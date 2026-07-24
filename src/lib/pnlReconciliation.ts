@@ -183,6 +183,12 @@ export function createPnlReconciliation(config: Config = {}) {
   const logger = config.logger ?? console
   let state: PnlReconciliationInput | null = null
 
+  // STARTUP ASSERTION, DISCLOSED (this task's explicit requirement): logs ONCE, at construction
+  // time, whether the detailed primary source was actually supplied — the fastest way to confirm
+  // from real production logs whether the wiring in src/pipeline/index.ts is actually reaching this
+  // module, without waiting for a full recovery pass to run first.
+  logger.warn('[pnl-reconciliation] startup', { detailedRecoverySourceConfigured: Boolean(config.priceSourceDetailedPrimary) })
+
   // RECOVERED-PRICE-DISCARDED FIX, DISCLOSED (confirmed root cause of stalled pricing coverage —
   // real production evidence: 283 closed lots, 7 fully priced, 2.47% coverage, unchanged by whether
   // recovery ran or not): this previously returned only a Set<string> of lot keys "recovery reached
@@ -207,6 +213,18 @@ export function createPnlReconciliation(config: Config = {}) {
   // lots per attempt than starting new lots from zero — sorted first (tie-broken by lotKey for
   // determinism), never changing which fetchers or how many attempts are used per lot.
   type RecoveredPrice = { costBasisUsd: number | null; proceedsUsd: number | null }
+  // WIRING DIAGNOSTIC COUNTERS, DISCLOSED (this task's explicit requirement): distinguishes THREE
+  // real, distinct things that a bare "recovered: 0" summary conflates:
+  //   - detailedLookupsUsed: how many leg attempts SELECTED the detailed path (the primary slot,
+  //     with a detailed fetcher configured) — this is a wiring/selection count, incremented
+  //     regardless of whether the underlying KV client ever actually invokes the fetcher.
+  //   - plainLookupsUsed: how many leg attempts used the plain (non-detailed) fetcher instead —
+  //     either because no detailed fetcher was configured, or because this was the fallback slot.
+  //   - detailedAttemptsObserved: how many times the detailed fetcher was ACTUALLY invoked (i.e.
+  //     RequestPriceKvClient's cache-hit/in-flight/per-token-cap short-circuits did NOT prevent a
+  //     real call). If detailedLookupsUsed is high but this stays near zero, that proves the
+  //     short-circuit — not a wiring gap — is what's suppressing real per-source attempts, without
+  //     this diagnostic pass needing to touch (or even know) that cap's value.
   async function recoverPrices(lots: readonly MatchedLot[]): Promise<{
     recoveredByLotKey: Map<string, RecoveredPrice>
     oneSideMissingCandidates: number
@@ -215,17 +233,23 @@ export function createPnlReconciliation(config: Config = {}) {
     candidatesCappedByBudget: number
     failureReasonCounts: RecoveryFailureReasonCounts
     sourceAttemptCounters: SourceAttemptCounters
+    detailedLookupsUsed: number
+    plainLookupsUsed: number
+    detailedAttemptsObserved: number
   }> {
     const recoveredByLotKey = new Map<string, RecoveredPrice>()
     const failureReasonCounts = emptyReasonCounts()
     const sourceAttemptCounters = emptySourceAttemptCounters()
+    let detailedLookupsUsed = 0
+    let plainLookupsUsed = 0
+    let detailedAttemptsObserved = 0
     const fetchers = [config.priceSources?.primary, config.priceSources?.fallback].filter(Boolean) as PriceSourceFn[]
     const detailedPrimary = config.priceSourceDetailedPrimary
     const missingLots = lots.filter((lot) => !(lot.costBasisUsd !== null && lot.proceedsUsd !== null))
     const oneSideMissingCandidates = missingLots.filter((l) => l.costBasisUsd !== null || l.proceedsUsd !== null).length
     const bothSidesMissingCandidates = missingLots.length - oneSideMissingCandidates
     if (!config.priceKvClient || fetchers.length === 0) {
-      return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length, failureReasonCounts, sourceAttemptCounters }
+      return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved }
     }
     const priceKvClient = config.priceKvClient
     const sorted = [...missingLots].sort((a, b) => {
@@ -253,6 +277,7 @@ export function createPnlReconciliation(config: Config = {}) {
       let lastBuyReason: string | null = null
       let lastSellReason: string | null = null
       const callDetailed = async (token: string, chain: string, timestamp: number): Promise<{ price: number | null; reason: string | null }> => {
+        detailedAttemptsObserved += 1
         try {
           const d = await detailedPrimary!(token, chain as SupportedChain, timestamp)
           recordSourceAttempts(sourceAttemptCounters, d.attempts)
@@ -269,6 +294,7 @@ export function createPnlReconciliation(config: Config = {}) {
         const useDetailed = i === 0 && Boolean(detailedPrimary) && fetcher === config.priceSources?.primary
         if (needsBuy && recoveredBuy === null && priceKvClient.getPriceHistorical) {
           if (useDetailed) {
+            detailedLookupsUsed += 1
             const wrapped: PriceSourceFn = async (t, c, ts) => {
               const result = await callDetailed(t, c, ts)
               lastBuyReason = result.reason
@@ -276,11 +302,13 @@ export function createPnlReconciliation(config: Config = {}) {
             }
             recoveredBuy = await priceKvClient.getPriceHistorical(lot.token, lot.chain, lot.openedAt, wrapped)
           } else {
+            plainLookupsUsed += 1
             recoveredBuy = await priceKvClient.getPriceHistorical(lot.token, lot.chain, lot.openedAt, fetcher)
           }
         }
         if (needsSell && recoveredSell === null && priceKvClient.getPricePrimary) {
           if (useDetailed) {
+            detailedLookupsUsed += 1
             const wrapped: PriceSourceFn = async (t, c, ts) => {
               const result = await callDetailed(t, c, ts)
               lastSellReason = result.reason
@@ -288,6 +316,7 @@ export function createPnlReconciliation(config: Config = {}) {
             }
             recoveredSell = await priceKvClient.getPricePrimary(lot.token, lot.chain, lot.closedAt, wrapped)
           } else {
+            plainLookupsUsed += 1
             recoveredSell = await priceKvClient.getPricePrimary(lot.token, lot.chain, lot.closedAt, fetcher)
           }
         }
@@ -299,7 +328,7 @@ export function createPnlReconciliation(config: Config = {}) {
         recoveredByLotKey.set(lotKey(lot), { costBasisUsd: recoveredBuy, proceedsUsd: recoveredSell })
       }
     })
-    return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: candidates.length, candidatesCappedByBudget: sorted.length - candidates.length, failureReasonCounts, sourceAttemptCounters }
+    return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: candidates.length, candidatesCappedByBudget: sorted.length - candidates.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved }
   }
 
   return {
@@ -371,6 +400,14 @@ export function createPnlReconciliation(config: Config = {}) {
         sourceAttemptCounts: recovery.sourceAttemptCounters.sourceAttemptCounts,
         sourceSuccessCounts: recovery.sourceAttemptCounters.sourceSuccessCounts,
         sourceFailureReasonCounts: recovery.sourceAttemptCounters.sourceFailureReasonCounts,
+        // WIRING DIAGNOSTIC COUNTERS, DISCLOSED (this task's explicit requirement): see
+        // recoverPrices' own header for what each of these three distinguishes — in particular, a
+        // real production run showing detailedLookupsUsed > 0 alongside detailedAttemptsObserved
+        // near 0 proves the detailed fetcher was correctly SELECTED but RequestPriceKvClient's own
+        // cache-hit/in-flight/per-token-cap short-circuit prevented it from ever actually running.
+        detailedLookupsUsed: recovery.detailedLookupsUsed,
+        plainLookupsUsed: recovery.plainLookupsUsed,
+        detailedAttemptsObserved: recovery.detailedAttemptsObserved,
       })
 
       let syntheticAlignedCount = 0

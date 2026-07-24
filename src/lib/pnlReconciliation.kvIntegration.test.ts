@@ -140,4 +140,107 @@ describe('pnlReconciliation.recoverPrices — real RequestPriceKvClient integrat
     // "unverified chain" reasons must classify away from providerReturnedNull.
     assert.equal(recoveryLog.failureReasonCounts.providerReturnedNull, 0, 'a real, specific "unverified chain" reason must never collapse into providerReturnedNull')
   })
+
+  function captureRecoveryLog(): { logger: { warn: (label: string, payload?: unknown) => void }; getPayload: () => Record<string, unknown> | undefined } {
+    const logs: Array<{ label: string; payload: unknown }> = []
+    return {
+      logger: { warn: (label, payload) => { logs.push({ label, payload }) } },
+      getPayload: () => logs.find((l) => l.label === '[pnl-reconciliation] recovery')?.payload as Record<string, unknown> | undefined,
+    }
+  }
+
+  it('a KV hit may have no live attempts — the detailed fetcher is never invoked when the KV client already has the value', async () => {
+    const store = new Map<string, number>([['v2:price:primary:base:0xcached:2', 5]])
+    const priceKvClient = createRequestPriceKvClient({
+      kv: { get: async (key: string) => store.get(key) ?? null, set: async () => 'OK' } as never,
+      maxLookupsPerToken: 10,
+      random: () => 0,
+    })
+    let detailedCalls = 0
+    const detailedPrimary = async () => { detailedCalls += 1; return { price: 999, route: 'goldrush', attempts: [{ source: 'goldrush', ok: true, reason: null }] } }
+    const { logger, getPayload } = captureRecoveryLog()
+    const r = createPnlReconciliation({ logger, priceKvClient, priceSources: { primary: async () => null }, priceSourceDetailedPrimary: detailedPrimary })
+
+    const missingSell = lot({ token: '0xcached', costBasisUsd: 1, proceedsUsd: null, openedAt: 1, closedAt: 2 })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [missingSell], realizedPnlUsd: null }),
+      pnlEngineResult: pnl(1, { realizedPnlUsd: null }),
+      syntheticPnlAssemblyOutput: null,
+    })
+
+    assert.equal(summary.priceRecoveredCount, 1, 'the cached KV value must still resolve the leg')
+    assert.equal(detailedCalls, 0, 'a KV cache hit must never invoke the detailed fetcher — nothing to observe')
+    const payload = getPayload()
+    assert.equal(payload?.detailedAttemptsObserved, 0, 'detailedAttemptsObserved must reflect that no live call happened')
+  })
+
+  it('a KV miss uses exactly one live lookup and records detailed attempts', async () => {
+    const priceKvClient = createRequestPriceKvClient({ kv: { get: async () => null, set: async () => 'OK' } as never, maxLookupsPerToken: 10, random: () => 0 })
+    let detailedCalls = 0
+    const detailedPrimary = async () => { detailedCalls += 1; return { price: 7, route: 'goldrush', attempts: [{ source: 'goldrush', ok: true, reason: null }] } }
+    const { logger, getPayload } = captureRecoveryLog()
+    const r = createPnlReconciliation({ logger, priceKvClient, priceSources: { primary: async () => null }, priceSourceDetailedPrimary: detailedPrimary })
+
+    const missingBuy = lot({ token: '0xmiss', costBasisUsd: null, proceedsUsd: 10, openedAt: 1, closedAt: 2 })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [missingBuy], realizedPnlUsd: null }),
+      pnlEngineResult: pnl(1, { realizedPnlUsd: null }),
+      syntheticPnlAssemblyOutput: null,
+    })
+
+    assert.equal(summary.priceRecoveredCount, 1)
+    assert.equal(detailedCalls, 1, 'a KV miss must invoke the detailed fetcher exactly once')
+    const payload = getPayload()
+    assert.equal(payload?.detailedAttemptsObserved, 1)
+    assert.equal((payload?.sourceAttemptCounts as Record<string, number> | undefined)?.goldrush, 1)
+  })
+
+  it('breaker-open still records detailed attempts — the breaker only skips the KV read, never the detailed provider call', async () => {
+    const kv = { get: async () => new Promise<null>(() => {}), set: async () => 'OK' }
+    const priceKvClient = createRequestPriceKvClient({ kv: kv as never, timeoutMs: 5, maxRetries: 0, maxConsecutiveTimeouts: 1, cooldownMs: 60_000, maxLookupsPerToken: 10, random: () => 0 })
+    let detailedCalls = 0
+    const detailedPrimary = async () => { detailedCalls += 1; return { price: 3, route: 'goldrush', attempts: [{ source: 'goldrush', ok: true, reason: null }] } }
+
+    // Pre-open the breaker with one real, sequential, genuinely-timed-out lookup (same isolation
+    // technique as the earlier breaker test above — avoids recoverPrices' own concurrency racing
+    // multiple candidates' KV reads before any of them observes the breaker opening).
+    await priceKvClient.getPricePrimary('0xwarmup', 'base', 1, async () => 1)
+    assert.equal(priceKvClient.stats.timeouts, 1)
+
+    const { logger, getPayload } = captureRecoveryLog()
+    const r = createPnlReconciliation({ logger, priceKvClient, priceSources: { primary: async () => null }, priceSourceDetailedPrimary: detailedPrimary })
+    const candidate = lot({ token: '0xafterbreaker', costBasisUsd: null, proceedsUsd: 10, openedAt: 1, closedAt: 2 })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [candidate], realizedPnlUsd: null }),
+      pnlEngineResult: pnl(1, { realizedPnlUsd: null }),
+      syntheticPnlAssemblyOutput: null,
+    })
+
+    assert.ok(priceKvClient.stats.breakerSkips >= 1, 'the breaker must have actually skipped this candidate\'s KV read')
+    assert.equal(summary.priceRecoveredCount, 1, 'the detailed provider must still resolve the price despite the breaker skipping KV')
+    assert.equal(detailedCalls, 1, 'the detailed fetcher must still run exactly once even though the KV read was skipped')
+    assert.equal(getPayload()?.detailedAttemptsObserved, 1)
+  })
+
+  it('no duplicate provider call is introduced by detailed capture — exactly one real provider call per leg, same as the plain path', async () => {
+    const priceKvClient = createRequestPriceKvClient({ kv: { get: async () => null, set: async () => 'OK' } as never, maxLookupsPerToken: 10, random: () => 0 })
+    let realProviderCalls = 0
+    const goldrushStub: PriceSourceFn = async () => { realProviderCalls += 1; return 4.2 }
+    const detailed = buildChainAwareHistoricalPriceSourceDetailed(goldrushStub)
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient,
+      priceSources: { primary: async (t, c, ts) => (await detailed(t, c, ts)).price },
+      priceSourceDetailedPrimary: detailed,
+    })
+    const candidate = lot({ chain: 'hyperevm', token: '0xnodup', costBasisUsd: null, proceedsUsd: 10, openedAt: 1, closedAt: 2 })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [candidate], realizedPnlUsd: null }),
+      pnlEngineResult: pnl(1, { realizedPnlUsd: null }),
+      syntheticPnlAssemblyOutput: null,
+    })
+
+    assert.equal(summary.priceRecoveredCount, 1)
+    assert.equal(realProviderCalls, 1, 'the detailed capture must observe the SAME single real goldrush call, never fire a second one')
+  })
 })
