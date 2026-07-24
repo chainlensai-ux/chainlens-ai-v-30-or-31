@@ -17,6 +17,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { createRequestPriceKvClient } from './kvClient'
 import { createPnlReconciliation } from './pnlReconciliation'
+import { buildChainAwareHistoricalPriceSourceDetailed } from '../pipeline/pricingAtTimeAdapter'
 import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
@@ -97,5 +98,46 @@ describe('pnlReconciliation.recoverPrices — real RequestPriceKvClient integrat
 
     assert.equal(providerCalls, 1, 'two lots requesting the identical (chain, token, timestamp) must coalesce into ONE real provider call')
     assert.equal(summary.priceRecoveredCount, 2, 'both lots must still receive the coalesced result')
+  })
+
+  it('end-to-end: the real detailed chain-aware router feeds real per-source attempts into recoverPrices — a specific reason never collapses to providerReturnedNull', async () => {
+    // 'hyperevm' is deliberately unverified in every real source's own chain map (dexscreener,
+    // geckoterminal, coingecko) — every real attempt resolves via a cheap, synchronous "unverified
+    // chain" check, so this test needs no fetch mocking and is fully deterministic (see
+    // pricingAtTimeAdapter.test.ts's own header for the same convention).
+    const goldrushStub: PriceSourceFn = async () => null
+    const detailed = buildChainAwareHistoricalPriceSourceDetailed(goldrushStub)
+    const primary: PriceSourceFn = async (t, c, ts) => (await detailed(t, c, ts)).price
+
+    const priceKvClient = createRequestPriceKvClient({ kv: { get: async () => null, set: async () => 'OK' } as never, maxLookupsPerToken: 10, random: () => 0 })
+    const logs: Array<{ label: string; payload: unknown }> = []
+    const capturingLogger = { warn: (label: string, payload?: unknown) => { logs.push({ label, payload }) } }
+    const r = createPnlReconciliation({ logger: capturingLogger, priceKvClient, priceSources: { primary }, priceSourceDetailedPrimary: detailed })
+
+    const missingBuy = lot({ chain: 'hyperevm', costBasisUsd: null, proceedsUsd: 10, openedAt: 100, closedAt: 200, openedTxHash: '0xh1', closedTxHash: '0xh2' })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [missingBuy], realizedPnlUsd: null }),
+      pnlEngineResult: pnl(1, { realizedPnlUsd: null }),
+      syntheticPnlAssemblyOutput: null,
+    })
+
+    assert.equal(summary.priceRecoveredCount, 0, 'hyperevm has no real coverage in any source — genuinely unpriced, never fabricated')
+
+    const recoveryLog = logs.find((l) => l.label === '[pnl-reconciliation] recovery')?.payload as {
+      failureReasonCounts: { providerReturnedNull: number; unknownReason: Record<string, number> }
+      sourceAttemptCounts: Record<string, number>
+      sourceSuccessCounts: Record<string, number>
+    }
+    assert.ok(recoveryLog, 'the recovery diagnostic log must have fired')
+    // Real per-source attempts (goldrush, dexscreener, geckoterminal, coingecko) must all be
+    // present — proving the per-source counters survive real end-to-end wiring, not just the
+    // synthetic unit-test fixtures above.
+    assert.ok(recoveryLog.sourceAttemptCounts.goldrush >= 1, 'goldrush must have been attempted')
+    assert.ok(recoveryLog.sourceAttemptCounts.dexscreener >= 1, 'dexscreener must have been attempted')
+    assert.ok(recoveryLog.sourceAttemptCounts.geckoterminal >= 1, 'geckoterminal must have been attempted')
+    assert.ok(recoveryLog.sourceAttemptCounts.coingecko >= 1, 'coingecko must have been attempted')
+    // The confirmed collapse this task fixes: every one of hyperevm's real, specific
+    // "unverified chain" reasons must classify away from providerReturnedNull.
+    assert.equal(recoveryLog.failureReasonCounts.providerReturnedNull, 0, 'a real, specific "unverified chain" reason must never collapse into providerReturnedNull')
   })
 })

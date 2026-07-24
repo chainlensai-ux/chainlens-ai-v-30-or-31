@@ -27,10 +27,25 @@ type Config = { logger?: Pick<Console, 'warn'>; priceKvClient?: PriceKvLike; pri
 // (dexscreener.ts, geckoTerminalPriceSource.ts, coingecko.ts, basedex.ts) was traced for its actual
 // reason strings (see pricingAtTimeAdapter.ts's own header); some requested categories
 // ('pool_created_after_timestamp', 'zero_liquidity', 'stale_price_rejection', 'invalid_decimals')
-// are NOT currently distinguishable from 'no_pool'/'provider_returned_null' by any real source in
-// this codebase — they remain in this counter object (always present, never omitted) so a future
+// are NOT currently distinguishable from 'no_pool'/other buckets by any real source in this
+// codebase — they remain in this counter object (always present, never omitted) so a future
 // source-level fix that adds that distinction has somewhere to report it, but they honestly read 0
 // today rather than being force-matched to the nearest real reason string.
+//
+// CONFIRMED COLLAPSE POINT, FIXED (this follow-up task's exact "every failure classified
+// providerReturnedNull" symptom): the PRIOR version of this function's fallback branch mapped ANY
+// non-enumerated reason string — including real, already-observed, source-specific strings like
+// basedex.ts's `rpc_error:${message}` and every source's `http_${status}`/`fetch_error:${message}`
+// — straight into `providerReturnedNull`. `providerReturnedNull` is supposed to mean "the source
+// gave back a plain null with no further explanation" (reason === null); silently routing a REAL,
+// specific-but-unenumerated string into that same bucket is exactly the "final generic null
+// overwrites a specific earlier reason" collapse this task's own diagnostic pass was meant to
+// surface, not perform — a wallet whose real BaseDex failures are mostly `rpc_error:*` (very
+// plausible given BaseDex's "hundreds of RPC operations", per this task's own production evidence)
+// would show 100% providerReturnedNull with every specific bucket at zero, matching the reported
+// symptom exactly. Fixed: `providerReturnedNull` is now reserved STRICTLY for a literal `null`
+// reason; every other non-matching string goes to the new `unknownReason` bucket below, keyed by a
+// compact, truncated reason NAME (never the dynamic message/token/raw body that can follow a `:`).
 export type RecoveryFailureReasonCounts = {
   unsupportedTokenOrChain: number
   timestampOutsideProviderData: number
@@ -42,26 +57,81 @@ export type RecoveryFailureReasonCounts = {
   stalePriceRejection: number
   invalidDecimals: number
   providerReturnedNull: number
+  // COMPACT, DISCLOSED: keyed by a normalized reason NAME only (e.g. 'rpc_error', 'http_500',
+  // 'no_candles') — never a raw provider response body, never a token address, never the dynamic
+  // exception message text that can follow a `:` in reasons like `rpc_error:${err.message}`.
+  unknownReason: Record<string, number>
 }
 
 function emptyReasonCounts(): RecoveryFailureReasonCounts {
-  return { unsupportedTokenOrChain: 0, timestampOutsideProviderData: 0, malformedResponse: 0, blockResolutionFailure: 0, noPool: 0, poolCreatedAfterTimestamp: 0, zeroLiquidity: 0, stalePriceRejection: 0, invalidDecimals: 0, providerReturnedNull: 0 }
+  return { unsupportedTokenOrChain: 0, timestampOutsideProviderData: 0, malformedResponse: 0, blockResolutionFailure: 0, noPool: 0, poolCreatedAfterTimestamp: 0, zeroLiquidity: 0, stalePriceRejection: 0, invalidDecimals: 0, providerReturnedNull: 0, unknownReason: {} }
 }
+
+// Truncates a reason string to a compact, bounded-cardinality NAME safe for a counter key — strips
+// everything from the first `:` onward (where every dynamic/unbounded part of this codebase's real
+// reason strings lives — `rpc_error:${message}`, `fetch_error:${message}`) so an unknown reason
+// still groups meaningfully (all RPC errors count together) without ever leaking the dynamic
+// message text, which could in principle echo back provider/response details.
+function compactReasonName(reason: string): string {
+  const colonIndex = reason.indexOf(':')
+  return colonIndex === -1 ? reason : reason.slice(0, colonIndex)
+}
+
+export type RecoveryFailureBucket = keyof Omit<RecoveryFailureReasonCounts, 'unknownReason'> | 'unknownReason'
 
 // Classifies ONE real, already-observed reason string (never a fabricated one — a candidate this
 // function never reached, e.g. because a cache hit resolved it, never calls this at all) into a
-// compact bucket. Exported for direct unit testing.
-export function classifyRecoveryFailureReason(reason: string | null): keyof RecoveryFailureReasonCounts {
-  if (reason === null) return 'providerReturnedNull'
-  if (reason.includes('unverified_chain') || reason.includes('unverified_network') || reason === 'base_dex_only_supports_base_chain' || reason === 'no_api_key_configured' || reason === 'goldrush_no_data') return 'unsupportedTokenOrChain'
-  if (reason.includes('timestamp_too_far_from_now') || reason === 'no_price_series_in_range') return 'timestampOutsideProviderData'
-  if (reason.includes('unparseable')) return 'malformedResponse'
-  if (reason === 'could_not_resolve_historical_block') return 'blockResolutionFailure'
-  if (reason === 'no_pool_found' || reason === 'no_uniswap_v3_pool_found' || reason === 'no_matching_pair') return 'noPool'
-  // http_*/fetch_error:*/rpc_error:* are real provider-side failures (non-2xx, network/RPC
-  // exception) — closest honest bucket is "provider returned null", not a fabricated malformed/
-  // block-failure classification this codebase's real code doesn't actually distinguish.
-  return 'providerReturnedNull'
+// compact bucket. `unknownKey` is set only when `bucket === 'unknownReason'`. Exported for direct
+// unit testing.
+export function classifyRecoveryFailureReason(reason: string | null): { bucket: RecoveryFailureBucket; unknownKey: string | null } {
+  if (reason === null) return { bucket: 'providerReturnedNull', unknownKey: null }
+  if (reason.includes('unverified_chain') || reason.includes('unverified_network') || reason === 'base_dex_only_supports_base_chain' || reason === 'no_api_key_configured' || reason === 'goldrush_no_data') return { bucket: 'unsupportedTokenOrChain', unknownKey: null }
+  if (reason.includes('timestamp_too_far_from_now') || reason === 'no_price_series_in_range' || reason === 'no_candles') return { bucket: 'timestampOutsideProviderData', unknownKey: null }
+  if (reason.includes('unparseable')) return { bucket: 'malformedResponse', unknownKey: null }
+  if (reason === 'could_not_resolve_historical_block') return { bucket: 'blockResolutionFailure', unknownKey: null }
+  if (reason === 'no_pool_found' || reason === 'no_uniswap_v3_pool_found' || reason === 'no_matching_pair') return { bucket: 'noPool', unknownKey: null }
+  // Every other real, non-empty reason string this codebase's sources can produce (http_*,
+  // fetch_error:*, rpc_error:*, or any future/unrecognized string) is a genuine, specific signal
+  // this classifier just doesn't have a named bucket for yet — it must never be silently folded
+  // into providerReturnedNull (that would recreate exactly the collapse this fix closes).
+  return { bucket: 'unknownReason', unknownKey: compactReasonName(reason) }
+}
+
+function recordFailureReason(counts: RecoveryFailureReasonCounts, reason: string | null): void {
+  const { bucket, unknownKey } = classifyRecoveryFailureReason(reason)
+  if (bucket === 'unknownReason') {
+    counts.unknownReason[unknownKey!] = (counts.unknownReason[unknownKey!] ?? 0) + 1
+  } else {
+    counts[bucket] += 1
+  }
+}
+
+// PER-SOURCE ATTEMPT COUNTERS, DISCLOSED (this task's explicit requirement): built from EVERY
+// attempt in a detailed lookup's `attempts` array (not just the final one), so a source that was
+// tried and failed early is never invisible just because a later source in the same lookup also
+// failed — every source's own real attempt/success/failure tally is preserved independently.
+export type SourceAttemptCounters = {
+  sourceAttemptCounts: Record<string, number>
+  sourceSuccessCounts: Record<string, number>
+  sourceFailureReasonCounts: Record<string, Record<string, number>>
+}
+
+function emptySourceAttemptCounters(): SourceAttemptCounters {
+  return { sourceAttemptCounts: {}, sourceSuccessCounts: {}, sourceFailureReasonCounts: {} }
+}
+
+function recordSourceAttempts(counters: SourceAttemptCounters, attempts: readonly DetailedPriceAttempt[]): void {
+  for (const attempt of attempts) {
+    counters.sourceAttemptCounts[attempt.source] = (counters.sourceAttemptCounts[attempt.source] ?? 0) + 1
+    if (attempt.ok) {
+      counters.sourceSuccessCounts[attempt.source] = (counters.sourceSuccessCounts[attempt.source] ?? 0) + 1
+      continue
+    }
+    const { bucket, unknownKey } = classifyRecoveryFailureReason(attempt.reason)
+    const bucketKey = bucket === 'unknownReason' ? `unknownReason:${unknownKey}` : bucket
+    const bySource = counters.sourceFailureReasonCounts[attempt.source] ?? (counters.sourceFailureReasonCounts[attempt.source] = {})
+    bySource[bucketKey] = (bySource[bucketKey] ?? 0) + 1
+  }
 }
 export type PnlReconciliationInput = { fifoEngineResult: FifoOutput; pnlEngineResult: PnlSummaryResult; routerInferenceOutput?: RouterInferenceLike | null; syntheticPnlAssemblyOutput?: SyntheticPnlSummary | null }
 export type PnlReconciliationSummary = { closedLots: number; unmatchedBuys: number; unmatchedSells: number; realizedPnlUsd: number | null; unrealizedPnlUsd: number | null; priceRecoveredCount: number; routerCorrectedCount: number; syntheticAlignedCount: number; missingEvidenceCount: number; publicPnlStatus: ReconciledPublicPnlStatus; mismatches: Array<{ key: string; classification: PnlMismatchClass }> }
@@ -144,16 +214,18 @@ export function createPnlReconciliation(config: Config = {}) {
     candidatesAttempted: number
     candidatesCappedByBudget: number
     failureReasonCounts: RecoveryFailureReasonCounts
+    sourceAttemptCounters: SourceAttemptCounters
   }> {
     const recoveredByLotKey = new Map<string, RecoveredPrice>()
     const failureReasonCounts = emptyReasonCounts()
+    const sourceAttemptCounters = emptySourceAttemptCounters()
     const fetchers = [config.priceSources?.primary, config.priceSources?.fallback].filter(Boolean) as PriceSourceFn[]
     const detailedPrimary = config.priceSourceDetailedPrimary
     const missingLots = lots.filter((lot) => !(lot.costBasisUsd !== null && lot.proceedsUsd !== null))
     const oneSideMissingCandidates = missingLots.filter((l) => l.costBasisUsd !== null || l.proceedsUsd !== null).length
     const bothSidesMissingCandidates = missingLots.length - oneSideMissingCandidates
     if (!config.priceKvClient || fetchers.length === 0) {
-      return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length, failureReasonCounts }
+      return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length, failureReasonCounts, sourceAttemptCounters }
     }
     const priceKvClient = config.priceKvClient
     const sorted = [...missingLots].sort((a, b) => {
@@ -169,21 +241,38 @@ export function createPnlReconciliation(config: Config = {}) {
       let recoveredSell: number | null = null
       // COMPACT REASON CAPTURE, DISCLOSED: only the PRIMARY slot (fetchers[0], when it's the real
       // chain-aware router) has a detailed variant available — see this file's own
-      // DetailedPriceSourceFn header. Capturing the LAST attempt's reason (the most recent real
-      // source tried before this leg gave up, not a fabricated aggregate) — never the full response,
+      // DetailedPriceSourceFn header. Records EVERY attempt in the detailed result (via
+      // recordSourceAttempts, per-source, never just the final one) into the per-source counters,
+      // and separately tracks the LAST attempt's reason (the most recent real source tried before
+      // this leg gave up) for the per-leg failureReasonCounts summary — never the full response,
       // matching this task's explicit "compact reason counters instead of logging full responses"
-      // requirement.
+      // requirement. An exception from the detailed source is caught here specifically (never
+      // silently converted to a generic null elsewhere) and recorded into the unknownReason bucket
+      // under a compact, bounded key — this task's own "confirm exceptions are not silently
+      // converted to generic null" requirement.
       let lastBuyReason: string | null = null
       let lastSellReason: string | null = null
+      const callDetailed = async (token: string, chain: string, timestamp: number): Promise<{ price: number | null; reason: string | null }> => {
+        try {
+          const d = await detailedPrimary!(token, chain as SupportedChain, timestamp)
+          recordSourceAttempts(sourceAttemptCounters, d.attempts)
+          return { price: d.price, reason: d.attempts.length > 0 ? d.attempts[d.attempts.length - 1].reason : null }
+        } catch (err) {
+          const exceptionKey = err instanceof Error ? err.constructor.name : 'UnknownException'
+          sourceAttemptCounters.sourceFailureReasonCounts.detailedPrimaryException = sourceAttemptCounters.sourceFailureReasonCounts.detailedPrimaryException ?? {}
+          sourceAttemptCounters.sourceFailureReasonCounts.detailedPrimaryException[exceptionKey] = (sourceAttemptCounters.sourceFailureReasonCounts.detailedPrimaryException[exceptionKey] ?? 0) + 1
+          return { price: null, reason: `exception:${exceptionKey}` }
+        }
+      }
       for (let i = 0; i < fetchers.length; i += 1) {
         const fetcher = fetchers[i]
         const useDetailed = i === 0 && Boolean(detailedPrimary) && fetcher === config.priceSources?.primary
         if (needsBuy && recoveredBuy === null && priceKvClient.getPriceHistorical) {
-          if (useDetailed && detailedPrimary) {
+          if (useDetailed) {
             const wrapped: PriceSourceFn = async (t, c, ts) => {
-              const d = await detailedPrimary(t, c as SupportedChain, ts)
-              lastBuyReason = d.attempts.length > 0 ? d.attempts[d.attempts.length - 1].reason : null
-              return d.price
+              const result = await callDetailed(t, c, ts)
+              lastBuyReason = result.reason
+              return result.price
             }
             recoveredBuy = await priceKvClient.getPriceHistorical(lot.token, lot.chain, lot.openedAt, wrapped)
           } else {
@@ -191,11 +280,11 @@ export function createPnlReconciliation(config: Config = {}) {
           }
         }
         if (needsSell && recoveredSell === null && priceKvClient.getPricePrimary) {
-          if (useDetailed && detailedPrimary) {
+          if (useDetailed) {
             const wrapped: PriceSourceFn = async (t, c, ts) => {
-              const d = await detailedPrimary(t, c as SupportedChain, ts)
-              lastSellReason = d.attempts.length > 0 ? d.attempts[d.attempts.length - 1].reason : null
-              return d.price
+              const result = await callDetailed(t, c, ts)
+              lastSellReason = result.reason
+              return result.price
             }
             recoveredSell = await priceKvClient.getPricePrimary(lot.token, lot.chain, lot.closedAt, wrapped)
           } else {
@@ -204,13 +293,13 @@ export function createPnlReconciliation(config: Config = {}) {
         }
         if ((!needsBuy || recoveredBuy !== null) && (!needsSell || recoveredSell !== null)) break
       }
-      if (needsBuy && recoveredBuy === null) failureReasonCounts[classifyRecoveryFailureReason(lastBuyReason)] += 1
-      if (needsSell && recoveredSell === null) failureReasonCounts[classifyRecoveryFailureReason(lastSellReason)] += 1
+      if (needsBuy && recoveredBuy === null) recordFailureReason(failureReasonCounts, lastBuyReason)
+      if (needsSell && recoveredSell === null) recordFailureReason(failureReasonCounts, lastSellReason)
       if (recoveredBuy !== null || recoveredSell !== null) {
         recoveredByLotKey.set(lotKey(lot), { costBasisUsd: recoveredBuy, proceedsUsd: recoveredSell })
       }
     })
-    return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: candidates.length, candidatesCappedByBudget: sorted.length - candidates.length, failureReasonCounts }
+    return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: candidates.length, candidatesCappedByBudget: sorted.length - candidates.length, failureReasonCounts, sourceAttemptCounters }
   }
 
   return {
@@ -276,6 +365,12 @@ export function createPnlReconciliation(config: Config = {}) {
         // category, never raw provider responses — see classifyRecoveryFailureReason's own header
         // for the full mapping and its honest, disclosed limitations.
         failureReasonCounts: recovery.failureReasonCounts,
+        // PER-SOURCE ATTEMPT COUNTERS, DISCLOSED (this task's explicit requirement): real per-source
+        // attempt/success/failure-reason tallies across every attempt this recovery pass made —
+        // never keyed by token or wallet, only by source name and reason name.
+        sourceAttemptCounts: recovery.sourceAttemptCounters.sourceAttemptCounts,
+        sourceSuccessCounts: recovery.sourceAttemptCounters.sourceSuccessCounts,
+        sourceFailureReasonCounts: recovery.sourceAttemptCounters.sourceFailureReasonCounts,
       })
 
       let syntheticAlignedCount = 0

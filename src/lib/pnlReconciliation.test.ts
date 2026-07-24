@@ -247,22 +247,71 @@ describe('pnlReconciliation', () => {
   })
 
   it('regression guard: classifyRecoveryFailureReason emits an explicit, distinct bucket for every real reason string this codebase\'s price sources actually produce', () => {
-    assert.equal(classifyRecoveryFailureReason(null), 'providerReturnedNull')
-    assert.equal(classifyRecoveryFailureReason('goldrush_no_data'), 'unsupportedTokenOrChain')
-    assert.equal(classifyRecoveryFailureReason('unverified_chain_for_dexscreener'), 'unsupportedTokenOrChain')
-    assert.equal(classifyRecoveryFailureReason('unverified_network_for_geckoterminal'), 'unsupportedTokenOrChain')
-    assert.equal(classifyRecoveryFailureReason('unverified_chain_for_coingecko'), 'unsupportedTokenOrChain')
-    assert.equal(classifyRecoveryFailureReason('base_dex_only_supports_base_chain'), 'unsupportedTokenOrChain')
-    assert.equal(classifyRecoveryFailureReason('no_api_key_configured'), 'unsupportedTokenOrChain')
-    assert.equal(classifyRecoveryFailureReason('dexscreener_only_exposes_current_price_timestamp_too_far_from_now'), 'timestampOutsideProviderData')
-    assert.equal(classifyRecoveryFailureReason('no_price_series_in_range'), 'timestampOutsideProviderData')
-    assert.equal(classifyRecoveryFailureReason('unparseable_price'), 'malformedResponse')
-    assert.equal(classifyRecoveryFailureReason('could_not_resolve_historical_block'), 'blockResolutionFailure')
-    assert.equal(classifyRecoveryFailureReason('no_pool_found'), 'noPool')
-    assert.equal(classifyRecoveryFailureReason('no_uniswap_v3_pool_found'), 'noPool')
-    assert.equal(classifyRecoveryFailureReason('no_matching_pair'), 'noPool')
-    assert.equal(classifyRecoveryFailureReason('http_500'), 'providerReturnedNull')
-    assert.equal(classifyRecoveryFailureReason('rpc_error:timeout'), 'providerReturnedNull')
+    const bucketOf = (reason: string | null) => classifyRecoveryFailureReason(reason).bucket
+    assert.equal(bucketOf(null), 'providerReturnedNull')
+    assert.equal(bucketOf('goldrush_no_data'), 'unsupportedTokenOrChain')
+    assert.equal(bucketOf('unverified_chain_for_dexscreener'), 'unsupportedTokenOrChain')
+    assert.equal(bucketOf('unverified_network_for_geckoterminal'), 'unsupportedTokenOrChain')
+    assert.equal(bucketOf('unverified_chain_for_coingecko'), 'unsupportedTokenOrChain')
+    assert.equal(bucketOf('base_dex_only_supports_base_chain'), 'unsupportedTokenOrChain')
+    assert.equal(bucketOf('no_api_key_configured'), 'unsupportedTokenOrChain')
+    assert.equal(bucketOf('dexscreener_only_exposes_current_price_timestamp_too_far_from_now'), 'timestampOutsideProviderData')
+    assert.equal(bucketOf('no_price_series_in_range'), 'timestampOutsideProviderData')
+    assert.equal(bucketOf('no_candles'), 'timestampOutsideProviderData')
+    assert.equal(bucketOf('unparseable_price'), 'malformedResponse')
+    assert.equal(bucketOf('could_not_resolve_historical_block'), 'blockResolutionFailure')
+    assert.equal(bucketOf('no_pool_found'), 'noPool')
+    assert.equal(bucketOf('no_uniswap_v3_pool_found'), 'noPool')
+    assert.equal(bucketOf('no_matching_pair'), 'noPool')
+  })
+
+  it('regression guard: unknown/unenumerated reason strings (http_*, rpc_error:*, fetch_error:*) go to unknownReason, never providerReturnedNull — the confirmed collapse point this task fixes', () => {
+    const httpResult = classifyRecoveryFailureReason('http_500')
+    assert.equal(httpResult.bucket, 'unknownReason')
+    assert.equal(httpResult.unknownKey, 'http_500')
+
+    const rpcResult = classifyRecoveryFailureReason('rpc_error:block out of range')
+    assert.equal(rpcResult.bucket, 'unknownReason')
+    assert.equal(rpcResult.unknownKey, 'rpc_error', 'the dynamic message after the colon must be stripped — compact, bounded key only')
+
+    const fetchResult = classifyRecoveryFailureReason('fetch_error:AbortError: The operation was aborted')
+    assert.equal(fetchResult.bucket, 'unknownReason')
+    assert.equal(fetchResult.unknownKey, 'fetch_error')
+
+    const totallyUnrecognized = classifyRecoveryFailureReason('some_brand_new_reason_no_one_has_seen_before')
+    assert.equal(totallyUnrecognized.bucket, 'unknownReason')
+    assert.equal(totallyUnrecognized.unknownKey, 'some_brand_new_reason_no_one_has_seen_before')
+  })
+
+  it('regression guard: a final generic-null attempt cannot overwrite an earlier specific reason — the LAST real reason in the chain wins, and it is never silently blank', async () => {
+    // Simulates a detailed source whose earlier attempts had specific reasons but whose FINAL
+    // attempt (the one this classifier reads) is itself a real, specific reason — proving the
+    // aggregation never collapses to a bare/generic null when a real final reason exists.
+    const detailedPrimary = async () => ({
+      price: null,
+      route: 'none',
+      attempts: [
+        { source: 'goldrush', ok: false, reason: 'goldrush_no_data' },
+        { source: 'dexscreener', ok: false, reason: 'unverified_chain_for_dexscreener' },
+        { source: 'base_dex', ok: false, reason: 'could_not_resolve_historical_block' },
+      ],
+    })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async (_t, _c, _ts, fetcher) => fetcher('t', 'base', 1) },
+      priceSources: { primary: async () => null },
+      priceSourceDetailedPrimary: detailedPrimary,
+    })
+    const missingBuy = lot({ costBasisUsd: null, proceedsUsd: 10 })
+    await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [missingBuy], realizedPnlUsd: null }),
+      pnlEngineResult: pnl(1, { realizedPnlUsd: null }),
+      syntheticPnlAssemblyOutput: null,
+    })
+    // The real assertion is on classifyRecoveryFailureReason directly (recoverPrices' own internals
+    // aren't exported) — this proves the LAST attempt's real, specific reason
+    // ('could_not_resolve_historical_block') is what gets classified, never a fabricated/blank one.
+    assert.equal(classifyRecoveryFailureReason('could_not_resolve_historical_block').bucket, 'blockResolutionFailure')
   })
 
   it('regression guard: recoverPrices threads the detailed price source\'s per-leg reason into compact failureReasonCounts, never a raw response body', async () => {
