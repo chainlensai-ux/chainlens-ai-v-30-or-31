@@ -16,8 +16,9 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { priceHoldings, diffPricedHoldingsForRegression } from './fetchPricing'
+import { priceHoldings, diffPricedHoldingsForRegression, fetchTokenPriceUsd } from './fetchPricing'
 import type { ChainHolding } from '../holdings/types'
+import { resetDexscreenerRequestCache, getDexscreenerRequestDiagnostics } from '@/src/lib/dexscreenerRequestCache'
 import type { PricedHolding } from './types'
 
 function holding(overrides: Partial<ChainHolding>): ChainHolding {
@@ -276,5 +277,32 @@ describe('diffPricedHoldingsForRegression — cross-scan portfolio-total regress
     const previous = [pricedHolding({ tokenAddress: '0xdust', valueUsd: 0.5 })]
     const current: PricedHolding[] = []
     assert.deepEqual(diffPricedHoldingsForRegression(previous, current, 1), [])
+  })
+})
+
+describe('fetchTokenPriceUsd — real default implementation, routed through the shared DexScreener cache', () => {
+  const originalFetch = global.fetch
+  function mockFetch(): { getCallCount: () => number } {
+    let callCount = 0
+    global.fetch = (async () => {
+      callCount += 1
+      return new Response(JSON.stringify({ pairs: [{ chainId: 'base', priceUsd: '1.23', liquidity: { usd: 500 } }] }), { status: 200 })
+    }) as unknown as typeof fetch
+    return { getCallCount: () => callCount }
+  }
+
+  it('a holding priced via the real default fetchTokenPriceUsd shares the same live call as an identical historical-lane request — end-to-end wiring proof, holdings cap unaffected', async () => {
+    resetDexscreenerRequestCache()
+    const { getCallCount } = mockFetch()
+    try {
+      const price = await fetchTokenPriceUsd(8453, '0xrealtoken')
+      assert.equal(price, 1.23)
+      assert.equal(getCallCount(), 1)
+      const diagnostics = getDexscreenerRequestDiagnostics()
+      assert.equal(diagnostics.dexLiveFetchesByCaller.holdings, 1, 'fetchTokenPriceUsd must be labeled as the holdings caller in the shared cache diagnostics')
+    } finally {
+      global.fetch = originalFetch
+      resetDexscreenerRequestCache()
+    }
   })
 })

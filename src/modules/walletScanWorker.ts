@@ -115,6 +115,12 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   // recoveryPolicy/utils.ts's own header for why multiple triggered candidates on one chain must
   // share ONE real GoldRush historical-page fetch, and why that sharing must reset per job.
   const { resetRecoveryHistoricalPageRequestCache } = await import('@/src/modules/recoveryPolicy/utils')
+  // SHARED DEXSCREENER CACHE RESET, DISCLOSED (this task's explicit requirement): same per-job
+  // reset convention as every other request-scoped cache above — see
+  // src/lib/dexscreenerRequestCache.ts's own header for the confirmed root cause this closes (two
+  // entirely separate, uncoordinated DexScreener implementations, neither aware of the other's
+  // calls or budget).
+  const { resetDexscreenerRequestCache, getDexscreenerRequestDiagnostics } = await import('@/src/lib/dexscreenerRequestCache')
 
   const startedAt = Date.now()
   console.warn('[wallet-scan-worker] job started', { jobId: payload.jobId })
@@ -128,6 +134,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   resetDexscreenerCallCount()
   resetProviderFetchWindowRequestCache()
   resetRecoveryHistoricalPageRequestCache()
+  resetDexscreenerRequestCache()
 
   let finalBody: unknown
   let completedSuccessfully = false
@@ -151,8 +158,20 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
     console.error('[wallet-scan-worker] job completed with failure result', err)
   }
 
+  const providerFetchWindowCounters = getProviderFetchWindowCoalescingCounters()
   // eslint-disable-next-line no-console
-  console.warn('[provider-call-audit] providerFetchWindow coalescing summary', { jobId: payload.jobId, ...getProviderFetchWindowCoalescingCounters() })
+  console.warn('[provider-call-audit] providerFetchWindow coalescing summary', {
+    jobId: payload.jobId,
+    ...providerFetchWindowCounters,
+    // EXPLICIT NAMES, DISCLOSED (this task's own requested diagnostic names): restates the same
+    // real counters above under the exact requested keys, so a "one live request maximum per
+    // chain" audit can grep for them directly instead of needing to know this module's own
+    // internal `liveFetches`/`settledReuseHits` naming.
+    transactionHistoryLiveFetches: providerFetchWindowCounters.liveFetches,
+    transactionHistorySettledReuseHits: providerFetchWindowCounters.settledReuseHits,
+  })
+  // eslint-disable-next-line no-console
+  console.warn('[provider-call-audit] dexscreener shared cache summary', { jobId: payload.jobId, ...getDexscreenerRequestDiagnostics() })
 
   const finishedAt = Date.now()
   const jobState: WalletScanJobState = {

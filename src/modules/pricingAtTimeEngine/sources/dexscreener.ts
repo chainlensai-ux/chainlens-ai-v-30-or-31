@@ -20,7 +20,11 @@ const DEXSCREENER_CHAIN_IDS: Partial<Record<SupportedChain, string>> = {
   // hyperevm intentionally omitted — no verified DexScreener chainId confirmed for it.
 }
 
-const DEXSCREENER_FRESHNESS_TOLERANCE_MS = 5 * 60 * 1000 // 5 minutes
+// EXPORTED, DISCLOSED (provider-call-audit follow-up task): the shared request-scoped DexScreener
+// cache (src/lib/dexscreenerRequestCache.ts) needs this exact same tolerance value to bucket
+// coalescing keys WITHOUT ever weakening this freshness gate — re-exporting the single real
+// constant instead of letting a second copy drift.
+export const DEXSCREENER_FRESHNESS_TOLERANCE_MS = 5 * 60 * 1000 // 5 minutes
 
 export type DexscreenerPriceResult = { priceUsd: number | null; reason: string | null }
 

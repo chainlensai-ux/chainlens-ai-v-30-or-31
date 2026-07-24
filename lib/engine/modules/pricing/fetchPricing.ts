@@ -26,7 +26,7 @@
 // holdings/fetchHoldings.ts, extended there in this same fix). An unmapped chainId still honestly
 // prices as null, never a guessed value.
 
-import { resolvePrices } from '@/src/modules/pricing'
+import { fetchDexscreenerPriceShared } from '@/src/lib/dexscreenerRequestCache'
 import { CHAIN_ID_TO_SUPPORTED_CHAIN } from '../holdings/fetchHoldings'
 import type { ChainHolding } from '../holdings/types'
 import type { PricedHolding, PricingEngineOutput } from './types'
@@ -91,15 +91,28 @@ export function diffPricedHoldingsForRegression(
   return diagnostics.sort((a, b) => (b.previousValueUsd - (b.currentValueUsd ?? 0)) - (a.previousValueUsd - (a.currentValueUsd ?? 0)))
 }
 
-// Never throws: resolvePrices already resolves every request to a real result (priceUsd: null,
-// source: 'unavailable' on any failure — see src/modules/pricing/index.ts's own guarantees), and
-// this function adds no additional network call of its own.
+// SHARED CACHE, DISCLOSED (provider-call-audit follow-up task, confirmed root cause of "far more
+// than 30 DexScreener calls in one scan" despite MAX_FALLBACK_TOKENS=30 below): this previously
+// called `resolvePrices` (src/modules/pricing), which internally reaches src/modules/pricing/
+// utils.ts's OWN separate, uncoordinated DexScreener implementation — entirely disconnected from
+// the historical pricing pass's own DexScreener calls (src/modules/pricingAtTimeEngine/sources/
+// dexscreener.ts, also used by recovery). A token needing a fallback price in BOTH this
+// current-holdings lane and the historical/recovery lane fired two independent real HTTP calls for
+// the identical answer, and neither lane's own per-lane cap bounded the other's total. Now routes
+// through the SAME shared, request-scoped cache both lanes use — real coalescing across the whole
+// scan, not just within one lane. `resolvePrices`/src/modules/pricing are untouched and still used
+// exactly as before by their other, unrelated callers (app/api/token, app/api/radar, etc.) — this
+// changes only fetchTokenPriceUsd's OWN implementation. Never throws: fetchDexscreenerPriceShared
+// already resolves every request to a real result (priceUsd: null on any failure), and this
+// function adds no additional network call of its own. `Date.now()` as the timestamp is correct
+// here (never a historical guess) — this is explicitly a CURRENT-price lookup, matching this
+// module's own file-header contract; DexScreener would reject anything else as historical anyway.
 export async function fetchTokenPriceUsd(chainId: number, tokenAddress: string): Promise<number | null> {
   const chain = CHAIN_ID_TO_SUPPORTED_CHAIN[chainId]
   if (!chain) return null // unsupported chainId — honestly unpriced, never guessed
 
-  const [result] = await resolvePrices([{ chain, contract: tokenAddress }])
-  return result?.priceUsd ?? null
+  const result = await fetchDexscreenerPriceShared(tokenAddress, chain, Date.now(), 'holdings')
+  return result.priceUsd
 }
 
 // FALLBACK-LOOKUP CONCURRENCY CAP, DISCLOSED (provider-call-audit task): only the holdings that

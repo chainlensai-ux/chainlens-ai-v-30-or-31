@@ -7,9 +7,17 @@
 // functions) or an honest null with a structured debug reason.
 
 import type { SupportedChain } from '../../providerFetchWindow/types'
-import { fetchDexscreenerPriceDetailed } from './dexscreener'
 import { fetchCoingeckoPriceDetailed } from './coingecko'
 import { fetchBaseDexPriceDetailed } from './basedex'
+import { fetchDexscreenerPriceShared } from '../../../lib/dexscreenerRequestCache'
+
+// SHARED CACHE, DISCLOSED (provider-call-audit follow-up task): routed through the same
+// request-scoped DexScreener cache/coalescer this engine's own chain-aware adapter
+// (src/pipeline/pricingAtTimeAdapter.ts) already tries FIRST for the same (chain, token) — by the
+// time this "safety net" attempt (already disclosed above as "a harmless redundant attempt") runs,
+// it now resolves as a free cache hit instead of a second real HTTP call for the identical answer.
+const fetchDexscreenerPriceDetailedShared = (token: string, chain: SupportedChain, timestamp: number) =>
+  fetchDexscreenerPriceShared(token, chain, timestamp, 'historical')
 
 export type PriceProviderName = 'dexscreener' | 'coingecko' | 'base_dex' | 'none'
 
@@ -53,7 +61,7 @@ export async function getPriceAtTime(params: GetPriceAtTimeParams): Promise<GetP
     return result.priceUsd
   }
 
-  const dexScreenerPrice = await run('dexscreener', fetchDexscreenerPriceDetailed)
+  const dexScreenerPrice = await run('dexscreener', fetchDexscreenerPriceDetailedShared)
   if (dexScreenerPrice !== null) {
     return { priceUsd: dexScreenerPrice, source: 'dexscreener', debug: { ...params, attempts } }
   }

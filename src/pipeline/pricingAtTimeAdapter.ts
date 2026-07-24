@@ -29,9 +29,9 @@
 
 import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
 import type { SupportedChain } from '../modules/providerFetchWindow/types'
-import { fetchDexscreenerPriceDetailed } from '../modules/pricingAtTimeEngine/sources/dexscreener'
 import { getPriceAtTime } from '../modules/pricingAtTimeEngine/sources/multiProviderPriceSource'
 import { fetchGeckoTerminalPriceDetailed } from './providers/geckoTerminalPriceSource'
+import { fetchDexscreenerPriceShared } from '../lib/dexscreenerRequestCache'
 
 // Sanity guard, applied to every price this pipeline resolves — a price outside this range is
 // provider garbage, never rendered. Independent of pnlSummaryAdapter.ts's separate $1e12
@@ -123,7 +123,7 @@ export function buildChainAwareHistoricalPriceSourceDetailed(
     return isSanePrice(price) ? { source: 'goldrush', ok: true, reason: null, price } : { source: 'goldrush', ok: false, reason: 'goldrush_no_data', price: null }
   }
   const tryDexscreener = async (token: string, chain: SupportedChain, timestamp: number): Promise<PriceAttemptDetail & { price: number | null }> => {
-    const result = await fetchDexscreenerPriceDetailed(token, chain, timestamp)
+    const result = await fetchDexscreenerPriceShared(token, chain, timestamp, 'historical')
     return isSanePrice(result.priceUsd)
       ? { source: 'dexscreener', ok: true, reason: null, price: result.priceUsd }
       : { source: 'dexscreener', ok: false, reason: result.reason, price: null }
