@@ -2,6 +2,7 @@ import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import type { SyntheticPnlSummary } from '../modules/syntheticPnl'
 import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
+import type { SupportedChain } from '../modules/providerFetchWindow/types'
 
 export type PnlMismatchClass = 'missingInboundEvidence' | 'missingOutboundEvidence' | 'routerClusterMismatch' | 'priceUnavailable' | 'dustSuppressedToken' | 'syntheticOnlyToken' | 'priceRecovered'
 export type ReconciledPublicPnlStatus = 'available' | 'partial' | 'unavailable'
@@ -9,7 +10,59 @@ export type ReconciledPublicPnlStatus = 'available' | 'partial' | 'unavailable'
 type RouterInferenceLike = { highConfidenceRouters?: ReadonlySet<string>; tokenFlowClustersByAddress?: ReadonlyMap<string, readonly unknown[]> }
 type PriceKvLike = { getPriceHistorical?: (token: string, chain: string, timestamp: number, fetcher: PriceSourceFn) => Promise<number | null>; getPricePrimary?: (token: string, chain: string, timestamp: number, fetcher: PriceSourceFn) => Promise<number | null> }
 
-type Config = { logger?: Pick<Console, 'warn'>; priceKvClient?: PriceKvLike; priceSources?: { primary?: PriceSourceFn; fallback?: PriceSourceFn }; dustSuppressedKeys?: ReadonlySet<string> }
+// DETAILED PRICE SOURCE, ADDITIVE (provider-call-audit follow-up task, "trace the one-side-missing
+// recovery candidates" requirement): a duck-typed shape matching
+// src/pipeline/pricingAtTimeAdapter.ts's ChainAwareHistoricalPriceResult — kept structural (not
+// imported directly) so this file has no hard dependency on that module's exact type location,
+// matching this file's existing convention of only depending on plain data shapes for its
+// injectable config. Optional: when absent, recovery behaves exactly as it did before this task
+// (no reason classification, same recovered prices).
+type DetailedPriceAttempt = { source: string; ok: boolean; reason: string | null }
+type DetailedPriceSourceFn = (token: string, chain: SupportedChain, timestamp: number) => Promise<{ price: number | null; route: string; attempts: DetailedPriceAttempt[] }>
+
+type Config = { logger?: Pick<Console, 'warn'>; priceKvClient?: PriceKvLike; priceSources?: { primary?: PriceSourceFn; fallback?: PriceSourceFn }; priceSourceDetailedPrimary?: DetailedPriceSourceFn; dustSuppressedKeys?: ReadonlySet<string> }
+
+// COMPACT FAILURE-REASON CATEGORIES, DISCLOSED: mirrors this task's own requested category list.
+// Mapping is honest, not exhaustive by construction — every real source function in this codebase
+// (dexscreener.ts, geckoTerminalPriceSource.ts, coingecko.ts, basedex.ts) was traced for its actual
+// reason strings (see pricingAtTimeAdapter.ts's own header); some requested categories
+// ('pool_created_after_timestamp', 'zero_liquidity', 'stale_price_rejection', 'invalid_decimals')
+// are NOT currently distinguishable from 'no_pool'/'provider_returned_null' by any real source in
+// this codebase — they remain in this counter object (always present, never omitted) so a future
+// source-level fix that adds that distinction has somewhere to report it, but they honestly read 0
+// today rather than being force-matched to the nearest real reason string.
+export type RecoveryFailureReasonCounts = {
+  unsupportedTokenOrChain: number
+  timestampOutsideProviderData: number
+  malformedResponse: number
+  blockResolutionFailure: number
+  noPool: number
+  poolCreatedAfterTimestamp: number
+  zeroLiquidity: number
+  stalePriceRejection: number
+  invalidDecimals: number
+  providerReturnedNull: number
+}
+
+function emptyReasonCounts(): RecoveryFailureReasonCounts {
+  return { unsupportedTokenOrChain: 0, timestampOutsideProviderData: 0, malformedResponse: 0, blockResolutionFailure: 0, noPool: 0, poolCreatedAfterTimestamp: 0, zeroLiquidity: 0, stalePriceRejection: 0, invalidDecimals: 0, providerReturnedNull: 0 }
+}
+
+// Classifies ONE real, already-observed reason string (never a fabricated one — a candidate this
+// function never reached, e.g. because a cache hit resolved it, never calls this at all) into a
+// compact bucket. Exported for direct unit testing.
+export function classifyRecoveryFailureReason(reason: string | null): keyof RecoveryFailureReasonCounts {
+  if (reason === null) return 'providerReturnedNull'
+  if (reason.includes('unverified_chain') || reason.includes('unverified_network') || reason === 'base_dex_only_supports_base_chain' || reason === 'no_api_key_configured' || reason === 'goldrush_no_data') return 'unsupportedTokenOrChain'
+  if (reason.includes('timestamp_too_far_from_now') || reason === 'no_price_series_in_range') return 'timestampOutsideProviderData'
+  if (reason.includes('unparseable')) return 'malformedResponse'
+  if (reason === 'could_not_resolve_historical_block') return 'blockResolutionFailure'
+  if (reason === 'no_pool_found' || reason === 'no_uniswap_v3_pool_found' || reason === 'no_matching_pair') return 'noPool'
+  // http_*/fetch_error:*/rpc_error:* are real provider-side failures (non-2xx, network/RPC
+  // exception) — closest honest bucket is "provider returned null", not a fabricated malformed/
+  // block-failure classification this codebase's real code doesn't actually distinguish.
+  return 'providerReturnedNull'
+}
 export type PnlReconciliationInput = { fifoEngineResult: FifoOutput; pnlEngineResult: PnlSummaryResult; routerInferenceOutput?: RouterInferenceLike | null; syntheticPnlAssemblyOutput?: SyntheticPnlSummary | null }
 export type PnlReconciliationSummary = { closedLots: number; unmatchedBuys: number; unmatchedSells: number; realizedPnlUsd: number | null; unrealizedPnlUsd: number | null; priceRecoveredCount: number; routerCorrectedCount: number; syntheticAlignedCount: number; missingEvidenceCount: number; publicPnlStatus: ReconciledPublicPnlStatus; mismatches: Array<{ key: string; classification: PnlMismatchClass }> }
 
@@ -90,14 +143,17 @@ export function createPnlReconciliation(config: Config = {}) {
     bothSidesMissingCandidates: number
     candidatesAttempted: number
     candidatesCappedByBudget: number
+    failureReasonCounts: RecoveryFailureReasonCounts
   }> {
     const recoveredByLotKey = new Map<string, RecoveredPrice>()
+    const failureReasonCounts = emptyReasonCounts()
     const fetchers = [config.priceSources?.primary, config.priceSources?.fallback].filter(Boolean) as PriceSourceFn[]
+    const detailedPrimary = config.priceSourceDetailedPrimary
     const missingLots = lots.filter((lot) => !(lot.costBasisUsd !== null && lot.proceedsUsd !== null))
     const oneSideMissingCandidates = missingLots.filter((l) => l.costBasisUsd !== null || l.proceedsUsd !== null).length
     const bothSidesMissingCandidates = missingLots.length - oneSideMissingCandidates
     if (!config.priceKvClient || fetchers.length === 0) {
-      return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length }
+      return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length, failureReasonCounts }
     }
     const priceKvClient = config.priceKvClient
     const sorted = [...missingLots].sort((a, b) => {
@@ -111,20 +167,50 @@ export function createPnlReconciliation(config: Config = {}) {
       const needsSell = lot.proceedsUsd === null
       let recoveredBuy: number | null = null
       let recoveredSell: number | null = null
-      for (const fetcher of fetchers) {
+      // COMPACT REASON CAPTURE, DISCLOSED: only the PRIMARY slot (fetchers[0], when it's the real
+      // chain-aware router) has a detailed variant available — see this file's own
+      // DetailedPriceSourceFn header. Capturing the LAST attempt's reason (the most recent real
+      // source tried before this leg gave up, not a fabricated aggregate) — never the full response,
+      // matching this task's explicit "compact reason counters instead of logging full responses"
+      // requirement.
+      let lastBuyReason: string | null = null
+      let lastSellReason: string | null = null
+      for (let i = 0; i < fetchers.length; i += 1) {
+        const fetcher = fetchers[i]
+        const useDetailed = i === 0 && Boolean(detailedPrimary) && fetcher === config.priceSources?.primary
         if (needsBuy && recoveredBuy === null && priceKvClient.getPriceHistorical) {
-          recoveredBuy = await priceKvClient.getPriceHistorical(lot.token, lot.chain, lot.openedAt, fetcher)
+          if (useDetailed && detailedPrimary) {
+            const wrapped: PriceSourceFn = async (t, c, ts) => {
+              const d = await detailedPrimary(t, c as SupportedChain, ts)
+              lastBuyReason = d.attempts.length > 0 ? d.attempts[d.attempts.length - 1].reason : null
+              return d.price
+            }
+            recoveredBuy = await priceKvClient.getPriceHistorical(lot.token, lot.chain, lot.openedAt, wrapped)
+          } else {
+            recoveredBuy = await priceKvClient.getPriceHistorical(lot.token, lot.chain, lot.openedAt, fetcher)
+          }
         }
         if (needsSell && recoveredSell === null && priceKvClient.getPricePrimary) {
-          recoveredSell = await priceKvClient.getPricePrimary(lot.token, lot.chain, lot.closedAt, fetcher)
+          if (useDetailed && detailedPrimary) {
+            const wrapped: PriceSourceFn = async (t, c, ts) => {
+              const d = await detailedPrimary(t, c as SupportedChain, ts)
+              lastSellReason = d.attempts.length > 0 ? d.attempts[d.attempts.length - 1].reason : null
+              return d.price
+            }
+            recoveredSell = await priceKvClient.getPricePrimary(lot.token, lot.chain, lot.closedAt, wrapped)
+          } else {
+            recoveredSell = await priceKvClient.getPricePrimary(lot.token, lot.chain, lot.closedAt, fetcher)
+          }
         }
         if ((!needsBuy || recoveredBuy !== null) && (!needsSell || recoveredSell !== null)) break
       }
+      if (needsBuy && recoveredBuy === null) failureReasonCounts[classifyRecoveryFailureReason(lastBuyReason)] += 1
+      if (needsSell && recoveredSell === null) failureReasonCounts[classifyRecoveryFailureReason(lastSellReason)] += 1
       if (recoveredBuy !== null || recoveredSell !== null) {
         recoveredByLotKey.set(lotKey(lot), { costBasisUsd: recoveredBuy, proceedsUsd: recoveredSell })
       }
     })
-    return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: candidates.length, candidatesCappedByBudget: sorted.length - candidates.length }
+    return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: candidates.length, candidatesCappedByBudget: sorted.length - candidates.length, failureReasonCounts }
   }
 
   return {
@@ -186,6 +272,10 @@ export function createPnlReconciliation(config: Config = {}) {
         candidatesCappedByBudget: recovery.candidatesCappedByBudget,
         recoveredBuyOnly, recoveredSellOnly, recoveredBoth,
         attemptedButStillUnpriced: recovery.candidatesAttempted - recovery.recoveredByLotKey.size,
+        // COMPACT REASON COUNTERS, DISCLOSED (provider-call-audit follow-up task): real counts per
+        // category, never raw provider responses — see classifyRecoveryFailureReason's own header
+        // for the full mapping and its honest, disclosed limitations.
+        failureReasonCounts: recovery.failureReasonCounts,
       })
 
       let syntheticAlignedCount = 0

@@ -23,7 +23,8 @@ import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/in
 import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/syntheticPnl/index'
 import type { PoolDataMap as SyntheticPoolDataMap } from '../modules/syntheticPnl/index'
 import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
-import { buildChainAwareHistoricalPriceSource, pricingRouteLog } from './pricingAtTimeAdapter'
+import { buildChainAwareHistoricalPriceSourceDetailed, pricingRouteLog } from './pricingAtTimeAdapter'
+import type { ChainAwareHistoricalPriceResult } from './pricingAtTimeAdapter'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { buildChainSelectionObject } from '../modules/chainSelection/index'
 import type { ChainSelectionResult } from '../modules/chainSelection/types'
@@ -115,24 +116,38 @@ function withPriceSourceCache(fn: PriceSourceFn, _sourceLabel: string, _skipCach
   return fn
 }
 
+// DETAILED PRIMARY, ADDITIVE (provider-call-audit follow-up task): the SAME real detailed-attempt
+// function `buildPriceSources()` below derives its plain `primary` source from — set once, at the
+// same module-load time, so any diagnostic caller (currently src/lib/pnlReconciliation.ts's
+// recovery pass) can capture per-source rejection reasons for a lookup WITHOUT ever making a
+// second/duplicate real call. `primary` itself is defined as a thin wrapper that discards
+// everything but `.price` from this exact same function.
+type DetailedPriceSourceFn = (token: string, chain: SupportedChain, timestamp: number) => Promise<ChainAwareHistoricalPriceResult>
+let priceSourcePrimaryDetailed: DetailedPriceSourceFn | null = null
+export function getPriceSourcePrimaryDetailed(): DetailedPriceSourceFn | null {
+  return priceSourcePrimaryDetailed
+}
+
 function buildPriceSources(): PriceSources {
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
   // Diagnostic log (never prints the key itself) — the fastest way to confirm, from the actual
   // runtime's own logs (e.g. Vercel's function logs), whether a real key was found in *that*
-  // process's env at module load, without needing a separate deployment-inspection tool.
+  // process's env at module load, without needing a separate diagnostics tool.
   // eslint-disable-next-line no-console
   console.warn(`[pipeline] buildPriceSources: real GoldRush key present = ${Boolean(apiKey)}`)
   // CHAIN-AWARE ROUTING, DISCLOSED (src/pipeline/pricingAtTimeAdapter.ts's
-  // buildChainAwareHistoricalPriceSource): Base tries GeckoTerminal -> DexScreener -> GoldRush;
-  // every other chain tries GoldRush -> DexScreener -> GeckoTerminal; CoinGecko/basedex remain a
-  // final safety net for every chain (see that file's own header for the full disclosure on both
-  // points, including the false "GoldRush returns null for Base" premise this ordering was
+  // buildChainAwareHistoricalPriceSourceDetailed): Base tries GeckoTerminal -> DexScreener ->
+  // GoldRush; every other chain tries GoldRush -> DexScreener -> GeckoTerminal; CoinGecko/basedex
+  // remain a final safety net for every chain (see that file's own header for the full disclosure
+  // on both points, including the false "GoldRush returns null for Base" premise this ordering was
   // requested under). The full router is assembled as a SINGLE `primary` source — `fallback` is
   // intentionally the always-null noPriceSources().fallback below, since the router already
   // encapsulates every real provider attempt itself; pricingAtTimeEngine would otherwise call a
   // second, redundant fallback after this one already tried everything.
   const goldrushFn: PriceSourceFn = apiKey ? (buildGoldrushSourceFn(apiKey) ?? noPriceSources().fallback) : noPriceSources().fallback
-  const chainAwareHistorical = withPriceSourceCache(buildChainAwareHistoricalPriceSource(goldrushFn), 'chain-aware-historical')
+  const detailed = buildChainAwareHistoricalPriceSourceDetailed(goldrushFn)
+  priceSourcePrimaryDetailed = detailed
+  const chainAwareHistorical = withPriceSourceCache(async (token, chain, timestamp) => (await detailed(token, chain, timestamp)).price, 'chain-aware-historical')
   return { primary: chainAwareHistorical, fallback: noPriceSources().fallback }
 }
 
@@ -1653,6 +1668,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const pnlReconciliation = createPnlReconciliation({
     priceKvClient: requestPriceKvClient,
     priceSources: PRICE_SOURCES,
+    // COMPACT FAILURE-REASON DIAGNOSTICS, ADDITIVE (provider-call-audit follow-up task): the SAME
+    // real detailed function `PRICE_SOURCES.primary` itself delegates to — see
+    // getPriceSourcePrimaryDetailed's own header. Passing it lets recoverPrices classify WHY a
+    // missing-leg lookup failed (unsupported chain, no pool, block-resolution failure, etc.) using
+    // information its one real call already produces, with zero additional network calls.
+    priceSourceDetailedPrimary: getPriceSourcePrimaryDetailed() ?? undefined,
     dustSuppressedKeys,
   })
   // SYNTHETIC-PNL LEAK FIX, DISCLOSED (confirmed, critical severity — see pnlReconciliation.ts's own

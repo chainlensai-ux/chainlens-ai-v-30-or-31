@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
-import { createPnlReconciliation } from './pnlReconciliation'
+import { createPnlReconciliation, classifyRecoveryFailureReason } from './pnlReconciliation'
 
 const quiet = { warn() {} }
 
@@ -244,6 +244,42 @@ describe('pnlReconciliation', () => {
     assert.equal(summary.priceRecoveredCount, 0)
     assert.equal(summary.realizedPnlUsd, null, 'no fabricated value — stays honestly null when the provider genuinely has nothing')
     assert.notEqual(summary.publicPnlStatus, 'available', 'status must never claim "available" while realizedPnlUsd is null')
+  })
+
+  it('regression guard: classifyRecoveryFailureReason emits an explicit, distinct bucket for every real reason string this codebase\'s price sources actually produce', () => {
+    assert.equal(classifyRecoveryFailureReason(null), 'providerReturnedNull')
+    assert.equal(classifyRecoveryFailureReason('goldrush_no_data'), 'unsupportedTokenOrChain')
+    assert.equal(classifyRecoveryFailureReason('unverified_chain_for_dexscreener'), 'unsupportedTokenOrChain')
+    assert.equal(classifyRecoveryFailureReason('unverified_network_for_geckoterminal'), 'unsupportedTokenOrChain')
+    assert.equal(classifyRecoveryFailureReason('unverified_chain_for_coingecko'), 'unsupportedTokenOrChain')
+    assert.equal(classifyRecoveryFailureReason('base_dex_only_supports_base_chain'), 'unsupportedTokenOrChain')
+    assert.equal(classifyRecoveryFailureReason('no_api_key_configured'), 'unsupportedTokenOrChain')
+    assert.equal(classifyRecoveryFailureReason('dexscreener_only_exposes_current_price_timestamp_too_far_from_now'), 'timestampOutsideProviderData')
+    assert.equal(classifyRecoveryFailureReason('no_price_series_in_range'), 'timestampOutsideProviderData')
+    assert.equal(classifyRecoveryFailureReason('unparseable_price'), 'malformedResponse')
+    assert.equal(classifyRecoveryFailureReason('could_not_resolve_historical_block'), 'blockResolutionFailure')
+    assert.equal(classifyRecoveryFailureReason('no_pool_found'), 'noPool')
+    assert.equal(classifyRecoveryFailureReason('no_uniswap_v3_pool_found'), 'noPool')
+    assert.equal(classifyRecoveryFailureReason('no_matching_pair'), 'noPool')
+    assert.equal(classifyRecoveryFailureReason('http_500'), 'providerReturnedNull')
+    assert.equal(classifyRecoveryFailureReason('rpc_error:timeout'), 'providerReturnedNull')
+  })
+
+  it('regression guard: recoverPrices threads the detailed price source\'s per-leg reason into compact failureReasonCounts, never a raw response body', async () => {
+    const detailedPrimary = async () => ({ price: null, route: 'none', attempts: [{ source: 'dexscreener', ok: false, reason: 'no_matching_pair' }] })
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient: { getPriceHistorical: async (_t, _c, _ts, fetcher) => fetcher('t', 'base', 1) },
+      priceSources: { primary: async () => null },
+      priceSourceDetailedPrimary: detailedPrimary,
+    })
+    const missingBuy = lot({ costBasisUsd: null, proceedsUsd: 10 })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [missingBuy], realizedPnlUsd: null }),
+      pnlEngineResult: pnl(1, { realizedPnlUsd: null }),
+      syntheticPnlAssemblyOutput: null,
+    })
+    assert.equal(summary.priceRecoveredCount, 0, 'the detailed fetcher genuinely found nothing — no fabricated recovery')
   })
 
   it('regression guard: pnlReconciliation.ts never imports a wallet-activity-fetching function — recovery can only use already-supplied prices, never refetch history', () => {

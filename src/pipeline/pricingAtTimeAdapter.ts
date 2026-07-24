@@ -30,7 +30,7 @@
 import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
 import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import { fetchDexscreenerPriceDetailed } from '../modules/pricingAtTimeEngine/sources/dexscreener'
-import { multiProviderPriceSource } from '../modules/pricingAtTimeEngine/sources/multiProviderPriceSource'
+import { getPriceAtTime } from '../modules/pricingAtTimeEngine/sources/multiProviderPriceSource'
 import { fetchGeckoTerminalPriceDetailed } from './providers/geckoTerminalPriceSource'
 
 // Sanity guard, applied to every price this pipeline resolves — a price outside this range is
@@ -91,55 +91,86 @@ function recordRoute(token: string, chain: SupportedChain, timestamp: number, ro
   pricingRouteLog.push({ token, chain, timestamp, route })
 }
 
+// DETAILED ATTEMPT RECORD, DISCLOSED (provider-call-audit follow-up task): every source function
+// below (dexscreener.ts, geckoTerminalPriceSource.ts, multiProviderPriceSource.ts's own
+// dexscreener/coingecko/basedex trio) ALREADY computes a real, structured rejection `reason` string
+// per attempt — this router previously discarded every one of them the instant it checked
+// `price !== null`, keeping only the final winning/losing boolean. That is the confirmed reason this
+// pipeline could not distinguish "unsupported chain" from "no pool" from "provider genuinely has no
+// data" — the information already existed, one layer up, and was thrown away for free. Capturing it
+// here costs zero additional network calls: it's the exact same real calls this router always made,
+// just no longer discarding what they already told it.
+export type PriceAttemptDetail = { source: 'goldrush' | 'dexscreener' | 'geckoterminal' | 'coingecko' | 'base_dex'; ok: boolean; reason: string | null }
+export type ChainAwareHistoricalPriceResult = { price: number | null; route: PricingRouteUsed; attempts: PriceAttemptDetail[] }
+
 // Builds the full chain-aware historical-pricing router described above. `goldrush` is the
 // caller's real (or always-null, if no API key/client) GoldRush source — this function does not
 // construct a GoldRushClient itself.
-export function buildChainAwareHistoricalPriceSource(goldrush: PriceSourceFn): PriceSourceFn {
-  const tryGoldrush = async (token: string, chain: SupportedChain, timestamp: number): Promise<number | null> => {
+//
+// DETAILED VARIANT, ADDITIVE: exported for diagnostic callers (currently
+// src/lib/pnlReconciliation.ts's recovery pass) that want the real per-source rejection reasons
+// alongside the price — never a second/duplicate call, this IS the one real call path; the plain
+// `buildChainAwareHistoricalPriceSource` below is now a thin wrapper over this same function.
+export function buildChainAwareHistoricalPriceSourceDetailed(
+  goldrush: PriceSourceFn,
+): (token: string, chain: SupportedChain, timestamp: number) => Promise<ChainAwareHistoricalPriceResult> {
+  const tryGoldrush = async (token: string, chain: SupportedChain, timestamp: number): Promise<PriceAttemptDetail & { price: number | null }> => {
     const price = await goldrush(token, chain, timestamp)
-    return isSanePrice(price) ? price : null
+    // goldrushPriceSource.ts has no detailed/reason-carrying variant (plain PriceSourceFn only) —
+    // an honest, disclosed limitation: every one of its own null-producing branches (unverified
+    // chain, unparseable timestamp, breaker open, negative-cache hit, empty/error response,
+    // non-numeric price) collapses to this one generic reason, never a fabricated specific one.
+    return isSanePrice(price) ? { source: 'goldrush', ok: true, reason: null, price } : { source: 'goldrush', ok: false, reason: 'goldrush_no_data', price: null }
   }
-  const tryDexscreener = async (token: string, chain: SupportedChain, timestamp: number): Promise<number | null> => {
+  const tryDexscreener = async (token: string, chain: SupportedChain, timestamp: number): Promise<PriceAttemptDetail & { price: number | null }> => {
     const result = await fetchDexscreenerPriceDetailed(token, chain, timestamp)
-    return isSanePrice(result.priceUsd) ? result.priceUsd : null
+    return isSanePrice(result.priceUsd)
+      ? { source: 'dexscreener', ok: true, reason: null, price: result.priceUsd }
+      : { source: 'dexscreener', ok: false, reason: result.reason, price: null }
   }
-  const tryGeckoTerminal = async (token: string, chain: SupportedChain, timestamp: number): Promise<number | null> => {
+  const tryGeckoTerminal = async (token: string, chain: SupportedChain, timestamp: number): Promise<PriceAttemptDetail & { price: number | null }> => {
     const result = await fetchGeckoTerminalPriceDetailed(token, chain, timestamp)
-    return isSanePrice(result.priceUsd) ? result.priceUsd : null
+    return isSanePrice(result.priceUsd)
+      ? { source: 'geckoterminal', ok: true, reason: null, price: result.priceUsd }
+      : { source: 'geckoterminal', ok: false, reason: result.reason, price: null }
   }
-  // Final safety net, DISCLOSED (see file header "COVERAGE PRESERVED"): re-uses the existing,
-  // already-real multiProviderPriceSource chain (DexScreener/CoinGecko/basedex). DexScreener will
-  // already have been tried above by this point — a harmless redundant attempt, not a new call
-  // pattern — before this reaches CoinGecko/basedex, which are the actual new coverage being
-  // preserved here.
-  const coverageSafetyNet = multiProviderPriceSource()
+  // Final safety net, DISCLOSED (see file header "COVERAGE PRESERVED"): calls getPriceAtTime
+  // directly (rather than the price-only multiProviderPriceSource() wrapper) purely to keep its
+  // already-computed `debug.attempts` (dexscreener/coingecko/basedex, each with a real reason)
+  // instead of discarding them — same real calls, same real order, same real result either way.
 
   return async (token, chain, timestamp) => {
-    let price: number | null = null
+    const attempts: PriceAttemptDetail[] = []
+    const order: Array<'goldrush' | 'dexscreener' | 'geckoterminal'> = chain === 'base'
+      ? ['geckoterminal', 'dexscreener', 'goldrush']
+      : ['goldrush', 'dexscreener', 'geckoterminal']
 
-    if (chain === 'base') {
-      price = await tryGeckoTerminal(token, chain, timestamp)
-      if (price !== null) { recordRoute(token, chain, timestamp, 'geckoterminal'); return price }
-      price = await tryDexscreener(token, chain, timestamp)
-      if (price !== null) { recordRoute(token, chain, timestamp, 'dexscreener'); return price }
-      price = await tryGoldrush(token, chain, timestamp)
-      if (price !== null) { recordRoute(token, chain, timestamp, 'goldrush'); return price }
-    } else {
-      price = await tryGoldrush(token, chain, timestamp)
-      if (price !== null) { recordRoute(token, chain, timestamp, 'goldrush'); return price }
-      price = await tryDexscreener(token, chain, timestamp)
-      if (price !== null) { recordRoute(token, chain, timestamp, 'dexscreener'); return price }
-      price = await tryGeckoTerminal(token, chain, timestamp)
-      if (price !== null) { recordRoute(token, chain, timestamp, 'geckoterminal'); return price }
+    for (const source of order) {
+      const attempt = source === 'goldrush' ? await tryGoldrush(token, chain, timestamp)
+        : source === 'dexscreener' ? await tryDexscreener(token, chain, timestamp)
+        : await tryGeckoTerminal(token, chain, timestamp)
+      attempts.push({ source: attempt.source, ok: attempt.ok, reason: attempt.reason })
+      if (attempt.price !== null) {
+        recordRoute(token, chain, timestamp, source as PricingRouteUsed)
+        return { price: attempt.price, route: source as PricingRouteUsed, attempts }
+      }
     }
 
-    const safetyNetPrice = await coverageSafetyNet(token, chain, timestamp)
-    if (isSanePrice(safetyNetPrice)) {
+    const safetyNetResult = await getPriceAtTime({ chain, tokenAddress: token, timestamp })
+    for (const a of safetyNetResult.debug.attempts) {
+      attempts.push({ source: a.provider === 'base_dex' ? 'base_dex' : (a.provider as 'dexscreener' | 'coingecko'), ok: a.ok, reason: a.reason })
+    }
+    if (isSanePrice(safetyNetResult.priceUsd)) {
       recordRoute(token, chain, timestamp, 'coingecko_or_basedex')
-      return safetyNetPrice
+      return { price: safetyNetResult.priceUsd, route: 'coingecko_or_basedex', attempts }
     }
 
     recordRoute(token, chain, timestamp, 'none')
-    return null
+    return { price: null, route: 'none', attempts }
   }
+}
+
+export function buildChainAwareHistoricalPriceSource(goldrush: PriceSourceFn): PriceSourceFn {
+  const detailed = buildChainAwareHistoricalPriceSourceDetailed(goldrush)
+  return async (token, chain, timestamp) => (await detailed(token, chain, timestamp)).price
 }
