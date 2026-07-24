@@ -243,4 +243,32 @@ describe('pnlReconciliation.recoverPrices — real RequestPriceKvClient integrat
     assert.equal(summary.priceRecoveredCount, 1)
     assert.equal(realProviderCalls, 1, 'the detailed capture must observe the SAME single real goldrush call, never fire a second one')
   })
+
+  it('when a detailed source is configured, it is the SOLE live fetcher — the plain primary/fallback are never separately attempted, even when the detailed lookup fails', async () => {
+    let plainPrimaryCalls = 0
+    let plainFallbackCalls = 0
+    const priceKvClient = createRequestPriceKvClient({ kv: { get: async () => null, set: async () => 'OK' } as never, maxLookupsPerToken: 10, random: () => 0 })
+    // Detailed genuinely finds nothing (a real, honest failure) — proves the plain slots are never
+    // separately consulted as a fallback attempt for the SAME leg once a detailed source exists.
+    const detailedPrimary = async () => ({ price: null, route: 'none', attempts: [{ source: 'goldrush', ok: false, reason: 'goldrush_no_data' }] })
+    const plainPrimary: PriceSourceFn = async () => { plainPrimaryCalls += 1; return 111 } // would poison the result if wrongly invoked
+    const plainFallback: PriceSourceFn = async () => { plainFallbackCalls += 1; return 222 }
+
+    const r = createPnlReconciliation({
+      logger: quiet,
+      priceKvClient,
+      priceSources: { primary: plainPrimary, fallback: plainFallback },
+      priceSourceDetailedPrimary: detailedPrimary,
+    })
+    const candidate = lot({ token: '0xdetailedonly', costBasisUsd: null, proceedsUsd: 10, openedAt: 1, closedAt: 2 })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [candidate], realizedPnlUsd: null }),
+      pnlEngineResult: pnl(1, { realizedPnlUsd: null }),
+      syntheticPnlAssemblyOutput: null,
+    })
+
+    assert.equal(summary.priceRecoveredCount, 0, 'the detailed source genuinely found nothing — no fabricated recovery from a plain fallback')
+    assert.equal(plainPrimaryCalls, 0, 'the plain primary must never be separately attempted once a detailed source is configured')
+    assert.equal(plainFallbackCalls, 0, 'the plain fallback must never be separately attempted once a detailed source is configured')
+  })
 })

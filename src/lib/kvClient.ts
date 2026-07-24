@@ -63,6 +63,13 @@ class CircuitBreaker {
   private transition(to: CircuitBreakerState, extra: Record<string, unknown> = {}): void { const from = this.state; this.state = to; console.warn('kv_circuit_breaker_transition', { from, to, consecutiveTimeouts: this.consecutiveTimeouts, ...extra }) }
 }
 
+export type RecoveryLaneStats = {
+  recoveryLookupsRequested: number
+  recoveryCacheHits: number
+  recoveryLiveFetches: number
+  recoveryCappedLookups: number
+}
+
 export class RequestPriceKvClient {
   private readonly cfg: BreakerConfig
   private readonly kv: KvLike
@@ -77,6 +84,22 @@ export class RequestPriceKvClient {
   readonly stats: PriceKvStats = { totalCalls: 0, remoteGets: 0, remoteSets: 0, cacheHits: 0, coalesced: 0, timeouts: 0, breakerSkips: 0, cappedLookups: 0 }
   readonly maxLookupsPerToken: number
   private readonly historicalReadOnly: boolean
+  // RECOVERY LANE, DISCLOSED (provider-call-audit follow-up task, confirmed root cause of
+  // "recovery attempted 40 candidates but made zero live source attempts"): the normal per-token
+  // cap (`lookupsByToken`/`maxLookupsPerToken`, shared with the main pricingAtTime pass) is a
+  // SHARED, cumulative-per-request budget — by the time pnlReconciliation's recovery pass runs
+  // (well after the main pass has already spent that budget on the same tokens), every recovery
+  // candidate's lookup was silently short-circuited by `cappedLookups` BEFORE resolveMiss (and
+  // therefore before the injected fetcher, detailed or plain) ever ran — a real, confirmed
+  // starvation, not a wiring gap. This lane gives recovery its OWN separate, bounded allowance —
+  // reusing the exact same `memory` cache, `inFlight` coalescing map, breaker, and `priceKey()`
+  // format as the normal lane (so a recovery lookup for a token the main pass already resolved
+  // still hits the shared cache/coalesces with an in-flight normal-pass call for free) — but never
+  // touching or being touched by `lookupsByToken`/`maxLookupsPerToken`, so neither budget can starve
+  // the other.
+  private recoveryLookupsBudget: number | null = null
+  private recoveryLookupsUsed = 0
+  readonly recoveryStats: RecoveryLaneStats = { recoveryLookupsRequested: 0, recoveryCacheHits: 0, recoveryLiveFetches: 0, recoveryCappedLookups: 0 }
   constructor(options: PriceKvClientOptions = {}) {
     this.cfg = { ...DEFAULTS, ...options }
     this.kv = options.kv ?? realKv
@@ -94,6 +117,49 @@ export class RequestPriceKvClient {
   async setPriceHistorical(token: string, chain: string, timestamp: number, price: number): Promise<void> { await this.setRemote(priceKey('chain-aware-historical', token, chain, timestamp), price) }
   wrapPriceSource(fetcher: PriceSourceFn, label: 'primary' | 'chain-aware-historical'): PriceSourceFn { return (token, chain, timestamp) => label === 'primary' ? this.getPricePrimary(token, chain, timestamp, fetcher) : this.getPriceHistorical(token, chain, timestamp, fetcher) }
   logStats(label = 'price_kv_client_stats'): void { console.warn(label, { ...this.stats }) }
+
+  // RECOVERY LANE ENTRY POINT, DISCLOSED: `maxRecoveryLookups` is the total live-fetch allowance for
+  // THIS client's ENTIRE recovery pass (derived by the caller strictly from its own
+  // MAX_RECOVERY_ATTEMPTS budget — never unlimited) — set on the FIRST call and reused for every
+  // later call in the same pass; later calls' own `maxRecoveryLookups` argument is ignored once set,
+  // so every caller in one recovery pass must agree on the same real budget (they do — one
+  // recoverPrices() call computes it once). A cache hit or in-flight coalesce consumes ZERO of this
+  // allowance — only a genuine new live fetch does.
+  async getPriceRecovery(token: string, chain: string, timestamp: number, fetcher: PriceSourceFn, label: 'primary' | 'chain-aware-historical', maxRecoveryLookups: number): Promise<number | null> {
+    if (this.recoveryLookupsBudget === null) this.recoveryLookupsBudget = Math.max(0, maxRecoveryLookups)
+    const key = priceKey(label, token, chain, timestamp)
+    this.recoveryStats.recoveryLookupsRequested++
+    this.stats.totalCalls++
+    if (this.memory.has(key)) { this.stats.cacheHits++; this.recoveryStats.recoveryCacheHits++; return this.memory.get(key) ?? null }
+    const existing = this.inFlight.get(key)
+    if (existing) { this.stats.coalesced++; this.recoveryStats.recoveryCacheHits++; return existing }
+    // IN-FLIGHT REGISTERED BEFORE THE REMOTE CHECK, DISCLOSED: so concurrent identical recovery
+    // calls still coalesce onto this exact promise regardless of whether it resolves via a remote
+    // KV hit or a real live fetch.
+    const promise = this.resolveRecoveryMiss(key, token, chain, timestamp, fetcher, label).finally(() => this.inFlight.delete(key))
+    this.inFlight.set(key, promise)
+    return promise
+  }
+
+  // A REMOTE KV HIT NEVER CONSUMES THE RECOVERY BUDGET, DISCLOSED (this task's explicit "a cache hit
+  // must not consume recovery live-fetch allowance" requirement): unlike the normal lane's
+  // resolveMiss (which has no budget concept at all), this checks the remote KV FIRST, for free —
+  // the bounded allowance is spent ONLY on an actual real call to the injected `fetcher`, never on
+  // asking the shared, already-real cache whether it happens to already know the answer.
+  private async resolveRecoveryMiss(key: string, token: string, chain: string, timestamp: number, fetcher: PriceSourceFn, label: 'primary' | 'chain-aware-historical'): Promise<number | null> {
+    const readOnly = label === 'chain-aware-historical' && this.historicalReadOnly
+    const cached = await this.getRemote<number>(key)
+    if (cached.ok && cached.value !== null) { this.memory.set(key, cached.value); this.recoveryStats.recoveryCacheHits++; return cached.value }
+    if (this.recoveryLookupsUsed >= this.recoveryLookupsBudget!) { this.recoveryStats.recoveryCappedLookups++; return null }
+    this.recoveryLookupsUsed += 1
+    this.recoveryStats.recoveryLiveFetches += 1
+    const price = await fetcher(token, chain as Parameters<PriceSourceFn>[1], timestamp)
+    const safe = typeof price === 'number' && Number.isFinite(price) ? price : null
+    this.memory.set(key, safe)
+    if (safe !== null && !readOnly) await this.setRemote(key, safe)
+    return safe
+  }
+
   private async getWithCache(key: string, token: string, chain: string, timestamp: number, fetcher: PriceSourceFn, readOnly = false): Promise<number | null> {
     this.stats.totalCalls++
     if (this.memory.has(key)) { this.stats.cacheHits++; return this.memory.get(key) ?? null }

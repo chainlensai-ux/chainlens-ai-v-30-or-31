@@ -136,3 +136,79 @@ describe('RequestPriceKvClient breaker and lookup cap', () => {
     assert.equal(client.stats.cappedLookups, 1)
   })
 })
+
+describe('RequestPriceKvClient — recovery lane (provider-call-audit follow-up task, confirmed root cause of "recovery made zero live source attempts")', () => {
+  it('an exhausted normal per-token cap does not block the bounded recovery lane', async () => {
+    let fetchCalls = 0
+    const source: PriceSourceFn = async () => { fetchCalls++; return 9 }
+    const client = createRequestPriceKvClient({ kv: neverHitKv() as never, maxLookupsPerToken: 1, random: () => 0 })
+
+    // Exhaust the NORMAL per-token cap for this token (simulates the main pricingAtTime pass having
+    // already spent its budget on this exact token before recovery ever runs).
+    assert.equal(await client.getPriceHistorical('0xshared', 'base', 100, source), 9)
+    assert.equal(await client.getPriceHistorical('0xshared', 'base', 200, source), null, 'the normal cap must already be exhausted for this token')
+    assert.equal(client.stats.cappedLookups, 1)
+
+    // The SAME token, via the recovery lane, must NOT be blocked by that same exhausted cap.
+    const recovered = await client.getPriceRecovery('0xshared', 'base', 300, source, 'chain-aware-historical', 10)
+    assert.equal(recovered, 9, 'the recovery lane must still resolve a real price for a token the normal cap has already exhausted')
+    assert.equal(client.recoveryStats.recoveryLiveFetches, 1)
+  })
+
+  it('recovery remains capped by its own bounded budget, derived strictly from the caller\'s recovery attempts — never unlimited', async () => {
+    let fetchCalls = 0
+    const source: PriceSourceFn = async () => { fetchCalls++; return 4 }
+    const client = createRequestPriceKvClient({ kv: neverHitKv() as never, random: () => 0 })
+
+    const budget = 3
+    for (let i = 0; i < 5; i += 1) {
+      await client.getPriceRecovery(`0xtoken${i}`, 'base', 1000 + i, source, 'chain-aware-historical', budget)
+    }
+
+    assert.equal(fetchCalls, budget, 'only the first `budget` distinct recovery lookups may make a real live fetch')
+    assert.equal(client.recoveryStats.recoveryLiveFetches, budget)
+    assert.equal(client.recoveryStats.recoveryCappedLookups, 5 - budget, 'lookups beyond the budget must be recorded as capped, never silently dropped')
+  })
+
+  it('a KV hit uses zero live recovery allowance', async () => {
+    const store = new Map<string, number>([['v2:price:primary:base:0xcached:1', 7]])
+    const client = createRequestPriceKvClient({
+      kv: { get: async (key: string) => store.get(key) ?? null, set: async () => 'OK' } as never,
+      random: () => 0,
+    })
+    let fetchCalls = 0
+    const source: PriceSourceFn = async () => { fetchCalls++; return 999 }
+
+    const recovered = await client.getPriceRecovery('0xcached', 'base', 1, source, 'primary', 10)
+    assert.equal(recovered, 7, 'the real cached KV value must be returned')
+    assert.equal(fetchCalls, 0, 'a KV hit must never invoke the live fetcher')
+    assert.equal(client.recoveryStats.recoveryLiveFetches, 0)
+    assert.equal(client.recoveryStats.recoveryCacheHits, 1)
+  })
+
+  it('identical recovery keys (same chain+token+timestamp) coalesce into one real live fetch', async () => {
+    let fetchCalls = 0
+    const source: PriceSourceFn = async () => { fetchCalls++; await new Promise((r) => setTimeout(r, 5)); return 11 }
+    const client = createRequestPriceKvClient({ kv: neverHitKv() as never, random: () => 0 })
+
+    const results = await Promise.all(Array.from({ length: 5 }, () => client.getPriceRecovery('0xshared', 'base', 500, source, 'chain-aware-historical', 10)))
+    assert.deepEqual([...new Set(results)], [11])
+    assert.equal(fetchCalls, 1, 'five concurrent identical recovery requests must coalesce into one real live fetch')
+    assert.equal(client.recoveryStats.recoveryLiveFetches, 1)
+    assert.equal(client.recoveryStats.recoveryCacheHits, 4, 'the four coalesced callers must be recorded as consuming zero NEW live allowance')
+  })
+
+  it('the recovery lane reuses the same cache a normal-lane lookup already populated — no duplicate real call for the same key', async () => {
+    let fetchCalls = 0
+    const source: PriceSourceFn = async () => { fetchCalls++; return 6 }
+    const client = createRequestPriceKvClient({ kv: neverHitKv() as never, maxLookupsPerToken: 10, random: () => 0 })
+
+    assert.equal(await client.getPriceHistorical('0xreused', 'base', 42, source), 6)
+    assert.equal(fetchCalls, 1)
+
+    const recovered = await client.getPriceRecovery('0xreused', 'base', 42, source, 'chain-aware-historical', 10)
+    assert.equal(recovered, 6, 'the recovery lane must reuse the value the normal lane already resolved for the identical key')
+    assert.equal(fetchCalls, 1, 'no duplicate provider call for a key already resolved by the normal lane')
+    assert.equal(client.recoveryStats.recoveryCacheHits, 1)
+  })
+})

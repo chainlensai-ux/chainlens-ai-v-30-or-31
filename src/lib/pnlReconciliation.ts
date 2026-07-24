@@ -8,7 +8,22 @@ export type PnlMismatchClass = 'missingInboundEvidence' | 'missingOutboundEviden
 export type ReconciledPublicPnlStatus = 'available' | 'partial' | 'unavailable'
 
 type RouterInferenceLike = { highConfidenceRouters?: ReadonlySet<string>; tokenFlowClustersByAddress?: ReadonlyMap<string, readonly unknown[]> }
-type PriceKvLike = { getPriceHistorical?: (token: string, chain: string, timestamp: number, fetcher: PriceSourceFn) => Promise<number | null>; getPricePrimary?: (token: string, chain: string, timestamp: number, fetcher: PriceSourceFn) => Promise<number | null> }
+// RECOVERY LANE, DISCLOSED (provider-call-audit follow-up task, confirmed root cause of "recovery
+// attempted 40 candidates but made zero live source attempts"): `getPriceRecovery` is the preferred
+// entry point — see src/lib/kvClient.ts's own header for the full disclosure on why recovery needs
+// its OWN bounded allowance, separate from the shared per-token cap the main pricingAtTime pass
+// already exhausts by the time recovery runs. `getPriceHistorical`/`getPricePrimary` remain here
+// purely as a fallback for a `priceKvClient` that doesn't implement the recovery lane (e.g. a
+// simpler test double) — production always supplies the real RequestPriceKvClient, which has both.
+type PriceKvLike = {
+  getPriceHistorical?: (token: string, chain: string, timestamp: number, fetcher: PriceSourceFn) => Promise<number | null>
+  getPricePrimary?: (token: string, chain: string, timestamp: number, fetcher: PriceSourceFn) => Promise<number | null>
+  getPriceRecovery?: (token: string, chain: string, timestamp: number, fetcher: PriceSourceFn, label: 'primary' | 'chain-aware-historical', maxRecoveryLookups: number) => Promise<number | null>
+  // DIAGNOSTIC-ONLY, DISCLOSED: optional read access to the real client's own counters — never
+  // required for recovery to function, only for the compact diagnostics logged below.
+  stats?: { cappedLookups: number }
+  recoveryStats?: { recoveryLookupsRequested: number; recoveryCacheHits: number; recoveryLiveFetches: number; recoveryCappedLookups: number }
+}
 
 // DETAILED PRICE SOURCE, ADDITIVE (provider-call-audit follow-up task, "trace the one-side-missing
 // recovery candidates" requirement): a duck-typed shape matching
@@ -248,7 +263,7 @@ export function createPnlReconciliation(config: Config = {}) {
     const missingLots = lots.filter((lot) => !(lot.costBasisUsd !== null && lot.proceedsUsd !== null))
     const oneSideMissingCandidates = missingLots.filter((l) => l.costBasisUsd !== null || l.proceedsUsd !== null).length
     const bothSidesMissingCandidates = missingLots.length - oneSideMissingCandidates
-    if (!config.priceKvClient || fetchers.length === 0) {
+    if (!config.priceKvClient || (fetchers.length === 0 && !detailedPrimary)) {
       return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved }
     }
     const priceKvClient = config.priceKvClient
@@ -258,69 +273,81 @@ export function createPnlReconciliation(config: Config = {}) {
       return aOneSide !== bOneSide ? aOneSide - bOneSide : lotKey(a).localeCompare(lotKey(b))
     })
     const candidates = sorted.slice(0, MAX_RECOVERY_ATTEMPTS)
+    // RECOVERY LANE BUDGET, DISCLOSED (this task's explicit requirement): derived strictly from the
+    // existing MAX_RECOVERY_ATTEMPTS candidate cap — worst case, every candidate needs BOTH legs
+    // (buy + sell), so the live-fetch allowance is exactly 2x that already-bounded number. Never
+    // unlimited, never a new independent knob.
+    const maxRecoveryLookups = MAX_RECOVERY_ATTEMPTS * 2
+    // Records EVERY attempt in a detailed result (via recordSourceAttempts, per-source, never just
+    // the final one) into the per-source counters, and returns the LAST attempt's reason (the most
+    // recent real source tried before this leg gave up) — never the full response, matching this
+    // task's explicit "compact reason counters instead of logging full responses" requirement. An
+    // exception from the detailed source is caught here specifically (never silently converted to a
+    // generic null elsewhere) and recorded into the unknownReason bucket under a compact, bounded
+    // key — this task's own "confirm exceptions are not silently converted to generic null"
+    // requirement.
+    const callDetailed = async (token: string, chain: string, timestamp: number): Promise<{ price: number | null; reason: string | null }> => {
+      detailedAttemptsObserved += 1
+      try {
+        const d = await detailedPrimary!(token, chain as SupportedChain, timestamp)
+        recordSourceAttempts(sourceAttemptCounters, d.attempts)
+        return { price: d.price, reason: d.attempts.length > 0 ? d.attempts[d.attempts.length - 1].reason : null }
+      } catch (err) {
+        const exceptionKey = err instanceof Error ? err.constructor.name : 'UnknownException'
+        sourceAttemptCounters.sourceFailureReasonCounts.detailedPrimaryException = sourceAttemptCounters.sourceFailureReasonCounts.detailedPrimaryException ?? {}
+        sourceAttemptCounters.sourceFailureReasonCounts.detailedPrimaryException[exceptionKey] = (sourceAttemptCounters.sourceFailureReasonCounts.detailedPrimaryException[exceptionKey] ?? 0) + 1
+        return { price: null, reason: `exception:${exceptionKey}` }
+      }
+    }
+    // SOLE LIVE FETCHER, DISCLOSED (this task's explicit "remove the detailed-then-plain double
+    // attempt" requirement): when a detailed source is configured, it is the ONLY live fetcher tried
+    // for a leg — one real call, whose own returned price is used directly. The plain
+    // `config.priceSources.primary`/`.fallback` pair is only ever consulted (in order) when NO
+    // detailed source is configured at all. Every call routes through the shared, bounded recovery
+    // lane (priceKvClient.getPriceRecovery) when available, falling back to the plain
+    // getPriceHistorical/getPricePrimary methods only for a priceKvClient that doesn't implement it.
+    const attemptLeg = async (token: string, chain: string, timestamp: number, label: 'primary' | 'chain-aware-historical'): Promise<{ price: number | null; reason: string | null }> => {
+      const callVia = async (fetcher: PriceSourceFn): Promise<number | null> => {
+        if (priceKvClient.getPriceRecovery) return priceKvClient.getPriceRecovery(token, chain, timestamp, fetcher, label, maxRecoveryLookups)
+        if (label === 'chain-aware-historical') return priceKvClient.getPriceHistorical ? priceKvClient.getPriceHistorical(token, chain, timestamp, fetcher) : null
+        return priceKvClient.getPricePrimary ? priceKvClient.getPricePrimary(token, chain, timestamp, fetcher) : null
+      }
+      if (detailedPrimary) {
+        let reason: string | null = null
+        const wrapped: PriceSourceFn = async (t, c, ts) => {
+          const result = await callDetailed(t, c, ts)
+          reason = result.reason
+          return result.price
+        }
+        const price = await callVia(wrapped)
+        return { price, reason }
+      }
+      for (const fetcher of fetchers) {
+        const price = await callVia(fetcher)
+        if (price !== null) return { price, reason: null }
+      }
+      return { price: null, reason: null }
+    }
     await mapWithConcurrencyLimit(candidates, RECOVERY_CONCURRENCY_LIMIT, async (lot) => {
       const needsBuy = lot.costBasisUsd === null
       const needsSell = lot.proceedsUsd === null
       let recoveredBuy: number | null = null
       let recoveredSell: number | null = null
-      // COMPACT REASON CAPTURE, DISCLOSED: only the PRIMARY slot (fetchers[0], when it's the real
-      // chain-aware router) has a detailed variant available — see this file's own
-      // DetailedPriceSourceFn header. Records EVERY attempt in the detailed result (via
-      // recordSourceAttempts, per-source, never just the final one) into the per-source counters,
-      // and separately tracks the LAST attempt's reason (the most recent real source tried before
-      // this leg gave up) for the per-leg failureReasonCounts summary — never the full response,
-      // matching this task's explicit "compact reason counters instead of logging full responses"
-      // requirement. An exception from the detailed source is caught here specifically (never
-      // silently converted to a generic null elsewhere) and recorded into the unknownReason bucket
-      // under a compact, bounded key — this task's own "confirm exceptions are not silently
-      // converted to generic null" requirement.
       let lastBuyReason: string | null = null
       let lastSellReason: string | null = null
-      const callDetailed = async (token: string, chain: string, timestamp: number): Promise<{ price: number | null; reason: string | null }> => {
-        detailedAttemptsObserved += 1
-        try {
-          const d = await detailedPrimary!(token, chain as SupportedChain, timestamp)
-          recordSourceAttempts(sourceAttemptCounters, d.attempts)
-          return { price: d.price, reason: d.attempts.length > 0 ? d.attempts[d.attempts.length - 1].reason : null }
-        } catch (err) {
-          const exceptionKey = err instanceof Error ? err.constructor.name : 'UnknownException'
-          sourceAttemptCounters.sourceFailureReasonCounts.detailedPrimaryException = sourceAttemptCounters.sourceFailureReasonCounts.detailedPrimaryException ?? {}
-          sourceAttemptCounters.sourceFailureReasonCounts.detailedPrimaryException[exceptionKey] = (sourceAttemptCounters.sourceFailureReasonCounts.detailedPrimaryException[exceptionKey] ?? 0) + 1
-          return { price: null, reason: `exception:${exceptionKey}` }
-        }
+      if (needsBuy) {
+        if (detailedPrimary) detailedLookupsUsed += 1
+        else plainLookupsUsed += 1
+        const result = await attemptLeg(lot.token, lot.chain, lot.openedAt, 'chain-aware-historical')
+        recoveredBuy = result.price
+        lastBuyReason = result.reason
       }
-      for (let i = 0; i < fetchers.length; i += 1) {
-        const fetcher = fetchers[i]
-        const useDetailed = i === 0 && Boolean(detailedPrimary) && fetcher === config.priceSources?.primary
-        if (needsBuy && recoveredBuy === null && priceKvClient.getPriceHistorical) {
-          if (useDetailed) {
-            detailedLookupsUsed += 1
-            const wrapped: PriceSourceFn = async (t, c, ts) => {
-              const result = await callDetailed(t, c, ts)
-              lastBuyReason = result.reason
-              return result.price
-            }
-            recoveredBuy = await priceKvClient.getPriceHistorical(lot.token, lot.chain, lot.openedAt, wrapped)
-          } else {
-            plainLookupsUsed += 1
-            recoveredBuy = await priceKvClient.getPriceHistorical(lot.token, lot.chain, lot.openedAt, fetcher)
-          }
-        }
-        if (needsSell && recoveredSell === null && priceKvClient.getPricePrimary) {
-          if (useDetailed) {
-            detailedLookupsUsed += 1
-            const wrapped: PriceSourceFn = async (t, c, ts) => {
-              const result = await callDetailed(t, c, ts)
-              lastSellReason = result.reason
-              return result.price
-            }
-            recoveredSell = await priceKvClient.getPricePrimary(lot.token, lot.chain, lot.closedAt, wrapped)
-          } else {
-            plainLookupsUsed += 1
-            recoveredSell = await priceKvClient.getPricePrimary(lot.token, lot.chain, lot.closedAt, fetcher)
-          }
-        }
-        if ((!needsBuy || recoveredBuy !== null) && (!needsSell || recoveredSell !== null)) break
+      if (needsSell) {
+        if (detailedPrimary) detailedLookupsUsed += 1
+        else plainLookupsUsed += 1
+        const result = await attemptLeg(lot.token, lot.chain, lot.closedAt, 'primary')
+        recoveredSell = result.price
+        lastSellReason = result.reason
       }
       if (needsBuy && recoveredBuy === null) recordFailureReason(failureReasonCounts, lastBuyReason)
       if (needsSell && recoveredSell === null) recordFailureReason(failureReasonCounts, lastSellReason)
@@ -408,6 +435,16 @@ export function createPnlReconciliation(config: Config = {}) {
         detailedLookupsUsed: recovery.detailedLookupsUsed,
         plainLookupsUsed: recovery.plainLookupsUsed,
         detailedAttemptsObserved: recovery.detailedAttemptsObserved,
+        // RECOVERY LANE DIAGNOSTICS, DISCLOSED (this task's explicit requirement):
+        // normalCappedLookups is the SHARED per-token cap's own count (from the main pricingAtTime
+        // pass, read here purely for comparison) — recoveryLookupsRequested/CacheHits/LiveFetches/
+        // CappedLookups are this recovery pass's OWN separate lane, proving the two budgets no
+        // longer starve each other.
+        normalCappedLookups: config.priceKvClient?.stats?.cappedLookups ?? null,
+        recoveryLookupsRequested: config.priceKvClient?.recoveryStats?.recoveryLookupsRequested ?? null,
+        recoveryCacheHits: config.priceKvClient?.recoveryStats?.recoveryCacheHits ?? null,
+        recoveryLiveFetches: config.priceKvClient?.recoveryStats?.recoveryLiveFetches ?? null,
+        recoveryCappedLookups: config.priceKvClient?.recoveryStats?.recoveryCappedLookups ?? null,
       })
 
       let syntheticAlignedCount = 0
