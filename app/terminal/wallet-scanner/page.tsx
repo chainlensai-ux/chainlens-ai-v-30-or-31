@@ -48,6 +48,7 @@ import type { FinalReport } from '@/src/modules/finalReportAssembler/types'
 import type { TokenHolding } from '@/src/modules/holdings/types'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
+import type { PricedHolding } from '@/lib/engine/modules/pricing/types'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { ChainActivityRecord } from '@/lib/engine/modules/activity/types'
 import type { SmartMoneyScore } from '@/lib/engine/modules/smartMoney/types'
@@ -69,6 +70,15 @@ export type WalletV2Report = FinalReport & {
   holdings: TokenHolding[]
   portfolio: PortfolioSummary
   portfolioV2?: EnginePortfolioV2
+  // CANONICAL PRICED HOLDINGS, DISCLOSED (Holdings V2 display consistency fix): workers/
+  // walletScanV2.ts already attaches these to the API response (`pricing.pricedHoldings`/
+  // `pricing.chainValueUsd` — the exact same values `portfolioV2.totalValueUsd` is built from) —
+  // previously never read by this page, which instead passed the OLD, separately-fetched
+  // `holdings: TokenHolding[]` into HoldingsViewV2, the confirmed root cause of Holdings V2
+  // disagreeing with the Portfolio Intelligence/hero totals for the same scan. See
+  // app/frontend/lib/holdingsV2Selector.ts's own header for the full trace.
+  pricedHoldings?: PricedHolding[]
+  chainValueUsd?: Record<number, number>
   pnlV2?: PnlV2
   chainActivityV2?: ChainActivityRecord[]
   // SMART-MONEY-SCORE WIRING, DISCLOSED (added per a later task): same real gap as portfolioV2/
@@ -645,7 +655,8 @@ export default function WalletScannerPage() {
               <SectionDivider label="Holdings" />
               <div className="ws-card">
                 <HoldingsViewV2
-                  holdings={result.holdings}
+                  pricedHoldings={result.pricedHoldings}
+                  chainValueUsd={result.chainValueUsd}
                   buyEntries={result.timelines?.buyTimeline?.entries}
                   bridgeEntries={result.bridgeTimeline}
                 />
