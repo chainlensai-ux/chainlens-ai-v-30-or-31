@@ -31,6 +31,7 @@ import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan
 import { supabase } from '@/lib/supabaseClient'
 import { scanWalletV2 } from '@/app/frontend/api/scanWallet'
 import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
+import { logScanIdentityIfDev } from '@/app/frontend/lib/walletScanIdentity'
 import {
   BehaviorIntelView,
   ChainSelectionView,
@@ -174,6 +175,18 @@ export function resolvePreservedResultOnScanStart(
   return null
 }
 
+// ATOMIC SCAN ENVELOPE, DISCLOSED (live-value staleness task): the report and the identity of the
+// scan that produced it are held in ONE state value, always replaced wholesale — see
+// app/frontend/lib/walletScanIdentity.ts's own header for the confirmed root cause this closes.
+// Because no code path can update `report` without also updating `jobId`/`completedAt`, every
+// component reading from one envelope is reading exactly one completed scan, and a nested field
+// from a previous scan can never survive into a new result.
+export type WalletScanEnvelope = {
+  report: WalletV2Report
+  jobId: string | null
+  completedAt: number
+}
+
 export default function WalletScannerPage() {
   const { plan, loading: planLoading, betaEliteActive } = usePlanWithLoading()
 
@@ -193,7 +206,11 @@ export default function WalletScannerPage() {
   // touch the existing result/error/loading blocks below.
   const [moduleErrors, setModuleErrors] = useState<Record<string, string> | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [result, setResult] = useState<WalletV2Report | null>(null)
+  // ATOMIC ENVELOPE STATE, DISCLOSED: `result` below is derived read-only from this single envelope
+  // — there is deliberately no separate setResult(), so a report can never be swapped without its
+  // scan identity going with it. See WalletScanEnvelope's own header for the root cause this closes.
+  const [resultEnvelope, setResultEnvelope] = useState<WalletScanEnvelope | null>(null)
+  const result = resultEnvelope?.report ?? null
   // SCAN DIAGNOSTICS, ADDITIVE/DISCLOSED: WalletV2Report carries no timing fields at all (no
   // totalMs/stagesMs/slowProviderDetected/jitterDetected — verified by search of
   // src/modules/finalReportAssembler/types.ts; a task once assumed these existed, they don't). The
@@ -354,7 +371,11 @@ export default function WalletScannerPage() {
     // wallet keeps its last-known-good, fully-resolved total on screen until the new scan's own
     // canonical result replaces it wholesale (never a partial/staged intermediate value — the poll
     // loop below still only ever calls setResult once, with the final complete report).
-    setResult((prev) => resolvePreservedResultOnScanStart(prev, address))
+    // PRESERVE-WHILE-REFRESHING, UNCHANGED: the previous envelope is kept only for a refresh of the
+    // SAME wallet (resolvePreservedResultOnScanStart's own, separately-tested rule, applied here to
+    // the envelope's report). The envelope is kept INTACT — never partially updated — so what stays
+    // on screen is the complete previous scan with its own identity, not a hybrid.
+    setResultEnvelope((prev) => (prev && resolvePreservedResultOnScanStart(prev.report, address) ? prev : null))
     setJobStatusMessage(null)
     setCurrentJobId(null)
     setScanProgress(null)
@@ -362,27 +383,45 @@ export default function WalletScannerPage() {
     setScanDurationMs(null)
 
     const scanStartedAt = Date.now()
+    // SCAN IDENTITY CAPTURE, DISCLOSED: held in a local (not read back from `currentJobId` state,
+    // which the finally-block below deliberately clears) so the completed report is bound to the
+    // exact job that produced it, with no dependency on React state timing.
+    let scanJobId: string | null = null
     try {
       // JOB/POLL CALL: scanWalletV2() enqueues immediately, then polls status while the
       // background queue runs the unchanged full scan worker outside this HTTP request.
       const response = await scanWalletV2(address, ['base', 'eth'], mode, ({ jobId, status }) => {
+        scanJobId = jobId
         setCurrentJobId(jobId)
         setJobStatusMessage(status === 'queued' ? 'queued — still scanning…' : status === 'running' ? 'running — still scanning…' : status)
       })
       setScanDurationMs(Date.now() - scanStartedAt)
+      // CONFIRMED ROOT-CAUSE FIX, DISCLOSED (live-value staleness task): both failure paths below
+      // previously left the PRESERVED previous result on screen — the `degraded` branch did a bare
+      // `return`, and a thrown scan only called setError() — while the results block renders on
+      // `result` alone, independent of `error`. A wallet whose real value had since changed
+      // therefore kept displaying its OLD total, indistinguishable from a current one, after every
+      // failed rescan. Dropping the envelope here is the honest outcome: a scan that did not
+      // produce a new complete result must never leave stale totals presented as current.
       if (response.degraded) {
-        setError('Final scan result is temporarily unavailable. The scan reached a terminal degraded state; please rescan in a moment.')
+        setResultEnvelope(null)
+        setError('Final scan result is temporarily unavailable. The scan reached a terminal degraded state; please rescan in a moment. Previous results were cleared — they may no longer reflect this wallet\'s current value.')
         return
       }
       if (!response.success || !response.data) {
         throw new Error(response.error?.message ?? 'Scan failed')
       }
       const report = response.data as WalletV2Report
-      setResult(report)
+      // ATOMIC REPLACEMENT: the entire previous envelope (report + identity) is replaced in one
+      // update — never merged field-by-field with the prior scan.
+      const envelope: WalletScanEnvelope = { report, jobId: scanJobId, completedAt: Date.now() }
+      setResultEnvelope(envelope)
       logEngineConsistencyIfDev(report)
+      logScanIdentityIfDev(envelope)
     } catch (err: unknown) {
       // eslint-disable-next-line no-console
       console.error('Scan failed', err)
+      setResultEnvelope(null)
       setError(err instanceof Error ? err.message : 'Scan failed — try again later')
     } finally {
       setLoading(false)
@@ -549,6 +588,16 @@ export default function WalletScannerPage() {
           {/* Loading state */}
           {loading && (
             <div className="ws-card" style={{ color: 'rgba(148,163,184,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '13px' }}>
+              {/* REFRESHING INDICATOR, DISCLOSED (this task's "clearly show Refreshing…"
+                  requirement): when a previous result is still on screen, the numbers below this
+                  banner belong to the PREVIOUS completed scan until the new one lands — say so
+                  explicitly rather than letting them look current. */}
+              {result && (
+                <div style={{ marginBottom: '8px', display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '4px 11px', borderRadius: '999px', background: 'rgba(251,191,36,0.10)', border: '1px solid rgba(251,191,36,0.32)', color: '#fbbf24', fontSize: '10px', fontWeight: 800, letterSpacing: '0.09em', textTransform: 'uppercase' }}>
+                  Refreshing… showing previous scan results until the new scan completes
+                </div>
+              )}
+              <div>
               Scanning {input.trim()}…{jobStatusMessage ? ` (${jobStatusMessage})` : ' (queued — still scanning…)'}
               {currentJobId && (
                 <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>
@@ -560,6 +609,7 @@ export default function WalletScannerPage() {
                   Module {scanProgress.currentModule}/{scanProgress.totalModules}: {scanProgress.moduleName}
                 </div>
               )}
+              </div>
             </div>
           )}
 
