@@ -184,20 +184,188 @@ function isEligibleForFallbackPricing(h: ChainHolding): boolean {
 // pricedHoldings with priceUsd/valueUsd: null, exactly like any other honestly-unpriced holding.
 const MAX_FALLBACK_TOKENS = 30
 
-function fallbackPriorityScore(h: ChainHolding): [number, number, number] {
-  const valueSignal = h.providerValueUsd != null && h.providerValueUsd > 0 ? h.providerValueUsd : -1
-  const quantity = Number(h.quantity)
-  const quantitySignal = Number.isFinite(quantity) ? quantity : -1
-  const activityMs = h.lastActivityAt ? Date.parse(h.lastActivityAt) : NaN
-  const activitySignal = Number.isFinite(activityMs) ? activityMs : -Infinity
-  return [valueSignal, quantitySignal, activitySignal]
+// CONFIRMED ROOT CAUSE, DISCLOSED (holdings-coverage audit task, real production evidence: 1,581
+// holdings discovered / 107 priced / 1,346 fallback-eligible / only 30 looked up / 1,316 left
+// unpriced by budget, with a canonical total far below the wallet's expected value): the PRIOR
+// ranking above was, in practice, RAW QUANTITY DESCENDING. Two independent reasons:
+//   1. Tier 1 (`providerValueUsd`) is absent for almost every fallback-eligible holding — by
+//      definition these are the holdings the balances provider did NOT price, and a provider that
+//      supplies no `quote_rate` overwhelmingly supplies no `quote` either. So tier 1 is a tie at -1
+//      across nearly the whole candidate set and decides nothing.
+//   2. Tier 3 (`lastActivityAt`) is DEAD: lib/engine/modules/holdings/fetchHoldings.ts hardcodes
+//      `lastActivityAt: null` for every holding (see its own header — no per-token activity indexer
+//      is wired at that level), so every candidate scores -Infinity and it decides nothing either.
+// That left tier 2, raw `quantity`, as the sole effective discriminator — and raw unit count is
+// precisely the axis spam/airdrop tokens maximize (they are minted with astronomically large unit
+// counts). A holding of 500,000,000,000 spam units therefore outranked a real 0.05 WETH position
+// on EVERY scan, deterministically, so the same spam tokens consumed the same 30-token budget
+// forever while genuinely valuable holdings were never checked (this task's findings 5 and 6).
+//
+// FIX, DISCLOSED: rank by likely USD materiality using ONLY evidence already present on
+// ChainHolding — no new provider call, no fabricated price, no change to the cap (still exactly 30),
+// and no change to any price-selection safety rule (minimum liquidity / base-token-side validation
+// in dexscreener.ts are untouched). Lanes, highest priority first:
+//   1. providerValueUsd — a real, provider-supplied partial USD figure still outranks everything.
+//   2. assetClassRank — `classification` is real local metadata (fetchHoldings.ts's classify():
+//      STABLE_SYMBOLS -> 'stable', BLUE_CHIP_SYMBOLS (ETH/WETH/WBTC) -> 'blue_chip'). A native,
+//      wrapped-native or stablecoin holding is a known real asset; spam is never in those sets.
+//   3. estimatedMaterialityUsd — RANKING ONLY, never a price: a stablecoin's unit count is a real,
+//      defensible ~$1/unit materiality estimate. Non-stables get -1 (unknown, never guessed).
+//   4. symbolQualityRank — a malformed symbol ('?' from an Alchemy row with no metadata, empty, or
+//      the whitespace/URL/overlong shapes airdrop spam uses to advertise) is a real, local spam
+//      signal. Well-formed symbols rank above it.
+//   5. quantity — the previous signal, demoted to a last-resort magnitude tiebreak where it can no
+//      longer let unit count alone dominate the budget.
+// A holding that still doesn't make the cut is NEVER hidden and NEVER defaulted to zero — it stays
+// in pricedHoldings with priceUsd/valueUsd: null, exactly as before.
+const ASSET_CLASS_RANK: Record<ChainHolding['classification'], number> = {
+  stable: 3,
+  blue_chip: 2,
+  lp: 1,
+  meme: 0,
+  other: 0,
 }
 
-function compareFallbackPriority(a: [number, number, number], b: [number, number, number]): number {
+// SPAM-SYMBOL SHAPES, DISCLOSED: deliberately conservative — only shapes a legitimate ERC-20 ticker
+// effectively never has. '?' is this codebase's own placeholder for an Alchemy row with no metadata
+// (src/modules/holdings/utils.ts), whose decimals also defaulted to 18, making its quantity
+// unreliable. Whitespace / URL punctuation / overlong strings are the advertising shapes airdrop
+// spam uses ("claim at site.com"). Never used to EXCLUDE a holding — only to rank it lower.
+const MAX_PLAUSIBLE_SYMBOL_LENGTH = 16
+
+export function isWellFormedSymbol(symbol: string | null | undefined): boolean {
+  if (typeof symbol !== 'string') return false
+  const trimmed = symbol.trim()
+  if (trimmed.length === 0 || trimmed === '?') return false
+  if (trimmed.length > MAX_PLAUSIBLE_SYMBOL_LENGTH) return false
+  if (/\s/.test(trimmed)) return false
+  if (/[./\\:]/.test(trimmed)) return false
+  return true
+}
+
+// PURE, exported for direct testing. A real, local materiality ESTIMATE used only to order the
+// fallback queue — it is never written to priceUsd/valueUsd and never contributes to any total.
+// Returns null when there is genuinely no local basis to estimate, rather than guessing.
+export function estimateMaterialityUsd(h: ChainHolding): number | null {
+  if (h.providerValueUsd != null && h.providerValueUsd > 0) return h.providerValueUsd
+  const quantity = Number(h.quantity)
+  if (!Number.isFinite(quantity) || quantity <= 0) return null
+  // A stablecoin's unit count is a real ~$1/unit materiality estimate (this codebase already treats
+  // USDC as $1 in basedex.ts's own disclosed convention). No other classification supports a local
+  // estimate without a price lookup, which is the exact thing being queued.
+  if (h.classification === 'stable') return quantity
+  return null
+}
+
+function fallbackPriorityScore(h: ChainHolding): number[] {
+  const providerValueSignal = h.providerValueUsd != null && h.providerValueUsd > 0 ? h.providerValueUsd : -1
+  const assetClassRank = ASSET_CLASS_RANK[h.classification] ?? 0
+  const estimatedMateriality = estimateMaterialityUsd(h)
+  const materialitySignal = estimatedMateriality ?? -1
+  const symbolQualityRank = isWellFormedSymbol(h.symbol) ? 1 : 0
+  const quantity = Number(h.quantity)
+  const quantitySignal = Number.isFinite(quantity) ? quantity : -1
+  return [providerValueSignal, assetClassRank, materialitySignal, symbolQualityRank, quantitySignal]
+}
+
+function compareFallbackPriority(a: number[], b: number[]): number {
   for (let i = 0; i < a.length; i += 1) {
     if (b[i] !== a[i]) return b[i] - a[i] // descending: highest signal first
   }
   return 0
+}
+
+// HOLDINGS-COVERAGE AUDIT, DISCLOSED (this task's explicit diagnostic requirement): one record per
+// UNPRICED holding, carrying exactly the requested fields. Pure and exported so the full set can be
+// asserted in tests ("required diagnostics for every unpriced holding") — while the console audit
+// below deliberately logs only the top candidates plus counts, because a real wallet in this
+// investigation produced 1,316 unpriced holdings and one log line each would blow past this
+// deployment's per-invocation log capture limit (the same real constraint already documented in
+// src/modules/pricingAtTimeEngine/sources/basedex.ts's own log-volume fix).
+export type FallbackSkipReason =
+  | 'priced_by_provider'
+  | 'known_negligible_provider_value'
+  | 'zero_or_malformed_quantity'
+  | 'outside_fallback_budget'
+  | 'fallback_lookup_returned_no_price'
+
+export type UnpricedHoldingDiagnostic = {
+  chainId: number
+  tokenAddress: string
+  symbol: string
+  quantity: string
+  providerPriceUsd: number | null
+  providerValueUsd: number | null
+  fallbackEligible: boolean
+  fallbackRank: number | null
+  selectedForFallback: boolean
+  skipReason: FallbackSkipReason
+  knownBalanceSignal: 'provider_value' | 'stable_unit_peg' | 'quantity_only' | 'none'
+  currentTransferRecency: string | null
+  estimatedMaterialitySignal: number | null
+}
+
+// PURE, exported for direct testing.
+export function buildUnpricedHoldingDiagnostics(params: {
+  holdings: ChainHolding[]
+  pricedHoldings: PricedHolding[]
+  rankedFallbackKeys: string[]
+  budgetedFallbackKeys: string[]
+  keyOf: (h: ChainHolding) => string
+}): UnpricedHoldingDiagnostic[] {
+  const { holdings, pricedHoldings, rankedFallbackKeys, budgetedFallbackKeys, keyOf } = params
+  const rankByKey = new Map(rankedFallbackKeys.map((k, i) => [k, i]))
+  const budgeted = new Set(budgetedFallbackKeys)
+  const diagnostics: UnpricedHoldingDiagnostic[] = []
+
+  for (let i = 0; i < holdings.length; i += 1) {
+    const h = holdings[i]
+    const p = pricedHoldings[i]
+    if (p?.priceUsd != null) continue // genuinely priced — not part of this audit
+
+    const key = keyOf(h)
+    const eligible = isEligibleForFallbackPricing(h)
+    const rank = rankByKey.get(key) ?? null
+    const selected = budgeted.has(key)
+    const quantity = Number(h.quantity)
+    const estimatedMaterialitySignal = estimateMaterialityUsd(h)
+
+    let skipReason: FallbackSkipReason
+    if (h.providerPriceUsd != null && h.providerPriceUsd > 0) skipReason = 'priced_by_provider'
+    else if (h.providerValueUsd != null && h.providerValueUsd > 0 && h.providerValueUsd < DUST_VALUE_USD_THRESHOLD) skipReason = 'known_negligible_provider_value'
+    else if (!Number.isFinite(quantity) || quantity <= DUST_QUANTITY_FLOOR) skipReason = 'zero_or_malformed_quantity'
+    else if (!selected) skipReason = 'outside_fallback_budget'
+    else skipReason = 'fallback_lookup_returned_no_price'
+
+    const knownBalanceSignal = h.providerValueUsd != null && h.providerValueUsd > 0
+      ? 'provider_value'
+      : h.classification === 'stable' && Number.isFinite(quantity) && quantity > 0
+        ? 'stable_unit_peg'
+        : Number.isFinite(quantity) && quantity > 0
+          ? 'quantity_only'
+          : 'none'
+
+    diagnostics.push({
+      chainId: h.chainId,
+      tokenAddress: h.tokenAddress,
+      symbol: h.symbol,
+      quantity: h.quantity,
+      providerPriceUsd: h.providerPriceUsd ?? null,
+      providerValueUsd: h.providerValueUsd ?? null,
+      fallbackEligible: eligible,
+      fallbackRank: rank,
+      selectedForFallback: selected,
+      skipReason,
+      knownBalanceSignal,
+      // HONEST NULL, DISCLOSED: `lastActivityAt` is hardcoded null for every holding by
+      // lib/engine/modules/holdings/fetchHoldings.ts (no per-token activity indexer is wired at that
+      // level — see its own header). Reported as the real null it is, never fabricated.
+      currentTransferRecency: h.lastActivityAt ?? null,
+      estimatedMaterialitySignal,
+    })
+  }
+
+  return diagnostics
 }
 
 // Public entry point. `priceHoldings(holdings)` — exactly the signature specified; the second
@@ -238,16 +406,22 @@ export async function priceHoldings(
 
   // Best (highest-priority) score across every holding sharing a key — a token appearing under two
   // classification buckets is ranked by whichever bucket carries the strongest real signal.
-  const bestScoreByKey = new Map<string, [number, number, number]>()
+  const bestScoreByKey = new Map<string, number[]>()
   for (const h of eligibleHoldings) {
     const key = fallbackKeyOf(h)
     const score = fallbackPriorityScore(h)
     const existing = bestScoreByKey.get(key)
     if (!existing || compareFallbackPriority(score, existing) < 0) bestScoreByKey.set(key, score)
   }
-  const rankedFallbackKeys = [...distinctFallbackKeys].sort((a, b) =>
-    compareFallbackPriority(bestScoreByKey.get(a)!, bestScoreByKey.get(b)!),
-  )
+  // DETERMINISTIC ORDERING, DISCLOSED (this task's explicit requirement): an explicit
+  // lexicographic tiebreak on the `chainId:tokenAddress` key means two holdings with genuinely
+  // identical signals always resolve the same way — the selected 30 can never shift between scans
+  // because of provider response ordering or Array.sort implementation details.
+  const rankedFallbackKeys = [...distinctFallbackKeys].sort((a, b) => {
+    const byScore = compareFallbackPriority(bestScoreByKey.get(a)!, bestScoreByKey.get(b)!)
+    if (byScore !== 0) return byScore
+    return a.localeCompare(b)
+  })
   const budgetedFallbackKeys = rankedFallbackKeys.slice(0, MAX_FALLBACK_TOKENS)
   const overBudgetKeys = rankedFallbackKeys.slice(MAX_FALLBACK_TOKENS)
 
@@ -385,6 +559,47 @@ export async function priceHoldings(
     pricedHoldingsCount: pricedCount,
     topValueHoldings,
     timestamp: Date.now(),
+  })
+
+  // HOLDINGS-COVERAGE AUDIT, DISCLOSED (this task's explicit production-audit requirement): reports
+  // exactly how much of this wallet the canonical total actually covers, and which unpriced holdings
+  // were the strongest candidates that the bounded budget could not reach. Every field is a real
+  // count or a real local signal — `estimatedPotentiallyMaterialUnpricedCount` counts only holdings
+  // with a REAL local materiality estimate (provider partial value, or a stablecoin's ~$1/unit peg)
+  // above $1; a token with no local basis to estimate is never counted as material on a guess.
+  const unpricedDiagnostics = buildUnpricedHoldingDiagnostics({
+    holdings,
+    pricedHoldings,
+    rankedFallbackKeys,
+    budgetedFallbackKeys,
+    keyOf: fallbackKeyOf,
+  })
+  const estimatedPotentiallyMaterialUnpricedCount = unpricedDiagnostics.filter(
+    (d) => d.estimatedMaterialitySignal != null && d.estimatedMaterialitySignal > DUST_VALUE_USD_THRESHOLD,
+  ).length
+  const TOP_UNPRICED_CANDIDATES_LOGGED = 15
+  const topUnpricedCandidates = unpricedDiagnostics
+    .filter((d) => d.fallbackEligible)
+    .sort((a, b) => {
+      const byMateriality = (b.estimatedMaterialitySignal ?? -1) - (a.estimatedMaterialitySignal ?? -1)
+      if (byMateriality !== 0) return byMateriality
+      return (a.fallbackRank ?? Number.MAX_SAFE_INTEGER) - (b.fallbackRank ?? Number.MAX_SAFE_INTEGER)
+    })
+    .slice(0, TOP_UNPRICED_CANDIDATES_LOGGED)
+  const fallbackSelectionReasons: Record<string, number> = {}
+  for (const d of unpricedDiagnostics) {
+    fallbackSelectionReasons[d.skipReason] = (fallbackSelectionReasons[d.skipReason] ?? 0) + 1
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[holdings-coverage-audit] current-holdings pricing coverage', {
+    canonicalTotalValueUsd: Math.round(totalValueUsd * 100) / 100,
+    pricedHoldingsCount: pricedCount,
+    unpricedHoldingsCount: unpricedDiagnostics.length,
+    fallbackEligibleCount: distinctFallbackKeys.length,
+    fallbackBudget: MAX_FALLBACK_TOKENS,
+    estimatedPotentiallyMaterialUnpricedCount,
+    topUnpricedCandidates,
+    fallbackSelectionReasons,
   })
 
   // DOMINANT-HOLDING PRICE PROVENANCE, DISCLOSED (this task's explicit requirement): traces exactly
