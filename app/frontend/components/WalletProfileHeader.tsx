@@ -34,7 +34,50 @@ import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
 // genuinely populated in this app's real, live data flow (scanWalletV2() calls the route that
 // computes it directly and exclusively). Only threaded through to
 // PortfolioIntelligenceCard below — no other rendering in this file changes.
-export type WalletV2Report = FinalReport & { holdings: TokenHolding[]; portfolio: PortfolioSummary; portfolioV2?: EnginePortfolioV2; smartMoneyScore?: SmartMoneyScore }
+// CANONICAL CHAIN TOTALS, DISCLOSED (Holdings V2 display consistency fix, follow-up): this file's
+// own chain-allocation bar previously read `report.portfolio?.chainValueBreakdown` — the OLD V1
+// field — entirely disconnected from the canonical `chainValueUsd` the hero total right above it
+// (via portfolioV2.totalValueUsd) is built from. Real production evidence: hero total $3,365.81,
+// but the bar below it showed BASE $337.90 (98%) + ETH $7.30 (2%) = $345.20 — the stale V1 sum,
+// with percentages computed relative to THAT wrong sum rather than the real total. Same root cause,
+// same fix pattern as app/frontend/lib/holdingsV2Selector.ts: prefer the canonical
+// `chainValueUsd`/`portfolioV2.totalValueUsd` pair when present; the V1 `chainValueBreakdown` stays
+// as a real, genuine fallback only when portfolioV2/chainValueUsd is genuinely absent.
+export type WalletV2Report = FinalReport & {
+  holdings: TokenHolding[]
+  portfolio: PortfolioSummary
+  portfolioV2?: EnginePortfolioV2
+  chainValueUsd?: Record<number, number>
+  smartMoneyScore?: SmartMoneyScore
+}
+
+const CHAIN_ID_TO_CHAIN_STRING: Record<number, string> = { 1: 'eth', 8453: 'base', 42161: 'arbitrum', 999: 'hyperevm' }
+
+export type ChainBreakdownRow = { chain: string; valueUsd: number; percent: number }
+
+// PURE, exported for direct testing (same convention as PortfolioIntelligenceCard.tsx's own
+// selectPortfolioStats). Prefers the canonical `chainValueUsd`/`totalValueUsd` pair — the same real
+// per-chain totals portfolioV2.totalValueUsd is summed from — computing each chain's percentage
+// against the SAME real total this header renders above, never a separately-summed (and therefore
+// potentially disagreeing) subtotal. Falls back to the old V1 `chainValueBreakdown` only when
+// `chainValueUsd` is genuinely absent (e.g. an older cached response predating this field).
+export function selectChainBreakdown(
+  chainValueUsd: Record<number, number> | null | undefined,
+  totalValueUsd: number | null,
+  v1Breakdown: ChainBreakdownRow[] | null | undefined,
+): ChainBreakdownRow[] {
+  if (chainValueUsd && typeof chainValueUsd === 'object') {
+    return Object.entries(chainValueUsd)
+      .filter(([, valueUsd]) => valueUsd > 0)
+      .map(([chainIdStr, valueUsd]) => ({
+        chain: CHAIN_ID_TO_CHAIN_STRING[Number(chainIdStr)] ?? chainIdStr,
+        valueUsd,
+        percent: totalValueUsd && totalValueUsd > 0 ? (valueUsd / totalValueUsd) * 100 : 0,
+      }))
+      .sort((a, b) => b.valueUsd - a.valueUsd)
+  }
+  return Array.isArray(v1Breakdown) ? v1Breakdown : []
+}
 
 export type WalletProfileHeaderProps = {
   report: WalletV2Report | null | undefined
@@ -180,7 +223,7 @@ function PortfolioSnapshot({ report }: { report: WalletV2Report }) {
     })
   }
 
-  const breakdown = Array.isArray(report.portfolio?.chainValueBreakdown) ? report.portfolio.chainValueBreakdown : []
+  const breakdown = selectChainBreakdown(report.chainValueUsd, totalValueUsd, report.portfolio?.chainValueBreakdown)
   const chainsScanned = Array.isArray(report.scanMetadata?.chainsScanned) ? report.scanMetadata.chainsScanned : []
   const chainsWithoutData = chainsScanned.filter((c) => !breakdown.some((b) => b.chain === c))
 
