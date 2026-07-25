@@ -124,7 +124,7 @@ export async function fetchDexscreenerPriceShared(
     // ever applies to the historical/recovery lane, per this task's explicit requirement.
     if (historicalBudgetUsed >= historicalBudget) {
       budgetCappedByCaller[caller] = (budgetCappedByCaller[caller] ?? 0) + 1
-      return { priceUsd: null, reason: 'dexscreener_shared_historical_budget_exhausted', pairAddress: null, dexId: null, liquidityUsd: null, pairAgeMs: null, quoteTokenSymbol: null, alternatePairs: [], winnerReason: null }
+      return { priceUsd: null, reason: 'dexscreener_shared_historical_budget_exhausted', pairAddress: null, dexId: null, liquidityUsd: null, pairAgeMs: null, quoteTokenSymbol: null, baseTokenSymbol: null, alternatePairs: [], winnerReason: null }
     }
     historicalBudgetUsed += 1
   }

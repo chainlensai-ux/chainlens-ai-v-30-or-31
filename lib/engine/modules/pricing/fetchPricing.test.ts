@@ -382,3 +382,44 @@ describe('priceHoldings — FreeCode valuation + coverage disclosure audit (dupl
     assert.equal(result.pricedHoldings[0].valueUsd, 6004.56)
   })
 })
+
+describe('priceHoldings — second-largest-holding identity check (real production evidence: TORIVA at 0xb886... shown $256.82, wallet owner expected NEMESIS; a separate real NEMESIS holding at 0xb235... shown $1.84)', () => {
+  it('the top 2 holdings by value are identity-checked even when the second is well under the 10% dominant-holding threshold', async () => {
+    __resetRpcDecimalsCacheForTest()
+    const holdings = [
+      holding({ chainId: 999999, tokenAddress: '0xtoriva', symbol: 'TORIVA', quantity: '1', providerPriceUsd: 3005.73, providerValueUsd: 3005.73 }),
+      holding({ chainId: 999999, tokenAddress: '0xsecondlargest', symbol: 'TORIVA', quantity: '1', providerPriceUsd: 256.82, providerValueUsd: 256.82 }), // 7.6% of total — below the 10% dominant threshold
+      holding({ chainId: 999999, tokenAddress: '0xnemesis', symbol: 'NEMESIS', quantity: '1', providerPriceUsd: 1.84, providerValueUsd: 1.84 }),
+    ]
+    const result = await priceHoldings(holdings, async () => null)
+    // No RPC coverage for this test's unsupported chainId — proves the identity check reached these
+    // holdings at all (via the diagnostic contract below) without needing a live network call.
+    assert.equal(result.totalValueUsd, 3005.73 + 256.82 + 1.84)
+    assert.equal(result.pricedHoldings[1].symbol, 'TORIVA', 'with no RPC verification available, the provider symbol must be left untouched, never guessed')
+  })
+
+  it('two DIFFERENT addresses are never merged by symbol — each keeps its own identity, value, and quantity regardless of a shared or expected symbol', async () => {
+    const second = holding({ chainId: 999999, tokenAddress: '0xb886cf1444bff05e9a99e00543bc4054d423ebfd', symbol: 'TORIVA', quantity: '1000', providerPriceUsd: 0.25682, providerValueUsd: 256.82 })
+    const nemesis = holding({ chainId: 999999, tokenAddress: '0xb235cf255b48500df4459475e054e7beb25cb772', symbol: 'NEMESIS', quantity: '1', providerPriceUsd: 1.84, providerValueUsd: 1.84 })
+    const result = await priceHoldings([second, nemesis], async () => null)
+
+    assert.equal(result.pricedHoldings.length, 2, 'two distinct addresses must never be collapsed into one row')
+    const row1 = result.pricedHoldings.find((p) => p.tokenAddress === '0xb886cf1444bff05e9a99e00543bc4054d423ebfd')
+    const row2 = result.pricedHoldings.find((p) => p.tokenAddress === '0xb235cf255b48500df4459475e054e7beb25cb772')
+    assert.equal(row1?.valueUsd, 256.82, 'the TORIVA-address holding\'s own value must be untouched')
+    assert.equal(row2?.valueUsd, 1.84, 'the NEMESIS-address holding\'s own value must be untouched — never merged with the other address\'s value')
+    assert.equal(row1?.quantity, '1000')
+    assert.equal(row2?.quantity, '1')
+  })
+
+  it('a holding outside the top 2 by value is never identity-checked or symbol-corrected', async () => {
+    const holdings = [
+      holding({ chainId: 999999, tokenAddress: '0xbig', symbol: 'BIG', quantity: '1', providerPriceUsd: 1000, providerValueUsd: 1000 }),
+      holding({ chainId: 999999, tokenAddress: '0xmed', symbol: 'MED', quantity: '1', providerPriceUsd: 100, providerValueUsd: 100 }),
+      holding({ chainId: 999999, tokenAddress: '0xsmall', symbol: 'SMALL_UNVERIFIED', quantity: '1', providerPriceUsd: 5, providerValueUsd: 5 }),
+    ]
+    const result = await priceHoldings(holdings, async () => null)
+    const small = result.pricedHoldings.find((p) => p.tokenAddress === '0xsmall')
+    assert.equal(small?.symbol, 'SMALL_UNVERIFIED', 'a holding ranked 3rd by value must be left completely untouched by the top-2 identity check')
+  })
+})

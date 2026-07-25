@@ -30,7 +30,7 @@ import { fetchDexscreenerPriceShared } from '@/src/lib/dexscreenerRequestCache'
 import { CHAIN_ID_TO_SUPPORTED_CHAIN } from '../holdings/fetchHoldings'
 import type { ChainHolding } from '../holdings/types'
 import type { PricedHolding, PricingEngineOutput } from './types'
-import { verifyOnchainDecimals } from './rpcDecimals'
+import { verifyOnchainDecimals, verifyOnchainSymbol } from './rpcDecimals'
 
 export type { PricedHolding, PricingEngineOutput } from './types'
 
@@ -479,6 +479,78 @@ export async function priceHoldings(
         dominantHoldingLiquidityUsd: pairInfo?.liquidityUsd ?? null,
         portfolioValueExcludingDominantHolding: Math.round((totalValueUsd - p.valueUsd!) * 100) / 100,
       })
+    }
+  }
+
+  // TOP-2-HOLDING IDENTITY CHECK, DISCLOSED (second-largest-holding identity check task, real
+  // production evidence: a wallet's second-largest priced row showed symbol "TORIVA" at
+  // 0xb886cf1444bff05e9a99e00543bc4054d423ebfd worth ~$256.82, while the wallet owner expected that
+  // value to belong to "NEMESIS" — a SEPARATE, real ChainHolding at
+  // 0xb235cf255b48500df4459475e054e7beb25cb772 worth only ~$1.84). CONFIRMED SCOPE: this only
+  // reaches the TOP 2 holdings by value — narrower than the >=10%-share dominant-holding block
+  // above, since a real second-largest holding can legitimately sit well under 10% of a small
+  // portfolio (7.6% here) and would otherwise never get an identity check at all.
+  //
+  // IDENTITY IS THE ADDRESS, NEVER THE SYMBOL, DISCLOSED (this task's explicit "verify ... from
+  // contract address, not symbol" / "never merge tokens by symbol" requirement): each holding below
+  // is checked strictly by its OWN (chainId, tokenAddress) — two holdings that happen to display
+  // the same symbol are NEVER combined or treated as interchangeable here, and a holding's own
+  // valueUsd/quantity/priceUsd are NEVER touched by this block (only `symbol`, a display label, may
+  // be corrected) — there is no evidence here of the two addresses' BALANCES being swapped, only of
+  // a possible DISPLAY-LABEL mismatch, so only the label is ever corrected, per this task's own
+  // "do not change values unless the address mapping is wrong" instruction.
+  const TOP_N_FOR_IDENTITY_CHECK = 2
+  const topByValue = pricedHoldings
+    .map((p, i) => ({ p, h: holdings[i] }))
+    .filter((row) => row.p.valueUsd != null)
+    .sort((a, b) => (b.p.valueUsd ?? 0) - (a.p.valueUsd ?? 0))
+    .slice(0, TOP_N_FOR_IDENTITY_CHECK)
+
+  for (const { p, h } of topByValue) {
+    const providerSymbol = h.symbol
+    // RPC ground truth, DISCLOSED: real on-chain symbol() for this exact address — cached
+    // permanently by rpcDecimals.ts, so a repeat check for the same token across scans costs zero
+    // further RPC calls. `null` means verification genuinely unavailable (unsupported chain/no RPC
+    // key/contract revert), never a guessed symbol.
+    const rpcSymbol = await verifyOnchainSymbol(h.chainId, h.tokenAddress)
+
+    // DexScreener's own view of this address's identity, DISCLOSED: reused from the SAME shared
+    // cache/detailed lookup as the dominant-holding block above (a genuine cache hit when this
+    // holding was already fallback-priced this scan; skipped entirely for a provider-priced holding
+    // or under the test-only priceFn seam, same guard reasoning as above — never a new live call).
+    let dexscreenerBaseTokenSymbol: string | null = null
+    const usedProviderForThis = h.providerPriceUsd != null && h.providerPriceUsd > 0
+    if (!usedProviderForThis && priceFn === fetchTokenPriceUsd && CHAIN_ID_TO_SUPPORTED_CHAIN[h.chainId]) {
+      const detailed = await fetchDexscreenerPriceShared(h.tokenAddress, CHAIN_ID_TO_SUPPORTED_CHAIN[h.chainId], Date.now(), 'holdings')
+      dexscreenerBaseTokenSymbol = detailed.baseTokenSymbol
+    }
+
+    // SELECTION RULE, DISCLOSED: the on-chain contract's OWN symbol() is the real ground truth for
+    // what a specific ADDRESS is — preferred whenever RPC verification succeeded. Falls back to the
+    // balances provider's symbol only when RPC verification is genuinely unavailable (never a
+    // fabricated symbol either way).
+    const selectedSymbol = rpcSymbol ?? providerSymbol
+    let mismatchReason: string | null = null
+    if (rpcSymbol == null) {
+      mismatchReason = 'rpc_unavailable'
+    } else if (rpcSymbol.toUpperCase() !== providerSymbol.toUpperCase()) {
+      mismatchReason = 'provider_symbol_mismatch'
+    } else if (dexscreenerBaseTokenSymbol != null && dexscreenerBaseTokenSymbol.toUpperCase() !== rpcSymbol.toUpperCase()) {
+      mismatchReason = 'dexscreener_symbol_mismatch'
+    }
+
+    // eslint-disable-next-line no-console
+    console.warn('[token-identity-audit] top-2-by-value holding identity check', {
+      address: h.tokenAddress,
+      providerSymbol,
+      rpcSymbol,
+      selectedSymbol,
+      mismatchReason,
+    })
+
+    // Only the display label is ever corrected here — see this block's own header disclosure.
+    if (selectedSymbol !== p.symbol) {
+      p.symbol = selectedSymbol
     }
   }
 

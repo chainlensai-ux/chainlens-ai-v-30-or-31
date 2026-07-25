@@ -38,6 +38,13 @@ export type DexscreenerPairInfo = {
   liquidityUsd: number | null
   pairAgeMs: number | null
   quoteTokenSymbol: string | null
+  // BASE-TOKEN IDENTITY, ADDITIVE, DISCLOSED (second-largest-holding identity check task, "verify
+  // ... DexScreener baseToken identity" requirement): the winning pair's OWN reported baseToken
+  // symbol — already present in the same single response this function already fetches (see
+  // baseToken.address's own use in the wrong-token-side fix above), previously discarded. Lets a
+  // caller cross-check DexScreener's own view of a token's identity against the balances provider's
+  // symbol and the contract's real on-chain symbol(), without an extra network call.
+  baseTokenSymbol: string | null
 }
 export type DexscreenerPriceResult = DexscreenerPairInfo & {
   priceUsd: number | null
@@ -57,7 +64,7 @@ export type DexscreenerPriceResult = DexscreenerPairInfo & {
 const DEXSCREENER_MIN_LIQUIDITY_USD = 1_000
 
 function emptyPairInfo(): DexscreenerPairInfo {
-  return { pairAddress: null, dexId: null, liquidityUsd: null, pairAgeMs: null, quoteTokenSymbol: null }
+  return { pairAddress: null, dexId: null, liquidityUsd: null, pairAgeMs: null, quoteTokenSymbol: null, baseTokenSymbol: null }
 }
 
 // CALL COUNTER, DISCLOSED (provider-call-audit task): same pattern as
@@ -103,7 +110,7 @@ export async function fetchDexscreenerPriceDetailed(
         priceUsd?: string
         liquidity?: { usd?: number }
         pairCreatedAt?: number
-        baseToken?: { address?: string }
+        baseToken?: { address?: string; symbol?: string }
         quoteToken?: { symbol?: string; address?: string }
       }>
     }
@@ -159,6 +166,7 @@ export async function fetchDexscreenerPriceDetailed(
       liquidityUsd: p.liquidity?.usd ?? null,
       pairAgeMs: typeof p.pairCreatedAt === 'number' ? Date.now() - p.pairCreatedAt : null,
       quoteTokenSymbol: p.quoteToken?.symbol ?? null,
+      baseTokenSymbol: p.baseToken?.symbol ?? null,
     })
     const alternatePairs = sorted.slice(1, 6).map((p) => ({ ...toPairInfo(p), priceUsd: Number(p.priceUsd) })).filter((p) => Number.isFinite(p.priceUsd))
 

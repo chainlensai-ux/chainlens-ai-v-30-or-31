@@ -142,4 +142,13 @@ describe('fetchDexscreenerPriceDetailed — requested token side determines pric
     assert.equal(result.priceUsd, 0.000002625, 'the real base-side pair must win, never the far-higher-liquidity wrong-side pair')
     assert.equal(result.pairAddress, '0xCORRECTSIDE')
   })
+
+  it('surfaces the winning pair\'s own baseToken symbol — for cross-checking DexScreener\'s view of a token\'s identity (second-largest-holding identity check task)', async () => {
+    mockPairsResponse([{
+      chainId: 'base', pairAddress: '0xIDENT', priceUsd: '1.00', liquidity: { usd: 5000 },
+      baseToken: { address: REQUESTED_TOKEN, symbol: 'REALSYMBOL' },
+    }])
+    const result = await fetchDexscreenerPriceDetailed(REQUESTED_TOKEN, 'base', NOW)
+    assert.equal(result.baseTokenSymbol, 'REALSYMBOL')
+  })
 })

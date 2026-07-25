@@ -1,5 +1,7 @@
-// lib/engine/modules/pricing/rpcDecimals.ts — RPC-verified ERC20 decimals(), for dominant holdings
-// only (FreeCode valuation audit task, "decimals are RPC-verified for dominant holdings").
+// lib/engine/modules/pricing/rpcDecimals.ts — RPC-verified ERC20 decimals()/symbol()/name(), for
+// dominant/high-value holdings only (FreeCode valuation audit task's "decimals are RPC-verified for
+// dominant holdings", extended by the second-largest-holding identity check task's
+// symbol()/name() verification).
 //
 // CONFIRMED GAP, DISCLOSED: every holding's `decimals` comes from the balances provider
 // (GoldRush's own `contract_decimals`, defaulting to 18 when the provider's response omits it —
@@ -32,6 +34,22 @@ import { base, mainnet, arbitrum } from 'viem/chains'
 
 const ERC20_DECIMALS_ABI = [
   { type: 'function', name: 'decimals', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint8' }] },
+] as const
+
+// TOKEN IDENTITY, ADDITIVE, DISCLOSED (second-largest-holding identity check task): same reasoning
+// as decimals above — `name()`/`symbol()` are real, immutable-per-deployment on-chain facts, never
+// independently checked against the balances provider's own `contract_ticker_symbol`/`contract_name`
+// metadata anywhere in this codebase before now. A provider can mislabel a contract (stale indexer
+// cache, a rebrand the provider never re-synced, or two visually-similar tokens/impersonators
+// sharing a display name) — the on-chain contract's OWN `name()`/`symbol()` is the real ground truth
+// for what a specific ADDRESS actually is, since identity here is defined by address, never by
+// symbol (this task's own explicit "verify identity from contract address, not symbol" / "never
+// merge tokens by symbol" requirement).
+const ERC20_SYMBOL_ABI = [
+  { type: 'function', name: 'symbol', stateMutability: 'view', inputs: [], outputs: [{ type: 'string' }] },
+] as const
+const ERC20_NAME_ABI = [
+  { type: 'function', name: 'name', stateMutability: 'view', inputs: [], outputs: [{ type: 'string' }] },
 ] as const
 
 // CHAIN COVERAGE, DISCLOSED: only chains this codebase already has a real, configured Alchemy RPC
@@ -110,11 +128,66 @@ export async function verifyOnchainDecimals(chainId: number, tokenAddress: strin
   }
 }
 
+// PERMANENT CACHES, DISCLOSED: same reasoning as decimalsCache above — a contract's own
+// name()/symbol() cannot change for an already-deployed address (a proxy upgrade theoretically
+// could, but that's a separate, far rarer concern this task doesn't ask to solve) — `null`
+// (unavailable) is deliberately never cached, same as decimals.
+const symbolCache = new Map<string, string>()
+const nameCache = new Map<string, string>()
+
+// Never throws: every failure path resolves to null, same contract as verifyOnchainDecimals.
+export async function verifyOnchainSymbol(chainId: number, tokenAddress: string): Promise<string | null> {
+  const key = cacheKey(chainId, tokenAddress)
+  const cached = symbolCache.get(key)
+  if (cached !== undefined) return cached
+
+  const client = getClient(chainId)
+  if (!client) return null
+
+  try {
+    const symbol = await client.readContract({
+      address: tokenAddress as `0x${string}`,
+      abi: ERC20_SYMBOL_ABI,
+      functionName: 'symbol',
+    })
+    if (typeof symbol !== 'string' || symbol.length === 0) return null
+    symbolCache.set(key, symbol)
+    return symbol
+  } catch {
+    return null
+  }
+}
+
+// Never throws: same contract as verifyOnchainSymbol above.
+export async function verifyOnchainName(chainId: number, tokenAddress: string): Promise<string | null> {
+  const key = cacheKey(chainId, tokenAddress)
+  const cached = nameCache.get(key)
+  if (cached !== undefined) return cached
+
+  const client = getClient(chainId)
+  if (!client) return null
+
+  try {
+    const name = await client.readContract({
+      address: tokenAddress as `0x${string}`,
+      abi: ERC20_NAME_ABI,
+      functionName: 'name',
+    })
+    if (typeof name !== 'string' || name.length === 0) return null
+    nameCache.set(key, name)
+    return name
+  } catch {
+    return null
+  }
+}
+
 // TEST-SUPPORT EXPORT, DISCLOSED: same convention as basedex.ts's own
 // __resetBaseDexCachesForTest — lets a test inject a fresh state instead of leaking a resolved
-// decimals value (or client) across unrelated test cases. Not called anywhere in real request
-// handling.
+// decimals/symbol/name value (or client) across unrelated test cases. Not called anywhere in real
+// request handling.
 export function __resetRpcDecimalsCacheForTest(): void {
   decimalsCache.clear()
+  symbolCache.clear()
+  nameCache.clear()
   clientCache.clear()
 }
