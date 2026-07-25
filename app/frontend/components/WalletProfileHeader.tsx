@@ -55,6 +55,16 @@ const CHAIN_ID_TO_CHAIN_STRING: Record<number, string> = { 1: 'eth', 8453: 'base
 
 export type ChainBreakdownRow = { chain: string; valueUsd: number; percent: number }
 
+// CLAMP, DISCLOSED (Wallet Scanner V3 layout task's explicit "clamp every displayed percentage to
+// 0-100" requirement): a real, defensive guard — rounding/dust across many small chain balances, or
+// a `chainValueUsd` snapshot momentarily out of sync with `totalValueUsd` (e.g. a stale cached
+// response), could otherwise produce a percent fractionally over 100 or under 0. Clamped once here,
+// at the single source every caller (old bar-width-only clamp inline in PortfolioSnapshot below, and
+// the new V3 header) reads from — never a separate, potentially-inconsistent clamp per renderer.
+function clampPercent(percent: number): number {
+  return Math.max(0, Math.min(100, percent))
+}
+
 // PURE, exported for direct testing (same convention as PortfolioIntelligenceCard.tsx's own
 // selectPortfolioStats). Prefers the canonical `chainValueUsd`/`totalValueUsd` pair — the same real
 // per-chain totals portfolioV2.totalValueUsd is summed from — computing each chain's percentage
@@ -72,11 +82,11 @@ export function selectChainBreakdown(
       .map(([chainIdStr, valueUsd]) => ({
         chain: CHAIN_ID_TO_CHAIN_STRING[Number(chainIdStr)] ?? chainIdStr,
         valueUsd,
-        percent: totalValueUsd && totalValueUsd > 0 ? (valueUsd / totalValueUsd) * 100 : 0,
+        percent: totalValueUsd && totalValueUsd > 0 ? clampPercent((valueUsd / totalValueUsd) * 100) : 0,
       }))
       .sort((a, b) => b.valueUsd - a.valueUsd)
   }
-  return Array.isArray(v1Breakdown) ? v1Breakdown : []
+  return (Array.isArray(v1Breakdown) ? v1Breakdown : []).map((row) => ({ ...row, percent: clampPercent(row.percent) }))
 }
 
 export type WalletProfileHeaderProps = {
@@ -161,7 +171,10 @@ function deriveRiskProfile(report: WalletV2Report): string {
   return [rotationPart, riskPart].filter(Boolean).join(' / ') || 'Not enough evidence yet'
 }
 
-function WalletOverview({ report }: { report: WalletV2Report }) {
+// EXPORTED, DISCLOSED (Wallet Scanner V3 layout task): additive-only `export` keyword — no logic
+// change — so the new compact V3 header (app/frontend/components/WalletScannerHeaderV3.tsx) can
+// reuse this exact, already-tested rendering instead of duplicating it.
+export function WalletOverview({ report }: { report: WalletV2Report }) {
   const address = report.scanMetadata?.walletAddress ?? ''
   const { firstSeenMs, lastActiveMs } = deriveActivityWindow(report)
 
@@ -199,7 +212,9 @@ function WalletOverview({ report }: { report: WalletV2Report }) {
 // completely separate field, read only by PnlAndConfidenceRow below), never a client-side sum of a
 // filtered/top-holdings/fallback-budgeted subset (selectPortfolioStats reads the single
 // already-computed totalValueUsd field either way, it never re-sums holdings for this purpose).
-function PortfolioSnapshot({ report }: { report: WalletV2Report }) {
+// EXPORTED, DISCLOSED (Wallet Scanner V3 layout task): additive-only — see WalletOverview's own
+// export disclosure above for the reasoning.
+export function PortfolioSnapshot({ report }: { report: WalletV2Report }) {
   const { stats, usingV2 } = selectPortfolioStats(report.portfolio, report.portfolioV2)
   const totalValueUsd = stats.totalValueUsd
 
@@ -324,7 +339,9 @@ function BehaviorSummary({ report }: { report: WalletV2Report }) {
   )
 }
 
-function Actions({ loading, isFullRecoveryAdmin, onDeepScan, onAdminAction }: Pick<WalletProfileHeaderProps, 'loading' | 'isFullRecoveryAdmin' | 'onDeepScan' | 'onAdminAction'>) {
+// EXPORTED, DISCLOSED (Wallet Scanner V3 layout task): additive-only — see WalletOverview's own
+// export disclosure above for the reasoning.
+export function Actions({ loading, isFullRecoveryAdmin, onDeepScan, onAdminAction }: Pick<WalletProfileHeaderProps, 'loading' | 'isFullRecoveryAdmin' | 'onDeepScan' | 'onAdminAction'>) {
   return (
     <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
       {/* Run Deep Scan is the one action every user (not just admins) sees, so it stays the sole

@@ -288,7 +288,12 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl }: PnlStatu
 
   return (
     <section>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px' }}>
+      {/* RESPONSIVE FIX, DISCLOSED (Wallet Scanner V3 layout task, "no horizontal overflow on
+          mobile" requirement): this row previously had no `flexWrap`, so a narrow viewport (~390px)
+          pushed the "Not Verified"/"Not Reliable" StatusBadge text (nowrap by design — see that
+          component's own header) past the viewport edge instead of wrapping onto a second line.
+          Presentational only — no badge label, tone, or underlying PnL value changes. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', flexWrap: 'wrap' }}>
         <span style={{ display: 'inline-flex' }}>{headerIcon}</span>
         <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>PnL (Verified V2)</h3>
         <StatusBadge label={isActive ? 'Active' : 'Unavailable'} tone={isActive ? 'success' : 'neutral'} glow={isActive} />

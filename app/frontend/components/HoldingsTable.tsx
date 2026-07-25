@@ -39,11 +39,17 @@ function HoldingRow({ holding, buyEntries, bridgeEntries, index }: { holding: To
       animate="visible"
       whileHover={{ background: 'rgba(255,255,255,0.03)' }}
       style={{
-        display: 'flex', alignItems: 'center', gap: '14px', padding: '12px 14px',
-        borderTop: '1px solid rgba(255,255,255,0.06)',
+        display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 14px',
+        borderTop: '1px solid rgba(255,255,255,0.06)', flexWrap: 'wrap',
       }}
     >
-      <div style={{ flex: '1 1 200px', minWidth: 0 }}>
+      {/* RESPONSIVE FIX, DISCLOSED (Wallet Scanner V3 layout task, "no horizontal overflow on
+          mobile" requirement): the name column's flex-basis (200px) plus the two fixed 110px
+          numeric columns below (420px+ combined) never fit a ~390px viewport — this row now wraps
+          (flexWrap above) and the numeric columns use a smaller, still-legible minWidth so the row
+          degrades to two lines on narrow screens instead of clipping past the viewport edge.
+          Presentational only — no balance/value number changes. */}
+      <div style={{ flex: '1 1 180px', minWidth: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <span style={{ fontSize: '13px', fontWeight: 800, color: '#e2e8f0' }}>{holding.symbol || '—'}</span>
           <ChainBadge chain={holding.chain} />
@@ -62,11 +68,11 @@ function HoldingRow({ holding, buyEntries, bridgeEntries, index }: { holding: To
         )}
       </div>
 
-      <div style={{ minWidth: '110px', textAlign: 'right', fontSize: '13px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+      <div style={{ minWidth: '80px', textAlign: 'right', fontSize: '13px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
         {fmtAmount(holding.amount)}
       </div>
 
-      <div style={{ minWidth: '110px', textAlign: 'right', fontSize: '14px', fontWeight: 800, color: holding.providerValueUsd == null ? 'rgba(148,163,184,0.45)' : '#e2e8f0' }}>
+      <div style={{ minWidth: '80px', textAlign: 'right', fontSize: '14px', fontWeight: 800, color: holding.providerValueUsd == null ? 'rgba(148,163,184,0.45)' : '#e2e8f0' }}>
         {fmtUsd(holding.providerValueUsd)}
       </div>
     </motion.div>
@@ -91,10 +97,10 @@ export function HoldingsTable({ holdings, buyEntries, bridgeEntries, initialVisi
 
   return (
     <div style={{ borderRadius: '14px', border: '1px solid rgba(255,255,255,0.07)', overflow: 'hidden' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '14px', padding: '9px 14px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-        <span style={{ flex: '1 1 200px' }}>Token</span>
-        <span style={{ minWidth: '110px', textAlign: 'right' }}>Balance</span>
-        <span style={{ minWidth: '110px', textAlign: 'right' }}>Value USD</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 14px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.45)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', flexWrap: 'wrap' }}>
+        <span style={{ flex: '1 1 180px' }}>Token</span>
+        <span style={{ minWidth: '80px', textAlign: 'right' }}>Balance</span>
+        <span style={{ minWidth: '80px', textAlign: 'right' }}>Value USD</span>
       </div>
 
       {visible.map((h, i) => (

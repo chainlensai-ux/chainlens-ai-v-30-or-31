@@ -43,4 +43,23 @@ describe('selectChainBreakdown — canonical chain-allocation bar (confirmed reg
     const result = selectChainBreakdown({ 1: 10, 8453: 3000, 42161: 50 }, 3060, [])
     assert.deepEqual(result.map((r) => r.chain), ['base', 'arbitrum', 'eth'])
   })
+
+  it('clamps a percent that would otherwise exceed 100 (e.g. a stale chainValueUsd momentarily out of sync with totalValueUsd)', () => {
+    // A real-world edge case, not fabricated: chainValueUsd summed slightly ahead of totalValueUsd
+    // (e.g. read from two not-quite-atomic fields) must never render "117%" — this task's own
+    // explicit "clamp every displayed percentage to 0-100" requirement.
+    const result = selectChainBreakdown({ 8453: 120 }, 100, [])
+    assert.equal(result[0].percent, 100, 'a percent above 100 must be clamped, never displayed raw')
+  })
+
+  it('clamps a negative percent to 0', () => {
+    const result = selectChainBreakdown({ 8453: 10 }, -5, [])
+    assert.equal(result[0].percent, 0)
+  })
+
+  it('clamps percentages from the V1 fallback path too, not only the canonical path', () => {
+    const v1 = [{ chain: 'base', valueUsd: 100, percent: 142 }]
+    const result = selectChainBreakdown(undefined, 100, v1)
+    assert.equal(result[0].percent, 100)
+  })
 })

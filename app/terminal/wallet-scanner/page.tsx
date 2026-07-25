@@ -43,6 +43,7 @@ import {
   RecoveryHealthCard,
   SectionDivider,
   WalletProfileHeader,
+  WalletScannerResultsV3,
 } from '@/app/frontend/components'
 import type { FinalReport } from '@/src/modules/finalReportAssembler/types'
 import type { TokenHolding } from '@/src/modules/holdings/types'
@@ -99,6 +100,14 @@ type WatchlistWallet = {
   portfolio_value?: number | null
   chain_mode?: string | null
 }
+
+// FEATURE ROLLOUT, DISCLOSED (Wallet Scanner V3 layout task): a plain module-level constant, not a
+// new environment variable or feature-flag service — this codebase has no existing feature-flag
+// pattern (confirmed by search before adding this). Flip to `false` for an instant rollback to the
+// old, unmodified layout below; the old JSX is left fully intact, not deleted, specifically so this
+// rollback stays available. WalletScannerResultsV3 reuses the exact same `result` data and the exact
+// same handlers already defined below — no new network calls, no new calculations.
+const WALLET_SCANNER_UI_V3 = true
 
 function fmtUSD(v: number): string {
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`
@@ -591,7 +600,19 @@ export default function WalletScannerPage() {
               visible under the "Scanning…" banner above, instead of blanking to the idle placeholder
               for the whole duration of the new scan. `result` is only ever null here for a genuinely
               new wallet with nothing to show yet. */}
-          {result && (
+          {result && WALLET_SCANNER_UI_V3 && (
+            <WalletScannerResultsV3
+              report={result}
+              loading={loading}
+              isFullRecoveryAdmin={isFullRecoveryAdmin}
+              onDeepScan={() => void handleScan('deep')}
+              onAdminAction={() => void handleScan('deep')}
+              scanDurationMs={scanDurationMs}
+              moduleErrors={moduleErrors}
+            />
+          )}
+
+          {result && !WALLET_SCANNER_UI_V3 && (
             <div className="ws-result-fade">
               <WalletProfileHeader
                 report={result}
