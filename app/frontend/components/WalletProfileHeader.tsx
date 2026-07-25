@@ -186,6 +186,9 @@ function PortfolioSnapshot({ report }: { report: WalletV2Report }) {
 
   return (
     <div>
+      <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '4px' }}>
+        Supported On-Chain Portfolio Value
+      </div>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
         <span className="wph-value" style={{ fontSize: '28px', fontWeight: 900, color: '#f1f5f9', fontFamily: 'var(--font-inter, Inter, sans-serif)', letterSpacing: '-0.02em' }}>
           {totalValueUsd != null ? fmtUsdFull(totalValueUsd) : 'Not available'}
@@ -194,6 +197,15 @@ function PortfolioSnapshot({ report }: { report: WalletV2Report }) {
           {report.scanMetadata?.intel_window_days ?? '—'}-Day Intelligence Engine
         </span>
       </div>
+      {/* COVERAGE DISCLOSURE, DISCLOSED (FreeCode valuation audit task's explicit requirement):
+          Wallet Scanner only ever covers on-chain holdings on its supported chains — it has no
+          custodial/exchange (e.g. Robinhood, Coinbase) integration anywhere in this codebase, so
+          this total can never represent "all assets" for a wallet owner who also holds custodial
+          positions. Always shown, not conditional on any per-scan flag — there is no code path
+          that ever adds custodial data, so this coverage gap is permanent, not scan-dependent. */}
+      <p style={{ fontSize: '10px', color: 'rgba(148,163,184,0.45)', marginTop: '4px', maxWidth: '480px' }}>
+        Covers on-chain holdings on supported chains only — custodial/exchange holdings (e.g. Robinhood) may not be included.
+      </p>
 
       {breakdown.length === 0 && chainsWithoutData.length === 0 ? (
         <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', marginTop: '10px' }}>No holdings data available for this scan.</p>

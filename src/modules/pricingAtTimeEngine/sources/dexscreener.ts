@@ -103,7 +103,8 @@ export async function fetchDexscreenerPriceDetailed(
         priceUsd?: string
         liquidity?: { usd?: number }
         pairCreatedAt?: number
-        quoteToken?: { symbol?: string }
+        baseToken?: { address?: string }
+        quoteToken?: { symbol?: string; address?: string }
       }>
     }
     // WRONG-CHAIN PAIR, AUDITED AND CONFIRMED SAFE, DISCLOSED: this filter already rejects every
@@ -111,7 +112,21 @@ export async function fetchDexscreenerPriceDetailed(
     // a pair on a different chain can never win regardless of its liquidity, so a wrong-chain
     // pair cannot masquerade as this token's real price. Kept unchanged; documented here because
     // this task explicitly asked it be audited, not because a bug was found in it.
-    const chainMatched = (data.pairs ?? []).filter((p) => p.chainId === chainId && p.priceUsd)
+    //
+    // WRONG TOKEN SIDE, CONFIRMED AND FIXED, DISCLOSED (FreeCode valuation audit task): DexScreener's
+    // own API contract for `/latest/dex/tokens/{address}` returns every pair where the requested
+    // token appears as EITHER `baseToken` OR `quoteToken` — but `priceUsd` on a pair is ALWAYS the
+    // price of that pair's `baseToken`, never the quoteToken. Previously this only checked
+    // `p.chainId === chainId && p.priceUsd` — a pair where the requested token is the QUOTE token
+    // (not the base) would have its `priceUsd` silently used as if it were OUR token's price, when
+    // it's actually the price of the OTHER token in that pair. Fixed by requiring
+    // `baseToken.address` to match the requested token exactly — a pair where our token is only the
+    // quote side is excluded here (honestly unpriced by this pair, never a wrong/inverted price
+    // fabricated in its place); if the SAME token has another real pair where it IS the base token,
+    // that pair still qualifies normally.
+    const chainMatched = (data.pairs ?? []).filter(
+      (p) => p.chainId === chainId && p.priceUsd && p.baseToken?.address?.toLowerCase() === token.toLowerCase(),
+    )
     if (chainMatched.length === 0) return { priceUsd: null, reason: 'no_matching_pair', ...emptyPairInfo(), alternatePairs: [], winnerReason: null }
 
     // LOW-LIQUIDITY/MANIPULATED PAIR, CONFIRMED AND FIXED, DISCLOSED: previously NO liquidity floor

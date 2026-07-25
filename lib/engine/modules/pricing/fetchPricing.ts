@@ -30,6 +30,7 @@ import { fetchDexscreenerPriceShared } from '@/src/lib/dexscreenerRequestCache'
 import { CHAIN_ID_TO_SUPPORTED_CHAIN } from '../holdings/fetchHoldings'
 import type { ChainHolding } from '../holdings/types'
 import type { PricedHolding, PricingEngineOutput } from './types'
+import { verifyOnchainDecimals } from './rpcDecimals'
 
 export type { PricedHolding, PricingEngineOutput } from './types'
 
@@ -326,11 +327,35 @@ export async function priceHoldings(
     }
   })
 
-  const totalValueUsd = pricedHoldings.reduce((sum, p) => sum + (p.valueUsd ?? 0), 0)
-
+  // DUPLICATED-BALANCE GUARD, DISCLOSED (FreeCode valuation audit task, explicit "check for
+  // duplicated balance" requirement): distinguishes a genuine duplicate — the exact SAME
+  // (chainId, tokenAddress, quantity) reported more than once, i.e. one real on-chain balance
+  // counted twice — from a legitimate case this codebase already relies on (see this module's own
+  // test "two holdings sharing the same (chainId, tokenAddress) ... exactly once, not once per
+  // holding"), where the SAME token genuinely appears more than once with DIFFERENT quantities
+  // (e.g. distinct classification buckets each carrying their own real sub-balance). Keying on
+  // quantity too means two real, distinct sub-balances of the same token are never conflated, while
+  // an exact repeat of the identical balance is only ever counted once toward the total. Never
+  // hides a holding from `pricedHoldings` — only guards the SUMMED total/chain figures.
+  const seenExactBalanceKeys = new Set<string>()
+  const duplicateBalancesDropped: Array<{ chainId: number; tokenAddress: string; quantity: string; valueUsd: number | null }> = []
+  let totalValueUsd = 0
   const chainValueUsd: Record<number, number> = {}
   for (const p of pricedHoldings) {
+    const exactKey = `${p.chainId}:${p.tokenAddress.toLowerCase()}:${p.quantity}`
+    if (seenExactBalanceKeys.has(exactKey)) {
+      duplicateBalancesDropped.push({ chainId: p.chainId, tokenAddress: p.tokenAddress, quantity: p.quantity, valueUsd: p.valueUsd })
+      continue
+    }
+    seenExactBalanceKeys.add(exactKey)
+    totalValueUsd += p.valueUsd ?? 0
     chainValueUsd[p.chainId] = (chainValueUsd[p.chainId] ?? 0) + (p.valueUsd ?? 0)
+  }
+  if (duplicateBalancesDropped.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn('[duplicate-balance-audit] exact-duplicate (chainId, tokenAddress, quantity) balance excluded from total', {
+      duplicateBalancesDropped,
+    })
   }
 
   const pricedCount = pricedHoldings.filter((p) => p.priceUsd != null).length
@@ -375,7 +400,6 @@ export async function priceHoldings(
       const p = pricedHoldings[i]
       if (p.valueUsd == null || p.valueUsd / totalValueUsd < DOMINANT_HOLDING_SHARE_THRESHOLD) continue
 
-      const share = p.valueUsd / totalValueUsd
       const usedProvider = h.providerPriceUsd != null && h.providerPriceUsd > 0
       const fallbackPriceUsd = fallbackPriceByKey.get(fallbackKeyOf(h)) ?? null
       const winningSource = usedProvider ? 'provider' : fallbackPriceUsd != null ? 'fallback' : 'unpriced'
@@ -393,6 +417,36 @@ export async function priceHoldings(
         // populated by the fallback-pricing pass above.
         const detailed = await fetchDexscreenerPriceShared(h.tokenAddress, CHAIN_ID_TO_SUPPORTED_CHAIN[h.chainId], Date.now(), 'holdings')
         pairInfo = detailed
+      }
+
+      // RPC-VERIFIED DECIMALS, DISCLOSED (FreeCode valuation audit task's explicit requirement,
+      // "decimals are RPC-verified for dominant holdings"): a dominant holding's `decimals` (and
+      // therefore its `quantity` and `valueUsd`) previously always trusted the balances provider's
+      // own `contract_decimals` with no independent check — see rpcDecimals.ts's own header for why
+      // that's the exact gap a thin-metadata, low-liquidity token like this can fall through.
+      // Bounded to dominant holdings only (never a per-holding blanket RPC audit) and cached
+      // permanently per (chainId, tokenAddress) by verifyOnchainDecimals itself.
+      let decimalsRecomputed = false
+      const rpcVerifiedDecimals = await verifyOnchainDecimals(h.chainId, h.tokenAddress)
+      if (rpcVerifiedDecimals != null && rpcVerifiedDecimals !== h.decimals && h.amountRaw != null && p.priceUsd != null) {
+        const correctedQuantity = Number(h.amountRaw) / 10 ** rpcVerifiedDecimals
+        if (Number.isFinite(correctedQuantity)) {
+          const correctedValueUsd = correctedQuantity * p.priceUsd
+          const previousValueUsd = p.valueUsd
+          totalValueUsd += correctedValueUsd - (previousValueUsd ?? 0)
+          chainValueUsd[h.chainId] = (chainValueUsd[h.chainId] ?? 0) + (correctedValueUsd - (previousValueUsd ?? 0))
+          p.decimals = rpcVerifiedDecimals
+          p.quantity = String(correctedQuantity)
+          p.valueUsd = correctedValueUsd
+          decimalsRecomputed = true
+          // eslint-disable-next-line no-console
+          console.warn('[dominant-holding-audit] provider-reported decimals disagreed with RPC-verified on-chain decimals — recomputed', {
+            chainId: h.chainId, tokenAddress: h.tokenAddress, symbol: h.symbol,
+            providerReportedDecimals: h.decimals, rpcVerifiedDecimals,
+            previousQuantity: h.quantity, correctedQuantity: String(correctedQuantity),
+            previousValueUsd, correctedValueUsd,
+          })
+        }
       }
 
       // eslint-disable-next-line no-console
@@ -415,12 +469,15 @@ export async function priceHoldings(
         priceTimestamp: Date.now(),
         alternatePairs: pairInfo?.alternatePairs ?? [],
         winnerReason: pairInfo?.winnerReason ?? (usedProvider ? 'provider_supplied_price_no_dexscreener_query' : null),
+        rpcVerifiedDecimals,
+        providerReportedDecimals: h.decimals,
+        decimalsRecomputed,
         priceUsd: p.priceUsd,
         valueUsd: p.valueUsd,
-        dominantHoldingValueShare: Math.round(share * 10000) / 100,
+        dominantHoldingValueShare: Math.round((p.valueUsd! / totalValueUsd) * 10000) / 100,
         dominantHoldingPriceSource: winningSource,
         dominantHoldingLiquidityUsd: pairInfo?.liquidityUsd ?? null,
-        portfolioValueExcludingDominantHolding: Math.round((totalValueUsd - p.valueUsd) * 100) / 100,
+        portfolioValueExcludingDominantHolding: Math.round((totalValueUsd - p.valueUsd!) * 100) / 100,
       })
     }
   }

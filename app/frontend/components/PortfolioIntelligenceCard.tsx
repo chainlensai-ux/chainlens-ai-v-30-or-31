@@ -146,7 +146,12 @@ export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanne
       </div>
 
       <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-        <StatBox label="Total Value" value={totalValueUsd != null ? fmtUsd(totalValueUsd) : 'Not available'} valueColor="#2DD4BF" />
+        <StatBox
+          label="Supported On-Chain Portfolio Value"
+          value={totalValueUsd != null ? fmtUsd(totalValueUsd) : 'Not available'}
+          sub="Custodial/exchange holdings (e.g. Robinhood) are not included"
+          valueColor="#2DD4BF"
+        />
         <StatBox label="Priced Tokens" value={pricedTokenCount} sub="Zero/unpriced tokens excluded" />
         <StatBox
           label="Concentration"

@@ -32,6 +32,14 @@ export type ChainHolding = {
   // as an explicit null (honestly falls through to the real fallback lookup).
   providerPriceUsd?: number | null
   providerValueUsd?: number | null
+  // RAW BALANCE, ADDITIVE, DISCLOSED (FreeCode valuation audit task): the underlying
+  // src/modules/holdings's TokenHolding already carries the provider's raw, pre-decimal-adjustment
+  // balance string (`amountRaw`) — previously dropped by this adapter. Needed so a dominant
+  // holding's quantity can be recomputed from RPC-VERIFIED decimals (fetchPricing.ts) instead of
+  // only ever trusting the balances provider's own possibly-wrong `contract_decimals`. Optional,
+  // same reasoning as providerPriceUsd/providerValueUsd above — a missing value just means this
+  // recomputation path is skipped, never fabricated.
+  amountRaw?: string | null
 }
 
 export type HoldingsEngineInput = {

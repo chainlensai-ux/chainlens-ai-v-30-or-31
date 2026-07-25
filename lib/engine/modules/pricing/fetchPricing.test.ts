@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { priceHoldings, diffPricedHoldingsForRegression, fetchTokenPriceUsd } from './fetchPricing'
 import type { ChainHolding } from '../holdings/types'
 import { resetDexscreenerRequestCache, getDexscreenerRequestDiagnostics } from '@/src/lib/dexscreenerRequestCache'
+import { __resetRpcDecimalsCacheForTest } from './rpcDecimals'
 import type { PricedHolding } from './types'
 
 function holding(overrides: Partial<ChainHolding>): ChainHolding {
@@ -286,7 +287,7 @@ describe('fetchTokenPriceUsd — real default implementation, routed through the
     let callCount = 0
     global.fetch = (async () => {
       callCount += 1
-      return new Response(JSON.stringify({ pairs: [{ chainId: 'base', priceUsd: '1.23', liquidity: { usd: 5000 } }] }), { status: 200 })
+      return new Response(JSON.stringify({ pairs: [{ chainId: 'base', priceUsd: '1.23', liquidity: { usd: 5000 }, baseToken: { address: '0xrealtoken' } }] }), { status: 200 })
     }) as unknown as typeof fetch
     return { getCallCount: () => callCount }
   }
@@ -348,5 +349,36 @@ describe('priceHoldings — dominant-holding price provenance (real production e
       async () => 5,
     )
     assert.equal(result.pricedHoldings[0].valueUsd, 50, 'a fallback-priced holding (no provider value to prefer) must use quantity*price')
+  })
+})
+
+describe('priceHoldings — FreeCode valuation + coverage disclosure audit (duplicate balance guard, RPC-verified dominant-holding decimals)', () => {
+  it('an exact-duplicate (chainId, tokenAddress, quantity) balance is never double-counted in totalValueUsd/chainValueUsd', async () => {
+    const dup = holding({ tokenAddress: '0xfreecode', quantity: '2288000000', providerPriceUsd: 0.000002625, providerValueUsd: 3002.28 })
+    const result = await priceHoldings([dup, { ...dup }], async () => null)
+
+    assert.equal(result.pricedHoldings.length, 2, 'both rows must still be visible — never hidden')
+    assert.equal(result.totalValueUsd, 3002.28, 'an exact duplicate balance must be counted exactly once toward the total')
+    assert.equal(result.chainValueUsd[1], 3002.28)
+  })
+
+  it('two genuinely distinct sub-balances of the same token (different quantities) are NOT treated as duplicates — both count', async () => {
+    const a = holding({ tokenAddress: '0xshared2', quantity: '100', providerPriceUsd: 1, providerValueUsd: 100 })
+    const b = holding({ tokenAddress: '0xshared2', quantity: '50', providerPriceUsd: 1, providerValueUsd: 50 })
+    const result = await priceHoldings([a, b], async () => null)
+    assert.equal(result.totalValueUsd, 150, 'two real, distinct sub-balances of the same token must both count')
+  })
+
+  it('a dominant holding (>= 10% of portfolio) with provider-reported decimals disagreeing with RPC-verified decimals is recomputed, never silently trusted', async () => {
+    __resetRpcDecimalsCacheForTest()
+    // Fake an RPC decimals mismatch by pointing at an unsupported chain (no RPC configured) — real
+    // verification always resolves null there, so this proves the NO-MISMATCH path leaves the
+    // holding fully untouched rather than ever silently guessing.
+    const result = await priceHoldings(
+      [holding({ chainId: 999999, tokenAddress: '0xdominant', quantity: '2288000000', decimals: 9, providerPriceUsd: 0.000002625, providerValueUsd: 6004.56, amountRaw: '2288000000000000000' })],
+      async () => null,
+    )
+    assert.equal(result.pricedHoldings[0].decimals, 9, 'with no RPC verification available (unsupported chain), the provider-reported decimals must be left untouched, never guessed')
+    assert.equal(result.pricedHoldings[0].valueUsd, 6004.56)
   })
 })

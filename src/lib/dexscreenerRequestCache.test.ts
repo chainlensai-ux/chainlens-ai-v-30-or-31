@@ -24,9 +24,13 @@ afterEach(() => {
 
 function mockFetch(): { getCallCount: () => number } {
   let callCount = 0
-  global.fetch = (async () => {
+  global.fetch = (async (url: string) => {
     callCount += 1
-    return new Response(JSON.stringify({ pairs: [{ chainId: 'base', priceUsd: '2.50', liquidity: { usd: 1000 } }] }), { status: 200 })
+    // Echoes the requested token back as the pair's baseToken address — dexscreener.ts now requires
+    // baseToken.address to match the requested token (see its own "wrong token side" fix), so a
+    // generic fixture that doesn't vary by requested token must still satisfy that check per call.
+    const tokenAddress = url.split('/').pop()
+    return new Response(JSON.stringify({ pairs: [{ chainId: 'base', priceUsd: '2.50', liquidity: { usd: 1000 }, baseToken: { address: tokenAddress } }] }), { status: 200 })
   }) as unknown as typeof fetch
   return { getCallCount: () => callCount }
 }

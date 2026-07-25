@@ -81,6 +81,8 @@ export async function fetchChainBalances(walletAddress: string, chainId: number)
       // See this file's ChainHolding type comment — previously dropped here entirely.
       providerPriceUsd: h.providerPriceUsd,
       providerValueUsd: h.providerValueUsd,
+      // See this file's ChainHolding type comment — previously dropped here entirely.
+      amountRaw: h.amountRaw,
     }))
 }
 
