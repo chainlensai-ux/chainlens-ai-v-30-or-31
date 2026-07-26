@@ -28,14 +28,14 @@ const syntheticPnlAssemblyPosition = position(
 )
 const finalReportPosition = position(
   'final report assembly',
-  'const finalReport = safeAssembleReport({',
+  'const finalReport = finalReportAssembler.assemble({',
 )
 
 const topSyntheticPnlSummaryPosition = position(
   'top syntheticPnl summary',
-  `logSyntheticPnlSummary(syntheticPnl)
-
-  // Deferred until after the mandatory synthetic-PnL summary above;`,
+  `// TOP-OF-LOG GUARANTEE: emit immediately after assembly and before the deferred heavy diagnostics
+  // below, so terminal truncation of normalizedEvents/provider-window details cannot hide it.
+  logSyntheticPnlSummary(syntheticPnl)`,
 )
 const providerFetchWindowDiagnosticsLogPosition = position(
   'providerFetchWindowDiagnostics log',
