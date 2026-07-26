@@ -100,6 +100,66 @@ function makeSlipstreamFakeClient(opts: { poolAddress: string | null }) {
   return { client, getCallCount: () => callCount }
 }
 
+// REGRESSION LOCK, DISCLOSED (found live, this task): a real, shipped wrong address
+// (0xCc0bDDB707055e04e497aB22a59c2aF4391cd12F — confirmed via velodrome-finance/slipstream's own
+// README, explicitly linked to optimistic.etherscan.io, to be VELODROME's Optimism factory, not
+// Aerodrome's) was corrected to the address below (confirmed 3x from aerodrome-finance/slipstream's
+// own README as its "Initial Deployment" PoolFactory on Base). This test pins the exact address
+// basedex.ts must target for every Slipstream discovery call, and the exact getPool(address,address,
+// int24) ABI shape it must use — a regression here would silently reintroduce the wrong-chain
+// factory bug.
+const VERIFIED_AERODROME_SLIPSTREAM_FACTORY_BASE = '0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A'
+const WRONG_VELODROME_OPTIMISM_FACTORY = '0xCc0bDDB707055e04e497aB22a59c2aF4391cd12F'
+
+describe('Aerodrome Slipstream factory address regression lock', () => {
+  beforeEach(() => {
+    __resetBaseDexCachesForTest()
+  })
+
+  it('targets the verified Aerodrome Base Slipstream factory, never the Velodrome Optimism one', async () => {
+    let sawTarget: string | null = null
+    const client = {
+      async call({ to, data }: { to: string; data: `0x${string}` }) {
+        assert.equal(to.toLowerCase(), MULTICALL3_ADDRESS.toLowerCase())
+        const { args } = decodeFunctionData({ abi: MULTICALL3_ABI, data })
+        const calls = args[0] as { target: `0x${string}`; allowFailure: boolean; callData: `0x${string}` }[]
+        for (const call of calls) {
+          sawTarget = call.target.toLowerCase()
+          assert.equal(
+            sawTarget,
+            VERIFIED_AERODROME_SLIPSTREAM_FACTORY_BASE.toLowerCase(),
+            'basedex.ts must target the verified Aerodrome Base factory address',
+          )
+          assert.notEqual(
+            sawTarget,
+            WRONG_VELODROME_OPTIMISM_FACTORY.toLowerCase(),
+            'basedex.ts must never target the confirmed-wrong Velodrome Optimism factory address',
+          )
+          // Confirm the exact ABI shape (getPool(address,address,int24)) basedex.ts actually encodes.
+          const decodedCall = decodeFunctionData({ abi: SLIPSTREAM_FACTORY_ABI, data: call.callData })
+          assert.equal(decodedCall.functionName, 'getPool')
+          assert.equal(decodedCall.args.length, 3)
+        }
+        const results = calls.map(() => ({
+          success: true,
+          returnData: encodeFunctionResult({
+            abi: SLIPSTREAM_FACTORY_ABI, functionName: 'getPool',
+            result: '0x0000000000000000000000000000000000000000' as `0x${string}`,
+          }),
+        }))
+        return wrapMulticallResults(results)
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      async readContract(): Promise<any> {
+        throw new Error('unexpected readContract call — multicall path should not fall back here')
+      },
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await resolveAerodromeSlipstreamPoolAddress(client as any, TOKEN as `0x${string}`, WETH as `0x${string}`)
+    assert.equal(sawTarget, VERIFIED_AERODROME_SLIPSTREAM_FACTORY_BASE.toLowerCase(), 'expected at least one call targeting the verified factory')
+  })
+})
+
 describe('Aerodrome Slipstream pool discovery', () => {
   beforeEach(() => {
     __resetBaseDexCachesForTest()

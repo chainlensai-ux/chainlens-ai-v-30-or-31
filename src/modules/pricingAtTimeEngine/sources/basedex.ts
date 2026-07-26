@@ -134,19 +134,33 @@ const ERC20_DECIMALS_ABI = [
 ] as const
 
 // AERODROME VENUES, DISCLOSED: additional venues alongside (never replacing) the Uniswap V3 venue
-// above — added per explicit user instruction with these two canonical Base addresses supplied
-// directly by the user:
+// above.
 //   Aerodrome Classic PoolFactory:    0x420DD381b31aEf6683db6B902084cB0FFECe40Da
-//   Aerodrome Slipstream PoolFactory: 0xCc0BddB707055e04e497aB22a59c2aF4391cd12F
-// VERIFICATION ATTEMPTED, DISCLOSED: the Classic PoolFactory address was independently confirmed via
-// Aerodrome's own public `aerodrome-finance/contracts` GitHub repository's deployment listing. The
-// Slipstream factory address could not be independently cross-confirmed in this sandbox — Basescan
-// and Aerodrome's own docs site both returned blocked/unreachable responses, and GitHub raw-file
-// lookups for a deployment-addresses manifest 404'd. It is used here because the user supplied it
-// directly as a "canonical" address for this exact purpose; if you can independently confirm (or
-// correct) it against Basescan or Aerodrome's official docs, update this constant.
+//   Aerodrome Slipstream PoolFactory: 0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A
+//
+// SLIPSTREAM FACTORY CORRECTION, DISCLOSED (found live, this task — a real, confirmed wrong address
+// that shipped in the previous version of this file): this constant previously held
+// 0xCc0BddB707055e04e497aB22a59c2aF4391cd12F. That address is Velodrome's (Aerodrome's sibling
+// protocol, on OPTIMISM, a different chain) Slipstream PoolFactory, NOT Aerodrome's Base one —
+// confirmed by fetching velodrome-finance/slipstream's own README, whose deployment table lists that
+// EXACT address with an explicit https://optimistic.etherscan.io link next to it. The corrected
+// address above was cross-confirmed 3 separate times from aerodrome-finance/slipstream's own README
+// (the correct, Aerodrome-owned repo) as its "Initial Deployment" PoolFactory on Base.
+//
+// LIVE ON-CHAIN VERIFICATION, ATTEMPTED AND DISCLOSED AS INCOMPLETE: this correction is backed by
+// GitHub source-of-truth documentation, cross-checked across repos, NOT by live eth_getCode/eth_call
+// evidence — every attempt to reach a Base RPC endpoint or block explorer from this sandbox (the
+// configured ALCHEMY_BASE_RPC_URL/KEY are unset here; also tried mainnet.base.org, basescan.org,
+// base.blockscout.com, llamarpc.com, publicnode.com, drpc.org, 1rpc.io) was rejected by this
+// environment's outbound network policy before reaching the chain. See
+// basedex.aerodromeSlipstreamFactory.liveVerification.test.ts: it runs the full 6-step on-chain
+// verification (eth_getCode on both addresses, getPool() across every supported tick spacing against
+// known Base WETH/USDC pairs, bytecode/token0/token1/slot0 checks on whatever pool is returned)
+// automatically the moment a real ALCHEMY_BASE_RPC_URL/KEY IS configured in whatever environment runs
+// it — it currently SKIPS (not fails) here for exactly that reason, per "fail closed if verification
+// is inconclusive": this file does not claim a live-chain check it did not actually perform.
 const AERODROME_CLASSIC_FACTORY = '0x420DD381b31aEf6683db6B902084cB0FFECe40Da'
-const AERODROME_SLIPSTREAM_FACTORY = '0xCc0BddB707055e04e497aB22a59c2aF4391cd12F'
+const AERODROME_SLIPSTREAM_FACTORY = '0x5e7BB104d84c7CB9B682AaC2F3d509f5F406809A'
 
 // Aerodrome Classic (Solidly-fork) factory: pools are keyed by (tokenA, tokenB, stable) — a
 // volatile pool and a stable pool for the SAME pair are different, independently-deployed contract
