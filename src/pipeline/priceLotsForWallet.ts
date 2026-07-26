@@ -41,6 +41,17 @@ import {
   type QuoteLegPriceResult,
 } from '../modules/quoteLegPricing/index'
 
+// SYNTHETIC DICTIONARY KEY, DISCLOSED: costUsd/proceedsUsd are Record<txHash, usd> — ONE slot per
+// real txHash. A native/WETH quote leg that never touches the wallet directly shares its target's
+// own txHash, so pricing it under that same literal txHash would silently collide with (and can
+// clobber) the target's own entry in the very same dictionary. Mirrors this file's own existing
+// `current:${chain}:${contract}` synthetic-key convention (see the "current" price pass below) —
+// a made-up dictionary key used only to give this requirement its own unambiguous slot, never a
+// real transaction hash.
+function nativeQuoteRequirementKey(chain: string, txHash: string): string {
+  return `native-quote:${chain}:${txHash.toLowerCase()}`
+}
+
 function toPriceableEntry(event: NormalizedEvent, pairRank: number | undefined): PriceableEntry {
   return {
     txHash: event.txHash,
@@ -181,13 +192,87 @@ export async function priceLotsForWallet(params: {
   const { matchedLots: structuralMatchedLots } = matchLotsFIFO(structuralLots, sells)
   const { entryRankByTxHash, exitRankByTxHash } = assignClosedLotPairRanks(structuralMatchedLots)
 
+  // RANK PROPAGATION BY TX, NOT BY LEG DIRECTION, DISCLOSED (confirmed production bug: 84 valid
+  // opposite legs found, 0 recovered, missing_verified_native_price: 42). entryRankByTxHash/
+  // exitRankByTxHash are keyed by which SIDE of a closed lot a txHash represents (opened vs closed),
+  // not by which array a given LEG of that same transaction happens to land in. A swap's ETH/WETH
+  // quote leg shares its target's own txHash but is virtually always the OPPOSITE direction (the
+  // target is inbound on a buy, so its own tx's ETH leg is outbound — landing in `sells`, which only
+  // ever consulted exitRankByTxHash, keyed by CLOSE transactions; this buy's txHash was never a close
+  // transaction, so the ETH leg's rank lookup always missed, no matter how important that specific
+  // tx's pricing was). Checking BOTH maps for every leg's own txHash (regardless of which array it's
+  // in) means a transaction's priority rank now reaches every leg of that transaction, ETH/WETH
+  // included, so priceAllEntries' existing rank-sort/per-token-cap correctly favors it over ordinary,
+  // unranked token lookups — using the SAME already-existing priority machinery, no new mechanism.
+  function rankForTxHash(txHash: string): number | undefined {
+    const entryRank = entryRankByTxHash.get(txHash)
+    const exitRank = exitRankByTxHash.get(txHash)
+    if (entryRank === undefined) return exitRank
+    if (exitRank === undefined) return entryRank
+    return Math.min(entryRank, exitRank)
+  }
+
+  // NATIVE/WETH QUOTE-LEG REQUIREMENTS, DISCLOSED, ADDITIVE: a quote leg that never touches the
+  // wallet directly (direction 'unknown' — a router-to-pool transfer) is correctly excluded from
+  // `buys`/`sells` (only 'inbound'/'outbound' events are real pricing requirements for fifoEngine's
+  // own cost basis) and so was NEVER sent to resolvePricingAtTime at all — no rank-propagation fix
+  // can recover a price that was never requested. For every transaction that a verified closed lot
+  // actually needs priced, if its grouped legs contain a canonical ETH/WETH leg with direction
+  // 'unknown', one extra PriceableEntry is added (into sellEntries, arbitrarily but consistently — a
+  // quote-only entry, not a real portfolio sell) carrying that SAME transaction's own priority rank
+  // and its OWN historical timestamp (never "now" — see NEVER-CURRENT-PRICE note below). This adds
+  // candidate entries competing for the SAME already-existing per-token cap (MAX_LOOKUPS_PER_TOKEN in
+  // pricingAtTimeEngine/index.ts, unchanged) — it does not raise that cap, so the number of REAL
+  // provider calls ETH/WETH can ever consume this scan is bounded exactly as it always was; this only
+  // changes WHICH of ETH's occurrences win those bounded slots, preferring the ones a real closed lot
+  // needs over an arbitrary/unranked one ("replace lower-priority failed token lookups when
+  // necessary").
+  const swapLegsByTx = groupSwapLegsByTransaction(merged)
+  const nativeQuoteEntries: PriceableEntry[] = []
+  const nativeQuoteRequirementSeen = new Set<string>()
+  let nativeQuoteRequirementsFound = 0
+  for (const lot of structuralMatchedLots) {
+    const requirements: Array<{ txHash: string; timestamp: number }> = [
+      { txHash: lot.openedTxHash, timestamp: lot.openedAt },
+      { txHash: lot.closedTxHash, timestamp: lot.closedAt },
+    ]
+    for (const { txHash, timestamp } of requirements) {
+      const groupKey = swapLegGroupKey(lot.chain, txHash)
+      const dedupeKey = `${groupKey}`
+      if (nativeQuoteRequirementSeen.has(dedupeKey)) continue
+      const legs = swapLegsByTx.get(groupKey) ?? []
+      const nativeLeg = legs.find(
+        (leg) => !leg.excludeReason && leg.direction === 'unknown' && (leg.symbol === 'ETH' || leg.symbol === 'WETH') && leg.amount > 0,
+      )
+      if (!nativeLeg) continue
+      nativeQuoteRequirementSeen.add(dedupeKey)
+      nativeQuoteRequirementsFound += 1
+      // NEVER-CURRENT-PRICE, DISCLOSED: `timestamp` is this SAME transaction's own historical
+      // timestamp (lot.openedAt/lot.closedAt) — the identical value the target leg itself is priced
+      // at — never Date.now()/the separate "current"-price pass (`atNow`, built later in this file
+      // for open-lot mark-to-market only). A historical swap's native quote leg is priced at the time
+      // it happened, exactly like every other historical entry in this same call.
+      nativeQuoteEntries.push({
+        txHash: nativeQuoteRequirementKey(lot.chain, txHash),
+        token: nativeLeg.contract,
+        chain: lot.chain,
+        timestamp,
+        amount: String(nativeLeg.amount),
+        pairRank: rankForTxHash(txHash),
+      })
+    }
+  }
+
   const routeLogSnapshotBefore = pricingRouteLog.length
 
   const atTradeTime = await resolvePricingAtTime({
-    buyEntries: buys.map((e) => toPriceableEntry(e, entryRankByTxHash.get(e.txHash))),
-    sellEntries: sells.map((e) => toPriceableEntry(e, exitRankByTxHash.get(e.txHash))),
+    buyEntries: buys.map((e) => toPriceableEntry(e, rankForTxHash(e.txHash))),
+    sellEntries: [...sells.map((e) => toPriceableEntry(e, rankForTxHash(e.txHash))), ...nativeQuoteEntries],
     priceSources: params.priceSources,
   })
+
+  const nativeQuoteRequirementsPriced = nativeQuoteEntries.filter((e) => atTradeTime.proceedsUsd[e.txHash] != null).length
+  const nativeQuoteRequirementsCapped = nativeQuoteRequirementsFound - nativeQuoteRequirementsPriced
 
   function countFullyPriced(): number {
     let both = 0
@@ -207,8 +292,8 @@ export async function priceLotsForWallet(params: {
   // demotes, an already-resolved (stronger) existing price. Zero provider/network calls: the
   // quote-leg's own USD value is read back from whichever of costUsd/proceedsUsd resolvePricingAtTime
   // already computed for that SAME transaction's opposite-direction leg (already resolved as its own
-  // ordinary priced entry — see buys/sells above), never re-fetched.
-  const swapLegsByTx = groupSwapLegsByTransaction(merged)
+  // ordinary priced entry — see buys/sells above), never re-fetched. `swapLegsByTx` is the SAME
+  // grouping already computed above for the native/WETH quote-leg requirements pass — built once.
 
   // FORENSIC LOOKUP-BUILD DIAGNOSTICS, DISCLOSED, ADDITIVE — answers "why does every lookup group
   // have no usable opposite leg" directly from real data, without guessing. Confirms (a) the lookup
@@ -289,14 +374,19 @@ export async function priceLotsForWallet(params: {
         (leg) => !leg.excludeReason && leg.direction !== event.direction && leg.contract.toLowerCase() !== event.contract.toLowerCase(),
       )
       let historicalNativePrice: number | null = null
-      // Only 'inbound'/'outbound' quote legs were themselves sent through resolvePricingAtTime (the
-      // buys/sells arrays built above exclude 'unknown'-direction events) — so only those have an
-      // already-resolved USD value to reuse at zero additional cost. A genuinely 'unknown'-direction
-      // native/WETH quote leg has no such value to reuse; this native-quote sub-case is honestly left
-      // unrecovered rather than issuing a new provider call to price it (see rejection reason
-      // 'missing_verified_native_price' in the per-key audit below).
-      if (quoteLeg && (quoteLeg.symbol === 'ETH' || quoteLeg.symbol === 'WETH') && quoteLeg.amount > 0 && quoteLeg.direction !== 'unknown') {
-        const quoteLegOwnUsd = quoteLeg.direction === 'inbound' ? atTradeTime.costUsd[event.txHash] : atTradeTime.proceedsUsd[event.txHash]
+      // 'inbound'/'outbound' quote legs were themselves sent through resolvePricingAtTime as ordinary
+      // buy/sell entries — their already-resolved USD value is reused directly, at zero additional
+      // cost. A genuinely 'unknown'-direction native/WETH quote leg (never touches the wallet) is now
+      // ALSO a real pricing requirement — see the NATIVE/WETH QUOTE-LEG REQUIREMENTS block above,
+      // which adds it under its own synthetic dictionary key (nativeQuoteRequirementKey) precisely so
+      // it never collides with the target's own entry sharing the same real txHash.
+      if (quoteLeg && (quoteLeg.symbol === 'ETH' || quoteLeg.symbol === 'WETH') && quoteLeg.amount > 0) {
+        const quoteLegOwnUsd =
+          quoteLeg.direction === 'inbound'
+            ? atTradeTime.costUsd[event.txHash]
+            : quoteLeg.direction === 'outbound'
+              ? atTradeTime.proceedsUsd[event.txHash]
+              : atTradeTime.proceedsUsd[nativeQuoteRequirementKey(event.chain, event.txHash)]
         if (quoteLegOwnUsd != null) historicalNativePrice = quoteLegOwnUsd / quoteLeg.amount
       }
       result = deriveSameTransactionQuotePrice({
@@ -365,6 +455,9 @@ export async function priceLotsForWallet(params: {
     targetTransactionFoundInLookup,
     targetTransactionMissingFromLookup,
     requirementsWithValidOppositeLeg,
+    nativeQuoteRequirementsFound,
+    nativeQuoteRequirementsPriced,
+    nativeQuoteRequirementsCapped,
     sameTxStablePricesRecovered,
     sameTxNativePricesRecovered,
     requirementsSatisfiedBySameTxQuote: sameTxStablePricesRecovered + sameTxNativePricesRecovered,
