@@ -19,6 +19,57 @@ const COINGECKO_RANGE_WINDOW_SECONDS = 24 * 60 * 60 // +/- 1 day around the targ
 
 export type CoingeckoPriceResult = { priceUsd: number | null; reason: string | null }
 
+// EXPLICIT TIER CONFIGURATION, DISCLOSED (this module previously hardcoded the demo/public base URL
+// and x-cg-demo-api-key header for every request regardless of what kind of key was actually
+// configured — audited two rounds ago, never fixed, since inferring PRO vs demo from the key's shape
+// would be a guess, not a verified fact). COINGECKO_API_TIER now makes the choice explicit and
+// caller-controlled instead of silently assumed.
+export type CoingeckoTier = 'demo' | 'pro'
+
+export type CoingeckoRuntimeConfig = {
+  // The raw configured value (may be invalid) — 'demo' when unset, for backward compatibility.
+  configuredTier: string
+  selectedBaseUrl: string
+  selectedHeaderName: 'x-cg-demo-api-key' | 'x-cg-pro-api-key'
+  keyConfigured: boolean
+  // false only when COINGECKO_API_TIER is set to something other than 'demo'/'pro' — the resolver
+  // still returns a SAFE, usable config (falls back to demo) rather than throwing, but callers use
+  // this flag to skip the request entirely rather than silently proceed on a misconfiguration.
+  configurationValid: boolean
+}
+
+const COINGECKO_TIER_BASE_URLS: Record<CoingeckoTier, string> = {
+  demo: 'https://api.coingecko.com/api/v3',
+  pro: 'https://pro-api.coingecko.com/api/v3',
+}
+const COINGECKO_TIER_HEADER_NAMES: Record<CoingeckoTier, 'x-cg-demo-api-key' | 'x-cg-pro-api-key'> = {
+  demo: 'x-cg-demo-api-key',
+  pro: 'x-cg-pro-api-key',
+}
+
+// SHARED CONFIG RESOLVER, DISCLOSED: the ONE place both the native and contract-based request paths
+// below read tier configuration from — never two separate reads that could silently drift apart.
+// NEVER infers tier from the key's own shape/format (that would be a guess about an opaque secret
+// string, never a verified fact) — reads only the explicit COINGECKO_API_TIER env var. Defaults to
+// 'demo' when unset, preserving this module's exact pre-existing behavior for every deployment that
+// never sets this new var. An invalid value (anything other than 'demo'/'pro') still returns a safe,
+// usable (demo) config — never throws — but flags `configurationValid: false` so callers can choose
+// to skip the request rather than silently proceed on a misconfiguration.
+export function resolveCoingeckoRuntimeConfig(): CoingeckoRuntimeConfig {
+  const rawTier = process.env.COINGECKO_API_TIER
+  const keyConfigured = !!process.env.COINGECKO_API_KEY
+  if (rawTier == null || rawTier === '') {
+    return { configuredTier: 'demo', selectedBaseUrl: COINGECKO_TIER_BASE_URLS.demo, selectedHeaderName: COINGECKO_TIER_HEADER_NAMES.demo, keyConfigured, configurationValid: true }
+  }
+  if (rawTier === 'demo' || rawTier === 'pro') {
+    return { configuredTier: rawTier, selectedBaseUrl: COINGECKO_TIER_BASE_URLS[rawTier], selectedHeaderName: COINGECKO_TIER_HEADER_NAMES[rawTier], keyConfigured, configurationValid: true }
+  }
+  // FAIL SAFE, DISCLOSED: an unrecognized tier value never crashes and never silently picks a tier —
+  // it falls back to the safe demo config (in case a caller ignores configurationValid) but reports
+  // itself as invalid so a caller CAN skip the request entirely (see both fetch functions below).
+  return { configuredTier: rawTier, selectedBaseUrl: COINGECKO_TIER_BASE_URLS.demo, selectedHeaderName: COINGECKO_TIER_HEADER_NAMES.demo, keyConfigured, configurationValid: false }
+}
+
 // SCAN-LEVEL CIRCUIT BREAKER, DISCLOSED (source-retry-avoidance task, explicit "skip CoinGecko
 // after the first 429 circuit-breaker event" requirement): CoinGecko's real public API enforces a
 // well-known per-minute rate limit. A wallet with many historical recovery candidates fans out many
@@ -114,25 +165,17 @@ export function getNativeEthHistoryCoalescingDiagnostics(): {
 }
 
 // RUNTIME CONFIGURATION AUDIT, DISCLOSED, ADDITIVE — read-only, logged at most once per unique live
-// call (never per coalesced hit, never containing the key itself): whether an authenticated key is
-// configured, which real base URL/tier this module actually targets, and whether the corresponding
-// auth mechanism is genuinely attached to the request. This module always targets CoinGecko's public/
-// demo base (`api.coingecko.com`) with the `x-cg-demo-api-key` header when a key is configured — it
-// never switches to the separate PRO base (`pro-api.coingecko.com`, `x-cg-pro-api-key` header) for
-// any key shape, so a PRO-tier key configured in COINGECKO_API_KEY would still be sent as a demo-tier
-// header against the demo-tier base URL. Disclosed here, not silently assumed correct.
-function auditCoingeckoRuntimeConfig(): void {
-  const apiKey = process.env.COINGECKO_API_KEY
+// call (never per coalesced hit, NEVER containing the key value itself — only whether one is
+// configured). Reports exactly what resolveCoingeckoRuntimeConfig() decided: configuredTier,
+// selectedBaseUrl, selectedHeaderName, keyConfigured, configurationValid.
+function auditCoingeckoRuntimeConfig(config: CoingeckoRuntimeConfig): void {
   // eslint-disable-next-line no-console
   console.warn('[coingecko-runtime-config-audit]', {
-    apiKeyConfigured: !!apiKey,
-    baseUrl: 'https://api.coingecko.com/api/v3',
-    tierAssumed: 'demo_or_public',
-    authHeaderName: 'x-cg-demo-api-key',
-    authHeaderAttached: !!apiKey,
-    note: apiKey
-      ? 'a key is configured and attached via x-cg-demo-api-key against the demo/public base URL — if this key is actually a PRO-tier key, it needs pro-api.coingecko.com + x-cg-pro-api-key instead, not audited/changed here'
-      : 'no COINGECKO_API_KEY configured — every request is unauthenticated, subject to the public (lowest) rate limit',
+    configuredTier: config.configuredTier,
+    selectedBaseUrl: config.selectedBaseUrl,
+    selectedHeaderName: config.selectedHeaderName,
+    keyConfigured: config.keyConfigured,
+    configurationValid: config.configurationValid,
   })
 }
 
@@ -155,9 +198,15 @@ export async function fetchCoingeckoPriceDetailed(
   // declaration above for the full reasoning.
   if (coingeckoCircuitOpen) return { priceUsd: null, reason: 'coingecko_circuit_open_after_429' }
 
+  // SHARED CONFIG, FAIL-SAFE, DISCLOSED: same resolver the native route uses (resolveCoingeckoRuntimeConfig)
+  // — never a second, independently-derived base URL/header. An invalid COINGECKO_API_TIER value
+  // skips this request entirely (no provider call) rather than silently guessing a tier.
+  const config = resolveCoingeckoRuntimeConfig()
+  if (!config.configurationValid) return { priceUsd: null, reason: 'invalid_coingecko_tier_config' }
+
   const targetSec = Math.floor(timestamp / 1000)
   const url = new URL(
-    `https://api.coingecko.com/api/v3/coins/${platform}/contract/${token.toLowerCase()}/market_chart/range`,
+    `${config.selectedBaseUrl}/coins/${platform}/contract/${token.toLowerCase()}/market_chart/range`,
   )
   url.searchParams.set('vs_currency', 'usd')
   url.searchParams.set('from', String(targetSec - COINGECKO_RANGE_WINDOW_SECONDS))
@@ -167,7 +216,7 @@ export async function fetchCoingeckoPriceDetailed(
 
   try {
     const res = await fetch(url.toString(), {
-      headers: apiKey ? { 'x-cg-demo-api-key': apiKey } : {},
+      headers: apiKey ? { [config.selectedHeaderName]: apiKey } : {},
       signal: AbortSignal.timeout(8_000),
     })
     if (res.status === 429) {
@@ -216,6 +265,7 @@ export type NativeEthPricingDiagnostic = {
     | 'history_payload_missing_usd'
     | 'invalid_price'
     | 'invalid_timestamp'
+    | 'invalid_coingecko_tier_config'
     | 'fetch_error'
     | null
 }
@@ -276,6 +326,30 @@ export async function fetchCoingeckoNativeEthPriceDetailed(
       },
     }
   }
+  // SHARED CONFIG, FAIL-SAFE, DISCLOSED: the SAME resolver the contract-based route uses — a single
+  // source of truth for base URL/header, never two independently-derived configs that could drift.
+  // An invalid COINGECKO_API_TIER skips this request entirely (no provider call), same as the
+  // contract-based route — never guesses a tier, never proceeds on a misconfiguration.
+  const config = resolveCoingeckoRuntimeConfig()
+  if (!config.configurationValid) {
+    return {
+      priceUsd: null,
+      reason: 'invalid_coingecko_tier_config',
+      diagnostic: {
+        originalTimestamp: timestamp,
+        formattedDate: null,
+        endpointType: 'native_coin_history',
+        circuitBreakerStateBeforeCall: breakerStateBeforeCall,
+        requestAttempted: false,
+        requestSkippedReason: 'invalid_coingecko_tier_config',
+        httpStatus: null,
+        responseShapePresent: { marketData: false, currentPrice: false, usd: false },
+        parsedPrice: null,
+        failureReason: 'invalid_coingecko_tier_config',
+      },
+    }
+  }
+
   const dateString = `${String(date.getUTCDate()).padStart(2, '0')}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${date.getUTCFullYear()}`
   const cacheKey = `ethereum:${dateString}`
 
@@ -291,7 +365,7 @@ export async function fetchCoingeckoNativeEthPriceDetailed(
 
   nativeEthHistoryUniqueDateRequests += 1
   nativeEthHistoryLiveCalls += 1
-  if (nativeEthHistoryUniqueDateRequests === 1) auditCoingeckoRuntimeConfig()
+  if (nativeEthHistoryUniqueDateRequests === 1) auditCoingeckoRuntimeConfig(config)
 
   const live = (async (): Promise<CoingeckoPriceResult & { diagnostic: NativeEthPricingDiagnostic }> => {
     const diagnostic: NativeEthPricingDiagnostic = {
@@ -307,7 +381,7 @@ export async function fetchCoingeckoNativeEthPriceDetailed(
       failureReason: null,
     }
 
-    const url = new URL('https://api.coingecko.com/api/v3/coins/ethereum/history')
+    const url = new URL(`${config.selectedBaseUrl}/coins/ethereum/history`)
     url.searchParams.set('date', dateString)
     url.searchParams.set('localization', 'false')
 
@@ -316,7 +390,7 @@ export async function fetchCoingeckoNativeEthPriceDetailed(
     diagnostic.requestAttempted = true
     try {
       const res = await fetch(url.toString(), {
-        headers: apiKey ? { 'x-cg-demo-api-key': apiKey } : {},
+        headers: apiKey ? { [config.selectedHeaderName]: apiKey } : {},
         signal: AbortSignal.timeout(8_000),
       })
       diagnostic.httpStatus = res.status
