@@ -163,4 +163,76 @@ describe('alchemyHistoricalPriceSource — bounded, shadow-mode', () => {
     // The function returns a plain, separate Map — never mutates any FIFO/PnL object; there is
     // nothing here for a caller to accidentally consume without explicitly reading this return value.
   })
+
+  it('temporal acceptance: a non-tier2 token price found more than 6 hours away is rejected', async () => {
+    global.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ timestamp: '2026-01-01T00:00:00.000Z', value: '3500' }] }), { status: 200 })) as unknown as typeof fetch
+
+    const requirements: AlchemyPricingRequirement[] = [
+      req({ txHash: '0xfar', timestamp: Date.parse('2026-01-01T00:00:00.000Z') + 7 * 60 * 60 * 1000 }),
+    ]
+    const { shadowPricesByTxHash, audit } = await resolveAlchemyHistoricalPricesShadow(requirements)
+
+    assert.equal(shadowPricesByTxHash.has('0xfar'), false, 'a price 7 hours away must be rejected for a non-tier2 asset (6h max)')
+    assert.equal(audit.rejectedByTemporalDistance, 1)
+    assert.equal(audit.acceptedRequirementsResolved, 0)
+    assert.equal(audit.failureReasons.temporal_distance_exceeded, 1)
+  })
+
+  it('temporal acceptance: a non-tier2 token price found within 6 hours is accepted', async () => {
+    global.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ timestamp: '2026-01-01T00:00:00.000Z', value: '3500' }] }), { status: 200 })) as unknown as typeof fetch
+
+    const requirements: AlchemyPricingRequirement[] = [
+      req({ txHash: '0xclose', timestamp: Date.parse('2026-01-01T00:00:00.000Z') + 5 * 60 * 60 * 1000 }),
+    ]
+    const { shadowPricesByTxHash, audit } = await resolveAlchemyHistoricalPricesShadow(requirements)
+
+    assert.equal(shadowPricesByTxHash.get('0xclose'), 3500)
+    assert.equal(audit.rejectedByTemporalDistance, 0)
+    assert.equal(audit.acceptedRequirementsResolved, 1)
+  })
+
+  it('temporal acceptance: ETH/WETH/stables get a wider 24-hour window than other tokens', async () => {
+    global.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ timestamp: '2026-01-01T00:00:00.000Z', value: '3500' }] }), { status: 200 })) as unknown as typeof fetch
+
+    const WETH_ETH = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
+    const requirements: AlchemyPricingRequirement[] = [
+      req({ token: WETH_ETH, txHash: '0xwethfar', timestamp: Date.parse('2026-01-01T00:00:00.000Z') + 20 * 60 * 60 * 1000, oneSideMissing: false }),
+    ]
+    const { shadowPricesByTxHash, audit } = await resolveAlchemyHistoricalPricesShadow(requirements)
+
+    assert.equal(shadowPricesByTxHash.get('0xwethfar'), 3500, 'a 20h distance is within WETH/stables 24h window, unlike other tokens')
+    assert.equal(audit.rejectedByTemporalDistance, 0)
+  })
+
+  it('logs a typed http_400 diagnostic (chain, token, network, range, interval, error code/message) without ever logging the API key', async () => {
+    process.env.ALCHEMY_API_KEY = 'super-secret-key-value'
+    global.fetch = (async () =>
+      new Response(JSON.stringify({ code: 'INVALID_RANGE', message: 'startTime must be before endTime' }), { status: 400 })) as unknown as typeof fetch
+
+    const logs: unknown[][] = []
+    const originalWarn = console.warn
+    console.warn = (...args: unknown[]) => { logs.push(args) }
+    try {
+      await resolveAlchemyHistoricalPricesShadow([req({ txHash: '0xbad' })])
+    } finally {
+      console.warn = originalWarn
+    }
+
+    const http400Log = logs.find((args) => args[0] === '[alchemy-historical-pricing-shadow] http_400')
+    assert.ok(http400Log, 'expected an http_400 diagnostic log entry')
+    const detail = http400Log?.[1] as Record<string, unknown>
+    assert.equal(detail.chain, 'eth')
+    assert.equal(detail.token, MEME)
+    assert.equal(detail.network, 'eth-mainnet')
+    assert.equal(detail.interval, '1d')
+    assert.equal(detail.errorCode, 'INVALID_RANGE')
+    assert.equal(detail.errorMessage, 'startTime must be before endTime')
+    assert.ok(typeof detail.startTime === 'string' && typeof detail.endTime === 'string')
+
+    const serialized = JSON.stringify(logs)
+    assert.equal(serialized.includes('super-secret-key-value'), false, 'the API key must never appear in any log output')
+  })
 })

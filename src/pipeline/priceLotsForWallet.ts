@@ -848,22 +848,24 @@ export async function priceLotsForWallet(params: {
   if (alchemyShadowRequirements.length > 0) {
     const { shadowPricesByTxHash, audit: alchemyShadowAudit } = await resolveAlchemyHistoricalPricesShadow(alchemyShadowRequirements)
 
-    // LOTS-POTENTIALLY-COMPLETED, DISCLOSED, SHADOW-ONLY — a lot counts here if it was NOT already
-    // fully priced by official sources but WOULD be fully priced if the shadow prices above were ever
-    // applied (they are not). Computed purely from the returned Map for logging; never written back
-    // into atTradeTime/FIFO/PnL.
-    let lotsPotentiallyCompleted = 0
+    // ACCEPTED-LOTS-POTENTIALLY-COMPLETED, DISCLOSED, SHADOW-ONLY — a lot counts here if it was NOT
+    // already fully priced by official sources but WOULD be fully priced if the shadow prices above
+    // were ever applied (they are not). shadowPricesByTxHash only ever contains prices that passed
+    // temporal acceptance (see alchemyHistoricalPriceSource.ts), so this is inherently "accepted"
+    // completion, not raw/unfiltered. Computed purely from the returned Map for logging; never
+    // written back into atTradeTime/FIFO/PnL.
+    let acceptedLotsPotentiallyCompleted = 0
     for (const lot of structuralMatchedLots) {
       const hasEntry = atTradeTime.costUsd[lot.openedTxHash] != null
       const hasExit = atTradeTime.proceedsUsd[lot.closedTxHash] != null
       if (hasEntry && hasExit) continue
       const wouldHaveEntry = hasEntry || shadowPricesByTxHash.has(lot.openedTxHash)
       const wouldHaveExit = hasExit || shadowPricesByTxHash.has(lot.closedTxHash)
-      if (wouldHaveEntry && wouldHaveExit) lotsPotentiallyCompleted += 1
+      if (wouldHaveEntry && wouldHaveExit) acceptedLotsPotentiallyCompleted += 1
     }
 
     // eslint-disable-next-line no-console
-    console.warn('[alchemy-historical-pricing-shadow]', { ...alchemyShadowAudit, lotsPotentiallyCompleted })
+    console.warn('[alchemy-historical-pricing-shadow]', { ...alchemyShadowAudit, acceptedLotsPotentiallyCompleted })
   }
 
   // CLOSED-LOT PRICING COVERAGE DIAGNOSTICS, DISCLOSED, ADDITIVE — bounded (one summary object, no

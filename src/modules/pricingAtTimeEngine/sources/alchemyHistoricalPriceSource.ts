@@ -103,6 +103,7 @@ let failedRequestsCount = 0
 let requirementsResolvedCount = 0
 let largestRangeDaysSeen = 0
 let closestPriceDistanceMsSeen = 0
+let rejectedByTemporalDistanceCount = 0
 const rangeCache = new Map<string, Promise<AlchemyAssetRangeResult>>()
 const requestedRangeKeysThisScan = new Set<string>()
 const resolvedByChainCounts = new Map<string, number>()
@@ -121,6 +122,7 @@ export function resetAlchemyHistoricalPricingState(): void {
   requirementsResolvedCount = 0
   largestRangeDaysSeen = 0
   closestPriceDistanceMsSeen = 0
+  rejectedByTemporalDistanceCount = 0
   rangeCache.clear()
   requestedRangeKeysThisScan.clear()
   resolvedByChainCounts.clear()
@@ -171,6 +173,47 @@ export type AlchemyHistoricalAuditRecord = {
   largestRangeDays: number
   closestPriceDistanceMs: number
   selectedAssetOrder: string[]
+  acceptedRequirementsResolved: number
+  rejectedByTemporalDistance: number
+}
+
+// TEMPORAL ACCEPTANCE, DISCLOSED: a resolved price is only ACCEPTED if the closest returned price
+// point is within this asset class's max acceptable distance from the requirement's own timestamp.
+// ETH/WETH/stables get a wider window (deep, liquid markets move less between daily points); every
+// other token gets a tighter window (thin markets can move a lot in a day) — anything farther is
+// rejected as temporal_distance_exceeded rather than silently accepted as "close enough."
+const TIER2_MAX_TEMPORAL_DISTANCE_MS = 24 * 60 * 60 * 1000
+const OTHER_MAX_TEMPORAL_DISTANCE_MS = 6 * 60 * 60 * 1000
+
+function maxTemporalDistanceMsFor(chain: SupportedChain, token: string): number {
+  return isTier2Asset(chain, token) ? TIER2_MAX_TEMPORAL_DISTANCE_MS : OTHER_MAX_TEMPORAL_DISTANCE_MS
+}
+
+// HTTP-400 DIAGNOSTIC LOGGING, DISCLOSED: logs the exact typed reason Alchemy rejected a request —
+// chain, token, network identifier, the bounded range requested, the interval, and whatever error
+// code/message Alchemy's response body carried. NEVER logs the API key (it is not read from the
+// request URL/body here, only the already-known chain/token/range/interval plus the response body).
+function logAlchemyHttp400(params: {
+  chain: SupportedChain
+  token: string
+  networkSlug: string
+  startTimeMs: number
+  endTimeMs: number
+  interval: string
+  errorCode: string | number | null
+  errorMessage: string | null
+}): void {
+  // eslint-disable-next-line no-console
+  console.warn('[alchemy-historical-pricing-shadow] http_400', {
+    chain: params.chain,
+    token: params.token,
+    network: params.networkSlug,
+    startTime: new Date(params.startTimeMs).toISOString(),
+    endTime: new Date(params.endTimeMs).toISOString(),
+    interval: params.interval,
+    errorCode: params.errorCode,
+    errorMessage: params.errorMessage,
+  })
 }
 
 async function fetchAlchemyHistoricalRange(
@@ -206,6 +249,7 @@ async function fetchAlchemyHistoricalRange(
   }
 
   liveRequests += 1
+  const interval = '1d'
   const live = (async (): Promise<AlchemyAssetRangeResult> => {
     try {
       const res = await fetch(`https://api.g.alchemy.com/prices/v1/${apiKey}/tokens/historical`, {
@@ -216,13 +260,27 @@ async function fetchAlchemyHistoricalRange(
           address: token,
           startTime: new Date(startTimeMs).toISOString(),
           endTime: new Date(endTimeMs).toISOString(),
-          interval: '1d',
+          interval,
         }),
         signal: AbortSignal.timeout(8_000),
         // NO RETRIES, DISCLOSED: a single bounded attempt — a miss/error here falls through to the
         // existing (unchanged) fallback chain, exactly like any other source's own honest miss.
       })
-      if (!res.ok) return { ok: false, reason: `http_${res.status}`, points: [] }
+      if (!res.ok) {
+        if (res.status === 400) {
+          let errorCode: string | number | null = null
+          let errorMessage: string | null = null
+          try {
+            const body = (await res.json()) as { code?: string | number; message?: string; error?: string }
+            errorCode = body?.code ?? null
+            errorMessage = body?.message ?? body?.error ?? null
+          } catch {
+            errorMessage = null
+          }
+          logAlchemyHttp400({ chain, token, networkSlug, startTimeMs, endTimeMs, interval, errorCode, errorMessage })
+        }
+        return { ok: false, reason: `http_${res.status}`, points: [] }
+      }
 
       const data = (await res.json()) as { data?: Array<{ timestamp?: string; value?: string }> }
       const series = Array.isArray(data.data) ? data.data : []
@@ -314,17 +372,28 @@ export async function resolveAlchemyHistoricalPricesShadow(
     }
     for (const req of reqs) {
       const price = closestPoint(result.points, req.timestamp)
-      if (price != null) {
-        shadowPricesByTxHash.set(req.txHash, price)
-        requirementsResolvedCount += 1
-        bumpMapCount(resolvedByChainCounts, req.chain)
-        bumpMapCount(resolvedByAssetCounts, assetKeyStr)
-        const closest = result.points.reduce((a, b) =>
-          Math.abs(b.timestamp - req.timestamp) < Math.abs(a.timestamp - req.timestamp) ? b : a,
-        )
-        const distanceMs = Math.abs(closest.timestamp - req.timestamp)
-        if (distanceMs > closestPriceDistanceMsSeen) closestPriceDistanceMsSeen = distanceMs
+      if (price == null) continue
+      const closest = result.points.reduce((a, b) =>
+        Math.abs(b.timestamp - req.timestamp) < Math.abs(a.timestamp - req.timestamp) ? b : a,
+      )
+      const distanceMs = Math.abs(closest.timestamp - req.timestamp)
+      const maxDistanceMs = maxTemporalDistanceMsFor(req.chain, req.token)
+
+      // TEMPORAL ACCEPTANCE, DISCLOSED: a price found farther away than this asset class's window
+      // is rejected outright — never added to shadowPricesByTxHash, never counted as resolved. This
+      // is a shadow-only rejection (nothing was ever going to be applied to official pricing either
+      // way); it exists so the audit honestly reports what would/would not have been usable.
+      if (distanceMs > maxDistanceMs) {
+        rejectedByTemporalDistanceCount += 1
+        bumpMapCount(failureReasonCounts, 'temporal_distance_exceeded')
+        continue
       }
+
+      shadowPricesByTxHash.set(req.txHash, price)
+      requirementsResolvedCount += 1
+      bumpMapCount(resolvedByChainCounts, req.chain)
+      bumpMapCount(resolvedByAssetCounts, assetKeyStr)
+      if (distanceMs > closestPriceDistanceMsSeen) closestPriceDistanceMsSeen = distanceMs
     }
   }
 
@@ -348,6 +417,8 @@ export async function resolveAlchemyHistoricalPricesShadow(
     largestRangeDays: Math.round(largestRangeDaysSeen * 100) / 100,
     closestPriceDistanceMs: closestPriceDistanceMsSeen,
     selectedAssetOrder: [...selectedAssetOrder],
+    acceptedRequirementsResolved: requirementsResolvedCount,
+    rejectedByTemporalDistance: rejectedByTemporalDistanceCount,
   }
 
   return { shadowPricesByTxHash, audit }
@@ -374,5 +445,7 @@ export function getAlchemyHistoricalPricingCountersForTest(): AlchemyHistoricalA
     largestRangeDays: Math.round(largestRangeDaysSeen * 100) / 100,
     closestPriceDistanceMs: closestPriceDistanceMsSeen,
     selectedAssetOrder: [...selectedAssetOrder],
+    acceptedRequirementsResolved: requirementsResolvedCount,
+    rejectedByTemporalDistance: rejectedByTemporalDistanceCount,
   }
 }
