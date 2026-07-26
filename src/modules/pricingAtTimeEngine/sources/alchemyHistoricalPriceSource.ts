@@ -75,6 +75,15 @@ export function isTier2Asset(chain: SupportedChain, contract: string): boolean {
 export const MAX_ALCHEMY_HISTORICAL_REQUESTS_PER_SCAN = 10
 export const ESTIMATED_CU_PER_ALCHEMY_HISTORICAL_REQUEST = 40
 
+// PROMOTION FLAG, DISCLOSED: this codebase has no pre-existing "Alchemy shadow mode" toggle to reuse
+// (searched: no ALCHEMY_HISTORICAL_PRICING_* env var, no feature-flag registry entry existed before
+// this change) — so a new, explicit, default-OFF flag is introduced here, following the same
+// explicit-config convention as COINGECKO_API_TIER. Default OFF means every existing deployment stays
+// in shadow mode (audit-only, never writes into official pricing) until this is deliberately set.
+export function isAlchemyHistoricalPricingEnabled(): boolean {
+  return process.env.ALCHEMY_HISTORICAL_PRICING_ENABLED === 'true'
+}
+
 export type AlchemyPricingRequirement = {
   chain: SupportedChain
   token: string

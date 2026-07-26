@@ -34,7 +34,11 @@ import { resolvePricingAtTime, priceableEntryIdentityKey } from '../modules/pric
 import type { PriceableEntry, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
 import { pricingRouteLog, isSanePrice, ethNativeRoutingAuditLog, type PricingRouteRecord } from './pricingAtTimeAdapter'
 import { reserveCoingeckoSlotsForNativeEth, getNativeEthHistoryCoalescingDiagnostics } from '../modules/pricingAtTimeEngine/sources/coingecko'
-import { resolveAlchemyHistoricalPricesShadow, type AlchemyPricingRequirement } from '../modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource'
+import {
+  resolveAlchemyHistoricalPricesShadow,
+  isAlchemyHistoricalPricingEnabled,
+  type AlchemyPricingRequirement,
+} from '../modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource'
 import {
   deriveSameTransactionQuotePrice,
   groupSwapLegsByTransaction,
@@ -826,46 +830,118 @@ export async function priceLotsForWallet(params: {
     console.warn('[historical-quote-leg-coverage] sample', { samples: sampleRecovered })
   }
 
-  // SHADOW-MODE ALCHEMY HISTORICAL PRICING, DISCLOSED, ADDITIVE — records what Alchemy's real,
-  // bounded historical-price endpoint would resolve for closed lots STILL missing a price after
-  // every existing source (goldrush/dexscreener/geckoterminal/coingecko/basedex + the same-tx
-  // quote-leg gap-fill above) has already run. NEVER writes into atTradeTime.costUsd/proceedsUsd —
-  // no FIFO/ranking/PnL/public-gate output can be affected by this block; it exists purely to gather
-  // real, safe, bounded evidence (grouped by asset, singleflight-cached, capped at
-  // MAX_ALCHEMY_HISTORICAL_REQUESTS_PER_SCAN live requests) before this source is ever wired into the
-  // official pricing path.
+  // ALCHEMY HISTORICAL PRICING, DISCLOSED, ADDITIVE — resolves what Alchemy's real, bounded
+  // historical-price endpoint returns for closed lots STILL missing a price after every existing
+  // source (goldrush/dexscreener/geckoterminal/coingecko/basedex + the same-tx quote-leg gap-fill
+  // above) has already run — grouped by asset, singleflight-cached, negative-cached, typed-failure-
+  // classified, capped at MAX_ALCHEMY_HISTORICAL_REQUESTS_PER_SCAN live requests (see
+  // alchemyHistoricalPriceSource.ts for the full budget/cache/classification disclosure).
+  //
+  // PROMOTION, DISCLOSED: gated by isAlchemyHistoricalPricingEnabled() (ALCHEMY_HISTORICAL_PRICING_
+  // ENABLED=true — see that function's own header for why this new flag exists). When OFF (the
+  // default), behavior is byte-identical to the prior shadow-mode-only pass: results are resolved and
+  // logged, never written into atTradeTime. When ON, only temporally-ACCEPTED prices
+  // (shadowPricesByTxHash already excludes anything that failed the 24h/6h acceptance window — see
+  // that module) are written, and ONLY into a costUsd/proceedsUsd slot that is currently null — an
+  // existing verified price from any earlier source is never touched, reordered, or overwritten.
+  // Because Alchemy is the LAST gap-fill stage in this whole pipeline, "Alchemy success stops lower
+  // fallbacks" is already true structurally: nothing runs after this block for these requirements.
+  const alchemyApplyEnabled = isAlchemyHistoricalPricingEnabled()
+  // UNIT CONVERSION, DISCLOSED: Alchemy's historical endpoint returns a PER-UNIT USD price, but
+  // costUsd/proceedsUsd store the TOTAL resolved USD value of a transaction leg (same convention as
+  // resolvePricingAtTime's own usd = price * amount, and the same-tx quote-leg gap-fill above) — so
+  // applying a bare per-unit price here would silently corrupt every downstream dollar figure by a
+  // factor of the token's own quantity. eventAmountByLegKey resolves the REAL transaction amount for
+  // the exact (chain, txHash, token) leg — keyed by token too, since one tx can carry multiple legs
+  // for different tokens at different amounts — read from `merged`, the same canonical event set the
+  // quote-leg lookup above is built from, never re-fetched.
+  const eventAmountByLegKey = new Map<string, number>()
+  for (const e of merged) {
+    eventAmountByLegKey.set(`${e.chain}:${e.txHash.toLowerCase()}:${e.contract.toLowerCase()}`, e.amount)
+  }
+  const alchemyRequirementSidesByTxHash = new Map<string, { sides: Set<'cost' | 'proceeds'>; chain: NormalizedEvent['chain']; token: string }>()
+  function markAlchemySide(txHash: string, side: 'cost' | 'proceeds', chain: NormalizedEvent['chain'], token: string): void {
+    const meta = alchemyRequirementSidesByTxHash.get(txHash) ?? { sides: new Set<'cost' | 'proceeds'>(), chain, token }
+    meta.sides.add(side)
+    alchemyRequirementSidesByTxHash.set(txHash, meta)
+  }
   const alchemyShadowRequirements: AlchemyPricingRequirement[] = []
   for (const lot of structuralMatchedLots) {
     const hasEntry = atTradeTime.costUsd[lot.openedTxHash] != null
     const hasExit = atTradeTime.proceedsUsd[lot.closedTxHash] != null
     if (!hasEntry) {
       alchemyShadowRequirements.push({ chain: lot.chain, token: lot.token, txHash: lot.openedTxHash, timestamp: lot.openedAt, oneSideMissing: hasExit })
+      markAlchemySide(lot.openedTxHash, 'cost', lot.chain, lot.token)
     }
     if (!hasExit) {
       alchemyShadowRequirements.push({ chain: lot.chain, token: lot.token, txHash: lot.closedTxHash, timestamp: lot.closedAt, oneSideMissing: hasEntry })
+      markAlchemySide(lot.closedTxHash, 'proceeds', lot.chain, lot.token)
     }
   }
   if (alchemyShadowRequirements.length > 0) {
-    const { shadowPricesByTxHash, audit: alchemyShadowAudit } = await resolveAlchemyHistoricalPricesShadow(alchemyShadowRequirements)
+    const { shadowPricesByTxHash, audit: alchemyAudit } = await resolveAlchemyHistoricalPricesShadow(alchemyShadowRequirements)
 
-    // ACCEPTED-LOTS-POTENTIALLY-COMPLETED, DISCLOSED, SHADOW-ONLY — a lot counts here if it was NOT
-    // already fully priced by official sources but WOULD be fully priced if the shadow prices above
-    // were ever applied (they are not). shadowPricesByTxHash only ever contains prices that passed
-    // temporal acceptance (see alchemyHistoricalPriceSource.ts), so this is inherently "accepted"
-    // completion, not raw/unfiltered. Computed purely from the returned Map for logging; never
-    // written back into atTradeTime/FIFO/PnL.
-    let acceptedLotsPotentiallyCompleted = 0
-    for (const lot of structuralMatchedLots) {
-      const hasEntry = atTradeTime.costUsd[lot.openedTxHash] != null
-      const hasExit = atTradeTime.proceedsUsd[lot.closedTxHash] != null
-      if (hasEntry && hasExit) continue
-      const wouldHaveEntry = hasEntry || shadowPricesByTxHash.has(lot.openedTxHash)
-      const wouldHaveExit = hasExit || shadowPricesByTxHash.has(lot.closedTxHash)
-      if (wouldHaveEntry && wouldHaveExit) acceptedLotsPotentiallyCompleted += 1
+    // Snapshot BEFORE any Alchemy write — reuses the exact same countFullyPriced() closure already
+    // defined above (over atTradeTime/structuralMatchedLots), so "before" here means "after every
+    // other source has already run," not the original pre-pipeline state.
+    const fullyPricedLotsBeforeAlchemy = countFullyPriced()
+    const verifiedCoverageBefore = structuralMatchedLots.length > 0 ? fullyPricedLotsBeforeAlchemy / structuralMatchedLots.length : 0
+    // AUDIT-ONLY PNL APPROXIMATION, DISCLOSED: sum of (proceedsUsd - costUsd) over lots whose BOTH
+    // sides already have a resolved USD value, using the same per-transaction totals costUsd/
+    // proceedsUsd already store elsewhere in this file. This is NOT the official realized-PnL module
+    // (src/modules/realizedPnl) and is never fed into any PnL gate — it exists purely so this audit
+    // log can report a before/after delta without requiring a second, heavier pipeline pass.
+    function sumApproxRealizedPnl(): number {
+      let sum = 0
+      for (const lot of structuralMatchedLots) {
+        const cost = atTradeTime.costUsd[lot.openedTxHash]
+        const proceeds = atTradeTime.proceedsUsd[lot.closedTxHash]
+        if (cost != null && proceeds != null) sum += proceeds - cost
+      }
+      return sum
+    }
+    const realizedPnlBefore = sumApproxRealizedPnl()
+
+    let pricesApplied = 0
+    if (alchemyApplyEnabled) {
+      for (const [txHash, { sides, chain, token }] of alchemyRequirementSidesByTxHash) {
+        const perUnitPrice = shadowPricesByTxHash.get(txHash)
+        if (perUnitPrice == null) continue
+        const amount = eventAmountByLegKey.get(`${chain}:${txHash.toLowerCase()}:${token.toLowerCase()}`)
+        // No real transaction amount to scale by — fail closed rather than write an un-scaled,
+        // silently-wrong per-unit value into a TOTAL-USD dictionary.
+        if (amount == null || !Number.isFinite(amount) || amount <= 0) continue
+        const totalUsd = perUnitPrice * amount
+        if (!isSanePrice(totalUsd)) continue
+        if (sides.has('cost') && atTradeTime.costUsd[txHash] == null) {
+          atTradeTime.costUsd[txHash] = totalUsd
+          pricesApplied += 1
+        }
+        if (sides.has('proceeds') && atTradeTime.proceedsUsd[txHash] == null) {
+          atTradeTime.proceedsUsd[txHash] = totalUsd
+          pricesApplied += 1
+        }
+      }
     }
 
+    const fullyPricedLotsAfterAlchemy = countFullyPriced()
+    const verifiedCoverageAfter = structuralMatchedLots.length > 0 ? fullyPricedLotsAfterAlchemy / structuralMatchedLots.length : 0
+    const lotsCompletedByAlchemy = fullyPricedLotsAfterAlchemy - fullyPricedLotsBeforeAlchemy
+    const realizedPnlAfter = sumApproxRealizedPnl()
+
     // eslint-disable-next-line no-console
-    console.warn('[alchemy-historical-pricing-shadow]', { ...alchemyShadowAudit, acceptedLotsPotentiallyCompleted })
+    console.warn('[alchemy-historical-pricing-shadow]', {
+      ...alchemyAudit,
+      applied: alchemyApplyEnabled,
+      pricesApplied,
+      lotsCompletedByAlchemy,
+      fullyPricedLotsBefore: fullyPricedLotsBeforeAlchemy,
+      fullyPricedLotsAfter: fullyPricedLotsAfterAlchemy,
+      verifiedCoverageBefore,
+      verifiedCoverageAfter,
+      realizedPnlBefore,
+      realizedPnlAfter,
+    })
   }
 
   // CLOSED-LOT PRICING COVERAGE DIAGNOSTICS, DISCLOSED, ADDITIVE — bounded (one summary object, no
