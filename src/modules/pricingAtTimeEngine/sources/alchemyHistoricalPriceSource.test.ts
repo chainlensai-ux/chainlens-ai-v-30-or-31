@@ -131,7 +131,7 @@ describe('alchemyHistoricalPriceSource — bounded, shadow-mode', () => {
     assert.equal(audit.duplicateRequestCount, 0)
   })
 
-  it('one-side-missing requirements are prioritised over ETH/WETH/stables and established tokens', async () => {
+  it('priority order: ETH/WETH/stables first, then one-side-missing, then everything else', async () => {
     const requestedAssets: string[] = []
     global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const body = init?.body ? JSON.parse(init.body as string) : {}
@@ -151,8 +151,56 @@ describe('alchemyHistoricalPriceSource — bounded, shadow-mode', () => {
 
     await resolveAlchemyHistoricalPricesShadow(requirements)
 
-    assert.equal(requestedAssets[0], oneSideMissingToken, 'the one-side-missing asset must be requested first')
-    assert.equal(requestedAssets[1], WETH_ETH.toLowerCase(), 'ETH/WETH/stables come before other established tokens')
+    assert.equal(requestedAssets[0], WETH_ETH.toLowerCase(), 'ETH/WETH/stables must be requested first')
+    assert.equal(requestedAssets[1], oneSideMissingToken, 'one-side-missing lots come next')
+    assert.equal(requestedAssets[2], otherToken, 'everything else comes last')
+  })
+
+  it('priority: an asset with a prior Alchemy success this scan is requested before an untested one, but still after ETH/WETH/stables and one-side-missing', async () => {
+    const requestedAssets: string[] = []
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(init.body as string) : {}
+      requestedAssets.push(body.address)
+      return new Response(JSON.stringify({ data: [{ timestamp: '2026-01-01T00:00:00.000Z', value: '1' }] }), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const provenToken = '0x0000000000000000000000000000000000000c01'
+    const untestedToken = '0x0000000000000000000000000000000000000c02'
+
+    // First call establishes "prior success" for provenToken.
+    await resolveAlchemyHistoricalPricesShadow([req({ token: provenToken, txHash: '0xproven1', oneSideMissing: false })])
+    requestedAssets.length = 0
+
+    // Second call: an untested asset arrives alongside a fresh requirement for the proven asset, at
+    // a NEW timestamp so its range differs from call 1's (cached) range and produces a genuine new
+    // live fetch — otherwise it would silently reuse the cache and never appear in requestedAssets.
+    await resolveAlchemyHistoricalPricesShadow([
+      req({ token: untestedToken, txHash: '0xuntested', oneSideMissing: false }),
+      req({ token: provenToken, txHash: '0xproven2', oneSideMissing: false, timestamp: Date.parse('2026-02-01T00:00:00.000Z') }),
+    ])
+
+    assert.equal(requestedAssets[0], provenToken, 'the asset with a prior success this scan is requested first among equals')
+    assert.equal(requestedAssets[1], untestedToken)
+  })
+
+  it('priority: unknown Base microcaps sort after other tier-4 assets', async () => {
+    const requestedAssets: string[] = []
+    global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const body = init?.body ? JSON.parse(init.body as string) : {}
+      requestedAssets.push(body.address)
+      return new Response(JSON.stringify({ data: [{ timestamp: '2026-01-01T00:00:00.000Z', value: '1' }] }), { status: 200 })
+    }) as unknown as typeof fetch
+
+    const baseMicrocap = '0x0000000000000000000000000000000000000d01'
+    const ethOther = '0x0000000000000000000000000000000000000d02'
+
+    await resolveAlchemyHistoricalPricesShadow([
+      req({ chain: 'base', token: baseMicrocap, txHash: '0xbasemicro', oneSideMissing: false }),
+      req({ chain: 'eth', token: ethOther, txHash: '0xethother', oneSideMissing: false }),
+    ])
+
+    assert.equal(requestedAssets[0], ethOther, 'a non-Base tier-4 asset is requested before an unknown Base microcap')
+    assert.equal(requestedAssets[1], baseMicrocap)
   })
 
   it('shadow mode never produces a price value the caller could accidentally use as an official one without opting in — it is returned separately from any FIFO/PnL structure', async () => {
@@ -230,9 +278,47 @@ describe('alchemyHistoricalPriceSource — bounded, shadow-mode', () => {
     assert.equal(detail.interval, '1d')
     assert.equal(detail.errorCode, 'INVALID_RANGE')
     assert.equal(detail.errorMessage, 'startTime must be before endTime')
+    assert.equal(detail.classifiedReason, 'invalid_request', 'an INVALID_RANGE code must classify as invalid_request')
     assert.ok(typeof detail.startTime === 'string' && typeof detail.endTime === 'string')
 
     const serialized = JSON.stringify(logs)
     assert.equal(serialized.includes('super-secret-key-value'), false, 'the API key must never appear in any log output')
+  })
+
+  it('classifies a "Token not found" 400 body as token_not_found', async () => {
+    global.fetch = (async () =>
+      new Response(JSON.stringify({ message: 'Token not found' }), { status: 400 })) as unknown as typeof fetch
+
+    const { audit } = await resolveAlchemyHistoricalPricesShadow([req({ txHash: '0xnotfound' })])
+
+    assert.equal(audit.failureReasons.token_not_found, 1)
+  })
+
+  it('classifies an unrecognized 400 body as http_400_unknown', async () => {
+    global.fetch = (async () =>
+      new Response(JSON.stringify({ message: 'rate limited for some other reason' }), { status: 400 })) as unknown as typeof fetch
+
+    const { audit } = await resolveAlchemyHistoricalPricesShadow([req({ txHash: '0xweird' })])
+
+    assert.equal(audit.failureReasons.http_400_unknown, 1)
+  })
+
+  it('negative cache: a token_not_found asset is never requested again this scan, even for a fresh requirement/range', async () => {
+    let calls = 0
+    global.fetch = (async () => {
+      calls += 1
+      return new Response(JSON.stringify({ message: 'Token not found' }), { status: 400 })
+    }) as unknown as typeof fetch
+
+    const notFoundToken = '0x0000000000000000000000000000000000000e01'
+    await resolveAlchemyHistoricalPricesShadow([req({ token: notFoundToken, txHash: '0xnf1', timestamp: Date.parse('2026-01-01T00:00:00.000Z') })])
+    assert.equal(calls, 1)
+
+    const { audit } = await resolveAlchemyHistoricalPricesShadow([
+      req({ token: notFoundToken, txHash: '0xnf2', timestamp: Date.parse('2026-02-01T00:00:00.000Z') }),
+    ])
+
+    assert.equal(calls, 1, 'a second call with a different range for the same negatively-cached token must not hit the network again')
+    assert.ok(audit.negativeCacheHits >= 1)
   })
 })

@@ -106,10 +106,17 @@ let closestPriceDistanceMsSeen = 0
 let rejectedByTemporalDistanceCount = 0
 const rangeCache = new Map<string, Promise<AlchemyAssetRangeResult>>()
 const requestedRangeKeysThisScan = new Set<string>()
+let negativeCacheHitsCount = 0
 const resolvedByChainCounts = new Map<string, number>()
 const resolvedByAssetCounts = new Map<string, number>()
 const failureReasonCounts = new Map<string, number>()
 const selectedAssetOrder: string[] = []
+// NEGATIVE CACHE, DISCLOSED: once Alchemy tells us a token was not found for an asset, that exact
+// chain+token is never requested again this scan — no range or requirement can revive it.
+const tokenNotFoundNegativeCache = new Set<string>()
+// PRIORITY STATE, DISCLOSED: assets that already had a genuine Alchemy success this scan get
+// bumped ahead of untested ones for any later, still-unresolved requirements (see tierOf below).
+const assetsWithPriorSuccessThisScan = new Set<string>()
 
 export function resetAlchemyHistoricalPricingState(): void {
   liveRequests = 0
@@ -123,12 +130,15 @@ export function resetAlchemyHistoricalPricingState(): void {
   largestRangeDaysSeen = 0
   closestPriceDistanceMsSeen = 0
   rejectedByTemporalDistanceCount = 0
+  negativeCacheHitsCount = 0
   rangeCache.clear()
   requestedRangeKeysThisScan.clear()
   resolvedByChainCounts.clear()
   resolvedByAssetCounts.clear()
   failureReasonCounts.clear()
   selectedAssetOrder.length = 0
+  tokenNotFoundNegativeCache.clear()
+  assetsWithPriorSuccessThisScan.clear()
 }
 
 function bumpMapCount(map: Map<string, number>, key: string, by = 1): void {
@@ -144,15 +154,28 @@ function assetKey(chain: SupportedChain, token: string): string {
 }
 
 // PRIORITY, DISCLOSED, per this task's explicit ordering:
-//   1. one-side-missing lots (the specific gap this whole feature exists to close)
-//   2. ETH/WETH/stables (deepest, most reliable coverage — worth spending a scarce slot on)
-//   3. everything else ("established tokens" — this codebase has no verified "established" signal
-//      to rank within this tier by, so it is left in its original, deterministic input order rather
-//      than guessing a popularity heuristic; honestly disclosed, not silently assumed).
-function tierOf(req: Pick<AlchemyPricingRequirement, 'chain' | 'token' | 'oneSideMissing'>): 1 | 2 | 3 {
-  if (req.oneSideMissing) return 1
-  if (isTier2Asset(req.chain, req.token)) return 2
-  return 3
+//   1. ETH/WETH/stables (deepest, most reliable coverage — worth spending a scarce slot on)
+//   2. one-side-missing lots (the specific gap this whole feature exists to close)
+//   3. assets this scan already had a live Alchemy success for (spending another slot on a proven,
+//      responsive asset is more likely to pay off than a cold, unverified one)
+//   4. everything else, with "unknown" Base microcaps (chain === 'base', not otherwise classified)
+//      pushed to the very back — Base has the highest proportion of unverified/rugged microcap
+//      contracts in this codebase's traffic, so they are the least likely bounded-budget spend to
+//      pay off and are honestly deprioritised rather than guessed at with a popularity heuristic.
+function tierOf(
+  req: Pick<AlchemyPricingRequirement, 'chain' | 'token' | 'oneSideMissing'>,
+  assetsWithPriorSuccess: Set<string>,
+): 1 | 2 | 3 | 4 {
+  if (isTier2Asset(req.chain, req.token)) return 1
+  if (req.oneSideMissing) return 2
+  if (assetsWithPriorSuccess.has(assetKey(req.chain, req.token))) return 3
+  return 4
+}
+
+// Within tier 4 ("everything else"), unknown Base microcaps sort after every other tier-4 asset —
+// this is a pure tie-break, never promotes/demotes across tiers 1-3.
+function isUnknownBaseMicrocap(chain: SupportedChain, token: string): boolean {
+  return chain === 'base' && !isTier2Asset(chain, token)
 }
 
 export type AlchemyHistoricalAuditRecord = {
@@ -175,6 +198,7 @@ export type AlchemyHistoricalAuditRecord = {
   selectedAssetOrder: string[]
   acceptedRequirementsResolved: number
   rejectedByTemporalDistance: number
+  negativeCacheHits: number
 }
 
 // TEMPORAL ACCEPTANCE, DISCLOSED: a resolved price is only ACCEPTED if the closest returned price
@@ -193,6 +217,19 @@ function maxTemporalDistanceMsFor(chain: SupportedChain, token: string): number 
 // chain, token, network identifier, the bounded range requested, the interval, and whatever error
 // code/message Alchemy's response body carried. NEVER logs the API key (it is not read from the
 // request URL/body here, only the already-known chain/token/range/interval plus the response body).
+// TYPED 400 CLASSIFICATION, DISCLOSED: Alchemy returns HTTP 400 for several distinct, disclosed
+// reasons — classified from the response body's own code/message text (never guessed from status
+// alone), so downstream audit/negative-caching logic can react differently to each:
+//   - "Token not found" (or any "not found" message) -> token_not_found
+//   - a malformed network/request signal (network/invalid/malformed in the message) -> invalid_request
+//   - anything else -> http_400_unknown (honestly unclassified, never silently merged into the above)
+function classifyAlchemy400(errorCode: string | number | null, errorMessage: string | null): string {
+  const text = `${errorCode ?? ''} ${errorMessage ?? ''}`.toLowerCase()
+  if (text.includes('not found')) return 'token_not_found'
+  if (text.includes('network') || text.includes('malformed') || text.includes('invalid')) return 'invalid_request'
+  return 'http_400_unknown'
+}
+
 function logAlchemyHttp400(params: {
   chain: SupportedChain
   token: string
@@ -202,6 +239,7 @@ function logAlchemyHttp400(params: {
   interval: string
   errorCode: string | number | null
   errorMessage: string | null
+  classifiedReason: string
 }): void {
   // eslint-disable-next-line no-console
   console.warn('[alchemy-historical-pricing-shadow] http_400', {
@@ -213,6 +251,7 @@ function logAlchemyHttp400(params: {
     interval: params.interval,
     errorCode: params.errorCode,
     errorMessage: params.errorMessage,
+    classifiedReason: params.classifiedReason,
   })
 }
 
@@ -222,6 +261,14 @@ async function fetchAlchemyHistoricalRange(
   startTimeMs: number,
   endTimeMs: number,
 ): Promise<AlchemyAssetRangeResult> {
+  // NEGATIVE CACHE, DISCLOSED: a chain+token Alchemy already reported as "not found" this scan is
+  // never requested again, for any range — checked before the singleflight/cache/budget logic below,
+  // and does NOT consume a live-request slot.
+  if (tokenNotFoundNegativeCache.has(assetKey(chain, token))) {
+    negativeCacheHitsCount += 1
+    return { ok: false, reason: 'token_not_found', points: [] }
+  }
+
   const networkSlug = ALCHEMY_NETWORK_SLUGS[chain]
   if (!networkSlug) return { ok: false, reason: 'unverified_chain_for_alchemy_prices', points: [] }
 
@@ -277,7 +324,10 @@ async function fetchAlchemyHistoricalRange(
           } catch {
             errorMessage = null
           }
-          logAlchemyHttp400({ chain, token, networkSlug, startTimeMs, endTimeMs, interval, errorCode, errorMessage })
+          const classifiedReason = classifyAlchemy400(errorCode, errorMessage)
+          logAlchemyHttp400({ chain, token, networkSlug, startTimeMs, endTimeMs, interval, errorCode, errorMessage, classifiedReason })
+          if (classifiedReason === 'token_not_found') tokenNotFoundNegativeCache.add(assetKey(chain, token))
+          return { ok: false, reason: classifiedReason, points: [] }
         }
         return { ok: false, reason: `http_${res.status}`, points: [] }
       }
@@ -291,6 +341,7 @@ async function fetchAlchemyHistoricalRange(
         if (Number.isFinite(ts) && Number.isFinite(price) && price > 0) points.push({ timestamp: ts, priceUsd: price })
       }
       if (points.length === 0) return { ok: false, reason: 'no_price_series_in_range', points: [] }
+      assetsWithPriorSuccessThisScan.add(assetKey(chain, token))
       return { ok: true, reason: null, points }
     } catch (err) {
       return { ok: false, reason: `fetch_error:${err instanceof Error ? err.message : 'unknown'}`, points: [] }
@@ -330,14 +381,19 @@ export async function resolveAlchemyHistoricalPricesShadow(
 
   // Priority order across ASSETS (not individual requirements): an asset's own tier is the BEST
   // (lowest-numbered) tier among any of its requirements — e.g. one asset with even a single
-  // one-side-missing requirement is tier 1 for the whole asset, since one bounded range covers all
-  // of that asset's requirements together anyway.
-  const assetEntries = [...byAsset.entries()].map(([key, reqs]) => ({
-    key,
-    reqs,
-    tier: Math.min(...reqs.map((r) => tierOf(r))) as 1 | 2 | 3,
-  }))
-  assetEntries.sort((a, b) => a.tier - b.tier)
+  // one-side-missing requirement is tier 2 for the whole asset, since one bounded range covers all
+  // of that asset's requirements together anyway. Within tier 4, unknown Base microcaps are pushed
+  // to the very back via baseMicrocapTieBreak (0 = sorts first, 1 = sorts last).
+  const assetEntries = [...byAsset.entries()].map(([key, reqs]) => {
+    const [{ chain, token }] = reqs
+    return {
+      key,
+      reqs,
+      tier: Math.min(...reqs.map((r) => tierOf(r, assetsWithPriorSuccessThisScan))) as 1 | 2 | 3 | 4,
+      baseMicrocapTieBreak: isUnknownBaseMicrocap(chain, token) ? 1 : 0,
+    }
+  })
+  assetEntries.sort((a, b) => a.tier - b.tier || a.baseMicrocapTieBreak - b.baseMicrocapTieBreak)
 
   const shadowPricesByTxHash = new Map<string, number>()
   let cacheHitsForThisCall = 0
@@ -419,6 +475,7 @@ export async function resolveAlchemyHistoricalPricesShadow(
     selectedAssetOrder: [...selectedAssetOrder],
     acceptedRequirementsResolved: requirementsResolvedCount,
     rejectedByTemporalDistance: rejectedByTemporalDistanceCount,
+    negativeCacheHits: negativeCacheHitsCount,
   }
 
   return { shadowPricesByTxHash, audit }
@@ -447,5 +504,6 @@ export function getAlchemyHistoricalPricingCountersForTest(): AlchemyHistoricalA
     selectedAssetOrder: [...selectedAssetOrder],
     acceptedRequirementsResolved: requirementsResolvedCount,
     rejectedByTemporalDistance: rejectedByTemporalDistanceCount,
+    negativeCacheHits: negativeCacheHitsCount,
   }
 }
