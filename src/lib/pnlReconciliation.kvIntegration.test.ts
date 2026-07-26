@@ -19,6 +19,7 @@ import { createRequestPriceKvClient } from './kvClient'
 import { createPnlReconciliation } from './pnlReconciliation'
 import { buildChainAwareHistoricalPriceSourceDetailed } from '../pipeline/pricingAtTimeAdapter'
 import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
+import { emptyUnrealizedReconciliation } from '../modules/fifoEngine/types'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
 
@@ -28,7 +29,7 @@ function lot(overrides: Partial<MatchedLot> = {}): MatchedLot {
   return { lotId: 'lot-1', token: '0xtoken', chain: 'base', openedAt: 1, closedAt: 2, openedTxHash: '0xbuy', closedTxHash: '0xsell', amount: 1, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced', ...overrides }
 }
 function fifo(overrides: Partial<FifoOutput> = {}): FifoOutput {
-  return { matchedLots: [], unmatchedBuys: 0, unmatchedSells: 0, realizedPnlUsd: null, unrealizedPnlUsd: 0, costBasisUsd: null, publicPnlStatus: 'unavailable', integrityFlags: { hardInvalid: false, estimateOnlyLotsExcluded: 0, syntheticLotsExcluded: 0 }, unrealizedPnlExcludedTokens: [], ...overrides }
+  return { matchedLots: [], unmatchedBuys: 0, unmatchedSells: 0, realizedPnlUsd: null, unrealizedPnlUsd: 0, costBasisUsd: null, publicPnlStatus: 'unavailable', integrityFlags: { hardInvalid: false, estimateOnlyLotsExcluded: 0, syntheticLotsExcluded: 0 }, unrealizedPnlExcludedTokens: [], unrealizedReconciliation: emptyUnrealizedReconciliation(), ...overrides }
 }
 function pnl(closedLots = 0, overrides: Partial<PnlSummaryResult> = {}): PnlSummaryResult {
   return { realizedPnlUsd: null, closedLots: [], winLossRate: { wins: 0, losses: 0, evaluated: 0, rate: 0 }, chainBreakdown: [], confidenceBasis: { high: 0, medium: 0, low: 0, aggregate: 'low' }, evidenceMissingCount: closedLots, ...overrides }

@@ -279,6 +279,7 @@ function safeRunFifoEngine(params: {
   priceUsdLookup?: import('../modules/fifoEngine/types').PriceUsdLookup
   currentPriceUsdLookup?: import('../modules/fifoEngine/types').CurrentPriceUsdLookup
   canonicalBalanceLookup?: import('../modules/fifoEngine/types').CanonicalBalanceLookup
+  unrealizedReconciliationDiagnostics?: import('../modules/fifoEngine/types').UnrealizedReconciliationDiagnosticsContext
 }): FifoOutput {
   try {
     const recoveredRawEvents: RawProviderEvent[] = params.recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents)
@@ -289,6 +290,7 @@ function safeRunFifoEngine(params: {
       priceUsdLookup: params.priceUsdLookup,
       currentPriceUsdLookup: params.currentPriceUsdLookup,
       canonicalBalanceLookup: params.canonicalBalanceLookup,
+      unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
     })
   } catch {
     return fifoEngineFallback(params.buyTimeline, params.sellTimeline)
@@ -1385,12 +1387,21 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     priceUsdLookup: walletPriceLookups.priceUsdLookup,
     currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
     canonicalBalanceLookup: params.canonicalBalanceLookup,
+    unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
   })
-  if (fifoAndPnl.unrealizedPnlExcludedTokens.length > 0) {
+  // RECONCILIATION DIAGNOSTICS, DISCLOSED, BOUNDED: one scan-level summary line plus the full
+  // per-position detail for every EXCLUDED position only (never a dump of every reconciled
+  // position). Every quantity logged here is already decimal-NORMALIZED — this path never reads or
+  // emits a raw base-unit balance (see UnrealizedReconciliationSummary's own header in
+  // fifoEngine/types.ts).
+  if (fifoAndPnl.unrealizedReconciliation.reconciliationStatus !== 'not_reconciled') {
+    const { excludedPositions, ...scanLevelTotals } = fifoAndPnl.unrealizedReconciliation
     // eslint-disable-next-line no-console
-    console.warn('[pipeline] unrealizedPnlUsd excluded tokens (failed canonical-balance reconciliation)', {
-      excludedTokens: fifoAndPnl.unrealizedPnlExcludedTokens,
-    })
+    console.warn('[pipeline] unrealized-pnl reconciliation', scanLevelTotals)
+    if (excludedPositions.length > 0) {
+      // eslint-disable-next-line no-console
+      console.warn('[pipeline] unrealized-pnl excluded positions', { excludedPositions })
+    }
   }
   // Diagnostic log — real FIFO output counts, directly requested.
   // eslint-disable-next-line no-console

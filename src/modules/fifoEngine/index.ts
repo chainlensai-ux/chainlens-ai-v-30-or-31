@@ -13,18 +13,27 @@ import type { RawProviderEvent, SupportedChain } from '../providerFetchWindow/ty
 import type {
   CanonicalBalanceLookup,
   CurrentPriceUsdLookup,
+  ExcludedUnrealizedPosition,
   FifoOutput,
   IntegrityFlags,
   MatchedLot,
   OpenLot,
   PriceUsdLookup,
   PublicPnlStatus,
+  UnrealizedExclusionReason,
+  UnrealizedReconciliationDiagnosticsContext,
+  UnrealizedReconciliationStatus,
+  UnrealizedReconciliationSummary,
 } from './types'
 import { buildLotId, groupByToken, mergeNormalizedEvents } from './utils'
 
 export type {
   CanonicalBalanceLookup,
+  CanonicalPositionMetadata,
+  CanonicalPositionMetadataLookup,
+  CurrentPriceSourceLookup,
   CurrentPriceUsdLookup,
+  ExcludedUnrealizedPosition,
   FifoOutput,
   IntegrityFlags,
   LotEvidenceQuality,
@@ -32,6 +41,10 @@ export type {
   OpenLot,
   PriceUsdLookup,
   PublicPnlStatus,
+  UnrealizedExclusionReason,
+  UnrealizedReconciliationDiagnosticsContext,
+  UnrealizedReconciliationStatus,
+  UnrealizedReconciliationSummary,
 } from './types'
 
 const noPriceLookup: PriceUsdLookup = () => null
@@ -150,8 +163,11 @@ type PnlSummary = {
   // in types.ts. `${chain}:${token.toLowerCase()}` keys for every token whose FIFO-derived open
   // quantity was excluded from unrealizedPnlUsd because it could not be reconciled against a real,
   // independently-fetched current balance (either no canonical balance was known, or the open
-  // quantity exceeded it) — always empty when canonicalBalanceLookup isn't supplied.
+  // quantity exceeded it) — always empty when canonicalBalanceLookup isn't supplied. KEPT for
+  // backward compatibility; `unrealizedReconciliation.excludedPositions` below carries the full,
+  // per-position detail (same set of positions, same order).
   unrealizedPnlExcludedTokens: string[]
+  unrealizedReconciliation: UnrealizedReconciliationSummary
 }
 
 // RECONCILIATION TOLERANCE, DISCLOSED: a small float-rounding allowance (0.1%) — real on-chain
@@ -159,6 +175,38 @@ type PnlSummary = {
 // genuinely consistent (e.g. a token with many small partial fills); this is NOT a loophole for a
 // meaningfully wrong quantity to sneak through — anything beyond this tiny slack fails closed.
 const CANONICAL_BALANCE_RECONCILIATION_TOLERANCE = 1.001
+
+// SANE-PRICE RANGE, DISCLOSED: the SAME ($0, $1e6] bound this codebase already applies to every
+// other price it accepts (src/pipeline/pricingAtTimeAdapter.ts's own MIN/MAX_VALID_USD_PRICE, and
+// lib/engines/unrealizedPnlEngine.ts's identical guard) — not a new or stricter standard invented
+// here, just the existing one finally applied at this specific reconciliation point too.
+const MIN_VALID_CURRENT_PRICE_USD = 0
+const MAX_VALID_CURRENT_PRICE_USD = 1e6
+
+// Token decimals are a uint8 on-chain; every real ERC-20 sits far below this bound. A value outside
+// it (or non-integer/non-finite) means the canonical snapshot's own normalization is untrustworthy.
+const MAX_PLAUSIBLE_TOKEN_DECIMALS = 36
+
+function isUsableDecimals(decimals: number): boolean {
+  return Number.isInteger(decimals) && decimals >= 0 && decimals <= MAX_PLAUSIBLE_TOKEN_DECIMALS
+}
+
+function emptyReconciliationSummary(
+  officialUnrealizedPnlUsd: number | null,
+  totalOpenPositions: number,
+  reconciliationStatus: UnrealizedReconciliationStatus,
+): UnrealizedReconciliationSummary {
+  return {
+    totalOpenPositions,
+    reconciledOpenPositions: reconciliationStatus === 'not_reconciled' ? 0 : totalOpenPositions,
+    excludedOpenPositions: 0,
+    excludedCandidateMarketValueUsd: 0,
+    excludedCandidateUnrealizedPnlUsd: 0,
+    officialUnrealizedPnlUsd,
+    reconciliationStatus,
+    excludedPositions: [],
+  }
+}
 
 // PURE. Aggregates PnL strictly from verified (priced, non-estimate) matched lots — an unpriced
 // lot contributes nothing to realizedPnlUsd/costBasisUsd (never a fabricated 0), and if there is
@@ -169,6 +217,7 @@ export function computePnl(
   remainingOpenLots: OpenLot[],
   currentPriceUsdLookup: CurrentPriceUsdLookup = noCurrentPriceLookup,
   canonicalBalanceLookup?: CanonicalBalanceLookup,
+  diagnostics?: UnrealizedReconciliationDiagnosticsContext,
 ): PnlSummary {
   const verifiedMatched = matchedLots.filter((l) => l.evidenceQuality === 'verified')
 
@@ -186,6 +235,31 @@ export function computePnl(
   // original expression (same map/filter/reduce over remainingOpenLots, same iteration order) —
   // guarantees byte-identical unrealizedPnlUsd for every existing caller that hasn't opted into
   // reconciliation, never a behavior change by default.
+  // POSITION KEYING, DISCLOSED: `${chain}:${token.toLowerCase()}` — the chain is part of the key, so
+  // the SAME token address on two different chains is two distinct positions that can never collide;
+  // and native ETH (providerFetchWindow's NATIVE_ASSET_ADDRESS pseudo-address,
+  // 0xeeee…eeee) has a genuinely different address from any chain's canonical WETH contract, so those
+  // never collide either. This module deliberately does NOT canonicalize native->WETH here (unlike
+  // quoteLegPricing's resolveNativePricingToken, which rewrites ONLY a price-lookup argument and
+  // explicitly never merges balances) — merging them would pool two separate real balances into one
+  // reconciliation check.
+  function positionKey(chain: SupportedChain, token: string): string {
+    return `${chain}:${token.toLowerCase()}`
+  }
+
+  // Groups every remaining open lot by position, so the reconciliation check runs on the SAME total
+  // quantity computePnl is about to value — a token split across several partially-consumed lots
+  // must reconcile as a whole, not lot-by-lot (a per-lot check could pass every individual lot while
+  // the SUM still exceeds the real balance).
+  const openLotsByToken = new Map<string, OpenLot[]>()
+  for (const lot of remainingOpenLots) {
+    const key = positionKey(lot.chain, lot.token)
+    const list = openLotsByToken.get(key)
+    if (list) list.push(lot)
+    else openLotsByToken.set(key, [lot])
+  }
+  const totalOpenPositions = openLotsByToken.size
+
   if (!canonicalBalanceLookup) {
     const unrealizedTerms = remainingOpenLots
       .map((lot) => {
@@ -195,44 +269,170 @@ export function computePnl(
       })
       .filter((v): v is number => v != null)
     const unrealizedPnlUsd = unrealizedTerms.length > 0 ? unrealizedTerms.reduce((sum, v) => sum + v, 0) : null
-    return { realizedPnlUsd, unrealizedPnlUsd, costBasisUsd, unrealizedPnlExcludedTokens: [] }
+    return {
+      realizedPnlUsd,
+      unrealizedPnlUsd,
+      costBasisUsd,
+      unrealizedPnlExcludedTokens: [],
+      unrealizedReconciliation: emptyReconciliationSummary(unrealizedPnlUsd, totalOpenPositions, 'not_reconciled'),
+    }
   }
 
-  // RECONCILED PATH, DISCLOSED: group every remaining open lot by (chain, token) first, so the
-  // reconciliation check runs on the SAME total quantity computePnl is about to value — a token
-  // split across several partially-consumed lots must reconcile as a whole, not lot-by-lot (a
-  // per-lot check could pass every individual lot while the SUM still exceeds the real balance).
-  const openLotsByToken = new Map<string, OpenLot[]>()
-  for (const lot of remainingOpenLots) {
-    const key = `${lot.chain}:${lot.token.toLowerCase()}`
-    const list = openLotsByToken.get(key)
-    if (list) list.push(lot)
-    else openLotsByToken.set(key, [lot])
-  }
-
+  // RECONCILED PATH, DISCLOSED. Exclusion-reason precedence is fixed and evaluated in this exact
+  // order, so a position that fails several checks always reports the SAME single, most-fundamental
+  // reason (never an arbitrary or run-dependent one):
+  //   1. invalid_open_quantity            — FIFO's own quantity is unusable; nothing downstream can be trusted
+  //   2. chain_or_token_key_mismatch      — the snapshot answered for a DIFFERENT position entirely
+  //   3. synthetic_or_quarantined_position— the snapshot itself flags this position as not real
+  //   4. invalid_decimals                 — the snapshot's normalization is untrustworthy, so its balance is too
+  //   5. missing_canonical_balance        — no balance evidence at all
+  //   6. open_quantity_exceeds_balance    — balance known, FIFO quantity is larger (the ~$545k class)
+  //   7. missing_verified_current_price   — reconciled quantity, but nothing to value it with
+  //   8. unverified_or_outlier_price      — a price exists but is outside the verified sane range
+  //
+  // OFFICIAL-TOTAL EQUIVALENCE, DISCLOSED: reasons 7 and 8 are reported at POSITION level, which is
+  // exactly equivalent to the previous per-lot skip for the official number — currentPriceUsdLookup
+  // is keyed by (token, chain), never by lot, so every lot of a position always receives the
+  // identical price. A position with no price contributed exactly zero terms before this change and
+  // contributes exactly zero now. Reason 8 is the one genuine behavior delta (an outlier price used
+  // to be summed into official PnL; it is now refused) — that is the "exclude price-outlier
+  // positions from official unrealized PnL" safety requirement, applied rather than only logged.
+  // Per-lot null costBasisUsd is still skipped per-lot below, unchanged.
+  const excludedPositions: ExcludedUnrealizedPosition[] = []
   const unrealizedPnlExcludedTokens: string[] = []
   const unrealizedTerms: number[] = []
+  let reconciledOpenPositions = 0
+
   for (const [key, lots] of openLotsByToken) {
-    const totalRemaining = lots.reduce((sum, l) => sum + l.amountRemaining, 0)
-    const canonicalBalance = canonicalBalanceLookup(lots[0].token, lots[0].chain)
-    // FAIL CLOSED, DISCLOSED: no real canonical balance evidence (null) OR the FIFO-derived open
-    // quantity exceeds it beyond the tiny float-rounding tolerance above — this token's entire
-    // unrealized contribution is EXCLUDED, never silently clamped down to the canonical balance and
-    // still included (that would hide a real data-integrity failure behind a plausible-looking
-    // smaller number) and never averaged/blended with trustworthy tokens.
-    if (canonicalBalance == null || totalRemaining > canonicalBalance * CANONICAL_BALANCE_RECONCILIATION_TOLERANCE) {
+    const token = lots[0].token
+    const chain = lots[0].chain
+    const openQuantityFromFifo = lots.reduce((sum, l) => sum + l.amountRemaining, 0)
+    // Summed over the lots that actually carry one — a position with no priced lot reports null
+    // rather than a fabricated 0.
+    const pricedOpenLots = lots.filter((l) => l.costBasisUsd != null)
+    const openCostBasisUsd = pricedOpenLots.length > 0
+      ? pricedOpenLots.reduce((sum, l) => sum + (l.costBasisUsd as number), 0)
+      : null
+
+    const metadata = diagnostics?.positionMetadataLookup?.(token, chain) ?? null
+    const canonicalCurrentBalance = canonicalBalanceLookup(token, chain)
+    const rawCurrentPrice = currentPriceUsdLookup(token, chain)
+    const currentPriceSource = diagnostics?.currentPriceSourceLookup?.(token, chain) ?? null
+
+    const excessOpenQuantity =
+      canonicalCurrentBalance != null && Number.isFinite(openQuantityFromFifo) && openQuantityFromFifo > canonicalCurrentBalance
+        ? openQuantityFromFifo - canonicalCurrentBalance
+        : null
+
+    // Candidate figures are computed from the SAME price/quantity the official path would have
+    // used — this is the refused number itself, reported so its inflation is measurable. Only
+    // computable when a real (even if outlier) price exists.
+    const candidateMarketValueUsd =
+      rawCurrentPrice != null && Number.isFinite(rawCurrentPrice * openQuantityFromFifo)
+        ? rawCurrentPrice * openQuantityFromFifo
+        : null
+    const candidateUnrealizedPnlUsd =
+      candidateMarketValueUsd != null && openCostBasisUsd != null
+        ? candidateMarketValueUsd - openCostBasisUsd
+        : null
+
+    function exclude(exclusionReason: UnrealizedExclusionReason): void {
+      excludedPositions.push({
+        chainId: chain,
+        tokenAddress: token,
+        symbol: metadata?.symbol ?? null,
+        openQuantityFromFifo,
+        canonicalCurrentBalance,
+        excessOpenQuantity,
+        decimalsUsed: metadata?.decimals ?? null,
+        currentPriceUsd: rawCurrentPrice,
+        currentPriceSource,
+        openCostBasisUsd,
+        candidateMarketValueUsd,
+        candidateUnrealizedPnlUsd,
+        exclusionReason,
+      })
       unrealizedPnlExcludedTokens.push(key)
+    }
+
+    // 1. FIFO's own open quantity must be a real, positive, finite number.
+    if (!Number.isFinite(openQuantityFromFifo) || openQuantityFromFifo <= 0) {
+      exclude('invalid_open_quantity')
       continue
     }
+    // 2. The snapshot must have answered for THIS position, not a different one.
+    if (metadata && (metadata.resolvedChain !== chain || metadata.resolvedTokenAddress.toLowerCase() !== token.toLowerCase())) {
+      exclude('chain_or_token_key_mismatch')
+      continue
+    }
+    // 3. Only ever fires on an explicit flag from the snapshot — never inferred here.
+    if (metadata?.quarantined === true) {
+      exclude('synthetic_or_quarantined_position')
+      continue
+    }
+    // 4. Checked only when the snapshot actually supplied a decimals value; an absent one is
+    //    "unknown metadata", not a failure, and never fabricates an exclusion.
+    if (metadata != null && metadata.decimals != null && !isUsableDecimals(metadata.decimals)) {
+      exclude('invalid_decimals')
+      continue
+    }
+    // 5/6. The original, unchanged fail-closed reconciliation — now split into its two real reasons.
+    if (canonicalCurrentBalance == null) {
+      exclude('missing_canonical_balance')
+      continue
+    }
+    if (openQuantityFromFifo > canonicalCurrentBalance * CANONICAL_BALANCE_RECONCILIATION_TOLERANCE) {
+      exclude('open_quantity_exceeds_balance')
+      continue
+    }
+    // 7/8. Price checks — see the OFFICIAL-TOTAL EQUIVALENCE note above.
+    if (rawCurrentPrice == null) {
+      exclude('missing_verified_current_price')
+      continue
+    }
+    if (!Number.isFinite(rawCurrentPrice) || rawCurrentPrice <= MIN_VALID_CURRENT_PRICE_USD || rawCurrentPrice > MAX_VALID_CURRENT_PRICE_USD) {
+      exclude('unverified_or_outlier_price')
+      continue
+    }
+
+    reconciledOpenPositions += 1
     for (const lot of lots) {
-      const currentPrice = currentPriceUsdLookup(lot.token, lot.chain)
-      if (currentPrice == null || lot.costBasisUsd == null) continue
-      unrealizedTerms.push(currentPrice * lot.amountRemaining - lot.costBasisUsd)
+      if (lot.costBasisUsd == null) continue
+      unrealizedTerms.push(rawCurrentPrice * lot.amountRemaining - lot.costBasisUsd)
     }
   }
+
   const unrealizedPnlUsd = unrealizedTerms.length > 0 ? unrealizedTerms.reduce((sum, v) => sum + v, 0) : null
 
-  return { realizedPnlUsd, unrealizedPnlUsd, costBasisUsd, unrealizedPnlExcludedTokens }
+  // Excluded candidate totals sum ONLY over positions that had a computable candidate — a position
+  // with no resolvable price contributes nothing here rather than a fabricated 0. These totals are
+  // reported alongside, and never merged into, officialUnrealizedPnlUsd.
+  const excludedCandidateMarketValueUsd = excludedPositions.reduce((sum, p) => sum + (p.candidateMarketValueUsd ?? 0), 0)
+  const excludedCandidateUnrealizedPnlUsd = excludedPositions.reduce((sum, p) => sum + (p.candidateUnrealizedPnlUsd ?? 0), 0)
+
+  const reconciliationStatus: UnrealizedReconciliationStatus =
+    excludedPositions.length === 0
+      ? 'ok'
+      : reconciledOpenPositions === 0
+        ? 'failed'
+        : 'partial'
+
+  return {
+    realizedPnlUsd,
+    unrealizedPnlUsd,
+    costBasisUsd,
+    unrealizedPnlExcludedTokens,
+    unrealizedReconciliation: {
+      totalOpenPositions,
+      reconciledOpenPositions,
+      excludedOpenPositions: excludedPositions.length,
+      excludedCandidateMarketValueUsd,
+      excludedCandidateUnrealizedPnlUsd,
+      officialUnrealizedPnlUsd: unrealizedPnlUsd,
+      reconciliationStatus,
+      excludedPositions,
+    },
+  }
 }
 
 // COVERAGE FIX, DISCLOSED (Clark-summary-confidence-mislabeling task): previously this only checked
@@ -276,6 +476,10 @@ export function buildFifoOutput(params: {
   // See CanonicalBalanceLookup's own header in types.ts — optional, defaults to unset (zero
   // behavior change unless a caller explicitly opts in).
   canonicalBalanceLookup?: CanonicalBalanceLookup
+  // Diagnostics-only enrichment for the reconciliation report — see
+  // UnrealizedReconciliationSummary's own header in types.ts. Never affects which positions are
+  // included in official unrealized PnL beyond the reason LABEL each exclusion reports.
+  unrealizedReconciliationDiagnostics?: UnrealizedReconciliationDiagnosticsContext
 }): FifoOutput {
   const priceUsdLookup = params.priceUsdLookup ?? noPriceLookup
   const currentPriceUsdLookup = params.currentPriceUsdLookup ?? noCurrentPriceLookup
@@ -286,8 +490,14 @@ export function buildFifoOutput(params: {
 
   const lots = buildLots(params.normalizedEvents, recoveredNormalized, priceUsdLookup)
   const { matchedLots, remainingOpenLots, unmatchedSells } = matchLotsFIFO(lots, sells, priceUsdLookup)
-  const { realizedPnlUsd, unrealizedPnlUsd, costBasisUsd, unrealizedPnlExcludedTokens } =
-    computePnl(matchedLots, remainingOpenLots, currentPriceUsdLookup, params.canonicalBalanceLookup)
+  const { realizedPnlUsd, unrealizedPnlUsd, costBasisUsd, unrealizedPnlExcludedTokens, unrealizedReconciliation } =
+    computePnl(
+      matchedLots,
+      remainingOpenLots,
+      currentPriceUsdLookup,
+      params.canonicalBalanceLookup,
+      params.unrealizedReconciliationDiagnostics,
+    )
 
   const verifiedMatchedCount = matchedLots.filter((l) => l.evidenceQuality === 'verified').length
   const estimateOnlyLotsExcluded = matchedLots.filter((l) => l.evidenceQuality === 'unpriced').length
@@ -311,6 +521,7 @@ export function buildFifoOutput(params: {
     publicPnlStatus: derivePublicPnlStatus(verifiedMatchedCount, matchedLots.length, unmatchedSells, hardInvalid),
     integrityFlags,
     unrealizedPnlExcludedTokens,
+    unrealizedReconciliation,
   }
 }
 

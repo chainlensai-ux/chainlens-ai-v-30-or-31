@@ -61,6 +61,41 @@ function buildCanonicalBalanceLookup(holdings: TokenHolding[]): import('../modul
   return (token, chain) => byKey.get(`${chain}:${token.toLowerCase()}`) ?? null
 }
 
+// DIAGNOSTICS-ONLY METADATA, DISCLOSED: built from the SAME already-fetched `holdings` array as
+// buildCanonicalBalanceLookup above — never an additional holdings fetch, never a provider call.
+// Supplies only symbol/decimals/resolved-key for the reconciliation report; the balance itself (and
+// therefore every include/exclude DECISION) still comes solely from the canonical balance lookup, so
+// this can never change which positions are counted.
+//
+// RAW-BALANCE SAFETY, DISCLOSED: `TokenHolding.amountRaw` (the pre-decimal-normalization base-unit
+// string) is deliberately NOT read here, and no field derived from it is exposed — only
+// `tokenDecimals` (the metadata) and the already-normalized `amount` (used by the balance lookup)
+// ever leave this file.
+//
+// `quarantined` IS NOT SET, DISCLOSED: TokenHolding carries no spam/quarantine/synthetic flag (see
+// src/modules/holdings/types.ts — chain, contract, symbol, name, amount, amountRaw, tokenDecimals,
+// providerPriceUsd, providerValueUsd, and nothing else), and this codebase's dust-suppression signal
+// lives in a different stage that never reaches this snapshot. Rather than fabricate a flag, this
+// lookup leaves `quarantined` unset — so the `synthetic_or_quarantined_position` reason is a real,
+// wired-and-tested code path that simply never fires from THIS caller until a genuine quarantine
+// signal exists to feed it.
+function buildCanonicalPositionMetadataLookup(
+  holdings: TokenHolding[],
+): import('../modules/fifoEngine/types').CanonicalPositionMetadataLookup {
+  const byKey = new Map<string, import('../modules/fifoEngine/types').CanonicalPositionMetadata>()
+  for (const h of holdings) {
+    const key = `${h.chain}:${h.contract.toLowerCase()}`
+    if (byKey.has(key)) continue
+    byKey.set(key, {
+      symbol: h.symbol ?? null,
+      decimals: Number.isFinite(h.tokenDecimals) ? h.tokenDecimals : null,
+      resolvedChain: h.chain,
+      resolvedTokenAddress: h.contract,
+    })
+  }
+  return (token, chain) => byKey.get(`${chain}:${token.toLowerCase()}`) ?? null
+}
+
 // Never mutates the report runWalletScan() returns — holdings/portfolio are computed
 // independently and merged into a new object at the end.
 export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunWalletScanV2Result> {
@@ -83,7 +118,17 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
     : []
 
   const holdings: TokenHolding[] = holdingsResults.flatMap((r) => r.holdings)
-  const report = await runWalletScan({ ...params, canonicalBalanceLookup: buildCanonicalBalanceLookup(holdings) })
+  const report = await runWalletScan({
+    ...params,
+    canonicalBalanceLookup: buildCanonicalBalanceLookup(holdings),
+    unrealizedReconciliationDiagnostics: {
+      positionMetadataLookup: buildCanonicalPositionMetadataLookup(holdings),
+      // No per-token current-price SOURCE is observable at this layer — fifoEngine's
+      // CurrentPriceUsdLookup contract is (token, chain) -> number|null and carries no provenance.
+      // Deliberately left unsupplied so `currentPriceSource` reports an honest null rather than a
+      // fabricated/default label.
+    },
+  })
 
   let portfolio: PortfolioSummary
   try {

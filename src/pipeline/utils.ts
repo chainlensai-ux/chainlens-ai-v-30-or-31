@@ -3,6 +3,7 @@
 import type { ChainSelectionResult } from '../modules/chainSelection/types'
 import type { BehaviorIntelResult, WindowCoverage } from '../modules/behaviorIntel/types'
 import type { FifoOutput } from '../modules/fifoEngine/types'
+import { emptyUnrealizedReconciliation } from '../modules/fifoEngine/types'
 import type { RecoveryPolicyResult } from '../modules/recoveryPolicy/types'
 import type { BuyTimeline, DistributionTimeline, SellTimeline, TimelineBuilderResult } from '../modules/timelineBuilder/types'
 import type { FinalReport, FinalSummary, ScanMetadata } from '../modules/finalReportAssembler/types'
@@ -80,6 +81,7 @@ export function fifoEngineFallback(buyTimeline: BuyTimeline, sellTimeline: SellT
     publicPnlStatus: 'unavailable',
     integrityFlags: { hardInvalid: true, estimateOnlyLotsExcluded: 0, syntheticLotsExcluded: 0 },
     unrealizedPnlExcludedTokens: [],
+    unrealizedReconciliation: emptyUnrealizedReconciliation(),
   }
 }
 

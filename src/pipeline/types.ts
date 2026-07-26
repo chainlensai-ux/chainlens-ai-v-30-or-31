@@ -21,6 +21,10 @@ export type RunWalletScanParams = {
   // event-replay-derived open quantity was never cross-checked against a real current balance).
   // Omitted by every existing caller that hasn't opted in — zero behavior change unless supplied.
   canonicalBalanceLookup?: import('../modules/fifoEngine/types').CanonicalBalanceLookup
+  // Diagnostics-only enrichment for the unrealized-PnL reconciliation report (symbol/decimals/
+  // quarantine flag + current-price source). Sourced from the SAME canonical holdings snapshot the
+  // balance lookup above already uses — never an additional holdings fetch.
+  unrealizedReconciliationDiagnostics?: import('../modules/fifoEngine/types').UnrealizedReconciliationDiagnosticsContext
 }
 
 // Architecture Step 9's "output shape" for the orchestrator's public entry point: the exact
