@@ -116,7 +116,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   // per-job reset convention as the counters above — see providerFetchWindow/index.ts's own header
   // for why this must be cleared at the start of every scan job (never leak a coalesced result
   // across unrelated wallets/scans on a warm serverless instance).
-  const { resetProviderFetchWindowRequestCache, getProviderFetchWindowCoalescingCounters } = await import('@/src/modules/providerFetchWindow/index')
+  const { resetProviderFetchWindowRequestCache, getProviderFetchWindowCoalescingCounters, getProviderFetchWindowKeyAudits } = await import('@/src/modules/providerFetchWindow/index')
   // RECOVERY-PAGE COALESCING RESET, DISCLOSED (provider-call-audit follow-up task, confirmed
   // duplicate-call cause): same per-job reset convention as the counters/coalescing above — see
   // recoveryPolicy/utils.ts's own header for why multiple triggered candidates on one chain must
@@ -142,7 +142,11 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   resetCoingeckoCircuitBreaker()
   resetGeckoTerminalNoPoolCache()
   resetPricingAtTimeAdapterScanState()
-  resetProviderFetchWindowRequestCache()
+  // JOB-ID THREADED, DISCLOSED (provider-coalescing follow-up task's explicit audit requirement):
+  // lets fetchProviderWindow's own per-key audit log attribute its entries to the real job that
+  // produced them — never used for any cache-key/coalescing decision (the canonical key stays
+  // (chain, wallet) only).
+  resetProviderFetchWindowRequestCache(payload.jobId)
   resetRecoveryHistoricalPageRequestCache()
   resetDexscreenerRequestCache()
 
@@ -182,6 +186,11 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   })
   // eslint-disable-next-line no-console
   console.warn('[provider-call-audit] dexscreener shared cache summary', { jobId: payload.jobId, ...getDexscreenerRequestDiagnostics() })
+  // PER-KEY AUDIT, DISCLOSED (provider-coalescing follow-up task's explicit diagnostic requirement):
+  // one compact record per (chain, wallet) key this job touched — proves directly, per key, whether
+  // a duplicate live fetch was actually prevented, rather than only a process-wide aggregate.
+  // eslint-disable-next-line no-console
+  console.warn('[provider-call-audit] providerFetchWindow per-key audit', { jobId: payload.jobId, keys: getProviderFetchWindowKeyAudits() })
 
   const finishedAt = Date.now()
   const jobState: WalletScanJobState = {

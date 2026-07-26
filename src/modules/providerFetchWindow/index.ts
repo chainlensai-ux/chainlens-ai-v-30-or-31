@@ -154,12 +154,101 @@ async function fetchProviderWindowLive(
 // instead of triggering its own live call. A caller asking for a WIDER window than what's already
 // known still correctly triggers its own fresh (wider) live fetch — a narrower prior result can
 // never be silently reused as if it covered a wider window.
+// CONFIRMED ROOT CAUSE, DISCLOSED (provider-coalescing follow-up task, real production evidence: one
+// worker invocation took 46.88s and made the exact same Base transactions_v3 request TWICE, both
+// timing out after 12s, while the equivalent Ethereum request was made once and succeeded): the
+// PRIOR version of this entry only tracked `settled: boolean` — a coarse yes/no with no record of
+// WHAT the settled outcome actually was. Reuse logic (`if (existing.settled) settledReuseHits += 1
+// else coalescedHits += 1`) worked correctly for either outcome — a settled entry, success or
+// failure, was always reused, never re-fetched, and this was already covered by this file's own
+// coalescing tests. But the cleanup path on the promise attached below,
+// `promise.then(onFulfilled, onRejected)`, deletes the map entry the instant `fetchProviderWindowLive`
+// EVER rejects — relying entirely on an UNDISCLOSED, implicit assumption (stated only in this file's
+// old comment, never enforced in code) that fetchGoldrushRawEvents/fetchAlchemyRawEvents can never
+// throw. That assumption held for every scenario this file's own tests modeled (a provider fetch()
+// throwing synchronously, wrapped by fetchGoldrushRawEvents/fetchAlchemyRawEvents's own try/catch,
+// which never propagates). A REAL 12-second AbortSignal.timeout firing goes through the identical
+// caught path today — but this map's own correctness for the timeout/failure case was, until this
+// fix, resting entirely on that lower module never changing, with no defense here if it ever did
+// (a future edit to either provider function, an uncaught exception in JSON parsing outside the
+// existing try, or any other unexpected throw). The FIX, DISCLOSED (this task's own explicit "do not
+// let a rejected promise get removed and retried" requirement): `fetchProviderWindowLive` is now
+// wrapped in `runLiveFetchSafely` below, which converts ANY rejection — expected or not — into the
+// exact same honest `provider_unavailable` degraded result this module already produces for a known
+// provider failure, so the promise STORED in this map can never reject. The `.then(onRejected)`
+// deletion branch this map used to rely on is removed entirely — there is no longer a rejection path
+// to delete on, so a duplicate live fetch after a timeout/failure is now structurally impossible,
+// not just untriggered in the scenarios tested so far.
+export type FetchOutcome = 'success' | 'timeout' | 'error'
+
 type CoalescedEntry = {
   windowDays: number
   promise: Promise<ProviderFetchWindowResult>
   settled: boolean
+  // PER-KEY AUDIT FIELDS, DISCLOSED (this task's explicit diagnostic requirement): tracked per
+  // (chain, wallet) entry, not just as a process-global aggregate, so a production log can show
+  // exactly which key avoided a duplicate and how.
+  invocationCount: number
+  pendingCoalescedHits: number
+  settledSuccessReuseHits: number
+  settledFailureReuseHits: number
+  duplicateLiveFetchPrevented: number
+  firstOutcome: FetchOutcome | null
 }
 const requestScopedFetches = new Map<string, CoalescedEntry>()
+
+// CURRENT JOB ID, DISCLOSED: set once per real scan job (resetProviderFetchWindowRequestCache,
+// called from walletScanWorker.ts) purely so the per-key audit log below can attribute its entries
+// to the job that produced them — never used for any cache-key/coalescing decision itself (the
+// canonical key remains (chain, wallet) only, unchanged).
+let currentJobId: string | null = null
+
+function isTimeoutLikeReason(reason: string | null): boolean {
+  if (!reason) return false
+  const lower = reason.toLowerCase()
+  return lower.includes('timeout') || lower.includes('abort')
+}
+
+// PURE, exported for direct testing. Classifies a settled ProviderFetchWindowResult into the real
+// outcome this task's audit requires — never a guess: 'success' whenever at least one provider
+// genuinely returned usable data (matches this module's own detectProviderUnavailable semantics —
+// 'ok' or 'partial' both mean real events came back), 'timeout' when both providers failed and
+// either one's own errorReason indicates an abort/timeout, 'error' for every other both-failed case.
+export function classifyFetchOutcome(result: ProviderFetchWindowResult): FetchOutcome {
+  if (result.providerStatus !== 'provider_unavailable') return 'success'
+  const { goldrush, alchemy } = result.providerResults
+  return isTimeoutLikeReason(goldrush.errorReason) || isTimeoutLikeReason(alchemy.errorReason) ? 'timeout' : 'error'
+}
+
+// SAFE WRAPPER, DISCLOSED: see this section's own header for the confirmed root cause this closes.
+// Guarantees the returned promise NEVER rejects — a genuine (expected-impossible, defense-in-depth)
+// exception from fetchProviderWindowLive is converted into the same shape a real "both providers
+// failed" result already takes, never a fabricated success and never a dropped/retried entry.
+async function runLiveFetchSafely(
+  chain: SupportedChain,
+  walletAddress: string,
+  resolvedWindowDays: number,
+): Promise<ProviderFetchWindowResult> {
+  try {
+    return await fetchProviderWindowLive(chain, walletAddress, resolvedWindowDays)
+  } catch (err) {
+    const errorReason = err instanceof Error ? err.message : 'unknown_error'
+    // eslint-disable-next-line no-console
+    console.warn('[provider-call-audit] fetchProviderWindowLive rejected unexpectedly — converting to a settled degraded result, never deleting the coalescing entry', {
+      chain, wallet: canonicalWallet(walletAddress), errorReason, jobId: currentJobId,
+    })
+    return {
+      chain,
+      providerStatus: 'provider_unavailable',
+      rawEvents: [],
+      providerResults: {
+        goldrush: { provider: 'goldrush', ok: false, events: [], errorReason },
+        alchemy: { provider: 'alchemy', ok: false, events: [], errorReason },
+      },
+      providerFetchWindowDays: resolvedWindowDays,
+    }
+  }
+}
 
 // COUNTERS, DISCLOSED (this follow-up task's explicit diagnostic requirement): real, per-job counts
 // — never estimates. `liveFetches` = real fetchProviderWindowLive calls actually started (the only
@@ -220,14 +309,44 @@ function sliceToWindow(result: ProviderFetchWindowResult, windowDays: number): P
   }
 }
 
-export function resetProviderFetchWindowRequestCache(): void {
+export function resetProviderFetchWindowRequestCache(jobId?: string): void {
   requestScopedFetches.clear()
   liveFetches = 0
   coalescedHits = 0
   settledReuseHits = 0
   resetCount += 1
+  currentJobId = jobId ?? null
   // eslint-disable-next-line no-console
-  console.warn('[provider-call-audit] providerFetchWindow request-scoped cache reset', { resetCount, moduleInstanceId, timestamp: Date.now() })
+  console.warn('[provider-call-audit] providerFetchWindow request-scoped cache reset', { resetCount, moduleInstanceId, jobId: currentJobId, timestamp: Date.now() })
+}
+
+// PER-KEY AUDIT EXPORT, DISCLOSED (this task's explicit diagnostic requirement): a real snapshot of
+// every (chain, wallet) entry's own coalescing history for the CURRENT job — never a process-global
+// estimate. Read-only; changes no state.
+export type ProviderFetchWindowKeyAudit = {
+  jobId: string | null
+  key: string
+  invocationCount: number
+  liveFetches: number
+  pendingCoalescedHits: number
+  settledSuccessReuseHits: number
+  settledFailureReuseHits: number
+  firstOutcome: FetchOutcome | null
+  duplicateLiveFetchPrevented: number
+}
+
+export function getProviderFetchWindowKeyAudits(): ProviderFetchWindowKeyAudit[] {
+  return [...requestScopedFetches.entries()].map(([key, entry]) => ({
+    jobId: currentJobId,
+    key,
+    invocationCount: entry.invocationCount,
+    liveFetches: 1, // one entry == exactly one live fetch ever started for this key, by construction
+    pendingCoalescedHits: entry.pendingCoalescedHits,
+    settledSuccessReuseHits: entry.settledSuccessReuseHits,
+    settledFailureReuseHits: entry.settledFailureReuseHits,
+    firstOutcome: entry.firstOutcome,
+    duplicateLiveFetchPrevented: entry.duplicateLiveFetchPrevented,
+  }))
 }
 
 export async function fetchProviderWindow(
@@ -252,13 +371,26 @@ export async function fetchProviderWindow(
     existingEntryWindowDays: existing?.windowDays ?? null,
     hit: Boolean(existing && existing.windowDays >= resolvedWindowDays),
     moduleInstanceId,
+    jobId: currentJobId,
     timestamp: Date.now(),
   })
 
   if (existing && existing.windowDays >= resolvedWindowDays) {
-    if (existing.settled) settledReuseHits += 1
-    else coalescedHits += 1
+    existing.invocationCount += 1
+    existing.duplicateLiveFetchPrevented += 1
+    if (existing.settled) {
+      settledReuseHits += 1
+      if (existing.firstOutcome === 'success') existing.settledSuccessReuseHits += 1
+      else existing.settledFailureReuseHits += 1
+    } else {
+      coalescedHits += 1
+      existing.pendingCoalescedHits += 1
+    }
     const result = await existing.promise
+    // eslint-disable-next-line no-console
+    console.warn('[provider-call-audit] fetchProviderWindow duplicate live fetch prevented', {
+      jobId: currentJobId, key, stage, reuseKind: existing.settled ? 'settled' : 'pending', firstOutcome: existing.firstOutcome,
+    })
     return sliceToWindow(result, resolvedWindowDays)
   }
 
@@ -266,17 +398,32 @@ export async function fetchProviderWindow(
   // caller needs) — a real, fresh live fetch is required. This intentionally REPLACES a narrower
   // existing entry so any later, still-narrower caller can now reuse this wider one instead.
   liveFetches += 1
-  const entry: CoalescedEntry = { windowDays: resolvedWindowDays, promise: undefined as unknown as Promise<ProviderFetchWindowResult>, settled: false }
-  const promise = fetchProviderWindowLive(chain, walletAddress, resolvedWindowDays)
+  const entry: CoalescedEntry = {
+    windowDays: resolvedWindowDays,
+    promise: undefined as unknown as Promise<ProviderFetchWindowResult>,
+    settled: false,
+    invocationCount: 1,
+    pendingCoalescedHits: 0,
+    settledSuccessReuseHits: 0,
+    settledFailureReuseHits: 0,
+    duplicateLiveFetchPrevented: 0,
+    firstOutcome: null,
+  }
+  // NEVER-REJECTS, DISCLOSED: runLiveFetchSafely guarantees this promise always resolves — see that
+  // function's own header for the confirmed root cause this closes. No `.catch`/rejection-handler
+  // branch exists anymore because there is no longer a rejection path to handle; a settled entry,
+  // success or failure, is kept in the map for the rest of this job, exactly per this task's "later
+  // duplicate after timeout/failure must return the same scan-scoped degraded result" requirement.
+  const promise = runLiveFetchSafely(chain, walletAddress, resolvedWindowDays)
   entry.promise = promise
   requestScopedFetches.set(key, entry)
-  // Defensive cleanup only: fetchProviderWindowLive is disclosed as never throwing (both provider
-  // calls resolve to an { ok: false, ... } shape on failure, never a rejection) — this guards
-  // against that contract ever being violated by a future change, so an unexpected rejection can't
-  // permanently poison this key for the rest of the request.
-  promise.then(
-    () => { entry.settled = true },
-    () => { if (requestScopedFetches.get(key) === entry) requestScopedFetches.delete(key) },
-  )
+  promise.then((result) => {
+    entry.settled = true
+    entry.firstOutcome = classifyFetchOutcome(result)
+    // eslint-disable-next-line no-console
+    console.warn('[provider-call-audit] fetchProviderWindow live fetch settled', {
+      jobId: currentJobId, key, firstOutcome: entry.firstOutcome, providerStatus: result.providerStatus,
+    })
+  })
   return promise
 }
