@@ -56,6 +56,23 @@ import { fetchCoingeckoNativeEthPriceDetailed } from '../modules/pricingAtTimeEn
 // this specific chain is functionally native ETH," not a general WETH-detection mechanism.
 const ETH_CANONICAL_WETH_ADDRESS = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
 
+// PER-REQUIREMENT AUDIT LOG, DISCLOSED, ADDITIVE — process-lifetime, same cross-request-leak-guard
+// snapshot (length-before/slice-after) convention as pricingRouteLog below. One entry per real
+// attempt at this specific (chain 'eth', canonical WETH) address, carrying every field
+// coingecko.ts's own diagnostic already computed (breaker state, HTTP status, response shape,
+// parsed price, exact failure reason) plus what THIS layer additionally knows: which fallback
+// sources were subsequently attempted after the native route missed. `txHash` is left null here —
+// this layer never sees it (PriceSourceFn is (token, chain, timestamp) only) — a caller that knows
+// the txHash for a given timestamp (priceLotsForWallet.ts, which owns that mapping for its own
+// native-quote requirements) can correlate by `originalTimestamp` and attach it.
+export type EthNativeRoutingAuditEntry = {
+  chain: SupportedChain
+  originalContract: string
+  diagnostic: import('../modules/pricingAtTimeEngine/sources/coingecko').NativeEthPricingDiagnostic
+  fallbackSourcesAttempted: PriceAttemptDetail[]
+}
+export const ethNativeRoutingAuditLog: EthNativeRoutingAuditEntry[] = []
+
 // Sanity guard, applied to every price this pipeline resolves — a price outside this range is
 // provider garbage, never rendered. Independent of pnlSummaryAdapter.ts's separate $1e12
 // PnL-overflow guard.
@@ -222,6 +239,22 @@ export function buildChainAwareHistoricalPriceSourceDetailed(
 
   return async (token, chain, timestamp) => {
     const attempts: PriceAttemptDetail[] = []
+    let ethNativeDiagnostic: import('../modules/pricingAtTimeEngine/sources/coingecko').NativeEthPricingDiagnostic | null = null
+
+    // Pushes the ETH-native audit entry (if this call ever reached that branch) with whatever
+    // fallback attempts were made afterward, then returns the final result — a single exit path so
+    // every one of this function's several `return`s below logs consistently, never duplicated.
+    function finalize(result: ChainAwareHistoricalPriceResult): ChainAwareHistoricalPriceResult {
+      if (ethNativeDiagnostic) {
+        ethNativeRoutingAuditLog.push({
+          chain,
+          originalContract: token,
+          diagnostic: ethNativeDiagnostic,
+          fallbackSourcesAttempted: attempts.slice(1),
+        })
+      }
+      return result
+    }
 
     // ETH NATIVE ROUTING, DISCLOSED: see ETH_CANONICAL_WETH_ADDRESS's own declaration above. Only an
     // EXTRA, earlier attempt for this one specific (chain, address) pair — never skips or replaces
@@ -231,10 +264,11 @@ export function buildChainAwareHistoricalPriceSourceDetailed(
     // more-appropriate source first for this specific well-known address.
     if (chain === 'eth' && token.toLowerCase() === ETH_CANONICAL_WETH_ADDRESS) {
       const nativeResult = await fetchCoingeckoNativeEthPriceDetailed(timestamp)
+      ethNativeDiagnostic = nativeResult.diagnostic
       attempts.push({ source: 'coingecko', ok: isSanePrice(nativeResult.priceUsd), reason: nativeResult.reason })
       if (isSanePrice(nativeResult.priceUsd)) {
         recordRoute(token, chain, timestamp, 'coingecko_native_eth')
-        return { price: nativeResult.priceUsd, route: 'coingecko_native_eth', attempts }
+        return finalize({ price: nativeResult.priceUsd, route: 'coingecko_native_eth', attempts })
       }
     }
 
@@ -246,7 +280,7 @@ export function buildChainAwareHistoricalPriceSourceDetailed(
       attempts.push({ source: attempt.source, ok: attempt.ok, reason: attempt.reason })
       if (attempt.price !== null) {
         recordRoute(token, chain, timestamp, 'coingecko_or_basedex')
-        return { price: attempt.price, route: 'coingecko_or_basedex', attempts }
+        return finalize({ price: attempt.price, route: 'coingecko_or_basedex', attempts })
       }
     }
 
@@ -261,7 +295,7 @@ export function buildChainAwareHistoricalPriceSourceDetailed(
       attempts.push({ source: attempt.source, ok: attempt.ok, reason: attempt.reason })
       if (attempt.price !== null) {
         recordRoute(token, chain, timestamp, source as PricingRouteUsed)
-        return { price: attempt.price, route: source as PricingRouteUsed, attempts }
+        return finalize({ price: attempt.price, route: source as PricingRouteUsed, attempts })
       }
     }
 
@@ -272,11 +306,11 @@ export function buildChainAwareHistoricalPriceSourceDetailed(
     }
     if (isSanePrice(safetyNetResult.priceUsd)) {
       recordRoute(token, chain, timestamp, 'coingecko_or_basedex')
-      return { price: safetyNetResult.priceUsd, route: 'coingecko_or_basedex', attempts }
+      return finalize({ price: safetyNetResult.priceUsd, route: 'coingecko_or_basedex', attempts })
     }
 
     recordRoute(token, chain, timestamp, 'none')
-    return { price: null, route: 'none', attempts }
+    return finalize({ price: null, route: 'none', attempts })
   }
 }
 

@@ -38,12 +38,48 @@ let coingeckoCircuitOpen = false
 // a real 429 never silently disables CoinGecko for an unrelated later scan of a different wallet.
 export function resetCoingeckoCircuitBreaker(): void {
   coingeckoCircuitOpen = false
+  coingeckoReservedForNativeEthSlots = 0
 }
 
 // TEST-SUPPORT EXPORT, DISCLOSED: read-only observability, same convention as
 // goldrushPriceSource.ts's isGoldrushBreakerOpenForTest.
 export function isCoingeckoCircuitOpenForTest(): boolean {
   return coingeckoCircuitOpen
+}
+
+// NATIVE-ETH RESERVATION, DISCLOSED (confirmed production bug: two Tier-2 ETH native requirements,
+// correctly prioritised, both routed to CoinGecko's native-coin-id endpoint — and still returned
+// nativeRequirementsProviderMiss: 2, with "CoinGecko elsewhere reports circuit_open_after_429"). The
+// native-ETH function shares this SAME module-level breaker with the ordinary, contract-based
+// CoinGecko function above — by design, since it's the same real rate-limit bucket. The confirmed
+// starvation mechanism: this breaker is process-lifetime, reset only once per scan
+// (resetCoingeckoCircuitBreaker) — an EARLIER, lower-priority ordinary CoinGecko contract call within
+// the SAME scan (from a different, non-native token entirely) can trip a real 429 and open the
+// breaker before the two high-priority native ETH requirements ever get their own turn, even though
+// their own PRICING requirement rank is correctly negative/highest-priority (rank determines
+// resolvePricingAtTime's own processing order, but does nothing to protect a SHARED, cross-call,
+// process-lifetime breaker from being tripped by something entirely outside that one call).
+//
+// FIX: a small, per-scan reservation counter. While `coingeckoReservedForNativeEthSlots > 0`, the
+// ORDINARY contract-based function (fetchCoingeckoPriceDetailed, below) skips its own real call
+// entirely — never even risks tripping the breaker — until the reserved native-ETH slots have each
+// had their own real attempt (success or genuine miss, decremented unconditionally the moment that
+// attempt is made). This never raises the total CoinGecko call ceiling: it only ever SKIPS a lower-
+// priority ordinary call it would otherwise have made, in favor of letting the two reserved,
+// higher-priority native attempts go first — the same "execute higher-priority attempts before
+// ordinary lower-priority ones" principle already used elsewhere in this codebase (e.g.
+// priceLotsForWallet.ts's own closed-lot pairRank priority).
+let coingeckoReservedForNativeEthSlots = 0
+
+// Called once per pricing pass, before resolvePricingAtTime runs, with the real count of completion-
+// eligible native-ETH requirements about to be submitted (bounded to however many actually exist —
+// never a hardcoded "2", so a scan with 0 or 1 such requirements never over-reserves).
+export function reserveCoingeckoSlotsForNativeEth(count: number): void {
+  coingeckoReservedForNativeEthSlots = Math.max(0, count)
+}
+
+export function coingeckoReservedForNativeEthSlotsRemainingForTest(): number {
+  return coingeckoReservedForNativeEthSlots
 }
 
 // Detailed variant — used by the orchestrator (getPriceAtTime) for structured debug output.
@@ -54,6 +90,12 @@ export async function fetchCoingeckoPriceDetailed(
 ): Promise<CoingeckoPriceResult> {
   const platform = COINGECKO_PLATFORM_IDS[chain]
   if (!platform) return { priceUsd: null, reason: 'unverified_chain_for_coingecko' }
+
+  // RESERVED-SLOT SKIP: checked before the breaker itself — see coingeckoReservedForNativeEthSlots'
+  // own declaration above. Never a real network call, never risks tripping the shared breaker on
+  // behalf of a lower-priority ordinary request while a higher-priority native-ETH request still has
+  // a reserved slot outstanding this scan.
+  if (coingeckoReservedForNativeEthSlots > 0) return { priceUsd: null, reason: 'coingecko_reserved_for_native_eth' }
 
   // BREAKER SHORT-CIRCUIT: checked before any network call — see coingeckoCircuitOpen's own
   // declaration above for the full reasoning.
@@ -95,6 +137,35 @@ export async function fetchCoingeckoPriceDetailed(
   }
 }
 
+// PER-REQUIREMENT DIAGNOSTIC, DISCLOSED, BOUNDED (caller — pricingAtTimeAdapter.ts — snapshots this
+// via length-before/slice-after, same cross-request-leak guard convention as pricingRouteLog
+// elsewhere in this codebase): everything the task's own audit list asked for that is actually
+// observable at THIS layer. `txHash` and `fallbackSourcesAttempted` are unknown here (this function
+// only ever sees token/chain/timestamp) — left null/[] for the caller to fill in, since the caller
+// (the chain-aware router) is the one that knows both.
+export type NativeEthPricingDiagnostic = {
+  originalTimestamp: number
+  formattedDate: string | null
+  endpointType: 'native_coin_history'
+  circuitBreakerStateBeforeCall: boolean
+  requestAttempted: boolean
+  requestSkippedReason: string | null
+  httpStatus: number | null
+  responseShapePresent: { marketData: boolean; currentPrice: boolean; usd: boolean }
+  parsedPrice: number | null
+  failureReason:
+    | 'native_route_budget_blocked'
+    | 'coingecko_circuit_open'
+    | 'coingecko_http_429'
+    | 'coingecko_http_error'
+    | 'history_payload_missing_market_data'
+    | 'history_payload_missing_usd'
+    | 'invalid_price'
+    | 'invalid_timestamp'
+    | 'fetch_error'
+    | null
+}
+
 // NATIVE-ASSET HISTORY, DISCLOSED (ETH native-routing-mismatch fix): CoinGecko indexes native ETH
 // under its own coin id ("ethereum") via the real, documented `/coins/{id}/history` endpoint — a
 // DIFFERENT, more complete dataset than the CONTRACT-address-based `/coins/{platform}/contract/
@@ -103,13 +174,43 @@ export async function fetchCoingeckoPriceDetailed(
 // primary history has). Single-day precision (`date=DD-MM-YYYY`), matching this function's own
 // historical-lookup contract — never a current-price fallback, never applied to any date but the
 // one requested. Shares the SAME circuit breaker as the contract-based function above (same
-// CoinGecko rate-limit bucket).
-export async function fetchCoingeckoNativeEthPriceDetailed(timestamp: number): Promise<CoingeckoPriceResult> {
-  if (coingeckoCircuitOpen) return { priceUsd: null, reason: 'coingecko_circuit_open_after_429' }
+// CoinGecko rate-limit bucket) — see coingeckoReservedForNativeEthSlots' own header for why this
+// function ALSO decrements that reservation, unconditionally, the moment it is invoked.
+export async function fetchCoingeckoNativeEthPriceDetailed(
+  timestamp: number,
+): Promise<CoingeckoPriceResult & { diagnostic: NativeEthPricingDiagnostic }> {
+  const breakerStateBeforeCall = coingeckoCircuitOpen
+  // Reservation is consumed the moment this requirement gets its real turn — regardless of outcome —
+  // so ordinary contract-based calls resume immediately after, never blocked longer than necessary.
+  if (coingeckoReservedForNativeEthSlots > 0) coingeckoReservedForNativeEthSlots -= 1
+
+  const diagnostic: NativeEthPricingDiagnostic = {
+    originalTimestamp: timestamp,
+    formattedDate: null,
+    endpointType: 'native_coin_history',
+    circuitBreakerStateBeforeCall: breakerStateBeforeCall,
+    requestAttempted: false,
+    requestSkippedReason: null,
+    httpStatus: null,
+    responseShapePresent: { marketData: false, currentPrice: false, usd: false },
+    parsedPrice: null,
+    failureReason: null,
+  }
+
+  if (breakerStateBeforeCall) {
+    diagnostic.requestSkippedReason = 'coingecko_circuit_open'
+    diagnostic.failureReason = 'coingecko_circuit_open'
+    return { priceUsd: null, reason: 'coingecko_circuit_open_after_429', diagnostic }
+  }
 
   const date = new Date(timestamp)
-  if (Number.isNaN(date.getTime())) return { priceUsd: null, reason: 'invalid_timestamp' }
+  if (Number.isNaN(date.getTime())) {
+    diagnostic.requestSkippedReason = 'invalid_timestamp'
+    diagnostic.failureReason = 'invalid_timestamp'
+    return { priceUsd: null, reason: 'invalid_timestamp', diagnostic }
+  }
   const dateString = `${String(date.getUTCDate()).padStart(2, '0')}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${date.getUTCFullYear()}`
+  diagnostic.formattedDate = dateString
 
   const url = new URL('https://api.coingecko.com/api/v3/coins/ethereum/history')
   url.searchParams.set('date', dateString)
@@ -117,22 +218,41 @@ export async function fetchCoingeckoNativeEthPriceDetailed(timestamp: number): P
 
   const apiKey = process.env.COINGECKO_API_KEY
 
+  diagnostic.requestAttempted = true
   try {
     const res = await fetch(url.toString(), {
       headers: apiKey ? { 'x-cg-demo-api-key': apiKey } : {},
       signal: AbortSignal.timeout(8_000),
     })
+    diagnostic.httpStatus = res.status
     if (res.status === 429) {
       coingeckoCircuitOpen = true
-      return { priceUsd: null, reason: 'http_429' }
+      diagnostic.failureReason = 'coingecko_http_429'
+      return { priceUsd: null, reason: 'http_429', diagnostic }
     }
-    if (!res.ok) return { priceUsd: null, reason: `http_${res.status}` }
+    if (!res.ok) {
+      diagnostic.failureReason = 'coingecko_http_error'
+      return { priceUsd: null, reason: `http_${res.status}`, diagnostic }
+    }
 
     const data = (await res.json()) as { market_data?: { current_price?: { usd?: number } } }
+    diagnostic.responseShapePresent.marketData = data.market_data != null
+    diagnostic.responseShapePresent.currentPrice = data.market_data?.current_price != null
     const price = data.market_data?.current_price?.usd
-    return typeof price === 'number' && Number.isFinite(price) ? { priceUsd: price, reason: null } : { priceUsd: null, reason: 'no_price_for_date' }
+    diagnostic.responseShapePresent.usd = typeof price === 'number'
+    if (!diagnostic.responseShapePresent.marketData) {
+      diagnostic.failureReason = 'history_payload_missing_market_data'
+      return { priceUsd: null, reason: 'no_price_for_date', diagnostic }
+    }
+    if (typeof price !== 'number' || !Number.isFinite(price)) {
+      diagnostic.failureReason = diagnostic.responseShapePresent.currentPrice ? 'invalid_price' : 'history_payload_missing_usd'
+      return { priceUsd: null, reason: 'no_price_for_date', diagnostic }
+    }
+    diagnostic.parsedPrice = price
+    return { priceUsd: price, reason: null, diagnostic }
   } catch (err) {
-    return { priceUsd: null, reason: `fetch_error:${err instanceof Error ? err.message : 'unknown'}` }
+    diagnostic.failureReason = 'fetch_error'
+    return { priceUsd: null, reason: `fetch_error:${err instanceof Error ? err.message : 'unknown'}`, diagnostic }
   }
 }
 

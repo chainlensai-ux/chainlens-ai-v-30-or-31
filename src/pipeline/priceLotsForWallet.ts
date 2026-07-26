@@ -32,7 +32,8 @@ import type { CurrentPriceUsdLookup, MatchedLot, PriceUsdLookup } from '../modul
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { resolvePricingAtTime, priceableEntryIdentityKey } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
-import { pricingRouteLog, isSanePrice, type PricingRouteRecord } from './pricingAtTimeAdapter'
+import { pricingRouteLog, isSanePrice, ethNativeRoutingAuditLog, type PricingRouteRecord } from './pricingAtTimeAdapter'
+import { reserveCoingeckoSlotsForNativeEth } from '../modules/pricingAtTimeEngine/sources/coingecko'
 import {
   deriveSameTransactionQuotePrice,
   groupSwapLegsByTransaction,
@@ -477,12 +478,57 @@ export async function priceLotsForWallet(params: {
   }
 
   const routeLogSnapshotBefore = pricingRouteLog.length
+  const ethNativeAuditLogSnapshotBefore = ethNativeRoutingAuditLog.length
+
+  // COINGECKO RESERVATION, DISCLOSED (confirmed production bug: two Tier-2 ETH native requirements,
+  // correctly prioritised and routed, both returned resolvedPriceUsd: null with "CoinGecko elsewhere
+  // reports circuit_open_after_429" — the shared, process-lifetime CoinGecko breaker was tripped by
+  // an EARLIER, lower-priority ordinary CoinGecko contract call within this same scan, before the
+  // two high-priority native ETH requirements ever got their own turn). Reserves exactly the number
+  // of ETH-native requirements that will actually be attempted before the cap exhausts (never a
+  // hardcoded "2") — see coingecko.ts's own reserveCoingeckoSlotsForNativeEth header for the full
+  // mechanism: this never raises the total CoinGecko call ceiling, it only defers lower-priority
+  // ordinary calls until the reserved native attempts have each had their own real turn.
+  const ethNativeSelectedCount = sortedNativeCandidates.slice(0, assumedCapSlots).filter((c) => c.chain === 'eth').length
+  reserveCoingeckoSlotsForNativeEth(ethNativeSelectedCount)
 
   const atTradeTime = await resolvePricingAtTime({
     buyEntries: buys.map((e) => toPriceableEntry(e, rankForEvent(e))),
     sellEntries: [...sells.map((e) => toPriceableEntry(e, rankForEvent(e))), ...nativeQuoteEntries],
     priceSources: params.priceSources,
   })
+
+  // PER-REQUIREMENT ETH-NATIVE DIAGNOSTIC, DISCLOSED, BOUNDED — cross-references
+  // pricingAtTimeAdapter.ts's own ethNativeRoutingAuditLog (which has every field observable at the
+  // provider layer: breaker state, HTTP status, response shape, parsed price, exact failure reason,
+  // fallback sources subsequently attempted) with this file's own knowledge of WHICH closed-lot
+  // requirement (txHash) each attempt belongs to — matched by originalTimestamp, the only identifier
+  // shared between the two layers (PriceSourceFn carries no txHash).
+  const ethNativeAuditEntriesThisCall = ethNativeRoutingAuditLog.slice(ethNativeAuditLogSnapshotBefore)
+  const ethNativeRequirementDiagnostics = sortedNativeCandidates
+    .filter((c) => c.chain === 'eth')
+    .map((c) => {
+      const auditEntry = ethNativeAuditEntriesThisCall.find((a) => a.diagnostic.originalTimestamp === c.timestamp)
+      return {
+        txHash: c.txHash,
+        originalTimestamp: c.timestamp,
+        formattedDate: auditEntry?.diagnostic.formattedDate ?? null,
+        routeEligibilityMatched: auditEntry != null,
+        requestAttempted: auditEntry?.diagnostic.requestAttempted ?? false,
+        requestSkippedReason: auditEntry?.diagnostic.requestSkippedReason ?? (auditEntry == null ? 'native_route_not_matched' : null),
+        circuitBreakerStateBeforeCall: auditEntry?.diagnostic.circuitBreakerStateBeforeCall ?? null,
+        endpointType: 'native_coin_history' as const,
+        httpStatus: auditEntry?.diagnostic.httpStatus ?? null,
+        responseShapePresent: auditEntry?.diagnostic.responseShapePresent ?? null,
+        parsedPrice: auditEntry?.diagnostic.parsedPrice ?? null,
+        failureReason: auditEntry?.diagnostic.failureReason ?? null,
+        fallbackSourcesAttempted: auditEntry?.fallbackSourcesAttempted ?? [],
+      }
+    })
+  if (ethNativeRequirementDiagnostics.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn('[quote-leg-eth-native-provider-audit]', { requirements: ethNativeRequirementDiagnostics })
+  }
 
   // CAP-VS-PROVIDER-MISS SPLIT, DISCLOSED (confirmed production bug: top completion candidates
   // reached pricing with correct negative ranks -42/-41 — genuinely SURVIVING the cap — yet still
