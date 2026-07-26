@@ -171,6 +171,23 @@ function windowCutoffMs(windowDays: number): number {
   return Date.now() - windowDays * 24 * 60 * 60 * 1000
 }
 
+// Canonical native-asset pseudo-address, DISCLOSED. Covalent's `transfers` resource on
+// transactions_v3 (read below) is ERC20-log-derived only — a wallet's own native ETH send (e.g.
+// "swap ETH for TOKEN" via a router, msg.value > 0, no ERC20 Transfer log for the ETH leg itself) is
+// never present in `transfers` at all. That same already-fetched transaction OBJECT (not a new
+// request — see `tx` below) also carries the standard Covalent top-level `value`/`from_address`/
+// `to_address` fields describing exactly this native transfer. Synthesizing one RawProviderEvent
+// from those fields — using this widely-recognized native-asset placeholder address so it passes
+// normalization's isValidContract check (which requires a 0x+40-hex address and would otherwise
+// discard a null contract with `missing_contract`) — surfaces data that was already paid for and
+// already sitting in this same HTTP response, at zero additional provider calls.
+export const NATIVE_ASSET_ADDRESS = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+
+// Positive-integer decimal string check — Covalent's `value` field is a base-10 wei string.
+function isPositiveDecimalString(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9]+$/.test(value) && value !== '0' && !/^0+$/.test(value)
+}
+
 // Fetches a SINGLE bounded page from GoldRush (Covalent) transactions_v3. Never pages further —
 // "never deep-page" (Architecture Step 1/8). Never throws: any failure resolves to
 // { ok: false, events: [], errorReason }.
@@ -218,6 +235,31 @@ export async function fetchGoldrushRawEvents(
       // raised (the provider call still reported ok: true). Removed: every transfer already present
       // in this same, already-fetched HTTP response is now considered, still bounded by the existing
       // MAX_RAW_EVENTS_PER_PROVIDER check inside the loop below — zero added provider calls or cost.
+      // NATIVE-VALUE SYNTHESIS, DISCLOSED (see NATIVE_ASSET_ADDRESS above for the full trace): only
+      // constructed when this SAME already-fetched `tx` object's own top-level fields describe a
+      // real native transfer — never a new request, never a guess. `tx.from_address`/`tx.to_address`
+      // are the transaction's own signer/recipient, exactly as reliable as `tr.from_address`/
+      // `tr.to_address` are for an ERC20 leg below.
+      if (
+        isPositiveDecimalString(tx.value) &&
+        typeof tx.from_address === 'string' &&
+        typeof tx.to_address === 'string' &&
+        events.length < MAX_RAW_EVENTS_PER_PROVIDER
+      ) {
+        events.push({
+          provider: 'goldrush',
+          chain,
+          txHash,
+          timestamp,
+          fromAddress: (tx.from_address as string).toLowerCase(),
+          toAddress: (tx.to_address as string).toLowerCase(),
+          contract: NATIVE_ASSET_ADDRESS,
+          symbol: 'ETH',
+          amountRaw: tx.value as string,
+          tokenDecimals: 18,
+        })
+      }
+      if (events.length >= MAX_RAW_EVENTS_PER_PROVIDER) break
       const transfers: unknown[] = Array.isArray(tx.transfers) ? tx.transfers : []
       for (const transfer of transfers) {
         if (events.length >= MAX_RAW_EVENTS_PER_PROVIDER) break

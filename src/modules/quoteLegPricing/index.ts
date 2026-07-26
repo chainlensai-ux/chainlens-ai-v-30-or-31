@@ -293,3 +293,13 @@ export function groupSwapLegsByTransaction(events: readonly NormalizedEvent[]): 
 export function swapLegGroupKey(chain: SupportedChain, txHash: string): string {
   return `${chain}:${txHash.toLowerCase()}`
 }
+
+// Diagnostic helper — true when `contract` is a verified stablecoin or canonical WETH address on
+// `chain`, or the native-asset symbol itself. Exported so callers can report "how many transactions
+// even contain a verified quote asset" without duplicating the address registries above.
+export function isVerifiedQuoteLegAddress(chain: SupportedChain, contract: string, symbol: string): boolean {
+  if (symbol === 'ETH') return true
+  if (stablecoinSymbolFor(chain, contract) !== null) return true
+  const set = CANONICAL_WETH_ADDRESSES[chain]
+  return set ? set.has(contract.toLowerCase()) : false
+}

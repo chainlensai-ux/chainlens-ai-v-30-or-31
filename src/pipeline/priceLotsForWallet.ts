@@ -33,7 +33,13 @@ import type { NormalizedEvent } from '../modules/normalization/types'
 import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
 import { pricingRouteLog, isSanePrice, type PricingRouteRecord } from './pricingAtTimeAdapter'
-import { deriveSameTransactionQuotePrice, groupSwapLegsByTransaction, swapLegGroupKey, type QuoteLegPriceResult } from '../modules/quoteLegPricing/index'
+import {
+  deriveSameTransactionQuotePrice,
+  groupSwapLegsByTransaction,
+  swapLegGroupKey,
+  isVerifiedQuoteLegAddress,
+  type QuoteLegPriceResult,
+} from '../modules/quoteLegPricing/index'
 
 function toPriceableEntry(event: NormalizedEvent, pairRank: number | undefined): PriceableEntry {
   return {
@@ -203,6 +209,45 @@ export async function priceLotsForWallet(params: {
   // already computed for that SAME transaction's opposite-direction leg (already resolved as its own
   // ordinary priced entry — see buys/sells above), never re-fetched.
   const swapLegsByTx = groupSwapLegsByTransaction(merged)
+
+  // FORENSIC LOOKUP-BUILD DIAGNOSTICS, DISCLOSED, ADDITIVE — answers "why does every lookup group
+  // have no usable opposite leg" directly from real data, without guessing. Confirms (a) the lookup
+  // is built from `merged` — the full canonical normalized+recovered event set (mergeNormalizedEvents
+  // above), never from `buys`/`sells` (the already-filtered, direction-gated pricing-requirement
+  // arrays) — and (b) exactly how many groups are single-leg vs multi-leg, which pins the loss to
+  // either "never ingested" (single-leg, no candidate anywhere in `merged`) or "present but
+  // mismatched" (multi-leg groups that still failed to match, a real bug in the selection logic
+  // rather than an ingestion gap).
+  let legCountOne = 0
+  let legCountTwo = 0
+  let legCountThreeOrMore = 0
+  let transactionsWithVerifiedQuoteAddress = 0
+  const sampleTransactions: Array<{ groupKey: string; legs: Array<{ contract: string; symbol: string; direction: string }> }> = []
+  for (const [groupKey, legs] of swapLegsByTx) {
+    if (legs.length === 1) legCountOne += 1
+    else if (legs.length === 2) legCountTwo += 1
+    else legCountThreeOrMore += 1
+    const [chainPart] = groupKey.split(':')
+    if (legs.some((leg) => isVerifiedQuoteLegAddress(chainPart as NormalizedEvent['chain'], leg.contract, leg.symbol))) {
+      transactionsWithVerifiedQuoteAddress += 1
+    }
+    if (sampleTransactions.length < 10) {
+      sampleTransactions.push({
+        groupKey,
+        legs: legs.map((leg) => ({ contract: leg.contract, symbol: leg.symbol, direction: leg.direction })),
+      })
+    }
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[quote-leg-lookup-forensics]', {
+    lookupBuiltFrom: 'merged (mergeNormalizedEvents(normalizedEvents, recoveredEvents)) — the full canonical set, never buys/sells',
+    mergedEventCount: merged.length,
+    transactionsInSwapLookup: swapLegsByTx.size,
+    legCountDistribution: { oneLeg: legCountOne, twoLegs: legCountTwo, threeOrMoreLegs: legCountThreeOrMore },
+    transactionsWithVerifiedQuoteAddress,
+    sampleTransactions,
+  })
+
   const quoteLegCache = new Map<string, QuoteLegPriceResult>()
   let sameTxStablePricesRecovered = 0
   let sameTxNativePricesRecovered = 0
@@ -222,11 +267,15 @@ export async function priceLotsForWallet(params: {
     timestamp: string
   }> = []
   const distinctTransactionsUsed = new Set<string>()
+  let targetTransactionFoundInLookup = 0
+  let targetTransactionMissingFromLookup = 0
 
   function applySameTxQuoteLegGapFill(event: NormalizedEvent, targetDict: Record<string, number | null>, side: 'entry' | 'exit'): void {
     if (targetDict[event.txHash] != null) return // an existing, stronger price already resolved — never reordered/overwritten
     const groupKey = swapLegGroupKey(event.chain, event.txHash)
     const legs = swapLegsByTx.get(groupKey) ?? []
+    if (legs.length > 0) targetTransactionFoundInLookup += 1
+    else targetTransactionMissingFromLookup += 1
     const cacheKey = `${groupKey}:${event.contract.toLowerCase()}:${event.direction}`
     let result = quoteLegCache.get(cacheKey)
     if (!result) {
@@ -313,6 +362,8 @@ export async function priceLotsForWallet(params: {
     // direction pool-side leg), then the recovered counts below (a valid opposite leg existed AND was
     // a verified stablecoin/native quote AND produced a sane price).
     transactionsInSwapLookup: swapLegsByTx.size,
+    targetTransactionFoundInLookup,
+    targetTransactionMissingFromLookup,
     requirementsWithValidOppositeLeg,
     sameTxStablePricesRecovered,
     sameTxNativePricesRecovered,
