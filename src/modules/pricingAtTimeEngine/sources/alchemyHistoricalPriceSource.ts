@@ -1,0 +1,298 @@
+// MODULE — pricingAtTimeEngine/sources: alchemyHistoricalPriceSource
+//
+// SHADOW MODE, DISCLOSED: this module ONLY records what Alchemy's real historical-price endpoint
+// would have returned for still-unresolved closed-lot pricing requirements — it never writes into
+// costUsd/proceedsUsd, never changes FIFO/ranking/PnL/public-gate output. It exists to gather real,
+// safe, bounded evidence before ever being wired into the official pricing path.
+//
+// REAL ENDPOINT, VERIFIED: Alchemy's Prices API historical endpoint —
+// POST https://api.g.alchemy.com/prices/v1/{apiKey}/tokens/historical
+// body: { network, address, startTime, endTime, interval } — returns a real daily/hourly price
+// series for one (network, address) pair over a bounded time range. This is the ONLY Alchemy
+// pricing call this module makes; no per-trade lookups, no "all holdings" sweep.
+//
+// KEY REUSE, DISCLOSED: this module keeps its own local copy of the chain->key-names/network-slug
+// map — same "no runtime coupling between modules" convention already used throughout this codebase
+// (providerFetchWindow/utils.ts, recoveryPolicy, holdings, goldrushPriceSource.ts's own chain-slug
+// copy, etc.) — rather than importing providerFetchWindow's private (unexported) alchemyApiKey.
+
+import type { SupportedChain } from '../../providerFetchWindow/types'
+
+const ALCHEMY_KEY_NAMES: Partial<Record<SupportedChain, string[]>> = {
+  eth: ['ALCHEMY_ETHEREUM_KEY', 'ALCHEMY_ETH_KEY', 'ALCHEMY_ETH_API_KEY', 'ALCHEMY_API_KEY'],
+  base: ['ALCHEMY_BASE_KEY', 'ALCHEMY_BASE_API_KEY', 'BASE_ALCHEMY_API_KEY', 'ALCHEMY_API_KEY'],
+  arbitrum: ['ALCHEMY_ARBITRUM_KEY', 'ALCHEMY_ARBITRUM_API_KEY', 'ARBITRUM_ALCHEMY_API_KEY', 'ALCHEMY_API_KEY'],
+  // hyperevm intentionally omitted — no verified Alchemy network slug for it, same convention as
+  // providerFetchWindow/utils.ts's own ALCHEMY_VERIFIED_CHAINS.
+}
+const ALCHEMY_NETWORK_SLUGS: Partial<Record<SupportedChain, string>> = {
+  eth: 'eth-mainnet',
+  base: 'base-mainnet',
+  arbitrum: 'arb-mainnet',
+}
+
+function alchemyApiKey(chain: SupportedChain): string {
+  const names = ALCHEMY_KEY_NAMES[chain]
+  if (!names) return ''
+  for (const name of names) {
+    const value = process.env[name]
+    if (value && value.trim().length > 0) return value.trim()
+  }
+  return ''
+}
+
+// Canonical native/WETH + verified stablecoin addresses, per chain — this module's OWN local copy
+// (same convention as quoteLegPricing/index.ts's registries), used only for tier-2 priority
+// classification below, never for any pricing-derivation logic.
+const TIER2_ADDRESSES: Partial<Record<SupportedChain, Set<string>>> = {
+  eth: new Set([
+    '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', // WETH
+    '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', // USDC
+    '0xdac17f958d2ee523a2206206994597c13d831ec7', // USDT
+    '0x6b175474e89094c44da98b954eedeac495271d0f', // DAI
+  ]),
+  base: new Set([
+    '0x4200000000000000000000000000000000000006', // WETH
+    '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC
+    '0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca', // USDbC
+  ]),
+  arbitrum: new Set([
+    '0x82af49447d8a07e3bd95bd0d56f35241523fbab1', // WETH
+    '0xaf88d065e77c8cc2239327c5edb3a432268e5831', // USDC
+    '0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9', // USDT
+    '0xda10009cbd5d07dd0cecc66161fc93d7c9000da1', // DAI
+  ]),
+}
+
+export function isTier2Asset(chain: SupportedChain, contract: string): boolean {
+  const set = TIER2_ADDRESSES[chain]
+  return set ? set.has(contract.toLowerCase()) : false
+}
+
+// BOUNDED BUDGET, DISCLOSED: 10 live Alchemy requests per scan, matching Alchemy's documented ~40 CU
+// cost for one historical-price call — 10 * 40 = 400 CU ceiling per scan, never exceeded regardless
+// of how many distinct assets/requirements exist.
+export const MAX_ALCHEMY_HISTORICAL_REQUESTS_PER_SCAN = 10
+export const ESTIMATED_CU_PER_ALCHEMY_HISTORICAL_REQUEST = 40
+
+export type AlchemyPricingRequirement = {
+  chain: SupportedChain
+  token: string
+  txHash: string
+  timestamp: number
+  oneSideMissing: boolean
+}
+
+export type AlchemyHistoricalPricePoint = { timestamp: number; priceUsd: number }
+
+export type AlchemyAssetRangeResult = {
+  ok: boolean
+  reason: string | null
+  points: AlchemyHistoricalPricePoint[]
+}
+
+// PER-SCAN STATE, DISCLOSED — reset at the same per-scan boundary every other provider-call-budget
+// state in this codebase resets at (see resetAlchemyHistoricalPricingState below).
+let liveRequests = 0
+let cacheHitsCount = 0
+let coalescedHitsCount = 0
+let cappedRequestsCount = 0
+let duplicateRequestCount = 0
+const rangeCache = new Map<string, Promise<AlchemyAssetRangeResult>>()
+const requestedRangeKeysThisScan = new Set<string>()
+
+export function resetAlchemyHistoricalPricingState(): void {
+  liveRequests = 0
+  cacheHitsCount = 0
+  coalescedHitsCount = 0
+  cappedRequestsCount = 0
+  duplicateRequestCount = 0
+  rangeCache.clear()
+  requestedRangeKeysThisScan.clear()
+}
+
+function assetKey(chain: SupportedChain, token: string): string {
+  return `${chain}:${token.toLowerCase()}`
+}
+
+// PRIORITY, DISCLOSED, per this task's explicit ordering:
+//   1. one-side-missing lots (the specific gap this whole feature exists to close)
+//   2. ETH/WETH/stables (deepest, most reliable coverage — worth spending a scarce slot on)
+//   3. everything else ("established tokens" — this codebase has no verified "established" signal
+//      to rank within this tier by, so it is left in its original, deterministic input order rather
+//      than guessing a popularity heuristic; honestly disclosed, not silently assumed).
+function tierOf(req: Pick<AlchemyPricingRequirement, 'chain' | 'token' | 'oneSideMissing'>): 1 | 2 | 3 {
+  if (req.oneSideMissing) return 1
+  if (isTier2Asset(req.chain, req.token)) return 2
+  return 3
+}
+
+export type AlchemyHistoricalAuditRecord = {
+  eligibleRequirements: number
+  uniqueAssets: number
+  liveRequests: number
+  cacheHits: number
+  coalescedHits: number
+  cappedRequests: number
+  estimatedCu: number
+  duplicateRequestCount: number
+}
+
+async function fetchAlchemyHistoricalRange(
+  chain: SupportedChain,
+  token: string,
+  startTimeMs: number,
+  endTimeMs: number,
+): Promise<AlchemyAssetRangeResult> {
+  const networkSlug = ALCHEMY_NETWORK_SLUGS[chain]
+  if (!networkSlug) return { ok: false, reason: 'unverified_chain_for_alchemy_prices', points: [] }
+
+  const apiKey = alchemyApiKey(chain)
+  if (!apiKey) return { ok: false, reason: 'no_api_key_configured', points: [] }
+
+  // REQUEST-SCOPED SINGLEFLIGHT/CACHE, DISCLOSED: keyed by chain+token+bounded-range — identical
+  // ranges (the common case: this SAME asset's whole scan-worth of requirements collapsed into ONE
+  // range by groupRequirementsByAsset below) execute exactly once. Stored BEFORE any await, so
+  // concurrent callers for the identical range share the in-flight promise.
+  const key = `${assetKey(chain, token)}:${startTimeMs}:${endTimeMs}`
+  if (requestedRangeKeysThisScan.has(key)) duplicateRequestCount += 1
+  requestedRangeKeysThisScan.add(key)
+
+  const existing = rangeCache.get(key)
+  if (existing) {
+    coalescedHitsCount += 1
+    return existing
+  }
+
+  if (liveRequests >= MAX_ALCHEMY_HISTORICAL_REQUESTS_PER_SCAN) {
+    cappedRequestsCount += 1
+    const cappedResult: AlchemyAssetRangeResult = { ok: false, reason: 'capped', points: [] }
+    return cappedResult
+  }
+
+  liveRequests += 1
+  const live = (async (): Promise<AlchemyAssetRangeResult> => {
+    try {
+      const res = await fetch(`https://api.g.alchemy.com/prices/v1/${apiKey}/tokens/historical`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          network: networkSlug,
+          address: token,
+          startTime: new Date(startTimeMs).toISOString(),
+          endTime: new Date(endTimeMs).toISOString(),
+          interval: '1d',
+        }),
+        signal: AbortSignal.timeout(8_000),
+        // NO RETRIES, DISCLOSED: a single bounded attempt — a miss/error here falls through to the
+        // existing (unchanged) fallback chain, exactly like any other source's own honest miss.
+      })
+      if (!res.ok) return { ok: false, reason: `http_${res.status}`, points: [] }
+
+      const data = (await res.json()) as { data?: Array<{ timestamp?: string; value?: string }> }
+      const series = Array.isArray(data.data) ? data.data : []
+      const points: AlchemyHistoricalPricePoint[] = []
+      for (const entry of series) {
+        const ts = entry.timestamp ? Date.parse(entry.timestamp) : NaN
+        const price = entry.value !== undefined ? Number(entry.value) : NaN
+        if (Number.isFinite(ts) && Number.isFinite(price) && price > 0) points.push({ timestamp: ts, priceUsd: price })
+      }
+      if (points.length === 0) return { ok: false, reason: 'no_price_series_in_range', points: [] }
+      return { ok: true, reason: null, points }
+    } catch (err) {
+      return { ok: false, reason: `fetch_error:${err instanceof Error ? err.message : 'unknown'}`, points: [] }
+    }
+  })()
+
+  rangeCache.set(key, live)
+  return live
+}
+
+function closestPoint(points: AlchemyHistoricalPricePoint[], timestamp: number): number | null {
+  if (points.length === 0) return null
+  const closest = points.reduce((a, b) => (Math.abs(b.timestamp - timestamp) < Math.abs(a.timestamp - timestamp) ? b : a))
+  return closest.priceUsd
+}
+
+// SHADOW-MODE RESOLUTION, DISCLOSED, ADDITIVE — groups requirements by (chain, token), assigns ONE
+// bounded historical range per asset (covering every requirement's own timestamp for that asset,
+// never "all holdings" and never one request per trade), prioritises which assets get the bounded
+// live-request budget by the tiers above, and returns a per-requirement shadow price alongside the
+// full audit record. NEVER writes into costUsd/proceedsUsd — the caller decides, separately, whether
+// to ever act on this (today: nowhere does).
+export async function resolveAlchemyHistoricalPricesShadow(
+  requirements: AlchemyPricingRequirement[],
+): Promise<{
+  shadowPricesByTxHash: Map<string, number>
+  audit: AlchemyHistoricalAuditRecord
+}> {
+  const eligibleRequirements = requirements.length
+  const byAsset = new Map<string, AlchemyPricingRequirement[]>()
+  for (const req of requirements) {
+    const key = assetKey(req.chain, req.token)
+    const list = byAsset.get(key) ?? []
+    list.push(req)
+    byAsset.set(key, list)
+  }
+
+  // Priority order across ASSETS (not individual requirements): an asset's own tier is the BEST
+  // (lowest-numbered) tier among any of its requirements — e.g. one asset with even a single
+  // one-side-missing requirement is tier 1 for the whole asset, since one bounded range covers all
+  // of that asset's requirements together anyway.
+  const assetEntries = [...byAsset.entries()].map(([key, reqs]) => ({
+    key,
+    reqs,
+    tier: Math.min(...reqs.map((r) => tierOf(r))) as 1 | 2 | 3,
+  }))
+  assetEntries.sort((a, b) => a.tier - b.tier)
+
+  const shadowPricesByTxHash = new Map<string, number>()
+  let cacheHitsForThisCall = 0
+
+  for (const { reqs } of assetEntries) {
+    const [{ chain, token }] = reqs
+    const timestamps = reqs.map((r) => r.timestamp)
+    const startTimeMs = Math.min(...timestamps)
+    const endTimeMs = Math.max(...timestamps)
+    const wasCached = rangeCache.has(`${assetKey(chain, token)}:${startTimeMs}:${endTimeMs}`)
+
+    const result = await fetchAlchemyHistoricalRange(chain, token, startTimeMs, endTimeMs)
+    if (wasCached) cacheHitsForThisCall += 1
+
+    if (!result.ok) continue
+    for (const req of reqs) {
+      const price = closestPoint(result.points, req.timestamp)
+      if (price != null) shadowPricesByTxHash.set(req.txHash, price)
+    }
+  }
+
+  cacheHitsCount += cacheHitsForThisCall
+
+  const audit: AlchemyHistoricalAuditRecord = {
+    eligibleRequirements,
+    uniqueAssets: byAsset.size,
+    liveRequests,
+    cacheHits: cacheHitsCount,
+    coalescedHits: coalescedHitsCount,
+    cappedRequests: cappedRequestsCount,
+    estimatedCu: liveRequests * ESTIMATED_CU_PER_ALCHEMY_HISTORICAL_REQUEST,
+    duplicateRequestCount,
+  }
+
+  return { shadowPricesByTxHash, audit }
+}
+
+// TEST-SUPPORT EXPORTS, DISCLOSED: read-only observability, same convention as this codebase's other
+// per-scan state (isGoldrushBreakerOpenForTest, isCoingeckoCircuitOpenForTest).
+export function getAlchemyHistoricalPricingCountersForTest(): AlchemyHistoricalAuditRecord {
+  return {
+    eligibleRequirements: 0,
+    uniqueAssets: 0,
+    liveRequests,
+    cacheHits: cacheHitsCount,
+    coalescedHits: coalescedHitsCount,
+    cappedRequests: cappedRequestsCount,
+    estimatedCu: liveRequests * ESTIMATED_CU_PER_ALCHEMY_HISTORICAL_REQUEST,
+    duplicateRequestCount,
+  }
+}

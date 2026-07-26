@@ -34,6 +34,7 @@ import { resolvePricingAtTime, priceableEntryIdentityKey } from '../modules/pric
 import type { PriceableEntry, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
 import { pricingRouteLog, isSanePrice, ethNativeRoutingAuditLog, type PricingRouteRecord } from './pricingAtTimeAdapter'
 import { reserveCoingeckoSlotsForNativeEth, getNativeEthHistoryCoalescingDiagnostics } from '../modules/pricingAtTimeEngine/sources/coingecko'
+import { resolveAlchemyHistoricalPricesShadow, type AlchemyPricingRequirement } from '../modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource'
 import {
   deriveSameTransactionQuotePrice,
   groupSwapLegsByTransaction,
@@ -823,6 +824,31 @@ export async function priceLotsForWallet(params: {
   if (sampleRecovered.length > 0) {
     // eslint-disable-next-line no-console
     console.warn('[historical-quote-leg-coverage] sample', { samples: sampleRecovered })
+  }
+
+  // SHADOW-MODE ALCHEMY HISTORICAL PRICING, DISCLOSED, ADDITIVE — records what Alchemy's real,
+  // bounded historical-price endpoint would resolve for closed lots STILL missing a price after
+  // every existing source (goldrush/dexscreener/geckoterminal/coingecko/basedex + the same-tx
+  // quote-leg gap-fill above) has already run. NEVER writes into atTradeTime.costUsd/proceedsUsd —
+  // no FIFO/ranking/PnL/public-gate output can be affected by this block; it exists purely to gather
+  // real, safe, bounded evidence (grouped by asset, singleflight-cached, capped at
+  // MAX_ALCHEMY_HISTORICAL_REQUESTS_PER_SCAN live requests) before this source is ever wired into the
+  // official pricing path.
+  const alchemyShadowRequirements: AlchemyPricingRequirement[] = []
+  for (const lot of structuralMatchedLots) {
+    const hasEntry = atTradeTime.costUsd[lot.openedTxHash] != null
+    const hasExit = atTradeTime.proceedsUsd[lot.closedTxHash] != null
+    if (!hasEntry) {
+      alchemyShadowRequirements.push({ chain: lot.chain, token: lot.token, txHash: lot.openedTxHash, timestamp: lot.openedAt, oneSideMissing: hasExit })
+    }
+    if (!hasExit) {
+      alchemyShadowRequirements.push({ chain: lot.chain, token: lot.token, txHash: lot.closedTxHash, timestamp: lot.closedAt, oneSideMissing: hasEntry })
+    }
+  }
+  if (alchemyShadowRequirements.length > 0) {
+    const { audit: alchemyShadowAudit } = await resolveAlchemyHistoricalPricesShadow(alchemyShadowRequirements)
+    // eslint-disable-next-line no-console
+    console.warn('[alchemy-historical-pricing-shadow]', alchemyShadowAudit)
   }
 
   // CLOSED-LOT PRICING COVERAGE DIAGNOSTICS, DISCLOSED, ADDITIVE — bounded (one summary object, no

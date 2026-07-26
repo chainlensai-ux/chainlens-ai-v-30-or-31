@@ -128,6 +128,12 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   // entirely separate, uncoordinated DexScreener implementations, neither aware of the other's
   // calls or budget).
   const { resetDexscreenerRequestCache, getDexscreenerRequestDiagnostics } = await import('@/src/lib/dexscreenerRequestCache')
+  // SHADOW-MODE ALCHEMY HISTORICAL PRICING RESET, DISCLOSED: same per-job reset convention as every
+  // other request-scoped provider budget/cache above — see alchemyHistoricalPriceSource.ts's own
+  // header for why this scan's live-request budget/singleflight cache must never leak into an
+  // unrelated later scan on a warm serverless instance. This module is shadow-mode only (records
+  // results, never feeds official pricing) — resetting it has no effect on FIFO/PnL/coverage.
+  const { resetAlchemyHistoricalPricingState } = await import('@/src/modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource')
 
   const startedAt = Date.now()
   console.warn('[wallet-scan-worker] job started', { jobId: payload.jobId })
@@ -149,6 +155,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   resetProviderFetchWindowRequestCache(payload.jobId)
   resetRecoveryHistoricalPageRequestCache()
   resetDexscreenerRequestCache()
+  resetAlchemyHistoricalPricingState()
 
   let finalBody: unknown
   let completedSuccessfully = false
