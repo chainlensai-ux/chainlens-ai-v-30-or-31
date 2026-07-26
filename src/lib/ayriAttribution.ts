@@ -11,6 +11,46 @@ export type AyriSyntheticInvolvement = 'syntheticAligned' | 'syntheticOnly' | 'n
 export type AyriYieldClassification = 'realized' | 'unrealized'
 export type AyriIntegrityTier = 'high' | 'medium' | 'low'
 
+// VERIFIED SOURCES, DISCLOSED: primaryPrice/fallbackPrice/ratioPrice are all directly observed
+// market prices (a real provider quote or a real on-chain pair ratio); syntheticPrice/recoveredPrice
+// are internal reconstructions the pipeline builds when no direct market price could be found. Only
+// the former count toward "verified" pricing coverage below.
+const VERIFIED_ATTRIBUTION_SOURCES: ReadonlySet<AyriAttributionSource> = new Set(['primaryPrice', 'fallbackPrice', 'ratioPrice'])
+
+// THRESHOLDS, DISCLOSED (this task's explicit "public confidence cannot be HIGH when verified
+// historical pricing coverage is below the required threshold" requirement): kept at the same
+// numeric values this file already used for its old, single-signal thresholds (0.95 / 0.75) — this
+// task asks for a required threshold to gate HIGH, not a specific new number, so the existing,
+// already-reviewed values are reused rather than inventing new ones.
+const INTEGRITY_HIGH_THRESHOLD = 0.95
+const INTEGRITY_MEDIUM_THRESHOLD = 0.75
+
+// PURE, exported for direct testing. NEVER derives integrityTier from attribution coverage alone
+// (this task's explicit requirement) — HIGH requires attribution coverage, VERIFIED pricing
+// coverage, zero critical mismatches, AND a non-'unavailable' publicPnlStatus all at once.
+// publicPnlStatus === 'unavailable' OVERRIDES every other signal straight to 'low', regardless of
+// how complete attribution/pricing coverage otherwise looks (this task's explicit "publicPnlStatus
+// unavailable always overrides internal confidence labels" requirement) — a wallet's own internal
+// bookkeeping can never present a confident label the public PnL pipeline itself couldn't verify.
+export function deriveIntegrityTier(params: {
+  attributionCoveragePercent: number
+  verifiedPricingCoveragePercent: number
+  criticalMismatchCount: number
+  publicPnlStatus: 'available' | 'partial' | 'unavailable'
+}): AyriIntegrityTier {
+  if (params.publicPnlStatus === 'unavailable') return 'low'
+  if (
+    params.attributionCoveragePercent >= INTEGRITY_HIGH_THRESHOLD
+    && params.verifiedPricingCoveragePercent >= INTEGRITY_HIGH_THRESHOLD
+    && params.criticalMismatchCount === 0
+  ) return 'high'
+  if (
+    params.attributionCoveragePercent >= INTEGRITY_MEDIUM_THRESHOLD
+    && params.verifiedPricingCoveragePercent >= INTEGRITY_MEDIUM_THRESHOLD
+  ) return 'medium'
+  return 'low'
+}
+
 export type AyriAttributionRecord = {
   token: string
   chain: string
@@ -29,16 +69,18 @@ export type AyriAttributionRecord = {
 export type AyriAttributionSummary = {
   totalLots: number
   attributedLots: number
-  // coveragePercent = attributedLots / totalLots: this measures ATTRIBUTION coverage — how many
-  // lots got any attribution record at all (a lot can be attributed via routerCorrected/
-  // syntheticAligned/priceRecovered bookkeeping without ever having a real priced realizedUsd).
-  // COVERAGE-SEPARATION FIX, DISCLOSED (confirmed, real production evidence: coveragePercent: 1,
-  // integrityTier: 'high' shown alongside realizedPnlUsd: 0 with zero fully priced lots — a
-  // misleading "100% coverage" claim when historical pricing coverage was actually poor).
-  // fullyPricedLots/historicalPricingCoveragePercent below are the separate, explicit PRICING
-  // coverage this summary was previously conflating with attribution coverage. coveragePercent and
-  // attributedLots are kept as-is (unrenamed) for existing consumers — only additive fields below.
-  coveragePercent: number
+  // RENAMED, DISCLOSED (holdings/PnL-confidence audit task, explicit "rename ayri coveragePercent to
+  // attributionCoveragePercent" requirement): attributionCoveragePercent = attributedLots /
+  // totalLots — this measures ATTRIBUTION coverage only: how many lots got any attribution record
+  // at all (a lot can be attributed via routerCorrected/syntheticAligned/priceRecovered bookkeeping
+  // without ever having a real priced realizedUsd). Renamed from the previous `coveragePercent` —
+  // every consumer (finalReportAssembler.ts, tests) updated alongside this rename, none left on the
+  // old name. See historicalPricingCoveragePercent/verifiedPricingCoveragePercent below for the two
+  // genuinely distinct PRICING-coverage concepts this field must never be conflated with — a wallet
+  // can legitimately show 100% attributionCoveragePercent while its real pricing coverage is poor or
+  // zero (confirmed real production evidence: coveragePercent: 1, integrityTier: 'high' shown
+  // alongside realizedPnlUsd: 0 with zero fully priced lots).
+  attributionCoveragePercent: number
   integrityTier: AyriIntegrityTier
   primaryCount: number
   fallbackCount: number
@@ -50,9 +92,16 @@ export type AyriAttributionSummary = {
   // Count of records with a REAL priced realizedUsd (i.e. lot.realizedPnlUsd !== null at the source)
   // — distinct from attributedLots, which counts any attribution record regardless of pricing.
   fullyPricedLots: number
-  // fullyPricedLots / totalLots — the real historical-pricing completeness, never to be confused
-  // with coveragePercent (attribution coverage) above.
+  // fullyPricedLots / totalLots — real historical-pricing completeness (ANY priced source, including
+  // reconstructed/estimated ones like syntheticPrice/recoveredPrice) — never to be confused with
+  // attributionCoveragePercent above, and distinct again from verifiedPricingCoveragePercent below.
   historicalPricingCoveragePercent: number
+  // ADDED, DISCLOSED (this task's explicit requirement): the fraction of totalLots priced by a
+  // genuinely VERIFIED, market-observed source — primaryPrice / fallbackPrice / ratioPrice — never
+  // counting syntheticPrice/recoveredPrice, which are internal reconstructions rather than directly
+  // observed market prices. This is the strictest of the three coverage figures and is the one
+  // integrityTier's "high" tier is gated on below — see that derivation's own header.
+  verifiedPricingCoveragePercent: number
   realizedPnlUsd: number | null
   unrealizedPnlUsd: number | null
 }
@@ -211,8 +260,7 @@ export function createAyriAttribution(config: Config = {}) {
 
       const totalLots = Math.max(input.reconciledPnL.closedLots, lots.length)
       const attributedLots = records.length
-      const coveragePercent = totalLots === 0 ? 1 : round(attributedLots / totalLots)
-      const integrityTier: AyriIntegrityTier = coveragePercent >= 0.95 && criticalMismatches.length === 0 ? 'high' : coveragePercent >= 0.75 ? 'medium' : 'low'
+      const attributionCoveragePercent = totalLots === 0 ? 1 : round(attributedLots / totalLots)
       // FALSE-ZERO FIX, DISCLOSED (confirmed bug, real production evidence: realizedPnlUsd: 0 shown
       // with totalLots: 290, attributedLots: 290, but zero lots actually fully priced). The previous
       // `records.length ? records.reduce((sum, r) => sum + (r.realizedUsd ?? 0), 0) : null` only
@@ -226,12 +274,33 @@ export function createAyriAttribution(config: Config = {}) {
       const pricedRecords = records.filter((r) => r.realizedUsd !== undefined)
       const fullyPricedLots = pricedRecords.length
       const historicalPricingCoveragePercent = totalLots === 0 ? 1 : round(fullyPricedLots / totalLots)
+      // VERIFIED PRICING COVERAGE, DISCLOSED (this task's explicit requirement): a strict subset of
+      // fullyPricedLots — only lots priced via a directly-observed market source (see
+      // VERIFIED_ATTRIBUTION_SOURCES's own header), never a syntheticPrice/recoveredPrice
+      // reconstruction. This is intentionally <= historicalPricingCoveragePercent, never greater.
+      const verifiedPricedLots = pricedRecords.filter((r) => VERIFIED_ATTRIBUTION_SOURCES.has(r.attributionSource)).length
+      const verifiedPricingCoveragePercent = totalLots === 0 ? 1 : round(verifiedPricedLots / totalLots)
+      const integrityTier = deriveIntegrityTier({
+        attributionCoveragePercent,
+        verifiedPricingCoveragePercent,
+        criticalMismatchCount: criticalMismatches.length,
+        publicPnlStatus: input.reconciledPnL.publicPnlStatus,
+      })
+      // NEVER-CONFLATE DIAGNOSTIC, DISCLOSED (this task's explicit "100% attribution must not be
+      // described as 100% PnL coverage" requirement): a real, compact warning whenever the two could
+      // plausibly be confused — attribution reads as complete while real pricing coverage lags well
+      // behind it. Never blocks anything; purely so this specific misreading can never happen silently.
+      if (attributionCoveragePercent >= INTEGRITY_HIGH_THRESHOLD && verifiedPricingCoveragePercent < INTEGRITY_MEDIUM_THRESHOLD) {
+        logger.warn('[ayri] attribution coverage must not be read as PnL coverage — verified pricing coverage is far lower', {
+          attributionCoveragePercent, verifiedPricingCoveragePercent, historicalPricingCoveragePercent,
+        })
+      }
       const realizedPnlUsd = input.reconciledPnL.realizedPnlUsd ?? (fullyPricedLots > 0 ? pricedRecords.reduce((sum, r) => sum + (r.realizedUsd as number), 0) : null)
       const unrealizedPnlUsd = input.reconciledPnL.unrealizedPnlUsd
       const summary: AyriAttributionSummary = {
         totalLots,
         attributedLots,
-        coveragePercent,
+        attributionCoveragePercent,
         integrityTier,
         primaryCount: records.filter((r) => r.attributionSource === 'primaryPrice').length,
         fallbackCount: records.filter((r) => r.attributionSource === 'fallbackPrice').length,
@@ -242,10 +311,19 @@ export function createAyriAttribution(config: Config = {}) {
         syntheticAlignedCount: records.filter((r) => r.syntheticAligned).length,
         fullyPricedLots,
         historicalPricingCoveragePercent,
+        verifiedPricingCoveragePercent,
         realizedPnlUsd,
         unrealizedPnlUsd,
       }
-      logger.warn('[ayri] coverage', { coveragePercent, integrityTier })
+      // DIAGNOSTIC-ONLY, DISCLOSED (this task's explicit "the internal realized/unrealized PnL
+      // figures this module computes must remain diagnostic-only" requirement): `realizedPnlUsd`/
+      // `unrealizedPnlUsd` above are logged here and returned in `attributionSummary` for internal
+      // review ONLY. src/lib/finalReportAssembler.ts's `buildReconciledFifo()` sources the PUBLIC
+      // `fifoAndPnl.realizedPnlUsd`/`unrealizedPnlUsd` fields exclusively from `input.reconciledPnL`
+      // — never from this module's own output — so no number computed in this file can ever reach
+      // the public/official PnL surface. Confirmed by src/lib/finalReportAssembler.diagnosticOnly.test.ts's
+      // own structural guard.
+      logger.warn('[ayri] coverage', { attributionCoveragePercent, verifiedPricingCoveragePercent, historicalPricingCoveragePercent, integrityTier })
       logger.warn('[ayri] summary', summary)
       return { ...summary, records, criticalMismatches }
     },

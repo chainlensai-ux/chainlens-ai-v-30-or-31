@@ -33,7 +33,17 @@ export type FinalReportAssemblerState = {
 
 export type FinalReportAssemblerOutput = FinalReport & {
   reconciliationSummary: PnlReconciliationSummary
-  coveragePercent: number
+  // RENAMED, DISCLOSED (holdings/PnL-confidence audit task): mirrors
+  // AyriAttributionSummary.attributionCoveragePercent's own rename — see that field's header in
+  // ayriAttribution.ts for the full reasoning. Every consumer of the old top-level `coveragePercent`
+  // name updated alongside this rename.
+  attributionCoveragePercent: number
+  // ADDED, DISCLOSED (this task's explicit "expose separately" requirement): passed through
+  // unchanged from ayriAttribution's own output — see that module's own field-level disclosures.
+  historicalPricingCoveragePercent: number
+  verifiedPricingCoveragePercent: number
+  fullyPricedLots: number
+  totalLots: number
   integrityTier: AyriAttributionOutput['integrityTier']
   attributionSummary: AyriAttributionOutput
   syntheticAlignedCount: number
@@ -144,7 +154,11 @@ export function createFinalReportAssembler(config: { logger?: Logger } = {}) {
       const finalReport = {
         ...base,
         reconciliationSummary: input.reconciledPnL,
-        coveragePercent: input.ayriAttribution.coveragePercent,
+        attributionCoveragePercent: input.ayriAttribution.attributionCoveragePercent,
+        historicalPricingCoveragePercent: input.ayriAttribution.historicalPricingCoveragePercent,
+        verifiedPricingCoveragePercent: input.ayriAttribution.verifiedPricingCoveragePercent,
+        fullyPricedLots: input.ayriAttribution.fullyPricedLots,
+        totalLots: input.ayriAttribution.totalLots,
         integrityTier: input.ayriAttribution.integrityTier,
         attributionSummary: input.ayriAttribution,
         syntheticAlignedCount: input.ayriAttribution.syntheticAlignedCount,

@@ -6,7 +6,7 @@ const quiet = { warn() {} }
 
 function baseInput(overrides: Record<string, unknown> = {}) {
   const reconciledPnL = { closedLots: 7, unmatchedBuys: 2, unmatchedSells: 1, realizedPnlUsd: 123.45, unrealizedPnlUsd: 67.89, priceRecoveredCount: 3, routerCorrectedCount: 4, syntheticAlignedCount: 5, missingEvidenceCount: 6, publicPnlStatus: 'partial', mismatches: [] }
-  const ayriAttribution = { totalLots: 7, attributedLots: 6, coveragePercent: 0.8571, integrityTier: 'medium', primaryCount: 1, fallbackCount: 2, ratioCount: 3, syntheticCount: 4, recoveredCount: 5, routerCorrectedCount: 4, syntheticAlignedCount: 5, realizedPnlUsd: 123.45, unrealizedPnlUsd: 67.89, records: [{ token: '0xtoken', chain: 'base', attributionSource: 'syntheticPrice', routerInvolvement: 'routerCorrected', syntheticInvolvement: 'syntheticAligned', yieldClassification: 'realized', syntheticAligned: true, priceRecovered: false, routerCorrected: true }], criticalMismatches: [] }
+  const ayriAttribution = { totalLots: 7, attributedLots: 6, attributionCoveragePercent: 0.8571, historicalPricingCoveragePercent: 0.5714, verifiedPricingCoveragePercent: 0.4286, fullyPricedLots: 4, integrityTier: 'medium', primaryCount: 1, fallbackCount: 2, ratioCount: 3, syntheticCount: 4, recoveredCount: 5, routerCorrectedCount: 4, syntheticAlignedCount: 5, realizedPnlUsd: 123.45, unrealizedPnlUsd: 67.89, records: [{ token: '0xtoken', chain: 'base', attributionSource: 'syntheticPrice', routerInvolvement: 'routerCorrected', syntheticInvolvement: 'syntheticAligned', yieldClassification: 'realized', syntheticAligned: true, priceRecovered: false, routerCorrected: true }], criticalMismatches: [] }
   return {
     scanMetadata: { walletAddress: '0xwallet', scanTimestamp: '2026-07-20T00:00:00.000Z', intel_window_days: 180, provider_fetch_window_days: 90, scanMode: 'normal', chainsScanned: ['base'] },
     chainSelection: { chains: [{ chain: 'base', visible_value_usd: 10, wallet_side_transactions: 2, swapCandidateEvents: 1, gates: { valueGate: true, activityGate: true, swapGate: true }, status: 'active_intelligence' }], activeChainCount: 1, dustChainCount: 0 },
@@ -45,7 +45,11 @@ describe('finalReportAssembler', () => {
 
   it('report matches AYRI attribution', () => {
     const report = createFinalReportAssembler({ logger: quiet }).assemble(baseInput())
-    assert.equal(report.coveragePercent, 0.8571)
+    assert.equal(report.attributionCoveragePercent, 0.8571)
+    assert.equal(report.historicalPricingCoveragePercent, 0.5714)
+    assert.equal(report.verifiedPricingCoveragePercent, 0.4286)
+    assert.equal(report.fullyPricedLots, 4)
+    assert.equal(report.totalLots, 7)
     assert.equal(report.integrityTier, 'medium')
     assert.equal(report.attributionSummary.syntheticAlignedCount, 5)
     assert.equal(report.recoveredCount, 5)

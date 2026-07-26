@@ -56,12 +56,12 @@ describe('ayriAttribution', () => {
     assert.deepEqual(ayri.build(input), ayri.build(input))
   })
 
-  it('computes coveragePercent and integrityTier transitions', () => {
+  it('computes attributionCoveragePercent and integrityTier transitions', () => {
     const high = createAyriAttribution({ logger: quiet }).build({ reconciledPnL: reconciled({ closedLots: 1 }), reconciledLots: [lot()], pricingSourceBreakdown: { primary: 1 } })
     const medium = createAyriAttribution({ logger: quiet }).build({ reconciledPnL: reconciled({ closedLots: 4 }), reconciledLots: [lot(), lot({ lotId: '2', openedTxHash: '0xb2' }), lot({ lotId: '3', openedTxHash: '0xb3' })], pricingSourceBreakdown: { primary: 3 } })
     const low = createAyriAttribution({ logger: quiet }).build({ reconciledPnL: reconciled({ closedLots: 4 }), reconciledLots: [lot()], pricingSourceBreakdown: { primary: 1 } })
     assert.equal(high.integrityTier, 'high')
-    assert.equal(medium.coveragePercent, 0.75)
+    assert.equal(medium.attributionCoveragePercent, 0.75)
     assert.equal(medium.integrityTier, 'medium')
     assert.equal(low.integrityTier, 'low')
   })
@@ -104,7 +104,7 @@ describe('ayriAttribution', () => {
     assert.equal(output.realizedPnlUsd, 0, 'a real priced lot summing to exactly 0 must report 0, not null')
   })
 
-  it('regression guard: coveragePercent (attribution) and historicalPricingCoveragePercent (pricing) are distinct fields', () => {
+  it('regression guard: attributionCoveragePercent and historicalPricingCoveragePercent are distinct fields', () => {
     // Confirmed real production evidence: coveragePercent: 1 / integrityTier: 'high' shown alongside
     // realizedPnlUsd: 0 with poor real pricing coverage — this test proves the two percentages can
     // legitimately diverge (100% attribution, 0% real pricing) rather than being conflated.
@@ -118,8 +118,10 @@ describe('ayriAttribution', () => {
       routerInferenceOutput: { highConfidenceRouters: new Set(['0xrouter']), acceptedRouters: new Set(['0xrouter']), tokenFlowClustersByAddress: new Map([['0xrouter', [{ tokens: ['0xtoken'] }]]]) } as never,
       pricingSourceBreakdown: { primary: 1 },
     })
-    assert.equal(output.coveragePercent, 1, 'attribution coverage: all 3 lots attributed')
+    assert.equal(output.attributionCoveragePercent, 1, 'attribution coverage: all 3 lots attributed')
     assert.equal(output.historicalPricingCoveragePercent, 0, 'pricing coverage: none actually priced')
+    assert.equal(output.verifiedPricingCoveragePercent, 0, 'verified pricing coverage: none actually priced by a verified source either')
+    assert.equal(output.integrityTier, 'low', 'integrityTier must never read as high/medium off attribution coverage alone when real pricing coverage is 0')
   })
 
   it('selects the correct route for a lot among many candidates for other tokens/timestamps (grouped-index lookup, not a linear scan)', () => {
