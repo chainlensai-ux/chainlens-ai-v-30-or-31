@@ -201,12 +201,60 @@ const AERODROME_CLASSIC_POOL_ABI = [
   { type: 'function', name: 'stable', stateMutability: 'view', inputs: [], outputs: [{ type: 'bool' }] },
 ] as const
 
-// Aerodrome Slipstream: a Uniswap-V3 fork (concentrated liquidity), publicly documented by
-// Aerodrome as based on Uniswap V3's CL design — its pool contracts expose the SAME slot0()/
-// token0() signatures as UNISWAP_V3_POOL_ABI above, so this file reuses that exact ABI and reuses
-// readPoolPrice's exact pricing math for Slipstream pools unchanged (see resolveAerodromeSlipstream-
-// PoolAddress below — only pool DISCOVERY differs, because Slipstream's factory is keyed by
-// tickSpacing, not a fee tier).
+// SLOT0 ABI MISMATCH, CONFIRMED AND FIXED, DISCLOSED (found live, this task — real production
+// evidence: pool 0x027256310dDD3773bc410f1CBd83524C42321Cd0 found, slot0() decode failed with
+// "Position `192` is out of bounds (`0 < position < 192`)", Slipstream pricesAccepted stayed 0).
+// ROOT CAUSE: Slipstream is a Uniswap V3 FORK, but its slot0() is NOT byte-identical to Uniswap V3's
+// — verified directly against Aerodrome's own source repository
+// (aerodrome-finance/slipstream/contracts/core/interfaces/pool/ICLPoolState.sol), which declares:
+//   function slot0() external view returns (
+//     uint160 sqrtPriceX96, int24 tick, uint16 observationIndex,
+//     uint16 observationCardinality, uint16 observationCardinalityNext, bool unlocked
+//   );
+// — SIX fields, no `feeProtocol` (uint8) before `unlocked`. Uniswap V3's slot0 (UNISWAP_V3_POOL_ABI
+// above) has SEVEN fields, WITH feeProtocol. Decoding Slipstream's real 6*32=192-byte return against
+// the 7-field ABI is exactly what produced "position 192 out of bounds" — the decoder correctly read
+// all 192 real bytes, then tried to read a 7th (nonexistent) field starting at byte offset 192.
+// FIELD SEMANTICS PRESERVED, DISCLOSED: sqrtPriceX96 is documented identically ("the square root
+// price in Q64.96 format") in both — the existing rawRatio/decimalAdjustment/orientation math
+// (readPoolPrice's own PRICE-CORRUPTION FIX above) is reused verbatim for Slipstream (see
+// readSlipstreamPoolPrice below) — only the ABI/decoder is dedicated, never the pricing formula.
+const AERODROME_SLIPSTREAM_POOL_ABI = [
+  {
+    type: 'function',
+    name: 'slot0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'tick', type: 'int24' },
+      { name: 'observationIndex', type: 'uint16' },
+      { name: 'observationCardinality', type: 'uint16' },
+      { name: 'observationCardinalityNext', type: 'uint16' },
+      { name: 'unlocked', type: 'bool' },
+    ],
+  },
+  {
+    type: 'function',
+    name: 'token0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'address' }],
+  },
+] as const
+
+// Expected raw returndata length for Slipstream's real 6-field slot0 above: uint160/int24/uint16 x3/
+// bool each pad to one 32-byte EVM word — 6 words = 192 bytes. FAIL-CLOSED, DISCLOSED: checked BEFORE
+// decodeFunctionResult is ever called, so an unexpected length (a future Slipstream upgrade, a proxy
+// returning something else, any other malformed response) is caught with a clear, attributable
+// reason instead of either a generic decode crash or — far worse — a wrong-but-plausible price from
+// silently misaligned field reads.
+const SLIPSTREAM_SLOT0_EXPECTED_BYTES = 192
+
+function slot0ReturnDataByteLength(data: `0x${string}`): number {
+  return (data.length - 2) / 2
+}
+
 const AERODROME_SLIPSTREAM_FACTORY_ABI = [
   {
     type: 'function',
@@ -733,6 +781,10 @@ const poolPriceCache = new Map<string, number | null>()
 // lumping it into an undifferentiated rpc_error.
 class PoolNotYetDeployedError extends Error {}
 
+// See SLIPSTREAM_SLOT0_EXPECTED_BYTES's own header — thrown for a deterministic returndata-shape
+// mismatch, never retried sequentially (the shape would be identical on retry).
+class SlipstreamSlot0ShapeError extends Error {}
+
 // NEGATIVE-RESULT CACHE, DISCLOSED (real-CU-fix, applied per user confirmation of measured
 // production evidence: distinct-token ratio logging showed avgLookupsPerToken=6.37 across 115
 // distinct tokens in one real scan, meaning most tokens are looked up several times each — and the
@@ -1006,6 +1058,132 @@ async function readPoolPriceInputsSequential(
     client.readContract({ address: tokenAddress, abi: ERC20_DECIMALS_ABI, functionName: 'decimals', blockNumber }),
     client.readContract({ address: pairedWith, abi: ERC20_DECIMALS_ABI, functionName: 'decimals', blockNumber }),
   ])
+}
+
+type SlipstreamPoolPriceInputs = [
+  readonly [bigint, number, number, number, number, boolean],
+  `0x${string}`,
+  number,
+  number,
+]
+
+// DEDICATED SLIPSTREAM slot0 DECODE PATH, DISCLOSED — see AERODROME_SLIPSTREAM_POOL_ABI's own header
+// above for the confirmed, source-verified ABI difference from Uniswap V3. Structurally identical to
+// readPoolPriceInputsViaMulticall above (same multicall batching, same PoolNotYetDeployedError
+// empty-returndata detection) — the only real differences are the dedicated 6-field ABI and the
+// explicit pre-decode length check below.
+async function readSlipstreamPoolPriceInputsViaMulticall(
+  client: PublicClient,
+  poolAddress: `0x${string}`,
+  tokenAddress: `0x${string}`,
+  pairedWith: `0x${string}`,
+  blockNumber: bigint,
+): Promise<SlipstreamPoolPriceInputs> {
+  const calls: Multicall3Call[] = [
+    { target: poolAddress, allowFailure: true, callData: encodeFunctionData({ abi: AERODROME_SLIPSTREAM_POOL_ABI, functionName: 'slot0' }) },
+    { target: poolAddress, allowFailure: true, callData: encodeFunctionData({ abi: AERODROME_SLIPSTREAM_POOL_ABI, functionName: 'token0' }) },
+    { target: tokenAddress, allowFailure: true, callData: encodeFunctionData({ abi: ERC20_DECIMALS_ABI, functionName: 'decimals' }) },
+    { target: pairedWith, allowFailure: true, callData: encodeFunctionData({ abi: ERC20_DECIMALS_ABI, functionName: 'decimals' }) },
+  ]
+
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:multicall:poolPrice:aeroSlipstream' })
+  trackRpcCall('readContract:multicall:poolPrice:aeroSlipstream')
+  const results = await multicall(client, calls, blockNumber)
+
+  if (results.length !== 4 || results.some((r) => !r.success)) {
+    throw new Error('multicall: one or more aeroSlipstream poolPrice sub-calls failed')
+  }
+
+  if (results[0].returnData === '0x' || results[1].returnData === '0x') {
+    throw new PoolNotYetDeployedError('pool_not_yet_deployed_at_block')
+  }
+
+  // FAIL-CLOSED LENGTH CHECK, DISCLOSED — see SLIPSTREAM_SLOT0_EXPECTED_BYTES's own header. Checked
+  // BEFORE decodeFunctionResult so a malformed/unexpected response is caught with a clear,
+  // attributable reason (pool address + byte length, never the raw returndata itself — kept out of
+  // logs deliberately, per "without logging excessive raw data") instead of a generic decode crash.
+  const slot0ByteLength = slot0ReturnDataByteLength(results[0].returnData)
+  if (slot0ByteLength !== SLIPSTREAM_SLOT0_EXPECTED_BYTES) {
+    // eslint-disable-next-line no-console
+    console.warn('[basedex] aerodrome slipstream slot0 returndata length mismatch', {
+      poolAddress,
+      expectedBytes: SLIPSTREAM_SLOT0_EXPECTED_BYTES,
+      actualBytes: slot0ByteLength,
+    })
+    // A deterministic shape mismatch, not a transient failure — a sequential retry would fetch the
+    // exact same malformed shape (this is what the contract actually returns), so this is deliberately
+    // NOT a plain Error: see readSlipstreamPoolPrice's own catch below, which (like
+    // PoolNotYetDeployedError above) rethrows this specific class instead of wasting a doomed retry.
+    throw new SlipstreamSlot0ShapeError(`slipstream_slot0_returndata_length_mismatch:pool=${poolAddress}:expected=${SLIPSTREAM_SLOT0_EXPECTED_BYTES}:actual=${slot0ByteLength}`)
+  }
+
+  const slot0 = decodeFunctionResult({ abi: AERODROME_SLIPSTREAM_POOL_ABI, functionName: 'slot0', data: results[0].returnData })
+  const token0 = decodeFunctionResult({ abi: AERODROME_SLIPSTREAM_POOL_ABI, functionName: 'token0', data: results[1].returnData })
+  const tokenDecimals = decodeFunctionResult({ abi: ERC20_DECIMALS_ABI, functionName: 'decimals', data: results[2].returnData })
+  const pairedDecimals = decodeFunctionResult({ abi: ERC20_DECIMALS_ABI, functionName: 'decimals', data: results[3].returnData })
+
+  return [slot0, token0, tokenDecimals, pairedDecimals]
+}
+
+async function readSlipstreamPoolPriceInputsSequential(
+  client: PublicClient,
+  poolAddress: `0x${string}`,
+  tokenAddress: `0x${string}`,
+  pairedWith: `0x${string}`,
+  blockNumber: bigint,
+): Promise<SlipstreamPoolPriceInputs> {
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:slot0:aeroSlipstream' })
+  trackRpcCall('readContract:slot0:aeroSlipstream')
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:token0' })
+  trackRpcCall('readContract:token0')
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
+  trackRpcCall('readContract:decimals')
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
+  trackRpcCall('readContract:decimals')
+  return Promise.all([
+    client.readContract({ address: poolAddress, abi: AERODROME_SLIPSTREAM_POOL_ABI, functionName: 'slot0', blockNumber }),
+    client.readContract({ address: poolAddress, abi: AERODROME_SLIPSTREAM_POOL_ABI, functionName: 'token0', blockNumber }),
+    client.readContract({ address: tokenAddress, abi: ERC20_DECIMALS_ABI, functionName: 'decimals', blockNumber }),
+    client.readContract({ address: pairedWith, abi: ERC20_DECIMALS_ABI, functionName: 'decimals', blockNumber }),
+  ])
+}
+
+// TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as readPoolPrice above. Pricing math (rawRatio/
+// decimalAdjustment/orientation, including the ZERO-PRICE and PRICE-CORRUPTION fixes) is reused
+// verbatim from readPoolPrice — only the ABI/decode path is dedicated (AERODROME_SLIPSTREAM_POOL_ABI),
+// per the confirmed field-count mismatch documented there.
+export async function readSlipstreamPoolPrice(
+  client: PublicClient,
+  poolAddress: `0x${string}`,
+  tokenAddress: `0x${string}`,
+  pairedWith: `0x${string}`,
+  blockNumber: bigint,
+): Promise<number | null> {
+  const cacheKey = `${poolAddress.toLowerCase()}-${blockNumber.toString()}`
+  const cachedPrice = poolPriceCache.get(cacheKey)
+  if (cachedPrice !== undefined) return cachedPrice
+
+  const [slot0, token0, tokenDecimals, pairedDecimals] = await readSlipstreamPoolPriceInputsViaMulticall(
+    client, poolAddress, tokenAddress, pairedWith, blockNumber,
+  ).catch((err) => {
+    if (err instanceof PoolNotYetDeployedError || err instanceof SlipstreamSlot0ShapeError) throw err
+    return readSlipstreamPoolPriceInputsSequential(client, poolAddress, tokenAddress, pairedWith, blockNumber)
+  })
+
+  const sqrtPriceX96 = slot0[0]
+
+  if (sqrtPriceX96 === BigInt(0)) {
+    poolPriceCache.set(cacheKey, null)
+    return null
+  }
+
+  const rawRatio = (Number(sqrtPriceX96) / 2 ** 96) ** 2
+  const isTokenToken0 = token0.toLowerCase() === tokenAddress.toLowerCase()
+  const decimalAdjustment = 10 ** (tokenDecimals - pairedDecimals)
+  const orientedRatio = isTokenToken0 ? rawRatio : 1 / rawRatio
+  const price = decimalAdjustment * orientedRatio
+  poolPriceCache.set(cacheKey, price)
+  return price
 }
 
 // ============================================================================
@@ -1460,7 +1638,7 @@ export async function fetchBaseDexPriceDetailed(
       readPrice: (client: PublicClient, poolAddress: `0x${string}`, tokenAddress: `0x${string}`, pairedWith: `0x${string}`, blockNumber: bigint) => Promise<number | null>
     }[] = [
       { venue: 'uniswap_v3', resolvePool: resolvePoolAddress, readPrice: readPoolPrice },
-      { venue: 'aerodrome_slipstream', resolvePool: resolveAerodromeSlipstreamPoolAddress, readPrice: readPoolPrice },
+      { venue: 'aerodrome_slipstream', resolvePool: resolveAerodromeSlipstreamPoolAddress, readPrice: readSlipstreamPoolPrice },
       { venue: 'aerodrome_classic_volatile', resolvePool: resolveAerodromeClassicVolatilePoolAddress, readPrice: readAerodromeClassicVolatilePoolPrice },
     ]
 

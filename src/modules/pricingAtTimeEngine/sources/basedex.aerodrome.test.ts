@@ -13,7 +13,7 @@ import {
   resolveAerodromeSlipstreamPoolAddress,
   resolveAerodromeClassicVolatilePoolAddress,
   readAerodromeClassicVolatilePoolPrice,
-  readPoolPrice,
+  readSlipstreamPoolPrice,
   fetchBaseDexPriceDetailed,
   __resetBaseDexCachesForTest,
 } from './basedex'
@@ -37,13 +37,14 @@ const SLIPSTREAM_FACTORY_ABI = [
     outputs: [{ name: 'pool', type: 'address' }] },
 ] as const
 
-const POOL_ABI = [
+// Slipstream's REAL, source-verified slot0 ABI — SIX fields, no feeProtocol. See this file's
+// "prices a Slipstream pool using its own dedicated 6-field slot0 ABI" test below for the full trace.
+const SLIPSTREAM_POOL_ABI = [
   { type: 'function', name: 'slot0', stateMutability: 'view', inputs: [],
     outputs: [
       { name: 'sqrtPriceX96', type: 'uint160' }, { name: 'tick', type: 'int24' },
       { name: 'observationIndex', type: 'uint16' }, { name: 'observationCardinality', type: 'uint16' },
-      { name: 'observationCardinalityNext', type: 'uint16' }, { name: 'feeProtocol', type: 'uint8' },
-      { name: 'unlocked', type: 'bool' },
+      { name: 'observationCardinalityNext', type: 'uint16' }, { name: 'unlocked', type: 'bool' },
     ] },
   { type: 'function', name: 'token0', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
 ] as const
@@ -173,7 +174,15 @@ describe('Aerodrome Slipstream pool discovery', () => {
     assert.equal(getCallCount(), 1, 'expected every tick-spacing attempt to collapse into one multicall call')
   })
 
-  it('prices a Slipstream pool using the exact same slot0 math as Uniswap V3 (Slipstream is a V3 fork)', async () => {
+  // CORRECTED, DISCLOSED (found live, this task — confirmed production evidence: pool
+  // 0x027256310dDD3773bc410f1CBd83524C42321Cd0 found, slot0() decode failed with "Position `192` is
+  // out of bounds"): Slipstream's real slot0() has SIX fields (no feeProtocol), NOT Uniswap V3's
+  // seven — verified against aerodrome-finance/slipstream's own ICLPoolState.sol. This test now
+  // exercises the dedicated readSlipstreamPoolPrice/AERODROME_SLIPSTREAM_POOL_ABI path with a
+  // correctly-shaped 6-field slot0 return (192 real bytes) — see
+  // basedex.aerodromeSlipstreamSlot0.test.ts for the regression test reproducing the exact reported
+  // out-of-bounds failure and confirming it no longer occurs.
+  it('prices a Slipstream pool using its own dedicated 6-field slot0 ABI (sqrtPriceX96 math reused verbatim from Uniswap V3)', async () => {
     __resetBaseDexCachesForTest()
     const slot0Client = {
       async call({ to, data }: { to: string; data: `0x${string}` }) {
@@ -182,12 +191,13 @@ describe('Aerodrome Slipstream pool discovery', () => {
         const calls = args[0] as { target: `0x${string}`; allowFailure: boolean; callData: `0x${string}` }[]
         const results = calls.map((call) => {
           try {
-            const decoded = decodeFunctionData({ abi: POOL_ABI, data: call.callData })
+            const decoded = decodeFunctionData({ abi: SLIPSTREAM_POOL_ABI, data: call.callData })
             if (decoded.functionName === 'slot0') {
-              return { success: true, returnData: encodeFunctionResult({ abi: POOL_ABI, functionName: 'slot0', result: [BigInt('79228162514264337593543950336'), 0, 0, 0, 0, 0, true] }) }
+              // Six fields — no feeProtocol — matching Slipstream's real, source-verified ABI.
+              return { success: true, returnData: encodeFunctionResult({ abi: SLIPSTREAM_POOL_ABI, functionName: 'slot0', result: [BigInt('79228162514264337593543950336'), 0, 0, 0, 0, true] }) }
             }
             if (decoded.functionName === 'token0') {
-              return { success: true, returnData: encodeFunctionResult({ abi: POOL_ABI, functionName: 'token0', result: TOKEN as `0x${string}` }) }
+              return { success: true, returnData: encodeFunctionResult({ abi: SLIPSTREAM_POOL_ABI, functionName: 'token0', result: TOKEN as `0x${string}` }) }
             }
           } catch { /* not a pool call */ }
           const decoded = decodeFunctionData({ abi: DECIMALS_ABI, data: call.callData })
@@ -198,8 +208,8 @@ describe('Aerodrome Slipstream pool discovery', () => {
       },
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const price = await readPoolPrice(slot0Client as any, POOL as `0x${string}`, TOKEN as `0x${string}`, WETH as `0x${string}`, BigInt(1))
-    assert.equal(price, 1, 'sqrtPriceX96 = 2^96 with equal decimals must resolve to a 1:1 ratio, same as the Uniswap V3 venue')
+    const price = await readSlipstreamPoolPrice(slot0Client as any, POOL as `0x${string}`, TOKEN as `0x${string}`, WETH as `0x${string}`, BigInt(1))
+    assert.equal(price, 1, 'sqrtPriceX96 = 2^96 with equal decimals must resolve to a 1:1 ratio, same math as the Uniswap V3 venue')
   })
 })
 
