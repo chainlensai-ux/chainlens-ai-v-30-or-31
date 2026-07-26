@@ -141,18 +141,26 @@ async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (ite
   return results
 }
 
-function summarizeEntryResults(results: Array<{ txHash: string; usd: number | null; source: keyof SourceBreakdown; missing: boolean }>) {
+function summarizeEntryResults(
+  results: Array<{ txHash: string; usd: number | null; source: keyof SourceBreakdown; missing: boolean; cappedByCap: boolean }>,
+) {
   const usdByTxHash: Record<string, number | null> = {}
   const breakdown: SourceBreakdown = { primary: 0, fallback: 0, failed: 0 }
   let missing = 0
+  // CAP-VS-PROVIDER-MISS DISTINCTION, DISCLOSED, ADDITIVE: `missing` alone conflates two different
+  // outcomes (an entry the per-token cap never even attempted vs. one that was attempted but every
+  // real price source returned null) — a caller diagnosing "why is this unpriced" needs to tell them
+  // apart. Purely additive: existing fields (usdByTxHash/breakdown/missing) are unchanged.
+  const cappedTxHashes = new Set<string>()
 
   for (const r of results) {
     usdByTxHash[r.txHash] = r.usd
     breakdown[r.source] += 1
     if (r.missing) missing += 1
+    if (r.cappedByCap) cappedTxHashes.add(r.txHash)
   }
 
-  return { usdByTxHash, breakdown, missing }
+  return { usdByTxHash, breakdown, missing, cappedTxHashes }
 }
 
 // CONCURRENCY CAP FIX, DISCLOSED: previously, buys and sells each ran through their own independent
@@ -169,8 +177,8 @@ async function priceAllEntries(
   priceSources: ResolvePricingAtTimeParams['priceSources'],
   fallbackPricing: FallbackPricingConfig | undefined,
 ): Promise<{
-  buys: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number }
-  sells: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number }
+  buys: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number; cappedTxHashes: Set<string> }
+  sells: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number; cappedTxHashes: Set<string> }
 }> {
   const combined = [
     ...buyEntries.map((entry) => ({ entry, list: 'buy' as const })),
@@ -223,7 +231,7 @@ async function priceAllEntries(
     if (priorLookups >= maxLookupsPerToken) {
       cappedCount += 1
       if (entry.pairRank !== undefined) priorityCappedCount += 1
-      return { list, txHash: entry.txHash, usd: null, source: 'failed' as const, missing: true }
+      return { list, txHash: entry.txHash, usd: null, source: 'failed' as const, missing: true, cappedByCap: true }
     }
     lookupCountByToken.set(tokenKey, priorLookups + 1)
 
@@ -239,11 +247,11 @@ async function priceAllEntries(
       const route = attempt.ok ? attempt.source : 'failed'
       fallbackPricing.onRouteRecorded?.({ token: entry.token, chain: entry.chain, timestamp: entry.timestamp, route })
       if (attempt.ok) {
-        return { list, txHash: entry.txHash, usd: multiplyAmount(attempt.priceUsd, entry.amount), source: 'fallback' as const, missing: false }
+        return { list, txHash: entry.txHash, usd: multiplyAmount(attempt.priceUsd, entry.amount), source: 'fallback' as const, missing: false, cappedByCap: false }
       }
     }
 
-    return { list, txHash: entry.txHash, usd: multiplyAmount(price, entry.amount), source, missing: price === null }
+    return { list, txHash: entry.txHash, usd: multiplyAmount(price, entry.amount), source, missing: price === null, cappedByCap: false }
   })
 
   if (cappedCount > 0) {
@@ -305,5 +313,8 @@ export async function resolvePricingAtTime(params: ResolvePricingAtTimeParams): 
       fallback: buys.breakdown.fallback + sells.breakdown.fallback,
       failed: buys.breakdown.failed + sells.breakdown.failed,
     },
+    // ADDITIVE, DISCLOSED: which txHash keys (in EITHER dict) were skipped by the per-token cap
+    // rather than genuinely attempted and missed — see summarizeEntryResults' own header.
+    cappedTxHashes: new Set([...buys.cappedTxHashes, ...sells.cappedTxHashes]),
   }
 }

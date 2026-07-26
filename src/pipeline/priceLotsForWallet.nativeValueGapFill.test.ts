@@ -60,6 +60,13 @@ function mockCovalentResponse(txHash: string, timestamp: string, tokenAmountRaw:
     )) as unknown as typeof fetch
 }
 
+// Canonical WETH address on Base — the real price source is now called with THIS address for a
+// native pseudo-address entry (see quoteLegPricing/index.ts's resolveNativePricingToken: a real
+// provider has never heard of the NATIVE_ASSET_ADDRESS sentinel, only WETH), never the sentinel
+// itself. NATIVE_ASSET_ADDRESS is kept imported/asserted against separately below (the underlying
+// event's own stored contract, untouched by the pricing-route fix).
+const WETH_BASE = '0x4200000000000000000000000000000000000006'
+
 // Direct provider pricing fails for the memecoin (production's own reality — "no market data"), but
 // genuinely succeeds for ETH itself (production reality too — ETH has deep, reliable coverage). This
 // is what lets the gap-fill reuse ETH's own already-resolved USD value, at zero extra calls.
@@ -67,7 +74,7 @@ function memeFailsEthSucceedsSources(ethPriceUsd: number): { sources: PriceSourc
   let calls = 0
   const fn: PriceSourceFn = (token) => {
     calls += 1
-    return token.toLowerCase() === NATIVE_ASSET_ADDRESS ? ethPriceUsd : null
+    return token.toLowerCase() === WETH_BASE ? ethPriceUsd : null
   }
   return { sources: { primary: fn, fallback: fn }, callCount: () => calls }
 }

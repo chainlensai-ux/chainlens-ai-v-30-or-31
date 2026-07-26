@@ -41,6 +41,11 @@ export type PricingAtTimeResult = {
   proceedsUsd: Record<string, number | null>
   evidenceMissingCount: number
   sourceBreakdown: SourceBreakdown
+  // ADDITIVE, DISCLOSED: txHash keys (from either costUsd or proceedsUsd) that the per-token cap
+  // skipped entirely — distinguishes "never attempted (capped)" from "attempted, every source
+  // returned null" for a caller diagnosing an unpriced entry. Every existing caller that ignores
+  // this field is unaffected.
+  cappedTxHashes: Set<string>
 }
 
 // Minimal shape this module actually needs from a buy/sell entry — deliberately not importing the

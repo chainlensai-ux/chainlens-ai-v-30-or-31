@@ -136,6 +136,31 @@ export function isCanonicalWethAddress(chain: SupportedChain, contract: string):
   return set ? set.has(contract.toLowerCase()) : false
 }
 
+// Returns the FIRST canonical WETH address registered for `chain`, or null if none is registered.
+// Used only to route a HISTORICAL PRICE LOOKUP for the native pseudo-address to a real, providers-
+// recognize-it contract — never used to relabel/merge the underlying event's own stored address.
+function firstCanonicalWethAddress(chain: SupportedChain): string | null {
+  const set = CANONICAL_WETH_ADDRESSES[chain]
+  if (!set || set.size === 0) return null
+  return [...set][0]
+}
+
+// NATIVE PRICING ROUTE, DISCLOSED (confirmed production bug: 42 native requirements reached pricing
+// with correct negative ranks, survived the per-token cap, but selectedNativeRequirementKeys was
+// still empty — because the token string actually sent to the real price source was the literal
+// NATIVE_ASSET_ADDRESS pseudo-address, which no real provider (GoldRush/DexScreener/CoinGecko/etc.)
+// has ever heard of, so every attempt genuinely, honestly returned null — a real provider miss, not a
+// cap loss. Real providers price WETH, not this sentinel — for a HISTORICAL PRICE LOOKUP ONLY, the
+// pseudo-address is routed to the chain's canonical WETH contract (1 ETH ≡ 1 WETH in USD terms,
+// always). This function is used SOLELY to pick the `token` argument passed to the price source
+// function; the underlying NormalizedEvent.contract, costUsd/proceedsUsd dictionary keys (still
+// txHash-based), and every other stored representation of this leg are completely untouched — no
+// balance is merged, no event is mutated, only the price-source lookup's own target address changes.
+export function resolveNativePricingToken(chain: SupportedChain, contract: string): string {
+  if (!isNativePseudoAddress(contract)) return contract
+  return firstCanonicalWethAddress(chain) ?? contract
+}
+
 function isNativeOrCanonicalWeth(chain: SupportedChain, leg: SwapLeg): boolean {
   if (isNativePseudoAddress(leg.contract) || leg.symbol === 'ETH') return true
   return isCanonicalWethAddress(chain, leg.contract) || leg.symbol === 'WETH'

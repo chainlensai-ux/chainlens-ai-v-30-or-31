@@ -169,6 +169,7 @@ export function pricingAtTimeFallback(): PricingAtTimeResult {
     proceedsUsd: {},
     evidenceMissingCount: 0,
     sourceBreakdown: { primary: 0, fallback: 0, failed: 0 },
+    cappedTxHashes: new Set(),
   }
 }
 

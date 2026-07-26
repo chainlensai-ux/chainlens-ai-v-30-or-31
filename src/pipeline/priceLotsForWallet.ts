@@ -40,6 +40,7 @@ import {
   isVerifiedQuoteLegAddress,
   isNativePseudoAddress,
   isCanonicalWethAddress,
+  resolveNativePricingToken,
   type QuoteLegPriceResult,
   type SwapLeg,
 } from '../modules/quoteLegPricing/index'
@@ -71,7 +72,11 @@ function nativeQuoteRequirementKey(chain: string, txHash: string): string {
 function toPriceableEntry(event: NormalizedEvent, pairRank: number | undefined): PriceableEntry {
   return {
     txHash: event.txHash,
-    token: event.contract,
+    // NATIVE PRICING ROUTE, DISCLOSED (see quoteLegPricing/index.ts's resolveNativePricingToken for
+    // the full trace): only the TOKEN STRING passed to the price source is routed to the chain's
+    // canonical WETH contract when this event's own contract is the native pseudo-address — the
+    // dictionary key (event.txHash, above) and every other stored field are untouched.
+    token: resolveNativePricingToken(event.chain, event.contract),
     chain: event.chain,
     timestamp: Date.parse(event.timestamp),
     amount: String(event.amount),
@@ -352,7 +357,10 @@ export async function priceLotsForWallet(params: {
       const syntheticKey = nativeQuoteRequirementKey(candidate.chain, candidate.txHash)
       nativeQuoteEntries.push({
         txHash: syntheticKey,
-        token: candidate.leg.contract,
+        // Same NATIVE PRICING ROUTE as toPriceableEntry above — only the price-source token string
+        // is routed to canonical WETH; the leg's own stored contract stays the native pseudo-address
+        // everywhere else (evidence/diagnostics, the quote-leg derivation, etc.).
+        token: resolveNativePricingToken(candidate.chain, candidate.leg.contract),
         chain: candidate.chain,
         timestamp: candidate.timestamp,
         amount: String(candidate.leg.amount),
@@ -382,18 +390,31 @@ export async function priceLotsForWallet(params: {
     priceSources: params.priceSources,
   })
 
-  const nativeQuoteRequirementsPriced = nativeQuoteRequirementResolvers.filter((r) => atTradeTime[r.dict][r.key] != null).length
-  const nativeQuoteRequirementsCapped = nativeQuoteRequirementsFound - nativeQuoteRequirementsPriced
+  // CAP-VS-PROVIDER-MISS SPLIT, DISCLOSED (confirmed production bug: 42 native requirements reached
+  // pricing with correct negative ranks, i.e. they SURVIVED the cap, but selectedNativeRequirementKeys
+  // was still empty — resolveNativePricingToken above is the actual fix; this split makes the
+  // difference directly observable rather than merging "never attempted" and "attempted but the real
+  // provider genuinely had no data" into one ambiguous "capped" bucket). Uses pricingAtTimeEngine's new
+  // additive `cappedTxHashes` (see pricingAtTimeEngine/index.ts's summarizeEntryResults) to tell them
+  // apart precisely, instead of guessing from the null result alone.
+  const nativeRequirementsSelectedByCap = nativeQuoteRequirementResolvers.filter((r) => !atTradeTime.cappedTxHashes.has(r.key)).length
+  const nativeRequirementsActuallyCapped = nativeQuoteRequirementResolvers.filter((r) => atTradeTime.cappedTxHashes.has(r.key)).length
+  const nativeRequirementsPriced = nativeQuoteRequirementResolvers.filter((r) => atTradeTime[r.dict][r.key] != null).length
+  const nativeRequirementsProviderMiss = nativeQuoteRequirementResolvers.filter(
+    (r) => !atTradeTime.cappedTxHashes.has(r.key) && atTradeTime[r.dict][r.key] == null,
+  ).length
+  const selectedNativeRequirementKeys = nativeQuoteRequirementResolvers
+    .filter((r) => atTradeTime[r.dict][r.key] != null)
+    .map((r) => r.groupKey)
   // eslint-disable-next-line no-console
   console.warn('[quote-leg-native-cap-priority]', {
     nativeRequirementsSubmittedBeforeCap: nativeQuoteRequirementResolvers.length,
     rankValuesSeenByPricingAtTimeEngine: sortedNativeCandidates.map((c) => nativeQuoteRankByGroupKey.get(c.groupKey)),
-    selectedNativeRequirementKeys: nativeQuoteRequirementResolvers
-      .filter((r) => atTradeTime[r.dict][r.key] != null)
-      .map((r) => r.groupKey),
-    nativeRequirementsCappedByReason: nativeQuoteRequirementResolvers
-      .filter((r) => atTradeTime[r.dict][r.key] == null)
-      .map((r) => ({ groupKey: r.groupKey, reason: 'per_token_cap_or_provider_miss' })),
+    nativeRequirementsSelectedByCap,
+    nativeRequirementsActuallyCapped,
+    nativeRequirementsProviderMiss,
+    nativeRequirementsPriced,
+    selectedNativeRequirementKeys,
   })
 
   function countFullyPriced(): number {
@@ -578,8 +599,10 @@ export async function priceLotsForWallet(params: {
     targetTransactionMissingFromLookup,
     requirementsWithValidOppositeLeg,
     nativeQuoteRequirementsFound,
-    nativeQuoteRequirementsPriced,
-    nativeQuoteRequirementsCapped,
+    nativeRequirementsSelectedByCap,
+    nativeRequirementsActuallyCapped,
+    nativeRequirementsProviderMiss,
+    nativeRequirementsPriced,
     sameTxStablePricesRecovered,
     sameTxNativePricesRecovered,
     requirementsSatisfiedBySameTxQuote: sameTxStablePricesRecovered + sameTxNativePricesRecovered,

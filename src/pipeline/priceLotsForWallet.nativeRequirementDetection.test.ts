@@ -68,11 +68,16 @@ function mockCovalentResponse(txHash: string, timestamp: string, tokenAmountRaw:
     )) as unknown as typeof fetch
 }
 
+// Canonical WETH address on Base — a real price source is now called with THIS address for a native
+// pseudo-address entry (resolveNativePricingToken routes it there; no real provider recognizes the
+// NATIVE_ASSET_ADDRESS sentinel itself). See quoteLegPricing/index.ts's own header for the full trace.
+const WETH_BASE = '0x4200000000000000000000000000000000000006'
+
 function memeFailsNativeSucceedsSources(nativePriceUsd: number): { sources: PriceSources; callCount: () => number } {
   let calls = 0
   const fn: PriceSourceFn = (token) => {
     calls += 1
-    return token.toLowerCase() === NATIVE_ASSET_ADDRESS ? nativePriceUsd : null
+    return token.toLowerCase() === WETH_BASE ? nativePriceUsd : null
   }
   return { sources: { primary: fn, fallback: fn }, callCount: () => calls }
 }
@@ -140,8 +145,8 @@ describe('priceLotsForWallet — native-requirement detection (production-shaped
 
     let nativeCallCount = 0
     const fn: PriceSourceFn = (token) => {
-      if (token.toLowerCase() === NATIVE_ASSET_ADDRESS) nativeCallCount += 1
-      return token.toLowerCase() === NATIVE_ASSET_ADDRESS ? 3500 : null
+      if (token.toLowerCase() === WETH_BASE) nativeCallCount += 1
+      return token.toLowerCase() === WETH_BASE ? 3500 : null
     }
     const sources: PriceSources = { primary: fn, fallback: fn }
 
