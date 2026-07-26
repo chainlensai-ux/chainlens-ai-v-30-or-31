@@ -184,10 +184,22 @@ export function deriveSameTransactionQuotePrice(
     return true
   })
 
-  const oppositeDirection: SwapLegDirection = targetDirection === 'inbound' ? 'outbound' : 'inbound'
+  // NOT-SAME-DIRECTION MATCH, DISCLOSED (confirmed production root cause — see
+  // src/modules/normalization/index.ts's classifyDirection: a leg whose from/to never touches the
+  // scanned wallet directly — e.g. a router-to-pool WETH transfer inside a native-ETH-funded swap,
+  // where the wallet only ever sent native ETH to the router — is honestly classified 'unknown', not
+  // forced into 'inbound'/'outbound'. The previous `leg.direction === oppositeDirection` check only
+  // ever matched a leg that ALSO independently touched the wallet, so every swap whose quote leg was
+  // pool-side (the overwhelming majority — most DEX pairs are token/WETH, not token/USDC, and most
+  // swaps route native ETH through a router rather than pre-wrapped WETH) produced zero candidates:
+  // "no_opposite_leg_in_transaction" even though the quote leg was genuinely present in `merged`.
+  // Matching on "not the same direction as the target" (which a same-tx swap's other leg can never
+  // be, whether 'outbound'/'inbound' from the wallet's own perspective or 'unknown' from a pool's)
+  // recovers exactly this case while still rejecting a genuine same-direction leg (two separate
+  // inbound transfers in one tx, e.g. an airdrop alongside a swap) as required.
   const candidateLegs = legs.filter(
     (leg) =>
-      leg.direction === oppositeDirection &&
+      leg.direction !== targetDirection &&
       leg.contract.toLowerCase() !== targetToken.toLowerCase() &&
       isFinitePositive(leg.amount) &&
       Number.isFinite(leg.decimals) &&

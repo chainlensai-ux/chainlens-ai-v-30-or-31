@@ -109,6 +109,30 @@ describe('deriveSameTransactionQuotePrice — native/WETH quote', () => {
   })
 })
 
+describe('deriveSameTransactionQuotePrice — unknown-direction (router/pool-side) quote legs', () => {
+  it('quote leg with direction "unknown" (never touched the wallet directly) is still matched', () => {
+    const legs: SwapLeg[] = [
+      { contract: MEME_TOKEN, symbol: 'MEME', decimals: 18, amount: 1000, direction: 'inbound', logIndex: 0 },
+      // Router-to-pool transfer — from/to never involve the wallet, so real normalization would
+      // classify this 'unknown', not 'outbound'.
+      { contract: USDC_ETH, symbol: 'USDC', decimals: 6, amount: 500, direction: 'unknown', logIndex: 1 },
+    ]
+    const result = deriveSameTransactionQuotePrice(baseParams({ groupedSwapLegs: legs }))
+    assert.equal(result.priceUsd, 0.5)
+    assert.equal(result.source, 'same_tx_stable_quote')
+  })
+
+  it('a same-direction leg (e.g. a second inbound transfer) is never chosen as the quote', () => {
+    const legs: SwapLeg[] = [
+      { contract: MEME_TOKEN, symbol: 'MEME', decimals: 18, amount: 1000, direction: 'inbound', logIndex: 0 },
+      { contract: OTHER_TOKEN, symbol: 'JUNK', decimals: 18, amount: 50, direction: 'inbound', logIndex: 1 },
+    ]
+    const result = deriveSameTransactionQuotePrice(baseParams({ groupedSwapLegs: legs }))
+    assert.equal(result.priceUsd, null)
+    assert.equal(result.evidence.rejectionReason, 'no_opposite_leg_in_transaction')
+  })
+})
+
 describe('deriveSameTransactionQuotePrice — rejections', () => {
   it('7. unrelated transfer in the same transaction is rejected', () => {
     const legs: SwapLeg[] = [

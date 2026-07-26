@@ -207,6 +207,7 @@ export async function priceLotsForWallet(params: {
   let sameTxStablePricesRecovered = 0
   let sameTxNativePricesRecovered = 0
   const rejectionReasonCounts: Record<string, number> = {}
+  let requirementsWithValidOppositeLeg = 0
   const sampleRecovered: Array<{
     chain: string
     txHash: string
@@ -229,12 +230,23 @@ export async function priceLotsForWallet(params: {
     const cacheKey = `${groupKey}:${event.contract.toLowerCase()}:${event.direction}`
     let result = quoteLegCache.get(cacheKey)
     if (!result) {
-      const oppositeDirection = event.direction === 'inbound' ? 'outbound' : 'inbound'
+      // NOT-SAME-DIRECTION MATCH, DISCLOSED (see deriveSameTransactionQuotePrice's own header for the
+      // full production trace): the quote leg's direction is resolved relative to the SCANNED WALLET
+      // (src/modules/normalization/index.ts's classifyDirection) — a router-to-pool leg that never
+      // touches the wallet directly is honestly 'unknown', not the strict opposite of the target's own
+      // inbound/outbound. Only requiring "not the same direction as the target" (rather than "exactly
+      // the opposite of inbound/outbound") is what actually locates it.
       const quoteLeg = legs.find(
-        (leg) => !leg.excludeReason && leg.direction === oppositeDirection && leg.contract.toLowerCase() !== event.contract.toLowerCase(),
+        (leg) => !leg.excludeReason && leg.direction !== event.direction && leg.contract.toLowerCase() !== event.contract.toLowerCase(),
       )
       let historicalNativePrice: number | null = null
-      if (quoteLeg && (quoteLeg.symbol === 'ETH' || quoteLeg.symbol === 'WETH') && quoteLeg.amount > 0) {
+      // Only 'inbound'/'outbound' quote legs were themselves sent through resolvePricingAtTime (the
+      // buys/sells arrays built above exclude 'unknown'-direction events) — so only those have an
+      // already-resolved USD value to reuse at zero additional cost. A genuinely 'unknown'-direction
+      // native/WETH quote leg has no such value to reuse; this native-quote sub-case is honestly left
+      // unrecovered rather than issuing a new provider call to price it (see rejection reason
+      // 'missing_verified_native_price' in the per-key audit below).
+      if (quoteLeg && (quoteLeg.symbol === 'ETH' || quoteLeg.symbol === 'WETH') && quoteLeg.amount > 0 && quoteLeg.direction !== 'unknown') {
         const quoteLegOwnUsd = quoteLeg.direction === 'inbound' ? atTradeTime.costUsd[event.txHash] : atTradeTime.proceedsUsd[event.txHash]
         if (quoteLegOwnUsd != null) historicalNativePrice = quoteLegOwnUsd / quoteLeg.amount
       }
@@ -250,8 +262,14 @@ export async function priceLotsForWallet(params: {
       })
       quoteLegCache.set(cacheKey, result)
     }
+    if (result.evidence.rejectionReason !== 'no_opposite_leg_in_transaction') requirementsWithValidOppositeLeg += 1
+    // costUsd/proceedsUsd store the TOTAL resolved USD value of a leg (resolvePricingAtTime's own
+    // usd = price * amount — see pricingAtTimeEngine/index.ts's priceAllEntries/multiplyAmount), not
+    // a per-unit price. The quote leg's own quoteValueUsd already IS that total (a swap's paid USD
+    // amount equals the USD value received) — priceUsd (per-unit) is sanity-checked, but
+    // quoteValueUsd is what must be stored to match every other value already in these dicts.
     if (result.priceUsd != null && isSanePrice(result.priceUsd)) {
-      targetDict[event.txHash] = result.priceUsd
+      targetDict[event.txHash] = result.quoteValueUsd
       if (result.source === 'same_tx_stable_quote') sameTxStablePricesRecovered += 1
       else sameTxNativePricesRecovered += 1
       distinctTransactionsUsed.add(groupKey)
@@ -286,6 +304,16 @@ export async function priceLotsForWallet(params: {
     closedLots: structuralMatchedLots.length,
     entryRequirements: entryRankByTxHash.size,
     exitRequirements: exitRankByTxHash.size,
+    // WHERE THE QUOTE LEG WAS LOST, DISCLOSED — a three-stage funnel so a regression is attributable
+    // to a specific stage rather than one opaque total: transactionsInSwapLookup (the tx actually has
+    // ANY grouped legs at all — a non-zero floor confirms `merged` itself isn't empty/misgrouped),
+    // requirementsWithValidOppositeLeg (a same-tx leg with a different direction than the target was
+    // found — this is exactly the count that was 0 in production before this fix, since the previous
+    // strict "exactly the opposite of inbound/outbound" match silently excluded every 'unknown'-
+    // direction pool-side leg), then the recovered counts below (a valid opposite leg existed AND was
+    // a verified stablecoin/native quote AND produced a sane price).
+    transactionsInSwapLookup: swapLegsByTx.size,
+    requirementsWithValidOppositeLeg,
     sameTxStablePricesRecovered,
     sameTxNativePricesRecovered,
     requirementsSatisfiedBySameTxQuote: sameTxStablePricesRecovered + sameTxNativePricesRecovered,
