@@ -486,10 +486,30 @@ export async function priceLotsForWallet(params: {
   const selectedNativeRequirementKeys = nativeQuoteRequirementResolvers
     .filter((r) => atTradeTime[r.dict][r.key] != null)
     .map((r) => r.groupKey)
+  // RANK-DIRECTION VERIFICATION, DISCLOSED, BOUNDED (top 5 only) — pricingAtTimeEngine sorts pairRank
+  // ASCENDING (smallest number = highest priority = processed first, see priceAllEntries' `rankOf(a) -
+  // rankOf(b)` comparator). This makes that concrete and directly checkable per candidate: the BEST
+  // candidate (sortedPosition 0, i.e. first in the completion-tier-sorted list) must have the SMALLEST
+  // (most negative) assignedRank — rank(i) = i - N — and selectedByCap must be true for it whenever a
+  // real cap slot was available. A future regression that reversed this (best getting the LARGEST
+  // negative rank, e.g. -1 instead of -N) would show up here as sortedPosition 0 NOT having the
+  // smallest assignedRank among the top 5.
+  const resolverByGroupKey = new Map(nativeQuoteRequirementResolvers.map((r) => [r.groupKey, r]))
+  const nativeRankTopFive = sortedNativeCandidates.slice(0, 5).map((c, i) => {
+    const resolver = resolverByGroupKey.get(c.groupKey)
+    return {
+      txHash: c.txHash,
+      completionTier: tierOf(c),
+      sortedPosition: i,
+      assignedRank: nativeQuoteRankByGroupKey.get(c.groupKey),
+      selectedByCap: resolver ? !atTradeTime.cappedTxHashes.has(resolver.key) : null,
+    }
+  })
   // eslint-disable-next-line no-console
   console.warn('[quote-leg-native-cap-priority]', {
     nativeRequirementsSubmittedBeforeCap: nativeQuoteRequirementResolvers.length,
     rankValuesSeenByPricingAtTimeEngine: sortedNativeCandidates.map((c) => nativeQuoteRankByGroupKey.get(c.groupKey)),
+    nativeRankTopFive,
     nativeRequirementsSelectedByCap,
     nativeRequirementsActuallyCapped,
     nativeRequirementsProviderMiss,
