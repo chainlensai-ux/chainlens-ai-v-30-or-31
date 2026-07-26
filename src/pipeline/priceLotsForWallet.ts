@@ -846,9 +846,24 @@ export async function priceLotsForWallet(params: {
     }
   }
   if (alchemyShadowRequirements.length > 0) {
-    const { audit: alchemyShadowAudit } = await resolveAlchemyHistoricalPricesShadow(alchemyShadowRequirements)
+    const { shadowPricesByTxHash, audit: alchemyShadowAudit } = await resolveAlchemyHistoricalPricesShadow(alchemyShadowRequirements)
+
+    // LOTS-POTENTIALLY-COMPLETED, DISCLOSED, SHADOW-ONLY — a lot counts here if it was NOT already
+    // fully priced by official sources but WOULD be fully priced if the shadow prices above were ever
+    // applied (they are not). Computed purely from the returned Map for logging; never written back
+    // into atTradeTime/FIFO/PnL.
+    let lotsPotentiallyCompleted = 0
+    for (const lot of structuralMatchedLots) {
+      const hasEntry = atTradeTime.costUsd[lot.openedTxHash] != null
+      const hasExit = atTradeTime.proceedsUsd[lot.closedTxHash] != null
+      if (hasEntry && hasExit) continue
+      const wouldHaveEntry = hasEntry || shadowPricesByTxHash.has(lot.openedTxHash)
+      const wouldHaveExit = hasExit || shadowPricesByTxHash.has(lot.closedTxHash)
+      if (wouldHaveEntry && wouldHaveExit) lotsPotentiallyCompleted += 1
+    }
+
     // eslint-disable-next-line no-console
-    console.warn('[alchemy-historical-pricing-shadow]', alchemyShadowAudit)
+    console.warn('[alchemy-historical-pricing-shadow]', { ...alchemyShadowAudit, lotsPotentiallyCompleted })
   }
 
   // CLOSED-LOT PRICING COVERAGE DIAGNOSTICS, DISCLOSED, ADDITIVE — bounded (one summary object, no

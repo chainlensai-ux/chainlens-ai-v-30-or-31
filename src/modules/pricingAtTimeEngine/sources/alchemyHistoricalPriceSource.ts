@@ -98,8 +98,17 @@ let cacheHitsCount = 0
 let coalescedHitsCount = 0
 let cappedRequestsCount = 0
 let duplicateRequestCount = 0
+let successfulRequestsCount = 0
+let failedRequestsCount = 0
+let requirementsResolvedCount = 0
+let largestRangeDaysSeen = 0
+let closestPriceDistanceMsSeen = 0
 const rangeCache = new Map<string, Promise<AlchemyAssetRangeResult>>()
 const requestedRangeKeysThisScan = new Set<string>()
+const resolvedByChainCounts = new Map<string, number>()
+const resolvedByAssetCounts = new Map<string, number>()
+const failureReasonCounts = new Map<string, number>()
+const selectedAssetOrder: string[] = []
 
 export function resetAlchemyHistoricalPricingState(): void {
   liveRequests = 0
@@ -107,8 +116,25 @@ export function resetAlchemyHistoricalPricingState(): void {
   coalescedHitsCount = 0
   cappedRequestsCount = 0
   duplicateRequestCount = 0
+  successfulRequestsCount = 0
+  failedRequestsCount = 0
+  requirementsResolvedCount = 0
+  largestRangeDaysSeen = 0
+  closestPriceDistanceMsSeen = 0
   rangeCache.clear()
   requestedRangeKeysThisScan.clear()
+  resolvedByChainCounts.clear()
+  resolvedByAssetCounts.clear()
+  failureReasonCounts.clear()
+  selectedAssetOrder.length = 0
+}
+
+function bumpMapCount(map: Map<string, number>, key: string, by = 1): void {
+  map.set(key, (map.get(key) ?? 0) + by)
+}
+
+function mapToRecord(map: Map<string, number>): Record<string, number> {
+  return Object.fromEntries(map.entries())
 }
 
 function assetKey(chain: SupportedChain, token: string): string {
@@ -136,6 +162,15 @@ export type AlchemyHistoricalAuditRecord = {
   cappedRequests: number
   estimatedCu: number
   duplicateRequestCount: number
+  successfulRequests: number
+  failedRequests: number
+  requirementsResolved: number
+  resolvedByChain: Record<string, number>
+  resolvedByAsset: Record<string, number>
+  failureReasons: Record<string, number>
+  largestRangeDays: number
+  closestPriceDistanceMs: number
+  selectedAssetOrder: string[]
 }
 
 async function fetchAlchemyHistoricalRange(
@@ -249,20 +284,47 @@ export async function resolveAlchemyHistoricalPricesShadow(
   const shadowPricesByTxHash = new Map<string, number>()
   let cacheHitsForThisCall = 0
 
-  for (const { reqs } of assetEntries) {
+  for (const { key: assetKeyStr, reqs } of assetEntries) {
     const [{ chain, token }] = reqs
     const timestamps = reqs.map((r) => r.timestamp)
     const startTimeMs = Math.min(...timestamps)
     const endTimeMs = Math.max(...timestamps)
     const wasCached = rangeCache.has(`${assetKey(chain, token)}:${startTimeMs}:${endTimeMs}`)
+    const wasAlreadyLive = requestedRangeKeysThisScan.has(`${assetKey(chain, token)}:${startTimeMs}:${endTimeMs}`)
 
+    const rangeDays = (endTimeMs - startTimeMs) / (24 * 60 * 60 * 1000)
+    if (rangeDays > largestRangeDaysSeen) largestRangeDaysSeen = rangeDays
+
+    const wasCapped = liveRequests >= MAX_ALCHEMY_HISTORICAL_REQUESTS_PER_SCAN && !wasCached && !wasAlreadyLive
     const result = await fetchAlchemyHistoricalRange(chain, token, startTimeMs, endTimeMs)
     if (wasCached) cacheHitsForThisCall += 1
 
-    if (!result.ok) continue
+    // A "selected" asset is one that actually consumed (or reused) a live-request slot this scan —
+    // i.e. not skipped by the cap. Recorded once, in the priority order assets were attempted in.
+    if (!wasCapped && !selectedAssetOrder.includes(assetKeyStr)) selectedAssetOrder.push(assetKeyStr)
+
+    if (result.reason === 'capped') continue
+    if (!wasCached && !wasAlreadyLive) {
+      if (result.ok) successfulRequestsCount += 1
+      else failedRequestsCount += 1
+    }
+    if (!result.ok) {
+      bumpMapCount(failureReasonCounts, result.reason ?? 'unknown')
+      continue
+    }
     for (const req of reqs) {
       const price = closestPoint(result.points, req.timestamp)
-      if (price != null) shadowPricesByTxHash.set(req.txHash, price)
+      if (price != null) {
+        shadowPricesByTxHash.set(req.txHash, price)
+        requirementsResolvedCount += 1
+        bumpMapCount(resolvedByChainCounts, req.chain)
+        bumpMapCount(resolvedByAssetCounts, assetKeyStr)
+        const closest = result.points.reduce((a, b) =>
+          Math.abs(b.timestamp - req.timestamp) < Math.abs(a.timestamp - req.timestamp) ? b : a,
+        )
+        const distanceMs = Math.abs(closest.timestamp - req.timestamp)
+        if (distanceMs > closestPriceDistanceMsSeen) closestPriceDistanceMsSeen = distanceMs
+      }
     }
   }
 
@@ -277,6 +339,15 @@ export async function resolveAlchemyHistoricalPricesShadow(
     cappedRequests: cappedRequestsCount,
     estimatedCu: liveRequests * ESTIMATED_CU_PER_ALCHEMY_HISTORICAL_REQUEST,
     duplicateRequestCount,
+    successfulRequests: successfulRequestsCount,
+    failedRequests: failedRequestsCount,
+    requirementsResolved: requirementsResolvedCount,
+    resolvedByChain: mapToRecord(resolvedByChainCounts),
+    resolvedByAsset: mapToRecord(resolvedByAssetCounts),
+    failureReasons: mapToRecord(failureReasonCounts),
+    largestRangeDays: Math.round(largestRangeDaysSeen * 100) / 100,
+    closestPriceDistanceMs: closestPriceDistanceMsSeen,
+    selectedAssetOrder: [...selectedAssetOrder],
   }
 
   return { shadowPricesByTxHash, audit }
@@ -294,5 +365,14 @@ export function getAlchemyHistoricalPricingCountersForTest(): AlchemyHistoricalA
     cappedRequests: cappedRequestsCount,
     estimatedCu: liveRequests * ESTIMATED_CU_PER_ALCHEMY_HISTORICAL_REQUEST,
     duplicateRequestCount,
+    successfulRequests: successfulRequestsCount,
+    failedRequests: failedRequestsCount,
+    requirementsResolved: requirementsResolvedCount,
+    resolvedByChain: mapToRecord(resolvedByChainCounts),
+    resolvedByAsset: mapToRecord(resolvedByAssetCounts),
+    failureReasons: mapToRecord(failureReasonCounts),
+    largestRangeDays: Math.round(largestRangeDaysSeen * 100) / 100,
+    closestPriceDistanceMs: closestPriceDistanceMsSeen,
+    selectedAssetOrder: [...selectedAssetOrder],
   }
 }
