@@ -95,6 +95,47 @@ export async function fetchCoingeckoPriceDetailed(
   }
 }
 
+// NATIVE-ASSET HISTORY, DISCLOSED (ETH native-routing-mismatch fix): CoinGecko indexes native ETH
+// under its own coin id ("ethereum") via the real, documented `/coins/{id}/history` endpoint — a
+// DIFFERENT, more complete dataset than the CONTRACT-address-based `/coins/{platform}/contract/
+// {address}/market_chart/range` endpoint above (that one is a secondary, contract-derived dataset;
+// querying it with WETH's contract address on mainnet can genuinely miss dates the coin's own
+// primary history has). Single-day precision (`date=DD-MM-YYYY`), matching this function's own
+// historical-lookup contract — never a current-price fallback, never applied to any date but the
+// one requested. Shares the SAME circuit breaker as the contract-based function above (same
+// CoinGecko rate-limit bucket).
+export async function fetchCoingeckoNativeEthPriceDetailed(timestamp: number): Promise<CoingeckoPriceResult> {
+  if (coingeckoCircuitOpen) return { priceUsd: null, reason: 'coingecko_circuit_open_after_429' }
+
+  const date = new Date(timestamp)
+  if (Number.isNaN(date.getTime())) return { priceUsd: null, reason: 'invalid_timestamp' }
+  const dateString = `${String(date.getUTCDate()).padStart(2, '0')}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${date.getUTCFullYear()}`
+
+  const url = new URL('https://api.coingecko.com/api/v3/coins/ethereum/history')
+  url.searchParams.set('date', dateString)
+  url.searchParams.set('localization', 'false')
+
+  const apiKey = process.env.COINGECKO_API_KEY
+
+  try {
+    const res = await fetch(url.toString(), {
+      headers: apiKey ? { 'x-cg-demo-api-key': apiKey } : {},
+      signal: AbortSignal.timeout(8_000),
+    })
+    if (res.status === 429) {
+      coingeckoCircuitOpen = true
+      return { priceUsd: null, reason: 'http_429' }
+    }
+    if (!res.ok) return { priceUsd: null, reason: `http_${res.status}` }
+
+    const data = (await res.json()) as { market_data?: { current_price?: { usd?: number } } }
+    const price = data.market_data?.current_price?.usd
+    return typeof price === 'number' && Number.isFinite(price) ? { priceUsd: price, reason: null } : { priceUsd: null, reason: 'no_price_for_date' }
+  } catch (err) {
+    return { priceUsd: null, reason: `fetch_error:${err instanceof Error ? err.message : 'unknown'}` }
+  }
+}
+
 // Public export matching this codebase's PriceSourceFn contract exactly (token, chain, timestamp)
 // -> number | null — a clean USD price or null, never a fabricated value.
 export async function fetchCoingeckoPrice(

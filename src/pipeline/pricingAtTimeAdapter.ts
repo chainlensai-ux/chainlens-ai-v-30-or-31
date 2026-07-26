@@ -35,6 +35,26 @@ import { fetchDexscreenerPriceShared } from '../lib/dexscreenerRequestCache'
 import { DEXSCREENER_FRESHNESS_TOLERANCE_MS, isDexscreenerSupportedChain } from '../modules/pricingAtTimeEngine/sources/dexscreener'
 import { isGoldrushCircuitOpen } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { fetchBaseDexPriceDetailed } from '../modules/pricingAtTimeEngine/sources/basedex'
+import { fetchCoingeckoNativeEthPriceDetailed } from '../modules/pricingAtTimeEngine/sources/coingecko'
+
+// ETH NATIVE ROUTING MISMATCH, DISCLOSED (confirmed production evidence: the two selected Ethereum
+// native-quote requirements, correctly routed to the canonical WETH-on-mainnet contract address,
+// both returned resolvedPriceUsd: null, while two Base native requirements — routed the same way, to
+// Base's own canonical WETH contract — priced successfully). Audited: Base's extra success comes
+// from basedex.ts's on-chain Uniswap V3 fallback, which ONLY supports 'base'
+// (`fetchBaseDexPriceDetailed` returns `base_dex_only_supports_base_chain` for every other chain,
+// confirmed by reading its own gate) — not something addable here without a real mainnet on-chain
+// integration, out of scope for a routing fix. The genuinely fixable mismatch: every existing source
+// queries WETH by ITS CONTRACT ADDRESS uniformly, including CoinGecko's contract-based
+// `/coins/{platform}/contract/{address}/market_chart/range` endpoint — a secondary, contract-derived
+// dataset that can genuinely have date gaps a token's OWN coin-id history does not. CoinGecko
+// separately indexes native ETH under its own real, documented coin id ("ethereum") via
+// `/coins/ethereum/history` — the SAME asset this pseudo-address-routed-to-WETH price is standing in
+// for, priced through its PRIMARY dataset instead of the secondary contract-derived one. This constant
+// is the well-known canonical WETH-on-mainnet address (the exact one quoteLegPricing/index.ts already
+// routes the native pseudo-address to for chain 'eth') — recognized here as "this specific address on
+// this specific chain is functionally native ETH," not a general WETH-detection mechanism.
+const ETH_CANONICAL_WETH_ADDRESS = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
 
 // Sanity guard, applied to every price this pipeline resolves — a price outside this range is
 // provider garbage, never rendered. Independent of pnlSummaryAdapter.ts's separate $1e12
@@ -75,7 +95,7 @@ export function withGeckoTerminalFallback(existingFallback: PriceSourceFn): Pric
   }
 }
 
-export type PricingRouteUsed = 'goldrush' | 'geckoterminal' | 'dexscreener' | 'coingecko_or_basedex' | 'none'
+export type PricingRouteUsed = 'goldrush' | 'geckoterminal' | 'dexscreener' | 'coingecko_or_basedex' | 'coingecko_native_eth' | 'none'
 
 export type PricingRouteRecord = {
   token: string
@@ -202,6 +222,21 @@ export function buildChainAwareHistoricalPriceSourceDetailed(
 
   return async (token, chain, timestamp) => {
     const attempts: PriceAttemptDetail[] = []
+
+    // ETH NATIVE ROUTING, DISCLOSED: see ETH_CANONICAL_WETH_ADDRESS's own declaration above. Only an
+    // EXTRA, earlier attempt for this one specific (chain, address) pair — never skips or replaces
+    // any of the existing ordering below if it misses, so coverage can only improve, never regress.
+    // Preserves the requested timestamp exactly (never "now"); never mutates `token`/`chain` — this
+    // reads the SAME token/chain/timestamp the caller already passed in, just tries one more real,
+    // more-appropriate source first for this specific well-known address.
+    if (chain === 'eth' && token.toLowerCase() === ETH_CANONICAL_WETH_ADDRESS) {
+      const nativeResult = await fetchCoingeckoNativeEthPriceDetailed(timestamp)
+      attempts.push({ source: 'coingecko', ok: isSanePrice(nativeResult.priceUsd), reason: nativeResult.reason })
+      if (isSanePrice(nativeResult.priceUsd)) {
+        recordRoute(token, chain, timestamp, 'coingecko_native_eth')
+        return { price: nativeResult.priceUsd, route: 'coingecko_native_eth', attempts }
+      }
+    }
 
     // PRIORITISED BASE DEX, DISCLOSED: see baseDexProvenThisScan's own declaration above. Only ever
     // an EXTRA, earlier attempt at an already-real source — never skips or replaces any of the
