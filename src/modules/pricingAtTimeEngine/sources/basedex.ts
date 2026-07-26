@@ -133,6 +133,85 @@ const ERC20_DECIMALS_ABI = [
   { type: 'function', name: 'decimals', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint8' }] },
 ] as const
 
+// AERODROME VENUES, DISCLOSED: additional venues alongside (never replacing) the Uniswap V3 venue
+// above — added per explicit user instruction with these two canonical Base addresses supplied
+// directly by the user:
+//   Aerodrome Classic PoolFactory:    0x420DD381b31aEf6683db6B902084cB0FFECe40Da
+//   Aerodrome Slipstream PoolFactory: 0xCc0BddB707055e04e497aB22a59c2aF4391cd12F
+// VERIFICATION ATTEMPTED, DISCLOSED: the Classic PoolFactory address was independently confirmed via
+// Aerodrome's own public `aerodrome-finance/contracts` GitHub repository's deployment listing. The
+// Slipstream factory address could not be independently cross-confirmed in this sandbox — Basescan
+// and Aerodrome's own docs site both returned blocked/unreachable responses, and GitHub raw-file
+// lookups for a deployment-addresses manifest 404'd. It is used here because the user supplied it
+// directly as a "canonical" address for this exact purpose; if you can independently confirm (or
+// correct) it against Basescan or Aerodrome's official docs, update this constant.
+const AERODROME_CLASSIC_FACTORY = '0x420DD381b31aEf6683db6B902084cB0FFECe40Da'
+const AERODROME_SLIPSTREAM_FACTORY = '0xCc0BddB707055e04e497aB22a59c2aF4391cd12F'
+
+// Aerodrome Classic (Solidly-fork) factory: pools are keyed by (tokenA, tokenB, stable) — a
+// volatile pool and a stable pool for the SAME pair are different, independently-deployed contract
+// addresses. Only ever queried below with stable=false (see STABLE-POOL SKIP note near
+// readAerodromeClassicVolatilePoolPrice) — never with stable=true.
+const AERODROME_CLASSIC_FACTORY_ABI = [
+  {
+    type: 'function',
+    name: 'getPool',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'tokenA', type: 'address' },
+      { name: 'tokenB', type: 'address' },
+      { name: 'stable', type: 'bool' },
+    ],
+    outputs: [{ name: 'pool', type: 'address' }],
+  },
+] as const
+
+// Aerodrome Classic pool: a Solidly/Uniswap-V2-style constant-product-invariant AMM (for the
+// volatile pools this file ever prices — see the stable-pool skip note below). `stable()` is read
+// back from the pool itself (not merely assumed from which factory call found it) as a second,
+// independent guard against ever pricing a stable-curve pool with volatile-pool (reserve-ratio)
+// math.
+const AERODROME_CLASSIC_POOL_ABI = [
+  {
+    type: 'function',
+    name: 'getReserves',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      { name: '_reserve0', type: 'uint256' },
+      { name: '_reserve1', type: 'uint256' },
+      { name: '_blockTimestampLast', type: 'uint256' },
+    ],
+  },
+  { type: 'function', name: 'token0', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
+  { type: 'function', name: 'stable', stateMutability: 'view', inputs: [], outputs: [{ type: 'bool' }] },
+] as const
+
+// Aerodrome Slipstream: a Uniswap-V3 fork (concentrated liquidity), publicly documented by
+// Aerodrome as based on Uniswap V3's CL design — its pool contracts expose the SAME slot0()/
+// token0() signatures as UNISWAP_V3_POOL_ABI above, so this file reuses that exact ABI and reuses
+// readPoolPrice's exact pricing math for Slipstream pools unchanged (see resolveAerodromeSlipstream-
+// PoolAddress below — only pool DISCOVERY differs, because Slipstream's factory is keyed by
+// tickSpacing, not a fee tier).
+const AERODROME_SLIPSTREAM_FACTORY_ABI = [
+  {
+    type: 'function',
+    name: 'getPool',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'tokenA', type: 'address' },
+      { name: 'tokenB', type: 'address' },
+      { name: 'tickSpacing', type: 'int24' },
+    ],
+    outputs: [{ name: 'pool', type: 'address' }],
+  },
+] as const
+
+// Standard, publicly-documented Aerodrome Slipstream tick spacings (1 = very tight/stable-like,
+// 50/100/200 = standard, 2000 = wide — the tier commonly used for volatile/memecoin pairs).
+// Same "try each, take the first non-zero hit" approach as UNISWAP_V3_FEE_TIERS above.
+const AERODROME_SLIPSTREAM_TICK_SPACINGS = [1, 50, 100, 200, 2000] as const
+
 let cachedBaseClient: PublicClient | null = null
 
 function getBaseClient(): PublicClient | null {
@@ -470,6 +549,7 @@ export function __resetBaseDexCachesForTest(): void {
   inFlightBlockSearches.clear()
   negativePoolCache.clear()
   inFlightPoolSearches.clear()
+  __resetAerodromeCachesForTest()
 }
 
 // RPC-COST FIX, DISCLOSED (continuation of the findBlockForTimestamp fix above): resolvePoolAddress
@@ -793,7 +873,397 @@ async function readPoolPriceInputsSequential(
   ])
 }
 
-export type BaseDexPriceResult = { priceUsd: number | null; reason: string | null }
+// ============================================================================
+// AERODROME SLIPSTREAM (concentrated liquidity, Uniswap-V3-style pool math)
+// ============================================================================
+//
+// Discovery only differs from Uniswap V3 (different factory address, tickSpacing instead of a fee
+// tier) — pricing reuses readPoolPrice UNCHANGED (see AERODROME_SLIPSTREAM_FACTORY_ABI's own header
+// above for why that's safe), so there is no separate "read price" implementation for this venue.
+// Cache/singleflight/negative-cache structure mirrors resolvePoolAddress's own, in a SEPARATE set of
+// maps (not the same Map object) so a token's Uniswap pool address and its Aerodrome Slipstream pool
+// address for the identical (token, pairedWith) pair — genuinely different on-chain contracts —
+// never collide under the same cache key.
+const aeroSlipstreamPoolAddressCache = new Map<string, `0x${string}`>()
+const aeroSlipstreamNegativePoolCache = new Map<string, number>()
+const aeroSlipstreamInFlightPoolSearches = new Map<string, Promise<`0x${string}` | null>>()
+
+async function resolveAerodromeSlipstreamPoolAddressViaMulticall(
+  client: PublicClient,
+  tokenAddress: `0x${string}`,
+  pairedWith: `0x${string}`,
+): Promise<`0x${string}` | null> {
+  const calls: Multicall3Call[] = AERODROME_SLIPSTREAM_TICK_SPACINGS.map((tickSpacing) => ({
+    target: AERODROME_SLIPSTREAM_FACTORY as `0x${string}`,
+    allowFailure: true,
+    callData: encodeFunctionData({
+      abi: AERODROME_SLIPSTREAM_FACTORY_ABI,
+      functionName: 'getPool',
+      args: [tokenAddress, pairedWith, tickSpacing],
+    }),
+  }))
+
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:multicall:getPool:aeroSlipstream' })
+  trackRpcCall('readContract:multicall:getPool:aeroSlipstream')
+  const results = await multicall(client, calls)
+
+  for (const result of results) {
+    if (!result.success) continue
+    const pool = decodeFunctionResult({
+      abi: AERODROME_SLIPSTREAM_FACTORY_ABI,
+      functionName: 'getPool',
+      data: result.returnData,
+    })
+    if (pool && pool !== '0x0000000000000000000000000000000000000000') return pool
+  }
+  return null
+}
+
+async function resolveAerodromeSlipstreamPoolAddressSequential(
+  client: PublicClient,
+  tokenAddress: `0x${string}`,
+  pairedWith: `0x${string}`,
+): Promise<`0x${string}` | null> {
+  for (const tickSpacing of AERODROME_SLIPSTREAM_TICK_SPACINGS) {
+    try {
+      logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:getPool:aeroSlipstream' })
+      trackRpcCall('readContract:getPool:aeroSlipstream')
+      const pool = await client.readContract({
+        address: AERODROME_SLIPSTREAM_FACTORY as `0x${string}`,
+        abi: AERODROME_SLIPSTREAM_FACTORY_ABI,
+        functionName: 'getPool',
+        args: [tokenAddress, pairedWith, tickSpacing],
+      })
+      if (pool && pool !== '0x0000000000000000000000000000000000000000') return pool
+    } catch {
+      // try the next tick spacing
+    }
+  }
+  return null
+}
+
+export async function resolveAerodromeSlipstreamPoolAddress(
+  client: PublicClient,
+  tokenAddress: `0x${string}`,
+  pairedWith: `0x${string}`,
+): Promise<`0x${string}` | null> {
+  const cacheKey = `${tokenAddress.toLowerCase()}-${pairedWith.toLowerCase()}`
+
+  const cached = aeroSlipstreamPoolAddressCache.get(cacheKey)
+  if (cached !== undefined) return cached
+
+  const negativeExpiresAt = aeroSlipstreamNegativePoolCache.get(cacheKey)
+  if (negativeExpiresAt !== undefined && Date.now() < negativeExpiresAt) return null
+
+  const inFlight = aeroSlipstreamInFlightPoolSearches.get(cacheKey)
+  if (inFlight) return inFlight
+
+  // Same scan-wide budget the block search already enforces — never spend more RPC budget on this
+  // new venue than the existing cap already allows. See MAX_BASEDEX_RPC_CALLS_PER_SCAN's own header.
+  if (baseDexScanBudgetExceeded()) return null
+
+  const search = (async (): Promise<`0x${string}` | null> => {
+    const pool = await resolveAerodromeSlipstreamPoolAddressViaMulticall(client, tokenAddress, pairedWith)
+      .catch(() => resolveAerodromeSlipstreamPoolAddressSequential(client, tokenAddress, pairedWith))
+
+    if (pool) {
+      aeroSlipstreamPoolAddressCache.set(cacheKey, pool)
+      return pool
+    }
+    aeroSlipstreamNegativePoolCache.set(cacheKey, Date.now() + NEGATIVE_POOL_CACHE_TTL_MS)
+    return null
+  })()
+
+  aeroSlipstreamInFlightPoolSearches.set(cacheKey, search)
+  try {
+    return await search
+  } finally {
+    aeroSlipstreamInFlightPoolSearches.delete(cacheKey)
+  }
+}
+
+// ============================================================================
+// AERODROME CLASSIC — VOLATILE POOLS ONLY (constant-product reserve-ratio math)
+// ============================================================================
+//
+// STABLE-POOL SKIP, DISCLOSED, INTENTIONAL: Aerodrome Classic stable pools use a different
+// (StableSwap-style) curve invariant than the constant-product (x*y=k) math this file implements
+// below — pricing a stable pool with plain reserve-ratio math would silently produce a WRONG price
+// (a plausible-looking number, not an honest failure) whenever the pool sits away from its 1:1 peg.
+// Per explicit instruction, this venue therefore NEVER queries the factory with stable=true, and
+// independently double-checks the pool's own `stable()` view (see readAerodromeClassicVolatile-
+// PoolPrice below) before ever using its reserves — so even a discovery-side accident could not slip
+// a stable pool through this volatile-only math.
+const aeroClassicPoolAddressCache = new Map<string, `0x${string}`>()
+const aeroClassicNegativePoolCache = new Map<string, number>()
+const aeroClassicInFlightPoolSearches = new Map<string, Promise<`0x${string}` | null>>()
+const aeroClassicPoolPriceCache = new Map<string, number | null>()
+
+class AeroPoolNotYetDeployedError extends Error {}
+
+export async function resolveAerodromeClassicVolatilePoolAddress(
+  client: PublicClient,
+  tokenAddress: `0x${string}`,
+  pairedWith: `0x${string}`,
+): Promise<`0x${string}` | null> {
+  const cacheKey = `${tokenAddress.toLowerCase()}-${pairedWith.toLowerCase()}`
+
+  const cached = aeroClassicPoolAddressCache.get(cacheKey)
+  if (cached !== undefined) return cached
+
+  const negativeExpiresAt = aeroClassicNegativePoolCache.get(cacheKey)
+  if (negativeExpiresAt !== undefined && Date.now() < negativeExpiresAt) return null
+
+  const inFlight = aeroClassicInFlightPoolSearches.get(cacheKey)
+  if (inFlight) return inFlight
+
+  if (baseDexScanBudgetExceeded()) return null
+
+  const search = (async (): Promise<`0x${string}` | null> => {
+    try {
+      logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:getPool:aeroClassic' })
+      trackRpcCall('readContract:getPool:aeroClassic')
+      const pool = await client.readContract({
+        address: AERODROME_CLASSIC_FACTORY as `0x${string}`,
+        abi: AERODROME_CLASSIC_FACTORY_ABI,
+        functionName: 'getPool',
+        args: [tokenAddress, pairedWith, false], // false = volatile only, see this section's own header
+      })
+      if (pool && pool !== '0x0000000000000000000000000000000000000000') {
+        aeroClassicPoolAddressCache.set(cacheKey, pool)
+        return pool
+      }
+    } catch {
+      // no pool for this pair (or a real RPC failure) — treated the same as "not found" below
+    }
+    aeroClassicNegativePoolCache.set(cacheKey, Date.now() + NEGATIVE_POOL_CACHE_TTL_MS)
+    return null
+  })()
+
+  aeroClassicInFlightPoolSearches.set(cacheKey, search)
+  try {
+    return await search
+  } finally {
+    aeroClassicInFlightPoolSearches.delete(cacheKey)
+  }
+}
+
+type AeroClassicPoolPriceInputs = [bigint, bigint, `0x${string}`, boolean, number, number]
+
+async function readAerodromeClassicVolatilePoolPriceInputsViaMulticall(
+  client: PublicClient,
+  poolAddress: `0x${string}`,
+  tokenAddress: `0x${string}`,
+  pairedWith: `0x${string}`,
+  blockNumber: bigint,
+): Promise<AeroClassicPoolPriceInputs> {
+  const calls: Multicall3Call[] = [
+    { target: poolAddress, allowFailure: true, callData: encodeFunctionData({ abi: AERODROME_CLASSIC_POOL_ABI, functionName: 'getReserves' }) },
+    { target: poolAddress, allowFailure: true, callData: encodeFunctionData({ abi: AERODROME_CLASSIC_POOL_ABI, functionName: 'token0' }) },
+    { target: poolAddress, allowFailure: true, callData: encodeFunctionData({ abi: AERODROME_CLASSIC_POOL_ABI, functionName: 'stable' }) },
+    { target: tokenAddress, allowFailure: true, callData: encodeFunctionData({ abi: ERC20_DECIMALS_ABI, functionName: 'decimals' }) },
+    { target: pairedWith, allowFailure: true, callData: encodeFunctionData({ abi: ERC20_DECIMALS_ABI, functionName: 'decimals' }) },
+  ]
+
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:multicall:poolPrice:aeroClassic' })
+  trackRpcCall('readContract:multicall:poolPrice:aeroClassic')
+  const results = await multicall(client, calls, blockNumber)
+
+  if (results.length !== 5 || results.some((r) => !r.success)) {
+    throw new Error('multicall: one or more aeroClassic poolPrice sub-calls failed')
+  }
+
+  // Same empty-returndata signal as PoolNotYetDeployedError above: a pool the factory currently
+  // links but that had no code yet at this historical block, detected for free from data this same
+  // multicall already fetched — never a wasted, doomed sequential retry.
+  if (results[0].returnData === '0x' || results[1].returnData === '0x' || results[2].returnData === '0x') {
+    throw new AeroPoolNotYetDeployedError('pool_not_yet_deployed_at_block')
+  }
+
+  const [reserve0, reserve1] = decodeFunctionResult({ abi: AERODROME_CLASSIC_POOL_ABI, functionName: 'getReserves', data: results[0].returnData })
+  const token0 = decodeFunctionResult({ abi: AERODROME_CLASSIC_POOL_ABI, functionName: 'token0', data: results[1].returnData })
+  const stable = decodeFunctionResult({ abi: AERODROME_CLASSIC_POOL_ABI, functionName: 'stable', data: results[2].returnData })
+  const tokenDecimals = decodeFunctionResult({ abi: ERC20_DECIMALS_ABI, functionName: 'decimals', data: results[3].returnData })
+  const pairedDecimals = decodeFunctionResult({ abi: ERC20_DECIMALS_ABI, functionName: 'decimals', data: results[4].returnData })
+
+  return [reserve0, reserve1, token0, stable, tokenDecimals, pairedDecimals]
+}
+
+async function readAerodromeClassicVolatilePoolPriceInputsSequential(
+  client: PublicClient,
+  poolAddress: `0x${string}`,
+  tokenAddress: `0x${string}`,
+  pairedWith: `0x${string}`,
+  blockNumber: bigint,
+): Promise<AeroClassicPoolPriceInputs> {
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:getReserves' })
+  trackRpcCall('readContract:getReserves')
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:token0' })
+  trackRpcCall('readContract:token0')
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:stable' })
+  trackRpcCall('readContract:stable')
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
+  trackRpcCall('readContract:decimals')
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
+  trackRpcCall('readContract:decimals')
+  const [reserves, token0, stable, tokenDecimals, pairedDecimals] = await Promise.all([
+    client.readContract({ address: poolAddress, abi: AERODROME_CLASSIC_POOL_ABI, functionName: 'getReserves', blockNumber }),
+    client.readContract({ address: poolAddress, abi: AERODROME_CLASSIC_POOL_ABI, functionName: 'token0', blockNumber }),
+    client.readContract({ address: poolAddress, abi: AERODROME_CLASSIC_POOL_ABI, functionName: 'stable', blockNumber }),
+    client.readContract({ address: tokenAddress, abi: ERC20_DECIMALS_ABI, functionName: 'decimals', blockNumber }),
+    client.readContract({ address: pairedWith, abi: ERC20_DECIMALS_ABI, functionName: 'decimals', blockNumber }),
+  ])
+  return [reserves[0], reserves[1], token0, stable, tokenDecimals, pairedDecimals]
+}
+
+export async function readAerodromeClassicVolatilePoolPrice(
+  client: PublicClient,
+  poolAddress: `0x${string}`,
+  tokenAddress: `0x${string}`,
+  pairedWith: `0x${string}`,
+  blockNumber: bigint,
+): Promise<number | null> {
+  const cacheKey = `${poolAddress.toLowerCase()}-${blockNumber.toString()}`
+  const cachedPrice = aeroClassicPoolPriceCache.get(cacheKey)
+  if (cachedPrice !== undefined) return cachedPrice
+
+  const [reserve0, reserve1, token0, stable, tokenDecimals, pairedDecimals] =
+    await readAerodromeClassicVolatilePoolPriceInputsViaMulticall(client, poolAddress, tokenAddress, pairedWith, blockNumber)
+      .catch((err) => {
+        if (err instanceof AeroPoolNotYetDeployedError) throw err
+        return readAerodromeClassicVolatilePoolPriceInputsSequential(client, poolAddress, tokenAddress, pairedWith, blockNumber)
+      })
+
+  // NEVER PRICE A STABLE POOL WITH THIS MATH — see this section's own header. Independently
+  // re-verified here from the pool's own on-chain state, not merely trusted from which factory call
+  // found it.
+  if (stable) {
+    aeroClassicPoolPriceCache.set(cacheKey, null)
+    return null
+  }
+
+  // ZERO-LIQUIDITY REJECTION: a deployed-but-never-funded (or fully-drained) pool has reserve0 or
+  // reserve1 === 0 — a real, legitimate on-chain state (same category as slot0().sqrtPriceX96 === 0
+  // for the Uniswap V3 venue above), not a hypothetical. Division by a zero reserve would otherwise
+  // produce Infinity/NaN, which must never be treated as a real price.
+  if (reserve0 === BigInt(0) || reserve1 === BigInt(0)) {
+    aeroClassicPoolPriceCache.set(cacheKey, null)
+    return null
+  }
+
+  const isTokenToken0 = token0.toLowerCase() === tokenAddress.toLowerCase()
+
+  // Same orientation/decimal-adjustment discipline as readPoolPrice's own hard-learned lesson above
+  // (see its PRICE-CORRUPTION FIX comment): decimalAdjustment = 10^(tokenDecimals - pairedDecimals)
+  // is a pool-independent constant that must NEVER flip sign; only which raw reserve plays the role
+  // of "the paired asset's reserve" depends on token0/token1 orientation.
+  // rawRatio = (raw reserve of the paired asset) / (raw reserve of the priced token)
+  const rawRatio = isTokenToken0 ? Number(reserve1) / Number(reserve0) : Number(reserve0) / Number(reserve1)
+  const decimalAdjustment = 10 ** (tokenDecimals - pairedDecimals)
+  const price = rawRatio * decimalAdjustment
+
+  if (!Number.isFinite(price)) {
+    aeroClassicPoolPriceCache.set(cacheKey, null)
+    return null
+  }
+
+  aeroClassicPoolPriceCache.set(cacheKey, price)
+  return price
+}
+
+// TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as __resetBaseDexCachesForTest above, extended to
+// the two new Aerodrome venues' own cache/singleflight maps.
+export function __resetAerodromeCachesForTest(): void {
+  aeroSlipstreamPoolAddressCache.clear()
+  aeroSlipstreamNegativePoolCache.clear()
+  aeroSlipstreamInFlightPoolSearches.clear()
+  aeroClassicPoolAddressCache.clear()
+  aeroClassicNegativePoolCache.clear()
+  aeroClassicInFlightPoolSearches.clear()
+  aeroClassicPoolPriceCache.clear()
+}
+
+export type BaseDexVenue = 'uniswap_v3' | 'aerodrome_slipstream' | 'aerodrome_classic_volatile'
+
+export type BaseDexVenueAttempt = {
+  venue: BaseDexVenue
+  quoteToken: 'WETH' | 'USDC'
+  attempted: boolean
+  ok: boolean
+  reason: string | null
+}
+
+// Converts a raw tokenPerQuote ratio (from any venue) into a USD price. USDC is treated as $1 (a
+// standard, disclosed industry approximation for a USD-pegged stablecoin — same as the pre-existing
+// Uniswap USDC path). WETH requires one further real, recursive CoinGecko lookup for WETH's own
+// historical USD price — never a guessed/hardcoded ETH price.
+async function convertQuoteRatioToUsd(
+  quoteLabel: 'WETH' | 'USDC',
+  tokenPerQuote: number,
+  timestamp: number,
+): Promise<number | null> {
+  if (quoteLabel === 'USDC') return tokenPerQuote
+  const wethUsd = await fetchCoingeckoPriceDetailed(WETH_BASE, 'base', timestamp)
+  if (wethUsd.priceUsd === null) return null
+  return tokenPerQuote * wethUsd.priceUsd
+}
+
+// One venue+quote-token attempt: resolve the pool, read its price, convert to USD, and always
+// record a structured attempt entry (success or failure) — this is what "expose attempts,
+// successes, selected venue/pool type, failure reason" is built from.
+async function tryBaseDexVenue(
+  venue: BaseDexVenue,
+  quoteLabel: 'WETH' | 'USDC',
+  quoteAddress: `0x${string}`,
+  tokenAddress: `0x${string}`,
+  client: PublicClient,
+  blockNumber: bigint,
+  timestamp: number,
+  attempts: BaseDexVenueAttempt[],
+  resolvePool: (client: PublicClient, tokenAddress: `0x${string}`, pairedWith: `0x${string}`) => Promise<`0x${string}` | null>,
+  readPrice: (client: PublicClient, poolAddress: `0x${string}`, tokenAddress: `0x${string}`, pairedWith: `0x${string}`, blockNumber: bigint) => Promise<number | null>,
+): Promise<number | null> {
+  let pool: `0x${string}` | null
+  try {
+    pool = await resolvePool(client, tokenAddress, quoteAddress)
+  } catch (err) {
+    attempts.push({ venue, quoteToken: quoteLabel, attempted: true, ok: false, reason: `pool_discovery_error:${err instanceof Error ? err.message : 'unknown'}` })
+    return null
+  }
+  if (!pool) {
+    attempts.push({ venue, quoteToken: quoteLabel, attempted: true, ok: false, reason: 'no_pool' })
+    return null
+  }
+
+  let ratio: number | null
+  try {
+    ratio = await readPrice(client, pool, tokenAddress, quoteAddress, blockNumber)
+  } catch (err) {
+    attempts.push({ venue, quoteToken: quoteLabel, attempted: true, ok: false, reason: err instanceof Error ? err.message : 'unknown' })
+    return null
+  }
+  if (ratio === null || !Number.isFinite(ratio)) {
+    attempts.push({ venue, quoteToken: quoteLabel, attempted: true, ok: false, reason: 'invalid_or_zero_price' })
+    return null
+  }
+
+  const usd = await convertQuoteRatioToUsd(quoteLabel, ratio, timestamp)
+  if (usd === null || !Number.isFinite(usd)) {
+    attempts.push({ venue, quoteToken: quoteLabel, attempted: true, ok: false, reason: 'quote_token_usd_unavailable' })
+    return null
+  }
+
+  attempts.push({ venue, quoteToken: quoteLabel, attempted: true, ok: true, reason: null })
+  return usd
+}
+
+export type BaseDexPriceResult = {
+  priceUsd: number | null
+  reason: string | null
+  venue?: BaseDexVenue
+  attempts?: BaseDexVenueAttempt[]
+  rpcCallsUsed?: number
+}
 
 // Detailed variant — used by the orchestrator (getPriceAtTime) for structured debug output.
 export async function fetchBaseDexPriceDetailed(
@@ -806,40 +1276,53 @@ export async function fetchBaseDexPriceDetailed(
   const client = getBaseClient()
   if (!client) return { priceUsd: null, reason: 'no_api_key_configured' }
 
+  const rpcCallsAtStart = totalBaseDexRpcCallsThisScan
+  const attempts: BaseDexVenueAttempt[] = []
+
   try {
     const targetSec = Math.floor(timestamp / 1000)
     const blockNumber = await findBlockForTimestamp(client, targetSec)
-    if (blockNumber === null) return { priceUsd: null, reason: 'could_not_resolve_historical_block' }
+    if (blockNumber === null) {
+      return { priceUsd: null, reason: 'could_not_resolve_historical_block', attempts, rpcCallsUsed: totalBaseDexRpcCallsThisScan - rpcCallsAtStart }
+    }
 
     const tokenAddress = token as `0x${string}`
+    const quotes: { label: 'WETH' | 'USDC'; address: `0x${string}` }[] = [
+      { label: 'WETH', address: WETH_BASE as `0x${string}` },
+      { label: 'USDC', address: USDC_BASE as `0x${string}` },
+    ]
 
-    // Try token/WETH first, then token/USDC.
-    const wethPool = await resolvePoolAddress(client, tokenAddress, WETH_BASE as `0x${string}`)
-    if (wethPool) {
-      const tokenPerWeth = await readPoolPrice(client, wethPool, tokenAddress, WETH_BASE as `0x${string}`, blockNumber)
-      if (tokenPerWeth !== null && Number.isFinite(tokenPerWeth)) {
-        // Need WETH's own USD price at this same timestamp to convert — real recursive lookup
-        // (CoinGecko has WETH's full historical range), never a guessed ETH price.
-        const wethUsd = await fetchCoingeckoPriceDetailed(WETH_BASE, 'base', timestamp)
-        if (wethUsd.priceUsd !== null) {
-          return { priceUsd: tokenPerWeth * wethUsd.priceUsd, reason: null }
+    // DETERMINISTIC VENUE PRIORITY, DISCLOSED: Uniswap V3 first (Base's deepest, most established
+    // venue — unchanged from before this task, so pre-existing behavior for any token that already
+    // had a Uniswap pool is byte-for-byte identical), then Aerodrome Slipstream (concentrated
+    // liquidity), then Aerodrome Classic volatile pools (constant-product) — Classic STABLE pools
+    // are never attempted at all (see AERODROME_CLASSIC_FACTORY_ABI's own header). Within each
+    // venue, WETH is tried before USDC, matching the pre-existing priority. This fixed order is
+    // itself the determinism guarantee: the same (token, chain, timestamp) always attempts venues in
+    // this exact sequence and returns the first one that produces a valid price — never a random or
+    // ambiguous choice among multiple venues that both have a pool.
+    const venuesInPriorityOrder: {
+      venue: BaseDexVenue
+      resolvePool: (client: PublicClient, tokenAddress: `0x${string}`, pairedWith: `0x${string}`) => Promise<`0x${string}` | null>
+      readPrice: (client: PublicClient, poolAddress: `0x${string}`, tokenAddress: `0x${string}`, pairedWith: `0x${string}`, blockNumber: bigint) => Promise<number | null>
+    }[] = [
+      { venue: 'uniswap_v3', resolvePool: resolvePoolAddress, readPrice: readPoolPrice },
+      { venue: 'aerodrome_slipstream', resolvePool: resolveAerodromeSlipstreamPoolAddress, readPrice: readPoolPrice },
+      { venue: 'aerodrome_classic_volatile', resolvePool: resolveAerodromeClassicVolatilePoolAddress, readPrice: readAerodromeClassicVolatilePoolPrice },
+    ]
+
+    for (const { venue, resolvePool, readPrice } of venuesInPriorityOrder) {
+      for (const quote of quotes) {
+        const usd = await tryBaseDexVenue(venue, quote.label, quote.address, tokenAddress, client, blockNumber, timestamp, attempts, resolvePool, readPrice)
+        if (usd !== null) {
+          return { priceUsd: usd, reason: null, venue, attempts, rpcCallsUsed: totalBaseDexRpcCallsThisScan - rpcCallsAtStart }
         }
       }
     }
 
-    const usdcPool = await resolvePoolAddress(client, tokenAddress, USDC_BASE as `0x${string}`)
-    if (usdcPool) {
-      const tokenPerUsdc = await readPoolPrice(client, usdcPool, tokenAddress, USDC_BASE as `0x${string}`, blockNumber)
-      if (tokenPerUsdc !== null && Number.isFinite(tokenPerUsdc)) {
-        // USDC is treated as $1 — a standard industry approximation (USDC is a USD-pegged
-        // stablecoin), disclosed here explicitly rather than silently assumed.
-        return { priceUsd: tokenPerUsdc, reason: null }
-      }
-    }
-
-    return { priceUsd: null, reason: 'no_uniswap_v3_pool_found' }
+    return { priceUsd: null, reason: 'no_dex_pool_found_any_venue', attempts, rpcCallsUsed: totalBaseDexRpcCallsThisScan - rpcCallsAtStart }
   } catch (err) {
-    return { priceUsd: null, reason: `rpc_error:${err instanceof Error ? err.message : 'unknown'}` }
+    return { priceUsd: null, reason: `rpc_error:${err instanceof Error ? err.message : 'unknown'}`, attempts, rpcCallsUsed: totalBaseDexRpcCallsThisScan - rpcCallsAtStart }
   }
 }
 

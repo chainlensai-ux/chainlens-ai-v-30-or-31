@@ -104,7 +104,7 @@ export function classifyRecoveryFailureReason(reason: string | null): { bucket: 
   if (reason.includes('timestamp_too_far_from_now') || reason === 'no_price_series_in_range' || reason === 'no_candles') return { bucket: 'timestampOutsideProviderData', unknownKey: null }
   if (reason.includes('unparseable')) return { bucket: 'malformedResponse', unknownKey: null }
   if (reason === 'could_not_resolve_historical_block') return { bucket: 'blockResolutionFailure', unknownKey: null }
-  if (reason === 'no_pool_found' || reason === 'no_uniswap_v3_pool_found' || reason === 'no_matching_pair') return { bucket: 'noPool', unknownKey: null }
+  if (reason === 'no_pool_found' || reason === 'no_uniswap_v3_pool_found' || reason === 'no_matching_pair' || reason === 'no_dex_pool_found_any_venue') return { bucket: 'noPool', unknownKey: null }
   // Every other real, non-empty reason string this codebase's sources can produce (http_*,
   // fetch_error:*, rpc_error:*, or any future/unrecognized string) is a genuine, specific signal
   // this classifier just doesn't have a named bucket for yet — it must never be silently folded
