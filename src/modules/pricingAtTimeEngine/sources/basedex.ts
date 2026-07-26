@@ -492,6 +492,114 @@ export function getBaseDexVenueAttributionForScan(): BaseDexVenueAttributionStat
   }
 }
 
+// SHARED QUOTE-PRICE CACHE, DISCLOSED, ADDITIVE (found live, this task — real production evidence:
+// Aerodrome Classic accepted a real historical price, Slipstream discovery/slot0 decode both work,
+// yet remaining failures include `quote_token_usd_unavailable` and Aerodrome completed 0 lots
+// because the OPPOSITE side's evidence stays missing). ROOT CAUSE, AUDITED: convertQuoteRatioToUsd
+// (below) calls fetchCoingeckoPriceDetailed(WETH_BASE, 'base', timestamp) with ZERO caching — that
+// function itself (coingecko.ts) has no per-(token,timestamp) cache either, only its own scan-wide
+// 429 circuit breaker. Every WETH-quoted attempt, across ALL THREE venues (Uniswap V3, Slipstream,
+// Classic) and every distinct token needing a WETH price at a similar timestamp, was firing its OWN
+// independent live CoinGecko request for what is very often the SAME underlying WETH-USD price
+// (Base has one WETH contract; many trades cluster in time) — multiplying exposure to the exact
+// 429/breaker/timeout failures that produce `quote_token_usd_unavailable`.
+//
+// FIX, DISCLOSED: a request-scoped (per-scan, cleared alongside every other basedex per-scan cache),
+// timestamp-BUCKETED (same BLOCK_TIMESTAMP_BUCKET_SECONDS 5-minute bucket already used for block
+// resolution — no new precision standard) cache + in-flight singleflight coalescing around this one
+// WETH-USD lookup. Shared automatically across all three venues because convertQuoteRatioToUsd is
+// the SAME function every venue already calls — no per-venue wiring needed. NEVER uses a "current"
+// price: still keyed by the real historical (bucketed) timestamp the trade actually needs, exactly
+// like every other historical lookup in this file. NEVER adds a provider call: a cache hit or an
+// in-flight join REPLACES what would otherwise have been an independent live call — this can only
+// reduce real CoinGecko call volume, never increase it, and never raises MAX_BASEDEX_RPC_CALLS_PER_
+// SCAN or any other budget (this cache is for the CoinGecko quote-price call, entirely outside that
+// RPC budget's own accounting). FAILS CLOSED: a resolved `null` (CoinGecko genuinely has no price at
+// this bucket, temporally too far, breaker open, etc.) is cached and reused too — the SAME honest
+// null a fresh call would have produced, never silently upgraded to a fabricated price.
+const sharedQuoteUsdCache = new Map<number, number | null>()
+const sharedQuoteUsdInFlight = new Map<number, Promise<number | null>>()
+
+// PER-SCAN QUOTE-PRICE ATTRIBUTION, DISCLOSED, ADDITIVE:
+// - quotePriceCacheHits: a WETH-USD lookup was served from sharedQuoteUsdCache — zero live call spent.
+// - quotePriceLiveResolutions: a real fetchCoingeckoPriceDetailed call was actually made (cache miss,
+//   this call is the singleflight leader) — regardless of whether it succeeded or failed.
+// - quotePriceUnavailable: the FINAL resolved quote price (via either path) was null — this specific
+//   venue+quote-token attempt will fail closed with reason 'quote_token_usd_unavailable'.
+type QuotePriceAttributionState = {
+  quotePriceCacheHits: number
+  quotePriceLiveResolutions: number
+  quotePriceUnavailable: number
+}
+let quotePriceAttributionState: QuotePriceAttributionState = { quotePriceCacheHits: 0, quotePriceLiveResolutions: 0, quotePriceUnavailable: 0 }
+
+// REQUEST-LEVEL QUOTE-PRICE ATTRIBUTION, DISCLOSED, ADDITIVE — mirrors aerodromeAttributionByRequestKey
+// above but is recorded for EVERY venue's accepted price (Uniswap V3 included), keyed the same way,
+// noting only whether THIS accepted price's own WETH-USD conversion was served by a cache hit. Lets a
+// caller (priceLotsForWallet.ts) confirm "this specific requirement's price only became available
+// because the shared quote-price cache avoided a live call that would otherwise have been exposed to
+// the same failure this task's own production evidence showed" — never a guess.
+type QuotePriceRequestAttribution = { venue: BaseDexVenue; usedSharedQuotePriceCacheHit: boolean }
+const quotePriceAttributionByRequestKey = new Map<string, QuotePriceRequestAttribution>()
+
+function recordQuotePriceAttribution(chain: string, token: string, timestamp: number, venue: BaseDexVenue, usedSharedQuotePriceCacheHit: boolean): void {
+  quotePriceAttributionByRequestKey.set(aerodromeAttributionKey(chain, token, timestamp), { venue, usedSharedQuotePriceCacheHit })
+}
+
+// Exported so a caller can confirm, for one specific (chain, token, timestamp) requirement it itself
+// submitted, whether basedex's accepted price depended on a shared quote-price cache hit.
+export function getQuotePriceAttributionForRequest(chain: string, token: string, timestamp: number): QuotePriceRequestAttribution | null {
+  return quotePriceAttributionByRequestKey.get(aerodromeAttributionKey(chain, token, timestamp)) ?? null
+}
+
+// Exported read-only snapshot of this scan's quote-price counters.
+export function getBaseDexQuotePriceAttributionForScan(): QuotePriceAttributionState {
+  return { ...quotePriceAttributionState }
+}
+
+// TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as __recordAerodromeAttributionForTest above.
+export function __recordQuotePriceAttributionForTest(chain: string, token: string, timestamp: number, venue: BaseDexVenue, usedSharedQuotePriceCacheHit: boolean): void {
+  recordQuotePriceAttribution(chain, token, timestamp, venue, usedSharedQuotePriceCacheHit)
+}
+
+// Resolves WETH's real historical USD price at `timestamp`, sharing one cached/in-flight result per
+// bucketed timestamp across every venue and every distinct token that needs it this scan. Returns
+// whether this call was served by a cache hit (no live call spent) alongside the resolved price.
+async function getSharedWethUsdPrice(timestamp: number): Promise<{ priceUsd: number | null; cacheHit: boolean }> {
+  const bucketed = bucketTimestamp(Math.floor(timestamp / 1000))
+
+  const cached = sharedQuoteUsdCache.get(bucketed)
+  if (cached !== undefined) {
+    quotePriceAttributionState.quotePriceCacheHits += 1
+    if (cached === null) quotePriceAttributionState.quotePriceUnavailable += 1
+    return { priceUsd: cached, cacheHit: true }
+  }
+
+  const inFlight = sharedQuoteUsdInFlight.get(bucketed)
+  if (inFlight) {
+    quotePriceAttributionState.quotePriceCacheHits += 1
+    const priceUsd = await inFlight
+    if (priceUsd === null) quotePriceAttributionState.quotePriceUnavailable += 1
+    return { priceUsd, cacheHit: true }
+  }
+
+  quotePriceAttributionState.quotePriceLiveResolutions += 1
+  const live = (async (): Promise<number | null> => {
+    const result = await fetchCoingeckoPriceDetailed(WETH_BASE, 'base', timestamp)
+    sharedQuoteUsdCache.set(bucketed, result.priceUsd)
+    return result.priceUsd
+  })()
+
+  sharedQuoteUsdInFlight.set(bucketed, live)
+  try {
+    const priceUsd = await live
+    if (priceUsd === null) quotePriceAttributionState.quotePriceUnavailable += 1
+    return { priceUsd, cacheHit: false }
+  } finally {
+    sharedQuoteUsdInFlight.delete(bucketed)
+  }
+}
+
 // SCAN-BOUNDARY RESET, DISCLOSED: folded into resetBaseDexRpcBudgetForScan's own call site (already
 // invoked once per real scan — see src/modules/walletScanWorker.ts) so no new wiring is needed
 // anywhere else. The per-request attribution map is cleared too — same "process-lifetime state must
@@ -499,6 +607,10 @@ export function getBaseDexVenueAttributionForScan(): BaseDexVenueAttributionStat
 export function resetBaseDexVenueAttributionForScan(): void {
   venueAttributionState = emptyVenueAttributionState()
   aerodromeAttributionByRequestKey.clear()
+  quotePriceAttributionState = { quotePriceCacheHits: 0, quotePriceLiveResolutions: 0, quotePriceUnavailable: 0 }
+  quotePriceAttributionByRequestKey.clear()
+  sharedQuoteUsdCache.clear()
+  sharedQuoteUsdInFlight.clear()
 }
 
 // FINAL-TOTALS SUMMARY, DISCLOSED: one log line, callable once a scan's pricing pass finishes,
@@ -1504,19 +1616,21 @@ export type BaseDexVenueAttempt = {
   reason: string | null
 }
 
-// Converts a raw tokenPerQuote ratio (from any venue) into a USD price. USDC is treated as $1 (a
-// standard, disclosed industry approximation for a USD-pegged stablecoin — same as the pre-existing
-// Uniswap USDC path). WETH requires one further real, recursive CoinGecko lookup for WETH's own
-// historical USD price — never a guessed/hardcoded ETH price.
+// Converts a raw tokenPerQuote ratio (from any venue) into a USD price. USDC is treated as $1 under
+// existing verified-stablecoin rules (a standard, disclosed industry approximation for a USD-pegged
+// stablecoin — same as the pre-existing Uniswap USDC path; never a live/current price, deterministic,
+// no provider call). WETH is resolved via getSharedWethUsdPrice — the SAME shared, bucketed,
+// singleflight-coalesced historical CoinGecko lookup every venue now reuses (see its own header
+// above) — never a guessed/hardcoded/current ETH price.
 async function convertQuoteRatioToUsd(
   quoteLabel: 'WETH' | 'USDC',
   tokenPerQuote: number,
   timestamp: number,
-): Promise<number | null> {
-  if (quoteLabel === 'USDC') return tokenPerQuote
-  const wethUsd = await fetchCoingeckoPriceDetailed(WETH_BASE, 'base', timestamp)
-  if (wethUsd.priceUsd === null) return null
-  return tokenPerQuote * wethUsd.priceUsd
+): Promise<{ usd: number | null; usedSharedQuotePriceCacheHit: boolean }> {
+  if (quoteLabel === 'USDC') return { usd: tokenPerQuote, usedSharedQuotePriceCacheHit: false }
+  const { priceUsd, cacheHit } = await getSharedWethUsdPrice(timestamp)
+  if (priceUsd === null) return { usd: null, usedSharedQuotePriceCacheHit: cacheHit }
+  return { usd: tokenPerQuote * priceUsd, usedSharedQuotePriceCacheHit: cacheHit }
 }
 
 // One venue+quote-token attempt: resolve the pool, read its price, convert to USD, and always
@@ -1537,12 +1651,13 @@ export async function tryBaseDexVenue(
   attempts: BaseDexVenueAttempt[],
   resolvePool: (client: PublicClient, tokenAddress: `0x${string}`, pairedWith: `0x${string}`) => Promise<`0x${string}` | null>,
   readPrice: (client: PublicClient, poolAddress: `0x${string}`, tokenAddress: `0x${string}`, pairedWith: `0x${string}`, blockNumber: bigint) => Promise<number | null>,
-): Promise<number | null> {
+): Promise<{ usd: number | null; usedSharedQuotePriceCacheHit: boolean }> {
   const rpcCallsAtStart = totalBaseDexRpcCallsThisScan
   function pushAttempt(ok: boolean, reason: string | null): void {
     attempts.push({ venue, quoteToken: quoteLabel, attempted: true, ok, reason })
     recordVenueAttempt(venue, ok, reason)
   }
+  const fail = (): { usd: null; usedSharedQuotePriceCacheHit: false } => ({ usd: null, usedSharedQuotePriceCacheHit: false })
 
   let pool: `0x${string}` | null
   try {
@@ -1550,12 +1665,12 @@ export async function tryBaseDexVenue(
   } catch (err) {
     recordVenueRpcCalls(venue, totalBaseDexRpcCallsThisScan - rpcCallsAtStart)
     pushAttempt(false, `pool_discovery_error:${err instanceof Error ? err.message : 'unknown'}`)
-    return null
+    return fail()
   }
   if (!pool) {
     recordVenueRpcCalls(venue, totalBaseDexRpcCallsThisScan - rpcCallsAtStart)
     pushAttempt(false, 'no_pool')
-    return null
+    return fail()
   }
   // DISCOVERY ONLY, DISCLOSED: recorded the instant a real pool address is found, regardless of what
   // happens next (deployed-but-not-yet-at-block, zero liquidity, non-finite price all still count as
@@ -1569,23 +1684,23 @@ export async function tryBaseDexVenue(
   } catch (err) {
     recordVenueRpcCalls(venue, totalBaseDexRpcCallsThisScan - rpcCallsAtStart)
     pushAttempt(false, err instanceof Error ? err.message : 'unknown')
-    return null
+    return fail()
   }
   if (ratio === null || !Number.isFinite(ratio)) {
     recordVenueRpcCalls(venue, totalBaseDexRpcCallsThisScan - rpcCallsAtStart)
     pushAttempt(false, 'invalid_or_zero_price')
-    return null
+    return fail()
   }
 
-  const usd = await convertQuoteRatioToUsd(quoteLabel, ratio, timestamp)
+  const { usd, usedSharedQuotePriceCacheHit } = await convertQuoteRatioToUsd(quoteLabel, ratio, timestamp)
   recordVenueRpcCalls(venue, totalBaseDexRpcCallsThisScan - rpcCallsAtStart)
   if (usd === null || !Number.isFinite(usd)) {
     pushAttempt(false, 'quote_token_usd_unavailable')
-    return null
+    return { usd: null, usedSharedQuotePriceCacheHit }
   }
 
   pushAttempt(true, null)
-  return usd
+  return { usd, usedSharedQuotePriceCacheHit }
 }
 
 export type BaseDexPriceResult = {
@@ -1644,11 +1759,12 @@ export async function fetchBaseDexPriceDetailed(
 
     for (const { venue, resolvePool, readPrice } of venuesInPriorityOrder) {
       for (const quote of quotes) {
-        const usd = await tryBaseDexVenue(venue, quote.label, quote.address, tokenAddress, client, blockNumber, timestamp, attempts, resolvePool, readPrice)
+        const { usd, usedSharedQuotePriceCacheHit } = await tryBaseDexVenue(venue, quote.label, quote.address, tokenAddress, client, blockNumber, timestamp, attempts, resolvePool, readPrice)
         if (usd !== null) {
           if (venue === 'aerodrome_slipstream' || venue === 'aerodrome_classic_volatile') {
             recordAerodromeAttribution(chain, token, timestamp, venue, usd)
           }
+          recordQuotePriceAttribution(chain, token, timestamp, venue, usedSharedQuotePriceCacheHit)
           return { priceUsd: usd, reason: null, venue, attempts, rpcCallsUsed: totalBaseDexRpcCallsThisScan - rpcCallsAtStart }
         }
       }

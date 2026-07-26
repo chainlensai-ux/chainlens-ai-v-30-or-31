@@ -16,6 +16,11 @@ export type RunWalletScanParams = {
   walletAddress: string
   chains: string[]
   scanMode: ScanModeInput
+  // OPTIONAL, ADDITIVE, DISCLOSED — see fifoEngine/types.ts's own CanonicalBalanceLookup header
+  // (found live: confirmed architectural gap behind a false ~$545k unrealized PnL — fifoEngine's
+  // event-replay-derived open quantity was never cross-checked against a real current balance).
+  // Omitted by every existing caller that hasn't opted in — zero behavior change unless supplied.
+  canonicalBalanceLookup?: import('../modules/fifoEngine/types').CanonicalBalanceLookup
 }
 
 // Architecture Step 9's "output shape" for the orchestrator's public entry point: the exact

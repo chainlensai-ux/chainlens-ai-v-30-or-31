@@ -79,6 +79,7 @@ export function fifoEngineFallback(buyTimeline: BuyTimeline, sellTimeline: SellT
     costBasisUsd: null,
     publicPnlStatus: 'unavailable',
     integrityFlags: { hardInvalid: true, estimateOnlyLotsExcluded: 0, syntheticLotsExcluded: 0 },
+    unrealizedPnlExcludedTokens: [],
   }
 }
 

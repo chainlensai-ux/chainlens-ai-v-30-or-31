@@ -139,7 +139,7 @@ describe('Aerodrome Slipstream slot0 ABI mismatch — production regression', ()
     // Drive it through the full venue-attribution path too, confirming pricesAccepted actually
     // increments (the reported symptom: "Slipstream pricesAccepted remained 0").
     const attempts: unknown[] = []
-    const usd = await tryBaseDexVenue(
+    const { usd } = await tryBaseDexVenue(
       'aerodrome_slipstream', 'USDC', WETH as `0x${string}`, TOKEN as `0x${string}`,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       client as any, BigInt(1), Date.now(), attempts as any,

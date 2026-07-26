@@ -102,7 +102,7 @@ describe('Classic accepted price increments only Classic counters', () => {
     }
     const attempts: unknown[] = []
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const usd = await tryBaseDexVenue('aerodrome_classic_volatile', 'USDC', WETH as `0x${string}`, TOKEN as `0x${string}`, client as any, BigInt(1), Date.now(), attempts as any, resolveAerodromeClassicVolatilePoolAddress, readAerodromeClassicVolatilePoolPrice)
+    const { usd } = await tryBaseDexVenue('aerodrome_classic_volatile', 'USDC', WETH as `0x${string}`, TOKEN as `0x${string}`, client as any, BigInt(1), Date.now(), attempts as any, resolveAerodromeClassicVolatilePoolAddress, readAerodromeClassicVolatilePoolPrice)
     assert.ok(usd !== null, 'expected a real accepted price')
 
     const snap = getBaseDexVenueAttributionForScan()
@@ -149,7 +149,7 @@ describe('Slipstream accepted price increments only Slipstream counters', () => 
     }
     const attempts: unknown[] = []
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const usd = await tryBaseDexVenue('aerodrome_slipstream', 'USDC', WETH as `0x${string}`, TOKEN as `0x${string}`, client as any, BigInt(1), Date.now(), attempts as any, resolveAerodromeSlipstreamPoolAddress, readPoolPrice)
+    const { usd } = await tryBaseDexVenue('aerodrome_slipstream', 'USDC', WETH as `0x${string}`, TOKEN as `0x${string}`, client as any, BigInt(1), Date.now(), attempts as any, resolveAerodromeSlipstreamPoolAddress, readPoolPrice)
     assert.ok(usd !== null, 'expected a real accepted price')
 
     const snap = getBaseDexVenueAttributionForScan()
@@ -193,7 +193,7 @@ describe('Found pool with rejected price does not count as success', () => {
     }
     const attempts: unknown[] = []
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const usd = await tryBaseDexVenue('aerodrome_classic_volatile', 'USDC', WETH as `0x${string}`, TOKEN as `0x${string}`, client as any, BigInt(1), Date.now(), attempts as any, resolveAerodromeClassicVolatilePoolAddress, readAerodromeClassicVolatilePoolPrice)
+    const { usd } = await tryBaseDexVenue('aerodrome_classic_volatile', 'USDC', WETH as `0x${string}`, TOKEN as `0x${string}`, client as any, BigInt(1), Date.now(), attempts as any, resolveAerodromeClassicVolatilePoolAddress, readAerodromeClassicVolatilePoolPrice)
     assert.equal(usd, null, 'zero liquidity must never be priced')
 
     const snap = getBaseDexVenueAttributionForScan()

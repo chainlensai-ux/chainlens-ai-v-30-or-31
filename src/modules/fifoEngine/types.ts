@@ -56,6 +56,10 @@ export type FifoOutput = {
   costBasisUsd: number | null
   publicPnlStatus: PublicPnlStatus
   integrityFlags: IntegrityFlags
+  // See CanonicalBalanceLookup's own header below — `${chain}:${token}` keys excluded from
+  // unrealizedPnlUsd because their FIFO-derived open quantity could not be reconciled against a
+  // real canonical balance. Always empty when no canonicalBalanceLookup was supplied.
+  unrealizedPnlExcludedTokens: string[]
 }
 
 // PURE lookup contracts — supplied by a future price-at-time module. Defaulting to "always null"
@@ -63,5 +67,23 @@ export type FifoOutput = {
 // resolve real cost basis/PnL the moment such a module is wired in, with no change to this file.
 export type PriceUsdLookup = (event: NormalizedEvent) => number | null
 export type CurrentPriceUsdLookup = (token: string, chain: SupportedChain) => number | null
+
+// CANONICAL-BALANCE RECONCILIATION, DISCLOSED, ADDITIVE (found live, this task — confirmed
+// architectural gap behind a false ~$545k unrealized PnL): this engine's own `remainingOpenLots`
+// (see computePnl in index.ts) is derived PURELY from event-replay (buys minus matched sells) —
+// there was NEVER any cross-check against the wallet's real, independently-fetched current token
+// balance (src/modules/holdings) before multiplying an open quantity by a current price. A missed
+// sell, a duplicated/mis-normalized buy event, or a raw-unit/decimal scaling bug in ANY upstream
+// provider can inflate a token's event-replay-derived open quantity far past its real on-chain
+// balance — and this engine, previously, had no way to catch that before reporting the resulting
+// (fabricated-looking) unrealizedPnlUsd as official.
+//
+// Optional, defaulting to undefined: a caller that does not supply this gets BYTE-IDENTICAL
+// existing behavior (see computePnl's own "ZERO-CHANGE PATH" comment) — this is purely an opt-in
+// safety layer, never a change to FIFO lot matching/identity itself (buildLots/matchLotsFIFO are
+// completely untouched). Returns the real current on-chain balance for (token, chain), or `null`
+// when that balance genuinely isn't known/trustworthy for this token — `null` is a real, honest
+// "unknown" result, never coerced to 0 or Infinity.
+export type CanonicalBalanceLookup = (token: string, chain: SupportedChain) => number | null
 
 export type { NormalizedEvent }

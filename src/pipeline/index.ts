@@ -278,6 +278,7 @@ function safeRunFifoEngine(params: {
   sellTimeline: SellTimeline
   priceUsdLookup?: import('../modules/fifoEngine/types').PriceUsdLookup
   currentPriceUsdLookup?: import('../modules/fifoEngine/types').CurrentPriceUsdLookup
+  canonicalBalanceLookup?: import('../modules/fifoEngine/types').CanonicalBalanceLookup
 }): FifoOutput {
   try {
     const recoveredRawEvents: RawProviderEvent[] = params.recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents)
@@ -287,6 +288,7 @@ function safeRunFifoEngine(params: {
       walletAddress: params.walletAddress,
       priceUsdLookup: params.priceUsdLookup,
       currentPriceUsdLookup: params.currentPriceUsdLookup,
+      canonicalBalanceLookup: params.canonicalBalanceLookup,
     })
   } catch {
     return fifoEngineFallback(params.buyTimeline, params.sellTimeline)
@@ -1382,7 +1384,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     sellTimeline: timelines.sellTimeline,
     priceUsdLookup: walletPriceLookups.priceUsdLookup,
     currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
+    canonicalBalanceLookup: params.canonicalBalanceLookup,
   })
+  if (fifoAndPnl.unrealizedPnlExcludedTokens.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn('[pipeline] unrealizedPnlUsd excluded tokens (failed canonical-balance reconciliation)', {
+      excludedTokens: fifoAndPnl.unrealizedPnlExcludedTokens,
+    })
+  }
   // Diagnostic log — real FIFO output counts, directly requested.
   // eslint-disable-next-line no-console
   console.warn('[pipeline] fifoEngine result', {

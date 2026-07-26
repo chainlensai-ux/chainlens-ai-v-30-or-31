@@ -37,6 +37,8 @@ import { reserveCoingeckoSlotsForNativeEth, getNativeEthHistoryCoalescingDiagnos
 import {
   getAerodromeAttributionForRequest,
   getBaseDexVenueAttributionForScan,
+  getQuotePriceAttributionForRequest,
+  getBaseDexQuotePriceAttributionForScan,
   type BaseDexVenue,
 } from '../modules/pricingAtTimeEngine/sources/basedex'
 import {
@@ -194,6 +196,17 @@ export type AerodromeAttribution = {
   verifiedCoverageAfterAerodrome: number
   failureReasonsByVenue: Record<BaseDexVenue, Record<string, number>>
   rpcCallsByVenue: Record<BaseDexVenue, number>
+  // SHARED QUOTE-PRICE ATTRIBUTION, DISCLOSED, ADDITIVE — see basedex.ts's own
+  // "SHARED QUOTE-PRICE CACHE" header for the full trace (found live, this task: Aerodrome completed
+  // 0 lots because `quote_token_usd_unavailable` kept blocking the opposite side even after Classic/
+  // Slipstream discovery+pricing both worked). Same real-counter + cross-referenced-requirement
+  // pattern as the Aerodrome fields above, generalized across ALL THREE venues (Uniswap V3 included)
+  // since the shared cache benefits every venue equally.
+  quotePriceCacheHits: number
+  quotePriceLiveResolutions: number
+  quotePriceUnavailable: number
+  requirementsRecoveredBySharedQuotePrice: number
+  lotsCompletedBySharedQuotePrice: number
 }
 
 export type WalletPriceLookups = {
@@ -726,6 +739,35 @@ export async function priceLotsForWallet(params: {
   const lotsCompletedByAerodrome = fullyPricedLotsAfterAerodrome - fullyPricedLotsBeforeAerodrome
   const verifiedCoverageBeforeAerodrome = structuralMatchedLots.length > 0 ? fullyPricedLotsBeforeAerodrome / structuralMatchedLots.length : 0
 
+  // SHARED QUOTE-PRICE ATTRIBUTION, DISCLOSED, ADDITIVE — see basedex.ts's own "SHARED QUOTE-PRICE
+  // CACHE" header. Same cross-referencing pattern as Aerodrome above, generalized to EVERY venue
+  // (uniswap_v3 included) via getQuotePriceAttributionForRequest — recorded whenever basedex accepts
+  // ANY venue's price, noting only whether the WETH-USD conversion for that specific requirement was
+  // served by the shared cache rather than its own independent live CoinGecko call.
+  const quotePriceRecoveredCostTxHashes = new Set<string>()
+  const quotePriceRecoveredProceedsTxHashes = new Set<string>()
+  let requirementsRecoveredBySharedQuotePrice = 0
+  for (const entry of buyRequirementEntries) {
+    if (atTradeTime.costUsd[entry.txHash] == null) continue
+    const attribution = getQuotePriceAttributionForRequest(entry.chain, entry.token, entry.timestamp)
+    if (!attribution?.usedSharedQuotePriceCacheHit) continue
+    quotePriceRecoveredCostTxHashes.add(entry.txHash)
+    requirementsRecoveredBySharedQuotePrice += 1
+  }
+  for (const entry of sellRequirementEntries) {
+    if (atTradeTime.proceedsUsd[entry.txHash] == null) continue
+    const attribution = getQuotePriceAttributionForRequest(entry.chain, entry.token, entry.timestamp)
+    if (!attribution?.usedSharedQuotePriceCacheHit) continue
+    quotePriceRecoveredProceedsTxHashes.add(entry.txHash)
+    requirementsRecoveredBySharedQuotePrice += 1
+  }
+  // Same exact-counterfactual reasoning as fullyPricedLotsBeforeAerodrome above: recompute the
+  // fully-priced count while treating every slot the shared quote-price cache contributed to as
+  // though it were still null.
+  const fullyPricedLotsBeforeSharedQuotePrice = countFullyPricedExcluding(quotePriceRecoveredCostTxHashes, quotePriceRecoveredProceedsTxHashes)
+  const lotsCompletedBySharedQuotePrice = fullyPricedLotsBefore - fullyPricedLotsBeforeSharedQuotePrice
+  const baseDexQuotePriceAttribution = getBaseDexQuotePriceAttributionForScan()
+
   const baseDexVenueAttribution = getBaseDexVenueAttributionForScan()
   const aerodromeAttribution: AerodromeAttribution = {
     aerodromeSlipstreamPoolsFound: baseDexVenueAttribution.poolsFoundByVenue.aerodrome_slipstream,
@@ -741,6 +783,11 @@ export async function priceLotsForWallet(params: {
     verifiedCoverageAfterAerodrome,
     failureReasonsByVenue: baseDexVenueAttribution.failureReasonsByVenue,
     rpcCallsByVenue: baseDexVenueAttribution.rpcCallsByVenue,
+    quotePriceCacheHits: baseDexQuotePriceAttribution.quotePriceCacheHits,
+    quotePriceLiveResolutions: baseDexQuotePriceAttribution.quotePriceLiveResolutions,
+    quotePriceUnavailable: baseDexQuotePriceAttribution.quotePriceUnavailable,
+    requirementsRecoveredBySharedQuotePrice,
+    lotsCompletedBySharedQuotePrice,
   }
   // eslint-disable-next-line no-console
   console.warn('[priceLotsForWallet] aerodrome attribution', aerodromeAttribution)
