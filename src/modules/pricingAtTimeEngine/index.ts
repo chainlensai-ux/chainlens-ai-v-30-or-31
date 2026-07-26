@@ -142,7 +142,7 @@ async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (ite
 }
 
 function summarizeEntryResults(
-  results: Array<{ txHash: string; usd: number | null; source: keyof SourceBreakdown; missing: boolean; cappedByCap: boolean }>,
+  results: Array<{ txHash: string; entryKey: string; usd: number | null; source: keyof SourceBreakdown; missing: boolean; cappedByCap: boolean }>,
 ) {
   const usdByTxHash: Record<string, number | null> = {}
   const breakdown: SourceBreakdown = { primary: 0, fallback: 0, failed: 0 }
@@ -152,15 +152,32 @@ function summarizeEntryResults(
   // real price source returned null) — a caller diagnosing "why is this unpriced" needs to tell them
   // apart. Purely additive: existing fields (usdByTxHash/breakdown/missing) are unchanged.
   const cappedTxHashes = new Set<string>()
+  // ENTRY-IDENTITY CAP TRACKING, DISCLOSED, ADDITIVE (confirmed production bug: target and native
+  // quote legs sharing one real transaction — the standard shape of a same-tx swap — collapsed to the
+  // SAME txHash string in `cappedTxHashes`, so if the TARGET's own entry got capped, that txHash
+  // showed up as "capped" for the NATIVE quote entry too, even when the native entry itself was
+  // genuinely selected and priced under a DIFFERENT dict/token). Keyed by chain+token+txHash+list — the
+  // exact identity of ONE entry, never ambiguous even when several entries share a real txHash.
+  const cappedEntryKeys = new Set<string>()
 
   for (const r of results) {
     usdByTxHash[r.txHash] = r.usd
     breakdown[r.source] += 1
     if (r.missing) missing += 1
-    if (r.cappedByCap) cappedTxHashes.add(r.txHash)
+    if (r.cappedByCap) {
+      cappedTxHashes.add(r.txHash)
+      cappedEntryKeys.add(r.entryKey)
+    }
   }
 
-  return { usdByTxHash, breakdown, missing, cappedTxHashes }
+  return { usdByTxHash, breakdown, missing, cappedTxHashes, cappedEntryKeys }
+}
+
+// Exported so a caller building a PriceableEntry can compute the EXACT SAME key this module uses
+// internally to track per-entry cap status — never re-derive it via a different formula that could
+// silently drift out of sync.
+export function priceableEntryIdentityKey(entry: Pick<PriceableEntry, 'chain' | 'token' | 'txHash'>, list: 'buy' | 'sell'): string {
+  return `${entry.chain}:${entry.token.toLowerCase()}:${entry.txHash.toLowerCase()}:${list}`
 }
 
 // CONCURRENCY CAP FIX, DISCLOSED: previously, buys and sells each ran through their own independent
@@ -177,8 +194,8 @@ async function priceAllEntries(
   priceSources: ResolvePricingAtTimeParams['priceSources'],
   fallbackPricing: FallbackPricingConfig | undefined,
 ): Promise<{
-  buys: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number; cappedTxHashes: Set<string> }
-  sells: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number; cappedTxHashes: Set<string> }
+  buys: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number; cappedTxHashes: Set<string>; cappedEntryKeys: Set<string> }
+  sells: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number; cappedTxHashes: Set<string>; cappedEntryKeys: Set<string> }
 }> {
   const combined = [
     ...buyEntries.map((entry) => ({ entry, list: 'buy' as const })),
@@ -227,11 +244,12 @@ async function priceAllEntries(
   // between this increment and the cap comparison, only between one worker's `await` and the next.
   const results = await mapWithConcurrencyLimit(tagged, PRICE_ENTRY_CONCURRENCY_LIMIT, async ({ entry, list }) => {
     const tokenKey = `${entry.chain}:${entry.token.toLowerCase()}`
+    const entryKey = priceableEntryIdentityKey(entry, list)
     const priorLookups = lookupCountByToken.get(tokenKey) ?? 0
     if (priorLookups >= maxLookupsPerToken) {
       cappedCount += 1
       if (entry.pairRank !== undefined) priorityCappedCount += 1
-      return { list, txHash: entry.txHash, usd: null, source: 'failed' as const, missing: true, cappedByCap: true }
+      return { list, txHash: entry.txHash, entryKey, usd: null, source: 'failed' as const, missing: true, cappedByCap: true }
     }
     lookupCountByToken.set(tokenKey, priorLookups + 1)
 
@@ -247,11 +265,11 @@ async function priceAllEntries(
       const route = attempt.ok ? attempt.source : 'failed'
       fallbackPricing.onRouteRecorded?.({ token: entry.token, chain: entry.chain, timestamp: entry.timestamp, route })
       if (attempt.ok) {
-        return { list, txHash: entry.txHash, usd: multiplyAmount(attempt.priceUsd, entry.amount), source: 'fallback' as const, missing: false, cappedByCap: false }
+        return { list, txHash: entry.txHash, entryKey, usd: multiplyAmount(attempt.priceUsd, entry.amount), source: 'fallback' as const, missing: false, cappedByCap: false }
       }
     }
 
-    return { list, txHash: entry.txHash, usd: multiplyAmount(price, entry.amount), source, missing: price === null, cappedByCap: false }
+    return { list, txHash: entry.txHash, entryKey, usd: multiplyAmount(price, entry.amount), source, missing: price === null, cappedByCap: false }
   })
 
   if (cappedCount > 0) {
@@ -314,7 +332,14 @@ export async function resolvePricingAtTime(params: ResolvePricingAtTimeParams): 
       failed: buys.breakdown.failed + sells.breakdown.failed,
     },
     // ADDITIVE, DISCLOSED: which txHash keys (in EITHER dict) were skipped by the per-token cap
-    // rather than genuinely attempted and missed — see summarizeEntryResults' own header.
+    // rather than genuinely attempted and missed — see summarizeEntryResults' own header. KEPT FOR
+    // BACKWARD COMPATIBILITY ONLY — ambiguous whenever two entries (e.g. a target and its same-tx
+    // native quote leg) share one real txHash; a caller needing to distinguish them MUST use
+    // `cappedEntryKeys` (below) instead, never this field.
     cappedTxHashes: new Set([...buys.cappedTxHashes, ...sells.cappedTxHashes]),
+    // ADDITIVE, DISCLOSED: the exact per-entry identity (chain+token+txHash+list, via
+    // priceableEntryIdentityKey) of every entry the per-token cap skipped — unambiguous even when
+    // multiple entries share a real txHash.
+    cappedEntryKeys: new Set([...buys.cappedEntryKeys, ...sells.cappedEntryKeys]),
   }
 }

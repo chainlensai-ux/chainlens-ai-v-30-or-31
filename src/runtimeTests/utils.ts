@@ -180,7 +180,7 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
       priceSources: testPriceSources,
     })
   } catch {
-    pricingAtTime = { costUsd: {}, proceedsUsd: {}, evidenceMissingCount: 0, sourceBreakdown: { primary: 0, fallback: 0, failed: 0 }, cappedTxHashes: new Set() }
+    pricingAtTime = { costUsd: {}, proceedsUsd: {}, evidenceMissingCount: 0, sourceBreakdown: { primary: 0, fallback: 0, failed: 0 }, cappedTxHashes: new Set(), cappedEntryKeys: new Set() }
   }
 
   const windowCoverage = computeWindowCoverage(PROVIDER_FETCH_WINDOW_DAYS_USED, recoveryPolicy.totalPagesUsedThisWallet)

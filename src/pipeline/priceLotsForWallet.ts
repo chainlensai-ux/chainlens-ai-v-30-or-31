@@ -30,7 +30,7 @@ import { mergeNormalizedEvents } from '../modules/fifoEngine/utils'
 import { buildLots, matchLotsFIFO } from '../modules/fifoEngine/index'
 import type { CurrentPriceUsdLookup, MatchedLot, PriceUsdLookup } from '../modules/fifoEngine/types'
 import type { NormalizedEvent } from '../modules/normalization/types'
-import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
+import { resolvePricingAtTime, priceableEntryIdentityKey } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
 import { pricingRouteLog, isSanePrice, type PricingRouteRecord } from './pricingAtTimeAdapter'
 import {
@@ -421,7 +421,14 @@ export async function priceLotsForWallet(params: {
   // 'unknown'-direction leg (never otherwise requested) gets its own new synthetic-key entry. This
   // means an already-real requirement is never duplicated into a second, budget-consuming entry —
   // "no budget increase" holds for both sub-cases, not just the synthetic one.
-  const nativeQuoteRequirementResolvers: Array<{ dict: 'costUsd' | 'proceedsUsd'; key: string; groupKey: string }> = []
+  // ENTRY-IDENTITY, DISCLOSED (confirmed production bug: top completion candidates got negative ranks
+  // -42/-41, correctly reached pricingAtTimeEngine, yet both still showed selectedByCap: false and all
+  // 42 were reported capped). `entryKey` records the EXACT entry identity (chain+routed-token+txHash+
+  // list, via pricingAtTimeEngine's own priceableEntryIdentityKey) — never just the bare txHash, which
+  // is ambiguous whenever a target and its same-tx native quote leg share one real transaction (the
+  // target's own entry getting capped made cappedTxHashes report that txHash as "capped" for the
+  // UNRELATED native entry too, even when the native entry itself was genuinely selected and priced).
+  const nativeQuoteRequirementResolvers: Array<{ dict: 'costUsd' | 'proceedsUsd'; key: string; groupKey: string; entryKey: string }> = []
   // Real-direction native legs share their txHash with the ORDINARY buys/sells map below — this
   // override lets that map use the SAME superior priority rank instead of the ordinary (tied) one,
   // keyed by the exact leg identity so it never touches the TARGET's own, unrelated requirement.
@@ -435,25 +442,32 @@ export async function priceLotsForWallet(params: {
       // for open-lot mark-to-market only). A historical swap's native quote leg is priced at the
       // time it happened, exactly like every other historical entry in this same call.
       const syntheticKey = nativeQuoteRequirementKey(candidate.chain, candidate.txHash)
+      const routedToken = resolveNativePricingToken(candidate.chain, candidate.leg.contract)
       nativeQuoteEntries.push({
         txHash: syntheticKey,
         // Same NATIVE PRICING ROUTE as toPriceableEntry above — only the price-source token string
         // is routed to canonical WETH; the leg's own stored contract stays the native pseudo-address
         // everywhere else (evidence/diagnostics, the quote-leg derivation, etc.).
-        token: resolveNativePricingToken(candidate.chain, candidate.leg.contract),
+        token: routedToken,
         chain: candidate.chain,
         timestamp: candidate.timestamp,
         amount: String(candidate.leg.amount),
         pairRank: rank,
       })
-      nativeQuoteRequirementResolvers.push({ dict: 'proceedsUsd', key: syntheticKey, groupKey: candidate.groupKey })
+      // This synthetic entry is always appended to sellEntries (see the resolvePricingAtTime call
+      // below) — list must be 'sell' to match pricingAtTimeEngine's own identity key exactly.
+      const entryKey = priceableEntryIdentityKey({ chain: candidate.chain, token: routedToken, txHash: syntheticKey }, 'sell')
+      nativeQuoteRequirementResolvers.push({ dict: 'proceedsUsd', key: syntheticKey, groupKey: candidate.groupKey, entryKey })
     } else {
       nativeLegRankOverride.set(
         `${candidate.chain}:${candidate.txHash.toLowerCase()}:${candidate.leg.contract.toLowerCase()}:${candidate.leg.direction}`,
         rank,
       )
       const dict = candidate.leg.direction === 'inbound' ? 'costUsd' : 'proceedsUsd'
-      nativeQuoteRequirementResolvers.push({ dict, key: candidate.txHash, groupKey: candidate.groupKey })
+      const list = candidate.leg.direction === 'inbound' ? 'buy' : 'sell'
+      const routedToken = resolveNativePricingToken(candidate.chain, candidate.leg.contract)
+      const entryKey = priceableEntryIdentityKey({ chain: candidate.chain, token: routedToken, txHash: candidate.txHash }, list)
+      nativeQuoteRequirementResolvers.push({ dict, key: candidate.txHash, groupKey: candidate.groupKey, entryKey })
     }
   }
 
@@ -470,18 +484,20 @@ export async function priceLotsForWallet(params: {
     priceSources: params.priceSources,
   })
 
-  // CAP-VS-PROVIDER-MISS SPLIT, DISCLOSED (confirmed production bug: 42 native requirements reached
-  // pricing with correct negative ranks, i.e. they SURVIVED the cap, but selectedNativeRequirementKeys
-  // was still empty — resolveNativePricingToken above is the actual fix; this split makes the
-  // difference directly observable rather than merging "never attempted" and "attempted but the real
-  // provider genuinely had no data" into one ambiguous "capped" bucket). Uses pricingAtTimeEngine's new
-  // additive `cappedTxHashes` (see pricingAtTimeEngine/index.ts's summarizeEntryResults) to tell them
-  // apart precisely, instead of guessing from the null result alone.
-  const nativeRequirementsSelectedByCap = nativeQuoteRequirementResolvers.filter((r) => !atTradeTime.cappedTxHashes.has(r.key)).length
-  const nativeRequirementsActuallyCapped = nativeQuoteRequirementResolvers.filter((r) => atTradeTime.cappedTxHashes.has(r.key)).length
+  // CAP-VS-PROVIDER-MISS SPLIT, DISCLOSED (confirmed production bug: top completion candidates
+  // reached pricing with correct negative ranks -42/-41 — genuinely SURVIVING the cap — yet still
+  // reported selectedByCap: false / all 42 "capped". Root cause: the prior version checked
+  // `cappedTxHashes`, keyed by bare txHash — ambiguous whenever a target and its same-tx native quote
+  // leg share one real transaction, since if the TARGET's own entry got capped, that shared txHash
+  // showed up as "capped" for the unrelated native entry too. Fixed by checking `cappedEntryKeys`
+  // instead — the exact per-entry identity (chain+routed-token+txHash+list), never ambiguous even
+  // when multiple entries share a real txHash. `cappedTxHashes` itself is untouched, kept only for
+  // callers that still rely on it.
+  const nativeRequirementsSelectedByCap = nativeQuoteRequirementResolvers.filter((r) => !atTradeTime.cappedEntryKeys.has(r.entryKey)).length
+  const nativeRequirementsActuallyCapped = nativeQuoteRequirementResolvers.filter((r) => atTradeTime.cappedEntryKeys.has(r.entryKey)).length
   const nativeRequirementsPriced = nativeQuoteRequirementResolvers.filter((r) => atTradeTime[r.dict][r.key] != null).length
   const nativeRequirementsProviderMiss = nativeQuoteRequirementResolvers.filter(
-    (r) => !atTradeTime.cappedTxHashes.has(r.key) && atTradeTime[r.dict][r.key] == null,
+    (r) => !atTradeTime.cappedEntryKeys.has(r.entryKey) && atTradeTime[r.dict][r.key] == null,
   ).length
   const selectedNativeRequirementKeys = nativeQuoteRequirementResolvers
     .filter((r) => atTradeTime[r.dict][r.key] != null)
@@ -499,10 +515,17 @@ export async function priceLotsForWallet(params: {
     const resolver = resolverByGroupKey.get(c.groupKey)
     return {
       txHash: c.txHash,
+      originalContract: c.leg.contract,
+      direction: c.leg.direction,
       completionTier: tierOf(c),
       sortedPosition: i,
       assignedRank: nativeQuoteRankByGroupKey.get(c.groupKey),
-      selectedByCap: resolver ? !atTradeTime.cappedTxHashes.has(resolver.key) : null,
+      pricingEntryDictKey: resolver?.key ?? null,
+      pricingEntryDict: resolver?.dict ?? null,
+      pricingEntryContract: resolveNativePricingToken(c.chain, c.leg.contract),
+      entryIdentityKey: resolver?.entryKey ?? null,
+      selectedByCap: resolver ? !atTradeTime.cappedEntryKeys.has(resolver.entryKey) : null,
+      resolvedPriceUsd: resolver ? atTradeTime[resolver.dict][resolver.key] : null,
     }
   })
   // eslint-disable-next-line no-console

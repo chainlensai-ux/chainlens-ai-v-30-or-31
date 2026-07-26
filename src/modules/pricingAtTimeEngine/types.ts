@@ -43,9 +43,14 @@ export type PricingAtTimeResult = {
   sourceBreakdown: SourceBreakdown
   // ADDITIVE, DISCLOSED: txHash keys (from either costUsd or proceedsUsd) that the per-token cap
   // skipped entirely — distinguishes "never attempted (capped)" from "attempted, every source
-  // returned null" for a caller diagnosing an unpriced entry. Every existing caller that ignores
-  // this field is unaffected.
+  // returned null" for a caller diagnosing an unpriced entry. AMBIGUOUS whenever two entries share a
+  // real txHash (e.g. a target and its same-tx native quote leg) — kept for backward compatibility
+  // only. Every existing caller that ignores this field is unaffected.
   cappedTxHashes: Set<string>
+  // ADDITIVE, DISCLOSED: the exact per-entry identity (see priceableEntryIdentityKey in
+  // pricingAtTimeEngine/index.ts — chain+token+txHash+list) of every entry the per-token cap skipped.
+  // Use this, never cappedTxHashes, whenever multiple entries can share one real txHash.
+  cappedEntryKeys: Set<string>
 }
 
 // Minimal shape this module actually needs from a buy/sell entry — deliberately not importing the
