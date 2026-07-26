@@ -234,8 +234,20 @@ function applyHeadlineTokenFocus(row: RawRow): RawRow {
 
 // Collapse rapid repeats: same wallet + token + side appearing multiple times
 // within a 5-minute window becomes one representative row with a `repeats` count.
-// Rows are expected newest-first (occurred_at desc).
-function collapseRapidRepeats(rows: RawRow[]): RawRow[] {
+//
+// CONFIRMED BUG FIX, DISCLOSED: this is called (in GET below) AFTER applyDiversityCap (sorts by USD
+// value desc) and an interesting_score sort — by the time rows reach here they are NOT newest-first,
+// despite this function's own original comment assuming they were. The old check
+// `(existing.firstTime - ts) < REPEAT_WINDOW_MS` is only correct for a positive (i.e. `ts` older than
+// `existing.firstTime`) difference; once order is no longer chronological, `ts` can be NEWER than
+// `existing.firstTime`, making the difference a large negative number — which is trivially
+// `< REPEAT_WINDOW_MS` (a positive constant) regardless of how many days apart the two rows actually
+// occurred. Two real, temporally-unrelated whale alerts sharing the same wallet+token+side then
+// silently collapsed into one, with the second one's own row dropped entirely from the feed and
+// miscounted as a "repeat." Fixed by comparing the ABSOLUTE distance between timestamps — correct
+// whether the input is chronologically ordered or not, and unchanged for the already-correct
+// chronological case (where the difference was always non-negative anyway).
+export function collapseRapidRepeats(rows: RawRow[]): RawRow[] {
   const REPEAT_WINDOW_MS = 5 * 60 * 1000
   const seen = new Map<string, { firstTime: number; idx: number; count: number }>()
   const result: RawRow[] = []
@@ -249,7 +261,7 @@ function collapseRapidRepeats(rows: RawRow[]): RawRow[] {
     const ts = row.occurred_at ? new Date(row.occurred_at as string).getTime() : 0
 
     const existing = seen.get(key)
-    if (existing && ts > 0 && existing.firstTime > 0 && (existing.firstTime - ts) < REPEAT_WINDOW_MS) {
+    if (existing && ts > 0 && existing.firstTime > 0 && Math.abs(existing.firstTime - ts) < REPEAT_WINDOW_MS) {
       existing.count += 1
       result[existing.idx] = { ...result[existing.idx], repeats: existing.count }
     } else {
