@@ -14,6 +14,7 @@
 
 import type { SupportedChain } from '../providerFetchWindow/types'
 import type { NormalizedEvent } from '../normalization/types'
+import { NATIVE_ASSET_ADDRESS } from '../providerFetchWindow/utils'
 
 export type SwapLegDirection = 'inbound' | 'outbound' | 'unknown'
 
@@ -118,13 +119,26 @@ function stablecoinSymbolFor(chain: SupportedChain, contract: string): string | 
   return map[contract.toLowerCase()] ?? null
 }
 
-// Native ETH transfers carry no ERC20 contract to verify against a registry — matched by symbol
-// only for the native asset itself. WETH, being an ERC20, is verified strictly by canonical address.
-function isNativeOrCanonicalWeth(chain: SupportedChain, leg: SwapLeg): boolean {
-  if (leg.symbol === 'ETH') return true
-  if (leg.symbol !== 'WETH') return false
+// ADDRESS-BASED NATIVE DETECTION, DISCLOSED (confirmed production bug: nativeQuoteRequirementsFound
+// stayed 0 despite 84 valid opposite legs — the native leg GoldRush synthesizes
+// (providerFetchWindow/utils.ts's NATIVE_ASSET_ADDRESS pseudo-address) was being recognized only by
+// `symbol === 'ETH'`, a weaker, string-based signal than the canonical address every synthesized
+// native event actually carries. Checking the real address directly is the same "never infer from
+// symbol text alone" principle this module already applies to stablecoins/WETH — symbol is kept as
+// an OR fallback only for legs constructed without going through that synthesis path (e.g. directly
+// in a test fixture), never as the primary signal.
+export function isNativePseudoAddress(contract: string): boolean {
+  return contract.toLowerCase() === NATIVE_ASSET_ADDRESS
+}
+
+export function isCanonicalWethAddress(chain: SupportedChain, contract: string): boolean {
   const set = CANONICAL_WETH_ADDRESSES[chain]
-  return set ? set.has(leg.contract.toLowerCase()) : false
+  return set ? set.has(contract.toLowerCase()) : false
+}
+
+function isNativeOrCanonicalWeth(chain: SupportedChain, leg: SwapLeg): boolean {
+  if (isNativePseudoAddress(leg.contract) || leg.symbol === 'ETH') return true
+  return isCanonicalWethAddress(chain, leg.contract) || leg.symbol === 'WETH'
 }
 
 function failure(params: DeriveSameTransactionQuotePriceParams, reason: string, targetDecimals: number | null): QuoteLegPriceFailure {

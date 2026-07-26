@@ -38,8 +38,24 @@ import {
   groupSwapLegsByTransaction,
   swapLegGroupKey,
   isVerifiedQuoteLegAddress,
+  isNativePseudoAddress,
+  isCanonicalWethAddress,
   type QuoteLegPriceResult,
+  type SwapLeg,
 } from '../modules/quoteLegPricing/index'
+
+// ADDRESS-BASED NATIVE/WETH RECOGNITION, DISCLOSED (confirmed production bug: nativeQuoteRequirementsFound
+// stayed 0 despite 84 valid opposite legs — the previous symbol==='ETH'/'WETH' check was a weaker
+// signal than the canonical address every leg actually carries; see quoteLegPricing/index.ts's own
+// isNativePseudoAddress/isCanonicalWethAddress for the full trace). Symbol kept only as a fallback OR
+// for legs built without going through real provider synthesis.
+function isNativeOrWethLeg(chain: NormalizedEvent['chain'], leg: SwapLeg): boolean {
+  return isNativePseudoAddress(leg.contract) || isCanonicalWethAddress(chain, leg.contract) || leg.symbol === 'ETH' || leg.symbol === 'WETH'
+}
+
+function isFinitePositiveAmount(amount: number): boolean {
+  return Number.isFinite(amount) && amount > 0
+}
 
 // SYNTHETIC DICTIONARY KEY, DISCLOSED: costUsd/proceedsUsd are Record<txHash, usd> — ONE slot per
 // real txHash. A native/WETH quote leg that never touches the wallet directly shares its target's
@@ -230,7 +246,27 @@ export async function priceLotsForWallet(params: {
   const swapLegsByTx = groupSwapLegsByTransaction(merged)
   const nativeQuoteEntries: PriceableEntry[] = []
   const nativeQuoteRequirementSeen = new Set<string>()
+  // Resolves each found requirement's OWN dictionary+key after resolvePricingAtTime runs — a real
+  // (already-ordinary, direction-real) leg is looked up in the SAME costUsd/proceedsUsd[txHash] slot
+  // its normal rank-fixed requirement already uses (see rankForTxHash above); only a genuinely
+  // 'unknown'-direction leg (never otherwise requested) gets its own new synthetic-key entry. This
+  // means an already-real requirement is never duplicated into a second, budget-consuming entry —
+  // "no budget increase" holds for both sub-cases, not just the synthetic one.
+  const nativeQuoteRequirementResolvers: Array<{ dict: 'costUsd' | 'proceedsUsd'; key: string }> = []
   let nativeQuoteRequirementsFound = 0
+  // DIAGNOSTIC SAMPLE, DISCLOSED, BOUNDED: exactly what the "first 10 valid opposite legs" audit
+  // asked for — logged once, after the loop, never per-transaction (no unbounded log volume).
+  const validOppositeLegSample: Array<{
+    chain: string
+    txHash: string
+    tokenAddress: string
+    symbol: string
+    direction: string
+    classification: 'native_or_weth' | 'other'
+    isNativePseudoAddress: boolean
+    isCanonicalWeth: boolean
+    rejectionReason: string | null
+  }> = []
   for (const lot of structuralMatchedLots) {
     const requirements: Array<{ txHash: string; timestamp: number }> = [
       { txHash: lot.openedTxHash, timestamp: lot.openedAt },
@@ -241,27 +277,52 @@ export async function priceLotsForWallet(params: {
       const dedupeKey = `${groupKey}`
       if (nativeQuoteRequirementSeen.has(dedupeKey)) continue
       const legs = swapLegsByTx.get(groupKey) ?? []
-      const nativeLeg = legs.find(
-        (leg) => !leg.excludeReason && leg.direction === 'unknown' && (leg.symbol === 'ETH' || leg.symbol === 'WETH') && leg.amount > 0,
-      )
+      const oppositeLegs = legs.filter((leg) => !leg.excludeReason && leg.contract.toLowerCase() !== lot.token.toLowerCase())
+      for (const leg of oppositeLegs) {
+        if (validOppositeLegSample.length >= 10) break
+        const isNative = isNativePseudoAddress(leg.contract)
+        const isWeth = isCanonicalWethAddress(lot.chain, leg.contract)
+        validOppositeLegSample.push({
+          chain: lot.chain,
+          txHash,
+          tokenAddress: leg.contract,
+          symbol: leg.symbol,
+          direction: leg.direction,
+          classification: isNative || isWeth || leg.symbol === 'ETH' || leg.symbol === 'WETH' ? 'native_or_weth' : 'other',
+          isNativePseudoAddress: isNative,
+          isCanonicalWeth: isWeth,
+          rejectionReason: !isFinitePositiveAmount(leg.amount) ? 'invalid_amount' : null,
+        })
+      }
+      const nativeLeg = oppositeLegs.find((leg) => isNativeOrWethLeg(lot.chain, leg) && leg.amount > 0)
       if (!nativeLeg) continue
       nativeQuoteRequirementSeen.add(dedupeKey)
       nativeQuoteRequirementsFound += 1
-      // NEVER-CURRENT-PRICE, DISCLOSED: `timestamp` is this SAME transaction's own historical
-      // timestamp (lot.openedAt/lot.closedAt) — the identical value the target leg itself is priced
-      // at — never Date.now()/the separate "current"-price pass (`atNow`, built later in this file
-      // for open-lot mark-to-market only). A historical swap's native quote leg is priced at the time
-      // it happened, exactly like every other historical entry in this same call.
-      nativeQuoteEntries.push({
-        txHash: nativeQuoteRequirementKey(lot.chain, txHash),
-        token: nativeLeg.contract,
-        chain: lot.chain,
-        timestamp,
-        amount: String(nativeLeg.amount),
-        pairRank: rankForTxHash(txHash),
-      })
+      if (nativeLeg.direction === 'unknown') {
+        // NEVER-CURRENT-PRICE, DISCLOSED: `timestamp` is this SAME transaction's own historical
+        // timestamp (lot.openedAt/lot.closedAt) — the identical value the target leg itself is priced
+        // at — never Date.now()/the separate "current"-price pass (`atNow`, built later in this file
+        // for open-lot mark-to-market only). A historical swap's native quote leg is priced at the
+        // time it happened, exactly like every other historical entry in this same call.
+        const syntheticKey = nativeQuoteRequirementKey(lot.chain, txHash)
+        nativeQuoteEntries.push({
+          txHash: syntheticKey,
+          token: nativeLeg.contract,
+          chain: lot.chain,
+          timestamp,
+          amount: String(nativeLeg.amount),
+          pairRank: rankForTxHash(txHash),
+        })
+        nativeQuoteRequirementResolvers.push({ dict: 'proceedsUsd', key: syntheticKey })
+      } else if (nativeLeg.direction === 'inbound') {
+        nativeQuoteRequirementResolvers.push({ dict: 'costUsd', key: txHash })
+      } else {
+        nativeQuoteRequirementResolvers.push({ dict: 'proceedsUsd', key: txHash })
+      }
     }
   }
+  // eslint-disable-next-line no-console
+  console.warn('[quote-leg-native-requirement-audit] first 10 valid opposite legs', { legs: validOppositeLegSample })
 
   const routeLogSnapshotBefore = pricingRouteLog.length
 
@@ -271,7 +332,7 @@ export async function priceLotsForWallet(params: {
     priceSources: params.priceSources,
   })
 
-  const nativeQuoteRequirementsPriced = nativeQuoteEntries.filter((e) => atTradeTime.proceedsUsd[e.txHash] != null).length
+  const nativeQuoteRequirementsPriced = nativeQuoteRequirementResolvers.filter((r) => atTradeTime[r.dict][r.key] != null).length
   const nativeQuoteRequirementsCapped = nativeQuoteRequirementsFound - nativeQuoteRequirementsPriced
 
   function countFullyPriced(): number {
@@ -380,7 +441,7 @@ export async function priceLotsForWallet(params: {
       // ALSO a real pricing requirement — see the NATIVE/WETH QUOTE-LEG REQUIREMENTS block above,
       // which adds it under its own synthetic dictionary key (nativeQuoteRequirementKey) precisely so
       // it never collides with the target's own entry sharing the same real txHash.
-      if (quoteLeg && (quoteLeg.symbol === 'ETH' || quoteLeg.symbol === 'WETH') && quoteLeg.amount > 0) {
+      if (quoteLeg && isNativeOrWethLeg(event.chain, quoteLeg) && quoteLeg.amount > 0) {
         const quoteLegOwnUsd =
           quoteLeg.direction === 'inbound'
             ? atTradeTime.costUsd[event.txHash]
