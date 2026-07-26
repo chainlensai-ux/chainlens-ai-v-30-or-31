@@ -294,6 +294,50 @@ describe('alchemyHistoricalPriceSource — bounded, shadow-mode', () => {
     assert.equal(audit.failureReasons.token_not_found, 1)
   })
 
+  it('classifies the REAL production shape { errorMessage: { message: "Token not found: 0x..." } } as token_not_found', async () => {
+    global.fetch = (async () =>
+      new Response(JSON.stringify({ errorMessage: { message: `Token not found: ${MEME}` } }), { status: 400 })) as unknown as typeof fetch
+
+    const { audit } = await resolveAlchemyHistoricalPricesShadow([req({ txHash: '0xrealshape' })])
+
+    assert.equal(audit.failureReasons.token_not_found, 1, 'the real production { errorMessage: { message } } shape must classify correctly')
+  })
+
+  it('classifies { error: { message: "Token NOT FOUND" } } (case-insensitive, nested error.message shape) as token_not_found', async () => {
+    global.fetch = (async () =>
+      new Response(JSON.stringify({ error: { message: 'Token NOT FOUND' } }), { status: 400 })) as unknown as typeof fetch
+
+    const { audit } = await resolveAlchemyHistoricalPricesShadow([req({ txHash: '0xnestederror' })])
+
+    assert.equal(audit.failureReasons.token_not_found, 1)
+  })
+
+  it('classifies a bare string 400 body as token_not_found when it says "not found"', async () => {
+    global.fetch = (async () => new Response(JSON.stringify('Not Found'), { status: 400 })) as unknown as typeof fetch
+
+    const { audit } = await resolveAlchemyHistoricalPricesShadow([req({ txHash: '0xbarestring' })])
+
+    assert.equal(audit.failureReasons.token_not_found, 1)
+  })
+
+  it('a token_not_found classification from the real production shape enters the negative cache', async () => {
+    let calls = 0
+    global.fetch = (async () => {
+      calls += 1
+      return new Response(JSON.stringify({ errorMessage: { message: `Token not found: ${MEME}` } }), { status: 400 })
+    }) as unknown as typeof fetch
+
+    await resolveAlchemyHistoricalPricesShadow([req({ txHash: '0xneg1', timestamp: Date.parse('2026-01-01T00:00:00.000Z') })])
+    assert.equal(calls, 1)
+
+    const { audit } = await resolveAlchemyHistoricalPricesShadow([
+      req({ txHash: '0xneg2', timestamp: Date.parse('2026-03-01T00:00:00.000Z') }),
+    ])
+
+    assert.equal(calls, 1, 'the negative cache must prevent a second live call for the same token, even with a different range')
+    assert.ok(audit.negativeCacheHits >= 1)
+  })
+
   it('classifies an unrecognized 400 body as http_400_unknown', async () => {
     global.fetch = (async () =>
       new Response(JSON.stringify({ message: 'rate limited for some other reason' }), { status: 400 })) as unknown as typeof fetch

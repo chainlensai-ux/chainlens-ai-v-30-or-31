@@ -217,15 +217,45 @@ function maxTemporalDistanceMsFor(chain: SupportedChain, token: string): number 
 // chain, token, network identifier, the bounded range requested, the interval, and whatever error
 // code/message Alchemy's response body carried. NEVER logs the API key (it is not read from the
 // request URL/body here, only the already-known chain/token/range/interval plus the response body).
+// ERROR-MESSAGE NORMALIZATION, DISCLOSED: Alchemy's 400 body shape varies — this has been observed
+// in real production traffic as { errorMessage: { message: "..." } }, not just the simpler
+// { message: "..." } / { error: "..." } shapes assumed originally. Every known shape is checked,
+// in order, before falling back to null (never guessing at a shape that isn't actually there):
+//   - body.message (string)
+//   - body.error.message (nested object)
+//   - body.errorMessage.message (nested object — the real production shape)
+//   - body.error (string)
+//   - body.errorMessage (string)
+//   - body itself, if the whole response body is a bare string
+function normalizeAlchemy400ErrorMessage(body: unknown): string | null {
+  if (typeof body === 'string') return body
+  if (body && typeof body === 'object') {
+    const obj = body as Record<string, unknown>
+    if (typeof obj.message === 'string') return obj.message
+    if (obj.error && typeof obj.error === 'object') {
+      const nested = (obj.error as Record<string, unknown>).message
+      if (typeof nested === 'string') return nested
+    }
+    if (obj.errorMessage && typeof obj.errorMessage === 'object') {
+      const nested = (obj.errorMessage as Record<string, unknown>).message
+      if (typeof nested === 'string') return nested
+    }
+    if (typeof obj.error === 'string') return obj.error
+    if (typeof obj.errorMessage === 'string') return obj.errorMessage
+  }
+  return null
+}
+
 // TYPED 400 CLASSIFICATION, DISCLOSED: Alchemy returns HTTP 400 for several distinct, disclosed
-// reasons — classified from the response body's own code/message text (never guessed from status
-// alone), so downstream audit/negative-caching logic can react differently to each:
-//   - "Token not found" (or any "not found" message) -> token_not_found
+// reasons — classified case-insensitively from the normalized response message/code text (never
+// guessed from status alone), so downstream audit/negative-caching logic can react differently to
+// each:
+//   - "token not found" (or any "not found" message) -> token_not_found
 //   - a malformed network/request signal (network/invalid/malformed in the message) -> invalid_request
 //   - anything else -> http_400_unknown (honestly unclassified, never silently merged into the above)
 function classifyAlchemy400(errorCode: string | number | null, errorMessage: string | null): string {
   const text = `${errorCode ?? ''} ${errorMessage ?? ''}`.toLowerCase()
-  if (text.includes('not found')) return 'token_not_found'
+  if (text.includes('token not found') || text.includes('not found')) return 'token_not_found'
   if (text.includes('network') || text.includes('malformed') || text.includes('invalid')) return 'invalid_request'
   return 'http_400_unknown'
 }
@@ -318,9 +348,12 @@ async function fetchAlchemyHistoricalRange(
           let errorCode: string | number | null = null
           let errorMessage: string | null = null
           try {
-            const body = (await res.json()) as { code?: string | number; message?: string; error?: string }
-            errorCode = body?.code ?? null
-            errorMessage = body?.message ?? body?.error ?? null
+            const body: unknown = await res.json()
+            if (body && typeof body === 'object' && 'code' in body) {
+              const code = (body as Record<string, unknown>).code
+              errorCode = typeof code === 'string' || typeof code === 'number' ? code : null
+            }
+            errorMessage = normalizeAlchemy400ErrorMessage(body)
           } catch {
             errorMessage = null
           }
