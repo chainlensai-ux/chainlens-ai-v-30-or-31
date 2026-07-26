@@ -244,15 +244,7 @@ export async function priceLotsForWallet(params: {
   // needs over an arbitrary/unranked one ("replace lower-priority failed token lookups when
   // necessary").
   const swapLegsByTx = groupSwapLegsByTransaction(merged)
-  const nativeQuoteEntries: PriceableEntry[] = []
   const nativeQuoteRequirementSeen = new Set<string>()
-  // Resolves each found requirement's OWN dictionary+key after resolvePricingAtTime runs — a real
-  // (already-ordinary, direction-real) leg is looked up in the SAME costUsd/proceedsUsd[txHash] slot
-  // its normal rank-fixed requirement already uses (see rankForTxHash above); only a genuinely
-  // 'unknown'-direction leg (never otherwise requested) gets its own new synthetic-key entry. This
-  // means an already-real requirement is never duplicated into a second, budget-consuming entry —
-  // "no budget increase" holds for both sub-cases, not just the synthetic one.
-  const nativeQuoteRequirementResolvers: Array<{ dict: 'costUsd' | 'proceedsUsd'; key: string }> = []
   let nativeQuoteRequirementsFound = 0
   // DIAGNOSTIC SAMPLE, DISCLOSED, BOUNDED: exactly what the "first 10 valid opposite legs" audit
   // asked for — logged once, after the loop, never per-transaction (no unbounded log volume).
@@ -267,6 +259,10 @@ export async function priceLotsForWallet(params: {
     isCanonicalWeth: boolean
     rejectionReason: string | null
   }> = []
+  // CANDIDATE COLLECTION, DISCLOSED — pass 1 of 2: gather every native/WETH quote-leg candidate WITHOUT
+  // yet assigning it a rank. Deterministic cross-candidate priority (below) needs the full set first.
+  type NativeCandidate = { groupKey: string; chain: NormalizedEvent['chain']; txHash: string; timestamp: number; leg: SwapLeg }
+  const nativeCandidates: NativeCandidate[] = []
   for (const lot of structuralMatchedLots) {
     const requirements: Array<{ txHash: string; timestamp: number }> = [
       { txHash: lot.openedTxHash, timestamp: lot.openedAt },
@@ -274,8 +270,7 @@ export async function priceLotsForWallet(params: {
     ]
     for (const { txHash, timestamp } of requirements) {
       const groupKey = swapLegGroupKey(lot.chain, txHash)
-      const dedupeKey = `${groupKey}`
-      if (nativeQuoteRequirementSeen.has(dedupeKey)) continue
+      if (nativeQuoteRequirementSeen.has(groupKey)) continue
       const legs = swapLegsByTx.get(groupKey) ?? []
       const oppositeLegs = legs.filter((leg) => !leg.excludeReason && leg.contract.toLowerCase() !== lot.token.toLowerCase())
       for (const leg of oppositeLegs) {
@@ -296,44 +291,110 @@ export async function priceLotsForWallet(params: {
       }
       const nativeLeg = oppositeLegs.find((leg) => isNativeOrWethLeg(lot.chain, leg) && leg.amount > 0)
       if (!nativeLeg) continue
-      nativeQuoteRequirementSeen.add(dedupeKey)
+      nativeQuoteRequirementSeen.add(groupKey)
       nativeQuoteRequirementsFound += 1
-      if (nativeLeg.direction === 'unknown') {
-        // NEVER-CURRENT-PRICE, DISCLOSED: `timestamp` is this SAME transaction's own historical
-        // timestamp (lot.openedAt/lot.closedAt) — the identical value the target leg itself is priced
-        // at — never Date.now()/the separate "current"-price pass (`atNow`, built later in this file
-        // for open-lot mark-to-market only). A historical swap's native quote leg is priced at the
-        // time it happened, exactly like every other historical entry in this same call.
-        const syntheticKey = nativeQuoteRequirementKey(lot.chain, txHash)
-        nativeQuoteEntries.push({
-          txHash: syntheticKey,
-          token: nativeLeg.contract,
-          chain: lot.chain,
-          timestamp,
-          amount: String(nativeLeg.amount),
-          pairRank: rankForTxHash(txHash),
-        })
-        nativeQuoteRequirementResolvers.push({ dict: 'proceedsUsd', key: syntheticKey })
-      } else if (nativeLeg.direction === 'inbound') {
-        nativeQuoteRequirementResolvers.push({ dict: 'costUsd', key: txHash })
-      } else {
-        nativeQuoteRequirementResolvers.push({ dict: 'proceedsUsd', key: txHash })
-      }
+      nativeCandidates.push({ groupKey, chain: lot.chain, txHash, timestamp, leg: nativeLeg })
     }
   }
   // eslint-disable-next-line no-console
   console.warn('[quote-leg-native-requirement-audit] first 10 valid opposite legs', { legs: validOppositeLegSample })
 
+  // PRIORITY ASSIGNMENT, DISCLOSED — pass 2 of 2 (confirmed production bug: nativeQuoteRequirementsFound:
+  // 42, Priced: 0, Capped: 42 — the requirements WERE built, but assignClosedLotPairRanks ranks purely
+  // PER TARGET TOKEN (`${chain}:${lot.token}`), so a wallet where most tokens have exactly one closed
+  // lot has EVERY closed lot tied at rank 0 within its own token group — a rank that's only ever
+  // compared against OTHER lots of that SAME target token (irrelevant for ordinary tokens, each with
+  // its own independent per-token cap). ETH/WETH is the one token EVERY one of these 42 different
+  // closed lots shares a quote leg for, so its own per-token cap (still 2, unchanged) had to arbitrate
+  // among 42 requirements ALL nominally "rank 0" — a tie broken only by original array insertion order,
+  // which is exactly why the intended "highest-ranked" requirements did not reliably win, and observed
+  // production behavior showed 0 of the 42 surviving. Fixed: every native quote requirement gets a
+  // DISTINCT, STRICTLY NEGATIVE rank (below every real closed-lot rank, which is always >= 0) — this
+  // guarantees a native quote requirement beats every ordinary (including tied rank-0) requirement AND
+  // every unranked/decoy ETH entry for the SAME shared per-token cap slots, without changing
+  // MAX_LOOKUPS_PER_TOKEN or any other cap/budget, and without touching pricingAtTimeEngine at all
+  // (priceAllEntries' existing `rankOf(entry) ?? UNRANKED` ascending sort already handles negative
+  // numbers correctly — no new mechanism, no new file touched).
+  //
+  // DETERMINISTIC TIE-BREAK, DISCLOSED: among the 42 (or however many) native requirements themselves,
+  // rank is assigned by quote amount DESC (a larger swap's quote leg is the more materially significant
+  // one to recover first) → timestamp ASC (earlier first, matching FIFO's own oldest-first philosophy)
+  // → txHash ASC (final, fully deterministic tie-break).
+  const sortedNativeCandidates = [...nativeCandidates].sort(
+    (a, b) => b.leg.amount - a.leg.amount || a.timestamp - b.timestamp || a.txHash.localeCompare(b.txHash),
+  )
+  // rank(i) = i - N: index 0 (best candidate — largest amount) gets the most negative (smallest,
+  // highest-priority) rank; every value here is strictly < 0, i.e. strictly better than any real
+  // closed-lot rank (always >= 0, per assignClosedLotPairRanks) or unranked entry (UNRANKED sentinel).
+  const nativeQuoteRankByGroupKey = new Map<string, number>()
+  sortedNativeCandidates.forEach((c, i) => nativeQuoteRankByGroupKey.set(c.groupKey, i - sortedNativeCandidates.length))
+
+  const nativeQuoteEntries: PriceableEntry[] = []
+  // Resolves each found requirement's OWN dictionary+key after resolvePricingAtTime runs — a real
+  // (already-ordinary, direction-real) leg is looked up in the SAME costUsd/proceedsUsd[txHash] slot
+  // its normal rank-fixed requirement already uses (see rankForTxHash above); only a genuinely
+  // 'unknown'-direction leg (never otherwise requested) gets its own new synthetic-key entry. This
+  // means an already-real requirement is never duplicated into a second, budget-consuming entry —
+  // "no budget increase" holds for both sub-cases, not just the synthetic one.
+  const nativeQuoteRequirementResolvers: Array<{ dict: 'costUsd' | 'proceedsUsd'; key: string; groupKey: string }> = []
+  // Real-direction native legs share their txHash with the ORDINARY buys/sells map below — this
+  // override lets that map use the SAME superior priority rank instead of the ordinary (tied) one,
+  // keyed by the exact leg identity so it never touches the TARGET's own, unrelated requirement.
+  const nativeLegRankOverride = new Map<string, number>()
+  for (const candidate of sortedNativeCandidates) {
+    const rank = nativeQuoteRankByGroupKey.get(candidate.groupKey)!
+    if (candidate.leg.direction === 'unknown') {
+      // NEVER-CURRENT-PRICE, DISCLOSED: `timestamp` is this SAME transaction's own historical
+      // timestamp (lot.openedAt/lot.closedAt) — the identical value the target leg itself is priced
+      // at — never Date.now()/the separate "current"-price pass (`atNow`, built later in this file
+      // for open-lot mark-to-market only). A historical swap's native quote leg is priced at the
+      // time it happened, exactly like every other historical entry in this same call.
+      const syntheticKey = nativeQuoteRequirementKey(candidate.chain, candidate.txHash)
+      nativeQuoteEntries.push({
+        txHash: syntheticKey,
+        token: candidate.leg.contract,
+        chain: candidate.chain,
+        timestamp: candidate.timestamp,
+        amount: String(candidate.leg.amount),
+        pairRank: rank,
+      })
+      nativeQuoteRequirementResolvers.push({ dict: 'proceedsUsd', key: syntheticKey, groupKey: candidate.groupKey })
+    } else {
+      nativeLegRankOverride.set(
+        `${candidate.chain}:${candidate.txHash.toLowerCase()}:${candidate.leg.contract.toLowerCase()}:${candidate.leg.direction}`,
+        rank,
+      )
+      const dict = candidate.leg.direction === 'inbound' ? 'costUsd' : 'proceedsUsd'
+      nativeQuoteRequirementResolvers.push({ dict, key: candidate.txHash, groupKey: candidate.groupKey })
+    }
+  }
+
+  function rankForEvent(event: NormalizedEvent): number | undefined {
+    const override = nativeLegRankOverride.get(`${event.chain}:${event.txHash.toLowerCase()}:${event.contract.toLowerCase()}:${event.direction}`)
+    return override ?? rankForTxHash(event.txHash)
+  }
+
   const routeLogSnapshotBefore = pricingRouteLog.length
 
   const atTradeTime = await resolvePricingAtTime({
-    buyEntries: buys.map((e) => toPriceableEntry(e, rankForTxHash(e.txHash))),
-    sellEntries: [...sells.map((e) => toPriceableEntry(e, rankForTxHash(e.txHash))), ...nativeQuoteEntries],
+    buyEntries: buys.map((e) => toPriceableEntry(e, rankForEvent(e))),
+    sellEntries: [...sells.map((e) => toPriceableEntry(e, rankForEvent(e))), ...nativeQuoteEntries],
     priceSources: params.priceSources,
   })
 
   const nativeQuoteRequirementsPriced = nativeQuoteRequirementResolvers.filter((r) => atTradeTime[r.dict][r.key] != null).length
   const nativeQuoteRequirementsCapped = nativeQuoteRequirementsFound - nativeQuoteRequirementsPriced
+  // eslint-disable-next-line no-console
+  console.warn('[quote-leg-native-cap-priority]', {
+    nativeRequirementsSubmittedBeforeCap: nativeQuoteRequirementResolvers.length,
+    rankValuesSeenByPricingAtTimeEngine: sortedNativeCandidates.map((c) => nativeQuoteRankByGroupKey.get(c.groupKey)),
+    selectedNativeRequirementKeys: nativeQuoteRequirementResolvers
+      .filter((r) => atTradeTime[r.dict][r.key] != null)
+      .map((r) => r.groupKey),
+    nativeRequirementsCappedByReason: nativeQuoteRequirementResolvers
+      .filter((r) => atTradeTime[r.dict][r.key] == null)
+      .map((r) => ({ groupKey: r.groupKey, reason: 'per_token_cap_or_provider_miss' })),
+  })
 
   function countFullyPriced(): number {
     let both = 0
