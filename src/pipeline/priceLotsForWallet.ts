@@ -40,6 +40,7 @@ import {
   isVerifiedQuoteLegAddress,
   isNativePseudoAddress,
   isCanonicalWethAddress,
+  isVerifiedStablecoinAddress,
   resolveNativePricingToken,
   type QuoteLegPriceResult,
   type SwapLeg,
@@ -266,14 +267,23 @@ export async function priceLotsForWallet(params: {
   }> = []
   // CANDIDATE COLLECTION, DISCLOSED — pass 1 of 2: gather every native/WETH quote-leg candidate WITHOUT
   // yet assigning it a rank. Deterministic cross-candidate priority (below) needs the full set first.
-  type NativeCandidate = { groupKey: string; chain: NormalizedEvent['chain']; txHash: string; timestamp: number; leg: SwapLeg }
+  type NativeCandidate = {
+    groupKey: string
+    chain: NormalizedEvent['chain']
+    txHash: string
+    timestamp: number
+    leg: SwapLeg
+    lotToken: string
+    oppositeTxHash: string
+    side: 'entry' | 'exit'
+  }
   const nativeCandidates: NativeCandidate[] = []
   for (const lot of structuralMatchedLots) {
-    const requirements: Array<{ txHash: string; timestamp: number }> = [
-      { txHash: lot.openedTxHash, timestamp: lot.openedAt },
-      { txHash: lot.closedTxHash, timestamp: lot.closedAt },
+    const requirements: Array<{ txHash: string; timestamp: number; oppositeTxHash: string; side: 'entry' | 'exit' }> = [
+      { txHash: lot.openedTxHash, timestamp: lot.openedAt, oppositeTxHash: lot.closedTxHash, side: 'entry' },
+      { txHash: lot.closedTxHash, timestamp: lot.closedAt, oppositeTxHash: lot.openedTxHash, side: 'exit' },
     ]
-    for (const { txHash, timestamp } of requirements) {
+    for (const { txHash, timestamp, oppositeTxHash, side } of requirements) {
       const groupKey = swapLegGroupKey(lot.chain, txHash)
       if (nativeQuoteRequirementSeen.has(groupKey)) continue
       const legs = swapLegsByTx.get(groupKey) ?? []
@@ -298,41 +308,111 @@ export async function priceLotsForWallet(params: {
       if (!nativeLeg) continue
       nativeQuoteRequirementSeen.add(groupKey)
       nativeQuoteRequirementsFound += 1
-      nativeCandidates.push({ groupKey, chain: lot.chain, txHash, timestamp, leg: nativeLeg })
+      nativeCandidates.push({ groupKey, chain: lot.chain, txHash, timestamp, leg: nativeLeg, lotToken: lot.token, oppositeTxHash, side })
     }
   }
   // eslint-disable-next-line no-console
   console.warn('[quote-leg-native-requirement-audit] first 10 valid opposite legs', { legs: validOppositeLegSample })
 
-  // PRIORITY ASSIGNMENT, DISCLOSED — pass 2 of 2 (confirmed production bug: nativeQuoteRequirementsFound:
-  // 42, Priced: 0, Capped: 42 — the requirements WERE built, but assignClosedLotPairRanks ranks purely
-  // PER TARGET TOKEN (`${chain}:${lot.token}`), so a wallet where most tokens have exactly one closed
-  // lot has EVERY closed lot tied at rank 0 within its own token group — a rank that's only ever
-  // compared against OTHER lots of that SAME target token (irrelevant for ordinary tokens, each with
-  // its own independent per-token cap). ETH/WETH is the one token EVERY one of these 42 different
-  // closed lots shares a quote leg for, so its own per-token cap (still 2, unchanged) had to arbitrate
-  // among 42 requirements ALL nominally "rank 0" — a tie broken only by original array insertion order,
-  // which is exactly why the intended "highest-ranked" requirements did not reliably win, and observed
-  // production behavior showed 0 of the 42 surviving. Fixed: every native quote requirement gets a
-  // DISTINCT, STRICTLY NEGATIVE rank (below every real closed-lot rank, which is always >= 0) — this
-  // guarantees a native quote requirement beats every ordinary (including tied rank-0) requirement AND
-  // every unranked/decoy ETH entry for the SAME shared per-token cap slots, without changing
-  // MAX_LOOKUPS_PER_TOKEN or any other cap/budget, and without touching pricingAtTimeEngine at all
-  // (priceAllEntries' existing `rankOf(entry) ?? UNRANKED` ascending sort already handles negative
-  // numbers correctly — no new mechanism, no new file touched).
+  // COMPLETION-AWARE PRIORITY ASSIGNMENT, DISCLOSED — pass 2 of 2 (confirmed production evidence: raw
+  // native pricing itself works — 2 selected, 2 priced, 2 same-tx recoveries, 0 provider misses — but
+  // amount-only ranking can spend the ETH cap's only 2 slots on two requirements that do NOT, together,
+  // complete any closed lot, so fullyPricedLots stays flat even though pricing "worked." Reordered to
+  // prioritize requirements by their EXPECTED effect on lot completion, computed from data already known
+  // BEFORE any provider call runs (never from a result this same call hasn't produced yet):
   //
-  // DETERMINISTIC TIE-BREAK, DISCLOSED: among the 42 (or however many) native requirements themselves,
-  // rank is assigned by quote amount DESC (a larger swap's quote leg is the more materially significant
-  // one to recover first) → timestamp ASC (earlier first, matching FIFO's own oldest-first philosophy)
-  // → txHash ASC (final, fully deterministic tie-break).
-  const sortedNativeCandidates = [...nativeCandidates].sort(
-    (a, b) => b.leg.amount - a.leg.amount || a.timestamp - b.timestamp || a.txHash.localeCompare(b.txHash),
-  )
-  // rank(i) = i - N: index 0 (best candidate — largest amount) gets the most negative (smallest,
-  // highest-priority) rank; every value here is strictly < 0, i.e. strictly better than any real
-  // closed-lot rank (always >= 0, per assignClosedLotPairRanks) or unranked entry (UNRANKED sentinel).
+  // Tier 1 — the missing side of a lot whose OPPOSITE side already has a genuinely verified stablecoin
+  // quote leg. A stablecoin quote resolves deterministically at $1/unit with NO provider call and NO
+  // cap slot (see quoteLegPricing's isVerifiedStablecoinAddress) — so that side is effectively already
+  // guaranteed priced regardless of this call's outcome. Spending an ETH slot on the OTHER side is what
+  // completes that lot "for free": the highest-value, lowest-risk use of a scarce slot.
+  // Tier 2 — transactions whose LOT can be fully completed using exactly the 2 available ETH slots,
+  // i.e. both sides of the same lot are themselves native-quote candidates. Grouped together (adjacent
+  // ranks, same tier) and ordered by the pair's combined quote amount DESC so the highest-value
+  // completable pair is attempted first.
+  // Tier 3 — every other candidate, ordered by its own quote amount DESC (the prior round's behavior).
+  // Tie-break within any tier: timestamp ASC → txHash ASC, fully deterministic.
+  //
+  // Every rank here stays STRICTLY NEGATIVE (below any real closed-lot rank, always >= 0, and below the
+  // UNRANKED sentinel) — same mechanism as before, no change to pricingAtTimeEngine, MAX_LOOKUPS_PER_TOKEN,
+  // or any cap/budget.
+  const candidateByTxHash = new Map(nativeCandidates.map((c) => [c.txHash, c]))
+  function oppositeHasVerifiedStablecoin(candidate: NativeCandidate): boolean {
+    const oppositeLegs = swapLegsByTx.get(swapLegGroupKey(candidate.chain, candidate.oppositeTxHash)) ?? []
+    return oppositeLegs.some(
+      (leg) =>
+        !leg.excludeReason &&
+        leg.contract.toLowerCase() !== candidate.lotToken.toLowerCase() &&
+        isFinitePositiveAmount(leg.amount) &&
+        isVerifiedStablecoinAddress(candidate.chain, leg.contract),
+    )
+  }
+  function tierOf(candidate: NativeCandidate): 1 | 2 | 3 {
+    if (oppositeHasVerifiedStablecoin(candidate)) return 1
+    if (candidateByTxHash.has(candidate.oppositeTxHash)) return 2
+    return 3
+  }
+  function pairAmount(candidate: NativeCandidate): number {
+    const opposite = candidateByTxHash.get(candidate.oppositeTxHash)
+    return opposite ? candidate.leg.amount + opposite.leg.amount : candidate.leg.amount
+  }
+  let completionEligibleNativeRequirements = 0
+  let selectedRequirementsWithOppositeSidePriced = 0 // tier-1 count — computed here, logged after selection below
+  const sortedNativeCandidates = [...nativeCandidates].sort((a, b) => {
+    const tierA = tierOf(a)
+    const tierB = tierOf(b)
+    if (tierA !== tierB) return tierA - tierB
+    if (tierA === 2) {
+      // Same tier-2 pair sorts adjacent: shared pairAmount, entry before exit, then timestamp/txHash.
+      const pairDiff = pairAmount(b) - pairAmount(a)
+      if (pairDiff !== 0) return pairDiff
+      if (a.side !== b.side) return a.side === 'entry' ? -1 : 1
+    } else {
+      const amountDiff = b.leg.amount - a.leg.amount
+      if (amountDiff !== 0) return amountDiff
+    }
+    return a.timestamp - b.timestamp || a.txHash.localeCompare(b.txHash)
+  })
+  for (const c of sortedNativeCandidates) {
+    const tier = tierOf(c)
+    if (tier <= 2) completionEligibleNativeRequirements += 1
+    if (tier === 1) selectedRequirementsWithOppositeSidePriced += 1
+  }
+  // rank(i) = i - N: index 0 (best candidate — tier 1 first, then tier 2, then tier 3) gets the most
+  // negative (smallest, highest-priority) rank; every value here is strictly < 0, i.e. strictly better
+  // than any real closed-lot rank (always >= 0) or unranked entry (UNRANKED sentinel).
   const nativeQuoteRankByGroupKey = new Map<string, number>()
   sortedNativeCandidates.forEach((c, i) => nativeQuoteRankByGroupKey.set(c.groupKey, i - sortedNativeCandidates.length))
+
+  // EXPECTED COMPLETION PREDICTION, DISCLOSED, ADDITIVE — computed BEFORE resolvePricingAtTime runs,
+  // from the same MAX_LOOKUPS_PER_TOKEN_DEFAULT/DENSE value (both currently 2, unchanged) every ETH/
+  // WETH requirement shares: assumes the top `assumedCapSlots` ranked candidates are the ones that
+  // will actually survive the real cap (true whenever this is the only source of ETH/WETH entries
+  // competing for that shared per-token slot budget), then counts how many DISTINCT lots that
+  // selection is expected to complete — a tier-1 candidate completes its lot alone (the opposite side
+  // is already deterministically stablecoin-priced); a tier-2 candidate only completes its lot if its
+  // PAIR partner is ALSO among the selected slots.
+  const assumedCapSlots = 2
+  const topSelectedGroupKeys = new Set(sortedNativeCandidates.slice(0, assumedCapSlots).map((c) => c.groupKey))
+  let expectedLotsCompletedBySelection = 0
+  {
+    const countedLots = new Set<string>()
+    for (const c of sortedNativeCandidates.slice(0, assumedCapSlots)) {
+      const lotKey = `${c.chain}:${c.lotToken.toLowerCase()}`
+      if (countedLots.has(lotKey)) continue
+      const tier = tierOf(c)
+      if (tier === 1) {
+        expectedLotsCompletedBySelection += 1
+        countedLots.add(lotKey)
+      } else if (tier === 2) {
+        const opposite = candidateByTxHash.get(c.oppositeTxHash)
+        if (opposite && topSelectedGroupKeys.has(opposite.groupKey)) {
+          expectedLotsCompletedBySelection += 1
+          countedLots.add(lotKey)
+        }
+      }
+    }
+  }
 
   const nativeQuoteEntries: PriceableEntry[] = []
   // Resolves each found requirement's OWN dictionary+key after resolvePricingAtTime runs — a real
@@ -415,6 +495,11 @@ export async function priceLotsForWallet(params: {
     nativeRequirementsProviderMiss,
     nativeRequirementsPriced,
     selectedNativeRequirementKeys,
+    // COMPLETION-AWARE RANKING DIAGNOSTICS, DISCLOSED, ADDITIVE — see the "COMPLETION-AWARE PRIORITY
+    // ASSIGNMENT" header above for the full tier definitions.
+    completionEligibleNativeRequirements,
+    selectedRequirementsWithOppositeSidePriced,
+    expectedLotsCompletedBySelection,
   })
 
   function countFullyPriced(): number {
@@ -580,6 +665,9 @@ export async function priceLotsForWallet(params: {
 
   const fullyPricedLotsAfter = countFullyPriced()
   const verifiedPricingCoverageAfter = structuralMatchedLots.length > 0 ? fullyPricedLotsAfter / structuralMatchedLots.length : 0
+  // Real, observed effect of this whole native-quote pass (ranking + reuse) on closed-lot completion —
+  // compared against expectedLotsCompletedBySelection (the pre-call prediction) above.
+  const actualLotsCompletedByQuote = fullyPricedLotsAfter - fullyPricedLotsBefore
 
   // eslint-disable-next-line no-console
   console.warn('[historical-quote-leg-coverage]', {
@@ -613,6 +701,7 @@ export async function priceLotsForWallet(params: {
     verifiedPricingCoverageAfter,
     fullyPricedLotsBefore,
     fullyPricedLotsAfter,
+    actualLotsCompletedByQuote,
     additionalProviderCalls: 0,
   })
   if (sampleRecovered.length > 0) {

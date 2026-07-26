@@ -108,7 +108,7 @@ describe('priceLotsForWallet — native pseudo-address pricing route', () => {
     assert.equal(lookups.priceUsdLookup(buyLeg), 3500, 'resolves using historical ETH pricing (routed via WETH) at the swap\'s own timestamp')
   })
 
-  it('provider miss and cap are reported separately (not merged into one ambiguous "capped" bucket)', async () => {
+  it('completion-aware ranking fully completes one lot rather than half-completing two, given the unchanged 2-slot cap', async () => {
     // 3 distinct native-quoted closed lots (cap = 2) so ONE is genuinely capped, while the price
     // source itself always succeeds for WETH — isolating "capped" from "provider miss" cleanly.
     const events: NormalizedEvent[] = []
@@ -134,16 +134,19 @@ describe('priceLotsForWallet — native pseudo-address pricing route', () => {
     const sources: PriceSources = { primary: fn, fallback: fn }
 
     const lookups = await priceLotsForWallet({ normalizedEvents: events, recoveredEvents: [], priceSources: sources })
-    const pricedCount = [0, 1, 2].filter((i) => {
-      const buy = events.find((e) => e.contract === memeToken(10 + i) && e.direction === 'inbound')!
-      return lookups.priceUsdLookup(buy) != null
-    }).length
+    // Both sides of EACH of these 3 lots need a native quote (no stablecoin side exists anywhere) —
+    // completion-aware ranking (this round's own fix) spends the 2 available cap slots on BOTH sides
+    // of the single highest-combined-quote lot (token 0) rather than one side each of two different
+    // lots, since completing one full lot is the higher-value outcome the ranking now targets.
+    const buy0 = events.find((e) => e.contract === memeToken(10) && e.direction === 'inbound')!
+    const sell0 = events.find((e) => e.contract === memeToken(10) && e.direction === 'outbound')!
+    const buy1 = events.find((e) => e.contract === memeToken(11) && e.direction === 'inbound')!
+    const buy2 = events.find((e) => e.contract === memeToken(12) && e.direction === 'inbound')!
 
-    // With a real, always-succeeding WETH price source, exactly 2 of the 3 requirements survive the
-    // (unchanged) cap; the 3rd is genuinely capped, not a provider miss — proving the two are now
-    // distinguishable in principle (a provider that always succeeds can only ever produce capped
-    // failures here, never miss failures).
-    assert.equal(pricedCount, 2, 'exactly 2 of 3 (the unchanged per-token cap) must be priced when the provider itself always succeeds')
+    assert.ok(lookups.priceUsdLookup(buy0) != null, 'token 0 entry must be priced')
+    assert.ok(lookups.priceUsdLookup(sell0) != null, 'token 0 exit must ALSO be priced — completion-aware ranking fully completes this lot')
+    assert.equal(lookups.priceUsdLookup(buy1), null, 'token 1 is genuinely capped out (not a provider miss — the source always succeeds)')
+    assert.equal(lookups.priceUsdLookup(buy2), null, 'token 2 is genuinely capped out (not a provider miss — the source always succeeds)')
   })
 
   it('sameTxNativePricesRecovered > 0 and fullyPricedLots rises, with no cap or provider-budget increase', async () => {

@@ -119,6 +119,13 @@ function stablecoinSymbolFor(chain: SupportedChain, contract: string): string | 
   return map[contract.toLowerCase()] ?? null
 }
 
+// Exported for completion-priority ranking (priceLotsForWallet.ts): a genuinely verified stablecoin
+// leg resolves DETERMINISTICALLY at $1/unit — no provider call, no cap slot — so knowing a lot's
+// OPPOSITE side already has one is knowable up front, before any pricing call runs.
+export function isVerifiedStablecoinAddress(chain: SupportedChain, contract: string): boolean {
+  return stablecoinSymbolFor(chain, contract) !== null
+}
+
 // ADDRESS-BASED NATIVE DETECTION, DISCLOSED (confirmed production bug: nativeQuoteRequirementsFound
 // stayed 0 despite 84 valid opposite legs — the native leg GoldRush synthesizes
 // (providerFetchWindow/utils.ts's NATIVE_ASSET_ADDRESS pseudo-address) was being recognized only by
