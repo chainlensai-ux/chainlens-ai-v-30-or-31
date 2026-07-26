@@ -32,7 +32,8 @@ import type { CurrentPriceUsdLookup, MatchedLot, PriceUsdLookup } from '../modul
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { resolvePricingAtTime } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
-import { pricingRouteLog, type PricingRouteRecord } from './pricingAtTimeAdapter'
+import { pricingRouteLog, isSanePrice, type PricingRouteRecord } from './pricingAtTimeAdapter'
+import { deriveSameTransactionQuotePrice, groupSwapLegsByTransaction, swapLegGroupKey, type QuoteLegPriceResult } from '../modules/quoteLegPricing/index'
 
 function toPriceableEntry(event: NormalizedEvent, pairRank: number | undefined): PriceableEntry {
   return {
@@ -182,11 +183,131 @@ export async function priceLotsForWallet(params: {
     priceSources: params.priceSources,
   })
 
+  function countFullyPriced(): number {
+    let both = 0
+    for (const lot of structuralMatchedLots) {
+      if (atTradeTime.costUsd[lot.openedTxHash] != null && atTradeTime.proceedsUsd[lot.closedTxHash] != null) both += 1
+    }
+    return both
+  }
+  const fullyPricedLotsBefore = countFullyPriced()
+  const verifiedPricingCoverageBefore = structuralMatchedLots.length > 0 ? fullyPricedLotsBefore / structuralMatchedLots.length : 0
+
+  // SAME-TRANSACTION QUOTE-LEG GAP-FILL PASS, DISCLOSED, ADDITIVE — applied AFTER resolvePricingAtTime
+  // (steps 3/4 of the required priority: existing provider historical price, existing on-chain pool
+  // price at block — both already attempted, unmodified, inside resolvePricingAtTime) but BEFORE any
+  // expensive bounded recovery fallback (pnlReconciliation.ts's own later stage — step 5, untouched).
+  // Only ever fills a costUsd/proceedsUsd entry that is currently null — never overwrites, never
+  // demotes, an already-resolved (stronger) existing price. Zero provider/network calls: the
+  // quote-leg's own USD value is read back from whichever of costUsd/proceedsUsd resolvePricingAtTime
+  // already computed for that SAME transaction's opposite-direction leg (already resolved as its own
+  // ordinary priced entry — see buys/sells above), never re-fetched.
+  const swapLegsByTx = groupSwapLegsByTransaction(merged)
+  const quoteLegCache = new Map<string, QuoteLegPriceResult>()
+  let sameTxStablePricesRecovered = 0
+  let sameTxNativePricesRecovered = 0
+  const rejectionReasonCounts: Record<string, number> = {}
+  const sampleRecovered: Array<{
+    chain: string
+    txHash: string
+    token: string
+    side: 'entry' | 'exit'
+    source: string
+    targetQuantity: number
+    quoteToken: string
+    quoteQuantity: number
+    quoteValueUsd: number
+    derivedPriceUsd: number
+    timestamp: string
+  }> = []
+  const distinctTransactionsUsed = new Set<string>()
+
+  function applySameTxQuoteLegGapFill(event: NormalizedEvent, targetDict: Record<string, number | null>, side: 'entry' | 'exit'): void {
+    if (targetDict[event.txHash] != null) return // an existing, stronger price already resolved — never reordered/overwritten
+    const groupKey = swapLegGroupKey(event.chain, event.txHash)
+    const legs = swapLegsByTx.get(groupKey) ?? []
+    const cacheKey = `${groupKey}:${event.contract.toLowerCase()}:${event.direction}`
+    let result = quoteLegCache.get(cacheKey)
+    if (!result) {
+      const oppositeDirection = event.direction === 'inbound' ? 'outbound' : 'inbound'
+      const quoteLeg = legs.find(
+        (leg) => !leg.excludeReason && leg.direction === oppositeDirection && leg.contract.toLowerCase() !== event.contract.toLowerCase(),
+      )
+      let historicalNativePrice: number | null = null
+      if (quoteLeg && (quoteLeg.symbol === 'ETH' || quoteLeg.symbol === 'WETH') && quoteLeg.amount > 0) {
+        const quoteLegOwnUsd = quoteLeg.direction === 'inbound' ? atTradeTime.costUsd[event.txHash] : atTradeTime.proceedsUsd[event.txHash]
+        if (quoteLegOwnUsd != null) historicalNativePrice = quoteLegOwnUsd / quoteLeg.amount
+      }
+      result = deriveSameTransactionQuotePrice({
+        chain: event.chain,
+        txHash: event.txHash,
+        timestamp: Date.parse(event.timestamp),
+        targetToken: event.contract,
+        targetDirection: event.direction,
+        targetQuantity: event.amount,
+        groupedSwapLegs: legs,
+        historicalNativePrice,
+      })
+      quoteLegCache.set(cacheKey, result)
+    }
+    if (result.priceUsd != null && isSanePrice(result.priceUsd)) {
+      targetDict[event.txHash] = result.priceUsd
+      if (result.source === 'same_tx_stable_quote') sameTxStablePricesRecovered += 1
+      else sameTxNativePricesRecovered += 1
+      distinctTransactionsUsed.add(groupKey)
+      if (sampleRecovered.length < 10) {
+        sampleRecovered.push({
+          chain: event.chain,
+          txHash: event.txHash,
+          token: event.contract,
+          side,
+          source: result.source,
+          targetQuantity: event.amount,
+          quoteToken: result.quoteToken,
+          quoteQuantity: result.quoteQuantity,
+          quoteValueUsd: result.quoteValueUsd,
+          derivedPriceUsd: result.priceUsd,
+          timestamp: event.timestamp,
+        })
+      }
+    } else if (result.evidence.rejectionReason) {
+      rejectionReasonCounts[result.evidence.rejectionReason] = (rejectionReasonCounts[result.evidence.rejectionReason] ?? 0) + 1
+    }
+  }
+
+  for (const e of buys) applySameTxQuoteLegGapFill(e, atTradeTime.costUsd, 'entry')
+  for (const e of sells) applySameTxQuoteLegGapFill(e, atTradeTime.proceedsUsd, 'exit')
+
+  const fullyPricedLotsAfter = countFullyPriced()
+  const verifiedPricingCoverageAfter = structuralMatchedLots.length > 0 ? fullyPricedLotsAfter / structuralMatchedLots.length : 0
+
+  // eslint-disable-next-line no-console
+  console.warn('[historical-quote-leg-coverage]', {
+    closedLots: structuralMatchedLots.length,
+    entryRequirements: entryRankByTxHash.size,
+    exitRequirements: exitRankByTxHash.size,
+    sameTxStablePricesRecovered,
+    sameTxNativePricesRecovered,
+    requirementsSatisfiedBySameTxQuote: sameTxStablePricesRecovered + sameTxNativePricesRecovered,
+    distinctTransactionsUsed: distinctTransactionsUsed.size,
+    rejectedQuoteCandidates: Object.values(rejectionReasonCounts).reduce((a, b) => a + b, 0),
+    rejectionReasonCounts,
+    verifiedPricingCoverageBefore,
+    verifiedPricingCoverageAfter,
+    fullyPricedLotsBefore,
+    fullyPricedLotsAfter,
+    additionalProviderCalls: 0,
+  })
+  if (sampleRecovered.length > 0) {
+    // eslint-disable-next-line no-console
+    console.warn('[historical-quote-leg-coverage] sample', { samples: sampleRecovered })
+  }
+
   // CLOSED-LOT PRICING COVERAGE DIAGNOSTICS, DISCLOSED, ADDITIVE — bounded (one summary object, no
   // per-event dump). Splits every structural closed lot by exactly which side(s) resolved a real
   // price, so "fullyPricedClosedLots" (both) is never confused with "attributed" (present) or with a
-  // lot that only got half its evidence. Computed AFTER resolvePricingAtTime so it reflects the real
-  // outcome, not the request.
+  // lot that only got half its evidence. Computed AFTER resolvePricingAtTime AND the same-tx
+  // quote-leg gap-fill so it reflects the real final outcome, not the pre-gap-fill request.
   let bothPriced = 0
   let entryOnlyPriced = 0
   let exitOnlyPriced = 0

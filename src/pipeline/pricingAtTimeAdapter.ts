@@ -42,7 +42,7 @@ import { fetchBaseDexPriceDetailed } from '../modules/pricingAtTimeEngine/source
 const MIN_VALID_USD_PRICE = 0
 const MAX_VALID_USD_PRICE = 1e6
 
-function isSanePrice(price: number | null | undefined): price is number {
+export function isSanePrice(price: number | null | undefined): price is number {
   return price != null && Number.isFinite(price) && price > MIN_VALID_USD_PRICE && price <= MAX_VALID_USD_PRICE
 }
 
