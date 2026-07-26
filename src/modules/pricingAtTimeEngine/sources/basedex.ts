@@ -502,6 +502,22 @@ export function __resetBaseDexCachesForTest(): void {
 const poolAddressCache = new Map<string, `0x${string}`>()
 const poolPriceCache = new Map<string, number | null>()
 
+// POOL-CREATED-AFTER-TRADE, DISCLOSED, ZERO-ADDED-COST FIX: resolvePoolAddress finds a pool's address
+// at the CURRENT factory state (no historical blockNumber — see its own header), which is safe for
+// pools that already existed at trade time (V3 pool addresses are permanent/deterministic), but a
+// pool address can also be one the factory only linked AFTER the trade's own historical block. In
+// that case the historical slot0()/token0() calls hit a contract with no code yet at that block — the
+// EVM returns `success` with EMPTY returndata for a call to an address with no code (never a revert),
+// so decodeFunctionResult() would throw a generic, unattributed decode error, and the existing
+// `.catch(() => sequential)` fallback would then retry the EXACT SAME doomed calls against the same
+// not-yet-deployed address, wasting a full second round of RPC calls only to fail identically.
+// Detected here from data already fetched by the ONE multicall this function already makes — zero
+// additional RPC cost — and surfaced as a distinguishable error message instead of an opaque
+// "multicall: one or more poolPrice sub-calls failed" / generic decode error, so
+// fetchBaseDexPriceDetailed's caller-facing `reason` can honestly attribute this case instead of
+// lumping it into an undifferentiated rpc_error.
+class PoolNotYetDeployedError extends Error {}
+
 // NEGATIVE-RESULT CACHE, DISCLOSED (real-CU-fix, applied per user confirmation of measured
 // production evidence: distinct-token ratio logging showed avgLookupsPerToken=6.37 across 115
 // distinct tokens in one real scan, meaning most tokens are looked up several times each — and the
@@ -653,7 +669,11 @@ export async function readPoolPrice(
 
   const [slot0, token0, tokenDecimals, pairedDecimals] = await readPoolPriceInputsViaMulticall(
     client, poolAddress, tokenAddress, pairedWith, blockNumber,
-  ).catch(() => readPoolPriceInputsSequential(client, poolAddress, tokenAddress, pairedWith, blockNumber))
+  ).catch((err) => {
+    // Never retry a provably-doomed identical call — see PoolNotYetDeployedError's own header.
+    if (err instanceof PoolNotYetDeployedError) throw err
+    return readPoolPriceInputsSequential(client, poolAddress, tokenAddress, pairedWith, blockNumber)
+  })
 
   const sqrtPriceX96 = slot0[0]
 
@@ -730,6 +750,14 @@ async function readPoolPriceInputsViaMulticall(
 
   if (results.length !== 4 || results.some((r) => !r.success)) {
     throw new Error('multicall: one or more poolPrice sub-calls failed')
+  }
+
+  // See PoolNotYetDeployedError's own header above: empty returndata for the POOL's own calls
+  // (slot0/token0) at this historical block — as opposed to the token-decimals calls, which target
+  // long-since-deployed ERC20s — is the real, cheaply-detected signal that this pool contract had no
+  // code yet at the trade's block, not a transient failure.
+  if (results[0].returnData === '0x' || results[1].returnData === '0x') {
+    throw new PoolNotYetDeployedError('pool_not_yet_deployed_at_block')
   }
 
   const slot0 = decodeFunctionResult({ abi: UNISWAP_V3_POOL_ABI, functionName: 'slot0', data: results[0].returnData })

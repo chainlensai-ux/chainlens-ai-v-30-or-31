@@ -413,6 +413,7 @@ function makeFakeMulticallClient(opts: {
   tokenDecimals?: number
   pairedDecimals?: number
   failSubCalls?: boolean
+  poolNotYetDeployed?: boolean
 }) {
   let callCount = 0
   const client = {
@@ -425,6 +426,17 @@ function makeFakeMulticallClient(opts: {
 
       const results = calls.map((call) => {
         if (opts.failSubCalls) return { success: false, returnData: '0x' as `0x${string}` }
+        // POOL-NOT-YET-DEPLOYED SIMULATION: a call to an address with no code at this historical
+        // block returns `success: true` with EMPTY returndata (never a revert) — this is what a real
+        // chain does, distinct from failSubCalls' `success: false` case above.
+        if (opts.poolNotYetDeployed) {
+          try {
+            const decoded = decodeFunctionData({ abi: POOL_ABI, data: call.callData })
+            if (decoded.functionName === 'slot0' || decoded.functionName === 'token0') {
+              return { success: true, returnData: '0x' as `0x${string}` }
+            }
+          } catch { /* not a pool call, fall through to normal handling below */ }
+        }
         // Dispatch by selector: try each known ABI in turn (mirrors how a real chain would route
         // by (target, selector) — here every sub-call's target/selector combination is unambiguous
         // given the test's own fixed addresses).
@@ -556,5 +568,25 @@ describe('readPoolPrice via the real multicall path', () => {
       /unexpected readContract call/,
       'expected the sequential fallback to have been attempted (and to surface its own real failure), never a fabricated price',
     )
+  })
+
+  // CONFIRMED FIX, DISCLOSED (see PoolNotYetDeployedError's own header in basedex.ts): a pool that
+  // didn't exist yet at the trade's historical block returns empty (not failed) returndata for its
+  // own calls — this must be classified distinctly AND must never retry the identically-doomed
+  // sequential fallback (a real, avoidable RPC cost this fix removes).
+  it('never falls back to the sequential path when the pool had no code yet at this historical block (avoids a doomed, wasted retry)', async () => {
+    __resetBaseDexCachesForTest()
+    const multi = makeFakeMulticallClient({ poolAddress: POOL, poolNotYetDeployed: true })
+    // This fake client's readContract throws unconditionally on ANY call — if the fix regressed and
+    // fell back to sequential here, this assertion would catch it via a mismatched rejection message.
+    await assert.rejects(
+      () => readPoolPrice(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        multi.client as any, POOL as `0x${string}`, TOKEN as `0x${string}`, WETH as `0x${string}`, BigInt(1),
+      ),
+      /pool_not_yet_deployed_at_block/,
+      'expected a distinguishable pool_not_yet_deployed_at_block error, with the sequential fallback never attempted',
+    )
+    assert.equal(multi.getCallCount(), 1, 'expected exactly one multicall call — no wasted sequential retry')
   })
 })
