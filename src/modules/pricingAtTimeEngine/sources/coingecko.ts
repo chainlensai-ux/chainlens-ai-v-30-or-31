@@ -19,6 +19,33 @@ const COINGECKO_RANGE_WINDOW_SECONDS = 24 * 60 * 60 // +/- 1 day around the targ
 
 export type CoingeckoPriceResult = { priceUsd: number | null; reason: string | null }
 
+// SCAN-LEVEL CIRCUIT BREAKER, DISCLOSED (source-retry-avoidance task, explicit "skip CoinGecko
+// after the first 429 circuit-breaker event" requirement): CoinGecko's real public API enforces a
+// well-known per-minute rate limit. A wallet with many historical recovery candidates fans out many
+// of these calls (bounded by this pipeline's own concurrency caps, but still real volume); once the
+// first 429 is observed, every rate-limit window for the rest of this scan is already exhausted or
+// about to be — retrying is predictably going to keep hitting the same limit, not a genuine
+// per-token/per-timestamp question CoinGecko might still answer differently for. Opens on the FIRST
+// http_429, stays open until explicitly reset (per-scan, alongside every other per-job reset this
+// codebase already applies — see resetCoingeckoCircuitBreaker's own header). NEVER FABRICATES: the
+// short-circuited result is the same honest `null` a real rate-limited call would have produced
+// anyway, just without paying for the network round-trip first.
+let coingeckoCircuitOpen = false
+
+// PER-SCAN RESET, DISCLOSED: same convention as goldrushPriceSource.ts's own
+// resetGoldrushPriceSourceCallCount / dexscreener.ts's resetDexscreenerCallCount — called once per
+// real scan (src/modules/walletScanWorker.ts) so a warm serverless instance's PREVIOUS scan hitting
+// a real 429 never silently disables CoinGecko for an unrelated later scan of a different wallet.
+export function resetCoingeckoCircuitBreaker(): void {
+  coingeckoCircuitOpen = false
+}
+
+// TEST-SUPPORT EXPORT, DISCLOSED: read-only observability, same convention as
+// goldrushPriceSource.ts's isGoldrushBreakerOpenForTest.
+export function isCoingeckoCircuitOpenForTest(): boolean {
+  return coingeckoCircuitOpen
+}
+
 // Detailed variant — used by the orchestrator (getPriceAtTime) for structured debug output.
 export async function fetchCoingeckoPriceDetailed(
   token: string,
@@ -27,6 +54,10 @@ export async function fetchCoingeckoPriceDetailed(
 ): Promise<CoingeckoPriceResult> {
   const platform = COINGECKO_PLATFORM_IDS[chain]
   if (!platform) return { priceUsd: null, reason: 'unverified_chain_for_coingecko' }
+
+  // BREAKER SHORT-CIRCUIT: checked before any network call — see coingeckoCircuitOpen's own
+  // declaration above for the full reasoning.
+  if (coingeckoCircuitOpen) return { priceUsd: null, reason: 'coingecko_circuit_open_after_429' }
 
   const targetSec = Math.floor(timestamp / 1000)
   const url = new URL(
@@ -43,6 +74,14 @@ export async function fetchCoingeckoPriceDetailed(
       headers: apiKey ? { 'x-cg-demo-api-key': apiKey } : {},
       signal: AbortSignal.timeout(8_000),
     })
+    if (res.status === 429) {
+      // TRIP THE BREAKER, DISCLOSED: the first real 429 this scan is trusted evidence the rate
+      // limit is exhausted — never waits for a second confirming 429 (unlike GoldRush's
+      // consecutive-miss threshold, which distinguishes "temporarily slow" from "structurally not
+      // answering"; a 429 IS the rate limiter answering, definitively, right now).
+      coingeckoCircuitOpen = true
+      return { priceUsd: null, reason: 'http_429' }
+    }
     if (!res.ok) return { priceUsd: null, reason: `http_${res.status}` }
 
     const data = (await res.json()) as { prices?: Array<[number, number]> }

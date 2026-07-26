@@ -26,6 +26,14 @@ const DEXSCREENER_CHAIN_IDS: Partial<Record<SupportedChain, string>> = {
 // constant instead of letting a second copy drift.
 export const DEXSCREENER_FRESHNESS_TOLERANCE_MS = 5 * 60 * 1000 // 5 minutes
 
+// EXPORTED, DISCLOSED (source-retry-avoidance task): src/pipeline/pricingAtTimeAdapter.ts's router
+// needs to know whether a chain is DexScreener-supported BEFORE deciding whether an old timestamp is
+// "structurally unsupported here" or genuinely just "unverified chain" — re-exporting a read of the
+// single real map instead of letting a second copy of DEXSCREENER_CHAIN_IDS drift.
+export function isDexscreenerSupportedChain(chain: SupportedChain): boolean {
+  return DEXSCREENER_CHAIN_IDS[chain] !== undefined
+}
+
 // PAIR PROVENANCE, ADDITIVE, DISCLOSED (dominant-holding price audit task): every field below was
 // already present in the SAME single real DexScreener response this function was already fetching
 // — previously discarded the instant a price was extracted. Surfacing it costs zero additional

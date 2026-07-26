@@ -105,6 +105,13 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   // (workers/walletScanV2.ts) would report stale cross-request counts on any warm instance.
   const { resetGoldrushPriceSourceCallCount } = await import('@/src/modules/pricingAtTimeEngine/sources/goldrushPriceSource')
   const { resetDexscreenerCallCount } = await import('@/src/modules/pricingAtTimeEngine/sources/dexscreener')
+  // SOURCE-RETRY-AVOIDANCE RESETS, DISCLOSED (source-retry-avoidance task): same per-job reset
+  // convention as every other scan-scoped provider state above — a warm serverless instance's
+  // PREVIOUS scan (a different wallet, possibly a different chain mix) must never bias this scan's
+  // CoinGecko circuit state, GeckoTerminal no-pool cache, or Base DEX prioritisation.
+  const { resetCoingeckoCircuitBreaker } = await import('@/src/modules/pricingAtTimeEngine/sources/coingecko')
+  const { resetGeckoTerminalNoPoolCache } = await import('@/src/pipeline/providers/geckoTerminalPriceSource')
+  const { resetPricingAtTimeAdapterScanState } = await import('@/src/pipeline/pricingAtTimeAdapter')
   // REQUEST-SCOPED FETCH COALESCING RESET, DISCLOSED (provider-call-audit follow-up task): same
   // per-job reset convention as the counters above — see providerFetchWindow/index.ts's own header
   // for why this must be cleared at the start of every scan job (never leak a coalesced result
@@ -132,6 +139,9 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   resetBaseDexRpcBudgetForScan()
   resetGoldrushPriceSourceCallCount()
   resetDexscreenerCallCount()
+  resetCoingeckoCircuitBreaker()
+  resetGeckoTerminalNoPoolCache()
+  resetPricingAtTimeAdapterScanState()
   resetProviderFetchWindowRequestCache()
   resetRecoveryHistoricalPageRequestCache()
   resetDexscreenerRequestCache()

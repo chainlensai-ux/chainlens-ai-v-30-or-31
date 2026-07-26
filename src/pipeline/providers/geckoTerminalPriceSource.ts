@@ -31,6 +31,49 @@ const GECKOTERMINAL_NETWORK_IDS: Partial<Record<SupportedChain, string>> = {
 
 export type GeckoTerminalPriceResult = { priceUsd: number | null; reason: string | null }
 
+// DETERMINISTIC-NO-POOL CACHE, DISCLOSED (source-retry-avoidance task, explicit "skip GeckoTerminal
+// after deterministic no-pool evidence" requirement): whether a token HAS a real, indexed pool on a
+// given network is a structural fact about that specific token, not something that changes from one
+// historical timestamp to another within the same scan — a token GeckoTerminal's pools endpoint
+// already reported zero pools for at timestamp A will report the same zero pools at timestamp B,
+// minutes later in the same scan. Caching this negative result (same pattern as
+// basedex.ts's own negativePoolCache / goldrushPriceSource.ts's negativeGoldrushPriceCache) means a
+// token with no real liquidity anywhere only pays the real resolveTopPoolAddress() network call
+// ONCE per scan, not once per historical entry that happens to reference it.
+//
+// TTL, NOT PERMANENT, DISCLOSED: 5 minutes, matching this codebase's own established convention
+// (basedex.ts/goldrushPriceSource.ts) — a pool that doesn't exist yet could be created later, and
+// this process can stay warm across many requests, so this is a bounded delay, never a permanent
+// "never check again."
+const NEGATIVE_POOL_CACHE_TTL_MS = 5 * 60 * 1000
+const negativeGeckoTerminalPoolCache = new Map<string, number>() // `${chain}:${token}` -> expiresAtMs
+
+function negativePoolCacheKey(chain: SupportedChain, token: string): string {
+  return `${chain}:${token.toLowerCase()}`
+}
+
+function isKnownNoPool(chain: SupportedChain, token: string): boolean {
+  const expiresAt = negativeGeckoTerminalPoolCache.get(negativePoolCacheKey(chain, token))
+  return expiresAt !== undefined && Date.now() < expiresAt
+}
+
+function recordNoPool(chain: SupportedChain, token: string): void {
+  negativeGeckoTerminalPoolCache.set(negativePoolCacheKey(chain, token), Date.now() + NEGATIVE_POOL_CACHE_TTL_MS)
+}
+
+// PER-SCAN RESET, DISCLOSED: same convention as every other request-scoped cache in this codebase
+// — called once per real scan (src/modules/walletScanWorker.ts) so this negative result never leaks
+// across unrelated wallets/scans on a warm serverless instance.
+export function resetGeckoTerminalNoPoolCache(): void {
+  negativeGeckoTerminalPoolCache.clear()
+}
+
+// TEST-SUPPORT EXPORT, DISCLOSED: read-only observability, same convention as
+// goldrushPriceSource.ts's isKnownGoldrushNegative.
+export function isKnownGeckoTerminalNoPool(chain: SupportedChain, token: string): boolean {
+  return isKnownNoPool(chain, token)
+}
+
 type PoolsResponse = {
   data?: Array<{ attributes?: { address?: string; reserve_in_usd?: string } }>
 }
@@ -69,8 +112,15 @@ export async function fetchGeckoTerminalPriceDetailed(
   const network = GECKOTERMINAL_NETWORK_IDS[chain]
   if (!network) return { priceUsd: null, reason: 'unverified_network_for_geckoterminal' }
 
+  // NEGATIVE-CACHE SHORT-CIRCUIT: checked before any network call — see this cache's own
+  // declaration above for the full reasoning.
+  if (isKnownNoPool(chain, token)) return { priceUsd: null, reason: 'no_pool_found' }
+
   const poolAddress = await resolveTopPoolAddress(network, token)
-  if (!poolAddress) return { priceUsd: null, reason: 'no_pool_found' }
+  if (!poolAddress) {
+    recordNoPool(chain, token)
+    return { priceUsd: null, reason: 'no_pool_found' }
+  }
 
   try {
     // `before_timestamp` (seconds) pages the daily-candle series back from a point in time so a

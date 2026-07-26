@@ -206,6 +206,20 @@ export function isGoldrushBreakerOpenForTest(): boolean {
   return goldrushBreakerOpen()
 }
 
+// REAL (NON-TEST) EXPORT, DISCLOSED (source-retry-avoidance task, "skip GoldRush for token/chain
+// classes already returning unsupported" requirement): src/pipeline/pricingAtTimeAdapter.ts's
+// router previously always ATTEMPTED GoldRush for every recovery candidate, even once this file's
+// own breaker had already opened after GOLDRUSH_BREAKER_THRESHOLD consecutive misses — the
+// underlying call still short-circuited to null at effectively zero cost, but the router still paid
+// an await + array-push + its place in the per-candidate ordering for a source already known, for
+// the rest of this cooldown window, not to answer. Exported so the router can skip the attempt
+// entirely (and, more importantly, let a more-likely source run in GoldRush's place in the ordering)
+// instead of just short-circuiting one layer down. Same real breaker state either way — this is not
+// a second, separate circuit, just a real read of the one that already exists.
+export function isGoldrushCircuitOpen(): boolean {
+  return goldrushBreakerOpen()
+}
+
 // Builds a PriceSourceFn backed by a real GoldRushClient instance. Never fabricates a price: an
 // unverified chain, an unparseable timestamp, a thrown/error response, or an empty/priceless
 // result all resolve to null — never a guessed number.

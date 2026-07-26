@@ -32,6 +32,9 @@ import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import { getPriceAtTime } from '../modules/pricingAtTimeEngine/sources/multiProviderPriceSource'
 import { fetchGeckoTerminalPriceDetailed } from './providers/geckoTerminalPriceSource'
 import { fetchDexscreenerPriceShared } from '../lib/dexscreenerRequestCache'
+import { DEXSCREENER_FRESHNESS_TOLERANCE_MS, isDexscreenerSupportedChain } from '../modules/pricingAtTimeEngine/sources/dexscreener'
+import { isGoldrushCircuitOpen } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
+import { fetchBaseDexPriceDetailed } from '../modules/pricingAtTimeEngine/sources/basedex'
 
 // Sanity guard, applied to every price this pipeline resolves — a price outside this range is
 // provider garbage, never rendered. Independent of pnlSummaryAdapter.ts's separate $1e12
@@ -103,6 +106,33 @@ function recordRoute(token: string, chain: SupportedChain, timestamp: number, ro
 export type PriceAttemptDetail = { source: 'goldrush' | 'dexscreener' | 'geckoterminal' | 'coingecko' | 'base_dex'; ok: boolean; reason: string | null }
 export type ChainAwareHistoricalPriceResult = { price: number | null; route: PricingRouteUsed; attempts: PriceAttemptDetail[] }
 
+// BASE-DEX PRIORITISATION, DISCLOSED (source-retry-avoidance task, explicit "prioritise Base DEX
+// first for Base historical candidates where it has already demonstrated success" requirement):
+// BaseDex (basedex.ts's on-chain Uniswap V3 read) previously only ever ran as the LAST resort, inside
+// the safety net, after GeckoTerminal/DexScreener/GoldRush had all already failed for every single
+// Base candidate — even on a scan where BaseDex has ALREADY proven it has real, current data for this
+// wallet's tokens (Base's own native DEX liquidity is often deeper/more current than any of the
+// three sources ahead of it). Tracked per-scan (module-level, reset alongside every other per-job
+// state — see resetPricingAtTimeAdapterScanState below): the FIRST time BaseDex succeeds for ANY Base
+// candidate in this scan, every SUBSEQUENT Base candidate tries BaseDex FIRST, before
+// GeckoTerminal/DexScreener/GoldRush — never changing which sources exist or their own internal
+// price-selection/validation rules, only the ORDER a demonstrably-working one is tried in.
+let baseDexProvenThisScan = false
+
+// PER-SCAN RESET, DISCLOSED: same convention as every other request-scoped/scan-scoped state in
+// this codebase — called once per real scan (src/modules/walletScanWorker.ts) so a warm serverless
+// instance's PREVIOUS scan (a different wallet, possibly on a different chain) never silently biases
+// this scan's own source ordering.
+export function resetPricingAtTimeAdapterScanState(): void {
+  baseDexProvenThisScan = false
+}
+
+// TEST-SUPPORT EXPORT, DISCLOSED: read-only observability, same convention as this codebase's other
+// scan-scoped state (isGoldrushBreakerOpenForTest, isCoingeckoCircuitOpenForTest).
+export function isBaseDexProvenThisScanForTest(): boolean {
+  return baseDexProvenThisScan
+}
+
 // Builds the full chain-aware historical-pricing router described above. `goldrush` is the
 // caller's real (or always-null, if no API key/client) GoldRush source — this function does not
 // construct a GoldRushClient itself.
@@ -114,7 +144,17 @@ export type ChainAwareHistoricalPriceResult = { price: number | null; route: Pri
 export function buildChainAwareHistoricalPriceSourceDetailed(
   goldrush: PriceSourceFn,
 ): (token: string, chain: SupportedChain, timestamp: number) => Promise<ChainAwareHistoricalPriceResult> {
+  // STRUCTURALLY-UNSUPPORTED SKIP, DISCLOSED (source-retry-avoidance task, "skip GoldRush for
+  // token/chain classes already returning unsupported" requirement): once GoldRush's OWN circuit
+  // breaker has opened (goldrushPriceSource.ts, after GOLDRUSH_BREAKER_THRESHOLD consecutive misses
+  // within this same process), the underlying call already short-circuits to null at effectively
+  // zero cost — but this router previously still spent an await + its place in the ordering
+  // attempting it anyway, on every remaining candidate. Skipping the attempt outright, instead of
+  // one layer down, means a source GoldRush's own breaker has just proven isn't answering no longer
+  // occupies a slot in the ordering ahead of sources that still might. Same real breaker state
+  // either way — never a second, separate circuit.
   const tryGoldrush = async (token: string, chain: SupportedChain, timestamp: number): Promise<PriceAttemptDetail & { price: number | null }> => {
+    if (isGoldrushCircuitOpen()) return { source: 'goldrush', ok: false, reason: 'goldrush_no_data', price: null }
     const price = await goldrush(token, chain, timestamp)
     // goldrushPriceSource.ts has no detailed/reason-carrying variant (plain PriceSourceFn only) —
     // an honest, disclosed limitation: every one of its own null-producing branches (unverified
@@ -122,7 +162,22 @@ export function buildChainAwareHistoricalPriceSourceDetailed(
     // non-numeric price) collapses to this one generic reason, never a fabricated specific one.
     return isSanePrice(price) ? { source: 'goldrush', ok: true, reason: null, price } : { source: 'goldrush', ok: false, reason: 'goldrush_no_data', price: null }
   }
+  // STRUCTURALLY-UNSUPPORTED SKIP, DISCLOSED ("skip DexScreener for historical timestamps it cannot
+  // serve" requirement): DexScreener's own public API is current-price-only (see dexscreener.ts's
+  // own header) — its real implementation ALREADY rejects any timestamp older than
+  // DEXSCREENER_FRESHNESS_TOLERANCE_MS with zero network call. Hoisting the identical check here
+  // means this router doesn't even pay the shared-cache lookup/coalescing overhead for a timestamp
+  // already known, deterministically, to be outside what this source can ever serve — same real
+  // gate dexscreener.ts itself already enforces, evaluated one layer earlier. A recovery candidate
+  // is virtually always historical (a real past trade), so this is the common case, not an edge one.
   const tryDexscreener = async (token: string, chain: SupportedChain, timestamp: number): Promise<PriceAttemptDetail & { price: number | null }> => {
+    // PRECEDENCE, DISCLOSED: mirrors dexscreener.ts's own real check order exactly (chain-support
+    // check first, freshness check second) — an unverified chain must still report
+    // 'unverified_chain_for_dexscreener', never be shadowed by the freshness skip below, for a chain
+    // this source was never going to support regardless of timestamp.
+    if (isDexscreenerSupportedChain(chain) && Math.abs(Date.now() - timestamp) > DEXSCREENER_FRESHNESS_TOLERANCE_MS) {
+      return { source: 'dexscreener', ok: false, reason: 'dexscreener_only_exposes_current_price_timestamp_too_far_from_now', price: null }
+    }
     const result = await fetchDexscreenerPriceShared(token, chain, timestamp, 'historical')
     return isSanePrice(result.priceUsd)
       ? { source: 'dexscreener', ok: true, reason: null, price: result.priceUsd }
@@ -134,6 +189,12 @@ export function buildChainAwareHistoricalPriceSourceDetailed(
       ? { source: 'geckoterminal', ok: true, reason: null, price: result.priceUsd }
       : { source: 'geckoterminal', ok: false, reason: result.reason, price: null }
   }
+  const tryBaseDex = async (token: string, chain: SupportedChain, timestamp: number): Promise<PriceAttemptDetail & { price: number | null }> => {
+    const result = await fetchBaseDexPriceDetailed(token, chain, timestamp)
+    return isSanePrice(result.priceUsd)
+      ? { source: 'base_dex', ok: true, reason: null, price: result.priceUsd }
+      : { source: 'base_dex', ok: false, reason: result.reason, price: null }
+  }
   // Final safety net, DISCLOSED (see file header "COVERAGE PRESERVED"): calls getPriceAtTime
   // directly (rather than the price-only multiProviderPriceSource() wrapper) purely to keep its
   // already-computed `debug.attempts` (dexscreener/coingecko/basedex, each with a real reason)
@@ -141,6 +202,19 @@ export function buildChainAwareHistoricalPriceSourceDetailed(
 
   return async (token, chain, timestamp) => {
     const attempts: PriceAttemptDetail[] = []
+
+    // PRIORITISED BASE DEX, DISCLOSED: see baseDexProvenThisScan's own declaration above. Only ever
+    // an EXTRA, earlier attempt at an already-real source — never skips or replaces any of the
+    // ordering below if it misses, so coverage can only improve, never regress.
+    if (chain === 'base' && baseDexProvenThisScan) {
+      const attempt = await tryBaseDex(token, chain, timestamp)
+      attempts.push({ source: attempt.source, ok: attempt.ok, reason: attempt.reason })
+      if (attempt.price !== null) {
+        recordRoute(token, chain, timestamp, 'coingecko_or_basedex')
+        return { price: attempt.price, route: 'coingecko_or_basedex', attempts }
+      }
+    }
+
     const order: Array<'goldrush' | 'dexscreener' | 'geckoterminal'> = chain === 'base'
       ? ['geckoterminal', 'dexscreener', 'goldrush']
       : ['goldrush', 'dexscreener', 'geckoterminal']
@@ -159,6 +233,7 @@ export function buildChainAwareHistoricalPriceSourceDetailed(
     const safetyNetResult = await getPriceAtTime({ chain, tokenAddress: token, timestamp })
     for (const a of safetyNetResult.debug.attempts) {
       attempts.push({ source: a.provider === 'base_dex' ? 'base_dex' : (a.provider as 'dexscreener' | 'coingecko'), ok: a.ok, reason: a.reason })
+      if (a.provider === 'base_dex' && a.ok) baseDexProvenThisScan = true
     }
     if (isSanePrice(safetyNetResult.priceUsd)) {
       recordRoute(token, chain, timestamp, 'coingecko_or_basedex')
