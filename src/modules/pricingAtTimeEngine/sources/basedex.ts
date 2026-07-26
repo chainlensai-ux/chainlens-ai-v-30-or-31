@@ -330,6 +330,127 @@ function baseDexScanBudgetExceeded(): boolean {
 // address is a permanent fact that stays valid and worth keeping warm across scans.
 export function resetBaseDexRpcBudgetForScan(): void {
   totalBaseDexRpcCallsThisScan = 0
+  resetBaseDexVenueAttributionForScan()
+}
+
+export type BaseDexVenue = 'uniswap_v3' | 'aerodrome_slipstream' | 'aerodrome_classic_volatile'
+
+// PER-SCAN VENUE ATTRIBUTION, DISCLOSED, ADDITIVE — no pricing behavior changes: every field below
+// is read-only bookkeeping around calls this file already makes, never a new call or a changed
+// selection/acceptance rule.
+//
+// - poolsFoundByVenue: incremented purely on DISCOVERY (a factory call returned a real, non-zero
+//   pool address) — never on a successful price. A pool that exists but fails every later check
+//   (not yet deployed, zero liquidity, non-finite price) still counts here, and must NEVER be
+//   reported as a pricing success — see "never count pool discovery as a pricing success."
+// - pricesAcceptedByVenue: incremented only when tryBaseDexVenue's own full chain (discovery -> read
+//   -> convert-to-USD) succeeds for that specific venue+quote-token attempt — this is a real,
+//   accepted USD price, one attempt at a time, before any caller-side aggregation.
+// - rpcCallsByVenue: the real totalBaseDexRpcCallsThisScan delta spent inside one venue's own
+//   resolvePool+readPrice calls for one attempt — summed across every attempt this scan, so it is a
+//   real accounting of RPC cost per venue, not an estimate.
+// - failureReasonsByVenue: every FAILED (ok: false) attempt's own real reason string, tallied by
+//   venue — never a synthesized/generic bucket beyond what tryBaseDexVenue itself already produces.
+type BaseDexVenueAttributionState = {
+  poolsFoundByVenue: Record<BaseDexVenue, number>
+  pricesAcceptedByVenue: Record<BaseDexVenue, number>
+  rpcCallsByVenue: Record<BaseDexVenue, number>
+  failureReasonsByVenue: Record<BaseDexVenue, Record<string, number>>
+}
+
+function emptyVenueAttributionState(): BaseDexVenueAttributionState {
+  return {
+    poolsFoundByVenue: { uniswap_v3: 0, aerodrome_slipstream: 0, aerodrome_classic_volatile: 0 },
+    pricesAcceptedByVenue: { uniswap_v3: 0, aerodrome_slipstream: 0, aerodrome_classic_volatile: 0 },
+    rpcCallsByVenue: { uniswap_v3: 0, aerodrome_slipstream: 0, aerodrome_classic_volatile: 0 },
+    failureReasonsByVenue: { uniswap_v3: {}, aerodrome_slipstream: {}, aerodrome_classic_volatile: {} },
+  }
+}
+
+let venueAttributionState: BaseDexVenueAttributionState = emptyVenueAttributionState()
+
+function recordPoolFound(venue: BaseDexVenue): void {
+  venueAttributionState.poolsFoundByVenue[venue] += 1
+}
+
+function recordVenueRpcCalls(venue: BaseDexVenue, delta: number): void {
+  venueAttributionState.rpcCallsByVenue[venue] += delta
+}
+
+function recordVenueAttempt(venue: BaseDexVenue, ok: boolean, reason: string | null): void {
+  if (ok) {
+    venueAttributionState.pricesAcceptedByVenue[venue] += 1
+    return
+  }
+  const key = reason ?? 'unknown'
+  const perVenue = venueAttributionState.failureReasonsByVenue[venue]
+  perVenue[key] = (perVenue[key] ?? 0) + 1
+}
+
+// REQUEST-LEVEL ATTRIBUTION, DISCLOSED, ADDITIVE — keyed by the exact (chain, token, timestamp) a
+// caller requested, recording ONLY a genuinely accepted (non-null, finite USD) Aerodrome-venue
+// price. This is what lets a caller (priceLotsForWallet.ts) later confirm "the price actually
+// written into this specific costUsd/proceedsUsd slot came from Aerodrome" rather than merely
+// "Aerodrome was attempted" — pool discovery or a rejected price is NEVER recorded here. Since
+// fetchBaseDexPriceDetailed is only ever reached for a given (chain, token, timestamp) after every
+// earlier price source (DexScreener/CoinGecko/GoldRush/GeckoTerminal) has already returned null for
+// that exact request (see pricingAtTimeAdapter.ts's own routing order), a hit here can never
+// silently overwrite/shadow a requirement an earlier source already resolved.
+type AerodromeAttributionEntry = { venue: 'aerodrome_slipstream' | 'aerodrome_classic_volatile'; priceUsd: number }
+const aerodromeAttributionByRequestKey = new Map<string, AerodromeAttributionEntry>()
+
+function aerodromeAttributionKey(chain: string, token: string, timestamp: number): string {
+  return `${chain}:${token.toLowerCase()}:${timestamp}`
+}
+
+function recordAerodromeAttribution(chain: string, token: string, timestamp: number, venue: 'aerodrome_slipstream' | 'aerodrome_classic_volatile', priceUsd: number): void {
+  aerodromeAttributionByRequestKey.set(aerodromeAttributionKey(chain, token, timestamp), { venue, priceUsd })
+}
+
+// Exported so a caller (priceLotsForWallet.ts) can confirm, for one specific (chain, token,
+// timestamp) requirement it itself submitted, whether Aerodrome specifically supplied the accepted
+// price — never a guess, a direct read of what this file itself recorded.
+export function getAerodromeAttributionForRequest(chain: string, token: string, timestamp: number): AerodromeAttributionEntry | null {
+  return aerodromeAttributionByRequestKey.get(aerodromeAttributionKey(chain, token, timestamp)) ?? null
+}
+
+// TEST-SUPPORT EXPORT, DISCLOSED: same convention as this file's other test-only exports — lets a
+// test in priceLotsForWallet.ts's own suite exercise the REAL cross-referencing logic there (does
+// this exact requirement's costUsd/proceedsUsd slot line up with a recorded Aerodrome attribution?)
+// without needing to mock a full JSON-RPC round trip through viem's http transport just to reach
+// this one recording call. Never used by any real request-handling code path.
+export function __recordAerodromeAttributionForTest(
+  chain: string,
+  token: string,
+  timestamp: number,
+  venue: 'aerodrome_slipstream' | 'aerodrome_classic_volatile',
+  priceUsd: number,
+): void {
+  recordAerodromeAttribution(chain, token, timestamp, venue, priceUsd)
+}
+
+// Exported read-only snapshot of this scan's venue-level counters — a plain deep copy, never the
+// live mutable state, so a caller can never accidentally corrupt this file's own bookkeeping.
+export function getBaseDexVenueAttributionForScan(): BaseDexVenueAttributionState {
+  return {
+    poolsFoundByVenue: { ...venueAttributionState.poolsFoundByVenue },
+    pricesAcceptedByVenue: { ...venueAttributionState.pricesAcceptedByVenue },
+    rpcCallsByVenue: { ...venueAttributionState.rpcCallsByVenue },
+    failureReasonsByVenue: {
+      uniswap_v3: { ...venueAttributionState.failureReasonsByVenue.uniswap_v3 },
+      aerodrome_slipstream: { ...venueAttributionState.failureReasonsByVenue.aerodrome_slipstream },
+      aerodrome_classic_volatile: { ...venueAttributionState.failureReasonsByVenue.aerodrome_classic_volatile },
+    },
+  }
+}
+
+// SCAN-BOUNDARY RESET, DISCLOSED: folded into resetBaseDexRpcBudgetForScan's own call site (already
+// invoked once per real scan — see src/modules/walletScanWorker.ts) so no new wiring is needed
+// anywhere else. The per-request attribution map is cleared too — same "process-lifetime state must
+// not leak into an unrelated scan" reasoning as totalBaseDexRpcCallsThisScan's own reset.
+export function resetBaseDexVenueAttributionForScan(): void {
+  venueAttributionState = emptyVenueAttributionState()
+  aerodromeAttributionByRequestKey.clear()
 }
 
 // FINAL-TOTALS SUMMARY, DISCLOSED: one log line, callable once a scan's pricing pass finishes,
@@ -1197,8 +1318,6 @@ export function __resetAerodromeCachesForTest(): void {
   aeroClassicPoolPriceCache.clear()
 }
 
-export type BaseDexVenue = 'uniswap_v3' | 'aerodrome_slipstream' | 'aerodrome_classic_volatile'
-
 export type BaseDexVenueAttempt = {
   venue: BaseDexVenue
   quoteToken: 'WETH' | 'USDC'
@@ -1225,7 +1344,11 @@ async function convertQuoteRatioToUsd(
 // One venue+quote-token attempt: resolve the pool, read its price, convert to USD, and always
 // record a structured attempt entry (success or failure) — this is what "expose attempts,
 // successes, selected venue/pool type, failure reason" is built from.
-async function tryBaseDexVenue(
+// TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as resolvePoolAddress/readPoolPrice above — exported
+// solely so a test can exercise one venue+quote-token attempt directly (with a mocked client) and
+// assert the resulting venue-attribution counters, without driving the full 6-attempt
+// fetchBaseDexPriceDetailed orchestration. No behavior change.
+export async function tryBaseDexVenue(
   venue: BaseDexVenue,
   quoteLabel: 'WETH' | 'USDC',
   quoteAddress: `0x${string}`,
@@ -1237,37 +1360,53 @@ async function tryBaseDexVenue(
   resolvePool: (client: PublicClient, tokenAddress: `0x${string}`, pairedWith: `0x${string}`) => Promise<`0x${string}` | null>,
   readPrice: (client: PublicClient, poolAddress: `0x${string}`, tokenAddress: `0x${string}`, pairedWith: `0x${string}`, blockNumber: bigint) => Promise<number | null>,
 ): Promise<number | null> {
+  const rpcCallsAtStart = totalBaseDexRpcCallsThisScan
+  function pushAttempt(ok: boolean, reason: string | null): void {
+    attempts.push({ venue, quoteToken: quoteLabel, attempted: true, ok, reason })
+    recordVenueAttempt(venue, ok, reason)
+  }
+
   let pool: `0x${string}` | null
   try {
     pool = await resolvePool(client, tokenAddress, quoteAddress)
   } catch (err) {
-    attempts.push({ venue, quoteToken: quoteLabel, attempted: true, ok: false, reason: `pool_discovery_error:${err instanceof Error ? err.message : 'unknown'}` })
+    recordVenueRpcCalls(venue, totalBaseDexRpcCallsThisScan - rpcCallsAtStart)
+    pushAttempt(false, `pool_discovery_error:${err instanceof Error ? err.message : 'unknown'}`)
     return null
   }
   if (!pool) {
-    attempts.push({ venue, quoteToken: quoteLabel, attempted: true, ok: false, reason: 'no_pool' })
+    recordVenueRpcCalls(venue, totalBaseDexRpcCallsThisScan - rpcCallsAtStart)
+    pushAttempt(false, 'no_pool')
     return null
   }
+  // DISCOVERY ONLY, DISCLOSED: recorded the instant a real pool address is found, regardless of what
+  // happens next (deployed-but-not-yet-at-block, zero liquidity, non-finite price all still count as
+  // "found" here) — see poolsFoundByVenue's own header. This must NEVER be conflated with a pricing
+  // success, which is only ever recorded at the bottom of this function on the full success path.
+  recordPoolFound(venue)
 
   let ratio: number | null
   try {
     ratio = await readPrice(client, pool, tokenAddress, quoteAddress, blockNumber)
   } catch (err) {
-    attempts.push({ venue, quoteToken: quoteLabel, attempted: true, ok: false, reason: err instanceof Error ? err.message : 'unknown' })
+    recordVenueRpcCalls(venue, totalBaseDexRpcCallsThisScan - rpcCallsAtStart)
+    pushAttempt(false, err instanceof Error ? err.message : 'unknown')
     return null
   }
   if (ratio === null || !Number.isFinite(ratio)) {
-    attempts.push({ venue, quoteToken: quoteLabel, attempted: true, ok: false, reason: 'invalid_or_zero_price' })
+    recordVenueRpcCalls(venue, totalBaseDexRpcCallsThisScan - rpcCallsAtStart)
+    pushAttempt(false, 'invalid_or_zero_price')
     return null
   }
 
   const usd = await convertQuoteRatioToUsd(quoteLabel, ratio, timestamp)
+  recordVenueRpcCalls(venue, totalBaseDexRpcCallsThisScan - rpcCallsAtStart)
   if (usd === null || !Number.isFinite(usd)) {
-    attempts.push({ venue, quoteToken: quoteLabel, attempted: true, ok: false, reason: 'quote_token_usd_unavailable' })
+    pushAttempt(false, 'quote_token_usd_unavailable')
     return null
   }
 
-  attempts.push({ venue, quoteToken: quoteLabel, attempted: true, ok: true, reason: null })
+  pushAttempt(true, null)
   return usd
 }
 
@@ -1329,6 +1468,9 @@ export async function fetchBaseDexPriceDetailed(
       for (const quote of quotes) {
         const usd = await tryBaseDexVenue(venue, quote.label, quote.address, tokenAddress, client, blockNumber, timestamp, attempts, resolvePool, readPrice)
         if (usd !== null) {
+          if (venue === 'aerodrome_slipstream' || venue === 'aerodrome_classic_volatile') {
+            recordAerodromeAttribution(chain, token, timestamp, venue, usd)
+          }
           return { priceUsd: usd, reason: null, venue, attempts, rpcCallsUsed: totalBaseDexRpcCallsThisScan - rpcCallsAtStart }
         }
       }

@@ -35,6 +35,11 @@ import type { PriceableEntry, PriceSources, SourceBreakdown } from '../modules/p
 import { pricingRouteLog, isSanePrice, ethNativeRoutingAuditLog, type PricingRouteRecord } from './pricingAtTimeAdapter'
 import { reserveCoingeckoSlotsForNativeEth, getNativeEthHistoryCoalescingDiagnostics } from '../modules/pricingAtTimeEngine/sources/coingecko'
 import {
+  getAerodromeAttributionForRequest,
+  getBaseDexVenueAttributionForScan,
+  type BaseDexVenue,
+} from '../modules/pricingAtTimeEngine/sources/basedex'
+import {
   resolveAlchemyHistoricalPricesShadow,
   isAlchemyHistoricalPricingEnabled,
   type AlchemyPricingRequirement,
@@ -166,9 +171,36 @@ export function resolveEventPriceUsd(
   return null // 'unknown' direction — never guess which dictionary applies
 }
 
+// AERODROME PRODUCTION ATTRIBUTION, DISCLOSED, ADDITIVE — see the computation site (search
+// "AERODROME ATTRIBUTION" below) for the full cross-referencing logic. Every count here is either
+// (a) a direct, real per-scan counter basedex.ts itself maintains (pools found/prices accepted/RPC
+// calls/failure reasons — see that file's own venueAttributionState header), or (b) cross-referenced
+// against this file's own real, already-resolved atTradeTime.costUsd/proceedsUsd dictionaries, so a
+// requirement only ever counts as "resolved by Aerodrome" when the exact slot it maps to is non-null
+// AND was recorded by basedex.ts as an accepted Aerodrome price for that exact request. Zero pricing
+// behavior change: purely additive read-only bookkeeping around numbers this pipeline already
+// computes.
+export type AerodromeAttribution = {
+  aerodromeSlipstreamPoolsFound: number
+  aerodromeClassicPoolsFound: number
+  aerodromeSlipstreamPricesAccepted: number
+  aerodromeClassicPricesAccepted: number
+  aerodromeSlipstreamRequirementsResolved: number
+  aerodromeClassicRequirementsResolved: number
+  lotsCompletedByAerodrome: number
+  fullyPricedLotsBeforeAerodrome: number
+  fullyPricedLotsAfterAerodrome: number
+  verifiedCoverageBeforeAerodrome: number
+  verifiedCoverageAfterAerodrome: number
+  failureReasonsByVenue: Record<BaseDexVenue, Record<string, number>>
+  rpcCallsByVenue: Record<BaseDexVenue, number>
+}
+
 export type WalletPriceLookups = {
   priceUsdLookup: PriceUsdLookup
   currentPriceUsdLookup: CurrentPriceUsdLookup
+  // See AerodromeAttribution's own header above.
+  aerodromeAttribution: AerodromeAttribution
   // Diagnostic-only, additive — real primary/fallback/failed counts from the at-trade-time pricing
   // pass (the "current" price pass isn't included, to keep this a direct, honest reflection of
   // real transaction pricing specifically). Never fabricated; a straight pass-through of
@@ -497,9 +529,12 @@ export async function priceLotsForWallet(params: {
   const ethNativeSelectedCount = sortedNativeCandidates.slice(0, assumedCapSlots).filter((c) => c.chain === 'eth').length
   reserveCoingeckoSlotsForNativeEth(ethNativeSelectedCount)
 
+  const buyRequirementEntries = buys.map((e) => toPriceableEntry(e, rankForEvent(e)))
+  const sellRequirementEntries = [...sells.map((e) => toPriceableEntry(e, rankForEvent(e))), ...nativeQuoteEntries]
+
   const atTradeTime = await resolvePricingAtTime({
-    buyEntries: buys.map((e) => toPriceableEntry(e, rankForEvent(e))),
-    sellEntries: [...sells.map((e) => toPriceableEntry(e, rankForEvent(e))), ...nativeQuoteEntries],
+    buyEntries: buyRequirementEntries,
+    sellEntries: sellRequirementEntries,
     priceSources: params.priceSources,
   })
 
@@ -632,6 +667,83 @@ export async function priceLotsForWallet(params: {
   }
   const fullyPricedLotsBefore = countFullyPriced()
   const verifiedPricingCoverageBefore = structuralMatchedLots.length > 0 ? fullyPricedLotsBefore / structuralMatchedLots.length : 0
+
+  // AERODROME ATTRIBUTION, DISCLOSED, ADDITIVE — see AerodromeAttribution's own header above. Cross-
+  // references basedex.ts's own per-request attribution record (getAerodromeAttributionForRequest —
+  // set ONLY on a genuinely accepted, non-null Aerodrome-venue price, never on a bare pool discovery)
+  // against the REAL, already-resolved atTradeTime dictionaries: a requirement only ever counts as
+  // "resolved by Aerodrome" when (a) its own costUsd/proceedsUsd slot is non-null right now, AND (b)
+  // that exact (chain, token, timestamp) request was recorded as an accepted Aerodrome price.
+  // NEVER DOUBLE-COUNTED, DISCLOSED: Aerodrome is only ever reached, inside resolvePricingAtTime,
+  // after DexScreener/CoinGecko/GoldRush/GeckoTerminal have ALL already returned null for that exact
+  // (chain, token, timestamp) — see pricingAtTimeAdapter.ts's own routing order — so a hit here can
+  // only ever be this requirement's own first, real price, never one an earlier source already
+  // resolved.
+  const aerodromeResolvedCostTxHashes = new Set<string>()
+  const aerodromeResolvedProceedsTxHashes = new Set<string>()
+  let aerodromeSlipstreamRequirementsResolved = 0
+  let aerodromeClassicRequirementsResolved = 0
+  for (const entry of buyRequirementEntries) {
+    if (atTradeTime.costUsd[entry.txHash] == null) continue
+    const attribution = getAerodromeAttributionForRequest(entry.chain, entry.token, entry.timestamp)
+    if (!attribution) continue
+    aerodromeResolvedCostTxHashes.add(entry.txHash)
+    if (attribution.venue === 'aerodrome_slipstream') aerodromeSlipstreamRequirementsResolved += 1
+    else aerodromeClassicRequirementsResolved += 1
+  }
+  for (const entry of sellRequirementEntries) {
+    if (atTradeTime.proceedsUsd[entry.txHash] == null) continue
+    const attribution = getAerodromeAttributionForRequest(entry.chain, entry.token, entry.timestamp)
+    if (!attribution) continue
+    aerodromeResolvedProceedsTxHashes.add(entry.txHash)
+    if (attribution.venue === 'aerodrome_slipstream') aerodromeSlipstreamRequirementsResolved += 1
+    else aerodromeClassicRequirementsResolved += 1
+  }
+
+  // "BEFORE AERODROME" AS A REAL COUNTERFACTUAL, DISCLOSED: Aerodrome runs INSIDE resolvePricingAtTime
+  // alongside every other source (unlike Alchemy, which is a separate later stage with its own real
+  // before/after snapshot below) — there is no separate "run without Aerodrome" pass to snapshot
+  // against. Instead, this recomputes the exact same fully-priced count while treating every slot
+  // this file just attributed to Aerodrome as though it were still null. This is EXACT, not an
+  // approximation: the same-tx quote-leg gap-fill and Alchemy passes below only ever fill an
+  // ALREADY-null slot (never overwrite/reorder an existing one — see their own headers), so nothing
+  // between this point and here could have touched a slot Aerodrome itself resolved.
+  function countFullyPricedExcluding(excludedCostTxHashes: Set<string>, excludedProceedsTxHashes: Set<string>): number {
+    let both = 0
+    for (const lot of structuralMatchedLots) {
+      const hasEntry = atTradeTime.costUsd[lot.openedTxHash] != null && !excludedCostTxHashes.has(lot.openedTxHash)
+      const hasExit = atTradeTime.proceedsUsd[lot.closedTxHash] != null && !excludedProceedsTxHashes.has(lot.closedTxHash)
+      if (hasEntry && hasExit) both += 1
+    }
+    return both
+  }
+  const fullyPricedLotsBeforeAerodrome = countFullyPricedExcluding(aerodromeResolvedCostTxHashes, aerodromeResolvedProceedsTxHashes)
+  // Same point in the pipeline as fullyPricedLotsBefore/verifiedPricingCoverageBefore above (right
+  // after resolvePricingAtTime, before any later gap-fill stage) — Aerodrome has already run by here,
+  // so that existing snapshot already IS the real "after Aerodrome" state.
+  const fullyPricedLotsAfterAerodrome = fullyPricedLotsBefore
+  const verifiedCoverageAfterAerodrome = verifiedPricingCoverageBefore
+  const lotsCompletedByAerodrome = fullyPricedLotsAfterAerodrome - fullyPricedLotsBeforeAerodrome
+  const verifiedCoverageBeforeAerodrome = structuralMatchedLots.length > 0 ? fullyPricedLotsBeforeAerodrome / structuralMatchedLots.length : 0
+
+  const baseDexVenueAttribution = getBaseDexVenueAttributionForScan()
+  const aerodromeAttribution: AerodromeAttribution = {
+    aerodromeSlipstreamPoolsFound: baseDexVenueAttribution.poolsFoundByVenue.aerodrome_slipstream,
+    aerodromeClassicPoolsFound: baseDexVenueAttribution.poolsFoundByVenue.aerodrome_classic_volatile,
+    aerodromeSlipstreamPricesAccepted: baseDexVenueAttribution.pricesAcceptedByVenue.aerodrome_slipstream,
+    aerodromeClassicPricesAccepted: baseDexVenueAttribution.pricesAcceptedByVenue.aerodrome_classic_volatile,
+    aerodromeSlipstreamRequirementsResolved,
+    aerodromeClassicRequirementsResolved,
+    lotsCompletedByAerodrome,
+    fullyPricedLotsBeforeAerodrome,
+    fullyPricedLotsAfterAerodrome,
+    verifiedCoverageBeforeAerodrome,
+    verifiedCoverageAfterAerodrome,
+    failureReasonsByVenue: baseDexVenueAttribution.failureReasonsByVenue,
+    rpcCallsByVenue: baseDexVenueAttribution.rpcCallsByVenue,
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[priceLotsForWallet] aerodrome attribution', aerodromeAttribution)
 
   // SAME-TRANSACTION QUOTE-LEG GAP-FILL PASS, DISCLOSED, ADDITIVE — applied AFTER resolvePricingAtTime
   // (steps 3/4 of the required priority: existing provider historical price, existing on-chain pool
@@ -1008,6 +1120,7 @@ export async function priceLotsForWallet(params: {
   return {
     priceUsdLookup,
     currentPriceUsdLookup,
+    aerodromeAttribution,
     sourceBreakdown: atTradeTime.sourceBreakdown,
     pricingUnavailableTokens,
     historicalPricingAttempts,
