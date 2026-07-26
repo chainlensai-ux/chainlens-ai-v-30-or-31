@@ -33,7 +33,7 @@ import type { NormalizedEvent } from '../modules/normalization/types'
 import { resolvePricingAtTime, priceableEntryIdentityKey } from '../modules/pricingAtTimeEngine/index'
 import type { PriceableEntry, PriceSources, SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
 import { pricingRouteLog, isSanePrice, ethNativeRoutingAuditLog, type PricingRouteRecord } from './pricingAtTimeAdapter'
-import { reserveCoingeckoSlotsForNativeEth } from '../modules/pricingAtTimeEngine/sources/coingecko'
+import { reserveCoingeckoSlotsForNativeEth, getNativeEthHistoryCoalescingDiagnostics } from '../modules/pricingAtTimeEngine/sources/coingecko'
 import {
   deriveSameTransactionQuotePrice,
   groupSwapLegsByTransaction,
@@ -528,6 +528,33 @@ export async function priceLotsForWallet(params: {
   if (ethNativeRequirementDiagnostics.length > 0) {
     // eslint-disable-next-line no-console
     console.warn('[quote-leg-eth-native-provider-audit]', { requirements: ethNativeRequirementDiagnostics })
+  }
+
+  // NATIVE-ETH HISTORY COALESCING DIAGNOSTIC, DISCLOSED (confirmed production bug: reservation
+  // worked, breaker was closed before both calls, yet both selected Tier-2 ETH requirements
+  // independently requested the SAME date and both received a real 429 — two redundant live
+  // requests for identical data). Groups this call's own ETH-native requirements by their resolved
+  // date, so a shared result (one real request, N consumers) is directly visible, alongside
+  // coingecko.ts's own live/coalesced counters for this whole scan.
+  if (ethNativeRequirementDiagnostics.length > 0) {
+    const byDate = new Map<string, typeof ethNativeRequirementDiagnostics>()
+    for (const d of ethNativeRequirementDiagnostics) {
+      if (!d.formattedDate) continue
+      const list = byDate.get(d.formattedDate) ?? []
+      list.push(d)
+      byDate.set(d.formattedDate, list)
+    }
+    const sharedResultGroups = [...byDate.entries()].map(([formattedDate, group]) => {
+      const first = group[0]
+      const sharedResultKind: 'success' | 'http_429' | 'provider_miss' =
+        first.parsedPrice != null ? 'success' : first.failureReason === 'coingecko_http_429' ? 'http_429' : 'provider_miss'
+      return { formattedDate, sharedResultKind, consumerTxHashes: group.map((d) => d.txHash) }
+    })
+    // eslint-disable-next-line no-console
+    console.warn('[quote-leg-eth-native-history-coalescing]', {
+      ...getNativeEthHistoryCoalescingDiagnostics(),
+      sharedResultGroups,
+    })
   }
 
   // CAP-VS-PROVIDER-MISS SPLIT, DISCLOSED (confirmed production bug: top completion candidates

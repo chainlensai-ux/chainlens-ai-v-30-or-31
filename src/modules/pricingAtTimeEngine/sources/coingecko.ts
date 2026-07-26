@@ -39,6 +39,10 @@ let coingeckoCircuitOpen = false
 export function resetCoingeckoCircuitBreaker(): void {
   coingeckoCircuitOpen = false
   coingeckoReservedForNativeEthSlots = 0
+  nativeEthHistoryCache.clear()
+  nativeEthHistoryUniqueDateRequests = 0
+  nativeEthHistoryCoalescedHits = 0
+  nativeEthHistoryLiveCalls = 0
 }
 
 // TEST-SUPPORT EXPORT, DISCLOSED: read-only observability, same convention as
@@ -80,6 +84,56 @@ export function reserveCoingeckoSlotsForNativeEth(count: number): void {
 
 export function coingeckoReservedForNativeEthSlotsRemainingForTest(): number {
   return coingeckoReservedForNativeEthSlots
+}
+
+// NATIVE-ETH HISTORY COALESCING, DISCLOSED (confirmed production bug: reservation worked — both
+// selected Tier-2 ETH requirements attempted the native endpoint with the breaker CLOSED before
+// both calls — yet both independently requested `ethereum history` for the SAME date
+// (11-05-2026) and both received a real HTTP 429. Two closed-lot requirements sharing one date
+// (e.g. a same-day buy+sell, or two different lots both quoted in ETH on the same day) is the
+// common case, not an edge one — the reservation mechanism protects against being starved by
+// OTHER, ordinary tokens, but does nothing to stop two of these SAME-day native requirements from
+// firing two redundant real requests for identical data. Fixed with a request-scoped singleflight/
+// cache keyed by `${coinId}:${formattedDate}` — the SAME key CoinGecko's own endpoint is scoped to
+// (one price per coin per calendar day, regardless of which specific closed lot needs it). The
+// promise is stored BEFORE any await, so two calls for the same date within the same tick share the
+// exact same in-flight request; the SETTLED result (success OR a genuine terminal failure like a
+// 429) is left in the map for the rest of this scan — never retried, never "waited out" — so no
+// requirement for that same date fires a second real request, ever, this scan.
+const nativeEthHistoryCache = new Map<string, Promise<CoingeckoPriceResult & { diagnostic: NativeEthPricingDiagnostic }>>()
+let nativeEthHistoryUniqueDateRequests = 0
+let nativeEthHistoryCoalescedHits = 0
+let nativeEthHistoryLiveCalls = 0
+
+export function getNativeEthHistoryCoalescingDiagnostics(): {
+  nativeEthHistoryUniqueDateRequests: number
+  nativeEthHistoryCoalescedHits: number
+  nativeEthHistoryLiveCalls: number
+} {
+  return { nativeEthHistoryUniqueDateRequests, nativeEthHistoryCoalescedHits, nativeEthHistoryLiveCalls }
+}
+
+// RUNTIME CONFIGURATION AUDIT, DISCLOSED, ADDITIVE — read-only, logged at most once per unique live
+// call (never per coalesced hit, never containing the key itself): whether an authenticated key is
+// configured, which real base URL/tier this module actually targets, and whether the corresponding
+// auth mechanism is genuinely attached to the request. This module always targets CoinGecko's public/
+// demo base (`api.coingecko.com`) with the `x-cg-demo-api-key` header when a key is configured — it
+// never switches to the separate PRO base (`pro-api.coingecko.com`, `x-cg-pro-api-key` header) for
+// any key shape, so a PRO-tier key configured in COINGECKO_API_KEY would still be sent as a demo-tier
+// header against the demo-tier base URL. Disclosed here, not silently assumed correct.
+function auditCoingeckoRuntimeConfig(): void {
+  const apiKey = process.env.COINGECKO_API_KEY
+  // eslint-disable-next-line no-console
+  console.warn('[coingecko-runtime-config-audit]', {
+    apiKeyConfigured: !!apiKey,
+    baseUrl: 'https://api.coingecko.com/api/v3',
+    tierAssumed: 'demo_or_public',
+    authHeaderName: 'x-cg-demo-api-key',
+    authHeaderAttached: !!apiKey,
+    note: apiKey
+      ? 'a key is configured and attached via x-cg-demo-api-key against the demo/public base URL — if this key is actually a PRO-tier key, it needs pro-api.coingecko.com + x-cg-pro-api-key instead, not audited/changed here'
+      : 'no COINGECKO_API_KEY configured — every request is unauthenticated, subject to the public (lowest) rate limit',
+  })
 }
 
 // Detailed variant — used by the orchestrator (getPriceAtTime) for structured debug output.
@@ -184,76 +238,126 @@ export async function fetchCoingeckoNativeEthPriceDetailed(
   // so ordinary contract-based calls resume immediately after, never blocked longer than necessary.
   if (coingeckoReservedForNativeEthSlots > 0) coingeckoReservedForNativeEthSlots -= 1
 
-  const diagnostic: NativeEthPricingDiagnostic = {
-    originalTimestamp: timestamp,
-    formattedDate: null,
-    endpointType: 'native_coin_history',
-    circuitBreakerStateBeforeCall: breakerStateBeforeCall,
-    requestAttempted: false,
-    requestSkippedReason: null,
-    httpStatus: null,
-    responseShapePresent: { marketData: false, currentPrice: false, usd: false },
-    parsedPrice: null,
-    failureReason: null,
-  }
-
   if (breakerStateBeforeCall) {
-    diagnostic.requestSkippedReason = 'coingecko_circuit_open'
-    diagnostic.failureReason = 'coingecko_circuit_open'
-    return { priceUsd: null, reason: 'coingecko_circuit_open_after_429', diagnostic }
+    return {
+      priceUsd: null,
+      reason: 'coingecko_circuit_open_after_429',
+      diagnostic: {
+        originalTimestamp: timestamp,
+        formattedDate: null,
+        endpointType: 'native_coin_history',
+        circuitBreakerStateBeforeCall: true,
+        requestAttempted: false,
+        requestSkippedReason: 'coingecko_circuit_open',
+        httpStatus: null,
+        responseShapePresent: { marketData: false, currentPrice: false, usd: false },
+        parsedPrice: null,
+        failureReason: 'coingecko_circuit_open',
+      },
+    }
   }
 
   const date = new Date(timestamp)
   if (Number.isNaN(date.getTime())) {
-    diagnostic.requestSkippedReason = 'invalid_timestamp'
-    diagnostic.failureReason = 'invalid_timestamp'
-    return { priceUsd: null, reason: 'invalid_timestamp', diagnostic }
+    return {
+      priceUsd: null,
+      reason: 'invalid_timestamp',
+      diagnostic: {
+        originalTimestamp: timestamp,
+        formattedDate: null,
+        endpointType: 'native_coin_history',
+        circuitBreakerStateBeforeCall: breakerStateBeforeCall,
+        requestAttempted: false,
+        requestSkippedReason: 'invalid_timestamp',
+        httpStatus: null,
+        responseShapePresent: { marketData: false, currentPrice: false, usd: false },
+        parsedPrice: null,
+        failureReason: 'invalid_timestamp',
+      },
+    }
   }
   const dateString = `${String(date.getUTCDate()).padStart(2, '0')}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${date.getUTCFullYear()}`
-  diagnostic.formattedDate = dateString
+  const cacheKey = `ethereum:${dateString}`
 
-  const url = new URL('https://api.coingecko.com/api/v3/coins/ethereum/history')
-  url.searchParams.set('date', dateString)
-  url.searchParams.set('localization', 'false')
-
-  const apiKey = process.env.COINGECKO_API_KEY
-
-  diagnostic.requestAttempted = true
-  try {
-    const res = await fetch(url.toString(), {
-      headers: apiKey ? { 'x-cg-demo-api-key': apiKey } : {},
-      signal: AbortSignal.timeout(8_000),
-    })
-    diagnostic.httpStatus = res.status
-    if (res.status === 429) {
-      coingeckoCircuitOpen = true
-      diagnostic.failureReason = 'coingecko_http_429'
-      return { priceUsd: null, reason: 'http_429', diagnostic }
-    }
-    if (!res.ok) {
-      diagnostic.failureReason = 'coingecko_http_error'
-      return { priceUsd: null, reason: `http_${res.status}`, diagnostic }
-    }
-
-    const data = (await res.json()) as { market_data?: { current_price?: { usd?: number } } }
-    diagnostic.responseShapePresent.marketData = data.market_data != null
-    diagnostic.responseShapePresent.currentPrice = data.market_data?.current_price != null
-    const price = data.market_data?.current_price?.usd
-    diagnostic.responseShapePresent.usd = typeof price === 'number'
-    if (!diagnostic.responseShapePresent.marketData) {
-      diagnostic.failureReason = 'history_payload_missing_market_data'
-      return { priceUsd: null, reason: 'no_price_for_date', diagnostic }
-    }
-    if (typeof price !== 'number' || !Number.isFinite(price)) {
-      diagnostic.failureReason = diagnostic.responseShapePresent.currentPrice ? 'invalid_price' : 'history_payload_missing_usd'
-      return { priceUsd: null, reason: 'no_price_for_date', diagnostic }
-    }
-    diagnostic.parsedPrice = price
-    return { priceUsd: price, reason: null, diagnostic }
-  } catch (err) {
-    diagnostic.failureReason = 'fetch_error'
-    return { priceUsd: null, reason: `fetch_error:${err instanceof Error ? err.message : 'unknown'}`, diagnostic }
+  // COALESCE, DISCLOSED: a second (or third...) requirement for the SAME date shares the exact same
+  // in-flight/settled promise — never fires its own request, never re-derives its own diagnostic
+  // (it gets the identical one the first requester received, including whichever outcome — success
+  // or a genuine terminal failure like a 429 — that call actually settled with).
+  const existing = nativeEthHistoryCache.get(cacheKey)
+  if (existing) {
+    nativeEthHistoryCoalescedHits += 1
+    return existing
   }
+
+  nativeEthHistoryUniqueDateRequests += 1
+  nativeEthHistoryLiveCalls += 1
+  if (nativeEthHistoryUniqueDateRequests === 1) auditCoingeckoRuntimeConfig()
+
+  const live = (async (): Promise<CoingeckoPriceResult & { diagnostic: NativeEthPricingDiagnostic }> => {
+    const diagnostic: NativeEthPricingDiagnostic = {
+      originalTimestamp: timestamp,
+      formattedDate: dateString,
+      endpointType: 'native_coin_history',
+      circuitBreakerStateBeforeCall: breakerStateBeforeCall,
+      requestAttempted: false,
+      requestSkippedReason: null,
+      httpStatus: null,
+      responseShapePresent: { marketData: false, currentPrice: false, usd: false },
+      parsedPrice: null,
+      failureReason: null,
+    }
+
+    const url = new URL('https://api.coingecko.com/api/v3/coins/ethereum/history')
+    url.searchParams.set('date', dateString)
+    url.searchParams.set('localization', 'false')
+
+    const apiKey = process.env.COINGECKO_API_KEY
+
+    diagnostic.requestAttempted = true
+    try {
+      const res = await fetch(url.toString(), {
+        headers: apiKey ? { 'x-cg-demo-api-key': apiKey } : {},
+        signal: AbortSignal.timeout(8_000),
+      })
+      diagnostic.httpStatus = res.status
+      if (res.status === 429) {
+        coingeckoCircuitOpen = true
+        diagnostic.failureReason = 'coingecko_http_429'
+        return { priceUsd: null, reason: 'http_429', diagnostic }
+      }
+      if (!res.ok) {
+        diagnostic.failureReason = 'coingecko_http_error'
+        return { priceUsd: null, reason: `http_${res.status}`, diagnostic }
+      }
+
+      const data = (await res.json()) as { market_data?: { current_price?: { usd?: number } } }
+      diagnostic.responseShapePresent.marketData = data.market_data != null
+      diagnostic.responseShapePresent.currentPrice = data.market_data?.current_price != null
+      const price = data.market_data?.current_price?.usd
+      diagnostic.responseShapePresent.usd = typeof price === 'number'
+      if (!diagnostic.responseShapePresent.marketData) {
+        diagnostic.failureReason = 'history_payload_missing_market_data'
+        return { priceUsd: null, reason: 'no_price_for_date', diagnostic }
+      }
+      if (typeof price !== 'number' || !Number.isFinite(price)) {
+        diagnostic.failureReason = diagnostic.responseShapePresent.currentPrice ? 'invalid_price' : 'history_payload_missing_usd'
+        return { priceUsd: null, reason: 'no_price_for_date', diagnostic }
+      }
+      diagnostic.parsedPrice = price
+      return { priceUsd: price, reason: null, diagnostic }
+    } catch (err) {
+      diagnostic.failureReason = 'fetch_error'
+      return { priceUsd: null, reason: `fetch_error:${err instanceof Error ? err.message : 'unknown'}`, diagnostic }
+    }
+  })()
+
+  // Stored BEFORE the caller awaits it (the assignment above already completed synchronously) —
+  // NEVER deleted, win or lose: caching a terminal failure (a real 429, a genuine http error, a
+  // malformed payload) is exactly as important as caching a success, since retrying either would
+  // either waste a call this scan already knows is doomed, or risk converting an honest miss into a
+  // fabricated "different" result on retry.
+  nativeEthHistoryCache.set(cacheKey, live)
+  return live
 }
 
 // Public export matching this codebase's PriceSourceFn contract exactly (token, chain, timestamp)
