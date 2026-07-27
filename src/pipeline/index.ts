@@ -20,6 +20,8 @@ import { createAyriAttribution } from '../lib/ayriAttribution'
 import { createFinalReportAssembler } from '../lib/finalReportAssembler'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
 import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/index'
+import { runWalletScanReceiptShadowMode } from '../modules/receiptSwapDecoder/walletScanShadowWiring'
+import { createLiveBaseDexPoolValidator } from '../modules/receiptSwapDecoder/poolValidator'
 import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/syntheticPnl/index'
 import type { PoolDataMap as SyntheticPoolDataMap } from '../modules/syntheticPnl/index'
 import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
@@ -1191,6 +1193,56 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       routerTradeHighConfidenceCount: routerTradeReconstruction.highConfidenceCount,
       routerTradeAmbiguousCount: routerTradeReconstruction.ambiguousCount,
     })
+  }
+
+  // RECEIPT SWAP DECODER — SHADOW MODE, DISCLOSED (src/modules/receiptSwapDecoder — Base only,
+  // Aerodrome Classic + Slipstream only; see that module's walletScanShadowWiring.ts header for the
+  // full disclosure). Read-only observability over the exact same routerTradeReconstruction
+  // candidate trades just computed above, keyed by chain+txHash — never a new event source, never
+  // fed into normalizedEvents/priceLotsForWallet/fifoEngine, never promoted into canonical events.
+  //
+  // PROVIDER-CALL / COST-GUARANTEE DISCLOSURE: `logsByTxHash` is intentionally an empty Map — this
+  // pipeline's real provider data (RawProviderEvent / NormalizedEvent) has never carried raw receipt
+  // logs, so every Base candidate here is honestly counted as `receiptsMissing`, and this NEVER
+  // fetches a receipt to fill that gap (this task's explicit "no provider-call increase" limit).
+  // The one awaited call inside runWalletScanReceiptShadowMode (pool-factory validation) is only
+  // reachable once logs are actually present — with today's real data that never happens, so this
+  // resolves with zero network calls, preserving this file's own "only stage 1 (and stage 5 in deep
+  // mode) make awaited network calls" cost guarantee in practice, and stays a no-op amount of work
+  // (an empty array filter/map) even in the worst case.
+  {
+    const receiptShadowCandidates = routerTradeReconstruction.candidateTrades
+      .filter((t) => t.chain === 'base')
+      .map((t) => ({
+        chain: t.chain,
+        txHash: t.txHash,
+        inferredTokenIn: t.tokenIn,
+        inferredTokenOut: t.tokenOut,
+        inferredAmountIn: t.amountIn,
+        inferredAmountOut: t.amountOut,
+        // routerTradeReconstruction never emits a candidate for an unresolved side (see that
+        // module's own header — "never fabricate a trade when evidence is ambiguous"), so every
+        // candidate sourced from it already has both sides known. Kept as a real field (not
+        // hardcoded past this mapping) so a future candidate source that DOES carry a genuine
+        // missing side can report it honestly without any change to the shadow-mode module itself.
+        inferredMissingSide: 'none' as const,
+      }))
+    if (receiptShadowCandidates.length > 0) {
+      const receiptShadowResult = await runWalletScanReceiptShadowMode({
+        walletAddress: params.walletAddress,
+        candidates: receiptShadowCandidates,
+        logsByTxHash: new Map(),
+        validator: createLiveBaseDexPoolValidator(),
+      })
+      // eslint-disable-next-line no-console
+      console.warn('[pipeline] receiptSwapDecoder shadow mode', {
+        ...receiptShadowResult.counters,
+        rejectionReasons: receiptShadowResult.rejectionReasons,
+        decodedByVenue: receiptShadowResult.decodedByVenue,
+        decodedByConfidence: receiptShadowResult.decodedByConfidence,
+        disagreementSamples: receiptShadowResult.disagreementSamples,
+      })
+    }
   }
 
   // ROUTER DISCOVERY, DISCLOSED: additive-only, log-only observability aid (src/pipeline/
