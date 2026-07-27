@@ -7,7 +7,7 @@ import {
 import type { CandidateTxEvidence } from './candidateSelector'
 import type { RawReceiptLog } from './types'
 import {
-  WALLET, POOL_A, USDC, TOKEN_X, transferLog, classicSwapLog, alwaysValidValidator, neverValidValidator,
+  WALLET, ROUTER, POOL_A, USDC, TOKEN_X, transferLog, classicSwapLog, wethDepositLog, alwaysValidValidator, neverValidValidator,
 } from './fixtures.test-helpers'
 import { WETH_BASE_ADDRESS } from './signatures'
 
@@ -178,6 +178,8 @@ test('non-base candidates are never processed, even if logs are supplied for the
     receiptsAvailable: 0, receiptsMissing: 0, receiptsExamined: 0, aerodromeSwapsDecoded: 0,
     exactTwoSidedSwapsRecovered: 0, oneLegTransactionsUpgraded: 0, inferenceAgreements: 0,
     inferenceDisagreements: 0, rejectedNonSwapTransactions: 0, candidateLotsUnlocked: 0, newProviderCalls: 0,
+    multiTransferPoolFlowsExamined: 0, multiTransferPoolFlowsResolved: 0, swapEventAmountMatches: 0,
+    swapEventAmountMismatches: 0, routerIntermediaryTransfersIgnored: 0, refundsNetted: 0,
   })
 })
 
@@ -370,4 +372,37 @@ test('production pipeline shape: receiptForensics is bounded to 10 and never inc
   // the forensic recording wrapper never triggers an extra validation call.
   assert.equal(payload.poolValidationProviderCalls, 10)
   assert.equal(payload.receiptProviderCalls, 10)
+})
+
+test('production pipeline shape: a multi-transfer router-mediated Classic swap resolves and surfaces the new multi-transfer counters', async () => {
+  const router = ROUTER.toLowerCase()
+  const multiTransferLogs = [
+    wethDepositLog(0, router, BigInt('1000000000000000000')),
+    transferLog(1, WETH, wallet, router, BigInt('1000000000000000000')),
+    transferLog(2, WETH, router, poolA, BigInt('600000000000000000')),
+    transferLog(3, WETH, router, poolA, BigInt('400000000000000000')),
+    classicSwapLog(4, poolA, router, BigInt('1000000000000000000'), BigInt('0'), BigInt('0'), BigInt('500000000000000000000')),
+    transferLog(5, TOKEN_X, poolA, router, BigInt('500000000000000000000')),
+    transferLog(6, TOKEN_X, router, wallet, BigInt('500000000000000000000')),
+    transferLog(7, WETH, router, wallet, BigInt('50000000000000000')),
+  ]
+  const evidence: CandidateTxEvidence[] = [ev({ txHash: '0x1' })]
+  const payload = await buildWalletScanShadowLogPayload({
+    walletAddress: wallet,
+    evidence,
+    tokenMeta: tokenMeta(),
+    validator: alwaysValidValidator(),
+    disabledByEnv: false,
+    receiptFetcher: okFetcher(multiTransferLogs),
+  })
+  assert.equal(payload.enabled, true)
+  if (!payload.enabled) return
+  assert.equal(payload.aerodromeSwapsDecoded, 1)
+  assert.equal(payload.multiTransferPoolFlowsExamined, 1)
+  assert.equal(payload.multiTransferPoolFlowsResolved, 1)
+  assert.equal(payload.swapEventAmountMatches, 1)
+  assert.equal(payload.swapEventAmountMismatches, 0)
+  assert.equal(payload.routerIntermediaryTransfersIgnored, 3)
+  assert.equal(payload.refundsNetted, 1)
+  assert.equal(payload.exactTwoSidedSwapsRecovered, 1)
 })

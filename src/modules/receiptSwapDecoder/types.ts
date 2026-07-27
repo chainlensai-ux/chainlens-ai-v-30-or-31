@@ -78,7 +78,21 @@ export type DecodedReceiptSwap = {
     nativeWrapDetected: boolean
     refundDetected: boolean
     feeLegsExcluded: number
+    // Present only when a Classic leg went through the multi-transfer resolver (multiTransferLeg.ts)
+    // — see that module's own header. Absent for Slipstream-only decodes.
+    multiTransfer?: MultiTransferDiagnostics
   }
+}
+
+// Bounded, shadow/debug-only diagnostics from the Classic multi-transfer resolver — never used to
+// gate/change the decode itself, purely aggregated by callers (e.g. walletScanShadowWiring.ts)
+// into the requested batch-level counters.
+export type MultiTransferDiagnostics = {
+  examined: boolean
+  resolved: boolean
+  swapEventAmountMatched: boolean | null
+  routerIntermediaryTransfersIgnored: number
+  refundNetted: boolean
 }
 
 // Why decoding did not produce a canonical swap for this tx — always a real, attributable reason,
@@ -94,6 +108,12 @@ export type ReceiptDecodeRejection = {
     | 'plain_transfer_no_swap_event'
     | 'contradictory_legs'
     | 'malformed_log_data'
+    // Classic multi-transfer resolution found the right token(s) but the aggregated pool-transfer
+    // sum did not match the Swap event's own authoritative amount within the 1-raw-unit tolerance
+    // (e.g. a fee-on-transfer token, or a genuinely inconsistent receipt) — never accepted as a
+    // guess, always fails closed.
+    | 'swap_event_amount_mismatch'
+  multiTransfer?: MultiTransferDiagnostics
 }
 
 export type ReceiptDecodeResult =

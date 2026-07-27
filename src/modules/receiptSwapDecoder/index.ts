@@ -36,8 +36,9 @@ import { decodeLogs } from './decodeLogs'
 import type { PoolValidator } from './poolValidator'
 import { WETH_BASE_ADDRESS } from './signatures'
 import type {
-  DecodedReceiptSwap, ReceiptDecodeResult, ReceiptTxBundle, TokenMeta, WalletDirection,
+  DecodedReceiptSwap, ReceiptDecodeResult, ReceiptTxBundle, TokenMeta, WalletDirection, MultiTransferDiagnostics,
 } from './types'
+import { resolveClassicMultiTransferLeg, mergeMultiTransferDiagnostics, type ClassicPoolLeg } from './multiTransferLeg'
 
 export type { DecodedReceiptSwap, ReceiptDecodeResult, ReceiptTxBundle } from './types'
 export { decodeLogs } from './decodeLogs'
@@ -50,18 +51,18 @@ function toNormalized(raw: bigint, decimals: number): number {
   return Number(raw) / 10 ** decimals
 }
 
-type PoolLeg = {
-  swap: DecodedPoolSwap
-  tokenIn: string
-  tokenOut: string
-  amountIn: bigint
-  amountOut: bigint
-}
+type PoolLeg = ClassicPoolLeg
 
-// Resolves one pool's swap event to concrete token addresses/amounts by matching it against the
-// EXACTLY one ERC20 Transfer log flowing into the pool and the exactly one flowing out of it, in
-// this same transaction. More or fewer than one of either side is contradictory (ambiguous which
-// transfer is the real swap leg) and is rejected rather than guessed.
+// Resolves one Slipstream pool's swap event to concrete token addresses/amounts by matching it
+// against the EXACTLY one ERC20 Transfer log flowing into the pool and the exactly one flowing out
+// of it, in this same transaction. More or fewer than one of either side is contradictory
+// (ambiguous which transfer is the real swap leg) and is rejected rather than guessed.
+//
+// CLASSIC USES A DIFFERENT RESOLVER, DISCLOSED: Aerodrome Classic pool legs are resolved by
+// multiTransferLeg.ts's resolveClassicMultiTransferLeg instead — see that module's own header for
+// why (real router-mediated Classic swaps can have more than one transfer per side; Slipstream's
+// Swap event carries no separate In/Out fields to authoritatively re-derive from, so it keeps this
+// original, stricter exactly-one-each match).
 function resolvePoolLeg(swap: DecodedPoolSwap, decoded: DecodedLogs): PoolLeg | null {
   const incoming = decoded.transfers.filter((t) => t.to === swap.poolAddress && t.value > BigInt("0"))
   const outgoing = decoded.transfers.filter((t) => t.from === swap.poolAddress && t.value > BigInt("0"))
@@ -140,14 +141,40 @@ export async function decodeReceiptSwap(tx: ReceiptTxBundle, validator: PoolVali
   }
 
   const legs: PoolLeg[] = []
+  const multiTransferDiagnosticsList: MultiTransferDiagnostics[] = []
   for (const swap of decoded.swaps) {
+    if (swap.protocol === 'aerodrome_classic') {
+      const resolution = resolveClassicMultiTransferLeg(swap, decoded)
+      multiTransferDiagnosticsList.push(resolution.diagnostics)
+      if (!resolution.ok) {
+        return {
+          ok: false,
+          rejection: { txHash: tx.txHash, reason: resolution.reason, multiTransfer: mergeMultiTransferDiagnostics(multiTransferDiagnosticsList) },
+        }
+      }
+      legs.push(resolution.leg)
+      continue
+    }
     const leg = resolvePoolLeg(swap, decoded)
-    if (!leg) return { ok: false, rejection: { txHash: tx.txHash, reason: 'contradictory_legs' } }
+    if (!leg) {
+      return {
+        ok: false,
+        rejection: {
+          txHash: tx.txHash, reason: 'contradictory_legs',
+          multiTransfer: mergeMultiTransferDiagnostics(multiTransferDiagnosticsList),
+        },
+      }
+    }
     legs.push(leg)
   }
 
   const chained = chainLegs(legs)
-  if (!chained) return { ok: false, rejection: { txHash: tx.txHash, reason: 'contradictory_legs' } }
+  if (!chained) {
+    return {
+      ok: false,
+      rejection: { txHash: tx.txHash, reason: 'contradictory_legs', multiTransfer: mergeMultiTransferDiagnostics(multiTransferDiagnosticsList) },
+    }
+  }
 
   // FACTORY VALIDATION, DISCLOSED: every pool in the chain must be confirmed by its protocol's real
   // factory for the exact token pair the leg claims — an unvalidated pool (a look-alike contract, a
@@ -155,7 +182,12 @@ export async function decodeReceiptSwap(tx: ReceiptTxBundle, validator: PoolVali
   // than being trusted on log shape alone.
   for (const leg of chained) {
     const isValid = await validator.isValidPool(leg.swap.protocol, leg.swap.poolAddress, leg.tokenIn, leg.tokenOut)
-    if (!isValid) return { ok: false, rejection: { txHash: tx.txHash, reason: 'pool_not_validated_by_factory' } }
+    if (!isValid) {
+      return {
+        ok: false,
+        rejection: { txHash: tx.txHash, reason: 'pool_not_validated_by_factory', multiTransfer: mergeMultiTransferDiagnostics(multiTransferDiagnosticsList) },
+      }
+    }
   }
 
   const first = chained[0]
@@ -178,6 +210,9 @@ export async function decodeReceiptSwap(tx: ReceiptTxBundle, validator: PoolVali
     void leg
     return count + 2 // one incoming + one outgoing transfer already accounted for per leg
   }, 0)
+
+  const multiTransfer = mergeMultiTransferDiagnostics(multiTransferDiagnosticsList)
+  if (multiTransfer && refundDetected) multiTransfer.refundNetted = true
 
   const tokenInMeta = tokenMetaFor(tx.tokenMeta, first.tokenIn)
   const tokenOutMeta = tokenMetaFor(tx.tokenMeta, last.tokenOut)
@@ -203,6 +238,7 @@ export async function decodeReceiptSwap(tx: ReceiptTxBundle, validator: PoolVali
       nativeWrapDetected,
       refundDetected,
       feeLegsExcluded: Math.max(0, feeLegsExcluded),
+      multiTransfer,
     },
   }
 

@@ -200,12 +200,32 @@ test('malformed receipt data fails closed instead of throwing or fabricating a s
   assert.equal(result.rejection.reason, 'malformed_log_data')
 })
 
-test('duplicate logs (identical transfer repeated) are contradictory, never double-counted', async () => {
+test('Classic: two transfers into the same pool that sum exactly to the Swap event amount are aggregated, not rejected', async () => {
+  // AGGREGATION, DISCLOSED (multiTransferLeg.ts): a duplicated/split incoming transfer whose sum
+  // matches the Swap event's own authoritative amount0In is a real, aggregatable pool leg — never
+  // "double counted" (the swap event amount, not the transfer sum, is what's reported), and never
+  // rejected merely for having more than one transfer on a side.
+  const tx = bundle({
+    logs: [
+      transferLog(0, WETH, wallet, poolA, BigInt("1000000000000000000")),
+      transferLog(1, WETH, wallet, poolA, BigInt("1000000000000000000")),
+      classicSwapLog(2, poolA, wallet, BigInt("2000000000000000000"), BigInt("0"), BigInt("0"), BigInt("500000000000000000000")),
+      transferLog(3, TOKEN_X, poolA, wallet, BigInt("500000000000000000000")),
+    ],
+  })
+  const result = await decodeReceiptSwap(tx, alwaysValidValidator())
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.equal(result.swap.amountInRaw, '2000000000000000000')
+  assert.equal(result.swap.tokenIn.address, WETH)
+})
+
+test('Slipstream: duplicate identical transfer logs remain contradictory (strict resolver, unchanged)', async () => {
   const tx = bundle({
     logs: [
       transferLog(0, WETH, wallet, poolA, BigInt("1000000000000000000")),
       transferLog(1, WETH, wallet, poolA, BigInt("1000000000000000000")), // duplicate incoming leg
-      classicSwapLog(2, poolA, wallet, BigInt("2000000000000000000"), BigInt("0"), BigInt("0"), BigInt("500000000000000000000")),
+      slipstreamSwapLog(2, poolA, wallet, wallet, BigInt("2000000000000000000"), BigInt("-500000000000000000000")),
       transferLog(3, TOKEN_X, poolA, wallet, BigInt("500000000000000000000")),
     ],
   })
@@ -248,6 +268,45 @@ test('empty receipt (no logs) is rejected as no_logs, not silently treated as a 
   assert.equal(result.ok, false)
   if (result.ok) return
   assert.equal(result.rejection.reason, 'no_logs')
+})
+
+// PRODUCTION FIXTURE, DISCLOSED (this task's exact reported evidence): likelyRoute: aerodrome_classic,
+// aerodromeSwapEventCount: 1, transferCount: 6, wrapCount: 1 — previously rejected as
+// contradictory_legs purely because the old resolver required exactly one incoming and one outgoing
+// transfer touching the pool. Reconstructed here: wallet wraps ETH via the router (wrap #1), the
+// router forwards the WETH to the pool split across two transfers (aggregated), the pool pays out
+// TOKEN_X to the router which forwards it to the wallet, and the router refunds a small leftover
+// WETH amount back to the wallet — 6 total ERC20 transfers, 1 wrap, 1 recognized Swap event.
+test('production fixture: multi-transfer router-mediated Classic swap (6 transfers, 1 wrap) resolves exactly instead of contradictory_legs', async () => {
+  const router = ROUTER.toLowerCase()
+  const tx = bundle({
+    router,
+    logs: [
+      wethDepositLog(0, router, BigInt('1000000000000000000')), // wrap #1
+      transferLog(1, WETH, wallet, router, BigInt('1000000000000000000')), // #1: wallet -> router (ignored, doesn't touch pool)
+      transferLog(2, WETH, router, poolA, BigInt('600000000000000000')), // #2: router -> pool (split leg A)
+      transferLog(3, WETH, router, poolA, BigInt('400000000000000000')), // #3: router -> pool (split leg B)
+      classicSwapLog(4, poolA, router, BigInt('1000000000000000000'), BigInt('0'), BigInt('0'), BigInt('500000000000000000000')),
+      transferLog(5, TOKEN_X, poolA, router, BigInt('500000000000000000000')), // #4: pool -> router
+      transferLog(6, TOKEN_X, router, wallet, BigInt('500000000000000000000')), // #5: router -> wallet (ignored, doesn't touch pool)
+      transferLog(7, WETH, router, wallet, BigInt('50000000000000000')), // #6: refund of unused WETH (ignored, doesn't touch pool)
+    ],
+  })
+  const result = await decodeReceiptSwap(tx, alwaysValidValidator())
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.equal(result.swap.protocol, 'aerodrome_classic')
+  assert.equal(result.swap.tokenIn.address, WETH)
+  assert.equal(result.swap.tokenOut.address, TOKEN_X)
+  assert.equal(result.swap.amountInRaw, '1000000000000000000')
+  assert.equal(result.swap.amountOutRaw, '500000000000000000000')
+  assert.equal(result.swap.meta.nativeWrapDetected, true)
+  assert.equal(result.swap.meta.refundDetected, true)
+  assert.ok(result.swap.meta.multiTransfer)
+  assert.equal(result.swap.meta.multiTransfer?.resolved, true)
+  assert.equal(result.swap.meta.multiTransfer?.swapEventAmountMatched, true)
+  assert.equal(result.swap.meta.multiTransfer?.routerIntermediaryTransfersIgnored, 3)
+  assert.equal(result.swap.meta.multiTransfer?.refundNetted, true)
 })
 
 void ZERO

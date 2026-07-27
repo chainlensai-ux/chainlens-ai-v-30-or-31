@@ -4,7 +4,7 @@ import { classifyReceiptForensics, createRecordingPoolValidator, MAX_FORENSIC_SA
 import { decodeReceiptSwap } from './index'
 import type { PoolValidator } from './poolValidator'
 import {
-  WALLET, POOL_A, USDC, TOKEN_X, transferLog, classicSwapLog, alwaysValidValidator, neverValidValidator,
+  WALLET, POOL_A, USDC, TOKEN_X, transferLog, classicSwapLog, slipstreamSwapLog, alwaysValidValidator, neverValidValidator,
 } from './fixtures.test-helpers'
 import { WETH_BASE_ADDRESS } from './signatures'
 
@@ -95,10 +95,13 @@ test('a validated Aerodrome Classic pool classifies as aerodrome_classic', async
 })
 
 test('contradictory_legs exposes the bounded decoded transfer flow and the exact contradiction', async () => {
+  // Slipstream (unchanged, strict resolver) — Classic's own duplicate-transfer case now aggregates
+  // successfully instead (see index.test.ts's "two transfers into the same pool" test), so this
+  // exercises the protocol that still fails closed on more-than-one-transfer-per-side.
   const logs = [
     transferLog(0, WETH, wallet, poolA, BigInt('1000000000000000000')),
     transferLog(1, WETH, wallet, poolA, BigInt('1000000000000000000')), // duplicate incoming leg
-    classicSwapLog(2, poolA, wallet, BigInt('2000000000000000000'), BigInt('0'), BigInt('0'), BigInt('500000000000000000000')),
+    slipstreamSwapLog(2, poolA, wallet, wallet, BigInt('2000000000000000000'), BigInt('-500000000000000000000')),
     transferLog(3, TOKEN_X, poolA, wallet, BigInt('500000000000000000000')),
   ]
   const { result, recorded } = await decodeWithRecording(logs, alwaysValidValidator())

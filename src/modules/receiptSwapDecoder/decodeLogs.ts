@@ -24,6 +24,12 @@ export type DecodedPoolSwap = {
   // shape downstream.
   amount0: bigint
   amount1: bigint
+  // AUTHORITATIVE GROSS LEGS, DISCLOSED — Classic only. Slipstream's Swap event has no separate
+  // In/Out fields (amount0/amount1 there are already the exact signed net leg), so this is always
+  // undefined for aerodrome_slipstream. Needed by index.ts's multi-transfer resolver to match
+  // aggregated same-token pool transfers against the Swap event's own authoritative amounts,
+  // independent of how many individual transfers/router hops carried them.
+  classicGross?: { amount0In: bigint; amount1In: bigint; amount0Out: bigint; amount1Out: bigint }
 }
 
 export type DecodedPoolLpEvent = { logIndex: number; poolAddress: string; kind: 'mint' | 'burn' }
@@ -71,6 +77,7 @@ export function decodeLogs(logs: RawReceiptLog[]): DecodedLogs {
         swaps.push({
           logIndex: log.logIndex, protocol: 'aerodrome_classic', poolAddress: address,
           sender: sender ?? '', amount0: amount0In - amount0Out, amount1: amount1In - amount1Out,
+          classicGross: { amount0In, amount1In, amount0Out, amount1Out },
         })
       } else if (topic0 === SLIPSTREAM_SWAP_TOPIC0) {
         const sender = topicAddress(log.topics[1])

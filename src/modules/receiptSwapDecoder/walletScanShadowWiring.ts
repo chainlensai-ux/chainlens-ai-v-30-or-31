@@ -85,6 +85,16 @@ export type WalletScanShadowCounters = {
   rejectedNonSwapTransactions: number
   candidateLotsUnlocked: number
   newProviderCalls: number
+  // AERODROME CLASSIC MULTI-TRANSFER RESOLUTION, DISCLOSED — see multiTransferLeg.ts's own header
+  // (production proof: a real 6-transfer/1-wrap Classic swap was rejected as contradictory_legs
+  // purely for having more than one transfer per side). Aggregated across every Classic swap this
+  // batch examined, regardless of whether it ultimately decoded successfully.
+  multiTransferPoolFlowsExamined: number
+  multiTransferPoolFlowsResolved: number
+  swapEventAmountMatches: number
+  swapEventAmountMismatches: number
+  routerIntermediaryTransfersIgnored: number
+  refundsNetted: number
 }
 
 export type WalletScanShadowDiagnostics = {
@@ -123,6 +133,12 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
     rejectedNonSwapTransactions: 0,
     candidateLotsUnlocked: 0,
     newProviderCalls: 0,
+    multiTransferPoolFlowsExamined: 0,
+    multiTransferPoolFlowsResolved: 0,
+    swapEventAmountMatches: 0,
+    swapEventAmountMismatches: 0,
+    routerIntermediaryTransfersIgnored: 0,
+    refundsNetted: 0,
   }
   const rejectionReasons: Record<string, number> = {}
   const decodedByVenue: Record<string, number> = {}
@@ -168,6 +184,16 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
       },
       recordingValidator,
     )
+
+    const multiTransfer = result.ok ? result.swap.meta.multiTransfer : result.rejection.multiTransfer
+    if (multiTransfer?.examined) {
+      counters.multiTransferPoolFlowsExamined += 1
+      if (multiTransfer.resolved) counters.multiTransferPoolFlowsResolved += 1
+      if (multiTransfer.swapEventAmountMatched === true) counters.swapEventAmountMatches += 1
+      if (multiTransfer.swapEventAmountMatched === false) counters.swapEventAmountMismatches += 1
+      counters.routerIntermediaryTransfersIgnored += multiTransfer.routerIntermediaryTransfersIgnored
+      if (multiTransfer.refundNetted) counters.refundsNetted += 1
+    }
 
     if (receiptForensics.length < MAX_FORENSIC_SAMPLES) {
       receiptForensics.push(classifyReceiptForensics({
@@ -291,6 +317,14 @@ export type WalletScanShadowLogPayload =
       exactTwoSidedSwapsRecovered: number
       oneLegTransactionsUpgraded: number
       candidateLotsUnlocked: number
+      // AERODROME CLASSIC MULTI-TRANSFER RESOLUTION, DISCLOSED — see multiTransferLeg.ts's own
+      // header and WalletScanShadowCounters' matching fields above.
+      multiTransferPoolFlowsExamined: number
+      multiTransferPoolFlowsResolved: number
+      swapEventAmountMatches: number
+      swapEventAmountMismatches: number
+      routerIntermediaryTransfersIgnored: number
+      refundsNetted: number
       // BOUNDED ACQUISITION, DISCLOSED — see receiptAcquisition.ts's own header (cap 10, concurrency
       // 3, no retries, per-call timeout, request-scoped cache + singleflight by chain:txHash).
       receiptCandidatesTotal: number
@@ -409,6 +443,12 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     exactTwoSidedSwapsRecovered: result.counters.exactTwoSidedSwapsRecovered,
     oneLegTransactionsUpgraded: result.counters.oneLegTransactionsUpgraded,
     candidateLotsUnlocked: result.counters.candidateLotsUnlocked,
+    multiTransferPoolFlowsExamined: result.counters.multiTransferPoolFlowsExamined,
+    multiTransferPoolFlowsResolved: result.counters.multiTransferPoolFlowsResolved,
+    swapEventAmountMatches: result.counters.swapEventAmountMatches,
+    swapEventAmountMismatches: result.counters.swapEventAmountMismatches,
+    routerIntermediaryTransfersIgnored: result.counters.routerIntermediaryTransfersIgnored,
+    refundsNetted: result.counters.refundsNetted,
     receiptCandidatesTotal: acquisition.counters.receiptCandidatesTotal,
     receiptCandidatesSelected: acquisition.counters.receiptCandidatesSelected,
     receiptCandidatesCapped: acquisition.counters.receiptCandidatesCapped,
