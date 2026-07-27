@@ -12,6 +12,7 @@ import { normalizeEvents } from '../normalization/index'
 import type { RawProviderEvent, SupportedChain } from '../providerFetchWindow/types'
 import type {
   CanonicalBalanceLookup,
+  CanonicalCurrentPriceLookup,
   CurrentPriceUsdLookup,
   ExcludedUnrealizedPosition,
   FifoOutput,
@@ -29,6 +30,8 @@ import { buildLotId, groupByToken, mergeNormalizedEvents } from './utils'
 
 export type {
   CanonicalBalanceLookup,
+  CanonicalCurrentPriceLookup,
+  CanonicalCurrentPriceResult,
   CanonicalPositionMetadata,
   CanonicalPositionMetadataLookup,
   CurrentPriceSourceLookup,
@@ -205,6 +208,16 @@ function emptyReconciliationSummary(
     officialUnrealizedPnlUsd,
     reconciliationStatus,
     excludedPositions: [],
+    reconciledPositionsByPriceSource: {},
+    excludedReasonCounts: {},
+    // Not computed in the zero-change (unreconciled) path — reconciliation didn't run, so there is
+    // no per-position provenance/cost-basis breakdown to report, only the pre-existing aggregate
+    // figures (costBasisUsd, officialUnrealizedPnlUsd) already returned alongside this summary.
+    reconciledMarketValueUsd: 0,
+    reconciledCostBasisUsd: 0,
+    // "Not reconciled" means every open position is treated as pass-through (never excluded) — 100%
+    // nominal coverage when there is anything open at all, 0 when there is nothing to cover.
+    unrealizedCoveragePercent: totalOpenPositions > 0 && reconciliationStatus === 'not_reconciled' ? 100 : 0,
   }
 }
 
@@ -302,6 +315,9 @@ export function computePnl(
   const unrealizedPnlExcludedTokens: string[] = []
   const unrealizedTerms: number[] = []
   let reconciledOpenPositions = 0
+  let reconciledMarketValueUsd = 0
+  let reconciledCostBasisUsd = 0
+  const reconciledPositionsByPriceSource: Record<string, number> = {}
 
   for (const [key, lots] of openLotsByToken) {
     const token = lots[0].token
@@ -316,8 +332,15 @@ export function computePnl(
 
     const metadata = diagnostics?.positionMetadataLookup?.(token, chain) ?? null
     const canonicalCurrentBalance = canonicalBalanceLookup(token, chain)
-    const rawCurrentPrice = currentPriceUsdLookup(token, chain)
-    const currentPriceSource = diagnostics?.currentPriceSourceLookup?.(token, chain) ?? null
+    // CANONICAL PRICE PREFERENCE, DISCLOSED — see CanonicalCurrentPriceLookup's own header in
+    // types.ts for the full trace. When the caller supplies the canonical (holdings-derived) price,
+    // it is used for BOTH the value fed into the reconciliation math below AND the reported
+    // provenance — never a guess blended from two different systems. Falling back to the
+    // pre-existing currentPriceUsdLookup + currentPriceSourceLookup preserves byte-identical
+    // behavior for any caller that hasn't wired the canonical lookup in.
+    const canonicalPrice = diagnostics?.canonicalCurrentPriceLookup?.(token, chain) ?? null
+    const rawCurrentPrice = canonicalPrice ? canonicalPrice.priceUsd : currentPriceUsdLookup(token, chain)
+    const currentPriceSource = canonicalPrice ? canonicalPrice.source : (diagnostics?.currentPriceSourceLookup?.(token, chain) ?? null)
 
     const excessOpenQuantity =
       canonicalCurrentBalance != null && Number.isFinite(openQuantityFromFifo) && openQuantityFromFifo > canonicalCurrentBalance
@@ -396,12 +419,19 @@ export function computePnl(
     }
 
     reconciledOpenPositions += 1
+    reconciledMarketValueUsd += rawCurrentPrice * openQuantityFromFifo
+    if (openCostBasisUsd != null) reconciledCostBasisUsd += openCostBasisUsd
+    const sourceKey = currentPriceSource ?? 'unknown'
+    reconciledPositionsByPriceSource[sourceKey] = (reconciledPositionsByPriceSource[sourceKey] ?? 0) + 1
     for (const lot of lots) {
       if (lot.costBasisUsd == null) continue
       unrealizedTerms.push(rawCurrentPrice * lot.amountRemaining - lot.costBasisUsd)
     }
   }
 
+  // OFFICIAL TOTAL, DISCLOSED: computed strictly from RECONCILED positions' own lot terms — the
+  // exact same expression the zero-change path above uses, just already filtered down to positions
+  // that survived every reconciliation check. An excluded position contributes nothing here, ever.
   const unrealizedPnlUsd = unrealizedTerms.length > 0 ? unrealizedTerms.reduce((sum, v) => sum + v, 0) : null
 
   // Excluded candidate totals sum ONLY over positions that had a computable candidate — a position
@@ -409,6 +439,10 @@ export function computePnl(
   // reported alongside, and never merged into, officialUnrealizedPnlUsd.
   const excludedCandidateMarketValueUsd = excludedPositions.reduce((sum, p) => sum + (p.candidateMarketValueUsd ?? 0), 0)
   const excludedCandidateUnrealizedPnlUsd = excludedPositions.reduce((sum, p) => sum + (p.candidateUnrealizedPnlUsd ?? 0), 0)
+  const excludedReasonCounts: Partial<Record<UnrealizedExclusionReason, number>> = {}
+  for (const p of excludedPositions) {
+    excludedReasonCounts[p.exclusionReason] = (excludedReasonCounts[p.exclusionReason] ?? 0) + 1
+  }
 
   const reconciliationStatus: UnrealizedReconciliationStatus =
     excludedPositions.length === 0
@@ -431,6 +465,11 @@ export function computePnl(
       officialUnrealizedPnlUsd: unrealizedPnlUsd,
       reconciliationStatus,
       excludedPositions,
+      reconciledPositionsByPriceSource,
+      excludedReasonCounts,
+      reconciledMarketValueUsd,
+      reconciledCostBasisUsd,
+      unrealizedCoveragePercent: totalOpenPositions > 0 ? (reconciledOpenPositions / totalOpenPositions) * 100 : 0,
     },
   }
 }

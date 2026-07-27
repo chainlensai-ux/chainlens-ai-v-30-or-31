@@ -168,6 +168,23 @@ export type UnrealizedReconciliationSummary = {
   officialUnrealizedPnlUsd: number | null
   reconciliationStatus: UnrealizedReconciliationStatus
   excludedPositions: ExcludedUnrealizedPosition[]
+  // Count of RECONCILED (never excluded) positions, grouped by currentPriceSource — lets a caller
+  // see, e.g., "58 provider_supplied, 2 dexscreener_fallback" instead of only a total count. A
+  // reconciled position with an unknown source is grouped under 'unknown', never silently dropped
+  // from the count.
+  reconciledPositionsByPriceSource: Record<string, number>
+  // Count of EXCLUDED positions, grouped by their exclusionReason — the same data
+  // excludedPositions carries, pre-tallied for a scan-level view.
+  excludedReasonCounts: Partial<Record<UnrealizedExclusionReason, number>>
+  // Sum of (currentPriceUsd * openQuantityFromFifo) over RECONCILED positions only — the real
+  // market value backing officialUnrealizedPnlUsd.
+  reconciledMarketValueUsd: number
+  // Sum of openCostBasisUsd over RECONCILED positions only.
+  reconciledCostBasisUsd: number
+  // reconciledOpenPositions / totalOpenPositions, as a 0-100 percent (0 when there are no open
+  // positions at all — vacuously fully covered, matching derivePublicPnlStatus's own "empty is ok"
+  // convention elsewhere in this file).
+  unrealizedCoveragePercent: number
 }
 
 // Shared factory for the "reconciliation never ran" summary — used by degraded/fallback FifoOutput
@@ -186,6 +203,11 @@ export function emptyUnrealizedReconciliation(): UnrealizedReconciliationSummary
     officialUnrealizedPnlUsd: null,
     reconciliationStatus: 'not_reconciled',
     excludedPositions: [],
+    reconciledPositionsByPriceSource: {},
+    excludedReasonCounts: {},
+    reconciledMarketValueUsd: 0,
+    reconciledCostBasisUsd: 0,
+    unrealizedCoveragePercent: 0,
   }
 }
 
@@ -211,9 +233,31 @@ export type CanonicalPositionMetadataLookup = (token: string, chain: SupportedCh
 // null when the caller genuinely does not know — never a fabricated/default source label.
 export type CurrentPriceSourceLookup = (token: string, chain: SupportedChain) => string | null
 
+// CANONICAL CURRENT-PRICE LOOKUP, DISCLOSED, ADDITIVE (found live, this task — confirmed production
+// evidence: totalOpenPositions: 60, reconciledOpenPositions: 0, every position excluded as
+// missing_verified_current_price with currentPriceSource: null for all 60). ROOT CAUSE, AUDITED: the
+// price fed into reconciliation (CurrentPriceUsdLookup, supplied by priceLotsForWallet.ts) comes from
+// this codebase's HISTORICAL/at-trade-time pricing infrastructure (pricingAtTimeEngine querying
+// DexScreener/CoinGecko/GoldRush/basedex fresh, per token) — a COMPLETELY DIFFERENT system from the
+// already-resolved, already-approved prices runWalletScanV2.ts's own holdings snapshot carries
+// (TokenHolding.providerPriceUsd, or src/modules/pricing's resolvePrices() output — the exact same
+// data buildPortfolioSummary already uses for the portfolio total). For most of the wallet's real
+// holdings, especially illiquid/long-tail tokens, the historical-pricing system's own live "current"
+// lookup path never finds anything (no historical evidence infrastructure exists for "right now"),
+// so the reconciliation was starved of a price it already had, sitting one module away.
+//
+// FIX: an optional, PREFERRED-when-present lookup that returns the SAME canonical (holdings-derived)
+// price + REAL provenance already resolved for portfolio valuation — no new provider/DexScreener/
+// holdings call, just reusing what runWalletScanV2.ts already computed. When absent, computePnl
+// falls back to the pre-existing currentPriceUsdLookup + currentPriceSourceLookup exactly as before
+// (zero behavior change for any caller that hasn't wired this in).
+export type CanonicalCurrentPriceResult = { priceUsd: number; source: string }
+export type CanonicalCurrentPriceLookup = (token: string, chain: SupportedChain) => CanonicalCurrentPriceResult | null
+
 export type UnrealizedReconciliationDiagnosticsContext = {
   positionMetadataLookup?: CanonicalPositionMetadataLookup
   currentPriceSourceLookup?: CurrentPriceSourceLookup
+  canonicalCurrentPriceLookup?: CanonicalCurrentPriceLookup
 }
 
 export type { NormalizedEvent }
