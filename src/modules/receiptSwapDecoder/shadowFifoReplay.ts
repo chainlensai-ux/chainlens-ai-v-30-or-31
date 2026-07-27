@@ -59,10 +59,25 @@ export type ShadowFifoReplayCounters = {
   shadowPnlDeltaUsd: number | null
 }
 
+export type ShadowClosedLotSample = {
+  token: string
+  chain: string
+  openedTxHash: string
+  closedTxHash: string
+  amount: number
+  costBasisUsd: number | null
+  proceedsUsd: number | null
+  realizedPnlUsd: number | null
+  evidenceQuality: MatchedLot['evidenceQuality']
+}
+
 export type ShadowFifoReplayResult = {
   shadowReplayAccepted: boolean
   rejectionReason: ShadowRejectionReason | null
   counters: ShadowFifoReplayCounters
+  // Bounded to at most 5 — never an unbounded lot dump. Empty whenever shadowReplayAccepted is
+  // false or no lot was newly closed.
+  newlyClosedLotSamples: ShadowClosedLotSample[]
 }
 
 export type ShadowFifoReplayInput = {
@@ -109,7 +124,23 @@ function zeroCounters(): ShadowFifoReplayCounters {
 }
 
 function rejected(reason: ShadowRejectionReason, extra: Partial<ShadowFifoReplayCounters> = {}): ShadowFifoReplayResult {
-  return { shadowReplayAccepted: false, rejectionReason: reason, counters: { ...zeroCounters(), ...extra } }
+  return { shadowReplayAccepted: false, rejectionReason: reason, counters: { ...zeroCounters(), ...extra }, newlyClosedLotSamples: [] }
+}
+
+const MAX_CLOSED_LOT_SAMPLES = 5
+
+function toClosedLotSample(lot: MatchedLot): ShadowClosedLotSample {
+  return {
+    token: lot.token,
+    chain: lot.chain,
+    openedTxHash: lot.openedTxHash,
+    closedTxHash: lot.closedTxHash,
+    amount: lot.amount,
+    costBasisUsd: lot.costBasisUsd,
+    proceedsUsd: lot.proceedsUsd,
+    realizedPnlUsd: lot.realizedPnlUsd,
+    evidenceQuality: lot.evidenceQuality,
+  }
 }
 
 // PURE. Deep-clones `normalizedEvents` (plain data — JSON round-trip is exact and safe here, same
@@ -267,5 +298,6 @@ export function runShadowFifoReplay(input: ShadowFifoReplayInput): ShadowFifoRep
       shadowRealizedPnlAfter: realizedAfter,
       shadowPnlDeltaUsd: pnlDelta,
     },
+    newlyClosedLotSamples: newlyClosed.slice(0, MAX_CLOSED_LOT_SAMPLES).map(toClosedLotSample),
   }
 }

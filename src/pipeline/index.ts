@@ -23,6 +23,8 @@ import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/in
 import { buildWalletScanShadowLogPayload } from '../modules/receiptSwapDecoder/walletScanShadowWiring'
 import type { CandidateTxEvidence } from '../modules/receiptSwapDecoder/candidateSelector'
 import { createLiveBaseDexPoolValidator } from '../modules/receiptSwapDecoder/poolValidator'
+import { runShadowFifoReplay } from '../modules/receiptSwapDecoder/shadowFifoReplay'
+import type { DecodedReceiptSwap } from '../modules/receiptSwapDecoder/types'
 import { groupSwapLegsByTransaction, swapLegGroupKey, isVerifiedQuoteLegAddress } from '../modules/quoteLegPricing/index'
 import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/syntheticPnl/index'
 import type { PoolDataMap as SyntheticPoolDataMap } from '../modules/syntheticPnl/index'
@@ -1276,6 +1278,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // disclosure, and walletScanShadowWiring.ts for how receiptProviderCalls (receipt fetches) and
   // poolValidationProviderCalls (factory getPool() reads) stay separately attributable while
   // newProviderCalls reports their sum.
+  //
+  // CAPTURED FOR LATER REPLAY, DISCLOSED (this task): `shadowExactReceiptSwaps` preserves whatever
+  // fully-accepted exact swaps this block decodes, in request scope, for the shadow-FIFO-replay
+  // stage below (which runs much later, after real FIFO/pricing exist). Never exposed as canonical
+  // events — this is a plain local array, never written into normalizedEvents or any FinalReport
+  // field.
+  let shadowExactReceiptSwaps: DecodedReceiptSwap[] = []
   try {
     const existingSwapCandidateTxHashes = new Set(
       routerTradeReconstruction.candidateTrades.map((t) => swapLegGroupKey(t.chain as SupportedChain, t.txHash)),
@@ -1339,6 +1348,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     })
     // eslint-disable-next-line no-console
     console.warn('[pipeline] receiptSwapDecoder shadow mode', shadowPayload)
+    if (shadowPayload.enabled) shadowExactReceiptSwaps = shadowPayload.acceptedExactSwaps
   } catch (err) {
     // Guarantees the log is truly unconditional — an unexpected throw from the shadow module never
     // silently disappears, and never propagates into the real scan result either.
@@ -1522,6 +1532,64 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     publicPnlStatus: fifoAndPnl.publicPnlStatus,
     hardInvalid: fifoAndPnl.integrityFlags.hardInvalid,
   })
+
+  // RECEIPT-DECODED FIFO SHADOW REPLAY, DISCLOSED (src/modules/receiptSwapDecoder/
+  // shadowFifoReplay.ts — see that module's own header). Runs exactly once per scan, right after
+  // the REAL fifoEngine result and REAL verified price lookups above exist — measures what closing
+  // a receipt-decoded one-leg transaction would actually do to FIFO/PnL, in a throwaway clone.
+  // Never mutates `normalizedEvents`, `fifoAndPnl`, or any other canonical structure; never
+  // promotes anything into a public field. `shadowExactReceiptSwaps` was captured in request scope
+  // by the earlier receiptSwapDecoder shadow-mode block (well before FIFO/pricing existed) — reused
+  // here unchanged, never re-decoded, never re-fetched.
+  //
+  // EXACTLY ONE REPLAY, DISCLOSED: only the FIRST accepted exact swap (if any) is replayed — this
+  // task's explicit "exactly one replay per scan" limit, not merely "the cheapest to compute".
+  //
+  // ZERO NEW PROVIDER CALLS, DISCLOSED: `walletPriceLookups.priceUsdLookup`/`currentPriceUsdLookup`
+  // are the SAME functions already used for the real fifoAndPnl above, reused unchanged; no
+  // recoveryPolicy/historical-page re-fetch, no receipt re-fetch (the receipt was already acquired
+  // by the earlier bounded acquisition, itself already capped at 10 calls/scan).
+  try {
+    const replayDisabledByEnv = process.env.RECEIPT_FIFO_SHADOW_REPLAY_DISABLED === 'true'
+    if (replayDisabledByEnv) {
+      // eslint-disable-next-line no-console
+      console.warn('[pipeline] receipt FIFO shadow replay', { enabled: false, rejectionReason: 'replay_disabled' })
+    } else if (shadowExactReceiptSwaps.length === 0) {
+      // eslint-disable-next-line no-console
+      console.warn('[pipeline] receipt FIFO shadow replay', { enabled: false, rejectionReason: 'no_exact_receipt_swaps' })
+    } else if (fifoAndPnl.integrityFlags.hardInvalid) {
+      // eslint-disable-next-line no-console
+      console.warn('[pipeline] receipt FIFO shadow replay', { enabled: false, rejectionReason: 'canonical_fifo_unavailable' })
+    } else if (!walletPriceLookups.priceUsdLookup) {
+      // eslint-disable-next-line no-console
+      console.warn('[pipeline] receipt FIFO shadow replay', { enabled: false, rejectionReason: 'verified_prices_unavailable' })
+    } else {
+      const replay = runShadowFifoReplay({
+        normalizedEvents,
+        walletAddress: params.walletAddress,
+        decodedSwap: shadowExactReceiptSwaps[0],
+        priceUsdLookup: walletPriceLookups.priceUsdLookup,
+        currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
+      })
+      // eslint-disable-next-line no-console
+      console.warn('[pipeline] receipt FIFO shadow replay', {
+        enabled: true,
+        rejectionReason: replay.rejectionReason,
+        shadowReplayAccepted: replay.shadowReplayAccepted,
+        ...replay.counters,
+        newlyClosedLotSamples: replay.newlyClosedLotSamples,
+      })
+    }
+  } catch (err) {
+    // Guarantees the log is truly unconditional even on an unexpected throw — never propagates
+    // into the real scan result.
+    // eslint-disable-next-line no-console
+    console.error('[pipeline] receipt FIFO shadow replay', {
+      enabled: false,
+      rejectionReason: 'replay_error',
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
 
   // 6b. pnlSummaryV2 — additive, pure, zero-cost. Now runs AFTER fifoEngine (was before it) so it
   // can borrow fifoEngine's real, now-priced matchedLots for resolveCostUsdEstimate/

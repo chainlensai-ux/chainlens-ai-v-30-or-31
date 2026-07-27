@@ -1,6 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { runShadowFifoReplay } from './shadowFifoReplay'
+import { runWalletScanReceiptShadowMode, type WalletScanSwapCandidate } from './walletScanShadowWiring'
+import { WALLET as FIX_WALLET, transferLog, slipstreamSwapLog, alwaysValidValidator } from './fixtures.test-helpers'
+import { WETH_BASE_ADDRESS } from './signatures'
 import type { NormalizedEvent } from '../normalization/types'
 import type { PriceUsdLookup } from '../fifoEngine/types'
 import type { DecodedReceiptSwap } from './types'
@@ -91,6 +94,10 @@ test('one-leg upgrade: recovering the missing buy leg closes the previously-unma
   assert.equal(result.counters.fifoClosedLotsAfter, 1)
   assert.equal(result.counters.newlyClosedLots, 1)
   assert.equal(result.counters.newlyPricedClosedLots, 1)
+  assert.equal(result.newlyClosedLotSamples.length, 1)
+  assert.equal(result.newlyClosedLotSamples[0].token, TOKEN_X)
+  assert.equal(result.newlyClosedLotSamples[0].realizedPnlUsd, 200)
+  assert.equal(result.newlyClosedLotSamples[0].evidenceQuality, 'verified')
   assert.equal(result.counters.verifiedPricingCoverageBefore, 0)
   assert.equal(result.counters.verifiedPricingCoverageAfter, 1)
   assert.equal(result.counters.shadowRealizedPnlBefore, null)
@@ -179,4 +186,76 @@ test('no extra provider calls: FIFO replay only ever passes an empty recoveredRa
   // is not a new provider call, since no I/O happens inside it. This just confirms it was reused,
   // never replaced with a fresh/expanded lookup that could imply a new fetch.
   assert.ok(lookupCalls > 0)
+})
+
+// ─── Production-path integration: shadow decode → shadow FIFO replay ───────────────────────────
+// Proves an exact, factory-validated one-leg receipt decode (produced by the REAL
+// runWalletScanReceiptShadowMode wiring, not a hand-built DecodedReceiptSwap) reaches
+// runShadowFifoReplay after canonical FIFO/pricing exist, and that only the internal cloned FIFO
+// computation changes — canonical normalizedEvents passed in stay exactly as they were.
+test('production integration: an exact one-leg receipt decode from the real shadow wiring reaches FIFO replay and only the clone changes', async () => {
+  const wallet = FIX_WALLET.toLowerCase()
+  const poolA = '0x3333333333333333333333333333333333333333'
+  const weth = WETH_BASE_ADDRESS.toLowerCase()
+  const tokenX = '0x5555555555555555555555555555555555555555'
+
+  // Real receipt logs for a one-leg buy: only the outbound WETH leg is in canonical
+  // normalizedEvents; the inbound TOKEN_X leg is recovered from the receipt.
+  const logs = [
+    transferLog(0, weth, wallet, poolA, BigInt('1000000000000000000')),
+    slipstreamSwapLog(1, poolA, wallet, wallet, BigInt('1000000000000000000'), BigInt('-100000000000000000000')),
+    transferLog(2, tokenX, poolA, wallet, BigInt('100000000000000000000')),
+  ]
+  const candidates: WalletScanSwapCandidate[] = [
+    { chain: 'base', txHash: 'buy_tx', inferredTokenIn: weth, inferredTokenOut: null, inferredAmountIn: 1, inferredAmountOut: null, inferredMissingSide: 'tokenOut' },
+  ]
+  const shadowResult = await runWalletScanReceiptShadowMode({
+    walletAddress: wallet,
+    candidates,
+    logsByTxHash: new Map([['buy_tx', logs]]),
+    tokenMeta: { [weth]: { symbol: 'WETH', decimals: 18 }, [tokenX]: { symbol: 'X', decimals: 18 } },
+    validator: alwaysValidValidator(),
+  })
+
+  assert.equal(shadowResult.acceptedExactSwaps.length, 1)
+  const decodedSwap = shadowResult.acceptedExactSwaps[0]
+  assert.equal(decodedSwap.confidence, 'exact')
+  assert.equal(decodedSwap.protocol, 'aerodrome_slipstream')
+
+  // The canonical normalizedEvents this scan's REAL fifoEngine/pricing already used — the one-leg
+  // buy tx plus a real, otherwise-unmatched later sell of TOKEN_X.
+  const canonicalNormalizedEvents: NormalizedEvent[] = [
+    {
+      provider: 'goldrush', chain: 'base', txHash: 'buy_tx', timestamp: '2024-01-01T00:00:00.000Z',
+      fromAddress: wallet, toAddress: poolA, contract: weth, symbol: 'WETH', amount: 1,
+      amountRaw: '1000000000000000000', tokenDecimals: 18, direction: 'outbound',
+    },
+    {
+      provider: 'goldrush', chain: 'base', txHash: 'sell_tx', timestamp: '2024-01-02T00:00:00.000Z',
+      fromAddress: wallet, toAddress: poolA, contract: tokenX, symbol: 'X', amount: 100,
+      amountRaw: '100000000000000000000', tokenDecimals: 18, direction: 'outbound',
+    },
+  ]
+  const canonicalSnapshot = JSON.parse(JSON.stringify(canonicalNormalizedEvents))
+
+  const priceUsdLookup: PriceUsdLookup = (event) => {
+    if (event.txHash === 'buy_tx' && event.direction === 'inbound') return 250
+    if (event.txHash === 'sell_tx') return 400
+    return null
+  }
+
+  const replay = runShadowFifoReplay({
+    normalizedEvents: canonicalNormalizedEvents,
+    walletAddress: wallet,
+    decodedSwap,
+    priceUsdLookup,
+  })
+
+  assert.equal(replay.shadowReplayAccepted, true)
+  assert.equal(replay.counters.newlyClosedLots, 1)
+  assert.equal(replay.counters.shadowRealizedPnlAfter, 150) // 400 proceeds - 250 cost basis
+  // The canonical array this scan's real FIFO/pricing already ran against is completely untouched —
+  // only the internal clone (never returned to the caller) reflects the recovered leg.
+  assert.deepEqual(canonicalNormalizedEvents, canonicalSnapshot)
+  assert.equal(canonicalNormalizedEvents.length, 2)
 })

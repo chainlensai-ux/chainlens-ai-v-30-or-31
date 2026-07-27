@@ -18,7 +18,7 @@
 
 import { decodeReceiptSwap } from './index'
 import type { PoolValidator } from './poolValidator'
-import type { RawReceiptLog, ReceiptSwapProtocol, TokenMeta } from './types'
+import type { DecodedReceiptSwap, RawReceiptLog, ReceiptSwapProtocol, TokenMeta } from './types'
 import { selectBaseReceiptCandidates, type CandidateTxEvidence, type CandidateSelectionResult } from './candidateSelector'
 import {
   acquireReceiptsForCandidates, createReceiptRequestScopeCache, createLiveBaseReceiptFetcher,
@@ -108,6 +108,11 @@ export type WalletScanShadowDiagnostics = {
   // MAX_FORENSIC_SAMPLES = 10) — see forensicClassifier.ts's own header. Never used to change
   // selection or decoding; purely diagnostic.
   receiptForensics: ReceiptForensicSample[]
+  // Bounded (<= MAX_FORENSIC_SAMPLES) list of fully-accepted exact swaps this batch decoded —
+  // confidence === 'exact', factory-validated, two-sided. Never promoted into canonical events by
+  // this module; a later stage (src/pipeline/index.ts, after real FIFO/pricing exist) may replay
+  // AT MOST ONE of these through shadowFifoReplay.ts for measurement only.
+  acceptedExactSwaps: DecodedReceiptSwap[]
 }
 
 const MAX_DISAGREEMENT_SAMPLES = 10
@@ -158,6 +163,7 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
   const baseCandidates = input.candidates.filter((c) => c.chain === 'base')
 
   const receiptForensics: ReceiptForensicSample[] = []
+  const acceptedExactSwaps: DecodedReceiptSwap[] = []
 
   for (const candidate of baseCandidates) {
     const logs = input.logsByTxHash?.get(candidate.txHash) ?? null
@@ -204,6 +210,10 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
         decodeResult: result,
         factoryValidationAttempts,
       }))
+    }
+
+    if (result.ok && result.swap.confidence === 'exact' && acceptedExactSwaps.length < MAX_FORENSIC_SAMPLES) {
+      acceptedExactSwaps.push(result.swap)
     }
 
     if (!result.ok) {
@@ -278,7 +288,7 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
   }
 
   counters.newProviderCalls = providerCalls
-  return { counters, rejectionReasons, decodedByVenue, decodedByConfidence, disagreementSamples, receiptForensics }
+  return { counters, rejectionReasons, decodedByVenue, decodedByConfidence, disagreementSamples, receiptForensics, acceptedExactSwaps }
 }
 
 // ─── Pipeline-facing entry point ───────────────────────────────────────────────────────────────
@@ -350,6 +360,10 @@ export type WalletScanShadowLogPayload =
       // Bounded (<= 10) forensic classification of every examined receipt — see
       // forensicClassifier.ts's own header. Shadow/debug-only.
       receiptForensics: ReceiptForensicSample[]
+      // Bounded (<= MAX_FORENSIC_SAMPLES) fully-accepted exact swaps — see
+      // WalletScanShadowDiagnostics' matching field above. Consumed by src/pipeline/index.ts's
+      // shadow-FIFO-replay stage (at most the first one, per scan) after real FIFO/pricing exist.
+      acceptedExactSwaps: DecodedReceiptSwap[]
       // SELECTOR BROADENING, DISCLOSED — see candidateSelector.ts's own header for the full
       // production-proof root cause this fixes (415 real swap-lookup transactions, 0 candidates
       // selected under the old routerDistributorMode-gated source).
@@ -467,6 +481,7 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     decodedByConfidence: result.decodedByConfidence,
     disagreementSamples: result.disagreementSamples,
     receiptForensics: result.receiptForensics,
+    acceptedExactSwaps: result.acceptedExactSwaps,
     selectorTransactionsConsidered: selection.selectorTransactionsConsidered,
     selectorEligibleCandidates: selection.selectorEligibleCandidates,
     selectorRejectedCandidates: selection.selectorRejectedCandidates,
