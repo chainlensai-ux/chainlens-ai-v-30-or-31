@@ -219,34 +219,45 @@ function ev(overrides: Partial<CandidateTxEvidence> & { txHash: string }): Candi
   }
 }
 
-test('production pipeline shape: non-empty base evidence + empty logsByTxHash still produces enabled:true diagnostics', async () => {
+function missingFetcher() {
+  return async () => ({ status: 'missing' as const })
+}
+
+function okFetcher(logs: ReturnType<typeof decodableLogs>) {
+  return async () => ({ status: 'ok' as const, logs })
+}
+
+test('production pipeline shape: non-empty base evidence with no receipts available still produces enabled:true diagnostics', async () => {
   const evidence: CandidateTxEvidence[] = [ev({ txHash: '0x1' }), ev({ txHash: '0x2' })]
   const payload = await buildWalletScanShadowLogPayload({
     walletAddress: wallet,
     evidence,
-    logsByTxHash: new Map(), // production reality today: never populated
     tokenMeta: tokenMeta(),
     validator: alwaysValidValidator(),
     disabledByEnv: false,
+    receiptFetcher: missingFetcher(),
   })
   assert.equal(payload.enabled, true)
   if (!payload.enabled) return
   assert.equal(payload.baseSwapCandidates, 2)
   assert.equal(payload.selectorTransactionsConsidered, 2)
   assert.equal(payload.selectorEligibleCandidates, 2)
+  assert.equal(payload.receiptCandidatesSelected, 2)
+  assert.equal(payload.receiptProviderCalls, 2)
+  assert.equal(payload.receiptMissingResults, 2)
   assert.equal(payload.receiptsMissing, 2)
   assert.equal(payload.receiptsAvailable, 0)
   assert.equal(payload.receiptsExamined, 0)
   assert.equal(payload.aerodromeSwapsDecoded, 0)
   assert.equal(payload.candidateLotsUnlocked, 0)
-  assert.equal(payload.newProviderCalls, 0)
+  assert.equal(payload.poolValidationProviderCalls, 0)
+  assert.equal(payload.newProviderCalls, 2)
 })
 
 test('production pipeline shape: zero evidence logs a typed no_candidates skip reason, never silence', async () => {
   const payload = await buildWalletScanShadowLogPayload({
     walletAddress: wallet,
     evidence: [],
-    logsByTxHash: new Map(),
     validator: alwaysValidValidator(),
     disabledByEnv: false,
   })
@@ -258,7 +269,6 @@ test('production pipeline shape: evidence exists but none is on base logs unsupp
   const payload = await buildWalletScanShadowLogPayload({
     walletAddress: wallet,
     evidence,
-    logsByTxHash: new Map(),
     validator: alwaysValidValidator(),
     disabledByEnv: false,
   })
@@ -274,7 +284,6 @@ test('production pipeline shape: evidence exists on base but none is eligible lo
   const payload = await buildWalletScanShadowLogPayload({
     walletAddress: wallet,
     evidence,
-    logsByTxHash: new Map(),
     validator: alwaysValidValidator(),
     disabledByEnv: false,
   })
@@ -286,28 +295,48 @@ test('production pipeline shape: the env kill switch produces shadow_disabled, i
   const payload = await buildWalletScanShadowLogPayload({
     walletAddress: wallet,
     evidence,
-    logsByTxHash: new Map(),
     validator: alwaysValidValidator(),
     disabledByEnv: true,
   })
   assert.deepEqual(payload, { enabled: false, skipReason: 'shadow_disabled', baseSwapCandidates: 0 })
 })
 
-test('production pipeline shape: when logs ARE available for a base candidate, real decode diagnostics surface', async () => {
+test('production pipeline shape: when a receipt IS successfully fetched for a base candidate, real decode diagnostics surface', async () => {
   const evidence: CandidateTxEvidence[] = [ev({ txHash: '0x1' })]
   const payload = await buildWalletScanShadowLogPayload({
     walletAddress: wallet,
     evidence,
-    logsByTxHash: new Map([['0x1', decodableLogs()]]),
     tokenMeta: tokenMeta(),
     validator: alwaysValidValidator(),
     disabledByEnv: false,
+    receiptFetcher: okFetcher(decodableLogs()),
   })
   assert.equal(payload.enabled, true)
   if (!payload.enabled) return
   assert.equal(payload.receiptsAvailable, 1)
   assert.equal(payload.aerodromeSwapsDecoded, 1)
-  assert.equal(payload.newProviderCalls, 1)
+  assert.equal(payload.receiptProviderCalls, 1)
+  assert.equal(payload.poolValidationProviderCalls, 1)
+  assert.equal(payload.newProviderCalls, 2)
+})
+
+test('production pipeline shape: receipt fetching is capped at 10 even with more than 10 eligible candidates', async () => {
+  const evidence: CandidateTxEvidence[] = Array.from({ length: 25 }, (_, i) => ev({ txHash: `0x${i.toString().padStart(3, '0')}` }))
+  const payload = await buildWalletScanShadowLogPayload({
+    walletAddress: wallet,
+    evidence,
+    validator: alwaysValidValidator(),
+    disabledByEnv: false,
+    receiptFetcher: missingFetcher(),
+  })
+  assert.equal(payload.enabled, true)
+  if (!payload.enabled) return
+  assert.equal(payload.baseSwapCandidates, 25)
+  assert.equal(payload.receiptCandidatesTotal, 25)
+  assert.equal(payload.receiptCandidatesSelected, 10)
+  assert.equal(payload.receiptCandidatesCapped, 15)
+  assert.equal(payload.receiptProviderCalls, 10)
+  assert.ok(payload.receiptProviderCalls <= 10)
 })
 
 test('production pipeline shape: identical inputs produce a deterministic payload across repeated calls', async () => {
@@ -315,9 +344,9 @@ test('production pipeline shape: identical inputs produce a deterministic payloa
   const opts = {
     walletAddress: wallet,
     evidence,
-    logsByTxHash: new Map(),
     validator: alwaysValidValidator(),
     disabledByEnv: false,
+    receiptFetcher: missingFetcher(),
   }
   const p1 = await buildWalletScanShadowLogPayload(opts)
   const p2 = await buildWalletScanShadowLogPayload(opts)

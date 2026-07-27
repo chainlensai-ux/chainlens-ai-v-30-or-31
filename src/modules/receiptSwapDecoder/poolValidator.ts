@@ -8,9 +8,8 @@
 // on-chain implementation used outside tests, reusing the exact same canonical factory addresses
 // already verified and shipped in basedex.ts (not re-derived or guessed here).
 
-import { createPublicClient, http, type PublicClient } from 'viem'
-import { base } from 'viem/chains'
 import type { ReceiptSwapProtocol } from './types'
+import { getSharedBaseClient } from './rpcClient'
 
 // Same canonical, previously-verified addresses as basedex.ts — see that file's own header for the
 // full provenance/verification disclosure. Not re-derived here; imported by value would create a
@@ -42,14 +41,9 @@ export type PoolValidator = {
   isValidPool(protocol: ReceiptSwapProtocol, poolAddress: string, token0: string, token1: string): Promise<boolean>
 }
 
-let cachedClient: PublicClient | null = null
-function getClient(): PublicClient | null {
-  const rpcUrl = process.env.ALCHEMY_BASE_RPC_URL
-    ?? (process.env.ALCHEMY_BASE_KEY ? `https://base-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_BASE_KEY}` : null)
-  if (!rpcUrl) return null
-  if (!cachedClient) cachedClient = createPublicClient({ chain: base, transport: http(rpcUrl) })
-  return cachedClient
-}
+// Shared client — see rpcClient.ts's own header for why this is one cached instance reused across
+// this whole module, not independently re-created here.
+const getClient = getSharedBaseClient
 
 // FAIL-CLOSED, DISCLOSED: any RPC failure, missing config, or a factory returning the zero address
 // for every attempted key resolves to `false` (not validated) — never treated as "validated" by

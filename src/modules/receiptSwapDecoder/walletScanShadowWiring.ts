@@ -9,23 +9,21 @@
 // or fifoEngine. Same "additive observability, never a second real event source" contract
 // routerTradeReconstruction's own header already establishes.
 //
-// PROVIDER-CALL DISCIPLINE, DISCLOSED (this task's hard limit — "no provider-call increase"):
-// `logsByTxHash` is caller-supplied and expected to be EMPTY in production today — this codebase's
-// real provider fetchers (providerFetchWindow/types.ts's RawProviderEvent) do not fetch or expose
-// raw receipt logs anywhere; confirmed by reading that module and NormalizedEvent (normalization/
-// types.ts), neither of which carries a `logs` field. This function never fetches a receipt itself
-// to fill that gap — a candidate with no logs already in hand is counted as `receiptsMissing` and
-// skipped, exactly as required ("when genuinely absent, do not fetch in this pass"). The only
-// network call this module can ever trigger is pool-factory validation (poolValidator.ts), and that
-// ONLY happens for a candidate whose logs were already available — so with today's real data (never
-// available), `newProviderCalls` is always 0. The counter exists so this stays honestly measured
-// the day a future provider upgrade actually supplies logs, per this task's explicit requirement to
-// expose it.
+// PROVIDER-CALL DISCIPLINE, DISCLOSED (runWalletScanReceiptShadowMode below): `logsByTxHash` is a
+// direct parameter here — a candidate with no logs already in hand is counted as `receiptsMissing`
+// and skipped; this function itself never fetches a receipt. Bounded, real receipt ACQUISITION
+// (up to 10 live eth_getTransactionReceipt calls per scan) now happens one layer up, in
+// buildWalletScanShadowLogPayload below, via receiptAcquisition.ts — see that module's own header
+// for the full disclosure (cap, concurrency, timeout, no-retry, cache/singleflight).
 
 import { decodeReceiptSwap } from './index'
 import type { PoolValidator } from './poolValidator'
 import type { RawReceiptLog, ReceiptSwapProtocol, TokenMeta } from './types'
 import { selectBaseReceiptCandidates, type CandidateTxEvidence, type CandidateSelectionResult } from './candidateSelector'
+import {
+  acquireReceiptsForCandidates, createReceiptRequestScopeCache, createLiveBaseReceiptFetcher,
+  type ReceiptFetcher, type ReceiptRequestScopeCache,
+} from './receiptAcquisition'
 
 export type WalletScanSwapCandidate = {
   chain: string
@@ -258,7 +256,26 @@ export type WalletScanShadowLogPayload =
       receiptsMissing: number
       receiptsExamined: number
       aerodromeSwapsDecoded: number
+      exactTwoSidedSwapsRecovered: number
+      oneLegTransactionsUpgraded: number
       candidateLotsUnlocked: number
+      // BOUNDED ACQUISITION, DISCLOSED — see receiptAcquisition.ts's own header (cap 10, concurrency
+      // 3, no retries, per-call timeout, request-scoped cache + singleflight by chain:txHash).
+      receiptCandidatesTotal: number
+      receiptCandidatesSelected: number
+      receiptCandidatesCapped: number
+      receiptCacheHits: number
+      receiptSingleflightHits: number
+      receiptLiveCalls: number
+      receiptTimeouts: number
+      receiptMissingResults: number
+      receiptMalformed: number
+      receiptReverted: number
+      // Attributable, separately-counted provider-call totals: receiptProviderCalls is real
+      // eth_getTransactionReceipt calls (<= 10); poolValidationProviderCalls is real factory
+      // getPool() calls (only for successfully-decoded receipts); newProviderCalls is their sum.
+      receiptProviderCalls: number
+      poolValidationProviderCalls: number
       newProviderCalls: number
       rejectionReasons: Record<string, number>
       decodedByVenue: Record<string, number>
@@ -279,17 +296,22 @@ export type BuildWalletScanShadowLogPayloadInput = {
   // Real, already-computed per-transaction evidence (leg grouping, router inference, bridge
   // detection, verified-quote-address, closed-lot pairing) — see candidateSelector.ts's own header.
   evidence: readonly CandidateTxEvidence[]
-  // Caller-supplied, expected empty in production today — see file header's provider-call
-  // discipline disclosure. Never fetched inside this function.
-  logsByTxHash: ReadonlyMap<string, RawReceiptLog[]>
   tokenMeta?: Record<string, TokenMeta>
   validator: PoolValidator
   disabledByEnv: boolean
+  // Receipt acquisition — defaults to the real, live, on-chain fetcher and a fresh request-scoped
+  // cache. Tests inject a fake fetcher / a pre-seeded requestScope (exactly "reuse any receipt
+  // already in request scope") instead of hitting the network.
+  receiptFetcher?: ReceiptFetcher
+  requestScope?: ReceiptRequestScopeCache
+  maxLiveReceiptCalls?: number
+  receiptConcurrency?: number
+  receiptTimeoutMs?: number
 }
 
-// PURE with respect to control flow (the only awaited work is runWalletScanReceiptShadowMode
-// itself, already documented as zero-network-call when logsByTxHash is empty). Never throws by
-// itself — a thrown error from runWalletScanReceiptShadowMode propagates to the caller, which
+// PURE with respect to control flow beyond the injected fetcher (acquireReceiptsForCandidates) and
+// pool validator (runWalletScanReceiptShadowMode) — both already bounded/documented in their own
+// files. Never throws by itself — a thrown error propagates to the caller, which
 // src/pipeline/index.ts catches and logs under the 'wiring_not_reached' skip reason so the
 // unconditional-log guarantee holds even in that case.
 export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShadowLogPayloadInput): Promise<WalletScanShadowLogPayload> {
@@ -304,10 +326,20 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
   if (selection.baseSwapCandidates === 0) {
     // Distinguishes "there was no Base evidence at all" from "there was Base evidence but none of
     // it survived eligibility" — both are honestly "nothing to decode", but the former is the exact
-    // production symptom this task fixes (evidence existed, selection was just always empty).
+    // production symptom the selector-broadening task fixed (evidence existed, selection was empty).
     const anyBaseEvidence = input.evidence.some((e) => e.chain === 'base')
     return { enabled: false, skipReason: anyBaseEvidence ? 'no_candidates' : 'unsupported_chain', baseSwapCandidates: 0 }
   }
+
+  const acquisition = await acquireReceiptsForCandidates({
+    // Highest-priority first — candidateSelector.ts already sorts `selected` this way.
+    candidates: selection.selected,
+    fetcher: input.receiptFetcher ?? createLiveBaseReceiptFetcher(),
+    requestScope: input.requestScope ?? createReceiptRequestScopeCache(),
+    maxLiveCalls: input.maxLiveReceiptCalls,
+    concurrency: input.receiptConcurrency,
+    timeoutMs: input.receiptTimeoutMs,
+  })
 
   const candidates: WalletScanSwapCandidate[] = selection.selected.map((c) => ({
     chain: c.chain,
@@ -322,10 +354,13 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
   const result = await runWalletScanReceiptShadowMode({
     walletAddress: input.walletAddress,
     candidates,
-    logsByTxHash: input.logsByTxHash,
+    logsByTxHash: acquisition.logsByTxHash,
     tokenMeta: input.tokenMeta,
     validator: input.validator,
   })
+
+  const poolValidationProviderCalls = result.counters.newProviderCalls
+  const receiptProviderCalls = acquisition.counters.receiptProviderCalls
 
   return {
     enabled: true,
@@ -334,8 +369,22 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     receiptsMissing: result.counters.receiptsMissing,
     receiptsExamined: result.counters.receiptsExamined,
     aerodromeSwapsDecoded: result.counters.aerodromeSwapsDecoded,
+    exactTwoSidedSwapsRecovered: result.counters.exactTwoSidedSwapsRecovered,
+    oneLegTransactionsUpgraded: result.counters.oneLegTransactionsUpgraded,
     candidateLotsUnlocked: result.counters.candidateLotsUnlocked,
-    newProviderCalls: result.counters.newProviderCalls,
+    receiptCandidatesTotal: acquisition.counters.receiptCandidatesTotal,
+    receiptCandidatesSelected: acquisition.counters.receiptCandidatesSelected,
+    receiptCandidatesCapped: acquisition.counters.receiptCandidatesCapped,
+    receiptCacheHits: acquisition.counters.receiptCacheHits,
+    receiptSingleflightHits: acquisition.counters.receiptSingleflightHits,
+    receiptLiveCalls: acquisition.counters.receiptLiveCalls,
+    receiptTimeouts: acquisition.counters.receiptTimeouts,
+    receiptMissingResults: acquisition.counters.receiptMissingResults,
+    receiptMalformed: acquisition.counters.receiptMalformed,
+    receiptReverted: acquisition.counters.receiptReverted,
+    receiptProviderCalls,
+    poolValidationProviderCalls,
+    newProviderCalls: receiptProviderCalls + poolValidationProviderCalls,
     rejectionReasons: result.rejectionReasons,
     decodedByVenue: result.decodedByVenue,
     decodedByConfidence: result.decodedByConfidence,

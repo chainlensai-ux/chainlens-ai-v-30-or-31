@@ -1267,13 +1267,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // before priceLotsForWallet/recoveryPolicy's own network calls, so this file's "only stage 1 (and
   // stage 5 in deep mode) make awaited network calls" cost guarantee is unaffected (see below).
   //
-  // PROVIDER-CALL / COST-GUARANTEE DISCLOSURE: `logsByTxHash` is intentionally an empty Map — this
-  // pipeline's real provider data (RawProviderEvent / NormalizedEvent) has never carried raw receipt
-  // logs, so every selected candidate here is honestly counted as `receiptsMissing`, and this NEVER
-  // fetches a receipt to fill that gap (this task's explicit "no receipt fetching yet" limit). The
-  // one awaited call inside runWalletScanReceiptShadowMode (pool-factory validation) is only
-  // reachable once logs are actually present — with today's real data that never happens, so this
-  // resolves with zero network calls in practice.
+  // BOUNDED RECEIPT ACQUISITION, DISCLOSED (this task): buildWalletScanShadowLogPayload now fetches
+  // real receipts for the top-priority selected candidates via receiptAcquisition.ts — capped at 10
+  // live eth_getTransactionReceipt calls per scan, concurrency 3, no retries, per-call timeout,
+  // request-scoped cache + singleflight keyed by chain:txHash. Still shadow-mode only: acquired logs
+  // feed decodeReceiptSwap for observability ONLY — never normalizedEvents/FIFO/pricing/PnL/router
+  // inference/public output. See receiptAcquisition.ts's own header for the full bound/fail-closed
+  // disclosure, and walletScanShadowWiring.ts for how receiptProviderCalls (receipt fetches) and
+  // poolValidationProviderCalls (factory getPool() reads) stay separately attributable while
+  // newProviderCalls reports their sum.
   try {
     const existingSwapCandidateTxHashes = new Set(
       routerTradeReconstruction.candidateTrades.map((t) => swapLegGroupKey(t.chain as SupportedChain, t.txHash)),
@@ -1332,7 +1334,6 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     const shadowPayload = await buildWalletScanShadowLogPayload({
       walletAddress: params.walletAddress,
       evidence,
-      logsByTxHash: new Map(),
       validator: createLiveBaseDexPoolValidator(),
       disabledByEnv: process.env.RECEIPT_SWAP_DECODER_SHADOW_DISABLED === 'true',
     })
