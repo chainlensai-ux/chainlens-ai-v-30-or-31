@@ -329,6 +329,19 @@ export function computePnl(
     const openCostBasisUsd = pricedOpenLots.length > 0
       ? pricedOpenLots.reduce((sum, l) => sum + (l.costBasisUsd as number), 0)
       : null
+    // AGGREGATE-ARITHMETIC FIX, DISCLOSED (found live, this task — confirmed production evidence:
+    // reconciledMarketValueUsd - reconciledCostBasisUsd did not equal officialUnrealizedPnlUsd for
+    // 5 reconciled positions). ROOT CAUSE: reconciledMarketValueUsd below used to be accumulated from
+    // `openQuantityFromFifo` — ALL of a position's lots, including any lot with a null costBasisUsd
+    // — while reconciledCostBasisUsd (openCostBasisUsd above) and the per-lot unrealizedTerms loop
+    // below both only ever include PRICED lots (costBasisUsd != null, see their own existing
+    // comments). A position with a MIX of priced and unpriced open lots therefore had its market
+    // value overstated by exactly `price * (unpriced lots' quantity)` relative to both the cost
+    // basis and the unrealized-PnL sum it was supposed to reconcile against. Fixed by scoping the
+    // market-value quantity to the SAME priced-lot subset cost basis and unrealizedTerms already
+    // use — this changes ONLY which quantity the aggregate diagnostic multiplies by, never which
+    // lots are priced, never FIFO matching, and never which positions are included/excluded.
+    const pricedOpenQuantity = pricedOpenLots.reduce((sum, l) => sum + l.amountRemaining, 0)
 
     const metadata = diagnostics?.positionMetadataLookup?.(token, chain) ?? null
     const canonicalCurrentBalance = canonicalBalanceLookup(token, chain)
@@ -419,7 +432,10 @@ export function computePnl(
     }
 
     reconciledOpenPositions += 1
-    reconciledMarketValueUsd += rawCurrentPrice * openQuantityFromFifo
+    // Scoped to pricedOpenQuantity (not openQuantityFromFifo) — see this position's own
+    // AGGREGATE-ARITHMETIC FIX comment above. Consistent with reconciledCostBasisUsd/
+    // unrealizedTerms: an unpriced lot contributes to neither, so it must not inflate this either.
+    reconciledMarketValueUsd += rawCurrentPrice * pricedOpenQuantity
     if (openCostBasisUsd != null) reconciledCostBasisUsd += openCostBasisUsd
     const sourceKey = currentPriceSource ?? 'unknown'
     reconciledPositionsByPriceSource[sourceKey] = (reconciledPositionsByPriceSource[sourceKey] ?? 0) + 1
