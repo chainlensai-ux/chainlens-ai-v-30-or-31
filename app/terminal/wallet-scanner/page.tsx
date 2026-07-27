@@ -678,11 +678,19 @@ export default function WalletScannerPage() {
 
               <SectionDivider label="PnL Summary" />
               <div className="ws-card">
-                {/* SINGLE-VERIFIED-SOURCE PNL, DISCLOSED: PnlStatusCard now reads ONLY result.pnlV2
-                    (the V2 engine's self-contained realized+unrealized PnL) — result.fifoAndPnl and
-                    result.pnlSummaryV2 (old pipeline sources) are intentionally no longer passed;
-                    this component has no fallback/merge logic across multiple PnL sources anymore. */}
-                <PnlStatusCard pnlV2={result.pnlV2} publicPnlStatus={result.finalSummary?.financialStatus?.officialPnlStatus} syntheticPnl={result.syntheticPnl} />
+                {/* SINGLE-VERIFIED-SOURCE PNL, UPDATED DISCLOSURE (found live, this task — confirmed
+                    ~$500k fabricated Unrealized PnL bug): realized/ROI/cost-basis still read ONLY
+                    result.pnlV2 (unchanged) — but Unrealized PnL specifically now reads
+                    result.fifoAndPnl.unrealizedReconciliation.officialUnrealizedPnlUsd, the real
+                    canonical, balance-reconciled figure, NEVER pnlV2.unrealizedPnlUsd (the legacy,
+                    un-reconciled field that produced the reported bug). result.pnlSummaryV2/
+                    ayriAttribution and any other PnL source remain excluded, unchanged. */}
+                <PnlStatusCard
+                  pnlV2={result.pnlV2}
+                  publicPnlStatus={result.finalSummary?.financialStatus?.officialPnlStatus}
+                  syntheticPnl={result.syntheticPnl}
+                  unrealizedReconciliation={result.fifoAndPnl?.unrealizedReconciliation}
+                />
               </div>
 
               {/* SELL ACTIVITY, ADDITIVE/DISCLOSED: sourced from result.timelines.sellTimelineV2 —

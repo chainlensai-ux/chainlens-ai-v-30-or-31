@@ -5,24 +5,57 @@
 //
 // REWRITTEN, DISCLOSED: this file previously tested selectPnlData()'s 3-way priority fallback
 // (pnlV2 > fifoAndPnl > pnlSummaryV2) — that function no longer exists. PnlStatusCard now reads
-// ONLY pnlV2 (the single verified source), so these tests cover selectVerifiedPnlData() instead:
-// real numbers when pnlV2 is present, honest all-null when it is not, and a real ROI computed from
-// pnlV2's own costBasis array (never fifoAndPnl.costBasisUsd, which no longer reaches this component).
+// realized PnL/ROI/cost-basis ONLY from pnlV2 (unchanged), and Unrealized PnL ONLY from
+// `unrealizedReconciliation.officialUnrealizedPnlUsd` (src/modules/fifoEngine's canonical,
+// balance-reconciled figure) — see selectDisplayedUnrealizedPnl's own header in PnlStatusCard.tsx
+// for the confirmed ~$500k fabricated-PnL bug this fixes. `pnlV2.unrealizedPnlUsd` is set to a
+// deliberately WRONG/conflicting value (545000) in most fixtures below specifically to prove it is
+// never read for display — every test asserting a real `unrealizedPnlUsd`/`totalPnlUsd` value now
+// supplies an explicit `unrealizedReconciliation` fixture.
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { selectVerifiedPnlData, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl, PNL_UNAVAILABLE_MESSAGE, hasGlobalSynthetic, hasPerChainSynthetic, shouldShowSyntheticGlobal, shouldShowSyntheticPerChain, resolvePnlDisplayMode } from './PnlStatusCard'
+import { selectVerifiedPnlData, selectDisplayedUnrealizedPnl, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl, PNL_UNAVAILABLE_MESSAGE, hasGlobalSynthetic, hasPerChainSynthetic, shouldShowSyntheticGlobal, shouldShowSyntheticPerChain, resolvePnlDisplayMode } from './PnlStatusCard'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
+import type { UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
 
 function pnlV2(overrides: Partial<PnlV2>): PnlV2 {
   return { realizedPnlUsd: 0, unrealizedPnlUsd: 0, costBasis: [], realized: [], unrealized: [], chainBreakdown: [], ...overrides }
 }
 
+// LEGACY-VS-CANONICAL CONFLICT FIXTURE, DISCLOSED: `545000` matches this task's own literal
+// production-shaped conflicting-value example — a deliberately WRONG legacy pnlV2.unrealizedPnlUsd
+// that must never leak into the display, paired with a real, small canonical reconciliation value.
+const LEGACY_CONFLICTING_UNREALIZED_PNL_USD = 545_000
+
+function reconciliation(overrides: Partial<UnrealizedReconciliationSummary> = {}): UnrealizedReconciliationSummary {
+  return {
+    totalOpenPositions: 1,
+    reconciledOpenPositions: 1,
+    excludedOpenPositions: 0,
+    excludedCandidateMarketValueUsd: 0,
+    excludedCandidateUnrealizedPnlUsd: 0,
+    officialUnrealizedPnlUsd: 0,
+    reconciliationStatus: 'ok',
+    excludedPositions: [],
+    reconciledPositionsByPriceSource: {},
+    excludedReasonCounts: {},
+    reconciledMarketValueUsd: 0,
+    reconciledCostBasisUsd: 0,
+    unrealizedCoveragePercent: 100,
+    ...overrides,
+  }
+}
+
 describe('selectVerifiedPnlData', () => {
-  it('reads real realized/unrealized/total numbers directly from pnlV2', () => {
-    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: -40 }))
+  it('reads realized from pnlV2, but unrealized ONLY from the canonical unrealizedReconciliation — never from pnlV2.unrealizedPnlUsd', () => {
+    const result = selectVerifiedPnlData(
+      pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: LEGACY_CONFLICTING_UNREALIZED_PNL_USD }),
+      'ok',
+      reconciliation({ officialUnrealizedPnlUsd: -40 }),
+    )
     assert.equal(result.realizedPnlUsd, 100)
-    assert.equal(result.unrealizedPnlUsd, -40)
+    assert.equal(result.unrealizedPnlUsd, -40, 'must be the canonical reconciled value, never the conflicting legacy pnlV2 figure')
     assert.equal(result.totalPnlUsd, 60)
   })
 
@@ -55,17 +88,89 @@ describe('selectVerifiedPnlData', () => {
     assert.equal(result.roi.value, null)
   })
 
-  it('never averages or merges — a negative realized + positive unrealized sums exactly, no smoothing', () => {
-    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: -30, unrealizedPnlUsd: 90 }))
+  it('never averages or merges — a negative realized + positive canonical unrealized sums exactly, no smoothing', () => {
+    const result = selectVerifiedPnlData(
+      pnlV2({ realizedPnlUsd: -30, unrealizedPnlUsd: LEGACY_CONFLICTING_UNREALIZED_PNL_USD }),
+      'ok',
+      reconciliation({ officialUnrealizedPnlUsd: 90 }),
+    )
     assert.equal(result.realizedPnlUsd, -30)
     assert.equal(result.unrealizedPnlUsd, 90)
     assert.equal(result.totalPnlUsd, 60)
   })
+
+  it('unrealizedReconciliation omitted entirely -> unrealizedPnlUsd/totalPnlUsd are null, never falling back to pnlV2.unrealizedPnlUsd', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: LEGACY_CONFLICTING_UNREALIZED_PNL_USD }))
+    assert.equal(result.unrealizedPnlUsd, null)
+    assert.equal(result.totalPnlUsd, null, 'a null unrealized value must make the total honestly null too, never realized-only masquerading as complete')
+  })
+
+  it('unrealizedReconciliation explicitly null -> unrealizedPnlUsd is null (canonical source checked, found nothing trustworthy)', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: LEGACY_CONFLICTING_UNREALIZED_PNL_USD }), 'ok', null)
+    assert.equal(result.unrealizedPnlUsd, null)
+  })
+
+  it('officialUnrealizedPnlUsd itself null (reconciliation ran, nothing reconciled) -> unrealizedPnlUsd is null, never a legacy estimate', () => {
+    const result = selectVerifiedPnlData(
+      pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: LEGACY_CONFLICTING_UNREALIZED_PNL_USD }),
+      'ok',
+      reconciliation({ officialUnrealizedPnlUsd: null, reconciliationStatus: 'failed', reconciledOpenPositions: 0, excludedOpenPositions: 3 }),
+    )
+    assert.equal(result.unrealizedPnlUsd, null)
+    assert.equal(result.totalPnlUsd, null)
+  })
+
+  it("PRODUCTION-SHAPED: legacy pnlV2 field = 545000, canonical field = -0.086 -> resolves to -0.09 (rounded)", () => {
+    const result = selectVerifiedPnlData(
+      pnlV2({ realizedPnlUsd: 0, unrealizedPnlUsd: 545_000 }),
+      'ok',
+      reconciliation({ officialUnrealizedPnlUsd: -0.0862676760201886, reconciliationStatus: 'partial', unrealizedCoveragePercent: 8.33 }),
+    )
+    assert.equal(result.unrealizedPnlUsd, -0.0862676760201886, 'the exact canonical value must be preserved, never the conflicting legacy 545000')
+    assert.equal(Math.round(result.unrealizedPnlUsd! * 100) / 100, -0.09, 'rounded for display must read -0.09, never anything derived from 545000')
+  })
+})
+
+describe('selectDisplayedUnrealizedPnl — the sole selector for the Unrealized PnL value', () => {
+  it('resolves the exact officialUnrealizedPnlUsd, reconciliationStatus, and coveragePercent from a real reconciliation', () => {
+    const result = selectDisplayedUnrealizedPnl(reconciliation({ officialUnrealizedPnlUsd: -0.0862676760201886, reconciliationStatus: 'partial', unrealizedCoveragePercent: 8.33 }))
+    assert.equal(result.value, -0.0862676760201886)
+    assert.equal(result.reconciliationStatus, 'partial')
+    assert.equal(result.coveragePercent, 8.33)
+  })
+
+  it('unrealizedReconciliation undefined -> value null', () => {
+    assert.equal(selectDisplayedUnrealizedPnl(undefined).value, null)
+  })
+
+  it('unrealizedReconciliation null -> value null (checked, nothing trustworthy — same as undefined for display purposes)', () => {
+    assert.equal(selectDisplayedUnrealizedPnl(null).value, null)
+  })
+
+  it('officialUnrealizedPnlUsd itself null -> value null, never coerced to 0', () => {
+    const result = selectDisplayedUnrealizedPnl(reconciliation({ officialUnrealizedPnlUsd: null }))
+    assert.equal(result.value, null)
+  })
+
+  it('excludedCandidateUnrealizedPnlUsd is NEVER read as the displayed value, even when it is the only non-zero figure present', () => {
+    const recon = reconciliation({
+      officialUnrealizedPnlUsd: null,
+      excludedCandidateUnrealizedPnlUsd: 545_000, // the refused, diagnostic-only figure
+      reconciliationStatus: 'failed',
+      reconciledOpenPositions: 0,
+      excludedOpenPositions: 1,
+    })
+    const result = selectDisplayedUnrealizedPnl(recon)
+    assert.equal(result.value, null, 'a diagnostic-only excluded candidate must never surface as the official displayed value')
+  })
 })
 
 describe('selectVerifiedPnlData — display-only guardrail (unreliable magnitude clamp)', () => {
-  it('flags unreliable when unrealizedPnlUsd is absurdly large, but leaves the raw pnlV2 numbers untouched', () => {
-    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 10, unrealizedPnlUsd: 5e12 }))
+  // UPDATED, DISCLOSED: this guard now reacts to the CANONICAL (reconciled) unrealized value, never
+  // pnlV2.unrealizedPnlUsd directly (which is no longer displayed at all) — every test below drives
+  // the magnitude via `reconciliation({ officialUnrealizedPnlUsd })`, not via pnlV2.
+  it('flags unreliable when the canonical unrealizedPnlUsd is absurdly large, but leaves the resolved number untouched', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 10 }), 'ok', reconciliation({ officialUnrealizedPnlUsd: 5e12 }))
     assert.equal(result.unreliable, true)
     // The underlying number is still returned honestly — only the component's rendering clamps it.
     assert.equal(result.unrealizedPnlUsd, 5e12)
@@ -74,43 +179,53 @@ describe('selectVerifiedPnlData — display-only guardrail (unreliable magnitude
   it('flags unreliable when total cost basis is absurdly large', () => {
     const result = selectVerifiedPnlData(pnlV2({
       costBasis: [{ tokenAddress: '0xa', chainId: 8453, totalQuantity: 1, totalCostUsd: 2e9, averageCostUsd: 2e9 }],
-    }))
+    }), 'ok', reconciliation())
     assert.equal(result.unreliable, true)
   })
 
   it('a normal, realistic wallet is never flagged unreliable', () => {
-    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 500, unrealizedPnlUsd: -120 }))
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 500 }), 'ok', reconciliation({ officialUnrealizedPnlUsd: -120 }))
     assert.equal(result.unreliable, false)
   })
 
-  it('an extreme 1e30 unrealizedPnlUsd is flagged unreliable (the task\'s own example magnitude)', () => {
-    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 0, unrealizedPnlUsd: 1e30 }))
+  it('an extreme 1e30 canonical unrealizedPnlUsd is flagged unreliable (the task\'s own example magnitude)', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 0 }), 'ok', reconciliation({ officialUnrealizedPnlUsd: 1e30 }))
     assert.equal(result.unreliable, true)
-    assert.equal(result.unrealizedPnlUsd, 1e30) // raw pnlV2 value still returned untouched
+    assert.equal(result.unrealizedPnlUsd, 1e30) // resolved value still returned untouched
+  })
+
+  it('a legacy pnlV2.unrealizedPnlUsd of 1e30 no longer flags unreliable BY ITSELF — it is never read at all once a sane canonical value exists', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 0, unrealizedPnlUsd: 1e30 }), 'ok', reconciliation({ officialUnrealizedPnlUsd: 5 }))
+    assert.equal(result.unreliable, false, 'the guard must react to the displayed (canonical) value, not the unused legacy field')
+    assert.equal(result.unrealizedPnlUsd, 5)
   })
 
   it('exactly at GUARDRAIL_ABS_LIMIT (1e9) is NOT flagged — the clamp is a strict "exceeds" check', () => {
-    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 0, unrealizedPnlUsd: GUARDRAIL_ABS_LIMIT }))
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 0 }), 'ok', reconciliation({ officialUnrealizedPnlUsd: GUARDRAIL_ABS_LIMIT }))
     assert.equal(result.unreliable, false)
   })
 
   it('just above GUARDRAIL_ABS_LIMIT (1e9 + 1) is flagged unreliable', () => {
-    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 0, unrealizedPnlUsd: GUARDRAIL_ABS_LIMIT + 1 }))
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 0 }), 'ok', reconciliation({ officialUnrealizedPnlUsd: GUARDRAIL_ABS_LIMIT + 1 }))
     assert.equal(result.unreliable, true)
   })
 
   it('just below GUARDRAIL_ABS_LIMIT is not flagged', () => {
-    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 0, unrealizedPnlUsd: GUARDRAIL_ABS_LIMIT - 1 }))
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 0 }), 'ok', reconciliation({ officialUnrealizedPnlUsd: GUARDRAIL_ABS_LIMIT - 1 }))
     assert.equal(result.unreliable, false)
   })
 
-  it('flags unreliable from a per-chain breakdown value alone, even if aggregate totals look sane', () => {
+  it('flags unreliable from realizedPnlUsd alone, even if the canonical unrealized total looks sane', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 1e15 }), 'ok', reconciliation({ officialUnrealizedPnlUsd: 10 }))
+    assert.equal(result.unreliable, true)
+  })
+
+  it('a per-chain pnlV2.chainBreakdown value alone no longer flags unreliable — that legacy figure is excluded from this guard now (see ChainBreakdownTable)', () => {
     const result = selectVerifiedPnlData(pnlV2({
       realizedPnlUsd: 10,
-      unrealizedPnlUsd: 10,
-      chainBreakdown: [{ chainId: 8453, realizedPnlUsd: 1e15, unrealizedPnlUsd: 0 }],
-    }))
-    assert.equal(result.unreliable, true)
+      chainBreakdown: [{ chainId: 8453, realizedPnlUsd: 10, unrealizedPnlUsd: 1e15 }],
+    }), 'ok', reconciliation({ officialUnrealizedPnlUsd: 10 }))
+    assert.equal(result.unreliable, false)
   })
 })
 
@@ -192,19 +307,25 @@ describe('isStablePnl — this task\'s stable-PnL display guard', () => {
 })
 
 describe('selectVerifiedPnlData — stable field wiring', () => {
-  it('a real, finite pnlV2 with publicPnlStatus "ok" is marked stable', () => {
-    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 500, unrealizedPnlUsd: -100 }), 'ok')
+  it('a real, finite pnlV2 with publicPnlStatus "ok" and a real canonical unrealized value is marked stable', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 500 }), 'ok', reconciliation({ officialUnrealizedPnlUsd: -100 }))
     assert.equal(result.stable, true)
   })
 
   it('publicPnlStatus "unavailable" marks otherwise-valid numbers unstable', () => {
-    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 500, unrealizedPnlUsd: -100 }), 'unavailable')
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 500 }), 'unavailable', reconciliation({ officialUnrealizedPnlUsd: -100 }))
     assert.equal(result.stable, false)
   })
 
   it('no pnlV2 at all -> stable is honestly false (nothing to be confident about)', () => {
     const result = selectVerifiedPnlData(null)
     assert.equal(result.stable, false)
+  })
+
+  it('a null canonical unrealized value marks the card unstable (blocked), even with a real realizedPnlUsd', () => {
+    const result = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 500 }), 'ok', reconciliation({ officialUnrealizedPnlUsd: null }))
+    assert.equal(result.stable, false)
+    assert.equal(result.unrealizedPnlUsd, null)
   })
 })
 
@@ -328,7 +449,7 @@ describe('PnlStatusCard end-to-end display mode — Cases A/B/C/D', () => {
   })
 
   it("Case D: publicPnlStatus = 'ok' -> real engine PnL renders, both synthetic blocks hidden", () => {
-    const pnl = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 100, unrealizedPnlUsd: 50 }), 'ok')
+    const pnl = selectVerifiedPnlData(pnlV2({ realizedPnlUsd: 100 }), 'ok', reconciliation({ officialUnrealizedPnlUsd: 50 }))
     const syntheticPnl = syntheticPnlFixture({})
     const showGlobal = shouldShowSyntheticGlobal('ok', syntheticPnl)
     const showPerChain = shouldShowSyntheticPerChain('ok', syntheticPnl)

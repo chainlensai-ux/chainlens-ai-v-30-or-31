@@ -290,12 +290,23 @@ export function PortfolioSnapshot({ report }: { report: WalletV2Report }) {
   )
 }
 
-// Real fifoAndPnl.realizedPnlUsd/unrealizedPnlUsd (the actual FIFO engine) + real
-// behaviorIntel.confidence — never a redefinition of what "confidence" means elsewhere in the
-// report (see PnLTab.tsx's own note on this).
+// Real fifoAndPnl.realizedPnlUsd (the actual FIFO engine) + real behaviorIntel.confidence — never a
+// redefinition of what "confidence" means elsewhere in the report (see PnLTab.tsx's own note on
+// this).
+//
+// UNREALIZED-PNL SOURCE, DISCLOSED (found live, this task — "audit every Wallet Scanner UI path
+// that renders Unrealized PnL" requirement): this used to read fifoAndPnl.unrealizedPnlUsd directly
+// — fifoEngine's own un-reconciled top-level total, the exact class of legacy field responsible for
+// the confirmed ~$500k fabricated-PnL bug elsewhere in this same UI (see PnlStatusCard.tsx's own
+// header for the full trace). Now reads ONLY
+// fifoAndPnl.unrealizedReconciliation.officialUnrealizedPnlUsd — null when reconciliation is absent
+// or found nothing trustworthy, rendered as the same honest "—" the null-coalesced style below
+// already produces, never a fallback estimate. This component is currently reachable only via the
+// disabled legacy layout (WALLET_SCANNER_UI_V3 = false in page.tsx) — fixed anyway so a rollback to
+// that layout can never resurface the bug.
 function PnlAndConfidenceRow({ report }: { report: WalletV2Report }) {
   const realized = report.fifoAndPnl?.realizedPnlUsd ?? null
-  const unrealized = report.fifoAndPnl?.unrealizedPnlUsd ?? null
+  const unrealized = report.fifoAndPnl?.unrealizedReconciliation?.officialUnrealizedPnlUsd ?? null
   const confidence = report.behaviorIntel?.confidence ?? 'low'
 
   return (

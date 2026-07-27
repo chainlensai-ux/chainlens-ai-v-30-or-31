@@ -26,7 +26,7 @@
 //   - ROI: now computed purely from PnlV2 — realizedPnlUsd / sum(costBasis[].totalCostUsd), a real
 //     total cost basis PnlV2 does carry (per-token, summed here), never fifoAndPnl.costBasisUsd.
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
-import type { PublicPnlStatus } from '@/src/modules/fifoEngine/types'
+import type { PublicPnlStatus, UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
 import type { SyntheticPnlSummary } from '@/src/modules/syntheticPnl/types'
 import { fmtSignedUsd, fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { StatusBadge } from './StatusBadge'
@@ -48,6 +48,16 @@ export type PnlStatusCardProps = {
   // header). Only ever rendered when publicPnlStatus === 'unavailable' AND pnlV2's own display is
   // blocked — never overlaid on top of a real, verified number.
   syntheticPnl?: SyntheticPnlSummary | null
+  // CANONICAL UNREALIZED-PNL SOURCE, DISCLOSED (found live, this task — confirmed production bug:
+  // the wallet-scanner UI kept showing a fabricated ~$500k unrealized PnL, sourced from pnlV2's own
+  // unrealizedPnlUsd, DESPITE the backend's real canonical reconciliation
+  // — result.fifoAndPnl.unrealizedReconciliation.officialUnrealizedPnlUsd — already correctly
+  // reporting -$0.0863). Real field lives at result.fifoAndPnl.unrealizedReconciliation
+  // (src/modules/fifoEngine/types.ts's UnrealizedReconciliationSummary) — a SEPARATE engine
+  // (fifoEngine) from pnlV2 (lib/engine/modules/pnl), but its own reconciliation, not its
+  // un-reconciled top-level unrealizedPnlUsd, is now this card's SOLE source for the displayed
+  // Unrealized PnL value. See selectDisplayedUnrealizedPnl's own header below for the exact rule.
+  unrealizedReconciliation?: UnrealizedReconciliationSummary | null
 }
 
 export type VerifiedPnlData = {
@@ -80,15 +90,70 @@ export type VerifiedPnlData = {
 // pricingAtTimeEngine, fifoEngine, or pnlV2's own semantics anywhere else in the codebase.
 export const GUARDRAIL_ABS_LIMIT = 1e9
 
-function isUnreliableMagnitude(pnlV2: PnlV2, totalCostBasisUsd: number): boolean {
+// UNREALIZED-VALUE PARAMETERIZED, DISCLOSED: this used to read pnlV2.unrealizedPnlUsd directly —
+// now takes the ALREADY-RESOLVED displayed unrealized value (from selectDisplayedUnrealizedPnl,
+// the canonical fifoEngine reconciliation, never pnlV2's own field) so this guard reacts to the
+// SAME number the card actually renders, never a legacy figure the card no longer displays at all.
+// Per-chain unrealizedPnlUsd (pnlV2.chainBreakdown) is deliberately EXCLUDED from this magnitude
+// check now — see ChainBreakdownTable's own header for why that legacy per-chain figure is no
+// longer rendered as an official number either.
+function isUnreliableMagnitude(pnlV2: PnlV2, totalCostBasisUsd: number, displayedUnrealizedPnlUsd: number | null): boolean {
   const magnitudes = [
     pnlV2.realizedPnlUsd,
-    pnlV2.unrealizedPnlUsd,
     totalCostBasisUsd,
     ...pnlV2.chainBreakdown.map((c) => c.realizedPnlUsd),
-    ...pnlV2.chainBreakdown.map((c) => c.unrealizedPnlUsd),
   ]
+  if (displayedUnrealizedPnlUsd != null) magnitudes.push(displayedUnrealizedPnlUsd)
   return magnitudes.some((v) => Math.abs(v) > GUARDRAIL_ABS_LIMIT)
+}
+
+// CANONICAL UNREALIZED-PNL SELECTOR, DISCLOSED — see PnlStatusCardProps.unrealizedReconciliation's
+// own header for the full production trace. Pure, exported for direct testing. The ONLY function
+// this card uses to resolve the displayed Unrealized PnL value — no priority list, no merge, no
+// averaging, and specifically NEVER pnlV2.unrealizedPnlUsd (the legacy, un-reconciled figure that
+// caused the reported ~$500k bug). `unrealizedReconciliation` missing/null (a caller that hasn't
+// wired it, or a genuinely absent backend field) and `officialUnrealizedPnlUsd` itself being null
+// (backend computed reconciliation but found nothing trustworthy to report) BOTH resolve to `value:
+// null` here — the component then renders "Unavailable", never a fallback estimate.
+export type DisplayedUnrealizedPnl = {
+  value: number | null
+  reconciliationStatus: UnrealizedReconciliationSummary['reconciliationStatus'] | null
+  coveragePercent: number | null
+}
+
+export function selectDisplayedUnrealizedPnl(
+  unrealizedReconciliation: UnrealizedReconciliationSummary | null | undefined,
+): DisplayedUnrealizedPnl {
+  if (!unrealizedReconciliation) {
+    return { value: null, reconciliationStatus: null, coveragePercent: null }
+  }
+  return {
+    value: unrealizedReconciliation.officialUnrealizedPnlUsd,
+    reconciliationStatus: unrealizedReconciliation.reconciliationStatus,
+    coveragePercent: unrealizedReconciliation.unrealizedCoveragePercent,
+  }
+}
+
+// DEV-ONLY DIAGNOSTIC, DISCLOSED (this task's own "add a development assertion/log identifying the
+// exact field selected" requirement): a single, cheap console.debug — never runs in production
+// (next.config's compiler.removeConsole strips console.debug/log there anyway, but this also skips
+// the call entirely rather than relying only on that stripping). Identifies, in plain text, exactly
+// which real field backed the rendered Unrealized PnL for this render — makes a future regression
+// (a fallback silently reintroduced) immediately visible in the browser console during development.
+function logUnrealizedPnlFieldSelection(displayed: DisplayedUnrealizedPnl, legacyPnlV2UnrealizedPnlUsd: number | null | undefined): void {
+  if (process.env.NODE_ENV === 'production') return
+  const field = displayed.value != null
+    ? 'fifoAndPnl.unrealizedReconciliation.officialUnrealizedPnlUsd'
+    : 'unavailable (no reconciliation or null officialUnrealizedPnlUsd)'
+  // eslint-disable-next-line no-console
+  console.debug('[PnlStatusCard] Unrealized PnL field selected', {
+    field,
+    displayedValue: displayed.value,
+    reconciliationStatus: displayed.reconciliationStatus,
+    coveragePercent: displayed.coveragePercent,
+    // Logged ONLY for comparison/debugging — never used anywhere as the displayed value.
+    legacyPnlV2UnrealizedPnlUsd: legacyPnlV2UnrealizedPnlUsd ?? null,
+  })
 }
 
 // isStablePnl — PURE, exported for direct testing, adapted from this task's own literal spec with
@@ -122,16 +187,24 @@ export function isStablePnl(params: {
   return true
 }
 
-// Pure, exported for direct testing. The ONLY selector this component uses — no priority list, no
-// merge, no averaging: pnlV2 present -> real numbers; pnlV2 absent -> honestly all-null.
+// Pure, exported for direct testing. The ONLY selector this component uses for realized PnL/ROI/
+// cost basis — no priority list, no merge, no averaging: pnlV2 present -> real numbers; pnlV2
+// absent -> honestly all-null. UNREALIZED PNL, DISCLOSED: sourced EXCLUSIVELY from
+// `unrealizedReconciliation` (via selectDisplayedUnrealizedPnl) — never from pnlV2.unrealizedPnlUsd,
+// regardless of whether pnlV2 itself is present. `totalPnlUsd` is therefore also null whenever the
+// reconciled unrealized value is null (realized-only would misrepresent itself as a complete total).
 export function selectVerifiedPnlData(
   pnlV2: PnlV2 | null | undefined,
   publicPnlStatus?: PublicPnlStatus | null,
+  unrealizedReconciliation?: UnrealizedReconciliationSummary | null,
 ): VerifiedPnlData {
+  const displayedUnrealized = selectDisplayedUnrealizedPnl(unrealizedReconciliation)
+  logUnrealizedPnlFieldSelection(displayedUnrealized, pnlV2?.unrealizedPnlUsd)
+
   if (!pnlV2) {
     return {
       realizedPnlUsd: null,
-      unrealizedPnlUsd: null,
+      unrealizedPnlUsd: displayedUnrealized.value,
       totalPnlUsd: null,
       totalCostBasisUsd: null,
       roi: { value: null, display: 'No verified PnL data' },
@@ -147,19 +220,40 @@ export function selectVerifiedPnlData(
     ? { value: null, display: 'No cost-basis evidence' }
     : { value: roiValue, display: `${roiValue >= 0 ? '+' : ''}${roiValue.toFixed(1)}%` }
 
+  const unrealizedPnlUsd = displayedUnrealized.value
+  const totalPnlUsd = unrealizedPnlUsd == null ? null : pnlV2.realizedPnlUsd + unrealizedPnlUsd
+
   return {
     realizedPnlUsd: pnlV2.realizedPnlUsd,
-    unrealizedPnlUsd: pnlV2.unrealizedPnlUsd,
-    totalPnlUsd: pnlV2.realizedPnlUsd + pnlV2.unrealizedPnlUsd,
+    unrealizedPnlUsd,
+    totalPnlUsd,
     totalCostBasisUsd,
     roi,
     integritySummary: 'not_available_in_v2_engine',
-    unreliable: isUnreliableMagnitude(pnlV2, totalCostBasisUsd),
-    stable: isStablePnl({ realizedPnlUsd: pnlV2.realizedPnlUsd, unrealizedPnlUsd: pnlV2.unrealizedPnlUsd, publicPnlStatus }),
+    unreliable: isUnreliableMagnitude(pnlV2, totalCostBasisUsd, unrealizedPnlUsd),
+    stable: isStablePnl({ realizedPnlUsd: pnlV2.realizedPnlUsd, unrealizedPnlUsd, publicPnlStatus }),
   }
 }
 
-function ChainBreakdownTable({ chainBreakdown, unreliable }: { chainBreakdown: PnlV2['chainBreakdown']; unreliable: boolean }) {
+// PER-CHAIN UNREALIZED SUPPRESSION, DISCLOSED (found live, this task — "audit every Wallet Scanner
+// UI path that renders Unrealized PnL" requirement): this table's per-chain `unrealizedPnlUsd`
+// column came straight from pnlV2.chainBreakdown — the SAME legacy, un-reconciled source responsible
+// for the reported ~$500k bug (confirmed: the original bug screenshot's own "PER-CHAIN BREAKDOWN"
+// table showed exactly this column, for chain 8453, as the fabricated figure). There is no
+// per-chain breakdown of the canonical `unrealizedReconciliation.officialUnrealizedPnlUsd` on the
+// backend to substitute it with, so rather than either (a) keep showing the legacy figure as if
+// official, or (b) fabricate a per-chain split of the aggregate that doesn't exist, this column is
+// replaced with an honest pointer to the one real reconciled number, shown above, whenever a
+// canonical reconciliation was supplied to this card at all (regardless of its own value/status).
+function ChainBreakdownTable({
+  chainBreakdown,
+  unreliable,
+  hasCanonicalUnrealizedSource,
+}: {
+  chainBreakdown: PnlV2['chainBreakdown']
+  unreliable: boolean
+  hasCanonicalUnrealizedSource: boolean
+}) {
   if (chainBreakdown.length === 0) {
     return <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>No per-chain PnL breakdown from the verified V2 engine.</p>
   }
@@ -177,7 +271,9 @@ function ChainBreakdownTable({ chainBreakdown, unreliable }: { chainBreakdown: P
           {chainBreakdown.map((c) => {
             // Same GUARDRAIL_ABS_LIMIT clamp applied per-chain-row, per task requirement — the
             // per-chain breakdown must not leak an absurd number even if the aggregate is clamped.
-            const rowUnreliable = unreliable && (Math.abs(c.realizedPnlUsd) > GUARDRAIL_ABS_LIMIT || Math.abs(c.unrealizedPnlUsd) > GUARDRAIL_ABS_LIMIT)
+            // Only applied to realizedPnlUsd now (still a real, pnlV2-sourced figure) — the legacy
+            // unrealized figure is suppressed unconditionally below, never rendered as official.
+            const rowUnreliable = unreliable && Math.abs(c.realizedPnlUsd) > GUARDRAIL_ABS_LIMIT
             return (
               <tr key={c.chainId} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
                 <td style={{ padding: '9px 10px', fontWeight: 700, color: '#e2e8f0' }}>{c.chainId}</td>
@@ -186,7 +282,9 @@ function ChainBreakdownTable({ chainBreakdown, unreliable }: { chainBreakdown: P
                 ) : (
                   <>
                     <td style={{ padding: '9px 10px', fontWeight: 700, color: c.realizedPnlUsd >= 0 ? '#4ade80' : '#f87171' }}>{fmtSignedUsd(c.realizedPnlUsd)}</td>
-                    <td style={{ padding: '9px 10px', fontWeight: 700, color: c.unrealizedPnlUsd >= 0 ? '#4ade80' : '#f87171' }}>{fmtSignedUsd(c.unrealizedPnlUsd)}</td>
+                    <td style={{ padding: '9px 10px', color: 'rgba(148,163,184,0.55)', fontStyle: 'italic' }}>
+                      {hasCanonicalUnrealizedSource ? 'See reconciled total above' : fmtSignedUsd(c.unrealizedPnlUsd)}
+                    </td>
                   </>
                 )}
               </tr>
@@ -266,9 +364,16 @@ export function resolvePnlDisplayMode(params: {
   return 'real'
 }
 
-export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl }: PnlStatusCardProps) {
-  const pnl = selectVerifiedPnlData(pnlV2, publicPnlStatus)
+export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealizedReconciliation }: PnlStatusCardProps) {
+  const pnl = selectVerifiedPnlData(pnlV2, publicPnlStatus, unrealizedReconciliation)
   const isActive = pnlV2 != null
+  // PARTIAL-COVERAGE BADGE, DISCLOSED (this task's own requirement): shown SEPARATELY from the
+  // blocked/unavailable states above — a "partial" reconciliation still has a real, honestly-
+  // computed officialUnrealizedPnlUsd (excluded positions are simply left out, never blended in),
+  // so this is informational context alongside a real number, never a reason to hide it.
+  const unrealizedCoverageBadgeLabel = unrealizedReconciliation?.reconciliationStatus === 'partial'
+    ? `Partial — ${unrealizedReconciliation.unrealizedCoveragePercent.toFixed(2)}% coverage`
+    : null
   const limitedSampleBadgeLabel = shouldShowLimitedSampleBadge(publicPnlStatus)
   const showSyntheticGlobal = shouldShowSyntheticGlobal(publicPnlStatus, syntheticPnl)
   const showSyntheticPerChain = shouldShowSyntheticPerChain(publicPnlStatus, syntheticPnl)
@@ -303,6 +408,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl }: PnlStatu
             finalSummary.financialStatus.officialPnlStatus) — a SEPARATE signal from the UI-only
             magnitude clamp above; shown whenever it isn't 'ok', regardless of magnitude. */}
         {limitedSampleBadgeLabel && <StatusBadge label={limitedSampleBadgeLabel} tone="warning" />}
+        {unrealizedCoverageBadgeLabel && <StatusBadge label={unrealizedCoverageBadgeLabel} tone="warning" />}
       </div>
 
       {showUnavailableBanner && (
@@ -318,7 +424,12 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl }: PnlStatu
       ) : (
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
           <MetricCard label="Realized PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.realizedPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.realizedPnlUsd)} index={0} />
-          <MetricCard label="Unrealized PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.unrealizedPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.unrealizedPnlUsd)} index={1} />
+          <MetricCard
+            label="Unrealized PnL"
+            value={pnl.unrealizedPnlUsd == null ? 'Unavailable' : blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.unrealizedPnlUsd)}
+            tone={pnl.unrealizedPnlUsd == null || blocked ? 'neutral' : toneFromNumber(pnl.unrealizedPnlUsd)}
+            index={1}
+          />
           <MetricCard label="Total PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.totalPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.totalPnlUsd)} index={2} />
           <MetricCard label="ROI" value={blocked ? PNL_UNAVAILABLE_MESSAGE : pnl.roi.display} tone={blocked ? 'neutral' : toneFromNumber(pnl.roi.value)} index={3} />
           <MetricCard label="Cost Basis" value={pnl.unreliable ? 'Not reliable' : fmtUsd(pnl.totalCostBasisUsd)} index={4} />
@@ -330,7 +441,11 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl }: PnlStatu
         <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           Per-Chain Breakdown
         </div>
-        <ChainBreakdownTable chainBreakdown={pnlV2?.chainBreakdown ?? []} unreliable={pnl.unreliable || blocked} />
+        {/* hasCanonicalUnrealizedSource: `!== undefined`, NOT `!= null` — a caller that explicitly
+            passes `null` (a real "checked, found nothing trustworthy" result) must still suppress
+            the legacy per-chain figure; only a prop that was never supplied at all (a caller not
+            yet migrated to this fix) falls back to it. */}
+        <ChainBreakdownTable chainBreakdown={pnlV2?.chainBreakdown ?? []} unreliable={pnl.unreliable || blocked} hasCanonicalUnrealizedSource={unrealizedReconciliation !== undefined} />
       </div>
 
       {!isActive && (

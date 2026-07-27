@@ -31,8 +31,17 @@ export type FullScanJobResult =
 
 const JOB_TTL_SECONDS = 15 * 60 // 15 minutes — enough headroom for reasonable polling
 
+// CACHE VERSION BUMP, DISCLOSED (found live, this task — "clear or version stale cached scan
+// results containing legacy unrealized fields" requirement): a job enqueued in the up-to-15-minute
+// window around a deploy could otherwise have its `after()` background work run on OLD code (pre-
+// unrealizedReconciliation) while a client's poll hits the status route on NEW code, or vice versa —
+// a real, if narrow, staleness surface at the deploy boundary. Bumping the key prefix (v1 -> v2)
+// means this deploy can NEVER read a job entry written by the previous version's key namespace: any
+// job started before this deploy simply reads as `not-found` after redeploy, forcing a clean re-scan
+// with the current, fixed reconciliation logic rather than ever serving a stale legacy-shaped
+// payload. Never affects TTL/expiry behavior — only which key namespace this deploy reads/writes.
 export function jobKey(jobId: string): string {
-  return `v1:full-scan-job:${jobId}`
+  return `v2:full-scan-job:${jobId}`
 }
 
 // Never throws — a Redis write failure (including the protocol mismatch disclosed in

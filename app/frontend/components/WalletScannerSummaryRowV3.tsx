@@ -45,10 +45,18 @@ export function WalletScannerSummaryRowV3({ report }: WalletScannerSummaryRowV3P
       )}
 
       <div style={cardStyle}>
+        {/* CANONICAL UNREALIZED-PNL SOURCE, DISCLOSED (found live, this task — confirmed ~$500k
+            fabricated Unrealized PnL rendered on THIS exact card despite the backend's real
+            canonical reconciliation, report.fifoAndPnl.unrealizedReconciliation.
+            officialUnrealizedPnlUsd, already correctly reporting -$0.0863). Realized PnL/ROI/cost
+            basis are unchanged (still pnlV2-only) — only Unrealized PnL is now sourced from the
+            fifoEngine reconciliation, never pnlV2.unrealizedPnlUsd. See PnlStatusCard.tsx's own
+            header for the full trace. */}
         <PnlStatusCard
           pnlV2={report.pnlV2}
           publicPnlStatus={report.finalSummary?.financialStatus?.officialPnlStatus}
           syntheticPnl={report.syntheticPnl}
+          unrealizedReconciliation={report.fifoAndPnl?.unrealizedReconciliation}
         />
       </div>
     </div>
