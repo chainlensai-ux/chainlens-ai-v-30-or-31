@@ -30,6 +30,7 @@ import type { PricedHolding } from '../pricing/types'
 import type { ChainHolding } from '../holdings/types'
 import type {
   ChainPnlBreakdown,
+  ExcludedUnrealizedPosition,
   ParsedTrade,
   PnlEngineOutput,
   PnlV2,
@@ -37,6 +38,11 @@ import type {
   TokenRealizedPnl,
   TokenUnrealizedPnl,
 } from './types'
+
+// RECONCILIATION TOLERANCE, DISCLOSED: same 0.1% float-rounding allowance already used by
+// src/modules/fifoEngine's own canonical-balance reconciliation (computePnl.ts there) — not a new
+// or looser standard, the identical tolerance applied a second time in this parallel engine.
+const CANONICAL_BALANCE_RECONCILIATION_TOLERANCE = 1.001
 
 export type { ParsedTrade } from './types'
 
@@ -107,7 +113,7 @@ export async function computePnl(
   // A. No trades — exactly as specified.
   if (trades.length === 0) {
     return {
-      pnlV2: { realizedPnlUsd: 0, unrealizedPnlUsd: 0, costBasis: [], realized: [], unrealized: [], chainBreakdown: [] },
+      pnlV2: { realizedPnlUsd: 0, unrealizedPnlUsd: 0, costBasis: [], realized: [], unrealized: [], chainBreakdown: [], unrealizedExcludedPositions: [] },
       pnlStatus: 'unavailable',
     }
   }
@@ -185,8 +191,19 @@ export async function computePnl(
   // token+chain against the FIFO remainder above). A holding with no matching cost-basis entry (no
   // real buy trade found for it in this trade set) or a null valueUsd is honestly skipped — never a
   // fabricated unrealized number.
+  //
+  // CANONICAL-BALANCE RECONCILIATION, DISCLOSED — see ExcludedUnrealizedPosition's own header in
+  // types.ts for the full production trace (a fabricated -$545,833.02 unrealized PnL on chain
+  // 8453). Before this fix, `match.totalCostUsd` (this module's own event-replay-derived FIFO
+  // remaining quantity's cost basis) was subtracted from `holding.valueUsd` (the REAL current
+  // balance's market value) with NO check that the two figures even referred to the same quantity.
+  // Now: `match.totalQuantity` must reconcile against `holding.quantity` (the real, independently-
+  // fetched canonical balance) before this position is ever allowed to contribute to official
+  // unrealizedPnlUsd — a mismatched position is EXCLUDED entirely (never clamped/blended) and
+  // reported, with its refused candidate figure, in unrealizedExcludedPositions.
   const costBasisByKey = new Map(costBasis.map((c) => [tokenKey(c.tokenAddress, c.chainId), c]))
   const unrealized: TokenUnrealizedPnl[] = []
+  const unrealizedExcludedPositions: ExcludedUnrealizedPosition[] = []
   let anyUnpricedHolding = false
 
   for (const holding of pricedHoldings) {
@@ -196,10 +213,41 @@ export async function computePnl(
     }
     const match = costBasisByKey.get(tokenKey(holding.tokenAddress, holding.chainId))
     if (!match) continue
+
+    const canonicalQuantity = Number(holding.quantity)
+    const candidateUnrealizedPnlUsd = holding.valueUsd - match.totalCostUsd
+
+    if (!Number.isFinite(canonicalQuantity) || canonicalQuantity < 0) {
+      unrealizedExcludedPositions.push({
+        chainId: holding.chainId,
+        tokenAddress: holding.tokenAddress,
+        fifoRemainingQuantity: match.totalQuantity,
+        canonicalQuantity: null,
+        fifoCostBasisUsd: match.totalCostUsd,
+        canonicalValueUsd: holding.valueUsd,
+        candidateUnrealizedPnlUsd,
+        exclusionReason: 'invalid_canonical_quantity',
+      })
+      continue
+    }
+    if (match.totalQuantity > canonicalQuantity * CANONICAL_BALANCE_RECONCILIATION_TOLERANCE) {
+      unrealizedExcludedPositions.push({
+        chainId: holding.chainId,
+        tokenAddress: holding.tokenAddress,
+        fifoRemainingQuantity: match.totalQuantity,
+        canonicalQuantity,
+        fifoCostBasisUsd: match.totalCostUsd,
+        canonicalValueUsd: holding.valueUsd,
+        candidateUnrealizedPnlUsd,
+        exclusionReason: 'quantity_exceeds_balance',
+      })
+      continue
+    }
+
     unrealized.push({
       tokenAddress: holding.tokenAddress,
       chainId: holding.chainId,
-      unrealizedPnlUsd: holding.valueUsd - match.totalCostUsd,
+      unrealizedPnlUsd: candidateUnrealizedPnlUsd,
     })
   }
 
@@ -219,7 +267,7 @@ export async function computePnl(
   const pnlStatus: PnlEngineOutput['pnlStatus'] = anyUnpricedTrade || anyUnpricedHolding ? 'partial' : 'ok'
 
   return {
-    pnlV2: { realizedPnlUsd, unrealizedPnlUsd, costBasis, realized, unrealized, chainBreakdown },
+    pnlV2: { realizedPnlUsd, unrealizedPnlUsd, costBasis, realized, unrealized, chainBreakdown, unrealizedExcludedPositions },
     pnlStatus,
   }
 }
