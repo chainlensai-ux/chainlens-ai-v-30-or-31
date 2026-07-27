@@ -180,6 +180,8 @@ test('non-base candidates are never processed, even if logs are supplied for the
     inferenceDisagreements: 0, rejectedNonSwapTransactions: 0, candidateLotsUnlocked: 0, newProviderCalls: 0,
     multiTransferPoolFlowsExamined: 0, multiTransferPoolFlowsResolved: 0, swapEventAmountMatches: 0,
     swapEventAmountMismatches: 0, routerIntermediaryTransfersIgnored: 0, refundsNetted: 0,
+    uniswapV3PoolsExamined: 0, uniswapV3PoolsValidated: 0, uniswapV3ValidationCalls: 0,
+    uniswapV3SwapsDecoded: 0, uniswapV3AmountMatches: 0, uniswapV3AmountMismatches: 0,
   })
 })
 

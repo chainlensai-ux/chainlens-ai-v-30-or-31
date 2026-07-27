@@ -39,6 +39,9 @@ import type {
   DecodedReceiptSwap, ReceiptDecodeResult, ReceiptTxBundle, TokenMeta, WalletDirection, MultiTransferDiagnostics,
 } from './types'
 import { resolveClassicMultiTransferLeg, mergeMultiTransferDiagnostics, type ClassicPoolLeg } from './multiTransferLeg'
+import { resolveUniswapV3Leg, type UniswapV3PoolLeg } from './uniswapV3Leg'
+import type { UniswapV3PoolValidator } from './uniswapV3PoolValidator'
+import type { UniswapV3Diagnostics } from './types'
 
 export type { DecodedReceiptSwap, ReceiptDecodeResult, ReceiptTxBundle } from './types'
 export { decodeLogs } from './decodeLogs'
@@ -116,7 +119,70 @@ function classifyDirection(tokenIn: string, tokenOut: string): WalletDirection {
   return 'wallet_swapped'
 }
 
-export async function decodeReceiptSwap(tx: ReceiptTxBundle, validator: PoolValidator): Promise<ReceiptDecodeResult> {
+// Builds the final DecodedReceiptSwap for a successfully-resolved-and-validated Uniswap V3 leg —
+// same wrap/refund diagnostics computation as the Aerodrome path below, just for a single leg
+// (V3 fallback is only ever attempted for one concentrated-liquidity Swap event at a time).
+function buildUniswapV3Swap(
+  tx: ReceiptTxBundle,
+  decoded: DecodedLogs,
+  poolAddress: string,
+  leg: UniswapV3PoolLeg,
+  fee: number | null,
+  diagnostics: UniswapV3Diagnostics,
+): ReceiptDecodeResult {
+  void diagnostics
+  const walletAddress = tx.walletAddress.toLowerCase()
+  const nativeWrapDetected = decoded.nativeWraps.some(
+    (w) => w.account === walletAddress || w.account === (tx.router ?? '').toLowerCase(),
+  )
+  const refundDetected = decoded.transfers.some(
+    (t) => t.token === leg.tokenIn && t.to === walletAddress && t.value > BigInt('0'),
+  )
+
+  const tokenInMeta = tokenMetaFor(tx.tokenMeta, leg.tokenIn)
+  const tokenOutMeta = tokenMetaFor(tx.tokenMeta, leg.tokenOut)
+
+  const swap: DecodedReceiptSwap = {
+    chain: tx.chain,
+    txHash: tx.txHash,
+    protocol: 'uniswap_v3',
+    poolAddress,
+    tokenIn: { address: leg.tokenIn, symbol: tokenInMeta.symbol, decimals: tokenInMeta.decimals },
+    tokenOut: { address: leg.tokenOut, symbol: tokenOutMeta.symbol, decimals: tokenOutMeta.decimals },
+    amountInRaw: leg.amountIn.toString(),
+    amountOutRaw: leg.amountOut.toString(),
+    decimals: { tokenIn: tokenInMeta.decimals, tokenOut: tokenOutMeta.decimals },
+    normalizedAmountIn: toNormalized(leg.amountIn, tokenInMeta.decimals),
+    normalizedAmountOut: toNormalized(leg.amountOut, tokenOutMeta.decimals),
+    walletDirection: classifyDirection(leg.tokenIn, leg.tokenOut),
+    evidenceSource: 'receipt_pool_swap_event',
+    confidence: 'exact',
+    meta: {
+      hops: 1,
+      poolsVisited: [poolAddress],
+      nativeWrapDetected,
+      refundDetected,
+      feeLegsExcluded: Math.max(0, decoded.transfers.length - 2),
+      ...(fee !== null ? { uniswapV3Fee: fee } : {}),
+    },
+  }
+
+  return { ok: true, swap }
+}
+
+// UNISWAP V3 FALLBACK, DISCLOSED: `uniswapV3Validator` is optional and backward-compatible — every
+// existing caller/test that omits it gets IDENTICAL behavior to before this parameter existed
+// (the fallback below is simply never attempted). When supplied, it is only ever consulted for a
+// SINGLE concentrated-liquidity-shaped Swap event (decoded.swaps.length === 1, protocol tag
+// 'aerodrome_slipstream' — the shared topic0 shape) whose Aerodrome Slipstream factory validation
+// has ALREADY genuinely failed — never the first attempt, never for a multi-hop/mixed-protocol tx
+// ("multiple incompatible pools" fails closed to the existing rejection by design, not attempted
+// here).
+export async function decodeReceiptSwap(
+  tx: ReceiptTxBundle,
+  validator: PoolValidator,
+  uniswapV3Validator?: UniswapV3PoolValidator,
+): Promise<ReceiptDecodeResult> {
   if (!tx.logs || tx.logs.length === 0) {
     return { ok: false, rejection: { txHash: tx.txHash, reason: 'no_logs' } }
   }
@@ -183,6 +249,22 @@ export async function decodeReceiptSwap(tx: ReceiptTxBundle, validator: PoolVali
   for (const leg of chained) {
     const isValid = await validator.isValidPool(leg.swap.protocol, leg.swap.poolAddress, leg.tokenIn, leg.tokenOut)
     if (!isValid) {
+      // UNISWAP V3 FALLBACK, DISCLOSED: only reachable for a single concentrated-liquidity-shaped
+      // Swap event whose Aerodrome Slipstream validation just genuinely failed — see this
+      // function's own header. A multi-hop/mixed chain never reaches here (chained.length > 1
+      // simply falls through to the original rejection below), so "multiple incompatible pools"
+      // fails closed by construction, not by an extra check.
+      if (uniswapV3Validator && chained.length === 1 && leg.swap.protocol === 'aerodrome_slipstream') {
+        const v3 = resolveUniswapV3Leg(leg.swap, decoded)
+        if (!v3.ok) {
+          return { ok: false, rejection: { txHash: tx.txHash, reason: v3.reason, uniswapV3: v3.diagnostics } }
+        }
+        const v3Valid = await uniswapV3Validator.validatePool(leg.swap.poolAddress, v3.leg.tokenIn, v3.leg.tokenOut)
+        if (!v3Valid.valid) {
+          return { ok: false, rejection: { txHash: tx.txHash, reason: 'uniswap_v3_pool_not_validated', uniswapV3: v3.diagnostics } }
+        }
+        return buildUniswapV3Swap(tx, decoded, leg.swap.poolAddress, v3.leg, v3Valid.fee, v3.diagnostics)
+      }
       return {
         ok: false,
         rejection: { txHash: tx.txHash, reason: 'pool_not_validated_by_factory', multiTransfer: mergeMultiTransferDiagnostics(multiTransferDiagnosticsList) },

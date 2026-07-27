@@ -23,6 +23,9 @@ import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/in
 import { buildWalletScanShadowLogPayload } from '../modules/receiptSwapDecoder/walletScanShadowWiring'
 import type { CandidateTxEvidence } from '../modules/receiptSwapDecoder/candidateSelector'
 import { createLiveBaseDexPoolValidator } from '../modules/receiptSwapDecoder/poolValidator'
+import {
+  createLiveUniswapV3PoolValidator, createCachedUniswapV3PoolValidator, createUniswapV3ValidationRequestScope,
+} from '../modules/receiptSwapDecoder/uniswapV3PoolValidator'
 import { runShadowFifoReplay } from '../modules/receiptSwapDecoder/shadowFifoReplay'
 import type { DecodedReceiptSwap } from '../modules/receiptSwapDecoder/types'
 import { groupSwapLegsByTransaction, swapLegGroupKey, isVerifiedQuoteLegAddress } from '../modules/quoteLegPricing/index'
@@ -1340,10 +1343,20 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       })
     }
 
+    // UNISWAP V3 (BASE) FALLBACK VALIDATOR, DISCLOSED: request-scoped cache + singleflight + a hard
+    // cap (separate from, and never increasing, the 10-call receipt-acquisition budget) — see
+    // uniswapV3PoolValidator.ts's own header. Only ever consulted by decodeReceiptSwap as a
+    // fallback for a concentrated-liquidity Swap event whose Aerodrome Slipstream validation has
+    // already genuinely failed.
+    const { validator: uniswapV3Validator } = createCachedUniswapV3PoolValidator(
+      createLiveUniswapV3PoolValidator(),
+      createUniswapV3ValidationRequestScope(),
+    )
     const shadowPayload = await buildWalletScanShadowLogPayload({
       walletAddress: params.walletAddress,
       evidence,
       validator: createLiveBaseDexPoolValidator(),
+      uniswapV3Validator,
       disabledByEnv: process.env.RECEIPT_SWAP_DECODER_SHADOW_DISABLED === 'true',
     })
     // eslint-disable-next-line no-console

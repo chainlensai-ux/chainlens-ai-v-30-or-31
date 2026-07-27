@@ -14,7 +14,7 @@
 
 export type ReceiptSwapChain = 'base'
 
-export type ReceiptSwapProtocol = 'aerodrome_classic' | 'aerodrome_slipstream'
+export type ReceiptSwapProtocol = 'aerodrome_classic' | 'aerodrome_slipstream' | 'uniswap_v3'
 
 // One raw, undecoded EVM log entry from a transaction receipt.
 export type RawReceiptLog = {
@@ -81,6 +81,10 @@ export type DecodedReceiptSwap = {
     // Present only when a Classic leg went through the multi-transfer resolver (multiTransferLeg.ts)
     // — see that module's own header. Absent for Slipstream-only decodes.
     multiTransfer?: MultiTransferDiagnostics
+    // Present only for protocol === 'uniswap_v3' — the exact fee tier the Uniswap V3 factory's own
+    // getPool() confirmed for this pool (see uniswapV3PoolValidator.ts) — never guessed from the
+    // Swap event itself (V3's Swap event carries no fee field).
+    uniswapV3Fee?: number
   }
 }
 
@@ -113,7 +117,25 @@ export type ReceiptDecodeRejection = {
     // (e.g. a fee-on-transfer token, or a genuinely inconsistent receipt) — never accepted as a
     // guess, always fails closed.
     | 'swap_event_amount_mismatch'
+    // UNISWAP V3, DISCLOSED (see uniswapV3Leg.ts / uniswapV3PoolValidator.ts) — only ever attempted
+    // as a fallback for a SINGLE concentrated-liquidity-shaped Swap event whose Aerodrome Slipstream
+    // factory validation genuinely failed first ("do not treat Slipstream pools as Uniswap V3").
+    | 'uniswap_v3_pool_not_validated'
+    | 'uniswap_v3_sign_ambiguous'
+    | 'uniswap_v3_ambiguous_token_mapping'
+    | 'uniswap_v3_amount_mismatch'
   multiTransfer?: MultiTransferDiagnostics
+  uniswapV3?: UniswapV3Diagnostics
+}
+
+// Bounded, shadow/debug-only diagnostics from the Uniswap V3 resolver (uniswapV3Leg.ts) — never
+// used to gate/change the decode itself.
+export type UniswapV3Diagnostics = {
+  examined: boolean
+  resolved: boolean
+  signValid: boolean | null
+  amountMatched: boolean | null
+  routerIntermediaryTransfersIgnored: number
 }
 
 export type ReceiptDecodeResult =

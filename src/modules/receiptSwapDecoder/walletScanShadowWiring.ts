@@ -18,6 +18,7 @@
 
 import { decodeReceiptSwap } from './index'
 import type { PoolValidator } from './poolValidator'
+import type { UniswapV3PoolValidator } from './uniswapV3PoolValidator'
 import type { DecodedReceiptSwap, RawReceiptLog, ReceiptSwapProtocol, TokenMeta } from './types'
 import { selectBaseReceiptCandidates, type CandidateTxEvidence, type CandidateSelectionResult } from './candidateSelector'
 import {
@@ -54,6 +55,11 @@ export type WalletScanShadowModeInput = {
   logsByTxHash?: ReadonlyMap<string, RawReceiptLog[]>
   tokenMeta?: Record<string, TokenMeta>
   validator: PoolValidator
+  // Optional — when supplied, a concentrated-liquidity-shaped Swap event whose Aerodrome Slipstream
+  // validation genuinely fails is also attempted against the real Uniswap V3 factory (see
+  // uniswapV3PoolValidator.ts / uniswapV3Leg.ts / index.ts's own header). Omitting this preserves
+  // identical behavior to before this parameter existed.
+  uniswapV3Validator?: UniswapV3PoolValidator
 }
 
 export type ShadowDisagreementSample = {
@@ -95,6 +101,15 @@ export type WalletScanShadowCounters = {
   swapEventAmountMismatches: number
   routerIntermediaryTransfersIgnored: number
   refundsNetted: number
+  // UNISWAP V3 (BASE), DISCLOSED — see uniswapV3Leg.ts / uniswapV3PoolValidator.ts / index.ts's own
+  // header. Aggregated across every concentrated-liquidity-shaped Swap event this batch attempted
+  // the V3 fallback for, regardless of outcome.
+  uniswapV3PoolsExamined: number
+  uniswapV3PoolsValidated: number
+  uniswapV3ValidationCalls: number
+  uniswapV3SwapsDecoded: number
+  uniswapV3AmountMatches: number
+  uniswapV3AmountMismatches: number
 }
 
 export type WalletScanShadowDiagnostics = {
@@ -116,6 +131,9 @@ export type WalletScanShadowDiagnostics = {
   // Count of accepted exact swaps grouped by their originating candidate's priority tier (keys are
   // stringified tier numbers, or 'unknown' when the candidate carried no tier) — diagnostic only.
   acceptedExactSwapsByPriorityTier: Record<string, number>
+  // Count of accepted exact swaps grouped by protocol/venue (e.g. 'uniswap_v3', 'aerodrome_classic',
+  // 'aerodrome_slipstream') — diagnostic only.
+  acceptedExactSwapsByVenue: Record<string, number>
 }
 
 const MAX_DISAGREEMENT_SAMPLES = 10
@@ -147,6 +165,12 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
     swapEventAmountMismatches: 0,
     routerIntermediaryTransfersIgnored: 0,
     refundsNetted: 0,
+    uniswapV3PoolsExamined: 0,
+    uniswapV3PoolsValidated: 0,
+    uniswapV3ValidationCalls: 0,
+    uniswapV3SwapsDecoded: 0,
+    uniswapV3AmountMatches: 0,
+    uniswapV3AmountMismatches: 0,
   }
   const rejectionReasons: Record<string, number> = {}
   const decodedByVenue: Record<string, number> = {}
@@ -161,6 +185,17 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
     },
   }
 
+  // SEPARATE COUNTER, DISCLOSED: Uniswap V3 validation calls are tracked independently from Aerodrome's
+  // `providerCalls`/`newProviderCalls` — see this task's "hard-cap Uniswap V3 validation calls
+  // separately" requirement. Only ever invoked when `input.uniswapV3Validator` is supplied.
+  let uniswapV3Calls = 0
+  const countingUniswapV3Validator: UniswapV3PoolValidator | undefined = input.uniswapV3Validator && {
+    async validatePool(poolAddress, token0, token1) {
+      uniswapV3Calls += 1
+      return input.uniswapV3Validator!.validatePool(poolAddress, token0, token1)
+    },
+  }
+
   // Base + Aerodrome only, regardless of what the caller passes — enforced here, not merely by
   // convention, so this module can never silently widen scope if a caller forgets to pre-filter.
   const baseCandidates = input.candidates.filter((c) => c.chain === 'base')
@@ -168,6 +203,7 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
   const receiptForensics: ReceiptForensicSample[] = []
   const acceptedExactSwaps: DecodedReceiptSwap[] = []
   const acceptedExactSwapsByPriorityTier: Record<string, number> = {}
+  const acceptedExactSwapsByVenue: Record<string, number> = {}
 
   for (const candidate of baseCandidates) {
     const logs = input.logsByTxHash?.get(candidate.txHash) ?? null
@@ -193,7 +229,21 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
         tokenMeta: input.tokenMeta,
       },
       recordingValidator,
+      countingUniswapV3Validator,
     )
+
+    const uniswapV3Diagnostics = result.ok
+      ? (result.swap.protocol === 'uniswap_v3' ? { examined: true, amountMatched: true as boolean | null } : undefined)
+      : result.rejection.uniswapV3
+    if (uniswapV3Diagnostics?.examined) {
+      counters.uniswapV3PoolsExamined += 1
+      if (uniswapV3Diagnostics.amountMatched === true) counters.uniswapV3AmountMatches += 1
+      if (uniswapV3Diagnostics.amountMatched === false) counters.uniswapV3AmountMismatches += 1
+    }
+    if (result.ok && result.swap.protocol === 'uniswap_v3') {
+      counters.uniswapV3SwapsDecoded += 1
+      counters.uniswapV3PoolsValidated += 1
+    }
 
     const multiTransfer = result.ok ? result.swap.meta.multiTransfer : result.rejection.multiTransfer
     if (multiTransfer?.examined) {
@@ -220,6 +270,7 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
       acceptedExactSwaps.push(result.swap)
       const tierKey = String(candidate.priorityTier ?? 'unknown')
       acceptedExactSwapsByPriorityTier[tierKey] = (acceptedExactSwapsByPriorityTier[tierKey] ?? 0) + 1
+      acceptedExactSwapsByVenue[result.swap.protocol] = (acceptedExactSwapsByVenue[result.swap.protocol] ?? 0) + 1
     }
 
     if (!result.ok) {
@@ -294,9 +345,10 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
   }
 
   counters.newProviderCalls = providerCalls
+  counters.uniswapV3ValidationCalls = uniswapV3Calls
   return {
     counters, rejectionReasons, decodedByVenue, decodedByConfidence, disagreementSamples,
-    receiptForensics, acceptedExactSwaps, acceptedExactSwapsByPriorityTier,
+    receiptForensics, acceptedExactSwaps, acceptedExactSwapsByPriorityTier, acceptedExactSwapsByVenue,
   }
 }
 
@@ -374,6 +426,14 @@ export type WalletScanShadowLogPayload =
       // shadow-FIFO-replay stage (at most the first one, per scan) after real FIFO/pricing exist.
       acceptedExactSwaps: DecodedReceiptSwap[]
       acceptedExactSwapsByPriorityTier: Record<string, number>
+      acceptedExactSwapsByVenue: Record<string, number>
+      // UNISWAP V3 (BASE), DISCLOSED — see uniswapV3Leg.ts / uniswapV3PoolValidator.ts.
+      uniswapV3PoolsExamined: number
+      uniswapV3PoolsValidated: number
+      uniswapV3ValidationCalls: number
+      uniswapV3SwapsDecoded: number
+      uniswapV3AmountMatches: number
+      uniswapV3AmountMismatches: number
       // TIER-DIVERSIFIED RECEIPT SELECTION, DISCLOSED — see receiptAcquisition.ts's
       // selectReceiptFetchCandidates for the full disclosure (5/5 quota reservation for tiers 3/4,
       // tier 1/2 always first, backfill from whichever tier has spare candidates).
@@ -397,6 +457,8 @@ export type BuildWalletScanShadowLogPayloadInput = {
   evidence: readonly CandidateTxEvidence[]
   tokenMeta?: Record<string, TokenMeta>
   validator: PoolValidator
+  // Optional — see WalletScanShadowModeInput's own field of the same name.
+  uniswapV3Validator?: UniswapV3PoolValidator
   disabledByEnv: boolean
   // Receipt acquisition — defaults to the real, live, on-chain fetcher and a fresh request-scoped
   // cache. Tests inject a fake fetcher / a pre-seeded requestScope (exactly "reuse any receipt
@@ -458,6 +520,7 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     logsByTxHash: acquisition.logsByTxHash,
     tokenMeta: input.tokenMeta,
     validator: input.validator,
+    uniswapV3Validator: input.uniswapV3Validator,
   })
 
   const poolValidationProviderCalls = result.counters.newProviderCalls
@@ -499,6 +562,13 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     receiptForensics: result.receiptForensics,
     acceptedExactSwaps: result.acceptedExactSwaps,
     acceptedExactSwapsByPriorityTier: result.acceptedExactSwapsByPriorityTier,
+    acceptedExactSwapsByVenue: result.acceptedExactSwapsByVenue,
+    uniswapV3PoolsExamined: result.counters.uniswapV3PoolsExamined,
+    uniswapV3PoolsValidated: result.counters.uniswapV3PoolsValidated,
+    uniswapV3ValidationCalls: result.counters.uniswapV3ValidationCalls,
+    uniswapV3SwapsDecoded: result.counters.uniswapV3SwapsDecoded,
+    uniswapV3AmountMatches: result.counters.uniswapV3AmountMatches,
+    uniswapV3AmountMismatches: result.counters.uniswapV3AmountMismatches,
     receiptSelectedByPriorityTier: acquisition.receiptSelectedByPriorityTier,
     receiptCandidatesSkippedByTierQuota: acquisition.receiptCandidatesSkippedByTierQuota,
     receiptQuotaBackfilled: acquisition.receiptQuotaBackfilled,
