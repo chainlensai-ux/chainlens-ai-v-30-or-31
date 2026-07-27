@@ -24,6 +24,10 @@ import {
   acquireReceiptsForCandidates, createReceiptRequestScopeCache, createLiveBaseReceiptFetcher,
   type ReceiptFetcher, type ReceiptRequestScopeCache,
 } from './receiptAcquisition'
+import {
+  classifyReceiptForensics, createRecordingPoolValidator, MAX_FORENSIC_SAMPLES,
+  type ReceiptForensicSample, type FactoryValidationAttempt,
+} from './forensicClassifier'
 
 export type WalletScanSwapCandidate = {
   chain: string
@@ -35,6 +39,11 @@ export type WalletScanSwapCandidate = {
   // Mirrors swapNormalizer's NormalizedTrade.meta.missingSide contract — 'none' means the existing
   // inference already resolved both sides.
   inferredMissingSide: 'none' | 'tokenIn' | 'tokenOut'
+  // Optional — carried through from candidateSelector.ts's SelectedCandidate when this candidate
+  // came from the real selector, purely for forensic attribution (see forensicClassifier.ts).
+  // null/undefined for candidates built directly (e.g. tests), never required for decoding.
+  priorityTier?: number | null
+  priorityReason?: string | null
 }
 
 export type WalletScanShadowModeInput = {
@@ -85,6 +94,10 @@ export type WalletScanShadowDiagnostics = {
   decodedByConfidence: Record<string, number>
   // Bounded to at most 10 entries — never an unbounded receipt/log dump.
   disagreementSamples: ShadowDisagreementSample[]
+  // Bounded, shadow/debug-only forensic classification of every EXAMINED receipt (at most
+  // MAX_FORENSIC_SAMPLES = 10) — see forensicClassifier.ts's own header. Never used to change
+  // selection or decoding; purely diagnostic.
+  receiptForensics: ReceiptForensicSample[]
 }
 
 const MAX_DISAGREEMENT_SAMPLES = 10
@@ -128,6 +141,8 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
   // convention, so this module can never silently widen scope if a caller forgets to pre-filter.
   const baseCandidates = input.candidates.filter((c) => c.chain === 'base')
 
+  const receiptForensics: ReceiptForensicSample[] = []
+
   for (const candidate of baseCandidates) {
     const logs = input.logsByTxHash?.get(candidate.txHash) ?? null
     if (!logs || logs.length === 0) {
@@ -137,6 +152,12 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
     counters.receiptsAvailable += 1
     counters.receiptsExamined += 1
 
+    // RECORDING WRAPPER, DISCLOSED (forensicClassifier.ts's own header): wraps the SAME
+    // countingValidator this tx's decode was always going to use — never a second isValidPool
+    // call, just an observer of the ones decodeReceiptSwap already makes below.
+    const factoryValidationAttempts: FactoryValidationAttempt[] = []
+    const recordingValidator = createRecordingPoolValidator(countingValidator, factoryValidationAttempts)
+
     const result = await decodeReceiptSwap(
       {
         chain: 'base',
@@ -145,8 +166,19 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
         logs,
         tokenMeta: input.tokenMeta,
       },
-      countingValidator,
+      recordingValidator,
     )
+
+    if (receiptForensics.length < MAX_FORENSIC_SAMPLES) {
+      receiptForensics.push(classifyReceiptForensics({
+        txHash: candidate.txHash,
+        candidatePriorityTier: candidate.priorityTier ?? null,
+        candidatePriorityReason: candidate.priorityReason ?? null,
+        logs,
+        decodeResult: result,
+        factoryValidationAttempts,
+      }))
+    }
 
     if (!result.ok) {
       bumpMap(rejectionReasons, result.rejection.reason)
@@ -220,7 +252,7 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
   }
 
   counters.newProviderCalls = providerCalls
-  return { counters, rejectionReasons, decodedByVenue, decodedByConfidence, disagreementSamples }
+  return { counters, rejectionReasons, decodedByVenue, decodedByConfidence, disagreementSamples, receiptForensics }
 }
 
 // ─── Pipeline-facing entry point ───────────────────────────────────────────────────────────────
@@ -281,6 +313,9 @@ export type WalletScanShadowLogPayload =
       decodedByVenue: Record<string, number>
       decodedByConfidence: Record<string, number>
       disagreementSamples: ShadowDisagreementSample[]
+      // Bounded (<= 10) forensic classification of every examined receipt — see
+      // forensicClassifier.ts's own header. Shadow/debug-only.
+      receiptForensics: ReceiptForensicSample[]
       // SELECTOR BROADENING, DISCLOSED — see candidateSelector.ts's own header for the full
       // production-proof root cause this fixes (415 real swap-lookup transactions, 0 candidates
       // selected under the old routerDistributorMode-gated source).
@@ -349,6 +384,8 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     inferredAmountIn: null,
     inferredAmountOut: null,
     inferredMissingSide: c.inferredMissingSide,
+    priorityTier: c.priorityTier,
+    priorityReason: c.priorityReason,
   }))
 
   const result = await runWalletScanReceiptShadowMode({
@@ -389,6 +426,7 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     decodedByVenue: result.decodedByVenue,
     decodedByConfidence: result.decodedByConfidence,
     disagreementSamples: result.disagreementSamples,
+    receiptForensics: result.receiptForensics,
     selectorTransactionsConsidered: selection.selectorTransactionsConsidered,
     selectorEligibleCandidates: selection.selectorEligibleCandidates,
     selectorRejectedCandidates: selection.selectorRejectedCandidates,

@@ -352,3 +352,22 @@ test('production pipeline shape: identical inputs produce a deterministic payloa
   const p2 = await buildWalletScanShadowLogPayload(opts)
   assert.deepEqual(p1, p2)
 })
+
+test('production pipeline shape: receiptForensics is bounded to 10 and never increases provider-call counts', async () => {
+  const evidence: CandidateTxEvidence[] = Array.from({ length: 25 }, (_, i) => ev({ txHash: `0x${i.toString().padStart(3, '0')}` }))
+  const payload = await buildWalletScanShadowLogPayload({
+    walletAddress: wallet,
+    evidence,
+    validator: alwaysValidValidator(),
+    disabledByEnv: false,
+    receiptFetcher: okFetcher(decodableLogs()),
+  })
+  assert.equal(payload.enabled, true)
+  if (!payload.enabled) return
+  assert.ok(payload.receiptForensics.length <= 10)
+  assert.equal(payload.receiptForensics.length, 10)
+  // Pool validation happens once per examined receipt, exactly matching the real decode path --
+  // the forensic recording wrapper never triggers an extra validation call.
+  assert.equal(payload.poolValidationProviderCalls, 10)
+  assert.equal(payload.receiptProviderCalls, 10)
+})
