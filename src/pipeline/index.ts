@@ -21,7 +21,9 @@ import { createFinalReportAssembler } from '../lib/finalReportAssembler'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
 import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/index'
 import { buildWalletScanShadowLogPayload } from '../modules/receiptSwapDecoder/walletScanShadowWiring'
+import type { CandidateTxEvidence } from '../modules/receiptSwapDecoder/candidateSelector'
 import { createLiveBaseDexPoolValidator } from '../modules/receiptSwapDecoder/poolValidator'
+import { groupSwapLegsByTransaction, swapLegGroupKey, isVerifiedQuoteLegAddress } from '../modules/quoteLegPricing/index'
 import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/syntheticPnl/index'
 import type { PoolDataMap as SyntheticPoolDataMap } from '../modules/syntheticPnl/index'
 import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
@@ -1195,57 +1197,6 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     })
   }
 
-  // RECEIPT SWAP DECODER — SHADOW MODE, DISCLOSED (src/modules/receiptSwapDecoder — Base only,
-  // Aerodrome Classic + Slipstream only; see that module's walletScanShadowWiring.ts header for the
-  // full disclosure). Read-only observability over the exact same routerTradeReconstruction
-  // candidate trades just computed above, keyed by chain+txHash — never a new event source, never
-  // fed into normalizedEvents/priceLotsForWallet/fifoEngine, never promoted into canonical events.
-  //
-  // MISSING-LOG BUG, FIXED, DISCLOSED (found live, this task — confirmed real production scans
-  // never emitted ANY "[pipeline] receiptSwapDecoder shadow mode" log at all): the previous version
-  // of this block only logged INSIDE `if (receiptShadowCandidates.length > 0)`. Since
-  // routerTradeReconstruction.candidateTrades is only ever non-empty when routerDistributorMode is
-  // true (see that module's own `applied` gate — a rare, high-outbound-router-activity condition),
-  // virtually every real scan reaches this block with zero candidates and the whole thing, log
-  // included, silently no-opped — exactly the missing-diagnostics symptom reported. Fixed by making
-  // the log UNCONDITIONAL: exactly one bounded `console.warn` fires every time this block runs,
-  // either with `enabled: true` and the real counters, or `enabled: false` with a typed
-  // `skipReason` (`no_candidates` | `unsupported_chain` | `shadow_disabled` | `wiring_not_reached`)
-  // explaining why. `shadow_disabled` is a genuine, off-by-default ops kill switch
-  // (RECEIPT_SWAP_DECODER_SHADOW_DISABLED=true) — never flips behavior unless explicitly set.
-  // `wiring_not_reached` covers an unexpected throw from the shadow module itself (caught below) so
-  // this log is truly unconditional even in that case.
-  //
-  // PROVIDER-CALL / COST-GUARANTEE DISCLOSURE: `logsByTxHash` is intentionally an empty Map — this
-  // pipeline's real provider data (RawProviderEvent / NormalizedEvent) has never carried raw receipt
-  // logs, so every Base candidate here is honestly counted as `receiptsMissing`, and this NEVER
-  // fetches a receipt to fill that gap (this task's explicit "no provider-call increase" limit).
-  // The one awaited call inside runWalletScanReceiptShadowMode (pool-factory validation) is only
-  // reachable once logs are actually present — with today's real data that never happens, so this
-  // resolves with zero network calls, preserving this file's own "only stage 1 (and stage 5 in deep
-  // mode) make awaited network calls" cost guarantee in practice, and stays a no-op amount of work
-  // (an empty array filter/map) even in the worst case.
-  try {
-    const shadowPayload = await buildWalletScanShadowLogPayload({
-      walletAddress: params.walletAddress,
-      allCandidateTrades: routerTradeReconstruction.candidateTrades,
-      logsByTxHash: new Map(),
-      validator: createLiveBaseDexPoolValidator(),
-      disabledByEnv: process.env.RECEIPT_SWAP_DECODER_SHADOW_DISABLED === 'true',
-    })
-    // eslint-disable-next-line no-console
-    console.warn('[pipeline] receiptSwapDecoder shadow mode', shadowPayload)
-  } catch (err) {
-    // Guarantees the log is truly unconditional — an unexpected throw from the shadow module never
-    // silently disappears, and never propagates into the real scan result either.
-    // eslint-disable-next-line no-console
-    console.error('[pipeline] receiptSwapDecoder shadow mode', {
-      enabled: false,
-      skipReason: 'wiring_not_reached',
-      error: err instanceof Error ? err.message : String(err),
-    })
-  }
-
   // ROUTER DISCOVERY, DISCLOSED: additive-only, log-only observability aid (src/pipeline/
   // routerDiscovery.ts). Flags outbound events whose counterparty isn't already in
   // KNOWN_DEX_ROUTER_ADDRESSES but matches a real pattern (repeated counterparty across this scan,
@@ -1292,6 +1243,111 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // chainSelection) since a bridge candidate can legitimately involve a dust/low-activity chain
   // on one leg.
   const bridgeTimeline = safeRunBridgeDetection(normalizedEvents)
+
+  // RECEIPT SWAP DECODER — SHADOW MODE, DISCLOSED (src/modules/receiptSwapDecoder — Base only,
+  // Aerodrome Classic + Slipstream only; see walletScanShadowWiring.ts and candidateSelector.ts's
+  // own headers for the full disclosure). Read-only observability — never a new event source,
+  // never fed into normalizedEvents/priceLotsForWallet/fifoEngine, never promoted into canonical
+  // events, never mutates KNOWN_DEX_ROUTER_ADDRESSES/routerInference.
+  //
+  // CANDIDATE-SOURCE BROADENING, DISCLOSED (found live, this task — production proof: a real scan
+  // with 415 real per-tx leg groups — the SAME groupSwapLegsByTransaction grouping
+  // priceLotsForWallet.ts already computes downstream, reused here rather than reimplemented —
+  // still logged baseSwapCandidates: 0). Root cause: the previous version sourced candidates ONLY
+  // from routerTradeReconstruction.candidateTrades, which is only ever non-empty when
+  // routerDistributorMode is true (a rare condition). Candidates are now selected from this
+  // pipeline's own real, already-computed per-tx evidence (leg grouping, router inference, bridge
+  // detection, verified-quote-address) via candidateSelector.ts's selectBaseReceiptCandidates,
+  // independent of routerDistributorMode. `missingClosedLotSide` is honestly `null` here — that
+  // signal only exists after priceLotsForWallet's structural lot matching (stage 5c, later than
+  // this block) — a future move of this block could wire it; not fabricated here.
+  //
+  // MOVED, DISCLOSED: this block now runs here (after bridgeTimeline) rather than immediately after
+  // routerTradeReconstruction, so real bridgeTimeline data is available for bridge exclusion — still
+  // before priceLotsForWallet/recoveryPolicy's own network calls, so this file's "only stage 1 (and
+  // stage 5 in deep mode) make awaited network calls" cost guarantee is unaffected (see below).
+  //
+  // PROVIDER-CALL / COST-GUARANTEE DISCLOSURE: `logsByTxHash` is intentionally an empty Map — this
+  // pipeline's real provider data (RawProviderEvent / NormalizedEvent) has never carried raw receipt
+  // logs, so every selected candidate here is honestly counted as `receiptsMissing`, and this NEVER
+  // fetches a receipt to fill that gap (this task's explicit "no receipt fetching yet" limit). The
+  // one awaited call inside runWalletScanReceiptShadowMode (pool-factory validation) is only
+  // reachable once logs are actually present — with today's real data that never happens, so this
+  // resolves with zero network calls in practice.
+  try {
+    const existingSwapCandidateTxHashes = new Set(
+      routerTradeReconstruction.candidateTrades.map((t) => swapLegGroupKey(t.chain as SupportedChain, t.txHash)),
+    )
+    const bridgeCandidateTxHashes = new Set<string>()
+    for (const bridge of bridgeTimeline) {
+      bridgeCandidateTxHashes.add(swapLegGroupKey(bridge.chainFrom as SupportedChain, bridge.txHashFrom))
+      bridgeCandidateTxHashes.add(swapLegGroupKey(bridge.chainTo as SupportedChain, bridge.txHashTo))
+    }
+
+    type RouterInfo = { isKnownRouter: boolean; routerConfidence: 'high' | 'medium' | 'low' | null }
+    const routerInfoByTx = new Map<string, RouterInfo>()
+    const walletInvolvedByTx = new Set<string>()
+    for (const e of normalizedEvents) {
+      const key = swapLegGroupKey(e.chain, e.txHash)
+      if (e.direction === 'inbound' || e.direction === 'outbound') walletInvolvedByTx.add(key)
+      const counterparty = e.direction === 'outbound' ? e.toAddress : e.fromAddress
+      const counterpartyLower = (counterparty ?? '').toLowerCase()
+      const isKnown = KNOWN_DEX_ROUTER_ADDRESSES.has(counterpartyLower)
+      const isHighConfidence = inferredRouterAddresses.has(counterpartyLower)
+      const existing = routerInfoByTx.get(key) ?? { isKnownRouter: false, routerConfidence: null }
+      routerInfoByTx.set(key, {
+        isKnownRouter: existing.isKnownRouter || isKnown,
+        routerConfidence: isHighConfidence ? 'high' : existing.routerConfidence,
+      })
+    }
+
+    const swapLegGroups = groupSwapLegsByTransaction(normalizedEvents)
+    const evidence: CandidateTxEvidence[] = []
+    for (const [groupKey, legs] of swapLegGroups) {
+      const [chainPart, ...txHashParts] = groupKey.split(':')
+      const txHash = txHashParts.join(':')
+      const router = routerInfoByTx.get(groupKey) ?? { isKnownRouter: false, routerConfidence: null }
+      evidence.push({
+        chain: chainPart,
+        txHash,
+        legs: legs.map((l) => ({ contract: l.contract, direction: l.direction, amount: l.amount })),
+        walletInvolved: walletInvolvedByTx.has(groupKey),
+        isKnownRouter: router.isKnownRouter,
+        routerConfidence: router.routerConfidence,
+        hasVerifiedQuoteAddress: legs.some((l) => isVerifiedQuoteLegAddress(chainPart as NormalizedEvent['chain'], l.contract, l.symbol)),
+        isExistingSwapCandidate: existingSwapCandidateTxHashes.has(groupKey),
+        isBridgeCandidate: bridgeCandidateTxHashes.has(groupKey),
+        // Real LP/staking/burn classification requires protocol-level pool metadata this pipeline
+        // stage doesn't have (see swapNormalizer's own disclosure on the same gap) — honestly false
+        // here, never guessed; such transactions still fail closed via the ordinary_transfer/
+        // no-positive-signal eligibility rule when they carry no other swap-like evidence.
+        isLpStakingOrBurn: false,
+        // Not available at this pipeline stage (needs priceLotsForWallet's structural lot pairing,
+        // which runs later) — honestly null, never fabricated.
+        missingClosedLotSide: null,
+        economicValueUsd: null,
+      })
+    }
+
+    const shadowPayload = await buildWalletScanShadowLogPayload({
+      walletAddress: params.walletAddress,
+      evidence,
+      logsByTxHash: new Map(),
+      validator: createLiveBaseDexPoolValidator(),
+      disabledByEnv: process.env.RECEIPT_SWAP_DECODER_SHADOW_DISABLED === 'true',
+    })
+    // eslint-disable-next-line no-console
+    console.warn('[pipeline] receiptSwapDecoder shadow mode', shadowPayload)
+  } catch (err) {
+    // Guarantees the log is truly unconditional — an unexpected throw from the shadow module never
+    // silently disappears, and never propagates into the real scan result either.
+    // eslint-disable-next-line no-console
+    console.error('[pipeline] receiptSwapDecoder shadow mode', {
+      enabled: false,
+      skipReason: 'wiring_not_reached',
+      error: err instanceof Error ? err.message : String(err),
+    })
+  }
 
   // 4c. Pre-recovery sell pass — pure, zero-cost, recovery-independent. Computes exactly
   // sellTimelineV2's mechanisms 1-3 (same-tx swap, transfer-to-known-router, bridge-exit) by

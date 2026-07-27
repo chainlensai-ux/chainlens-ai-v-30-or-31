@@ -2,8 +2,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   runWalletScanReceiptShadowMode, buildWalletScanShadowLogPayload,
-  type WalletScanSwapCandidate, type PipelineCandidateTrade,
+  type WalletScanSwapCandidate,
 } from './walletScanShadowWiring'
+import type { CandidateTxEvidence } from './candidateSelector'
 import type { RawReceiptLog } from './types'
 import {
   WALLET, POOL_A, USDC, TOKEN_X, transferLog, classicSwapLog, alwaysValidValidator, neverValidValidator,
@@ -198,14 +199,31 @@ test('disagreement samples are bounded to 10 even with many disagreeing candidat
 // logsByTxHash is empty (today's real-world case), and that it emits a typed skip reason instead
 // of silence whenever the shadow module is skipped.
 
-test('production pipeline shape: non-empty base candidate trades + empty logsByTxHash still produces enabled:true diagnostics', async () => {
-  const allCandidateTrades: PipelineCandidateTrade[] = [
-    { chain: 'base', txHash: '0x1', tokenIn: WETH, tokenOut: tokenX, amountIn: 1, amountOut: 500 },
-    { chain: 'base', txHash: '0x2', tokenIn: WETH, tokenOut: USDC, amountIn: 2, amountOut: 5000 },
-  ]
+function ev(overrides: Partial<CandidateTxEvidence> & { txHash: string }): CandidateTxEvidence {
+  return {
+    chain: 'base',
+    legs: [
+      { contract: WETH, direction: 'outbound', amount: 1 },
+      { contract: tokenX, direction: 'inbound', amount: 500 },
+    ],
+    walletInvolved: true,
+    isKnownRouter: false,
+    routerConfidence: null,
+    hasVerifiedQuoteAddress: false,
+    isExistingSwapCandidate: true,
+    isBridgeCandidate: false,
+    isLpStakingOrBurn: false,
+    missingClosedLotSide: null,
+    economicValueUsd: null,
+    ...overrides,
+  }
+}
+
+test('production pipeline shape: non-empty base evidence + empty logsByTxHash still produces enabled:true diagnostics', async () => {
+  const evidence: CandidateTxEvidence[] = [ev({ txHash: '0x1' }), ev({ txHash: '0x2' })]
   const payload = await buildWalletScanShadowLogPayload({
     walletAddress: wallet,
-    allCandidateTrades,
+    evidence,
     logsByTxHash: new Map(), // production reality today: never populated
     tokenMeta: tokenMeta(),
     validator: alwaysValidValidator(),
@@ -214,6 +232,8 @@ test('production pipeline shape: non-empty base candidate trades + empty logsByT
   assert.equal(payload.enabled, true)
   if (!payload.enabled) return
   assert.equal(payload.baseSwapCandidates, 2)
+  assert.equal(payload.selectorTransactionsConsidered, 2)
+  assert.equal(payload.selectorEligibleCandidates, 2)
   assert.equal(payload.receiptsMissing, 2)
   assert.equal(payload.receiptsAvailable, 0)
   assert.equal(payload.receiptsExamined, 0)
@@ -222,10 +242,10 @@ test('production pipeline shape: non-empty base candidate trades + empty logsByT
   assert.equal(payload.newProviderCalls, 0)
 })
 
-test('production pipeline shape: zero candidate trades logs a typed no_candidates skip reason, never silence', async () => {
+test('production pipeline shape: zero evidence logs a typed no_candidates skip reason, never silence', async () => {
   const payload = await buildWalletScanShadowLogPayload({
     walletAddress: wallet,
-    allCandidateTrades: [],
+    evidence: [],
     logsByTxHash: new Map(),
     validator: alwaysValidValidator(),
     disabledByEnv: false,
@@ -233,13 +253,11 @@ test('production pipeline shape: zero candidate trades logs a typed no_candidate
   assert.deepEqual(payload, { enabled: false, skipReason: 'no_candidates', baseSwapCandidates: 0 })
 })
 
-test('production pipeline shape: candidate trades exist but none are on base logs unsupported_chain', async () => {
-  const allCandidateTrades: PipelineCandidateTrade[] = [
-    { chain: 'eth', txHash: '0x1', tokenIn: WETH, tokenOut: tokenX, amountIn: 1, amountOut: 500 },
-  ]
+test('production pipeline shape: evidence exists but none is on base logs unsupported_chain', async () => {
+  const evidence: CandidateTxEvidence[] = [ev({ txHash: '0x1', chain: 'eth' })]
   const payload = await buildWalletScanShadowLogPayload({
     walletAddress: wallet,
-    allCandidateTrades,
+    evidence,
     logsByTxHash: new Map(),
     validator: alwaysValidValidator(),
     disabledByEnv: false,
@@ -247,13 +265,27 @@ test('production pipeline shape: candidate trades exist but none are on base log
   assert.deepEqual(payload, { enabled: false, skipReason: 'unsupported_chain', baseSwapCandidates: 0 })
 })
 
-test('production pipeline shape: the env kill switch produces shadow_disabled, independent of candidate count', async () => {
-  const allCandidateTrades: PipelineCandidateTrade[] = [
-    { chain: 'base', txHash: '0x1', tokenIn: WETH, tokenOut: tokenX, amountIn: 1, amountOut: 500 },
-  ]
+test('production pipeline shape: evidence exists on base but none is eligible logs no_candidates', async () => {
+  const evidence: CandidateTxEvidence[] = [ev({
+    txHash: '0x1',
+    isExistingSwapCandidate: false,
+    legs: [{ contract: tokenX, direction: 'outbound', amount: 1 }], // one-leg, no router, no other signal
+  })]
   const payload = await buildWalletScanShadowLogPayload({
     walletAddress: wallet,
-    allCandidateTrades,
+    evidence,
+    logsByTxHash: new Map(),
+    validator: alwaysValidValidator(),
+    disabledByEnv: false,
+  })
+  assert.deepEqual(payload, { enabled: false, skipReason: 'no_candidates', baseSwapCandidates: 0 })
+})
+
+test('production pipeline shape: the env kill switch produces shadow_disabled, independent of candidate count', async () => {
+  const evidence: CandidateTxEvidence[] = [ev({ txHash: '0x1' })]
+  const payload = await buildWalletScanShadowLogPayload({
+    walletAddress: wallet,
+    evidence,
     logsByTxHash: new Map(),
     validator: alwaysValidValidator(),
     disabledByEnv: true,
@@ -262,12 +294,10 @@ test('production pipeline shape: the env kill switch produces shadow_disabled, i
 })
 
 test('production pipeline shape: when logs ARE available for a base candidate, real decode diagnostics surface', async () => {
-  const allCandidateTrades: PipelineCandidateTrade[] = [
-    { chain: 'base', txHash: '0x1', tokenIn: WETH, tokenOut: tokenX, amountIn: 1, amountOut: 500 },
-  ]
+  const evidence: CandidateTxEvidence[] = [ev({ txHash: '0x1' })]
   const payload = await buildWalletScanShadowLogPayload({
     walletAddress: wallet,
-    allCandidateTrades,
+    evidence,
     logsByTxHash: new Map([['0x1', decodableLogs()]]),
     tokenMeta: tokenMeta(),
     validator: alwaysValidValidator(),
@@ -281,12 +311,10 @@ test('production pipeline shape: when logs ARE available for a base candidate, r
 })
 
 test('production pipeline shape: identical inputs produce a deterministic payload across repeated calls', async () => {
-  const allCandidateTrades: PipelineCandidateTrade[] = [
-    { chain: 'base', txHash: '0x1', tokenIn: WETH, tokenOut: tokenX, amountIn: 1, amountOut: 500 },
-  ]
+  const evidence: CandidateTxEvidence[] = [ev({ txHash: '0x1' })]
   const opts = {
     walletAddress: wallet,
-    allCandidateTrades,
+    evidence,
     logsByTxHash: new Map(),
     validator: alwaysValidValidator(),
     disabledByEnv: false,

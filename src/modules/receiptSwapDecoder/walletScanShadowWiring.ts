@@ -25,6 +25,7 @@
 import { decodeReceiptSwap } from './index'
 import type { PoolValidator } from './poolValidator'
 import type { RawReceiptLog, ReceiptSwapProtocol, TokenMeta } from './types'
+import { selectBaseReceiptCandidates, type CandidateTxEvidence, type CandidateSelectionResult } from './candidateSelector'
 
 export type WalletScanSwapCandidate = {
   chain: string
@@ -263,11 +264,21 @@ export type WalletScanShadowLogPayload =
       decodedByVenue: Record<string, number>
       decodedByConfidence: Record<string, number>
       disagreementSamples: ShadowDisagreementSample[]
+      // SELECTOR BROADENING, DISCLOSED — see candidateSelector.ts's own header for the full
+      // production-proof root cause this fixes (415 real swap-lookup transactions, 0 candidates
+      // selected under the old routerDistributorMode-gated source).
+      selectorTransactionsConsidered: number
+      selectorEligibleCandidates: number
+      selectorRejectedCandidates: number
+      selectorReasonCounts: Record<string, number>
+      candidatePriorityBreakdown: Record<string, number>
     }
 
 export type BuildWalletScanShadowLogPayloadInput = {
   walletAddress: string
-  allCandidateTrades: readonly PipelineCandidateTrade[]
+  // Real, already-computed per-transaction evidence (leg grouping, router inference, bridge
+  // detection, verified-quote-address, closed-lot pairing) — see candidateSelector.ts's own header.
+  evidence: readonly CandidateTxEvidence[]
   // Caller-supplied, expected empty in production today — see file header's provider-call
   // discipline disclosure. Never fetched inside this function.
   logsByTxHash: ReadonlyMap<string, RawReceiptLog[]>
@@ -285,25 +296,27 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
   if (input.disabledByEnv) {
     return { enabled: false, skipReason: 'shadow_disabled', baseSwapCandidates: 0 }
   }
-  if (input.allCandidateTrades.length === 0) {
+  if (input.evidence.length === 0) {
     return { enabled: false, skipReason: 'no_candidates', baseSwapCandidates: 0 }
   }
-  const baseCandidateTrades = input.allCandidateTrades.filter((t) => t.chain === 'base')
-  if (baseCandidateTrades.length === 0) {
-    return { enabled: false, skipReason: 'unsupported_chain', baseSwapCandidates: 0 }
+
+  const selection: CandidateSelectionResult = selectBaseReceiptCandidates(input.evidence)
+  if (selection.baseSwapCandidates === 0) {
+    // Distinguishes "there was no Base evidence at all" from "there was Base evidence but none of
+    // it survived eligibility" — both are honestly "nothing to decode", but the former is the exact
+    // production symptom this task fixes (evidence existed, selection was just always empty).
+    const anyBaseEvidence = input.evidence.some((e) => e.chain === 'base')
+    return { enabled: false, skipReason: anyBaseEvidence ? 'no_candidates' : 'unsupported_chain', baseSwapCandidates: 0 }
   }
 
-  const candidates: WalletScanSwapCandidate[] = baseCandidateTrades.map((t) => ({
-    chain: t.chain,
-    txHash: t.txHash,
-    inferredTokenIn: t.tokenIn,
-    inferredTokenOut: t.tokenOut,
-    inferredAmountIn: t.amountIn,
-    inferredAmountOut: t.amountOut,
-    // routerTradeReconstruction never emits a candidate for an unresolved side (see that module's
-    // own header — "never fabricate a trade when evidence is ambiguous"), so every real candidate
-    // sourced from it already has both sides known.
-    inferredMissingSide: 'none',
+  const candidates: WalletScanSwapCandidate[] = selection.selected.map((c) => ({
+    chain: c.chain,
+    txHash: c.txHash,
+    inferredTokenIn: c.inferredTokenIn,
+    inferredTokenOut: c.inferredTokenOut,
+    inferredAmountIn: null,
+    inferredAmountOut: null,
+    inferredMissingSide: c.inferredMissingSide,
   }))
 
   const result = await runWalletScanReceiptShadowMode({
@@ -316,7 +329,7 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
 
   return {
     enabled: true,
-    baseSwapCandidates: candidates.length,
+    baseSwapCandidates: selection.baseSwapCandidates,
     receiptsAvailable: result.counters.receiptsAvailable,
     receiptsMissing: result.counters.receiptsMissing,
     receiptsExamined: result.counters.receiptsExamined,
@@ -327,5 +340,10 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     decodedByVenue: result.decodedByVenue,
     decodedByConfidence: result.decodedByConfidence,
     disagreementSamples: result.disagreementSamples,
+    selectorTransactionsConsidered: selection.selectorTransactionsConsidered,
+    selectorEligibleCandidates: selection.selectorEligibleCandidates,
+    selectorRejectedCandidates: selection.selectorRejectedCandidates,
+    selectorReasonCounts: selection.selectorReasonCounts,
+    candidatePriorityBreakdown: selection.candidatePriorityBreakdown,
   }
 }
