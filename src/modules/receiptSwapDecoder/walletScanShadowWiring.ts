@@ -223,3 +223,109 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
   counters.newProviderCalls = providerCalls
   return { counters, rejectionReasons, decodedByVenue, decodedByConfidence, disagreementSamples }
 }
+
+// ─── Pipeline-facing entry point ───────────────────────────────────────────────────────────────
+//
+// UNCONDITIONAL-LOG FIX, DISCLOSED (found live — real production scans emitted NO
+// "[pipeline] receiptSwapDecoder shadow mode" log at all): src/pipeline/index.ts previously only
+// logged when it had already built a non-empty `receiptShadowCandidates` array. Since
+// routerTradeReconstruction.candidateTrades is only ever non-empty when routerDistributorMode is
+// true (a rare, high-router-activity condition — see that module's own `applied` gate), virtually
+// every real scan reached that block with zero candidates and the log silently never fired. This
+// function is now the SINGLE place that decides enabled-vs-skipped and shapes the log payload —
+// src/pipeline/index.ts calls it and unconditionally logs whatever it returns, so this function
+// being tested directly (see walletScanShadowWiring.test.ts's pipeline-integration tests) is
+// exercising the exact same code path the real pipeline runs, not a parallel reimplementation.
+
+export type PipelineCandidateTrade = {
+  chain: string
+  txHash: string
+  tokenIn: string
+  tokenOut: string
+  amountIn: number
+  amountOut: number
+}
+
+export type ShadowSkipReason = 'no_candidates' | 'unsupported_chain' | 'shadow_disabled' | 'wiring_not_reached'
+
+export type WalletScanShadowLogPayload =
+  | { enabled: false; skipReason: ShadowSkipReason; baseSwapCandidates: number }
+  | {
+      enabled: true
+      baseSwapCandidates: number
+      receiptsAvailable: number
+      receiptsMissing: number
+      receiptsExamined: number
+      aerodromeSwapsDecoded: number
+      candidateLotsUnlocked: number
+      newProviderCalls: number
+      rejectionReasons: Record<string, number>
+      decodedByVenue: Record<string, number>
+      decodedByConfidence: Record<string, number>
+      disagreementSamples: ShadowDisagreementSample[]
+    }
+
+export type BuildWalletScanShadowLogPayloadInput = {
+  walletAddress: string
+  allCandidateTrades: readonly PipelineCandidateTrade[]
+  // Caller-supplied, expected empty in production today — see file header's provider-call
+  // discipline disclosure. Never fetched inside this function.
+  logsByTxHash: ReadonlyMap<string, RawReceiptLog[]>
+  tokenMeta?: Record<string, TokenMeta>
+  validator: PoolValidator
+  disabledByEnv: boolean
+}
+
+// PURE with respect to control flow (the only awaited work is runWalletScanReceiptShadowMode
+// itself, already documented as zero-network-call when logsByTxHash is empty). Never throws by
+// itself — a thrown error from runWalletScanReceiptShadowMode propagates to the caller, which
+// src/pipeline/index.ts catches and logs under the 'wiring_not_reached' skip reason so the
+// unconditional-log guarantee holds even in that case.
+export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShadowLogPayloadInput): Promise<WalletScanShadowLogPayload> {
+  if (input.disabledByEnv) {
+    return { enabled: false, skipReason: 'shadow_disabled', baseSwapCandidates: 0 }
+  }
+  if (input.allCandidateTrades.length === 0) {
+    return { enabled: false, skipReason: 'no_candidates', baseSwapCandidates: 0 }
+  }
+  const baseCandidateTrades = input.allCandidateTrades.filter((t) => t.chain === 'base')
+  if (baseCandidateTrades.length === 0) {
+    return { enabled: false, skipReason: 'unsupported_chain', baseSwapCandidates: 0 }
+  }
+
+  const candidates: WalletScanSwapCandidate[] = baseCandidateTrades.map((t) => ({
+    chain: t.chain,
+    txHash: t.txHash,
+    inferredTokenIn: t.tokenIn,
+    inferredTokenOut: t.tokenOut,
+    inferredAmountIn: t.amountIn,
+    inferredAmountOut: t.amountOut,
+    // routerTradeReconstruction never emits a candidate for an unresolved side (see that module's
+    // own header — "never fabricate a trade when evidence is ambiguous"), so every real candidate
+    // sourced from it already has both sides known.
+    inferredMissingSide: 'none',
+  }))
+
+  const result = await runWalletScanReceiptShadowMode({
+    walletAddress: input.walletAddress,
+    candidates,
+    logsByTxHash: input.logsByTxHash,
+    tokenMeta: input.tokenMeta,
+    validator: input.validator,
+  })
+
+  return {
+    enabled: true,
+    baseSwapCandidates: candidates.length,
+    receiptsAvailable: result.counters.receiptsAvailable,
+    receiptsMissing: result.counters.receiptsMissing,
+    receiptsExamined: result.counters.receiptsExamined,
+    aerodromeSwapsDecoded: result.counters.aerodromeSwapsDecoded,
+    candidateLotsUnlocked: result.counters.candidateLotsUnlocked,
+    newProviderCalls: result.counters.newProviderCalls,
+    rejectionReasons: result.rejectionReasons,
+    decodedByVenue: result.decodedByVenue,
+    decodedByConfidence: result.decodedByConfidence,
+    disagreementSamples: result.disagreementSamples,
+  }
+}

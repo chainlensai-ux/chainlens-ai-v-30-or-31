@@ -1,6 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runWalletScanReceiptShadowMode, type WalletScanSwapCandidate } from './walletScanShadowWiring'
+import {
+  runWalletScanReceiptShadowMode, buildWalletScanShadowLogPayload,
+  type WalletScanSwapCandidate, type PipelineCandidateTrade,
+} from './walletScanShadowWiring'
 import type { RawReceiptLog } from './types'
 import {
   WALLET, POOL_A, USDC, TOKEN_X, transferLog, classicSwapLog, alwaysValidValidator, neverValidValidator,
@@ -187,4 +190,108 @@ test('disagreement samples are bounded to 10 even with many disagreeing candidat
   })
   assert.equal(result.counters.inferenceDisagreements, 15)
   assert.equal(result.disagreementSamples.length, 10)
+})
+
+// ─── Pipeline-integration tests: buildWalletScanShadowLogPayload ────────────────────────────────
+// These exercise the EXACT function src/pipeline/index.ts calls and unconditionally logs the
+// return value of — proving the real production pipeline emits diagnostics even when
+// logsByTxHash is empty (today's real-world case), and that it emits a typed skip reason instead
+// of silence whenever the shadow module is skipped.
+
+test('production pipeline shape: non-empty base candidate trades + empty logsByTxHash still produces enabled:true diagnostics', async () => {
+  const allCandidateTrades: PipelineCandidateTrade[] = [
+    { chain: 'base', txHash: '0x1', tokenIn: WETH, tokenOut: tokenX, amountIn: 1, amountOut: 500 },
+    { chain: 'base', txHash: '0x2', tokenIn: WETH, tokenOut: USDC, amountIn: 2, amountOut: 5000 },
+  ]
+  const payload = await buildWalletScanShadowLogPayload({
+    walletAddress: wallet,
+    allCandidateTrades,
+    logsByTxHash: new Map(), // production reality today: never populated
+    tokenMeta: tokenMeta(),
+    validator: alwaysValidValidator(),
+    disabledByEnv: false,
+  })
+  assert.equal(payload.enabled, true)
+  if (!payload.enabled) return
+  assert.equal(payload.baseSwapCandidates, 2)
+  assert.equal(payload.receiptsMissing, 2)
+  assert.equal(payload.receiptsAvailable, 0)
+  assert.equal(payload.receiptsExamined, 0)
+  assert.equal(payload.aerodromeSwapsDecoded, 0)
+  assert.equal(payload.candidateLotsUnlocked, 0)
+  assert.equal(payload.newProviderCalls, 0)
+})
+
+test('production pipeline shape: zero candidate trades logs a typed no_candidates skip reason, never silence', async () => {
+  const payload = await buildWalletScanShadowLogPayload({
+    walletAddress: wallet,
+    allCandidateTrades: [],
+    logsByTxHash: new Map(),
+    validator: alwaysValidValidator(),
+    disabledByEnv: false,
+  })
+  assert.deepEqual(payload, { enabled: false, skipReason: 'no_candidates', baseSwapCandidates: 0 })
+})
+
+test('production pipeline shape: candidate trades exist but none are on base logs unsupported_chain', async () => {
+  const allCandidateTrades: PipelineCandidateTrade[] = [
+    { chain: 'eth', txHash: '0x1', tokenIn: WETH, tokenOut: tokenX, amountIn: 1, amountOut: 500 },
+  ]
+  const payload = await buildWalletScanShadowLogPayload({
+    walletAddress: wallet,
+    allCandidateTrades,
+    logsByTxHash: new Map(),
+    validator: alwaysValidValidator(),
+    disabledByEnv: false,
+  })
+  assert.deepEqual(payload, { enabled: false, skipReason: 'unsupported_chain', baseSwapCandidates: 0 })
+})
+
+test('production pipeline shape: the env kill switch produces shadow_disabled, independent of candidate count', async () => {
+  const allCandidateTrades: PipelineCandidateTrade[] = [
+    { chain: 'base', txHash: '0x1', tokenIn: WETH, tokenOut: tokenX, amountIn: 1, amountOut: 500 },
+  ]
+  const payload = await buildWalletScanShadowLogPayload({
+    walletAddress: wallet,
+    allCandidateTrades,
+    logsByTxHash: new Map(),
+    validator: alwaysValidValidator(),
+    disabledByEnv: true,
+  })
+  assert.deepEqual(payload, { enabled: false, skipReason: 'shadow_disabled', baseSwapCandidates: 0 })
+})
+
+test('production pipeline shape: when logs ARE available for a base candidate, real decode diagnostics surface', async () => {
+  const allCandidateTrades: PipelineCandidateTrade[] = [
+    { chain: 'base', txHash: '0x1', tokenIn: WETH, tokenOut: tokenX, amountIn: 1, amountOut: 500 },
+  ]
+  const payload = await buildWalletScanShadowLogPayload({
+    walletAddress: wallet,
+    allCandidateTrades,
+    logsByTxHash: new Map([['0x1', decodableLogs()]]),
+    tokenMeta: tokenMeta(),
+    validator: alwaysValidValidator(),
+    disabledByEnv: false,
+  })
+  assert.equal(payload.enabled, true)
+  if (!payload.enabled) return
+  assert.equal(payload.receiptsAvailable, 1)
+  assert.equal(payload.aerodromeSwapsDecoded, 1)
+  assert.equal(payload.newProviderCalls, 1)
+})
+
+test('production pipeline shape: identical inputs produce a deterministic payload across repeated calls', async () => {
+  const allCandidateTrades: PipelineCandidateTrade[] = [
+    { chain: 'base', txHash: '0x1', tokenIn: WETH, tokenOut: tokenX, amountIn: 1, amountOut: 500 },
+  ]
+  const opts = {
+    walletAddress: wallet,
+    allCandidateTrades,
+    logsByTxHash: new Map(),
+    validator: alwaysValidValidator(),
+    disabledByEnv: false,
+  }
+  const p1 = await buildWalletScanShadowLogPayload(opts)
+  const p2 = await buildWalletScanShadowLogPayload(opts)
+  assert.deepEqual(p1, p2)
 })

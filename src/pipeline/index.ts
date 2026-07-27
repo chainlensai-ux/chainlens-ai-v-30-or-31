@@ -20,7 +20,7 @@ import { createAyriAttribution } from '../lib/ayriAttribution'
 import { createFinalReportAssembler } from '../lib/finalReportAssembler'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
 import { reconstructRouterTrades } from '../modules/routerTradeReconstruction/index'
-import { runWalletScanReceiptShadowMode } from '../modules/receiptSwapDecoder/walletScanShadowWiring'
+import { buildWalletScanShadowLogPayload } from '../modules/receiptSwapDecoder/walletScanShadowWiring'
 import { createLiveBaseDexPoolValidator } from '../modules/receiptSwapDecoder/poolValidator'
 import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/syntheticPnl/index'
 import type { PoolDataMap as SyntheticPoolDataMap } from '../modules/syntheticPnl/index'
@@ -1201,6 +1201,21 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // candidate trades just computed above, keyed by chain+txHash — never a new event source, never
   // fed into normalizedEvents/priceLotsForWallet/fifoEngine, never promoted into canonical events.
   //
+  // MISSING-LOG BUG, FIXED, DISCLOSED (found live, this task — confirmed real production scans
+  // never emitted ANY "[pipeline] receiptSwapDecoder shadow mode" log at all): the previous version
+  // of this block only logged INSIDE `if (receiptShadowCandidates.length > 0)`. Since
+  // routerTradeReconstruction.candidateTrades is only ever non-empty when routerDistributorMode is
+  // true (see that module's own `applied` gate — a rare, high-outbound-router-activity condition),
+  // virtually every real scan reaches this block with zero candidates and the whole thing, log
+  // included, silently no-opped — exactly the missing-diagnostics symptom reported. Fixed by making
+  // the log UNCONDITIONAL: exactly one bounded `console.warn` fires every time this block runs,
+  // either with `enabled: true` and the real counters, or `enabled: false` with a typed
+  // `skipReason` (`no_candidates` | `unsupported_chain` | `shadow_disabled` | `wiring_not_reached`)
+  // explaining why. `shadow_disabled` is a genuine, off-by-default ops kill switch
+  // (RECEIPT_SWAP_DECODER_SHADOW_DISABLED=true) — never flips behavior unless explicitly set.
+  // `wiring_not_reached` covers an unexpected throw from the shadow module itself (caught below) so
+  // this log is truly unconditional even in that case.
+  //
   // PROVIDER-CALL / COST-GUARANTEE DISCLOSURE: `logsByTxHash` is intentionally an empty Map — this
   // pipeline's real provider data (RawProviderEvent / NormalizedEvent) has never carried raw receipt
   // logs, so every Base candidate here is honestly counted as `receiptsMissing`, and this NEVER
@@ -1210,39 +1225,25 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // resolves with zero network calls, preserving this file's own "only stage 1 (and stage 5 in deep
   // mode) make awaited network calls" cost guarantee in practice, and stays a no-op amount of work
   // (an empty array filter/map) even in the worst case.
-  {
-    const receiptShadowCandidates = routerTradeReconstruction.candidateTrades
-      .filter((t) => t.chain === 'base')
-      .map((t) => ({
-        chain: t.chain,
-        txHash: t.txHash,
-        inferredTokenIn: t.tokenIn,
-        inferredTokenOut: t.tokenOut,
-        inferredAmountIn: t.amountIn,
-        inferredAmountOut: t.amountOut,
-        // routerTradeReconstruction never emits a candidate for an unresolved side (see that
-        // module's own header — "never fabricate a trade when evidence is ambiguous"), so every
-        // candidate sourced from it already has both sides known. Kept as a real field (not
-        // hardcoded past this mapping) so a future candidate source that DOES carry a genuine
-        // missing side can report it honestly without any change to the shadow-mode module itself.
-        inferredMissingSide: 'none' as const,
-      }))
-    if (receiptShadowCandidates.length > 0) {
-      const receiptShadowResult = await runWalletScanReceiptShadowMode({
-        walletAddress: params.walletAddress,
-        candidates: receiptShadowCandidates,
-        logsByTxHash: new Map(),
-        validator: createLiveBaseDexPoolValidator(),
-      })
-      // eslint-disable-next-line no-console
-      console.warn('[pipeline] receiptSwapDecoder shadow mode', {
-        ...receiptShadowResult.counters,
-        rejectionReasons: receiptShadowResult.rejectionReasons,
-        decodedByVenue: receiptShadowResult.decodedByVenue,
-        decodedByConfidence: receiptShadowResult.decodedByConfidence,
-        disagreementSamples: receiptShadowResult.disagreementSamples,
-      })
-    }
+  try {
+    const shadowPayload = await buildWalletScanShadowLogPayload({
+      walletAddress: params.walletAddress,
+      allCandidateTrades: routerTradeReconstruction.candidateTrades,
+      logsByTxHash: new Map(),
+      validator: createLiveBaseDexPoolValidator(),
+      disabledByEnv: process.env.RECEIPT_SWAP_DECODER_SHADOW_DISABLED === 'true',
+    })
+    // eslint-disable-next-line no-console
+    console.warn('[pipeline] receiptSwapDecoder shadow mode', shadowPayload)
+  } catch (err) {
+    // Guarantees the log is truly unconditional — an unexpected throw from the shadow module never
+    // silently disappears, and never propagates into the real scan result either.
+    // eslint-disable-next-line no-console
+    console.error('[pipeline] receiptSwapDecoder shadow mode', {
+      enabled: false,
+      skipReason: 'wiring_not_reached',
+      error: err instanceof Error ? err.message : String(err),
+    })
   }
 
   // ROUTER DISCOVERY, DISCLOSED: additive-only, log-only observability aid (src/pipeline/
