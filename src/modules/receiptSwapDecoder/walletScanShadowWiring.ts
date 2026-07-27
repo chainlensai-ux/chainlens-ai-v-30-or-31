@@ -113,6 +113,9 @@ export type WalletScanShadowDiagnostics = {
   // this module; a later stage (src/pipeline/index.ts, after real FIFO/pricing exist) may replay
   // AT MOST ONE of these through shadowFifoReplay.ts for measurement only.
   acceptedExactSwaps: DecodedReceiptSwap[]
+  // Count of accepted exact swaps grouped by their originating candidate's priority tier (keys are
+  // stringified tier numbers, or 'unknown' when the candidate carried no tier) — diagnostic only.
+  acceptedExactSwapsByPriorityTier: Record<string, number>
 }
 
 const MAX_DISAGREEMENT_SAMPLES = 10
@@ -164,6 +167,7 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
 
   const receiptForensics: ReceiptForensicSample[] = []
   const acceptedExactSwaps: DecodedReceiptSwap[] = []
+  const acceptedExactSwapsByPriorityTier: Record<string, number> = {}
 
   for (const candidate of baseCandidates) {
     const logs = input.logsByTxHash?.get(candidate.txHash) ?? null
@@ -214,6 +218,8 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
 
     if (result.ok && result.swap.confidence === 'exact' && acceptedExactSwaps.length < MAX_FORENSIC_SAMPLES) {
       acceptedExactSwaps.push(result.swap)
+      const tierKey = String(candidate.priorityTier ?? 'unknown')
+      acceptedExactSwapsByPriorityTier[tierKey] = (acceptedExactSwapsByPriorityTier[tierKey] ?? 0) + 1
     }
 
     if (!result.ok) {
@@ -288,7 +294,10 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
   }
 
   counters.newProviderCalls = providerCalls
-  return { counters, rejectionReasons, decodedByVenue, decodedByConfidence, disagreementSamples, receiptForensics, acceptedExactSwaps }
+  return {
+    counters, rejectionReasons, decodedByVenue, decodedByConfidence, disagreementSamples,
+    receiptForensics, acceptedExactSwaps, acceptedExactSwapsByPriorityTier,
+  }
 }
 
 // ─── Pipeline-facing entry point ───────────────────────────────────────────────────────────────
@@ -364,6 +373,13 @@ export type WalletScanShadowLogPayload =
       // WalletScanShadowDiagnostics' matching field above. Consumed by src/pipeline/index.ts's
       // shadow-FIFO-replay stage (at most the first one, per scan) after real FIFO/pricing exist.
       acceptedExactSwaps: DecodedReceiptSwap[]
+      acceptedExactSwapsByPriorityTier: Record<string, number>
+      // TIER-DIVERSIFIED RECEIPT SELECTION, DISCLOSED — see receiptAcquisition.ts's
+      // selectReceiptFetchCandidates for the full disclosure (5/5 quota reservation for tiers 3/4,
+      // tier 1/2 always first, backfill from whichever tier has spare candidates).
+      receiptSelectedByPriorityTier: Record<string, number>
+      receiptCandidatesSkippedByTierQuota: Record<string, number>
+      receiptQuotaBackfilled: number
       // SELECTOR BROADENING, DISCLOSED — see candidateSelector.ts's own header for the full
       // production-proof root cause this fixes (415 real swap-lookup transactions, 0 candidates
       // selected under the old routerDistributorMode-gated source).
@@ -482,6 +498,10 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     disagreementSamples: result.disagreementSamples,
     receiptForensics: result.receiptForensics,
     acceptedExactSwaps: result.acceptedExactSwaps,
+    acceptedExactSwapsByPriorityTier: result.acceptedExactSwapsByPriorityTier,
+    receiptSelectedByPriorityTier: acquisition.receiptSelectedByPriorityTier,
+    receiptCandidatesSkippedByTierQuota: acquisition.receiptCandidatesSkippedByTierQuota,
+    receiptQuotaBackfilled: acquisition.receiptQuotaBackfilled,
     selectorTransactionsConsidered: selection.selectorTransactionsConsidered,
     selectorEligibleCandidates: selection.selectorEligibleCandidates,
     selectorRejectedCandidates: selection.selectorRejectedCandidates,

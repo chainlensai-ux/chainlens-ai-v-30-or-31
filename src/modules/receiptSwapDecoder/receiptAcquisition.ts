@@ -46,6 +46,92 @@ const DEFAULT_MAX_LIVE_CALLS = 10
 const DEFAULT_CONCURRENCY = 3
 const DEFAULT_TIMEOUT_MS = 4000
 
+// TIER-DIVERSIFIED SELECTION, DISCLOSED (this task — production proof: a scan selected 7 tier-3
+// verified-quote candidates and only 3 tier-4 known/high-confidence-router candidates, recovered no
+// exact swap, and FIFO replay correctly had nothing to replay). A plain "first N in priority order"
+// selection lets an abundant tier (3) exhaust the whole 10-call budget before a scarcer-but-equally
+// useful tier (4) ever gets a chance, purely because 3 sorts ahead of 4 — never because tier 4 was
+// actually less promising. Reserving up to 5 calls for EACH of tier 3 and tier 4 guarantees both
+// classes get real coverage whenever candidates exist for them, while an abundant tier can still
+// backfill unused capacity from a genuinely scarce one (never idle capacity, never a forced 5/5 when
+// one side has fewer real candidates than its own quota).
+//
+// SCOPE, DISCLOSED: this changes ONLY which of the already-eligible, already-selected (by
+// candidateSelector.ts) candidates get a receipt FETCHED first — never eligibility, never the
+// selector's own priority/ordering logic, never the 10-call cap, never introduces any new signal.
+// Tiers 1 and 2 (missing-closed-lot-side, existing-swap-candidate) always come first, unlimited —
+// they are strictly higher-priority than the tier-3/4 quota split and simply shrink the pool the
+// quota draws from. Tier 5 (economic-value-only) fills any capacity left over after 1/2/3/4.
+const TIER_3_QUOTA = 5
+const TIER_4_QUOTA = 5
+
+export type ReceiptTierSelection = {
+  selected: SelectedCandidate[]
+  selectedByTier: Record<1 | 2 | 3 | 4 | 5, number>
+  skippedByTierQuota: Record<3 | 4, number>
+  quotaBackfilled: number
+}
+
+// PURE, deterministic — no randomness, no rotation. `candidates` is assumed already sorted by
+// candidateSelector.ts (priority tier ascending, economic value descending, chain+txHash
+// tie-break) — this function only regroups by tier and re-slices; it never reorders within a tier,
+// so that ordering is preserved exactly.
+export function selectReceiptFetchCandidates(candidates: readonly SelectedCandidate[], maxLiveCalls: number): ReceiptTierSelection {
+  const byTier: Record<1 | 2 | 3 | 4 | 5, SelectedCandidate[]> = { 1: [], 2: [], 3: [], 4: [], 5: [] }
+  for (const c of candidates) byTier[c.priorityTier].push(c)
+
+  const selected: SelectedCandidate[] = []
+  const selectedByTier: Record<1 | 2 | 3 | 4 | 5, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
+  let remaining = maxLiveCalls
+
+  // Tiers 1 and 2 always come first, unlimited (beyond the overall cap) — they reduce the capacity
+  // the tier-3/4 quota split draws from, per this task's explicit "reduce both quotas" rule.
+  for (const tier of [1, 2] as const) {
+    const take = Math.min(byTier[tier].length, remaining)
+    selected.push(...byTier[tier].slice(0, take))
+    selectedByTier[tier] = take
+    remaining -= take
+  }
+
+  const capacityForTier34 = remaining
+  let take3 = Math.min(TIER_3_QUOTA, byTier[3].length, capacityForTier34)
+  let leftover = capacityForTier34 - take3
+  let take4 = Math.min(TIER_4_QUOTA, byTier[4].length, leftover)
+  leftover -= take4
+
+  // BACKFILL, DISCLOSED: tier 3 (the higher-priority of the two) gets first claim on any capacity
+  // left unused because the OTHER tier ran out of real candidates; tier 4 gets whatever is left
+  // after that. Never randomized, never rotated — purely a function of how many real candidates
+  // each tier actually has this scan.
+  const backfill3 = Math.min(byTier[3].length - take3, leftover)
+  take3 += backfill3
+  leftover -= backfill3
+  const backfill4 = Math.min(byTier[4].length - take4, leftover)
+  take4 += backfill4
+  leftover -= backfill4
+
+  selected.push(...byTier[3].slice(0, take3))
+  selectedByTier[3] = take3
+  selected.push(...byTier[4].slice(0, take4))
+  selectedByTier[4] = take4
+  remaining = leftover
+
+  // Tier 5 (economic-value-only) fills any capacity still left over after 1/2/3/4.
+  const take5 = Math.min(byTier[5].length, remaining)
+  selected.push(...byTier[5].slice(0, take5))
+  selectedByTier[5] = take5
+
+  return {
+    selected,
+    selectedByTier,
+    skippedByTierQuota: {
+      3: byTier[3].length - take3,
+      4: byTier[4].length - take4,
+    },
+    quotaBackfilled: backfill3 + backfill4,
+  }
+}
+
 export type AcquireReceiptsInput = {
   // Already priority-sorted by candidateSelector — "first N" here means highest-priority first.
   candidates: readonly SelectedCandidate[]
@@ -75,6 +161,10 @@ export type ReceiptAcquisitionCounters = {
 export type AcquireReceiptsResult = {
   logsByTxHash: Map<string, RawReceiptLog[]>
   counters: ReceiptAcquisitionCounters
+  // TIER DIVERSIFICATION, DISCLOSED — see selectReceiptFetchCandidates's own header.
+  receiptSelectedByPriorityTier: Record<1 | 2 | 3 | 4 | 5, number>
+  receiptCandidatesSkippedByTierQuota: Record<3 | 4, number>
+  receiptQuotaBackfilled: number
 }
 
 // NO RETRIES, DISCLOSED: a single attempt per key. If it times out or errors, the outcome is
@@ -120,7 +210,8 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
   const timeoutMs = input.timeoutMs ?? DEFAULT_TIMEOUT_MS
 
   const receiptCandidatesTotal = input.candidates.length
-  const selectedForFetch = input.candidates.slice(0, maxLiveCalls)
+  const tierSelection = selectReceiptFetchCandidates(input.candidates, maxLiveCalls)
+  const selectedForFetch = tierSelection.selected
   const receiptCandidatesCapped = Math.max(0, receiptCandidatesTotal - selectedForFetch.length)
 
   const logsByTxHash = new Map<string, RawReceiptLog[]>()
@@ -195,6 +286,9 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
       receiptReverted: reverted,
       receiptProviderCalls: liveCalls,
     },
+    receiptSelectedByPriorityTier: tierSelection.selectedByTier,
+    receiptCandidatesSkippedByTierQuota: tierSelection.skippedByTierQuota,
+    receiptQuotaBackfilled: tierSelection.quotaBackfilled,
   }
 }
 
