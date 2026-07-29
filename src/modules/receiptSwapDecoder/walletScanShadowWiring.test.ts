@@ -6,8 +6,13 @@ import {
 } from './walletScanShadowWiring'
 import type { CandidateTxEvidence } from './candidateSelector'
 import type { RawReceiptLog } from './types'
+import type { UniswapV3PoolValidator, UniswapV3ValidationDiagnostics } from './uniswapV3PoolValidator'
+import type { ConcentratedPoolEmitterFingerprinter, ConcentratedEmitterFingerprintDiagnostics } from './concentratedPoolEmitterFingerprint'
+import { CONCENTRATED_POOL_EMITTER_FORENSIC_LOG_LABEL } from './concentratedPoolEmitterForensicLog'
+import { AERODROME_SLIPSTREAM_FACTORY } from './poolValidator'
 import {
-  WALLET, ROUTER, POOL_A, USDC, TOKEN_X, transferLog, classicSwapLog, wethDepositLog, alwaysValidValidator, neverValidValidator,
+  WALLET, ROUTER, POOL_A, USDC, TOKEN_X, transferLog, classicSwapLog, slipstreamSwapLog, wethDepositLog,
+  alwaysValidValidator, neverValidValidator,
 } from './fixtures.test-helpers'
 import { WETH_BASE_ADDRESS } from './signatures'
 
@@ -407,4 +412,111 @@ test('production pipeline shape: a multi-transfer router-mediated Classic swap r
   assert.equal(payload.routerIntermediaryTransfersIgnored, 3)
   assert.equal(payload.refundsNetted, 1)
   assert.equal(payload.exactTwoSidedSwapsRecovered, 1)
+})
+
+// CONCENTRATED POOL EMITTER FINGERPRINTING WIRING, DISCLOSED (this task): a concentrated-liquidity
+// Swap event whose Uniswap V3 factory validation genuinely failed (factory_pool_mismatch) also gets
+// its own emitter fingerprinted -- exact production shape: swap signs/transfer amounts reconcile,
+// Uniswap V3 validation fails with factory_pool_mismatch, and the emitter fingerprint identifies it
+// as the real, verified Aerodrome Slipstream factory.
+test('production fixture: a concentrated pool whose Uniswap V3 validation fails also gets its emitter fingerprinted and logged', async () => {
+  const PRODUCTION_EMITTER = poolA
+  const PRODUCTION_TOKEN_X = tokenX
+
+  const v3Validator: UniswapV3PoolValidator = {
+    async validatePool(pool, t0, t1) {
+      const diagnostics: UniswapV3ValidationDiagnostics = {
+        eventEmitter: pool, configuredFactory: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD', token0: t0, token1: t1,
+        fee: null, feeSource: 'unavailable', getPoolResult: '0xdifferentpool', emitterMatchesResult: false,
+        reversedTokenOrderAttempted: true, reversedGetPoolResult: '0xdifferentpool',
+        feeAttempts: [500, 3000, 10000], getPoolResults: ['0x0', '0x0', '0xdifferentpool'], reversedGetPoolResults: ['0x0', '0x0', '0xdifferentpool'],
+        finalTypedReason: 'factory_pool_mismatch',
+      }
+      return { valid: false, fee: null, diagnostics }
+    },
+  }
+
+  const fingerprintCalls: string[] = []
+  const fingerprintResult: ConcentratedEmitterFingerprintDiagnostics = {
+    txHash: '0x1', eventEmitter: PRODUCTION_EMITTER, emitterFactory: AERODROME_SLIPSTREAM_FACTORY.toLowerCase(),
+    emitterToken0: WETH, emitterToken1: PRODUCTION_TOKEN_X, emitterFee: 10000, runtimeCodeHash: '0xhash',
+    matchedProtocol: 'aerodrome_slipstream', matchedFactory: AERODROME_SLIPSTREAM_FACTORY.toLowerCase(),
+    tokenPairMatches: true, finalTypedReason: 'verified_non_uniswap_factory',
+  }
+  const emitterFingerprinter: ConcentratedPoolEmitterFingerprinter = {
+    async fingerprint(txHash, emitter, t0, t1) {
+      fingerprintCalls.push(`${txHash}:${emitter}:${t0}:${t1}`)
+      return fingerprintResult
+    },
+  }
+
+  const originalWarn = console.warn
+  const warnCalls: unknown[][] = []
+  console.warn = (...args: unknown[]) => { warnCalls.push(args) }
+  try {
+    const result = await runWalletScanReceiptShadowMode({
+      walletAddress: wallet,
+      candidates: [{ chain: 'base', txHash: '0x1', inferredTokenIn: null, inferredTokenOut: null, inferredAmountIn: null, inferredAmountOut: null, inferredMissingSide: 'none' }],
+      logsByTxHash: new Map([['0x1', [
+        transferLog(0, WETH, wallet, PRODUCTION_EMITTER, BigInt('1000000000000000000')),
+        slipstreamSwapLog(1, PRODUCTION_EMITTER, wallet, wallet, BigInt('1000000000000000000'), BigInt('-100000000000000000000')),
+        transferLog(2, PRODUCTION_TOKEN_X, PRODUCTION_EMITTER, wallet, BigInt('100000000000000000000')),
+      ]]]),
+      tokenMeta: { [WETH]: { symbol: 'WETH', decimals: 18 }, [PRODUCTION_TOKEN_X]: { symbol: 'X', decimals: 18 } },
+      validator: neverValidValidator(),
+      uniswapV3Validator: v3Validator,
+      emitterFingerprinter,
+    })
+    assert.equal(result.rejectionReasons.factory_pool_mismatch, 1)
+
+    // Fingerprinter is called with the exact emitter/token pair the failed V3 validation examined.
+    assert.equal(fingerprintCalls.length, 1)
+    assert.equal(fingerprintCalls[0], `0x1:${PRODUCTION_EMITTER}:${WETH}:${PRODUCTION_TOKEN_X}`)
+
+    const forensicCall = warnCalls.find((args) => args[0] === CONCENTRATED_POOL_EMITTER_FORENSIC_LOG_LABEL)
+    assert.ok(forensicCall, 'expected a "[pipeline] concentrated pool emitter forensic" log line')
+    const record = forensicCall![1] as Record<string, unknown>
+    assert.equal(record.txHash, '0x1')
+    assert.equal(record.eventEmitter, PRODUCTION_EMITTER)
+    assert.equal(record.matchedProtocol, 'aerodrome_slipstream')
+    assert.equal(record.finalTypedReason, 'verified_non_uniswap_factory')
+  } finally {
+    console.warn = originalWarn
+  }
+})
+
+test('a validated Uniswap V3 pool never gets its emitter fingerprinted -- fingerprinting only follows a failed validation', async () => {
+  const v3Validator: UniswapV3PoolValidator = {
+    async validatePool(pool, t0, t1) {
+      const diagnostics: UniswapV3ValidationDiagnostics = {
+        eventEmitter: pool, configuredFactory: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD', token0: t0, token1: t1,
+        fee: 3000, feeSource: 'factory_getPool_fee_tier_match', getPoolResult: pool, emitterMatchesResult: true,
+        reversedTokenOrderAttempted: false, reversedGetPoolResult: null,
+        feeAttempts: [3000], getPoolResults: [pool], reversedGetPoolResults: [],
+        finalTypedReason: 'validated',
+      }
+      return { valid: true, fee: 3000, diagnostics }
+    },
+  }
+  const fingerprintCalls: string[] = []
+  const emitterFingerprinter: ConcentratedPoolEmitterFingerprinter = {
+    async fingerprint(txHash, emitter, t0, t1) {
+      fingerprintCalls.push(`${txHash}:${emitter}:${t0}:${t1}`)
+      throw new Error('should never be called for a validated pool')
+    },
+  }
+  await runWalletScanReceiptShadowMode({
+    walletAddress: wallet,
+    candidates: [{ chain: 'base', txHash: '0x1', inferredTokenIn: null, inferredTokenOut: null, inferredAmountIn: null, inferredAmountOut: null, inferredMissingSide: 'none' }],
+    logsByTxHash: new Map([['0x1', [
+      transferLog(0, WETH, wallet, poolA, BigInt('1000000000000000000')),
+      slipstreamSwapLog(1, poolA, wallet, wallet, BigInt('1000000000000000000'), BigInt('-100000000000000000000')),
+      transferLog(2, tokenX, poolA, wallet, BigInt('100000000000000000000')),
+    ]]]),
+    tokenMeta: tokenMeta(),
+    validator: neverValidValidator(),
+    uniswapV3Validator: v3Validator,
+    emitterFingerprinter,
+  })
+  assert.equal(fingerprintCalls.length, 0)
 })

@@ -30,6 +30,10 @@ import {
   type ReceiptForensicSample, type FactoryValidationAttempt,
 } from './forensicClassifier'
 import { buildUniswapV3ForensicLogRecord, UNISWAP_V3_FORENSIC_LOG_LABEL } from './uniswapV3ForensicLog'
+import type { ConcentratedPoolEmitterFingerprinter } from './concentratedPoolEmitterFingerprint'
+import {
+  buildConcentratedPoolEmitterForensicLogRecord, CONCENTRATED_POOL_EMITTER_FORENSIC_LOG_LABEL,
+} from './concentratedPoolEmitterForensicLog'
 
 export type WalletScanSwapCandidate = {
   chain: string
@@ -61,6 +65,11 @@ export type WalletScanShadowModeInput = {
   // uniswapV3PoolValidator.ts / uniswapV3Leg.ts / index.ts's own header). Omitting this preserves
   // identical behavior to before this parameter existed.
   uniswapV3Validator?: UniswapV3PoolValidator
+  // Optional — when supplied, a concentrated-liquidity Swap event whose Uniswap V3 factory
+  // validation genuinely failed also gets its own emitter fingerprinted (see
+  // concentratedPoolEmitterFingerprint.ts's own header). Omitting this preserves identical behavior
+  // to before this parameter existed.
+  emitterFingerprinter?: ConcentratedPoolEmitterFingerprinter
 }
 
 export type ShadowDisagreementSample = {
@@ -251,6 +260,19 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
       : result.rejection.uniswapV3Validation
     if (uniswapV3ValidationDiagnostics) {
       console.warn(UNISWAP_V3_FORENSIC_LOG_LABEL, buildUniswapV3ForensicLogRecord(candidate.txHash, uniswapV3ValidationDiagnostics))
+    }
+
+    // CONCENTRATED POOL EMITTER FINGERPRINTING, DISCLOSED (this task): only ever attempted for an
+    // emitter whose Uniswap V3 factory validation genuinely failed (finalTypedReason !==
+    // 'validated') -- "identify the non-Uniswap concentrated pool emitter", never a re-check of an
+    // emitter that already validated. Bounded to this loop's already-bounded (<= 10) receipt cap;
+    // never fetches a receipt itself.
+    if (uniswapV3ValidationDiagnostics && uniswapV3ValidationDiagnostics.finalTypedReason !== 'validated' && input.emitterFingerprinter) {
+      const fingerprint = await input.emitterFingerprinter.fingerprint(
+        candidate.txHash, uniswapV3ValidationDiagnostics.eventEmitter,
+        uniswapV3ValidationDiagnostics.token0, uniswapV3ValidationDiagnostics.token1,
+      )
+      console.warn(CONCENTRATED_POOL_EMITTER_FORENSIC_LOG_LABEL, buildConcentratedPoolEmitterForensicLogRecord(fingerprint))
     }
     if (result.ok && result.swap.protocol === 'uniswap_v3') {
       counters.uniswapV3SwapsDecoded += 1
@@ -471,6 +493,8 @@ export type BuildWalletScanShadowLogPayloadInput = {
   validator: PoolValidator
   // Optional — see WalletScanShadowModeInput's own field of the same name.
   uniswapV3Validator?: UniswapV3PoolValidator
+  // Optional — see WalletScanShadowModeInput's own field of the same name.
+  emitterFingerprinter?: ConcentratedPoolEmitterFingerprinter
   disabledByEnv: boolean
   // Receipt acquisition — defaults to the real, live, on-chain fetcher and a fresh request-scoped
   // cache. Tests inject a fake fetcher / a pre-seeded requestScope (exactly "reuse any receipt
@@ -533,6 +557,7 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     tokenMeta: input.tokenMeta,
     validator: input.validator,
     uniswapV3Validator: input.uniswapV3Validator,
+    emitterFingerprinter: input.emitterFingerprinter,
   })
 
   const poolValidationProviderCalls = result.counters.newProviderCalls

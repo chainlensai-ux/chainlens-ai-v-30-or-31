@@ -84,6 +84,21 @@ test('mismatchDetail identifies a single fee tier returning a differing non-zero
   assert.equal(record.mismatchDetail, `single_fee_tier_pool_mismatch:fee=3000,returnedPool=${OTHER_POOL.toLowerCase()}`)
 })
 
+// PRODUCTION FIXTURE, DISCLOSED (this task's own reported evidence): primary and the
+// order-reversed attempt both observe the SAME real pool at the SAME fee tier (10000) — a real
+// non-Uniswap concentrated pool the factory legitimately knows about at that one fee, just under a
+// different address than the emitter. Must classify as single_fee_tier_pool_mismatch, not
+// multiple_or_ambiguous, once deduplicated by (fee, address).
+test('mismatchDetail deduplicates the same (fee, pool) hit seen by both primary and reversed attempts', () => {
+  const record = buildUniswapV3ForensicLogRecord('0xabc', diag({
+    finalTypedReason: 'factory_pool_mismatch',
+    getPoolResults: [ZERO, ZERO, OTHER_POOL],
+    reversedTokenOrderAttempted: true,
+    reversedGetPoolResults: [ZERO, ZERO, OTHER_POOL],
+  }))
+  assert.equal(record.mismatchDetail, `single_fee_tier_pool_mismatch:fee=10000,returnedPool=${OTHER_POOL.toLowerCase()}`)
+})
+
 test('mismatchDetail identifies multiple fee-tier hits as ambiguous', () => {
   const record = buildUniswapV3ForensicLogRecord('0xabc', diag({
     finalTypedReason: 'factory_pool_mismatch',

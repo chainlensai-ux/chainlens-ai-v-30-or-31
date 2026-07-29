@@ -26,6 +26,10 @@ import { createLiveBaseDexPoolValidator } from '../modules/receiptSwapDecoder/po
 import {
   createLiveUniswapV3PoolValidator, createCachedUniswapV3PoolValidator, createUniswapV3ValidationRequestScope,
 } from '../modules/receiptSwapDecoder/uniswapV3PoolValidator'
+import {
+  createLiveConcentratedPoolEmitterFingerprinter, createCachedConcentratedPoolEmitterFingerprinter,
+  createConcentratedFingerprintRequestScope,
+} from '../modules/receiptSwapDecoder/concentratedPoolEmitterFingerprint'
 import { runShadowFifoReplay } from '../modules/receiptSwapDecoder/shadowFifoReplay'
 import type { DecodedReceiptSwap } from '../modules/receiptSwapDecoder/types'
 import { groupSwapLegsByTransaction, swapLegGroupKey, isVerifiedQuoteLegAddress } from '../modules/quoteLegPricing/index'
@@ -1352,11 +1356,19 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       createLiveUniswapV3PoolValidator(),
       createUniswapV3ValidationRequestScope(),
     )
+    // CONCENTRATED POOL EMITTER FINGERPRINTING, DISCLOSED — see
+    // concentratedPoolEmitterFingerprint.ts's own header. Only ever consulted by
+    // walletScanShadowWiring.ts for an emitter whose Uniswap V3 factory validation already failed.
+    const { fingerprinter: emitterFingerprinter } = createCachedConcentratedPoolEmitterFingerprinter(
+      createLiveConcentratedPoolEmitterFingerprinter(),
+      createConcentratedFingerprintRequestScope(),
+    )
     const shadowPayload = await buildWalletScanShadowLogPayload({
       walletAddress: params.walletAddress,
       evidence,
       validator: createLiveBaseDexPoolValidator(),
       uniswapV3Validator,
+      emitterFingerprinter,
       disabledByEnv: process.env.RECEIPT_SWAP_DECODER_SHADOW_DISABLED === 'true',
     })
     // eslint-disable-next-line no-console

@@ -55,15 +55,23 @@ function joinFeeResultPairs(feeAttempts: readonly number[], results: readonly (s
 function computeMismatchDetail(diagnostics: UniswapV3ValidationDiagnostics): string {
   if (diagnostics.finalTypedReason !== 'factory_pool_mismatch') return 'not_applicable'
 
+  // DEDUPLICATE BY FEE+RETURNED ADDRESS, DISCLOSED (this task — production proof: primary and the
+  // order-reversed fallback both legitimately hit the SAME real pool at the SAME fee tier, since
+  // Uniswap-shaped factories sort tokens internally and are order-independent — counting that one
+  // real pool twice, once per attempt, previously misclassified an honest single-fee-tier mismatch
+  // as 'multiple_or_ambiguous_fee_tier_pools'). A (fee, address) pair is one real-world fact
+  // regardless of how many token-order attempts happened to observe it.
+  const seen = new Set<string>()
   const nonZeroHits: Array<{ fee: number; pool: string }> = []
-  diagnostics.feeAttempts.forEach((fee, i) => {
-    const pool = diagnostics.getPoolResults[i]
-    if (pool && pool.toLowerCase() !== ZERO_ADDRESS) nonZeroHits.push({ fee, pool })
-  })
-  diagnostics.feeAttempts.forEach((fee, i) => {
-    const pool = diagnostics.reversedGetPoolResults[i]
-    if (pool && pool.toLowerCase() !== ZERO_ADDRESS) nonZeroHits.push({ fee, pool })
-  })
+  const record = (fee: number, pool: string | null): void => {
+    if (!pool || pool.toLowerCase() === ZERO_ADDRESS) return
+    const key = `${fee}:${pool.toLowerCase()}`
+    if (seen.has(key)) return
+    seen.add(key)
+    nonZeroHits.push({ fee, pool })
+  }
+  diagnostics.feeAttempts.forEach((fee, i) => record(fee, diagnostics.getPoolResults[i]))
+  diagnostics.feeAttempts.forEach((fee, i) => record(fee, diagnostics.reversedGetPoolResults[i]))
 
   if (nonZeroHits.length === 1) {
     return `single_fee_tier_pool_mismatch:fee=${nonZeroHits[0].fee},returnedPool=${nonZeroHits[0].pool.toLowerCase()}`
