@@ -38,6 +38,10 @@ import type { UnknownConcentratedFactoryVerifier } from './unknownConcentratedFa
 import {
   buildUnknownConcentratedFactoryVerificationLogRecord, UNKNOWN_CONCENTRATED_FACTORY_VERIFICATION_LOG_LABEL,
 } from './unknownConcentratedFactoryVerificationLog'
+import type { UnsupportedFactoryForensicsAnalyzer } from './unsupportedFactoryForensics'
+import {
+  buildUnsupportedFactoryForensicsLogRecord, UNSUPPORTED_FACTORY_FORENSIC_LOG_LABEL,
+} from './unsupportedFactoryForensicsLog'
 
 export type WalletScanSwapCandidate = {
   chain: string
@@ -79,6 +83,11 @@ export type WalletScanShadowModeInput = {
   // claimed factory itself (see unknownConcentratedFactoryVerifier.ts's own header). Omitting this
   // preserves identical behavior to before this parameter existed.
   unknownFactoryVerifier?: UnknownConcentratedFactoryVerifier
+  // Optional — when supplied, a claimed factory whose standard discovery interface is
+  // 'unsupported_factory_interface' (see unknownConcentratedFactoryVerifier.ts) is additionally
+  // analyzed forensically (see unsupportedFactoryForensics.ts's own header). Omitting this preserves
+  // identical behavior to before this parameter existed.
+  unsupportedFactoryForensicsAnalyzer?: UnsupportedFactoryForensicsAnalyzer
 }
 
 export type ShadowDisagreementSample = {
@@ -300,6 +309,18 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
           UNKNOWN_CONCENTRATED_FACTORY_VERIFICATION_LOG_LABEL,
           buildUnknownConcentratedFactoryVerificationLogRecord(verification),
         )
+
+        // UNSUPPORTED FACTORY FORENSICS, DISCLOSED (this task): only ever attempted when the
+        // unknown-factory verifier itself couldn't get a standard discovery method to work
+        // ('unsupported_factory_interface') — "resolve the unsupported concentrated factory
+        // interface", never a registry mutation or a decode/replay trigger by itself.
+        if (verification.finalTypedReason === 'unsupported_factory_interface' && input.unsupportedFactoryForensicsAnalyzer) {
+          const forensics = await input.unsupportedFactoryForensicsAnalyzer.analyze({
+            txHash: candidate.txHash, pool: fingerprint.eventEmitter, claimedFactory: fingerprint.emitterFactory,
+            expectedToken0: fingerprint.emitterToken0, expectedToken1: fingerprint.emitterToken1, expectedFee: fingerprint.emitterFee,
+          })
+          console.warn(UNSUPPORTED_FACTORY_FORENSIC_LOG_LABEL, buildUnsupportedFactoryForensicsLogRecord(forensics))
+        }
       }
     }
     if (result.ok && result.swap.protocol === 'uniswap_v3') {
@@ -525,6 +546,8 @@ export type BuildWalletScanShadowLogPayloadInput = {
   emitterFingerprinter?: ConcentratedPoolEmitterFingerprinter
   // Optional — see WalletScanShadowModeInput's own field of the same name.
   unknownFactoryVerifier?: UnknownConcentratedFactoryVerifier
+  // Optional — see WalletScanShadowModeInput's own field of the same name.
+  unsupportedFactoryForensicsAnalyzer?: UnsupportedFactoryForensicsAnalyzer
   disabledByEnv: boolean
   // Receipt acquisition — defaults to the real, live, on-chain fetcher and a fresh request-scoped
   // cache. Tests inject a fake fetcher / a pre-seeded requestScope (exactly "reuse any receipt
@@ -589,6 +612,7 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     uniswapV3Validator: input.uniswapV3Validator,
     emitterFingerprinter: input.emitterFingerprinter,
     unknownFactoryVerifier: input.unknownFactoryVerifier,
+    unsupportedFactoryForensicsAnalyzer: input.unsupportedFactoryForensicsAnalyzer,
   })
 
   const poolValidationProviderCalls = result.counters.newProviderCalls

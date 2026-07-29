@@ -11,6 +11,8 @@ import type { ConcentratedPoolEmitterFingerprinter, ConcentratedEmitterFingerpri
 import { CONCENTRATED_POOL_EMITTER_FORENSIC_LOG_LABEL } from './concentratedPoolEmitterForensicLog'
 import type { UnknownConcentratedFactoryVerifier, UnknownConcentratedFactoryVerificationDiagnostics } from './unknownConcentratedFactoryVerifier'
 import { UNKNOWN_CONCENTRATED_FACTORY_VERIFICATION_LOG_LABEL } from './unknownConcentratedFactoryVerificationLog'
+import type { UnsupportedFactoryForensicsAnalyzer, UnsupportedFactoryForensicsDiagnostics } from './unsupportedFactoryForensics'
+import { UNSUPPORTED_FACTORY_FORENSIC_LOG_LABEL } from './unsupportedFactoryForensicsLog'
 import { AERODROME_SLIPSTREAM_FACTORY } from './poolValidator'
 import {
   WALLET, ROUTER, POOL_A, USDC, TOKEN_X, transferLog, classicSwapLog, slipstreamSwapLog, wethDepositLog,
@@ -648,4 +650,154 @@ test('a fingerprint result other than unknown_concentrated_factory never trigger
     unknownFactoryVerifier,
   })
   assert.equal(verifyCalls.length, 0)
+})
+
+// PRODUCTION FIXTURE, DISCLOSED (this task's exact reported evidence): the unknown-factory
+// verification step itself terminates in 'unsupported_factory_interface' -- this must trigger the
+// new forensic-resolution step and its own separate flat log line.
+test('production fixture: an unsupported_factory_interface verification result triggers forensic resolution and its own flat log', async () => {
+  const PRODUCTION_EMITTER = poolA
+  const PRODUCTION_CLAIMED_FACTORY = '0xade65c38cd4849adba595a4323a8c7ddfe89716a'
+  const PRODUCTION_TOKEN_X = tokenX
+  const PRODUCTION_FEE = 10000
+
+  const v3Validator: UniswapV3PoolValidator = {
+    async validatePool(pool, t0, t1) {
+      const diagnostics: UniswapV3ValidationDiagnostics = {
+        eventEmitter: pool, configuredFactory: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD', token0: t0, token1: t1,
+        fee: null, feeSource: 'unavailable', getPoolResult: null, emitterMatchesResult: false,
+        reversedTokenOrderAttempted: true, reversedGetPoolResult: null,
+        feeAttempts: [500, 3000, 10000], getPoolResults: ['0x0', '0x0', '0x0'], reversedGetPoolResults: ['0x0', '0x0', '0x0'],
+        finalTypedReason: 'factory_returned_zero',
+      }
+      return { valid: false, fee: null, diagnostics }
+    },
+  }
+  const emitterFingerprinter: ConcentratedPoolEmitterFingerprinter = {
+    async fingerprint() {
+      return {
+        txHash: '0x1', eventEmitter: PRODUCTION_EMITTER, emitterFactory: PRODUCTION_CLAIMED_FACTORY,
+        emitterToken0: WETH, emitterToken1: PRODUCTION_TOKEN_X, emitterFee: PRODUCTION_FEE, runtimeCodeHash: '0xhash',
+        matchedProtocol: null, matchedFactory: null, tokenPairMatches: true,
+        finalTypedReason: 'unknown_concentrated_factory' as const,
+      }
+    },
+  }
+  const unknownFactoryVerifier: UnknownConcentratedFactoryVerifier = {
+    async verify() {
+      return {
+        txHash: '0x1', eventEmitter: PRODUCTION_EMITTER, claimedFactory: PRODUCTION_CLAIMED_FACTORY,
+        factoryCodeHash: '0xfactoryhash', discoveryMethod: null, discoveredPool: null,
+        emitterMatchesDiscoveredPool: null, poolCodeHash: null, knownImplementationCodeMatch: null,
+        proposedProtocol: null, confidence: 'low', finalTypedReason: 'unsupported_factory_interface' as const,
+      }
+    },
+  }
+
+  const forensicsCalls: string[] = []
+  const forensicsResult: UnsupportedFactoryForensicsDiagnostics = {
+    txHash: '0x1', pool: PRODUCTION_EMITTER, claimedFactory: PRODUCTION_CLAIMED_FACTORY, factoryCodeHash: '0xfactoryhash',
+    proxyType: 'none', implementationAddress: null, implementationCodeHash: null, create2Detected: false,
+    poolCreatedTopicDetected: false, creationReceiptAvailable: false, creationEventEmitter: null, creationEventPool: null,
+    creationEventToken0: null, creationEventToken1: null, creationEventFee: null, creationProofMatches: null,
+    finalTypedReason: 'no_supported_creation_proof',
+  }
+  const unsupportedFactoryForensicsAnalyzer: UnsupportedFactoryForensicsAnalyzer = {
+    async analyze(input) {
+      forensicsCalls.push(`${input.txHash}:${input.pool}:${input.claimedFactory}:${input.expectedToken0}:${input.expectedToken1}:${input.expectedFee}`)
+      return forensicsResult
+    },
+  }
+
+  const originalWarn = console.warn
+  const warnCalls: unknown[][] = []
+  console.warn = (...args: unknown[]) => { warnCalls.push(args) }
+  try {
+    await runWalletScanReceiptShadowMode({
+      walletAddress: wallet,
+      candidates: [{ chain: 'base', txHash: '0x1', inferredTokenIn: null, inferredTokenOut: null, inferredAmountIn: null, inferredAmountOut: null, inferredMissingSide: 'none' }],
+      logsByTxHash: new Map([['0x1', [
+        transferLog(0, WETH, wallet, PRODUCTION_EMITTER, BigInt('1000000000000000000')),
+        slipstreamSwapLog(1, PRODUCTION_EMITTER, wallet, wallet, BigInt('1000000000000000000'), BigInt('-100000000000000000000')),
+        transferLog(2, PRODUCTION_TOKEN_X, PRODUCTION_EMITTER, wallet, BigInt('100000000000000000000')),
+      ]]]),
+      tokenMeta: { [WETH]: { symbol: 'WETH', decimals: 18 }, [PRODUCTION_TOKEN_X]: { symbol: 'X', decimals: 18 } },
+      validator: neverValidValidator(),
+      uniswapV3Validator: v3Validator,
+      emitterFingerprinter,
+      unknownFactoryVerifier,
+      unsupportedFactoryForensicsAnalyzer,
+    })
+
+    assert.equal(forensicsCalls.length, 1)
+    assert.equal(forensicsCalls[0], `0x1:${PRODUCTION_EMITTER}:${PRODUCTION_CLAIMED_FACTORY}:${WETH}:${PRODUCTION_TOKEN_X}:${PRODUCTION_FEE}`)
+
+    const forensicCall = warnCalls.find((args) => args[0] === UNSUPPORTED_FACTORY_FORENSIC_LOG_LABEL)
+    assert.ok(forensicCall, 'expected a "[pipeline] unsupported concentrated factory forensic" log line')
+    const record = forensicCall![1] as Record<string, unknown>
+    assert.equal(record.txHash, '0x1')
+    assert.equal(record.pool, PRODUCTION_EMITTER)
+    assert.equal(record.claimedFactory, PRODUCTION_CLAIMED_FACTORY)
+    assert.equal(record.finalTypedReason, 'no_supported_creation_proof')
+  } finally {
+    console.warn = originalWarn
+  }
+})
+
+test('a verification result other than unsupported_factory_interface never triggers forensic resolution', async () => {
+  const v3Validator: UniswapV3PoolValidator = {
+    async validatePool(pool, t0, t1) {
+      const diagnostics: UniswapV3ValidationDiagnostics = {
+        eventEmitter: pool, configuredFactory: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD', token0: t0, token1: t1,
+        fee: null, feeSource: 'unavailable', getPoolResult: null, emitterMatchesResult: false,
+        reversedTokenOrderAttempted: true, reversedGetPoolResult: null,
+        feeAttempts: [500, 3000, 10000], getPoolResults: ['0x0', '0x0', '0x0'], reversedGetPoolResults: ['0x0', '0x0', '0x0'],
+        finalTypedReason: 'factory_returned_zero',
+      }
+      return { valid: false, fee: null, diagnostics }
+    },
+  }
+  const emitterFingerprinter: ConcentratedPoolEmitterFingerprinter = {
+    async fingerprint() {
+      return {
+        txHash: '0x1', eventEmitter: poolA, emitterFactory: '0xade65c38cd4849adba595a4323a8c7ddfe89716a',
+        emitterToken0: WETH, emitterToken1: tokenX, emitterFee: 10000, runtimeCodeHash: '0xhash',
+        matchedProtocol: null, matchedFactory: null, tokenPairMatches: true,
+        finalTypedReason: 'unknown_concentrated_factory' as const,
+      }
+    },
+  }
+  const unknownFactoryVerifier: UnknownConcentratedFactoryVerifier = {
+    async verify() {
+      return {
+        txHash: '0x1', eventEmitter: poolA, claimedFactory: '0xade65c38cd4849adba595a4323a8c7ddfe89716a',
+        factoryCodeHash: '0xfactoryhash', discoveryMethod: 'getPool', discoveredPool: poolA,
+        emitterMatchesDiscoveredPool: true, poolCodeHash: null, knownImplementationCodeMatch: null,
+        proposedProtocol: null, confidence: 'medium', finalTypedReason: 'factory_created_emitter' as const,
+      }
+    },
+  }
+  const forensicsCalls: string[] = []
+  const unsupportedFactoryForensicsAnalyzer: UnsupportedFactoryForensicsAnalyzer = {
+    async analyze(input) {
+      forensicsCalls.push(`${input.txHash}:${input.pool}`)
+      throw new Error('should never be called when the factory was already resolved via getPool')
+    },
+  }
+  await runWalletScanReceiptShadowMode({
+    walletAddress: wallet,
+    candidates: [{ chain: 'base', txHash: '0x1', inferredTokenIn: null, inferredTokenOut: null, inferredAmountIn: null, inferredAmountOut: null, inferredMissingSide: 'none' }],
+    logsByTxHash: new Map([['0x1', [
+      transferLog(0, WETH, wallet, poolA, BigInt('1000000000000000000')),
+      slipstreamSwapLog(1, poolA, wallet, wallet, BigInt('1000000000000000000'), BigInt('-100000000000000000000')),
+      transferLog(2, tokenX, poolA, wallet, BigInt('100000000000000000000')),
+    ]]]),
+    tokenMeta: tokenMeta(),
+    validator: neverValidValidator(),
+    uniswapV3Validator: v3Validator,
+    emitterFingerprinter,
+    unknownFactoryVerifier,
+    unsupportedFactoryForensicsAnalyzer,
+  })
+  assert.equal(forensicsCalls.length, 0)
 })

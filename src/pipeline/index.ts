@@ -34,6 +34,10 @@ import {
   createLiveUnknownConcentratedFactoryVerifier, createCachedUnknownConcentratedFactoryVerifier,
   createUnknownFactoryVerificationRequestScope,
 } from '../modules/receiptSwapDecoder/unknownConcentratedFactoryVerifier'
+import {
+  createLiveUnsupportedFactoryForensicsAnalyzer, createCachedUnsupportedFactoryForensicsAnalyzer,
+  createUnsupportedFactoryForensicsRequestScope,
+} from '../modules/receiptSwapDecoder/unsupportedFactoryForensics'
 import { runShadowFifoReplay } from '../modules/receiptSwapDecoder/shadowFifoReplay'
 import type { DecodedReceiptSwap } from '../modules/receiptSwapDecoder/types'
 import { groupSwapLegsByTransaction, swapLegGroupKey, isVerifiedQuoteLegAddress } from '../modules/quoteLegPricing/index'
@@ -1374,6 +1378,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       createLiveUnknownConcentratedFactoryVerifier(),
       createUnknownFactoryVerificationRequestScope(),
     )
+    // UNSUPPORTED FACTORY FORENSICS, DISCLOSED — see unsupportedFactoryForensics.ts's own header.
+    // Only ever consulted by walletScanShadowWiring.ts for a claimed factory whose standard
+    // discovery interface was itself unsupported; never adds anything to the verified registry.
+    const { analyzer: unsupportedFactoryForensicsAnalyzer } = createCachedUnsupportedFactoryForensicsAnalyzer(
+      createLiveUnsupportedFactoryForensicsAnalyzer(),
+      createUnsupportedFactoryForensicsRequestScope(),
+    )
     const shadowPayload = await buildWalletScanShadowLogPayload({
       walletAddress: params.walletAddress,
       evidence,
@@ -1381,6 +1392,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       uniswapV3Validator,
       emitterFingerprinter,
       unknownFactoryVerifier,
+      unsupportedFactoryForensicsAnalyzer,
       disabledByEnv: process.env.RECEIPT_SWAP_DECODER_SHADOW_DISABLED === 'true',
     })
     // eslint-disable-next-line no-console
