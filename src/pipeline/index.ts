@@ -30,6 +30,10 @@ import {
   createLiveConcentratedPoolEmitterFingerprinter, createCachedConcentratedPoolEmitterFingerprinter,
   createConcentratedFingerprintRequestScope,
 } from '../modules/receiptSwapDecoder/concentratedPoolEmitterFingerprint'
+import {
+  createLiveUnknownConcentratedFactoryVerifier, createCachedUnknownConcentratedFactoryVerifier,
+  createUnknownFactoryVerificationRequestScope,
+} from '../modules/receiptSwapDecoder/unknownConcentratedFactoryVerifier'
 import { runShadowFifoReplay } from '../modules/receiptSwapDecoder/shadowFifoReplay'
 import type { DecodedReceiptSwap } from '../modules/receiptSwapDecoder/types'
 import { groupSwapLegsByTransaction, swapLegGroupKey, isVerifiedQuoteLegAddress } from '../modules/quoteLegPricing/index'
@@ -1363,12 +1367,20 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       createLiveConcentratedPoolEmitterFingerprinter(),
       createConcentratedFingerprintRequestScope(),
     )
+    // UNKNOWN FACTORY VERIFICATION, DISCLOSED — see unknownConcentratedFactoryVerifier.ts's own
+    // header. Only ever consulted by walletScanShadowWiring.ts for an emitter whose claimed
+    // factory() didn't match the verified registry; never adds anything to that registry itself.
+    const { verifier: unknownFactoryVerifier } = createCachedUnknownConcentratedFactoryVerifier(
+      createLiveUnknownConcentratedFactoryVerifier(),
+      createUnknownFactoryVerificationRequestScope(),
+    )
     const shadowPayload = await buildWalletScanShadowLogPayload({
       walletAddress: params.walletAddress,
       evidence,
       validator: createLiveBaseDexPoolValidator(),
       uniswapV3Validator,
       emitterFingerprinter,
+      unknownFactoryVerifier,
       disabledByEnv: process.env.RECEIPT_SWAP_DECODER_SHADOW_DISABLED === 'true',
     })
     // eslint-disable-next-line no-console

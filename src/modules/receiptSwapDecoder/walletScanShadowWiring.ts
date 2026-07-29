@@ -34,6 +34,10 @@ import type { ConcentratedPoolEmitterFingerprinter } from './concentratedPoolEmi
 import {
   buildConcentratedPoolEmitterForensicLogRecord, CONCENTRATED_POOL_EMITTER_FORENSIC_LOG_LABEL,
 } from './concentratedPoolEmitterForensicLog'
+import type { UnknownConcentratedFactoryVerifier } from './unknownConcentratedFactoryVerifier'
+import {
+  buildUnknownConcentratedFactoryVerificationLogRecord, UNKNOWN_CONCENTRATED_FACTORY_VERIFICATION_LOG_LABEL,
+} from './unknownConcentratedFactoryVerificationLog'
 
 export type WalletScanSwapCandidate = {
   chain: string
@@ -70,6 +74,11 @@ export type WalletScanShadowModeInput = {
   // concentratedPoolEmitterFingerprint.ts's own header). Omitting this preserves identical behavior
   // to before this parameter existed.
   emitterFingerprinter?: ConcentratedPoolEmitterFingerprinter
+  // Optional — when supplied, an emitter whose factory() claim is 'unknown_concentrated_factory'
+  // (see concentratedPoolEmitterFingerprint.ts) is additionally forensically verified against the
+  // claimed factory itself (see unknownConcentratedFactoryVerifier.ts's own header). Omitting this
+  // preserves identical behavior to before this parameter existed.
+  unknownFactoryVerifier?: UnknownConcentratedFactoryVerifier
 }
 
 export type ShadowDisagreementSample = {
@@ -273,6 +282,25 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
         uniswapV3ValidationDiagnostics.token0, uniswapV3ValidationDiagnostics.token1,
       )
       console.warn(CONCENTRATED_POOL_EMITTER_FORENSIC_LOG_LABEL, buildConcentratedPoolEmitterForensicLogRecord(fingerprint))
+
+      // UNKNOWN FACTORY VERIFICATION, DISCLOSED (this task): only ever attempted when the
+      // fingerprint itself couldn't recognize the claimed factory ('unknown_concentrated_factory')
+      // and every input this needs (claimed factory, both tokens, fee) is actually in hand — "verify
+      // the unknown factory before registry inclusion", never a registry mutation by itself.
+      if (
+        fingerprint.finalTypedReason === 'unknown_concentrated_factory' && fingerprint.emitterFactory
+        && fingerprint.emitterToken0 && fingerprint.emitterToken1 && fingerprint.emitterFee !== null
+        && input.unknownFactoryVerifier
+      ) {
+        const verification = await input.unknownFactoryVerifier.verify(
+          candidate.txHash, fingerprint.eventEmitter, fingerprint.emitterFactory,
+          fingerprint.emitterToken0, fingerprint.emitterToken1, fingerprint.emitterFee,
+        )
+        console.warn(
+          UNKNOWN_CONCENTRATED_FACTORY_VERIFICATION_LOG_LABEL,
+          buildUnknownConcentratedFactoryVerificationLogRecord(verification),
+        )
+      }
     }
     if (result.ok && result.swap.protocol === 'uniswap_v3') {
       counters.uniswapV3SwapsDecoded += 1
@@ -495,6 +523,8 @@ export type BuildWalletScanShadowLogPayloadInput = {
   uniswapV3Validator?: UniswapV3PoolValidator
   // Optional — see WalletScanShadowModeInput's own field of the same name.
   emitterFingerprinter?: ConcentratedPoolEmitterFingerprinter
+  // Optional — see WalletScanShadowModeInput's own field of the same name.
+  unknownFactoryVerifier?: UnknownConcentratedFactoryVerifier
   disabledByEnv: boolean
   // Receipt acquisition — defaults to the real, live, on-chain fetcher and a fresh request-scoped
   // cache. Tests inject a fake fetcher / a pre-seeded requestScope (exactly "reuse any receipt
@@ -558,6 +588,7 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     validator: input.validator,
     uniswapV3Validator: input.uniswapV3Validator,
     emitterFingerprinter: input.emitterFingerprinter,
+    unknownFactoryVerifier: input.unknownFactoryVerifier,
   })
 
   const poolValidationProviderCalls = result.counters.newProviderCalls
