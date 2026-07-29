@@ -220,7 +220,9 @@ export function classifyUnsupportedFactoryForensics(input: RawUnsupportedFactory
   return { ...base, creationProofMatches: null, finalTypedReason: 'no_supported_creation_proof' }
 }
 
-function decodePoolCreatedLog(log: RawReceiptLog): {
+// Exported for reuse by poolCreationProvenanceInvestigator.ts, which needs the exact same
+// PoolCreated-shaped decode against a different (the pool's own creation) receipt.
+export function decodePoolCreatedLog(log: RawReceiptLog): {
   emitter: string; token0: string; token1: string; fee: number; pool: string
 } | null {
   if ((log.topics[0] ?? '').toLowerCase() !== POOL_CREATED_TOPIC0.toLowerCase()) return null
