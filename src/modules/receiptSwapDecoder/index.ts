@@ -40,7 +40,7 @@ import type {
 } from './types'
 import { resolveClassicMultiTransferLeg, mergeMultiTransferDiagnostics, type ClassicPoolLeg } from './multiTransferLeg'
 import { resolveUniswapV3Leg, type UniswapV3PoolLeg } from './uniswapV3Leg'
-import type { UniswapV3PoolValidator } from './uniswapV3PoolValidator'
+import type { UniswapV3PoolValidator, UniswapV3ValidationResult } from './uniswapV3PoolValidator'
 import type { UniswapV3Diagnostics } from './types'
 
 export type { DecodedReceiptSwap, ReceiptDecodeResult, ReceiptTxBundle } from './types'
@@ -127,10 +127,11 @@ function buildUniswapV3Swap(
   decoded: DecodedLogs,
   poolAddress: string,
   leg: UniswapV3PoolLeg,
-  fee: number | null,
+  validation: UniswapV3ValidationResult,
   diagnostics: UniswapV3Diagnostics,
 ): ReceiptDecodeResult {
   void diagnostics
+  const fee = validation.fee
   const walletAddress = tx.walletAddress.toLowerCase()
   const nativeWrapDetected = decoded.nativeWraps.some(
     (w) => w.account === walletAddress || w.account === (tx.router ?? '').toLowerCase(),
@@ -164,6 +165,7 @@ function buildUniswapV3Swap(
       refundDetected,
       feeLegsExcluded: Math.max(0, decoded.transfers.length - 2),
       ...(fee !== null ? { uniswapV3Fee: fee } : {}),
+      uniswapV3Validation: validation.diagnostics,
     },
   }
 
@@ -261,9 +263,21 @@ export async function decodeReceiptSwap(
         }
         const v3Valid = await uniswapV3Validator.validatePool(leg.swap.poolAddress, v3.leg.tokenIn, v3.leg.tokenOut)
         if (!v3Valid.valid) {
-          return { ok: false, rejection: { txHash: tx.txHash, reason: 'uniswap_v3_pool_not_validated', uniswapV3: v3.diagnostics } }
+          // FORENSIC REASON MAPPING, DISCLOSED: the validator's own finalTypedReason is surfaced
+          // directly as the rejection reason, EXCEPT factory_returned_zero — which, combined with
+          // the fact that Aerodrome's own factories already failed for this exact pool just above,
+          // is remapped to the higher-confidence conclusion 'likely_non_uniswap_v3_factory' (this
+          // task's sixth requested distinguishing reason — a synthesis this validator alone cannot
+          // make, since it has no visibility into whether Aerodrome was even tried).
+          const reason = v3Valid.diagnostics.finalTypedReason === 'factory_returned_zero'
+            ? 'likely_non_uniswap_v3_factory' as const
+            : v3Valid.diagnostics.finalTypedReason as Exclude<typeof v3Valid.diagnostics.finalTypedReason, 'validated' | 'factory_returned_zero'>
+          return {
+            ok: false,
+            rejection: { txHash: tx.txHash, reason, uniswapV3: v3.diagnostics, uniswapV3Validation: v3Valid.diagnostics },
+          }
         }
-        return buildUniswapV3Swap(tx, decoded, leg.swap.poolAddress, v3.leg, v3Valid.fee, v3.diagnostics)
+        return buildUniswapV3Swap(tx, decoded, leg.swap.poolAddress, v3.leg, v3Valid, v3.diagnostics)
       }
       return {
         ok: false,

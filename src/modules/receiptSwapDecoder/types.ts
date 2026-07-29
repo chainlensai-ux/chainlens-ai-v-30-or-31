@@ -85,7 +85,34 @@ export type DecodedReceiptSwap = {
     // getPool() confirmed for this pool (see uniswapV3PoolValidator.ts) — never guessed from the
     // Swap event itself (V3's Swap event carries no fee field).
     uniswapV3Fee?: number
+    // Present only for protocol === 'uniswap_v3' — the full forensic diagnostics from the
+    // validation attempt that succeeded (finalTypedReason: 'validated').
+    uniswapV3Validation?: UniswapV3ValidationDiagnostics
   }
+}
+
+// Bounded, shadow/debug-only diagnostics from one Uniswap V3 factory validation attempt — see
+// uniswapV3PoolValidator.ts's own header for the full disclosure. Restated here (not imported) to
+// avoid a circular type dependency between types.ts and uniswapV3PoolValidator.ts.
+export type UniswapV3ValidationDiagnostics = {
+  eventEmitter: string
+  configuredFactory: string
+  token0: string
+  token1: string
+  fee: number | null
+  feeSource: 'factory_getPool_fee_tier_match' | 'unavailable'
+  getPoolResult: string | null
+  emitterMatchesResult: boolean
+  reversedTokenOrderAttempted: boolean
+  reversedGetPoolResult: string | null
+  finalTypedReason:
+    | 'validated'
+    | 'invalid_token_pair'
+    | 'rpc_failure'
+    | 'factory_returned_zero'
+    | 'factory_pool_mismatch'
+    | 'fee_unavailable'
+    | 'validation_cap_exceeded'
 }
 
 // Bounded, shadow/debug-only diagnostics from the Classic multi-transfer resolver — never used to
@@ -120,12 +147,26 @@ export type ReceiptDecodeRejection = {
     // UNISWAP V3, DISCLOSED (see uniswapV3Leg.ts / uniswapV3PoolValidator.ts) — only ever attempted
     // as a fallback for a SINGLE concentrated-liquidity-shaped Swap event whose Aerodrome Slipstream
     // factory validation genuinely failed first ("do not treat Slipstream pools as Uniswap V3").
-    | 'uniswap_v3_pool_not_validated'
     | 'uniswap_v3_sign_ambiguous'
     | 'uniswap_v3_ambiguous_token_mapping'
     | 'uniswap_v3_amount_mismatch'
+    // FORENSIC VALIDATION REASONS, DISCLOSED (this task — replaces the old single generic
+    // 'uniswap_v3_pool_not_validated' with the exact distinguishable outcomes requested; see
+    // uniswapV3PoolValidator.ts's own header for what each one means). 'likely_non_uniswap_v3_factory'
+    // is a higher-level conclusion decodeReceiptSwap draws (the validator's own factory_returned_zero
+    // PLUS Aerodrome's factories having already failed first) — the validator itself never returns it.
+    | 'invalid_token_pair'
+    | 'rpc_failure'
+    | 'factory_returned_zero'
+    | 'factory_pool_mismatch'
+    | 'fee_unavailable'
+    | 'likely_non_uniswap_v3_factory'
+    | 'validation_cap_exceeded'
   multiTransfer?: MultiTransferDiagnostics
   uniswapV3?: UniswapV3Diagnostics
+  // Bounded, shadow/debug-only forensic diagnostics for the exact Uniswap V3 factory validation
+  // attempt that produced one of the reasons above — see uniswapV3PoolValidator.ts's own header.
+  uniswapV3Validation?: UniswapV3ValidationDiagnostics
 }
 
 // Bounded, shadow/debug-only diagnostics from the Uniswap V3 resolver (uniswapV3Leg.ts) — never

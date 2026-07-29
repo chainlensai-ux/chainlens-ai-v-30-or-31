@@ -31,7 +31,27 @@ function fakeV3Validator(feeThatMatches: number | null, calls: string[] = []): U
   return {
     async validatePool(pool, t0, t1) {
       calls.push(`${pool}:${t0}:${t1}`)
-      return feeThatMatches === null ? { valid: false, fee: null } : { valid: true, fee: feeThatMatches }
+      const base = {
+        eventEmitter: pool, configuredFactory: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD', token0: t0, token1: t1,
+      }
+      if (feeThatMatches === null) {
+        return {
+          valid: false, fee: null,
+          diagnostics: {
+            ...base, fee: null, feeSource: 'unavailable' as const, getPoolResult: '0x0000000000000000000000000000000000000000',
+            emitterMatchesResult: false, reversedTokenOrderAttempted: true, reversedGetPoolResult: '0x0000000000000000000000000000000000000000',
+            finalTypedReason: 'factory_returned_zero' as const,
+          },
+        }
+      }
+      return {
+        valid: true, fee: feeThatMatches,
+        diagnostics: {
+          ...base, fee: feeThatMatches, feeSource: 'factory_getPool_fee_tier_match' as const, getPoolResult: pool,
+          emitterMatchesResult: true, reversedTokenOrderAttempted: false, reversedGetPoolResult: null,
+          finalTypedReason: 'validated' as const,
+        },
+      }
     },
   }
 }
@@ -139,7 +159,7 @@ test('invalid factory: neither Aerodrome nor Uniswap V3 validates the pool, deco
   const result = await decodeReceiptSwap(tx, neverValidValidator(), fakeV3Validator(null))
   assert.equal(result.ok, false)
   if (result.ok) return
-  assert.equal(result.rejection.reason, 'uniswap_v3_pool_not_validated')
+  assert.equal(result.rejection.reason, 'likely_non_uniswap_v3_factory')
 })
 
 test('a genuine Aerodrome Slipstream pool never falls through to the V3 fallback ("do not treat Slipstream as Uniswap V3")', async () => {
@@ -219,4 +239,109 @@ test('backward compatible: omitting the V3 validator entirely preserves the orig
   assert.equal(result.ok, false)
   if (result.ok) return
   assert.equal(result.rejection.reason, 'pool_not_validated_by_factory')
+})
+
+// FORENSIC DIAGNOSTICS, DISCLOSED (this task — exact production evidence): 1 V3 pool examined,
+// Swap amount reconciliation passed (resolveUniswapV3Leg succeeds), 1 validation call, 0 pools
+// validated, generic rejection uniswap_v3_pool_not_validated with no way to tell why. This test
+// reproduces that exact scan shape and confirms the bounded forensic diagnostics now distinguish
+// WHICH of the 6 typed reasons applies (here: the factory genuinely has no record of this pair at
+// all, surfaced as the higher-level 'likely_non_uniswap_v3_factory' conclusion), with exactly one
+// validation call made -- never a duplicate merely to populate diagnostics.
+test('production forensic fixture: 1 pool examined, reconciliation passed, exactly 1 validation call, 0 validated, typed reason distinguishes why', async () => {
+  const calls: string[] = []
+  const validator: UniswapV3PoolValidator = {
+    async validatePool(pool, t0, t1) {
+      calls.push(`${pool}:${t0}:${t1}`)
+      return {
+        valid: false,
+        fee: null,
+        diagnostics: {
+          eventEmitter: pool,
+          configuredFactory: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD',
+          token0: t0,
+          token1: t1,
+          fee: null,
+          feeSource: 'unavailable',
+          getPoolResult: '0x0000000000000000000000000000000000000000',
+          emitterMatchesResult: false,
+          reversedTokenOrderAttempted: true,
+          reversedGetPoolResult: '0x0000000000000000000000000000000000000000',
+          finalTypedReason: 'factory_returned_zero',
+        },
+      }
+    },
+  }
+  const tx = bundle({
+    logs: [
+      transferLog(0, WETH, wallet, poolA, BigInt('1000000000000000000')),
+      slipstreamSwapLog(1, poolA, wallet, wallet, BigInt('1000000000000000000'), BigInt('-100000000000000000000')),
+      transferLog(2, TOKEN_X, poolA, wallet, BigInt('100000000000000000000')),
+    ],
+  })
+  const result = await decodeReceiptSwap(tx, neverValidValidator(), validator)
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  // Reconciliation (resolveUniswapV3Leg) passed -- the rejection came from validation, not decode.
+  assert.equal(result.rejection.uniswapV3?.resolved, true)
+  assert.equal(result.rejection.uniswapV3?.amountMatched, true)
+  assert.equal(calls.length, 1) // exactly one validation call, never duplicated for diagnostics
+  assert.equal(result.rejection.reason, 'likely_non_uniswap_v3_factory')
+  assert.equal(result.rejection.uniswapV3Validation?.finalTypedReason, 'factory_returned_zero')
+  assert.equal(result.rejection.uniswapV3Validation?.emitterMatchesResult, false)
+  assert.equal(result.rejection.uniswapV3Validation?.configuredFactory, '0x33128a8fC17869897dcE68Ed026d694621f6FDfD')
+})
+
+test('typed reason: factory_pool_mismatch is distinguished from factory_returned_zero', async () => {
+  const validator: UniswapV3PoolValidator = {
+    async validatePool(pool, t0, t1) {
+      return {
+        valid: false, fee: null,
+        diagnostics: {
+          eventEmitter: pool, configuredFactory: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD', token0: t0, token1: t1,
+          fee: null, feeSource: 'unavailable', getPoolResult: '0xdifferentpool',
+          emitterMatchesResult: false, reversedTokenOrderAttempted: true, reversedGetPoolResult: '0xdifferentpool',
+          finalTypedReason: 'factory_pool_mismatch',
+        },
+      }
+    },
+  }
+  const tx = bundle({
+    logs: [
+      transferLog(0, WETH, wallet, poolA, BigInt('1000000000000000000')),
+      slipstreamSwapLog(1, poolA, wallet, wallet, BigInt('1000000000000000000'), BigInt('-100000000000000000000')),
+      transferLog(2, TOKEN_X, poolA, wallet, BigInt('100000000000000000000')),
+    ],
+  })
+  const result = await decodeReceiptSwap(tx, neverValidValidator(), validator)
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  assert.equal(result.rejection.reason, 'factory_pool_mismatch')
+})
+
+test('typed reason: rpc_failure is distinguished and never treated as a validated pool', async () => {
+  const validator: UniswapV3PoolValidator = {
+    async validatePool(pool, t0, t1) {
+      return {
+        valid: false, fee: null,
+        diagnostics: {
+          eventEmitter: pool, configuredFactory: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD', token0: t0, token1: t1,
+          fee: null, feeSource: 'unavailable', getPoolResult: null,
+          emitterMatchesResult: false, reversedTokenOrderAttempted: true, reversedGetPoolResult: null,
+          finalTypedReason: 'rpc_failure',
+        },
+      }
+    },
+  }
+  const tx = bundle({
+    logs: [
+      transferLog(0, WETH, wallet, poolA, BigInt('1000000000000000000')),
+      slipstreamSwapLog(1, poolA, wallet, wallet, BigInt('1000000000000000000'), BigInt('-100000000000000000000')),
+      transferLog(2, TOKEN_X, poolA, wallet, BigInt('100000000000000000000')),
+    ],
+  })
+  const result = await decodeReceiptSwap(tx, neverValidValidator(), validator)
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  assert.equal(result.rejection.reason, 'rpc_failure')
 })
