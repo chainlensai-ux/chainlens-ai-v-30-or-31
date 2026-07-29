@@ -39,6 +39,7 @@ import {
   createUnsupportedFactoryForensicsRequestScope,
 } from '../modules/receiptSwapDecoder/unsupportedFactoryForensics'
 import { runShadowFifoReplay } from '../modules/receiptSwapDecoder/shadowFifoReplay'
+import { promoteVerifiedReceiptSwaps } from '../modules/receiptSwapDecoder/canonicalPromotion'
 import type { DecodedReceiptSwap } from '../modules/receiptSwapDecoder/types'
 import { groupSwapLegsByTransaction, swapLegGroupKey, isVerifiedQuoteLegAddress } from '../modules/quoteLegPricing/index'
 import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/syntheticPnl/index'
@@ -1501,7 +1502,30 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const recoveredRawEventsForPricing = recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents)
   const { normalizedEvents: recoveredNormalizedForPricing } = normalizeEvents(recoveredRawEventsForPricing, params.walletAddress)
 
-  const normalizedEventsForPricing = buildFilteredEventsForPricing(normalizedEvents, dustSuppressedKeys)
+  // RECEIPT-SWAP CANONICAL PROMOTION, DISCLOSED (this task): a real, surgical promotion path for
+  // fully-verified, factory-validated exact receipt swaps to fill a genuinely missing canonical
+  // buy/sell side — gated behind RECEIPT_SWAP_CANONICAL_PROMOTION_ENABLED, defaulting OFF. When
+  // off (the default), `canonicalNormalizedEvents` is literally `normalizedEvents` itself and
+  // everything downstream (pricing, fifoEngine, publicPnlStatus/coverage gates) runs byte-identical
+  // to before this task. When on, it is `normalizedEvents` PLUS zero or more additively-spliced
+  // legs — see canonicalPromotion.ts's own header for the full "never overwrite, never replace
+  // provider-native evidence, unknown factories structurally unreachable" disclosure. Uses
+  // `shadowExactReceiptSwaps` — evidence already computed by this same scan's existing shadow
+  // wiring above, from receipts already fetched under the existing budget — so this promotion step
+  // itself makes ZERO new provider calls.
+  let canonicalNormalizedEvents: NormalizedEvent[] = normalizedEvents
+  let receiptSwapPromotionResult: ReturnType<typeof promoteVerifiedReceiptSwaps> | null = null
+  const receiptSwapCanonicalPromotionEnabled = process.env.RECEIPT_SWAP_CANONICAL_PROMOTION_ENABLED === 'true'
+  if (receiptSwapCanonicalPromotionEnabled && shadowExactReceiptSwaps.length > 0) {
+    receiptSwapPromotionResult = promoteVerifiedReceiptSwaps({
+      normalizedEvents,
+      walletAddress: params.walletAddress,
+      acceptedExactSwaps: shadowExactReceiptSwaps,
+    })
+    canonicalNormalizedEvents = receiptSwapPromotionResult.promotedEvents
+  }
+
+  const normalizedEventsForPricing = buildFilteredEventsForPricing(canonicalNormalizedEvents, dustSuppressedKeys)
   const recoveredEventsForPricing = buildFilteredEventsForPricing(recoveredNormalizedForPricing, dustSuppressedKeys)
 
   const priceLotsForWalletStart = performance.now()
@@ -1548,7 +1572,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // priceUsdLookup/currentPriceUsdLookup injection points — the actual fix for "PnL always
   // unavailable". fifoEngine's own source is unmodified.
   const fifoAndPnl = safeRunFifoEngine({
-    normalizedEvents,
+    normalizedEvents: canonicalNormalizedEvents,
     recoveryPolicy,
     walletAddress: params.walletAddress,
     buyTimeline: timelines.buyTimeline,
@@ -1558,6 +1582,56 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     canonicalBalanceLookup: params.canonicalBalanceLookup,
     unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
   })
+
+  // RECEIPT-SWAP CANONICAL PROMOTION DIAGNOSTICS, DISCLOSED, BOUNDED: one unconditional log
+  // whenever the feature flag is on (even if this scan had nothing to promote), giving the exact
+  // before-vs-after picture this task requires — promoted swaps, rejected promotions, canonical
+  // legs added, and the fifoEngine-level closedLots/publicPnlStatus/coverage delta. "Before" is
+  // computed via a SECOND, PURE (fifoEngine makes no provider calls) safeRunFifoEngine call against
+  // the ORIGINAL, un-promoted `normalizedEvents`, reusing the EXACT SAME priceUsdLookup/
+  // currentPriceUsdLookup functions already computed above for the real "after" run — zero new
+  // provider calls, same convention shadowFifoReplay.ts's own before/after measurement already
+  // uses. This is fifoEngine's OWN publicPnlStatus/coverage (not the later, fuller
+  // pnlReconciliation.reconcile() figure, which combines a second engine and would cost
+  // meaningfully more to duplicate here) — a smaller, honestly-scoped diagnostic, never presented
+  // as the final public status.
+  if (receiptSwapCanonicalPromotionEnabled) {
+    const beforePromotion = receiptSwapPromotionResult
+      ? safeRunFifoEngine({
+          normalizedEvents,
+          recoveryPolicy,
+          walletAddress: params.walletAddress,
+          buyTimeline: timelines.buyTimeline,
+          sellTimeline: timelines.sellTimeline,
+          priceUsdLookup: walletPriceLookups.priceUsdLookup,
+          currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
+          canonicalBalanceLookup: params.canonicalBalanceLookup,
+          unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
+        })
+      : fifoAndPnl
+    const verifiedCoverage = (matchedLots: typeof fifoAndPnl.matchedLots) =>
+      matchedLots.length === 0 ? 0 : matchedLots.filter((l) => l.evidenceQuality === 'verified').length / matchedLots.length
+    // eslint-disable-next-line no-console
+    console.warn('[pipeline] receipt swap canonical promotion', {
+      enabled: true,
+      promotedSwaps: receiptSwapPromotionResult?.promotions.length ?? 0,
+      rejectedPromotions: receiptSwapPromotionResult?.rejections.length ?? 0,
+      canonicalLegsAdded: receiptSwapPromotionResult?.addedLegs.length ?? 0,
+      promotions: receiptSwapPromotionResult?.promotions ?? [],
+      rejections: receiptSwapPromotionResult?.rejections ?? [],
+      fifoClosedLotsBefore: beforePromotion.matchedLots.length,
+      fifoClosedLotsAfter: fifoAndPnl.matchedLots.length,
+      unmatchedBuysBefore: beforePromotion.unmatchedBuys,
+      unmatchedBuysAfter: fifoAndPnl.unmatchedBuys,
+      unmatchedSellsBefore: beforePromotion.unmatchedSells,
+      unmatchedSellsAfter: fifoAndPnl.unmatchedSells,
+      verifiedCoverageBefore: verifiedCoverage(beforePromotion.matchedLots),
+      verifiedCoverageAfter: verifiedCoverage(fifoAndPnl.matchedLots),
+      publicPnlStatusBefore: beforePromotion.publicPnlStatus,
+      publicPnlStatusAfter: fifoAndPnl.publicPnlStatus,
+    })
+  }
+
   // RECONCILIATION DIAGNOSTICS, DISCLOSED, BOUNDED: one scan-level summary line plus the full
   // per-position detail for every EXCLUDED position only (never a dump of every reconciled
   // position). Every quantity logged here is already decimal-NORMALIZED — this path never reads or

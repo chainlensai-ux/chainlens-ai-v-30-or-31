@@ -29,6 +29,7 @@ import type { NormalizedEvent } from '../normalization/types'
 import type { PriceUsdLookup, CurrentPriceUsdLookup, MatchedLot } from '../fifoEngine/types'
 import { buildFifoOutput } from '../fifoEngine/index'
 import type { DecodedReceiptSwap } from './types'
+import { resolvePromotableLeg } from './receiptLegPromotionResolver'
 
 export type ShadowRejectionReason =
   | 'not_exact_confidence'
@@ -153,96 +154,21 @@ export function runShadowFifoReplay(input: ShadowFifoReplayInput): ShadowFifoRep
   // (both tokens real, non-empty addresses), and a recognized protocol. A non-reverted receipt and
   // "no ambiguity/mismatch" are already guaranteed by decodeReceiptSwap only ever returning
   // `ok: true` under those exact conditions (index.ts's own fail-closed contract) — restated here
-  // defensively, never re-derived with different logic.
-  if (decodedSwap.confidence !== 'exact') return rejected('not_exact_confidence')
-  if (!RECOGNIZED_PROTOCOLS.has(decodedSwap.protocol)) return rejected('protocol_not_recognized')
-  if (!decodedSwap.tokenIn.address || !decodedSwap.tokenOut.address || decodedSwap.tokenIn.address === decodedSwap.tokenOut.address) {
-    return rejected('not_two_sided_resolution')
-  }
-
-  const eligibleCounters: Partial<ShadowFifoReplayCounters> = { exactReceiptSwapsEligible: 1 }
-
-  const txHashLower = decodedSwap.txHash.toLowerCase()
-  const matchIndices: number[] = []
-  input.normalizedEvents.forEach((e, i) => {
-    if (e.chain === decodedSwap.chain && e.txHash.toLowerCase() === txHashLower) matchIndices.push(i)
-  })
-
-  if (matchIndices.length === 0) return rejected('no_matching_incomplete_transaction', eligibleCounters)
-  if (matchIndices.length > 2) return rejected('multiple_incomplete_matches_ambiguous', eligibleCounters)
-
-  if (matchIndices.length === 2) {
-    // ALREADY COMPLETE, NOT AMBIGUOUS, DISCLOSED: exactly two events for this tx that already match
-    // the decoded swap's own (tokenIn, outbound) + (tokenOut, inbound) pair is a transaction that
-    // already carries both real legs — there is no "incomplete transaction" left to replace, and
-    // replaying it would only ever create a duplicate. A pair that does NOT match that shape (e.g.
-    // two unrelated events sharing a txHash) is genuinely ambiguous instead.
-    const [a, b] = matchIndices.map((i) => input.normalizedEvents[i])
-    const isCompletePair = (x: NormalizedEvent, y: NormalizedEvent) =>
-      x.direction === 'outbound' && x.contract.toLowerCase() === decodedSwap.tokenIn.address.toLowerCase()
-      && y.direction === 'inbound' && y.contract.toLowerCase() === decodedSwap.tokenOut.address.toLowerCase()
-    if (isCompletePair(a, b) || isCompletePair(b, a)) {
-      return rejected('would_duplicate_transaction', { ...eligibleCounters, shadowDuplicateRejections: 1 })
+  // defensively, never re-derived with different logic. Matching/missing-leg logic itself now lives
+  // in receiptLegPromotionResolver.ts, shared with the real canonical-promotion path — see that
+  // file's own header.
+  const resolution = resolvePromotableLeg(input.normalizedEvents, input.walletAddress, decodedSwap, RECOGNIZED_PROTOCOLS)
+  if (!resolution.ok) {
+    if (resolution.reason === 'not_exact_confidence' || resolution.reason === 'protocol_not_recognized' || resolution.reason === 'not_two_sided_resolution') {
+      return rejected(resolution.reason)
     }
-    return rejected('multiple_incomplete_matches_ambiguous', eligibleCounters)
-  }
-
-  const existingIndex = matchIndices[0]
-  const existingEvent = input.normalizedEvents[existingIndex]
-
-  if (existingEvent.direction !== 'inbound' && existingEvent.direction !== 'outbound') {
-    return rejected('existing_leg_direction_unknown', eligibleCounters)
-  }
-
-  const existingContract = existingEvent.contract.toLowerCase()
-  let missingEvent: NormalizedEvent
-  if (existingEvent.direction === 'outbound') {
-    if (existingContract !== decodedSwap.tokenIn.address.toLowerCase()) return rejected('existing_leg_token_mismatch', eligibleCounters)
-    missingEvent = {
-      provider: existingEvent.provider,
-      chain: decodedSwap.chain,
-      txHash: existingEvent.txHash,
-      timestamp: existingEvent.timestamp,
-      fromAddress: decodedSwap.poolAddress,
-      toAddress: input.walletAddress,
-      contract: decodedSwap.tokenOut.address,
-      symbol: decodedSwap.tokenOut.symbol,
-      amount: decodedSwap.normalizedAmountOut,
-      amountRaw: decodedSwap.amountOutRaw,
-      tokenDecimals: decodedSwap.decimals.tokenOut,
-      direction: 'inbound',
+    const eligibleCounters: Partial<ShadowFifoReplayCounters> = { exactReceiptSwapsEligible: 1 }
+    if (resolution.reason === 'would_duplicate_transaction') {
+      return rejected(resolution.reason, { ...eligibleCounters, shadowDuplicateRejections: 1 })
     }
-  } else {
-    if (existingContract !== decodedSwap.tokenOut.address.toLowerCase()) return rejected('existing_leg_token_mismatch', eligibleCounters)
-    missingEvent = {
-      provider: existingEvent.provider,
-      chain: decodedSwap.chain,
-      txHash: existingEvent.txHash,
-      timestamp: existingEvent.timestamp,
-      fromAddress: input.walletAddress,
-      toAddress: decodedSwap.poolAddress,
-      contract: decodedSwap.tokenIn.address,
-      symbol: decodedSwap.tokenIn.symbol,
-      amount: decodedSwap.normalizedAmountIn,
-      amountRaw: decodedSwap.amountInRaw,
-      tokenDecimals: decodedSwap.decimals.tokenIn,
-      direction: 'outbound',
-    }
+    return rejected(resolution.reason, eligibleCounters)
   }
-
-  // NO DUPLICATE TRANSACTION/LEG, DISCLOSED: a canonical set that already carries BOTH sides for
-  // this tx (an event matching the missing leg's exact chain/txHash/contract/direction already
-  // present) means this transaction is already complete — replaying would create a duplicate leg,
-  // never accepted.
-  const wouldDuplicate = input.normalizedEvents.some(
-    (e) => e.chain === missingEvent.chain
-      && e.txHash.toLowerCase() === txHashLower
-      && e.contract.toLowerCase() === missingEvent.contract.toLowerCase()
-      && e.direction === missingEvent.direction,
-  )
-  if (wouldDuplicate) {
-    return rejected('would_duplicate_transaction', { ...eligibleCounters, shadowDuplicateRejections: 1 })
-  }
+  const { missingEvent, existingIndex } = resolution
 
   // DEEP CLONE, DISCLOSED: plain-data JSON round-trip — exact, safe, and guarantees the original
   // `input.normalizedEvents` array/objects are never touched by the splice below.
