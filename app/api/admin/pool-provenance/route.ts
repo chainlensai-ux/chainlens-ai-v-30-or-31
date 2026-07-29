@@ -6,9 +6,19 @@
 // src/modules/receiptSwapDecoder/walletScanShadowWiring.ts — a normal wallet scan can never reach
 // this route.
 //
-// AUTH, DISCLOSED: same admin-gate convention as app/api/admin/actions/route.ts /
-// app/api/admin/data/route.ts — a Supabase-issued bearer token whose user email is in the
-// ADMIN_EMAILS allowlist. No new auth mechanism introduced.
+// TEMPORARY NO-AUTH + HARD-LOCK, DISCLOSED (this task): bearer-token admin auth is deliberately
+// removed from POST for now — in its place, POST accepts ONLY the exact single known forensic case
+// (KNOWN_FORENSIC_CASE below: the pool/factory/token-pair/fee this whole investigation chain was
+// built around). Any request whose body doesn't match that exact case byte-for-byte (case-
+// insensitive on addresses) is rejected with 403, never investigated — so even with no token
+// required, this route cannot be used to probe an arbitrary address. This is explicitly temporary:
+// re-adding bearer auth (see the removed verifyAdmin/ADMIN_EMAILS convention still used by
+// app/api/admin/actions/route.ts and app/api/admin/data/route.ts) is a follow-up, not deferred
+// silently.
+//
+// KILL SWITCH, DISCLOSED (this task): POOL_PROVENANCE_ENDPOINT_ENABLED must be exactly the string
+// 'true' or every request (GET and POST) gets an honest 404 — the endpoint is fully hidden, not
+// merely unauthorized, when the switch is off or unset (fails closed by default).
 //
 // PERMANENT, PROCESS-LIFETIME CACHE, DISCLOSED: the investigator's own cache
 // (createPoolCreationProvenanceCache) is instantiated ONCE at module scope, not per-request — a
@@ -16,49 +26,35 @@
 // requests within the same warm serverless instance, exactly matching the investigator's own
 // "permanent cache" contract. A cold start gets a fresh cache, which is correct (nothing to lose).
 //
-// NEVER HTML, DISCLOSED: every response on every path — success, validation failure, auth failure,
-// investigator error — is NextResponse.json(...); there is no default Next.js error page this route
-// can fall through to.
+// NEVER HTML, DISCLOSED: every response on every path — kill-switch, validation failure, hard-lock
+// rejection, investigator error, success — is NextResponse.json(...); there is no default Next.js
+// error page this route can fall through to.
 
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
 import {
   createLiveBaseScanContractCreationLookup, createLivePoolCreationReceiptFetcher,
   createPoolCreationProvenanceInvestigator, createPoolCreationProvenanceCache,
 } from '@/src/modules/receiptSwapDecoder/poolCreationProvenanceInvestigator'
 import { buildPoolCreationProvenanceLogRecord } from '@/src/modules/receiptSwapDecoder/poolCreationProvenanceLog'
 
-// ─── Admin access list (same convention as app/api/admin/actions/route.ts) ────────────────────────
-function getAdminEmails(): Set<string> {
-  const raw = process.env.ADMIN_EMAILS
-  if (raw) return new Set(raw.split(',').map((e) => e.trim().toLowerCase()).filter(Boolean))
-  return new Set()
-}
-const ADMIN_EMAILS = getAdminEmails()
-
-function makeAnonClient() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-  if (!url || !key) return null
-  return createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
+// ─── Kill switch ────────────────────────────────────────────────────────────────────────────────
+function isEndpointEnabled(): boolean {
+  return process.env.POOL_PROVENANCE_ENDPOINT_ENABLED === 'true'
 }
 
-async function verifyAdmin(req: NextRequest): Promise<string | null> {
-  const auth = req.headers.get('authorization') ?? ''
-  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
-  if (!token) return null
-
-  const anon = makeAnonClient()
-  if (!anon) return null
-
-  try {
-    const { data } = await anon.auth.getUser(token)
-    const email = (data.user?.email ?? '').toLowerCase()
-    if (!email || !ADMIN_EMAILS.has(email)) return null
-    return email
-  } catch {
-    return null
-  }
+// ─── The single known forensic case, DISCLOSED: pool 0x7f31b371ac675bca3357fd9c26854fed067400c0 /
+// claimed factory 0xade65c38cd4849adba595a4323a8c7ddfe89716a / Base WETH paired with
+// 0x5576d6ed9181f2225aff5282ac0ed29f755437ea at fee 10000 — the exact production evidence every
+// prior task in this investigation chain (fingerprinting, unknown-factory verification, unsupported
+// -interface forensics, creation-provenance) was built around. No other input is accepted while
+// this route runs without bearer auth. ────────────────────────────────────────────────────────────
+export const KNOWN_FORENSIC_CASE = {
+  chain: 'base' as const,
+  pool: '0x7f31b371ac675bca3357fd9c26854fed067400c0',
+  claimedFactory: '0xade65c38cd4849adba595a4323a8c7ddfe89716a',
+  expectedToken0: '0x4200000000000000000000000000000000000006',
+  expectedToken1: '0x5576d6ed9181f2225aff5282ac0ed29f755437ea',
+  expectedFee: 10000,
 }
 
 // ─── Request validation ─────────────────────────────────────────────────────────────────────────
@@ -73,7 +69,7 @@ export type PoolProvenanceRequestBody = {
 
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/
 
-// PURE, DISCLOSED: no I/O — directly unit-testable independent of NextRequest/auth/the investigator.
+// PURE, DISCLOSED: no I/O — directly unit-testable independent of NextRequest/the investigator.
 export function validatePoolProvenanceRequestBody(body: unknown): { ok: true; value: PoolProvenanceRequestBody } | { ok: false; error: string } {
   if (!body || typeof body !== 'object') return { ok: false, error: 'Invalid JSON body' }
   const { chain, pool, claimedFactory, expectedToken0, expectedToken1, expectedFee } = body as Record<string, unknown>
@@ -90,6 +86,17 @@ export function validatePoolProvenanceRequestBody(body: unknown): { ok: true; va
   return { ok: true, value: { chain, pool, claimedFactory, expectedToken0, expectedToken1, expectedFee } }
 }
 
+// PURE, DISCLOSED: byte-for-byte match against KNOWN_FORENSIC_CASE, case-insensitive on addresses
+// only — never a partial/fuzzy match, never any other pool/factory/pair/fee.
+export function matchesKnownForensicCase(value: PoolProvenanceRequestBody): boolean {
+  return value.chain === KNOWN_FORENSIC_CASE.chain
+    && value.pool.toLowerCase() === KNOWN_FORENSIC_CASE.pool.toLowerCase()
+    && value.claimedFactory.toLowerCase() === KNOWN_FORENSIC_CASE.claimedFactory.toLowerCase()
+    && value.expectedToken0.toLowerCase() === KNOWN_FORENSIC_CASE.expectedToken0.toLowerCase()
+    && value.expectedToken1.toLowerCase() === KNOWN_FORENSIC_CASE.expectedToken1.toLowerCase()
+    && value.expectedFee === KNOWN_FORENSIC_CASE.expectedFee
+}
+
 function noStore(body: unknown, init?: { status?: number }): NextResponse {
   const res = NextResponse.json(body as object, init)
   res.headers.set('Cache-Control', 'no-store')
@@ -101,9 +108,8 @@ function noStore(body: unknown, init?: { status?: number }): NextResponse {
 const provenanceCache = createPoolCreationProvenanceCache()
 
 export async function POST(req: NextRequest) {
-  const adminEmail = await verifyAdmin(req)
-  if (!adminEmail) {
-    return noStore({ error: 'Unauthorized' }, { status: 401 })
+  if (!isEndpointEnabled()) {
+    return noStore({ error: 'Not found' }, { status: 404 })
   }
 
   let body: unknown
@@ -116,6 +122,10 @@ export async function POST(req: NextRequest) {
   const validated = validatePoolProvenanceRequestBody(body)
   if (!validated.ok) {
     return noStore({ error: validated.error }, { status: 400 })
+  }
+
+  if (!matchesKnownForensicCase(validated.value)) {
+    return noStore({ error: 'Forbidden: only the known forensic case is accepted while this endpoint runs without authentication' }, { status: 403 })
   }
   const { chain, pool, claimedFactory, expectedToken0, expectedToken1, expectedFee } = validated.value
 
@@ -138,9 +148,12 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// GET, DISCLOSED: unauthenticated, side-effect-free, no investigator call — exists purely so a
-// deploy of this route can be verified safely (per this task's own requirement) without needing an
-// admin bearer token or triggering any external provider call.
+// GET, DISCLOSED: side-effect-free, no investigator call — exists purely so a deploy of this route
+// can be verified safely. Still gated by the same kill switch as POST: when disabled, the endpoint
+// is entirely hidden (404), not merely unauthorized.
 export async function GET() {
+  if (!isEndpointEnabled()) {
+    return noStore({ error: 'Not found' }, { status: 404 })
+  }
   return noStore({ ok: true, route: 'pool-provenance' })
 }
