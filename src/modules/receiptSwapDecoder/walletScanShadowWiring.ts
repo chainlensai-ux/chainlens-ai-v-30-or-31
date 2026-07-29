@@ -29,6 +29,7 @@ import {
   classifyReceiptForensics, createRecordingPoolValidator, MAX_FORENSIC_SAMPLES,
   type ReceiptForensicSample, type FactoryValidationAttempt,
 } from './forensicClassifier'
+import { buildUniswapV3ForensicLogRecord, UNISWAP_V3_FORENSIC_LOG_LABEL } from './uniswapV3ForensicLog'
 
 export type WalletScanSwapCandidate = {
   chain: string
@@ -239,6 +240,17 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
       counters.uniswapV3PoolsExamined += 1
       if (uniswapV3Diagnostics.amountMatched === true) counters.uniswapV3AmountMatches += 1
       if (uniswapV3Diagnostics.amountMatched === false) counters.uniswapV3AmountMismatches += 1
+    }
+
+    // FORENSIC PRODUCTION LOG, DISCLOSED (this task): one separate flat log per examined Uniswap V3
+    // validation attempt — reuses the SAME diagnostics object decodeReceiptSwap already produced
+    // above (zero additional getPool()/provider calls), bounded to this loop's already-bounded
+    // (<= 10) receipt cap. See uniswapV3ForensicLog.ts's own header.
+    const uniswapV3ValidationDiagnostics = result.ok
+      ? (result.swap.protocol === 'uniswap_v3' ? result.swap.meta.uniswapV3Validation : undefined)
+      : result.rejection.uniswapV3Validation
+    if (uniswapV3ValidationDiagnostics) {
+      console.warn(UNISWAP_V3_FORENSIC_LOG_LABEL, buildUniswapV3ForensicLogRecord(candidate.txHash, uniswapV3ValidationDiagnostics))
     }
     if (result.ok && result.swap.protocol === 'uniswap_v3') {
       counters.uniswapV3SwapsDecoded += 1

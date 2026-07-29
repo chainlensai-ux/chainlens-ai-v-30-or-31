@@ -15,7 +15,9 @@ function diag(overrides: Partial<UniswapV3ValidationDiagnostics> = {}): UniswapV
   return {
     eventEmitter: POOL, configuredFactory: FACTORY, token0: WETH, token1: TOKEN_X,
     fee: null, feeSource: 'unavailable', getPoolResult: null, emitterMatchesResult: false,
-    reversedTokenOrderAttempted: false, reversedGetPoolResult: null, finalTypedReason: 'factory_returned_zero',
+    reversedTokenOrderAttempted: false, reversedGetPoolResult: null,
+    feeAttempts: [500, 3000, 10000], getPoolResults: [ZERO, ZERO, ZERO], reversedGetPoolResults: [],
+    finalTypedReason: 'factory_returned_zero',
     ...overrides,
   }
 }

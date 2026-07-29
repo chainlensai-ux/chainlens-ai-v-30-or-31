@@ -105,6 +105,15 @@ export type UniswapV3ValidationDiagnostics = {
   emitterMatchesResult: boolean
   reversedTokenOrderAttempted: boolean
   reversedGetPoolResult: string | null
+  // FORENSIC LOGGING, DISCLOSED (this task): the full per-fee-tier getPool() results behind the
+  // single `fee`/`getPoolResult` "winner" above -- captured from the exact same calls, never a
+  // duplicate call issued to populate these. `feeAttempts` is the ordered list of fee tiers tried
+  // for the primary (normalized) token order; `getPoolResults` is the aligned per-tier getPool()
+  // address (or null if that tier's RPC call itself failed). `reversedGetPoolResults` is the same,
+  // aligned to `feeAttempts`, for the order-reversed fallback pass (empty when never attempted).
+  feeAttempts: number[]
+  getPoolResults: (string | null)[]
+  reversedGetPoolResults: (string | null)[]
   finalTypedReason:
     | 'validated'
     | 'invalid_token_pair'

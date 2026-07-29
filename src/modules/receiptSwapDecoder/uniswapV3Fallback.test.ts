@@ -40,6 +40,7 @@ function fakeV3Validator(feeThatMatches: number | null, calls: string[] = []): U
           diagnostics: {
             ...base, fee: null, feeSource: 'unavailable' as const, getPoolResult: '0x0000000000000000000000000000000000000000',
             emitterMatchesResult: false, reversedTokenOrderAttempted: true, reversedGetPoolResult: '0x0000000000000000000000000000000000000000',
+            feeAttempts: [500, 3000, 10000], getPoolResults: ['0x0', '0x0', '0x0'], reversedGetPoolResults: ['0x0', '0x0', '0x0'],
             finalTypedReason: 'factory_returned_zero' as const,
           },
         }
@@ -49,6 +50,7 @@ function fakeV3Validator(feeThatMatches: number | null, calls: string[] = []): U
         diagnostics: {
           ...base, fee: feeThatMatches, feeSource: 'factory_getPool_fee_tier_match' as const, getPoolResult: pool,
           emitterMatchesResult: true, reversedTokenOrderAttempted: false, reversedGetPoolResult: null,
+          feeAttempts: [feeThatMatches], getPoolResults: [pool], reversedGetPoolResults: [],
           finalTypedReason: 'validated' as const,
         },
       }
@@ -267,6 +269,9 @@ test('production forensic fixture: 1 pool examined, reconciliation passed, exact
           emitterMatchesResult: false,
           reversedTokenOrderAttempted: true,
           reversedGetPoolResult: '0x0000000000000000000000000000000000000000',
+          feeAttempts: [500, 3000, 10000],
+          getPoolResults: ['0x0000000000000000000000000000000000000000', '0x0000000000000000000000000000000000000000', '0x0000000000000000000000000000000000000000'],
+          reversedGetPoolResults: ['0x0000000000000000000000000000000000000000', '0x0000000000000000000000000000000000000000', '0x0000000000000000000000000000000000000000'],
           finalTypedReason: 'factory_returned_zero',
         },
       }
@@ -301,6 +306,7 @@ test('typed reason: factory_pool_mismatch is distinguished from factory_returned
           eventEmitter: pool, configuredFactory: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD', token0: t0, token1: t1,
           fee: null, feeSource: 'unavailable', getPoolResult: '0xdifferentpool',
           emitterMatchesResult: false, reversedTokenOrderAttempted: true, reversedGetPoolResult: '0xdifferentpool',
+          feeAttempts: [500, 3000, 10000], getPoolResults: ['0x0', '0xdifferentpool', '0x0'], reversedGetPoolResults: ['0x0', '0x0', '0x0'],
           finalTypedReason: 'factory_pool_mismatch',
         },
       }
@@ -328,6 +334,7 @@ test('typed reason: rpc_failure is distinguished and never treated as a validate
           eventEmitter: pool, configuredFactory: '0x33128a8fC17869897dcE68Ed026d694621f6FDfD', token0: t0, token1: t1,
           fee: null, feeSource: 'unavailable', getPoolResult: null,
           emitterMatchesResult: false, reversedTokenOrderAttempted: true, reversedGetPoolResult: null,
+          feeAttempts: [], getPoolResults: [], reversedGetPoolResults: [],
           finalTypedReason: 'rpc_failure',
         },
       }

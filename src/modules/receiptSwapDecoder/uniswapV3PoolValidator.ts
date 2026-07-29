@@ -112,6 +112,9 @@ function cappedDiagnostics(poolAddress: string, token0: string, token1: string):
     emitterMatchesResult: false,
     reversedTokenOrderAttempted: false,
     reversedGetPoolResult: null,
+    feeAttempts: [],
+    getPoolResults: [],
+    reversedGetPoolResults: [],
     finalTypedReason: 'validation_cap_exceeded',
   }
 }
@@ -163,11 +166,20 @@ async function attemptFeeTiers(
   tokenA: string,
   tokenB: string,
   poolAddress: string,
-): Promise<{ matchedFee: number | null; matchedPool: string | null; anyRpcSucceeded: boolean; anyNonZero: boolean }> {
+): Promise<{
+  matchedFee: number | null
+  matchedPool: string | null
+  anyRpcSucceeded: boolean
+  anyNonZero: boolean
+  // Per-tier getPool() result, aligned index-for-index with UNISWAP_V3_FEE_TIERS — null means that
+  // tier's own RPC call threw. Captured from the same calls above, purely for forensic surfacing.
+  perTierResults: (string | null)[]
+}> {
   let matchedFee: number | null = null
   let matchedPool: string | null = null
   let anyRpcSucceeded = false
   let anyNonZero = false
+  const perTierResults: (string | null)[] = []
 
   for (const fee of UNISWAP_V3_FEE_TIERS) {
     try {
@@ -177,7 +189,11 @@ async function attemptFeeTiers(
         functionName: 'getPool',
         args: [tokenA as `0x${string}`, tokenB as `0x${string}`, fee],
       })
-      if (typeof pool !== 'string') continue
+      if (typeof pool !== 'string') {
+        perTierResults.push(null)
+        continue
+      }
+      perTierResults.push(pool)
       anyRpcSucceeded = true
       if (pool.toLowerCase() !== ZERO_ADDRESS) {
         anyNonZero = true
@@ -190,10 +206,11 @@ async function attemptFeeTiers(
       }
     } catch {
       // Fails closed for this tier only — tries the next real tier, never re-attempts this one.
+      perTierResults.push(null)
     }
   }
 
-  return { matchedFee, matchedPool, anyRpcSucceeded, anyNonZero }
+  return { matchedFee, matchedPool, anyRpcSucceeded, anyNonZero, perTierResults }
 }
 
 // Real, on-chain implementation. NO RETRIES, DISCLOSED: each fee tier (and, if needed, the single
@@ -214,6 +231,7 @@ export function createLiveUniswapV3PoolValidator(): UniswapV3PoolValidator {
           diagnostics: {
             ...baseDiagnostics, fee: null, feeSource: 'unavailable', getPoolResult: null,
             emitterMatchesResult: false, reversedTokenOrderAttempted: false, reversedGetPoolResult: null,
+            feeAttempts: [], getPoolResults: [], reversedGetPoolResults: [],
             finalTypedReason: 'invalid_token_pair',
           },
         }
@@ -226,6 +244,7 @@ export function createLiveUniswapV3PoolValidator(): UniswapV3PoolValidator {
           diagnostics: {
             ...baseDiagnostics, fee: null, feeSource: 'unavailable', getPoolResult: null,
             emitterMatchesResult: false, reversedTokenOrderAttempted: false, reversedGetPoolResult: null,
+            feeAttempts: [], getPoolResults: [], reversedGetPoolResults: [],
             finalTypedReason: 'rpc_failure',
           },
         }
@@ -237,13 +256,16 @@ export function createLiveUniswapV3PoolValidator(): UniswapV3PoolValidator {
       const [primaryA, primaryB] = token0.toLowerCase() < token1.toLowerCase() ? [token0, token1] : [token1, token0]
 
       const primary = await attemptFeeTiers(client, primaryA, primaryB, poolAddress)
+      const primaryFeeAttempts = UNISWAP_V3_FEE_TIERS.slice(0, primary.perTierResults.length)
       if (primary.matchedFee !== null) {
         return {
           valid: true, fee: primary.matchedFee,
           diagnostics: {
             ...baseDiagnostics, fee: primary.matchedFee, feeSource: 'factory_getPool_fee_tier_match',
             getPoolResult: primary.matchedPool, emitterMatchesResult: true,
-            reversedTokenOrderAttempted: false, reversedGetPoolResult: null, finalTypedReason: 'validated',
+            reversedTokenOrderAttempted: false, reversedGetPoolResult: null,
+            feeAttempts: primaryFeeAttempts, getPoolResults: primary.perTierResults, reversedGetPoolResults: [],
+            finalTypedReason: 'validated',
           },
         }
       }
@@ -258,7 +280,9 @@ export function createLiveUniswapV3PoolValidator(): UniswapV3PoolValidator {
           diagnostics: {
             ...baseDiagnostics, fee: reversed.matchedFee, feeSource: 'factory_getPool_fee_tier_match',
             getPoolResult: primary.matchedPool, emitterMatchesResult: true,
-            reversedTokenOrderAttempted: true, reversedGetPoolResult: reversed.matchedPool, finalTypedReason: 'validated',
+            reversedTokenOrderAttempted: true, reversedGetPoolResult: reversed.matchedPool,
+            feeAttempts: primaryFeeAttempts, getPoolResults: primary.perTierResults, reversedGetPoolResults: reversed.perTierResults,
+            finalTypedReason: 'validated',
           },
         }
       }
@@ -278,6 +302,7 @@ export function createLiveUniswapV3PoolValidator(): UniswapV3PoolValidator {
           ...baseDiagnostics, fee: null, feeSource: 'unavailable',
           getPoolResult: primary.matchedPool, emitterMatchesResult: false,
           reversedTokenOrderAttempted: true, reversedGetPoolResult: reversed.matchedPool,
+          feeAttempts: primaryFeeAttempts, getPoolResults: primary.perTierResults, reversedGetPoolResults: reversed.perTierResults,
           finalTypedReason,
         },
       }
