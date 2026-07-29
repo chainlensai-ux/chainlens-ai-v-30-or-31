@@ -182,3 +182,59 @@ test('a scan with no accepted exact swaps promotes nothing and returns an unchan
   assert.equal(result.addedLegs.length, 0)
   assert.deepEqual(result.promotedEvents, events)
 })
+
+// DOUBLE-FILL GUARD, DISCLOSED (audit fix): recoveryPolicy independently recovers missing legs via
+// its own historical-page-fetch mechanism, held in a separate array from canonical normalizedEvents
+// until fifoEngine's own mergeNormalizedEvents combines them later (an EXACT-field-match dedupe a
+// receipt-derived leg could differ from by even one field, e.g. fromAddress). Passing those already-
+// recovered events as `recoveredEvents` must prevent this module from proposing the same leg again.
+test('never promotes a leg that recoveryPolicy already independently recovered for the same tx (exact-shape match)', () => {
+  const events: NormalizedEvent[] = [baseEvent({ txHash: 'buy_tx', direction: 'outbound', contract: WETH })]
+  const alreadyRecovered: NormalizedEvent[] = [
+    baseEvent({ txHash: 'buy_tx', direction: 'inbound', contract: TOKEN_X, fromAddress: POOL_A, toAddress: WALLET, amount: 100, amountRaw: '100000000000000000000', symbol: 'X' }),
+  ]
+  const result = promoteVerifiedReceiptSwaps({
+    normalizedEvents: events, walletAddress: WALLET, acceptedExactSwaps: [exactSwap()], recoveredEvents: alreadyRecovered,
+  })
+  assert.equal(result.addedLegs.length, 0)
+  assert.equal(result.rejections[0].reason, 'would_duplicate_transaction')
+  // The canonical array is untouched -- recoveryPolicy's own separate merge (outside this module)
+  // is what actually completes this transaction.
+  assert.equal(result.promotedEvents.length, 1)
+})
+
+test('never promotes a leg that recoveryPolicy already recovered even when its shape differs from what this module would have produced (a genuine double-fill risk without the guard)', () => {
+  const events: NormalizedEvent[] = [baseEvent({ txHash: 'buy_tx', direction: 'outbound', contract: WETH })]
+  // Differs from what this module would propose: a router intermediary address instead of the pool,
+  // and a slightly different amountRaw -- exactly the "would NOT dedupe via mergeNormalizedEvents's
+  // exact-match key" scenario this guard exists for.
+  const alreadyRecovered: NormalizedEvent[] = [
+    baseEvent({
+      txHash: 'buy_tx', direction: 'inbound', contract: TOKEN_X, fromAddress: '0x9999999999999999999999999999999999999999',
+      toAddress: WALLET, amount: 99.999, amountRaw: '99999000000000000000', symbol: 'X',
+    }),
+  ]
+  const result = promoteVerifiedReceiptSwaps({
+    normalizedEvents: events, walletAddress: WALLET, acceptedExactSwaps: [exactSwap()], recoveredEvents: alreadyRecovered,
+  })
+  assert.equal(result.addedLegs.length, 0)
+  assert.ok(['would_duplicate_transaction', 'multiple_incomplete_matches_ambiguous'].includes(result.rejections[0].reason))
+})
+
+test('recoveredEvents for a DIFFERENT transaction never blocks promotion of the transaction actually being promoted', () => {
+  const events: NormalizedEvent[] = [baseEvent({ txHash: 'buy_tx', direction: 'outbound', contract: WETH })]
+  const unrelatedRecovered: NormalizedEvent[] = [
+    baseEvent({ txHash: 'other_tx', direction: 'inbound', contract: TOKEN_Y, fromAddress: POOL_B, toAddress: WALLET }),
+  ]
+  const result = promoteVerifiedReceiptSwaps({
+    normalizedEvents: events, walletAddress: WALLET, acceptedExactSwaps: [exactSwap()], recoveredEvents: unrelatedRecovered,
+  })
+  assert.equal(result.addedLegs.length, 1)
+  assert.equal(result.rejections.length, 0)
+})
+
+test('omitting recoveredEvents entirely preserves original behavior (backward compatible)', () => {
+  const events: NormalizedEvent[] = [baseEvent({ txHash: 'buy_tx', direction: 'outbound', contract: WETH })]
+  const result = promoteVerifiedReceiptSwaps({ normalizedEvents: events, walletAddress: WALLET, acceptedExactSwaps: [exactSwap()] })
+  assert.equal(result.addedLegs.length, 1)
+})

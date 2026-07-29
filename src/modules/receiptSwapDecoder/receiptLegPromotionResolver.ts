@@ -10,6 +10,21 @@
 // each caller can scope which protocols it trusts (shadowFifoReplay.ts keeps its own original,
 // narrower set; canonicalPromotion.ts uses its own, separately disclosed set) without this shared
 // module hardcoding either caller's policy.
+//
+// DOUBLE-FILL GUARD, DISCLOSED (audit fix): `additionalKnownEvents` is an optional, SEPARATE set of
+// events this resolver must be AWARE of for ambiguity/completeness detection but must NEVER splice
+// from or index into — real production shape: src/pipeline/index.ts's recoveryPolicy independently
+// recovers missing legs via its own historical-page-fetch mechanism, held in a completely separate
+// array from canonical `normalizedEvents` until fifoEngine's own mergeNormalizedEvents combines them
+// at FIFO-build time. Without this awareness, canonicalPromotion.ts could propose the SAME missing
+// leg recoveryPolicy already recovered — and because mergeNormalizedEvents only dedupes on an EXACT
+// txHash+contract+fromAddress+toAddress+amountRaw match, a receipt-derived leg that differs in even
+// one of those fields (e.g. a router intermediary address recoveryPolicy used as fromAddress versus
+// this module's own poolAddress) would NOT be deduped — a real double-count. A transaction whose
+// only known incomplete leg lives in `additionalKnownEvents` (not `events`) has nothing in the
+// canonical array to anchor a splice to, so it is rejected as `no_matching_incomplete_transaction`
+// rather than promoted; a transaction complete only when both arrays are combined is rejected as
+// `would_duplicate_transaction`, exactly like an in-`events` completeness match.
 
 import type { NormalizedEvent } from '../normalization/types'
 import type { DecodedReceiptSwap } from './types'
@@ -38,6 +53,7 @@ export function resolvePromotableLeg(
   walletAddress: string,
   decodedSwap: DecodedReceiptSwap,
   recognizedProtocols: ReadonlySet<string>,
+  additionalKnownEvents: readonly NormalizedEvent[] = [],
 ): PromotableLegResolution {
   if (decodedSwap.confidence !== 'exact') return { ok: false, reason: 'not_exact_confidence' }
   if (!recognizedProtocols.has(decodedSwap.protocol)) return { ok: false, reason: 'protocol_not_recognized' }
@@ -46,20 +62,23 @@ export function resolvePromotableLeg(
   }
 
   const txHashLower = decodedSwap.txHash.toLowerCase()
+  const isMatch = (e: NormalizedEvent) => e.chain === decodedSwap.chain && e.txHash.toLowerCase() === txHashLower
+
   const matchIndices: number[] = []
-  events.forEach((e, i) => {
-    if (e.chain === decodedSwap.chain && e.txHash.toLowerCase() === txHashLower) matchIndices.push(i)
-  })
+  events.forEach((e, i) => { if (isMatch(e)) matchIndices.push(i) })
+  const additionalMatches = additionalKnownEvents.filter(isMatch)
+  const totalMatchCount = matchIndices.length + additionalMatches.length
 
-  if (matchIndices.length === 0) return { ok: false, reason: 'no_matching_incomplete_transaction' }
-  if (matchIndices.length > 2) return { ok: false, reason: 'multiple_incomplete_matches_ambiguous' }
+  if (totalMatchCount === 0) return { ok: false, reason: 'no_matching_incomplete_transaction' }
+  if (totalMatchCount > 2) return { ok: false, reason: 'multiple_incomplete_matches_ambiguous' }
 
-  if (matchIndices.length === 2) {
-    // ALREADY COMPLETE, NOT AMBIGUOUS, DISCLOSED: exactly two events for this tx that already match
-    // the decoded swap's own (tokenIn, outbound) + (tokenOut, inbound) pair is a transaction that
-    // already carries both real legs — nothing missing to fill. A pair that does NOT match that
-    // shape (e.g. two unrelated events sharing a txHash) is genuinely ambiguous instead.
-    const [a, b] = matchIndices.map((i) => events[i])
+  if (totalMatchCount === 2) {
+    // ALREADY COMPLETE, NOT AMBIGUOUS, DISCLOSED: exactly two known events for this tx (from either
+    // `events` or `additionalKnownEvents` — see this file's own "double-fill guard" header) that
+    // already match the decoded swap's own (tokenIn, outbound) + (tokenOut, inbound) pair is a
+    // transaction that already carries both real legs — nothing missing to fill. A pair that does
+    // NOT match that shape (e.g. two unrelated events sharing a txHash) is genuinely ambiguous.
+    const [a, b] = [...matchIndices.map((i) => events[i]), ...additionalMatches]
     const isCompletePair = (x: NormalizedEvent, y: NormalizedEvent) =>
       x.direction === 'outbound' && x.contract.toLowerCase() === decodedSwap.tokenIn.address.toLowerCase()
       && y.direction === 'inbound' && y.contract.toLowerCase() === decodedSwap.tokenOut.address.toLowerCase()
@@ -68,6 +87,10 @@ export function resolvePromotableLeg(
     }
     return { ok: false, reason: 'multiple_incomplete_matches_ambiguous' }
   }
+
+  // totalMatchCount === 1: if that one known leg lives only in `additionalKnownEvents`, there is no
+  // canonical event in `events` to anchor a splice to — never promoted (see this file's own header).
+  if (matchIndices.length === 0) return { ok: false, reason: 'no_matching_incomplete_transaction' }
 
   const existingIndex = matchIndices[0]
   const existingEvent = events[existingIndex]
@@ -112,15 +135,18 @@ export function resolvePromotableLeg(
     }
   }
 
-  // NO DUPLICATE TRANSACTION/LEG, DISCLOSED: a canonical set that already carries the proposed
-  // missing leg (same chain/txHash/contract/direction) means there is nothing left to add.
-  const wouldDuplicate = events.some(
-    (e) => e.chain === missingEvent.chain
-      && e.txHash.toLowerCase() === txHashLower
-      && e.contract.toLowerCase() === missingEvent.contract.toLowerCase()
-      && e.direction === missingEvent.direction,
-  )
-  if (wouldDuplicate) return { ok: false, reason: 'would_duplicate_transaction' }
+  // NO DUPLICATE TRANSACTION/LEG, DISCLOSED: a canonical set (OR the caller's separately-tracked
+  // `additionalKnownEvents` — see this file's own "double-fill guard" header) that already carries
+  // the proposed missing leg (same chain/txHash/contract/direction) means there is nothing left to
+  // add.
+  const isDuplicateOfMissing = (e: NormalizedEvent) =>
+    e.chain === missingEvent.chain
+    && e.txHash.toLowerCase() === txHashLower
+    && e.contract.toLowerCase() === missingEvent.contract.toLowerCase()
+    && e.direction === missingEvent.direction
+  if (events.some(isDuplicateOfMissing) || additionalKnownEvents.some(isDuplicateOfMissing)) {
+    return { ok: false, reason: 'would_duplicate_transaction' }
+  }
 
   return { ok: true, missingEvent, existingIndex }
 }

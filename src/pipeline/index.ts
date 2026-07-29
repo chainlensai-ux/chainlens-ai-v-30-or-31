@@ -1521,6 +1521,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       normalizedEvents,
       walletAddress: params.walletAddress,
       acceptedExactSwaps: shadowExactReceiptSwaps,
+      // DOUBLE-FILL GUARD, DISCLOSED (audit fix) — see canonicalPromotion.ts's own header: never
+      // propose a leg recoveryPolicy's own, independent historical-recovery mechanism already
+      // recovered for the same transaction (recoveredNormalizedForPricing is the exact same
+      // recovered-event source safeRunFifoEngine/buildFifoOutput itself merges in below).
+      recoveredEvents: recoveredNormalizedForPricing,
     })
     canonicalNormalizedEvents = receiptSwapPromotionResult.promotedEvents
   }

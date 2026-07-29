@@ -74,6 +74,15 @@ export type PromoteVerifiedReceiptSwapsInput = {
   normalizedEvents: readonly NormalizedEvent[]
   walletAddress: string
   acceptedExactSwaps: readonly DecodedReceiptSwap[]
+  // DOUBLE-FILL GUARD, DISCLOSED (audit fix) — see receiptLegPromotionResolver.ts's own header:
+  // src/pipeline/index.ts's recoveryPolicy independently recovers missing legs via its own
+  // historical-page-fetch mechanism, held separately from canonical `normalizedEvents` until
+  // fifoEngine's own mergeNormalizedEvents combines them at FIFO-build time (an EXACT-match dedupe
+  // that a receipt-derived leg could differ from by even one field). Passing those already-recovered
+  // events here (never spliced, only used to detect "recoveryPolicy already has this leg") prevents
+  // this module from proposing a leg recoveryPolicy independently already recovered for the same
+  // transaction. Optional — omitting it preserves this module's original, pre-audit-fix behavior.
+  recoveredEvents?: readonly NormalizedEvent[]
 }
 
 export type PromoteVerifiedReceiptSwapsResult = {
@@ -106,7 +115,9 @@ export function promoteVerifiedReceiptSwaps(input: PromoteVerifiedReceiptSwapsIn
     if (seen.has(key)) continue
     seen.add(key)
 
-    const resolution = resolvePromotableLeg(working, input.walletAddress, decodedSwap, CANONICAL_PROMOTION_RECOGNIZED_PROTOCOLS)
+    const resolution = resolvePromotableLeg(
+      working, input.walletAddress, decodedSwap, CANONICAL_PROMOTION_RECOGNIZED_PROTOCOLS, input.recoveredEvents ?? [],
+    )
     if (!resolution.ok) {
       rejections.push({ chain: decodedSwap.chain, txHash: decodedSwap.txHash, reason: resolution.reason })
       continue
