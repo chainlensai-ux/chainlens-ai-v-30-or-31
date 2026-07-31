@@ -11,9 +11,14 @@
 // unauthenticated GET endpoint making a real Alchemy call across 4 chains, discoverable at a
 // predictable /api/test/* path bots/scanners specifically probe for. Every real
 // eth_blockNumber call it makes is cheap in isolation, but with zero auth and zero rate limit any
-// repeated/automated hits accumulate for free, unbounded, forever). Fixed by applying the EXACT
-// same convention its sibling already uses: production requires x-admin-secret === ADMIN_SECRET,
-// and every environment is rate-limited per IP — never silently left open.
+// repeated/automated hits accumulate for free, unbounded, forever).
+//
+// HARDENED FURTHER, DISCLOSED (follow-up task): the first fix still allowed a production bypass via
+// x-admin-secret. Per explicit instruction, this route (and every other /api/test/* route that can
+// call a paid provider) now ALWAYS returns 404 in production with ZERO exception — it makes zero
+// provider calls there even with the correct admin secret. Usable only in local development
+// (see lib/server/devOnlyProviderRoute.ts). The per-IP rate limit is kept for local-dev safety but
+// is no longer what protects production — production protection is now unconditional.
 // KEY-SELECTION CORRECTION, DISCLOSED: requested as always reading process.env.ALCHEMY_BASE_KEY
 // regardless of chain — that would silently use the Base API key against Ethereum/Polygon/
 // Arbitrum endpoints, which doesn't work (Alchemy keys are per-network in this codebase's existing
@@ -32,6 +37,9 @@ import { NextResponse } from 'next/server'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { auditGlobalAlchemyCall } from '@/lib/server/globalRpcAudit'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
+import { isDevOnlyProviderRouteAllowed, devOnlyProviderRouteBlockedResponse } from '@/lib/server/devOnlyProviderRoute'
+import { recordAlchemyUsage } from '@/lib/server/alchemyUsageAttribution'
+import { estimatedCuForMethod } from '@/lib/server/alchemyCallBudget'
 
 export const dynamic = 'force-dynamic'
 
@@ -54,14 +62,12 @@ function jsonNoStore(body: unknown, status: number) {
 
 export async function GET(req: Request) {
   try {
-    // PRODUCTION ADMIN GATE, DISCLOSED (audit fix): identical convention to
-    // /api/test/alchemy/route.ts — never available in production without the admin secret, so a
-    // public/bot scan of this path in production gets an honest 404, never a real Alchemy call.
-    if (process.env.NODE_ENV === 'production') {
-      const adminSecret = req.headers.get('x-admin-secret')
-      if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
-        return jsonNoStore({ error: 'Not available' }, 404)
-      }
+    // CU-LEAK AUDIT HARDENING, DISCLOSED (this task): ALWAYS blocked in production now — no
+    // ADMIN_SECRET bypass. A bypass, however gated, is still a live path to a real Alchemy call in
+    // production, across 4 chains; this route is now local-development-only, zero exception, zero
+    // provider call ever reachable in production.
+    if (!isDevOnlyProviderRouteAllowed()) {
+      return devOnlyProviderRouteBlockedResponse()
     }
     const ip = getClientIp(req)
     if (!limiter.check(ip)) {
@@ -87,6 +93,19 @@ export async function GET(req: Request) {
     const url = `https://${config.networkSlug}.g.alchemy.com/v2/${key}`
     logRpcCall({ route: '/api/test/alchemy-multichain', chain, method: 'eth_blockNumber' })
     auditGlobalAlchemyCall('eth_blockNumber', { chain, route: '/api/test/alchemy-multichain' })
+    // USAGE ATTRIBUTION, DISCLOSED (this task) — see lib/server/alchemyUsageAttribution.ts's own
+    // header: never logs the API key/wallet/token contents, only the shape of the call itself.
+    recordAlchemyUsage({
+      requestId: crypto.randomUUID(),
+      route: '/api/test/alchemy-multichain',
+      feature: 'provider_connectivity_check',
+      method: 'eth_blockNumber',
+      chain,
+      cacheHit: false,
+      userClassification: 'anonymous',
+      sourceCategory: 'admin',
+      estimatedCu: estimatedCuForMethod('eth_blockNumber'),
+    })
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

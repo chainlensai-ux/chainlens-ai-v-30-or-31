@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { auditGlobalAlchemyCall } from "@/lib/server/globalRpcAudit";
+import { isDevOnlyProviderRouteAllowed, devOnlyProviderRouteBlockedResponse } from "@/lib/server/devOnlyProviderRoute";
+import { recordAlchemyUsage } from "@/lib/server/alchemyUsageAttribution";
+import { estimatedCuForMethod } from "@/lib/server/alchemyCallBudget";
 
 const rateMap = new Map<string, { count: number; resetAt: number }>();
 const MAX_PER_MINUTE = 3;
@@ -22,14 +25,13 @@ function checkRate(ip: string): boolean {
 }
 
 export async function GET(req: NextRequest) {
-  const ip = getIp(req);
-  // Block in production unless IP is whitelisted or internal
-  if (process.env.NODE_ENV === "production") {
-    const adminSecret = req.headers.get("x-admin-secret");
-    if (!adminSecret || adminSecret !== process.env.ADMIN_SECRET) {
-      return NextResponse.json({ error: "Not available" }, { status: 404 });
-    }
+  // CU-LEAK AUDIT HARDENING, DISCLOSED (this task): ALWAYS blocked in production now — no
+  // ADMIN_SECRET bypass. A bypass, however gated, is still a live path to a real Alchemy call in
+  // production; this route is now local-development-only, with zero exception.
+  if (!isDevOnlyProviderRouteAllowed()) {
+    return devOnlyProviderRouteBlockedResponse();
   }
+  const ip = getIp(req);
   if (!checkRate(ip)) {
     return NextResponse.json({ error: "Rate limited" }, { status: 429 });
   }
@@ -39,6 +41,19 @@ export async function GET(req: NextRequest) {
     const url = `https://eth-mainnet.g.alchemy.com/v2/${key}`;
     logRpcCall({ route: "/api/test/alchemy", chain: "eth", method: "eth_blockNumber" });
     auditGlobalAlchemyCall("eth_blockNumber", { chain: "eth", route: "/api/test/alchemy" });
+    // USAGE ATTRIBUTION, DISCLOSED (this task) — see lib/server/alchemyUsageAttribution.ts's own
+    // header: never logs the API key/wallet/token contents, only the shape of the call itself.
+    recordAlchemyUsage({
+      requestId: crypto.randomUUID(),
+      route: "/api/test/alchemy",
+      feature: "provider_connectivity_check",
+      method: "eth_blockNumber",
+      chain: "eth",
+      cacheHit: false,
+      userClassification: "anonymous",
+      sourceCategory: "admin",
+      estimatedCu: estimatedCuForMethod("eth_blockNumber"),
+    });
     const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

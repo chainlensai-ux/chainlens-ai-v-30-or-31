@@ -11,8 +11,13 @@
 // export const dynamic = 'force-dynamic'.
 
 import { NextResponse } from 'next/server'
+import { isDevOnlyProviderRouteAllowed, devOnlyProviderRouteBlockedResponse } from '@/lib/server/devOnlyProviderRoute'
 
 export const dynamic = 'force-dynamic'
+
+// CU-LEAK AUDIT HARDENING, DISCLOSED (this task): this route shipped with NO production gate at
+// all — a real, paid Zerion API call reachable unauthenticated in every environment. Now
+// local-development-only, same convention as every other /api/test/* paid-provider route.
 
 function jsonNoStore(body: unknown, status: number) {
   return NextResponse.json(body, { status, headers: { 'Cache-Control': 'no-store' } })
@@ -37,6 +42,9 @@ async function testZerion(): Promise<{ ok: boolean; data?: unknown; error?: stri
 }
 
 export async function GET() {
+  if (!isDevOnlyProviderRouteAllowed()) {
+    return devOnlyProviderRouteBlockedResponse()
+  }
   const result = await testZerion()
   return result.ok ? jsonNoStore({ ok: true, data: result.data }, 200) : jsonNoStore({ ok: false, error: result.error }, 500)
 }

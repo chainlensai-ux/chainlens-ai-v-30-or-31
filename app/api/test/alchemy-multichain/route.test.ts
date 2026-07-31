@@ -50,6 +50,25 @@ test('production with a wrong x-admin-secret is still rejected 404', async () =>
   })
 })
 
+// HARDENING, DISCLOSED (follow-up task): the CORRECT admin secret must no longer bypass production
+// either — this route is now local-development-only with zero exception, never a live path to a
+// real Alchemy call in production regardless of any header.
+test('production with the CORRECT x-admin-secret is STILL rejected 404 -- no bypass exists anymore', async () => {
+  await withNodeEnv('production', async () => {
+    const originalSecret = process.env.ADMIN_SECRET
+    process.env.ADMIN_SECRET = 'real-secret'
+    try {
+      const res = await GET(req({ 'x-admin-secret': 'real-secret' }))
+      assert.equal(res.status, 404)
+      const body = await res.json()
+      assert.deepEqual(body, { error: 'Not available' })
+    } finally {
+      if (originalSecret === undefined) delete process.env.ADMIN_SECRET
+      else process.env.ADMIN_SECRET = originalSecret
+    }
+  })
+})
+
 test('response always carries Cache-Control: no-store, even on the 404 path', async () => {
   await withNodeEnv('production', async () => {
     const res = await GET(req())

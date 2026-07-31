@@ -12,8 +12,13 @@
 import { NextResponse } from 'next/server'
 import { GoldRushClient } from '@covalenthq/client-sdk'
 import { logRpcCall } from '@/lib/server/rpcDebug'
+import { isDevOnlyProviderRouteAllowed, devOnlyProviderRouteBlockedResponse } from '@/lib/server/devOnlyProviderRoute'
 
 export const dynamic = 'force-dynamic'
+
+// CU-LEAK AUDIT HARDENING, DISCLOSED (this task): this route shipped with NO production gate at
+// all — a real, paid GoldRush/Covalent SDK call reachable unauthenticated in every environment.
+// Now local-development-only, same convention as every other /api/test/* paid-provider route.
 
 function jsonNoStore(body: unknown, status: number) {
   return NextResponse.json(body, { status, headers: { 'Cache-Control': 'no-store' } })
@@ -35,6 +40,9 @@ async function testGoldrush(): Promise<{ ok: boolean; data?: unknown; error?: st
 }
 
 export async function GET() {
+  if (!isDevOnlyProviderRouteAllowed()) {
+    return devOnlyProviderRouteBlockedResponse()
+  }
   const result = await testGoldrush()
   return result.ok ? jsonNoStore({ ok: true, data: result.data }, 200) : jsonNoStore({ ok: false, error: result.error }, 500)
 }
