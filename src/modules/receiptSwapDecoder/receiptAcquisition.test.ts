@@ -319,3 +319,46 @@ test('no reserve candidates available: a negatively-evidenced slot with nothing 
   assert.equal(result.counters.receiptQuotaSubstitutions, 0)
   assert.equal(result.counters.receiptLiveCalls, 2)
 })
+
+// ROOT-CAUSE REGRESSION, DISCLOSED: production proof — a real scan's receiptQuotaSubstitutions
+// stayed 0 even though 8/10 fetched receipts were plain_transfer_no_swap_event, because those
+// candidates qualified via candidateSelector's own `legs.length === 1 && hasRouterLikeCounterparty`
+// path — exactly the single-leg case where inferredTokenOut (or inferredTokenIn) is null. The old
+// tokenPairKey required BOTH sides non-null, so it silently returned null for this dominant
+// real-world pattern, meaning negative evidence was never recorded AND never matched against.
+test('single-leg candidates (one side null) record and match negative evidence via a single-token key', async () => {
+  const badSingleA = candidate('0xbad-a', 4, '0xrepeat-token', null as unknown as string) // missing tokenOut, tier 4 router-touch shape
+  const badSingleB = candidate('0xbad-b', 4, '0xrepeat-token', null as unknown as string)
+  const goodCapped = candidate('0xcapped-good', 5, '0xtoken3', '0xtoken4')
+  const calls: string[] = []
+  const result = await acquireReceiptsForCandidates({
+    candidates: [badSingleA, badSingleB, goodCapped],
+    fetcher: countingFetcher((txHash) => {
+      calls.push(txHash)
+      return txHash === '0xbad-a' ? { status: 'ok', logs: plainTransferLogs() } : { status: 'ok', logs: [] }
+    }, []),
+    requestScope: createReceiptRequestScopeCache(),
+    maxLiveCalls: 2,
+    concurrency: 1,
+  })
+  assert.deepEqual(calls, ['0xbad-a', '0xcapped-good'])
+  assert.equal(result.counters.receiptQuotaSubstitutions, 1)
+})
+
+test('single-leg candidates with different known tokens are never conflated into the same negative-evidence key', async () => {
+  const badSingleA = candidate('0xbad-a', 4, '0xtoken-a', null as unknown as string)
+  const differentTokenSingle = candidate('0xdifferent', 4, '0xtoken-b', null as unknown as string)
+  const calls: string[] = []
+  const result = await acquireReceiptsForCandidates({
+    candidates: [badSingleA, differentTokenSingle],
+    fetcher: countingFetcher((txHash) => {
+      calls.push(txHash)
+      return txHash === '0xbad-a' ? { status: 'ok', logs: plainTransferLogs() } : { status: 'ok', logs: realSwapLogs() }
+    }, []),
+    requestScope: createReceiptRequestScopeCache(),
+    maxLiveCalls: 2,
+    concurrency: 1,
+  })
+  assert.deepEqual(calls, ['0xbad-a', '0xdifferent'])
+  assert.equal(result.counters.receiptQuotaSubstitutions, 0)
+})

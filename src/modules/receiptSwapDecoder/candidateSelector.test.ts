@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { selectBaseReceiptCandidates, type CandidateTxEvidence } from './candidateSelector'
+import { selectBaseReceiptCandidates, RECEIPT_SELECTOR_ALGORITHM_VERSION, type CandidateTxEvidence } from './candidateSelector'
 
 const WETH = '0x4200000000000000000000000000000000000006'
 const USDC = '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913'
@@ -271,4 +271,57 @@ test('among two paired-leg candidates in the same tier, economic value still tie
   const result = selectBaseReceiptCandidates([lowerValue, higherValue])
   assert.equal(result.selected[0].txHash, '0xhigh')
   assert.equal(result.selected[1].txHash, '0xlow')
+})
+
+test('RECEIPT_SELECTOR_ALGORITHM_VERSION is a non-empty string, present for deployment verification', () => {
+  assert.equal(typeof RECEIPT_SELECTOR_ALGORITHM_VERSION, 'string')
+  assert.ok(RECEIPT_SELECTOR_ALGORITHM_VERSION.length > 0)
+})
+
+test('orderingTrace reports pairingStrength, leg counts, tier, and final sorted position matching selected order', () => {
+  const paired = baseEvidence({
+    txHash: '0xpaired',
+    legs: [{ contract: WETH, direction: 'outbound', amount: 1 }, { contract: TOKEN_X, direction: 'inbound', amount: 1 }],
+    routerConfidence: 'high',
+    economicValueUsd: 100,
+  })
+  const single = baseEvidence({
+    txHash: '0xsingle',
+    legs: [{ contract: WETH, direction: 'outbound', amount: 1 }],
+    routerConfidence: 'high',
+    economicValueUsd: 5000,
+  })
+  const result = selectBaseReceiptCandidates([single, paired])
+  assert.equal(result.orderingTrace.length, 2)
+  const pairedTrace = result.orderingTrace.find((t) => t.txHash === '0xpaired')
+  const singleTrace = result.orderingTrace.find((t) => t.txHash === '0xsingle')
+  assert.ok(pairedTrace)
+  assert.ok(singleTrace)
+  assert.equal(pairedTrace?.pairingStrength, 1)
+  assert.equal(pairedTrace?.inboundLegCount, 1)
+  assert.equal(pairedTrace?.outboundLegCount, 1)
+  assert.equal(pairedTrace?.distinctTokenCount, 2)
+  assert.equal(singleTrace?.pairingStrength, 0)
+  assert.equal(singleTrace?.finalSortedPosition, 1)
+  assert.equal(pairedTrace?.finalSortedPosition, 0)
+  assert.deepEqual(result.orderingTrace.map((t) => t.txHash), result.selected.map((s) => s.txHash))
+})
+
+test('orderingTrace.originalIndex reflects position in the raw input list, independent of final sort order', () => {
+  const evidenceList = [
+    baseEvidence({ txHash: '0xfirst', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], routerConfidence: 'high', economicValueUsd: 1 }),
+    baseEvidence({
+      txHash: '0xsecond',
+      legs: [{ contract: WETH, direction: 'outbound', amount: 1 }, { contract: TOKEN_X, direction: 'inbound', amount: 1 }],
+      routerConfidence: 'high',
+      economicValueUsd: 1,
+    }),
+  ]
+  const result = selectBaseReceiptCandidates(evidenceList)
+  const first = result.orderingTrace.find((t) => t.txHash === '0xfirst')
+  const second = result.orderingTrace.find((t) => t.txHash === '0xsecond')
+  assert.equal(first?.originalIndex, 0)
+  assert.equal(second?.originalIndex, 1)
+  // Paired candidate ('0xsecond') outranks single-leg ('0xfirst') despite arriving second in input.
+  assert.equal(result.selected[0].txHash, '0xsecond')
 })

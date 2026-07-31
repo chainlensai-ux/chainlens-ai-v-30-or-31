@@ -76,6 +76,27 @@ export type RejectedSample = {
   reason: RejectReason
 }
 
+// ORDERING-TRACE INSTRUMENTATION, DISCLOSED: one row per ELIGIBLE candidate (bounded to
+// MAX_SELECTED, same 25-candidate ceiling `selected` itself already has — never a second, larger
+// dump), capturing every input the ranking/quota stages actually consume plus the position each
+// candidate lands in after sorting. Exists purely to let a real production log prove exactly where
+// an expected reordering was or wasn't produced, without needing to re-derive it after the fact.
+export type CandidateOrderingTrace = {
+  chain: string
+  txHash: string
+  tier: 1 | 2 | 3 | 4 | 5
+  originalIndex: number
+  pairingStrength: 0 | 1
+  inboundLegCount: number
+  outboundLegCount: number
+  distinctTokenCount: number
+  hasVerifiedQuoteAddress: boolean
+  routerSignal: RouterConfidence
+  isKnownRouter: boolean
+  economicValueUsd: number | null
+  finalSortedPosition: number
+}
+
 export type CandidateSelectionResult = {
   selectorTransactionsConsidered: number
   selectorEligibleCandidates: number
@@ -85,7 +106,14 @@ export type CandidateSelectionResult = {
   candidatePriorityBreakdown: Record<1 | 2 | 3 | 4 | 5, number>
   selected: SelectedCandidate[]
   rejectedSamples: RejectedSample[]
+  orderingTrace: CandidateOrderingTrace[]
 }
+
+// DEPLOYMENT VERIFICATION, DISCLOSED: bump this string whenever selectBaseReceiptCandidates's
+// ordering/eligibility logic changes. Logged unconditionally by walletScanShadowWiring.ts's shadow
+// payload so a real production log can prove which build actually ran, without depending on commit
+// SHA plumbing this module has no access to.
+export const RECEIPT_SELECTOR_ALGORITHM_VERSION = 'receipt-selector-v3-single-leg-key-fix'
 
 const MAX_SELECTED = 25
 const MAX_REJECTED_SAMPLES = 10
@@ -165,6 +193,12 @@ export function selectBaseReceiptCandidates(evidenceList: readonly CandidateTxEv
     deduped.push(evidence)
   }
 
+  const originalIndexByKey = new Map<string, number>()
+  evidenceList.forEach((evidence, index) => {
+    const key = dedupeKey(evidence)
+    if (!originalIndexByKey.has(key)) originalIndexByKey.set(key, index)
+  })
+
   const eligible: CandidateTxEvidence[] = []
   for (const evidence of deduped) {
     const { eligible: isEligible, reason } = evaluateEligibility(evidence)
@@ -205,6 +239,31 @@ export function selectBaseReceiptCandidates(evidenceList: readonly CandidateTxEv
       return dedupeKey(a.evidence).localeCompare(dedupeKey(b.evidence))
     })
 
+  // ORDERING TRACE, DISCLOSED: built from `ranked` (post-sort, pre-slice) so `finalSortedPosition`
+  // reflects every eligible candidate's true position, including the ones the MAX_SELECTED slice
+  // below cuts off. Bounded to MAX_SELECTED entries — a real audit only ever needs to see as many
+  // rows as `selected` itself can contain.
+  const orderingTrace: CandidateOrderingTrace[] = ranked.slice(0, MAX_SELECTED).map(({ evidence, priority }, position) => {
+    const inboundLegCount = evidence.legs.filter((l) => l.direction === 'inbound').length
+    const outboundLegCount = evidence.legs.filter((l) => l.direction === 'outbound').length
+    const distinctTokenCount = new Set(evidence.legs.map((l) => l.contract.toLowerCase())).size
+    return {
+      chain: evidence.chain,
+      txHash: evidence.txHash,
+      tier: priority.tier,
+      originalIndex: originalIndexByKey.get(dedupeKey(evidence)) ?? -1,
+      pairingStrength: legPairingStrength(evidence) as 0 | 1,
+      inboundLegCount,
+      outboundLegCount,
+      distinctTokenCount,
+      hasVerifiedQuoteAddress: evidence.hasVerifiedQuoteAddress,
+      routerSignal: evidence.routerConfidence,
+      isKnownRouter: evidence.isKnownRouter,
+      economicValueUsd: evidence.economicValueUsd,
+      finalSortedPosition: position,
+    }
+  })
+
   const selectedRanked = ranked.slice(0, MAX_SELECTED)
   const candidatePriorityBreakdown: Record<1 | 2 | 3 | 4 | 5, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
   const selected: SelectedCandidate[] = selectedRanked.map(({ evidence, priority }) => {
@@ -231,5 +290,6 @@ export function selectBaseReceiptCandidates(evidenceList: readonly CandidateTxEv
     candidatePriorityBreakdown,
     selected,
     rejectedSamples,
+    orderingTrace,
   }
 }

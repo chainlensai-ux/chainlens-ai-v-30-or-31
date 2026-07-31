@@ -20,7 +20,10 @@ import { decodeReceiptSwap } from './index'
 import type { PoolValidator } from './poolValidator'
 import type { UniswapV3PoolValidator } from './uniswapV3PoolValidator'
 import type { DecodedReceiptSwap, RawReceiptLog, ReceiptSwapProtocol, TokenMeta } from './types'
-import { selectBaseReceiptCandidates, type CandidateTxEvidence, type CandidateSelectionResult } from './candidateSelector'
+import {
+  selectBaseReceiptCandidates, RECEIPT_SELECTOR_ALGORITHM_VERSION,
+  type CandidateTxEvidence, type CandidateSelectionResult, type CandidateOrderingTrace,
+} from './candidateSelector'
 import {
   acquireReceiptsForCandidates, createReceiptRequestScopeCache, createLiveBaseReceiptFetcher,
   type ReceiptFetcher, type ReceiptRequestScopeCache,
@@ -536,6 +539,15 @@ export type WalletScanShadowLogPayload =
       selectorRejectedCandidates: number
       selectorReasonCounts: Record<string, number>
       candidatePriorityBreakdown: Record<string, number>
+      // DEPLOYMENT VERIFICATION, DISCLOSED — see candidateSelector.ts's own
+      // RECEIPT_SELECTOR_ALGORITHM_VERSION header. Logged unconditionally so a real production log
+      // line can prove which selector build actually ran, without needing separate CI/deploy
+      // tooling this module has no access to.
+      receiptSelectorAlgorithmVersion: string
+      // ORDERING-TRACE INSTRUMENTATION, DISCLOSED — see candidateSelector.ts's own
+      // CandidateOrderingTrace header. Bounded to the same MAX_SELECTED (25) ceiling `selected`
+      // itself already has.
+      candidateOrderingTrace: CandidateOrderingTrace[]
     }
 
 export type BuildWalletScanShadowLogPayloadInput = {
@@ -675,5 +687,7 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     selectorRejectedCandidates: selection.selectorRejectedCandidates,
     selectorReasonCounts: selection.selectorReasonCounts,
     candidatePriorityBreakdown: selection.candidatePriorityBreakdown,
+    receiptSelectorAlgorithmVersion: RECEIPT_SELECTOR_ALGORITHM_VERSION,
+    candidateOrderingTrace: selection.orderingTrace,
   }
 }

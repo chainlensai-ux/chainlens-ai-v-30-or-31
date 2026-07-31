@@ -175,14 +175,28 @@ export type AcquireReceiptsResult = {
   receiptQuotaBackfilled: number
 }
 
-// PURE, DISCLOSED: order-independent token-pair key used as the "router/emitter pattern" proxy for
-// negative evidence — the only pre-fetch-correlatable signal SelectedCandidate actually carries
-// (the real pool/router address is only known once a receipt is fetched). `null` when either side
-// is unknown (nothing to key negative evidence by).
+// PURE, DISCLOSED (root-cause fix — production proof: receiptQuotaSubstitutions stayed 0 on a real
+// scan whose selected set was dominated by tier 3/4's own `legs.length === 1` eligibility path,
+// i.e. candidates that qualify PRECISELY because only one side is known pre-fetch). The original
+// version required BOTH tokenIn and tokenOut to be non-null, returning null otherwise — but a
+// single-leg candidate (missingSide 'tokenIn' or 'tokenOut') can NEVER carry both, so it could
+// never be added to `negativeEvidence` after decoding to a plain transfer, and could never be
+// matched against as a substitution candidate either. Since single-leg candidates are exactly the
+// weak-evidence, router-touch-only pattern this whole mechanism exists to displace, the negative-
+// evidence set was silently inert for the dominant real-world case. Fixed: when exactly one side is
+// known, key on that single known token alone (`single:<token>`, distinct prefix so it can never
+// collide with a real two-sided pair key) — still order-independent (a single value has no order),
+// still never infers protocol/venue from anything beyond the token address candidateSelector.ts's
+// own inferTokensFromLegs already computed. `null` only when NEITHER side is known (nothing to key
+// by at all).
 function tokenPairKey(tokenIn: string | null, tokenOut: string | null): string | null {
-  if (!tokenIn || !tokenOut) return null
-  const [a, b] = [tokenIn.toLowerCase(), tokenOut.toLowerCase()].sort()
-  return `${a}:${b}`
+  if (tokenIn && tokenOut) {
+    const [a, b] = [tokenIn.toLowerCase(), tokenOut.toLowerCase()].sort()
+    return `${a}:${b}`
+  }
+  const single = tokenIn ?? tokenOut
+  if (single) return `single:${single.toLowerCase()}`
+  return null
 }
 
 // NO RETRIES, DISCLOSED: a single attempt per key. If it times out or errors, the outcome is
