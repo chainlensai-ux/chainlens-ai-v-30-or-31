@@ -31,6 +31,18 @@ import type { BehaviorV2 } from '@/lib/engine/modules/behavior/types'
 import type { RiskV2 } from '@/lib/engine/modules/risk/types'
 import type { SignalV2 } from '@/lib/engine/modules/signals/types'
 import type { ChainActivityRecord } from '@/lib/engine/modules/activity/types'
+import type { PortfolioSummary } from '@/src/modules/portfolio/types'
+import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
+// CONCENTRATION WIRING FIX, DISCLOSED (this task's own root-cause trace: portfolio intelligence ->
+// API serialization -> page selector -> personality model): the ONLY real, live-populated
+// dominant-holding-share computation in this codebase is PortfolioIntelligenceCard.tsx's own
+// selectPortfolioStats() — behaviorIntel.concentrationSignals (the field this module previously
+// read) is ALWAYS null in production (src/pipeline/index.ts still passes `holdings: []` into
+// buildBehaviorIntelObject — see that card's own header for the same disclosure). Reusing
+// selectPortfolioStats() directly (never reimplementing the same percentage calculation a second
+// time) guarantees the Personality card's concentration reading can never drift from what the
+// Portfolio Intelligence card itself displays for the exact same scan.
+import { selectPortfolioStats } from '@/app/frontend/components/PortfolioIntelligenceCard'
 
 export type WalletPersonalitySourceReport = Pick<FinalReport, 'behaviorIntel' | 'fifoAndPnl' | 'finalSummary' | 'timelines' | 'chainSelection'> & {
   personalityV2?: PersonalityV2 | null
@@ -38,13 +50,20 @@ export type WalletPersonalitySourceReport = Pick<FinalReport, 'behaviorIntel' | 
   riskV2?: RiskV2 | null
   signalsV2?: SignalV2[] | null
   chainActivityV2?: ChainActivityRecord[] | null
+  // See the CONCENTRATION WIRING FIX comment above — the same two fields
+  // WalletScannerSummaryRowV3/PortfolioIntelligenceCard already read from `report`.
+  portfolio?: PortfolioSummary | null
+  portfolioV2?: EnginePortfolioV2 | null
 }
 
 export type EvidenceBasis = 'behavior_verified' | 'behavior_only' | 'behavior_plus_pnl' | 'limited_evidence'
 
 export type TradingStyle = 'Manual trader' | 'Assisted trader' | 'Bot-like' | 'Highly automated' | 'Automation signals present'
 export type HoldingStyle = 'Long-term holder' | 'Swing trader' | 'Short-term rotator' | 'Hyperactive sniper' | 'Not enough data'
-export type ConcentrationClass = 'Concentrated' | 'Moderately diversified' | 'Highly diversified' | 'Not enough data'
+// CONCENTRATION BANDS, DISCLOSED (this task's own exact required mapping, based on the dominant
+// holding's share of PRICED portfolio value — never raw token count): <25% Diversified,
+// 25-49% Moderately concentrated, 50-69% Concentrated, >=70% Highly concentrated.
+export type ConcentrationClass = 'Diversified' | 'Moderately concentrated' | 'Concentrated' | 'Highly concentrated' | 'Not enough data'
 export type RiskClass = 'Low risk behavior' | 'Medium risk behavior' | 'High risk behavior' | 'Not enough data'
 
 export type PersonalityTraits = {
@@ -240,11 +259,22 @@ function classifyAutomation(automationAxis: AxisScore, suspectedBot: boolean): T
   return 'Manual trader'
 }
 
-function classifyConcentration(label: 'high' | 'medium' | 'balanced' | 'none' | null): ConcentrationClass {
-  if (label === 'high') return 'Concentrated'
-  if (label === 'medium') return 'Moderately diversified'
-  if (label === 'balanced') return 'Highly diversified'
-  return 'Not enough data'
+// CALIBRATED CONCENTRATION, DISCLOSED (this task's own exact required mapping): `dominantSharePercent`
+// is the dominant holding's real share (0-100) of PRICED portfolio value — never inferred from raw
+// token count. `null` (never a guessed band) whenever no priced dominant holding exists at all.
+export function classifyConcentration(dominantSharePercent: number | null): ConcentrationClass {
+  if (dominantSharePercent == null || !Number.isFinite(dominantSharePercent)) return 'Not enough data'
+  if (dominantSharePercent >= 70) return 'Highly concentrated'
+  if (dominantSharePercent >= 50) return 'Concentrated'
+  if (dominantSharePercent >= 25) return 'Moderately concentrated'
+  return 'Diversified'
+}
+
+// PURE. Normalizes a dominant-holding share [0,100] to the [0,1] sub-signal value the Risk/
+// Conviction axes consume — same clamp/finite guard as every other axis sub-signal in this file.
+function normalizeConcentrationSignal(dominantSharePercent: number | null): number | null {
+  if (dominantSharePercent == null || !Number.isFinite(dominantSharePercent)) return null
+  return clamp01(dominantSharePercent / 100)
 }
 
 // RISK LABEL, DISCLOSED (this task's own explicit rebuild): the badge is now derived from the
@@ -433,18 +463,28 @@ function computeActivityAxis(params: { totalTransactions: number; walletAgeDays:
 // of the sub-signals below. Token-churn and holding-speed are shared concepts with the Rotation/
 // Conviction axes — included here at REDUCED weight only (0.15/0.10 vs. their primary-axis weight
 // of 0.30-0.35) so the same underlying behavior is never double-counted at full strength twice.
+// SHARED CONCENTRATION DETAIL, DISCLOSED (this task's own "include the dominant token symbol and
+// rounded share in Why this score" requirement) — one shared formatter so the Risk axis, the
+// Conviction axis, and any other consumer render an IDENTICAL detail string for the same input,
+// never independently-drifting phrasing for the same underlying fact.
+function dominantHoldingDetail(dominantSharePercent: number | null, dominantSymbol: string | null): string {
+  if (dominantSharePercent == null || !Number.isFinite(dominantSharePercent)) return 'Unknown'
+  const symbolPart = dominantSymbol ? `${dominantSymbol} · ` : ''
+  return `${symbolPart}${Math.round(dominantSharePercent)}% of priced portfolio`
+}
+
 function computeRiskAxis(params: {
   averageHoldingDays: number | null
-  concentrationLabel: 'high' | 'medium' | 'balanced' | 'none' | null
+  dominantSharePercent: number | null
+  dominantSymbol: string | null
   uniqueTokensTraded: number | null
   totalTransactions: number
   activeChains: number
 }): AxisScore {
-  const { averageHoldingDays, concentrationLabel, uniqueTokensTraded, totalTransactions, activeChains } = params
+  const { averageHoldingDays, dominantSharePercent, dominantSymbol, uniqueTokensTraded, totalTransactions, activeChains } = params
 
   const shortHolding = averageHoldingDays != null ? clamp01((5 - averageHoldingDays) / 5) : null
-  const concentration = concentrationLabel == null ? null
-    : concentrationLabel === 'high' ? 1 : concentrationLabel === 'medium' ? 0.5 : concentrationLabel === 'balanced' ? 0.1 : null
+  const concentration = normalizeConcentrationSignal(dominantSharePercent)
   const tokenChurn = uniqueTokensTraded != null && totalTransactions >= MIN_TRANSACTIONS_FOR_CHURN_SIGNAL
     ? clamp01((uniqueTokensTraded / totalTransactions) / 0.5)
     : null
@@ -454,8 +494,11 @@ function computeRiskAxis(params: {
     { key: 'shortHolding', label: 'Short holding periods', detail: fmtDays(averageHoldingDays), value: shortHolding, weight: 0.40 },
     // CONFIDENCE-NOT-ASSUMPTION, DISCLOSED (this task's own explicit rule): a null concentration
     // input is EXCLUDED here (never treated as "assume high risk") — it only lowers
-    // evidenceConfidence via combineAxis' own availableWeight/totalPossibleWeight ratio.
-    { key: 'concentration', label: 'Portfolio concentration', detail: concentrationLabel ?? 'Unknown', value: concentration, weight: 0.35 },
+    // evidenceConfidence via combineAxis' own availableWeight/totalPossibleWeight ratio. Never
+    // treated as high risk BY ITSELF either — it is one of 4 independently-weighted sub-signals,
+    // and combineAxis' own single-signal ceiling additionally prevents it (or any one signal)
+    // from unilaterally forcing the axis to a high reading alone.
+    { key: 'concentration', label: 'Portfolio concentration', detail: dominantHoldingDetail(dominantSharePercent, dominantSymbol), value: concentration, weight: 0.35 },
     // REDUCED WEIGHT, DISCLOSED (shared with Rotation's own primary churnRatio signal at 0.35) —
     // never double-counted at full strength.
     { key: 'tokenChurnReduced', label: 'Token churn (reduced weight)', detail: uniqueTokensTraded != null ? `${uniqueTokensTraded} unique tokens` : 'Unknown', value: tokenChurn, weight: 0.15 },
@@ -512,18 +555,22 @@ function computeRotationAxis(params: {
 // for Rotation's own speed signal — so the two do not simply mirror each other).
 function computeConvictionAxis(params: {
   convictionValue: 'high' | 'medium' | 'low' | 'unknown'
-  concentrationLabel: 'high' | 'medium' | 'balanced' | 'none' | null
+  dominantSharePercent: number | null
+  dominantSymbol: string | null
   averageHoldingDays: number | null
 }): AxisScore {
-  const { convictionValue, concentrationLabel, averageHoldingDays } = params
+  const { convictionValue, dominantSharePercent, dominantSymbol, averageHoldingDays } = params
   const categorical = convictionValue === 'unknown' ? null : convictionValue === 'high' ? 1 : convictionValue === 'medium' ? 0.5 : 0.15
-  const concentration = concentrationLabel == null ? null
-    : concentrationLabel === 'high' ? 1 : concentrationLabel === 'medium' ? 0.5 : concentrationLabel === 'balanced' ? 0.15 : null
+  // REDUCED WEIGHT, DISCLOSED (shared with Risk's own primary concentration signal at 0.35) — a
+  // concentrated position reads as conviction here (holding one asset with real weight), the
+  // OPPOSITE framing from Risk's own use of the same underlying share — never double-counted at
+  // full strength, and each axis interprets the same real number through its own lens.
+  const concentration = normalizeConcentrationSignal(dominantSharePercent)
   const holdingDuration = averageHoldingDays != null ? clamp01(averageHoldingDays / 30) : null
 
   return combineAxis([
     { key: 'convictionScore', label: 'Conviction classification', detail: convictionValue === 'unknown' ? 'Unknown' : convictionValue, value: categorical, weight: 0.50 },
-    { key: 'concentrationReduced', label: 'Portfolio concentration (reduced weight)', detail: concentrationLabel ?? 'Unknown', value: concentration, weight: 0.25 },
+    { key: 'concentrationReduced', label: 'Portfolio concentration (reduced weight)', detail: dominantHoldingDetail(dominantSharePercent, dominantSymbol), value: concentration, weight: 0.25 },
     { key: 'holdingDuration', label: 'Holding duration', detail: fmtDays(averageHoldingDays), value: holdingDuration, weight: 0.25 },
   ])
 }
@@ -532,7 +579,8 @@ function computeConvictionAxis(params: {
 export function computeRadarAxes(params: {
   totalTransactions: number
   walletAgeDays: number | null
-  concentrationLabel: 'high' | 'medium' | 'balanced' | 'none' | null
+  dominantSharePercent: number | null
+  dominantSymbol: string | null
   uniqueTokensTraded: number | null
   activeChains: number
   suspectedBot: boolean
@@ -545,7 +593,7 @@ export function computeRadarAxes(params: {
   return {
     activity: computeActivityAxis({ totalTransactions: params.totalTransactions, walletAgeDays: params.walletAgeDays }),
     risk: computeRiskAxis({
-      averageHoldingDays: params.averageHoldingDays, concentrationLabel: params.concentrationLabel,
+      averageHoldingDays: params.averageHoldingDays, dominantSharePercent: params.dominantSharePercent, dominantSymbol: params.dominantSymbol,
       uniqueTokensTraded: params.uniqueTokensTraded, totalTransactions: params.totalTransactions, activeChains: params.activeChains,
     }),
     automation: computeAutomationAxis({
@@ -556,7 +604,8 @@ export function computeRadarAxes(params: {
       totalTransactions: params.totalTransactions, averageHoldingDays: params.averageHoldingDays,
     }),
     conviction: computeConvictionAxis({
-      convictionValue: params.convictionValue, concentrationLabel: params.concentrationLabel, averageHoldingDays: params.averageHoldingDays,
+      convictionValue: params.convictionValue, dominantSharePercent: params.dominantSharePercent, dominantSymbol: params.dominantSymbol,
+      averageHoldingDays: params.averageHoldingDays,
     }),
   }
 }
@@ -619,8 +668,17 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
   const lastActiveAt = lastActiveMs != null ? new Date(lastActiveMs).toISOString() : null
 
   const suspectedBot = b?.automationSignals?.suspectedBot ?? false
-  const concentrationLabel = b?.concentrationSignals?.concentrationLabel ?? null
-  const concentrationClass = classifyConcentration(concentrationLabel)
+
+  // DOMINANT HOLDING, DISCLOSED (this task's own root-cause fix — see this file's own
+  // CONCENTRATION WIRING FIX header import comment for the full trace): reuses
+  // PortfolioIntelligenceCard's own selectPortfolioStats() rather than the always-null
+  // behaviorIntel.concentrationSignals — `topChips[0]` is the SAME dominant-holding entry that
+  // card itself renders first, computed from real PRICED portfolio value (never raw token count).
+  const portfolioStats = selectPortfolioStats(report.portfolio, report.portfolioV2).stats
+  const dominantHolding = portfolioStats.topChips[0] ?? null
+  const dominantSharePercent = dominantHolding != null && Number.isFinite(dominantHolding.percent) ? dominantHolding.percent : null
+  const dominantSymbol = dominantHolding?.symbol ?? null
+  const concentrationClass = classifyConcentration(dominantSharePercent)
   const holdingClass = classifyHolding(averageHoldingDays)
 
   const rotationValue = b?.rotationStyle?.value ?? 'unknown'
@@ -637,7 +695,7 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
   // themselves now derive FROM the multi-signal axis scores (see classifyAutomation/classifyRisk's
   // own headers) rather than from a single raw field each.
   const radar = computeRadarAxes({
-    totalTransactions, walletAgeDays, concentrationLabel, uniqueTokensTraded, activeChains,
+    totalTransactions, walletAgeDays, dominantSharePercent, dominantSymbol, uniqueTokensTraded, activeChains,
     suspectedBot, repeatedRouterPercent, cadenceRegularity, rotationValue, convictionValue, averageHoldingDays,
   })
 

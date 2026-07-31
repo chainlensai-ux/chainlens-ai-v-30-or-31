@@ -1,10 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deriveWalletPersonality, computeHoldingDaysStats, computeRepeatedRouterPercent, computeVerifiedWinLoss, composeTitle, computeRadarAxes, combineAxis, computeCadenceRegularity } from './walletPersonality'
+import { deriveWalletPersonality, computeHoldingDaysStats, computeRepeatedRouterPercent, computeVerifiedWinLoss, composeTitle, computeRadarAxes, combineAxis, computeCadenceRegularity, classifyConcentration } from './walletPersonality'
 import type { WalletPersonalitySourceReport } from './walletPersonality'
 import type { MatchedLot } from '@/src/modules/fifoEngine/types'
 import type { SellTimelineEntry } from '@/src/modules/sellTimeline/types'
 import type { BuyTimelineEntry } from '@/src/modules/timelineBuilder/types'
+import type { PortfolioSummary, TokenListEntry } from '@/src/modules/portfolio/types'
 
 const DAY = 86_400_000
 const NOW = Date.now()
@@ -353,7 +354,7 @@ test('no blank titles: every branch of deriveWalletPersonality returns a non-emp
 
 test('no fake precision: axes are "Insufficient evidence" with a null signalStrength (not a guessed midpoint) whenever every underlying input is genuinely unknown', () => {
   const axes = computeRadarAxes({
-    totalTransactions: 0, walletAgeDays: null, concentrationLabel: null, uniqueTokensTraded: null,
+    totalTransactions: 0, walletAgeDays: null, dominantSharePercent: null, dominantSymbol: null, uniqueTokensTraded: null,
     activeChains: 0, suspectedBot: false, repeatedRouterPercent: null, cadenceRegularity: null,
     rotationValue: 'unknown', convictionValue: 'unknown', averageHoldingDays: null,
   })
@@ -490,7 +491,7 @@ test('composeTitle: never returns "General User" — that string is reserved for
   const combos: Array<Parameters<typeof composeTitle>[0]> = [
     { automationClass: 'Manual trader', holdingClass: 'Long-term holder', concentrationClass: 'Not enough data', riskClass: 'Not enough data', rotationValue: 'unknown', convictionValue: 'unknown', activeChains: 1, totalTransactions: 1, activityLevel: 'Light' },
     { automationClass: 'Bot-like', holdingClass: 'Hyperactive sniper', concentrationClass: 'Concentrated', riskClass: 'Medium risk behavior', rotationValue: 'rotator', convictionValue: 'high', activeChains: 2, totalTransactions: 40, activityLevel: 'Active' },
-    { automationClass: 'Highly automated', holdingClass: 'Short-term rotator', concentrationClass: 'Moderately diversified', riskClass: 'Low risk behavior', rotationValue: 'distributor', convictionValue: 'medium', activeChains: 5, totalTransactions: 100, activityLevel: 'Very active' },
+    { automationClass: 'Highly automated', holdingClass: 'Short-term rotator', concentrationClass: 'Moderately concentrated', riskClass: 'Low risk behavior', rotationValue: 'distributor', convictionValue: 'medium', activeChains: 5, totalTransactions: 100, activityLevel: 'Very active' },
   ]
   for (const combo of combos) {
     assert.notEqual(composeTitle(combo), 'General User')
@@ -598,4 +599,79 @@ test('legacy riskOnOff.value never overrides the calibrated risk classification 
   })
   // Flipping ONLY the legacy field must not change the title at all — it is not consulted.
   assert.equal(riskOn.title, riskOffVariant.title)
+})
+
+// ─── Concentration wiring fix: dominant holding share (real production evidence) ───────────────
+
+// Reconstructs the exact reported production evidence: portfolio total ~$366.01, TORIVA
+// ~$256.72 (70.14% of priced value), 104 priced holdings total (only the dominant one matters for
+// this fixture's own math — the remaining ~103 tokens' combined value fills out the rest).
+function portfolioWithDominantHolding(): PortfolioSummary {
+  const others: TokenListEntry[] = Array.from({ length: 103 }, (_, i) => ({
+    chain: 'base', contract: `0xother${i}`, symbol: `TKN${i}`, name: null, amount: 1, priceUsd: 1,
+    valueUsd: (366.01 - 256.72) / 103,
+  }))
+  return {
+    totalValueUsd: 366.01,
+    tokens: [
+      { chain: 'base', contract: '0xtoriva', symbol: 'TORIVA', name: 'Toriva', amount: 1000, priceUsd: 0.25672, valueUsd: 256.72 },
+      ...others,
+    ],
+    chainValueBreakdown: [],
+  }
+}
+
+test('70.14% dominant holding (TORIVA, real production evidence): concentration reads Highly concentrated, never "Not enough data"', () => {
+  const report = baseReport({ portfolio: portfolioWithDominantHolding() })
+  const data = deriveWalletPersonality(report)
+  assert.equal(data.traits.portfolioConcentration, 'Highly concentrated')
+  assert.notEqual(data.traits.portfolioConcentration, 'Not enough data')
+  assert.equal(data.classification.concentration, 'Highly concentrated')
+  // "Why this score?" must include the dominant symbol and a rounded share for BOTH the Risk and
+  // Conviction axes (one independent sub-signal each), per this task's own requirement.
+  const riskContributor = data.radar.risk.contributors.find((c) => c.key === 'concentration')!
+  const convictionContributor = data.radar.conviction.contributors.find((c) => c.key === 'concentrationReduced')!
+  assert.ok(riskContributor.detail.includes('TORIVA'))
+  assert.ok(riskContributor.detail.includes('70%'))
+  assert.ok(convictionContributor.detail.includes('TORIVA'))
+  assert.ok(convictionContributor.detail.includes('70%'))
+  assert.notEqual(riskContributor.normalizedValue, null)
+  assert.notEqual(convictionContributor.normalizedValue, null)
+  // Never treated as high risk BY ITSELF: this fixture has no other elevated risk sub-signal
+  // (long holding, low churn, low chain breadth), so a single concentrated-position signal alone
+  // must not push the whole Risk axis to a high reading.
+  assert.notEqual(data.classification.risk, 'High risk behavior')
+})
+
+test('missing portfolio data: concentration stays "Not enough data" and lowers Risk/Conviction confidence, never assumes high or low risk from it', () => {
+  const report = baseReport({ portfolio: null, portfolioV2: null })
+  const data = deriveWalletPersonality(report)
+  assert.equal(data.traits.portfolioConcentration, 'Not enough data')
+  assert.equal(data.radar.risk.missingInputs.includes('Portfolio concentration'), true)
+  assert.equal(data.radar.conviction.missingInputs.includes('Portfolio concentration (reduced weight)'), true)
+  const riskContributor = data.radar.risk.contributors.find((c) => c.key === 'concentration')!
+  assert.equal(riskContributor.normalizedValue, null)
+  assert.equal(riskContributor.detail, 'Unknown')
+})
+
+test('classifyConcentration: exact band boundaries from this task\'s own spec, never inferred from raw token count', () => {
+  assert.equal(classifyConcentration(24.9), 'Diversified')
+  assert.equal(classifyConcentration(25), 'Moderately concentrated')
+  assert.equal(classifyConcentration(49.9), 'Moderately concentrated')
+  assert.equal(classifyConcentration(50), 'Concentrated')
+  assert.equal(classifyConcentration(69.9), 'Concentrated')
+  assert.equal(classifyConcentration(70), 'Highly concentrated')
+  assert.equal(classifyConcentration(100), 'Highly concentrated')
+  assert.equal(classifyConcentration(null), 'Not enough data')
+})
+
+test('concentration, conviction, and risk consistency: the chip (traits), Risk axis, and Conviction axis all derive from the identical dominant-share input', () => {
+  const report = baseReport({ portfolio: portfolioWithDominantHolding() })
+  const data = deriveWalletPersonality(report)
+  const riskConcentration = data.radar.risk.contributors.find((c) => c.key === 'concentration')!.normalizedValue!
+  const convictionConcentration = data.radar.conviction.contributors.find((c) => c.key === 'concentrationReduced')!.normalizedValue!
+  // Both axes normalize the SAME real percentage identically (0.7014 from the 70.14% share) —
+  // never two independently-drifting numbers for the same underlying fact.
+  assert.ok(Math.abs(riskConcentration - convictionConcentration) < 1e-9)
+  assert.ok(Math.abs(riskConcentration - 0.7014) < 0.01)
 })
