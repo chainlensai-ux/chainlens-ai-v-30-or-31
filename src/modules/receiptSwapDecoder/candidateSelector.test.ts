@@ -14,6 +14,7 @@ function baseEvidence(overrides: Partial<CandidateTxEvidence> & { txHash: string
     walletInvolved: true,
     isKnownRouter: false,
     routerConfidence: null,
+    routerOrCounterpartyAddress: null,
     hasVerifiedQuoteAddress: false,
     isExistingSwapCandidate: false,
     isBridgeCandidate: false,

@@ -11,6 +11,7 @@ import { transferLog, slipstreamSwapLog, POOL_A, WALLET, TOKEN_X } from './fixtu
 function candidate(
   txHash: string, priorityTier: 1 | 2 | 3 | 4 | 5 = 2,
   tokenIn = '0xaaa', tokenOut = '0xbbb',
+  routeFingerprint?: string,
 ): SelectedCandidate {
   return {
     chain: 'base',
@@ -21,6 +22,11 @@ function candidate(
     inferredTokenOut: tokenOut,
     inferredMissingSide: 'none',
     economicValueUsd: null,
+    // Defaults to a fingerprint DERIVED from the token pair purely so this file's many pre-existing
+    // token-pair-based tests (written before the route-fingerprint fix) keep exercising distinct
+    // substitution groups without every call site needing an explicit override. Tests that actually
+    // exercise route-fingerprint matching pass routeFingerprint explicitly.
+    routeFingerprint: routeFingerprint ?? `base:router:${tokenIn ?? 'none'}:${tokenOut ?? 'none'}`,
   }
 }
 
@@ -320,22 +326,24 @@ test('no reserve candidates available: a negatively-evidenced slot with nothing 
   assert.equal(result.counters.receiptLiveCalls, 2)
 })
 
-// ROOT-CAUSE REGRESSION, DISCLOSED: production proof — a real scan's receiptQuotaSubstitutions
-// stayed 0 even though 8/10 fetched receipts were plain_transfer_no_swap_event, because those
-// candidates qualified via candidateSelector's own `legs.length === 1 && hasRouterLikeCounterparty`
-// path — exactly the single-leg case where inferredTokenOut (or inferredTokenIn) is null. The old
-// tokenPairKey required BOTH sides non-null, so it silently returned null for this dominant
-// real-world pattern, meaning negative evidence was never recorded AND never matched against.
-test('single-leg candidates (one side null) record and match negative evidence via a single-token key', async () => {
-  const badSingleA = candidate('0xbad-a', 4, '0xrepeat-token', null as unknown as string) // missing tokenOut, tier 4 router-touch shape
-  const badSingleB = candidate('0xbad-b', 4, '0xrepeat-token', null as unknown as string)
-  const goodCapped = candidate('0xcapped-good', 5, '0xtoken3', '0xtoken4')
+// ROOT-CAUSE REGRESSION, DISCLOSED (round 2 — the real production trace): receiptQuotaSubstitutions
+// stayed 0 even though the 8 dominant plain-transfer candidates were NOT single-leg —
+// pairingStrength=1, inboundLegCount=1, outboundLegCount=1, distinctTokenCount=2 on every one.
+// Exact token-pair matching never matched any of the 15 capped candidates because those 8
+// candidates each touched a DIFFERENT token pair through the SAME router/route shape. This fixture
+// reproduces exactly that: two candidates with fully-paired legs and DISTINCT token pairs, sharing
+// only the same routeFingerprint (same router/counterparty + same leg-direction shape) — proving
+// substitution now matches on the broader, proven-correct signal instead of the too-narrow pair key.
+test('candidates with fully-paired legs but DISTINCT token pairs still substitute when they share the same route fingerprint', async () => {
+  const sameRouteA = candidate('0xbad-a', 4, '0xtoken1', '0xtoken2', 'base:0xrouter:1i1ow')
+  const sameRouteB = candidate('0xbad-b', 4, '0xtoken3', '0xtoken4', 'base:0xrouter:1i1ow') // different pair, same route fingerprint
+  const goodCapped = candidate('0xcapped-good', 5, '0xtoken5', '0xtoken6', 'base:0xotherrouter:1i1ow')
   const calls: string[] = []
   const result = await acquireReceiptsForCandidates({
-    candidates: [badSingleA, badSingleB, goodCapped],
+    candidates: [sameRouteA, sameRouteB, goodCapped],
     fetcher: countingFetcher((txHash) => {
       calls.push(txHash)
-      return txHash === '0xbad-a' ? { status: 'ok', logs: plainTransferLogs() } : { status: 'ok', logs: [] }
+      return txHash === '0xbad-a' ? { status: 'ok', logs: plainTransferLogs() } : { status: 'ok', logs: realSwapLogs() }
     }, []),
     requestScope: createReceiptRequestScopeCache(),
     maxLiveCalls: 2,
@@ -343,14 +351,17 @@ test('single-leg candidates (one side null) record and match negative evidence v
   })
   assert.deepEqual(calls, ['0xbad-a', '0xcapped-good'])
   assert.equal(result.counters.receiptQuotaSubstitutions, 1)
+  assert.equal(result.counters.receiptNegativeFingerprintsRecorded, 1)
+  assert.equal(result.counters.receiptSubstitutionAttempts, 1)
+  assert.deepEqual(result.negativeFingerprintSamples, [{ routeFingerprint: 'base:0xrouter:1i1ow', fromTxHash: '0xbad-a' }])
 })
 
-test('single-leg candidates with different known tokens are never conflated into the same negative-evidence key', async () => {
-  const badSingleA = candidate('0xbad-a', 4, '0xtoken-a', null as unknown as string)
-  const differentTokenSingle = candidate('0xdifferent', 4, '0xtoken-b', null as unknown as string)
+test('two candidates that happen to share a token pair but touch different routers are never conflated', async () => {
+  const badA = candidate('0xbad-a', 2, '0xtoken1', '0xtoken2', 'base:0xrouterA:1i1ow')
+  const differentRouterSamePair = candidate('0xdifferent', 2, '0xtoken1', '0xtoken2', 'base:0xrouterB:1i1ow')
   const calls: string[] = []
   const result = await acquireReceiptsForCandidates({
-    candidates: [badSingleA, differentTokenSingle],
+    candidates: [badA, differentRouterSamePair],
     fetcher: countingFetcher((txHash) => {
       calls.push(txHash)
       return txHash === '0xbad-a' ? { status: 'ok', logs: plainTransferLogs() } : { status: 'ok', logs: realSwapLogs() }
@@ -360,5 +371,25 @@ test('single-leg candidates with different known tokens are never conflated into
     concurrency: 1,
   })
   assert.deepEqual(calls, ['0xbad-a', '0xdifferent'])
+  assert.equal(result.counters.receiptQuotaSubstitutions, 0)
+})
+
+test('a candidate with STRONGER evidence (already selected ahead by tier/ranking) is never displaced by substitution — only capped reserve candidates are ever pulled in', async () => {
+  const badA = candidate('0xbad-a', 4, '0xtoken1', '0xtoken2', 'base:0xrouter:1i1ow')
+  const strongerAlreadySelected = candidate('0xstrong', 1, '0xtoken3', '0xtoken4', 'base:0xrouter:1i1ow') // same route fingerprint, but tier 1 (already selected, not reserve)
+  const calls: string[] = []
+  const result = await acquireReceiptsForCandidates({
+    candidates: [strongerAlreadySelected, badA],
+    fetcher: countingFetcher((txHash) => {
+      calls.push(txHash)
+      return { status: 'ok', logs: txHash === '0xstrong' ? realSwapLogs() : plainTransferLogs() }
+    }, []),
+    requestScope: createReceiptRequestScopeCache(),
+    maxLiveCalls: 2,
+    concurrency: 1,
+  })
+  // Both already fit within budget (maxLiveCalls 2, 2 candidates) — nothing to substitute FROM
+  // reserve (empty), so both are fetched exactly as selected; the stronger candidate is untouched.
+  assert.deepEqual(calls, ['0xstrong', '0xbad-a'])
   assert.equal(result.counters.receiptQuotaSubstitutions, 0)
 })

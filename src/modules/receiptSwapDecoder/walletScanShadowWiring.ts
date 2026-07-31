@@ -26,7 +26,7 @@ import {
 } from './candidateSelector'
 import {
   acquireReceiptsForCandidates, createReceiptRequestScopeCache, createLiveBaseReceiptFetcher,
-  type ReceiptFetcher, type ReceiptRequestScopeCache,
+  type ReceiptFetcher, type ReceiptRequestScopeCache, type NegativeFingerprintSample,
 } from './receiptAcquisition'
 import {
   classifyReceiptForensics, createRecordingPoolValidator, MAX_FORENSIC_SAMPLES,
@@ -529,8 +529,12 @@ export type WalletScanShadowLogPayload =
       // NEGATIVE-EVIDENCE SUBSTITUTION, DISCLOSED — see receiptAcquisition.ts's own
       // acquireReceiptsForCandidates header: how many quota-selected, not-yet-fetched slots this
       // scan swapped out for a capped candidate because an earlier receipt this same scan already
-      // proved that token-pair pattern plain_transfer_no_swap_event.
+      // proved that ROUTE FINGERPRINT (chain + router/counterparty + route shape — never token pair
+      // alone) plain_transfer_no_swap_event.
       receiptQuotaSubstitutions: number
+      receiptNegativeFingerprintsRecorded: number
+      receiptSubstitutionAttempts: number
+      negativeFingerprintSamples: NegativeFingerprintSample[]
       // SELECTOR BROADENING, DISCLOSED — see candidateSelector.ts's own header for the full
       // production-proof root cause this fixes (415 real swap-lookup transactions, 0 candidates
       // selected under the old routerDistributorMode-gated source).
@@ -682,6 +686,9 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     receiptCandidatesSkippedByTierQuota: acquisition.receiptCandidatesSkippedByTierQuota,
     receiptQuotaBackfilled: acquisition.receiptQuotaBackfilled,
     receiptQuotaSubstitutions: acquisition.counters.receiptQuotaSubstitutions,
+    receiptNegativeFingerprintsRecorded: acquisition.counters.receiptNegativeFingerprintsRecorded,
+    receiptSubstitutionAttempts: acquisition.counters.receiptSubstitutionAttempts,
+    negativeFingerprintSamples: acquisition.negativeFingerprintSamples,
     selectorTransactionsConsidered: selection.selectorTransactionsConsidered,
     selectorEligibleCandidates: selection.selectorEligibleCandidates,
     selectorRejectedCandidates: selection.selectorRejectedCandidates,

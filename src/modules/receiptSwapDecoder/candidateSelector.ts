@@ -33,6 +33,13 @@ export type CandidateTxEvidence = {
   walletInvolved: boolean
   isKnownRouter: boolean
   routerConfidence: RouterConfidence
+  // ROUTE-FINGERPRINT INPUT, DISCLOSED (this task) — the actual router/counterparty ADDRESS this
+  // tx's wallet-facing leg touched, when known. Real, already-computed pipeline evidence (the same
+  // counterparty address src/pipeline/index.ts's routerInfoByTx already derives to set
+  // isKnownRouter/routerConfidence, just not previously threaded through) — never guessed here.
+  // null when no single counterparty was identifiable (e.g. multiple legs touching different
+  // addresses, or the address couldn't be resolved).
+  routerOrCounterpartyAddress: string | null
   hasVerifiedQuoteAddress: boolean
   // A real, already-computed "this looks like a swap" signal from elsewhere in the pipeline (e.g.
   // routerTradeReconstruction already paired this tx, or a future swapDetection.isSwapCandidate-
@@ -68,6 +75,12 @@ export type SelectedCandidate = {
   inferredTokenOut: string | null
   inferredMissingSide: 'none' | 'tokenIn' | 'tokenOut'
   economicValueUsd: number | null
+  // ROUTE FINGERPRINT, DISCLOSED (this task — see routeFingerprintFor's own header): deterministic,
+  // pre-fetch-only identity for "this candidate's route shape", used by receiptAcquisition.ts's
+  // negative-evidence substitution as the PRIMARY match key — never token pair alone (see
+  // receiptAcquisition.ts for the full production-proof disclosure of why token pair alone was too
+  // narrow).
+  routeFingerprint: string
 }
 
 export type RejectedSample = {
@@ -95,6 +108,8 @@ export type CandidateOrderingTrace = {
   isKnownRouter: boolean
   economicValueUsd: number | null
   finalSortedPosition: number
+  routeFingerprint: string
+  routerOrCounterpartyAddress: string | null
 }
 
 export type CandidateSelectionResult = {
@@ -113,15 +128,41 @@ export type CandidateSelectionResult = {
 // ordering/eligibility logic changes. Logged unconditionally by walletScanShadowWiring.ts's shadow
 // payload so a real production log can prove which build actually ran, without depending on commit
 // SHA plumbing this module has no access to.
-export const RECEIPT_SELECTOR_ALGORITHM_VERSION = 'receipt-selector-v3-single-leg-key-fix'
+export const RECEIPT_SELECTOR_ALGORITHM_VERSION = 'receipt-selector-v4-route-fingerprint'
 
 const MAX_SELECTED = 25
 const MAX_REJECTED_SAMPLES = 10
+const NATIVE_WRAP_ADDRESS_BASE = '0x4200000000000000000000000000000000000006'
 
 function hasOppositeDirectionLegs(legs: CandidateLeg[]): boolean {
   const inbound = legs.some((l) => l.direction === 'inbound')
   const outbound = legs.some((l) => l.direction === 'outbound')
   return inbound && outbound
+}
+
+// ROUTE FINGERPRINT, DISCLOSED (this task — production proof: a real scan whose 8 plain-transfer
+// receipts were NOT single-leg — pairingStrength=1, inboundLegCount=1, outboundLegCount=1,
+// distinctTokenCount=2 on every one of them — so the prior single:<token>/pair:<a>:<b> key never
+// matched, because those 8 candidates each touched a DIFFERENT token pair through the SAME
+// router/route shape. Exact token-pair matching was proven too narrow for this real pattern.
+//
+// Built ENTIRELY from evidence already available before the next fetch — chain, the actual
+// router/counterparty address this tx's wallet-facing leg touched (real, threaded through from
+// pipeline/index.ts's own routerInfoByTx — never guessed), and a structural "route shape" (leg
+// direction counts + whether a canonical native-wrap contract appears among the legs). Token pair
+// is deliberately NOT part of this fingerprint — receiptAcquisition.ts's negative-evidence matching
+// uses this as the sole match key, treating token pair only as an optional stronger-specificity
+// SIGNAL callers may log alongside it, never as a requirement for a match. Never infers protocol
+// from an unsupported topic (this function never sees receipt logs at all — only pre-fetch
+// evidence) and never varies by amount, so two structurally-identical repeated router calls always
+// fingerprint identically, regardless of which specific token they moved.
+function routeFingerprintFor(evidence: CandidateTxEvidence): string {
+  const inboundLegCount = evidence.legs.filter((l) => l.direction === 'inbound').length
+  const outboundLegCount = evidence.legs.filter((l) => l.direction === 'outbound').length
+  const hasNativeWrapLeg = evidence.legs.some((l) => l.contract.toLowerCase() === NATIVE_WRAP_ADDRESS_BASE)
+  const routeShape = `${inboundLegCount}i${outboundLegCount}o${hasNativeWrapLeg ? 'w' : 'n'}`
+  const counterparty = evidence.routerOrCounterpartyAddress ? evidence.routerOrCounterpartyAddress.toLowerCase() : 'no-counterparty'
+  return `${evidence.chain}:${counterparty}:${routeShape}`
 }
 
 function hasRouterLikeCounterparty(evidence: CandidateTxEvidence): boolean {
@@ -261,6 +302,8 @@ export function selectBaseReceiptCandidates(evidenceList: readonly CandidateTxEv
       isKnownRouter: evidence.isKnownRouter,
       economicValueUsd: evidence.economicValueUsd,
       finalSortedPosition: position,
+      routeFingerprint: routeFingerprintFor(evidence),
+      routerOrCounterpartyAddress: evidence.routerOrCounterpartyAddress,
     }
   })
 
@@ -278,6 +321,7 @@ export function selectBaseReceiptCandidates(evidenceList: readonly CandidateTxEv
       inferredTokenOut: inferred.tokenOut,
       inferredMissingSide: inferred.missingSide,
       economicValueUsd: evidence.economicValueUsd,
+      routeFingerprint: routeFingerprintFor(evidence),
     }
   })
 

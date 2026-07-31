@@ -159,12 +159,29 @@ export type ReceiptAcquisitionCounters = {
   receiptProviderCalls: number
   // NEGATIVE EVIDENCE, DISCLOSED — see acquireReceiptsForCandidates's own header: how many
   // not-yet-fetched, quota-selected slots this scan swapped out (for a not-yet-selected, capped
-  // candidate) because an EARLIER receipt fetched THIS SAME scan, sharing that slot's inferred
-  // token pair, already proved plain_transfer_no_swap_event (no recognized pool-swap event at
+  // candidate) because an EARLIER receipt fetched THIS SAME scan, sharing that slot's route
+  // fingerprint, already proved plain_transfer_no_swap_event (no recognized pool-swap event at
   // all). Never a retry, never a new provider call — the replacement candidate is fetched exactly
   // once, same as any originally-selected candidate.
   receiptQuotaSubstitutions: number
+  // ROUTE-FINGERPRINT DIAGNOSTICS, DISCLOSED (this task) — how many distinct route fingerprints
+  // this scan actually recorded as negative evidence (a receipt fetch definitively resolved to
+  // plain_transfer_no_swap_event), and how many times a not-yet-fetched slot MATCHED one of them
+  // (whether or not a replacement was actually found — see receiptQuotaSubstitutions for the
+  // completed subset). Lets a real production log distinguish "no candidate ever matched" from
+  // "candidates matched but no safe replacement existed in reserve".
+  receiptNegativeFingerprintsRecorded: number
+  receiptSubstitutionAttempts: number
 }
+
+// One row per fingerprint recorded as negative evidence this scan — bounded so this never becomes
+// an unbounded per-transaction dump.
+export type NegativeFingerprintSample = {
+  routeFingerprint: string
+  fromTxHash: string
+}
+
+const MAX_FINGERPRINT_SAMPLES = 10
 
 export type AcquireReceiptsResult = {
   logsByTxHash: Map<string, RawReceiptLog[]>
@@ -173,30 +190,9 @@ export type AcquireReceiptsResult = {
   receiptSelectedByPriorityTier: Record<1 | 2 | 3 | 4 | 5, number>
   receiptCandidatesSkippedByTierQuota: Record<3 | 4, number>
   receiptQuotaBackfilled: number
-}
-
-// PURE, DISCLOSED (root-cause fix — production proof: receiptQuotaSubstitutions stayed 0 on a real
-// scan whose selected set was dominated by tier 3/4's own `legs.length === 1` eligibility path,
-// i.e. candidates that qualify PRECISELY because only one side is known pre-fetch). The original
-// version required BOTH tokenIn and tokenOut to be non-null, returning null otherwise — but a
-// single-leg candidate (missingSide 'tokenIn' or 'tokenOut') can NEVER carry both, so it could
-// never be added to `negativeEvidence` after decoding to a plain transfer, and could never be
-// matched against as a substitution candidate either. Since single-leg candidates are exactly the
-// weak-evidence, router-touch-only pattern this whole mechanism exists to displace, the negative-
-// evidence set was silently inert for the dominant real-world case. Fixed: when exactly one side is
-// known, key on that single known token alone (`single:<token>`, distinct prefix so it can never
-// collide with a real two-sided pair key) — still order-independent (a single value has no order),
-// still never infers protocol/venue from anything beyond the token address candidateSelector.ts's
-// own inferTokensFromLegs already computed. `null` only when NEITHER side is known (nothing to key
-// by at all).
-function tokenPairKey(tokenIn: string | null, tokenOut: string | null): string | null {
-  if (tokenIn && tokenOut) {
-    const [a, b] = [tokenIn.toLowerCase(), tokenOut.toLowerCase()].sort()
-    return `${a}:${b}`
-  }
-  const single = tokenIn ?? tokenOut
-  if (single) return `single:${single.toLowerCase()}`
-  return null
+  // ROUTE-FINGERPRINT DIAGNOSTICS, DISCLOSED (this task) — see counters' own header for the
+  // recorded/attempted distinction. Bounded to MAX_FINGERPRINT_SAMPLES.
+  negativeFingerprintSamples: NegativeFingerprintSample[]
 }
 
 // NO RETRIES, DISCLOSED: a single attempt per key. If it times out or errors, the outcome is
@@ -227,16 +223,30 @@ function withTimeout(promise: Promise<ReceiptFetchOutcome>, timeoutMs: number): 
   })
 }
 
-// NEGATIVE-EVIDENCE SUBSTITUTION, DISCLOSED (production proof: 25 eligible, 10 fetched, 8/10 ended
-// plain_transfer_no_swap_event, 0 exact swaps recovered): purely quota-based tier selection cannot
-// see, mid-scan, that a receipt it already fetched proved a given token-pair pattern is NOT a swap
-// (no recognized pool-swap-shaped event at all — never a protocol/venue inference, just presence/
-// absence). Once that's known, spending ANOTHER of the fixed 10 slots on a not-yet-fetched,
-// still-queued candidate sharing that exact pattern is a proven waste this scan can now avoid: it
-// is swapped out for the next-priority CAPPED candidate instead (never re-attempting the
-// already-fetched one, never retrying, never exceeding the original slot count). A capped candidate
-// that itself already matches known-negative evidence is skipped over, never selected as a
-// replacement.
+// NEGATIVE-EVIDENCE SUBSTITUTION, DISCLOSED (production proof, two rounds: round 1 found
+// receiptQuotaSubstitutions stuck at 0 because the then-current key required a full token pair or a
+// single known token — but round 2's real trace showed the 8 dominant plain-transfer candidates were
+// NOT single-leg at all: pairingStrength=1, inboundLegCount=1, outboundLegCount=1,
+// distinctTokenCount=2 on every one. Token-PAIR matching was still too narrow — those 8 candidates
+// shared the same ROUTER and ROUTE SHAPE but touched 8 DIFFERENT token pairs, so an exact-pair key
+// never matched any of the 15 capped candidates either. Rebuilt on candidateSelector.ts's
+// routeFingerprintFor (chain + router/counterparty address + leg-direction/native-wrap route shape)
+// as the SOLE match key — token pair is deliberately excluded from the key entirely per this task's
+// explicit "token pair only as optional specificity, never a requirement" instruction.
+//
+// Purely quota-based tier selection cannot see, mid-scan, that a receipt it already fetched proved a
+// given route fingerprint is NOT a swap (no recognized pool-swap-shaped event at all — never a
+// protocol/venue inference, just presence/absence; this module never reads an unsupported topic to
+// guess a protocol). Once that's known, spending ANOTHER of the fixed 10 slots on a not-yet-fetched,
+// still-queued candidate sharing that fingerprint is a proven waste this scan can now avoid: it is
+// swapped out for the next-priority CAPPED candidate instead (never re-attempting the already-fetched
+// one, never retrying, never exceeding the original slot count). A candidate that ALREADY carries
+// stronger supported-pool/factory evidence is never touched by this — substitution only ever pulls
+// FROM the tier-quota-capped reserve, never removes a candidate the tier/leg-pairing ranking already
+// promoted. A capped candidate that itself already matches known-negative evidence is skipped over,
+// never selected as a replacement. Negative evidence is a plain local Set, scoped to this single
+// function call — it is discarded when acquireReceiptsForCandidates returns and never shared across
+// requests or wallets (never a global blacklist).
 //
 // PURE with respect to control flow beyond the injected fetcher — no retries, no receipt-fetch call
 // this function didn't explicitly make, no mutation of `candidates`/`requestScope` beyond the
@@ -255,7 +265,9 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
   const reserve = input.candidates.filter((c) => !selectedKeys.has(receiptCacheKey(c.chain, c.txHash)))
   let reserveIndex = 0
   const negativeEvidence = new Set<string>()
+  const negativeFingerprintSamples: NegativeFingerprintSample[] = []
   let quotaSubstitutions = 0
+  let substitutionAttempts = 0
 
   // The fixed-size, mutable queue of slots actually fetched this scan — its LENGTH never changes
   // (still exactly `selectedForFetch.length`, never more than maxLiveCalls), only individual
@@ -264,13 +276,12 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
 
   function substituteIfNegativelyEvidenced(index: number): void {
     const candidate = queue[index]
-    const key = tokenPairKey(candidate.inferredTokenIn, candidate.inferredTokenOut)
-    if (!key || !negativeEvidence.has(key)) return
+    if (!negativeEvidence.has(candidate.routeFingerprint)) return
+    substitutionAttempts += 1
     while (reserveIndex < reserve.length) {
       const replacement = reserve[reserveIndex]
       reserveIndex += 1
-      const replacementKey = tokenPairKey(replacement.inferredTokenIn, replacement.inferredTokenOut)
-      if (replacementKey && negativeEvidence.has(replacementKey)) continue
+      if (negativeEvidence.has(replacement.routeFingerprint)) continue
       queue[index] = replacement
       quotaSubstitutions += 1
       return
@@ -313,10 +324,16 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
         // NEGATIVE EVIDENCE, DISCLOSED: pure, offline (zero provider calls) check for "does this
         // receipt contain ANY recognized pool-swap-shaped event at all" — never asserts WHICH
         // protocol/venue, only presence/absence, so this never infers protocol from a Swap topic.
+        // Only recorded once a fetched receipt DEFINITIVELY resolves to no recognized swap event —
+        // never speculative, never based on anything less than a real decode outcome.
         const decoded = decodeLogs(outcome.logs)
         if (decoded.swaps.length === 0) {
-          const pairKey = tokenPairKey(candidate.inferredTokenIn, candidate.inferredTokenOut)
-          if (pairKey) negativeEvidence.add(pairKey)
+          if (!negativeEvidence.has(candidate.routeFingerprint)) {
+            negativeEvidence.add(candidate.routeFingerprint)
+            if (negativeFingerprintSamples.length < MAX_FINGERPRINT_SAMPLES) {
+              negativeFingerprintSamples.push({ routeFingerprint: candidate.routeFingerprint, fromTxHash: candidate.txHash })
+            }
+          }
         }
         break
       }
@@ -366,10 +383,13 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
       receiptReverted: reverted,
       receiptQuotaSubstitutions: quotaSubstitutions,
       receiptProviderCalls: liveCalls,
+      receiptNegativeFingerprintsRecorded: negativeEvidence.size,
+      receiptSubstitutionAttempts: substitutionAttempts,
     },
     receiptSelectedByPriorityTier: finalSelectedByTier,
     receiptCandidatesSkippedByTierQuota: tierSelection.skippedByTierQuota,
     receiptQuotaBackfilled: tierSelection.quotaBackfilled,
+    negativeFingerprintSamples,
   }
 }
 

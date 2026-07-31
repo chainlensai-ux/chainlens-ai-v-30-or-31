@@ -222,6 +222,7 @@ function ev(overrides: Partial<CandidateTxEvidence> & { txHash: string }): Candi
     walletInvolved: true,
     isKnownRouter: false,
     routerConfidence: null,
+    routerOrCounterpartyAddress: null,
     hasVerifiedQuoteAddress: false,
     isExistingSwapCandidate: true,
     isBridgeCandidate: false,
@@ -350,6 +351,72 @@ test('production pipeline shape: receipt fetching is capped at 10 even with more
   assert.equal(payload.receiptCandidatesCapped, 15)
   assert.equal(payload.receiptProviderCalls, 10)
   assert.ok(payload.receiptProviderCalls <= 10)
+})
+
+// PRODUCTION-SHAPE REGRESSION, DISCLOSED: reproduces the real production trace this task audited —
+// the 8 dominant plain-transfer candidates were fully paired (pairingStrength=1, one inbound, one
+// outbound leg, 2 distinct tokens), each touching a DIFFERENT token pair, but all routed through
+// the SAME counterparty address. A naive token-pair-keyed negative-evidence set (the prior version)
+// never matched any of them against each other or against the capped reserve. This fixture proves
+// route-fingerprint-keyed substitution now recovers real swap candidates that share the same
+// router/route shape as an already-proven-bad candidate, even though every token pair differs.
+test('production shape: paired-leg candidates sharing one router/route fingerprint but distinct token pairs are recognized as the same negative-evidence group, freeing budget for a genuinely different route', async () => {
+  const SAME_ROUTER = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  const OTHER_ROUTER = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+
+  function pairedEvidence(txHash: string, counterparty: string, tokenOut: string): CandidateTxEvidence {
+    return ev({
+      txHash,
+      legs: [
+        { contract: WETH, direction: 'outbound', amount: 1 },
+        { contract: tokenOut, direction: 'inbound', amount: 500 },
+      ],
+      isKnownRouter: true,
+      routerConfidence: 'high',
+      isExistingSwapCandidate: false,
+      routerOrCounterpartyAddress: counterparty,
+    })
+  }
+
+  // 8 dominant candidates: same router, same route shape (1 inbound / 1 outbound leg), 8 DIFFERENT
+  // token pairs — exactly the real production pattern.
+  const dominant: CandidateTxEvidence[] = Array.from({ length: 8 }, (_, i) =>
+    pairedEvidence(`0xdominant${i}`, SAME_ROUTER, `0xdominanttoken${i.toString().padStart(2, '0')}${'0'.repeat(18)}`))
+  // 2 candidates through a genuinely DIFFERENT router — real swaps, should be recovered once budget
+  // frees up.
+  const genuinelyDifferent: CandidateTxEvidence[] = [
+    pairedEvidence('0xreal0', OTHER_ROUTER, tokenX),
+    pairedEvidence('0xreal1', OTHER_ROUTER, USDC),
+  ]
+  const evidence = [...dominant, ...genuinelyDifferent]
+
+  function fetcherFor(txHash: string): RawReceiptLog[] {
+    if (txHash.startsWith('0xreal')) return decodableLogs()
+    // Plain transfer only — no recognized pool-swap-shaped event at all.
+    return [transferLog(0, WETH, wallet, SAME_ROUTER, BigInt('1000000000000000000'))]
+  }
+
+  const payload = await buildWalletScanShadowLogPayload({
+    walletAddress: wallet,
+    evidence,
+    validator: alwaysValidValidator(),
+    disabledByEnv: false,
+    receiptFetcher: async (_chain, txHash) => ({ status: 'ok', logs: fetcherFor(txHash) }),
+    maxLiveReceiptCalls: 5,
+    receiptConcurrency: 1,
+  })
+
+  assert.equal(payload.enabled, true)
+  if (!payload.enabled) return
+  assert.equal(payload.baseSwapCandidates, 10)
+  assert.equal(payload.receiptCandidatesTotal, 10)
+  assert.equal(payload.receiptCandidatesSelected, 5)
+  assert.equal(payload.receiptProviderCalls, 5)
+  // Budget stayed at 5 live calls total — substitution never adds a new provider call.
+  assert.ok(payload.receiptProviderCalls <= 5)
+  // At least one of the genuinely-different-route real swaps was substituted into budget.
+  assert.ok(payload.receiptQuotaSubstitutions >= 1)
+  assert.ok(payload.acceptedExactSwaps.some((s) => s.txHash === '0xreal0' || s.txHash === '0xreal1'))
 })
 
 test('production pipeline shape: identical inputs produce a deterministic payload across repeated calls', async () => {

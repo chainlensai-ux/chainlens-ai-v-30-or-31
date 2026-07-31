@@ -13,6 +13,7 @@ function candidate(txHash: string, priorityTier: 1 | 2 | 3 | 4 | 5): SelectedCan
     inferredTokenOut: '0xbbb',
     inferredMissingSide: 'none',
     economicValueUsd: null,
+    routeFingerprint: `base:router:${txHash}`,
   }
 }
 

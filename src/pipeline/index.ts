@@ -1314,6 +1314,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     type RouterInfo = { isKnownRouter: boolean; routerConfidence: 'high' | 'medium' | 'low' | null }
     const routerInfoByTx = new Map<string, RouterInfo>()
     const walletInvolvedByTx = new Set<string>()
+    // ROUTE-FINGERPRINT INPUT, DISCLOSED (this task) — the distinct counterparty addresses this
+    // tx's wallet-facing legs touched, so a single unambiguous router/counterparty address can be
+    // threaded into CandidateTxEvidence.routerOrCounterpartyAddress (see candidateSelector.ts's own
+    // routeFingerprintFor header). `null` (not fabricated) whenever a tx's legs touch more than one
+    // distinct address — genuinely ambiguous, never guessed down to one.
+    const counterpartyAddressesByTx = new Map<string, Set<string>>()
     for (const e of normalizedEvents) {
       const key = swapLegGroupKey(e.chain, e.txHash)
       if (e.direction === 'inbound' || e.direction === 'outbound') walletInvolvedByTx.add(key)
@@ -1326,6 +1332,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         isKnownRouter: existing.isKnownRouter || isKnown,
         routerConfidence: isHighConfidence ? 'high' : existing.routerConfidence,
       })
+      if (counterpartyLower) {
+        const addresses = counterpartyAddressesByTx.get(key) ?? new Set<string>()
+        addresses.add(counterpartyLower)
+        counterpartyAddressesByTx.set(key, addresses)
+      }
     }
 
     const swapLegGroups = groupSwapLegsByTransaction(normalizedEvents)
@@ -1334,6 +1345,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       const [chainPart, ...txHashParts] = groupKey.split(':')
       const txHash = txHashParts.join(':')
       const router = routerInfoByTx.get(groupKey) ?? { isKnownRouter: false, routerConfidence: null }
+      const counterpartyAddresses = counterpartyAddressesByTx.get(groupKey)
+      const routerOrCounterpartyAddress = counterpartyAddresses && counterpartyAddresses.size === 1
+        ? [...counterpartyAddresses][0]
+        : null
       evidence.push({
         chain: chainPart,
         txHash,
@@ -1341,6 +1356,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         walletInvolved: walletInvolvedByTx.has(groupKey),
         isKnownRouter: router.isKnownRouter,
         routerConfidence: router.routerConfidence,
+        routerOrCounterpartyAddress,
         hasVerifiedQuoteAddress: legs.some((l) => isVerifiedQuoteLegAddress(chainPart as NormalizedEvent['chain'], l.contract, l.symbol)),
         isExistingSwapCandidate: existingSwapCandidateTxHashes.has(groupKey),
         isBridgeCandidate: bridgeCandidateTxHashes.has(groupKey),
