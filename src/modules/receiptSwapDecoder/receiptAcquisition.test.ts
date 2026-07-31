@@ -5,18 +5,37 @@ import {
   type ReceiptFetcher, type ReceiptFetchOutcome,
 } from './receiptAcquisition'
 import type { SelectedCandidate } from './candidateSelector'
+import type { RawReceiptLog } from './types'
+import { transferLog, slipstreamSwapLog, POOL_A, WALLET, TOKEN_X } from './fixtures.test-helpers'
 
-function candidate(txHash: string, priorityTier: 1 | 2 | 3 | 4 | 5 = 2): SelectedCandidate {
+function candidate(
+  txHash: string, priorityTier: 1 | 2 | 3 | 4 | 5 = 2,
+  tokenIn = '0xaaa', tokenOut = '0xbbb',
+): SelectedCandidate {
   return {
     chain: 'base',
     txHash,
     priorityTier,
     priorityReason: 'existing_one_leg_swap_candidate',
-    inferredTokenIn: '0xaaa',
-    inferredTokenOut: '0xbbb',
+    inferredTokenIn: tokenIn,
+    inferredTokenOut: tokenOut,
     inferredMissingSide: 'none',
     economicValueUsd: null,
   }
+}
+
+const WETH = '0x4200000000000000000000000000000000000006'
+
+function plainTransferLogs(): RawReceiptLog[] {
+  return [transferLog(0, WETH, WALLET, '0x9999999999999999999999999999999999999999', BigInt('1000000000000000000'))]
+}
+
+function realSwapLogs(): RawReceiptLog[] {
+  return [
+    transferLog(0, WETH, WALLET, POOL_A, BigInt('1000000000000000000')),
+    slipstreamSwapLog(1, POOL_A, WALLET, WALLET, BigInt('1000000000000000000'), BigInt('-100000000000000000000')),
+    transferLog(2, TOKEN_X, POOL_A, WALLET, BigInt('100000000000000000000')),
+  ]
 }
 
 function countingFetcher(outcomeFor: (txHash: string) => ReceiptFetchOutcome, calls: string[]): ReceiptFetcher {
@@ -201,4 +220,102 @@ test('zero canonical-output mutation: input candidates array is never mutated by
     requestScope: createReceiptRequestScopeCache(),
   })
   assert.deepEqual(candidates, snapshot)
+})
+
+// NEGATIVE-EVIDENCE SUBSTITUTION, DISCLOSED (production proof: 25 eligible, 10 fetched, 8/10 ended
+// plain_transfer_no_swap_event, 0 exact swaps). These tests prove a proven-bad token-pair pattern,
+// discovered from an EARLIER batch this same scan, causes a not-yet-fetched, quota-selected slot
+// sharing that pattern to be swapped out for a capped candidate instead — never a retry, never
+// exceeding the original call budget.
+
+test('a candidate sharing a token pair already proven plain-transfer is substituted with a capped candidate', async () => {
+  const badPairA = candidate('0xbad-a', 2, '0xtoken1', '0xtoken2')
+  const badPairB = candidate('0xbad-b', 2, '0xtoken1', '0xtoken2') // same pair as badPairA, batch 2
+  const goodCapped = candidate('0xcapped-good', 5, '0xtoken3', '0xtoken4')
+  const candidates = [badPairA, badPairB, goodCapped]
+  const calls: string[] = []
+  const result = await acquireReceiptsForCandidates({
+    candidates,
+    fetcher: countingFetcher((txHash) => {
+      calls.push(txHash)
+      if (txHash === '0xbad-a') return { status: 'ok', logs: plainTransferLogs() }
+      return { status: 'ok', logs: [] }
+    }, []),
+    requestScope: createReceiptRequestScopeCache(),
+    maxLiveCalls: 2,
+    concurrency: 1, // force sequential batches so badPairA's negative evidence lands before badPairB's batch
+  })
+  assert.deepEqual(calls, ['0xbad-a', '0xcapped-good'])
+  assert.equal(result.counters.receiptQuotaSubstitutions, 1)
+  assert.equal(result.counters.receiptCandidatesSelected, 2)
+})
+
+test('a proven-good (real swap) token pair is never substituted, even if it repeats', async () => {
+  const goodA = candidate('0xgood-a', 2, '0xtoken1', '0xtoken2')
+  const goodB = candidate('0xgood-b', 2, '0xtoken1', '0xtoken2')
+  const calls: string[] = []
+  const result = await acquireReceiptsForCandidates({
+    candidates: [goodA, goodB],
+    fetcher: countingFetcher((txHash) => { calls.push(txHash); return { status: 'ok', logs: realSwapLogs() } }, []),
+    requestScope: createReceiptRequestScopeCache(),
+    maxLiveCalls: 2,
+    concurrency: 1,
+  })
+  assert.deepEqual(calls, ['0xgood-a', '0xgood-b'])
+  assert.equal(result.counters.receiptQuotaSubstitutions, 0)
+})
+
+test('substitution never increases total live provider calls beyond the original budget', async () => {
+  const badPairA = candidate('0xbad-a', 2, '0xtoken1', '0xtoken2')
+  const badPairB = candidate('0xbad-b', 2, '0xtoken1', '0xtoken2')
+  const goodCapped = candidate('0xcapped-good', 5, '0xtoken3', '0xtoken4')
+  const result = await acquireReceiptsForCandidates({
+    candidates: [badPairA, badPairB, goodCapped],
+    fetcher: countingFetcher((txHash) => (txHash === '0xbad-a' ? { status: 'ok', logs: plainTransferLogs() } : { status: 'ok', logs: [] }), []),
+    requestScope: createReceiptRequestScopeCache(),
+    maxLiveCalls: 2,
+    concurrency: 1,
+  })
+  assert.equal(result.counters.receiptLiveCalls, 2)
+  assert.equal(result.counters.receiptProviderCalls, 2)
+})
+
+test('a capped candidate that ALSO matches known-negative evidence is skipped as a replacement, never selected', async () => {
+  const badPairA = candidate('0xbad-a', 2, '0xtoken1', '0xtoken2')
+  const badPairB = candidate('0xbad-b', 2, '0xtoken1', '0xtoken2')
+  const alsoBadCapped = candidate('0xcapped-also-bad', 5, '0xtoken1', '0xtoken2') // same bad pair
+  const goodCapped = candidate('0xcapped-good', 5, '0xtoken3', '0xtoken4')
+  const calls: string[] = []
+  const result = await acquireReceiptsForCandidates({
+    candidates: [badPairA, badPairB, alsoBadCapped, goodCapped],
+    fetcher: countingFetcher((txHash) => {
+      calls.push(txHash)
+      return txHash === '0xbad-a' ? { status: 'ok', logs: plainTransferLogs() } : { status: 'ok', logs: [] }
+    }, []),
+    requestScope: createReceiptRequestScopeCache(),
+    maxLiveCalls: 2,
+    concurrency: 1,
+  })
+  assert.equal(calls.includes('0xcapped-also-bad'), false)
+  assert.deepEqual(calls, ['0xbad-a', '0xcapped-good'])
+  assert.equal(result.counters.receiptCandidatesSelected, 2)
+})
+
+test('no reserve candidates available: a negatively-evidenced slot with nothing to substitute stays as-is (no crash, no extra call)', async () => {
+  const badPairA = candidate('0xbad-a', 2, '0xtoken1', '0xtoken2')
+  const badPairB = candidate('0xbad-b', 2, '0xtoken1', '0xtoken2')
+  const calls: string[] = []
+  const result = await acquireReceiptsForCandidates({
+    candidates: [badPairA, badPairB], // no reserve/capped candidates exist at all
+    fetcher: countingFetcher((txHash) => {
+      calls.push(txHash)
+      return txHash === '0xbad-a' ? { status: 'ok', logs: plainTransferLogs() } : { status: 'ok', logs: [] }
+    }, []),
+    requestScope: createReceiptRequestScopeCache(),
+    maxLiveCalls: 2,
+    concurrency: 1,
+  })
+  assert.deepEqual(calls, ['0xbad-a', '0xbad-b'])
+  assert.equal(result.counters.receiptQuotaSubstitutions, 0)
+  assert.equal(result.counters.receiptLiveCalls, 2)
 })

@@ -178,10 +178,27 @@ export function selectBaseReceiptCandidates(evidenceList: readonly CandidateTxEv
     eligible.push(evidence)
   }
 
+  // WITHIN-TIER LEG-PAIRING RANKING FIX, DISCLOSED (production proof: 25 eligible, 10 fetched,
+  // 8/10 ended plain_transfer_no_swap_event, 0 exact swaps recovered). Tiers 3/4's own eligibility
+  // path lets a transaction with only ONE recorded leg qualify purely because it touched a known/
+  // high-confidence router (`legs.length === 1 && hasRouterLikeCounterparty`) — a real, but WEAK,
+  // pre-fetch signal: no concrete evidence of BOTH token flows a real swap always produces, just
+  // "this tx touched a router". A candidate that already shows OPPOSITE-DIRECTION legs (both an
+  // inbound and an outbound transfer already recorded) is much stronger pre-fetch evidence a real,
+  // decodable pool swap is actually in that receipt — the exact in+out shape decodeReceiptSwap's own
+  // resolvePoolLeg/resolveClassicMultiTransferLeg require. This never changes WHICH tier a candidate
+  // lands in (deterministic tier quotas are unchanged) — it only reorders candidates WITHIN the same
+  // tier, before the existing economicValueUsd tie-break, so a fixed receipt budget is spent on the
+  // strongest-evidence candidates within whichever tier the quota draws from.
+  const legPairingStrength = (evidence: CandidateTxEvidence): number => (hasOppositeDirectionLegs(evidence.legs) ? 1 : 0)
+
   const ranked = eligible
     .map((evidence) => ({ evidence, priority: priorityFor(evidence) }))
     .sort((a, b) => {
       if (a.priority.tier !== b.priority.tier) return a.priority.tier - b.priority.tier
+      const aPairing = legPairingStrength(a.evidence)
+      const bPairing = legPairingStrength(b.evidence)
+      if (aPairing !== bPairing) return bPairing - aPairing
       const aValue = a.evidence.economicValueUsd ?? -Infinity
       const bValue = b.evidence.economicValueUsd ?? -Infinity
       if (aValue !== bValue) return bValue - aValue

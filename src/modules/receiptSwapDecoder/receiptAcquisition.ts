@@ -16,6 +16,7 @@
 import type { RawReceiptLog } from './types'
 import type { SelectedCandidate } from './candidateSelector'
 import { getSharedBaseClient } from './rpcClient'
+import { decodeLogs } from './decodeLogs'
 
 export type ReceiptFetchOutcome =
   | { status: 'ok'; logs: RawReceiptLog[] }
@@ -156,6 +157,13 @@ export type ReceiptAcquisitionCounters = {
   // Real live network calls this acquisition actually issued — cache/singleflight hits are NOT
   // provider calls. Always <= maxLiveCalls (10 by default).
   receiptProviderCalls: number
+  // NEGATIVE EVIDENCE, DISCLOSED — see acquireReceiptsForCandidates's own header: how many
+  // not-yet-fetched, quota-selected slots this scan swapped out (for a not-yet-selected, capped
+  // candidate) because an EARLIER receipt fetched THIS SAME scan, sharing that slot's inferred
+  // token pair, already proved plain_transfer_no_swap_event (no recognized pool-swap event at
+  // all). Never a retry, never a new provider call — the replacement candidate is fetched exactly
+  // once, same as any originally-selected candidate.
+  receiptQuotaSubstitutions: number
 }
 
 export type AcquireReceiptsResult = {
@@ -165,6 +173,16 @@ export type AcquireReceiptsResult = {
   receiptSelectedByPriorityTier: Record<1 | 2 | 3 | 4 | 5, number>
   receiptCandidatesSkippedByTierQuota: Record<3 | 4, number>
   receiptQuotaBackfilled: number
+}
+
+// PURE, DISCLOSED: order-independent token-pair key used as the "router/emitter pattern" proxy for
+// negative evidence — the only pre-fetch-correlatable signal SelectedCandidate actually carries
+// (the real pool/router address is only known once a receipt is fetched). `null` when either side
+// is unknown (nothing to key negative evidence by).
+function tokenPairKey(tokenIn: string | null, tokenOut: string | null): string | null {
+  if (!tokenIn || !tokenOut) return null
+  const [a, b] = [tokenIn.toLowerCase(), tokenOut.toLowerCase()].sort()
+  return `${a}:${b}`
 }
 
 // NO RETRIES, DISCLOSED: a single attempt per key. If it times out or errors, the outcome is
@@ -195,14 +213,19 @@ function withTimeout(promise: Promise<ReceiptFetchOutcome>, timeoutMs: number): 
   })
 }
 
-function chunk<T>(items: readonly T[], size: number): T[][] {
-  const result: T[][] = []
-  for (let i = 0; i < items.length; i += size) result.push(items.slice(i, i + size))
-  return result
-}
-
-// PURE with respect to control flow beyond the injected fetcher — no retries, no receipt-fetch
-// call this function didn't explicitly make, no mutation of `candidates`/`requestScope` beyond the
+// NEGATIVE-EVIDENCE SUBSTITUTION, DISCLOSED (production proof: 25 eligible, 10 fetched, 8/10 ended
+// plain_transfer_no_swap_event, 0 exact swaps recovered): purely quota-based tier selection cannot
+// see, mid-scan, that a receipt it already fetched proved a given token-pair pattern is NOT a swap
+// (no recognized pool-swap-shaped event at all — never a protocol/venue inference, just presence/
+// absence). Once that's known, spending ANOTHER of the fixed 10 slots on a not-yet-fetched,
+// still-queued candidate sharing that exact pattern is a proven waste this scan can now avoid: it
+// is swapped out for the next-priority CAPPED candidate instead (never re-attempting the
+// already-fetched one, never retrying, never exceeding the original slot count). A capped candidate
+// that itself already matches known-negative evidence is skipped over, never selected as a
+// replacement.
+//
+// PURE with respect to control flow beyond the injected fetcher — no retries, no receipt-fetch call
+// this function didn't explicitly make, no mutation of `candidates`/`requestScope` beyond the
 // documented cache/inFlight bookkeeping.
 export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput): Promise<AcquireReceiptsResult> {
   const maxLiveCalls = input.maxLiveCalls ?? DEFAULT_MAX_LIVE_CALLS
@@ -213,6 +236,32 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
   const tierSelection = selectReceiptFetchCandidates(input.candidates, maxLiveCalls)
   const selectedForFetch = tierSelection.selected
   const receiptCandidatesCapped = Math.max(0, receiptCandidatesTotal - selectedForFetch.length)
+
+  const selectedKeys = new Set(selectedForFetch.map((c) => receiptCacheKey(c.chain, c.txHash)))
+  const reserve = input.candidates.filter((c) => !selectedKeys.has(receiptCacheKey(c.chain, c.txHash)))
+  let reserveIndex = 0
+  const negativeEvidence = new Set<string>()
+  let quotaSubstitutions = 0
+
+  // The fixed-size, mutable queue of slots actually fetched this scan — its LENGTH never changes
+  // (still exactly `selectedForFetch.length`, never more than maxLiveCalls), only individual
+  // not-yet-processed entries may be substituted before their batch runs.
+  const queue = [...selectedForFetch]
+
+  function substituteIfNegativelyEvidenced(index: number): void {
+    const candidate = queue[index]
+    const key = tokenPairKey(candidate.inferredTokenIn, candidate.inferredTokenOut)
+    if (!key || !negativeEvidence.has(key)) return
+    while (reserveIndex < reserve.length) {
+      const replacement = reserve[reserveIndex]
+      reserveIndex += 1
+      const replacementKey = tokenPairKey(replacement.inferredTokenIn, replacement.inferredTokenOut)
+      if (replacementKey && negativeEvidence.has(replacementKey)) continue
+      queue[index] = replacement
+      quotaSubstitutions += 1
+      return
+    }
+  }
 
   const logsByTxHash = new Map<string, RawReceiptLog[]>()
   let cacheHits = 0
@@ -245,9 +294,18 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
     }
 
     switch (outcome.status) {
-      case 'ok':
+      case 'ok': {
         logsByTxHash.set(candidate.txHash, outcome.logs)
+        // NEGATIVE EVIDENCE, DISCLOSED: pure, offline (zero provider calls) check for "does this
+        // receipt contain ANY recognized pool-swap-shaped event at all" — never asserts WHICH
+        // protocol/venue, only presence/absence, so this never infers protocol from a Swap topic.
+        const decoded = decodeLogs(outcome.logs)
+        if (decoded.swaps.length === 0) {
+          const pairKey = tokenPairKey(candidate.inferredTokenIn, candidate.inferredTokenOut)
+          if (pairKey) negativeEvidence.add(pairKey)
+        }
         break
+      }
       case 'timeout':
         timeouts += 1
         break
@@ -265,17 +323,25 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
 
   // CONCURRENCY CAP, DISCLOSED: processed in fixed-size batches (never more than `concurrency` live
   // promises in flight at once) rather than an unbounded Promise.all — simple and sufficient at
-  // this scale (at most maxLiveCalls candidates ever reach this loop).
-  for (const batch of chunk(selectedForFetch, concurrency)) {
+  // this scale (at most maxLiveCalls candidates ever reach this loop). Substitution is checked
+  // immediately before each batch runs, using negative evidence accumulated from every PRIOR batch
+  // this same scan (never the batch about to run, which hasn't been fetched yet).
+  for (let start = 0; start < queue.length; start += concurrency) {
+    const end = Math.min(start + concurrency, queue.length)
+    for (let i = start; i < end; i += 1) substituteIfNegativelyEvidenced(i)
+    const batch = queue.slice(start, end)
     // eslint-disable-next-line no-await-in-loop
     await Promise.all(batch.map(processOne))
   }
+
+  const finalSelectedByTier: Record<1 | 2 | 3 | 4 | 5, number> = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
+  for (const c of queue) finalSelectedByTier[c.priorityTier] += 1
 
   return {
     logsByTxHash,
     counters: {
       receiptCandidatesTotal,
-      receiptCandidatesSelected: selectedForFetch.length,
+      receiptCandidatesSelected: queue.length,
       receiptCandidatesCapped,
       receiptCacheHits: cacheHits,
       receiptSingleflightHits: singleflightHits,
@@ -284,9 +350,10 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
       receiptMissingResults: missing,
       receiptMalformed: malformed,
       receiptReverted: reverted,
+      receiptQuotaSubstitutions: quotaSubstitutions,
       receiptProviderCalls: liveCalls,
     },
-    receiptSelectedByPriorityTier: tierSelection.selectedByTier,
+    receiptSelectedByPriorityTier: finalSelectedByTier,
     receiptCandidatesSkippedByTierQuota: tierSelection.skippedByTierQuota,
     receiptQuotaBackfilled: tierSelection.quotaBackfilled,
   }

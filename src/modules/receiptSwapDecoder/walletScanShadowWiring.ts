@@ -523,6 +523,11 @@ export type WalletScanShadowLogPayload =
       receiptSelectedByPriorityTier: Record<string, number>
       receiptCandidatesSkippedByTierQuota: Record<string, number>
       receiptQuotaBackfilled: number
+      // NEGATIVE-EVIDENCE SUBSTITUTION, DISCLOSED — see receiptAcquisition.ts's own
+      // acquireReceiptsForCandidates header: how many quota-selected, not-yet-fetched slots this
+      // scan swapped out for a capped candidate because an earlier receipt this same scan already
+      // proved that token-pair pattern plain_transfer_no_swap_event.
+      receiptQuotaSubstitutions: number
       // SELECTOR BROADENING, DISCLOSED — see candidateSelector.ts's own header for the full
       // production-proof root cause this fixes (415 real swap-lookup transactions, 0 candidates
       // selected under the old routerDistributorMode-gated source).
@@ -664,6 +669,7 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     receiptSelectedByPriorityTier: acquisition.receiptSelectedByPriorityTier,
     receiptCandidatesSkippedByTierQuota: acquisition.receiptCandidatesSkippedByTierQuota,
     receiptQuotaBackfilled: acquisition.receiptQuotaBackfilled,
+    receiptQuotaSubstitutions: acquisition.counters.receiptQuotaSubstitutions,
     selectorTransactionsConsidered: selection.selectorTransactionsConsidered,
     selectorEligibleCandidates: selection.selectorEligibleCandidates,
     selectorRejectedCandidates: selection.selectorRejectedCandidates,

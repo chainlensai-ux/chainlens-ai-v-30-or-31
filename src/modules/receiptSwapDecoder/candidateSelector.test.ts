@@ -208,3 +208,67 @@ test('deterministic output: identical input produces byte-identical results acro
   const r2 = selectBaseReceiptCandidates(evidence)
   assert.deepEqual(r1, r2)
 })
+
+// WITHIN-TIER LEG-PAIRING RANKING FIX, DISCLOSED (production proof: 25 eligible, 10 fetched, 8/10
+// ended plain_transfer_no_swap_event, 0 exact swaps). A candidate with both an inbound AND an
+// outbound leg already recorded is much stronger pre-fetch evidence of a real, decodable swap than
+// a single-leg candidate that only qualified via a router touch -- these tests prove that ordering
+// within a tier, without changing which tier either candidate lands in.
+test('within tier 4 (known/high-confidence router), a two-leg (paired) candidate is selected before a one-leg (router-touch-only) candidate, despite lower economic value', () => {
+  const paired = baseEvidence({
+    txHash: '0xpaired',
+    legs: [{ contract: WETH, direction: 'outbound', amount: 1 }, { contract: TOKEN_X, direction: 'inbound', amount: 1 }],
+    routerConfidence: 'high',
+    economicValueUsd: 10,
+  })
+  const singleLeg = baseEvidence({
+    txHash: '0xsingle',
+    legs: [{ contract: WETH, direction: 'outbound', amount: 1 }],
+    routerConfidence: 'high',
+    economicValueUsd: 1000,
+  })
+  const result = selectBaseReceiptCandidates([singleLeg, paired])
+  assert.equal(result.selected[0].txHash, '0xpaired')
+  assert.equal(result.selected[1].txHash, '0xsingle')
+  // Both still land in tier 4 -- this is a within-tier reorder, never a tier change.
+  assert.equal(result.selected[0].priorityTier, 4)
+  assert.equal(result.selected[1].priorityTier, 4)
+})
+
+test('within tier 3 (verified quote address), paired-leg candidates outrank single-leg candidates before the economic-value tie-break applies', () => {
+  const paired = baseEvidence({
+    txHash: '0xpaired',
+    legs: [{ contract: WETH, direction: 'outbound', amount: 1 }, { contract: TOKEN_X, direction: 'inbound', amount: 1 }],
+    hasVerifiedQuoteAddress: true,
+    routerConfidence: 'medium',
+    economicValueUsd: null,
+  })
+  const singleLeg = baseEvidence({
+    txHash: '0xsingle',
+    legs: [{ contract: WETH, direction: 'outbound', amount: 1 }],
+    hasVerifiedQuoteAddress: true,
+    routerConfidence: 'medium',
+    economicValueUsd: 5000,
+  })
+  const result = selectBaseReceiptCandidates([singleLeg, paired])
+  assert.equal(result.selected[0].txHash, '0xpaired')
+  assert.equal(result.selected[0].priorityTier, 3)
+})
+
+test('among two paired-leg candidates in the same tier, economic value still tie-breaks as before', () => {
+  const higherValue = baseEvidence({
+    txHash: '0xhigh',
+    legs: [{ contract: WETH, direction: 'outbound', amount: 1 }, { contract: TOKEN_X, direction: 'inbound', amount: 1 }],
+    routerConfidence: 'high',
+    economicValueUsd: 500,
+  })
+  const lowerValue = baseEvidence({
+    txHash: '0xlow',
+    legs: [{ contract: WETH, direction: 'outbound', amount: 1 }, { contract: USDC, direction: 'inbound', amount: 1 }],
+    routerConfidence: 'high',
+    economicValueUsd: 10,
+  })
+  const result = selectBaseReceiptCandidates([lowerValue, higherValue])
+  assert.equal(result.selected[0].txHash, '0xhigh')
+  assert.equal(result.selected[1].txHash, '0xlow')
+})
