@@ -4,6 +4,7 @@ import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { auditGlobalAlchemyCall } from '@/lib/server/globalRpcAudit'
+import { assertAlchemyChainAllowed } from '@/lib/server/alchemySupportedChains'
 
 type WindowKey = '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
@@ -532,6 +533,11 @@ function resolveBaseRpc(): string {
 const BASE_RPC = resolveBaseRpc()
 
 async function fetchOnChain(address: string): Promise<OnChainData> {
+  // CU-LEAK AUDIT, DISCLOSED (this task): defense-in-depth invariant, not a behavior change — this
+  // call is already hardcoded to 'base' only; assertAlchemyChainAllowed makes that an enforced
+  // guarantee rather than convention, so this call site can never silently be widened to a chain
+  // this app has no real Alchemy key for.
+  assertAlchemyChainAllowed('base', '/api/whale-alerts')
   const cacheKey = `base:${address.toLowerCase()}`
   const cached = onChainCache.get(cacheKey)
   if (cached && cached.exp > Date.now()) return cached.data
