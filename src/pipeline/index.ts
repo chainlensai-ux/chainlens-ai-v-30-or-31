@@ -10,7 +10,8 @@
 // fetchProviderWindow (stage 1) and, when scanMode === 'deep', buildRecoveryPolicyObject
 // (stage 5). Every other stage is a synchronous, pure, or try/catch-wrapped pure call.
 
-import { fetchProviderWindow } from '../modules/providerFetchWindow/index'
+import { fetchProviderWindow, getProviderFetchWindowCoalescingCounters } from '../modules/providerFetchWindow/index'
+import { mergeNormalizedEvents } from '../modules/fifoEngine/utils'
 import type { RawProviderEvent, SupportedChain } from '../modules/providerFetchWindow/types'
 import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
@@ -1672,6 +1673,117 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // no separate stage to compute — recoveryPolicy is already uniformly threaded into every
   // safeRunFifoEngine call in this file (including the two below), so its effect is already baked
   // into every count reported here, not omitted. Never a per-lot dump — only aggregate counts.
+  // FIFO STRUCTURE AUDIT, DISCLOSED, BOUNDED — added to diagnose a REAL determinism question, not to
+  // change any outcome: the same wallet/window previously produced 219 structural closed lots / 10
+  // verified, and a later scan produced 165 / 8. This block is purely observational. It computes
+  // nothing that feeds FIFO, pricing, evidence classification or the public gate, and it deliberately
+  // does NOT normalize, pad or otherwise steer the lot count toward any prior value — the honest
+  // number is whatever the inputs produce, and the point is to locate WHICH stage differs between
+  // two runs, not to make them agree.
+  //
+  // The candidate explanations this is built to separate:
+  //   - provider-page truncation  -> perChainProviderCounts / rawEventCount differ
+  //   - cache variation           -> providerFetchWindow coalescing/reuse counters differ
+  //   - scan-window drift         -> earliest/latest event instants or window days differ
+  //   - dedupe instability        -> mergedEventCount vs dedupedEventCount, or rawMatchedLots vs
+  //                                  dedupedMatchedLots, differ while inputs match
+  //   - event ordering            -> identical multisets but different orderInstability fingerprints
+  //   - a real input change       -> everything above is self-consistent and the wallet simply had
+  //                                  different on-chain activity in the window
+  {
+    const mergedForAudit = mergeNormalizedEvents(canonicalNormalizedEvents, recoveredNormalizedForPricing)
+    // Same identity a duplicate event would collapse under. Deterministic and side-effect free.
+    const eventIdentity = (e: NormalizedEvent) =>
+      `${e.chain}:${e.txHash.toLowerCase()}:${e.contract.toLowerCase()}:${e.direction}:${e.amount}:${e.timestamp}`
+    const dedupedEventKeys = new Set(mergedForAudit.map(eventIdentity))
+
+    const eventInstants = mergedForAudit
+      .map((e) => Date.parse(e.timestamp))
+      .filter((t) => Number.isFinite(t))
+      .sort((a, b) => a - b)
+
+    const lots = fifoAndPnl.matchedLots
+    const lotIdentity = (l: MatchedLot) =>
+      `${l.chain}:${l.token.toLowerCase()}:${l.openedTxHash.toLowerCase()}:${l.closedTxHash.toLowerCase()}:${l.amount}`
+    const dedupedLotKeys = new Set(lots.map(lotIdentity))
+
+    // ORDER FINGERPRINT, DISCLOSED: a cheap, stable signature of the SEQUENCE fed to FIFO. Two runs
+    // with identical event multisets but different fingerprints prove an ordering difference — the
+    // one cause that identical counts alone can never reveal.
+    const orderFingerprint = (values: string[]) => {
+      let hash = 0
+      for (const value of values) {
+        for (let i = 0; i < value.length; i += 1) hash = (Math.imul(31, hash) + value.charCodeAt(i)) | 0
+      }
+      return hash
+    }
+
+    // eslint-disable-next-line no-console
+    console.warn('[fifo-structure-audit]', {
+      // Stage 1 — providers, per chain and per provider.
+      perChainProviderCounts: providerResults.map((r) => ({
+        chain: r.chain,
+        providerStatus: r.providerStatus,
+        rawEventCount: r.rawEvents.length,
+        goldrushOk: r.providerResults.goldrush.ok,
+        goldrushErrorReason: r.providerResults.goldrush.errorReason,
+        goldrushEventCount: r.providerResults.goldrush.events.length,
+        alchemyOk: r.providerResults.alchemy.ok,
+        alchemyErrorReason: r.providerResults.alchemy.errorReason,
+        alchemyEventCount: r.providerResults.alchemy.events.length,
+      })),
+      rawEventCount: allRawEvents.length,
+      // Stage 2 — normalization.
+      normalizedEventCount: normalizedEvents.length,
+      normalizationErrorCount: normalizationErrors.length,
+      canonicalNormalizedEventCount: canonicalNormalizedEvents.length,
+      recoveredNormalizedEventCount: recoveredNormalizedForPricing.length,
+      // Stage 3 — merge and dedupe. A gap between these two is dedupe doing real work; a gap that
+      // MOVES between runs on identical inputs is dedupe instability.
+      mergedEventCount: mergedForAudit.length,
+      dedupedEventCount: dedupedEventKeys.size,
+      duplicateEventCount: mergedForAudit.length - dedupedEventKeys.size,
+      // Stage 4 — detection vs what FIFO is actually handed.
+      detectedBuys: timelines.buyTimeline.totalBuys,
+      detectedSells: timelines.sellTimeline.totalSells,
+      fifoInputBuys: mergedForAudit.filter((e) => e.direction === 'inbound').length,
+      fifoInputSells: mergedForAudit.filter((e) => e.direction === 'outbound').length,
+      fifoInputUnknownDirection: mergedForAudit.filter((e) => e.direction === 'unknown').length,
+      // Stage 5 — lots produced, and what was dropped.
+      rawMatchedLots: lots.length,
+      dedupedMatchedLots: dedupedLotKeys.size,
+      duplicateMatchedLots: lots.length - dedupedLotKeys.size,
+      unmatchedBuys: fifoAndPnl.unmatchedBuys,
+      unmatchedSells: fifoAndPnl.unmatchedSells,
+      droppedLotReasons: {
+        hardInvalid: fifoAndPnl.integrityFlags.hardInvalid,
+        estimateOnlyLotsExcluded: fifoAndPnl.integrityFlags.estimateOnlyLotsExcluded,
+        syntheticLotsExcluded: fifoAndPnl.integrityFlags.syntheticLotsExcluded,
+      },
+      verifiedLots: lots.filter((l) => l.evidenceQuality === 'verified').length,
+      // Stage 6 — scan window boundaries actually covered by the data.
+      scanWindow: {
+        configuredWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
+        earliestEventUtc: eventInstants.length > 0 ? new Date(eventInstants[0]).toISOString() : null,
+        latestEventUtc: eventInstants.length > 0 ? new Date(eventInstants[eventInstants.length - 1]).toISOString() : null,
+        observedSpanDays:
+          eventInstants.length > 1
+            ? Math.round((eventInstants[eventInstants.length - 1] - eventInstants[0]) / 86_400_000)
+            : 0,
+        recoveryPagesUsed: recoveryPolicy.totalPagesUsedThisWallet,
+      },
+      // Stage 7 — cache/coalescing state, the direct test for "same wallet, different inputs because
+      // a warm instance served something different".
+      providerFetchWindowCache: getProviderFetchWindowCoalescingCounters(),
+      // Stage 8 — ordering fingerprints. Identical counts with differing fingerprints isolates
+      // ordering as the cause.
+      orderFingerprints: {
+        mergedEvents: orderFingerprint(mergedForAudit.map(eventIdentity)),
+        matchedLots: orderFingerprint(lots.map(lotIdentity)),
+      },
+    })
+  }
+
   {
     const summarizeFifo = (fifo: FifoOutput) => {
       const total = fifo.matchedLots.length

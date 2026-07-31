@@ -2,19 +2,23 @@ import { test, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   ALLOWLISTED_ETH_USD_POOLS,
-  MAX_GECKOTERMINAL_OHLCV_REQUESTS_PER_SCAN,
+  MAX_GECKOTERMINAL_RANGE_REQUESTS_PER_SCAN,
   allowlistedPoolForChain,
-  fetchGeckoTerminalEthUsdForUtcDay,
   getGeckoTerminalEthOhlcvRequestCount,
+  getGeckoTerminalRangeDiagnostics,
+  isGeckoTerminalQuotaStopped,
   parseCandleRow,
+  primeGeckoTerminalRangeForBuckets,
+  readGeckoTerminalEthUsdForUtcDay,
   resetGeckoTerminalEthOhlcvForScan,
 } from './geckoTerminalEthOhlcv'
 
-const TRADE_MS = Date.UTC(2026, 4, 11, 13, 45, 0)
+const DAY_MS = 86_400_000
 const BUCKET_MS = Date.UTC(2026, 4, 11, 0, 0, 0)
 const BUCKET_SEC = BUCKET_MS / 1000
-const DAY_SEC = 86_400
 
+const ETH_POOL = '0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640'
+const ETH_WETH = '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2'
 const BASE_POOL = '0xd0b53d9277642d899df5c87a3966a349a798f224'
 const BASE_WETH = '0x4200000000000000000000000000000000000006'
 
@@ -28,11 +32,15 @@ function ohlcvBody(rows: unknown[], meta?: unknown): string {
   return JSON.stringify({ data: { attributes: { ohlcv_list: rows } }, ...(meta ? { meta } : {}) })
 }
 
-function mockOhlcv(body: string, status = 200): { urls: string[] } {
+// Routes by pool address so a test can make the Ethereum pool fail and the Base pool answer.
+function mockPools(handlers: { eth?: () => Response; base?: () => Response }): { urls: string[] } {
   const urls: string[] = []
   global.fetch = (async (input: RequestInfo | URL) => {
-    urls.push(typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url)
-    return new Response(body, { status })
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+    urls.push(url)
+    if (url.includes(ETH_POOL)) return handlers.eth ? handlers.eth() : new Response('{}', { status: 500 })
+    if (url.includes(BASE_POOL)) return handlers.base ? handlers.base() : new Response('{}', { status: 500 })
+    return new Response('{}', { status: 500 })
   }) as unknown as typeof fetch
   return { urls }
 }
@@ -45,146 +53,247 @@ afterEach(() => {
   global.fetch = originalFetch
 })
 
-test('the pool allowlist is fixed and covers Base and Ethereum with canonical WETH addresses', () => {
+test('the pool allowlist is fixed, Ethereum first, with canonical WETH addresses', () => {
   assert.equal(ALLOWLISTED_ETH_USD_POOLS.length, 2)
+  // Ethereum is attempted first — the deepest ETH/USD venue.
+  assert.equal(ALLOWLISTED_ETH_USD_POOLS[0].chain, 'eth')
+  assert.equal(ALLOWLISTED_ETH_USD_POOLS[0].poolAddress, ETH_POOL)
   assert.equal(allowlistedPoolForChain('base')?.poolAddress, BASE_POOL)
   assert.equal(allowlistedPoolForChain('base')?.wethAddress, BASE_WETH)
-  assert.equal(allowlistedPoolForChain('eth')?.wethAddress, '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2')
-  // No pool has been reviewed for Arbitrum, so none is offered — never discovered dynamically.
+  assert.equal(allowlistedPoolForChain('eth')?.wethAddress, ETH_WETH)
+  // No pool reviewed for these — never discovered dynamically.
   assert.equal(allowlistedPoolForChain('arbitrum'), null)
   assert.equal(allowlistedPoolForChain('hyperevm'), null)
 })
 
-test('an allowlisted pool is used and the WETH side is requested explicitly, never the stablecoin side', async () => {
-  const { urls } = mockOhlcv(ohlcvBody([candle(BUCKET_SEC, 3120.5)]))
-  const result = await fetchGeckoTerminalEthUsdForUtcDay({ chain: 'base', timestampMs: TRADE_MS, bucketStartMs: BUCKET_MS })
+test('ONE range request resolves many required days — the fix for 25 requests / 25 HTTP 429s', async () => {
+  const requiredBuckets = Array.from({ length: 25 }, (_, i) => BUCKET_MS + i * DAY_MS)
+  const rows = requiredBuckets.map((b, i) => candle(b / 1000, 3000 + i))
+  const { urls } = mockPools({ eth: () => new Response(ohlcvBody(rows), { status: 200 }) })
 
-  assert.equal(result.priceUsd, 3120.5)
-  assert.equal(result.poolAddress, BASE_POOL)
-  assert.equal(result.poolLabel, 'uniswap_v3_weth_usdc_005_base')
-  assert.equal(result.candleTimestampMs, BUCKET_MS)
-  assert.equal(result.rejectionReason, null)
+  const diagnostics = await primeGeckoTerminalRangeForBuckets(requiredBuckets)
+
+  assert.equal(urls.length, 1, '25 required days must cost exactly ONE request')
+  assert.equal(getGeckoTerminalEthOhlcvRequestCount(), 1)
+  assert.equal(diagnostics.requiredBucketCount, 25)
+  assert.equal(diagnostics.rangeRequests, 1)
+  assert.equal(diagnostics.candlesReturned, 25)
+  assert.equal(diagnostics.exactDaysMatched, 25)
+  assert.deepEqual(diagnostics.missingDays, [])
+  assert.equal(diagnostics.rangeStartUtc, '2026-05-11')
+  assert.equal(diagnostics.rangeEndUtc, new Date(BUCKET_MS + 24 * DAY_MS).toISOString().slice(0, 10))
+
+  // Every bucket now resolves locally, with zero further requests.
+  for (let i = 0; i < 25; i += 1) {
+    const hit = readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: requiredBuckets[i] })
+    assert.equal(hit.priceUsd, 3000 + i)
+    assert.equal(hit.poolAddress, ETH_POOL)
+    assert.equal(hit.candleTimestampMs, requiredBuckets[i])
+  }
+  assert.equal(urls.length, 1, 'reads must never issue a request')
+})
+
+test('the range request carries the explicit WETH token parameter, a bounded limit and a historical anchor', async () => {
+  const { urls } = mockPools({ eth: () => new Response(ohlcvBody([candle(BUCKET_SEC, 3120.5)]), { status: 200 }) })
+  await primeGeckoTerminalRangeForBuckets([BUCKET_MS, BUCKET_MS + 3 * DAY_MS])
 
   const url = urls[0]
-  assert.ok(url.includes(`/pools/${BASE_POOL}/ohlcv/day`), 'must query the allowlisted pool')
-  // Explicitly asking for the WETH token's USD series is what prevents reading the ~$1 stablecoin side.
-  assert.ok(url.includes(`token=${BASE_WETH}`))
+  assert.ok(url.includes(`/pools/${ETH_POOL}/ohlcv/day`))
+  assert.ok(url.includes(`token=${ETH_WETH}`), 'the WETH side must be requested explicitly, never the stablecoin side')
   assert.ok(url.includes('currency=usd'))
-  assert.ok(url.includes('before_timestamp='), 'must anchor to the historical day, never "now"')
+  assert.ok(url.includes('before_timestamp='), 'must anchor to the historical window, never "now"')
+  const limit = Number(new URL(url).searchParams.get('limit'))
+  assert.ok(limit > 0 && limit <= 1000, 'limit must be bounded')
 })
 
-test('the candle for the requested UTC day is selected even when neighbours are returned', async () => {
-  mockOhlcv(
-    ohlcvBody([
-      candle(BUCKET_SEC + DAY_SEC, 3300),
-      candle(BUCKET_SEC, 3120.5),
-      candle(BUCKET_SEC - DAY_SEC, 2900),
-    ]),
-  )
-  const result = await fetchGeckoTerminalEthUsdForUtcDay({ chain: 'base', timestampMs: TRADE_MS, bucketStartMs: BUCKET_MS })
-  assert.equal(result.priceUsd, 3120.5, 'must pick the exact-day candle, not the first or nearest')
-  assert.equal(result.candleTimestampMs, BUCKET_MS)
+test('the Base pool is used only as a second INDEPENDENT pool fallback, and never more than 2 requests', async () => {
+  const { urls } = mockPools({
+    eth: () => new Response(ohlcvBody([]), { status: 200 }), // Ethereum pool genuinely returns nothing
+    base: () => new Response(ohlcvBody([candle(BUCKET_SEC, 3120.5)]), { status: 200 }),
+  })
+
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+
+  assert.equal(urls.length, 2)
+  assert.ok(urls[0].includes(ETH_POOL), 'Ethereum pool first')
+  assert.ok(urls[1].includes(BASE_POOL), 'Base pool second — a different venue, not a retry')
+  assert.equal(diagnostics.rangeRequests, MAX_GECKOTERMINAL_RANGE_REQUESTS_PER_SCAN)
+  assert.equal(readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS }).priceUsd, 3120.5)
+  assert.equal(readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS }).poolAddress, BASE_POOL)
 })
 
-test('an adjacent/stale candle is REJECTED, never substituted for the requested day', async () => {
-  // Only neighbouring days are available — the requested day genuinely has no candle.
-  mockOhlcv(ohlcvBody([candle(BUCKET_SEC - DAY_SEC, 2900), candle(BUCKET_SEC + DAY_SEC, 3300)]))
-  const result = await fetchGeckoTerminalEthUsdForUtcDay({ chain: 'base', timestampMs: TRADE_MS, bucketStartMs: BUCKET_MS })
-
-  assert.equal(result.priceUsd, null)
-  assert.equal(result.rejectionReason, 'geckoterminal_no_candle_for_requested_utc_day')
-  assert.equal(result.candleTimestampMs, null)
+test('the Base pool is NOT requested when the Ethereum range already covered every required day', async () => {
+  const { urls } = mockPools({ eth: () => new Response(ohlcvBody([candle(BUCKET_SEC, 3120.5)]), { status: 200 }) })
+  await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+  assert.equal(urls.length, 1, 'no second request when nothing is missing')
 })
 
-test('malformed and zero/negative candles are rejected', async () => {
-  for (const rows of [
-    [[BUCKET_SEC, 1, 2]], // too short
-    [[BUCKET_SEC, 1, 2, 3, 0, 5]], // zero close
-    [[BUCKET_SEC, 1, 2, 3, -10, 5]], // negative close
-    [[BUCKET_SEC, 1, 2, 3, 'not-a-number', 5]], // non-numeric close
-    [['not-a-timestamp', 1, 2, 3, 3120.5, 5]], // non-numeric timestamp
-  ]) {
-    resetGeckoTerminalEthOhlcvForScan()
-    mockOhlcv(ohlcvBody(rows))
-    const result = await fetchGeckoTerminalEthUsdForUtcDay({ chain: 'base', timestampMs: TRADE_MS, bucketStartMs: BUCKET_MS })
-    assert.equal(result.priceUsd, null)
-    assert.ok(result.rejectionReason, 'a malformed candle must state a rejection reason')
-  }
+test('HTTP 429 stops the GeckoTerminal quota group for the scan — the second pool is not attempted', async () => {
+  const { urls } = mockPools({
+    eth: () => new Response('{}', { status: 429 }),
+    base: () => new Response(ohlcvBody([candle(BUCKET_SEC, 3120.5)]), { status: 200 }),
+  })
+
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+
+  assert.equal(urls.length, 1, 'a 429 must stop the quota group, not roll on to the next pool')
+  assert.equal(isGeckoTerminalQuotaStopped(), true)
+  assert.equal(diagnostics.quotaStopped, true)
+  assert.equal(diagnostics.httpStatuses[0].status, 429)
+  const read = readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS })
+  assert.equal(read.priceUsd, null)
+  assert.equal(read.rejectionReason, 'geckoterminal_quota_stopped_this_scan')
 })
 
-test('an empty or missing ohlcv_list fails closed', async () => {
-  mockOhlcv(ohlcvBody([]))
-  const empty = await fetchGeckoTerminalEthUsdForUtcDay({ chain: 'base', timestampMs: TRADE_MS, bucketStartMs: BUCKET_MS })
-  assert.equal(empty.rejectionReason, 'geckoterminal_no_candles')
-
-  resetGeckoTerminalEthOhlcvForScan()
-  mockOhlcv(JSON.stringify({ data: {} }))
-  const missing = await fetchGeckoTerminalEthUsdForUtcDay({ chain: 'base', timestampMs: TRADE_MS, bucketStartMs: BUCKET_MS })
-  assert.equal(missing.priceUsd, null)
-  assert.equal(missing.rejectionReason, 'geckoterminal_no_candles')
-})
-
-test('a pool-identity mismatch in the response metadata fails closed', async () => {
-  mockOhlcv(
-    ohlcvBody([candle(BUCKET_SEC, 3120.5)], {
-      base: { address: '0x0000000000000000000000000000000000000dead', symbol: 'NOPE' },
-      quote: { address: '0x0000000000000000000000000000000000000beef', symbol: 'ALSONOPE' },
-    }),
-  )
-  const result = await fetchGeckoTerminalEthUsdForUtcDay({ chain: 'base', timestampMs: TRADE_MS, bucketStartMs: BUCKET_MS })
-  assert.equal(result.priceUsd, null)
-  assert.equal(result.rejectionReason, 'pool_identity_mismatch')
-})
-
-test('matching metadata is accepted', async () => {
-  mockOhlcv(
-    ohlcvBody([candle(BUCKET_SEC, 3120.5)], {
-      base: { address: BASE_WETH.toUpperCase(), symbol: 'WETH' },
-      quote: { address: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', symbol: 'USDC' },
-    }),
-  )
-  const result = await fetchGeckoTerminalEthUsdForUtcDay({ chain: 'base', timestampMs: TRADE_MS, bucketStartMs: BUCKET_MS })
-  assert.equal(result.priceUsd, 3120.5)
-})
-
-test('an implausible value — such as the stablecoin side being read by mistake — fails closed', async () => {
-  mockOhlcv(ohlcvBody([candle(BUCKET_SEC, 1.0001)]))
-  const result = await fetchGeckoTerminalEthUsdForUtcDay({ chain: 'base', timestampMs: TRADE_MS, bucketStartMs: BUCKET_MS })
-  assert.equal(result.priceUsd, null)
-  assert.equal(result.rejectionReason, 'geckoterminal_implausible_eth_price')
-  // The guard rejects; it never clamps, adjusts or synthesizes a replacement.
-})
-
-test('a chain with no allowlisted pool fails closed rather than discovering one', async () => {
-  mockOhlcv(ohlcvBody([candle(BUCKET_SEC, 3120.5)]))
-  const arb = await fetchGeckoTerminalEthUsdForUtcDay({ chain: 'arbitrum', timestampMs: TRADE_MS, bucketStartMs: BUCKET_MS })
-  assert.equal(arb.priceUsd, null)
-  assert.equal(arb.rejectionReason, 'unsupported_network_for_geckoterminal')
-  assert.equal(getGeckoTerminalEthOhlcvRequestCount(), 0, 'no request may be spent on an unsupported chain')
-})
-
-test('a non-200 response fails closed and is never retried', async () => {
-  const { urls } = mockOhlcv('{}', 429)
-  const result = await fetchGeckoTerminalEthUsdForUtcDay({ chain: 'base', timestampMs: TRADE_MS, bucketStartMs: BUCKET_MS })
-  assert.equal(result.priceUsd, null)
-  assert.equal(result.httpStatus, 429)
-  assert.equal(result.rejectionReason, 'geckoterminal_http_429')
-  assert.equal(urls.length, 1, 'exactly one request — this module never retries')
-})
-
-test('the hard per-scan request cap is enforced and resets per scan', async () => {
-  mockOhlcv(ohlcvBody([]))
-  for (let i = 0; i < MAX_GECKOTERMINAL_OHLCV_REQUESTS_PER_SCAN; i += 1) {
-    await fetchGeckoTerminalEthUsdForUtcDay({ chain: 'base', timestampMs: TRADE_MS, bucketStartMs: BUCKET_MS + i * DAY_SEC * 1000 })
-  }
-  assert.equal(getGeckoTerminalEthOhlcvRequestCount(), MAX_GECKOTERMINAL_OHLCV_REQUESTS_PER_SCAN)
-
-  const overCap = await fetchGeckoTerminalEthUsdForUtcDay({ chain: 'base', timestampMs: TRADE_MS, bucketStartMs: BUCKET_MS })
-  assert.equal(overCap.priceUsd, null)
-  assert.equal(overCap.rejectionReason, 'geckoterminal_scan_request_cap_reached')
+test('priming is once per scan and resets per scan', async () => {
+  const { urls } = mockPools({ eth: () => new Response(ohlcvBody([candle(BUCKET_SEC, 3120.5)]), { status: 200 }) })
+  await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+  await primeGeckoTerminalRangeForBuckets([BUCKET_MS, BUCKET_MS + DAY_MS])
+  assert.equal(urls.length, 1, 'a second prime in the same scan must not re-fetch')
 
   resetGeckoTerminalEthOhlcvForScan()
   assert.equal(getGeckoTerminalEthOhlcvRequestCount(), 0)
+  assert.equal(isGeckoTerminalQuotaStopped(), false)
+  await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+  assert.equal(urls.length, 2, 'a new scan may prime again')
+})
+
+test('a day genuinely absent from the returned range is reported missing and fails closed', async () => {
+  const present = BUCKET_MS
+  const absent = BUCKET_MS + 5 * DAY_MS
+  mockPools({
+    eth: () => new Response(ohlcvBody([candle(present / 1000, 3120.5)]), { status: 200 }),
+    base: () => new Response(ohlcvBody([]), { status: 200 }),
+  })
+
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([present, absent])
+
+  assert.equal(diagnostics.exactDaysMatched, 1)
+  assert.deepEqual(diagnostics.missingDays, [new Date(absent).toISOString().slice(0, 10)])
+  const read = readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: absent })
+  assert.equal(read.priceUsd, null)
+  assert.equal(read.rejectionReason, 'geckoterminal_no_candle_for_requested_utc_day')
+})
+
+test('an adjacent/stale candle is never substituted for a requested day', async () => {
+  mockPools({
+    eth: () => new Response(ohlcvBody([candle((BUCKET_MS - DAY_MS) / 1000, 2900), candle((BUCKET_MS + DAY_MS) / 1000, 3300)]), { status: 200 }),
+    base: () => new Response(ohlcvBody([]), { status: 200 }),
+  })
+  await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+
+  const read = readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS })
+  assert.equal(read.priceUsd, null, 'neighbouring days must not fill the requested day')
+  // The neighbours ARE indexed under their own days — correct, and provably not cross-assigned.
+  assert.equal(readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS - DAY_MS }).priceUsd, 2900)
+})
+
+test('malformed, zero, negative and non-day-aligned candles are excluded from the index', async () => {
+  mockPools({
+    eth: () =>
+      new Response(
+        ohlcvBody([
+          [BUCKET_SEC, 1, 2], // too short
+          [BUCKET_SEC + 3600, 1, 2, 3, 3120.5, 5], // not UTC-day aligned
+          [BUCKET_SEC + DAY_MS / 1000, 1, 2, 3, 0, 5], // zero close
+          [BUCKET_SEC + (2 * DAY_MS) / 1000, 1, 2, 3, -10, 5], // negative close
+          [BUCKET_SEC + (3 * DAY_MS) / 1000, 1, 2, 3, 'nope', 5], // non-numeric close
+        ]),
+        { status: 200 },
+      ),
+    base: () => new Response(ohlcvBody([]), { status: 200 }),
+  })
+
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS, BUCKET_MS + DAY_MS, BUCKET_MS + 2 * DAY_MS, BUCKET_MS + 3 * DAY_MS])
+  assert.equal(diagnostics.exactDaysMatched, 0, 'no malformed row may enter the index')
+  for (const offset of [0, 1, 2, 3]) {
+    assert.equal(readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS + offset * DAY_MS }).priceUsd, null)
+  }
+})
+
+test('a pool-identity mismatch rejects the whole response', async () => {
+  mockPools({
+    eth: () =>
+      new Response(
+        ohlcvBody([candle(BUCKET_SEC, 3120.5)], {
+          base: { address: '0x0000000000000000000000000000000000000dead', symbol: 'NOPE' },
+          quote: { address: '0x0000000000000000000000000000000000000beef', symbol: 'ALSONOPE' },
+        }),
+        { status: 200 },
+      ),
+    base: () => new Response(ohlcvBody([]), { status: 200 }),
+  })
+
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+  assert.equal(diagnostics.httpStatuses[0].rejectionReason, 'pool_identity_mismatch')
+  assert.equal(readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS }).priceUsd, null)
+})
+
+test('matching pool metadata is accepted', async () => {
+  mockPools({
+    eth: () =>
+      new Response(
+        ohlcvBody([candle(BUCKET_SEC, 3120.5)], {
+          base: { address: ETH_WETH.toUpperCase(), symbol: 'WETH' },
+          quote: { address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', symbol: 'USDC' },
+        }),
+        { status: 200 },
+      ),
+  })
+  await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+  assert.equal(readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS }).priceUsd, 3120.5)
+})
+
+test('an implausible value — such as the stablecoin side read by mistake — is excluded, never clamped', async () => {
+  mockPools({
+    eth: () => new Response(ohlcvBody([candle(BUCKET_SEC, 1.0001)]), { status: 200 }),
+    base: () => new Response(ohlcvBody([]), { status: 200 }),
+  })
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+  assert.equal(diagnostics.exactDaysMatched, 0)
+  assert.equal(readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS }).priceUsd, null)
+})
+
+test('a non-200, non-429 response fails closed without retrying that pool', async () => {
+  const { urls } = mockPools({
+    eth: () => new Response('{}', { status: 503 }),
+    base: () => new Response(ohlcvBody([candle(BUCKET_SEC, 3120.5)]), { status: 200 }),
+  })
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+
+  assert.equal(diagnostics.httpStatuses[0].status, 503)
+  assert.equal(urls.filter((u) => u.includes(ETH_POOL)).length, 1, 'never retried')
+  // A 503 is not a quota signal, so the second, independent pool is still tried.
+  assert.equal(readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS }).priceUsd, 3120.5)
+})
+
+test('reading before priming is reported distinctly, never as a missing day', () => {
+  const read = readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS })
+  assert.equal(read.priceUsd, null)
+  assert.equal(read.rejectionReason, 'geckoterminal_range_not_primed')
+})
+
+test('an unsupported chain fails closed', () => {
+  const read = readGeckoTerminalEthUsdForUtcDay({ chain: 'hyperevm', bucketStartMs: BUCKET_MS })
+  assert.equal(read.priceUsd, null)
+  assert.equal(read.rejectionReason, 'unsupported_network_for_geckoterminal')
+})
+
+test('no required buckets means no request at all', async () => {
+  const { urls } = mockPools({ eth: () => new Response(ohlcvBody([candle(BUCKET_SEC, 3120.5)]), { status: 200 }) })
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([])
+  assert.equal(urls.length, 0)
+  assert.equal(diagnostics.rangeRequests, 0)
+})
+
+test('range diagnostics are exposed for the scan audit', async () => {
+  mockPools({ eth: () => new Response(ohlcvBody([candle(BUCKET_SEC, 3120.5)]), { status: 200 }) })
+  await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+  const snapshot = getGeckoTerminalRangeDiagnostics()
+  assert.ok(snapshot)
+  assert.equal(snapshot!.requiredBucketCount, 1)
+  assert.equal(snapshot!.exactDaysMatched, 1)
+  assert.equal(snapshot!.rangeRequests, 1)
 })
 
 test('parseCandleRow validates structure without inventing values', () => {

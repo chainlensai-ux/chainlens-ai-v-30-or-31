@@ -53,7 +53,7 @@ import {
   isEthNativeChain,
   getNativePriceResolverDiagnostics,
 } from '../modules/nativePriceResolver/index'
-import { getGeckoTerminalEthOhlcvRequestCount } from '../modules/nativePriceResolver/geckoTerminalEthOhlcv'
+import { getGeckoTerminalEthOhlcvRequestCount, getGeckoTerminalRangeDiagnostics } from '../modules/nativePriceResolver/geckoTerminalEthOhlcv'
 import {
   deriveSameTransactionQuotePrice,
   groupSwapLegsByTransaction,
@@ -1064,6 +1064,10 @@ export async function priceLotsForWallet(params: {
       geckoTerminalAttempts: resolverDiagnostics.attemptsBySource.geckoterminal_eth_ohlcv,
       geckoTerminalSuccesses: resolverDiagnostics.successesBySource.geckoterminal_eth_ohlcv,
       geckoTerminalRequestsThisScan: getGeckoTerminalEthOhlcvRequestCount(),
+      // BOUNDED RANGE ARCHITECTURE, DISCLOSED (replaces per-day fetching, which spent 25 requests and
+      // received 25 HTTP 429s): requiredBucketCount / rangeStart / rangeEnd / rangeRequests /
+      // candlesReturned / exactDaysMatched / missingDays / HTTP statuses for the at-most-2 requests.
+      geckoTerminalRange: getGeckoTerminalRangeDiagnostics(),
       // Which allowlisted pool and which exact daily candle backed each accepted pool-derived bucket.
       selectedPools: resolverDiagnostics.selectedPools,
       // Coverage on both sides of the whole native-price pass, so a real gain is attributable.

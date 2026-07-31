@@ -206,7 +206,7 @@ test('the per-attempt audit record carries every field the audit brief requires,
 
 // ─── GECKOTERMINAL: THE INDEPENDENT SOURCE ADDED AFTER GOLDRUSH ALSO CAME BACK EMPTY ─────────────
 
-const GT_BASE_POOL = '0xd0b53d9277642d899df5c87a3966a349a798f224'
+const GT_ETH_POOL = '0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640'
 const TRADE_BUCKET_SEC = nativePriceBucketStart(TRADE_MS) / 1000
 
 function gtCandle(timestampSec: number, close: number): unknown {
@@ -231,13 +231,15 @@ test('GoldRush returns null and GeckoTerminal succeeds — the exact current pro
   registerIndependentNativePriceSource(async () => null) // 25/25 goldrush_no_price, as production showed
   const counters = mockGeckoTerminal([gtCandle(TRADE_BUCKET_SEC, 3120.5)])
 
-  const result = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  // The production path: prefetch primes ONE bounded range, then every bucket resolves from it.
+  const prefetched = await prefetchNativeUsdPrices({ requirements: [{ chain: 'base', timestamp: TRADE_MS }], nowMs: NOW_MS })
+  const result = readPrefetchedNativeUsdPrice(prefetched, TRADE_MS)
 
   assert.equal(result?.priceUsd, 3120.5)
   assert.equal(result?.source, 'geckoterminal_eth_ohlcv')
   assert.equal(result?.confidence, 'verified')
   // Provenance is preserved on the resolution itself, not just in a log.
-  assert.equal(result?.poolAddress, GT_BASE_POOL)
+  assert.equal(result?.poolAddress, GT_ETH_POOL)
   assert.equal(result?.candleTimestampMs, nativePriceBucketStart(TRADE_MS))
   assert.equal(counters.geckoCalls, 1)
 
@@ -247,7 +249,7 @@ test('GoldRush returns null and GeckoTerminal succeeds — the exact current pro
   // Ordered after GoldRush and before CoinGecko — the CoinGecko group is never reached.
   assert.equal(diagnostics.attemptsBySource.coingecko_native_coin_history, 0)
   assert.deepEqual(diagnostics.acceptedBuckets, ['2026-05-11'])
-  assert.equal(diagnostics.selectedPools[0].poolAddress, GT_BASE_POOL)
+  assert.equal(diagnostics.selectedPools[0].poolAddress, GT_ETH_POOL)
   assert.equal(diagnostics.selectedPools[0].candleTimestampMs, nativePriceBucketStart(TRADE_MS))
 })
 
@@ -258,7 +260,8 @@ test('an open CoinGecko breaker does NOT block GeckoTerminal — separate quota 
   await resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: NEXT_DAY_MS, nowMs: NOW_MS })
 
   const counters = mockGeckoTerminal([gtCandle(TRADE_BUCKET_SEC, 3120.5)])
-  const result = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  const prefetched = await prefetchNativeUsdPrices({ requirements: [{ chain: 'base', timestamp: TRADE_MS }], nowMs: NOW_MS })
+  const result = readPrefetchedNativeUsdPrice(prefetched, TRADE_MS)
 
   assert.equal(result?.priceUsd, 3120.5)
   assert.equal(result?.source, 'geckoterminal_eth_ohlcv')
@@ -276,7 +279,8 @@ test('a GeckoTerminal provider miss still falls through, and if nothing answers 
     return new Response('{}', { status: 500 })
   }) as unknown as typeof fetch
 
-  const result = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  const prefetched = await prefetchNativeUsdPrices({ requirements: [{ chain: 'base', timestamp: TRADE_MS }], nowMs: NOW_MS })
+  const result = readPrefetchedNativeUsdPrice(prefetched, TRADE_MS)
   assert.equal(result, null)
 
   const diagnostics = getNativePriceResolverDiagnostics()
@@ -293,7 +297,8 @@ test('a GeckoTerminal-accepted day serves Base, Ethereum and Arbitrum consumers 
   registerIndependentNativePriceSource(async () => null)
   const counters = mockGeckoTerminal([gtCandle(TRADE_BUCKET_SEC, 3120.5)])
 
-  const base = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  const prefetched = await prefetchNativeUsdPrices({ requirements: [{ chain: 'base', timestamp: TRADE_MS }], nowMs: NOW_MS })
+  const base = readPrefetchedNativeUsdPrice(prefetched, TRADE_MS)
   const eth = await resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: SAME_DAY_LATER_MS, nowMs: NOW_MS })
   // Arbitrum has no allowlisted pool of its own, yet is served correctly — one accepted ETH/USD day is
   // chain-independent, which is the entire basis of the shared cache.
@@ -310,16 +315,18 @@ test('a GeckoTerminal-accepted day survives a scan reset with no second network 
   registerIndependentNativePriceSource(async () => null)
   const counters = mockGeckoTerminal([gtCandle(TRADE_BUCKET_SEC, 3120.5)])
 
-  const first = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
-  assert.equal(first?.priceUsd, 3120.5)
+  const firstPrefetch = await prefetchNativeUsdPrices({ requirements: [{ chain: 'base', timestamp: TRADE_MS }], nowMs: NOW_MS })
+  assert.equal(readPrefetchedNativeUsdPrice(firstPrefetch, TRADE_MS)?.priceUsd, 3120.5)
 
   resetNativePriceResolverForScan()
 
-  const second = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  // A new scan: the accepted day is already known, so the range prime is skipped entirely.
+  const secondPrefetch = await prefetchNativeUsdPrices({ requirements: [{ chain: 'base', timestamp: TRADE_MS }], nowMs: NOW_MS })
+  const second = readPrefetchedNativeUsdPrice(secondPrefetch, TRADE_MS)
   assert.equal(second?.priceUsd, 3120.5)
   assert.equal(second?.servedFromPermanentCache, true)
-  assert.equal(second?.poolAddress, GT_BASE_POOL, 'provenance survives the cache too')
-  assert.equal(counters.geckoCalls, 1)
+  assert.equal(second?.poolAddress, GT_ETH_POOL, 'provenance survives the cache too')
+  assert.equal(counters.geckoCalls, 1, 'a cached day must trigger no second range request')
 })
 
 test('same-day consumers coalesce onto one GeckoTerminal request', async () => {
@@ -334,6 +341,8 @@ test('same-day consumers coalesce onto one GeckoTerminal request', async () => {
     return new Response('{}', { status: 500 })
   }) as unknown as typeof fetch
 
+  // Prime once (one bounded range), then three same-day consumers resolve with no further request.
+  await prefetchNativeUsdPrices({ requirements: [{ chain: 'base', timestamp: TRADE_MS }], nowMs: NOW_MS })
   const [a, b, c] = await Promise.all([
     resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS }),
     resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: SAME_DAY_LATER_MS, nowMs: NOW_MS }),
@@ -344,7 +353,11 @@ test('same-day consumers coalesce onto one GeckoTerminal request', async () => {
   assert.equal(a?.priceUsd, 3120.5)
   assert.equal(b?.priceUsd, 3120.5)
   assert.equal(c?.priceUsd, 3120.5)
-  assert.equal(getNativePriceResolverDiagnostics().coalescedHits, 2)
+  // Under the range architecture the prime resolves and accepts the day up front, so the three
+  // consumers are served by the accepted-day cache rather than by in-flight coalescing. Both paths
+  // spend zero additional requests; in-flight coalescing itself is still exercised directly by the
+  // GoldRush coalescing test above, where no prime precedes the concurrent callers.
+  assert.equal(getNativePriceResolverDiagnostics().permanentCacheHits, 3)
 })
 
 test('a GeckoTerminal failure is scan-scoped, not permanent', async () => {
@@ -353,21 +366,25 @@ test('a GeckoTerminal failure is scan-scoped, not permanent', async () => {
   global.fetch = (async (input: RequestInfo | URL) => {
     if (urlOf(input).includes('api.geckoterminal.com')) {
       geckoCalls += 1
-      const rows = geckoCalls === 1 ? [] : [gtCandle(TRADE_BUCKET_SEC, 3120.5)]
+      const rows = geckoCalls <= 2 ? [] : [gtCandle(TRADE_BUCKET_SEC, 3120.5)]
       return new Response(JSON.stringify({ data: { attributes: { ohlcv_list: rows } } }), { status: 200 })
     }
     return new Response('{}', { status: 500 })
   }) as unknown as typeof fetch
 
-  assert.equal(await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS }), null)
+  const firstPrefetch = await prefetchNativeUsdPrices({ requirements: [{ chain: 'base', timestamp: TRADE_MS }], nowMs: NOW_MS })
+  assert.equal(readPrefetchedNativeUsdPrice(firstPrefetch, TRADE_MS), null)
   // Same scan: the doomed bucket is not retried.
   await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: SAME_DAY_LATER_MS, nowMs: NOW_MS })
-  assert.equal(geckoCalls, 1)
+  assert.ok(geckoCalls <= 2, 'at most the two allowlisted pools, never a retry')
+  const callsAfterFirstScan = geckoCalls
 
   resetNativePriceResolverForScan()
 
-  const recovered = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  const recoveredPrefetch = await prefetchNativeUsdPrices({ requirements: [{ chain: 'base', timestamp: TRADE_MS }], nowMs: NOW_MS })
+  const recovered = readPrefetchedNativeUsdPrice(recoveredPrefetch, TRADE_MS)
   assert.equal(recovered?.priceUsd, 3120.5, 'a new scan may legitimately retry a transiently failed day')
+  assert.ok(geckoCalls > callsAfterFirstScan)
 })
 
 // ─── SHARING, COALESCING AND CACHING ─────────────────────────────────────────────────────────────

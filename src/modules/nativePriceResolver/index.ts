@@ -80,7 +80,11 @@
 
 import type { SupportedChain } from '../providerFetchWindow/types'
 import type { PriceSourceFn } from '../pricingAtTimeEngine/types'
-import { fetchGeckoTerminalEthUsdForUtcDay, resetGeckoTerminalEthOhlcvForScan } from './geckoTerminalEthOhlcv'
+import {
+  readGeckoTerminalEthUsdForUtcDay,
+  primeGeckoTerminalRangeForBuckets,
+  resetGeckoTerminalEthOhlcvForScan,
+} from './geckoTerminalEthOhlcv'
 import {
   fetchCoingeckoNativeEthPriceDetailed,
   fetchCoingeckoPriceDetailed,
@@ -410,8 +414,10 @@ type SourceOutcome = {
 // third independent quota group: different host, no API key, unaffected by a CoinGecko 429 or open
 // breaker. See geckoTerminalEthOhlcv.ts for the allowlist, the exact-UTC-day candle requirement, the
 // pool-identity check and the per-scan request cap.
-async function attemptGeckoTerminal(chain: SupportedChain, timestamp: number, bucketStartMs: number): Promise<SourceOutcome> {
-  const result = await fetchGeckoTerminalEthUsdForUtcDay({ chain, timestampMs: timestamp, bucketStartMs })
+function attemptGeckoTerminal(chain: SupportedChain, bucketStartMs: number): SourceOutcome {
+  // READS the already-primed request-scoped range index — never issues a request. All GeckoTerminal
+  // fetching happens exactly once per scan, in prefetchNativeUsdPrices below, as a bounded range.
+  const result = readGeckoTerminalEthUsdForUtcDay({ chain, bucketStartMs })
   return {
     priceUsd: result.priceUsd,
     httpStatus: result.httpStatus,
@@ -486,7 +492,7 @@ async function attemptSource(
   bucketStartMs: number,
 ): Promise<SourceOutcome> {
   if (source === 'goldrush_historical') return attemptGoldrush(chain, timestamp)
-  if (source === 'geckoterminal_eth_ohlcv') return attemptGeckoTerminal(chain, timestamp, bucketStartMs)
+  if (source === 'geckoterminal_eth_ohlcv') return attemptGeckoTerminal(chain, bucketStartMs)
   if (source === 'coingecko_native_coin_history') return attemptCoingeckoNative(timestamp)
   return attemptCoingeckoWethContract(chain, timestamp)
 }
@@ -681,6 +687,18 @@ export async function prefetchNativeUsdPrices(params: {
   const ordered = [...params.requirements]
     .filter((r) => Number.isFinite(r.timestamp) && r.timestamp > 0 && isEthNativeChain(r.chain))
     .sort((a, b) => a.timestamp - b.timestamp || a.chain.localeCompare(b.chain))
+
+  // BOUNDED RANGE PRIME, DISCLOSED (replaces per-day fetching, which spent 25 requests and received
+  // 25 HTTP 429s in production): every required UTC day is collected first, then ONE bounded OHLCV
+  // range covering earliest..latest is fetched and indexed by exact day. Days already in the
+  // process-lifetime accepted cache are excluded, so a warm worker narrows the range instead of
+  // re-fetching what it already knows. At most 2 sequential requests per scan; none at all when
+  // nothing is missing.
+  const bucketsNeedingPrime = [...new Set(ordered.map((r) => nativePriceBucketStart(r.timestamp)))]
+    .filter((bucket) => !acceptedPriceByBucket.has(bucket))
+  if (bucketsNeedingPrime.length > 0) {
+    await primeGeckoTerminalRangeForBuckets(bucketsNeedingPrime)
+  }
 
   for (const requirement of ordered) {
     const bucketStartMs = nativePriceBucketStart(requirement.timestamp)

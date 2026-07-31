@@ -10,6 +10,21 @@
 // from GoldRush's. A CoinGecko 429 or an open CoinGecko breaker has no effect on this source, and
 // this module deliberately never consults either.
 //
+// ─── PER-DAY FETCHING WAS THE WRONG SHAPE (current revision) ─────────────────────────────────────
+//
+// Production proof: 25 GeckoTerminal OHLCV requests, ALL HTTP 429, acceptedBuckets 0, lotsCompleted
+// 0. The source itself was correct; its REQUEST ARCHITECTURE was not. GeckoTerminal's free tier is
+// roughly 30 requests/minute with no key, and one request per required UTC day meant a scan needing
+// 25 distinct days spent 25 requests to fetch what is, in reality, ONE contiguous daily series from
+// ONE pool. The endpoint has always accepted a `limit`, so the entire window can be retrieved in a
+// single call and indexed locally.
+//
+// This module now fetches a bounded RANGE covering the earliest through latest required day, indexes
+// the returned candles by exact UTC day, and answers every bucket from that one response. Hard cap:
+// 2 requests per scan — the allowlisted Ethereum pool first, and the allowlisted Base pool only as a
+// second INDEPENDENT POOL fallback (a different venue, not a retry of the same one). Sequential, no
+// burst concurrency, no retries. A 429 stops the GeckoTerminal quota group for the rest of the scan.
+//
 // WHAT IT READS: the real, documented endpoint
 //   GET /api/v2/networks/{network}/pools/{pool}/ohlcv/day?before_timestamp={sec}&limit={n}
 //       &currency=usd&token={weth}
@@ -93,15 +108,23 @@ const DAY_SECONDS = 86_400
 const MIN_PLAUSIBLE_ETH_USD = 10
 const MAX_PLAUSIBLE_ETH_USD = 1_000_000
 
-export type GeckoTerminalEthOhlcvResult = {
-  priceUsd: number | null
-  httpStatus: number | null
-  responseShape: string | null
-  rejectionReason: string | null
-  poolAddress: string | null
-  poolLabel: string | null
-  candleTimestampMs: number | null
-  endpoint: string
+export type GeckoTerminalCandleHit = {
+  priceUsd: number
+  poolAddress: string
+  poolLabel: string
+  candleTimestampMs: number
+}
+
+export type GeckoTerminalRangeDiagnostics = {
+  requiredBucketCount: number
+  rangeStartUtc: string | null
+  rangeEndUtc: string | null
+  rangeRequests: number
+  candlesReturned: number
+  exactDaysMatched: number
+  missingDays: string[]
+  httpStatuses: Array<{ poolLabel: string; status: number | null; rejectionReason: string | null }>
+  quotaStopped: boolean
 }
 
 type OhlcvResponse = {
@@ -109,18 +132,55 @@ type OhlcvResponse = {
   meta?: { base?: { address?: string; symbol?: string }; quote?: { address?: string; symbol?: string } }
 }
 
-let ohlcvRequestsThisScan = 0
+// HARD CAP, DISCLOSED: at most two real GeckoTerminal requests per scan — one per allowlisted pool,
+// and only because they are genuinely DIFFERENT venues on different networks. The second is never a
+// retry of the first.
+export const MAX_GECKOTERMINAL_RANGE_REQUESTS_PER_SCAN = 2
+
+// GeckoTerminal's documented maximum candles per OHLCV response.
+const MAX_CANDLES_PER_REQUEST = 1000
+
+const DAY_MS = 86_400_000
+
+// REQUEST-SCOPED RANGE INDEX, DISCLOSED: the single fetched series, keyed by exact UTC-day bucket
+// start. Every consumer this scan reads from this one index, so a day costs zero additional requests
+// no matter how many lots need it. Cleared per scan (the ACCEPTED-day cache that must outlive a scan
+// lives in the resolver, not here — see index.ts's acceptedPriceByBucket).
+let rangeIndexThisScan = new Map<number, GeckoTerminalCandleHit>()
+let rangeRequestsThisScan = 0
+let rangePrimedThisScan = false
+// QUOTA STOP, DISCLOSED: set on the first HTTP 429. Once set, no further GeckoTerminal request is
+// made this scan — the rate limiter has answered definitively and spending the remaining budget would
+// only produce more 429s.
+let quotaStoppedThisScan = false
+let lastRangeDiagnostics: GeckoTerminalRangeDiagnostics | null = null
 
 export function resetGeckoTerminalEthOhlcvForScan(): void {
-  ohlcvRequestsThisScan = 0
+  rangeIndexThisScan = new Map()
+  rangeRequestsThisScan = 0
+  rangePrimedThisScan = false
+  quotaStoppedThisScan = false
+  lastRangeDiagnostics = null
 }
 
 export function getGeckoTerminalEthOhlcvRequestCount(): number {
-  return ohlcvRequestsThisScan
+  return rangeRequestsThisScan
+}
+
+export function getGeckoTerminalRangeDiagnostics(): GeckoTerminalRangeDiagnostics | null {
+  return lastRangeDiagnostics ? { ...lastRangeDiagnostics, missingDays: [...lastRangeDiagnostics.missingDays], httpStatuses: [...lastRangeDiagnostics.httpStatuses] } : null
+}
+
+export function isGeckoTerminalQuotaStopped(): boolean {
+  return quotaStoppedThisScan
 }
 
 function isFinitePositive(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
+}
+
+function utcDay(bucketStartMs: number): string {
+  return new Date(bucketStartMs).toISOString().slice(0, 10)
 }
 
 // PURE. Validates one raw ohlcv_list row and returns its [timestampSec, close] when structurally
@@ -134,111 +194,226 @@ export function parseCandleRow(row: unknown): { timestampSec: number; close: num
   return { timestampSec, close }
 }
 
-// Fetches the daily candle for the UTC day containing `timestampMs` from the chain's allowlisted
-// pool. Fails closed on: an unsupported chain, no allowlisted pool, an exhausted per-scan cap, a
-// non-200 response, a malformed body, a pool-identity mismatch, a missing candle for that exact day,
-// or an implausible value. Never retries, never substitutes an adjacent day, never uses a current
-// price.
-export async function fetchGeckoTerminalEthUsdForUtcDay(params: {
-  chain: SupportedChain
-  timestampMs: number
-  bucketStartMs: number
-}): Promise<GeckoTerminalEthOhlcvResult> {
-  const { chain, bucketStartMs } = params
-  const endpoint = 'geckoterminal:/networks/{network}/pools/{pool}/ohlcv/day?token={weth}&currency=usd'
-  const base: Omit<GeckoTerminalEthOhlcvResult, 'priceUsd' | 'rejectionReason'> = {
-    httpStatus: null,
-    responseShape: null,
-    poolAddress: null,
-    poolLabel: null,
-    candleTimestampMs: null,
-    endpoint,
-  }
+type RangeFetchOutcome = {
+  candlesReturned: number
+  indexed: number
+  httpStatus: number | null
+  rejectionReason: string | null
+}
 
-  const network = GECKOTERMINAL_NETWORK_IDS[chain]
-  if (!network) return { ...base, priceUsd: null, rejectionReason: 'unsupported_network_for_geckoterminal' }
+// Fetches ONE bounded daily range from ONE allowlisted pool and indexes every structurally sound,
+// plausible candle by its exact UTC day. Never retries. Never substitutes an adjacent day: indexing
+// is by the candle's own timestamp, so a bucket with no candle simply has no entry.
+async function fetchRangeFromPool(
+  pool: AllowlistedEthPool,
+  earliestBucketMs: number,
+  latestBucketMs: number,
+): Promise<RangeFetchOutcome> {
+  // One candle per day inclusive, plus a small margin so the boundary days are certainly covered,
+  // clamped to the endpoint's documented maximum.
+  const dayspan = Math.floor((latestBucketMs - earliestBucketMs) / DAY_MS) + 1
+  const limit = Math.min(MAX_CANDLES_PER_REQUEST, Math.max(1, dayspan + 2))
+  // Anchored one day past the latest required day so that day's own closed candle is included.
+  const beforeTimestampSec = Math.floor(latestBucketMs / 1000) + 86_400 * 2
 
-  const pool = allowlistedPoolForChain(chain)
-  if (!pool) return { ...base, priceUsd: null, rejectionReason: 'no_allowlisted_pool_for_chain' }
-
-  const withPool = { ...base, poolAddress: pool.poolAddress, poolLabel: pool.label }
-
-  if (ohlcvRequestsThisScan >= MAX_GECKOTERMINAL_OHLCV_REQUESTS_PER_SCAN) {
-    return { ...withPool, priceUsd: null, rejectionReason: 'geckoterminal_scan_request_cap_reached' }
-  }
-
-  const bucketStartSec = Math.floor(bucketStartMs / 1000)
-  // Anchored one day PAST the target day's start so the target day's own closed candle is included in
-  // the returned window. `limit=3` keeps the payload minimal while tolerating the endpoint returning
-  // the series anchored slightly differently — the exact-day match below is what actually selects.
-  const beforeTimestampSec = bucketStartSec + DAY_SECONDS * 2
   const url =
-    `https://api.geckoterminal.com/api/v2/networks/${network}/pools/${pool.poolAddress}/ohlcv/day` +
-    `?before_timestamp=${beforeTimestampSec}&limit=3&currency=usd&token=${pool.wethAddress}`
+    `https://api.geckoterminal.com/api/v2/networks/${pool.network}/pools/${pool.poolAddress}/ohlcv/day` +
+    `?before_timestamp=${beforeTimestampSec}&limit=${limit}&currency=usd&token=${pool.wethAddress}`
 
-  ohlcvRequestsThisScan += 1
+  rangeRequestsThisScan += 1
 
   let res: Response
   try {
-    res = await fetch(url, { signal: AbortSignal.timeout(8_000) })
+    res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
   } catch (err) {
-    // NO RETRY, DISCLOSED: returned as a failure immediately. The resolver records the bucket as
-    // unavailable for this scan only, so a later scan may legitimately try again.
-    return { ...withPool, priceUsd: null, rejectionReason: `geckoterminal_fetch_error:${err instanceof Error ? err.name : 'unknown'}` }
+    return { candlesReturned: 0, indexed: 0, httpStatus: null, rejectionReason: `geckoterminal_fetch_error:${err instanceof Error ? err.name : 'unknown'}` }
   }
 
-  const withStatus = { ...withPool, httpStatus: res.status }
-  if (!res.ok) return { ...withStatus, priceUsd: null, rejectionReason: `geckoterminal_http_${res.status}` }
+  if (res.status === 429) {
+    // QUOTA STOP: the rate limiter has answered definitively. No further request this scan.
+    quotaStoppedThisScan = true
+    return { candlesReturned: 0, indexed: 0, httpStatus: 429, rejectionReason: 'geckoterminal_http_429' }
+  }
+  if (!res.ok) {
+    return { candlesReturned: 0, indexed: 0, httpStatus: res.status, rejectionReason: `geckoterminal_http_${res.status}` }
+  }
 
   let body: OhlcvResponse
   try {
     body = (await res.json()) as OhlcvResponse
   } catch {
-    return { ...withStatus, priceUsd: null, responseShape: 'unparseable_json', rejectionReason: 'geckoterminal_unparseable_json' }
+    return { candlesReturned: 0, indexed: 0, httpStatus: res.status, rejectionReason: 'geckoterminal_unparseable_json' }
   }
 
-  // POOL IDENTITY VERIFICATION, DISCLOSED: when the response carries token metadata, the allowlisted
-  // WETH address MUST appear on one side of the returned pair. This catches a wrong/redirected pool
-  // before its numbers are ever trusted. When metadata is absent, identity still rests on the fixed
-  // allowlist above (the pool address was never discovered dynamically), so absence alone is not
-  // treated as a failure — a MISMATCH is.
+  // POOL IDENTITY VERIFICATION, DISCLOSED, UNCHANGED: when the response carries token metadata, the
+  // allowlisted WETH address MUST appear on one side of the returned pair, or nothing from this
+  // response is trusted. Absence of metadata is not a failure (identity already rests on the fixed
+  // allowlist); a MISMATCH is.
   const metaAddresses = [body.meta?.base?.address, body.meta?.quote?.address]
     .filter((a): a is string => typeof a === 'string')
     .map((a) => a.toLowerCase())
   if (metaAddresses.length > 0 && !metaAddresses.includes(pool.wethAddress.toLowerCase())) {
-    return { ...withStatus, priceUsd: null, responseShape: 'meta_present', rejectionReason: 'pool_identity_mismatch' }
+    return { candlesReturned: 0, indexed: 0, httpStatus: res.status, rejectionReason: 'pool_identity_mismatch' }
   }
 
   const rawList = body.data?.attributes?.ohlcv_list
   if (!Array.isArray(rawList) || rawList.length === 0) {
-    return { ...withStatus, priceUsd: null, responseShape: 'ohlcv_list_missing_or_empty', rejectionReason: 'geckoterminal_no_candles' }
+    return { candlesReturned: 0, indexed: 0, httpStatus: res.status, rejectionReason: 'geckoterminal_no_candles' }
   }
 
-  const parsed = rawList.map(parseCandleRow).filter((c): c is { timestampSec: number; close: number } => c !== null)
-  if (parsed.length === 0) {
-    return { ...withStatus, priceUsd: null, responseShape: 'ohlcv_list_rows_malformed', rejectionReason: 'geckoterminal_malformed_candles' }
+  let indexed = 0
+  for (const row of rawList) {
+    const parsed = parseCandleRow(row)
+    if (!parsed) continue
+    // EXACT UTC-DAY INDEXING, DISCLOSED: a candle is filed under its OWN day only. Nothing is
+    // interpolated, carried forward, or nearest-matched — a day absent from the series stays absent.
+    const candleMs = parsed.timestampSec * 1000
+    if (candleMs % DAY_MS !== 0) continue // not a UTC-day-aligned daily candle — never trusted
+    // PLAUSIBILITY GUARD, unchanged: rejects a category error (e.g. the ~$1 stablecoin side); never
+    // clamps or adjusts.
+    if (parsed.close < MIN_PLAUSIBLE_ETH_USD || parsed.close > MAX_PLAUSIBLE_ETH_USD) continue
+    if (rangeIndexThisScan.has(candleMs)) continue // first accepted pool wins, deterministically
+    rangeIndexThisScan.set(candleMs, {
+      priceUsd: parsed.close,
+      poolAddress: pool.poolAddress,
+      poolLabel: pool.label,
+      candleTimestampMs: candleMs,
+    })
+    indexed += 1
   }
 
-  // EXACT UTC-DAY MATCH ONLY, DISCLOSED: the candle's own timestamp must be the requested day's start.
-  // An adjacent or stale candle is NEVER substituted — that would silently price a trade with a
-  // different day's ETH price while still labelling it verified.
-  const exact = parsed.find((candle) => candle.timestampSec === bucketStartSec)
-  if (!exact) {
+  return { candlesReturned: rawList.length, indexed, httpStatus: res.status, rejectionReason: null }
+}
+
+// PRIMES the request-scoped range index for every required UTC-day bucket, using at most
+// MAX_GECKOTERMINAL_RANGE_REQUESTS_PER_SCAN sequential requests. Called once per scan by the
+// resolver's prefetch; safe to call again (it is a no-op once primed).
+export async function primeGeckoTerminalRangeForBuckets(requiredBucketStartsMs: readonly number[]): Promise<GeckoTerminalRangeDiagnostics> {
+  const required = [...new Set(requiredBucketStartsMs)].filter((b) => Number.isFinite(b) && b > 0).sort((a, b) => a - b)
+
+  if (rangePrimedThisScan || required.length === 0) {
+    const diagnostics: GeckoTerminalRangeDiagnostics = lastRangeDiagnostics ?? {
+      requiredBucketCount: required.length,
+      rangeStartUtc: null,
+      rangeEndUtc: null,
+      rangeRequests: rangeRequestsThisScan,
+      candlesReturned: 0,
+      exactDaysMatched: 0,
+      missingDays: [],
+      httpStatuses: [],
+      quotaStopped: quotaStoppedThisScan,
+    }
+    return diagnostics
+  }
+
+  rangePrimedThisScan = true
+
+  const earliest = required[0]
+  const latest = required[required.length - 1]
+  const httpStatuses: GeckoTerminalRangeDiagnostics['httpStatuses'] = []
+  let candlesReturned = 0
+
+  // SEQUENTIAL, DISCLOSED: the Ethereum pool first (the deepest ETH/USD venue), then the Base pool
+  // only if days are still missing. Never concurrent — burst concurrency against a keyless, per-minute
+  // limit is what produced the 429 storm this revision replaces.
+  for (const pool of ALLOWLISTED_ETH_USD_POOLS) {
+    if (rangeRequestsThisScan >= MAX_GECKOTERMINAL_RANGE_REQUESTS_PER_SCAN) break
+    if (quotaStoppedThisScan) break
+    const stillMissing = required.filter((bucket) => !rangeIndexThisScan.has(bucket))
+    if (stillMissing.length === 0) break
+
+    const outcome = await fetchRangeFromPool(pool, earliest, latest)
+    candlesReturned += outcome.candlesReturned
+    httpStatuses.push({ poolLabel: pool.label, status: outcome.httpStatus, rejectionReason: outcome.rejectionReason })
+  }
+
+  const missing = required.filter((bucket) => !rangeIndexThisScan.has(bucket))
+
+  lastRangeDiagnostics = {
+    requiredBucketCount: required.length,
+    rangeStartUtc: utcDay(earliest),
+    rangeEndUtc: utcDay(latest),
+    rangeRequests: rangeRequestsThisScan,
+    candlesReturned,
+    exactDaysMatched: required.length - missing.length,
+    // Bounded so log volume stays sane on a wide window.
+    missingDays: missing.slice(0, 20).map(utcDay),
+    httpStatuses,
+    quotaStopped: quotaStoppedThisScan,
+  }
+  return lastRangeDiagnostics
+}
+
+export type GeckoTerminalEthOhlcvResult = {
+  priceUsd: number | null
+  httpStatus: number | null
+  responseShape: string | null
+  rejectionReason: string | null
+  poolAddress: string | null
+  poolLabel: string | null
+  candleTimestampMs: number | null
+  endpoint: string
+}
+
+// Resolves one UTC day from the ALREADY-PRIMED, request-scoped range index. PURE with respect to the
+// network: this never issues a request — all fetching happens once, in primeGeckoTerminalRangeForBuckets.
+// Fails closed when the day is genuinely absent from the fetched series; an adjacent or stale candle
+// is never substituted, because the index is keyed by the candle's own exact UTC day.
+export function readGeckoTerminalEthUsdForUtcDay(params: {
+  chain: SupportedChain
+  bucketStartMs: number
+}): GeckoTerminalEthOhlcvResult {
+  const endpoint = 'geckoterminal:/networks/{network}/pools/{pool}/ohlcv/day?token={weth}&currency=usd (range, indexed)'
+  const base = {
+    httpStatus: null,
+    responseShape: null as string | null,
+    poolAddress: null as string | null,
+    poolLabel: null as string | null,
+    candleTimestampMs: null as number | null,
+    endpoint,
+  }
+
+  if (!isEthNativeGeckoChain(params.chain)) {
+    return { ...base, priceUsd: null, rejectionReason: 'unsupported_network_for_geckoterminal' }
+  }
+
+  if (quotaStoppedThisScan && rangeIndexThisScan.size === 0) {
+    return { ...base, priceUsd: null, rejectionReason: 'geckoterminal_quota_stopped_this_scan' }
+  }
+
+  const hit = rangeIndexThisScan.get(params.bucketStartMs)
+  if (!hit) {
     return {
-      ...withStatus,
+      ...base,
       priceUsd: null,
-      responseShape: `candles=${parsed.length}`,
-      rejectionReason: 'geckoterminal_no_candle_for_requested_utc_day',
+      responseShape: `indexed_days=${rangeIndexThisScan.size}`,
+      rejectionReason: rangePrimedThisScan ? 'geckoterminal_no_candle_for_requested_utc_day' : 'geckoterminal_range_not_primed',
     }
   }
 
-  const withCandle = { ...withStatus, candleTimestampMs: exact.timestampSec * 1000, responseShape: 'ohlcv_list[close]' }
-
-  if (exact.close < MIN_PLAUSIBLE_ETH_USD || exact.close > MAX_PLAUSIBLE_ETH_USD) {
-    // See MIN/MAX_PLAUSIBLE_ETH_USD above — a category-error guard, failing closed rather than
-    // adjusting anything.
-    return { ...withCandle, priceUsd: null, rejectionReason: 'geckoterminal_implausible_eth_price' }
+  return {
+    priceUsd: hit.priceUsd,
+    httpStatus: 200,
+    responseShape: 'ohlcv_list[close]',
+    rejectionReason: null,
+    poolAddress: hit.poolAddress,
+    poolLabel: hit.poolLabel,
+    candleTimestampMs: hit.candleTimestampMs,
+    endpoint,
   }
+}
 
-  return { ...withCandle, priceUsd: exact.close, rejectionReason: null }
+// Chains for which an ETH/USD series can be sourced at all. The RANGE is fetched from allowlisted
+// pools on eth/base; any ETH-native chain may READ the resulting day, since one accepted ETH/USD day
+// is chain-independent.
+function isEthNativeGeckoChain(chain: SupportedChain): boolean {
+  return chain === 'eth' || chain === 'base' || chain === 'arbitrum'
+}
+
+// TEST-SUPPORT ONLY, DISCLOSED: seeds the request-scoped range index so a test can exercise the read
+// path without a network call. Rejects a non-price, so a fabricated value cannot be seeded.
+export function __seedGeckoTerminalRangeForTest(bucketStartMs: number, hit: GeckoTerminalCandleHit): void {
+  if (!isFinitePositive(hit.priceUsd)) throw new Error('__seedGeckoTerminalRangeForTest requires a finite positive price')
+  rangeIndexThisScan.set(bucketStartMs, hit)
+  rangePrimedThisScan = true
 }
