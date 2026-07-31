@@ -36,6 +36,12 @@ function mockCoingecko(handlers: { nativeHistory?: () => Response; contractRange
   const calls: string[] = []
   global.fetch = (async (input: RequestInfo | URL) => {
     const url = urlOf(input)
+    // GeckoTerminal is a DIFFERENT host and must be routed separately — folding it into the CoinGecko
+    // contract branch would misattribute its request and hide whether the CoinGecko quota was spent.
+    if (url.includes('api.geckoterminal.com')) {
+      calls.push('geckoterminal')
+      return new Response('{}', { status: 500 })
+    }
     if (url.includes('/coins/ethereum/history')) {
       calls.push('native_history')
       return handlers.nativeHistory ? handlers.nativeHistory() : new Response('{}', { status: 500 })
@@ -169,7 +175,7 @@ test('every source fails => unavailable, never a fabricated value', async () => 
   assert.notEqual(result, 0)
 
   const diagnostics = getNativePriceResolverDiagnostics()
-  assert.equal(diagnostics.sourceAttempts, 3, 'all three sources genuinely attempted when no quota is exhausted')
+  assert.equal(diagnostics.sourceAttempts, 4, 'all four sources genuinely attempted when no quota is exhausted')
   assert.equal(diagnostics.sourceSuccesses, 0)
   assert.equal(diagnostics.acceptedResolutions, 0)
 })
@@ -180,7 +186,7 @@ test('the per-attempt audit record carries every field the audit brief requires,
   await resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: TRADE_MS, nowMs: NOW_MS })
 
   const { attemptLog } = getNativePriceResolverDiagnostics()
-  assert.equal(attemptLog.length, 3)
+  assert.equal(attemptLog.length, 4)
   for (const attempt of attemptLog) {
     assert.equal(attempt.bucketDateUtc, '2026-05-11')
     assert.equal(attempt.bucketStartMs, nativePriceBucketStart(TRADE_MS))
@@ -195,6 +201,173 @@ test('the per-attempt audit record carries every field the audit brief requires,
   // Quota grouping is explicit: the two CoinGecko endpoints share one group, GoldRush does not.
   assert.equal(attemptLog.filter((a) => a.quotaGroup === 'coingecko').length, 2)
   assert.equal(attemptLog.filter((a) => a.quotaGroup === 'goldrush').length, 1)
+  assert.equal(attemptLog.filter((a) => a.quotaGroup === 'geckoterminal').length, 1)
+})
+
+// ─── GECKOTERMINAL: THE INDEPENDENT SOURCE ADDED AFTER GOLDRUSH ALSO CAME BACK EMPTY ─────────────
+
+const GT_BASE_POOL = '0xd0b53d9277642d899df5c87a3966a349a798f224'
+const TRADE_BUCKET_SEC = nativePriceBucketStart(TRADE_MS) / 1000
+
+function gtCandle(timestampSec: number, close: number): unknown {
+  return [timestampSec, close * 0.99, close * 1.02, close * 0.97, close, 1_000_000]
+}
+
+// Answers GeckoTerminal OHLCV; every other host is failed so nothing else can accidentally satisfy.
+function mockGeckoTerminal(rows: unknown[], status = 200): { geckoCalls: number } {
+  const counters = { geckoCalls: 0 }
+  global.fetch = (async (input: RequestInfo | URL) => {
+    const url = urlOf(input)
+    if (url.includes('api.geckoterminal.com')) {
+      counters.geckoCalls += 1
+      return new Response(JSON.stringify({ data: { attributes: { ohlcv_list: rows } } }), { status })
+    }
+    return new Response('{}', { status: 500 })
+  }) as unknown as typeof fetch
+  return counters
+}
+
+test('GoldRush returns null and GeckoTerminal succeeds — the exact current production failure, recovered', async () => {
+  registerIndependentNativePriceSource(async () => null) // 25/25 goldrush_no_price, as production showed
+  const counters = mockGeckoTerminal([gtCandle(TRADE_BUCKET_SEC, 3120.5)])
+
+  const result = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+
+  assert.equal(result?.priceUsd, 3120.5)
+  assert.equal(result?.source, 'geckoterminal_eth_ohlcv')
+  assert.equal(result?.confidence, 'verified')
+  // Provenance is preserved on the resolution itself, not just in a log.
+  assert.equal(result?.poolAddress, GT_BASE_POOL)
+  assert.equal(result?.candleTimestampMs, nativePriceBucketStart(TRADE_MS))
+  assert.equal(counters.geckoCalls, 1)
+
+  const diagnostics = getNativePriceResolverDiagnostics()
+  assert.equal(diagnostics.successesBySource.geckoterminal_eth_ohlcv, 1)
+  assert.equal(diagnostics.failureReasonsBySource.goldrush_historical['goldrush_no_price'], 1)
+  // Ordered after GoldRush and before CoinGecko — the CoinGecko group is never reached.
+  assert.equal(diagnostics.attemptsBySource.coingecko_native_coin_history, 0)
+  assert.deepEqual(diagnostics.acceptedBuckets, ['2026-05-11'])
+  assert.equal(diagnostics.selectedPools[0].poolAddress, GT_BASE_POOL)
+  assert.equal(diagnostics.selectedPools[0].candleTimestampMs, nativePriceBucketStart(TRADE_MS))
+})
+
+test('an open CoinGecko breaker does NOT block GeckoTerminal — separate quota groups', async () => {
+  registerIndependentNativePriceSource(async () => null)
+  // Trip the real CoinGecko breaker first, exactly as production had it.
+  mockCoingecko({ nativeHistory: () => new Response('{}', { status: 429 }) })
+  await resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: NEXT_DAY_MS, nowMs: NOW_MS })
+
+  const counters = mockGeckoTerminal([gtCandle(TRADE_BUCKET_SEC, 3120.5)])
+  const result = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+
+  assert.equal(result?.priceUsd, 3120.5)
+  assert.equal(result?.source, 'geckoterminal_eth_ohlcv')
+  assert.equal(counters.geckoCalls, 1, 'GeckoTerminal must still be attempted while CoinGecko is exhausted')
+})
+
+test('a GeckoTerminal provider miss still falls through, and if nothing answers the bucket is unavailable', async () => {
+  registerIndependentNativePriceSource(async () => null)
+  // GeckoTerminal has no candle for the requested day; CoinGecko answers nothing either.
+  global.fetch = (async (input: RequestInfo | URL) => {
+    const url = urlOf(input)
+    if (url.includes('api.geckoterminal.com')) {
+      return new Response(JSON.stringify({ data: { attributes: { ohlcv_list: [gtCandle(TRADE_BUCKET_SEC - 86_400, 2900)] } } }), { status: 200 })
+    }
+    return new Response('{}', { status: 500 })
+  }) as unknown as typeof fetch
+
+  const result = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  assert.equal(result, null)
+
+  const diagnostics = getNativePriceResolverDiagnostics()
+  assert.equal(
+    diagnostics.failureReasonsBySource.geckoterminal_eth_ohlcv['geckoterminal_no_candle_for_requested_utc_day'],
+    1,
+    'a stale/adjacent candle must be rejected, never substituted',
+  )
+  assert.equal(diagnostics.acceptedResolutions, 0)
+  assert.deepEqual(diagnostics.unresolvedBuckets, ['2026-05-11'])
+})
+
+test('a GeckoTerminal-accepted day serves Base, Ethereum and Arbitrum consumers with no second request', async () => {
+  registerIndependentNativePriceSource(async () => null)
+  const counters = mockGeckoTerminal([gtCandle(TRADE_BUCKET_SEC, 3120.5)])
+
+  const base = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  const eth = await resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: SAME_DAY_LATER_MS, nowMs: NOW_MS })
+  // Arbitrum has no allowlisted pool of its own, yet is served correctly — one accepted ETH/USD day is
+  // chain-independent, which is the entire basis of the shared cache.
+  const arb = await resolveHistoricalNativeUsdPrice({ chain: 'arbitrum', timestamp: TRADE_MS + 60_000, nowMs: NOW_MS })
+
+  assert.equal(base?.priceUsd, 3120.5)
+  assert.equal(eth?.priceUsd, 3120.5)
+  assert.equal(arb?.priceUsd, 3120.5)
+  assert.equal(counters.geckoCalls, 1, 'a cached day must cause no second network request')
+  assert.equal(getNativePriceResolverDiagnostics().permanentCacheHits, 2)
+})
+
+test('a GeckoTerminal-accepted day survives a scan reset with no second network request', async () => {
+  registerIndependentNativePriceSource(async () => null)
+  const counters = mockGeckoTerminal([gtCandle(TRADE_BUCKET_SEC, 3120.5)])
+
+  const first = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  assert.equal(first?.priceUsd, 3120.5)
+
+  resetNativePriceResolverForScan()
+
+  const second = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  assert.equal(second?.priceUsd, 3120.5)
+  assert.equal(second?.servedFromPermanentCache, true)
+  assert.equal(second?.poolAddress, GT_BASE_POOL, 'provenance survives the cache too')
+  assert.equal(counters.geckoCalls, 1)
+})
+
+test('same-day consumers coalesce onto one GeckoTerminal request', async () => {
+  registerIndependentNativePriceSource(async () => null)
+  let geckoCalls = 0
+  global.fetch = (async (input: RequestInfo | URL) => {
+    if (urlOf(input).includes('api.geckoterminal.com')) {
+      geckoCalls += 1
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      return new Response(JSON.stringify({ data: { attributes: { ohlcv_list: [gtCandle(TRADE_BUCKET_SEC, 3120.5)] } } }), { status: 200 })
+    }
+    return new Response('{}', { status: 500 })
+  }) as unknown as typeof fetch
+
+  const [a, b, c] = await Promise.all([
+    resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS }),
+    resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: SAME_DAY_LATER_MS, nowMs: NOW_MS }),
+    resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS + 5_000, nowMs: NOW_MS }),
+  ])
+
+  assert.equal(geckoCalls, 1, 'three same-day consumers share exactly one real request')
+  assert.equal(a?.priceUsd, 3120.5)
+  assert.equal(b?.priceUsd, 3120.5)
+  assert.equal(c?.priceUsd, 3120.5)
+  assert.equal(getNativePriceResolverDiagnostics().coalescedHits, 2)
+})
+
+test('a GeckoTerminal failure is scan-scoped, not permanent', async () => {
+  registerIndependentNativePriceSource(async () => null)
+  let geckoCalls = 0
+  global.fetch = (async (input: RequestInfo | URL) => {
+    if (urlOf(input).includes('api.geckoterminal.com')) {
+      geckoCalls += 1
+      const rows = geckoCalls === 1 ? [] : [gtCandle(TRADE_BUCKET_SEC, 3120.5)]
+      return new Response(JSON.stringify({ data: { attributes: { ohlcv_list: rows } } }), { status: 200 })
+    }
+    return new Response('{}', { status: 500 })
+  }) as unknown as typeof fetch
+
+  assert.equal(await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS }), null)
+  // Same scan: the doomed bucket is not retried.
+  await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: SAME_DAY_LATER_MS, nowMs: NOW_MS })
+  assert.equal(geckoCalls, 1)
+
+  resetNativePriceResolverForScan()
+
+  const recovered = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  assert.equal(recovered?.priceUsd, 3120.5, 'a new scan may legitimately retry a transiently failed day')
 })
 
 // ─── SHARING, COALESCING AND CACHING ─────────────────────────────────────────────────────────────

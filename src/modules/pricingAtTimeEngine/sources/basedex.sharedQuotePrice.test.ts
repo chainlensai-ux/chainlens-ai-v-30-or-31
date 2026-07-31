@@ -39,8 +39,17 @@ function urlOf(input: RequestInfo | URL): string {
   return typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
 }
 
+// The shared resolver now attempts GeckoTerminal (a different host, its own quota) before the
+// CoinGecko group. These tests are about basedex's CoinGecko-backed quote price specifically, so
+// GeckoTerminal is failed explicitly here and the CoinGecko endpoints answer — otherwise the counts
+// below would be measuring a different source entirely.
+function isGeckoTerminal(input: RequestInfo | URL): boolean {
+  return urlOf(input).includes('api.geckoterminal.com')
+}
+
 // Answers whichever real CoinGecko endpoint is asked for, so a resolution costs exactly one request.
 function respondToBothCoingeckoEndpoints(input: RequestInfo | URL): Response {
+  if (isGeckoTerminal(input)) return new Response('{}', { status: 500 })
   return new Response(urlOf(input).includes('/coins/ethereum/history') ? NATIVE_HISTORY_BODY : CONTRACT_RANGE_BODY, { status: 200 })
 }
 
@@ -173,7 +182,9 @@ describe('basedex shared WETH-USD quote-price cache', () => {
   it('a live CoinGecko call is only made once for two distinct venues sharing the same bucketed timestamp — the second is a cache hit, not a second live call', async () => {
     let liveCalls = 0
     global.fetch = (async (input: RequestInfo | URL) => {
-      liveCalls += 1
+      // Only CoinGecko-quota requests are counted — the GeckoTerminal attempt ahead of them is a
+      // separate quota group and is not what this test is measuring.
+      if (!isGeckoTerminal(input)) liveCalls += 1
       return respondToBothCoingeckoEndpoints(input)
     }) as unknown as typeof fetch
 
@@ -211,6 +222,7 @@ describe('basedex shared WETH-USD quote-price cache', () => {
     // keeps asserting on the contract request's own `from`/`to` range — the exact thing that would
     // reveal a "current price" substitution.
     global.fetch = (async (input: RequestInfo | URL) => {
+      if (isGeckoTerminal(input)) return new Response('{}', { status: 500 })
       const url = urlOf(input)
       if (url.includes('/coins/ethereum/history')) return new Response(JSON.stringify({}), { status: 200 })
       capturedUrl = url
@@ -235,7 +247,8 @@ describe('basedex shared WETH-USD quote-price cache', () => {
 
   it('fails closed (never fabricates a quote price) when CoinGecko genuinely has no historical price, and this is cached too — never retried a second time', async () => {
     let liveCalls = 0
-    global.fetch = (async () => {
+    global.fetch = (async (input: RequestInfo | URL) => {
+      if (isGeckoTerminal(input)) return new Response('{}', { status: 500 })
       liveCalls += 1
       return new Response(JSON.stringify({ prices: [] }), { status: 200 })
     }) as unknown as typeof fetch

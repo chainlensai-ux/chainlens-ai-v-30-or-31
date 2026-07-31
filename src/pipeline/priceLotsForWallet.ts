@@ -53,6 +53,7 @@ import {
   isEthNativeChain,
   getNativePriceResolverDiagnostics,
 } from '../modules/nativePriceResolver/index'
+import { getGeckoTerminalEthOhlcvRequestCount } from '../modules/nativePriceResolver/geckoTerminalEthOhlcv'
 import {
   deriveSameTransactionQuotePrice,
   groupSwapLegsByTransaction,
@@ -1058,6 +1059,17 @@ export async function priceLotsForWallet(params: {
       permanentCacheHits: resolverDiagnostics.permanentCacheHits,
       nativeRequirementsCompleted: nativePricesFromSharedResolver,
       lotsCompleted: fullyPricedLotsAfter - fullyPricedLotsBefore,
+      // GeckoTerminal-specific attribution — the source added after GoldRush returned 25/25
+      // `goldrush_no_price` and the CoinGecko group stayed exhausted.
+      geckoTerminalAttempts: resolverDiagnostics.attemptsBySource.geckoterminal_eth_ohlcv,
+      geckoTerminalSuccesses: resolverDiagnostics.successesBySource.geckoterminal_eth_ohlcv,
+      geckoTerminalRequestsThisScan: getGeckoTerminalEthOhlcvRequestCount(),
+      // Which allowlisted pool and which exact daily candle backed each accepted pool-derived bucket.
+      selectedPools: resolverDiagnostics.selectedPools,
+      // Coverage on both sides of the whole native-price pass, so a real gain is attributable.
+      closedLots: structuralMatchedLots.length,
+      verifiedCoverageBefore: Math.round(verifiedPricingCoverageBefore * 10000) / 100,
+      verifiedCoverageAfter: Math.round(verifiedPricingCoverageAfter * 10000) / 100,
       attemptLog: resolverDiagnostics.attemptLog,
     })
   }

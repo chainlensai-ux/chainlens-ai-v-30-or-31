@@ -57,6 +57,20 @@
 // one place that constructs it. The two CoinGecko endpoints are retained after it as genuine
 // last-resort attempts, now correctly reported as sharing a single quota.
 //
+// ─── GOLDRUSH ALSO CAME BACK EMPTY — GECKOTERMINAL OHLCV ADDED (current revision) ────────────────
+//
+// Next production proof: GoldRush historical made 25 attempts and returned `goldrush_no_price` 25
+// times with 0 successes, while the CoinGecko group remained exhausted with its breaker open.
+// Accepted buckets: 0. `missing_verified_native_price` still 51; verified coverage still 10/219.
+// So the chain had one source that structurally cannot answer and one group that cannot be reached.
+//
+// GeckoTerminal daily OHLCV is inserted as source 2 — after GoldRush, BEFORE the CoinGecko group, so
+// an exhausted CoinGecko quota can never block it. It is a THIRD independent quota group: different
+// host (api.geckoterminal.com), no API key, unaffected by either other provider's rate limit or
+// breaker. It reads a fixed, explicitly reviewed allowlist of canonical, highly liquid WETH/stablecoin
+// pools and accepts a candle ONLY when its timestamp is exactly the requested UTC day — never a
+// dynamically discovered pool, never an adjacent or stale candle. See geckoTerminalEthOhlcv.ts.
+//
 // EVIDENCE STANDARD IS UNCHANGED: every source here returns a real historical daily USD price from a
 // real provider. Nothing is estimated, interpolated, averaged, or relabelled. An answer this module
 // cannot stand behind is returned as null.
@@ -66,6 +80,7 @@
 
 import type { SupportedChain } from '../providerFetchWindow/types'
 import type { PriceSourceFn } from '../pricingAtTimeEngine/types'
+import { fetchGeckoTerminalEthUsdForUtcDay, resetGeckoTerminalEthOhlcvForScan } from './geckoTerminalEthOhlcv'
 import {
   fetchCoingeckoNativeEthPriceDetailed,
   fetchCoingeckoPriceDetailed,
@@ -99,6 +114,7 @@ const CANONICAL_WETH_BY_CHAIN: Partial<Record<SupportedChain, string>> = {
 
 export type NativePriceSourceId =
   | 'goldrush_historical'
+  | 'geckoterminal_eth_ohlcv'
   | 'coingecko_native_coin_history'
   | 'coingecko_weth_contract_history'
 
@@ -107,18 +123,24 @@ export type NativePriceSourceId =
 // output rather than leaving it to be rediscovered from a 429 pattern.
 const SOURCE_QUOTA_GROUP: Record<NativePriceSourceId, string> = {
   goldrush_historical: 'goldrush',
+  // Different host (api.geckoterminal.com), no API key — a rate-limit bucket entirely separate from
+  // both the keyed CoinGecko quota and GoldRush's. This is what makes it a real fallback.
+  geckoterminal_eth_ohlcv: 'geckoterminal',
   coingecko_native_coin_history: 'coingecko',
   coingecko_weth_contract_history: 'coingecko',
 }
 
 // DETERMINISTIC SOURCE ORDER, DISCLOSED — fixed, never reordered by outcome, never randomized:
-//   1. GoldRush historical pricing — independent quota, independent key, independent breaker, already
-//      configured as this pipeline's primary price source. Placed first precisely because it does NOT
-//      share the exhausted CoinGecko quota.
-//   2. CoinGecko native coin history — the most complete ETH dataset when its quota is available.
-//   3. CoinGecko canonical-WETH contract history — a genuinely different dataset, but same quota as 2.
+//   1. GoldRush historical pricing — independent quota, key and breaker, already configured as this
+//      pipeline's primary price source.
+//   2. GeckoTerminal daily OHLCV from a fixed, allowlisted canonical WETH/stablecoin pool — a third
+//      independent quota group (different host, no key). Placed after GoldRush and BEFORE the
+//      CoinGecko group, so an exhausted CoinGecko quota can never block it.
+//   3. CoinGecko native coin history — the most complete ETH dataset when its quota is available.
+//   4. CoinGecko canonical-WETH contract history — a genuinely different dataset, but same quota as 3.
 const SOURCE_ORDER: readonly NativePriceSourceId[] = [
   'goldrush_historical',
+  'geckoterminal_eth_ohlcv',
   'coingecko_native_coin_history',
   'coingecko_weth_contract_history',
 ]
@@ -136,6 +158,11 @@ export type NativePriceResolution = {
   confidence: 'verified'
   servedFromPermanentCache: boolean
   coalesced: boolean
+  // PROVENANCE, DISCLOSED — populated when the accepted source is pool-derived (GeckoTerminal), so a
+  // consumer or auditor can see exactly which allowlisted venue and which candle backed this price.
+  // Null for sources that are not pool-derived; never invented.
+  poolAddress: string | null
+  candleTimestampMs: number | null
 }
 
 // Per-attempt audit record — exactly the fields the audit brief asks for, per bucket AND per source.
@@ -150,6 +177,10 @@ export type NativePriceSourceAttempt = {
   responseShape: string | null
   parsedValue: number | null
   rejectionReason: string | null
+  // Pool-derived provenance for this attempt (GeckoTerminal only); null otherwise.
+  poolAddress: string | null
+  poolLabel: string | null
+  candleTimestampMs: number | null
   // This resolver deliberately does NOT retry a source within a scan (a 429 is the rate limiter
   // answering definitively; retrying it burns the quota the NEXT bucket needs). Recorded explicitly
   // so "no retry" is visible as a decision rather than looking like an omission.
@@ -165,7 +196,14 @@ function bucketDateUtc(bucketStartMs: number): string {
 // PERMANENT CACHE, DISCLOSED — process-lifetime, deliberately NOT cleared per scan. A real historical
 // ETH price for a past UTC day is IMMUTABLE: there is no correctness reason to re-fetch it, and
 // re-fetching is precisely what exhausts the quota. Only ACCEPTED (finite, positive) prices are here.
-const acceptedPriceByBucket = new Map<number, { priceUsd: number; source: NativePriceSourceId }>()
+type AcceptedBucketPrice = {
+  priceUsd: number
+  source: NativePriceSourceId
+  poolAddress: string | null
+  candleTimestampMs: number | null
+}
+
+const acceptedPriceByBucket = new Map<number, AcceptedBucketPrice>()
 
 // FAILURES ARE NOT CACHED PERMANENTLY, DISCLOSED: a miss is usually transient (a 429, a breaker
 // opened by an unrelated call, a timeout). Recording it for the process lifetime would convert a
@@ -198,6 +236,8 @@ type ResolverDiagnostics = {
   httpStatusesBySource: Record<NativePriceSourceId, Record<string, number>>
   acceptedBuckets: string[]
   unresolvedBuckets: string[]
+  // Which allowlisted pool backed each accepted pool-derived bucket, with its candle timestamp.
+  selectedPools: Array<{ bucketDateUtc: string; poolAddress: string; poolLabel: string | null; candleTimestampMs: number | null }>
   // Bounded sample of full per-attempt records, for forensic reading without unbounded log volume.
   attemptLog: NativePriceSourceAttempt[]
 }
@@ -207,8 +247,18 @@ const MAX_ATTEMPT_LOG_ENTRIES = 40
 function emptyBySource<T>(make: () => T): Record<NativePriceSourceId, T> {
   return {
     goldrush_historical: make(),
+    geckoterminal_eth_ohlcv: make(),
     coingecko_native_coin_history: make(),
     coingecko_weth_contract_history: make(),
+  }
+}
+
+function cloneBySource<T>(record: Record<NativePriceSourceId, Record<string, T>>): Record<NativePriceSourceId, Record<string, T>> {
+  return {
+    goldrush_historical: { ...record.goldrush_historical },
+    geckoterminal_eth_ohlcv: { ...record.geckoterminal_eth_ohlcv },
+    coingecko_native_coin_history: { ...record.coingecko_native_coin_history },
+    coingecko_weth_contract_history: { ...record.coingecko_weth_contract_history },
   }
 }
 
@@ -231,6 +281,7 @@ function emptyDiagnostics(): ResolverDiagnostics {
     httpStatusesBySource: emptyBySource<Record<string, number>>(() => ({})),
     acceptedBuckets: [],
     unresolvedBuckets: [],
+    selectedPools: [],
     attemptLog: [],
   }
 }
@@ -271,6 +322,7 @@ export function resetNativePriceResolverForScan(): void {
   failedBucketsThisScan.clear()
   diagnostics = emptyDiagnostics()
   liveBucketsThisScan = 0
+  resetGeckoTerminalEthOhlcvForScan()
 }
 
 export function getNativePriceResolverDiagnostics(): ResolverDiagnostics & { permanentCacheSize: number } {
@@ -278,16 +330,9 @@ export function getNativePriceResolverDiagnostics(): ResolverDiagnostics & { per
     ...diagnostics,
     attemptsBySource: { ...diagnostics.attemptsBySource },
     successesBySource: { ...diagnostics.successesBySource },
-    failureReasonsBySource: {
-      goldrush_historical: { ...diagnostics.failureReasonsBySource.goldrush_historical },
-      coingecko_native_coin_history: { ...diagnostics.failureReasonsBySource.coingecko_native_coin_history },
-      coingecko_weth_contract_history: { ...diagnostics.failureReasonsBySource.coingecko_weth_contract_history },
-    },
-    httpStatusesBySource: {
-      goldrush_historical: { ...diagnostics.httpStatusesBySource.goldrush_historical },
-      coingecko_native_coin_history: { ...diagnostics.httpStatusesBySource.coingecko_native_coin_history },
-      coingecko_weth_contract_history: { ...diagnostics.httpStatusesBySource.coingecko_weth_contract_history },
-    },
+    failureReasonsBySource: cloneBySource(diagnostics.failureReasonsBySource),
+    httpStatusesBySource: cloneBySource(diagnostics.httpStatusesBySource),
+    selectedPools: [...diagnostics.selectedPools],
     acceptedBuckets: [...diagnostics.acceptedBuckets],
     unresolvedBuckets: [...diagnostics.unresolvedBuckets],
     attemptLog: [...diagnostics.attemptLog],
@@ -304,6 +349,7 @@ export function __resetNativePriceResolverForTest(): void {
   diagnostics = emptyDiagnostics()
   liveBucketsThisScan = 0
   independentNativeSource = null
+  resetGeckoTerminalEthOhlcvForScan()
 }
 
 // TEST-SUPPORT ONLY, DISCLOSED: seeds a known-good accepted price so a test can assert reuse /
@@ -311,24 +357,25 @@ export function __resetNativePriceResolverForTest(): void {
 // finite, positive price — a fabricated value can never enter the cache through this.
 export function __seedAcceptedNativePriceForTest(timestampMs: number, priceUsd: number, source: NativePriceSourceId): void {
   if (!isAcceptablePrice(priceUsd)) throw new Error('__seedAcceptedNativePriceForTest requires a finite positive price')
-  acceptedPriceByBucket.set(nativePriceBucketStart(timestampMs), { priceUsd, source })
+  acceptedPriceByBucket.set(nativePriceBucketStart(timestampMs), { priceUsd, source, poolAddress: null, candleTimestampMs: null })
 }
 
 function buildResolution(
   bucketStartMs: number,
   timestampMs: number,
-  priceUsd: number,
-  source: NativePriceSourceId,
+  accepted: AcceptedBucketPrice,
   flags: { servedFromPermanentCache: boolean; coalesced: boolean },
 ): NativePriceResolution {
   return {
-    priceUsd,
-    source,
+    priceUsd: accepted.priceUsd,
+    source: accepted.source,
     bucketStartMs,
     timestampDistanceMs: timestampMs - bucketStartMs,
     confidence: 'verified',
     servedFromPermanentCache: flags.servedFromPermanentCache,
     coalesced: flags.coalesced,
+    poolAddress: accepted.poolAddress,
+    candleTimestampMs: accepted.candleTimestampMs,
   }
 }
 
@@ -354,6 +401,27 @@ type SourceOutcome = {
   responseShape: string | null
   rejectionReason: string | null
   endpoint: string
+  poolAddress?: string | null
+  poolLabel?: string | null
+  candleTimestampMs?: number | null
+}
+
+// SOURCE 2 — GeckoTerminal daily OHLCV from a fixed, allowlisted canonical WETH/stablecoin pool. A
+// third independent quota group: different host, no API key, unaffected by a CoinGecko 429 or open
+// breaker. See geckoTerminalEthOhlcv.ts for the allowlist, the exact-UTC-day candle requirement, the
+// pool-identity check and the per-scan request cap.
+async function attemptGeckoTerminal(chain: SupportedChain, timestamp: number, bucketStartMs: number): Promise<SourceOutcome> {
+  const result = await fetchGeckoTerminalEthUsdForUtcDay({ chain, timestampMs: timestamp, bucketStartMs })
+  return {
+    priceUsd: result.priceUsd,
+    httpStatus: result.httpStatus,
+    responseShape: result.responseShape,
+    rejectionReason: result.rejectionReason,
+    endpoint: result.endpoint,
+    poolAddress: result.poolAddress,
+    poolLabel: result.poolLabel,
+    candleTimestampMs: result.candleTimestampMs,
+  }
 }
 
 // SOURCE 1 — GoldRush historical pricing. Genuinely independent quota/key/breaker. Uses the injected,
@@ -411,8 +479,14 @@ async function attemptCoingeckoWethContract(chain: SupportedChain, timestamp: nu
   return { priceUsd: null, httpStatus: null, responseShape: null, rejectionReason: result.reason ?? 'coingecko_contract_no_price', endpoint }
 }
 
-async function attemptSource(source: NativePriceSourceId, chain: SupportedChain, timestamp: number): Promise<SourceOutcome> {
+async function attemptSource(
+  source: NativePriceSourceId,
+  chain: SupportedChain,
+  timestamp: number,
+  bucketStartMs: number,
+): Promise<SourceOutcome> {
   if (source === 'goldrush_historical') return attemptGoldrush(chain, timestamp)
+  if (source === 'geckoterminal_eth_ohlcv') return attemptGeckoTerminal(chain, timestamp, bucketStartMs)
   if (source === 'coingecko_native_coin_history') return attemptCoingeckoNative(timestamp)
   return attemptCoingeckoWethContract(chain, timestamp)
 }
@@ -422,7 +496,7 @@ async function resolveLive(
   chain: SupportedChain,
   timestamp: number,
   bucketStartMs: number,
-): Promise<{ priceUsd: number; source: NativePriceSourceId } | null> {
+): Promise<AcceptedBucketPrice | null> {
   const dateUtc = bucketDateUtc(bucketStartMs)
   // Quota groups already known to be exhausted this scan — a second source in the SAME group cannot
   // rescue the first, so it is skipped honestly rather than burning a guaranteed-failing round trip.
@@ -456,7 +530,7 @@ async function resolveLive(
         endpoint: 'coingecko:skipped',
       }
     } else {
-      outcome = await attemptSource(source, chain, timestamp)
+      outcome = await attemptSource(source, chain, timestamp, bucketStartMs)
       if (outcome.httpStatus === 429 || outcome.rejectionReason === 'coingecko_http_429') {
         exhaustedQuotaGroups.add(quotaGroup)
       }
@@ -472,13 +546,29 @@ async function resolveLive(
       responseShape: outcome.responseShape,
       parsedValue: outcome.priceUsd,
       rejectionReason: outcome.rejectionReason,
+      poolAddress: outcome.poolAddress ?? null,
+      poolLabel: outcome.poolLabel ?? null,
+      candleTimestampMs: outcome.candleTimestampMs ?? null,
       retried: false,
       fallbackRan: false,
     })
 
     if (isAcceptablePrice(outcome.priceUsd)) {
       pending.forEach(recordAttempt)
-      return { priceUsd: outcome.priceUsd, source }
+      if (outcome.poolAddress) {
+        diagnostics.selectedPools.push({
+          bucketDateUtc: dateUtc,
+          poolAddress: outcome.poolAddress,
+          poolLabel: outcome.poolLabel ?? null,
+          candleTimestampMs: outcome.candleTimestampMs ?? null,
+        })
+      }
+      return {
+        priceUsd: outcome.priceUsd,
+        source,
+        poolAddress: outcome.poolAddress ?? null,
+        candleTimestampMs: outcome.candleTimestampMs ?? null,
+      }
     }
     // A further source exists and will be attempted — record that on the attempt just made.
     if (i < SOURCE_ORDER.length - 1) pending[pending.length - 1].fallbackRan = true
@@ -521,7 +611,7 @@ export async function resolveHistoricalNativeUsdPrice(params: {
   const cached = acceptedPriceByBucket.get(bucketStartMs)
   if (cached) {
     diagnostics.permanentCacheHits += 1
-    return buildResolution(bucketStartMs, timestamp, cached.priceUsd, cached.source, { servedFromPermanentCache: true, coalesced: false })
+    return buildResolution(bucketStartMs, timestamp, cached, { servedFromPermanentCache: true, coalesced: false })
   }
 
   // This scan already learned this bucket is unavailable — never spend a second chain of calls on it.
@@ -536,7 +626,12 @@ export async function resolveHistoricalNativeUsdPrice(params: {
     if (!shared) return null
     // Rebuilt against THIS caller's own timestamp so `timestampDistanceMs` stays honest per consumer;
     // the underlying price and source are the shared ones, unchanged.
-    return buildResolution(bucketStartMs, timestamp, shared.priceUsd, shared.source, { servedFromPermanentCache: false, coalesced: true })
+    return buildResolution(
+      bucketStartMs,
+      timestamp,
+      { priceUsd: shared.priceUsd, source: shared.source, poolAddress: shared.poolAddress, candleTimestampMs: shared.candleTimestampMs },
+      { servedFromPermanentCache: false, coalesced: true },
+    )
   }
 
   if (liveBucketsThisScan >= MAX_NATIVE_PRICE_LIVE_BUCKETS_PER_SCAN) {
@@ -558,7 +653,7 @@ export async function resolveHistoricalNativeUsdPrice(params: {
     acceptedPriceByBucket.set(bucketStartMs, resolved)
     diagnostics.acceptedResolutions += 1
     diagnostics.acceptedBuckets.push(bucketDateUtc(bucketStartMs))
-    return buildResolution(bucketStartMs, timestamp, resolved.priceUsd, resolved.source, { servedFromPermanentCache: false, coalesced: false })
+    return buildResolution(bucketStartMs, timestamp, resolved, { servedFromPermanentCache: false, coalesced: false })
   })()
 
   inFlightByBucket.set(bucketStartMs, live)
