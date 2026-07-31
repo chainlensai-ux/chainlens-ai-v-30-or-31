@@ -61,6 +61,12 @@ export type AllowlistedEthPool = {
   network: string
   poolAddress: string
   wethAddress: string
+  // The pool's OTHER (non-WETH) side — a known stablecoin address. Used only to distinguish, when a
+  // response's meta is present, "this response never mentions our WETH token at all" (token_param_
+  // mismatch — the token= query param appears not to have been honored) from "this response mentions
+  // WETH but the other side isn't the pool we reviewed" (pool_identity_mismatch — a different, less
+  // trustworthy pool). Diagnostic classification only; either case still fails closed identically.
+  otherTokenAddress: string
   label: string
 }
 
@@ -71,6 +77,7 @@ export const ALLOWLISTED_ETH_USD_POOLS: readonly AllowlistedEthPool[] = [
     // Uniswap V3 USDC/WETH 0.05% — the reference ETH/USD venue on Ethereum mainnet.
     poolAddress: '0x88e6a0c2ddd26feeb64f039a2c41296fcb3f5640',
     wethAddress: '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2',
+    otherTokenAddress: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', // USDC (Ethereum)
     label: 'uniswap_v3_usdc_weth_005_eth',
   },
   {
@@ -79,6 +86,7 @@ export const ALLOWLISTED_ETH_USD_POOLS: readonly AllowlistedEthPool[] = [
     // Uniswap V3 WETH/USDC 0.05% on Base — the reference ETH/USD venue on Base.
     poolAddress: '0xd0b53d9277642d899df5c87a3966a349a798f224',
     wethAddress: '0x4200000000000000000000000000000000000006',
+    otherTokenAddress: '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC (Base)
     label: 'uniswap_v3_weth_usdc_005_base',
   },
 ]
@@ -115,6 +123,51 @@ export type GeckoTerminalCandleHit = {
   candleTimestampMs: number
 }
 
+// CANONICAL REJECTION CATEGORY, DISCLOSED — the fixed, exhaustive bucket every real attempt's outcome
+// is classified into, requested explicitly so a production log answers "which of these eight things
+// actually happened" without guessing from a free-text reason string. Diagnostic-only: this
+// classification never changes whether a price is accepted, only how the rejection is reported.
+export type GeckoTerminalRejectionCategory =
+  | 'http_429'
+  | 'http_4xx'
+  | 'http_5xx'
+  | 'malformed_response'
+  | 'empty_ohlcv'
+  | 'pool_identity_mismatch'
+  | 'token_param_mismatch'
+  | 'timestamp_range_mismatch'
+  // null means the network attempt itself succeeded structurally (2xx, parseable, identity verified,
+  // candles within the requested window) — NOT that every required day was found in it. Per-day
+  // coverage (exactDaysMatched/missingDays) is reported separately in the aggregate diagnostics; a
+  // structurally-fine response that happens to lack a specific day is not a "rejected attempt".
+  | null
+
+// FULL PER-ATTEMPT AUDIT RECORD, DISCLOSED — everything requested to expose the exact failure without
+// re-deploying: the request shape (no secrets — this endpoint takes none today), the exact response,
+// and the final classification. Logged as its own bounded, FLAT line per attempt (see
+// logRangeAttempt below) specifically so it survives a production log pipeline that truncates deeply
+// nested objects (the prior aggregate-only diagnostic rendered this data as `[Object]`).
+export type GeckoTerminalRangeAttempt = {
+  poolLabel: string
+  network: string
+  poolAddress: string
+  tokenParam: string
+  timeframe: 'day'
+  aggregate: 1
+  beforeTimestamp: number
+  limit: number
+  httpStatus: number | null
+  retryAfterHeader: string | null
+  contentType: string | null
+  // Bounded so a malformed/huge body can never blow out log volume.
+  bodySnippet: string | null
+  parsedCandlePath: string | null
+  rawCandleCount: number
+  exactDayCandlesIndexed: number
+  rejectionCategory: GeckoTerminalRejectionCategory
+  rejectionDetail: string | null
+}
+
 export type GeckoTerminalRangeDiagnostics = {
   requiredBucketCount: number
   rangeStartUtc: string | null
@@ -125,6 +178,19 @@ export type GeckoTerminalRangeDiagnostics = {
   missingDays: string[]
   httpStatuses: Array<{ poolLabel: string; status: number | null; rejectionReason: string | null }>
   quotaStopped: boolean
+  // The full per-attempt audit trail — see GeckoTerminalRangeAttempt's own header.
+  attempts: GeckoTerminalRangeAttempt[]
+}
+
+const BODY_SNIPPET_MAX_CHARS = 500
+
+// FLAT PER-ATTEMPT LOG LINE, DISCLOSED: emitted immediately after each real request settles, with
+// every field a JSON-serializable primitive (no nested arrays/objects) — guaranteed to render fully
+// in any log pipeline, unlike the aggregate [native-price-resolver-source-audit] line whose nested
+// httpStatuses array was observed collapsing to `[Object]` in production.
+function logRangeAttempt(attempt: GeckoTerminalRangeAttempt): void {
+  // eslint-disable-next-line no-console
+  console.warn('[geckoterminal-range-request]', attempt)
 }
 
 type OhlcvResponse = {
@@ -168,7 +234,14 @@ export function getGeckoTerminalEthOhlcvRequestCount(): number {
 }
 
 export function getGeckoTerminalRangeDiagnostics(): GeckoTerminalRangeDiagnostics | null {
-  return lastRangeDiagnostics ? { ...lastRangeDiagnostics, missingDays: [...lastRangeDiagnostics.missingDays], httpStatuses: [...lastRangeDiagnostics.httpStatuses] } : null
+  return lastRangeDiagnostics
+    ? {
+        ...lastRangeDiagnostics,
+        missingDays: [...lastRangeDiagnostics.missingDays],
+        httpStatuses: [...lastRangeDiagnostics.httpStatuses],
+        attempts: [...lastRangeDiagnostics.attempts],
+      }
+    : null
 }
 
 export function isGeckoTerminalQuotaStopped(): boolean {
@@ -199,6 +272,13 @@ type RangeFetchOutcome = {
   indexed: number
   httpStatus: number | null
   rejectionReason: string | null
+  attempt: GeckoTerminalRangeAttempt
+}
+
+function classifyHttpFailure(status: number): GeckoTerminalRejectionCategory {
+  if (status === 429) return 'http_429'
+  if (status >= 400 && status < 500) return 'http_4xx'
+  return 'http_5xx'
 }
 
 // Fetches ONE bounded daily range from ONE allowlisted pool and indexes every structurally sound,
@@ -220,46 +300,186 @@ async function fetchRangeFromPool(
     `https://api.geckoterminal.com/api/v2/networks/${pool.network}/pools/${pool.poolAddress}/ohlcv/day` +
     `?before_timestamp=${beforeTimestampSec}&limit=${limit}&currency=usd&token=${pool.wethAddress}`
 
+  // REQUEST SHAPE, DISCLOSED, NO SECRETS: this endpoint takes no API key today, so the full URL is
+  // itself already secret-free — the fields below are logged individually anyway (rather than the raw
+  // URL string) so the shape stays explicit and stable even if a key is ever added to this call later.
+  const baseAttempt: GeckoTerminalRangeAttempt = {
+    poolLabel: pool.label,
+    network: pool.network,
+    poolAddress: pool.poolAddress,
+    tokenParam: pool.wethAddress,
+    timeframe: 'day',
+    aggregate: 1,
+    beforeTimestamp: beforeTimestampSec,
+    limit,
+    httpStatus: null,
+    retryAfterHeader: null,
+    contentType: null,
+    bodySnippet: null,
+    parsedCandlePath: null,
+    rawCandleCount: 0,
+    exactDayCandlesIndexed: 0,
+    rejectionCategory: null,
+    rejectionDetail: null,
+  }
+
   rangeRequestsThisScan += 1
 
   let res: Response
   try {
     res = await fetch(url, { signal: AbortSignal.timeout(10_000) })
   } catch (err) {
-    return { candlesReturned: 0, indexed: 0, httpStatus: null, rejectionReason: `geckoterminal_fetch_error:${err instanceof Error ? err.name : 'unknown'}` }
+    const attempt: GeckoTerminalRangeAttempt = {
+      ...baseAttempt,
+      // A thrown fetch has no HTTP status at all — genuinely distinct from any 4xx/5xx.
+      rejectionCategory: 'http_5xx',
+      rejectionDetail: `fetch_error:${err instanceof Error ? err.name : 'unknown'}`,
+    }
+    logRangeAttempt(attempt)
+    return { candlesReturned: 0, indexed: 0, httpStatus: null, rejectionReason: `geckoterminal_fetch_error:${err instanceof Error ? err.name : 'unknown'}`, attempt }
   }
+
+  const retryAfterHeader = res.headers.get('retry-after')
+  const contentType = res.headers.get('content-type')
 
   if (res.status === 429) {
     // QUOTA STOP: the rate limiter has answered definitively. No further request this scan.
     quotaStoppedThisScan = true
-    return { candlesReturned: 0, indexed: 0, httpStatus: 429, rejectionReason: 'geckoterminal_http_429' }
+    const attempt: GeckoTerminalRangeAttempt = {
+      ...baseAttempt,
+      httpStatus: 429,
+      retryAfterHeader,
+      contentType,
+      rejectionCategory: 'http_429',
+      rejectionDetail: 'geckoterminal_http_429',
+    }
+    logRangeAttempt(attempt)
+    return { candlesReturned: 0, indexed: 0, httpStatus: 429, rejectionReason: 'geckoterminal_http_429', attempt }
   }
   if (!res.ok) {
-    return { candlesReturned: 0, indexed: 0, httpStatus: res.status, rejectionReason: `geckoterminal_http_${res.status}` }
+    // Bounded body read even on a non-2xx status — the error message itself is often the most useful
+    // single field for diagnosing a 4xx (e.g. an unrecognized network/pool slug).
+    let bodySnippet: string | null = null
+    try {
+      bodySnippet = (await res.text()).slice(0, BODY_SNIPPET_MAX_CHARS)
+    } catch { /* body unreadable — leave null, still report the status */ }
+    const attempt: GeckoTerminalRangeAttempt = {
+      ...baseAttempt,
+      httpStatus: res.status,
+      retryAfterHeader,
+      contentType,
+      bodySnippet,
+      rejectionCategory: classifyHttpFailure(res.status),
+      rejectionDetail: `geckoterminal_http_${res.status}`,
+    }
+    logRangeAttempt(attempt)
+    return { candlesReturned: 0, indexed: 0, httpStatus: res.status, rejectionReason: `geckoterminal_http_${res.status}`, attempt }
   }
+
+  const rawBodyText = await res.text()
+  const boundedBodySnippet = rawBodyText.slice(0, BODY_SNIPPET_MAX_CHARS)
 
   let body: OhlcvResponse
   try {
-    body = (await res.json()) as OhlcvResponse
+    body = JSON.parse(rawBodyText) as OhlcvResponse
   } catch {
-    return { candlesReturned: 0, indexed: 0, httpStatus: res.status, rejectionReason: 'geckoterminal_unparseable_json' }
+    const attempt: GeckoTerminalRangeAttempt = {
+      ...baseAttempt,
+      httpStatus: res.status,
+      retryAfterHeader,
+      contentType,
+      bodySnippet: boundedBodySnippet,
+      rejectionCategory: 'malformed_response',
+      rejectionDetail: 'geckoterminal_unparseable_json',
+    }
+    logRangeAttempt(attempt)
+    return { candlesReturned: 0, indexed: 0, httpStatus: res.status, rejectionReason: 'geckoterminal_unparseable_json', attempt }
   }
 
-  // POOL IDENTITY VERIFICATION, DISCLOSED, UNCHANGED: when the response carries token metadata, the
-  // allowlisted WETH address MUST appear on one side of the returned pair, or nothing from this
-  // response is trusted. Absence of metadata is not a failure (identity already rests on the fixed
-  // allowlist); a MISMATCH is.
+  // POOL IDENTITY VERIFICATION, DISCLOSED — now split into two distinct, requested categories:
+  //   - token_param_mismatch: the response's meta mentions neither side as our WETH address at all —
+  //     the token= query parameter does not appear to have been honored.
+  //   - pool_identity_mismatch: the WETH side IS present, but the pool's other side is not the
+  //     specific stablecoin this allowlist entry was reviewed against — a different, untrusted pool.
+  // Absence of metadata entirely is not a failure (identity already rests on the fixed allowlist
+  // address in the URL); a MISMATCH within present metadata is. Either category still fails closed
+  // identically — this only sharpens WHY.
   const metaAddresses = [body.meta?.base?.address, body.meta?.quote?.address]
     .filter((a): a is string => typeof a === 'string')
     .map((a) => a.toLowerCase())
   if (metaAddresses.length > 0 && !metaAddresses.includes(pool.wethAddress.toLowerCase())) {
-    return { candlesReturned: 0, indexed: 0, httpStatus: res.status, rejectionReason: 'pool_identity_mismatch' }
+    const attempt: GeckoTerminalRangeAttempt = {
+      ...baseAttempt,
+      httpStatus: res.status,
+      retryAfterHeader,
+      contentType,
+      bodySnippet: boundedBodySnippet,
+      parsedCandlePath: 'meta.base.address|meta.quote.address',
+      rejectionCategory: 'token_param_mismatch',
+      rejectionDetail: 'token_param_mismatch',
+    }
+    logRangeAttempt(attempt)
+    return { candlesReturned: 0, indexed: 0, httpStatus: res.status, rejectionReason: 'token_param_mismatch', attempt }
+  }
+  if (metaAddresses.length > 0 && !metaAddresses.includes(pool.otherTokenAddress.toLowerCase())) {
+    const attempt: GeckoTerminalRangeAttempt = {
+      ...baseAttempt,
+      httpStatus: res.status,
+      retryAfterHeader,
+      contentType,
+      bodySnippet: boundedBodySnippet,
+      parsedCandlePath: 'meta.base.address|meta.quote.address',
+      rejectionCategory: 'pool_identity_mismatch',
+      rejectionDetail: 'pool_identity_mismatch',
+    }
+    logRangeAttempt(attempt)
+    return { candlesReturned: 0, indexed: 0, httpStatus: res.status, rejectionReason: 'pool_identity_mismatch', attempt }
   }
 
   const rawList = body.data?.attributes?.ohlcv_list
-  if (!Array.isArray(rawList) || rawList.length === 0) {
-    return { candlesReturned: 0, indexed: 0, httpStatus: res.status, rejectionReason: 'geckoterminal_no_candles' }
+  if (!Array.isArray(rawList)) {
+    const attempt: GeckoTerminalRangeAttempt = {
+      ...baseAttempt,
+      httpStatus: res.status,
+      retryAfterHeader,
+      contentType,
+      bodySnippet: boundedBodySnippet,
+      parsedCandlePath: 'data.attributes.ohlcv_list',
+      rejectionCategory: 'malformed_response',
+      rejectionDetail: 'ohlcv_list_missing_or_not_an_array',
+    }
+    logRangeAttempt(attempt)
+    return { candlesReturned: 0, indexed: 0, httpStatus: res.status, rejectionReason: 'geckoterminal_malformed_response', attempt }
   }
+  if (rawList.length === 0) {
+    const attempt: GeckoTerminalRangeAttempt = {
+      ...baseAttempt,
+      httpStatus: res.status,
+      retryAfterHeader,
+      contentType,
+      bodySnippet: boundedBodySnippet,
+      parsedCandlePath: 'data.attributes.ohlcv_list',
+      rawCandleCount: 0,
+      rejectionCategory: 'empty_ohlcv',
+      rejectionDetail: 'geckoterminal_no_candles',
+    }
+    logRangeAttempt(attempt)
+    return { candlesReturned: 0, indexed: 0, httpStatus: res.status, rejectionReason: 'geckoterminal_no_candles', attempt }
+  }
+
+  // TIMESTAMP-RANGE MISMATCH, DISCLOSED: the response is structurally well-formed and non-empty, but
+  // if EVERY row's timestamp falls entirely outside the requested window (with a generous ±7-day
+  // slack — not the exact-day match applied at indexing time), the series itself is for the wrong
+  // period rather than merely missing a handful of specific days. Distinguishing this from an
+  // ordinary partial-coverage miss is diagnostic only; both still leave the requested bucket
+  // unresolved.
+  const slackMs = 7 * DAY_MS
+  const windowLow = earliestBucketMs - slackMs
+  const windowHigh = latestBucketMs + slackMs
+  const rawTimestampsMs = rawList
+    .map((row) => (Array.isArray(row) && typeof row[0] === 'number' ? row[0] * 1000 : null))
+    .filter((ms): ms is number => ms !== null)
+  const anyWithinWindow = rawTimestampsMs.some((ms) => ms >= windowLow && ms <= windowHigh)
 
   let indexed = 0
   for (const row of rawList) {
@@ -282,7 +502,42 @@ async function fetchRangeFromPool(
     indexed += 1
   }
 
-  return { candlesReturned: rawList.length, indexed, httpStatus: res.status, rejectionReason: null }
+  // Classified purely on whether ANY raw candle timestamp falls near the requested window — not on
+  // `indexed`, which tracks candles filed under their own real day regardless of relevance. A series
+  // entirely for a different period can still index candles under their own (irrelevant) days; what
+  // makes this timestamp_range_mismatch rather than an ordinary partial miss is that none of them are
+  // anywhere near what was actually requested.
+  if (rawTimestampsMs.length > 0 && !anyWithinWindow) {
+    const attempt: GeckoTerminalRangeAttempt = {
+      ...baseAttempt,
+      httpStatus: res.status,
+      retryAfterHeader,
+      contentType,
+      bodySnippet: boundedBodySnippet,
+      parsedCandlePath: 'data.attributes.ohlcv_list',
+      rawCandleCount: rawList.length,
+      exactDayCandlesIndexed: 0,
+      rejectionCategory: 'timestamp_range_mismatch',
+      rejectionDetail: 'timestamp_range_mismatch',
+    }
+    logRangeAttempt(attempt)
+    return { candlesReturned: rawList.length, indexed: 0, httpStatus: res.status, rejectionReason: 'timestamp_range_mismatch', attempt }
+  }
+
+  const attempt: GeckoTerminalRangeAttempt = {
+    ...baseAttempt,
+    httpStatus: res.status,
+    retryAfterHeader,
+    contentType,
+    bodySnippet: boundedBodySnippet,
+    parsedCandlePath: 'data.attributes.ohlcv_list',
+    rawCandleCount: rawList.length,
+    exactDayCandlesIndexed: indexed,
+    rejectionCategory: null,
+    rejectionDetail: null,
+  }
+  logRangeAttempt(attempt)
+  return { candlesReturned: rawList.length, indexed, httpStatus: res.status, rejectionReason: null, attempt }
 }
 
 // PRIMES the request-scoped range index for every required UTC-day bucket, using at most
@@ -302,6 +557,7 @@ export async function primeGeckoTerminalRangeForBuckets(requiredBucketStartsMs: 
       missingDays: [],
       httpStatuses: [],
       quotaStopped: quotaStoppedThisScan,
+      attempts: [],
     }
     return diagnostics
   }
@@ -311,6 +567,7 @@ export async function primeGeckoTerminalRangeForBuckets(requiredBucketStartsMs: 
   const earliest = required[0]
   const latest = required[required.length - 1]
   const httpStatuses: GeckoTerminalRangeDiagnostics['httpStatuses'] = []
+  const attempts: GeckoTerminalRangeAttempt[] = []
   let candlesReturned = 0
 
   // SEQUENTIAL, DISCLOSED: the Ethereum pool first (the deepest ETH/USD venue), then the Base pool
@@ -325,6 +582,7 @@ export async function primeGeckoTerminalRangeForBuckets(requiredBucketStartsMs: 
     const outcome = await fetchRangeFromPool(pool, earliest, latest)
     candlesReturned += outcome.candlesReturned
     httpStatuses.push({ poolLabel: pool.label, status: outcome.httpStatus, rejectionReason: outcome.rejectionReason })
+    attempts.push(outcome.attempt)
   }
 
   const missing = required.filter((bucket) => !rangeIndexThisScan.has(bucket))
@@ -340,6 +598,7 @@ export async function primeGeckoTerminalRangeForBuckets(requiredBucketStartsMs: 
     missingDays: missing.slice(0, 20).map(utcDay),
     httpStatuses,
     quotaStopped: quotaStoppedThisScan,
+    attempts,
   }
   return lastRangeDiagnostics
 }

@@ -1047,6 +1047,7 @@ export async function priceLotsForWallet(params: {
   // bounded, and no entry ever contains a key or a secret-bearing URL.
   {
     const resolverDiagnostics = getNativePriceResolverDiagnostics()
+    const geckoTerminalRangeDiagnostics = getGeckoTerminalRangeDiagnostics()
     // eslint-disable-next-line no-console
     console.warn('[native-price-resolver-source-audit]', {
       bucketsRequested: resolverDiagnostics.bucketsRequested,
@@ -1065,9 +1066,33 @@ export async function priceLotsForWallet(params: {
       geckoTerminalSuccesses: resolverDiagnostics.successesBySource.geckoterminal_eth_ohlcv,
       geckoTerminalRequestsThisScan: getGeckoTerminalEthOhlcvRequestCount(),
       // BOUNDED RANGE ARCHITECTURE, DISCLOSED (replaces per-day fetching, which spent 25 requests and
-      // received 25 HTTP 429s): requiredBucketCount / rangeStart / rangeEnd / rangeRequests /
-      // candlesReturned / exactDaysMatched / missingDays / HTTP statuses for the at-most-2 requests.
-      geckoTerminalRange: getGeckoTerminalRangeDiagnostics(),
+      // received 25 HTTP 429s). FLATTENED HERE DELIBERATELY, DISCLOSED (production defect fixed this
+      // revision): the previous shape nested a `geckoTerminalRange` object containing an `httpStatuses`
+      // array of objects inside this already-large aggregate log line — a production log pipeline
+      // rendered that nested array as `[Object]`, hiding the exact failure. Every field the audit
+      // needs is now a top-level primitive/array-of-primitives on THIS line, and the full per-request
+      // detail (URL shape, headers, body snippet, canonical rejection category) is additionally logged
+      // as its own flat, bounded '[geckoterminal-range-request]' line per real request — see
+      // geckoTerminalEthOhlcv.ts's logRangeAttempt — which survives even a shallow log inspector.
+      geckoTerminalRequiredBucketCount: geckoTerminalRangeDiagnostics?.requiredBucketCount ?? 0,
+      geckoTerminalRangeStartUtc: geckoTerminalRangeDiagnostics?.rangeStartUtc ?? null,
+      geckoTerminalRangeEndUtc: geckoTerminalRangeDiagnostics?.rangeEndUtc ?? null,
+      geckoTerminalRangeRequests: geckoTerminalRangeDiagnostics?.rangeRequests ?? 0,
+      geckoTerminalCandlesReturned: geckoTerminalRangeDiagnostics?.candlesReturned ?? 0,
+      geckoTerminalExactDaysMatched: geckoTerminalRangeDiagnostics?.exactDaysMatched ?? 0,
+      geckoTerminalMissingDays: geckoTerminalRangeDiagnostics?.missingDays ?? [],
+      geckoTerminalQuotaStopped: geckoTerminalRangeDiagnostics?.quotaStopped ?? false,
+      // One entry per real request this scan: poolLabel, exact httpStatus, and the canonical
+      // rejection category (http_429/http_4xx/http_5xx/malformed_response/empty_ohlcv/
+      // pool_identity_mismatch/token_param_mismatch/timestamp_range_mismatch/null-on-success) — small
+      // enough (at most 2 entries) to stay flat and readable even nested one level.
+      geckoTerminalAttemptSummaries: (geckoTerminalRangeDiagnostics?.attempts ?? []).map((a) => ({
+        poolLabel: a.poolLabel,
+        httpStatus: a.httpStatus,
+        rejectionCategory: a.rejectionCategory,
+        rawCandleCount: a.rawCandleCount,
+        exactDayCandlesIndexed: a.exactDayCandlesIndexed,
+      })),
       // Which allowlisted pool and which exact daily candle backed each accepted pool-derived bucket.
       selectedPools: resolverDiagnostics.selectedPools,
       // Coverage on both sides of the whole native-price pass, so a real gain is attributable.

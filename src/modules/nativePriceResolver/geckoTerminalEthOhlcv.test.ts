@@ -211,7 +211,7 @@ test('malformed, zero, negative and non-day-aligned candles are excluded from th
   }
 })
 
-test('a pool-identity mismatch rejects the whole response', async () => {
+test('neither side of the response mentions our WETH token — classified as token_param_mismatch', async () => {
   mockPools({
     eth: () =>
       new Response(
@@ -225,7 +225,27 @@ test('a pool-identity mismatch rejects the whole response', async () => {
   })
 
   const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+  assert.equal(diagnostics.httpStatuses[0].rejectionReason, 'token_param_mismatch')
+  assert.equal(diagnostics.attempts[0].rejectionCategory, 'token_param_mismatch')
+  assert.equal(readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS }).priceUsd, null)
+})
+
+test('WETH is present but the other side is not our reviewed stablecoin — classified as pool_identity_mismatch', async () => {
+  mockPools({
+    eth: () =>
+      new Response(
+        ohlcvBody([candle(BUCKET_SEC, 3120.5)], {
+          base: { address: ETH_WETH, symbol: 'WETH' },
+          quote: { address: '0x0000000000000000000000000000000000000beef', symbol: 'RANDOM' },
+        }),
+        { status: 200 },
+      ),
+    base: () => new Response(ohlcvBody([]), { status: 200 }),
+  })
+
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
   assert.equal(diagnostics.httpStatuses[0].rejectionReason, 'pool_identity_mismatch')
+  assert.equal(diagnostics.attempts[0].rejectionCategory, 'pool_identity_mismatch')
   assert.equal(readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS }).priceUsd, null)
 })
 
@@ -265,6 +285,98 @@ test('a non-200, non-429 response fails closed without retrying that pool', asyn
   assert.equal(urls.filter((u) => u.includes(ETH_POOL)).length, 1, 'never retried')
   // A 503 is not a quota signal, so the second, independent pool is still tried.
   assert.equal(readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS }).priceUsd, 3120.5)
+})
+
+// ─── EXACT FAILURE EXPOSURE, DISCLOSED — the production defect this revision fixes: an aggregate
+// diagnostic whose nested httpStatuses array rendered as `[Object]`, giving no way to see WHICH of
+// http_429/http_4xx/http_5xx/malformed_response/empty_ohlcv/pool_identity_mismatch/
+// token_param_mismatch/timestamp_range_mismatch actually happened, nor the request shape or response
+// detail behind it. ────────────────────────────────────────────────────────────────────────────────
+
+test('a 429 attempt records the exact HTTP status, Retry-After header and canonical http_429 category', async () => {
+  global.fetch = (async () => new Response('rate limited', { status: 429, headers: { 'Retry-After': '37' } })) as unknown as typeof fetch
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+
+  assert.equal(diagnostics.attempts.length, 1, 'a 429 stops the quota group — only one attempt is made')
+  const attempt = diagnostics.attempts[0]
+  assert.equal(attempt.httpStatus, 429)
+  assert.equal(attempt.retryAfterHeader, '37')
+  assert.equal(attempt.rejectionCategory, 'http_429')
+  assert.equal(attempt.poolAddress, ETH_POOL)
+  assert.equal(attempt.network, 'eth')
+  assert.equal(attempt.tokenParam, ETH_WETH)
+  assert.equal(attempt.timeframe, 'day')
+  assert.equal(attempt.aggregate, 1)
+  assert.ok(attempt.beforeTimestamp > 0)
+  assert.ok(attempt.limit > 0)
+})
+
+test('a generic 4xx and a 5xx are classified into their own distinct categories, with a bounded body snippet', async () => {
+  mockPools({
+    eth: () => new Response('token not recognized on this network', { status: 400 }),
+    base: () => new Response('x'.repeat(2000), { status: 502 }),
+  })
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+
+  assert.equal(diagnostics.attempts[0].httpStatus, 400)
+  assert.equal(diagnostics.attempts[0].rejectionCategory, 'http_4xx')
+  assert.equal(diagnostics.attempts[0].bodySnippet, 'token not recognized on this network')
+
+  assert.equal(diagnostics.attempts[1].httpStatus, 502)
+  assert.equal(diagnostics.attempts[1].rejectionCategory, 'http_5xx')
+  assert.ok(diagnostics.attempts[1].bodySnippet!.length <= 500, 'body snippet must be bounded')
+})
+
+test('an unparseable JSON body is classified malformed_response with content-type and a body snippet', async () => {
+  mockPools({
+    eth: () => new Response('not json at all {{{', { status: 200, headers: { 'content-type': 'text/plain' } }),
+    base: () => new Response(ohlcvBody([]), { status: 200 }),
+  })
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+
+  assert.equal(diagnostics.attempts[0].rejectionCategory, 'malformed_response')
+  assert.equal(diagnostics.attempts[0].contentType, 'text/plain')
+  assert.equal(diagnostics.attempts[0].bodySnippet, 'not json at all {{{')
+})
+
+test('a shape missing ohlcv_list entirely is malformed_response, distinct from a present-but-empty list', async () => {
+  mockPools({
+    eth: () => new Response(JSON.stringify({ data: { attributes: {} } }), { status: 200 }),
+    base: () => new Response(ohlcvBody([]), { status: 200 }),
+  })
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+  assert.equal(diagnostics.attempts[0].rejectionCategory, 'malformed_response')
+  assert.equal(diagnostics.attempts[0].parsedCandlePath, 'data.attributes.ohlcv_list')
+})
+
+test('a present but empty ohlcv_list is classified empty_ohlcv', async () => {
+  mockPools({ eth: () => new Response(ohlcvBody([]), { status: 200 }) })
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+  assert.equal(diagnostics.attempts[0].rejectionCategory, 'empty_ohlcv')
+  assert.equal(diagnostics.attempts[0].rawCandleCount, 0)
+})
+
+test('candles entirely outside the requested window are classified timestamp_range_mismatch, not a plain miss', async () => {
+  const farAway = BUCKET_SEC - 400 * 86_400 // over a year before the requested bucket
+  mockPools({
+    eth: () => new Response(ohlcvBody([candle(farAway, 3120.5)]), { status: 200 }),
+    base: () => new Response(ohlcvBody([]), { status: 200 }),
+  })
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+  assert.equal(diagnostics.attempts[0].rejectionCategory, 'timestamp_range_mismatch')
+  assert.equal(diagnostics.attempts[0].rawCandleCount, 1)
+  assert.equal(readGeckoTerminalEthUsdForUtcDay({ chain: 'base', bucketStartMs: BUCKET_MS }).priceUsd, null)
+})
+
+test('a genuine success carries the parsed path, raw and indexed counts, and no rejection category', async () => {
+  mockPools({ eth: () => new Response(ohlcvBody([candle(BUCKET_SEC, 3120.5)]), { status: 200 }) })
+  const diagnostics = await primeGeckoTerminalRangeForBuckets([BUCKET_MS])
+  const attempt = diagnostics.attempts[0]
+  assert.equal(attempt.rejectionCategory, null)
+  assert.equal(attempt.parsedCandlePath, 'data.attributes.ohlcv_list')
+  assert.equal(attempt.rawCandleCount, 1)
+  assert.equal(attempt.exactDayCandlesIndexed, 1)
+  assert.equal(attempt.httpStatus, 200)
 })
 
 test('reading before priming is reported distinctly, never as a missing day', () => {
