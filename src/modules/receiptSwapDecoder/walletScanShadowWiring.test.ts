@@ -56,6 +56,60 @@ test('existing receipt data is reused: a candidate with logs already supplied is
   assert.equal(result.counters.inferenceDisagreements, 0)
 })
 
+test('a receipt served from cache (txHash absent from freshlyFetchedTxHashes) is decoded normally but does NOT count as fresh yield', async () => {
+  const candidates: WalletScanSwapCandidate[] = [
+    { chain: 'base', txHash: '0x1', inferredTokenIn: WETH, inferredTokenOut: tokenX, inferredAmountIn: 1, inferredAmountOut: 500, inferredMissingSide: 'tokenOut' },
+  ]
+  const result = await runWalletScanReceiptShadowMode({
+    walletAddress: wallet,
+    candidates,
+    logsByTxHash: new Map([['0x1', decodableLogs()]]),
+    // Deliberately empty — this txHash was served from the permanent cache, not a live call this scan.
+    freshlyFetchedTxHashes: new Set(),
+    tokenMeta: tokenMeta(),
+    validator: alwaysValidValidator(),
+  })
+  assert.equal(result.counters.aerodromeSwapsDecoded, 1, 'the receipt still decodes normally — caching never affects decode correctness')
+  assert.equal(result.counters.exactTwoSidedSwapsRecovered, 1)
+  assert.equal(result.counters.exactTwoSidedSwapsRecoveredFresh, 0)
+  assert.equal(result.counters.exactTwoSidedSwapsRecoveredFromCache, 1)
+  assert.equal(result.counters.candidateLotsUnlockedFresh, 0)
+  assert.equal(result.counters.candidateLotsUnlockedFromCache, 1)
+})
+
+test('a genuinely freshly-fetched receipt DOES count as fresh yield', async () => {
+  const candidates: WalletScanSwapCandidate[] = [
+    { chain: 'base', txHash: '0x1', inferredTokenIn: WETH, inferredTokenOut: tokenX, inferredAmountIn: 1, inferredAmountOut: 500, inferredMissingSide: 'tokenOut' },
+  ]
+  const result = await runWalletScanReceiptShadowMode({
+    walletAddress: wallet,
+    candidates,
+    logsByTxHash: new Map([['0x1', decodableLogs()]]),
+    freshlyFetchedTxHashes: new Set(['0x1']),
+    tokenMeta: tokenMeta(),
+    validator: alwaysValidValidator(),
+  })
+  assert.equal(result.counters.exactTwoSidedSwapsRecoveredFresh, 1)
+  assert.equal(result.counters.exactTwoSidedSwapsRecoveredFromCache, 0)
+  assert.equal(result.counters.candidateLotsUnlockedFresh, 1)
+})
+
+test('when freshness data is omitted entirely, a recovered swap is honestly excluded from BOTH fresh and cached counts, never guessed', async () => {
+  const candidates: WalletScanSwapCandidate[] = [
+    { chain: 'base', txHash: '0x1', inferredTokenIn: WETH, inferredTokenOut: tokenX, inferredAmountIn: 1, inferredAmountOut: 500, inferredMissingSide: 'none' },
+  ]
+  const result = await runWalletScanReceiptShadowMode({
+    walletAddress: wallet,
+    candidates,
+    logsByTxHash: new Map([['0x1', decodableLogs()]]),
+    tokenMeta: tokenMeta(),
+    validator: alwaysValidValidator(),
+  })
+  assert.equal(result.counters.exactTwoSidedSwapsRecovered, 1)
+  assert.equal(result.counters.exactTwoSidedSwapsRecoveredFresh, 0)
+  assert.equal(result.counters.exactTwoSidedSwapsRecoveredFromCache, 0)
+})
+
 test('missing receipts cause no fetch: a candidate with no logs in the map is counted as receiptsMissing, decode never runs', async () => {
   const candidates: WalletScanSwapCandidate[] = [
     { chain: 'base', txHash: '0x1', inferredTokenIn: WETH, inferredTokenOut: tokenX, inferredAmountIn: 1, inferredAmountOut: 500, inferredMissingSide: 'none' },
@@ -185,7 +239,9 @@ test('non-base candidates are never processed, even if logs are supplied for the
   })
   assert.deepEqual(result.counters, {
     receiptsAvailable: 0, receiptsMissing: 0, receiptsExamined: 0, aerodromeSwapsDecoded: 0,
-    exactTwoSidedSwapsRecovered: 0, oneLegTransactionsUpgraded: 0, inferenceAgreements: 0,
+    exactTwoSidedSwapsRecovered: 0, exactTwoSidedSwapsRecoveredFresh: 0, exactTwoSidedSwapsRecoveredFromCache: 0,
+    oneLegTransactionsUpgraded: 0, candidateLotsUnlockedFresh: 0, candidateLotsUnlockedFromCache: 0,
+    inferenceAgreements: 0,
     inferenceDisagreements: 0, rejectedNonSwapTransactions: 0, candidateLotsUnlocked: 0, newProviderCalls: 0,
     multiTransferPoolFlowsExamined: 0, multiTransferPoolFlowsResolved: 0, swapEventAmountMatches: 0,
     swapEventAmountMismatches: 0, routerIntermediaryTransfersIgnored: 0, refundsNetted: 0,
@@ -299,7 +355,9 @@ test('completionBudget summary is absent by default (backward compatible), prese
   assert.equal(withFlag.receiptProviderCalls, 2)
 })
 
-test('completion budget only expands beyond the normal budget while marginal yield stays real and high', async () => {
+test('completion budget only expands beyond the normal budget for genuine TIER-1 candidates, never tier 2', async () => {
+  // ev()'s default (isExistingSwapCandidate: true) is tier 2, not tier 1 — under the budget-
+  // allocation fix, the conditional budget must never reach these at all, regardless of yield.
   const evidence: CandidateTxEvidence[] = Array.from({ length: 20 }, (_, i) => ev({ txHash: `0x${i}` }))
   const payload = await buildWalletScanShadowLogPayload({
     walletAddress: wallet,
@@ -307,15 +365,42 @@ test('completion budget only expands beyond the normal budget while marginal yie
     tokenMeta: tokenMeta(),
     validator: alwaysValidValidator(),
     disabledByEnv: false,
-    receiptFetcher: missingFetcher(), // every receipt genuinely missing — zero swap-event detections
+    receiptFetcher: missingFetcher(),
     completionBudgetEnabled: true,
   })
   assert.equal(payload.enabled, true)
   if (!payload.enabled) return
-  // Zero marginal yield on the first conditional round must stop expansion immediately — a real
-  // provider budget must never be spent chasing a batch that already proved unproductive.
-  assert.equal(payload.completionBudget!.conditionalBudgetUsed, 3)
-  assert.equal(payload.completionBudget!.marginalYieldByBatch[1].stopReason, 'below_threshold')
+  // No tier-1 candidates exist at all — the conditional budget must be provably zero, never
+  // backfilled from the abundant tier-2 pool.
+  assert.equal(payload.completionBudget!.conditionalBudgetUsed, 0)
+  assert.equal(payload.completionBudget!.marginalYieldByBatch[1].stopReason, 'no_live_calls_remaining')
+})
+
+test('completion budget DOES expand for genuine tier-1 candidates beyond the normal budget, in batches of 3', async () => {
+  // Genuine tier-1 evidence: structural completion + two independent signals (router + verified
+  // quote), per candidateSelector.ts's own v7 gate.
+  const evidence: CandidateTxEvidence[] = Array.from({ length: 20 }, (_, i) => ev({
+    txHash: `0x${i}`,
+    isExistingSwapCandidate: false,
+    missingClosedLotSide: 'entry',
+    isKnownRouter: true,
+    hasVerifiedQuoteAddress: true,
+  }))
+  const payload = await buildWalletScanShadowLogPayload({
+    walletAddress: wallet,
+    evidence,
+    tokenMeta: tokenMeta(),
+    validator: alwaysValidValidator(),
+    disabledByEnv: false,
+    receiptFetcher: okFetcher(decodableLogs()),
+    completionBudgetEnabled: true,
+  })
+  assert.equal(payload.enabled, true)
+  if (!payload.enabled) return
+  assert.ok(payload.completionBudget!.conditionalBudgetUsed > 0, 'genuine tier-1 candidates beyond the normal budget must be reached')
+  for (const batch of payload.completionBudget!.marginalYieldByBatch.slice(1)) {
+    assert.ok(batch.liveCallsThisRound <= 3)
+  }
 })
 
 test('production pipeline shape: zero evidence logs a typed no_candidates skip reason, never silence', async () => {

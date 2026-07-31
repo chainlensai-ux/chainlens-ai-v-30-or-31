@@ -201,6 +201,9 @@ export type AcquireReceiptsResult = {
   // ROUTE-FINGERPRINT DIAGNOSTICS, DISCLOSED (this task) — see counters' own header for the
   // recorded/attempted distinction. Bounded to MAX_FINGERPRINT_SAMPLES.
   negativeFingerprintSamples: NegativeFingerprintSample[]
+  // See freshlyFetchedTxHashes' own declaration above — real per-tx "a live call happened for this
+  // exact transaction during THIS call", never a cache/singleflight/permanent-cache reuse.
+  freshlyFetchedTxHashes: ReadonlySet<string>
 }
 
 // NO RETRIES, DISCLOSED: a single attempt per key. If it times out or errors, the outcome is
@@ -308,6 +311,15 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
   const { cache, inFlight } = input.requestScope
 
   let freshFetchSwapEventDetections = 0
+  // FRESHLY-FETCHED TX HASHES, DISCLOSED (Phase 2 budget-allocation fix) — real per-tx attribution of
+  // "a live network call happened for this exact transaction DURING THIS acquireReceiptsForCandidates
+  // call", as opposed to being served from the permanent cache (persisted from a prior scan, seeded
+  // into this scan's request scope before acquisition ever ran) or an in-scan cache/singleflight
+  // reuse. Callers use this to distinguish a genuinely NEW recovery this scan produced from one that
+  // merely replays an already-known result — production proof showed the one swap this pipeline
+  // "recovered" was in fact a receipt cached from a prior scan, not new evidence this scan itself
+  // earned.
+  const freshlyFetchedTxHashes = new Set<string>()
 
   async function processOne(candidate: SelectedCandidate): Promise<void> {
     const key = receiptCacheKey(candidate.chain, candidate.txHash)
@@ -333,6 +345,7 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
     switch (outcome.status) {
       case 'ok': {
         logsByTxHash.set(candidate.txHash, outcome.logs)
+        if (freshlyFetched) freshlyFetchedTxHashes.add(candidate.txHash)
         // NEGATIVE EVIDENCE, DISCLOSED: pure, offline (zero provider calls) check for "does this
         // receipt contain ANY recognized pool-swap-shaped event at all" — never asserts WHICH
         // protocol/venue, only presence/absence, so this never infers protocol from a Swap topic.
@@ -409,6 +422,7 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
     receiptCandidatesSkippedByTierQuota: tierSelection.skippedByTierQuota,
     receiptQuotaBackfilled: tierSelection.quotaBackfilled,
     negativeFingerprintSamples,
+    freshlyFetchedTxHashes,
   }
 }
 

@@ -72,6 +72,15 @@ export type WalletScanShadowModeInput = {
   // Present ONLY when the caller's provider data already included raw receipt logs for that
   // (chain, txHash) — see file header. Never populated by fetching inside this module.
   logsByTxHash?: ReadonlyMap<string, RawReceiptLog[]>
+  // FRESH-VS-CACHED ATTRIBUTION, DISCLOSED (Phase 2 budget-allocation fix) — real per-tx evidence of
+  // whether THIS scan made a live network call for that receipt (see receiptAcquisition.ts's own
+  // freshlyFetchedTxHashes header), as opposed to serving it from the permanent cache (persisted from
+  // a prior scan) or an in-scan cache/singleflight reuse. Optional — omitting it means every decoded
+  // swap is honestly reported as neither fresh nor cached-known (both new counters stay 0), never
+  // guessed. Production proof: the one swap this pipeline "recovered" turned out to be a receipt
+  // cached from a PRIOR scan, not new evidence this scan itself earned — this lets that distinction
+  // be reported rather than silently blended into one undifferentiated count.
+  freshlyFetchedTxHashes?: ReadonlySet<string>
   tokenMeta?: Record<string, TokenMeta>
   validator: PoolValidator
   // Optional — when supplied, a concentrated-liquidity-shaped Swap event whose Aerodrome Slipstream
@@ -119,7 +128,17 @@ export type WalletScanShadowCounters = {
   receiptsExamined: number
   aerodromeSwapsDecoded: number
   exactTwoSidedSwapsRecovered: number
+  // FRESH-VS-CACHED SPLIT, DISCLOSED — see WalletScanShadowModeInput.freshlyFetchedTxHashes' own
+  // header. exactTwoSidedSwapsRecoveredFresh + exactTwoSidedSwapsRecoveredFromCache always sums to
+  // exactTwoSidedSwapsRecovered above; a candidate whose freshness couldn't be determined (freshness
+  // input omitted entirely) is honestly excluded from BOTH rather than guessed into either.
+  exactTwoSidedSwapsRecoveredFresh: number
+  exactTwoSidedSwapsRecoveredFromCache: number
   oneLegTransactionsUpgraded: number
+  // Same fresh-vs-cached split, for the specific subset of recoveries that also completed a real
+  // missing FIFO lot side (candidate.inferredMissingSide !== 'none').
+  candidateLotsUnlockedFresh: number
+  candidateLotsUnlockedFromCache: number
   inferenceAgreements: number
   inferenceDisagreements: number
   rejectedNonSwapTransactions: number
@@ -187,7 +206,11 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
     receiptsExamined: 0,
     aerodromeSwapsDecoded: 0,
     exactTwoSidedSwapsRecovered: 0,
+    exactTwoSidedSwapsRecoveredFresh: 0,
+    exactTwoSidedSwapsRecoveredFromCache: 0,
     oneLegTransactionsUpgraded: 0,
+    candidateLotsUnlockedFresh: 0,
+    candidateLotsUnlockedFromCache: 0,
     inferenceAgreements: 0,
     inferenceDisagreements: 0,
     rejectedNonSwapTransactions: 0,
@@ -394,6 +417,13 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
 
     counters.aerodromeSwapsDecoded += 1
     counters.exactTwoSidedSwapsRecovered += 1
+    // FRESH-VS-CACHED ATTRIBUTION, DISCLOSED — see WalletScanShadowModeInput.freshlyFetchedTxHashes'
+    // own header. `undefined` (the caller never supplied freshness data) means neither bucket is
+    // incremented — honest omission, never a guessed default.
+    const isFresh = input.freshlyFetchedTxHashes?.has(candidate.txHash) ?? false
+    const isKnownCached = input.freshlyFetchedTxHashes !== undefined && !isFresh
+    if (isFresh) counters.exactTwoSidedSwapsRecoveredFresh += 1
+    else if (isKnownCached) counters.exactTwoSidedSwapsRecoveredFromCache += 1
     bumpMap(decodedByVenue, result.swap.protocol)
     bumpMap(decodedByConfidence, result.swap.confidence)
 
@@ -401,6 +431,8 @@ export async function runWalletScanReceiptShadowMode(input: WalletScanShadowMode
     if (completesMissingSide) {
       counters.oneLegTransactionsUpgraded += 1
       counters.candidateLotsUnlocked += 1
+      if (isFresh) counters.candidateLotsUnlockedFresh += 1
+      else if (isKnownCached) counters.candidateLotsUnlockedFromCache += 1
     }
 
     const bothInferredSidesKnown = candidate.inferredTokenIn !== null && candidate.inferredTokenOut !== null
@@ -475,8 +507,12 @@ export type WalletScanShadowLogPayload =
       receiptsExamined: number
       aerodromeSwapsDecoded: number
       exactTwoSidedSwapsRecovered: number
+      exactTwoSidedSwapsRecoveredFresh: number
+      exactTwoSidedSwapsRecoveredFromCache: number
       oneLegTransactionsUpgraded: number
       candidateLotsUnlocked: number
+      candidateLotsUnlockedFresh: number
+      candidateLotsUnlockedFromCache: number
       // AERODROME CLASSIC MULTI-TRANSFER RESOLUTION, DISCLOSED — see multiTransferLeg.ts's own
       // header and WalletScanShadowCounters' matching fields above.
       multiTransferPoolFlowsExamined: number
@@ -551,6 +587,11 @@ export type WalletScanShadowLogPayload =
       // line can prove which selector build actually ran, without needing separate CI/deploy
       // tooling this module has no access to.
       receiptSelectorAlgorithmVersion: string
+      // FRESH-VS-CACHED ATTRIBUTION, DISCLOSED — the exact set runWalletScanReceiptShadowMode used
+      // for its own exactTwoSidedSwapsRecoveredFresh/FromCache split. Exposed so a caller (e.g.
+      // src/pipeline/index.ts's later fifoLotsUnlockedFresh diagnostic) can reuse the identical set
+      // rather than re-deriving it.
+      freshlyFetchedTxHashes: ReadonlySet<string>
       // ORDERING-TRACE INSTRUMENTATION, DISCLOSED — see candidateSelector.ts's own
       // CandidateOrderingTrace header. Bounded to the same MAX_SELECTED (25) ceiling `selected`
       // itself already has.
@@ -686,6 +727,7 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     walletAddress: input.walletAddress,
     candidates,
     logsByTxHash: acquisition.logsByTxHash,
+    freshlyFetchedTxHashes: acquisition.freshlyFetchedTxHashes,
     tokenMeta: input.tokenMeta,
     validator: input.validator,
     uniswapV3Validator: input.uniswapV3Validator,
@@ -711,8 +753,12 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     receiptsExamined: result.counters.receiptsExamined,
     aerodromeSwapsDecoded: result.counters.aerodromeSwapsDecoded,
     exactTwoSidedSwapsRecovered: result.counters.exactTwoSidedSwapsRecovered,
+    exactTwoSidedSwapsRecoveredFresh: result.counters.exactTwoSidedSwapsRecoveredFresh,
+    exactTwoSidedSwapsRecoveredFromCache: result.counters.exactTwoSidedSwapsRecoveredFromCache,
     oneLegTransactionsUpgraded: result.counters.oneLegTransactionsUpgraded,
     candidateLotsUnlocked: result.counters.candidateLotsUnlocked,
+    candidateLotsUnlockedFresh: result.counters.candidateLotsUnlockedFresh,
+    candidateLotsUnlockedFromCache: result.counters.candidateLotsUnlockedFromCache,
     multiTransferPoolFlowsExamined: result.counters.multiTransferPoolFlowsExamined,
     multiTransferPoolFlowsResolved: result.counters.multiTransferPoolFlowsResolved,
     swapEventAmountMatches: result.counters.swapEventAmountMatches,
@@ -760,6 +806,7 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     selectorReasonCounts: selection.selectorReasonCounts,
     candidatePriorityBreakdown: selection.candidatePriorityBreakdown,
     receiptSelectorAlgorithmVersion: RECEIPT_SELECTOR_ALGORITHM_VERSION,
+    freshlyFetchedTxHashes: acquisition.freshlyFetchedTxHashes,
     candidateOrderingTrace: selection.orderingTrace,
     tier1Diagnostics: selection.tier1Diagnostics,
     ...(completionBudgetSummary ? { completionBudget: completionBudgetSummary } : {}),

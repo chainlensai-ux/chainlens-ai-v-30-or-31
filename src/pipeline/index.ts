@@ -1335,10 +1335,19 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     decodedByVenue: Record<string, number>
     rejectionReasons: Record<string, number>
     exactSwapsRecovered: number
+    // FRESH-VS-CACHED SPLIT, DISCLOSED (Phase 2 budget-allocation fix) — see
+    // walletScanShadowWiring.ts's own WalletScanShadowCounters header. Always sums to
+    // exactSwapsRecovered above.
+    exactSwapsRecoveredFresh: number
+    exactSwapsRecoveredFromCache: number
     providerCalls: number
     marginalYieldByBatch: unknown[]
     permanentCacheSeeded: number
     permanentCacheRecorded: number
+    // Real freshly-fetched txHash set this scan, threaded through to the fifoLotsUnlocked
+    // fresh/cached split computed later (once fifoAndPnl exists) — never re-derived, always the
+    // exact same set walletScanShadowWiring itself used for its own fresh/cached counters.
+    freshlyFetchedTxHashes: ReadonlySet<string>
   } | null = null
   try {
     const existingSwapCandidateTxHashes = new Set(
@@ -1549,10 +1558,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         decodedByVenue: shadowPayload.decodedByVenue,
         rejectionReasons: shadowPayload.rejectionReasons,
         exactSwapsRecovered: shadowPayload.exactTwoSidedSwapsRecovered,
+        exactSwapsRecoveredFresh: shadowPayload.exactTwoSidedSwapsRecoveredFresh,
+        exactSwapsRecoveredFromCache: shadowPayload.exactTwoSidedSwapsRecoveredFromCache,
         providerCalls: shadowPayload.completionBudget?.providerCalls ?? shadowPayload.newProviderCalls,
         marginalYieldByBatch: shadowPayload.completionBudget?.marginalYieldByBatch ?? [],
         permanentCacheSeeded,
         permanentCacheRecorded,
+        freshlyFetchedTxHashes: shadowPayload.freshlyFetchedTxHashes,
       }
     }
   } catch (err) {
@@ -1822,6 +1834,42 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     const fullyPricedLotsBefore = countFullyPriced(promotionBeforeSnapshot.matchedLots)
     const fullyPricedLotsAfter = countFullyPriced(fifoAndPnl.matchedLots)
 
+    // FIFO-LOTS-UNLOCKED, FRESH VS CACHED, DISCLOSED (Phase 2 budget-allocation fix — explicit
+    // "report fifoLotsUnlockedFresh separately from cached repeat recoveries" requirement). Computes
+    // ONE extra structural (zero-provider-call, reused priceUsdLookup — same pattern as
+    // promotionBeforeSnapshot above) FIFO snapshot with ONLY the cached-sourced promotions applied,
+    // never the real ones — this is diagnostic-only and never replaces or alters the real
+    // `receiptSwapPromotionResult`/`fifoAndPnl` this scan's actual canonical output uses.
+    const cachedOnlySwaps = shadowExactReceiptSwaps.filter(
+      (s) => !receiptCompletionPhase2Summary!.freshlyFetchedTxHashes.has(s.txHash),
+    )
+    const cachedOnlyPromotion = receiptSwapCanonicalPromotionEnabled
+      ? promoteVerifiedReceiptSwaps({
+          normalizedEvents,
+          walletAddress: params.walletAddress,
+          acceptedExactSwaps: cachedOnlySwaps,
+          recoveredEvents: recoveredNormalizedForPricing,
+        })
+      : null
+    const cachedOnlyFifo = cachedOnlyPromotion
+      ? safeRunFifoEngine({
+          normalizedEvents: cachedOnlyPromotion.promotedEvents,
+          recoveryPolicy,
+          walletAddress: params.walletAddress,
+          buyTimeline: timelines.buyTimeline,
+          sellTimeline: timelines.sellTimeline,
+          priceUsdLookup: walletPriceLookups.priceUsdLookup,
+          currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
+          canonicalBalanceLookup: params.canonicalBalanceLookup,
+          unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
+        })
+      : promotionBeforeSnapshot
+    const fullyPricedLotsCachedOnly = countFullyPriced(cachedOnlyFifo.matchedLots)
+    // The FULL after-state (fifoAndPnl) already includes fresh + cached together; the fresh-only
+    // marginal contribution is whatever lies BEYOND what cached-only recoveries already unlocked.
+    const fifoLotsUnlockedFresh = fullyPricedLotsAfter - fullyPricedLotsCachedOnly
+    const fifoLotsUnlockedFromCache = fullyPricedLotsCachedOnly - fullyPricedLotsBefore
+
     // eslint-disable-next-line no-console
     console.warn('[receipt-completion-phase2]', {
       candidatesConsidered: receiptCompletionPhase2Summary.candidatesConsidered,
@@ -1833,12 +1881,20 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       decodedByVenue: receiptCompletionPhase2Summary.decodedByVenue,
       rejectionReasons: receiptCompletionPhase2Summary.rejectionReasons,
       exactSwapsRecovered: receiptCompletionPhase2Summary.exactSwapsRecovered,
+      // FRESH-VS-CACHED SPLIT, DISCLOSED (Phase 2 budget-allocation fix) — production proof: the
+      // one swap this pipeline "recovered" was in fact served from the permanent cache (persisted
+      // from a prior scan), not a new recovery this scan itself earned. Reported separately so that
+      // distinction is never blended into one undifferentiated count again.
+      exactSwapsRecoveredFresh: receiptCompletionPhase2Summary.exactSwapsRecoveredFresh,
+      exactSwapsRecoveredFromCache: receiptCompletionPhase2Summary.exactSwapsRecoveredFromCache,
       // MISSING-LEGS-ADDED / FIFO-LOTS-UNLOCKED, DISCLOSED: real counts from the SAME promotion
       // result the "receipt swap canonical promotion" diagnostic above already computed — never a
       // second promotion pass. Both are honestly 0 when RECEIPT_SWAP_CANONICAL_PROMOTION_ENABLED is
       // off (this scan decoded exact swaps but never promoted any into canonical events).
       missingLegsAdded: receiptSwapPromotionResult?.addedLegs.length ?? 0,
       fifoLotsUnlocked: fullyPricedLotsAfter - fullyPricedLotsBefore,
+      fifoLotsUnlockedFresh,
+      fifoLotsUnlockedFromCache,
       fullyPricedLotsBefore,
       fullyPricedLotsAfter,
       verifiedCoverageBefore: Math.round(verifiedCoverage(promotionBeforeSnapshot.matchedLots) * 10000) / 100,

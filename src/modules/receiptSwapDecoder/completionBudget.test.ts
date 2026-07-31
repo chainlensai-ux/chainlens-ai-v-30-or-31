@@ -152,6 +152,104 @@ test('no candidate is ever fetched twice — already-fetched receipts are cache 
   assert.equal(new Set(fetchedTxHashes).size, fetchedTxHashes.length, 'no txHash was ever fetched more than once')
 })
 
+// ─── BUDGET-ALLOCATION FIX, DISCLOSED — production proof: tier1CandidatesAfter=0 yet the decoder
+// still spent normalBudget=10 PLUS conditionalBudget=3, because the prior version handed the full,
+// all-tiers candidate list to conditional rounds too, letting tier-3/4 backfill a budget the
+// completion-first premise never justified for them. ─────────────────────────────────────────────
+
+test('zero tier-1 candidates uses zero conditional budget, even with plenty of high-yield tier-3/4 candidates', async () => {
+  // Every candidate is tier 3 or 4 — real, high-yield swap events, but NONE is tier 1.
+  const candidates = [
+    ...Array.from({ length: 20 }, (_, i) => candidate(`0x3-${i}`, { priorityTier: 3, priorityReason: 'verified_quote_address' })),
+    ...Array.from({ length: 20 }, (_, i) => candidate(`0x4-${i}`, { priorityTier: 4, priorityReason: 'known_or_high_confidence_router' })),
+  ]
+  const fetcher = async (): Promise<ReceiptFetchOutcome> => ({ status: 'ok', logs: swapLog() }) // high yield if it were allowed to run
+
+  const result = await acquireReceiptsWithCompletionBudget({ candidates, fetcher, requestScope: createReceiptRequestScopeCache() })
+
+  // Normal budget still spends its full 10 (unchanged — tier 3/4 backfill IS allowed there).
+  assert.equal(result.normalBudgetUsed, 10)
+  // But the conditional budget must be provably zero — no tier-1 candidates exist to justify it.
+  assert.equal(result.conditionalBudgetUsed, 0)
+  assert.equal(result.receiptsFetched, 10)
+  const conditionalBatch = result.marginalYieldByBatch[1]
+  assert.equal(conditionalBatch.liveCallsThisRound, 0)
+  assert.equal(conditionalBatch.stopReason, 'no_live_calls_remaining')
+  assert.equal(result.marginalYieldByBatch.length, 2, 'expansion must stop after exactly one (zero-call) conditional attempt')
+})
+
+test('tier-3/4 candidates cannot backfill the conditional budget once tier-1 candidates are exhausted', async () => {
+  // Exactly 2 real tier-1 candidates (both high-yield), plus a large pool of equally high-yield
+  // tier-3/4 candidates that must NEVER be reachable by the conditional budget.
+  const candidates = [
+    candidate('0xtier1-a', { priorityTier: 1, priorityReason: 'could_complete_missing_entry' }),
+    candidate('0xtier1-b', { priorityTier: 1, priorityReason: 'could_complete_missing_exit' }),
+    ...Array.from({ length: 30 }, (_, i) => candidate(`0xtier3-${i}`, { priorityTier: 3, priorityReason: 'verified_quote_address' })),
+  ]
+  const fetchedTxHashes: string[] = []
+  const fetcher = async (_chain: 'base', txHash: string): Promise<ReceiptFetchOutcome> => {
+    fetchedTxHashes.push(txHash)
+    return { status: 'ok', logs: swapLog() }
+  }
+
+  const result = await acquireReceiptsWithCompletionBudget({ candidates, fetcher, requestScope: createReceiptRequestScopeCache() })
+
+  // Normal budget (10) covers both tier-1 candidates (unlimited-first) plus 8 tier-3 candidates —
+  // unchanged, expected behavior for the NORMAL budget specifically.
+  assert.equal(result.normalBudgetUsed, 10)
+  assert.ok(fetchedTxHashes.includes('0xtier1-a'))
+  assert.ok(fetchedTxHashes.includes('0xtier1-b'))
+  // Both tier-1 candidates were already covered by the normal budget, so the conditional pool has
+  // nothing left — it must spend zero, never reach into the remaining 22 tier-3 candidates.
+  assert.equal(result.conditionalBudgetUsed, 0)
+  assert.equal(fetchedTxHashes.filter((h) => h.startsWith('0xtier3-')).length, 8, 'exactly the 8 tier-3 slots the NORMAL budget backfilled, never more via conditional expansion')
+})
+
+test('a genuine tier-1 candidate beyond the normal budget IS reached by conditional expansion, in batches of 3, while tier-3/4 remain untouched by it', async () => {
+  // 15 tier-1 candidates (more than the normal budget's own unlimited-first allocation could spend
+  // alongside nothing else) plus a pool of tier-4 candidates that must stay conditional-unreachable.
+  const candidates = [
+    ...Array.from({ length: 15 }, (_, i) => candidate(`0xtier1-${i}`, { priorityTier: 1, priorityReason: 'could_complete_missing_entry' })),
+    ...Array.from({ length: 10 }, (_, i) => candidate(`0xtier4-${i}`, { priorityTier: 4, priorityReason: 'known_or_high_confidence_router' })),
+  ]
+  const fetchedTxHashes: string[] = []
+  const fetcher = async (_chain: 'base', txHash: string): Promise<ReceiptFetchOutcome> => {
+    fetchedTxHashes.push(txHash)
+    return { status: 'ok', logs: swapLog() } // every real tier-1 fetch yields — expansion should keep going
+  }
+
+  const result = await acquireReceiptsWithCompletionBudget({ candidates, fetcher, requestScope: createReceiptRequestScopeCache() })
+
+  assert.equal(result.normalBudgetUsed, 10) // all 10 spent on tier-1 (unlimited-first), zero tier-4 reached by the normal round
+  assert.ok(result.conditionalBudgetUsed > 0, 'the remaining 5 real tier-1 candidates must be reached by conditional expansion')
+  assert.equal(result.conditionalBudgetUsed, 5, 'exactly the 5 remaining tier-1 candidates — expansion stops once the tier-1 pool itself is exhausted')
+  assert.equal(fetchedTxHashes.filter((h) => h.startsWith('0xtier4-')).length, 0, 'tier-4 must never be reached by conditional expansion')
+  // Batches of 3: two full batches (3+3=6 ceiling growth) would overshoot by one since only 5 remain
+  // — the LAST batch naturally returns fewer live calls than the batch size, never more than 3.
+  const conditionalBatches = result.marginalYieldByBatch.slice(1)
+  for (const b of conditionalBatches) assert.ok(b.liveCallsThisRound <= 3)
+})
+
+test('deterministic candidate ordering: identical tier1Only selection and total spend regardless of input shuffling', async () => {
+  const base = [
+    candidate('0xtier1-a', { priorityTier: 1 }),
+    candidate('0xtier1-b', { priorityTier: 1 }),
+    candidate('0xtier1-c', { priorityTier: 1 }),
+    candidate('0xtier3-a', { priorityTier: 3 }),
+    candidate('0xtier4-a', { priorityTier: 4 }),
+  ]
+  const shuffled = [base[3], base[1], base[4], base[0], base[2]]
+  const fetcher = async (): Promise<ReceiptFetchOutcome> => ({ status: 'ok', logs: swapLog() })
+
+  const resultA = await acquireReceiptsWithCompletionBudget({ candidates: base, fetcher, requestScope: createReceiptRequestScopeCache() })
+  const resultB = await acquireReceiptsWithCompletionBudget({ candidates: shuffled, fetcher, requestScope: createReceiptRequestScopeCache() })
+
+  assert.equal(resultA.normalBudgetUsed, resultB.normalBudgetUsed)
+  assert.equal(resultA.conditionalBudgetUsed, resultB.conditionalBudgetUsed)
+  assert.equal(resultA.receiptsFetched, resultB.receiptsFetched)
+  assert.deepEqual([...resultA.final.logsByTxHash.keys()].sort(), [...resultB.final.logsByTxHash.keys()].sort())
+})
+
 test('deterministic total spend under a custom, lower threshold', async () => {
   const candidates = Array.from({ length: 30 }, (_, i) => candidate(`0x${i}`))
   const fetcher = async (): Promise<ReceiptFetchOutcome> => ({ status: 'ok', logs: swapLog() })
