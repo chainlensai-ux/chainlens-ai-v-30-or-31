@@ -29,6 +29,9 @@ import {
   type ReceiptFetcher, type ReceiptRequestScopeCache, type NegativeFingerprintSample,
 } from './receiptAcquisition'
 import {
+  acquireReceiptsWithCompletionBudget, type CompletionBudgetBatch,
+} from './completionBudget'
+import {
   classifyReceiptForensics, createRecordingPoolValidator, MAX_FORENSIC_SAMPLES,
   type ReceiptForensicSample, type FactoryValidationAttempt,
 } from './forensicClassifier'
@@ -552,6 +555,16 @@ export type WalletScanShadowLogPayload =
       // CandidateOrderingTrace header. Bounded to the same MAX_SELECTED (25) ceiling `selected`
       // itself already has.
       candidateOrderingTrace: CandidateOrderingTrace[]
+      // PHASE 2 COMPLETION-FIRST BUDGET, DISCLOSED — see BuildWalletScanShadowLogPayloadInput's own
+      // `completionBudgetEnabled` header. Present only when that flag was set; absent (never a
+      // fabricated zero) when this call used the plain, fixed-budget acquisition.
+      completionBudget?: {
+        normalBudgetUsed: number
+        conditionalBudgetUsed: number
+        receiptsFetched: number
+        providerCalls: number
+        marginalYieldByBatch: CompletionBudgetBatch[]
+      }
     }
 
 export type BuildWalletScanShadowLogPayloadInput = {
@@ -578,6 +591,17 @@ export type BuildWalletScanShadowLogPayloadInput = {
   maxLiveReceiptCalls?: number
   receiptConcurrency?: number
   receiptTimeoutMs?: number
+  // PHASE 2 COMPLETION-FIRST BUDGET, DISCLOSED — see completionBudget.ts's own header. When set, the
+  // normal `maxLiveReceiptCalls`-capped acquisition (unchanged, still the default) is replaced by
+  // acquireReceiptsWithCompletionBudget: the same normal budget is always spent first, then up to
+  // `maxConditionalReceiptBudget` ADDITIONAL receipts are fetched in `completionBatchSize`-sized
+  // rounds while marginal completion yield stays at or above `marginalYieldStopThreshold`. Omitting
+  // this preserves this function's exact original acquisition behavior.
+  completionBudgetEnabled?: boolean
+  normalReceiptBudget?: number
+  maxConditionalReceiptBudget?: number
+  completionBatchSize?: number
+  marginalYieldStopThreshold?: number
 }
 
 // PURE with respect to control flow beyond the injected fetcher (acquireReceiptsForCandidates) and
@@ -602,15 +626,45 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     return { enabled: false, skipReason: anyBaseEvidence ? 'no_candidates' : 'unsupported_chain', baseSwapCandidates: 0 }
   }
 
-  const acquisition = await acquireReceiptsForCandidates({
-    // Highest-priority first — candidateSelector.ts already sorts `selected` this way.
-    candidates: selection.selected,
-    fetcher: input.receiptFetcher ?? createLiveBaseReceiptFetcher(),
-    requestScope: input.requestScope ?? createReceiptRequestScopeCache(),
-    maxLiveCalls: input.maxLiveReceiptCalls,
-    concurrency: input.receiptConcurrency,
-    timeoutMs: input.receiptTimeoutMs,
-  })
+  const requestScope = input.requestScope ?? createReceiptRequestScopeCache()
+  const receiptFetcher = input.receiptFetcher ?? createLiveBaseReceiptFetcher()
+
+  let acquisition: Awaited<ReturnType<typeof acquireReceiptsForCandidates>>
+  let completionBudgetSummary:
+    | { normalBudgetUsed: number; conditionalBudgetUsed: number; receiptsFetched: number; providerCalls: number; marginalYieldByBatch: CompletionBudgetBatch[] }
+    | null = null
+
+  if (input.completionBudgetEnabled) {
+    const withBudget = await acquireReceiptsWithCompletionBudget({
+      candidates: selection.selected,
+      fetcher: receiptFetcher,
+      requestScope,
+      normalBudget: input.normalReceiptBudget,
+      maxConditionalBudget: input.maxConditionalReceiptBudget,
+      batchSize: input.completionBatchSize,
+      marginalYieldStopThreshold: input.marginalYieldStopThreshold,
+      concurrency: input.receiptConcurrency,
+      timeoutMs: input.receiptTimeoutMs,
+    })
+    acquisition = withBudget.final
+    completionBudgetSummary = {
+      normalBudgetUsed: withBudget.normalBudgetUsed,
+      conditionalBudgetUsed: withBudget.conditionalBudgetUsed,
+      receiptsFetched: withBudget.receiptsFetched,
+      providerCalls: withBudget.providerCalls,
+      marginalYieldByBatch: withBudget.marginalYieldByBatch,
+    }
+  } else {
+    acquisition = await acquireReceiptsForCandidates({
+      // Highest-priority first — candidateSelector.ts already sorts `selected` this way.
+      candidates: selection.selected,
+      fetcher: receiptFetcher,
+      requestScope,
+      maxLiveCalls: input.maxLiveReceiptCalls,
+      concurrency: input.receiptConcurrency,
+      timeoutMs: input.receiptTimeoutMs,
+    })
+  }
 
   const candidates: WalletScanSwapCandidate[] = selection.selected.map((c) => ({
     chain: c.chain,
@@ -637,7 +691,13 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
   })
 
   const poolValidationProviderCalls = result.counters.newProviderCalls
-  const receiptProviderCalls = acquisition.counters.receiptProviderCalls
+  // CUMULATIVE ACROSS ROUNDS, DISCLOSED: under the completion-budget path, `acquisition` is the LAST
+  // round's own result — its own receiptLiveCalls/receiptProviderCalls reflect only that round's
+  // marginal fetches (by design, so marginal-yield measurement stays per-round-honest — see
+  // completionBudget.ts's own header). The real total spent this scan is
+  // completionBudgetSummary.receiptsFetched (summed across every round). Falls back to the
+  // single-call counter when completion budget was not used, preserving exact prior behavior.
+  const receiptProviderCalls = completionBudgetSummary ? completionBudgetSummary.providerCalls : acquisition.counters.receiptProviderCalls
 
   return {
     enabled: true,
@@ -660,7 +720,8 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     receiptCandidatesCapped: acquisition.counters.receiptCandidatesCapped,
     receiptCacheHits: acquisition.counters.receiptCacheHits,
     receiptSingleflightHits: acquisition.counters.receiptSingleflightHits,
-    receiptLiveCalls: acquisition.counters.receiptLiveCalls,
+    // Same cumulative-across-rounds reasoning as receiptProviderCalls above.
+    receiptLiveCalls: completionBudgetSummary ? completionBudgetSummary.receiptsFetched : acquisition.counters.receiptLiveCalls,
     receiptTimeouts: acquisition.counters.receiptTimeouts,
     receiptMissingResults: acquisition.counters.receiptMissingResults,
     receiptMalformed: acquisition.counters.receiptMalformed,
@@ -696,5 +757,6 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     candidatePriorityBreakdown: selection.candidatePriorityBreakdown,
     receiptSelectorAlgorithmVersion: RECEIPT_SELECTOR_ALGORITHM_VERSION,
     candidateOrderingTrace: selection.orderingTrace,
+    ...(completionBudgetSummary ? { completionBudget: completionBudgetSummary } : {}),
   }
 }

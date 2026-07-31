@@ -41,6 +41,11 @@ import {
 } from '../modules/receiptSwapDecoder/unsupportedFactoryForensics'
 import { runShadowFifoReplay } from '../modules/receiptSwapDecoder/shadowFifoReplay'
 import { promoteVerifiedReceiptSwaps } from '../modules/receiptSwapDecoder/canonicalPromotion'
+import { computeMissingClosedLotSides, type SwapLegGroupSummary } from '../modules/receiptSwapDecoder/structuralCompletionSignal'
+import {
+  seedPermanentReceiptsIntoRequestScope, recordPermanentReceiptsFromRequestScope,
+} from '../modules/receiptSwapDecoder/permanentReceiptCache'
+import { createReceiptRequestScopeCache } from '../modules/receiptSwapDecoder/receiptAcquisition'
 import type { DecodedReceiptSwap } from '../modules/receiptSwapDecoder/types'
 import { groupSwapLegsByTransaction, swapLegGroupKey, isVerifiedQuoteLegAddress } from '../modules/quoteLegPricing/index'
 import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/syntheticPnl/index'
@@ -1312,6 +1317,26 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // events — this is a plain local array, never written into normalizedEvents or any FinalReport
   // field.
   let shadowExactReceiptSwaps: DecodedReceiptSwap[] = []
+  // CAPTURED FOR THE LATER [receipt-completion-phase2] DIAGNOSTIC, DISCLOSED: same "capture-early,
+  // use-late" pattern as shadowExactReceiptSwaps above — fifoLotsUnlocked/fullyPricedLots/coverage
+  // fields require fifoAndPnl, which doesn't exist yet at this point in the file. Never exposed on
+  // FinalReport; a plain local var read once, later, by the diagnostic block near
+  // [smart-money-source-audit]/[fifo-structure-audit].
+  let receiptCompletionPhase2Summary: {
+    candidatesConsidered: number
+    candidatesSelected: number
+    normalBudgetUsed: number
+    conditionalBudgetUsed: number
+    receiptsFetched: number
+    cacheHits: number
+    decodedByVenue: Record<string, number>
+    rejectionReasons: Record<string, number>
+    exactSwapsRecovered: number
+    providerCalls: number
+    marginalYieldByBatch: unknown[]
+    permanentCacheSeeded: number
+    permanentCacheRecorded: number
+  } | null = null
   try {
     const existingSwapCandidateTxHashes = new Set(
       routerTradeReconstruction.candidateTrades.map((t) => swapLegGroupKey(t.chain as SupportedChain, t.txHash)),
@@ -1351,6 +1376,32 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     }
 
     const swapLegGroups = groupSwapLegsByTransaction(normalizedEvents)
+
+    // STRUCTURAL COMPLETION SIGNAL, DISCLOSED (Phase 2 — this task's explicit "rank transactions by
+    // expected completed verified lots per receipt call" / "prioritize one-side-missing FIFO
+    // requirements" Selection requirements). candidateSelector.ts's own tier 1
+    // ("could_complete_missing_entry/exit") already IS this exact ranking — it simply never received
+    // real data at this call site (missingClosedLotSide was hardcoded null below, "not available at
+    // this pipeline stage"). Fixed the honest way: run the SAME zero-network-call, price-free
+    // structural FIFO pre-pass priceLotsForWallet.ts's own "Phase A" already runs (fifoEngine's
+    // exported, unmodified buildLots/matchLotsFIFO with no priceUsdLookup), one stage earlier, purely
+    // to learn which one-leg transactions are the real open/close boundary of a real structural
+    // closed lot — see structuralCompletionSignal.ts's own header for the full disclosure, including
+    // why this pre-pass's own lot count legitimately differs from the pipeline's final structural
+    // count computed later.
+    const preShadowStructuralLots = safeRunFifoEngine({
+      normalizedEvents, recoveryPolicy: recoveryPolicyFallback(), walletAddress: params.walletAddress,
+      buyTimeline: timelines.buyTimeline, sellTimeline: timelines.sellTimeline,
+    }).matchedLots
+    const legGroupSummaries = new Map<string, SwapLegGroupSummary>(
+      [...swapLegGroups.entries()].map(([groupKey, legs]) => [groupKey, { groupKey, legCount: legs.length }]),
+    )
+    const missingClosedLotSideByGroupKey = computeMissingClosedLotSides(
+      preShadowStructuralLots,
+      legGroupSummaries,
+      (chain, txHash) => swapLegGroupKey(chain as SupportedChain, txHash),
+    )
+
     const evidence: CandidateTxEvidence[] = []
     for (const [groupKey, legs] of swapLegGroups) {
       const [chainPart, ...txHashParts] = groupKey.split(':')
@@ -1376,9 +1427,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         // here, never guessed; such transactions still fail closed via the ordinary_transfer/
         // no-positive-signal eligibility rule when they carry no other swap-like evidence.
         isLpStakingOrBurn: false,
-        // Not available at this pipeline stage (needs priceLotsForWallet's structural lot pairing,
-        // which runs later) — honestly null, never fabricated.
-        missingClosedLotSide: null,
+        // Real signal now, from the price-free structural pre-pass above — see
+        // structuralCompletionSignal.ts's own header. null (never fabricated) when this transaction
+        // is not the one-leg open/close boundary of any real structural lot.
+        missingClosedLotSide: missingClosedLotSideByGroupKey.get(groupKey) ?? null,
         economicValueUsd: null,
       })
     }
@@ -1413,6 +1465,17 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       createLiveUnsupportedFactoryForensicsAnalyzer(),
       createUnsupportedFactoryForensicsRequestScope(),
     )
+    // PERMANENT RECEIPT CACHE, DISCLOSED (Phase 2 explicit requirement) — see
+    // permanentReceiptCache.ts's own header: a real mined receipt is immutable, so it is seeded into
+    // this scan's request-scoped cache BEFORE acquisition runs (a seeded entry is a real cache hit,
+    // never a live call), and every freshly-'ok' entry is recorded back into the permanent cache
+    // AFTER acquisition completes, so a later scan of the same wallet reuses it for free.
+    const receiptRequestScope = createReceiptRequestScopeCache()
+    const permanentCacheSeeded = seedPermanentReceiptsIntoRequestScope(
+      receiptRequestScope,
+      evidence.filter((e) => e.chain === 'base').map((e) => ({ chain: e.chain, txHash: e.txHash })),
+    )
+
     const shadowPayload = await buildWalletScanShadowLogPayload({
       walletAddress: params.walletAddress,
       evidence,
@@ -1422,10 +1485,34 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       unknownFactoryVerifier,
       unsupportedFactoryForensicsAnalyzer,
       disabledByEnv: process.env.RECEIPT_SWAP_DECODER_SHADOW_DISABLED === 'true',
+      requestScope: receiptRequestScope,
+      // PHASE 2 COMPLETION-FIRST BUDGET, DISCLOSED — see completionBudget.ts's own header. Normal
+      // budget (10) is always spent first; up to 40 additional receipts are fetched in batches of 3
+      // while marginal completion yield stays real, stopping the first round it falls below
+      // MARGINAL_YIELD_STOP_THRESHOLD.
+      completionBudgetEnabled: true,
     })
+    const permanentCacheRecorded = recordPermanentReceiptsFromRequestScope(receiptRequestScope)
     // eslint-disable-next-line no-console
     console.warn('[pipeline] receiptSwapDecoder shadow mode', shadowPayload)
-    if (shadowPayload.enabled) shadowExactReceiptSwaps = shadowPayload.acceptedExactSwaps
+    if (shadowPayload.enabled) {
+      shadowExactReceiptSwaps = shadowPayload.acceptedExactSwaps
+      receiptCompletionPhase2Summary = {
+        candidatesConsidered: shadowPayload.selectorTransactionsConsidered,
+        candidatesSelected: shadowPayload.baseSwapCandidates,
+        normalBudgetUsed: shadowPayload.completionBudget?.normalBudgetUsed ?? 0,
+        conditionalBudgetUsed: shadowPayload.completionBudget?.conditionalBudgetUsed ?? 0,
+        receiptsFetched: shadowPayload.completionBudget?.receiptsFetched ?? shadowPayload.receiptLiveCalls,
+        cacheHits: shadowPayload.receiptCacheHits + permanentCacheSeeded,
+        decodedByVenue: shadowPayload.decodedByVenue,
+        rejectionReasons: shadowPayload.rejectionReasons,
+        exactSwapsRecovered: shadowPayload.exactTwoSidedSwapsRecovered,
+        providerCalls: shadowPayload.completionBudget?.providerCalls ?? shadowPayload.newProviderCalls,
+        marginalYieldByBatch: shadowPayload.completionBudget?.marginalYieldByBatch ?? [],
+        permanentCacheSeeded,
+        permanentCacheRecorded,
+      }
+    }
   } catch (err) {
     // Guarantees the log is truly unconditional — an unexpected throw from the shadow module never
     // silently disappears, and never propagates into the real scan result either.
@@ -1661,6 +1748,63 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       verifiedCoverageAfter: verifiedCoverage(fifoAndPnl.matchedLots),
       publicPnlStatusBefore: beforePromotion.publicPnlStatus,
       publicPnlStatusAfter: fifoAndPnl.publicPnlStatus,
+    })
+  }
+
+  // RECEIPT-COMPLETION PHASE 2 DIAGNOSTIC, DISCLOSED, BOUNDED — one unconditional log whenever the
+  // shadow-decoder block above actually ran (receiptCompletionPhase2Summary is captured there; see
+  // its own declaration for why fifoLotsUnlocked/fullyPricedLots/coverage must be computed HERE,
+  // after fifoAndPnl exists). "Before" reuses the SAME beforePromotion structural snapshot the
+  // promotion diagnostic above already computed (zero new provider calls, zero new FIFO run) when
+  // promotion is enabled; when promotion is off, before and after are honestly identical (nothing
+  // this scan could have changed FIFO's own structural output).
+  if (receiptCompletionPhase2Summary) {
+    const promotionBeforeSnapshot = receiptSwapCanonicalPromotionEnabled && receiptSwapPromotionResult
+      ? safeRunFifoEngine({
+          normalizedEvents,
+          recoveryPolicy,
+          walletAddress: params.walletAddress,
+          buyTimeline: timelines.buyTimeline,
+          sellTimeline: timelines.sellTimeline,
+          priceUsdLookup: walletPriceLookups.priceUsdLookup,
+          currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
+          canonicalBalanceLookup: params.canonicalBalanceLookup,
+          unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
+        })
+      : fifoAndPnl
+    const countFullyPriced = (matchedLots: typeof fifoAndPnl.matchedLots) =>
+      matchedLots.filter((l) => Number.isFinite(l.costBasisUsd) && Number.isFinite(l.proceedsUsd) && Number.isFinite(l.realizedPnlUsd)).length
+    const verifiedCoverage = (matchedLots: typeof fifoAndPnl.matchedLots) =>
+      matchedLots.length === 0 ? 0 : matchedLots.filter((l) => l.evidenceQuality === 'verified').length / matchedLots.length
+
+    const fullyPricedLotsBefore = countFullyPriced(promotionBeforeSnapshot.matchedLots)
+    const fullyPricedLotsAfter = countFullyPriced(fifoAndPnl.matchedLots)
+
+    // eslint-disable-next-line no-console
+    console.warn('[receipt-completion-phase2]', {
+      candidatesConsidered: receiptCompletionPhase2Summary.candidatesConsidered,
+      candidatesSelected: receiptCompletionPhase2Summary.candidatesSelected,
+      normalBudgetUsed: receiptCompletionPhase2Summary.normalBudgetUsed,
+      conditionalBudgetUsed: receiptCompletionPhase2Summary.conditionalBudgetUsed,
+      receiptsFetched: receiptCompletionPhase2Summary.receiptsFetched,
+      cacheHits: receiptCompletionPhase2Summary.cacheHits,
+      decodedByVenue: receiptCompletionPhase2Summary.decodedByVenue,
+      rejectionReasons: receiptCompletionPhase2Summary.rejectionReasons,
+      exactSwapsRecovered: receiptCompletionPhase2Summary.exactSwapsRecovered,
+      // MISSING-LEGS-ADDED / FIFO-LOTS-UNLOCKED, DISCLOSED: real counts from the SAME promotion
+      // result the "receipt swap canonical promotion" diagnostic above already computed — never a
+      // second promotion pass. Both are honestly 0 when RECEIPT_SWAP_CANONICAL_PROMOTION_ENABLED is
+      // off (this scan decoded exact swaps but never promoted any into canonical events).
+      missingLegsAdded: receiptSwapPromotionResult?.addedLegs.length ?? 0,
+      fifoLotsUnlocked: fullyPricedLotsAfter - fullyPricedLotsBefore,
+      fullyPricedLotsBefore,
+      fullyPricedLotsAfter,
+      verifiedCoverageBefore: Math.round(verifiedCoverage(promotionBeforeSnapshot.matchedLots) * 10000) / 100,
+      verifiedCoverageAfter: Math.round(verifiedCoverage(fifoAndPnl.matchedLots) * 10000) / 100,
+      providerCalls: receiptCompletionPhase2Summary.providerCalls,
+      marginalYieldByBatch: receiptCompletionPhase2Summary.marginalYieldByBatch,
+      permanentReceiptCacheSeeded: receiptCompletionPhase2Summary.permanentCacheSeeded,
+      permanentReceiptCacheRecorded: receiptCompletionPhase2Summary.permanentCacheRecorded,
     })
   }
 

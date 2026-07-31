@@ -268,6 +268,56 @@ test('production pipeline shape: non-empty base evidence with no receipts availa
   assert.equal(payload.newProviderCalls, 2)
 })
 
+test('completionBudget summary is absent by default (backward compatible), present only when explicitly enabled', async () => {
+  const evidence: CandidateTxEvidence[] = [ev({ txHash: '0x1' }), ev({ txHash: '0x2' })]
+  const withoutFlag = await buildWalletScanShadowLogPayload({
+    walletAddress: wallet,
+    evidence,
+    tokenMeta: tokenMeta(),
+    validator: alwaysValidValidator(),
+    disabledByEnv: false,
+    receiptFetcher: missingFetcher(),
+  })
+  assert.equal(withoutFlag.enabled, true)
+  if (withoutFlag.enabled) assert.equal('completionBudget' in withoutFlag, false)
+
+  const withFlag = await buildWalletScanShadowLogPayload({
+    walletAddress: wallet,
+    evidence,
+    tokenMeta: tokenMeta(),
+    validator: alwaysValidValidator(),
+    disabledByEnv: false,
+    receiptFetcher: missingFetcher(),
+    completionBudgetEnabled: true,
+  })
+  assert.equal(withFlag.enabled, true)
+  if (!withFlag.enabled) return
+  assert.ok(withFlag.completionBudget)
+  assert.equal(withFlag.completionBudget!.normalBudgetUsed, 2)
+  assert.equal(withFlag.completionBudget!.marginalYieldByBatch[0].batchIndex, 0)
+  // Missing receipts still count as real provider calls under the completion-budget path too.
+  assert.equal(withFlag.receiptProviderCalls, 2)
+})
+
+test('completion budget only expands beyond the normal budget while marginal yield stays real and high', async () => {
+  const evidence: CandidateTxEvidence[] = Array.from({ length: 20 }, (_, i) => ev({ txHash: `0x${i}` }))
+  const payload = await buildWalletScanShadowLogPayload({
+    walletAddress: wallet,
+    evidence,
+    tokenMeta: tokenMeta(),
+    validator: alwaysValidValidator(),
+    disabledByEnv: false,
+    receiptFetcher: missingFetcher(), // every receipt genuinely missing — zero swap-event detections
+    completionBudgetEnabled: true,
+  })
+  assert.equal(payload.enabled, true)
+  if (!payload.enabled) return
+  // Zero marginal yield on the first conditional round must stop expansion immediately — a real
+  // provider budget must never be spent chasing a batch that already proved unproductive.
+  assert.equal(payload.completionBudget!.conditionalBudgetUsed, 3)
+  assert.equal(payload.completionBudget!.marginalYieldByBatch[1].stopReason, 'below_threshold')
+})
+
 test('production pipeline shape: zero evidence logs a typed no_candidates skip reason, never silence', async () => {
   const payload = await buildWalletScanShadowLogPayload({
     walletAddress: wallet,

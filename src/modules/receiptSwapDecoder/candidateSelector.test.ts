@@ -154,6 +154,30 @@ test('priority ordering: missing-closed-lot-side ranks above existing-swap-candi
   assert.deepEqual(result.selected.map((s) => s.priorityTier), [1, 2, 3, 4, 5])
 })
 
+test('Phase 2: within tier 1, a one-side-missing candidate whose existing leg is stable/ETH/WETH-verified outranks one that is not', () => {
+  const evidence: CandidateTxEvidence[] = [
+    // Tier 1, but the existing leg is an unverified token — weaker completion evidence.
+    baseEvidence({ txHash: '0xweak', legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry' }),
+    // Tier 1 AND the existing leg is a verified stablecoin/ETH/WETH quote — the strongest, cheapest
+    // completion shape a receipt can resolve (this task's explicit "prioritize transactions where
+    // the existing side is stablecoin, ETH or WETH" requirement).
+    baseEvidence({ txHash: '0xstrong', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'exit', hasVerifiedQuoteAddress: true }),
+  ]
+  const result = selectBaseReceiptCandidates(evidence)
+  assert.deepEqual(result.selected.map((s) => s.txHash), ['0xstrong', '0xweak'])
+  // Both remain tier 1 — this only reorders WITHIN the tier, never changes tier assignment.
+  assert.deepEqual(result.selected.map((s) => s.priorityTier), [1, 1])
+})
+
+test('Phase 2: a completion-first (tier 1) candidate outranks a generic known-router (tier 4) transaction', () => {
+  const evidence: CandidateTxEvidence[] = [
+    baseEvidence({ txHash: '0xrouter', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], isKnownRouter: true }),
+    baseEvidence({ txHash: '0xcompletion', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry' }),
+  ]
+  const result = selectBaseReceiptCandidates(evidence)
+  assert.deepEqual(result.selected.map((s) => s.txHash), ['0xcompletion', '0xrouter'])
+})
+
 test('deterministic chain+txHash tie-break within the same priority tier', () => {
   const evidence: CandidateTxEvidence[] = [
     baseEvidence({ txHash: '0xbbb', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], isExistingSwapCandidate: true }),

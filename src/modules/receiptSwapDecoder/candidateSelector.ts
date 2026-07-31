@@ -128,7 +128,7 @@ export type CandidateSelectionResult = {
 // ordering/eligibility logic changes. Logged unconditionally by walletScanShadowWiring.ts's shadow
 // payload so a real production log can prove which build actually ran, without depending on commit
 // SHA plumbing this module has no access to.
-export const RECEIPT_SELECTOR_ALGORITHM_VERSION = 'receipt-selector-v4-route-fingerprint'
+export const RECEIPT_SELECTOR_ALGORITHM_VERSION = 'receipt-selector-v5-completion-first'
 
 const MAX_SELECTED = 25
 const MAX_REJECTED_SAMPLES = 10
@@ -267,10 +267,24 @@ export function selectBaseReceiptCandidates(evidenceList: readonly CandidateTxEv
   // strongest-evidence candidates within whichever tier the quota draws from.
   const legPairingStrength = (evidence: CandidateTxEvidence): number => (hasOppositeDirectionLegs(evidence.legs) ? 1 : 0)
 
+  // COMPLETION-FIRST OPPOSITE-SIDE TIE-BREAK, DISCLOSED (Phase 2 — this task's explicit "prioritize
+  // transactions where the existing side is stablecoin, ETH or WETH" requirement). Placed WITHIN a
+  // tier, ahead of leg-pairing strength: a one-leg candidate whose already-recorded side is a
+  // verified stablecoin/native/WETH leg (evidence.hasVerifiedQuoteAddress — the same real signal
+  // priorityFor's own tier 3 already uses, computed by quoteLegPricing's own address allowlist, never
+  // guessed here) is real evidence the receipt only needs to recover ONE unknown-value leg to
+  // complete a lot — the strongest, cheapest-to-verify completion shape a receipt can resolve. This
+  // never changes WHICH tier a candidate lands in (tier assignment is unchanged) — it only reorders
+  // candidates WITHIN the same tier, before the existing leg-pairing/economic-value tie-breaks.
+  const oppositeSideVerified = (evidence: CandidateTxEvidence): number => (evidence.hasVerifiedQuoteAddress ? 1 : 0)
+
   const ranked = eligible
     .map((evidence) => ({ evidence, priority: priorityFor(evidence) }))
     .sort((a, b) => {
       if (a.priority.tier !== b.priority.tier) return a.priority.tier - b.priority.tier
+      const aVerified = oppositeSideVerified(a.evidence)
+      const bVerified = oppositeSideVerified(b.evidence)
+      if (aVerified !== bVerified) return bVerified - aVerified
       const aPairing = legPairingStrength(a.evidence)
       const bPairing = legPairingStrength(b.evidence)
       if (aPairing !== bPairing) return bPairing - aPairing

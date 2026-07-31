@@ -172,6 +172,14 @@ export type ReceiptAcquisitionCounters = {
   // "candidates matched but no safe replacement existed in reserve".
   receiptNegativeFingerprintsRecorded: number
   receiptSubstitutionAttempts: number
+  // FRESH-FETCH SWAP-EVENT SIGNAL, DISCLOSED (Phase 2 completion-budget requirement) — count of
+  // receipts FRESHLY fetched by a real live call THIS INVOCATION (never a cache/singleflight reuse —
+  // those are excluded so a repeat call with a larger maxLiveCalls reports only its OWN marginal
+  // signal, not a re-count of already-known results) whose decodeLogs found at least one recognized
+  // pool-swap-shaped event. Same zero-extra-cost decodeLogs check acquireReceiptsForCandidates
+  // already performs for negative-fingerprint recording — this only additionally counts it, never a
+  // new pass over the logs.
+  receiptsWithSwapEventDetectedFreshFetch: number
 }
 
 // One row per fingerprint recorded as negative evidence this scan — bounded so this never becomes
@@ -299,10 +307,13 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
 
   const { cache, inFlight } = input.requestScope
 
+  let freshFetchSwapEventDetections = 0
+
   async function processOne(candidate: SelectedCandidate): Promise<void> {
     const key = receiptCacheKey(candidate.chain, candidate.txHash)
 
     let outcome: ReceiptFetchOutcome
+    let freshlyFetched = false
     if (cache.has(key)) {
       cacheHits += 1
       outcome = cache.get(key)!
@@ -311,6 +322,7 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
       outcome = await inFlight.get(key)!
     } else {
       liveCalls += 1
+      freshlyFetched = true
       const promise = withTimeout(input.fetcher('base', candidate.txHash), timeoutMs)
       inFlight.set(key, promise)
       outcome = await promise
@@ -334,6 +346,12 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
               negativeFingerprintSamples.push({ routeFingerprint: candidate.routeFingerprint, fromTxHash: candidate.txHash })
             }
           }
+        } else if (freshlyFetched) {
+          // FRESH-FETCH ONLY, DISCLOSED: a cache/singleflight-served outcome is a receipt this scan
+          // already counted (in an earlier call to this function, sharing the same requestScope) —
+          // counting it again here would corrupt the Phase 2 completion-budget's marginal-yield
+          // measurement, which needs "how many of THIS round's own new fetches actually mattered".
+          freshFetchSwapEventDetections += 1
         }
         break
       }
@@ -385,6 +403,7 @@ export async function acquireReceiptsForCandidates(input: AcquireReceiptsInput):
       receiptProviderCalls: liveCalls,
       receiptNegativeFingerprintsRecorded: negativeEvidence.size,
       receiptSubstitutionAttempts: substitutionAttempts,
+      receiptsWithSwapEventDetectedFreshFetch: freshFetchSwapEventDetections,
     },
     receiptSelectedByPriorityTier: finalSelectedByTier,
     receiptCandidatesSkippedByTierQuota: tierSelection.skippedByTierQuota,
