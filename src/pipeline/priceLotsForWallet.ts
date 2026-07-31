@@ -586,9 +586,23 @@ export async function priceLotsForWallet(params: {
     // own "already resolved by a prior round" branch is honestly exercised as empty, not implied.
     const alreadyResolvedKeys = new Set<string>()
 
+    // AUDIT FIX, DISCLOSED: real, per-transaction evidence of "this transaction already has a same-tx
+    // verified stablecoin/native/WETH quote leg" — the SAME isVerifiedQuoteLegAddress check
+    // [quote-leg-lookup-forensics] above already uses, reused here rather than re-derived. This is
+    // what "opposite side already verified" must actually check (a lot's own traded token is never
+    // itself the quote currency — checking IT for stablecoin/native/WETH status was the bug this
+    // fixes).
+    const verifiedQuoteTxHashes = new Set<string>()
+    for (const [groupKey, legs] of swapLegsByTx) {
+      const [chainPart] = groupKey.split(':')
+      if (legs.some((leg) => isVerifiedQuoteLegAddress(chainPart as NormalizedEvent['chain'], leg.contract, leg.symbol))) {
+        verifiedQuoteTxHashes.add(groupKey)
+      }
+    }
+
     const requirements: SchedulerRequirement[] = [
-      ...buyRequirementEntries.map((entry) => annotateRequirement({ entry, list: 'buy' as const, lotsByOpenKey, lotsByCloseKey, alreadyResolvedKeys })),
-      ...sellRequirementEntries.map((entry) => annotateRequirement({ entry, list: 'sell' as const, lotsByOpenKey, lotsByCloseKey, alreadyResolvedKeys })),
+      ...buyRequirementEntries.map((entry) => annotateRequirement({ entry, list: 'buy' as const, lotsByOpenKey, lotsByCloseKey, alreadyResolvedKeys, verifiedQuoteTxHashes })),
+      ...sellRequirementEntries.map((entry) => annotateRequirement({ entry, list: 'sell' as const, lotsByOpenKey, lotsByCloseKey, alreadyResolvedKeys, verifiedQuoteTxHashes })),
     ]
 
     const distinctTokenCount = new Set(requirements.map((r) => `${r.entry.chain}:${r.entry.token.toLowerCase()}`)).size

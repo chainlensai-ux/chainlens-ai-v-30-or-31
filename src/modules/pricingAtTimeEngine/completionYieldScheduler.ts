@@ -95,6 +95,17 @@ export function annotateRequirement(params: {
   lotsByOpenKey: ReadonlyMap<string, SchedulerLotRef[]>
   lotsByCloseKey: ReadonlyMap<string, SchedulerLotRef[]>
   alreadyResolvedKeys: ReadonlySet<string>
+  // BUG FIX, DISCLOSED (found in audit): a structural lot's own `token` is the TRADED asset (e.g. a
+  // memecoin) — never the quote currency actually used to buy/sell it. The original implementation
+  // checked `isVerifiedStablecoinAddress(lot.chain, lot.token)` etc. directly on the lot's own
+  // token, which is a category error: it asks "is the thing being traded itself a stablecoin",
+  // almost always false, rather than "did the OPPOSITE transaction actually pay/receive in a
+  // verified stablecoin/native/WETH quote leg". That made Tier 1 (immediate lot completion) nearly
+  // unreachable in practice — the scheduler could barely ever detect its own best case. Fixed by
+  // passing in the real, already-computed per-transaction quote-leg evidence (the SAME
+  // isVerifiedQuoteLegAddress check used everywhere else in this pipeline, applied to the OPPOSITE
+  // transaction's own real swap legs — never to the lot's traded-asset identity).
+  verifiedQuoteTxHashes: ReadonlySet<string>
 }): SchedulerRequirement {
   const { entry, list } = params
   const key = `${entry.chain}:${entry.txHash.toLowerCase()}`
@@ -107,13 +118,14 @@ export function annotateRequirement(params: {
   let oppositeSideVerified = false
   if (lots.length > 0) {
     missingSide = list === 'buy' ? 'entry' : 'exit'
-    // The opposite side is verified when EVERY affected lot's opposite leg is either a verified
-    // stablecoin/native/WETH quote or already resolved by an earlier round of this same pass.
+    // The opposite side is verified when EVERY affected lot's opposite TRANSACTION either already
+    // has a real same-tx verified stablecoin/native/WETH quote leg, or was already resolved by an
+    // earlier round of this same pass.
     oppositeSideVerified = lots.every((lot) => {
       const oppositeTxHash = list === 'buy' ? lot.closedTxHash : lot.openedTxHash
       const oppositeKey = `${lot.chain}:${lot.token.toLowerCase()}:${oppositeTxHash.toLowerCase()}:${list === 'buy' ? 'sell' : 'buy'}`
       if (params.alreadyResolvedKeys.has(oppositeKey)) return true
-      return isVerifiedStablecoinAddress(lot.chain, lot.token) || isNativePseudoAddress(lot.token) || isCanonicalWethAddress(lot.chain, lot.token)
+      return params.verifiedQuoteTxHashes.has(`${lot.chain}:${oppositeTxHash.toLowerCase()}`)
     })
     // "Both sides missing" is real when neither this requirement's opposite verification holds AND
     // this SAME lot also appears in neither already-resolved set — a conservative, honest default:

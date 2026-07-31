@@ -31,31 +31,60 @@ function buildLotMaps(lots: SchedulerLotRef[]) {
   return { lotsByOpenKey, lotsByCloseKey }
 }
 
+// verifiedQuoteTxHashes: real per-transaction evidence of "this transaction already has a same-tx
+// verified stablecoin/native/WETH quote leg" — the SAME real signal priceLotsForWallet.ts computes
+// from swapLegsByTx/isVerifiedQuoteLegAddress (see the AUDIT FIX in completionYieldScheduler.ts's own
+// header — a lot's own traded token is never the quote currency, so this must be checked at the
+// TRANSACTION level, never derived from the lot's own token identity).
 function annotate(
-  e: PriceableEntry, list: 'buy' | 'sell', lots: SchedulerLotRef[], alreadyResolvedKeys: ReadonlySet<string> = new Set(),
+  e: PriceableEntry,
+  list: 'buy' | 'sell',
+  lots: SchedulerLotRef[],
+  opts: { alreadyResolvedKeys?: ReadonlySet<string>; verifiedQuoteTxHashes?: ReadonlySet<string> } = {},
 ): SchedulerRequirement {
   const { lotsByOpenKey, lotsByCloseKey } = buildLotMaps(lots)
-  return annotateRequirement({ entry: e, list, lotsByOpenKey, lotsByCloseKey, alreadyResolvedKeys })
+  return annotateRequirement({
+    entry: e,
+    list,
+    lotsByOpenKey,
+    lotsByCloseKey,
+    alreadyResolvedKeys: opts.alreadyResolvedKeys ?? new Set(),
+    verifiedQuoteTxHashes: opts.verifiedQuoteTxHashes ?? new Set(),
+  })
 }
 
-test('annotateRequirement: a buy entry whose lot close side is NOT a verified/resolved asset is both-sides-missing', () => {
+function txKey(chain: string, txHash: string): string {
+  return `${chain}:${txHash.toLowerCase()}`
+}
+
+test('annotateRequirement: a buy entry whose lot close side has no verified quote leg is both-sides-missing', () => {
   const l = lot({ lotId: 'lot-1', token: TOKEN_A, openedTxHash: '0xopen', closedTxHash: '0xclose' })
   const buyEntry = entry({ txHash: '0xopen', token: TOKEN_A })
   const req = annotate(buyEntry, 'buy', [l])
   assert.deepEqual(req.lotIds, ['lot-1'])
-  // The lot's opposite (close) side is TOKEN_A itself here — not a verified stablecoin/native/WETH
-  // quote, and not already resolved — so this is honestly both-sides-missing, never assumed one-sided.
+  // No verifiedQuoteTxHashes entry for '0xclose' — honestly both-sides-missing, never assumed one-sided.
   assert.equal(req.oppositeSideVerified, false)
   assert.equal(req.missingSide, 'both')
 })
 
-test('annotateRequirement: a sell entry whose lot open side is a verified native/WETH pseudo-address is immediately completable', () => {
+test('AUDIT FIX: a lot whose traded token itself happens to look like a stablecoin/native address must NOT be treated as verified — only the OPPOSITE TRANSACTION\'s real quote leg counts', () => {
+  // The lot's own `token` field is set to a canonical native pseudo-address here — the exact shape
+  // of the original bug (checking the lot's own token identity instead of the opposite
+  // transaction's real swap legs). With no verifiedQuoteTxHashes entry, this must still be
+  // both-sides-missing.
   const NATIVE = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
+  const l = lot({ lotId: 'lot-1', token: NATIVE, openedTxHash: '0xopen', closedTxHash: '0xclose' })
+  const buyEntry = entry({ txHash: '0xopen', token: NATIVE })
+  const req = annotate(buyEntry, 'buy', [l])
+  assert.equal(req.oppositeSideVerified, false, 'the lot\'s own token identity must never substitute for real opposite-transaction evidence')
+  assert.equal(req.missingSide, 'both')
+})
+
+test('annotateRequirement: a sell entry whose lot OPEN TRANSACTION has a real same-tx verified quote leg is immediately completable', () => {
   const l = lot({ lotId: 'lot-1', token: TOKEN_A, openedTxHash: '0xopen', closedTxHash: '0xclose' })
-  // The OPPOSITE (open) side's own token identity for this lot is the native pseudo-address.
   const sellEntry = entry({ txHash: '0xclose', token: TOKEN_A })
-  const lotWithNativeOpen: SchedulerLotRef = { ...l, token: NATIVE }
-  const req = annotate(sellEntry, 'sell', [lotWithNativeOpen])
+  const verifiedQuoteTxHashes = new Set([txKey(CHAIN, '0xopen')])
+  const req = annotate(sellEntry, 'sell', [l], { verifiedQuoteTxHashes })
   assert.equal(req.oppositeSideVerified, true)
   assert.equal(req.missingSide, 'exit')
 })
@@ -71,7 +100,7 @@ test('annotateRequirement: already-resolved opposite side (from an earlier sched
   const l = lot({ lotId: 'lot-1', token: TOKEN_A, openedTxHash: '0xopen', closedTxHash: '0xclose' })
   const buyEntry = entry({ txHash: '0xopen', token: TOKEN_A })
   const resolvedKey = `${CHAIN}:${TOKEN_A.toLowerCase()}:0xclose:sell`
-  const req = annotate(buyEntry, 'buy', [l], new Set([resolvedKey]))
+  const req = annotate(buyEntry, 'buy', [l], { alreadyResolvedKeys: new Set([resolvedKey]) })
   assert.equal(req.oppositeSideVerified, true)
   assert.equal(req.missingSide, 'entry')
 })
@@ -80,22 +109,21 @@ test('annotateRequirement: already-resolved opposite side (from an earlier sched
 
 test('immediate lot completion outranks an unrelated (non-lot) requirement', () => {
   const l = lot({ lotId: 'lot-1', token: TOKEN_A, openedTxHash: '0xopen', closedTxHash: '0xclose' })
-  const completable = annotate(entry({ txHash: '0xclose', token: TOKEN_A }), 'sell', [{ ...l, token: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' }])
+  const verifiedQuoteTxHashes = new Set([txKey(CHAIN, '0xopen')])
+  const completable = annotate(entry({ txHash: '0xclose', token: TOKEN_A }), 'sell', [l], { verifiedQuoteTxHashes })
   const unrelated = annotate(entry({ txHash: '0xunrelated', token: TOKEN_B }), 'buy', [])
   const result = selectByCompletionYield([unrelated, completable], 1)
   assert.equal(result.selected[0], completable)
 })
 
 test('one request completing MULTIPLE lots ranks first, ahead of a single-lot completion', () => {
-  const nativeToken = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
   const lotSingle = lot({ lotId: 'lot-single', token: TOKEN_A, openedTxHash: '0xopenA', closedTxHash: '0xclose-shared' })
   const lotMulti1 = lot({ lotId: 'lot-multi-1', token: TOKEN_B, openedTxHash: '0xopenB1', closedTxHash: '0xclose-shared-2' })
   const lotMulti2 = lot({ lotId: 'lot-multi-2', token: TOKEN_B, openedTxHash: '0xopenB2', closedTxHash: '0xclose-shared-2' })
 
-  const singleReq = annotate(entry({ txHash: '0xclose-shared', token: TOKEN_A }), 'sell', [{ ...lotSingle, token: nativeToken }])
-  const multiReq = annotate(entry({ txHash: '0xclose-shared-2', token: TOKEN_B }), 'sell', [
-    { ...lotMulti1, token: nativeToken }, { ...lotMulti2, token: nativeToken },
-  ])
+  const verifiedQuoteTxHashes = new Set([txKey(CHAIN, '0xopenA'), txKey(CHAIN, '0xopenB1'), txKey(CHAIN, '0xopenB2')])
+  const singleReq = annotate(entry({ txHash: '0xclose-shared', token: TOKEN_A }), 'sell', [lotSingle], { verifiedQuoteTxHashes })
+  const multiReq = annotate(entry({ txHash: '0xclose-shared-2', token: TOKEN_B }), 'sell', [lotMulti1, lotMulti2], { verifiedQuoteTxHashes })
 
   const result = selectByCompletionYield([singleReq, multiReq], 2)
   assert.equal(result.selected[0], multiReq)
@@ -105,9 +133,9 @@ test('one request completing MULTIPLE lots ranks first, ahead of a single-lot co
 test('one-side-missing outranks both-sides-missing', () => {
   const l1 = lot({ lotId: 'lot-1', token: TOKEN_A, openedTxHash: '0xopen1', closedTxHash: '0xclose1' })
   const l2 = lot({ lotId: 'lot-2', token: TOKEN_B, openedTxHash: '0xopen2', closedTxHash: '0xclose2' })
-  // oneSided: opposite (close) side is a verified native token — real one-side-missing shape.
-  const oneSided = annotate(entry({ txHash: '0xopen1', token: TOKEN_A }), 'buy', [{ ...l1, token: '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' }])
-  // bothSided: opposite (close) side is TOKEN_B itself (not verified, not resolved) — real both-sides-missing shape.
+  // oneSided: opposite (close) TRANSACTION has a real verified quote leg — real one-side-missing shape.
+  const oneSided = annotate(entry({ txHash: '0xopen1', token: TOKEN_A }), 'buy', [l1], { verifiedQuoteTxHashes: new Set([txKey(CHAIN, '0xclose1')]) })
+  // bothSided: opposite (close) transaction has no verified quote leg — real both-sides-missing shape.
   const bothSided = annotate(entry({ txHash: '0xopen2', token: TOKEN_B }), 'buy', [l2])
   const result = selectByCompletionYield([bothSided, oneSided], 2)
   assert.equal(result.selected[0], oneSided)
@@ -132,25 +160,29 @@ test('a requirement with prior negative-cache history is skipped while real cand
 // ─── FAIRNESS FLOOR ───────────────────────────────────────────────────────────────────────────────
 
 test('a dense token CAN exceed the old flat cap of 2 when real completion yield justifies it', () => {
-  const nativeToken = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
-  // 5 distinct real lots for TOKEN_A, each immediately completable (opposite side native).
-  const requirements = Array.from({ length: 5 }, (_, i) => {
-    const l = lot({ lotId: `lot-${i}`, token: TOKEN_A, openedTxHash: `0xopen${i}`, closedTxHash: `0xclose${i}` })
-    return annotate(entry({ txHash: `0xopen${i}`, token: TOKEN_A }), 'buy', [{ ...l, token: nativeToken }])
+  // 5 distinct real lots for TOKEN_A, each immediately completable via a real verified opposite
+  // transaction.
+  const openTxHashes = Array.from({ length: 5 }, (_, i) => `0xopen${i}`)
+  const verifiedQuoteTxHashes = new Set(openTxHashes.map((h) => txKey(CHAIN, h)))
+  const requirements = openTxHashes.map((openTxHash, i) => {
+    const l = lot({ lotId: `lot-${i}`, token: TOKEN_A, openedTxHash: openTxHash, closedTxHash: `0xclose${i}` })
+    return annotate(entry({ txHash: `0xclose${i}`, token: TOKEN_A }), 'sell', [l], { verifiedQuoteTxHashes })
   })
   const result = selectByCompletionYield(requirements, 5)
   assert.equal(result.selected.length, 5, 'all 5 — well beyond the old flat cap of 2 — are selected when yield justifies it')
 })
 
 test('the fairness floor prevents one dense token from consuming the entire budget', () => {
-  const nativeToken = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
-  const denseTokenRequirements = Array.from({ length: FAIRNESS_FLOOR_PER_TOKEN + 10 }, (_, i) => {
-    const l = lot({ lotId: `dense-lot-${i}`, token: TOKEN_A, openedTxHash: `0xdopen${i}`, closedTxHash: `0xdclose${i}` })
-    return annotate(entry({ txHash: `0xdopen${i}`, token: TOKEN_A }), 'buy', [{ ...l, token: nativeToken }])
+  const denseCount = FAIRNESS_FLOOR_PER_TOKEN + 10
+  const denseOpenTxHashes = Array.from({ length: denseCount }, (_, i) => `0xdopen${i}`)
+  const verifiedQuoteTxHashes = new Set([...denseOpenTxHashes.map((h) => txKey(CHAIN, h)), txKey(CHAIN, '0xopenOther')])
+  const denseTokenRequirements = denseOpenTxHashes.map((openTxHash, i) => {
+    const l = lot({ lotId: `dense-lot-${i}`, token: TOKEN_A, openedTxHash: openTxHash, closedTxHash: `0xdclose${i}` })
+    return annotate(entry({ txHash: `0xdclose${i}`, token: TOKEN_A }), 'sell', [l], { verifiedQuoteTxHashes })
   })
   const otherTokenRequirement = (() => {
     const l = lot({ lotId: 'other-lot', token: TOKEN_B, openedTxHash: '0xopenOther', closedTxHash: '0xcloseOther' })
-    return annotate(entry({ txHash: '0xopenOther', token: TOKEN_B }), 'buy', [{ ...l, token: nativeToken }])
+    return annotate(entry({ txHash: '0xcloseOther', token: TOKEN_B }), 'sell', [l], { verifiedQuoteTxHashes })
   })()
 
   const result = selectByCompletionYield([...denseTokenRequirements, otherTokenRequirement], denseTokenRequirements.length + 1)
@@ -163,10 +195,12 @@ test('the fairness floor prevents one dense token from consuming the entire budg
 // ─── DETERMINISM AND BUDGET PARITY ───────────────────────────────────────────────────────────────
 
 test('deterministic under shuffled requirement order', () => {
-  const nativeToken = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
-  const requirements = Array.from({ length: 12 }, (_, i) => {
-    const l = lot({ lotId: `lot-${i}`, token: i % 2 === 0 ? TOKEN_A : TOKEN_B, openedTxHash: `0xopen${i}`, closedTxHash: `0xclose${i}` })
-    return annotate(entry({ txHash: `0xopen${i}`, token: l.token }), 'buy', [{ ...l, token: nativeToken }])
+  const openTxHashes = Array.from({ length: 12 }, (_, i) => `0xopen${i}`)
+  const verifiedQuoteTxHashes = new Set(openTxHashes.map((h) => txKey(CHAIN, h)))
+  const requirements = openTxHashes.map((openTxHash, i) => {
+    const token = i % 2 === 0 ? TOKEN_A : TOKEN_B
+    const l = lot({ lotId: `lot-${i}`, token, openedTxHash: openTxHash, closedTxHash: `0xclose${i}` })
+    return annotate(entry({ txHash: `0xclose${i}`, token }), 'sell', [l], { verifiedQuoteTxHashes })
   })
   const shuffled = [requirements[7], requirements[2], requirements[11], requirements[0], requirements[5], requirements[9], ...requirements.slice(1, 12).filter((_, i) => ![7, 2, 11, 0, 5, 9].includes(i + 1))]
   const a = selectByCompletionYield(requirements, 6)
@@ -184,9 +218,9 @@ test('the yield selection never exceeds the same total budget the flat-cap selec
 })
 
 test('computeSchedulerComparison reports the exact shadow fields with no provider call made', () => {
-  const nativeToken = '0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee'
   const l = lot({ lotId: 'lot-1', token: TOKEN_A, openedTxHash: '0xopen', closedTxHash: '0xclose' })
-  const req = annotate(entry({ txHash: '0xopen', token: TOKEN_A }), 'buy', [{ ...l, token: nativeToken }])
+  const verifiedQuoteTxHashes = new Set([txKey(CHAIN, '0xclose')])
+  const req = annotate(entry({ txHash: '0xopen', token: TOKEN_A }), 'buy', [l], { verifiedQuoteTxHashes })
   const { comparison } = computeSchedulerComparison([req], 2)
   assert.equal(comparison.existingSelectedCount, 1)
   assert.equal(comparison.yieldSelectedCount, 1)
