@@ -54,6 +54,10 @@ import type { PricedHolding } from '@/lib/engine/modules/pricing/types'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { ChainActivityRecord } from '@/lib/engine/modules/activity/types'
 import type { SmartMoneyScore } from '@/lib/engine/modules/smartMoney/types'
+import type { PersonalityV2 } from '@/lib/engine/modules/personality/types'
+import type { BehaviorV2 } from '@/lib/engine/modules/behavior/types'
+import type { RiskV2 } from '@/lib/engine/modules/risk/types'
+import type { SignalV2 } from '@/lib/engine/modules/signals/types'
 import type { WalletConditionSection } from '@/src/pipeline/walletConditionMessages'
 
 // PORTFOLIO V2 MIGRATION, UPDATED DISCLOSURE: `portfolioV2` (the new engine's Portfolio shape —
@@ -86,6 +90,19 @@ export type WalletV2Report = FinalReport & {
   // SMART-MONEY-SCORE WIRING, DISCLOSED (added per a later task): same real gap as portfolioV2/
   // chainActivityV2 above — only ever populated by app/api/scan-v2/full-scan/route.ts.
   smartMoneyScore?: SmartMoneyScore
+  // WALLET PERSONALITY CARD WIRING, DISCLOSED (Wallet Personality task): these four V2 engine
+  // outputs (lib/engine/modules/personality|behavior|risk|signals) exist as real, already-built
+  // modules but — same real gap as portfolioV2/smartMoneyScore above — are not currently populated
+  // by the live /api/wallet-scan route this page actually calls (confirmed by search before adding
+  // these fields: no reference to them anywhere in src/modules/walletScanWorker.ts or its callers).
+  // Declared optional here so WalletPersonalityCard can consume them WHEN present (a future wiring
+  // task, or an older/different response shape) without ever assuming they exist — its own
+  // behaviorIntel/fifoAndPnl/finalSummary-derived fallback is what the live route actually exercises
+  // today. See app/frontend/lib/walletPersonality.ts's own header for the full trace.
+  personalityV2?: PersonalityV2
+  behaviorV2?: BehaviorV2
+  riskV2?: RiskV2
+  signalsV2?: SignalV2[]
   // WALLET CONDITION MESSAGES, DISCLOSED: additive top-level field on RunWalletScanResult (src/
   // pipeline/types.ts), populated by runWalletScan() itself — not part of FinalReport's own
   // protected type, same pattern as normalizationErrors. Optional because the synthetic runtime-

@@ -17,6 +17,7 @@ import { WalletScannerHeaderV3 } from './WalletScannerHeaderV3'
 import { WalletScannerSummaryRowV3 } from './WalletScannerSummaryRowV3'
 import { WalletScannerTabsV3 } from './WalletScannerTabsV3'
 import { WalletScannerDiagnosticsV3 } from './WalletScannerDiagnosticsV3'
+import { WalletPersonalityCard } from './WalletPersonalityCard'
 
 export type WalletScannerResultsV3Props = {
   report: WalletV2Report
@@ -47,6 +48,11 @@ export function WalletScannerResultsV3({
         onAdminAction={onAdminAction}
       />
       <WalletScannerSummaryRowV3 report={report} />
+      {/* WALLET PERSONALITY, DISCLOSED: full-width, directly below the Portfolio Intelligence /
+          Smart Money Score / PnL summary row — never squeezed into the Smart Money Score card
+          itself (see WalletPersonalityCard.tsx's own header for why it always renders, even with
+          zero PnL evidence). */}
+      <WalletPersonalityCard report={report} />
       <div style={{ marginBottom: '16px' }}>
         <WalletScannerTabsV3 report={report} />
       </div>

@@ -7,6 +7,7 @@
 // a claim of a precise, validated "wallet quality" metric. No new data is invented here.
 
 import type { SmartMoneyScore } from '@/lib/engine/modules/smartMoney/types'
+import { WALLET_PERSONALITY_CARD_ID } from './WalletPersonalityCard'
 
 export type SmartMoneyScoreCardProps = {
   smartMoneyScore: SmartMoneyScore | null | undefined
@@ -43,14 +44,40 @@ export function SmartMoneyScoreCard({ smartMoneyScore }: SmartMoneyScoreCardProp
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '8px' }}>
-        {COMPONENT_LABELS.map(({ key, label }) => (
-          <div key={key} style={{ fontSize: '11px' }}>
-            <span style={{ color: '#64748b' }}>{label} — </span>
-            <span style={{ fontWeight: 700, color: scoreColor(smartMoneyScore.components[key]) }}>
-              {smartMoneyScore.components[key]}
-            </span>
-          </div>
-        ))}
+        {COMPONENT_LABELS.map(({ key, label }) => {
+          // PERSONALITY SUBSCORE LINK, DISCLOSED (Wallet Personality task): this remains a plain
+          // 0-100 SUBSCORE — never used as, or replaced by, the Wallet Personality card's own
+          // title/label. Only the Personality row is made clickable, scrolling to the real
+          // Wallet Personality card below (see WalletPersonalityCard.tsx) — every other subscore
+          // row is unchanged, plain text.
+          if (key === 'personalityScore') {
+            return (
+              <a
+                key={key}
+                href={`#${WALLET_PERSONALITY_CARD_ID}`}
+                onClick={(e) => {
+                  e.preventDefault()
+                  document.getElementById(WALLET_PERSONALITY_CARD_ID)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                }}
+                style={{ fontSize: '11px', textDecoration: 'none', cursor: 'pointer' }}
+                title="Jump to the full Wallet Personality card"
+              >
+                <span style={{ color: '#64748b' }}>{label} — </span>
+                <span style={{ fontWeight: 700, color: scoreColor(smartMoneyScore.components[key]), textDecoration: 'underline', textUnderlineOffset: '2px' }}>
+                  {smartMoneyScore.components[key]}
+                </span>
+              </a>
+            )
+          }
+          return (
+            <div key={key} style={{ fontSize: '11px' }}>
+              <span style={{ color: '#64748b' }}>{label} — </span>
+              <span style={{ fontWeight: 700, color: scoreColor(smartMoneyScore.components[key]) }}>
+                {smartMoneyScore.components[key]}
+              </span>
+            </div>
+          )
+        })}
       </div>
 
       {smartMoneyScore.notes.length > 0 && (
