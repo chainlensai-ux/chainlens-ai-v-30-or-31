@@ -74,16 +74,61 @@ test('known/high-confidence router transaction is eligible', () => {
   assert.equal(result.candidatePriorityBreakdown[4], 1)
 })
 
-test('a real closed-lot requirement missing its opposite side is eligible and gets top priority', () => {
+test('a real closed-lot requirement missing its opposite side, PLUS an independent swap signal, is eligible and gets top priority', () => {
   const evidence = baseEvidence({
     txHash: '0x1',
     legs: [{ contract: WETH, direction: 'outbound', amount: 1 }],
     missingClosedLotSide: 'exit',
+    // Independent signal required alongside structural completion — see
+    // hasIndependentSwapSignal's own header in candidateSelector.ts. The existing WETH leg being a
+    // real verified quote address is exactly the realistic case this represents.
+    hasVerifiedQuoteAddress: true,
   })
   const result = selectBaseReceiptCandidates([evidence])
   assert.equal(result.selectorEligibleCandidates, 1)
   assert.equal(result.candidatePriorityBreakdown[1], 1)
   assert.equal(result.selected[0].priorityTier, 1)
+})
+
+test('SELECTION CORRECTION: structural completion ALONE, with no independent swap signal and no shared route fingerprint proof, is rejected as ordinary_transfer — never tier 1', () => {
+  const evidence = baseEvidence({
+    txHash: '0x1',
+    legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 100 }],
+    missingClosedLotSide: 'exit',
+    // Deliberately no router, no verified quote address, no opposite-direction leg — this is the
+    // production case: a lone transaction sitting at a real FIFO lot boundary that is, on its own,
+    // indistinguishable from an ordinary wallet transfer.
+  })
+  const result = selectBaseReceiptCandidates([evidence])
+  assert.equal(result.selectorEligibleCandidates, 0)
+  assert.equal(result.selectorReasonCounts.ordinary_transfer, 1)
+  assert.equal(result.rejectedSamples[0].reason, 'ordinary_transfer')
+})
+
+test('a structural-completion-only candidate IS promoted to tier 1 when another candidate proves the SAME route fingerprint independently', () => {
+  const evidence: CandidateTxEvidence[] = [
+    // Proves the route: same chain, no counterparty, same route shape (1 outbound leg, no native
+    // wrap) — and independently qualifies via a known router.
+    baseEvidence({ txHash: '0xproof', legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }], isKnownRouter: true }),
+    // Structural completion only, but shares that EXACT proven route fingerprint.
+    baseEvidence({ txHash: '0xriding', legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry' }),
+  ]
+  const result = selectBaseReceiptCandidates(evidence)
+  const riding = result.selected.find((s) => s.txHash === '0xriding')
+  assert.ok(riding, 'the fingerprint-proven candidate must be selected, not rejected')
+  assert.equal(riding!.priorityTier, 1)
+})
+
+test('a structural-completion-only candidate is NOT promoted when no other candidate shares its route fingerprint or proves it', () => {
+  const evidence: CandidateTxEvidence[] = [
+    baseEvidence({ txHash: '0xunrelated', legs: [{ contract: USDC, direction: 'outbound', amount: 1 }], isKnownRouter: true }),
+    // Different route shape (WETH leg carries the native-wrap marker) — never shares 0xunrelated's
+    // fingerprint, so it gets no proof from it.
+    baseEvidence({ txHash: '0xalone', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry' }),
+  ]
+  const result = selectBaseReceiptCandidates(evidence)
+  assert.equal(result.selected.some((s) => s.txHash === '0xalone'), false)
+  assert.equal(result.selectorReasonCounts.ordinary_transfer, 1)
 })
 
 test('plain ordinary wallet transfer (single leg, no signal at all) is rejected', () => {
@@ -156,8 +201,9 @@ test('priority ordering: missing-closed-lot-side ranks above existing-swap-candi
 
 test('Phase 2: within tier 1, a one-side-missing candidate whose existing leg is stable/ETH/WETH-verified outranks one that is not', () => {
   const evidence: CandidateTxEvidence[] = [
-    // Tier 1, but the existing leg is an unverified token — weaker completion evidence.
-    baseEvidence({ txHash: '0xweak', legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry' }),
+    // Tier 1 (independently qualified via a known router — required since Selection Correction),
+    // but the existing leg itself is an unverified token — weaker completion evidence than 0xstrong.
+    baseEvidence({ txHash: '0xweak', legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry', isKnownRouter: true }),
     // Tier 1 AND the existing leg is a verified stablecoin/ETH/WETH quote — the strongest, cheapest
     // completion shape a receipt can resolve (this task's explicit "prioritize transactions where
     // the existing side is stablecoin, ETH or WETH" requirement).

@@ -128,7 +128,7 @@ export type CandidateSelectionResult = {
 // ordering/eligibility logic changes. Logged unconditionally by walletScanShadowWiring.ts's shadow
 // payload so a real production log can prove which build actually ran, without depending on commit
 // SHA plumbing this module has no access to.
-export const RECEIPT_SELECTOR_ALGORITHM_VERSION = 'receipt-selector-v5-completion-first'
+export const RECEIPT_SELECTOR_ALGORITHM_VERSION = 'receipt-selector-v6-completion-requires-independent-signal'
 
 const MAX_SELECTED = 25
 const MAX_REJECTED_SAMPLES = 10
@@ -169,9 +169,68 @@ function hasRouterLikeCounterparty(evidence: CandidateTxEvidence): boolean {
   return evidence.isKnownRouter || evidence.routerConfidence === 'high' || evidence.routerConfidence === 'medium'
 }
 
+// SELECTION CORRECTION, DISCLOSED (Phase 2 forensics follow-up — production proof: 25 tier-1
+// candidates selected on structural-completion grounds alone, 13 receipts fetched, 0 recognized swap
+// events, 11 explicitly `plain_transfer_no_swap_event`, one candidate that should have been rejected
+// pre-fetch as an ordinary transfer). FIFO boundary membership (missingClosedLotSide !== null) means
+// "this transaction is the open/close side of a real structural lot whose opposite leg is absent from
+// provider events" — that is real evidence a LEG IS MISSING, but it is NOT evidence that this specific
+// transaction is itself a swap rather than an ordinary wallet transfer that merely happens to sit at a
+// lot boundary (e.g. a plain deposit into a wallet later sold, or a plain withdrawal after a purchase).
+// Structural completion is therefore NECESSARY but not SUFFICIENT for tier 1: it must now be paired
+// with at least one INDEPENDENT swap signal — see hasIndependentSwapSignal below — before a receipt is
+// spent chasing it. "Independent" is used strictly: the four signals below are computable BEFORE any
+// receipt is fetched, from evidence this pipeline already has for unrelated reasons (router inference,
+// quote-address verification, opposite-direction leg presence) — never derived from the completion
+// signal itself.
+function hasIndependentSwapSignal(evidence: CandidateTxEvidence): boolean {
+  return (
+    // Known/high-confidence router — real routerInfoByTx evidence (src/pipeline/index.ts), never
+    // guessed here.
+    hasRouterLikeCounterparty(evidence)
+    // A verified quote leg — the existing recorded side is itself a real stablecoin/native/WETH
+    // address (quoteLegPricing's own allowlist), the same signal tier 3 already trusts on its own.
+    || evidence.hasVerifiedQuoteAddress
+    // Multi-token opposing wallet flow — BOTH an inbound and an outbound leg already recorded, the
+    // real in+out shape a swap always produces (never a lone transfer that merely touches a lot
+    // boundary).
+    || hasOppositeDirectionLegs(evidence.legs)
+    // RESERVED, DISCLOSED: "recognized swap-like input selector" is deliberately NOT evaluated here.
+    // A transaction's calldata selector requires eth_getTransactionByHash (the transaction object),
+    // never returned by eth_getTransactionReceipt (the ONLY per-tx call this pipeline stage makes,
+    // via receiptAcquisition.ts) — there is no real selector data available at THIS pre-fetch
+    // decision point to check honestly. Adding a fabricated/guessed check here would violate this
+    // codebase's own "never infer from data that was never fetched" rule; this OR-branch is a wiring
+    // point for a future stage that actually has calldata, not a signal this function can supply
+    // today.
+  )
+}
+
+// PROVEN ROUTE FINGERPRINT, DISCLOSED: a pure, same-call cross-reference — never external state,
+// never persisted across scans. If ANY candidate sharing a given route fingerprint already carries an
+// independent swap signal (see above), every OTHER candidate sharing that exact fingerprint may treat
+// it as "a previously proven route" — the same router/route-shape has already shown real swap
+// evidence elsewhere in this same evidence list, which is real (if indirect) proof this route
+// genuinely transacts swaps, not merely a repeated guess.
+function computeProvenRouteFingerprints(evidenceList: readonly CandidateTxEvidence[]): ReadonlySet<string> {
+  const proven = new Set<string>()
+  for (const evidence of evidenceList) {
+    if (hasIndependentSwapSignal(evidence)) proven.add(routeFingerprintFor(evidence))
+  }
+  return proven
+}
+
+function qualifiesForCompletionTier(evidence: CandidateTxEvidence, provenFingerprints: ReadonlySet<string>): boolean {
+  if (evidence.missingClosedLotSide === null) return false
+  return hasIndependentSwapSignal(evidence) || provenFingerprints.has(routeFingerprintFor(evidence))
+}
+
 // Eligibility per this task's spec: Base only, wallet directly involved, not a clear bridge/LP/
 // staking/burn/ordinary-transfer, and at least one positive swap-candidate signal.
-function evaluateEligibility(evidence: CandidateTxEvidence): { eligible: boolean; reason?: RejectReason } {
+function evaluateEligibility(
+  evidence: CandidateTxEvidence,
+  provenFingerprints: ReadonlySet<string>,
+): { eligible: boolean; reason?: RejectReason } {
   if (evidence.chain !== 'base') return { eligible: false, reason: 'unsupported_chain' }
   if (!evidence.walletInvolved) return { eligible: false, reason: 'wallet_not_involved' }
   if (evidence.legs.length === 0) return { eligible: false, reason: 'no_legs' }
@@ -183,15 +242,22 @@ function evaluateEligibility(evidence: CandidateTxEvidence): { eligible: boolean
     || hasRouterLikeCounterparty(evidence)
     || hasOppositeDirectionLegs(evidence.legs)
     || (evidence.legs.length === 1 && hasRouterLikeCounterparty(evidence))
-    || evidence.missingClosedLotSide !== null
+    // CORRECTED, DISCLOSED: structural completion (missingClosedLotSide !== null) no longer counts
+    // on its own — see qualifiesForCompletionTier's own header above.
+    || qualifiesForCompletionTier(evidence, provenFingerprints)
 
   if (!positiveSignal) return { eligible: false, reason: 'ordinary_transfer' }
   return { eligible: true }
 }
 
 // Priority per this task's exact ordering (1 = highest).
-function priorityFor(evidence: CandidateTxEvidence): { tier: 1 | 2 | 3 | 4 | 5; reason: string } {
-  if (evidence.missingClosedLotSide !== null) return { tier: 1, reason: `could_complete_missing_${evidence.missingClosedLotSide}` }
+function priorityFor(
+  evidence: CandidateTxEvidence,
+  provenFingerprints: ReadonlySet<string>,
+): { tier: 1 | 2 | 3 | 4 | 5; reason: string } {
+  if (qualifiesForCompletionTier(evidence, provenFingerprints)) {
+    return { tier: 1, reason: `could_complete_missing_${evidence.missingClosedLotSide}` }
+  }
   if (evidence.isExistingSwapCandidate) return { tier: 2, reason: 'existing_one_leg_swap_candidate' }
   if (evidence.hasVerifiedQuoteAddress) return { tier: 3, reason: 'verified_quote_address' }
   if (evidence.isKnownRouter || evidence.routerConfidence === 'high') return { tier: 4, reason: 'known_or_high_confidence_router' }
@@ -240,9 +306,13 @@ export function selectBaseReceiptCandidates(evidenceList: readonly CandidateTxEv
     if (!originalIndexByKey.has(key)) originalIndexByKey.set(key, index)
   })
 
+  // Computed once, over the FULL deduped evidence set, before any per-candidate eligibility/tier
+  // decision — see computeProvenRouteFingerprints' own header.
+  const provenFingerprints = computeProvenRouteFingerprints(deduped)
+
   const eligible: CandidateTxEvidence[] = []
   for (const evidence of deduped) {
-    const { eligible: isEligible, reason } = evaluateEligibility(evidence)
+    const { eligible: isEligible, reason } = evaluateEligibility(evidence, provenFingerprints)
     if (!isEligible) {
       selectorReasonCounts[reason!] += 1
       if (rejectedSamples.length < MAX_REJECTED_SAMPLES) {
@@ -279,7 +349,7 @@ export function selectBaseReceiptCandidates(evidenceList: readonly CandidateTxEv
   const oppositeSideVerified = (evidence: CandidateTxEvidence): number => (evidence.hasVerifiedQuoteAddress ? 1 : 0)
 
   const ranked = eligible
-    .map((evidence) => ({ evidence, priority: priorityFor(evidence) }))
+    .map((evidence) => ({ evidence, priority: priorityFor(evidence, provenFingerprints) }))
     .sort((a, b) => {
       if (a.priority.tier !== b.priority.tier) return a.priority.tier - b.priority.tier
       const aVerified = oppositeSideVerified(a.evidence)

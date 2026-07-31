@@ -45,7 +45,10 @@ import { computeMissingClosedLotSides, type SwapLegGroupSummary } from '../modul
 import {
   seedPermanentReceiptsIntoRequestScope, recordPermanentReceiptsFromRequestScope,
 } from '../modules/receiptSwapDecoder/permanentReceiptCache'
-import { createReceiptRequestScopeCache } from '../modules/receiptSwapDecoder/receiptAcquisition'
+import { createReceiptRequestScopeCache, receiptCacheKey } from '../modules/receiptSwapDecoder/receiptAcquisition'
+import {
+  auditCachedReceipt, buildReceiptPhase2ForensicsDiagnostic, type CachedReceiptAuditInput,
+} from '../modules/receiptSwapDecoder/receiptPhase2Forensics'
 import type { DecodedReceiptSwap } from '../modules/receiptSwapDecoder/types'
 import { groupSwapLegsByTransaction, swapLegGroupKey, isVerifiedQuoteLegAddress } from '../modules/quoteLegPricing/index'
 import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/syntheticPnl/index'
@@ -1493,6 +1496,36 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       completionBudgetEnabled: true,
     })
     const permanentCacheRecorded = recordPermanentReceiptsFromRequestScope(receiptRequestScope)
+
+    // RECEIPT PHASE 2 FORENSICS, DISCLOSED — audits every cached tier-1 (structural-completion)
+    // receipt this scan actually has logs for, OFFLINE, using ONLY what is already in
+    // `receiptRequestScope.cache` (this scan's live fetches plus anything the permanent cache
+    // seeded) — zero additional provider calls. See receiptPhase2Forensics.ts's own header for the
+    // full disclosure, including why a real transaction input selector is honestly reported
+    // unavailable rather than fabricated.
+    {
+      const tier1AuditInputs: CachedReceiptAuditInput[] = []
+      for (const e of evidence) {
+        if (e.chain !== 'base' || e.missingClosedLotSide === null) continue
+        const cached = receiptRequestScope.cache.get(receiptCacheKey(e.chain, e.txHash))
+        if (!cached || cached.status !== 'ok') continue
+        const walletLeg = e.legs.find((l) => l.direction === 'inbound' || l.direction === 'outbound') ?? null
+        tier1AuditInputs.push({
+          chain: e.chain,
+          txHash: e.txHash,
+          missingClosedLotSide: e.missingClosedLotSide,
+          walletLeg,
+          routerOrCounterpartyAddress: e.routerOrCounterpartyAddress,
+          isKnownRouter: e.isKnownRouter,
+          logs: cached.logs,
+        })
+      }
+      const forensicRecords = tier1AuditInputs.map(auditCachedReceipt)
+      const forensicsDiagnostic = buildReceiptPhase2ForensicsDiagnostic(forensicRecords)
+      // eslint-disable-next-line no-console
+      console.warn('[receipt-phase2-forensics]', forensicsDiagnostic)
+    }
+
     // eslint-disable-next-line no-console
     console.warn('[pipeline] receiptSwapDecoder shadow mode', shadowPayload)
     if (shadowPayload.enabled) {
