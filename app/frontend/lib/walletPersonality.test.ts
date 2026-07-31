@@ -213,11 +213,24 @@ test('empty/null personality fields (concentrationSignals null, rotationStyle un
       riskOnOff: { value: 'unknown', basis: 'x' },
       concentrationSignals: null,
     },
+    // Zero active chains too, so every Risk axis sub-signal (holding, concentration, churn,
+    // chain breadth) is genuinely unavailable — the true "no risk evidence at all" case.
+    chainSelection: { chains: [], activeChainCount: 0, dustChainCount: 0 } as unknown as WalletPersonalitySourceReport['chainSelection'],
   })
   const data = deriveWalletPersonality(report)
   assert.equal(data.traits.portfolioConcentration, 'Not enough data')
   assert.equal(data.traits.riskAppetite, 'Unknown')
+  assert.equal(data.radar.risk.signalStrength, null)
   assert.equal(data.traits.rotationBehavior, 'Unknown')
+})
+
+test('risk trait now reads the CALIBRATED axis, not the legacy riskOnOff field — a Low-confidence-but-present risk signal is labeled from the axis, never "risk on"', () => {
+  const report = baseReport({
+    behaviorIntel: { ...baseReport().behaviorIntel, riskOnOff: { value: 'risk_on', basis: 'x' } },
+  })
+  const data = deriveWalletPersonality(report)
+  assert.notEqual(data.traits.riskAppetite, 'risk on')
+  assert.ok(['Low behavioral risk', 'Moderate behavioral risk', 'Elevated behavioral risk', 'Very high behavioral risk', 'Unknown'].includes(data.traits.riskAppetite))
 })
 
 test('no false zero values: win rate/holding time/router-repetition are null (not 0) when genuinely unknown', () => {
@@ -296,7 +309,11 @@ test('full evidence wallet: gets a distinctive, non-generic title and a fully po
   const data = deriveWalletPersonality(report)
   assert.notEqual(data.title, 'General User')
   assert.notEqual(data.title, '')
-  assert.equal(data.title, 'Risk-On Swing Operator')
+  // CALIBRATED-RISK FIX, DISCLOSED: this fixture's legacy riskOnOff.value is 'risk_on', but the
+  // CALIBRATED risk axis reads Low here (long-enough holding, no concentration evidence) — the
+  // title must never say "Risk-On" for a calibrated-Low wallet, matching this task's own rule.
+  assert.ok(!data.title.toLowerCase().includes('risk-on'))
+  assert.equal(data.classification.risk, 'Low risk behavior')
   assert.equal(data.evidenceBasis, 'behavior_plus_pnl')
   // Conviction has a real 'high' categorical input plus a holding-duration signal — a genuine axis
   // score, not the old riskOnOff-forced binary.
@@ -471,9 +488,9 @@ test('computeCadenceRegularity: null with too few real transaction timestamps, n
 
 test('composeTitle: never returns "General User" — that string is reserved for the zero-evidence path only', () => {
   const combos: Array<Parameters<typeof composeTitle>[0]> = [
-    { automationClass: 'Manual trader', holdingClass: 'Long-term holder', concentrationClass: 'Not enough data', riskValue: 'unknown', rotationValue: 'unknown', convictionValue: 'unknown', activeChains: 1, totalTransactions: 1 },
-    { automationClass: 'Bot-like', holdingClass: 'Hyperactive sniper', concentrationClass: 'Concentrated', riskValue: 'risk_on', rotationValue: 'rotator', convictionValue: 'high', activeChains: 2, totalTransactions: 40 },
-    { automationClass: 'Highly automated', holdingClass: 'Short-term rotator', concentrationClass: 'Moderately diversified', riskValue: 'risk_off', rotationValue: 'distributor', convictionValue: 'medium', activeChains: 5, totalTransactions: 100 },
+    { automationClass: 'Manual trader', holdingClass: 'Long-term holder', concentrationClass: 'Not enough data', riskClass: 'Not enough data', rotationValue: 'unknown', convictionValue: 'unknown', activeChains: 1, totalTransactions: 1, activityLevel: 'Light' },
+    { automationClass: 'Bot-like', holdingClass: 'Hyperactive sniper', concentrationClass: 'Concentrated', riskClass: 'Medium risk behavior', rotationValue: 'rotator', convictionValue: 'high', activeChains: 2, totalTransactions: 40, activityLevel: 'Active' },
+    { automationClass: 'Highly automated', holdingClass: 'Short-term rotator', concentrationClass: 'Moderately diversified', riskClass: 'Low risk behavior', rotationValue: 'distributor', convictionValue: 'medium', activeChains: 5, totalTransactions: 100, activityLevel: 'Very active' },
   ]
   for (const combo of combos) {
     assert.notEqual(composeTitle(combo), 'General User')
@@ -505,4 +522,80 @@ test('limited PnL sample surfaces the explicit "not official" disclosure via dis
   assert.equal(data.profitEvidence.lossCount, 3)
   assert.equal(data.profitEvidence.evaluatedCount, 7)
   assert.ok(Math.abs((data.profitEvidence.winRatePercent ?? 0) - (4 / 7) * 100) < 0.01)
+})
+
+// ─── Two proven consistency bugs: General-User-despite-evidence title, riskOnOff-vs-calibrated-risk trait ───
+
+function manyBuys(count: number, spanDays: number): BuyTimelineEntry[] {
+  return Array.from({ length: count }, (_, i) => buyEntry({ txHash: `0xbuy${i}`, timestamp: NOW - Math.round((spanDays * DAY * i) / count) }))
+}
+function manySells(count: number, spanDays: number): SellTimelineEntry[] {
+  return Array.from({ length: count }, (_, i) => sellEntry({ txHash: `0xsell${i}`, counterparty: i % 3 === 0 ? '0xrouterA' : '0xrouterB', timestamp: NOW - Math.round((spanDays * DAY * i) / count) }))
+}
+
+// Reconstructs the reported live scenario: 526 transactions, 163 unique tokens, 2 active chains,
+// a real matched-lot holding history long enough that the Risk axis's shortHolding sub-signal is
+// NOT elevated, no concentration evidence, and a legacy riskOnOff.value of 'risk_on' deliberately
+// left set (proving it no longer leaks into the title/trait/summary).
+function activeWallet526(): WalletPersonalitySourceReport {
+  return baseReport({
+    behaviorIntel: {
+      ...baseReport().behaviorIntel,
+      rotationStyle: { value: 'unknown', basis: { buyCount: 300, sellCount: 226, distributionCount: 0, distinctTokensTraded: 163 } },
+      riskOnOff: { value: 'risk_on', basis: 'legacy field, deliberately non-neutral' },
+      concentrationSignals: null,
+      automationSignals: { suspectedBot: false, signals: [] },
+      confidence: 'high',
+    },
+    fifoAndPnl: {
+      ...baseReport().fifoAndPnl,
+      matchedLots: [
+        lot({ lotId: 'l1', openedAt: NOW - 34 * DAY, closedAt: NOW - 19 * DAY, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' }),
+        lot({ lotId: 'l2', openedAt: NOW - 30 * DAY, closedAt: NOW - 14 * DAY, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' }),
+      ],
+    },
+    timelines: {
+      buyTimeline: { totalBuys: 300, entries: manyBuys(300, 89) },
+      sellTimeline: { totalSells: 0, entries: [] },
+      distributionTimeline: { totalDistributions: 0, entries: [] },
+      sellTimelineV2: { totalSells: 226, chainContext: { includedChains: ['base'], excludedChains: [] }, entries: manySells(226, 89) },
+    } as unknown as WalletPersonalitySourceReport['timelines'],
+    chainSelection: { chains: [], activeChainCount: 2, dustChainCount: 0 } as unknown as WalletPersonalitySourceReport['chainSelection'],
+  })
+}
+
+test('a non-empty 526-transaction wallet cannot render "General User"', () => {
+  const data = deriveWalletPersonality(activeWallet526())
+  assert.equal(data.metrics.totalTransactions, 526)
+  assert.notEqual(data.title, 'General User')
+  assert.equal(data.insufficientEvidence, false)
+})
+
+test('the card never shows Low calibrated risk together with a "risk on" trait/summary — title, trait, and summary all read the calibrated axis, not legacy riskOnOff', () => {
+  const data = deriveWalletPersonality(activeWallet526())
+  // The calibrated axis reads Low for this fixture (long holding, no concentration evidence,
+  // moderate churn/chain-breadth only) — confirms the scenario actually exercises the bug.
+  assert.equal(data.classification.risk, 'Low risk behavior')
+  assert.ok((data.radar.risk.signalStrength ?? 100) < 25)
+
+  // None of title / trait / summary may say "risk on"/"risk-on" while the calibrated axis is Low —
+  // this is the literal consistency invariant this task requires.
+  const lowerTitle = data.title.toLowerCase()
+  const lowerTrait = data.traits.riskAppetite.toLowerCase()
+  const lowerSummary = data.summarySentence.toLowerCase()
+  assert.ok(!lowerTitle.includes('risk-on') && !lowerTitle.includes('risk on'))
+  assert.ok(!lowerTrait.includes('risk on') && lowerTrait !== 'risk on')
+  assert.ok(!lowerSummary.includes('risk-on posture') && !lowerSummary.includes('risk on posture'))
+  assert.equal(data.traits.riskAppetite, 'Low behavioral risk')
+})
+
+test('legacy riskOnOff.value never overrides the calibrated risk classification in the returned title', () => {
+  const wallet = activeWallet526()
+  const riskOn = deriveWalletPersonality(wallet)
+  const riskOffVariant = deriveWalletPersonality({
+    ...wallet,
+    behaviorIntel: { ...wallet.behaviorIntel, riskOnOff: { value: 'risk_off', basis: 'x' } },
+  })
+  // Flipping ONLY the legacy field must not change the title at all — it is not consulted.
+  assert.equal(riskOn.title, riskOffVariant.title)
 })

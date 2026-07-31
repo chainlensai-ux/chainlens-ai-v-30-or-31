@@ -261,23 +261,47 @@ function classifyRisk(riskAxis: AxisScore): RiskClass {
   return 'Low risk behavior'
 }
 
+// CALIBRATED RISK LABEL, DISCLOSED (this task's own exact required mapping) — describes RISK
+// INTENSITY only (never profitability, skill, or a moral judgment), derived from the SAME
+// radar.risk.signalStrength the badge/bar/"Why this score?" panel already use. `null` (no risk
+// sub-signal had any data) resolves to an honest "Unknown", never a guessed band.
+export function describeCalibratedRisk(riskSignalStrength: number | null): string {
+  if (riskSignalStrength == null) return 'Unknown'
+  if (riskSignalStrength <= 24) return 'Low behavioral risk'
+  if (riskSignalStrength <= 49) return 'Moderate behavioral risk'
+  if (riskSignalStrength <= 74) return 'Elevated behavioral risk'
+  return 'Very high behavioral risk'
+}
+
 // PURE. Composes a distinctive, evidence-grounded personality title from real classification
 // inputs only — never a placeholder. "General User" is reserved EXCLUSIVELY for the
 // insufficient-evidence case (handled by the caller, not this function) — every other case
-// produces a specific, real-signal-backed title, matching this task's own explicit examples
-// ("Risk-On Swing Operator", "High-Tempo Token Rotator", "Manual Multi-Chain Trader",
-// "Concentrated Conviction Holder"). Deterministic priority order, most-specific signal first.
+// produces a specific, real-signal-backed title. Deterministic priority order, most-specific
+// signal first.
+//
+// CALIBRATED-RISK FIX, DISCLOSED (this task's own confirmed bug): previously took the LEGACY raw
+// `riskValue` ('risk_on'/'risk_off'/'unknown' — behaviorIntel.riskOnOff.value, a single-field
+// heuristic completely independent of the calibrated Risk axis) as its risk input. A wallet whose
+// CALIBRATED risk signal reads Low (e.g. 19%) could still get "Risk-On Swing Operator" in its
+// title purely because the unrelated legacy field happened to say 'risk_on' — the exact
+// title-vs-trait-vs-badge contradiction this task reports live. Now takes `riskClass` (the SAME
+// calibrated RiskClass classifyRisk() derives from the Risk axis's own signalStrength — the one
+// value every other part of this card already reads) instead — "Risk-On"/"Risk-Off" wording is
+// never used anywhere in this function anymore; risk-flavored titles only appear when riskClass
+// itself is Medium/High, matching this task's explicit "do not use Risk-On when calibrated risk
+// strength is Low" rule.
 export function composeTitle(params: {
   automationClass: TradingStyle
   holdingClass: HoldingStyle
   concentrationClass: ConcentrationClass
-  riskValue: 'risk_on' | 'risk_off' | 'unknown'
+  riskClass: RiskClass
   rotationValue: 'accumulator' | 'rotator' | 'distributor' | 'unknown'
   convictionValue: 'high' | 'medium' | 'low' | 'unknown'
   activeChains: number
   totalTransactions: number
+  activityLevel: string
 }): string {
-  const { automationClass, holdingClass, concentrationClass, riskValue, rotationValue, convictionValue, activeChains, totalTransactions } = params
+  const { automationClass, holdingClass, concentrationClass, riskClass, rotationValue, convictionValue, activeChains, totalTransactions, activityLevel } = params
 
   // CONFLICT DETECTION, DISCLOSED (this task's own explicit rule): 'rotator' (fast, frequent
   // token-switching) and 'Long-term holder' (patient, multi-week+ average holding time) are
@@ -286,19 +310,33 @@ export function composeTitle(params: {
   if (rotationValue === 'rotator' && holdingClass === 'Long-term holder') return 'Mixed-Signal Trader'
 
   if (concentrationClass === 'Concentrated' && convictionValue === 'high') return 'Concentrated Conviction Holder'
-  if (riskValue === 'risk_on' && holdingClass === 'Swing trader') return 'Risk-On Swing Operator'
+  const elevatedRisk = riskClass === 'High risk behavior' || riskClass === 'Medium risk behavior'
+  if (elevatedRisk && holdingClass === 'Swing trader') return 'Elevated-Risk Swing Operator'
   if (rotationValue === 'rotator' && (holdingClass === 'Short-term rotator' || holdingClass === 'Hyperactive sniper') && totalTransactions >= 15) return 'High-Tempo Token Rotator'
-  if (automationClass === 'Manual trader' && activeChains >= 3) return 'Manual Multi-Chain Trader'
+  // MULTI-CHAIN, DISCLOSED: 2+ active chains is real, meaningful multi-chain evidence for this
+  // engine's own scope (Base + a small set of supported chains — see chainSelection's own header)
+  // — lowered from the prior 3-chain bar so a genuinely active 2-chain wallet (this task's own
+  // example) gets a specific title instead of falling through to the generic fallback.
+  if (automationClass === 'Manual trader' && holdingClass === 'Swing trader' && activeChains >= 2) return 'Active Multi-Chain Swing Trader'
+  if (automationClass === 'Manual trader' && activeChains >= 2) return 'Manual Multi-Chain Trader'
   if (automationClass === 'Highly automated') return 'Highly Automated Execution Wallet'
   if (automationClass === 'Bot-like') return 'Bot-Like Execution Pattern'
   if (automationClass === 'Automation signals present') return 'Wallet With Automation Signals'
-  if (holdingClass === 'Long-term holder') return riskValue === 'risk_off' ? 'Disciplined Long-Term Holder' : 'Conviction Long-Term Holder'
+  if (rotationValue === 'distributor' && totalTransactions >= 100) return 'High-Activity Token Distributor'
+  if (holdingClass === 'Long-term holder') return riskClass === 'Low risk behavior' ? 'Disciplined Long-Term Holder' : 'Conviction Long-Term Holder'
   if (holdingClass === 'Hyperactive sniper') return 'Hyperactive Token Sniper'
   if (holdingClass === 'Short-term rotator') return 'Short-Term Token Rotator'
   if (rotationValue === 'accumulator') return 'Steady Accumulator'
   if (rotationValue === 'distributor') return 'Active Distributor'
-  const riskLabel = riskValue === 'risk_on' ? 'Risk-On' : riskValue === 'risk_off' ? 'Risk-Off' : 'Balanced'
-  return `${riskLabel} ${automationClass}`
+
+  // GENERIC FALLBACK, DISCLOSED: uses calibrated risk ONLY when it is genuinely Medium/High —
+  // never mentions risk at all for Low/Not-enough-data, using real activity level instead so the
+  // fallback itself can never contradict a Low risk badge.
+  if (elevatedRisk) {
+    const riskWord = riskClass === 'High risk behavior' ? 'High-Risk' : 'Elevated-Risk'
+    return `${riskWord} ${automationClass}`
+  }
+  return `${activityLevel} ${automationClass}`
 }
 
 function clamp01(v: number): number {
@@ -586,7 +624,12 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
   const holdingClass = classifyHolding(averageHoldingDays)
 
   const rotationValue = b?.rotationStyle?.value ?? 'unknown'
-  const riskValue = b?.riskOnOff?.value ?? 'unknown'
+  // CONSISTENCY INVARIANT, DISCLOSED (this task's own explicit rule): behaviorIntel.riskOnOff.value
+  // (the raw legacy field) is deliberately NOT read into a variable here anymore — every risk-
+  // flavored value this function returns (title, traits.riskAppetite, summarySentence,
+  // classification.risk, the radar bar) now derives from the SAME calibrated Risk axis
+  // (radar.risk / riskClass below), so no old raw categorical field can silently override the
+  // calibrated axis anywhere in this card's presentation.
   const convictionValue = b?.convictionScore?.value ?? 'unknown'
   const cadenceRegularity = computeCadenceRegularity(allTimestamps)
 
@@ -640,16 +683,33 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
     : 'behavior_only'
 
   const insufficientEvidence = totalTransactions === 0
+  const activityLevel = totalTransactions === 0 ? 'Inactive' : totalTransactions >= 50 ? 'Very active' : totalTransactions >= 10 ? 'Active' : 'Light'
+
+  // CALIBRATED RISK PHRASE, DISCLOSED (this task's own required mapping) — the SAME calibrated
+  // riskClass every other part of this card reads (badge, "Why this score?" panel) — never the
+  // legacy riskOnOff.value ('risk_on'/'risk_off'). "Risk intensity", never a profitability or moral
+  // judgment — see classifyRisk's own header for the signalStrength thresholds this mirrors.
+  const riskPhrase = riskClass === 'Not enough data' ? 'an undetermined'
+    : riskClass === 'High risk behavior' ? 'a high'
+    : riskClass === 'Medium risk behavior' ? 'an elevated'
+    : 'a low'
 
   // TITLE, DISCLOSED: "General User" is reserved EXCLUSIVELY for the zero-evidence case (per this
-  // task's explicit instruction) — prefers a real V2 personalityV2.archetype when the caller
-  // supplied one (see this module's own header — not populated by the live scan route today, but
-  // consumed when present), otherwise composeTitle() builds a distinctive, real-signal-backed
-  // title — NEVER from smartMoneyScore.components.personalityScore (a 0-100 number, not a label).
+  // task's explicit instruction). PERSONALITY-V2 OVERRIDE FIX, DISCLOSED (this task's own confirmed
+  // bug): previously trusted `report.personalityV2?.archetype` unconditionally whenever present —
+  // but lib/engine/modules/personality/computePersonality.ts's own archetypeFor() has 'General
+  // User' as ITS OWN internal fallback default, so a caller that ever wires personalityV2 in could
+  // silently reintroduce exactly the "General User despite real evidence" contradiction this task
+  // reports, bypassing composeTitle's own real, evidence-backed result entirely. Now an archetype
+  // override is only trusted when it is a real, non-generic label AND we don't already have strong
+  // evidence of our own — composeTitle()'s calibrated-risk-aware result always wins once
+  // `insufficientEvidence` is false, regardless of what an external archetype field claims.
+  const archetypeOverride = report.personalityV2?.archetype
+  const useArchetypeOverride = !insufficientEvidence && archetypeOverride != null && archetypeOverride.trim().length > 0 && archetypeOverride !== 'General User'
   const title = insufficientEvidence
     ? 'General User'
-    : (report.personalityV2?.archetype ?? composeTitle({
-        automationClass, holdingClass, concentrationClass, riskValue, rotationValue, convictionValue, activeChains, totalTransactions,
+    : (useArchetypeOverride ? archetypeOverride! : composeTitle({
+        automationClass, holdingClass, concentrationClass, riskClass, rotationValue, convictionValue, activeChains, totalTransactions, activityLevel,
       }))
 
   const subtitle = insufficientEvidence
@@ -658,7 +718,7 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
 
   const summarySentence = insufficientEvidence
     ? 'Not enough on-chain activity was found for this wallet to characterize its trading behavior.'
-    : `This wallet is a ${automationClass.toLowerCase()}, ${holdingClass.toLowerCase()} trading across ${activeChains} active chain${activeChains === 1 ? '' : 's'}, with ${riskValue === 'unknown' ? 'an undetermined' : riskValue.replace('_', '-')} risk posture.`
+    : `This wallet is a ${automationClass.toLowerCase()}, ${holdingClass.toLowerCase()} trading across ${activeChains} active chain${activeChains === 1 ? '' : 's'}, with ${riskPhrase} calibrated behavioral risk signal.`
 
   const overallConfidence = deriveOverallConfidence({
     backendConfidence: b?.confidence ?? 'low',
@@ -693,10 +753,17 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
     radar,
     traits: {
       tradingStyle: automationClass,
-      activityLevel: totalTransactions === 0 ? 'Inactive' : totalTransactions >= 50 ? 'Very active' : totalTransactions >= 10 ? 'Active' : 'Light',
+      activityLevel,
       holdingStyle: holdingClass,
       rotationBehavior: rotationValue === 'unknown' ? 'Unknown' : rotationValue.charAt(0).toUpperCase() + rotationValue.slice(1),
-      riskAppetite: riskValue === 'unknown' ? 'Unknown' : riskValue.replace('_', ' '),
+      // CALIBRATED RISK TRAIT FIX, DISCLOSED (this task's own confirmed bug): previously read the
+      // LEGACY riskOnOff.value directly ("risk on"/"risk off"/"Unknown") — a field computed
+      // entirely independently of the calibrated Risk axis, so it could (and did, live) show
+      // "risk on" for a wallet whose calibrated Risk signal was simultaneously 19%/Low. Now derived
+      // from the SAME radar.risk.signalStrength via describeCalibratedRisk()'s exact mapping — the
+      // one number every other part of this card (badge, bar, "Why this score?" panel) already
+      // uses, so no raw legacy categorical field can ever contradict it in presentation again.
+      riskAppetite: describeCalibratedRisk(radar.risk.signalStrength),
       automationLikelihood: automationClass,
       chainPreference: b?.multiChainParticipation?.primaryChain ?? 'Unknown',
       portfolioConcentration: concentrationClass,
