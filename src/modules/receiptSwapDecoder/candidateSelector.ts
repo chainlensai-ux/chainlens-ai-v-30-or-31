@@ -122,13 +122,44 @@ export type CandidateSelectionResult = {
   selected: SelectedCandidate[]
   rejectedSamples: RejectedSample[]
   orderingTrace: CandidateOrderingTrace[]
+  // TIER-1 SELECTION-FIX DIAGNOSTICS, DISCLOSED — see qualifiesForCompletionTier's own header for
+  // the full v7 rationale. All computed over the deduped, structurally-completing (missingClosedLotSide
+  // !== null) population only; never affected by which OTHER tiers a candidate might otherwise
+  // qualify for.
+  tier1Diagnostics: Tier1SelectionDiagnostics
+}
+
+export type Tier1SelectionDiagnostics = {
+  // Structural-completion candidates that would have qualified under the PRIOR (single-independent-
+  // signal) rule: missingClosedLotSide !== null AND at least one signal, direct or fingerprint-proven
+  // under that looser (single-signal-seed) standard.
+  tier1CandidatesBefore: number
+  // Structural-completion candidates that qualify under THIS revision's two-independent-signal rule.
+  tier1CandidatesAfter: number
+  // missingClosedLotSide !== null with ZERO signals at all, even under the looser prior standard —
+  // structural completion was genuinely the only thing these candidates had.
+  rejectedStructuralOnly: number
+  // missingClosedLotSide !== null with EXACTLY ONE signal (the exact shape this revision now
+  // excludes: a lone known-router or a lone verified-quote-address, real but insufficient alone).
+  rejectedSingleWeakSignal: number
+  // Count of candidates qualifying under the new two-signal rule — always equal to
+  // tier1CandidatesAfter and to the sum of signalCombinationCounts; both are exposed because a real
+  // production log reading one shouldn't need to re-derive the other.
+  eligibleBySignalCombination: number
+  // Breakdown of which EXACT signal combination (sorted, '+'-joined signal names) qualified each
+  // tier-1-eligible candidate — e.g. "quote+router", "opposingLegs+provenFingerprint".
+  signalCombinationCounts: Record<string, number>
+  // receiptsAvoided = tier1CandidatesBefore - tier1CandidatesAfter — the real number of receipt
+  // fetches this fix prevents on this exact evidence set, assuming every one of the prior rule's
+  // tier-1 candidates would otherwise have consumed a receipt-acquisition slot.
+  receiptsAvoided: number
 }
 
 // DEPLOYMENT VERIFICATION, DISCLOSED: bump this string whenever selectBaseReceiptCandidates's
 // ordering/eligibility logic changes. Logged unconditionally by walletScanShadowWiring.ts's shadow
 // payload so a real production log can prove which build actually ran, without depending on commit
 // SHA plumbing this module has no access to.
-export const RECEIPT_SELECTOR_ALGORITHM_VERSION = 'receipt-selector-v6-completion-requires-independent-signal'
+export const RECEIPT_SELECTOR_ALGORITHM_VERSION = 'receipt-selector-v7-completion-requires-two-independent-signals'
 
 const MAX_SELECTED = 25
 const MAX_REJECTED_SAMPLES = 10
@@ -169,67 +200,174 @@ function hasRouterLikeCounterparty(evidence: CandidateTxEvidence): boolean {
   return evidence.isKnownRouter || evidence.routerConfidence === 'high' || evidence.routerConfidence === 'medium'
 }
 
-// SELECTION CORRECTION, DISCLOSED (Phase 2 forensics follow-up — production proof: 25 tier-1
-// candidates selected on structural-completion grounds alone, 13 receipts fetched, 0 recognized swap
-// events, 11 explicitly `plain_transfer_no_swap_event`, one candidate that should have been rejected
-// pre-fetch as an ordinary transfer). FIFO boundary membership (missingClosedLotSide !== null) means
-// "this transaction is the open/close side of a real structural lot whose opposite leg is absent from
-// provider events" — that is real evidence a LEG IS MISSING, but it is NOT evidence that this specific
-// transaction is itself a swap rather than an ordinary wallet transfer that merely happens to sit at a
-// lot boundary (e.g. a plain deposit into a wallet later sold, or a plain withdrawal after a purchase).
-// Structural completion is therefore NECESSARY but not SUFFICIENT for tier 1: it must now be paired
-// with at least one INDEPENDENT swap signal — see hasIndependentSwapSignal below — before a receipt is
-// spent chasing it. "Independent" is used strictly: the four signals below are computable BEFORE any
-// receipt is fetched, from evidence this pipeline already has for unrelated reasons (router inference,
-// quote-address verification, opposite-direction leg presence) — never derived from the completion
-// signal itself.
-function hasIndependentSwapSignal(evidence: CandidateTxEvidence): boolean {
-  return (
-    // Known/high-confidence router — real routerInfoByTx evidence (src/pipeline/index.ts), never
-    // guessed here.
-    hasRouterLikeCounterparty(evidence)
-    // A verified quote leg — the existing recorded side is itself a real stablecoin/native/WETH
-    // address (quoteLegPricing's own allowlist), the same signal tier 3 already trusts on its own.
-    || evidence.hasVerifiedQuoteAddress
-    // Multi-token opposing wallet flow — BOTH an inbound and an outbound leg already recorded, the
-    // real in+out shape a swap always produces (never a lone transfer that merely touches a lot
-    // boundary).
-    || hasOppositeDirectionLegs(evidence.legs)
-    // RESERVED, DISCLOSED: "recognized swap-like input selector" is deliberately NOT evaluated here.
-    // A transaction's calldata selector requires eth_getTransactionByHash (the transaction object),
-    // never returned by eth_getTransactionReceipt (the ONLY per-tx call this pipeline stage makes,
-    // via receiptAcquisition.ts) — there is no real selector data available at THIS pre-fetch
-    // decision point to check honestly. Adding a fabricated/guessed check here would violate this
-    // codebase's own "never infer from data that was never fetched" rule; this OR-branch is a wiring
-    // point for a future stage that actually has calldata, not a signal this function can supply
-    // today.
-  )
+// SELECTION CORRECTION v2, DISCLOSED (production proof: v6's single-independent-signal rule still
+// selected 25 tier-1 candidates on this same wallet; 13 receipts fetched under that rule produced 0
+// recognized swap events, 0 exact swaps, all 13 auditing to `ordinary_transfer` under
+// receiptPhase2Forensics.ts's own offline classification, `candidateDecoderFamilies` empty). The root
+// cause: a known/high-confidence router counterparty ALONE, or a verified stablecoin/native/WETH quote
+// address ALONE, is real but WEAK evidence — a router receives and forwards plenty of plain transfers
+// that are never swaps, and a wallet plainly depositing/withdrawing a stablecoin at a lot boundary is
+// exactly as consistent with an ordinary transfer as with a swap. Neither, alone, actually distinguishes
+// a real swap from a coincidental FIFO boundary. This revision requires structural completion PLUS AT
+// LEAst TWO of the independent signals below — never structural completion itself, never a single
+// signal alone — before a receipt is spent chasing a candidate.
+//
+// THE SIGNAL POOL, DISCLOSED — exactly three DIRECT (pre-fetch, no receipt needed) signals, plus one
+// CONTEXTUAL signal (a proven route fingerprint) that itself only exists when built from OTHER
+// candidates whose OWN direct signals already clear the two-signal bar:
+//   - router:        known/high-confidence router counterparty (hasRouterLikeCounterparty).
+//   - quote:         the existing recorded leg is itself a verified stablecoin/native/WETH address
+//                    (evidence.hasVerifiedQuoteAddress).
+//   - opposingLegs:  a genuine two-asset opposing wallet flow — an outbound leg AND an inbound leg
+//                    for DIFFERENT contracts (never the same token counted on both sides, and never
+//                    satisfied by same-direction legs alone) — see hasGenuineOpposingLegs below.
+//   - provenFingerprint: this candidate's route fingerprint was independently proven by a DIFFERENT
+//                    candidate in the same batch — see computeProvenRouteFingerprints' own header for
+//                    why self-seeding is structurally impossible.
+//
+// RESERVED, DISCLOSED: "recognized swap-like input selector" remains deliberately unevaluated — a
+// transaction's calldata selector requires eth_getTransactionByHash (the transaction object), never
+// returned by eth_getTransactionReceipt (the only per-tx call this pipeline stage makes). This task
+// explicitly forbids adding that call; this signal type has no honest source today.
+function hasRouterSignal(evidence: CandidateTxEvidence): boolean {
+  return hasRouterLikeCounterparty(evidence)
+}
+
+function hasQuoteSignal(evidence: CandidateTxEvidence): boolean {
+  return evidence.hasVerifiedQuoteAddress
+}
+
+// GENUINE OPPOSING LEGS, DISCLOSED (stricter than the plain in+out direction check used elsewhere in
+// this file for OTHER, non-completion-tier eligibility paths): requires an outbound leg and an inbound
+// leg for DIFFERENT contract addresses — the real two-asset shape a swap always produces. Two legs of
+// the SAME token moving in opposite directions (e.g. a refund) is never counted as this signal.
+function hasGenuineOpposingLegs(evidence: CandidateTxEvidence): boolean {
+  const outboundContracts = evidence.legs.filter((l) => l.direction === 'outbound').map((l) => l.contract.toLowerCase())
+  const inboundContracts = evidence.legs.filter((l) => l.direction === 'inbound').map((l) => l.contract.toLowerCase())
+  return outboundContracts.some((out) => inboundContracts.some((inn) => inn !== out))
+}
+
+export type CompletionSignalName = 'router' | 'quote' | 'opposingLegs' | 'provenFingerprint'
+
+// The three DIRECT signals only — deliberately excludes provenFingerprint, since a fingerprint can
+// only ever be proven BY a candidate whose own direct signals already qualify it (see
+// computeProvenRouteFingerprints below). Order is fixed for deterministic combination labeling.
+function directCompletionSignals(evidence: CandidateTxEvidence): CompletionSignalName[] {
+  const names: CompletionSignalName[] = []
+  if (hasRouterSignal(evidence)) names.push('router')
+  if (hasQuoteSignal(evidence)) names.push('quote')
+  if (hasGenuineOpposingLegs(evidence)) names.push('opposingLegs')
+  return names
 }
 
 // PROVEN ROUTE FINGERPRINT, DISCLOSED: a pure, same-call cross-reference — never external state,
-// never persisted across scans. If ANY candidate sharing a given route fingerprint already carries an
-// independent swap signal (see above), every OTHER candidate sharing that exact fingerprint may treat
-// it as "a previously proven route" — the same router/route-shape has already shown real swap
-// evidence elsewhere in this same evidence list, which is real (if indirect) proof this route
-// genuinely transacts swaps, not merely a repeated guess.
-function computeProvenRouteFingerprints(evidenceList: readonly CandidateTxEvidence[]): ReadonlySet<string> {
-  const proven = new Set<string>()
+// never persisted across scans. SEEDED ONLY by a candidate whose OWN direct signals (router/quote/
+// opposingLegs) already number two or more — i.e. a candidate that is independently eligible for tier
+// 1 without any fingerprint help at all. This is what makes self-seeding structurally impossible: a
+// lone candidate with a single weak signal (or zero) never has enough direct signals to seed its own
+// fingerprint. It is ALSO impossible for a candidate to count its OWN qualifying signals as proof of
+// itself — `fingerprintProvenByOther` below explicitly requires the seed to be a DIFFERENT candidate
+// (by dedupe key), so a 2-signal candidate's diagnostic combination reports exactly its own two real
+// signals, never an inflated third "provenFingerprint" entry sourced from itself. Once a fingerprint
+// IS proven by a different candidate, every OTHER candidate sharing that exact route shape may count
+// it as ONE contextual signal (never two, never a full override) — real, if indirect, evidence this
+// specific router/route shape genuinely carries swaps elsewhere in this same batch.
+function computeFingerprintSeeds(
+  evidenceList: readonly CandidateTxEvidence[],
+  minDirectSignals: number,
+): ReadonlyMap<string, readonly CandidateTxEvidence[]> {
+  const seeds = new Map<string, CandidateTxEvidence[]>()
   for (const evidence of evidenceList) {
-    if (hasIndependentSwapSignal(evidence)) proven.add(routeFingerprintFor(evidence))
+    if (directCompletionSignals(evidence).length < minDirectSignals) continue
+    const fingerprint = routeFingerprintFor(evidence)
+    const list = seeds.get(fingerprint) ?? []
+    list.push(evidence)
+    seeds.set(fingerprint, list)
   }
-  return proven
+  return seeds
 }
 
-function qualifiesForCompletionTier(evidence: CandidateTxEvidence, provenFingerprints: ReadonlySet<string>): boolean {
+function fingerprintProvenByOther(evidence: CandidateTxEvidence, seeds: ReadonlyMap<string, readonly CandidateTxEvidence[]>): boolean {
+  const seededBy = seeds.get(routeFingerprintFor(evidence))
+  if (!seededBy) return false
+  return seededBy.some((seed) => dedupeKey(seed) !== dedupeKey(evidence))
+}
+
+// Full signal set for ONE candidate, including the contextual proven-fingerprint signal when it
+// applies. Returns the actual contributing names (for diagnostics) — callers check `.length >= 2`.
+function completionSignalsFor(evidence: CandidateTxEvidence, strictSeeds: ReadonlyMap<string, readonly CandidateTxEvidence[]>): CompletionSignalName[] {
+  const names = directCompletionSignals(evidence)
+  if (fingerprintProvenByOther(evidence, strictSeeds)) names.push('provenFingerprint')
+  return names
+}
+
+function qualifiesForCompletionTier(evidence: CandidateTxEvidence, strictSeeds: ReadonlyMap<string, readonly CandidateTxEvidence[]>): boolean {
   if (evidence.missingClosedLotSide === null) return false
-  return hasIndependentSwapSignal(evidence) || provenFingerprints.has(routeFingerprintFor(evidence))
+  return completionSignalsFor(evidence, strictSeeds).length >= 2
+}
+
+// PURE. Computes the full Tier1SelectionDiagnostics block for the population of candidates that are
+// structurally completing a real lot (missingClosedLotSide !== null) among those that reach the
+// positive-signal decision at all (i.e. survived chain/wallet-involvement/bridge/LP exclusion) —
+// exactly the population qualifiesForCompletionTier ever evaluates.
+function computeTier1Diagnostics(
+  structuralCandidates: readonly CandidateTxEvidence[],
+  strictSeeds: ReadonlyMap<string, readonly CandidateTxEvidence[]>,
+): Tier1SelectionDiagnostics {
+  // PRIOR-RULE (v6) FINGERPRINT SEEDING, DISCLOSED, DIAGNOSTIC-ONLY — reproduces the single-signal-
+  // seed standard the immediately prior revision used, SOLELY to compute tier1CandidatesBefore/
+  // receiptsAvoided below. Never consulted by the real eligibility/tier decision above.
+  const looseSeeds = computeFingerprintSeeds(structuralCandidates, 1)
+
+  let tier1CandidatesBefore = 0
+  let tier1CandidatesAfter = 0
+  let rejectedStructuralOnly = 0
+  let rejectedSingleWeakSignal = 0
+  const signalCombinationCounts: Record<string, number> = {}
+
+  for (const evidence of structuralCandidates) {
+    const directCount = directCompletionSignals(evidence).length
+    const loosePasses = directCount >= 1 || fingerprintProvenByOther(evidence, looseSeeds)
+    if (loosePasses) tier1CandidatesBefore += 1
+
+    const strictSignals = completionSignalsFor(evidence, strictSeeds)
+    if (strictSignals.length >= 2) {
+      tier1CandidatesAfter += 1
+      const combination = [...strictSignals].sort().join('+')
+      signalCombinationCounts[combination] = (signalCombinationCounts[combination] ?? 0) + 1
+    } else if (!loosePasses) {
+      rejectedStructuralOnly += 1
+    } else {
+      rejectedSingleWeakSignal += 1
+    }
+  }
+
+  const eligibleBySignalCombination = Object.values(signalCombinationCounts).reduce((a, b) => a + b, 0)
+
+  return {
+    tier1CandidatesBefore,
+    tier1CandidatesAfter,
+    rejectedStructuralOnly,
+    rejectedSingleWeakSignal,
+    eligibleBySignalCombination,
+    signalCombinationCounts,
+    receiptsAvoided: tier1CandidatesBefore - tier1CandidatesAfter,
+  }
 }
 
 // Eligibility per this task's spec: Base only, wallet directly involved, not a clear bridge/LP/
 // staking/burn/ordinary-transfer, and at least one positive swap-candidate signal.
+//
+// ORDINARY-TRANSFER OVERRIDE, DISCLOSED: this function's own fallback — no positive signal at all,
+// from ANY path, rejects as `ordinary_transfer` — is the single point every candidate must clear.
+// Structural completion alone, or structural completion plus exactly one weak signal, both fall
+// straight through to this same override; there is no separate path that could let either slip past
+// it. This is what "ordinary-transfer preclassification must always override tier eligibility" means
+// in a pipeline stage that runs strictly BEFORE any receipt exists to classify post-fetch: the
+// pre-fetch ordinary-transfer default is never bypassed by a partial completion signal.
 function evaluateEligibility(
   evidence: CandidateTxEvidence,
-  provenFingerprints: ReadonlySet<string>,
+  strictSeeds: ReadonlyMap<string, readonly CandidateTxEvidence[]>,
 ): { eligible: boolean; reason?: RejectReason } {
   if (evidence.chain !== 'base') return { eligible: false, reason: 'unsupported_chain' }
   if (!evidence.walletInvolved) return { eligible: false, reason: 'wallet_not_involved' }
@@ -242,9 +380,9 @@ function evaluateEligibility(
     || hasRouterLikeCounterparty(evidence)
     || hasOppositeDirectionLegs(evidence.legs)
     || (evidence.legs.length === 1 && hasRouterLikeCounterparty(evidence))
-    // CORRECTED, DISCLOSED: structural completion (missingClosedLotSide !== null) no longer counts
-    // on its own — see qualifiesForCompletionTier's own header above.
-    || qualifiesForCompletionTier(evidence, provenFingerprints)
+    // CORRECTED, DISCLOSED: structural completion now requires TWO independent signals — see
+    // qualifiesForCompletionTier's own header above.
+    || qualifiesForCompletionTier(evidence, strictSeeds)
 
   if (!positiveSignal) return { eligible: false, reason: 'ordinary_transfer' }
   return { eligible: true }
@@ -253,9 +391,9 @@ function evaluateEligibility(
 // Priority per this task's exact ordering (1 = highest).
 function priorityFor(
   evidence: CandidateTxEvidence,
-  provenFingerprints: ReadonlySet<string>,
+  strictSeeds: ReadonlyMap<string, readonly CandidateTxEvidence[]>,
 ): { tier: 1 | 2 | 3 | 4 | 5; reason: string } {
-  if (qualifiesForCompletionTier(evidence, provenFingerprints)) {
+  if (qualifiesForCompletionTier(evidence, strictSeeds)) {
     return { tier: 1, reason: `could_complete_missing_${evidence.missingClosedLotSide}` }
   }
   if (evidence.isExistingSwapCandidate) return { tier: 2, reason: 'existing_one_leg_swap_candidate' }
@@ -308,11 +446,19 @@ export function selectBaseReceiptCandidates(evidenceList: readonly CandidateTxEv
 
   // Computed once, over the FULL deduped evidence set, before any per-candidate eligibility/tier
   // decision — see computeProvenRouteFingerprints' own header.
-  const provenFingerprints = computeProvenRouteFingerprints(deduped)
+  const strictSeeds = computeFingerprintSeeds(deduped, 2)
+
+  // TIER-1 SELECTION-FIX DIAGNOSTICS, DISCLOSED — computed over the same population
+  // qualifiesForCompletionTier ever evaluates (chain/wallet-involvement/bridge/LP already excluded),
+  // restricted to genuinely structural (missingClosedLotSide !== null) candidates.
+  const structuralCandidates = deduped.filter(
+    (e) => e.missingClosedLotSide !== null && e.chain === 'base' && e.walletInvolved && !e.isBridgeCandidate && !e.isLpStakingOrBurn && e.legs.length > 0,
+  )
+  const tier1Diagnostics = computeTier1Diagnostics(structuralCandidates, strictSeeds)
 
   const eligible: CandidateTxEvidence[] = []
   for (const evidence of deduped) {
-    const { eligible: isEligible, reason } = evaluateEligibility(evidence, provenFingerprints)
+    const { eligible: isEligible, reason } = evaluateEligibility(evidence, strictSeeds)
     if (!isEligible) {
       selectorReasonCounts[reason!] += 1
       if (rejectedSamples.length < MAX_REJECTED_SAMPLES) {
@@ -349,7 +495,7 @@ export function selectBaseReceiptCandidates(evidenceList: readonly CandidateTxEv
   const oppositeSideVerified = (evidence: CandidateTxEvidence): number => (evidence.hasVerifiedQuoteAddress ? 1 : 0)
 
   const ranked = eligible
-    .map((evidence) => ({ evidence, priority: priorityFor(evidence, provenFingerprints) }))
+    .map((evidence) => ({ evidence, priority: priorityFor(evidence, strictSeeds) }))
     .sort((a, b) => {
       if (a.priority.tier !== b.priority.tier) return a.priority.tier - b.priority.tier
       const aVerified = oppositeSideVerified(a.evidence)
@@ -419,5 +565,6 @@ export function selectBaseReceiptCandidates(evidenceList: readonly CandidateTxEv
     selected,
     rejectedSamples,
     orderingTrace,
+    tier1Diagnostics,
   }
 }

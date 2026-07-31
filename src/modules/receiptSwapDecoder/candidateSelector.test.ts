@@ -74,61 +74,195 @@ test('known/high-confidence router transaction is eligible', () => {
   assert.equal(result.candidatePriorityBreakdown[4], 1)
 })
 
-test('a real closed-lot requirement missing its opposite side, PLUS an independent swap signal, is eligible and gets top priority', () => {
+test('structural completion + TWO independent signals (router + quote) is accepted and gets tier 1', () => {
   const evidence = baseEvidence({
     txHash: '0x1',
     legs: [{ contract: WETH, direction: 'outbound', amount: 1 }],
     missingClosedLotSide: 'exit',
-    // Independent signal required alongside structural completion — see
-    // hasIndependentSwapSignal's own header in candidateSelector.ts. The existing WETH leg being a
-    // real verified quote address is exactly the realistic case this represents.
+    isKnownRouter: true,
     hasVerifiedQuoteAddress: true,
   })
   const result = selectBaseReceiptCandidates([evidence])
   assert.equal(result.selectorEligibleCandidates, 1)
   assert.equal(result.candidatePriorityBreakdown[1], 1)
   assert.equal(result.selected[0].priorityTier, 1)
+  assert.equal(result.tier1Diagnostics.tier1CandidatesAfter, 1)
+  assert.deepEqual(result.tier1Diagnostics.signalCombinationCounts, { 'quote+router': 1 })
 })
 
-test('SELECTION CORRECTION: structural completion ALONE, with no independent swap signal and no shared route fingerprint proof, is rejected as ordinary_transfer — never tier 1', () => {
+test('SELECTION CORRECTION v2: structural + known-router ALONE (a single weak signal) never reaches tier 1 — it falls to the ordinary known-router tier', () => {
   const evidence = baseEvidence({
     txHash: '0x1',
     legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 100 }],
     missingClosedLotSide: 'exit',
-    // Deliberately no router, no verified quote address, no opposite-direction leg — this is the
-    // production case: a lone transaction sitting at a real FIFO lot boundary that is, on its own,
-    // indistinguishable from an ordinary wallet transfer.
+    isKnownRouter: true,
+  })
+  const result = selectBaseReceiptCandidates([evidence])
+  // A single-leg router touch is still real, ordinary tier-4 evidence on its own (a pre-existing,
+  // unchanged eligibility path) — this fix's job is keeping it OUT of tier 1, not rejecting it
+  // outright, since it has real (if weak) signal, unlike a bare structural-only candidate.
+  assert.equal(result.selectorEligibleCandidates, 1)
+  assert.equal(result.selected[0].priorityTier, 4)
+  assert.notEqual(result.selected[0].priorityTier, 1)
+  assert.equal(result.tier1Diagnostics.rejectedSingleWeakSignal, 1)
+  assert.equal(result.tier1Diagnostics.tier1CandidatesAfter, 0)
+})
+
+test('SELECTION CORRECTION v2: structural + verified-quote-address ALONE (a single weak signal) is rejected as ordinary_transfer, never tier 1', () => {
+  const evidence = baseEvidence({
+    txHash: '0x1',
+    legs: [{ contract: WETH, direction: 'outbound', amount: 100 }],
+    missingClosedLotSide: 'exit',
+    hasVerifiedQuoteAddress: true,
   })
   const result = selectBaseReceiptCandidates([evidence])
   assert.equal(result.selectorEligibleCandidates, 0)
   assert.equal(result.selectorReasonCounts.ordinary_transfer, 1)
-  assert.equal(result.rejectedSamples[0].reason, 'ordinary_transfer')
+  assert.equal(result.tier1Diagnostics.rejectedSingleWeakSignal, 1)
 })
 
-test('a structural-completion-only candidate IS promoted to tier 1 when another candidate proves the SAME route fingerprint independently', () => {
+test('SELECTION CORRECTION v2: structural completion ALONE (zero signals) is rejected as ordinary_transfer, counted as rejectedStructuralOnly', () => {
+  const evidence = baseEvidence({
+    txHash: '0x1',
+    legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 100 }],
+    missingClosedLotSide: 'exit',
+  })
+  const result = selectBaseReceiptCandidates([evidence])
+  assert.equal(result.selectorEligibleCandidates, 0)
+  assert.equal(result.selectorReasonCounts.ordinary_transfer, 1)
+  assert.equal(result.tier1Diagnostics.rejectedStructuralOnly, 1)
+  assert.equal(result.tier1Diagnostics.rejectedSingleWeakSignal, 0)
+})
+
+test('opposing legs count as a signal ONLY when the two legs are different assets, never the same token both directions', () => {
+  const sameToken = baseEvidence({
+    txHash: '0x1',
+    legs: [{ contract: WETH, direction: 'outbound', amount: 1 }, { contract: WETH, direction: 'inbound', amount: 1 }],
+    missingClosedLotSide: 'exit',
+    isKnownRouter: true, // one real direct signal
+  })
+  // Same-token in/out (e.g. a refund) + router = still only ONE real tier-1 signal (router);
+  // opposingLegs must not count. The candidate is still eligible overall (the pre-existing, unchanged
+  // hasOppositeDirectionLegs eligibility path doesn't distinguish same-vs-different asset — only the
+  // TIER-1 signal count does) but must never reach tier 1.
+  const result = selectBaseReceiptCandidates([sameToken])
+  assert.equal(result.selected[0].priorityTier, 4)
+  assert.notEqual(result.selected[0].priorityTier, 1)
+  assert.equal(result.tier1Diagnostics.rejectedSingleWeakSignal, 1)
+})
+
+test('a genuine two-asset opposing leg pair DOES count as a signal, combining with router to reach two', () => {
+  const evidence = baseEvidence({
+    txHash: '0x1',
+    legs: [{ contract: WETH, direction: 'outbound', amount: 1 }, { contract: TOKEN_X, direction: 'inbound', amount: 1 }],
+    missingClosedLotSide: 'exit',
+    isKnownRouter: true,
+  })
+  const result = selectBaseReceiptCandidates([evidence])
+  assert.equal(result.selectorEligibleCandidates, 1)
+  assert.equal(result.selected[0].priorityTier, 1)
+  assert.deepEqual(result.tier1Diagnostics.signalCombinationCounts, { 'opposingLegs+router': 1 })
+})
+
+test('a lone candidate with exactly one direct signal cannot prove its own route fingerprint — self-seeding is impossible', () => {
+  const evidence = baseEvidence({
+    txHash: '0xalone',
+    legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }],
+    missingClosedLotSide: 'entry',
+    isKnownRouter: true, // exactly one direct signal — cannot seed (seeding requires >= 2)
+  })
+  const result = selectBaseReceiptCandidates([evidence])
+  // Real (if weak) router evidence keeps it eligible via the pre-existing single-leg-router path —
+  // but it must never reach tier 1 purely by "proving" its own single signal as a fingerprint.
+  assert.equal(result.selected.length, 1)
+  assert.notEqual(result.selected[0].priorityTier, 1)
+  assert.equal(result.tier1Diagnostics.rejectedSingleWeakSignal, 1)
+  assert.equal(result.tier1Diagnostics.tier1CandidatesAfter, 0)
+})
+
+test('a candidate with one direct signal IS promoted to tier 1 when a DIFFERENT, independently-eligible candidate proves the same route fingerprint', () => {
   const evidence: CandidateTxEvidence[] = [
-    // Proves the route: same chain, no counterparty, same route shape (1 outbound leg, no native
-    // wrap) — and independently qualifies via a known router.
-    baseEvidence({ txHash: '0xproof', legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }], isKnownRouter: true }),
-    // Structural completion only, but shares that EXACT proven route fingerprint.
-    baseEvidence({ txHash: '0xriding', legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry' }),
+    // Seeds the fingerprint: TWO direct signals of its own (router + quote), independently eligible
+    // without any fingerprint help.
+    baseEvidence({
+      txHash: '0xseed',
+      legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }],
+      missingClosedLotSide: 'exit',
+      isKnownRouter: true,
+      hasVerifiedQuoteAddress: true,
+    }),
+    // Same exact route shape (same counterparty=null, same 1-outbound/0-inbound/no-wrap shape), with
+    // exactly ONE direct signal of its own — reaches two only via the proven fingerprint.
+    baseEvidence({
+      txHash: '0xriding',
+      legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }],
+      missingClosedLotSide: 'entry',
+      hasVerifiedQuoteAddress: true,
+    }),
   ]
   const result = selectBaseReceiptCandidates(evidence)
   const riding = result.selected.find((s) => s.txHash === '0xriding')
-  assert.ok(riding, 'the fingerprint-proven candidate must be selected, not rejected')
+  assert.ok(riding, 'the fingerprint-assisted candidate must be selected')
   assert.equal(riding!.priorityTier, 1)
 })
 
-test('a structural-completion-only candidate is NOT promoted when no other candidate shares its route fingerprint or proves it', () => {
+test('a structural-completion-only candidate is NOT promoted when no other candidate shares or proves its route fingerprint', () => {
   const evidence: CandidateTxEvidence[] = [
-    baseEvidence({ txHash: '0xunrelated', legs: [{ contract: USDC, direction: 'outbound', amount: 1 }], isKnownRouter: true }),
+    baseEvidence({
+      txHash: '0xunrelated', legs: [{ contract: USDC, direction: 'outbound', amount: 1 }],
+      isKnownRouter: true, hasVerifiedQuoteAddress: true,
+    }),
     // Different route shape (WETH leg carries the native-wrap marker) — never shares 0xunrelated's
-    // fingerprint, so it gets no proof from it.
+    // fingerprint, so it gets no proof from it, and has zero direct signals of its own.
     baseEvidence({ txHash: '0xalone', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry' }),
   ]
   const result = selectBaseReceiptCandidates(evidence)
   assert.equal(result.selected.some((s) => s.txHash === '0xalone'), false)
   assert.equal(result.selectorReasonCounts.ordinary_transfer, 1)
+})
+
+test('tier1Diagnostics: receiptsAvoided reflects the drop from the prior single-signal rule to the new two-signal rule', () => {
+  const evidence: CandidateTxEvidence[] = [
+    // Would have qualified under the prior (v6) single-signal rule; now insufficient alone.
+    baseEvidence({ txHash: '0xa', legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry', isKnownRouter: true }),
+    baseEvidence({ txHash: '0xb', legs: [{ contract: USDC, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'exit', hasVerifiedQuoteAddress: true }),
+    // Genuinely qualifies under both rules.
+    baseEvidence({
+      txHash: '0xc', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry',
+      isKnownRouter: true, hasVerifiedQuoteAddress: true,
+    }),
+  ]
+  const result = selectBaseReceiptCandidates(evidence)
+  assert.equal(result.tier1Diagnostics.tier1CandidatesBefore, 3)
+  assert.equal(result.tier1Diagnostics.tier1CandidatesAfter, 1)
+  assert.equal(result.tier1Diagnostics.receiptsAvoided, 2)
+  assert.equal(result.tier1Diagnostics.rejectedSingleWeakSignal, 2)
+  assert.equal(result.tier1Diagnostics.eligibleBySignalCombination, 1)
+})
+
+test('deterministic under shuffled candidate order: tier1Diagnostics and the selected set are identical regardless of input order', () => {
+  const evidence: CandidateTxEvidence[] = [
+    baseEvidence({
+      txHash: '0xseed', legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'exit',
+      isKnownRouter: true, hasVerifiedQuoteAddress: true,
+    }),
+    baseEvidence({ txHash: '0xriding', legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry', hasVerifiedQuoteAddress: true }),
+    baseEvidence({ txHash: '0xweak', legs: [{ contract: USDC, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'exit', isKnownRouter: true }),
+    baseEvidence({ txHash: '0xnone', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry' }),
+    baseEvidence({ txHash: '0xordinary', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }] }),
+  ]
+  const shuffled = [evidence[3], evidence[0], evidence[4], evidence[1], evidence[2]]
+  const resultA = selectBaseReceiptCandidates(evidence)
+  const resultB = selectBaseReceiptCandidates(shuffled)
+  assert.deepEqual(resultA.tier1Diagnostics, resultB.tier1Diagnostics)
+  assert.deepEqual(
+    [...resultA.selected].map((s) => s.txHash).sort(),
+    [...resultB.selected].map((s) => s.txHash).sort(),
+  )
+  for (const s of resultA.selected) {
+    const match = resultB.selected.find((b) => b.txHash === s.txHash)
+    assert.equal(match?.priorityTier, s.priorityTier)
+  }
 })
 
 test('plain ordinary wallet transfer (single leg, no signal at all) is rejected', () => {
@@ -189,7 +323,10 @@ test('a transaction not involving the wallet directly is excluded', () => {
 test('priority ordering: missing-closed-lot-side ranks above existing-swap-candidate ranks above verified-quote ranks above router ranks above economic-value-only', () => {
   const evidence: CandidateTxEvidence[] = [
     baseEvidence({ txHash: '0x5', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], isKnownRouter: true }),
-    baseEvidence({ txHash: '0x1', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry' }),
+    baseEvidence({
+      txHash: '0x1', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry',
+      isKnownRouter: true, hasVerifiedQuoteAddress: true, // two independent signals — required for tier 1 under v7
+    }),
     baseEvidence({ txHash: '0x3', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], hasVerifiedQuoteAddress: true, isKnownRouter: true }),
     baseEvidence({ txHash: '0x2', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], isExistingSwapCandidate: true }),
     baseEvidence({ txHash: '0x4', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }, { contract: TOKEN_X, direction: 'inbound', amount: 1 }] }),
@@ -201,13 +338,21 @@ test('priority ordering: missing-closed-lot-side ranks above existing-swap-candi
 
 test('Phase 2: within tier 1, a one-side-missing candidate whose existing leg is stable/ETH/WETH-verified outranks one that is not', () => {
   const evidence: CandidateTxEvidence[] = [
-    // Tier 1 (independently qualified via a known router — required since Selection Correction),
-    // but the existing leg itself is an unverified token — weaker completion evidence than 0xstrong.
-    baseEvidence({ txHash: '0xweak', legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry', isKnownRouter: true }),
-    // Tier 1 AND the existing leg is a verified stablecoin/ETH/WETH quote — the strongest, cheapest
-    // completion shape a receipt can resolve (this task's explicit "prioritize transactions where
-    // the existing side is stablecoin, ETH or WETH" requirement).
-    baseEvidence({ txHash: '0xstrong', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'exit', hasVerifiedQuoteAddress: true }),
+    // Tier 1 (independently qualified via TWO signals — router + a genuine opposing leg — required
+    // under the v7 two-signal rule), but the existing leg itself is an unverified token — weaker
+    // completion evidence than 0xstrong.
+    baseEvidence({
+      txHash: '0xweak',
+      legs: [{ contract: TOKEN_X, direction: 'outbound', amount: 1 }, { contract: USDC, direction: 'inbound', amount: 1 }],
+      missingClosedLotSide: 'entry', isKnownRouter: true,
+    }),
+    // Tier 1 (router + verified-quote) AND the existing leg is a verified stablecoin/ETH/WETH quote —
+    // the strongest, cheapest completion shape a receipt can resolve (this task's explicit
+    // "prioritize transactions where the existing side is stablecoin, ETH or WETH" requirement).
+    baseEvidence({
+      txHash: '0xstrong', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'exit',
+      hasVerifiedQuoteAddress: true, isKnownRouter: true,
+    }),
   ]
   const result = selectBaseReceiptCandidates(evidence)
   assert.deepEqual(result.selected.map((s) => s.txHash), ['0xstrong', '0xweak'])
@@ -215,10 +360,13 @@ test('Phase 2: within tier 1, a one-side-missing candidate whose existing leg is
   assert.deepEqual(result.selected.map((s) => s.priorityTier), [1, 1])
 })
 
-test('Phase 2: a completion-first (tier 1) candidate outranks a generic known-router (tier 4) transaction', () => {
+test('Phase 2: a completion-first (tier 1, two independent signals) candidate outranks a generic known-router-only (tier 4) transaction', () => {
   const evidence: CandidateTxEvidence[] = [
-    baseEvidence({ txHash: '0xrouter', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], isKnownRouter: true }),
-    baseEvidence({ txHash: '0xcompletion', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry' }),
+    baseEvidence({ txHash: '0xrouter', legs: [{ contract: USDC, direction: 'outbound', amount: 1 }], isKnownRouter: true }),
+    baseEvidence({
+      txHash: '0xcompletion', legs: [{ contract: WETH, direction: 'outbound', amount: 1 }], missingClosedLotSide: 'entry',
+      isKnownRouter: true, hasVerifiedQuoteAddress: true,
+    }),
   ]
   const result = selectBaseReceiptCandidates(evidence)
   assert.deepEqual(result.selected.map((s) => s.txHash), ['0xcompletion', '0xrouter'])

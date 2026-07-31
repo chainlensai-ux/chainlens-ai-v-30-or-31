@@ -555,6 +555,10 @@ export type WalletScanShadowLogPayload =
       // CandidateOrderingTrace header. Bounded to the same MAX_SELECTED (25) ceiling `selected`
       // itself already has.
       candidateOrderingTrace: CandidateOrderingTrace[]
+      // TIER-1 SELECTION-FIX DIAGNOSTICS, DISCLOSED — see candidateSelector.ts's own
+      // Tier1SelectionDiagnostics header (production proof: v6's single-signal rule still selected
+      // 25 tier-1 candidates that produced 0 recognized swap events across 13 real receipts).
+      tier1Diagnostics: import('./candidateSelector').Tier1SelectionDiagnostics
       // PHASE 2 COMPLETION-FIRST BUDGET, DISCLOSED — see BuildWalletScanShadowLogPayloadInput's own
       // `completionBudgetEnabled` header. Present only when that flag was set; absent (never a
       // fabricated zero) when this call used the plain, fixed-budget acquisition.
@@ -757,6 +761,7 @@ export async function buildWalletScanShadowLogPayload(input: BuildWalletScanShad
     candidatePriorityBreakdown: selection.candidatePriorityBreakdown,
     receiptSelectorAlgorithmVersion: RECEIPT_SELECTOR_ALGORITHM_VERSION,
     candidateOrderingTrace: selection.orderingTrace,
+    tier1Diagnostics: selection.tier1Diagnostics,
     ...(completionBudgetSummary ? { completionBudget: completionBudgetSummary } : {}),
   }
 }

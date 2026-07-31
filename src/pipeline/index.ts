@@ -1528,6 +1528,15 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
 
     // eslint-disable-next-line no-console
     console.warn('[pipeline] receiptSwapDecoder shadow mode', shadowPayload)
+    // TIER-1 SELECTION-FIX DIAGNOSTIC, DISCLOSED, FLAT — production proof: v6's single-independent-
+    // signal rule still selected 25 tier-1 candidates that produced 0 recognized swap events across
+    // 13 real receipts. Surfaced as its own flat line (never nested inside the larger shadow-mode
+    // object) for the same reason the GeckoTerminal range-request audit was: a real production log
+    // pipeline has been observed collapsing deeply nested fields to `[Object]`.
+    if (shadowPayload.enabled) {
+      // eslint-disable-next-line no-console
+      console.warn('[receipt-phase2-tier1-selection-fix]', shadowPayload.tier1Diagnostics)
+    }
     if (shadowPayload.enabled) {
       shadowExactReceiptSwaps = shadowPayload.acceptedExactSwaps
       receiptCompletionPhase2Summary = {
