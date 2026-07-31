@@ -206,12 +206,13 @@ export function buildFullyDegradedReport(
     scanMode: params.scanMode === 'deep' ? 'deep' : 'normal',
     chainsScanned: [],
   }
+  const fifoAndPnlFallback = fifoEngineFallback(emptyTimelines().buyTimeline, emptyTimelines().sellTimeline)
   return {
     scanMetadata,
     chainSelection,
     timelines: { ...emptyTimelines(), sellTimelineV2: sellTimelineV2Fallback() },
     recoveryPolicy: recoveryPolicyFallback(),
-    fifoAndPnl: fifoEngineFallback(emptyTimelines().buyTimeline, emptyTimelines().sellTimeline),
+    fifoAndPnl: fifoAndPnlFallback,
     behaviorIntel: behaviorIntelFallback(chainSelection),
     windowCoverage: computeWindowCoverage(providerFetchWindowDays, 0),
     finalSummary: finalSummaryFallback(),
@@ -220,5 +221,9 @@ export function buildFullyDegradedReport(
     pricingAtTime: pricingAtTimeFallback(),
     providerDiagnostics: [],
     pricingProvidersStatus: pricingProvidersStatusFallback(),
+    // Same real alias convention as the real assembleReport() path — see
+    // FinalReport.canonicalPricedFifo's own header. A fully-degraded report has no real FIFO
+    // evidence either way, so this is the SAME honest fallback object, not a second computation.
+    canonicalPricedFifo: fifoAndPnlFallback,
   }
 }

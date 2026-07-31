@@ -28,7 +28,7 @@ import { computeBehavior } from '@/lib/engine/modules/behavior/computeBehavior'
 import { computeSignals } from '@/lib/engine/modules/signals/computeSignals'
 import { computeSmartMoneyScore } from '@/lib/engine/modules/smartMoney/computeSmartMoneyScore'
 import { adaptFifoMatchedLots } from '@/lib/engine/modules/smartMoney/adaptFifoMatchedLots'
-import type { MatchedLot } from '@/src/modules/fifoEngine/types'
+import { selectCanonicalMatchedLots, type CanonicalPricedFifoSource } from '@/src/pipeline/selectCanonicalPricedFifo'
 import { createEventsCache } from '@/app/api/_shared/eventsCache'
 import { createCuBudget } from '@/app/api/_shared/cuBudget'
 import { recordCuUsage } from '@/app/api/_shared/cuUsageStore'
@@ -627,19 +627,22 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     t0 = performance.now()
     let smartMoneyScore: ReturnType<typeof computeSmartMoneyScore> | undefined
     try {
-      // CANONICAL FIFO WIRING, DISCLOSED (this task's own fix — prior pass here honestly passed an
-      // empty trades array because THIS worker's own PnL engine, lib/engine/modules/pnl/
-      // computePnl.ts, only exposes per-TOKEN aggregates with no per-trade timestamps). The old
-      // pipeline's real, canonical FIFO result (src/modules/fifoEngine, via
-      // router.handleScanRequest -> src/pipeline/index.ts's safeRunFifoEngine) is ALREADY computed
-      // once per scan and already present on `body.data.fifoAndPnl` — confirmed by this worker's
-      // own pre-existing engineComparison diagnostic read a few lines above, which read the exact
-      // same field loosely typed as `unknown`. Typed properly here and run through
-      // adaptFifoMatchedLots() (never fabricated, never re-deriving FIFO logic — a pure read of an
-      // already-computed real result) so the Smart Money scorer's verified-trade evidence and
-      // structural denominator both come from the SAME canonical FIFO output the rest of this
-      // scan's response already reports as `fifoAndPnl`, never pnlSummaryV2's diagnostic rows.
-      const canonicalMatchedLots = (body.data as { fifoAndPnl?: { matchedLots?: MatchedLot[] } } | undefined)?.fifoAndPnl?.matchedLots ?? null
+      // CANONICAL FIFO WIRING, DISCLOSED (evidence-source-ordering task — this task's own fix over
+      // the prior pass, which read `body.data.fifoAndPnl` directly): now goes through
+      // selectCanonicalMatchedLots(), the SAME shared selector Wallet Personality's own
+      // profit-evidence panel uses (app/frontend/lib/walletPersonality.ts) — both read
+      // `report.canonicalPricedFifo`, an explicit alias of the one real, finalized FIFO result
+      // (pricing + receipt canonical-promotion + recovery already applied — see
+      // src/modules/finalReportAssembler/types.ts's own header) — never `fifoAndPnl` directly,
+      // never pnlSummaryV2's diagnostic rows, never a stale/partial snapshot. Structural drift
+      // between the PnL evidence panel and Smart Money is now impossible by construction: there is
+      // only one code path that reads FIFO matched lots for verified-trade purposes.
+      // NOTE, DISCLOSED: the full `[smart-money-source-audit]` diagnostic (staged pre-pricing/
+      // post-pricing/post-promotion counts) is logged once per scan in src/pipeline/index.ts
+      // itself, the only place those distinct stages are actually observable — this worker only
+      // ever sees the already-finalized `body.data` snapshot, so re-logging a partial version of
+      // the same diagnostic here would be redundant, not additive.
+      const canonicalMatchedLots = selectCanonicalMatchedLots(body.data as CanonicalPricedFifoSource | undefined)
       const fifoAdapterResult = adaptFifoMatchedLots(canonicalMatchedLots)
       smartMoneyScore = computeSmartMoneyScore({
         trades: fifoAdapterResult?.verifiedTrades ?? [],

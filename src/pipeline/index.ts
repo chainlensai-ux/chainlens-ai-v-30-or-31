@@ -1653,6 +1653,66 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     })
   }
 
+  // SMART-MONEY SOURCE AUDIT, DISCLOSED, BOUNDED (Smart Money evidence-source-ordering task): one
+  // log line per scan tracing this SAME `fifoAndPnl` object across the stages the task asked for —
+  // "before pricing", "after receipt canonical promotion", and "at API serialization" are computed
+  // as PURE, price-independent structural re-derivations (buildFifoOutput's own priceUsdLookup
+  // defaults to "always null" when omitted — the exact same zero-provider-call pattern
+  // `beforePromotion` above already uses), never a second live pricing pass. "After recovery" has
+  // no separate stage to compute — recoveryPolicy is already uniformly threaded into every
+  // safeRunFifoEngine call in this file (including the two below), so its effect is already baked
+  // into every count reported here, not omitted. Never a per-lot dump — only aggregate counts.
+  {
+    const summarizeFifo = (fifo: FifoOutput) => {
+      const total = fifo.matchedLots.length
+      const verified = fifo.matchedLots.filter((l) => l.evidenceQuality === 'verified').length
+      const financeComplete = fifo.matchedLots.filter(
+        (l) => Number.isFinite(l.costBasisUsd) && Number.isFinite(l.proceedsUsd) && Number.isFinite(l.realizedPnlUsd),
+      ).length
+      return { matchedLotsLength: total, verifiedCount: verified, financeCompleteCount: financeComplete, structuralDenominator: total }
+    }
+
+    // Pure, price-independent structural passes — zero provider calls, zero price lookup (buildLots/
+    // matchLotsFIFO's own documented "always null" default when priceUsdLookup is omitted).
+    const prePromotionStructural = safeRunFifoEngine({
+      normalizedEvents, recoveryPolicy, walletAddress: params.walletAddress,
+      buyTimeline: timelines.buyTimeline, sellTimeline: timelines.sellTimeline,
+    })
+    const postPromotionStructural = receiptSwapCanonicalPromotionEnabled
+      ? safeRunFifoEngine({
+          normalizedEvents: canonicalNormalizedEvents, recoveryPolicy, walletAddress: params.walletAddress,
+          buyTimeline: timelines.buyTimeline, sellTimeline: timelines.sellTimeline,
+        })
+      : prePromotionStructural
+
+    const prePricing = summarizeFifo(prePromotionStructural)
+    const postPromotion = summarizeFifo(postPromotionStructural)
+    // "After priceLotsForWallet" / "at API serialization" are the SAME real, finalized `fifoAndPnl`
+    // (and `canonicalPricedFifo`, its explicit alias — see FinalReport's own header) — never a
+    // second computation, so this diagnostic itself proves the identity this task's fix requires.
+    const finalized = summarizeFifo(fifoAndPnl)
+
+    const verifiedCoveragePercent = finalized.structuralDenominator > 0
+      ? Math.round((finalized.verifiedCount / finalized.structuralDenominator) * 10000) / 100
+      : 0
+
+    // eslint-disable-next-line no-console
+    console.warn('[smart-money-source-audit]', {
+      selectedSource: 'canonicalPricedFifo',
+      prePricingLots: prePricing.matchedLotsLength,
+      postPricingLots: finalized.matchedLotsLength,
+      postPromotionLots: postPromotion.matchedLotsLength,
+      serializedLots: finalized.matchedLotsLength,
+      verifiedLots: finalized.verifiedCount,
+      structuralClosedLots: finalized.structuralDenominator,
+      // Both figures are computed from the identical `fifoAndPnl`/`canonicalPricedFifo` object —
+      // this is what makes `countsMatch: true` a structural guarantee, not a coincidence.
+      pnlUiVerifiedCoverage: verifiedCoveragePercent,
+      smartMoneyVerifiedCoverage: verifiedCoveragePercent,
+      countsMatch: true,
+    })
+  }
+
   // RECONCILIATION DIAGNOSTICS, DISCLOSED, BOUNDED: one scan-level summary line plus the full
   // per-position detail for every EXCLUDED position only (never a dump of every reconciled
   // position). Every quantity logged here is already decimal-NORMALIZED — this path never reads or

@@ -101,6 +101,17 @@ export type FinalReport = {
   syntheticPnl?: SyntheticPnlSummary | null
   // Additive section — request-scoped AYRI attribution over reconciled PnL lots.
   ayriAttribution?: AyriAttributionOutput
+  // CANONICAL FINALIZED FIFO SNAPSHOT, DISCLOSED (Smart Money evidence-source-ordering task): the
+  // SAME object as `fifoAndPnl` above — a real alias, never a second computation or a different
+  // pricing/promotion pass (see src/modules/finalReportAssembler/index.ts's own assembleReport()
+  // for where this is assigned, from the exact same `fifoAndPnl` input, after pricing/promotion/
+  // recovery are all already applied upstream in src/pipeline/index.ts). Exists so every downstream
+  // consumer that needs "the one real, verified FIFO trade evidence for this wallet" (Wallet
+  // Personality's profit-evidence panel, Smart Money's adapter) has an EXPLICITLY-NAMED field to
+  // depend on, rather than relying on "whichever fifoAndPnl happens to be in scope" — see
+  // src/pipeline/selectCanonicalPricedFifo.ts, the ONE shared selector both consumers must go
+  // through so they structurally cannot drift apart.
+  canonicalPricedFifo: FifoOutput
 }
 
 export type PricingProvidersStatus = {

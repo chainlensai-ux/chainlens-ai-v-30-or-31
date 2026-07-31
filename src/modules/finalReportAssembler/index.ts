@@ -63,5 +63,8 @@ export function assembleReport(input: AssembleReportInput): FinalReport {
     pricingProvidersStatus: input.pricingProvidersStatus,
     syntheticPnl: input.syntheticPnl,
     ayriAttribution: input.ayriAttribution,
+    // CANONICAL FINALIZED FIFO SNAPSHOT, DISCLOSED — see FinalReport.canonicalPricedFifo's own
+    // header. A real alias of the SAME `input.fifoAndPnl` object above, never a second computation.
+    canonicalPricedFifo: input.fifoAndPnl,
   }
 }

@@ -26,6 +26,11 @@
 
 import type { FinalReport } from '@/src/modules/finalReportAssembler/types'
 import type { MatchedLot } from '@/src/modules/fifoEngine/types'
+// SHARED CANONICAL-FIFO SELECTOR, DISCLOSED (Smart Money evidence-source-ordering task): the ONE
+// selector both this module's profit-evidence panel AND Smart Money's adapter must use for "the
+// real, verified FIFO trade evidence for this wallet" — see that file's own header for why a
+// shared selector is what makes drift structurally impossible, not just unlikely.
+import { selectCanonicalPricedFifo } from '@/src/pipeline/selectCanonicalPricedFifo'
 import type { PersonalityV2 } from '@/lib/engine/modules/personality/types'
 import type { BehaviorV2 } from '@/lib/engine/modules/behavior/types'
 import type { RiskV2 } from '@/lib/engine/modules/risk/types'
@@ -45,6 +50,10 @@ import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfo
 import { selectPortfolioStats } from '@/app/frontend/components/PortfolioIntelligenceCard'
 
 export type WalletPersonalitySourceReport = Pick<FinalReport, 'behaviorIntel' | 'fifoAndPnl' | 'finalSummary' | 'timelines' | 'chainSelection'> & {
+  // Optional here (unlike FinalReport's own required field) so an older caller/fixture that
+  // predates this field still type-checks — selectCanonicalPricedFifo() already treats a missing
+  // field as "unavailable" (null), never a fabricated empty result.
+  canonicalPricedFifo?: FinalReport['canonicalPricedFifo'] | null
   personalityV2?: PersonalityV2 | null
   behaviorV2?: BehaviorV2 | null
   riskV2?: RiskV2 | null
@@ -646,7 +655,11 @@ function fmtDays(v: number | null): string {
 // honestly-labeled "not enough data" placeholder — never a fabricated 0/blank.
 export function deriveWalletPersonality(report: WalletPersonalitySourceReport): WalletPersonalityData {
   const b = report.behaviorIntel
-  const matchedLots = report.fifoAndPnl?.matchedLots ?? []
+  // CANONICAL SOURCE, DISCLOSED: goes through the SAME shared selector Smart Money's adapter uses
+  // — never reads report.fifoAndPnl directly — so this panel's verified-trade evidence can never
+  // drift from Smart Money's own verified-trade count/coverage for the identical scan.
+  const canonicalFifo = selectCanonicalPricedFifo(report)
+  const matchedLots = canonicalFifo?.matchedLots ?? []
   const buys = report.timelines?.buyTimeline?.totalBuys ?? 0
   const sellEntries = report.timelines?.sellTimelineV2?.entries ?? []
   const sells = report.timelines?.sellTimelineV2?.totalSells ?? sellEntries.length
@@ -708,8 +721,8 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
   const profitEvidence: ProfitEvidence = (() => {
     if (officialPnlStatus === 'ok' && evaluated > 0) {
       const winRatePercent = (wins / evaluated) * 100
-      const skill = report.fifoAndPnl?.realizedPnlUsd != null
-        ? report.fifoAndPnl.realizedPnlUsd > 0 ? 'profitable' : report.fifoAndPnl.realizedPnlUsd < 0 ? 'unprofitable' : 'breakeven'
+      const skill = canonicalFifo?.realizedPnlUsd != null
+        ? canonicalFifo.realizedPnlUsd > 0 ? 'profitable' : canonicalFifo.realizedPnlUsd < 0 ? 'unprofitable' : 'breakeven'
         : null
       return {
         kind: 'verified',

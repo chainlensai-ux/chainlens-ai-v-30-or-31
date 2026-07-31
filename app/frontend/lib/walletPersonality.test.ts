@@ -35,6 +35,15 @@ function buyEntry(overrides: Partial<BuyTimelineEntry> = {}): BuyTimelineEntry {
 }
 
 function baseReport(overrides: Partial<WalletPersonalitySourceReport> = {}): WalletPersonalitySourceReport {
+  // CANONICAL-FIFO FIXTURE SYNC, DISCLOSED (evidence-source-ordering task): deriveWalletPersonality
+  // now reads matchedLots exclusively via selectCanonicalPricedFifo(report), i.e.
+  // report.canonicalPricedFifo — NOT report.fifoAndPnl directly. Defaulting canonicalPricedFifo to
+  // whatever fifoAndPnl override a test supplies (unless the test explicitly overrides
+  // canonicalPricedFifo itself) keeps every existing fixture's intent working unchanged, while
+  // still exercising the real production wiring (report.fifoAndPnl is kept too, as a real report
+  // always carries both — they're simply the same object in production, see
+  // src/modules/finalReportAssembler/index.ts's own real alias).
+  const { fifoAndPnl: fifoAndPnlOverride, canonicalPricedFifo: canonicalPricedFifoOverride, ...restOverrides } = overrides
   return {
     behaviorIntel: {
       rotationStyle: { value: 'rotator', basis: { buyCount: 3, sellCount: 3, distributionCount: 0, distinctTokensTraded: 3 } },
@@ -51,7 +60,19 @@ function baseReport(overrides: Partial<WalletPersonalitySourceReport> = {}): Wal
       exitVelocity: { medianMsBetweenSells: null, basis: 'x' },
       convictionScore: { value: 'unknown', basis: 'x' },
     },
-    fifoAndPnl: {
+    fifoAndPnl: fifoAndPnlOverride ?? {
+      matchedLots: [], unmatchedBuys: 0, unmatchedSells: 0, realizedPnlUsd: null, unrealizedPnlUsd: null,
+      costBasisUsd: null, publicPnlStatus: 'unavailable',
+      integrityFlags: { hardInvalid: false, estimateOnlyLotsExcluded: 0, syntheticLotsExcluded: 0 },
+      unrealizedPnlExcludedTokens: [],
+      unrealizedReconciliation: {
+        totalOpenPositions: 0, reconciledOpenPositions: 0, excludedOpenPositions: 0,
+        excludedCandidateMarketValueUsd: 0, excludedCandidateUnrealizedPnlUsd: 0, officialUnrealizedPnlUsd: null,
+        reconciliationStatus: 'not_reconciled', excludedPositions: [], reconciledPositionsByPriceSource: {},
+        excludedReasonCounts: {}, reconciledMarketValueUsd: 0, reconciledCostBasisUsd: 0, unrealizedCoveragePercent: 0,
+      },
+    },
+    canonicalPricedFifo: canonicalPricedFifoOverride ?? fifoAndPnlOverride ?? {
       matchedLots: [], unmatchedBuys: 0, unmatchedSells: 0, realizedPnlUsd: null, unrealizedPnlUsd: null,
       costBasisUsd: null, publicPnlStatus: 'unavailable',
       integrityFlags: { hardInvalid: false, estimateOnlyLotsExcluded: 0, syntheticLotsExcluded: 0 },
@@ -75,7 +96,7 @@ function baseReport(overrides: Partial<WalletPersonalitySourceReport> = {}): Wal
       sellTimelineV2: { totalSells: 3, chainContext: { includedChains: ['base'], excludedChains: [] }, entries: [sellEntry(), sellEntry({ txHash: '0xsell2' }), sellEntry({ txHash: '0xsell3' })] },
     } as unknown as WalletPersonalitySourceReport['timelines'],
     chainSelection: { chains: [], activeChainCount: 1, dustChainCount: 0 } as unknown as WalletPersonalitySourceReport['chainSelection'],
-    ...overrides,
+    ...restOverrides,
   }
 }
 
