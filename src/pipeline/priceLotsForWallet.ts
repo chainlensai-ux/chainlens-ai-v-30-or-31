@@ -55,6 +55,11 @@ import {
 } from '../modules/nativePriceResolver/index'
 import { getGeckoTerminalEthOhlcvRequestCount, getGeckoTerminalRangeDiagnostics } from '../modules/nativePriceResolver/geckoTerminalEthOhlcv'
 import {
+  annotateRequirement, computeSchedulerComparison,
+  FAIRNESS_FLOOR_PER_TOKEN, type SchedulerLotRef, type SchedulerRequirement,
+} from '../modules/pricingAtTimeEngine/completionYieldScheduler'
+import { resolveMaxLookupsPerToken } from '../modules/pricingAtTimeEngine/index'
+import {
   deriveSameTransactionQuotePrice,
   groupSwapLegsByTransaction,
   swapLegGroupKey,
@@ -550,13 +555,67 @@ export async function priceLotsForWallet(params: {
   const ethNativeSelectedCount = sortedNativeCandidates.slice(0, assumedCapSlots).filter((c) => c.chain === 'eth').length
   reserveCoingeckoSlotsForNativeEth(ethNativeSelectedCount)
 
-  const buyRequirementEntries = buys.map((e) => toPriceableEntry(e, rankForEvent(e)))
-  const sellRequirementEntries = [...sells.map((e) => toPriceableEntry(e, rankForEvent(e))), ...nativeQuoteEntries]
+  let buyRequirementEntries = buys.map((e) => toPriceableEntry(e, rankForEvent(e)))
+  let sellRequirementEntries = [...sells.map((e) => toPriceableEntry(e, rankForEvent(e))), ...nativeQuoteEntries]
+
+  // COMPLETION-YIELD HISTORICAL-PRICING SCHEDULER, DISCLOSED — see completionYieldScheduler.ts's own
+  // header. Production baseline: 219 structural lots, 11 verified (5.02%), ~500 total pricing
+  // requirements, ~293 capped by the flat maxLookupsPerToken=2 rule, 312 of them real closed-lot
+  // ("priority") requirements yet 226 of THOSE were still capped. SHADOW FIRST: both selections are
+  // always computed and logged, with zero effect on real pricing, unless
+  // HISTORICAL_PRICING_YIELD_SCHEDULER_ENABLED is explicitly set — in which case the entries actually
+  // submitted to resolvePricingAtTime are pre-filtered to the scheduler's own selection (SAME total
+  // budget the flat rule would have used) and the flat per-token cap inside pricingAtTimeEngine is
+  // overridden to the scheduler's own fairness floor, so the pre-curated set is never re-clipped.
+  let schedulerYieldSelected: SchedulerRequirement[] = []
+  {
+    const lotRefs: SchedulerLotRef[] = structuralMatchedLots.map((lot) => ({
+      lotId: lot.lotId, chain: lot.chain, token: lot.token, openedTxHash: lot.openedTxHash, closedTxHash: lot.closedTxHash,
+    }))
+    const lotsByOpenKey = new Map<string, SchedulerLotRef[]>()
+    const lotsByCloseKey = new Map<string, SchedulerLotRef[]>()
+    for (const lot of lotRefs) {
+      const openKey = `${lot.chain}:${lot.openedTxHash.toLowerCase()}`
+      const closeKey = `${lot.chain}:${lot.closedTxHash.toLowerCase()}`
+      lotsByOpenKey.set(openKey, [...(lotsByOpenKey.get(openKey) ?? []), lot])
+      lotsByCloseKey.set(closeKey, [...(lotsByCloseKey.get(closeKey) ?? []), lot])
+    }
+    // Empty on the FIRST scheduling pass — this scheduler runs once, up front, over the full
+    // requirement pool (same as the flat rule always has); no earlier round exists yet to have
+    // resolved anything. Kept as an explicit, real parameter (never omitted) so annotateRequirement's
+    // own "already resolved by a prior round" branch is honestly exercised as empty, not implied.
+    const alreadyResolvedKeys = new Set<string>()
+
+    const requirements: SchedulerRequirement[] = [
+      ...buyRequirementEntries.map((entry) => annotateRequirement({ entry, list: 'buy' as const, lotsByOpenKey, lotsByCloseKey, alreadyResolvedKeys })),
+      ...sellRequirementEntries.map((entry) => annotateRequirement({ entry, list: 'sell' as const, lotsByOpenKey, lotsByCloseKey, alreadyResolvedKeys })),
+    ]
+
+    const distinctTokenCount = new Set(requirements.map((r) => `${r.entry.chain}:${r.entry.token.toLowerCase()}`)).size
+    const flatMaxLookupsPerToken = resolveMaxLookupsPerToken(distinctTokenCount)
+    const { yieldSelection, comparison } = computeSchedulerComparison(requirements, flatMaxLookupsPerToken)
+    schedulerYieldSelected = yieldSelection.selected
+
+    // eslint-disable-next-line no-console
+    console.warn('[historical-pricing-scheduler-shadow]', comparison)
+
+    const schedulerEnabled = process.env.HISTORICAL_PRICING_YIELD_SCHEDULER_ENABLED === 'true'
+    if (schedulerEnabled) {
+      const selectedKeys = new Set(schedulerYieldSelected.map((r) => priceableEntryIdentityKey(r.entry, r.list)))
+      buyRequirementEntries = buyRequirementEntries.filter((e) => selectedKeys.has(priceableEntryIdentityKey(e, 'buy')))
+      sellRequirementEntries = sellRequirementEntries.filter((e) => selectedKeys.has(priceableEntryIdentityKey(e, 'sell')))
+    }
+  }
 
   const atTradeTime = await resolvePricingAtTime({
     buyEntries: buyRequirementEntries,
     sellEntries: sellRequirementEntries,
     priceSources: params.priceSources,
+    // Only applied when the pre-filter above actually ran (schedulerYieldSelected reflects the
+    // selection either way, but the override only matters once entries were curated to it) — see
+    // ResolvePricingAtTimeParams's own header. FAIRNESS_FLOOR_PER_TOKEN, never the flat default, so
+    // the already-curated set is never re-clipped a second time inside pricingAtTimeEngine.
+    maxLookupsPerTokenOverride: process.env.HISTORICAL_PRICING_YIELD_SCHEDULER_ENABLED === 'true' ? FAIRNESS_FLOOR_PER_TOKEN : undefined,
   })
 
   // PER-REQUIREMENT ETH-NATIVE DIAGNOSTIC, DISCLOSED, BOUNDED — cross-references
@@ -688,6 +747,36 @@ export async function priceLotsForWallet(params: {
   }
   const fullyPricedLotsBefore = countFullyPriced()
   const verifiedPricingCoverageBefore = structuralMatchedLots.length > 0 ? fullyPricedLotsBefore / structuralMatchedLots.length : 0
+
+  // HISTORICAL-PRICING SCHEDULER RESULT, DISCLOSED, BOUNDED — only logged when
+  // HISTORICAL_PRICING_YIELD_SCHEDULER_ENABLED actually applied the scheduler's own selection.
+  // "Before" here is the real structural (price-free) state — zero, by construction, since
+  // structuralMatchedLots is computed before any pricing pass runs — and "after" is the state
+  // immediately following THIS scheduler's own dispatch, isolated from the later same-tx-quote-gap-
+  // fill/Aerodrome/Alchemy passes (which run afterward and are already separately attributed by
+  // their own existing diagnostics further down this file).
+  if (process.env.HISTORICAL_PRICING_YIELD_SCHEDULER_ENABLED === 'true') {
+    let resolvedRequirements = 0
+    let pricesApplied = 0
+    for (const req of schedulerYieldSelected) {
+      const dict = req.list === 'buy' ? atTradeTime.costUsd : atTradeTime.proceedsUsd
+      const usd = dict[req.entry.txHash]
+      if (usd != null) { resolvedRequirements += 1; pricesApplied += 1 }
+    }
+    // eslint-disable-next-line no-console
+    console.warn('[historical-pricing-scheduler-result]', {
+      selectedRequirements: schedulerYieldSelected.length,
+      resolvedRequirements,
+      pricesApplied,
+      lotsCompleted: fullyPricedLotsBefore,
+      fullyPricedLotsBefore: 0,
+      fullyPricedLotsAfter: fullyPricedLotsBefore,
+      verifiedCoverageBefore: 0,
+      verifiedCoverageAfter: Math.round(verifiedPricingCoverageBefore * 10000) / 100,
+      callsBySource: atTradeTime.sourceBreakdown,
+      failuresByReason: { unresolved: schedulerYieldSelected.length - resolvedRequirements },
+    })
+  }
 
   // AERODROME ATTRIBUTION, DISCLOSED, ADDITIVE — see AerodromeAttribution's own header above. Cross-
   // references basedex.ts's own per-request attribution record (getAerodromeAttributionForRequest —

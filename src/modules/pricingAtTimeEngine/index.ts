@@ -193,6 +193,7 @@ async function priceAllEntries(
   sellEntries: PriceableEntry[],
   priceSources: ResolvePricingAtTimeParams['priceSources'],
   fallbackPricing: FallbackPricingConfig | undefined,
+  maxLookupsPerTokenOverride: number | undefined,
 ): Promise<{
   buys: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number; cappedTxHashes: Set<string>; cappedEntryKeys: Set<string> }
   sells: { usdByTxHash: Record<string, number | null>; breakdown: SourceBreakdown; missing: number; cappedTxHashes: Set<string>; cappedEntryKeys: Set<string> }
@@ -234,7 +235,9 @@ async function priceAllEntries(
   const priorityRequirementCount = combined.filter(({ entry }) => entry.pairRank !== undefined).length
 
   const distinctTokenCount = new Set(tagged.map(({ entry }) => `${entry.chain}:${entry.token.toLowerCase()}`)).size
-  const maxLookupsPerToken = resolveMaxLookupsPerToken(distinctTokenCount)
+  // COMPLETION-YIELD SCHEDULER OVERRIDE, DISCLOSED — see ResolvePricingAtTimeParams's own header.
+  // Falls back to the exact original flat computation when no override is supplied.
+  const maxLookupsPerToken = maxLookupsPerTokenOverride ?? resolveMaxLookupsPerToken(distinctTokenCount)
   const lookupCountByToken = new Map<string, number>()
   let cappedCount = 0
   let priorityCappedCount = 0
@@ -305,7 +308,9 @@ export async function resolvePricingAtTime(params: ResolvePricingAtTimeParams): 
   logFanOutSize('sells', params.sellEntries.length)
   logDistinctTokenRatio(params.buyEntries, params.sellEntries)
 
-  const { buys, sells } = await priceAllEntries(params.buyEntries, params.sellEntries, params.priceSources, params.fallbackPricing)
+  const { buys, sells } = await priceAllEntries(
+    params.buyEntries, params.sellEntries, params.priceSources, params.fallbackPricing, params.maxLookupsPerTokenOverride,
+  )
 
   // FINAL-TOTALS SUMMARY, DISCLOSED: one line per scan reporting basedex's cumulative RPC counts,
   // fired once this scan's whole pricing pass finishes — replaces scrolling through hundreds of

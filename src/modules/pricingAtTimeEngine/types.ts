@@ -113,4 +113,14 @@ export type ResolvePricingAtTimeParams = {
   sellEntries: PriceableEntry[]
   priceSources: PriceSources
   fallbackPricing?: FallbackPricingConfig
+  // COMPLETION-YIELD SCHEDULER, DISCLOSED, OPTIONAL/ADDITIVE — see
+  // src/modules/pricingAtTimeEngine/completionYieldScheduler.ts's own header. Omitting this preserves
+  // the exact original flat resolveMaxLookupsPerToken(distinctTokenCount) behavior. Supplied only when
+  // HISTORICAL_PRICING_YIELD_SCHEDULER_ENABLED is on AND the caller (priceLotsForWallet.ts) has
+  // already pre-filtered buyEntries/sellEntries down to exactly its own yield-selected requirement
+  // set — this override exists so that already-curated set isn't ALSO re-clipped by the flat default
+  // (2) once it reaches this module, which would silently defeat the scheduler's own fairness-floor
+  // selection. Never raises the TOTAL number of entries submitted — only how many of one token's
+  // ALREADY-SELECTED entries may be dispatched.
+  maxLookupsPerTokenOverride?: number
 }
