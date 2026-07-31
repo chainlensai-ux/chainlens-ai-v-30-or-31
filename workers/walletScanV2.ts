@@ -26,7 +26,7 @@ import { computeRisk } from '@/lib/engine/modules/risk/computeRisk'
 import { computePersonality } from '@/lib/engine/modules/personality/computePersonality'
 import { computeBehavior } from '@/lib/engine/modules/behavior/computeBehavior'
 import { computeSignals } from '@/lib/engine/modules/signals/computeSignals'
-import { computeSmartMoneyScore, deriveSmartMoneyInputs } from '@/lib/engine/modules/smartMoney/computeSmartMoneyScore'
+import { computeSmartMoneyScore } from '@/lib/engine/modules/smartMoney/computeSmartMoneyScore'
 import { createEventsCache } from '@/app/api/_shared/eventsCache'
 import { createCuBudget } from '@/app/api/_shared/cuBudget'
 import { recordCuUsage } from '@/app/api/_shared/cuUsageStore'
@@ -625,18 +625,25 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     t0 = performance.now()
     let smartMoneyScore: ReturnType<typeof computeSmartMoneyScore> | undefined
     try {
-      smartMoneyScore = computeSmartMoneyScore(
-        deriveSmartMoneyInputs({
-          pnlV2: pnlOutput.pnlV2,
-          pnlStatus: pnlOutput.pnlStatus,
-          totalValueUsd: pricing.totalValueUsd,
-          behaviorV2: behaviorOutput.behaviorV2,
-          personalityV2: personalityOutput.personalityV2,
-          chainActivityV2: chainActivityOutput.chainActivityV2,
-          riskV2: riskOutput.riskV2,
-          signalsV2: signalsOutput.signalsV2,
-        }),
-      )
+      // REBUILT MODEL WIRING, DISCLOSED (Smart Money Score audit/rebuild task): the official model
+      // now requires REAL, per-trade verified evidence (realized PnL + cost basis + a real close
+      // timestamp per trade) — see computeSmartMoneyScore.ts's own VerifiedTradeEvidence header.
+      // This worker's PnL engine (lib/engine/modules/pnl/computePnl.ts) only exposes PER-TOKEN
+      // aggregates (TokenRealizedPnl/TokenCostBasis, no timestamps, no per-trade breakdown) — there
+      // is no real per-trade evidence available here to map honestly, and fabricating fake
+      // "trades" from token aggregates (guessing a close timestamp, splitting an aggregate into
+      // synthetic per-trade rows) would be exactly the kind of invented precision this task's own
+      // audit was written to eliminate. Passing an empty trades array is the honest choice: this
+      // worker's own real data genuinely cannot support a verified-performance score, so
+      // computeSmartMoneyScore correctly (not accidentally) returns status: 'not_yet_rated' here —
+      // behaviorV2 is still passed through for the one allowed non-performance
+      // (provisionalBehaviorScore) category. A future task wiring src/modules/fifoEngine's real
+      // MatchedLot[] into this worker (out of this task's own "do not change pricing/FIFO" scope)
+      // is what would let this specific call site ever reach 'official' status.
+      smartMoneyScore = computeSmartMoneyScore({
+        trades: [],
+        behaviorV2: behaviorOutput.behaviorV2,
+      })
     } catch {
       smartMoneyScore = undefined
     }
