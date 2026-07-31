@@ -9,6 +9,7 @@
 // midpoint or 0; an explicit not-yet-rated gate below the verified-evidence bar).
 import { useState } from 'react'
 import type { SmartMoneyScore, SmartMoneyPerformanceBreakdown } from '@/lib/engine/modules/smartMoney/types'
+import { MIN_VERIFIED_TRADES_FOR_OFFICIAL, MIN_COVERAGE_PERCENT_FOR_OFFICIAL } from '@/lib/engine/modules/smartMoney/computeSmartMoneyScore'
 import { WALLET_PERSONALITY_CARD_ID } from './WalletPersonalityCard'
 import { StatusBadge } from './StatusBadge'
 
@@ -76,22 +77,41 @@ export function SmartMoneyScoreCard({ smartMoneyScore }: SmartMoneyScoreCardProp
       )}
 
       {/* VERIFIED TRADES / COVERAGE, DISCLOSED: always shown, official or not — this is the real
-          evidence backing (or currently withholding) the score, never hidden. */}
+          evidence backing (or currently withholding) the score, never hidden. Shows real threshold
+          PROGRESS ("X / Y minimum met/not met"), not just a bare number, and an honest
+          "Unavailable" (never a bare 0) when the canonical FIFO structural count itself wasn't
+          available this scan — see computeSmartMoneyScore.ts's own totalMatchedLotCount header. */}
       <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap' }}>
         <div>
           <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)' }}>
             Verified Trades
           </div>
-          <div style={{ fontSize: '14px', fontWeight: 800, color: '#e2e8f0' }}>{evidenceConfidence.fullyPricedTradeCount}</div>
+          <div style={{ fontSize: '14px', fontWeight: 800, color: evidenceConfidence.fullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? '#4ade80' : '#e2e8f0' }}>
+            {evidenceConfidence.fullyPricedTradeCount} / {MIN_VERIFIED_TRADES_FOR_OFFICIAL} minimum
+            <span style={{ fontSize: '10px', fontWeight: 700, marginLeft: '6px', color: evidenceConfidence.fullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? '#4ade80' : '#f87171' }}>
+              {evidenceConfidence.fullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? 'met' : 'not met'}
+            </span>
+          </div>
         </div>
         <div>
           <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)' }}>
             Verified Coverage
           </div>
-          <div style={{ fontSize: '14px', fontWeight: 800, color: '#e2e8f0' }}>
-            {evidenceConfidence.verifiedCoveragePercent.toFixed(1)}%
-            <span style={{ fontSize: '10px', color: 'rgba(148,163,184,0.50)', fontWeight: 600 }}> of {evidenceConfidence.totalMatchedLotCount} closed lots</span>
-          </div>
+          {evidenceConfidence.verifiedCoveragePercent == null ? (
+            <div style={{ fontSize: '14px', fontWeight: 800, color: 'rgba(148,163,184,0.55)' }}>Unavailable</div>
+          ) : (
+            <div style={{ fontSize: '14px', fontWeight: 800, color: evidenceConfidence.verifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL ? '#4ade80' : '#e2e8f0' }}>
+              {evidenceConfidence.verifiedCoveragePercent.toFixed(2)}% / {MIN_COVERAGE_PERCENT_FOR_OFFICIAL}% minimum
+              <span style={{ fontSize: '10px', fontWeight: 700, marginLeft: '6px', color: evidenceConfidence.verifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL ? '#4ade80' : '#f87171' }}>
+                {evidenceConfidence.verifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL ? 'met' : 'not met'}
+              </span>
+              {evidenceConfidence.totalMatchedLotCount != null && (
+                <span style={{ display: 'block', fontSize: '10px', color: 'rgba(148,163,184,0.50)', fontWeight: 600 }}>
+                  of {evidenceConfidence.totalMatchedLotCount} closed lots
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

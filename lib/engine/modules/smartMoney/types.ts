@@ -28,8 +28,12 @@ export type SmartMoneyEvidenceConfidence = {
   value: number // 0-1
   level: SmartMoneyEvidenceConfidenceLevel
   fullyPricedTradeCount: number
-  totalMatchedLotCount: number
-  verifiedCoveragePercent: number // 0-100 — fullyPricedTradeCount / totalMatchedLotCount
+  // CANONICAL-UNAVAILABLE FIX, DISCLOSED (this task's own explicit rule): `null` when the
+  // canonical FIFO result itself was unavailable this scan — NEVER fabricated as 0. `0` is a real,
+  // distinct outcome meaning FIFO ran and genuinely found zero closed lots. See
+  // adaptFifoMatchedLots.ts's own header for the full trace of where this distinction is made.
+  totalMatchedLotCount: number | null
+  verifiedCoveragePercent: number | null // 0-100 — fullyPricedTradeCount / totalMatchedLotCount
   historyDays: number | null
 }
 

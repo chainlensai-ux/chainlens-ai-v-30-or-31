@@ -280,24 +280,40 @@ function combineBreakdown(breakdown: SmartMoneyPerformanceBreakdown): number | n
 // closed-lot history) — never derived from how extreme the score itself is.
 function computeEvidenceConfidence(params: {
   verifiedCount: number
-  totalMatchedLotCount: number
+  totalMatchedLotCount: number | null
   historyDays: number | null
 }): SmartMoneyEvidenceConfidence {
   const { verifiedCount, totalMatchedLotCount, historyDays } = params
-  const verifiedCoveragePercent = totalMatchedLotCount > 0 ? (verifiedCount / totalMatchedLotCount) * 100 : 0
+  // CANONICAL-UNAVAILABLE, DISCLOSED: `null` propagates honestly — coverage cannot be computed
+  // (not "0%", which would look like real, measured, unfavorable evidence) when the structural
+  // denominator itself is unknown this scan.
+  const verifiedCoveragePercent = totalMatchedLotCount == null ? null
+    : totalMatchedLotCount > 0 ? (verifiedCount / totalMatchedLotCount) * 100 : 0
 
-  const coverageFactor = clamp((verifiedCoveragePercent / 100) / (MIN_COVERAGE_PERCENT_FOR_OFFICIAL / 100), 0, 1)
+  const coverageFactor = verifiedCoveragePercent == null ? 0
+    : clamp((verifiedCoveragePercent / 100) / (MIN_COVERAGE_PERCENT_FOR_OFFICIAL / 100), 0, 1)
   const sampleSizeFactor = clamp(verifiedCount / 20, 0, 1)
   const historyFactor = historyDays == null ? 0 : clamp(historyDays / 30, 0, 1)
 
   const value = clamp(0.5 * coverageFactor + 0.3 * sampleSizeFactor + 0.2 * historyFactor, 0, 1)
   const level: SmartMoneyEvidenceConfidenceLevel = value >= 0.7 ? 'high' : value >= 0.4 ? 'medium' : 'low'
 
-  return { value: Math.round(value * 100) / 100, level, fullyPricedTradeCount: verifiedCount, totalMatchedLotCount, verifiedCoveragePercent: Math.round(verifiedCoveragePercent * 100) / 100, historyDays }
+  return {
+    value: Math.round(value * 100) / 100, level, fullyPricedTradeCount: verifiedCount, totalMatchedLotCount,
+    verifiedCoveragePercent: verifiedCoveragePercent == null ? null : Math.round(verifiedCoveragePercent * 100) / 100,
+    historyDays,
+  }
 }
 
 export type ComputeSmartMoneyScoreParams = {
   trades: readonly VerifiedTradeEvidence[]
+  // CANONICAL STRUCTURAL DENOMINATOR, DISCLOSED (this task's own explicit rule): the real, full
+  // canonical FIFO matched-lot count (verified + unpriced) — see adaptFifoMatchedLots.ts's own
+  // header. `undefined` (omitted) falls back to `trades.length` for backward compatibility with a
+  // caller that has no separate structural count; `null` explicitly means the canonical FIFO
+  // result was unavailable this scan (never fabricated as 0); a real number (including 0) is the
+  // true, measured denominator. NEVER pnlSummaryV2's diagnostic sell-row count.
+  structuralClosedLotCount?: number | null
   // Optional — real BehaviorV2 field for the one allowed non-performance category. Omitting it
   // simply leaves behaviorQuality null (excluded from the weighted average, not defaulted).
   behaviorV2?: BehaviorV2 | null
@@ -312,9 +328,11 @@ export function computeSmartMoneyScore(params: ComputeSmartMoneyScoreParams): Sm
   const closedAtValues = trades.map((l) => l.closedAt).filter((t) => Number.isFinite(t))
   const historyDays = closedAtValues.length >= 2 ? (Math.max(...closedAtValues) - Math.min(...closedAtValues)) / MS_PER_DAY : null
 
+  const structuralClosedLotCount = params.structuralClosedLotCount === undefined ? trades.length : params.structuralClosedLotCount
+
   const evidenceConfidence = computeEvidenceConfidence({
     verifiedCount: verifiedLots.length,
-    totalMatchedLotCount: trades.length,
+    totalMatchedLotCount: structuralClosedLotCount,
     historyDays,
   })
 
@@ -330,8 +348,10 @@ export function computeSmartMoneyScore(params: ComputeSmartMoneyScoreParams): Sm
   // GATE, DISCLOSED: an official score requires BOTH a real minimum sample (>= 10 verified trades)
   // AND real minimum coverage (>= 50% of this wallet's own matched lots actually priced) — mirrors
   // fifoEngine's own derivePublicPnlStatus() bar exactly, so "official Smart Money Score" and
-  // "official PnL" agree on what counts as enough real evidence.
+  // "official PnL" agree on what counts as enough real evidence. A null coverage (canonical FIFO
+  // data unavailable this scan) NEVER clears the gate — never treated as "no evidence against it".
   const meetsGate = verifiedLots.length >= MIN_VERIFIED_TRADES_FOR_OFFICIAL
+    && evidenceConfidence.verifiedCoveragePercent != null
     && evidenceConfidence.verifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL
 
   const status: SmartMoneyScoreStatus = meetsGate ? 'official' : 'not_yet_rated'
@@ -342,9 +362,11 @@ export function computeSmartMoneyScore(params: ComputeSmartMoneyScoreParams): Sm
   const provisionalBehaviorScore = !meetsGate ? breakdown.behaviorQuality : null
 
   const reasonNotRated = meetsGate ? null
-    : verifiedLots.length < MIN_VERIFIED_TRADES_FOR_OFFICIAL
-      ? `Only ${verifiedLots.length} fully priced, verified trade${verifiedLots.length === 1 ? '' : 's'} — at least ${MIN_VERIFIED_TRADES_FOR_OFFICIAL} are required.`
-      : `Verified coverage is ${evidenceConfidence.verifiedCoveragePercent.toFixed(1)}% of this wallet's ${trades.length} closed lots — at least ${MIN_COVERAGE_PERCENT_FOR_OFFICIAL}% is required.`
+    : evidenceConfidence.totalMatchedLotCount == null
+      ? 'Canonical FIFO closed-lot data is unavailable for this scan.'
+      : verifiedLots.length < MIN_VERIFIED_TRADES_FOR_OFFICIAL
+        ? `Only ${verifiedLots.length} fully priced, verified trade${verifiedLots.length === 1 ? '' : 's'} — at least ${MIN_VERIFIED_TRADES_FOR_OFFICIAL} are required.`
+        : `Enough verified trades, but the sample covers too little of the wallet's closed history (${(evidenceConfidence.verifiedCoveragePercent ?? 0).toFixed(2)}% of ${evidenceConfidence.totalMatchedLotCount} closed lots — at least ${MIN_COVERAGE_PERCENT_FOR_OFFICIAL}% is required).`
 
   const notes: string[] = []
   if (meetsGate) {

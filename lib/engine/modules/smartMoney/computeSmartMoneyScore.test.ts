@@ -91,8 +91,10 @@ test('low coverage blocks the official score even with 10+ verified trades (mirr
   assert.equal(result.officialScore, null)
   assert.equal(result.evidenceConfidence.fullyPricedTradeCount, 10)
   assert.equal(result.evidenceConfidence.totalMatchedLotCount, 219)
-  assert.ok(result.evidenceConfidence.verifiedCoveragePercent < MIN_COVERAGE_PERCENT_FOR_OFFICIAL)
-  assert.ok(result.reasonNotRated!.includes('coverage'))
+  assert.notEqual(result.evidenceConfidence.verifiedCoveragePercent, null)
+  assert.ok((result.evidenceConfidence.verifiedCoveragePercent ?? 100) < MIN_COVERAGE_PERCENT_FOR_OFFICIAL)
+  assert.ok(Math.abs((result.evidenceConfidence.verifiedCoveragePercent ?? 0) - (10 / 219) * 100) < 0.01)
+  assert.ok(result.reasonNotRated!.includes('covers too little'))
 })
 
 test('enough verified trades (>= 10 AND >= 50% coverage) unlocks an official score', () => {
@@ -100,7 +102,7 @@ test('enough verified trades (>= 10 AND >= 50% coverage) unlocks an official sco
   const result = computeSmartMoneyScore({ trades })
   assert.equal(result.status, 'official')
   assert.notEqual(result.officialScore, null)
-  assert.ok(result.evidenceConfidence.verifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL)
+  assert.ok((result.evidenceConfidence.verifiedCoveragePercent ?? 0) >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL)
 })
 
 test('one lucky trade cannot dominate: a single extreme outlier is winsorized, never allowed to swing the score alone', () => {
