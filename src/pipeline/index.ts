@@ -46,6 +46,7 @@ import { logSyntheticPnlSummary, syntheticPnlAssembly } from '../modules/synthet
 import type { PoolDataMap as SyntheticPoolDataMap } from '../modules/syntheticPnl/index'
 import { adaptPnlSummaryForUi } from './pnlSummaryAdapter'
 import { buildChainAwareHistoricalPriceSourceDetailed, pricingRouteLog } from './pricingAtTimeAdapter'
+import { registerIndependentNativePriceSource } from '../modules/nativePriceResolver/index'
 import type { ChainAwareHistoricalPriceResult } from './pricingAtTimeAdapter'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import { buildChainSelectionObject } from '../modules/chainSelection/index'
@@ -167,6 +168,15 @@ function buildPriceSources(): PriceSources {
   // encapsulates every real provider attempt itself; pricingAtTimeEngine would otherwise call a
   // second, redundant fallback after this one already tried everything.
   const goldrushFn: PriceSourceFn = apiKey ? (buildGoldrushSourceFn(apiKey) ?? noPriceSources().fallback) : noPriceSources().fallback
+  // INDEPENDENT NATIVE-PRICE SOURCE REGISTRATION, DISCLOSED (Phase 1 production-failure fix): the
+  // shared native ETH/USD resolver previously fell back from CoinGecko to CoinGecko — same key, same
+  // quota, same circuit breaker — so a single 429 killed the whole chain (25 live bucket requests, 0
+  // accepted, in production). GoldRush is a genuinely independent provider (different host, key,
+  // quota and breaker) that is ALREADY configured here as this pipeline's primary price source.
+  // Handing the resolver this exact, already-budgeted function means no new paid dependency, no
+  // duplicated key handling, and no new provider budget anywhere — see
+  // src/modules/nativePriceResolver/index.ts's own header for the full audit.
+  registerIndependentNativePriceSource(apiKey ? goldrushFn : null)
   const detailed = buildChainAwareHistoricalPriceSourceDetailed(goldrushFn)
   priceSourcePrimaryDetailed = detailed
   const chainAwareHistorical = withPriceSourceCache(async (token, chain, timestamp) => (await detailed(token, chain, timestamp)).price, 'chain-aware-historical')

@@ -1,4 +1,4 @@
-import { test } from 'node:test'
+import { test, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   NATIVE_PRICE_BUCKET_MS,
@@ -9,9 +9,11 @@ import {
   resolveHistoricalNativeUsdPrice,
   getNativePriceResolverDiagnostics,
   resetNativePriceResolverForScan,
+  registerIndependentNativePriceSource,
   __resetNativePriceResolverForTest,
   __seedAcceptedNativePriceForTest,
 } from './index'
+import { resetCoingeckoCircuitBreaker } from '../pricingAtTimeEngine/sources/coingecko'
 
 // A real past instant, used across every case. Mid-day so bucket-distance assertions are meaningful.
 const TRADE_MS = Date.UTC(2026, 4, 11, 13, 45, 0)
@@ -19,8 +21,45 @@ const SAME_DAY_LATER_MS = Date.UTC(2026, 4, 11, 22, 5, 0)
 const NEXT_DAY_MS = Date.UTC(2026, 4, 12, 9, 0, 0)
 const NOW_MS = Date.UTC(2026, 6, 1, 0, 0, 0)
 
-test('bucket is one UTC day and distance is reported honestly', () => {
+const NATIVE_HISTORY_BODY = JSON.stringify({ market_data: { current_price: { usd: 3000 } } })
+const CONTRACT_RANGE_BODY = JSON.stringify({ prices: [[1000, 2950]] })
+
+const originalFetch = global.fetch
+
+function urlOf(input: RequestInfo | URL): string {
+  return typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+}
+
+// Installs a CoinGecko mock that answers each real endpoint independently, so a test can make the
+// native route fail while the contract route succeeds (or vice versa) and observe the real chain.
+function mockCoingecko(handlers: { nativeHistory?: () => Response; contractRange?: () => Response }): { calls: string[] } {
+  const calls: string[] = []
+  global.fetch = (async (input: RequestInfo | URL) => {
+    const url = urlOf(input)
+    if (url.includes('/coins/ethereum/history')) {
+      calls.push('native_history')
+      return handlers.nativeHistory ? handlers.nativeHistory() : new Response('{}', { status: 500 })
+    }
+    calls.push('contract_range')
+    return handlers.contractRange ? handlers.contractRange() : new Response('{}', { status: 500 })
+  }) as unknown as typeof fetch
+  return { calls }
+}
+
+beforeEach(() => {
   __resetNativePriceResolverForTest()
+  // coingecko.ts keeps its own per-scan breaker and native-date cache; production clears both once
+  // per scan via walletScanWorker, so the equivalent per-case reset belongs here.
+  resetCoingeckoCircuitBreaker()
+  // No network in this environment — every test that wants a source to answer installs its own mock.
+  global.fetch = (async () => new Response('{}', { status: 500 })) as unknown as typeof fetch
+})
+
+afterEach(() => {
+  global.fetch = originalFetch
+})
+
+test('bucket is one UTC day and distance is reported honestly', () => {
   const bucket = nativePriceBucketStart(TRADE_MS)
   assert.equal(bucket, Date.UTC(2026, 4, 11, 0, 0, 0))
   assert.equal(nativePriceBucketStart(SAME_DAY_LATER_MS), bucket)
@@ -28,7 +67,7 @@ test('bucket is one UTC day and distance is reported honestly', () => {
   assert.equal(NATIVE_PRICE_BUCKET_MS, 86_400_000)
 })
 
-test('Base native ETH, Ethereum native ETH and Arbitrum are ETH-native; hyperevm is not', () => {
+test('Base, Ethereum and Arbitrum are ETH-native; hyperevm is not', () => {
   assert.equal(isEthNativeChain('base'), true)
   assert.equal(isEthNativeChain('eth'), true)
   assert.equal(isEthNativeChain('arbitrum'), true)
@@ -36,16 +75,14 @@ test('Base native ETH, Ethereum native ETH and Arbitrum are ETH-native; hyperevm
 })
 
 test('an ineligible chain fails closed — never served an ETH price', async () => {
-  __resetNativePriceResolverForTest()
-  __seedAcceptedNativePriceForTest(TRADE_MS, 3120.5, 'coingecko_native_coin_history')
+  __seedAcceptedNativePriceForTest(TRADE_MS, 3120.5, 'goldrush_historical')
   const result = await resolveHistoricalNativeUsdPrice({ chain: 'hyperevm', timestamp: TRADE_MS, nowMs: NOW_MS })
   assert.equal(result, null)
   assert.equal(getNativePriceResolverDiagnostics().rejectedIneligibleChain, 1)
 })
 
-test('a future timestamp is rejected — a current price is never historical proof', async () => {
-  __resetNativePriceResolverForTest()
-  __seedAcceptedNativePriceForTest(NOW_MS + NATIVE_PRICE_BUCKET_MS * 5, 9999, 'coingecko_native_coin_history')
+test('a future timestamp fails closed — a current price is never historical proof', async () => {
+  __seedAcceptedNativePriceForTest(NOW_MS + NATIVE_PRICE_BUCKET_MS * 5, 9999, 'goldrush_historical')
   const result = await resolveHistoricalNativeUsdPrice({
     chain: 'base',
     timestamp: NOW_MS + NATIVE_PRICE_BUCKET_MS * 5,
@@ -55,75 +92,219 @@ test('a future timestamp is rejected — a current price is never historical pro
   assert.equal(getNativePriceResolverDiagnostics().rejectedInvalidTimestamp, 1)
 })
 
-test('an invalid timestamp is rejected, never guessed', async () => {
-  __resetNativePriceResolverForTest()
+test('an invalid timestamp fails closed, never guessed', async () => {
   for (const bad of [Number.NaN, 0, -1, Number.POSITIVE_INFINITY]) {
     assert.equal(await resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: bad, nowMs: NOW_MS }), null)
   }
+  assert.equal(getNativePriceResolverDiagnostics().rejectedInvalidTimestamp, 4)
 })
 
-test('an accepted price is reused across chains and across same-day consumers with zero extra calls', async () => {
-  __resetNativePriceResolverForTest()
-  __seedAcceptedNativePriceForTest(TRADE_MS, 3120.5, 'coingecko_native_coin_history')
+// ─── THE PRODUCTION FAILURE THIS REVISION FIXES ──────────────────────────────────────────────────
+
+test('primary returns 429 and the INDEPENDENT source succeeds — the exact production failure, now recovered', async () => {
+  // GoldRush is registered and answers. CoinGecko would 429, exactly as production showed.
+  registerIndependentNativePriceSource(async () => 3120.5)
+  mockCoingecko({ nativeHistory: () => new Response('{}', { status: 429 }) })
+
+  const result = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+
+  assert.equal(result?.priceUsd, 3120.5)
+  assert.equal(result?.source, 'goldrush_historical')
+  assert.equal(result?.confidence, 'verified')
+
+  const diagnostics = getNativePriceResolverDiagnostics()
+  assert.equal(diagnostics.acceptedResolutions, 1)
+  assert.equal(diagnostics.successesBySource.goldrush_historical, 1)
+  // The independent source is FIRST, so the exhausted CoinGecko quota is never even touched.
+  assert.equal(diagnostics.attemptsBySource.coingecko_native_coin_history, 0)
+})
+
+test('independent source unavailable, CoinGecko native 429s, and the second CoinGecko endpoint is correctly reported as sharing the exhausted quota', async () => {
+  // No GoldRush key configured — the previous revision's exact situation: CoinGecko falling back to
+  // CoinGecko. The audit must now show WHY that cannot work, rather than an opaque "no price".
+  registerIndependentNativePriceSource(null)
+  const { calls } = mockCoingecko({ nativeHistory: () => new Response('{}', { status: 429 }) })
+
+  const result = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  assert.equal(result, null)
+
+  const diagnostics = getNativePriceResolverDiagnostics()
+  assert.equal(diagnostics.failureReasonsBySource.goldrush_historical['goldrush_source_not_configured'], 1)
+  assert.equal(diagnostics.failureReasonsBySource.coingecko_native_coin_history['coingecko_http_429'], 1)
+  // The contract endpoint is SKIPPED, explicitly attributed to the shared quota — not silently retried.
+  assert.equal(diagnostics.failureReasonsBySource.coingecko_weth_contract_history['skipped_quota_group_already_exhausted'], 1)
+  assert.equal(calls.filter((c) => c === 'contract_range').length, 0, 'a guaranteed-failing same-quota call must not be spent')
+  assert.equal(diagnostics.httpStatusesBySource.coingecko_native_coin_history['429'], 1)
+  assert.deepEqual(diagnostics.unresolvedBuckets, ['2026-05-11'])
+})
+
+test('primary malformed response, fallback succeeds', async () => {
+  registerIndependentNativePriceSource(null)
+  // Native history returns 200 with a shape that carries no usable price; the contract endpoint does.
+  mockCoingecko({
+    nativeHistory: () => new Response(JSON.stringify({ market_data: {} }), { status: 200 }),
+    contractRange: () => new Response(CONTRACT_RANGE_BODY, { status: 200 }),
+  })
+
+  const result = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+
+  assert.equal(result?.priceUsd, 2950)
+  assert.equal(result?.source, 'coingecko_weth_contract_history')
+  const diagnostics = getNativePriceResolverDiagnostics()
+  // A malformed 200 is NOT a quota signal, so the same-quota fallback is correctly still attempted.
+  assert.equal(diagnostics.attemptsBySource.coingecko_weth_contract_history, 1)
+  assert.equal(diagnostics.attemptLog[0].fallbackRan, true)
+  assert.equal(diagnostics.attemptLog[0].retried, false)
+})
+
+test('every source fails => unavailable, never a fabricated value', async () => {
+  registerIndependentNativePriceSource(async () => null)
+  mockCoingecko({
+    nativeHistory: () => new Response(JSON.stringify({}), { status: 200 }),
+    contractRange: () => new Response(JSON.stringify({ prices: [] }), { status: 200 }),
+  })
+
+  const result = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  assert.equal(result, null)
+  assert.notEqual(result, 0)
+
+  const diagnostics = getNativePriceResolverDiagnostics()
+  assert.equal(diagnostics.sourceAttempts, 3, 'all three sources genuinely attempted when no quota is exhausted')
+  assert.equal(diagnostics.sourceSuccesses, 0)
+  assert.equal(diagnostics.acceptedResolutions, 0)
+})
+
+test('the per-attempt audit record carries every field the audit brief requires, and no secret', async () => {
+  registerIndependentNativePriceSource(null)
+  mockCoingecko({ nativeHistory: () => new Response('{}', { status: 429 }) })
+  await resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: TRADE_MS, nowMs: NOW_MS })
+
+  const { attemptLog } = getNativePriceResolverDiagnostics()
+  assert.equal(attemptLog.length, 3)
+  for (const attempt of attemptLog) {
+    assert.equal(attempt.bucketDateUtc, '2026-05-11')
+    assert.equal(attempt.bucketStartMs, nativePriceBucketStart(TRADE_MS))
+    assert.ok(attempt.source)
+    assert.ok(attempt.quotaGroup)
+    assert.ok(attempt.endpoint)
+    assert.equal(attempt.retried, false)
+    assert.ok('httpStatus' in attempt && 'responseShape' in attempt && 'parsedValue' in attempt)
+    assert.ok(attempt.rejectionReason, 'a failed attempt must state why')
+    assert.ok(!/api[-_]?key|x-cg-|0x[a-f0-9]{32}/i.test(attempt.endpoint), 'endpoint must never carry a secret')
+  }
+  // Quota grouping is explicit: the two CoinGecko endpoints share one group, GoldRush does not.
+  assert.equal(attemptLog.filter((a) => a.quotaGroup === 'coingecko').length, 2)
+  assert.equal(attemptLog.filter((a) => a.quotaGroup === 'goldrush').length, 1)
+})
+
+// ─── SHARING, COALESCING AND CACHING ─────────────────────────────────────────────────────────────
+
+test('one accepted bucket price serves Base ETH, Ethereum ETH and WETH consumers for that day', async () => {
+  __seedAcceptedNativePriceForTest(TRADE_MS, 3120.5, 'goldrush_historical')
 
   const base = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
   const eth = await resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: SAME_DAY_LATER_MS, nowMs: NOW_MS })
+  const arb = await resolveHistoricalNativeUsdPrice({ chain: 'arbitrum', timestamp: TRADE_MS + 60_000, nowMs: NOW_MS })
 
+  // The SAME accepted ETH/USD figure serves every ETH-native chain and both the native and WETH
+  // aliases — that identity is the entire basis of the coalescing win.
   assert.equal(base?.priceUsd, 3120.5)
-  // The SAME accepted ETH/USD figure serves Base native ETH and Ethereum native ETH — that identity
-  // is the whole basis of the Phase 1 coalescing win.
   assert.equal(eth?.priceUsd, 3120.5)
-  assert.equal(base?.confidence, 'verified')
-  assert.equal(base?.source, 'coingecko_native_coin_history')
+  assert.equal(arb?.priceUsd, 3120.5)
   assert.equal(base?.servedFromPermanentCache, true)
-  assert.equal(eth?.servedFromPermanentCache, true)
 
   const diagnostics = getNativePriceResolverDiagnostics()
-  assert.equal(diagnostics.permanentCacheHits, 2)
+  assert.equal(diagnostics.permanentCacheHits, 3)
   assert.equal(diagnostics.liveBucketRequests, 0)
 })
 
-test('timestampDistanceMs is per-consumer honest, not the shared bucket-leader distance', async () => {
-  __resetNativePriceResolverForTest()
-  __seedAcceptedNativePriceForTest(TRADE_MS, 3120.5, 'coingecko_native_coin_history')
+test('same-day consumers coalesce onto one in-flight resolution covering the whole source chain', async () => {
+  let goldrushCalls = 0
+  registerIndependentNativePriceSource(async () => {
+    goldrushCalls += 1
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    return 3120.5
+  })
 
+  const [a, b, c] = await Promise.all([
+    resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS }),
+    resolveHistoricalNativeUsdPrice({ chain: 'eth', timestamp: SAME_DAY_LATER_MS, nowMs: NOW_MS }),
+    resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS + 5_000, nowMs: NOW_MS }),
+  ])
+
+  assert.equal(goldrushCalls, 1, 'three same-day consumers must share exactly one real resolution')
+  assert.equal(a?.priceUsd, 3120.5)
+  assert.equal(b?.priceUsd, 3120.5)
+  assert.equal(c?.priceUsd, 3120.5)
+  assert.equal(getNativePriceResolverDiagnostics().coalescedHits, 2)
+  // Distance stays honest per consumer even when the price is shared.
+  assert.notEqual(a?.timestampDistanceMs, b?.timestampDistanceMs)
+})
+
+test('timestampDistanceMs is per-consumer honest and always within the bucket', async () => {
+  __seedAcceptedNativePriceForTest(TRADE_MS, 3120.5, 'goldrush_historical')
   const early = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
   const late = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: SAME_DAY_LATER_MS, nowMs: NOW_MS })
 
   assert.equal(early?.bucketStartMs, late?.bucketStartMs)
   assert.equal(early?.timestampDistanceMs, TRADE_MS - nativePriceBucketStart(TRADE_MS))
   assert.equal(late?.timestampDistanceMs, SAME_DAY_LATER_MS - nativePriceBucketStart(SAME_DAY_LATER_MS))
-  assert.notEqual(early?.timestampDistanceMs, late?.timestampDistanceMs)
   assert.ok(early!.timestampDistanceMs >= 0 && early!.timestampDistanceMs < NATIVE_PRICE_BUCKET_MS)
 })
 
-test('the accepted-price cache survives a scan reset — past historical prices are immutable', async () => {
-  __resetNativePriceResolverForTest()
-  __seedAcceptedNativePriceForTest(TRADE_MS, 3120.5, 'coingecko_native_coin_history')
+test('an accepted historical value is cached permanently — it survives a scan reset', async () => {
+  let goldrushCalls = 0
+  registerIndependentNativePriceSource(async () => {
+    goldrushCalls += 1
+    return 3120.5
+  })
+
+  const first = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  assert.equal(first?.priceUsd, 3120.5)
+  assert.equal(goldrushCalls, 1)
 
   resetNativePriceResolverForScan()
 
-  const afterReset = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
-  assert.equal(afterReset?.priceUsd, 3120.5)
-  assert.equal(afterReset?.servedFromPermanentCache, true)
+  const second = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  assert.equal(second?.priceUsd, 3120.5)
+  assert.equal(second?.servedFromPermanentCache, true)
+  assert.equal(goldrushCalls, 1, 'an immutable past day must never be re-fetched')
   assert.equal(getNativePriceResolverDiagnostics().liveBucketRequests, 0)
 })
 
-test('a different day is never served a neighbouring day price', async () => {
-  __resetNativePriceResolverForTest()
-  __seedAcceptedNativePriceForTest(TRADE_MS, 3120.5, 'coingecko_native_coin_history')
+test('a transient failure is NOT cached permanently — the next scan retries that bucket', async () => {
+  let goldrushCalls = 0
+  registerIndependentNativePriceSource(async () => {
+    goldrushCalls += 1
+    return goldrushCalls === 1 ? null : 3120.5
+  })
 
-  // No network is reachable in this environment, so the live path genuinely resolves nothing — which
-  // is exactly the assertion: an adjacent, already-accepted bucket is NEVER substituted.
+  const first = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  assert.equal(first, null)
+
+  // Within the SAME scan the doomed bucket is not retried.
+  await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: SAME_DAY_LATER_MS, nowMs: NOW_MS })
+  assert.equal(goldrushCalls, 1)
+
+  resetNativePriceResolverForScan()
+
+  // A NEW scan may retry it — and here it genuinely recovers, which a permanent failure cache would
+  // have made impossible.
+  const afterReset = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
+  assert.equal(afterReset?.priceUsd, 3120.5)
+  assert.ok(goldrushCalls > 1)
+})
+
+test('a different day is never served a neighbouring day price', async () => {
+  __seedAcceptedNativePriceForTest(TRADE_MS, 3120.5, 'goldrush_historical')
+  registerIndependentNativePriceSource(async () => null)
   const nextDay = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: NEXT_DAY_MS, nowMs: NOW_MS })
   assert.equal(nextDay, null)
 })
 
 test('prefetch collapses many requirements into distinct buckets and reads back per-timestamp', async () => {
-  __resetNativePriceResolverForTest()
-  __seedAcceptedNativePriceForTest(TRADE_MS, 3120.5, 'coingecko_native_coin_history')
+  __seedAcceptedNativePriceForTest(TRADE_MS, 3120.5, 'goldrush_historical')
 
-  // 4 requirements, all on the same UTC day, across two ETH-native chains — one bucket.
   const prefetched = await prefetchNativeUsdPrices({
     requirements: [
       { chain: 'base', timestamp: TRADE_MS },
@@ -136,13 +317,13 @@ test('prefetch collapses many requirements into distinct buckets and reads back 
   assert.equal(prefetched.size, 1)
   assert.equal(readPrefetchedNativeUsdPrice(prefetched, TRADE_MS)?.priceUsd, 3120.5)
   assert.equal(readPrefetchedNativeUsdPrice(prefetched, SAME_DAY_LATER_MS)?.priceUsd, 3120.5)
-  // A day that was never a requirement is genuinely absent — reading it returns null, not a nearby price.
   assert.equal(readPrefetchedNativeUsdPrice(prefetched, NEXT_DAY_MS), null)
+  assert.equal(getNativePriceResolverDiagnostics().bucketsRequested, 1)
   assert.equal(getNativePriceResolverDiagnostics().liveBucketRequests, 0)
 })
 
 test('prefetch drops ineligible chains and invalid timestamps before spending anything', async () => {
-  __resetNativePriceResolverForTest()
+  registerIndependentNativePriceSource(async () => 3120.5)
   const prefetched = await prefetchNativeUsdPrices({
     requirements: [
       { chain: 'hyperevm', timestamp: TRADE_MS },
@@ -151,39 +332,11 @@ test('prefetch drops ineligible chains and invalid timestamps before spending an
     ],
   })
   assert.equal(prefetched.size, 0)
-  const diagnostics = getNativePriceResolverDiagnostics()
-  assert.equal(diagnostics.liveBucketRequests, 0)
-  assert.equal(diagnostics.rejectedIneligibleChain, 0) // filtered before dispatch, never even attempted
-})
-
-test('unavailable stays null and is never upgraded to a fabricated zero or a spot price', async () => {
-  __resetNativePriceResolverForTest()
-  const result = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
-  assert.equal(result, null)
-  assert.notEqual(result, 0)
-  // Failure is remembered for this scan only — a second ask in the same scan spends nothing more.
-  const before = getNativePriceResolverDiagnostics().liveBucketRequests
-  await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: SAME_DAY_LATER_MS, nowMs: NOW_MS })
-  assert.equal(getNativePriceResolverDiagnostics().liveBucketRequests, before)
-})
-
-test('a transient failure is NOT cached permanently — the next scan may retry that bucket', async () => {
-  __resetNativePriceResolverForTest()
-  await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
-  const afterFirstScan = getNativePriceResolverDiagnostics().liveBucketRequests
-  assert.equal(afterFirstScan, 1)
-
-  resetNativePriceResolverForScan()
-
-  await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp: TRADE_MS, nowMs: NOW_MS })
-  // Counters were reset, so this scan's own live count starts fresh — proving the bucket was retried
-  // rather than being permanently blacklisted by one transient miss.
-  assert.equal(getNativePriceResolverDiagnostics().liveBucketRequests, 1)
+  assert.equal(getNativePriceResolverDiagnostics().liveBucketRequests, 0)
 })
 
 test('seeding rejects a non-price value — a fabricated figure cannot enter the cache', () => {
-  __resetNativePriceResolverForTest()
   for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
-    assert.throws(() => __seedAcceptedNativePriceForTest(TRADE_MS, bad, 'coingecko_native_coin_history'))
+    assert.throws(() => __seedAcceptedNativePriceForTest(TRADE_MS, bad, 'goldrush_historical'))
   }
 })

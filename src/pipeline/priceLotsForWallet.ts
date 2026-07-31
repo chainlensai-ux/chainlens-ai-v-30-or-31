@@ -1038,6 +1038,29 @@ export async function priceLotsForWallet(params: {
     verifiedCoverageAfter: Math.round(verifiedPricingCoverageAfter * 10000) / 100,
     resolver: getNativePriceResolverDiagnostics(),
   })
+
+  // PER-SOURCE AUDIT, DISCLOSED, BOUNDED — exactly the breakdown the Phase 1 production failure
+  // required and could not be answered without: which source was attempted for which UTC bucket,
+  // what it returned, and whether a fallback genuinely ran or was skipped because it shares an
+  // already-exhausted quota. `attemptLog` is capped (MAX_ATTEMPT_LOG_ENTRIES) so log volume stays
+  // bounded, and no entry ever contains a key or a secret-bearing URL.
+  {
+    const resolverDiagnostics = getNativePriceResolverDiagnostics()
+    // eslint-disable-next-line no-console
+    console.warn('[native-price-resolver-source-audit]', {
+      bucketsRequested: resolverDiagnostics.bucketsRequested,
+      sourceAttempts: resolverDiagnostics.sourceAttempts,
+      sourceSuccesses: resolverDiagnostics.sourceSuccesses,
+      failureReasonsBySource: resolverDiagnostics.failureReasonsBySource,
+      httpStatusesBySource: resolverDiagnostics.httpStatusesBySource,
+      acceptedBuckets: resolverDiagnostics.acceptedBuckets,
+      unresolvedBuckets: resolverDiagnostics.unresolvedBuckets,
+      permanentCacheHits: resolverDiagnostics.permanentCacheHits,
+      nativeRequirementsCompleted: nativePricesFromSharedResolver,
+      lotsCompleted: fullyPricedLotsAfter - fullyPricedLotsBefore,
+      attemptLog: resolverDiagnostics.attemptLog,
+    })
+  }
   // Real, observed effect of this whole native-quote pass (ranking + reuse) on closed-lot completion —
   // compared against expectedLotsCompletedBySelection (the pre-call prediction) above.
   const actualLotsCompletedByQuote = fullyPricedLotsAfter - fullyPricedLotsBefore
