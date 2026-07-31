@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deriveWalletPersonality, computeHoldingDaysStats, computeRepeatedRouterPercent, computeVerifiedWinLoss } from './walletPersonality'
+import { deriveWalletPersonality, computeHoldingDaysStats, computeRepeatedRouterPercent, computeVerifiedWinLoss, composeTitle, computeRadarAxes } from './walletPersonality'
 import type { WalletPersonalitySourceReport } from './walletPersonality'
 import type { MatchedLot } from '@/src/modules/fifoEngine/types'
 import type { SellTimelineEntry } from '@/src/modules/sellTimeline/types'
@@ -89,7 +89,8 @@ test('never renders blank: a fully-empty wallet still returns a safe, non-throwi
   })
   const data = deriveWalletPersonality(report)
   assert.equal(data.insufficientEvidence, true)
-  assert.equal(data.title, 'Insufficient evidence for a detailed personality')
+  assert.equal(data.title, 'General User')
+  assert.equal(data.subtitle, 'Insufficient evidence for a detailed personality')
   assert.equal(data.metrics.totalTransactions, 0)
   assert.equal(data.evidenceBasis, 'limited_evidence')
 })
@@ -269,4 +270,117 @@ test('evidence basis badges cover all four states', () => {
     finalSummary: { ...baseReport().finalSummary, financialStatus: { officialPnlStatus: 'ok', headline: 'x' } },
     fifoAndPnl: { ...baseReport().fifoAndPnl, matchedLots: [lot({ realizedPnlUsd: 1, evidenceQuality: 'verified' })], publicPnlStatus: 'ok' },
   })).evidenceBasis, 'behavior_plus_pnl')
+})
+
+// ─── Redesign task: premium title/subtitle/radar coverage ──────────────────────────────────────
+
+test('full evidence wallet: gets a distinctive, non-generic title and a fully populated radar', () => {
+  const report = baseReport({
+    behaviorIntel: {
+      ...baseReport().behaviorIntel,
+      riskOnOff: { value: 'risk_on', basis: 'x' },
+      confidence: 'high',
+      convictionScore: { value: 'high', basis: 'x' },
+    },
+    fifoAndPnl: {
+      ...baseReport().fifoAndPnl,
+      matchedLots: [
+        lot({ lotId: 'l1', openedAt: NOW - 12 * DAY, closedAt: NOW - 4 * DAY, realizedPnlUsd: 10, evidenceQuality: 'verified' }),
+        lot({ lotId: 'l2', openedAt: NOW - 20 * DAY, closedAt: NOW - 10 * DAY, realizedPnlUsd: 6, evidenceQuality: 'verified' }),
+      ],
+      realizedPnlUsd: 16,
+      publicPnlStatus: 'ok',
+    },
+    finalSummary: { ...baseReport().finalSummary, financialStatus: { officialPnlStatus: 'ok', headline: 'x' } },
+  })
+  const data = deriveWalletPersonality(report)
+  assert.notEqual(data.title, 'General User')
+  assert.notEqual(data.title, '')
+  assert.equal(data.title, 'Risk-On Swing Operator')
+  assert.equal(data.evidenceBasis, 'behavior_plus_pnl')
+  assert.equal(data.radar.risk, 1)
+  assert.equal(data.radar.conviction, 1)
+  assert.notEqual(data.radar.activity, null)
+})
+
+test('behavior-only wallet (no PnL evidence): still gets a real, distinctive, non-blank title', () => {
+  const data = deriveWalletPersonality(baseReport({
+    behaviorIntel: { ...baseReport().behaviorIntel, confidence: 'low' },
+  }))
+  assert.equal(data.evidenceBasis, 'behavior_only')
+  assert.notEqual(data.title, 'General User')
+  assert.notEqual(data.title, '')
+  assert.equal(data.profitEvidence.kind, 'not_proven')
+})
+
+test('no blank titles: every branch of deriveWalletPersonality returns a non-empty title and subtitle', () => {
+  const scenarios: WalletPersonalitySourceReport[] = [
+    baseReport(),
+    baseReport({ behaviorIntel: { ...baseReport().behaviorIntel, automationSignals: { suspectedBot: true, signals: ['x'] } } }),
+    baseReport({ behaviorIntel: { ...baseReport().behaviorIntel, rotationStyle: { value: 'accumulator', basis: { buyCount: 1, sellCount: 0, distributionCount: 0, distinctTokensTraded: 1 } } } }),
+    baseReport({
+      timelines: {
+        buyTimeline: { totalBuys: 0, entries: [] }, sellTimeline: { totalSells: 0, entries: [] },
+        distributionTimeline: { totalDistributions: 0, entries: [] },
+        sellTimelineV2: { totalSells: 0, chainContext: { includedChains: [], excludedChains: [] }, entries: [] },
+      } as unknown as WalletPersonalitySourceReport['timelines'],
+    }),
+  ]
+  for (const report of scenarios) {
+    const data = deriveWalletPersonality(report)
+    assert.ok(data.title.length > 0, 'title must never be blank')
+    assert.ok(data.subtitle.length > 0, 'subtitle must never be blank')
+  }
+})
+
+test('no fake precision: radar axes are null (not a guessed midpoint) whenever the underlying signal is genuinely unknown', () => {
+  const axes = computeRadarAxes({
+    totalTransactions: 0, riskValue: 'unknown', suspectedBot: false, repeatedRouterPercent: null,
+    rotationValue: 'unknown', convictionValue: 'unknown',
+  })
+  assert.equal(axes.activity, null)
+  assert.equal(axes.risk, null)
+  assert.equal(axes.rotation, null)
+  assert.equal(axes.conviction, null)
+  // automation defaults to a real 0 (suspectedBot=false, no router evidence) — a genuine computed
+  // value, not a placeholder, so this one is intentionally NOT null.
+  assert.equal(axes.automation, 0)
+})
+
+test('composeTitle: never returns "General User" — that string is reserved for the zero-evidence path only', () => {
+  const combos: Array<Parameters<typeof composeTitle>[0]> = [
+    { automationClass: 'Manual trader', holdingClass: 'Long-term holder', concentrationClass: 'Not enough data', riskValue: 'unknown', rotationValue: 'unknown', convictionValue: 'unknown', activeChains: 1, totalTransactions: 1 },
+    { automationClass: 'Bot-like', holdingClass: 'Hyperactive sniper', concentrationClass: 'Concentrated', riskValue: 'risk_on', rotationValue: 'rotator', convictionValue: 'high', activeChains: 2, totalTransactions: 40 },
+    { automationClass: 'Highly automated', holdingClass: 'Short-term rotator', concentrationClass: 'Moderately diversified', riskValue: 'risk_off', rotationValue: 'distributor', convictionValue: 'medium', activeChains: 5, totalTransactions: 100 },
+  ]
+  for (const combo of combos) {
+    assert.notEqual(composeTitle(combo), 'General User')
+    assert.ok(composeTitle(combo).length > 0)
+  }
+})
+
+test('limited PnL sample surfaces the explicit "not official" disclosure via distinct win/loss/evaluated fields (never a single opaque sentence only)', () => {
+  const report = baseReport({
+    fifoAndPnl: {
+      ...baseReport().fifoAndPnl,
+      matchedLots: [
+        lot({ lotId: 'l1', realizedPnlUsd: 10, evidenceQuality: 'verified' }),
+        lot({ lotId: 'l2', realizedPnlUsd: 8, evidenceQuality: 'verified' }),
+        lot({ lotId: 'l3', realizedPnlUsd: 4, evidenceQuality: 'verified' }),
+        lot({ lotId: 'l4', realizedPnlUsd: 2, evidenceQuality: 'verified' }),
+        lot({ lotId: 'l5', realizedPnlUsd: -1, evidenceQuality: 'verified' }),
+        lot({ lotId: 'l6', realizedPnlUsd: -1, evidenceQuality: 'verified' }),
+        lot({ lotId: 'l7', realizedPnlUsd: -1, evidenceQuality: 'verified' }),
+        lot({ lotId: 'l8', realizedPnlUsd: null, evidenceQuality: 'unpriced' }),
+      ],
+      publicPnlStatus: 'limited_verified_sample',
+    },
+    finalSummary: { ...baseReport().finalSummary, financialStatus: { officialPnlStatus: 'limited_verified_sample', headline: 'x' } },
+  })
+  const data = deriveWalletPersonality(report)
+  assert.equal(data.profitEvidence.kind, 'limited_sample')
+  assert.equal(data.profitEvidence.winCount, 4)
+  assert.equal(data.profitEvidence.lossCount, 3)
+  assert.equal(data.profitEvidence.evaluatedCount, 7)
+  assert.ok(Math.abs((data.profitEvidence.winRatePercent ?? 0) - (4 / 7) * 100) < 0.01)
 })

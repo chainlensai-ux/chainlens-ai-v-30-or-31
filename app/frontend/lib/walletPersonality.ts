@@ -87,14 +87,28 @@ export type ProfitEvidence = {
   winRatePercent: number | null
 }
 
+// RADAR AXES, DISCLOSED: 5 axes normalized to [0, 1] for the compact visual summary — each is a
+// deterministic function of real, already-present behavior data (never a fabricated precision
+// figure). `null` (never a guessed midpoint like 0.5) whenever the underlying signal itself is
+// genuinely unknown (e.g. riskOnOff === 'unknown', or zero real transactions for activity).
+export type RadarAxes = {
+  activity: number | null
+  risk: number | null
+  automation: number | null
+  rotation: number | null
+  conviction: number | null
+}
+
 export type WalletPersonalityData = {
   title: string
+  subtitle: string
   summarySentence: string
   confidence: 'high' | 'medium' | 'low'
   evidenceBasis: EvidenceBasis
   traits: PersonalityTraits
   metrics: BehaviorMetrics
   classification: BehaviorClassification
+  radar: RadarAxes
   strengths: string[]
   watchouts: string[]
   profitEvidence: ProfitEvidence
@@ -198,6 +212,58 @@ function classifyRisk(riskOnOff: 'risk_on' | 'risk_off' | 'unknown', suspectedBo
   return 'Low risk behavior'
 }
 
+// PURE. Composes a distinctive, evidence-grounded personality title from real classification
+// inputs only — never a placeholder. "General User" is reserved EXCLUSIVELY for the
+// insufficient-evidence case (handled by the caller, not this function) — every other case
+// produces a specific, real-signal-backed title, matching this task's own explicit examples
+// ("Risk-On Swing Operator", "High-Tempo Token Rotator", "Manual Multi-Chain Trader",
+// "Concentrated Conviction Holder"). Deterministic priority order, most-specific signal first.
+export function composeTitle(params: {
+  automationClass: TradingStyle
+  holdingClass: HoldingStyle
+  concentrationClass: ConcentrationClass
+  riskValue: 'risk_on' | 'risk_off' | 'unknown'
+  rotationValue: 'accumulator' | 'rotator' | 'distributor' | 'unknown'
+  convictionValue: 'high' | 'medium' | 'low' | 'unknown'
+  activeChains: number
+  totalTransactions: number
+}): string {
+  const { automationClass, holdingClass, concentrationClass, riskValue, rotationValue, convictionValue, activeChains, totalTransactions } = params
+
+  if (concentrationClass === 'Concentrated' && convictionValue === 'high') return 'Concentrated Conviction Holder'
+  if (riskValue === 'risk_on' && holdingClass === 'Swing trader') return 'Risk-On Swing Operator'
+  if (rotationValue === 'rotator' && (holdingClass === 'Short-term rotator' || holdingClass === 'Hyperactive sniper') && totalTransactions >= 15) return 'High-Tempo Token Rotator'
+  if (automationClass === 'Manual trader' && activeChains >= 3) return 'Manual Multi-Chain Trader'
+  if (automationClass === 'Highly automated') return 'Highly Automated Execution Wallet'
+  if (automationClass === 'Bot-like') return 'Bot-Like Execution Pattern'
+  if (holdingClass === 'Long-term holder') return riskValue === 'risk_off' ? 'Disciplined Long-Term Holder' : 'Conviction Long-Term Holder'
+  if (holdingClass === 'Hyperactive sniper') return 'Hyperactive Token Sniper'
+  if (holdingClass === 'Short-term rotator') return 'Short-Term Token Rotator'
+  if (rotationValue === 'accumulator') return 'Steady Accumulator'
+  if (rotationValue === 'distributor') return 'Active Distributor'
+  const riskLabel = riskValue === 'risk_on' ? 'Risk-On' : riskValue === 'risk_off' ? 'Risk-Off' : 'Balanced'
+  return `${riskLabel} ${automationClass}`
+}
+
+// PURE. 5-axis radar, each normalized to [0, 1] or null — see RadarAxes' own header.
+export function computeRadarAxes(params: {
+  totalTransactions: number
+  riskValue: 'risk_on' | 'risk_off' | 'unknown'
+  suspectedBot: boolean
+  repeatedRouterPercent: number | null
+  rotationValue: 'accumulator' | 'rotator' | 'distributor' | 'unknown'
+  convictionValue: 'high' | 'medium' | 'low' | 'unknown'
+}): RadarAxes {
+  const { totalTransactions, riskValue, suspectedBot, repeatedRouterPercent, rotationValue, convictionValue } = params
+  return {
+    activity: totalTransactions === 0 ? null : Math.min(1, totalTransactions / 50),
+    risk: riskValue === 'unknown' ? null : riskValue === 'risk_on' ? 1 : 0,
+    automation: suspectedBot ? 1 : repeatedRouterPercent != null ? Math.min(1, repeatedRouterPercent / 100) : 0,
+    rotation: rotationValue === 'unknown' ? null : rotationValue === 'rotator' ? 1 : rotationValue === 'distributor' ? 0.6 : 0.2,
+    conviction: convictionValue === 'unknown' ? null : convictionValue === 'high' ? 1 : convictionValue === 'medium' ? 0.5 : 0.15,
+  }
+}
+
 function fmtDays(v: number | null): string {
   if (v == null) return 'Not enough data'
   if (v < 1) return `${(v * 24).toFixed(1)}h`
@@ -280,19 +346,28 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
   const rotationValue = b?.rotationStyle?.value ?? 'unknown'
   const riskValue = b?.riskOnOff?.value ?? 'unknown'
 
-  // TITLE, DISCLOSED: prefers a real V2 personalityV2.archetype when the caller supplied one (see
-  // this module's own header — not populated by the live scan route today, but consumed when
-  // present per this task's explicit request); otherwise composes a title purely from real
-  // behaviorIntel-derived classification — NEVER from smartMoneyScore.components.personalityScore
-  // (a 0-100 number, not a label) per this task's explicit instruction.
-  const title = report.personalityV2?.archetype
-    ?? (insufficientEvidence
-      ? 'Insufficient evidence for a detailed personality'
-      : (holdingClass !== 'Not enough data' ? holdingClass : automationClass))
+  const convictionValue = b?.convictionScore?.value ?? 'unknown'
+
+  // TITLE, DISCLOSED: "General User" is reserved EXCLUSIVELY for the zero-evidence case (per this
+  // task's explicit instruction) — prefers a real V2 personalityV2.archetype when the caller
+  // supplied one (see this module's own header — not populated by the live scan route today, but
+  // consumed when present), otherwise composeTitle() builds a distinctive, real-signal-backed
+  // title — NEVER from smartMoneyScore.components.personalityScore (a 0-100 number, not a label).
+  const title = insufficientEvidence
+    ? 'General User'
+    : (report.personalityV2?.archetype ?? composeTitle({
+        automationClass, holdingClass, concentrationClass, riskValue, rotationValue, convictionValue, activeChains, totalTransactions,
+      }))
+
+  const subtitle = insufficientEvidence
+    ? 'Insufficient evidence for a detailed personality'
+    : `${automationClass} · ${holdingClass} · ${activeChains} active chain${activeChains === 1 ? '' : 's'}`
 
   const summarySentence = insufficientEvidence
     ? 'Not enough on-chain activity was found for this wallet to characterize its trading behavior.'
     : `This wallet is a ${automationClass.toLowerCase()}, ${holdingClass.toLowerCase()} trading across ${activeChains} active chain${activeChains === 1 ? '' : 's'}, with ${riskValue === 'unknown' ? 'an undetermined' : riskValue.replace('_', '-')} risk posture.`
+
+  const radar = computeRadarAxes({ totalTransactions, riskValue, suspectedBot, repeatedRouterPercent, rotationValue, convictionValue })
 
   const strengths: string[] = []
   const watchouts: string[] = []
@@ -313,9 +388,11 @@ export function deriveWalletPersonality(report: WalletPersonalitySourceReport): 
 
   return {
     title,
+    subtitle,
     summarySentence,
     confidence: b?.confidence ?? 'low',
     evidenceBasis,
+    radar,
     traits: {
       tradingStyle: automationClass,
       activityLevel: totalTransactions === 0 ? 'Inactive' : totalTransactions >= 50 ? 'Very active' : totalTransactions >= 10 ? 'Active' : 'Light',
