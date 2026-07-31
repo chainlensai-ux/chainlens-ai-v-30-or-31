@@ -17,7 +17,8 @@
 // a literal 0/0%/a fabricated bar length. Win rate is only ever shown when
 // profitEvidence.evaluatedCount > 0, and the limited-sample win rate is always explicitly labeled
 // "Not the wallet's official overall win rate."
-import type { WalletPersonalitySourceReport, TradingStyle, RiskClass } from '@/app/frontend/lib/walletPersonality'
+import { useState } from 'react'
+import type { WalletPersonalitySourceReport, TradingStyle, RiskClass, AxisScore } from '@/app/frontend/lib/walletPersonality'
 import { deriveWalletPersonality, fmtHoldingDays } from '@/app/frontend/lib/walletPersonality'
 import { StatusBadge } from './StatusBadge'
 
@@ -140,23 +141,76 @@ const RADAR_AXES: Array<{ key: 'activity' | 'risk' | 'automation' | 'rotation' |
   { key: 'conviction', label: 'Conviction', accent: PURPLE },
 ]
 
-// TRAIT METER, DISCLOSED: a horizontal bar rendering a [0,1] normalized value — a `null` value
-// (genuinely unknown signal) NEVER renders a bar at all, only the honest "Insufficient evidence"
-// label, so nothing here implies a precision the underlying data doesn't have.
-function TraitMeter({ label, value, accent }: { label: string; value: number | null; accent: string }) {
+function confidenceWord(c: number): string {
+  if (c >= 0.75) return 'strong evidence'
+  if (c >= 0.4) return 'partial evidence'
+  if (c > 0) return 'thin evidence'
+  return 'no evidence'
+}
+
+// AXIS ROW, DISCLOSED: renders a signalStrength bar PLUS its own evidenceConfidence — never just
+// a bar. A `null` signalStrength (no sub-signal had any real data) NEVER renders a bar at all,
+// only the honest "Insufficient evidence" label, so nothing here implies a precision the
+// underlying data doesn't have. "Very high" (never "fully proven"/"100% proof") is the strongest
+// wording used anywhere on this axis. An expandable "Why this score?" panel shows the exact real
+// metrics that contributed, their individual contribution, and which inputs were missing.
+function AxisRow({ label, axis, accent }: { label: string; axis: AxisScore; accent: string }) {
+  const [expanded, setExpanded] = useState(false)
+  const hasEvidence = axis.signalStrength != null
+
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-      <div style={{ width: '78px', fontSize: '10px', fontWeight: 700, color: SLATE, textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 }}>
-        {label}
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ width: '86px', fontSize: '10px', fontWeight: 700, color: SLATE, textTransform: 'uppercase', letterSpacing: '0.05em', flexShrink: 0 }}>
+          {label}
+        </div>
+        <div style={{ flex: 1, height: '7px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', position: 'relative' }}>
+          {hasEvidence && (
+            <div
+              style={{
+                width: `${axis.signalStrength}%`, height: '100%', borderRadius: '999px',
+                background: `linear-gradient(90deg, ${accent}, ${accent}99)`, boxShadow: `0 0 8px ${accent}66`,
+              }}
+            />
+          )}
+        </div>
+        <div style={{ width: '64px', fontSize: '11px', fontWeight: 700, color: hasEvidence ? WHITE : SLATE, textAlign: 'right', flexShrink: 0 }}>
+          {hasEvidence ? `${axis.signalStrength}%` : 'N/A'}
+        </div>
+        <div style={{ width: '84px', fontSize: '10px', fontWeight: 700, color: accent, flexShrink: 0 }}>
+          {axis.label}
+        </div>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          style={{
+            background: 'transparent', border: 'none', color: SLATE, fontSize: '10px', fontWeight: 700, cursor: 'pointer',
+            padding: '2px 6px', flexShrink: 0, textDecoration: 'underline', textUnderlineOffset: '2px',
+          }}
+        >
+          {expanded ? 'Hide' : 'Why?'}
+        </button>
       </div>
-      <div style={{ flex: 1, height: '7px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', position: 'relative' }}>
-        {value != null && (
-          <div style={{ width: `${Math.round(value * 100)}%`, height: '100%', borderRadius: '999px', background: `linear-gradient(90deg, ${accent}, ${accent}99)`, boxShadow: `0 0 8px ${accent}66` }} />
-        )}
-      </div>
-      <div style={{ width: '80px', fontSize: '11px', fontWeight: 700, color: value == null ? SLATE : WHITE, textAlign: 'right', flexShrink: 0 }}>
-        {value == null ? 'Insufficient evidence' : `${Math.round(value * 100)}%`}
-      </div>
+      {expanded && (
+        <div style={{ marginTop: '8px', marginLeft: '96px', padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+          <div style={{ fontSize: '10px', color: SLATE, marginBottom: '7px' }}>
+            Evidence confidence: <strong style={{ color: WHITE }}>{Math.round(axis.evidenceConfidence * 100)}%</strong> ({confidenceWord(axis.evidenceConfidence)})
+          </div>
+          <ul style={{ margin: 0, padding: 0, listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            {axis.contributors.map((c) => (
+              <li key={c.key} style={{ fontSize: '11px', color: c.normalizedValue == null ? 'rgba(122,138,158,0.75)' : 'rgba(226,232,240,0.85)', display: 'flex', justifyContent: 'space-between', gap: '10px' }}>
+                <span>{c.label} — {c.detail}</span>
+                <span style={{ flexShrink: 0 }}>{c.normalizedValue == null ? 'missing' : `${Math.round(c.normalizedValue * 100)}%`}</span>
+              </li>
+            ))}
+          </ul>
+          {axis.missingInputs.length > 0 && (
+            <div style={{ fontSize: '10px', color: SLATE, marginTop: '7px' }}>
+              Missing inputs: {axis.missingInputs.join(', ')}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -245,14 +299,28 @@ export function WalletPersonalityCard({ report }: WalletPersonalityCardProps) {
           </div>
         ) : (
           <>
-            {/* ===== ZONE 2 — PERSONALITY VISUAL (trait meters) ===== */}
+            {/* ===== ZONE 2 — PERSONALITY SIGNAL STRENGTH ===== */}
             <div style={{ marginBottom: '22px', paddingTop: '2px' }}>
-              <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.09em', textTransform: 'uppercase', color: SLATE, marginBottom: '12px' }}>
-                Personality Signal
+              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '4px' }}>
+                <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.09em', textTransform: 'uppercase', color: SLATE }}>
+                  Personality Signal Strength
+                </div>
+                <span
+                  title="Percentages show signal intensity, not certainty. Each bar combines several independent real behavior signals — one metric alone can never push a bar to 100."
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '13px', height: '13px', borderRadius: '999px',
+                    border: `1px solid ${SLATE}`, color: SLATE, fontSize: '9px', fontWeight: 800, cursor: 'help', flexShrink: 0,
+                  }}
+                >
+                  i
+                </span>
               </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '9px', maxWidth: '640px' }}>
+              <div style={{ fontSize: '10.5px', color: 'rgba(148,163,184,0.65)', marginBottom: '12px' }}>
+                Percentages show signal intensity, not certainty.
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '11px', maxWidth: '720px' }}>
                 {RADAR_AXES.map(({ key, label, accent }) => (
-                  <TraitMeter key={key} label={label} value={data.radar[key]} accent={accent} />
+                  <AxisRow key={key} label={label} axis={data.radar[key]} accent={accent} />
                 ))}
               </div>
             </div>

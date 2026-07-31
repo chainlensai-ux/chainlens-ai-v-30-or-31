@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { deriveWalletPersonality, computeHoldingDaysStats, computeRepeatedRouterPercent, computeVerifiedWinLoss, composeTitle, computeRadarAxes } from './walletPersonality'
+import { deriveWalletPersonality, computeHoldingDaysStats, computeRepeatedRouterPercent, computeVerifiedWinLoss, composeTitle, computeRadarAxes, combineAxis, computeCadenceRegularity } from './walletPersonality'
 import type { WalletPersonalitySourceReport } from './walletPersonality'
 import type { MatchedLot } from '@/src/modules/fifoEngine/types'
 import type { SellTimelineEntry } from '@/src/modules/sellTimeline/types'
@@ -298,9 +298,10 @@ test('full evidence wallet: gets a distinctive, non-generic title and a fully po
   assert.notEqual(data.title, '')
   assert.equal(data.title, 'Risk-On Swing Operator')
   assert.equal(data.evidenceBasis, 'behavior_plus_pnl')
-  assert.equal(data.radar.risk, 1)
-  assert.equal(data.radar.conviction, 1)
-  assert.notEqual(data.radar.activity, null)
+  // Conviction has a real 'high' categorical input plus a holding-duration signal — a genuine axis
+  // score, not the old riskOnOff-forced binary.
+  assert.notEqual(data.radar.conviction.signalStrength, null)
+  assert.notEqual(data.radar.activity.signalStrength, null)
 })
 
 test('behavior-only wallet (no PnL evidence): still gets a real, distinctive, non-blank title', () => {
@@ -333,18 +334,139 @@ test('no blank titles: every branch of deriveWalletPersonality returns a non-emp
   }
 })
 
-test('no fake precision: radar axes are null (not a guessed midpoint) whenever the underlying signal is genuinely unknown', () => {
+test('no fake precision: axes are "Insufficient evidence" with a null signalStrength (not a guessed midpoint) whenever every underlying input is genuinely unknown', () => {
   const axes = computeRadarAxes({
-    totalTransactions: 0, riskValue: 'unknown', suspectedBot: false, repeatedRouterPercent: null,
-    rotationValue: 'unknown', convictionValue: 'unknown',
+    totalTransactions: 0, walletAgeDays: null, concentrationLabel: null, uniqueTokensTraded: null,
+    activeChains: 0, suspectedBot: false, repeatedRouterPercent: null, cadenceRegularity: null,
+    rotationValue: 'unknown', convictionValue: 'unknown', averageHoldingDays: null,
   })
-  assert.equal(axes.activity, null)
-  assert.equal(axes.risk, null)
-  assert.equal(axes.rotation, null)
-  assert.equal(axes.conviction, null)
-  // automation defaults to a real 0 (suspectedBot=false, no router evidence) — a genuine computed
-  // value, not a placeholder, so this one is intentionally NOT null.
-  assert.equal(axes.automation, 0)
+  assert.equal(axes.activity.signalStrength, null)
+  assert.equal(axes.activity.label, 'Insufficient evidence')
+  assert.equal(axes.risk.signalStrength, null)
+  assert.equal(axes.rotation.signalStrength, null)
+  assert.equal(axes.conviction.signalStrength, null)
+  // Automation: suspectedBot=false is a real, computed 0 (not a placeholder) — but with zero
+  // other real inputs, evidenceConfidence must still be low, never implying certainty.
+  assert.equal(axes.automation.signalStrength, 0)
+  assert.ok(axes.automation.evidenceConfidence < 0.5)
+})
+
+// ─── Calibration audit task: signal strength vs. evidence confidence ───────────────────────────
+
+test('one metric alone cannot produce a 100% signal strength', () => {
+  const result = combineAxis([
+    { key: 'onlySignal', label: 'Only signal', detail: 'x', value: 1, weight: 1 },
+    { key: 'missing1', label: 'Missing 1', detail: 'x', value: null, weight: 1 },
+    { key: 'missing2', label: 'Missing 2', detail: 'x', value: null, weight: 1 },
+  ])
+  assert.notEqual(result.signalStrength, 100)
+  assert.ok((result.signalStrength ?? 0) <= 85)
+})
+
+test('several independent top-band metrics CAN produce a 100% signal strength', () => {
+  const result = combineAxis([
+    { key: 'a', label: 'A', detail: 'x', value: 1, weight: 1 },
+    { key: 'b', label: 'B', detail: 'x', value: 1, weight: 1 },
+  ])
+  assert.equal(result.signalStrength, 100)
+})
+
+test('missing concentration data lowers Risk axis confidence, never assumes high risk', () => {
+  const report = baseReport({
+    behaviorIntel: { ...baseReport().behaviorIntel, concentrationSignals: null },
+  })
+  const data = deriveWalletPersonality(report)
+  assert.ok(data.radar.risk.missingInputs.includes('Portfolio concentration'))
+  assert.ok(data.radar.risk.evidenceConfidence < 1)
+  assert.notEqual(data.classification.risk, 'High risk behavior')
+})
+
+test('repeated-router percentage alone does not prove automation — confidence stays capped and the label stays soft', () => {
+  const report = baseReport({
+    behaviorIntel: { ...baseReport().behaviorIntel, automationSignals: { suspectedBot: false, signals: [] } },
+    timelines: {
+      ...baseReport().timelines,
+      sellTimelineV2: {
+        totalSells: 3, chainContext: { includedChains: ['base'], excludedChains: [] },
+        entries: [
+          sellEntry({ txHash: '0xa', counterparty: '0xsamerouter' }),
+          sellEntry({ txHash: '0xb', counterparty: '0xsamerouter' }),
+          sellEntry({ txHash: '0xc', counterparty: '0xsamerouter' }),
+        ],
+      },
+    } as unknown as WalletPersonalitySourceReport['timelines'],
+  })
+  const data = deriveWalletPersonality(report)
+  assert.equal(data.metrics.repeatedRouterPercent, 100)
+  // Only 1 of the 3 automation sub-signals (repeated router) has real data — cadence needs 6+
+  // timestamps and suspectedBot is a real, computed false — so confidence must stay well under the
+  // MIN_CONFIDENCE_FOR_BOT_LABEL bar, and the label must be the soft "signals present" wording,
+  // never the alarmist "Bot-like"/"Highly automated" claim from one proxy metric alone.
+  assert.notEqual(data.classification.automation, 'Bot-like')
+  assert.notEqual(data.classification.automation, 'Highly automated')
+})
+
+test('high activity alone does not imply high risk — the two axes are structurally independent', () => {
+  const report = baseReport({
+    timelines: {
+      buyTimeline: { totalBuys: 200, entries: Array.from({ length: 200 }, (_, i) => buyEntry({ txHash: `0xbuy${i}`, timestamp: NOW - (200 - i) * 3600_000 })) },
+      sellTimeline: { totalSells: 0, entries: [] },
+      distributionTimeline: { totalDistributions: 0, entries: [] },
+      sellTimelineV2: { totalSells: 0, chainContext: { includedChains: ['base'], excludedChains: [] }, entries: [] },
+    } as unknown as WalletPersonalitySourceReport['timelines'],
+    fifoAndPnl: {
+      ...baseReport().fifoAndPnl,
+      matchedLots: [lot({ openedAt: NOW - 40 * DAY, closedAt: NOW - 5 * DAY, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })],
+    },
+    behaviorIntel: { ...baseReport().behaviorIntel, concentrationSignals: { topHoldingSymbol: 'X', topHoldingPercent: 10, concentrationLabel: 'balanced' } },
+  })
+  const data = deriveWalletPersonality(report)
+  assert.ok((data.radar.activity.signalStrength ?? 0) >= 70, 'activity should read high given 200 dense transactions')
+  assert.ok((data.radar.risk.signalStrength ?? 0) < 40, 'risk must not inherit a high reading purely from high activity')
+})
+
+test('correlated features (token churn, holding speed) are not double-counted at full weight across axes', () => {
+  const churnSignal = { key: 'churn', label: 'churn', detail: 'x', value: 1, weight: 0.35 }
+  const rotationResult = combineAxis([
+    { key: 'cat', label: 'cat', detail: 'x', value: 1, weight: 0.45 },
+    churnSignal,
+    { key: 'holdSpeed', label: 'holdSpeed', detail: 'x', value: 1, weight: 0.20 },
+  ])
+  const riskResult = combineAxis([
+    { key: 'shortHolding', label: 'shortHolding', detail: 'x', value: 1, weight: 0.40 },
+    { key: 'concentration', label: 'concentration', detail: 'x', value: 1, weight: 0.35 },
+    { key: 'churnReduced', label: 'churnReduced', detail: 'x', value: 1, weight: 0.15 },
+    { key: 'chainBreadth', label: 'chainBreadth', detail: 'x', value: 1, weight: 0.10 },
+  ])
+  // The shared "token churn" concept carries full weight (0.35) in Rotation but only reduced
+  // weight (0.15) in Risk — never the same full-strength contribution counted twice.
+  const churnWeightInRotation = rotationResult.contributors.find((c) => c.key === 'churn')!.weight
+  const churnWeightInRisk = riskResult.contributors.find((c) => c.key === 'churnReduced')!.weight
+  assert.ok(churnWeightInRisk < churnWeightInRotation)
+})
+
+test('percentages are deterministic: identical input always produces the identical signalStrength/evidenceConfidence', () => {
+  const report = baseReport()
+  const a = deriveWalletPersonality(report)
+  const b = deriveWalletPersonality(report)
+  assert.deepEqual(a.radar, b.radar)
+})
+
+test('no fake midpoint for unknown inputs: a partially-missing axis never resolves to a default 0.5/50%', () => {
+  const result = combineAxis([
+    { key: 'known', label: 'known', detail: 'x', value: 0.9, weight: 1 },
+    { key: 'unknown', label: 'unknown', detail: 'x', value: null, weight: 1 },
+  ])
+  // Only the known signal contributes — never averaged against a guessed 0.5 for the missing one.
+  assert.equal(result.signalStrength, 85) // single available signal, capped at SINGLE_SIGNAL_CEILING
+  assert.equal(result.evidenceConfidence, 0.5)
+})
+
+test('computeCadenceRegularity: null with too few real transaction timestamps, never a guessed value', () => {
+  assert.equal(computeCadenceRegularity([1000, 2000, 3000]), null)
+  const regular = computeCadenceRegularity([0, 1000, 2000, 3000, 4000, 5000, 6000])
+  assert.notEqual(regular, null)
+  assert.ok((regular ?? 0) > 0.9)
 })
 
 test('composeTitle: never returns "General User" — that string is reserved for the zero-evidence path only', () => {
