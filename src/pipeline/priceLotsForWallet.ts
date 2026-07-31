@@ -47,6 +47,13 @@ import {
   type AlchemyPricingRequirement,
 } from '../modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource'
 import {
+  prefetchNativeUsdPrices,
+  readPrefetchedNativeUsdPrice,
+  nativePriceBucketStart,
+  isEthNativeChain,
+  getNativePriceResolverDiagnostics,
+} from '../modules/nativePriceResolver/index'
+import {
   deriveSameTransactionQuotePrice,
   groupSwapLegsByTransaction,
   swapLegGroupKey,
@@ -841,9 +848,54 @@ export async function priceLotsForWallet(params: {
     sampleTransactions,
   })
 
+  // SHARED NATIVE-PRICE PREFETCH, DISCLOSED, PHASE 1 — see src/modules/nativePriceResolver/index.ts's
+  // own header for the full audited root cause. Production baseline: 53 native ETH/WETH requirements,
+  // only 4 selected, 51 quote candidates failing `missing_verified_native_price`. Those 51 failed not
+  // because ETH's historical price was unknowable, but because the ONLY way this function could learn
+  // it was to read back a costUsd/proceedsUsd slot that had itself survived MAX_LOOKUPS_PER_TOKEN (2)
+  // — rationing one global scalar behind a per-token call cap it never needed to be subject to.
+  //
+  // Collected here as (chain, timestamp) requirements for exactly the transactions whose same-tx quote
+  // leg IS a native/WETH leg, then resolved by DISTINCT UTC-day bucket (a handful of calendar days,
+  // not 53 requirements) before the synchronous gap-fill loop below runs. Accepted prices are cached
+  // for the life of the process, so repeat scans over the same days spend zero calls.
+  //
+  // NO BUDGET INCREASE TO ANY EXISTING PATH: this never touches MAX_LOOKUPS_PER_TOKEN, never adds an
+  // entry to resolvePricingAtTime, and never re-requests a bucket already known. Its own live-call
+  // ceiling is nativePriceResolver's own hard cap (MAX_NATIVE_PRICE_LIVE_BUCKETS_PER_PROCESS).
+  const nativePriceRequirements: Array<{ chain: NormalizedEvent['chain']; timestamp: number }> = []
+  {
+    const seenRequirementKeys = new Set<string>()
+    for (const event of [...buys, ...sells]) {
+      const timestamp = Date.parse(event.timestamp)
+      if (!Number.isFinite(timestamp)) continue
+      if (!isEthNativeChain(event.chain)) continue
+      const legs = swapLegsByTx.get(swapLegGroupKey(event.chain, event.txHash)) ?? []
+      const hasNativeQuoteLeg = legs.some(
+        (leg) =>
+          !leg.excludeReason &&
+          leg.direction !== event.direction &&
+          leg.contract.toLowerCase() !== event.contract.toLowerCase() &&
+          isNativeOrWethLeg(event.chain, leg) &&
+          isFinitePositiveAmount(leg.amount),
+      )
+      if (!hasNativeQuoteLeg) continue
+      const key = `${event.chain}:${nativePriceBucketStart(timestamp)}`
+      if (seenRequirementKeys.has(key)) continue
+      seenRequirementKeys.add(key)
+      nativePriceRequirements.push({ chain: event.chain, timestamp })
+    }
+  }
+  const prefetchedNativePrices = await prefetchNativeUsdPrices({ requirements: nativePriceRequirements })
+
   const quoteLegCache = new Map<string, QuoteLegPriceResult>()
   let sameTxStablePricesRecovered = 0
   let sameTxNativePricesRecovered = 0
+  // Real attribution for the Phase 1 change specifically — how many native quote legs got their price
+  // from the shared resolver rather than from an already-resolved dictionary slot.
+  let nativePricesFromResolvedSlot = 0
+  let nativePricesFromSharedResolver = 0
+  let nativePricesStillUnavailable = 0
   const rejectionReasonCounts: Record<string, number> = {}
   let requirementsWithValidOppositeLeg = 0
   const sampleRecovered: Array<{
@@ -895,7 +947,27 @@ export async function priceLotsForWallet(params: {
             : quoteLeg.direction === 'outbound'
               ? atTradeTime.proceedsUsd[event.txHash]
               : atTradeTime.proceedsUsd[nativeQuoteRequirementKey(event.chain, event.txHash)]
-        if (quoteLegOwnUsd != null) historicalNativePrice = quoteLegOwnUsd / quoteLeg.amount
+        if (quoteLegOwnUsd != null) {
+          // PREFERRED, UNCHANGED PATH: this leg's own already-resolved USD value, priced at this exact
+          // transaction. Strictly the strongest evidence available — never displaced by the shared
+          // resolver below, which is consulted ONLY when this is genuinely absent.
+          historicalNativePrice = quoteLegOwnUsd / quoteLeg.amount
+          nativePricesFromResolvedSlot += 1
+        } else {
+          // PHASE 1 RECOVERY, DISCLOSED: the 51 `missing_verified_native_price` failures land here.
+          // ETH/USD at this trade's own historical day, from the one shared resolver — the SAME real
+          // source, at the SAME real granularity, that filled the slot above whenever the cap happened
+          // to allow it. Not a weaker class of evidence being promoted: the identical evidence, no
+          // longer rationed. Still fails closed (historicalNativePrice stays null → the existing
+          // `missing_verified_native_price` rejection) when the resolver genuinely has no price.
+          const resolved = readPrefetchedNativeUsdPrice(prefetchedNativePrices, Date.parse(event.timestamp))
+          if (resolved) {
+            historicalNativePrice = resolved.priceUsd
+            nativePricesFromSharedResolver += 1
+          } else {
+            nativePricesStillUnavailable += 1
+          }
+        }
       }
       result = deriveSameTransactionQuotePrice({
         chain: event.chain,
@@ -945,6 +1017,27 @@ export async function priceLotsForWallet(params: {
 
   const fullyPricedLotsAfter = countFullyPriced()
   const verifiedPricingCoverageAfter = structuralMatchedLots.length > 0 ? fullyPricedLotsAfter / structuralMatchedLots.length : 0
+
+  // PHASE 1 COVERAGE DIAGNOSTIC, DISCLOSED, BOUNDED — one line per scan. Reports the real, measured
+  // effect of the shared native-price resolver against the production baseline this phase targets
+  // (53 native requirements / 4 selected / 51 `missing_verified_native_price`), so the gain is
+  // attributable rather than assumed before Phase 2 is built on top of it.
+  // eslint-disable-next-line no-console
+  console.warn('[native-price-resolver-phase1]', {
+    nativePriceRequirementBuckets: nativePriceRequirements.length,
+    nativePricesFromResolvedSlot,
+    nativePricesFromSharedResolver,
+    nativePricesStillUnavailable,
+    missingVerifiedNativePriceRejections: rejectionReasonCounts['missing_verified_native_price'] ?? 0,
+    sameTxNativePricesRecovered,
+    sameTxStablePricesRecovered,
+    closedLots: structuralMatchedLots.length,
+    fullyPricedLotsBefore,
+    fullyPricedLotsAfter,
+    verifiedCoverageBefore: Math.round(verifiedPricingCoverageBefore * 10000) / 100,
+    verifiedCoverageAfter: Math.round(verifiedPricingCoverageAfter * 10000) / 100,
+    resolver: getNativePriceResolverDiagnostics(),
+  })
   // Real, observed effect of this whole native-quote pass (ranking + reuse) on closed-lot completion —
   // compared against expectedLotsCompletedBySelection (the pre-call prediction) above.
   const actualLotsCompletedByQuote = fullyPricedLotsAfter - fullyPricedLotsBefore

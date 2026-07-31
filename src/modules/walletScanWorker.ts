@@ -134,6 +134,13 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   // unrelated later scan on a warm serverless instance. This module is shadow-mode only (records
   // results, never feeds official pricing) — resetting it has no effect on FIFO/PnL/coverage.
   const { resetAlchemyHistoricalPricingState } = await import('@/src/modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource')
+  // SHARED NATIVE-PRICE RESOLVER RESET, DISCLOSED (Phase 1) — clears ONLY this scan's transient
+  // failure memory and counters. Deliberately does NOT clear the accepted-price cache: a real
+  // historical ETH price for a past UTC day is immutable, so carrying it across scans on a warm
+  // instance is correct AND is the entire point of the module (see nativePriceResolver/index.ts's
+  // own header — repeatedly re-fetching immutable prices is what exhausted the rate limit that
+  // produced this phase's production baseline).
+  const { resetNativePriceResolverForScan } = await import('@/src/modules/nativePriceResolver/index')
 
   const startedAt = Date.now()
   console.warn('[wallet-scan-worker] job started', { jobId: payload.jobId })
@@ -146,6 +153,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   resetGoldrushPriceSourceCallCount()
   resetDexscreenerCallCount()
   resetCoingeckoCircuitBreaker()
+  resetNativePriceResolverForScan()
   resetGeckoTerminalNoPoolCache()
   resetPricingAtTimeAdapterScanState()
   // JOB-ID THREADED, DISCLOSED (provider-coalescing follow-up task's explicit audit requirement):

@@ -16,7 +16,7 @@
 import { createPublicClient, decodeFunctionResult, encodeFunctionData, http, type PublicClient } from 'viem'
 import { base } from 'viem/chains'
 import type { SupportedChain } from '../../providerFetchWindow/types'
-import { fetchCoingeckoPriceDetailed } from './coingecko'
+import { resolveHistoricalNativeUsdPrice } from '../../nativePriceResolver/index'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 
 const WETH_BASE = '0x4200000000000000000000000000000000000006'
@@ -583,11 +583,26 @@ async function getSharedWethUsdPrice(timestamp: number): Promise<{ priceUsd: num
     return { priceUsd, cacheHit: true }
   }
 
-  quotePriceAttributionState.quotePriceLiveResolutions += 1
   const live = (async (): Promise<number | null> => {
-    const result = await fetchCoingeckoPriceDetailed(WETH_BASE, 'base', timestamp)
-    sharedQuoteUsdCache.set(bucketed, result.priceUsd)
-    return result.priceUsd
+    // PHASE 1 — SHARED NATIVE-PRICE RESOLVER, DISCLOSED (see src/modules/nativePriceResolver/index.ts's
+    // own header for the full audited root cause). This function previously fired its OWN independent
+    // live CoinGecko call for Base WETH/USD, entirely unaware that coingecko.ts's native-ETH route and
+    // priceLotsForWallet.ts's same-tx quote pricing were separately resolving the IDENTICAL number for
+    // the IDENTICAL day. All three now go through one resolver with one process-lifetime accepted-price
+    // cache, so the DEX-ratio path here and the same-tx quote path there literally reuse one accepted
+    // price. This can only REDUCE live call volume — a hit on the shared cache replaces a call this
+    // function would otherwise have made. It adds no budget, changes no evidence standard (same real
+    // source, same real daily granularity as before), and still returns an honest null when the price
+    // is genuinely unavailable.
+    const resolution = await resolveHistoricalNativeUsdPrice({ chain: 'base', timestamp })
+    const priceUsd = resolution?.priceUsd ?? null
+    if (resolution?.servedFromPermanentCache || resolution?.coalesced) {
+      quotePriceAttributionState.quotePriceCacheHits += 1
+    } else {
+      quotePriceAttributionState.quotePriceLiveResolutions += 1
+    }
+    sharedQuoteUsdCache.set(bucketed, priceUsd)
+    return priceUsd
   })()
 
   sharedQuoteUsdInFlight.set(bucketed, live)

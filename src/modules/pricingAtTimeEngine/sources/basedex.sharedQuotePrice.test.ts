@@ -18,6 +18,31 @@ import {
   resetBaseDexVenueAttributionForScan,
   __resetBaseDexCachesForTest,
 } from './basedex'
+import { __resetNativePriceResolverForTest } from '../../nativePriceResolver/index'
+import { resetCoingeckoCircuitBreaker } from './coingecko'
+
+// PHASE 1, DISCLOSED: basedex's WETH-USD quote price now resolves through the ONE shared native-price
+// resolver (src/modules/nativePriceResolver) rather than firing its own independent CoinGecko call —
+// so these tests exercise that resolver's deterministic fallback chain too. Two consequences, both
+// deliberate and both asserted below:
+//   1. The resolver tries CoinGecko's NATIVE coin-history endpoint first, then falls back to the
+//      canonical-WETH CONTRACT endpoint. A mock that only answers the contract shape therefore sees
+//      two requests for one resolution — the fixtures below answer BOTH endpoints so each test
+//      measures real sharing rather than fallback noise.
+//   2. The resolver's accepted-price cache is intentionally process-lifetime (a past day's ETH price
+//      is immutable). That must be cleared between tests, or an accepted price from one case leaks
+//      into the next case's "fails closed" assertion.
+const NATIVE_HISTORY_BODY = JSON.stringify({ market_data: { current_price: { usd: 3000 } } })
+const CONTRACT_RANGE_BODY = JSON.stringify({ prices: [[1000, 3000]] })
+
+function urlOf(input: RequestInfo | URL): string {
+  return typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+}
+
+// Answers whichever real CoinGecko endpoint is asked for, so a resolution costs exactly one request.
+function respondToBothCoingeckoEndpoints(input: RequestInfo | URL): Response {
+  return new Response(urlOf(input).includes('/coins/ethereum/history') ? NATIVE_HISTORY_BODY : CONTRACT_RANGE_BODY, { status: 200 })
+}
 
 const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11'
 const MULTICALL3_ABI = [
@@ -133,6 +158,11 @@ const originalFetch = global.fetch
 beforeEach(() => {
   __resetBaseDexCachesForTest()
   resetBaseDexVenueAttributionForScan()
+  __resetNativePriceResolverForTest()
+  // coingecko.ts keeps its OWN per-scan native-ETH date cache; production clears it once per scan via
+  // walletScanWorker, so the equivalent per-case reset belongs here too — otherwise an accepted price
+  // from an earlier case is coalesced into a later case that is asserting the fail-closed path.
+  resetCoingeckoCircuitBreaker()
 })
 
 afterEach(() => {
@@ -142,9 +172,9 @@ afterEach(() => {
 describe('basedex shared WETH-USD quote-price cache', () => {
   it('a live CoinGecko call is only made once for two distinct venues sharing the same bucketed timestamp — the second is a cache hit, not a second live call', async () => {
     let liveCalls = 0
-    global.fetch = (async () => {
+    global.fetch = (async (input: RequestInfo | URL) => {
       liveCalls += 1
-      return new Response(JSON.stringify({ prices: [[1000, 3000]] }), { status: 200 })
+      return respondToBothCoingeckoEndpoints(input)
     }) as unknown as typeof fetch
 
     const timestamp = Date.now()
@@ -177,9 +207,14 @@ describe('basedex shared WETH-USD quote-price cache', () => {
 
   it('never uses a "current" price — only the real historical timestamp requested', async () => {
     let capturedUrl: string | null = null
+    // Only the CONTRACT endpoint is answered here, so the resolver falls through to it and this test
+    // keeps asserting on the contract request's own `from`/`to` range — the exact thing that would
+    // reveal a "current price" substitution.
     global.fetch = (async (input: RequestInfo | URL) => {
-      capturedUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-      return new Response(JSON.stringify({ prices: [[1000, 3000]] }), { status: 200 })
+      const url = urlOf(input)
+      if (url.includes('/coins/ethereum/history')) return new Response(JSON.stringify({}), { status: 200 })
+      capturedUrl = url
+      return new Response(CONTRACT_RANGE_BODY, { status: 200 })
     }) as unknown as typeof fetch
 
     const historicalTimestamp = new Date('2024-01-01T00:00:00.000Z').getTime()
@@ -222,14 +257,18 @@ describe('basedex shared WETH-USD quote-price cache', () => {
 
     assert.equal(first.usd, null, 'must fail closed, never fabricate a price, when no verified historical quote price exists')
     assert.equal(second.usd, null, 'the cached null must also fail closed for the second venue')
-    assert.equal(liveCalls, 1, 'the null result must be cached too — a second attempt must not repeat the live call')
+    // TWO requests for ONE resolution: the shared resolver's deterministic fallback chain tries the
+    // native coin-history endpoint, then the canonical-WETH contract endpoint, before failing closed.
+    // The assertion that matters is unchanged in spirit — the SECOND venue adds nothing, because the
+    // miss is remembered for this scan.
+    assert.equal(liveCalls, 2, 'one resolution costs at most its two fallback sources — and the second venue must add zero further calls')
 
     const snap = getBaseDexQuotePriceAttributionForScan()
     assert.equal(snap.quotePriceUnavailable, 2, 'both the live miss and its cache-hit reuse count as unavailable')
   })
 
   it('records per-request attribution so a caller can confirm whether an accepted price used a shared cache hit', async () => {
-    global.fetch = (async () => new Response(JSON.stringify({ prices: [[1000, 3000]] }), { status: 200 })) as unknown as typeof fetch
+    global.fetch = (async (input: RequestInfo | URL) => respondToBothCoingeckoEndpoints(input)) as unknown as typeof fetch
 
     const timestamp = Date.now()
     const attempts: unknown[] = []
