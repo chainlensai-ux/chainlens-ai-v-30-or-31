@@ -118,10 +118,50 @@ const levelCounts = new Map<string, LevelCounts>()
 const reasonCountsByAsset = new Map<string, Map<string, number>>()
 const permanentlyMissingAssets = new Set<string>()
 
+// DELTA LEDGER, DISCLOSED — see sourceSuccessEvidencePersistence.ts. `levelCounts` above is the
+// EFFECTIVE view (persisted baseline + everything observed in this process); `deltaCounts` is only
+// what THIS process observed itself. Persisting the delta rather than the effective total is what
+// makes concurrent flushes from several workers additive instead of mutually clobbering — a worker
+// that wrote back its loaded baseline would re-count observations another worker had already
+// stored.
+const deltaCounts = new Map<string, LevelCounts>()
+// Real observations made by this process, counted once each (not once per specificity level).
+let recordedThisProcess = 0
+
 export function resetSourceSuccessEvidence(): void {
   levelCounts.clear()
   reasonCountsByAsset.clear()
   permanentlyMissingAssets.clear()
+  deltaCounts.clear()
+  recordedThisProcess = 0
+}
+
+// Seeds the effective ledger with counts loaded from durable storage. NEVER touches `deltaCounts`:
+// loaded evidence has already been persisted by whichever worker observed it, and must not be
+// written back. Additive, so a load arriving after some local recording (or a second load) merges
+// rather than replaces.
+export function seedPersistedEvidence(
+  loaded: ReadonlyMap<string, { attempts: number; successes: number; hardFailures: number }>,
+): void {
+  for (const [key, counts] of loaded) {
+    const existing = levelCounts.get(key) ?? { attempts: 0, successes: 0, hardFailures: 0 }
+    levelCounts.set(key, {
+      attempts: existing.attempts + counts.attempts,
+      successes: existing.successes + counts.successes,
+      hardFailures: existing.hardFailures + counts.hardFailures,
+    })
+  }
+}
+
+// The counts observed by THIS process since the last reset — exactly what a flush should persist.
+export function snapshotEvidenceDelta(): ReadonlyMap<string, LevelCounts> {
+  const copy = new Map<string, LevelCounts>()
+  for (const [k, v] of deltaCounts) copy.set(k, { ...v })
+  return copy
+}
+
+export function evidenceRecordedThisProcess(): number {
+  return recordedThisProcess
 }
 
 export function assetEvidenceKey(chain: string, token: string): string {
@@ -152,12 +192,15 @@ function levelKeys(o: {
 // purely additive bookkeeping over an outcome that has already happened.
 export function recordPricingAttemptOutcome(outcome: PricingAttemptOutcome): void {
   const isHard = outcome.reason !== null && HARD_FAILURE_REASONS.has(outcome.reason)
+  recordedThisProcess += 1
   for (const key of levelKeys(outcome)) {
-    const counts = levelCounts.get(key) ?? { attempts: 0, successes: 0, hardFailures: 0 }
-    counts.attempts += 1
-    if (outcome.ok) counts.successes += 1
-    else if (isHard) counts.hardFailures += 1
-    levelCounts.set(key, counts)
+    for (const store of [levelCounts, deltaCounts]) {
+      const counts = store.get(key) ?? { attempts: 0, successes: 0, hardFailures: 0 }
+      counts.attempts += 1
+      if (outcome.ok) counts.successes += 1
+      else if (isHard) counts.hardFailures += 1
+      store.set(key, counts)
+    }
   }
 
   const assetKey = assetEvidenceKey(outcome.chain, outcome.token)
@@ -165,7 +208,15 @@ export function recordPricingAttemptOutcome(outcome: PricingAttemptOutcome): voi
     const perAsset = reasonCountsByAsset.get(assetKey) ?? new Map<string, number>()
     perAsset.set(outcome.reason, (perAsset.get(outcome.reason) ?? 0) + 1)
     reasonCountsByAsset.set(assetKey, perAsset)
-    if (PERMANENT_SKIP_REASONS.has(outcome.reason)) permanentlyMissingAssets.add(assetKey)
+    // PROVIDER-SPECIFIC, DISCLOSED (this task's explicit "token_not_found remains provider-specific"
+    // requirement): recorded per (chain, token, SOURCE). GeckoTerminal asserting a token does not
+    // exist says nothing about whether GoldRush knows it — treating one provider's assertion as
+    // global would permanently blind the scheduler to assets another provider can price perfectly
+    // well. An asset is only ever hard-skipped when EVERY source on its real route has independently
+    // asserted it (see isPermanentlyMissingAsset).
+    if (PERMANENT_SKIP_REASONS.has(outcome.reason)) {
+      permanentlyMissingAssets.add(`${assetKey}:${outcome.source}`)
+    }
   }
 }
 
@@ -242,10 +293,27 @@ export function observedFailureReasonsForAsset(
   return evidence.reasonCountsByAsset.get(assetEvidenceKey(chain, token)) ?? new Map()
 }
 
-// True only when a provider has POSITIVELY asserted this asset does not exist for it (see
+// True only when a specific provider has POSITIVELY asserted this asset does not exist for it (see
 // PERMANENT_SKIP_REASONS) — not merely "we have not managed to price it yet".
-export function isPermanentlyMissingAsset(evidence: SourceSuccessEvidence, chain: string, token: string): boolean {
-  return evidence.permanentlyMissingAssets.has(assetEvidenceKey(chain, token))
+export function isPermanentlyMissingForSource(
+  evidence: SourceSuccessEvidence,
+  chain: string,
+  token: string,
+  source: PricingSourceName,
+): boolean {
+  return evidence.permanentlyMissingAssets.has(`${assetEvidenceKey(chain, token)}:${source}`)
+}
+
+// An asset is only treated as permanently missing — i.e. skipped outright rather than discounted —
+// when EVERY source on its real dispatch route has independently asserted token_not_found. One
+// provider's assertion is real evidence about THAT provider, never about the asset as a whole.
+export function isPermanentlyMissingAsset(
+  evidence: SourceSuccessEvidence,
+  chain: SupportedChain,
+  token: string,
+): boolean {
+  const route = routeSourceOrderFor(chain)
+  return route.every((source) => isPermanentlyMissingForSource(evidence, chain, token, source))
 }
 
 // ROUTE ORDER, DISCLOSED, SINGLE DEFINITION: the real per-chain source ordering the pricing router

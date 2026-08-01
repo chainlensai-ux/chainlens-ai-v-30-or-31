@@ -12,6 +12,7 @@ import {
   estimateRouteSuccess,
   observedFailureReasonsForAsset,
   isPermanentlyMissingAsset,
+  isPermanentlyMissingForSource,
   routeSourceOrderFor,
   DEFAULT_UNSEEN_SUCCESS_PROBABILITY,
   HARD_FAILURE_REASONS,
@@ -84,13 +85,36 @@ test('every failure reason named in the spec is classified, and only token_not_f
   assert.deepEqual([...PERMANENT_SKIP_REASONS], ['token_not_found'])
 })
 
-test('token_not_found marks the asset permanently missing; no_pool alone never does', () => {
-  recordPricingAttemptOutcome(outcome({ ok: false, reason: 'no_pool' }))
+test('SPEC RULE: token_not_found is provider-specific — one provider asserting it never condemns the asset', () => {
+  recordPricingAttemptOutcome(outcome({ source: 'geckoterminal', ok: false, reason: 'token_not_found' }))
+  const evidence = snapshotSourceSuccessEvidence()
+
+  assert.equal(isPermanentlyMissingForSource(evidence, 'base', TOKEN, 'geckoterminal'), true,
+    'the asserting provider must record it')
+  assert.equal(isPermanentlyMissingForSource(evidence, 'base', TOKEN, 'goldrush'), false,
+    'a provider that never said so must never inherit another provider\'s assertion')
+  assert.equal(isPermanentlyMissingAsset(evidence, 'base', TOKEN), false,
+    'the asset is only permanently missing once EVERY source on its route has asserted it')
+})
+
+test('an asset is permanently missing only when every source on its real route has asserted token_not_found', () => {
+  const route = routeSourceOrderFor('base')
+  for (const source of route.slice(0, route.length - 1)) {
+    recordPricingAttemptOutcome(outcome({ source, ok: false, reason: 'token_not_found' }))
+  }
+  assert.equal(isPermanentlyMissingAsset(snapshotSourceSuccessEvidence(), 'base', TOKEN), false,
+    'all but one is not enough — the remaining source may still know the asset')
+
+  recordPricingAttemptOutcome(outcome({ source: route[route.length - 1], ok: false, reason: 'token_not_found' }))
+  assert.equal(isPermanentlyMissingAsset(snapshotSourceSuccessEvidence(), 'base', TOKEN), true)
+})
+
+test('no_pool never permanently skips an asset, however many sources report it', () => {
+  for (const source of routeSourceOrderFor('base')) {
+    for (let i = 0; i < 10; i += 1) recordPricingAttemptOutcome(outcome({ source, ok: false, reason: 'no_pool' }))
+  }
   assert.equal(isPermanentlyMissingAsset(snapshotSourceSuccessEvidence(), 'base', TOKEN), false,
     'no_pool is venue/time specific and must never permanently skip an asset')
-
-  recordPricingAttemptOutcome(outcome({ ok: false, reason: 'token_not_found' }))
-  assert.equal(isPermanentlyMissingAsset(snapshotSourceSuccessEvidence(), 'base', TOKEN), true)
 })
 
 test('evidence is source-specific, never global — one source failing does not condemn another', () => {

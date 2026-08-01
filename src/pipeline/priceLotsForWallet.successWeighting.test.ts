@@ -30,7 +30,11 @@ function countingPriceSources(): { sources: PriceSources; state: { calls: number
   return { sources: { primary: fn, fallback: fn }, state }
 }
 
-const FLAGS = ['HISTORICAL_PRICING_YIELD_SCHEDULER_ENABLED', 'HISTORICAL_PRICING_SUCCESS_WEIGHTING_ENABLED'] as const
+const FLAGS = [
+  'HISTORICAL_PRICING_YIELD_SCHEDULER_ENABLED',
+  'HISTORICAL_PRICING_SUCCESS_WEIGHTING_ENABLED',
+  'HISTORICAL_PRICING_EVIDENCE_PERSISTENCE_ENABLED',
+] as const
 const originals = new Map(FLAGS.map((f) => [f, process.env[f]]))
 
 // Captures the shadow diagnostic without letting it flood the test output.
@@ -148,6 +152,66 @@ describe('priceLotsForWallet — success-weighted scheduling wiring', () => {
 
     assert.ok(on.state.calls <= off.state.calls,
       `success weighting must redistribute, never grow, the budget (on=${on.state.calls}, off=${off.state.calls})`)
+  })
+
+  it('always logs [source-success-evidence-summary] with every required field', async () => {
+    const buy = event({ txHash: '0xbuy', direction: 'inbound', timestamp: '2026-01-01T00:00:00.000Z' })
+    const sell = event({ txHash: '0xsell', direction: 'outbound', timestamp: '2026-01-02T00:00:00.000Z' })
+    const { sources } = countingPriceSources()
+
+    const capture = captureWarn()
+    try {
+      await priceLotsForWallet({ normalizedEvents: [buy, sell], recoveredEvents: [], priceSources: sources })
+    } finally {
+      capture.restore()
+    }
+
+    const summary = capture.lines.find((l) => l.tag === '[source-success-evidence-summary]')
+    assert.ok(summary, 'the evidence summary must always be emitted')
+    const payload = summary.payload as Record<string, unknown>
+    for (const field of [
+      'persistenceEnabled', 'evidenceLoadedBeforeScan', 'evidenceRecordedThisScan',
+      'aggregateKeysLoaded', 'tokenKeysLoaded', 'readTimedOut', 'writeTimedOut',
+      'usedDefaultPriors', 'processInstanceId',
+    ]) {
+      assert.ok(field in payload, `missing required diagnostic field: ${field}`)
+    }
+    assert.equal(payload.persistenceEnabled, false, 'persistence stays off unless explicitly enabled')
+  })
+
+  it('scheduler budgets and provider calls are unchanged when persistence is unavailable', async () => {
+    const events = Array.from({ length: 10 }, (_, i) => event({
+      txHash: `0xtx${i}`,
+      contract: `0xtoken${i % 3}`,
+      direction: i % 2 === 0 ? 'inbound' : 'outbound',
+      timestamp: `2026-01-${String(i + 1).padStart(2, '0')}T00:00:00.000Z`,
+    }))
+
+    const off = countingPriceSources()
+    const captureOff = captureWarn()
+    try {
+      await priceLotsForWallet({ normalizedEvents: events, recoveredEvents: [], priceSources: off.sources })
+    } finally {
+      captureOff.restore()
+    }
+
+    // Persistence ON but with no KV credentials configured in this environment — the real
+    // fail-open path. Call volume and pricing output must be identical.
+    process.env.HISTORICAL_PRICING_EVIDENCE_PERSISTENCE_ENABLED = 'true'
+    const on = countingPriceSources()
+    const captureOn = captureWarn()
+    let summaryPayload: Record<string, unknown> | undefined
+    try {
+      await priceLotsForWallet({ normalizedEvents: events, recoveredEvents: [], priceSources: on.sources })
+      summaryPayload = captureOn.lines.find((l) => l.tag === '[source-success-evidence-summary]')?.payload as Record<string, unknown>
+    } finally {
+      captureOn.restore()
+    }
+
+    assert.equal(on.state.calls, off.state.calls,
+      'an unreachable KV must never change how many pricing provider calls a scan makes')
+    assert.equal(summaryPayload?.usedDefaultPriors, true,
+      'with no reachable KV the scan must fall back to default priors')
   })
 
   it('the shadow diagnostic is deterministic across identical runs', async () => {

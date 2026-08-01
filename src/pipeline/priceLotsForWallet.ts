@@ -58,7 +58,13 @@ import {
   annotateRequirement, computeSchedulerComparison, computeSuccessWeightedComparison,
   FAIRNESS_FLOOR_PER_TOKEN, type SchedulerLotRef, type SchedulerRequirement,
 } from '../modules/pricingAtTimeEngine/completionYieldScheduler'
-import { snapshotSourceSuccessEvidence } from '../modules/pricingAtTimeEngine/sourceSuccessEvidence'
+import {
+  snapshotSourceSuccessEvidence, seedPersistedEvidence, snapshotEvidenceDelta, evidenceRecordedThisProcess,
+} from '../modules/pricingAtTimeEngine/sourceSuccessEvidence'
+import {
+  loadPersistedEvidence, flushEvidenceDelta, buildEvidenceSummary, emptyLoadedEvidence, processInstanceId,
+  type LoadedEvidence,
+} from '../modules/pricingAtTimeEngine/sourceSuccessEvidencePersistence'
 import { resolveMaxLookupsPerToken } from '../modules/pricingAtTimeEngine/index'
 import {
   deriveSameTransactionQuotePrice,
@@ -569,6 +575,7 @@ export async function priceLotsForWallet(params: {
   // budget the flat rule would have used) and the flat per-token cap inside pricingAtTimeEngine is
   // overridden to the scheduler's own fairness floor, so the pre-curated set is never re-clipped.
   let schedulerYieldSelected: SchedulerRequirement[] = []
+  let evidenceLoadResult: LoadedEvidence = emptyLoadedEvidence()
   {
     const lotRefs: SchedulerLotRef[] = structuralMatchedLots.map((lot) => ({
       lotId: lot.lotId, chain: lot.chain, token: lot.token, openedTxHash: lot.openedTxHash, closedTxHash: lot.closedTxHash,
@@ -631,6 +638,14 @@ export async function priceLotsForWallet(params: {
     // SAME `existingSelectedCount` budget the flat rule would have used, with the same
     // FAIRNESS_FLOOR_PER_TOKEN — it reorders which requirements win existing slots, never how many
     // exist. SHADOW FIRST: always computed and logged; applied only behind the explicit flag below.
+    // DURABLE EVIDENCE LOAD, DISCLOSED — see sourceSuccessEvidencePersistence.ts. Exactly ONE
+    // bounded read, here, BEFORE any ranking, so a cold Vercel worker starts with the aggregate
+    // counters previous workers already earned instead of an empty ledger. Strictly fail-open: any
+    // timeout or KV outage leaves the ledger exactly as it was and the scan runs on the
+    // deterministic default priors, unchanged. Never blocks pricing, never retries.
+    evidenceLoadResult = await loadPersistedEvidence()
+    seedPersistedEvidence(evidenceLoadResult.levelCounts)
+
     const successEvidence = snapshotSourceSuccessEvidence()
     const { weightedSelection, comparison: successComparison } =
       computeSuccessWeightedComparison(requirements, comparison.existingSelectedCount, successEvidence)
@@ -1451,6 +1466,22 @@ export async function priceLotsForWallet(params: {
     // eslint-disable-next-line no-console
     console.warn('[priceLotsForWallet] tokens with no price from any source', { count: pricingUnavailableTokens.length, tokens: pricingUnavailableTokens })
   }
+
+  // DURABLE EVIDENCE FLUSH, DISCLOSED — see sourceSuccessEvidencePersistence.ts. Exactly ONE bounded,
+  // batched write, here, AFTER every pricing pass in this call has completed, so it carries the full
+  // set of typed outcomes this scan observed. Only the DELTA this process recorded is written (never
+  // the loaded baseline), and every counter is applied as a per-field HINCRBY, so two workers
+  // flushing at the same instant both have their counts applied and neither loses the other's.
+  // Strictly fail-open and never retried: a failed flush is logged and discarded, with no effect on
+  // anything this function returns.
+  const evidenceFlushResult = await flushEvidenceDelta(snapshotEvidenceDelta())
+  // eslint-disable-next-line no-console
+  console.warn('[source-success-evidence-summary]', buildEvidenceSummary({
+    loaded: evidenceLoadResult,
+    flush: evidenceFlushResult,
+    evidenceRecordedThisScan: evidenceRecordedThisProcess(),
+    processInstanceId: processInstanceId(),
+  }))
 
   const routeRecordsThisCall = pricingRouteLog.slice(routeLogSnapshotBefore)
   const historicalPricingAttempts = routeRecordsThisCall.filter((r) => r.route !== 'none')

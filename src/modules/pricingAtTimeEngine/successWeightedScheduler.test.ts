@@ -148,11 +148,15 @@ test('SPEC RULE: verified immediate-completion requirements remain highest-value
     'structural precedence must not be overridable by probability alone')
 })
 
-test('SPEC RULE: a permanent negative-cache / token_not_found requirement is skipped, never merely discounted', () => {
-  recordPricingAttemptOutcome({
-    chain: CHAIN, token: TOKEN_A, source: 'geckoterminal',
-    assetClass: 'other', requirementType: 'entry', ok: false, reason: 'token_not_found',
-  })
+test('SPEC RULE: a requirement every route source has declared token_not_found for is skipped, never merely discounted', () => {
+  // Provider-specific by design: it takes EVERY source on the route asserting the asset does not
+  // exist before it is skipped. One provider's assertion only discounts (covered separately below).
+  for (const source of routeSourceOrderFor(CHAIN)) {
+    recordPricingAttemptOutcome({
+      chain: CHAIN, token: TOKEN_A, source: source as PricingSourceName,
+      assetClass: 'other', requirementType: 'entry', ok: false, reason: 'token_not_found',
+    })
+  }
   const evidence = snapshotSourceSuccessEvidence()
 
   const doomed = completingRequirement(TOKEN_A, '0xopenA', '0xcloseA', 'lot-a')
@@ -164,6 +168,19 @@ test('SPEC RULE: a permanent negative-cache / token_not_found requirement is ski
   assert.equal(result.selected[0].requirement.entry.token, TOKEN_B)
   assert.equal(result.skippedHardFailures.length, 1)
   assert.equal(result.skippedHardFailures[0].requirement.entry.token, TOKEN_A)
+})
+
+test('SPEC RULE: token_not_found from ONE provider discounts but never skips — another provider may still know the asset', () => {
+  recordPricingAttemptOutcome({
+    chain: CHAIN, token: TOKEN_A, source: 'geckoterminal',
+    assetClass: 'other', requirementType: 'entry', ok: false, reason: 'token_not_found',
+  })
+  const evidence = snapshotSourceSuccessEvidence()
+  const req = completingRequirement(TOKEN_A, '0xopenA', '0xcloseA', 'lot-a')
+  const result = selectBySuccessWeightedYield([req], 1, evidence)
+  assert.equal(result.skippedHardFailures.length, 0,
+    'one provider\'s token_not_found must never skip an asset the rest of the route has not ruled out')
+  assert.equal(result.selected.length, 1)
 })
 
 test('SPEC RULE: no_pool discounts but never skips — a no_pool token is still selectable when budget allows', () => {
