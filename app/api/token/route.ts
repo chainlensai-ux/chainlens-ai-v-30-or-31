@@ -4150,6 +4150,13 @@ export async function POST(req: Request) {
         if (probe.v2Like) {
           const totalSupplyHex = await countedRpcCall("eth_call", [{ to: _lpProofAddress!, data: "0x18160ddd" }, "latest"], "lpControlCheck.totalSupply", false);
           const totalSupplyBigInt = hexToBigInt(totalSupplyHex);
+          // BUG FIX, DISCLOSED: this path previously converted totalSupplyBigInt/balBigInt to
+          // Number BEFORE dividing, exactly the precision hazard bigIntPct() (above) was already
+          // written to avoid for this same kind of raw on-chain balance-vs-supply percentage — a
+          // pool with an LP-token supply beyond Number.MAX_SAFE_INTEGER (2^53) silently loses
+          // precision with no error, which can misreport a burn/lock/team-controlled share right
+          // at a 50%/80% threshold. Reused bigIntPct() so this path has the same BigInt-safe
+          // division-before-conversion behavior as the rest of this file.
           const totalSupply = totalSupplyBigInt != null ? Number(totalSupplyBigInt) : null;
           if (!totalSupply || totalSupply <= 0) {
             lpControl = { status: "partial", confidence: "low", poolType: "v2", source: "dex_data+rpc", reason: "Pool probed as V2-like but RPC totalSupply read returned no data.", evidence: [`Verification pool: ${lpPair}`, "RPC probe: V2-like interface detected"], poolAddressPresent: true, probeV2Like: true, probeV3Like: false, dexId: dexId || undefined };
@@ -4159,7 +4166,7 @@ export async function POST(req: Request) {
               const balHex = await countedRpcCall("eth_call", [{ to: _lpProofAddress!, data }, "latest"], "lpControlCheck.balanceOf", false);
               const balBigInt = hexToBigInt(balHex);
               if (balBigInt == null) return 0;
-              return (Number(balBigInt) / totalSupply) * 100;
+              return bigIntPct(balBigInt, totalSupplyBigInt) ?? 0;
             };
             const _ownerForLpProbe = ownerAddrEarlyForLp && !DEAD.has(ownerAddrEarlyForLp) && !KNOWN_LOCKERS.has(ownerAddrEarlyForLp) ? ownerAddrEarlyForLp : null
             const [burn0, burnDead, _lockerPcts, _ownerLpPctProbe] = await Promise.all([
@@ -4273,6 +4280,10 @@ export async function POST(req: Request) {
         _lpRpcFallbackRan = true
         const totalSupplyHex = await countedRpcCall("eth_call", [{ to: _lpProofAddress!, data: "0x18160ddd" }, "latest"], "lpControlCheck.totalSupply", false);
         const totalSupplyBigInt = hexToBigInt(totalSupplyHex);
+        // BUG FIX, DISCLOSED: same precision hazard as the other RPC-fallback branch above —
+        // converting to Number before dividing loses precision for LP-token supplies beyond
+        // Number.MAX_SAFE_INTEGER with no error. Reused bigIntPct() (BigInt division before
+        // conversion) for consistency with the rest of this file.
         const totalSupply = totalSupplyBigInt != null ? Number(totalSupplyBigInt) : null;
         if (!totalSupply || totalSupply <= 0) {
           lpControl = { status: "partial", confidence: "low", poolType: _lpProofType, source: "dex_data+rpc", reason: "LP holder percentages not indexed; RPC totalSupply read returned no data.", evidence: [`pool=${_lpAddrSnippet}`] };
@@ -4282,7 +4293,7 @@ export async function POST(req: Request) {
             const balHex = await countedRpcCall("eth_call", [{ to: _lpProofAddress!, data }, "latest"], "lpControlCheck.balanceOf", false);
             const balBigInt = hexToBigInt(balHex);
             if (balBigInt == null) return 0;
-            return (Number(balBigInt) / totalSupply) * 100;
+            return bigIntPct(balBigInt, totalSupplyBigInt) ?? 0;
           };
           const _ownerForLpFallback = ownerAddrEarlyForLp && !DEAD.has(ownerAddrEarlyForLp) && !KNOWN_LOCKERS.has(ownerAddrEarlyForLp) ? ownerAddrEarlyForLp : null
           const [burn0, burnDead, _lockerPcts, _ownerLpPctFallback] = await Promise.all([

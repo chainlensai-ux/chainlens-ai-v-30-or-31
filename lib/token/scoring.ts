@@ -637,7 +637,12 @@ export function calculateCortexScoreV2(rawResult: unknown): CortexScoreResultV2 
   }
 
   const honeypot = getHoneypot(result)
-  const maxTax = Math.max(getTax(result, 'buyTax') ?? 0, getTax(result, 'sellTax') ?? 0)
+  // BUG FIX, DISCLOSED: previously only buyTax/sellTax were considered here, so a token with 0%
+  // buy/sell tax but a punitive transferTax (a known rug pattern — free to buy/hold, costly to
+  // move/sell outside the primary DEX pair) never triggered this cap, even though
+  // riskScore.ts's own critical-flag check already treats transferTax > 10% as severe. Including
+  // it here only WIDENS when the cap applies — it can never suppress a legitimately high score.
+  const maxTax = Math.max(getTax(result, 'buyTax') ?? 0, getTax(result, 'sellTax') ?? 0, getTax(result, 'transferTax') ?? 0)
   const top1 = num(getHolderDistribution(result)?.top1)
   const top10 = num(getHolderDistribution(result)?.top10)
   const holderCount = num(getHolderDistribution(result)?.holderCount)
