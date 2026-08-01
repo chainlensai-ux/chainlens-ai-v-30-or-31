@@ -36,6 +36,21 @@ import { DEXSCREENER_FRESHNESS_TOLERANCE_MS, isDexscreenerSupportedChain } from 
 import { isGoldrushCircuitOpen } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { fetchBaseDexPriceDetailed } from '../modules/pricingAtTimeEngine/sources/basedex'
 import { fetchCoingeckoNativeEthPriceDetailed } from '../modules/pricingAtTimeEngine/sources/coingecko'
+import {
+  recordPricingAttemptOutcome, routeSourceOrderFor, type PricingAssetClass,
+} from '../modules/pricingAtTimeEngine/sourceSuccessEvidence'
+import {
+  isNativePseudoAddress, isCanonicalWethAddress, isVerifiedStablecoinAddress,
+} from '../modules/quoteLegPricing/index'
+
+// Classifies the asset a price was requested for, using the SAME address-based checks the rest of
+// this pipeline already uses — never a symbol heuristic, never a guess. 'other' is the honest
+// default for anything not in one of the two verified classes.
+function evidenceAssetClassFor(chain: SupportedChain, token: string): PricingAssetClass {
+  if (isNativePseudoAddress(token) || isCanonicalWethAddress(chain, token)) return 'native'
+  if (isVerifiedStablecoinAddress(chain, token)) return 'stable'
+  return 'other'
+}
 
 // ETH NATIVE ROUTING MISMATCH, DISCLOSED (confirmed production evidence: the two selected Ethereum
 // native-quote requirements, correctly routed to the canonical WETH-on-mainnet contract address,
@@ -245,6 +260,26 @@ export function buildChainAwareHistoricalPriceSourceDetailed(
     // fallback attempts were made afterward, then returns the final result — a single exit path so
     // every one of this function's several `return`s below logs consistently, never duplicated.
     function finalize(result: ChainAwareHistoricalPriceResult): ChainAwareHistoricalPriceResult {
+      // SUCCESS-EVIDENCE RECORDING, DISCLOSED, ADDITIVE — see
+      // src/modules/pricingAtTimeEngine/sourceSuccessEvidence.ts's own header. Every attempt
+      // recorded here has ALREADY happened; this adds no call, no retry and no branch of its own. It
+      // only preserves the typed {source, ok, reason} outcomes this router already computed, which
+      // were otherwise discarded once the price was returned. Purely passive bookkeeping.
+      for (const attempt of attempts) {
+        recordPricingAttemptOutcome({
+          chain,
+          token,
+          source: attempt.source,
+          assetClass: evidenceAssetClassFor(chain, token),
+          // This layer genuinely does not know which structural lot side a request belongs to
+          // (PriceSourceFn is (token, chain, timestamp) only — see this file's own txHash note
+          // above), so the requirement type is recorded honestly as 'unranked' rather than guessed.
+          // The estimator's specificity ladder backs off past this level cleanly when it is absent.
+          requirementType: 'unranked',
+          ok: attempt.ok,
+          reason: attempt.reason,
+        })
+      }
       if (ethNativeDiagnostic) {
         ethNativeRoutingAuditLog.push({
           chain,
@@ -284,9 +319,10 @@ export function buildChainAwareHistoricalPriceSourceDetailed(
       }
     }
 
-    const order: Array<'goldrush' | 'dexscreener' | 'geckoterminal'> = chain === 'base'
-      ? ['geckoterminal', 'dexscreener', 'goldrush']
-      : ['goldrush', 'dexscreener', 'geckoterminal']
+    // SINGLE DEFINITION, DISCLOSED: the per-chain ordering now lives in sourceSuccessEvidence.ts so
+    // the success-probability model and this real dispatch order can never drift apart. Same order,
+    // same chains, same behaviour as the inline literal it replaces.
+    const order = routeSourceOrderFor(chain)
 
     for (const source of order) {
       const attempt = source === 'goldrush' ? await tryGoldrush(token, chain, timestamp)

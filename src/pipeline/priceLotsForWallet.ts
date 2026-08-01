@@ -55,9 +55,10 @@ import {
 } from '../modules/nativePriceResolver/index'
 import { getGeckoTerminalEthOhlcvRequestCount, getGeckoTerminalRangeDiagnostics } from '../modules/nativePriceResolver/geckoTerminalEthOhlcv'
 import {
-  annotateRequirement, computeSchedulerComparison,
+  annotateRequirement, computeSchedulerComparison, computeSuccessWeightedComparison,
   FAIRNESS_FLOOR_PER_TOKEN, type SchedulerLotRef, type SchedulerRequirement,
 } from '../modules/pricingAtTimeEngine/completionYieldScheduler'
+import { snapshotSourceSuccessEvidence } from '../modules/pricingAtTimeEngine/sourceSuccessEvidence'
 import { resolveMaxLookupsPerToken } from '../modules/pricingAtTimeEngine/index'
 import {
   deriveSameTransactionQuotePrice,
@@ -612,6 +613,37 @@ export async function priceLotsForWallet(params: {
 
     // eslint-disable-next-line no-console
     console.warn('[historical-pricing-scheduler-shadow]', comparison)
+
+    // SUCCESS-WEIGHTED SCHEDULING, DISCLOSED — see completionYieldScheduler.ts's own
+    // "SUCCESS-WEIGHTED SCHEDULING" header and sourceSuccessEvidence.ts's evidence model. Production
+    // baseline with the completion-yield scheduler live: 210 requirements selected, only 66
+    // resolved, 145 unresolved; native 53 selected / 4 priced / 49 provider misses; GeckoTerminal
+    // still 429; many Base DEX paths returning no_pool / blockResolutionFailure. Structural yield
+    // cannot see any of that, so this discounts it by real, observed, source-specific success
+    // probability.
+    //
+    // ONE SNAPSHOT, DISCLOSED (this task's explicit "no asynchronous ordering dependence"
+    // constraint): the evidence is snapshotted ONCE, here, before any pricing call in this pass, and
+    // that immutable value is used for every requirement — nothing computed below can depend on when
+    // a concurrent provider attempt happened to land.
+    //
+    // SAME BUDGET, SAME PROVIDERS, SAME FAIRNESS CAP: the weighted selection is computed at the
+    // SAME `existingSelectedCount` budget the flat rule would have used, with the same
+    // FAIRNESS_FLOOR_PER_TOKEN — it reorders which requirements win existing slots, never how many
+    // exist. SHADOW FIRST: always computed and logged; applied only behind the explicit flag below.
+    const successEvidence = snapshotSourceSuccessEvidence()
+    const { weightedSelection, comparison: successComparison } =
+      computeSuccessWeightedComparison(requirements, comparison.existingSelectedCount, successEvidence)
+
+    // eslint-disable-next-line no-console
+    console.warn('[historical-pricing-success-weighted-shadow]', successComparison)
+
+    // NOT ENABLED AUTOMATICALLY, DISCLOSED: strictly opt-in via its own separate flag. With the flag
+    // unset, `schedulerYieldSelected` keeps exactly the unweighted completion-yield selection above
+    // and this whole block is observation only.
+    if (process.env.HISTORICAL_PRICING_SUCCESS_WEIGHTING_ENABLED === 'true') {
+      schedulerYieldSelected = weightedSelection.selected.map((w) => w.requirement)
+    }
 
     const schedulerEnabled = process.env.HISTORICAL_PRICING_YIELD_SCHEDULER_ENABLED === 'true'
     if (schedulerEnabled) {

@@ -28,6 +28,10 @@ import {
   isVerifiedStablecoinAddress, isNativePseudoAddress, isCanonicalWethAddress,
 } from '../quoteLegPricing/index'
 import { isKnownGoldrushNegative } from './sources/goldrushPriceSource'
+import {
+  estimateRouteSuccess, observedFailureReasonsForAsset, isPermanentlyMissingAsset,
+  type SourceSuccessEvidence, type PricingAssetClass, type PricingRequirementType, type PricingSourceName,
+} from './sourceSuccessEvidence'
 
 // FAIRNESS FLOOR, DISCLOSED — this task's explicit "retain a fairness floor so one dense token cannot
 // consume the full budget" requirement. A real cap, just no longer the FLAT default (2) regardless of
@@ -325,4 +329,273 @@ export function computeSchedulerComparison(
   }
 
   return { existing, yieldSelection, comparison }
+}
+
+// ============================================================================================
+// SUCCESS-WEIGHTED SCHEDULING, DISCLOSED — see sourceSuccessEvidence.ts's own header for the
+// evidence model. Production baseline with the completion-yield scheduler enabled: verified lots
+// 30/216 (13.89%), 210 requirements selected but only 66 resolved and 145 unresolved; native 53
+// selected / 4 priced / 49 provider misses; GeckoTerminal still 429; many Base DEX paths returning
+// no_pool / blockResolutionFailure. Structural completion yield alone cannot see any of that — it
+// ranks a requirement identically whether its sources answer 90% of the time or 3% of the time.
+//
+// This layer multiplies the EXISTING structural yield by a real, observed, source-specific success
+// probability and divides by the real estimated cost:
+//
+//     score = expectedLotsCompleted x sourceSuccessProbability / estimatedCost
+//
+// BUDGETS, PROVIDERS, FIFO, THE PUBLIC GATE AND THE FAIRNESS CAP ARE ALL UNCHANGED, DISCLOSED: this
+// selects a DIFFERENT subset of the same size from the same pool, using the same
+// FAIRNESS_FLOOR_PER_TOKEN, the same providers in the same order, and never touches FIFO matching or
+// any public coverage threshold. It makes no provider call of its own.
+// ============================================================================================
+
+// Structural precedence is preserved ahead of the score, per this task's explicit "verified
+// immediate-completion requirements remain highest-value structurally" rule: a requirement whose
+// opposite side is already verified and which really does complete at least one lot is in bucket 0
+// and can never be outranked by a merely-probable one. The score orders WITHIN a bucket, it does not
+// override the structural tier.
+function structuralBucketOf(req: SchedulerRequirement): 0 | 1 | 2 {
+  if (req.oppositeSideVerified && req.lotIds.length > 0) return 0
+  if (req.lotIds.length > 0) return 1
+  return 2
+}
+
+export type SuccessWeightedRequirement = {
+  requirement: SchedulerRequirement
+  // Distinct structural lots this requirement would complete outright if it prices — real, and
+  // already known before any call: only a requirement whose opposite side is verified/resolved can
+  // complete a lot by itself.
+  expectedLotsCompleted: number
+  sourceSuccessProbability: number
+  primarySource: PricingSourceName
+  estimatedCalls: number
+  estimatedCu: number
+  score: number
+  // Real, observed typed reasons for this exact asset — the evidence behind any discount applied.
+  // Empty when nothing has ever been observed (an unseen requirement is discounted by nothing, it
+  // simply receives the deterministic fallback probability).
+  observedFailureReasons: ReadonlyMap<string, number>
+  // A provider positively asserted this asset does not exist (token_not_found), or a live permanent
+  // negative-cache entry covers it. Never selected, never retried — reported, not silently dropped.
+  isHardFailure: boolean
+}
+
+function assetClassOf(req: SchedulerRequirement): PricingAssetClass {
+  if (isNativePseudoAddress(req.entry.token) || isCanonicalWethAddress(req.entry.chain, req.entry.token)) return 'native'
+  if (isVerifiedStablecoinAddress(req.entry.chain, req.entry.token)) return 'stable'
+  return 'other'
+}
+
+function requirementTypeOf(req: SchedulerRequirement): PricingRequirementType {
+  return req.missingSide ?? 'unranked'
+}
+
+// Minimum cost divisor — guards the score against a degenerate zero-cost estimate. Never reached
+// with the real ESTIMATED_CU_BY_SOURCE table (every entry is positive); present so a future table
+// edit can never produce a division by zero that would silently rank everything equal.
+const MIN_ESTIMATED_CU = 1
+
+// PURE, DETERMINISTIC. Attaches the real success/cost terms to one already-annotated structural
+// requirement. Makes no provider call.
+export function annotateSuccessWeighting(
+  req: SchedulerRequirement,
+  evidence: SourceSuccessEvidence,
+): SuccessWeightedRequirement {
+  const assetClass = assetClassOf(req)
+  const requirementType = requirementTypeOf(req)
+  const route = estimateRouteSuccess(evidence, {
+    chain: req.entry.chain,
+    token: req.entry.token,
+    assetClass,
+    requirementType,
+  })
+
+  const expectedLots = req.oppositeSideVerified ? req.lotIds.length : 0
+  const observedFailureReasons = observedFailureReasonsForAsset(evidence, req.entry.chain, req.entry.token)
+  // Both real permanent signals, kept distinct in the comment but equivalent in effect: a provider's
+  // own token_not_found assertion, and the GoldRush permanent negative cache the structural
+  // annotation already recorded.
+  const isHardFailure =
+    isPermanentlyMissingAsset(evidence, req.entry.chain, req.entry.token) || req.hasPriorNegativeCacheHit
+
+  const cost = Math.max(route.estimatedCu, MIN_ESTIMATED_CU)
+  // A requirement that completes no lot outright still has real value (it advances a lot toward
+  // completion, and every 'both'-sided lot needs its first side priced before its second can ever
+  // complete one). It is scored on the same axes at a deliberately reduced structural weight rather
+  // than being zeroed out, which would starve every both-sides-missing lot forever.
+  const structuralWeight = expectedLots > 0 ? expectedLots : req.lotIds.length > 0 ? 0.5 : 0.1
+  const score = (structuralWeight * route.probability) / cost
+
+  return {
+    requirement: req,
+    expectedLotsCompleted: expectedLots,
+    sourceSuccessProbability: route.probability,
+    primarySource: route.primarySource,
+    estimatedCalls: route.estimatedCalls,
+    estimatedCu: route.estimatedCu,
+    score,
+    observedFailureReasons,
+    isHardFailure,
+  }
+}
+
+export type SuccessWeightedSelection = {
+  selected: SuccessWeightedRequirement[]
+  skippedHardFailures: SuccessWeightedRequirement[]
+  skippedByFairnessCap: SuccessWeightedRequirement[]
+  skippedOther: SuccessWeightedRequirement[]
+}
+
+// PURE, DETERMINISTIC. Same total budget, same fairness cap, same pool — reordered by
+// expectedLotsCompleted x sourceSuccessProbability / estimatedCost, with structural precedence
+// preserved ahead of the score and hard failures skipped outright.
+export function selectBySuccessWeightedYield(
+  requirements: readonly SchedulerRequirement[],
+  totalBudget: number,
+  evidence: SourceSuccessEvidence,
+): SuccessWeightedSelection {
+  const weighted = requirements.map((r) => annotateSuccessWeighting(r, evidence))
+
+  const skippedHardFailures = weighted.filter((w) => w.isHardFailure)
+  const eligible = weighted.filter((w) => !w.isHardFailure)
+
+  const ranked = [...eligible].sort((a, b) => {
+    const bucketA = structuralBucketOf(a.requirement)
+    const bucketB = structuralBucketOf(b.requirement)
+    if (bucketA !== bucketB) return bucketA - bucketB
+    if (a.score !== b.score) return b.score - a.score
+    // Fully deterministic tie-break — the SAME comparator ordering the unweighted scheduler already
+    // uses for its final tiers, so equal-score requirements keep a stable, reproducible order.
+    if (a.requirement.entry.chain !== b.requirement.entry.chain) {
+      return a.requirement.entry.chain.localeCompare(b.requirement.entry.chain)
+    }
+    const tokenCompare = a.requirement.entry.token.toLowerCase().localeCompare(b.requirement.entry.token.toLowerCase())
+    if (tokenCompare !== 0) return tokenCompare
+    if (a.requirement.entry.timestamp !== b.requirement.entry.timestamp) {
+      return a.requirement.entry.timestamp - b.requirement.entry.timestamp
+    }
+    return requirementKeyOf(a.requirement).localeCompare(requirementKeyOf(b.requirement))
+  })
+
+  const selected: SuccessWeightedRequirement[] = []
+  const skippedByFairnessCap: SuccessWeightedRequirement[] = []
+  const lookupCountByToken = new Map<string, number>()
+
+  for (const w of ranked) {
+    if (selected.length >= totalBudget) break
+    const tokenKey = tokenKeyOf(w.requirement.entry)
+    const count = lookupCountByToken.get(tokenKey) ?? 0
+    // UNCHANGED FAIRNESS CAP, DISCLOSED: the exact same FAIRNESS_FLOOR_PER_TOKEN the unweighted
+    // scheduler enforces — success weighting never raises or lowers it.
+    if (count >= FAIRNESS_FLOOR_PER_TOKEN) {
+      skippedByFairnessCap.push(w)
+      continue
+    }
+    lookupCountByToken.set(tokenKey, count + 1)
+    selected.push(w)
+  }
+
+  const accountedKeys = new Set([
+    ...selected.map((w) => requirementKeyOf(w.requirement)),
+    ...skippedByFairnessCap.map((w) => requirementKeyOf(w.requirement)),
+    ...skippedHardFailures.map((w) => requirementKeyOf(w.requirement)),
+  ])
+  const skippedOther = weighted.filter((w) => !accountedKeys.has(requirementKeyOf(w.requirement)))
+
+  return { selected, skippedHardFailures, skippedByFairnessCap, skippedOther }
+}
+
+export type SuccessWeightedShadowComparison = {
+  baselineSelected: number
+  weightedSelected: number
+  overlap: number
+  // Structural expectation, undiscounted — how many distinct lots each selection would complete if
+  // every dispatched requirement actually returned a price.
+  baselineExpectedLots: number
+  weightedExpectedLots: number
+  // The same expectation DISCOUNTED by real observed source success probability — the honest
+  // estimate of how many lots each selection will actually complete. This is the number the whole
+  // change exists to improve, and the one to read first.
+  baselineExpectedResolvedLots: number
+  weightedExpectedResolvedLots: number
+  selectedBySource: Record<string, number>
+  discountedByFailureReason: Record<string, number>
+  skippedHardFailures: number
+  estimatedCalls: number
+  estimatedCu: number
+}
+
+function round2(value: number): number {
+  return Math.round(value * 100) / 100
+}
+
+// Expected lots completed, discounted by each contributing requirement's own real success
+// probability. A lot completed by a single requirement contributes that requirement's probability; a
+// lot reachable via several selected requirements contributes the probability that AT LEAST ONE of
+// them lands — never a sum that could exceed 1 for a single lot.
+function expectedResolvedLots(selected: readonly SuccessWeightedRequirement[]): number {
+  const missProbabilityByLot = new Map<string, number>()
+  for (const w of selected) {
+    if (w.expectedLotsCompleted === 0) continue
+    for (const lotId of w.requirement.lotIds) {
+      const prior = missProbabilityByLot.get(lotId) ?? 1
+      missProbabilityByLot.set(lotId, prior * (1 - w.sourceSuccessProbability))
+    }
+  }
+  let total = 0
+  for (const miss of missProbabilityByLot.values()) total += 1 - miss
+  return total
+}
+
+// PURE. The shadow comparison for this task — computes the EXISTING (unweighted completion-yield)
+// selection and the new success-weighted selection over the same pool at the same budget, and
+// reports the difference. Makes no provider call and changes nothing about what actually gets
+// priced unless the caller explicitly applies the weighted selection.
+export function computeSuccessWeightedComparison(
+  requirements: readonly SchedulerRequirement[],
+  totalBudget: number,
+  evidence: SourceSuccessEvidence,
+): { weightedSelection: SuccessWeightedSelection; comparison: SuccessWeightedShadowComparison } {
+  const baseline = selectByCompletionYield(requirements, totalBudget)
+  const weightedSelection = selectBySuccessWeightedYield(requirements, totalBudget, evidence)
+
+  const baselineWeighted = baseline.selected.map((r) => annotateSuccessWeighting(r, evidence))
+
+  const baselineKeys = new Set(baseline.selected.map(requirementKeyOf))
+  let overlap = 0
+  for (const w of weightedSelection.selected) {
+    if (baselineKeys.has(requirementKeyOf(w.requirement))) overlap += 1
+  }
+
+  const selectedBySource: Record<string, number> = {}
+  for (const w of weightedSelection.selected) {
+    selectedBySource[w.primarySource] = (selectedBySource[w.primarySource] ?? 0) + 1
+  }
+
+  // Every real, observed typed reason that contributed to a discount on a requirement this pass
+  // considered — reported exactly as the providers returned it, never re-labelled.
+  const discountedByFailureReason: Record<string, number> = {}
+  for (const w of [...weightedSelection.selected, ...weightedSelection.skippedOther, ...weightedSelection.skippedHardFailures]) {
+    for (const [reason, count] of w.observedFailureReasons) {
+      discountedByFailureReason[reason] = (discountedByFailureReason[reason] ?? 0) + count
+    }
+  }
+
+  const comparison: SuccessWeightedShadowComparison = {
+    baselineSelected: baseline.selected.length,
+    weightedSelected: weightedSelection.selected.length,
+    overlap,
+    baselineExpectedLots: expectedLotsCompleted(baseline.selected),
+    weightedExpectedLots: expectedLotsCompleted(weightedSelection.selected.map((w) => w.requirement)),
+    baselineExpectedResolvedLots: round2(expectedResolvedLots(baselineWeighted)),
+    weightedExpectedResolvedLots: round2(expectedResolvedLots(weightedSelection.selected)),
+    selectedBySource,
+    discountedByFailureReason,
+    skippedHardFailures: weightedSelection.skippedHardFailures.length,
+    estimatedCalls: round2(weightedSelection.selected.reduce((sum, w) => sum + w.estimatedCalls, 0)),
+    estimatedCu: round2(weightedSelection.selected.reduce((sum, w) => sum + w.estimatedCu, 0)),
+  }
+
+  return { weightedSelection, comparison }
 }
