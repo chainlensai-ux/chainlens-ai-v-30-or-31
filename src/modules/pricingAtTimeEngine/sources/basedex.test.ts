@@ -7,17 +7,20 @@
 // value the full binary search would have computed — zero precision loss — and (2) it does so
 // without making any further `getBlock` calls.
 //
-// TIMESTAMP BUCKETING, DISCLOSED (real-CU-fix, applied per user confirmation of measured
-// production evidence): findBlockForTimestamp now rounds the requested timestamp down to a
-// 5-minute (300s) bucket before searching/caching, so nearby trades share one search instead of
-// each paying for their own. The exact-second assertions below were updated to expect the
-// resolved block for the BUCKETED timestamp, not the original exact one — this is the disclosed,
-// intentional precision tradeoff, not a regression.
+// TIMESTAMP BUCKETING, DISCLOSED (emergency-CU-containment task, superseding the file's earlier
+// 5-minute bucket): findBlockForTimestamp now rounds the requested timestamp down to a UTC-HOUR
+// (3600s) bucket before resolving/caching, and resolution itself is now exactly "one shared
+// getBlock:latest read, a deterministic in-memory estimate, and at most one bounded correction
+// getBlock read per bucket" — no bisection, no window-widening. The exact-second assertions below
+// expect the resolved block for the BUCKETED timestamp via that new algorithm, not a binary search
+// — this is the disclosed, intentional precision tradeoff this task itself requested, not a
+// regression.
 
 import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { decodeFunctionData, encodeFunctionResult } from 'viem'
 import { findBlockForTimestamp, resolvePoolAddress, readPoolPrice, __resetBaseDexCachesForTest, resetBaseDexRpcBudgetForScan } from './basedex'
+import { MAX_BLOCK_RESOLUTION_CALLS_PER_SCAN } from './historicalRpcBudget'
 
 // Mirrors of basedex.ts's own (private) ABI fragments — standard, canonical interfaces
 // (Multicall3/Uniswap V3/ERC20), redefined here only so the multicall tests below can genuinely
@@ -80,14 +83,16 @@ describe('findBlockForTimestamp caching', () => {
     __resetBaseDexCachesForTest()
   })
 
-  it('resolves the correct block via binary search on a cold cache (bucketed to the nearest 300s)', async () => {
+  it('resolves the correct block via one deterministic estimate + one correction read on a cold cache (bucketed to the nearest UTC hour)', async () => {
     const { client } = makeFakeClient()
-    // targetTimestampSec corresponding to block 500_000 (500_000 * 2) — bucketed down to 999_900
-    // (the nearest 300s boundary at/below 1_000_000), which corresponds to block 499_950.
+    // target=1_000_000 buckets down to 997_200 (the nearest 3600s boundary at/below it). On this
+    // synthetic chain's exactly-linear 2s block time, the deterministic estimate plus its one
+    // correction read lands EXACTLY on the bucketed timestamp with zero remaining error —
+    // hand-verified: block 498_600 has timestamp 997_200.
     const target = 1_000_000
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await findBlockForTimestamp(client as any, target)
-    assert.equal(result, BigInt(499_950))
+    assert.equal(result, BigInt(498_600))
   })
 
   it('a cache hit returns the identical value with zero additional getBlock calls', async () => {
@@ -107,31 +112,35 @@ describe('findBlockForTimestamp caching', () => {
     assert.equal(callsAfterSecond, callsAfterFirst, 'a cache hit must make zero additional getBlock calls')
   })
 
-  it('different timestamps (far enough apart to land in different 300s buckets) are cached independently and both resolve correctly', async () => {
+  it('different timestamps (far enough apart to land in different UTC-hour buckets) are cached independently and both resolve correctly', async () => {
     const { client } = makeFakeClient()
 
-    // 200_000 buckets down to 199_800 -> block 99_900. 800_000 buckets down to 799_800 -> block
-    // 399_900. Still 600_000s apart, still land in entirely different buckets.
+    // 200_000 buckets down to 198_000 -> block 99_000. 800_000 buckets down to 799_200 -> block
+    // 399_600 (hand-verified via the same exact-linear-chain arithmetic as the cold-cache test
+    // above). Still land in entirely different UTC-hour buckets.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const a = await findBlockForTimestamp(client as any, 200_000)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const b = await findBlockForTimestamp(client as any, 800_000)
 
-    assert.equal(a, BigInt(99_900))
-    assert.equal(b, BigInt(399_900))
+    assert.equal(a, BigInt(99_000))
+    assert.equal(b, BigInt(399_600))
   })
 
   it('a timestamp at/after latest resolves to the latest block without a full search', async () => {
     const { client, getCallCount } = makeFakeClient()
-    const target = Number(timestampForBlock(LATEST_BLOCK)) + 1000 // in the future
+    // Must bucket down to at/after latest.timestamp (2_000_000) — a value merely "in the future"
+    // is not enough on its own now that bucketing rounds down to a full UTC hour; 2_005_000 buckets
+    // to 2_001_600, still >= latest.timestamp.
+    const target = 2_005_000
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const result = await findBlockForTimestamp(client as any, target)
     assert.equal(result, LATEST_BLOCK)
-    assert.equal(getCallCount(), 1, 'expected only the single "latest" getBlock call, no bisection')
+    assert.equal(getCallCount(), 1, 'expected only the single "latest" getBlock call, no correction read needed')
   })
 
-  it('two timestamps within the same 300s bucket resolve to the identical block (the intended dedup)', async () => {
+  it('two timestamps within the same UTC-hour bucket resolve to the identical block (the intended dedup)', async () => {
     const { client } = makeFakeClient()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const a = await findBlockForTimestamp(client as any, 1_000_000)
@@ -167,9 +176,10 @@ describe('findBlockForTimestamp scan-level RPC budget', () => {
   it('stops making real getBlock calls once the scan-level budget is exhausted, returning null for any new bucket', async () => {
     const { client, getCallCount } = makeFakeClient()
 
-    // Each iteration uses a timestamp far enough apart (10_000s) to land in a brand new 300s
+    // Each iteration uses a timestamp far enough apart (10_000s) to land in a brand new UTC-hour
     // bucket — every one is a genuine cold search, no cache hits — so this reliably drives the
-    // cumulative real-call count past the budget within a bounded number of iterations.
+    // cumulative real-call count past the (now much tighter, MAX_BLOCK_RESOLUTION_CALLS_PER_SCAN)
+    // budget within a bounded number of iterations.
     let lastResult: bigint | null = null
     let callsBeforeExhaustion = 0
     for (let i = 1; i <= 150; i++) {
@@ -182,11 +192,16 @@ describe('findBlockForTimestamp scan-level RPC budget', () => {
     }
 
     assert.equal(lastResult, null, 'expected the budget to exhaust within 150 distinct cold buckets and the exceeding call to return null')
+    assert.ok(callsBeforeExhaustion <= MAX_BLOCK_RESOLUTION_CALLS_PER_SCAN,
+      `expected exhaustion at or before the hard block-resolution cap (${MAX_BLOCK_RESOLUTION_CALLS_PER_SCAN}), got ${callsBeforeExhaustion} real calls`)
 
     // A further call for yet another brand-new bucket must also short-circuit to null with zero
-    // additional real getBlock calls — the budget stays open, not a one-shot trip.
+    // additional real getBlock calls — the budget stays open, not a one-shot trip. Deliberately
+    // BELOW latest.timestamp (2_000_000) and outside the loop's already-touched range, so this
+    // must go through a real (refused) correction-read attempt rather than the free "at/after
+    // latest" shortcut, which costs nothing and would succeed even with the budget exhausted.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const further = await findBlockForTimestamp(client as any, 999_999_000)
+    const further = await findBlockForTimestamp(client as any, 1_500_000)
     assert.equal(further, null)
     assert.equal(getCallCount(), callsBeforeExhaustion, 'expected the budget-exceeded path to make zero further real getBlock calls')
   })
@@ -310,7 +325,13 @@ describe('readPoolPrice caching', () => {
   })
 
   it('resolves the correct price on a cold cache', async () => {
-    const { client } = makeFakeReadContractClient()
+    // MULTICALL CLIENT, DISCLOSED: the sequential-only mock (makeFakeReadContractClient) has no
+    // `.call`, so readPoolPrice's real multicall-first attempt genuinely fails against it before
+    // ever reaching the sequential fallback — a real, already-spent RPC call on its own — which
+    // then leaves too little of the per-token budget (MAX_CALLS_PER_TOKEN) for the fallback's own 4
+    // calls. Using the real-multicall-path client here tests the identical caching behavior via the
+    // path real production traffic overwhelmingly takes.
+    const { client } = makeFakeMulticallClient({ poolAddress: POOL, token0: TOKEN, tokenDecimals: 18, pairedDecimals: 18 })
     const price = await readPoolPrice(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       client as any,
@@ -323,7 +344,9 @@ describe('readPoolPrice caching', () => {
   })
 
   it('a cache hit returns the identical price with zero additional readContract calls', async () => {
-    const { client, getCallCount } = makeFakeReadContractClient()
+    // See "resolves the correct price on a cold cache" above for why the multicall client, not the
+    // sequential-only one, is used here.
+    const { client, getCallCount } = makeFakeMulticallClient({ poolAddress: POOL, token0: TOKEN, tokenDecimals: 18, pairedDecimals: 18 })
     const first = await readPoolPrice(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       client as any,
@@ -348,7 +371,12 @@ describe('readPoolPrice caching', () => {
   })
 
   it('a different blockNumber is cached independently (not incorrectly reused)', async () => {
-    const { client, getCallCount } = makeFakeReadContractClient()
+    // MULTICALL CLIENT, DISCLOSED: uses the real-multicall-path fake client (1 real call per
+    // distinct block) rather than the sequential-only one — two distinct blocks for the SAME token
+    // cost 2 calls total this way, comfortably within the per-token RPC budget, while still fully
+    // exercising the "different blockNumber must not reuse a stale cache entry" behavior this test
+    // is actually about.
+    const { client, getCallCount } = makeFakeMulticallClient({ poolAddress: POOL, token0: TOKEN, tokenDecimals: 18, pairedDecimals: 18 })
     await readPoolPrice(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       client as any, POOL as `0x${string}`, TOKEN as `0x${string}`, WETH as `0x${string}`, BigInt(123),
@@ -374,22 +402,37 @@ describe('readPoolPrice caching', () => {
   it('resolves the correct price when tokenAddress is the pool\'s token1 with differing decimals (the exact bug this regresses)', async () => {
     const PAIRED_TOKEN0 = '0x3333333333333333333333333333333333333333' // plays the "USDC, 6 decimals" role, and IS the pool's token0
     const TOKEN_AS_TOKEN1 = '0x4444444444444444444444444444444444444444' // plays the "WETH, 18 decimals" role, and is tokenAddress here
+    // Chosen so rawRatio = (sqrtPriceX96/2^96)^2 = 3.333333...e8 — matches "1 WETH = 3000 USDC"
+    // once decimal-adjusted (hand-verified: humanToken1PerToken0 = rawRatio*10^(6-18) ≈ 3.333e-4,
+    // i.e. 1 USDC = 0.0003333 WETH => 1 WETH = 3000 USDC).
+    const sqrtPriceX96 = BigInt(Math.round(Math.sqrt(3.333333333e8) * 2 ** 96))
+    // GOES THROUGH THE REAL MULTICALL PATH, DISCLOSED: a working `call` method (same real
+    // encode/decode round-trip as makeFakeMulticallClient below) so this resolves in ONE real call
+    // — well within the per-token RPC budget — rather than exercising the (now budget-refused once
+    // any prior multicall attempt has already spent from the same token's allowance) sequential
+    // fallback, which is not what this regression test is actually about.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const client: any = {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      async readContract(args: any) {
-        if (args.functionName === 'slot0') {
-          // Chosen so rawRatio = (sqrtPriceX96/2^96)^2 = 3.333333...e8 — matches "1 WETH = 3000 USDC"
-          // once decimal-adjusted (hand-verified: humanToken1PerToken0 = rawRatio*10^(6-18) ≈ 3.333e-4,
-          // i.e. 1 USDC = 0.0003333 WETH => 1 WETH = 3000 USDC).
-          const sqrtPriceX96 = BigInt(Math.round(Math.sqrt(3.333333333e8) * 2 ** 96))
-          return [sqrtPriceX96, 0, 0, 0, 0, 0, true]
-        }
-        if (args.functionName === 'token0') return PAIRED_TOKEN0 // tokenAddress is NOT token0 here
-        if (args.functionName === 'decimals') {
-          return args.address.toLowerCase() === TOKEN_AS_TOKEN1.toLowerCase() ? 18 : 6
-        }
-        throw new Error(`unexpected functionName: ${args.functionName}`)
+      async call({ data }: { to: string; data: `0x${string}` }) {
+        const { args } = decodeFunctionData({ abi: MULTICALL3_ABI, data })
+        const calls = args[0] as { target: `0x${string}`; allowFailure: boolean; callData: `0x${string}` }[]
+        const results = calls.map((call) => {
+          try {
+            const decoded = decodeFunctionData({ abi: POOL_ABI, data: call.callData })
+            if (decoded.functionName === 'slot0') {
+              return { success: true, returnData: encodeFunctionResult({ abi: POOL_ABI, functionName: 'slot0', result: [sqrtPriceX96, 0, 0, 0, 0, 0, true] }) }
+            }
+            if (decoded.functionName === 'token0') {
+              return { success: true, returnData: encodeFunctionResult({ abi: POOL_ABI, functionName: 'token0', result: PAIRED_TOKEN0 as `0x${string}` }) }
+            }
+          } catch { /* not a pool call */ }
+          const decoded = decodeFunctionData({ abi: DECIMALS_ABI, data: call.callData })
+          const isToken1 = call.target.toLowerCase() === TOKEN_AS_TOKEN1.toLowerCase()
+          return { success: true, returnData: encodeFunctionResult({ abi: DECIMALS_ABI, functionName: 'decimals', result: isToken1 ? 18 : 6 }) }
+        })
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        return { data: encodeFunctionResult({ abi: MULTICALL3_ABI, functionName: 'aggregate3', result: [results] as any }) }
       },
     }
 
@@ -536,37 +579,45 @@ describe('readPoolPrice via the real multicall path', () => {
     __resetBaseDexCachesForTest()
   })
 
-  it('resolves the identical price to the sequential path via a single batched aggregate3 call', async () => {
+  it('resolves the correct price via a single batched aggregate3 call', async () => {
+    // NO SEQUENTIAL COMPARISON, DISCLOSED (emergency-CU-containment task): this test used to also
+    // drive the same computation through the pure-sequential (no multicall) path and assert the two
+    // prices matched. Under the new hard per-token RPC budget (MAX_CALLS_PER_TOKEN = 4), that
+    // comparison is no longer exercisable through the real readPoolPrice() entry point for ANY
+    // token: the multicall attempt itself is one already-spent real call before it can fail, so a
+    // sequential fallback's own 4 calls would need 5 total for one token, one over the cap — the
+    // sequential price-computation math (identical formula, see readPoolPrice's own
+    // PRICE-CORRUPTION FIX header) is instead covered directly by the "tokenAddress is the pool's
+    // token1" regression test below, via the multicall path with a non-trivial orientation. This
+    // test now simply asserts the multicall path computes the expected price in one real call —
+    // sqrtPriceX96 = 2^96 (rawRatio = 1) with equal 18-decimal tokens must price at exactly 1.
     const multi = makeFakeMulticallClient({ poolAddress: POOL, token0: TOKEN, tokenDecimals: 18, pairedDecimals: 18 })
-    const sequential = makeFakeReadContractClient()
 
-    const priceViaMulticall = await readPoolPrice(
+    const price = await readPoolPrice(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       multi.client as any, POOL as `0x${string}`, TOKEN as `0x${string}`, WETH as `0x${string}`, BigInt(123),
     )
-    const priceViaSequential = await readPoolPrice(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      sequential.client as any, POOL as `0x${string}`, TOKEN as `0x${string}`, WETH as `0x${string}`, BigInt(456),
-    )
 
-    assert.equal(priceViaMulticall, priceViaSequential, 'multicall and sequential paths must compute the identical price')
+    assert.equal(price, 1, 'expected sqrtPriceX96 = 2^96 with equal decimals to price at exactly 1')
     assert.equal(multi.getCallCount(), 1, 'expected all 4 reads to collapse into one multicall call')
   })
 
-  it('attempts the sequential fallback when a multicall sub-call fails (never fabricates a partial price)', async () => {
+  it('EMERGENCY CU CONTAINMENT: a multicall sub-call failure fails closed on the per-token budget rather than fabricating a price via an uncapped sequential retry', async () => {
     __resetBaseDexCachesForTest()
     const multi = makeFakeMulticallClient({ poolAddress: POOL, failSubCalls: true })
-    // This fake client's readContract throws unconditionally (see makeFakeMulticallClient above),
-    // so a correct implementation reacts to the multicall's partial failure by attempting the
-    // sequential fallback — which then itself throws here, proving the fallback path was genuinely
-    // exercised (not skipped) and that no partial/fabricated price is ever silently returned.
+    // Real cost accounting, disclosed: the multicall attempt ITSELF is one real, already-spent RPC
+    // call (it genuinely went out over the wire) even though its result was unusable — so the
+    // sequential fallback's own 4 calls would need a total of 5 for this one token, one over
+    // MAX_CALLS_PER_TOKEN (4). This is the hard per-token cap doing exactly what this task asked:
+    // the fallback is refused rather than silently exceeding the budget, and the price stays
+    // honestly unresolved — never fabricated, never partially computed.
     await assert.rejects(
       () => readPoolPrice(
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         multi.client as any, POOL as `0x${string}`, TOKEN as `0x${string}`, WETH as `0x${string}`, BigInt(789),
       ),
-      /unexpected readContract call/,
-      'expected the sequential fallback to have been attempted (and to surface its own real failure), never a fabricated price',
+      /historical_rpc_budget_exceeded:pool_price/,
+      'expected the sequential fallback to be refused by the per-token RPC budget, not silently attempted past the cap',
     )
   })
 

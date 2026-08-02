@@ -6,7 +6,7 @@
 // Uses minimal fake PublicClients (only the methods each path actually calls), same style as
 // basedex.test.ts, so this never hits real RPC/env vars.
 
-import { describe, it, beforeEach } from 'node:test'
+import { describe, it, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { decodeFunctionData, encodeFunctionResult } from 'viem'
 import {
@@ -354,10 +354,19 @@ describe('Aerodrome Classic volatile pool pricing', () => {
 // ============================================================================
 
 describe('fetchBaseDexPriceDetailed venue orchestration', () => {
+  const originalEnabled = process.env.HISTORICAL_ONCHAIN_RPC_PRICING_ENABLED
   beforeEach(() => {
     __resetBaseDexCachesForTest()
     delete process.env.ALCHEMY_BASE_RPC_URL
     delete process.env.ALCHEMY_BASE_KEY
+    // Emergency-CU-containment kill switch defaults OFF — these tests exercise the internal
+    // RPC-path behavior once enabled, not the kill switch itself (see the dedicated kill-switch
+    // test below).
+    process.env.HISTORICAL_ONCHAIN_RPC_PRICING_ENABLED = 'true'
+  })
+  after(() => {
+    if (originalEnabled === undefined) delete process.env.HISTORICAL_ONCHAIN_RPC_PRICING_ENABLED
+    else process.env.HISTORICAL_ONCHAIN_RPC_PRICING_ENABLED = originalEnabled
   })
 
   it('reports base_dex_only_supports_base_chain for a non-Base chain without touching any client', async () => {
@@ -371,5 +380,13 @@ describe('fetchBaseDexPriceDetailed venue orchestration', () => {
     assert.equal(result.priceUsd, null)
     assert.equal(result.reason, 'no_api_key_configured')
     assert.equal(result.attempts, undefined, 'no venue should ever be attempted without a client')
+  })
+
+  it('EMERGENCY KILL SWITCH: reports onchain_rpc_pricing_disabled and touches nothing when the flag is unset (default)', async () => {
+    delete process.env.HISTORICAL_ONCHAIN_RPC_PRICING_ENABLED
+    const result = await fetchBaseDexPriceDetailed(TOKEN, 'base', Date.now())
+    assert.equal(result.priceUsd, null)
+    assert.equal(result.reason, 'onchain_rpc_pricing_disabled')
+    assert.equal(result.attempts, undefined)
   })
 })

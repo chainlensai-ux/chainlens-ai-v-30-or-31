@@ -18,6 +18,21 @@ import { base } from 'viem/chains'
 import type { SupportedChain } from '../../providerFetchWindow/types'
 import { resolveHistoricalNativeUsdPrice } from '../../nativePriceResolver/index'
 import { logRpcCall } from '@/lib/server/rpcDebug'
+import {
+  isHistoricalOnchainRpcPricingEnabled,
+  tryReserveRpcCall,
+  canReserveRpcCalls,
+  recordTimestampBucket,
+  recordBlockCacheHit,
+  recordPoolCacheHit,
+  recordNegativeCacheHit,
+  resetHistoricalRpcBudgetForScan,
+  logHistoricalRpcBudgetSummary,
+  getHistoricalRpcBudgetSummary,
+  MAX_TOTAL_RPC_CALLS_PER_SCAN,
+  __resetHistoricalRpcBudgetForTest,
+  type RpcBudgetVenue,
+} from './historicalRpcBudget'
 
 const WETH_BASE = '0x4200000000000000000000000000000000000006'
 const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
@@ -346,6 +361,27 @@ function trackRpcCall(method: string): void {
   totalBaseDexRpcCallsThisScan += 1
 }
 
+// EMERGENCY CU CONTAINMENT, DISCLOSED — see historicalRpcBudget.ts's own header. Thrown by
+// reserveOrThrow below when the shared, request-scoped RPC budget refuses a call; every retry/
+// fallback `.catch()` in this file that would otherwise re-attempt the same work via a different
+// path (multicall -> sequential, primary venue -> next venue, etc.) checks for this specific class
+// FIRST and rethrows it unhandled — a budget refusal must never trigger ANOTHER attempt that would
+// itself just be refused again (or worse, silently bypass the budget via a path that forgot to
+// check it). Every real caller ultimately fails closed on this exactly like any other genuine RPC
+// failure: unresolved stays unresolved, nothing is fabricated.
+class RpcBudgetExceededError extends Error {}
+
+// The ONLY place in this file that may spend from the shared historical-RPC budget. Every real
+// RPC-issuing call site below calls this immediately before making its call; if it throws, the call
+// is NEVER made — this is what makes "stop immediately once any global cap is reached" real rather
+// than aspirational. `token` is null for block-resolution calls (bucket-shared, not token-specific).
+function reserveOrThrow(method: string, category: 'block_resolution' | 'pool_discovery' | 'pool_price', venue: RpcBudgetVenue, token: string | null): void {
+  if (!tryReserveRpcCall(category, venue, token)) {
+    throw new RpcBudgetExceededError(`historical_rpc_budget_exceeded:${category}`)
+  }
+  trackRpcCall(method)
+}
+
 // SCAN-LEVEL RPC BUDGET, DISCLOSED (real-latency-fix): a real, measured scan showed this file's
 // FINAL TOTALS line reporting 600-900+ RPC calls per pricing pass (getBlock:estimate/bisect,
 // readContract:multicall), repeated across multiple passes in one scan — this deployment's own
@@ -362,11 +398,18 @@ function trackRpcCall(method: string): void {
 // unpriced, the same honest outcome an unindexed token already gets). NEVER FABRICATES: this only
 // ever produces the same null an exhausted/failed search would, just without paying for the rest of
 // it. A bucket already resolved and cached is still served instantly regardless of the budget.
-const MAX_BASEDEX_RPC_CALLS_PER_SCAN = 300
+// HARD BUDGET, DISCLOSED, SUPERSEDES THE PRIOR 300-CALL SOFT CEILING: this task's emergency
+// containment requirement — a single request-scoped budget (historicalRpcBudget.ts), shared by
+// EVERY on-chain RPC consumer in this file (block resolution, Uniswap V3, Aerodrome Slipstream,
+// Aerodrome Classic, pool discovery, pool price reads), hard-capped at 40 total calls per scan. The
+// local `totalBaseDexRpcCallsThisScan` counter below is kept ONLY for this file's own pre-existing
+// per-venue RPC-call attribution bookkeeping (rpcCallsByVenue, rpcCallsUsed on each result) — it no
+// longer gates anything; every real call site below now gates on tryReserveRpcCall() from the shared
+// budget module instead, via trackRpcCall()'s own return value.
 let totalBaseDexRpcCallsThisScan = 0
 
 function baseDexScanBudgetExceeded(): boolean {
-  return totalBaseDexRpcCallsThisScan >= MAX_BASEDEX_RPC_CALLS_PER_SCAN
+  return getHistoricalRpcBudgetSummary().totalRpcCalls >= MAX_TOTAL_RPC_CALLS_PER_SCAN
 }
 
 // SCAN-BOUNDARY RESET, DISCLOSED: called once per scan (see src/modules/walletScanWorker.ts,
@@ -379,6 +422,7 @@ function baseDexScanBudgetExceeded(): boolean {
 export function resetBaseDexRpcBudgetForScan(): void {
   totalBaseDexRpcCallsThisScan = 0
   resetBaseDexVenueAttributionForScan()
+  resetHistoricalRpcBudgetForScan()
 }
 
 export type BaseDexVenue = 'uniswap_v3' | 'aerodrome_slipstream' | 'aerodrome_classic_volatile'
@@ -640,32 +684,34 @@ export function logBaseDexFinalTotals(): void {
   }
   // eslint-disable-next-line no-console
   console.warn('[RPC-INVESTIGATION] basedex FINAL TOTALS', { totals, timestamp: Date.now() })
+  // EMERGENCY CU CONTAINMENT, DISCLOSED: same call site as the totals line above — no new wiring
+  // needed at any caller. See historicalRpcBudget.ts's own header for the full diagnostic contract.
+  logHistoricalRpcBudgetSummary()
 }
 
 async function getLatestBlockCached(client: PublicClient): ReturnType<PublicClient['getBlock']> {
   const now = Date.now()
   if (latestBlockCache && now - latestBlockCache.fetchedAtMs < LATEST_BLOCK_CACHE_TTL_MS) {
+    recordBlockCacheHit()
     return latestBlockCache.block
   }
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:latest' })
-  trackRpcCall('getBlock:latest')
+  reserveOrThrow('getBlock:latest', 'block_resolution', 'block_resolution', null)
   const block = await client.getBlock({ blockTag: 'latest' })
   latestBlockCache = { block, fetchedAtMs: now }
   return block
 }
 
-// TIMESTAMP BUCKETING, DISCLOSED PRECISION TRADEOFF (real-CU-fix, applied live per user
-// confirmation of measured production evidence): blockForTimestampCache was keyed on the EXACT
-// requested second, so two trades even a few seconds apart each paid the full ~20-30-call
-// bisection search from scratch. Rounding down to a 5-minute bucket before searching/caching means
-// every trade within the same 5-minute window shares one search — a real, order-of-magnitude cut
-// in eth_getBlockByNumber volume for any wallet with multiple trades close together in time (the
-// common case). The real tradeoff: the resolved block (and therefore the price read at it) is now
-// accurate to within this same 5-minute window, not the exact trade second. BUCKET SIZE CHOICE,
-// DISCLOSED: 5 minutes matches DEXSCREENER_FRESHNESS_TOLERANCE_MS above — this file already treats
-// a 5-minute price-staleness window as an acceptable tolerance elsewhere in this same pricing
-// chain, so this isn't a new or looser precision standard, just applying the same one here.
-const BLOCK_TIMESTAMP_BUCKET_SECONDS = 5 * 60
+// TIMESTAMP BUCKETING, UTC-HOUR, DISCLOSED PRECISION TRADEOFF (emergency-CU-containment task,
+// explicit requirement: "coalesce timestamps into UTC-hour or larger deterministic buckets" —
+// widened from this file's earlier 5-minute bucket). Unix seconds are already UTC, so rounding down
+// to a multiple of 3600 is a genuine UTC-hour boundary with no timezone ambiguity. Every requirement
+// on the same chain whose timestamp falls in the same UTC hour now shares exactly ONE block
+// resolution — a real, order-of-magnitude cut over the prior 5-minute bucket for any wallet whose
+// trades cluster within an hour (the common case). The tradeoff: the resolved block (and therefore
+// the price read at it) is accurate to within this same UTC-hour window, not the exact trade second
+// — an explicit, deliberate loosening this task itself requested as part of hard CU containment.
+const BLOCK_TIMESTAMP_BUCKET_SECONDS = 60 * 60
 
 function bucketTimestamp(targetTimestampSec: number): number {
   return Math.floor(targetTimestampSec / BLOCK_TIMESTAMP_BUCKET_SECONDS) * BLOCK_TIMESTAMP_BUCKET_SECONDS
@@ -677,168 +723,103 @@ function bucketTimestamp(targetTimestampSec: number): number {
 // bucketed timestamp while a search for it is already running, they now share that single in-flight
 // search instead of each starting a redundant duplicate one. This is purely deduplicating identical
 // concurrent work — it changes no computed value, only how many times the same answer is computed.
-const inFlightBlockSearches = new Map<number, Promise<bigint>>()
+const inFlightBlockSearches = new Map<number, Promise<bigint | null>>()
 
-// AVG BLOCK TIME ESTIMATE, DISCLOSED: Base has a near-constant ~2s block time (OP-stack chain).
-// Used ONLY to pick a starting guess for the search below — never trusted as the final answer.
-// Every guess this produces is verified (and corrected, via bisection) against real on-chain block
-// timestamps before being accepted, so drift in the true average block time can only cost a few
-// extra RPC calls (a wider search window), never an incorrect resolved block.
+// A bucket this scan already tried to resolve and genuinely could not (budget exhausted, or the one
+// correction read itself failed) is remembered so a later requirement sharing the same bucket never
+// re-attempts a doomed resolution — one real request-scoped negative fact, exactly like every other
+// negative cache in this file (see NEGATIVE_POOL_CACHE_TTL_MS's own header for the parallel).
+const blockResolutionFailureCache = new Set<number>()
+
+// AVG BLOCK TIME ESTIMATE, DISCLOSED: Base has a near-constant ~2s block time (OP-stack chain). Used
+// to compute a deterministic starting guess entirely in memory (no RPC call).
 const BASE_AVG_BLOCK_TIME_SEC = 2
-const ESTIMATE_SEARCH_WINDOW_BLOCKS = BigInt(256)
-const ESTIMATE_SEARCH_MAX_WIDEN_ATTEMPTS = 4
 
-// BISECT-COST FIX, DISCLOSED (real-CU-fix, applied per user confirmation of measured production
-// evidence — a single scan's FINAL TOTALS line showed 6,821 getBlock:bisect calls, ~11x more than
-// every other basedex method combined, after the earlier caching/coalescing fixes already landed).
-// ROOT CAUSE: the old bounds here (`approxBlocksAgo * 2` below latest, `latest.number` above) still
-// spanned a huge fraction of chain history for any timestamp more than a few hours old, so the
-// 30-step bisection loop almost always ran close to its full 30 iterations — one getBlock call per
-// step — for EVERY distinct (bucketed) timestamp, even though Base's block time is close enough to
-// constant that a direct estimate lands within a few hundred blocks almost every time.
-//
-// FIX: estimate the target block directly from Base's average block time, verify it against one
-// real on-chain probe, self-calibrate a LOCAL average block time from that probe (latest.timestamp
-// vs probe.timestamp), and bisect only a small window (256 blocks either side, ~8-9 steps) around
-// the corrected guess — instead of bisecting the entire historical range from scratch.
-//
-// CORRECTNESS GUARANTEE, DISCLOSED: before trusting that small window, both of its boundaries are
-// verified against real getBlock results (fetched below) to actually bracket the target timestamp.
-// If they don't (block-time drift bigger than expected, e.g. a network hiccup), the window is
-// doubled and re-verified, up to 4 attempts; if all 4 still miss (extremely unlikely on a chain with
-// Base's block-time consistency), this falls back to the ORIGINAL full-range bisection used before
-// this fix, so the worst case is "no more expensive than before," never a wrong answer.
-async function estimateAndVerifyWindow(
-  client: PublicClient,
-  latest: Awaited<ReturnType<PublicClient['getBlock']>>,
-  bucketed: number,
-): Promise<{ low: bigint; high: bigint } | null> {
+// NO INDEPENDENT BISECTION, DISCLOSED (emergency-CU-containment task, explicit requirement: "remove
+// per-requirement binary-search block resolution... do not bisect independently for every
+// requirement"). Previously: one direct estimate probe, an optional second calibration probe, up to
+// 4 window-widening probes, THEN a full up-to-30-call bisection within that window — a single
+// scan's FINAL TOTALS line measured 207 getBlock:bisect calls and 69 getBlock:estimate calls in one
+// production incident. Replaced with exactly the sequence this task specifies, per bucket:
+//   1. one latest-block read (cached across the whole scan — getLatestBlockCached above)
+//   2. a deterministic timestamp-to-block estimate, computed with plain arithmetic, no RPC call
+//   3. at most ONE bounded correction read: a single getBlock at the estimated block number, whose
+//      real (block, timestamp) is used to linearly extrapolate a corrected final block number —
+//      again with plain arithmetic, no further RPC call
+// No bisection loop, no window-widening loop, no second calibration probe. Worst case per NEW bucket
+// is exactly one getBlock call (the correction read); every later requirement in the same UTC-hour
+// bucket is a pure cache hit at zero further cost. ACCURACY, DISCLOSED: a single real sample
+// linearly extrapolated is accurate to within a handful of blocks on a chain with Base's near-
+// constant block time — well inside the UTC-hour bucket tolerance this task itself already accepts,
+// so this is not a new or looser precision standard beyond the bucket widening above.
+async function resolveBlockForBucket(client: PublicClient, bucketed: number): Promise<bigint> {
+  const latest = await getLatestBlockCached(client)
+  if (bucketed >= Number(latest.timestamp)) return latest.number
+
   const secondsAgo = Number(latest.timestamp) - bucketed
   const estimatedBlocksAgo = BigInt(Math.max(1, Math.round(secondsAgo / BASE_AVG_BLOCK_TIME_SEC)))
   const initialGuess = latest.number > estimatedBlocksAgo ? latest.number - estimatedBlocksAgo : BigInt(0)
 
-  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:estimate' })
-  trackRpcCall('getBlock:estimate')
-  let guessBlock = await client.getBlock({ blockNumber: initialGuess })
-  let guess = initialGuess
+  logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:correction' })
+  reserveOrThrow('getBlock:correction', 'block_resolution', 'block_resolution', null)
+  const guessBlock = await client.getBlock({ blockNumber: initialGuess })
 
-  // Self-calibrate using the real gap between this probe and `latest` (rather than trusting the
-  // constant above), then take one corrective step — this is what lets the window stay small even
-  // when the true average block time differs slightly from the assumed constant.
   const blockDelta = latest.number - guessBlock.number
   const timeDelta = Number(latest.timestamp) - Number(guessBlock.timestamp)
-  if (blockDelta > BigInt(0) && timeDelta > 0) {
-    const localAvgBlockTime = timeDelta / Number(blockDelta)
-    const remainingSeconds = bucketed - Number(guessBlock.timestamp)
-    const adjustBlocks = BigInt(Math.round(remainingSeconds / localAvgBlockTime))
-    let refinedGuess = guessBlock.number + adjustBlocks
-    if (refinedGuess < BigInt(0)) refinedGuess = BigInt(0)
-    if (refinedGuess > latest.number) refinedGuess = latest.number
-    if (refinedGuess !== guess) {
-      guess = refinedGuess
-      logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:estimate' })
-      trackRpcCall('getBlock:estimate')
-      guessBlock = await client.getBlock({ blockNumber: guess })
-    }
-  }
+  if (blockDelta <= BigInt(0) || timeDelta <= 0) return guessBlock.number
 
-  let windowBlocks = ESTIMATE_SEARCH_WINDOW_BLOCKS
-  for (let attempt = 0; attempt < ESTIMATE_SEARCH_MAX_WIDEN_ATTEMPTS; attempt++) {
-    const guessAtOrBelowTarget = Number(guessBlock.timestamp) <= bucketed
-
-    let low: bigint
-    let high: bigint
-    let lowOk: boolean
-    let highOk: boolean
-
-    if (guessAtOrBelowTarget) {
-      low = guess
-      lowOk = true
-      high = guess + windowBlocks > latest.number ? latest.number : guess + windowBlocks
-      if (high === latest.number) {
-        highOk = true
-      } else {
-        logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:estimate' })
-        trackRpcCall('getBlock:estimate')
-        const highBlock = await client.getBlock({ blockNumber: high })
-        highOk = Number(highBlock.timestamp) > bucketed
-      }
-    } else {
-      high = guess
-      highOk = true
-      low = guess > windowBlocks ? guess - windowBlocks : BigInt(0)
-      if (low === BigInt(0)) {
-        lowOk = true
-      } else {
-        logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:estimate' })
-        trackRpcCall('getBlock:estimate')
-        const lowBlock = await client.getBlock({ blockNumber: low })
-        lowOk = Number(lowBlock.timestamp) <= bucketed
-      }
-    }
-
-    if (lowOk && highOk) return { low, high }
-    windowBlocks = windowBlocks * BigInt(4)
-  }
-
-  return null
-}
-
-async function bisectWithinBounds(
-  client: PublicClient,
-  bucketed: number,
-  initialLow: bigint,
-  initialHigh: bigint,
-): Promise<bigint> {
-  let low = initialLow
-  let high = initialHigh
-  const two = BigInt(2)
-
-  for (let i = 0; i < 30 && low < high; i++) {
-    const mid = (low + high + BigInt(1)) / two
-    logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'getBlock:bisect' })
-    trackRpcCall('getBlock:bisect')
-    const block = await client.getBlock({ blockNumber: mid })
-    if (Number(block.timestamp) <= bucketed) {
-      low = mid
-    } else {
-      high = mid - BigInt(1)
-    }
-  }
-  return low
+  const localAvgBlockTime = timeDelta / Number(blockDelta)
+  const remainingSeconds = bucketed - Number(guessBlock.timestamp)
+  const adjustBlocks = BigInt(Math.round(remainingSeconds / localAvgBlockTime))
+  let corrected = guessBlock.number + adjustBlocks
+  if (corrected < BigInt(0)) corrected = BigInt(0)
+  if (corrected > latest.number) corrected = latest.number
+  return corrected
 }
 
 // TEST-SUPPORT EXPORT, DISCLOSED: exported (alongside a cache-reset helper below) solely so a test
 // can inject a mocked PublicClient and assert the caching behavior without hitting real RPC/env
 // vars — does not change this function's real behavior or signature (beyond the disclosed
-// timestamp-bucketing precision tradeoff above, which applies uniformly to every caller).
+// UTC-hour bucketing and single-correction-read tradeoffs above, which apply uniformly to every
+// caller).
 export async function findBlockForTimestamp(client: PublicClient, targetTimestampSec: number): Promise<bigint | null> {
   const bucketed = bucketTimestamp(targetTimestampSec)
+  recordTimestampBucket(bucketed)
 
   const cached = blockForTimestampCache.get(bucketed)
-  if (cached !== undefined) return cached
+  if (cached !== undefined) {
+    recordBlockCacheHit()
+    return cached
+  }
+
+  if (blockResolutionFailureCache.has(bucketed)) {
+    recordNegativeCacheHit()
+    return null
+  }
 
   const inFlight = inFlightBlockSearches.get(bucketed)
   if (inFlight) return inFlight
 
   // BUDGET SHORT-CIRCUIT: checked after the cache/in-flight checks above (a bucket this scan
   // already resolved, or is already resolving concurrently, is always served regardless of the
-  // budget) — see MAX_BASEDEX_RPC_CALLS_PER_SCAN's own declaration for the full reasoning.
+  // budget) — see the shared historicalRpcBudget module's own header for the full reasoning.
   if (baseDexScanBudgetExceeded()) return null
 
-  const search = (async (): Promise<bigint> => {
-    const latest = await getLatestBlockCached(client)
-    if (bucketed >= Number(latest.timestamp)) {
-      blockForTimestampCache.set(bucketed, latest.number)
-      return latest.number
+  const search = (async (): Promise<bigint | null> => {
+    try {
+      const resolved = await resolveBlockForBucket(client, bucketed)
+      blockForTimestampCache.set(bucketed, resolved)
+      return resolved
+    } catch (err) {
+      // BLOCK-RESOLUTION-FAILURE NEGATIVE CACHE, DISCLOSED: a real, request-scoped negative fact —
+      // this bucket could not be resolved (budget exhausted, or the RPC call itself failed) — never
+      // retried again this scan, matching every other negative-cache convention in this file.
+      // Fails closed: the caller gets exactly the same null a genuine "no data" answer produces,
+      // never a fabricated block/price.
+      blockResolutionFailureCache.add(bucketed)
+      if (err instanceof RpcBudgetExceededError) return null
+      throw err
     }
-
-    const window = await estimateAndVerifyWindow(client, latest, bucketed)
-    const [initialLow, initialHigh] = window ? [window.low, window.high] : [BigInt(0), latest.number]
-
-    const low = await bisectWithinBounds(client, bucketed, initialLow, initialHigh)
-    blockForTimestampCache.set(bucketed, low)
-    return low
   })()
 
   inFlightBlockSearches.set(bucketed, search)
@@ -857,9 +838,11 @@ export function __resetBaseDexCachesForTest(): void {
   poolAddressCache.clear()
   poolPriceCache.clear()
   inFlightBlockSearches.clear()
+  blockResolutionFailureCache.clear()
   negativePoolCache.clear()
   inFlightPoolSearches.clear()
   __resetAerodromeCachesForTest()
+  __resetHistoricalRpcBudgetForTest()
 }
 
 // RPC-COST FIX, DISCLOSED (continuation of the findBlockForTimestamp fix above): resolvePoolAddress
@@ -950,6 +933,7 @@ export async function resolvePoolAddress(
 
   const cached = poolAddressCache.get(cacheKey)
   if (cached !== undefined) {
+    recordPoolCacheHit()
     // eslint-disable-next-line no-console
     console.log('[CU-DIAG] basedex: poolAddress cache hit =', cacheKey)
     return cached
@@ -957,6 +941,7 @@ export async function resolvePoolAddress(
 
   const negativeExpiresAt = negativePoolCache.get(cacheKey)
   if (negativeExpiresAt !== undefined && Date.now() < negativeExpiresAt) {
+    recordNegativeCacheHit()
     return null
   }
 
@@ -965,7 +950,14 @@ export async function resolvePoolAddress(
 
   const search = (async (): Promise<`0x${string}` | null> => {
     const pool = await resolvePoolAddressViaMulticall(client, tokenAddress, pairedWith)
-      .catch(() => resolvePoolAddressSequential(client, tokenAddress, pairedWith))
+      .catch((err) => {
+        if (err instanceof RpcBudgetExceededError) throw err
+        return resolvePoolAddressSequential(client, tokenAddress, pairedWith)
+      })
+      .catch((err) => {
+        if (err instanceof RpcBudgetExceededError) return null
+        throw err
+      })
 
     if (pool) {
       poolAddressCache.set(cacheKey, pool)
@@ -1005,7 +997,7 @@ async function resolvePoolAddressViaMulticall(
   }))
 
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:multicall:getPool' })
-  trackRpcCall('readContract:multicall:getPool')
+  reserveOrThrow('readContract:multicall:getPool', 'pool_discovery', 'uniswap_v3', tokenAddress)
   const results = await multicall(client, calls)
 
   for (const result of results) {
@@ -1021,16 +1013,19 @@ async function resolvePoolAddressViaMulticall(
 }
 
 // FALLBACK PATH, DISCLOSED: the original, pre-multicall sequential implementation — unchanged
-// logic, used only when the multicall attempt above throws.
+// logic, used only when the multicall attempt above throws. NEVER FAN OUT PAST BUDGET, DISCLOSED:
+// each fee-tier attempt reserves its own budget slot before making its call — the loop stops the
+// instant the shared budget refuses, rather than blindly trying all 3 tiers regardless of cap state.
 async function resolvePoolAddressSequential(
   client: PublicClient,
   tokenAddress: `0x${string}`,
   pairedWith: `0x${string}`,
 ): Promise<`0x${string}` | null> {
   for (const fee of UNISWAP_V3_FEE_TIERS) {
+    if (baseDexScanBudgetExceeded()) throw new RpcBudgetExceededError('historical_rpc_budget_exceeded:pool_discovery')
     try {
       logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:getPool' })
-      trackRpcCall('readContract:getPool')
+      reserveOrThrow('readContract:getPool', 'pool_discovery', 'uniswap_v3', tokenAddress)
       const pool = await client.readContract({
         address: UNISWAP_V3_FACTORY_BASE as `0x${string}`,
         abi: UNISWAP_V3_FACTORY_ABI,
@@ -1038,7 +1033,8 @@ async function resolvePoolAddressSequential(
         args: [tokenAddress, pairedWith, fee],
       })
       if (pool && pool !== '0x0000000000000000000000000000000000000000') return pool
-    } catch {
+    } catch (err) {
+      if (err instanceof RpcBudgetExceededError) throw err
       // try the next fee tier
     }
   }
@@ -1056,18 +1052,41 @@ export async function readPoolPrice(
   const cacheKey = `${poolAddress.toLowerCase()}-${blockNumber.toString()}`
   const cachedPrice = poolPriceCache.get(cacheKey)
   if (cachedPrice !== undefined) {
+    recordPoolCacheHit()
     // eslint-disable-next-line no-console
     console.log('[CU-DIAG] basedex: poolPrice cache hit =', cacheKey)
     return cachedPrice
   }
 
-  const [slot0, token0, tokenDecimals, pairedDecimals] = await readPoolPriceInputsViaMulticall(
-    client, poolAddress, tokenAddress, pairedWith, blockNumber,
-  ).catch((err) => {
-    // Never retry a provably-doomed identical call — see PoolNotYetDeployedError's own header.
-    if (err instanceof PoolNotYetDeployedError) throw err
-    return readPoolPriceInputsSequential(client, poolAddress, tokenAddress, pairedWith, blockNumber)
-  })
+  let slot0: PoolPriceInputs[0]
+  let token0: PoolPriceInputs[1]
+  let tokenDecimals: PoolPriceInputs[2]
+  let pairedDecimals: PoolPriceInputs[3]
+  try {
+    ;[slot0, token0, tokenDecimals, pairedDecimals] = await readPoolPriceInputsViaMulticall(
+      client, poolAddress, tokenAddress, pairedWith, blockNumber,
+    ).catch((err) => {
+      // Never retry a provably-doomed identical call — see PoolNotYetDeployedError's own header —
+      // and never retry a budget refusal via a different path, see RpcBudgetExceededError's own
+      // header.
+      if (err instanceof PoolNotYetDeployedError || err instanceof RpcBudgetExceededError) throw err
+      return readPoolPriceInputsSequential(client, poolAddress, tokenAddress, pairedWith, blockNumber)
+    })
+  } catch (err) {
+    // POOL-CREATED-AFTER-TRADE NEGATIVE CACHE, DISCLOSED (emergency-CU-containment task, explicit
+    // "add request-scoped negative caching for... pool created after timestamp" requirement): this
+    // exact (pool, block) pair is a permanent, already-settled historical fact — the pool genuinely
+    // had no code at this block, and always will not have had — so it is safe (and required) to
+    // cache the null result exactly like every other permanent poolPriceCache entry, instead of
+    // re-running the same doomed multicall the next time this pool/block pair is requested.
+    // RETHROWN, NOT SWALLOWED, DISCLOSED: the caller (tryBaseDexVenue) already attributes this exact
+    // error class by its own distinguishable message ('pool_not_yet_deployed_at_block' /
+    // 'historical_rpc_budget_exceeded:...') — converting it to a bare `null` here would collapse
+    // that into the generic 'invalid_or_zero_price' reason, losing real diagnostic information for
+    // no benefit; caching the negative fact and rethrowing preserves both.
+    if (err instanceof PoolNotYetDeployedError) poolPriceCache.set(cacheKey, null)
+    throw err
+  }
 
   const sqrtPriceX96 = slot0[0]
 
@@ -1139,7 +1158,7 @@ async function readPoolPriceInputsViaMulticall(
   ]
 
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:multicall:poolPrice' })
-  trackRpcCall('readContract:multicall:poolPrice')
+  reserveOrThrow('readContract:multicall:poolPrice', 'pool_price', 'uniswap_v3', tokenAddress)
   const results = await multicall(client, calls, blockNumber)
 
   if (results.length !== 4 || results.some((r) => !r.success)) {
@@ -1171,14 +1190,21 @@ async function readPoolPriceInputsSequential(
   pairedWith: `0x${string}`,
   blockNumber: bigint,
 ): Promise<PoolPriceInputs> {
+  // ATOMIC BATCH RESERVATION, DISCLOSED: readPoolPrice needs all 4 values to compute a price — a
+  // partial reservation (2 of 4 calls fit under the cap, 2 don't) would spend real budget on calls
+  // whose result can never be used. Checked as one atomic batch BEFORE any of the 4 real calls are
+  // reserved or fired, so a refusal here spends nothing at all.
+  if (!canReserveRpcCalls('pool_price', tokenAddress, 4)) {
+    throw new RpcBudgetExceededError('historical_rpc_budget_exceeded:pool_price')
+  }
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:slot0' })
-  trackRpcCall('readContract:slot0')
+  reserveOrThrow('readContract:slot0', 'pool_price', 'uniswap_v3', tokenAddress)
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:token0' })
-  trackRpcCall('readContract:token0')
+  reserveOrThrow('readContract:token0', 'pool_price', 'uniswap_v3', tokenAddress)
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
-  trackRpcCall('readContract:decimals')
+  reserveOrThrow('readContract:decimals', 'pool_price', 'uniswap_v3', tokenAddress)
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
-  trackRpcCall('readContract:decimals')
+  reserveOrThrow('readContract:decimals', 'pool_price', 'uniswap_v3', tokenAddress)
   return Promise.all([
     client.readContract({ address: poolAddress, abi: UNISWAP_V3_POOL_ABI, functionName: 'slot0', blockNumber }),
     client.readContract({ address: poolAddress, abi: UNISWAP_V3_POOL_ABI, functionName: 'token0', blockNumber }),
@@ -1214,7 +1240,7 @@ async function readSlipstreamPoolPriceInputsViaMulticall(
   ]
 
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:multicall:poolPrice:aeroSlipstream' })
-  trackRpcCall('readContract:multicall:poolPrice:aeroSlipstream')
+  reserveOrThrow('readContract:multicall:poolPrice:aeroSlipstream', 'pool_price', 'aerodrome_slipstream', tokenAddress)
   const results = await multicall(client, calls, blockNumber)
 
   if (results.length !== 4 || results.some((r) => !r.success)) {
@@ -1259,14 +1285,17 @@ async function readSlipstreamPoolPriceInputsSequential(
   pairedWith: `0x${string}`,
   blockNumber: bigint,
 ): Promise<SlipstreamPoolPriceInputs> {
+  if (!canReserveRpcCalls('pool_price', tokenAddress, 4)) {
+    throw new RpcBudgetExceededError('historical_rpc_budget_exceeded:pool_price')
+  }
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:slot0:aeroSlipstream' })
-  trackRpcCall('readContract:slot0:aeroSlipstream')
+  reserveOrThrow('readContract:slot0:aeroSlipstream', 'pool_price', 'aerodrome_slipstream', tokenAddress)
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:token0' })
-  trackRpcCall('readContract:token0')
+  reserveOrThrow('readContract:token0', 'pool_price', 'aerodrome_slipstream', tokenAddress)
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
-  trackRpcCall('readContract:decimals')
+  reserveOrThrow('readContract:decimals', 'pool_price', 'aerodrome_slipstream', tokenAddress)
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
-  trackRpcCall('readContract:decimals')
+  reserveOrThrow('readContract:decimals', 'pool_price', 'aerodrome_slipstream', tokenAddress)
   return Promise.all([
     client.readContract({ address: poolAddress, abi: AERODROME_SLIPSTREAM_POOL_ABI, functionName: 'slot0', blockNumber }),
     client.readContract({ address: poolAddress, abi: AERODROME_SLIPSTREAM_POOL_ABI, functionName: 'token0', blockNumber }),
@@ -1288,14 +1317,29 @@ export async function readSlipstreamPoolPrice(
 ): Promise<number | null> {
   const cacheKey = `${poolAddress.toLowerCase()}-${blockNumber.toString()}`
   const cachedPrice = poolPriceCache.get(cacheKey)
-  if (cachedPrice !== undefined) return cachedPrice
+  if (cachedPrice !== undefined) {
+    recordPoolCacheHit()
+    return cachedPrice
+  }
 
-  const [slot0, token0, tokenDecimals, pairedDecimals] = await readSlipstreamPoolPriceInputsViaMulticall(
-    client, poolAddress, tokenAddress, pairedWith, blockNumber,
-  ).catch((err) => {
-    if (err instanceof PoolNotYetDeployedError || err instanceof SlipstreamSlot0ShapeError) throw err
-    return readSlipstreamPoolPriceInputsSequential(client, poolAddress, tokenAddress, pairedWith, blockNumber)
-  })
+  let slot0: SlipstreamPoolPriceInputs[0]
+  let token0: SlipstreamPoolPriceInputs[1]
+  let tokenDecimals: SlipstreamPoolPriceInputs[2]
+  let pairedDecimals: SlipstreamPoolPriceInputs[3]
+  try {
+    ;[slot0, token0, tokenDecimals, pairedDecimals] = await readSlipstreamPoolPriceInputsViaMulticall(
+      client, poolAddress, tokenAddress, pairedWith, blockNumber,
+    ).catch((err) => {
+      if (err instanceof PoolNotYetDeployedError || err instanceof SlipstreamSlot0ShapeError || err instanceof RpcBudgetExceededError) throw err
+      return readSlipstreamPoolPriceInputsSequential(client, poolAddress, tokenAddress, pairedWith, blockNumber)
+    })
+  } catch (err) {
+    // Same permanent negative-cache treatment (and same "rethrow, don't swallow, to preserve real
+    // diagnostic attribution" reasoning) as readPoolPrice's own — see its POOL-CREATED-AFTER-TRADE
+    // NEGATIVE CACHE header.
+    if (err instanceof PoolNotYetDeployedError) poolPriceCache.set(cacheKey, null)
+    throw err
+  }
 
   const sqrtPriceX96 = slot0[0]
 
@@ -1344,7 +1388,7 @@ async function resolveAerodromeSlipstreamPoolAddressViaMulticall(
   }))
 
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:multicall:getPool:aeroSlipstream' })
-  trackRpcCall('readContract:multicall:getPool:aeroSlipstream')
+  reserveOrThrow('readContract:multicall:getPool:aeroSlipstream', 'pool_discovery', 'aerodrome_slipstream', tokenAddress)
   const results = await multicall(client, calls)
 
   for (const result of results) {
@@ -1365,9 +1409,10 @@ async function resolveAerodromeSlipstreamPoolAddressSequential(
   pairedWith: `0x${string}`,
 ): Promise<`0x${string}` | null> {
   for (const tickSpacing of AERODROME_SLIPSTREAM_TICK_SPACINGS) {
+    if (baseDexScanBudgetExceeded()) throw new RpcBudgetExceededError('historical_rpc_budget_exceeded:pool_discovery')
     try {
       logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:getPool:aeroSlipstream' })
-      trackRpcCall('readContract:getPool:aeroSlipstream')
+      reserveOrThrow('readContract:getPool:aeroSlipstream', 'pool_discovery', 'aerodrome_slipstream', tokenAddress)
       const pool = await client.readContract({
         address: AERODROME_SLIPSTREAM_FACTORY as `0x${string}`,
         abi: AERODROME_SLIPSTREAM_FACTORY_ABI,
@@ -1375,7 +1420,8 @@ async function resolveAerodromeSlipstreamPoolAddressSequential(
         args: [tokenAddress, pairedWith, tickSpacing],
       })
       if (pool && pool !== '0x0000000000000000000000000000000000000000') return pool
-    } catch {
+    } catch (err) {
+      if (err instanceof RpcBudgetExceededError) throw err
       // try the next tick spacing
     }
   }
@@ -1390,21 +1436,34 @@ export async function resolveAerodromeSlipstreamPoolAddress(
   const cacheKey = `${tokenAddress.toLowerCase()}-${pairedWith.toLowerCase()}`
 
   const cached = aeroSlipstreamPoolAddressCache.get(cacheKey)
-  if (cached !== undefined) return cached
+  if (cached !== undefined) {
+    recordPoolCacheHit()
+    return cached
+  }
 
   const negativeExpiresAt = aeroSlipstreamNegativePoolCache.get(cacheKey)
-  if (negativeExpiresAt !== undefined && Date.now() < negativeExpiresAt) return null
+  if (negativeExpiresAt !== undefined && Date.now() < negativeExpiresAt) {
+    recordNegativeCacheHit()
+    return null
+  }
 
   const inFlight = aeroSlipstreamInFlightPoolSearches.get(cacheKey)
   if (inFlight) return inFlight
 
   // Same scan-wide budget the block search already enforces — never spend more RPC budget on this
-  // new venue than the existing cap already allows. See MAX_BASEDEX_RPC_CALLS_PER_SCAN's own header.
+  // venue than the shared historicalRpcBudget module allows. See its own header for the full cap.
   if (baseDexScanBudgetExceeded()) return null
 
   const search = (async (): Promise<`0x${string}` | null> => {
     const pool = await resolveAerodromeSlipstreamPoolAddressViaMulticall(client, tokenAddress, pairedWith)
-      .catch(() => resolveAerodromeSlipstreamPoolAddressSequential(client, tokenAddress, pairedWith))
+      .catch((err) => {
+        if (err instanceof RpcBudgetExceededError) throw err
+        return resolveAerodromeSlipstreamPoolAddressSequential(client, tokenAddress, pairedWith)
+      })
+      .catch((err) => {
+        if (err instanceof RpcBudgetExceededError) return null
+        throw err
+      })
 
     if (pool) {
       aeroSlipstreamPoolAddressCache.set(cacheKey, pool)
@@ -1449,10 +1508,16 @@ export async function resolveAerodromeClassicVolatilePoolAddress(
   const cacheKey = `${tokenAddress.toLowerCase()}-${pairedWith.toLowerCase()}`
 
   const cached = aeroClassicPoolAddressCache.get(cacheKey)
-  if (cached !== undefined) return cached
+  if (cached !== undefined) {
+    recordPoolCacheHit()
+    return cached
+  }
 
   const negativeExpiresAt = aeroClassicNegativePoolCache.get(cacheKey)
-  if (negativeExpiresAt !== undefined && Date.now() < negativeExpiresAt) return null
+  if (negativeExpiresAt !== undefined && Date.now() < negativeExpiresAt) {
+    recordNegativeCacheHit()
+    return null
+  }
 
   const inFlight = aeroClassicInFlightPoolSearches.get(cacheKey)
   if (inFlight) return inFlight
@@ -1462,7 +1527,7 @@ export async function resolveAerodromeClassicVolatilePoolAddress(
   const search = (async (): Promise<`0x${string}` | null> => {
     try {
       logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:getPool:aeroClassic' })
-      trackRpcCall('readContract:getPool:aeroClassic')
+      reserveOrThrow('readContract:getPool:aeroClassic', 'pool_discovery', 'aerodrome_classic_volatile', tokenAddress)
       const pool = await client.readContract({
         address: AERODROME_CLASSIC_FACTORY as `0x${string}`,
         abi: AERODROME_CLASSIC_FACTORY_ABI,
@@ -1473,7 +1538,8 @@ export async function resolveAerodromeClassicVolatilePoolAddress(
         aeroClassicPoolAddressCache.set(cacheKey, pool)
         return pool
       }
-    } catch {
+    } catch (err) {
+      if (err instanceof RpcBudgetExceededError) return null
       // no pool for this pair (or a real RPC failure) — treated the same as "not found" below
     }
     aeroClassicNegativePoolCache.set(cacheKey, Date.now() + NEGATIVE_POOL_CACHE_TTL_MS)
@@ -1506,7 +1572,7 @@ async function readAerodromeClassicVolatilePoolPriceInputsViaMulticall(
   ]
 
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:multicall:poolPrice:aeroClassic' })
-  trackRpcCall('readContract:multicall:poolPrice:aeroClassic')
+  reserveOrThrow('readContract:multicall:poolPrice:aeroClassic', 'pool_price', 'aerodrome_classic_volatile', tokenAddress)
   const results = await multicall(client, calls, blockNumber)
 
   if (results.length !== 5 || results.some((r) => !r.success)) {
@@ -1536,16 +1602,19 @@ async function readAerodromeClassicVolatilePoolPriceInputsSequential(
   pairedWith: `0x${string}`,
   blockNumber: bigint,
 ): Promise<AeroClassicPoolPriceInputs> {
+  if (!canReserveRpcCalls('pool_price', tokenAddress, 5)) {
+    throw new RpcBudgetExceededError('historical_rpc_budget_exceeded:pool_price')
+  }
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:getReserves' })
-  trackRpcCall('readContract:getReserves')
+  reserveOrThrow('readContract:getReserves', 'pool_price', 'aerodrome_classic_volatile', tokenAddress)
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:token0' })
-  trackRpcCall('readContract:token0')
+  reserveOrThrow('readContract:token0', 'pool_price', 'aerodrome_classic_volatile', tokenAddress)
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:stable' })
-  trackRpcCall('readContract:stable')
+  reserveOrThrow('readContract:stable', 'pool_price', 'aerodrome_classic_volatile', tokenAddress)
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
-  trackRpcCall('readContract:decimals')
+  reserveOrThrow('readContract:decimals', 'pool_price', 'aerodrome_classic_volatile', tokenAddress)
   logRpcCall({ route: 'pricingAtTimeEngine:basedex', chain: 'base', method: 'readContract:decimals' })
-  trackRpcCall('readContract:decimals')
+  reserveOrThrow('readContract:decimals', 'pool_price', 'aerodrome_classic_volatile', tokenAddress)
   const [reserves, token0, stable, tokenDecimals, pairedDecimals] = await Promise.all([
     client.readContract({ address: poolAddress, abi: AERODROME_CLASSIC_POOL_ABI, functionName: 'getReserves', blockNumber }),
     client.readContract({ address: poolAddress, abi: AERODROME_CLASSIC_POOL_ABI, functionName: 'token0', blockNumber }),
@@ -1565,14 +1634,31 @@ export async function readAerodromeClassicVolatilePoolPrice(
 ): Promise<number | null> {
   const cacheKey = `${poolAddress.toLowerCase()}-${blockNumber.toString()}`
   const cachedPrice = aeroClassicPoolPriceCache.get(cacheKey)
-  if (cachedPrice !== undefined) return cachedPrice
+  if (cachedPrice !== undefined) {
+    recordPoolCacheHit()
+    return cachedPrice
+  }
 
-  const [reserve0, reserve1, token0, stable, tokenDecimals, pairedDecimals] =
-    await readAerodromeClassicVolatilePoolPriceInputsViaMulticall(client, poolAddress, tokenAddress, pairedWith, blockNumber)
-      .catch((err) => {
-        if (err instanceof AeroPoolNotYetDeployedError) throw err
-        return readAerodromeClassicVolatilePoolPriceInputsSequential(client, poolAddress, tokenAddress, pairedWith, blockNumber)
-      })
+  let reserve0: AeroClassicPoolPriceInputs[0]
+  let reserve1: AeroClassicPoolPriceInputs[1]
+  let token0: AeroClassicPoolPriceInputs[2]
+  let stable: AeroClassicPoolPriceInputs[3]
+  let tokenDecimals: AeroClassicPoolPriceInputs[4]
+  let pairedDecimals: AeroClassicPoolPriceInputs[5]
+  try {
+    ;[reserve0, reserve1, token0, stable, tokenDecimals, pairedDecimals] =
+      await readAerodromeClassicVolatilePoolPriceInputsViaMulticall(client, poolAddress, tokenAddress, pairedWith, blockNumber)
+        .catch((err) => {
+          if (err instanceof AeroPoolNotYetDeployedError || err instanceof RpcBudgetExceededError) throw err
+          return readAerodromeClassicVolatilePoolPriceInputsSequential(client, poolAddress, tokenAddress, pairedWith, blockNumber)
+        })
+  } catch (err) {
+    // Same permanent negative-cache treatment (and same "rethrow, don't swallow" reasoning) as the
+    // Uniswap V3/Slipstream venues' own — see readPoolPrice's POOL-CREATED-AFTER-TRADE NEGATIVE
+    // CACHE header.
+    if (err instanceof AeroPoolNotYetDeployedError) aeroClassicPoolPriceCache.set(cacheKey, null)
+    throw err
+  }
 
   // NEVER PRICE A STABLE POOL WITH THIS MATH — see this section's own header. Independently
   // re-verified here from the pool's own on-chain state, not merely trusted from which factory call
@@ -1733,6 +1819,15 @@ export async function fetchBaseDexPriceDetailed(
   timestamp: number,
 ): Promise<BaseDexPriceResult> {
   if (chain !== 'base') return { priceUsd: null, reason: 'base_dex_only_supports_base_chain' }
+
+  // EMERGENCY KILL SWITCH, DISCLOSED, DEFAULT OFF — see historicalRpcBudget.ts's own header for the
+  // full reasoning. Unset (or anything other than the literal string 'true') means this ENTIRE
+  // on-chain historical pricing venue is skipped, at zero RPC cost — pricing falls through to
+  // whatever the provider-based sources already produced. This is the cheapest possible answer to
+  // "make historical on-chain pricing impossible to exceed a strict budget": zero calls when off.
+  if (!isHistoricalOnchainRpcPricingEnabled()) {
+    return { priceUsd: null, reason: 'onchain_rpc_pricing_disabled' }
+  }
 
   const client = getBaseClient()
   if (!client) return { priceUsd: null, reason: 'no_api_key_configured' }
