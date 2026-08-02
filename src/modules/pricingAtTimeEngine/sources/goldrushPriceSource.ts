@@ -22,7 +22,9 @@
 import { GoldRushClient } from '@covalenthq/client-sdk'
 import type { Chain } from '@covalenthq/client-sdk'
 import type { PriceSourceFn } from '../types'
+import type { SupportedChain } from '../../providerFetchWindow/types'
 import { logRpcCall } from '@/lib/server/rpcDebug'
+import { tryConsume, recordDuplicatePrevented, recordCallOutcome } from '../../providerCost/walletProviderCostLedger'
 
 // Real, verified GoldRush chain slugs (confirmed against the installed SDK's Generic.types.d.ts
 // ChainName enum). Kept as this module's own literal copy — same "no runtime coupling between
@@ -242,11 +244,33 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
     const tokenLower = token.toLowerCase()
     const negativeCacheKey = `${chain}:${tokenLower}`
     const negativeExpiresAt = negativeGoldrushPriceCache.get(negativeCacheKey)
-    if (negativeExpiresAt !== undefined && Date.now() < negativeExpiresAt) return null
+    if (negativeExpiresAt !== undefined && Date.now() < negativeExpiresAt) {
+      recordDuplicatePrevented('goldrush', 'negative_cache')
+      return null
+    }
 
+    // TIME-BUCKET DEDUPE KEY, DISCLOSED: (chain, token, UTC day) — the exact granularity the real
+    // query itself uses (getTokenPrices takes YYYY-MM-DD from/to), so two requirements for the same
+    // token on the same day genuinely cannot produce different answers and are correctly collapsed
+    // onto one call.
     const inFlightKey = `${negativeCacheKey}:${dateString}`
     const inFlight = inFlightGoldrushPriceLookups.get(inFlightKey)
-    if (inFlight) return inFlight
+    if (inFlight) {
+      recordDuplicatePrevented('goldrush', 'singleflight')
+      return inFlight
+    }
+
+    // HARD PER-SCAN CAP, DISCLOSED (cost-audit finding B.3 — see
+    // docs/wallet-provider-cost-audit.md). The consecutive-miss breaker above bounds LATENCY, not
+    // SPEND: it reopens after its 30s cooldown and this source resumes at full cost, which is
+    // exactly how a real measured scan reached 1,045 calls with zero accepted results. This is the
+    // shared, scan-wide ceiling on top of it. Checked AFTER the breaker/negative-cache/singleflight
+    // short-circuits above, so a question already answerable for free is always served regardless
+    // of budget state — the cap only ever refuses a genuinely NEW live call. FAILS CLOSED: returns
+    // the same honest null a real miss produces; never a fabricated price, never a retry.
+    if (!tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: chain as SupportedChain, stage: 'historical_pricing', isPricing: true })) {
+      return null
+    }
 
     const lookup = (async (): Promise<number | null> => {
       try {
@@ -260,6 +284,7 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
         if (response.error || !response.data) {
           negativeGoldrushPriceCache.set(negativeCacheKey, Date.now() + NEGATIVE_PRICE_CACHE_TTL_MS)
           recordGoldrushMiss()
+          recordCallOutcome('goldrush', false)
           return null
         }
 
@@ -267,16 +292,21 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
         if (!Array.isArray(items) || items.length === 0) {
           negativeGoldrushPriceCache.set(negativeCacheKey, Date.now() + NEGATIVE_PRICE_CACHE_TTL_MS)
           recordGoldrushMiss()
+          recordCallOutcome('goldrush', false)
           return null
         }
 
         const price = items[0]?.price
         if (typeof price === 'number' && Number.isFinite(price)) {
           recordGoldrushSuccess()
+          // A real call whose result the scan genuinely consumed — the numerator of the cost
+          // audit's own callsWhoseResultWasUsed/Unused split.
+          recordCallOutcome('goldrush', true)
           return price
         }
         negativeGoldrushPriceCache.set(negativeCacheKey, Date.now() + NEGATIVE_PRICE_CACHE_TTL_MS)
         recordGoldrushMiss()
+        recordCallOutcome('goldrush', false)
         return null
       } catch {
         // GoldRush threw (network error, rate limit, invalid API key, etc.) — never a crash, never a

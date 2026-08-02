@@ -141,6 +141,13 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   // own header — repeatedly re-fetching immutable prices is what exhausted the rate limit that
   // produced this phase's production baseline).
   const { resetNativePriceResolverForScan } = await import('@/src/modules/nativePriceResolver/index')
+  // SHARED PROVIDER COST LEDGER RESET, DISCLOSED (cost-audit task): the single request-scoped
+  // Alchemy+GoldRush budget every provider call site now gates on — see
+  // src/modules/providerCost/walletProviderCostLedger.ts and docs/wallet-provider-cost-audit.md.
+  // Same per-job reset convention as every other request-scoped budget above: a warm serverless
+  // instance serving a second, unrelated scan must start with a fresh budget rather than inherit
+  // the previous scan's exhausted one.
+  const { resetWalletProviderCostLedger, logWalletProviderCostAudit } = await import('@/src/modules/providerCost/walletProviderCostLedger')
 
   const startedAt = Date.now()
   console.warn('[wallet-scan-worker] job started', { jobId: payload.jobId })
@@ -150,6 +157,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   // fresh (see basedex.ts's resetBaseDexRpcBudgetForScan for the full reasoning), not inherit the
   // previous scan's exhausted counter.
   resetBaseDexRpcBudgetForScan()
+  resetWalletProviderCostLedger()
   resetGoldrushPriceSourceCallCount()
   resetDexscreenerCallCount()
   resetCoingeckoCircuitBreaker()
@@ -219,6 +227,10 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   if (completedSuccessfully) {
     printAlchemyAuditSummary()
   }
+  // UNCONDITIONAL, DISCLOSED (cost-audit task): logged on FAILURE as well as success — a scan that
+  // died partway through is exactly the case where knowing what it already spent matters most, and
+  // gating this on success would hide the runaway scans this diagnostic exists to catch.
+  logWalletProviderCostAudit()
   // Unconditional (success or failure) durationMs log via console.warn — the single most direct
   // way to answer "how long did the whole worker actually take, and did it finish or throw" on the
   // next real attempt, regardless of outcome.

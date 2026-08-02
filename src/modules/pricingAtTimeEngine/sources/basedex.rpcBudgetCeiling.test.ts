@@ -68,10 +68,15 @@ function makeNoPoolFakeClient() {
         success: true,
         returnData: encodeFunctionResult({ abi: FACTORY_ABI, functionName: 'getPool', result: ZERO }),
       }))
+      // See basedex.test.ts's own WRAPPING NOTE: aggregate3 has exactly one output (itself an
+      // array), and viem's encodeFunctionResult only wraps `result` when it is NOT already an
+      // array — so the already-array `results` must be wrapped once more to be read as "the single
+      // output's array value" rather than "one value per output".
       return {
         data: encodeFunctionResult({
           abi: MULTICALL3_ABI, functionName: 'aggregate3',
-          result: [results] as unknown as [{ success: boolean; returnData: `0x${string}` }[]],
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          result: [results] as any,
         }),
       }
     },

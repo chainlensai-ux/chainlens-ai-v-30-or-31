@@ -14,6 +14,12 @@ import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import type { GoldRushClient } from '@covalenthq/client-sdk'
 import { goldrushPriceSource, __resetGoldrushPriceSourceCachesForTest, getGoldrushPriceSourceCallCount, isKnownGoldrushNegative, isGoldrushBreakerOpenForTest } from './goldrushPriceSource'
+// SHARED LEDGER RESET, DISCLOSED (cost-audit task): goldrushPriceSource now consumes from the
+// scan-wide provider budget (walletProviderCostLedger), which in production is reset once per scan
+// job. A test file runs many "scans" back to back in one process, so without this reset the
+// cumulative budget would leak across cases and refuse calls a real single scan would allow —
+// resetting per test models the real per-job lifecycle, it does not weaken any assertion.
+import { __resetWalletProviderCostLedgerForTest } from '../../providerCost/walletProviderCostLedger'
 
 const TOKEN = '0x1111111111111111111111111111111111111111'
 const CHAIN = 'base'
@@ -39,6 +45,7 @@ function makeFakeClient(opts: {
 
 describe('goldrushPriceSource negative-result caching', () => {
   beforeEach(() => {
+    __resetWalletProviderCostLedgerForTest()
     __resetGoldrushPriceSourceCachesForTest()
   })
 
@@ -144,6 +151,7 @@ describe('goldrushPriceSource negative-result caching', () => {
 
 describe('goldrushPriceSource — scan-level circuit breaker', () => {
   beforeEach(() => {
+    __resetWalletProviderCostLedgerForTest()
     __resetGoldrushPriceSourceCachesForTest()
   })
 

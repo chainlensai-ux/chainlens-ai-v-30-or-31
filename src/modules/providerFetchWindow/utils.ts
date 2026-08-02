@@ -16,6 +16,7 @@ import {
   PROVIDER_FETCH_WINDOW_DAYS_MIN,
 } from './types'
 import { logRpcCall } from '@/lib/server/rpcDebug'
+import { tryConsume, recordPageFetched } from '../providerCost/walletProviderCostLedger'
 import { auditRPC } from '@/lib/server/alchemyAudit'
 
 // Env var resolution mirrors the project's existing convention (multiple accepted names, server
@@ -210,6 +211,14 @@ export async function fetchGoldrushRawEvents(
     url.searchParams.set('page-number', '0')
     url.searchParams.set('with-logs', 'true')
     url.searchParams.set('no-spam', 'true')
+    // SHARED LEDGER, DISCLOSED (cost-audit task): counted against the one scan-wide GoldRush
+    // budget. This is the scan's single structural history fetch per chain (already singleflighted
+    // by fetchProviderWindow), so it is expected to always fit — recording it is what makes the
+    // [wallet-provider-cost-audit] diagnostic reconcile exactly against real invocations.
+    if (!tryConsume({ provider: 'goldrush', endpoint: 'goldrush_transactions_v3', chain, stage: 'transaction_history' })) {
+      return { provider: 'goldrush', ok: false, events: [], errorReason: 'provider_budget_exhausted' }
+    }
+    recordPageFetched('goldrush')
     logRpcCall({ route: 'providerFetchWindow', chain, method: 'goldrush_transactions_v3' })
     const res = await fetch(url.toString(), {
       cache: 'no-store',
@@ -337,6 +346,9 @@ export async function fetchAlchemyRawEvents(
   }
   const rpc = async (params: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
     try {
+      // SHARED LEDGER, DISCLOSED (cost-audit task): same reasoning as the GoldRush history fetch
+      // above — the scan's structural per-chain Alchemy history pull, counted once per real call.
+      if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'transaction_history' })) return null
       logRpcCall({ route: 'providerFetchWindow', chain, method: 'alchemy_getAssetTransfers' })
       auditRPC('alchemy_getAssetTransfers', params)
       const res = await fetch(url, {

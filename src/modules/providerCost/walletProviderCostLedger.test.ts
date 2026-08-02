@@ -1,0 +1,190 @@
+// TESTS — providerCost: the scan-wide Alchemy + GoldRush budget and cost ledger.
+//
+// These are the hard assertions this cost-audit task requires. Every one of them is about a real,
+// provable cost property — never a restatement of the implementation.
+
+import { test, beforeEach } from 'node:test'
+import assert from 'node:assert/strict'
+import {
+  tryConsume,
+  canConsume,
+  recordPageFetched,
+  recordDuplicatePrevented,
+  recordCallOutcome,
+  getWalletProviderCostAudit,
+  __resetWalletProviderCostLedgerForTest,
+  MAX_ALCHEMY_CALLS_PER_SCAN,
+  MAX_ALCHEMY_CU_PER_SCAN,
+  MAX_GOLDRUSH_CALLS_PER_SCAN,
+  MAX_GOLDRUSH_PRICING_CALLS_PER_SCAN,
+} from './walletProviderCostLedger'
+import { estimatedCuForMethod } from '@/lib/server/alchemyCallBudget'
+
+beforeEach(() => __resetWalletProviderCostLedgerForTest())
+
+test('a fresh ledger reports zero of everything', () => {
+  const audit = getWalletProviderCostAudit()
+  assert.equal(audit.alchemy.calls, 0)
+  assert.equal(audit.alchemy.estimatedCu, 0)
+  assert.equal(audit.goldrush.calls, 0)
+  assert.equal(audit.goldrush.estimatedCredits, 0)
+  assert.deepEqual(audit.alchemy.callsByEndpoint, {})
+})
+
+test('HARD ASSERTION: 200+ pricing requirements cannot exceed the configured GoldRush pricing budget', () => {
+  let granted = 0
+  for (let i = 0; i < 250; i++) {
+    if (tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: 'base', stage: 'historical_pricing', isPricing: true })) {
+      granted += 1
+    }
+  }
+  assert.equal(granted, MAX_GOLDRUSH_PRICING_CALLS_PER_SCAN)
+  const audit = getWalletProviderCostAudit()
+  assert.equal(audit.goldrush.calls, MAX_GOLDRUSH_PRICING_CALLS_PER_SCAN)
+  assert.equal(audit.goldrush.cappedCalls, 250 - MAX_GOLDRUSH_PRICING_CALLS_PER_SCAN)
+})
+
+test('HARD ASSERTION: 200+ Alchemy requirements cannot exceed the configured Alchemy budget', () => {
+  let granted = 0
+  for (let i = 0; i < 250; i++) {
+    // eth_call is the cheapest real method this scan makes, so the CALL cap binds before the CU cap
+    // here — the CU cap is separately asserted below with an expensive method.
+    if (tryConsume({ provider: 'alchemy', endpoint: 'eth_call', chain: 'base', stage: 'onchain_rpc_pricing' })) granted += 1
+  }
+  assert.equal(granted, MAX_ALCHEMY_CALLS_PER_SCAN)
+  assert.ok(getWalletProviderCostAudit().alchemy.estimatedCu <= MAX_ALCHEMY_CU_PER_SCAN)
+})
+
+test('the Alchemy CU cap binds independently of the call cap for expensive methods', () => {
+  const perCall = estimatedCuForMethod('alchemy_getAssetTransfers')
+  let granted = 0
+  for (let i = 0; i < MAX_ALCHEMY_CALLS_PER_SCAN; i++) {
+    if (tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain: 'base', stage: 'transaction_history' })) granted += 1
+  }
+  assert.ok(granted < MAX_ALCHEMY_CALLS_PER_SCAN,
+    'expected the CU cap to bind before the call cap for a 150-CU method')
+  assert.ok(granted * perCall <= MAX_ALCHEMY_CU_PER_SCAN)
+})
+
+test('HARD ASSERTION: no provider call is granted after a budget refusal', () => {
+  for (let i = 0; i < MAX_GOLDRUSH_PRICING_CALLS_PER_SCAN; i++) {
+    tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: 'base', stage: 'historical_pricing', isPricing: true })
+  }
+  const callsAtCap = getWalletProviderCostAudit().goldrush.calls
+  // Repeated attempts must stay refused — never a one-shot trip that silently reopens.
+  for (let i = 0; i < 20; i++) {
+    assert.equal(tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: 'base', stage: 'historical_pricing', isPricing: true }), false)
+  }
+  assert.equal(getWalletProviderCostAudit().goldrush.calls, callsAtCap, 'a refused call must never increment the spent total')
+})
+
+test('the GoldRush pricing sub-cap never starves the scan\'s structural GoldRush calls', () => {
+  // Exhaust the pricing sub-cap entirely...
+  for (let i = 0; i < MAX_GOLDRUSH_PRICING_CALLS_PER_SCAN + 20; i++) {
+    tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: 'base', stage: 'historical_pricing', isPricing: true })
+  }
+  // ...a structural, non-pricing call (transaction history) must still be allowed, because the
+  // overall GoldRush cap is higher than the pricing sub-cap.
+  assert.equal(tryConsume({ provider: 'goldrush', endpoint: 'goldrush_transactions_v3', chain: 'base', stage: 'transaction_history' }), true)
+})
+
+test('the overall GoldRush cap still binds above the pricing sub-cap', () => {
+  let granted = 0
+  for (let i = 0; i < MAX_GOLDRUSH_CALLS_PER_SCAN + 50; i++) {
+    if (tryConsume({ provider: 'goldrush', endpoint: 'goldrush_transactions_v3', chain: 'base', stage: 'transaction_history' })) granted += 1
+  }
+  assert.equal(granted, MAX_GOLDRUSH_CALLS_PER_SCAN)
+})
+
+test('canConsume is a pure check — it never mutates the ledger', () => {
+  const before = getWalletProviderCostAudit()
+  assert.equal(canConsume({ provider: 'alchemy', endpoint: 'eth_call', chain: 'base', stage: 'unknown' }), true)
+  assert.deepEqual(getWalletProviderCostAudit(), before)
+})
+
+test('HARD ASSERTION: diagnostics reconcile exactly with real provider invocation counts', () => {
+  // Simulates a mocked provider: exactly 7 calls genuinely go out, 3 more are prevented by caches,
+  // 2 are refused by a cap. The audit must attribute all 12 correctly, with `calls` counting ONLY
+  // the 7 real ones.
+  let realInvocations = 0
+  const mockProviderCall = (endpoint: string, chain: 'base' | 'eth', stage: 'transaction_history' | 'historical_pricing') => {
+    if (!tryConsume({ provider: 'goldrush', endpoint, chain, stage })) return 'capped'
+    realInvocations += 1
+    return 'called'
+  }
+
+  for (let i = 0; i < 4; i++) mockProviderCall('goldrush_transactions_v3', 'base', 'transaction_history')
+  for (let i = 0; i < 3; i++) mockProviderCall('goldrush_getTokenPrices', 'eth', 'historical_pricing')
+  for (let i = 0; i < 3; i++) recordDuplicatePrevented('goldrush', 'request_cache')
+  recordDuplicatePrevented('goldrush', 'singleflight')
+  recordDuplicatePrevented('goldrush', 'negative_cache')
+
+  const audit = getWalletProviderCostAudit()
+  assert.equal(audit.goldrush.calls, realInvocations, 'audit call count must equal real provider invocations exactly')
+  assert.equal(audit.goldrush.calls, 7)
+  assert.equal(audit.goldrush.callsByEndpoint.goldrush_transactions_v3, 4)
+  assert.equal(audit.goldrush.callsByEndpoint.goldrush_getTokenPrices, 3)
+  assert.equal(audit.goldrush.callsByChain.base, 4)
+  assert.equal(audit.goldrush.callsByChain.eth, 3)
+  assert.equal(audit.goldrush.callsByStage.transaction_history, 4)
+  assert.equal(audit.goldrush.callsByStage.historical_pricing, 3)
+  assert.equal(audit.goldrush.duplicateCallsPrevented, 5)
+  assert.equal(audit.cache.requestHits, 3)
+  assert.equal(audit.cache.singleflightHits, 1)
+  assert.equal(audit.cache.negativeCacheHits, 1)
+})
+
+test('a prevented duplicate is never counted as a call', () => {
+  for (let i = 0; i < 50; i++) recordDuplicatePrevented('alchemy', 'request_cache')
+  const audit = getWalletProviderCostAudit()
+  assert.equal(audit.alchemy.calls, 0, 'cache hits must cost nothing')
+  assert.equal(audit.alchemy.estimatedCu, 0)
+  assert.equal(audit.alchemy.duplicateCallsPrevented, 50)
+})
+
+test('a capped call is never counted as a call', () => {
+  for (let i = 0; i < MAX_ALCHEMY_CALLS_PER_SCAN + 10; i++) {
+    tryConsume({ provider: 'alchemy', endpoint: 'eth_chainId', chain: 'base', stage: 'unknown' })
+  }
+  const audit = getWalletProviderCostAudit()
+  assert.equal(audit.alchemy.calls, MAX_ALCHEMY_CALLS_PER_SCAN)
+  assert.equal(audit.alchemy.cappedCalls, 10)
+})
+
+test('used/unused outcomes are tracked separately from call counts', () => {
+  tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: 'base', stage: 'historical_pricing', isPricing: true })
+  recordCallOutcome('goldrush', true)
+  tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: 'base', stage: 'historical_pricing', isPricing: true })
+  recordCallOutcome('goldrush', false)
+
+  const audit = getWalletProviderCostAudit()
+  assert.equal(audit.goldrush.calls, 2)
+  assert.equal(audit.outputs.callsWhoseResultWasUsed, 1)
+  assert.equal(audit.outputs.callsWhoseResultWasUnused, 1)
+})
+
+test('pagesFetched is tracked without inflating the call count', () => {
+  tryConsume({ provider: 'goldrush', endpoint: 'goldrush_transactions_v3', chain: 'base', stage: 'transaction_history' })
+  recordPageFetched('goldrush')
+  const audit = getWalletProviderCostAudit()
+  assert.equal(audit.goldrush.calls, 1)
+  assert.equal(audit.goldrush.pagesFetched, 1)
+})
+
+test('the Alchemy and GoldRush budgets are genuinely independent', () => {
+  for (let i = 0; i < MAX_GOLDRUSH_CALLS_PER_SCAN + 10; i++) {
+    tryConsume({ provider: 'goldrush', endpoint: 'goldrush_transactions_v3', chain: 'base', stage: 'transaction_history' })
+  }
+  assert.equal(tryConsume({ provider: 'alchemy', endpoint: 'eth_call', chain: 'base', stage: 'onchain_rpc_pricing' }), true,
+    'an exhausted GoldRush budget must never block an Alchemy call')
+})
+
+test('reset restores a clean slate for the next scan', () => {
+  tryConsume({ provider: 'alchemy', endpoint: 'eth_call', chain: 'base', stage: 'unknown' })
+  recordDuplicatePrevented('goldrush', 'request_cache')
+  __resetWalletProviderCostLedgerForTest()
+  const audit = getWalletProviderCostAudit()
+  assert.equal(audit.alchemy.calls, 0)
+  assert.equal(audit.goldrush.duplicateCallsPrevented, 0)
+  assert.equal(audit.cache.requestHits, 0)
+})

@@ -11,6 +11,7 @@ import type { RawProviderEvent, SupportedChain } from '../providerFetchWindow/ty
 import type { HoldingInput, RecoveryTriggerEvidenceRef } from './types'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { auditRPC } from '@/lib/server/alchemyAudit'
+import { tryConsume, recordPageFetched } from '../providerCost/walletProviderCostLedger'
 
 const ALCHEMY_BASE_KEY_NAMES = ['ALCHEMY_BASE_KEY', 'ALCHEMY_BASE_API_KEY', 'BASE_ALCHEMY_API_KEY', 'ALCHEMY_API_KEY', 'NEXT_PUBLIC_ALCHEMY_BASE_KEY']
 const ALCHEMY_ETH_KEY_NAMES = ['ALCHEMY_ETHEREUM_KEY', 'ALCHEMY_ETH_KEY', 'ALCHEMY_ETH_API_KEY', 'ALCHEMY_API_KEY']
@@ -121,6 +122,11 @@ async function fetchGoldrushHistoricalPageLive(
     url.searchParams.set('page-number', String(pageNumber))
     url.searchParams.set('with-logs', 'true')
     url.searchParams.set('no-spam', 'true')
+    // SHARED BUDGET GATE, DISCLOSED (cost-audit task): recovery's own GoldRush history pages count
+    // against the same scan-wide GoldRush budget as every other call. Already request-scoped
+    // coalesced per (chain, wallet, page) above — this bounds the total across candidates.
+    if (!tryConsume({ provider: 'goldrush', endpoint: 'goldrush_transactions_v3', chain, stage: 'recovery' })) return []
+    recordPageFetched('goldrush')
     logRpcCall({ route: 'recoveryPolicy', chain, method: 'goldrush_transactions_v3_historical' })
     const res = await fetch(url.toString(), {
       cache: 'no-store',
@@ -171,6 +177,15 @@ export async function fetchAlchemyTokenHistory(
   if (!apiKey) return []
   const rpc = async (params: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
     try {
+      // SHARED BUDGET GATE, DISCLOSED (cost-audit finding B.4 — see
+      // docs/wallet-provider-cost-audit.md). This was the one Alchemy call site in the scan with NO
+      // budget and NO cache: 2 x alchemy_getAssetTransfers (300 CU) per TRIGGERED recovery
+      // candidate, scaling with candidate count. Its GoldRush sibling
+      // (fetchGoldrushHistoricalPage) already had request-scoped coalescing; this did not. Now
+      // gated on the scan-wide ledger. FAILS CLOSED: a refusal returns the same null a real
+      // provider failure already returns here, so recovery simply finds no extra history for that
+      // candidate — never a fabricated event, never a retry.
+      if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'recovery' })) return null
       logRpcCall({ route: 'recoveryPolicy', chain, method: 'alchemy_getAssetTransfers' })
       auditRPC('alchemy_getAssetTransfers', params)
       const res = await fetch(url, {

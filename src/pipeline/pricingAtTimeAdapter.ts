@@ -39,6 +39,7 @@ import { fetchCoingeckoNativeEthPriceDetailed } from '../modules/pricingAtTimeEn
 import {
   recordPricingAttemptOutcome, routeSourceOrderFor, type PricingAssetClass,
 } from '../modules/pricingAtTimeEngine/sourceSuccessEvidence'
+import { recordDuplicatePrevented } from '../modules/providerCost/walletProviderCostLedger'
 import {
   isNativePseudoAddress, isCanonicalWethAddress, isVerifiedStablecoinAddress,
 } from '../modules/quoteLegPricing/index'
@@ -127,7 +128,17 @@ export function withGeckoTerminalFallback(existingFallback: PriceSourceFn): Pric
   }
 }
 
-export type PricingRouteUsed = 'goldrush' | 'geckoterminal' | 'dexscreener' | 'coingecko_or_basedex' | 'coingecko_native_eth' | 'none'
+// 'verified_stablecoin' is a real, distinguishable route, DISCLOSED: a deterministic $1.00 for an
+// address-verified USD-pegged stablecoin, resolved with ZERO provider calls (see the short-circuit
+// in buildChainAwareHistoricalPriceSourceDetailed below). Kept as its own route value — never
+// folded into an existing provider's label — so a reader of pricingRouteLog can always tell a
+// deterministic resolution apart from one a real provider actually answered.
+export type PricingRouteUsed = 'goldrush' | 'geckoterminal' | 'dexscreener' | 'coingecko_or_basedex' | 'coingecko_native_eth' | 'verified_stablecoin' | 'none'
+
+// A verified, address-checked USD-pegged stablecoin is priced at exactly $1.00 — the same
+// deterministic convention basedex's convertQuoteRatioToUsd already applies to a verified
+// stablecoin quote leg. Named rather than inlined so every use site is greppable.
+export const VERIFIED_STABLECOIN_USD = 1
 
 export type PricingRouteRecord = {
   token: string
@@ -253,6 +264,30 @@ export function buildChainAwareHistoricalPriceSourceDetailed(
   // instead of discarding them — same real calls, same real order, same real result either way.
 
   return async (token, chain, timestamp) => {
+    // VERIFIED-STABLECOIN SHORT-CIRCUIT, DISCLOSED (cost-audit finding B.1 — see
+    // docs/wallet-provider-cost-audit.md). CONFIRMED WASTE: isVerifiedStablecoinAddress already
+    // existed and was already trusted elsewhere in this exact pricing chain — basedex's
+    // convertQuoteRatioToUsd prices a verified stablecoin quote leg at $1.00 with no provider call
+    // at all — but NOTHING in this router ever consulted it. Every USDC/USDbC/DAI/USDT leg
+    // therefore paid the full four-provider fallback chain (GoldRush -> DexScreener ->
+    // GeckoTerminal -> CoinGecko/basedex safety net) to discover a price this codebase already
+    // treats as deterministic. Since priceLotsForWallet builds a PriceableEntry for EVERY merged
+    // inbound/outbound event, and the dominant quote assets on Base/ETH are stablecoins, this was
+    // roughly one wasted full fallback chain per trade on a stablecoin-quoted wallet.
+    //
+    // NOT A NEW EVIDENCE STANDARD, DISCLOSED: $1.00 for a VERIFIED (address-checked, never
+    // symbol-guessed — see quoteLegPricing's own stablecoinSymbolFor) USD-pegged stablecoin is the
+    // exact same deterministic convention this pipeline already applies in basedex, applied one
+    // layer earlier so it costs zero calls instead of four. Address-verified only: an unrecognised
+    // "stablecoin-looking" token is untouched and still goes through the full real chain below.
+    // Never applied to a non-stablecoin, never used to fill an unrelated gap, and recorded as a
+    // prevented duplicate so the cost audit reports exactly what it saved.
+    if (isVerifiedStablecoinAddress(chain, token)) {
+      recordDuplicatePrevented('goldrush', 'deterministic')
+      recordRoute(token, chain, timestamp, 'verified_stablecoin')
+      return { price: VERIFIED_STABLECOIN_USD, route: 'verified_stablecoin', attempts: [] }
+    }
+
     const attempts: PriceAttemptDetail[] = []
     let ethNativeDiagnostic: import('../modules/pricingAtTimeEngine/sources/coingecko').NativeEthPricingDiagnostic | null = null
 
