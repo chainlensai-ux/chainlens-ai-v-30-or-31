@@ -95,12 +95,19 @@ test('a validated Aerodrome Classic pool classifies as aerodrome_classic', async
 })
 
 test('contradictory_legs exposes the bounded decoded transfer flow and the exact contradiction', async () => {
-  // Slipstream (unchanged, strict resolver) — Classic's own duplicate-transfer case now aggregates
-  // successfully instead (see index.test.ts's "two transfers into the same pool" test), so this
-  // exercises the protocol that still fails closed on more-than-one-transfer-per-side.
+  // REVERSED, DISCLOSED (evidence-first PnL completion task, requirement #7 — Aerodrome Slipstream
+  // multihop fix): this fixture previously used two IDENTICAL duplicate incoming WETH transfers
+  // that happened to sum EXACTLY to the Swap event's own amount — Slipstream now nets same-token
+  // multi-transfer legs the same way Classic already does (resolveSlipstreamMultiTransferLeg,
+  // aerodromeSlipstreamLeg.ts), so that case now correctly resolves as a real swap instead of
+  // contradicting (see index.test.ts's "Slipstream: duplicate identical transfer logs now aggregate
+  // successfully" test for that reversal). This fixture is rewritten to a contradiction the netting
+  // fix does NOT resolve: two DIFFERENT tokens (WETH, USDC) both transferred into the pool, each
+  // independently within tolerance of the Swap event's own incoming amount — genuinely ambiguous
+  // WHICH token is the real swap leg, never picked arbitrarily.
   const logs = [
-    transferLog(0, WETH, wallet, poolA, BigInt('1000000000000000000')),
-    transferLog(1, WETH, wallet, poolA, BigInt('1000000000000000000')), // duplicate incoming leg
+    transferLog(0, WETH, wallet, poolA, BigInt('2000000000000000000')),
+    transferLog(1, USDC, wallet, poolA, BigInt('2000000000000000000')), // ambiguous: also matches
     slipstreamSwapLog(2, poolA, wallet, wallet, BigInt('2000000000000000000'), BigInt('-500000000000000000000')),
     transferLog(3, TOKEN_X, poolA, wallet, BigInt('500000000000000000000')),
   ]

@@ -220,11 +220,41 @@ test('Classic: two transfers into the same pool that sum exactly to the Swap eve
   assert.equal(result.swap.tokenIn.address, WETH)
 })
 
-test('Slipstream: duplicate identical transfer logs remain contradictory (strict resolver, unchanged)', async () => {
+test('Slipstream: duplicate identical transfer logs now aggregate successfully (multihop fix)', async () => {
+  // REVERSED, DISCLOSED (evidence-first PnL completion task, requirement #7 — Aerodrome Slipstream
+  // multihop fix): production proof showed a real Slipstream multihop transaction rejected as
+  // contradictory_legs purely because the old resolver (resolvePoolLeg) required EXACTLY one
+  // incoming and one outgoing transfer touching the pool — a real router-mediated swap can
+  // legitimately split/duplicate a leg across more than one transfer without being any less exact.
+  // resolveSlipstreamMultiTransferLeg (aerodromeSlipstreamLeg.ts) now nets same-token multi-transfer
+  // legs against the Swap event's own authoritative signed (amount0, amount1) — the exact same fix
+  // multiTransferLeg.ts already shipped for Aerodrome Classic (see "Classic: two transfers into the
+  // same pool" test directly above) — so this exact fixture now resolves instead of contradicting.
   const tx = bundle({
     logs: [
       transferLog(0, WETH, wallet, poolA, BigInt("1000000000000000000")),
       transferLog(1, WETH, wallet, poolA, BigInt("1000000000000000000")), // duplicate incoming leg
+      slipstreamSwapLog(2, poolA, wallet, wallet, BigInt("2000000000000000000"), BigInt("-500000000000000000000")),
+      transferLog(3, TOKEN_X, poolA, wallet, BigInt("500000000000000000000")),
+    ],
+  })
+  const result = await decodeReceiptSwap(tx, alwaysValidValidator())
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.equal(result.swap.amountInRaw, '2000000000000000000')
+  assert.equal(result.swap.tokenIn.address, WETH)
+  assert.equal(result.swap.amountOutRaw, '500000000000000000000')
+  assert.equal(result.swap.tokenOut.address, TOKEN_X)
+})
+
+test('Slipstream: two different tokens both matching the incoming side is a genuine, still-rejected ambiguity', async () => {
+  // The netting fix above resolves SAME-token duplicate/split transfers — it must never resolve a
+  // genuinely ambiguous case where two DIFFERENT tokens each independently match the Swap event's
+  // incoming amount within tolerance. No confidence weakening: this remains contradictory_legs.
+  const tx = bundle({
+    logs: [
+      transferLog(0, WETH, wallet, poolA, BigInt("2000000000000000000")),
+      transferLog(1, USDC, wallet, poolA, BigInt("2000000000000000000")),
       slipstreamSwapLog(2, poolA, wallet, wallet, BigInt("2000000000000000000"), BigInt("-500000000000000000000")),
       transferLog(3, TOKEN_X, poolA, wallet, BigInt("500000000000000000000")),
     ],

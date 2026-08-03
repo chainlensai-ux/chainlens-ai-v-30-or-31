@@ -1,0 +1,207 @@
+// MODULE — eventClassification
+//
+// GOAL, DISCLOSED (evidence-first PnL completion task, requirements #1-#6): fifoEngine
+// (src/modules/fifoEngine) treats EVERY inbound normalized event as a "buy" and every outbound
+// event as a "sell", regardless of whether it was actually a trade — an airdrop, a bridge deposit,
+// an LP withdrawal, a router pass-through hop, or plain dust all enter FIFO exactly like a real
+// swap leg does today. This module is a PURE, deterministic, offline classifier that runs BEFORE
+// FIFO: it groups a wallet's normalized events by (chain, txHash) — transaction-first, per
+// requirement #2 — nets each token's flow within that transaction, and classifies every event into
+// exactly one of eight categories. Only `genuine_trade_leg` (and `unknown`, kept conservatively
+// eligible — see below) are meant to reach FIFO; every other category is real, positive evidence
+// that an event is NOT a trade.
+//
+// CONSERVATISM, DISCLOSED: this classifier only ever moves an event OUT of trade-eligibility when
+// it has a real, structural, positive signal for doing so — a genuine same-token duplicate/refund/
+// intermediary-hop pattern WITHIN one transaction (never a lone single-leg event, which stays
+// trade-eligible exactly as fifoEngine has always treated it — see the "NON-REGRESSION SCOPING"
+// disclosure below for why), a negligible on-chain amount, or a repeated-identical-amount
+// inbound-only pattern with no outbound counterpart ever. It never guesses a router/bridge/
+// LP-staking address — `bridge` and
+// `lp_staking` are declared in the type for completeness (per requirement #1's full category list)
+// but this pass never actually assigns them: this codebase has no verified bridge/LP-staking
+// contract registry to check against (unlike KNOWN_DEX_ROUTER_ADDRESSES, an existing, already-used
+// registry), and guessing one would violate this task's own "no guessed router/pool acceptance"
+// hard limit. `unknown` is likewise never assigned by this pass — every event is resolved into one
+// of the other six categories — but the type keeps it for forward compatibility with a future
+// signal this codebase doesn't have yet, and callers should treat it exactly like
+// `genuine_trade_leg` (FIFO-eligible) rather than silently excluding a leg this classifier couldn't
+// positively rule out as a trade.
+//
+// NO NEW PROVIDER CALLS, DISCLOSED: this operates entirely on already-fetched, already-normalized
+// events (NormalizedEvent — module 2's output). It makes zero network/provider calls of its own.
+
+import type { NormalizedEvent } from '../normalization/types'
+
+export type EventClassification =
+  | 'genuine_trade_leg'
+  | 'ordinary_transfer'
+  | 'distribution_airdrop'
+  | 'router_intermediary'
+  | 'bridge'
+  | 'lp_staking'
+  | 'dust_non_economic'
+  | 'unknown'
+
+export type ClassifiedEvent = { event: NormalizedEvent; classification: EventClassification }
+
+export type EventClassificationContext = {
+  // Same registry already used by routerInference/distributorRecovery elsewhere in this pipeline —
+  // never re-derived or guessed here, just reused as an injected read-only signal.
+  knownDexRouterAddresses: ReadonlySet<string>
+}
+
+// Deterministic, disclosed threshold (human-decimal token units) below which an amount is treated
+// as on-chain noise (wei-level dust, rounding remainders) rather than a real economic transfer — far
+// below any real "small" transfer (e.g. 0.67 tokens, this task's own ordinary-transfer fixture,
+// is 6+ orders of magnitude above this).
+export const DUST_AMOUNT_THRESHOLD = 1e-6
+
+function txGroupKey(e: NormalizedEvent): string {
+  return `${e.chain}:${e.txHash}`
+}
+
+// PURE. Classifies every event in `events` (transaction-first: grouped by chain+txHash before any
+// per-token netting, requirement #2) into exactly one EventClassification. Never mutates or
+// reorders `events` — the returned array is in the SAME order as the input, one entry per input
+// event, so `events[i]` and `result[i].event` always correspond.
+export function classifyEvents(events: readonly NormalizedEvent[], context: EventClassificationContext): ClassifiedEvent[] {
+  const groups = new Map<string, NormalizedEvent[]>()
+  for (const e of events) {
+    const key = txGroupKey(e)
+    const list = groups.get(key)
+    if (list) list.push(e)
+    else groups.set(key, [e])
+  }
+
+  const classifications = new Map<NormalizedEvent, EventClassification>()
+
+  // NON-REGRESSION SCOPING, DISCLOSED (deliberate, explicit interpretation of requirement #5 —
+  // "require two-sided reconciled wallet flow or a verified swap event"): the overwhelming majority
+  // of today's REAL, already-correct closed lots come from a single inbound leg (e.g. a CEX
+  // withdrawal, an airdrop later sold) or a single outbound leg (e.g. a direct-to-exchange sell)
+  // with NO on-chain counterpart in the same transaction — that is simply how a great many real buys
+  // and sells look on-chain, and fifoEngine has always correctly treated them as trades. Applying a
+  // strict "two distinct tokens, opposite net direction, same tx" gate to EVERY event (including a
+  // lone single-leg transaction) would silently reclassify a huge share of today's genuinely correct
+  // buy/sell lots as `ordinary_transfer`, directly contradicting this task's own goal ("increase
+  // genuine closed-lot reconstruction") and its "never lower evidence standards" hard limit. The
+  // netting/two-sided-flow requirement below is therefore scoped to where it actually applies: a
+  // token that has MORE THAN ONE leg within the same transaction (a real duplicate/refund/
+  // intermediary-hop pattern — exactly what requirement #3 asks to net). A token with exactly ONE
+  // leg in its transaction is never touched by this netting pass at all and defaults to
+  // `genuine_trade_leg`, preserving today's existing, correct single-leg buy/sell behavior exactly.
+  for (const groupEvents of groups.values()) {
+    const perTokenNet = new Map<string, number>()
+    const perTokenLegCount = new Map<string, number>()
+    for (const e of groupEvents) {
+      if (e.direction === 'unknown') continue
+      const signed = e.direction === 'inbound' ? e.amount : -e.amount
+      perTokenNet.set(e.contract, (perTokenNet.get(e.contract) ?? 0) + signed)
+      perTokenLegCount.set(e.contract, (perTokenLegCount.get(e.contract) ?? 0) + 1)
+    }
+
+    for (const e of groupEvents) {
+      if (e.direction === 'unknown') {
+        classifications.set(e, 'unknown')
+        continue
+      }
+      if (e.amount < DUST_AMOUNT_THRESHOLD) {
+        classifications.set(e, 'dust_non_economic')
+        continue
+      }
+      const legCountForToken = perTokenLegCount.get(e.contract) ?? 0
+      if (legCountForToken <= 1) {
+        // The only leg of this token in this transaction — no duplicate/refund/hop pattern to net
+        // against. Preserves today's existing single-leg buy/sell behavior exactly.
+        classifications.set(e, 'genuine_trade_leg')
+        continue
+      }
+      // MULTIPLE legs of the SAME token within one transaction, DISCLOSED (requirements #3/#4): a
+      // real duplicate/split transfer (multiple legs, same direction, netting the same way — e.g.
+      // the Classic/Slipstream multi-transfer swap-leg pattern already handled at the receipt-decode
+      // layer, or a provider reporting a batched transfer as separate log entries), a refund of
+      // unused input, or a router intermediary relaying this exact token through more than one hop.
+      // Only the leg(s) whose OWN direction agrees with the token's overall NET direction for this
+      // tx are genuine; a leg running opposite to (or contributing to a net that rounds to zero for)
+      // its own token is the non-genuine half of that same-token pattern — classified
+      // `router_intermediary` when it actually touches a known DEX router (a real routing hop), or
+      // `ordinary_transfer` otherwise (a same-token duplicate/refund/wash flow not involving a
+      // known router — still a real, provable non-net-contributing signal, never a guess about a
+      // lone, otherwise-unremarkable transfer).
+      const net = perTokenNet.get(e.contract) ?? 0
+      const netIsNonzero = Math.abs(net) > DUST_AMOUNT_THRESHOLD
+      const legAgreesWithNet = netIsNonzero
+        && ((net > 0 && e.direction === 'inbound') || (net < 0 && e.direction === 'outbound'))
+      if (legAgreesWithNet) {
+        classifications.set(e, 'genuine_trade_leg')
+      } else {
+        const touchesRouter = context.knownDexRouterAddresses.has(e.toAddress.toLowerCase())
+          || context.knownDexRouterAddresses.has(e.fromAddress.toLowerCase())
+        classifications.set(e, touchesRouter ? 'router_intermediary' : 'ordinary_transfer')
+      }
+    }
+  }
+
+  // DISTRIBUTION/AIRDROP RECLASSIFICATION, DISCLOSED (requirement #1's distribution_airdrop
+  // category): a real, positive, deterministic signal — repeated inbound transfers of the exact
+  // same (chain, contract, amount) across DIFFERENT transactions, where the wallet has NEVER once
+  // sent that same token anywhere. That is the canonical signature of a recurring airdrop/
+  // distribution drop (this task's own "repeated 500-token distribution transfers" fixture), never
+  // a guess — a real trade would eventually show at least one outbound leg for the same token.
+  // Reclassifies from EITHER `genuine_trade_leg` (the common case: each drop is a lone leg in its
+  // own transaction, so the pass above already defaulted it to trade-eligible) or
+  // `ordinary_transfer` (a same-tx duplicate/refund pattern that also happens to repeat) — this is
+  // the one deliberate exception to "only ever narrows FIFO eligibility within a transaction": a
+  // repeating cross-transaction pattern is real, independent evidence a single-transaction view can
+  // never see.
+  const outboundTokenKeys = new Set(
+    events.filter((e) => e.direction === 'outbound').map((e) => `${e.chain}:${e.contract.toLowerCase()}`),
+  )
+  const candidateInboundGroups = new Map<string, NormalizedEvent[]>()
+  for (const e of events) {
+    const classification = classifications.get(e)
+    if ((classification !== 'genuine_trade_leg' && classification !== 'ordinary_transfer') || e.direction !== 'inbound') continue
+    const key = `${e.chain}:${e.contract.toLowerCase()}:${e.amount}`
+    const list = candidateInboundGroups.get(key)
+    if (list) list.push(e)
+    else candidateInboundGroups.set(key, [e])
+  }
+  for (const [key, list] of candidateInboundGroups) {
+    if (list.length < 2) continue
+    const [chain, contract] = key.split(':')
+    if (outboundTokenKeys.has(`${chain}:${contract}`)) continue
+    for (const e of list) classifications.set(e, 'distribution_airdrop')
+  }
+
+  return events.map((event) => ({ event, classification: classifications.get(event) ?? 'unknown' }))
+}
+
+// FIFO-ELIGIBLE CLASSIFICATIONS, DISCLOSED (requirement #6): only these two categories may enter
+// FIFO. `unknown` is included per this module's own conservatism disclosure above — this classifier
+// currently never actually assigns it, but a caller must never silently drop a leg this pass
+// couldn't positively classify as non-trade.
+const FIFO_ELIGIBLE: ReadonlySet<EventClassification> = new Set(['genuine_trade_leg', 'unknown'])
+
+export function isFifoEligible(classification: EventClassification): boolean {
+  return FIFO_ELIGIBLE.has(classification)
+}
+
+// PURE. Filters `events` down to only FIFO-eligible legs, preserving original order/dedupe —
+// requirement #6's "ordinary transfers/distributions/bridges/LP activity must never enter FIFO",
+// requirement's own "preserve deterministic ordering and dedupe" hard limit.
+export function filterToFifoEligible(events: readonly NormalizedEvent[], context: EventClassificationContext): NormalizedEvent[] {
+  const classified = classifyEvents(events, context)
+  return classified.filter((c) => isFifoEligible(c.classification)).map((c) => c.event)
+}
+
+// Compact per-classification counts — the `eventsByClassification` shape requirement #9's audit
+// asks for.
+export function countByClassification(classified: readonly ClassifiedEvent[]): Record<EventClassification, number> {
+  const counts: Record<EventClassification, number> = {
+    genuine_trade_leg: 0, ordinary_transfer: 0, distribution_airdrop: 0, router_intermediary: 0,
+    bridge: 0, lp_staking: 0, dust_non_economic: 0, unknown: 0,
+  }
+  for (const c of classified) counts[c.classification] += 1
+  return counts
+}

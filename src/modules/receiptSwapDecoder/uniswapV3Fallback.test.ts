@@ -181,6 +181,15 @@ test('a genuine Aerodrome Slipstream pool never falls through to the V3 fallback
 })
 
 test('sign ambiguity in the V3 Swap event fails closed without ever calling the V3 validator', async () => {
+  // REASON STRING UPDATED, DISCLOSED (evidence-first PnL completion task, requirement #7 —
+  // Aerodrome Slipstream multihop fix): resolveSlipstreamMultiTransferLeg (aerodromeSlipstreamLeg.ts)
+  // now performs this exact sign-ambiguity check UP FRONT for every Slipstream-shaped Swap event
+  // (both0/both1 positive is a contradiction in the event's own reported amounts), so this fixture
+  // now fails closed at that earlier point — with the same, already-established `contradictory_legs`
+  // reason multiTransferLeg.ts's Classic resolver already uses, rather than ever reaching the V3
+  // fallback path (unreachable per this leg's own PoolLeg-building step never succeeding). The
+  // fail-closed OUTCOME is identical (still rejected, V3 validator still never called) — only the
+  // label changed, to the SAME vocabulary Classic already established as canonical.
   const calls: string[] = []
   const tx = bundle({
     logs: [
@@ -192,11 +201,16 @@ test('sign ambiguity in the V3 Swap event fails closed without ever calling the 
   const result = await decodeReceiptSwap(tx, neverValidValidator(), fakeV3Validator(3000, calls))
   assert.equal(result.ok, false)
   if (result.ok) return
-  assert.equal(result.rejection.reason, 'uniswap_v3_sign_ambiguous')
+  assert.equal(result.rejection.reason, 'contradictory_legs')
   assert.equal(calls.length, 0)
 })
 
 test('amount mismatch in the V3 path fails closed', async () => {
+  // REASON STRING UPDATED, DISCLOSED (same fix as above): resolveSlipstreamMultiTransferLeg now
+  // reconciles the pool's transfer aggregate against the Swap event's own signed amount up front,
+  // so a genuine short transfer is caught there first (`swap_event_amount_mismatch` — the same
+  // reason Classic's resolver already uses for this exact failure mode), never reaching the V3
+  // fallback. Still fails closed; only the label changed.
   const tx = bundle({
     logs: [
       transferLog(0, WETH, wallet, poolA, BigInt('900000000000000000')), // short
@@ -207,7 +221,7 @@ test('amount mismatch in the V3 path fails closed', async () => {
   const result = await decodeReceiptSwap(tx, neverValidValidator(), fakeV3Validator(3000))
   assert.equal(result.ok, false)
   if (result.ok) return
-  assert.equal(result.rejection.reason, 'uniswap_v3_amount_mismatch')
+  assert.equal(result.rejection.reason, 'swap_event_amount_mismatch')
 })
 
 test('caching: the same pool is only validated once by the V3 validator across repeated decodes with a shared scope', async () => {

@@ -31,7 +31,7 @@
 // pool event at all) returns `{ ok: false, rejection }` — callers fall back to the existing
 // inference path. This module never emits a low-confidence guess as if it were receipt-decoded.
 
-import type { DecodedLogs, DecodedPoolSwap } from './decodeLogs'
+import type { DecodedLogs } from './decodeLogs'
 import { decodeLogs } from './decodeLogs'
 import type { PoolValidator } from './poolValidator'
 import { WETH_BASE_ADDRESS } from './signatures'
@@ -39,6 +39,7 @@ import type {
   DecodedReceiptSwap, ReceiptDecodeResult, ReceiptTxBundle, TokenMeta, WalletDirection, MultiTransferDiagnostics,
 } from './types'
 import { resolveClassicMultiTransferLeg, mergeMultiTransferDiagnostics, type ClassicPoolLeg } from './multiTransferLeg'
+import { resolveSlipstreamMultiTransferLeg } from './aerodromeSlipstreamLeg'
 import { resolveUniswapV3Leg, type UniswapV3PoolLeg } from './uniswapV3Leg'
 import type { UniswapV3PoolValidator, UniswapV3ValidationResult } from './uniswapV3PoolValidator'
 import type { UniswapV3Diagnostics } from './types'
@@ -55,26 +56,6 @@ function toNormalized(raw: bigint, decimals: number): number {
 }
 
 type PoolLeg = ClassicPoolLeg
-
-// Resolves one Slipstream pool's swap event to concrete token addresses/amounts by matching it
-// against the EXACTLY one ERC20 Transfer log flowing into the pool and the exactly one flowing out
-// of it, in this same transaction. More or fewer than one of either side is contradictory
-// (ambiguous which transfer is the real swap leg) and is rejected rather than guessed.
-//
-// CLASSIC USES A DIFFERENT RESOLVER, DISCLOSED: Aerodrome Classic pool legs are resolved by
-// multiTransferLeg.ts's resolveClassicMultiTransferLeg instead — see that module's own header for
-// why (real router-mediated Classic swaps can have more than one transfer per side; Slipstream's
-// Swap event carries no separate In/Out fields to authoritatively re-derive from, so it keeps this
-// original, stricter exactly-one-each match).
-function resolvePoolLeg(swap: DecodedPoolSwap, decoded: DecodedLogs): PoolLeg | null {
-  const incoming = decoded.transfers.filter((t) => t.to === swap.poolAddress && t.value > BigInt("0"))
-  const outgoing = decoded.transfers.filter((t) => t.from === swap.poolAddress && t.value > BigInt("0"))
-  if (incoming.length !== 1 || outgoing.length !== 1) return null
-  const [tokenIn] = incoming
-  const [tokenOut] = outgoing
-  if (tokenIn.token === tokenOut.token) return null
-  return { swap, tokenIn: tokenIn.token, tokenOut: tokenOut.token, amountIn: tokenIn.value, amountOut: tokenOut.value }
-}
 
 // Chains individually-resolved pool legs into one end-to-end path (handles router intermediaries
 // and multi-hop transactions): the leg whose tokenIn is never any other leg's tokenOut is the true
@@ -223,17 +204,25 @@ export async function decodeReceiptSwap(
       legs.push(resolution.leg)
       continue
     }
-    const leg = resolvePoolLeg(swap, decoded)
-    if (!leg) {
+    // AERODROME SLIPSTREAM MULTIHOP FIX, DISCLOSED (evidence-first PnL completion task, requirement
+    // #7): previously used resolvePoolLeg (strict exactly-one-in/exactly-one-out transfer touching
+    // the pool) — see aerodromeSlipstreamLeg.ts's own header for the full production-proof/fix
+    // trace. resolveSlipstreamMultiTransferLeg nets every transfer touching the pool by token and
+    // matches the aggregate against the Swap event's own authoritative signed (amount0, amount1),
+    // the exact same reconciliation rigor (1-raw-unit tolerance, fail-closed on ambiguity) Classic's
+    // multi-transfer resolver already uses — never a weaker proof, only a correctly-netted one.
+    const resolution = resolveSlipstreamMultiTransferLeg(swap, decoded)
+    multiTransferDiagnosticsList.push(resolution.diagnostics)
+    if (!resolution.ok) {
       return {
         ok: false,
         rejection: {
-          txHash: tx.txHash, reason: 'contradictory_legs',
+          txHash: tx.txHash, reason: resolution.reason,
           multiTransfer: mergeMultiTransferDiagnostics(multiTransferDiagnosticsList),
         },
       }
     }
-    legs.push(leg)
+    legs.push(resolution.leg)
   }
 
   const chained = chainLegs(legs)

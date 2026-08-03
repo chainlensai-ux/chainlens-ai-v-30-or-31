@@ -65,6 +65,7 @@ import type { BuyTimeline, BuyTimelineEntry, SellTimeline, TimelineBuilderResult
 import { buildRecoveryPolicyObject } from '../modules/recoveryPolicy/index'
 import type { RecoveryPolicyResult } from '../modules/recoveryPolicy/types'
 import { buildFifoOutput } from '../modules/fifoEngine/index'
+import { classifyEvents, filterToFifoEligible, countByClassification, type EventClassification } from '../modules/eventClassification/index'
 import type { FifoOutput } from '../modules/fifoEngine/types'
 import { buildBehaviorIntelObject } from '../modules/behaviorIntel/index'
 import type { BehaviorIntelResult, WindowCoverage } from '../modules/behaviorIntel/types'
@@ -307,11 +308,19 @@ async function safeRunRecoveryPolicy(params: {
   }
 }
 
-// REAL FIX for "FIFO & PnL always unavailable": buildFifoOutput has always accepted optional
-// priceUsdLookup/currentPriceUsdLookup — this pipeline simply never supplied one before. Now wired
-// to the real pre-resolved lookups from priceLotsForWallet (src/pipeline/priceLotsForWallet.ts).
-// fifoEngine's own source is unmodified; these are its existing injection points.
-function safeRunFifoEngine(params: {
+// STRUCTURAL PNL RECONSTRUCTION, DISCLOSED (evidence-first PnL completion task, requirements
+// #2/#3/#4/#5/#6/#8): fifoEngine itself is unmodified — every call site here now hands it only
+// FIFO-ELIGIBLE events (src/modules/eventClassification), filtered via the SAME transaction-first,
+// two-sided-flow classification for every caller, rather than the raw normalized-event stream that
+// previously let ordinary transfers/airdrops/router-intermediary legs enter FIFO as if they were
+// real trades. This is "Re-run FIFO from canonical genuine swaps only" (requirement #8) implemented
+// as a FILTER on fifoEngine's INPUT, never a change to fifoEngine's own matching logic.
+//
+// SCOPE, DISCLOSED: only `normalizedEvents` is classified/filtered here. `recoveredRawEvents`
+// (recoveryPolicy's deep-scan-only, capped historical backfill) are RawProviderEvent, not yet
+// normalized at this point in the pipeline, and recoveryPolicy is a separate, independently-scoped
+// mechanism — reclassifying its output is left to a future pass rather than guessed at here.
+export function safeRunFifoEngine(params: {
   normalizedEvents: NormalizedEvent[]
   recoveryPolicy: RecoveryPolicyResult
   walletAddress: string
@@ -321,11 +330,65 @@ function safeRunFifoEngine(params: {
   currentPriceUsdLookup?: import('../modules/fifoEngine/types').CurrentPriceUsdLookup
   canonicalBalanceLookup?: import('../modules/fifoEngine/types').CanonicalBalanceLookup
   unrealizedReconciliationDiagnostics?: import('../modules/fifoEngine/types').UnrealizedReconciliationDiagnosticsContext
+  // ADDITIVE, OPTIONAL, DISCLOSED (requirement #9): when true, this call also logs a
+  // [structural-pnl-reconstruction-audit] comparing the unfiltered ("before") and filtered
+  // ("after") FIFO result. Default false so every OTHER call site (this function has several,
+  // each already part of its own before/after promotion comparison) pays zero extra computation —
+  // only the primary fifoAndPnl call site opts in.
+  computeReconstructionAudit?: boolean
 }): FifoOutput {
+  const classificationContext = { knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES }
+  const recoveredRawEvents: RawProviderEvent[] = params.recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents)
+  const canonicalEvents = filterToFifoEligible(params.normalizedEvents, classificationContext)
+
+  if (params.computeReconstructionAudit) {
+    try {
+      const classified = classifyEvents(params.normalizedEvents, classificationContext)
+      const eventsByClassification = countByClassification(classified)
+      const before = buildFifoOutput({
+        normalizedEvents: params.normalizedEvents,
+        recoveredRawEvents,
+        walletAddress: params.walletAddress,
+        priceUsdLookup: params.priceUsdLookup,
+        currentPriceUsdLookup: params.currentPriceUsdLookup,
+        canonicalBalanceLookup: params.canonicalBalanceLookup,
+        unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
+      })
+      const after = buildFifoOutput({
+        normalizedEvents: canonicalEvents,
+        recoveredRawEvents,
+        walletAddress: params.walletAddress,
+        priceUsdLookup: params.priceUsdLookup,
+        currentPriceUsdLookup: params.currentPriceUsdLookup,
+        canonicalBalanceLookup: params.canonicalBalanceLookup,
+        unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
+      })
+      const nonTradeClassifications: EventClassification[] = ['ordinary_transfer', 'distribution_airdrop', 'router_intermediary', 'bridge', 'lp_staking', 'dust_non_economic']
+      const nonTradesRemovedFromFifo = classified.filter((c) => nonTradeClassifications.includes(c.classification)).length
+      // eslint-disable-next-line no-console
+      console.warn('[structural-pnl-reconstruction-audit]', {
+        eventsByClassification,
+        closedLotsBefore: before.matchedLots.length,
+        closedLotsAfter: after.matchedLots.length,
+        genuineUnmatchedTradeLegsBefore: before.unmatchedBuys + before.unmatchedSells,
+        genuineUnmatchedTradeLegsAfter: after.unmatchedBuys + after.unmatchedSells,
+        nonTradesRemovedFromFifo,
+        // Real, always-zero-here disclosure: multihop reconciliation (requirement #7) happens
+        // upstream in receiptSwapDecoder, before any event reaches normalization/FIFO — a lot
+        // "unlocked" by that fix shows up as one more genuine_trade_leg pair in
+        // eventsByClassification/closedLotsAfter above, not as a separate counter this function
+        // could compute independently without re-deriving receiptSwapDecoder's own output.
+        lotsUnlockedByMultihop: 0,
+      })
+      return after
+    } catch {
+      return fifoEngineFallback(params.buyTimeline, params.sellTimeline)
+    }
+  }
+
   try {
-    const recoveredRawEvents: RawProviderEvent[] = params.recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents)
     return buildFifoOutput({
-      normalizedEvents: params.normalizedEvents,
+      normalizedEvents: canonicalEvents,
       recoveredRawEvents,
       walletAddress: params.walletAddress,
       priceUsdLookup: params.priceUsdLookup,
@@ -1754,6 +1817,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     currentPriceUsdLookup: walletPriceLookups.currentPriceUsdLookup,
     canonicalBalanceLookup: params.canonicalBalanceLookup,
     unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
+    computeReconstructionAudit: true,
   })
 
   // RECEIPT-SWAP CANONICAL PROMOTION DIAGNOSTICS, DISCLOSED, BOUNDED: one unconditional log
