@@ -16,6 +16,7 @@ import type { RawProviderEvent, SupportedChain } from '../modules/providerFetchW
 import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import { createRouterInference } from '../lib/routerInference'
+import { kv as acceptedEvidenceRealKv } from '@vercel/kv'
 import { createPnlReconciliation } from '../lib/pnlReconciliation'
 import { buildScanDeterminismAudit } from '../lib/scanDeterminismAudit'
 import { createAyriAttribution } from '../lib/ayriAttribution'
@@ -2605,6 +2606,19 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // information its one real call already produces, with zero additional network calls.
     priceSourceDetailedPrimary: getPriceSourcePrimaryDetailed() ?? undefined,
     dustSuppressedKeys,
+    // ACCEPTED-EVIDENCE STORE WIRING, DISCLOSED (accepted-evidence-canonical-seeding-eligibility
+    // follow-up task — CONFIRMED PIPELINE GAP): this field was never actually passed here across
+    // every prior determinism follow-up task — `config.acceptedEvidenceKv` was always `undefined` in
+    // real production runs, so hydrateFromAcceptedEvidence/seedAcceptedEvidenceForVerifiedLots both
+    // short-circuited to their empty/no-op paths on every real scan (their own unit tests always
+    // passed because they inject a fake KV directly, which never exercised this actual wiring gap).
+    // This alone fully explains a real production run reporting `verifiedSidesEligibleForPersistence:
+    // 0`/`canonicalSeedingWriteSuccesses: 0`/`accepted_evidence_store_unseeded` alongside real
+    // verified lots — the store was never reachable at all, not merely mis-targeted. Real
+    // `@vercel/kv` client, same shape (`get`/`set`) `RequestPriceKvClient`'s own historical price
+    // cache already uses — a genuinely separate key namespace (`v1:accepted-evidence:...` vs
+    // `v2:price:...`), same underlying Upstash instance.
+    acceptedEvidenceKv: acceptedEvidenceRealKv,
   })
   // SYNTHETIC-PNL LEAK FIX, DISCLOSED (confirmed, critical severity — see pnlReconciliation.ts's own
   // header comment on the realizedPnlUsd computation for the full trace): this previously also

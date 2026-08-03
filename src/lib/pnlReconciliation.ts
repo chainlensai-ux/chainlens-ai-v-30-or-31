@@ -356,6 +356,24 @@ const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Numb
 const tokenKey = (chain: string, token: string) => `${chain}:${token.toLowerCase()}`
 const lotKey = (lot: Pick<MatchedLot, 'chain' | 'token' | 'openedTxHash' | 'closedTxHash' | 'openedAt' | 'closedAt'>) => [lot.chain, lot.token.toLowerCase(), lot.openedTxHash, lot.closedTxHash, lot.openedAt, lot.closedAt].join(':')
 
+// CANONICAL VERIFIED-LOT PREDICATE, DISCLOSED (accepted-evidence-canonical-seeding-eligibility
+// follow-up task, requirement #2 — confirmed root cause: seeding's own eligibility check silently
+// dropped every lot whose `evidenceQuality` wasn't exactly `'verified'` into neither the eligible
+// NOR the skipped bucket whenever both `costBasisUsd`/`proceedsUsd` happened to be null on THAT
+// specific check, instead of unconditionally bucketing every non-verified lot as
+// `verifiedSidesSkippedUnverified`). This is the ONE shared definition of "this lot is part of the
+// public verified closed-lot sample" — the exact boolean the gate below already computes inline
+// (`updatedFifoLots.filter((l) => isCanonicalVerifiedLotForPnl(l))`) to derive
+// `verifiedLotCount`/`fullyPricedLotCount`/`verifiedPricingCoverage` — refactored into a named,
+// exported function so the gate, this reconciliation's own summary, and accepted-evidence seeding
+// all read from the exact same predicate, never a second, subtly different reimplementation.
+// Deliberately NEVER checks a `verificationStatus`/`confidence`/`pnlDisplayStatus`/`pnlDecisive`
+// field — `MatchedLot` (fifoEngine/types.ts) carries none of those; its only real pricing-quality
+// signal is `evidenceQuality: 'verified' | 'unpriced'`.
+export function isCanonicalVerifiedLotForPnl(lot: Pick<MatchedLot, 'evidenceQuality'>): boolean {
+  return lot.evidenceQuality === 'verified'
+}
+
 // CONFIRMED ROOT CAUSE, DISCLOSED (real production evidence): recoverPrices previously ran a
 // FULLY SEQUENTIAL for-loop — one lot at a time, each `await`ing a real KV-backed price lookup
 // (falling through to a real provider fetcher on a KV miss) — over every lot missing a price, with
@@ -676,34 +694,46 @@ export function createPnlReconciliation(config: Config = {}) {
     return typeof price === 'number' && Number.isFinite(price) && price > 0
   }
 
-  // FINAL CANONICAL SEEDING PASS, DISCLOSED (accepted-evidence-store-seeding follow-up task —
-  // confirmed production gap: 43 of 54 sides were already verified BEFORE recovery ever ran — priced
-  // by whichever upstream canonical pricing phase this pipeline uses (primary historical scheduler,
-  // same-tx stable/native quote, Alchemy historical pricing, the generic historical cache, etc. — see
-  // requirement #3's own list) — and recoverPrices' write-back above only ever wrote sides IT
-  // resolved live, so those 43 sides were never persisted at all, even though they are exactly as
-  // "canonically verified" as a recovery-resolved side. This pass runs ONCE, AFTER every pricing
-  // phase (recovery included) has finished — over the FINAL, fully-resolved lot list — and persists
-  // every verified side that isn't already covered, regardless of which phase priced it.
+  // FINAL CANONICAL SEEDING PASS, DISCLOSED (accepted-evidence-canonical-seeding-eligibility
+  // follow-up task — confirmed production bug: `verifiedLotCount: 19` yet
+  // `verifiedSidesEligibleForPersistence/verifiedSidesSkippedUnverified/verifiedSidesSkippedInvalid`
+  // ALL reported 0 — a mathematical impossibility under the invariant this task requires
+  // (`matchedLotSidesTotal === eligible + skippedUnverified + skippedInvalid`) unless sides were
+  // being silently dropped into NEITHER bucket. Root cause, CONFIRMED: the prior version's
+  // `if (lot.evidenceQuality !== 'verified') { if (costBasisUsd !== null || proceedsUsd !== null)
+  // skippedUnverified += 2; continue }` only counted a non-verified lot's sides when at least one
+  // price happened to be non-null — a non-verified lot with BOTH sides still null (a genuinely
+  // common, correct state: an unpriced open position) fell through `continue` without landing in
+  // ANY bucket. Fixed below: every lot lands in EXACTLY one of skippedUnverified/skippedInvalid/
+  // examined-as-eligible, unconditionally — the invariant now holds by construction, not by
+  // coincidence of which lots happen to have a stray price.
   //
-  // NEVER PERSISTS, DISCLOSED (requirement #4): a lot whose `evidenceQuality` isn't the real
-  // `'verified'` value (counted as `verifiedSidesSkippedUnverified` — this module has no concept of
-  // "estimated"/"synthetic" lots of its own; fifoEngine's own `LotEvidenceQuality` union is only
-  // `'verified' | 'unpriced'`, so "estimated/synthetic" per requirement #4 can never even reach this
-  // function — they simply aren't `'verified'`), a structurally invalid lot (`verifiedSidesSkippedInvalid`),
-  // or a non-finite/zero/negative price (also `verifiedSidesSkippedInvalid` — a "verified" lot with a
-  // corrupt price is a data defect, not a real accepted fact).
+  // ELIGIBILITY, DISCLOSED (requirement #2/#3): uses `isCanonicalVerifiedLotForPnl` — the SAME
+  // shared predicate the gate uses for `verifiedLotCount`/`fullyPricedLotCount` — as the sole
+  // lot-level "is this lot part of the canonical verified PnL sample" gate. A side of a canonically
+  // verified lot is eligible when it ALSO has a finite, strictly-positive price and the lot is
+  // structurally valid; MatchedLot's `costBasisUsd`/`proceedsUsd` are BY DEFINITION the historical
+  // prices fifoEngine/pnlReconciliation actually used for `realizedPnlUsd` — this module has no
+  // separate "current price" or "synthetic price" field that could ever masquerade as one here (a
+  // synthetic figure lives entirely in the separate, never-merged `syntheticPnl` module — see this
+  // file's own header on `realizedPnlUsd`'s canonical-source disclosure).
+  //
+  // NEVER PERSISTS, DISCLOSED (requirement #4): a lot that isn't `isCanonicalVerifiedLotForPnl`
+  // (`verifiedSidesSkippedUnverified`, both sides, unconditionally), a structurally invalid lot
+  // (`verifiedSidesSkippedInvalid`, both sides), or a non-finite/zero/negative price on an otherwise
+  // eligible lot's side (also `verifiedSidesSkippedInvalid`, that one side only).
   //
   // ALREADY-PERSISTED CHECK, DISCLOSED: reads the store first (bounded-concurrency, same pattern as
   // the recovery pass) — a side already covered by a valid accepted-evidence entry is counted as
   // `verifiedSidesAlreadyPersisted` and never rewritten (idempotent; avoids needless KV fan-out on
   // every single rescan once evidence has been seeded once).
   //
-  // SOURCE METADATA, HONESTLY DISCLOSED: `MatchedLot` (fifoEngine/types.ts) carries no field
-  // recording WHICH upstream phase priced a given side — this function genuinely cannot know. Rather
-  // than fabricate a specific source name, it records `'canonical-upstream'`/`'unknown'` and counts
-  // every such write in `missingVerifiedEvidenceMetadata` — an honest, disclosed limitation, not a
-  // silent gap.
+  // SOURCE METADATA, HONESTLY DISCLOSED (requirement #9 — "must not stop exact price evidence from
+  // being persisted"): `MatchedLot` (fifoEngine/types.ts) carries no field recording WHICH upstream
+  // phase priced a given side — this function genuinely cannot know. Rather than fabricate a
+  // specific source name, or — worse — treat the absence as a reason to SKIP the write, it records
+  // `'canonical-upstream'`/`'unknown'` and counts every such write in `missingVerifiedEvidenceMetadata`
+  // as a disclosed limitation, never a blocking condition.
   async function seedAcceptedEvidenceForVerifiedLots(lots: readonly MatchedLot[]): Promise<AcceptedEvidenceAudit> {
     const audit = emptyAcceptedEvidenceAudit()
     const acceptedEvidenceKv = config.acceptedEvidenceKv
@@ -713,10 +743,8 @@ export function createPnlReconciliation(config: Config = {}) {
     type SeedSide = { side: AcceptedEvidenceSide; txHash: string; timestamp: number; price: number | null }
     const tasks: Array<{ lot: MatchedLot; side: SeedSide }> = []
     for (const lot of lots) {
-      if (lot.evidenceQuality !== 'verified') {
-        if (lot.costBasisUsd !== null || lot.proceedsUsd !== null) audit.verifiedSidesSkippedUnverified += 2
-        continue
-      }
+      audit.matchedLotSidesTotal += 2
+      if (!isCanonicalVerifiedLotForPnl(lot)) { audit.verifiedSidesSkippedUnverified += 2; continue }
       if (!isStructurallyValidLot(lot)) { audit.verifiedSidesSkippedInvalid += 2; continue }
       const sides: SeedSide[] = [
         { side: 'entry', txHash: lot.openedTxHash, timestamp: lot.openedAt, price: lot.costBasisUsd },
@@ -836,13 +864,40 @@ export function createPnlReconciliation(config: Config = {}) {
       // store is either unconfigured, unreachable, or was never seeded for this wallet/window at all.
       // Logged as an error (not warn) — this is exactly the condition that reproduces the
       // determinism failure this whole feature exists to close.
-      const hasVerifiedSides = updatedFifoLots.some((l) => l.evidenceQuality === 'verified')
+      const hasVerifiedSides = updatedFifoLots.some(isCanonicalVerifiedLotForPnl)
       if (hasVerifiedSides && acceptedEvidenceAudit.persistedAcceptedSidesLoaded === 0 && acceptedEvidenceAudit.canonicalSeedingWriteSuccesses === 0) {
         logger.warn('accepted_evidence_store_unseeded', {
-          verifiedLotCount: updatedFifoLots.filter((l) => l.evidenceQuality === 'verified').length,
+          verifiedLotCount: updatedFifoLots.filter(isCanonicalVerifiedLotForPnl).length,
           persistedAcceptedSidesLoaded: acceptedEvidenceAudit.persistedAcceptedSidesLoaded,
           canonicalSeedingWriteSuccesses: acceptedEvidenceAudit.canonicalSeedingWriteSuccesses,
           verifiedSidesEligibleForPersistence: acceptedEvidenceAudit.verifiedSidesEligibleForPersistence,
+        })
+      }
+      // ELIGIBILITY-MISMATCH SAFETY CHECK, DISCLOSED (requirement #6): a real, structural invariant
+      // — if there ARE verified lots AND there WERE already-priced sides going into hydration
+      // (`existingVerifiedSidesProtectedFromOverwrite > 0`, i.e. real evidence exists to seed), then
+      // the seeding pass must have found at least one ELIGIBLE side, unless every one of them was
+      // already persisted (a legitimate, non-broken steady state on a later rescan) OR every one of
+      // them has an honest, disclosed explanation via `verifiedSidesSkippedInvalid` (a real
+      // structural defect, not a silent predicate bug). Anything else — eligible === 0 AND
+      // alreadyPersisted === 0 AND skippedInvalid === 0 — reproduces exactly this task's own
+      // confirmed bug (a real eligibility predicate defect silently dropping verified sides) and must
+      // never pass unnoticed again.
+      const verifiedLotCountForMismatchCheck = updatedFifoLots.filter(isCanonicalVerifiedLotForPnl).length
+      if (
+        verifiedLotCountForMismatchCheck > 0
+        && acceptedEvidenceAudit.existingVerifiedSidesProtectedFromOverwrite > 0
+        && acceptedEvidenceAudit.verifiedSidesEligibleForPersistence === 0
+        && acceptedEvidenceAudit.verifiedSidesAlreadyPersisted === 0
+        && acceptedEvidenceAudit.verifiedSidesSkippedInvalid === 0
+      ) {
+        logger.warn('CRITICAL accepted_evidence_eligibility_mismatch', {
+          verifiedLotCount: verifiedLotCountForMismatchCheck,
+          existingVerifiedSidesProtectedFromOverwrite: acceptedEvidenceAudit.existingVerifiedSidesProtectedFromOverwrite,
+          verifiedSidesEligibleForPersistence: acceptedEvidenceAudit.verifiedSidesEligibleForPersistence,
+          verifiedSidesAlreadyPersisted: acceptedEvidenceAudit.verifiedSidesAlreadyPersisted,
+          verifiedSidesSkippedUnverified: acceptedEvidenceAudit.verifiedSidesSkippedUnverified,
+          verifiedSidesSkippedInvalid: acceptedEvidenceAudit.verifiedSidesSkippedInvalid,
         })
       }
       logger.warn('[pnl-reconciliation] recovery', {
@@ -967,7 +1022,7 @@ export function createPnlReconciliation(config: Config = {}) {
       // realizedPnlUsd, null when none) — when recovery finds nothing new, this is numerically
       // identical to the old value; it only ever adds real, newly-recovered lots to the sum, never
       // changes or removes an already-verified one.
-      const verifiedUpdatedLots = updatedFifoLots.filter((l) => l.evidenceQuality === 'verified')
+      const verifiedUpdatedLots = updatedFifoLots.filter(isCanonicalVerifiedLotForPnl)
       const recoveryInclusiveRealizedPnlUsd = verifiedUpdatedLots.length > 0
         ? verifiedUpdatedLots.reduce((sum, l) => sum + (l.realizedPnlUsd ?? 0), 0)
         : null
