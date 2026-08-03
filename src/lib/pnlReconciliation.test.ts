@@ -819,6 +819,103 @@ describe('pnlReconciliation', () => {
     const r = createPnlReconciliation({ logger: quiet, priceKvClient: priceKvClient as never, priceSources: { primary: async () => 4 }, acceptedEvidenceKv: brokenKv as never, now: () => 50 })
     const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [missingLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
     assert.equal(summary.realizedPnlUsd, 0)
-    assert.equal(summary.acceptedEvidenceAudit.acceptedEvidenceWriteFailures, 2)
+    // Both the live recovery loop's write-back (2 sides) AND the final canonical seeding pass (the
+    // same 2 sides, now verified after recovery resolved them) attempt a write against the same
+    // broken KV — 2 recovery-lane failures + 2 canonical-seeding failures = 4 total, never a throw.
+    assert.equal(summary.acceptedEvidenceAudit.recoveryEvidenceWriteFailures, 2)
+    assert.equal(summary.acceptedEvidenceAudit.canonicalSeedingWriteFailures, 2)
+    assert.equal(summary.acceptedEvidenceAudit.acceptedEvidenceWriteFailures, 4)
+  })
+
+  // ===============================================================================================
+  // ACCEPTED-EVIDENCE-STORE SEEDING — accepted-evidence-store-seeding follow-up task, requirement #9.
+  // ===============================================================================================
+
+  // 27 lots ALREADY fully priced/verified — simulating upstream canonical pricing (primary
+  // historical scheduler, same-tx quote, Alchemy historical pricing, etc.) that resolved every side
+  // BEFORE pnlReconciliation's own recovery pass ever runs — the exact production shape reported
+  // (43 of 54 sides already verified, recovery resolving zero).
+  function build27AlreadyPricedLotFixture(): MatchedLot[] {
+    return Array.from({ length: 27 }, (_, i) => lot({
+      lotId: `lot-${i}`, token: `0xseed${i}`, openedTxHash: `0xsb${i}`, closedTxHash: `0xss${i}`,
+      openedAt: 5000 + i, closedAt: 6000 + i, amount: 1,
+      costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10, evidenceQuality: 'verified',
+    }))
+  }
+
+  it('HARD ASSERTION (required regression #9): 27 lots already priced by upstream canonical pricing (recovery resolving zero sides) are fully seeded on the first run, then reused identically on a second run where upstream returns null/wrong prices', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+
+    // RUN 1: no recovery needed at all — a fetcher that would prove a bug if ever called.
+    let liveCallsRun1 = 0
+    const priceKvClient1 = { getPriceRecovery: async () => { liveCallsRun1 += 1; return null } }
+    const r1 = createPnlReconciliation({
+      logger: quiet, priceKvClient: priceKvClient1 as never, priceSources: { primary: async () => { liveCallsRun1 += 1; return null } },
+      acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 1_000_000,
+    })
+    const summary1 = await r1.reconcile({
+      fifoEngineResult: fifo({ matchedLots: build27AlreadyPricedLotFixture() }), pnlEngineResult: pnl(27), syntheticPnlAssemblyOutput: null,
+    })
+
+    assert.equal(liveCallsRun1, 0, 'recovery must never be invoked — every side was already verified upstream')
+    assert.equal(summary1.publicPnlGateAudit.verifiedClosedLots, 27)
+    assert.ok(summary1.acceptedEvidenceAudit.canonicalSeedingWriteSuccesses > 0, 'the final seeding pass must persist the already-verified sides')
+    assert.equal(summary1.acceptedEvidenceAudit.canonicalSeedingWriteSuccesses, 54, 'all 27 lots x 2 sides must be seeded')
+    assert.equal(summary1.acceptedEvidenceAudit.verifiedSidesWritten, 54)
+    assert.equal(summary1.acceptedEvidenceAudit.verifiedSideWriteFailures, 0)
+
+    // RUN 2: a FRESH fifoEngine recompute where upstream canonical pricing FAILED this time (both
+    // sides null again) — with a deliberately WRONG fetcher as a canary.
+    let liveCallsRun2 = 0
+    const priceKvClient2 = {
+      getPriceRecovery: async (token: string, chain: string, timestamp: number, fetcher: (t: string, c: string, ts: number) => Promise<number | null>) => fetcher(token, chain, timestamp),
+    }
+    const run2Fetcher = async (token: string, _chain: string, timestamp: number): Promise<number | null> => {
+      liveCallsRun2 += 1
+      const i = Number(token.replace('0xseed', ''))
+      return timestamp === 5000 + i ? (10 + i) + 1000 : null // wrong on purpose
+    }
+    const unpricedLots2 = Array.from({ length: 27 }, (_, i) => lot({
+      lotId: `lot-${i}`, token: `0xseed${i}`, openedTxHash: `0xsb${i}`, closedTxHash: `0xss${i}`,
+      openedAt: 5000 + i, closedAt: 6000 + i, amount: 1,
+      costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    }))
+    const r2 = createPnlReconciliation({
+      logger: quiet, priceKvClient: priceKvClient2 as never, priceSources: { primary: run2Fetcher },
+      acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 2_000_000,
+    })
+    const summary2 = await r2.reconcile({
+      fifoEngineResult: fifo({ matchedLots: unpricedLots2 }), pnlEngineResult: pnl(27), syntheticPnlAssemblyOutput: null,
+    })
+
+    assert.equal(liveCallsRun2, 0, 'exact accepted sides must hydrate BEFORE recovery ever calls a live source')
+    assert.equal(summary2.publicPnlGateAudit.verifiedClosedLots, 27)
+    assert.equal(summary2.realizedPnlUsd, summary1.realizedPnlUsd, 'identical realized PnL across rescans')
+    assert.equal(summary2.acceptedEvidenceAudit.persistedAcceptedSidesLoaded, 54)
+    assert.equal(summary2.acceptedEvidenceAudit.persistedAcceptedSidesApplied, 54)
+    assert.equal(summary2.acceptedEvidenceAudit.liveSidesResolved, 0)
+    assert.equal(summary2.acceptedEvidenceAudit.existingVerifiedSidesProtectedFromOverwrite, 0, 'unpricedLots2 start unpriced — nothing to protect, everything came from hydration')
+  })
+
+  it('HARD ASSERTION (requirement #10): verified sides exist but neither hydration nor seeding found/wrote anything -> logs accepted_evidence_store_unseeded', async () => {
+    const calls: unknown[][] = []
+    const logger = { warn: (...args: unknown[]) => { calls.push(args) } }
+    // acceptedEvidenceKv omitted entirely — hydration/seeding both no-op, exactly the unseeded case.
+    const alreadyPriced = lot({ lotId: 'x', token: '0xunseeded', openedTxHash: '0xb', closedTxHash: '0xs', openedAt: 1, closedAt: 2, costBasisUsd: 5, proceedsUsd: 7, realizedPnlUsd: 2, evidenceQuality: 'verified' })
+    const r = createPnlReconciliation({ logger })
+    await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [alreadyPriced] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    const found = calls.find((c) => c[0] === 'accepted_evidence_store_unseeded')
+    assert.ok(found, 'must log accepted_evidence_store_unseeded when verified sides exist but the store was never seeded')
+  })
+
+  it('does NOT log accepted_evidence_store_unseeded when seeding succeeds', async () => {
+    const calls: unknown[][] = []
+    const logger = { warn: (...args: unknown[]) => { calls.push(args) } }
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const alreadyPriced = lot({ lotId: 'x', token: '0xseeded', openedTxHash: '0xb', closedTxHash: '0xs', openedAt: 1, closedAt: 2, costBasisUsd: 5, proceedsUsd: 7, realizedPnlUsd: 2, evidenceQuality: 'verified' })
+    const r = createPnlReconciliation({ logger, acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 1 })
+    await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [alreadyPriced] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    const found = calls.find((c) => c[0] === 'accepted_evidence_store_unseeded')
+    assert.equal(found, undefined)
   })
 })

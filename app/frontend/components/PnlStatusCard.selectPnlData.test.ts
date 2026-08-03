@@ -49,6 +49,11 @@ function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}
       matchedLotSidesTotal: 54, persistedAcceptedSidesLoaded: 0, persistedAcceptedSidesApplied: 0,
       liveSidesResolved: 0, existingVerifiedSidesProtectedFromOverwrite: 38,
       acceptedEvidenceWriteSuccesses: 0, acceptedEvidenceWriteFailures: 0, missingAcceptedEvidenceKeys: 16,
+      recoveryEvidenceWriteSuccesses: 0, recoveryEvidenceWriteFailures: 0,
+      canonicalSeedingWriteSuccesses: 0, canonicalSeedingWriteFailures: 0,
+      verifiedSidesEligibleForPersistence: 0, verifiedSidesAlreadyPersisted: 0, verifiedSidesWritten: 0,
+      verifiedSideWriteFailures: 0, verifiedSidesSkippedUnverified: 0, verifiedSidesSkippedInvalid: 0,
+      missingVerifiedEvidenceMetadata: 0,
     },
     ...overrides,
   }

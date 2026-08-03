@@ -300,9 +300,32 @@ export type AcceptedEvidenceAudit = {
   persistedAcceptedSidesApplied: number
   liveSidesResolved: number
   existingVerifiedSidesProtectedFromOverwrite: number
+  // AGGREGATE, DISCLOSED (requirement #6): the sum of recoveryEvidenceWriteSuccesses/Failures below
+  // AND canonicalSeedingWriteSuccesses/Failures below — kept for backward compatibility with any
+  // existing consumer of the total, while the two phases are now ALSO separately exposed.
   acceptedEvidenceWriteSuccesses: number
   acceptedEvidenceWriteFailures: number
   missingAcceptedEvidenceKeys: number
+  // RECOVERY-LANE WRITES, DISCLOSED: writes made by the live recovery loop itself (a side this pass
+  // had to fetch from a real provider because no accepted evidence covered it).
+  recoveryEvidenceWriteSuccesses: number
+  recoveryEvidenceWriteFailures: number
+  // CANONICAL-SEEDING WRITES, DISCLOSED (this task's own fix): writes made by the FINAL seeding pass
+  // below, for sides that were ALREADY verified before recovery ever ran (priced by any upstream
+  // canonical pricing phase — primary historical scheduler, same-tx stable/native quote, Alchemy
+  // historical pricing, etc.) — see seedAcceptedEvidenceForVerifiedLots' own header.
+  canonicalSeedingWriteSuccesses: number
+  canonicalSeedingWriteFailures: number
+  // FINAL-SEEDING-PASS COUNTERS, DISCLOSED (requirement #5): scoped to the seeding pass only — never
+  // conflated with the hydration-pass counters above, which describe a DIFFERENT phase (reading
+  // evidence back, not writing it).
+  verifiedSidesEligibleForPersistence: number
+  verifiedSidesAlreadyPersisted: number
+  verifiedSidesWritten: number
+  verifiedSideWriteFailures: number
+  verifiedSidesSkippedUnverified: number
+  verifiedSidesSkippedInvalid: number
+  missingVerifiedEvidenceMetadata: number
 }
 
 export type PnlReconciliationSummary = {
@@ -419,7 +442,16 @@ export function createPnlReconciliation(config: Config = {}) {
   //     short-circuit — not a wiring gap — is what's suppressing real per-source attempts, without
   //     this diagnostic pass needing to touch (or even know) that cap's value.
   function emptyAcceptedEvidenceAudit(): AcceptedEvidenceAudit {
-    return { matchedLotSidesTotal: 0, persistedAcceptedSidesLoaded: 0, persistedAcceptedSidesApplied: 0, liveSidesResolved: 0, existingVerifiedSidesProtectedFromOverwrite: 0, acceptedEvidenceWriteSuccesses: 0, acceptedEvidenceWriteFailures: 0, missingAcceptedEvidenceKeys: 0 }
+    return {
+      matchedLotSidesTotal: 0, persistedAcceptedSidesLoaded: 0, persistedAcceptedSidesApplied: 0,
+      liveSidesResolved: 0, existingVerifiedSidesProtectedFromOverwrite: 0,
+      acceptedEvidenceWriteSuccesses: 0, acceptedEvidenceWriteFailures: 0, missingAcceptedEvidenceKeys: 0,
+      recoveryEvidenceWriteSuccesses: 0, recoveryEvidenceWriteFailures: 0,
+      canonicalSeedingWriteSuccesses: 0, canonicalSeedingWriteFailures: 0,
+      verifiedSidesEligibleForPersistence: 0, verifiedSidesAlreadyPersisted: 0, verifiedSidesWritten: 0,
+      verifiedSideWriteFailures: 0, verifiedSidesSkippedUnverified: 0, verifiedSidesSkippedInvalid: 0,
+      missingVerifiedEvidenceMetadata: 0,
+    }
   }
 
   // HYDRATE FROM ACCEPTED EVIDENCE, DISCLOSED (determinism follow-up task, requirements #1-#3,#8 —
@@ -611,8 +643,8 @@ export function createPnlReconciliation(config: Config = {}) {
             priceUsd: recoveredBuy, valueUsd: recoveredBuy * lot.amount, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: writeNow(),
           })
           const ok = await writeAcceptedEvidence(acceptedEvidenceKv, envelope)
-          if (ok) acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses += 1
-          else acceptedEvidenceAudit.acceptedEvidenceWriteFailures += 1
+          if (ok) { acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses += 1; acceptedEvidenceAudit.recoveryEvidenceWriteSuccesses += 1 }
+          else { acceptedEvidenceAudit.acceptedEvidenceWriteFailures += 1; acceptedEvidenceAudit.recoveryEvidenceWriteFailures += 1 }
         }
         if (recoveredSell !== null) {
           const envelope = buildAcceptedEvidenceEnvelope({
@@ -620,12 +652,110 @@ export function createPnlReconciliation(config: Config = {}) {
             priceUsd: recoveredSell, valueUsd: recoveredSell * lot.amount, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: writeNow(),
           })
           const ok = await writeAcceptedEvidence(acceptedEvidenceKv, envelope)
-          if (ok) acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses += 1
-          else acceptedEvidenceAudit.acceptedEvidenceWriteFailures += 1
+          if (ok) { acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses += 1; acceptedEvidenceAudit.recoveryEvidenceWriteSuccesses += 1 }
+          else { acceptedEvidenceAudit.acceptedEvidenceWriteFailures += 1; acceptedEvidenceAudit.recoveryEvidenceWriteFailures += 1 }
         }
       }
     })
     return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: candidates.length, candidatesCappedByBudget: sorted.length - candidates.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved, acceptedEvidenceAudit }
+  }
+
+  // STRUCTURAL VALIDITY, DISCLOSED (requirement #4's "never persist... structurally invalid lots"):
+  // the minimum a lot identity needs to build a real, well-formed accepted-evidence key at all —
+  // never a judgment about pricing correctness, only about whether the identity fields themselves
+  // are usable.
+  function isStructurallyValidLot(lot: MatchedLot): boolean {
+    return Boolean(lot.chain) && Boolean(lot.token) && Boolean(lot.openedTxHash) && Boolean(lot.closedTxHash)
+      && Number.isFinite(lot.openedAt) && Number.isFinite(lot.closedAt) && Number.isFinite(lot.amount) && lot.amount > 0
+  }
+
+  // A PRICE VALID FOR PERSISTENCE, DISCLOSED (requirement #4): finite AND strictly positive — a real
+  // USD price can never legitimately be zero or negative; a zero/negative/non-finite value is either
+  // a data defect or a "no price" sentinel, never a real accepted price.
+  function isPersistablePrice(price: number | null): price is number {
+    return typeof price === 'number' && Number.isFinite(price) && price > 0
+  }
+
+  // FINAL CANONICAL SEEDING PASS, DISCLOSED (accepted-evidence-store-seeding follow-up task —
+  // confirmed production gap: 43 of 54 sides were already verified BEFORE recovery ever ran — priced
+  // by whichever upstream canonical pricing phase this pipeline uses (primary historical scheduler,
+  // same-tx stable/native quote, Alchemy historical pricing, the generic historical cache, etc. — see
+  // requirement #3's own list) — and recoverPrices' write-back above only ever wrote sides IT
+  // resolved live, so those 43 sides were never persisted at all, even though they are exactly as
+  // "canonically verified" as a recovery-resolved side. This pass runs ONCE, AFTER every pricing
+  // phase (recovery included) has finished — over the FINAL, fully-resolved lot list — and persists
+  // every verified side that isn't already covered, regardless of which phase priced it.
+  //
+  // NEVER PERSISTS, DISCLOSED (requirement #4): a lot whose `evidenceQuality` isn't the real
+  // `'verified'` value (counted as `verifiedSidesSkippedUnverified` — this module has no concept of
+  // "estimated"/"synthetic" lots of its own; fifoEngine's own `LotEvidenceQuality` union is only
+  // `'verified' | 'unpriced'`, so "estimated/synthetic" per requirement #4 can never even reach this
+  // function — they simply aren't `'verified'`), a structurally invalid lot (`verifiedSidesSkippedInvalid`),
+  // or a non-finite/zero/negative price (also `verifiedSidesSkippedInvalid` — a "verified" lot with a
+  // corrupt price is a data defect, not a real accepted fact).
+  //
+  // ALREADY-PERSISTED CHECK, DISCLOSED: reads the store first (bounded-concurrency, same pattern as
+  // the recovery pass) — a side already covered by a valid accepted-evidence entry is counted as
+  // `verifiedSidesAlreadyPersisted` and never rewritten (idempotent; avoids needless KV fan-out on
+  // every single rescan once evidence has been seeded once).
+  //
+  // SOURCE METADATA, HONESTLY DISCLOSED: `MatchedLot` (fifoEngine/types.ts) carries no field
+  // recording WHICH upstream phase priced a given side — this function genuinely cannot know. Rather
+  // than fabricate a specific source name, it records `'canonical-upstream'`/`'unknown'` and counts
+  // every such write in `missingVerifiedEvidenceMetadata` — an honest, disclosed limitation, not a
+  // silent gap.
+  async function seedAcceptedEvidenceForVerifiedLots(lots: readonly MatchedLot[]): Promise<AcceptedEvidenceAudit> {
+    const audit = emptyAcceptedEvidenceAudit()
+    const acceptedEvidenceKv = config.acceptedEvidenceKv
+    if (!acceptedEvidenceKv) return audit
+    const now = (config.now ?? Date.now)()
+
+    type SeedSide = { side: AcceptedEvidenceSide; txHash: string; timestamp: number; price: number | null }
+    const tasks: Array<{ lot: MatchedLot; side: SeedSide }> = []
+    for (const lot of lots) {
+      if (lot.evidenceQuality !== 'verified') {
+        if (lot.costBasisUsd !== null || lot.proceedsUsd !== null) audit.verifiedSidesSkippedUnverified += 2
+        continue
+      }
+      if (!isStructurallyValidLot(lot)) { audit.verifiedSidesSkippedInvalid += 2; continue }
+      const sides: SeedSide[] = [
+        { side: 'entry', txHash: lot.openedTxHash, timestamp: lot.openedAt, price: lot.costBasisUsd },
+        { side: 'exit', txHash: lot.closedTxHash, timestamp: lot.closedAt, price: lot.proceedsUsd },
+      ]
+      for (const s of sides) {
+        if (!isPersistablePrice(s.price)) { audit.verifiedSidesSkippedInvalid += 1; continue }
+        audit.verifiedSidesEligibleForPersistence += 1
+        tasks.push({ lot, side: s })
+      }
+    }
+
+    // BOUNDED CONCURRENCY, AWAITED, DISCLOSED (requirements #7): every read-then-maybe-write task
+    // runs through the SAME bounded worker pool as the live recovery pass — never unbounded KV
+    // fan-out — and the whole pass is awaited by reconcile() BEFORE the scan's summary is built, so a
+    // caller can never observe a "done" scan whose seeding writes are still in flight.
+    await mapWithConcurrencyLimit(tasks, RECOVERY_CONCURRENCY_LIMIT, async ({ lot, side }) => {
+      const price = side.price as number
+      const identityVersion = lotIdentityVersion(lot)
+      const identity = { chain: lot.chain, token: lot.token, txHash: side.txHash, side: side.side, timestamp: side.timestamp, lotIdentityVersion: identityVersion }
+      const existing = await readAcceptedEvidence(acceptedEvidenceKv, identity, now)
+      if (existing) { audit.verifiedSidesAlreadyPersisted += 1; return }
+      const envelope = buildAcceptedEvidenceEnvelope({
+        identity, priceUsd: price, valueUsd: price * lot.amount,
+        source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, now,
+      })
+      audit.missingVerifiedEvidenceMetadata += 1
+      const ok = await writeAcceptedEvidence(acceptedEvidenceKv, envelope)
+      if (ok) {
+        audit.verifiedSidesWritten += 1
+        audit.canonicalSeedingWriteSuccesses += 1
+        audit.acceptedEvidenceWriteSuccesses += 1
+      } else {
+        audit.verifiedSideWriteFailures += 1
+        audit.canonicalSeedingWriteFailures += 1
+        audit.acceptedEvidenceWriteFailures += 1
+      }
+    })
+    return audit
   }
 
   return {
@@ -680,6 +810,41 @@ export function createPnlReconciliation(config: Config = {}) {
           evidenceQuality: nowFullyPriced ? ('verified' as const) : lot.evidenceQuality,
         }
       })
+      // FINAL CANONICAL SEEDING PASS, DISCLOSED (accepted-evidence-store-seeding follow-up task):
+      // runs over `updatedFifoLots` — the FULLY RESOLVED lot list, after recovery has already merged
+      // in anything it found — so this pass sees every verified side regardless of whether it was
+      // priced upstream (before recoverPrices ever ran) or by recovery itself just above. See
+      // seedAcceptedEvidenceForVerifiedLots' own header for the full rationale.
+      const seeding = await seedAcceptedEvidenceForVerifiedLots(updatedFifoLots)
+      const acceptedEvidenceAudit: AcceptedEvidenceAudit = {
+        ...recovery.acceptedEvidenceAudit,
+        acceptedEvidenceWriteSuccesses: recovery.acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses + seeding.acceptedEvidenceWriteSuccesses,
+        acceptedEvidenceWriteFailures: recovery.acceptedEvidenceAudit.acceptedEvidenceWriteFailures + seeding.acceptedEvidenceWriteFailures,
+        canonicalSeedingWriteSuccesses: seeding.canonicalSeedingWriteSuccesses,
+        canonicalSeedingWriteFailures: seeding.canonicalSeedingWriteFailures,
+        verifiedSidesEligibleForPersistence: seeding.verifiedSidesEligibleForPersistence,
+        verifiedSidesAlreadyPersisted: seeding.verifiedSidesAlreadyPersisted,
+        verifiedSidesWritten: seeding.verifiedSidesWritten,
+        verifiedSideWriteFailures: seeding.verifiedSideWriteFailures,
+        verifiedSidesSkippedUnverified: seeding.verifiedSidesSkippedUnverified,
+        verifiedSidesSkippedInvalid: seeding.verifiedSidesSkippedInvalid,
+        missingVerifiedEvidenceMetadata: seeding.missingVerifiedEvidenceMetadata,
+      }
+      // PRODUCTION SAFETY WARNING, DISCLOSED (requirement #10): real verified sides exist
+      // (updatedFifoLots has at least one verified lot) but NEITHER the hydration pass found any
+      // persisted evidence NOR this scan's own seeding pass wrote any — meaning the accepted-evidence
+      // store is either unconfigured, unreachable, or was never seeded for this wallet/window at all.
+      // Logged as an error (not warn) — this is exactly the condition that reproduces the
+      // determinism failure this whole feature exists to close.
+      const hasVerifiedSides = updatedFifoLots.some((l) => l.evidenceQuality === 'verified')
+      if (hasVerifiedSides && acceptedEvidenceAudit.persistedAcceptedSidesLoaded === 0 && acceptedEvidenceAudit.canonicalSeedingWriteSuccesses === 0) {
+        logger.warn('accepted_evidence_store_unseeded', {
+          verifiedLotCount: updatedFifoLots.filter((l) => l.evidenceQuality === 'verified').length,
+          persistedAcceptedSidesLoaded: acceptedEvidenceAudit.persistedAcceptedSidesLoaded,
+          canonicalSeedingWriteSuccesses: acceptedEvidenceAudit.canonicalSeedingWriteSuccesses,
+          verifiedSidesEligibleForPersistence: acceptedEvidenceAudit.verifiedSidesEligibleForPersistence,
+        })
+      }
       logger.warn('[pnl-reconciliation] recovery', {
         oneSideMissingCandidates: recovery.oneSideMissingCandidates,
         bothSidesMissingCandidates: recovery.bothSidesMissingCandidates,
@@ -719,7 +884,7 @@ export function createPnlReconciliation(config: Config = {}) {
       // ACCEPTED-EVIDENCE AUDIT, DISCLOSED (determinism follow-up task, requirement #6): real
       // counters from hydrateFromAcceptedEvidence + the live recovery loop's own write-back — see
       // recoverPrices' own header for what each field means.
-      logger.warn('[accepted-evidence-audit]', recovery.acceptedEvidenceAudit)
+      logger.warn('[accepted-evidence-audit]', acceptedEvidenceAudit)
 
       let syntheticAlignedCount = 0
       const synthetic = input.syntheticPnlAssemblyOutput
@@ -1033,7 +1198,7 @@ export function createPnlReconciliation(config: Config = {}) {
         publicPnlGateAudit,
         mismatches: [...mismatches.entries()].map(([key, classification]) => ({ key, classification })).sort((a, b) => a.key.localeCompare(b.key)),
         warning,
-        acceptedEvidenceAudit: recovery.acceptedEvidenceAudit,
+        acceptedEvidenceAudit,
       }
       logger.warn('[pnl-reconciliation] finalSummary', summary)
       logger.warn('[public-pnl-gate-audit]', publicPnlGateAudit)

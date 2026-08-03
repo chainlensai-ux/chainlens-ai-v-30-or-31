@@ -34,6 +34,11 @@ function reconciled(overrides: Partial<PnlReconciliationSummary> = {}): PnlRecon
       matchedLotSidesTotal: 2, persistedAcceptedSidesLoaded: 0, persistedAcceptedSidesApplied: 0,
       liveSidesResolved: 0, existingVerifiedSidesProtectedFromOverwrite: 2,
       acceptedEvidenceWriteSuccesses: 0, acceptedEvidenceWriteFailures: 0, missingAcceptedEvidenceKeys: 0,
+      recoveryEvidenceWriteSuccesses: 0, recoveryEvidenceWriteFailures: 0,
+      canonicalSeedingWriteSuccesses: 0, canonicalSeedingWriteFailures: 0,
+      verifiedSidesEligibleForPersistence: 0, verifiedSidesAlreadyPersisted: 0, verifiedSidesWritten: 0,
+      verifiedSideWriteFailures: 0, verifiedSidesSkippedUnverified: 0, verifiedSidesSkippedInvalid: 0,
+      missingVerifiedEvidenceMetadata: 0,
     },
     ...overrides,
   }
