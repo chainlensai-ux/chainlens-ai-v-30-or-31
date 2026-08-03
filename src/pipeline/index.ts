@@ -2652,6 +2652,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       openPositionBuys: unmatchedEvidenceAudit.openPositionBuys,
       preWindowInventoryExits: unmatchedEvidenceAudit.preWindowInventoryExits,
       scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
+      windowBoundaryProven: unmatchedEvidenceAudit.windowBoundaryProven,
     },
   })
   const reconciledFifoAndPnl: FifoOutput = {

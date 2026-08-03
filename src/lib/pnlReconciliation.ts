@@ -183,6 +183,12 @@ export type StructuralCoverageDenominatorAudit = {
   openPositionBuys?: number
   preWindowInventoryExits?: number
   scanWindowDays?: number
+  // WINDOW BOUNDARY PROOF, DISCLOSED (bounded-sample-gate follow-up task, requirement #2): real,
+  // from eventClassification's computeUnmatchedEvidenceAudit.windowBoundaryProven — never guessed.
+  // Omitted/false means the bounded-verified-sample path cannot be earned (fail closed): without
+  // proof the fetch actually reached the configured window's edge, an unmatched sell with no
+  // earlier buy cannot be honestly distinguished from a genuinely invalid one.
+  windowBoundaryProven?: boolean
 }
 
 export type PnlReconciliationInput = {
@@ -242,6 +248,17 @@ export type PublicPnlGateAudit = {
   // is already the canonical source (see structuralConsistent's own disclosure below). This field
   // preserves full visibility into the divergence without it ever blocking publication.
   engineDivergenceDiagnostic: { fifoClosedLots: number; pnlClosedLots: number; agrees: boolean }
+  // BOUNDED-SAMPLE GATE AUDIT, DISCLOSED (bounded-sample-gate follow-up task, requirement #6): the
+  // bounded verified-sample ('partial') path evaluated and reported on its OWN terms — it is
+  // deliberately NOT required to satisfy `blockingReasons`/`fullAvailabilityBlockingReasons` (e.g.
+  // unmatched_sells, missing_evidence_count) — see `boundedSampleEligible`'s own computation for the
+  // real, narrower rule set it actually evaluates.
+  boundedSampleEligible: boolean
+  boundedSampleBlockingReasons: PublicPnlGateBlockingReason[]
+  fullAvailabilityBlockingReasons: PublicPnlGateBlockingReason[]
+  includedVerifiedLotCount: number
+  excludedUnpricedLotCount: number
+  excludedUnknownUnmatchedCount: number
 }
 
 // MISSING-EVIDENCE BREAKDOWN, DISCLOSED (requirement #7): the single `missingEvidenceCount` number
@@ -272,6 +289,11 @@ export type PnlReconciliationSummary = {
   publicPnlStatus: ReconciledPublicPnlStatus
   publicPnlGateAudit: PublicPnlGateAudit
   mismatches: Array<{ key: string; classification: PnlMismatchClass }>
+  // BOUNDED-SAMPLE WARNING, DISCLOSED (bounded-sample-gate follow-up task, requirement #7): a real,
+  // human-readable disclosure — set ONLY when publicPnlStatus is 'partial' via the bounded verified-
+  // sample path (never for the legacy near-miss fallback, never for 'available'/'unavailable').
+  // Never claims complete wallet history.
+  warning: string | null
 }
 
 const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : null
@@ -696,15 +718,37 @@ export function createPnlReconciliation(config: Config = {}) {
       const pricingCoverageThresholdMet = verifiedPricingCoverage !== null && verifiedPricingCoverage >= MIN_VERIFIED_PRICING_COVERAGE
       const noHardInvalidEvidence = gateUnmatchedBuys === 0 && gateUnmatchedSells === 0
       const structuralConsistent = noHardInvalidEvidence && missingEvidenceCount === 0 && realizedPnlUsd !== null
-      // BOUNDED VERIFIED SAMPLE, DISCLOSED (requirement #6's "allow verified realized PnL samples
-      // without pretending bounded history is complete"): meeting both thresholds with no hard-
-      // invalid evidence and a real realized PnL figure earns 'partial' — explicitly never
-      // 'available', since a bounded 90-day scan can never honestly claim complete history even when
-      // every fetched lot it DID find is fully verified.
-      const boundedVerifiedSampleEligible = noHardInvalidEvidence && realizedPnlUsd !== null && verifiedLotThresholdMet && pricingCoverageThresholdMet
+      // BOUNDED VERIFIED SAMPLE, REWIRED, DISCLOSED (bounded-sample-gate follow-up task, real
+      // production evidence: 27 structural lots, 18 verified/66.67% coverage, 94 buys correctly
+      // disclosed as open_position_inventory, 110 sells correctly disclosed as
+      // pre_window_inventory_exit, only 4 genuinely invalid/unknown unmatched sells — yet the PRIOR
+      // wiring still required `noHardInvalidEvidence` (zero unmatched buys/sells of ANY kind) and
+      // fell through to the legacy `missingEvidenceCount <= 3` fallback, which counts those same 4
+      // unmatched sells AND pnlEngine's own evidenceMissingCount AND any pricing gap — for this
+      // wallet, missingEvidenceCount was 15, so the bounded path never actually admitted a real,
+      // otherwise-eligible verified sample. Fixed per this task's explicit requirements #2-#5: the
+      // bounded path now evaluates its OWN, narrower rule set —
+      //   - verifiedLotThresholdMet / pricingCoverageThresholdMet (unchanged, requirement #8: keep
+      //     the 10-lot / 50%-coverage thresholds byte-for-byte the same)
+      //   - `!hardInvalidFifoResult` — fifoEngine's OWN integrity flag for a result it has positively
+      //     proven invalid (never this function's own unmatched-count tally, which conflates "not
+      //     yet matched" with "invalid")
+      //   - `windowBoundaryProven` — real, from the caller's exact-unmatched-evidence audit (see
+      //     computeUnmatchedEvidenceAudit's own header); without it, an unmatched sell's true reason
+      //     is undetermined, so the bounded path cannot be earned (fails closed)
+      //   - `realizedPnlUsd !== null` — canonical, from fifoEngine alone, unchanged
+      // It deliberately does NOT require gateUnmatchedBuys/Sells === 0 or missingEvidenceCount === 0
+      // — per requirement #5, unknown/join-failure evidence may still prevent the FULL 'available'
+      // tier (via structuralConsistent above, completely unchanged), but must not by itself veto an
+      // otherwise independently verified bounded sample. Those excluded events remain disclosed
+      // (`invalidOrUnknownUnmatchedEvents` below) and continue to receive zero cost basis — nothing
+      // about fifoEngine's own PnL arithmetic changes.
+      const hardInvalidFifoResult = input.fifoEngineResult.integrityFlags.hardInvalid
+      const windowBoundaryProven = denomAudit?.windowBoundaryProven ?? false
+      const boundedSampleEligible = verifiedLotThresholdMet && pricingCoverageThresholdMet && !hardInvalidFifoResult && windowBoundaryProven && realizedPnlUsd !== null
       const publicPnlStatus: ReconciledPublicPnlStatus = structuralConsistent
         ? 'available'
-        : boundedVerifiedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0)
+        : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0)
           ? 'partial'
           : 'unavailable'
       const totalClosedLots = Math.max(fifoLots.length, pnlLots.length)
@@ -782,6 +826,27 @@ export function createPnlReconciliation(config: Config = {}) {
       if (realizedPnlUsd === null) {
         blockingReasons.push({ rule: 'realized_pnl_present', threshold: 'non-null', actualValue: 'null' })
       }
+      // BOUNDED-SAMPLE BLOCKING REASONS, DISCLOSED (requirement #6): the bounded path's OWN reason
+      // list — deliberately excludes unmatched_buys/unmatched_sells/missing_evidence_count, which
+      // are real for the FULL-availability path (`fullAvailabilityBlockingReasons` below) but never
+      // veto the bounded path per requirement #5.
+      const boundedSampleBlockingReasons: PublicPnlGateBlockingReason[] = []
+      if (!verifiedLotThresholdMet) {
+        boundedSampleBlockingReasons.push({ rule: 'minimum_verified_closed_lots', threshold: String(MIN_VERIFIED_CLOSED_LOTS), actualValue: String(verifiedUpdatedLots.length) })
+      }
+      if (!pricingCoverageThresholdMet) {
+        boundedSampleBlockingReasons.push({ rule: 'minimum_verified_pricing_coverage', threshold: String(MIN_VERIFIED_PRICING_COVERAGE), actualValue: verifiedPricingCoverage === null ? 'null' : String(verifiedPricingCoverage) })
+      }
+      if (hardInvalidFifoResult) {
+        boundedSampleBlockingReasons.push({ rule: 'fifo_result_hard_invalid', threshold: 'false', actualValue: 'true' })
+      }
+      if (!windowBoundaryProven) {
+        boundedSampleBlockingReasons.push({ rule: 'window_boundary_proven', threshold: 'true', actualValue: 'false' })
+      }
+      if (realizedPnlUsd === null) {
+        boundedSampleBlockingReasons.push({ rule: 'realized_pnl_present', threshold: 'non-null', actualValue: 'null' })
+      }
+      const fullAvailabilityBlockingReasons = blockingReasons
       const publicPnlGateAudit: PublicPnlGateAudit = {
         verifiedLotCount: verifiedUpdatedLots.length,
         fullyPricedLotCount,
@@ -789,7 +854,7 @@ export function createPnlReconciliation(config: Config = {}) {
         structuralCoverage: structuralDenominator > 0 ? fifoLots.length / structuralDenominator : null,
         unmatchedBuyCount: gateUnmatchedBuys,
         unmatchedSellCount: gateUnmatchedSells,
-        integrityTier: structuralConsistent ? 'full' : boundedVerifiedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0) ? 'partial' : 'blocked',
+        integrityTier: structuralConsistent ? 'full' : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0) ? 'partial' : 'blocked',
         blockingReasons,
         rawUnmatchedBuys: correctedUnmatchedBuys,
         rawUnmatchedSells: correctedUnmatchedSells,
@@ -809,7 +874,20 @@ export function createPnlReconciliation(config: Config = {}) {
         scanWindowDays: denomAudit?.scanWindowDays ?? null,
         verifiedPricingCoverage,
         engineDivergenceDiagnostic: { fifoClosedLots: fifoLots.length, pnlClosedLots: pnlLots.length, agrees: engineLotCountsAgree },
+        boundedSampleEligible,
+        boundedSampleBlockingReasons,
+        fullAvailabilityBlockingReasons,
+        includedVerifiedLotCount: verifiedUpdatedLots.length,
+        excludedUnpricedLotCount: Math.max(0, fifoLots.length - verifiedUpdatedLots.length),
+        excludedUnknownUnmatchedCount: gateUnmatchedBuys + gateUnmatchedSells,
       }
+
+      // BOUNDED-SAMPLE WARNING, DISCLOSED (requirement #7): set only when 'partial' was earned via
+      // the bounded verified-sample path — never for the legacy near-miss fallback (which is a
+      // near-complete result, not a deliberately bounded one) or for 'available'/'unavailable'.
+      const warning = publicPnlStatus === 'partial' && boundedSampleEligible
+        ? `Verified ${denomAudit?.scanWindowDays ?? 90}-day sample, not complete wallet history`
+        : null
 
       const summary: PnlReconciliationSummary = {
         closedLots: totalClosedLots,
@@ -825,6 +903,7 @@ export function createPnlReconciliation(config: Config = {}) {
         publicPnlStatus,
         publicPnlGateAudit,
         mismatches: [...mismatches.entries()].map(([key, classification]) => ({ key, classification })).sort((a, b) => a.key.localeCompare(b.key)),
+        warning,
       }
       logger.warn('[pnl-reconciliation] finalSummary', summary)
       logger.warn('[public-pnl-gate-audit]', publicPnlGateAudit)

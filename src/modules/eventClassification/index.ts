@@ -500,6 +500,13 @@ export type UnmatchedEvidenceAudit = {
   structuralCoverageNumerator: number
   structuralCoverageDenominator: number
   structuralCoverage: number | null
+  // WINDOW BOUNDARY PROOF, DISCLOSED (bounded-sample-gate follow-up task, requirement #2): real —
+  // true only when this scan's earliest fetched event genuinely reached (or predates) the
+  // configured window's start boundary within tolerance, exactly the same signal
+  // `pre_window_inventory_exit` detection above already relies on. A caller (the public PnL gate)
+  // needing to prove "the provider window boundary was reached" reads this field rather than
+  // re-deriving it.
+  windowBoundaryProven: boolean
 }
 
 const DEFAULT_WINDOW_BOUNDARY_TOLERANCE_MS = 3 * 24 * 60 * 60 * 1000
@@ -598,6 +605,7 @@ export function computeUnmatchedEvidenceAudit(
     structuralCoverageNumerator,
     structuralCoverageDenominator,
     structuralCoverage: structuralCoverageDenominator > 0 ? structuralCoverageNumerator / structuralCoverageDenominator : null,
+    windowBoundaryProven: boundaryReached,
   }
 }
 

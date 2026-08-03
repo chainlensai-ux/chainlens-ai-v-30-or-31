@@ -25,8 +25,11 @@ function reconciled(overrides: Partial<PnlReconciliationSummary> = {}): PnlRecon
       verifiedClosedLots: 1, structuralClosedLots: 1, openPositionBuys: 0, preWindowInventoryExits: 0,
       invalidOrUnknownUnmatchedEvents: 0, scanWindowDays: null, verifiedPricingCoverage: 1,
       engineDivergenceDiagnostic: { fifoClosedLots: 1, pnlClosedLots: 1, agrees: true },
+      boundedSampleEligible: false, boundedSampleBlockingReasons: [], fullAvailabilityBlockingReasons: [],
+      includedVerifiedLotCount: 1, excludedUnpricedLotCount: 0, excludedUnknownUnmatchedCount: 0,
     },
     mismatches: [],
+    warning: null,
     ...overrides,
   }
 }

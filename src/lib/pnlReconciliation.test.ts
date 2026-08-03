@@ -597,7 +597,7 @@ describe('pnlReconciliation', () => {
       fifoEngineResult: fifo({ matchedLots: [...verifiedLots, ...unpricedLots] }),
       pnlEngineResult: pnl(9),
       syntheticPnlAssemblyOutput: null,
-      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 0, scanWindowDays: 90 },
+      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 0, scanWindowDays: 90, windowBoundaryProven: true },
     })
     assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 17)
     assert.equal(summary.publicPnlGateAudit.structuralClosedLots, 27)
@@ -618,6 +618,74 @@ describe('pnlReconciliation', () => {
       structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 0 },
     })
     assert.ok(summary.publicPnlGateAudit.blockingReasons.some((r2) => r2.rule === 'minimum_verified_closed_lots'))
+    assert.equal(summary.publicPnlStatus, 'unavailable')
+  })
+
+  it('HARD ASSERTION: exact production-shaped case — 27 structural lots, 18 verified (66.67% coverage), 94 open-position buys, 110 pre-window sells, 4 invalid/unknown unmatched sells — publishes partial, never unavailable', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const verifiedLots = Array.from({ length: 18 }, (_, i) => lot({ lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`, realizedPnlUsd: -200.55 }))
+    const unpricedLots = Array.from({ length: 9 }, (_, i) => lot({ lotId: `u${i}`, openedTxHash: `0xub${i}`, closedTxHash: `0xus${i}`, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' }))
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [...verifiedLots, ...unpricedLots], unmatchedBuys: 94, unmatchedSells: 114 }),
+      pnlEngineResult: pnl(9),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0, genuineUnmatchedSells: 4,
+        openPositionBuys: 94, preWindowInventoryExits: 110,
+        scanWindowDays: 90, windowBoundaryProven: true,
+      },
+    })
+    assert.equal(summary.publicPnlStatus, 'partial', 'the prior gate wiring bug left this exact production shape at unavailable — must now be partial')
+    assert.equal(summary.realizedPnlUsd, -3609.9)
+    assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 18)
+    assert.equal(summary.publicPnlGateAudit.structuralClosedLots, 27)
+    assert.ok(Math.abs((summary.publicPnlGateAudit.verifiedPricingCoverage ?? 0) - 18 / 27) < 1e-9)
+    assert.equal(summary.publicPnlGateAudit.openPositionBuys, 94)
+    assert.equal(summary.publicPnlGateAudit.preWindowInventoryExits, 110)
+    assert.equal(summary.publicPnlGateAudit.invalidOrUnknownUnmatchedEvents, 4)
+    assert.equal(summary.publicPnlGateAudit.boundedSampleEligible, true)
+    assert.deepEqual(summary.publicPnlGateAudit.boundedSampleBlockingReasons, [])
+    assert.equal(summary.warning, 'Verified 90-day sample, not complete wallet history')
+    // The old, blocking view is still fully disclosed — it just no longer vetoes the bounded path.
+    assert.ok(summary.publicPnlGateAudit.fullAvailabilityBlockingReasons.some((r2) => r2.rule === 'unmatched_sells'))
+    assert.ok(summary.publicPnlGateAudit.fullAvailabilityBlockingReasons.some((r2) => r2.rule === 'missing_evidence_count'))
+  })
+
+  it('HARD ASSERTION: the bounded path fails closed when the provider window boundary is not proven, even with otherwise-eligible thresholds', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const verifiedLots = Array.from({ length: 18 }, (_, i) => lot({ lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`, realizedPnlUsd: -200.55 }))
+    const unpricedLots = Array.from({ length: 9 }, (_, i) => lot({ lotId: `u${i}`, openedTxHash: `0xub${i}`, closedTxHash: `0xus${i}`, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' }))
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [...verifiedLots, ...unpricedLots], unmatchedBuys: 94, unmatchedSells: 114 }),
+      pnlEngineResult: pnl(9),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0, genuineUnmatchedSells: 4,
+        openPositionBuys: 94, preWindowInventoryExits: 110,
+        scanWindowDays: 90, windowBoundaryProven: false,
+      },
+    })
+    assert.equal(summary.publicPnlGateAudit.boundedSampleEligible, false)
+    assert.ok(summary.publicPnlGateAudit.boundedSampleBlockingReasons.some((r2) => r2.rule === 'window_boundary_proven'))
+    assert.equal(summary.publicPnlStatus, 'unavailable')
+  })
+
+  it('HARD ASSERTION: the bounded path fails closed when fifoEngine has positively flagged a hard-invalid result', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const verifiedLots = Array.from({ length: 18 }, (_, i) => lot({ lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`, realizedPnlUsd: -200.55 }))
+    const unpricedLots = Array.from({ length: 9 }, (_, i) => lot({ lotId: `u${i}`, openedTxHash: `0xub${i}`, closedTxHash: `0xus${i}`, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' }))
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [...verifiedLots, ...unpricedLots], unmatchedBuys: 94, unmatchedSells: 114, integrityFlags: { hardInvalid: true, estimateOnlyLotsExcluded: 0, syntheticLotsExcluded: 0 } }),
+      pnlEngineResult: pnl(9),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0, genuineUnmatchedSells: 4,
+        openPositionBuys: 94, preWindowInventoryExits: 110,
+        scanWindowDays: 90, windowBoundaryProven: true,
+      },
+    })
+    assert.equal(summary.publicPnlGateAudit.boundedSampleEligible, false)
+    assert.ok(summary.publicPnlGateAudit.boundedSampleBlockingReasons.some((r2) => r2.rule === 'fifo_result_hard_invalid'))
     assert.equal(summary.publicPnlStatus, 'unavailable')
   })
 })
