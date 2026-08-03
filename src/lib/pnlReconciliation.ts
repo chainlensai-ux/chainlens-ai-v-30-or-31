@@ -149,7 +149,54 @@ function recordSourceAttempts(counters: SourceAttemptCounters, attempts: readonl
   }
 }
 export type PnlReconciliationInput = { fifoEngineResult: FifoOutput; pnlEngineResult: PnlSummaryResult; routerInferenceOutput?: RouterInferenceLike | null; syntheticPnlAssemblyOutput?: SyntheticPnlSummary | null }
-export type PnlReconciliationSummary = { closedLots: number; unmatchedBuys: number; unmatchedSells: number; realizedPnlUsd: number | null; unrealizedPnlUsd: number | null; priceRecoveredCount: number; routerCorrectedCount: number; syntheticAlignedCount: number; missingEvidenceCount: number; publicPnlStatus: ReconciledPublicPnlStatus; mismatches: Array<{ key: string; classification: PnlMismatchClass }> }
+
+// PUBLIC PNL GATE AUDIT, DISCLOSED (evidence-first PnL completion task, requirement #1): a single,
+// exhaustive report of every rule the public PnL gate actually evaluates, so a wallet blocked from
+// publication has an exact, auditable explanation instead of just an opaque `publicPnlStatus`
+// string. Every field here is read from the SAME values `structuralConsistent`/`publicPnlStatus`
+// below are computed from — this is a reporting view over that existing gate, never a second,
+// separate gate with its own (possibly divergent) thresholds.
+export type PublicPnlGateBlockingReason = { rule: string; threshold: string; actualValue: string }
+export type PublicPnlGateAudit = {
+  verifiedLotCount: number
+  fullyPricedLotCount: number
+  pricingCoverage: number | null
+  structuralCoverage: number | null
+  unmatchedBuyCount: number
+  unmatchedSellCount: number
+  integrityTier: 'full' | 'partial' | 'blocked'
+  blockingReasons: PublicPnlGateBlockingReason[]
+}
+
+// MISSING-EVIDENCE BREAKDOWN, DISCLOSED (requirement #7): the single `missingEvidenceCount` number
+// told a caller THAT evidence was missing, never WHY — whether it was a structurally-unmatched
+// trade leg (the wallet-side gap that actually blocks reconstructing a closed lot at all),
+// unpriced-but-structurally-matched evidence (a pricing-only gap), or something that was never a
+// trade to begin with (dust/non-trade exclusions, which must never block public PnL — see
+// `dustExcluded`/`nonTradeExcluded` below, both EXCLUDED from `missingEvidenceCount` itself, exactly
+// as they already were before this change; this breakdown is additive visibility, not a new gate).
+export type MissingEvidenceBreakdown = {
+  criticalTradeEvidenceMissing: number
+  pricingEvidenceMissing: number
+  dustExcluded: number
+  nonTradeExcluded: number
+}
+
+export type PnlReconciliationSummary = {
+  closedLots: number
+  unmatchedBuys: number
+  unmatchedSells: number
+  realizedPnlUsd: number | null
+  unrealizedPnlUsd: number | null
+  priceRecoveredCount: number
+  routerCorrectedCount: number
+  syntheticAlignedCount: number
+  missingEvidenceCount: number
+  missingEvidenceBreakdown: MissingEvidenceBreakdown
+  publicPnlStatus: ReconciledPublicPnlStatus
+  publicPnlGateAudit: PublicPnlGateAudit
+  mismatches: Array<{ key: string; classification: PnlMismatchClass }>
+}
 
 const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : null
 const tokenKey = (chain: string, token: string) => `${chain}:${token.toLowerCase()}`
@@ -527,8 +574,74 @@ export function createPnlReconciliation(config: Config = {}) {
       // being merely unlikely.
       const structuralConsistent = fifoLots.length === pnlLots.length && correctedUnmatchedBuys === 0 && correctedUnmatchedSells === 0 && missingEvidenceCount === 0 && realizedPnlUsd !== null
       const publicPnlStatus: ReconciledPublicPnlStatus = structuralConsistent ? 'available' : missingEvidenceCount <= 3 && fifoLots.length > 0 ? 'partial' : 'unavailable'
-      const summary: PnlReconciliationSummary = { closedLots: Math.max(fifoLots.length, pnlLots.length), unmatchedBuys: correctedUnmatchedBuys, unmatchedSells: correctedUnmatchedSells, realizedPnlUsd, unrealizedPnlUsd: roundUsd(input.fifoEngineResult.unrealizedPnlUsd), priceRecoveredCount: recovered.size, routerCorrectedCount, syntheticAlignedCount, missingEvidenceCount, publicPnlStatus, mismatches: [...mismatches.entries()].map(([key, classification]) => ({ key, classification })).sort((a, b) => a.key.localeCompare(b.key)) }
+      const totalClosedLots = Math.max(fifoLots.length, pnlLots.length)
+
+      // MISSING-EVIDENCE BREAKDOWN, DISCLOSED (requirement #7): splits the same missingEvidenceCount
+      // computed above into WHY evidence is missing, never changing the total or the gate itself.
+      // criticalTradeEvidenceMissing covers structurally-unmatched trade legs (this engine's own
+      // correctedUnmatchedBuys/Sells) plus pnlEngine's own independent evidenceMissingCount tally —
+      // both describe a trade leg the pipeline could not structurally close, the kind of gap that
+      // actually blocks reconstructing a lot at all. pricingEvidenceMissing covers lots that WERE
+      // structurally matched but still lack priced evidence after recovery. dustExcluded/
+      // nonTradeExcluded are informational only — dust-suppressed tokens and (once real, see
+      // 'syntheticOnlyToken' declared above but not yet ever set by this codebase) synthetic-only
+      // legs are already excluded upstream and were never counted in missingEvidenceCount to begin
+      // with; they must never block public PnL, and this breakdown does not change that.
+      const criticalTradeEvidenceMissing = correctedUnmatchedBuys + correctedUnmatchedSells + input.pnlEngineResult.evidenceMissingCount
+      const pricingEvidenceMissing = Math.max(0, priceUnavailableCount - recovered.size)
+      const dustExcluded = config.dustSuppressedKeys?.size ?? 0
+      const nonTradeExcluded = [...mismatches.values()].filter((v) => v === 'syntheticOnlyToken').length
+      const missingEvidenceBreakdown: MissingEvidenceBreakdown = { criticalTradeEvidenceMissing, pricingEvidenceMissing, dustExcluded, nonTradeExcluded }
+
+      // PUBLIC PNL GATE AUDIT, DISCLOSED (requirement #1): a reporting view over the exact same
+      // values structuralConsistent/publicPnlStatus above are computed from — every threshold below
+      // is the real threshold this gate enforces, not a separate/looser one.
+      const fullyPricedLotCount = updatedFifoLots.filter((l) => l.costBasisUsd !== null && l.proceedsUsd !== null).length
+      const structuralDenominator = fifoLots.length + correctedUnmatchedBuys + correctedUnmatchedSells
+      const blockingReasons: PublicPnlGateBlockingReason[] = []
+      if (fifoLots.length !== pnlLots.length) {
+        blockingReasons.push({ rule: 'engine_lot_count_agreement', threshold: 'fifoEngine closed lots === pnlEngine closed lots', actualValue: `${fifoLots.length} vs ${pnlLots.length}` })
+      }
+      if (correctedUnmatchedBuys > 0) {
+        blockingReasons.push({ rule: 'unmatched_buys', threshold: '0', actualValue: String(correctedUnmatchedBuys) })
+      }
+      if (correctedUnmatchedSells > 0) {
+        blockingReasons.push({ rule: 'unmatched_sells', threshold: '0', actualValue: String(correctedUnmatchedSells) })
+      }
+      if (missingEvidenceCount > 0) {
+        blockingReasons.push({ rule: 'missing_evidence_count', threshold: '0', actualValue: String(missingEvidenceCount) })
+      }
+      if (realizedPnlUsd === null) {
+        blockingReasons.push({ rule: 'realized_pnl_present', threshold: 'non-null', actualValue: 'null' })
+      }
+      const publicPnlGateAudit: PublicPnlGateAudit = {
+        verifiedLotCount: verifiedUpdatedLots.length,
+        fullyPricedLotCount,
+        pricingCoverage: fifoLots.length > 0 ? fullyPricedLotCount / fifoLots.length : null,
+        structuralCoverage: structuralDenominator > 0 ? fifoLots.length / structuralDenominator : null,
+        unmatchedBuyCount: correctedUnmatchedBuys,
+        unmatchedSellCount: correctedUnmatchedSells,
+        integrityTier: structuralConsistent ? 'full' : missingEvidenceCount <= 3 && fifoLots.length > 0 ? 'partial' : 'blocked',
+        blockingReasons,
+      }
+
+      const summary: PnlReconciliationSummary = {
+        closedLots: totalClosedLots,
+        unmatchedBuys: correctedUnmatchedBuys,
+        unmatchedSells: correctedUnmatchedSells,
+        realizedPnlUsd,
+        unrealizedPnlUsd: roundUsd(input.fifoEngineResult.unrealizedPnlUsd),
+        priceRecoveredCount: recovered.size,
+        routerCorrectedCount,
+        syntheticAlignedCount,
+        missingEvidenceCount,
+        missingEvidenceBreakdown,
+        publicPnlStatus,
+        publicPnlGateAudit,
+        mismatches: [...mismatches.entries()].map(([key, classification]) => ({ key, classification })).sort((a, b) => a.key.localeCompare(b.key)),
+      }
       logger.warn('[pnl-reconciliation] finalSummary', summary)
+      logger.warn('[public-pnl-gate-audit]', publicPnlGateAudit)
       return summary
     },
   }

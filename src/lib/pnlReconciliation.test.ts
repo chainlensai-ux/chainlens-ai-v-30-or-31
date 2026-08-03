@@ -345,4 +345,60 @@ describe('pnlReconciliation', () => {
       assert.ok(!source.includes(forbidden), `pnlReconciliation.ts must never reference ${forbidden} — recovery must only use already-supplied prices/events, never refetch wallet history`)
     }
   })
+
+  // =============================================================================================
+  // publicPnlGateAudit / missingEvidenceBreakdown — evidence-first PnL completion task, requirements
+  // #1 and #7. A reporting view over the SAME gate structuralConsistent/publicPnlStatus already
+  // enforce — never a second, looser or stricter gate.
+  // =============================================================================================
+
+  it('publicPnlGateAudit reports integrityTier: full with zero blockingReasons when the gate actually passes', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({ fifoEngineResult: fifo(), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null })
+    assert.equal(summary.publicPnlStatus, 'available')
+    assert.equal(summary.publicPnlGateAudit.integrityTier, 'full')
+    assert.deepEqual(summary.publicPnlGateAudit.blockingReasons, [])
+    assert.equal(summary.publicPnlGateAudit.verifiedLotCount, 1)
+    assert.equal(summary.publicPnlGateAudit.fullyPricedLotCount, 1)
+    assert.equal(summary.publicPnlGateAudit.pricingCoverage, 1)
+    assert.equal(summary.publicPnlGateAudit.structuralCoverage, 1)
+  })
+
+  it('HARD ASSERTION: publicPnlGateAudit.blockingReasons names every failed rule with its exact threshold and actual value', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ unmatchedBuys: 2, matchedLots: [lot({ costBasisUsd: null, proceedsUsd: null })] }),
+      pnlEngineResult: pnl(1, { evidenceMissingCount: 0 }),
+      syntheticPnlAssemblyOutput: null,
+    })
+    assert.notEqual(summary.publicPnlGateAudit.integrityTier, 'full')
+    assert.ok(summary.publicPnlGateAudit.blockingReasons.length > 0, 'a non-full gate must always name at least one reason')
+    for (const reason of summary.publicPnlGateAudit.blockingReasons) {
+      assert.equal(typeof reason.rule, 'string')
+      assert.equal(typeof reason.threshold, 'string')
+      assert.equal(typeof reason.actualValue, 'string')
+    }
+    const rules = summary.publicPnlGateAudit.blockingReasons.map((r2) => r2.rule)
+    assert.ok(rules.includes('unmatched_buys'))
+    const unmatchedBuysReason = summary.publicPnlGateAudit.blockingReasons.find((r2) => r2.rule === 'unmatched_buys')!
+    assert.equal(unmatchedBuysReason.threshold, '0')
+    assert.equal(unmatchedBuysReason.actualValue, '2')
+  })
+
+  it('missingEvidenceBreakdown separates critical trade-evidence gaps from pricing-only gaps, and dust/non-trade exclusions never contribute to either', async () => {
+    const r = createPnlReconciliation({ logger: quiet, dustSuppressedKeys: new Set(['base:0xdust1', 'base:0xdust2']) })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ unmatchedSells: 1, matchedLots: [lot({ costBasisUsd: null, proceedsUsd: null })] }),
+      pnlEngineResult: pnl(1, { evidenceMissingCount: 0 }),
+      syntheticPnlAssemblyOutput: null,
+    })
+    assert.equal(summary.missingEvidenceBreakdown.criticalTradeEvidenceMissing, 1, 'the one genuinely unmatched sell is a critical trade-evidence gap')
+    assert.equal(summary.missingEvidenceBreakdown.pricingEvidenceMissing, 1, 'the structurally-matched-but-unpriced lot is a pricing-only gap')
+    assert.equal(summary.missingEvidenceBreakdown.dustExcluded, 2, 'the two dust-suppressed keys are visible, but...')
+    assert.equal(
+      summary.missingEvidenceBreakdown.criticalTradeEvidenceMissing + summary.missingEvidenceBreakdown.pricingEvidenceMissing,
+      summary.missingEvidenceCount,
+      'dustExcluded/nonTradeExcluded must never be folded into missingEvidenceCount — they must never block public PnL',
+    )
+  })
 })

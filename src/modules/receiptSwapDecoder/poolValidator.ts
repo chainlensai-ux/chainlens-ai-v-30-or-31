@@ -81,6 +81,39 @@ export async function tryClassicStableVariants(
 // this whole module, not independently re-created here.
 const getClient = getSharedBaseClient
 
+// POOL-VALIDATION AUDIT LOG, DISCLOSED (evidence-first PnL completion task, requirement #5): a
+// real, observability-only record of every factory query this validator actually made for a
+// `pool_not_validated_by_factory` rejection — which factory was queried, what pool (if any) it
+// returned for each attempted key, the candidate pool this receipt actually claimed, and the token
+// pair involved. This is PURELY additive logging: it changes nothing about which pools validate —
+// no new venue is guessed at, no key is skipped or added, and only the two already-in-scope,
+// already-verified factories (AERODROME_CLASSIC_FACTORY, AERODROME_SLIPSTREAM_FACTORY) are ever
+// queried, exactly as before this change.
+export type PoolValidationAttempt = { key: string; returnedPool: string | null }
+// Exported for direct unit testing — the real, on-chain caller (createLiveBaseDexPoolValidator
+// below) has no injection point for its RPC client, so this pure logging function is tested in
+// isolation rather than through a live/mocked client.
+export function logPoolValidationAudit(
+  protocol: ReceiptSwapProtocol,
+  factory: string,
+  candidatePool: string,
+  token0: string,
+  token1: string,
+  attempts: PoolValidationAttempt[],
+  matched: boolean,
+): void {
+  if (matched) return // only the rejection case needs an audit trail — a match needs no explanation
+  // eslint-disable-next-line no-console
+  console.warn('[pool-validation-audit]', {
+    protocol,
+    factoryQueried: factory,
+    candidatePool,
+    tokenPair: [token0.toLowerCase(), token1.toLowerCase()],
+    attempts,
+    reason: 'pool_not_validated_by_factory',
+  })
+}
+
 // FAIL-CLOSED, DISCLOSED: any RPC failure, missing config, or a factory returning the zero address
 // for every attempted key resolves to `false` (not validated) — never treated as "validated" by
 // default. Callers (index.ts) fail closed to the inference path whenever validation isn't `true`.
@@ -90,20 +123,27 @@ export function createLiveBaseDexPoolValidator(): PoolValidator {
       const client = getClient()
       if (!client) return false
       const target = poolAddress.toLowerCase()
+      const attempts: PoolValidationAttempt[] = []
       try {
         if (protocol === 'aerodrome_classic') {
           // Try the volatile key first (preserves prior behavior/ordering for the common case),
           // then the stable key only if volatile didn't match — the real, finite (tokenA, tokenB,
           // stable) key space, never a guess. See this file's own header for the full disclosure.
-          return tryClassicStableVariants(
-            (stable) => client.readContract({
-              address: AERODROME_CLASSIC_FACTORY as `0x${string}`,
-              abi: CLASSIC_FACTORY_ABI,
-              functionName: 'getPool',
-              args: [token0 as `0x${string}`, token1 as `0x${string}`, stable],
-            }) as Promise<string>,
+          const matched = await tryClassicStableVariants(
+            async (stable) => {
+              const pool = await client.readContract({
+                address: AERODROME_CLASSIC_FACTORY as `0x${string}`,
+                abi: CLASSIC_FACTORY_ABI,
+                functionName: 'getPool',
+                args: [token0 as `0x${string}`, token1 as `0x${string}`, stable],
+              }) as string
+              attempts.push({ key: `stable=${stable}`, returnedPool: typeof pool === 'string' ? pool.toLowerCase() : null })
+              return pool
+            },
             target,
           )
+          logPoolValidationAudit(protocol, AERODROME_CLASSIC_FACTORY, target, token0, token1, attempts, matched)
+          return matched
         }
         for (const tickSpacing of SLIPSTREAM_TICK_SPACINGS) {
           const pool = await client.readContract({
@@ -112,10 +152,16 @@ export function createLiveBaseDexPoolValidator(): PoolValidator {
             functionName: 'getPool',
             args: [token0 as `0x${string}`, token1 as `0x${string}`, tickSpacing],
           })
-          if (typeof pool === 'string' && pool.toLowerCase() === target) return true
+          attempts.push({ key: `tickSpacing=${tickSpacing}`, returnedPool: typeof pool === 'string' ? pool.toLowerCase() : null })
+          if (typeof pool === 'string' && pool.toLowerCase() === target) {
+            logPoolValidationAudit(protocol, AERODROME_SLIPSTREAM_FACTORY, target, token0, token1, attempts, true)
+            return true
+          }
         }
+        logPoolValidationAudit(protocol, AERODROME_SLIPSTREAM_FACTORY, target, token0, token1, attempts, false)
         return false
       } catch {
+        logPoolValidationAudit(protocol, protocol === 'aerodrome_classic' ? AERODROME_CLASSIC_FACTORY : AERODROME_SLIPSTREAM_FACTORY, target, token0, token1, attempts, false)
         return false
       }
     },
