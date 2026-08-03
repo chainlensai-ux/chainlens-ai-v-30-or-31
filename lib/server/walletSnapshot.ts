@@ -2,6 +2,7 @@ import { fetchMoralisBalances, fetchMoralisTransfers, fetchMoralisTransfersPagin
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { computeWalletProfile, type WalletProfile } from './walletIdentity'
 import { canUseWalletProviderCall, createWalletProviderCallAudit, recordWalletProviderCall, type WalletProviderCallRequest, type WalletProviderPurpose } from './walletProviders'
+import { budgetedAlchemyCall, resetWalletSnapshotAlchemyBudget, getWalletSnapshotAlchemyCostDiagnostics } from './walletSnapshotAlchemyBudget'
 import { buildBuyTimeline, type BuyTimelineResult, type BuyTimelineSourceItem } from './buyTimeline'
 
 
@@ -3326,19 +3327,30 @@ function inferChainFromRpcUrl(url: string): string {
 // all of them call this one shared helper — no other fetch() call in this file bypasses it).
 // Instrumenting it here, once, captures every real RPC call this file makes, rather than
 // individually wrapping all 12 scattered call sites across this ~20,000-line file — safer and
-// more complete than piecemeal edits, and zero risk of missing one. Logging only: no change to
-// this function's logic, request, or return value.
+// more complete than piecemeal edits, and zero risk of missing one.
+//
+// SHARED REQUEST-SCOPED BUDGET, DISCLOSED (cost-audit task — see
+// lib/server/walletSnapshotAlchemyBudget.ts's own header for the full finding): every one of this
+// file's 12 Alchemy call sites now routes through one real, enforced budget at this single choke
+// point — settled-result reuse (a proven duplicate: fetchAlchemyPnlEvents is called twice with
+// identical arguments from two independent branches), in-flight singleflight, and hard call/CU
+// caps that fail closed to `null` — the exact value this function already returned for "no
+// result" (`json.result ?? null`, preserved verbatim below), so every existing caller's
+// established null/empty handling is completely unchanged. No caller's signature, return type, or
+// error-handling shape is touched.
 async function alchemyRpc(url: string, method: string, params: unknown[]) {
-  logRpcCall({ route: 'walletSnapshot', chain: inferChainFromRpcUrl(url), method })
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id: 1, jsonrpc: '2.0', method, params }),
-    cache: 'no-store',
-    signal: AbortSignal.timeout(8_000),
+  return budgetedAlchemyCall(url, method, params, async () => {
+    logRpcCall({ route: 'walletSnapshot', chain: inferChainFromRpcUrl(url), method })
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 1, jsonrpc: '2.0', method, params }),
+      cache: 'no-store',
+      signal: AbortSignal.timeout(8_000),
+    })
+    const json = await res.json()
+    return json.result ?? null
   })
-  const json = await res.json()
-  return json.result ?? null
 }
 
 // Shared cross-pass receipt cache — same chain+txHash receipt is fetched at most once per scan/cache window,
@@ -12571,6 +12583,12 @@ async function buildUnpricedCandidateReceiptPass(
 }
 
 export async function fetchWalletSnapshot(address: string, options: WalletSnapshotOptions = {}): Promise<WalletSnapshot> {
+  // SHARED REQUEST-SCOPED ALCHEMY BUDGET RESET, DISCLOSED (cost-audit task): must run before any
+  // Alchemy call this request could make. A warm serverless instance serving a second, unrelated
+  // request must start with a fresh budget and a fresh settled-result cache — never inherit the
+  // previous request's spend, and never serve one wallet's memoized transfer history to a
+  // different wallet's request.
+  resetWalletSnapshotAlchemyBudget()
   const { refresh = false, chain: requestedChain = 'base', deepScan = false, deepActivity = false, chainMode = 'auto', historicalCoverage = false, maxHistoricalPages: rawMaxHistoricalPages, maxFallbackPages: rawMaxFallbackPages, walletScanBudget, debug = false, maxDebugTokens = DEFAULT_MAX_DEBUG_TOKENS } = options
   const scanModeConfig = walletScanBudget?.scanModeConfig
   const clampedMaxHistoricalPages = Math.max(1, Math.min(scanModeConfig?.targetedRecoveryPages ?? 5, rawMaxHistoricalPages ?? 3))
@@ -17805,6 +17823,13 @@ export async function fetchWalletSnapshot(address: string, options: WalletSnapsh
       endpoints: _logByProvider('alchemy').map(e => e.endpoint),
       credits: 0,
       loadUnits: _alchemyCount,
+      // REAL, ENFORCED BUDGET, DISCLOSED (cost-audit task — see
+      // lib/server/walletSnapshotAlchemyBudget.ts's own header): unlike the fields above (an
+      // advisory log this file's own diagnostics warn against exceeding, never actually enforced),
+      // this is the live state of the ONE real, enforced request-scoped budget every Alchemy call
+      // in this file now goes through — callsUsed/estimatedCu are exactly what was spent, capped
+      // shows exactly how many real calls this request avoided by fail-closing at the cap.
+      budget: getWalletSnapshotAlchemyCostDiagnostics(),
     },
     zerion: {
       calls: _zerionLiveCount,
