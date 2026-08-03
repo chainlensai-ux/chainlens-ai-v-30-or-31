@@ -406,27 +406,124 @@ describe('pnlReconciliation', () => {
   // exact-unmatched-identity follow-up task — structuralCoverageDenominatorAudit's exact fields
   // ===============================================================================================
 
-  it('HARD ASSERTION: exact structuralCoverageDenominatorAudit fields recompute structuralCoverage without changing the gate decision itself', async () => {
+  // REVERSED, DISCLOSED (exact-unmatched-evidence follow-up task — confirmed, deliberate escalation
+  // from the prior task): the prior task's own explicit constraint was "the gate DECISION itself is
+  // untouched, still driven by fifoAndPnl's own raw unmatched counts." THIS task explicitly reverses
+  // that scoping decision: "Correct only the evidence inputs used by the existing structural-
+  // consistency gate... Replace raw unmatchedBuyCount/unmatchedSellCount in the structural-
+  // consistency calculation with exactAudit.genuineUnmatchedBuys/Sells." The gate's FORMULA/
+  // THRESHOLDS stay byte-for-byte identical (see the dedicated threshold-immutability test below) —
+  // only WHICH numbers feed those thresholds changed, from raw FIFO stragglers to exact genuine
+  // trade evidence.
+  it('HARD ASSERTION: exact structuralCoverageDenominatorAudit fields now feed the gate decision itself — public status can improve only when exact non-trades are excluded', async () => {
     const r = createPnlReconciliation({ logger: quiet })
-    const withoutAudit = await r.reconcile({ fifoEngineResult: fifo({ unmatchedSells: 3 }), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null })
+    // Raw: 4 unmatched sells -> missingEvidenceCount 4 -> exceeds the unchanged <=3 partial
+    // threshold -> 'unavailable'.
+    const withoutAudit = await r.reconcile({ fifoEngineResult: fifo({ unmatchedSells: 4 }), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null })
+    assert.equal(withoutAudit.publicPnlStatus, 'unavailable')
+
+    // Exact: 3 of those 4 raw unmatched sells are PROVEN non-trades (distributions) — only 1 is
+    // genuine — missingEvidenceCount now 1, at/under the SAME unchanged <=3 threshold -> 'partial'.
+    // The status improved ONLY because real evidence proved most of the raw stragglers were never
+    // trades — never because the threshold moved.
     const withAudit = await r.reconcile({
-      fifoEngineResult: fifo({ unmatchedSells: 3 }),
+      fifoEngineResult: fifo({ unmatchedSells: 4 }),
       pnlEngineResult: pnl(),
       syntheticPnlAssemblyOutput: null,
       structuralCoverageDenominatorAudit: {
         genuineUnmatchedBuys: 0,
-        genuineUnmatchedSells: 1, // exact join found only 1 of the 3 raw unmatched sells is genuine
-        excludedUnmatchedByClassification: { distribution_airdrop: 2 },
+        genuineUnmatchedSells: 1,
+        excludedUnmatchedByClassification: { distribution_airdrop: 3 },
         unmatchedIdentityJoinFailures: 0,
       },
     })
-    // The gate DECISION (publicPnlStatus/structuralConsistent, driven by raw unmatchedSells) is
-    // identical either way — only the structuralCoverage REPORTING metric differs.
-    assert.equal(withoutAudit.publicPnlStatus, withAudit.publicPnlStatus)
-    assert.equal(withoutAudit.unmatchedSells, withAudit.unmatchedSells)
-    assert.notEqual(withoutAudit.publicPnlGateAudit.structuralCoverage, withAudit.publicPnlGateAudit.structuralCoverage)
+    assert.equal(withAudit.publicPnlStatus, 'partial', 'status improves once exact evidence proves the raw stragglers were non-trades')
+    assert.equal(withAudit.unmatchedSells, 4, 'the top-level (non-gate) unmatchedSells figure stays RAW — only the gate itself uses exact evidence')
+    assert.equal(withAudit.publicPnlGateAudit.unmatchedSellCount, 1, 'the gate audit reports the EXACT count the gate actually used')
     assert.equal(withAudit.publicPnlGateAudit.genuineUnmatchedSells, 1)
-    assert.equal(withAudit.publicPnlGateAudit.excludedUnmatchedByClassification.distribution_airdrop, 2)
+    assert.equal(withAudit.publicPnlGateAudit.excludedUnmatchedByClassification.distribution_airdrop, 3)
     assert.equal(withAudit.publicPnlGateAudit.unmatchedIdentityJoinFailures, 0)
+  })
+
+  it('HARD ASSERTION: an unknown classification or a failed join still blocks the gate exactly like a raw unmatched leg (fail-closed)', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    // genuineUnmatchedSells still reports 4 (fail-closed: join failures/unknowns count as genuine)
+    // even though nominally "3 excluded" would suggest only 1 remains — proves this reconciler
+    // trusts whatever genuineUnmatchedSells the caller supplies, never re-deriving a lower number.
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ unmatchedSells: 4 }),
+      pnlEngineResult: pnl(),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0,
+        genuineUnmatchedSells: 4,
+        excludedUnmatchedByClassification: {},
+        unmatchedIdentityJoinFailures: 2,
+      },
+    })
+    assert.equal(summary.publicPnlStatus, 'unavailable', 'join failures/unknowns must still block exactly like genuine unmatched legs')
+    assert.equal(summary.publicPnlGateAudit.unmatchedSellCount, 4)
+    assert.equal(summary.publicPnlGateAudit.unmatchedIdentityJoinFailures, 2)
+  })
+
+  it('HARD ASSERTION: verified lot count, realized PnL, matched lots, and pricing coverage are unchanged by the exact evidence audit — only unmatched counts/status/coverage move', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const matchedLots = [lot({ costBasisUsd: 10, proceedsUsd: 12, realizedPnlUsd: 2, evidenceQuality: 'verified' })]
+    const base = { fifoEngineResult: fifo({ unmatchedSells: 4, matchedLots }), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null }
+    const withoutAudit = await r.reconcile(base)
+    const withAudit = await r.reconcile({
+      ...base,
+      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 1, excludedUnmatchedByClassification: { distribution_airdrop: 3 }, unmatchedIdentityJoinFailures: 0 },
+    })
+    assert.equal(withoutAudit.publicPnlGateAudit.verifiedLotCount, withAudit.publicPnlGateAudit.verifiedLotCount)
+    assert.equal(withoutAudit.realizedPnlUsd, withAudit.realizedPnlUsd)
+    assert.equal(withoutAudit.closedLots, withAudit.closedLots)
+    assert.equal(withoutAudit.publicPnlGateAudit.fullyPricedLotCount, withAudit.publicPnlGateAudit.fullyPricedLotCount)
+    assert.equal(withoutAudit.publicPnlGateAudit.pricingCoverage, withAudit.publicPnlGateAudit.pricingCoverage)
+    assert.notEqual(withoutAudit.publicPnlStatus, withAudit.publicPnlStatus, 'the gate decision itself DOES move — that is this task\'s entire point')
+  })
+
+  it('HARD ASSERTION: the gate\'s own thresholds are byte-for-byte unchanged — same 0/0/<=3 formula, only the inputs differ', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    // Exactly at the <=3 partial-status boundary using EXACT evidence — proves the SAME "<=3"
+    // threshold this codebase has always used still governs the exact-evidence path, never a new
+    // or looser number.
+    const atBoundary = await r.reconcile({
+      fifoEngineResult: fifo({ unmatchedSells: 10 }),
+      pnlEngineResult: pnl(),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 3, excludedUnmatchedByClassification: {}, unmatchedIdentityJoinFailures: 0 },
+    })
+    assert.equal(atBoundary.publicPnlStatus, 'partial', 'exactly 3 genuine unmatched sells is still <= 3 — the unchanged threshold')
+
+    const overBoundary = await r.reconcile({
+      fifoEngineResult: fifo({ unmatchedSells: 10 }),
+      pnlEngineResult: pnl(),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 4, excludedUnmatchedByClassification: {}, unmatchedIdentityJoinFailures: 0 },
+    })
+    assert.equal(overBoundary.publicPnlStatus, 'unavailable', 'exactly 4 genuine unmatched sells exceeds the unchanged <=3 threshold')
+  })
+
+  it('[gate-shadow-audit] reports rawGateStatus, exactEvidenceGateStatus, both coverage figures, both unmatched-count pairs, and joinFailures', async () => {
+    const calls: unknown[][] = []
+    const capturingLogger = { warn: (...args: unknown[]) => { calls.push(args) } }
+    const r = createPnlReconciliation({ logger: capturingLogger })
+    await r.reconcile({
+      fifoEngineResult: fifo({ unmatchedSells: 4 }),
+      pnlEngineResult: pnl(),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 1, excludedUnmatchedByClassification: { distribution_airdrop: 3 }, unmatchedIdentityJoinFailures: 0 },
+    })
+    const shadowCall = calls.find((c) => c[0] === '[gate-shadow-audit]')
+    assert.ok(shadowCall, 'must log the required gate-shadow-audit diagnostic')
+    const payload = shadowCall![1] as Record<string, unknown>
+    assert.equal(payload.rawGateStatus, 'unavailable')
+    assert.equal(payload.exactEvidenceGateStatus, 'partial')
+    assert.equal(typeof payload.rawStructuralCoverage, 'number')
+    assert.equal(typeof payload.exactStructuralCoverage, 'number')
+    assert.deepEqual(payload.rawUnmatchedCounts, { buys: 0, sells: 4 })
+    assert.deepEqual(payload.exactGenuineUnmatchedCounts, { buys: 0, sells: 1 })
+    assert.equal(payload.joinFailures, 0)
   })
 })
