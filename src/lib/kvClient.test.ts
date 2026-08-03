@@ -212,3 +212,93 @@ describe('RequestPriceKvClient — recovery lane (provider-call-audit follow-up 
     assert.equal(client.recoveryStats.recoveryCacheHits, 1)
   })
 })
+
+describe('RequestPriceKvClient — historical price determinism (determinism follow-up task)', () => {
+  it('HARD ASSERTION: a historical price is written with the long (30-day) TTL, never the short 45s primary TTL', async () => {
+    const setCalls: Array<{ key: string; opts: { ex?: number } | undefined }> = []
+    const kv = { get: async () => null, set: async (key: string, _value: unknown, opts?: { ex?: number }) => { setCalls.push({ key, opts }); return 'OK' } }
+    const client = createRequestPriceKvClient({ kv: kv as never, maxLookupsPerToken: 10, random: () => 0 })
+
+    await client.getPriceHistorical('0xLongTtl', 'base', 100, async () => 5)
+    await client.getPricePrimary('0xLongTtl', 'base', 200, async () => 6)
+
+    const historicalSet = setCalls.find((c) => c.key.includes('chain-aware-historical'))!
+    const primarySet = setCalls.find((c) => c.key.includes(':primary:'))!
+    assert.equal(historicalSet.opts?.ex, 60 * 60 * 24 * 30)
+    assert.equal(primarySet.opts?.ex, 45)
+  })
+
+  it('HARD ASSERTION: a second, separate client (a rescan) reuses the exact accepted historical price beyond the old 45s TTL window — the actual root-cause fix', async () => {
+    // Simulates two wallet scans separated by hours: the fake KV honors real expiry via `ex`, so
+    // this proves the long TTL — not just "some" persistence — is what makes the value still be
+    // there on the second scan.
+    const store = new Map<string, { value: unknown; expiresAtMs: number }>()
+    let clock = 1_000_000
+    const kv = {
+      get: async (key: string) => {
+        const entry = store.get(key)
+        if (!entry) return null
+        return entry.expiresAtMs > clock ? entry.value : null
+      },
+      set: async (key: string, value: unknown, opts?: { ex?: number }) => {
+        store.set(key, { value, expiresAtMs: clock + (opts?.ex ?? 0) * 1000 })
+        return 'OK'
+      },
+    }
+    let fetchCalls = 0
+    const source: PriceSourceFn = async () => { fetchCalls++; return 42 }
+
+    const firstScan = createRequestPriceKvClient({ kv: kv as never, maxLookupsPerToken: 10, random: () => 0, now: () => clock })
+    assert.equal(await firstScan.getPriceHistorical('0xRescan', 'base', 999, source), 42)
+    assert.equal(fetchCalls, 1)
+
+    // Advance the clock well past the OLD 45-second TTL (10 minutes) — a rescan hours/days later in
+    // production, represented here by a smaller but still-45s-busting gap for a fast test.
+    clock += 10 * 60 * 1000
+
+    const secondScan = createRequestPriceKvClient({ kv: kv as never, maxLookupsPerToken: 10, random: () => 0, now: () => clock })
+    assert.equal(await secondScan.getPriceHistorical('0xRescan', 'base', 999, source), 42, 'the second scan must reuse the SAME accepted historical price')
+    assert.equal(fetchCalls, 1, 'no live provider call on the second scan — this is what makes the rescan deterministic')
+  })
+
+  it('a bare legacy number (written before this fix) is still read correctly — no invalidation of previously-cached data', async () => {
+    const store = new Map<string, number>()
+    const kv = {
+      get: async (key: string) => store.get(key) ?? null,
+      set: async () => 'OK',
+    }
+    store.set('v2:price:chain-aware-historical:base:0xlegacy:1', 17)
+    const client = createRequestPriceKvClient({ kv: kv as never, maxLookupsPerToken: 10, random: () => 0 })
+    let fetchCalls = 0
+    const result = await client.getPriceHistorical('0xlegacy', 'base', 1, async () => { fetchCalls++; return 999 })
+    assert.equal(result, 17)
+    assert.equal(fetchCalls, 0)
+  })
+
+  it('HARD ASSERTION: a corrupt/malformed cached envelope is a cache MISS, never coerced into a price (fail-closed)', async () => {
+    const kv = { get: async () => ({ priceUsd: 'not-a-number', evidenceType: 'chain-aware-historical' }), set: async () => 'OK' }
+    const client = createRequestPriceKvClient({ kv: kv as never, maxLookupsPerToken: 10, random: () => 0 })
+    let fetchCalls = 0
+    const result = await client.getPriceHistorical('0xcorrupt', 'base', 1, async () => { fetchCalls++; return 55 })
+    assert.equal(result, 55, 'a corrupt cache entry must fall through to a real live fetch, never a fabricated value')
+    assert.equal(fetchCalls, 1)
+  })
+
+  it('HARD ASSERTION: an expired envelope (expiresAt in the past) is a cache MISS, never returned as still-valid', async () => {
+    const kv = { get: async () => ({ priceUsd: 3, source: 'unspecified', evidenceType: 'chain-aware-historical', createdAt: 0, expiresAt: 500 }), set: async () => 'OK' }
+    const client = createRequestPriceKvClient({ kv: kv as never, maxLookupsPerToken: 10, random: () => 0, now: () => 1000 })
+    let fetchCalls = 0
+    const result = await client.getPriceHistorical('0xexpired', 'base', 1, async () => { fetchCalls++; return 88 })
+    assert.equal(result, 88)
+    assert.equal(fetchCalls, 1, 'an expired envelope must never be treated as a valid cache hit')
+  })
+
+  it('a well-formed, still-live envelope IS reused without a live fetch', async () => {
+    const kv = { get: async () => ({ priceUsd: 3, source: 'unspecified', evidenceType: 'chain-aware-historical', createdAt: 0, expiresAt: 5000 }), set: async () => 'OK' }
+    const client = createRequestPriceKvClient({ kv: kv as never, maxLookupsPerToken: 10, random: () => 0, now: () => 1000 })
+    let fetchCalls = 0
+    const result = await client.getPriceHistorical('0xlive', 'base', 1, async () => { fetchCalls++; return 88 })
+    assert.equal(result, 3)
+    assert.equal(fetchCalls, 0)
+  })
+})

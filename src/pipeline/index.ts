@@ -17,6 +17,7 @@ import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import { createRouterInference } from '../lib/routerInference'
 import { createPnlReconciliation } from '../lib/pnlReconciliation'
+import { buildScanDeterminismAudit } from '../lib/scanDeterminismAudit'
 import { createAyriAttribution } from '../lib/ayriAttribution'
 import { createFinalReportAssembler } from '../lib/finalReportAssembler'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
@@ -2663,6 +2664,24 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     unrealizedPnlUsd: reconciledPnlSummary.unrealizedPnlUsd,
     publicPnlStatus: reconciledPnlSummary.publicPnlStatus === 'available' ? 'ok' : reconciledPnlSummary.publicPnlStatus === 'partial' ? 'limited_verified_sample' : 'unavailable',
   }
+  // SCAN DETERMINISM AUDIT, DISCLOSED (determinism follow-up task, requirement #6): real,
+  // computed-only, from the SAME reconciled matched lots and realized PnL every other section of
+  // this report already uses — never a second, independent computation. `persistedEvidenceHits`/
+  // `liveEvidenceMisses` are scoped honestly to the pricing KV client's own real counters: cache
+  // hits (memory + remote KV, both lanes) vs. the recovery lane's genuine live-fetch count — the
+  // recovery lane is specifically what determines a verified lot's accepted historical price, the
+  // exact evidence this determinism fix targets. `previousScanFingerprint` is not threaded here
+  // (this pipeline has no request-to-request scan-history store of its own) — a caller with one
+  // (e.g. a future job-history lookup) can pass it in; omitted here means
+  // `deterministicComparedToPreviousScan` is honestly `null`, never guessed.
+  const scanDeterminismAudit = buildScanDeterminismAudit({
+    matchedLots: reconciledFifoAndPnl.matchedLots,
+    realizedPnlUsd: reconciledFifoAndPnl.realizedPnlUsd,
+    persistedEvidenceHits: requestPriceKvClient.stats.cacheHits + requestPriceKvClient.recoveryStats.recoveryCacheHits,
+    liveEvidenceMisses: requestPriceKvClient.recoveryStats.recoveryLiveFetches,
+  })
+  // eslint-disable-next-line no-console
+  console.warn('[pipeline] scanDeterminismAudit', scanDeterminismAudit)
   const reconciledPnlSummaryV2: PnlSummaryResult = {
     ...adaptedPnlSummary,
     realizedPnlUsd: reconciledPnlSummary.realizedPnlUsd,
@@ -2880,7 +2899,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // has completed, independent of the earlier immediate post-assembly log.
   logSyntheticPnlSummary(syntheticPnl)
 
-  return { ...finalReport, normalizationErrors, walletConditionMessages }
+  return { ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit }
 }
 
 export type { SupportedChain }

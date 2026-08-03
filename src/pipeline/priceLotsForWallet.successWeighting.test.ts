@@ -170,13 +170,19 @@ describe('priceLotsForWallet — success-weighted scheduling wiring', () => {
     assert.ok(summary, 'the evidence summary must always be emitted')
     const payload = summary.payload as Record<string, unknown>
     for (const field of [
-      'persistenceEnabled', 'evidenceLoadedBeforeScan', 'evidenceRecordedThisScan',
+      'persistenceEnabled', 'disabledReason', 'evidenceLoadedBeforeScan', 'evidenceRecordedThisScan',
       'aggregateKeysLoaded', 'tokenKeysLoaded', 'readTimedOut', 'writeTimedOut',
       'usedDefaultPriors', 'processInstanceId',
     ]) {
       assert.ok(field in payload, `missing required diagnostic field: ${field}`)
     }
-    assert.equal(payload.persistenceEnabled, false, 'persistence stays off unless explicitly enabled')
+    // DEFAULT POLARITY FLIPPED, DISCLOSED (determinism follow-up task, requirement #1 — confirmed
+    // root cause of production's persistenceEnabled: false): a production deployment that never
+    // explicitly configured HISTORICAL_PRICING_EVIDENCE_PERSISTENCE_ENABLED ran with persistence
+    // permanently off. The flag is now opt-OUT (enabled unless explicitly set to 'false') — this
+    // test's own env is unset, so persistence is now expected to be ON by default.
+    assert.equal(payload.persistenceEnabled, true, 'persistence stays on by default unless explicitly disabled')
+    assert.equal(payload.disabledReason, null)
   })
 
   it('scheduler budgets and provider calls are unchanged when persistence is unavailable', async () => {

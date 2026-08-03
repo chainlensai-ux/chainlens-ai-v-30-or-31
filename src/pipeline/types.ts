@@ -10,6 +10,7 @@ import type { NormalizationError } from '../modules/normalization/types'
 import type { FinalReport } from '../modules/finalReportAssembler/types'
 import type { WalletConditionSection } from './walletConditionMessages'
 import type { PnlReconciliationSummary } from '../lib/pnlReconciliation'
+import type { ScanDeterminismAudit } from '../lib/scanDeterminismAudit'
 
 export type ScanModeInput = 'normal' | 'deep'
 
@@ -42,6 +43,10 @@ export type RunWalletScanResult = FinalReport & {
   // additively, so the real `publicPnlGateAudit`/`warning` fields (verified lot count, pricing
   // coverage, disclosed unresolved-exit count) can reach the Wallet Scanner UI.
   reconciliationSummary?: PnlReconciliationSummary
+  // SCAN DETERMINISM AUDIT, DISCLOSED (determinism follow-up task, requirement #6): additive,
+  // real-values-only fingerprint of the canonical matched-lot/realized-PnL result — see
+  // src/lib/scanDeterminismAudit.ts's own header.
+  scanDeterminismAudit?: ScanDeterminismAudit
 }
 
 export type PreScanValidation = {

@@ -19,6 +19,8 @@ import {
   AGGREGATE_EVIDENCE_TTL_MS,
   PERSISTED_COUNTER_FIELDS,
   LAST_UPDATED_FIELD,
+  isEvidencePersistenceEnabled,
+  evidencePersistenceDisabledReason,
   type EvidenceKvLike,
   type EvidencePipelineLike,
 } from './sourceSuccessEvidencePersistence'
@@ -489,13 +491,14 @@ test('the summary reports every required field', () => {
     processInstanceId: processInstanceId(),
   })
   for (const field of [
-    'persistenceEnabled', 'evidenceLoadedBeforeScan', 'evidenceRecordedThisScan',
+    'persistenceEnabled', 'disabledReason', 'evidenceLoadedBeforeScan', 'evidenceRecordedThisScan',
     'aggregateKeysLoaded', 'tokenKeysLoaded', 'readTimedOut', 'writeTimedOut',
     'usedDefaultPriors', 'processInstanceId',
   ]) {
     assert.ok(field in summary, `missing required diagnostic field: ${field}`)
   }
   assert.equal(summary.persistenceEnabled, true)
+  assert.equal(summary.disabledReason, null)
   assert.equal(summary.evidenceLoadedBeforeScan, false)
   assert.ok(summary.processInstanceId.length > 0)
 })
@@ -504,4 +507,28 @@ test('isTokenLevelKey distinguishes token-scoped keys from broad ones', () => {
   assert.equal(isTokenLevelKey(`s=goldrush|ch=base|t=${TOKEN}`), true)
   assert.equal(isTokenLevelKey('s=goldrush|c=other'), false)
   assert.equal(isTokenLevelKey('s=goldrush'), false)
+})
+
+test('HARD ASSERTION: persistence defaults ON when the env var is unset — determinism follow-up task, requirement #1 (confirmed root cause of production persistenceEnabled: false)', () => {
+  delete process.env[FLAG]
+  assert.equal(isEvidencePersistenceEnabled(), true)
+  assert.equal(evidencePersistenceDisabledReason(), null)
+})
+
+test('an explicit "false" still disables persistence, with a real disabledReason', () => {
+  process.env[FLAG] = 'false'
+  assert.equal(isEvidencePersistenceEnabled(), false)
+  assert.equal(evidencePersistenceDisabledReason(), 'explicitly_disabled')
+})
+
+test('an explicit "true" keeps persistence enabled with no disabledReason', () => {
+  process.env[FLAG] = 'true'
+  assert.equal(isEvidencePersistenceEnabled(), true)
+  assert.equal(evidencePersistenceDisabledReason(), null)
+})
+
+test('any other stray value (not the literal "false") still leaves persistence enabled', () => {
+  process.env[FLAG] = 'nope'
+  assert.equal(isEvidencePersistenceEnabled(), true)
+  assert.equal(evidencePersistenceDisabledReason(), null)
 })

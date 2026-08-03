@@ -58,8 +58,27 @@ export const MAX_TOKEN_EVIDENCE_KEYS = 5000
 export const EVIDENCE_READ_TIMEOUT_MS = 400
 export const EVIDENCE_WRITE_TIMEOUT_MS = 600
 
+// DEFAULT POLARITY FLIPPED, DISCLOSED (determinism follow-up task, requirement #1 — confirmed root
+// cause of production's `persistenceEnabled: false`): this flag was opt-IN (`=== 'true'`), so a
+// production deployment that never explicitly set
+// `HISTORICAL_PRICING_EVIDENCE_PERSISTENCE_ENABLED=true` in its environment silently ran with
+// persistence off forever — not a bug in the KV logic itself (already fail-open/fail-safe by
+// design, see this file's own header), just a flag defaulting to the wrong state for a feature that
+// is safe to enable everywhere. Flipped to opt-OUT: enabled unless explicitly set to the literal
+// string `'false'`. Every other behavior in this module (fail-open on timeout/error, bounded
+// read/write timeouts, structural key-grammar validation) is completely unchanged — this only
+// changes which state a deployment starts in when the variable is never configured at all.
 export function isEvidencePersistenceEnabled(): boolean {
-  return process.env.HISTORICAL_PRICING_EVIDENCE_PERSISTENCE_ENABLED === 'true'
+  return process.env.HISTORICAL_PRICING_EVIDENCE_PERSISTENCE_ENABLED !== 'false'
+}
+
+// DISABLED-REASON DIAGNOSTIC, DISCLOSED (requirement #1's "log explicit disabledReason"): real,
+// never guessed — distinguishes an operator's deliberate opt-out from every other state. `null` when
+// persistence is enabled (nothing to explain).
+export type EvidencePersistenceDisabledReason = 'explicitly_disabled' | null
+
+export function evidencePersistenceDisabledReason(): EvidencePersistenceDisabledReason {
+  return process.env.HISTORICAL_PRICING_EVIDENCE_PERSISTENCE_ENABLED === 'false' ? 'explicitly_disabled' : null
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -361,6 +380,7 @@ export async function flushEvidenceDelta(
 
 export type SourceSuccessEvidenceSummary = {
   persistenceEnabled: boolean
+  disabledReason: EvidencePersistenceDisabledReason
   evidenceLoadedBeforeScan: boolean
   evidenceRecordedThisScan: number
   aggregateKeysLoaded: number
@@ -388,6 +408,7 @@ export function buildEvidenceSummary(params: {
 }): SourceSuccessEvidenceSummary {
   return {
     persistenceEnabled: isEvidencePersistenceEnabled(),
+    disabledReason: evidencePersistenceDisabledReason(),
     evidenceLoadedBeforeScan: params.loaded.levelCounts.size > 0,
     evidenceRecordedThisScan: params.evidenceRecordedThisScan,
     aggregateKeysLoaded: params.loaded.aggregateKeysLoaded,

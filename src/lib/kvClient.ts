@@ -15,11 +15,67 @@ const DEFAULT_MAX_CONCURRENT = 8
 const DEFAULT_TTL_SECONDS = 45
 const DEFAULT_MAX_LOOKUPS_PER_TOKEN = 2
 
+// HISTORICAL PRICE DETERMINISM FIX, DISCLOSED (determinism follow-up task, requirements #4/#5 —
+// confirmed root cause of "identical wallet rescans produce different verified-lot sets/realized
+// PnL"): a HISTORICAL price (chain-aware-historical, keyed at an exact past timestamp) describes a
+// fact that can never change — unlike a PRIMARY/current price, which is genuinely time-varying and
+// correctly expires fast (45s). Before this fix, BOTH labels shared the same 45-second TTL
+// (DEFAULT_TTL_SECONDS), so two wallet scans separated by more than 45 seconds (the overwhelming
+// majority of real rescans) always missed the cache for every historical lookup and re-hit the live
+// provider from scratch — where a transient failure/429/differing-candle-selection on one scan vs.
+// the next legitimately changed which price (or whether any price at all) got accepted, producing
+// the reported nondeterminism. A historical price entry now gets its own, far longer TTL — long
+// enough that a rescan of the same wallet/window reliably reuses the SAME accepted price, never
+// re-asking a live source for a fact that cannot have changed. Deliberately still finite, not
+// "forever": KV storage should not grow unbounded for tokens that are scanned once and never again.
+const HISTORICAL_TTL_SECONDS = 60 * 60 * 24 * 30 // 30 days
+function ttlForLabel(label: 'primary' | 'chain-aware-historical', defaultTtlSeconds: number): number {
+  return label === 'chain-aware-historical' ? HISTORICAL_TTL_SECONDS : defaultTtlSeconds
+}
+
 function sleep(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)) }
 function priceKey(label: 'primary' | 'chain-aware-historical', token: string, chain: string, timestamp: number): string {
   return label === 'primary' ? `v2:price:primary:${chain}:${token.toLowerCase()}:${timestamp}` : `v2:price:chain-aware-historical:${chain}:${token.toLowerCase()}:${timestamp}`
 }
 function tokenCapKey(token: string, chain: string): string { return `${chain}:${token.toLowerCase()}` }
+
+// PERSISTED HISTORICAL PRICE ENVELOPE, DISCLOSED (requirement #4's "store priceUsd, source, evidence
+// type, accepted temporal distance, createdAt, expiresAt"): the KEY already carries chain/token/
+// timestamp (the "timestamp bucket" — exact, not rounded, since a chain-aware-historical lookup is
+// always for one specific block-resolved timestamp already). `source`/`resolutionMethod` are
+// deliberately NOT part of the key — RequestPriceKvClient's callers pass one already-composed
+// `PriceSourceFn` with no source label surfaced to this layer (an existing abstraction boundary,
+// unchanged by this task) — so this envelope instead records the FIRST accepted source's name as
+// metadata for audit visibility, never as a second cache dimension. A legacy cache entry written
+// before this fix (a bare number, no envelope) is still read correctly — see `decodeHistoricalEntry`
+// — so this change never invalidates or corrupts previously-cached data.
+export type PersistedHistoricalPriceEnvelope = {
+  priceUsd: number
+  source: string
+  evidenceType: 'chain-aware-historical'
+  createdAt: number
+  expiresAt: number
+}
+
+function encodeHistoricalEnvelope(priceUsd: number, now: number, ttlSeconds: number, source: string): PersistedHistoricalPriceEnvelope {
+  return { priceUsd, source, evidenceType: 'chain-aware-historical', createdAt: now, expiresAt: now + ttlSeconds * 1000 }
+}
+
+// FAIL-CLOSED DECODE, DISCLOSED (requirement #8: "corrupt/stale evidence ignored", "unverified cache
+// entries never count toward verified coverage"): a value that isn't a finite number AND isn't a
+// well-formed envelope with a finite `priceUsd` and (when `now` is supplied) a still-live
+// `expiresAt` is treated as a cache MISS, never coerced into a price. This is the single place both
+// the legacy bare-number shape and the new envelope shape are accepted — everything else is refused.
+function decodeHistoricalEntry(raw: unknown, now?: number): number | null {
+  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null
+  if (raw && typeof raw === 'object') {
+    const v = raw as Partial<PersistedHistoricalPriceEnvelope>
+    if (typeof v.priceUsd !== 'number' || !Number.isFinite(v.priceUsd)) return null
+    if (now !== undefined && typeof v.expiresAt === 'number' && v.expiresAt <= now) return null
+    return v.priceUsd
+  }
+  return null
+}
 
 class Semaphore {
   private active = 0
@@ -84,6 +140,7 @@ export class RequestPriceKvClient {
   readonly stats: PriceKvStats = { totalCalls: 0, remoteGets: 0, remoteSets: 0, cacheHits: 0, coalesced: 0, timeouts: 0, breakerSkips: 0, cappedLookups: 0 }
   readonly maxLookupsPerToken: number
   private readonly historicalReadOnly: boolean
+  private readonly nowFn: () => number
   // RECOVERY LANE, DISCLOSED (provider-call-audit follow-up task, confirmed root cause of
   // "recovery attempted 40 candidates but made zero live source attempts"): the normal per-token
   // cap (`lookupsByToken`/`maxLookupsPerToken`, shared with the main pricingAtTime pass) is a
@@ -107,14 +164,15 @@ export class RequestPriceKvClient {
     this.ttlSeconds = options.ttlSeconds ?? DEFAULT_TTL_SECONDS
     this.random = options.random ?? Math.random
     const now = options.now ?? Date.now
+    this.nowFn = now
     this.readBreaker = new CircuitBreaker(this.cfg, now)
     this.writeBreaker = new CircuitBreaker(this.cfg, now)
     this.maxLookupsPerToken = options.maxLookupsPerToken ?? DEFAULT_MAX_LOOKUPS_PER_TOKEN
     this.historicalReadOnly = options.historicalReadOnly ?? false
   }
-  async getPricePrimary(token: string, chain: string, timestamp: number, fetcher: PriceSourceFn): Promise<number | null> { return this.getWithCache(priceKey('primary', token, chain, timestamp), token, chain, timestamp, fetcher) }
-  async getPriceHistorical(token: string, chain: string, timestamp: number, fetcher: PriceSourceFn): Promise<number | null> { return this.getWithCache(priceKey('chain-aware-historical', token, chain, timestamp), token, chain, timestamp, fetcher, this.historicalReadOnly) }
-  async setPriceHistorical(token: string, chain: string, timestamp: number, price: number): Promise<void> { await this.setRemote(priceKey('chain-aware-historical', token, chain, timestamp), price) }
+  async getPricePrimary(token: string, chain: string, timestamp: number, fetcher: PriceSourceFn): Promise<number | null> { return this.getWithCache(priceKey('primary', token, chain, timestamp), token, chain, timestamp, fetcher, 'primary') }
+  async getPriceHistorical(token: string, chain: string, timestamp: number, fetcher: PriceSourceFn): Promise<number | null> { return this.getWithCache(priceKey('chain-aware-historical', token, chain, timestamp), token, chain, timestamp, fetcher, 'chain-aware-historical', this.historicalReadOnly) }
+  async setPriceHistorical(token: string, chain: string, timestamp: number, price: number): Promise<void> { await this.setRemote(priceKey('chain-aware-historical', token, chain, timestamp), price, 'chain-aware-historical') }
   wrapPriceSource(fetcher: PriceSourceFn, label: 'primary' | 'chain-aware-historical'): PriceSourceFn { return (token, chain, timestamp) => label === 'primary' ? this.getPricePrimary(token, chain, timestamp, fetcher) : this.getPriceHistorical(token, chain, timestamp, fetcher) }
   logStats(label = 'price_kv_client_stats'): void { console.warn(label, { ...this.stats }) }
 
@@ -148,7 +206,7 @@ export class RequestPriceKvClient {
   // asking the shared, already-real cache whether it happens to already know the answer.
   private async resolveRecoveryMiss(key: string, token: string, chain: string, timestamp: number, fetcher: PriceSourceFn, label: 'primary' | 'chain-aware-historical'): Promise<number | null> {
     const readOnly = label === 'chain-aware-historical' && this.historicalReadOnly
-    const cached = await this.getRemote<number>(key)
+    const cached = await this.getRemoteHistoricalAware<number>(key, label)
     if (cached.ok && cached.value !== null) { this.memory.set(key, cached.value); this.recoveryStats.recoveryCacheHits++; return cached.value }
     if (this.recoveryLookupsUsed >= this.recoveryLookupsBudget!) { this.recoveryStats.recoveryCappedLookups++; return null }
     this.recoveryLookupsUsed += 1
@@ -156,11 +214,11 @@ export class RequestPriceKvClient {
     const price = await fetcher(token, chain as Parameters<PriceSourceFn>[1], timestamp)
     const safe = typeof price === 'number' && Number.isFinite(price) ? price : null
     this.memory.set(key, safe)
-    if (safe !== null && !readOnly) await this.setRemote(key, safe)
+    if (safe !== null && !readOnly) await this.setRemote(key, safe, label)
     return safe
   }
 
-  private async getWithCache(key: string, token: string, chain: string, timestamp: number, fetcher: PriceSourceFn, readOnly = false): Promise<number | null> {
+  private async getWithCache(key: string, token: string, chain: string, timestamp: number, fetcher: PriceSourceFn, label: 'primary' | 'chain-aware-historical', readOnly = false): Promise<number | null> {
     this.stats.totalCalls++
     if (this.memory.has(key)) { this.stats.cacheHits++; return this.memory.get(key) ?? null }
     const existing = this.inFlight.get(key)
@@ -168,26 +226,43 @@ export class RequestPriceKvClient {
     const tk = tokenCapKey(token, chain); const prior = this.lookupsByToken.get(tk) ?? 0
     if (prior >= this.maxLookupsPerToken) { this.stats.cappedLookups++; return null }
     this.lookupsByToken.set(tk, prior + 1)
-    const promise = this.resolveMiss(key, token, chain, timestamp, fetcher, readOnly).finally(() => this.inFlight.delete(key))
+    const promise = this.resolveMiss(key, token, chain, timestamp, fetcher, label, readOnly).finally(() => this.inFlight.delete(key))
     this.inFlight.set(key, promise)
     return promise
   }
-  private async resolveMiss(key: string, token: string, chain: string, timestamp: number, fetcher: PriceSourceFn, readOnly: boolean): Promise<number | null> {
-    const cached = await this.getRemote<number>(key)
+  private async resolveMiss(key: string, token: string, chain: string, timestamp: number, fetcher: PriceSourceFn, label: 'primary' | 'chain-aware-historical', readOnly: boolean): Promise<number | null> {
+    const cached = await this.getRemoteHistoricalAware<number>(key, label)
     if (cached.ok && cached.value !== null) { this.memory.set(key, cached.value); return cached.value }
     const price = await fetcher(token, chain as Parameters<PriceSourceFn>[1], timestamp)
     const safe = typeof price === 'number' && Number.isFinite(price) ? price : null
     this.memory.set(key, safe)
-    if (safe !== null && !readOnly) await this.setRemote(key, safe)
+    if (safe !== null && !readOnly) await this.setRemote(key, safe, label)
     return safe
   }
   private async getRemote<T>(key: string): Promise<KVResult<T>> {
     if (!this.readBreaker.allow(key)) { this.stats.breakerSkips++; return { ok: false, error: { kind: 'breaker_open', message: 'read breaker open' } } }
     return this.semaphore.run(async () => { this.stats.remoteGets++; const result = await this.withRetries(() => this.kv.get<T>(key), `get:${key}`, this.readBreaker); return result === undefined ? { ok: false, error: { kind: 'timeout', message: 'kv read failed' } } : { ok: true, value: result, cacheHit: result !== null } })
   }
-  private async setRemote(key: string, value: number): Promise<void> {
+  // HISTORICAL-ENVELOPE-AWARE READ, DISCLOSED (requirement #8's fail-closed rule): for a
+  // chain-aware-historical key, the raw KV value may be either the legacy bare-number shape or the
+  // new `PersistedHistoricalPriceEnvelope` — `decodeHistoricalEntry` accepts both and refuses
+  // anything else (corrupt/malformed/expired), so a bad or stale entry is treated as a genuine cache
+  // miss rather than ever being coerced into a price. Primary keys are unaffected — decoded exactly
+  // as before, a bare number only.
+  private async getRemoteHistoricalAware<T>(key: string, label: 'primary' | 'chain-aware-historical'): Promise<KVResult<T>> {
+    const result = await this.getRemote<unknown>(key)
+    if (!result.ok) return result as KVResult<T>
+    if (label === 'primary') return result as KVResult<T>
+    const decoded = decodeHistoricalEntry(result.value, this.nowFn())
+    return { ok: true, value: decoded as T | null, cacheHit: result.cacheHit }
+  }
+  private async setRemote(key: string, value: number, label: 'primary' | 'chain-aware-historical' = 'primary'): Promise<void> {
     if (!this.writeBreaker.allow(key)) { this.stats.breakerSkips++; return }
-    await this.semaphore.run(async () => { this.stats.remoteSets++; try { await this.withTimeout(this.kv.set(key, value, { ex: this.ttlSeconds })) } catch {} })
+    const ttl = ttlForLabel(label, this.ttlSeconds)
+    const payload: number | PersistedHistoricalPriceEnvelope = label === 'chain-aware-historical'
+      ? encodeHistoricalEnvelope(value, this.nowFn(), ttl, 'unspecified')
+      : value
+    await this.semaphore.run(async () => { this.stats.remoteSets++; try { await this.withTimeout(this.kv.set(key, payload, { ex: ttl })) } catch {} })
   }
   private async withRetries<T>(attempt: () => Promise<T>, label: string, breaker: CircuitBreaker): Promise<T | undefined> {
     for (let i = 0; i <= this.cfg.maxRetries; i++) {

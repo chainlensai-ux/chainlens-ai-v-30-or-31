@@ -47,13 +47,13 @@ const normalizedEventsTraceLogPosition = position(
 )
 const bottomSyntheticPnlSummaryPosition = position(
   'bottom syntheticPnl summary',
-  `logSyntheticPnlSummary(syntheticPnl)
-
-  return { ...finalReport, normalizationErrors, walletConditionMessages }`,
+  `// END-OF-PIPELINE FALLBACK GUARANTEE: repeat the compact synthetic-PnL summary after every stage
+  // has completed, independent of the earlier immediate post-assembly log.
+  logSyntheticPnlSummary(syntheticPnl)`,
 )
 const finalReturnPosition = position(
   'final return',
-  'return { ...finalReport, normalizationErrors, walletConditionMessages }',
+  'return { ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit }',
 )
 
 test('provider-only scans cannot return after normalization before pricingAtTime', () => {
