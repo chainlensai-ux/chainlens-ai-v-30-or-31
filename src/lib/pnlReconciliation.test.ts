@@ -526,4 +526,98 @@ describe('pnlReconciliation', () => {
     assert.deepEqual(payload.exactGenuineUnmatchedCounts, { buys: 0, sells: 1 })
     assert.equal(payload.joinFailures, 0)
   })
+
+  // ===============================================================================================
+  // BOUNDED-HISTORY FOLLOW-UP — requirements #1-#8.
+  // ===============================================================================================
+
+  it('HARD ASSERTION: an unsold valid buy (open_position_inventory) does not block realized PnL', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ unmatchedBuys: 5 }),
+      pnlEngineResult: pnl(),
+      syntheticPnlAssemblyOutput: null,
+      // The caller (pipeline) has already excluded the 5 open-position buys from genuineUnmatchedBuys
+      // — only disclosed via openPositionBuys, never blocking.
+      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 0, openPositionBuys: 5 },
+    })
+    assert.equal(summary.publicPnlStatus, 'available')
+    assert.equal(summary.publicPnlGateAudit.unmatchedBuyCount, 0)
+    assert.equal(summary.publicPnlGateAudit.openPositionBuys, 5)
+    assert.equal(summary.publicPnlGateAudit.blockingReasons.length, 0)
+  })
+
+  it('HARD ASSERTION: a sell whose entry predates the bounded window is excluded (pre_window_inventory_exit), never fabricated into realized PnL', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ unmatchedSells: 3 }),
+      pnlEngineResult: pnl(),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 0, preWindowInventoryExits: 3, scanWindowDays: 90 },
+    })
+    assert.equal(summary.publicPnlStatus, 'available')
+    assert.equal(summary.publicPnlGateAudit.preWindowInventoryExits, 3)
+    assert.equal(summary.publicPnlGateAudit.scanWindowDays, 90)
+    // No cost basis was invented for the excluded sells — realizedPnlUsd is untouched, still only
+    // the sum of fifoEngine's own verified, matched lots.
+    assert.equal(summary.realizedPnlUsd, 2)
+  })
+
+  it('HARD ASSERTION: unknown/unjoinable unmatched evidence still blocks the gate even under the bounded-history split', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ unmatchedSells: 4 }),
+      pnlEngineResult: pnl(),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 4, unmatchedIdentityJoinFailures: 4 },
+    })
+    assert.equal(summary.publicPnlStatus, 'unavailable')
+    assert.ok(summary.publicPnlGateAudit.blockingReasons.some((r2) => r2.rule === 'unmatched_sells'))
+  })
+
+  it('HARD ASSERTION: pnlEngine lot-count disagreement is diagnostic only — never a public veto — while canonical realized PnL and matched lots stay unchanged', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    // fifoEngine reports 1 closed lot; pnlEngine (a separate, independent read model) reports 9 —
+    // a real divergence that must be visible but must never by itself block publication.
+    const summary = await r.reconcile({ fifoEngineResult: fifo(), pnlEngineResult: pnl(9), syntheticPnlAssemblyOutput: null })
+    assert.equal(summary.publicPnlStatus, 'available', 'engine disagreement alone must not block public PnL')
+    assert.ok(!summary.publicPnlGateAudit.blockingReasons.some((r2) => r2.rule === 'engine_lot_count_agreement'), 'engine agreement is no longer a gate rule at all')
+    assert.deepEqual(summary.publicPnlGateAudit.engineDivergenceDiagnostic, { fifoClosedLots: 1, pnlClosedLots: 9, agrees: false })
+    // Canonical figures are computed from fifoEngine alone and are untouched by the divergence.
+    assert.equal(summary.realizedPnlUsd, 2)
+    assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 1)
+    assert.equal(summary.publicPnlGateAudit.structuralClosedLots, 1)
+  })
+
+  it('HARD ASSERTION: production-shaped bounded verified sample (17/27 verified, 62.96% pricing coverage) is published as a clearly-labelled partial sample, never available, never unavailable', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const verifiedLots = Array.from({ length: 17 }, (_, i) => lot({ lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}` }))
+    const unpricedLots = Array.from({ length: 10 }, (_, i) => lot({ lotId: `u${i}`, openedTxHash: `0xub${i}`, closedTxHash: `0xus${i}`, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' }))
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [...verifiedLots, ...unpricedLots] }),
+      pnlEngineResult: pnl(9),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 0, scanWindowDays: 90 },
+    })
+    assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 17)
+    assert.equal(summary.publicPnlGateAudit.structuralClosedLots, 27)
+    assert.ok(Math.abs((summary.publicPnlGateAudit.verifiedPricingCoverage ?? 0) - 17 / 27) < 1e-9)
+    assert.equal(summary.publicPnlStatus, 'partial', 'a bounded, incomplete-but-verified sample must be published as partial — never claimed complete, never blocked outright')
+    assert.equal(summary.publicPnlGateAudit.scanWindowDays, 90)
+    assert.equal(summary.realizedPnlUsd, 34, 'realized PnL still comes only from the 17 fully-verified lots, unchanged by publication status')
+  })
+
+  it('below-threshold bounded sample (fewer than 10 verified lots) stays unavailable even with no hard-invalid evidence', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const verifiedLots = Array.from({ length: 5 }, (_, i) => lot({ lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}` }))
+    const unpricedLots = Array.from({ length: 5 }, (_, i) => lot({ lotId: `u${i}`, openedTxHash: `0xub${i}`, closedTxHash: `0xus${i}`, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' }))
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [...verifiedLots, ...unpricedLots] }),
+      pnlEngineResult: pnl(5),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 0 },
+    })
+    assert.ok(summary.publicPnlGateAudit.blockingReasons.some((r2) => r2.rule === 'minimum_verified_closed_lots'))
+    assert.equal(summary.publicPnlStatus, 'unavailable')
+  })
 })

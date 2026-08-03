@@ -422,6 +422,185 @@ function joinOneSide(
   return { genuine, excludedByClassification, joinFailures }
 }
 
+// UNMATCHED EVIDENCE AUDIT, DISCLOSED (bounded-history follow-up task, requirements #1-#4): the
+// exact join above (computeExactStructuralCoverageAudit) only ever separates unmatched evidence
+// into "proven non-trade" vs "genuine" — but a real, unsold unmatched BUY is not evidence of a
+// problem at all, it is an open position (the wallet still holds it) and must never block realized
+// PnL on already-closed lots. Likewise a real unmatched SELL can legitimately have no matching buy
+// in the fetched history simply because this scan's fetch window is bounded (PROVIDER_FETCH_WINDOW,
+// a fixed number of days) and the acquisition happened before that boundary — a bounded-history
+// evidence gap, not a structural defect. This function splits unmatched evidence one level finer:
+//
+//   Buys:  open_position_inventory (default for every resolved, non-excluded buy — an unsold buy
+//            is definitionally still-held inventory) | unknown (join failure, fail-closed, still
+//            blocks) | structurally_invalid_buy (declared for completeness/forward-compatibility,
+//            per this module's own existing convention for `bridge`/`lp_staking` above — never
+//            actually assigned here, because this module has no positive signal that would prove a
+//            buy structurally invalid rather than just unsold; guessing one would violate the
+//            existing "never guess" hard limit this file already documents).
+//   Sells: transfer_distribution (the join resolved to a proven non-trade classification — reuses
+//            excludedByClassification exactly as computeExactStructuralCoverageAudit already does)
+//            | pre_window_inventory_exit (see PRE_WINDOW DETECTION below) | unknown (join failure,
+//            OR a genuine trade-leg sell with no earlier buy that does NOT meet the conservative
+//            pre-window signal — fail-closed: this function cannot prove it's a bounded-history gap,
+//            so it stays blocking rather than being silently excluded) | structurally_invalid_sell
+//            (declared, never assigned, same rationale as structurally_invalid_buy above).
+//
+// PRE-WINDOW DETECTION, DISCLOSED (requirement #3, all four conditions required together):
+//   1. No earlier BUY-classified event exists anywhere in `classified` (the full fetched event set,
+//      not just FIFO-eligible ones) for the same (chain, token) at a timestamp strictly before this
+//      sell's own timestamp.
+//   2. The provider window reached its configured boundary: the EARLIEST event this scan ever
+//      fetched (any token, any direction) is at or before `windowStartTimestamp +
+//      windowBoundaryToleranceMs` — i.e. the fetch genuinely reached back to (or past) the
+//      configured window edge, rather than the wallet simply having a short real history. Without
+//      this check, "no earlier buy" alone cannot distinguish "acquired before the window" from "was
+//      never really bought" — the boundary signal is what makes the exclusion conservative rather
+//      than a guess.
+//   3. The sell itself occurred inside the fetched/scanned window (always true for any event this
+//      function ever sees, since `classified` only ever contains events the scan actually fetched —
+//      kept as an explicit, named condition for auditability, not a no-op).
+//   4. No contradictory same-window evidence: this sell is never the join-failure/ambiguous case
+//      (condition already handled by the `unknown` fallback above) and never itself resolves to a
+//      proven non-trade classification (handled by `transfer_distribution` above) — by construction,
+//      reaching the pre-window check at all means neither contradiction applies.
+// Never invents a cost basis for a pre-window exit — its FIFO-computed realizedPnlUsd contribution
+// (none; it was never matched to a lot) is completely untouched by this classification pass, which
+// only feeds the structural-coverage/gate DENOMINATOR, never fifoEngine's own PnL arithmetic.
+export type UnmatchedBuyCategory = 'open_position_inventory' | 'structurally_invalid_buy' | 'unknown'
+export type UnmatchedSellCategory = 'pre_window_inventory_exit' | 'transfer_distribution' | 'structurally_invalid_sell' | 'unknown'
+
+export type UnmatchedEvidenceAuditContext = {
+  // Epoch ms. The configured fetch window's start boundary for this scan (scanTimestamp minus the
+  // configured window days) — real, computed by the caller from the same fixed constant the
+  // provider fetch itself used, never guessed here.
+  windowStartTimestamp: number
+  // Epoch ms tolerance around windowStartTimestamp for treating "the earliest fetched event" as
+  // having reached the boundary — real wallets rarely have an event at the exact millisecond a
+  // window opens. Defaults to 3 days: small relative to the (currently 90-day) window, chosen to
+  // absorb normal on-chain gaps without loosening the check into "any short history counts".
+  windowBoundaryToleranceMs?: number
+  scanWindowDays?: number
+}
+
+export type UnmatchedEvidenceAudit = {
+  openPositionBuys: number
+  structurallyInvalidBuys: number
+  unknownBuys: number
+  preWindowInventoryExits: number
+  transferDistributionSells: Partial<Record<EventClassification, number>>
+  structurallyInvalidSells: number
+  unknownSells: number
+  unmatchedIdentityJoinFailures: number
+  // BLOCKING COUNTS, DISCLOSED (requirement #4): only these two feed the structural-consistency
+  // gate's denominator/decision below — open positions and pre-window exits are disclosed but never
+  // invalidate an independently verified closed lot.
+  structurallyInvalidOrUnknownBuys: number
+  structurallyInvalidOrUnknownSells: number
+  structuralCoverageNumerator: number
+  structuralCoverageDenominator: number
+  structuralCoverage: number | null
+}
+
+const DEFAULT_WINDOW_BOUNDARY_TOLERANCE_MS = 3 * 24 * 60 * 60 * 1000
+
+function isTradeEligibleBuyClassification(classification: EventClassification): boolean {
+  return classification === 'genuine_trade_leg' || classification === 'unknown' || classification === 'dust_non_economic'
+}
+
+export function computeUnmatchedEvidenceAudit(
+  classified: readonly ClassifiedEvent[],
+  closedLotCount: number,
+  unmatchedBuyEvents: readonly UnmatchedEventIdentity[],
+  unmatchedSellEvents: readonly UnmatchedEventIdentity[],
+  context: UnmatchedEvidenceAuditContext,
+): UnmatchedEvidenceAudit {
+  const groups = new Map<string, ClassifiedEvent[]>()
+  let earliestEventTimestamp: number | null = null
+  const earliestBuyTimestampByToken = new Map<string, number>()
+  for (const c of classified) {
+    if (c.event.direction === 'unknown') continue
+    const key = unmatchedJoinGroupKey(c.event.chain, c.event.txHash, c.event.contract, c.event.direction)
+    const list = groups.get(key)
+    if (list) list.push(c)
+    else groups.set(key, [c])
+    const ts = Date.parse(c.event.timestamp)
+    if (Number.isFinite(ts)) {
+      if (earliestEventTimestamp === null || ts < earliestEventTimestamp) earliestEventTimestamp = ts
+      if (c.event.direction === 'inbound' && isTradeEligibleBuyClassification(c.classification)) {
+        const tokenKeyStr = `${c.event.chain}:${c.event.contract.toLowerCase()}`
+        const existing = earliestBuyTimestampByToken.get(tokenKeyStr)
+        if (existing === undefined || ts < existing) earliestBuyTimestampByToken.set(tokenKeyStr, ts)
+      }
+    }
+  }
+  const tolerance = context.windowBoundaryToleranceMs ?? DEFAULT_WINDOW_BOUNDARY_TOLERANCE_MS
+  const boundaryReached = earliestEventTimestamp !== null && earliestEventTimestamp <= context.windowStartTimestamp + tolerance
+
+  const resolveJoin = (identity: UnmatchedEventIdentity): EventClassification | null => {
+    const key = unmatchedJoinGroupKey(identity.chain, identity.txHash, identity.token, identity.direction)
+    const candidates = groups.get(key) ?? []
+    if (candidates.length === 1) return candidates[0].classification
+    if (candidates.length > 1) {
+      const exactMatches = candidates.filter((c) => Math.abs(c.event.amount - identity.amount) < 1e-12)
+      if (exactMatches.length === 1) return exactMatches[0].classification
+    }
+    return null
+  }
+
+  let openPositionBuys = 0
+  let unknownBuys = 0
+  let joinFailures = 0
+  for (const identity of unmatchedBuyEvents) {
+    const resolved = resolveJoin(identity)
+    if (resolved === null) { unknownBuys += 1; joinFailures += 1; continue }
+    // Every resolved, joined buy is definitionally still-held inventory — see this function's own
+    // header for why `structurally_invalid_buy` is declared but never assigned.
+    openPositionBuys += 1
+  }
+
+  let preWindowInventoryExits = 0
+  let unknownSells = 0
+  const transferDistributionSells: Partial<Record<EventClassification, number>> = {}
+  for (const identity of unmatchedSellEvents) {
+    const resolved = resolveJoin(identity)
+    if (resolved === null) { unknownSells += 1; joinFailures += 1; continue }
+    if (!isTradeEligibleBuyClassification(resolved)) {
+      transferDistributionSells[resolved] = (transferDistributionSells[resolved] ?? 0) + 1
+      continue
+    }
+    const tokenKeyStr = `${identity.chain}:${identity.token.toLowerCase()}`
+    const earlierBuyExists = earliestBuyTimestampByToken.has(tokenKeyStr) && earliestBuyTimestampByToken.get(tokenKeyStr)! < identity.timestamp
+    if (!earlierBuyExists && boundaryReached) {
+      preWindowInventoryExits += 1
+    } else {
+      // Fail closed (requirement #8): cannot prove either a bounded-history gap or a structural
+      // defect — stays `unknown` and continues blocking, never silently excluded/guessed.
+      unknownSells += 1
+    }
+  }
+
+  const structurallyInvalidOrUnknownBuys = unknownBuys
+  const structurallyInvalidOrUnknownSells = unknownSells
+  const structuralCoverageNumerator = closedLotCount
+  const structuralCoverageDenominator = structuralCoverageNumerator + structurallyInvalidOrUnknownBuys + structurallyInvalidOrUnknownSells
+  return {
+    openPositionBuys,
+    structurallyInvalidBuys: 0,
+    unknownBuys,
+    preWindowInventoryExits,
+    transferDistributionSells,
+    structurallyInvalidSells: 0,
+    unknownSells,
+    unmatchedIdentityJoinFailures: joinFailures,
+    structurallyInvalidOrUnknownBuys,
+    structurallyInvalidOrUnknownSells,
+    structuralCoverageNumerator,
+    structuralCoverageDenominator,
+    structuralCoverage: structuralCoverageDenominator > 0 ? structuralCoverageNumerator / structuralCoverageDenominator : null,
+  }
+}
+
 export function computeExactStructuralCoverageAudit(
   classified: readonly ClassifiedEvent[],
   closedLotCount: number,

@@ -65,7 +65,7 @@ import type { BuyTimeline, BuyTimelineEntry, SellTimeline, TimelineBuilderResult
 import { buildRecoveryPolicyObject } from '../modules/recoveryPolicy/index'
 import type { RecoveryPolicyResult } from '../modules/recoveryPolicy/types'
 import { buildFifoOutput } from '../modules/fifoEngine/index'
-import { classifyEvents, filterToFifoEligible, countByClassification, computeExactStructuralCoverageAudit, type EventClassification } from '../modules/eventClassification/index'
+import { classifyEvents, filterToFifoEligible, countByClassification, computeExactStructuralCoverageAudit, computeUnmatchedEvidenceAudit, type EventClassification } from '../modules/eventClassification/index'
 import type { FifoOutput } from '../modules/fifoEngine/types'
 import { buildBehaviorIntelObject } from '../modules/behaviorIntel/index'
 import type { BehaviorIntelResult, WindowCoverage } from '../modules/behaviorIntel/types'
@@ -2628,16 +2628,30 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const exactStructuralCoverageAudit = computeExactStructuralCoverageAudit(
     structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
   )
+  // BOUNDED-HISTORY EVIDENCE SPLIT, DISCLOSED (bounded-history follow-up task, requirements #1-#4):
+  // real, computed here (not inside pnlReconciliation.ts, which has no per-event classification
+  // visibility) — separates the exact join above one level finer, into open positions / pre-window
+  // exits (never blocking) vs structurally-invalid-or-unknown evidence (still blocking). The gate
+  // now receives ONLY the blocking-only counts as its "genuine unmatched" evidence — see
+  // computeUnmatchedEvidenceAudit's own header for the full, conservative pre-window detection
+  // logic and its fail-closed default.
+  const unmatchedEvidenceAudit = computeUnmatchedEvidenceAudit(
+    structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
+    { windowStartTimestamp: Date.parse(scanTimestamp) - PROVIDER_FETCH_WINDOW_DAYS_USED * 24 * 60 * 60 * 1000, scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED },
+  )
   const reconciledPnlSummary = await pnlReconciliation.reconcile({
     fifoEngineResult: fifoAndPnl,
     pnlEngineResult: adaptedPnlSummary,
     routerInferenceOutput: routerInferenceResult,
     syntheticPnlAssemblyOutput: syntheticPnl,
     structuralCoverageDenominatorAudit: {
-      genuineUnmatchedBuys: exactStructuralCoverageAudit.genuineUnmatchedBuys,
-      genuineUnmatchedSells: exactStructuralCoverageAudit.genuineUnmatchedSells,
+      genuineUnmatchedBuys: unmatchedEvidenceAudit.structurallyInvalidOrUnknownBuys,
+      genuineUnmatchedSells: unmatchedEvidenceAudit.structurallyInvalidOrUnknownSells,
       excludedUnmatchedByClassification: exactStructuralCoverageAudit.excludedUnmatchedByClassification,
-      unmatchedIdentityJoinFailures: exactStructuralCoverageAudit.unmatchedIdentityJoinFailures,
+      unmatchedIdentityJoinFailures: unmatchedEvidenceAudit.unmatchedIdentityJoinFailures,
+      openPositionBuys: unmatchedEvidenceAudit.openPositionBuys,
+      preWindowInventoryExits: unmatchedEvidenceAudit.preWindowInventoryExits,
+      scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
     },
   })
   const reconciledFifoAndPnl: FifoOutput = {

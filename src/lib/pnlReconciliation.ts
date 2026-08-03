@@ -174,6 +174,15 @@ export type StructuralCoverageDenominatorAudit = {
   // above (it continues to block, never silently excluded).
   excludedUnmatchedByClassification?: Record<string, number>
   unmatchedIdentityJoinFailures?: number
+  // BOUNDED-HISTORY EVIDENCE SPLIT, DISCLOSED (bounded-history follow-up task): real counts from
+  // eventClassification's computeUnmatchedEvidenceAudit — see its own header. Optional/additive;
+  // when supplied, `genuineUnmatchedBuys`/`genuineUnmatchedSells` above are expected to already
+  // equal ONLY the structurally-invalid-or-unknown (blocking) counts from that same audit — an open
+  // buy position or a pre-window sell exit is disclosed here but never folded into
+  // genuineUnmatchedBuys/Sells, so it never reaches the gate as blocking evidence.
+  openPositionBuys?: number
+  preWindowInventoryExits?: number
+  scanWindowDays?: number
 }
 
 export type PnlReconciliationInput = {
@@ -218,6 +227,21 @@ export type PublicPnlGateAudit = {
   unmatchedIdentityJoinFailures: number | null
   structuralCoverageNumerator: number
   structuralCoverageDenominator: number
+  // BOUNDED-HISTORY PUBLIC DISCLOSURE, DISCLOSED (bounded-history follow-up task, requirement #7):
+  // real values only — openPositionBuys/preWindowInventoryExits are 0 when the caller didn't supply
+  // the new audit fields (never estimated). scanWindowDays is null (never guessed) when omitted.
+  verifiedClosedLots: number
+  structuralClosedLots: number
+  openPositionBuys: number
+  preWindowInventoryExits: number
+  invalidOrUnknownUnmatchedEvents: number
+  scanWindowDays: number | null
+  verifiedPricingCoverage: number | null
+  // ENGINE DIVERGENCE, DIAGNOSTIC ONLY, DISCLOSED (bounded-history follow-up task, requirement #5):
+  // fifoEngine vs pnlEngine closed-lot-count agreement is no longer a public-gate veto — fifoEngine
+  // is already the canonical source (see structuralConsistent's own disclosure below). This field
+  // preserves full visibility into the divergence without it ever blocking publication.
+  engineDivergenceDiagnostic: { fifoClosedLots: number; pnlClosedLots: number; agrees: boolean }
 }
 
 // MISSING-EVIDENCE BREAKDOWN, DISCLOSED (requirement #7): the single `missingEvidenceCount` number
@@ -645,8 +669,44 @@ export function createPnlReconciliation(config: Config = {}) {
       // already fixed elsewhere this session (walletConditionMessages, SellActivitySummary).
       // Requiring realizedPnlUsd !== null here closes that gap explicitly rather than relying on it
       // being merely unlikely.
-      const structuralConsistent = fifoLots.length === pnlLots.length && gateUnmatchedBuys === 0 && gateUnmatchedSells === 0 && missingEvidenceCount === 0 && realizedPnlUsd !== null
-      const publicPnlStatus: ReconciledPublicPnlStatus = structuralConsistent ? 'available' : missingEvidenceCount <= 3 && fifoLots.length > 0 ? 'partial' : 'unavailable'
+      // ENGINE LOT-COUNT AGREEMENT REMOVED AS A PUBLIC VETO, DISCLOSED (bounded-history follow-up
+      // task, requirement #5): fifoEngine is already the canonical source for every closed lot,
+      // its own realized PnL figure, and every other per-lot mechanism in this pipeline — pnlEngine
+      // is a separate, independent read model that can legitimately diverge (different matching
+      // implementation, only partly-overlapping input set — see the "TWO-DISAGREEING-ENGINES FIX"
+      // disclosure above). Divergence is still logged (`[pnl-reconciliation] structuralMismatch`
+      // above) and surfaced via `engineDivergenceDiagnostic` below, but it can no longer by itself
+      // block public PnL — only a specific, canonical FIFO lot proven invalid would (this codebase
+      // has no such proof mechanism today, so this never silently fabricates one).
+      const engineLotCountsAgree = fifoLots.length === pnlLots.length
+      const fullyPricedLotCount = updatedFifoLots.filter((l) => l.costBasisUsd !== null && l.proceedsUsd !== null).length
+      const verifiedPricingCoverage = fifoLots.length > 0 ? fullyPricedLotCount / fifoLots.length : null
+      // PUBLIC PNL ELIGIBILITY THRESHOLDS, DISCLOSED (requirement #6, byte-for-byte from this
+      // task's own explicit numbers): a minimum verified-closed-lot count and minimum verified
+      // pricing coverage, both required alongside zero hard-invalid/unknown structural evidence and
+      // a non-null realized PnL figure, before a BOUNDED (partial, 90-day) verified sample may be
+      // published at all. Neither threshold was previously enforced explicitly — this task's
+      // production evidence (17 verified lots, 62.96% coverage) is exactly the case these thresholds
+      // are meant to admit as 'partial', never as 'available' (this scan's window is always bounded,
+      // so a wallet can only ever earn 'available' by ALSO having zero missing evidence of any kind
+      // — see structuralConsistent below, unchanged in shape).
+      const MIN_VERIFIED_CLOSED_LOTS = 10
+      const MIN_VERIFIED_PRICING_COVERAGE = 0.5
+      const verifiedLotThresholdMet = verifiedUpdatedLots.length >= MIN_VERIFIED_CLOSED_LOTS
+      const pricingCoverageThresholdMet = verifiedPricingCoverage !== null && verifiedPricingCoverage >= MIN_VERIFIED_PRICING_COVERAGE
+      const noHardInvalidEvidence = gateUnmatchedBuys === 0 && gateUnmatchedSells === 0
+      const structuralConsistent = noHardInvalidEvidence && missingEvidenceCount === 0 && realizedPnlUsd !== null
+      // BOUNDED VERIFIED SAMPLE, DISCLOSED (requirement #6's "allow verified realized PnL samples
+      // without pretending bounded history is complete"): meeting both thresholds with no hard-
+      // invalid evidence and a real realized PnL figure earns 'partial' — explicitly never
+      // 'available', since a bounded 90-day scan can never honestly claim complete history even when
+      // every fetched lot it DID find is fully verified.
+      const boundedVerifiedSampleEligible = noHardInvalidEvidence && realizedPnlUsd !== null && verifiedLotThresholdMet && pricingCoverageThresholdMet
+      const publicPnlStatus: ReconciledPublicPnlStatus = structuralConsistent
+        ? 'available'
+        : boundedVerifiedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0)
+          ? 'partial'
+          : 'unavailable'
       const totalClosedLots = Math.max(fifoLots.length, pnlLots.length)
 
       // GATE SHADOW AUDIT, DISCLOSED (requirement #5): a before/after comparison — what the gate
@@ -698,11 +758,17 @@ export function createPnlReconciliation(config: Config = {}) {
       // (requirement #4) now matches the EXACT evidence inputs the gate itself decided on —
       // gateUnmatchedBuys/Sells, never the raw correctedUnmatchedBuys/Sells (still reported
       // separately, unchanged, via rawUnmatchedBuys/Sells below).
-      const fullyPricedLotCount = updatedFifoLots.filter((l) => l.costBasisUsd !== null && l.proceedsUsd !== null).length
       const structuralDenominator = fifoLots.length + gateUnmatchedBuys + gateUnmatchedSells
       const blockingReasons: PublicPnlGateBlockingReason[] = []
-      if (fifoLots.length !== pnlLots.length) {
-        blockingReasons.push({ rule: 'engine_lot_count_agreement', threshold: 'fifoEngine closed lots === pnlEngine closed lots', actualValue: `${fifoLots.length} vs ${pnlLots.length}` })
+      // NOTE, DISCLOSED: these two thresholds gate the BOUNDED-VERIFIED-SAMPLE ('partial') path only
+      // — a wallet that already achieves full structural consistency (zero missing evidence at any
+      // lot count) needs neither a minimum lot count nor a minimum coverage percentage to publish,
+      // exactly as before this task. Surfaced here only when relevant to explaining a non-full gate.
+      if (!structuralConsistent && !verifiedLotThresholdMet) {
+        blockingReasons.push({ rule: 'minimum_verified_closed_lots', threshold: String(MIN_VERIFIED_CLOSED_LOTS), actualValue: String(verifiedUpdatedLots.length) })
+      }
+      if (!structuralConsistent && !pricingCoverageThresholdMet) {
+        blockingReasons.push({ rule: 'minimum_verified_pricing_coverage', threshold: String(MIN_VERIFIED_PRICING_COVERAGE), actualValue: verifiedPricingCoverage === null ? 'null' : String(verifiedPricingCoverage) })
       }
       if (gateUnmatchedBuys > 0) {
         blockingReasons.push({ rule: 'unmatched_buys', threshold: '0', actualValue: String(gateUnmatchedBuys) })
@@ -723,7 +789,7 @@ export function createPnlReconciliation(config: Config = {}) {
         structuralCoverage: structuralDenominator > 0 ? fifoLots.length / structuralDenominator : null,
         unmatchedBuyCount: gateUnmatchedBuys,
         unmatchedSellCount: gateUnmatchedSells,
-        integrityTier: structuralConsistent ? 'full' : missingEvidenceCount <= 3 && fifoLots.length > 0 ? 'partial' : 'blocked',
+        integrityTier: structuralConsistent ? 'full' : boundedVerifiedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0) ? 'partial' : 'blocked',
         blockingReasons,
         rawUnmatchedBuys: correctedUnmatchedBuys,
         rawUnmatchedSells: correctedUnmatchedSells,
@@ -735,6 +801,14 @@ export function createPnlReconciliation(config: Config = {}) {
         unmatchedIdentityJoinFailures: denomAudit?.unmatchedIdentityJoinFailures ?? null,
         structuralCoverageNumerator: fifoLots.length,
         structuralCoverageDenominator: structuralDenominator,
+        verifiedClosedLots: verifiedUpdatedLots.length,
+        structuralClosedLots: fifoLots.length,
+        openPositionBuys: denomAudit?.openPositionBuys ?? 0,
+        preWindowInventoryExits: denomAudit?.preWindowInventoryExits ?? 0,
+        invalidOrUnknownUnmatchedEvents: gateUnmatchedBuys + gateUnmatchedSells,
+        scanWindowDays: denomAudit?.scanWindowDays ?? null,
+        verifiedPricingCoverage,
+        engineDivergenceDiagnostic: { fifoClosedLots: fifoLots.length, pnlClosedLots: pnlLots.length, agrees: engineLotCountsAgree },
       }
 
       const summary: PnlReconciliationSummary = {

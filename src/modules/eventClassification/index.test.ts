@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { NormalizedEvent } from '../normalization/types'
-import { classifyEvents, filterToFifoEligible, countByClassification, isFifoEligible, DUST_AMOUNT_THRESHOLD, auditDistributionDirection, computeStructuralCoverageAudit, computeExactStructuralCoverageAudit } from './index'
+import { classifyEvents, filterToFifoEligible, countByClassification, isFifoEligible, DUST_AMOUNT_THRESHOLD, auditDistributionDirection, computeStructuralCoverageAudit, computeExactStructuralCoverageAudit, computeUnmatchedEvidenceAudit } from './index'
 import type { UnmatchedEventIdentity } from '../fifoEngine/types'
 
 const WALLET = '0xwallet'
@@ -315,4 +315,73 @@ test('a multi-candidate group resolves via exact amount match when exactly one c
   const identity = unmatchedIdentity({ txHash: '0xexact', token: TOKEN_A, direction: 'inbound', amount: 3 })
   const audit = computeExactStructuralCoverageAudit(classified, 0, [identity], [])
   assert.equal(audit.unmatchedIdentityJoinFailures, 0, 'exactly one exact-amount match resolves the ambiguity')
+})
+
+// =================================================================================================
+// BOUNDED-HISTORY FOLLOW-UP — requirements #1-#4: computeUnmatchedEvidenceAudit.
+// =================================================================================================
+
+const NOW_ISO = '2026-08-03T00:00:00.000Z'
+const WINDOW_DAYS = 90
+const WINDOW_START = Date.parse(NOW_ISO) - WINDOW_DAYS * 24 * 60 * 60 * 1000
+const ctx = { windowStartTimestamp: WINDOW_START, scanWindowDays: WINDOW_DAYS }
+
+test('HARD ASSERTION: an unsold valid buy does not block realized PnL — it is disclosed as open_position_inventory, never counted in the blocking denominator', () => {
+  const buy = event({ txHash: '0xopen1', direction: 'inbound', contract: TOKEN_A, amount: 5, timestamp: new Date(WINDOW_START + 10 * 24 * 60 * 60 * 1000).toISOString() })
+  const classified = classifyEvents([buy], noRouters)
+  const identity = unmatchedIdentity({ txHash: '0xopen1', token: TOKEN_A, direction: 'inbound', amount: 5, timestamp: Date.parse(buy.timestamp) })
+  const audit = computeUnmatchedEvidenceAudit(classified, 10, [identity], [], ctx)
+  assert.equal(audit.openPositionBuys, 1)
+  assert.equal(audit.structurallyInvalidOrUnknownBuys, 0, 'an unsold buy must never block realized PnL on already-closed lots')
+  assert.equal(audit.structuralCoverageDenominator, 10, 'open position buys are disclosed but excluded from the blocking denominator')
+})
+
+test('HARD ASSERTION: a sell whose entry predates the bounded fetch window is excluded as pre_window_inventory_exit, never fabricated cost basis', () => {
+  // Wallet history reaches back to (at or before) the window boundary — the earliest fetched event
+  // is right at the window start — proving the fetch genuinely reached its configured boundary.
+  const earliestHistoryEvent = event({ txHash: '0xearliest', direction: 'inbound', contract: TOKEN_B, amount: 1, timestamp: new Date(WINDOW_START).toISOString() })
+  const sell = event({ txHash: '0xsell1', direction: 'outbound', contract: TOKEN_A, amount: 5, timestamp: new Date(WINDOW_START + 5 * 24 * 60 * 60 * 1000).toISOString() })
+  const classified = classifyEvents([earliestHistoryEvent, sell], noRouters)
+  const identity = unmatchedIdentity({ txHash: '0xsell1', token: TOKEN_A, direction: 'outbound', amount: 5, timestamp: Date.parse(sell.timestamp) })
+  const audit = computeUnmatchedEvidenceAudit(classified, 10, [], [identity], ctx)
+  assert.equal(audit.preWindowInventoryExits, 1)
+  assert.equal(audit.structurallyInvalidOrUnknownSells, 0, 'a pre-window exit must never block realized PnL on already-closed lots')
+  assert.equal(audit.structuralCoverageDenominator, 10)
+})
+
+test('HARD ASSERTION: a sell with no earlier buy is NOT excluded when the fetch never reached the window boundary — fail-closed, stays unknown/blocking', () => {
+  // The wallet's ENTIRE fetched history is recent (well inside the window, not near its edge) — the
+  // fetch never proved it reached back to the window boundary, so "no earlier buy" alone cannot be
+  // trusted as a bounded-history signal. Must not be excluded.
+  const recentHistoryEvent = event({ txHash: '0xrecent', direction: 'inbound', contract: TOKEN_B, amount: 1, timestamp: new Date(Date.parse(NOW_ISO) - 1 * 24 * 60 * 60 * 1000).toISOString() })
+  const sell = event({ txHash: '0xsell2', direction: 'outbound', contract: TOKEN_A, amount: 5, timestamp: new Date(Date.parse(NOW_ISO) - 1 * 24 * 60 * 60 * 1000).toISOString() })
+  const classified = classifyEvents([recentHistoryEvent, sell], noRouters)
+  const identity = unmatchedIdentity({ txHash: '0xsell2', token: TOKEN_A, direction: 'outbound', amount: 5, timestamp: Date.parse(sell.timestamp) })
+  const audit = computeUnmatchedEvidenceAudit(classified, 10, [], [identity], ctx)
+  assert.equal(audit.preWindowInventoryExits, 0)
+  assert.equal(audit.unknownSells, 1)
+  assert.equal(audit.structurallyInvalidOrUnknownSells, 1, 'unproven — continues blocking rather than being silently excluded')
+})
+
+test('HARD ASSERTION: unknown/unjoinable unmatched evidence still blocks (fail-closed) even under the bounded-history split', () => {
+  const classified = classifyEvents([], noRouters)
+  const orphanBuy = unmatchedIdentity({ txHash: '0xorphanbuy', token: TOKEN_A, direction: 'inbound', amount: 7, timestamp: WINDOW_START + 1000 })
+  const orphanSell = unmatchedIdentity({ txHash: '0xorphansell', token: TOKEN_A, direction: 'outbound', amount: 7, timestamp: WINDOW_START + 1000 })
+  const audit = computeUnmatchedEvidenceAudit(classified, 0, [orphanBuy], [orphanSell], ctx)
+  assert.equal(audit.unknownBuys, 1)
+  assert.equal(audit.unknownSells, 1)
+  assert.equal(audit.unmatchedIdentityJoinFailures, 2)
+  assert.equal(audit.structurallyInvalidOrUnknownBuys, 1)
+  assert.equal(audit.structurallyInvalidOrUnknownSells, 1)
+})
+
+test('a sell resolved to a proven non-trade classification is disclosed as transfer_distribution and never blocks', () => {
+  const dist1 = event({ txHash: '0xd1', direction: 'outbound', contract: TOKEN_C, amount: 500, timestamp: new Date(WINDOW_START + 20 * 24 * 60 * 60 * 1000).toISOString() })
+  const dist2 = event({ txHash: '0xd2', direction: 'outbound', contract: TOKEN_C, amount: 500, timestamp: new Date(WINDOW_START + 21 * 24 * 60 * 60 * 1000).toISOString() })
+  const classified = classifyEvents([dist1, dist2], noRouters)
+  for (const c of classified) assert.equal(c.classification, 'distribution_airdrop')
+  const identities = [dist1, dist2].map((e) => unmatchedIdentity({ txHash: e.txHash, token: TOKEN_C, direction: 'outbound', amount: e.amount, timestamp: Date.parse(e.timestamp) }))
+  const audit = computeUnmatchedEvidenceAudit(classified, 0, [], identities, ctx)
+  assert.equal(audit.transferDistributionSells.distribution_airdrop, 2)
+  assert.equal(audit.structurallyInvalidOrUnknownSells, 0)
 })
