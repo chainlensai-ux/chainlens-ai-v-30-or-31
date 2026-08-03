@@ -346,16 +346,32 @@ export function alchemyHexDecimalToNumber(hexDecimal: string | null): number | n
 // resetProviderFetchWindowRequestCache() (the same per-job reset point already used for this
 // module's other request-scoped state), not left to accumulate across unrelated jobs.
 export const ALCHEMY_HISTORY_MAX_CONCURRENCY = 1
-// Short pause after ANY 429 (initial or retry) before the next QUEUED call gets its turn —
-// requirement #8's "cooldown", deliberately short since the goal is de-bursting, not stalling a
-// normal 4-call job for seconds.
+// Short pause after ANY 429 before the next QUEUED call gets its turn — deliberately short since
+// the goal is de-bursting, not stalling a normal 4-call job for seconds.
 const ALCHEMY_HISTORY_429_COOLDOWN_MS = 400
 // Deterministic (not randomized — avoids a second, harder-to-reproduce source of test flakiness)
-// fallback retry delay used only when Alchemy's response carries no Retry-After header at all.
+// fallback retry delay, kept only for the (currently disabled — see below) retry path.
 const ALCHEMY_HISTORY_DEFAULT_RETRY_DELAY_MS = 875
+
+// RETRY DISABLED BY DEFAULT, DISCLOSED (429-persistent-rate-limit task — production proof): a
+// prior task added exactly-one-retry-per-429. Production then showed all 4 initial calls AND all 4
+// retries returning 429 — 8 calls / 1,200 CU spent for 0 events, a 0% retry recovery rate. When
+// Alchemy is genuinely, persistently rate-limiting this API key/project (not a one-off blip), a
+// bounded retry does not recover anything — it just doubles the wasted spend. Retries are now off
+// by default; the circuit breaker below (which reacts to real, observed 429s, not a fixed retry
+// count) is what actually stops the waste.
+export const ALCHEMY_HISTORY_429_RETRY_ENABLED = false
+
+// CIRCUIT BREAKER, DISCLOSED (this task's core fix): after CIRCUIT_OPEN_THRESHOLD *consecutive*
+// 429s (any chain, any direction — Alchemy's rate limit is per API key/project, not per chain), no
+// further Alchemy transaction-history calls are attempted for the REST OF THIS JOB. GoldRush is a
+// fully separate code path (fetchGoldrushRawEvents) and is never touched by this breaker.
+export const ALCHEMY_RATE_LIMIT_CIRCUIT_OPEN_THRESHOLD = 2
 
 let alchemyHistoryQueueTail: Promise<void> = Promise.resolve()
 let alchemyHistoryCooldownUntil = 0
+let alchemyConsecutive429s = 0
+let alchemyRateLimitCircuitOpen = false
 
 type AlchemyRateLimitAudit = {
   queuedRequests: number
@@ -377,12 +393,40 @@ function freshRateLimitAudit(): AlchemyRateLimitAudit {
 
 let alchemyRateLimitAudit: AlchemyRateLimitAudit = freshRateLimitAudit()
 
+// [alchemy-rate-limit-circuit] backing state, DISCLOSED: request-scoped (reset per job, never
+// across jobs — requirement #5, "do not cache this as a permanent provider failure across jobs").
+type AlchemyRateLimitCircuitAudit = {
+  consecutive429s: number
+  circuitOpened: boolean
+  callsPrevented: number
+  wastedCuPrevented: number
+  first429Chain: SupportedChain | null
+  first429Direction: 'from' | 'to' | null
+}
+
+function freshCircuitAudit(): AlchemyRateLimitCircuitAudit {
+  return { consecutive429s: 0, circuitOpened: false, callsPrevented: 0, wastedCuPrevented: 0, first429Chain: null, first429Direction: null }
+}
+
+let alchemyRateLimitCircuitAudit: AlchemyRateLimitCircuitAudit = freshCircuitAudit()
+
 // Exported test/reset hook — mirrors the pattern used by walletProviderCostLedger's own
-// __resetForTest, and is wired into providerFetchWindow/index.ts's per-job reset.
+// __resetForTest, and is wired into providerFetchWindow/index.ts's per-job reset. This is the ONLY
+// place the circuit closes — a new wallet job always starts with a fully closed circuit
+// (requirement: "next wallet job starts with circuit closed"), never inheriting a prior job's
+// rate-limit state.
 export function resetAlchemyHistoryConcurrencyState(): void {
   alchemyHistoryQueueTail = Promise.resolve()
   alchemyHistoryCooldownUntil = 0
+  alchemyConsecutive429s = 0
+  alchemyRateLimitCircuitOpen = false
   alchemyRateLimitAudit = freshRateLimitAudit()
+  alchemyRateLimitCircuitAudit = freshCircuitAudit()
+}
+
+// Read-only test hook — lets tests assert circuit state without reaching into module internals.
+export function isAlchemyRateLimitCircuitOpen(): boolean {
+  return alchemyRateLimitCircuitOpen
 }
 
 function sleep(ms: number): Promise<void> {
@@ -609,61 +653,94 @@ export async function fetchAlchemyRawEvents(
     }
   }
 
+  let http429Count = 0
+  let circuitPreventedCount = 0
+
   const rpc = (direction: 'from' | 'to', params: Record<string, unknown>): Promise<Record<string, unknown> | null> =>
     withAlchemyHistoryConcurrencyLimit(async () => {
-      // BUDGET GATE, DISCLOSED: checked BEFORE the real call, exactly as before — the fix here is
-      // classification/rate-limiting, never a change to when/whether an initial call is attempted.
+      // CIRCUIT BREAKER GATE, DISCLOSED (requirement #3): checked BEFORE the budget gate, and
+      // BEFORE any HTTP call — an open circuit means ZERO further Alchemy calls for this job, not
+      // "call but expect it to fail." No tryConsume() happens here, so no CU is spent on a call
+      // this job already knows will be rate-limited.
+      if (alchemyRateLimitCircuitOpen) {
+        circuitPreventedCount += 1
+        alchemyRateLimitCircuitAudit.callsPrevented += 1
+        alchemyRateLimitCircuitAudit.wastedCuPrevented += estimatedCuForMethod('alchemy_getAssetTransfers')
+        return null
+      }
+      // BUDGET GATE, DISCLOSED: checked BEFORE the real call, exactly as before.
       if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'transaction_history' })) {
         budgetRefusals += 1
         return null
       }
       liveCalls += 1
       alchemyRateLimitAudit.initialCalls += 1
-      const first = await attemptOnce(direction, params)
-      if (first.kind === 'success') return first.result
-      if (first.kind !== 'http_429') {
-        recordFailureOutcome(first)
+      const outcome = await attemptOnce(direction, params)
+      if (outcome.kind === 'success') {
+        alchemyConsecutive429s = 0
+        return outcome.result
+      }
+      if (outcome.kind !== 'http_429') {
+        alchemyConsecutive429s = 0
+        recordFailureOutcome(outcome)
         alchemyRateLimitAudit.finalFailedRequests += 1
         return null
       }
 
-      // ── HTTP 429: exactly one bounded retry (requirement #5) ────────────────────────────────
-      httpErrors += 1
-      malformedResponses += 1
+      // ── HTTP 429: typed distinctly, never counted as malformed (requirements #8/#9) ─────────
+      http429Count += 1
       alchemyRateLimitAudit.http429Count += 1
-      const retryDelayMs = first.retryAfterMs !== null ? first.retryAfterMs : ALCHEMY_HISTORY_DEFAULT_RETRY_DELAY_MS
-      if (first.retryAfterMs !== null) alchemyRateLimitAudit.retryAfterMsSeen = first.retryAfterMs
+      if (outcome.retryAfterMs !== null) alchemyRateLimitAudit.retryAfterMsSeen = outcome.retryAfterMs
+      if (alchemyRateLimitCircuitAudit.first429Chain === null) {
+        alchemyRateLimitCircuitAudit.first429Chain = chain
+        alchemyRateLimitCircuitAudit.first429Direction = direction
+      }
+      alchemyConsecutive429s += 1
+      alchemyRateLimitCircuitAudit.consecutive429s = alchemyConsecutive429s
       // Requirement #8: a short request-scoped cooldown applies to the NEXT queued call (any
-      // direction/chain) after any 429 — set here so a call already waiting in the queue behind
-      // this one also backs off, not just this call's own retry.
+      // direction/chain) after any 429 — whether or not it ends up being prevented by the circuit.
       alchemyHistoryCooldownUntil = Math.max(alchemyHistoryCooldownUntil, Date.now() + ALCHEMY_HISTORY_429_COOLDOWN_MS)
-      await sleep(retryDelayMs)
 
-      // RETRY CONSUMES BUDGET, DISCLOSED (requirement #5): a retry is a real second Alchemy call —
-      // it must pass the same budget gate as any other call, never a free extra attempt.
-      if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'transaction_history' })) {
-        budgetRefusals += 1
+      if (alchemyConsecutive429s >= ALCHEMY_RATE_LIMIT_CIRCUIT_OPEN_THRESHOLD && !alchemyRateLimitCircuitOpen) {
+        // OPEN THE CIRCUIT, DISCLOSED (requirement #3): stops every remaining Alchemy
+        // transaction-history call for the REST OF THIS JOB, on any chain — set here, checked at
+        // the top of this same function, so the very next queued call (already waiting behind this
+        // one) is prevented rather than fired.
+        alchemyRateLimitCircuitOpen = true
+        alchemyRateLimitCircuitAudit.circuitOpened = true
+      }
+
+      // RETRY (disabled by default — ALCHEMY_HISTORY_429_RETRY_ENABLED), DISCLOSED: kept as dead
+      // code behind the flag rather than deleted, so a future task can re-enable it for environments
+      // where Alchemy's rate limit is known to be a brief blip rather than persistent — but the
+      // production trace for THIS task showed 0% retry recovery, so it must never run by default.
+      if (ALCHEMY_HISTORY_429_RETRY_ENABLED && !alchemyRateLimitCircuitOpen) {
+        const retryDelayMs = outcome.retryAfterMs !== null ? outcome.retryAfterMs : ALCHEMY_HISTORY_DEFAULT_RETRY_DELAY_MS
+        await sleep(retryDelayMs)
+        if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'transaction_history' })) {
+          budgetRefusals += 1
+          alchemyRateLimitAudit.finalFailedRequests += 1
+          return null
+        }
+        liveCalls += 1
+        alchemyRateLimitAudit.retryCalls += 1
+        const retry = await attemptOnce(direction, params)
+        if (retry.kind === 'success') {
+          alchemyConsecutive429s = 0
+          alchemyRateLimitAudit.requestsRecoveredAfter429 += 1
+          return retry.result
+        }
+        if (retry.kind === 'http_429') {
+          http429Count += 1
+          alchemyRateLimitAudit.http429Count += 1
+          alchemyRateLimitAudit.finalFailedRequests += 1
+          return null
+        }
+        recordFailureOutcome(retry)
         alchemyRateLimitAudit.finalFailedRequests += 1
         return null
       }
-      liveCalls += 1
-      alchemyRateLimitAudit.retryCalls += 1
-      const retry = await attemptOnce(direction, params)
-      if (retry.kind === 'success') {
-        alchemyRateLimitAudit.requestsRecoveredAfter429 += 1
-        return retry.result
-      }
-      if (retry.kind === 'http_429') {
-        // Second 429 in a row for this request: no second retry (requirement #5's "maximum 1 retry
-        // per failed request") — the request fails, typed as http_error via httpErrors below.
-        httpErrors += 1
-        malformedResponses += 1
-        alchemyRateLimitAudit.http429Count += 1
-        alchemyHistoryCooldownUntil = Math.max(alchemyHistoryCooldownUntil, Date.now() + ALCHEMY_HISTORY_429_COOLDOWN_MS)
-        alchemyRateLimitAudit.finalFailedRequests += 1
-        return null
-      }
-      recordFailureOutcome(retry)
+
       alchemyRateLimitAudit.finalFailedRequests += 1
       return null
     })
@@ -676,12 +753,11 @@ export async function fetchAlchemyRawEvents(
     const diagnostics = {
       liveCalls, budgetRefusals, malformedResponses, nullResponses,
       httpErrors, jsonParseErrors, jsonRpcErrors, missingResult: missingResultCount, invalidTransfersShape: invalidTransfersShapeCount,
+      http429Count, circuitPrevented: circuitPreventedCount,
     }
     // [alchemy-rate-limit-audit], DISCLOSED (429-burst regression task): logged once per real
     // fetchAlchemyRawEvents call (per chain) from the shared, request-scoped (reset per job)
-    // counters above — real counts, not estimates. `estimatedCu` covers every call actually made
-    // for THIS (chain) invocation, including any retry, so it reconciles against the same
-    // per-method CU figure the cost ledger itself charged.
+    // counters above — real counts, not estimates.
     console.warn('[alchemy-rate-limit-audit]', {
       chain,
       queuedRequests: alchemyRateLimitAudit.queuedRequests,
@@ -695,27 +771,47 @@ export async function fetchAlchemyRawEvents(
       finalFailedRequests: alchemyRateLimitAudit.finalFailedRequests,
       estimatedCu: liveCalls * estimatedCuForMethod('alchemy_getAssetTransfers'),
     })
+    // [alchemy-rate-limit-circuit], DISCLOSED (this task's required diagnostic): logged once per
+    // fetchAlchemyRawEvents call from the shared, request-scoped circuit-breaker state — real
+    // counts, including calls this very invocation had prevented (circuitPreventedCount).
+    console.warn('[alchemy-rate-limit-circuit]', {
+      chain,
+      consecutive429s: alchemyRateLimitCircuitAudit.consecutive429s,
+      circuitOpened: alchemyRateLimitCircuitAudit.circuitOpened,
+      callsPrevented: alchemyRateLimitCircuitAudit.callsPrevented,
+      wastedCuPrevented: alchemyRateLimitCircuitAudit.wastedCuPrevented,
+      first429Chain: alchemyRateLimitCircuitAudit.first429Chain,
+      first429Direction: alchemyRateLimitCircuitAudit.first429Direction,
+    })
     if (!fromResult && !toResult) {
-      // TYPED REASON, DISCLOSED (requirement #5): distinguishes WHY both sub-calls failed instead of
-      // collapsing every cause into one generic string. Priority: a self-imposed budget throttle is
-      // reported first (it is this system's own decision, never Alchemy's fault); then a genuine
-      // HTTP transport failure; then a body that couldn't be parsed as JSON at all; then a JSON-RPC-
-      // level error object Alchemy itself returned; then a 200 with no `result` field whatsoever;
-      // then a `result` present but with a non-array `transfers`; only falling back to the generic
+      // TYPED REASON, DISCLOSED: distinguishes WHY both sub-calls failed instead of collapsing every
+      // cause into one generic string. Priority: a self-imposed budget throttle is reported first
+      // (it is this system's own decision, never Alchemy's fault); then the circuit breaker having
+      // prevented this call outright (distinct from Alchemy having actually responded 429 — the
+      // breaker is why NO call was even attempted); then a genuine observed 429 (requirement #8: a
+      // 'http_429' reason, distinct from the generic 'http_error', so computeRateLimitFlag — see
+      // src/pipeline/index.ts — reliably detects it); then a genuine non-429 HTTP transport failure;
+      // then a body that couldn't be parsed as JSON at all; then a JSON-RPC-level error object
+      // Alchemy itself returned; then a 200 with no `result` field whatsoever; then a `result`
+      // present but with a non-array `transfers`; only falling back to the generic
       // 'no_usable_response' for a network error/timeout with none of the above (the `catch` path).
       const errorReason = budgetRefusals > 0
         ? 'provider_budget_exhausted'
-        : httpErrors > 0
-          ? 'http_error'
-          : jsonParseErrors > 0
-            ? 'json_parse_error'
-            : jsonRpcErrors > 0
-              ? 'json_rpc_error'
-              : missingResultCount > 0
-                ? 'missing_result'
-                : invalidTransfersShapeCount > 0
-                  ? 'invalid_transfers_shape'
-                  : 'no_usable_response'
+        : circuitPreventedCount > 0
+          ? 'alchemy_rate_limit_circuit_open'
+          : http429Count > 0
+            ? 'http_429'
+            : httpErrors > 0
+              ? 'http_error'
+              : jsonParseErrors > 0
+                ? 'json_parse_error'
+                : jsonRpcErrors > 0
+                  ? 'json_rpc_error'
+                  : missingResultCount > 0
+                    ? 'missing_result'
+                    : invalidTransfersShapeCount > 0
+                      ? 'invalid_transfers_shape'
+                      : 'no_usable_response'
       return { provider: 'alchemy', ok: false, events: [], errorReason, diagnostics }
     }
     const cutoff = windowCutoffMs(windowDays)
@@ -753,6 +849,7 @@ export async function fetchAlchemyRawEvents(
       diagnostics: {
         liveCalls, budgetRefusals, malformedResponses, nullResponses,
         httpErrors, jsonParseErrors, jsonRpcErrors, missingResult: missingResultCount, invalidTransfersShape: invalidTransfersShapeCount,
+        http429Count, circuitPrevented: circuitPreventedCount,
       },
     }
   }

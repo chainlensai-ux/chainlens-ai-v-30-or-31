@@ -70,6 +70,13 @@ export type SingleProviderFetchResult = {
     // `result` present but with a non-array `transfers` (`invalidTransfersShape`) are now counted
     // and reported distinctly, so a caller/log-reader can tell them apart instead of all four
     // collapsing into one generic 'malformed_response' reason.
+    // ADDITIVE, OPTIONAL, DISCLOSED (persistent-429/circuit-breaker task): `httpErrors` above no
+    // longer includes 429s (a genuine HTTP 429 is never "malformed" — it's a real, well-formed rate
+    // limit response). `http429Count` is the real 429 count; `circuitPrevented` is how many of this
+    // call's sub-requests never happened at all because the request-scoped circuit breaker was
+    // already open.
+    http429Count?: number
+    circuitPrevented?: number
     httpErrors?: number
     jsonParseErrors?: number
     jsonRpcErrors?: number
