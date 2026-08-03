@@ -39,6 +39,12 @@ function reconciled(overrides: Partial<PnlReconciliationSummary> = {}): PnlRecon
       verifiedSidesEligibleForPersistence: 0, verifiedSidesAlreadyPersisted: 0, verifiedSidesWritten: 0,
       verifiedSideWriteFailures: 0, verifiedSidesSkippedUnverified: 0, verifiedSidesSkippedInvalid: 0,
       missingVerifiedEvidenceMetadata: 0,
+      acceptedSidesRequestedBeforePricing: 0, acceptedSidesLoadedBeforePricing: 0, acceptedSidesAppliedBeforePricing: 0,
+      upstreamLookupsSkippedByAcceptedEvidence: 0, upstreamPricesMatchingAcceptedEvidence: 0,
+      upstreamPricesRejectedDueToAcceptedEvidence: 0, acceptedEvidenceIdentityMisses: 0,
+      acceptedEvidenceValidationFailures: 0, acceptedEvidenceAppliedAfterUpstreamPricing: 0,
+      existingUpstreamSidesBackedByAcceptedEvidence: 0, existingUpstreamSidesWithoutAcceptedEvidence: 0,
+      existingUpstreamSidesConflictingWithAcceptedEvidence: 0,
     },
     ...overrides,
   }

@@ -777,10 +777,15 @@ describe('pnlReconciliation', () => {
     assert.equal(summary2.acceptedEvidenceAudit.existingVerifiedSidesProtectedFromOverwrite, 0, 'lots2 start unpriced — nothing to protect, everything came from hydration instead')
   })
 
-  it('HARD ASSERTION: a side fifoEngine already priced is NEVER touched by hydration or live recovery, even if the accepted-evidence store holds a different value for it', async () => {
+  it('HARD ASSERTION (superseded by hydration-timing-and-canonical-precedence follow-up task): accepted evidence is now CANONICAL even for a side fifoEngine already priced — it overrides a conflicting upstream candidate, never the reverse', async () => {
+    // DELIBERATE BEHAVIOR CHANGE, DISCLOSED: this test previously asserted the OPPOSITE — that an
+    // already-priced side was NEVER touched even when accepted evidence disagreed. That was exactly
+    // the confirmed production bug this follow-up task fixes (requirement #3: "persisted evidence
+    // wins... upstream price must not replace it") — an already-priced side is no longer immune to
+    // being checked against accepted evidence; when a valid entry exists, it is now canonical.
     const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
     const alreadyPriced = lot({ lotId: 'already', token: '0xalready', openedTxHash: '0xb', closedTxHash: '0xs', openedAt: 1, closedAt: 2, costBasisUsd: 5, proceedsUsd: 7, realizedPnlUsd: 2, evidenceQuality: 'verified' })
-    // Seed a DIFFERENT accepted price for the same identity — must never be applied.
+    // Seed a DIFFERENT accepted price for the entry side only — must now be applied as canonical.
     const identityVersion = ['base', '0xalready', '0xb', '0xs', 1, 2, 1].join(':')
     acceptedEvidenceKv.store.set(`v1:accepted-evidence:base:0xalready:0xb:entry:1`, {
       schemaVersion: 1, chain: 'base', token: '0xalready', txHash: '0xb', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion,
@@ -791,9 +796,12 @@ describe('pnlReconciliation', () => {
     const priceKvClient = { getPriceRecovery: async (t: string, c: string, ts: number, fetcher: (t: string, c: string, ts: number) => Promise<number | null>) => { liveCalls += 1; return fetcher(t, c, ts) } }
     const r = createPnlReconciliation({ logger: quiet, priceKvClient: priceKvClient as never, priceSources: { primary: async () => 1 }, acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 50 })
     const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [alreadyPriced] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
-    assert.equal(summary.realizedPnlUsd, 2, 'the pre-existing verified price (7-5=2) must be completely unchanged')
-    assert.equal(liveCalls, 0)
-    assert.equal(summary.acceptedEvidenceAudit.existingVerifiedSidesProtectedFromOverwrite, 2)
+    assert.equal(summary.realizedPnlUsd, -992, 'canonical entry price (999) wins over the upstream candidate (5) — 7 (unchanged exit) - 999 = -992')
+    assert.equal(liveCalls, 0, 'no live call needed — recovery never runs for a side hydration already resolved')
+    assert.equal(summary.acceptedEvidenceAudit.existingVerifiedSidesProtectedFromOverwrite, 2, 'kept for backward compatibility — both sides were already upstream-priced going in')
+    assert.equal(summary.acceptedEvidenceAudit.existingUpstreamSidesConflictingWithAcceptedEvidence, 1, 'the entry side: upstream said 5, accepted evidence said 999')
+    assert.equal(summary.acceptedEvidenceAudit.existingUpstreamSidesWithoutAcceptedEvidence, 1, 'the exit side: no accepted evidence exists for it at all')
+    assert.equal(summary.acceptedEvidenceAudit.upstreamPricesRejectedDueToAcceptedEvidence, 1)
   })
 
   it('HARD ASSERTION: corrupt/mismatched persisted evidence (wrong lot-identity-version) is ignored and falls through to live recovery, never coerced into a price', async () => {
@@ -1035,5 +1043,84 @@ describe('pnlReconciliation', () => {
     await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [structurallyInvalid] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
     const mismatch = calls.find((c) => c[0] === 'CRITICAL accepted_evidence_eligibility_mismatch')
     assert.equal(mismatch, undefined, 'a structurally-invalid lot is an honest, disclosed skippedInvalid reason — never a silent, unexplained mismatch')
+  })
+
+  // ===============================================================================================
+  // HYDRATION TIMING & CANONICAL PRECEDENCE — hydration-timing-and-canonical-precedence follow-up
+  // task, required regression #7.
+  // ===============================================================================================
+
+  function build27CanonicalPrecedenceLots(costBasisByIndex: (i: number) => number | null, proceedsByIndex: (i: number) => number | null): MatchedLot[] {
+    return Array.from({ length: 27 }, (_, i) => {
+      const costBasisUsd = costBasisByIndex(i)
+      const proceedsUsd = proceedsByIndex(i)
+      const bothPriced = costBasisUsd !== null && proceedsUsd !== null
+      return lot({
+        lotId: `cp${i}`, token: `0xprecedence${i}`, openedTxHash: `0xpcb${i}`, closedTxHash: `0xpcs${i}`,
+        openedAt: 20000 + i, closedAt: 21000 + i, amount: 1,
+        costBasisUsd, proceedsUsd,
+        realizedPnlUsd: bothPriced ? proceedsUsd! - costBasisUsd! : null,
+        evidenceQuality: bothPriced ? 'verified' : 'unpriced',
+      })
+    })
+  }
+
+  it('HARD ASSERTION (required regression #7): persisted accepted sides apply before provider pricing on a rescan — upstream returning different valid prices, two newly-priceable lots, and some providers returning null never change the previously-accepted portion of the sample', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+
+    // RUN 1: upstream prices exactly 17 of 27 lots (indices 0-16); the rest are genuinely unpriced.
+    const run1Lots = build27CanonicalPrecedenceLots(
+      (i) => (i < 17 ? 10 + i : null),
+      (i) => (i < 17 ? 20 + i : null),
+    )
+    const r1 = createPnlReconciliation({
+      logger: quiet, priceKvClient: { getPriceRecovery: async () => null } as never, priceSources: { primary: async () => null },
+      acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 1_000_000,
+    })
+    const summary1 = await r1.reconcile({ fifoEngineResult: fifo({ matchedLots: run1Lots }), pnlEngineResult: pnl(17), syntheticPnlAssemblyOutput: null })
+    assert.equal(summary1.publicPnlGateAudit.verifiedClosedLots, 17)
+    assert.equal(summary1.acceptedEvidenceAudit.canonicalSeedingWriteSuccesses, 34, '17 lots x 2 sides seeded')
+
+    // RUN 2: same 27 structural lot identities. Upstream now returns DIFFERENT valid prices for the
+    // same 17 lots (simulating provider drift), TWO more lots (17, 18) become newly live-priceable,
+    // and the remaining lots stay unpriced (simulating "some providers return null").
+    const run2UpstreamLots = build27CanonicalPrecedenceLots(
+      (i) => (i < 17 ? 10 + i + 500 : null), // deliberately DIFFERENT upstream candidate for the 17
+      (i) => (i < 17 ? 20 + i + 500 : null),
+    )
+    let liveCalls = 0
+    const priceKvClient2 = {
+      getPriceRecovery: async (token: string, chain: string, timestamp: number, fetcher: (t: string, c: string, ts: number) => Promise<number | null>) => fetcher(token, chain, timestamp),
+    }
+    const run2Fetcher = async (token: string, _chain: string, timestamp: number): Promise<number | null> => {
+      liveCalls += 1
+      const i = Number(token.replace('0xprecedence', ''))
+      if (i === 17 || i === 18) return timestamp === 20000 + i ? 100 + i : 200 + i // two newly-priceable lots
+      return null // every other still-missing lot: provider returns null
+    }
+    const r2 = createPnlReconciliation({
+      logger: quiet, priceKvClient: priceKvClient2 as never, priceSources: { primary: run2Fetcher },
+      acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 2_000_000,
+    })
+    const summary2 = await r2.reconcile({ fifoEngineResult: fifo({ matchedLots: run2UpstreamLots }), pnlEngineResult: pnl(19), syntheticPnlAssemblyOutput: null })
+
+    // The 17 previously-accepted lots: accepted evidence applies BEFORE/OVER the different upstream
+    // candidate — no live call is ever needed for them (hydration already fully resolved both sides).
+    const audit2 = summary2.acceptedEvidenceAudit
+    assert.equal(audit2.persistedAcceptedSidesLoaded, 34, 'persisted accepted sides apply before provider pricing')
+    assert.equal(audit2.persistedAcceptedSidesApplied, 34)
+    assert.equal(audit2.upstreamLookupsSkippedByAcceptedEvidence + audit2.upstreamPricesMatchingAcceptedEvidence + audit2.upstreamPricesRejectedDueToAcceptedEvidence, 34, 'every accepted side is accounted for as either a skip or a compared-and-overridden upstream candidate')
+    assert.ok(audit2.upstreamPricesRejectedDueToAcceptedEvidence > 0, 'the deliberately different run-2 upstream candidates for the 17 lots must be detected and rejected')
+    assert.equal(audit2.acceptedEvidenceAppliedAfterUpstreamPricing, 0, 'accepted evidence is always applied before recovery/live pricing by construction')
+
+    // Rebuild what the FIRST 17 lots' canonical prices actually are (from summary1's own known
+    // accepted values) to prove they are byte-for-byte unchanged in summary2.
+    const unchanged17RealizedPnl = Array.from({ length: 17 }, (_, i) => (20 + i) - (10 + i)).reduce((a, b) => a + b, 0)
+    assert.equal(liveCalls, (27 - 17) * 2, 'only the genuinely still-unresolved lots (10, both sides each) ever reach a live fetcher — never the 17 already-accepted ones')
+    // Total realized PnL: the unchanged 17 lots' contribution PLUS the 2 newly-resolved lots' own
+    // real contribution (100+17=117 buy, 200+17=217 sell -> 100; 100+18=118 buy, 200+18=218 sell -> 100).
+    const newlyResolvedContribution = (217 - 117) + (218 - 118)
+    assert.equal(summary2.realizedPnlUsd, unchanged17RealizedPnl + newlyResolvedContribution, 'the previously-accepted 17 lots contribute their exact original canonical PnL, unaffected by the different run-2 upstream candidates')
+    assert.equal(summary2.publicPnlGateAudit.verifiedClosedLots, 19)
   })
 })

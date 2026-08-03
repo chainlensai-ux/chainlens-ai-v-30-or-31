@@ -326,6 +326,32 @@ export type AcceptedEvidenceAudit = {
   verifiedSidesSkippedUnverified: number
   verifiedSidesSkippedInvalid: number
   missingVerifiedEvidenceMetadata: number
+  // CANONICAL-PRECEDENCE COUNTERS, DISCLOSED (hydration-timing-and-canonical-precedence follow-up
+  // task, requirements #5/#6 — confirmed root cause: an already-upstream-priced side was previously
+  // "protected from overwrite" by simply never being checked against accepted evidence at all, so a
+  // provider returning a genuinely different price on a later scan silently became the new canonical
+  // value). These describe the hydration pass's real behavior when accepted evidence is now compared
+  // against EVERY side, not just missing ones — see hydrateFromAcceptedEvidence's own header.
+  acceptedSidesRequestedBeforePricing: number
+  acceptedSidesLoadedBeforePricing: number
+  acceptedSidesAppliedBeforePricing: number
+  upstreamLookupsSkippedByAcceptedEvidence: number
+  upstreamPricesMatchingAcceptedEvidence: number
+  upstreamPricesRejectedDueToAcceptedEvidence: number
+  acceptedEvidenceIdentityMisses: number
+  acceptedEvidenceValidationFailures: number
+  // DISCLOSED: always 0 by construction in this architecture — hydration (which applies accepted
+  // evidence) runs strictly before recovery/live pricing every reconcile() call, so accepted
+  // evidence can never be "applied after" upstream pricing already ran. Kept as a real, checked
+  // field (never silently omitted) so a future architecture change that violated this ordering would
+  // be immediately visible rather than silently assumed.
+  acceptedEvidenceAppliedAfterUpstreamPricing: number
+  // SUPPLEMENTS existingVerifiedSidesProtectedFromOverwrite (requirement #6, kept for backward
+  // compatibility — still real, still incremented for every already-priced side regardless of
+  // outcome below): a finer breakdown of WHAT "protected" actually meant for that side.
+  existingUpstreamSidesBackedByAcceptedEvidence: number
+  existingUpstreamSidesWithoutAcceptedEvidence: number
+  existingUpstreamSidesConflictingWithAcceptedEvidence: number
 }
 
 export type PnlReconciliationSummary = {
@@ -469,6 +495,12 @@ export function createPnlReconciliation(config: Config = {}) {
       verifiedSidesEligibleForPersistence: 0, verifiedSidesAlreadyPersisted: 0, verifiedSidesWritten: 0,
       verifiedSideWriteFailures: 0, verifiedSidesSkippedUnverified: 0, verifiedSidesSkippedInvalid: 0,
       missingVerifiedEvidenceMetadata: 0,
+      acceptedSidesRequestedBeforePricing: 0, acceptedSidesLoadedBeforePricing: 0, acceptedSidesAppliedBeforePricing: 0,
+      upstreamLookupsSkippedByAcceptedEvidence: 0, upstreamPricesMatchingAcceptedEvidence: 0,
+      upstreamPricesRejectedDueToAcceptedEvidence: 0, acceptedEvidenceIdentityMisses: 0,
+      acceptedEvidenceValidationFailures: 0, acceptedEvidenceAppliedAfterUpstreamPricing: 0,
+      existingUpstreamSidesBackedByAcceptedEvidence: 0, existingUpstreamSidesWithoutAcceptedEvidence: 0,
+      existingUpstreamSidesConflictingWithAcceptedEvidence: 0,
     }
   }
 
@@ -482,6 +514,20 @@ export function createPnlReconciliation(config: Config = {}) {
   // acceptedEvidenceStore.ts's own fail-closed matching rule. A hydrated side BYPASSES live provider
   // competition entirely: it is removed from the candidate pool the live loop below ever sees, so no
   // live source can replace or downgrade it during an ordinary rescan.
+  // CANONICAL-PRECEDENCE HYDRATION, DISCLOSED (hydration-timing-and-canonical-precedence follow-up
+  // task — confirmed root cause: an already-upstream-priced side was previously "protected from
+  // overwrite" by never being checked against accepted evidence AT ALL — so a provider returning a
+  // genuinely different price on a later scan silently became the new canonical value, changing
+  // verified-lot membership and realized PnL for an unchanged matched-lot structure). This function
+  // now checks accepted evidence for EVERY side — already-priced by upstream AND still-missing
+  // alike — and, whenever a VALID persisted entry exists for the exact identity (chain/token/txHash/
+  // side/timestamp/lot-identity-version/schemaVersion — acceptedEvidenceStore.ts's own fail-closed
+  // rule, unchanged here), that accepted price is now CANONICAL: it always wins, whether the
+  // upstream candidate agreed (`upstreamPricesMatchingAcceptedEvidence`) or genuinely differed
+  // (`upstreamPricesRejectedDueToAcceptedEvidence` — the upstream candidate is logged for diagnostics
+  // only, never applied). A side with no valid accepted evidence keeps its upstream value exactly as
+  // before (nothing to override with) — accepted evidence can only ever narrow disagreement toward
+  // the previously-published canonical fact, never invent one from nothing.
   async function hydrateFromAcceptedEvidence(lots: readonly MatchedLot[]): Promise<{ hydratedLots: MatchedLot[]; audit: AcceptedEvidenceAudit }> {
     const audit = emptyAcceptedEvidenceAudit()
     const kv = config.acceptedEvidenceKv
@@ -492,30 +538,68 @@ export function createPnlReconciliation(config: Config = {}) {
       let costBasisUsd = lot.costBasisUsd
       let proceedsUsd = lot.proceedsUsd
       const identityVersion = lotIdentityVersion(lot)
-      const sides: Array<{ side: AcceptedEvidenceSide; txHash: string; timestamp: number; already: boolean }> = [
-        { side: 'entry', txHash: lot.openedTxHash, timestamp: lot.openedAt, already: lot.costBasisUsd !== null },
-        { side: 'exit', txHash: lot.closedTxHash, timestamp: lot.closedAt, already: lot.proceedsUsd !== null },
+      const sides: Array<{ side: AcceptedEvidenceSide; txHash: string; timestamp: number; upstreamPrice: number | null; already: boolean }> = [
+        { side: 'entry', txHash: lot.openedTxHash, timestamp: lot.openedAt, upstreamPrice: lot.costBasisUsd, already: lot.costBasisUsd !== null },
+        { side: 'exit', txHash: lot.closedTxHash, timestamp: lot.closedAt, upstreamPrice: lot.proceedsUsd, already: lot.proceedsUsd !== null },
       ]
       for (const s of sides) {
-        if (s.already) { audit.existingVerifiedSidesProtectedFromOverwrite += 1; continue }
-        if (!kv) { audit.missingAcceptedEvidenceKeys += 1; continue }
+        if (s.already) audit.existingVerifiedSidesProtectedFromOverwrite += 1
+        if (!kv) {
+          audit.missingAcceptedEvidenceKeys += 1
+          if (s.already) audit.existingUpstreamSidesWithoutAcceptedEvidence += 1
+          continue
+        }
         const identity = { chain: lot.chain, token: lot.token, txHash: s.txHash, side: s.side, timestamp: s.timestamp, lotIdentityVersion: identityVersion }
+        audit.acceptedSidesRequestedBeforePricing += 1
         const evidence = await readAcceptedEvidence(kv, identity, now)
         if (evidence) {
           audit.persistedAcceptedSidesLoaded += 1
           audit.persistedAcceptedSidesApplied += 1
+          audit.acceptedSidesLoadedBeforePricing += 1
+          audit.acceptedSidesAppliedBeforePricing += 1
+          if (s.already) {
+            // CONFLICT DETECTION, DISCLOSED (requirement #6): compares the upstream candidate ONLY
+            // for diagnostics — the accepted, canonical price is applied unconditionally below
+            // regardless of the outcome of this comparison.
+            if (s.upstreamPrice === evidence.priceUsd) {
+              audit.upstreamPricesMatchingAcceptedEvidence += 1
+              audit.existingUpstreamSidesBackedByAcceptedEvidence += 1
+            } else {
+              audit.upstreamPricesRejectedDueToAcceptedEvidence += 1
+              audit.existingUpstreamSidesConflictingWithAcceptedEvidence += 1
+            }
+          } else {
+            audit.upstreamLookupsSkippedByAcceptedEvidence += 1
+          }
           if (s.side === 'entry') costBasisUsd = evidence.priceUsd
           else proceedsUsd = evidence.priceUsd
         } else {
           audit.missingAcceptedEvidenceKeys += 1
+          audit.acceptedEvidenceIdentityMisses += 1
+          if (s.already) audit.existingUpstreamSidesWithoutAcceptedEvidence += 1
         }
       }
-      hydratedLots.push(costBasisUsd === lot.costBasisUsd && proceedsUsd === lot.proceedsUsd ? lot : { ...lot, costBasisUsd, proceedsUsd })
+      // REALIZED-PNL RECOMPUTE, DISCLOSED: a side that was already both-sides-priced by upstream
+      // (fifoEngine's own `realizedPnlUsd`/`evidenceQuality` reflect ITS prices) can have one or both
+      // of those prices overridden by canonical accepted evidence above — `realizedPnlUsd` must be
+      // recomputed from the FINAL, canonical prices, never left stale against a superseded upstream
+      // figure. Only recomputed when a price actually changed and both sides are now known.
+      const pricesChanged = costBasisUsd !== lot.costBasisUsd || proceedsUsd !== lot.proceedsUsd
+      if (!pricesChanged) { hydratedLots.push(lot); continue }
+      const nowFullyPriced = costBasisUsd !== null && proceedsUsd !== null
+      hydratedLots.push({
+        ...lot,
+        costBasisUsd,
+        proceedsUsd,
+        realizedPnlUsd: nowFullyPriced ? proceedsUsd! - costBasisUsd! : lot.realizedPnlUsd,
+        evidenceQuality: nowFullyPriced ? ('verified' as const) : lot.evidenceQuality,
+      })
     }
     return { hydratedLots, audit }
   }
 
   async function recoverPrices(lots: readonly MatchedLot[]): Promise<{
+    hydratedLots: MatchedLot[]
     recoveredByLotKey: Map<string, RecoveredPrice>
     oneSideMissingCandidates: number
     bothSidesMissingCandidates: number
@@ -529,17 +613,14 @@ export function createPnlReconciliation(config: Config = {}) {
     acceptedEvidenceAudit: AcceptedEvidenceAudit
   }> {
     const { hydratedLots, audit: acceptedEvidenceAudit } = await hydrateFromAcceptedEvidence(lots)
-    // HYDRATION SEEDS THE RESULT MAP, DISCLOSED: a lot with BOTH sides hydrated never appears in
-    // `missingLots`/`candidates` below at all (correctly — there is nothing left for it to recover
-    // live) — its hydrated prices are recorded here up front so reconcile()'s own merge step (which
-    // reads ONLY `recoveredByLotKey`) still sees them.
+    // CANONICAL BASE, DISCLOSED (hydration-timing-and-canonical-precedence follow-up task):
+    // `hydratedLots` — NOT the raw, un-hydrated `lots` — is now the base the caller's `updatedFifoLots`
+    // merge builds from (see reconcile()'s own call site below). Every side accepted evidence covered
+    // (whether it filled a gap or overrode an upstream candidate) is ALREADY final in `hydratedLots`,
+    // including a correctly recomputed `realizedPnlUsd`/`evidenceQuality` — `recoveredByLotKey` below
+    // is reserved EXCLUSIVELY for sides genuinely resolved by LIVE recovery in this same pass, never
+    // a duplicate encoding of what hydration already decided.
     const recoveredByLotKey = new Map<string, RecoveredPrice>()
-    for (const lot of hydratedLots) {
-      const original = lots.find((l) => lotKey(l) === lotKey(lot))!
-      const hydratedBuy = original.costBasisUsd === null && lot.costBasisUsd !== null ? lot.costBasisUsd : null
-      const hydratedSell = original.proceedsUsd === null && lot.proceedsUsd !== null ? lot.proceedsUsd : null
-      if (hydratedBuy !== null || hydratedSell !== null) recoveredByLotKey.set(lotKey(lot), { costBasisUsd: hydratedBuy, proceedsUsd: hydratedSell })
-    }
     const failureReasonCounts = emptyReasonCounts()
     const sourceAttemptCounters = emptySourceAttemptCounters()
     let detailedLookupsUsed = 0
@@ -551,7 +632,7 @@ export function createPnlReconciliation(config: Config = {}) {
     const oneSideMissingCandidates = missingLots.filter((l) => l.costBasisUsd !== null || l.proceedsUsd !== null).length
     const bothSidesMissingCandidates = missingLots.length - oneSideMissingCandidates
     if (!config.priceKvClient || (fetchers.length === 0 && !detailedPrimary)) {
-      return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved, acceptedEvidenceAudit }
+      return { hydratedLots, recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved, acceptedEvidenceAudit }
     }
     const priceKvClient = config.priceKvClient
     const sorted = [...missingLots].sort((a, b) => {
@@ -645,6 +726,19 @@ export function createPnlReconciliation(config: Config = {}) {
       }
       if (recoveredBuy !== null) acceptedEvidenceAudit.liveSidesResolved += 1
       if (recoveredSell !== null) acceptedEvidenceAudit.liveSidesResolved += 1
+      // CANDIDATE NEW EVIDENCE, DISCLOSED (requirement #7's own "log them as candidateNewEvidence
+      // until a deliberate sample-version refresh occurs"): a lot that had NEITHER side covered by
+      // accepted evidence before this scan (both `needsBuy`/`needsSell` were true — hydration found
+      // nothing) and just became newly, fully live-priceable is real NEW evidence this specific scan
+      // introduced, not a previously-published fact. Logged only — this pass does not implement the
+      // full sample-version-gated expansion policy requirement #7/#8 describe (a durable manifest
+      // deciding WHEN a scan window's published sample is allowed to grow); that is a real, disclosed
+      // scope limit of this follow-up task, not a silent omission. The lot's own realized PnL
+      // contribution is unchanged by this log — it still counts normally, exactly as fifoEngine/
+      // recovery already resolved it.
+      if (needsBuy && needsSell && recoveredBuy !== null && recoveredSell !== null) {
+        logger.warn('candidateNewEvidence', { lotIdentity: lotKey(lot), chain: lot.chain, token: lot.token })
+      }
       // WRITE-BACK, AWAITED, DISCLOSED (requirement #5): a newly live-resolved side is persisted to
       // the accepted-evidence store BEFORE this concurrency-limited task resolves, so a later
       // `await recoverPrices(...)` caller — including the very end of this scan's own reconcile()
@@ -675,7 +769,7 @@ export function createPnlReconciliation(config: Config = {}) {
         }
       }
     })
-    return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: candidates.length, candidatesCappedByBudget: sorted.length - candidates.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved, acceptedEvidenceAudit }
+    return { hydratedLots, recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: candidates.length, candidatesCappedByBudget: sorted.length - candidates.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved, acceptedEvidenceAudit }
   }
 
   // STRUCTURAL VALIDITY, DISCLOSED (requirement #4's "never persist... structurally invalid lots"):
@@ -818,10 +912,18 @@ export function createPnlReconciliation(config: Config = {}) {
       // found, instead of discarding it (see recoverPrices' own header for the full trace). A lot
       // recovery didn't touch is returned unchanged; a lot recovery reached but genuinely couldn't
       // price stays exactly as unpriced as before — never a fabricated value.
+      //
+      // CANONICAL-PRECEDENCE BASE, DISCLOSED (hydration-timing-and-canonical-precedence follow-up
+      // task): maps over `recovery.hydratedLots` — NOT the raw `fifoLots` — so a side accepted
+      // evidence already overrode (whether it filled a gap or replaced a genuinely different upstream
+      // candidate) is the starting point here, never silently reverted back to the raw upstream
+      // value. `recovery.recoveredByLotKey` now contains ONLY genuinely live-recovered sides (see
+      // recoverPrices' own header) and is merged on top of that already-canonical base exactly as
+      // before.
       let recoveredBuyOnly = 0
       let recoveredSellOnly = 0
       let recoveredBoth = 0
-      const updatedFifoLots = fifoLots.map((lot) => {
+      const updatedFifoLots = recovery.hydratedLots.map((lot) => {
         const recoveredPrice = recovery.recoveredByLotKey.get(lotKey(lot))
         if (!recoveredPrice) return lot
         const costBasisUsd = lot.costBasisUsd ?? recoveredPrice.costBasisUsd
