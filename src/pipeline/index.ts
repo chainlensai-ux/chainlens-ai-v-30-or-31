@@ -19,6 +19,12 @@ import { createRouterInference } from '../lib/routerInference'
 import { kv as acceptedEvidenceRealKv } from '@vercel/kv'
 import { createPnlReconciliation } from '../lib/pnlReconciliation'
 import { buildScanDeterminismAudit, checkFinalPnlSnapshotDivergence, logFinalPnlSnapshotDivergenceIfAny } from '../lib/scanDeterminismAudit'
+import {
+  buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
+  readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, applyManifestToCandidateSample,
+  canonicalLotIdentityKey, emptyCanonicalSampleManifestAudit,
+  type CanonicalSampleManifestKvLike, type CanonicalSampleManifestAudit,
+} from '../lib/canonicalPnlSampleManifest'
 import { createAyriAttribution } from '../lib/ayriAttribution'
 import { createFinalReportAssembler } from '../lib/finalReportAssembler'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
@@ -2684,6 +2690,147 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     unrealizedPnlUsd: reconciledPnlSummary.unrealizedPnlUsd,
     publicPnlStatus: reconciledPnlSummary.publicPnlStatus === 'available' ? 'ok' : reconciledPnlSummary.publicPnlStatus === 'partial' ? 'limited_verified_sample' : 'unavailable',
   }
+  // STRUCTURAL DETERMINISM PRE-PASS, DISCLOSED (durable-canonical-sample follow-up task): computed
+  // BEFORE any manifest logic runs, purely to obtain `matchedLotFingerprint` — a stable structural
+  // identity (chain/token/tx-hash/timestamp/amount only, never evidenceQuality or price; see
+  // scanDeterminismAudit.ts's own `lotIdentityKey`) that is the manifest's own lookup key. Computing
+  // it on the FULL, unfiltered `reconciledFifoAndPnl.matchedLots` here (never on a
+  // manifest-filtered subset) is exactly what requirement #6 asks for: the same structural lot set
+  // must produce the same key regardless of the wall-clock scan time or which sides happen to be
+  // priced yet.
+  const structuralFingerprintAudit = buildScanDeterminismAudit({
+    matchedLots: reconciledFifoAndPnl.matchedLots,
+    realizedPnlUsd: reconciledFifoAndPnl.realizedPnlUsd,
+    persistedEvidenceHits: requestPriceKvClient.stats.cacheHits + requestPriceKvClient.recoveryStats.recoveryCacheHits,
+    liveEvidenceMisses: requestPriceKvClient.recoveryStats.recoveryLiveFetches,
+  })
+
+  // DURABLE CANONICAL PNL SAMPLE MANIFEST, DISCLOSED (durable-canonical-sample follow-up task): the
+  // exact gap production evidence proved — accepted-evidence precedence and gate/AYRI agreement
+  // were both already correct, but newly available provider evidence silently EXPANDED the
+  // published verified sample between rescans of the SAME structural lot set (19 lots/70.37%/
+  // -1377.03 -> 21 lots/77.78%/-979.81). This manifest is the durable record of "the sample we
+  // already published" that a rescan reproduces unless an explicit refresh is requested. See
+  // src/lib/canonicalPnlSampleManifest.ts's own header for the full identity/fail-closed contract.
+  const canonicalSampleManifestKv = acceptedEvidenceRealKv as unknown as CanonicalSampleManifestKvLike
+  const candidateVerifiedLots = reconciledFifoAndPnl.matchedLots.filter((l) => l.evidenceQuality === 'verified')
+  const manifestIdentity = buildManifestIdentity({
+    walletAddress: params.walletAddress,
+    chains: preScan.sanitizedChains,
+    configuredWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
+    matchedLotFingerprint: structuralFingerprintAudit.matchedLotFingerprint,
+  })
+  const manifestKey = buildManifestKey(manifestIdentity)
+  const existingManifestRead = await readCanonicalPnlSampleManifest(canonicalSampleManifestKv, manifestIdentity)
+  const refreshRequested = params.refreshCanonicalPnlSample === true
+  let canonicalSampleManifestAudit: CanonicalSampleManifestAudit = emptyCanonicalSampleManifestAudit(manifestKey)
+  let sampleUpdated = false
+
+  if (!existingManifestRead.manifest || refreshRequested) {
+    // FIRST QUALIFYING SCAN, or an EXPLICIT refresh (requirement #3/#7) — build/replace the manifest
+    // from this scan's own candidate verified sample, never from a filtered/prior one.
+    const candidateFingerprintAudit = buildScanDeterminismAudit({
+      matchedLots: reconciledFifoAndPnl.matchedLots,
+      realizedPnlUsd: reconciledFifoAndPnl.realizedPnlUsd,
+      persistedEvidenceHits: requestPriceKvClient.stats.cacheHits + requestPriceKvClient.recoveryStats.recoveryCacheHits,
+      liveEvidenceMisses: requestPriceKvClient.recoveryStats.recoveryLiveFetches,
+    })
+    const newManifest = refreshRequested && existingManifestRead.manifest
+      ? buildRefreshedManifest({
+          priorManifest: existingManifestRead.manifest, identity: manifestIdentity, candidateVerifiedLots,
+          structuralLotCount: reconciledFifoAndPnl.matchedLots.length, fingerprints: candidateFingerprintAudit,
+          realizedPnlUsd: reconciledFifoAndPnl.realizedPnlUsd, verifiedPricingCoverage: reconciledPnlSummary.publicPnlGateAudit.verifiedPricingCoverage,
+          now: Date.now(), refreshReason: 'explicit-refresh-requested',
+        })
+      : buildManifestFromCandidate({
+          identity: manifestIdentity, candidateVerifiedLots, structuralLotCount: reconciledFifoAndPnl.matchedLots.length,
+          fingerprints: candidateFingerprintAudit, realizedPnlUsd: reconciledFifoAndPnl.realizedPnlUsd,
+          verifiedPricingCoverage: reconciledPnlSummary.publicPnlGateAudit.verifiedPricingCoverage, now: Date.now(),
+        })
+    // AWAITED, DISCLOSED (requirement #3 — "await the manifest write before returning"): the scan
+    // does not report success until this durable record either lands or is honestly marked failed.
+    const writeSuccess = await writeCanonicalPnlSampleManifest(canonicalSampleManifestKv, newManifest)
+    sampleUpdated = refreshRequested && !!existingManifestRead.manifest
+    canonicalSampleManifestAudit = {
+      manifestKey,
+      manifestFound: !!existingManifestRead.manifest,
+      manifestCreated: !existingManifestRead.manifest,
+      manifestApplied: false,
+      manifestVersion: newManifest.manifestVersion,
+      manifestVerifiedLotCount: newManifest.verifiedLotCount,
+      currentCandidateVerifiedLotCount: candidateVerifiedLots.length,
+      candidateNewEvidenceCount: 0,
+      candidateNewEvidenceLotKeys: [],
+      manifestLotsMissingCurrentEvidence: [],
+      manifestEvidenceHydrated: true,
+      manifestIdentityMismatches: 0,
+      manifestValidationFailures: existingManifestRead.validationFailure ? 1 : 0,
+      manifestWriteSuccess: writeSuccess,
+      manifestWriteFailure: !writeSuccess,
+      refreshRequested,
+      refreshReason: newManifest.refreshReason,
+      canonicalSampleEvidenceUnavailable: false,
+    }
+    // The freshly-built manifest IS this scan's own candidate sample — nothing to filter out.
+  } else {
+    // SUBSEQUENT, UNCHANGED SCAN, DISCLOSED (requirement #4): the manifest already exists for this
+    // exact (wallet, chain scope, scan-window identity, structural fingerprint, methodology,
+    // schema) — apply it. Newly-priceable lots this run are excluded from the published sample and
+    // exposed only as candidateNewEvidenceLotKeys; nothing here EVER silently substitutes or drops a
+    // manifest-referenced lot the current scan can't reproduce (requirement #9 — fail closed).
+    const manifest = existingManifestRead.manifest
+    const applied = applyManifestToCandidateSample({ manifest, candidateVerifiedLots })
+    canonicalSampleManifestAudit = {
+      manifestKey,
+      manifestFound: true,
+      manifestCreated: false,
+      manifestApplied: !applied.evidenceUnavailable,
+      manifestVersion: manifest.manifestVersion,
+      manifestVerifiedLotCount: manifest.verifiedLotCount,
+      currentCandidateVerifiedLotCount: candidateVerifiedLots.length,
+      candidateNewEvidenceCount: applied.candidateNewEvidence.length,
+      candidateNewEvidenceLotKeys: applied.candidateNewEvidence.map(canonicalLotIdentityKey),
+      manifestLotsMissingCurrentEvidence: applied.manifestLotsMissingCurrentEvidence,
+      manifestEvidenceHydrated: !applied.evidenceUnavailable,
+      manifestIdentityMismatches: 0,
+      manifestValidationFailures: 0,
+      manifestWriteSuccess: false,
+      manifestWriteFailure: false,
+      refreshRequested: false,
+      refreshReason: null,
+      canonicalSampleEvidenceUnavailable: applied.evidenceUnavailable,
+    }
+
+    if (!applied.evidenceUnavailable) {
+      // CROSS-CONSUMER PUBLICATION, DISCLOSED (requirement #10): candidateNewEvidence lots are
+      // withheld from every downstream consumer of `reconciledFifoAndPnl.matchedLots` (gate, AYRI,
+      // serialized lots, determinism fingerprinting, UI all read this SAME array) by reverting them
+      // to the honest `'unpriced'` evidence state for publication purposes — their real price is
+      // known internally this scan but deliberately not published until an explicit refresh. This
+      // never mutates FIFO matching/classification/accepted-price VALUES for any lot that IS
+      // published; it only withholds publication of ones that aren't yet.
+      const candidateNewEvidenceKeys = new Set(applied.candidateNewEvidence.map(canonicalLotIdentityKey))
+      reconciledFifoAndPnl.matchedLots = reconciledFifoAndPnl.matchedLots.map((lot) => {
+        if (lot.evidenceQuality !== 'verified' || !candidateNewEvidenceKeys.has(canonicalLotIdentityKey(lot))) return lot
+        return { ...lot, evidenceQuality: 'unpriced' as const, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null }
+      })
+      // The manifest's OWN stored, frozen totals become the published figures — never recomputed
+      // from this run's expanded candidate set, which is exactly what keeps realizedPnlUsd/coverage/
+      // fingerprints reproducible across rescans (requirement #8's own literal expectation).
+      reconciledFifoAndPnl.realizedPnlUsd = manifest.realizedPnlUsd
+      reconciledPnlSummary.realizedPnlUsd = manifest.realizedPnlUsd
+      reconciledPnlSummary.publicPnlGateAudit.verifiedClosedLots = manifest.verifiedLotCount
+      reconciledPnlSummary.publicPnlGateAudit.verifiedPricingCoverage = manifest.verifiedPricingCoverage
+    }
+    // else: FAIL CLOSED (requirement #9) — a required manifest evidence record could not be
+    // reproduced this scan. Never substitute a new value, never drop the lot silently: the array is
+    // left exactly as this scan's own reconciliation produced it (an honest, degraded-vs-manifest
+    // state), and `canonicalSampleEvidenceUnavailable`/`manifestLotsMissingCurrentEvidence` disclose
+    // the gap rather than hiding it behind a falsely-reproduced published figure.
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[pipeline] canonicalSampleManifestAudit', canonicalSampleManifestAudit)
+
   // SCAN DETERMINISM AUDIT, DISCLOSED (determinism follow-up task, requirement #6): real,
   // computed-only, from the SAME reconciled matched lots and realized PnL every other section of
   // this report already uses — never a second, independent computation. `persistedEvidenceHits`/
@@ -2693,7 +2840,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // exact evidence this determinism fix targets. `previousScanFingerprint` is not threaded here
   // (this pipeline has no request-to-request scan-history store of its own) — a caller with one
   // (e.g. a future job-history lookup) can pass it in; omitted here means
-  // `deterministicComparedToPreviousScan` is honestly `null`, never guessed.
+  // `deterministicComparedToPreviousScan` is honestly `null`, never guessed. Computed AFTER the
+  // manifest publication step above, on the now-possibly-manifest-filtered matchedLots/
+  // realizedPnlUsd — `matchedLotFingerprint` is unaffected by that filtering (identity-only hash,
+  // never evidenceQuality/price; see canonicalLotIdentityKey's own header), so it stays equal to
+  // `structuralFingerprintAudit.matchedLotFingerprint` above by construction.
   const scanDeterminismAudit = buildScanDeterminismAudit({
     matchedLots: reconciledFifoAndPnl.matchedLots,
     realizedPnlUsd: reconciledFifoAndPnl.realizedPnlUsd,
@@ -2939,7 +3090,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // has completed, independent of the earlier immediate post-assembly log.
   logSyntheticPnlSummary(syntheticPnl)
 
-  return { ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit }
+  return { ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated }
 }
 
 export type { SupportedChain }

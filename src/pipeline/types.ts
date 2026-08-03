@@ -11,6 +11,7 @@ import type { FinalReport } from '../modules/finalReportAssembler/types'
 import type { WalletConditionSection } from './walletConditionMessages'
 import type { PnlReconciliationSummary } from '../lib/pnlReconciliation'
 import type { ScanDeterminismAudit } from '../lib/scanDeterminismAudit'
+import type { CanonicalSampleManifestAudit } from '../lib/canonicalPnlSampleManifest'
 
 export type ScanModeInput = 'normal' | 'deep'
 
@@ -27,6 +28,11 @@ export type RunWalletScanParams = {
   // quarantine flag + current-price source). Sourced from the SAME canonical holdings snapshot the
   // balance lookup above already uses — never an additional holdings fetch.
   unrealizedReconciliationDiagnostics?: import('../modules/fifoEngine/types').UnrealizedReconciliationDiagnosticsContext
+  // EXPLICIT REFRESH, DISCLOSED (durable-canonical-sample follow-up task, requirement #7): default
+  // false, no public automatic refresh — a rescan reproduces the previously published canonical
+  // sample unless this is deliberately set true, in which case a NEW manifest version is created
+  // (retaining audit linkage to the prior one) and the response discloses `sampleUpdated: true`.
+  refreshCanonicalPnlSample?: boolean
 }
 
 // Architecture Step 9's "output shape" for the orchestrator's public entry point: the exact
@@ -47,6 +53,11 @@ export type RunWalletScanResult = FinalReport & {
   // real-values-only fingerprint of the canonical matched-lot/realized-PnL result — see
   // src/lib/scanDeterminismAudit.ts's own header.
   scanDeterminismAudit?: ScanDeterminismAudit
+  // DURABLE CANONICAL SAMPLE MANIFEST, DISCLOSED (durable-canonical-sample follow-up task): see
+  // src/lib/canonicalPnlSampleManifest.ts's own header. `sampleUpdated` is true only on an explicit
+  // refresh (requirement #7) — never set on ordinary provider-availability-driven variance.
+  canonicalSampleManifestAudit?: CanonicalSampleManifestAudit
+  sampleUpdated?: boolean
 }
 
 export type PreScanValidation = {
