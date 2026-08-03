@@ -1,4 +1,5 @@
 import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
+import { isCanonicalVerifiedPublishedLot } from './canonicalVerifiedLot'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import type { SyntheticPnlSummary } from '../modules/syntheticPnl'
 import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
@@ -430,8 +431,16 @@ const lotKey = (lot: Pick<MatchedLot, 'chain' | 'token' | 'openedTxHash' | 'clos
 // Deliberately NEVER checks a `verificationStatus`/`confidence`/`pnlDisplayStatus`/`pnlDecisive`
 // field — `MatchedLot` (fifoEngine/types.ts) carries none of those; its only real pricing-quality
 // signal is `evidenceQuality: 'verified' | 'unpriced'`.
-export function isCanonicalVerifiedLotForPnl(lot: Pick<MatchedLot, 'evidenceQuality'>): boolean {
-  return lot.evidenceQuality === 'verified'
+// NOW DELEGATES TO THE ONE SHARED PREDICATE, DISCLOSED (canonical-price-replay follow-up task,
+// requirement #6): this used to test `evidenceQuality === 'verified'` alone, while the gate's own
+// `fullyPricedLotCount` separately tested that both price sides were non-null and AYRI tested an
+// attribution source — three different questions that could legitimately disagree about the same
+// lot (confirmed production: gate 23 verified, AYRI 18). All of them now resolve to
+// src/lib/canonicalVerifiedLot.ts. This is a strict tightening in principle only: fifoEngine sets
+// `evidenceQuality: 'verified'` exactly when both sides are priced, so no lot that previously
+// counted stops counting — it simply can no longer diverge from what the other consumers see.
+export function isCanonicalVerifiedLotForPnl(lot: Pick<MatchedLot, 'evidenceQuality' | 'costBasisUsd' | 'proceedsUsd' | 'realizedPnlUsd'>): boolean {
+  return isCanonicalVerifiedPublishedLot(lot)
 }
 
 // CONFIRMED ROOT CAUSE, DISCLOSED (real production evidence): recoverPrices previously ran a
@@ -1204,7 +1213,11 @@ export function createPnlReconciliation(config: Config = {}) {
       // block public PnL — only a specific, canonical FIFO lot proven invalid would (this codebase
       // has no such proof mechanism today, so this never silently fabricates one).
       const engineLotCountsAgree = fifoLots.length === pnlLots.length
-      const fullyPricedLotCount = publishedFifoLots.filter((l) => l.costBasisUsd !== null && l.proceedsUsd !== null).length
+      // SAME PREDICATE AS THE VERIFIED COUNT, DISCLOSED (requirement #6's explicit "do not let the
+      // gate count 'fully priced' while AYRI requires a different evidenceQuality value"): these two
+      // figures previously answered subtly different questions on the same array, which is how three
+      // consumers of one lot array ended up publishing three different verified counts.
+      const fullyPricedLotCount = publishedFifoLots.filter(isCanonicalVerifiedPublishedLot).length
       const verifiedPricingCoverage = fifoLots.length > 0 ? fullyPricedLotCount / fifoLots.length : null
       // PUBLIC PNL ELIGIBILITY THRESHOLDS, DISCLOSED (requirement #6, byte-for-byte from this
       // task's own explicit numbers): a minimum verified-closed-lot count and minimum verified

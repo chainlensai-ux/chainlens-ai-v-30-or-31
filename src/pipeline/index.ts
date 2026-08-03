@@ -17,14 +17,16 @@ import { normalizeEvents } from '../modules/normalization/index'
 import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate } from './routerDiscovery'
 import { createRouterInference } from '../lib/routerInference'
 import { kv as acceptedEvidenceRealKv } from '@vercel/kv'
-import { createPnlReconciliation, isCanonicalVerifiedLotForPnl, type CanonicalSampleSelector } from '../lib/pnlReconciliation'
+import { createPnlReconciliation, type CanonicalSampleSelector } from '../lib/pnlReconciliation'
 import { buildScanDeterminismAudit, checkFinalPnlSnapshotDivergence, logFinalPnlSnapshotDivergenceIfAny } from '../lib/scanDeterminismAudit'
 import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
   readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest,
   logDuplicateIdentityIfAny, buildLastKnownCanonicalSample, emptyCanonicalSampleManifestAudit,
-  type CanonicalSampleManifestKvLike, type CanonicalSampleManifestAudit,
+  type CanonicalSampleManifestKvLike, type CanonicalSampleManifestAudit, type AcceptedEvidenceLoader,
 } from '../lib/canonicalPnlSampleManifest'
+import { isCanonicalVerifiedPublishedLot, buildCanonicalVerifiedPredicateReasonCounts } from '../lib/canonicalVerifiedLot'
+import { readAcceptedEvidence, readAcceptedEvidenceAnyLotVersion, type AcceptedEvidenceKvLike } from '../lib/acceptedEvidenceStore'
 import { createAyriAttribution } from '../lib/ayriAttribution'
 import { createFinalReportAssembler } from '../lib/finalReportAssembler'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
@@ -2698,31 +2700,58 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       matchedLotFingerprint: structuralAudit.matchedLotFingerprint,
     })
     const manifestKey = buildManifestKey(manifestIdentity)
-    const candidateVerifiedLots = reconciledLots.filter(isCanonicalVerifiedLotForPnl)
+    const candidateVerifiedLots = reconciledLots.filter(isCanonicalVerifiedPublishedLot)
     const existingRead = await readCanonicalPnlSampleManifest(canonicalSampleManifestKv, manifestIdentity)
+
+    // ACCEPTED EVIDENCE IS THE SOURCE OF TRUTH, DISCLOSED (requirement #2): the same real store, the
+    // same fail-closed identity/side/timestamp/lot-identity-version/schema validation
+    // `readAcceptedEvidence` already enforces everywhere else in this pipeline. Manifest replay
+    // rebuilds every published lot from these records — never from the manifest's own stored numbers,
+    // and never from the current scan's live provider values.
+    const loadAcceptedEvidence: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...sideIdentity }) => {
+      const kv = acceptedEvidenceRealKv as unknown as AcceptedEvidenceKvLike
+      // A null version is a build-time DISCOVERY read (which lot-identity version backs this tx
+      // side — see acceptedEvidenceStore's own header on partial fills). Every replay passes a real
+      // version and therefore takes the fully strict path.
+      return version === null
+        ? readAcceptedEvidenceAnyLotVersion(kv, sideIdentity, Date.now())
+        : readAcceptedEvidence(kv, { ...sideIdentity, lotIdentityVersion: version }, Date.now())
+    }
+    const computeManifestFingerprints = (lots: readonly MatchedLot[], realizedPnlUsd: number | null) => {
+      const audit = buildScanDeterminismAudit({ matchedLots: lots, realizedPnlUsd, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
+      return {
+        verifiedLotIdentityFingerprint: audit.verifiedLotIdentityFingerprint,
+        acceptedHistoricalPriceFingerprint: audit.acceptedHistoricalPriceFingerprint,
+        realizedPnlFingerprint: audit.realizedPnlFingerprint,
+        scanFingerprint: audit.scanFingerprint,
+      }
+    }
 
     if (!existingRead.manifest || refreshCanonicalSampleRequested) {
       // FIRST QUALIFYING SCAN, or an EXPLICIT refresh (requirement #9 — never an automatic refresh
       // because replay failed). The manifest records THIS scan's own candidate verified sample, and
       // that same sample is published unchanged; there is nothing to withhold.
-      const fingerprints = buildScanDeterminismAudit({
-        matchedLots: reconciledLots,
-        realizedPnlUsd: candidateVerifiedLots.length > 0 ? candidateVerifiedLots.reduce((s, l) => s + (l.realizedPnlUsd ?? 0), 0) : null,
-        persistedEvidenceHits: 0,
-        liveEvidenceMisses: 0,
-      })
-      const realizedPnlUsd = candidateVerifiedLots.length > 0 ? candidateVerifiedLots.reduce((s, l) => s + (l.realizedPnlUsd ?? 0), 0) : null
+      // CENT-ROUNDED, DISCLOSED: rounded to cents with the SAME rule replay uses when it re-derives
+      // this total by summing the reconstructed lots (see replayManifest). Storing an unrounded sum
+      // here would make the stored `realizedPnlFingerprint` — which hashes the value's own
+      // `toFixed(8)` text — unreproducible on replay purely from float accumulation noise, failing a
+      // replay that is in fact perfectly correct.
+      const realizedPnlUsd = candidateVerifiedLots.length > 0
+        ? Math.round(candidateVerifiedLots.reduce((s, l) => s + (l.realizedPnlUsd ?? 0), 0) * 100) / 100
+        : null
+      const fingerprints = computeManifestFingerprints(reconciledLots, realizedPnlUsd)
       const verifiedPricingCoverage = reconciledLots.length > 0 ? candidateVerifiedLots.length / reconciledLots.length : null
       const newManifest = refreshCanonicalSampleRequested && existingRead.manifest
-        ? buildRefreshedManifest({
+        ? await buildRefreshedManifest({
             priorManifest: existingRead.manifest, identity: manifestIdentity, allCandidateLots: reconciledLots,
             candidateVerifiedLots, structuralLotCount: reconciledLots.length, fingerprints, realizedPnlUsd,
             verifiedPricingCoverage, now: Date.now(), refreshReason: 'explicit-refresh-requested',
+            loadEvidence: loadAcceptedEvidence,
           })
-        : buildManifestFromCandidate({
+        : await buildManifestFromCandidate({
             identity: manifestIdentity, allCandidateLots: reconciledLots, candidateVerifiedLots,
             structuralLotCount: reconciledLots.length, fingerprints, realizedPnlUsd,
-            verifiedPricingCoverage, now: Date.now(),
+            verifiedPricingCoverage, now: Date.now(), loadEvidence: loadAcceptedEvidence,
           })
       // AWAITED before this scan reports success — the durable record either lands or is honestly
       // marked failed; it is never fire-and-forget.
@@ -2749,9 +2778,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // SUBSEQUENT UNCHANGED SCAN — atomic replay (requirement #3): every manifest lot is resolved and
     // validated before any published array is constructed, and the array is built exactly once.
     const manifest = existingRead.manifest
-    const replay = replayManifest({ manifest, allCandidateLots: reconciledLots, isVerified: isCanonicalVerifiedLotForPnl })
+    const replay = await replayManifest({
+      manifest, allCandidateLots: reconciledLots,
+      loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
+    })
     logDuplicateIdentityIfAny(replay.duplicates)
-    const publishedVerifiedLotCount = replay.publishedLots.filter(isCanonicalVerifiedLotForPnl).length
+    const publishedVerifiedLotCount = replay.publishedLots.filter(isCanonicalVerifiedPublishedLot).length
     canonicalSampleManifestAudit = {
       ...emptyCanonicalSampleManifestAudit(manifestKey),
       manifestFound: true,
@@ -2771,6 +2803,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       manifestDuplicateLotKeys: replay.duplicates.manifestDuplicateLotKeys,
       candidateDuplicateLotKeys: replay.duplicates.candidateDuplicateLotKeys,
       manifestDuplicateEvidenceKeys: replay.duplicates.manifestDuplicateEvidenceKeys,
+      // REQUIREMENT #7: after a successful replay this MUST be empty — a manifest lot that replayed
+      // its identity and evidence but still fails the ONE canonical published-verified predicate
+      // means the predicate and the reconstruction disagree, which fails closed above.
+      manifestReplayedButNotCanonicalVerifiedLotKeys: replay.manifestReplayedButNotCanonicalVerifiedLotKeys,
+      canonicalVerifiedPredicateReasonCounts: buildCanonicalVerifiedPredicateReasonCounts(replay.publishedLots),
+      recomputedRealizedPnlUsd: replay.recomputedRealizedPnlUsd,
       // FAIL CLOSED (requirement #4): the previous manifest's stored figures survive ONLY as
       // clearly-labelled metadata (`availableForCurrentVerification: false`) — never re-presented as
       // this scan's freshly verified result.
@@ -2862,14 +2900,36 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // scoring is not computed inside this pipeline module (see lib/engine/modules/smartMoney), so
   // there is nothing real to compare here yet; the check itself already skips a `null` consumer
   // rather than treating it as a fabricated agreement or a fabricated mismatch.
+  // STRENGTHENED FINAL INVARIANT, DISCLOSED (requirement #8): lot counts and coverage agreeing is
+  // necessary but not sufficient — the confirmed production failure had 23 verified lots agreed
+  // across consumers while the realized total silently moved from 1791.71 to 4286.93. The realized
+  // total is now compared across the public figure, the SUM of the published lots themselves, the
+  // manifest's stored total, and AYRI's own figure. `ayriFullyPricedLots` is deliberately compared
+  // against AYRI's canonical verified count (the one shared predicate), not its attribution-source
+  // tally — see canonicalVerifiedLot.ts's own header for the confirmed five-lot gap that caused.
+  const canonicalPublishedVerifiedLots = reconciledFifoAndPnl.matchedLots.filter(isCanonicalVerifiedPublishedLot)
+  const publishedLotsRealizedPnlSum = canonicalPublishedVerifiedLots.length > 0
+    ? Math.round(canonicalPublishedVerifiedLots.reduce((sum, l) => sum + (l.realizedPnlUsd ?? 0), 0) * 100) / 100
+    : null
   logFinalPnlSnapshotDivergenceIfAny(checkFinalPnlSnapshotDivergence({
     publicGateVerifiedLots: reconciledPnlSummary.publicPnlGateAudit.verifiedClosedLots,
     publicGatePricingCoverage: reconciledPnlSummary.publicPnlGateAudit.verifiedPricingCoverage,
-    ayriFullyPricedLots: ayriAttribution.fullyPricedLots,
+    ayriFullyPricedLots: ayriAttribution.canonicalVerifiedLots,
     ayriVerifiedPricingCoverage: ayriAttribution.verifiedPricingCoveragePercent,
     smartMoneyVerifiedLots: null,
     smartMoneyVerifiedPricingCoverage: null,
-    canonicalVerifiedLots: reconciledFifoAndPnl.matchedLots.filter((l) => l.evidenceQuality === 'verified').length,
+    canonicalVerifiedLots: canonicalPublishedVerifiedLots.length,
+    // Only compared when this scan actually replayed a manifest — `undefined` means "no manifest
+    // figure exists to compare", never a fabricated agreement.
+    canonicalRecomputedCoverage: canonicalSampleManifestAudit.manifestApplied
+      ? (reconciledFifoAndPnl.matchedLots.length > 0 ? canonicalPublishedVerifiedLots.length / reconciledFifoAndPnl.matchedLots.length : null)
+      : undefined,
+    publicRealizedPnlUsd: reconciledPnlSummary.realizedPnlUsd,
+    publishedLotsRealizedPnlSum,
+    manifestStoredRealizedPnlUsd: canonicalSampleManifestAudit.manifestApplied
+      ? canonicalSampleManifestAudit.recomputedRealizedPnlUsd
+      : undefined,
+    ayriRealizedPnlUsd: ayriAttribution.realizedPnlUsd,
   }))
 
   // Deferred until after the mandatory synthetic-PnL summary above; these can be very large on

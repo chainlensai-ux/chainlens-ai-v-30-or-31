@@ -31,14 +31,54 @@
 // never lets the current live candidate sample escape as canonical (requirement #4).
 
 import type { MatchedLot } from '../modules/fifoEngine/types'
-import { buildAcceptedEvidenceKey, lotIdentityVersion, type AcceptedEvidenceKvLike } from './acceptedEvidenceStore'
+import {
+  buildAcceptedEvidenceKey, lotIdentityVersion,
+  type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope,
+} from './acceptedEvidenceStore'
+import {
+  isCanonicalVerifiedPublishedLot, emptyCanonicalVerifiedPredicateReasonCounts,
+  type CanonicalVerifiedPredicateReasonCounts,
+} from './canonicalVerifiedLot'
 
-// Bumped to 2 by the identity rewrite (requirement #1). This version is part of the KV key itself,
-// so every v1 manifest (built with the broken float-in-key identity) is simply never looked up
-// again — a clean rebuild on the next scan, never a silent reuse of identities this module can no
-// longer reproduce.
-export const CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION = 2
+// SCHEMA BUMP TO 3, GENUINELY REQUIRED, DISCLOSED (canonical-price-replay follow-up task,
+// requirement #10 — "do not create a new manifest schema key merely to hide this test unless the
+// stored manifest lacks required side references"). It genuinely does: a v2 manifest's per-lot
+// record carried ONLY `{ key, canonicalAmount, partialFillOrdinal, partialFillGroupSize }` — there
+// is no accepted-evidence key, no entry/exit price, no cost basis, no proceeds and no realized
+// figure anywhere in it. That is exactly why the confirmed production replay froze lot MEMBERSHIP
+// correctly (23 lots, identity fingerprint stable at e60a4d17) while the VALUES drifted
+// (realized 1791.71 -> 4286.93, acceptedHistoricalPriceFingerprint 705231e0 -> fd9bffdb): replay
+// republished the current scan's own lot objects, prices included, because the manifest had no
+// canonical prices to restore. A v2 record cannot be upgraded in place — the required side
+// references were never written — so the version is bumped and the next scan rebuilds. Both the
+// first (creation) and second (replay) scan of this new schema are covered end-to-end by the
+// regressions in canonicalPnlSampleManifest.test.ts.
+export const CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION = 3
+// UNCHANGED at 2: the structural lot IDENTITY semantics (chain/token/tx hashes/timestamps/
+// partial-fill ordinal) are correct and were proven correct in production — identity replay
+// succeeded for all 23 lots with zero mismatches. Only the stored VALUES were missing.
 export const CANONICAL_LOT_IDENTITY_SCHEMA_VERSION = 2
+
+// NUMERIC TOLERANCES, DISCLOSED (requirement #3's "documented numeric tolerance").
+//
+// Per-side prices and per-lot values are copied verbatim out of the SAME immutable accepted-evidence
+// records on both the creating and the replaying scan, so they should agree bit-for-bit; the
+// tolerance exists only to absorb IEEE-754 round-tripping through JSON, never to paper over a
+// genuinely different price. 1e-9 is far below the smallest price this codebase treats as
+// persistable, so a real disagreement can never hide inside it.
+export const CANONICAL_VALUE_TOLERANCE = 1e-9
+// The aggregate realized total is rounded to cents by pnlReconciliation's own `roundUsd` before it
+// is stored, so comparing a freshly-summed total against a stored, cent-rounded one needs a
+// cent-scale tolerance. Half a cent per lot would be unbounded across a large sample, so this is
+// deliberately a flat one cent on the TOTAL — tight enough that any real value drift (the confirmed
+// production case moved by ~2495 USD) fails immediately.
+export const CANONICAL_TOTAL_TOLERANCE_USD = 0.01
+
+function withinTolerance(a: number | null, b: number | null, tolerance: number): boolean {
+  if (a === null || b === null) return a === b
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false
+  return Math.abs(a - b) <= tolerance
+}
 // Bumped only when the CANONICAL SELECTION LOGIC changes (e.g. which accepted-evidence precedence
 // rule governs a lot's published price) — never for a provider-availability change, which is
 // precisely the class of change this whole module exists to make invisible to the published sample.
@@ -240,14 +280,53 @@ export function buildManifestKey(identity: CanonicalPnlSampleManifestIdentity): 
 // MANIFEST RECORD
 // ============================================================================
 
-// Per-lot validation metadata (requirement #1's "treat them as validation metadata, not the primary
-// identity"). Keyed by the lot identity key; never consulted to FIND a lot, only to confirm the one
-// found by identity still describes the same fill.
+// PER-LOT CANONICAL RECORD, DISCLOSED (requirement #1). Carries three genuinely different kinds of
+// field, and the distinction matters:
+//
+//  * IDENTITY / STRUCTURAL (`key`, `canonicalAmount`, ordinals, chain/token/tx hashes/timestamps,
+//    `lotIdentityVersion`) — how to FIND this lot again and how to address its evidence records.
+//  * EVIDENCE REFERENCES (`entryEvidenceKey`, `exitEvidenceKey`) — THE SOURCE OF TRUTH. Replay
+//    reloads these immutable accepted-evidence records and rebuilds the lot from them.
+//  * FROZEN VALUES (`entryPriceUsd` ... `realizedPnlUsd`, `evidenceQuality`, source metadata) —
+//    VALIDATION ONLY, per requirement #1's explicit "stored numeric values may be used for
+//    validation but must never silently override missing/invalid accepted evidence". If an
+//    accepted-evidence record cannot be loaded or fails validation, replay FAILS CLOSED; it never
+//    falls back to these numbers, because doing so would republish a price with no surviving
+//    evidence behind it.
 export type CanonicalManifestLotRecord = {
   key: string
   canonicalAmount: string
   partialFillOrdinal: number
   partialFillGroupSize: number
+  // Addressing data for the two immutable accepted-evidence records this lot's values come from.
+  chain: string
+  token: string
+  openedTxHash: string
+  closedTxHash: string
+  openedAt: number
+  closedAt: number
+  lotIdentityVersion: string
+  entryEvidenceKey: string
+  exitEvidenceKey: string
+  // The lot-identity version each side's stored evidence record ACTUALLY carries. For a partial
+  // fill several slices share one evidence key, so this is frequently a sibling slice's version
+  // rather than this lot's own — recording it is what lets every slice replay strictly (see
+  // AcceptedEvidenceLoader's own header). Null when no record was discoverable at build time.
+  entryEvidenceLotIdentityVersion: string | null
+  exitEvidenceLotIdentityVersion: string | null
+  // Frozen canonical values — validation only (see this type's own header).
+  entryPriceUsd: number | null
+  entryValueUsd: number | null
+  exitPriceUsd: number | null
+  exitValueUsd: number | null
+  costBasisUsd: number | null
+  proceedsUsd: number | null
+  realizedPnlUsd: number | null
+  evidenceQuality: MatchedLot['evidenceQuality']
+  entrySource: string | null
+  exitSource: string | null
+  pricingMethodologyVersion: number
+  evidenceSchemaVersion: number | null
 }
 
 export type CanonicalPnlSampleManifest = CanonicalPnlSampleManifestIdentity & {
@@ -277,7 +356,29 @@ type DeterminismFingerprints = {
   scanFingerprint: string
 }
 
-export function buildManifestFromCandidate(params: {
+// Loads the immutable accepted-evidence record backing one lot side. Supplied by the caller so this
+// module stays free of KV wiring of its own and remains directly testable.
+// `lotIdentityVersion: null` means DISCOVERY: return the record backing this tx side whatever
+// lot-identity version it carries, so the manifest can record that version once at build time (see
+// acceptedEvidenceStore's readAcceptedEvidenceAnyLotVersion for why partial fills need this). A
+// non-null version means a STRICT read — every identity field including the version must match,
+// which is what every replay uses.
+export type AcceptedEvidenceLoader = (identity: {
+  chain: string; token: string; txHash: string; side: AcceptedEvidenceSide; timestamp: number; lotIdentityVersion: string | null
+}) => Promise<AcceptedEvidenceEnvelope | null>
+
+function sideIdentityForLot(lot: MatchedLot, side: AcceptedEvidenceSide) {
+  return {
+    chain: lot.chain,
+    token: lot.token,
+    txHash: side === 'entry' ? lot.openedTxHash : lot.closedTxHash,
+    side,
+    timestamp: side === 'entry' ? lot.openedAt : lot.closedAt,
+    lotIdentityVersion: lotIdentityVersion(lot),
+  }
+}
+
+export async function buildManifestFromCandidate(params: {
   identity: CanonicalPnlSampleManifestIdentity
   // The FULL canonical lot array — required so partial-fill ordinals are assigned over every slice,
   // not just the priced ones (see buildCanonicalLotIdentities' own header).
@@ -290,7 +391,12 @@ export function buildManifestFromCandidate(params: {
   now: number
   priorManifest?: CanonicalPnlSampleManifest | null
   refreshReason?: string | null
-}): CanonicalPnlSampleManifest {
+  // OPTIONAL, DISCLOSED: used ONLY to record honest per-side SOURCE METADATA (which provider/lane
+  // produced the accepted value, and under which evidence schema). The canonical VALUES themselves
+  // come from the lot, which is already accepted-evidence-hydrated by the time a manifest is built —
+  // so a missing loader degrades source metadata to honest nulls and never fabricates a price.
+  loadEvidence?: AcceptedEvidenceLoader
+}): Promise<CanonicalPnlSampleManifest> {
   const identities = buildCanonicalLotIdentities(params.allCandidateLots)
   const records: CanonicalManifestLotRecord[] = []
   const rawLotKeys: string[] = []
@@ -299,13 +405,43 @@ export function buildManifestFromCandidate(params: {
     const identity = identities.get(lot)
     if (!identity) continue
     rawLotKeys.push(identity.key)
+    const [entryEvidenceKey, exitEvidenceKey] = acceptedEvidenceIdentityKeysForLot(lot)
+    const entryEvidence = params.loadEvidence ? await params.loadEvidence({ ...sideIdentityForLot(lot, 'entry'), lotIdentityVersion: null }) : null
+    const exitEvidence = params.loadEvidence ? await params.loadEvidence({ ...sideIdentityForLot(lot, 'exit'), lotIdentityVersion: null }) : null
     records.push({
       key: identity.key,
       canonicalAmount: identity.canonicalAmount,
       partialFillOrdinal: identity.partialFillOrdinal,
       partialFillGroupSize: identity.partialFillGroupSize,
+      chain: lot.chain,
+      token: lot.token,
+      openedTxHash: lot.openedTxHash,
+      closedTxHash: lot.closedTxHash,
+      openedAt: lot.openedAt,
+      closedAt: lot.closedAt,
+      lotIdentityVersion: lotIdentityVersion(lot),
+      entryEvidenceKey,
+      exitEvidenceKey,
+      entryEvidenceLotIdentityVersion: entryEvidence?.lotIdentityVersion ?? null,
+      exitEvidenceLotIdentityVersion: exitEvidence?.lotIdentityVersion ?? null,
+      // CONVENTION, DISCLOSED: this codebase treats a matched lot's `costBasisUsd`/`proceedsUsd` as
+      // the accepted per-side PRICE itself (see pnlReconciliation's hydrateFromAcceptedEvidence,
+      // which assigns `costBasisUsd = evidence.priceUsd` directly) — not price x quantity. The
+      // separate `valueUsd` is recorded alongside it, exactly as the evidence store does.
+      entryPriceUsd: lot.costBasisUsd,
+      entryValueUsd: entryEvidence?.valueUsd ?? null,
+      exitPriceUsd: lot.proceedsUsd,
+      exitValueUsd: exitEvidence?.valueUsd ?? null,
+      costBasisUsd: lot.costBasisUsd,
+      proceedsUsd: lot.proceedsUsd,
+      realizedPnlUsd: lot.realizedPnlUsd,
+      evidenceQuality: lot.evidenceQuality,
+      entrySource: entryEvidence?.source ?? null,
+      exitSource: exitEvidence?.source ?? null,
+      pricingMethodologyVersion: params.identity.pricingMethodologyVersion,
+      evidenceSchemaVersion: entryEvidence?.schemaVersion ?? null,
     })
-    rawEvidenceKeys.push(...acceptedEvidenceIdentityKeysForLot(lot))
+    rawEvidenceKeys.push(entryEvidenceKey, exitEvidenceKey)
   }
   // CANONICALIZE -> SORT -> DEDUPE before persistence (requirement #2).
   const { unique: verifiedLotIdentityKeys } = dedupeKeys(rawLotKeys)
@@ -337,7 +473,7 @@ export function buildManifestFromCandidate(params: {
   }
 }
 
-export function buildRefreshedManifest(params: {
+export async function buildRefreshedManifest(params: {
   priorManifest: CanonicalPnlSampleManifest
   identity: CanonicalPnlSampleManifestIdentity
   allCandidateLots: readonly MatchedLot[]
@@ -348,7 +484,8 @@ export function buildRefreshedManifest(params: {
   verifiedPricingCoverage: number | null
   now: number
   refreshReason: string
-}): CanonicalPnlSampleManifest {
+  loadEvidence?: AcceptedEvidenceLoader
+}): Promise<CanonicalPnlSampleManifest> {
   return buildManifestFromCandidate({ ...params, priorManifest: params.priorManifest })
 }
 
@@ -423,6 +560,17 @@ export type ManifestReplayReason =
   | 'manifest_duplicate_identity'
   | 'manifest_candidate_only_lot'
   | 'manifest_replay_success'
+  // VALUE-REPLAY REASONS, DISCLOSED (requirement #3): the confirmed production failure was
+  // exclusively in this class — identity replay reported 23/23 success while the canonical VALUES
+  // silently drifted, so every value comparison now has its own named, counted failure mode.
+  | 'manifest_entry_price_mismatch'
+  | 'manifest_exit_price_mismatch'
+  | 'manifest_cost_basis_mismatch'
+  | 'manifest_proceeds_mismatch'
+  | 'manifest_realized_pnl_mismatch'
+  | 'manifest_evidence_quality_mismatch'
+  | 'manifest_realized_total_mismatch'
+  | 'manifest_fingerprint_mismatch'
 
 export type ManifestReplayReasonCounts = Record<ManifestReplayReason, number>
 
@@ -435,6 +583,14 @@ function emptyReplayReasonCounts(): ManifestReplayReasonCounts {
     manifest_duplicate_identity: 0,
     manifest_candidate_only_lot: 0,
     manifest_replay_success: 0,
+    manifest_entry_price_mismatch: 0,
+    manifest_exit_price_mismatch: 0,
+    manifest_cost_basis_mismatch: 0,
+    manifest_proceeds_mismatch: 0,
+    manifest_realized_pnl_mismatch: 0,
+    manifest_evidence_quality_mismatch: 0,
+    manifest_realized_total_mismatch: 0,
+    manifest_fingerprint_mismatch: 0,
   }
 }
 
@@ -454,6 +610,13 @@ export type ManifestReplayResult = {
   manifestLotsMissingCurrentEvidence: string[]
   reasonCounts: ManifestReplayReasonCounts
   duplicates: DuplicateIdentityCheck
+  // REQUIREMENT #4/#5: the frozen total re-derived by SUMMING the reconstructed published lots —
+  // never copied from `manifest.realizedPnlUsd`. Null when replay failed.
+  recomputedRealizedPnlUsd: number | null
+  recomputedFingerprints: DeterminismFingerprints | null
+  // REQUIREMENT #7: manifest lots that replayed their identity+evidence successfully but still fail
+  // the ONE canonical published-verified predicate. After a successful replay this MUST be empty.
+  manifestReplayedButNotCanonicalVerifiedLotKeys: string[]
 }
 
 // Reverts a lot to the honest unpriced state for PUBLICATION purposes only. Never mutates the input
@@ -471,16 +634,23 @@ function withheldFromPublication(lot: MatchedLot): MatchedLot {
 // decision. There is no incremental mutation of a shared lot array anywhere in this function — the
 // prior implementation's mutate-then-decide shape is exactly what let a live 23-lot sample escape
 // while the audit simultaneously reported the manifest as unavailable.
-export function replayManifest(params: {
+export async function replayManifest(params: {
   manifest: CanonicalPnlSampleManifest
   allCandidateLots: readonly MatchedLot[]
-  isVerified: (lot: MatchedLot) => boolean
-}): ManifestReplayResult {
+  // REQUIRED (requirement #2): accepted evidence is the SOURCE OF TRUTH for every manifest lot's
+  // canonical values. Without a loader nothing can be verified, so every lot fails closed rather
+  // than falling back to the manifest's own stored numbers (requirement #1's explicit "stored
+  // numeric values ... must never silently override missing/invalid accepted evidence").
+  loadEvidence: AcceptedEvidenceLoader
+  // Recomputes the determinism fingerprints over a candidate published array, so replay can prove
+  // the frozen result is internally derivable (requirement #4) rather than merely asserted.
+  computeFingerprints: (lots: readonly MatchedLot[], realizedPnlUsd: number | null) => DeterminismFingerprints
+}): Promise<ManifestReplayResult> {
   const reasonCounts = emptyReplayReasonCounts()
 
   // 1. Build the current candidate identity map over the FULL array (ordinals must see every slice).
   const identities = buildCanonicalLotIdentities(params.allCandidateLots)
-  const candidateVerifiedLots = params.allCandidateLots.filter(params.isVerified)
+  const candidateVerifiedLots = params.allCandidateLots.filter(isCanonicalVerifiedPublishedLot)
 
   // 2. Canonicalize + dedupe both sides (requirement #2).
   const manifestDedupe = dedupeKeys(params.manifest.verifiedLotIdentityKeys)
@@ -495,12 +665,6 @@ export function replayManifest(params: {
   }
   reasonCounts.manifest_duplicate_identity = manifestDedupe.duplicates.length + candidateDedupe.duplicates.length + evidenceDedupe.duplicates.length
 
-  // 3. Resolve + validate EVERY manifest lot. Nothing is published until this loop completes.
-  const candidateVerifiedByKey = new Map<string, MatchedLot>()
-  for (const lot of candidateVerifiedLots) {
-    const identity = identities.get(lot)
-    if (identity && !candidateVerifiedByKey.has(identity.key)) candidateVerifiedByKey.set(identity.key, lot)
-  }
   const anyCandidateByKey = new Map<string, MatchedLot>()
   for (const lot of params.allCandidateLots) {
     const identity = identities.get(lot)
@@ -508,8 +672,14 @@ export function replayManifest(params: {
   }
   const recordByKey = new Map(params.manifest.verifiedLotRecords.map((r) => [r.key, r]))
 
+  // 3. Resolve, REBUILD FROM ACCEPTED EVIDENCE, and validate EVERY manifest lot (requirement #2/#3).
+  //    Nothing is published until this loop completes — the rebuilt lots are collected in a local
+  //    map and only merged into a published array in step 6, atomically.
+  const rebuiltByKey = new Map<string, MatchedLot>()
   const selectedLotKeys: string[] = []
   const manifestLotsMissingCurrentEvidence: string[] = []
+  const manifestReplayedButNotCanonicalVerifiedLotKeys: string[] = []
+
   for (const key of manifestDedupe.unique) {
     const structuralLot = anyCandidateByKey.get(key)
     if (!structuralLot) {
@@ -519,7 +689,13 @@ export function replayManifest(params: {
     }
     const currentIdentity = identities.get(structuralLot)
     const record = recordByKey.get(key)
-    if (record && currentIdentity && record.partialFillGroupSize !== currentIdentity.partialFillGroupSize) {
+    if (!record) {
+      // A manifest that names a lot but carries no canonical record for it cannot be value-replayed.
+      reasonCounts.manifest_side_evidence_invalid += 1
+      manifestLotsMissingCurrentEvidence.push(key)
+      continue
+    }
+    if (currentIdentity && record.partialFillGroupSize !== currentIdentity.partialFillGroupSize) {
       // The same structural tx pair split into a DIFFERENT number of FIFO slices this run — the
       // identity resolved, but it no longer describes the same fill. Fail closed rather than publish
       // a slice the manifest never actually recorded.
@@ -527,20 +703,81 @@ export function replayManifest(params: {
       manifestLotsMissingCurrentEvidence.push(key)
       continue
     }
-    if (record && currentIdentity && record.canonicalAmount !== currentIdentity.canonicalAmount) {
+    if (currentIdentity && record.canonicalAmount !== currentIdentity.canonicalAmount) {
       reasonCounts.manifest_side_evidence_invalid += 1
       manifestLotsMissingCurrentEvidence.push(key)
       continue
     }
-    if (!candidateVerifiedByKey.has(key)) {
-      // The lot is structurally present but its accepted side evidence could not be reproduced this
-      // run (one or both sides lost their price) — never substitute a live provider value for it.
+
+    // 3a. Load the exact accepted-evidence records this manifest lot's values came from. These are
+    //     the source of truth; the current scan's own provider values are diagnostic candidates only
+    //     and are discarded below regardless of what they say.
+    // STRICT reads, using the lot-identity version this side's record was recorded as carrying —
+    // never a relaxed lookup. A manifest that never discovered a backing version falls back to this
+    // lot's own version, which still fails closed if nothing matches.
+    const entryEvidence = await params.loadEvidence({
+      chain: record.chain, token: record.token, txHash: record.openedTxHash,
+      side: 'entry', timestamp: record.openedAt,
+      lotIdentityVersion: record.entryEvidenceLotIdentityVersion ?? record.lotIdentityVersion,
+    })
+    const exitEvidence = await params.loadEvidence({
+      chain: record.chain, token: record.token, txHash: record.closedTxHash,
+      side: 'exit', timestamp: record.closedAt,
+      lotIdentityVersion: record.exitEvidenceLotIdentityVersion ?? record.lotIdentityVersion,
+    })
+    if (!entryEvidence || !exitEvidence) {
+      // readAcceptedEvidence already enforces exact identity/side/timestamp/lot-identity-version/
+      // schemaVersion matching and expiry, so a null here means the record is genuinely absent or
+      // genuinely fails that validation. Never substitute the manifest's stored number.
       reasonCounts.manifest_side_evidence_missing += 1
       manifestLotsMissingCurrentEvidence.push(key)
       continue
     }
+    if (record.pricingMethodologyVersion !== params.manifest.pricingMethodologyVersion) {
+      reasonCounts.manifest_side_evidence_invalid += 1
+      manifestLotsMissingCurrentEvidence.push(key)
+      continue
+    }
+
+    // 3b. Rebuild the lot from the canonical accepted values, OVERWRITING whatever the current scan
+    //     resolved. Same convention pnlReconciliation's own hydrateFromAcceptedEvidence uses:
+    //     costBasisUsd/proceedsUsd ARE the accepted per-side prices, realized PnL is their difference.
+    const costBasisUsd = entryEvidence.priceUsd
+    const proceedsUsd = exitEvidence.priceUsd
+    const rebuilt: MatchedLot = {
+      ...structuralLot,
+      costBasisUsd,
+      proceedsUsd,
+      realizedPnlUsd: proceedsUsd - costBasisUsd,
+      evidenceQuality: 'verified',
+    }
+
+    // 3c. Validate the reconstruction against the manifest's frozen values (requirement #3).
+    let mismatched = false
+    if (!withinTolerance(costBasisUsd, record.entryPriceUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_entry_price_mismatch += 1; mismatched = true }
+    if (!withinTolerance(proceedsUsd, record.exitPriceUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_exit_price_mismatch += 1; mismatched = true }
+    if (!withinTolerance(costBasisUsd, record.costBasisUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_cost_basis_mismatch += 1; mismatched = true }
+    if (!withinTolerance(proceedsUsd, record.proceedsUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_proceeds_mismatch += 1; mismatched = true }
+    if (!withinTolerance(rebuilt.realizedPnlUsd, record.realizedPnlUsd, CANONICAL_TOTAL_TOLERANCE_USD)) { reasonCounts.manifest_realized_pnl_mismatch += 1; mismatched = true }
+    if (record.evidenceQuality !== 'verified') { reasonCounts.manifest_evidence_quality_mismatch += 1; mismatched = true }
+    if (mismatched) {
+      manifestLotsMissingCurrentEvidence.push(key)
+      continue
+    }
+
+    // 3d. The rebuilt lot must satisfy the ONE canonical published-verified predicate (requirement
+    //     #6/#7). After a clean replay this list is empty by construction; if it ever isn't, the
+    //     predicate and the reconstruction disagree and that must fail closed, not ship.
+    if (!isCanonicalVerifiedPublishedLot(rebuilt)) {
+      reasonCounts.manifest_evidence_quality_mismatch += 1
+      manifestReplayedButNotCanonicalVerifiedLotKeys.push(key)
+      manifestLotsMissingCurrentEvidence.push(key)
+      continue
+    }
+
     reasonCounts.manifest_replay_success += 1
     selectedLotKeys.push(key)
+    rebuiltByKey.set(key, rebuilt)
   }
 
   // 4. Candidate-only lots — real, newly-priceable evidence, never merged into the published sample.
@@ -548,20 +785,51 @@ export function replayManifest(params: {
   const candidateNewEvidenceLotKeys = candidateDedupe.unique.filter((key) => !manifestKeySet.has(key))
   reasonCounts.manifest_candidate_only_lot = candidateNewEvidenceLotKeys.length
 
-  // 5. ONE atomic decision, then ONE published array (requirement #3/#4).
-  const replayFailed = manifestLotsMissingCurrentEvidence.length > 0 || duplicates.hasDuplicates
+  // 5. Per-lot outcome is settled. Build the candidate published array ONCE (requirement #3).
+  const perLotFailed = manifestLotsMissingCurrentEvidence.length > 0 || duplicates.hasDuplicates
   const selectedKeySet = new Set(selectedLotKeys)
-  const publishedLots = params.allCandidateLots.map((lot) => {
-    if (!params.isVerified(lot)) return lot
-    // FAIL CLOSED (requirement #4): when the manifest could not be replayed in full, NO verified lot
-    // is published at all — the live candidate sample must never escape as canonical. When it
-    // replayed cleanly, only manifest-selected lots are published; candidate-only lots are withheld
-    // (requirement #6 — zero contribution to public realized PnL).
-    if (replayFailed) return withheldFromPublication(lot)
+  const buildPublished = (failed: boolean): MatchedLot[] => params.allCandidateLots.map((lot) => {
     const identity = identities.get(lot)
-    if (!identity || !selectedKeySet.has(identity.key)) return withheldFromPublication(lot)
-    return lot
+    const rebuilt = identity ? rebuiltByKey.get(identity.key) : undefined
+    // FAIL CLOSED (requirement #4): when the manifest could not be replayed in full, NO verified lot
+    // is published at all — the live candidate sample must never escape as canonical.
+    if (failed) return isCanonicalVerifiedPublishedLot(lot) ? withheldFromPublication(lot) : lot
+    // A manifest lot publishes its REBUILT canonical values, never the current scan's own.
+    if (rebuilt && identity && selectedKeySet.has(identity.key)) return rebuilt
+    // Everything else — candidate-only lots included — is withheld from publication.
+    return isCanonicalVerifiedPublishedLot(lot) ? withheldFromPublication(lot) : lot
   })
+
+  // 6. Prove the frozen result is INTERNALLY DERIVABLE before publishing it (requirement #4/#5):
+  //    the total is SUMMED from the reconstructed lots, never copied off the manifest, and the
+  //    fingerprints are RECOMPUTED over the reconstructed array and compared to the stored ones.
+  let recomputedRealizedPnlUsd: number | null = null
+  let recomputedFingerprints: DeterminismFingerprints | null = null
+  let derivationFailed = false
+  if (!perLotFailed) {
+    const candidatePublished = buildPublished(false)
+    const publishedVerified = candidatePublished.filter(isCanonicalVerifiedPublishedLot)
+    recomputedRealizedPnlUsd = publishedVerified.length > 0
+      ? Math.round(publishedVerified.reduce((sum, l) => sum + (l.realizedPnlUsd ?? 0), 0) * 100) / 100
+      : null
+    if (!withinTolerance(recomputedRealizedPnlUsd, params.manifest.realizedPnlUsd, CANONICAL_TOTAL_TOLERANCE_USD)) {
+      reasonCounts.manifest_realized_total_mismatch += 1
+      derivationFailed = true
+    }
+    recomputedFingerprints = params.computeFingerprints(candidatePublished, recomputedRealizedPnlUsd)
+    const fingerprintDisagreements = [
+      recomputedFingerprints.verifiedLotIdentityFingerprint !== params.manifest.verifiedLotIdentityFingerprint,
+      recomputedFingerprints.acceptedHistoricalPriceFingerprint !== params.manifest.acceptedHistoricalPriceFingerprint,
+      recomputedFingerprints.realizedPnlFingerprint !== params.manifest.realizedPnlFingerprint,
+    ].filter(Boolean).length
+    if (fingerprintDisagreements > 0) {
+      reasonCounts.manifest_fingerprint_mismatch += fingerprintDisagreements
+      derivationFailed = true
+    }
+  }
+
+  const replayFailed = perLotFailed || derivationFailed
+  const publishedLots = buildPublished(replayFailed)
 
   return {
     outcome: replayFailed ? 'unavailable' : 'applied',
@@ -570,14 +838,16 @@ export function replayManifest(params: {
     // ATOMIC REPORTING, DISCLOSED: on failure this is EMPTY, because zero lots were actually
     // selected for publication — reporting the lots that happened to resolve before the failure
     // would claim a selection that never reached the published array, which is precisely the
-    // audit-vs-reality mismatch this task exists to eliminate (production reported
-    // `manifestVerifiedLotCount: 21` next to a published 23-lot live sample). The per-lot diagnostic
-    // detail survives honestly in `reasonCounts.manifest_replay_success`.
+    // audit-vs-reality mismatch this task exists to eliminate. The per-lot diagnostic detail
+    // survives honestly in `reasonCounts`.
     selectedLotKeys: replayFailed ? [] : selectedLotKeys,
     candidateNewEvidenceLotKeys,
     manifestLotsMissingCurrentEvidence,
     reasonCounts,
     duplicates,
+    recomputedRealizedPnlUsd: replayFailed ? null : recomputedRealizedPnlUsd,
+    recomputedFingerprints: replayFailed ? null : recomputedFingerprints,
+    manifestReplayedButNotCanonicalVerifiedLotKeys,
   }
 }
 
@@ -634,6 +904,14 @@ export type CanonicalSampleManifestAudit = {
   candidateDuplicateLotKeys: string[]
   manifestDuplicateEvidenceKeys: string[]
   lastKnownCanonicalSample: LastKnownCanonicalSample | null
+  // REQUIREMENT #7: the exact lots that replayed but still fail the ONE canonical published-verified
+  // predicate, plus a full breakdown of WHY any published lot fails it. This is what makes a
+  // gate-vs-AYRI verified-count gap diagnosable instead of merely visible.
+  manifestReplayedButNotCanonicalVerifiedLotKeys: string[]
+  canonicalVerifiedPredicateReasonCounts: CanonicalVerifiedPredicateReasonCounts
+  // REQUIREMENT #4/#5: the total re-derived by summing the reconstructed published lots — never
+  // copied from the manifest. Null whenever replay did not produce a publishable canonical sample.
+  recomputedRealizedPnlUsd: number | null
 }
 
 export function emptyCanonicalSampleManifestAudit(manifestKey: string): CanonicalSampleManifestAudit {
@@ -662,5 +940,8 @@ export function emptyCanonicalSampleManifestAudit(manifestKey: string): Canonica
     candidateDuplicateLotKeys: [],
     manifestDuplicateEvidenceKeys: [],
     lastKnownCanonicalSample: null,
+    manifestReplayedButNotCanonicalVerifiedLotKeys: [],
+    canonicalVerifiedPredicateReasonCounts: emptyCanonicalVerifiedPredicateReasonCounts(),
+    recomputedRealizedPnlUsd: null,
   }
 }

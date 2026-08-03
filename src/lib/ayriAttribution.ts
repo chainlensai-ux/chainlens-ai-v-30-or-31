@@ -1,4 +1,8 @@
 import type { MatchedLot } from '../modules/fifoEngine/types'
+import {
+  isCanonicalVerifiedPublishedLot, canonicalVerifiedRejectionReason,
+  buildCanonicalVerifiedPredicateReasonCounts, type CanonicalVerifiedPredicateReasonCounts,
+} from './canonicalVerifiedLot'
 import type { SourceBreakdown } from '../modules/pricingAtTimeEngine/types'
 import type { PnlReconciliationSummary } from './pnlReconciliation'
 import type { RouterInferenceResult } from './routerInference'
@@ -102,6 +106,13 @@ export type AyriAttributionSummary = {
   // observed market prices. This is the strictest of the three coverage figures and is the one
   // integrityTier's "high" tier is gated on below — see that derivation's own header.
   verifiedPricingCoveragePercent: number
+  // REQUIREMENT #6/#7: the count above, restated as the exact set it came from, plus a full
+  // breakdown of why any lot in this scan fails the ONE canonical published-verified predicate.
+  canonicalVerifiedLots: number
+  canonicalVerifiedPredicateReasonCounts: CanonicalVerifiedPredicateReasonCounts
+  // Lots this module counts as canonically verified but whose ATTRIBUTION source is not in
+  // VERIFIED_ATTRIBUTION_SOURCES — diagnostic only, never a reason to drop a lot from the sample.
+  canonicalVerifiedNotAttributionVerifiedLotKeys: string[]
   realizedPnlUsd: number | null
   unrealizedPnlUsd: number | null
 }
@@ -278,8 +289,65 @@ export function createAyriAttribution(config: Config = {}) {
       // fullyPricedLots — only lots priced via a directly-observed market source (see
       // VERIFIED_ATTRIBUTION_SOURCES's own header), never a syntheticPrice/recoveredPrice
       // reconstruction. This is intentionally <= historicalPricingCoveragePercent, never greater.
-      const verifiedPricedLots = pricedRecords.filter((r) => VERIFIED_ATTRIBUTION_SOURCES.has(r.attributionSource)).length
+      // CANONICAL VERIFIED COUNT, DISCLOSED (canonical-price-replay follow-up task, requirement #6/#7).
+      // CONFIRMED PRODUCTION DIVERGENCE THIS FIXES: for one scan the public gate reported 23 verified
+      // lots / 85.19% while this module reported 18 / 66.67% — a five-lot gap. ROOT CAUSE, AUDITED:
+      // `verifiedPricedLots` was previously derived from `VERIFIED_ATTRIBUTION_SOURCES`, and a lot's
+      // attribution source is assigned partly from a SCAN-LEVEL BUDGET — `syntheticAligned` above is
+      // `syntheticBudget > 0`, where the budget is `reconciledPnL.syntheticAlignedCount` consumed
+      // first-come down a sorted lot array. So exactly `syntheticAlignedCount` lots were labelled
+      // `syntheticPrice` and dropped from this tally purely by their POSITION in the array, with no
+      // per-lot evidence that their own canonical entry/exit values were reconstructed rather than
+      // observed. Five lots, in the confirmed case.
+      //
+      // The verified COUNT now comes from the ONE shared canonical predicate every other consumer
+      // uses (src/lib/canonicalVerifiedLot.ts). The attribution-source classification itself is
+      // completely unchanged and still reported (primaryCount/syntheticCount/recoveredCount etc.) —
+      // it remains a real, useful diagnostic; it is simply no longer the arbiter of whether a lot is
+      // part of the canonical verified sample.
+      const canonicalVerifiedLots = lots.filter(isCanonicalVerifiedPublishedLot)
+      const verifiedPricedLots = canonicalVerifiedLots.length
       const verifiedPricingCoveragePercent = totalLots === 0 ? 1 : round(verifiedPricedLots / totalLots)
+      // REQUIREMENT #7: the exact lots that are fully priced yet fail the canonical predicate, with
+      // the real per-lot reason — so any future gap is diagnosable from one log line instead of
+      // re-derived by hand. Empty whenever the two agree, which is the expected steady state.
+      const canonicalVerifiedPredicateReasonCounts: CanonicalVerifiedPredicateReasonCounts =
+        buildCanonicalVerifiedPredicateReasonCounts(lots)
+      const attributionVerifiedLotKeys = new Set(
+        lots.filter((l) => {
+          const rec = records.find((r) => r.token === l.token && r.chain === l.chain)
+          return rec ? VERIFIED_ATTRIBUTION_SOURCES.has(rec.attributionSource) : false
+        }).map(lotKey),
+      )
+      const canonicalVerifiedNotAttributionVerifiedLotKeys = canonicalVerifiedLots
+        .map(lotKey)
+        .filter((k) => !attributionVerifiedLotKeys.has(k))
+      if (canonicalVerifiedNotAttributionVerifiedLotKeys.length > 0) {
+        logger.warn('[ayri] canonical verified lots not attribution-verified — attribution source is diagnostic only', {
+          count: canonicalVerifiedNotAttributionVerifiedLotKeys.length,
+          lotKeys: canonicalVerifiedNotAttributionVerifiedLotKeys.slice(0, 20),
+          canonicalVerifiedPredicateReasonCounts,
+          syntheticAlignedBudget: input.reconciledPnL.syntheticAlignedCount,
+        })
+      }
+      const notCanonicalVerifiedDetail = lots
+        .filter((l) => !isCanonicalVerifiedPublishedLot(l))
+        .filter((l) => l.costBasisUsd !== null || l.proceedsUsd !== null)
+        .map((l) => ({
+          lotKey: lotKey(l),
+          reason: canonicalVerifiedRejectionReason(l),
+          evidenceQuality: l.evidenceQuality,
+          costBasisUsd: l.costBasisUsd,
+          proceedsUsd: l.proceedsUsd,
+          realizedPnlUsd: l.realizedPnlUsd,
+          priceRecovered: recoveryHas(input.priceRecoveryMap, l) || mismatchClasses.get(lotKey(l)) === 'priceRecovered',
+        }))
+      if (notCanonicalVerifiedDetail.length > 0) {
+        logger.warn('[ayri] partially-priced lots excluded from the canonical verified sample', {
+          count: notCanonicalVerifiedDetail.length,
+          lots: notCanonicalVerifiedDetail.slice(0, 20),
+        })
+      }
       const integrityTier = deriveIntegrityTier({
         attributionCoveragePercent,
         verifiedPricingCoveragePercent,
@@ -312,6 +380,9 @@ export function createAyriAttribution(config: Config = {}) {
         fullyPricedLots,
         historicalPricingCoveragePercent,
         verifiedPricingCoveragePercent,
+        canonicalVerifiedLots: verifiedPricedLots,
+        canonicalVerifiedPredicateReasonCounts,
+        canonicalVerifiedNotAttributionVerifiedLotKeys,
         realizedPnlUsd,
         unrealizedPnlUsd,
       }

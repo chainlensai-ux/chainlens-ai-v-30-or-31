@@ -16,6 +16,7 @@
 // pattern.
 
 import type { MatchedLot } from '../modules/fifoEngine/types'
+import { isCanonicalVerifiedPublishedLot } from './canonicalVerifiedLot'
 
 function deterministicHash(input: string): string {
   let hash = 5381
@@ -29,7 +30,7 @@ function deterministicHash(input: string): string {
 // lot equality (chain/token/openedTxHash/closedTxHash/openedAt/closedAt — see pnlReconciliation.ts's
 // own `lotKey`), plus `amount` — a lot with the same tx pair but a different matched quantity is a
 // genuinely different match, not the same lot re-observed.
-type FingerprintableLot = Pick<MatchedLot, 'chain' | 'token' | 'openedTxHash' | 'closedTxHash' | 'openedAt' | 'closedAt' | 'amount' | 'evidenceQuality' | 'costBasisUsd' | 'proceedsUsd'>
+type FingerprintableLot = Pick<MatchedLot, 'chain' | 'token' | 'openedTxHash' | 'closedTxHash' | 'openedAt' | 'closedAt' | 'amount' | 'evidenceQuality' | 'costBasisUsd' | 'proceedsUsd' | 'realizedPnlUsd'>
 
 function lotIdentityKey(lot: FingerprintableLot): string {
   return [lot.chain, lot.token.toLowerCase(), lot.openedTxHash, lot.closedTxHash, lot.openedAt, lot.closedAt, lot.amount].join(':')
@@ -62,7 +63,12 @@ export function buildScanDeterminismAudit(params: {
   const matchedKeys = [...params.matchedLots].map(lotIdentityKey).sort()
   const matchedLotFingerprint = deterministicHash(matchedKeys.join('|'))
 
-  const verifiedLots = params.matchedLots.filter((l) => l.evidenceQuality === 'verified')
+  // ONE SHARED PREDICATE, DISCLOSED (canonical-price-replay follow-up task, requirement #6): the
+  // fingerprint's verified-set selection must be the SAME question the gate, AYRI, smart-money,
+  // serialization and the UI all ask — previously this filtered on `evidenceQuality` alone while
+  // the gate counted fully-priced lots and AYRI counted attribution sources, so all three could
+  // legitimately disagree about which lots the "verified" fingerprint even covered.
+  const verifiedLots = params.matchedLots.filter(isCanonicalVerifiedPublishedLot)
   const verifiedKeys = verifiedLots.map(lotIdentityKey).sort()
   const verifiedLotIdentityFingerprint = deterministicHash(verifiedKeys.join('|'))
 
@@ -164,12 +170,24 @@ export type FinalPnlSnapshotConsumers = {
   smartMoneyVerifiedLots: number | null
   smartMoneyVerifiedPricingCoverage: number | null
   canonicalVerifiedLots: number
+  // STRENGTHENED INVARIANT, DISCLOSED (canonical-price-replay follow-up task, requirement #8): lot
+  // counts and coverage agreeing is necessary but NOT sufficient — the confirmed production failure
+  // had 23 verified lots agreed across consumers while the realized total silently moved from
+  // 1791.71 to 4286.93. Every field below is optional (`undefined` = "this consumer isn't present
+  // in this scan", never a fabricated agreement); `null` is a real, compared value.
+  canonicalRecomputedCoverage?: number | null
+  manifestStoredCoverage?: number | null
+  publicRealizedPnlUsd?: number | null
+  publishedLotsRealizedPnlSum?: number | null
+  manifestStoredRealizedPnlUsd?: number | null
+  ayriRealizedPnlUsd?: number | null
 }
 
 export type FinalPnlSnapshotDivergenceCheck = {
   divergent: boolean
   verifiedLotCountsAgree: boolean
   pricingCoverageAgrees: boolean
+  realizedPnlAgrees: boolean
   consumers: FinalPnlSnapshotConsumers
 }
 
@@ -186,6 +204,11 @@ function numbersAgree(a: number | null, b: number | null): boolean {
   return Math.abs(a - b) <= COVERAGE_AGREEMENT_TOLERANCE
 }
 
+// REALIZED-PNL AGREEMENT TOLERANCE, DISCLOSED: public realized PnL is rounded to cents before
+// publication, so comparing it against a freshly-summed total needs a cent-scale tolerance. One cent
+// is far tighter than any real divergence (the confirmed production case moved by ~2495 USD).
+const REALIZED_PNL_AGREEMENT_TOLERANCE_USD = 0.01
+
 export function checkFinalPnlSnapshotDivergence(consumers: FinalPnlSnapshotConsumers): FinalPnlSnapshotDivergenceCheck {
   const lotCounts = [consumers.publicGateVerifiedLots, consumers.ayriFullyPricedLots, consumers.canonicalVerifiedLots]
   if (consumers.smartMoneyVerifiedLots !== null) lotCounts.push(consumers.smartMoneyVerifiedLots)
@@ -193,12 +216,31 @@ export function checkFinalPnlSnapshotDivergence(consumers: FinalPnlSnapshotConsu
 
   const coverages = [consumers.publicGatePricingCoverage, consumers.ayriVerifiedPricingCoverage]
   if (consumers.smartMoneyVerifiedPricingCoverage !== null) coverages.push(consumers.smartMoneyVerifiedPricingCoverage)
+  // OPTIONAL-MEANS-ABSENT, DISCLOSED: only compare a manifest/recomputed coverage that this scan
+  // actually produced. `undefined` is skipped (there is nothing real to compare); an explicit `null`
+  // is a genuine value and IS compared, so a null-vs-number disagreement still fails.
+  if (consumers.canonicalRecomputedCoverage !== undefined) coverages.push(consumers.canonicalRecomputedCoverage)
+  if (consumers.manifestStoredCoverage !== undefined) coverages.push(consumers.manifestStoredCoverage)
   const pricingCoverageAgrees = coverages.every((c) => numbersAgree(c, coverages[0]))
 
+  const realizedTotals: Array<number | null> = []
+  if (consumers.publicRealizedPnlUsd !== undefined) realizedTotals.push(consumers.publicRealizedPnlUsd)
+  if (consumers.publishedLotsRealizedPnlSum !== undefined) realizedTotals.push(consumers.publishedLotsRealizedPnlSum)
+  if (consumers.manifestStoredRealizedPnlUsd !== undefined) realizedTotals.push(consumers.manifestStoredRealizedPnlUsd)
+  if (consumers.ayriRealizedPnlUsd !== undefined) realizedTotals.push(consumers.ayriRealizedPnlUsd)
+  const realizedPnlAgrees = realizedTotals.length === 0
+    ? true
+    : realizedTotals.every((t) => {
+        const first = realizedTotals[0]
+        if (t === null || first === null) return t === first
+        return Math.abs(t - first) <= REALIZED_PNL_AGREEMENT_TOLERANCE_USD
+      })
+
   return {
-    divergent: !verifiedLotCountsAgree || !pricingCoverageAgrees,
+    divergent: !verifiedLotCountsAgree || !pricingCoverageAgrees || !realizedPnlAgrees,
     verifiedLotCountsAgree,
     pricingCoverageAgrees,
+    realizedPnlAgrees,
     consumers,
   }
 }
@@ -211,6 +253,7 @@ export function logFinalPnlSnapshotDivergenceIfAny(
   logger.error('CRITICAL final_pnl_snapshot_divergence', {
     verifiedLotCountsAgree: check.verifiedLotCountsAgree,
     pricingCoverageAgrees: check.pricingCoverageAgrees,
+    realizedPnlAgrees: check.realizedPnlAgrees,
     consumers: check.consumers,
   })
 }

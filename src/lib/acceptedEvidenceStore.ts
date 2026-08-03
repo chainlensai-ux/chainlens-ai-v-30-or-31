@@ -95,6 +95,51 @@ export function isValidAcceptedEvidence(raw: unknown, expected: AcceptedEvidence
   return true
 }
 
+// PARTIAL-FILL DISCOVERY READ, DISCLOSED, ADDITIVE (canonical-price-replay follow-up task).
+// CONFIRMED MODELLING GAP THIS ADDRESSES: an accepted-evidence KEY is per (chain, token, txHash,
+// side, timestamp) — it deliberately does NOT include `lotIdentityVersion` — but the envelope's
+// validation DOES require an exact `lotIdentityVersion` match. When one buy tx is split across
+// several FIFO lots (a real partial fill), every slice shares the same key while carrying a
+// different lot-identity version (the version includes `amount`), so the seeding pass writes the
+// key once per slice and only the LAST writer's version survives. A later strict read for any other
+// slice then legitimately misses, even though the price evidence for that tx side is present and
+// correct.
+//
+// This read exists purely so a caller can DISCOVER which lot-identity version actually backs a
+// stored side, and record it. It validates every other identity field exactly as strictly as
+// `isValidAcceptedEvidence` does — chain, token, txHash, side, timestamp, schemaVersion,
+// verificationStatus, finite price, expiry — and relaxes NOTHING else. It is never a substitute for
+// the strict read: the canonical-sample manifest uses this once at build time to record the backing
+// version, then always reads strictly (version included) on every subsequent replay.
+export function isValidAcceptedEvidenceIgnoringLotVersion(raw: unknown, expected: Omit<AcceptedEvidenceIdentity, 'lotIdentityVersion'>, now: number): raw is AcceptedEvidenceEnvelope {
+  if (!raw || typeof raw !== 'object') return false
+  const e = raw as Partial<AcceptedEvidenceEnvelope>
+  if (e.schemaVersion !== ACCEPTED_EVIDENCE_SCHEMA_VERSION) return false
+  if (e.chain !== expected.chain) return false
+  if (typeof e.token !== 'string' || e.token.toLowerCase() !== expected.token.toLowerCase()) return false
+  if (e.txHash !== expected.txHash) return false
+  if (e.side !== expected.side) return false
+  if (e.timestamp !== expected.timestamp) return false
+  if (typeof e.lotIdentityVersion !== 'string') return false
+  if (e.verificationStatus !== 'verified') return false
+  if (!isFiniteNumber(e.priceUsd)) return false
+  if (!isFiniteNumber(e.expiresAt) || e.expiresAt <= now) return false
+  return true
+}
+
+export async function readAcceptedEvidenceAnyLotVersion(
+  kv: AcceptedEvidenceKvLike,
+  identity: Omit<AcceptedEvidenceIdentity, 'lotIdentityVersion'>,
+  now: number,
+): Promise<AcceptedEvidenceEnvelope | null> {
+  try {
+    const raw = await kv.get<unknown>(buildAcceptedEvidenceKey({ ...identity, lotIdentityVersion: '' }))
+    return isValidAcceptedEvidenceIgnoringLotVersion(raw, identity, now) ? raw : null
+  } catch {
+    return null
+  }
+}
+
 // FAIL-OPEN ON I/O, FAIL-CLOSED ON CONTENT, DISCLOSED: a KV outage/timeout degrades to "no accepted
 // evidence found" (never blocks or throws) — but any VALUE that IS returned is validated with zero
 // tolerance; a corrupt or mismatched entry is treated exactly like a cache miss.

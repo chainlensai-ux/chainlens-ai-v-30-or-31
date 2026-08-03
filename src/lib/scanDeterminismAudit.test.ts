@@ -131,6 +131,84 @@ describe('checkPricingDeterminismViolation / logPricingDeterminismViolationIfAny
   })
 })
 
+
+describe('checkFinalPnlSnapshotDivergence — realized-PnL agreement (canonical-price-replay requirement #8)', () => {
+  const base = {
+    publicGateVerifiedLots: 23,
+    publicGatePricingCoverage: 0.8519,
+    ayriFullyPricedLots: 23,
+    ayriVerifiedPricingCoverage: 0.8519,
+    smartMoneyVerifiedLots: null,
+    smartMoneyVerifiedPricingCoverage: null,
+    canonicalVerifiedLots: 23,
+  }
+
+  it('agreeing counts, coverage and totals are never divergent', () => {
+    const check = checkFinalPnlSnapshotDivergence({
+      ...base,
+      publicRealizedPnlUsd: 1791.71,
+      publishedLotsRealizedPnlSum: 1791.71,
+      manifestStoredRealizedPnlUsd: 1791.71,
+      ayriRealizedPnlUsd: 1791.71,
+    })
+    assert.equal(check.divergent, false)
+    assert.equal(check.realizedPnlAgrees, true)
+  })
+
+  it('HARD ASSERTION (the confirmed production failure): identical lot counts and coverage but a drifted realized total IS divergent', () => {
+    // 23 verified lots agreed across every consumer while the total moved 1791.71 -> 4286.93. The
+    // prior check compared only counts and coverage, so it could not see this at all.
+    const check = checkFinalPnlSnapshotDivergence({
+      ...base,
+      publicRealizedPnlUsd: 4286.93,
+      publishedLotsRealizedPnlSum: 4286.93,
+      manifestStoredRealizedPnlUsd: 1791.71,
+      ayriRealizedPnlUsd: 4286.93,
+    })
+    assert.equal(check.verifiedLotCountsAgree, true)
+    assert.equal(check.pricingCoverageAgrees, true)
+    assert.equal(check.realizedPnlAgrees, false)
+    assert.equal(check.divergent, true)
+  })
+
+  it('a manifest coverage that disagrees with the gate is divergent', () => {
+    const check = checkFinalPnlSnapshotDivergence({ ...base, manifestStoredCoverage: 0.7037 })
+    assert.equal(check.pricingCoverageAgrees, false)
+    assert.equal(check.divergent, true)
+  })
+
+  it('omitted (undefined) optional consumers are skipped, never treated as a fabricated agreement or mismatch', () => {
+    const check = checkFinalPnlSnapshotDivergence(base)
+    assert.equal(check.realizedPnlAgrees, true)
+    assert.equal(check.divergent, false)
+  })
+
+  it('an explicit null realized total disagreeing with a real one is still caught', () => {
+    const check = checkFinalPnlSnapshotDivergence({
+      ...base, publicRealizedPnlUsd: null, publishedLotsRealizedPnlSum: 1791.71,
+    })
+    assert.equal(check.realizedPnlAgrees, false)
+    assert.equal(check.divergent, true)
+  })
+
+  it('cent-scale rounding noise in the realized total never false-positives', () => {
+    const check = checkFinalPnlSnapshotDivergence({
+      ...base, publicRealizedPnlUsd: 1791.71, publishedLotsRealizedPnlSum: 1791.715,
+    })
+    assert.equal(check.realizedPnlAgrees, true)
+  })
+
+  it('a realized-PnL divergence logs CRITICAL final_pnl_snapshot_divergence', () => {
+    const errors: unknown[][] = []
+    const check = checkFinalPnlSnapshotDivergence({
+      ...base, publicRealizedPnlUsd: 4286.93, manifestStoredRealizedPnlUsd: 1791.71,
+    })
+    logFinalPnlSnapshotDivergenceIfAny(check, { error: (...args: unknown[]) => { errors.push(args) } })
+    assert.equal(errors.length, 1)
+    assert.equal(errors[0][0], 'CRITICAL final_pnl_snapshot_divergence')
+  })
+})
+
 describe('checkFinalPnlSnapshotDivergence / logFinalPnlSnapshotDivergenceIfAny (requirement #4)', () => {
   function consumers(overrides: Partial<FinalPnlSnapshotConsumers> = {}): FinalPnlSnapshotConsumers {
     return {
