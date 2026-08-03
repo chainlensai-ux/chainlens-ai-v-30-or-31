@@ -207,12 +207,36 @@ export type StructuralCoverageDenominatorAudit = {
   windowBoundaryProven?: boolean
 }
 
+// CANONICAL SAMPLE SELECTOR, DISCLOSED (canonical-manifest-replay follow-up task, requirement #5 —
+// "apply manifest selection before all final calculations"). CONFIRMED PRODUCTION FAILURE THIS
+// CLOSES: the public gate below computes `verifiedPricingCoverage`/`verifiedLotCount` from the
+// post-recovery lot array, and the canonical sample manifest was previously applied AFTER
+// `reconcile()` had already returned — so a scan whose manifest replay failed still published the
+// live 23-lot / 85.19% gate result the manifest was supposed to freeze at 21 / 77.78%. Threading the
+// selection in HERE, before the realized-PnL sum and before every gate computation, is the only
+// placement where the gate can genuinely be "calculated from that array".
+//
+// The selector receives the fully accepted-evidence-reconciled lot array and returns the ONE
+// canonical array to publish from. It never adds, removes or reorders a lot — it only decides which
+// verified lots are published (an unpublished lot comes back in the honest `'unpriced'` state), so
+// FIFO matching, the structural lot set, and every coverage denominator are untouched. Optional: a
+// caller that doesn't supply one gets byte-identical prior behavior.
+export type CanonicalSampleSelection = {
+  publishedLots: MatchedLot[]
+  // Set when a valid manifest exists but could not be replayed in full — the gate must then report a
+  // degraded/unavailable public state rather than falling through to whatever the live sample would
+  // have earned on its own (requirement #4's "never present frozen stored PnL as freshly verified").
+  forcePublicPnlUnavailable: boolean
+}
+export type CanonicalSampleSelector = (lots: readonly MatchedLot[]) => Promise<CanonicalSampleSelection>
+
 export type PnlReconciliationInput = {
   fifoEngineResult: FifoOutput
   pnlEngineResult: PnlSummaryResult
   routerInferenceOutput?: RouterInferenceLike | null
   syntheticPnlAssemblyOutput?: SyntheticPnlSummary | null
   structuralCoverageDenominatorAudit?: StructuralCoverageDenominatorAudit | null
+  canonicalSampleSelector?: CanonicalSampleSelector
 }
 
 // PUBLIC PNL GATE AUDIT, DISCLOSED (evidence-first PnL completion task, requirement #1): a single,
@@ -376,6 +400,16 @@ export type PnlReconciliationSummary = {
   // ACCEPTED-EVIDENCE AUDIT, DISCLOSED (determinism follow-up task, requirement #6): real, from this
   // scan's own hydration/recovery pass — see AcceptedEvidenceAudit's own header.
   acceptedEvidenceAudit: AcceptedEvidenceAudit
+  // THE ONE CANONICAL PUBLISHED LOT ARRAY, DISCLOSED (canonical-manifest-replay follow-up task,
+  // requirement #5/#10). CONFIRMED PRODUCTION BUG THIS CLOSES: this summary previously exposed no
+  // lot array at all, so `src/pipeline/index.ts` built its `reconciledFifoAndPnl` by spreading the
+  // RAW, pre-reconciliation `fifoEngineResult` — meaning AYRI, serialization and the UI all read a
+  // lot array that predated accepted-evidence hydration and price recovery entirely, while the gate
+  // reported figures derived from the hydrated one. That is exactly the confirmed 18-vs-23
+  // divergence (AYRI 18 verified / public gate 23 verified for the same scan). Every consumer must
+  // now read THIS array: it is the same array the realized-PnL sum and every gate figure below were
+  // computed from, after accepted-evidence reconciliation and after canonical sample selection.
+  publishedMatchedLots: MatchedLot[]
 }
 
 const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : null
@@ -946,6 +980,19 @@ export function createPnlReconciliation(config: Config = {}) {
       // priced upstream (before recoverPrices ever ran) or by recovery itself just above. See
       // seedAcceptedEvidenceForVerifiedLots' own header for the full rationale.
       const seeding = await seedAcceptedEvidenceForVerifiedLots(updatedFifoLots)
+      // CANONICAL SAMPLE SELECTION, DISCLOSED (requirement #5's exact required order: reconcile
+      // accepted evidence -> resolve manifest -> validate -> construct final canonical published lot
+      // array -> calculate gate/AYRI/fingerprints from THAT array). Runs AFTER accepted-evidence
+      // hydration/recovery/seeding above (so the manifest replays against fully-reconciled evidence)
+      // and BEFORE the realized-PnL sum and every gate computation below — every figure this
+      // function reports is derived from `publishedFifoLots` from here on. Accepted-evidence
+      // persistence itself deliberately still runs over the unfiltered `updatedFifoLots`: withholding
+      // a lot from PUBLICATION must never also stop its genuinely-resolved evidence from being
+      // persisted (that would make the next scan worse, not more deterministic).
+      const canonicalSampleSelection = input.canonicalSampleSelector
+        ? await input.canonicalSampleSelector(updatedFifoLots)
+        : null
+      const publishedFifoLots = canonicalSampleSelection ? canonicalSampleSelection.publishedLots : updatedFifoLots
       const acceptedEvidenceAudit: AcceptedEvidenceAudit = {
         ...recovery.acceptedEvidenceAudit,
         acceptedEvidenceWriteSuccesses: recovery.acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses + seeding.acceptedEvidenceWriteSuccesses,
@@ -1124,7 +1171,12 @@ export function createPnlReconciliation(config: Config = {}) {
       // realizedPnlUsd, null when none) — when recovery finds nothing new, this is numerically
       // identical to the old value; it only ever adds real, newly-recovered lots to the sum, never
       // changes or removes an already-verified one.
-      const verifiedUpdatedLots = updatedFifoLots.filter(isCanonicalVerifiedLotForPnl)
+      // PUBLISHED-ARRAY DERIVED, DISCLOSED (requirement #5/#6): `publishedFifoLots`, never
+      // `updatedFifoLots` — a candidate-new-evidence lot withheld by canonical sample selection must
+      // make ZERO contribution to public realized PnL and must not count toward the gate's verified
+      // lot count or pricing coverage. When no selector is wired, `publishedFifoLots` IS
+      // `updatedFifoLots`, so this is byte-identical to the prior behavior for every existing caller.
+      const verifiedUpdatedLots = publishedFifoLots.filter(isCanonicalVerifiedLotForPnl)
       const recoveryInclusiveRealizedPnlUsd = verifiedUpdatedLots.length > 0
         ? verifiedUpdatedLots.reduce((sum, l) => sum + (l.realizedPnlUsd ?? 0), 0)
         : null
@@ -1152,7 +1204,7 @@ export function createPnlReconciliation(config: Config = {}) {
       // block public PnL — only a specific, canonical FIFO lot proven invalid would (this codebase
       // has no such proof mechanism today, so this never silently fabricates one).
       const engineLotCountsAgree = fifoLots.length === pnlLots.length
-      const fullyPricedLotCount = updatedFifoLots.filter((l) => l.costBasisUsd !== null && l.proceedsUsd !== null).length
+      const fullyPricedLotCount = publishedFifoLots.filter((l) => l.costBasisUsd !== null && l.proceedsUsd !== null).length
       const verifiedPricingCoverage = fifoLots.length > 0 ? fullyPricedLotCount / fifoLots.length : null
       // PUBLIC PNL ELIGIBILITY THRESHOLDS, DISCLOSED (requirement #6, byte-for-byte from this
       // task's own explicit numbers): a minimum verified-closed-lot count and minimum verified
@@ -1197,11 +1249,21 @@ export function createPnlReconciliation(config: Config = {}) {
       const hardInvalidFifoResult = input.fifoEngineResult.integrityFlags.hardInvalid
       const windowBoundaryProven = denomAudit?.windowBoundaryProven ?? false
       const boundedSampleEligible = verifiedLotThresholdMet && pricingCoverageThresholdMet && !hardInvalidFifoResult && windowBoundaryProven && realizedPnlUsd !== null
-      const publicPnlStatus: ReconciledPublicPnlStatus = structuralConsistent
-        ? 'available'
-        : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0)
-          ? 'partial'
-          : 'unavailable'
+      // CANONICAL SAMPLE UNAVAILABLE OVERRIDE, DISCLOSED (requirement #4 — genuine fail-closed): a
+      // valid manifest exists but this scan could not reproduce its required evidence. The public
+      // result must then be degraded/unavailable — never the live candidate sample that happens to
+      // be sitting in front of us, and never the manifest's own stored figures re-presented as
+      // freshly verified (those survive separately, clearly labelled, as
+      // `lastKnownCanonicalSample` in the manifest audit). This can only ever make the gate MORE
+      // conservative — it is a veto, never a path to publication.
+      const canonicalSampleUnavailable = canonicalSampleSelection?.forcePublicPnlUnavailable === true
+      const publicPnlStatus: ReconciledPublicPnlStatus = canonicalSampleUnavailable
+        ? 'unavailable'
+        : structuralConsistent
+          ? 'available'
+          : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0)
+            ? 'partial'
+            : 'unavailable'
       const totalClosedLots = Math.max(fifoLots.length, pnlLots.length)
 
       // GATE SHADOW AUDIT, DISCLOSED (requirement #5): a before/after comparison — what the gate
@@ -1305,7 +1367,7 @@ export function createPnlReconciliation(config: Config = {}) {
         structuralCoverage: structuralDenominator > 0 ? fifoLots.length / structuralDenominator : null,
         unmatchedBuyCount: gateUnmatchedBuys,
         unmatchedSellCount: gateUnmatchedSells,
-        integrityTier: structuralConsistent ? 'full' : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0) ? 'partial' : 'blocked',
+        integrityTier: canonicalSampleUnavailable ? 'blocked' : structuralConsistent ? 'full' : boundedSampleEligible || (missingEvidenceCount <= 3 && fifoLots.length > 0) ? 'partial' : 'blocked',
         blockingReasons,
         rawUnmatchedBuys: correctedUnmatchedBuys,
         rawUnmatchedSells: correctedUnmatchedSells,
@@ -1356,6 +1418,7 @@ export function createPnlReconciliation(config: Config = {}) {
         mismatches: [...mismatches.entries()].map(([key, classification]) => ({ key, classification })).sort((a, b) => a.key.localeCompare(b.key)),
         warning,
         acceptedEvidenceAudit,
+        publishedMatchedLots: publishedFifoLots,
       }
       logger.warn('[pnl-reconciliation] finalSummary', summary)
       logger.warn('[public-pnl-gate-audit]', publicPnlGateAudit)

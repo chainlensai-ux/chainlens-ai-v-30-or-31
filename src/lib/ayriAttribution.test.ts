@@ -13,6 +13,7 @@ function lot(overrides: Partial<MatchedLot> = {}): MatchedLot {
 function reconciled(overrides: Partial<PnlReconciliationSummary> = {}): PnlReconciliationSummary {
   return {
     closedLots: 1, unmatchedBuys: 0, unmatchedSells: 0, realizedPnlUsd: 2, unrealizedPnlUsd: 5,
+    publishedMatchedLots: [],
     priceRecoveredCount: 0, routerCorrectedCount: 0, syntheticAlignedCount: 0, missingEvidenceCount: 0,
     missingEvidenceBreakdown: { criticalTradeEvidenceMissing: 0, pricingEvidenceMissing: 0, dustExcluded: 0, nonTradeExcluded: 0 },
     publicPnlStatus: 'available',

@@ -28,6 +28,7 @@ import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
 function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}): PnlReconciliationSummary {
   return {
     closedLots: 27, unmatchedBuys: 94, unmatchedSells: 114, realizedPnlUsd: -3515.49, unrealizedPnlUsd: -19.02,
+    publishedMatchedLots: [],
     priceRecoveredCount: 0, routerCorrectedCount: 0, syntheticAlignedCount: 0, missingEvidenceCount: 15,
     missingEvidenceBreakdown: { criticalTradeEvidenceMissing: 4, pricingEvidenceMissing: 8, dustExcluded: 0, nonTradeExcluded: 0 },
     publicPnlStatus: 'partial',

@@ -1,14 +1,17 @@
-// Regression tests for the durable canonical PnL sample manifest (item #12: corrupt, missing-record,
-// expiry, methodology-version and structural fingerprint-change coverage; item #11: the production-
-// shaped run1/run2/explicit-refresh regression). Run directly with:
+// Regression tests for the durable canonical PnL sample manifest, after the confirmed production
+// replay failure (float-in-identity-key -> zero of 21 manifest lots resolved -> live 23-lot sample
+// escaped as canonical). Covers requirements #1 (float-free identity + partial-fill ordinals),
+// #2 (deduplication), #3 (atomic replay), #4 (genuine fail-closed), #6 (candidate exclusion),
+// #7 (reason codes) and #8 (production-shaped partial-fill regressions). Run directly with:
 //   npx tsx --test src/lib/canonicalPnlSampleManifest.test.ts
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
-  readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, applyManifestToCandidateSample,
-  canonicalLotIdentityKey, buildScanWindowIdentity, buildChainScope, normalizeWalletAddress,
+  readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest,
+  buildCanonicalLotIdentities, canonicalAmountString, dedupeKeys, logDuplicateIdentityIfAny,
+  buildLastKnownCanonicalSample, buildScanWindowIdentity, buildChainScope, normalizeWalletAddress,
   type CanonicalSampleManifestKvLike,
 } from './canonicalPnlSampleManifest.ts'
 import { buildScanDeterminismAudit } from './scanDeterminismAudit.ts'
@@ -22,6 +25,8 @@ function fakeKv(): CanonicalSampleManifestKvLike & { store: Map<string, unknown>
     set: async (key: string, value: unknown) => { store.set(key, value); return 'OK' },
   }
 }
+
+const isVerified = (lot: MatchedLot) => lot.evidenceQuality === 'verified'
 
 function lot(overrides: Partial<MatchedLot> = {}): MatchedLot {
   return {
@@ -54,256 +59,433 @@ function fingerprintsFor(structuralLots: readonly MatchedLot[], realizedPnlUsd: 
   }
 }
 
-describe('canonicalPnlSampleManifest — identity', () => {
-  it('normalizes wallet address and chain scope; is stable regardless of wall-clock time', () => {
-    assert.equal(normalizeWalletAddress(' 0xAbC '), '0xabc')
-    assert.equal(buildChainScope(['Base', 'eth', 'base']), 'base,eth')
-    const a = buildScanWindowIdentity({ configuredWindowDays: 90, pricingMethodologyVersion: 1 })
-    const b = buildScanWindowIdentity({ configuredWindowDays: 90, pricingMethodologyVersion: 1 })
-    assert.equal(a, b)
+function identity(matchedLotFingerprint = 'fp1') {
+  return buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint })
+}
+
+function manifestFor(allLots: readonly MatchedLot[], realizedPnlUsd: number, coverage: number, now = 1000) {
+  const verified = allLots.filter(isVerified)
+  return buildManifestFromCandidate({
+    identity: identity(), allCandidateLots: allLots, candidateVerifiedLots: verified,
+    structuralLotCount: allLots.length, fingerprints: fingerprintsFor(allLots, realizedPnlUsd),
+    realizedPnlUsd, verifiedPricingCoverage: coverage, now,
+  })
+}
+
+describe('canonicalPnlSampleManifest — lot identity (requirement #1)', () => {
+  it('HARD ASSERTION (the exact production bug): a float-noise difference in a partial fill\'s amount never changes the identity key', () => {
+    // The SAME structural fill, serialized two ways by float accumulation order — this is precisely
+    // what made all 21 production manifest lots unresolvable.
+    const clean = lot({ amount: 0.3 })
+    const noisy = lot({ amount: 0.1 + 0.2 }) // 0.30000000000000004
+    assert.notEqual(String(clean.amount), String(noisy.amount), 'sanity: the raw float text really does differ')
+
+    const keyClean = [...buildCanonicalLotIdentities([clean]).values()][0].key
+    const keyNoisy = [...buildCanonicalLotIdentities([noisy]).values()][0].key
+    assert.equal(keyClean, keyNoisy, 'float noise must never reach the identity key')
   })
 
-  it('manifest key never depends on wall-clock time — same identity inputs always produce the same key', () => {
-    const identity1 = buildManifestIdentity({ walletAddress: '0xAAA', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1' })
-    const identity2 = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1' })
-    assert.equal(buildManifestKey(identity1), buildManifestKey(identity2))
+  it('no identity key ever contains raw JS float text', () => {
+    const lots = [lot({ amount: 0.1 + 0.2 }), lot({ closedTxHash: '0xsell2', amount: 1 / 3 })]
+    for (const id of buildCanonicalLotIdentities(lots).values()) {
+      assert.doesNotMatch(id.key, /0\.30000000000000004|0\.3333333333333333/)
+    }
   })
 
-  it('a different matchedLotFingerprint produces a different manifest key (structural change requirement)', () => {
-    const identity1 = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1' })
-    const identity2 = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp2' })
-    assert.notEqual(buildManifestKey(identity1), buildManifestKey(identity2))
+  it('canonicalAmountString normalizes float noise and reports non-finite input honestly', () => {
+    assert.equal(canonicalAmountString(0.1 + 0.2), canonicalAmountString(0.3))
+    assert.equal(canonicalAmountString(Number.NaN), 'invalid')
+    assert.equal(canonicalAmountString(Number.POSITIVE_INFINITY), 'invalid')
   })
 
-  it('a different pricing methodology version produces a different manifest key', () => {
-    const identity1 = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1', pricingMethodologyVersion: 1 })
-    const identity2 = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1', pricingMethodologyVersion: 2 })
-    assert.notEqual(buildManifestKey(identity1), buildManifestKey(identity2))
+  it('partial fills of the same tx pair get distinct, stable ordinals assigned over the FULL lot array', () => {
+    // One buy tx split across two lots closed by the same sell tx — the real partial-fill shape.
+    const fillA = lot({ lotId: 'a', amount: 2 })
+    const fillB = lot({ lotId: 'b', amount: 3 })
+    const identities = buildCanonicalLotIdentities([fillA, fillB])
+    const keyA = identities.get(fillA)!.key
+    const keyB = identities.get(fillB)!.key
+    assert.notEqual(keyA, keyB, 'two slices of one fill must never collide on one identity')
+    assert.equal(identities.get(fillA)!.partialFillGroupSize, 2)
+    assert.equal(identities.get(fillB)!.partialFillGroupSize, 2)
+
+    // Reversed construction order must produce the SAME assignment (requirement #8's "floating-point
+    // construction/order differs internally").
+    const reversed = buildCanonicalLotIdentities([fillB, fillA])
+    assert.equal(reversed.get(fillA)!.key, keyA)
+    assert.equal(reversed.get(fillB)!.key, keyB)
+  })
+
+  it('a slice\'s identity does not shift when a SIBLING slice becomes priced (ordinals span all slices, not just verified ones)', () => {
+    const fillA = lot({ lotId: 'a', amount: 2 })
+    const fillBUnpriced = lot({ lotId: 'b', amount: 3, evidenceQuality: 'unpriced', costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null })
+    const before = buildCanonicalLotIdentities([fillA, fillBUnpriced]).get(fillA)!.key
+    const fillBPriced = { ...fillBUnpriced, evidenceQuality: 'verified' as const, costBasisUsd: 5, proceedsUsd: 9, realizedPnlUsd: 4 }
+    const after = buildCanonicalLotIdentities([fillA, fillBPriced]).get(fillA)!.key
+    assert.equal(before, after)
+  })
+})
+
+describe('canonicalPnlSampleManifest — deduplication (requirement #2)', () => {
+  it('dedupeKeys canonicalizes, sorts and deduplicates, reporting the real duplicates', () => {
+    const result = dedupeKeys(['b', 'a', 'b', 'c', 'a'])
+    assert.deepEqual(result.unique, ['a', 'b', 'c'])
+    assert.deepEqual(result.duplicates, ['a', 'b'])
+  })
+
+  it('partial fills sharing one buy tx produce duplicate evidence keys, which the manifest deduplicates before persistence', () => {
+    const fillA = lot({ lotId: 'a', amount: 2 })
+    const fillB = lot({ lotId: 'b', amount: 3 })
+    const manifest = manifestFor([fillA, fillB], 4, 1)
+    // Both slices share openedTxHash AND closedTxHash, so their entry/exit evidence keys collide.
+    assert.equal(manifest.acceptedEvidenceIdentityKeys.length, new Set(manifest.acceptedEvidenceIdentityKeys).size)
+    assert.equal(manifest.verifiedLotIdentityKeys.length, 2, 'the two distinct slices still have two distinct lot identities')
+    assert.equal(manifest.verifiedLotCount, 2)
+  })
+
+  it('a manifest carrying duplicate lot keys logs CRITICAL canonical_manifest_duplicate_identity and fails replay closed', () => {
+    const lots = buildLots(12, 12)
+    const manifest = manifestFor(lots, 120, 1)
+    const corrupted = { ...manifest, verifiedLotIdentityKeys: [...manifest.verifiedLotIdentityKeys, manifest.verifiedLotIdentityKeys[0]] }
+
+    const replay = replayManifest({ manifest: corrupted, allCandidateLots: lots, isVerified })
+    assert.equal(replay.duplicates.hasDuplicates, true)
+    assert.deepEqual(replay.duplicates.manifestDuplicateLotKeys, [manifest.verifiedLotIdentityKeys[0]])
+    assert.equal(replay.outcome, 'unavailable', 'a duplicate identity must never be silently tolerated')
+    assert.equal(replay.reasonCounts.manifest_duplicate_identity, 1)
+
+    const errors: unknown[][] = []
+    logDuplicateIdentityIfAny(replay.duplicates, { error: (...args: unknown[]) => { errors.push(args) } })
+    assert.equal(errors.length, 1)
+    assert.equal(errors[0][0], 'CRITICAL canonical_manifest_duplicate_identity')
+  })
+
+  it('never logs when there are no duplicates', () => {
+    const errors: unknown[][] = []
+    logDuplicateIdentityIfAny({ hasDuplicates: false, manifestDuplicateLotKeys: [], candidateDuplicateLotKeys: [], manifestDuplicateEvidenceKeys: [] }, { error: (...a: unknown[]) => { errors.push(a) } })
+    assert.equal(errors.length, 0)
   })
 })
 
 describe('canonicalPnlSampleManifest — read/write, fail-closed', () => {
   it('round-trips a written manifest', async () => {
     const kv = fakeKv()
-    const identity = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1' })
     const lots = buildLots(3, 3)
-    const fp = fingerprintsFor(lots, 30)
-    const manifest = buildManifestFromCandidate({ identity, candidateVerifiedLots: lots, structuralLotCount: 3, fingerprints: fp, realizedPnlUsd: 30, verifiedPricingCoverage: 1, now: 1000 })
+    const manifest = manifestFor(lots, 30, 1)
     assert.equal(await writeCanonicalPnlSampleManifest(kv, manifest), true)
-    const result = await readCanonicalPnlSampleManifest(kv, identity)
+    const result = await readCanonicalPnlSampleManifest(kv, identity())
     assert.deepEqual(result.manifest, manifest)
     assert.equal(result.validationFailure, false)
   })
 
-  it('missing record: reports null manifest, no validation failure', async () => {
-    const kv = fakeKv()
-    const identity = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1' })
-    const result = await readCanonicalPnlSampleManifest(kv, identity)
+  it('missing record: null manifest, no validation failure', async () => {
+    const result = await readCanonicalPnlSampleManifest(fakeKv(), identity())
     assert.equal(result.manifest, null)
     assert.equal(result.validationFailure, false)
   })
 
-  it('corrupt record: fails closed, reports validationFailure true, never fabricates a manifest', async () => {
+  it('corrupt record: fails closed with validationFailure, never fabricates a manifest', async () => {
     const kv = fakeKv()
-    const identity = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1' })
-    await kv.set(buildManifestKey(identity), { garbage: true })
-    const result = await readCanonicalPnlSampleManifest(kv, identity)
+    await kv.set(buildManifestKey(identity()), { garbage: true })
+    const result = await readCanonicalPnlSampleManifest(kv, identity())
     assert.equal(result.manifest, null)
     assert.equal(result.validationFailure, true)
   })
 
-  it('identity mismatch (wallet address changed) never returns the wrong wallet\'s manifest', async () => {
+  it('a stale lot-identity schema version is rejected (old float-keyed manifests are never replayed)', async () => {
     const kv = fakeKv()
-    const identityA = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1' })
-    const lots = buildLots(2, 2)
-    const fp = fingerprintsFor(lots, 20)
-    const manifestA = buildManifestFromCandidate({ identity: identityA, candidateVerifiedLots: lots, structuralLotCount: 2, fingerprints: fp, realizedPnlUsd: 20, verifiedPricingCoverage: 1, now: 1 })
-    await kv.set(buildManifestKey(identityA), manifestA)
-
-    // Different wallet asking under a colliding raw store lookup never happens (different key), but
-    // simulate a corrupted/foreign record written under the SAME key by an identity-mismatched writer.
-    const identityB = buildManifestIdentity({ walletAddress: '0xbbb', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1' })
-    await kv.set(buildManifestKey(identityB), manifestA) // wrong-wallet payload under wallet B's key
-    const result = await readCanonicalPnlSampleManifest(kv, identityB)
+    const manifest = manifestFor(buildLots(2, 2), 20, 1)
+    await kv.set(buildManifestKey(identity()), { ...manifest, lotIdentitySchemaVersion: 1 })
+    const result = await readCanonicalPnlSampleManifest(kv, identity())
     assert.equal(result.manifest, null)
     assert.equal(result.validationFailure, true)
   })
 
-  it('a structural fingerprint change never reuses the prior manifest (different key entirely, real miss)', async () => {
+  it('identity mismatch (foreign payload under this key) is rejected', async () => {
     const kv = fakeKv()
-    const identity1 = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp-before' })
-    const lots = buildLots(2, 2)
-    const fp = fingerprintsFor(lots, 20)
-    const manifest = buildManifestFromCandidate({ identity: identity1, candidateVerifiedLots: lots, structuralLotCount: 2, fingerprints: fp, realizedPnlUsd: 20, verifiedPricingCoverage: 1, now: 1 })
-    await writeCanonicalPnlSampleManifest(kv, manifest)
-
-    const identity2 = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp-after' })
-    const result = await readCanonicalPnlSampleManifest(kv, identity2)
+    const foreign = { ...manifestFor(buildLots(2, 2), 20, 1), normalizedWalletAddress: '0xbbb' }
+    await kv.set(buildManifestKey(identity()), foreign)
+    const result = await readCanonicalPnlSampleManifest(kv, identity())
     assert.equal(result.manifest, null)
-    assert.equal(result.validationFailure, false, 'a structural fingerprint change is a real miss, not corruption')
+    assert.equal(result.validationFailure, true)
+  })
+
+  it('a structural fingerprint change is a real miss, never a reuse and never corruption', async () => {
+    const kv = fakeKv()
+    await writeCanonicalPnlSampleManifest(kv, manifestFor(buildLots(2, 2), 20, 1))
+    const result = await readCanonicalPnlSampleManifest(kv, identity('fp-after'))
+    assert.equal(result.manifest, null)
+    assert.equal(result.validationFailure, false)
   })
 
   it('a methodology version change never reuses the prior manifest', async () => {
     const kv = fakeKv()
-    const identity1 = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1', pricingMethodologyVersion: 1 })
-    const lots = buildLots(2, 2)
-    const fp = fingerprintsFor(lots, 20)
-    const manifest = buildManifestFromCandidate({ identity: identity1, candidateVerifiedLots: lots, structuralLotCount: 2, fingerprints: fp, realizedPnlUsd: 20, verifiedPricingCoverage: 1, now: 1 })
-    await writeCanonicalPnlSampleManifest(kv, manifest)
-
-    const identity2 = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1', pricingMethodologyVersion: 2 })
-    const result = await readCanonicalPnlSampleManifest(kv, identity2)
-    assert.equal(result.manifest, null)
+    await writeCanonicalPnlSampleManifest(kv, manifestFor(buildLots(2, 2), 20, 1))
+    const other = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1', pricingMethodologyVersion: 2 })
+    assert.equal((await readCanonicalPnlSampleManifest(kv, other)).manifest, null)
   })
 
-  it('KV outage on read fails open to "no manifest" (never blocks, never fabricates)', async () => {
-    const identity = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1' })
-    const brokenKv: CanonicalSampleManifestKvLike = { get: async () => { throw new Error('down') }, set: async () => 'OK' }
-    const result = await readCanonicalPnlSampleManifest(brokenKv, identity)
-    assert.equal(result.manifest, null)
-    assert.equal(result.validationFailure, false)
+  it('KV outage fails open to "no manifest" on read and returns false on write, never throwing', async () => {
+    const broken: CanonicalSampleManifestKvLike = { get: async () => { throw new Error('down') }, set: async () => { throw new Error('down') } }
+    const read = await readCanonicalPnlSampleManifest(broken, identity())
+    assert.equal(read.manifest, null)
+    assert.equal(read.validationFailure, false)
+    assert.equal(await writeCanonicalPnlSampleManifest(broken, manifestFor(buildLots(1, 1), 10, 1)), false)
   })
 
-  it('KV outage on write returns false, never throws', async () => {
-    const identity = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1' })
-    const lots = buildLots(1, 1)
-    const fp = fingerprintsFor(lots, 10)
-    const manifest = buildManifestFromCandidate({ identity, candidateVerifiedLots: lots, structuralLotCount: 1, fingerprints: fp, realizedPnlUsd: 10, verifiedPricingCoverage: 1, now: 1 })
-    const brokenKv: CanonicalSampleManifestKvLike = { get: async () => null, set: async () => { throw new Error('down') } }
-    assert.equal(await writeCanonicalPnlSampleManifest(brokenKv, manifest), false)
+  it('normalizes wallet address / chain scope, and scan-window identity ignores wall-clock time', () => {
+    assert.equal(normalizeWalletAddress(' 0xAbC '), '0xabc')
+    assert.equal(buildChainScope(['Base', 'eth', 'base']), 'base,eth')
+    assert.equal(
+      buildScanWindowIdentity({ configuredWindowDays: 90, pricingMethodologyVersion: 1 }),
+      buildScanWindowIdentity({ configuredWindowDays: 90, pricingMethodologyVersion: 1 }),
+    )
   })
 })
 
-describe('canonicalPnlSampleManifest — applyManifestToCandidateSample (requirement #4/#9)', () => {
-  it('an unchanged rescan reproduces exactly the manifest sample; nothing new leaks in', () => {
-    const lots = buildLots(5, 5)
-    const identity = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1' })
-    const fp = fingerprintsFor(lots, 50)
-    const manifest = buildManifestFromCandidate({ identity, candidateVerifiedLots: lots, structuralLotCount: 5, fingerprints: fp, realizedPnlUsd: 50, verifiedPricingCoverage: 1, now: 1 })
-    const applied = applyManifestToCandidateSample({ manifest, candidateVerifiedLots: lots })
-    assert.equal(applied.selectedLots.length, 5)
-    assert.equal(applied.candidateNewEvidence.length, 0)
-    assert.equal(applied.evidenceUnavailable, false)
+describe('canonicalPnlSampleManifest — atomic replay + reason codes (requirements #3, #6, #7)', () => {
+  it('an unchanged rescan replays every lot and publishes exactly the manifest sample', () => {
+    const lots = buildLots(12, 12)
+    const replay = replayManifest({ manifest: manifestFor(lots, 120, 1), allCandidateLots: lots, isVerified })
+    assert.equal(replay.outcome, 'applied')
+    assert.equal(replay.forcePublicPnlUnavailable, false)
+    assert.equal(replay.selectedLotKeys.length, 12)
+    assert.equal(replay.reasonCounts.manifest_replay_success, 12)
+    assert.equal(replay.publishedLots.filter(isVerified).length, 12)
   })
 
-  it('newly-priceable lots this scan are reported as candidateNewEvidence, never merged into selectedLots', () => {
-    const originalLots = buildLots(19, 19)
-    const identity = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1' })
-    const fp = fingerprintsFor(originalLots, -1377.03)
-    const manifest = buildManifestFromCandidate({ identity, candidateVerifiedLots: originalLots, structuralLotCount: 27, fingerprints: fp, realizedPnlUsd: -1377.03, verifiedPricingCoverage: 0.7037, now: 1 })
+  it('HARD ASSERTION (requirement #6): newly-priceable lots are withheld from the published array and contribute zero PnL', () => {
+    const run1Lots = buildLots(27, 21)
+    const manifest = manifestFor(run1Lots, -979.81, 21 / 27)
 
-    // Rescan: same 19 originally-verified lots PLUS 2 newly-priceable ones.
-    const newlyPriced = buildLots(2, 2).map((l, i) => ({ ...l, lotId: `new-${i}`, token: `0xnew${i}`, openedTxHash: `0xnewbuy${i}`, closedTxHash: `0xnewsell${i}` }))
-    const candidate = [...originalLots, ...newlyPriced]
-    const applied = applyManifestToCandidateSample({ manifest, candidateVerifiedLots: candidate })
+    // Run 2: lots 21 and 22 become priceable with brand-new (non-manifest) prices.
+    const run2Lots = run1Lots.map((l, i) => (i === 21 || i === 22)
+      ? { ...l, evidenceQuality: 'verified' as const, costBasisUsd: 999, proceedsUsd: 5000, realizedPnlUsd: 4001 }
+      : l)
+    assert.equal(run2Lots.filter(isVerified).length, 23, 'sanity: the live candidate really is 23 lots')
 
-    assert.equal(applied.selectedLots.length, 19, 'published sample must stay at 19')
-    assert.equal(applied.candidateNewEvidence.length, 2)
-    assert.deepEqual(applied.candidateNewEvidence.map((l) => l.lotId).sort(), ['new-0', 'new-1'])
-    assert.equal(applied.evidenceUnavailable, false)
+    const replay = replayManifest({ manifest, allCandidateLots: run2Lots, isVerified })
+    assert.equal(replay.outcome, 'applied')
+    assert.equal(replay.publishedLots.filter(isVerified).length, 21, 'the published sample must stay at 21, never 23')
+    assert.equal(replay.candidateNewEvidenceLotKeys.length, 2)
+    assert.equal(replay.reasonCounts.manifest_candidate_only_lot, 2)
+    assert.equal(replay.publishedLots.length, run2Lots.length, 'the structural lot set is never shrunk')
+
+    // The withheld lots contribute nothing: their published PnL fields are honest nulls.
+    const withheld = replay.publishedLots.filter((l) => l.costBasisUsd === 999)
+    assert.equal(withheld.length, 0, 'no live candidate price may survive into the published array')
+    const publishedPnl = replay.publishedLots.filter(isVerified).reduce((s, l) => s + (l.realizedPnlUsd ?? 0), 0)
+    assert.equal(publishedPnl, 21 * 10, 'published PnL is exactly the 21 manifest lots, with zero candidate contribution')
   })
 
-  it('fail-closed: a manifest-referenced lot missing from the current candidate set is reported, never substituted or dropped silently', () => {
-    const originalLots = buildLots(3, 3)
-    const identity = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1' })
-    const fp = fingerprintsFor(originalLots, 30)
-    const manifest = buildManifestFromCandidate({ identity, candidateVerifiedLots: originalLots, structuralLotCount: 3, fingerprints: fp, realizedPnlUsd: 30, verifiedPricingCoverage: 1, now: 1 })
+  it('HARD ASSERTION (requirement #4): when a manifest lot loses its side evidence, the live sample must NOT escape', () => {
+    const run1Lots = buildLots(27, 21)
+    const manifest = manifestFor(run1Lots, -979.81, 21 / 27)
 
-    // This scan's accepted evidence for lot-1 could not be loaded (missing entirely this run).
-    const degradedCandidate = originalLots.filter((l) => l.lotId !== 'lot-1')
-    const applied = applyManifestToCandidateSample({ manifest, candidateVerifiedLots: degradedCandidate })
+    // Run 2: lot-5 lost its accepted evidence, AND two new lots became priceable — the exact
+    // production shape that previously published 23 lots / 85.19% / +4105.85.
+    const run2Lots = run1Lots.map((l, i) => {
+      if (i === 5) return { ...l, evidenceQuality: 'unpriced' as const, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null }
+      if (i === 21 || i === 22) return { ...l, evidenceQuality: 'verified' as const, costBasisUsd: 999, proceedsUsd: 5000, realizedPnlUsd: 4001 }
+      return l
+    })
+    assert.equal(run2Lots.filter(isVerified).length, 22, 'sanity: a live candidate sample does exist')
 
-    assert.equal(applied.evidenceUnavailable, true)
-    assert.equal(applied.selectedLots.length, 2)
-    assert.deepEqual(applied.manifestLotsMissingCurrentEvidence, [canonicalLotIdentityKey(originalLots[1])])
+    const replay = replayManifest({ manifest, allCandidateLots: run2Lots, isVerified })
+    assert.equal(replay.outcome, 'unavailable')
+    assert.equal(replay.forcePublicPnlUnavailable, true)
+    assert.equal(replay.reasonCounts.manifest_side_evidence_missing, 1)
+    assert.equal(replay.manifestLotsMissingCurrentEvidence.length, 1)
+    assert.equal(replay.publishedLots.filter(isVerified).length, 0, 'NO verified lot may be published when replay fails — the live sample must never escape')
+    assert.equal(replay.publishedLots.length, run2Lots.length, 'structural lots are still disclosed, just unpriced')
+    assert.equal(replay.selectedLotKeys.length, 0, 'replay is atomic: it never partially applies')
+  })
+
+  it('a manifest lot whose structural identity vanished reports manifest_lot_identity_not_found', () => {
+    const lots = buildLots(12, 12)
+    const manifest = manifestFor(lots, 120, 1)
+    const replay = replayManifest({ manifest, allCandidateLots: lots.slice(0, 11), isVerified })
+    assert.equal(replay.outcome, 'unavailable')
+    assert.equal(replay.reasonCounts.manifest_lot_identity_not_found, 1)
+    assert.equal(replay.publishedLots.filter(isVerified).length, 0)
+  })
+
+  it('a partial fill that splits into a different number of slices reports manifest_partial_fill_ordinal_mismatch', () => {
+    const twoSlices = [lot({ lotId: 'a', amount: 2 }), lot({ lotId: 'b', amount: 3 })]
+    const manifest = manifestFor(twoSlices, 4, 1)
+    // The same tx pair now resolves as a single, merged lot.
+    const oneSlice = [lot({ lotId: 'merged', amount: 5 })]
+    const replay = replayManifest({ manifest, allCandidateLots: oneSlice, isVerified })
+    assert.equal(replay.outcome, 'unavailable')
+    assert.ok(
+      replay.reasonCounts.manifest_partial_fill_ordinal_mismatch + replay.reasonCounts.manifest_lot_identity_not_found > 0,
+      'a changed partial-fill split must fail closed, never silently match the wrong slice',
+    )
+    assert.equal(replay.publishedLots.filter(isVerified).length, 0)
+  })
+
+  it('a manifest lot whose recorded quantity no longer matches reports manifest_side_evidence_invalid', () => {
+    const lots = [lot({ lotId: 'a', amount: 2 }), lot({ lotId: 'b', closedTxHash: '0xsell2', amount: 3 })]
+    const manifest = manifestFor(lots, 4, 1)
+    // Same identity (same tx pair, same ordinal within its own single-slice group) but a genuinely
+    // different matched quantity — validation metadata catches what the key alone cannot.
+    const changed = [lot({ lotId: 'a', amount: 2 }), lot({ lotId: 'b', closedTxHash: '0xsell2', amount: 99 })]
+    const replay = replayManifest({ manifest, allCandidateLots: changed, isVerified })
+    assert.equal(replay.outcome, 'unavailable')
+    assert.equal(replay.reasonCounts.manifest_side_evidence_invalid, 1)
+  })
+
+  it('every reason code is present in the counts object, so a zero is a real measured zero', () => {
+    const lots = buildLots(12, 12)
+    const replay = replayManifest({ manifest: manifestFor(lots, 120, 1), allCandidateLots: lots, isVerified })
+    for (const code of [
+      'manifest_lot_identity_not_found', 'manifest_side_evidence_missing', 'manifest_side_evidence_invalid',
+      'manifest_partial_fill_ordinal_mismatch', 'manifest_duplicate_identity', 'manifest_candidate_only_lot',
+      'manifest_replay_success',
+    ] as const) {
+      assert.equal(typeof replay.reasonCounts[code], 'number', `${code} must always be reported`)
+    }
   })
 })
 
-describe('canonicalPnlSampleManifest — refresh (requirement #5/#7)', () => {
-  it('an explicit refresh creates a new manifest version, links the prior version, and may change fingerprints', () => {
-    const identity = buildManifestIdentity({ walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1' })
-    const originalLots = buildLots(19, 19)
-    const priorFp = fingerprintsFor(originalLots, -1377.03)
-    const priorManifest = buildManifestFromCandidate({ identity, candidateVerifiedLots: originalLots, structuralLotCount: 27, fingerprints: priorFp, realizedPnlUsd: -1377.03, verifiedPricingCoverage: 0.7037, now: 1000 })
+describe('canonicalPnlSampleManifest — refresh (requirement #9)', () => {
+  it('an explicit refresh creates a new version, links the prior one, and may change fingerprints', () => {
+    const run1Lots = buildLots(27, 21)
+    const prior = manifestFor(run1Lots, -979.81, 21 / 27)
+    const expanded = run1Lots.map((l, i) => (i === 21 || i === 22)
+      ? { ...l, evidenceQuality: 'verified' as const, costBasisUsd: 5, proceedsUsd: 9, realizedPnlUsd: 4 }
+      : l)
 
-    const expandedLots = buildLots(21, 21)
-    const newFp = fingerprintsFor(expandedLots, -979.81)
     const refreshed = buildRefreshedManifest({
-      priorManifest, identity, candidateVerifiedLots: expandedLots, structuralLotCount: 27,
-      fingerprints: newFp, realizedPnlUsd: -979.81, verifiedPricingCoverage: 0.7778, now: 2000, refreshReason: 'explicit-refresh',
+      priorManifest: prior, identity: identity(), allCandidateLots: expanded,
+      candidateVerifiedLots: expanded.filter(isVerified), structuralLotCount: expanded.length,
+      fingerprints: fingerprintsFor(expanded, -971.81), realizedPnlUsd: -971.81,
+      verifiedPricingCoverage: 23 / 27, now: 2000, refreshReason: 'explicit-refresh',
     })
 
     assert.equal(refreshed.manifestVersion, 2)
     assert.equal(refreshed.priorManifestVersion, 1)
-    assert.equal(refreshed.verifiedLotCount, 21)
-    assert.equal(refreshed.realizedPnlUsd, -979.81)
+    assert.equal(refreshed.verifiedLotCount, 23)
     assert.equal(refreshed.refreshReason, 'explicit-refresh')
-    assert.notEqual(refreshed.realizedPnlFingerprint, priorManifest.realizedPnlFingerprint, 'a real, disclosed refresh may intentionally change fingerprints')
-    assert.equal(refreshed.createdAt, priorManifest.createdAt, 'createdAt tracks manifest lineage, not the refresh event')
+    assert.equal(refreshed.createdAt, prior.createdAt, 'createdAt tracks lineage, not the refresh event')
     assert.equal(refreshed.refreshedAt, 2000)
+    assert.notEqual(refreshed.realizedPnlFingerprint, prior.realizedPnlFingerprint)
+  })
+
+  it('buildLastKnownCanonicalSample always labels itself unavailable for current verification', () => {
+    const meta = buildLastKnownCanonicalSample(manifestFor(buildLots(27, 21), -979.81, 21 / 27))
+    assert.equal(meta.availableForCurrentVerification, false)
+    assert.equal(meta.verifiedLotCount, 21)
+    assert.equal(meta.realizedPnlUsd, -979.81)
   })
 })
 
-describe('canonicalPnlSampleManifest — production-shaped regression (requirement #11)', () => {
-  it('run1 creates the manifest at 19/70.37%/A; run2 (same structural fingerprint, 2 newly-priceable lots, different live provider values) reproduces exactly 19 lots / manifest coverage / realized PnL A, with candidateNewEvidence reported and both structural + all four determinism fingerprints unchanged; an explicit refresh then legitimately expands to 21', async () => {
+describe('canonicalPnlSampleManifest — production-shaped regression with real partial fills (requirement #8)', () => {
+  // 21 verified lots where ONE buy transaction is split across three FIFO lots (a real partial
+  // fill), plus 6 structurally-matched-but-unpriced lots — the production 27/21 shape.
+  function buildPartialFillScan(): MatchedLot[] {
+    const split = [
+      lot({ lotId: 'split-0', token: '0xsplit', openedTxHash: '0xbigbuy', closedTxHash: '0xbigsell', openedAt: 500, closedAt: 900, amount: 0.1 + 0.2, costBasisUsd: 3, proceedsUsd: 5, realizedPnlUsd: 2 }),
+      lot({ lotId: 'split-1', token: '0xsplit', openedTxHash: '0xbigbuy', closedTxHash: '0xbigsell', openedAt: 500, closedAt: 900, amount: 1 / 3, costBasisUsd: 4, proceedsUsd: 7, realizedPnlUsd: 3 }),
+      lot({ lotId: 'split-2', token: '0xsplit', openedTxHash: '0xbigbuy', closedTxHash: '0xbigsell', openedAt: 500, closedAt: 900, amount: 2.5, costBasisUsd: 6, proceedsUsd: 10, realizedPnlUsd: 4 }),
+    ]
+    const plain = Array.from({ length: 18 }, (_, i) => lot({
+      lotId: `v-${i}`, token: `0xtok${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`,
+      openedAt: i, closedAt: 100 + i, amount: 1 + i, costBasisUsd: 10, proceedsUsd: 21, realizedPnlUsd: 11,
+    }))
+    const unpriced = Array.from({ length: 6 }, (_, i) => lot({
+      lotId: `u-${i}`, token: `0xun${i}`, openedTxHash: `0xub${i}`, closedTxHash: `0xus${i}`,
+      openedAt: 300 + i, closedAt: 400 + i, amount: 2 + i,
+      evidenceQuality: 'unpriced', costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null,
+    }))
+    return [...split, ...plain, ...unpriced]
+  }
+
+  it('HARD ASSERTION: run1 persists 21 verified lots (one tx split into 3 FIFO lots); run2 with different internal float construction + order and 2 newly-priceable lots replays all 21, publishes exactly 21 with identical PnL, and reports the 2 as candidate-only', async () => {
     const kv = fakeKv()
-    const REALIZED_PNL_A = -1377.03
-    const COVERAGE_A = 19 / 27
+    const run1Lots = buildPartialFillScan()
+    assert.equal(run1Lots.filter(isVerified).length, 21, 'sanity: run1 has 21 verified lots')
+    assert.equal(run1Lots.length, 27, 'sanity: 27 structural lots')
 
-    // RUN 1 — 27 structural lots, 19 verified.
-    const structuralLots = buildLots(27, 19)
-    const verifiedRun1 = structuralLots.filter((l) => l.evidenceQuality === 'verified')
-    const identity = buildManifestIdentity({ walletAddress: '0xWallet', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: fingerprintsFor(structuralLots, REALIZED_PNL_A).matchedLotFingerprint })
-    const fpRun1 = fingerprintsFor(structuralLots, REALIZED_PNL_A)
-    const manifestRun1 = buildManifestFromCandidate({
-      identity, candidateVerifiedLots: verifiedRun1, structuralLotCount: structuralLots.length,
-      fingerprints: fpRun1, realizedPnlUsd: REALIZED_PNL_A, verifiedPricingCoverage: COVERAGE_A, now: 1000,
-    })
-    assert.equal(await writeCanonicalPnlSampleManifest(kv, manifestRun1), true)
+    const REALIZED_A = run1Lots.filter(isVerified).reduce((s, l) => s + (l.realizedPnlUsd ?? 0), 0)
+    const COVERAGE_A = 21 / 27
+    const run1Manifest = manifestFor(run1Lots, REALIZED_A, COVERAGE_A)
+    assert.equal(run1Manifest.verifiedLotCount, 21)
+    assert.equal(await writeCanonicalPnlSampleManifest(kv, run1Manifest), true)
 
-    // RUN 2 — SAME matchedLotFingerprint (structural set unchanged), providers now return different
-    // live values for previously-unresolved sides, and 2 previously-unpriced structural lots (index
-    // 19, 20) become fully priceable this run with DIFFERENT (non-manifest) prices.
-    const structuralLotsRun2 = structuralLots.map((l, i) => {
-      if (i === 19 || i === 20) return { ...l, evidenceQuality: 'verified' as const, costBasisUsd: 999, proceedsUsd: 1111, realizedPnlUsd: 112 }
+    // RUN 2 — identical structural events, but:
+    //  * the split lots' amounts are constructed by a DIFFERENT float path (0.30000000000000004 vs
+    //    0.1+0.2 recomputed, 0.3333333333333333 vs 1/3 recomputed),
+    //  * the array order is shuffled,
+    //  * two previously-unpriced lots become priceable with brand-new live values.
+    const run2Lots = [...run1Lots]
+      .map((l) => {
+        if (l.lotId === 'split-0') return { ...l, amount: Number((0.1 + 0.2).toFixed(17)) }
+        if (l.lotId === 'split-1') return { ...l, amount: 0.3333333333333333 }
+        if (l.lotId === 'u-0' || l.lotId === 'u-1') {
+          return { ...l, evidenceQuality: 'verified' as const, costBasisUsd: 777, proceedsUsd: 3000, realizedPnlUsd: 2223 }
+        }
+        return l
+      })
+      .reverse()
+    assert.equal(run2Lots.filter(isVerified).length, 23, 'sanity: the live candidate sample really is 23')
+
+    const read = await readCanonicalPnlSampleManifest(kv, identity())
+    assert.ok(read.manifest, 'the manifest must resolve by its stable structural identity')
+
+    const replay = replayManifest({ manifest: read.manifest!, allCandidateLots: run2Lots, isVerified })
+
+    // All 21 manifest identities resolve — the confirmed production failure was ZERO resolving.
+    assert.equal(replay.reasonCounts.manifest_replay_success, 21)
+    assert.equal(replay.reasonCounts.manifest_lot_identity_not_found, 0)
+    assert.equal(replay.reasonCounts.manifest_side_evidence_missing, 0)
+    assert.equal(replay.reasonCounts.manifest_partial_fill_ordinal_mismatch, 0)
+    assert.equal(replay.outcome, 'applied')
+    assert.equal(replay.forcePublicPnlUnavailable, false)
+
+    // Exactly 21 published, 2 candidate-only, zero candidate contribution to PnL.
+    const publishedVerified = replay.publishedLots.filter(isVerified)
+    assert.equal(publishedVerified.length, 21)
+    assert.equal(replay.candidateNewEvidenceLotKeys.length, 2)
+    assert.equal(publishedVerified.reduce((s, l) => s + (l.realizedPnlUsd ?? 0), 0), REALIZED_A)
+    assert.equal(publishedVerified.some((l) => l.costBasisUsd === 777), false, 'no live candidate price may reach the published array')
+
+    // Fingerprints over the published array are identical to run1's, order-independently.
+    const fpRun1 = fingerprintsFor(run1Lots, REALIZED_A)
+    const fpRun2 = fingerprintsFor(replay.publishedLots, REALIZED_A)
+    assert.equal(fpRun2.matchedLotFingerprint, fpRun1.matchedLotFingerprint)
+    assert.equal(fpRun2.verifiedLotIdentityFingerprint, fpRun1.verifiedLotIdentityFingerprint)
+    assert.equal(fpRun2.acceptedHistoricalPriceFingerprint, fpRun1.acceptedHistoricalPriceFingerprint)
+    assert.equal(fpRun2.realizedPnlFingerprint, fpRun1.realizedPnlFingerprint)
+  })
+
+  it('HARD ASSERTION (missing-evidence regression): removing one required accepted-evidence record blocks the whole replay, keeps the live sample out, and preserves last-known metadata separately', async () => {
+    const kv = fakeKv()
+    const run1Lots = buildPartialFillScan()
+    const REALIZED_A = run1Lots.filter(isVerified).reduce((s, l) => s + (l.realizedPnlUsd ?? 0), 0)
+    const run1Manifest = manifestFor(run1Lots, REALIZED_A, 21 / 27)
+    await writeCanonicalPnlSampleManifest(kv, run1Manifest)
+
+    // One manifest lot's accepted evidence is gone this run; two new lots became priceable.
+    const run2Lots = run1Lots.map((l) => {
+      if (l.lotId === 'split-1') return { ...l, evidenceQuality: 'unpriced' as const, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null }
+      if (l.lotId === 'u-0' || l.lotId === 'u-1') return { ...l, evidenceQuality: 'verified' as const, costBasisUsd: 777, proceedsUsd: 3000, realizedPnlUsd: 2223 }
       return l
     })
-    const readBack = await readCanonicalPnlSampleManifest(kv, identity)
-    assert.ok(readBack.manifest, 'the manifest must be found by its stable structural identity, unaffected by provider-availability changes')
-    const candidateVerifiedRun2 = structuralLotsRun2.filter((l) => l.evidenceQuality === 'verified')
-    assert.equal(candidateVerifiedRun2.length, 21, 'sanity: run2 candidate now has 21 verified lots')
 
-    const applied = applyManifestToCandidateSample({ manifest: readBack.manifest!, candidateVerifiedLots: candidateVerifiedRun2 })
-    assert.equal(applied.selectedLots.length, 19, 'published sample must remain 19 lots, not silently expand to 21')
-    assert.equal(applied.candidateNewEvidence.length, 2, 'the 2 newly-priceable lots must be reported as candidateNewEvidence')
-    assert.equal(applied.evidenceUnavailable, false)
+    const read = await readCanonicalPnlSampleManifest(kv, identity())
+    const replay = replayManifest({ manifest: read.manifest!, allCandidateLots: run2Lots, isVerified })
 
-    // Published figures for run2 come from the manifest itself (frozen), never recomputed from the
-    // expanded candidate set — this is what keeps realizedPnlUsd/coverage/fingerprints identical.
-    assert.equal(readBack.manifest!.realizedPnlUsd, REALIZED_PNL_A)
-    assert.equal(readBack.manifest!.verifiedPricingCoverage, COVERAGE_A)
-    assert.equal(readBack.manifest!.verifiedLotIdentityFingerprint, fpRun1.verifiedLotIdentityFingerprint)
-    assert.equal(readBack.manifest!.acceptedHistoricalPriceFingerprint, fpRun1.acceptedHistoricalPriceFingerprint)
-    assert.equal(readBack.manifest!.realizedPnlFingerprint, fpRun1.realizedPnlFingerprint)
-    assert.equal(readBack.manifest!.matchedLotFingerprint, identity.matchedLotFingerprint, 'structural fingerprint must remain the lookup key itself, unchanged')
+    assert.equal(replay.outcome, 'unavailable')
+    assert.equal(replay.forcePublicPnlUnavailable, true)
+    assert.equal(replay.reasonCounts.manifest_side_evidence_missing, 1)
+    assert.equal(replay.selectedLotKeys.length, 0, 'the manifest must not apply partially')
+    assert.equal(replay.publishedLots.filter(isVerified).length, 0, 'the live 22-lot candidate sample must not escape')
 
-    // EXPLICIT REFRESH RUN — deliberately expands the published sample to 21, with disclosure.
-    const fpRun3 = fingerprintsFor(structuralLotsRun2, -979.81)
-    const refreshedManifest = buildRefreshedManifest({
-      priorManifest: readBack.manifest!, identity, candidateVerifiedLots: candidateVerifiedRun2,
-      structuralLotCount: structuralLotsRun2.length, fingerprints: fpRun3, realizedPnlUsd: -979.81,
-      verifiedPricingCoverage: 21 / 27, now: 3000, refreshReason: 'explicit-refresh',
-    })
-    assert.equal(refreshedManifest.manifestVersion, 2)
-    assert.equal(refreshedManifest.priorManifestVersion, 1)
-    assert.equal(refreshedManifest.verifiedLotCount, 21)
-    assert.equal(refreshedManifest.realizedPnlUsd, -979.81)
-    assert.notEqual(refreshedManifest.realizedPnlFingerprint, manifestRun1.realizedPnlFingerprint, 'an explicit, disclosed refresh may intentionally change fingerprints')
-    assert.equal(await writeCanonicalPnlSampleManifest(kv, refreshedManifest), true)
-
-    // RUN 4 — a subsequent unchanged rescan must now reproduce the REFRESHED 21-lot sample, not v1.
-    const readBackAfterRefresh = await readCanonicalPnlSampleManifest(kv, identity)
-    assert.equal(readBackAfterRefresh.manifest!.manifestVersion, 2)
-    assert.equal(readBackAfterRefresh.manifest!.verifiedLotCount, 21)
+    // The prior manifest's figures survive ONLY as clearly-labelled, not-currently-verified metadata.
+    const lastKnown = buildLastKnownCanonicalSample(read.manifest!)
+    assert.equal(lastKnown.availableForCurrentVerification, false)
+    assert.equal(lastKnown.verifiedLotCount, 21)
+    assert.equal(lastKnown.realizedPnlUsd, REALIZED_A)
   })
 })
