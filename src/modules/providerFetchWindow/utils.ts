@@ -359,7 +359,33 @@ export async function fetchAlchemyRawEvents(
   let budgetRefusals = 0
   let malformedResponses = 0
   let nullResponses = 0
-  const rpc = async (params: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
+  let httpErrors = 0
+  let jsonParseErrors = 0
+  let jsonRpcErrors = 0
+  let missingResultCount = 0
+  let invalidTransfersShapeCount = 0
+
+  // SAFE SHAPE LOGGING, DISCLOSED (malformed_response regression task): logs only the STRUCTURE of
+  // the response, never its content — no addresses, tx hashes, amounts, or raw bodies. This is what
+  // let this regression be diagnosed instead of just re-observed as an opaque 'malformed_response'
+  // string.
+  const logResponseShape = (direction: 'from' | 'to', shape: {
+    httpStatus: number | null
+    contentType: string | null
+    jsonRpcErrorCode: number | null
+    jsonRpcErrorMessage: string | null
+    hasResult: boolean
+    resultType: string
+    hasTransfers: boolean
+    transfersIsArray: boolean
+    transferCount: number
+    hasPageKey: boolean
+    classification: string
+  }) => {
+    console.warn('[alchemy-response-shape]', { chain, direction, ...shape })
+  }
+
+  const rpc = async (direction: 'from' | 'to', params: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
     // BUDGET GATE, DISCLOSED: checked BEFORE the real call, exactly as before — the fix here is
     // classification, never a change to when/whether a call is actually attempted.
     if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'transaction_history' })) {
@@ -374,24 +400,91 @@ export async function fetchAlchemyRawEvents(
         method: 'POST',
         cache: 'no-store',
         headers: { 'Content-Type': 'application/json' },
+        // CONFIRMED, DISCLOSED (requirement #6): method is literally 'alchemy_getAssetTransfers' and
+        // `params` is passed through untouched from the caller below — nothing in this function or
+        // its caller builds a cache key from this object or mutates it before/after this call.
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'alchemy_getAssetTransfers', params: [params] }),
         signal: AbortSignal.timeout(12_000),
       })
+      const contentType = res.headers.get('content-type')
       if (!res.ok) {
-        malformedResponses += 1
+        httpErrors += 1
+        malformedResponses += 1 // kept for backward-compatible aggregate count
+        logResponseShape(direction, {
+          httpStatus: res.status, contentType, jsonRpcErrorCode: null, jsonRpcErrorMessage: null,
+          hasResult: false, resultType: 'n/a', hasTransfers: false, transfersIsArray: false,
+          transferCount: 0, hasPageKey: false, classification: 'http_error',
+        })
         return null
       }
-      const json = await res.json()
+      let json: Record<string, unknown>
+      try {
+        json = await res.json()
+      } catch {
+        jsonParseErrors += 1
+        malformedResponses += 1
+        logResponseShape(direction, {
+          httpStatus: res.status, contentType, jsonRpcErrorCode: null, jsonRpcErrorMessage: null,
+          hasResult: false, resultType: 'n/a', hasTransfers: false, transfersIsArray: false,
+          transferCount: 0, hasPageKey: false, classification: 'json_parse_error',
+        })
+        return null
+      }
+      // ACCEPTED SHAPE, DISCLOSED (requirement #2): the real Alchemy success shape is
+      // { jsonrpc, id, result: { transfers: [], pageKey? } } — an empty `transfers` array IS a
+      // valid, successful "no transfers on this page" answer, and a missing `pageKey` IS a valid
+      // final page. Neither is ever treated as a failure below.
+      const jsonRpcError = json?.error as { code?: unknown; message?: unknown } | undefined
+      if (jsonRpcError) {
+        jsonRpcErrors += 1
+        malformedResponses += 1
+        logResponseShape(direction, {
+          httpStatus: res.status, contentType,
+          jsonRpcErrorCode: typeof jsonRpcError.code === 'number' ? jsonRpcError.code : null,
+          jsonRpcErrorMessage: typeof jsonRpcError.message === 'string' ? jsonRpcError.message : null,
+          hasResult: false, resultType: 'n/a', hasTransfers: false, transfersIsArray: false,
+          transferCount: 0, hasPageKey: false, classification: 'json_rpc_error',
+        })
+        return null
+      }
       const result = (json?.result as Record<string, unknown>) ?? null
-      // A well-formed HTTP 200 whose body genuinely has no `result` (or a `result` missing the
-      // `transfers` array entirely — as opposed to a real, empty `transfers: []`, which IS a valid
-      // "no transfers" answer and is NOT counted as malformed) is a shape Alchemy should never
-      // actually send for this method — tracked distinctly from a real null/timeout.
-      if (result !== null && !Array.isArray(result.transfers)) {
+      const hasResult = result !== null
+      const resultType = result === null ? typeof json?.result : Array.isArray(result) ? 'array' : typeof result
+      const hasTransfers = hasResult && 'transfers' in result
+      const transfersIsArray = hasResult && Array.isArray(result.transfers)
+      const transferCount = transfersIsArray ? (result.transfers as unknown[]).length : 0
+      const hasPageKey = hasResult && typeof result.pageKey === 'string' && result.pageKey.length > 0
+      if (!hasResult) {
+        missingResultCount += 1
         malformedResponses += 1
+        logResponseShape(direction, {
+          httpStatus: res.status, contentType, jsonRpcErrorCode: null, jsonRpcErrorMessage: null,
+          hasResult, resultType, hasTransfers, transfersIsArray, transferCount, hasPageKey,
+          classification: 'missing_result',
+        })
         return null
       }
-      if (result === null) nullResponses += 1
+      // Result is present but does not carry a `transfers` array at all — an actual shape Alchemy
+      // should never send for this method (as opposed to a real, empty `transfers: []`, which is a
+      // valid success, handled by falling through to the return below without incrementing anything).
+      if (!transfersIsArray) {
+        invalidTransfersShapeCount += 1
+        malformedResponses += 1
+        logResponseShape(direction, {
+          httpStatus: res.status, contentType, jsonRpcErrorCode: null, jsonRpcErrorMessage: null,
+          hasResult, resultType, hasTransfers, transfersIsArray, transferCount, hasPageKey,
+          classification: 'invalid_transfers_shape',
+        })
+        return null
+      }
+      logResponseShape(direction, {
+        httpStatus: res.status, contentType, jsonRpcErrorCode: null, jsonRpcErrorMessage: null,
+        hasResult, resultType, hasTransfers, transfersIsArray, transferCount, hasPageKey,
+        classification: 'success',
+      })
+      // WRAPPER RETURNS THE ORIGINAL PARSED RESULT, DISCLOSED (requirement #7): `result` is the raw
+      // parsed `json.result` object, unwrapped and unmodified — never a diagnostic envelope, never a
+      // cache-metadata wrapper. `collect()` below reads it exactly as Alchemy sent it.
       return result
     } catch {
       nullResponses += 1
@@ -400,19 +493,34 @@ export async function fetchAlchemyRawEvents(
   }
   try {
     const [fromResult, toResult] = await Promise.all([
-      rpc({ fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0xC8', order: 'desc', fromAddress: walletAddress }),
-      rpc({ fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0xC8', order: 'desc', toAddress: walletAddress }),
+      rpc('from', { fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0xC8', order: 'desc', fromAddress: walletAddress }),
+      rpc('to', { fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0xC8', order: 'desc', toAddress: walletAddress }),
     ])
-    const diagnostics = { liveCalls, budgetRefusals, malformedResponses, nullResponses }
+    const diagnostics = {
+      liveCalls, budgetRefusals, malformedResponses, nullResponses,
+      httpErrors, jsonParseErrors, jsonRpcErrors, missingResult: missingResultCount, invalidTransfersShape: invalidTransfersShapeCount,
+    }
     if (!fromResult && !toResult) {
-      // TYPED REASON, DISCLOSED: distinguishes WHY both sub-calls failed instead of collapsing
-      // every cause into one generic string — a caller (or human reading logs) can now tell a
-      // self-imposed budget throttle apart from a genuine provider outage.
+      // TYPED REASON, DISCLOSED (requirement #5): distinguishes WHY both sub-calls failed instead of
+      // collapsing every cause into one generic string. Priority: a self-imposed budget throttle is
+      // reported first (it is this system's own decision, never Alchemy's fault); then a genuine
+      // HTTP transport failure; then a body that couldn't be parsed as JSON at all; then a JSON-RPC-
+      // level error object Alchemy itself returned; then a 200 with no `result` field whatsoever;
+      // then a `result` present but with a non-array `transfers`; only falling back to the generic
+      // 'no_usable_response' for a network error/timeout with none of the above (the `catch` path).
       const errorReason = budgetRefusals > 0
         ? 'provider_budget_exhausted'
-        : malformedResponses > 0
-          ? 'malformed_response'
-          : 'no_usable_response'
+        : httpErrors > 0
+          ? 'http_error'
+          : jsonParseErrors > 0
+            ? 'json_parse_error'
+            : jsonRpcErrors > 0
+              ? 'json_rpc_error'
+              : missingResultCount > 0
+                ? 'missing_result'
+                : invalidTransfersShapeCount > 0
+                  ? 'invalid_transfers_shape'
+                  : 'no_usable_response'
       return { provider: 'alchemy', ok: false, events: [], errorReason, diagnostics }
     }
     const cutoff = windowCutoffMs(windowDays)
@@ -445,7 +553,13 @@ export async function fetchAlchemyRawEvents(
     collect(toResult)
     return { provider: 'alchemy', ok: true, events, errorReason: null, diagnostics }
   } catch (err) {
-    return { provider: 'alchemy', ok: false, events: [], errorReason: err instanceof Error ? err.message : 'unknown_error', diagnostics: { liveCalls, budgetRefusals, malformedResponses, nullResponses } }
+    return {
+      provider: 'alchemy', ok: false, events: [], errorReason: err instanceof Error ? err.message : 'unknown_error',
+      diagnostics: {
+        liveCalls, budgetRefusals, malformedResponses, nullResponses,
+        httpErrors, jsonParseErrors, jsonRpcErrors, missingResult: missingResultCount, invalidTransfersShape: invalidTransfersShapeCount,
+      },
+    }
   }
 }
 

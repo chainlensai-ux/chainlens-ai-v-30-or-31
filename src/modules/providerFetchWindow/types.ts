@@ -62,6 +62,19 @@ export type SingleProviderFetchResult = {
     budgetRefusals: number
     malformedResponses: number
     nullResponses: number
+    // ADDITIVE, OPTIONAL, DISCLOSED (Alchemy malformed_response regression task): fine-grained
+    // breakdown of what previously collapsed into `malformedResponses`/`nullResponses` above (both
+    // kept, unchanged, for backward compatibility with existing readers). A real HTTP transport
+    // failure (`httpErrors`), an unparseable body (`jsonParseErrors`), a JSON-RPC-level error object
+    // (`jsonRpcErrors`), a well-formed 200 with no `result` field at all (`missingResult`), and a
+    // `result` present but with a non-array `transfers` (`invalidTransfersShape`) are now counted
+    // and reported distinctly, so a caller/log-reader can tell them apart instead of all four
+    // collapsing into one generic 'malformed_response' reason.
+    httpErrors?: number
+    jsonParseErrors?: number
+    jsonRpcErrors?: number
+    missingResult?: number
+    invalidTransfersShape?: number
   }
 }
 

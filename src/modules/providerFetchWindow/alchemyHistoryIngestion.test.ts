@@ -94,9 +94,106 @@ test('a malformed (well-formed HTTP 200, but no transfers array) response is rep
   global.fetch = (async () => new Response(JSON.stringify({ result: { unexpectedShape: true } }), { status: 200 })) as unknown as typeof fetch
   const result = await fetchAlchemyRawEvents('base', '0xwallet', 90)
   assert.equal(result.ok, false)
-  assert.equal(result.errorReason, 'malformed_response')
-  assert.ok(result.diagnostics && result.diagnostics.malformedResponses > 0)
+  assert.equal(result.errorReason, 'invalid_transfers_shape', 'a result present without a transfers array must be typed distinctly, not collapsed into the generic malformed_response bucket')
+  assert.ok(result.diagnostics && result.diagnostics.malformedResponses > 0, 'the aggregate malformedResponses count is kept for backward compatibility')
+  assert.equal(result.diagnostics?.invalidTransfersShape, 2)
   assert.equal(result.diagnostics?.budgetRefusals, 0)
+})
+
+// ---------------------------------------------------------------------------------------------
+// HARD ASSERTION: production-like malformed_response regression — HTTP errors and JSON-RPC
+// errors must never be mislabeled. Root cause of the second regression: an HTTP transport failure
+// (rate limit / 5xx) was previously bucketed into the exact same 'malformed_response' reason as a
+// genuine invalid-shape response, masking a transient provider/infra issue as a parsing bug.
+// ---------------------------------------------------------------------------------------------
+
+test('HARD ASSERTION: a real HTTP transport failure (e.g. 429/500) is reported as http_error, never malformed_response', async () => {
+  global.fetch = (async () => new Response('rate limited', { status: 429 })) as unknown as typeof fetch
+  const result = await fetchAlchemyRawEvents('base', '0xwallet', 90)
+  assert.equal(result.ok, false)
+  assert.equal(result.errorReason, 'http_error')
+  assert.notEqual(result.errorReason, 'malformed_response')
+  assert.equal(result.diagnostics?.httpErrors, 2)
+})
+
+test('HARD ASSERTION: a JSON-RPC-level error object (HTTP 200) is reported as json_rpc_error, distinct from a shape problem', async () => {
+  global.fetch = (async () => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32602, message: 'invalid params' } }), { status: 200 })) as unknown as typeof fetch
+  const result = await fetchAlchemyRawEvents('base', '0xwallet', 90)
+  assert.equal(result.ok, false)
+  assert.equal(result.errorReason, 'json_rpc_error')
+  assert.equal(result.diagnostics?.jsonRpcErrors, 2)
+})
+
+test('a body that fails to parse as JSON is reported as json_parse_error', async () => {
+  global.fetch = (async () => new Response('<html>not json</html>', { status: 200 })) as unknown as typeof fetch
+  const result = await fetchAlchemyRawEvents('base', '0xwallet', 90)
+  assert.equal(result.ok, false)
+  assert.equal(result.errorReason, 'json_parse_error')
+  assert.equal(result.diagnostics?.jsonParseErrors, 2)
+})
+
+test('a well-formed 200 with no result field and no error field is reported as missing_result', async () => {
+  global.fetch = (async () => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1 }), { status: 200 })) as unknown as typeof fetch
+  const result = await fetchAlchemyRawEvents('base', '0xwallet', 90)
+  assert.equal(result.ok, false)
+  assert.equal(result.errorReason, 'missing_result')
+  assert.equal(result.diagnostics?.missingResult, 2)
+})
+
+// ---------------------------------------------------------------------------------------------
+// HARD ASSERTION: production-captured Base and ETH response shapes are accepted as real successes
+// ---------------------------------------------------------------------------------------------
+
+test('HARD ASSERTION: a production-like Base response with pageKey present is accepted, never malformed', async () => {
+  global.fetch = (async () => new Response(JSON.stringify({
+    jsonrpc: '2.0', id: 1,
+    result: {
+      transfers: [
+        { hash: '0xbase1', from: '0xaaa', to: '0xbbb', asset: 'USDC', category: 'erc20', rawContract: { address: '0xtokenbase', value: '0x5f5e100', decimal: '0x6' }, metadata: { blockTimestamp: new Date().toISOString() } },
+      ],
+      pageKey: 'next-page-token-abc',
+    },
+  }), { status: 200 })) as unknown as typeof fetch
+  const result = await fetchAlchemyRawEvents('base', '0xwallet', 90)
+  assert.equal(result.ok, true)
+  assert.equal(result.errorReason, null)
+  assert.ok(result.events.length > 0)
+})
+
+test('HARD ASSERTION: a production-like ETH response with an empty transfers array is accepted, never malformed', async () => {
+  global.fetch = (async () => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { transfers: [] } }), { status: 200 })) as unknown as typeof fetch
+  const result = await fetchAlchemyRawEvents('eth', '0xwallet', 90)
+  assert.equal(result.ok, true)
+  assert.equal(result.errorReason, null)
+  assert.deepEqual(result.events, [])
+})
+
+// ---------------------------------------------------------------------------------------------
+// INTEGRATION: a valid empty first page (from-wallet direction) and a valid populated page
+// (to-wallet direction) in the SAME fetch are both accepted — proving neither an empty result nor
+// a populated one is misclassified relative to the other.
+// ---------------------------------------------------------------------------------------------
+
+test('INTEGRATION: a valid empty first page and a valid populated page in the same fetch are both accepted', async () => {
+  global.fetch = (async (_url: unknown, init: unknown) => {
+    const body = JSON.parse((init as { body: string }).body)
+    const isFromDirection = 'fromAddress' in (body.params[0] ?? {})
+    if (isFromDirection) {
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { transfers: [] } }), { status: 200 })
+    }
+    return new Response(JSON.stringify({
+      jsonrpc: '2.0', id: 1,
+      result: {
+        transfers: [
+          { hash: '0xpop1', from: '0xccc', to: '0xwallet', asset: 'WETH', rawContract: { address: '0xweth', value: '0xde0b6b3a7640000', decimal: '0x12' }, metadata: { blockTimestamp: new Date().toISOString() } },
+        ],
+      },
+    }), { status: 200 })
+  }) as unknown as typeof fetch
+  const result = await fetchAlchemyRawEvents('base', '0xwallet', 90)
+  assert.equal(result.ok, true)
+  assert.equal(result.errorReason, null)
+  assert.equal(result.events.length, 1, 'the empty page contributes nothing, the populated page contributes its one real transfer — both accepted as valid')
 })
 
 // ---------------------------------------------------------------------------------------------

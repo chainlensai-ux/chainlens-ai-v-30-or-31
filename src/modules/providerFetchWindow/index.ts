@@ -284,6 +284,14 @@ function logAlchemyHistoryIngestionAudit(
     budgetRefusals: d.budgetRefusals,
     malformedResponses: d.malformedResponses,
     nullResponses: d.nullResponses,
+    // ADDITIVE, DISCLOSED (malformed_response regression task): breakdown of what previously
+    // collapsed into malformedResponses above — undefined-safe since older diagnostics objects
+    // (pre-fix, or any future caller that doesn't populate them) simply omit these fields.
+    httpErrors: d.httpErrors ?? 0,
+    jsonParseErrors: d.jsonParseErrors ?? 0,
+    jsonRpcErrors: d.jsonRpcErrors ?? 0,
+    missingResult: d.missingResult ?? 0,
+    invalidTransfersShape: d.invalidTransfersShape ?? 0,
     usableEventCount,
     estimatedCu: d.liveCalls * estimatedCuForMethod('alchemy_getAssetTransfers'),
     finalStatus,
