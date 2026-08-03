@@ -44,7 +44,7 @@ import type {
   SingleProviderFetchResult,
   SupportedChain,
 } from './types'
-import { clampWindowDays, dedupeRawEventKey, fetchAlchemyRawEvents, fetchGoldrushRawEvents } from './utils'
+import { clampWindowDays, dedupeRawEventKey, fetchAlchemyRawEvents, fetchGoldrushRawEvents, resetAlchemyHistoryConcurrencyState } from './utils'
 import { estimatedCuForMethod } from '@/lib/server/alchemyCallBudget'
 
 export type {
@@ -394,6 +394,10 @@ export function resetProviderFetchWindowRequestCache(jobId?: string): void {
   settledReuseHits = 0
   resetCount += 1
   currentJobId = jobId ?? null
+  // 429-burst regression task, DISCLOSED: the Alchemy history concurrency limiter/cooldown/retry
+  // audit is its own request-scoped state (utils.ts) — reset here alongside this module's other
+  // per-job state so a new job never inherits a stale queue tail or cooldown from a prior one.
+  resetAlchemyHistoryConcurrencyState()
   // eslint-disable-next-line no-console
   console.warn('[provider-call-audit] providerFetchWindow request-scoped cache reset', { resetCount, moduleInstanceId, jobId: currentJobId, timestamp: Date.now() })
 }

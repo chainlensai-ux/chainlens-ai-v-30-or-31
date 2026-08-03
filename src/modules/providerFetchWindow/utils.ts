@@ -18,6 +18,7 @@ import {
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { tryConsume, recordPageFetched } from '../providerCost/walletProviderCostLedger'
 import { auditRPC } from '@/lib/server/alchemyAudit'
+import { estimatedCuForMethod } from '@/lib/server/alchemyCallBudget'
 
 // Env var resolution mirrors the project's existing convention (multiple accepted names, server
 // vars checked before NEXT_PUBLIC_*). This module intentionally does not import from
@@ -329,6 +330,105 @@ export function alchemyHexDecimalToNumber(hexDecimal: string | null): number | n
   return Number.isFinite(parsed) ? parsed : null
 }
 
+// ── Alchemy transaction-history concurrency limiter + bounded 429 retry, DISCLOSED ────────────
+//
+// Production proof (429-burst regression task): Base from/to and ETH from/to — all 4 of this
+// job's structural transaction-history calls — fired concurrently (Promise.all within each chain,
+// and each chain's own fetchAlchemyRawEvents call not otherwise coordinated with the other chain's)
+// and all 4 came back HTTP 429. GoldRush, a different provider/infra, was unaffected — this is a
+// burst-concurrency problem on Alchemy's side, not a malformed-request or budget problem.
+//
+// Fix: a single MODULE-LEVEL mutex (concurrency = 1) serializing every real
+// alchemy_getAssetTransfers HTTP call across BOTH chains — not per-chain, since Base's and ETH's
+// calls are exactly what burst together in the production trace. "Request-scoped" per this task's
+// requirement #1 means scoped to one wallet job: state is reset by
+// resetAlchemyHistoryConcurrencyState(), called from providerFetchWindow/index.ts's own
+// resetProviderFetchWindowRequestCache() (the same per-job reset point already used for this
+// module's other request-scoped state), not left to accumulate across unrelated jobs.
+export const ALCHEMY_HISTORY_MAX_CONCURRENCY = 1
+// Short pause after ANY 429 (initial or retry) before the next QUEUED call gets its turn —
+// requirement #8's "cooldown", deliberately short since the goal is de-bursting, not stalling a
+// normal 4-call job for seconds.
+const ALCHEMY_HISTORY_429_COOLDOWN_MS = 400
+// Deterministic (not randomized — avoids a second, harder-to-reproduce source of test flakiness)
+// fallback retry delay used only when Alchemy's response carries no Retry-After header at all.
+const ALCHEMY_HISTORY_DEFAULT_RETRY_DELAY_MS = 875
+
+let alchemyHistoryQueueTail: Promise<void> = Promise.resolve()
+let alchemyHistoryCooldownUntil = 0
+
+type AlchemyRateLimitAudit = {
+  queuedRequests: number
+  initialCalls: number
+  retryCalls: number
+  http429Count: number
+  retryAfterMsSeen: number
+  cooldownMsApplied: number
+  requestsRecoveredAfter429: number
+  finalFailedRequests: number
+}
+
+function freshRateLimitAudit(): AlchemyRateLimitAudit {
+  return {
+    queuedRequests: 0, initialCalls: 0, retryCalls: 0, http429Count: 0,
+    retryAfterMsSeen: 0, cooldownMsApplied: 0, requestsRecoveredAfter429: 0, finalFailedRequests: 0,
+  }
+}
+
+let alchemyRateLimitAudit: AlchemyRateLimitAudit = freshRateLimitAudit()
+
+// Exported test/reset hook — mirrors the pattern used by walletProviderCostLedger's own
+// __resetForTest, and is wired into providerFetchWindow/index.ts's per-job reset.
+export function resetAlchemyHistoryConcurrencyState(): void {
+  alchemyHistoryQueueTail = Promise.resolve()
+  alchemyHistoryCooldownUntil = 0
+  alchemyRateLimitAudit = freshRateLimitAudit()
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+// Simple FIFO mutex (concurrency 1): each queued task waits for the PREVIOUS task to fully settle
+// (success or failure) before it runs — never partial overlap, exactly requirement #2's "at most 1
+// alchemy_getAssetTransfers request at a time." A task's own queued wait time counts toward
+// `queuedRequests` for the audit, not toward its own execution.
+async function withAlchemyHistoryConcurrencyLimit<T>(task: () => Promise<T>): Promise<T> {
+  alchemyRateLimitAudit.queuedRequests += 1
+  const previous = alchemyHistoryQueueTail
+  let releaseNext: () => void = () => {}
+  alchemyHistoryQueueTail = new Promise((resolve) => { releaseNext = resolve })
+  await previous
+  // A cooldown set by an earlier 429 (this job, either chain) delays this task's turn, not just the
+  // task that triggered it — requirement #8: the cooldown applies to "the next queued Alchemy
+  // history call", whichever call that turns out to be.
+  const waitMs = alchemyHistoryCooldownUntil - Date.now()
+  if (waitMs > 0) {
+    alchemyRateLimitAudit.cooldownMsApplied += waitMs
+    await sleep(waitMs)
+  }
+  try {
+    return await task()
+  } finally {
+    releaseNext()
+  }
+}
+
+// Parses a Retry-After header per RFC 7231 §7.1.3: either a delay-seconds integer, or an HTTP-date.
+// Returns null (never guessed) if the header is absent or unparseable — callers fall back to the
+// deterministic default delay in that case.
+function parseRetryAfterMs(header: string | null): number | null {
+  if (!header) return null
+  const seconds = Number(header)
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000
+  const dateMs = Date.parse(header)
+  if (Number.isFinite(dateMs)) {
+    const delta = dateMs - Date.now()
+    return delta > 0 ? delta : 0
+  }
+  return null
+}
+
 // Fetches a SINGLE bounded pull from Alchemy (both from- and to-wallet batches, one page each).
 // Never throws: any failure resolves to { ok: false, events: [], errorReason }.
 export async function fetchAlchemyRawEvents(
@@ -385,14 +485,20 @@ export async function fetchAlchemyRawEvents(
     console.warn('[alchemy-response-shape]', { chain, direction, ...shape })
   }
 
-  const rpc = async (direction: 'from' | 'to', params: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
-    // BUDGET GATE, DISCLOSED: checked BEFORE the real call, exactly as before — the fix here is
-    // classification, never a change to when/whether a call is actually attempted.
-    if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'transaction_history' })) {
-      budgetRefusals += 1
-      return null
-    }
-    liveCalls += 1
+  // Single raw HTTP attempt + classification. No retry/concurrency logic lives here — that's the
+  // caller's (`rpc`, below) job — so this stays a pure "make the request, tell me what happened"
+  // primitive reusable for both the initial attempt and its one bounded 429 retry.
+  type AttemptOutcome =
+    | { kind: 'success'; result: Record<string, unknown> }
+    | { kind: 'http_429'; retryAfterMs: number | null }
+    | { kind: 'http_error' }
+    | { kind: 'json_parse_error' }
+    | { kind: 'json_rpc_error' }
+    | { kind: 'missing_result' }
+    | { kind: 'invalid_transfers_shape' }
+    | { kind: 'network_error' }
+
+  const attemptOnce = async (direction: 'from' | 'to', params: Record<string, unknown>): Promise<AttemptOutcome> => {
     try {
       logRpcCall({ route: 'providerFetchWindow', chain, method: 'alchemy_getAssetTransfers' })
       auditRPC('alchemy_getAssetTransfers', params)
@@ -407,28 +513,33 @@ export async function fetchAlchemyRawEvents(
         signal: AbortSignal.timeout(12_000),
       })
       const contentType = res.headers.get('content-type')
+      if (res.status === 429) {
+        const retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'))
+        logResponseShape(direction, {
+          httpStatus: res.status, contentType, jsonRpcErrorCode: null, jsonRpcErrorMessage: null,
+          hasResult: false, resultType: 'n/a', hasTransfers: false, transfersIsArray: false,
+          transferCount: 0, hasPageKey: false, classification: 'http_429',
+        })
+        return { kind: 'http_429', retryAfterMs }
+      }
       if (!res.ok) {
-        httpErrors += 1
-        malformedResponses += 1 // kept for backward-compatible aggregate count
         logResponseShape(direction, {
           httpStatus: res.status, contentType, jsonRpcErrorCode: null, jsonRpcErrorMessage: null,
           hasResult: false, resultType: 'n/a', hasTransfers: false, transfersIsArray: false,
           transferCount: 0, hasPageKey: false, classification: 'http_error',
         })
-        return null
+        return { kind: 'http_error' }
       }
       let json: Record<string, unknown>
       try {
         json = await res.json()
       } catch {
-        jsonParseErrors += 1
-        malformedResponses += 1
         logResponseShape(direction, {
           httpStatus: res.status, contentType, jsonRpcErrorCode: null, jsonRpcErrorMessage: null,
           hasResult: false, resultType: 'n/a', hasTransfers: false, transfersIsArray: false,
           transferCount: 0, hasPageKey: false, classification: 'json_parse_error',
         })
-        return null
+        return { kind: 'json_parse_error' }
       }
       // ACCEPTED SHAPE, DISCLOSED (requirement #2): the real Alchemy success shape is
       // { jsonrpc, id, result: { transfers: [], pageKey? } } — an empty `transfers` array IS a
@@ -436,8 +547,6 @@ export async function fetchAlchemyRawEvents(
       // final page. Neither is ever treated as a failure below.
       const jsonRpcError = json?.error as { code?: unknown; message?: unknown } | undefined
       if (jsonRpcError) {
-        jsonRpcErrors += 1
-        malformedResponses += 1
         logResponseShape(direction, {
           httpStatus: res.status, contentType,
           jsonRpcErrorCode: typeof jsonRpcError.code === 'number' ? jsonRpcError.code : null,
@@ -445,7 +554,7 @@ export async function fetchAlchemyRawEvents(
           hasResult: false, resultType: 'n/a', hasTransfers: false, transfersIsArray: false,
           transferCount: 0, hasPageKey: false, classification: 'json_rpc_error',
         })
-        return null
+        return { kind: 'json_rpc_error' }
       }
       const result = (json?.result as Record<string, unknown>) ?? null
       const hasResult = result !== null
@@ -455,27 +564,23 @@ export async function fetchAlchemyRawEvents(
       const transferCount = transfersIsArray ? (result.transfers as unknown[]).length : 0
       const hasPageKey = hasResult && typeof result.pageKey === 'string' && result.pageKey.length > 0
       if (!hasResult) {
-        missingResultCount += 1
-        malformedResponses += 1
         logResponseShape(direction, {
           httpStatus: res.status, contentType, jsonRpcErrorCode: null, jsonRpcErrorMessage: null,
           hasResult, resultType, hasTransfers, transfersIsArray, transferCount, hasPageKey,
           classification: 'missing_result',
         })
-        return null
+        return { kind: 'missing_result' }
       }
       // Result is present but does not carry a `transfers` array at all — an actual shape Alchemy
       // should never send for this method (as opposed to a real, empty `transfers: []`, which is a
       // valid success, handled by falling through to the return below without incrementing anything).
       if (!transfersIsArray) {
-        invalidTransfersShapeCount += 1
-        malformedResponses += 1
         logResponseShape(direction, {
           httpStatus: res.status, contentType, jsonRpcErrorCode: null, jsonRpcErrorMessage: null,
           hasResult, resultType, hasTransfers, transfersIsArray, transferCount, hasPageKey,
           classification: 'invalid_transfers_shape',
         })
-        return null
+        return { kind: 'invalid_transfers_shape' }
       }
       logResponseShape(direction, {
         httpStatus: res.status, contentType, jsonRpcErrorCode: null, jsonRpcErrorMessage: null,
@@ -485,12 +590,84 @@ export async function fetchAlchemyRawEvents(
       // WRAPPER RETURNS THE ORIGINAL PARSED RESULT, DISCLOSED (requirement #7): `result` is the raw
       // parsed `json.result` object, unwrapped and unmodified — never a diagnostic envelope, never a
       // cache-metadata wrapper. `collect()` below reads it exactly as Alchemy sent it.
-      return result
+      return { kind: 'success', result }
     } catch {
-      nullResponses += 1
-      return null
+      return { kind: 'network_error' }
     }
   }
+
+  // Records a non-429, non-success outcome into the shared counters (used for both the initial
+  // attempt and, if it also fails, the one bounded retry).
+  const recordFailureOutcome = (outcome: Exclude<AttemptOutcome, { kind: 'success' } | { kind: 'http_429' }>) => {
+    switch (outcome.kind) {
+      case 'http_error': httpErrors += 1; malformedResponses += 1; break
+      case 'json_parse_error': jsonParseErrors += 1; malformedResponses += 1; break
+      case 'json_rpc_error': jsonRpcErrors += 1; malformedResponses += 1; break
+      case 'missing_result': missingResultCount += 1; malformedResponses += 1; break
+      case 'invalid_transfers_shape': invalidTransfersShapeCount += 1; malformedResponses += 1; break
+      case 'network_error': nullResponses += 1; break
+    }
+  }
+
+  const rpc = (direction: 'from' | 'to', params: Record<string, unknown>): Promise<Record<string, unknown> | null> =>
+    withAlchemyHistoryConcurrencyLimit(async () => {
+      // BUDGET GATE, DISCLOSED: checked BEFORE the real call, exactly as before — the fix here is
+      // classification/rate-limiting, never a change to when/whether an initial call is attempted.
+      if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'transaction_history' })) {
+        budgetRefusals += 1
+        return null
+      }
+      liveCalls += 1
+      alchemyRateLimitAudit.initialCalls += 1
+      const first = await attemptOnce(direction, params)
+      if (first.kind === 'success') return first.result
+      if (first.kind !== 'http_429') {
+        recordFailureOutcome(first)
+        alchemyRateLimitAudit.finalFailedRequests += 1
+        return null
+      }
+
+      // ── HTTP 429: exactly one bounded retry (requirement #5) ────────────────────────────────
+      httpErrors += 1
+      malformedResponses += 1
+      alchemyRateLimitAudit.http429Count += 1
+      const retryDelayMs = first.retryAfterMs !== null ? first.retryAfterMs : ALCHEMY_HISTORY_DEFAULT_RETRY_DELAY_MS
+      if (first.retryAfterMs !== null) alchemyRateLimitAudit.retryAfterMsSeen = first.retryAfterMs
+      // Requirement #8: a short request-scoped cooldown applies to the NEXT queued call (any
+      // direction/chain) after any 429 — set here so a call already waiting in the queue behind
+      // this one also backs off, not just this call's own retry.
+      alchemyHistoryCooldownUntil = Math.max(alchemyHistoryCooldownUntil, Date.now() + ALCHEMY_HISTORY_429_COOLDOWN_MS)
+      await sleep(retryDelayMs)
+
+      // RETRY CONSUMES BUDGET, DISCLOSED (requirement #5): a retry is a real second Alchemy call —
+      // it must pass the same budget gate as any other call, never a free extra attempt.
+      if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'transaction_history' })) {
+        budgetRefusals += 1
+        alchemyRateLimitAudit.finalFailedRequests += 1
+        return null
+      }
+      liveCalls += 1
+      alchemyRateLimitAudit.retryCalls += 1
+      const retry = await attemptOnce(direction, params)
+      if (retry.kind === 'success') {
+        alchemyRateLimitAudit.requestsRecoveredAfter429 += 1
+        return retry.result
+      }
+      if (retry.kind === 'http_429') {
+        // Second 429 in a row for this request: no second retry (requirement #5's "maximum 1 retry
+        // per failed request") — the request fails, typed as http_error via httpErrors below.
+        httpErrors += 1
+        malformedResponses += 1
+        alchemyRateLimitAudit.http429Count += 1
+        alchemyHistoryCooldownUntil = Math.max(alchemyHistoryCooldownUntil, Date.now() + ALCHEMY_HISTORY_429_COOLDOWN_MS)
+        alchemyRateLimitAudit.finalFailedRequests += 1
+        return null
+      }
+      recordFailureOutcome(retry)
+      alchemyRateLimitAudit.finalFailedRequests += 1
+      return null
+    })
+
   try {
     const [fromResult, toResult] = await Promise.all([
       rpc('from', { fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0xC8', order: 'desc', fromAddress: walletAddress }),
@@ -500,6 +677,24 @@ export async function fetchAlchemyRawEvents(
       liveCalls, budgetRefusals, malformedResponses, nullResponses,
       httpErrors, jsonParseErrors, jsonRpcErrors, missingResult: missingResultCount, invalidTransfersShape: invalidTransfersShapeCount,
     }
+    // [alchemy-rate-limit-audit], DISCLOSED (429-burst regression task): logged once per real
+    // fetchAlchemyRawEvents call (per chain) from the shared, request-scoped (reset per job)
+    // counters above — real counts, not estimates. `estimatedCu` covers every call actually made
+    // for THIS (chain) invocation, including any retry, so it reconciles against the same
+    // per-method CU figure the cost ledger itself charged.
+    console.warn('[alchemy-rate-limit-audit]', {
+      chain,
+      queuedRequests: alchemyRateLimitAudit.queuedRequests,
+      maxConcurrency: ALCHEMY_HISTORY_MAX_CONCURRENCY,
+      initialCalls: alchemyRateLimitAudit.initialCalls,
+      retryCalls: alchemyRateLimitAudit.retryCalls,
+      http429Count: alchemyRateLimitAudit.http429Count,
+      retryAfterMsSeen: alchemyRateLimitAudit.retryAfterMsSeen,
+      cooldownMsApplied: alchemyRateLimitAudit.cooldownMsApplied,
+      requestsRecoveredAfter429: alchemyRateLimitAudit.requestsRecoveredAfter429,
+      finalFailedRequests: alchemyRateLimitAudit.finalFailedRequests,
+      estimatedCu: liveCalls * estimatedCuForMethod('alchemy_getAssetTransfers'),
+    })
     if (!fromResult && !toResult) {
       // TYPED REASON, DISCLOSED (requirement #5): distinguishes WHY both sub-calls failed instead of
       // collapsing every cause into one generic string. Priority: a self-imposed budget throttle is

@@ -107,8 +107,8 @@ test('a malformed (well-formed HTTP 200, but no transfers array) response is rep
 // genuine invalid-shape response, masking a transient provider/infra issue as a parsing bug.
 // ---------------------------------------------------------------------------------------------
 
-test('HARD ASSERTION: a real HTTP transport failure (e.g. 429/500) is reported as http_error, never malformed_response', async () => {
-  global.fetch = (async () => new Response('rate limited', { status: 429 })) as unknown as typeof fetch
+test('HARD ASSERTION: a real HTTP transport failure (e.g. 500) is reported as http_error, never malformed_response', async () => {
+  global.fetch = (async () => new Response('server error', { status: 500 })) as unknown as typeof fetch
   const result = await fetchAlchemyRawEvents('base', '0xwallet', 90)
   assert.equal(result.ok, false)
   assert.equal(result.errorReason, 'http_error')
