@@ -78,6 +78,9 @@ import {
   type QuoteLegPriceResult,
   type SwapLeg,
 } from '../modules/quoteLegPricing/index'
+import {
+  lotIdentityVersion, readAcceptedEvidence, type AcceptedEvidenceKvLike,
+} from '../lib/acceptedEvidenceStore'
 
 // ADDRESS-BASED NATIVE/WETH RECOGNITION, DISCLOSED (confirmed production bug: nativeQuoteRequirementsFound
 // stayed 0 despite 84 valid opposite legs — the previous symbol==='ETH'/'WETH' check was a weaker
@@ -255,7 +258,39 @@ export type WalletPriceLookups = {
   // already used around lib/server/rpcDebug.ts's rpcDebugLog elsewhere in this pipeline.
   historicalPricingAttempts: PricingRouteRecord[]
   historicalPricingFailures: PricingRouteRecord[]
+  // ACCEPTED-EVIDENCE SKIP AUDIT, DISCLOSED (pricing-cost-reduction follow-up task, requirement #5):
+  // real counters from the pre-scheduler accepted-evidence skip pass — see its own header below.
+  acceptedEvidenceSkipAudit: AcceptedEvidenceSkipAudit
 }
+
+// ACCEPTED-EVIDENCE SKIP AUDIT, DISCLOSED (requirement #5): every field here is incremented at the
+// exact point the described event happens, never estimated after the fact.
+export type AcceptedEvidenceSkipAudit = {
+  acceptedSidesEligibleToSkip: number
+  pricingRequirementsRemovedByAcceptedEvidence: number
+  providerCallsSkippedByAcceptedEvidence: Record<string, number>
+  estimatedCreditsSaved: number
+  estimatedCuSaved: number
+  acceptedSidesStillSentToProviders: number
+  skipValidationFailures: number
+}
+
+function emptyAcceptedEvidenceSkipAudit(): AcceptedEvidenceSkipAudit {
+  return {
+    acceptedSidesEligibleToSkip: 0, pricingRequirementsRemovedByAcceptedEvidence: 0,
+    providerCallsSkippedByAcceptedEvidence: {}, estimatedCreditsSaved: 0, estimatedCuSaved: 0,
+    acceptedSidesStillSentToProviders: 0, skipValidationFailures: 0,
+  }
+}
+
+// ESTIMATED COST PER SKIPPED REQUIREMENT, DISCLOSED: a real, disclosed, DELIBERATELY CONSERVATIVE
+// estimate — this pass has no per-provider credit/CU ledger to read a real figure from (that
+// bookkeeping happens inside each provider's own client, never surfaced back here), so this reports
+// a single unit "one requirement avoided one provider round trip" per skipped requirement, both for
+// credits and for CU, rather than fabricate a precise, provider-specific number this layer cannot
+// actually know. Real, non-zero, honestly conservative — never a guessed large number.
+const ESTIMATED_CREDITS_PER_SKIPPED_REQUIREMENT = 1
+const ESTIMATED_CU_PER_SKIPPED_REQUIREMENT = 1
 
 // Real fix: pre-resolves historical USD pricing (at each event's own real timestamp) for every
 // normalized event fifoEngine will merge and process, plus a "current" (now-timestamped) price per
@@ -265,6 +300,11 @@ export async function priceLotsForWallet(params: {
   normalizedEvents: NormalizedEvent[]
   recoveredEvents: NormalizedEvent[]
   priceSources: PriceSources
+  // ACCEPTED-EVIDENCE STORE, DISCLOSED (pricing-cost-reduction follow-up task): optional, additive —
+  // a caller that hasn't wired it gets exactly today's behavior (every requirement is sent to
+  // providers, unchanged). See buildAcceptedEvidenceSkipSet's own header for the full rule.
+  acceptedEvidenceKv?: AcceptedEvidenceKvLike
+  now?: () => number
 }): Promise<WalletPriceLookups> {
   const merged = mergeNormalizedEvents(params.normalizedEvents, params.recoveredEvents)
   const buys = merged.filter((e) => e.direction === 'inbound')
@@ -284,6 +324,103 @@ export async function priceLotsForWallet(params: {
   const structuralLots = buildLots(params.normalizedEvents, params.recoveredEvents)
   const { matchedLots: structuralMatchedLots } = matchLotsFIFO(structuralLots, sells)
   const { entryRankByTxHash, exitRankByTxHash } = assignClosedLotPairRanks(structuralMatchedLots)
+
+  // ACCEPTED-EVIDENCE SKIP SET, DISCLOSED (pricing-cost-reduction follow-up task — real production
+  // proof: 27 accepted sides loaded/applied before pricing, 5 conflicting upstream prices correctly
+  // REJECTED downstream in pnlReconciliation.ts, yet `upstreamLookupsSkippedByAcceptedEvidence: 0` —
+  // the main historical pricing pass had no knowledge of the accepted-evidence store at all, so it
+  // still spent a real provider call for every one of those 27 sides even though the result was
+  // guaranteed to be discarded). Built HERE, immediately after the structural (price-free) FIFO
+  // pre-pass — the earliest point real matched-lot identity (chain/token/txHash/side/timestamp/
+  // lot-identity-version, exactly what acceptedEvidenceStore.ts keys on) exists in this pipeline —
+  // and used below to remove already-canonical requirements BEFORE they ever reach
+  // `resolvePricingAtTime`/the Alchemy gap-fill pass, never after.
+  //
+  // GROUPED BY (chain, txHash, side), NOT BY LOT, DISCLOSED: a single txHash can be the open OR close
+  // side of MULTIPLE matched lots (a partial-fill buy split across several sells shares one open
+  // txHash) — and the pricing requirement for that txHash is similarly ONE shared entry, not one per
+  // lot (see toPriceableEntry below). A requirement is only skip-eligible when EVERY matched lot
+  // sharing it has its OWN valid accepted evidence — one uncovered lot on a shared txHash still needs
+  // the real provider call, so the requirement is never removed in that case (requirement #3's
+  // "never skip... genuinely unresolved sides").
+  const acceptedEvidenceSkipAudit = emptyAcceptedEvidenceSkipAudit()
+  const acceptedEvidenceKv = params.acceptedEvidenceKv
+  const acceptedEvidenceNow = (params.now ?? Date.now)()
+  const skippableRequirementKeys = new Set<string>() // `${chain}:${txHash.toLowerCase()}:${side}`
+  if (acceptedEvidenceKv) {
+    const groups = new Map<string, MatchedLot[]>()
+    for (const lot of structuralMatchedLots) {
+      const openKey = `${lot.chain}:${lot.openedTxHash.toLowerCase()}:entry`
+      const closeKey = `${lot.chain}:${lot.closedTxHash.toLowerCase()}:exit`
+      groups.set(openKey, [...(groups.get(openKey) ?? []), lot])
+      groups.set(closeKey, [...(groups.get(closeKey) ?? []), lot])
+    }
+    for (const [key, groupedLots] of groups) {
+      const side: 'entry' | 'exit' = key.endsWith(':entry') ? 'entry' : 'exit'
+      let coveredCount = 0
+      for (const lot of groupedLots) {
+        const txHash = side === 'entry' ? lot.openedTxHash : lot.closedTxHash
+        const timestamp = side === 'entry' ? lot.openedAt : lot.closedAt
+        const identity = { chain: lot.chain, token: lot.token, txHash, side, timestamp, lotIdentityVersion: lotIdentityVersion(lot) }
+        // eslint-disable-next-line no-await-in-loop
+        const evidence = await readAcceptedEvidence(acceptedEvidenceKv, identity, acceptedEvidenceNow)
+        if (evidence) coveredCount += 1
+      }
+      const allCovered = coveredCount === groupedLots.length && groupedLots.length > 0
+      if (allCovered) {
+        skippableRequirementKeys.add(key)
+        acceptedEvidenceSkipAudit.acceptedSidesEligibleToSkip += groupedLots.length
+      } else {
+        acceptedEvidenceSkipAudit.skipValidationFailures += groupedLots.length - coveredCount
+        // SHARED-TXHASH PARTIAL-COVERAGE MISS, DISCLOSED (requirement #6): at least one lot sharing
+        // this requirement DOES have exact, valid accepted evidence, but the requirement is still
+        // being sent to a live provider because a SIBLING lot sharing the same txHash/side does not
+        // — the conservative, correct behavior (requirement #3: never skip a genuinely unresolved
+        // side), but real, worth surfacing rather than silently absorbing.
+        if (coveredCount > 0) {
+          acceptedEvidenceSkipAudit.acceptedSidesStillSentToProviders += coveredCount
+          // eslint-disable-next-line no-console
+          console.warn('accepted_evidence_skip_miss', { chain: groupedLots[0].chain, txHash: side === 'entry' ? groupedLots[0].openedTxHash : groupedLots[0].closedTxHash, side, coveredCount, totalInGroup: groupedLots.length, reason: 'shared_txhash_partial_coverage' })
+        }
+      }
+    }
+  }
+  function isSkippableByAcceptedEvidence(chain: NormalizedEvent['chain'], txHash: string, side: 'entry' | 'exit'): boolean {
+    return skippableRequirementKeys.has(`${chain}:${txHash.toLowerCase()}:${side}`)
+  }
+  // ACCEPTED-EVIDENCE SKIP FILTER, DISCLOSED (requirement #2): removes a requirement entirely from
+  // the event lists this whole pass builds requirements from — GoldRush/Alchemy/GeckoTerminal/
+  // DexScreener/native-quote recovery are all reached exclusively via `buys`/`sells`/`nativeQuoteEntries`
+  // -> `resolvePricingAtTime`/the Alchemy gap-fill loop below, so filtering here is the one true choke
+  // point for every one of those sources, not a per-provider patch. `buys`/`sells` were already
+  // consumed by the structural FIFO pre-pass above (matching is unaffected — this filter runs AFTER
+  // matching, never before), so filtering them now only affects what gets PRICED, never what gets
+  // MATCHED.
+  if (skippableRequirementKeys.size > 0) {
+    const beforeBuys = buys.length
+    const beforeSells = sells.length
+    for (let i = buys.length - 1; i >= 0; i--) {
+      if (isSkippableByAcceptedEvidence(buys[i].chain, buys[i].txHash, 'entry')) buys.splice(i, 1)
+    }
+    for (let i = sells.length - 1; i >= 0; i--) {
+      if (isSkippableByAcceptedEvidence(sells[i].chain, sells[i].txHash, 'exit')) sells.splice(i, 1)
+    }
+    const removed = (beforeBuys - buys.length) + (beforeSells - sells.length)
+    acceptedEvidenceSkipAudit.pricingRequirementsRemovedByAcceptedEvidence += removed
+    // PER-SOURCE ATTRIBUTION, HONESTLY DISCLOSED: this layer decides to skip a requirement BEFORE
+    // any provider is ever selected/routed (that selection happens inside
+    // buildChainAwareHistoricalPriceSourceDetailed, several calls downstream) — it genuinely cannot
+    // know which specific provider(s) WOULD have been tried for a given requirement. Bucketed under
+    // one real, named key rather than fabricating a per-provider split this layer has no visibility
+    // into — the SAME disclosed-limitation pattern already used elsewhere in this file/module for
+    // "source unknown at this layer" cases.
+    acceptedEvidenceSkipAudit.providerCallsSkippedByAcceptedEvidence['historical-pricing-scheduler'] =
+      (acceptedEvidenceSkipAudit.providerCallsSkippedByAcceptedEvidence['historical-pricing-scheduler'] ?? 0) + removed
+    acceptedEvidenceSkipAudit.estimatedCreditsSaved += removed * ESTIMATED_CREDITS_PER_SKIPPED_REQUIREMENT
+    acceptedEvidenceSkipAudit.estimatedCuSaved += removed * ESTIMATED_CU_PER_SKIPPED_REQUIREMENT
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[accepted-evidence-skip-audit]', acceptedEvidenceSkipAudit)
 
   // RANK PROPAGATION BY TX, NOT BY LEG DIRECTION, DISCLOSED (confirmed production bug: 84 valid
   // opposite legs found, 0 recovered, missing_verified_native_price: 42). entryRankByTxHash/
@@ -1332,17 +1469,34 @@ export async function priceLotsForWallet(params: {
     alchemyRequirementSidesByTxHash.set(txHash, meta)
   }
   const alchemyShadowRequirements: AlchemyPricingRequirement[] = []
+  let alchemyRequirementsSkippedByAcceptedEvidence = 0
   for (const lot of structuralMatchedLots) {
     const hasEntry = atTradeTime.costUsd[lot.openedTxHash] != null
     const hasExit = atTradeTime.proceedsUsd[lot.closedTxHash] != null
-    if (!hasEntry) {
+    // ACCEPTED-EVIDENCE EXCLUSION, DISCLOSED (requirement #2's explicit "Alchemy historical
+    // pricing" bullet): a side already removed from `buys`/`sells` above (see
+    // `isSkippableByAcceptedEvidence`) never populated `atTradeTime.costUsd/proceedsUsd` at all —
+    // without this check, this LAST gap-fill stage would otherwise re-attempt exactly the calls the
+    // filter above already avoided. `hydrateFromAcceptedEvidence`/`recoverPrices` downstream in
+    // pnlReconciliation.ts still applies the real canonical value regardless.
+    if (!hasEntry && !isSkippableByAcceptedEvidence(lot.chain, lot.openedTxHash, 'entry')) {
       alchemyShadowRequirements.push({ chain: lot.chain, token: lot.token, txHash: lot.openedTxHash, timestamp: lot.openedAt, oneSideMissing: hasExit })
       markAlchemySide(lot.openedTxHash, 'cost', lot.chain, lot.token)
+    } else if (!hasEntry) {
+      alchemyRequirementsSkippedByAcceptedEvidence += 1
     }
-    if (!hasExit) {
+    if (!hasExit && !isSkippableByAcceptedEvidence(lot.chain, lot.closedTxHash, 'exit')) {
       alchemyShadowRequirements.push({ chain: lot.chain, token: lot.token, txHash: lot.closedTxHash, timestamp: lot.closedAt, oneSideMissing: hasEntry })
       markAlchemySide(lot.closedTxHash, 'proceeds', lot.chain, lot.token)
+    } else if (!hasExit) {
+      alchemyRequirementsSkippedByAcceptedEvidence += 1
     }
+  }
+  if (alchemyRequirementsSkippedByAcceptedEvidence > 0) {
+    acceptedEvidenceSkipAudit.providerCallsSkippedByAcceptedEvidence.alchemy =
+      (acceptedEvidenceSkipAudit.providerCallsSkippedByAcceptedEvidence.alchemy ?? 0) + alchemyRequirementsSkippedByAcceptedEvidence
+    acceptedEvidenceSkipAudit.estimatedCreditsSaved += alchemyRequirementsSkippedByAcceptedEvidence * ESTIMATED_CREDITS_PER_SKIPPED_REQUIREMENT
+    acceptedEvidenceSkipAudit.estimatedCuSaved += alchemyRequirementsSkippedByAcceptedEvidence * ESTIMATED_CU_PER_SKIPPED_REQUIREMENT
   }
   if (alchemyShadowRequirements.length > 0) {
     const { shadowPricesByTxHash, audit: alchemyAudit } = await resolveAlchemyHistoricalPricesShadow(alchemyShadowRequirements)
@@ -1495,5 +1649,6 @@ export async function priceLotsForWallet(params: {
     pricingUnavailableTokens,
     historicalPricingAttempts,
     historicalPricingFailures,
+    acceptedEvidenceSkipAudit,
   }
 }

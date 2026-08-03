@@ -1876,6 +1876,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     normalizedEvents: normalizedEventsForPricing,
     recoveredEvents: recoveredEventsForPricing,
     priceSources: requestPriceSources,
+    // ACCEPTED-EVIDENCE SKIP WIRING, DISCLOSED (pricing-cost-reduction follow-up task): the SAME real
+    // acceptedEvidenceKv client already wired into pnlReconciliation below — lets the historical
+    // pricing scheduler skip a real provider call for a lot side already covered by valid, exact
+    // accepted evidence, closing the "27 accepted sides loaded/applied yet
+    // upstreamLookupsSkippedByAcceptedEvidence: 0" production gap this task's own proof describes.
+    acceptedEvidenceKv: acceptedEvidenceRealKv,
   })
   scanTimer.mark('priceLotsForWallet', priceLotsForWalletStart)
   // CU-ESTIMATOR SNAPSHOT, DISCLOSED: delta over rpcDebugLog taken specifically around this stage's
