@@ -154,6 +154,56 @@ describe('wallet-scan final publish and poll key alignment', () => {
   })
 })
 
+describe('wallet-scan poll route: realizedPnlUsd survives a non-full integrityTier (bounded-PnL-UI follow-up task, requirement #5)', () => {
+  it('HARD ASSERTION: a partial/bounded-sample result (integrityTier: "partial") is returned with realizedPnlUsd intact — the route never nulls it out because the tier is not "full"', async () => {
+    installMemoryKv()
+    const result = {
+      success: true,
+      reconciliationSummary: {
+        realizedPnlUsd: -3515.49,
+        publicPnlStatus: 'partial',
+        warning: 'Verified 90-day sample, not complete wallet history',
+        publicPnlGateAudit: {
+          integrityTier: 'partial',
+          verifiedClosedLots: 19,
+          structuralClosedLots: 27,
+          verifiedPricingCoverage: 0.7037,
+          invalidOrUnknownUnmatchedEvents: 4,
+          boundedSampleEligible: true,
+        },
+      },
+    }
+
+    await publishFinalResultForTest('job-bounded-sample', result)
+    const response = await poll('job-bounded-sample')
+
+    assert.equal(response.status, 200)
+    const body = response.body as { status: string; result: typeof result }
+    assert.equal(body.status, 'done')
+    assert.equal(body.result.reconciliationSummary.realizedPnlUsd, -3515.49, 'realizedPnlUsd must survive the round trip unchanged, regardless of integrityTier')
+    assert.equal(body.result.reconciliationSummary.publicPnlGateAudit.integrityTier, 'partial')
+  })
+
+  it('a "blocked" integrityTier result with a genuinely null realizedPnlUsd still passes it through as null, never coerced to a fabricated 0', async () => {
+    installMemoryKv()
+    const result = {
+      success: true,
+      reconciliationSummary: {
+        realizedPnlUsd: null,
+        publicPnlStatus: 'unavailable',
+        warning: null,
+        publicPnlGateAudit: { integrityTier: 'blocked', verifiedClosedLots: 2, structuralClosedLots: 27, verifiedPricingCoverage: 0.1, invalidOrUnknownUnmatchedEvents: 20, boundedSampleEligible: false },
+      },
+    }
+
+    await publishFinalResultForTest('job-blocked', result)
+    const response = await poll('job-blocked')
+
+    const body = response.body as { status: string; result: typeof result }
+    assert.equal(body.result.reconciliationSummary.realizedPnlUsd, null)
+  })
+})
+
 describe('wallet-scan result serialization guard', () => {
   it('converts BigInt to decimal strings and non-finite numbers to null; JSON-safe values pass through identically', () => {
     const raw = {

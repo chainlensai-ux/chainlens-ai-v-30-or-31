@@ -57,6 +57,7 @@ export function WalletScannerSummaryRowV3({ report }: WalletScannerSummaryRowV3P
           publicPnlStatus={report.finalSummary?.financialStatus?.officialPnlStatus}
           syntheticPnl={report.syntheticPnl}
           unrealizedReconciliation={report.fifoAndPnl?.unrealizedReconciliation}
+          reconciliationSummary={report.reconciliationSummary}
         />
       </div>
     </div>

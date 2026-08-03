@@ -28,6 +28,7 @@
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { PublicPnlStatus, UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
 import type { SyntheticPnlSummary } from '@/src/modules/syntheticPnl/types'
+import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
 import { fmtSignedUsd, fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { StatusBadge } from './StatusBadge'
 import { MetricCard, toneFromNumber } from './MetricCard'
@@ -58,6 +59,13 @@ export type PnlStatusCardProps = {
   // un-reconciled top-level unrealizedPnlUsd, is now this card's SOLE source for the displayed
   // Unrealized PnL value. See selectDisplayedUnrealizedPnl's own header below for the exact rule.
   unrealizedReconciliation?: UnrealizedReconciliationSummary | null
+  // BOUNDED VERIFIED SAMPLE, DISCLOSED (bounded-PnL-UI follow-up task): the real, canonical
+  // pnlReconciliation output — result.reconciliationSummary (src/lib/pnlReconciliation.ts). Only
+  // ever consulted for the disclosure block shown when publicPnlStatus === 'limited_verified_sample'
+  // (the real backend value for a bounded, 90-day-window-limited but independently-verified sample —
+  // see `publicPnlGateAudit.boundedSampleEligible` on the backend). Never merged into pnlV2's own
+  // numbers above, never used for 'ok'/'unavailable' — those keep their existing, unchanged behavior.
+  reconciliationSummary?: PnlReconciliationSummary | null
 }
 
 export type VerifiedPnlData = {
@@ -174,6 +182,13 @@ function logUnrealizedPnlFieldSelection(displayed: DisplayedUnrealizedPnl, legac
 //      already an optional prop on this component (see PnlStatusCardProps) for callers that don't
 //      wire it — omitted/undefined does not fail this check by itself, so this guard's addition
 //      never silently blocks every existing caller that hasn't been updated to pass it.
+//   3. BOUNDED-SAMPLE FIX, DISCLOSED (bounded-PnL-UI follow-up task — confirmed live bug: a real
+//      bounded, independently-verified sample — publicPnlStatus === 'limited_verified_sample',
+//      backend already proved boundedSampleEligible — was hidden behind the exact same "PnL
+//      unavailable" guard as a genuinely `'unavailable'` wallet, because this check previously
+//      treated ANY non-'ok' status identically). Only the real `'unavailable'` status blocks now;
+//      `'limited_verified_sample'` is a real, backend-verified (if intentionally bounded) result and
+//      must be shown, with its own disclosure — see selectBoundedSampleDisclosure below — not hidden.
 export function isStablePnl(params: {
   realizedPnlUsd: number | null | undefined
   unrealizedPnlUsd: number | null | undefined
@@ -183,7 +198,7 @@ export function isStablePnl(params: {
   if ((params.evidenceMissingCount ?? 0) > 0) return false
   if (!Number.isFinite(params.realizedPnlUsd)) return false
   if (!Number.isFinite(params.unrealizedPnlUsd)) return false
-  if (params.publicPnlStatus != null && params.publicPnlStatus !== 'ok') return false
+  if (params.publicPnlStatus === 'unavailable') return false
   return true
 }
 
@@ -310,6 +325,41 @@ export function shouldShowLimitedSampleBadge(publicPnlStatus: PublicPnlStatus | 
 // string rather than a substring guess.
 export const PNL_UNAVAILABLE_MESSAGE = 'PnL unavailable due to missing evidence'
 
+// BOUNDED SAMPLE DISCLOSURE, DISCLOSED (bounded-PnL-UI follow-up task): real values only, sourced
+// exclusively from `reconciliationSummary` (src/lib/pnlReconciliation.ts's own output) — never
+// estimated, never merged with pnlV2. Returns null whenever `publicPnlStatus` isn't the real
+// `'limited_verified_sample'` value, or when the caller hasn't supplied `reconciliationSummary`
+// (an older/unwired caller) — so an absent prop degrades to "no bounded-sample block", never a
+// fabricated one. Pure, exported for direct testing.
+export type BoundedSampleDisclosure = {
+  label: string
+  realizedPnlUsd: number | null
+  verifiedClosedLots: number
+  structuralClosedLots: number
+  verifiedPricingCoveragePercent: number | null
+  unresolvedExitsExcluded: number
+  warning: string | null
+}
+
+export function selectBoundedSampleDisclosure(
+  publicPnlStatus: PublicPnlStatus | null | undefined,
+  reconciliationSummary: PnlReconciliationSummary | null | undefined,
+): BoundedSampleDisclosure | null {
+  if (publicPnlStatus !== 'limited_verified_sample') return null
+  if (!reconciliationSummary) return null
+  const audit = reconciliationSummary.publicPnlGateAudit
+  const scanWindowDays = audit.scanWindowDays ?? 90
+  return {
+    label: `Verified ${scanWindowDays}-day sample`,
+    realizedPnlUsd: reconciliationSummary.realizedPnlUsd,
+    verifiedClosedLots: audit.verifiedClosedLots,
+    structuralClosedLots: audit.structuralClosedLots,
+    verifiedPricingCoveragePercent: audit.verifiedPricingCoverage != null ? audit.verifiedPricingCoverage * 100 : null,
+    unresolvedExitsExcluded: audit.invalidOrUnknownUnmatchedEvents,
+    warning: reconciliationSummary.warning,
+  }
+}
+
 // GLOBAL-VS-PER-CHAIN SYNTHETIC GATING, DISCLOSED. RELAXED, DISCLOSED (this task's own request —
 // Nansen-style "always show a number when the real engine can't"): `hasGlobalSynthetic` previously
 // additionally required `syntheticPnl.totalPnlUsd !== null` — since computeSyntheticPnl (see that
@@ -364,9 +414,10 @@ export function resolvePnlDisplayMode(params: {
   return 'real'
 }
 
-export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealizedReconciliation }: PnlStatusCardProps) {
+export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealizedReconciliation, reconciliationSummary }: PnlStatusCardProps) {
   const pnl = selectVerifiedPnlData(pnlV2, publicPnlStatus, unrealizedReconciliation)
   const isActive = pnlV2 != null
+  const boundedSample = selectBoundedSampleDisclosure(publicPnlStatus, reconciliationSummary)
   // PARTIAL-COVERAGE BADGE, DISCLOSED (this task's own requirement): shown SEPARATELY from the
   // blocked/unavailable states above — a "partial" reconciliation still has a real, honestly-
   // computed officialUnrealizedPnlUsd (excluded positions are simply left out, never blended in),
@@ -415,6 +466,35 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
         <p style={{ fontSize: '13px', fontWeight: 700, color: '#fbbf24', margin: '0 0 12px' }}>
           {PNL_UNAVAILABLE_MESSAGE}
         </p>
+      )}
+
+      {/* BOUNDED VERIFIED SAMPLE DISCLOSURE, DISCLOSED (bounded-PnL-UI follow-up task): real,
+          backend-computed values only (src/lib/pnlReconciliation.ts's publicPnlGateAudit/warning) —
+          shown ONLY for the real 'limited_verified_sample' status, never for 'ok'/'unavailable'.
+          Deliberately never labeled "Complete PnL"/"All-time PnL"/"Fully verified" — this IS a
+          bounded, disclosed sample, and every string here says so explicitly. */}
+      {boundedSample && (
+        <div style={{ background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.25)', borderRadius: '10px', padding: '12px 14px', marginBottom: '16px' }}>
+          <div style={{ fontSize: '11px', fontWeight: 800, color: '#fbbf24', letterSpacing: '0.04em', marginBottom: '6px' }}>
+            {boundedSample.label}
+          </div>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: boundedSample.realizedPnlUsd != null && boundedSample.realizedPnlUsd < 0 ? '#f87171' : '#4ade80', marginBottom: '6px' }}>
+            Realized PnL: {fmtSignedUsd(boundedSample.realizedPnlUsd)}
+          </div>
+          <div style={{ fontSize: '11px', color: 'rgba(226,232,240,0.75)', lineHeight: 1.7 }}>
+            {boundedSample.verifiedClosedLots} verified closed lots
+            {boundedSample.structuralClosedLots > 0 && ` of ${boundedSample.structuralClosedLots} structural`}
+            <br />
+            {boundedSample.verifiedPricingCoveragePercent != null ? `${boundedSample.verifiedPricingCoveragePercent.toFixed(2)}%` : 'Unknown'} historical pricing coverage
+            <br />
+            {boundedSample.unresolvedExitsExcluded} unresolved exit{boundedSample.unresolvedExitsExcluded === 1 ? '' : 's'} excluded
+          </div>
+          {boundedSample.warning && (
+            <div style={{ fontSize: '11px', fontWeight: 600, color: '#fbbf24', marginTop: '8px' }}>
+              {boundedSample.warning}
+            </div>
+          )}
+        </div>
       )}
 
       {displayMode === 'synthetic' && syntheticPnl ? (

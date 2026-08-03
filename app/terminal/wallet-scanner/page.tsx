@@ -59,6 +59,7 @@ import type { BehaviorV2 } from '@/lib/engine/modules/behavior/types'
 import type { RiskV2 } from '@/lib/engine/modules/risk/types'
 import type { SignalV2 } from '@/lib/engine/modules/signals/types'
 import type { WalletConditionSection } from '@/src/pipeline/walletConditionMessages'
+import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
 
 // PORTFOLIO V2 MIGRATION, UPDATED DISCLOSURE: `portfolioV2` (the new engine's Portfolio shape —
 // categories/chains/topHoldings/stablecoinRatio/concentrationIndex — structurally different from
@@ -109,6 +110,11 @@ export type WalletV2Report = FinalReport & {
   // test harness path (unrelated to this real route) returns an empty array, and any older cached
   // response predating this field simply won't have it.
   walletConditionMessages?: WalletConditionSection[]
+  // BOUNDED-SAMPLE UI WIRING, DISCLOSED (bounded-PnL-UI follow-up task): additive top-level field on
+  // RunWalletScanResult (src/pipeline/types.ts) — real at runtime for every scan (finalReportAssembler
+  // always attaches it), only newly declared here so PnlStatusCard can read the real verified-lot-
+  // count/pricing-coverage/warning disclosure for a 'limited_verified_sample' result.
+  reconciliationSummary?: PnlReconciliationSummary
 }
 
 type WatchlistWallet = {
@@ -707,6 +713,7 @@ export default function WalletScannerPage() {
                   publicPnlStatus={result.finalSummary?.financialStatus?.officialPnlStatus}
                   syntheticPnl={result.syntheticPnl}
                   unrealizedReconciliation={result.fifoAndPnl?.unrealizedReconciliation}
+                  reconciliationSummary={result.reconciliationSummary}
                 />
               </div>
 

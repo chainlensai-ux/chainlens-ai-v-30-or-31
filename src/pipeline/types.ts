@@ -9,6 +9,7 @@ import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import type { NormalizationError } from '../modules/normalization/types'
 import type { FinalReport } from '../modules/finalReportAssembler/types'
 import type { WalletConditionSection } from './walletConditionMessages'
+import type { PnlReconciliationSummary } from '../lib/pnlReconciliation'
 
 export type ScanModeInput = 'normal' | 'deep'
 
@@ -34,6 +35,13 @@ export type RunWalletScanParams = {
 export type RunWalletScanResult = FinalReport & {
   normalizationErrors: NormalizationError[]
   walletConditionMessages: WalletConditionSection[]
+  // BOUNDED-SAMPLE UI WIRING, DISCLOSED (bounded-PnL-UI follow-up task): runWalletScan() has always
+  // returned this at runtime (it spreads `...finalReport`, and finalReportAssembler.assemble()
+  // already attaches `reconciliationSummary` — see FinalReportAssemblerOutput) — this type simply
+  // never declared it, so no frontend/API caller could read it without a cast. Declared here,
+  // additively, so the real `publicPnlGateAudit`/`warning` fields (verified lot count, pricing
+  // coverage, disclosed unresolved-exit count) can reach the Wallet Scanner UI.
+  reconciliationSummary?: PnlReconciliationSummary
 }
 
 export type PreScanValidation = {

@@ -15,9 +15,39 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { selectVerifiedPnlData, selectDisplayedUnrealizedPnl, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl, PNL_UNAVAILABLE_MESSAGE, hasGlobalSynthetic, hasPerChainSynthetic, shouldShowSyntheticGlobal, shouldShowSyntheticPerChain, resolvePnlDisplayMode } from './PnlStatusCard'
+import { selectVerifiedPnlData, selectDisplayedUnrealizedPnl, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl, PNL_UNAVAILABLE_MESSAGE, hasGlobalSynthetic, hasPerChainSynthetic, shouldShowSyntheticGlobal, shouldShowSyntheticPerChain, resolvePnlDisplayMode, selectBoundedSampleDisclosure } from './PnlStatusCard'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
+import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
+
+// Minimal, real-shaped PnlReconciliationSummary fixture builder — mirrors the fixture pattern
+// already used in src/lib/pnlReconciliation.test.ts. Only the fields this card's selector actually
+// reads (realizedPnlUsd, warning, publicPnlGateAudit.{verifiedClosedLots,structuralClosedLots,
+// verifiedPricingCoverage,invalidOrUnknownUnmatchedEvents,scanWindowDays}) vary meaningfully across
+// tests below; the rest are honest, unused-by-this-selector placeholders.
+function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}): PnlReconciliationSummary {
+  return {
+    closedLots: 27, unmatchedBuys: 94, unmatchedSells: 114, realizedPnlUsd: -3515.49, unrealizedPnlUsd: -19.02,
+    priceRecoveredCount: 0, routerCorrectedCount: 0, syntheticAlignedCount: 0, missingEvidenceCount: 15,
+    missingEvidenceBreakdown: { criticalTradeEvidenceMissing: 4, pricingEvidenceMissing: 8, dustExcluded: 0, nonTradeExcluded: 0 },
+    publicPnlStatus: 'partial',
+    publicPnlGateAudit: {
+      verifiedLotCount: 19, fullyPricedLotCount: 19, pricingCoverage: 0.7037, structuralCoverage: 0.871,
+      unmatchedBuyCount: 0, unmatchedSellCount: 4, integrityTier: 'partial', blockingReasons: [],
+      rawUnmatchedBuys: 94, rawUnmatchedSells: 114, genuineUnmatchedBuys: 0, genuineUnmatchedSells: 4,
+      excludedNonTradeBuys: {}, excludedNonTradeSells: {}, excludedUnmatchedByClassification: {}, unmatchedIdentityJoinFailures: 0,
+      structuralCoverageNumerator: 27, structuralCoverageDenominator: 31,
+      verifiedClosedLots: 19, structuralClosedLots: 27, openPositionBuys: 94, preWindowInventoryExits: 110,
+      invalidOrUnknownUnmatchedEvents: 4, scanWindowDays: 90, verifiedPricingCoverage: 0.7037,
+      engineDivergenceDiagnostic: { fifoClosedLots: 27, pnlClosedLots: 9, agrees: false },
+      boundedSampleEligible: true, boundedSampleBlockingReasons: [], fullAvailabilityBlockingReasons: [],
+      includedVerifiedLotCount: 19, excludedUnpricedLotCount: 8, excludedUnknownUnmatchedCount: 4,
+    },
+    mismatches: [],
+    warning: 'Verified 90-day sample, not complete wallet history',
+    ...overrides,
+  }
+}
 
 function pnlV2(overrides: Partial<PnlV2>): PnlV2 {
   return { realizedPnlUsd: 0, unrealizedPnlUsd: 0, costBasis: [], realized: [], unrealized: [], chainBreakdown: [], ...overrides }
@@ -289,8 +319,8 @@ describe('isStablePnl — this task\'s stable-PnL display guard', () => {
     assert.equal(isStablePnl({ realizedPnlUsd: 10, unrealizedPnlUsd: 5, publicPnlStatus: 'ok' }), true)
   })
 
-  it("publicPnlStatus 'limited_verified_sample' -> unstable", () => {
-    assert.equal(isStablePnl({ realizedPnlUsd: 10, unrealizedPnlUsd: 5, publicPnlStatus: 'limited_verified_sample' }), false)
+  it("HARD ASSERTION: publicPnlStatus 'limited_verified_sample' -> stable, no longer hidden identically to 'unavailable' (bounded-PnL-UI follow-up task fix — confirmed live bug: a real, backend-verified bounded sample was hidden behind the same guard as a genuinely unavailable wallet)", () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: 10, unrealizedPnlUsd: 5, publicPnlStatus: 'limited_verified_sample' }), true)
   })
 
   it("publicPnlStatus 'unavailable' -> unstable", () => {
@@ -481,5 +511,85 @@ describe('resolvePnlDisplayMode — pure combinatorial logic', () => {
   it('not blocked -> real, regardless of synthetic flags (should never happen together, but real wins if it does)', () => {
     assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: false, showSyntheticGlobal: true, showSyntheticPerChain: true }), 'real')
     assert.equal(resolvePnlDisplayMode({ isActive: true, blocked: false, showSyntheticGlobal: false, showSyntheticPerChain: false }), 'real')
+  })
+})
+
+describe('selectBoundedSampleDisclosure — bounded-PnL-UI follow-up task', () => {
+  it("HARD ASSERTION: exact production-shaped case — partial status with reconciliationSummary shows canonical realized PnL, 19 verified lots, 70.37% pricing coverage, 4 unresolved exits, and the exact backend warning string", () => {
+    const disclosure = selectBoundedSampleDisclosure('limited_verified_sample', reconciliationSummary())
+    assert.ok(disclosure)
+    assert.equal(disclosure!.label, 'Verified 90-day sample')
+    assert.equal(disclosure!.realizedPnlUsd, -3515.49)
+    assert.equal(disclosure!.verifiedClosedLots, 19)
+    assert.equal(disclosure!.structuralClosedLots, 27)
+    assert.ok(Math.abs(disclosure!.verifiedPricingCoveragePercent! - 70.37) < 0.01)
+    assert.equal(disclosure!.unresolvedExitsExcluded, 4)
+    assert.equal(disclosure!.warning, 'Verified 90-day sample, not complete wallet history')
+  })
+
+  it("returns null for 'ok' (available) — the bounded-sample block is never shown for a fully available result", () => {
+    assert.equal(selectBoundedSampleDisclosure('ok', reconciliationSummary()), null)
+  })
+
+  it("returns null for 'unavailable' — never shows a bounded-sample disclosure for a genuinely unavailable result", () => {
+    assert.equal(selectBoundedSampleDisclosure('unavailable', reconciliationSummary()), null)
+  })
+
+  it("returns null when reconciliationSummary is absent, even for 'limited_verified_sample' — never fabricates the disclosure for an unwired caller", () => {
+    assert.equal(selectBoundedSampleDisclosure('limited_verified_sample', null), null)
+    assert.equal(selectBoundedSampleDisclosure('limited_verified_sample', undefined), null)
+  })
+
+  it('honors a non-default scanWindowDays in the label rather than hardcoding 90', () => {
+    const disclosure = selectBoundedSampleDisclosure('limited_verified_sample', reconciliationSummary({
+      publicPnlGateAudit: { ...reconciliationSummary().publicPnlGateAudit, scanWindowDays: 30 },
+    }))
+    assert.equal(disclosure!.label, 'Verified 30-day sample')
+  })
+
+  it('never produces a label containing "Complete PnL", "All-time PnL", or "Fully verified"', () => {
+    const disclosure = selectBoundedSampleDisclosure('limited_verified_sample', reconciliationSummary())!
+    for (const forbidden of ['Complete PnL', 'All-time PnL', 'Fully verified']) {
+      assert.equal(disclosure.label.includes(forbidden), false)
+      assert.equal((disclosure.warning ?? '').includes(forbidden), false)
+    }
+  })
+})
+
+describe('bounded-PnL-UI end-to-end regression: partial/available/unavailable rendering behavior', () => {
+  const pnlV2Fixture = pnlV2({ realizedPnlUsd: -3515.49, unrealizedPnlUsd: 545000 })
+  const unrealizedRecon = reconciliation({ officialUnrealizedPnlUsd: -19.02, reconciliationStatus: 'ok' })
+
+  it('HARD ASSERTION: partial status (limited_verified_sample) displays the canonical realized PnL — not blocked as unavailable', () => {
+    const pnl = selectVerifiedPnlData(pnlV2Fixture, 'limited_verified_sample', unrealizedRecon)
+    assert.equal(pnl.stable, true, 'a real, backend-verified bounded sample must display as stable')
+    assert.equal(pnl.realizedPnlUsd, -3515.49)
+    assert.equal(pnl.unrealizedPnlUsd, -19.02)
+    const blocked = pnl.unreliable || !pnl.stable
+    assert.equal(blocked, false)
+  })
+
+  it('HARD ASSERTION: unavailable status still hides unverified PnL — unchanged behavior', () => {
+    const pnl = selectVerifiedPnlData(pnlV2Fixture, 'unavailable', unrealizedRecon)
+    assert.equal(pnl.stable, false)
+    const blocked = pnl.unreliable || !pnl.stable
+    assert.equal(blocked, true, 'unavailable must still block the numeric display')
+  })
+
+  it("HARD ASSERTION: 'ok' (available) rendering is unchanged by this task's fix", () => {
+    const pnl = selectVerifiedPnlData(pnlV2Fixture, 'ok', unrealizedRecon)
+    assert.equal(pnl.stable, true)
+    const blocked = pnl.unreliable || !pnl.stable
+    assert.equal(blocked, false)
+  })
+
+  it('HARD ASSERTION: the bounded-sample warning and verified-lot/coverage disclosure are shown alongside the partial badge, using real backend values only', () => {
+    const badge = shouldShowLimitedSampleBadge('limited_verified_sample')
+    assert.equal(badge, 'Limited verified sample')
+    const disclosure = selectBoundedSampleDisclosure('limited_verified_sample', reconciliationSummary())
+    assert.ok(disclosure)
+    assert.equal(disclosure!.verifiedClosedLots, 19)
+    assert.ok(Math.abs(disclosure!.verifiedPricingCoveragePercent! - 70.37) < 0.01)
+    assert.equal(disclosure!.warning, 'Verified 90-day sample, not complete wallet history')
   })
 })
