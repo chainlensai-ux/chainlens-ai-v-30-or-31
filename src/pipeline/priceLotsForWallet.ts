@@ -81,6 +81,8 @@ import {
 import {
   lotIdentityVersion, readAcceptedEvidence, type AcceptedEvidenceKvLike,
 } from '../lib/acceptedEvidenceStore'
+import { getGoldrushPriceSourceCallCount } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
+import { getDexscreenerCallCount } from '../modules/pricingAtTimeEngine/sources/dexscreener'
 
 // ADDRESS-BASED NATIVE/WETH RECOGNITION, DISCLOSED (confirmed production bug: nativeQuoteRequirementsFound
 // stayed 0 despite 84 valid opposite legs — the previous symbol==='ETH'/'WETH' check was a weaker
@@ -268,18 +270,50 @@ export type WalletPriceLookups = {
 export type AcceptedEvidenceSkipAudit = {
   acceptedSidesEligibleToSkip: number
   pricingRequirementsRemovedByAcceptedEvidence: number
-  providerCallsSkippedByAcceptedEvidence: Record<string, number>
+  // RENAMED, DISCLOSED (accepted-evidence-skip-hydration follow-up task, requirement #6 —
+  // confirmed audit-accuracy bug: the prior field name `providerCallsSkippedByAcceptedEvidence`
+  // implied a MEASURED count of real network calls avoided, but it only ever counted REMOVED
+  // PRICING REQUIREMENTS — one requirement is not necessarily one network call: the chain-aware
+  // historical router can try several sources per requirement, requirements coalesce, and a
+  // requirement removed pre-scheduler was never dispatched to any specific provider at all, so
+  // there is nothing to have "called" in the first place. Renamed to say exactly what it measures).
+  pricingRequirementsSkippedByAcceptedEvidence: Record<string, number>
+  // A real, disclosed, DELIBERATELY CONSERVATIVE single estimate (never per-source — this layer
+  // cannot know which source a removed requirement would have routed to) — see
+  // ESTIMATED_CREDITS_PER_SKIPPED_REQUIREMENT's own header. Never presented as a measured fact.
+  estimatedProviderCallsAvoided: number
   estimatedCreditsSaved: number
   estimatedCuSaved: number
   acceptedSidesStillSentToProviders: number
   skipValidationFailures: number
+  // SOURCE-SPECIFIC BEFORE/AFTER + REAL LIVE-CALL COUNTERS, DISCLOSED (requirement #7 — "trace why
+  // 20 removed requirements did not reduce GoldRush calls"). `*RequirementsBeforeSkip`/`AfterSkip`
+  // are real counts of PRICING REQUIREMENTS (never a claim about which provider they'd route to —
+  // that routing decision happens deep inside the chain-aware historical router, several calls
+  // after this layer's own filter runs, and is genuinely unknowable here). `goldrushActualLiveCalls`/
+  // `dexActualLiveCalls` are REAL, MEASURED deltas of this codebase's own existing process-lifetime
+  // call counters (getGoldrushPriceSourceCallCount/getDexscreenerCallCount), snapshotted immediately
+  // before and after this call's own `resolvePricingAtTime` — genuinely measured, never estimated.
+  // `alchemyActualLiveCalls` is the real `liveRequests` field `resolveAlchemyHistoricalPricesShadow`
+  // already returns — also genuinely measured, not derived here.
+  pricingRequirementsBeforeSkip: number
+  pricingRequirementsAfterSkip: number
+  goldrushActualLiveCalls: number
+  alchemyRequirementsBeforeSkip: number
+  alchemyRequirementsAfterSkip: number
+  alchemyActualLiveCalls: number
+  dexActualLiveCalls: number
 }
 
 function emptyAcceptedEvidenceSkipAudit(): AcceptedEvidenceSkipAudit {
   return {
     acceptedSidesEligibleToSkip: 0, pricingRequirementsRemovedByAcceptedEvidence: 0,
-    providerCallsSkippedByAcceptedEvidence: {}, estimatedCreditsSaved: 0, estimatedCuSaved: 0,
+    pricingRequirementsSkippedByAcceptedEvidence: {}, estimatedProviderCallsAvoided: 0,
+    estimatedCreditsSaved: 0, estimatedCuSaved: 0,
     acceptedSidesStillSentToProviders: 0, skipValidationFailures: 0,
+    pricingRequirementsBeforeSkip: 0, pricingRequirementsAfterSkip: 0, goldrushActualLiveCalls: 0,
+    alchemyRequirementsBeforeSkip: 0, alchemyRequirementsAfterSkip: 0, alchemyActualLiveCalls: 0,
+    dexActualLiveCalls: 0,
   }
 }
 
@@ -347,6 +381,19 @@ export async function priceLotsForWallet(params: {
   const acceptedEvidenceKv = params.acceptedEvidenceKv
   const acceptedEvidenceNow = (params.now ?? Date.now)()
   const skippableRequirementKeys = new Set<string>() // `${chain}:${txHash.toLowerCase()}:${side}`
+  // ACCEPTED-PRICE HYDRATION MAPS, DISCLOSED (accepted-evidence-skip-hydration follow-up task,
+  // requirement #1 — confirmed root cause of the split canonical snapshot: the prior version
+  // REMOVED a fully-covered requirement from the pricing pool without ever writing its accepted
+  // price into `atTradeTime.costUsd`/`proceedsUsd` — those dictionaries stayed exactly as
+  // un-populated as a genuinely unresolved side, so `priceUsdLookup`/`currentPriceUsdLookup`, and
+  // therefore this pass's OWN `structuralMatchedLots`-derived consumers like AYRI, never saw the
+  // canonical price at all — only pnlReconciliation.ts's SEPARATE, later hydration pass did,
+  // producing two different "verified" counts for the same scan). Captured here, applied to
+  // `atTradeTime.costUsd`/`proceedsUsd` immediately after `resolvePricingAtTime` returns (see below)
+  // — BEFORE anything else reads those dictionaries (Alchemy gap-fill's `hasEntry`/`hasExit`,
+  // `countFullyPriced()`, the final lookup builders) — so a skipped requirement behaves exactly like
+  // one a provider resolved, never like an unpriced placeholder.
+  const acceptedPriceByTxHash = { costUsd: new Map<string, number>(), proceedsUsd: new Map<string, number>() }
   if (acceptedEvidenceKv) {
     const groups = new Map<string, MatchedLot[]>()
     for (const lot of structuralMatchedLots) {
@@ -358,18 +405,22 @@ export async function priceLotsForWallet(params: {
     for (const [key, groupedLots] of groups) {
       const side: 'entry' | 'exit' = key.endsWith(':entry') ? 'entry' : 'exit'
       let coveredCount = 0
+      let canonicalPriceUsd: number | null = null
       for (const lot of groupedLots) {
         const txHash = side === 'entry' ? lot.openedTxHash : lot.closedTxHash
         const timestamp = side === 'entry' ? lot.openedAt : lot.closedAt
         const identity = { chain: lot.chain, token: lot.token, txHash, side, timestamp, lotIdentityVersion: lotIdentityVersion(lot) }
         // eslint-disable-next-line no-await-in-loop
         const evidence = await readAcceptedEvidence(acceptedEvidenceKv, identity, acceptedEvidenceNow)
-        if (evidence) coveredCount += 1
+        if (evidence) { coveredCount += 1; canonicalPriceUsd = evidence.priceUsd }
       }
       const allCovered = coveredCount === groupedLots.length && groupedLots.length > 0
-      if (allCovered) {
+      if (allCovered && canonicalPriceUsd !== null) {
         skippableRequirementKeys.add(key)
         acceptedEvidenceSkipAudit.acceptedSidesEligibleToSkip += groupedLots.length
+        const txHash = side === 'entry' ? groupedLots[0].openedTxHash : groupedLots[0].closedTxHash
+        const dict = side === 'entry' ? acceptedPriceByTxHash.costUsd : acceptedPriceByTxHash.proceedsUsd
+        dict.set(txHash, canonicalPriceUsd)
       } else {
         acceptedEvidenceSkipAudit.skipValidationFailures += groupedLots.length - coveredCount
         // SHARED-TXHASH PARTIAL-COVERAGE MISS, DISCLOSED (requirement #6): at least one lot sharing
@@ -396,6 +447,7 @@ export async function priceLotsForWallet(params: {
   // consumed by the structural FIFO pre-pass above (matching is unaffected — this filter runs AFTER
   // matching, never before), so filtering them now only affects what gets PRICED, never what gets
   // MATCHED.
+  acceptedEvidenceSkipAudit.pricingRequirementsBeforeSkip = buys.length + sells.length
   if (skippableRequirementKeys.size > 0) {
     const beforeBuys = buys.length
     const beforeSells = sells.length
@@ -414,13 +466,18 @@ export async function priceLotsForWallet(params: {
     // one real, named key rather than fabricating a per-provider split this layer has no visibility
     // into — the SAME disclosed-limitation pattern already used elsewhere in this file/module for
     // "source unknown at this layer" cases.
-    acceptedEvidenceSkipAudit.providerCallsSkippedByAcceptedEvidence['historical-pricing-scheduler'] =
-      (acceptedEvidenceSkipAudit.providerCallsSkippedByAcceptedEvidence['historical-pricing-scheduler'] ?? 0) + removed
+    acceptedEvidenceSkipAudit.pricingRequirementsSkippedByAcceptedEvidence['historical-pricing-scheduler'] =
+      (acceptedEvidenceSkipAudit.pricingRequirementsSkippedByAcceptedEvidence['historical-pricing-scheduler'] ?? 0) + removed
+    acceptedEvidenceSkipAudit.estimatedProviderCallsAvoided += removed
     acceptedEvidenceSkipAudit.estimatedCreditsSaved += removed * ESTIMATED_CREDITS_PER_SKIPPED_REQUIREMENT
     acceptedEvidenceSkipAudit.estimatedCuSaved += removed * ESTIMATED_CU_PER_SKIPPED_REQUIREMENT
   }
-  // eslint-disable-next-line no-console
-  console.warn('[accepted-evidence-skip-audit]', acceptedEvidenceSkipAudit)
+  acceptedEvidenceSkipAudit.pricingRequirementsAfterSkip = buys.length + sells.length
+  // REAL, MEASURED LIVE-CALL SNAPSHOT, DISCLOSED (requirement #7): taken immediately around this
+  // call's own `resolvePricingAtTime` — this codebase's own existing process-lifetime counters
+  // (never reset per-scan, so only the DELTA across this exact call is attributable to it).
+  const goldrushCallsBeforeResolve = getGoldrushPriceSourceCallCount()
+  const dexCallsBeforeResolve = getDexscreenerCallCount()
 
   // RANK PROPAGATION BY TX, NOT BY LEG DIRECTION, DISCLOSED (confirmed production bug: 84 valid
   // opposite legs found, 0 recovered, missing_verified_native_price: 42). entryRankByTxHash/
@@ -815,6 +872,21 @@ export async function priceLotsForWallet(params: {
     // the already-curated set is never re-clipped a second time inside pricingAtTimeEngine.
     maxLookupsPerTokenOverride: process.env.HISTORICAL_PRICING_YIELD_SCHEDULER_ENABLED === 'true' ? FAIRNESS_FLOOR_PER_TOKEN : undefined,
   })
+
+  // ACCEPTED-PRICE HYDRATION, DISCLOSED (requirement #1 — "apply the persisted accepted price to
+  // the exact matched-lot side immediately... do not merely remove the requirement while leaving
+  // the lot side null"): merged in HERE, immediately after `resolvePricingAtTime` returns and BEFORE
+  // any other code in this function reads `atTradeTime.costUsd`/`proceedsUsd` — the Alchemy gap-fill
+  // pass's `hasEntry`/`hasExit` checks, `countFullyPriced()`, and the final `priceUsdLookup`/
+  // `currentPriceUsdLookup` builders below all see the canonical accepted price exactly as if a
+  // live provider had resolved it. Never overwrites a value `resolvePricingAtTime` itself already
+  // set — a skipped requirement's txHash was never sent to it in the first place (see the filter
+  // above), so there is nothing to conflict with; this is populating a gap, never replacing a value.
+  for (const [txHash, priceUsd] of acceptedPriceByTxHash.costUsd) atTradeTime.costUsd[txHash] = priceUsd
+  for (const [txHash, priceUsd] of acceptedPriceByTxHash.proceedsUsd) atTradeTime.proceedsUsd[txHash] = priceUsd
+
+  acceptedEvidenceSkipAudit.goldrushActualLiveCalls = getGoldrushPriceSourceCallCount() - goldrushCallsBeforeResolve
+  acceptedEvidenceSkipAudit.dexActualLiveCalls = getDexscreenerCallCount() - dexCallsBeforeResolve
 
   // PER-REQUIREMENT ETH-NATIVE DIAGNOSTIC, DISCLOSED, BOUNDED — cross-references
   // pricingAtTimeAdapter.ts's own ethNativeRoutingAuditLog (which has every field observable at the
@@ -1492,14 +1564,18 @@ export async function priceLotsForWallet(params: {
       alchemyRequirementsSkippedByAcceptedEvidence += 1
     }
   }
+  acceptedEvidenceSkipAudit.alchemyRequirementsBeforeSkip = alchemyShadowRequirements.length + alchemyRequirementsSkippedByAcceptedEvidence
+  acceptedEvidenceSkipAudit.alchemyRequirementsAfterSkip = alchemyShadowRequirements.length
   if (alchemyRequirementsSkippedByAcceptedEvidence > 0) {
-    acceptedEvidenceSkipAudit.providerCallsSkippedByAcceptedEvidence.alchemy =
-      (acceptedEvidenceSkipAudit.providerCallsSkippedByAcceptedEvidence.alchemy ?? 0) + alchemyRequirementsSkippedByAcceptedEvidence
+    acceptedEvidenceSkipAudit.pricingRequirementsSkippedByAcceptedEvidence.alchemy =
+      (acceptedEvidenceSkipAudit.pricingRequirementsSkippedByAcceptedEvidence.alchemy ?? 0) + alchemyRequirementsSkippedByAcceptedEvidence
+    acceptedEvidenceSkipAudit.estimatedProviderCallsAvoided += alchemyRequirementsSkippedByAcceptedEvidence
     acceptedEvidenceSkipAudit.estimatedCreditsSaved += alchemyRequirementsSkippedByAcceptedEvidence * ESTIMATED_CREDITS_PER_SKIPPED_REQUIREMENT
     acceptedEvidenceSkipAudit.estimatedCuSaved += alchemyRequirementsSkippedByAcceptedEvidence * ESTIMATED_CU_PER_SKIPPED_REQUIREMENT
   }
   if (alchemyShadowRequirements.length > 0) {
     const { shadowPricesByTxHash, audit: alchemyAudit } = await resolveAlchemyHistoricalPricesShadow(alchemyShadowRequirements)
+    acceptedEvidenceSkipAudit.alchemyActualLiveCalls = alchemyAudit.liveRequests
 
     // Snapshot BEFORE any Alchemy write — reuses the exact same countFullyPriced() closure already
     // defined above (over atTradeTime/structuralMatchedLots), so "before" here means "after every
@@ -1640,6 +1716,9 @@ export async function priceLotsForWallet(params: {
   const routeRecordsThisCall = pricingRouteLog.slice(routeLogSnapshotBefore)
   const historicalPricingAttempts = routeRecordsThisCall.filter((r) => r.route !== 'none')
   const historicalPricingFailures = routeRecordsThisCall.filter((r) => r.route === 'none')
+
+  // eslint-disable-next-line no-console
+  console.warn('[accepted-evidence-skip-audit]', acceptedEvidenceSkipAudit)
 
   return {
     priceUsdLookup,

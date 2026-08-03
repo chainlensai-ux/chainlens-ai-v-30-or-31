@@ -144,3 +144,73 @@ export function logPricingDeterminismViolationIfAny(
     previousRealizedPnlFingerprint: check.previousRealizedPnlFingerprint,
   })
 }
+
+// FINAL-SNAPSHOT DIVERGENCE CHECK, DISCLOSED (accepted-evidence-skip-hydration follow-up task,
+// requirement #4 — confirmed production evidence: the public gate reported 19 verified lots /
+// 70.37% coverage for the SAME scan AYRI reported 6 verified lots / 22.22% coverage for). Every
+// consumer listed here is SUPPOSED to derive its own verified-lot/coverage figures from the exact
+// same final canonical matched-lot array (`reconciledFifoAndPnl.matchedLots` in
+// src/pipeline/index.ts) — a real disagreement here means two consumers computed their own figure
+// from data that had already diverged (a stale intermediate snapshot, a different filtering rule, a
+// classification bug), which is exactly the failure mode this check exists to catch, loudly, rather
+// than silently ship two different numbers for the same wallet in the same response. Pure — no I/O,
+// directly testable; logging is `logFinalPnlSnapshotDivergenceIfAny`'s job, same split as the
+// pricing-determinism check above.
+export type FinalPnlSnapshotConsumers = {
+  publicGateVerifiedLots: number
+  publicGatePricingCoverage: number | null
+  ayriFullyPricedLots: number
+  ayriVerifiedPricingCoverage: number | null
+  smartMoneyVerifiedLots: number | null
+  smartMoneyVerifiedPricingCoverage: number | null
+  canonicalVerifiedLots: number
+}
+
+export type FinalPnlSnapshotDivergenceCheck = {
+  divergent: boolean
+  verifiedLotCountsAgree: boolean
+  pricingCoverageAgrees: boolean
+  consumers: FinalPnlSnapshotConsumers
+}
+
+// COVERAGE-COMPARISON TOLERANCE, DISCLOSED: coverage percentages are real floating-point divisions
+// (fullyPricedLots / totalLots) computed independently by each consumer — a tiny float-precision
+// difference (e.g. rounding to a different number of decimal places) is not a real divergence.
+// 0.0001 (0.01 percentage points) is far tighter than any real, meaningfully-different coverage gap
+// (the production evidence's own divergence was 70.37% vs 22.22% — a 48-point gap, nowhere near this
+// tolerance) while still absorbing genuine floating-point noise.
+const COVERAGE_AGREEMENT_TOLERANCE = 0.0001
+
+function numbersAgree(a: number | null, b: number | null): boolean {
+  if (a === null || b === null) return a === b
+  return Math.abs(a - b) <= COVERAGE_AGREEMENT_TOLERANCE
+}
+
+export function checkFinalPnlSnapshotDivergence(consumers: FinalPnlSnapshotConsumers): FinalPnlSnapshotDivergenceCheck {
+  const lotCounts = [consumers.publicGateVerifiedLots, consumers.ayriFullyPricedLots, consumers.canonicalVerifiedLots]
+  if (consumers.smartMoneyVerifiedLots !== null) lotCounts.push(consumers.smartMoneyVerifiedLots)
+  const verifiedLotCountsAgree = lotCounts.every((n) => n === lotCounts[0])
+
+  const coverages = [consumers.publicGatePricingCoverage, consumers.ayriVerifiedPricingCoverage]
+  if (consumers.smartMoneyVerifiedPricingCoverage !== null) coverages.push(consumers.smartMoneyVerifiedPricingCoverage)
+  const pricingCoverageAgrees = coverages.every((c) => numbersAgree(c, coverages[0]))
+
+  return {
+    divergent: !verifiedLotCountsAgree || !pricingCoverageAgrees,
+    verifiedLotCountsAgree,
+    pricingCoverageAgrees,
+    consumers,
+  }
+}
+
+export function logFinalPnlSnapshotDivergenceIfAny(
+  check: FinalPnlSnapshotDivergenceCheck,
+  logger: Pick<Console, 'error'> = console,
+): void {
+  if (!check.divergent) return
+  logger.error('CRITICAL final_pnl_snapshot_divergence', {
+    verifiedLotCountsAgree: check.verifiedLotCountsAgree,
+    pricingCoverageAgrees: check.pricingCoverageAgrees,
+    consumers: check.consumers,
+  })
+}

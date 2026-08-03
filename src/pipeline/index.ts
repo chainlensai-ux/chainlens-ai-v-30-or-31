@@ -18,7 +18,7 @@ import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate 
 import { createRouterInference } from '../lib/routerInference'
 import { kv as acceptedEvidenceRealKv } from '@vercel/kv'
 import { createPnlReconciliation } from '../lib/pnlReconciliation'
-import { buildScanDeterminismAudit } from '../lib/scanDeterminismAudit'
+import { buildScanDeterminismAudit, checkFinalPnlSnapshotDivergence, logFinalPnlSnapshotDivergenceIfAny } from '../lib/scanDeterminismAudit'
 import { createAyriAttribution } from '../lib/ayriAttribution'
 import { createFinalReportAssembler } from '../lib/finalReportAssembler'
 import { analyzeDistributorRouterFlows } from '../modules/distributorRecovery/index'
@@ -2717,6 +2717,26 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     pricingSourceBreakdown: walletPriceLookups.sourceBreakdown,
     pricingRoutes: walletPriceLookups.historicalPricingAttempts,
   })
+
+  // FINAL-SNAPSHOT DIVERGENCE CHECK, DISCLOSED (accepted-evidence-skip-hydration follow-up task,
+  // requirement #4 — confirmed production evidence: the public gate and AYRI reported different
+  // verified-lot counts/coverage for the SAME scan). Both consumers already receive the SAME final
+  // array (`reconciledFifoAndPnl.matchedLots`) — this check catches any future disagreement between
+  // how they each independently reduce that array to a verified count/coverage figure, loudly,
+  // rather than silently shipping two different numbers for the same wallet in the same response.
+  // `smartMoneyVerifiedLots`/`smartMoneyVerifiedPricingCoverage` are honestly `null` — smart-money
+  // scoring is not computed inside this pipeline module (see lib/engine/modules/smartMoney), so
+  // there is nothing real to compare here yet; the check itself already skips a `null` consumer
+  // rather than treating it as a fabricated agreement or a fabricated mismatch.
+  logFinalPnlSnapshotDivergenceIfAny(checkFinalPnlSnapshotDivergence({
+    publicGateVerifiedLots: reconciledPnlSummary.publicPnlGateAudit.verifiedClosedLots,
+    publicGatePricingCoverage: reconciledPnlSummary.publicPnlGateAudit.verifiedPricingCoverage,
+    ayriFullyPricedLots: ayriAttribution.fullyPricedLots,
+    ayriVerifiedPricingCoverage: ayriAttribution.verifiedPricingCoveragePercent,
+    smartMoneyVerifiedLots: null,
+    smartMoneyVerifiedPricingCoverage: null,
+    canonicalVerifiedLots: reconciledFifoAndPnl.matchedLots.filter((l) => l.evidenceQuality === 'verified').length,
+  }))
 
   // Deferred until after the mandatory synthetic-PnL summary above; these can be very large on
   // provider-only/heavy-wallet scans and must never be the first thing a truncated terminal keeps.

@@ -1,6 +1,9 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildScanDeterminismAudit, checkPricingDeterminismViolation, logPricingDeterminismViolationIfAny } from './scanDeterminismAudit'
+import {
+  buildScanDeterminismAudit, checkPricingDeterminismViolation, logPricingDeterminismViolationIfAny,
+  checkFinalPnlSnapshotDivergence, logFinalPnlSnapshotDivergenceIfAny, type FinalPnlSnapshotConsumers,
+} from './scanDeterminismAudit'
 import type { MatchedLot } from '../modules/fifoEngine/types'
 
 function lot(overrides: Partial<MatchedLot> = {}): MatchedLot {
@@ -124,6 +127,63 @@ describe('checkPricingDeterminismViolation / logPricingDeterminismViolationIfAny
     const calls: unknown[][] = []
     const logger = { error: (...args: unknown[]) => { calls.push(args) } }
     logPricingDeterminismViolationIfAny({ violation: false, matchedLotFingerprint: 'x', currentRealizedPnlFingerprint: 'y', previousRealizedPnlFingerprint: null }, logger)
+    assert.equal(calls.length, 0)
+  })
+})
+
+describe('checkFinalPnlSnapshotDivergence / logFinalPnlSnapshotDivergenceIfAny (requirement #4)', () => {
+  function consumers(overrides: Partial<FinalPnlSnapshotConsumers> = {}): FinalPnlSnapshotConsumers {
+    return {
+      publicGateVerifiedLots: 19, publicGatePricingCoverage: 0.7037,
+      ayriFullyPricedLots: 19, ayriVerifiedPricingCoverage: 0.7037,
+      smartMoneyVerifiedLots: null, smartMoneyVerifiedPricingCoverage: null,
+      canonicalVerifiedLots: 19,
+      ...overrides,
+    }
+  }
+
+  it('agreeing consumers -> never divergent', () => {
+    const check = checkFinalPnlSnapshotDivergence(consumers())
+    assert.equal(check.divergent, false)
+    assert.equal(check.verifiedLotCountsAgree, true)
+    assert.equal(check.pricingCoverageAgrees, true)
+  })
+
+  it('HARD ASSERTION: reproduces the exact confirmed production divergence — gate 19/70.37% vs AYRI 6/22.22% -> divergent', () => {
+    const check = checkFinalPnlSnapshotDivergence(consumers({ ayriFullyPricedLots: 6, ayriVerifiedPricingCoverage: 0.2222 }))
+    assert.equal(check.divergent, true)
+    assert.equal(check.verifiedLotCountsAgree, false)
+    assert.equal(check.pricingCoverageAgrees, false)
+  })
+
+  it('a null smart-money consumer is skipped, never treated as a fabricated agreement or mismatch', () => {
+    const check = checkFinalPnlSnapshotDivergence(consumers({ smartMoneyVerifiedLots: null, smartMoneyVerifiedPricingCoverage: null }))
+    assert.equal(check.divergent, false)
+  })
+
+  it('a real smart-money disagreement is also caught', () => {
+    const check = checkFinalPnlSnapshotDivergence(consumers({ smartMoneyVerifiedLots: 3, smartMoneyVerifiedPricingCoverage: 0.1 }))
+    assert.equal(check.divergent, true)
+  })
+
+  it('tiny floating-point coverage noise is never treated as a real divergence', () => {
+    const check = checkFinalPnlSnapshotDivergence(consumers({ ayriVerifiedPricingCoverage: 0.70370001 }))
+    assert.equal(check.pricingCoverageAgrees, true)
+    assert.equal(check.divergent, false)
+  })
+
+  it('HARD ASSERTION: a divergence logs CRITICAL final_pnl_snapshot_divergence via logger.error', () => {
+    const calls: unknown[][] = []
+    const logger = { error: (...args: unknown[]) => { calls.push(args) } }
+    logFinalPnlSnapshotDivergenceIfAny(checkFinalPnlSnapshotDivergence(consumers({ ayriFullyPricedLots: 6 })), logger)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0][0], 'CRITICAL final_pnl_snapshot_divergence')
+  })
+
+  it('no log call when consumers agree', () => {
+    const calls: unknown[][] = []
+    const logger = { error: (...args: unknown[]) => { calls.push(args) } }
+    logFinalPnlSnapshotDivergenceIfAny(checkFinalPnlSnapshotDivergence(consumers()), logger)
     assert.equal(calls.length, 0)
   })
 })

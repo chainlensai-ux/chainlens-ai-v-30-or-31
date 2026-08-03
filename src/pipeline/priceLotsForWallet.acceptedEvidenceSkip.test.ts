@@ -89,9 +89,17 @@ describe('priceLotsForWallet — accepted-evidence skip pass (pricing-cost-reduc
     const audit2 = result2.acceptedEvidenceSkipAudit
     assert.equal(audit2.pricingRequirementsRemovedByAcceptedEvidence, 2, 'both sides of the accepted lot must be removed from the requirement pool before scheduler construction')
     assert.equal(audit2.acceptedSidesEligibleToSkip, 2)
+    assert.ok(audit2.estimatedProviderCallsAvoided > 0)
     assert.ok(audit2.estimatedCreditsSaved > 0)
     assert.ok(audit2.estimatedCuSaved > 0)
     assert.ok(run2Calls < run1Calls, 'fewer total provider calls on the second run')
+
+    // HARD ASSERTION (requirement #1/#2 — the actual bug this task fixes): a skipped requirement's
+    // accepted price must be APPLIED to the exact matched-lot side, not merely removed from the
+    // pool — priceLotsForWallet's OWN returned priceUsdLookup must already reflect the canonical
+    // accepted prices (5 buy / 7 sell), never null, and never the counting fetcher's own value (1).
+    assert.equal(result2.priceUsdLookup(acceptedLot.buy), 5, 'the accepted entry price must be hydrated onto priceUsdLookup, not left null')
+    assert.equal(result2.priceUsdLookup(acceptedLot.sell), 7, 'the accepted exit price must be hydrated onto priceUsdLookup, not left null')
 
     // The still-unresolved lot's buy+sell must still be requested normally — never silently dropped.
     assert.ok(result2.historicalPricingAttempts.length + result2.historicalPricingFailures.length >= 0)
