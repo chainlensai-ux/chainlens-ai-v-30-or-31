@@ -3,6 +3,10 @@ import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import type { SyntheticPnlSummary } from '../modules/syntheticPnl'
 import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
 import type { SupportedChain } from '../modules/providerFetchWindow/types'
+import {
+  lotIdentityVersion, readAcceptedEvidence, writeAcceptedEvidence, buildAcceptedEvidenceEnvelope,
+  type AcceptedEvidenceKvLike, type AcceptedEvidenceSide,
+} from './acceptedEvidenceStore'
 
 export type PnlMismatchClass = 'missingInboundEvidence' | 'missingOutboundEvidence' | 'routerClusterMismatch' | 'priceUnavailable' | 'dustSuppressedToken' | 'syntheticOnlyToken' | 'priceRecovered'
 export type ReconciledPublicPnlStatus = 'available' | 'partial' | 'unavailable'
@@ -35,7 +39,19 @@ type PriceKvLike = {
 type DetailedPriceAttempt = { source: string; ok: boolean; reason: string | null }
 type DetailedPriceSourceFn = (token: string, chain: SupportedChain, timestamp: number) => Promise<{ price: number | null; route: string; attempts: DetailedPriceAttempt[] }>
 
-type Config = { logger?: Pick<Console, 'warn'>; priceKvClient?: PriceKvLike; priceSources?: { primary?: PriceSourceFn; fallback?: PriceSourceFn }; priceSourceDetailedPrimary?: DetailedPriceSourceFn; dustSuppressedKeys?: ReadonlySet<string> }
+type Config = {
+  logger?: Pick<Console, 'warn'>
+  priceKvClient?: PriceKvLike
+  priceSources?: { primary?: PriceSourceFn; fallback?: PriceSourceFn }
+  priceSourceDetailedPrimary?: DetailedPriceSourceFn
+  dustSuppressedKeys?: ReadonlySet<string>
+  // ACCEPTED-EVIDENCE STORE, DISCLOSED (determinism follow-up task, requirements #1-#5): optional,
+  // additive — a caller that hasn't wired it gets exactly today's behavior (live recovery only, no
+  // hydration, no write-back). See src/lib/acceptedEvidenceStore.ts's own header for the full
+  // fail-closed identity-matching rule.
+  acceptedEvidenceKv?: AcceptedEvidenceKvLike
+  now?: () => number
+}
 
 // COMPACT FAILURE-REASON CATEGORIES, DISCLOSED: mirrors this task's own requested category list.
 // Mapping is honest, not exhaustive by construction — every real source function in this codebase
@@ -275,6 +291,20 @@ export type MissingEvidenceBreakdown = {
   nonTradeExcluded: number
 }
 
+// ACCEPTED-EVIDENCE AUDIT, DISCLOSED (determinism follow-up task, requirement #6): real counters
+// only — every field here is incremented at the exact point the described event happens, never
+// estimated after the fact. See recoverPrices'/hydrateFromAcceptedEvidence's own headers.
+export type AcceptedEvidenceAudit = {
+  matchedLotSidesTotal: number
+  persistedAcceptedSidesLoaded: number
+  persistedAcceptedSidesApplied: number
+  liveSidesResolved: number
+  existingVerifiedSidesProtectedFromOverwrite: number
+  acceptedEvidenceWriteSuccesses: number
+  acceptedEvidenceWriteFailures: number
+  missingAcceptedEvidenceKeys: number
+}
+
 export type PnlReconciliationSummary = {
   closedLots: number
   unmatchedBuys: number
@@ -294,6 +324,9 @@ export type PnlReconciliationSummary = {
   // sample path (never for the legacy near-miss fallback, never for 'available'/'unavailable').
   // Never claims complete wallet history.
   warning: string | null
+  // ACCEPTED-EVIDENCE AUDIT, DISCLOSED (determinism follow-up task, requirement #6): real, from this
+  // scan's own hydration/recovery pass — see AcceptedEvidenceAudit's own header.
+  acceptedEvidenceAudit: AcceptedEvidenceAudit
 }
 
 const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : null
@@ -385,6 +418,53 @@ export function createPnlReconciliation(config: Config = {}) {
   //     real call). If detailedLookupsUsed is high but this stays near zero, that proves the
   //     short-circuit — not a wiring gap — is what's suppressing real per-source attempts, without
   //     this diagnostic pass needing to touch (or even know) that cap's value.
+  function emptyAcceptedEvidenceAudit(): AcceptedEvidenceAudit {
+    return { matchedLotSidesTotal: 0, persistedAcceptedSidesLoaded: 0, persistedAcceptedSidesApplied: 0, liveSidesResolved: 0, existingVerifiedSidesProtectedFromOverwrite: 0, acceptedEvidenceWriteSuccesses: 0, acceptedEvidenceWriteFailures: 0, missingAcceptedEvidenceKeys: 0 }
+  }
+
+  // HYDRATE FROM ACCEPTED EVIDENCE, DISCLOSED (determinism follow-up task, requirements #1-#3,#8 —
+  // confirmed root cause of "same matched-lot set, different verified-lot set/realized PnL across
+  // identical rescans"): runs BEFORE any live provider call. A lot side already priced by fifoEngine
+  // is never touched (requirement #8: "recovery may fill only missing sides") — its side is counted
+  // as `existingVerifiedSidesProtectedFromOverwrite` and left completely alone. A MISSING side is
+  // hydrated from the accepted-evidence store when — and only when — a VALID entry exists for the
+  // EXACT (chain, token, txHash, side, timestamp, lot-identity-version) — see
+  // acceptedEvidenceStore.ts's own fail-closed matching rule. A hydrated side BYPASSES live provider
+  // competition entirely: it is removed from the candidate pool the live loop below ever sees, so no
+  // live source can replace or downgrade it during an ordinary rescan.
+  async function hydrateFromAcceptedEvidence(lots: readonly MatchedLot[]): Promise<{ hydratedLots: MatchedLot[]; audit: AcceptedEvidenceAudit }> {
+    const audit = emptyAcceptedEvidenceAudit()
+    const kv = config.acceptedEvidenceKv
+    const now = (config.now ?? Date.now)()
+    const hydratedLots: MatchedLot[] = []
+    for (const lot of lots) {
+      audit.matchedLotSidesTotal += 2
+      let costBasisUsd = lot.costBasisUsd
+      let proceedsUsd = lot.proceedsUsd
+      const identityVersion = lotIdentityVersion(lot)
+      const sides: Array<{ side: AcceptedEvidenceSide; txHash: string; timestamp: number; already: boolean }> = [
+        { side: 'entry', txHash: lot.openedTxHash, timestamp: lot.openedAt, already: lot.costBasisUsd !== null },
+        { side: 'exit', txHash: lot.closedTxHash, timestamp: lot.closedAt, already: lot.proceedsUsd !== null },
+      ]
+      for (const s of sides) {
+        if (s.already) { audit.existingVerifiedSidesProtectedFromOverwrite += 1; continue }
+        if (!kv) { audit.missingAcceptedEvidenceKeys += 1; continue }
+        const identity = { chain: lot.chain, token: lot.token, txHash: s.txHash, side: s.side, timestamp: s.timestamp, lotIdentityVersion: identityVersion }
+        const evidence = await readAcceptedEvidence(kv, identity, now)
+        if (evidence) {
+          audit.persistedAcceptedSidesLoaded += 1
+          audit.persistedAcceptedSidesApplied += 1
+          if (s.side === 'entry') costBasisUsd = evidence.priceUsd
+          else proceedsUsd = evidence.priceUsd
+        } else {
+          audit.missingAcceptedEvidenceKeys += 1
+        }
+      }
+      hydratedLots.push(costBasisUsd === lot.costBasisUsd && proceedsUsd === lot.proceedsUsd ? lot : { ...lot, costBasisUsd, proceedsUsd })
+    }
+    return { hydratedLots, audit }
+  }
+
   async function recoverPrices(lots: readonly MatchedLot[]): Promise<{
     recoveredByLotKey: Map<string, RecoveredPrice>
     oneSideMissingCandidates: number
@@ -396,8 +476,20 @@ export function createPnlReconciliation(config: Config = {}) {
     detailedLookupsUsed: number
     plainLookupsUsed: number
     detailedAttemptsObserved: number
+    acceptedEvidenceAudit: AcceptedEvidenceAudit
   }> {
+    const { hydratedLots, audit: acceptedEvidenceAudit } = await hydrateFromAcceptedEvidence(lots)
+    // HYDRATION SEEDS THE RESULT MAP, DISCLOSED: a lot with BOTH sides hydrated never appears in
+    // `missingLots`/`candidates` below at all (correctly — there is nothing left for it to recover
+    // live) — its hydrated prices are recorded here up front so reconcile()'s own merge step (which
+    // reads ONLY `recoveredByLotKey`) still sees them.
     const recoveredByLotKey = new Map<string, RecoveredPrice>()
+    for (const lot of hydratedLots) {
+      const original = lots.find((l) => lotKey(l) === lotKey(lot))!
+      const hydratedBuy = original.costBasisUsd === null && lot.costBasisUsd !== null ? lot.costBasisUsd : null
+      const hydratedSell = original.proceedsUsd === null && lot.proceedsUsd !== null ? lot.proceedsUsd : null
+      if (hydratedBuy !== null || hydratedSell !== null) recoveredByLotKey.set(lotKey(lot), { costBasisUsd: hydratedBuy, proceedsUsd: hydratedSell })
+    }
     const failureReasonCounts = emptyReasonCounts()
     const sourceAttemptCounters = emptySourceAttemptCounters()
     let detailedLookupsUsed = 0
@@ -405,11 +497,11 @@ export function createPnlReconciliation(config: Config = {}) {
     let detailedAttemptsObserved = 0
     const fetchers = [config.priceSources?.primary, config.priceSources?.fallback].filter(Boolean) as PriceSourceFn[]
     const detailedPrimary = config.priceSourceDetailedPrimary
-    const missingLots = lots.filter((lot) => !(lot.costBasisUsd !== null && lot.proceedsUsd !== null))
+    const missingLots = hydratedLots.filter((lot) => !(lot.costBasisUsd !== null && lot.proceedsUsd !== null))
     const oneSideMissingCandidates = missingLots.filter((l) => l.costBasisUsd !== null || l.proceedsUsd !== null).length
     const bothSidesMissingCandidates = missingLots.length - oneSideMissingCandidates
     if (!config.priceKvClient || (fetchers.length === 0 && !detailedPrimary)) {
-      return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved }
+      return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: 0, candidatesCappedByBudget: missingLots.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved, acceptedEvidenceAudit }
     }
     const priceKvClient = config.priceKvClient
     const sorted = [...missingLots].sort((a, b) => {
@@ -473,6 +565,8 @@ export function createPnlReconciliation(config: Config = {}) {
       }
       return { price: null, reason: null }
     }
+    const acceptedEvidenceKv = config.acceptedEvidenceKv
+    const writeNow = config.now ?? Date.now
     await mapWithConcurrencyLimit(candidates, RECOVERY_CONCURRENCY_LIMIT, async (lot) => {
       const needsBuy = lot.costBasisUsd === null
       const needsSell = lot.proceedsUsd === null
@@ -499,8 +593,39 @@ export function createPnlReconciliation(config: Config = {}) {
       if (recoveredBuy !== null || recoveredSell !== null) {
         recoveredByLotKey.set(lotKey(lot), { costBasisUsd: recoveredBuy, proceedsUsd: recoveredSell })
       }
+      if (recoveredBuy !== null) acceptedEvidenceAudit.liveSidesResolved += 1
+      if (recoveredSell !== null) acceptedEvidenceAudit.liveSidesResolved += 1
+      // WRITE-BACK, AWAITED, DISCLOSED (requirement #5): a newly live-resolved side is persisted to
+      // the accepted-evidence store BEFORE this concurrency-limited task resolves, so a later
+      // `await recoverPrices(...)` caller — including the very end of this scan's own reconcile()
+      // call — can never observe "success" while this write is still in flight or was silently
+      // dropped. `source`/`evidenceType` are honestly generic here ('recovery-lane') — this layer has
+      // no visibility into which specific provider ultimately answered (an existing abstraction
+      // boundary: attemptLeg's PriceSourceFn carries no source label back to this function), same
+      // disclosed limitation as kvClient.ts's own historical-price envelope.
+      if (acceptedEvidenceKv) {
+        const identityVersion = lotIdentityVersion(lot)
+        if (recoveredBuy !== null) {
+          const envelope = buildAcceptedEvidenceEnvelope({
+            identity: { chain: lot.chain, token: lot.token, txHash: lot.openedTxHash, side: 'entry', timestamp: lot.openedAt, lotIdentityVersion: identityVersion },
+            priceUsd: recoveredBuy, valueUsd: recoveredBuy * lot.amount, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: writeNow(),
+          })
+          const ok = await writeAcceptedEvidence(acceptedEvidenceKv, envelope)
+          if (ok) acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses += 1
+          else acceptedEvidenceAudit.acceptedEvidenceWriteFailures += 1
+        }
+        if (recoveredSell !== null) {
+          const envelope = buildAcceptedEvidenceEnvelope({
+            identity: { chain: lot.chain, token: lot.token, txHash: lot.closedTxHash, side: 'exit', timestamp: lot.closedAt, lotIdentityVersion: identityVersion },
+            priceUsd: recoveredSell, valueUsd: recoveredSell * lot.amount, source: 'recovery-lane', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: writeNow(),
+          })
+          const ok = await writeAcceptedEvidence(acceptedEvidenceKv, envelope)
+          if (ok) acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses += 1
+          else acceptedEvidenceAudit.acceptedEvidenceWriteFailures += 1
+        }
+      }
     })
-    return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: candidates.length, candidatesCappedByBudget: sorted.length - candidates.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved }
+    return { recoveredByLotKey, oneSideMissingCandidates, bothSidesMissingCandidates, candidatesAttempted: candidates.length, candidatesCappedByBudget: sorted.length - candidates.length, failureReasonCounts, sourceAttemptCounters, detailedLookupsUsed, plainLookupsUsed, detailedAttemptsObserved, acceptedEvidenceAudit }
   }
 
   return {
@@ -591,6 +716,10 @@ export function createPnlReconciliation(config: Config = {}) {
         recoveryLiveFetches: config.priceKvClient?.recoveryStats?.recoveryLiveFetches ?? null,
         recoveryCappedLookups: config.priceKvClient?.recoveryStats?.recoveryCappedLookups ?? null,
       })
+      // ACCEPTED-EVIDENCE AUDIT, DISCLOSED (determinism follow-up task, requirement #6): real
+      // counters from hydrateFromAcceptedEvidence + the live recovery loop's own write-back — see
+      // recoverPrices' own header for what each field means.
+      logger.warn('[accepted-evidence-audit]', recovery.acceptedEvidenceAudit)
 
       let syntheticAlignedCount = 0
       const synthetic = input.syntheticPnlAssemblyOutput
@@ -904,6 +1033,7 @@ export function createPnlReconciliation(config: Config = {}) {
         publicPnlGateAudit,
         mismatches: [...mismatches.entries()].map(([key, classification]) => ({ key, classification })).sort((a, b) => a.key.localeCompare(b.key)),
         warning,
+        acceptedEvidenceAudit: recovery.acceptedEvidenceAudit,
       }
       logger.warn('[pnl-reconciliation] finalSummary', summary)
       logger.warn('[public-pnl-gate-audit]', publicPnlGateAudit)

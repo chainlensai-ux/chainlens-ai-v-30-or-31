@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildScanDeterminismAudit } from './scanDeterminismAudit'
+import { buildScanDeterminismAudit, checkPricingDeterminismViolation, logPricingDeterminismViolationIfAny } from './scanDeterminismAudit'
 import type { MatchedLot } from '../modules/fifoEngine/types'
 
 function lot(overrides: Partial<MatchedLot> = {}): MatchedLot {
@@ -79,5 +79,51 @@ describe('buildScanDeterminismAudit', () => {
     const audit = buildScanDeterminismAudit({ matchedLots: [], realizedPnlUsd: null, persistedEvidenceHits: 7, liveEvidenceMisses: 3 })
     assert.equal(audit.persistedEvidenceHits, 7)
     assert.equal(audit.liveEvidenceMisses, 3)
+  })
+})
+
+describe('checkPricingDeterminismViolation / logPricingDeterminismViolationIfAny (requirement #10)', () => {
+  it('no previous result -> never a violation', () => {
+    const check = checkPricingDeterminismViolation({ matchedLotFingerprint: 'a', realizedPnlFingerprint: 'b' }, null)
+    assert.equal(check.violation, false)
+  })
+
+  it('HARD ASSERTION: same matchedLotFingerprint but different realizedPnlFingerprint IS a violation', () => {
+    const check = checkPricingDeterminismViolation(
+      { matchedLotFingerprint: '7877dd6b', realizedPnlFingerprint: 'aaa' },
+      { matchedLotFingerprint: '7877dd6b', realizedPnlFingerprint: 'bbb' },
+    )
+    assert.equal(check.violation, true)
+  })
+
+  it('a genuinely different matchedLotFingerprint (real chain-data change) is never a violation, even with a different realizedPnlFingerprint', () => {
+    const check = checkPricingDeterminismViolation(
+      { matchedLotFingerprint: 'new-structure', realizedPnlFingerprint: 'aaa' },
+      { matchedLotFingerprint: 'old-structure', realizedPnlFingerprint: 'bbb' },
+    )
+    assert.equal(check.violation, false)
+  })
+
+  it('same matchedLotFingerprint AND same realizedPnlFingerprint is never a violation', () => {
+    const check = checkPricingDeterminismViolation(
+      { matchedLotFingerprint: '7877dd6b', realizedPnlFingerprint: 'aaa' },
+      { matchedLotFingerprint: '7877dd6b', realizedPnlFingerprint: 'aaa' },
+    )
+    assert.equal(check.violation, false)
+  })
+
+  it('HARD ASSERTION: a violation logs CRITICAL pricing_determinism_violation via logger.error, never .warn', () => {
+    const calls: unknown[][] = []
+    const logger = { error: (...args: unknown[]) => { calls.push(args) } }
+    logPricingDeterminismViolationIfAny({ violation: true, matchedLotFingerprint: '7877dd6b', currentRealizedPnlFingerprint: 'aaa', previousRealizedPnlFingerprint: 'bbb' }, logger)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0][0], 'CRITICAL pricing_determinism_violation')
+  })
+
+  it('no log call at all when there is no violation', () => {
+    const calls: unknown[][] = []
+    const logger = { error: (...args: unknown[]) => { calls.push(args) } }
+    logPricingDeterminismViolationIfAny({ violation: false, matchedLotFingerprint: 'x', currentRealizedPnlFingerprint: 'y', previousRealizedPnlFingerprint: null }, logger)
+    assert.equal(calls.length, 0)
   })
 })

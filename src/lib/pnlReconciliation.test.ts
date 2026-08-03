@@ -688,4 +688,137 @@ describe('pnlReconciliation', () => {
     assert.ok(summary.publicPnlGateAudit.boundedSampleBlockingReasons.some((r2) => r2.rule === 'fifo_result_hard_invalid'))
     assert.equal(summary.publicPnlStatus, 'unavailable')
   })
+
+  // ===============================================================================================
+  // ACCEPTED-EVIDENCE DETERMINISM — requirements #1-#9.
+  // ===============================================================================================
+
+  function fakeAcceptedEvidenceKv(): { get: (key: string) => Promise<unknown>; set: (key: string, value: unknown) => Promise<string>; store: Map<string, unknown> } {
+    const store = new Map<string, unknown>()
+    return {
+      store,
+      get: async (key: string) => (store.has(key) ? store.get(key) : null),
+      set: async (key: string, value: unknown) => { store.set(key, value); return 'OK' },
+    }
+  }
+
+  // 27 structural lots, same shape as production evidence — every lot on its own distinct token so
+  // no cross-lot interference, both sides genuinely missing (matching a fresh fifoEngine recompute
+  // every scan — fifoEngine itself never caches a price between scans).
+  function build27LotFixture(): MatchedLot[] {
+    return Array.from({ length: 27 }, (_, i) => lot({
+      lotId: `lot-${i}`, token: `0xtoken${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`,
+      openedAt: 1000 + i, closedAt: 2000 + i, amount: 1,
+      costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    }))
+  }
+
+  it('HARD ASSERTION (required regression #9): the same 27-lot fixture run twice under DIFFERENT simulated provider availability produces an identical verified set and realized PnL, zero overwrites, and fewer live calls on the second run', async () => {
+    const lots = build27LotFixture()
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const buyPriceFor = (i: number) => 10 + i
+    const sellPriceFor = (i: number) => 20 + i
+
+    // RUN 1: every provider call succeeds with the canonical price.
+    let liveCallsRun1 = 0
+    const priceKvClient1 = {
+      getPriceRecovery: async (token: string, chain: string, timestamp: number, fetcher: (t: string, c: string, ts: number) => Promise<number | null>) => fetcher(token, chain, timestamp),
+    }
+    const run1Fetcher = async (token: string, _chain: string, timestamp: number): Promise<number | null> => {
+      liveCallsRun1 += 1
+      const i = Number(token.replace('0xtoken', ''))
+      return timestamp === 1000 + i ? buyPriceFor(i) : sellPriceFor(i)
+    }
+
+    const r1 = createPnlReconciliation({
+      logger: quiet, priceKvClient: priceKvClient1 as never, priceSources: { primary: run1Fetcher },
+      acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 1_000_000,
+    })
+    const summary1 = await r1.reconcile({
+      fifoEngineResult: fifo({ matchedLots: lots }), pnlEngineResult: pnl(27), syntheticPnlAssemblyOutput: null,
+    })
+
+    assert.equal(summary1.publicPnlGateAudit.verifiedClosedLots, 27, 'every lot must resolve on the first, fully-available run')
+    assert.ok(liveCallsRun1 > 0)
+    assert.equal(summary1.acceptedEvidenceAudit.acceptedEvidenceWriteFailures, 0)
+    assert.equal(summary1.acceptedEvidenceAudit.acceptedEvidenceWriteSuccesses, 54, 'every one of the 27 lots’ 2 sides must be written back')
+
+    // RUN 2: a FRESH fifoEngine recompute (same 27 lots, both sides genuinely null again — the real
+    // production shape) with a DELIBERATELY WRONG fetcher that, if ever called, proves the accepted
+    // evidence store failed to bypass live competition. Some "providers" (represented here as the
+    // same fetcher) would return null/a different price — this must never matter because it must
+    // never be reached at all.
+    const lots2 = build27LotFixture()
+    let liveCallsRun2 = 0
+    const priceKvClient2 = {
+      getPriceRecovery: async (token: string, chain: string, timestamp: number, fetcher: (t: string, c: string, ts: number) => Promise<number | null>) => fetcher(token, chain, timestamp),
+    }
+    const run2Fetcher = async (token: string, _chain: string, timestamp: number): Promise<number | null> => {
+      liveCallsRun2 += 1
+      const i = Number(token.replace('0xtoken', ''))
+      // Deliberately WRONG values — a canary: if this is ever invoked for a lot the accepted-evidence
+      // store already covers, the resulting mismatched realizedPnlUsd will fail the assertions below.
+      return timestamp === 1000 + i ? buyPriceFor(i) + 1000 : null
+    }
+    const r2 = createPnlReconciliation({
+      logger: quiet, priceKvClient: priceKvClient2 as never, priceSources: { primary: run2Fetcher },
+      acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 2_000_000,
+    })
+    const summary2 = await r2.reconcile({
+      fifoEngineResult: fifo({ matchedLots: lots2 }), pnlEngineResult: pnl(27), syntheticPnlAssemblyOutput: null,
+    })
+
+    assert.equal(summary2.publicPnlGateAudit.verifiedClosedLots, 27)
+    assert.equal(summary2.realizedPnlUsd, summary1.realizedPnlUsd, 'identical realizedPnlUsd across rescans — the actual determinism requirement')
+    assert.equal(liveCallsRun2, 0, 'the second run must make ZERO live calls — every side was already accepted')
+    assert.ok(liveCallsRun2 < liveCallsRun1, 'fewer (here: zero) live calls on the second run')
+    assert.equal(summary2.acceptedEvidenceAudit.persistedAcceptedSidesApplied, 54, 'all 54 sides hydrated from the accepted-evidence store')
+    assert.equal(summary2.acceptedEvidenceAudit.liveSidesResolved, 0)
+    assert.equal(summary2.acceptedEvidenceAudit.existingVerifiedSidesProtectedFromOverwrite, 0, 'lots2 start unpriced — nothing to protect, everything came from hydration instead')
+  })
+
+  it('HARD ASSERTION: a side fifoEngine already priced is NEVER touched by hydration or live recovery, even if the accepted-evidence store holds a different value for it', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const alreadyPriced = lot({ lotId: 'already', token: '0xalready', openedTxHash: '0xb', closedTxHash: '0xs', openedAt: 1, closedAt: 2, costBasisUsd: 5, proceedsUsd: 7, realizedPnlUsd: 2, evidenceQuality: 'verified' })
+    // Seed a DIFFERENT accepted price for the same identity — must never be applied.
+    const identityVersion = ['base', '0xalready', '0xb', '0xs', 1, 2, 1].join(':')
+    acceptedEvidenceKv.store.set(`v1:accepted-evidence:base:0xalready:0xb:entry:1`, {
+      schemaVersion: 1, chain: 'base', token: '0xalready', txHash: '0xb', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion,
+      priceUsd: 999, valueUsd: 999, source: 's', evidenceType: 't', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: 100_000_000_000,
+    })
+    let liveCalls = 0
+    const priceKvClient = { getPriceRecovery: async (t: string, c: string, ts: number, fetcher: (t: string, c: string, ts: number) => Promise<number | null>) => { liveCalls += 1; return fetcher(t, c, ts) } }
+    const r = createPnlReconciliation({ logger: quiet, priceKvClient: priceKvClient as never, priceSources: { primary: async () => 1 }, acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 50 })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [alreadyPriced] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    assert.equal(summary.realizedPnlUsd, 2, 'the pre-existing verified price (7-5=2) must be completely unchanged')
+    assert.equal(liveCalls, 0)
+    assert.equal(summary.acceptedEvidenceAudit.existingVerifiedSidesProtectedFromOverwrite, 2)
+  })
+
+  it('HARD ASSERTION: corrupt/mismatched persisted evidence (wrong lot-identity-version) is ignored and falls through to live recovery, never coerced into a price', async () => {
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    acceptedEvidenceKv.store.set('v1:accepted-evidence:base:0xmismatch:0xb:entry:1', {
+      schemaVersion: 1, chain: 'base', token: '0xmismatch', txHash: '0xb', side: 'entry', timestamp: 1, lotIdentityVersion: 'wrong-version',
+      priceUsd: 999, valueUsd: 999, source: 's', evidenceType: 't', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: 100_000_000_000,
+    })
+    const missingLot = lot({ lotId: 'm', token: '0xmismatch', openedTxHash: '0xb', closedTxHash: '0xs', openedAt: 1, closedAt: 2, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    let liveCalls = 0
+    const priceKvClient = { getPriceRecovery: async (t: string, c: string, ts: number, fetcher: (t: string, c: string, ts: number) => Promise<number | null>) => { liveCalls += 1; return fetcher(t, c, ts) } }
+    const r = createPnlReconciliation({ logger: quiet, priceKvClient: priceKvClient as never, priceSources: { primary: async () => 3 }, acceptedEvidenceKv: acceptedEvidenceKv as never, now: () => 50 })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [missingLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    assert.ok(liveCalls > 0, 'a mismatched entry must never be trusted — live recovery must still run')
+    assert.equal(summary.realizedPnlUsd, 0, '3 (live) - 3 (live) = 0, never the corrupt 999 value')
+  })
+
+  it('a KV outage during hydration fails open — recovery still runs live, never throws', async () => {
+    const brokenKv = { get: async () => { throw new Error('down') }, set: async () => { throw new Error('down') } }
+    const missingLot = lot({ lotId: 'm', token: '0xoutage', openedTxHash: '0xb', closedTxHash: '0xs', openedAt: 1, closedAt: 2, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const priceKvClient = { getPriceRecovery: async (t: string, c: string, ts: number, fetcher: (t: string, c: string, ts: number) => Promise<number | null>) => fetcher(t, c, ts) }
+    const r = createPnlReconciliation({ logger: quiet, priceKvClient: priceKvClient as never, priceSources: { primary: async () => 4 }, acceptedEvidenceKv: brokenKv as never, now: () => 50 })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [missingLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+    assert.equal(summary.realizedPnlUsd, 0)
+    assert.equal(summary.acceptedEvidenceAudit.acceptedEvidenceWriteFailures, 2)
+  })
 })

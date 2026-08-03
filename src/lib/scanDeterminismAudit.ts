@@ -94,3 +94,53 @@ export function buildScanDeterminismAudit(params: {
     deterministicComparedToPreviousScan,
   }
 }
+
+// PRODUCTION SAFETY WARNING, DISCLOSED (determinism follow-up task, requirement #10): the specific,
+// narrower violation this task's own production evidence proved — the matched-lot STRUCTURE is
+// unchanged (same matchedLotFingerprint) but the realized PnL figure differs from a previously
+// persisted result. This is distinct from `deterministicComparedToPreviousScan` above (which flags
+// ANY difference, including a legitimate one from newly-scanned chain activity) — a violation here
+// specifically means the FIFO input didn't change but the accepted PRICING evidence did, which
+// should now be structurally impossible once accepted evidence is honored (see
+// pnlReconciliation.ts's hydrateFromAcceptedEvidence). Pure — returns a real, typed result; logging
+// is the caller's responsibility (see `logPricingDeterminismViolationIfAny` below), keeping this
+// function itself I/O-free and directly testable.
+export type PricingDeterminismViolationCheck = {
+  violation: boolean
+  matchedLotFingerprint: string
+  currentRealizedPnlFingerprint: string
+  previousRealizedPnlFingerprint: string | null
+}
+
+export function checkPricingDeterminismViolation(
+  current: Pick<ScanDeterminismAudit, 'matchedLotFingerprint' | 'realizedPnlFingerprint'>,
+  previous: { matchedLotFingerprint: string; realizedPnlFingerprint: string } | null | undefined,
+): PricingDeterminismViolationCheck {
+  if (!previous) {
+    return { violation: false, matchedLotFingerprint: current.matchedLotFingerprint, currentRealizedPnlFingerprint: current.realizedPnlFingerprint, previousRealizedPnlFingerprint: null }
+  }
+  const sameStructure = current.matchedLotFingerprint === previous.matchedLotFingerprint
+  const violation = sameStructure && current.realizedPnlFingerprint !== previous.realizedPnlFingerprint
+  return {
+    violation,
+    matchedLotFingerprint: current.matchedLotFingerprint,
+    currentRealizedPnlFingerprint: current.realizedPnlFingerprint,
+    previousRealizedPnlFingerprint: previous.realizedPnlFingerprint,
+  }
+}
+
+// LOGGING WRAPPER, DISCLOSED: the ONLY function in this module that performs I/O — a thin,
+// separately-testable (via an injectable logger) wrapper so `checkPricingDeterminismViolation`
+// itself stays pure. `logger.error`, not `.warn` — this is the explicit CRITICAL severity requirement
+// #10 asks for, distinct from every other `logger.warn` diagnostic in this codebase's pricing path.
+export function logPricingDeterminismViolationIfAny(
+  check: PricingDeterminismViolationCheck,
+  logger: Pick<Console, 'error'> = console,
+): void {
+  if (!check.violation) return
+  logger.error('CRITICAL pricing_determinism_violation', {
+    matchedLotFingerprint: check.matchedLotFingerprint,
+    currentRealizedPnlFingerprint: check.currentRealizedPnlFingerprint,
+    previousRealizedPnlFingerprint: check.previousRealizedPnlFingerprint,
+  })
+}

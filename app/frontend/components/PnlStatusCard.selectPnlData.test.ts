@@ -45,6 +45,11 @@ function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}
     },
     mismatches: [],
     warning: 'Verified 90-day sample, not complete wallet history',
+    acceptedEvidenceAudit: {
+      matchedLotSidesTotal: 54, persistedAcceptedSidesLoaded: 0, persistedAcceptedSidesApplied: 0,
+      liveSidesResolved: 0, existingVerifiedSidesProtectedFromOverwrite: 38,
+      acceptedEvidenceWriteSuccesses: 0, acceptedEvidenceWriteFailures: 0, missingAcceptedEvidenceKeys: 16,
+    },
     ...overrides,
   }
 }

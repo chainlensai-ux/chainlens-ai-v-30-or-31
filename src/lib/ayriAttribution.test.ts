@@ -30,6 +30,11 @@ function reconciled(overrides: Partial<PnlReconciliationSummary> = {}): PnlRecon
     },
     mismatches: [],
     warning: null,
+    acceptedEvidenceAudit: {
+      matchedLotSidesTotal: 2, persistedAcceptedSidesLoaded: 0, persistedAcceptedSidesApplied: 0,
+      liveSidesResolved: 0, existingVerifiedSidesProtectedFromOverwrite: 2,
+      acceptedEvidenceWriteSuccesses: 0, acceptedEvidenceWriteFailures: 0, missingAcceptedEvidenceKeys: 0,
+    },
     ...overrides,
   }
 }
