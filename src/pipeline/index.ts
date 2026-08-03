@@ -2630,6 +2630,19 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     previousPnL: undefined,
     currentPnL: reconciledPnlSummary.realizedPnlUsd,
     excludedTokens,
+    // TRUTHFULNESS-FIX WIRING, DISCLOSED (confirmed bug #2 — production: providerErrors: 2, partial
+    // provider status on both chains, 0 closed lots, publicPnlStatus unavailable, Alchemy
+    // transaction history missing; old output claimed FULL evidence / 100% confidence / FULL scan
+    // depth). All three map onto real, already-computed signals — no new provider calls, no change
+    // to FIFO/pricing/the public PnL gate itself, only to what this UI-messaging module is told
+    // about outcomes those systems already produced.
+    publicPnlStatus: reconciledPnlSummary.publicPnlStatus === 'available'
+      ? 'ok' as const
+      : reconciledPnlSummary.publicPnlStatus === 'partial'
+        ? 'limited_verified_sample' as const
+        : 'unavailable' as const,
+    rateLimitDetected: slowProviderSignals.rateLimitDetected,
+    transactionHistoryPartial: providerDiagnostics.some((d) => d.providerStatus === 'partial' || d.providerStatus === 'provider_unavailable'),
   }
   const finalReportAssembler = createFinalReportAssembler()
   const finalReport = finalReportAssembler.assemble({

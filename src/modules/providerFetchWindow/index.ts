@@ -272,18 +272,41 @@ function logAlchemyHistoryIngestionAudit(
   finalStatus: ProviderFetchWindowResult['providerStatus'],
 ): void {
   const d = alchemyResult.diagnostics ?? { liveCalls: 0, budgetRefusals: 0, malformedResponses: 0, nullResponses: 0 }
+  // OBSERVABILITY-TRUTHFULNESS FIX, DISCLOSED (this task — confirmed bug #1): with 2 real Base
+  // calls both returning HTTP 429, the OLD `pagesSucceeded` formula (`liveCalls - malformedResponses
+  // - nullResponses`) reported 2 (since a 429 counts toward NEITHER malformedResponses NOR
+  // nullResponses after the prior task's fixes) — a genuine "0 events, 0 successes" outcome was
+  // logged as "2 pages succeeded." `http429Errors` (from `diagnostics.http429Count`, added by the
+  // circuit-breaker task) is now subtracted too, so a call is only ever counted as "succeeded" when
+  // it actually was — never when it was rate-limited.
+  const http429Errors = d.http429Count ?? 0
+  const preventedCalls = d.circuitPrevented ?? 0
+  const pagesSucceeded = Math.max(0, d.liveCalls - d.malformedResponses - d.nullResponses - http429Errors)
+  // CIRCUIT-PREVENTED CALLS NEVER INFLATE liveCalls/pagesRequested, DISCLOSED (requirement):
+  // `d.liveCalls` (from fetchAlchemyRawEvents) already excludes circuit-prevented calls by
+  // construction — the circuit-breaker gate in utils.ts returns before `liveCalls += 1` ever runs.
+  // `preventedCalls` (below) is its own distinct field, never folded into `pagesRequested`/`liveCalls`.
+  const finalStatusRefined = preventedCalls > 0
+    ? 'circuit_open'
+    : http429Errors > 0
+      ? 'rate_limited'
+      : finalStatus === 'ok'
+        ? 'ok'
+        : 'partial'
   // eslint-disable-next-line no-console
   console.warn('[alchemy-history-ingestion-audit]', {
     chain,
     pagesRequested: 2, // one bounded from+to page each — see this module's own "never deep-page" rule
-    pagesSucceeded: d.liveCalls - d.malformedResponses - d.nullResponses,
+    pagesSucceeded,
     pageKeysSeen: 0, // this module never follows a pageKey — see fetchAlchemyRawEvents' own header
     liveCalls: d.liveCalls,
+    preventedCalls,
     settledReuseHits: entry.settledSuccessReuseHits + entry.settledFailureReuseHits,
     singleflightHits: entry.pendingCoalescedHits,
     budgetRefusals: d.budgetRefusals,
     malformedResponses: d.malformedResponses,
     nullResponses: d.nullResponses,
+    http429Errors,
     // ADDITIVE, DISCLOSED (malformed_response regression task): breakdown of what previously
     // collapsed into malformedResponses above — undefined-safe since older diagnostics objects
     // (pre-fix, or any future caller that doesn't populate them) simply omit these fields.
@@ -294,7 +317,7 @@ function logAlchemyHistoryIngestionAudit(
     invalidTransfersShape: d.invalidTransfersShape ?? 0,
     usableEventCount,
     estimatedCu: d.liveCalls * estimatedCuForMethod('alchemy_getAssetTransfers'),
-    finalStatus,
+    finalStatus: finalStatusRefined,
   })
 }
 

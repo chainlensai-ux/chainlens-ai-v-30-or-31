@@ -47,6 +47,18 @@ export type WalletConditionInput = {
   // dust-suppression mechanism tracks (chain, token) KEYS, not human-readable symbols). Section 9 is
   // hidden when omitted or empty, never populated with a placeholder.
   excludedTokens?: string[]
+  // TRUTHFULNESS-FIX INPUTS, DISCLOSED (observability/public-evidence-truthfulness task — confirmed
+  // bug #2): without these three signals, this module previously had no way to know that a scan's
+  // "0 closed lots / 0 total sells" could mean "genuinely no sells ever" OR "Alchemy transaction
+  // history was rate-limited/missing, so we don't actually know how many sells there were" — the two
+  // are indistinguishable from closedLots/totalSells alone, and the old code silently treated both as
+  // the former (reporting FULL evidence, 100% confidence). All three are optional and default to the
+  // "no known issue" value so a caller that hasn't wired them yet gets identical behavior to before —
+  // except for the zero-evaluated-lots rule below, which is a real, previously-proven bug fix that
+  // applies unconditionally (see closedLots===0 handling), not gated on these optional inputs.
+  publicPnlStatus?: 'ok' | 'limited_verified_sample' | 'unavailable'
+  rateLimitDetected?: boolean
+  transactionHistoryPartial?: boolean
 }
 
 export type WalletConditionSection = { id: string; text: string }
@@ -73,11 +85,42 @@ function computeHealthScore(input: WalletConditionInput): { score: number; descr
   return { score, description }
 }
 
+// EVIDENCE-QUALITY TRUTH RULES, DISCLOSED (confirmed bug #2 — production: providerErrors: 2,
+// partial provider status on both chains, 0 closed lots, publicPnlStatus unavailable, Alchemy
+// transaction history missing; old output: FULL evidence / 100% confidence / FULL scan depth):
+//   - zeroEvaluated: closedLots === 0. Previously, when totalSells was ALSO 0 (exactly the case
+//     when transaction history never arrived), `closedLots < totalSells` was false, so section 3/10
+//     took their "complete" branch and section 8's confidence formula fell back to a hardcoded 100 —
+//     a scan that evaluated ZERO lots was reported as 100% confident. This can never be correct:
+//     zero evaluated lots means zero evidence, never full confidence in it.
+//   - coverageIssue: any of providerErrors > 0, rateLimitDetected, transactionHistoryPartial, or
+//     publicPnlStatus === 'unavailable' — a real, independent reason the underlying data itself may
+//     be incomplete, distinct from "some priced sells lacked evidence" (which closedLots < totalSells
+//     already covers). A wallet can have closedLots === totalSells (every sell we KNOW ABOUT got
+//     priced) while still not knowing about every real sell, if the provider fetch itself was
+//     rate-limited/partial — that must never read as FULL.
+function deriveEvidenceQuality(input: WalletConditionInput): {
+  zeroEvaluated: boolean
+  incompletePricing: boolean
+  coverageIssue: boolean
+  isFull: boolean
+} {
+  const zeroEvaluated = input.closedLots === 0
+  const incompletePricing = input.closedLots < input.totalSells
+  const coverageIssue = input.providerErrors > 0
+    || input.rateLimitDetected === true
+    || input.transactionHistoryPartial === true
+    || input.publicPnlStatus === 'unavailable'
+  const isFull = !zeroEvaluated && !incompletePricing && !coverageIssue
+  return { zeroEvaluated, incompletePricing, coverageIssue, isFull }
+}
+
 // PURE — builds only the sections this wallet's real data actually triggers, in the task's own
 // numbered order. Never throws: every division is guarded, every optional field defaults to a
 // value that hides its dependent section rather than fabricating one.
 export function buildWalletConditionMessages(input: WalletConditionInput): WalletConditionSection[] {
   const sections: WalletConditionSection[] = []
+  const evidence = deriveEvidenceQuality(input)
 
   // 1. WALLET HEALTH SCORE
   if (input.tokenCount > 50 || input.deadTokens > 0 || input.unindexedTokens > 0) {
@@ -96,14 +139,21 @@ export function buildWalletConditionMessages(input: WalletConditionInput): Walle
     sections.push({ id: 'walletIssuesDetected', text: issueLines.join(' ') })
   }
 
-  // 3. PNL EVIDENCE LEVEL
-  if (input.closedLots < input.totalSells) {
+  // 3. PNL EVIDENCE LEVEL — truth rules, DISCLOSED: FULL requires zero coverage issues AND at
+  // least one evaluated lot; zero evaluated lots is always "Insufficient evidence" (never FULL,
+  // never a bare "LIMITED — 0 of 0" that reads as vacuously complete).
+  if (evidence.isFull) {
+    sections.push({ id: 'pnlEvidenceLevel', text: 'PnL Evidence Level: FULL — All priced sells had complete on-chain evidence.' })
+  } else if (evidence.zeroEvaluated) {
     sections.push({
       id: 'pnlEvidenceLevel',
-      text: `PnL Evidence Level: LIMITED — ${input.closedLots} of ${input.totalSells} sells had verifiable pricing.`,
+      text: `PnL Evidence Level: Insufficient evidence — 0 of ${input.totalSells} sells had verifiable pricing.`,
     })
   } else {
-    sections.push({ id: 'pnlEvidenceLevel', text: 'PnL Evidence Level: FULL — All priced sells had complete on-chain evidence.' })
+    sections.push({
+      id: 'pnlEvidenceLevel',
+      text: `PnL Evidence Level: Limited coverage — ${input.closedLots} of ${input.totalSells} sells had verifiable pricing.`,
+    })
   }
 
   // 4. EVIDENCE GAPS (CAUSE-AWARE) — each line only appears when its own real signal is present;
@@ -157,11 +207,18 @@ export function buildWalletConditionMessages(input: WalletConditionInput): Walle
       : 'Risk Posture: MODERATE.',
   })
 
-  // 8. PNL CONFIDENCE SCORE — guarded against divide-by-zero. totalSells === 0 reports 100%,
-  // consistent with section 3/10's own FULL determination for the same edge case (closedLots <
-  // totalSells is false when there are no sells at all — vacuously "complete", not "confident about
-  // nothing").
-  const confidence = input.totalSells > 0 ? round((input.closedLots / input.totalSells) * 100) : 100
+  // 8. PNL CONFIDENCE SCORE — truth rules, DISCLOSED (confirmed bug #2): zero evaluated lots is
+  // ALWAYS 0% confidence, never the old vacuous-100% fallback for totalSells === 0 (that fallback is
+  // exactly what let a rate-limited scan with zero real data report "100% confident"). A genuine
+  // coverage issue (provider errors, rate limiting, partial transaction history, or publicPnlStatus
+  // unavailable) caps confidence below the "high confidence" range even when every KNOWN sell got
+  // priced — a 100% closedLots/totalSells ratio does not mean the wallet's true sell set is complete.
+  let confidence = evidence.zeroEvaluated
+    ? 0
+    : input.totalSells > 0
+      ? round((input.closedLots / input.totalSells) * 100)
+      : 0
+  if (evidence.coverageIssue) confidence = Math.min(confidence, 79)
   sections.push({ id: 'pnlConfidenceScore', text: `PnL Confidence: ${confidence}% — Based on available pricing evidence.` })
 
   // 9. TOKENS EXCLUDED FROM PNL
@@ -169,13 +226,16 @@ export function buildWalletConditionMessages(input: WalletConditionInput): Walle
     sections.push({ id: 'tokensExcludedFromPnl', text: `Excluded from PnL: ${input.excludedTokens.join(', ')} — Missing pricing evidence.` })
   }
 
-  // 10. SCAN DEPTH INDICATOR
-  sections.push({
-    id: 'scanDepthIndicator',
-    text: input.closedLots < input.totalSells
-      ? `Scan Depth: LIMITED — Only ${input.closedLots} priced sells reconstructed.`
-      : 'Scan Depth: FULL.',
-  })
+  // 10. SCAN DEPTH INDICATOR — same truth rules as section 3: partial transaction history or any
+  // other coverage issue can never read as FULL, and zero evaluated lots gets its own distinct
+  // "Insufficient evidence" wording rather than being folded into the generic "Limited coverage" one.
+  if (evidence.isFull) {
+    sections.push({ id: 'scanDepthIndicator', text: 'Scan Depth: FULL.' })
+  } else if (evidence.zeroEvaluated) {
+    sections.push({ id: 'scanDepthIndicator', text: 'Scan Depth: Insufficient evidence — 0 priced sells reconstructed.' })
+  } else {
+    sections.push({ id: 'scanDepthIndicator', text: `Scan Depth: Limited coverage — Only ${input.closedLots} priced sells reconstructed.` })
+  }
 
   return sections
 }
