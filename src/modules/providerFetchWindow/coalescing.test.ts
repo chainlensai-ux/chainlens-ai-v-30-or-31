@@ -30,13 +30,22 @@ afterEach(() => {
 // Counts real fetch() invocations and, when `delayMs`/`fail` are given, simulates a slow or
 // permanently-failing provider — long enough that several concurrent callers overlap in real time,
 // exactly the production scenario (a 12s provider timeout) this fix targets.
+// URL-AWARE SUCCESS SHAPE, DISCLOSED (Alchemy-history-ingestion-regression task): goldrush
+// (covalenthq.com) and alchemy (g.alchemy.com) expect genuinely different real response shapes — a
+// one-size `{data:{items:[]}}` body makes Alchemy's own `rpc()` helper see no `.result` field and
+// honestly report a miss (previously masked by the old "any partial result is a permanent success"
+// coalescing behavior this task reverses — see coalescingAudit.test.ts's own file header). Matches
+// the same fix already applied in coalescingAudit.test.ts's mockFetch.
 function mockFetch(opts: { delayMs?: number; fail?: boolean } = {}): { getCallCount: () => number } {
   let callCount = 0
-  global.fetch = (async () => {
+  global.fetch = (async (url: string) => {
     callCount += 1
     if (opts.delayMs) await new Promise((resolve) => setTimeout(resolve, opts.delayMs))
     if (opts.fail) throw new Error('simulated provider timeout')
-    return new Response(JSON.stringify({ data: { items: [] } }), { status: 200 })
+    const body = typeof url === 'string' && url.includes('g.alchemy.com')
+      ? { result: { transfers: [] } }
+      : { data: { items: [] } }
+    return new Response(JSON.stringify(body), { status: 200 })
   }) as unknown as typeof fetch
   return { getCallCount: () => callCount }
 }
@@ -59,7 +68,12 @@ describe('fetchProviderWindow — request-scoped promise coalescing', () => {
     }
   })
 
-  it('a timeout/failure result is reused for the rest of the request — a later caller does not retry live', async () => {
+  it('a transient timeout/failure result is NEVER permanently cached — a later caller gets its own fresh attempt (Alchemy-history-ingestion-regression task)', async () => {
+    // BEHAVIOR REVISED, DISCLOSED: see coalescingAudit.test.ts's own file header for the full
+    // production root-cause trace this reverses. A transient failure (this generic thrown-and-
+    // caught error) is evicted from the coalescing map the instant it settles, so a later,
+    // non-concurrent caller gets a genuinely fresh live attempt instead of being permanently stuck
+    // with one unlucky throttle/outage for the rest of the job.
     const { getCallCount } = mockFetch({ fail: true })
 
     const first = await fetchProviderWindow('base', '0xwallet', 90)
@@ -68,10 +82,10 @@ describe('fetchProviderWindow — request-scoped promise coalescing', () => {
     assert.equal(callsAfterFirst, 3) // goldrush (1) + alchemy (2-batch), all failed
 
     // A SECOND, LATER caller for the same key (simulating the V2 engine chain reading after the old
-    // pipeline already failed) must reuse the same failure result, not fire new live calls.
+    // pipeline already failed) gets its own fresh live attempt.
     const second = await fetchProviderWindow('base', '0xwallet', 90)
     assert.equal(second.providerStatus, 'provider_unavailable')
-    assert.equal(getCallCount(), callsAfterFirst, 'a later caller must NOT trigger a fresh live fetch after a failure — it must reuse the request-scoped result')
+    assert.ok(getCallCount() > callsAfterFirst, 'a later caller must get a genuinely fresh live attempt after a transient failure, never reuse a permanently-cached one')
   })
 
   it('a different chain for the same wallet remains independent — its own live fetch still happens', async () => {

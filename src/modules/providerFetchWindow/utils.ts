@@ -344,11 +344,30 @@ export async function fetchAlchemyRawEvents(
   if (!apiKey) {
     return { provider: 'alchemy', ok: false, events: [], errorReason: 'no_api_key_configured' }
   }
+  // TYPED PER-CALL OUTCOME, DISCLOSED (Alchemy-history-ingestion-regression task — root cause
+  // confirmed): a budget refusal (tryConsume returning false) previously produced the exact same
+  // `null` as a genuine malformed/HTTP-failure/empty response, so the aggregate check below
+  // (`!fromResult && !toResult`) collapsed EVERY one of those distinct causes into the single
+  // generic reason 'no_usable_response' — a self-imposed throttle indistinguishable, to every
+  // caller, from "Alchemy genuinely has no data for this wallet". GoldRush's own sibling function
+  // (fetchGoldrushRawEvents, above) already reports 'provider_budget_exhausted' distinctly; this
+  // brings Alchemy to parity. Each sub-call now returns its own kind, and the diagnostics below
+  // (liveCalls/budgetRefusals/malformedResponses/nullResponses) are real counts, never estimates —
+  // this is what makes [alchemy-history-ingestion-audit] reconcile exactly against what actually
+  // happened for this (chain, wallet) fetch.
+  let liveCalls = 0
+  let budgetRefusals = 0
+  let malformedResponses = 0
+  let nullResponses = 0
   const rpc = async (params: Record<string, unknown>): Promise<Record<string, unknown> | null> => {
+    // BUDGET GATE, DISCLOSED: checked BEFORE the real call, exactly as before — the fix here is
+    // classification, never a change to when/whether a call is actually attempted.
+    if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'transaction_history' })) {
+      budgetRefusals += 1
+      return null
+    }
+    liveCalls += 1
     try {
-      // SHARED LEDGER, DISCLOSED (cost-audit task): same reasoning as the GoldRush history fetch
-      // above — the scan's structural per-chain Alchemy history pull, counted once per real call.
-      if (!tryConsume({ provider: 'alchemy', endpoint: 'alchemy_getAssetTransfers', chain, stage: 'transaction_history' })) return null
       logRpcCall({ route: 'providerFetchWindow', chain, method: 'alchemy_getAssetTransfers' })
       auditRPC('alchemy_getAssetTransfers', params)
       const res = await fetch(url, {
@@ -358,10 +377,24 @@ export async function fetchAlchemyRawEvents(
         body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'alchemy_getAssetTransfers', params: [params] }),
         signal: AbortSignal.timeout(12_000),
       })
-      if (!res.ok) return null
+      if (!res.ok) {
+        malformedResponses += 1
+        return null
+      }
       const json = await res.json()
-      return (json?.result as Record<string, unknown>) ?? null
+      const result = (json?.result as Record<string, unknown>) ?? null
+      // A well-formed HTTP 200 whose body genuinely has no `result` (or a `result` missing the
+      // `transfers` array entirely — as opposed to a real, empty `transfers: []`, which IS a valid
+      // "no transfers" answer and is NOT counted as malformed) is a shape Alchemy should never
+      // actually send for this method — tracked distinctly from a real null/timeout.
+      if (result !== null && !Array.isArray(result.transfers)) {
+        malformedResponses += 1
+        return null
+      }
+      if (result === null) nullResponses += 1
+      return result
     } catch {
+      nullResponses += 1
       return null
     }
   }
@@ -370,8 +403,17 @@ export async function fetchAlchemyRawEvents(
       rpc({ fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0xC8', order: 'desc', fromAddress: walletAddress }),
       rpc({ fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0xC8', order: 'desc', toAddress: walletAddress }),
     ])
+    const diagnostics = { liveCalls, budgetRefusals, malformedResponses, nullResponses }
     if (!fromResult && !toResult) {
-      return { provider: 'alchemy', ok: false, events: [], errorReason: 'no_usable_response' }
+      // TYPED REASON, DISCLOSED: distinguishes WHY both sub-calls failed instead of collapsing
+      // every cause into one generic string — a caller (or human reading logs) can now tell a
+      // self-imposed budget throttle apart from a genuine provider outage.
+      const errorReason = budgetRefusals > 0
+        ? 'provider_budget_exhausted'
+        : malformedResponses > 0
+          ? 'malformed_response'
+          : 'no_usable_response'
+      return { provider: 'alchemy', ok: false, events: [], errorReason, diagnostics }
     }
     const cutoff = windowCutoffMs(windowDays)
     const events: RawProviderEvent[] = []
@@ -401,9 +443,9 @@ export async function fetchAlchemyRawEvents(
     }
     collect(fromResult)
     collect(toResult)
-    return { provider: 'alchemy', ok: true, events, errorReason: null }
+    return { provider: 'alchemy', ok: true, events, errorReason: null, diagnostics }
   } catch (err) {
-    return { provider: 'alchemy', ok: false, events: [], errorReason: err instanceof Error ? err.message : 'unknown_error' }
+    return { provider: 'alchemy', ok: false, events: [], errorReason: err instanceof Error ? err.message : 'unknown_error', diagnostics: { liveCalls, budgetRefusals, malformedResponses, nullResponses } }
   }
 }
 

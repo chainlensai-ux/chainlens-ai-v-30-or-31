@@ -53,6 +53,16 @@ export type SingleProviderFetchResult = {
   ok: boolean
   events: RawProviderEvent[]
   errorReason: string | null
+  // ADDITIVE, OPTIONAL, DISCLOSED (Alchemy-history-ingestion-regression task): low-level per-call
+  // outcome counts backing the [alchemy-history-ingestion-audit] diagnostic — populated only by
+  // fetchAlchemyRawEvents today. Omitted (undefined) for every other/prior caller, so this is a
+  // strictly additive field with zero effect on any existing consumer that doesn't read it.
+  diagnostics?: {
+    liveCalls: number
+    budgetRefusals: number
+    malformedResponses: number
+    nullResponses: number
+  }
 }
 
 export type ProviderFetchWindowResult = {

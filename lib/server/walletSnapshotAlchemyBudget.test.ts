@@ -165,6 +165,47 @@ test('different arguments are never treated as duplicates', async () => {
 })
 
 // ---------------------------------------------------------------------------------------------
+// HARD ASSERTION: pageKey changes cache identity (Alchemy-history-ingestion-regression task,
+// explicit requirement #1/#2 — cache identity must include pageKey; page 1 must never be reused
+// for page 2).
+// ---------------------------------------------------------------------------------------------
+
+test('HARD ASSERTION: two requests differing ONLY by pageKey are never treated as duplicates — page 1 is never reused for page 2', async () => {
+  let realInvocations = 0
+  const fetcher = async () => { realInvocations += 1; return { transfers: [], calledAt: realInvocations } }
+
+  const baseParams = { fromBlock: '0x0', category: ['erc20'], withMetadata: true, maxCount: '0x64', order: 'desc', fromAddress: '0xwallet' }
+  const page1 = await budgetedAlchemyCall(URL_BASE, 'alchemy_getAssetTransfers', [baseParams], fetcher)
+  const page2 = await budgetedAlchemyCall(URL_BASE, 'alchemy_getAssetTransfers', [{ ...baseParams, pageKey: 'real-page-key-from-page-1' }], fetcher)
+  const page1Again = await budgetedAlchemyCall(URL_BASE, 'alchemy_getAssetTransfers', [baseParams], fetcher)
+
+  assert.equal(realInvocations, 2, 'page 1 and page 2 (distinguished only by pageKey) must each make their own real call')
+  assert.notDeepEqual(page2, page1, 'page 2\'s own result must never be silently identical to page 1\'s')
+  assert.deepEqual(page1Again, page1, 'a genuine repeat of page 1 (identical params, no pageKey) correctly reuses page 1\'s own settled result')
+})
+
+test('cache identity includes every real Alchemy getAssetTransfers dimension: category, fromBlock/toBlock, contractAddresses, direction, excludeZeroValue, maxCount', async () => {
+  let realInvocations = 0
+  const fetcher = async () => { realInvocations += 1; return { ok: true } }
+
+  const variants: Record<string, unknown>[] = [
+    { fromBlock: '0x0', toBlock: 'latest', category: ['erc20'], contractAddresses: ['0xtokenA'], fromAddress: '0xw', excludeZeroValue: true, maxCount: '0x64' },
+    { fromBlock: '0x1', toBlock: 'latest', category: ['erc20'], contractAddresses: ['0xtokenA'], fromAddress: '0xw', excludeZeroValue: true, maxCount: '0x64' }, // different fromBlock
+    { fromBlock: '0x0', toBlock: '0xffff', category: ['erc20'], contractAddresses: ['0xtokenA'], fromAddress: '0xw', excludeZeroValue: true, maxCount: '0x64' }, // different toBlock
+    { fromBlock: '0x0', toBlock: 'latest', category: ['erc721'], contractAddresses: ['0xtokenA'], fromAddress: '0xw', excludeZeroValue: true, maxCount: '0x64' }, // different category
+    { fromBlock: '0x0', toBlock: 'latest', category: ['erc20'], contractAddresses: ['0xtokenB'], fromAddress: '0xw', excludeZeroValue: true, maxCount: '0x64' }, // different contractAddresses
+    { fromBlock: '0x0', toBlock: 'latest', category: ['erc20'], contractAddresses: ['0xtokenA'], toAddress: '0xw', excludeZeroValue: true, maxCount: '0x64' }, // different direction (from vs to)
+    { fromBlock: '0x0', toBlock: 'latest', category: ['erc20'], contractAddresses: ['0xtokenA'], fromAddress: '0xw', excludeZeroValue: false, maxCount: '0x64' }, // different excludeZeroValue
+    { fromBlock: '0x0', toBlock: 'latest', category: ['erc20'], contractAddresses: ['0xtokenA'], fromAddress: '0xw', excludeZeroValue: true, maxCount: '0xC8' }, // different maxCount
+  ]
+  for (const params of variants) {
+    await budgetedAlchemyCall(URL_BASE, 'alchemy_getAssetTransfers', [params], fetcher)
+  }
+
+  assert.equal(realInvocations, variants.length, 'every dimension listed must independently affect cache identity — none may be silently ignored')
+})
+
+// ---------------------------------------------------------------------------------------------
 // Fail-closed / no-retries semantics
 // ---------------------------------------------------------------------------------------------
 

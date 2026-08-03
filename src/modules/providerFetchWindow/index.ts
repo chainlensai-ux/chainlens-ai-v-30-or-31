@@ -45,6 +45,7 @@ import type {
   SupportedChain,
 } from './types'
 import { clampWindowDays, dedupeRawEventKey, fetchAlchemyRawEvents, fetchGoldrushRawEvents } from './utils'
+import { estimatedCuForMethod } from '@/lib/server/alchemyCallBudget'
 
 export type {
   ProviderFetchWindowResult,
@@ -218,6 +219,75 @@ export function classifyFetchOutcome(result: ProviderFetchWindowResult): FetchOu
   if (result.providerStatus !== 'provider_unavailable') return 'success'
   const { goldrush, alchemy } = result.providerResults
   return isTimeoutLikeReason(goldrush.errorReason) || isTimeoutLikeReason(alchemy.errorReason) ? 'timeout' : 'error'
+}
+
+// PERMANENT vs. TRANSIENT FAILURE REASONS, DISCLOSED (Alchemy-history-ingestion-regression task —
+// confirmed root cause of "Base 0 events, ETH 0 events" while GoldRush stayed healthy). A reason is
+// PERMANENT only when it can never change for the rest of THIS job — missing config, an unsupported
+// chain — so memoizing it costs nothing (no further calls would ever be attempted anyway) and saves
+// nothing either (retrying is genuinely pointless). Every other reason — a budget refusal, a
+// malformed response, an HTTP failure, a timeout, an unknown/network error — is TRANSIENT: it can
+// genuinely differ on a later attempt within the same job, so permanently caching it risks locking
+// the entire rest of the job into a bad, single unlucky attempt.
+const PERMANENT_FAILURE_REASONS = new Set(['chain_not_verified_for_provider', 'no_api_key_configured'])
+
+function isPermanentFailureReason(reason: string | null): boolean {
+  return reason !== null && PERMANENT_FAILURE_REASONS.has(reason)
+}
+
+// CONFIRMED ROOT CAUSE, DISCLOSED: detectProviderUnavailable's own `partial` classification (one
+// provider ok, the other not) is correct for ROUTING this one call's own merged events — but this
+// module's coalescing layer previously treated ANY `partial`/`ok` outcome as unconditionally
+// reuse-worthy for the REST OF THE JOB (classifyFetchOutcome only ever returns 'success' or
+// 'timeout'/'error', with no notion of "successful but for a self-imposed, transient reason"). The
+// real production regression: GoldRush genuinely succeeded, Alchemy was refused by this job's own
+// shared CU budget (a transient, request-scoped throttle, never a real provider outage) — the
+// merged (GoldRush-only) result was classified 'success' and memoized, so EVERY later duplicate
+// caller for that (chain, wallet) — old pipeline, V2 engine, holdings, trades — received the SAME
+// Alchemy-less degraded result for the rest of the job, collapsing ~565 events / ~216 lots down to
+// 89 events / 45 lots. A result is now reuse-eligible (settled, kept for the rest of the job) ONLY
+// when every provider that didn't succeed failed for a PERMANENT reason — a budget refusal (or any
+// other transient failure) on EITHER provider means this exact result must never become the job's
+// only answer for this (chain, wallet).
+function isReuseEligible(result: ProviderFetchWindowResult): boolean {
+  const { goldrush, alchemy } = result.providerResults
+  if (!goldrush.ok && !isPermanentFailureReason(goldrush.errorReason)) return false
+  if (!alchemy.ok && !isPermanentFailureReason(alchemy.errorReason)) return false
+  return true
+}
+
+// [alchemy-history-ingestion-audit], DISCLOSED (this task's explicit diagnostic requirement):
+// logged once per real LIVE fetch (never for a reused/coalesced call, which made no new Alchemy
+// call of its own) — real counts only, reconciled directly from fetchAlchemyRawEvents' own
+// diagnostics (see providerFetchWindow/utils.ts) and this key's own per-entry coalescing counters,
+// never estimates. `pagesRequested`/`pageKeysSeen` are always 2/0 today (this module's own
+// "never deep-page" rule — one bounded from+to page per provider, no pageKey follow-up), kept as
+// real fields (not hardcoded in the log) so a future paginated caller is reflected honestly rather
+// than silently under-reported.
+function logAlchemyHistoryIngestionAudit(
+  chain: SupportedChain,
+  alchemyResult: SingleProviderFetchResult,
+  entry: CoalescedEntry,
+  usableEventCount: number,
+  finalStatus: ProviderFetchWindowResult['providerStatus'],
+): void {
+  const d = alchemyResult.diagnostics ?? { liveCalls: 0, budgetRefusals: 0, malformedResponses: 0, nullResponses: 0 }
+  // eslint-disable-next-line no-console
+  console.warn('[alchemy-history-ingestion-audit]', {
+    chain,
+    pagesRequested: 2, // one bounded from+to page each — see this module's own "never deep-page" rule
+    pagesSucceeded: d.liveCalls - d.malformedResponses - d.nullResponses,
+    pageKeysSeen: 0, // this module never follows a pageKey — see fetchAlchemyRawEvents' own header
+    liveCalls: d.liveCalls,
+    settledReuseHits: entry.settledSuccessReuseHits + entry.settledFailureReuseHits,
+    singleflightHits: entry.pendingCoalescedHits,
+    budgetRefusals: d.budgetRefusals,
+    malformedResponses: d.malformedResponses,
+    nullResponses: d.nullResponses,
+    usableEventCount,
+    estimatedCu: d.liveCalls * estimatedCuForMethod('alchemy_getAssetTransfers'),
+    finalStatus,
+  })
 }
 
 // SAFE WRAPPER, DISCLOSED: see this section's own header for the confirmed root cause this closes.
@@ -411,15 +481,34 @@ export async function fetchProviderWindow(
   }
   // NEVER-REJECTS, DISCLOSED: runLiveFetchSafely guarantees this promise always resolves — see that
   // function's own header for the confirmed root cause this closes. No `.catch`/rejection-handler
-  // branch exists anymore because there is no longer a rejection path to handle; a settled entry,
-  // success or failure, is kept in the map for the rest of this job, exactly per this task's "later
-  // duplicate after timeout/failure must return the same scan-scoped degraded result" requirement.
+  // branch exists anymore because there is no longer a rejection path to handle.
+  //
+  // REUSE ELIGIBILITY, DISCLOSED (see isReuseEligible's own header for the full root-cause trace):
+  // a genuinely PERMANENT failure (both providers, or the one that failed, missing config/
+  // unsupported chain) is still kept in the map for the rest of this job — retrying it can never
+  // succeed, so memoizing it costs nothing and correctly avoids a pointless repeat attempt. Any
+  // TRANSIENT failure (budget refusal, malformed response, HTTP failure, timeout, unknown error) is
+  // instead EVICTED from the map the instant it settles — concurrent callers already awaiting this
+  // SAME promise still receive this result (real coalescing of genuinely simultaneous work is
+  // preserved), but a caller arriving AFTER this resolution gets a genuinely fresh live attempt
+  // instead of being permanently stuck with one unlucky throttle for the rest of the job.
   const promise = runLiveFetchSafely(chain, walletAddress, resolvedWindowDays)
   entry.promise = promise
   requestScopedFetches.set(key, entry)
   promise.then((result) => {
-    entry.settled = true
     entry.firstOutcome = classifyFetchOutcome(result)
+    logAlchemyHistoryIngestionAudit(chain, result.providerResults.alchemy, entry, result.providerResults.alchemy.events.length, result.providerStatus)
+    if (!isReuseEligible(result)) {
+      if (requestScopedFetches.get(key) === entry) requestScopedFetches.delete(key)
+      // eslint-disable-next-line no-console
+      console.warn('[provider-call-audit] fetchProviderWindow transient-failure result evicted, not permanently cached', {
+        jobId: currentJobId, key, firstOutcome: entry.firstOutcome, providerStatus: result.providerStatus,
+        goldrushErrorReason: result.providerResults.goldrush.errorReason,
+        alchemyErrorReason: result.providerResults.alchemy.errorReason,
+      })
+      return
+    }
+    entry.settled = true
     // eslint-disable-next-line no-console
     console.warn('[provider-call-audit] fetchProviderWindow live fetch settled', {
       jobId: currentJobId, key, firstOutcome: entry.firstOutcome, providerStatus: result.providerStatus,

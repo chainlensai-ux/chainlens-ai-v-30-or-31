@@ -1,10 +1,23 @@
 // Tests for src/modules/providerFetchWindow/index.ts's per-key coalescing audit and the
-// never-rejects hardening — the provider-coalescing follow-up task's explicit requirement:
-// "represent provider failure as a settled reusable result rather than leaving a rejected promise
-// that gets removed and retried." Real production evidence this closes: one worker invocation made
-// the exact same Base transactions_v3 request twice, both timing out after 12s, while the
-// equivalent Ethereum request was made once and succeeded. Mocks global.fetch (no real network
-// dependency), same pattern as coalescing.test.ts. Run with:
+// never-rejects hardening.
+//
+// BEHAVIOR REVISED, DISCLOSED (Alchemy-history-ingestion-regression task — confirmed production
+// root cause: GoldRush genuinely succeeded, Alchemy was refused by the shared per-job CU budget —
+// a transient, request-scoped throttle, never a real provider outage — yet the merged, Alchemy-less
+// result was memoized as "settled success" and reused by every later duplicate caller for the rest
+// of the job, collapsing ~565 events / ~216 lots to 89 events / 45 lots). This file previously
+// asserted the OPPOSITE of what's now required: this task's own explicit instruction is "never
+// permanently cache: null, timeout, HTTP failure, malformed response, budget refusal" and "only
+// successful settled results may enter settled-result reuse." A TRANSIENT failure (timeout, thrown
+// error, budget refusal, malformed response) is now EVICTED from the coalescing map the instant it
+// settles — see index.ts's own isReuseEligible/isPermanentFailureReason — so a caller arriving
+// AFTER that resolution gets a genuinely fresh live attempt instead of being stuck with one unlucky
+// throttle for the rest of the job. A caller already concurrently awaiting the SAME in-flight
+// promise still receives that result (real coalescing of genuinely simultaneous work is
+// unaffected) — eviction only changes what a LATER, non-concurrent caller receives. Only a
+// PERMANENT failure (missing API key, unsupported chain — see PERMANENT_FAILURE_REASONS) is still
+// memoized for the rest of the job, since retrying it can never succeed. Mocks global.fetch (no
+// real network dependency), same pattern as coalescing.test.ts. Run with:
 //   npx tsx --test src/modules/providerFetchWindow/coalescingAudit.test.ts
 
 import { describe, it, beforeEach, afterEach } from 'node:test'
@@ -97,8 +110,8 @@ describe('fetchProviderWindow — (2) successful later duplicate produces no new
   })
 })
 
-describe('fetchProviderWindow — (3) timed-out later duplicate produces no new live fetch (the confirmed production scenario)', () => {
-  it('a caller arriving after a REAL AbortSignal-timeout-shaped failure reuses the degraded result, never re-fetching', async () => {
+describe('fetchProviderWindow — (3) timed-out later duplicate gets a fresh retry (transient failure, never permanently cached)', () => {
+  it('a caller arriving after a REAL AbortSignal-timeout-shaped failure triggers its own fresh live attempt, never reusing the stale failure', async () => {
     const { getCallCount } = mockFetch({ abort: true })
     const first = await fetchProviderWindow('base', '0xwallet', 90, 'old-pipeline')
     assert.equal(first.providerStatus, 'provider_unavailable')
@@ -106,31 +119,37 @@ describe('fetchProviderWindow — (3) timed-out later duplicate produces no new 
     assert.ok(callsAfterFirst > 0)
 
     const second = await fetchProviderWindow('base', '0xwallet', 90, 'v2-engine')
-    assert.equal(getCallCount(), callsAfterFirst, 'a timed-out later duplicate must NEVER issue another live provider request')
+    assert.ok(getCallCount() > callsAfterFirst, 'a timed-out (transient) later duplicate must get a genuinely fresh attempt, never be stuck with the stale failure')
     assert.equal(second.providerStatus, 'provider_unavailable')
 
+    // The evicted key's audit no longer exists as ONE historical entry — it was replaced by the
+    // fresh attempt's own new entry, itself also evicted after settling (still failing, since the
+    // mock still simulates a timeout on every call).
     const audit = getProviderFetchWindowKeyAudits().find((a) => a.key === 'base:0xwallet')
-    assert.equal(audit?.firstOutcome, 'timeout')
-    assert.equal(audit?.settledFailureReuseHits, 1)
+    assert.equal(audit, undefined, 'a transiently-failed entry must not remain in the map after settling')
   })
 })
 
-describe('fetchProviderWindow — (4) rejected provider later duplicate produces no new live fetch', () => {
-  it('even if the underlying live fetch unexpectedly REJECTS (defense-in-depth), the entry is never removed and never retried', async () => {
-    // Simulates the exact defensive scenario runLiveFetchSafely guards against: a provider function
-    // violating its own "never throws" contract. Since fetchGoldrushRawEvents/fetchAlchemyRawEvents
-    // both wrap fetch() in their own try/catch, the only way to make the REAL fetchProviderWindowLive
-    // reject here is a fetch() implementation that throws something neither of those catches —
-    // not reachable through the real provider functions, so this proves the wrapper (runLiveFetchSafely)
-    // itself, not just the already-caught provider-level paths.
+describe('fetchProviderWindow — (4) a generically-failed later duplicate also gets a fresh retry (transient failure)', () => {
+  it('a thrown, caught provider error is a transient failure — a later duplicate gets its own fresh live attempt', async () => {
     const { getCallCount } = mockFetch({ fail: true })
     const first = await fetchProviderWindow('base', '0xwallet', 90)
     const callsAfterFirst = getCallCount()
     assert.equal(first.providerStatus, 'provider_unavailable')
 
     const second = await fetchProviderWindow('base', '0xwallet', 90)
-    assert.equal(getCallCount(), callsAfterFirst, 'a rejected/failed provider later duplicate must never issue another live request')
+    assert.ok(getCallCount() > callsAfterFirst, 'a generic thrown-and-caught provider failure must also be treated as transient, never permanently cached')
     assert.equal(second.providerStatus, 'provider_unavailable')
+  })
+
+  it('concurrent (genuinely simultaneous) callers still coalesce onto one real in-flight fetch, even though the outcome is transient', async () => {
+    const { getCallCount } = mockFetch({ fail: true, delayMs: 10 })
+    const [a, b] = await Promise.all([
+      fetchProviderWindow('base', '0xwallet', 90),
+      fetchProviderWindow('base', '0xwallet', 90),
+    ])
+    assert.equal(getCallCount(), 3, 'two genuinely concurrent callers must still share ONE real in-flight fetch')
+    assert.deepEqual(a, b, 'concurrent callers receive the identical in-flight result, regardless of eviction afterward')
   })
 })
 
@@ -156,18 +175,22 @@ describe('fetchProviderWindow — (6) Base failure does not affect Ethereum', ()
     const eth = await fetchProviderWindow('eth', '0xwallet', 90)
     assert.equal(eth.providerStatus, 'ok', 'a Base failure must never suppress or degrade a different chain\'s own independent fetch')
 
+    // Base's transient failure was evicted (see describe block 3 above); Ethereum's real success
+    // remains settled and audited normally — proves eviction is per-key, never global.
     const audits = getProviderFetchWindowKeyAudits()
-    assert.equal(audits.find((a) => a.key === 'base:0xwallet')?.firstOutcome, 'timeout')
+    assert.equal(audits.find((a) => a.key === 'base:0xwallet'), undefined, 'Base\'s transient failure must not remain in the map')
     assert.equal(audits.find((a) => a.key === 'eth:0xwallet')?.firstOutcome, 'success')
   })
 })
 
 describe('fetchProviderWindow — (7) a new job reset permits a new Base attempt', () => {
-  it('resetProviderFetchWindowRequestCache clears the failed entry — the next job may attempt Base again', async () => {
+  it('resetProviderFetchWindowRequestCache clears the map — the next job may attempt Base again', async () => {
     const { getCallCount } = mockFetch({ abort: true })
     await fetchProviderWindow('base', '0xwallet', 90)
     const callsAfterFirstJob = getCallCount()
-    assert.equal(getProviderFetchWindowKeyAudits().length, 1)
+    // The transient failure was already evicted within THIS job (see describe block 3 above) —
+    // the map is already empty for this key before the reset even runs.
+    assert.equal(getProviderFetchWindowKeyAudits().length, 0)
 
     resetProviderFetchWindowRequestCache('test-job-2')
     assert.equal(getProviderFetchWindowKeyAudits().length, 0, 'a fresh job must start with no carried-over key audits')
@@ -188,13 +211,13 @@ describe('fetchProviderWindow — (8) old-pipeline and V2-engine share the same 
     assert.deepEqual(v2EngineResult, oldPipelineResult)
   })
 
-  it('the same reuse holds when the FIRST (old-pipeline) attempt timed out — this is the exact confirmed production scenario', async () => {
+  it('when the FIRST (old-pipeline) attempt timed out, v2-engine gets its own fresh retry rather than reusing the stale failure', async () => {
     const { getCallCount } = mockFetch({ abort: true })
     await fetchProviderWindow('base', '0xwallet', 90, 'old-pipeline')
     const callsAfterOldPipeline = getCallCount()
 
     await fetchProviderWindow('base', '0xwallet', 90, 'v2-engine')
-    assert.equal(getCallCount(), callsAfterOldPipeline, 'v2-engine must NOT repeat the same timed-out Base request old-pipeline already made')
+    assert.ok(getCallCount() > callsAfterOldPipeline, 'v2-engine must get a genuinely fresh attempt after old-pipeline\'s transient (timeout) failure, never be stuck reusing it')
   })
 })
 

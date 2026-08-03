@@ -70,6 +70,21 @@ export const MAX_GOLDRUSH_CALLS_PER_SCAN = 150
 // (transaction history, balances) of their handful of calls.
 export const MAX_GOLDRUSH_PRICING_CALLS_PER_SCAN = 80
 
+// TRANSACTION-HISTORY RESERVATION, DISCLOSED (Alchemy-history-ingestion-regression task, explicit
+// requirement: "reserve transaction-history CU before optional receipt/pricing/debug calls" /
+// "transaction history must have higher priority than receipts, historical price shadows,
+// recovery, optional diagnostics"). Only two call sites ever consume from the Alchemy budget today
+// — providerFetchWindow's own structural per-chain history pull (stage 'transaction_history') and
+// recoveryPolicy's targeted per-candidate pull (stage 'recovery', scales with candidate count). A
+// non-'transaction_history' Alchemy request may only spend up to this reserved floor BELOW the
+// hard ceiling — guaranteeing the structural history fetch always has at least this much headroom
+// left, no matter how many recovery candidates ran first or how the two concurrent engines (old
+// pipeline, V2) happen to interleave. Sized for every SupportedChain's own from+to pull
+// (base/eth/arbitrum/hyperevm x 2 directions x 150 CU = 1,200) with one full chain of additional
+// headroom for retries after a transient-failure eviction (see providerFetchWindow/index.ts's own
+// isReuseEligible).
+export const ALCHEMY_TRANSACTION_HISTORY_RESERVED_CU = 1_500
+
 type ProviderCounters = {
   calls: number
   estimatedCost: number
@@ -148,7 +163,15 @@ export type ConsumeRequest = {
 export function canConsume(request: ConsumeRequest): boolean {
   if (request.provider === 'alchemy') {
     if (state.alchemy.calls >= MAX_ALCHEMY_CALLS_PER_SCAN) return false
-    if (state.alchemy.estimatedCost + estimatedCuForMethod(request.endpoint) > MAX_ALCHEMY_CU_PER_SCAN) return false
+    // RESERVED FLOOR, DISCLOSED: a non-transaction_history request (today, only 'recovery') is
+    // checked against the ceiling MINUS the reserved floor — it can never push cumulative Alchemy
+    // spend past that reduced line, no matter how many recovery candidates are queued. The
+    // structural transaction_history fetch itself is always checked against the FULL ceiling, so
+    // it can spend into the reserved floor freely — that floor exists FOR it, not against it.
+    const effectiveCeiling = request.stage === 'transaction_history'
+      ? MAX_ALCHEMY_CU_PER_SCAN
+      : MAX_ALCHEMY_CU_PER_SCAN - ALCHEMY_TRANSACTION_HISTORY_RESERVED_CU
+    if (state.alchemy.estimatedCost + estimatedCuForMethod(request.endpoint) > effectiveCeiling) return false
     return true
   }
   if (state.goldrush.calls >= MAX_GOLDRUSH_CALLS_PER_SCAN) return false
