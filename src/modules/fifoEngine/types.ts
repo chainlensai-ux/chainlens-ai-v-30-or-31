@@ -22,6 +22,13 @@ export type OpenLot = {
   amountRemaining: number
   costBasisUsd: number | null
   evidenceQuality: LotEvidenceQuality
+  // ADDITIVE, OPTIONAL, DISCLOSED (exact-unmatched-identity follow-up task): the original buy
+  // event's fromAddress/toAddress/amountRaw — carried through purely so a still-open lot (an
+  // unmatched buy) can be reported as an UnmatchedEventIdentity with real, non-fabricated fields.
+  // Optional so any existing direct OpenLot construction (tests, other callers) is unaffected.
+  sourceFromAddress?: string
+  sourceToAddress?: string
+  sourceAmountRaw?: string | null
 }
 
 export type MatchedLot = {
@@ -47,10 +54,39 @@ export type IntegrityFlags = {
 
 export type PublicPnlStatus = 'unavailable' | 'limited_verified_sample' | 'ok'
 
+// UNMATCHED EVENT IDENTITY, DISCLOSED, ADDITIVE (exact-unmatched-identity follow-up task): a stable
+// source identity for one leg fifoEngine's own FIFO matching left unmatched (or partially
+// unmatched) — chain/txHash/token/direction/amount/timestamp, the real fields this engine already
+// has, joined against for evidence classification purposes downstream (never fed back into
+// matching itself). `logIndex`/`providerIndex` are DELIBERATELY OMITTED, DISCLOSED: no such field
+// exists anywhere in this codebase's NormalizedEvent (module 2's own output, the only source this
+// engine ever reads) — fabricating one would violate this task's own evidence-honesty standard.
+// `fromAddress`/`toAddress`/`amountRaw` are included instead as the best REAL additional identity
+// fields this engine actually has, for disambiguating same-tx/same-token/same-amount duplicates.
+export type UnmatchedEventIdentity = {
+  chain: SupportedChain
+  txHash: string
+  token: string
+  timestamp: number
+  direction: 'inbound' | 'outbound'
+  // The unmatched QUANTITY — for a buy, the lot's own remaining (unconsumed) amount; for a sell,
+  // the portion that found no open lot to draw from. Never the original event's full amount when
+  // only part of it went unmatched (a partially-filled sell/lot is not double-reported).
+  amount: number
+  fromAddress: string
+  toAddress: string
+  amountRaw: string | null
+}
+
 export type FifoOutput = {
   matchedLots: MatchedLot[]
   unmatchedBuys: number
   unmatchedSells: number
+  // ADDITIVE, DISCLOSED: exact source identities for the unmatched buys/sells the counts above
+  // already reported — see UnmatchedEventIdentity's own header. Always the same length as
+  // unmatchedBuys/unmatchedSells respectively; never a separate, possibly-divergent count.
+  unmatchedBuyEvents: UnmatchedEventIdentity[]
+  unmatchedSellEvents: UnmatchedEventIdentity[]
   realizedPnlUsd: number | null
   unrealizedPnlUsd: number | null
   costBasisUsd: number | null

@@ -32,6 +32,7 @@
 // events (NormalizedEvent — module 2's output). It makes zero network/provider calls of its own.
 
 import type { NormalizedEvent } from '../normalization/types'
+import type { UnmatchedEventIdentity } from '../fifoEngine/types'
 
 export type EventClassification =
   | 'genuine_trade_leg'
@@ -305,6 +306,14 @@ export type StructuralCoverageAudit = {
 
 const NON_TRADE_CLASSIFICATIONS: readonly EventClassification[] = ['distribution_airdrop', 'ordinary_transfer', 'router_intermediary', 'bridge', 'lp_staking']
 
+// SUPERSEDED, DISCLOSED (exact-unmatched-identity follow-up task): this was a REPORTING-ONLY
+// approximation — fifoEngine previously exposed only unmatched COUNTS, never which specific events
+// remained unmatched, so `dustInbound`/`dustOutbound` here was an upper-bound guess (total dust
+// events fed into FIFO, not necessarily the ones that ended up unmatched). Now that fifoEngine
+// additively exposes `unmatchedBuyEvents`/`unmatchedSellEvents` (real source identities — see
+// UnmatchedEventIdentity in fifoEngine/types.ts), `computeExactStructuralCoverageAudit` below joins
+// those exact identities back to this module's own classification and replaces this approximation.
+// Kept only for backward compatibility with any existing caller/test that hasn't migrated.
 export function computeStructuralCoverageAudit(
   classified: readonly ClassifiedEvent[],
   closedLotCount: number,
@@ -338,6 +347,113 @@ export function computeStructuralCoverageAudit(
     genuineUnmatchedSells,
     excludedNonTradeBuys,
     excludedNonTradeSells,
+    structuralCoverageNumerator,
+    structuralCoverageDenominator,
+    structuralCoverage: structuralCoverageDenominator > 0 ? structuralCoverageNumerator / structuralCoverageDenominator : null,
+  }
+}
+
+// EXACT UNMATCHED ATTRIBUTION, DISCLOSED (exact-unmatched-identity follow-up task): joins
+// fifoEngine's own real unmatched source identities (UnmatchedEventIdentity — chain/txHash/token/
+// direction/amount) back to THIS classifier's own per-event classification, so the structural
+// coverage denominator reflects EXACTLY which unmatched buys/sells are genuine trade evidence,
+// never an approximation.
+//
+// JOIN STRATEGY, DISCLOSED: keyed by (chain, txHash, token, direction) — the identity fields both
+// sides genuinely share. When exactly one classified event matches that key, the join is
+// unambiguous regardless of amount (a partially-consumed buy/sell's remaining/unmatched amount
+// legitimately differs from the original event's full amount — see UnmatchedEventIdentity's own
+// header). When MULTIPLE classified events share that key (a real same-tx/same-token/same-direction
+// multi-leg pattern), the join falls back to an EXACT amount match; if that's still ambiguous (zero
+// or more than one exact match), or no candidate exists at all, this is an honest JOIN FAILURE —
+// per requirement #8's fail-closed rule, the event is treated as `unknown` and counted in
+// `unmatchedIdentityJoinFailures`, never silently excluded or guessed into a non-trade category.
+export type ExactUnmatchedCategory = EventClassification | 'genuine_unmatched_trade'
+
+export type ExactStructuralCoverageAudit = {
+  rawUnmatchedBuys: number
+  rawUnmatchedSells: number
+  genuineUnmatchedBuys: number
+  genuineUnmatchedSells: number
+  excludedUnmatchedByClassification: Partial<Record<EventClassification, number>>
+  unmatchedIdentityJoinFailures: number
+  structuralCoverageNumerator: number
+  structuralCoverageDenominator: number
+  structuralCoverage: number | null
+}
+
+function unmatchedJoinGroupKey(chain: string, txHash: string, token: string, direction: 'inbound' | 'outbound'): string {
+  return `${chain}:${txHash}:${token.toLowerCase()}:${direction}`
+}
+
+function joinOneSide(
+  identities: readonly UnmatchedEventIdentity[],
+  groups: Map<string, ClassifiedEvent[]>,
+): { genuine: number; excludedByClassification: Partial<Record<EventClassification, number>>; joinFailures: number } {
+  const excludedByClassification: Partial<Record<EventClassification, number>> = {}
+  let genuine = 0
+  let joinFailures = 0
+  for (const identity of identities) {
+    const key = unmatchedJoinGroupKey(identity.chain, identity.txHash, identity.token, identity.direction)
+    const candidates = groups.get(key) ?? []
+    let resolved: EventClassification | null = null
+    if (candidates.length === 1) {
+      resolved = candidates[0].classification
+    } else if (candidates.length > 1) {
+      const exactMatches = candidates.filter((c) => Math.abs(c.event.amount - identity.amount) < 1e-12)
+      if (exactMatches.length === 1) resolved = exactMatches[0].classification
+      // 0 or >1 exact matches among multiple candidates: genuinely ambiguous — falls through to
+      // the join-failure path below (resolved stays null), never guessed.
+    }
+    if (resolved === null) {
+      // FAIL CLOSED, DISCLOSED (requirement #8): no candidate at all, or a genuinely ambiguous
+      // multi-candidate group — this event remains `unknown` and continues counting as genuine
+      // (blocking) unmatched evidence, exactly as an un-joinable event must.
+      joinFailures += 1
+      genuine += 1
+      continue
+    }
+    if (resolved === 'genuine_trade_leg' || resolved === 'unknown') {
+      genuine += 1
+    } else {
+      excludedByClassification[resolved] = (excludedByClassification[resolved] ?? 0) + 1
+    }
+  }
+  return { genuine, excludedByClassification, joinFailures }
+}
+
+export function computeExactStructuralCoverageAudit(
+  classified: readonly ClassifiedEvent[],
+  closedLotCount: number,
+  unmatchedBuyEvents: readonly UnmatchedEventIdentity[],
+  unmatchedSellEvents: readonly UnmatchedEventIdentity[],
+): ExactStructuralCoverageAudit {
+  const groups = new Map<string, ClassifiedEvent[]>()
+  for (const c of classified) {
+    const key = unmatchedJoinGroupKey(c.event.chain, c.event.txHash, c.event.contract, c.event.direction === 'unknown' ? 'inbound' : c.event.direction)
+    if (c.event.direction === 'unknown') continue // never a candidate for a buy/sell join — has no genuine direction
+    const list = groups.get(key)
+    if (list) list.push(c)
+    else groups.set(key, [c])
+  }
+
+  const buySide = joinOneSide(unmatchedBuyEvents, groups)
+  const sellSide = joinOneSide(unmatchedSellEvents, groups)
+
+  const excludedUnmatchedByClassification: Partial<Record<EventClassification, number>> = { ...buySide.excludedByClassification }
+  for (const [cls, count] of Object.entries(sellSide.excludedByClassification) as Array<[EventClassification, number]>) {
+    excludedUnmatchedByClassification[cls] = (excludedUnmatchedByClassification[cls] ?? 0) + count
+  }
+
+  const structuralCoverageNumerator = closedLotCount
+  const structuralCoverageDenominator = structuralCoverageNumerator + buySide.genuine + sellSide.genuine
+  return {
+    rawUnmatchedBuys: unmatchedBuyEvents.length,
+    rawUnmatchedSells: unmatchedSellEvents.length,
+    genuineUnmatchedBuys: buySide.genuine,
+    genuineUnmatchedSells: sellSide.genuine,
+    excludedUnmatchedByClassification,
+    unmatchedIdentityJoinFailures: buySide.joinFailures + sellSide.joinFailures,
     structuralCoverageNumerator,
     structuralCoverageDenominator,
     structuralCoverage: structuralCoverageDenominator > 0 ? structuralCoverageNumerator / structuralCoverageDenominator : null,

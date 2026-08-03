@@ -21,7 +21,7 @@ function lot(overrides: Partial<MatchedLot> = {}): MatchedLot {
 
 function fifoOutput(matchedLots: MatchedLot[]): FifoOutput {
   return {
-    matchedLots, unmatchedBuys: 0, unmatchedSells: 0, realizedPnlUsd: null, unrealizedPnlUsd: null,
+    matchedLots, unmatchedBuys: 0, unmatchedSells: 0, unmatchedBuyEvents: [], unmatchedSellEvents: [], realizedPnlUsd: null, unrealizedPnlUsd: null,
     costBasisUsd: null, publicPnlStatus: 'unavailable',
     integrityFlags: { hardInvalid: false, estimateOnlyLotsExcluded: 0, syntheticLotsExcluded: 0 },
     unrealizedPnlExcludedTokens: [],

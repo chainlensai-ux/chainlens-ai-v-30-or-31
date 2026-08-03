@@ -13,7 +13,7 @@ function lot(overrides: Partial<MatchedLot> = {}): MatchedLot {
   return { lotId: 'lot-1', token: '0xtoken', chain: 'base', openedAt: 1, closedAt: 2, openedTxHash: '0xbuy', closedTxHash: '0xsell', amount: 1, costBasisUsd: 10, proceedsUsd: 12, realizedPnlUsd: 2, evidenceQuality: 'verified', ...overrides }
 }
 function fifo(overrides: Partial<FifoOutput> = {}): FifoOutput {
-  return { matchedLots: [lot()], unmatchedBuys: 0, unmatchedSells: 0, realizedPnlUsd: 2, unrealizedPnlUsd: 0, costBasisUsd: 10, publicPnlStatus: 'ok', integrityFlags: { hardInvalid: false, estimateOnlyLotsExcluded: 0, syntheticLotsExcluded: 0 }, unrealizedPnlExcludedTokens: [], unrealizedReconciliation: emptyUnrealizedReconciliation(), ...overrides }
+  return { matchedLots: [lot()], unmatchedBuys: 0, unmatchedSells: 0, unmatchedBuyEvents: [], unmatchedSellEvents: [], realizedPnlUsd: 2, unrealizedPnlUsd: 0, costBasisUsd: 10, publicPnlStatus: 'ok', integrityFlags: { hardInvalid: false, estimateOnlyLotsExcluded: 0, syntheticLotsExcluded: 0 }, unrealizedPnlExcludedTokens: [], unrealizedReconciliation: emptyUnrealizedReconciliation(), ...overrides }
 }
 function pnl(closedLots = 1, overrides: Partial<PnlSummaryResult> = {}): PnlSummaryResult {
   return { realizedPnlUsd: 2, closedLots: Array.from({ length: closedLots }, (_, i) => ({ lotId: `closed-${i}`, matchedBuyLotId: null, token: '0xtoken', symbol: 'TOK', chain: 'base', timestamp: 2 + i, txHash: `0xsell${i}`, amount: '1', costUsdEstimate: 10, proceedsUsdEstimate: 12, realizedPnlUsd: 2, confidence: 'high', evidence: 'complete' })), winLossRate: { wins: 1, losses: 0, evaluated: 1, rate: 1 }, chainBreakdown: [], confidenceBasis: { high: 1, medium: 0, low: 0, aggregate: 'high' }, evidenceMissingCount: 0, ...overrides }
@@ -400,5 +400,33 @@ describe('pnlReconciliation', () => {
       summary.missingEvidenceCount,
       'dustExcluded/nonTradeExcluded must never be folded into missingEvidenceCount — they must never block public PnL',
     )
+  })
+
+  // ===============================================================================================
+  // exact-unmatched-identity follow-up task — structuralCoverageDenominatorAudit's exact fields
+  // ===============================================================================================
+
+  it('HARD ASSERTION: exact structuralCoverageDenominatorAudit fields recompute structuralCoverage without changing the gate decision itself', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const withoutAudit = await r.reconcile({ fifoEngineResult: fifo({ unmatchedSells: 3 }), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null })
+    const withAudit = await r.reconcile({
+      fifoEngineResult: fifo({ unmatchedSells: 3 }),
+      pnlEngineResult: pnl(),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0,
+        genuineUnmatchedSells: 1, // exact join found only 1 of the 3 raw unmatched sells is genuine
+        excludedUnmatchedByClassification: { distribution_airdrop: 2 },
+        unmatchedIdentityJoinFailures: 0,
+      },
+    })
+    // The gate DECISION (publicPnlStatus/structuralConsistent, driven by raw unmatchedSells) is
+    // identical either way — only the structuralCoverage REPORTING metric differs.
+    assert.equal(withoutAudit.publicPnlStatus, withAudit.publicPnlStatus)
+    assert.equal(withoutAudit.unmatchedSells, withAudit.unmatchedSells)
+    assert.notEqual(withoutAudit.publicPnlGateAudit.structuralCoverage, withAudit.publicPnlGateAudit.structuralCoverage)
+    assert.equal(withAudit.publicPnlGateAudit.genuineUnmatchedSells, 1)
+    assert.equal(withAudit.publicPnlGateAudit.excludedUnmatchedByClassification.distribution_airdrop, 2)
+    assert.equal(withAudit.publicPnlGateAudit.unmatchedIdentityJoinFailures, 0)
   })
 })

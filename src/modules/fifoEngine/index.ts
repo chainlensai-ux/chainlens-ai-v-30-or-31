@@ -21,6 +21,7 @@ import type {
   OpenLot,
   PriceUsdLookup,
   PublicPnlStatus,
+  UnmatchedEventIdentity,
   UnrealizedExclusionReason,
   UnrealizedReconciliationDiagnosticsContext,
   UnrealizedReconciliationStatus,
@@ -44,6 +45,7 @@ export type {
   OpenLot,
   PriceUsdLookup,
   PublicPnlStatus,
+  UnmatchedEventIdentity,
   UnrealizedExclusionReason,
   UnrealizedReconciliationDiagnosticsContext,
   UnrealizedReconciliationStatus,
@@ -78,6 +80,9 @@ export function buildLots(
       amountRemaining: event.amount,
       costBasisUsd,
       evidenceQuality: costBasisUsd != null ? 'verified' : 'unpriced',
+      sourceFromAddress: event.fromAddress,
+      sourceToAddress: event.toAddress,
+      sourceAmountRaw: event.amountRaw,
     }
   })
 
@@ -88,6 +93,7 @@ type MatchResult = {
   matchedLots: MatchedLot[]
   remainingOpenLots: OpenLot[]
   unmatchedSells: number
+  unmatchedSellEvents: UnmatchedEventIdentity[]
 }
 
 // PURE. Matches every outbound leg in the merged event set against the oldest available open lot
@@ -104,6 +110,7 @@ export function matchLotsFIFO(
   const lotsByToken = groupByToken(workingLots)
   const matchedLots: MatchedLot[] = []
   let unmatchedSells = 0
+  const unmatchedSellEvents: UnmatchedEventIdentity[] = []
 
   const sortedSells = [...sellEvents].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
 
@@ -151,11 +158,27 @@ export function matchLotsFIFO(
       matchedAnyAmount = true
     }
 
-    if (remainingToMatch > 0 || !matchedAnyAmount) unmatchedSells += 1
+    if (remainingToMatch > 0 || !matchedAnyAmount) {
+      unmatchedSells += 1
+      // remainingToMatch already equals sell.amount when nothing matched at all (matchedAnyAmount
+      // false) — this is the real unmatched QUANTITY either way, never the sell's full original
+      // amount when only part of it went unmatched.
+      unmatchedSellEvents.push({
+        chain: sell.chain,
+        txHash: sell.txHash,
+        token: sell.contract,
+        timestamp: Date.parse(sell.timestamp),
+        direction: 'outbound',
+        amount: remainingToMatch,
+        fromAddress: sell.fromAddress,
+        toAddress: sell.toAddress,
+        amountRaw: sell.amountRaw,
+      })
+    }
   }
 
   const remainingOpenLots = [...lotsByToken.values()].flat().filter((l) => l.amountRemaining > 0)
-  return { matchedLots, remainingOpenLots, unmatchedSells }
+  return { matchedLots, remainingOpenLots, unmatchedSells, unmatchedSellEvents }
 }
 
 type PnlSummary = {
@@ -544,7 +567,24 @@ export function buildFifoOutput(params: {
   const sells = mergedAll.filter((e) => e.direction === 'outbound')
 
   const lots = buildLots(params.normalizedEvents, recoveredNormalized, priceUsdLookup)
-  const { matchedLots, remainingOpenLots, unmatchedSells } = matchLotsFIFO(lots, sells, priceUsdLookup)
+  const { matchedLots, remainingOpenLots, unmatchedSells, unmatchedSellEvents } = matchLotsFIFO(lots, sells, priceUsdLookup)
+  // UNMATCHED BUY IDENTITIES, DISCLOSED, ADDITIVE: one UnmatchedEventIdentity per remaining open
+  // lot — same array `remainingOpenLots` computePnl/unmatchedBuys already use, just re-shaped for
+  // exact identity reporting. `sourceFromAddress`/`sourceToAddress`/`sourceAmountRaw` default to
+  // real empty-string/null only for the (non-production) case of an OpenLot constructed directly
+  // without going through buildLots above — buildLots itself always populates them from the real
+  // source event.
+  const unmatchedBuyEvents: UnmatchedEventIdentity[] = remainingOpenLots.map((lot) => ({
+    chain: lot.chain,
+    txHash: lot.openedTxHash,
+    token: lot.token,
+    timestamp: lot.openedAt,
+    direction: 'inbound',
+    amount: lot.amountRemaining,
+    fromAddress: lot.sourceFromAddress ?? '',
+    toAddress: lot.sourceToAddress ?? '',
+    amountRaw: lot.sourceAmountRaw ?? null,
+  }))
   const { realizedPnlUsd, unrealizedPnlUsd, costBasisUsd, unrealizedPnlExcludedTokens, unrealizedReconciliation } =
     computePnl(
       matchedLots,
@@ -570,6 +610,8 @@ export function buildFifoOutput(params: {
     matchedLots,
     unmatchedBuys: remainingOpenLots.length,
     unmatchedSells,
+    unmatchedBuyEvents,
+    unmatchedSellEvents,
     realizedPnlUsd,
     unrealizedPnlUsd,
     costBasisUsd,

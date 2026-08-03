@@ -61,7 +61,7 @@ function baseReport(overrides: Partial<WalletPersonalitySourceReport> = {}): Wal
       convictionScore: { value: 'unknown', basis: 'x' },
     },
     fifoAndPnl: fifoAndPnlOverride ?? {
-      matchedLots: [], unmatchedBuys: 0, unmatchedSells: 0, realizedPnlUsd: null, unrealizedPnlUsd: null,
+      matchedLots: [], unmatchedBuys: 0, unmatchedSells: 0, unmatchedBuyEvents: [], unmatchedSellEvents: [], realizedPnlUsd: null, unrealizedPnlUsd: null,
       costBasisUsd: null, publicPnlStatus: 'unavailable',
       integrityFlags: { hardInvalid: false, estimateOnlyLotsExcluded: 0, syntheticLotsExcluded: 0 },
       unrealizedPnlExcludedTokens: [],
@@ -73,7 +73,7 @@ function baseReport(overrides: Partial<WalletPersonalitySourceReport> = {}): Wal
       },
     },
     canonicalPricedFifo: canonicalPricedFifoOverride ?? fifoAndPnlOverride ?? {
-      matchedLots: [], unmatchedBuys: 0, unmatchedSells: 0, realizedPnlUsd: null, unrealizedPnlUsd: null,
+      matchedLots: [], unmatchedBuys: 0, unmatchedSells: 0, unmatchedBuyEvents: [], unmatchedSellEvents: [], realizedPnlUsd: null, unrealizedPnlUsd: null,
       costBasisUsd: null, publicPnlStatus: 'unavailable',
       integrityFlags: { hardInvalid: false, estimateOnlyLotsExcluded: 0, syntheticLotsExcluded: 0 },
       unrealizedPnlExcludedTokens: [],

@@ -75,6 +75,8 @@ export function fifoEngineFallback(buyTimeline: BuyTimeline, sellTimeline: SellT
     matchedLots: [],
     unmatchedBuys: buyTimeline.totalBuys,
     unmatchedSells: sellTimeline.totalSells,
+    unmatchedBuyEvents: [],
+    unmatchedSellEvents: [],
     realizedPnlUsd: null,
     unrealizedPnlUsd: null,
     costBasisUsd: null,

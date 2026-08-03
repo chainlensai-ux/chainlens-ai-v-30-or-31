@@ -161,8 +161,19 @@ function recordSourceAttempts(counters: SourceAttemptCounters, attempts: readonl
 export type StructuralCoverageDenominatorAudit = {
   genuineUnmatchedBuys: number
   genuineUnmatchedSells: number
-  excludedNonTradeBuys: Record<string, number>
-  excludedNonTradeSells: Record<string, number>
+  // LEGACY, DISCLOSED: the reporting-only dust-approximation shape (buy/sell-split, per
+  // non-trade classification) — still accepted for backward compatibility with any caller that
+  // hasn't migrated to the exact join below. Optional; omit when supplying the exact fields.
+  excludedNonTradeBuys?: Record<string, number>
+  excludedNonTradeSells?: Record<string, number>
+  // EXACT UNMATCHED ATTRIBUTION, DISCLOSED (exact-unmatched-identity follow-up task): real counts
+  // from joining fifoEngine's own unmatchedBuyEvents/unmatchedSellEvents source identities against
+  // this scan's event classification — see eventClassification's computeExactStructuralCoverageAudit.
+  // `unmatchedIdentityJoinFailures` is real per requirement #8's fail-closed rule: an event that
+  // could not be joined/classified is counted here AND still included in genuineUnmatchedBuys/Sells
+  // above (it continues to block, never silently excluded).
+  excludedUnmatchedByClassification?: Record<string, number>
+  unmatchedIdentityJoinFailures?: number
 }
 
 export type PnlReconciliationInput = {
@@ -200,6 +211,11 @@ export type PublicPnlGateAudit = {
   genuineUnmatchedSells: number | null
   excludedNonTradeBuys: Record<string, number>
   excludedNonTradeSells: Record<string, number>
+  // EXACT ATTRIBUTION, DISCLOSED (requirement #6): populated only when the caller supplied the
+  // exact join fields on structuralCoverageDenominatorAudit — otherwise empty/null, never a
+  // fabricated stand-in.
+  excludedUnmatchedByClassification: Record<string, number>
+  unmatchedIdentityJoinFailures: number | null
   structuralCoverageNumerator: number
   structuralCoverageDenominator: number
 }
@@ -675,6 +691,8 @@ export function createPnlReconciliation(config: Config = {}) {
         genuineUnmatchedSells: denomAudit?.genuineUnmatchedSells ?? null,
         excludedNonTradeBuys: denomAudit?.excludedNonTradeBuys ?? {},
         excludedNonTradeSells: denomAudit?.excludedNonTradeSells ?? {},
+        excludedUnmatchedByClassification: denomAudit?.excludedUnmatchedByClassification ?? {},
+        unmatchedIdentityJoinFailures: denomAudit?.unmatchedIdentityJoinFailures ?? null,
         structuralCoverageNumerator: fifoLots.length,
         structuralCoverageDenominator: structuralDenominator,
       }
