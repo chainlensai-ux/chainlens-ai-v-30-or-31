@@ -9,6 +9,7 @@ import { safeRunFifoEngine } from './index'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import type { RecoveryPolicyResult } from '../modules/recoveryPolicy/types'
 import type { BuyTimeline, SellTimeline } from '../modules/timelineBuilder/types'
+import { DUST_AMOUNT_THRESHOLD } from '../modules/eventClassification/index'
 
 const emptyRecoveryPolicy: RecoveryPolicyResult = {
   triggerRecoveryWhen: {} as never,
@@ -221,4 +222,61 @@ test('HARD ASSERTION (requirement #4 safety guard): a same-token pair with COMPA
   // fully matched against the one 10-unit buy, zero unmatched.
   assert.equal(result.unmatchedBuys, 0)
   assert.equal(result.unmatchedSells, 0)
+})
+
+// =================================================================================================
+// PRODUCTION-EVIDENCE FOLLOW-UP — the exact confirmed production regression: buy source classified
+// dust_non_economic (previously deleted pre-FIFO), sell source classified genuine_trade_leg,
+// closed lots regressed 27 -> 26. This is the minimal reproduction: one dust-threshold buy, one
+// normal-sized sell of the same token, chronologically ordered buy-then-sell.
+// =================================================================================================
+
+test('HARD ASSERTION (production regression fixture): a dust-threshold buy followed by a normal sell now closes a lot instead of leaving an unmatched sell', () => {
+  const tinyBuy = evt({ txHash: '0xtinybuy', direction: 'inbound', contract: '0xlostlot', amount: DUST_AMOUNT_THRESHOLD / 10, timestamp: '1700000000' })
+  const normalSell = evt({ txHash: '0xnormalsell', direction: 'outbound', contract: '0xlostlot', amount: DUST_AMOUNT_THRESHOLD / 10, timestamp: '1700000100' })
+
+  const result = safeRunFifoEngine({
+    normalizedEvents: [tinyBuy, normalSell],
+    recoveryPolicy: emptyRecoveryPolicy,
+    walletAddress: '0xwallet',
+    buyTimeline: emptyBuyTimeline,
+    sellTimeline: emptySellTimeline,
+  })
+
+  assert.equal(result.matchedLots.length, 1, 'the lot must close — the dust-threshold buy is no longer deleted before FIFO gets to match it')
+  assert.equal(result.matchedLots[0].token, '0xlostlot')
+  assert.equal(result.unmatchedSells, 0, 'the sell must no longer be stranded as unmatched')
+})
+
+test('HARD ASSERTION (production regression fixture): [lot-identity-audit] reports the restored lot, and dust classification never diverges the before/after result', () => {
+  const { calls, restore } = captureWarnings()
+  try {
+    const tinyBuy = evt({ txHash: '0xtinybuy2', direction: 'inbound', contract: '0xlostlot2', amount: DUST_AMOUNT_THRESHOLD / 10, timestamp: '1700000000' })
+    const normalSell = evt({ txHash: '0xnormalsell2', direction: 'outbound', contract: '0xlostlot2', amount: DUST_AMOUNT_THRESHOLD / 10, timestamp: '1700000100' })
+
+    const result = safeRunFifoEngine({
+      normalizedEvents: [tinyBuy, normalSell],
+      recoveryPolicy: emptyRecoveryPolicy,
+      walletAddress: '0xwallet',
+      buyTimeline: emptyBuyTimeline,
+      sellTimeline: emptySellTimeline,
+      computeReconstructionAudit: true,
+    })
+    restore()
+
+    assert.equal(result.matchedLots.length, 1)
+    const auditCall = calls.find((c) => c[0] === '[structural-pnl-reconstruction-audit]')
+    const payload = auditCall![1] as Record<string, unknown>
+    // Both legs of this dust-sized lot are classified dust_non_economic (a matching buy/sell pair
+    // necessarily shares the same quantity) — the point is that this label no longer causes the
+    // lot to disappear: "before" (unfiltered) and "after" (canonical, classification-filtered) must
+    // agree on this lot's existence, proving no lot is removed solely for a dust label.
+    assert.equal((payload.eventsByClassification as Record<string, number>).dust_non_economic, 2)
+    const lotIdentityCall = calls.find((c) => c[0] === '[lot-identity-audit]')
+    const lotIdentityPayload = lotIdentityCall![1] as { lotsRemoved: unknown[]; lotsAdded: unknown[] }
+    assert.equal(lotIdentityPayload.lotsRemoved.length, 0, 'no lot removed solely for dust')
+    assert.equal(payload.closedLotsBefore, payload.closedLotsAfter)
+  } finally {
+    restore()
+  }
 })

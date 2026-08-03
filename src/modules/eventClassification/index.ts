@@ -168,44 +168,92 @@ export function classifyEvents(events: readonly NormalizedEvent[], context: Even
   }
 
   // DISTRIBUTION/AIRDROP RECLASSIFICATION, DISCLOSED (requirement #1's distribution_airdrop
-  // category): a real, positive, deterministic signal — repeated inbound transfers of the exact
-  // same (chain, contract, amount) across DIFFERENT transactions, where the wallet has NEVER once
-  // sent that same token anywhere. That is the canonical signature of a recurring airdrop/
-  // distribution drop (this task's own "repeated 500-token distribution transfers" fixture), never
-  // a guess — a real trade would eventually show at least one outbound leg for the same token.
-  // Reclassifies from EITHER `genuine_trade_leg` (the common case: each drop is a lone leg in its
-  // own transaction, so the pass above already defaulted it to trade-eligible) or
-  // `ordinary_transfer` (a same-tx duplicate/refund pattern that also happens to repeat) — this is
-  // the one deliberate exception to "only ever narrows FIFO eligibility within a transaction": a
-  // repeating cross-transaction pattern is real, independent evidence a single-transaction view can
-  // never see.
+  // category, extended per the production-evidence follow-up task's requirement #2 — "audit
+  // directionally: inbound airdrop, outbound distribution... do not treat every outbound transfer
+  // as a sell"): a real, positive, deterministic signal — repeated transfers of the exact same
+  // (chain, contract, amount, DIRECTION) across DIFFERENT transactions, where the wallet has NEVER
+  // once moved that same token the OPPOSITE direction. Symmetric by design: repeated INBOUND legs
+  // with no outbound counterpart ever is the canonical "wallet receives an airdrop" signature;
+  // repeated OUTBOUND legs with no inbound counterpart ever is the canonical "wallet IS the
+  // distributor, fanning identical amounts out to many recipients" signature — neither is a real
+  // trade, and treating the outbound case as a genuine unmatched sell (as fifoEngine's old
+  // every-outbound-is-a-sell behavior did) inflates unmatched-sell counts with events that were
+  // never sales at all. Both directions reuse the single `distribution_airdrop` category (this
+  // module's enum has no separate "distribution" vs "airdrop" value) — `auditDistributionDirection`
+  // below reports the real inbound/outbound split for observability. Reclassifies from EITHER
+  // `genuine_trade_leg` (the common case: each drop is a lone leg in its own transaction) or
+  // `ordinary_transfer`/`dust_non_economic` (a same-tx pattern, or a tiny repeated amount, that also
+  // happens to repeat) — this is the one deliberate exception to "only ever narrows FIFO eligibility
+  // within a transaction": a repeating cross-transaction pattern is real, independent evidence a
+  // single-transaction view can never see. Never reclassifies `router_intermediary`, `bridge`, or
+  // `lp_staking` — those already have their own real, non-guessed exclusion reason.
   const outboundTokenKeys = new Set(
     events.filter((e) => e.direction === 'outbound').map((e) => `${e.chain}:${e.contract.toLowerCase()}`),
   )
-  const candidateInboundGroups = new Map<string, NormalizedEvent[]>()
+  const inboundTokenKeys = new Set(
+    events.filter((e) => e.direction === 'inbound').map((e) => `${e.chain}:${e.contract.toLowerCase()}`),
+  )
+  const RECLASSIFIABLE: ReadonlySet<EventClassification> = new Set(['genuine_trade_leg', 'ordinary_transfer', 'dust_non_economic'])
+  const candidateGroups = new Map<string, NormalizedEvent[]>()
   for (const e of events) {
     const classification = classifications.get(e)
-    if ((classification !== 'genuine_trade_leg' && classification !== 'ordinary_transfer') || e.direction !== 'inbound') continue
-    const key = `${e.chain}:${e.contract.toLowerCase()}:${e.amount}`
-    const list = candidateInboundGroups.get(key)
+    if (!classification || !RECLASSIFIABLE.has(classification)) continue
+    const key = `${e.chain}:${e.contract.toLowerCase()}:${e.amount}:${e.direction}`
+    const list = candidateGroups.get(key)
     if (list) list.push(e)
-    else candidateInboundGroups.set(key, [e])
+    else candidateGroups.set(key, [e])
   }
-  for (const [key, list] of candidateInboundGroups) {
+  for (const [key, list] of candidateGroups) {
     if (list.length < 2) continue
-    const [chain, contract] = key.split(':')
-    if (outboundTokenKeys.has(`${chain}:${contract}`)) continue
+    const [chain, contract, , direction] = key.split(':')
+    const oppositeTokenKeys = direction === 'inbound' ? outboundTokenKeys : inboundTokenKeys
+    if (oppositeTokenKeys.has(`${chain}:${contract}`)) continue
     for (const e of list) classifications.set(e, 'distribution_airdrop')
   }
 
   return events.map((event) => ({ event, classification: classifications.get(event) ?? 'unknown' }))
 }
 
+// DIRECTIONAL DISTRIBUTION AUDIT, DISCLOSED (requirement #2): a real, observability-only split of
+// every `distribution_airdrop`-classified event by direction — inbound (wallet received an
+// airdrop) vs outbound (wallet distributed to others) — plus, for completeness, the same
+// inbound/outbound split for `ordinary_transfer` and `genuine_trade_leg`. Never changes any
+// classification itself; purely a reporting view over `classifyEvents`' own output.
+export type DirectionalClassificationAudit = {
+  inboundAirdrop: number
+  outboundDistribution: number
+  ordinaryWalletTransfer: number
+  genuineTradeLeg: number
+}
+export function auditDistributionDirection(classified: readonly ClassifiedEvent[]): DirectionalClassificationAudit {
+  const audit: DirectionalClassificationAudit = { inboundAirdrop: 0, outboundDistribution: 0, ordinaryWalletTransfer: 0, genuineTradeLeg: 0 }
+  for (const c of classified) {
+    if (c.classification === 'distribution_airdrop') {
+      if (c.event.direction === 'inbound') audit.inboundAirdrop += 1
+      else if (c.event.direction === 'outbound') audit.outboundDistribution += 1
+      continue
+    }
+    if (c.classification === 'ordinary_transfer') audit.ordinaryWalletTransfer += 1
+    else if (c.classification === 'genuine_trade_leg') audit.genuineTradeLeg += 1
+  }
+  return audit
+}
+
 // FIFO-ELIGIBLE CLASSIFICATIONS, DISCLOSED (requirement #6): only these two categories may enter
 // FIFO. `unknown` is included per this module's own conservatism disclosure above — this classifier
 // currently never actually assigns it, but a caller must never silently drop a leg this pass
 // couldn't positively classify as non-trade.
-const FIFO_ELIGIBLE: ReadonlySet<EventClassification> = new Set(['genuine_trade_leg', 'unknown'])
+// DUST NO LONGER A PRE-FIFO EXCLUSION, DISCLOSED (production-evidence follow-up task — confirmed
+// bug): a real closed lot was lost because its BUY-side event's raw on-chain amount fell under
+// DUST_AMOUNT_THRESHOLD and was classified `dust_non_economic`, which previously ALSO meant
+// "removed from FIFO" — while its SELL-side event (a normal-sized amount) stayed in and became an
+// unmatched sell. Dust/materiality is a DISPLAY/reporting judgment (is this amount meaningful
+// enough to show, to count toward "significant" stats, to publish) — it must never delete a
+// structurally valid buy/sell event before FIFO gets to match it. `dust_non_economic` is now
+// FIFO-eligible: the classification itself is unchanged (still computed the same way, still used
+// to exclude dust from the structural-coverage denominator and from display/stats — see
+// countByClassification's callers), only its effect on FIFO admission changed.
+const FIFO_ELIGIBLE: ReadonlySet<EventClassification> = new Set(['genuine_trade_leg', 'unknown', 'dust_non_economic'])
 
 export function isFifoEligible(classification: EventClassification): boolean {
   return FIFO_ELIGIBLE.has(classification)
@@ -228,4 +276,70 @@ export function countByClassification(classified: readonly ClassifiedEvent[]): R
   }
   for (const c of classified) counts[c.classification] += 1
   return counts
+}
+
+// STRUCTURAL COVERAGE DENOMINATOR AUDIT, DISCLOSED (production-evidence follow-up task,
+// requirements #3/#4): the public PnL gate's "structural coverage" must be computed from GENUINE
+// trade evidence only — verified closed lots and genuinely-unmatched trade legs — never inflated by
+// events that were never trades to begin with. `distribution_airdrop`/`ordinary_transfer`/
+// `router_intermediary`/`bridge`/`lp_staking` are already excluded from FIFO entirely (see
+// FIFO_ELIGIBLE above), so they can never appear in `fifoUnmatchedBuys`/`fifoUnmatchedSells` — the
+// one remaining source of denominator inflation is `dust_non_economic`, which (per this same task's
+// requirement #1) DOES now enter FIFO, and can legitimately end up as one of FIFO's own unmatched
+// stragglers. Since fifoEngine reports only a COUNT (never which specific events remained
+// unmatched), `genuineUnmatchedBuys/Sells` is a real, disclosed, clamped-at-zero UPPER-BOUND
+// approximation: the raw unmatched count minus the total number of dust-classified events on that
+// side that were fed into FIFO. This can only ever REDUCE the denominator toward genuine evidence,
+// never inflate it, and is exact whenever fewer dust events exist than the raw unmatched count.
+export type StructuralCoverageAudit = {
+  rawUnmatchedBuys: number
+  rawUnmatchedSells: number
+  genuineUnmatchedBuys: number
+  genuineUnmatchedSells: number
+  excludedNonTradeBuys: Partial<Record<EventClassification, number>>
+  excludedNonTradeSells: Partial<Record<EventClassification, number>>
+  structuralCoverageNumerator: number
+  structuralCoverageDenominator: number
+  structuralCoverage: number | null
+}
+
+const NON_TRADE_CLASSIFICATIONS: readonly EventClassification[] = ['distribution_airdrop', 'ordinary_transfer', 'router_intermediary', 'bridge', 'lp_staking']
+
+export function computeStructuralCoverageAudit(
+  classified: readonly ClassifiedEvent[],
+  closedLotCount: number,
+  fifoUnmatchedBuys: number,
+  fifoUnmatchedSells: number,
+): StructuralCoverageAudit {
+  const excludedNonTradeBuys: Partial<Record<EventClassification, number>> = {}
+  const excludedNonTradeSells: Partial<Record<EventClassification, number>> = {}
+  for (const cls of NON_TRADE_CLASSIFICATIONS) { excludedNonTradeBuys[cls] = 0; excludedNonTradeSells[cls] = 0 }
+  let dustInbound = 0
+  let dustOutbound = 0
+  for (const c of classified) {
+    if (NON_TRADE_CLASSIFICATIONS.includes(c.classification)) {
+      if (c.event.direction === 'inbound') excludedNonTradeBuys[c.classification] = (excludedNonTradeBuys[c.classification] ?? 0) + 1
+      else if (c.event.direction === 'outbound') excludedNonTradeSells[c.classification] = (excludedNonTradeSells[c.classification] ?? 0) + 1
+      continue
+    }
+    if (c.classification === 'dust_non_economic') {
+      if (c.event.direction === 'inbound') dustInbound += 1
+      else if (c.event.direction === 'outbound') dustOutbound += 1
+    }
+  }
+  const genuineUnmatchedBuys = Math.max(0, fifoUnmatchedBuys - dustInbound)
+  const genuineUnmatchedSells = Math.max(0, fifoUnmatchedSells - dustOutbound)
+  const structuralCoverageNumerator = closedLotCount
+  const structuralCoverageDenominator = structuralCoverageNumerator + genuineUnmatchedBuys + genuineUnmatchedSells
+  return {
+    rawUnmatchedBuys: fifoUnmatchedBuys,
+    rawUnmatchedSells: fifoUnmatchedSells,
+    genuineUnmatchedBuys,
+    genuineUnmatchedSells,
+    excludedNonTradeBuys,
+    excludedNonTradeSells,
+    structuralCoverageNumerator,
+    structuralCoverageDenominator,
+    structuralCoverage: structuralCoverageDenominator > 0 ? structuralCoverageNumerator / structuralCoverageDenominator : null,
+  }
 }

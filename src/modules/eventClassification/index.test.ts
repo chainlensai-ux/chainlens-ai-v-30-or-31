@@ -3,7 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { NormalizedEvent } from '../normalization/types'
-import { classifyEvents, filterToFifoEligible, countByClassification, isFifoEligible, DUST_AMOUNT_THRESHOLD } from './index'
+import { classifyEvents, filterToFifoEligible, countByClassification, isFifoEligible, DUST_AMOUNT_THRESHOLD, auditDistributionDirection, computeStructuralCoverageAudit } from './index'
 
 const WALLET = '0xwallet'
 const ROUTER = '0xrouter'
@@ -141,4 +141,95 @@ test('countByClassification reports real counts for every one of the 8 declared 
   const counts = countByClassification(classified)
   assert.equal(Object.keys(counts).length, 8)
   assert.equal(counts.genuine_trade_leg, 1)
+})
+
+// =================================================================================================
+// PRODUCTION-EVIDENCE FOLLOW-UP — confirmed bug: a real closed lot was lost because its tiny
+// (dust-threshold) buy-side event was excluded from FIFO while its normal-sized sell-side event
+// stayed in and became an unmatched sell.
+// =================================================================================================
+
+test('HARD ASSERTION: a tiny buy later sold must remain matchable — dust is a classification label, never a pre-FIFO exclusion', () => {
+  const tinyBuy = event({ txHash: '0xtinybuy', direction: 'inbound', contract: TOKEN_A, amount: DUST_AMOUNT_THRESHOLD / 10 })
+  const sell = event({ txHash: '0xnormalsell', direction: 'outbound', contract: TOKEN_A, amount: DUST_AMOUNT_THRESHOLD / 10 })
+
+  const classified = classifyEvents([tinyBuy, sell], noRouters)
+  assert.equal(classified.find((c) => c.event === tinyBuy)!.classification, 'dust_non_economic', 'still classified dust for display/stats purposes')
+  assert.equal(isFifoEligible('dust_non_economic'), true, 'HARD ASSERTION: dust must be FIFO-eligible — it can never delete a canonical event before matching')
+
+  const filtered = filterToFifoEligible([tinyBuy, sell], noRouters)
+  assert.deepEqual(filtered, [tinyBuy, sell], 'both the dust-labeled buy and its sell must reach FIFO — dust is applied only after, for display/stats/significance')
+})
+
+test('dust label is applied for display/stats only, after FIFO — never removes the event itself', () => {
+  const tinyBuy = event({ txHash: '0xtinybuy2', direction: 'inbound', contract: TOKEN_A, amount: DUST_AMOUNT_THRESHOLD / 5 })
+  const classified = classifyEvents([tinyBuy], noRouters)
+  assert.equal(classified[0].classification, 'dust_non_economic')
+  const filtered = filterToFifoEligible([tinyBuy], noRouters)
+  assert.equal(filtered.length, 1, 'the dust-classified event itself is never removed from the FIFO-eligible set')
+  assert.equal(filtered[0], tinyBuy)
+})
+
+// =================================================================================================
+// PRODUCTION-EVIDENCE FOLLOW-UP — requirement #2: an outbound distribution must never be treated as
+// a genuine unmatched sell.
+// =================================================================================================
+
+test('HARD ASSERTION: repeated identical-amount OUTBOUND transfers with no inbound counterpart ever are distribution_airdrop (outbound distributor pattern), never genuine sells', () => {
+  const out1 = event({ txHash: '0xdist1', direction: 'outbound', contract: TOKEN_B, amount: 500 })
+  const out2 = event({ txHash: '0xdist2', direction: 'outbound', contract: TOKEN_B, amount: 500 })
+  const out3 = event({ txHash: '0xdist3', direction: 'outbound', contract: TOKEN_B, amount: 500 })
+
+  const classified = classifyEvents([out1, out2, out3], noRouters)
+  for (const c of classified) assert.equal(c.classification, 'distribution_airdrop')
+  assert.equal(isFifoEligible('distribution_airdrop'), false)
+
+  const filtered = filterToFifoEligible([out1, out2, out3], noRouters)
+  assert.deepEqual(filtered, [], 'none of the outbound-distribution legs may enter FIFO as sells')
+})
+
+test('auditDistributionDirection reports the real inbound-airdrop vs outbound-distribution split', () => {
+  const inbound1 = event({ txHash: '0xin1', direction: 'inbound', contract: TOKEN_A, amount: 500 })
+  const inbound2 = event({ txHash: '0xin2', direction: 'inbound', contract: TOKEN_A, amount: 500 })
+  const outbound1 = event({ txHash: '0xout1', direction: 'outbound', contract: TOKEN_B, amount: 500 })
+  const outbound2 = event({ txHash: '0xout2', direction: 'outbound', contract: TOKEN_B, amount: 500 })
+  const genuine = event({ txHash: '0xgenuine1', direction: 'inbound', contract: TOKEN_C, amount: 3 })
+
+  const classified = classifyEvents([inbound1, inbound2, outbound1, outbound2, genuine], noRouters)
+  const audit = auditDistributionDirection(classified)
+  assert.equal(audit.inboundAirdrop, 2)
+  assert.equal(audit.outboundDistribution, 2)
+  assert.equal(audit.genuineTradeLeg, 1)
+})
+
+// =================================================================================================
+// PRODUCTION-EVIDENCE FOLLOW-UP — requirements #3/#4: structural coverage denominator audit.
+// =================================================================================================
+
+test('HARD ASSERTION: the structural coverage denominator excludes proven non-trades and dust from unmatched counts', () => {
+  const distribution = event({ txHash: '0xd1', direction: 'inbound', contract: TOKEN_A, amount: 500 })
+  const distribution2 = event({ txHash: '0xd2', direction: 'inbound', contract: TOKEN_A, amount: 500 })
+  const tinyDust = event({ txHash: '0xdust1', direction: 'inbound', contract: TOKEN_B, amount: DUST_AMOUNT_THRESHOLD / 10 })
+  const genuineTrade = event({ txHash: '0xg1', direction: 'inbound', contract: TOKEN_C, amount: 5 })
+
+  const classified = classifyEvents([distribution, distribution2, tinyDust, genuineTrade], noRouters)
+  // Simulates fifoEngine's own raw counts: the distribution pair never reached FIFO at all (already
+  // excluded), so it contributes nothing to fifoUnmatchedBuys; the dust event DID reach FIFO (per
+  // this task's requirement #1) and, in this scenario, remained unmatched.
+  const audit = computeStructuralCoverageAudit(classified, /* closedLotCount */ 0, /* fifoUnmatchedBuys */ 2, /* fifoUnmatchedSells */ 0)
+  assert.equal(audit.rawUnmatchedBuys, 2)
+  assert.equal(audit.genuineUnmatchedBuys, 1, 'the dust-classified unmatched buy is excluded from the genuine denominator, leaving only the real trade leg')
+  assert.equal(audit.excludedNonTradeBuys.distribution_airdrop, 2)
+  assert.equal(audit.structuralCoverageDenominator, 0 + 1 + 0)
+})
+
+test('structural coverage denominator falls back to raw unmatched counts when no dust is present', () => {
+  const genuineBuy = event({ txHash: '0xg2', direction: 'inbound', contract: TOKEN_A, amount: 5 })
+  const classified = classifyEvents([genuineBuy], noRouters)
+  const audit = computeStructuralCoverageAudit(classified, 3, 1, 2)
+  assert.equal(audit.genuineUnmatchedBuys, 1)
+  assert.equal(audit.genuineUnmatchedSells, 2)
+  assert.equal(audit.structuralCoverageNumerator, 3)
+  assert.equal(audit.structuralCoverageDenominator, 6)
+  assert.equal(audit.structuralCoverage, 3 / 6)
 })

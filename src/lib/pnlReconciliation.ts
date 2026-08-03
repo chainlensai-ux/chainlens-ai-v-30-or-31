@@ -148,7 +148,30 @@ function recordSourceAttempts(counters: SourceAttemptCounters, attempts: readonl
     bySource[bucketKey] = (bySource[bucketKey] ?? 0) + 1
   }
 }
-export type PnlReconciliationInput = { fifoEngineResult: FifoOutput; pnlEngineResult: PnlSummaryResult; routerInferenceOutput?: RouterInferenceLike | null; syntheticPnlAssemblyOutput?: SyntheticPnlSummary | null }
+// STRUCTURAL COVERAGE DENOMINATOR AUDIT, DISCLOSED (production-evidence follow-up task,
+// requirements #3/#4): optional, additive input — computed by the caller (src/pipeline/index.ts,
+// via src/modules/eventClassification's computeStructuralCoverageAudit) from real event
+// classification data this module has no visibility into on its own. When supplied, ONLY the
+// `structuralCoverage` REPORTING metric in publicPnlGateAudit below is recomputed from it — the
+// actual gate decision (structuralConsistent/publicPnlStatus/blockingReasons, all still driven by
+// fifoEngine's own correctedUnmatchedBuys/Sells, exactly as before) is completely untouched, per
+// this task's own "do not change pricing, thresholds or public gate rules — fix the evidence
+// feeding the existing gate" constraint. Omitting it preserves this module's original structural-
+// coverage formula exactly (backward compatible for any other caller/test).
+export type StructuralCoverageDenominatorAudit = {
+  genuineUnmatchedBuys: number
+  genuineUnmatchedSells: number
+  excludedNonTradeBuys: Record<string, number>
+  excludedNonTradeSells: Record<string, number>
+}
+
+export type PnlReconciliationInput = {
+  fifoEngineResult: FifoOutput
+  pnlEngineResult: PnlSummaryResult
+  routerInferenceOutput?: RouterInferenceLike | null
+  syntheticPnlAssemblyOutput?: SyntheticPnlSummary | null
+  structuralCoverageDenominatorAudit?: StructuralCoverageDenominatorAudit | null
+}
 
 // PUBLIC PNL GATE AUDIT, DISCLOSED (evidence-first PnL completion task, requirement #1): a single,
 // exhaustive report of every rule the public PnL gate actually evaluates, so a wallet blocked from
@@ -166,6 +189,19 @@ export type PublicPnlGateAudit = {
   unmatchedSellCount: number
   integrityTier: 'full' | 'partial' | 'blocked'
   blockingReasons: PublicPnlGateBlockingReason[]
+  // DENOMINATOR AUDIT, DISCLOSED (requirement #4): real breakdown of what structuralCoverage above
+  // is actually computed from. rawUnmatchedBuys/Sells are fifoEngine's own (post-classification-
+  // filter) counts; genuineUnmatchedBuys/Sells and excludedNonTradeBuys/Sells are populated only
+  // when the caller supplied `structuralCoverageDenominatorAudit` — otherwise null/empty, never a
+  // guessed value standing in for real classification data this module doesn't have on its own.
+  rawUnmatchedBuys: number
+  rawUnmatchedSells: number
+  genuineUnmatchedBuys: number | null
+  genuineUnmatchedSells: number | null
+  excludedNonTradeBuys: Record<string, number>
+  excludedNonTradeSells: Record<string, number>
+  structuralCoverageNumerator: number
+  structuralCoverageDenominator: number
 }
 
 // MISSING-EVIDENCE BREAKDOWN, DISCLOSED (requirement #7): the single `missingEvidenceCount` number
@@ -597,7 +633,17 @@ export function createPnlReconciliation(config: Config = {}) {
       // values structuralConsistent/publicPnlStatus above are computed from — every threshold below
       // is the real threshold this gate enforces, not a separate/looser one.
       const fullyPricedLotCount = updatedFifoLots.filter((l) => l.costBasisUsd !== null && l.proceedsUsd !== null).length
-      const structuralDenominator = fifoLots.length + correctedUnmatchedBuys + correctedUnmatchedSells
+      // STRUCTURAL COVERAGE, DISCLOSED (requirement #3): when the caller supplies real event-
+      // classification data, the denominator uses GENUINE unmatched trade legs only (excluding
+      // proven distributions/airdrops/ordinary transfers/router intermediaries/bridge/LP-staking/
+      // dust — see StructuralCoverageDenominatorAudit's own header). Falls back to fifoEngine's raw
+      // correctedUnmatchedBuys/Sells (today's original formula, unchanged) when no audit is
+      // supplied — the gate DECISION (structuralConsistent/publicPnlStatus/blockingReasons below)
+      // always uses the raw counts regardless, per this task's "do not change gate rules" limit.
+      const denomAudit = input.structuralCoverageDenominatorAudit ?? null
+      const structuralCoverageUnmatchedBuys = denomAudit?.genuineUnmatchedBuys ?? correctedUnmatchedBuys
+      const structuralCoverageUnmatchedSells = denomAudit?.genuineUnmatchedSells ?? correctedUnmatchedSells
+      const structuralDenominator = fifoLots.length + structuralCoverageUnmatchedBuys + structuralCoverageUnmatchedSells
       const blockingReasons: PublicPnlGateBlockingReason[] = []
       if (fifoLots.length !== pnlLots.length) {
         blockingReasons.push({ rule: 'engine_lot_count_agreement', threshold: 'fifoEngine closed lots === pnlEngine closed lots', actualValue: `${fifoLots.length} vs ${pnlLots.length}` })
@@ -623,6 +669,14 @@ export function createPnlReconciliation(config: Config = {}) {
         unmatchedSellCount: correctedUnmatchedSells,
         integrityTier: structuralConsistent ? 'full' : missingEvidenceCount <= 3 && fifoLots.length > 0 ? 'partial' : 'blocked',
         blockingReasons,
+        rawUnmatchedBuys: correctedUnmatchedBuys,
+        rawUnmatchedSells: correctedUnmatchedSells,
+        genuineUnmatchedBuys: denomAudit?.genuineUnmatchedBuys ?? null,
+        genuineUnmatchedSells: denomAudit?.genuineUnmatchedSells ?? null,
+        excludedNonTradeBuys: denomAudit?.excludedNonTradeBuys ?? {},
+        excludedNonTradeSells: denomAudit?.excludedNonTradeSells ?? {},
+        structuralCoverageNumerator: fifoLots.length,
+        structuralCoverageDenominator: structuralDenominator,
       }
 
       const summary: PnlReconciliationSummary = {

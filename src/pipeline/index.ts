@@ -65,7 +65,7 @@ import type { BuyTimeline, BuyTimelineEntry, SellTimeline, TimelineBuilderResult
 import { buildRecoveryPolicyObject } from '../modules/recoveryPolicy/index'
 import type { RecoveryPolicyResult } from '../modules/recoveryPolicy/types'
 import { buildFifoOutput } from '../modules/fifoEngine/index'
-import { classifyEvents, filterToFifoEligible, countByClassification, type EventClassification } from '../modules/eventClassification/index'
+import { classifyEvents, filterToFifoEligible, countByClassification, computeStructuralCoverageAudit, type EventClassification } from '../modules/eventClassification/index'
 import type { FifoOutput } from '../modules/fifoEngine/types'
 import { buildBehaviorIntelObject } from '../modules/behaviorIntel/index'
 import type { BehaviorIntelResult, WindowCoverage } from '../modules/behaviorIntel/types'
@@ -2612,11 +2612,28 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // whenever both real engines (fifoAndPnl, adaptedPnlSummary) had none — contradicting syntheticPnl's
   // own documented "never an input to the real, verified engines" contract. Removed entirely; official
   // PnL now comes only from the two real engines below.
+  // STRUCTURAL COVERAGE DENOMINATOR AUDIT, DISCLOSED (production-evidence follow-up task,
+  // requirements #3/#4): real event classification, pure/local/no provider calls, computed here
+  // (not inside pnlReconciliation.ts, which has no visibility into per-event classification) and
+  // threaded through so the public gate's structuralCoverage REPORTING metric reflects genuine
+  // trade evidence only — the gate DECISION itself (structuralConsistent/publicPnlStatus) is
+  // untouched, still driven by fifoAndPnl's own raw unmatched counts (see pnlReconciliation.ts's
+  // own disclosure at its structuralCoverage computation).
+  const structuralCoverageClassified = classifyEvents(canonicalNormalizedEvents, { knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES })
+  const structuralCoverageAudit = computeStructuralCoverageAudit(
+    structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuys, fifoAndPnl.unmatchedSells,
+  )
   const reconciledPnlSummary = await pnlReconciliation.reconcile({
     fifoEngineResult: fifoAndPnl,
     pnlEngineResult: adaptedPnlSummary,
     routerInferenceOutput: routerInferenceResult,
     syntheticPnlAssemblyOutput: syntheticPnl,
+    structuralCoverageDenominatorAudit: {
+      genuineUnmatchedBuys: structuralCoverageAudit.genuineUnmatchedBuys,
+      genuineUnmatchedSells: structuralCoverageAudit.genuineUnmatchedSells,
+      excludedNonTradeBuys: structuralCoverageAudit.excludedNonTradeBuys,
+      excludedNonTradeSells: structuralCoverageAudit.excludedNonTradeSells,
+    },
   })
   const reconciledFifoAndPnl: FifoOutput = {
     ...fifoAndPnl,

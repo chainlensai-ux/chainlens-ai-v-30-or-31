@@ -16,7 +16,12 @@ function reconciled(overrides: Partial<PnlReconciliationSummary> = {}): PnlRecon
     priceRecoveredCount: 0, routerCorrectedCount: 0, syntheticAlignedCount: 0, missingEvidenceCount: 0,
     missingEvidenceBreakdown: { criticalTradeEvidenceMissing: 0, pricingEvidenceMissing: 0, dustExcluded: 0, nonTradeExcluded: 0 },
     publicPnlStatus: 'available',
-    publicPnlGateAudit: { verifiedLotCount: 1, fullyPricedLotCount: 1, pricingCoverage: 1, structuralCoverage: 1, unmatchedBuyCount: 0, unmatchedSellCount: 0, integrityTier: 'full', blockingReasons: [] },
+    publicPnlGateAudit: {
+      verifiedLotCount: 1, fullyPricedLotCount: 1, pricingCoverage: 1, structuralCoverage: 1, unmatchedBuyCount: 0, unmatchedSellCount: 0,
+      integrityTier: 'full', blockingReasons: [],
+      rawUnmatchedBuys: 0, rawUnmatchedSells: 0, genuineUnmatchedBuys: null, genuineUnmatchedSells: null,
+      excludedNonTradeBuys: {}, excludedNonTradeSells: {}, structuralCoverageNumerator: 1, structuralCoverageDenominator: 1,
+    },
     mismatches: [],
     ...overrides,
   }
