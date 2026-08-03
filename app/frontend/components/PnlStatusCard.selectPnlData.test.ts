@@ -15,7 +15,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { selectVerifiedPnlData, selectDisplayedUnrealizedPnl, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl, PNL_UNAVAILABLE_MESSAGE, hasGlobalSynthetic, hasPerChainSynthetic, shouldShowSyntheticGlobal, shouldShowSyntheticPerChain, resolvePnlDisplayMode, selectBoundedSampleDisclosure } from './PnlStatusCard'
+import { selectVerifiedPnlData, selectDisplayedUnrealizedPnl, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl, PNL_UNAVAILABLE_MESSAGE, hasGlobalSynthetic, hasPerChainSynthetic, shouldShowSyntheticGlobal, shouldShowSyntheticPerChain, resolvePnlDisplayMode, selectBoundedSampleDisclosure, selectDisplayedPnl, PER_CHAIN_BOUNDED_SAMPLE_MESSAGE } from './PnlStatusCard'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
@@ -591,5 +591,103 @@ describe('bounded-PnL-UI end-to-end regression: partial/available/unavailable re
     assert.equal(disclosure!.verifiedClosedLots, 19)
     assert.ok(Math.abs(disclosure!.verifiedPricingCoveragePercent! - 70.37) < 0.01)
     assert.equal(disclosure!.warning, 'Verified 90-day sample, not complete wallet history')
+  })
+})
+
+describe('selectDisplayedPnl — canonical single-source selector (contradictory-tiles follow-up task)', () => {
+  it('HARD ASSERTION: exact live case — bounded sample (realized -$3,903.53, unrealized -$19.02) — realized tile and total both use the canonical reconciliationSummary values, total is the exact sum', () => {
+    const summary = reconciliationSummary({ realizedPnlUsd: -3903.53, unrealizedPnlUsd: -19.02 })
+    const displayed = selectDisplayedPnl({
+      pnlV2: pnlV2({ realizedPnlUsd: 0, unrealizedPnlUsd: 0, costBasis: [] }), // deliberately wrong/zeroed pnlV2 — must never be read
+      publicPnlStatus: 'limited_verified_sample',
+      reconciliationSummary: summary,
+    })
+    assert.equal(displayed.source, 'reconciliationSummary')
+    assert.equal(displayed.realizedPnlUsd, -3903.53)
+    assert.equal(displayed.unrealizedPnlUsd, -19.02)
+    assert.equal(displayed.totalPnlUsd, -3922.55)
+  })
+
+  it('HARD ASSERTION: never falls back to pnlV2, syntheticPnl, or zero when publicPnlStatus is partial — pnlV2 present with real (non-zero) numbers is still ignored', () => {
+    const displayed = selectDisplayedPnl({
+      pnlV2: pnlV2({ realizedPnlUsd: 999999, unrealizedPnlUsd: 888888, costBasis: [{ tokenAddress: '0xa', chainId: 8453, totalQuantity: 1, totalCostUsd: 500, averageCostUsd: 500 }] }),
+      publicPnlStatus: 'limited_verified_sample',
+      reconciliationSummary: reconciliationSummary({ realizedPnlUsd: -100, unrealizedPnlUsd: -5 }),
+    })
+    assert.equal(displayed.realizedPnlUsd, -100, 'must be the reconciliationSummary value, never pnlV2.realizedPnlUsd')
+    assert.equal(displayed.unrealizedPnlUsd, -5)
+    assert.equal(displayed.costBasisUsd, null, 'reconciliationSummary carries no verified cost-basis field — must never borrow pnlV2.costBasis')
+  })
+
+  it('totalPnlUsd is null (never a partial/one-sided sum) when either realized or unrealized is null', () => {
+    const displayed = selectDisplayedPnl({
+      pnlV2: null,
+      publicPnlStatus: 'limited_verified_sample',
+      reconciliationSummary: reconciliationSummary({ realizedPnlUsd: -100, unrealizedPnlUsd: null }),
+    })
+    assert.equal(displayed.realizedPnlUsd, -100)
+    assert.equal(displayed.unrealizedPnlUsd, null)
+    assert.equal(displayed.totalPnlUsd, null)
+  })
+
+  it('HARD ASSERTION: no $0.00 realized/cost-basis fallback when reconciliationSummary is unwired for a partial status — honest nulls, never zero', () => {
+    const displayed = selectDisplayedPnl({ pnlV2: pnlV2({ realizedPnlUsd: 0, unrealizedPnlUsd: 0 }), publicPnlStatus: 'limited_verified_sample', reconciliationSummary: null })
+    assert.equal(displayed.source, 'none')
+    assert.equal(displayed.realizedPnlUsd, null)
+    assert.equal(displayed.costBasisUsd, null)
+    assert.notEqual(displayed.realizedPnlUsd, 0)
+  })
+
+  it('cost basis and ROI are honest disclosures, never $0.00/"No cost-basis evidence" — a bounded sample is not "lacking evidence"', () => {
+    const displayed = selectDisplayedPnl({ pnlV2: null, publicPnlStatus: 'limited_verified_sample', reconciliationSummary: reconciliationSummary() })
+    assert.equal(displayed.costBasisUsd, null)
+    assert.equal(displayed.costBasisLabel, 'Not available for bounded sample')
+    assert.equal(displayed.roiPercent, null)
+    assert.equal(displayed.roiLabel, 'Not calculated for bounded sample')
+    assert.notEqual(displayed.roiLabel, 'No cost-basis evidence')
+  })
+
+  it("HARD ASSERTION: integrity label says 'PARTIAL — VERIFIED {N}-DAY SAMPLE' for a bounded sample, never 'Not available (V2 engine)'", () => {
+    const displayed = selectDisplayedPnl({ pnlV2: null, publicPnlStatus: 'limited_verified_sample', reconciliationSummary: reconciliationSummary() })
+    assert.equal(displayed.integrityLabel, 'PARTIAL — VERIFIED 90-DAY SAMPLE')
+    assert.notEqual(displayed.integrityLabel, 'Not available (V2 engine)')
+  })
+
+  it("HARD ASSERTION: 'unavailable' status keeps the existing wording and pnlV2-derived pass-through — unchanged by this task", () => {
+    const summary = reconciliationSummary({ realizedPnlUsd: -3903.53 })
+    const displayed = selectDisplayedPnl({ pnlV2: pnlV2({ realizedPnlUsd: 42, costBasis: [] }), publicPnlStatus: 'unavailable', reconciliationSummary: summary })
+    assert.equal(displayed.source, 'pnlV2')
+    assert.equal(displayed.realizedPnlUsd, 42, 'unavailable must still read pnlV2, never reconciliationSummary')
+    assert.equal(displayed.integrityLabel, 'Not available (V2 engine)')
+  })
+
+  it("HARD ASSERTION: 'ok' (available) status keeps the existing pnlV2 pass-through and integrity wording — unchanged by this task", () => {
+    const displayed = selectDisplayedPnl({
+      pnlV2: pnlV2({ realizedPnlUsd: 100, costBasis: [{ tokenAddress: '0xa', chainId: 8453, totalQuantity: 1, totalCostUsd: 50, averageCostUsd: 50 }] }),
+      publicPnlStatus: 'ok',
+      unrealizedReconciliation: reconciliation({ officialUnrealizedPnlUsd: 10 }),
+      reconciliationSummary: reconciliationSummary({ realizedPnlUsd: -999 }),
+    })
+    assert.equal(displayed.source, 'pnlV2')
+    assert.equal(displayed.realizedPnlUsd, 100, "'ok' must never read reconciliationSummary either")
+    assert.equal(displayed.totalPnlUsd, 110)
+    assert.equal(displayed.costBasisUsd, 50)
+    assert.equal(displayed.integrityLabel, 'Not available (V2 engine)')
+  })
+})
+
+describe('PnlStatusCard rendering — contradictory-tiles regression coverage (pure selector level)', () => {
+  it("HARD ASSERTION: a bounded sample never renders per-chain data from pnlV2 — PER_CHAIN_BOUNDED_SAMPLE_MESSAGE is the literal, exact string the component falls back to", () => {
+    assert.equal(PER_CHAIN_BOUNDED_SAMPLE_MESSAGE, 'Per-chain breakdown not available for this verified sample')
+  })
+
+  it('isStablePnl + selectDisplayedPnl together prove a bounded sample is never gated by pnlV2-derived stability while still exposing a real value', () => {
+    assert.equal(isStablePnl({ realizedPnlUsd: 0, unrealizedPnlUsd: 0, publicPnlStatus: 'limited_verified_sample' }), true)
+    const displayed = selectDisplayedPnl({
+      pnlV2: pnlV2({ realizedPnlUsd: 0, unrealizedPnlUsd: 0 }),
+      publicPnlStatus: 'limited_verified_sample',
+      reconciliationSummary: reconciliationSummary({ realizedPnlUsd: -3903.53, unrealizedPnlUsd: -19.02 }),
+    })
+    assert.equal(displayed.realizedPnlUsd, -3903.53, 'the canonical value must win regardless of pnlV2 stability')
   })
 })

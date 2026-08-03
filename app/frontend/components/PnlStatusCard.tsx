@@ -260,6 +260,14 @@ export function selectVerifiedPnlData(
 // official, or (b) fabricate a per-chain split of the aggregate that doesn't exist, this column is
 // replaced with an honest pointer to the one real reconciled number, shown above, whenever a
 // canonical reconciliation was supplied to this card at all (regardless of its own value/status).
+// PER-CHAIN, BOUNDED SAMPLE, DISCLOSED (requirement #7): `reconciliationSummary` carries no
+// per-chain breakdown field today (only wallet-level totals) — so a bounded sample can never show a
+// per-chain table SOURCED FROM the canonical reconciliation, and per requirement #7 the pnlV2-derived
+// table (a DIFFERENT, non-canonical source for this status) must not be shown in its place either.
+// The one honest option is this explicit unavailability sentence — never the old "verified V2
+// engine" wording, which reads as if pnlV2 itself were the authority for a bounded sample (it isn't).
+export const PER_CHAIN_BOUNDED_SAMPLE_MESSAGE = 'Per-chain breakdown not available for this verified sample'
+
 function ChainBreakdownTable({
   chainBreakdown,
   unreliable,
@@ -360,6 +368,95 @@ export function selectBoundedSampleDisclosure(
   }
 }
 
+// CONTRADICTORY-TILES FIX, DISCLOSED (found live, this task — confirmed production bug: the bounded
+// disclosure block above correctly showed realized PnL -$3,903.53 from `reconciliationSummary`,
+// while the MAIN MetricCard tiles two inches below it — still wired to `selectVerifiedPnlData`'s
+// pnlV2-only numbers — showed a contradictory $0.00 Realized / unrealized-only Total / $0.00 Cost
+// Basis / "Not available (V2 engine)" Integrity, all on the SAME card for the SAME scan). Root
+// cause: this card always had TWO independent number sources (pnlV2 for the main tiles,
+// reconciliationSummary for the disclosure block added by the prior task) that were never
+// reconciled with each other. `selectDisplayedPnl` is now the ONE canonical selector every visible
+// tile reads from — for a bounded sample (`publicPnlStatus === 'limited_verified_sample'`), EVERY
+// number comes from `reconciliationSummary` alone, matching the disclosure block exactly; for
+// 'ok'/'unavailable'/unset, it is a pure pass-through of the existing, unchanged
+// `selectVerifiedPnlData` result — zero behavior change for those two statuses.
+export type DisplayedPnlSource = 'reconciliationSummary' | 'pnlV2' | 'none'
+
+export type DisplayedPnl = {
+  status: PublicPnlStatus | null
+  realizedPnlUsd: number | null
+  unrealizedPnlUsd: number | null
+  totalPnlUsd: number | null
+  costBasisUsd: number | null
+  costBasisLabel: string | null
+  roiPercent: number | null
+  roiLabel: string | null
+  integrityLabel: string
+  source: DisplayedPnlSource
+}
+
+// NEVER-FALL-BACK, DISCLOSED (requirement #3): when `publicPnlStatus === 'limited_verified_sample'`,
+// this function reads `reconciliationSummary` ONLY — never `pnlV2.realizedPnlUsd`, never
+// `syntheticPnl`, never a fabricated `0`. A caller that hasn't wired `reconciliationSummary` yet
+// gets honest nulls (source: 'none'), never a silent fallback to the wrong number.
+//
+// COST BASIS / ROI, DISCLOSED (requirements #4/#5): `reconciliationSummary`/`publicPnlGateAudit`
+// carry no verified, canonical per-wallet cost-basis figure today (only per-lot costBasisUsd inside
+// individual matched lots, never summed/exposed at this level) — so for a bounded sample this
+// function honestly returns `costBasisUsd: null` with the literal label "Not available for bounded
+// sample", and `roiPercent: null` with "Not calculated for bounded sample", rather than either
+// showing a fabricated $0.00/"No cost-basis evidence" (which reads as "this whole sample lacks
+// evidence", not true — 19 lots ARE verified) or computing a number from data this function was
+// never given. If a real canonical cost-basis field is ever added to PnlReconciliationSummary, this
+// is the one place that would need to start reading it.
+export function selectDisplayedPnl(params: {
+  pnlV2: PnlV2 | null | undefined
+  publicPnlStatus?: PublicPnlStatus | null
+  unrealizedReconciliation?: UnrealizedReconciliationSummary | null
+  reconciliationSummary?: PnlReconciliationSummary | null
+}): DisplayedPnl {
+  const status = params.publicPnlStatus ?? null
+
+  if (status === 'limited_verified_sample') {
+    const summary = params.reconciliationSummary
+    if (!summary) {
+      return {
+        status, realizedPnlUsd: null, unrealizedPnlUsd: null, totalPnlUsd: null,
+        costBasisUsd: null, costBasisLabel: 'Not available for bounded sample',
+        roiPercent: null, roiLabel: 'Not calculated for bounded sample',
+        integrityLabel: 'PARTIAL — VERIFIED SAMPLE', source: 'none',
+      }
+    }
+    const scanWindowDays = summary.publicPnlGateAudit.scanWindowDays ?? 90
+    const realizedPnlUsd = summary.realizedPnlUsd
+    const unrealizedPnlUsd = summary.unrealizedPnlUsd
+    const totalPnlUsd = realizedPnlUsd != null && unrealizedPnlUsd != null ? realizedPnlUsd + unrealizedPnlUsd : null
+    return {
+      status, realizedPnlUsd, unrealizedPnlUsd, totalPnlUsd,
+      costBasisUsd: null, costBasisLabel: 'Not available for bounded sample',
+      roiPercent: null, roiLabel: 'Not calculated for bounded sample',
+      integrityLabel: `PARTIAL — VERIFIED ${scanWindowDays}-DAY SAMPLE`, source: 'reconciliationSummary',
+    }
+  }
+
+  // 'ok' / 'unavailable' / unset — UNCHANGED pass-through of the existing pnlV2-based selector, per
+  // requirement #4's own "keep unavailable wording only for truly unavailable status" and this
+  // task's "available behavior unchanged" regression requirement.
+  const pnl = selectVerifiedPnlData(params.pnlV2, params.publicPnlStatus, params.unrealizedReconciliation)
+  return {
+    status,
+    realizedPnlUsd: pnl.realizedPnlUsd,
+    unrealizedPnlUsd: pnl.unrealizedPnlUsd,
+    totalPnlUsd: pnl.totalPnlUsd,
+    costBasisUsd: pnl.totalCostBasisUsd,
+    costBasisLabel: null,
+    roiPercent: pnl.roi.value,
+    roiLabel: pnl.roi.display,
+    integrityLabel: 'Not available (V2 engine)',
+    source: params.pnlV2 != null ? 'pnlV2' : 'none',
+  }
+}
+
 // GLOBAL-VS-PER-CHAIN SYNTHETIC GATING, DISCLOSED. RELAXED, DISCLOSED (this task's own request —
 // Nansen-style "always show a number when the real engine can't"): `hasGlobalSynthetic` previously
 // additionally required `syntheticPnl.totalPnlUsd !== null` — since computeSyntheticPnl (see that
@@ -418,6 +515,15 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   const pnl = selectVerifiedPnlData(pnlV2, publicPnlStatus, unrealizedReconciliation)
   const isActive = pnlV2 != null
   const boundedSample = selectBoundedSampleDisclosure(publicPnlStatus, reconciliationSummary)
+  // CANONICAL DISPLAYED PNL, DISCLOSED (contradictory-tiles follow-up task): the ONE selector every
+  // visible tile below reads from. For a bounded sample (`isBoundedSample`), this is
+  // `reconciliationSummary`-sourced and INDEPENDENT of `pnl`/`blocked` (the pnlV2-only, magnitude-
+  // heuristic-gated values above) — those remain exactly as they were for 'ok'/'unavailable', but a
+  // bounded sample no longer reads them at all, closing the exact contradiction this task reported
+  // (disclosure block showing a real number while the main tiles showed $0.00 from a DIFFERENT,
+  // unrelated source).
+  const displayed = selectDisplayedPnl({ pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary })
+  const isBoundedSample = publicPnlStatus === 'limited_verified_sample'
   // PARTIAL-COVERAGE BADGE, DISCLOSED (this task's own requirement): shown SEPARATELY from the
   // blocked/unavailable states above — a "partial" reconciliation still has a real, honestly-
   // computed officialUnrealizedPnlUsd (excluded positions are simply left out, never blended in),
@@ -434,13 +540,20 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   // (this task's requirement 4); Cost Basis is a real, always-finite sum of costBasis[] entries
   // with no NaN/Infinity failure mode of its own, so it is not blocked by this guard, only by the
   // separate magnitude heuristic already applied to it below.
-  const blocked = isActive && (pnl.unreliable || !pnl.stable)
+  // BOUNDED-SAMPLE EXEMPT, DISCLOSED (contradictory-tiles follow-up task): `pnl.unreliable`/
+  // `pnl.stable` are computed from `pnlV2`'s OWN numbers — irrelevant once a bounded sample displays
+  // `reconciliationSummary`'s numbers instead. Forcing `blocked: false` here only ever affects the
+  // 'real'-vs-'unavailable'/synthetic `displayMode` decision below (synthetic/unavailable are already
+  // gated on `publicPnlStatus === 'unavailable'` elsewhere, never reachable for a bounded sample
+  // anyway); it never widens what's shown — `displayed.realizedPnlUsd == null` still renders
+  // PNL_UNAVAILABLE_MESSAGE per-tile below when `reconciliationSummary` itself wasn't wired.
+  const blocked = isBoundedSample ? false : isActive && (pnl.unreliable || !pnl.stable)
   const displayMode = resolvePnlDisplayMode({ isActive, blocked, showSyntheticGlobal, showSyntheticPerChain })
   const showUnavailableBanner = displayMode === 'unavailable'
 
-  const headerIcon = pnl.realizedPnlUsd == null
+  const headerIcon = displayed.realizedPnlUsd == null
     ? <WarningIcon size={16} color="#fbbf24" />
-    : pnl.realizedPnlUsd >= 0 ? <TrendingUpIcon size={16} color="#4ade80" /> : <TrendingDownIcon size={16} color="#f87171" />
+    : displayed.realizedPnlUsd >= 0 ? <TrendingUpIcon size={16} color="#4ade80" /> : <TrendingDownIcon size={16} color="#f87171" />
 
   return (
     <section>
@@ -453,8 +566,12 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
         <span style={{ display: 'inline-flex' }}>{headerIcon}</span>
         <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>PnL (Verified V2)</h3>
         <StatusBadge label={isActive ? 'Active' : 'Unavailable'} tone={isActive ? 'success' : 'neutral'} glow={isActive} />
-        {pnl.unreliable && <StatusBadge label="Not reliable (magnitude)" tone="warning" glow />}
-        {!pnl.stable && isActive && <StatusBadge label="PnL unavailable" tone="warning" glow />}
+        {/* BOUNDED-SAMPLE EXEMPT, DISCLOSED: these two badges are computed from `pnl` (pnlV2's own
+            magnitude/stability heuristics) — irrelevant once a bounded sample displays
+            `reconciliationSummary`'s numbers instead (see `displayed`/`isBoundedSample` above).
+            Suppressed here so the header never contradicts the real, canonical tiles below. */}
+        {!isBoundedSample && pnl.unreliable && <StatusBadge label="Not reliable (magnitude)" tone="warning" glow />}
+        {!isBoundedSample && !pnl.stable && isActive && <StatusBadge label="PnL unavailable" tone="warning" glow />}
         {/* REAL backend classification (fifoEngine's publicPnlStatus, via
             finalSummary.financialStatus.officialPnlStatus) — a SEPARATE signal from the UI-only
             magnitude clamp above; shown whenever it isn't 'ok', regardless of magnitude. */}
@@ -501,6 +618,20 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
         <SyntheticPnlBlock syntheticPnl={syntheticPnl} />
       ) : displayMode === 'synthetic_per_chain' && syntheticPnl ? (
         <SyntheticPerChainPnlBlock perChain={syntheticPnl.perChain} />
+      ) : isBoundedSample ? (
+        // BOUNDED-SAMPLE TILES, DISCLOSED (contradictory-tiles follow-up task): every value here is
+        // `displayed.*` — the SAME `reconciliationSummary`-sourced numbers the disclosure block above
+        // shows, never `pnl.*` (pnlV2). `displayed.realizedPnlUsd == null` here means the caller
+        // hasn't wired `reconciliationSummary` at all — shown as PNL_UNAVAILABLE_MESSAGE, never a
+        // fabricated $0.00.
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
+          <MetricCard label="Realized PnL" value={displayed.realizedPnlUsd == null ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(displayed.realizedPnlUsd)} tone={toneFromNumber(displayed.realizedPnlUsd)} index={0} />
+          <MetricCard label="Unrealized PnL" value={displayed.unrealizedPnlUsd == null ? 'Unavailable' : fmtSignedUsd(displayed.unrealizedPnlUsd)} tone={toneFromNumber(displayed.unrealizedPnlUsd)} index={1} />
+          <MetricCard label="Total PnL" value={displayed.totalPnlUsd == null ? 'Unavailable' : fmtSignedUsd(displayed.totalPnlUsd)} tone={toneFromNumber(displayed.totalPnlUsd)} index={2} />
+          <MetricCard label="ROI" value={displayed.roiLabel ?? 'Not calculated for bounded sample'} tone="neutral" index={3} />
+          <MetricCard label="Cost Basis" value={displayed.costBasisLabel ?? 'Not available for bounded sample'} index={4} />
+          <MetricCard label="Integrity" value={<StatusBadge label={displayed.integrityLabel} tone="warning" />} index={5} />
+        </div>
       ) : (
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
           <MetricCard label="Realized PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.realizedPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.realizedPnlUsd)} index={0} />
@@ -521,11 +652,15 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
         <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           Per-Chain Breakdown
         </div>
-        {/* hasCanonicalUnrealizedSource: `!== undefined`, NOT `!= null` — a caller that explicitly
-            passes `null` (a real "checked, found nothing trustworthy" result) must still suppress
-            the legacy per-chain figure; only a prop that was never supplied at all (a caller not
-            yet migrated to this fix) falls back to it. */}
-        <ChainBreakdownTable chainBreakdown={pnlV2?.chainBreakdown ?? []} unreliable={pnl.unreliable || blocked} hasCanonicalUnrealizedSource={unrealizedReconciliation !== undefined} />
+        {isBoundedSample ? (
+          <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>{PER_CHAIN_BOUNDED_SAMPLE_MESSAGE}</p>
+        ) : (
+          // hasCanonicalUnrealizedSource: `!== undefined`, NOT `!= null` — a caller that explicitly
+          // passes `null` (a real "checked, found nothing trustworthy" result) must still suppress
+          // the legacy per-chain figure; only a prop that was never supplied at all (a caller not
+          // yet migrated to this fix) falls back to it.
+          <ChainBreakdownTable chainBreakdown={pnlV2?.chainBreakdown ?? []} unreliable={pnl.unreliable || blocked} hasCanonicalUnrealizedSource={unrealizedReconciliation !== undefined} />
+        )}
       </div>
 
       {!isActive && (
