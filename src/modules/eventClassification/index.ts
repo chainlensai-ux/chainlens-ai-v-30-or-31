@@ -91,13 +91,24 @@ export function classifyEvents(events: readonly NormalizedEvent[], context: Even
   // intermediary-hop pattern — exactly what requirement #3 asks to net). A token with exactly ONE
   // leg in its transaction is never touched by this netting pass at all and defaults to
   // `genuine_trade_leg`, preserving today's existing, correct single-leg buy/sell behavior exactly.
+  // PROVABLY-NON-ECONOMIC GUARD, DISCLOSED (production-evidence follow-up task, requirement #4 —
+  // "do not classify any event out of FIFO unless its removal is provably non-economic"): a
+  // same-token multi-leg group is only netted down to its majority-direction legs when the
+  // opposing (minority) side is CLEARLY small relative to the majority — a genuine refund/dust
+  // remainder or duplicate-log artifact, never two comparably-sized flows that could equally well
+  // be two real, independent economic events sharing one transaction. When the minority side is NOT
+  // clearly small, this classifier cannot prove non-economic-ness and defaults to keeping every leg
+  // for that token trade-eligible — fail-closed toward inclusion, never toward exclusion.
+  const MINOR_REMAINDER_MAX_RATIO = 0.5
+
   for (const groupEvents of groups.values()) {
-    const perTokenNet = new Map<string, number>()
+    const perTokenSumInbound = new Map<string, number>()
+    const perTokenSumOutbound = new Map<string, number>()
     const perTokenLegCount = new Map<string, number>()
     for (const e of groupEvents) {
       if (e.direction === 'unknown') continue
-      const signed = e.direction === 'inbound' ? e.amount : -e.amount
-      perTokenNet.set(e.contract, (perTokenNet.get(e.contract) ?? 0) + signed)
+      const sums = e.direction === 'inbound' ? perTokenSumInbound : perTokenSumOutbound
+      sums.set(e.contract, (sums.get(e.contract) ?? 0) + e.amount)
       perTokenLegCount.set(e.contract, (perTokenLegCount.get(e.contract) ?? 0) + 1)
     }
 
@@ -122,24 +133,37 @@ export function classifyEvents(events: readonly NormalizedEvent[], context: Even
       // the Classic/Slipstream multi-transfer swap-leg pattern already handled at the receipt-decode
       // layer, or a provider reporting a batched transfer as separate log entries), a refund of
       // unused input, or a router intermediary relaying this exact token through more than one hop.
-      // Only the leg(s) whose OWN direction agrees with the token's overall NET direction for this
-      // tx are genuine; a leg running opposite to (or contributing to a net that rounds to zero for)
-      // its own token is the non-genuine half of that same-token pattern — classified
+      const sumInbound = perTokenSumInbound.get(e.contract) ?? 0
+      const sumOutbound = perTokenSumOutbound.get(e.contract) ?? 0
+      const net = sumInbound - sumOutbound
+      const netIsZero = Math.abs(net) <= DUST_AMOUNT_THRESHOLD
+      const touchesRouter = context.knownDexRouterAddresses.has(e.toAddress.toLowerCase())
+        || context.knownDexRouterAddresses.has(e.fromAddress.toLowerCase())
+      if (netIsZero) {
+        // PERFECT PASS-THROUGH, DISCLOSED: inbound and outbound legs for this token cancel out
+        // EXACTLY — the strongest, least-ambiguous non-economic signal there is (a genuine
+        // round-trip contributes nothing to the wallet's position). Every leg for this token is
+        // excluded, never just one side.
+        classifications.set(e, touchesRouter ? 'router_intermediary' : 'ordinary_transfer')
+        continue
+      }
+      const majoritySum = net > 0 ? sumInbound : sumOutbound
+      const minoritySum = net > 0 ? sumOutbound : sumInbound
+      const minorityIsProvablyNonEconomic = majoritySum > 0 && minoritySum <= majoritySum * MINOR_REMAINDER_MAX_RATIO
+      if (!minorityIsProvablyNonEconomic) {
+        // Cannot prove either side is non-economic — the two sides are comparably sized, which
+        // could equally well be two real, independent economic events sharing one transaction.
+        // Keep every leg for this token trade-eligible rather than guess (requirement #4).
+        classifications.set(e, 'genuine_trade_leg')
+        continue
+      }
+      const legAgreesWithNet = (net > 0 && e.direction === 'inbound') || (net < 0 && e.direction === 'outbound')
+      // The provably-minor, non-net-contributing half of this same-token pattern — classified
       // `router_intermediary` when it actually touches a known DEX router (a real routing hop), or
       // `ordinary_transfer` otherwise (a same-token duplicate/refund/wash flow not involving a
-      // known router — still a real, provable non-net-contributing signal, never a guess about a
-      // lone, otherwise-unremarkable transfer).
-      const net = perTokenNet.get(e.contract) ?? 0
-      const netIsNonzero = Math.abs(net) > DUST_AMOUNT_THRESHOLD
-      const legAgreesWithNet = netIsNonzero
-        && ((net > 0 && e.direction === 'inbound') || (net < 0 && e.direction === 'outbound'))
-      if (legAgreesWithNet) {
-        classifications.set(e, 'genuine_trade_leg')
-      } else {
-        const touchesRouter = context.knownDexRouterAddresses.has(e.toAddress.toLowerCase())
-          || context.knownDexRouterAddresses.has(e.fromAddress.toLowerCase())
-        classifications.set(e, touchesRouter ? 'router_intermediary' : 'ordinary_transfer')
-      }
+      // known router). The majority side, which genuinely accounts for the token's real net flow,
+      // always stays genuine_trade_leg.
+      classifications.set(e, legAgreesWithNet ? 'genuine_trade_leg' : (touchesRouter ? 'router_intermediary' : 'ordinary_transfer'))
     }
   }
 

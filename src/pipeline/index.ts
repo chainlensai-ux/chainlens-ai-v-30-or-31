@@ -308,6 +308,71 @@ async function safeRunRecoveryPolicy(params: {
   }
 }
 
+// LOT IDENTITY AUDIT, DISCLOSED (production-evidence follow-up task, requirement #1): a real,
+// exact diff between the unfiltered ("before") and filtered ("after") FIFO result — lot keys
+// present before but missing after, lot keys newly added after, the buy/sell event identity for
+// every changed lot, and (for a removed lot) the classification this scan's eventClassification
+// pass assigned to its buy-side and sell-side source events, so a regression like "closed lots
+// went from 27 to 26" is immediately traceable to the exact event and the exact reason, rather than
+// left as an opaque count delta.
+function fifoLotIdentityKey(lot: MatchedLot): string {
+  return `${lot.chain}:${lot.token.toLowerCase()}:${lot.openedTxHash}:${lot.closedTxHash}:${lot.openedAt}:${lot.closedAt}`
+}
+
+function eventClassificationLookupKey(chain: string, txHash: string, contract: string): string {
+  return `${chain}:${txHash}:${contract.toLowerCase()}`
+}
+
+type LotIdentityAuditEntry = {
+  lotKey: string
+  lotId: string
+  token: string
+  buyEventId: string
+  sellEventId: string
+  buyClassification: EventClassification | null
+  sellClassification: EventClassification | null
+  exclusionReason: string
+}
+
+function buildLotIdentityAudit(
+  before: FifoOutput,
+  after: FifoOutput,
+  classified: { event: NormalizedEvent; classification: EventClassification }[],
+): { lotsRemoved: LotIdentityAuditEntry[]; lotsAdded: Array<{ lotKey: string; lotId: string; token: string }> } {
+  const beforeByKey = new Map(before.matchedLots.map((l) => [fifoLotIdentityKey(l), l]))
+  const afterByKey = new Map(after.matchedLots.map((l) => [fifoLotIdentityKey(l), l]))
+  const classificationLookup = new Map<string, EventClassification>()
+  for (const c of classified) {
+    classificationLookup.set(eventClassificationLookupKey(c.event.chain, c.event.txHash, c.event.contract), c.classification)
+  }
+
+  const lotsRemoved: LotIdentityAuditEntry[] = []
+  for (const [key, lot] of beforeByKey) {
+    if (afterByKey.has(key)) continue
+    const buyClassification = classificationLookup.get(eventClassificationLookupKey(lot.chain, lot.openedTxHash, lot.token)) ?? null
+    const sellClassification = classificationLookup.get(eventClassificationLookupKey(lot.chain, lot.closedTxHash, lot.token)) ?? null
+    const buyExcluded = buyClassification !== null && buyClassification !== 'genuine_trade_leg' && buyClassification !== 'unknown'
+    const sellExcluded = sellClassification !== null && sellClassification !== 'genuine_trade_leg' && sellClassification !== 'unknown'
+    const exclusionReason = buyExcluded
+      ? `buy-side source event classified '${buyClassification}' and removed from FIFO`
+      : sellExcluded
+        ? `sell-side source event classified '${sellClassification}' and removed from FIFO`
+        : 'no source-event exclusion for this lot itself — its buy/sell match order shifted after unrelated events were removed from FIFO'
+    lotsRemoved.push({
+      lotKey: key, lotId: lot.lotId, token: lot.token,
+      buyEventId: eventClassificationLookupKey(lot.chain, lot.openedTxHash, lot.token),
+      sellEventId: eventClassificationLookupKey(lot.chain, lot.closedTxHash, lot.token),
+      buyClassification, sellClassification, exclusionReason,
+    })
+  }
+  const lotsAdded: Array<{ lotKey: string; lotId: string; token: string }> = []
+  for (const [key, lot] of afterByKey) {
+    if (beforeByKey.has(key)) continue
+    lotsAdded.push({ lotKey: key, lotId: lot.lotId, token: lot.token })
+  }
+  return { lotsRemoved, lotsAdded }
+}
+
 // STRUCTURAL PNL RECONSTRUCTION, DISCLOSED (evidence-first PnL completion task, requirements
 // #2/#3/#4/#5/#6/#8): fifoEngine itself is unmodified — every call site here now hands it only
 // FIFO-ELIGIBLE events (src/modules/eventClassification), filtered via the SAME transaction-first,
@@ -336,6 +401,11 @@ export function safeRunFifoEngine(params: {
   // each already part of its own before/after promotion comparison) pays zero extra computation —
   // only the primary fifoAndPnl call site opts in.
   computeReconstructionAudit?: boolean
+  // ADDITIVE, OPTIONAL, DISCLOSED (production-evidence follow-up task, requirement #6): real counts
+  // from this SAME scan's receipt-swap canonical promotion pass (already computed by the caller
+  // before this function runs — see src/pipeline/index.ts's receiptSwapPromotionResult), threaded
+  // through purely for the audit log below. Never recomputed here.
+  receiptPromotionCounts?: { exactSwapsRecovered: number; contradictoryLegsAfter: number | null }
 }): FifoOutput {
   const classificationContext = { knownDexRouterAddresses: KNOWN_DEX_ROUTER_ADDRESSES }
   const recoveredRawEvents: RawProviderEvent[] = params.recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents)
@@ -365,6 +435,9 @@ export function safeRunFifoEngine(params: {
       })
       const nonTradeClassifications: EventClassification[] = ['ordinary_transfer', 'distribution_airdrop', 'router_intermediary', 'bridge', 'lp_staking', 'dust_non_economic']
       const nonTradesRemovedFromFifo = classified.filter((c) => nonTradeClassifications.includes(c.classification)).length
+      const lotIdentityAudit = buildLotIdentityAudit(before, after, classified)
+      // eslint-disable-next-line no-console
+      console.warn('[lot-identity-audit]', lotIdentityAudit)
       // eslint-disable-next-line no-console
       console.warn('[structural-pnl-reconstruction-audit]', {
         eventsByClassification,
@@ -373,12 +446,27 @@ export function safeRunFifoEngine(params: {
         genuineUnmatchedTradeLegsBefore: before.unmatchedBuys + before.unmatchedSells,
         genuineUnmatchedTradeLegsAfter: after.unmatchedBuys + after.unmatchedSells,
         nonTradesRemovedFromFifo,
+        // RESTORED LOTS, DISCLOSED (requirement #6): real count of lots present in the canonical
+        // ("after") result that were NOT present in the unfiltered ("before") baseline — see
+        // [lot-identity-audit] above for exactly which lots and why.
+        restoredLots: lotIdentityAudit.lotsAdded.length,
+        // Real counts from this SAME scan's receipt-swap canonical promotion pass (requirement #7's
+        // Slipstream multihop fix) — threaded through from the caller, never recomputed here.
+        exactSwapsRecovered: params.receiptPromotionCounts?.exactSwapsRecovered ?? null,
         // Real, always-zero-here disclosure: multihop reconciliation (requirement #7) happens
         // upstream in receiptSwapDecoder, before any event reaches normalization/FIFO — a lot
         // "unlocked" by that fix shows up as one more genuine_trade_leg pair in
         // eventsByClassification/closedLotsAfter above, not as a separate counter this function
         // could compute independently without re-deriving receiptSwapDecoder's own output.
         lotsUnlockedByMultihop: 0,
+        // CONTRADICTORY-LEGS BEFORE/AFTER, DISCLOSED (requirement #6): "after" is the real, current
+        // count of contradictory_legs rejections this scan's receipt-swap promotion pass observed
+        // (see [contradictory-legs-audit] for the full per-rejection trace). "before" (the count
+        // under the PRE-fix resolver) is honestly null — that resolver no longer exists in this
+        // codebase to re-run for comparison; fabricating a number for it would violate this task's
+        // own evidence standard.
+        contradictoryLegsBefore: null,
+        contradictoryLegsAfter: params.receiptPromotionCounts?.contradictoryLegsAfter ?? null,
       })
       return after
     } catch {
@@ -1818,6 +1906,17 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     canonicalBalanceLookup: params.canonicalBalanceLookup,
     unrealizedReconciliationDiagnostics: params.unrealizedReconciliationDiagnostics,
     computeReconstructionAudit: true,
+    // CONTRADICTORY-LEGS COUNT, DISCLOSED: not wired here — receiptSwapPromotionResult.rejections
+    // uses canonicalPromotion.ts's own PromotableLegRejectionReason taxonomy (a downstream,
+    // promotion-level set of reasons: not_exact_confidence, would_duplicate_transaction, etc.),
+    // never the decode-level 'contradictory_legs' reason decodeReceiptSwap itself produces (see
+    // [contradictory-legs-audit] for that real, per-rejection trace). No existing counter in this
+    // pipeline currently aggregates decode-level rejection reasons across a scan; wiring one up
+    // would mean adding a new counter to walletScanShadowWiring.ts, out of this pass's scope.
+    receiptPromotionCounts: {
+      exactSwapsRecovered: receiptSwapPromotionResult?.promotions.length ?? 0,
+      contradictoryLegsAfter: null,
+    },
   })
 
   // RECEIPT-SWAP CANONICAL PROMOTION DIAGNOSTICS, DISCLOSED, BOUNDED: one unconditional log

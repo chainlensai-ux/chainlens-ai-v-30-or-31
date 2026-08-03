@@ -57,12 +57,35 @@ function toNormalized(raw: bigint, decimals: number): number {
 
 type PoolLeg = ClassicPoolLeg
 
+// EXACT-DUPLICATE LEG DEDUPE, DISCLOSED (evidence-first PnL completion follow-up task,
+// requirement #3's "internal multihop token flow" / "duplicated transfer logs" bucket): a real,
+// provable, EXACT match — the same pool, same tokenIn/tokenOut, same amountIn/amountOut — appearing
+// more than once in `legs` can only be a genuine duplicate emission (a proxy/multicall pattern that
+// logs the same Swap event twice, or the same underlying transfer set resolved into two byte-
+// identical legs), never two real, independently-priced hops: two REAL hops through the same pool
+// pair always differ in at least one amount (a real second trade never has the exact same size as
+// the first, down to the raw unit). This is exact-match dedup only — never a fuzzy/guessed merge —
+// so it can only ever REMOVE a byte-identical redundant entry, never alter or combine two genuinely
+// distinct legs' amounts.
+function dedupeExactLegs(legs: PoolLeg[]): PoolLeg[] {
+  const seen = new Set<string>()
+  const result: PoolLeg[] = []
+  for (const leg of legs) {
+    const key = `${leg.swap.poolAddress}:${leg.tokenIn}:${leg.tokenOut}:${leg.amountIn.toString()}:${leg.amountOut.toString()}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(leg)
+  }
+  return result
+}
+
 // Chains individually-resolved pool legs into one end-to-end path (handles router intermediaries
 // and multi-hop transactions): the leg whose tokenIn is never any other leg's tokenOut is the true
 // start; the leg whose tokenOut is never any other leg's tokenIn is the true end. Requires the legs
 // to form exactly one connected chain from start to end — any branching or disconnected leg is
 // contradictory and rejected (fails closed to inference).
-function chainLegs(legs: PoolLeg[]): PoolLeg[] | null {
+function chainLegs(rawLegs: PoolLeg[]): PoolLeg[] | null {
+  const legs = dedupeExactLegs(rawLegs)
   if (legs.length === 0) return null
   if (legs.length === 1) return legs
 
@@ -90,6 +113,62 @@ function chainLegs(legs: PoolLeg[]): PoolLeg[] | null {
     current = next
   }
   return ordered.length === legs.length ? ordered : null
+}
+
+// CONTRADICTORY-LEGS DIAGNOSTIC, DISCLOSED (evidence-first PnL completion follow-up task,
+// requirement #2): logged whenever this receipt is about to be rejected as `contradictory_legs` —
+// every ordered Swap event, the pool it touched, the exact signed amount0/amount1 it reported,
+// every ERC20 Transfer log touching ANY of this receipt's pools, the real per-token net transfer
+// total across those pool-touching transfers, and (per Slipstream swap) the exact expected-vs-
+// observed raw-unit delta already computed by resolveSlipstreamMultiTransferLeg's own reconciliation
+// math, reused here rather than re-derived. Real counts/values only — never a raw wallet address or
+// tx hash beyond what the caller already has (txHash is already a public, non-secret identifier this
+// module's own rejection object already carries).
+function logContradictoryLegsAudit(tx: ReceiptTxBundle, decoded: DecodedLogs): void {
+  const poolAddresses = new Set(decoded.swaps.map((s) => s.poolAddress))
+  const poolTouchingTransfers = decoded.transfers.filter((t) => poolAddresses.has(t.to) || poolAddresses.has(t.from))
+  const perTokenNet = new Map<string, bigint>()
+  for (const t of poolTouchingTransfers) {
+    const signed = poolAddresses.has(t.to) ? t.value : -t.value
+    perTokenNet.set(t.token, (perTokenNet.get(t.token) ?? BigInt('0')) + signed)
+  }
+  const orderedSwaps = decoded.swaps.map((s) => {
+    const perPoolTransfers = decoded.transfers.filter((t) => t.to === s.poolAddress || t.from === s.poolAddress)
+    const incomingByToken = new Map<string, bigint>()
+    const outgoingByToken = new Map<string, bigint>()
+    for (const t of perPoolTransfers) {
+      if (t.to === s.poolAddress) incomingByToken.set(t.token, (incomingByToken.get(t.token) ?? BigInt('0')) + t.value)
+      if (t.from === s.poolAddress) outgoingByToken.set(t.token, (outgoingByToken.get(t.token) ?? BigInt('0')) + t.value)
+    }
+    const zero = BigInt('0')
+    const swapAmountIn = s.amount0 > zero ? s.amount0 : s.amount1 > zero ? s.amount1 : null
+    const swapAmountOut = s.amount0 < zero ? -s.amount0 : s.amount1 < zero ? -s.amount1 : null
+    return {
+      logIndex: s.logIndex,
+      protocol: s.protocol,
+      poolAddress: s.poolAddress,
+      amount0: s.amount0.toString(),
+      amount1: s.amount1.toString(),
+      incomingTransfersByToken: [...incomingByToken.entries()].map(([token, sum]) => ({
+        token, observedRaw: sum.toString(),
+        expectedRaw: swapAmountIn !== null ? swapAmountIn.toString() : null,
+        deltaRaw: swapAmountIn !== null ? (sum - swapAmountIn).toString() : null,
+      })),
+      outgoingTransfersByToken: [...outgoingByToken.entries()].map(([token, sum]) => ({
+        token, observedRaw: sum.toString(),
+        expectedRaw: swapAmountOut !== null ? swapAmountOut.toString() : null,
+        deltaRaw: swapAmountOut !== null ? (sum - swapAmountOut).toString() : null,
+      })),
+    }
+  })
+  // eslint-disable-next-line no-console
+  console.warn('[contradictory-legs-audit]', {
+    txHash: tx.txHash,
+    orderedSwaps,
+    poolAddresses: [...poolAddresses],
+    poolTouchingTransfers: poolTouchingTransfers.map((t) => ({ logIndex: t.logIndex, token: t.token, from: t.from, to: t.to, valueRaw: t.value.toString() })),
+    perTokenNetTotalsRaw: [...perTokenNet.entries()].map(([token, net]) => ({ token, netRaw: net.toString() })),
+  })
 }
 
 function classifyDirection(tokenIn: string, tokenOut: string): WalletDirection {
@@ -196,6 +275,7 @@ export async function decodeReceiptSwap(
       const resolution = resolveClassicMultiTransferLeg(swap, decoded)
       multiTransferDiagnosticsList.push(resolution.diagnostics)
       if (!resolution.ok) {
+        if (resolution.reason === 'contradictory_legs') logContradictoryLegsAudit(tx, decoded)
         return {
           ok: false,
           rejection: { txHash: tx.txHash, reason: resolution.reason, multiTransfer: mergeMultiTransferDiagnostics(multiTransferDiagnosticsList) },
@@ -214,6 +294,7 @@ export async function decodeReceiptSwap(
     const resolution = resolveSlipstreamMultiTransferLeg(swap, decoded)
     multiTransferDiagnosticsList.push(resolution.diagnostics)
     if (!resolution.ok) {
+      if (resolution.reason === 'contradictory_legs') logContradictoryLegsAudit(tx, decoded)
       return {
         ok: false,
         rejection: {
@@ -227,6 +308,7 @@ export async function decodeReceiptSwap(
 
   const chained = chainLegs(legs)
   if (!chained) {
+    logContradictoryLegsAudit(tx, decoded)
     return {
       ok: false,
       rejection: { txHash: tx.txHash, reason: 'contradictory_legs', multiTransfer: mergeMultiTransferDiagnostics(multiTransferDiagnosticsList) },

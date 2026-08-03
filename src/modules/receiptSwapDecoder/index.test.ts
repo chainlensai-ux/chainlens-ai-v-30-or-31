@@ -265,6 +265,48 @@ test('Slipstream: two different tokens both matching the incoming side is a genu
   assert.equal(result.rejection.reason, 'contradictory_legs')
 })
 
+test('HARD ASSERTION: a duplicated Swap event log (same pool, same amounts) resolves instead of contradicting via exact-duplicate leg dedup', async () => {
+  // PRODUCTION-EVIDENCE FOLLOW-UP FIX, DISCLOSED: a proxy/multicall pattern can emit the exact
+  // same Swap event twice for one real economic hop — chainLegs previously saw 2 legs sharing the
+  // same tokenIn (neither produced by the other), so BOTH counted as "starts" and it rejected as
+  // contradictory_legs even though there was really only ONE real hop. dedupeExactLegs (index.ts)
+  // now collapses byte-identical (pool, tokenIn, tokenOut, amountIn, amountOut) legs before
+  // chaining — an exact match only, never a fuzzy/guessed merge.
+  const tx = bundle({
+    logs: [
+      transferLog(0, WETH, wallet, poolA, BigInt("1000000000000000000")),
+      slipstreamSwapLog(1, poolA, wallet, wallet, BigInt("1000000000000000000"), BigInt("-500000000000000000000")),
+      slipstreamSwapLog(2, poolA, wallet, wallet, BigInt("1000000000000000000"), BigInt("-500000000000000000000")), // duplicate log
+      transferLog(3, TOKEN_X, poolA, wallet, BigInt("500000000000000000000")),
+    ],
+  })
+  const result = await decodeReceiptSwap(tx, alwaysValidValidator())
+  assert.equal(result.ok, true)
+  if (!result.ok) return
+  assert.equal(result.swap.amountInRaw, '1000000000000000000')
+  assert.equal(result.swap.tokenIn.address, WETH)
+  assert.equal(result.swap.amountOutRaw, '500000000000000000000')
+  assert.equal(result.swap.tokenOut.address, TOKEN_X)
+})
+
+test('two genuinely distinct legs through the same pool (different amounts) are never merged by the dedup', async () => {
+  // The dedup is exact-match only — two REAL hops through the same pool pair always differ in at
+  // least one amount. This is a contrived, still-ambiguous multi-leg case (same pool used twice
+  // with different amounts, no clean chain) — it must remain rejected, not silently merged.
+  const tx = bundle({
+    logs: [
+      transferLog(0, WETH, wallet, poolA, BigInt("1000000000000000000")),
+      slipstreamSwapLog(1, poolA, wallet, wallet, BigInt("1000000000000000000"), BigInt("-500000000000000000000")),
+      transferLog(2, TOKEN_X, poolA, wallet, BigInt("500000000000000000000")),
+      transferLog(3, WETH, wallet, poolA, BigInt("2000000000000000000")),
+      slipstreamSwapLog(4, poolA, wallet, wallet, BigInt("2000000000000000000"), BigInt("-900000000000000000000")),
+      transferLog(5, TOKEN_X, poolA, wallet, BigInt("900000000000000000000")),
+    ],
+  })
+  const result = await decodeReceiptSwap(tx, alwaysValidValidator())
+  assert.equal(result.ok, false, 'two genuinely distinct legs through the same pool must never be silently merged/accepted by the dedup')
+})
+
 test('deterministic output: identical input decodes to a byte-identical result across repeated runs', async () => {
   const tx = bundle({
     logs: [
