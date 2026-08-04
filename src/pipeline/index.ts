@@ -22,10 +22,12 @@ import { buildScanDeterminismAudit, checkFinalPnlSnapshotDivergence, logFinalPnl
 import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
   readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest,
-  logDuplicateIdentityIfAny, buildLastKnownCanonicalSample, emptyCanonicalSampleManifestAudit,
+  logDuplicateIdentityIfAny, buildLastKnownCanonicalSample, emptyCanonicalSampleManifestAudit, buildCanonicalLotIdentities,
   type CanonicalSampleManifestKvLike, type CanonicalSampleManifestAudit, type AcceptedEvidenceLoader,
 } from '../lib/canonicalPnlSampleManifest'
 import { isCanonicalVerifiedPublishedLot, buildCanonicalVerifiedPredicateReasonCounts } from '../lib/canonicalVerifiedLot'
+import { buildCanonicalPnlDiffAudit, logCanonicalPnlDiffAudit } from '../lib/canonicalPnlDiffAudit'
+import { isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
 import { readAcceptedEvidence, readAcceptedEvidenceAnyLotVersion, type AcceptedEvidenceKvLike } from '../lib/acceptedEvidenceStore'
 import { createAyriAttribution } from '../lib/ayriAttribution'
 import { createFinalReportAssembler } from '../lib/finalReportAssembler'
@@ -2783,6 +2785,59 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
     })
     logDuplicateIdentityIfAny(replay.duplicates)
+
+    // CANONICAL PNL DIFF AUDIT, DISCLOSED (canonical-PnL-movement audit task) — DIAGNOSTIC ONLY.
+    // Rebuilds this scan's OWN candidate manifest records purely in memory and diffs them against
+    // the stored manifest, so a value movement on an unchanged lot set can be attributed to exact
+    // groups. `buildManifestFromCandidate` performs no persistence of its own and the result is
+    // deliberately DISCARDED — nothing here writes, refreshes, or replaces the stored manifest, and
+    // the published sample below is still decided solely by `replay` above. Wrapped so a diagnostic
+    // failure can never take down a scan.
+    try {
+      const candidateManifestForDiff = await buildManifestFromCandidate({
+        identity: manifestIdentity, allCandidateLots: reconciledLots, candidateVerifiedLots,
+        structuralLotCount: reconciledLots.length,
+        fingerprints: computeManifestFingerprints(reconciledLots, null), realizedPnlUsd: null,
+        verifiedPricingCoverage: null, now: Date.now(),
+        loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
+      })
+      // Real accepted-evidence side totals for every key either snapshot references — enables the
+      // duplicated/allocated-once/priceUsd-semantics/side-total checks. Deduplicated first.
+      const diffEvidenceKeys = [...new Set([
+        ...candidateManifestForDiff.verifiedLotRecords.flatMap((r) => [r.entryEvidenceKey, r.exitEvidenceKey]),
+        ...manifest.verifiedLotRecords.flatMap((r) => [r.entryEvidenceKey, r.exitEvidenceKey]),
+      ])]
+      const diffEvidenceByKey = new Map<string, { priceUsd: number; valueUsd: number } | null>()
+      const allDiffRecords = [...candidateManifestForDiff.verifiedLotRecords, ...manifest.verifiedLotRecords]
+      for (const key of diffEvidenceKeys) {
+        const owner = allDiffRecords.find((r) => r.entryEvidenceKey === key || r.exitEvidenceKey === key)
+        if (!owner) continue
+        const side = owner.entryEvidenceKey === key ? 'entry' as const : 'exit' as const
+        // eslint-disable-next-line no-await-in-loop
+        const envelope = await loadAcceptedEvidence({
+          chain: owner.chain, token: owner.token,
+          txHash: side === 'entry' ? owner.openedTxHash : owner.closedTxHash,
+          side, timestamp: side === 'entry' ? owner.openedAt : owner.closedAt,
+          lotIdentityVersion: null,
+        })
+        diffEvidenceByKey.set(key, envelope ? { priceUsd: envelope.priceUsd, valueUsd: envelope.valueUsd } : null)
+      }
+      const amountByGroupKey = new Map<string, number>()
+      for (const [lotObject, lotIdentity] of buildCanonicalLotIdentities(reconciledLots)) {
+        if (!amountByGroupKey.has(lotIdentity.key)) amountByGroupKey.set(lotIdentity.key, lotObject.amount)
+      }
+      logCanonicalPnlDiffAudit(buildCanonicalPnlDiffAudit({
+        currentRecords: candidateManifestForDiff.verifiedLotRecords,
+        previousRecords: manifest.verifiedLotRecords,
+        evidenceByKey: diffEvidenceByKey,
+        isStablecoin: (chain, token) => isVerifiedStablecoinAddress(chain as SupportedChain, token),
+        amountByGroupKey,
+      }))
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.warn('[canonical-pnl-diff-audit] skipped — diagnostic failure never blocks a scan', { error: String(error) })
+    }
+
     const publishedVerifiedLotCount = replay.publishedLots.filter(isCanonicalVerifiedPublishedLot).length
     canonicalSampleManifestAudit = {
       ...emptyCanonicalSampleManifestAudit(manifestKey),
