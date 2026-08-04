@@ -114,9 +114,9 @@ describe('priceLotsForWallet — accepted-evidence skip pass (pricing-cost-reduc
     assert.ok(counting.calls() > 0, 'an empty accepted-evidence store must never suppress a genuinely unresolved side')
   })
 
-  it('a partially-covered shared requirement (one side accepted, sibling lot on the same txHash not) is never skipped and logs accepted_evidence_skip_miss', async () => {
+  it('a requirement with NO accepted evidence at all on a shared txHash is never skipped', async () => {
     // Two lots sharing the SAME buy txHash (a partial-fill buy consumed by two different sells) —
-    // only ONE of the two closing lots gets accepted evidence for its own exit side.
+    // the accepted-evidence store is completely empty for this group.
     const sharedToken = '0xshared'
     const buy = event({ txHash: '0xsharedbuy', direction: 'inbound', contract: sharedToken, amount: 2, timestamp: '2026-01-01T00:00:00.000Z' })
     const sellA = event({ txHash: '0xsellA', direction: 'outbound', contract: sharedToken, amount: 1, timestamp: '2026-01-02T00:00:00.000Z' })
@@ -124,19 +124,42 @@ describe('priceLotsForWallet — accepted-evidence skip pass (pricing-cost-reduc
 
     const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
     const now = 1
-    // Seed ONLY the entry side under a lot-identity-version that will NOT match either real
-    // structural lot exactly (a deliberately narrow/partial seed) — this proves partial coverage on
-    // a shared txHash never causes the requirement to be skipped.
-    const calls: unknown[][] = []
-    const originalWarn = console.warn
-    console.warn = (...args: unknown[]) => { calls.push(args) }
-    try {
-      const counting = countingPriceSources()
-      const result = await priceLotsForWallet({ normalizedEvents: [buy, sellA, sellB], recoveredEvents: [], priceSources: counting.sources, acceptedEvidenceKv, now: () => now })
-      assert.ok(counting.calls() > 0, 'a shared, only-partially-covered requirement must still be sent to providers')
-      assert.equal(result.acceptedEvidenceSkipAudit.pricingRequirementsRemovedByAcceptedEvidence, 0)
-    } finally {
-      console.warn = originalWarn
-    }
+    const counting = countingPriceSources()
+    const result = await priceLotsForWallet({ normalizedEvents: [buy, sellA, sellB], recoveredEvents: [], priceSources: counting.sources, acceptedEvidenceKv, now: () => now })
+    assert.ok(counting.calls() > 0, 'an uncovered requirement must still be sent to providers')
+    assert.equal(result.acceptedEvidenceSkipAudit.pricingRequirementsRemovedByAcceptedEvidence, 0)
+    assert.equal(result.manifestFastPathAudit.fastPathApplied, false)
+  })
+
+  it('HARD ASSERTION (canonical-manifest-fast-path follow-up task, Part B — the exact confirmed production bug): a partial-fill GROUP whose accepted evidence was seeded by only ONE sibling\'s own write is now correctly recognized as covered and skips the live provider call for every sibling', async () => {
+    // One buy split across two different sells — the real partial-fill shape production evidence
+    // showed. Accepted evidence is keyed per (chain, token, txHash, side, timestamp) — NOT per lot —
+    // so seeding it via "whichever sibling wrote last" is exactly how a real seeding pass persists
+    // it. The prior strict-per-sibling-version check meant NEITHER sibling's own read could ever
+    // match the other's write, so the requirement was never skip-eligible despite real, valid
+    // evidence existing for the whole group — the confirmed root cause of GoldRush calls whose
+    // result went entirely unused in production.
+    const sharedToken = '0xshared2'
+    const buy = event({ txHash: '0xsharedbuy2', direction: 'inbound', contract: sharedToken, amount: 2, timestamp: '2026-01-01T00:00:00.000Z' })
+    const sellA = event({ txHash: '0xsellA2', direction: 'outbound', contract: sharedToken, amount: 1, timestamp: '2026-01-02T00:00:00.000Z' })
+    const sellB = event({ txHash: '0xsellB2', direction: 'outbound', contract: sharedToken, amount: 1, timestamp: '2026-01-03T00:00:00.000Z' })
+
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const now = 1
+    // Seed the ENTRY side once, under sellA's own sibling-specific lot-identity-version (simulating
+    // "whichever sibling the seeding pass happened to write last") — sellB's own read would never
+    // have matched this exact version under the old strict check.
+    const entryIdentity = { chain: buy.chain, token: buy.contract, txHash: buy.txHash, side: 'entry' as const, timestamp: Date.parse(buy.timestamp), lotIdentityVersion: lotIdentityVersion({ chain: buy.chain, token: buy.contract, openedTxHash: buy.txHash, closedTxHash: sellA.txHash, openedAt: Date.parse(buy.timestamp), closedAt: Date.parse(sellA.timestamp), amount: 1 }) }
+    await acceptedEvidenceKv.set(
+      `v1:accepted-evidence:${entryIdentity.chain}:${entryIdentity.token.toLowerCase()}:${entryIdentity.txHash}:entry:${entryIdentity.timestamp}`,
+      buildAcceptedEvidenceEnvelope({ identity: entryIdentity, priceUsd: 20, valueUsd: 20, source: 'test', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now }),
+    )
+
+    const counting = countingPriceSources()
+    const result = await priceLotsForWallet({ normalizedEvents: [buy, sellA, sellB], recoveredEvents: [], priceSources: counting.sources, acceptedEvidenceKv, now: () => now })
+    assert.equal(result.acceptedEvidenceSkipAudit.pricingRequirementsRemovedByAcceptedEvidence, 1, 'the shared entry requirement must now be recognized as covered and removed')
+    assert.equal(result.manifestFastPathAudit.manifestCoveredPricingRequirements, 2, 'both sibling lots benefit from the one shared, group-level record')
+    assert.equal(result.manifestFastPathAudit.fastPathApplied, true)
+    assert.ok(result.manifestFastPathAudit.manifestEvidenceBatchReads > 0, 'the batch reader must actually have run')
   })
 })

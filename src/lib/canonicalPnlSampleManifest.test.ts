@@ -122,16 +122,20 @@ function identity(matchedLotFingerprint = 'fp1') {
 // seeded evidence store so a replay can be driven against it.
 async function manifestWithEvidence(allLots: readonly MatchedLot[], manifestIdentity = identity()) {
   const evidence = seededEvidence(allLots)
-  const total = realizedTotal(allLots)
   const verified = allLots.filter(isCanonicalVerifiedPublishedLot)
   const manifest = await buildManifestFromCandidate({
     identity: manifestIdentity, allCandidateLots: allLots, candidateVerifiedLots: verified,
-    structuralLotCount: allLots.length, fingerprints: computeFingerprints(allLots, total),
-    realizedPnlUsd: total,
+    structuralLotCount: allLots.length,
+    // `fingerprints`/`realizedPnlUsd` here are only the LEGACY FALLBACK (used when no
+    // evidence/allocation happens) — with `loadEvidence` + `computeFingerprints` both supplied, the
+    // real, self-consistent total and fingerprints are recomputed internally from the ALLOCATED
+    // per-lot values (Part A), never from this fixture's own pre-allocation numbers.
+    fingerprints: computeFingerprints(allLots, realizedTotal(allLots)),
+    realizedPnlUsd: realizedTotal(allLots),
     verifiedPricingCoverage: allLots.length > 0 ? verified.length / allLots.length : null,
-    now: 1000, loadEvidence: evidence.loader,
+    now: 1000, loadEvidence: evidence.loader, computeFingerprints,
   })
-  return { manifest, evidence, total }
+  return { manifest, evidence, total: manifest.realizedPnlUsd }
 }
 
 function replay(manifest: CanonicalPnlSampleManifest, allCandidateLots: readonly MatchedLot[], loadEvidence: AcceptedEvidenceLoader) {
@@ -552,16 +556,26 @@ describe('canonicalPnlSampleManifest — production-shaped regression (requireme
     assert.equal(result.reasonCounts.manifest_candidate_only_lot, 2)
     assert.deepEqual(result.manifestReplayedButNotCanonicalVerifiedLotKeys, [], 'requirement #7: empty after a successful replay')
 
-    // Published lots carry the EXACT manifest accepted values, never the drifted live ones.
+    // Published lots carry the EXACT manifest accepted values (Part A: each partial-fill sibling's
+    // own ALLOCATED share of the shared evidence total, never a flat copy and never the drifted
+    // live ones) — compared against the manifest's OWN frozen per-lot records, the real source of
+    // truth, not the test fixture's own pre-allocation numbers.
     const published = result.publishedLots.filter(isCanonicalVerifiedPublishedLot)
     assert.equal(published.length, 23, '23 canonical verified lots')
     assert.equal(published.some((l) => l.costBasisUsd === 99.9 || l.costBasisUsd === 88.8 || l.costBasisUsd === 777), false)
+    const run1IdentityByLotId = new Map([...buildCanonicalLotIdentities(run1Lots).entries()].map(([lot, id]) => [lot.lotId, id.key]))
+    const recordByKey = new Map(run1Manifest.verifiedLotRecords.map((r) => [r.key, r]))
     for (const l of published) {
-      const original = run1Lots.find((o) => o.lotId === l.lotId)!
-      assert.equal(l.costBasisUsd, original.costBasisUsd, `${l.lotId} cost basis must be the frozen canonical value`)
-      assert.equal(l.proceedsUsd, original.proceedsUsd, `${l.lotId} proceeds must be the frozen canonical value`)
-      assert.equal(l.realizedPnlUsd, original.realizedPnlUsd)
+      const record = recordByKey.get(run1IdentityByLotId.get(l.lotId)!)!
+      assert.equal(l.costBasisUsd, record.allocatedCostBasisUsd, `${l.lotId} cost basis must be the frozen canonical allocated value`)
+      assert.equal(l.proceedsUsd, record.allocatedProceedsUsd, `${l.lotId} proceeds must be the frozen canonical allocated value`)
+      assert.equal(l.realizedPnlUsd, record.realizedPnlUsd)
     }
+    // The three-way partial fill's allocated shares sum exactly back to the shared evidence total.
+    const splitRecords = run1Manifest.verifiedLotRecords.filter((r) => r.openedTxHash === '0xbigbuy')
+    assert.equal(splitRecords.length, 3)
+    const splitEntryTotal = Math.round(splitRecords.reduce((s, r) => s + (r.allocatedCostBasisUsd ?? 0), 0) * 1e8) / 1e8
+    assert.equal(splitEntryTotal, Math.round((evidence.store.get(splitRecords[0].entryEvidenceKey) as { priceUsd: number }).priceUsd * 1e8) / 1e8)
 
     // Coverage and total are DERIVED from the published array, not copied off the manifest.
     assert.equal(published.length / result.publishedLots.length, 23 / 27)
@@ -605,5 +619,55 @@ describe('canonicalPnlSampleManifest — production-shaped regression (requireme
     assert.equal(lastKnown.availableForCurrentVerification, false)
     assert.equal(lastKnown.verifiedLotCount, 23)
     assert.equal(lastKnown.realizedPnlUsd, TOTAL_A)
+  })
+})
+
+describe('canonicalPnlSampleManifest — five-sibling partial-fill value allocation (Part A, requirement #8)', () => {
+  it('HARD ASSERTION: five FIFO slices sharing ONE entry evidence record each replay their own exact frozen allocated value, and the five sum back to the shared accepted total', async () => {
+    // Five slices of the same buy tx, closed by five DIFFERENT sells (a real "one buy consumed by
+    // many sells" partial fill) — deliberately non-uniform amounts so a flat per-lot copy (the
+    // confirmed bug) would be trivially distinguishable from a correct quantity-proportional split.
+    const amounts = [0.5, 1.25, 0.1 + 0.2, 3, 10 / 3]
+    const siblings = amounts.map((amount, i) => lot({
+      lotId: `sib-${i}`, token: '0xshared', openedTxHash: '0xsharedbuy', closedTxHash: `0xsell${i}`,
+      openedAt: 100, closedAt: 200 + i, amount,
+      // Placeholder pre-allocation values — irrelevant once evidence-driven allocation runs.
+      costBasisUsd: 1, proceedsUsd: 2, realizedPnlUsd: 1,
+    }))
+
+    const { manifest, evidence } = await manifestWithEvidence(siblings)
+    const splitRecords = manifest.verifiedLotRecords
+    assert.equal(splitRecords.length, 5)
+
+    // All five resolved entryEvidenceKey to the SAME shared record.
+    const uniqueEntryKeys = new Set(splitRecords.map((r) => r.entryEvidenceKey))
+    assert.equal(uniqueEntryKeys.size, 1)
+    const sharedEntryTotal = (evidence.store.get(splitRecords[0].entryEvidenceKey) as { priceUsd: number }).priceUsd
+
+    // Every sibling's own allocated share sums back to the shared total, deterministically.
+    const allocatedSum = Math.round(splitRecords.reduce((s, r) => s + (r.allocatedCostBasisUsd ?? 0), 0) * 1e8) / 1e8
+    assert.equal(allocatedSum, Math.round(sharedEntryTotal * 1e8) / 1e8)
+
+    // No sibling was given a flat copy of the shared total (the confirmed bug).
+    for (const record of splitRecords) {
+      assert.notEqual(record.allocatedCostBasisUsd, sharedEntryTotal)
+      assert.equal(record.acceptedEvidenceValueType, 'total_side_value_usd')
+      assert.equal(record.entrySideGroupIdentity, splitRecords[0].entryEvidenceKey)
+    }
+
+    // Replay reproduces the EXACT same five allocated values from evidence alone.
+    const result = await replay(manifest, siblings, evidence.loader)
+    assert.equal(result.outcome, 'applied')
+    assert.equal(result.reasonCounts.manifest_replay_success, 5)
+    const published = result.publishedLots.filter(isCanonicalVerifiedPublishedLot)
+    assert.equal(published.length, 5)
+    const recordByKey = new Map(splitRecords.map((r) => [r.key, r]))
+    const identityByLotId = new Map([...buildCanonicalLotIdentities(siblings).entries()].map(([l, id]) => [l.lotId, id.key]))
+    for (const l of published) {
+      const record = recordByKey.get(identityByLotId.get(l.lotId)!)!
+      assert.equal(l.costBasisUsd, record.allocatedCostBasisUsd)
+    }
+    const publishedSum = Math.round(published.reduce((s, l) => s + (l.costBasisUsd ?? 0), 0) * 1e8) / 1e8
+    assert.equal(publishedSum, Math.round(sharedEntryTotal * 1e8) / 1e8, 'the five replayed shares must still sum exactly to the shared accepted total')
   })
 })

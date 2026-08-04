@@ -3133,7 +3133,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // has completed, independent of the earlier immediate post-assembly log.
   logSyntheticPnlSummary(syntheticPnl)
 
-  return { ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated }
+  return { ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated, manifestFastPathAudit: walletPriceLookups.manifestFastPathAudit }
 }
 
 export type { SupportedChain }

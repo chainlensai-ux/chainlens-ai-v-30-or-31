@@ -168,6 +168,68 @@ export async function writeAcceptedEvidence(kv: AcceptedEvidenceKvLike, envelope
   }
 }
 
+// BOUNDED-CONCURRENCY BATCH READ, DISCLOSED, ADDITIVE (canonical-manifest-fast-path follow-up task,
+// Part C — confirmed perf issue: a manifest replay/pre-validation over N lots was issuing 2*N fully
+// SEQUENTIAL `await`s, one per side, each a real KV round trip; for 26 manifest lots that is 52
+// serial awaits, a real, measurable chunk of a 77s scan). Deduplicates by the exact identity tuple
+// BEFORE issuing any read (a shared partial-fill group's side is fetched once, never once per
+// sibling), runs up to `concurrency` reads in flight at a time (never unbounded fan-out against the
+// KV backend), and returns a Map keyed by the SAME real KV key `buildAcceptedEvidenceKey` produces —
+// so a caller can look up any of the original (possibly-duplicate) identities it asked for by
+// re-deriving that same key. `anyLotVersion: true` on an identity dispatches to
+// `readAcceptedEvidenceAnyLotVersion` (the relaxed discovery read) for that one entry; everything
+// else uses the strict, exact-version `readAcceptedEvidence`. Every individual read already fails
+// open to `null` on its own timeout/error (unchanged); this function adds no additional timeout of
+// its own — bounding concurrency IS the batch-level time bound, since no more than `concurrency`
+// reads are ever simultaneously in flight regardless of how many identities are requested.
+export type AcceptedEvidenceBatchIdentity =
+  | (AcceptedEvidenceIdentity & { anyLotVersion?: false })
+  | (Omit<AcceptedEvidenceIdentity, 'lotIdentityVersion'> & { anyLotVersion: true })
+
+export type AcceptedEvidenceBatchResult = {
+  byKey: Map<string, AcceptedEvidenceEnvelope | null>
+  keysRequested: number
+  uniqueKeysRead: number
+  elapsedMs: number
+}
+
+const DEFAULT_BATCH_READ_CONCURRENCY = 8
+
+export async function readAcceptedEvidenceBatch(
+  kv: AcceptedEvidenceKvLike,
+  identities: readonly AcceptedEvidenceBatchIdentity[],
+  now: number,
+  concurrency: number = DEFAULT_BATCH_READ_CONCURRENCY,
+): Promise<AcceptedEvidenceBatchResult> {
+  const start = Date.now()
+  const uniqueByKey = new Map<string, AcceptedEvidenceBatchIdentity>()
+  for (const identity of identities) {
+    const key = buildAcceptedEvidenceKey('lotIdentityVersion' in identity && !identity.anyLotVersion ? identity : { ...identity, lotIdentityVersion: '' })
+    if (!uniqueByKey.has(key)) uniqueByKey.set(key, identity)
+  }
+  const entries = [...uniqueByKey.entries()]
+  const byKey = new Map<string, AcceptedEvidenceEnvelope | null>()
+
+  let cursor = 0
+  async function worker(): Promise<void> {
+    for (;;) {
+      const index = cursor
+      cursor += 1
+      if (index >= entries.length) return
+      const [key, identity] = entries[index]
+      // eslint-disable-next-line no-await-in-loop
+      const envelope = identity.anyLotVersion
+        ? await readAcceptedEvidenceAnyLotVersion(kv, identity, now)
+        : await readAcceptedEvidence(kv, identity, now)
+      byKey.set(key, envelope)
+    }
+  }
+  const workerCount = Math.max(1, Math.min(concurrency, entries.length))
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+
+  return { byKey, keysRequested: identities.length, uniqueKeysRead: entries.length, elapsedMs: Date.now() - start }
+}
+
 export function buildAcceptedEvidenceEnvelope(params: {
   identity: AcceptedEvidenceIdentity
   priceUsd: number

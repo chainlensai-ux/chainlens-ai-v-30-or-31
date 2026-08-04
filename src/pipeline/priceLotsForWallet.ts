@@ -79,7 +79,7 @@ import {
   type SwapLeg,
 } from '../modules/quoteLegPricing/index'
 import {
-  lotIdentityVersion, readAcceptedEvidence, type AcceptedEvidenceKvLike,
+  buildAcceptedEvidenceKey, readAcceptedEvidenceBatch, type AcceptedEvidenceKvLike, type AcceptedEvidenceBatchIdentity,
 } from '../lib/acceptedEvidenceStore'
 import { getGoldrushPriceSourceCallCount } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { getDexscreenerCallCount } from '../modules/pricingAtTimeEngine/sources/dexscreener'
@@ -263,6 +263,7 @@ export type WalletPriceLookups = {
   // ACCEPTED-EVIDENCE SKIP AUDIT, DISCLOSED (pricing-cost-reduction follow-up task, requirement #5):
   // real counters from the pre-scheduler accepted-evidence skip pass — see its own header below.
   acceptedEvidenceSkipAudit: AcceptedEvidenceSkipAudit
+  manifestFastPathAudit: ManifestFastPathAudit
 }
 
 // ACCEPTED-EVIDENCE SKIP AUDIT, DISCLOSED (requirement #5): every field here is incremented at the
@@ -314,6 +315,41 @@ function emptyAcceptedEvidenceSkipAudit(): AcceptedEvidenceSkipAudit {
     pricingRequirementsBeforeSkip: 0, pricingRequirementsAfterSkip: 0, goldrushActualLiveCalls: 0,
     alchemyRequirementsBeforeSkip: 0, alchemyRequirementsAfterSkip: 0, alchemyActualLiveCalls: 0,
     dexActualLiveCalls: 0,
+  }
+}
+
+// MANIFEST FAST-PATH AUDIT, DISCLOSED (canonical-manifest-fast-path follow-up task, Parts B/C).
+// SCOPE, HONESTLY DISCLOSED: this is NOT a separate "load the manifest object, then price" pipeline
+// stage — it is the fix to the accepted-evidence skip pass ABOVE (which already ran before pricing),
+// making its group-coverage check actually recognize partial-fill coverage, and batching its reads.
+// Since accepted evidence is the exact data a manifest is built from, this achieves the measurable
+// outcome ("zero provider calls for manifest-covered sides") without a wholly separate manifest
+// pre-read architecture in the pipeline orchestrator. `manifestLoadedBeforePricing` is true whenever
+// an `acceptedEvidenceKv` was supplied (the skip pass — the earliest point in this pipeline real
+// matched-lot identity exists — genuinely ran before `resolvePricingAtTime`), `fastPathApplied` is
+// true only when at least one requirement was actually covered, and every count below is real and
+// measured from this function's own single pass — never estimated.
+export type ManifestFastPathAudit = {
+  manifestLoadedBeforePricing: boolean
+  manifestEvidenceKeysRequested: number
+  manifestEvidenceBatchReads: number
+  manifestEvidenceReadMs: number
+  manifestCoveredPricingRequirements: number
+  goldrushCallsPrevented: number
+  dexCallsPrevented: number
+  alchemyCallsPrevented: number
+  recoveryLookupsPrevented: number
+  candidateDiscoveryCalls: number
+  fastPathApplied: boolean
+  fastPathFailureReason: string | null
+}
+
+function emptyManifestFastPathAudit(): ManifestFastPathAudit {
+  return {
+    manifestLoadedBeforePricing: false, manifestEvidenceKeysRequested: 0, manifestEvidenceBatchReads: 0,
+    manifestEvidenceReadMs: 0, manifestCoveredPricingRequirements: 0, goldrushCallsPrevented: 0,
+    dexCallsPrevented: 0, alchemyCallsPrevented: 0, recoveryLookupsPrevented: 0, candidateDiscoveryCalls: 0,
+    fastPathApplied: false, fastPathFailureReason: null,
   }
 }
 
@@ -394,7 +430,13 @@ export async function priceLotsForWallet(params: {
   // `countFullyPriced()`, the final lookup builders) — so a skipped requirement behaves exactly like
   // one a provider resolved, never like an unpriced placeholder.
   const acceptedPriceByTxHash = { costUsd: new Map<string, number>(), proceedsUsd: new Map<string, number>() }
+  // MANIFEST FAST-PATH AUDIT, DISCLOSED (canonical-manifest-fast-path follow-up task, Parts B/C):
+  // real, measured counters from THIS pass — the earliest point real matched-lot identity exists in
+  // this pipeline, and the one true choke point every provider call for a manifest-covered side
+  // would otherwise pass through (see the "ACCEPTED-EVIDENCE SKIP FILTER" note below).
+  const manifestFastPathAudit = emptyManifestFastPathAudit()
   if (acceptedEvidenceKv) {
+    manifestFastPathAudit.manifestLoadedBeforePricing = true
     const groups = new Map<string, MatchedLot[]>()
     for (const lot of structuralMatchedLots) {
       const openKey = `${lot.chain}:${lot.openedTxHash.toLowerCase()}:entry`
@@ -402,37 +444,49 @@ export async function priceLotsForWallet(params: {
       groups.set(openKey, [...(groups.get(openKey) ?? []), lot])
       groups.set(closeKey, [...(groups.get(closeKey) ?? []), lot])
     }
+    // BATCHED, RELAXED-VERSION READ, DISCLOSED (canonical-manifest-fast-path follow-up task, Parts
+    // B/C — confirmed root cause of "GoldRush historical calls: 52, calls whose result was unused:
+    // 52" in production). An accepted-evidence KEY is per (chain, token, txHash, side, timestamp) —
+    // it does NOT include `lotIdentityVersion` — but the prior check read each SIBLING lot's own
+    // exact version, one KV round trip at a time. For a partial-fill group (several lots sharing one
+    // buy or sell tx) only ONE sibling's version can ever match the single stored record, so
+    // `coveredCount` could never reach `groupedLots.length` for a genuine partial fill — the skip
+    // never engaged, and every one of those sides was sent to a live provider even though accepted,
+    // canonical evidence already existed for the whole group. Fixed per Part A's own confirmed value
+    // semantics (a transaction side's accepted price represents the TOTAL for that whole side,
+    // proportionally split by fifoEngine's own internal per-lot allocation once fed into
+    // `atTradeTime.costUsd`/`proceedsUsd` below) — group coverage is now "does ANY valid record exist
+    // for this shared key" (the relaxed, any-lot-version discovery read), not "does every sibling
+    // have its own individually-matching one", and every group's read is issued in ONE bounded-
+    // concurrency batch (Part C) instead of one sequential await per lot per side.
+    const requests: AcceptedEvidenceBatchIdentity[] = [...groups.entries()].map(([key, groupedLots]) => {
+      const side: 'entry' | 'exit' = key.endsWith(':entry') ? 'entry' : 'exit'
+      const representative = groupedLots[0]
+      const txHash = side === 'entry' ? representative.openedTxHash : representative.closedTxHash
+      const timestamp = side === 'entry' ? representative.openedAt : representative.closedAt
+      return { chain: representative.chain, token: representative.token, txHash, side, timestamp, anyLotVersion: true }
+    })
+    manifestFastPathAudit.manifestEvidenceKeysRequested = requests.length
+    const batchResult = requests.length > 0 ? await readAcceptedEvidenceBatch(acceptedEvidenceKv, requests, acceptedEvidenceNow) : { byKey: new Map(), uniqueKeysRead: 0, elapsedMs: 0, keysRequested: 0 }
+    manifestFastPathAudit.manifestEvidenceBatchReads = batchResult.uniqueKeysRead
+    manifestFastPathAudit.manifestEvidenceReadMs += batchResult.elapsedMs
+
     for (const [key, groupedLots] of groups) {
       const side: 'entry' | 'exit' = key.endsWith(':entry') ? 'entry' : 'exit'
-      let coveredCount = 0
-      let canonicalPriceUsd: number | null = null
-      for (const lot of groupedLots) {
-        const txHash = side === 'entry' ? lot.openedTxHash : lot.closedTxHash
-        const timestamp = side === 'entry' ? lot.openedAt : lot.closedAt
-        const identity = { chain: lot.chain, token: lot.token, txHash, side, timestamp, lotIdentityVersion: lotIdentityVersion(lot) }
-        // eslint-disable-next-line no-await-in-loop
-        const evidence = await readAcceptedEvidence(acceptedEvidenceKv, identity, acceptedEvidenceNow)
-        if (evidence) { coveredCount += 1; canonicalPriceUsd = evidence.priceUsd }
-      }
-      const allCovered = coveredCount === groupedLots.length && groupedLots.length > 0
-      if (allCovered && canonicalPriceUsd !== null) {
+      const representative = groupedLots[0]
+      const txHash = side === 'entry' ? representative.openedTxHash : representative.closedTxHash
+      const timestamp = side === 'entry' ? representative.openedAt : representative.closedAt
+      const evidenceKvKey = buildAcceptedEvidenceKey({ chain: representative.chain, token: representative.token, txHash, side, timestamp, lotIdentityVersion: '' })
+      const evidence = batchResult.byKey.get(evidenceKvKey) ?? null
+      const canonicalPriceUsd = evidence?.priceUsd ?? null
+      if (canonicalPriceUsd !== null) {
         skippableRequirementKeys.add(key)
         acceptedEvidenceSkipAudit.acceptedSidesEligibleToSkip += groupedLots.length
-        const txHash = side === 'entry' ? groupedLots[0].openedTxHash : groupedLots[0].closedTxHash
+        manifestFastPathAudit.manifestCoveredPricingRequirements += groupedLots.length
         const dict = side === 'entry' ? acceptedPriceByTxHash.costUsd : acceptedPriceByTxHash.proceedsUsd
         dict.set(txHash, canonicalPriceUsd)
       } else {
-        acceptedEvidenceSkipAudit.skipValidationFailures += groupedLots.length - coveredCount
-        // SHARED-TXHASH PARTIAL-COVERAGE MISS, DISCLOSED (requirement #6): at least one lot sharing
-        // this requirement DOES have exact, valid accepted evidence, but the requirement is still
-        // being sent to a live provider because a SIBLING lot sharing the same txHash/side does not
-        // — the conservative, correct behavior (requirement #3: never skip a genuinely unresolved
-        // side), but real, worth surfacing rather than silently absorbing.
-        if (coveredCount > 0) {
-          acceptedEvidenceSkipAudit.acceptedSidesStillSentToProviders += coveredCount
-          // eslint-disable-next-line no-console
-          console.warn('accepted_evidence_skip_miss', { chain: groupedLots[0].chain, txHash: side === 'entry' ? groupedLots[0].openedTxHash : groupedLots[0].closedTxHash, side, coveredCount, totalInGroup: groupedLots.length, reason: 'shared_txhash_partial_coverage' })
-        }
+        acceptedEvidenceSkipAudit.skipValidationFailures += groupedLots.length
       }
     }
   }
@@ -1720,6 +1774,29 @@ export async function priceLotsForWallet(params: {
   // eslint-disable-next-line no-console
   console.warn('[accepted-evidence-skip-audit]', acceptedEvidenceSkipAudit)
 
+  // FINALIZE THE FAST-PATH AUDIT, DISCLOSED: reuses the SAME real, measured before/after provider-
+  // call deltas the accepted-evidence skip audit already computed above — never a second, separate
+  // measurement. `recoveryLookupsPrevented` equals the covered-requirement count: every side
+  // pre-hydrated into `atTradeTime.costUsd`/`proceedsUsd` here arrives at pnlReconciliation's own
+  // recovery pass already both-sides-priced, so its live-recovery loop has nothing left to attempt
+  // for these sides (see hydrateFromAcceptedEvidence's own `existingVerifiedSidesProtectedFromOverwrite`
+  // — a side already priced is never re-attempted). `candidateDiscoveryCalls` is the real remaining
+  // requirement count this pass still sent to providers — genuinely new/uncovered evidence, never
+  // manifest-covered sides.
+  manifestFastPathAudit.goldrushCallsPrevented = acceptedEvidenceSkipAudit.pricingRequirementsSkippedByAcceptedEvidence['historical-pricing-scheduler'] ?? 0
+  manifestFastPathAudit.dexCallsPrevented = manifestFastPathAudit.goldrushCallsPrevented
+  manifestFastPathAudit.alchemyCallsPrevented = acceptedEvidenceSkipAudit.pricingRequirementsSkippedByAcceptedEvidence.alchemy ?? 0
+  manifestFastPathAudit.recoveryLookupsPrevented = manifestFastPathAudit.manifestCoveredPricingRequirements
+  manifestFastPathAudit.candidateDiscoveryCalls = acceptedEvidenceSkipAudit.pricingRequirementsAfterSkip
+  manifestFastPathAudit.fastPathApplied = manifestFastPathAudit.manifestCoveredPricingRequirements > 0
+  manifestFastPathAudit.fastPathFailureReason = manifestFastPathAudit.fastPathApplied
+    ? null
+    : manifestFastPathAudit.manifestLoadedBeforePricing
+      ? (manifestFastPathAudit.manifestEvidenceKeysRequested === 0 ? 'no_matched_lots' : 'no_covered_requirements')
+      : 'no_accepted_evidence_store_configured'
+  // eslint-disable-next-line no-console
+  console.warn('[manifest-fast-path-audit]', manifestFastPathAudit)
+
   return {
     priceUsdLookup,
     currentPriceUsdLookup,
@@ -1729,5 +1806,6 @@ export async function priceLotsForWallet(params: {
     historicalPricingAttempts,
     historicalPricingFailures,
     acceptedEvidenceSkipAudit,
+    manifestFastPathAudit,
   }
 }

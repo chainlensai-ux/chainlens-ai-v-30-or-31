@@ -163,6 +163,98 @@ export function buildCanonicalLotIdentities(lots: readonly MatchedLot[]): Map<Ma
   return identities
 }
 
+// ============================================================================
+// SIDE-VALUE ALLOCATION (canonical-price-replay-values follow-up task, Part A)
+// ============================================================================
+//
+// CONFIRMED BUG THIS SECTION FIXES: accepted evidence is keyed per TRANSACTION SIDE
+// (chain/token/txHash/side/timestamp) — one record can be shared by several sibling FIFO
+// partial-fill lots (one buy tx split across multiple sells, or one sell tx split across multiple
+// buys). The prior manifest build/replay assigned `evidence.priceUsd` to EVERY sibling lot
+// directly — the full transaction-side figure duplicated onto each slice — instead of each
+// sibling's own proportional share. Confirmed production failure: entry/exit/cost-basis/proceeds/
+// realized-PnL mismatches on exactly the lots that share a transaction side with another lot.
+//
+// VALUE SEMANTICS, DISCLOSED: this codebase's own foundational model (fifoEngine's buildLots/
+// matchLotsFIFO — see index.ts's own `costBasisForPortion = (amountFromThisLot / lot.amountOpened)
+// * lot.costBasisUsd`) already establishes that a per-event USD figure represents the TOTAL value
+// for that whole transaction side, with each FIFO slice entitled to a QUANTITY-PROPORTIONAL share
+// of it — never a flat copy. `acceptedEvidenceValueType` is recorded explicitly on every manifest
+// lot record (never inferred from ambiguous historical data) and is currently always
+// `'total_side_value_usd'` in this implementation, matching that established model; the
+// `'unit_price_usd'` variant is a documented, supported schema value for a future evidence source
+// whose own `priceUsd` genuinely IS a per-token unit price (in which case the caller would multiply
+// by `lot.amount` directly, with no group allocation needed — the type field is what a future
+// caller checks to know which formula applies).
+export type AcceptedEvidenceValueType = 'unit_price_usd' | 'total_side_value_usd'
+
+// INTEGER-SAFE ALLOCATION, DISCLOSED (requirement #6/#7's "integer raw quantities or canonical
+// decimal arithmetic" and "sum exactly back to the accepted side total, with deterministic
+// remainder assignment"). `canonicalAmountString`'s own fixed 12-decimal text is parsed directly
+// into a BigInt integer — never re-scaled from the raw float, which would reintroduce the exact
+// noise this whole identity/allocation scheme exists to eliminate. USD values are similarly scaled
+// to an 8-decimal BigInt integer before dividing, so every share is computed with exact integer
+// division and the group's shares sum to the group total BIT-FOR-BIT — no accumulated float error,
+// ever — with any residual (from truncation) assigned deterministically to the LAST lot in a stable
+// sort order (by canonical lot identity key), never dropped, never duplicated.
+const RAW_QUANTITY_SCALE = BigInt(1_000_000_000_000) // matches canonicalAmountString's 12 decimal places
+const VALUE_SCALE = BigInt(100_000_000) // 8 decimal places of USD precision
+
+function toScaledRawQuantity(amount: number): bigint {
+  const str = canonicalAmountString(amount)
+  if (str === 'invalid') return BigInt(0)
+  const negative = str.startsWith('-')
+  const unsigned = negative ? str.slice(1) : str
+  const [whole, frac] = unsigned.split('.')
+  const scaled = BigInt(whole) * RAW_QUANTITY_SCALE + BigInt(frac)
+  return negative ? -scaled : scaled
+}
+
+function toScaledValue(value: number): bigint {
+  if (!Number.isFinite(value)) return BigInt(0)
+  return BigInt(Math.round(value * Number(VALUE_SCALE)))
+}
+
+function fromScaledValue(scaled: bigint): number {
+  return Math.round((Number(scaled) / Number(VALUE_SCALE)) * 1e8) / 1e8
+}
+
+export type SideAllocationShare = {
+  lot: MatchedLot
+  allocatedValueUsd: number
+  numerator: string
+  denominator: string
+}
+
+// PURE, DETERMINISTIC (requirement #6): allocates ONE shared transaction-side total across every
+// lot in `groupLots` (siblings sharing one accepted-evidence identity) by raw-quantity ratio.
+// `groupLots` must be the FULL set of matched lots drawing from that transaction side — including
+// any not currently verified/priced — so a verified sibling is never over-credited a share that
+// rightly belongs to an unpriced one (see this module's own header on the allocation population).
+export function allocateSideValueAcrossGroup(groupLots: readonly MatchedLot[], totalValueUsd: number): SideAllocationShare[] {
+  // Stable sort key: identity fields + canonical (float-noise-free) amount — the same fields
+  // buildCanonicalLotIdentities' own ordinal assignment sorts by, without needing the full-array
+  // ordinal context this function's smaller `groupLots` slice doesn't have.
+  const sortKey = (lot: MatchedLot) => [lot.chain, lot.token.toLowerCase(), lot.openedTxHash, lot.closedTxHash, lot.openedAt, lot.closedAt, canonicalAmountString(lot.amount)].join(':')
+  const ordered = [...groupLots].sort((a, b) => sortKey(a).localeCompare(sortKey(b)))
+  const rawQuantities = ordered.map((lot) => toScaledRawQuantity(lot.amount))
+  const totalRawQuantity = rawQuantities.reduce((sum, q) => sum + q, BigInt(0))
+  const totalValueScaled = toScaledValue(totalValueUsd)
+  if (totalRawQuantity <= BigInt(0) || ordered.length === 0) {
+    return ordered.map((lot) => ({ lot, allocatedValueUsd: 0, numerator: '0', denominator: totalRawQuantity.toString() }))
+  }
+  const shares = rawQuantities.map((q) => (totalValueScaled * q) / totalRawQuantity)
+  const allocatedSoFar = shares.reduce((sum, s) => sum + s, BigInt(0))
+  const remainder = totalValueScaled - allocatedSoFar
+  shares[shares.length - 1] += remainder
+  return ordered.map((lot, i) => ({
+    lot,
+    allocatedValueUsd: fromScaledValue(shares[i]),
+    numerator: rawQuantities[i].toString(),
+    denominator: totalRawQuantity.toString(),
+  }))
+}
+
 // The two accepted-evidence identity keys (entry + exit) a verified lot's own persisted evidence
 // lives under. Recorded on the manifest per requirement #2 purely as an audit trail of WHICH
 // evidence records the manifest depends on — this module never reads or writes accepted-evidence
@@ -327,6 +419,25 @@ export type CanonicalManifestLotRecord = {
   exitSource: string | null
   pricingMethodologyVersion: number
   evidenceSchemaVersion: number | null
+  // PARTIAL-FILL VALUE ALLOCATION, DISCLOSED (canonical-price-replay-values follow-up task, Part
+  // A). `entrySideGroupIdentity`/`exitSideGroupIdentity` echo `entryEvidenceKey`/`exitEvidenceKey`
+  // (the group this lot's side belongs to) under the field names this task's own spec asks for.
+  // `costBasisUsd`/`proceedsUsd` above ARE this lot's own already-allocated share (never the raw,
+  // unallocated evidence total) — `allocatedCostBasisUsd`/`allocatedProceedsUsd` are the same
+  // numbers again, named explicitly for audit clarity per this task's own field list.
+  acceptedEvidenceValueType: AcceptedEvidenceValueType
+  entrySideGroupIdentity: string
+  entrySideGroupRawQuantity: string
+  entryLotRawQuantity: string
+  entryAllocationNumerator: string
+  entryAllocationDenominator: string
+  exitSideGroupIdentity: string
+  exitSideGroupRawQuantity: string
+  exitLotRawQuantity: string
+  exitAllocationNumerator: string
+  exitAllocationDenominator: string
+  allocatedCostBasisUsd: number | null
+  allocatedProceedsUsd: number | null
 }
 
 export type CanonicalPnlSampleManifest = CanonicalPnlSampleManifestIdentity & {
@@ -385,29 +496,77 @@ export async function buildManifestFromCandidate(params: {
   allCandidateLots: readonly MatchedLot[]
   candidateVerifiedLots: readonly MatchedLot[]
   structuralLotCount: number
+  // FALLBACK ONLY, DISCLOSED: used verbatim only when `loadEvidence`/`computeFingerprints` are both
+  // absent (legacy callers/tests with no evidence to allocate from). Otherwise recomputed from the
+  // corrected, allocated lot values — see this function's own "REALIZED TOTAL / FINGERPRINTS" note.
   fingerprints: DeterminismFingerprints
   realizedPnlUsd: number | null
   verifiedPricingCoverage: number | null
   now: number
   priorManifest?: CanonicalPnlSampleManifest | null
   refreshReason?: string | null
-  // OPTIONAL, DISCLOSED: used ONLY to record honest per-side SOURCE METADATA (which provider/lane
-  // produced the accepted value, and under which evidence schema). The canonical VALUES themselves
-  // come from the lot, which is already accepted-evidence-hydrated by the time a manifest is built —
-  // so a missing loader degrades source metadata to honest nulls and never fabricates a price.
+  // Loads the accepted-evidence record backing one lot side — the source of truth for Part A's
+  // per-sibling value allocation. A missing loader degrades to the legacy (no-allocation) path.
   loadEvidence?: AcceptedEvidenceLoader
+  // Recomputes the four determinism fingerprints over a candidate array — required alongside
+  // `loadEvidence` to get the corrected total/fingerprints; see this function's own note above.
+  computeFingerprints?: (lots: readonly MatchedLot[], realizedPnlUsd: number | null) => DeterminismFingerprints
 }): Promise<CanonicalPnlSampleManifest> {
   const identities = buildCanonicalLotIdentities(params.allCandidateLots)
+
+  // GROUP BY SHARED EVIDENCE SIDE, DISCLOSED (Part A): populated from `allCandidateLots` — every
+  // structurally-matched lot drawing from a transaction side, whether currently verified or not —
+  // so a verified sibling is never over-credited a share that rightly belongs to an unpriced one.
+  const entryGroups = new Map<string, MatchedLot[]>()
+  const exitGroups = new Map<string, MatchedLot[]>()
+  for (const lot of params.allCandidateLots) {
+    const [entryKey, exitKey] = acceptedEvidenceIdentityKeysForLot(lot)
+    entryGroups.set(entryKey, [...(entryGroups.get(entryKey) ?? []), lot])
+    exitGroups.set(exitKey, [...(exitGroups.get(exitKey) ?? []), lot])
+  }
+
+  // Load each group's evidence ONCE (never once per sibling) and compute its allocation once.
+  const entryEvidenceByKey = new Map<string, AcceptedEvidenceEnvelope | null>()
+  const exitEvidenceByKey = new Map<string, AcceptedEvidenceEnvelope | null>()
+  const entryAllocationByKey = new Map<string, Map<MatchedLot, SideAllocationShare>>()
+  const exitAllocationByKey = new Map<string, Map<MatchedLot, SideAllocationShare>>()
+  if (params.loadEvidence) {
+    for (const [key, groupLots] of entryGroups) {
+      // eslint-disable-next-line no-await-in-loop
+      const evidence = await params.loadEvidence({ ...sideIdentityForLot(groupLots[0], 'entry'), lotIdentityVersion: null })
+      entryEvidenceByKey.set(key, evidence)
+      if (evidence) entryAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(groupLots, evidence.priceUsd).map((s) => [s.lot, s])))
+    }
+    for (const [key, groupLots] of exitGroups) {
+      // eslint-disable-next-line no-await-in-loop
+      const evidence = await params.loadEvidence({ ...sideIdentityForLot(groupLots[0], 'exit'), lotIdentityVersion: null })
+      exitEvidenceByKey.set(key, evidence)
+      if (evidence) exitAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(groupLots, evidence.priceUsd).map((s) => [s.lot, s])))
+    }
+  }
+
   const records: CanonicalManifestLotRecord[] = []
   const rawLotKeys: string[] = []
   const rawEvidenceKeys: string[] = []
+  const correctedByIdentityKey = new Map<string, MatchedLot>()
   for (const lot of params.candidateVerifiedLots) {
     const identity = identities.get(lot)
     if (!identity) continue
     rawLotKeys.push(identity.key)
     const [entryEvidenceKey, exitEvidenceKey] = acceptedEvidenceIdentityKeysForLot(lot)
-    const entryEvidence = params.loadEvidence ? await params.loadEvidence({ ...sideIdentityForLot(lot, 'entry'), lotIdentityVersion: null }) : null
-    const exitEvidence = params.loadEvidence ? await params.loadEvidence({ ...sideIdentityForLot(lot, 'exit'), lotIdentityVersion: null }) : null
+    const entryEvidence = entryEvidenceByKey.get(entryEvidenceKey) ?? null
+    const exitEvidence = exitEvidenceByKey.get(exitEvidenceKey) ?? null
+    const entryShare = entryAllocationByKey.get(entryEvidenceKey)?.get(lot) ?? null
+    const exitShare = exitAllocationByKey.get(exitEvidenceKey)?.get(lot) ?? null
+    // FALLS BACK TO THE LOT'S OWN VALUE ONLY when no evidence loader was supplied at all (legacy
+    // callers/tests) or a group's evidence genuinely could not be loaded — never silently drops the
+    // lot from the manifest; the build simply cannot correct what it has no evidence to correct.
+    const allocatedCostBasisUsd = entryShare ? entryShare.allocatedValueUsd : lot.costBasisUsd
+    const allocatedProceedsUsd = exitShare ? exitShare.allocatedValueUsd : lot.proceedsUsd
+    const allocatedRealizedPnlUsd = allocatedCostBasisUsd !== null && allocatedProceedsUsd !== null
+      ? Math.round((allocatedProceedsUsd - allocatedCostBasisUsd) * 100) / 100
+      : null
+    correctedByIdentityKey.set(identity.key, { ...lot, costBasisUsd: allocatedCostBasisUsd, proceedsUsd: allocatedProceedsUsd, realizedPnlUsd: allocatedRealizedPnlUsd })
     records.push({
       key: identity.key,
       canonicalAmount: identity.canonicalAmount,
@@ -424,22 +583,33 @@ export async function buildManifestFromCandidate(params: {
       exitEvidenceKey,
       entryEvidenceLotIdentityVersion: entryEvidence?.lotIdentityVersion ?? null,
       exitEvidenceLotIdentityVersion: exitEvidence?.lotIdentityVersion ?? null,
-      // CONVENTION, DISCLOSED: this codebase treats a matched lot's `costBasisUsd`/`proceedsUsd` as
-      // the accepted per-side PRICE itself (see pnlReconciliation's hydrateFromAcceptedEvidence,
-      // which assigns `costBasisUsd = evidence.priceUsd` directly) — not price x quantity. The
-      // separate `valueUsd` is recorded alongside it, exactly as the evidence store does.
-      entryPriceUsd: lot.costBasisUsd,
+      // entryPriceUsd/exitPriceUsd/costBasisUsd/proceedsUsd/realizedPnlUsd are now this lot's OWN
+      // allocated share (Part A) — never the raw, unallocated group total.
+      entryPriceUsd: allocatedCostBasisUsd,
       entryValueUsd: entryEvidence?.valueUsd ?? null,
-      exitPriceUsd: lot.proceedsUsd,
+      exitPriceUsd: allocatedProceedsUsd,
       exitValueUsd: exitEvidence?.valueUsd ?? null,
-      costBasisUsd: lot.costBasisUsd,
-      proceedsUsd: lot.proceedsUsd,
-      realizedPnlUsd: lot.realizedPnlUsd,
+      costBasisUsd: allocatedCostBasisUsd,
+      proceedsUsd: allocatedProceedsUsd,
+      realizedPnlUsd: allocatedRealizedPnlUsd,
       evidenceQuality: lot.evidenceQuality,
       entrySource: entryEvidence?.source ?? null,
       exitSource: exitEvidence?.source ?? null,
       pricingMethodologyVersion: params.identity.pricingMethodologyVersion,
       evidenceSchemaVersion: entryEvidence?.schemaVersion ?? null,
+      acceptedEvidenceValueType: 'total_side_value_usd',
+      entrySideGroupIdentity: entryEvidenceKey,
+      entrySideGroupRawQuantity: entryShare?.denominator ?? '0',
+      entryLotRawQuantity: entryShare?.numerator ?? '0',
+      entryAllocationNumerator: entryShare?.numerator ?? '0',
+      entryAllocationDenominator: entryShare?.denominator ?? '0',
+      exitSideGroupIdentity: exitEvidenceKey,
+      exitSideGroupRawQuantity: exitShare?.denominator ?? '0',
+      exitLotRawQuantity: exitShare?.numerator ?? '0',
+      exitAllocationNumerator: exitShare?.numerator ?? '0',
+      exitAllocationDenominator: exitShare?.denominator ?? '0',
+      allocatedCostBasisUsd,
+      allocatedProceedsUsd,
     })
     rawEvidenceKeys.push(entryEvidenceKey, exitEvidenceKey)
   }
@@ -450,6 +620,26 @@ export async function buildManifestFromCandidate(params: {
     .map((key) => records.find((r) => r.key === key))
     .filter((r): r is CanonicalManifestLotRecord => r !== undefined)
 
+  // REALIZED TOTAL / FINGERPRINTS, DISCLOSED (Part A): when evidence was actually loaded and
+  // allocation applied, the manifest's own frozen total and fingerprints are computed from the
+  // CORRECTED (allocated) per-lot values via `computeFingerprints` — never trusted blindly off the
+  // caller's pre-computed `params.realizedPnlUsd`/`params.fingerprints`, which may still reflect the
+  // pre-allocation (buggy, flat-copy) values on a caller that hasn't re-derived them itself. Falls
+  // back to the caller-supplied values only when no evidence loader was given at all.
+  let realizedPnlUsd = params.realizedPnlUsd
+  let fingerprints = params.fingerprints
+  if (params.loadEvidence && params.computeFingerprints) {
+    const correctedAllLots = params.allCandidateLots.map((lot) => {
+      const identity = identities.get(lot)
+      return identity && correctedByIdentityKey.has(identity.key) ? correctedByIdentityKey.get(identity.key)! : lot
+    })
+    const correctedVerified = correctedAllLots.filter(isCanonicalVerifiedPublishedLot)
+    realizedPnlUsd = correctedVerified.length > 0
+      ? Math.round(correctedVerified.reduce((sum, l) => sum + (l.realizedPnlUsd ?? 0), 0) * 100) / 100
+      : null
+    fingerprints = params.computeFingerprints(correctedAllLots, realizedPnlUsd)
+  }
+
   return {
     ...params.identity,
     lotIdentitySchemaVersion: CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
@@ -458,11 +648,11 @@ export async function buildManifestFromCandidate(params: {
     verifiedLotIdentityKeys,
     verifiedLotRecords: dedupedRecords,
     acceptedEvidenceIdentityKeys,
-    verifiedLotIdentityFingerprint: params.fingerprints.verifiedLotIdentityFingerprint,
-    acceptedHistoricalPriceFingerprint: params.fingerprints.acceptedHistoricalPriceFingerprint,
-    realizedPnlFingerprint: params.fingerprints.realizedPnlFingerprint,
-    scanFingerprint: params.fingerprints.scanFingerprint,
-    realizedPnlUsd: params.realizedPnlUsd,
+    verifiedLotIdentityFingerprint: fingerprints.verifiedLotIdentityFingerprint,
+    acceptedHistoricalPriceFingerprint: fingerprints.acceptedHistoricalPriceFingerprint,
+    realizedPnlFingerprint: fingerprints.realizedPnlFingerprint,
+    scanFingerprint: fingerprints.scanFingerprint,
+    realizedPnlUsd,
     // The REAL published count — deduplicated, so it can never be inflated by a duplicate key.
     verifiedLotCount: verifiedLotIdentityKeys.length,
     structuralLotCount: params.structuralLotCount,
@@ -485,6 +675,7 @@ export async function buildRefreshedManifest(params: {
   now: number
   refreshReason: string
   loadEvidence?: AcceptedEvidenceLoader
+  computeFingerprints?: (lots: readonly MatchedLot[], realizedPnlUsd: number | null) => DeterminismFingerprints
 }): Promise<CanonicalPnlSampleManifest> {
   return buildManifestFromCandidate({ ...params, priorManifest: params.priorManifest })
 }
@@ -642,6 +833,11 @@ export async function replayManifest(params: {
   // than falling back to the manifest's own stored numbers (requirement #1's explicit "stored
   // numeric values ... must never silently override missing/invalid accepted evidence").
   loadEvidence: AcceptedEvidenceLoader
+  // BOUNDED-CONCURRENCY BATCH LOAD, DISCLOSED (Part C — confirmed perf issue: sequential per-side
+  // awaits, one per lot, were a real, measurable chunk of a 77s scan). Optional: when omitted, one
+  // is built automatically from `loadEvidence` with bounded concurrency, so every caller gets the
+  // speedup with zero wiring required.
+  loadEvidenceBatch?: (requests: readonly { key: string; identity: Parameters<AcceptedEvidenceLoader>[0] }[]) => Promise<Map<string, Awaited<ReturnType<AcceptedEvidenceLoader>>>>
   // Recomputes the determinism fingerprints over a candidate published array, so replay can prove
   // the frozen result is internally derivable (requirement #4) rather than merely asserted.
   computeFingerprints: (lots: readonly MatchedLot[], realizedPnlUsd: number | null) => DeterminismFingerprints
@@ -651,6 +847,16 @@ export async function replayManifest(params: {
   // 1. Build the current candidate identity map over the FULL array (ordinals must see every slice).
   const identities = buildCanonicalLotIdentities(params.allCandidateLots)
   const candidateVerifiedLots = params.allCandidateLots.filter(isCanonicalVerifiedPublishedLot)
+
+  // GROUP BY SHARED EVIDENCE SIDE (Part A, replay side) — same population rule as build time:
+  // every structurally-matched lot from `allCandidateLots`, verified or not.
+  const entryGroupsByKey = new Map<string, MatchedLot[]>()
+  const exitGroupsByKey = new Map<string, MatchedLot[]>()
+  for (const lot of params.allCandidateLots) {
+    const [entryKey, exitKey] = acceptedEvidenceIdentityKeysForLot(lot)
+    entryGroupsByKey.set(entryKey, [...(entryGroupsByKey.get(entryKey) ?? []), lot])
+    exitGroupsByKey.set(exitKey, [...(exitGroupsByKey.get(exitKey) ?? []), lot])
+  }
 
   // 2. Canonicalize + dedupe both sides (requirement #2).
   const manifestDedupe = dedupeKeys(params.manifest.verifiedLotIdentityKeys)
@@ -672,9 +878,62 @@ export async function replayManifest(params: {
   }
   const recordByKey = new Map(params.manifest.verifiedLotRecords.map((r) => [r.key, r]))
 
-  // 3. Resolve, REBUILD FROM ACCEPTED EVIDENCE, and validate EVERY manifest lot (requirement #2/#3).
-  //    Nothing is published until this loop completes — the rebuilt lots are collected in a local
-  //    map and only merged into a published array in step 6, atomically.
+  // 2b. BATCH-LOAD every unique evidence side this manifest's records reference (Part C) — one
+  // dedicated pass, bounded concurrency, before any per-lot validation runs. `defaultBatchLoad`
+  // is used whenever the caller hasn't supplied its own `loadEvidenceBatch`.
+  type EvidenceRequest = { key: string; identity: Parameters<AcceptedEvidenceLoader>[0] }
+  const evidenceRequests = new Map<string, EvidenceRequest>()
+  for (const key of manifestDedupe.unique) {
+    const record = recordByKey.get(key)
+    if (!record) continue
+    evidenceRequests.set(record.entryEvidenceKey, {
+      key: record.entryEvidenceKey,
+      identity: { chain: record.chain, token: record.token, txHash: record.openedTxHash, side: 'entry', timestamp: record.openedAt, lotIdentityVersion: record.entryEvidenceLotIdentityVersion ?? record.lotIdentityVersion },
+    })
+    evidenceRequests.set(record.exitEvidenceKey, {
+      key: record.exitEvidenceKey,
+      identity: { chain: record.chain, token: record.token, txHash: record.closedTxHash, side: 'exit', timestamp: record.closedAt, lotIdentityVersion: record.exitEvidenceLotIdentityVersion ?? record.lotIdentityVersion },
+    })
+  }
+  const defaultBatchLoad = async (requests: readonly EvidenceRequest[]) => {
+    const map = new Map<string, Awaited<ReturnType<AcceptedEvidenceLoader>>>()
+    const BATCH_CONCURRENCY = 8
+    let cursor = 0
+    async function worker(): Promise<void> {
+      for (;;) {
+        const index = cursor
+        cursor += 1
+        if (index >= requests.length) return
+        const req = requests[index]
+        // eslint-disable-next-line no-await-in-loop
+        const result = await params.loadEvidence(req.identity)
+        map.set(req.key, result)
+      }
+    }
+    const workerCount = Math.max(1, Math.min(BATCH_CONCURRENCY, requests.length))
+    await Promise.all(Array.from({ length: workerCount }, () => worker()))
+    return map
+  }
+  const evidenceRequestList = [...evidenceRequests.values()]
+  const batchLoad = params.loadEvidenceBatch ?? defaultBatchLoad
+  const evidenceByKey = evidenceRequestList.length ? await batchLoad(evidenceRequestList) : new Map<string, Awaited<ReturnType<AcceptedEvidenceLoader>>>()
+
+  // 2c. Allocate each evidence group's total across its structural siblings ONCE (Part A), reusing
+  // this scan's own structural lots (not the manifest's — the manifest carries no full lot objects).
+  const entryAllocationByKey = new Map<string, Map<MatchedLot, SideAllocationShare>>()
+  const exitAllocationByKey = new Map<string, Map<MatchedLot, SideAllocationShare>>()
+  for (const [key, evidence] of evidenceByKey) {
+    if (!evidence) continue
+    const entryGroup = entryGroupsByKey.get(key)
+    if (entryGroup) entryAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(entryGroup, evidence.priceUsd).map((share) => [share.lot, share])))
+    const exitGroup = exitGroupsByKey.get(key)
+    if (exitGroup) exitAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(exitGroup, evidence.priceUsd).map((share) => [share.lot, share])))
+  }
+
+  // 3. Resolve, REBUILD FROM ACCEPTED EVIDENCE (Part A: per-sibling allocated share, never a flat
+  //    copy), and validate EVERY manifest lot (requirement #2/#3). Nothing is published until this
+  //    loop completes — the rebuilt lots are collected in a local map and only merged into a
+  //    published array in step 6, atomically.
   const rebuiltByKey = new Map<string, MatchedLot>()
   const selectedLotKeys: string[] = []
   const manifestLotsMissingCurrentEvidence: string[] = []
@@ -709,22 +968,11 @@ export async function replayManifest(params: {
       continue
     }
 
-    // 3a. Load the exact accepted-evidence records this manifest lot's values came from. These are
-    //     the source of truth; the current scan's own provider values are diagnostic candidates only
-    //     and are discarded below regardless of what they say.
-    // STRICT reads, using the lot-identity version this side's record was recorded as carrying —
-    // never a relaxed lookup. A manifest that never discovered a backing version falls back to this
-    // lot's own version, which still fails closed if nothing matches.
-    const entryEvidence = await params.loadEvidence({
-      chain: record.chain, token: record.token, txHash: record.openedTxHash,
-      side: 'entry', timestamp: record.openedAt,
-      lotIdentityVersion: record.entryEvidenceLotIdentityVersion ?? record.lotIdentityVersion,
-    })
-    const exitEvidence = await params.loadEvidence({
-      chain: record.chain, token: record.token, txHash: record.closedTxHash,
-      side: 'exit', timestamp: record.closedAt,
-      lotIdentityVersion: record.exitEvidenceLotIdentityVersion ?? record.lotIdentityVersion,
-    })
+    // 3a. Look up the already-batch-loaded accepted-evidence records this manifest lot's values
+    //     came from (Part C — no per-lot await here). These are the source of truth; the current
+    //     scan's own provider values are diagnostic candidates only and are discarded below.
+    const entryEvidence = evidenceByKey.get(record.entryEvidenceKey) ?? null
+    const exitEvidence = evidenceByKey.get(record.exitEvidenceKey) ?? null
     if (!entryEvidence || !exitEvidence) {
       // readAcceptedEvidence already enforces exact identity/side/timestamp/lot-identity-version/
       // schemaVersion matching and expiry, so a null here means the record is genuinely absent or
@@ -739,16 +987,26 @@ export async function replayManifest(params: {
       continue
     }
 
-    // 3b. Rebuild the lot from the canonical accepted values, OVERWRITING whatever the current scan
-    //     resolved. Same convention pnlReconciliation's own hydrateFromAcceptedEvidence uses:
-    //     costBasisUsd/proceedsUsd ARE the accepted per-side prices, realized PnL is their difference.
-    const costBasisUsd = entryEvidence.priceUsd
-    const proceedsUsd = exitEvidence.priceUsd
+    // 3b. Rebuild the lot from THIS LOT'S OWN ALLOCATED SHARE of the group's accepted total (Part
+    //     A — never a flat copy of the whole transaction side onto every sibling), OVERWRITING
+    //     whatever the current scan itself resolved.
+    const entryShare = entryAllocationByKey.get(record.entryEvidenceKey)?.get(structuralLot) ?? null
+    const exitShare = exitAllocationByKey.get(record.exitEvidenceKey)?.get(structuralLot) ?? null
+    if (!entryShare || !exitShare) {
+      // The evidence loaded, but this specific structural lot isn't a member of the group the
+      // allocation was computed over (e.g. its own group changed shape) — fail closed rather than
+      // publish an unallocated or mismatched share.
+      reasonCounts.manifest_side_evidence_invalid += 1
+      manifestLotsMissingCurrentEvidence.push(key)
+      continue
+    }
+    const costBasisUsd = entryShare.allocatedValueUsd
+    const proceedsUsd = exitShare.allocatedValueUsd
     const rebuilt: MatchedLot = {
       ...structuralLot,
       costBasisUsd,
       proceedsUsd,
-      realizedPnlUsd: proceedsUsd - costBasisUsd,
+      realizedPnlUsd: Math.round((proceedsUsd - costBasisUsd) * 100) / 100,
       evidenceQuality: 'verified',
     }
 

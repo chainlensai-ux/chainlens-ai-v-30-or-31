@@ -58,6 +58,9 @@ export type RunWalletScanResult = FinalReport & {
   // refresh (requirement #7) — never set on ordinary provider-availability-driven variance.
   canonicalSampleManifestAudit?: CanonicalSampleManifestAudit
   sampleUpdated?: boolean
+  // MANIFEST FAST-PATH AUDIT, DISCLOSED (canonical-manifest-fast-path follow-up task, Parts B/C):
+  // see src/pipeline/priceLotsForWallet.ts's own ManifestFastPathAudit header.
+  manifestFastPathAudit?: import('./priceLotsForWallet').ManifestFastPathAudit
 }
 
 export type PreScanValidation = {

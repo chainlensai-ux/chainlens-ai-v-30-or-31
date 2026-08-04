@@ -53,7 +53,7 @@ const bottomSyntheticPnlSummaryPosition = position(
 )
 const finalReturnPosition = position(
   'final return',
-  'return { ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated }',
+  'return { ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated, manifestFastPathAudit: walletPriceLookups.manifestFastPathAudit }',
 )
 
 test('provider-only scans cannot return after normalization before pricingAtTime', () => {

@@ -2,8 +2,9 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildAcceptedEvidenceKey, buildAcceptedEvidenceEnvelope, isValidAcceptedEvidence,
-  readAcceptedEvidence, writeAcceptedEvidence, lotIdentityVersion,
+  readAcceptedEvidence, writeAcceptedEvidence, lotIdentityVersion, readAcceptedEvidenceBatch,
   ACCEPTED_EVIDENCE_SCHEMA_VERSION, type AcceptedEvidenceIdentity, type AcceptedEvidenceKvLike,
+  type AcceptedEvidenceBatchIdentity,
 } from './acceptedEvidenceStore'
 
 function fakeKv(): AcceptedEvidenceKvLike & { store: Map<string, unknown> } {
@@ -85,5 +86,73 @@ describe('acceptedEvidenceStore', () => {
     assert.equal(withBucket.temporalDistanceMs, 100)
     const withoutBucket = buildAcceptedEvidenceEnvelope({ identity: IDENTITY, priceUsd: 1, valueUsd: 1, source: 's', evidenceType: 't', providerTimestampBucket: null, now: 0 })
     assert.equal(withoutBucket.temporalDistanceMs, null)
+  })
+})
+
+describe('readAcceptedEvidenceBatch — bounded-concurrency batch reads (canonical-manifest-fast-path follow-up task, Part C)', () => {
+  it('reads every distinct identity and reports the real key that resolved each one', async () => {
+    const kv = fakeKv()
+    const a: AcceptedEvidenceIdentity = { chain: 'base', token: '0xa', txHash: '0xbuya', side: 'entry', timestamp: 1, lotIdentityVersion: 'va' }
+    const b: AcceptedEvidenceIdentity = { chain: 'base', token: '0xb', txHash: '0xbuyb', side: 'entry', timestamp: 1, lotIdentityVersion: 'vb' }
+    await writeAcceptedEvidence(kv, buildAcceptedEvidenceEnvelope({ identity: a, priceUsd: 1, valueUsd: 1, source: 's', evidenceType: 't', providerTimestampBucket: null, now: 0 }))
+    await writeAcceptedEvidence(kv, buildAcceptedEvidenceEnvelope({ identity: b, priceUsd: 2, valueUsd: 2, source: 's', evidenceType: 't', providerTimestampBucket: null, now: 0 }))
+
+    const result = await readAcceptedEvidenceBatch(kv, [a, b], 0)
+    assert.equal(result.byKey.get(buildAcceptedEvidenceKey(a))?.priceUsd, 1)
+    assert.equal(result.byKey.get(buildAcceptedEvidenceKey(b))?.priceUsd, 2)
+    assert.equal(result.uniqueKeysRead, 2)
+  })
+
+  it('HARD ASSERTION: deduplicates identical identities into ONE real read, never one per duplicate', async () => {
+    const kv = fakeKv()
+    let reads = 0
+    const countingKv: AcceptedEvidenceKvLike = { get: async (key) => { reads += 1; return kv.get(key) }, set: kv.set }
+    const identity: AcceptedEvidenceIdentity = { chain: 'base', token: '0xa', txHash: '0xbuya', side: 'entry', timestamp: 1, lotIdentityVersion: 'va' }
+    await writeAcceptedEvidence(kv, buildAcceptedEvidenceEnvelope({ identity, priceUsd: 5, valueUsd: 5, source: 's', evidenceType: 't', providerTimestampBucket: null, now: 0 }))
+
+    const requests: AcceptedEvidenceBatchIdentity[] = Array.from({ length: 10 }, () => ({ ...identity }))
+    const result = await readAcceptedEvidenceBatch(countingKv, requests, 0)
+    assert.equal(reads, 1, 'ten identical requests must issue exactly one real KV read')
+    assert.equal(result.keysRequested, 10)
+    assert.equal(result.uniqueKeysRead, 1)
+  })
+
+  it('a `anyLotVersion: true` entry dispatches to the relaxed discovery read', async () => {
+    const kv = fakeKv()
+    const written: AcceptedEvidenceIdentity = { chain: 'base', token: '0xa', txHash: '0xbuya', side: 'entry', timestamp: 1, lotIdentityVersion: 'writer-version' }
+    await writeAcceptedEvidence(kv, buildAcceptedEvidenceEnvelope({ identity: written, priceUsd: 9, valueUsd: 9, source: 's', evidenceType: 't', providerTimestampBucket: null, now: 0 }))
+
+    const request: AcceptedEvidenceBatchIdentity = { chain: 'base', token: '0xa', txHash: '0xbuya', side: 'entry', timestamp: 1, anyLotVersion: true }
+    const result = await readAcceptedEvidenceBatch(kv, [request], 0)
+    const key = buildAcceptedEvidenceKey({ ...written })
+    assert.equal(result.byKey.get(key)?.priceUsd, 9, 'a relaxed request must find the record regardless of which version wrote it')
+  })
+
+  it('a missing identity resolves to null in the map, never omitted and never thrown', async () => {
+    const kv = fakeKv()
+    const missing: AcceptedEvidenceIdentity = { chain: 'base', token: '0xnone', txHash: '0xnone', side: 'entry', timestamp: 1, lotIdentityVersion: 'v' }
+    const result = await readAcceptedEvidenceBatch(kv, [missing], 0)
+    assert.equal(result.byKey.has(buildAcceptedEvidenceKey(missing)), true)
+    assert.equal(result.byKey.get(buildAcceptedEvidenceKey(missing)), null)
+  })
+
+  it('a KV read that throws fails open to null for that key, never blocking the rest of the batch', async () => {
+    const kv = fakeKv()
+    const good: AcceptedEvidenceIdentity = { chain: 'base', token: '0xgood', txHash: '0xgood', side: 'entry', timestamp: 1, lotIdentityVersion: 'v' }
+    const bad: AcceptedEvidenceIdentity = { chain: 'base', token: '0xbad', txHash: '0xbad', side: 'entry', timestamp: 1, lotIdentityVersion: 'v' }
+    await writeAcceptedEvidence(kv, buildAcceptedEvidenceEnvelope({ identity: good, priceUsd: 1, valueUsd: 1, source: 's', evidenceType: 't', providerTimestampBucket: null, now: 0 }))
+    const flakyKv: AcceptedEvidenceKvLike = {
+      get: async (key) => (key === buildAcceptedEvidenceKey(bad) ? Promise.reject(new Error('down')) : kv.get(key)),
+      set: kv.set,
+    }
+    const result = await readAcceptedEvidenceBatch(flakyKv, [good, bad], 0)
+    assert.equal(result.byKey.get(buildAcceptedEvidenceKey(good))?.priceUsd, 1)
+    assert.equal(result.byKey.get(buildAcceptedEvidenceKey(bad)), null)
+  })
+
+  it('an empty request list returns an empty result without error', async () => {
+    const result = await readAcceptedEvidenceBatch(fakeKv(), [], 0)
+    assert.equal(result.byKey.size, 0)
+    assert.equal(result.keysRequested, 0)
   })
 })
