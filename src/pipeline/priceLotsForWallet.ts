@@ -605,6 +605,17 @@ export async function priceLotsForWallet(params: {
     for (const { txHash, timestamp, oppositeTxHash, side } of requirements) {
       const groupKey = swapLegGroupKey(lot.chain, txHash)
       if (nativeQuoteRequirementSeen.has(groupKey)) continue
+      // MANIFEST/ACCEPTED-EVIDENCE SKIP APPLIES HERE TOO, DISCLOSED (canonical-manifest-fast-path
+      // follow-up task, issue #3 — confirmed production bug: "113 historical requirements selected
+      // despite expectedLotsCompleted=0"). `nativeCandidates` is built from `structuralMatchedLots`
+      // directly, NEVER from the already-filtered `buys`/`sells` arrays the earlier skip-splice
+      // mutates — so a side already covered by accepted evidence (an unchanged manifest rescan with
+      // zero genuinely new lots) still generated a native-quote candidate here, an independent entry
+      // point into `resolvePricingAtTime` this skip previously never reached. Since this side's price
+      // is already known (and already merged into `atTradeTime.costUsd`/`proceedsUsd` below), a
+      // native-quote candidate for it can only ever complete zero NEW lots — exactly the reported
+      // expectedLotsCompleted=0 selections.
+      if (isSkippableByAcceptedEvidence(lot.chain, txHash, side)) continue
       const legs = swapLegsByTx.get(groupKey) ?? []
       const oppositeLegs = legs.filter((leg) => !leg.excludeReason && leg.contract.toLowerCase() !== lot.token.toLowerCase())
       for (const leg of oppositeLegs) {

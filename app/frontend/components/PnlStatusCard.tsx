@@ -29,6 +29,7 @@ import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { PublicPnlStatus, UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
 import type { SyntheticPnlSummary } from '@/src/modules/syntheticPnl/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
+import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 import { fmtSignedUsd, fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { StatusBadge } from './StatusBadge'
 import { MetricCard, toneFromNumber } from './MetricCard'
@@ -66,6 +67,16 @@ export type PnlStatusCardProps = {
   // see `publicPnlGateAudit.boundedSampleEligible` on the backend). Never merged into pnlV2's own
   // numbers above, never used for 'ok'/'unavailable' — those keep their existing, unchanged behavior.
   reconciliationSummary?: PnlReconciliationSummary | null
+  // FAIL-CLOSED UI, DISCLOSED (canonical-manifest-fast-path follow-up task, issue #2 — confirmed
+  // production bug: a scan whose canonical manifest replay failed [`canonicalSampleEvidenceUnavailable:
+  // true`, backend-forced `realizedPnlUsd: null`/`publicPnlStatus: 'unavailable'`] still displayed an
+  // unrelated "37.35% coverage" figure somewhere in the UI). Optional, additive — a caller that
+  // hasn't wired it gets today's existing behavior unchanged. When supplied and
+  // `canonicalSampleEvidenceUnavailable === true`, this OVERRIDES every other source below
+  // (`pnlV2`, `reconciliationSummary`, `publicPnlStatus`) regardless of what any of them individually
+  // claim — defense in depth, not a replacement for the backend's own fail-closed gate. See
+  // `selectDisplayedPnl`'s own header for the exact precedence.
+  canonicalSampleManifestAudit?: CanonicalSampleManifestAudit | null
 }
 
 export type VerifiedPnlData = {
@@ -323,6 +334,39 @@ function ChainBreakdownTable({
 // Returns null for 'ok' (no badge) or when publicPnlStatus wasn't supplied at all (no fabricated
 // default); otherwise returns the exact label to show, distinguishing the two non-'ok' real
 // statuses rather than collapsing them into one generic string.
+// LAST-KNOWN SAMPLE DISCLOSURE, DISCLOSED (issue #2 — "show last-known sample separately as not
+// currently verified"). Pure, exported for direct testing. Sourced ONLY from
+// `canonicalSampleManifestAudit.lastKnownCanonicalSample` (src/lib/canonicalPnlSampleManifest.ts's
+// own `LastKnownCanonicalSample`, which is ITSELF only ever populated with
+// `availableForCurrentVerification: false`) — never merged into or confused with the live PnL
+// numbers above; this is metadata about a PRIOR scan's frozen sample, shown so the user isn't left
+// with nothing at all, but unambiguously labeled as not currently verified.
+export type LastKnownSampleDisclosure = {
+  verifiedLotCount: number
+  verifiedPricingCoveragePercent: number | null
+  realizedPnlUsd: number | null
+  manifestVersion: number
+  refreshedAt: number
+  label: string
+}
+
+export const LAST_KNOWN_SAMPLE_LABEL = 'Last known sample — not currently verified'
+
+export function selectLastKnownSampleDisclosure(
+  canonicalSampleManifestAudit: CanonicalSampleManifestAudit | null | undefined,
+): LastKnownSampleDisclosure | null {
+  const lastKnown = canonicalSampleManifestAudit?.lastKnownCanonicalSample
+  if (!lastKnown) return null
+  return {
+    verifiedLotCount: lastKnown.verifiedLotCount,
+    verifiedPricingCoveragePercent: lastKnown.verifiedPricingCoverage != null ? lastKnown.verifiedPricingCoverage * 100 : null,
+    realizedPnlUsd: lastKnown.realizedPnlUsd,
+    manifestVersion: lastKnown.manifestVersion,
+    refreshedAt: lastKnown.refreshedAt,
+    label: LAST_KNOWN_SAMPLE_LABEL,
+  }
+}
+
 export function shouldShowLimitedSampleBadge(publicPnlStatus: PublicPnlStatus | null | undefined): string | null {
   if (publicPnlStatus == null || publicPnlStatus === 'ok') return null
   if (publicPnlStatus === 'limited_verified_sample') return 'Limited verified sample'
@@ -352,7 +396,13 @@ export type BoundedSampleDisclosure = {
 export function selectBoundedSampleDisclosure(
   publicPnlStatus: PublicPnlStatus | null | undefined,
   reconciliationSummary: PnlReconciliationSummary | null | undefined,
+  canonicalSampleManifestAudit?: CanonicalSampleManifestAudit | null,
 ): BoundedSampleDisclosure | null {
+  // FAIL-CLOSED OVERRIDE, DISCLOSED (issue #2): never show a coverage percentage — bounded or
+  // otherwise — for a scan whose canonical sample could not be replayed, even if `publicPnlStatus`
+  // somehow still claims 'limited_verified_sample' (defense in depth; the backend's own gate
+  // already forces 'unavailable' in this case, but this block never trusts that alone).
+  if (canonicalSampleManifestAudit?.canonicalSampleEvidenceUnavailable) return null
   if (publicPnlStatus !== 'limited_verified_sample') return null
   if (!reconciliationSummary) return null
   const audit = reconciliationSummary.publicPnlGateAudit
@@ -409,12 +459,30 @@ export type DisplayedPnl = {
 // evidence", not true — 19 lots ARE verified) or computing a number from data this function was
 // never given. If a real canonical cost-basis field is ever added to PnlReconciliationSummary, this
 // is the one place that would need to start reading it.
+// FAIL-CLOSED LABEL, DISCLOSED (issue #2's own literal spec — "show PnL unavailable"). Exported so
+// tests can assert on the exact string rather than a substring guess.
+export const CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL = 'PnL unavailable — canonical sample not currently verified'
+
 export function selectDisplayedPnl(params: {
   pnlV2: PnlV2 | null | undefined
   publicPnlStatus?: PublicPnlStatus | null
   unrealizedReconciliation?: UnrealizedReconciliationSummary | null
   reconciliationSummary?: PnlReconciliationSummary | null
+  canonicalSampleManifestAudit?: CanonicalSampleManifestAudit | null
 }): DisplayedPnl {
+  // FAIL-CLOSED OVERRIDE, DISCLOSED (issue #2): takes precedence over EVERYTHING below — a manifest
+  // replay failure means there is no canonical published sample this scan, so no PnL number of any
+  // kind (real, bounded, or otherwise) may be shown, regardless of what `publicPnlStatus`,
+  // `pnlV2`, or `reconciliationSummary` individually claim.
+  if (params.canonicalSampleManifestAudit?.canonicalSampleEvidenceUnavailable) {
+    return {
+      status: 'unavailable', realizedPnlUsd: null, unrealizedPnlUsd: null, totalPnlUsd: null,
+      costBasisUsd: null, costBasisLabel: 'Not available — canonical sample unavailable',
+      roiPercent: null, roiLabel: CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL,
+      integrityLabel: CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL, source: 'none',
+    }
+  }
+
   const status = params.publicPnlStatus ?? null
 
   if (status === 'limited_verified_sample') {
@@ -511,10 +579,12 @@ export function resolvePnlDisplayMode(params: {
   return 'real'
 }
 
-export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealizedReconciliation, reconciliationSummary }: PnlStatusCardProps) {
+export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit }: PnlStatusCardProps) {
   const pnl = selectVerifiedPnlData(pnlV2, publicPnlStatus, unrealizedReconciliation)
   const isActive = pnlV2 != null
-  const boundedSample = selectBoundedSampleDisclosure(publicPnlStatus, reconciliationSummary)
+  const canonicalSampleUnavailable = canonicalSampleManifestAudit?.canonicalSampleEvidenceUnavailable === true
+  const boundedSample = selectBoundedSampleDisclosure(publicPnlStatus, reconciliationSummary, canonicalSampleManifestAudit)
+  const lastKnownSample = selectLastKnownSampleDisclosure(canonicalSampleManifestAudit)
   // CANONICAL DISPLAYED PNL, DISCLOSED (contradictory-tiles follow-up task): the ONE selector every
   // visible tile below reads from. For a bounded sample (`isBoundedSample`), this is
   // `reconciliationSummary`-sourced and INDEPENDENT of `pnl`/`blocked` (the pnlV2-only, magnitude-
@@ -522,15 +592,23 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   // bounded sample no longer reads them at all, closing the exact contradiction this task reported
   // (disclosure block showing a real number while the main tiles showed $0.00 from a DIFFERENT,
   // unrelated source).
-  const displayed = selectDisplayedPnl({ pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary })
+  const displayed = selectDisplayedPnl({ pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit })
   const isBoundedSample = publicPnlStatus === 'limited_verified_sample'
   // PARTIAL-COVERAGE BADGE, DISCLOSED (this task's own requirement): shown SEPARATELY from the
   // blocked/unavailable states above — a "partial" reconciliation still has a real, honestly-
   // computed officialUnrealizedPnlUsd (excluded positions are simply left out, never blended in),
   // so this is informational context alongside a real number, never a reason to hide it.
-  const unrealizedCoverageBadgeLabel = unrealizedReconciliation?.reconciliationStatus === 'partial'
-    ? `Partial — ${unrealizedReconciliation.unrealizedCoveragePercent.toFixed(2)}% coverage`
-    : null
+  // FAIL-CLOSED SUPPRESSION, DISCLOSED (issue #2 — confirmed production bug: this badge's own
+  // coverage percentage, about UNRELATED unrealized-position reconciliation, kept rendering next to
+  // a "PnL unavailable" banner for a scan whose canonical sample failed replay, reading as if it
+  // were the PnL evidence coverage). Never shown at all when the canonical sample is unavailable —
+  // even though it is a real, legitimately different metric, showing ANY unlabeled coverage
+  // percentage next to a fail-closed PnL state is exactly the confusion this task asks to eliminate.
+  const unrealizedCoverageBadgeLabel = canonicalSampleUnavailable
+    ? null
+    : unrealizedReconciliation?.reconciliationStatus === 'partial'
+      ? `Partial — ${unrealizedReconciliation.unrealizedCoveragePercent.toFixed(2)}% coverage`
+      : null
   const limitedSampleBadgeLabel = shouldShowLimitedSampleBadge(publicPnlStatus)
   const showSyntheticGlobal = shouldShowSyntheticGlobal(publicPnlStatus, syntheticPnl)
   const showSyntheticPerChain = shouldShowSyntheticPerChain(publicPnlStatus, syntheticPnl)
@@ -611,6 +689,27 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
               {boundedSample.warning}
             </div>
           )}
+        </div>
+      )}
+
+      {/* LAST-KNOWN SAMPLE DISCLOSURE, DISCLOSED (issue #2 — "show last-known sample separately as
+          not currently verified"): rendered ONLY when a prior manifest exists but this scan's
+          replay failed — clearly separate from, and never merged into, the PnL tiles above (which
+          already show PNL_UNAVAILABLE_MESSAGE / CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL). Explicitly
+          labeled "not currently verified" in the block itself, not just implied by placement. */}
+      {lastKnownSample && (
+        <div style={{ background: 'rgba(148,163,184,0.06)', border: '1px dashed rgba(148,163,184,0.3)', borderRadius: '10px', padding: '12px 14px', marginBottom: '16px' }}>
+          <div style={{ fontSize: '11px', fontWeight: 800, color: 'rgba(148,163,184,0.85)', letterSpacing: '0.04em', marginBottom: '6px' }}>
+            {lastKnownSample.label}
+          </div>
+          <div style={{ fontSize: '13px', fontWeight: 700, color: 'rgba(226,232,240,0.75)', marginBottom: '6px' }}>
+            Last verified realized PnL: {fmtSignedUsd(lastKnownSample.realizedPnlUsd)}
+          </div>
+          <div style={{ fontSize: '11px', color: 'rgba(226,232,240,0.6)', lineHeight: 1.7 }}>
+            {lastKnownSample.verifiedLotCount} verified closed lots (manifest v{lastKnownSample.manifestVersion})
+            <br />
+            {lastKnownSample.verifiedPricingCoveragePercent != null ? `${lastKnownSample.verifiedPricingCoveragePercent.toFixed(2)}%` : 'Unknown'} historical pricing coverage
+          </div>
         </div>
       )}
 

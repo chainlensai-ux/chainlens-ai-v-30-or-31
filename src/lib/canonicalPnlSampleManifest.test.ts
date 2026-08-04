@@ -19,7 +19,7 @@ import {
   readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest,
   buildCanonicalLotIdentities, canonicalAmountString, dedupeKeys, logDuplicateIdentityIfAny,
   buildLastKnownCanonicalSample, buildScanWindowIdentity, buildChainScope, normalizeWalletAddress,
-  CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION,
+  CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, CANONICAL_VALUE_METHODOLOGY_VERSION, CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
   type CanonicalSampleManifestKvLike, type AcceptedEvidenceLoader, type CanonicalPnlSampleManifest,
 } from './canonicalPnlSampleManifest.ts'
 import { buildScanDeterminismAudit } from './scanDeterminismAudit.ts'
@@ -669,5 +669,39 @@ describe('canonicalPnlSampleManifest — five-sibling partial-fill value allocat
     }
     const publishedSum = Math.round(published.reduce((s, l) => s + (l.costBasisUsd ?? 0), 0) * 1e8) / 1e8
     assert.equal(publishedSum, Math.round(sharedEntryTotal * 1e8) / 1e8, 'the five replayed shares must still sum exactly to the shared accepted total')
+  })
+})
+
+describe('canonicalPnlSampleManifest — value methodology version (issue #1: manifest compatibility)', () => {
+  it('HARD ASSERTION: a manifest built under an OLDER value methodology version is never found under the current identity, so a rescan creates a fresh manifest instead of repeatedly failing replay', async () => {
+    const kv = fakeKv()
+    const lots = buildLots(6, 6)
+    const oldMethodologyIdentity = buildManifestIdentity({
+      walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1',
+      valueMethodologyVersion: CANONICAL_VALUE_METHODOLOGY_VERSION - 1,
+    })
+    const { manifest: oldManifest } = await manifestWithEvidence(lots, oldMethodologyIdentity)
+    await writeCanonicalPnlSampleManifest(kv, oldManifest)
+
+    // A rescan resolves identity under the CURRENT (default) value methodology version.
+    const currentIdentity = identity()
+    assert.notEqual(buildManifestKey(oldMethodologyIdentity), buildManifestKey(currentIdentity), 'the two identities must key to different manifest slots')
+    const read = await readCanonicalPnlSampleManifest(kv, currentIdentity)
+    assert.equal(read.manifest, null, 'the old-methodology manifest must simply miss, not be found-and-fail')
+    assert.equal(read.validationFailure, false, 'a version mismatch is a real miss, never reported as corruption')
+  })
+
+  it('a manifest with the correct value methodology version still resolves normally', async () => {
+    const kv = fakeKv()
+    const lots = buildLots(6, 6)
+    const { manifest } = await manifestWithEvidence(lots)
+    assert.equal(manifest.valueMethodologyVersion, CANONICAL_VALUE_METHODOLOGY_VERSION)
+    await writeCanonicalPnlSampleManifest(kv, manifest)
+    const read = await readCanonicalPnlSampleManifest(kv, identity())
+    assert.deepEqual(read.manifest, manifest)
+  })
+
+  it('structural lot identity schema stays unchanged by the value methodology bump', () => {
+    assert.equal(CANONICAL_LOT_IDENTITY_SCHEMA_VERSION, 2)
   })
 })

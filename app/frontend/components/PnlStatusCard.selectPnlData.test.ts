@@ -15,7 +15,13 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { selectVerifiedPnlData, selectDisplayedUnrealizedPnl, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl, PNL_UNAVAILABLE_MESSAGE, hasGlobalSynthetic, hasPerChainSynthetic, shouldShowSyntheticGlobal, shouldShowSyntheticPerChain, resolvePnlDisplayMode, selectBoundedSampleDisclosure, selectDisplayedPnl, PER_CHAIN_BOUNDED_SAMPLE_MESSAGE } from './PnlStatusCard'
+import {
+  selectVerifiedPnlData, selectDisplayedUnrealizedPnl, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl,
+  PNL_UNAVAILABLE_MESSAGE, hasGlobalSynthetic, hasPerChainSynthetic, shouldShowSyntheticGlobal, shouldShowSyntheticPerChain,
+  resolvePnlDisplayMode, selectBoundedSampleDisclosure, selectDisplayedPnl, PER_CHAIN_BOUNDED_SAMPLE_MESSAGE,
+  selectLastKnownSampleDisclosure, CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL, LAST_KNOWN_SAMPLE_LABEL,
+} from './PnlStatusCard'
+import { emptyCanonicalSampleManifestAudit, type CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
@@ -706,5 +712,82 @@ describe('PnlStatusCard rendering — contradictory-tiles regression coverage (p
       reconciliationSummary: reconciliationSummary({ realizedPnlUsd: -3903.53, unrealizedPnlUsd: -19.02 }),
     })
     assert.equal(displayed.realizedPnlUsd, -3903.53, 'the canonical value must win regardless of pnlV2 stability')
+  })
+})
+
+describe('PnlStatusCard — fail-closed UI when canonicalSampleEvidenceUnavailable (issue #2)', () => {
+  function unavailableAudit(overrides: Partial<CanonicalSampleManifestAudit> = {}): CanonicalSampleManifestAudit {
+    return { ...emptyCanonicalSampleManifestAudit('manifest-key'), canonicalSampleEvidenceUnavailable: true, ...overrides }
+  }
+
+  it('HARD ASSERTION: selectDisplayedPnl shows PnL unavailable, never a real number, even when publicPnlStatus still claims limited_verified_sample', () => {
+    const displayed = selectDisplayedPnl({
+      pnlV2: pnlV2({ realizedPnlUsd: 100 }),
+      publicPnlStatus: 'limited_verified_sample',
+      reconciliationSummary: reconciliationSummary({ realizedPnlUsd: -3515.49 }),
+      canonicalSampleManifestAudit: unavailableAudit(),
+    })
+    assert.equal(displayed.status, 'unavailable')
+    assert.equal(displayed.realizedPnlUsd, null)
+    assert.equal(displayed.unrealizedPnlUsd, null)
+    assert.equal(displayed.totalPnlUsd, null)
+    assert.equal(displayed.roiLabel, CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL)
+    assert.equal(displayed.integrityLabel, CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL)
+  })
+
+  it("HARD ASSERTION: never shows a stray coverage percentage (the confirmed '37.35% coverage' bug) — selectBoundedSampleDisclosure returns null", () => {
+    const disclosure = selectBoundedSampleDisclosure('limited_verified_sample', reconciliationSummary({ realizedPnlUsd: -3903.53 }), unavailableAudit())
+    assert.equal(disclosure, null)
+  })
+
+  it('with no canonicalSampleManifestAudit supplied, behavior is completely unchanged (backward compatible)', () => {
+    const displayed = selectDisplayedPnl({
+      pnlV2: pnlV2({ realizedPnlUsd: 100 }),
+      publicPnlStatus: 'limited_verified_sample',
+      reconciliationSummary: reconciliationSummary({ realizedPnlUsd: -3903.53 }),
+    })
+    assert.equal(displayed.realizedPnlUsd, -3903.53)
+    assert.equal(selectBoundedSampleDisclosure('limited_verified_sample', reconciliationSummary({ realizedPnlUsd: -3903.53 }))?.realizedPnlUsd, -3903.53)
+  })
+
+  it('a canonicalSampleManifestAudit with canonicalSampleEvidenceUnavailable: false never overrides anything', () => {
+    const displayed = selectDisplayedPnl({
+      pnlV2: pnlV2({ realizedPnlUsd: 100 }),
+      publicPnlStatus: 'limited_verified_sample',
+      reconciliationSummary: reconciliationSummary({ realizedPnlUsd: -3903.53 }),
+      canonicalSampleManifestAudit: emptyCanonicalSampleManifestAudit('manifest-key'),
+    })
+    assert.equal(displayed.realizedPnlUsd, -3903.53)
+  })
+
+  it('selectLastKnownSampleDisclosure exposes the prior manifest\'s frozen figures, clearly labeled not currently verified', () => {
+    const audit = unavailableAudit({
+      lastKnownCanonicalSample: {
+        manifestVersion: 1, verifiedLotCount: 23, verifiedPricingCoverage: 0.8519,
+        realizedPnlUsd: 1791.71, refreshedAt: 1000, availableForCurrentVerification: false,
+      },
+    })
+    const disclosure = selectLastKnownSampleDisclosure(audit)
+    assert.ok(disclosure)
+    assert.equal(disclosure!.label, LAST_KNOWN_SAMPLE_LABEL)
+    assert.equal(disclosure!.verifiedLotCount, 23)
+    assert.equal(disclosure!.realizedPnlUsd, 1791.71)
+    assert.equal(disclosure!.verifiedPricingCoveragePercent, 85.19)
+  })
+
+  it('selectLastKnownSampleDisclosure returns null when there is no prior manifest to disclose', () => {
+    assert.equal(selectLastKnownSampleDisclosure(emptyCanonicalSampleManifestAudit('k')), null)
+    assert.equal(selectLastKnownSampleDisclosure(null), null)
+    assert.equal(selectLastKnownSampleDisclosure(undefined), null)
+  })
+
+  it("HARD ASSERTION: the last-known sample is never conflated with the live PnL numbers — the two coexist independently", () => {
+    const audit = unavailableAudit({
+      lastKnownCanonicalSample: { manifestVersion: 2, verifiedLotCount: 26, verifiedPricingCoverage: 0.963, realizedPnlUsd: 1384.93, refreshedAt: 2000, availableForCurrentVerification: false },
+    })
+    const displayed = selectDisplayedPnl({ pnlV2: pnlV2({ realizedPnlUsd: 999 }), publicPnlStatus: 'ok', canonicalSampleManifestAudit: audit })
+    const lastKnown = selectLastKnownSampleDisclosure(audit)
+    assert.equal(displayed.realizedPnlUsd, null, 'the live display must stay unavailable')
+    assert.equal(lastKnown!.realizedPnlUsd, 1384.93, 'the last-known figure is a real, separate value')
   })
 })

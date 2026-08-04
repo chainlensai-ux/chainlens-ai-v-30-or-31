@@ -10,11 +10,21 @@
 import { useState } from 'react'
 import type { SmartMoneyScore, SmartMoneyPerformanceBreakdown } from '@/lib/engine/modules/smartMoney/types'
 import { MIN_VERIFIED_TRADES_FOR_OFFICIAL, MIN_COVERAGE_PERCENT_FOR_OFFICIAL } from '@/lib/engine/modules/smartMoney/computeSmartMoneyScore'
+import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 import { WALLET_PERSONALITY_CARD_ID } from './WalletPersonalityCard'
 import { StatusBadge } from './StatusBadge'
 
 export type SmartMoneyScoreCardProps = {
   smartMoneyScore: SmartMoneyScore | null | undefined
+  // FAIL-CLOSED SHARED STATE, DISCLOSED (canonical-manifest-fast-path follow-up task, issue #2 —
+  // "Smart Money and PnL must use the same canonical count/status"). Optional, additive — omitted by
+  // any caller that hasn't wired the same-scan canonical manifest audit into this card yet, in which
+  // case behavior is completely unchanged. When supplied and
+  // `canonicalSampleEvidenceUnavailable === true`, this card's own Verified Coverage figure is
+  // overridden to "Unavailable" regardless of what `evidenceConfidence.verifiedCoveragePercent`
+  // itself reports — the SAME canonical-sample-unavailable state PnlStatusCard's own
+  // `canonicalSampleManifestAudit` prop gates its PnL display on.
+  canonicalSampleManifestAudit?: CanonicalSampleManifestAudit | null
 }
 
 const BREAKDOWN_LABELS: Array<{ key: keyof SmartMoneyPerformanceBreakdown; label: string; weightPercent: number }> = [
@@ -42,12 +52,14 @@ function fmtBreakdownValue(v: number | null): string {
   return v == null ? 'No data' : `${v}`
 }
 
-export function SmartMoneyScoreCard({ smartMoneyScore }: SmartMoneyScoreCardProps) {
+export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAudit }: SmartMoneyScoreCardProps) {
   const [expanded, setExpanded] = useState(false)
   if (!smartMoneyScore) return null
 
   const { status, officialScore, provisionalBehaviorScore, evidenceConfidence, breakdown, notes, reasonNotRated } = smartMoneyScore
   const isOfficial = status === 'official'
+  const canonicalSampleUnavailable = canonicalSampleManifestAudit?.canonicalSampleEvidenceUnavailable === true
+  const displayedVerifiedCoveragePercent = canonicalSampleUnavailable ? null : evidenceConfidence.verifiedCoveragePercent
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -97,13 +109,15 @@ export function SmartMoneyScoreCard({ smartMoneyScore }: SmartMoneyScoreCardProp
           <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)' }}>
             Verified Coverage
           </div>
-          {evidenceConfidence.verifiedCoveragePercent == null ? (
-            <div style={{ fontSize: '14px', fontWeight: 800, color: 'rgba(148,163,184,0.55)' }}>Unavailable</div>
+          {displayedVerifiedCoveragePercent == null ? (
+            <div style={{ fontSize: '14px', fontWeight: 800, color: 'rgba(148,163,184,0.55)' }}>
+              {canonicalSampleUnavailable ? 'Unavailable — canonical sample not currently verified' : 'Unavailable'}
+            </div>
           ) : (
-            <div style={{ fontSize: '14px', fontWeight: 800, color: evidenceConfidence.verifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL ? '#4ade80' : '#e2e8f0' }}>
-              {evidenceConfidence.verifiedCoveragePercent.toFixed(2)}% / {MIN_COVERAGE_PERCENT_FOR_OFFICIAL}% minimum
-              <span style={{ fontSize: '10px', fontWeight: 700, marginLeft: '6px', color: evidenceConfidence.verifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL ? '#4ade80' : '#f87171' }}>
-                {evidenceConfidence.verifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL ? 'met' : 'not met'}
+            <div style={{ fontSize: '14px', fontWeight: 800, color: displayedVerifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL ? '#4ade80' : '#e2e8f0' }}>
+              {displayedVerifiedCoveragePercent.toFixed(2)}% / {MIN_COVERAGE_PERCENT_FOR_OFFICIAL}% minimum
+              <span style={{ fontSize: '10px', fontWeight: 700, marginLeft: '6px', color: displayedVerifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL ? '#4ade80' : '#f87171' }}>
+                {displayedVerifiedCoveragePercent >= MIN_COVERAGE_PERCENT_FOR_OFFICIAL ? 'met' : 'not met'}
               </span>
               {evidenceConfidence.totalMatchedLotCount != null && (
                 <span style={{ display: 'block', fontSize: '10px', color: 'rgba(148,163,184,0.50)', fontWeight: 600 }}>

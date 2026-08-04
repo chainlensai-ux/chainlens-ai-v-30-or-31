@@ -8,6 +8,7 @@ import { priceLotsForWallet } from './priceLotsForWallet.ts'
 import { lotIdentityVersion, buildAcceptedEvidenceEnvelope, type AcceptedEvidenceKvLike } from '../lib/acceptedEvidenceStore.ts'
 import type { NormalizedEvent } from '../modules/normalization/types'
 import type { PriceSourceFn, PriceSources } from '../modules/pricingAtTimeEngine/types'
+import { NATIVE_ASSET_ADDRESS } from '../modules/providerFetchWindow/utils.ts'
 
 function event(overrides: Partial<NormalizedEvent> = {}): NormalizedEvent {
   return {
@@ -161,5 +162,42 @@ describe('priceLotsForWallet — accepted-evidence skip pass (pricing-cost-reduc
     assert.equal(result.manifestFastPathAudit.manifestCoveredPricingRequirements, 2, 'both sibling lots benefit from the one shared, group-level record')
     assert.equal(result.manifestFastPathAudit.fastPathApplied, true)
     assert.ok(result.manifestFastPathAudit.manifestEvidenceBatchReads > 0, 'the batch reader must actually have run')
+  })
+
+  it('HARD ASSERTION (canonical-manifest-fast-path follow-up task, issue #3 — confirmed production bug: "113 historical requirements selected despite expectedLotsCompleted=0"): an accepted-evidence-covered lot\'s same-tx native/WETH quote leg is never separately scheduled for live pricing', async () => {
+    // A buy whose transaction ALSO carries a same-tx native (ETH) quote leg with direction
+    // 'unknown' — the exact "router-to-pool" shape `nativeCandidates` recognizes independently of
+    // `buys`/`sells`. `nativeCandidates` is built straight from `structuralMatchedLots`, never from
+    // the already-skip-filtered `buys`/`sells` arrays, so this leg's own live pricing requirement
+    // was NEVER gated by the accepted-evidence skip at all before this fix.
+    const buy = event({ txHash: '0xnativebuy', direction: 'inbound', contract: '0xnativetoken', amount: 1, timestamp: '2026-01-01T00:00:00.000Z' })
+    const nativeLeg = event({ txHash: '0xnativebuy', direction: 'unknown', contract: NATIVE_ASSET_ADDRESS, symbol: 'ETH', amount: 0.5, timestamp: '2026-01-01T00:00:00.000Z' })
+    const sell = event({ txHash: '0xnativesell', direction: 'outbound', contract: '0xnativetoken', amount: 1, timestamp: '2026-01-02T00:00:00.000Z' })
+
+    // BASELINE — no accepted evidence at all: the native quote leg must genuinely generate a real
+    // pricing attempt (sanity, so the fixture is proven to exercise the native-candidate path).
+    const baseline = countingPriceSources()
+    await priceLotsForWallet({ normalizedEvents: [buy, nativeLeg, sell], recoveredEvents: [], priceSources: baseline.sources })
+    assert.ok(baseline.calls() > 0, 'sanity: the baseline scan must make real provider calls at all')
+
+    // Seed accepted evidence for the ENTRY side of the resulting structural lot (the buy).
+    const acceptedIdentityBase = { chain: buy.chain, token: buy.contract, openedTxHash: buy.txHash, closedTxHash: sell.txHash, openedAt: Date.parse(buy.timestamp), closedAt: Date.parse(sell.timestamp), amount: buy.amount }
+    const identityVersion = lotIdentityVersion(acceptedIdentityBase)
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const now = 1
+    const entryEnvelope = buildAcceptedEvidenceEnvelope({
+      identity: { chain: acceptedIdentityBase.chain, token: acceptedIdentityBase.token, txHash: acceptedIdentityBase.openedTxHash, side: 'entry', timestamp: acceptedIdentityBase.openedAt, lotIdentityVersion: identityVersion },
+      priceUsd: 5, valueUsd: 5, source: 'test', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now,
+    })
+    await acceptedEvidenceKv.set(`v1:accepted-evidence:${acceptedIdentityBase.chain}:${acceptedIdentityBase.token.toLowerCase()}:${acceptedIdentityBase.openedTxHash}:entry:${acceptedIdentityBase.openedAt}`, entryEnvelope)
+
+    const covered = countingPriceSources()
+    const coveredResult = await priceLotsForWallet({ normalizedEvents: [buy, nativeLeg, sell], recoveredEvents: [], priceSources: covered.sources, acceptedEvidenceKv, now: () => now })
+    assert.equal(coveredResult.acceptedEvidenceSkipAudit.pricingRequirementsRemovedByAcceptedEvidence, 1)
+    // Strictly fewer live provider calls than the uncovered baseline — the entry side's ordinary
+    // requirement AND its same-tx native quote leg are both now avoided; only the exit (sell) side,
+    // which has no accepted evidence, still needs a real call.
+    assert.ok(covered.calls() < baseline.calls(), 'the covered scan must make strictly fewer live provider calls than the uncovered baseline')
+    assert.ok(covered.calls() > 0, 'the genuinely uncovered exit side must still be priced')
   })
 })

@@ -83,6 +83,21 @@ function withinTolerance(a: number | null, b: number | null, tolerance: number):
 // rule governs a lot's published price) — never for a provider-availability change, which is
 // precisely the class of change this whole module exists to make invisible to the published sample.
 export const CANONICAL_PRICING_METHODOLOGY_VERSION = 1
+// VALUE METHODOLOGY VERSION, DISCLOSED, GENUINELY REQUIRED (canonical-manifest-compatibility
+// follow-up task, issue #1 — confirmed production gap: the partial-fill allocation algorithm
+// changed the VALUES a manifest's per-lot records mean, but old schema-3 manifests built before
+// that change still resolved under the SAME manifest key and were replayed against it — value
+// validation correctly failed them closed, but they kept being found and re-attempted every scan
+// instead of a fresh, correct manifest ever getting created). Bumped whenever the VALUE
+// RECONSTRUCTION ALGORITHM changes (how a lot's cost basis/proceeds are derived from accepted
+// evidence — e.g. flat-copy vs proportional allocation) — never for a provider-availability change,
+// and deliberately SEPARATE from `pricingMethodologyVersion` (which versions accepted-evidence
+// PRECEDENCE, not value reconstruction) and from `CANONICAL_LOT_IDENTITY_SCHEMA_VERSION` (which
+// stays unchanged here — structural lot identity did not change). Part of the manifest KEY itself,
+// so an old-methodology manifest simply MISSES on lookup (manifestFound: false) rather than being
+// found and failing replay repeatedly — a rescan under the new methodology creates a fresh manifest
+// exactly like a genuine first-ever scan would.
+export const CANONICAL_VALUE_METHODOLOGY_VERSION = 1
 
 // Reuses the exact same duck-typed KV interface accepted-evidence records already use — same
 // underlying store, a genuinely separate key namespace (`v1:canonical-pnl-sample-manifest:...`).
@@ -334,6 +349,10 @@ export type CanonicalPnlSampleManifestIdentity = {
   scanWindowIdentity: string
   matchedLotFingerprint: string
   pricingMethodologyVersion: number
+  // GENUINELY REQUIRED, DISCLOSED — see CANONICAL_VALUE_METHODOLOGY_VERSION's own header. Part of
+  // the manifest key/record identity, distinct from pricingMethodologyVersion and from the
+  // structural lot-identity schema (unchanged).
+  valueMethodologyVersion: number
   manifestSchemaVersion: number
 }
 
@@ -343,15 +362,18 @@ export function buildManifestIdentity(params: {
   configuredWindowDays: number
   matchedLotFingerprint: string
   pricingMethodologyVersion?: number
+  valueMethodologyVersion?: number
   manifestSchemaVersion?: number
 }): CanonicalPnlSampleManifestIdentity {
   const pricingMethodologyVersion = params.pricingMethodologyVersion ?? CANONICAL_PRICING_METHODOLOGY_VERSION
+  const valueMethodologyVersion = params.valueMethodologyVersion ?? CANONICAL_VALUE_METHODOLOGY_VERSION
   return {
     normalizedWalletAddress: normalizeWalletAddress(params.walletAddress),
     chainScope: buildChainScope(params.chains),
     scanWindowIdentity: buildScanWindowIdentity({ configuredWindowDays: params.configuredWindowDays, pricingMethodologyVersion }),
     matchedLotFingerprint: params.matchedLotFingerprint,
     pricingMethodologyVersion,
+    valueMethodologyVersion,
     manifestSchemaVersion: params.manifestSchemaVersion ?? CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION,
   }
 }
@@ -364,6 +386,7 @@ export function buildManifestKey(identity: CanonicalPnlSampleManifestIdentity): 
     identity.scanWindowIdentity,
     identity.matchedLotFingerprint,
     `v${identity.pricingMethodologyVersion}`,
+    `vv${identity.valueMethodologyVersion}`,
     `s${identity.manifestSchemaVersion}`,
   ].join(':')
 }
@@ -691,6 +714,7 @@ export function isValidCanonicalPnlSampleManifest(raw: unknown, expectedIdentity
   if (m.scanWindowIdentity !== expectedIdentity.scanWindowIdentity) return false
   if (m.matchedLotFingerprint !== expectedIdentity.matchedLotFingerprint) return false
   if (m.pricingMethodologyVersion !== expectedIdentity.pricingMethodologyVersion) return false
+  if (m.valueMethodologyVersion !== expectedIdentity.valueMethodologyVersion) return false
   if (m.manifestSchemaVersion !== expectedIdentity.manifestSchemaVersion) return false
   if (m.lotIdentitySchemaVersion !== CANONICAL_LOT_IDENTITY_SCHEMA_VERSION) return false
   if (!Array.isArray(m.verifiedLotIdentityKeys)) return false
