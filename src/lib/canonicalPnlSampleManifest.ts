@@ -57,7 +57,7 @@ export const CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION = 3
 // UNCHANGED at 2: the structural lot IDENTITY semantics (chain/token/tx hashes/timestamps/
 // partial-fill ordinal) are correct and were proven correct in production — identity replay
 // succeeded for all 23 lots with zero mismatches. Only the stored VALUES were missing.
-export const CANONICAL_LOT_IDENTITY_SCHEMA_VERSION = 2
+export const CANONICAL_LOT_IDENTITY_SCHEMA_VERSION = 3
 
 // NUMERIC TOLERANCES, DISCLOSED (requirement #3's "documented numeric tolerance").
 //
@@ -97,7 +97,7 @@ export const CANONICAL_PRICING_METHODOLOGY_VERSION = 1
 // so an old-methodology manifest simply MISSES on lookup (manifestFound: false) rather than being
 // found and failing replay repeatedly — a rescan under the new methodology creates a fresh manifest
 // exactly like a genuine first-ever scan would.
-export const CANONICAL_VALUE_METHODOLOGY_VERSION = 1
+export const CANONICAL_VALUE_METHODOLOGY_VERSION = 2
 
 // Reuses the exact same duck-typed KV interface accepted-evidence records already use — same
 // underlying store, a genuinely separate key namespace (`v1:canonical-pnl-sample-manifest:...`).
@@ -130,75 +130,72 @@ function structuralGroupKey(lot: IdentityLot): string {
 }
 
 export type CanonicalLotIdentity = {
+  // OCCURRENCE-GROUP KEY, DISCLOSED (grouped-multiplicity rewrite): identifies a SET of
+  // structurally-identical lots, never one array position. Every lot sharing the same structural
+  // identity AND the same canonical amount resolves to this SAME key — see
+  // buildCanonicalLotIdentities' own header for the confirmed production failure this replaces.
   key: string
   groupKey: string
-  partialFillOrdinal: number
-  // The group's total size, recorded so a replay can detect that a partial fill SPLIT DIFFERENTLY
-  // between runs (same structural key, different slice count) instead of silently matching the
-  // wrong slice — see `manifest_partial_fill_ordinal_mismatch`.
-  partialFillGroupSize: number
   canonicalAmount: string
-  // AMBIGUOUS-ORDINAL DETECTION, DISCLOSED (canonical-manifest-fast-path follow-up task, issue #1 —
-  // a real, confirmed structural gap traced end-to-end): the ordinal tie-break below falls back to
-  // `closedTxHash`/`openedTxHash` comparison, but every member of the SAME group shares an IDENTICAL
-  // structural group key (chain/token/openedTxHash/closedTxHash) by construction — so that
-  // tie-break is a no-op for same-group ties, and TWO SIBLINGS WHOSE AMOUNTS ROUND TO THE SAME
-  // 12-DECIMAL canonicalAmount get ordinals decided purely by the STABLE SORT's preserved INPUT
-  // ORDER, i.e. whatever order the caller's own `lots` array happened to iterate in. If that order
-  // legitimately differs between two scans of the same wallet (different internal FIFO/array
-  // construction order — the exact "different internal float construction/order" scenario this
-  // whole manifest system is required to survive), the SAME logical slice can be assigned a
-  // DIFFERENT ordinal on each scan, silently cross-wiring which manifest record a replay lot
-  // resolves against. True when 2+ members of this lot's own group share an identical
-  // canonicalAmount — every consumer of this field must treat it as replay-unresolvable, never
-  // trust the ordinal's cross-run stability.
-  ordinalAmbiguous: boolean
+  // How many structurally-identical lots share this exact key. This is the multiplicity that
+  // REPLACES the old per-lot ordinal: replay matches the complete group by count, never by which
+  // array slot a given lot happened to occupy.
+  occurrenceCount: number
+  // Total number of lots sharing the structural group key (across ALL canonical amounts within it) —
+  // retained purely as a coarse "did this partial fill split differently" signal, distinct from
+  // `occurrenceCount` above.
+  partialFillGroupSize: number
 }
 
-// PARTIAL-FILL ORDINAL, DISCLOSED (requirement #1): assigned over the FULL canonical lot array —
-// never over a verified-only subset, because whether a given slice happens to be priced this run
-// must never shift another slice's identity. Within a structural group, slices are ordered by
-// (canonicalAmount, closedTxHash, openedTxHash) rather than by raw array position: array position
-// depends on FIFO's internal accumulation order, which is exactly the kind of run-to-run variation
-// requirement #8 asks this identity to survive. Amount is used here purely as an ORDERING signal in
-// its already-normalized, noise-tolerant form — never as key text.
+// GROUPED MULTIPLICITY, DISCLOSED (grouped-multiplicity rewrite — confirmed production failure:
+// `manifestFound: true, manifestApplied: false, 11 partial-fill ordinal mismatches, only 6/26
+// replayed, PnL unavailable`).
+//
+// ROOT CAUSE, TRACED: the prior identity gave each sibling in a partial-fill group a positional
+// ORDINAL, tie-broken by (canonicalAmount, closedTxHash, openedTxHash). Every member of a structural
+// group shares chain/token/openedTxHash/closedTxHash BY CONSTRUCTION, so for two lots that are also
+// identical in amount, ALL THREE tie-break keys are identical and the ordinal fell through to the
+// stable sort's preserved INPUT ORDER — i.e. whatever order the caller's array happened to iterate
+// in. The prior task correctly detected that as unresolvable (`ordinalAmbiguous`) and failed closed,
+// which is exactly the 11 mismatches production reported: fully identical duplicate FIFO lots are a
+// completely normal shape (one buy tx consumed by several equal-sized sells, repeated equal
+// partial fills), so failing closed on them meant the manifest could essentially never apply.
+//
+// FIX: identical lots are no longer distinguished at all. They collapse into ONE occurrence-group
+// identity carrying a multiplicity count. Replay matches the whole group (count + totals) and
+// deterministically reconstructs every occurrence from the group's stored totals — array order is
+// never consulted, so there is nothing left to be ambiguous about.
 export function buildCanonicalLotIdentities(lots: readonly MatchedLot[]): Map<MatchedLot, CanonicalLotIdentity> {
-  const groups = new Map<string, MatchedLot[]>()
+  const structuralGroups = new Map<string, MatchedLot[]>()
   for (const lot of lots) {
     const gk = structuralGroupKey(lot)
-    const existing = groups.get(gk)
+    const existing = structuralGroups.get(gk)
     if (existing) existing.push(lot)
-    else groups.set(gk, [lot])
+    else structuralGroups.set(gk, [lot])
   }
 
   const identities = new Map<MatchedLot, CanonicalLotIdentity>()
-  for (const [gk, members] of groups) {
-    const ordered = [...members].sort((a, b) => {
-      const amountCompare = canonicalAmountString(a.amount).localeCompare(canonicalAmountString(b.amount))
-      if (amountCompare !== 0) return amountCompare
-      const closedCompare = a.closedTxHash.localeCompare(b.closedTxHash)
-      if (closedCompare !== 0) return closedCompare
-      return a.openedTxHash.localeCompare(b.openedTxHash)
-    })
-    // AMBIGUOUS-ORDINAL DETECTION, DISCLOSED — see CanonicalLotIdentity's own header. A duplicate
-    // canonicalAmount anywhere in this group means the tie-break above is a no-op for at least one
-    // pair, so ordinal assignment for the ENTIRE group is not provably stable across runs.
-    const amountCounts = new Map<string, number>()
-    for (const lot of ordered) {
-      const key = canonicalAmountString(lot.amount)
-      amountCounts.set(key, (amountCounts.get(key) ?? 0) + 1)
+  for (const [gk, members] of structuralGroups) {
+    // Within one structural group, sub-group by canonical amount — that pair (structural identity +
+    // canonical amount) is the complete, order-independent identity of a set of identical lots.
+    const byAmount = new Map<string, MatchedLot[]>()
+    for (const lot of members) {
+      const amount = canonicalAmountString(lot.amount)
+      const existing = byAmount.get(amount)
+      if (existing) existing.push(lot)
+      else byAmount.set(amount, [lot])
     }
-    const groupHasTie = [...amountCounts.values()].some((count) => count > 1)
-    ordered.forEach((lot, ordinal) => {
-      identities.set(lot, {
-        key: `v${CANONICAL_LOT_IDENTITY_SCHEMA_VERSION}:${gk}:${ordinal}`,
+    for (const [canonicalAmount, occurrences] of byAmount) {
+      const identity: CanonicalLotIdentity = {
+        key: `v${CANONICAL_LOT_IDENTITY_SCHEMA_VERSION}:${gk}:amt:${canonicalAmount}`,
         groupKey: gk,
-        partialFillOrdinal: ordinal,
-        partialFillGroupSize: ordered.length,
-        canonicalAmount: canonicalAmountString(lot.amount),
-        ordinalAmbiguous: groupHasTie,
-      })
-    })
+        canonicalAmount,
+        occurrenceCount: occurrences.length,
+        partialFillGroupSize: members.length,
+      }
+      // Every identical occurrence maps to the SAME identity object — by design.
+      for (const lot of occurrences) identities.set(lot, identity)
+    }
   }
   return identities
 }
@@ -293,6 +290,30 @@ export function allocateSideValueAcrossGroup(groupLots: readonly MatchedLot[], t
     numerator: rawQuantities[i].toString(),
     denominator: totalRawQuantity.toString(),
   }))
+}
+
+// DETERMINISTIC OCCURRENCE SPLIT, DISCLOSED (grouped-multiplicity rewrite, requirement #1's
+// "deterministically reconstruct all occurrences"). Splits one occurrence-group TOTAL across its N
+// structurally-identical members using the SAME integer-exact arithmetic as
+// `allocateSideValueAcrossGroup` — equal shares with any truncation remainder assigned to the last
+// member — so the N shares always sum back to the stored total bit-for-bit.
+//
+// WHY THIS IS ORDER-INDEPENDENT, DISCLOSED: the members are, by the definition of an occurrence
+// group, completely identical (same chain/token/both tx hashes/both timestamps/canonical amount).
+// Which physical lot object receives the remainder share is therefore not observable in any output:
+// every fingerprint this codebase computes sorts its per-lot strings (see scanDeterminismAudit's own
+// `acceptedHistoricalPriceFingerprint`), so the resulting MULTISET — not the assignment — is what is
+// hashed. Build and replay run this identical function on the identical stored total, so they
+// produce the identical multiset regardless of either scan's own array order.
+export function splitGroupTotalAcrossOccurrences(totalUsd: number | null, occurrenceCount: number): Array<number | null> {
+  if (totalUsd === null || !Number.isFinite(totalUsd)) return Array.from({ length: occurrenceCount }, () => null)
+  if (occurrenceCount <= 0) return []
+  const totalScaled = toScaledValue(totalUsd)
+  const countBig = BigInt(occurrenceCount)
+  const base = totalScaled / countBig
+  const shares = Array.from({ length: occurrenceCount }, () => base)
+  shares[shares.length - 1] += totalScaled - base * countBig
+  return shares.map(fromScaledValue)
 }
 
 // The two accepted-evidence identity keys (entry + exit) a verified lot's own persisted evidence
@@ -434,10 +455,22 @@ export function buildManifestKey(identity: CanonicalPnlSampleManifestIdentity): 
 //    falls back to these numbers, because doing so would republish a price with no surviving
 //    evidence behind it.
 export type CanonicalManifestLotRecord = {
+  // OCCURRENCE-GROUP RECORD, DISCLOSED (grouped-multiplicity rewrite): ONE record now describes a
+  // whole set of structurally-identical lots, not a single array position. See
+  // buildCanonicalLotIdentities' own header for the confirmed production failure this replaces.
   key: string
   canonicalAmount: string
-  partialFillOrdinal: number
+  // How many identical lots this one record stands for. Replay requires the CURRENT scan to present
+  // exactly this many, and reconstructs all of them from the group totals below.
+  occurrenceCount: number
   partialFillGroupSize: number
+  // THE GROUP'S TOTALS, DISCLOSED (requirement #1's "store the group's total allocated
+  // cost/proceeds/PnL") — the authoritative frozen values. Per-occurrence figures are DERIVED from
+  // these by `splitGroupTotalAcrossOccurrences`, never stored per-position, so nothing in this
+  // record depends on which array slot a lot occupied.
+  groupCostBasisUsd: number | null
+  groupProceedsUsd: number | null
+  groupRealizedPnlUsd: number | null
   // Addressing data for the two immutable accepted-evidence records this lot's values come from.
   chain: string
   token: string
@@ -593,14 +626,24 @@ export async function buildManifestFromCandidate(params: {
     }
   }
 
-  const records: CanonicalManifestLotRecord[] = []
-  const rawLotKeys: string[] = []
-  const rawEvidenceKeys: string[] = []
-  const correctedByIdentityKey = new Map<string, MatchedLot>()
+  // PER-LOT ALLOCATION FROM EVIDENCE (Part A, unchanged) — each verified lot's own proportional
+  // share of its two shared transaction-side totals.
+  type AllocatedLot = {
+    lot: MatchedLot
+    identity: CanonicalLotIdentity
+    entryEvidenceKey: string
+    exitEvidenceKey: string
+    entryEvidence: AcceptedEvidenceEnvelope | null
+    exitEvidence: AcceptedEvidenceEnvelope | null
+    entryShare: SideAllocationShare | null
+    exitShare: SideAllocationShare | null
+    costBasisUsd: number | null
+    proceedsUsd: number | null
+  }
+  const allocated: AllocatedLot[] = []
   for (const lot of params.candidateVerifiedLots) {
     const identity = identities.get(lot)
     if (!identity) continue
-    rawLotKeys.push(identity.key)
     const [entryEvidenceKey, exitEvidenceKey] = acceptedEvidenceIdentityKeysForLot(lot)
     const entryEvidence = entryEvidenceByKey.get(entryEvidenceKey) ?? null
     const exitEvidence = exitEvidenceByKey.get(exitEvidenceKey) ?? null
@@ -609,17 +652,64 @@ export async function buildManifestFromCandidate(params: {
     // FALLS BACK TO THE LOT'S OWN VALUE ONLY when no evidence loader was supplied at all (legacy
     // callers/tests) or a group's evidence genuinely could not be loaded — never silently drops the
     // lot from the manifest; the build simply cannot correct what it has no evidence to correct.
-    const allocatedCostBasisUsd = entryShare ? entryShare.allocatedValueUsd : lot.costBasisUsd
-    const allocatedProceedsUsd = exitShare ? exitShare.allocatedValueUsd : lot.proceedsUsd
-    const allocatedRealizedPnlUsd = allocatedCostBasisUsd !== null && allocatedProceedsUsd !== null
-      ? Math.round((allocatedProceedsUsd - allocatedCostBasisUsd) * 100) / 100
-      : null
-    correctedByIdentityKey.set(identity.key, { ...lot, costBasisUsd: allocatedCostBasisUsd, proceedsUsd: allocatedProceedsUsd, realizedPnlUsd: allocatedRealizedPnlUsd })
+    allocated.push({
+      lot, identity, entryEvidenceKey, exitEvidenceKey, entryEvidence, exitEvidence, entryShare, exitShare,
+      costBasisUsd: entryShare ? entryShare.allocatedValueUsd : lot.costBasisUsd,
+      proceedsUsd: exitShare ? exitShare.allocatedValueUsd : lot.proceedsUsd,
+    })
+  }
+
+  // COLLAPSE INTO OCCURRENCE GROUPS (requirement #1): identical lots produce ONE record carrying the
+  // group's multiplicity and its summed totals.
+  const byOccurrenceKey = new Map<string, AllocatedLot[]>()
+  for (const entry of allocated) {
+    const existing = byOccurrenceKey.get(entry.identity.key)
+    if (existing) existing.push(entry)
+    else byOccurrenceKey.set(entry.identity.key, [entry])
+  }
+
+  const records: CanonicalManifestLotRecord[] = []
+  const rawEvidenceKeys: string[] = []
+  // Maps each occurrence-group key to the exact per-occurrence values the manifest freezes, so the
+  // corrected array below (and therefore the stored fingerprints) is built from the SAME
+  // deterministic split replay will later reproduce — never from the raw per-lot allocation, whose
+  // remainder placement depends on evidence-group ordering rather than on this group alone.
+  const frozenSharesByKey = new Map<string, { cost: Array<number | null>; proceeds: Array<number | null>; pnl: Array<number | null> }>()
+
+  for (const [key, members] of byOccurrenceKey) {
+    const representative = members[0]
+    const lot = representative.lot
+    const occurrenceCount = members.length
+    const sumOrNull = (values: Array<number | null>): number | null => {
+      if (values.some((v) => v === null)) return null
+      let sum = 0
+      for (const v of values) sum += v as number
+      return Math.round(sum * 1e8) / 1e8
+    }
+    const groupCostBasisUsd = sumOrNull(members.map((m) => m.costBasisUsd))
+    const groupProceedsUsd = sumOrNull(members.map((m) => m.proceedsUsd))
+
+    // DETERMINISTIC RE-SPLIT, DISCLOSED: the group's total is immediately re-split across its own
+    // occurrences with `splitGroupTotalAcrossOccurrences` — the exact function replay uses. This is
+    // what makes build and replay produce a bit-for-bit identical multiset of per-lot values, and
+    // therefore identical fingerprints, without either side consulting array order.
+    const costShares = splitGroupTotalAcrossOccurrences(groupCostBasisUsd, occurrenceCount)
+    const proceedsShares = splitGroupTotalAcrossOccurrences(groupProceedsUsd, occurrenceCount)
+    const pnlShares = costShares.map((c, i) => {
+      const p = proceedsShares[i]
+      return c === null || p === null ? null : Math.round((p - c) * 100) / 100
+    })
+    frozenSharesByKey.set(key, { cost: costShares, proceeds: proceedsShares, pnl: pnlShares })
+    const groupRealizedPnlUsd = sumOrNull(pnlShares)
+
     records.push({
-      key: identity.key,
-      canonicalAmount: identity.canonicalAmount,
-      partialFillOrdinal: identity.partialFillOrdinal,
-      partialFillGroupSize: identity.partialFillGroupSize,
+      key,
+      canonicalAmount: representative.identity.canonicalAmount,
+      occurrenceCount,
+      partialFillGroupSize: representative.identity.partialFillGroupSize,
+      groupCostBasisUsd,
+      groupProceedsUsd,
+      groupRealizedPnlUsd,
       chain: lot.chain,
       token: lot.token,
       openedTxHash: lot.openedTxHash,
@@ -627,46 +717,59 @@ export async function buildManifestFromCandidate(params: {
       openedAt: lot.openedAt,
       closedAt: lot.closedAt,
       lotIdentityVersion: lotIdentityVersion(lot),
-      entryEvidenceKey,
-      exitEvidenceKey,
-      entryEvidenceLotIdentityVersion: entryEvidence?.lotIdentityVersion ?? null,
-      exitEvidenceLotIdentityVersion: exitEvidence?.lotIdentityVersion ?? null,
-      // entryPriceUsd/exitPriceUsd/costBasisUsd/proceedsUsd/realizedPnlUsd are now this lot's OWN
-      // allocated share (Part A) — never the raw, unallocated group total.
-      entryPriceUsd: allocatedCostBasisUsd,
-      entryValueUsd: entryEvidence?.valueUsd ?? null,
-      exitPriceUsd: allocatedProceedsUsd,
-      exitValueUsd: exitEvidence?.valueUsd ?? null,
-      costBasisUsd: allocatedCostBasisUsd,
-      proceedsUsd: allocatedProceedsUsd,
-      realizedPnlUsd: allocatedRealizedPnlUsd,
+      entryEvidenceKey: representative.entryEvidenceKey,
+      exitEvidenceKey: representative.exitEvidenceKey,
+      entryEvidenceLotIdentityVersion: representative.entryEvidence?.lotIdentityVersion ?? null,
+      exitEvidenceLotIdentityVersion: representative.exitEvidence?.lotIdentityVersion ?? null,
+      // Per-OCCURRENCE frozen values (the first occurrence's share) — validation metadata only; the
+      // group totals above are the authoritative figures replay validates against.
+      entryPriceUsd: costShares[0] ?? null,
+      entryValueUsd: representative.entryEvidence?.valueUsd ?? null,
+      exitPriceUsd: proceedsShares[0] ?? null,
+      exitValueUsd: representative.exitEvidence?.valueUsd ?? null,
+      costBasisUsd: costShares[0] ?? null,
+      proceedsUsd: proceedsShares[0] ?? null,
+      realizedPnlUsd: pnlShares[0] ?? null,
       evidenceQuality: lot.evidenceQuality,
-      entrySource: entryEvidence?.source ?? null,
-      exitSource: exitEvidence?.source ?? null,
+      entrySource: representative.entryEvidence?.source ?? null,
+      exitSource: representative.exitEvidence?.source ?? null,
       pricingMethodologyVersion: params.identity.pricingMethodologyVersion,
-      evidenceSchemaVersion: entryEvidence?.schemaVersion ?? null,
+      evidenceSchemaVersion: representative.entryEvidence?.schemaVersion ?? null,
       acceptedEvidenceValueType: 'total_side_value_usd',
-      entrySideGroupIdentity: entryEvidenceKey,
-      entrySideGroupRawQuantity: entryShare?.denominator ?? '0',
-      entryLotRawQuantity: entryShare?.numerator ?? '0',
-      entryAllocationNumerator: entryShare?.numerator ?? '0',
-      entryAllocationDenominator: entryShare?.denominator ?? '0',
-      exitSideGroupIdentity: exitEvidenceKey,
-      exitSideGroupRawQuantity: exitShare?.denominator ?? '0',
-      exitLotRawQuantity: exitShare?.numerator ?? '0',
-      exitAllocationNumerator: exitShare?.numerator ?? '0',
-      exitAllocationDenominator: exitShare?.denominator ?? '0',
-      allocatedCostBasisUsd,
-      allocatedProceedsUsd,
+      entrySideGroupIdentity: representative.entryEvidenceKey,
+      entrySideGroupRawQuantity: representative.entryShare?.denominator ?? '0',
+      entryLotRawQuantity: representative.entryShare?.numerator ?? '0',
+      entryAllocationNumerator: representative.entryShare?.numerator ?? '0',
+      entryAllocationDenominator: representative.entryShare?.denominator ?? '0',
+      exitSideGroupIdentity: representative.exitEvidenceKey,
+      exitSideGroupRawQuantity: representative.exitShare?.denominator ?? '0',
+      exitLotRawQuantity: representative.exitShare?.numerator ?? '0',
+      exitAllocationNumerator: representative.exitShare?.numerator ?? '0',
+      exitAllocationDenominator: representative.exitShare?.denominator ?? '0',
+      allocatedCostBasisUsd: groupCostBasisUsd,
+      allocatedProceedsUsd: groupProceedsUsd,
     })
-    rawEvidenceKeys.push(entryEvidenceKey, exitEvidenceKey)
+    for (const m of members) rawEvidenceKeys.push(m.entryEvidenceKey, m.exitEvidenceKey)
   }
-  // CANONICALIZE -> SORT -> DEDUPE before persistence (requirement #2).
-  const { unique: verifiedLotIdentityKeys } = dedupeKeys(rawLotKeys)
+
+  // CANONICALIZE -> SORT -> DEDUPE before persistence (requirement #2 of the prior task).
+  const { unique: verifiedLotIdentityKeys } = dedupeKeys(records.map((r) => r.key))
   const { unique: acceptedEvidenceIdentityKeys } = dedupeKeys(rawEvidenceKeys)
   const dedupedRecords = verifiedLotIdentityKeys
     .map((key) => records.find((r) => r.key === key))
     .filter((r): r is CanonicalManifestLotRecord => r !== undefined)
+  // THE REAL PUBLISHED LOT COUNT, DISCLOSED: the SUM of every group's multiplicity — never the
+  // number of records, which now counts GROUPS rather than lots.
+  const verifiedLotCountFromGroups = dedupedRecords.reduce((sum, r) => sum + r.occurrenceCount, 0)
+
+  // Per-lot corrected values, drawn from the same frozen per-occurrence shares stored above.
+  const correctedByLot = new Map<MatchedLot, MatchedLot>()
+  for (const [key, members] of byOccurrenceKey) {
+    const shares = frozenSharesByKey.get(key)!
+    members.forEach((m, i) => {
+      correctedByLot.set(m.lot, { ...m.lot, costBasisUsd: shares.cost[i], proceedsUsd: shares.proceeds[i], realizedPnlUsd: shares.pnl[i] })
+    })
+  }
 
   // REALIZED TOTAL / FINGERPRINTS, DISCLOSED (Part A): when evidence was actually loaded and
   // allocation applied, the manifest's own frozen total and fingerprints are computed from the
@@ -677,10 +780,7 @@ export async function buildManifestFromCandidate(params: {
   let realizedPnlUsd = params.realizedPnlUsd
   let fingerprints = params.fingerprints
   if (params.loadEvidence && params.computeFingerprints) {
-    const correctedAllLots = params.allCandidateLots.map((lot) => {
-      const identity = identities.get(lot)
-      return identity && correctedByIdentityKey.has(identity.key) ? correctedByIdentityKey.get(identity.key)! : lot
-    })
+    const correctedAllLots = params.allCandidateLots.map((lot) => correctedByLot.get(lot) ?? lot)
     const correctedVerified = correctedAllLots.filter(isCanonicalVerifiedPublishedLot)
     realizedPnlUsd = correctedVerified.length > 0
       ? Math.round(correctedVerified.reduce((sum, l) => sum + (l.realizedPnlUsd ?? 0), 0) * 100) / 100
@@ -702,7 +802,7 @@ export async function buildManifestFromCandidate(params: {
     scanFingerprint: fingerprints.scanFingerprint,
     realizedPnlUsd,
     // The REAL published count — deduplicated, so it can never be inflated by a duplicate key.
-    verifiedLotCount: verifiedLotIdentityKeys.length,
+    verifiedLotCount: verifiedLotCountFromGroups,
     structuralLotCount: params.structuralLotCount,
     verifiedPricingCoverage: params.verifiedPricingCoverage,
     createdAt: params.priorManifest ? params.priorManifest.createdAt : params.now,
@@ -909,8 +1009,13 @@ export async function replayManifest(params: {
 
   // 2. Canonicalize + dedupe both sides (requirement #2).
   const manifestDedupe = dedupeKeys(params.manifest.verifiedLotIdentityKeys)
-  const candidateVerifiedKeys = candidateVerifiedLots.map((lot) => identities.get(lot)?.key ?? '')
-  const candidateDedupe = dedupeKeys(candidateVerifiedKeys.filter((k) => k !== ''))
+  // GROUPED MULTIPLICITY, DISCLOSED: an occurrence-group key legitimately maps to MANY identical
+  // lots now, so collecting one key per lot would report every genuine duplicate-lot group as a
+  // duplicate-IDENTITY corruption. The candidate side is therefore deduped over the DISTINCT group
+  // keys this scan produced — real corruption (the same key emitted twice by
+  // buildCanonicalLotIdentities' own grouping) remains impossible by construction, and a corrupt
+  // MANIFEST carrying a repeated key is still caught by `manifestDedupe` above, unchanged.
+  const candidateDedupe = dedupeKeys([...new Set(candidateVerifiedLots.map((lot) => identities.get(lot)?.key ?? '').filter((k) => k !== ''))])
   const evidenceDedupe = dedupeKeys(params.manifest.acceptedEvidenceIdentityKeys)
   const duplicates: DuplicateIdentityCheck = {
     hasDuplicates: manifestDedupe.duplicates.length > 0 || candidateDedupe.duplicates.length > 0 || evidenceDedupe.duplicates.length > 0,
@@ -920,10 +1025,16 @@ export async function replayManifest(params: {
   }
   reasonCounts.manifest_duplicate_identity = manifestDedupe.duplicates.length + candidateDedupe.duplicates.length + evidenceDedupe.duplicates.length
 
-  const anyCandidateByKey = new Map<string, MatchedLot>()
+  // OCCURRENCE GROUPS FOR THIS SCAN (grouped-multiplicity rewrite): every lot sharing an
+  // occurrence-group key, collected in full — replay matches the COMPLETE group by count, never one
+  // representative by array position.
+  const candidateOccurrenceGroups = new Map<string, MatchedLot[]>()
   for (const lot of params.allCandidateLots) {
     const identity = identities.get(lot)
-    if (identity && !anyCandidateByKey.has(identity.key)) anyCandidateByKey.set(identity.key, lot)
+    if (!identity) continue
+    const existing = candidateOccurrenceGroups.get(identity.key)
+    if (existing) existing.push(lot)
+    else candidateOccurrenceGroups.set(identity.key, [lot])
   }
   const recordByKey = new Map(params.manifest.verifiedLotRecords.map((r) => [r.key, r]))
 
@@ -983,40 +1094,32 @@ export async function replayManifest(params: {
   //    copy), and validate EVERY manifest lot (requirement #2/#3). Nothing is published until this
   //    loop completes — the rebuilt lots are collected in a local map and only merged into a
   //    published array in step 6, atomically.
-  const rebuiltByKey = new Map<string, MatchedLot>()
+  const rebuiltByLot = new Map<MatchedLot, MatchedLot>()
   const selectedLotKeys: string[] = []
   const manifestLotsMissingCurrentEvidence: string[] = []
   const manifestReplayedButNotCanonicalVerifiedLotKeys: string[] = []
 
   for (const key of manifestDedupe.unique) {
-    const structuralLot = anyCandidateByKey.get(key)
-    if (!structuralLot) {
+    const occurrences = candidateOccurrenceGroups.get(key)
+    if (!occurrences || occurrences.length === 0) {
       reasonCounts.manifest_lot_identity_not_found += 1
       manifestLotsMissingCurrentEvidence.push(key)
       continue
     }
+    const structuralLot = occurrences[0]
     const currentIdentity = identities.get(structuralLot)
     const record = recordByKey.get(key)
     if (!record) {
-      // A manifest that names a lot but carries no canonical record for it cannot be value-replayed.
+      // A manifest that names a group but carries no canonical record for it cannot be value-replayed.
       reasonCounts.manifest_side_evidence_invalid += 1
       manifestLotsMissingCurrentEvidence.push(key)
       continue
     }
-    if (currentIdentity && record.partialFillGroupSize !== currentIdentity.partialFillGroupSize) {
-      // The same structural tx pair split into a DIFFERENT number of FIFO slices this run — the
-      // identity resolved, but it no longer describes the same fill. Fail closed rather than publish
-      // a slice the manifest never actually recorded.
-      reasonCounts.manifest_partial_fill_ordinal_mismatch += 1
-      manifestLotsMissingCurrentEvidence.push(key)
-      continue
-    }
-    if (currentIdentity?.ordinalAmbiguous) {
-      // AMBIGUOUS ORDINAL, DISCLOSED (issue #1's confirmed structural gap — see
-      // CanonicalLotIdentity's own header): two or more siblings in this lot's group share the
-      // exact same 12-decimal canonicalAmount, so which physical slice the manifest's own ordinal
-      // named is not provably stable across runs. Fail closed rather than risk silently resolving
-      // this key against the WRONG physical slice's evidence.
+    // GROUP MULTIPLICITY CHECK, DISCLOSED (requirement #1's "fail only when current group count or
+    // totals differ"): the ONLY structural condition that can invalidate an occurrence group is a
+    // change in how many identical lots it contains. Array order is never consulted — which is
+    // precisely what the old positional-ordinal identity could not say.
+    if (occurrences.length !== record.occurrenceCount) {
       reasonCounts.manifest_partial_fill_ordinal_mismatch += 1
       manifestLotsMissingCurrentEvidence.push(key)
       continue
@@ -1027,9 +1130,9 @@ export async function replayManifest(params: {
       continue
     }
 
-    // 3a. Look up the already-batch-loaded accepted-evidence records this manifest lot's values
-    //     came from (Part C — no per-lot await here). These are the source of truth; the current
-    //     scan's own provider values are diagnostic candidates only and are discarded below.
+    // 3a. Look up the already-batch-loaded accepted-evidence records this group's values came from
+    //     (Part C — no per-lot await here). These are the source of truth; the current scan's own
+    //     provider values are diagnostic candidates only and are discarded below.
     const entryEvidence = evidenceByKey.get(record.entryEvidenceKey) ?? null
     const exitEvidence = evidenceByKey.get(record.exitEvidenceKey) ?? null
     if (!entryEvidence || !exitEvidence) {
@@ -1046,55 +1149,68 @@ export async function replayManifest(params: {
       continue
     }
 
-    // 3b. Rebuild the lot from THIS LOT'S OWN ALLOCATED SHARE of the group's accepted total (Part
-    //     A — never a flat copy of the whole transaction side onto every sibling), OVERWRITING
-    //     whatever the current scan itself resolved.
-    const entryShare = entryAllocationByKey.get(record.entryEvidenceKey)?.get(structuralLot) ?? null
-    const exitShare = exitAllocationByKey.get(record.exitEvidenceKey)?.get(structuralLot) ?? null
-    if (!entryShare || !exitShare) {
-      // The evidence loaded, but this specific structural lot isn't a member of the group the
-      // allocation was computed over (e.g. its own group changed shape) — fail closed rather than
-      // publish an unallocated or mismatched share.
+    // 3b. Recompute this group's TOTALS from live accepted evidence (Part A allocation, unchanged),
+    //     then validate those totals against the manifest's frozen group totals.
+    const entryShares = occurrences.map((lot) => entryAllocationByKey.get(record.entryEvidenceKey)?.get(lot) ?? null)
+    const exitShares = occurrences.map((lot) => exitAllocationByKey.get(record.exitEvidenceKey)?.get(lot) ?? null)
+    if (entryShares.some((sh) => sh === null) || exitShares.some((sh) => sh === null)) {
+      // Evidence loaded, but at least one occurrence isn't a member of the evidence group the
+      // allocation was computed over — fail closed rather than publish an unallocated share.
       reasonCounts.manifest_side_evidence_invalid += 1
       manifestLotsMissingCurrentEvidence.push(key)
       continue
     }
-    const costBasisUsd = entryShare.allocatedValueUsd
-    const proceedsUsd = exitShare.allocatedValueUsd
-    const rebuilt: MatchedLot = {
-      ...structuralLot,
-      costBasisUsd,
-      proceedsUsd,
-      realizedPnlUsd: Math.round((proceedsUsd - costBasisUsd) * 100) / 100,
-      evidenceQuality: 'verified',
-    }
+    const liveGroupCostBasisUsd = Math.round(entryShares.reduce((sum, sh) => sum + sh!.allocatedValueUsd, 0) * 1e8) / 1e8
+    const liveGroupProceedsUsd = Math.round(exitShares.reduce((sum, sh) => sum + sh!.allocatedValueUsd, 0) * 1e8) / 1e8
 
-    // 3c. Validate the reconstruction against the manifest's frozen values (requirement #3).
     let mismatched = false
-    if (!withinTolerance(costBasisUsd, record.entryPriceUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_entry_price_mismatch += 1; mismatched = true }
-    if (!withinTolerance(proceedsUsd, record.exitPriceUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_exit_price_mismatch += 1; mismatched = true }
-    if (!withinTolerance(costBasisUsd, record.costBasisUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_cost_basis_mismatch += 1; mismatched = true }
-    if (!withinTolerance(proceedsUsd, record.proceedsUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_proceeds_mismatch += 1; mismatched = true }
-    if (!withinTolerance(rebuilt.realizedPnlUsd, record.realizedPnlUsd, CANONICAL_TOTAL_TOLERANCE_USD)) { reasonCounts.manifest_realized_pnl_mismatch += 1; mismatched = true }
+    if (!withinTolerance(liveGroupCostBasisUsd, record.groupCostBasisUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_entry_price_mismatch += 1; reasonCounts.manifest_cost_basis_mismatch += 1; mismatched = true }
+    if (!withinTolerance(liveGroupProceedsUsd, record.groupProceedsUsd, CANONICAL_VALUE_TOLERANCE)) { reasonCounts.manifest_exit_price_mismatch += 1; reasonCounts.manifest_proceeds_mismatch += 1; mismatched = true }
     if (record.evidenceQuality !== 'verified') { reasonCounts.manifest_evidence_quality_mismatch += 1; mismatched = true }
     if (mismatched) {
       manifestLotsMissingCurrentEvidence.push(key)
       continue
     }
 
-    // 3d. The rebuilt lot must satisfy the ONE canonical published-verified predicate (requirement
-    //     #6/#7). After a clean replay this list is empty by construction; if it ever isn't, the
-    //     predicate and the reconstruction disagree and that must fail closed, not ship.
-    if (!isCanonicalVerifiedPublishedLot(rebuilt)) {
+    // 3c. DETERMINISTICALLY RECONSTRUCT every occurrence from the group's frozen totals — the same
+    //     `splitGroupTotalAcrossOccurrences` the build used, so the resulting multiset is identical
+    //     to scan one's regardless of either scan's array order.
+    const costShares = splitGroupTotalAcrossOccurrences(record.groupCostBasisUsd, record.occurrenceCount)
+    const proceedsShares = splitGroupTotalAcrossOccurrences(record.groupProceedsUsd, record.occurrenceCount)
+    const rebuiltOccurrences: MatchedLot[] = occurrences.map((lot, i) => {
+      const costBasisUsd = costShares[i]
+      const proceedsUsd = proceedsShares[i]
+      return {
+        ...lot,
+        costBasisUsd,
+        proceedsUsd,
+        realizedPnlUsd: costBasisUsd === null || proceedsUsd === null ? null : Math.round((proceedsUsd - costBasisUsd) * 100) / 100,
+        evidenceQuality: 'verified' as const,
+      }
+    })
+
+    // 3d. The reconstructed group's own realized total must match the manifest's frozen figure, and
+    //     every occurrence must satisfy the ONE canonical published-verified predicate.
+    const rebuiltGroupPnl = rebuiltOccurrences.some((l) => l.realizedPnlUsd === null)
+      ? null
+      : Math.round(rebuiltOccurrences.reduce((sum, l) => sum + (l.realizedPnlUsd as number), 0) * 1e8) / 1e8
+    if (!withinTolerance(rebuiltGroupPnl, record.groupRealizedPnlUsd, CANONICAL_TOTAL_TOLERANCE_USD)) {
+      reasonCounts.manifest_realized_pnl_mismatch += 1
+      manifestLotsMissingCurrentEvidence.push(key)
+      continue
+    }
+    if (!rebuiltOccurrences.every(isCanonicalVerifiedPublishedLot)) {
       reasonCounts.manifest_evidence_quality_mismatch += 1
       manifestReplayedButNotCanonicalVerifiedLotKeys.push(key)
       manifestLotsMissingCurrentEvidence.push(key)
       continue
     }
 
-    reasonCounts.manifest_replay_success += 1
+    // Counted per LOT, not per group — `manifest_replay_success` must stay comparable to the
+    // manifest's own verifiedLotCount.
+    reasonCounts.manifest_replay_success += rebuiltOccurrences.length
     selectedLotKeys.push(key)
-    rebuiltByKey.set(key, rebuilt)
+    rebuiltOccurrences.forEach((rebuilt, i) => rebuiltByLot.set(occurrences[i], rebuilt))
   }
 
   // 4. Candidate-only lots — real, newly-priceable evidence, never merged into the published sample.
@@ -1107,7 +1223,7 @@ export async function replayManifest(params: {
   const selectedKeySet = new Set(selectedLotKeys)
   const buildPublished = (failed: boolean): MatchedLot[] => params.allCandidateLots.map((lot) => {
     const identity = identities.get(lot)
-    const rebuilt = identity ? rebuiltByKey.get(identity.key) : undefined
+    const rebuilt = rebuiltByLot.get(lot)
     // FAIL CLOSED (requirement #4): when the manifest could not be replayed in full, NO verified lot
     // is published at all — the live candidate sample must never escape as canonical.
     if (failed) return isCanonicalVerifiedPublishedLot(lot) ? withheldFromPublication(lot) : lot

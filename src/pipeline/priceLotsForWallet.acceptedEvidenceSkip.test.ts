@@ -201,3 +201,50 @@ describe('priceLotsForWallet — accepted-evidence skip pass (pricing-cost-reduc
     assert.ok(covered.calls() > 0, 'the genuinely uncovered exit side must still be priced')
   })
 })
+
+describe('priceLotsForWallet — unchanged-rescan requirement restriction (grouped-multiplicity task, requirement #3)', () => {
+  it('HARD ASSERTION: when every closed-lot side is accepted-evidence covered, unmatched sells stop being priced while open-position buys are deliberately retained', async () => {
+    // One matched lot (buy1 -> sell1), one UNMATCHED sell of a token never bought (its price is
+    // unreachable by any consumer), and one open-position buy never sold (its price IS the open
+    // lot's cost basis and must survive).
+    const buy1 = event({ txHash: '0xmb', direction: 'inbound', contract: '0xmatched', amount: 1, timestamp: '2026-01-01T00:00:00.000Z' })
+    const sell1 = event({ txHash: '0xms', direction: 'outbound', contract: '0xmatched', amount: 1, timestamp: '2026-01-02T00:00:00.000Z' })
+    const orphanSell = event({ txHash: '0xorphan', direction: 'outbound', contract: '0xorphantoken', amount: 5, timestamp: '2026-01-03T00:00:00.000Z' })
+    const openBuy = event({ txHash: '0xopen', direction: 'inbound', contract: '0xopentoken', amount: 3, timestamp: '2026-01-04T00:00:00.000Z' })
+    const allEvents = [buy1, sell1, orphanSell, openBuy]
+
+    // BASELINE — no accepted evidence: everything is priced normally.
+    const baseline = countingPriceSources()
+    const baselineResult = await priceLotsForWallet({ normalizedEvents: allEvents, recoveredEvents: [], priceSources: baseline.sources })
+    assert.equal(baselineResult.manifestFastPathAudit.allClosedLotSidesCovered, false)
+    assert.equal(baselineResult.manifestFastPathAudit.unmatchedSellRequirementsSuppressed, 0)
+
+    // Seed accepted evidence for BOTH sides of the one matched lot — a genuine unchanged rescan.
+    const base = { chain: buy1.chain, token: buy1.contract, openedTxHash: buy1.txHash, closedTxHash: sell1.txHash, openedAt: Date.parse(buy1.timestamp), closedAt: Date.parse(sell1.timestamp), amount: buy1.amount }
+    const version = lotIdentityVersion(base)
+    const kv = fakeAcceptedEvidenceKv()
+    const now = 1
+    for (const side of ['entry', 'exit'] as const) {
+      const txHash = side === 'entry' ? base.openedTxHash : base.closedTxHash
+      const timestamp = side === 'entry' ? base.openedAt : base.closedAt
+      const envelope = buildAcceptedEvidenceEnvelope({
+        identity: { chain: base.chain, token: base.token, txHash, side, timestamp, lotIdentityVersion: version },
+        priceUsd: side === 'entry' ? 5 : 7, valueUsd: 5, source: 'test', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now,
+      })
+      await kv.set(`v1:accepted-evidence:${base.chain}:${base.token.toLowerCase()}:${txHash}:${side}:${timestamp}`, envelope)
+    }
+
+    const covered = countingPriceSources()
+    const result = await priceLotsForWallet({ normalizedEvents: allEvents, recoveredEvents: [], priceSources: covered.sources, acceptedEvidenceKv: kv, now: () => now })
+
+    assert.equal(result.manifestFastPathAudit.allClosedLotSidesCovered, true, 'every closed-lot side is covered on this rescan')
+    assert.equal(result.manifestFastPathAudit.unmatchedSellRequirementsSuppressed, 1, 'the orphan sell must stop being priced')
+    assert.equal(result.manifestFastPathAudit.openPositionRequirementsRetained, 1, 'the open-position buy must be retained for open-lot cost basis')
+    assert.ok(covered.calls() < baseline.calls(), 'strictly fewer live provider calls than the uncovered baseline')
+    // The matched lot still publishes its exact accepted values, unaffected by the restriction.
+    assert.equal(result.priceUsdLookup(buy1), 5)
+    assert.equal(result.priceUsdLookup(sell1), 7)
+    // The retained open-position buy is still genuinely priced (unrealized PnL is never sacrificed).
+    assert.notEqual(result.priceUsdLookup(openBuy), null)
+  })
+})

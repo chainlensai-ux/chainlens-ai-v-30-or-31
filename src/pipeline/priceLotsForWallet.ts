@@ -331,6 +331,13 @@ function emptyAcceptedEvidenceSkipAudit(): AcceptedEvidenceSkipAudit {
 // measured from this function's own single pass — never estimated.
 export type ManifestFastPathAudit = {
   manifestLoadedBeforePricing: boolean
+  // UNCHANGED-RESCAN RESTRICTION COUNTERS, DISCLOSED (requirement #3) — see the restriction's own
+  // header at the call site for exactly what is and is not suppressed, and why.
+  allClosedLotSidesCovered: boolean
+  unmatchedSellRequirementsSuppressed: number
+  // Real, measured count of inbound requirements DELIBERATELY retained because they carry open-lot
+  // cost basis for unrealized PnL. Reported honestly rather than suppressed to reach a cosmetic zero.
+  openPositionRequirementsRetained: number
   manifestEvidenceKeysRequested: number
   manifestEvidenceBatchReads: number
   manifestEvidenceReadMs: number
@@ -346,7 +353,9 @@ export type ManifestFastPathAudit = {
 
 function emptyManifestFastPathAudit(): ManifestFastPathAudit {
   return {
-    manifestLoadedBeforePricing: false, manifestEvidenceKeysRequested: 0, manifestEvidenceBatchReads: 0,
+    manifestLoadedBeforePricing: false, allClosedLotSidesCovered: false,
+    unmatchedSellRequirementsSuppressed: 0, openPositionRequirementsRetained: 0,
+    manifestEvidenceKeysRequested: 0, manifestEvidenceBatchReads: 0,
     manifestEvidenceReadMs: 0, manifestCoveredPricingRequirements: 0, goldrushCallsPrevented: 0,
     dexCallsPrevented: 0, alchemyCallsPrevented: 0, recoveryLookupsPrevented: 0, candidateDiscoveryCalls: 0,
     fastPathApplied: false, fastPathFailureReason: null,
@@ -526,6 +535,48 @@ export async function priceLotsForWallet(params: {
     acceptedEvidenceSkipAudit.estimatedCreditsSaved += removed * ESTIMATED_CREDITS_PER_SKIPPED_REQUIREMENT
     acceptedEvidenceSkipAudit.estimatedCuSaved += removed * ESTIMATED_CU_PER_SKIPPED_REQUIREMENT
   }
+  // UNCHANGED-RESCAN RESTRICTION, DISCLOSED (grouped-multiplicity/perf task, requirement #3 —
+  // confirmed production waste: 230 candidate discovery calls and 26 unused GoldRush results on a
+  // rescan whose closed-lot sides were ALL already covered by accepted evidence).
+  //
+  // WHAT THIS SUPPRESSES: outbound (sell) events that participate in NO structural matched lot at
+  // all. An unmatched sell's historical price is genuinely unreachable by any consumer — it is not a
+  // closed lot's exit side (nothing to compute realized PnL from) and it opens no lot (sells never
+  // create open-lot cost basis), so its resolved price is written into `atTradeTime.proceedsUsd` and
+  // then never read. Suppressing it is a pure, zero-behaviour-change saving.
+  //
+  // WHAT THIS DELIBERATELY DOES NOT SUPPRESS, HONESTLY DISCLOSED: inbound (buy) events outside any
+  // matched lot. Those are OPEN POSITIONS, and fifoEngine's `buildLots` resolves each one's
+  // `costBasisUsd` from exactly this historical pricing pass — dropping them would leave every open
+  // lot unpriced and silently collapse UNREALIZED PnL to null (computePnl skips any lot with a null
+  // cost basis). Reaching a literal zero historical requirement count on an unchanged rescan is
+  // therefore only possible by trading away unrealized PnL, which this task did not ask for and
+  // which would be a silent regression — so buy-side open-position pricing is left intact and the
+  // real remaining count is reported honestly via `openPositionRequirementsRetained` below rather
+  // than driven to a cosmetic zero.
+  //
+  // GATED, DISCLOSED: only applied when EVERY structural matched-lot side is already
+  // accepted-evidence covered — i.e. a genuine unchanged rescan with no new structural groups. On a
+  // first scan, or whenever any closed-lot side is still uncovered, nothing here changes at all.
+  const matchedLotSideKeys = new Set<string>()
+  for (const lot of structuralMatchedLots) {
+    matchedLotSideKeys.add(`${lot.chain}:${lot.openedTxHash.toLowerCase()}:entry`)
+    matchedLotSideKeys.add(`${lot.chain}:${lot.closedTxHash.toLowerCase()}:exit`)
+  }
+  const everyMatchedLotSideCovered = matchedLotSideKeys.size > 0
+    && [...matchedLotSideKeys].every((key) => skippableRequirementKeys.has(key))
+  manifestFastPathAudit.allClosedLotSidesCovered = everyMatchedLotSideCovered
+  if (everyMatchedLotSideCovered) {
+    const beforeSells = sells.length
+    for (let i = sells.length - 1; i >= 0; i--) {
+      if (!matchedLotSideKeys.has(`${sells[i].chain}:${sells[i].txHash.toLowerCase()}:exit`)) sells.splice(i, 1)
+    }
+    manifestFastPathAudit.unmatchedSellRequirementsSuppressed = beforeSells - sells.length
+  }
+  manifestFastPathAudit.openPositionRequirementsRetained = buys.filter(
+    (b) => !matchedLotSideKeys.has(`${b.chain}:${b.txHash.toLowerCase()}:entry`),
+  ).length
+
   acceptedEvidenceSkipAudit.pricingRequirementsAfterSkip = buys.length + sells.length
   // REAL, MEASURED LIVE-CALL SNAPSHOT, DISCLOSED (requirement #7): taken immediately around this
   // call's own `resolvePricingAtTime` — this codebase's own existing process-lifetime counters

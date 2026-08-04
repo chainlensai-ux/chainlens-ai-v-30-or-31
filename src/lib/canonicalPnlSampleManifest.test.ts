@@ -20,6 +20,7 @@ import {
   buildCanonicalLotIdentities, canonicalAmountString, dedupeKeys, logDuplicateIdentityIfAny,
   buildLastKnownCanonicalSample, buildScanWindowIdentity, buildChainScope, normalizeWalletAddress,
   CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, CANONICAL_VALUE_METHODOLOGY_VERSION, CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
+  splitGroupTotalAcrossOccurrences,
   type CanonicalSampleManifestKvLike, type AcceptedEvidenceLoader, type CanonicalPnlSampleManifest,
 } from './canonicalPnlSampleManifest.ts'
 import { buildScanDeterminismAudit } from './scanDeterminismAudit.ts'
@@ -719,7 +720,7 @@ describe('canonicalPnlSampleManifest — value methodology version (issue #1: ma
   })
 
   it('structural lot identity schema stays unchanged by the value methodology bump', () => {
-    assert.equal(CANONICAL_LOT_IDENTITY_SCHEMA_VERSION, 2)
+    assert.equal(CANONICAL_LOT_IDENTITY_SCHEMA_VERSION, 3)
   })
 })
 
@@ -849,20 +850,57 @@ describe('canonicalPnlSampleManifest — real JSON/KV persistence round-trip (is
         ? readAcceptedEvidenceAnyLotVersion(evidenceKv, rest, NOW)
         : readAcceptedEvidence(evidenceKv, { ...rest, lotIdentityVersion: version }, NOW)
 
+    // GROUPED MULTIPLICITY, DISCLOSED: both identical lots resolve to ONE occurrence-group identity
+    // carrying occurrenceCount 2 — there is no ordinal left to be ambiguous about.
     const identities = buildCanonicalLotIdentities(tied)
-    for (const id of identities.values()) assert.equal(id.ordinalAmbiguous, true)
+    const distinctKeys = new Set([...identities.values()].map((id) => id.key))
+    assert.equal(distinctKeys.size, 1, 'two identical lots must share exactly one occurrence-group identity')
+    for (const id of identities.values()) assert.equal(id.occurrenceCount, 2)
 
     const manifest = await buildManifestFromCandidate({
       identity: identity(), allCandidateLots: tied, candidateVerifiedLots: tied,
       structuralLotCount: tied.length, fingerprints: computeFingerprints(tied, realizedTotal(tied)),
       realizedPnlUsd: realizedTotal(tied), verifiedPricingCoverage: 1, now: 1000, loadEvidence: loader, computeFingerprints,
     })
-    // Replayed on a DIFFERENT (reversed) array order — the exact scenario that could silently
-    // cross-wire tied ordinals across two scans.
+    assert.equal(manifest.verifiedLotRecords.length, 1, 'one record stands for the whole identical group')
+    assert.equal(manifest.verifiedLotRecords[0].occurrenceCount, 2)
+    assert.equal(manifest.verifiedLotCount, 2, 'verifiedLotCount counts LOTS, never groups')
+
+    // Replayed on a DIFFERENT (reversed) array order — the exact scenario that used to cross-wire
+    // positional ordinals. With grouped multiplicity it now replays cleanly and identically.
     const result = await replayManifest({ manifest, allCandidateLots: [...tied].reverse(), loadEvidence: loader, computeFingerprints })
+    assert.equal(result.outcome, 'applied')
+    assert.equal(result.reasonCounts.manifest_partial_fill_ordinal_mismatch, 0)
+    assert.equal(result.reasonCounts.manifest_replay_success, 2, 'replay success counts LOTS, not groups')
+    assert.equal(result.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 2)
+    assert.equal(result.recomputedRealizedPnlUsd, manifest.realizedPnlUsd)
+    assert.equal(result.recomputedFingerprints!.acceptedHistoricalPriceFingerprint, manifest.acceptedHistoricalPriceFingerprint)
+  })
+
+  it('HARD ASSERTION: a genuinely CHANGED group count (2 identical lots become 3) fails closed', async () => {
+    const evidenceKv = jsonKv()
+    const two = [0, 1].map((i) => lot({ lotId: `dup-${i}`, token: '0xdup', openedTxHash: '0xdupbuy', closedTxHash: '0xdupsell', openedAt: 100, closedAt: 200, amount: 1.5 }))
+    for (const l of two) {
+      for (const side of ['entry', 'exit'] as const) {
+        const priceUsd = side === 'entry' ? 10 : 15
+        const idn = { chain: l.chain, token: l.token, txHash: side === 'entry' ? l.openedTxHash : l.closedTxHash, side, timestamp: side === 'entry' ? l.openedAt : l.closedAt, lotIdentityVersion: lotIdentityVersion(l) }
+        await evidenceKv.set(buildAcceptedEvidenceKey(idn), buildAcceptedEvidenceEnvelope({ identity: idn, priceUsd, valueUsd: priceUsd * l.amount, source: 't', evidenceType: 'x', providerTimestampBucket: null, now: NOW }))
+      }
+    }
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null ? readAcceptedEvidenceAnyLotVersion(evidenceKv, rest, NOW) : readAcceptedEvidence(evidenceKv, { ...rest, lotIdentityVersion: version }, NOW)
+
+    const manifest = await buildManifestFromCandidate({
+      identity: identity(), allCandidateLots: two, candidateVerifiedLots: two,
+      structuralLotCount: two.length, fingerprints: computeFingerprints(two, realizedTotal(two)),
+      realizedPnlUsd: realizedTotal(two), verifiedPricingCoverage: 1, now: 1000, loadEvidence: loader, computeFingerprints,
+    })
+
+    const three = [...two, lot({ lotId: 'dup-2', token: '0xdup', openedTxHash: '0xdupbuy', closedTxHash: '0xdupsell', openedAt: 100, closedAt: 200, amount: 1.5 })]
+    const result = await replayManifest({ manifest, allCandidateLots: three, loadEvidence: loader, computeFingerprints })
     assert.equal(result.outcome, 'unavailable')
-    assert.ok(result.reasonCounts.manifest_partial_fill_ordinal_mismatch > 0)
-    assert.equal(result.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 0, 'an ambiguous tie must never silently resolve to a possibly-wrong slice')
+    assert.equal(result.reasonCounts.manifest_partial_fill_ordinal_mismatch, 1, 'a real change in group multiplicity is the one structural condition that must fail')
+    assert.equal(result.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 0)
   })
 })
 
@@ -890,3 +928,142 @@ async function manifestWithEvidenceOnKv(allLots: readonly MatchedLot[], evidence
   })
   return { manifest, loader }
 }
+
+describe('canonicalPnlSampleManifest — identical duplicate FIFO lots, grouped multiplicity (requirement #4)', () => {
+  // Seeds accepted evidence for a lot set through the real JSON-serializing KV and returns a real
+  // strict/relaxed loader over it.
+  async function seedOnJsonKv(lots: readonly MatchedLot[], evidenceKv: ReturnType<typeof jsonKv>, entryPriceUsd: number, exitPriceUsd: number) {
+    for (const l of lots) {
+      for (const side of ['entry', 'exit'] as const) {
+        const priceUsd = side === 'entry' ? entryPriceUsd : exitPriceUsd
+        const idn = {
+          chain: l.chain, token: l.token, txHash: side === 'entry' ? l.openedTxHash : l.closedTxHash,
+          side, timestamp: side === 'entry' ? l.openedAt : l.closedAt, lotIdentityVersion: lotIdentityVersion(l),
+        }
+        await evidenceKv.set(buildAcceptedEvidenceKey(idn), buildAcceptedEvidenceEnvelope({
+          identity: idn, priceUsd, valueUsd: priceUsd * l.amount,
+          source: 'grouped-test', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW,
+        }))
+      }
+    }
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null
+        ? readAcceptedEvidenceAnyLotVersion(evidenceKv, rest, NOW)
+        : readAcceptedEvidence(evidenceKv, { ...rest, lotIdentityVersion: version }, NOW)
+    return loader
+  }
+
+  // Deterministic, seeded shuffle — proves order-independence without Math.random making the test
+  // itself nondeterministic.
+  function shuffle<T>(items: readonly T[], seed: number): T[] {
+    const out = [...items]
+    let state = seed
+    for (let i = out.length - 1; i > 0; i--) {
+      state = (state * 1103515245 + 12345) % 2147483648
+      const j = state % (i + 1)
+      ;[out[i], out[j]] = [out[j], out[i]]
+    }
+    return out
+  }
+
+  for (const occurrenceCount of [2, 5]) {
+    it(`HARD ASSERTION: ${occurrenceCount} COMPLETELY IDENTICAL sibling lots survive a JSON/KV round-trip and a shuffled reload — exact count, PnL and all three fingerprints reproduced`, async () => {
+      const evidenceKv = jsonKv()
+      const manifestKv = jsonKv()
+
+      // Every field identical — the exact shape the old positional-ordinal identity could not
+      // resolve (production: 11 partial-fill ordinal mismatches, only 6/26 replayed).
+      const identical = Array.from({ length: occurrenceCount }, (_, i) => lot({
+        lotId: `identical-${i}`, token: '0xidentical',
+        openedTxHash: '0xidenticalbuy', closedTxHash: '0xidenticalsell',
+        openedAt: 500, closedAt: 900, amount: 2.5,
+        costBasisUsd: 1, proceedsUsd: 2, realizedPnlUsd: 1,
+      }))
+      // Plus one genuinely distinct lot, so the manifest is not trivially single-group.
+      const distinct = lot({ lotId: 'distinct', token: '0xother', openedTxHash: '0xotherbuy', closedTxHash: '0xothersell', openedAt: 1, closedAt: 2, amount: 7, costBasisUsd: 3, proceedsUsd: 9, realizedPnlUsd: 6 })
+      const allLots = [...identical, distinct]
+
+      const loader = await seedOnJsonKv(identical, evidenceKv, 40, 95)
+      await seedOnJsonKv([distinct], evidenceKv, 3, 9)
+
+      // SCAN ONE — build and persist through the real JSON KV.
+      const manifest = await buildManifestFromCandidate({
+        identity: identity(), allCandidateLots: allLots, candidateVerifiedLots: allLots,
+        structuralLotCount: allLots.length, fingerprints: computeFingerprints(allLots, realizedTotal(allLots)),
+        realizedPnlUsd: realizedTotal(allLots), verifiedPricingCoverage: 1, now: 1000,
+        loadEvidence: loader, computeFingerprints,
+      })
+      assert.equal(await writeCanonicalPnlSampleManifest(manifestKv, manifest), true)
+
+      // ONE record stands for all N identical lots; the distinct lot gets its own.
+      assert.equal(manifest.verifiedLotRecords.length, 2, 'identical siblings collapse into exactly one occurrence-group record')
+      const groupRecord = manifest.verifiedLotRecords.find((r) => r.openedTxHash === '0xidenticalbuy')!
+      assert.equal(groupRecord.occurrenceCount, occurrenceCount)
+      assert.equal(manifest.verifiedLotCount, occurrenceCount + 1, 'verifiedLotCount counts LOTS, never groups')
+      // The group's stored totals are the sum of its own occurrences' allocated values.
+      const groupShares = splitGroupTotalAcrossOccurrences(groupRecord.groupCostBasisUsd, occurrenceCount)
+      let groupShareSum = 0
+      for (const share of groupShares) groupShareSum += share as number
+      assert.equal(Math.round(groupShareSum * 1e8) / 1e8, groupRecord.groupCostBasisUsd)
+
+      // SCAN TWO — reload from the persisted JSON, then replay against a SHUFFLED array. Array order
+      // is exactly what the old ordinal identity depended on, so this is the decisive check.
+      const reloaded = await readCanonicalPnlSampleManifest(manifestKv, identity())
+      assert.ok(reloaded.manifest)
+      assert.deepEqual(reloaded.manifest, manifest, 'the manifest must survive real JSON serialization byte-for-byte')
+
+      const shuffled = shuffle(allLots, 9973)
+      const result = await replayManifest({ manifest: reloaded.manifest!, allCandidateLots: shuffled, loadEvidence: loader, computeFingerprints })
+
+      assert.equal(result.outcome, 'applied')
+      assert.equal(result.reasonCounts.manifest_partial_fill_ordinal_mismatch, 0, 'identical siblings must never report an ordinal mismatch again')
+      assert.equal(result.reasonCounts.manifest_replay_success, occurrenceCount + 1)
+      assert.equal(result.reasonCounts.manifest_side_evidence_missing, 0)
+
+      const published = result.publishedLots.filter(isCanonicalVerifiedPublishedLot)
+      assert.equal(published.length, occurrenceCount + 1, 'exact lot count reproduced')
+      for (const l of published) {
+        assert.notEqual(l.costBasisUsd, null)
+        assert.notEqual(l.proceedsUsd, null)
+        assert.notEqual(l.realizedPnlUsd, null)
+      }
+
+      // Exact PnL and all three fingerprints reproduced from the shuffled reload.
+      assert.equal(result.recomputedRealizedPnlUsd, manifest.realizedPnlUsd)
+      assert.equal(result.recomputedFingerprints!.verifiedLotIdentityFingerprint, manifest.verifiedLotIdentityFingerprint)
+      assert.equal(result.recomputedFingerprints!.acceptedHistoricalPriceFingerprint, manifest.acceptedHistoricalPriceFingerprint)
+      assert.equal(result.recomputedFingerprints!.realizedPnlFingerprint, manifest.realizedPnlFingerprint)
+
+      // The identical group's replayed shares still sum exactly to its frozen total.
+      const identicalPublished = published.filter((l) => l.openedTxHash === '0xidenticalbuy')
+      assert.equal(identicalPublished.length, occurrenceCount)
+      assert.equal(
+        Math.round(identicalPublished.reduce((s, l) => s + (l.costBasisUsd ?? 0), 0) * 1e8) / 1e8,
+        groupRecord.groupCostBasisUsd,
+      )
+    })
+  }
+
+  it('HARD ASSERTION: replaying the SAME identical-sibling manifest against several different shuffles always yields byte-identical fingerprints', async () => {
+    const evidenceKv = jsonKv()
+    const identical = Array.from({ length: 5 }, (_, i) => lot({
+      lotId: `s-${i}`, token: '0xsame', openedTxHash: '0xsamebuy', closedTxHash: '0xsamesell',
+      openedAt: 10, closedAt: 20, amount: 1 / 3, costBasisUsd: 1, proceedsUsd: 2, realizedPnlUsd: 1,
+    }))
+    const loader = await seedOnJsonKv(identical, evidenceKv, 17, 41)
+    const manifest = await buildManifestFromCandidate({
+      identity: identity(), allCandidateLots: identical, candidateVerifiedLots: identical,
+      structuralLotCount: identical.length, fingerprints: computeFingerprints(identical, realizedTotal(identical)),
+      realizedPnlUsd: realizedTotal(identical), verifiedPricingCoverage: 1, now: 1000,
+      loadEvidence: loader, computeFingerprints,
+    })
+
+    for (const seed of [1, 42, 12345, 999983]) {
+      const result = await replayManifest({ manifest, allCandidateLots: shuffle(identical, seed), loadEvidence: loader, computeFingerprints })
+      assert.equal(result.outcome, 'applied', `shuffle seed ${seed} must replay cleanly`)
+      assert.equal(result.recomputedRealizedPnlUsd, manifest.realizedPnlUsd, `shuffle seed ${seed} must reproduce the frozen total`)
+      assert.equal(result.recomputedFingerprints!.acceptedHistoricalPriceFingerprint, manifest.acceptedHistoricalPriceFingerprint, `shuffle seed ${seed} must reproduce the price fingerprint`)
+      assert.equal(result.recomputedFingerprints!.realizedPnlFingerprint, manifest.realizedPnlFingerprint)
+    }
+  })
+})
