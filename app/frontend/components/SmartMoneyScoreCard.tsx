@@ -58,8 +58,16 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
 
   const { status, officialScore, provisionalBehaviorScore, evidenceConfidence, breakdown, notes, reasonNotRated } = smartMoneyScore
   const isOfficial = status === 'official'
+  // FAIL-CLOSED, DISCLOSED (canonical-manifest-fast-path follow-up task, issue #3 — "Smart Money
+  // shows evidence unavailable, not normal 0/10 scoring"): a manifest replay failure means the
+  // canonical verified-lot sample this score would be computed FROM is not currently reproducible —
+  // showing "0 / 10 not met" reads as a real, current, low score rather than "we cannot verify
+  // anything about this wallet's trades right now". Every evidence-derived figure below (trades,
+  // coverage, and the header itself) is overridden to an explicit "Evidence Unavailable" state,
+  // never a numeric 0.
   const canonicalSampleUnavailable = canonicalSampleManifestAudit?.canonicalSampleEvidenceUnavailable === true
   const displayedVerifiedCoveragePercent = canonicalSampleUnavailable ? null : evidenceConfidence.verifiedCoveragePercent
+  const displayedFullyPricedTradeCount = canonicalSampleUnavailable ? null : evidenceConfidence.fullyPricedTradeCount
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -68,7 +76,9 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
         <span style={{ fontSize: '11px', fontWeight: 800, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.70)' }}>
           Smart Money Score
         </span>
-        {isOfficial ? (
+        {canonicalSampleUnavailable ? (
+          <span style={{ fontSize: '15px', fontWeight: 800, color: '#f87171' }}>Evidence Unavailable</span>
+        ) : isOfficial ? (
           <>
             <span style={{ fontSize: '22px', fontWeight: 900, color: scoreColor(officialScore ?? 0) }}>
               {officialScore}
@@ -78,10 +88,17 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
         ) : (
           <span style={{ fontSize: '15px', fontWeight: 800, color: '#fbbf24' }}>Not Yet Rated</span>
         )}
-        <StatusBadge label={`${evidenceConfidence.level.toUpperCase()} EVIDENCE CONFIDENCE`} tone={confidenceTone(evidenceConfidence.level)} glow={evidenceConfidence.level === 'high'} />
+        {!canonicalSampleUnavailable && (
+          <StatusBadge label={`${evidenceConfidence.level.toUpperCase()} EVIDENCE CONFIDENCE`} tone={confidenceTone(evidenceConfidence.level)} glow={evidenceConfidence.level === 'high'} />
+        )}
       </div>
 
-      {!isOfficial && (
+      {canonicalSampleUnavailable ? (
+        <p style={{ fontSize: '12px', color: 'rgba(226,232,240,0.75)', margin: 0, fontWeight: 600 }}>
+          The canonical verified sample for this wallet could not be reproduced this scan — no score,
+          trade count, or coverage figure can be shown until it is.
+        </p>
+      ) : !isOfficial && (
         <p style={{ fontSize: '12px', color: 'rgba(226,232,240,0.75)', margin: 0, fontWeight: 600 }}>
           Not yet rated — insufficient verified performance evidence.
           {reasonNotRated ? ` ${reasonNotRated}` : ''}
@@ -98,12 +115,18 @@ export function SmartMoneyScoreCard({ smartMoneyScore, canonicalSampleManifestAu
           <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)' }}>
             Verified Trades
           </div>
-          <div style={{ fontSize: '14px', fontWeight: 800, color: evidenceConfidence.fullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? '#4ade80' : '#e2e8f0' }}>
-            {evidenceConfidence.fullyPricedTradeCount} / {MIN_VERIFIED_TRADES_FOR_OFFICIAL} minimum
-            <span style={{ fontSize: '10px', fontWeight: 700, marginLeft: '6px', color: evidenceConfidence.fullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? '#4ade80' : '#f87171' }}>
-              {evidenceConfidence.fullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? 'met' : 'not met'}
-            </span>
-          </div>
+          {displayedFullyPricedTradeCount == null ? (
+            <div style={{ fontSize: '14px', fontWeight: 800, color: 'rgba(148,163,184,0.55)' }}>
+              Unavailable — canonical sample not currently verified
+            </div>
+          ) : (
+            <div style={{ fontSize: '14px', fontWeight: 800, color: displayedFullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? '#4ade80' : '#e2e8f0' }}>
+              {displayedFullyPricedTradeCount} / {MIN_VERIFIED_TRADES_FOR_OFFICIAL} minimum
+              <span style={{ fontSize: '10px', fontWeight: 700, marginLeft: '6px', color: displayedFullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? '#4ade80' : '#f87171' }}>
+                {displayedFullyPricedTradeCount >= MIN_VERIFIED_TRADES_FOR_OFFICIAL ? 'met' : 'not met'}
+              </span>
+            </div>
+          )}
         </div>
         <div>
           <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '0.07em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)' }}>

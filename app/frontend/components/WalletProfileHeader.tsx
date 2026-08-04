@@ -22,6 +22,7 @@ import type { TokenHolding } from '@/src/modules/holdings/types'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
 import type { SmartMoneyScore } from '@/lib/engine/modules/smartMoney/types'
+import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 import { ChainBadge } from './ChainBadge'
 import { ConfidenceBadge } from './ConfidenceBadge'
 import { PortfolioIntelligenceCard, selectPortfolioStats } from './PortfolioIntelligenceCard'
@@ -49,6 +50,12 @@ export type WalletV2Report = FinalReport & {
   portfolioV2?: EnginePortfolioV2
   chainValueUsd?: Record<number, number>
   smartMoneyScore?: SmartMoneyScore
+  // FAIL-CLOSED SHARED STATE, DISCLOSED (canonical-manifest-fast-path follow-up task, issue #3):
+  // real field the API response already carries (RunWalletScanResult's own additive
+  // `canonicalSampleManifestAudit` — src/pipeline/types.ts) but this frontend type never declared,
+  // so no page-level caller could pass it into PnlStatusCard/SmartMoneyScoreCard at all. Optional —
+  // an older cached response predating this field degrades to today's existing behavior.
+  canonicalSampleManifestAudit?: CanonicalSampleManifestAudit
 }
 
 const CHAIN_ID_TO_CHAIN_STRING: Record<number, string> = { 1: 'eth', 8453: 'base', 42161: 'arbitrum', 999: 'hyperevm' }
@@ -428,7 +435,7 @@ export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDe
       {report.smartMoneyScore && (
         <>
           <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
-          <SmartMoneyScoreCard smartMoneyScore={report.smartMoneyScore} />
+          <SmartMoneyScoreCard smartMoneyScore={report.smartMoneyScore} canonicalSampleManifestAudit={report.canonicalSampleManifestAudit} />
         </>
       )}
       <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />

@@ -60,6 +60,7 @@ import type { RiskV2 } from '@/lib/engine/modules/risk/types'
 import type { SignalV2 } from '@/lib/engine/modules/signals/types'
 import type { WalletConditionSection } from '@/src/pipeline/walletConditionMessages'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
+import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 
 // PORTFOLIO V2 MIGRATION, UPDATED DISCLOSURE: `portfolioV2` (the new engine's Portfolio shape —
 // categories/chains/topHoldings/stablecoinRatio/concentrationIndex — structurally different from
@@ -115,6 +116,11 @@ export type WalletV2Report = FinalReport & {
   // always attaches it), only newly declared here so PnlStatusCard can read the real verified-lot-
   // count/pricing-coverage/warning disclosure for a 'limited_verified_sample' result.
   reconciliationSummary?: PnlReconciliationSummary
+  // FAIL-CLOSED SHARED STATE, DISCLOSED (canonical-manifest-fast-path follow-up task, issue #3):
+  // real additive field on RunWalletScanResult (src/pipeline/types.ts) never declared here before,
+  // so PnlStatusCard/SmartMoneyScoreCard had no way to read it from this page at all. Optional — an
+  // older cached response predating this field degrades to today's existing behavior unchanged.
+  canonicalSampleManifestAudit?: CanonicalSampleManifestAudit
 }
 
 type WatchlistWallet = {
@@ -714,6 +720,7 @@ export default function WalletScannerPage() {
                   syntheticPnl={result.syntheticPnl}
                   unrealizedReconciliation={result.fifoAndPnl?.unrealizedReconciliation}
                   reconciliationSummary={result.reconciliationSummary}
+                  canonicalSampleManifestAudit={result.canonicalSampleManifestAudit}
                 />
               </div>
 

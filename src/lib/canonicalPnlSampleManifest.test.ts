@@ -43,6 +43,23 @@ function fakeKv(): CanonicalSampleManifestKvLike & { store: Map<string, unknown>
   }
 }
 
+// REAL JSON-SERIALIZING KV, DISCLOSED (canonical-manifest-fast-path follow-up task, issue #4 —
+// "reload from persisted JSON/KV. Do not test only in-memory objects"). Every other `fakeKv`/
+// `seededEvidence` helper in this file stores the raw JS object BY REFERENCE — a genuine
+// serialization bug (a field that doesn't round-trip through JSON, e.g. `undefined`) could hide
+// behind that shortcut forever. This wrapper forces every write through `JSON.stringify` and every
+// read back through `JSON.parse`, the same encoding a real Redis-backed KV performs, so any manifest
+// record or accepted-evidence envelope actually persisted here is proven byte-for-byte reconstructable
+// from its own serialized form — not just a live object reference surviving in memory.
+function jsonKv(): CanonicalSampleManifestKvLike & AcceptedEvidenceKvLike & { raw: Map<string, string> } {
+  const raw = new Map<string, string>()
+  return {
+    raw,
+    get: async <T>(key: string) => (raw.has(key) ? (JSON.parse(raw.get(key)!) as T) : null),
+    set: async (key: string, value: unknown) => { raw.set(key, JSON.stringify(value)); return 'OK' },
+  }
+}
+
 // A real accepted-evidence store seeded from a lot array, read back through the REAL
 // readAcceptedEvidence — so identity/side/timestamp/lot-identity-version/schema validation and
 // expiry are all genuinely exercised, never stubbed past.
@@ -705,3 +722,171 @@ describe('canonicalPnlSampleManifest — value methodology version (issue #1: ma
     assert.equal(CANONICAL_LOT_IDENTITY_SCHEMA_VERSION, 2)
   })
 })
+
+describe('canonicalPnlSampleManifest — real JSON/KV persistence round-trip (issue #4)', () => {
+  it('HARD ASSERTION: create manifest -> persist to a real JSON-serializing KV -> reload -> replay a partial-fill group entirely from the reloaded, byte-for-byte-reconstructed manifest', async () => {
+    const evidenceKv = jsonKv()
+    const manifestKv = jsonKv()
+    const NOW = 1_000_000
+
+    // Five FIFO slices sharing BOTH the same buy tx and the same sell tx (a real partial fill,
+    // production shape) — so BOTH sides pool a shared total to allocate, and both sums are
+    // independently provable. Non-uniform amounts so tie-based ordinal ambiguity is never
+    // accidentally hit.
+    const amounts = [0.5, 1.25, 0.1 + 0.2, 3, 10 / 3]
+    const siblings = amounts.map((amount, i) => lot({
+      lotId: `sib-${i}`, token: '0xshared', openedTxHash: '0xsharedbuy', closedTxHash: '0xsharedsell',
+      openedAt: 100, closedAt: 200, amount, costBasisUsd: 1, proceedsUsd: 2, realizedPnlUsd: 1,
+    }))
+
+    // Seed accepted evidence through the REAL readAcceptedEvidence/writeAcceptedEvidence path,
+    // against the real JSON-serializing KV — never a shortcut in-memory store.
+    for (const l of siblings) {
+      for (const side of ['entry', 'exit'] as const) {
+        const priceUsd = side === 'entry' ? 20 : 35
+        const identity = {
+          chain: l.chain, token: l.token, txHash: side === 'entry' ? l.openedTxHash : l.closedTxHash,
+          side, timestamp: side === 'entry' ? l.openedAt : l.closedAt, lotIdentityVersion: lotIdentityVersion(l),
+        }
+        const envelope = buildAcceptedEvidenceEnvelope({ identity, priceUsd, valueUsd: priceUsd * l.amount, source: 'json-kv-test', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW })
+        await evidenceKv.set(buildAcceptedEvidenceKey(identity), envelope)
+      }
+    }
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null
+        ? readAcceptedEvidenceAnyLotVersion(evidenceKv, rest, NOW)
+        : readAcceptedEvidence(evidenceKv, { ...rest, lotIdentityVersion: version }, NOW)
+
+    // BUILD, through the real writeCanonicalPnlSampleManifest -> a real JSON-serializing KV.
+    // `realizedPnlUsd`/`fingerprints` passed here are only the legacy fallback — the manifest's own
+    // internally-recomputed, self-consistent total (from the ALLOCATED values) is what actually gets
+    // stored; see buildManifestFromCandidate's own "REALIZED TOTAL / FINGERPRINTS" note.
+    const manifest = await buildManifestFromCandidate({
+      identity: identity(), allCandidateLots: siblings, candidateVerifiedLots: siblings,
+      structuralLotCount: siblings.length, fingerprints: computeFingerprints(siblings, realizedTotal(siblings)),
+      realizedPnlUsd: realizedTotal(siblings), verifiedPricingCoverage: 1, now: 1000, loadEvidence: loader, computeFingerprints,
+    })
+    const total = manifest.realizedPnlUsd
+    assert.equal(await writeCanonicalPnlSampleManifest(manifestKv, manifest), true)
+
+    // RELOAD — a completely fresh read, through JSON.parse of the actually-persisted string. Proves
+    // the manifest (including every allocation field: entryEvidenceKey, entryEvidenceLotIdentityVersion,
+    // allocatedCostBasisUsd, etc.) survives real serialization intact.
+    const reloaded = await readCanonicalPnlSampleManifest(manifestKv, identity())
+    assert.ok(reloaded.manifest, 'the manifest must be found after a real JSON round-trip')
+    assert.equal(reloaded.validationFailure, false)
+    assert.deepEqual(reloaded.manifest, manifest, 'the reloaded manifest must be byte-for-byte identical to what was written')
+
+    // REPLAY entirely from the reloaded manifest and a fresh evidence loader over the SAME
+    // JSON-serializing evidence KV — no in-memory object identity anywhere in this path.
+    const result = await replayManifest({ manifest: reloaded.manifest!, allCandidateLots: siblings, loadEvidence: loader, computeFingerprints })
+
+    assert.equal(result.outcome, 'applied')
+    assert.equal(result.reasonCounts.manifest_replay_success, 5)
+    assert.equal(result.reasonCounts.manifest_side_evidence_missing, 0)
+    assert.equal(result.reasonCounts.manifest_partial_fill_ordinal_mismatch, 0)
+    const published = result.publishedLots.filter(isCanonicalVerifiedPublishedLot)
+    assert.equal(published.length, 5)
+    for (const l of published) {
+      assert.notEqual(l.costBasisUsd, null, 'HARD ASSERTION: reloaded-from-JSON replay must never leave cost basis null')
+      assert.notEqual(l.proceedsUsd, null, 'HARD ASSERTION: reloaded-from-JSON replay must never leave proceeds null')
+      assert.notEqual(l.realizedPnlUsd, null, 'HARD ASSERTION: reloaded-from-JSON replay must never leave realized PnL null')
+    }
+    assert.equal(result.recomputedRealizedPnlUsd, total)
+    assert.equal(result.recomputedFingerprints!.verifiedLotIdentityFingerprint, manifest.verifiedLotIdentityFingerprint)
+    assert.equal(result.recomputedFingerprints!.acceptedHistoricalPriceFingerprint, manifest.acceptedHistoricalPriceFingerprint)
+    assert.equal(result.recomputedFingerprints!.realizedPnlFingerprint, manifest.realizedPnlFingerprint)
+
+    // The five allocated shares still sum exactly to the shared accepted total after the full
+    // build -> JSON persist -> reload -> replay -> JSON persist round trip.
+    const sharedTotal = (JSON.parse(evidenceKv.raw.get(buildAcceptedEvidenceKey({ chain: 'base', token: '0xshared', txHash: '0xsharedbuy', side: 'entry', timestamp: 100, lotIdentityVersion: '' }))!) as { priceUsd: number }).priceUsd
+    const publishedSum = Math.round(published.reduce((s, l) => s + (l.costBasisUsd ?? 0), 0) * 1e8) / 1e8
+    assert.equal(publishedSum, Math.round(sharedTotal * 1e8) / 1e8)
+  })
+
+  it('HARD ASSERTION: a full manifest replay-failure path also survives real JSON persistence — corrupting one persisted evidence record through the real KV still fails closed with no live PnL escaping', async () => {
+    const evidenceKv = jsonKv()
+    const manifestKv = jsonKv()
+    const lots = buildLots(6, 6)
+    const { manifest } = await manifestWithEvidenceOnKv(lots, evidenceKv)
+    await writeCanonicalPnlSampleManifest(manifestKv, manifest)
+
+    // Corrupt the persisted JSON string for one evidence record directly (simulating real storage
+    // corruption, not an in-memory object mutation).
+    const key = buildAcceptedEvidenceKey({ chain: lots[2].chain, token: lots[2].token, txHash: lots[2].openedTxHash, side: 'entry', timestamp: lots[2].openedAt, lotIdentityVersion: '' })
+    const stored = JSON.parse(evidenceKv.raw.get(key)!) as { priceUsd: number }
+    evidenceKv.raw.set(key, JSON.stringify({ ...stored, priceUsd: stored.priceUsd * 7 }))
+
+    const reloadedManifest = await readCanonicalPnlSampleManifest(manifestKv, identity())
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null
+        ? readAcceptedEvidenceAnyLotVersion(evidenceKv, rest, NOW)
+        : readAcceptedEvidence(evidenceKv, { ...rest, lotIdentityVersion: version }, NOW)
+    const result = await replayManifest({ manifest: reloadedManifest.manifest!, allCandidateLots: lots, loadEvidence: loader, computeFingerprints })
+
+    assert.equal(result.outcome, 'unavailable')
+    assert.equal(result.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 0, 'no live PnL may escape even after a real KV round-trip')
+    assert.equal(result.recomputedRealizedPnlUsd, null)
+  })
+
+  it('a tied-amount partial-fill group fails closed rather than risk cross-wiring identities across scans', async () => {
+    const evidenceKv = jsonKv()
+    // Two siblings with the IDENTICAL matched amount — canonicalAmount ties, so the ordinal
+    // tie-break (closedTxHash/openedTxHash) is a no-op since both fields are shared by definition.
+    const tied = [
+      lot({ lotId: 'tied-a', token: '0xtied', openedTxHash: '0xtiedbuy', closedTxHash: '0xtiedsell', openedAt: 100, closedAt: 200, amount: 1.5 }),
+      lot({ lotId: 'tied-b', token: '0xtied', openedTxHash: '0xtiedbuy', closedTxHash: '0xtiedsell', openedAt: 100, closedAt: 200, amount: 1.5 }),
+    ]
+    for (const l of tied) {
+      for (const side of ['entry', 'exit'] as const) {
+        const priceUsd = side === 'entry' ? 10 : 15
+        const idn = { chain: l.chain, token: l.token, txHash: side === 'entry' ? l.openedTxHash : l.closedTxHash, side, timestamp: side === 'entry' ? l.openedAt : l.closedAt, lotIdentityVersion: lotIdentityVersion(l) }
+        await evidenceKv.set(buildAcceptedEvidenceKey(idn), buildAcceptedEvidenceEnvelope({ identity: idn, priceUsd, valueUsd: priceUsd * l.amount, source: 't', evidenceType: 'x', providerTimestampBucket: null, now: NOW }))
+      }
+    }
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null
+        ? readAcceptedEvidenceAnyLotVersion(evidenceKv, rest, NOW)
+        : readAcceptedEvidence(evidenceKv, { ...rest, lotIdentityVersion: version }, NOW)
+
+    const identities = buildCanonicalLotIdentities(tied)
+    for (const id of identities.values()) assert.equal(id.ordinalAmbiguous, true)
+
+    const manifest = await buildManifestFromCandidate({
+      identity: identity(), allCandidateLots: tied, candidateVerifiedLots: tied,
+      structuralLotCount: tied.length, fingerprints: computeFingerprints(tied, realizedTotal(tied)),
+      realizedPnlUsd: realizedTotal(tied), verifiedPricingCoverage: 1, now: 1000, loadEvidence: loader, computeFingerprints,
+    })
+    // Replayed on a DIFFERENT (reversed) array order — the exact scenario that could silently
+    // cross-wire tied ordinals across two scans.
+    const result = await replayManifest({ manifest, allCandidateLots: [...tied].reverse(), loadEvidence: loader, computeFingerprints })
+    assert.equal(result.outcome, 'unavailable')
+    assert.ok(result.reasonCounts.manifest_partial_fill_ordinal_mismatch > 0)
+    assert.equal(result.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 0, 'an ambiguous tie must never silently resolve to a possibly-wrong slice')
+  })
+})
+
+// Builds a manifest end-to-end using a REAL JSON-serializing KV for accepted evidence (issue #4).
+async function manifestWithEvidenceOnKv(allLots: readonly MatchedLot[], evidenceKv: AcceptedEvidenceKvLike) {
+  for (const lot of allLots) {
+    if (!isCanonicalVerifiedPublishedLot(lot)) continue
+    for (const side of ['entry', 'exit'] as const) {
+      const priceUsd = (side === 'entry' ? lot.costBasisUsd : lot.proceedsUsd) as number
+      const identityFor = { chain: lot.chain, token: lot.token, txHash: side === 'entry' ? lot.openedTxHash : lot.closedTxHash, side, timestamp: side === 'entry' ? lot.openedAt : lot.closedAt, lotIdentityVersion: lotIdentityVersion(lot) }
+      await evidenceKv.set(buildAcceptedEvidenceKey(identityFor), buildAcceptedEvidenceEnvelope({ identity: identityFor, priceUsd, valueUsd: priceUsd * lot.amount, source: 'json-kv-test', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now: NOW }))
+    }
+  }
+  const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+    version === null
+      ? readAcceptedEvidenceAnyLotVersion(evidenceKv, rest, NOW)
+      : readAcceptedEvidence(evidenceKv, { ...rest, lotIdentityVersion: version }, NOW)
+  const total = realizedTotal(allLots)
+  const verified = allLots.filter(isCanonicalVerifiedPublishedLot)
+  const manifest = await buildManifestFromCandidate({
+    identity: identity(), allCandidateLots: allLots, candidateVerifiedLots: verified,
+    structuralLotCount: allLots.length, fingerprints: computeFingerprints(allLots, total),
+    realizedPnlUsd: total, verifiedPricingCoverage: allLots.length > 0 ? verified.length / allLots.length : null,
+    now: 1000, loadEvidence: loader, computeFingerprints,
+  })
+  return { manifest, loader }
+}

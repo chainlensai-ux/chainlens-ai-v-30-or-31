@@ -138,6 +138,21 @@ export type CanonicalLotIdentity = {
   // wrong slice — see `manifest_partial_fill_ordinal_mismatch`.
   partialFillGroupSize: number
   canonicalAmount: string
+  // AMBIGUOUS-ORDINAL DETECTION, DISCLOSED (canonical-manifest-fast-path follow-up task, issue #1 —
+  // a real, confirmed structural gap traced end-to-end): the ordinal tie-break below falls back to
+  // `closedTxHash`/`openedTxHash` comparison, but every member of the SAME group shares an IDENTICAL
+  // structural group key (chain/token/openedTxHash/closedTxHash) by construction — so that
+  // tie-break is a no-op for same-group ties, and TWO SIBLINGS WHOSE AMOUNTS ROUND TO THE SAME
+  // 12-DECIMAL canonicalAmount get ordinals decided purely by the STABLE SORT's preserved INPUT
+  // ORDER, i.e. whatever order the caller's own `lots` array happened to iterate in. If that order
+  // legitimately differs between two scans of the same wallet (different internal FIFO/array
+  // construction order — the exact "different internal float construction/order" scenario this
+  // whole manifest system is required to survive), the SAME logical slice can be assigned a
+  // DIFFERENT ordinal on each scan, silently cross-wiring which manifest record a replay lot
+  // resolves against. True when 2+ members of this lot's own group share an identical
+  // canonicalAmount — every consumer of this field must treat it as replay-unresolvable, never
+  // trust the ordinal's cross-run stability.
+  ordinalAmbiguous: boolean
 }
 
 // PARTIAL-FILL ORDINAL, DISCLOSED (requirement #1): assigned over the FULL canonical lot array —
@@ -165,6 +180,15 @@ export function buildCanonicalLotIdentities(lots: readonly MatchedLot[]): Map<Ma
       if (closedCompare !== 0) return closedCompare
       return a.openedTxHash.localeCompare(b.openedTxHash)
     })
+    // AMBIGUOUS-ORDINAL DETECTION, DISCLOSED — see CanonicalLotIdentity's own header. A duplicate
+    // canonicalAmount anywhere in this group means the tie-break above is a no-op for at least one
+    // pair, so ordinal assignment for the ENTIRE group is not provably stable across runs.
+    const amountCounts = new Map<string, number>()
+    for (const lot of ordered) {
+      const key = canonicalAmountString(lot.amount)
+      amountCounts.set(key, (amountCounts.get(key) ?? 0) + 1)
+    }
+    const groupHasTie = [...amountCounts.values()].some((count) => count > 1)
     ordered.forEach((lot, ordinal) => {
       identities.set(lot, {
         key: `v${CANONICAL_LOT_IDENTITY_SCHEMA_VERSION}:${gk}:${ordinal}`,
@@ -172,6 +196,7 @@ export function buildCanonicalLotIdentities(lots: readonly MatchedLot[]): Map<Ma
         partialFillOrdinal: ordinal,
         partialFillGroupSize: ordered.length,
         canonicalAmount: canonicalAmountString(lot.amount),
+        ordinalAmbiguous: groupHasTie,
       })
     })
   }
@@ -982,6 +1007,16 @@ export async function replayManifest(params: {
       // The same structural tx pair split into a DIFFERENT number of FIFO slices this run — the
       // identity resolved, but it no longer describes the same fill. Fail closed rather than publish
       // a slice the manifest never actually recorded.
+      reasonCounts.manifest_partial_fill_ordinal_mismatch += 1
+      manifestLotsMissingCurrentEvidence.push(key)
+      continue
+    }
+    if (currentIdentity?.ordinalAmbiguous) {
+      // AMBIGUOUS ORDINAL, DISCLOSED (issue #1's confirmed structural gap — see
+      // CanonicalLotIdentity's own header): two or more siblings in this lot's group share the
+      // exact same 12-decimal canonicalAmount, so which physical slice the manifest's own ordinal
+      // named is not provably stable across runs. Fail closed rather than risk silently resolving
+      // this key against the WRONG physical slice's evidence.
       reasonCounts.manifest_partial_fill_ordinal_mismatch += 1
       manifestLotsMissingCurrentEvidence.push(key)
       continue

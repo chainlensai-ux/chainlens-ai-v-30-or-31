@@ -40,7 +40,7 @@ export function WalletScannerSummaryRowV3({ report }: WalletScannerSummaryRowV3P
 
       {report.smartMoneyScore && (
         <div style={cardStyle}>
-          <SmartMoneyScoreCard smartMoneyScore={report.smartMoneyScore} />
+          <SmartMoneyScoreCard smartMoneyScore={report.smartMoneyScore} canonicalSampleManifestAudit={report.canonicalSampleManifestAudit} />
         </div>
       )}
 

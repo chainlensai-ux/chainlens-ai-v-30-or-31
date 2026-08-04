@@ -751,7 +751,14 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
         <div style={{ fontSize: '10px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           Per-Chain Breakdown
         </div>
-        {isBoundedSample ? (
+        {canonicalSampleUnavailable ? (
+          // FAIL-CLOSED, DISCLOSED (issue #2/#3 — "no $0 per-chain PnL"): never render pnlV2's own
+          // per-chain figures when the canonical sample is unavailable, regardless of
+          // `isBoundedSample` (which reads the raw `publicPnlStatus` prop and can disagree with the
+          // manifest audit) — pnlV2 is a completely separate engine with no awareness of manifest
+          // replay state, so its own numbers must never fill this gap with an unrelated $0.00 table.
+          <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>{CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL}</p>
+        ) : isBoundedSample ? (
           <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>{PER_CHAIN_BOUNDED_SAMPLE_MESSAGE}</p>
         ) : (
           // hasCanonicalUnrealizedSource: `!== undefined`, NOT `!= null` — a caller that explicitly
