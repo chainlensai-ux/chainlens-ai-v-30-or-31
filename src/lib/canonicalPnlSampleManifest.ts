@@ -39,6 +39,7 @@ import {
   isCanonicalVerifiedPublishedLot, emptyCanonicalVerifiedPredicateReasonCounts,
   type CanonicalVerifiedPredicateReasonCounts,
 } from './canonicalVerifiedLot'
+import { sortLotsByCanonicalIdentity, sumQuantizedUsd } from './scanDeterminismAudit'
 
 // SCHEMA BUMP TO 3, GENUINELY REQUIRED, DISCLOSED (canonical-price-replay follow-up task,
 // requirement #10 — "do not create a new manifest schema key merely to hide this test unless the
@@ -793,7 +794,7 @@ export async function buildManifestFromCandidate(params: {
     const correctedAllLots = params.allCandidateLots.map((lot) => correctedByLot.get(lot) ?? lot)
     const correctedVerified = correctedAllLots.filter(isCanonicalVerifiedPublishedLot)
     realizedPnlUsd = correctedVerified.length > 0
-      ? Math.round(correctedVerified.reduce((sum, l) => sum + (l.realizedPnlUsd ?? 0), 0) * 100) / 100
+      ? sumQuantizedUsd(sortLotsByCanonicalIdentity(correctedVerified).map((l) => l.realizedPnlUsd))
       : null
     fingerprints = params.computeFingerprints(correctedAllLots, realizedPnlUsd)
   }
@@ -1376,7 +1377,7 @@ export async function replayManifest(params: {
     const candidatePublished = buildPublished(false)
     const publishedVerified = candidatePublished.filter(isCanonicalVerifiedPublishedLot)
     recomputedRealizedPnlUsd = publishedVerified.length > 0
-      ? Math.round(publishedVerified.reduce((sum, l) => sum + (l.realizedPnlUsd ?? 0), 0) * 100) / 100
+      ? sumQuantizedUsd(sortLotsByCanonicalIdentity(publishedVerified).map((l) => l.realizedPnlUsd))
       : null
     if (!withinTolerance(recomputedRealizedPnlUsd, params.manifest.realizedPnlUsd, CANONICAL_TOTAL_TOLERANCE_USD)) {
       reasonCounts.manifest_realized_total_mismatch += 1

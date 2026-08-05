@@ -18,7 +18,10 @@ import { buildCounterpartyStats, classifyRouterLikeEvent, recordRouterCandidate 
 import { createRouterInference } from '../lib/routerInference'
 import { kv as acceptedEvidenceRealKv } from '@vercel/kv'
 import { createPnlReconciliation, type CanonicalSampleSelector } from '../lib/pnlReconciliation'
-import { buildScanDeterminismAudit, checkFinalPnlSnapshotDivergence, logFinalPnlSnapshotDivergenceIfAny } from '../lib/scanDeterminismAudit'
+import {
+  buildScanDeterminismAudit, checkFinalPnlSnapshotDivergence, logFinalPnlSnapshotDivergenceIfAny,
+  sortLotsByCanonicalIdentity, sumQuantizedUsd,
+} from '../lib/scanDeterminismAudit'
 import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
   readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest,
@@ -2816,13 +2819,16 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       // FIRST QUALIFYING SCAN, or an EXPLICIT refresh (requirement #9 — never an automatic refresh
       // because replay failed). The manifest records THIS scan's own candidate verified sample, and
       // that same sample is published unchanged; there is nothing to withhold.
-      // CENT-ROUNDED, DISCLOSED: rounded to cents with the SAME rule replay uses when it re-derives
-      // this total by summing the reconstructed lots (see replayManifest). Storing an unrounded sum
-      // here would make the stored `realizedPnlFingerprint` — which hashes the value's own
-      // `toFixed(8)` text — unreproducible on replay purely from float accumulation noise, failing a
-      // replay that is in fact perfectly correct.
+      // CANONICAL INTEGER SUM, DISCLOSED (fingerprint-divergence fix task): sorted by canonical
+      // identity then summed as quantized integer minor units — never a plain floating-point
+      // `.reduce()` over this array's own order — so the SAME rule replay uses when it re-derives
+      // this total (see replayManifest) always reproduces the identical value regardless of either
+      // scan's own array order. The stored `realizedPnlFingerprint` hashes this value's own quantized
+      // form (see scanDeterminismAudit's own header); an unrounded, order-dependent sum here would
+      // make it unreproducible on replay purely from float accumulation noise, failing a replay that
+      // is in fact perfectly correct.
       const realizedPnlUsd = candidateVerifiedLots.length > 0
-        ? Math.round(candidateVerifiedLots.reduce((s, l) => s + (l.realizedPnlUsd ?? 0), 0) * 100) / 100
+        ? sumQuantizedUsd(sortLotsByCanonicalIdentity(candidateVerifiedLots).map((l) => l.realizedPnlUsd))
         : null
       const fingerprints = computeManifestFingerprints(reconciledLots, realizedPnlUsd)
       const verifiedPricingCoverage = reconciledLots.length > 0 ? candidateVerifiedLots.length / reconciledLots.length : null

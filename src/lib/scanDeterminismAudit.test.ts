@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {
   buildScanDeterminismAudit, checkPricingDeterminismViolation, logPricingDeterminismViolationIfAny,
   checkFinalPnlSnapshotDivergence, logFinalPnlSnapshotDivergenceIfAny, type FinalPnlSnapshotConsumers,
+  sortLotsByCanonicalIdentity, quantizeUsd, sumQuantizedUsd,
 } from './scanDeterminismAudit'
 import type { MatchedLot } from '../modules/fifoEngine/types'
 
@@ -263,5 +264,84 @@ describe('checkFinalPnlSnapshotDivergence / logFinalPnlSnapshotDivergenceIfAny (
     const logger = { error: (...args: unknown[]) => { calls.push(args) } }
     logFinalPnlSnapshotDivergenceIfAny(checkFinalPnlSnapshotDivergence(consumers()), logger)
     assert.equal(calls.length, 0)
+  })
+})
+
+// =================================================================================================
+// FINGERPRINT-DIVERGENCE FIX — fingerprint-divergence fix task (confirmed production shape: manifest
+// replay resolves every lot, zero value/identity/evidence mismatches, yet
+// manifest_fingerprint_mismatch still fires — two independently re-derived allocations of the same
+// accepted-evidence total agreed within CANONICAL_VALUE_TOLERANCE but diverged at float-bit level,
+// which the former raw-string/order-dependent-sum fingerprint treated as a real difference).
+// =================================================================================================
+
+describe('fingerprint-divergence fix: quantization + canonical order + integer summation', () => {
+  it('HARD ASSERTION (required regression): two independent allocations of the same side totals differing only BELOW the accepted tolerance produce the identical fingerprint after a JSON/KV round-trip', () => {
+    // Two "independently re-derived" per-lot values for the SAME lot identity — the exact confirmed
+    // production shape: both are correct, both would pass CANONICAL_VALUE_TOLERANCE (1e-9) against
+    // each other, but they are not the same float bit pattern.
+    const allocationA = lot({ lotId: 'v1', costBasisUsd: 33.33333333, proceedsUsd: 50, realizedPnlUsd: 16.66666667 })
+    const allocationB = lot({ lotId: 'v1', costBasisUsd: 33.33333333 + 1e-10, proceedsUsd: 50, realizedPnlUsd: 16.66666667 - 1e-10 })
+    assert.notEqual(allocationA.costBasisUsd, allocationB.costBasisUsd, 'sanity: the two allocations really do differ at the raw float level')
+
+    // A genuine JSON/KV round-trip — proves the fix survives real (de)serialization, not just an
+    // in-memory object reference.
+    const roundTrip = <T>(v: T): T => JSON.parse(JSON.stringify(v))
+    const buildAudit = (l: MatchedLot) => buildScanDeterminismAudit({
+      matchedLots: roundTrip([l]), realizedPnlUsd: roundTrip(l.realizedPnlUsd), persistedEvidenceHits: 0, liveEvidenceMisses: 0,
+    })
+    const auditA = buildAudit(allocationA)
+    const auditB = buildAudit(allocationB)
+    assert.equal(auditA.acceptedHistoricalPriceFingerprint, auditB.acceptedHistoricalPriceFingerprint, 'sub-tolerance divergence must no longer produce different fingerprints')
+    assert.equal(auditA.realizedPnlFingerprint, auditB.realizedPnlFingerprint)
+    assert.equal(auditA.scanFingerprint, auditB.scanFingerprint)
+  })
+
+  it('HARD ASSERTION (required regression): a difference ABOVE the accepted tolerance must still produce a different fingerprint — never accepting a genuinely different manifest', () => {
+    const genuinelyDifferent = lot({ lotId: 'v1', costBasisUsd: 33.34, proceedsUsd: 50, realizedPnlUsd: 16.66 })
+    const original = lot({ lotId: 'v1', costBasisUsd: 33.33, proceedsUsd: 50, realizedPnlUsd: 16.67 })
+    const a = buildScanDeterminismAudit({ matchedLots: [original], realizedPnlUsd: original.realizedPnlUsd, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
+    const b = buildScanDeterminismAudit({ matchedLots: [genuinelyDifferent], realizedPnlUsd: genuinelyDifferent.realizedPnlUsd, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
+    assert.notEqual(a.acceptedHistoricalPriceFingerprint, b.acceptedHistoricalPriceFingerprint)
+    assert.notEqual(a.scanFingerprint, b.scanFingerprint)
+  })
+
+  it('sumQuantizedUsd sums the SAME multiset to the identical total regardless of array order — no order-dependent float accumulation', () => {
+    const values = [33.33, 66.67, 12.01, 0.99, 87.55, 5.44]
+    const forward = sumQuantizedUsd(values)
+    const reversed = sumQuantizedUsd([...values].reverse())
+    const shuffled = sumQuantizedUsd([values[3], values[0], values[5], values[1], values[4], values[2]])
+    assert.equal(forward, reversed)
+    assert.equal(forward, shuffled)
+    assert.equal(forward, Math.round(values.reduce((s, v) => s + v, 0) * 100) / 100)
+  })
+
+  it('sumQuantizedUsd returns null the moment any value is null — never a fabricated total', () => {
+    assert.equal(sumQuantizedUsd([1, 2, null, 3]), null)
+    assert.equal(sumQuantizedUsd([]), 0)
+  })
+
+  it('sortLotsByCanonicalIdentity produces the same order regardless of input order, and quantizeUsd is stable across a JSON/KV round-trip', () => {
+    const a = lot({ lotId: 'a', openedTxHash: '0xaaa' })
+    const b = lot({ lotId: 'b', openedTxHash: '0xbbb' })
+    const c = lot({ lotId: 'c', openedTxHash: '0xccc' })
+    const forward = sortLotsByCanonicalIdentity([a, b, c]).map((l) => l.lotId)
+    const reversed = sortLotsByCanonicalIdentity([c, b, a]).map((l) => l.lotId)
+    const shuffled = sortLotsByCanonicalIdentity([b, c, a]).map((l) => l.lotId)
+    assert.deepEqual(forward, reversed)
+    assert.deepEqual(forward, shuffled)
+
+    const value = 1384.9299999999998
+    const roundTripped = JSON.parse(JSON.stringify(value)) as number
+    assert.equal(quantizeUsd(value), quantizeUsd(roundTripped))
+    assert.equal(quantizeUsd(null), 'null')
+  })
+
+  it('a genuine, above-tolerance realized-PnL total change is still detected as a pricing determinism violation — replay value validation is not weakened', () => {
+    const matchedLots = [lot({ lotId: 'v1' })]
+    const before = buildScanDeterminismAudit({ matchedLots, realizedPnlUsd: 100, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
+    const after = buildScanDeterminismAudit({ matchedLots, realizedPnlUsd: 105, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
+    const check = checkPricingDeterminismViolation(after, { matchedLotFingerprint: before.matchedLotFingerprint, realizedPnlFingerprint: before.realizedPnlFingerprint })
+    assert.equal(check.violation, true, 'the same structural lot set with a genuinely different realized total must still be flagged')
   })
 })

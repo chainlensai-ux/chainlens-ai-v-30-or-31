@@ -30,10 +30,56 @@ function deterministicHash(input: string): string {
 // lot equality (chain/token/openedTxHash/closedTxHash/openedAt/closedAt — see pnlReconciliation.ts's
 // own `lotKey`), plus `amount` — a lot with the same tx pair but a different matched quantity is a
 // genuinely different match, not the same lot re-observed.
-type FingerprintableLot = Pick<MatchedLot, 'chain' | 'token' | 'openedTxHash' | 'closedTxHash' | 'openedAt' | 'closedAt' | 'amount' | 'evidenceQuality' | 'costBasisUsd' | 'proceedsUsd' | 'realizedPnlUsd'>
+export type FingerprintableLot = Pick<MatchedLot, 'chain' | 'token' | 'openedTxHash' | 'closedTxHash' | 'openedAt' | 'closedAt' | 'amount' | 'evidenceQuality' | 'costBasisUsd' | 'proceedsUsd' | 'realizedPnlUsd'>
 
 function lotIdentityKey(lot: FingerprintableLot): string {
   return [lot.chain, lot.token.toLowerCase(), lot.openedTxHash, lot.closedTxHash, lot.openedAt, lot.closedAt, lot.amount].join(':')
+}
+
+// CANONICAL LOT ORDER, DISCLOSED, EXPORTED (fingerprint-divergence fix task — confirmed production
+// root cause: manifest build and replay independently RE-DERIVE the same accepted-evidence side
+// totals via two separate allocation passes — buildManifestFromCandidate's own `correctedByLot` at
+// build time, replayManifest's own `rebuiltByLot` here — both of which pass the existing per-group
+// CANONICAL_VALUE_TOLERANCE checks, but a caller that then SUMS those lots' realizedPnlUsd with a
+// plain floating-point `.reduce()` over each lot ARRAY's own — potentially different — iteration
+// order gets an order-dependent, non-associative float result). Every caller that sums or hashes a
+// canonical lot set for a fingerprint now sorts through this ONE shared function first, so both
+// build and replay always fold the identical multiset in the identical order.
+export function sortLotsByCanonicalIdentity<T extends FingerprintableLot>(lots: readonly T[]): T[] {
+  return [...lots].sort((a, b) => lotIdentityKey(a).localeCompare(lotIdentityKey(b)))
+}
+
+// QUANTIZATION, DISCLOSED, EXPORTED (fingerprint-divergence fix task): ONE shared canonicalization
+// step for every USD field this module hashes, and for every USD total a caller sums before handing
+// it to this module. 8 decimal places — integer minor units at the same precision as
+// canonicalPnlSampleManifest.ts's own `VALUE_SCALE`/`CANONICAL_VALUE_TOLERANCE` (1e-9, i.e. two
+// independently-recomputed per-lot allocations that already PASS that tolerance check differ by far
+// less than one quantum here) — so two allocations that agree within the existing, UNCHANGED
+// tolerance always canonicalize to the identical string, while a genuine difference above one
+// quantum (1e-8, itself tighter than `CANONICAL_TOTAL_TOLERANCE_USD`'s 0.01) still produces a
+// different one. This hardens agreement; it never widens what counts as a match, and never touches
+// the tolerance checks themselves.
+const QUANTIZE_SCALE = 100_000_000 // 8 decimal places
+
+export function quantizeUsd(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return 'null'
+  return BigInt(Math.round(value * QUANTIZE_SCALE)).toString()
+}
+
+// INTEGER SUM, DISCLOSED, EXPORTED (fingerprint-divergence fix task): BigInt addition is exactly
+// associative — unlike `Array.prototype.reduce` over floating-point numbers — so summing the SAME
+// multiset of quantized values always produces the identical result regardless of array order. The
+// caller is expected to have already sorted with `sortLotsByCanonicalIdentity` (order no longer
+// matters for the sum itself, but keeps every caller's canonicalization step visibly uniform).
+// Returns null (never a fabricated 0) the moment any input is null/non-finite, exactly matching this
+// codebase's existing "unpriced lot blocks the total" convention.
+export function sumQuantizedUsd(values: readonly (number | null)[]): number | null {
+  let total = BigInt(0)
+  for (const v of values) {
+    if (v === null || !Number.isFinite(v)) return null
+    total += BigInt(Math.round(v * QUANTIZE_SCALE))
+  }
+  return Math.round((Number(total) / QUANTIZE_SCALE) * 100) / 100
 }
 
 export type ScanDeterminismAudit = {
@@ -56,11 +102,14 @@ export function buildScanDeterminismAudit(params: {
   liveEvidenceMisses: number
   previousScanFingerprint?: string | null
 }): ScanDeterminismAudit {
-  // ALL SORTED, DISCLOSED: FIFO's own internal ordering is not itself a determinism guarantee this
-  // module wants to assert on — two structurally-identical matches produced in a different array
-  // order must fingerprint identically. Sorting here is fingerprinting-only; it never reorders or
-  // mutates the caller's own `matchedLots` array.
-  const matchedKeys = [...params.matchedLots].map(lotIdentityKey).sort()
+  // CANONICAL ORDER, DISCLOSED: FIFO's own internal ordering is not itself a determinism guarantee
+  // this module wants to assert on — two structurally-identical matches produced in a different
+  // array order must fingerprint identically. Sorting here is fingerprinting-only; it never reorders
+  // or mutates the caller's own `matchedLots` array. Uses the ONE shared canonical order (see
+  // sortLotsByCanonicalIdentity's own header) rather than sorting hash-input strings after the fact —
+  // the same order every caller of this function's canonicalization helpers now uses.
+  const canonicalMatchedLots = sortLotsByCanonicalIdentity(params.matchedLots)
+  const matchedKeys = canonicalMatchedLots.map(lotIdentityKey)
   const matchedLotFingerprint = deterministicHash(matchedKeys.join('|'))
 
   // ONE SHARED PREDICATE, DISCLOSED (canonical-price-replay follow-up task, requirement #6): the
@@ -68,18 +117,29 @@ export function buildScanDeterminismAudit(params: {
   // serialization and the UI all ask — previously this filtered on `evidenceQuality` alone while
   // the gate counted fully-priced lots and AYRI counted attribution sources, so all three could
   // legitimately disagree about which lots the "verified" fingerprint even covered.
-  const verifiedLots = params.matchedLots.filter(isCanonicalVerifiedPublishedLot)
-  const verifiedKeys = verifiedLots.map(lotIdentityKey).sort()
+  const verifiedLots = canonicalMatchedLots.filter(isCanonicalVerifiedPublishedLot)
+  const verifiedKeys = verifiedLots.map(lotIdentityKey)
   const verifiedLotIdentityFingerprint = deterministicHash(verifiedKeys.join('|'))
 
-  // ACCEPTED HISTORICAL PRICE FINGERPRINT, DISCLOSED: the exact per-lot costBasisUsd/proceedsUsd
-  // pair for every VERIFIED lot — this is what actually changes when a rescan accepts a different
-  // historical price than a previous scan did (the reported nondeterminism), independent of whether
-  // the lot SET itself (verifiedLotIdentityFingerprint) also changed.
-  const priceKeys = verifiedLots.map((l) => `${lotIdentityKey(l)}:${l.costBasisUsd}:${l.proceedsUsd}`).sort()
+  // ACCEPTED HISTORICAL PRICE FINGERPRINT, DISCLOSED, QUANTIZED (fingerprint-divergence fix task):
+  // the exact per-lot costBasisUsd/proceedsUsd pair for every VERIFIED lot — this is what actually
+  // changes when a rescan accepts a different historical price than a previous scan did (the
+  // reported nondeterminism), independent of whether the lot SET itself
+  // (verifiedLotIdentityFingerprint) also changed. QUANTIZED via the one shared `quantizeUsd` (never
+  // raw float interpolation) — CONFIRMED PRODUCTION ROOT CAUSE: two independently re-derived
+  // allocations of the identical accepted-evidence total (manifest build vs manifest replay) could
+  // already agree within CANONICAL_VALUE_TOLERANCE while still differing at a float bit level too
+  // fine for that tolerance to catch as a "mismatch" but exact enough to fail this fingerprint's
+  // former raw-string comparison — quantizing collapses any such sub-tolerance divergence to the
+  // identical string, while a genuine above-tolerance difference still fails.
+  // Re-sorted by the FULL compound string (identity + quantized values), not just lot identity:
+  // occurrence-group siblings share an identical identity key by construction, so only sorting by
+  // VALUE too guarantees the same joined string regardless of which physical sibling object ends up
+  // holding which value in either scan's own array order.
+  const priceKeys = verifiedLots.map((l) => `${lotIdentityKey(l)}:${quantizeUsd(l.costBasisUsd)}:${quantizeUsd(l.proceedsUsd)}`).sort()
   const acceptedHistoricalPriceFingerprint = deterministicHash(priceKeys.join('|'))
 
-  const realizedPnlFingerprint = deterministicHash(params.realizedPnlUsd === null ? 'null' : params.realizedPnlUsd.toFixed(8))
+  const realizedPnlFingerprint = deterministicHash(quantizeUsd(params.realizedPnlUsd))
 
   const scanFingerprint = deterministicHash([
     matchedLotFingerprint, verifiedLotIdentityFingerprint, acceptedHistoricalPriceFingerprint, realizedPnlFingerprint,
