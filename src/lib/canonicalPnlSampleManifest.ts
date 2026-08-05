@@ -97,7 +97,16 @@ export const CANONICAL_PRICING_METHODOLOGY_VERSION = 1
 // so an old-methodology manifest simply MISSES on lookup (manifestFound: false) rather than being
 // found and failing replay repeatedly — a rescan under the new methodology creates a fresh manifest
 // exactly like a genuine first-ever scan would.
-export const CANONICAL_VALUE_METHODOLOGY_VERSION = 2
+//
+// BUMPED 2 -> 3 (accepted-evidence-persistence follow-up task): the accepted-evidence writer fix
+// changed what a persisted side VALUE means — from a corrupted single-sibling overwrite to a
+// genuine side total allocated across siblings — so a vv2 manifest built under the old, corrupted
+// semantics must never be found and replayed again (it would still carry the old corrupted totals,
+// e.g. $5,066.84, even though the underlying accepted-evidence store now holds the correct schema-2
+// values). Bumping this makes the old vv2 manifest key MISS on lookup, exactly the same
+// manifestFound: false / fresh-manifest path this version already documents above — never a manual
+// delete or refresh of the old manifest record.
+export const CANONICAL_VALUE_METHODOLOGY_VERSION = 3
 
 // Reuses the exact same duck-typed KV interface accepted-evidence records already use — same
 // underlying store, a genuinely separate key namespace (`v1:canonical-pnl-sample-manifest:...`).
