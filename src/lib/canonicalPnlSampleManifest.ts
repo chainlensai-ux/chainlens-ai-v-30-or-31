@@ -967,6 +967,128 @@ export type ManifestReplayResult = {
   // REQUIREMENT #7: manifest lots that replayed their identity+evidence successfully but still fail
   // the ONE canonical published-verified predicate. After a successful replay this MUST be empty.
   manifestReplayedButNotCanonicalVerifiedLotKeys: string[]
+  // FINGERPRINT-MISMATCH DIAGNOSTIC, DISCLOSED, ADDITIVE (fingerprint-mismatch audit task): null
+  // whenever every per-lot/per-value check above already passed AND every fingerprint agreed — set
+  // ONLY on the specific, confirmed-production shape of a replay that resolves every manifest lot,
+  // passes every per-group value/total check, yet still fails on `manifest_fingerprint_mismatch`
+  // alone. See buildFingerprintMismatchDiagnostic's own header for what it isolates.
+  fingerprintMismatchDiagnostic: FingerprintMismatchDiagnostic | null
+}
+
+// FINGERPRINT-MISMATCH DIAGNOSTIC, DISCLOSED (fingerprint-mismatch audit task — confirmed production
+// shape: manifest replay resolves 23/23 lots, zero lot/value/identity/evidence mismatches, yet
+// `manifest_fingerprint_mismatch` still fires and forces `manifestApplied: false`/
+// `canonicalSampleEvidenceUnavailable: true`).
+//
+// ROOT MECHANISM THIS ISOLATES, DISCLOSED: the manifest's STORED fingerprints
+// (verifiedLotIdentityFingerprint/acceptedHistoricalPriceFingerprint/realizedPnlFingerprint) were
+// computed ONCE, at build time, from `reconciledLots` — i.e. from pnlReconciliation's own
+// `hydrateFromAcceptedEvidence` per-lot allocation of the accepted-evidence side totals. The
+// RECOMPUTED fingerprints on replay are instead computed from `candidatePublished` — i.e. from THIS
+// module's own, SEPARATE per-lot allocation (`allocateSideValueAcrossGroup` /
+// `splitGroupTotalAcrossOccurrences`, re-run independently inside `buildManifestFromCandidate`/
+// `replayManifest` from the same stored evidence). Both allocations read the identical accepted-
+// evidence totals and both are individually correct — the per-lot/per-group VALUE checks above
+// already prove they agree within `CANONICAL_VALUE_TOLERANCE` — but they are two independently
+// re-derived numbers, not one shared computation, so they are not always BIT-IDENTICAL, and the
+// fingerprint comparison is an EXACT string-equality check with no tolerance. This diagnostic makes
+// that gap directly observable: it compares each replayed lot's THIS-SCAN, PRE-REBUILD live value
+// (`occurrences[i]` — exactly what fed the STORED fingerprint at build time, since that scan's own
+// `reconciledLots` carried the same hydrate-time allocation) against the SAME lot's REBUILT value
+// (`rebuiltByLot` — exactly what feeds the RECOMPUTED fingerprint this replay). A non-zero, sub-cent
+// divergence for one or more lots there is direct proof of two independent allocations disagreeing
+// at float precision; an EMPTY list with the fingerprints still disagreeing instead points at the
+// realized-PnL SUM (order-dependent floating-point addition over `publishedVerified`/
+// `candidateVerifiedLots`, see `realizedPnlFingerprint`'s own header) rather than any per-lot value.
+export type FingerprintMismatchDiagnostic = {
+  verifiedLotIdentityFingerprintMismatch: boolean
+  acceptedHistoricalPriceFingerprintMismatch: boolean
+  realizedPnlFingerprintMismatch: boolean
+  storedRealizedPnlUsd: number | null
+  recomputedRealizedPnlUsd: number | null
+  storedRealizedPnlFingerprint: string
+  recomputedRealizedPnlFingerprint: string
+  storedVerifiedLotIdentityFingerprint: string
+  recomputedVerifiedLotIdentityFingerprint: string
+  storedAcceptedHistoricalPriceFingerprint: string
+  recomputedAcceptedHistoricalPriceFingerprint: string
+  replayedLotCount: number
+  // Every replayed lot whose THIS-SCAN pre-rebuild value (what fed the STORED fingerprint) differs
+  // AT ALL from its rebuilt value (what feeds the RECOMPUTED fingerprint) — sorted by the largest
+  // single-field absolute difference, descending, bounded to the top 10 (never per-lot-unbounded
+  // logging — this codebase's own prior confirmed stdout-backpressure bug).
+  divergentLotCount: number
+  topDivergentLots: Array<{
+    groupKey: string
+    livePreRebuildCostBasisUsd: number | null
+    rebuiltCostBasisUsd: number | null
+    livePreRebuildProceedsUsd: number | null
+    rebuiltProceedsUsd: number | null
+    livePreRebuildRealizedPnlUsd: number | null
+    rebuiltRealizedPnlUsd: number | null
+    maxAbsDifferenceUsd: number
+  }>
+}
+
+const FINGERPRINT_MISMATCH_TOP_DIVERGENT_LOTS = 10
+
+function absDiff(a: number | null, b: number | null): number {
+  if (a === null || b === null) return a === b ? 0 : Number.POSITIVE_INFINITY
+  return Math.abs(a - b)
+}
+
+export function buildFingerprintMismatchDiagnostic(params: {
+  manifest: CanonicalPnlSampleManifest
+  recomputedFingerprints: DeterminismFingerprints
+  recomputedRealizedPnlUsd: number | null
+  // Original (this-scan, pre-rebuild) lot -> its rebuilt replacement, for every replayed lot —
+  // exactly `rebuiltByLot` from replayManifest's own atomic replay loop.
+  rebuiltByLot: ReadonlyMap<MatchedLot, MatchedLot>
+  identities: ReadonlyMap<MatchedLot, CanonicalLotIdentity>
+}): FingerprintMismatchDiagnostic {
+  const rows: FingerprintMismatchDiagnostic['topDivergentLots'] = []
+  for (const [live, rebuilt] of params.rebuiltByLot) {
+    const costDiff = absDiff(live.costBasisUsd, rebuilt.costBasisUsd)
+    const proceedsDiff = absDiff(live.proceedsUsd, rebuilt.proceedsUsd)
+    const pnlDiff = absDiff(live.realizedPnlUsd, rebuilt.realizedPnlUsd)
+    const maxAbsDifferenceUsd = Math.max(costDiff, proceedsDiff, pnlDiff)
+    if (maxAbsDifferenceUsd === 0) continue
+    rows.push({
+      groupKey: params.identities.get(live)?.key ?? 'unknown',
+      livePreRebuildCostBasisUsd: live.costBasisUsd,
+      rebuiltCostBasisUsd: rebuilt.costBasisUsd,
+      livePreRebuildProceedsUsd: live.proceedsUsd,
+      rebuiltProceedsUsd: rebuilt.proceedsUsd,
+      livePreRebuildRealizedPnlUsd: live.realizedPnlUsd,
+      rebuiltRealizedPnlUsd: rebuilt.realizedPnlUsd,
+      maxAbsDifferenceUsd,
+    })
+  }
+  rows.sort((a, b) => b.maxAbsDifferenceUsd - a.maxAbsDifferenceUsd)
+  return {
+    verifiedLotIdentityFingerprintMismatch: params.recomputedFingerprints.verifiedLotIdentityFingerprint !== params.manifest.verifiedLotIdentityFingerprint,
+    acceptedHistoricalPriceFingerprintMismatch: params.recomputedFingerprints.acceptedHistoricalPriceFingerprint !== params.manifest.acceptedHistoricalPriceFingerprint,
+    realizedPnlFingerprintMismatch: params.recomputedFingerprints.realizedPnlFingerprint !== params.manifest.realizedPnlFingerprint,
+    storedRealizedPnlUsd: params.manifest.realizedPnlUsd,
+    recomputedRealizedPnlUsd: params.recomputedRealizedPnlUsd,
+    storedRealizedPnlFingerprint: params.manifest.realizedPnlFingerprint,
+    recomputedRealizedPnlFingerprint: params.recomputedFingerprints.realizedPnlFingerprint,
+    storedVerifiedLotIdentityFingerprint: params.manifest.verifiedLotIdentityFingerprint,
+    recomputedVerifiedLotIdentityFingerprint: params.recomputedFingerprints.verifiedLotIdentityFingerprint,
+    storedAcceptedHistoricalPriceFingerprint: params.manifest.acceptedHistoricalPriceFingerprint,
+    recomputedAcceptedHistoricalPriceFingerprint: params.recomputedFingerprints.acceptedHistoricalPriceFingerprint,
+    replayedLotCount: params.rebuiltByLot.size,
+    divergentLotCount: rows.length,
+    topDivergentLots: rows.slice(0, FINGERPRINT_MISMATCH_TOP_DIVERGENT_LOTS),
+  }
+}
+
+export function logFingerprintMismatchDiagnosticIfAny(
+  diagnostic: FingerprintMismatchDiagnostic | null,
+  logger: Pick<Console, 'warn'> = console,
+): void {
+  if (!diagnostic) return
+  logger.warn('[fingerprint-mismatch-diagnostic]', diagnostic)
 }
 
 // Reverts a lot to the honest unpriced state for PUBLICATION purposes only. Never mutates the input
@@ -1249,6 +1371,7 @@ export async function replayManifest(params: {
   let recomputedRealizedPnlUsd: number | null = null
   let recomputedFingerprints: DeterminismFingerprints | null = null
   let derivationFailed = false
+  let fingerprintMismatchDiagnostic: FingerprintMismatchDiagnostic | null = null
   if (!perLotFailed) {
     const candidatePublished = buildPublished(false)
     const publishedVerified = candidatePublished.filter(isCanonicalVerifiedPublishedLot)
@@ -1268,6 +1391,12 @@ export async function replayManifest(params: {
     if (fingerprintDisagreements > 0) {
       reasonCounts.manifest_fingerprint_mismatch += fingerprintDisagreements
       derivationFailed = true
+      // DIAGNOSTIC ONLY, DISCLOSED (fingerprint-mismatch audit task): built even though replay is
+      // about to fail — see FingerprintMismatchDiagnostic's own header. Never changes `derivationFailed`
+      // or `publishedLots` below; purely observational.
+      fingerprintMismatchDiagnostic = buildFingerprintMismatchDiagnostic({
+        manifest: params.manifest, recomputedFingerprints, recomputedRealizedPnlUsd, rebuiltByLot, identities,
+      })
     }
   }
 
@@ -1291,6 +1420,7 @@ export async function replayManifest(params: {
     recomputedRealizedPnlUsd: replayFailed ? null : recomputedRealizedPnlUsd,
     recomputedFingerprints: replayFailed ? null : recomputedFingerprints,
     manifestReplayedButNotCanonicalVerifiedLotKeys,
+    fingerprintMismatchDiagnostic,
   }
 }
 

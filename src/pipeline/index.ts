@@ -23,6 +23,7 @@ import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
   readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest,
   logDuplicateIdentityIfAny, buildLastKnownCanonicalSample, emptyCanonicalSampleManifestAudit, buildCanonicalLotIdentities,
+  logFingerprintMismatchDiagnosticIfAny,
   type CanonicalSampleManifestKvLike, type CanonicalSampleManifestAudit, type AcceptedEvidenceLoader,
 } from '../lib/canonicalPnlSampleManifest'
 import { isCanonicalVerifiedPublishedLot, buildCanonicalVerifiedPredicateReasonCounts } from '../lib/canonicalVerifiedLot'
@@ -2867,6 +2868,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
     })
     logDuplicateIdentityIfAny(replay.duplicates)
+    logFingerprintMismatchDiagnosticIfAny(replay.fingerprintMismatchDiagnostic)
 
     // CANONICAL PNL DIFF AUDIT, DISCLOSED (canonical-PnL-movement audit task) — DIAGNOSTIC ONLY.
     // Rebuilds this scan's OWN candidate manifest records purely in memory and diffs them against

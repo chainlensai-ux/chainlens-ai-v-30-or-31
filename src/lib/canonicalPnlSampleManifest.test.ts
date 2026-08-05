@@ -20,7 +20,7 @@ import {
   buildCanonicalLotIdentities, canonicalAmountString, dedupeKeys, logDuplicateIdentityIfAny,
   buildLastKnownCanonicalSample, buildScanWindowIdentity, buildChainScope, normalizeWalletAddress,
   CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, CANONICAL_VALUE_METHODOLOGY_VERSION, CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
-  splitGroupTotalAcrossOccurrences,
+  splitGroupTotalAcrossOccurrences, buildFingerprintMismatchDiagnostic,
   type CanonicalSampleManifestKvLike, type AcceptedEvidenceLoader, type CanonicalPnlSampleManifest,
 } from './canonicalPnlSampleManifest.ts'
 import { buildScanDeterminismAudit } from './scanDeterminismAudit.ts'
@@ -1064,6 +1064,78 @@ describe('canonicalPnlSampleManifest — identical duplicate FIFO lots, grouped 
       assert.equal(result.recomputedRealizedPnlUsd, manifest.realizedPnlUsd, `shuffle seed ${seed} must reproduce the frozen total`)
       assert.equal(result.recomputedFingerprints!.acceptedHistoricalPriceFingerprint, manifest.acceptedHistoricalPriceFingerprint, `shuffle seed ${seed} must reproduce the price fingerprint`)
       assert.equal(result.recomputedFingerprints!.realizedPnlFingerprint, manifest.realizedPnlFingerprint)
+    }
+  })
+})
+
+// =================================================================================================
+// FINGERPRINT-MISMATCH DIAGNOSTIC — fingerprint-mismatch audit task (production shape: replay
+// resolves 23/23 lots, zero per-group value mismatches, yet manifest_fingerprint_mismatch still
+// fires -> manifestApplied:false / canonicalSampleEvidenceUnavailable:true). Diagnosis only.
+// =================================================================================================
+
+describe('canonicalPnlSampleManifest — fingerprint-mismatch diagnostic (audit task)', () => {
+  it('HARD ASSERTION: isolates the exact lot(s) whose pre-rebuild live value differs from its rebuilt value, and which sub-fingerprint(s) disagree', async () => {
+    const lots = buildLots(3, 3)
+    const { manifest } = await manifestWithEvidence(lots)
+
+    // Simulate the confirmed production shape: replay resolves every lot and every per-group value
+    // check passes, but the RECOMPUTED fingerprints differ from the STORED ones (two independently
+    // re-derived allocations agreeing on VALUE within tolerance but not on the exact float/string).
+    const identities = buildCanonicalLotIdentities(lots)
+    const rebuiltByLot = new Map<MatchedLot, MatchedLot>()
+    // lots[0]: rebuilt with a genuine, sub-cent divergence from its own live value.
+    rebuiltByLot.set(lots[0], { ...lots[0], costBasisUsd: lots[0].costBasisUsd! + 0.001, realizedPnlUsd: lots[0].realizedPnlUsd! - 0.001 })
+    // lots[1] and lots[2]: rebuilt identically to their live values — never flagged as divergent.
+    rebuiltByLot.set(lots[1], lots[1])
+    rebuiltByLot.set(lots[2], lots[2])
+
+    const recomputedFingerprints = { ...computeFingerprints(lots, manifest.realizedPnlUsd), acceptedHistoricalPriceFingerprint: 'DIFFERENT-HASH' }
+    const diagnostic = buildFingerprintMismatchDiagnostic({
+      manifest, recomputedFingerprints, recomputedRealizedPnlUsd: manifest.realizedPnlUsd, rebuiltByLot, identities,
+    })
+
+    assert.equal(diagnostic.acceptedHistoricalPriceFingerprintMismatch, true)
+    assert.equal(diagnostic.verifiedLotIdentityFingerprintMismatch, false)
+    assert.equal(diagnostic.realizedPnlFingerprintMismatch, false)
+    assert.equal(diagnostic.replayedLotCount, 3)
+    assert.equal(diagnostic.divergentLotCount, 1, 'only the ONE lot with a genuine live-vs-rebuilt difference is flagged — never the two that match exactly')
+    assert.equal(diagnostic.topDivergentLots.length, 1)
+    assert.equal(diagnostic.topDivergentLots[0].groupKey, identities.get(lots[0])!.key)
+    assert.equal(diagnostic.topDivergentLots[0].livePreRebuildCostBasisUsd, lots[0].costBasisUsd)
+    assert.equal(diagnostic.topDivergentLots[0].rebuiltCostBasisUsd, lots[0].costBasisUsd! + 0.001)
+    assert.ok(Math.abs(diagnostic.topDivergentLots[0].maxAbsDifferenceUsd - 0.001) < 1e-9)
+  })
+
+  it('returns zero divergent lots when every rebuilt value is byte-identical to its live value — proving a real mismatch must come from the realized-PnL SUM, not any single lot', async () => {
+    const lots = buildLots(2, 2)
+    const { manifest } = await manifestWithEvidence(lots)
+    const identities = buildCanonicalLotIdentities(lots)
+    const rebuiltByLot = new Map<MatchedLot, MatchedLot>([[lots[0], lots[0]], [lots[1], lots[1]]])
+    const recomputedFingerprints = { ...computeFingerprints(lots, manifest.realizedPnlUsd), realizedPnlFingerprint: 'DIFFERENT-HASH' }
+    const diagnostic = buildFingerprintMismatchDiagnostic({
+      manifest, recomputedFingerprints, recomputedRealizedPnlUsd: manifest.realizedPnlUsd, rebuiltByLot, identities,
+    })
+    assert.equal(diagnostic.realizedPnlFingerprintMismatch, true)
+    assert.equal(diagnostic.divergentLotCount, 0, 'no per-lot divergence — the mismatch must be isolated to the aggregate sum/fingerprint, not any single lot value')
+    assert.deepEqual(diagnostic.topDivergentLots, [])
+  })
+
+  it('bounds the divergent-lot list to the top 10, sorted by largest absolute difference, never unbounded per-lot logging', async () => {
+    const lots = buildLots(15, 15)
+    const { manifest } = await manifestWithEvidence(lots)
+    const identities = buildCanonicalLotIdentities(lots)
+    const rebuiltByLot = new Map<MatchedLot, MatchedLot>()
+    lots.forEach((l, i) => rebuiltByLot.set(l, { ...l, costBasisUsd: l.costBasisUsd! + (i + 1) * 0.001 }))
+    const recomputedFingerprints = { ...computeFingerprints(lots, manifest.realizedPnlUsd), acceptedHistoricalPriceFingerprint: 'DIFFERENT-HASH' }
+    const diagnostic = buildFingerprintMismatchDiagnostic({
+      manifest, recomputedFingerprints, recomputedRealizedPnlUsd: manifest.realizedPnlUsd, rebuiltByLot, identities,
+    })
+    assert.equal(diagnostic.divergentLotCount, 15, 'the real total is still honestly disclosed')
+    assert.equal(diagnostic.topDivergentLots.length, 10, 'log output itself is bounded to the top 10')
+    assert.equal(diagnostic.topDivergentLots[0].groupKey, identities.get(lots[14])!.key, 'largest divergence (lot 14, +0.015) sorts first')
+    for (let i = 1; i < diagnostic.topDivergentLots.length; i++) {
+      assert.ok(diagnostic.topDivergentLots[i - 1].maxAbsDifferenceUsd >= diagnostic.topDivergentLots[i].maxAbsDifferenceUsd, 'descending order')
     }
   })
 })
