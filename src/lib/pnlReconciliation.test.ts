@@ -6,6 +6,7 @@ import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
 import { emptyUnrealizedReconciliation } from '../modules/fifoEngine/types'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import { createPnlReconciliation, classifyRecoveryFailureReason } from './pnlReconciliation'
+import { ACCEPTED_EVIDENCE_SCHEMA_VERSION } from './acceptedEvidenceStore'
 
 const quiet = { warn() {} }
 
@@ -788,8 +789,8 @@ describe('pnlReconciliation', () => {
     // Seed a DIFFERENT accepted price for the entry side only — must now be applied as canonical.
     const identityVersion = ['base', '0xalready', '0xb', '0xs', 1, 2, 1].join(':')
     acceptedEvidenceKv.store.set(`v1:accepted-evidence:base:0xalready:0xb:entry:1`, {
-      schemaVersion: 1, chain: 'base', token: '0xalready', txHash: '0xb', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion,
-      priceUsd: 999, valueUsd: 999, source: 's', evidenceType: 't', providerTimestampBucket: null, temporalDistanceMs: null,
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: 'base', token: '0xalready', txHash: '0xb', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion,
+      priceUsd: 999, valueUsd: 999, valueType: 'total_side_value_usd', source: 's', evidenceType: 't', providerTimestampBucket: null, temporalDistanceMs: null,
       verificationStatus: 'verified', acceptedAt: 0, expiresAt: 100_000_000_000,
     })
     let liveCalls = 0
@@ -807,8 +808,8 @@ describe('pnlReconciliation', () => {
   it('HARD ASSERTION: corrupt/mismatched persisted evidence (wrong lot-identity-version) is ignored and falls through to live recovery, never coerced into a price', async () => {
     const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
     acceptedEvidenceKv.store.set('v1:accepted-evidence:base:0xmismatch:0xb:entry:1', {
-      schemaVersion: 1, chain: 'base', token: '0xmismatch', txHash: '0xb', side: 'entry', timestamp: 1, lotIdentityVersion: 'wrong-version',
-      priceUsd: 999, valueUsd: 999, source: 's', evidenceType: 't', providerTimestampBucket: null, temporalDistanceMs: null,
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: 'base', token: '0xmismatch', txHash: '0xb', side: 'entry', timestamp: 1, lotIdentityVersion: 'wrong-version',
+      priceUsd: 999, valueUsd: 999, valueType: 'total_side_value_usd', source: 's', evidenceType: 't', providerTimestampBucket: null, temporalDistanceMs: null,
       verificationStatus: 'verified', acceptedAt: 0, expiresAt: 100_000_000_000,
     })
     const missingLot = lot({ lotId: 'm', token: '0xmismatch', openedTxHash: '0xb', closedTxHash: '0xs', openedAt: 1, closedAt: 2, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
@@ -1122,5 +1123,128 @@ describe('pnlReconciliation', () => {
     const newlyResolvedContribution = (217 - 117) + (218 - 118)
     assert.equal(summary2.realizedPnlUsd, unchanged17RealizedPnl + newlyResolvedContribution, 'the previously-accepted 17 lots contribute their exact original canonical PnL, unaffected by the different run-2 upstream candidates')
     assert.equal(summary2.publicPnlGateAudit.verifiedClosedLots, 19)
+  })
+
+  // ===============================================================================================
+  // ACCEPTED-EVIDENCE PERSISTENCE FOR SHARED PARTIAL-FILL SIDES — accepted-evidence-persistence
+  // follow-up task. CONFIRMED PRODUCTION ROOT CAUSE: an accepted-evidence key is scoped to one
+  // TRANSACTION SIDE (chain/token/txHash/side/timestamp), shared by every sibling FIFO partial-fill
+  // lot drawing from that side, but the seeding writer used to persist one sibling's own apportioned
+  // USD value under that shared key — the store's "already persisted" check then let only the FIRST
+  // writer's value survive, so replay recovered roughly 1/N of the side's genuine total. Fixed: every
+  // eligible sibling's value is summed FIRST, the side is written EXACTLY ONCE with the true total,
+  // and a rescan allocates that total back across the group deterministically.
+  // ===============================================================================================
+
+  // A JSON/KV round-tripping fake — values are genuinely serialized/deserialized on every get/set,
+  // never kept as live object references, so a bug that only manifests after a real KV round-trip
+  // cannot hide behind an in-memory fake that happens to share object identity.
+  function jsonKv(): { get: (key: string) => Promise<unknown>; set: (key: string, value: unknown) => Promise<string>; store: Map<string, string> } {
+    const store = new Map<string, string>()
+    return {
+      store,
+      get: async (key: string) => (store.has(key) ? JSON.parse(store.get(key)!) : null),
+      set: async (key: string, value: unknown) => { store.set(key, JSON.stringify(value)); return 'OK' },
+    }
+  }
+
+  // Three GENUINELY IDENTICAL partial-fill siblings — same chain/token/both tx hashes/both
+  // timestamps/amount — the exact production shape (one buy tx split into 3 equal sells, or vice
+  // versa) that shares ONE accepted-evidence key per side across all three siblings.
+  function threeIdenticalSiblings(costBasisEach: number, proceedsEach: number, lotIdSuffixes: readonly string[] = ['0', '1', '2']): MatchedLot[] {
+    return lotIdSuffixes.map((suffix) => lot({
+      lotId: `sib-${suffix}`, token: '0xsibling', openedTxHash: '0xsibbuy', closedTxHash: '0xsibsell',
+      openedAt: 100, closedAt: 200, amount: 1,
+      costBasisUsd: costBasisEach, proceedsUsd: proceedsEach, realizedPnlUsd: proceedsEach - costBasisEach,
+      evidenceQuality: 'verified',
+    }))
+  }
+
+  it('HARD ASSERTION (root cause): the seeding writer aggregates every sibling\'s value into ONE genuine side total and writes each side EXACTLY ONCE, never one write per sibling and never a single sibling\'s own apportioned value', async () => {
+    const kv = jsonKv()
+    const siblings = threeIdenticalSiblings(60, 100) // entry total 3x60=180, exit total 3x100=300
+    const r = createPnlReconciliation({ logger: quiet, acceptedEvidenceKv: kv as never, now: () => 1_000_000 })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: siblings }), pnlEngineResult: pnl(3), syntheticPnlAssemblyOutput: null })
+
+    assert.equal(kv.store.size, 2, 'exactly ONE real KV write per side (entry, exit) — never once per sibling')
+    assert.equal(summary.acceptedEvidenceAudit.canonicalSeedingWriteSuccesses, 6, 'still counted per lot-side (3 siblings x 2 sides) even though only 2 real KV writes happen')
+
+    const entryRaw = JSON.parse(kv.store.get('v1:accepted-evidence:base:0xsibling:0xsibbuy:entry:100')!) as { priceUsd: number; valueUsd: number; valueType: string; schemaVersion: number }
+    const exitRaw = JSON.parse(kv.store.get('v1:accepted-evidence:base:0xsibling:0xsibsell:exit:200')!) as { priceUsd: number; valueUsd: number; valueType: string; schemaVersion: number }
+    assert.equal(entryRaw.priceUsd, 180, 'the genuine TOTAL side value (3 x 60) — never one sibling\'s own apportioned 60')
+    assert.equal(exitRaw.priceUsd, 300, 'the genuine TOTAL side value (3 x 100) — never one sibling\'s own apportioned 100')
+    assert.equal(entryRaw.valueUsd, 180)
+    assert.equal(entryRaw.valueType, 'total_side_value_usd', 'value semantics stored explicitly, never left implicit')
+    assert.equal(entryRaw.schemaVersion, ACCEPTED_EVIDENCE_SCHEMA_VERSION)
+  })
+
+  it('HARD ASSERTION (required regression): 3 identical siblings worth $180 total replay exactly $180 after a genuine JSON/KV round-trip, regardless of sibling array order', async () => {
+    const kv = jsonKv()
+    // RUN 1: seed the store — 3 identical siblings, each individually apportioned to $60/$100 —
+    // genuine entry-side total $180, exit-side total $300.
+    const r1 = createPnlReconciliation({ logger: quiet, acceptedEvidenceKv: kv as never, now: () => 1_000_000 })
+    await r1.reconcile({ fifoEngineResult: fifo({ matchedLots: threeIdenticalSiblings(60, 100) }), pnlEngineResult: pnl(3), syntheticPnlAssemblyOutput: null })
+
+    // RUN 2: a FRESH fifoEngine recompute (both sides genuinely null again — the real production
+    // shape; fifoEngine never caches a price between scans), siblings reordered in the array —
+    // proving replay never depends on array position — with a deliberately WRONG live fetcher as a
+    // canary that must never be reached.
+    const shuffledUnpriced = threeIdenticalSiblings(0, 0, ['2', '0', '1']).map((l) => ({
+      ...l, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' as const,
+    }))
+    let liveCalls = 0
+    const priceKvClient2 = { getPriceRecovery: async (t: string, c: string, ts: number, fetcher: (t: string, c: string, ts: number) => Promise<number | null>) => { liveCalls += 1; return fetcher(t, c, ts) } }
+    const r2 = createPnlReconciliation({
+      logger: quiet, priceKvClient: priceKvClient2 as never, priceSources: { primary: async () => { liveCalls += 1; return 99999 } },
+      acceptedEvidenceKv: kv as never, now: () => 2_000_000,
+    })
+    const summary2 = await r2.reconcile({ fifoEngineResult: fifo({ matchedLots: shuffledUnpriced }), pnlEngineResult: pnl(3), syntheticPnlAssemblyOutput: null })
+
+    assert.equal(liveCalls, 0, 'every side was already accepted — the canary live fetcher must never be reached')
+    assert.equal(summary2.publishedMatchedLots.length, 3)
+    for (const l of summary2.publishedMatchedLots) {
+      assert.equal(l.costBasisUsd, 60, 'identical siblings split an identical total into identical, exact $60 shares')
+      assert.equal(l.proceedsUsd, 100, 'identical siblings split an identical total into identical, exact $100 shares')
+      assert.equal(l.realizedPnlUsd, 40)
+    }
+    const entryTotal = summary2.publishedMatchedLots.reduce((s, l) => s + (l.costBasisUsd ?? 0), 0)
+    const exitTotal = summary2.publishedMatchedLots.reduce((s, l) => s + (l.proceedsUsd ?? 0), 0)
+    assert.equal(entryTotal, 180, 'the 3 siblings\' allocated shares sum EXACTLY back to the stored $180 entry total')
+    assert.equal(exitTotal, 300, 'the 3 siblings\' allocated shares sum EXACTLY back to the stored $300 exit total')
+    assert.equal(summary2.realizedPnlUsd, 3 * 40, 'identical realized PnL to the original run — never inflated by an N-fold duplication, never collapsed by an N-fold under-count')
+  })
+
+  it('HARD ASSERTION: 5 identical siblings\' side total survives a genuine JSON/KV round-trip with an exact, deterministic remainder split (a total not evenly divisible by the sibling count)', async () => {
+    const kv = jsonKv()
+    // 5 siblings each worth $33.333333... in reality — costBasisUsd fed in pre-rounded to 8dp, so
+    // the true side total is not evenly divisible by 5 at cent precision, exercising the same
+    // integer-exact remainder assignment allocateSideValueAcrossGroup already guarantees.
+    const suffixes = ['0', '1', '2', '3', '4']
+    const siblings = suffixes.map((suffix) => lot({
+      lotId: `five-${suffix}`, token: '0xfive', openedTxHash: '0xfivebuy', closedTxHash: '0xfivesell',
+      openedAt: 300, closedAt: 400, amount: 1,
+      costBasisUsd: 33.33333333, proceedsUsd: 50, realizedPnlUsd: 50 - 33.33333333,
+      evidenceQuality: 'verified',
+    }))
+    const r1 = createPnlReconciliation({ logger: quiet, acceptedEvidenceKv: kv as never, now: () => 1_000_000 })
+    await r1.reconcile({ fifoEngineResult: fifo({ matchedLots: siblings }), pnlEngineResult: pnl(5), syntheticPnlAssemblyOutput: null })
+
+    const storedTotal = 5 * 33.33333333
+    const entryRaw = JSON.parse(kv.store.get('v1:accepted-evidence:base:0xfive:0xfivebuy:entry:300')!) as { priceUsd: number }
+    assert.equal(entryRaw.priceUsd, Math.round(storedTotal * 1e8) / 1e8, 'the stored total is the exact sum of all 5 siblings\' own values')
+
+    const shuffled = ['3', '1', '4', '0', '2'].map((suffix) => lot({
+      lotId: `five-${suffix}`, token: '0xfive', openedTxHash: '0xfivebuy', closedTxHash: '0xfivesell',
+      openedAt: 300, closedAt: 400, amount: 1,
+      costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' as const,
+    }))
+    let liveCalls = 0
+    const priceKvClient2 = { getPriceRecovery: async (t: string, c: string, ts: number, fetcher: (t: string, c: string, ts: number) => Promise<number | null>) => { liveCalls += 1; return fetcher(t, c, ts) } }
+    const r2 = createPnlReconciliation({ logger: quiet, priceKvClient: priceKvClient2 as never, priceSources: { primary: async () => 99999 }, acceptedEvidenceKv: kv as never, now: () => 2_000_000 })
+    const summary2 = await r2.reconcile({ fifoEngineResult: fifo({ matchedLots: shuffled }), pnlEngineResult: pnl(5), syntheticPnlAssemblyOutput: null })
+
+    assert.equal(liveCalls, 0)
+    const rebuiltEntryTotal = summary2.publishedMatchedLots.reduce((s, l) => s + (l.costBasisUsd ?? 0), 0)
+    assert.equal(Math.round(rebuiltEntryTotal * 1e8) / 1e8, Math.round(storedTotal * 1e8) / 1e8, 'the 5 reconstructed shares sum EXACTLY back to the stored total, bit-for-bit, regardless of remainder placement or array order')
   })
 })

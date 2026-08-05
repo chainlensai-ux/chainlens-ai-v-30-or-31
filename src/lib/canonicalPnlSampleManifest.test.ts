@@ -27,7 +27,7 @@ import { buildScanDeterminismAudit } from './scanDeterminismAudit.ts'
 import { isCanonicalVerifiedPublishedLot } from './canonicalVerifiedLot.ts'
 import {
   buildAcceptedEvidenceEnvelope, buildAcceptedEvidenceKey, lotIdentityVersion, readAcceptedEvidence,
-  readAcceptedEvidenceAnyLotVersion,
+  readAcceptedEvidenceAnyLotVersion, ACCEPTED_EVIDENCE_SCHEMA_VERSION,
   type AcceptedEvidenceKvLike,
 } from './acceptedEvidenceStore.ts'
 import type { MatchedLot } from '../modules/fifoEngine/types'
@@ -220,7 +220,7 @@ describe('canonicalPnlSampleManifest — canonical side references (requirement 
       assert.equal(record.entrySource, 'test-source')
       assert.equal(record.exitSource, 'test-source')
       assert.equal(record.pricingMethodologyVersion, manifest.pricingMethodologyVersion)
-      assert.equal(record.evidenceSchemaVersion, 1)
+      assert.equal(record.evidenceSchemaVersion, ACCEPTED_EVIDENCE_SCHEMA_VERSION)
       assert.equal(typeof record.lotIdentityVersion, 'string')
     }
   })

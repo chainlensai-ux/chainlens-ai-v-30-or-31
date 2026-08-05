@@ -19,11 +19,31 @@
 
 export type AcceptedEvidenceSide = 'entry' | 'exit'
 
-export const ACCEPTED_EVIDENCE_SCHEMA_VERSION = 1
+// SCHEMA BUMP TO 2, GENUINELY REQUIRED, DISCLOSED (accepted-evidence-persistence follow-up task —
+// confirmed root cause: every persisted envelope's `priceUsd` was ONE sibling FIFO partial-fill
+// lot's own apportioned USD value, even though the KV key it lived under is scoped to the whole
+// transaction SIDE (chain/token/txHash/side/timestamp) and is shared by every sibling lot drawing
+// from that side. The writer now aggregates every eligible sibling's value into one genuine
+// side-total before writing — a v1 record's `priceUsd` is NOT that total, so it must never be
+// reused as if it were. Bumping the schema version is what makes `isValidAcceptedEvidence` treat
+// every existing v1 record as a clean miss (never a corrupt/invalid value to reject loudly, never a
+// value to silently reinterpret) — a rescan simply re-seeds it correctly under the new version.
+export const ACCEPTED_EVIDENCE_SCHEMA_VERSION = 2
 // IMMUTABLE HISTORICAL FACT, DISCLOSED: same reasoning as kvClient.ts's HISTORICAL_TTL_SECONDS — an
 // accepted price for a specific past (chain, token, txHash, timestamp) can never legitimately
 // change, so a long TTL is safe. Still finite (not "forever") to bound storage growth.
 export const ACCEPTED_EVIDENCE_TTL_SECONDS = 60 * 60 * 24 * 30 // 30 days
+
+// VALUE SEMANTICS, EXPLICITLY STORED, DISCLOSED (accepted-evidence-persistence follow-up task): the
+// canonical-sample manifest module's own allocation math (`allocateSideValueAcrossGroup`) already
+// assumed every envelope's `priceUsd` was the TOTAL value for the whole transaction side, splitting
+// it across siblings by raw quantity. That assumption is now genuinely true of every value this
+// store's own writers persist — recorded explicitly on the envelope itself (never left implicit)
+// so any reader can confirm which formula applies without having to trust the writer's own comment.
+// `'unit_price_usd'` remains a documented, supported value for a future evidence source whose own
+// price genuinely is a per-token unit price (a caller would multiply by the lot's own amount
+// directly, with no group allocation needed) — this store does not produce that value today.
+export type AcceptedEvidenceValueType = 'unit_price_usd' | 'total_side_value_usd'
 
 export type AcceptedEvidenceIdentity = {
   chain: string
@@ -42,6 +62,7 @@ export type AcceptedEvidenceEnvelope = AcceptedEvidenceIdentity & {
   schemaVersion: number
   priceUsd: number
   valueUsd: number
+  valueType: AcceptedEvidenceValueType
   source: string
   evidenceType: string
   // The provider's own original timestamp/bucket for the candle/quote actually used, when known —
@@ -234,6 +255,10 @@ export function buildAcceptedEvidenceEnvelope(params: {
   identity: AcceptedEvidenceIdentity
   priceUsd: number
   valueUsd: number
+  // Defaults to 'total_side_value_usd' — the only value this store's own writers actually produce
+  // today (see this module's own header) — so existing callers that don't pass it explicitly still
+  // persist an honest, correct tag rather than an omitted field.
+  valueType?: AcceptedEvidenceValueType
   source: string
   evidenceType: string
   providerTimestampBucket: number | null
@@ -244,6 +269,7 @@ export function buildAcceptedEvidenceEnvelope(params: {
     schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION,
     priceUsd: params.priceUsd,
     valueUsd: params.valueUsd,
+    valueType: params.valueType ?? 'total_side_value_usd',
     source: params.source,
     evidenceType: params.evidenceType,
     providerTimestampBucket: params.providerTimestampBucket,

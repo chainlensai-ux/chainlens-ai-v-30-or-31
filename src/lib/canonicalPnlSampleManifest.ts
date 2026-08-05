@@ -33,7 +33,7 @@
 import type { MatchedLot } from '../modules/fifoEngine/types'
 import {
   buildAcceptedEvidenceKey, lotIdentityVersion,
-  type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope,
+  type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope, type AcceptedEvidenceValueType,
 } from './acceptedEvidenceStore'
 import {
   isCanonicalVerifiedPublishedLot, emptyCanonicalVerifiedPredicateReasonCounts,
@@ -222,8 +222,9 @@ export function buildCanonicalLotIdentities(lots: readonly MatchedLot[]): Map<Ma
 // `'unit_price_usd'` variant is a documented, supported schema value for a future evidence source
 // whose own `priceUsd` genuinely IS a per-token unit price (in which case the caller would multiply
 // by `lot.amount` directly, with no group allocation needed — the type field is what a future
-// caller checks to know which formula applies).
-export type AcceptedEvidenceValueType = 'unit_price_usd' | 'total_side_value_usd'
+// caller checks to know which formula applies). `AcceptedEvidenceValueType` itself now lives in
+// acceptedEvidenceStore.ts (accepted-evidence-persistence follow-up task) — the actual persistence
+// layer this value semantics tag is stored on — and is imported above, not redefined here.
 
 // INTEGER-SAFE ALLOCATION, DISCLOSED (requirement #6/#7's "integer raw quantities or canonical
 // decimal arithmetic" and "sum exactly back to the accepted side total, with deterministic

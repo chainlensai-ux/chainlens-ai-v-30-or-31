@@ -5,9 +5,10 @@ import type { SyntheticPnlSummary } from '../modules/syntheticPnl'
 import type { PriceSourceFn } from '../modules/pricingAtTimeEngine/types'
 import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import {
-  lotIdentityVersion, readAcceptedEvidence, writeAcceptedEvidence, buildAcceptedEvidenceEnvelope,
-  type AcceptedEvidenceKvLike, type AcceptedEvidenceSide,
+  lotIdentityVersion, readAcceptedEvidenceAnyLotVersion, writeAcceptedEvidence, buildAcceptedEvidenceEnvelope,
+  type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope,
 } from './acceptedEvidenceStore'
+import { allocateSideValueAcrossGroup, type SideAllocationShare } from './canonicalPnlSampleManifest'
 
 export type PnlMismatchClass = 'missingInboundEvidence' | 'missingOutboundEvidence' | 'routerClusterMismatch' | 'priceUnavailable' | 'dustSuppressedToken' | 'syntheticOnlyToken' | 'priceRecovered'
 export type ReconciledPublicPnlStatus = 'available' | 'partial' | 'unavailable'
@@ -571,40 +572,98 @@ export function createPnlReconciliation(config: Config = {}) {
   // only, never applied). A side with no valid accepted evidence keeps its upstream value exactly as
   // before (nothing to override with) — accepted evidence can only ever narrow disagreement toward
   // the previously-published canonical fact, never invent one from nothing.
+  //
+  // GROUP-AWARE ALLOCATION, DISCLOSED (accepted-evidence-persistence follow-up task): an accepted
+  // evidence record is keyed per TRANSACTION SIDE, not per lot — several sibling FIFO partial-fill
+  // lots can share one record. That record's `priceUsd` is now genuinely the whole side's TOTAL
+  // value (see acceptedEvidenceStore.ts's own header on the schema-2 writer fix), so it can never be
+  // assigned 1:1 to every sibling (that would duplicate the group's total onto each lot). This
+  // function groups `lots` by shared side identity FIRST, reads each group's evidence exactly ONCE
+  // (a discovery read — `readAcceptedEvidenceAnyLotVersion` — since siblings carry different
+  // lot-identity versions and only one of them can be the version a shared record happens to store),
+  // then allocates that one total across the group by raw-quantity ratio using the exact same
+  // `allocateSideValueAcrossGroup` function the canonical-sample manifest's own build/replay use —
+  // one shared, tested implementation, never a second reimplementation of the same arithmetic.
   async function hydrateFromAcceptedEvidence(lots: readonly MatchedLot[]): Promise<{ hydratedLots: MatchedLot[]; audit: AcceptedEvidenceAudit }> {
     const audit = emptyAcceptedEvidenceAudit()
     const kv = config.acceptedEvidenceKv
     const now = (config.now ?? Date.now)()
+    audit.matchedLotSidesTotal += lots.length * 2
+
+    if (!kv) {
+      for (const lot of lots) {
+        if (lot.costBasisUsd !== null) { audit.existingVerifiedSidesProtectedFromOverwrite += 1; audit.existingUpstreamSidesWithoutAcceptedEvidence += 1 }
+        if (lot.proceedsUsd !== null) { audit.existingVerifiedSidesProtectedFromOverwrite += 1; audit.existingUpstreamSidesWithoutAcceptedEvidence += 1 }
+        audit.missingAcceptedEvidenceKeys += 2
+      }
+      return { hydratedLots: [...lots], audit }
+    }
+
+    type SideGroup = { chain: string; token: string; txHash: string; side: AcceptedEvidenceSide; timestamp: number; lots: MatchedLot[] }
+    const sideGroupKey = (chain: string, token: string, txHash: string, side: AcceptedEvidenceSide, timestamp: number) =>
+      `${chain}:${token.toLowerCase()}:${txHash}:${side}:${timestamp}`
+    const groups = new Map<string, SideGroup>()
+    const addToGroup = (lot: MatchedLot, side: AcceptedEvidenceSide, txHash: string, timestamp: number) => {
+      const key = sideGroupKey(lot.chain, lot.token, txHash, side, timestamp)
+      const existing = groups.get(key)
+      if (existing) existing.lots.push(lot)
+      else groups.set(key, { chain: lot.chain, token: lot.token, txHash, side, timestamp, lots: [lot] })
+    }
+    for (const lot of lots) {
+      addToGroup(lot, 'entry', lot.openedTxHash, lot.openedAt)
+      addToGroup(lot, 'exit', lot.closedTxHash, lot.closedAt)
+    }
+
+    // ONE DISCOVERY READ PER GROUP, BOUNDED CONCURRENCY, DISCLOSED: never once per sibling. STILL
+    // FAIL-CLOSED, DISCLOSED: the discovery read only relaxes the `lotIdentityVersion` MATCH — it
+    // does not relax WHICH versions are acceptable. The version the store actually returns must
+    // belong to one of THIS group's own current siblings (their real, freshly-computed identity
+    // versions) or it is discarded exactly like a miss. This is what still rejects a genuinely
+    // corrupt/stale record — e.g. a version belonging to a structurally different lot from a prior
+    // FIFO rematch — falling through to live recovery instead of being coerced into a price.
+    const evidenceByGroupKey = new Map<string, AcceptedEvidenceEnvelope | null>()
+    await mapWithConcurrencyLimit([...groups.entries()], RECOVERY_CONCURRENCY_LIMIT, async ([key, group]) => {
+      audit.acceptedSidesRequestedBeforePricing += group.lots.length
+      const evidence = await readAcceptedEvidenceAnyLotVersion(kv, { chain: group.chain, token: group.token, txHash: group.txHash, side: group.side, timestamp: group.timestamp }, now)
+      const groupVersions = new Set(group.lots.map((l) => lotIdentityVersion(l)))
+      evidenceByGroupKey.set(key, evidence && groupVersions.has(evidence.lotIdentityVersion) ? evidence : null)
+    })
+
+    // ALLOCATE EACH GROUP'S TOTAL ACROSS ITS SIBLINGS, ONCE, DISCLOSED: the exact same deterministic,
+    // integer-exact split the manifest module uses — allocated shares sum back to the group's total.
+    const shareByLot = new Map<MatchedLot, { entry?: SideAllocationShare; exit?: SideAllocationShare }>()
+    for (const [key, group] of groups) {
+      const evidence = evidenceByGroupKey.get(key)
+      if (!evidence) continue
+      for (const share of allocateSideValueAcrossGroup(group.lots, evidence.priceUsd)) {
+        const existing = shareByLot.get(share.lot) ?? {}
+        if (group.side === 'entry') existing.entry = share
+        else existing.exit = share
+        shareByLot.set(share.lot, existing)
+      }
+    }
+
     const hydratedLots: MatchedLot[] = []
     for (const lot of lots) {
-      audit.matchedLotSidesTotal += 2
       let costBasisUsd = lot.costBasisUsd
       let proceedsUsd = lot.proceedsUsd
-      const identityVersion = lotIdentityVersion(lot)
-      const sides: Array<{ side: AcceptedEvidenceSide; txHash: string; timestamp: number; upstreamPrice: number | null; already: boolean }> = [
-        { side: 'entry', txHash: lot.openedTxHash, timestamp: lot.openedAt, upstreamPrice: lot.costBasisUsd, already: lot.costBasisUsd !== null },
-        { side: 'exit', txHash: lot.closedTxHash, timestamp: lot.closedAt, upstreamPrice: lot.proceedsUsd, already: lot.proceedsUsd !== null },
+      const shares = shareByLot.get(lot)
+      const sides: Array<{ side: AcceptedEvidenceSide; upstreamPrice: number | null; already: boolean; share: SideAllocationShare | undefined }> = [
+        { side: 'entry', upstreamPrice: lot.costBasisUsd, already: lot.costBasisUsd !== null, share: shares?.entry },
+        { side: 'exit', upstreamPrice: lot.proceedsUsd, already: lot.proceedsUsd !== null, share: shares?.exit },
       ]
       for (const s of sides) {
         if (s.already) audit.existingVerifiedSidesProtectedFromOverwrite += 1
-        if (!kv) {
-          audit.missingAcceptedEvidenceKeys += 1
-          if (s.already) audit.existingUpstreamSidesWithoutAcceptedEvidence += 1
-          continue
-        }
-        const identity = { chain: lot.chain, token: lot.token, txHash: s.txHash, side: s.side, timestamp: s.timestamp, lotIdentityVersion: identityVersion }
-        audit.acceptedSidesRequestedBeforePricing += 1
-        const evidence = await readAcceptedEvidence(kv, identity, now)
-        if (evidence) {
+        if (s.share) {
           audit.persistedAcceptedSidesLoaded += 1
           audit.persistedAcceptedSidesApplied += 1
           audit.acceptedSidesLoadedBeforePricing += 1
           audit.acceptedSidesAppliedBeforePricing += 1
           if (s.already) {
             // CONFLICT DETECTION, DISCLOSED (requirement #6): compares the upstream candidate ONLY
-            // for diagnostics — the accepted, canonical price is applied unconditionally below
-            // regardless of the outcome of this comparison.
-            if (s.upstreamPrice === evidence.priceUsd) {
+            // for diagnostics — the accepted, canonical allocated share is applied unconditionally
+            // below regardless of the outcome of this comparison.
+            if (s.upstreamPrice === s.share.allocatedValueUsd) {
               audit.upstreamPricesMatchingAcceptedEvidence += 1
               audit.existingUpstreamSidesBackedByAcceptedEvidence += 1
             } else {
@@ -614,8 +673,8 @@ export function createPnlReconciliation(config: Config = {}) {
           } else {
             audit.upstreamLookupsSkippedByAcceptedEvidence += 1
           }
-          if (s.side === 'entry') costBasisUsd = evidence.priceUsd
-          else proceedsUsd = evidence.priceUsd
+          if (s.side === 'entry') costBasisUsd = s.share.allocatedValueUsd
+          else proceedsUsd = s.share.allocatedValueUsd
         } else {
           audit.missingAcceptedEvidenceKeys += 1
           audit.acceptedEvidenceIdentityMisses += 1
@@ -871,53 +930,85 @@ export function createPnlReconciliation(config: Config = {}) {
   // specific source name, or — worse — treat the absence as a reason to SKIP the write, it records
   // `'canonical-upstream'`/`'unknown'` and counts every such write in `missingVerifiedEvidenceMetadata`
   // as a disclosed limitation, never a blocking condition.
+  //
+  // AGGREGATE-BEFORE-WRITE, DISCLOSED (accepted-evidence-persistence follow-up task — confirmed
+  // production root cause: this pass used to write one envelope PER SIBLING LOT under the SAME
+  // shared side key, each carrying only that one sibling's own apportioned USD value — the store's
+  // own "already persisted" check then let only the first writer's value survive, so replay recovered
+  // roughly 1/N of the side's genuine total value. Every eligible sibling sharing a transaction side
+  // is now summed FIRST (entry total = sum of sibling costBasisUsd, exit total = sum of sibling
+  // proceedsUsd) and the side is written EXACTLY ONCE, carrying the true side total — the group's own
+  // members can later reconstruct their individual shares deterministically via
+  // `allocateSideValueAcrossGroup`/`splitGroupTotalAcrossOccurrences` (canonicalPnlSampleManifest.ts),
+  // which sum bit-for-bit back to this exact stored total.
   async function seedAcceptedEvidenceForVerifiedLots(lots: readonly MatchedLot[]): Promise<AcceptedEvidenceAudit> {
     const audit = emptyAcceptedEvidenceAudit()
     const acceptedEvidenceKv = config.acceptedEvidenceKv
     if (!acceptedEvidenceKv) return audit
     const now = (config.now ?? Date.now)()
 
-    type SeedSide = { side: AcceptedEvidenceSide; txHash: string; timestamp: number; price: number | null }
-    const tasks: Array<{ lot: MatchedLot; side: SeedSide }> = []
+    type SideGroup = { chain: string; token: string; txHash: string; side: AcceptedEvidenceSide; timestamp: number; lots: MatchedLot[]; total: number }
+    const sideGroupKey = (chain: string, token: string, txHash: string, side: AcceptedEvidenceSide, timestamp: number) =>
+      `${chain}:${token.toLowerCase()}:${txHash}:${side}:${timestamp}`
+    const groups = new Map<string, SideGroup>()
+    const addToGroup = (lot: MatchedLot, side: AcceptedEvidenceSide, txHash: string, timestamp: number, price: number) => {
+      const key = sideGroupKey(lot.chain, lot.token, txHash, side, timestamp)
+      const existing = groups.get(key)
+      if (existing) { existing.lots.push(lot); existing.total += price }
+      else groups.set(key, { chain: lot.chain, token: lot.token, txHash, side, timestamp, lots: [lot], total: price })
+    }
     for (const lot of lots) {
       audit.matchedLotSidesTotal += 2
       if (!isCanonicalVerifiedLotForPnl(lot)) { audit.verifiedSidesSkippedUnverified += 2; continue }
       if (!isStructurallyValidLot(lot)) { audit.verifiedSidesSkippedInvalid += 2; continue }
-      const sides: SeedSide[] = [
+      const sides: Array<{ side: AcceptedEvidenceSide; txHash: string; timestamp: number; price: number | null }> = [
         { side: 'entry', txHash: lot.openedTxHash, timestamp: lot.openedAt, price: lot.costBasisUsd },
         { side: 'exit', txHash: lot.closedTxHash, timestamp: lot.closedAt, price: lot.proceedsUsd },
       ]
       for (const s of sides) {
         if (!isPersistablePrice(s.price)) { audit.verifiedSidesSkippedInvalid += 1; continue }
         audit.verifiedSidesEligibleForPersistence += 1
-        tasks.push({ lot, side: s })
+        addToGroup(lot, s.side, s.txHash, s.timestamp, s.price)
       }
     }
 
-    // BOUNDED CONCURRENCY, AWAITED, DISCLOSED (requirements #7): every read-then-maybe-write task
-    // runs through the SAME bounded worker pool as the live recovery pass — never unbounded KV
-    // fan-out — and the whole pass is awaited by reconcile() BEFORE the scan's summary is built, so a
-    // caller can never observe a "done" scan whose seeding writes are still in flight.
-    await mapWithConcurrencyLimit(tasks, RECOVERY_CONCURRENCY_LIMIT, async ({ lot, side }) => {
-      const price = side.price as number
-      const identityVersion = lotIdentityVersion(lot)
-      const identity = { chain: lot.chain, token: lot.token, txHash: side.txHash, side: side.side, timestamp: side.timestamp, lotIdentityVersion: identityVersion }
-      const existing = await readAcceptedEvidence(acceptedEvidenceKv, identity, now)
-      if (existing) { audit.verifiedSidesAlreadyPersisted += 1; return }
+    // DETERMINISTIC REPRESENTATIVE IDENTITY VERSION, DISCLOSED: the persisted envelope's own
+    // `lotIdentityVersion` field can only ever record ONE version, even though several siblings with
+    // different amounts (and therefore different versions) share this write. The lexicographically
+    // smallest sibling version is chosen — a fixed, order-independent tie-break — never the array's
+    // first/last element, so a JSON/KV round-trip with siblings reloaded in any order still picks the
+    // exact same representative. Every reader that needs to match ANY sibling's version already uses
+    // the relaxed discovery read (`readAcceptedEvidenceAnyLotVersion`), never a strict match against
+    // this one recorded version.
+    const representativeVersion = (group: SideGroup): string =>
+      [...group.lots].map((l) => lotIdentityVersion(l)).sort()[0]
+
+    // BOUNDED CONCURRENCY, AWAITED, DISCLOSED (requirements #7): one read-then-maybe-write task PER
+    // SIDE GROUP (never once per sibling) — the same bounded worker pool as the live recovery pass,
+    // never unbounded KV fan-out — and the whole pass is awaited by reconcile() BEFORE the scan's
+    // summary is built, so a caller can never observe a "done" scan whose seeding writes are still in
+    // flight. The "already persisted" check uses the RELAXED discovery read — a valid record backing
+    // this side under ANY sibling's version means the group is already durable; never rewritten
+    // (idempotent, matches this pass's own established "never rewrite once seeded" rule).
+    await mapWithConcurrencyLimit([...groups.values()], RECOVERY_CONCURRENCY_LIMIT, async (group) => {
+      const existing = await readAcceptedEvidenceAnyLotVersion(acceptedEvidenceKv, { chain: group.chain, token: group.token, txHash: group.txHash, side: group.side, timestamp: group.timestamp }, now)
+      if (existing) { audit.verifiedSidesAlreadyPersisted += group.lots.length; return }
+      const totalUsd = Math.round(group.total * 1e8) / 1e8
+      const identity = { chain: group.chain, token: group.token, txHash: group.txHash, side: group.side, timestamp: group.timestamp, lotIdentityVersion: representativeVersion(group) }
       const envelope = buildAcceptedEvidenceEnvelope({
-        identity, priceUsd: price, valueUsd: price * lot.amount,
+        identity, priceUsd: totalUsd, valueUsd: totalUsd, valueType: 'total_side_value_usd',
         source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, now,
       })
-      audit.missingVerifiedEvidenceMetadata += 1
+      audit.missingVerifiedEvidenceMetadata += group.lots.length
       const ok = await writeAcceptedEvidence(acceptedEvidenceKv, envelope)
       if (ok) {
-        audit.verifiedSidesWritten += 1
-        audit.canonicalSeedingWriteSuccesses += 1
-        audit.acceptedEvidenceWriteSuccesses += 1
+        audit.verifiedSidesWritten += group.lots.length
+        audit.canonicalSeedingWriteSuccesses += group.lots.length
+        audit.acceptedEvidenceWriteSuccesses += group.lots.length
       } else {
-        audit.verifiedSideWriteFailures += 1
-        audit.canonicalSeedingWriteFailures += 1
-        audit.acceptedEvidenceWriteFailures += 1
+        audit.verifiedSideWriteFailures += group.lots.length
+        audit.canonicalSeedingWriteFailures += group.lots.length
+        audit.acceptedEvidenceWriteFailures += group.lots.length
       }
     })
     return audit
