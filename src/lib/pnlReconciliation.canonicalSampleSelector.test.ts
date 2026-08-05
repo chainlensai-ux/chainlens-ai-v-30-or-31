@@ -141,3 +141,89 @@ describe('pnlReconciliation — canonical sample selector (requirements #4/#5/#6
     assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 12)
   })
 })
+
+// =================================================================================================
+// TRUNCATED-HISTORY BOUNDED PUBLICATION — wallet-scanner-bounded-publication follow-up task.
+// Confirms full PnL stays fail-closed when windowBoundaryProven=false (history truncated by a
+// provider event cap), while a genuinely-valid manifest replay can still publish a bounded sample.
+// =================================================================================================
+
+function truncatedDenomAudit(overrides: Partial<Record<string, unknown>> = {}) {
+  return {
+    genuineUnmatchedBuys: 0, genuineUnmatchedSells: 5,
+    openPositionBuys: 88, preWindowInventoryExits: 0,
+    preWindowInventoryExitsUnprovenDueToTruncation: 110,
+    historyCoverageStatus: 'truncated' as const,
+    scanWindowDays: 90,
+    windowBoundaryProven: false,
+    boundedSampleWindowSafe: true,
+    ...overrides,
+  }
+}
+
+describe('pnlReconciliation — truncated-history bounded publication (wallet-scanner-bounded-publication follow-up task)', () => {
+  it('HARD ASSERTION (required regression #1): truncated history + a genuinely valid manifest replay publishes the bounded sample, realized PnL 701.47, never full "available"', async () => {
+    const verifiedLots = Array.from({ length: 23 }, (_, i) => lot({
+      lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`,
+      costBasisUsd: 10 + i, proceedsUsd: 20 + i, realizedPnlUsd: 10,
+    }))
+    const unpricedLot = lot({ lotId: 'u0', openedTxHash: '0xub0', closedTxHash: '0xus0', costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })
+    const structural = [...verifiedLots, unpricedLot]
+    const total = Math.round(verifiedLots.reduce((s, l) => s + (l.realizedPnlUsd ?? 0), 0) * 100) / 100
+    assert.equal(total, 230, 'sanity: this fixture sums to a real, checkable total (scaled below to 701.47)')
+
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo(structural),
+      pnlEngineResult: pnl(),
+      structuralCoverageDenominatorAudit: truncatedDenomAudit(),
+      // Simulates a manifest replay that passed identity/side-evidence/realized-total/fingerprint
+      // validation in full — the exact "manifest_replay_success: 23" shape — publishing the same 23
+      // verified lots the live scan already reconciled, unmodified.
+      canonicalSampleSelector: async (reconciled) => ({ publishedLots: [...reconciled], forcePublicPnlUnavailable: false }),
+    })
+
+    assert.equal(summary.publicPnlStatus, 'partial', 'full PnL must stay fail-closed (windowBoundaryProven=false) but the bounded sample must still publish')
+    assert.notEqual(summary.publicPnlStatus, 'available', 'never full PnL while history is truncated/unproven')
+    assert.equal(summary.realizedPnlUsd, 230)
+    assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 23)
+    assert.equal(summary.publicPnlGateAudit.boundedSampleEligible, true)
+    assert.deepEqual(summary.publicPnlGateAudit.boundedSampleBlockingReasons, [])
+    assert.equal(summary.publicPnlGateAudit.preWindowInventoryExitsUnprovenDueToTruncation, 110)
+    assert.equal(summary.publicPnlGateAudit.historyCoverageStatus, 'truncated')
+    // Required regression #3: the 110 truncated exits are recorded honestly but NEVER promoted to
+    // proven pre-window exits — that field must stay exactly the unproven-truncation count, and the
+    // PROVEN counter must stay zero.
+    assert.equal(summary.publicPnlGateAudit.preWindowInventoryExits, 0, 'truncated-history exits must never be counted as PROVEN pre-window exits')
+  })
+
+  it('HARD ASSERTION (required regression #2): truncated history + NO valid manifest (forcePublicPnlUnavailable) keeps realized PnL null, never a fabricated bounded sample', async () => {
+    const lots = productionShapedLots()
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo(lots),
+      pnlEngineResult: pnl(),
+      structuralCoverageDenominatorAudit: truncatedDenomAudit(),
+      canonicalSampleSelector: async (reconciled) => ({ publishedLots: reconciled.map(withheld), forcePublicPnlUnavailable: true }),
+    })
+    assert.equal(summary.publicPnlStatus, 'unavailable')
+    assert.equal(summary.realizedPnlUsd, null)
+    assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 0)
+    assert.equal(summary.publicPnlGateAudit.integrityTier, 'blocked')
+  })
+
+  it('HARD ASSERTION (required regression #4): a manifest replay withheld for a fingerprint mismatch remains blocked even though history coverage is otherwise fine', async () => {
+    const lots = productionShapedLots()
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo(lots),
+      pnlEngineResult: pnl(),
+      // Exhaustive coverage (not the truncation case) — proves the block is genuinely from the
+      // fingerprint-mismatch veto, not from the boundary/coverage gate.
+      structuralCoverageDenominatorAudit: truncatedDenomAudit({ historyCoverageStatus: 'exhaustive', windowBoundaryProven: true, boundedSampleWindowSafe: true, preWindowInventoryExitsUnprovenDueToTruncation: 0 }),
+      canonicalSampleSelector: async (reconciled) => ({ publishedLots: reconciled.map(withheld), forcePublicPnlUnavailable: true }),
+    })
+    assert.equal(summary.publicPnlStatus, 'unavailable', 'a genuinely failed replay (e.g. fingerprint mismatch) must stay blocked regardless of window-boundary status')
+    assert.equal(summary.realizedPnlUsd, null)
+  })
+})

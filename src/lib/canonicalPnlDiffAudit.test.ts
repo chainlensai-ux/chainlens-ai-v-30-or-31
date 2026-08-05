@@ -10,6 +10,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   buildCanonicalPnlDiffAudit, logCanonicalPnlDiffAudit, CANONICAL_PNL_DIFF_TOP_CAUSES,
+  OBSOLETE_ACCEPTED_EVIDENCE_SCHEMA_VERSION,
   type AcceptedEvidenceSideTotals,
 } from './canonicalPnlDiffAudit.ts'
 import {
@@ -172,15 +173,17 @@ describe('canonicalPnlDiffAudit — value-semantics validation', () => {
     return new Map(Object.entries(entries))
   }
 
-  it('HARD ASSERTION (the confirmed defect): a group that DIVIDES a per-lot priceUsd across its occurrences is flagged with the exact under-count', () => {
+  it('HARD ASSERTION (the confirmed defect): a group that DIVIDES a per-lot priceUsd across its occurrences is flagged with the exact under-count (OBSOLETE v1 evidence only)', () => {
     // priceUsd is written as ONE lot's own cost basis and restored 1:1, so 3 occurrences must claim
-    // 3 x 100 = 300. Claiming exactly 100 means a per-lot figure was divided as a side total.
+    // 3 x 100 = 300. Claiming exactly 100 means a per-lot figure was divided as a side total. This
+    // defect can only arise from OBSOLETE v1 accepted-evidence (schemaVersion: 1) — see
+    // OBSOLETE_ACCEPTED_EVIDENCE_SCHEMA_VERSION's own header.
     const audit = buildCanonicalPnlDiffAudit({
       currentRecords: [record({ occurrenceCount: 3, groupCostBasisUsd: 100, groupProceedsUsd: 160, groupRealizedPnlUsd: 60 })],
       previousRecords: [],
       evidenceByKey: evidence({
-        [entryKey]: { priceUsd: 100, valueUsd: 200 },
-        [exitKey]: { priceUsd: 160, valueUsd: 320 },
+        [entryKey]: { priceUsd: 100, valueUsd: 200, schemaVersion: 1 },
+        [exitKey]: { priceUsd: 160, valueUsd: 320, schemaVersion: 1 },
       }),
     })
     const semantic = audit.findings.filter((f) => f.code === 'price_usd_confused_with_total_transaction_value')
@@ -289,6 +292,50 @@ describe('canonicalPnlDiffAudit — value-semantics validation', () => {
     assert.equal(audit.findings.filter((f) => f.code === 'price_usd_confused_with_total_transaction_value').length, 0)
     assert.equal(audit.findings.filter((f) => f.code === 'stablecoin_side_not_unit_priced').length, 0)
   })
+
+  // ===============================================================================================
+  // OBSOLETE-SCHEMA GATE — wallet-scanner-bounded-publication follow-up task. The
+  // price_usd_confused_with_total_transaction_value check exists ONLY to catch the confirmed v1
+  // defect; it must never fire a false CRITICAL against genuinely-correct current-schema (2+)
+  // evidence, while still catching the real defect on evidence that genuinely IS obsolete v1.
+  // ===============================================================================================
+
+  it('HARD ASSERTION (required fix): the exact same claimed-total shape that would be a v1 defect is NEVER flagged for current-schema (2+) evidence — it is legitimately correct there', () => {
+    assert.equal(OBSOLETE_ACCEPTED_EVIDENCE_SCHEMA_VERSION, 1)
+    const audit = buildCanonicalPnlDiffAudit({
+      currentRecords: [record({ occurrenceCount: 3, groupCostBasisUsd: 100, groupProceedsUsd: 160, groupRealizedPnlUsd: 60 })],
+      previousRecords: [],
+      evidenceByKey: evidence({
+        [entryKey]: { priceUsd: 100, valueUsd: 200, schemaVersion: 2 },
+        [exitKey]: { priceUsd: 160, valueUsd: 320, schemaVersion: 2 },
+      }),
+    })
+    assert.equal(audit.findings.filter((f) => f.code === 'price_usd_confused_with_total_transaction_value').length, 0, 'for schema-2+ evidence, claimedTotal === priceUsd directly IS the correct shape, never a defect')
+  })
+
+  it('a caller that has not wired schemaVersion at all is treated conservatively as current-schema — never a false positive from an unmigrated caller', () => {
+    const audit = buildCanonicalPnlDiffAudit({
+      currentRecords: [record({ occurrenceCount: 3, groupCostBasisUsd: 100, groupProceedsUsd: 160, groupRealizedPnlUsd: 60 })],
+      previousRecords: [],
+      evidenceByKey: evidence({
+        [entryKey]: { priceUsd: 100, valueUsd: 200 },
+        [exitKey]: { priceUsd: 160, valueUsd: 320 },
+      }),
+    })
+    assert.equal(audit.findings.filter((f) => f.code === 'price_usd_confused_with_total_transaction_value').length, 0)
+  })
+
+  it('genuinely obsolete v1 evidence (schemaVersion: 1) still fires the finding — the gate exempts current data, it never disables real detection', () => {
+    const audit = buildCanonicalPnlDiffAudit({
+      currentRecords: [record({ occurrenceCount: 3, groupCostBasisUsd: 100, groupProceedsUsd: 160, groupRealizedPnlUsd: 60 })],
+      previousRecords: [],
+      evidenceByKey: evidence({
+        [entryKey]: { priceUsd: 100, valueUsd: 200, schemaVersion: 1 },
+        [exitKey]: { priceUsd: 160, valueUsd: 320, schemaVersion: 1 },
+      }),
+    })
+    assert.equal(audit.findings.filter((f) => f.code === 'price_usd_confused_with_total_transaction_value').length, 2)
+  })
 })
 
 describe('canonicalPnlDiffAudit — end-to-end against a REAL manifest build (the confirmed production mechanism)', () => {
@@ -345,11 +392,15 @@ describe('canonicalPnlDiffAudit — end-to-end against a REAL manifest build (th
     assert.equal(manifest.verifiedLotRecords[0].groupRealizedPnlUsd, 60, 'the frozen group PnL is a 3x under-count of the real $180')
     assert.equal(manifest.realizedPnlUsd, 60)
 
-    // The audit names it, with the real numbers and the real direction.
+    // The audit names it, with the real numbers and the real direction. `schemaVersion: 1` here
+    // represents what a genuinely OBSOLETE v1 accepted-evidence record looked like — this exact
+    // per-sibling-overwrite shape is what production actually persisted before the accepted-
+    // evidence-persistence follow-up task fixed the writer to aggregate before writing (bumping
+    // ACCEPTED_EVIDENCE_SCHEMA_VERSION 1 -> 2); a real schema-2+ writer can no longer produce it.
     const evidenceByKey = new Map<string, AcceptedEvidenceSideTotals>()
     for (const [key, raw] of store) {
       const envelope = JSON.parse(raw) as { priceUsd: number; valueUsd: number }
-      evidenceByKey.set(key, { priceUsd: envelope.priceUsd, valueUsd: envelope.valueUsd })
+      evidenceByKey.set(key, { priceUsd: envelope.priceUsd, valueUsd: envelope.valueUsd, schemaVersion: 1 })
     }
     const audit = buildCanonicalPnlDiffAudit({ currentRecords: manifest.verifiedLotRecords, previousRecords: [], evidenceByKey })
 
@@ -390,8 +441,8 @@ describe('canonicalPnlDiffAudit — logging', () => {
       currentRecords: [record({ occurrenceCount: 3, groupCostBasisUsd: 100, groupProceedsUsd: 160 })],
       previousRecords: [],
       evidenceByKey: new Map([
-        ['v1:accepted-evidence:base:0xtoken:0xbuy:entry:1', { priceUsd: 100, valueUsd: 200 }],
-        ['v1:accepted-evidence:base:0xtoken:0xsell:exit:2', { priceUsd: 160, valueUsd: 320 }],
+        ['v1:accepted-evidence:base:0xtoken:0xbuy:entry:1', { priceUsd: 100, valueUsd: 200, schemaVersion: 1 }],
+        ['v1:accepted-evidence:base:0xtoken:0xsell:exit:2', { priceUsd: 160, valueUsd: 320, schemaVersion: 1 }],
       ]),
     })
     logCanonicalPnlDiffAudit(audit, logger)

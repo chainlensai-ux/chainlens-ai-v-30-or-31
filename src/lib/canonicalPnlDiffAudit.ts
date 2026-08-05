@@ -51,6 +51,20 @@
 
 import type { CanonicalManifestLotRecord } from './canonicalPnlSampleManifest'
 
+// OBSOLETE-SCHEMA GATE, DISCLOSED (wallet-scanner-bounded-publication follow-up task — confirmed
+// false-positive source: `checkValueSemantics` below was built to detect ONE specific, now-fixed
+// defect — the v1 accepted-evidence writer persisting a PER-LOT value under a side-scoped key,
+// later restored 1:1 as if it were the side TOTAL (see this module's own header). The
+// accepted-evidence-persistence follow-up task fixed the writer to persist a genuine side total
+// (bumping ACCEPTED_EVIDENCE_SCHEMA_VERSION 1 -> 2) — for schema-2+ evidence, a group's claimed
+// total legitimately equals `evidence.priceUsd` DIRECTLY (never `priceUsd * occurrenceCount`), so
+// `checkValueSemantics`'s own "does the claimed total equal N x priceUsd" test is testing for a
+// pattern that can only arise from OBSOLETE v1 data — evaluating it against current-schema evidence
+// produces a false CRITICAL on genuinely-correct data. `OBSOLETE_ACCEPTED_EVIDENCE_SCHEMA_VERSION`
+// names that one known-obsolete version literally (never "not the current version", which would
+// also silently swallow a genuinely NEW, real defect pattern introduced by some future schema bump).
+export const OBSOLETE_ACCEPTED_EVIDENCE_SCHEMA_VERSION = 1
+
 // Cent-scale tolerance, matching the manifest module's own `CANONICAL_TOTAL_TOLERANCE_USD` — real
 // value drift in the confirmed production case was thousands of dollars, nowhere near this.
 export const PNL_DIFF_TOLERANCE_USD = 0.01
@@ -183,9 +197,12 @@ export type CanonicalPnlValidationFinding = {
   differenceUsd: number | null
 }
 
-// The accepted-evidence figures a caller loaded for one side key. Both fields are the envelope's
-// own, unmodified values.
-export type AcceptedEvidenceSideTotals = { priceUsd: number; valueUsd: number }
+// The accepted-evidence figures a caller loaded for one side key. Every field is the envelope's
+// own, unmodified value. `schemaVersion` is optional/additive — omitted (undefined) means the
+// caller hasn't wired it, in which case `checkValueSemantics` conservatively treats the evidence as
+// current-schema (never obsolete) rather than guessing; a caller that HAS wired it gets the real
+// obsolete-schema exemption.
+export type AcceptedEvidenceSideTotals = { priceUsd: number; valueUsd: number; schemaVersion?: number }
 
 export type CanonicalPnlDiffInput = {
   currentRecords: readonly CanonicalManifestLotRecord[]
@@ -297,6 +314,11 @@ function checkValueSemantics(input: CanonicalPnlDiffInput): CanonicalPnlValidati
       if (!evidenceKey || claimedTotal === null) continue
       const evidence = input.evidenceByKey.get(evidenceKey)
       if (!evidence) continue
+      // OBSOLETE-SCHEMA GATE, DISCLOSED: this check exists ONLY to detect the confirmed v1 defect
+      // (see OBSOLETE_ACCEPTED_EVIDENCE_SCHEMA_VERSION's own header) — for schema-2+ evidence the
+      // claimed total legitimately equals `evidence.priceUsd` directly, so testing it against
+      // `priceUsd * occurrenceCount` here would be a false positive on genuinely-correct data.
+      if (evidence.schemaVersion !== OBSOLETE_ACCEPTED_EVIDENCE_SCHEMA_VERSION) continue
 
       const perLotRestore = round8(evidence.priceUsd * record.occurrenceCount)
       if (Math.abs(claimedTotal - perLotRestore) <= PNL_DIFF_TOLERANCE_USD) continue

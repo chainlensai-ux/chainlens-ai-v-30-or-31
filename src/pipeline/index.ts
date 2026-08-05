@@ -2897,7 +2897,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         ...candidateManifestForDiff.verifiedLotRecords.flatMap((r) => [r.entryEvidenceKey, r.exitEvidenceKey]),
         ...manifest.verifiedLotRecords.flatMap((r) => [r.entryEvidenceKey, r.exitEvidenceKey]),
       ])]
-      const diffEvidenceByKey = new Map<string, { priceUsd: number; valueUsd: number } | null>()
+      const diffEvidenceByKey = new Map<string, { priceUsd: number; valueUsd: number; schemaVersion: number } | null>()
       const allDiffRecords = [...candidateManifestForDiff.verifiedLotRecords, ...manifest.verifiedLotRecords]
       for (const key of diffEvidenceKeys) {
         const owner = allDiffRecords.find((r) => r.entryEvidenceKey === key || r.exitEvidenceKey === key)
@@ -2910,7 +2910,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
           side, timestamp: side === 'entry' ? owner.openedAt : owner.closedAt,
           lotIdentityVersion: null,
         })
-        diffEvidenceByKey.set(key, envelope ? { priceUsd: envelope.priceUsd, valueUsd: envelope.valueUsd } : null)
+        // schemaVersion is real, from the envelope itself — never guessed — so the diff audit's own
+        // obsolete-v1 exemption (canonicalPnlDiffAudit.ts's OBSOLETE_ACCEPTED_EVIDENCE_SCHEMA_VERSION)
+        // only ever suppresses a finding for evidence that genuinely IS the known-obsolete version.
+        diffEvidenceByKey.set(key, envelope ? { priceUsd: envelope.priceUsd, valueUsd: envelope.valueUsd, schemaVersion: envelope.schemaVersion } : null)
       }
       const amountByGroupKey = new Map<string, number>()
       for (const [lotObject, lotIdentity] of buildCanonicalLotIdentities(reconciledLots)) {
