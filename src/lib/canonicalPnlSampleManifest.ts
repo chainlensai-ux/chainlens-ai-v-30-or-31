@@ -107,7 +107,22 @@ export const CANONICAL_PRICING_METHODOLOGY_VERSION = 1
 // values). Bumping this makes the old vv2 manifest key MISS on lookup, exactly the same
 // manifestFound: false / fresh-manifest path this version already documents above — never a manual
 // delete or refresh of the old manifest record.
-export const CANONICAL_VALUE_METHODOLOGY_VERSION = 3
+//
+// BUMPED 3 -> 4 (fingerprint-divergence fix task): a stored vv3 manifest's
+// verifiedLotIdentityFingerprint/acceptedHistoricalPriceFingerprint/realizedPnlFingerprint were
+// computed by the OLD algorithm — raw-float string interpolation over an unsorted (or
+// value-dependent-sorted) lot array, summed with an order-dependent `.reduce()` — which
+// scanDeterminismAudit.ts's `buildScanDeterminismAudit` no longer produces (it now sorts lots by
+// canonical identity and quantizes every USD field via `quantizeUsd`/`sumQuantizedUsd` before
+// hashing; see that module's own header for the confirmed production shape this fixes). The NEW
+// algorithm is a genuinely different serialized meaning for the SAME stored fingerprint fields — a
+// vv3 manifest's stored fingerprints can never be reproduced by the new recompute, not because its
+// underlying values are wrong (they are not; per-group value/identity/evidence checks already passed
+// 23/23), but because the two algorithms canonicalize differently. Bumping this makes every existing
+// vv3 manifest key MISS on lookup — the same manifestFound: false / fresh-manifest path documented
+// above — so the very next scan creates one fresh manifest fingerprinted correctly from the start,
+// never a manual refresh or delete of the old record.
+export const CANONICAL_VALUE_METHODOLOGY_VERSION = 4
 
 // Reuses the exact same duck-typed KV interface accepted-evidence records already use — same
 // underlying store, a genuinely separate key namespace (`v1:canonical-pnl-sample-manifest:...`).

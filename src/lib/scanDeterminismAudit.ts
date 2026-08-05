@@ -49,17 +49,32 @@ export function sortLotsByCanonicalIdentity<T extends FingerprintableLot>(lots: 
   return [...lots].sort((a, b) => lotIdentityKey(a).localeCompare(lotIdentityKey(b)))
 }
 
-// QUANTIZATION, DISCLOSED, EXPORTED (fingerprint-divergence fix task): ONE shared canonicalization
-// step for every USD field this module hashes, and for every USD total a caller sums before handing
-// it to this module. 8 decimal places — integer minor units at the same precision as
-// canonicalPnlSampleManifest.ts's own `VALUE_SCALE`/`CANONICAL_VALUE_TOLERANCE` (1e-9, i.e. two
-// independently-recomputed per-lot allocations that already PASS that tolerance check differ by far
-// less than one quantum here) — so two allocations that agree within the existing, UNCHANGED
-// tolerance always canonicalize to the identical string, while a genuine difference above one
-// quantum (1e-8, itself tighter than `CANONICAL_TOTAL_TOLERANCE_USD`'s 0.01) still produces a
-// different one. This hardens agreement; it never widens what counts as a match, and never touches
-// the tolerance checks themselves.
-const QUANTIZE_SCALE = 100_000_000 // 8 decimal places
+// QUANTIZATION, DISCLOSED, EXPORTED (fingerprint-divergence fix task, quantization-safety
+// follow-up). ONE shared canonicalization step for every USD field this module hashes, and for
+// every USD total a caller sums before handing it to this module.
+//
+// CONFIRMED, PROVEN-UNSAFE PRIOR CHOICE, DISCLOSED: the first version of this quantum used 8 decimal
+// places (step = 1e-8) — COARSER than `canonicalPnlSampleManifest.ts`'s own
+// `CANONICAL_VALUE_TOLERANCE` (1e-9), the exact tolerance the per-group value checks already gate
+// replay on. Rounding to the nearest multiple of `step` only guarantees two DIFFERENT buckets when
+// the two values differ by AT LEAST `step` (two values in the SAME bucket can differ by up to just
+// under `step`) — so an 8-decimal step could not prove it never collapsed a pair that legitimately
+// differs by MORE than the 1e-9 tolerance (e.g. two values ~1.1e-9 apart, genuinely above tolerance,
+// both round to the identical 1e-8 bucket — see this module's own regression test). Collapsing an
+// above-tolerance difference into an identical fingerprint would silently widen what this codebase
+// treats as "the same value" beyond the tolerance every other value check already enforces.
+//
+// FIX, DISCLOSED: the quantum is now 1e-9 — EXACTLY `CANONICAL_VALUE_TOLERANCE`, never coarser.
+// PROOF this is safe: two values in the same bucket cannot differ by `step` or more (rounding to the
+// nearest multiple of `step` bounds same-bucket separation to strictly less than `step`) — so with
+// `step === CANONICAL_VALUE_TOLERANCE`, any pair differing by MORE than the tolerance is GUARANTEED
+// to land in different buckets; the guarantee never depends on where exactly the pair sits. The two
+// independently re-derived allocations this task exists to reconcile differ only by genuine
+// floating-point rounding noise (far below 1e-9, typically ~1e-13-1e-15) — comfortably inside one
+// 1e-9 quantum — so they still collapse to the identical fingerprint exactly as intended. This
+// hardens agreement to be provably no more permissive than the existing tolerance; it never widens
+// it, and it never touches the tolerance checks themselves.
+const QUANTIZE_SCALE = 1_000_000_000 // 9 decimal places — matches CANONICAL_VALUE_TOLERANCE (1e-9)
 
 export function quantizeUsd(value: number | null): string {
   if (value === null || !Number.isFinite(value)) return 'null'

@@ -344,4 +344,33 @@ describe('fingerprint-divergence fix: quantization + canonical order + integer s
     const check = checkPricingDeterminismViolation(after, { matchedLotFingerprint: before.matchedLotFingerprint, realizedPnlFingerprint: before.realizedPnlFingerprint })
     assert.equal(check.violation, true, 'the same structural lot set with a genuinely different realized total must still be flagged')
   })
+
+  it('HARD ASSERTION (quantization-safety follow-up, required regression): a pair ~1.1e-9 apart — genuinely ABOVE CANONICAL_VALUE_TOLERANCE (1e-9) — falls inside the same 1e-8 bucket (proving the OLD 8-decimal quantum was unsafe) but must NOT produce the same fingerprint under the fixed 1e-9 quantum', () => {
+    const a = 33.0
+    const b = 33.0 + 1.1e-9
+    assert.ok(Math.abs(a - b) > 1e-9, 'sanity: this pair is genuinely above CANONICAL_VALUE_TOLERANCE')
+
+    // Proves the OLD, coarser 8-decimal step really did collapse this above-tolerance pair — a
+    // step of 1e-8 rounds both a and b to the identical nearest multiple of 1e-8 here.
+    const oldScale = 100_000_000
+    const oldBucketA = BigInt(Math.round(a * oldScale)).toString()
+    const oldBucketB = BigInt(Math.round(b * oldScale)).toString()
+    assert.equal(oldBucketA, oldBucketB, 'sanity: the prior 1e-8 quantum genuinely collapsed this above-tolerance pair')
+
+    // The FIXED quantum (quantizeUsd, now 1e-9 — see this module's own header) must never collapse it.
+    assert.notEqual(quantizeUsd(a), quantizeUsd(b), 'an above-tolerance difference must produce a different fingerprint input')
+
+    const auditA = buildScanDeterminismAudit({ matchedLots: [lot({ lotId: 'v1', costBasisUsd: a, proceedsUsd: 50, realizedPnlUsd: 50 - a })], realizedPnlUsd: 50 - a, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
+    const auditB = buildScanDeterminismAudit({ matchedLots: [lot({ lotId: 'v1', costBasisUsd: b, proceedsUsd: 50, realizedPnlUsd: 50 - b })], realizedPnlUsd: 50 - b, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
+    assert.notEqual(auditA.acceptedHistoricalPriceFingerprint, auditB.acceptedHistoricalPriceFingerprint)
+    assert.notEqual(auditA.realizedPnlFingerprint, auditB.realizedPnlFingerprint)
+    assert.notEqual(auditA.scanFingerprint, auditB.scanFingerprint)
+  })
+
+  it('the fixed 1e-9 quantum still collapses genuine sub-tolerance allocation noise (the original bug this task fixes)', () => {
+    const a = 33.33333333
+    const b = 33.33333333 + 1e-13
+    assert.notEqual(a, b, 'sanity: the two allocations really do differ at the raw float level')
+    assert.equal(quantizeUsd(a), quantizeUsd(b), 'real allocation noise (~1e-13) is comfortably inside one 1e-9 quantum')
+  })
 })

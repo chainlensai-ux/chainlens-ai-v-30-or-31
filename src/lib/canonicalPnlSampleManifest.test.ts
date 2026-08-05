@@ -709,6 +709,29 @@ describe('canonicalPnlSampleManifest — value methodology version (issue #1: ma
     assert.equal(read.validationFailure, false, 'a version mismatch is a real miss, never reported as corruption')
   })
 
+  it('HARD ASSERTION (fingerprint-migration follow-up, required regression): the value methodology version is 4 — a stored vv3 manifest (fingerprinted by the old raw-float algorithm) misses cleanly under the current identity, and the very next scan creates one fresh manifest', async () => {
+    assert.equal(CANONICAL_VALUE_METHODOLOGY_VERSION, 4)
+    const kv = fakeKv()
+    const lots = buildLots(6, 6)
+    const vv3Identity = buildManifestIdentity({
+      walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1',
+      valueMethodologyVersion: 3,
+    })
+    const vv3Manifest = { ...(await manifestWithEvidence(lots, vv3Identity)).manifest, verifiedLotIdentityFingerprint: 'old-raw-float-fingerprint' }
+    await writeCanonicalPnlSampleManifest(kv, vv3Manifest)
+    assert.ok(buildManifestKey(vv3Identity).includes(':vv3:'), 'sanity: the old manifest really is keyed under vv3')
+
+    const currentRead = await readCanonicalPnlSampleManifest(kv, identity())
+    assert.equal(currentRead.manifest, null, 'the vv3 manifest must never be found under the vv4 identity')
+    assert.equal(currentRead.validationFailure, false, 'a methodology-version miss is a clean miss, never reported as corruption')
+
+    // The next scan (no manifest found) builds and persists a fresh vv4 manifest — never a manual
+    // refresh/delete of the stale vv3 record, which remains untouched in the store under its own key.
+    const { manifest: freshManifest } = await manifestWithEvidence(lots)
+    assert.equal(freshManifest.valueMethodologyVersion, 4)
+    assert.ok(buildManifestKey(identity()).includes(':vv4:'))
+  })
+
   it('a manifest with the correct value methodology version still resolves normally', async () => {
     const kv = fakeKv()
     const lots = buildLots(6, 6)
