@@ -385,3 +385,215 @@ test('a sell resolved to a proven non-trade classification is disclosed as trans
   assert.equal(audit.transferDistributionSells.distribution_airdrop, 2)
   assert.equal(audit.structurallyInvalidOrUnknownSells, 0)
 })
+
+// =================================================================================================
+// WINDOW-BOUNDARY-PROOF AUDIT — window-boundary-proof audit task (Aug 5 production regression:
+// preWindowInventoryExits ~110 -> 0, 115 unmatched sells reclassified unknown,
+// window_boundary_proven=false, on a wallet whose lot structure was otherwise unchanged).
+//
+// WHAT THESE PROVE, DISCLOSED: `windowBoundaryProven` is a SINGLE boolean derived from ONE number —
+// the earliest event this scan happened to receive — and every `pre_window_inventory_exit` decision
+// is gated on it. The tests below prove, deterministically, that (a) losing older events flips that
+// boolean and reclassifies the ENTIRE qualifying sell population at once, (b) the flip is a
+// one-event cliff, (c) the classification/join pass is byte-for-byte identical across the flip and
+// is therefore exonerated, and (d) the rolling window ADVANCING on its own can only ever make the
+// boundary EASIER to prove — so wall-clock advance alone cannot explain the regression and event
+// loss is the only remaining mechanism. These are diagnosis regressions: they assert today's exact
+// behavior, including the failure, and deliberately implement no fix.
+// =================================================================================================
+
+const BP_NOW = Date.parse('2026-08-05T00:00:00.000Z')
+const BP_DAY = 24 * 60 * 60 * 1000
+const BP_WINDOW_DAYS = 90
+const BP_WINDOW_START = BP_NOW - BP_WINDOW_DAYS * BP_DAY
+const bpCtx = { windowStartTimestamp: BP_WINDOW_START, scanWindowDays: BP_WINDOW_DAYS }
+const iso = (ms: number) => new Date(ms).toISOString()
+
+// Production-shaped fixture: 115 unmatched sells total — 110 with NO earlier buy anywhere in the
+// fetched history (the population that legitimately qualifies as bounded-history pre-window exits)
+// and 5 that genuinely DO have an earlier in-window buy (permanently unknown regardless of the
+// boundary flag). `anchorAtWindowStart` is the single oldest event proving the fetch reached the
+// window edge — the exact event a bounded single-page provider fetch drops first when a wallet's
+// recent activity grows past the page cap.
+function boundaryProofFixture() {
+  const anchorAtWindowStart = event({
+    txHash: '0xbp-anchor', direction: 'inbound', contract: TOKEN_B, amount: 1,
+    timestamp: iso(BP_WINDOW_START),
+  })
+  const noEarlierBuySells = Array.from({ length: 110 }, (_, i) => event({
+    txHash: `0xbp-nb-sell-${i}`, direction: 'outbound', contract: `0xnb${i}`, amount: 5,
+    timestamp: iso(BP_NOW - 10 * BP_DAY),
+  }))
+  const earlierBuys = Array.from({ length: 5 }, (_, i) => event({
+    txHash: `0xbp-wb-buy-${i}`, direction: 'inbound', contract: `0xwb${i}`, amount: 9,
+    timestamp: iso(BP_NOW - 30 * BP_DAY),
+  }))
+  const withEarlierBuySells = Array.from({ length: 5 }, (_, i) => event({
+    txHash: `0xbp-wb-sell-${i}`, direction: 'outbound', contract: `0xwb${i}`, amount: 9,
+    timestamp: iso(BP_NOW - 10 * BP_DAY),
+  }))
+  const sellEvents = [...noEarlierBuySells, ...withEarlierBuySells]
+  const sellIdentities = sellEvents.map((e) => unmatchedIdentity({
+    txHash: e.txHash, token: e.contract, direction: 'outbound', amount: e.amount, timestamp: Date.parse(e.timestamp),
+  }))
+  return { anchorAtWindowStart, earlierBuys, sellEvents, sellIdentities }
+}
+
+test('HARD ASSERTION (Aug 5 regression, reproduced exactly): losing ONLY the single oldest event flips windowBoundaryProven and reclassifies all 110 pre-window exits to unknown in one step', () => {
+  const f = boundaryProofFixture()
+  const fullHistory = [f.anchorAtWindowStart, ...f.earlierBuys, ...f.sellEvents]
+  // The failed scan differs from the successful one ONLY by the absence of the oldest event — the
+  // exact shape of provider page-cap truncation / rolling-window event loss. Every sell identity,
+  // every classification input and the configured window are otherwise byte-for-byte identical.
+  const truncatedHistory = [...f.earlierBuys, ...f.sellEvents]
+
+  const good = computeUnmatchedEvidenceAudit(classifyEvents(fullHistory, noRouters), 26, [], f.sellIdentities, bpCtx)
+  const bad = computeUnmatchedEvidenceAudit(classifyEvents(truncatedHistory, noRouters), 26, [], f.sellIdentities, bpCtx)
+
+  // Successful scan (7877dd6b-shaped): boundary proven, the 110 qualify as bounded-history exits.
+  assert.equal(good.windowBoundaryProven, true)
+  assert.equal(good.preWindowInventoryExits, 110)
+  assert.equal(good.unknownSells, 5, 'only the 5 sells that genuinely have an earlier in-window buy stay unknown')
+  assert.equal(good.structurallyInvalidOrUnknownSells, 5)
+
+  // Failed scan (8486c013-shaped): the reported production numbers, exactly.
+  assert.equal(bad.windowBoundaryProven, false)
+  assert.equal(bad.preWindowInventoryExits, 0, 'the reported collapse: ~110 -> 0')
+  assert.equal(bad.unknownSells, 115, 'the reported reclassification: all 115 unmatched sells become unknown')
+  assert.equal(bad.structurallyInvalidOrUnknownSells, 115)
+
+  // THE DECISIVE ATTRIBUTION: the entire swing is sells blocked SOLELY because the boundary was not
+  // proven — not one additional sell became unknown for any classification/matching reason.
+  assert.equal(bad.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary, 110)
+  assert.equal(bad.boundaryProofDiagnostics.sellsWithEarlierBuyInWindow, 5)
+  assert.equal(good.boundaryProofDiagnostics.sellsWithEarlierBuyInWindow, 5, 'identical in both scans — this population is boundary-independent')
+  assert.equal(good.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary, 0)
+  assert.equal(
+    bad.unknownSells - good.unknownSells,
+    bad.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary,
+    'the whole unknown-sell increase is accounted for by the boundary flag alone',
+  )
+})
+
+test('HARD ASSERTION: the classification/join pass is byte-for-byte identical across the flip — unmatched-event classification is exonerated as a cause', () => {
+  const f = boundaryProofFixture()
+  const good = computeUnmatchedEvidenceAudit(classifyEvents([f.anchorAtWindowStart, ...f.earlierBuys, ...f.sellEvents], noRouters), 26, [], f.sellIdentities, bpCtx)
+  const bad = computeUnmatchedEvidenceAudit(classifyEvents([...f.earlierBuys, ...f.sellEvents], noRouters), 26, [], f.sellIdentities, bpCtx)
+
+  // Every sell resolved its join in BOTH scans, and none resolved to a non-trade classification —
+  // so neither a join failure nor a classification change can explain the swing.
+  assert.equal(good.unmatchedIdentityJoinFailures, 0)
+  assert.equal(bad.unmatchedIdentityJoinFailures, 0)
+  assert.deepEqual(bad.transferDistributionSells, good.transferDistributionSells)
+  assert.deepEqual(bad.transferDistributionSells, {})
+  assert.equal(bad.structurallyInvalidSells, 0)
+  assert.equal(good.structurallyInvalidSells, 0)
+  // The sell population itself never changed size — only how it was bucketed.
+  assert.equal(good.preWindowInventoryExits + good.unknownSells, 115)
+  assert.equal(bad.preWindowInventoryExits + bad.unknownSells, 115)
+})
+
+test('HARD ASSERTION: the rolling window ADVANCING on its own can never break boundary proof — wall-clock advance alone is eliminated as a cause', () => {
+  const f = boundaryProofFixture()
+  const classified = classifyEvents([f.anchorAtWindowStart, ...f.earlierBuys, ...f.sellEvents], noRouters)
+  // Same fetched history, scanned progressively later. windowStartTimestamp = scanTime - windowDays
+  // moves FORWARD with wall clock, so the boundary threshold the earliest event must precede also
+  // moves forward — a later scan can only ever make the proof EASIER, never harder.
+  for (const daysLater of [0, 1, 2, 7, 30]) {
+    const laterCtx = { windowStartTimestamp: (BP_NOW + daysLater * BP_DAY) - BP_WINDOW_DAYS * BP_DAY, scanWindowDays: BP_WINDOW_DAYS }
+    const audit = computeUnmatchedEvidenceAudit(classified, 26, [], f.sellIdentities, laterCtx)
+    assert.equal(audit.windowBoundaryProven, true, `boundary must stay proven ${daysLater} days later when no event is lost`)
+    assert.equal(audit.preWindowInventoryExits, 110, `pre-window exits must be stable ${daysLater} days later`)
+    assert.equal(audit.boundaryProofDiagnostics.boundaryShortfallMs, 0)
+  }
+})
+
+test('HARD ASSERTION: boundary proof is a one-event cliff — the flip is driven entirely by whichever single event happens to be oldest', () => {
+  const f = boundaryProofFixture()
+  const tolerance = 3 * BP_DAY
+  // An oldest event exactly AT the tolerance edge still proves the boundary; one millisecond newer
+  // does not. Nothing else about the scan differs.
+  const atEdge = event({ txHash: '0xbp-edge', direction: 'inbound', contract: TOKEN_B, amount: 1, timestamp: iso(BP_WINDOW_START + tolerance) })
+  const justPastEdge = event({ txHash: '0xbp-edge', direction: 'inbound', contract: TOKEN_B, amount: 1, timestamp: iso(BP_WINDOW_START + tolerance + 1) })
+
+  const proven = computeUnmatchedEvidenceAudit(classifyEvents([atEdge, ...f.earlierBuys, ...f.sellEvents], noRouters), 26, [], f.sellIdentities, bpCtx)
+  const unproven = computeUnmatchedEvidenceAudit(classifyEvents([justPastEdge, ...f.earlierBuys, ...f.sellEvents], noRouters), 26, [], f.sellIdentities, bpCtx)
+
+  assert.equal(proven.windowBoundaryProven, true)
+  assert.equal(proven.preWindowInventoryExits, 110)
+  assert.equal(proven.boundaryProofDiagnostics.boundaryShortfallMs, 0)
+
+  assert.equal(unproven.windowBoundaryProven, false, 'one millisecond of lost history reclassifies 110 lots')
+  assert.equal(unproven.preWindowInventoryExits, 0)
+  assert.equal(unproven.boundaryProofDiagnostics.boundaryShortfallMs, 1)
+})
+
+test('HARD ASSERTION: boundary diagnostics quantify page-cap truncation distinctly from a genuinely short wallet history', () => {
+  const f = boundaryProofFixture()
+
+  // TRUNCATION SHAPE: the wallet really does have 90 days of history, but the fetch only returned
+  // its most recent slice — the fetched span is far below the configured window and the shortfall is
+  // large. This is what a bounded single-page provider fetch produces for an active wallet.
+  const truncated = computeUnmatchedEvidenceAudit(classifyEvents([...f.earlierBuys, ...f.sellEvents], noRouters), 26, [], f.sellIdentities, bpCtx)
+  const d = truncated.boundaryProofDiagnostics
+  assert.equal(d.earliestFetchedEventTimestamp, BP_NOW - 30 * BP_DAY)
+  assert.equal(d.latestFetchedEventTimestamp, BP_NOW - 10 * BP_DAY)
+  assert.equal(d.fetchedHistorySpanDays, 20, 'only 20 days of history came back for a 90-day window')
+  assert.equal(d.configuredWindowDays, 90)
+  assert.equal(d.boundaryThresholdTimestamp, BP_WINDOW_START + 3 * BP_DAY)
+  assert.equal(d.boundaryShortfallMs, 57 * BP_DAY, 'the fetch fell 57 days short of proving the window boundary')
+  assert.ok(d.fetchedHistorySpanDays! < d.configuredWindowDays! / 2, 'span far below the window is the truncation signature')
+  assert.equal(d.classifiedEventsConsidered, 120)
+
+  // SHORT-HISTORY SHAPE, for contrast: an equally unproven boundary, but the fetched span is small
+  // because the wallet's real history is small — no large shortfall relative to what exists.
+  const youngWallet = [
+    event({ txHash: '0xbp-young-buy', direction: 'inbound', contract: TOKEN_B, amount: 1, timestamp: iso(BP_NOW - 2 * BP_DAY) }),
+    event({ txHash: '0xbp-young-sell', direction: 'outbound', contract: TOKEN_C, amount: 1, timestamp: iso(BP_NOW - 1 * BP_DAY) }),
+  ]
+  const youngIdentity = unmatchedIdentity({ txHash: '0xbp-young-sell', token: TOKEN_C, direction: 'outbound', amount: 1, timestamp: BP_NOW - 1 * BP_DAY })
+  const young = computeUnmatchedEvidenceAudit(classifyEvents(youngWallet, noRouters), 1, [], [youngIdentity], bpCtx)
+  assert.equal(young.windowBoundaryProven, false, 'both shapes fail the proof identically — only the diagnostics tell them apart')
+  assert.equal(young.boundaryProofDiagnostics.fetchedHistorySpanDays, 1)
+  assert.equal(young.boundaryProofDiagnostics.classifiedEventsConsidered, 2)
+  assert.ok(
+    young.boundaryProofDiagnostics.classifiedEventsConsidered < d.classifiedEventsConsidered,
+    'a short history is sparse; a truncated fetch is dense right up to the cap — the discriminator',
+  )
+})
+
+test('HARD ASSERTION: one provider dropping out reproduces the identical flip when it was the provider supplying the older history', () => {
+  const f = boundaryProofFixture()
+  // fetchProviderWindow returns providerStatus 'partial' (not 'provider_unavailable') when exactly
+  // one provider succeeds, and mergeProviderResults still merges — so a partial fetch silently
+  // yields whatever the surviving provider returned, with no signal reaching the boundary proof.
+  // Modelled here as the merged event set the pipeline would actually classify.
+  const bothProviders = [f.anchorAtWindowStart, ...f.earlierBuys, ...f.sellEvents]
+  const onlyRecentProvider = [...f.earlierBuys, ...f.sellEvents]
+
+  const merged = computeUnmatchedEvidenceAudit(classifyEvents(bothProviders, noRouters), 26, [], f.sellIdentities, bpCtx)
+  const partial = computeUnmatchedEvidenceAudit(classifyEvents(onlyRecentProvider, noRouters), 26, [], f.sellIdentities, bpCtx)
+
+  assert.equal(merged.windowBoundaryProven, true)
+  assert.equal(partial.windowBoundaryProven, false)
+  assert.equal(partial.preWindowInventoryExits, 0)
+  assert.equal(partial.boundaryProofDiagnostics.sellsBlockedSolelyByUnprovenBoundary, 110)
+  // Provider merge loss and page-cap truncation are INDISTINGUISHABLE inside this function — both
+  // present as "the oldest event is newer than it was". Telling them apart requires the per-provider
+  // coverage the pipeline's own [window-boundary-proof-audit] line now logs alongside these fields.
+  assert.deepEqual(partial.boundaryProofDiagnostics, computeUnmatchedEvidenceAudit(classifyEvents(onlyRecentProvider, noRouters), 26, [], f.sellIdentities, bpCtx).boundaryProofDiagnostics)
+})
+
+test('the boundary diagnostics never alter any existing decision — every pre-existing field is unchanged by their presence', () => {
+  const f = boundaryProofFixture()
+  const classified = classifyEvents([f.anchorAtWindowStart, ...f.earlierBuys, ...f.sellEvents], noRouters)
+  const audit = computeUnmatchedEvidenceAudit(classified, 26, [], f.sellIdentities, bpCtx)
+  // The gate's own inputs: numerator is the closed-lot count, denominator adds ONLY blocking
+  // evidence, and pre-window exits/open positions stay excluded from it — unchanged by this task.
+  assert.equal(audit.structuralCoverageNumerator, 26)
+  assert.equal(audit.structuralCoverageDenominator, 26 + 0 + 5)
+  assert.equal(audit.structuralCoverage, 26 / 31)
+  assert.equal(audit.openPositionBuys, 0)
+  assert.equal(audit.structurallyInvalidBuys, 0)
+  assert.equal(audit.unknownBuys, 0)
+})

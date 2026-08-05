@@ -507,6 +507,55 @@ export type UnmatchedEvidenceAudit = {
   // needing to prove "the provider window boundary was reached" reads this field rather than
   // re-deriving it.
   windowBoundaryProven: boolean
+  // DIAGNOSTIC ONLY, ADDITIVE, DISCLOSED (window-boundary-proof audit task): the real evidence
+  // behind `windowBoundaryProven` above and behind every sell this pass declined to classify as a
+  // pre-window exit. Changes NO decision — every counter above, `windowBoundaryProven` itself, and
+  // the gate that reads it are byte-for-byte unchanged. Exists so a production log can attribute a
+  // `preWindowInventoryExits: 110 -> 0` swing to its exact cause instead of leaving four candidate
+  // explanations indistinguishable. See WindowBoundaryProofDiagnostics' own header.
+  boundaryProofDiagnostics: WindowBoundaryProofDiagnostics
+}
+
+// DIAGNOSTIC-ONLY EVIDENCE, DISCLOSED (window-boundary-proof audit task). CONFIRMED MECHANISM THIS
+// MAKES OBSERVABLE: `boundaryReached` below is a SINGLE boolean derived from one number — the
+// earliest event this scan happened to receive. Because every `pre_window_inventory_exit` decision
+// is gated on it, that one boolean flipping reclassifies EVERY otherwise-qualifying unmatched sell
+// to `unknown` at once (preWindowInventoryExits -> 0, unknownSells += the same count,
+// windowBoundaryProven -> false). The counters below separate the four candidate explanations for
+// such a swing, which the audit's existing fields cannot tell apart:
+//
+//   * `sellsBlockedSolelyByUnprovenBoundary` — sells that resolved, are trade-eligible, and have no
+//     earlier in-window buy, and were therefore counted `unknown` ONLY because `boundaryReached`
+//     was false. When this equals the whole `unknownSells` swing, the cause is the boundary flag,
+//     never the join/classification pass (which ran identically).
+//   * `sellsWithEarlierBuyInWindow` — sells genuinely `unknown` regardless of the boundary flag
+//     (an earlier buy for the same token IS present, so bounded history cannot explain them).
+//     A swing concentrated here would instead implicate matching/classification.
+//   * `earliestFetchedEventTimestamp` / `fetchedHistorySpanDays` / `boundaryShortfallMs` — quantify
+//     HOW the boundary failed: a fetch truncated well inside the window (span far below
+//     `configuredWindowDays`, large shortfall) is provider page-cap event loss, whereas a wallet
+//     whose genuine history is simply short shows a small shortfall with no truncation signal.
+export type WindowBoundaryProofDiagnostics = {
+  earliestFetchedEventTimestamp: number | null
+  latestFetchedEventTimestamp: number | null
+  windowStartTimestamp: number
+  windowBoundaryToleranceMs: number
+  // The exact instant `earliestFetchedEventTimestamp` had to be at or before for the boundary to be
+  // considered proven — `windowStartTimestamp + windowBoundaryToleranceMs`, surfaced so a log reader
+  // never has to re-derive it.
+  boundaryThresholdTimestamp: number
+  // How far the earliest fetched event fell SHORT of proving the boundary, in ms: 0 when proven,
+  // null when this scan fetched no timestamped events at all. A large positive value is the direct
+  // measure of missing older history.
+  boundaryShortfallMs: number | null
+  // Real span of what was actually fetched (latest - earliest). A span far below
+  // `configuredWindowDays` while the window itself is unchanged is the signature of a bounded
+  // single-page provider fetch truncating an active wallet's older events.
+  fetchedHistorySpanDays: number | null
+  configuredWindowDays: number | null
+  classifiedEventsConsidered: number
+  sellsBlockedSolelyByUnprovenBoundary: number
+  sellsWithEarlierBuyInWindow: number
 }
 
 const DEFAULT_WINDOW_BOUNDARY_TOLERANCE_MS = 3 * 24 * 60 * 60 * 1000
@@ -524,6 +573,10 @@ export function computeUnmatchedEvidenceAudit(
 ): UnmatchedEvidenceAudit {
   const groups = new Map<string, ClassifiedEvent[]>()
   let earliestEventTimestamp: number | null = null
+  // DIAGNOSTIC ONLY, ADDITIVE: tracked alongside the existing earliest scan, never read by any
+  // decision below — see WindowBoundaryProofDiagnostics' own header.
+  let latestEventTimestamp: number | null = null
+  let timestampedEventsConsidered = 0
   const earliestBuyTimestampByToken = new Map<string, number>()
   for (const c of classified) {
     if (c.event.direction === 'unknown') continue
@@ -533,6 +586,8 @@ export function computeUnmatchedEvidenceAudit(
     else groups.set(key, [c])
     const ts = Date.parse(c.event.timestamp)
     if (Number.isFinite(ts)) {
+      timestampedEventsConsidered += 1
+      if (latestEventTimestamp === null || ts > latestEventTimestamp) latestEventTimestamp = ts
       if (earliestEventTimestamp === null || ts < earliestEventTimestamp) earliestEventTimestamp = ts
       if (c.event.direction === 'inbound' && isTradeEligibleBuyClassification(c.classification)) {
         const tokenKeyStr = `${c.event.chain}:${c.event.contract.toLowerCase()}`
@@ -568,6 +623,10 @@ export function computeUnmatchedEvidenceAudit(
 
   let preWindowInventoryExits = 0
   let unknownSells = 0
+  // DIAGNOSTIC ONLY, ADDITIVE: split the `else` branch below by its real cause without changing
+  // which branch is taken — see WindowBoundaryProofDiagnostics' own header.
+  let sellsBlockedSolelyByUnprovenBoundary = 0
+  let sellsWithEarlierBuyInWindow = 0
   const transferDistributionSells: Partial<Record<EventClassification, number>> = {}
   for (const identity of unmatchedSellEvents) {
     const resolved = resolveJoin(identity)
@@ -584,6 +643,8 @@ export function computeUnmatchedEvidenceAudit(
       // Fail closed (requirement #8): cannot prove either a bounded-history gap or a structural
       // defect — stays `unknown` and continues blocking, never silently excluded/guessed.
       unknownSells += 1
+      if (earlierBuyExists) sellsWithEarlierBuyInWindow += 1
+      else sellsBlockedSolelyByUnprovenBoundary += 1
     }
   }
 
@@ -606,6 +667,23 @@ export function computeUnmatchedEvidenceAudit(
     structuralCoverageDenominator,
     structuralCoverage: structuralCoverageDenominator > 0 ? structuralCoverageNumerator / structuralCoverageDenominator : null,
     windowBoundaryProven: boundaryReached,
+    boundaryProofDiagnostics: {
+      earliestFetchedEventTimestamp: earliestEventTimestamp,
+      latestFetchedEventTimestamp: latestEventTimestamp,
+      windowStartTimestamp: context.windowStartTimestamp,
+      windowBoundaryToleranceMs: tolerance,
+      boundaryThresholdTimestamp: context.windowStartTimestamp + tolerance,
+      boundaryShortfallMs: earliestEventTimestamp === null
+        ? null
+        : Math.max(0, earliestEventTimestamp - (context.windowStartTimestamp + tolerance)),
+      fetchedHistorySpanDays: earliestEventTimestamp === null || latestEventTimestamp === null
+        ? null
+        : Math.round(((latestEventTimestamp - earliestEventTimestamp) / (24 * 60 * 60 * 1000)) * 100) / 100,
+      configuredWindowDays: context.scanWindowDays ?? null,
+      classifiedEventsConsidered: timestampedEventsConsidered,
+      sellsBlockedSolelyByUnprovenBoundary,
+      sellsWithEarlierBuyInWindow,
+    },
   }
 }
 

@@ -10,7 +10,7 @@
 // fetchProviderWindow (stage 1) and, when scanMode === 'deep', buildRecoveryPolicyObject
 // (stage 5). Every other stage is a synchronous, pure, or try/catch-wrapped pure call.
 
-import { fetchProviderWindow, getProviderFetchWindowCoalescingCounters } from '../modules/providerFetchWindow/index'
+import { fetchProviderWindow, getProviderFetchWindowCoalescingCounters, MAX_RAW_EVENTS_PER_PROVIDER } from '../modules/providerFetchWindow/index'
 import { mergeNormalizedEvents } from '../modules/fifoEngine/utils'
 import type { RawProviderEvent, SupportedChain } from '../modules/providerFetchWindow/types'
 import { normalizeEvents } from '../modules/normalization/index'
@@ -2670,6 +2670,69 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
     { windowStartTimestamp: Date.parse(scanTimestamp) - PROVIDER_FETCH_WINDOW_DAYS_USED * 24 * 60 * 60 * 1000, scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED },
   )
+  // [window-boundary-proof-audit], DISCLOSED, DIAGNOSTIC ONLY (window-boundary-proof audit task).
+  // Read-only: derives everything from data already computed above and changes no decision.
+  //
+  // WHY THIS EXISTS: `windowBoundaryProven` is one boolean derived from one number (the earliest
+  // event this scan happened to receive), and EVERY `pre_window_inventory_exit` decision is gated on
+  // it — so it flipping reclassifies every otherwise-qualifying unmatched sell to `unknown` at once.
+  // A production log previously showed only the AFTER state (`preWindowInventoryExits: 0`,
+  // `unknownSells: 115`, `window_boundary_proven: false`), which is equally consistent with four
+  // different causes. This line pairs the audit's own boundary evidence with the per-provider
+  // coverage that produced the fetched event set, so the next occurrence is attributable rather than
+  // merely observable.
+  //
+  // TRUNCATION SIGNAL, DISCLOSED: `atEventCap` is a real, exact check against
+  // MAX_RAW_EVENTS_PER_PROVIDER — the bounded single page each provider fetch is capped at (see
+  // src/modules/providerFetchWindow/types.ts's own disclosure that a single bounded page "increases
+  // the real risk that an active wallet's older events fall outside that one page and are silently
+  // missed"). A provider at its cap returns `ok: true` with no error of any kind, so this is the ONLY
+  // available signal that older history was dropped. `atEventCap` together with a
+  // `fetchedHistorySpanDays` far below `configuredWindowDays` is the signature of page-cap event
+  // loss; a small `boundaryShortfallMs` with neither signal instead indicates a genuinely short
+  // wallet history. BOUNDED: one line, one entry per chain, scalar counters only — never per-event.
+  {
+    const boundaryDiag = unmatchedEvidenceAudit.boundaryProofDiagnostics
+    // eslint-disable-next-line no-console
+    console.warn('[window-boundary-proof-audit]', {
+      windowBoundaryProven: unmatchedEvidenceAudit.windowBoundaryProven,
+      preWindowInventoryExits: unmatchedEvidenceAudit.preWindowInventoryExits,
+      unknownSells: unmatchedEvidenceAudit.unknownSells,
+      unmatchedIdentityJoinFailures: unmatchedEvidenceAudit.unmatchedIdentityJoinFailures,
+      // The decisive discriminator: when this accounts for the whole unknown-sell population, the
+      // classification/join pass is exonerated and the boundary flag is the entire cause.
+      sellsBlockedSolelyByUnprovenBoundary: boundaryDiag.sellsBlockedSolelyByUnprovenBoundary,
+      sellsWithEarlierBuyInWindow: boundaryDiag.sellsWithEarlierBuyInWindow,
+      earliestFetchedEventTimestamp: boundaryDiag.earliestFetchedEventTimestamp,
+      latestFetchedEventTimestamp: boundaryDiag.latestFetchedEventTimestamp,
+      boundaryThresholdTimestamp: boundaryDiag.boundaryThresholdTimestamp,
+      boundaryShortfallMs: boundaryDiag.boundaryShortfallMs,
+      boundaryShortfallDays: boundaryDiag.boundaryShortfallMs === null
+        ? null
+        : Math.round((boundaryDiag.boundaryShortfallMs / (24 * 60 * 60 * 1000)) * 100) / 100,
+      fetchedHistorySpanDays: boundaryDiag.fetchedHistorySpanDays,
+      configuredWindowDays: boundaryDiag.configuredWindowDays,
+      classifiedEventsConsidered: boundaryDiag.classifiedEventsConsidered,
+      maxRawEventsPerProvider: MAX_RAW_EVENTS_PER_PROVIDER,
+      providerCoverage: providerResults.map((r) => ({
+        chain: r.chain,
+        providerStatus: r.providerStatus,
+        mergedRawEvents: r.rawEvents.length,
+        goldrush: {
+          ok: r.providerResults.goldrush.ok,
+          errorReason: r.providerResults.goldrush.errorReason,
+          eventCount: r.providerResults.goldrush.events.length,
+          atEventCap: r.providerResults.goldrush.events.length >= MAX_RAW_EVENTS_PER_PROVIDER,
+        },
+        alchemy: {
+          ok: r.providerResults.alchemy.ok,
+          errorReason: r.providerResults.alchemy.errorReason,
+          eventCount: r.providerResults.alchemy.events.length,
+          atEventCap: r.providerResults.alchemy.events.length >= MAX_RAW_EVENTS_PER_PROVIDER,
+        },
+      })),
+    })
+  }
   // DURABLE CANONICAL PNL SAMPLE MANIFEST, DISCLOSED (canonical-manifest-replay follow-up task).
   // CONFIRMED PRODUCTION FAILURE THIS WIRING FIXES: the manifest was previously resolved AFTER
   // `reconcile()` returned, and the published gate figures were patched afterwards — so a scan whose
