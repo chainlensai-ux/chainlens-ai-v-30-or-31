@@ -468,7 +468,33 @@ function joinOneSide(
 // (none; it was never matched to a lot) is completely untouched by this classification pass, which
 // only feeds the structural-coverage/gate DENOMINATOR, never fifoEngine's own PnL arithmetic.
 export type UnmatchedBuyCategory = 'open_position_inventory' | 'structurally_invalid_buy' | 'unknown'
-export type UnmatchedSellCategory = 'pre_window_inventory_exit' | 'transfer_distribution' | 'structurally_invalid_sell' | 'unknown'
+export type UnmatchedSellCategory = 'pre_window_inventory_exit' | 'pre_window_inventory_exit_unproven_due_to_truncation' | 'transfer_distribution' | 'structurally_invalid_sell' | 'unknown'
+
+// HISTORY COVERAGE MODEL, DISCLOSED (boundary-model follow-up task — confirmed production root
+// cause: Base's Alchemy fetch hit MAX_RAW_EVENTS_PER_PROVIDER (400/400) with both providers
+// otherwise healthy, `earliestFetchedEventTimestamp` therefore reflected the CAP, not the wallet's
+// real history, `windowBoundaryProven` flipped false purely from that truncation, and 110
+// legitimate pre-window exits were reclassified `unknown` and hard-blocked an otherwise-verified
+// 23/24-lot sample). `earliestFetchedEventTimestamp` alone can never distinguish "this wallet's
+// real history is short" from "a bounded page truncated it" — a provider/direction that returned
+// exactly its cap could easily have MORE, older events it simply never got to report. Coverage is
+// now classified explicitly, from real signals the caller supplies (never inferred from timestamps
+// alone):
+//   'exhaustive' — no provider/direction hit its event cap, no provider failed, and the earliest
+//     fetched event genuinely reached the configured window boundary. The only status that may
+//     grant a full, proven pre_window_inventory_exit classification.
+//   'truncated'  — every provider succeeded (`ok: true`), but at least one provider/direction hit
+//     its bounded-page event cap, so the fetch cannot prove it reached the window edge even though
+//     nothing failed. A sell that would otherwise qualify is now `pre_window_inventory_exit_
+//     unproven_due_to_truncation` — disclosed, excluded from hard blocking, but never presented as
+//     a proven full-window fact.
+//   'partial'    — at least one provider genuinely failed (a real fetch error, not a cap) — the
+//     fetched set itself is suspect, not just its age boundary. Fails closed exactly as before this
+//     task (unchanged, unmatched sells stay `unknown` and continue to block).
+//   'unknown'    — every provider succeeded, nothing was capped, but the earliest fetched event
+//     still didn't reach the window boundary — a genuinely short real history, OR (rarely) no
+//     timestamped events at all. Fails closed exactly as before this task (unchanged).
+export type HistoryCoverageStatus = 'exhaustive' | 'truncated' | 'partial' | 'unknown'
 
 export type UnmatchedEvidenceAuditContext = {
   // Epoch ms. The configured fetch window's start boundary for this scan (scanTimestamp minus the
@@ -481,6 +507,13 @@ export type UnmatchedEvidenceAuditContext = {
   // absorb normal on-chain gaps without loosening the check into "any short history counts".
   windowBoundaryToleranceMs?: number
   scanWindowDays?: number
+  // HISTORY COVERAGE INPUTS, DISCLOSED, ADDITIVE (boundary-model follow-up task): real signals only
+  // — this module has no visibility into provider fetch results itself, so the caller (which does)
+  // supplies them. Both default to false (unset) for backward compatibility with any existing
+  // caller that hasn't been updated — that caller gets the OLD 'exhaustive'-or-'unknown' behavior
+  // exactly as before, never a silently different classification.
+  anyProviderAtEventCap?: boolean
+  anyProviderFetchFailed?: boolean
 }
 
 export type UnmatchedEvidenceAudit = {
@@ -488,25 +521,40 @@ export type UnmatchedEvidenceAudit = {
   structurallyInvalidBuys: number
   unknownBuys: number
   preWindowInventoryExits: number
+  // TRUNCATED-HISTORY DISCLOSURE, DISCLOSED, ADDITIVE (boundary-model follow-up task): sells that
+  // would have qualified as pre_window_inventory_exit but coverage was only 'truncated' — real
+  // count, never folded into `preWindowInventoryExits` (which would falsely claim a proven full
+  // window) and never folded into `unknownSells`/the blocking denominator (which would hard-block
+  // an otherwise-verified sample over provider page-cap truncation, the confirmed production bug).
+  preWindowInventoryExitsUnprovenDueToTruncation: number
   transferDistributionSells: Partial<Record<EventClassification, number>>
   structurallyInvalidSells: number
   unknownSells: number
   unmatchedIdentityJoinFailures: number
   // BLOCKING COUNTS, DISCLOSED (requirement #4): only these two feed the structural-consistency
-  // gate's denominator/decision below — open positions and pre-window exits are disclosed but never
-  // invalidate an independently verified closed lot.
+  // gate's denominator/decision below — open positions and pre-window exits (proven or
+  // truncation-disclosed) are disclosed but never invalidate an independently verified closed lot.
   structurallyInvalidOrUnknownBuys: number
   structurallyInvalidOrUnknownSells: number
   structuralCoverageNumerator: number
   structuralCoverageDenominator: number
   structuralCoverage: number | null
+  // HISTORY COVERAGE STATUS, DISCLOSED (boundary-model follow-up task): see HistoryCoverageStatus's
+  // own header for the full four-way disclosure this replaces a single boolean with.
+  historyCoverageStatus: HistoryCoverageStatus
   // WINDOW BOUNDARY PROOF, DISCLOSED (bounded-sample-gate follow-up task, requirement #2): real —
-  // true only when this scan's earliest fetched event genuinely reached (or predates) the
-  // configured window's start boundary within tolerance, exactly the same signal
-  // `pre_window_inventory_exit` detection above already relies on. A caller (the public PnL gate)
-  // needing to prove "the provider window boundary was reached" reads this field rather than
-  // re-deriving it.
+  // true ONLY when historyCoverageStatus is 'exhaustive' (the earliest fetched event genuinely
+  // reached the configured window's start boundary within tolerance, with nothing capped or
+  // failed). UNCHANGED MEANING from before this task — still never true for a truncated fetch, so a
+  // caller reading this field alone never sees a false full-window claim.
   windowBoundaryProven: boolean
+  // BOUNDED-SAMPLE ADMISSION SIGNAL, DISCLOSED, ADDITIVE (boundary-model follow-up task): true for
+  // BOTH 'exhaustive' and 'truncated' coverage — the real signal the bounded (partial, 90-day)
+  // sample gate should admit on, since a page-capped-but-otherwise-healthy fetch is disclosed via
+  // `historyCoverageStatus`/`preWindowInventoryExitsUnprovenDueToTruncation` above rather than
+  // silently hard-blocking. Still false (fail-closed, unchanged from before this task) for
+  // 'partial' (a genuine provider failure) and 'unknown' (a fetch that proved nothing, cap or not).
+  boundedSampleWindowSafe: boolean
   // DIAGNOSTIC ONLY, ADDITIVE, DISCLOSED (window-boundary-proof audit task): the real evidence
   // behind `windowBoundaryProven` above and behind every sell this pass declined to classify as a
   // pre-window exit. Changes NO decision — every counter above, `windowBoundaryProven` itself, and
@@ -599,6 +647,21 @@ export function computeUnmatchedEvidenceAudit(
   const tolerance = context.windowBoundaryToleranceMs ?? DEFAULT_WINDOW_BOUNDARY_TOLERANCE_MS
   const boundaryReached = earliestEventTimestamp !== null && earliestEventTimestamp <= context.windowStartTimestamp + tolerance
 
+  // HISTORY COVERAGE CLASSIFICATION, DISCLOSED (boundary-model follow-up task): a genuine provider
+  // failure is checked FIRST and unconditionally fails closed (`'partial'`) — a fetch that didn't
+  // even complete cleanly is not merely "boundary-unproven", the returned event set itself is
+  // suspect. Only once every provider has genuinely SUCCEEDED does a page-cap on any of them
+  // demote the result to `'truncated'` rather than letting `boundaryReached` — which cannot tell a
+  // capped fetch from a short real history — silently decide `'exhaustive'` vs `'unknown'` alone.
+  const historyCoverageStatus: HistoryCoverageStatus = context.anyProviderFetchFailed
+    ? 'partial'
+    : context.anyProviderAtEventCap
+      ? 'truncated'
+      : boundaryReached
+        ? 'exhaustive'
+        : 'unknown'
+  const boundedSampleWindowSafe = historyCoverageStatus === 'exhaustive' || historyCoverageStatus === 'truncated'
+
   const resolveJoin = (identity: UnmatchedEventIdentity): EventClassification | null => {
     const key = unmatchedJoinGroupKey(identity.chain, identity.txHash, identity.token, identity.direction)
     const candidates = groups.get(key) ?? []
@@ -622,6 +685,7 @@ export function computeUnmatchedEvidenceAudit(
   }
 
   let preWindowInventoryExits = 0
+  let preWindowInventoryExitsUnprovenDueToTruncation = 0
   let unknownSells = 0
   // DIAGNOSTIC ONLY, ADDITIVE: split the `else` branch below by its real cause without changing
   // which branch is taken — see WindowBoundaryProofDiagnostics' own header.
@@ -637,14 +701,27 @@ export function computeUnmatchedEvidenceAudit(
     }
     const tokenKeyStr = `${identity.chain}:${identity.token.toLowerCase()}`
     const earlierBuyExists = earliestBuyTimestampByToken.has(tokenKeyStr) && earliestBuyTimestampByToken.get(tokenKeyStr)! < identity.timestamp
-    if (!earlierBuyExists && boundaryReached) {
-      preWindowInventoryExits += 1
-    } else {
-      // Fail closed (requirement #8): cannot prove either a bounded-history gap or a structural
-      // defect — stays `unknown` and continues blocking, never silently excluded/guessed.
+    // CONTRADICTORY EVIDENCE, DISCLOSED (requirement: "genuine unmatched sells with contradictory
+    // or invalid evidence must still block"): an earlier in-window buy for the same token directly
+    // contradicts the pre-window hypothesis — this is never a coverage question, so it blocks
+    // unconditionally, regardless of historyCoverageStatus.
+    if (earlierBuyExists) {
       unknownSells += 1
-      if (earlierBuyExists) sellsWithEarlierBuyInWindow += 1
-      else sellsBlockedSolelyByUnprovenBoundary += 1
+      sellsWithEarlierBuyInWindow += 1
+    } else if (historyCoverageStatus === 'exhaustive') {
+      // Only status that may grant a full, proven classification — unchanged from before this task.
+      preWindowInventoryExits += 1
+    } else if (historyCoverageStatus === 'truncated') {
+      // CONFIRMED PRODUCTION FIX (boundary-model follow-up task): a page-capped-but-healthy fetch
+      // no longer collapses this whole population into `unknown`/hard-blocking — disclosed
+      // separately, excluded from the blocking denominator below, never claimed as proven.
+      preWindowInventoryExitsUnprovenDueToTruncation += 1
+    } else {
+      // 'partial' (a genuine provider failure) or 'unknown' (short real history / no timestamped
+      // evidence) — fail closed exactly as before this task: cannot prove either a bounded-history
+      // gap or a structural defect, stays `unknown` and continues blocking.
+      unknownSells += 1
+      sellsBlockedSolelyByUnprovenBoundary += 1
     }
   }
 
@@ -657,6 +734,7 @@ export function computeUnmatchedEvidenceAudit(
     structurallyInvalidBuys: 0,
     unknownBuys,
     preWindowInventoryExits,
+    preWindowInventoryExitsUnprovenDueToTruncation,
     transferDistributionSells,
     structurallyInvalidSells: 0,
     unknownSells,
@@ -666,7 +744,9 @@ export function computeUnmatchedEvidenceAudit(
     structuralCoverageNumerator,
     structuralCoverageDenominator,
     structuralCoverage: structuralCoverageDenominator > 0 ? structuralCoverageNumerator / structuralCoverageDenominator : null,
-    windowBoundaryProven: boundaryReached,
+    historyCoverageStatus,
+    windowBoundaryProven: historyCoverageStatus === 'exhaustive',
+    boundedSampleWindowSafe,
     boundaryProofDiagnostics: {
       earliestFetchedEventTimestamp: earliestEventTimestamp,
       latestFetchedEventTimestamp: latestEventTimestamp,

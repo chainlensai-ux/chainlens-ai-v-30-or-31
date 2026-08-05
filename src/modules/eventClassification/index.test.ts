@@ -597,3 +597,85 @@ test('the boundary diagnostics never alter any existing decision — every pre-e
   assert.equal(audit.structurallyInvalidBuys, 0)
   assert.equal(audit.unknownBuys, 0)
 })
+
+// =================================================================================================
+// BOUNDARY MODEL FIX — boundary-model follow-up task (production cause confirmed: Base's Alchemy
+// fetch hit the 400-event cap while both providers reported ok:true, fetched span was 82.96 days
+// against the 90-day window, boundaryReached flipped false purely from the cap, and 110 pre-window
+// exits were reclassified unknown, hard-blocking an otherwise-verified 23/24-lot sample).
+// =================================================================================================
+
+test('HARD ASSERTION (production reproduction): a page-capped-but-healthy fetch (400-event cap, 82.96-day span, 110 boundary-gated sells, 4 with earlier buys) is classified truncated, not unknown/blocking', () => {
+  const f = boundaryProofFixture()
+  // Reproduces the exact production shape: no anchor event (the cap dropped it), every provider
+  // otherwise healthy — `anyProviderAtEventCap: true`, `anyProviderFetchFailed: false`.
+  const classified = classifyEvents([...f.earlierBuys, ...f.sellEvents], noRouters)
+  const audit = computeUnmatchedEvidenceAudit(classified, 23, [], f.sellIdentities, {
+    ...bpCtx, anyProviderAtEventCap: true, anyProviderFetchFailed: false,
+  })
+
+  assert.equal(audit.historyCoverageStatus, 'truncated')
+  assert.equal(audit.boundedSampleWindowSafe, true, 'truncated coverage still admits the bounded sample')
+  // NO FALSE FULL-WINDOW CLAIM, DISCLOSED: windowBoundaryProven stays false — truncation is never
+  // presented as a proven exhaustive fetch.
+  assert.equal(audit.windowBoundaryProven, false)
+
+  // The 110 boundary-gated sells are neither a proven pre-window exit NOR folded into unknown/
+  // blocking — they get their own, separately disclosed, non-blocking bucket.
+  assert.equal(audit.preWindowInventoryExits, 0, 'never claimed as PROVEN under truncated coverage')
+  assert.equal(audit.preWindowInventoryExitsUnprovenDueToTruncation, 110)
+  // Only the 5 sells with a genuine earlier in-window buy (contradictory evidence) still block.
+  assert.equal(audit.unknownSells, 5)
+  assert.equal(audit.structurallyInvalidOrUnknownSells, 5)
+  assert.equal(audit.structuralCoverageDenominator, 23 + 0 + 5)
+})
+
+test('HARD ASSERTION: a genuine provider failure (partial) still hard-blocks even when a provider also happens to be at its event cap', () => {
+  const f = boundaryProofFixture()
+  const classified = classifyEvents([...f.earlierBuys, ...f.sellEvents], noRouters)
+  const audit = computeUnmatchedEvidenceAudit(classified, 23, [], f.sellIdentities, {
+    ...bpCtx, anyProviderAtEventCap: true, anyProviderFetchFailed: true,
+  })
+  assert.equal(audit.historyCoverageStatus, 'partial', 'a genuine fetch failure outranks a mere cap')
+  assert.equal(audit.boundedSampleWindowSafe, false, 'fail-closed, unchanged from before this task')
+  assert.equal(audit.windowBoundaryProven, false)
+  assert.equal(audit.preWindowInventoryExits, 0)
+  assert.equal(audit.preWindowInventoryExitsUnprovenDueToTruncation, 0)
+  assert.equal(audit.unknownSells, 115, 'the 110 unproven + the 5 contradictory all stay blocking under a genuine provider failure')
+})
+
+test('a short real wallet history (no cap, no failure, boundary genuinely not reached) still fails closed exactly as before this task', () => {
+  const f = boundaryProofFixture()
+  const classified = classifyEvents([...f.earlierBuys, ...f.sellEvents], noRouters)
+  const audit = computeUnmatchedEvidenceAudit(classified, 23, [], f.sellIdentities, {
+    ...bpCtx, anyProviderAtEventCap: false, anyProviderFetchFailed: false,
+  })
+  assert.equal(audit.historyCoverageStatus, 'unknown')
+  assert.equal(audit.boundedSampleWindowSafe, false)
+  assert.equal(audit.preWindowInventoryExitsUnprovenDueToTruncation, 0)
+  assert.equal(audit.unknownSells, 115)
+})
+
+test('a genuinely exhaustive fetch (no cap, no failure, boundary reached) is unaffected by this task — byte-for-byte prior behavior', () => {
+  const f = boundaryProofFixture()
+  const classified = classifyEvents([f.anchorAtWindowStart, ...f.earlierBuys, ...f.sellEvents], noRouters)
+  const audit = computeUnmatchedEvidenceAudit(classified, 23, [], f.sellIdentities, {
+    ...bpCtx, anyProviderAtEventCap: false, anyProviderFetchFailed: false,
+  })
+  assert.equal(audit.historyCoverageStatus, 'exhaustive')
+  assert.equal(audit.boundedSampleWindowSafe, true)
+  assert.equal(audit.windowBoundaryProven, true)
+  assert.equal(audit.preWindowInventoryExits, 110)
+  assert.equal(audit.preWindowInventoryExitsUnprovenDueToTruncation, 0)
+  assert.equal(audit.unknownSells, 5)
+})
+
+test('an unmigrated caller that never supplies anyProviderAtEventCap/anyProviderFetchFailed gets byte-for-byte the pre-existing behavior', () => {
+  const f = boundaryProofFixture()
+  const classified = classifyEvents([...f.earlierBuys, ...f.sellEvents], noRouters)
+  const audit = computeUnmatchedEvidenceAudit(classified, 23, [], f.sellIdentities, bpCtx)
+  assert.equal(audit.historyCoverageStatus, 'unknown', 'defaults to false/false — old boundaryReached=false path, never silently truncated')
+  assert.equal(audit.preWindowInventoryExits, 0)
+  assert.equal(audit.preWindowInventoryExitsUnprovenDueToTruncation, 0)
+  assert.equal(audit.unknownSells, 115)
+})

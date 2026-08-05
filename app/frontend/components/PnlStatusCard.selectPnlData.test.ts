@@ -45,6 +45,7 @@ function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}
       excludedNonTradeBuys: {}, excludedNonTradeSells: {}, excludedUnmatchedByClassification: {}, unmatchedIdentityJoinFailures: 0,
       structuralCoverageNumerator: 27, structuralCoverageDenominator: 31,
       verifiedClosedLots: 19, structuralClosedLots: 27, openPositionBuys: 94, preWindowInventoryExits: 110,
+      preWindowInventoryExitsUnprovenDueToTruncation: 0, historyCoverageStatus: 'exhaustive',
       invalidOrUnknownUnmatchedEvents: 4, scanWindowDays: 90, verifiedPricingCoverage: 0.7037,
       engineDivergenceDiagnostic: { fifoClosedLots: 27, pnlClosedLots: 9, agrees: false },
       boundedSampleEligible: true, boundedSampleBlockingReasons: [], fullAvailabilityBlockingReasons: [],

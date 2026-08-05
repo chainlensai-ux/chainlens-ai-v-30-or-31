@@ -652,6 +652,36 @@ describe('pnlReconciliation', () => {
     assert.ok(summary.publicPnlGateAudit.fullAvailabilityBlockingReasons.some((r2) => r2.rule === 'missing_evidence_count'))
   })
 
+  it('HARD ASSERTION (boundary-model follow-up task, production reproduction): a page-capped-but-healthy fetch (historyCoverageStatus truncated, windowBoundaryProven false) still publishes a verified 23/24-lot bounded sample, with truncated-history disclosure and no false full-window claim', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    const verifiedLots = Array.from({ length: 23 }, (_, i) => lot({ lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`, realizedPnlUsd: -2.564347826086957 }))
+    const unpricedLots = [lot({ lotId: 'u0', openedTxHash: '0xub0', closedTxHash: '0xus0', costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' })]
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [...verifiedLots, ...unpricedLots], unmatchedBuys: 88, unmatchedSells: 115 }),
+      pnlEngineResult: pnl(9),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0, genuineUnmatchedSells: 4,
+        openPositionBuys: 88, preWindowInventoryExits: 0,
+        preWindowInventoryExitsUnprovenDueToTruncation: 110,
+        historyCoverageStatus: 'truncated',
+        scanWindowDays: 90,
+        windowBoundaryProven: false,
+        boundedSampleWindowSafe: true,
+      },
+    })
+    assert.equal(summary.publicPnlStatus, 'partial', 'the confirmed production bug: page-cap truncation must not hard-block an otherwise-verified sample')
+    assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 23)
+    assert.equal(summary.publicPnlGateAudit.structuralClosedLots, 24)
+    assert.equal(summary.publicPnlGateAudit.boundedSampleEligible, true)
+    assert.deepEqual(summary.publicPnlGateAudit.boundedSampleBlockingReasons, [])
+    assert.equal(summary.publicPnlGateAudit.preWindowInventoryExits, 0, 'never claimed as a PROVEN pre-window exit under truncated coverage')
+    assert.equal(summary.publicPnlGateAudit.preWindowInventoryExitsUnprovenDueToTruncation, 110)
+    assert.equal(summary.publicPnlGateAudit.historyCoverageStatus, 'truncated')
+    assert.ok(summary.warning?.includes('truncated'), 'reduced-confidence disclosure, never a silent identical warning to an exhaustive scan')
+    assert.ok(summary.warning?.includes('110'))
+  })
+
   it('HARD ASSERTION: the bounded path fails closed when the provider window boundary is not proven, even with otherwise-eligible thresholds', async () => {
     const r = createPnlReconciliation({ logger: quiet })
     const verifiedLots = Array.from({ length: 18 }, (_, i) => lot({ lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`, realizedPnlUsd: -200.55 }))

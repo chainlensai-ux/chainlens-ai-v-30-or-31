@@ -24,6 +24,7 @@ function reconciled(overrides: Partial<PnlReconciliationSummary> = {}): PnlRecon
       excludedNonTradeBuys: {}, excludedNonTradeSells: {}, excludedUnmatchedByClassification: {}, unmatchedIdentityJoinFailures: null,
       structuralCoverageNumerator: 1, structuralCoverageDenominator: 1,
       verifiedClosedLots: 1, structuralClosedLots: 1, openPositionBuys: 0, preWindowInventoryExits: 0,
+      preWindowInventoryExitsUnprovenDueToTruncation: 0, historyCoverageStatus: null,
       invalidOrUnknownUnmatchedEvents: 0, scanWindowDays: null, verifiedPricingCoverage: 1,
       engineDivergenceDiagnostic: { fifoClosedLots: 1, pnlClosedLots: 1, agrees: true },
       boundedSampleEligible: false, boundedSampleBlockingReasons: [], fullAvailabilityBlockingReasons: [],

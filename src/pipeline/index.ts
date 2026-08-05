@@ -2666,9 +2666,23 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // now receives ONLY the blocking-only counts as its "genuine unmatched" evidence — see
   // computeUnmatchedEvidenceAudit's own header for the full, conservative pre-window detection
   // logic and its fail-closed default.
+  // HISTORY COVERAGE INPUTS, DISCLOSED (boundary-model follow-up task — confirmed production root
+  // cause: Base's Alchemy fetch hit MAX_RAW_EVENTS_PER_PROVIDER (400/400) with both providers
+  // otherwise reporting `ok: true`, so `earliestFetchedEventTimestamp` reflected the CAP, not the
+  // wallet's real history). Computed here, from the same real `providerResults` this scan's own
+  // [window-boundary-proof-audit]/[pipeline] providerDiagnostics logs already read — never guessed,
+  // never derived from timestamps alone. `anyProviderFetchFailed` is checked separately (a genuine
+  // failure, not a cap, is a different and still fail-closed case — see eventClassification's own
+  // HistoryCoverageStatus header).
+  const anyProviderAtEventCap = providerResults.some((r) =>
+    r.providerResults.goldrush.events.length >= MAX_RAW_EVENTS_PER_PROVIDER || r.providerResults.alchemy.events.length >= MAX_RAW_EVENTS_PER_PROVIDER)
+  const anyProviderFetchFailed = providerResults.some((r) => r.providerStatus !== 'ok')
   const unmatchedEvidenceAudit = computeUnmatchedEvidenceAudit(
     structuralCoverageClassified, fifoAndPnl.matchedLots.length, fifoAndPnl.unmatchedBuyEvents, fifoAndPnl.unmatchedSellEvents,
-    { windowStartTimestamp: Date.parse(scanTimestamp) - PROVIDER_FETCH_WINDOW_DAYS_USED * 24 * 60 * 60 * 1000, scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED },
+    {
+      windowStartTimestamp: Date.parse(scanTimestamp) - PROVIDER_FETCH_WINDOW_DAYS_USED * 24 * 60 * 60 * 1000, scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
+      anyProviderAtEventCap, anyProviderFetchFailed,
+    },
   )
   // [window-boundary-proof-audit], DISCLOSED, DIAGNOSTIC ONLY (window-boundary-proof audit task).
   // Read-only: derives everything from data already computed above and changes no decision.
@@ -2695,8 +2709,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     const boundaryDiag = unmatchedEvidenceAudit.boundaryProofDiagnostics
     // eslint-disable-next-line no-console
     console.warn('[window-boundary-proof-audit]', {
+      historyCoverageStatus: unmatchedEvidenceAudit.historyCoverageStatus,
+      boundedSampleWindowSafe: unmatchedEvidenceAudit.boundedSampleWindowSafe,
+      anyProviderAtEventCap,
+      anyProviderFetchFailed,
       windowBoundaryProven: unmatchedEvidenceAudit.windowBoundaryProven,
       preWindowInventoryExits: unmatchedEvidenceAudit.preWindowInventoryExits,
+      preWindowInventoryExitsUnprovenDueToTruncation: unmatchedEvidenceAudit.preWindowInventoryExitsUnprovenDueToTruncation,
       unknownSells: unmatchedEvidenceAudit.unknownSells,
       unmatchedIdentityJoinFailures: unmatchedEvidenceAudit.unmatchedIdentityJoinFailures,
       // The decisive discriminator: when this accounts for the whole unknown-sell population, the
@@ -2947,8 +2966,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       unmatchedIdentityJoinFailures: unmatchedEvidenceAudit.unmatchedIdentityJoinFailures,
       openPositionBuys: unmatchedEvidenceAudit.openPositionBuys,
       preWindowInventoryExits: unmatchedEvidenceAudit.preWindowInventoryExits,
+      preWindowInventoryExitsUnprovenDueToTruncation: unmatchedEvidenceAudit.preWindowInventoryExitsUnprovenDueToTruncation,
+      historyCoverageStatus: unmatchedEvidenceAudit.historyCoverageStatus,
       scanWindowDays: PROVIDER_FETCH_WINDOW_DAYS_USED,
       windowBoundaryProven: unmatchedEvidenceAudit.windowBoundaryProven,
+      boundedSampleWindowSafe: unmatchedEvidenceAudit.boundedSampleWindowSafe,
     },
     canonicalSampleSelector,
   })

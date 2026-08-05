@@ -200,13 +200,31 @@ export type StructuralCoverageDenominatorAudit = {
   // genuineUnmatchedBuys/Sells, so it never reaches the gate as blocking evidence.
   openPositionBuys?: number
   preWindowInventoryExits?: number
+  // TRUNCATED-HISTORY DISCLOSURE, DISCLOSED, ADDITIVE (boundary-model follow-up task): real count
+  // from eventClassification's computeUnmatchedEvidenceAudit — sells that would have qualified as
+  // pre-window exits but the fetch's coverage was only 'truncated' (a provider/direction hit its
+  // bounded-page event cap while every provider otherwise succeeded). Disclosed here for the same
+  // reason `preWindowInventoryExits` is — excluded from `genuineUnmatchedSells`/blocking, but never
+  // conflated with a PROVEN pre-window exit.
+  preWindowInventoryExitsUnprovenDueToTruncation?: number
   scanWindowDays?: number
+  // HISTORY COVERAGE STATUS, DISCLOSED, ADDITIVE (boundary-model follow-up task): real, from
+  // eventClassification's computeUnmatchedEvidenceAudit.historyCoverageStatus — see its own header.
+  historyCoverageStatus?: 'exhaustive' | 'truncated' | 'partial' | 'unknown'
   // WINDOW BOUNDARY PROOF, DISCLOSED (bounded-sample-gate follow-up task, requirement #2): real,
   // from eventClassification's computeUnmatchedEvidenceAudit.windowBoundaryProven — never guessed.
-  // Omitted/false means the bounded-verified-sample path cannot be earned (fail closed): without
-  // proof the fetch actually reached the configured window's edge, an unmatched sell with no
-  // earlier buy cannot be honestly distinguished from a genuinely invalid one.
+  // UNCHANGED MEANING (boundary-model follow-up task): true only for 'exhaustive' coverage — this
+  // field alone never claims a truncated fetch proved the full window.
   windowBoundaryProven?: boolean
+  // BOUNDED-SAMPLE ADMISSION SIGNAL, DISCLOSED, ADDITIVE (boundary-model follow-up task): real, from
+  // eventClassification's computeUnmatchedEvidenceAudit.boundedSampleWindowSafe — true for BOTH
+  // 'exhaustive' and 'truncated' coverage. THIS is what the bounded (partial, 90-day) sample gate
+  // now admits on below — never `windowBoundaryProven` alone, which would still hard-block the
+  // confirmed production case (Base's Alchemy fetch capped at 400/400, both providers healthy,
+  // 82.96-day span, 110 boundary-gated sells) even though it is disclosed and safe to publish.
+  // Omitted (a caller that hasn't been updated) falls back to `windowBoundaryProven` — byte-for-byte
+  // the prior gate behavior, never silently more permissive for an unmigrated caller.
+  boundedSampleWindowSafe?: boolean
 }
 
 // CANONICAL SAMPLE SELECTOR, DISCLOSED (canonical-manifest-replay follow-up task, requirement #5 —
@@ -282,6 +300,13 @@ export type PublicPnlGateAudit = {
   structuralClosedLots: number
   openPositionBuys: number
   preWindowInventoryExits: number
+  // TRUNCATED-HISTORY DISCLOSURE, DISCLOSED, ADDITIVE (boundary-model follow-up task): real,
+  // from denomAudit.preWindowInventoryExitsUnprovenDueToTruncation — see its own header. 0 when the
+  // caller didn't supply it (never estimated).
+  preWindowInventoryExitsUnprovenDueToTruncation: number
+  // HISTORY COVERAGE STATUS, DISCLOSED, ADDITIVE (boundary-model follow-up task): real, from
+  // denomAudit.historyCoverageStatus — null when the caller didn't supply it (never guessed).
+  historyCoverageStatus: 'exhaustive' | 'truncated' | 'partial' | 'unknown' | null
   invalidOrUnknownUnmatchedEvents: number
   scanWindowDays: number | null
   verifiedPricingCoverage: number | null
@@ -1352,7 +1377,14 @@ export function createPnlReconciliation(config: Config = {}) {
       // about fifoEngine's own PnL arithmetic changes.
       const hardInvalidFifoResult = input.fifoEngineResult.integrityFlags.hardInvalid
       const windowBoundaryProven = denomAudit?.windowBoundaryProven ?? false
-      const boundedSampleEligible = verifiedLotThresholdMet && pricingCoverageThresholdMet && !hardInvalidFifoResult && windowBoundaryProven && realizedPnlUsd !== null
+      // BOUNDED-SAMPLE WINDOW ADMISSION, DISCLOSED (boundary-model follow-up task — confirmed
+      // production root cause: a page-capped-but-healthy provider fetch made `windowBoundaryProven`
+      // false purely from truncation, hard-blocking an otherwise-verified sample). The bounded path
+      // now admits on `boundedSampleWindowSafe` (true for 'exhaustive' AND 'truncated' coverage —
+      // see eventClassification's own header), falling back to `windowBoundaryProven` for a caller
+      // that hasn't supplied the new field — byte-for-byte the prior gate behavior in that case.
+      const boundedSampleWindowSafe = denomAudit?.boundedSampleWindowSafe ?? windowBoundaryProven
+      const boundedSampleEligible = verifiedLotThresholdMet && pricingCoverageThresholdMet && !hardInvalidFifoResult && boundedSampleWindowSafe && realizedPnlUsd !== null
       // CANONICAL SAMPLE UNAVAILABLE OVERRIDE, DISCLOSED (requirement #4 — genuine fail-closed): a
       // valid manifest exists but this scan could not reproduce its required evidence. The public
       // result must then be degraded/unavailable — never the live candidate sample that happens to
@@ -1457,7 +1489,7 @@ export function createPnlReconciliation(config: Config = {}) {
       if (hardInvalidFifoResult) {
         boundedSampleBlockingReasons.push({ rule: 'fifo_result_hard_invalid', threshold: 'false', actualValue: 'true' })
       }
-      if (!windowBoundaryProven) {
+      if (!boundedSampleWindowSafe) {
         boundedSampleBlockingReasons.push({ rule: 'window_boundary_proven', threshold: 'true', actualValue: 'false' })
       }
       if (realizedPnlUsd === null) {
@@ -1487,6 +1519,8 @@ export function createPnlReconciliation(config: Config = {}) {
         structuralClosedLots: fifoLots.length,
         openPositionBuys: denomAudit?.openPositionBuys ?? 0,
         preWindowInventoryExits: denomAudit?.preWindowInventoryExits ?? 0,
+        preWindowInventoryExitsUnprovenDueToTruncation: denomAudit?.preWindowInventoryExitsUnprovenDueToTruncation ?? 0,
+        historyCoverageStatus: denomAudit?.historyCoverageStatus ?? null,
         invalidOrUnknownUnmatchedEvents: gateUnmatchedBuys + gateUnmatchedSells,
         scanWindowDays: denomAudit?.scanWindowDays ?? null,
         verifiedPricingCoverage,
@@ -1502,8 +1536,15 @@ export function createPnlReconciliation(config: Config = {}) {
       // BOUNDED-SAMPLE WARNING, DISCLOSED (requirement #7): set only when 'partial' was earned via
       // the bounded verified-sample path — never for the legacy near-miss fallback (which is a
       // near-complete result, not a deliberately bounded one) or for 'available'/'unavailable'.
+      // TRUNCATED-HISTORY DISCLOSURE, DISCLOSED, ADDITIVE (boundary-model follow-up task): reduces
+      // confidence in the human-readable warning (never in any numeric figure — realizedPnlUsd and
+      // every gate count are unaffected) whenever the bounded sample was admitted via truncated,
+      // not exhaustive, coverage — so a reader is told the fetch hit a provider page cap rather than
+      // silently seeing the same "verified sample" wording an exhaustive scan would get.
       const warning = publicPnlStatus === 'partial' && boundedSampleEligible
-        ? `Verified ${denomAudit?.scanWindowDays ?? 90}-day sample, not complete wallet history`
+        ? denomAudit?.historyCoverageStatus === 'truncated'
+          ? `Verified ${denomAudit?.scanWindowDays ?? 90}-day sample, not complete wallet history — provider history was truncated (event cap reached), so ${denomAudit?.preWindowInventoryExitsUnprovenDueToTruncation ?? 0} additional pre-window exit(s) could not be proven and are excluded from this sample`
+          : `Verified ${denomAudit?.scanWindowDays ?? 90}-day sample, not complete wallet history`
         : null
 
       const summary: PnlReconciliationSummary = {
