@@ -15,6 +15,17 @@ export {
 
 export type WalletScanJobStatus = 'queued' | 'running' | 'done' | 'failed'
 
+// STAGE PROGRESS, DISCLOSED (perceived-speed follow-up task, explicit requirement: "Split UI stages
+// clearly" / never leave the user staring at a blank/generic spinner for the whole scan). Real,
+// already-existing per-module checkpoints (workers/walletScanV2.ts's own reportProgress, and one
+// added checkpoint before the core FIFO/PnL/manifest call) — never a fabricated timer-based guess.
+// `elapsedMs` is a real `Date.now() - scanStartedAt` delta, stamped at the moment this stage began.
+export type WalletScanJobProgress = {
+  stage: string
+  label: string
+  elapsedMs: number
+}
+
 export type WalletScanJobMetadata = {
   jobId: string
   wallet: string
@@ -26,6 +37,7 @@ export type WalletScanJobMetadata = {
   ip?: string
   error?: string
   finishedAt?: number
+  progress?: WalletScanJobProgress
 }
 
 export type WalletScanJobPayload = {
@@ -98,6 +110,25 @@ export async function readWalletScanJob(jobId: string): Promise<WalletScanJobMet
   } catch (err) {
     logQueueFailure('[wallet-scan-queue] read-job-failure', err)
     throw statusUnavailable(err)
+  }
+}
+
+// BEST-EFFORT PROGRESS UPDATE, DISCLOSED (perceived-speed follow-up task): a plain read-modify-write
+// over the SAME job record `claimWalletScanPayload` already maintains during the running phase —
+// no new storage primitive, no new KV client. NOT atomic under concurrent writes (same accepted
+// tradeoff as src/modules/scanJobs.ts's own setJobProgress) — a dropped/stale progress update never
+// affects `status`/the final result, which the worker's own `publishFinal` still writes directly and
+// unconditionally once the scan completes. Never throws — a missing job, unconfigured KV, or a
+// transient failure is a silent no-op; there is nothing useful to update and the real scan must
+// never be slowed or blocked by an observability write.
+export async function updateWalletScanJobProgress(jobId: string, progress: WalletScanJobProgress): Promise<void> {
+  if (!walletScanRedisConfigured()) return
+  try {
+    const job = await kv.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
+    if (!job) return
+    await kv.set(walletScanJobKey(jobId), { ...job, progress, updatedAt: Date.now() })
+  } catch (err) {
+    logQueueFailure('[wallet-scan-queue] update-progress-failure', err)
   }
 }
 

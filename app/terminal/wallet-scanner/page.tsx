@@ -29,7 +29,7 @@
 import { useEffect, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
-import { scanWalletV2 } from '@/app/frontend/api/scanWallet'
+import { scanWalletV2, type WalletScanStageProgress } from '@/app/frontend/api/scanWallet'
 import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
 import { logScanIdentityIfDev } from '@/app/frontend/lib/walletScanIdentity'
 import {
@@ -223,11 +223,15 @@ export default function WalletScannerPage() {
   const [loading, setLoading] = useState(false)
   const [jobStatusMessage, setJobStatusMessage] = useState<string | null>(null)
   const [currentJobId, setCurrentJobId] = useState<string | null>(null)
-  // PROGRESS, ADDED DISCLOSED (module-progress-reporting task): mirrors the optional `progress`
-  // field on ScanJobStatusResponse (app/frontend/api/scanWallet.ts) — populated by the same
-  // onUpdate callback that already sets jobStatusMessage, purely additive to the loading-state UI
-  // below; does not touch result/error rendering.
-  const [scanProgress, setScanProgress] = useState<{ currentModule: number; totalModules: number; moduleName: string } | null>(null)
+  // STAGE PROGRESS, DISCLOSED (perceived-speed follow-up task — replaces the previously-dead
+  // {currentModule,totalModules,moduleName} shape this state used to hold: that shape was reported
+  // by workers/walletScanV2.ts to a DIFFERENT job-record namespace [src/modules/scanJobs.ts] the
+  // live poll route this page actually calls never reads — see this file's own now-stale header
+  // comment above and app/frontend/api/scanWallet.ts's WalletScanStageProgress for the real,
+  // currently-wired source: app/api/wallet-scan/[jobId]/route.ts's own job-record `progress` field,
+  // written by the SAME worker via src/modules/walletScanQueue.ts's updateWalletScanJobProgress).
+  // Real, six-literal-label stage text and a real elapsed-ms figure, never fabricated.
+  const [scanProgress, setScanProgress] = useState<WalletScanStageProgress | null>(null)
   // MODULE ERRORS, ADDED DISCLOSED (stuck-at-module-11 task): mirrors the optional `moduleErrors`
   // field the completed job's status carries (see app/frontend/api/scanWallet.ts) — captured off
   // the same onUpdate callback that already fires on the final 'completed' status before
@@ -419,10 +423,15 @@ export default function WalletScannerPage() {
     try {
       // JOB/POLL CALL: scanWalletV2() enqueues immediately, then polls status while the
       // background queue runs the unchanged full scan worker outside this HTTP request.
-      const response = await scanWalletV2(address, ['base', 'eth'], mode, ({ jobId, status }) => {
+      const response = await scanWalletV2(address, ['base', 'eth'], mode, ({ jobId, status, progress }) => {
         scanJobId = jobId
         setCurrentJobId(jobId)
         setJobStatusMessage(status === 'queued' ? 'queued — still scanning…' : status === 'running' ? 'running — still scanning…' : status)
+        // REAL STAGE LABEL, DISCLOSED: only ever set from a real backend checkpoint (see
+        // WalletScanStageProgress's own header) — never advanced by a client-side timer/guess, and
+        // never cleared back to null mid-scan (a later poll simply hasn't reached a new checkpoint
+        // yet — the last real stage stays visible rather than the UI reverting to a generic spinner).
+        if (progress) setScanProgress(progress)
       })
       setScanDurationMs(Date.now() - scanStartedAt)
       // CONFIRMED ROOT-CAUSE FIX, DISCLOSED (live-value staleness task): both failure paths below
@@ -627,7 +636,14 @@ export default function WalletScannerPage() {
                 </div>
               )}
               <div>
-              Scanning {input.trim()}…{jobStatusMessage ? ` (${jobStatusMessage})` : ' (queued — still scanning…)'}
+              {/* STAGED LABEL, DISCLOSED (perceived-speed follow-up task, "Split UI stages clearly"
+                  requirement): prefers the real backend stage label the whole time one is known —
+                  the last real checkpoint stays visible across polls that haven't reached a new one
+                  yet (never reverts to the generic "still scanning…" once real stage data exists).
+                  Falls back to the generic queued/running text only before the FIRST real stage
+                  checkpoint has been reported. */}
+              Scanning {input.trim()}…{' '}
+              {scanProgress ? `(${scanProgress.label})` : jobStatusMessage ? `(${jobStatusMessage})` : '(queued — still scanning…)'}
               {currentJobId && (
                 <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>
                   Job {currentJobId}
@@ -635,7 +651,7 @@ export default function WalletScannerPage() {
               )}
               {scanProgress && (
                 <div style={{ marginTop: '6px', fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>
-                  Module {scanProgress.currentModule}/{scanProgress.totalModules}: {scanProgress.moduleName}
+                  {(scanProgress.elapsedMs / 1000).toFixed(1)}s elapsed
                 </div>
               )}
               </div>

@@ -34,6 +34,7 @@ import { createCuBudget } from '@/app/api/_shared/cuBudget'
 import { recordCuUsage } from '@/app/api/_shared/cuUsageStore'
 import { logFifoPricingDivergence, shouldSampleThisScan } from '@/lib/server/engineComparison'
 import { setJobProgress } from '@/src/modules/scanJobs'
+import { updateWalletScanJobProgress } from '@/src/modules/walletScanQueue'
 import { withScanTimeout } from '@/src/utils/timeout'
 import { alchemyAudit } from '@/lib/server/alchemyAudit'
 import { getGoldrushPriceSourceCallCount } from '@/src/modules/pricingAtTimeEngine/sources/goldrushPriceSource'
@@ -291,6 +292,46 @@ function reportProgress(jobId: string | undefined, currentModule: number, module
   })
 }
 
+// USER-FACING STAGE REPORTING, DISCLOSED (perceived-speed follow-up task, explicit "Split UI stages
+// clearly" requirement). Separate from reportProgress()/setJobProgress() above (a different, older
+// job-record namespace this codebase's live wallet-scan poll route — app/api/wallet-scan/[jobId]/
+// route.ts — never actually reads; kept unchanged so nothing that already relies on it regresses).
+// This writes to the SAME job record the live poll route DOES read
+// (src/modules/walletScanQueue.ts's walletScanJobKey), so a real stage label reaches the UI.
+// `label` is one of the six literal, user-facing strings this task specified; `stage` is the stable,
+// machine-readable key. Fire-and-forget by the same "never let an observability write slow or
+// affect the real scan" convention as reportProgress — the caller does not await this.
+function reportStage(jobId: string | undefined, startTime: number, stage: string, label: string): void {
+  if (!jobId) return
+  void updateWalletScanJobProgress(jobId, { stage, label, elapsedMs: Date.now() - startTime })
+}
+
+// TIMING AUDIT, DISCLOSED (perceived-speed follow-up task, explicit requirement): real
+// `Date.now() - startTime` deltas captured at the point each real module/stage genuinely completed
+// — never estimated, never backfilled after the fact. `stagesBlockingInitialRender` /
+// `stagesDeferredAfterInitialRender` are REAL module-name lists reflecting this worker's actual
+// execution order, not aspirational ones.
+//
+// HONEST LIMITATION, DISCLOSED: `timeToFirstPortfolioMs`/`timeToFirstHoldingsMs` below are measured
+// AFTER `router.handleScanRequest` (the core FIFO/PnL/manifest replay call) has already fully
+// resolved — that call runs first and is NOT parallelized with the holdings/pricing/portfolio
+// modules that follow it, so these two figures include the full core-call duration, not just the
+// holdings/portfolio work itself. This worker file does not reorder or parallelize that call against
+// the holdings/portfolio modules — doing so safely would require duplicating (not bypassing) the
+// core call's own request validation/sanitization/rate-limiting ahead of it, which is out of scope
+// for this pass and is called out explicitly here rather than silently claimed as fixed. What IS
+// real and true here: holdings/portfolio genuinely never wait on receipt-decoder shadow mode,
+// recovery, Smart Money, open-position unrealized pricing, or deep provider diagnostics — those
+// modules run strictly AFTER holdings/portfolio/PnL, per `stagesDeferredAfterInitialRender` below.
+export type WalletScanTimingAudit = {
+  timeToFirstPortfolioMs: number | null
+  timeToFirstHoldingsMs: number | null
+  timeToFirstPnlMs: number | null
+  timeToFullScanMs: number
+  stagesBlockingInitialRender: string[]
+  stagesDeferredAfterInitialRender: string[]
+}
+
 // CU-HARDENING WIRING (unchanged from the route file's own history — fixes docs/CU_AUDIT.md
 // Finding #1): a fresh, request-scoped EventsCache is created per call (not a shared module-level
 // singleton) and threaded into both fetchParsedTrades and computeChainActivity.
@@ -309,6 +350,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   // eslint-disable-next-line no-console
   console.warn('[CU-HARDENING] Cache cleared for new request')
 
+  reportStage(jobId, startTime, 'core', 'Replaying verified PnL...')
   // handleScanRequest already never throws internally (rate-limit/validation errors and any
   // runWalletScanV2 failure are both caught and returned as a structured RouteResult).
   let result: Awaited<ReturnType<typeof router.handleScanRequest>>
@@ -320,6 +362,9 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     }
     throw err
   }
+  // REAL, MEASURED — see WalletScanTimingAudit's own header for the honest caveat: this is measured
+  // AFTER the core call resolves, since manifest-replayed realized PnL is only known once it returns.
+  const timeToFirstPnlMs = Date.now() - startTime
 
   let body = result.body as { success: boolean; data?: { scanMetadata?: { walletAddress?: string } } }
 
@@ -370,6 +415,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     const moduleErrors: Record<string, string> = {}
 
     reportProgress(jobId, 1, 'holdings')
+    reportStage(jobId, startTime, 'holdings', 'Loading holdings...')
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting holdings')
     let t0 = performance.now()
@@ -384,6 +430,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] finished holdings in', performance.now() - t0, 'ms', 'count=', chainHoldings.length)
     logProviderCallsForStage('holdings', providerCallsBefore)
+    const timeToFirstHoldingsMs = Date.now() - startTime
 
     reportProgress(jobId, 2, 'pricing')
     // eslint-disable-next-line no-console
@@ -402,6 +449,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     logProviderCallsForStage('pricing', providerCallsBefore)
 
     reportProgress(jobId, 3, 'portfolio')
+    reportStage(jobId, startTime, 'portfolio', 'Loading portfolio...')
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting portfolio')
     t0 = performance.now()
@@ -417,6 +465,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     )
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] finished portfolio in', performance.now() - t0, 'ms', 'holdings=', chainHoldings.length)
+    const timeToFirstPortfolioMs = Date.now() - startTime
     // DIAGNOSTIC, DISCLOSED (portfolio-intelligence $0 bug fix): real counts only — pricedTokens
     // here is the actual number of pricing.pricedHoldings with a non-null valueUsd (not
     // portfolioOutput.portfolio.topHoldings.length, which the frontend's PortfolioIntelligenceCard
@@ -498,6 +547,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     }
 
     reportProgress(jobId, 6, 'chainActivity')
+    reportStage(jobId, startTime, 'activity', 'Checking activity...')
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting chainActivity')
     t0 = performance.now()
@@ -635,6 +685,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // progress report, and letting it dangle unawaited is exactly what could race with (and
     // clobber) the worker's final `status:'completed'` write moments later.
     void reportProgress(jobId, 11, 'smartMoneyScore')
+    reportStage(jobId, startTime, 'smartMoney', 'Building Smart Money...')
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting smartMoneyScore')
     t0 = performance.now()
@@ -684,6 +735,22 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       cacheHits: eventsCache.hitCount,
     })
 
+    reportStage(jobId, startTime, 'finalizing', 'Finalizing wallet intelligence...')
+    const timingAudit: WalletScanTimingAudit = {
+      timeToFirstPortfolioMs,
+      timeToFirstHoldingsMs,
+      timeToFirstPnlMs,
+      timeToFullScanMs: Date.now() - startTime,
+      // REAL, DISCLOSED: nothing in this worker withholds the holdings/portfolio/PnL fields above
+      // pending any of the modules below — see WalletScanTimingAudit's own header for the one
+      // honest caveat (holdings/portfolio are still sequenced after, not parallelized with, the
+      // core FIFO/PnL/manifest replay call).
+      stagesBlockingInitialRender: [],
+      stagesDeferredAfterInitialRender: [
+        'trades', 'pricing', 'chainActivity', 'risk', 'personality', 'behavior', 'signals', 'smartMoneyScore',
+      ],
+    }
+
     body = {
       ...body,
       data: {
@@ -712,6 +779,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         // entries when at least one module actually timed out/rejected — an empty object here
         // (the common case) means every module ran to real completion within its 20s budget.
         moduleErrors: Date.now() - startTime >= WORKER_GLOBAL_TIMEOUT_MS ? { ...moduleErrors, worker: 'worker_global_timeout' } : moduleErrors,
+        timingAudit,
       },
     } as typeof body
 

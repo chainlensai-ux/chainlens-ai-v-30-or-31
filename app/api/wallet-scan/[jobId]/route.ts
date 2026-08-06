@@ -1,9 +1,16 @@
 import { WALLET_SCAN_STATUS_UNAVAILABLE, walletScanJobKey, walletScanResultKey } from '@/src/modules/walletScanQueue'
+import type { WalletScanJobProgress } from '@/src/modules/walletScanQueue'
 import { kv } from '@/lib/server/kv'
 
 type WalletScanJobState = {
   status?: string
   error?: string
+  // STAGE PROGRESS, DISCLOSED (perceived-speed follow-up task): real, present only while the job is
+  // still running — the worker's own `publishFinal` overwrites this whole record with a
+  // status:'done'/'failed' shape once the scan completes, so `progress` naturally disappears from
+  // the response the moment a final result exists (never a stale progress line shown alongside a
+  // finished scan).
+  progress?: WalletScanJobProgress
 }
 
 export async function GET(_req: Request, context: { params: Promise<{ jobId: string }> }): Promise<Response> {
@@ -38,5 +45,5 @@ export async function GET(_req: Request, context: { params: Promise<{ jobId: str
     return Response.json({ status: 'failed', ...(typeof job.error === 'string' && job.error ? { error: job.error } : {}) })
   }
 
-  return Response.json({ status: job.status ?? 'running' })
+  return Response.json({ status: job.status ?? 'running', ...(job.progress ? { progress: job.progress } : {}) })
 }
