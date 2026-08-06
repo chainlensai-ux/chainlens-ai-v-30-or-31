@@ -235,6 +235,11 @@ describe('priceLotsForWallet — accepted-evidence skip pass (pricing-cost-reduc
     assert.equal(result.acceptedEvidenceSkipAudit.pricingRequirementsAfterSkip, 0)
     assert.equal(result.manifestFastPathAudit.allClosedLotSidesCovered, true)
     assert.equal(result.manifestFastPathAudit.openPositionRequirementsRetained, 0, 'no open positions in this fixture — nothing legitimately still needs live pricing')
+    // COST-AUDIT SPLIT, DISCLOSED (cost-audit follow-up task): with zero open positions, the
+    // SEPARATELY-scoped current-price pass also has nothing to fetch — both the replay-covered
+    // historical figure and the current-price figure are honestly zero, not just the historical one.
+    assert.equal(result.acceptedEvidenceSkipAudit.goldrushActualLiveCalls, 0)
+    assert.equal(result.acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls, 0)
     assert.equal(result.priceUsdLookup(lotA.buy), 5)
     assert.equal(result.priceUsdLookup(lotA.sell), 7)
     assert.equal(result.priceUsdLookup(lotB.buy), 5)

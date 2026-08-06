@@ -328,6 +328,21 @@ export type AcceptedEvidenceSkipAudit = {
   alchemyRequirementsAfterSkip: number
   alchemyActualLiveCalls: number
   dexActualLiveCalls: number
+  // CURRENT-PRICE PASS, SEPARATELY SCOPED, DISCLOSED (cost-audit follow-up task — confirmed
+  // production shape: goldrushActualLiveCalls correctly reports 0 on a fully accepted-evidence-
+  // covered/replay-covered closed-lot sample, yet [wallet-provider-cost-audit]'s scan-wide
+  // goldrush_getTokenPrices total still shows real live calls with 0 used. Root cause: `atNow`'s
+  // "current" price pass below — which resolves OPEN-POSITION cost basis/unrealized valuation, a
+  // structurally SEPARATE concern accepted evidence can never cover (a "current" price is, by
+  // definition, never a fixed historical fact — see this file's own header on why open-position
+  // buys are deliberately retained) — goes through the exact same GoldRush price source and
+  // process-lifetime call counter as the at-trade-time historical pass above, but
+  // `goldrushActualLiveCalls`'s own snapshot closes BEFORE this pass ever runs, so its calls were
+  // real but invisible to that field. `currentPriceGoldrushLiveCalls`/`currentPriceDexActualLiveCalls`
+  // are the SAME real, measured delta pattern, scoped to ONLY this pass — never estimated, never
+  // conflated with the replay-covered historical figure above.
+  currentPriceGoldrushLiveCalls: number
+  currentPriceDexActualLiveCalls: number
 }
 
 function emptyAcceptedEvidenceSkipAudit(): AcceptedEvidenceSkipAudit {
@@ -338,7 +353,7 @@ function emptyAcceptedEvidenceSkipAudit(): AcceptedEvidenceSkipAudit {
     acceptedSidesStillSentToProviders: 0, skipValidationFailures: 0,
     pricingRequirementsBeforeSkip: 0, pricingRequirementsAfterSkip: 0, goldrushActualLiveCalls: 0,
     alchemyRequirementsBeforeSkip: 0, alchemyRequirementsAfterSkip: 0, alchemyActualLiveCalls: 0,
-    dexActualLiveCalls: 0,
+    dexActualLiveCalls: 0, currentPriceGoldrushLiveCalls: 0, currentPriceDexActualLiveCalls: 0,
   }
 }
 
@@ -1822,7 +1837,16 @@ export async function priceLotsForWallet(params: {
     timestamp: Date.now(),
     amount: '1',
   }))
+  // REAL, MEASURED LIVE-CALL SNAPSHOT FOR THE CURRENT-PRICE PASS, DISCLOSED — see
+  // `currentPriceGoldrushLiveCalls`'s own header on `AcceptedEvidenceSkipAudit`. Scoped to ONLY this
+  // call, separately from the at-trade-time snapshot above, so a real live call this pass genuinely
+  // needs (open-position valuation, never accepted-evidence-coverable) is never silently invisible
+  // to the audit, and never conflated with the replay-covered historical figure either.
+  const goldrushCallsBeforeNow = getGoldrushPriceSourceCallCount()
+  const dexCallsBeforeNow = getDexscreenerCallCount()
   const atNow = await resolvePricingAtTime({ buyEntries: nowEntries, sellEntries: [], priceSources: params.priceSources })
+  acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls = getGoldrushPriceSourceCallCount() - goldrushCallsBeforeNow
+  acceptedEvidenceSkipAudit.currentPriceDexActualLiveCalls = getDexscreenerCallCount() - dexCallsBeforeNow
 
   const priceUsdLookup: PriceUsdLookup = (event) => resolveEventPriceUsd(event, atTradeTime.costUsd, atTradeTime.proceedsUsd)
 

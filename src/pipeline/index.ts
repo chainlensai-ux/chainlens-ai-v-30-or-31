@@ -1936,6 +1936,16 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // (verification requirement: confirm the fan-out actually shrinks for dust-heavy wallets).
   // eslint-disable-next-line no-console
   console.warn('[pipeline] priceLotsForWallet: pricing source breakdown', walletPriceLookups.sourceBreakdown)
+  // REPLAY-COVERED vs CURRENT-PRICE GOLDRUSH CALL SPLIT, DISCLOSED (cost-audit follow-up task):
+  // proves, from a live scan's own logs, that the manifest-replay-covered historical/closed-lot
+  // sample made zero live GoldRush calls, separately from whatever real, unavoidable live calls the
+  // current-price/open-position valuation pass needed — the two were previously indistinguishable in
+  // [wallet-provider-cost-audit]'s single scan-wide goldrush_getTokenPrices total.
+  // eslint-disable-next-line no-console
+  console.warn('[pipeline] GoldRush live-call split (replay-covered historical vs current-price)', {
+    historicalGoldrushLiveCalls: walletPriceLookups.acceptedEvidenceSkipAudit.goldrushActualLiveCalls,
+    currentPriceGoldrushLiveCalls: walletPriceLookups.acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls,
+  })
   // eslint-disable-next-line no-console
   console.warn('[pipeline] dust suppression (upstream, before priceLotsForWallet)', {
     totalDistinctBuyTokens: new Set(timelines.buyTimeline.entries.map((e) => dustTokenKey(e.chain, e.token))).size,
