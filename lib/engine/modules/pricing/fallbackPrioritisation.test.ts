@@ -25,6 +25,12 @@ import {
 import type { ChainHolding } from '../holdings/types'
 import type { PricedHolding } from './types'
 
+// Real, canonical Base USDC/DAI addresses (src/modules/quoteLegPricing/index.ts's own verified
+// registry) — used whenever a test needs a GENUINE, address-verified stablecoin, as opposed to the
+// symbol-spoof shapes this task's own tests exercise separately below.
+const CANONICAL_BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+const CANONICAL_BASE_DAI = '0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb'
+
 function holding(overrides: Partial<ChainHolding>): ChainHolding {
   return {
     chainId: 8453,
@@ -85,23 +91,39 @@ describe('fallback prioritisation — native / wrapped-native / stablecoin asset
       [
         holding({ tokenAddress: '0xother', symbol: 'RANDOM', quantity: '5000' }),
         holding({ tokenAddress: '0xweth', symbol: 'WETH', quantity: '0.01', classification: 'blue_chip' }),
-        holding({ tokenAddress: '0xusdc', symbol: 'USDC', quantity: '120', classification: 'stable' }),
+        holding({ tokenAddress: CANONICAL_BASE_USDC, symbol: 'USDC', quantity: '120', classification: 'stable' }),
       ],
       fn,
     )
-    assert.deepEqual(order, ['0xusdc', '0xweth', '0xother'])
+    assert.deepEqual(order, [CANONICAL_BASE_USDC.toLowerCase(), '0xweth', '0xother'])
   })
 
   it('stablecoins are ordered among themselves by their real ~$1/unit materiality estimate', async () => {
     const { fn, order } = recordingPriceFn()
     await priceHoldings(
       [
-        holding({ tokenAddress: '0xsmallstable', symbol: 'DAI', quantity: '4', classification: 'stable' }),
-        holding({ tokenAddress: '0xbigstable', symbol: 'USDC', quantity: '900', classification: 'stable' }),
+        holding({ tokenAddress: CANONICAL_BASE_DAI, symbol: 'DAI', quantity: '4', classification: 'stable' }),
+        holding({ tokenAddress: CANONICAL_BASE_USDC, symbol: 'USDC', quantity: '900', classification: 'stable' }),
       ],
       fn,
     )
-    assert.deepEqual(order, ['0xbigstable', '0xsmallstable'])
+    assert.deepEqual(order, [CANONICAL_BASE_USDC.toLowerCase(), CANONICAL_BASE_DAI.toLowerCase()])
+  })
+
+  it('HARD ASSERTION (required regression): a symbol-spoofed "USDC" at a non-canonical address never receives stablecoin-tier priority or its unit-count materiality boost', async () => {
+    const { fn, order } = recordingPriceFn()
+    await priceHoldings(
+      [
+        // Attacker-minted, astronomically large unit count — the exact confirmed production shape
+        // ("spoof UЅDС"): symbol claims USDC, classification therefore says 'stable' (fetchHoldings'
+        // own symbol-only classify()), but the address is NOT the canonical Base USDC contract.
+        holding({ tokenAddress: '0xspoofusdc', symbol: 'USDC', quantity: '50000000000', classification: 'stable' }),
+        // A real, small, providerValue-backed position.
+        holding({ tokenAddress: '0xreal', symbol: 'REAL', quantity: '2', providerValueUsd: 15 }),
+      ],
+      fn,
+    )
+    assert.equal(order[0], '0xreal', 'the real, address-unverified-nothing-to-do-with-it position must be looked up first')
   })
 
   it('a malformed-symbol row ranks below a well-formed one of the same class', async () => {
@@ -228,8 +250,12 @@ describe('estimateMaterialityUsd / isWellFormedSymbol — pure local signals, ne
     assert.equal(estimateMaterialityUsd(holding({ providerValueUsd: 42, quantity: '999', classification: 'stable' })), 42)
   })
 
-  it('estimates a stablecoin from its unit count', () => {
-    assert.equal(estimateMaterialityUsd(holding({ symbol: 'USDC', quantity: '250', classification: 'stable' })), 250)
+  it('estimates a stablecoin from its unit count — ONLY for a canonically address-verified stablecoin', () => {
+    assert.equal(estimateMaterialityUsd(holding({ tokenAddress: CANONICAL_BASE_USDC, symbol: 'USDC', quantity: '250', classification: 'stable' })), 250)
+  })
+
+  it('HARD ASSERTION (required regression): a stable-classified holding at a NON-canonical address never receives the unit-count materiality estimate — a symbol match alone is never trusted', () => {
+    assert.equal(estimateMaterialityUsd(holding({ tokenAddress: '0xspoofusdc', symbol: 'USDC', quantity: '50000000000', classification: 'stable' })), null)
   })
 
   it('returns null — never a guess — when there is no local basis to estimate', () => {
@@ -274,21 +300,25 @@ describe('buildUnpricedHoldingDiagnostics — one record per unpriced holding', 
 
   it('carries every required diagnostic field', () => {
     const diagnostics = buildUnpricedHoldingDiagnostics({
-      holdings: [holding({ tokenAddress: '0xu', symbol: 'USDC', quantity: '75', classification: 'stable' })],
-      pricedHoldings: [priced({ tokenAddress: '0xu' })],
-      rankedFallbackKeys: ['8453:0xu'],
+      holdings: [holding({ tokenAddress: CANONICAL_BASE_USDC, symbol: 'USDC', quantity: '75', classification: 'stable' })],
+      pricedHoldings: [priced({ tokenAddress: CANONICAL_BASE_USDC })],
+      rankedFallbackKeys: [`8453:${CANONICAL_BASE_USDC.toLowerCase()}`],
       budgetedFallbackKeys: [],
       keyOf: (h) => `${h.chainId}:${h.tokenAddress.toLowerCase()}`,
     })
     const d = diagnostics[0]
     for (const field of [
       'chainId', 'tokenAddress', 'symbol', 'quantity', 'providerPriceUsd', 'providerValueUsd',
-      'fallbackEligible', 'fallbackRank', 'selectedForFallback', 'skipReason', 'knownBalanceSignal',
-      'currentTransferRecency', 'estimatedMaterialitySignal',
+      'fallbackEligible', 'fallbackRank', 'selectedForFallback', 'skipReason', 'selectionReason',
+      'knownBalanceSignal', 'currentTransferRecency', 'estimatedMaterialitySignal',
     ]) {
       assert.ok(field in d, `missing required diagnostic field: ${field}`)
     }
     assert.equal(d.skipReason, 'outside_fallback_budget')
+    // A genuinely, address-verified stablecoin still has a real materiality signal, so it is never
+    // treated as spam-suppressed even when it misses the budget — 'outside_fallback_budget', not
+    // 'quantity_only_spam_suppressed'.
+    assert.equal(d.selectionReason, 'outside_fallback_budget')
     assert.equal(d.knownBalanceSignal, 'stable_unit_peg')
     assert.equal(d.estimatedMaterialitySignal, 75)
     assert.equal(d.currentTransferRecency, null, 'reported as the real null it is, never fabricated')
@@ -314,5 +344,32 @@ describe('buildUnpricedHoldingDiagnostics — one record per unpriced holding', 
     assert.equal(byToken.get('0xnegligible')?.skipReason, 'known_negligible_provider_value')
     assert.equal(byToken.get('0xbudget')?.skipReason, 'outside_fallback_budget')
     assert.equal(byToken.get('0xnoprice')?.skipReason, 'fallback_lookup_returned_no_price')
+  })
+
+  it('HARD ASSERTION (required regression): distinguishes the new explicit selection reasons — spam-suppressed, spoofed, selected-material, and no-materiality-but-selected', () => {
+    const keyOf = (h: ChainHolding) => `${h.chainId}:${h.tokenAddress.toLowerCase()}`
+    const holdings = [
+      // No provider value, no verified stable address, no transfer recency — pure quantity-only spam,
+      // outside the budget.
+      holding({ tokenAddress: '0xspam', symbol: 'BONKO', quantity: '900000000000' }),
+      // Symbol claims 'stable' but the address is not canonical — spoofed.
+      holding({ tokenAddress: '0xspoof', symbol: 'USDC', quantity: '5000000000', classification: 'stable' }),
+      // Real providerValue signal, selected.
+      holding({ tokenAddress: '0xmaterial', symbol: 'REAL', quantity: '2', providerValueUsd: 40 }),
+      // No real signal at all, but still selected (budget had room left over).
+      holding({ tokenAddress: '0xfiller', symbol: 'FILLER', quantity: '3' }),
+    ]
+    const diagnostics = buildUnpricedHoldingDiagnostics({
+      holdings,
+      pricedHoldings: holdings.map((h) => priced({ tokenAddress: h.tokenAddress })),
+      rankedFallbackKeys: ['8453:0xmaterial', '8453:0xfiller', '8453:0xspoof', '8453:0xspam'],
+      budgetedFallbackKeys: ['8453:0xmaterial', '8453:0xfiller'],
+      keyOf,
+    })
+    const byToken = new Map(diagnostics.map((d) => [d.tokenAddress, d]))
+    assert.equal(byToken.get('0xspam')?.selectionReason, 'quantity_only_spam_suppressed')
+    assert.equal(byToken.get('0xspoof')?.selectionReason, 'spoof_stable_symbol')
+    assert.equal(byToken.get('0xmaterial')?.selectionReason, 'selected_material_candidate')
+    assert.equal(byToken.get('0xfiller')?.selectionReason, 'no_materiality_signal')
   })
 })

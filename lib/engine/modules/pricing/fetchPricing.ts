@@ -31,6 +31,30 @@ import { CHAIN_ID_TO_SUPPORTED_CHAIN } from '../holdings/fetchHoldings'
 import type { ChainHolding } from '../holdings/types'
 import type { PricedHolding, PricingEngineOutput } from './types'
 import { verifyOnchainDecimals, verifyOnchainSymbol } from './rpcDecimals'
+import { isVerifiedStablecoinAddress } from '@/src/modules/quoteLegPricing/index'
+
+// CANONICAL-ADDRESS STABLECOIN CHECK, DISCLOSED (holdings-fallback-spam follow-up task — confirmed
+// production evidence: a symbol-spoofed token reporting itself as "USDC" at a non-canonical address
+// was classified `stable` by fetchHoldings.ts's own symbol-only `classify()` and, via that
+// classification alone, ranked at the TOP of the fallback queue with a fake ~$1/unit materiality
+// estimate derived from its own attacker-minted unit count). Reuses the SAME address-verified
+// registry `stablecoinNormalizedGroupTotal`/quote-leg pricing already trusts (`STABLECOIN_ADDRESSES`
+// in src/modules/quoteLegPricing/index.ts) — never a second, symbol-based stablecoin list. A chain
+// this module has no numeric-chainId mapping for (CHAIN_ID_TO_SUPPORTED_CHAIN) never matches, same
+// as every other address-registry check in this codebase.
+function isVerifiedStableHolding(h: ChainHolding): boolean {
+  const chain = CHAIN_ID_TO_SUPPORTED_CHAIN[h.chainId]
+  return chain != null && isVerifiedStablecoinAddress(chain, h.tokenAddress)
+}
+
+// A holding classified `stable` by fetchHoldings.ts's OWN symbol-only heuristic, but whose address
+// does NOT appear in the canonical, address-verified registry above — exactly the spoof shape
+// described above. Never used to exclude a holding (it may well be a genuine token that merely
+// shares a common stablecoin ticker) — only to strip the unverified "guaranteed ~$1 asset" trust a
+// bare classification match would otherwise grant it.
+function isSpoofStableSymbol(h: ChainHolding): boolean {
+  return h.classification === 'stable' && !isVerifiedStableHolding(h)
+}
 
 export type { PricedHolding, PricingEngineOutput } from './types'
 
@@ -251,21 +275,58 @@ export function estimateMaterialityUsd(h: ChainHolding): number | null {
   const quantity = Number(h.quantity)
   if (!Number.isFinite(quantity) || quantity <= 0) return null
   // A stablecoin's unit count is a real ~$1/unit materiality estimate (this codebase already treats
-  // USDC as $1 in basedex.ts's own disclosed convention). No other classification supports a local
-  // estimate without a price lookup, which is the exact thing being queued.
-  if (h.classification === 'stable') return quantity
+  // USDC as $1 in basedex.ts's own disclosed convention) — but ONLY once the token's address is
+  // address-verified against the canonical registry (isVerifiedStableHolding), never from
+  // fetchHoldings.ts's own symbol-only `classify()` alone (confirmed production spam vector: a
+  // symbol-spoofed "USDC" at an attacker-controlled address, minted with a huge fake unit count, was
+  // previously granted a huge fake ~$1/unit materiality estimate from that unit count alone). No
+  // other classification supports a local estimate without a price lookup, which is the exact thing
+  // being queued.
+  if (isVerifiedStableHolding(h)) return quantity
   return null
+}
+
+// REAL, NON-FABRICATED "this holding is more than a raw unit count" SIGNAL, DISCLOSED
+// (holdings-fallback-spam follow-up task — explicit requirement: "penalize quantity-only holdings
+// with no provider value, no price, no recent transfer signal, no materiality signal"). True only
+// when at least one of these already-available-for-free signals is present:
+//   - a real, provider-supplied partial USD value
+//   - a canonical, address-verified stablecoin (never a bare symbol match)
+//   - a real recent-transfer timestamp (lastActivityAt — currently always null per
+//     fetchHoldings.ts's own disclosed limitation, included here so it engages automatically the
+//     moment that data becomes real, with zero further change needed here)
+// Deliberately EXCLUDES well-formed-symbol and raw quantity — a well-formed ticker and a large unit
+// count are exactly the two things obvious spam (BONKO/CLOUD/CASHCAT-shaped tokens) can trivially
+// fake for free; neither is treated as proof of real materiality.
+function hasRealMaterialitySignal(h: ChainHolding): boolean {
+  return (h.providerValueUsd != null && h.providerValueUsd > 0) || isVerifiedStableHolding(h) || h.lastActivityAt != null
 }
 
 function fallbackPriorityScore(h: ChainHolding): number[] {
   const providerValueSignal = h.providerValueUsd != null && h.providerValueUsd > 0 ? h.providerValueUsd : -1
-  const assetClassRank = ASSET_CLASS_RANK[h.classification] ?? 0
+  const spoofStable = isSpoofStableSymbol(h)
+  // SPOOF DEMOTION, DISCLOSED: a `stable`-classified holding whose address is not canonically
+  // verified is stripped of the trusted stable/blue-chip tier entirely — ranked exactly like any
+  // other unverified "other" holding, never above it.
+  const assetClassRank = spoofStable ? 0 : (ASSET_CLASS_RANK[h.classification] ?? 0)
   const estimatedMateriality = estimateMaterialityUsd(h)
   const materialitySignal = estimatedMateriality ?? -1
   const symbolQualityRank = isWellFormedSymbol(h.symbol) ? 1 : 0
   const quantity = Number(h.quantity)
-  const quantitySignal = Number.isFinite(quantity) ? quantity : -1
-  return [providerValueSignal, assetClassRank, materialitySignal, symbolQualityRank, quantitySignal]
+  const hasRealSignal = hasRealMaterialitySignal(h)
+  // REAL-SIGNAL GATE, DISCLOSED: the single highest-priority lane. Any holding with at least one
+  // real materiality signal ranks above EVERY holding that has none, regardless of either one's raw
+  // unit count — closing the confirmed production gap where a 900-trillion-unit spam token
+  // outranked genuinely real, evidence-backed positions purely on magnitude.
+  const realSignalRank = hasRealSignal ? 1 : 0
+  // QUANTITY NEUTRALIZED FOR SPAM, DISCLOSED: raw unit count is precisely the axis spam/airdrop
+  // tokens maximize for free. It remains a legitimate LAST-RESORT tiebreak among holdings that
+  // already cleared the real-signal gate (e.g. two provider-valued positions), but contributes
+  // NOTHING to ranking among holdings with no real signal at all — those are ordered only by symbol
+  // quality and then the deterministic lexicographic key tiebreak below, never by whichever one
+  // happens to hold the most attacker-minted units.
+  const quantitySignal = hasRealSignal && Number.isFinite(quantity) ? quantity : 0
+  return [realSignalRank, providerValueSignal, assetClassRank, materialitySignal, symbolQualityRank, quantitySignal]
 }
 
 function compareFallbackPriority(a: number[], b: number[]): number {
@@ -289,6 +350,23 @@ export type FallbackSkipReason =
   | 'outside_fallback_budget'
   | 'fallback_lookup_returned_no_price'
 
+// EXPLICIT SELECTION REASONS, DISCLOSED (holdings-fallback-spam follow-up task's explicit
+// requirement: "add explicit skip/selection reasons"). ADDITIVE, separate from `skipReason` above —
+// `skipReason` describes the post-hoc OUTCOME (was this ever priced, and if not, why is it still
+// unpriced right now); `selectionReason` describes the ranking-time RATIONALE for whether this
+// holding was ever a real candidate for one of the bounded fallback slots, independent of whether
+// the lookup (if it ran) later found a price. Kept as two fields rather than overloading one, so
+// existing `skipReason` consumers/tests are completely unaffected by this addition.
+export type FallbackSelectionReason =
+  | 'priced_by_provider'
+  | 'known_negligible_provider_value'
+  | 'zero_or_malformed_quantity'
+  | 'spoof_stable_symbol'
+  | 'selected_material_candidate'
+  | 'no_materiality_signal'
+  | 'outside_fallback_budget'
+  | 'quantity_only_spam_suppressed'
+
 export type UnpricedHoldingDiagnostic = {
   chainId: number
   tokenAddress: string
@@ -300,6 +378,7 @@ export type UnpricedHoldingDiagnostic = {
   fallbackRank: number | null
   selectedForFallback: boolean
   skipReason: FallbackSkipReason
+  selectionReason: FallbackSelectionReason
   knownBalanceSignal: 'provider_value' | 'stable_unit_peg' | 'quantity_only' | 'none'
   currentTransferRecency: string | null
   estimatedMaterialitySignal: number | null
@@ -337,9 +416,19 @@ export function buildUnpricedHoldingDiagnostics(params: {
     else if (!selected) skipReason = 'outside_fallback_budget'
     else skipReason = 'fallback_lookup_returned_no_price'
 
+    const spoofStable = isSpoofStableSymbol(h)
+    const hasRealSignal = hasRealMaterialitySignal(h)
+    let selectionReason: FallbackSelectionReason
+    if (h.providerPriceUsd != null && h.providerPriceUsd > 0) selectionReason = 'priced_by_provider'
+    else if (h.providerValueUsd != null && h.providerValueUsd > 0 && h.providerValueUsd < DUST_VALUE_USD_THRESHOLD) selectionReason = 'known_negligible_provider_value'
+    else if (!Number.isFinite(quantity) || quantity <= DUST_QUANTITY_FLOOR) selectionReason = 'zero_or_malformed_quantity'
+    else if (spoofStable) selectionReason = 'spoof_stable_symbol'
+    else if (selected) selectionReason = hasRealSignal ? 'selected_material_candidate' : 'no_materiality_signal'
+    else selectionReason = hasRealSignal ? 'outside_fallback_budget' : 'quantity_only_spam_suppressed'
+
     const knownBalanceSignal = h.providerValueUsd != null && h.providerValueUsd > 0
       ? 'provider_value'
-      : h.classification === 'stable' && Number.isFinite(quantity) && quantity > 0
+      : isVerifiedStableHolding(h) && Number.isFinite(quantity) && quantity > 0
         ? 'stable_unit_peg'
         : Number.isFinite(quantity) && quantity > 0
           ? 'quantity_only'
@@ -354,6 +443,7 @@ export function buildUnpricedHoldingDiagnostics(params: {
       providerValueUsd: h.providerValueUsd ?? null,
       fallbackEligible: eligible,
       fallbackRank: rank,
+      selectionReason,
       selectedForFallback: selected,
       skipReason,
       knownBalanceSignal,
