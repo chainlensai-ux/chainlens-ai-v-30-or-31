@@ -40,6 +40,32 @@ import {
   type CanonicalVerifiedPredicateReasonCounts,
 } from './canonicalVerifiedLot'
 import { sortLotsByCanonicalIdentity, sumQuantizedUsd } from './scanDeterminismAudit'
+import { isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
+
+// STABLECOIN DETERMINISTIC $1 NORMALIZATION, DISCLOSED (stablecoin-side-normalization follow-up
+// task — confirmed production bug: canonical-pnl-diff-audit's own `stablecoin_side_not_unit_priced`
+// warning caught a real, live example — one Base USDC side's stored/accepted total was ~$5.9705 for
+// an occurrence quantity that should have valued at ~$1194.1715 at the deterministic $1/token rate
+// this codebase already applies to every VERIFIED (address-checked, never symbol-guessed — see
+// quoteLegPricing.ts's own stablecoinSymbolFor) stablecoin elsewhere — e.g.
+// pricingAtTimeAdapter.ts's own VERIFIED-STABLECOIN SHORT-CIRCUIT, which prices a verified
+// stablecoin leg at exactly $1.00/unit with zero provider call. A group's accepted-evidence total
+// can silently diverge from that rate — stale evidence written before that convention existed, or
+// any other upstream USD/quantity mismatch — and, being accepted evidence, would otherwise persist
+// forever and keep propagating a wrong value into real, published cost basis/proceeds/realized PnL
+// for that side. This is the ONE place every accepted-evidence side total is turned into a per-lot
+// allocation (`allocateSideValueAcrossGroup`'s own `totalValueUsd` argument) — applying the
+// normalization here means a stale/wrong stored figure for a verified stablecoin side can never
+// reach publication, replay, or the manifest, regardless of which caller allocates it.
+// NOT A NEW EVIDENCE STANDARD, NOT A FABRICATED VALUE, DISCLOSED: $1.00/unit for a verified
+// stablecoin is the same deterministic convention this codebase already treats as ground truth
+// elsewhere — this never invents a price for anything that isn't already address-verified, and
+// never touches a non-stablecoin side's own accepted total.
+export function stablecoinNormalizedGroupTotal(groupLots: readonly MatchedLot[], totalValueUsd: number): number {
+  const representative = groupLots[0]
+  if (!representative || !isVerifiedStablecoinAddress(representative.chain, representative.token)) return totalValueUsd
+  return groupLots.reduce((sum, lot) => sum + lot.amount, 0)
+}
 
 // SCHEMA BUMP TO 3, GENUINELY REQUIRED, DISCLOSED (canonical-price-replay follow-up task,
 // requirement #10 — "do not create a new manifest schema key merely to hide this test unless the
@@ -137,7 +163,17 @@ export const CANONICAL_PRICING_METHODOLOGY_VERSION = 1
 // stored price fingerprint can never be reproduced by the new (coarser) recompute — bumping makes
 // every existing vv4 manifest key MISS on lookup, the same fresh-manifest path documented above,
 // never a manual refresh or delete of the old record.
-export const CANONICAL_VALUE_METHODOLOGY_VERSION = 5
+//
+// BUMPED 5 -> 6 (stablecoin-side-normalization follow-up task): a stored vv5 manifest could carry a
+// verified-stablecoin side's group total taken directly from accepted evidence, without the
+// deterministic $1/token normalization `stablecoinNormalizedGroupTotal` now applies at allocation
+// time — confirmed production shape: canonical-pnl-diff-audit's own `stablecoin_side_not_unit_priced`
+// warning, one Base USDC side stored ~$5.9705 for an occurrence quantity that should value at
+// ~$1194.1715 at $1/token. This is a genuinely different serialized meaning for the SAME stored
+// `groupCostBasisUsd`/`groupProceedsUsd`/`realizedPnlUsd`/fingerprint fields whenever a verified
+// stablecoin side is involved — bumping makes every existing vv5 manifest key MISS on lookup, the
+// same fresh-manifest path documented above, never a manual refresh or delete of the old record.
+export const CANONICAL_VALUE_METHODOLOGY_VERSION = 6
 
 // Reuses the exact same duck-typed KV interface accepted-evidence records already use — same
 // underlying store, a genuinely separate key namespace (`v1:canonical-pnl-sample-manifest:...`).
@@ -657,13 +693,13 @@ export async function buildManifestFromCandidate(params: {
       // eslint-disable-next-line no-await-in-loop
       const evidence = await params.loadEvidence({ ...sideIdentityForLot(groupLots[0], 'entry'), lotIdentityVersion: null })
       entryEvidenceByKey.set(key, evidence)
-      if (evidence) entryAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(groupLots, evidence.priceUsd).map((s) => [s.lot, s])))
+      if (evidence) entryAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(groupLots, stablecoinNormalizedGroupTotal(groupLots, evidence.priceUsd)).map((s) => [s.lot, s])))
     }
     for (const [key, groupLots] of exitGroups) {
       // eslint-disable-next-line no-await-in-loop
       const evidence = await params.loadEvidence({ ...sideIdentityForLot(groupLots[0], 'exit'), lotIdentityVersion: null })
       exitEvidenceByKey.set(key, evidence)
-      if (evidence) exitAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(groupLots, evidence.priceUsd).map((s) => [s.lot, s])))
+      if (evidence) exitAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(groupLots, stablecoinNormalizedGroupTotal(groupLots, evidence.priceUsd)).map((s) => [s.lot, s])))
     }
   }
 
@@ -1261,9 +1297,9 @@ export async function replayManifest(params: {
   for (const [key, evidence] of evidenceByKey) {
     if (!evidence) continue
     const entryGroup = entryGroupsByKey.get(key)
-    if (entryGroup) entryAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(entryGroup, evidence.priceUsd).map((share) => [share.lot, share])))
+    if (entryGroup) entryAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(entryGroup, stablecoinNormalizedGroupTotal(entryGroup, evidence.priceUsd)).map((share) => [share.lot, share])))
     const exitGroup = exitGroupsByKey.get(key)
-    if (exitGroup) exitAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(exitGroup, evidence.priceUsd).map((share) => [share.lot, share])))
+    if (exitGroup) exitAllocationByKey.set(key, new Map(allocateSideValueAcrossGroup(exitGroup, stablecoinNormalizedGroupTotal(exitGroup, evidence.priceUsd)).map((share) => [share.lot, share])))
   }
 
   // 3. Resolve, REBUILD FROM ACCEPTED EVIDENCE (Part A: per-sibling allocated share, never a flat

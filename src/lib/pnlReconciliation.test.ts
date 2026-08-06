@@ -6,7 +6,7 @@ import type { FifoOutput, MatchedLot } from '../modules/fifoEngine/types'
 import { emptyUnrealizedReconciliation } from '../modules/fifoEngine/types'
 import type { PnlSummaryResult } from '../modules/pnlEngine/types'
 import { createPnlReconciliation, classifyRecoveryFailureReason } from './pnlReconciliation'
-import { ACCEPTED_EVIDENCE_SCHEMA_VERSION } from './acceptedEvidenceStore'
+import { ACCEPTED_EVIDENCE_SCHEMA_VERSION, lotIdentityVersion as realLotIdentityVersion, buildAcceptedEvidenceKey } from './acceptedEvidenceStore'
 
 const quiet = { warn() {} }
 
@@ -1295,5 +1295,44 @@ describe('pnlReconciliation', () => {
     assert.equal(liveCalls, 0)
     const rebuiltEntryTotal = summary2.publishedMatchedLots.reduce((s, l) => s + (l.costBasisUsd ?? 0), 0)
     assert.equal(Math.round(rebuiltEntryTotal * 1e8) / 1e8, Math.round(storedTotal * 1e8) / 1e8, 'the 5 reconstructed shares sum EXACTLY back to the stored total, bit-for-bit, regardless of remainder placement or array order')
+  })
+
+  // STABLECOIN-SIDE-NORMALIZATION FOLLOW-UP TASK — confirmed production shape: canonical-pnl-diff-
+  // audit's own stablecoin_side_not_unit_priced warning caught one Base USDC side stored ~$5.9705
+  // for an occurrence quantity that should value at ~$1194.1715 at the deterministic $1/token rate
+  // this codebase already applies to every address-verified stablecoin elsewhere. hydrateFromAcceptedEvidence
+  // (via allocateSideValueAcrossGroup) is a SEPARATE call site from canonicalPnlSampleManifest's own
+  // build/replay allocation — this proves the normalization applies here too, not just there.
+  it('HARD ASSERTION (required regression): a mispriced verified-stablecoin side hydrated from accepted evidence is normalized to $1/token, never left as verified truth', async () => {
+    const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+    const stableLot = lot({
+      lotId: 'stable-0', token: BASE_USDC, openedTxHash: '0xstablebuy', closedTxHash: '0xstablesell',
+      openedAt: 1, closedAt: 2, amount: 1194.1715,
+      costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced',
+    })
+    const kv = fakeAcceptedEvidenceKv()
+    const identityVersion = realLotIdentityVersion({
+      chain: stableLot.chain, token: stableLot.token, openedTxHash: stableLot.openedTxHash, closedTxHash: stableLot.closedTxHash,
+      openedAt: stableLot.openedAt, closedAt: stableLot.closedAt, amount: stableLot.amount,
+    })
+    const now = 1_000_000
+    // Seed the WRONG, confirmed-production total ($5.9705 instead of the correct $1194.1715 at
+    // $1/token) — simulating stale/corrupted accepted evidence for a verified stablecoin side.
+    kv.store.set(buildAcceptedEvidenceKey({ chain: 'base', token: BASE_USDC, txHash: '0xstablebuy', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion }), {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: 'base', token: BASE_USDC, txHash: '0xstablebuy', side: 'entry', timestamp: 1, lotIdentityVersion: identityVersion,
+      priceUsd: 5.9705, valueUsd: 5.9705, valueType: 'total_side_value_usd', source: 's', evidenceType: 't', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: 100_000_000_000,
+    })
+    kv.store.set(buildAcceptedEvidenceKey({ chain: 'base', token: BASE_USDC, txHash: '0xstablesell', side: 'exit', timestamp: 2, lotIdentityVersion: identityVersion }), {
+      schemaVersion: ACCEPTED_EVIDENCE_SCHEMA_VERSION, chain: 'base', token: BASE_USDC, txHash: '0xstablesell', side: 'exit', timestamp: 2, lotIdentityVersion: identityVersion,
+      priceUsd: 5.9705, valueUsd: 5.9705, valueType: 'total_side_value_usd', source: 's', evidenceType: 't', providerTimestampBucket: null, temporalDistanceMs: null,
+      verificationStatus: 'verified', acceptedAt: 0, expiresAt: 100_000_000_000,
+    })
+
+    const r = createPnlReconciliation({ logger: quiet, acceptedEvidenceKv: kv as never, now: () => now })
+    const summary = await r.reconcile({ fifoEngineResult: fifo({ matchedLots: [stableLot] }), pnlEngineResult: pnl(1), syntheticPnlAssemblyOutput: null })
+
+    const published = summary.publishedMatchedLots.find((l) => l.lotId === 'stable-0')
+    assert.equal(published?.costBasisUsd, 1194.1715, 'the mispriced accepted-evidence total is normalized to the deterministic $1/token figure, not left as the stale wrong value')
   })
 })

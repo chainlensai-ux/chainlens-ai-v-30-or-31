@@ -199,7 +199,40 @@ export function matchLotsFIFO(
   }
 
   const remainingOpenLots = [...lotsByToken.values()].flat().filter((l) => l.amountRemaining > 0)
-  return { matchedLots, remainingOpenLots, unmatchedSells, unmatchedSellEvents }
+  return { matchedLots: dedupeExactEconomicDuplicates(matchedLots), remainingOpenLots, unmatchedSells, unmatchedSellEvents }
+}
+
+// PUBLICATION-TIME ECONOMIC-DUPLICATE SAFETY NET, DISCLOSED (duplicate-economic-lot follow-up
+// task — confirmed production bug: publishedMatchedLots carried two matches with identical
+// token/openedAt/closedAt/openedTxHash/closedTxHash/amount/costBasisUsd/proceedsUsd/realizedPnlUsd,
+// distinguished only by the occurrence-suffixed lotId — a real duplicate, not a legitimate partial
+// fill). The real fix is at the SOURCE (mergeNormalizedEvents.ts's own base-self-dedupe, above this
+// module in the call chain) — this is a defense-in-depth backstop for this function specifically,
+// so a caller that hands matchLotsFIFO a pre-built sell/lot array with an undetected duplicate
+// (bypassing mergeNormalizedEvents entirely) still cannot publish two identical matches.
+// UNIQUE lotId IS NOT ENOUGH, DISCLOSED: the fingerprint below deliberately EXCLUDES `lotId` — two
+// matches with the SAME economic identity but different lotId suffixes (exactly the confirmed
+// production shape) are still recognized as duplicates. A genuine partial fill is NEVER collapsed:
+// two occurrences differ in `closedTxHash` (different sells) or in `amount`/`costBasisUsd`/
+// `proceedsUsd` (different quantities/prices) whenever they are economically distinct — only a
+// match whose entire published economic identity is byte-identical to an earlier one is dropped.
+function economicFingerprint(lot: MatchedLot): string {
+  return [
+    lot.chain, lot.token.toLowerCase(), lot.openedTxHash.toLowerCase(), lot.closedTxHash.toLowerCase(),
+    lot.openedAt, lot.closedAt, lot.amount, lot.costBasisUsd, lot.proceedsUsd, lot.realizedPnlUsd, lot.evidenceQuality,
+  ].join(':')
+}
+
+function dedupeExactEconomicDuplicates(lots: MatchedLot[]): MatchedLot[] {
+  const seen = new Set<string>()
+  const deduped: MatchedLot[] = []
+  for (const lot of lots) {
+    const fingerprint = economicFingerprint(lot)
+    if (seen.has(fingerprint)) continue
+    seen.add(fingerprint)
+    deduped.push(lot)
+  }
+  return deduped
 }
 
 type PnlSummary = {

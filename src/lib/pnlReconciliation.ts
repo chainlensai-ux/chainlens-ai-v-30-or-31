@@ -8,7 +8,7 @@ import {
   lotIdentityVersion, readAcceptedEvidenceAnyLotVersion, writeAcceptedEvidence, buildAcceptedEvidenceEnvelope,
   type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope,
 } from './acceptedEvidenceStore'
-import { allocateSideValueAcrossGroup, type SideAllocationShare } from './canonicalPnlSampleManifest'
+import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, type SideAllocationShare } from './canonicalPnlSampleManifest'
 
 export type PnlMismatchClass = 'missingInboundEvidence' | 'missingOutboundEvidence' | 'routerClusterMismatch' | 'priceUnavailable' | 'dustSuppressedToken' | 'syntheticOnlyToken' | 'priceRecovered'
 export type ReconciledPublicPnlStatus = 'available' | 'partial' | 'unavailable'
@@ -660,7 +660,7 @@ export function createPnlReconciliation(config: Config = {}) {
     for (const [key, group] of groups) {
       const evidence = evidenceByGroupKey.get(key)
       if (!evidence) continue
-      for (const share of allocateSideValueAcrossGroup(group.lots, evidence.priceUsd)) {
+      for (const share of allocateSideValueAcrossGroup(group.lots, stablecoinNormalizedGroupTotal(group.lots, evidence.priceUsd))) {
         const existing = shareByLot.get(share.lot) ?? {}
         if (group.side === 'entry') existing.entry = share
         else existing.exit = share

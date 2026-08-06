@@ -94,3 +94,50 @@ test('a single-fill match (no split) keeps its lotId identical to the underlying
   assert.equal(result.matchedLots.length, 1)
   assert.equal(result.matchedLots[0]?.lotId, lots[0]?.lotId, 'an unsplit match publishes the exact same id as its open lot — no unnecessary suffix churn')
 })
+
+// DUPLICATE-ECONOMIC-LOT FOLLOW-UP TASK — confirmed production bug: publishedMatchedLots carried
+// two matches with identical token/openedAt/closedAt/openedTxHash/closedTxHash/amount/costBasisUsd/
+// proceedsUsd/realizedPnlUsd, distinguished only by the occurrence-suffixed lotId (e.g. base id and
+// `#3` for the exact same real match) — a genuine duplicate, not a legitimate partial fill. Root
+// cause: mergeNormalizedEvents.ts's own `base` array was never deduped against itself. These tests
+// exercise matchLotsFIFO's own publication-time economic-fingerprint safety net directly (the
+// backstop), independent of that upstream source fix.
+test('HARD ASSERTION (required regression): unique lotId is not enough — a true duplicate match (same sell processed twice) is never published twice', () => {
+  const buy = evt({ txHash: '0xbuy1', direction: 'inbound', amount: 483894.23953504855, timestamp: new Date(1_700_000_000_000).toISOString() })
+  const sell = evt({ txHash: '0xsell1', direction: 'outbound', amount: 483894.23953504855, timestamp: new Date(1_700_000_001_000).toISOString() })
+
+  const lots = buildLots([buy], [])
+  // The exact same sell event object appears twice in the input — simulating an undetected upstream
+  // duplicate that bypassed mergeNormalizedEvents (this function's own defense-in-depth backstop).
+  const result = matchLotsFIFO(lots, [sell, sell])
+
+  assert.equal(result.matchedLots.length, 1, 'the true duplicate match is dropped — never published twice just because its lotId happens to differ')
+  assert.equal(result.matchedLots[0]?.amount, 483894.23953504855)
+})
+
+test('legitimate partial fills across different sells are never collapsed by the economic-duplicate safety net', () => {
+  const buy = evt({ txHash: '0xbuy1', direction: 'inbound', amount: 1212.7675176316989 * 2, timestamp: new Date(1_700_000_000_000).toISOString() })
+  const sellA = evt({ txHash: '0xsellA', direction: 'outbound', amount: 1212.7675176316989, timestamp: new Date(1_700_000_001_000).toISOString() })
+  const sellB = evt({ txHash: '0xsellB', direction: 'outbound', amount: 1212.7675176316989, timestamp: new Date(1_700_000_002_000).toISOString() })
+
+  const lots = buildLots([buy], [])
+  const result = matchLotsFIFO(lots, [sellA, sellB])
+
+  // Two genuinely distinct matches (different closedTxHash) sharing the same amount must both survive
+  // — the safety net only ever drops a match whose ENTIRE economic identity, closedTxHash included,
+  // is byte-identical to an earlier one.
+  assert.equal(result.matchedLots.length, 2, 'same-amount partial fills against different sells are real, distinct matches, never merged')
+  const closedTxHashes = new Set(result.matchedLots.map((l) => l.closedTxHash))
+  assert.equal(closedTxHashes.size, 2)
+})
+
+test('a genuine same-lotId partial-fill occurrence set (different amounts) is unaffected by the duplicate safety net', () => {
+  const buy = evt({ txHash: '0xbuy1', direction: 'inbound', amount: 10, timestamp: new Date(1_700_000_000_000).toISOString() })
+  const sellA = evt({ txHash: '0xsellA', direction: 'outbound', amount: 4, timestamp: new Date(1_700_000_001_000).toISOString() })
+  const sellB = evt({ txHash: '0xsellB', direction: 'outbound', amount: 6, timestamp: new Date(1_700_000_002_000).toISOString() })
+
+  const lots = buildLots([buy], [])
+  const result = matchLotsFIFO(lots, [sellA, sellB])
+
+  assert.equal(result.matchedLots.length, 2, 'genuinely distinct partial-fill amounts must both survive the economic-duplicate safety net')
+})

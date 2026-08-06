@@ -20,7 +20,7 @@ import {
   buildCanonicalLotIdentities, canonicalAmountString, dedupeKeys, logDuplicateIdentityIfAny,
   buildLastKnownCanonicalSample, buildScanWindowIdentity, buildChainScope, normalizeWalletAddress,
   CANONICAL_SAMPLE_MANIFEST_SCHEMA_VERSION, CANONICAL_VALUE_METHODOLOGY_VERSION, CANONICAL_LOT_IDENTITY_SCHEMA_VERSION,
-  splitGroupTotalAcrossOccurrences, buildFingerprintMismatchDiagnostic,
+  splitGroupTotalAcrossOccurrences, buildFingerprintMismatchDiagnostic, stablecoinNormalizedGroupTotal,
   type CanonicalSampleManifestKvLike, type AcceptedEvidenceLoader, type CanonicalPnlSampleManifest,
 } from './canonicalPnlSampleManifest.ts'
 import { buildScanDeterminismAudit } from './scanDeterminismAudit.ts'
@@ -709,27 +709,27 @@ describe('canonicalPnlSampleManifest — value methodology version (issue #1: ma
     assert.equal(read.validationFailure, false, 'a version mismatch is a real miss, never reported as corruption')
   })
 
-  it('HARD ASSERTION (fingerprint-migration follow-up, required regression): the value methodology version is 5 — a stored vv4 manifest (fingerprinted by the old 1e-9 price-fingerprint algorithm) misses cleanly under the current identity, and the very next scan creates one fresh manifest', async () => {
-    assert.equal(CANONICAL_VALUE_METHODOLOGY_VERSION, 5)
+  it('HARD ASSERTION (fingerprint-migration follow-up, required regression): the value methodology version is 6 — a stored vv5 manifest (fingerprinted before stablecoin-side normalization) misses cleanly under the current identity, and the very next scan creates one fresh manifest', async () => {
+    assert.equal(CANONICAL_VALUE_METHODOLOGY_VERSION, 6)
     const kv = fakeKv()
     const lots = buildLots(6, 6)
-    const vv4Identity = buildManifestIdentity({
+    const vv5Identity = buildManifestIdentity({
       walletAddress: '0xaaa', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp1',
-      valueMethodologyVersion: 4,
+      valueMethodologyVersion: 5,
     })
-    const vv4Manifest = { ...(await manifestWithEvidence(lots, vv4Identity)).manifest, verifiedLotIdentityFingerprint: 'old-1e9-price-fingerprint' }
-    await writeCanonicalPnlSampleManifest(kv, vv4Manifest)
-    assert.ok(buildManifestKey(vv4Identity).includes(':vv4:'), 'sanity: the old manifest really is keyed under vv4')
+    const vv5Manifest = { ...(await manifestWithEvidence(lots, vv5Identity)).manifest, verifiedLotIdentityFingerprint: 'old-pre-stablecoin-normalization-fingerprint' }
+    await writeCanonicalPnlSampleManifest(kv, vv5Manifest)
+    assert.ok(buildManifestKey(vv5Identity).includes(':vv5:'), 'sanity: the old manifest really is keyed under vv5')
 
     const currentRead = await readCanonicalPnlSampleManifest(kv, identity())
-    assert.equal(currentRead.manifest, null, 'the vv4 manifest must never be found under the vv5 identity')
+    assert.equal(currentRead.manifest, null, 'the vv5 manifest must never be found under the vv6 identity')
     assert.equal(currentRead.validationFailure, false, 'a methodology-version miss is a clean miss, never reported as corruption')
 
-    // The next scan (no manifest found) builds and persists a fresh vv5 manifest — never a manual
-    // refresh/delete of the stale vv4 record, which remains untouched in the store under its own key.
+    // The next scan (no manifest found) builds and persists a fresh vv6 manifest — never a manual
+    // refresh/delete of the stale vv5 record, which remains untouched in the store under its own key.
     const { manifest: freshManifest } = await manifestWithEvidence(lots)
-    assert.equal(freshManifest.valueMethodologyVersion, 5)
-    assert.ok(buildManifestKey(identity()).includes(':vv5:'))
+    assert.equal(freshManifest.valueMethodologyVersion, 6)
+    assert.ok(buildManifestKey(identity()).includes(':vv6:'))
   })
 
   it('a manifest with the correct value methodology version still resolves normally', async () => {
@@ -1301,5 +1301,65 @@ describe('canonicalPnlSampleManifest — create/replay shared canonicalization (
     const result = await replay(manifest, lots, evidence.loader)
     assert.equal(result.outcome, 'unavailable')
     assert.equal(result.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 0, 'no live PnL escapes on a genuine mismatch')
+  })
+})
+
+describe('stablecoinNormalizedGroupTotal — deterministic $1/token normalization (stablecoin-side-normalization follow-up task)', () => {
+  // Real, address-verified Base USDC — src/modules/quoteLegPricing/index.ts's own STABLECOIN_ADDRESSES.
+  const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+  const NON_STABLE_TOKEN = '0xsome-other-token'
+
+  it('HARD ASSERTION (required regression — confirmed production shape): a verified stablecoin side whose stored total is materially non-$1/token is normalized to amount x $1, never left as verified truth', () => {
+    // Confirmed live shape: one Base USDC side stored ~$5.9705 for an occurrence quantity that
+    // should value at ~$1194.1715 at $1/token — a ~200x undervaluation.
+    const group = [lot({ chain: 'base', token: BASE_USDC, amount: 1194.1715 })]
+    const normalized = stablecoinNormalizedGroupTotal(group, 5.9705)
+    assert.equal(normalized, 1194.1715, 'the wrong stored total is replaced with the deterministic amount x $1 figure')
+  })
+
+  it('sums every sibling occurrence amount for a multi-lot stablecoin group', () => {
+    const group = [
+      lot({ chain: 'base', token: BASE_USDC, amount: 100 }),
+      lot({ chain: 'base', token: BASE_USDC, amount: 250.5 }),
+    ]
+    assert.equal(stablecoinNormalizedGroupTotal(group, 1), 350.5)
+  })
+
+  it('a non-stablecoin token is completely untouched — the stored total passes through unchanged', () => {
+    const group = [lot({ chain: 'base', token: NON_STABLE_TOKEN, amount: 1194.1715 })]
+    assert.equal(stablecoinNormalizedGroupTotal(group, 5.9705), 5.9705, 'never invents a price for anything that is not address-verified')
+  })
+
+  it('a verified stablecoin whose stored total already equals $1/token is unaffected (no spurious change)', () => {
+    const group = [lot({ chain: 'base', token: BASE_USDC, amount: 100 })]
+    assert.equal(stablecoinNormalizedGroupTotal(group, 100), 100)
+  })
+
+  it('an empty group returns the input total unchanged (nothing to normalize)', () => {
+    assert.equal(stablecoinNormalizedGroupTotal([], 42), 42)
+  })
+
+  it('HARD ASSERTION (end-to-end, required regression): a manifest built from a mispriced verified-stablecoin side stores the normalized $1/token total, not the stale wrong figure — and canonical-pnl-diff-audit no longer has anything to warn about', async () => {
+    const stableLot = lot({
+      lotId: 'stable-0', token: BASE_USDC, chain: 'base', openedTxHash: '0xstablebuy', closedTxHash: '0xstablesell',
+      openedAt: 1, closedAt: 2, amount: 1194.1715,
+      costBasisUsd: 5.9705, proceedsUsd: 5.9705, realizedPnlUsd: 0,
+    })
+    const evidence = seededEvidence([stableLot])
+    // Overwrite the seeded entry evidence with the WRONG, confirmed-production total ($5.9705
+    // instead of the correct $1194.1715 at $1/token) — simulating stale/corrupted accepted evidence.
+    const entryKey = evidence.keyFor(stableLot, 'entry')
+    const entryEnvelope = evidence.store.get(entryKey) as { priceUsd: number; valueUsd: number }
+    evidence.store.set(entryKey, { ...entryEnvelope, priceUsd: 5.9705, valueUsd: 5.9705 })
+
+    const manifest = await buildManifestFromCandidate({
+      identity: identity('stablecoin-normalization'), allCandidateLots: [stableLot], candidateVerifiedLots: [stableLot],
+      structuralLotCount: 1, fingerprints: computeFingerprints([stableLot], null), realizedPnlUsd: null,
+      verifiedPricingCoverage: 1, now: 1000, loadEvidence: evidence.loader, computeFingerprints,
+    })
+
+    const record = manifest.verifiedLotRecords[0]
+    assert.equal(record.groupCostBasisUsd, 1194.1715, 'the manifest stores the deterministic $1/token total, never the stale wrong figure')
+    assert.equal(record.costBasisUsd, 1194.1715)
   })
 })
