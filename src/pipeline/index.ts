@@ -97,7 +97,7 @@ import type { FallbackPricingConfig, FallbackPricingRoute, PriceableEntry, Price
 import { fallbackPricingService } from '../modules/fallbackPricing/index'
 import { GoldRushClient } from '@covalenthq/client-sdk'
 import { goldrushPriceSource, isKnownGoldrushNegative } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
-import { priceLotsForWallet } from './priceLotsForWallet'
+import { priceLotsForWallet, partitionAlreadyPricedEntries } from './priceLotsForWallet'
 import { createProviderWindowKvWriter, withStageCache } from '../../lib/server/cache/v2StageCache'
 import { createRequestPriceKvClient } from '../lib/kvClient'
 import type { MatchedLot } from '../modules/fifoEngine/types'
@@ -2468,12 +2468,45 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     },
   }
 
+  // DISPLAY-PASS PROVIDER-CALL DEDUPE, DISCLOSED (surgical cost-pass follow-up task — confirmed
+  // production waste: goldrush_getTokenPrices 22, callsWhoseResultWasUnused 22, on a second scan
+  // where accepted evidence/the canonical manifest already fully priced every published lot).
+  // safeRunPricingAtTime below feeds ONLY syntheticPnl/syntheticPoolData (display-only — see that
+  // module's own header: "never touches fifoEngine/priceLotsForWallet/pnlV2"), but it is completely
+  // ungated against priceLotsForWallet's own accepted-evidence skip pass above — it re-requests a
+  // live historical price for every buy/sell entry regardless of whether that exact (chain, token,
+  // txHash) side was already resolved there, whether by a real live call or by accepted-evidence
+  // hydration. This is the true root cause: the OFFICIAL pricing pass (priceLotsForWallet) already
+  // makes zero live calls when the canonical sample is fully covered (verified separately); this
+  // SECOND, independent, display-only pass never even asks. Entries whose price
+  // walletPriceLookups.priceUsdLookup already knows are filtered out here before the request, and
+  // the already-known value is backfilled into pricingAtTime's own costUsd/proceedsUsd afterward —
+  // syntheticPnl/syntheticPoolData see the exact same data as before, with zero duplicate provider
+  // calls for anything already resolved. Never touches fifoEngine, the canonical sample, or
+  // priceLotsForWallet's own official pricing pass — strictly a dedupe of this second pass against
+  // the first.
+  const buyDedupe = partitionAlreadyPricedEntries(displayBuyEntries, 'inbound', walletPriceLookups.priceUsdLookup)
+  const sellDedupe = partitionAlreadyPricedEntries(sellTimelineV2.entries, 'outbound', walletPriceLookups.priceUsdLookup)
+  // eslint-disable-next-line no-console
+  console.warn('[pipeline] display pricingAtTime pass — already-priced dedupe', {
+    buyEntriesBeforeDedupe: displayBuyEntries.length,
+    sellEntriesBeforeDedupe: sellTimelineV2.entries.length,
+    buyEntriesAfterDedupe: buyDedupe.needsPricing.length,
+    sellEntriesAfterDedupe: sellDedupe.needsPricing.length,
+    displayPassCallsAvoided: buyDedupe.alreadyKnown.size + sellDedupe.alreadyKnown.size,
+  })
+
   const pricingAtTime = await safeRunPricingAtTime({
-    buyEntries: displayBuyEntries,
-    sellEntries: sellTimelineV2.entries,
+    buyEntries: buyDedupe.needsPricing,
+    sellEntries: sellDedupe.needsPricing,
     priceSources: requestPriceSources,
     fallbackPricing: fallbackPricingConfig,
   })
+  // Backfill already-known prices for entries filtered out above, so downstream consumers
+  // (syntheticPoolData, synthetic trade reconstruction) see the exact same data they would have
+  // seen without this dedupe — this pass's own OUTPUT never regresses, only its provider calls do.
+  for (const [txHash, price] of buyDedupe.alreadyKnown) pricingAtTime.costUsd[txHash] = price
+  for (const [txHash, price] of sellDedupe.alreadyKnown) pricingAtTime.proceedsUsd[txHash] = price
   scanTimer.mark('pricingAtTime', pricingAtTimeStart)
   requestPriceKvClient.logStats('[pipeline] price KV stats')
   // CU-ESTIMATOR SNAPSHOT, DISCLOSED: same delta pattern as priceLotsForWallet's own snapshot above.

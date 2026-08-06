@@ -198,6 +198,30 @@ export function resolveEventPriceUsd(
   return null // 'unknown' direction — never guess which dictionary applies
 }
 
+// DISPLAY-PASS PROVIDER-CALL DEDUPE, DISCLOSED (surgical cost-pass follow-up task — confirmed
+// production waste: goldrush_getTokenPrices 22, callsWhoseResultWasUnused 22, on a second scan where
+// accepted evidence/the canonical manifest already fully priced every published lot). A SEPARATE,
+// display-only pricing pass (pipeline/index.ts's syntheticPnl/syntheticPoolData feed) re-requested a
+// live historical price for every buy/sell entry regardless of whether this pass's own
+// priceUsdLookup — hydrated from a real live call OR from accepted-evidence — already knew it. Splits
+// entries into `needsPricing` (genuinely unresolved — send to providers as before) and `alreadyKnown`
+// (a txHash -> price map the caller backfills into its own result so display data never regresses).
+// Pure, no I/O, no change to priceUsdLookup itself or to what gets matched/published.
+export function partitionAlreadyPricedEntries<T extends { txHash: string }>(
+  entries: readonly T[],
+  direction: 'inbound' | 'outbound',
+  priceUsdLookup: PriceUsdLookup,
+): { needsPricing: T[]; alreadyKnown: Map<string, number> } {
+  const needsPricing: T[] = []
+  const alreadyKnown = new Map<string, number>()
+  for (const entry of entries) {
+    const known = priceUsdLookup({ txHash: entry.txHash, direction } as NormalizedEvent)
+    if (known !== null) alreadyKnown.set(entry.txHash, known)
+    else needsPricing.push(entry)
+  }
+  return { needsPricing, alreadyKnown }
+}
+
 // AERODROME PRODUCTION ATTRIBUTION, DISCLOSED, ADDITIVE — see the computation site (search
 // "AERODROME ATTRIBUTION" below) for the full cross-referencing logic. Every count here is either
 // (a) a direct, real per-scan counter basedex.ts itself maintains (pools found/prices accepted/RPC
