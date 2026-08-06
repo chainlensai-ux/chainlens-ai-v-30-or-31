@@ -81,7 +81,7 @@ import {
 import {
   buildAcceptedEvidenceKey, readAcceptedEvidenceBatch, type AcceptedEvidenceKvLike, type AcceptedEvidenceBatchIdentity,
 } from '../lib/acceptedEvidenceStore'
-import { getGoldrushPriceSourceCallCount } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
+import { getGoldrushPriceSourceCallCount, setGoldrushPriceSourceStage, resetGoldrushPriceSourceStage } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { getDexscreenerCallCount } from '../modules/pricingAtTimeEngine/sources/dexscreener'
 
 // ADDRESS-BASED NATIVE/WETH RECOGNITION, DISCLOSED (confirmed production bug: nativeQuoteRequirementsFound
@@ -1844,7 +1844,18 @@ export async function priceLotsForWallet(params: {
   // to the audit, and never conflated with the replay-covered historical figure either.
   const goldrushCallsBeforeNow = getGoldrushPriceSourceCallCount()
   const dexCallsBeforeNow = getDexscreenerCallCount()
-  const atNow = await resolvePricingAtTime({ buyEntries: nowEntries, sellEntries: [], priceSources: params.priceSources })
+  // STAGE ATTRIBUTION, DISCLOSED (wallet-provider-cost-audit follow-up task): this pass's own
+  // GoldRush calls are current-price/open-position lookups, never historical/replay-coverable ones
+  // — see goldrushPriceSource.ts's own `setGoldrushPriceSourceStage` header for why this ambient
+  // flag exists. Reset back to 'historical_pricing' in a finally so a thrown error can never leave
+  // a later, unrelated at-trade-time call mislabeled as current-price.
+  setGoldrushPriceSourceStage('current_pricing')
+  let atNow: Awaited<ReturnType<typeof resolvePricingAtTime>>
+  try {
+    atNow = await resolvePricingAtTime({ buyEntries: nowEntries, sellEntries: [], priceSources: params.priceSources })
+  } finally {
+    resetGoldrushPriceSourceStage()
+  }
   acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls = getGoldrushPriceSourceCallCount() - goldrushCallsBeforeNow
   acceptedEvidenceSkipAudit.currentPriceDexActualLiveCalls = getDexscreenerCallCount() - dexCallsBeforeNow
 

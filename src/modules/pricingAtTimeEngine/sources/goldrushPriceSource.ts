@@ -24,7 +24,27 @@ import type { Chain } from '@covalenthq/client-sdk'
 import type { PriceSourceFn } from '../types'
 import type { SupportedChain } from '../../providerFetchWindow/types'
 import { logRpcCall } from '@/lib/server/rpcDebug'
-import { tryConsume, recordDuplicatePrevented, recordCallOutcome } from '../../providerCost/walletProviderCostLedger'
+import { tryConsume, recordDuplicatePrevented, recordCallOutcome, type CostStage } from '../../providerCost/walletProviderCostLedger'
+
+// AMBIENT PASS-CONTEXT, DISCLOSED (wallet-provider-cost-audit follow-up task — confirmed production
+// confusion: `wallet-provider-cost-audit` reported 80 calls under `historical_pricing` for a scan
+// whose historical/manifest-replay path had genuinely made zero, because this SAME price source
+// function is reused, unmodified, for BOTH resolvePricingAtTime passes in priceLotsForWallet.ts —
+// the at-trade-time historical pass AND the current/open-position pass. Neither this module's own
+// PriceSourceFn signature (types.ts) nor pricingAtTimeEngine's own resolvePricingAtTime call
+// contract carries a "which pass is this" parameter, so there is no way to thread the real stage
+// through the normal call chain without changing that shared, well-tested contract. This ambient,
+// scan-scoped flag is the SAME "set immediately before, read inside, reset after" convention this
+// codebase already uses for `getGoldrushPriceSourceCallCount`'s own before/after delta pattern
+// (priceLotsForWallet.ts's own `currentPriceGoldrushLiveCalls` computation) — the caller that DOES
+// know which pass it's running sets this right before invoking resolvePricingAtTime for that pass.
+let goldrushPriceSourceStage: CostStage = 'historical_pricing'
+export function setGoldrushPriceSourceStage(stage: CostStage): void {
+  goldrushPriceSourceStage = stage
+}
+export function resetGoldrushPriceSourceStage(): void {
+  goldrushPriceSourceStage = 'historical_pricing'
+}
 
 // Real, verified GoldRush chain slugs (confirmed against the installed SDK's Generic.types.d.ts
 // ChainName enum). Kept as this module's own literal copy — same "no runtime coupling between
@@ -189,6 +209,7 @@ export function isKnownGoldrushNegative(token: string, chain: string): boolean {
 // per-stage provider-call diagnostic reports THIS scan's own count, not a stale cumulative total.
 export function resetGoldrushPriceSourceCallCount(): void {
   goldrushPriceSourceCallCount = 0
+  resetGoldrushPriceSourceStage()
 }
 
 // TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as basedex.ts's own __resetBaseDexCachesForTest —
@@ -268,7 +289,7 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
     // short-circuits above, so a question already answerable for free is always served regardless
     // of budget state — the cap only ever refuses a genuinely NEW live call. FAILS CLOSED: returns
     // the same honest null a real miss produces; never a fabricated price, never a retry.
-    if (!tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: chain as SupportedChain, stage: 'historical_pricing', isPricing: true })) {
+    if (!tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: chain as SupportedChain, stage: goldrushPriceSourceStage, isPricing: true })) {
       return null
     }
 

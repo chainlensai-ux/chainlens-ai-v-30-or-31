@@ -13,13 +13,13 @@
 import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import type { GoldRushClient } from '@covalenthq/client-sdk'
-import { goldrushPriceSource, __resetGoldrushPriceSourceCachesForTest, getGoldrushPriceSourceCallCount, isKnownGoldrushNegative, isGoldrushBreakerOpenForTest } from './goldrushPriceSource'
+import { goldrushPriceSource, __resetGoldrushPriceSourceCachesForTest, getGoldrushPriceSourceCallCount, isKnownGoldrushNegative, isGoldrushBreakerOpenForTest, setGoldrushPriceSourceStage, resetGoldrushPriceSourceStage } from './goldrushPriceSource'
 // SHARED LEDGER RESET, DISCLOSED (cost-audit task): goldrushPriceSource now consumes from the
 // scan-wide provider budget (walletProviderCostLedger), which in production is reset once per scan
 // job. A test file runs many "scans" back to back in one process, so without this reset the
 // cumulative budget would leak across cases and refuse calls a real single scan would allow —
 // resetting per test models the real per-job lifecycle, it does not weaken any assertion.
-import { __resetWalletProviderCostLedgerForTest } from '../../providerCost/walletProviderCostLedger'
+import { __resetWalletProviderCostLedgerForTest, getWalletProviderCostAudit } from '../../providerCost/walletProviderCostLedger'
 
 const TOKEN = '0x1111111111111111111111111111111111111111'
 const CHAIN = 'base'
@@ -209,5 +209,48 @@ describe('goldrushPriceSource — scan-level circuit breaker', () => {
       await fn(tokenAddress(i), CHAIN, Date.parse('2024-01-01'))
     }
     assert.equal(isGoldrushBreakerOpenForTest(), true, 'expected 20 consecutive thrown errors to trip the breaker exactly like clean misses')
+  })
+})
+
+// STAGE ATTRIBUTION, DISCLOSED (wallet-provider-cost-audit follow-up task — confirmed production
+// confusion: wallet-provider-cost-audit reported 80 calls under `historical_pricing` for a scan
+// whose historical/replay-covered pass made zero, because this shared price source hardcoded
+// `stage: 'historical_pricing'` regardless of which resolvePricingAtTime pass invoked it).
+describe('goldrushPriceSource stage attribution (wallet-provider-cost-audit follow-up task)', () => {
+  beforeEach(() => {
+    __resetWalletProviderCostLedgerForTest()
+    __resetGoldrushPriceSourceCachesForTest()
+    resetGoldrushPriceSourceStage()
+  })
+
+  it('HARD ASSERTION (required regression): defaults to historical_pricing when the caller never sets a stage', async () => {
+    const { client } = makeFakeClient({ respond: () => ({ error: false, data: [{ items: [{ price: 1 }] }] }) })
+    await goldrushPriceSource(client)(TOKEN, CHAIN, Date.parse('2024-01-01'))
+    const audit = getWalletProviderCostAudit()
+    assert.equal(audit.goldrush.callsByStage.historical_pricing, 1)
+    assert.equal(audit.goldrush.callsByStage.current_pricing, undefined)
+  })
+
+  it('HARD ASSERTION (required regression): a call made while setGoldrushPriceSourceStage(\'current_pricing\') is active is attributed to current_pricing, never historical_pricing', async () => {
+    const { client } = makeFakeClient({ respond: () => ({ error: false, data: [{ items: [{ price: 1 }] }] }) })
+    setGoldrushPriceSourceStage('current_pricing')
+    try {
+      await goldrushPriceSource(client)(TOKEN, CHAIN, Date.parse('2024-01-01'))
+    } finally {
+      resetGoldrushPriceSourceStage()
+    }
+    const audit = getWalletProviderCostAudit()
+    assert.equal(audit.goldrush.callsByStage.current_pricing, 1)
+    assert.equal(audit.goldrush.callsByStage.historical_pricing, undefined)
+  })
+
+  it('resetGoldrushPriceSourceStage returns to historical_pricing for the next call — no leakage across passes', async () => {
+    const { client } = makeFakeClient({ respond: () => ({ error: false, data: [{ items: [{ price: 1 }] }] }) })
+    setGoldrushPriceSourceStage('current_pricing')
+    resetGoldrushPriceSourceStage()
+    await goldrushPriceSource(client)(TOKEN, CHAIN, Date.parse('2024-01-01'))
+    const audit = getWalletProviderCostAudit()
+    assert.equal(audit.goldrush.callsByStage.historical_pricing, 1)
+    assert.equal(audit.goldrush.callsByStage.current_pricing, undefined)
   })
 })

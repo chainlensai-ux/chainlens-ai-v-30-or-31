@@ -413,6 +413,36 @@ export type BoundedSampleDisclosure = {
   warning: string | null
 }
 
+// STALE/INTERMEDIATE-STATE RESILIENCE, DISCLOSED (Wallet Scanner final-UI follow-up task —
+// confirmed production report: a live scan whose backend gate had genuinely resolved to a healthy
+// bounded sample [manifestApplied: true, canonicalSampleEvidenceUnavailable: false,
+// reconciliationSummary.publicPnlStatus: 'partial'] still rendered "PnL unavailable" client-side).
+// `publicPnlStatus` (the `finalSummary.financialStatus.officialPnlStatus` prop) is threaded through
+// several component layers/props before reaching this card — this function is the card's OWN,
+// self-contained cross-check against the two backend fields that are the strongest, most direct
+// evidence of the FINAL outcome (`canonicalSampleManifestAudit.manifestApplied` and
+// `reconciliationSummary.publicPnlStatus`, both already present as separate props on this exact
+// card). If those two independently agree the scan is a genuinely-applied, non-unavailable bounded
+// sample while the `publicPnlStatus` prop itself claims 'unavailable', the bounded-sample reading
+// wins — never the reverse (a manifest that genuinely failed/is unavailable is never overridden
+// into looking available; this only ever recovers a bounded-sample result, never fabricates a full
+// 'ok' one). NEVER used to override an 'ok'/'limited_verified_sample' status downward — this is a
+// one-directional "unavailable was wrong, use the real bounded sample" recovery only.
+export function resolveEffectivePublicPnlStatus(
+  publicPnlStatus: PublicPnlStatus | null | undefined,
+  reconciliationSummary: PnlReconciliationSummary | null | undefined,
+  canonicalSampleManifestAudit?: CanonicalSampleManifestAudit | null,
+): PublicPnlStatus | null {
+  const status = publicPnlStatus ?? null
+  if (status !== 'unavailable') return status
+  const manifestGenuinelyApplied = canonicalSampleManifestAudit?.manifestApplied === true
+    && canonicalSampleManifestAudit?.canonicalSampleEvidenceUnavailable !== true
+  if (manifestGenuinelyApplied && reconciliationSummary?.publicPnlStatus === 'partial') {
+    return 'limited_verified_sample'
+  }
+  return status
+}
+
 export function selectBoundedSampleDisclosure(
   publicPnlStatus: PublicPnlStatus | null | undefined,
   reconciliationSummary: PnlReconciliationSummary | null | undefined,
@@ -423,7 +453,8 @@ export function selectBoundedSampleDisclosure(
   // somehow still claims 'limited_verified_sample' (defense in depth; the backend's own gate
   // already forces 'unavailable' in this case, but this block never trusts that alone).
   if (canonicalSampleManifestAudit?.canonicalSampleEvidenceUnavailable) return null
-  if (publicPnlStatus !== 'limited_verified_sample') return null
+  const effectiveStatus = resolveEffectivePublicPnlStatus(publicPnlStatus, reconciliationSummary, canonicalSampleManifestAudit)
+  if (effectiveStatus !== 'limited_verified_sample') return null
   if (!reconciliationSummary) return null
   const audit = reconciliationSummary.publicPnlGateAudit
   const scanWindowDays = audit.scanWindowDays ?? 90
@@ -520,7 +551,7 @@ export function selectDisplayedPnl(params: {
     }
   }
 
-  const status = params.publicPnlStatus ?? null
+  const status = resolveEffectivePublicPnlStatus(params.publicPnlStatus, params.reconciliationSummary, params.canonicalSampleManifestAudit)
 
   if (status === 'limited_verified_sample') {
     const summary = params.reconciliationSummary
@@ -617,7 +648,8 @@ export function resolvePnlDisplayMode(params: {
 }
 
 export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit }: PnlStatusCardProps) {
-  const pnl = selectVerifiedPnlData(pnlV2, publicPnlStatus, unrealizedReconciliation)
+  const effectivePublicPnlStatus = resolveEffectivePublicPnlStatus(publicPnlStatus, reconciliationSummary, canonicalSampleManifestAudit)
+  const pnl = selectVerifiedPnlData(pnlV2, effectivePublicPnlStatus, unrealizedReconciliation)
   const isActive = pnlV2 != null
   const canonicalSampleUnavailable = canonicalSampleManifestAudit?.canonicalSampleEvidenceUnavailable === true
   const boundedSample = selectBoundedSampleDisclosure(publicPnlStatus, reconciliationSummary, canonicalSampleManifestAudit)
@@ -630,7 +662,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   // (disclosure block showing a real number while the main tiles showed $0.00 from a DIFFERENT,
   // unrelated source).
   const displayed = selectDisplayedPnl({ pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit })
-  const isBoundedSample = publicPnlStatus === 'limited_verified_sample'
+  const isBoundedSample = effectivePublicPnlStatus === 'limited_verified_sample'
   // PARTIAL-COVERAGE BADGE, DISCLOSED (this task's own requirement): shown SEPARATELY from the
   // blocked/unavailable states above — a "partial" reconciliation still has a real, honestly-
   // computed officialUnrealizedPnlUsd (excluded positions are simply left out, never blended in),
@@ -653,9 +685,9 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
     : unrealizedReconciliation?.reconciliationStatus === 'partial'
       ? `Open-position coverage: ${unrealizedReconciliation.unrealizedCoveragePercent.toFixed(2)}% (unrealized only)`
       : null
-  const limitedSampleBadgeLabel = shouldShowLimitedSampleBadge(publicPnlStatus)
-  const showSyntheticGlobal = shouldShowSyntheticGlobal(publicPnlStatus, syntheticPnl)
-  const showSyntheticPerChain = shouldShowSyntheticPerChain(publicPnlStatus, syntheticPnl)
+  const limitedSampleBadgeLabel = shouldShowLimitedSampleBadge(effectivePublicPnlStatus)
+  const showSyntheticGlobal = shouldShowSyntheticGlobal(effectivePublicPnlStatus, syntheticPnl)
+  const showSyntheticPerChain = shouldShowSyntheticPerChain(effectivePublicPnlStatus, syntheticPnl)
   // BLOCKED, DISCLOSED: `pnl.unreliable` (the pre-existing magnitude heuristic) and
   // `!pnl.stable` (this task's new isStablePnl guard) are two independent reasons to hide the
   // numeric display — either alone is enough. Applies uniformly to Realized/Unrealized/Total/ROI

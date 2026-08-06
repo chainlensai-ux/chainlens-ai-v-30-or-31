@@ -17,6 +17,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   selectVerifiedPnlData, selectDisplayedUnrealizedPnl, shouldShowLimitedSampleBadge, GUARDRAIL_ABS_LIMIT, isStablePnl,
+  resolveEffectivePublicPnlStatus,
   PNL_UNAVAILABLE_MESSAGE, hasGlobalSynthetic, hasPerChainSynthetic, shouldShowSyntheticGlobal, shouldShowSyntheticPerChain,
   resolvePnlDisplayMode, selectBoundedSampleDisclosure, selectDisplayedPnl, PER_CHAIN_BOUNDED_SAMPLE_MESSAGE,
   selectLastKnownSampleDisclosure, CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL, LAST_KNOWN_SAMPLE_LABEL,
@@ -851,5 +852,59 @@ describe('PnlStatusCard — fail-closed UI when canonicalSampleEvidenceUnavailab
     const lastKnown = selectLastKnownSampleDisclosure(audit)
     assert.equal(displayed.realizedPnlUsd, null, 'the live display must stay unavailable')
     assert.equal(lastKnown!.realizedPnlUsd, 1384.93, 'the last-known figure is a real, separate value')
+  })
+})
+
+// UI FINAL-STATE RESILIENCE, DISCLOSED (Wallet Scanner final-UI follow-up task — confirmed
+// production report: publicPnlStatus 'unavailable' rendered even though manifestApplied: true,
+// canonicalSampleEvidenceUnavailable: false, and reconciliationSummary.publicPnlStatus: 'partial'
+// all agreed the scan was a genuinely healthy bounded sample). resolveEffectivePublicPnlStatus is
+// the card's own cross-check against the two strongest backend signals it already receives as
+// separate props, so a stale/mis-threaded `publicPnlStatus` prop can never mask an otherwise-healthy
+// bounded-sample result.
+describe('resolveEffectivePublicPnlStatus (Wallet Scanner final-UI follow-up task)', () => {
+  function appliedAudit(overrides: Partial<CanonicalSampleManifestAudit> = {}): CanonicalSampleManifestAudit {
+    return { ...emptyCanonicalSampleManifestAudit('manifest-key'), manifestApplied: true, canonicalSampleEvidenceUnavailable: false, ...overrides }
+  }
+
+  it('HARD ASSERTION (required regression): a stale unavailable publicPnlStatus is overridden to limited_verified_sample when manifestApplied is true and reconciliationSummary confirms a partial (bounded) sample', () => {
+    const status = resolveEffectivePublicPnlStatus('unavailable', reconciliationSummary({ realizedPnlUsd: 608.45 }), appliedAudit())
+    assert.equal(status, 'limited_verified_sample')
+  })
+
+  it('selectDisplayedPnl and selectBoundedSampleDisclosure both use the recovered bounded-sample reading end to end', () => {
+    const summary = reconciliationSummary({ realizedPnlUsd: 608.45 })
+    const audit = appliedAudit()
+    const displayed = selectDisplayedPnl({ pnlV2: pnlV2({ realizedPnlUsd: 100 }), publicPnlStatus: 'unavailable', reconciliationSummary: summary, canonicalSampleManifestAudit: audit })
+    assert.equal(displayed.status, 'limited_verified_sample')
+    assert.equal(displayed.realizedPnlUsd, 608.45)
+    const disclosure = selectBoundedSampleDisclosure('unavailable', summary, audit)
+    assert.ok(disclosure)
+    assert.equal(disclosure!.realizedPnlUsd, 608.45)
+  })
+
+  it('a GENUINELY unavailable scan (manifestApplied false) is never overridden — negative control', () => {
+    const status = resolveEffectivePublicPnlStatus('unavailable', reconciliationSummary({ realizedPnlUsd: 608.45 }), emptyCanonicalSampleManifestAudit('manifest-key'))
+    assert.equal(status, 'unavailable')
+  })
+
+  it('a genuinely failed replay (canonicalSampleEvidenceUnavailable: true) is never overridden even if manifestApplied is stale-true', () => {
+    const status = resolveEffectivePublicPnlStatus(
+      'unavailable',
+      reconciliationSummary({ realizedPnlUsd: 608.45 }),
+      appliedAudit({ canonicalSampleEvidenceUnavailable: true }),
+    )
+    assert.equal(status, 'unavailable')
+  })
+
+  it('reconciliationSummary disagreeing (still available/full, not partial) never overrides — only a confirmed bounded sample recovers', () => {
+    const status = resolveEffectivePublicPnlStatus('unavailable', reconciliationSummary({ realizedPnlUsd: 608.45, publicPnlStatus: 'available' }), appliedAudit())
+    assert.equal(status, 'unavailable')
+  })
+
+  it('never touches an already-healthy status — ok and limited_verified_sample pass through unchanged', () => {
+    assert.equal(resolveEffectivePublicPnlStatus('ok', null, null), 'ok')
+    assert.equal(resolveEffectivePublicPnlStatus('limited_verified_sample', null, null), 'limited_verified_sample')
+    assert.equal(resolveEffectivePublicPnlStatus(null, null, null), null)
   })
 })
