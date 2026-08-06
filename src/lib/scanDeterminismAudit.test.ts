@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {
   buildScanDeterminismAudit, checkPricingDeterminismViolation, logPricingDeterminismViolationIfAny,
   checkFinalPnlSnapshotDivergence, logFinalPnlSnapshotDivergenceIfAny, type FinalPnlSnapshotConsumers,
-  sortLotsByCanonicalIdentity, quantizeUsd, sumQuantizedUsd,
+  sortLotsByCanonicalIdentity, quantizeUsd, quantizeUsdCents, sumQuantizedUsd,
 } from './scanDeterminismAudit'
 import type { MatchedLot } from '../modules/fifoEngine/types'
 
@@ -357,14 +357,22 @@ describe('fingerprint-divergence fix: quantization + canonical order + integer s
     const oldBucketB = BigInt(Math.round(b * oldScale)).toString()
     assert.equal(oldBucketA, oldBucketB, 'sanity: the prior 1e-8 quantum genuinely collapsed this above-tolerance pair')
 
-    // The FIXED quantum (quantizeUsd, now 1e-9 — see this module's own header) must never collapse it.
+    // quantizeUsd (still 1e-9 — see this module's own header) must never collapse it — this remains
+    // the general-purpose, near-exact canonicalization used for the realized-total fingerprint and
+    // for the per-group value-tolerance check elsewhere (canonicalPnlSampleManifest.ts's own
+    // CANONICAL_VALUE_TOLERANCE, unchanged).
     assert.notEqual(quantizeUsd(a), quantizeUsd(b), 'an above-tolerance difference must produce a different fingerprint input')
 
     const auditA = buildScanDeterminismAudit({ matchedLots: [lot({ lotId: 'v1', costBasisUsd: a, proceedsUsd: 50, realizedPnlUsd: 50 - a })], realizedPnlUsd: 50 - a, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
     const auditB = buildScanDeterminismAudit({ matchedLots: [lot({ lotId: 'v1', costBasisUsd: b, proceedsUsd: 50, realizedPnlUsd: 50 - b })], realizedPnlUsd: 50 - b, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
-    assert.notEqual(auditA.acceptedHistoricalPriceFingerprint, auditB.acceptedHistoricalPriceFingerprint)
+    // acceptedHistoricalPriceFingerprint now canonicalizes cost/proceeds at CENT precision
+    // (wallet-scanner-bounded-publication follow-up task, quantizeUsdCents) — a sub-cent difference
+    // like this 1.1e-9 pair is exactly the sub-cent rounding drift that fix is meant to absorb, so it
+    // legitimately collapses here. realizedPnlFingerprint still uses quantizeUsd (1e-9) directly on
+    // the caller-supplied total, so it — and therefore scanFingerprint — still correctly differs.
+    assert.equal(auditA.acceptedHistoricalPriceFingerprint, auditB.acceptedHistoricalPriceFingerprint, 'sub-cent cost/proceeds drift is intentionally absorbed by the price fingerprint\'s cent-level canonicalization')
     assert.notEqual(auditA.realizedPnlFingerprint, auditB.realizedPnlFingerprint)
-    assert.notEqual(auditA.scanFingerprint, auditB.scanFingerprint)
+    assert.notEqual(auditA.scanFingerprint, auditB.scanFingerprint, 'the realized-total fingerprint alone still makes the overall scan fingerprint differ')
   })
 
   it('the fixed 1e-9 quantum still collapses genuine sub-tolerance allocation noise (the original bug this task fixes)', () => {
@@ -372,5 +380,45 @@ describe('fingerprint-divergence fix: quantization + canonical order + integer s
     const b = 33.33333333 + 1e-13
     assert.notEqual(a, b, 'sanity: the two allocations really do differ at the raw float level')
     assert.equal(quantizeUsd(a), quantizeUsd(b), 'real allocation noise (~1e-13) is comfortably inside one 1e-9 quantum')
+  })
+})
+
+// =================================================================================================
+// PRICE-FINGERPRINT CENT CANONICALIZATION — wallet-scanner-bounded-publication follow-up task
+// (confirmed production shape: manifest replay resolved 23/23 lots, identity and realized-total
+// fingerprints matched, stored/recomputed realized PnL both $701.47, cost/proceeds agreed at cent
+// precision — yet acceptedHistoricalPriceFingerprint still mismatched on genuine sub-cent per-lot
+// rounding drift, e.g. -0.88505 vs -0.89, that the old 1e-9 quantum did not fully absorb).
+// =================================================================================================
+
+describe('buildScanDeterminismAudit — price-fingerprint cent canonicalization (required regression #1)', () => {
+  it('HARD ASSERTION (required regression): sub-cent per-lot rounding drift (e.g. -0.88505 vs -0.89) does NOT fail the price fingerprint when identity, side evidence, cost/proceeds and the realized total all match', () => {
+    // Two independently re-derived allocations for the SAME lot identity — cost/proceeds agree to
+    // the cent, but one carries raw sub-cent precision and the other is already cent-rounded.
+    const unrounded = lot({ lotId: 'v1', costBasisUsd: 100, proceedsUsd: 99.11495, realizedPnlUsd: -0.88505 })
+    const rounded = lot({ lotId: 'v1', costBasisUsd: 100, proceedsUsd: 99.11, realizedPnlUsd: -0.89 })
+    assert.notEqual(unrounded.proceedsUsd, rounded.proceedsUsd, 'sanity: the two allocations genuinely differ at sub-cent precision')
+
+    const auditUnrounded = buildScanDeterminismAudit({ matchedLots: [unrounded], realizedPnlUsd: -0.89, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
+    const auditRounded = buildScanDeterminismAudit({ matchedLots: [rounded], realizedPnlUsd: -0.89, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
+    assert.equal(auditUnrounded.acceptedHistoricalPriceFingerprint, auditRounded.acceptedHistoricalPriceFingerprint, 'sub-cent proceeds drift must not fail the price fingerprint when the realized total already agrees')
+    assert.equal(auditUnrounded.scanFingerprint, auditRounded.scanFingerprint)
+  })
+
+  it('a genuine, ABOVE-cent cost/proceeds difference still produces a different price fingerprint — validation is not weakened', () => {
+    const a = lot({ lotId: 'v1', costBasisUsd: 100, proceedsUsd: 99.11 })
+    const b = lot({ lotId: 'v1', costBasisUsd: 100, proceedsUsd: 99.10 })
+    const auditA = buildScanDeterminismAudit({ matchedLots: [a], realizedPnlUsd: -0.89, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
+    const auditB = buildScanDeterminismAudit({ matchedLots: [b], realizedPnlUsd: -0.90, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
+    assert.notEqual(auditA.acceptedHistoricalPriceFingerprint, auditB.acceptedHistoricalPriceFingerprint, 'a real, one-cent difference must still fail the price fingerprint')
+  })
+
+  it('quantizeUsdCents rounds to the nearest cent and is stable across a JSON/KV round-trip', () => {
+    assert.equal(quantizeUsdCents(99.11495), quantizeUsdCents(99.11))
+    assert.notEqual(quantizeUsdCents(99.11), quantizeUsdCents(99.10))
+    assert.equal(quantizeUsdCents(null), 'null')
+    const value = 1384.9299999999998
+    const roundTripped = JSON.parse(JSON.stringify(value)) as number
+    assert.equal(quantizeUsdCents(value), quantizeUsdCents(roundTripped))
   })
 })

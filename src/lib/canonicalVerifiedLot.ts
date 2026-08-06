@@ -29,6 +29,7 @@ export type CanonicalVerifiedRejectionReason =
   | 'missing_proceeds'
   | 'missing_realized_pnl'
   | 'non_finite_value'
+  | 'invalid_chronology'
 
 export const CANONICAL_VERIFIED_REJECTION_REASONS: readonly CanonicalVerifiedRejectionReason[] = [
   'evidence_quality_not_verified',
@@ -36,14 +37,30 @@ export const CANONICAL_VERIFIED_REJECTION_REASONS: readonly CanonicalVerifiedRej
   'missing_proceeds',
   'missing_realized_pnl',
   'non_finite_value',
+  'invalid_chronology',
 ]
 
-type PublishableLot = Pick<MatchedLot, 'evidenceQuality' | 'costBasisUsd' | 'proceedsUsd' | 'realizedPnlUsd'>
+type PublishableLot = Pick<MatchedLot, 'evidenceQuality' | 'costBasisUsd' | 'proceedsUsd' | 'realizedPnlUsd' | 'openedAt' | 'closedAt'>
+
+// CHRONOLOGY GUARD, DISCLOSED, ADDITIVE (wallet-scanner-bounded-publication follow-up task —
+// confirmed production shape: a structural lot with `closedAt < openedAt` — a sell TIMESTAMPED
+// before its own matched buy — observed in the raw structural array. Such a lot cannot represent a
+// real, physically-possible trade; whatever upstream matching/normalization step produced it, this
+// predicate is the ONE shared gate every consumer (gate, AYRI, smart-money, fingerprinting,
+// serialization, UI) already goes through, so it is the right place to fail closed rather than
+// trusting an impossible timeline into a "verified" publication. This never rejects a genuinely
+// same-block/same-second open+close (`closedAt === openedAt` is a real, valid same-block round-trip,
+// left alone) — only a closedAt STRICTLY BEFORE its own openedAt, which no real trade can produce.
+function hasInvalidChronology(lot: Pick<PublishableLot, 'openedAt' | 'closedAt'>): boolean {
+  return lot.closedAt < lot.openedAt
+}
 
 // Returns the FIRST reason this lot is not canonically verified, or null when it is. Ordered from
 // most-fundamental to most-specific so the reason counts read as a real diagnosis rather than an
-// arbitrary pick among several simultaneous failures.
+// arbitrary pick among several simultaneous failures. Chronology is checked FIRST — an impossible
+// timeline invalidates the lot regardless of what its price fields otherwise look like.
 export function canonicalVerifiedRejectionReason(lot: PublishableLot): CanonicalVerifiedRejectionReason | null {
+  if (hasInvalidChronology(lot)) return 'invalid_chronology'
   if (lot.evidenceQuality !== 'verified') return 'evidence_quality_not_verified'
   if (lot.costBasisUsd === null) return 'missing_cost_basis'
   if (lot.proceedsUsd === null) return 'missing_proceeds'
@@ -67,6 +84,7 @@ export function emptyCanonicalVerifiedPredicateReasonCounts(): CanonicalVerified
     missing_proceeds: 0,
     missing_realized_pnl: 0,
     non_finite_value: 0,
+    invalid_chronology: 0,
   }
 }
 

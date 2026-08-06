@@ -407,12 +407,29 @@ export function selectBoundedSampleDisclosure(
   if (!reconciliationSummary) return null
   const audit = reconciliationSummary.publicPnlGateAudit
   const scanWindowDays = audit.scanWindowDays ?? 90
+  // TRUNCATED-HISTORY LABEL, DISCLOSED (wallet-scanner-bounded-publication follow-up task,
+  // requirement #5): a valid bounded sample built on TRUNCATED provider history (a page-cap
+  // truncation, `historyCoverageStatus === 'truncated'` — see eventClassification's own
+  // HistoryCoverageStatus header) gets its own explicit, literal label rather than the generic
+  // "Verified N-day sample" wording, which reads as a complete window rather than a boundary-
+  // unproven, page-capped one. `boundaryProven`/'exhaustive' coverage is UNCHANGED — never this
+  // label, still the original "Verified N-day sample" wording (this bounded block only ever
+  // appears at all for `publicPnlStatus === 'limited_verified_sample'`, never full 'ok'/'available'
+  // — the backend gate above already guarantees FULL PnL is never shown unless the window boundary
+  // is proven, this label change is display wording only, never a status change).
+  const label = audit.historyCoverageStatus === 'truncated'
+    ? 'Verified bounded sample — transaction history was truncated.'
+    : `Verified ${scanWindowDays}-day sample`
+  // COVERAGE CAP, DISCLOSED (requirement #5's "cap confidence/coverage at 100%"): a real backend
+  // ratio should never exceed 1.0, but this display-only clamp guards against ever showing a
+  // nonsensical >100% figure regardless of cause — it never changes the underlying backend value.
+  const verifiedPricingCoveragePercent = audit.verifiedPricingCoverage != null ? Math.min(100, audit.verifiedPricingCoverage * 100) : null
   return {
-    label: `Verified ${scanWindowDays}-day sample`,
+    label,
     realizedPnlUsd: reconciliationSummary.realizedPnlUsd,
     verifiedClosedLots: audit.verifiedClosedLots,
     structuralClosedLots: audit.structuralClosedLots,
-    verifiedPricingCoveragePercent: audit.verifiedPricingCoverage != null ? audit.verifiedPricingCoverage * 100 : null,
+    verifiedPricingCoveragePercent,
     unresolvedExitsExcluded: audit.invalidOrUnknownUnmatchedEvents,
     warning: reconciliationSummary.warning,
   }

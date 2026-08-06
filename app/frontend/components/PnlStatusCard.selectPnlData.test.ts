@@ -578,6 +578,41 @@ describe('selectBoundedSampleDisclosure — bounded-PnL-UI follow-up task', () =
       assert.equal((disclosure.warning ?? '').includes(forbidden), false)
     }
   })
+
+  // ===============================================================================================
+  // TRUNCATED-HISTORY WORDING — wallet-scanner-bounded-publication follow-up task, required
+  // regression #4 ("bounded/truncated public wording"). A valid bounded sample built on truncated
+  // provider history gets its own explicit label — never "Evidence Unavailable", never the plain
+  // "Verified N-day sample" wording that reads as a complete window.
+  // ===============================================================================================
+
+  it('HARD ASSERTION (required regression): a valid bounded sample with truncated history coverage gets the explicit truncation label, never "Evidence Unavailable" and never the exhaustive-coverage wording', () => {
+    const disclosure = selectBoundedSampleDisclosure('limited_verified_sample', reconciliationSummary({
+      publicPnlGateAudit: { ...reconciliationSummary().publicPnlGateAudit, historyCoverageStatus: 'truncated', preWindowInventoryExitsUnprovenDueToTruncation: 110 },
+    }))
+    assert.ok(disclosure, 'a valid bounded sample must still publish — never Evidence Unavailable for a genuinely valid replay')
+    assert.equal(disclosure!.label, 'Verified bounded sample — transaction history was truncated.')
+    assert.notEqual(disclosure!.label, 'Verified 90-day sample', 'the generic exhaustive-coverage wording must not be used for truncated coverage')
+  })
+
+  it('exhaustive coverage keeps the original "Verified N-day sample" wording — unaffected by this fix', () => {
+    const disclosure = selectBoundedSampleDisclosure('limited_verified_sample', reconciliationSummary({
+      publicPnlGateAudit: { ...reconciliationSummary().publicPnlGateAudit, historyCoverageStatus: 'exhaustive' },
+    }))
+    assert.equal(disclosure!.label, 'Verified 90-day sample')
+  })
+
+  it('HARD ASSERTION (required regression): verifiedPricingCoveragePercent is capped at 100 even if the backend ratio somehow exceeds 1.0', () => {
+    const disclosure = selectBoundedSampleDisclosure('limited_verified_sample', reconciliationSummary({
+      publicPnlGateAudit: { ...reconciliationSummary().publicPnlGateAudit, verifiedPricingCoverage: 1.5 },
+    }))
+    assert.equal(disclosure!.verifiedPricingCoveragePercent, 100)
+  })
+
+  it('a normal, in-range coverage ratio is unaffected by the cap', () => {
+    const disclosure = selectBoundedSampleDisclosure('limited_verified_sample', reconciliationSummary())!
+    assert.ok(Math.abs(disclosure.verifiedPricingCoveragePercent! - 70.37) < 0.01)
+  })
 })
 
 describe('bounded-PnL-UI end-to-end regression: partial/available/unavailable rendering behavior', () => {

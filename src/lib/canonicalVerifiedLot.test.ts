@@ -66,4 +66,32 @@ describe('canonicalVerifiedLot — the one shared predicate (requirement #6)', (
     const counts = buildCanonicalVerifiedPredicateReasonCounts([lot(), lot(), lot()])
     assert.deepEqual(counts, emptyCanonicalVerifiedPredicateReasonCounts())
   })
+
+  // =================================================================================================
+  // CHRONOLOGY GUARD — wallet-scanner-bounded-publication follow-up task (confirmed production
+  // shape: a structural lot with closedAt < openedAt observed in the raw structural array).
+  // =================================================================================================
+
+  it('HARD ASSERTION (required regression #3): a lot whose closedAt is BEFORE its own openedAt is never canonically verified, even with otherwise fully-priced, finite values', () => {
+    const impossible = lot({ openedAt: 1781536955000, closedAt: 1780669707000 })
+    assert.equal(canonicalVerifiedRejectionReason(impossible), 'invalid_chronology')
+    assert.equal(isCanonicalVerifiedPublishedLot(impossible), false)
+  })
+
+  it('chronology is checked BEFORE any price-field reason, so an impossible timeline is never masked as a pricing gap', () => {
+    const impossibleAndUnpriced = lot({ openedAt: 200, closedAt: 100, costBasisUsd: null, evidenceQuality: 'unpriced' })
+    assert.equal(canonicalVerifiedRejectionReason(impossibleAndUnpriced), 'invalid_chronology')
+  })
+
+  it('a same-instant open+close (closedAt === openedAt) is a real, valid same-block round-trip — never flagged', () => {
+    const sameBlock = lot({ openedAt: 500, closedAt: 500 })
+    assert.equal(canonicalVerifiedRejectionReason(sameBlock), null)
+    assert.equal(isCanonicalVerifiedPublishedLot(sameBlock), true)
+  })
+
+  it('reason counts include invalid_chronology as a real, always-present key', () => {
+    const counts = buildCanonicalVerifiedPredicateReasonCounts([lot(), lot({ openedAt: 50, closedAt: 10 })])
+    assert.equal(counts.invalid_chronology, 1)
+    assert.ok('invalid_chronology' in emptyCanonicalVerifiedPredicateReasonCounts())
+  })
 })

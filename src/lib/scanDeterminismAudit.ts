@@ -81,6 +81,27 @@ export function quantizeUsd(value: number | null): string {
   return BigInt(Math.round(value * QUANTIZE_SCALE)).toString()
 }
 
+// CENT-PRECISION CANONICALIZATION, DISCLOSED, EXPORTED (wallet-scanner-bounded-publication
+// follow-up task — confirmed production shape: manifest replay resolved 23/23 lots, identity and
+// realized-total fingerprints matched, stored/recomputed realized PnL both $701.47, cost/proceeds
+// agreed at cent precision — yet `acceptedHistoricalPriceFingerprint` still mismatched on genuine
+// per-lot rounding drift below a cent). `quantizeUsd`'s 1e-9 quantum is the CORRECT precision for
+// the per-group VALUE TOLERANCE CHECK (`CANONICAL_VALUE_TOLERANCE` in
+// canonicalPnlSampleManifest.ts's own `replayManifest`) — that check is what actually GATES replay
+// pass/fail on cost/proceeds agreement, stays completely unchanged, and still fails closed on any
+// genuine value divergence above 1e-9. The FINGERPRINT is a SEPARATE, downstream concern: whether
+// two independently re-derived, ALREADY-tolerance-passing allocations produce the same PUBLISHED
+// representation — and every published USD figure in this codebase (realizedPnlUsd, the manifest's
+// own `CANONICAL_TOTAL_TOLERANCE_USD`) is already cent-precision. Rounding cost/proceeds to cents
+// here — matching that same, already-established precision — canonicalizes what the fingerprint
+// actually represents without touching the stricter upstream gate: a genuine, PUBLISHABLE (>= 1
+// cent) difference still produces a different fingerprint and still fails closed; only sub-cent
+// noise that the per-group tolerance check has ALREADY proven immaterial is absorbed.
+export function quantizeUsdCents(value: number | null): string {
+  if (value === null || !Number.isFinite(value)) return 'null'
+  return BigInt(Math.round(value * 100)).toString()
+}
+
 // INTEGER SUM, DISCLOSED, EXPORTED (fingerprint-divergence fix task): BigInt addition is exactly
 // associative — unlike `Array.prototype.reduce` over floating-point numbers — so summing the SAME
 // multiset of quantized values always produces the identical result regardless of array order. The
@@ -151,7 +172,7 @@ export function buildScanDeterminismAudit(params: {
   // occurrence-group siblings share an identical identity key by construction, so only sorting by
   // VALUE too guarantees the same joined string regardless of which physical sibling object ends up
   // holding which value in either scan's own array order.
-  const priceKeys = verifiedLots.map((l) => `${lotIdentityKey(l)}:${quantizeUsd(l.costBasisUsd)}:${quantizeUsd(l.proceedsUsd)}`).sort()
+  const priceKeys = verifiedLots.map((l) => `${lotIdentityKey(l)}:${quantizeUsdCents(l.costBasisUsd)}:${quantizeUsdCents(l.proceedsUsd)}`).sort()
   const acceptedHistoricalPriceFingerprint = deterministicHash(priceKeys.join('|'))
 
   const realizedPnlFingerprint = deterministicHash(quantizeUsd(params.realizedPnlUsd))

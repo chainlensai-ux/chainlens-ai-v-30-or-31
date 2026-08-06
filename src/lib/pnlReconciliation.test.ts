@@ -20,10 +20,24 @@ function pnl(closedLots = 1, overrides: Partial<PnlSummaryResult> = {}): PnlSumm
   return { realizedPnlUsd: 2, closedLots: Array.from({ length: closedLots }, (_, i) => ({ lotId: `closed-${i}`, matchedBuyLotId: null, token: '0xtoken', symbol: 'TOK', chain: 'base', timestamp: 2 + i, txHash: `0xsell${i}`, amount: '1', costUsdEstimate: 10, proceedsUsdEstimate: 12, realizedPnlUsd: 2, confidence: 'high', evidence: 'complete' })), winLossRate: { wins: 1, losses: 0, evaluated: 1, rate: 1 }, chainBreakdown: [], confidenceBasis: { high: 1, medium: 0, low: 0, aggregate: 'high' }, evidenceMissingCount: 0, ...overrides }
 }
 
+// PROVEN-WINDOW-BOUNDARY FIXTURE, DISCLOSED (wallet-scanner-bounded-publication follow-up task):
+// full 'available' status now additionally requires `windowBoundaryProven` (see pnlReconciliation.ts's
+// own "FULL PNL REQUIRES A PROVEN WINDOW BOUNDARY" disclosure) — every test below that asserts a
+// genuine, complete-history 'available' outcome and isn't itself testing boundary/truncation
+// behavior wires this real, exhaustive-coverage audit rather than leaving the field unset (which
+// now correctly, fail-closed, defaults to unproven).
+function provenAudit(overrides: Partial<Record<string, unknown>> = {}) {
+  return { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 0, windowBoundaryProven: true, historyCoverageStatus: 'exhaustive' as const, ...overrides }
+}
+
 describe('pnlReconciliation', () => {
   it('corrects mismatched lots by router inference', async () => {
     const r = createPnlReconciliation({ logger: quiet })
-    const summary = await r.reconcile({ fifoEngineResult: fifo({ unmatchedSells: 1 }), pnlEngineResult: pnl(), routerInferenceOutput: { highConfidenceRouters: new Set(['0xrouter']) }, syntheticPnlAssemblyOutput: null })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ unmatchedSells: 1 }), pnlEngineResult: pnl(),
+      routerInferenceOutput: { highConfidenceRouters: new Set(['0xrouter']) }, syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: provenAudit(),
+    })
     assert.equal(summary.routerCorrectedCount, 1)
     assert.equal(summary.unmatchedSells, 0)
     assert.equal(summary.publicPnlStatus, 'available')
@@ -51,7 +65,7 @@ describe('pnlReconciliation', () => {
 
   it('pipeline integration: publicPnlStatus transitions correctly', async () => {
     const r = createPnlReconciliation({ logger: quiet })
-    assert.equal((await r.reconcile({ fifoEngineResult: fifo(), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null })).publicPnlStatus, 'available')
+    assert.equal((await r.reconcile({ fifoEngineResult: fifo(), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null, structuralCoverageDenominatorAudit: provenAudit() })).publicPnlStatus, 'available')
     assert.equal((await r.reconcile({ fifoEngineResult: fifo({ unmatchedBuys: 1 }), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null })).publicPnlStatus, 'partial')
     assert.equal((await r.reconcile({ fifoEngineResult: fifo({ unmatchedBuys: 10 }), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null })).publicPnlStatus, 'unavailable')
   })
@@ -355,7 +369,7 @@ describe('pnlReconciliation', () => {
 
   it('publicPnlGateAudit reports integrityTier: full with zero blockingReasons when the gate actually passes', async () => {
     const r = createPnlReconciliation({ logger: quiet })
-    const summary = await r.reconcile({ fifoEngineResult: fifo(), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null })
+    const summary = await r.reconcile({ fifoEngineResult: fifo(), pnlEngineResult: pnl(), syntheticPnlAssemblyOutput: null, structuralCoverageDenominatorAudit: provenAudit() })
     assert.equal(summary.publicPnlStatus, 'available')
     assert.equal(summary.publicPnlGateAudit.integrityTier, 'full')
     assert.deepEqual(summary.publicPnlGateAudit.blockingReasons, [])
@@ -540,7 +554,7 @@ describe('pnlReconciliation', () => {
       syntheticPnlAssemblyOutput: null,
       // The caller (pipeline) has already excluded the 5 open-position buys from genuineUnmatchedBuys
       // — only disclosed via openPositionBuys, never blocking.
-      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 0, openPositionBuys: 5 },
+      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 0, openPositionBuys: 5, windowBoundaryProven: true },
     })
     assert.equal(summary.publicPnlStatus, 'available')
     assert.equal(summary.publicPnlGateAudit.unmatchedBuyCount, 0)
@@ -554,7 +568,12 @@ describe('pnlReconciliation', () => {
       fifoEngineResult: fifo({ unmatchedSells: 3 }),
       pnlEngineResult: pnl(),
       syntheticPnlAssemblyOutput: null,
-      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 0, preWindowInventoryExits: 3, scanWindowDays: 90 },
+      // preWindowInventoryExits being non-zero at all can only ever occur under 'exhaustive' coverage
+      // (see eventClassification's own HistoryCoverageStatus header — only a PROVEN boundary grants a
+      // full, non-truncation-disclosed pre-window exit), so this fixture's own narrative already
+      // implies windowBoundaryProven: true — wired explicitly here rather than left to a fail-closed
+      // default that would contradict the scenario this test represents.
+      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 0, preWindowInventoryExits: 3, scanWindowDays: 90, windowBoundaryProven: true },
     })
     assert.equal(summary.publicPnlStatus, 'available')
     assert.equal(summary.publicPnlGateAudit.preWindowInventoryExits, 3)
@@ -580,7 +599,7 @@ describe('pnlReconciliation', () => {
     const r = createPnlReconciliation({ logger: quiet })
     // fifoEngine reports 1 closed lot; pnlEngine (a separate, independent read model) reports 9 —
     // a real divergence that must be visible but must never by itself block publication.
-    const summary = await r.reconcile({ fifoEngineResult: fifo(), pnlEngineResult: pnl(9), syntheticPnlAssemblyOutput: null })
+    const summary = await r.reconcile({ fifoEngineResult: fifo(), pnlEngineResult: pnl(9), syntheticPnlAssemblyOutput: null, structuralCoverageDenominatorAudit: provenAudit() })
     assert.equal(summary.publicPnlStatus, 'available', 'engine disagreement alone must not block public PnL')
     assert.ok(!summary.publicPnlGateAudit.blockingReasons.some((r2) => r2.rule === 'engine_lot_count_agreement'), 'engine agreement is no longer a gate rule at all')
     assert.deepEqual(summary.publicPnlGateAudit.engineDivergenceDiagnostic, { fifoClosedLots: 1, pnlClosedLots: 9, agrees: false })

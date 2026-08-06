@@ -200,6 +200,46 @@ describe('priceLotsForWallet — accepted-evidence skip pass (pricing-cost-reduc
     assert.ok(covered.calls() < baseline.calls(), 'the covered scan must make strictly fewer live provider calls than the uncovered baseline')
     assert.ok(covered.calls() > 0, 'the genuinely uncovered exit side must still be priced')
   })
+
+  it('HARD ASSERTION (required regression #4, wallet-scanner-bounded-publication follow-up task — confirmed production waste: 80 GoldRush calls, 0 used): when EVERY closed-lot side across the whole scan is already accepted-evidence covered (no open positions), the historical pricing pass makes ZERO live provider calls', async () => {
+    // Two fully-closed lots, both entry and exit sides seeded with accepted evidence — no open
+    // positions at all, so there is nothing left this pass could legitimately still need to fetch.
+    const lotA = buildLotEvents(10)
+    const lotB = buildLotEvents(11)
+    const allEvents = [lotA.buy, lotA.sell, lotB.buy, lotB.sell]
+    const acceptedEvidenceKv = fakeAcceptedEvidenceKv()
+    const now = 1
+    for (const l of [lotA, lotB]) {
+      const base = {
+        chain: l.buy.chain, token: l.buy.contract, openedTxHash: l.buy.txHash, closedTxHash: l.sell.txHash,
+        openedAt: Date.parse(l.buy.timestamp), closedAt: Date.parse(l.sell.timestamp), amount: l.buy.amount,
+      }
+      const version = lotIdentityVersion(base)
+      const entry = buildAcceptedEvidenceEnvelope({
+        identity: { chain: base.chain, token: base.token, txHash: base.openedTxHash, side: 'entry', timestamp: base.openedAt, lotIdentityVersion: version },
+        priceUsd: 5, valueUsd: 5, source: 'test', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now,
+      })
+      const exit = buildAcceptedEvidenceEnvelope({
+        identity: { chain: base.chain, token: base.token, txHash: base.closedTxHash, side: 'exit', timestamp: base.closedAt, lotIdentityVersion: version },
+        priceUsd: 7, valueUsd: 7, source: 'test', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now,
+      })
+      await acceptedEvidenceKv.set(`v1:accepted-evidence:${base.chain}:${base.token.toLowerCase()}:${base.openedTxHash}:entry:${base.openedAt}`, entry)
+      await acceptedEvidenceKv.set(`v1:accepted-evidence:${base.chain}:${base.token.toLowerCase()}:${base.closedTxHash}:exit:${base.closedAt}`, exit)
+    }
+
+    const counting = countingPriceSources()
+    const result = await priceLotsForWallet({ normalizedEvents: allEvents, recoveredEvents: [], priceSources: counting.sources, acceptedEvidenceKv, now: () => now })
+
+    assert.equal(counting.calls(), 0, 'zero live provider calls when accepted evidence already hydrates the entire canonical sample — no unused historical pricing pass')
+    assert.equal(result.acceptedEvidenceSkipAudit.pricingRequirementsRemovedByAcceptedEvidence, 4, 'all 4 sides (2 lots x entry/exit) removed before scheduler construction')
+    assert.equal(result.acceptedEvidenceSkipAudit.pricingRequirementsAfterSkip, 0)
+    assert.equal(result.manifestFastPathAudit.allClosedLotSidesCovered, true)
+    assert.equal(result.manifestFastPathAudit.openPositionRequirementsRetained, 0, 'no open positions in this fixture — nothing legitimately still needs live pricing')
+    assert.equal(result.priceUsdLookup(lotA.buy), 5)
+    assert.equal(result.priceUsdLookup(lotA.sell), 7)
+    assert.equal(result.priceUsdLookup(lotB.buy), 5)
+    assert.equal(result.priceUsdLookup(lotB.sell), 7)
+  })
 })
 
 describe('priceLotsForWallet — unchanged-rescan requirement restriction (grouped-multiplicity task, requirement #3)', () => {

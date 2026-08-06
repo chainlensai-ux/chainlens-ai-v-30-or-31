@@ -122,7 +122,22 @@ export const CANONICAL_PRICING_METHODOLOGY_VERSION = 1
 // vv3 manifest key MISS on lookup — the same manifestFound: false / fresh-manifest path documented
 // above — so the very next scan creates one fresh manifest fingerprinted correctly from the start,
 // never a manual refresh or delete of the old record.
-export const CANONICAL_VALUE_METHODOLOGY_VERSION = 4
+//
+// BUMPED 4 -> 5 (wallet-scanner-bounded-publication follow-up task): a stored vv4 manifest's
+// `acceptedHistoricalPriceFingerprint` was computed by quantizing cost/proceeds at 1e-9
+// (`quantizeUsd`) — the SAME granularity as the per-group value-tolerance check
+// (`CANONICAL_VALUE_TOLERANCE`). Confirmed production shape: replay resolved 23/23 lots, identity
+// and realized-total fingerprints matched, stored/recomputed realized PnL both agreed at $701.47,
+// yet the price fingerprint still mismatched on genuine sub-cent per-lot rounding drift the 1e-9
+// quantum did not fully absorb. `scanDeterminismAudit.ts`'s price fingerprint now canonicalizes
+// cost/proceeds at CENT precision (`quantizeUsdCents`) — the same precision every other published
+// USD figure in this codebase already uses — while the per-group tolerance check itself is
+// completely unchanged and still fails closed on any genuine, publishable divergence. This is a
+// genuinely different serialized meaning for the SAME stored fingerprint field, so a vv4 manifest's
+// stored price fingerprint can never be reproduced by the new (coarser) recompute — bumping makes
+// every existing vv4 manifest key MISS on lookup, the same fresh-manifest path documented above,
+// never a manual refresh or delete of the old record.
+export const CANONICAL_VALUE_METHODOLOGY_VERSION = 5
 
 // Reuses the exact same duck-typed KV interface accepted-evidence records already use — same
 // underlying store, a genuinely separate key namespace (`v1:canonical-pnl-sample-manifest:...`).

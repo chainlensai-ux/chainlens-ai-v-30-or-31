@@ -465,7 +465,7 @@ const lotKey = (lot: Pick<MatchedLot, 'chain' | 'token' | 'openedTxHash' | 'clos
 // src/lib/canonicalVerifiedLot.ts. This is a strict tightening in principle only: fifoEngine sets
 // `evidenceQuality: 'verified'` exactly when both sides are priced, so no lot that previously
 // counted stops counting — it simply can no longer diverge from what the other consumers see.
-export function isCanonicalVerifiedLotForPnl(lot: Pick<MatchedLot, 'evidenceQuality' | 'costBasisUsd' | 'proceedsUsd' | 'realizedPnlUsd'>): boolean {
+export function isCanonicalVerifiedLotForPnl(lot: Pick<MatchedLot, 'evidenceQuality' | 'costBasisUsd' | 'proceedsUsd' | 'realizedPnlUsd' | 'openedAt' | 'closedAt'>): boolean {
   return isCanonicalVerifiedPublishedLot(lot)
 }
 
@@ -1349,7 +1349,22 @@ export function createPnlReconciliation(config: Config = {}) {
       const verifiedLotThresholdMet = verifiedUpdatedLots.length >= MIN_VERIFIED_CLOSED_LOTS
       const pricingCoverageThresholdMet = verifiedPricingCoverage !== null && verifiedPricingCoverage >= MIN_VERIFIED_PRICING_COVERAGE
       const noHardInvalidEvidence = gateUnmatchedBuys === 0 && gateUnmatchedSells === 0
-      const structuralConsistent = noHardInvalidEvidence && missingEvidenceCount === 0 && realizedPnlUsd !== null
+      // WINDOW BOUNDARY PROVEN, DISCLOSED (bounded-sample-gate follow-up task, requirement #2 —
+      // moved up from below so the FULL-availability gate can reference it too, see next note): real,
+      // from the caller's exact-unmatched-evidence audit.
+      const windowBoundaryProven = denomAudit?.windowBoundaryProven ?? false
+      // FULL PNL REQUIRES A PROVEN WINDOW BOUNDARY, DISCLOSED (wallet-scanner-bounded-publication
+      // follow-up task — confirmed gap: `preWindowInventoryExitsUnprovenDueToTruncation` sells are
+      // deliberately excluded from `gateUnmatchedSells` [never hard-blocking], so a wallet with
+      // ZERO other unmatched/missing evidence could satisfy every other structuralConsistent
+      // condition and earn full 'available' status EVEN THOUGH its history was truncated and its
+      // window boundary was never proven — publishing an unqualified "complete wallet history"
+      // claim on an incomplete fetch. Full availability now additionally requires
+      // `windowBoundaryProven` — the bounded ('partial') path remains reachable via
+      // `boundedSampleWindowSafe` below (true for both 'exhaustive' and 'truncated' coverage), so a
+      // truncated-but-otherwise-clean wallet still publishes its verified bounded sample, just never
+      // as unqualified FULL history.
+      const structuralConsistent = noHardInvalidEvidence && missingEvidenceCount === 0 && realizedPnlUsd !== null && windowBoundaryProven
       // BOUNDED VERIFIED SAMPLE, REWIRED, DISCLOSED (bounded-sample-gate follow-up task, real
       // production evidence: 27 structural lots, 18 verified/66.67% coverage, 94 buys correctly
       // disclosed as open_position_inventory, 110 sells correctly disclosed as
@@ -1376,7 +1391,6 @@ export function createPnlReconciliation(config: Config = {}) {
       // (`invalidOrUnknownUnmatchedEvents` below) and continue to receive zero cost basis — nothing
       // about fifoEngine's own PnL arithmetic changes.
       const hardInvalidFifoResult = input.fifoEngineResult.integrityFlags.hardInvalid
-      const windowBoundaryProven = denomAudit?.windowBoundaryProven ?? false
       // BOUNDED-SAMPLE WINDOW ADMISSION, DISCLOSED (boundary-model follow-up task — confirmed
       // production root cause: a page-capped-but-healthy provider fetch made `windowBoundaryProven`
       // false purely from truncation, hard-blocking an otherwise-verified sample). The bounded path
