@@ -17,7 +17,7 @@
 // calls) is still called from here, unchanged; this file does not reimplement or bypass it.
 
 import { router } from '@/src/deployment/index'
-import { fetchAllHoldings } from '@/lib/engine/modules/holdings/fetchHoldings'
+import { fetchAllHoldings, DEFAULT_HOLDINGS_CHAIN_IDS, CHAIN_ID_TO_SUPPORTED_CHAIN } from '@/lib/engine/modules/holdings/fetchHoldings'
 import { priceHoldings } from '@/lib/engine/modules/pricing/fetchPricing'
 import { buildPortfolio } from '@/lib/engine/modules/portfolio/buildPortfolio'
 import { computePnl, fetchParsedTrades } from '@/lib/engine/modules/pnl/computePnl'
@@ -343,8 +343,19 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
 
   if (body.success && body.data?.scanMetadata?.walletAddress) {
     const walletAddress = body.data.scanMetadata.walletAddress
+    // CHAIN ALLOWLIST BY SCAN MODE, DISCLOSED (Alchemy cost-audit follow-up task — confirmed
+    // production mismatch: this exact log line already claimed `chains: [1, 8453]` while the real
+    // `fetchAllHoldings` call below unconditionally fanned out to all 4 supported chains regardless
+    // of scan mode). `scanMetadata.scanMode` is the SAME real field the old pipeline already
+    // computes and returns (src/pipeline/index.ts's `scanMode: params.scanMode`) — 'deep' is the
+    // only mode that may reach chains beyond Base + ETH; every other mode (including an absent/
+    // unrecognised value, never guessed as deep) stays hard-allowlisted to Base + ETH.
+    const scanMode = (body.data.scanMetadata as { scanMode?: string } | undefined)?.scanMode
+    const holdingsAllowedChainIds = scanMode === 'deep'
+      ? Object.keys(CHAIN_ID_TO_SUPPORTED_CHAIN).map(Number)
+      : DEFAULT_HOLDINGS_CHAIN_IDS
     // eslint-disable-next-line no-console
-    console.warn('[CU-TRACK] deep-scan start:', { walletAddress, chains: [1, 8453] })
+    console.warn('[CU-TRACK] deep-scan start:', { walletAddress, scanMode: scanMode ?? 'normal', chains: holdingsAllowedChainIds })
     // WORKER OBSERVABILITY, DISCLOSED: per-module `performance.now()` timing logs added below, per
     // explicit instruction — purely additive console.log calls wrapped around each already-existing
     // module call, in the same order they already ran. No module's logic, arguments, ordering, or
@@ -367,7 +378,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // holdings is expected to ever trip it first.
     const chainHoldings = scanRpcBudgetExceeded(moduleErrors)
       ? ([] as Awaited<ReturnType<typeof fetchAllHoldings>>)
-      : await runWithTimeoutAndRpcAudit('holdings', () => fetchAllHoldings(walletAddress), [] as Awaited<ReturnType<typeof fetchAllHoldings>>, moduleErrors, moduleTimeoutMs(startTime))
+      : await runWithTimeoutAndRpcAudit('holdings', () => fetchAllHoldings(walletAddress, holdingsAllowedChainIds), [] as Awaited<ReturnType<typeof fetchAllHoldings>>, moduleErrors, moduleTimeoutMs(startTime))
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] finished holdings in', performance.now() - t0, 'ms', 'count=', chainHoldings.length)
     logProviderCallsForStage('holdings', providerCallsBefore)
@@ -709,7 +720,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[CU-SUMMARY]', {
       wallet: walletAddress,
-      chains: [1, 8453],
+      chains: holdingsAllowedChainIds,
       providerCalls: cuBudget.providerCalls,
       cacheHits: eventsCache.hitCount,
       elapsedMs: Date.now() - startTime,

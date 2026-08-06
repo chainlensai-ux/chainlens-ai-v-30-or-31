@@ -59,6 +59,38 @@ function classify(symbol: string): ChainHolding['classification'] {
   return 'other'
 }
 
+// DEFAULT CHAIN ALLOWLIST, DISCLOSED (Alchemy cost-audit follow-up task — confirmed production
+// mismatch: workers/walletScanV2.ts already LOGS `[CU-TRACK] deep-scan start: { chains: [1, 8453] }`
+// as if the scan were scoped to Ethereum+Base, but `fetchAllHoldings` itself unconditionally
+// iterated EVERY key of `CHAIN_ID_TO_SUPPORTED_CHAIN` — all 4 chains, Arbitrum and HyperEVM
+// included, on every single scan, log message notwithstanding). A normal Wallet Scanner live scan
+// must only probe Base + ETH unless the caller explicitly requests deep/full-chain coverage.
+export const DEFAULT_HOLDINGS_CHAIN_IDS: readonly number[] = [1, 8453] // eth, base
+// HARD PER-REQUEST CAP, DISCLOSED: independent of whatever `allowedChainIds` a caller supplies —
+// this module will never fan out to more chains than it has real, mapped support for (currently 4),
+// regardless of what a caller mistakenly passes in.
+const MAX_CHAINS_PER_HOLDINGS_REQUEST = Object.keys(CHAIN_ID_TO_SUPPORTED_CHAIN).length
+
+// NEGATIVE-RESULT CACHE, DISCLOSED: a wallet genuinely holding nothing on a given chain answers the
+// same real "empty" result on every rescan within a short window — same "don't re-pay for an answer
+// this process already has" convention already used elsewhere in this codebase (e.g.
+// negativeGoldrushPriceCache in goldrushPriceSource.ts). Process-lifetime, deliberately short TTL
+// (a real balance can change at any time — this only ever avoids a REPEAT call within the window,
+// never substitutes a stale non-zero balance for a fresh one).
+const NEGATIVE_BALANCE_CACHE_TTL_MS = 60_000
+const negativeBalanceCache = new Map<string, number>() // `${chainId}:${wallet}` -> expiry epoch ms
+
+function negativeCacheKey(chainId: number, walletAddress: string): string {
+  return `${chainId}:${walletAddress.toLowerCase()}`
+}
+
+// TEST-SUPPORT EXPORT, DISCLOSED: same convention as every other process-lifetime cache reset in
+// this codebase (e.g. resetGoldrushPriceSourceCallCount) — a warm serverless instance serving a
+// later, unrelated wallet must never inherit an earlier wallet's cached "empty" result.
+export function __resetNegativeBalanceCacheForTest(): void {
+  negativeBalanceCache.clear()
+}
+
 // Never throws: src/modules/holdings's real fetchHoldings already resolves to an honest
 // provider_unavailable/[] result on any failure (see that module's own guarantees) rather than
 // throwing, and this function adds no additional network calls of its own that could fail.
@@ -66,9 +98,13 @@ export async function fetchChainBalances(walletAddress: string, chainId: number)
   const chain = CHAIN_ID_TO_SUPPORTED_CHAIN[chainId]
   if (!chain) return [] // unsupported chainId — honestly empty, never a guessed chain
 
+  const cacheKey = negativeCacheKey(chainId, walletAddress)
+  const cachedExpiry = negativeBalanceCache.get(cacheKey)
+  if (cachedExpiry !== undefined && Date.now() < cachedExpiry) return [] // real, recently-confirmed empty result — no live call
+
   const result = await fetchRealHoldings(chain, walletAddress)
 
-  return result.holdings
+  const holdings = result.holdings
     .filter((h) => h.amount > 0)
     .map((h): ChainHolding => ({
       chainId,
@@ -84,12 +120,41 @@ export async function fetchChainBalances(walletAddress: string, chainId: number)
       // See this file's ChainHolding type comment — previously dropped here entirely.
       amountRaw: h.amountRaw,
     }))
+
+  if (holdings.length === 0) negativeBalanceCache.set(cacheKey, Date.now() + NEGATIVE_BALANCE_CACHE_TTL_MS)
+  else negativeBalanceCache.delete(cacheKey) // a real non-zero result always wins over any stale negative entry
+
+  return holdings
 }
 
-// Public entry point. Runs all 4 supported chains in parallel; never throws (each
-// fetchChainBalances call above already can't).
-export async function fetchAllHoldings(walletAddress: string): Promise<ChainHolding[]> {
-  const chains = Object.keys(CHAIN_ID_TO_SUPPORTED_CHAIN).map(Number)
-  const results = await Promise.all(chains.map((c) => fetchChainBalances(walletAddress, c)))
+// CHAIN-CALL AUDIT, DISCLOSED: real, measured chain-scoping decisions for every fetchAllHoldings
+// call — printed unconditionally so a live scan's own logs prove which chains were actually probed,
+// never just which chains a comment claims were probed.
+function logChainCallAudit(requestedChainIds: readonly number[], allowedChainIds: readonly number[], blockedChainIds: readonly number[]): void {
+  // eslint-disable-next-line no-console
+  console.warn('[chain-call-audit]', {
+    requestedChains: requestedChainIds,
+    allowedChains: allowedChainIds,
+    blockedChains: blockedChainIds,
+    callsByChain: Object.fromEntries(allowedChainIds.map((c) => [c, 1])),
+    callsPrevented: blockedChainIds.length,
+  })
+}
+
+// Public entry point. HARD-ALLOWLISTED, DISCLOSED: `allowedChainIds` defaults to
+// `DEFAULT_HOLDINGS_CHAIN_IDS` (Base + ETH only) — a caller must EXPLICITLY pass every other
+// supported chain id (e.g. all 4, for an explicit deep/full-chain scan) to reach them at all. Never
+// throws (each fetchChainBalances call above already can't). Every chain outside this module's own
+// real `CHAIN_ID_TO_SUPPORTED_CHAIN` mapping is silently dropped regardless of what's requested —
+// this was already true per-chain via fetchChainBalances' own unsupported-chainId guard, and is now
+// also true for the whole request via `MAX_CHAINS_PER_HOLDINGS_REQUEST`.
+export async function fetchAllHoldings(walletAddress: string, allowedChainIds: readonly number[] = DEFAULT_HOLDINGS_CHAIN_IDS): Promise<ChainHolding[]> {
+  const supportedChainIds = Object.keys(CHAIN_ID_TO_SUPPORTED_CHAIN).map(Number)
+  const requested = allowedChainIds.slice(0, MAX_CHAINS_PER_HOLDINGS_REQUEST)
+  const allowed = requested.filter((c) => supportedChainIds.includes(c))
+  const blocked = [...new Set(allowedChainIds)].filter((c) => !allowed.includes(c))
+  logChainCallAudit(allowedChainIds, allowed, blocked)
+
+  const results = await Promise.all(allowed.map((c) => fetchChainBalances(walletAddress, c)))
   return results.flat()
 }
