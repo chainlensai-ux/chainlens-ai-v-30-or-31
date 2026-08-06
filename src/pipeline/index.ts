@@ -3124,7 +3124,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       manifestRefreshReason,
     }
     logDeploymentProofAudit(manifestKey, canonicalSampleManifestAudit)
-    return { publishedLots: replay.publishedLots, forcePublicPnlUnavailable: replay.forcePublicPnlUnavailable }
+    return { publishedLots: replay.publishedLots, forcePublicPnlUnavailable: replay.forcePublicPnlUnavailable, manifestApplied: replay.outcome === 'applied' }
   }
 
   const reconciledPnlSummary = await pnlReconciliation.reconcile({

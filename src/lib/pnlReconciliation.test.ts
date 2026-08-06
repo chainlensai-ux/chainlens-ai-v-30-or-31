@@ -1335,4 +1335,58 @@ describe('pnlReconciliation', () => {
     const published = summary.publishedMatchedLots.find((l) => l.lotId === 'stable-0')
     assert.equal(published?.costBasisUsd, 1194.1715, 'the mispriced accepted-evidence total is normalized to the deterministic $1/token figure, not left as the stale wrong value')
   })
+
+  // GATE/CLASSIFICATION-REGRESSION FOLLOW-UP TASK — required regression: confirmed production bug —
+  // a manifest replay that genuinely applied (17 real verified lots, stable $608.45 realized total,
+  // 100% pricing coverage) was hidden behind publicPnlStatus 'unavailable' because this gate's own,
+  // SEPARATE structural-unmatched-sell classification regressed (116 raw unmatched instead of the
+  // correct 3 genuine + 113 truncation-unproven-and-excluded). The canonical manifest result must
+  // not be hidden when replay applies and the bounded sample is otherwise valid.
+  it('HARD ASSERTION (required regression): a replay-applied bounded sample remains limited_verified_sample (\'partial\') even when the raw/live unmatched-sell recompute is high, as long as the manifest itself genuinely applied', async () => {
+    const lots = Array.from({ length: 17 }, (_, i) => lot({
+      lotId: `manifest-lot-${i}`, token: `0xtok${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`,
+      openedAt: i, closedAt: 100 + i, costBasisUsd: 10, proceedsUsd: 20, realizedPnlUsd: 10,
+    }))
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: lots }),
+      pnlEngineResult: pnl(17),
+      syntheticPnlAssemblyOutput: null,
+      // The exact confirmed-regression shape: the LIVE structural recompute reports 116 genuine
+      // unmatched sells (a real classification bug elsewhere, out of THIS gate's own scope to fix)
+      // and an unproven window boundary — both of which, on their own, would force 'unavailable'.
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0, genuineUnmatchedSells: 116,
+        windowBoundaryProven: false, boundedSampleWindowSafe: false, historyCoverageStatus: 'unknown',
+      },
+      // The canonical manifest replay's own, independent verdict: it genuinely applied.
+      canonicalSampleSelector: async (candidateLots) => ({
+        publishedLots: [...candidateLots], forcePublicPnlUnavailable: false, manifestApplied: true,
+      }),
+    })
+
+    assert.equal(summary.publicPnlStatus, 'partial', 'the canonical manifest result must not be hidden when replay applies and the bounded sample is otherwise valid')
+    assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 17)
+    assert.equal(summary.realizedPnlUsd, 170)
+  })
+
+  it('without a genuinely applied manifest, the same high raw unmatched-sell count still blocks (the fix is scoped, never a general relaxation)', async () => {
+    const lots = Array.from({ length: 17 }, (_, i) => lot({
+      lotId: `manifest-lot-${i}`, token: `0xtok${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`,
+      openedAt: i, closedAt: 100 + i, costBasisUsd: 10, proceedsUsd: 20, realizedPnlUsd: 10,
+    }))
+    const r = createPnlReconciliation({ logger: quiet })
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: lots }),
+      pnlEngineResult: pnl(17),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0, genuineUnmatchedSells: 116,
+        windowBoundaryProven: false, boundedSampleWindowSafe: false, historyCoverageStatus: 'unknown',
+      },
+      // No canonicalSampleSelector wired at all — no manifest applied signal available.
+    })
+
+    assert.equal(summary.publicPnlStatus, 'unavailable', 'without a genuinely applied manifest, a real unproven/blocked structural state still fails closed')
+  })
 })

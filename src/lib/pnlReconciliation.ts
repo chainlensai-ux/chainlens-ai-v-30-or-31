@@ -247,6 +247,18 @@ export type CanonicalSampleSelection = {
   // degraded/unavailable public state rather than falling through to whatever the live sample would
   // have earned on its own (requirement #4's "never present frozen stored PnL as freshly verified").
   forcePublicPnlUnavailable: boolean
+  // MANIFEST-APPLIED SIGNAL, DISCLOSED, ADDITIVE (gate/classification-regression follow-up task —
+  // confirmed production bug: a manifest replay that genuinely APPLIED — real verified lots, stable
+  // realized total, 100% pricing coverage — still reported publicPnlStatus 'unavailable' because
+  // this gate's own INDEPENDENT structural-coverage recompute classified a large batch of unmatched
+  // sells as genuine [116] instead of truncation-unproven-and-excluded [113 of 116], a live
+  // classification regression unrelated to the manifest's own, already-validated correctness).
+  // `true` only when replayManifest's own outcome was 'applied' (or an equivalent first-scan/
+  // explicit-refresh success) — never a guess, never true merely because a manifest exists. See
+  // `boundedSampleEligible`'s own header below for exactly how this is used: as an ADDITIONAL,
+  // independent path to eligibility, never a replacement for the existing structural checks, and
+  // never consulted at all when this manifest itself failed to apply.
+  manifestApplied?: boolean
 }
 export type CanonicalSampleSelector = (lots: readonly MatchedLot[]) => Promise<CanonicalSampleSelection>
 
@@ -1398,7 +1410,25 @@ export function createPnlReconciliation(config: Config = {}) {
       // see eventClassification's own header), falling back to `windowBoundaryProven` for a caller
       // that hasn't supplied the new field — byte-for-byte the prior gate behavior in that case.
       const boundedSampleWindowSafe = denomAudit?.boundedSampleWindowSafe ?? windowBoundaryProven
-      const boundedSampleEligible = verifiedLotThresholdMet && pricingCoverageThresholdMet && !hardInvalidFifoResult && boundedSampleWindowSafe && realizedPnlUsd !== null
+      // MANIFEST-APPLIED ELIGIBILITY PATH, DISCLOSED (gate/classification-regression follow-up task
+      // — confirmed production bug: a manifest replay that genuinely APPLIED (real verified lots,
+      // stable realized total, full pricing coverage) was still hidden behind publicPnlStatus
+      // 'unavailable' because THIS gate's own, separately-computed structural-unmatched-sell
+      // classification regressed — 116 unmatched instead of the correct 3 genuine + 113
+      // truncation-unproven-and-excluded. The manifest's own replay validation (identity, side
+      // evidence, cost/proceeds tolerance, realized-total/fingerprint agreement — see
+      // canonicalPnlSampleManifest.ts's replayManifest) is independently authoritative for whether
+      // THOSE published lots are genuinely verified; it must not be silently overridden by a
+      // DIFFERENT, unrelated structural recompute's own noisy denominator. `canonicalManifestApplied`
+      // is an ADDITIONAL, independent path to eligibility — never a replacement for the existing
+      // structural checks above (still the ONLY path whenever no manifest applied this scan), and
+      // still requires the same real verified-lot-count/pricing-coverage/non-hard-invalid/real-total
+      // conditions, just not `boundedSampleWindowSafe` specifically (a signal this gate computes
+      // from a live, current-scan recompute the manifest replay does not depend on).
+      const canonicalManifestApplied = canonicalSampleSelection?.manifestApplied === true
+      const boundedSampleEligible =
+        verifiedLotThresholdMet && pricingCoverageThresholdMet && !hardInvalidFifoResult && realizedPnlUsd !== null
+        && (boundedSampleWindowSafe || canonicalManifestApplied)
       // CANONICAL SAMPLE UNAVAILABLE OVERRIDE, DISCLOSED (requirement #4 — genuine fail-closed): a
       // valid manifest exists but this scan could not reproduce its required evidence. The public
       // result must then be degraded/unavailable — never the live candidate sample that happens to

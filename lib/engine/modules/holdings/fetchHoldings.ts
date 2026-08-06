@@ -47,6 +47,31 @@ export const CHAIN_ID_TO_SUPPORTED_CHAIN: Record<number, SupportedChain> = {
   [HYPEREVM_CHAIN_ID]: 'hyperevm',
 }
 
+// REVERSE MAP, DISCLOSED, ADDITIVE (Alchemy cost-audit follow-up task, issue #2 — confirmed
+// production bug: gating the holdings chain allowlist on `scanMode === 'deep'` alone silently
+// unlocked Arbitrum/HyperEVM for ANY deep-mode scan, regardless of which chains the caller actually
+// requested — "Run Deep Scan" must never silently mean "all chains" by itself). Lets a caller derive
+// the REAL, explicit chain-id allowlist from the wallet's own already-validated `chainsScanned`
+// request field (src/deployment/validator.ts's `chains`, echoed back on `scanMetadata.chainsScanned`)
+// instead of inferring it from scan mode.
+export const SUPPORTED_CHAIN_TO_CHAIN_ID: Partial<Record<SupportedChain, number>> = Object.fromEntries(
+  Object.entries(CHAIN_ID_TO_SUPPORTED_CHAIN).map(([id, chain]) => [chain, Number(id)]),
+)
+
+// PURE, EXPORTED FOR DIRECT TESTING (Alchemy cost-audit follow-up task, issue #2): the exact chain-
+// resolution rule workers/walletScanV2.ts uses. `chainsScanned` is the wallet's own already-
+// validated request chains, echoed back on `scanMetadata.chainsScanned` — the one real "the caller
+// explicitly wants this chain" signal, deliberately never scan mode alone (see this file's own
+// SUPPORTED_CHAIN_TO_CHAIN_ID header). Falls back to `DEFAULT_HOLDINGS_CHAIN_IDS` (Base + ETH) only
+// when `chainsScanned` is missing/empty/maps to nothing real — never a ceiling this explicit signal
+// can't exceed, never a wider default than what was actually requested.
+export function resolveHoldingsAllowedChainIds(chainsScanned: readonly string[] | null | undefined): number[] {
+  const requested = (chainsScanned ?? [])
+    .map((chain) => SUPPORTED_CHAIN_TO_CHAIN_ID[chain as keyof typeof SUPPORTED_CHAIN_TO_CHAIN_ID])
+    .filter((id): id is number => typeof id === 'number')
+  return requested.length > 0 ? requested : [...DEFAULT_HOLDINGS_CHAIN_IDS]
+}
+
 const STABLE_SYMBOLS = new Set(['USDC', 'USDT', 'DAI', 'FDUSD', 'USDBC', 'TUSD'])
 const BLUE_CHIP_SYMBOLS = new Set(['ETH', 'WETH', 'WBTC'])
 

@@ -18,7 +18,7 @@ import { describe, it, beforeEach } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   fetchAllHoldings, fetchChainBalances, DEFAULT_HOLDINGS_CHAIN_IDS, CHAIN_ID_TO_SUPPORTED_CHAIN,
-  __resetNegativeBalanceCacheForTest,
+  __resetNegativeBalanceCacheForTest, resolveHoldingsAllowedChainIds,
 } from './fetchHoldings'
 
 const TEST_WALLET = '0xf85679316f1c3998c6387f6f707b31aeeb3a9abe' // real address used elsewhere this session
@@ -92,6 +92,47 @@ describe('fetchAllHoldings — hard chain allowlist (Alchemy cost-audit follow-u
     // OBSERVABLE contract — a stable, repeatable empty result — rather than a private call counter.)
     const second = await fetchChainBalances(TEST_WALLET, 1)
     assert.equal(second.length, 0)
+  })
+})
+
+// ALCHEMY COST-AUDIT FOLLOW-UP TASK, ISSUE #2 — required regressions: confirmed production
+// regression — gating the holdings chain allowlist on scanMode === 'deep' ALONE silently unlocked
+// Arbitrum/HyperEVM for every deep-mode scan, regardless of which chains the caller actually
+// requested. workers/walletScanV2.ts now derives the allowlist from `resolveHoldingsAllowedChainIds`
+// using the wallet's own real, already-validated `chainsScanned` request field instead.
+describe('resolveHoldingsAllowedChainIds (Alchemy cost-audit follow-up task, issue #2)', () => {
+  it('HARD ASSERTION (required regression): a default scan (chainsScanned = [\'base\', \'eth\'], the real UI default) resolves to allowedChains [1, 8453], blocking 999/42161', () => {
+    const result = resolveHoldingsAllowedChainIds(['base', 'eth'])
+    assert.deepEqual([...result].sort((a, b) => a - b), [1, 8453])
+    assert.ok(!result.includes(999), 'HyperEVM (999) must be blocked on a default scan')
+    assert.ok(!result.includes(42161), 'Arbitrum (42161) must be blocked on a default scan')
+  })
+
+  it('a missing/empty chainsScanned falls back to the Base+ETH default, never a wider one', () => {
+    assert.deepEqual([...resolveHoldingsAllowedChainIds(undefined)].sort((a, b) => a - b), [1, 8453])
+    assert.deepEqual([...resolveHoldingsAllowedChainIds([])].sort((a, b) => a - b), [1, 8453])
+  })
+
+  it('explicit deep/all-supported chain selection may allow extra supported chains — but ONLY the ones actually requested', () => {
+    const result = resolveHoldingsAllowedChainIds(['base', 'eth', 'arbitrum', 'hyperevm'])
+    assert.deepEqual([...result].sort((a, b) => a - b), [1, 999, 8453, 42161])
+  })
+
+  it('a partial explicit selection (e.g. base + arbitrum only) never silently adds hyperevm/eth', () => {
+    const result = resolveHoldingsAllowedChainIds(['base', 'arbitrum'])
+    assert.deepEqual([...result].sort((a, b) => a - b), [8453, 42161])
+  })
+
+  it('an unrecognised chain string is silently dropped, never guessed or substituted', () => {
+    const result = resolveHoldingsAllowedChainIds(['base', 'linea'])
+    assert.deepEqual(result, [8453])
+  })
+
+  it('HARD ASSERTION (required regression): "Run Deep Scan" alone (scanMode) never implies all chains — only an explicit chains request does; this function has no scanMode parameter at all, by design', () => {
+    // Same chainsScanned as the confirmed-regression production report (a deep-mode scan whose own
+    // request still only actually named Base + ETH) must resolve identically regardless of scan mode
+    // — there is no scanMode input to this function to leak that decision through.
+    assert.deepEqual([...resolveHoldingsAllowedChainIds(['base', 'eth'])].sort((a, b) => a - b), [1, 8453])
   })
 })
 

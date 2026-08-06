@@ -5,6 +5,7 @@ import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { logRpcCall } from '@/lib/server/rpcDebug'
 import { auditGlobalAlchemyCall } from '@/lib/server/globalRpcAudit'
 import { assertAlchemyChainAllowed } from '@/lib/server/alchemySupportedChains'
+import { logAlchemyCallAttribution, fingerprintAlchemyKey } from '@/lib/server/alchemyCallAttribution'
 
 type WindowKey = '1h' | '6h' | '24h' | '7d'
 type RawRow = Record<string, unknown>
@@ -531,6 +532,7 @@ function resolveBaseRpc(): string {
   return 'https://mainnet.base.org'
 }
 const BASE_RPC = resolveBaseRpc()
+const BASE_RPC_KEY_FINGERPRINT = fingerprintAlchemyKey(process.env.ALCHEMY_BASE_KEY ?? process.env.ALCHEMY_API_KEY ?? null)
 
 async function fetchOnChain(address: string): Promise<OnChainData> {
   // CU-LEAK AUDIT, DISCLOSED (this task): defense-in-depth invariant, not a behavior change — this
@@ -544,6 +546,14 @@ async function fetchOnChain(address: string): Promise<OnChainData> {
   let isContract: boolean | null = null, nativeBalanceEth: number | null = null, txCount: number | null = null
   try {
     logRpcCall({ route: '/api/whale-alerts', chain: 'base', method: 'batch:eth_getBalance+eth_getTransactionCount+eth_getCode' })
+    // ALCHEMY CALL ATTRIBUTION, DISCLOSED (Alchemy cost-audit follow-up task, issue #3): real,
+    // structured attribution for the eth_getBalance call this batch includes — route/chain/key
+    // fingerprint, so a live deployment's logs can directly attribute any eth_getBalance CU usage
+    // reported elsewhere (e.g. the Alchemy dashboard) back to this exact call site.
+    logAlchemyCallAttribution({
+      route: '/api/whale-alerts', worker: null, module: 'onChainEnrichment', chain: 'base',
+      jobId: null, scanMode: null, method: 'eth_getBalance', keyFingerprint: BASE_RPC_KEY_FINGERPRINT,
+    })
     // PRODUCTION-ONLY ALCHEMY-URL GUARD, DISCLOSED (browser-debug-stream task): in real production,
     // only audit as an Alchemy call when BASE_RPC actually resolved to one (resolveBaseRpc can also
     // return an explicit override or the public mainnet.base.org fallback). In preview/dev, audit

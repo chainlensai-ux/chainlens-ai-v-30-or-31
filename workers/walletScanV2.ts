@@ -17,7 +17,7 @@
 // calls) is still called from here, unchanged; this file does not reimplement or bypass it.
 
 import { router } from '@/src/deployment/index'
-import { fetchAllHoldings, DEFAULT_HOLDINGS_CHAIN_IDS, CHAIN_ID_TO_SUPPORTED_CHAIN } from '@/lib/engine/modules/holdings/fetchHoldings'
+import { fetchAllHoldings, resolveHoldingsAllowedChainIds } from '@/lib/engine/modules/holdings/fetchHoldings'
 import { priceHoldings } from '@/lib/engine/modules/pricing/fetchPricing'
 import { buildPortfolio } from '@/lib/engine/modules/portfolio/buildPortfolio'
 import { computePnl, fetchParsedTrades } from '@/lib/engine/modules/pnl/computePnl'
@@ -343,19 +343,21 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
 
   if (body.success && body.data?.scanMetadata?.walletAddress) {
     const walletAddress = body.data.scanMetadata.walletAddress
-    // CHAIN ALLOWLIST BY SCAN MODE, DISCLOSED (Alchemy cost-audit follow-up task — confirmed
-    // production mismatch: this exact log line already claimed `chains: [1, 8453]` while the real
-    // `fetchAllHoldings` call below unconditionally fanned out to all 4 supported chains regardless
-    // of scan mode). `scanMetadata.scanMode` is the SAME real field the old pipeline already
-    // computes and returns (src/pipeline/index.ts's `scanMode: params.scanMode`) — 'deep' is the
-    // only mode that may reach chains beyond Base + ETH; every other mode (including an absent/
-    // unrecognised value, never guessed as deep) stays hard-allowlisted to Base + ETH.
+    // CHAIN ALLOWLIST BY EXPLICIT REQUEST, DISCLOSED (Alchemy cost-audit follow-up task, issue #2
+    // — confirmed production regression: gating this allowlist on `scanMode === 'deep'` ALONE
+    // silently unlocked Arbitrum/HyperEVM for every deep-mode scan regardless of which chains the
+    // caller actually requested — "Run Deep Scan" must never silently mean "all chains" by itself.
+    // The REAL signal for "the caller explicitly wants this chain" is `scanMetadata.chainsScanned`
+    // — the wallet's own already-validated `chains` request field (src/deployment/validator.ts),
+    // echoed back unchanged by the pipeline (src/pipeline/index.ts's `chainsScanned`) — never scan
+    // mode alone. A chain only reaches the holdings fetch here if the caller's OWN request actually
+    // named it; `DEFAULT_HOLDINGS_CHAIN_IDS` (Base + ETH) is the floor whenever `chainsScanned` is
+    // missing/empty (an older/unwired caller), never a ceiling this explicit signal can't exceed.
+    const chainsScanned = (body.data.scanMetadata as { chainsScanned?: string[] } | undefined)?.chainsScanned
     const scanMode = (body.data.scanMetadata as { scanMode?: string } | undefined)?.scanMode
-    const holdingsAllowedChainIds = scanMode === 'deep'
-      ? Object.keys(CHAIN_ID_TO_SUPPORTED_CHAIN).map(Number)
-      : DEFAULT_HOLDINGS_CHAIN_IDS
+    const holdingsAllowedChainIds = resolveHoldingsAllowedChainIds(chainsScanned)
     // eslint-disable-next-line no-console
-    console.warn('[CU-TRACK] deep-scan start:', { walletAddress, scanMode: scanMode ?? 'normal', chains: holdingsAllowedChainIds })
+    console.warn('[CU-TRACK] deep-scan start:', { walletAddress, scanMode: scanMode ?? 'normal', chainsScanned: chainsScanned ?? null, chains: holdingsAllowedChainIds })
     // WORKER OBSERVABILITY, DISCLOSED: per-module `performance.now()` timing logs added below, per
     // explicit instruction — purely additive console.log calls wrapped around each already-existing
     // module call, in the same order they already ran. No module's logic, arguments, ordering, or
