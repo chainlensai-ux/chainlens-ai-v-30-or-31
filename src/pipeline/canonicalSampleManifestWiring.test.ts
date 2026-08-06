@@ -79,7 +79,7 @@ test('the manifest write is awaited before the scan can report success', () => {
 // it — so creation wrote the caller's raw, pre-allocation total/fingerprints while every later replay
 // correctly recomputed the corrected, cent-rounded ones, guaranteeing a permanent mismatch.
 test('HARD ASSERTION: manifest creation (buildRefreshedManifest and buildManifestFromCandidate) passes the SAME computeFingerprints helper replayManifest uses', () => {
-  const replayCallStart = position('replayManifest call site', 'const replay = await replayManifest({')
+  const replayCallStart = position('replayManifest call site', 'const firstReplay = await replayManifest({')
   const replayCallEnd = pipelineSource.indexOf('\n    })', replayCallStart)
   const replayBody = pipelineSource.slice(replayCallStart, replayCallEnd)
   assert.match(replayBody, /computeFingerprints:\s*computeManifestFingerprints/, 'replayManifest must receive the shared canonicalization helper')
@@ -93,4 +93,48 @@ test('HARD ASSERTION: manifest creation (buildRefreshedManifest and buildManifes
   const createCallEnd = pipelineSource.indexOf('\n          })', createCallStart)
   const createBody = pipelineSource.slice(createCallStart, createCallEnd)
   assert.match(createBody, /computeFingerprints:\s*computeManifestFingerprints/, 'buildManifestFromCandidate (the manifest-creation path) must receive the SAME shared canonicalization helper as replay')
+})
+
+// STALE-MANIFEST SELF-HEAL WIRING, DISCLOSED (stale-manifest self-heal follow-up task — confirmed
+// production shape: a manifest written before 66adf73c permanently mismatches its own replay). Static
+// source position/content assertions, same convention as the rest of this file.
+test('HARD ASSERTION: a stale-canonicalization mismatch triggers exactly one rebuild-and-rewrite, published only from a re-replay of the refreshed manifest', () => {
+  const firstReplayStart = position('first replay call site', 'const firstReplay = await replayManifest({')
+  const selfHealGuardStart = position('self-heal guard', 'if (firstReplay.staleManifestCanonicalizationMismatch) {')
+  const refreshedManifestStart = position('refreshed manifest build', 'const refreshedManifest = await buildRefreshedManifest({')
+  const rewriteStart = position('refreshed manifest write', 'const rewriteSuccess = await writeCanonicalPnlSampleManifest(canonicalSampleManifestKv, refreshedManifest)')
+  const secondReplayStart = position('second replay call site', 'const secondReplay = await replayManifest({\n            manifest: refreshedManifest, allCandidateLots: reconciledLots,')
+  const effectiveReplayAssignStart = position('effectiveReplay assignment on success', 'effectiveReplay = secondReplay')
+  const replayAliasStart = position('replay alias', 'const replay = effectiveReplay')
+
+  assert.ok(firstReplayStart < selfHealGuardStart)
+  assert.ok(selfHealGuardStart < refreshedManifestStart)
+  assert.ok(refreshedManifestStart < rewriteStart)
+  assert.ok(rewriteStart < secondReplayStart)
+  assert.ok(secondReplayStart < effectiveReplayAssignStart)
+  assert.ok(effectiveReplayAssignStart < replayAliasStart, 'everything downstream must read the (possibly healed) effectiveReplay, never the raw first attempt')
+
+  const refreshedManifestCallEnd = pipelineSource.indexOf('\n        })', refreshedManifestStart)
+  const refreshedManifestBody = pipelineSource.slice(refreshedManifestStart, refreshedManifestCallEnd)
+  assert.match(refreshedManifestBody, /priorManifest:\s*manifest,/, 'the refresh must be built against the ORIGINAL stored manifest')
+  assert.match(refreshedManifestBody, /computeFingerprints:\s*computeManifestFingerprints/, 'the rebuild must use the same shared canonicalization helper')
+})
+
+test('HARD ASSERTION: manifestRefreshAttempted/Applied/Reason and staleManifestCanonicalizationMismatch are only ever set from the FIRST replay attempt, never fabricated', () => {
+  const auditStart = position('replay-path audit construction', 'canonicalSampleManifestAudit = {\n      ...emptyCanonicalSampleManifestAudit(manifestKey),\n      manifestFound: true,')
+  const auditEnd = pipelineSource.indexOf('\n    }', auditStart)
+  const auditBody = pipelineSource.slice(auditStart, auditEnd)
+  assert.match(auditBody, /staleManifestCanonicalizationMismatch:\s*firstReplay\.staleManifestCanonicalizationMismatch,/)
+  assert.match(auditBody, /manifestRefreshAttempted,/)
+  assert.match(auditBody, /manifestRefreshApplied,/)
+  assert.match(auditBody, /manifestRefreshReason,/)
+})
+
+test('HARD ASSERTION: a deployment-proof audit (methodology/fingerprint-helper version, commit sha) is logged on both the manifest-creation and manifest-replay paths', () => {
+  const versionConstant = position('methodology/helper version constants', 'const MANIFEST_FINGERPRINT_HELPER_VERSION = 2')
+  assert.match(pipelineSource, /canonicalValueMethodologyVersion:\s*CANONICAL_VALUE_METHODOLOGY_VERSION,/)
+  assert.match(pipelineSource, /manifestFingerprintHelperVersion:\s*MANIFEST_FINGERPRINT_HELPER_VERSION,/)
+  const logCallSites = [...pipelineSource.matchAll(/logDeploymentProofAudit\(manifestKey, canonicalSampleManifestAudit\)/g)]
+  assert.equal(logCallSites.length, 2, 'the deployment-proof audit must be logged on BOTH the manifest-creation return and the manifest-replay return')
+  assert.ok(versionConstant >= 0)
 })

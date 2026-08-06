@@ -26,7 +26,7 @@ import {
   buildManifestIdentity, buildManifestKey, buildManifestFromCandidate, buildRefreshedManifest,
   readCanonicalPnlSampleManifest, writeCanonicalPnlSampleManifest, replayManifest,
   logDuplicateIdentityIfAny, buildLastKnownCanonicalSample, emptyCanonicalSampleManifestAudit, buildCanonicalLotIdentities,
-  logFingerprintMismatchDiagnosticIfAny,
+  logFingerprintMismatchDiagnosticIfAny, CANONICAL_VALUE_METHODOLOGY_VERSION,
   type CanonicalSampleManifestKvLike, type CanonicalSampleManifestAudit, type AcceptedEvidenceLoader,
 } from '../lib/canonicalPnlSampleManifest'
 import { isCanonicalVerifiedPublishedLot, buildCanonicalVerifiedPredicateReasonCounts } from '../lib/canonicalVerifiedLot'
@@ -129,6 +129,35 @@ export type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from
 export { INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from './types'
 
 const PROVIDER_FETCH_WINDOW_DAYS_USED = 90
+
+// DEPLOYMENT/VERSION AUDIT, DISCLOSED (stale-manifest self-heal follow-up task): a live scan's own
+// logs are the only way to prove which build actually served it — the two confirmed production
+// failures in this scan's own history (raw-vs-canonical manifest creation, then the resulting stale
+// vv5 manifests) both looked, from the API response alone, identical to "the fix hasn't deployed
+// yet". `MANIFEST_FINGERPRINT_HELPER_VERSION` is bumped whenever the manifest create/replay
+// canonicalization wiring itself changes (independent of `CANONICAL_VALUE_METHODOLOGY_VERSION`,
+// which tracks the manifest's own stored-value/fingerprint ALGORITHM) — 1 = pre-66adf73c (create and
+// replay could diverge), 2 = 66adf73c (shared computeFingerprints on create+replay) + this task's
+// stale-manifest self-heal. `runtimeCommitSha` reads the real platform-supplied commit env var when
+// present (Vercel sets VERCEL_GIT_COMMIT_SHA); honestly `null`, never fabricated, when absent (e.g.
+// local dev).
+const MANIFEST_FINGERPRINT_HELPER_VERSION = 2
+const DEPLOYMENT_RUNTIME_COMMIT_SHA = process.env.VERCEL_GIT_COMMIT_SHA ?? null
+function logDeploymentProofAudit(manifestKey: string, audit: CanonicalSampleManifestAudit): void {
+  // eslint-disable-next-line no-console
+  console.warn('[deployment-proof-audit]', {
+    manifestKey,
+    runtimeCommitSha: DEPLOYMENT_RUNTIME_COMMIT_SHA,
+    canonicalValueMethodologyVersion: CANONICAL_VALUE_METHODOLOGY_VERSION,
+    manifestFingerprintHelperVersion: MANIFEST_FINGERPRINT_HELPER_VERSION,
+    manifestApplied: audit.manifestApplied,
+    manifestCreated: audit.manifestCreated,
+    staleManifestCanonicalizationMismatch: audit.staleManifestCanonicalizationMismatch,
+    manifestRefreshAttempted: audit.manifestRefreshAttempted,
+    manifestRefreshApplied: audit.manifestRefreshApplied,
+    manifestRefreshReason: audit.manifestRefreshReason,
+  })
+}
 
 // Real GoldRush SDK integration for pricingAtTime (src/modules/pricingAtTimeEngine). Built once at
 // module load, since the API key doesn't change per-request.
@@ -2919,18 +2948,80 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         refreshRequested: refreshCanonicalSampleRequested,
         refreshReason: newManifest.refreshReason,
       }
+      logDeploymentProofAudit(manifestKey, canonicalSampleManifestAudit)
       return { publishedLots: [...reconciledLots], forcePublicPnlUnavailable: false }
     }
 
     // SUBSEQUENT UNCHANGED SCAN — atomic replay (requirement #3): every manifest lot is resolved and
     // validated before any published array is constructed, and the array is built exactly once.
     const manifest = existingRead.manifest
-    const replay = await replayManifest({
+    const firstReplay = await replayManifest({
       manifest, allCandidateLots: reconciledLots,
       loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
     })
-    logDuplicateIdentityIfAny(replay.duplicates)
-    logFingerprintMismatchDiagnosticIfAny(replay.fingerprintMismatchDiagnostic)
+    logDuplicateIdentityIfAny(firstReplay.duplicates)
+    logFingerprintMismatchDiagnosticIfAny(firstReplay.fingerprintMismatchDiagnostic)
+
+    // STALE-MANIFEST SELF-HEAL, DISCLOSED (stale-manifest self-heal follow-up task — confirmed
+    // production shape: a manifest written BEFORE 66adf73c's create/replay canonicalization fix
+    // carries a raw, pre-allocation realizedPnlUsd/fingerprints that can never match what THIS,
+    // fixed replay correctly recomputes — a permanent, self-inflicted mismatch on an otherwise
+    // perfectly valid sample). `firstReplay.staleManifestCanonicalizationMismatch` is true ONLY
+    // when every per-lot check already passed (identity, side evidence, cost/proceeds tolerance,
+    // chronology) and the stored lot-identity fingerprint itself still matches — see
+    // ManifestReplayResult's own header. On a genuine identity mismatch, missing/invalid evidence,
+    // cost/proceeds mismatch, invalid chronology, or any real value divergence, this flag is false
+    // and NONE of the code below runs — the scan falls straight through to firstReplay's own
+    // (fail-closed) result, exactly as before this task.
+    let effectiveReplay = firstReplay
+    let effectiveManifest = manifest
+    let manifestRefreshAttempted = false
+    let manifestRefreshApplied = false
+    let manifestRefreshReason: string | null = null
+    if (firstReplay.staleManifestCanonicalizationMismatch) {
+      manifestRefreshAttempted = true
+      manifestRefreshReason = 'stale-manifest-canonicalization-self-heal'
+      try {
+        const verifiedPricingCoverage = reconciledLots.length > 0 ? candidateVerifiedLots.length / reconciledLots.length : null
+        // Rebuilds the manifest exactly the way a first-qualifying scan does (buildRefreshedManifest
+        // -> buildManifestFromCandidate), with `computeFingerprints` supplied — so the rewritten
+        // manifest is guaranteed self-consistent with THIS replay logic. `fingerprints`/`realizedPnlUsd`
+        // below are only the legacy fallback (see buildManifestFromCandidate's own header); the real
+        // values come from its internal correction, exactly like a fresh first scan.
+        const refreshedManifest = await buildRefreshedManifest({
+          priorManifest: manifest, identity: manifestIdentity, allCandidateLots: reconciledLots,
+          candidateVerifiedLots, structuralLotCount: reconciledLots.length,
+          fingerprints: computeManifestFingerprints(reconciledLots, null), realizedPnlUsd: null,
+          verifiedPricingCoverage, now: Date.now(), refreshReason: manifestRefreshReason,
+          loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
+        })
+        const rewriteSuccess = await writeCanonicalPnlSampleManifest(canonicalSampleManifestKv, refreshedManifest)
+        if (rewriteSuccess) {
+          // Publish ONLY from a replay of the freshly-written, validated manifest — never the raw
+          // rebuilt manifest directly, so the exact same atomic per-lot/total/fingerprint validation
+          // this whole function performs on every other scan is applied here too.
+          const secondReplay = await replayManifest({
+            manifest: refreshedManifest, allCandidateLots: reconciledLots,
+            loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
+          })
+          if (secondReplay.outcome === 'applied') {
+            manifestRefreshApplied = true
+            effectiveReplay = secondReplay
+            effectiveManifest = refreshedManifest
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn('[stale-manifest-self-heal] refreshed manifest still failed to replay — falling back to the original unavailable result', { manifestKey, reasonCounts: secondReplay.reasonCounts })
+          }
+        } else {
+          // eslint-disable-next-line no-console
+          console.warn('[stale-manifest-self-heal] refreshed manifest write failed — falling back to the original unavailable result', { manifestKey })
+        }
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.warn('[stale-manifest-self-heal] threw — falling back to the original unavailable result, never crashing the scan', { manifestKey, error: String(error) })
+      }
+    }
+    const replay = effectiveReplay
 
     // CANONICAL PNL DIFF AUDIT, DISCLOSED (canonical-PnL-movement audit task) — DIAGNOSTIC ONLY.
     // Rebuilds this scan's OWN candidate manifest records purely in memory and diffs them against
@@ -2993,8 +3084,8 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       manifestFound: true,
       manifestCreated: false,
       manifestApplied: replay.outcome === 'applied',
-      manifestVersion: manifest.manifestVersion,
-      manifestVerifiedLotCount: manifest.verifiedLotCount,
+      manifestVersion: effectiveManifest.manifestVersion,
+      manifestVerifiedLotCount: effectiveManifest.verifiedLotCount,
       currentCandidateVerifiedLotCount: candidateVerifiedLots.length,
       publishedVerifiedLotCount,
       candidateNewEvidenceCount: replay.candidateNewEvidenceLotKeys.length,
@@ -3016,8 +3107,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       // FAIL CLOSED (requirement #4): the previous manifest's stored figures survive ONLY as
       // clearly-labelled metadata (`availableForCurrentVerification: false`) — never re-presented as
       // this scan's freshly verified result.
-      lastKnownCanonicalSample: replay.outcome === 'unavailable' ? buildLastKnownCanonicalSample(manifest) : null,
+      lastKnownCanonicalSample: replay.outcome === 'unavailable' ? buildLastKnownCanonicalSample(effectiveManifest) : null,
+      staleManifestCanonicalizationMismatch: firstReplay.staleManifestCanonicalizationMismatch,
+      manifestRefreshAttempted,
+      manifestRefreshApplied,
+      manifestRefreshReason,
     }
+    logDeploymentProofAudit(manifestKey, canonicalSampleManifestAudit)
     return { publishedLots: replay.publishedLots, forcePublicPnlUnavailable: replay.forcePublicPnlUnavailable }
   }
 

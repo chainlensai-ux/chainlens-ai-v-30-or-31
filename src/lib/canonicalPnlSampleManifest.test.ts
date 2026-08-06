@@ -1205,6 +1205,66 @@ describe('canonicalPnlSampleManifest — create/replay shared canonicalization (
     const brokenReplay = await replay(brokenManifest, lots, evidence.loader)
     assert.equal(brokenReplay.outcome, 'unavailable', 'a manifest written without the shared canonicalization permanently mismatches its own later replay')
     assert.equal(brokenReplay.reasonCounts.manifest_realized_total_mismatch, 1)
+    // THE SELF-HEAL SIGNAL (stale-manifest self-heal follow-up task): every per-lot check passed
+    // (identity, side evidence, cost/proceeds tolerance) and the stored identity fingerprint itself
+    // still matches — the ONLY disagreement is the derived USD fingerprints/total. This is exactly
+    // the safe-to-rebuild shape the pipeline's self-heal uses to trigger a one-time refresh.
+    assert.equal(brokenReplay.staleManifestCanonicalizationMismatch, true)
+
+    // THE FIX, VERIFIED: rebuilding a manifest for the SAME candidate sample WITH computeFingerprints
+    // (exactly what the pipeline's self-heal now does) produces a manifest that replays cleanly.
+    const healedManifest = await buildRefreshedManifest({
+      priorManifest: brokenManifest, identity: identity('live-shape'), allCandidateLots: lots,
+      candidateVerifiedLots: verified, structuralLotCount: lots.length,
+      fingerprints: computeFingerprints(lots, null), realizedPnlUsd: null,
+      verifiedPricingCoverage: 1, now: 2000, refreshReason: 'stale-manifest-canonicalization-self-heal',
+      loadEvidence: evidence.loader, computeFingerprints,
+    })
+    assert.equal(healedManifest.realizedPnlUsd, roundCents(healedManifest.realizedPnlUsd!), 'the healed manifest stores a cent-clean canonical total (sum of cent-rounded per-lot allocated shares, not a rounded raw sum)')
+    const healedReplay = await replay(healedManifest, lots, evidence.loader)
+    assert.equal(healedReplay.outcome, 'applied')
+    assert.equal(healedReplay.reasonCounts.manifest_replay_success, 21)
+    assert.equal(healedReplay.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 21)
+    assert.equal(healedReplay.staleManifestCanonicalizationMismatch, false, 'a clean, self-consistent replay is never itself flagged as stale')
+  })
+
+  it('staleManifestCanonicalizationMismatch is false on a genuine identity mismatch (never a safe rebuild target)', async () => {
+    const lots = buildLiveShapeLots()
+    const { manifest, evidence } = await manifestWithEvidence(lots, identity('live-shape-identity'))
+    // A genuinely different candidate sample — the manifest's own lots are entirely absent.
+    const differentLots = buildLiveShapeLots().map((l) => ({ ...l, openedTxHash: `${l.openedTxHash}-other`, closedTxHash: `${l.closedTxHash}-other` }))
+    const result = await replay(manifest, differentLots, evidence.loader)
+    assert.equal(result.outcome, 'unavailable')
+    assert.equal(result.staleManifestCanonicalizationMismatch, false)
+  })
+
+  it('staleManifestCanonicalizationMismatch is false on missing side evidence (never a safe rebuild target)', async () => {
+    const lots = buildLiveShapeLots()
+    const { manifest, evidence } = await manifestWithEvidence(lots, identity('live-shape-missing'))
+    const key = evidence.keyFor(lots[0], 'entry')
+    evidence.store.delete(key)
+    const result = await replay(manifest, lots, evidence.loader)
+    assert.equal(result.outcome, 'unavailable')
+    assert.equal(result.staleManifestCanonicalizationMismatch, false)
+  })
+
+  it('staleManifestCanonicalizationMismatch is false on a genuine cost/proceeds mismatch (never a safe rebuild target)', async () => {
+    const lots = buildLiveShapeLots()
+    const { manifest, evidence } = await manifestWithEvidence(lots, identity('live-shape-corrupted'))
+    const key = evidence.keyFor(lots[0], 'entry')
+    const envelope = evidence.store.get(key) as { priceUsd: number }
+    evidence.store.set(key, { ...envelope, priceUsd: envelope.priceUsd + 50 })
+    const result = await replay(manifest, lots, evidence.loader)
+    assert.equal(result.outcome, 'unavailable')
+    assert.equal(result.staleManifestCanonicalizationMismatch, false)
+  })
+
+  it('staleManifestCanonicalizationMismatch is false on a genuinely successful replay (nothing to heal)', async () => {
+    const lots = buildLiveShapeLots()
+    const { manifest, evidence } = await manifestWithEvidence(lots, identity('live-shape-clean'))
+    const result = await replay(manifest, lots, evidence.loader)
+    assert.equal(result.outcome, 'applied')
+    assert.equal(result.staleManifestCanonicalizationMismatch, false)
   })
 
   it('HARD ASSERTION (required regression): live-shape 21-lot sample — build WITH the shared computeFingerprints helper, then replay applies and publishes all 21, with identical fingerprints', async () => {

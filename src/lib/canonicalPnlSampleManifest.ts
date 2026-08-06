@@ -1004,6 +1004,19 @@ export type ManifestReplayResult = {
   // passes every per-group value/total check, yet still fails on `manifest_fingerprint_mismatch`
   // alone. See buildFingerprintMismatchDiagnostic's own header for what it isolates.
   fingerprintMismatchDiagnostic: FingerprintMismatchDiagnostic | null
+  // STALE-MANIFEST CANONICALIZATION MISMATCH, DISCLOSED, ADDITIVE (stale-manifest self-heal
+  // follow-up task — confirmed production shape: a manifest written BEFORE 66adf73c's
+  // create/replay canonicalization fix carries a raw, pre-allocation realizedPnlUsd/fingerprints;
+  // every later replay correctly recomputes the corrected, cent-rounded figures and therefore
+  // permanently mismatches its own manifest, even though every per-lot check — identity, side
+  // evidence, cost/proceeds tolerance, chronology — genuinely passed). True only when EVERY per-lot
+  // check passed (`!perLotFailed`: no identity mismatch, no missing/invalid side evidence, no
+  // cost/proceeds/chronology failure) AND the stored `verifiedLotIdentityFingerprint` itself still
+  // matches (the lot SET is identical) AND the only disagreement is in the derived USD fingerprints
+  // (`acceptedHistoricalPriceFingerprint`/`realizedPnlFingerprint`) — never set on a genuine identity
+  // divergence, missing evidence, or a real cost/proceeds/value mismatch. The caller (pipeline) uses
+  // this, and ONLY this, to decide whether a one-time manifest refresh is safe.
+  staleManifestCanonicalizationMismatch: boolean
 }
 
 // FINGERPRINT-MISMATCH DIAGNOSTIC, DISCLOSED (fingerprint-mismatch audit task — confirmed production
@@ -1434,6 +1447,16 @@ export async function replayManifest(params: {
   const replayFailed = perLotFailed || derivationFailed
   const publishedLots = buildPublished(replayFailed)
 
+  // See ManifestReplayResult's own header for the full disclosure. Computed from the LOCAL
+  // `recomputedFingerprints` (before the outward-facing null-on-failure below) — this is the one
+  // signal the caller needs to safely distinguish "stale but self-consistent manifest, safe to
+  // rebuild" from every genuine failure mode, which must never trigger a refresh.
+  const staleManifestCanonicalizationMismatch = !perLotFailed
+    && recomputedFingerprints !== null
+    && recomputedFingerprints.verifiedLotIdentityFingerprint === params.manifest.verifiedLotIdentityFingerprint
+    && (recomputedFingerprints.acceptedHistoricalPriceFingerprint !== params.manifest.acceptedHistoricalPriceFingerprint
+      || recomputedFingerprints.realizedPnlFingerprint !== params.manifest.realizedPnlFingerprint)
+
   return {
     outcome: replayFailed ? 'unavailable' : 'applied',
     publishedLots,
@@ -1452,6 +1475,7 @@ export async function replayManifest(params: {
     recomputedFingerprints: replayFailed ? null : recomputedFingerprints,
     manifestReplayedButNotCanonicalVerifiedLotKeys,
     fingerprintMismatchDiagnostic,
+    staleManifestCanonicalizationMismatch,
   }
 }
 
@@ -1516,6 +1540,16 @@ export type CanonicalSampleManifestAudit = {
   // REQUIREMENT #4/#5: the total re-derived by summing the reconstructed published lots — never
   // copied from the manifest. Null whenever replay did not produce a publishable canonical sample.
   recomputedRealizedPnlUsd: number | null
+  // STALE-MANIFEST SELF-HEAL, DISCLOSED, ADDITIVE (stale-manifest self-heal follow-up task). See
+  // ManifestReplayResult's own `staleManifestCanonicalizationMismatch` header for the exact
+  // condition. `manifestRefreshAttempted`/`manifestRefreshApplied` are only ever true when
+  // `staleManifestCanonicalizationMismatch` was true on the FIRST replay this scan ran — a genuine
+  // identity mismatch, missing/invalid side evidence, cost/proceeds mismatch, invalid chronology, or
+  // any other real divergence never sets any of these three fields.
+  staleManifestCanonicalizationMismatch: boolean
+  manifestRefreshAttempted: boolean
+  manifestRefreshApplied: boolean
+  manifestRefreshReason: string | null
 }
 
 export function emptyCanonicalSampleManifestAudit(manifestKey: string): CanonicalSampleManifestAudit {
@@ -1547,5 +1581,9 @@ export function emptyCanonicalSampleManifestAudit(manifestKey: string): Canonica
     manifestReplayedButNotCanonicalVerifiedLotKeys: [],
     canonicalVerifiedPredicateReasonCounts: emptyCanonicalVerifiedPredicateReasonCounts(),
     recomputedRealizedPnlUsd: null,
+    staleManifestCanonicalizationMismatch: false,
+    manifestRefreshAttempted: false,
+    manifestRefreshApplied: false,
+    manifestRefreshReason: null,
   }
 }
