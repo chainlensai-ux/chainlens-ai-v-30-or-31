@@ -14,7 +14,7 @@ import {
   type AcceptedEvidenceSideTotals,
 } from './canonicalPnlDiffAudit.ts'
 import {
-  buildManifestFromCandidate, buildManifestIdentity, type CanonicalManifestLotRecord,
+  buildManifestFromCandidate, buildManifestIdentity, replayManifest, type CanonicalManifestLotRecord,
   type AcceptedEvidenceLoader,
 } from './canonicalPnlSampleManifest.ts'
 import { buildScanDeterminismAudit } from './scanDeterminismAudit.ts'
@@ -22,6 +22,7 @@ import {
   buildAcceptedEvidenceEnvelope, buildAcceptedEvidenceKey, lotIdentityVersion,
   readAcceptedEvidence, readAcceptedEvidenceAnyLotVersion, type AcceptedEvidenceKvLike,
 } from './acceptedEvidenceStore.ts'
+import { isCanonicalVerifiedPublishedLot } from './canonicalVerifiedLot.ts'
 import type { MatchedLot } from '../modules/fifoEngine/types'
 
 const NOW = 1_000_000
@@ -284,6 +285,73 @@ describe('canonicalPnlDiffAudit — value-semantics validation', () => {
     assert.equal(audit.findings.filter((f) => f.code === 'stablecoin_side_not_unit_priced').length, 0)
   })
 
+  // VV6 AUDIT-CONSISTENCY FOLLOW-UP TASK — confirmed production false positive: after
+  // canonicalPnlSampleManifest.ts's stablecoinNormalizedGroupTotal correctly overrides a verified
+  // stablecoin side's claimed total to the deterministic $1/token figure, this audit's own
+  // shared-evidence-allocation check still compared that NORMALIZED claim against the accepted-
+  // evidence record's own RAW, stale priceUsd/valueUsd — firing false CRITICAL
+  // shared_side_value_duplicated_across_groups / group_total_does_not_equal_accepted_side_total
+  // findings on every correctly-normalized stablecoin side.
+  it('HARD ASSERTION (required regression): stale stablecoin accepted evidence with a provider value != the $1-normalized total does NOT trigger a false CRITICAL under methodology v6', () => {
+    // Confirmed production shape: Base USDC side claims the correct, normalized $1197.164051
+    // (1194.1715 units x $1), but the stale accepted-evidence record still carries its old, wrong
+    // priceUsd/valueUsd of $5.985462.
+    const usdcKey = 'v1:accepted-evidence:base:0xusdc:0xbuy:entry:1'
+    const usdcExitKey = 'v1:accepted-evidence:base:0xusdc:0xsell:exit:2'
+    const audit = buildCanonicalPnlDiffAudit({
+      currentRecords: [record({
+        key: 'g:usdc-vv6', token: '0xusdc', canonicalAmount: '1194.171500000000',
+        entryEvidenceKey: usdcKey, exitEvidenceKey: usdcExitKey,
+        groupCostBasisUsd: 1197.164051, groupProceedsUsd: 1197.164051, groupRealizedPnlUsd: 0,
+      })],
+      previousRecords: [],
+      evidenceByKey: evidence({
+        [usdcKey]: { priceUsd: 5.985462, valueUsd: 5.985462 },
+        [usdcExitKey]: { priceUsd: 5.985462, valueUsd: 5.985462 },
+      }),
+      isStablecoin: (_chain, token) => token === '0xusdc',
+      amountByGroupKey: new Map([['g:usdc-vv6', 1197.164051]]),
+    })
+    const critical = audit.findings.filter((f) => f.severity === 'critical')
+    assert.deepEqual(critical, [], 'a verified stablecoin side correctly normalized to $1/token must never be flagged against stale accepted-evidence figures the normalization exists specifically to override')
+  })
+
+  it('HARD ASSERTION (required regression): a real duplicated shared stablecoin side still triggers CRITICAL under methodology v6', () => {
+    // Two DISTINCT groups, each genuinely holding 500 real tokens (so the correct combined
+    // normalized total is 500 + 500 = $1000), but each INCORRECTLY claims the FULL $1000 for
+    // itself instead of its own $500 share — a real duplication (claimedSum 2000 vs the correct
+    // combined normalized total 1000), never a normalization artifact (which would instead show each
+    // group correctly claiming its own $500 share, summing exactly to the correct $1000).
+    const sharedKey = 'v1:accepted-evidence:base:0xusdc:0xbuy:entry:1'
+    const audit = buildCanonicalPnlDiffAudit({
+      currentRecords: [
+        record({ key: 'g:usdc-a', token: '0xusdc', canonicalAmount: '500.000000000000', entryEvidenceKey: sharedKey, groupCostBasisUsd: 1000 }),
+        record({ key: 'g:usdc-b', token: '0xusdc', canonicalAmount: '500.000000000000', entryEvidenceKey: sharedKey, groupCostBasisUsd: 1000 }),
+      ],
+      previousRecords: [],
+      evidenceByKey: evidence({ [sharedKey]: { priceUsd: 5.99, valueUsd: 5.99 } }), // stale, deliberately irrelevant
+      isStablecoin: (_chain, token) => token === '0xusdc',
+      amountByGroupKey: new Map([['g:usdc-a', 500], ['g:usdc-b', 500]]),
+    })
+    const dup = audit.findings.find((f) => f.code === 'shared_side_value_duplicated_across_groups')
+    assert.ok(dup, 'a genuinely duplicated stablecoin side must still be caught — normalization awareness never masks a real defect')
+    assert.equal(dup!.severity, 'critical')
+    assert.equal(dup!.observedUsd, 2000, 'both groups over-claiming the full total sum to 2000')
+    assert.equal(dup!.expectedUsd, 1000, 'the correct combined normalized total for the two real 500-unit occurrences')
+  })
+
+  it('a verified stablecoin side is SKIPPED (never guessed) when real per-occurrence amount data is unavailable', () => {
+    const usdcKey = 'v1:accepted-evidence:base:0xusdc:0xbuy:entry:1'
+    const audit = buildCanonicalPnlDiffAudit({
+      currentRecords: [record({ key: 'g:usdc-noamount', token: '0xusdc', entryEvidenceKey: usdcKey, groupCostBasisUsd: 1197.164051 })],
+      previousRecords: [],
+      evidenceByKey: evidence({ [usdcKey]: { priceUsd: 5.985462, valueUsd: 5.985462 } }),
+      isStablecoin: (_chain, token) => token === '0xusdc',
+      // amountByGroupKey intentionally omitted — nothing to validate against, never guessed.
+    })
+    assert.equal(audit.findings.filter((f) => f.evidenceKey === usdcKey).length, 0)
+  })
+
   it('checks needing optional inputs are SKIPPED, never guessed, when those inputs are absent', () => {
     const audit = buildCanonicalPnlDiffAudit({
       currentRecords: [record({ occurrenceCount: 3, groupCostBasisUsd: 100 })],
@@ -414,6 +482,78 @@ describe('canonicalPnlDiffAudit — end-to-end against a REAL manifest build (th
     assert.equal(exitFinding.observedUsd, 160)
     assert.equal(exitFinding.expectedUsd, 480)
     assert.equal(exitFinding.differenceUsd, -320)
+  })
+
+  // VV6 AUDIT-CONSISTENCY FOLLOW-UP TASK — required regression: a CRITICAL audit result must never
+  // coexist with a public verified publish. Once the confirmed false-positive source is fixed
+  // (stablecoin normalization awareness), a correctly-normalized stablecoin lot must produce BOTH
+  // zero critical findings from this audit AND a real, independent 'applied' outcome from
+  // replayManifest — the two systems must agree, never one silently publishing while the other
+  // still screams CRITICAL.
+  it('HARD ASSERTION (required regression): a correctly vv6-normalized stablecoin lot produces zero CRITICAL findings, in agreement with a real, independently-successful manifest replay', async () => {
+    const store = new Map<string, string>()
+    const kv: AcceptedEvidenceKvLike = {
+      get: async <T>(key: string) => (store.has(key) ? (JSON.parse(store.get(key)!) as T) : null),
+      set: async (key: string, value: unknown) => { store.set(key, JSON.stringify(value)); return 'OK' },
+    }
+    const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+    const stableLot = lot({
+      lotId: 'stable', token: BASE_USDC, openedTxHash: '0xstablebuy', closedTxHash: '0xstablesell',
+      openedAt: 100, closedAt: 200, amount: 1194.1715, costBasisUsd: 1194.1715, proceedsUsd: 1194.1715, realizedPnlUsd: 0,
+    })
+    // Seed the STALE, mispriced accepted evidence — the exact confirmed production shape ($5.985462
+    // instead of the correct $1194.1715 at $1/token).
+    for (const side of ['entry', 'exit'] as const) {
+      const identity = {
+        chain: stableLot.chain, token: stableLot.token, txHash: side === 'entry' ? stableLot.openedTxHash : stableLot.closedTxHash,
+        side, timestamp: side === 'entry' ? stableLot.openedAt : stableLot.closedAt, lotIdentityVersion: lotIdentityVersion(stableLot),
+      }
+      await kv.set(buildAcceptedEvidenceKey(identity), buildAcceptedEvidenceEnvelope({
+        identity, priceUsd: 5.985462, valueUsd: 5.985462,
+        source: 'canonical-upstream', evidenceType: 'unknown', providerTimestampBucket: null, now: NOW,
+      }))
+    }
+    const loader: AcceptedEvidenceLoader = ({ lotIdentityVersion: version, ...rest }) =>
+      version === null
+        ? readAcceptedEvidenceAnyLotVersion(kv, rest, NOW)
+        : readAcceptedEvidence(kv, { ...rest, lotIdentityVersion: version }, NOW)
+    const computeFingerprints = (lots: readonly MatchedLot[], realizedPnlUsd: number | null) => {
+      const a = buildScanDeterminismAudit({ matchedLots: lots, realizedPnlUsd, persistedEvidenceHits: 0, liveEvidenceMisses: 0 })
+      return {
+        verifiedLotIdentityFingerprint: a.verifiedLotIdentityFingerprint,
+        acceptedHistoricalPriceFingerprint: a.acceptedHistoricalPriceFingerprint,
+        realizedPnlFingerprint: a.realizedPnlFingerprint,
+        scanFingerprint: a.scanFingerprint,
+      }
+    }
+    const identity = buildManifestIdentity({ walletAddress: '0xw', chains: ['base'], configuredWindowDays: 90, matchedLotFingerprint: 'fp-stable' })
+    const manifest = await buildManifestFromCandidate({
+      identity, allCandidateLots: [stableLot], candidateVerifiedLots: [stableLot], structuralLotCount: 1,
+      fingerprints: computeFingerprints([stableLot], null), realizedPnlUsd: null,
+      verifiedPricingCoverage: 1, now: 1, loadEvidence: loader, computeFingerprints,
+    })
+    assert.equal(manifest.verifiedLotRecords[0].groupCostBasisUsd, 1194.1715, 'the manifest stores the normalized total, not the stale evidence figure')
+
+    // The audit, wired with the SAME real isStablecoin predicate/amount data a real scan supplies.
+    const evidenceByKey = new Map<string, AcceptedEvidenceSideTotals>()
+    for (const [key, raw] of store) {
+      const envelope = JSON.parse(raw) as { priceUsd: number; valueUsd: number }
+      evidenceByKey.set(key, { priceUsd: envelope.priceUsd, valueUsd: envelope.valueUsd, schemaVersion: 2 })
+    }
+    const amountByGroupKey = new Map([[manifest.verifiedLotRecords[0].key, stableLot.amount]])
+    const audit = buildCanonicalPnlDiffAudit({
+      currentRecords: manifest.verifiedLotRecords, previousRecords: [], evidenceByKey,
+      isStablecoin: (_chain, token) => token.toLowerCase() === BASE_USDC.toLowerCase(),
+      amountByGroupKey,
+    })
+    assert.equal(audit.findings.filter((f) => f.severity === 'critical').length, 0, 'a correctly normalized stablecoin lot must never be flagged CRITICAL')
+
+    // AGREEMENT, PROVEN: a real, independent replay of the SAME manifest also succeeds — the audit's
+    // "no critical findings" and the actual publish path's "applied" outcome are not two unrelated
+    // claims, they describe the same real, valid data.
+    const replay = await replayManifest({ manifest, allCandidateLots: [stableLot], loadEvidence: loader, computeFingerprints })
+    assert.equal(replay.outcome, 'applied')
+    assert.equal(replay.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 1)
   })
 })
 

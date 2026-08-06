@@ -247,47 +247,88 @@ function checkSharedEvidenceAllocation(input: CanonicalPnlDiffInput): CanonicalP
       if (claimedSum === null) continue
       const groupKeys = records.map((r) => r.key).sort()
 
-      const matchesPrice = Math.abs(claimedSum - evidence.priceUsd) <= PNL_DIFF_TOLERANCE_USD
-      const matchesValue = Math.abs(claimedSum - evidence.valueUsd) <= PNL_DIFF_TOLERANCE_USD
+      // STABLECOIN-NORMALIZATION AWARENESS, DISCLOSED (vv6 audit-consistency follow-up task —
+      // confirmed production false positive: canonicalPnlSampleManifest.ts's `stablecoinNormalizedGroupTotal`
+      // correctly overrides a verified stablecoin side's group total to the deterministic $1/token
+      // figure — that is now what the manifest/replay genuinely, correctly claims — but this check
+      // still compared that NORMALIZED claim against the accepted-evidence record's own RAW, possibly
+      // stale `priceUsd`/`valueUsd`, firing false `shared_side_value_duplicated_across_groups`/
+      // `group_total_does_not_equal_accepted_side_total` CRITICAL findings on every normalized
+      // stablecoin side. For a verified stablecoin side with real per-occurrence amount data
+      // available, the EXPECTED total here is now the SAME deterministic $1/token figure
+      // stablecoinNormalizedGroupTotal itself computes (sum of every sharing group's own
+      // amount x occurrenceCount) — never the raw accepted-evidence figure the normalization exists
+      // specifically to override. Without real amount data for every sharing group, this key is
+      // SKIPPED entirely (never guessed) rather than validated against a comparison that no longer
+      // reflects the real expected value. A non-stablecoin side takes the EXACT SAME, completely
+      // unmodified priceUsd/valueUsd comparison as before — this never weakens that check.
+      const representative = records[0]
+      const isStablecoinSide = input.isStablecoin?.(representative.chain, representative.token) ?? false
+      let expected = evidence.priceUsd
+      if (isStablecoinSide) {
+        if (!input.amountByGroupKey) continue
+        let normalizedTotal = 0
+        let missingAmount = false
+        for (const r of records) {
+          const amount = input.amountByGroupKey.get(r.key)
+          if (amount === undefined || !Number.isFinite(amount)) { missingAmount = true; break }
+          normalizedTotal += amount * r.occurrenceCount
+        }
+        if (missingAmount) continue
+        expected = round8(normalizedTotal)
+      }
 
-      if (!matchesPrice && !matchesValue) {
+      const matchesExpected = Math.abs(claimedSum - expected) <= PNL_DIFF_TOLERANCE_USD
+      // For a stablecoin side there is exactly ONE correct answer (the normalized $1/token total) —
+      // `matchesValue` collapses to the same comparison so the OR-logic below behaves identically to
+      // the pre-existing "neither priceUsd nor valueUsd matches" shape. A non-stablecoin side still
+      // independently checks the evidence record's own valueUsd, completely unchanged.
+      const matchesValue = isStablecoinSide ? matchesExpected : Math.abs(claimedSum - evidence.valueUsd) <= PNL_DIFF_TOLERANCE_USD
+
+      if (!matchesExpected && !matchesValue) {
         findings.push({
           code: 'group_total_does_not_equal_accepted_side_total',
           severity: 'critical',
           canonicalGroupKeys: groupKeys,
           evidenceKey,
-          detail: `${side} side: the sum of every group's claimed total matches neither the evidence record's priceUsd nor its valueUsd`,
+          detail: isStablecoinSide
+            ? `${side} side: the sum of every group's claimed total does not match the deterministic $1/token normalized total for this verified stablecoin side`
+            : `${side} side: the sum of every group's claimed total matches neither the evidence record's priceUsd nor its valueUsd`,
           observedUsd: claimedSum,
-          expectedUsd: evidence.priceUsd,
-          differenceUsd: round8(claimedSum - evidence.priceUsd),
+          expectedUsd: expected,
+          differenceUsd: round8(claimedSum - expected),
         })
       }
 
       // DUPLICATION: more than one DISTINCT occurrence group draws on one shared side, and each
       // claims a full side's worth — so the side's value is counted once per group.
-      if (records.length > 1 && matchesPrice === false && claimedSum > evidence.priceUsd + PNL_DIFF_TOLERANCE_USD) {
+      if (records.length > 1 && !matchesExpected && claimedSum > expected + PNL_DIFF_TOLERANCE_USD) {
         findings.push({
           code: 'shared_side_value_duplicated_across_groups',
           severity: 'critical',
           canonicalGroupKeys: groupKeys,
           evidenceKey,
-          detail: `${side} side is shared by ${records.length} distinct occurrence groups whose claimed totals sum ABOVE the evidence record's own priceUsd — the side value is being counted more than once`,
+          detail: isStablecoinSide
+            ? `${side} side is shared by ${records.length} distinct occurrence groups whose claimed totals sum ABOVE the deterministic $1/token normalized total — the side value is being counted more than once`
+            : `${side} side is shared by ${records.length} distinct occurrence groups whose claimed totals sum ABOVE the evidence record's own priceUsd — the side value is being counted more than once`,
           observedUsd: claimedSum,
-          expectedUsd: evidence.priceUsd,
-          differenceUsd: round8(claimedSum - evidence.priceUsd),
+          expectedUsd: expected,
+          differenceUsd: round8(claimedSum - expected),
         })
       }
 
-      if (!matchesPrice && !matchesValue && records.length === 1) {
+      if (!matchesExpected && !matchesValue && records.length === 1) {
         findings.push({
           code: 'shared_side_value_not_allocated_exactly_once',
           severity: 'critical',
           canonicalGroupKeys: groupKeys,
           evidenceKey,
-          detail: `${side} side's single owning group claims a total that is neither the evidence priceUsd nor its valueUsd — the side was not allocated exactly once`,
+          detail: isStablecoinSide
+            ? `${side} side's single owning group claims a total that does not match the deterministic $1/token normalized total — the side was not allocated exactly once`
+            : `${side} side's single owning group claims a total that is neither the evidence priceUsd nor its valueUsd — the side was not allocated exactly once`,
           observedUsd: claimedSum,
-          expectedUsd: evidence.priceUsd,
-          differenceUsd: round8(claimedSum - evidence.priceUsd),
+          expectedUsd: expected,
+          differenceUsd: round8(claimedSum - expected),
         })
       }
     }
@@ -319,6 +360,12 @@ function checkValueSemantics(input: CanonicalPnlDiffInput): CanonicalPnlValidati
       // claimed total legitimately equals `evidence.priceUsd` directly, so testing it against
       // `priceUsd * occurrenceCount` here would be a false positive on genuinely-correct data.
       if (evidence.schemaVersion !== OBSOLETE_ACCEPTED_EVIDENCE_SCHEMA_VERSION) continue
+      // STABLECOIN EXEMPTION, DISCLOSED (vv6 audit-consistency follow-up task): a verified
+      // stablecoin side's claimed total is the deterministic $1/token normalized figure
+      // (stablecoinNormalizedGroupTotal), never a raw `priceUsd`/`priceUsd x occurrenceCount`
+      // restore of the accepted-evidence record — this v1-schema defect detector does not apply to
+      // it and must never fire a false positive by testing it against either shape.
+      if (input.isStablecoin?.(record.chain, record.token)) continue
 
       const perLotRestore = round8(evidence.priceUsd * record.occurrenceCount)
       if (Math.abs(claimedTotal - perLotRestore) <= PNL_DIFF_TOLERANCE_USD) continue
