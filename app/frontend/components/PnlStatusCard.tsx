@@ -377,6 +377,22 @@ export function shouldShowLimitedSampleBadge(publicPnlStatus: PublicPnlStatus | 
 // string rather than a substring guess.
 export const PNL_UNAVAILABLE_MESSAGE = 'PnL unavailable due to missing evidence'
 
+// TRUST/LABELING FIX, DISCLOSED (UI/trust follow-up task — confirmed production confusion: a user
+// read a stable realized PnL alongside a scan-to-scan-changing unrealized/total figure and
+// concluded the whole PnL was fabricated, because "Total PnL" implied one single, complete, stable
+// number). Realized PnL — sourced only from the manifest-replayed, verified closed-lot sample — is
+// the one figure this codebase can actually GUARANTEE is stable scan-to-scan for an unchanged lot
+// set (see canonicalPnlSampleManifest.ts's whole replay-canonicalization design). Unrealized PnL is,
+// by definition, a live, partial-coverage estimate (current market price x open-position quantity,
+// for whatever open positions were successfully reconciled) — it is EXPECTED to move, and that
+// movement must never read as "the verified PnL changed." These labels/copy are the ONE place every
+// tile that shows Realized/Unrealized/Total reads its wording from, so bounded and 'ok'/full-history
+// tiles say the same thing.
+export const REALIZED_PNL_LABEL = 'Realized PnL (Official)'
+export const UNREALIZED_PNL_LABEL = 'Current open-position estimate — partial coverage'
+export const TOTAL_PNL_LABEL = 'Realized + partial open estimate'
+export const PNL_STABILITY_NOTE = 'Realized PnL is fixed from verified closed lots. Unrealized PnL can move with live prices and partial open-position coverage.'
+
 // BOUNDED SAMPLE DISCLOSURE, DISCLOSED (bounded-PnL-UI follow-up task): real values only, sourced
 // exclusively from `reconciliationSummary` (src/lib/pnlReconciliation.ts's own output) — never
 // estimated, never merged with pnlV2. Returns null whenever `publicPnlStatus` isn't the real
@@ -741,27 +757,33 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
         // hasn't wired `reconciliationSummary` at all — shown as PNL_UNAVAILABLE_MESSAGE, never a
         // fabricated $0.00.
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-          <MetricCard label="Realized PnL" value={displayed.realizedPnlUsd == null ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(displayed.realizedPnlUsd)} tone={toneFromNumber(displayed.realizedPnlUsd)} index={0} />
-          <MetricCard label="Unrealized PnL" value={displayed.unrealizedPnlUsd == null ? 'Unavailable' : fmtSignedUsd(displayed.unrealizedPnlUsd)} tone={toneFromNumber(displayed.unrealizedPnlUsd)} index={1} />
-          <MetricCard label="Total PnL" value={displayed.totalPnlUsd == null ? 'Unavailable' : fmtSignedUsd(displayed.totalPnlUsd)} tone={toneFromNumber(displayed.totalPnlUsd)} index={2} />
+          <MetricCard label={REALIZED_PNL_LABEL} value={displayed.realizedPnlUsd == null ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(displayed.realizedPnlUsd)} tone={toneFromNumber(displayed.realizedPnlUsd)} index={0} />
+          <MetricCard label={UNREALIZED_PNL_LABEL} value={displayed.unrealizedPnlUsd == null ? 'Unavailable' : fmtSignedUsd(displayed.unrealizedPnlUsd)} tone={toneFromNumber(displayed.unrealizedPnlUsd)} index={1} />
+          <MetricCard label={TOTAL_PNL_LABEL} value={displayed.totalPnlUsd == null ? 'Unavailable' : fmtSignedUsd(displayed.totalPnlUsd)} tone={toneFromNumber(displayed.totalPnlUsd)} index={2} />
           <MetricCard label="ROI" value={displayed.roiLabel ?? 'Not calculated for bounded sample'} tone="neutral" index={3} />
           <MetricCard label="Cost Basis" value={displayed.costBasisLabel ?? 'Not available for bounded sample'} index={4} />
           <MetricCard label="Integrity" value={<StatusBadge label={displayed.integrityLabel} tone="warning" />} index={5} />
         </div>
       ) : (
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-          <MetricCard label="Realized PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.realizedPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.realizedPnlUsd)} index={0} />
+          <MetricCard label={REALIZED_PNL_LABEL} value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.realizedPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.realizedPnlUsd)} index={0} />
           <MetricCard
-            label="Unrealized PnL"
+            label={UNREALIZED_PNL_LABEL}
             value={pnl.unrealizedPnlUsd == null ? 'Unavailable' : blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.unrealizedPnlUsd)}
             tone={pnl.unrealizedPnlUsd == null || blocked ? 'neutral' : toneFromNumber(pnl.unrealizedPnlUsd)}
             index={1}
           />
-          <MetricCard label="Total PnL" value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.totalPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.totalPnlUsd)} index={2} />
+          <MetricCard label={TOTAL_PNL_LABEL} value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.totalPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.totalPnlUsd)} index={2} />
           <MetricCard label="ROI" value={blocked ? PNL_UNAVAILABLE_MESSAGE : pnl.roi.display} tone={blocked ? 'neutral' : toneFromNumber(pnl.roi.value)} index={3} />
           <MetricCard label="Cost Basis" value={pnl.unreliable ? 'Not reliable' : fmtUsd(pnl.totalCostBasisUsd)} index={4} />
           <MetricCard label="Integrity" value={<StatusBadge label="Not available (V2 engine)" tone="neutral" />} index={5} />
         </div>
+      )}
+
+      {(isBoundedSample || displayMode === 'real') && (
+        <p style={{ fontSize: '11px', color: 'rgba(148,163,184,0.6)', lineHeight: 1.6, margin: '0 0 16px' }}>
+          {PNL_STABILITY_NOTE}
+        </p>
       )}
 
       <div style={{ marginBottom: '10px' }}>

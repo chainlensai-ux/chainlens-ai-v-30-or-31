@@ -20,6 +20,7 @@ import {
   PNL_UNAVAILABLE_MESSAGE, hasGlobalSynthetic, hasPerChainSynthetic, shouldShowSyntheticGlobal, shouldShowSyntheticPerChain,
   resolvePnlDisplayMode, selectBoundedSampleDisclosure, selectDisplayedPnl, PER_CHAIN_BOUNDED_SAMPLE_MESSAGE,
   selectLastKnownSampleDisclosure, CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL, LAST_KNOWN_SAMPLE_LABEL,
+  REALIZED_PNL_LABEL, UNREALIZED_PNL_LABEL, TOTAL_PNL_LABEL, PNL_STABILITY_NOTE,
 } from './PnlStatusCard'
 import { emptyCanonicalSampleManifestAudit, type CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
@@ -386,6 +387,28 @@ describe('selectVerifiedPnlData — stable field wiring', () => {
 describe('PNL_UNAVAILABLE_MESSAGE — exact literal text', () => {
   it('matches this task\'s required exact string', () => {
     assert.equal(PNL_UNAVAILABLE_MESSAGE, 'PnL unavailable due to missing evidence')
+  })
+})
+
+describe('REALIZED_PNL_LABEL / UNREALIZED_PNL_LABEL / TOTAL_PNL_LABEL / PNL_STABILITY_NOTE — exact literal text (UI/trust follow-up task)', () => {
+  // Confirmed production confusion: a stable realized PnL alongside a scan-to-scan-changing
+  // unrealized/total figure read as "the whole PnL is fake" because "Total PnL" implied one single,
+  // complete, stable number. These labels are the ONE place both the bounded-sample and 'ok'/full
+  // tiles read their wording from — asserted here as exact literal strings, same convention as
+  // PNL_UNAVAILABLE_MESSAGE above, so a future edit that quietly waters down the disclosure fails
+  // loudly instead of silently.
+  it('Realized PnL is explicitly labeled the official figure', () => {
+    assert.equal(REALIZED_PNL_LABEL, 'Realized PnL (Official)')
+  })
+  it('Unrealized PnL is explicitly labeled a partial, current-price estimate, never implying it is canonical/verified', () => {
+    assert.equal(UNREALIZED_PNL_LABEL, 'Current open-position estimate — partial coverage')
+  })
+  it('Total PnL is explicitly labeled as realized plus a partial estimate, never "Total PnL" alone', () => {
+    assert.equal(TOTAL_PNL_LABEL, 'Realized + partial open estimate')
+    assert.notEqual(TOTAL_PNL_LABEL, 'Total PnL', 'must never read as one single official total figure')
+  })
+  it('the stability note explains realized is fixed while unrealized can move, so movement is never mistaken for the verified PnL changing', () => {
+    assert.equal(PNL_STABILITY_NOTE, 'Realized PnL is fixed from verified closed lots. Unrealized PnL can move with live prices and partial open-position coverage.')
   })
 })
 

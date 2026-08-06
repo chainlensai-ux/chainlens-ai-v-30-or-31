@@ -43,6 +43,24 @@ function pipelineDiagnosticsFrom(result: unknown): unknown {
   }
 }
 
+// GOLDRUSH CALL SPLIT EXTRACTION, DISCLOSED (UI/trust follow-up task): the real, measured
+// historical-vs-current-price split src/pipeline/index.ts's own final return now carries (see
+// `goldrushCallSplit` there) — extracted here, defensively, so `logWalletProviderCostAudit` can
+// attribute [wallet-provider-cost-audit]'s own numbers correctly. `undefined` (never a fabricated
+// split) whenever the result shape doesn't carry real, finite numbers — a genuinely missing/failed
+// scan degrades to the ledger's pre-existing, unsplit behavior, never a fabricated 0.
+function goldrushCallSplitFrom(result: unknown): { historicalGoldrushLiveCalls: number; currentPriceGoldrushLiveCalls: number } | undefined {
+  if (!result || typeof result !== 'object') return undefined
+  const body = result as Record<string, unknown>
+  const data = body.data && typeof body.data === 'object' ? body.data as Record<string, unknown> : body
+  const split = data.goldrushCallSplit
+  if (!split || typeof split !== 'object') return undefined
+  const { historicalGoldrushLiveCalls, currentPriceGoldrushLiveCalls } = split as Record<string, unknown>
+  if (typeof historicalGoldrushLiveCalls !== 'number' || !Number.isFinite(historicalGoldrushLiveCalls)) return undefined
+  if (typeof currentPriceGoldrushLiveCalls !== 'number' || !Number.isFinite(currentPriceGoldrushLiveCalls)) return undefined
+  return { historicalGoldrushLiveCalls, currentPriceGoldrushLiveCalls }
+}
+
 async function readWorkerJobId(req: Request): Promise<string | null> {
   const body = await req.json().catch(() => null) as { jobId?: unknown } | null
   return typeof body?.jobId === 'string' && body.jobId.trim() ? body.jobId.trim() : null
@@ -230,7 +248,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   // UNCONDITIONAL, DISCLOSED (cost-audit task): logged on FAILURE as well as success — a scan that
   // died partway through is exactly the case where knowing what it already spent matters most, and
   // gating this on success would hide the runaway scans this diagnostic exists to catch.
-  logWalletProviderCostAudit()
+  logWalletProviderCostAudit(goldrushCallSplitFrom(finalBody))
   // Unconditional (success or failure) durationMs log via console.warn — the single most direct
   // way to answer "how long did the whole worker actually take, and did it finish or throw" on the
   // next real attempt, regardless of outcome.

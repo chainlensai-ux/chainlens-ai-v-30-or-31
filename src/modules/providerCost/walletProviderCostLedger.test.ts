@@ -188,3 +188,52 @@ test('reset restores a clean slate for the next scan', () => {
   assert.equal(audit.goldrush.duplicateCallsPrevented, 0)
   assert.equal(audit.cache.requestHits, 0)
 })
+
+// GOLDRUSH HISTORICAL-VS-CURRENT-PRICE SPLIT, DISCLOSED (UI/trust follow-up task — confirmed
+// production confusion: [wallet-provider-cost-audit] reported "80 unused GoldRush calls" even
+// though the manifest-replay-covered historical pass made zero live calls — those 80 were real,
+// legitimate, unavoidable open-position current-price calls, indistinguishable from waste on the
+// replay-covered path). See `goldrushCallSplit`'s own header on WalletProviderCostAudit.
+test('HARD ASSERTION (required regression): 0 historical calls proves 0 unused-historical calls, even with real current-price unused calls in the same ledger', () => {
+  // Simulates the exact confirmed production shape: the replay-covered historical pass made ZERO
+  // real calls (accepted evidence covered every side), but the SAME ledger recorded 8 real
+  // current-price calls (open positions), all of which missed (0 used, 8 unused) — the old,
+  // undifferentiated `callsWhoseResultWasUnused: 8` read as "waste on the replay-covered path".
+  for (let i = 0; i < 8; i++) {
+    tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: 'base', stage: 'historical_pricing', isPricing: true })
+    recordCallOutcome('goldrush', false)
+  }
+  const audit = getWalletProviderCostAudit({ historicalGoldrushLiveCalls: 0, currentPriceGoldrushLiveCalls: 8 })
+  assert.equal(audit.outputs.callsWhoseResultWasUnused, 8, 'the ledger-wide total is still honestly reported, unchanged')
+  assert.equal(audit.goldrushCallSplit.historicalGoldrushLiveCalls, 0)
+  assert.equal(audit.goldrushCallSplit.currentPriceGoldrushLiveCalls, 8)
+  assert.equal(audit.goldrushCallSplit.unusedHistoricalGoldrushCalls, 0, 'zero historical calls means zero unused historical calls — never fabricated waste on the replay-covered path')
+})
+
+test('a genuine mix of historical and current-price calls attributes unused/used calls within honest, clamped bounds', () => {
+  tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: 'base', stage: 'historical_pricing', isPricing: true })
+  recordCallOutcome('goldrush', true) // 1 historical call, used
+  for (let i = 0; i < 3; i++) {
+    tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: 'base', stage: 'historical_pricing', isPricing: true })
+    recordCallOutcome('goldrush', false) // 3 current-price calls, unused
+  }
+  const audit = getWalletProviderCostAudit({ historicalGoldrushLiveCalls: 1, currentPriceGoldrushLiveCalls: 3 })
+  assert.equal(audit.outputs.callsWhoseResultWasUsed, 1)
+  assert.equal(audit.outputs.callsWhoseResultWasUnused, 3)
+  // Honest clamp, never fabricated exact attribution (see the field's own header) — bounded by both
+  // the pass's own call count and the ledger-wide total.
+  assert.equal(audit.goldrushCallSplit.unusedHistoricalGoldrushCalls, 1)
+  assert.equal(audit.goldrushCallSplit.currentPriceCallsUsedForUnrealized, 1)
+})
+
+test('omitting the split leaves every new field honestly null — never a fabricated zero for an unwired caller', () => {
+  tryConsume({ provider: 'goldrush', endpoint: 'goldrush_getTokenPrices', chain: 'base', stage: 'historical_pricing', isPricing: true })
+  recordCallOutcome('goldrush', false)
+  const audit = getWalletProviderCostAudit()
+  assert.equal(audit.goldrushCallSplit.historicalGoldrushLiveCalls, null)
+  assert.equal(audit.goldrushCallSplit.currentPriceGoldrushLiveCalls, null)
+  assert.equal(audit.goldrushCallSplit.unusedHistoricalGoldrushCalls, null)
+  assert.equal(audit.goldrushCallSplit.currentPriceCallsUsedForUnrealized, null)
+  // The pre-existing, unsplit totals are completely unaffected by this task.
+  assert.equal(audit.outputs.callsWhoseResultWasUnused, 1)
+})

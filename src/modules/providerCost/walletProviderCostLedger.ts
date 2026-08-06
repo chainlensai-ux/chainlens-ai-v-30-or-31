@@ -260,10 +260,46 @@ export type WalletProviderCostAudit = {
     callsWhoseResultWasUsed: number
     callsWhoseResultWasUnused: number
   }
+  // GOLDRUSH HISTORICAL-VS-CURRENT-PRICE SPLIT, DISCLOSED (UI/trust follow-up task — confirmed
+  // production confusion: this ledger's own `goldrush.calls`/`outputs.callsWhoseResultWasUnused`
+  // conflate TWO structurally different real GoldRush uses into one number — the at-trade-time
+  // HISTORICAL pass (fully skippable once accepted evidence/the manifest covers a lot's sides,
+  // provably 0 on a replay-covered scan) and the CURRENT-PRICE pass for open positions (never
+  // accepted-evidence-coverable by design — see priceLotsForWallet.ts's own header — genuinely live
+  // every scan, needed for unrealized PnL). `goldrushPriceSource.ts` tags every one of its own
+  // `tryConsume`/`recordCallOutcome` calls identically regardless of which pass invoked it, so this
+  // ledger alone cannot attribute a given call/outcome to one pass or the other — the caller (which
+  // DOES know, via priceLotsForWallet's own separately-scoped snapshots — see
+  // AcceptedEvidenceSkipAudit's `goldrushActualLiveCalls`/`currentPriceGoldrushLiveCalls`) supplies
+  // the split as an OPTIONAL parameter. `historicalGoldrushLiveCalls`/`currentPriceGoldrushLiveCalls`
+  // are then the caller's own REAL, MEASURED numbers, passed straight through — never derived here.
+  // `unusedHistoricalGoldrushCalls`/`currentPriceCallsUsedForUnrealized` are honestly clamped
+  // (`min(pass count, ledger-wide total)`) rather than fabricated exact per-call attribution this
+  // ledger has no way to know — EXACT (not just a bound) whenever the corresponding pass count is 0,
+  // which is precisely the replay-covered-path claim this task exists to prove. Every field defaults
+  // to `null` when the caller doesn't supply the split (an older/unwired caller) — never a fabricated
+  // zero standing in for "unknown".
+  goldrushCallSplit: {
+    historicalGoldrushLiveCalls: number | null
+    currentPriceGoldrushLiveCalls: number | null
+    unusedHistoricalGoldrushCalls: number | null
+    currentPriceCallsUsedForUnrealized: number | null
+  }
 }
 
-// PURE snapshot — safe to call at any point during or after a scan.
-export function getWalletProviderCostAudit(): WalletProviderCostAudit {
+export type GoldrushCallSplitInput = {
+  historicalGoldrushLiveCalls: number
+  currentPriceGoldrushLiveCalls: number
+}
+
+// PURE snapshot — safe to call at any point during or after a scan. `goldrushSplit` is an OPTIONAL,
+// real, measured input (see `goldrushCallSplit`'s own header above) — omitted entirely degrades to
+// the pre-existing, unchanged behavior (every new field simply reads `null`).
+export function getWalletProviderCostAudit(goldrushSplit?: GoldrushCallSplitInput): WalletProviderCostAudit {
+  const totalGoldrushUnused = state.goldrush.resultUnused
+  const totalGoldrushUsed = state.goldrush.resultUsed
+  const unusedHistoricalGoldrushCalls = goldrushSplit ? Math.min(goldrushSplit.historicalGoldrushLiveCalls, totalGoldrushUnused) : null
+  const currentPriceCallsUsedForUnrealized = goldrushSplit ? Math.min(goldrushSplit.currentPriceGoldrushLiveCalls, totalGoldrushUsed) : null
   return {
     alchemy: {
       calls: state.alchemy.calls,
@@ -293,14 +329,20 @@ export function getWalletProviderCostAudit(): WalletProviderCostAudit {
       callsWhoseResultWasUsed: state.alchemy.resultUsed + state.goldrush.resultUsed,
       callsWhoseResultWasUnused: state.alchemy.resultUnused + state.goldrush.resultUnused,
     },
+    goldrushCallSplit: {
+      historicalGoldrushLiveCalls: goldrushSplit?.historicalGoldrushLiveCalls ?? null,
+      currentPriceGoldrushLiveCalls: goldrushSplit?.currentPriceGoldrushLiveCalls ?? null,
+      unusedHistoricalGoldrushCalls,
+      currentPriceCallsUsedForUnrealized,
+    },
   }
 }
 
 // console.warn, not console.log — next.config's compiler.removeConsole strips log/info/debug from
 // the production build, and this diagnostic must survive in real deployment logs.
-export function logWalletProviderCostAudit(): void {
+export function logWalletProviderCostAudit(goldrushSplit?: GoldrushCallSplitInput): void {
   // eslint-disable-next-line no-console
-  console.warn('[wallet-provider-cost-audit]', getWalletProviderCostAudit())
+  console.warn('[wallet-provider-cost-audit]', getWalletProviderCostAudit(goldrushSplit))
 }
 
 // TEST-SUPPORT EXPORT, DISCLOSED: same convention as every other reset helper in this pipeline.

@@ -3446,7 +3446,18 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // has completed, independent of the earlier immediate post-assembly log.
   logSyntheticPnlSummary(syntheticPnl)
 
-  return { ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated, manifestFastPathAudit: walletPriceLookups.manifestFastPathAudit }
+  return {
+    ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated,
+    manifestFastPathAudit: walletPriceLookups.manifestFastPathAudit,
+    // GOLDRUSH CALL SPLIT, DISCLOSED (UI/trust follow-up task) — the real, measured
+    // historical-vs-current-price split (see AcceptedEvidenceSkipAudit's own header), exposed on the
+    // final result so the worker's own [wallet-provider-cost-audit] log can attribute calls
+    // correctly instead of reporting current-price/open-position calls as historical replay waste.
+    goldrushCallSplit: {
+      historicalGoldrushLiveCalls: walletPriceLookups.acceptedEvidenceSkipAudit.goldrushActualLiveCalls,
+      currentPriceGoldrushLiveCalls: walletPriceLookups.acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls,
+    },
+  }
 }
 
 export type { SupportedChain }

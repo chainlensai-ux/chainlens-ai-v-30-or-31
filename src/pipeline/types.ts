@@ -61,6 +61,12 @@ export type RunWalletScanResult = FinalReport & {
   // MANIFEST FAST-PATH AUDIT, DISCLOSED (canonical-manifest-fast-path follow-up task, Parts B/C):
   // see src/pipeline/priceLotsForWallet.ts's own ManifestFastPathAudit header.
   manifestFastPathAudit?: import('./priceLotsForWallet').ManifestFastPathAudit
+  // GOLDRUSH CALL SPLIT, DISCLOSED (UI/trust follow-up task): the real, measured historical-vs-
+  // current-price GoldRush call split — see AcceptedEvidenceSkipAudit's own header on
+  // priceLotsForWallet.ts. Read by walletScanWorker.ts to attribute [wallet-provider-cost-audit]'s
+  // own numbers correctly instead of reporting open-position current-price calls as historical
+  // replay waste.
+  goldrushCallSplit?: { historicalGoldrushLiveCalls: number; currentPriceGoldrushLiveCalls: number }
 }
 
 export type PreScanValidation = {
