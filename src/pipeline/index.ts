@@ -2873,17 +2873,32 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         : null
       const fingerprints = computeManifestFingerprints(reconciledLots, realizedPnlUsd)
       const verifiedPricingCoverage = reconciledLots.length > 0 ? candidateVerifiedLots.length / reconciledLots.length : null
+      // SHARED CANONICALIZATION, DISCLOSED (surgical manifest-replay fix follow-up task — confirmed
+      // production bug: manifest_fingerprint_mismatch 2 despite matching identity/side evidence/
+      // cost/proceeds, e.g. stored realizedPnlUsd -583.97 vs recomputed -583.96). `realizedPnlUsd`/
+      // `fingerprints` above are computed from `candidateVerifiedLots`' own RAW per-lot values — the
+      // pre-allocation numbers fifoEngine/pnlReconciliation produced, never cent-rounded via the
+      // per-occurrence group split. `computeFingerprints` was passed to `replayManifest` below but
+      // NEVER to `buildRefreshedManifest`/`buildManifestFromCandidate` here — so buildManifestFromCandidate's
+      // own internal correction (`if (params.loadEvidence && params.computeFingerprints)`, which
+      // re-derives realizedPnlUsd/fingerprints from the CORRECTED, cent-rounded per-occurrence shares)
+      // never ran on manifest CREATION, and the manifest was durably written with the raw, uncorrected
+      // total/fingerprints while every later replay correctly recomputes the corrected one — a
+      // guaranteed, permanent mismatch. Passing the SAME `computeManifestFingerprints` helper here that
+      // replay already uses makes manifest creation and replay share one canonicalization, exactly like
+      // the identity/evidence pipeline already does.
       const newManifest = refreshCanonicalSampleRequested && existingRead.manifest
         ? await buildRefreshedManifest({
             priorManifest: existingRead.manifest, identity: manifestIdentity, allCandidateLots: reconciledLots,
             candidateVerifiedLots, structuralLotCount: reconciledLots.length, fingerprints, realizedPnlUsd,
             verifiedPricingCoverage, now: Date.now(), refreshReason: 'explicit-refresh-requested',
-            loadEvidence: loadAcceptedEvidence,
+            loadEvidence: loadAcceptedEvidence, computeFingerprints: computeManifestFingerprints,
           })
         : await buildManifestFromCandidate({
             identity: manifestIdentity, allCandidateLots: reconciledLots, candidateVerifiedLots,
             structuralLotCount: reconciledLots.length, fingerprints, realizedPnlUsd,
             verifiedPricingCoverage, now: Date.now(), loadEvidence: loadAcceptedEvidence,
+            computeFingerprints: computeManifestFingerprints,
           })
       // AWAITED before this scan reports success — the durable record either lands or is honestly
       // marked failed; it is never fire-and-forget.

@@ -70,3 +70,27 @@ test('the manifest is never auto-refreshed — refresh is driven only by the exp
 test('the manifest write is awaited before the scan can report success', () => {
   assert.match(pipelineSource, /await writeCanonicalPnlSampleManifest\(/)
 })
+
+// SHARED CANONICALIZATION WIRING, DISCLOSED (surgical manifest-replay fix follow-up task — confirmed
+// production bug: manifest_fingerprint_mismatch 2 with matching identity/side-evidence/cost/proceeds,
+// e.g. storedRealizedPnlUsd -583.97 vs recomputedRealizedPnlUsd -583.96). `replayManifest` was always
+// called with `computeFingerprints: computeManifestFingerprints`, but the manifest-CREATE calls
+// (`buildRefreshedManifest`/`buildManifestFromCandidate` on a first scan or explicit refresh) omitted
+// it — so creation wrote the caller's raw, pre-allocation total/fingerprints while every later replay
+// correctly recomputed the corrected, cent-rounded ones, guaranteeing a permanent mismatch.
+test('HARD ASSERTION: manifest creation (buildRefreshedManifest and buildManifestFromCandidate) passes the SAME computeFingerprints helper replayManifest uses', () => {
+  const replayCallStart = position('replayManifest call site', 'const replay = await replayManifest({')
+  const replayCallEnd = pipelineSource.indexOf('\n    })', replayCallStart)
+  const replayBody = pipelineSource.slice(replayCallStart, replayCallEnd)
+  assert.match(replayBody, /computeFingerprints:\s*computeManifestFingerprints/, 'replayManifest must receive the shared canonicalization helper')
+
+  const refreshedCallStart = position('buildRefreshedManifest call site', 'await buildRefreshedManifest({')
+  const refreshedCallEnd = pipelineSource.indexOf('\n          })', refreshedCallStart)
+  const refreshedBody = pipelineSource.slice(refreshedCallStart, refreshedCallEnd)
+  assert.match(refreshedBody, /computeFingerprints:\s*computeManifestFingerprints/, 'buildRefreshedManifest must receive the SAME shared canonicalization helper as replay')
+
+  const createCallStart = position('buildManifestFromCandidate (create) call site', 'await buildManifestFromCandidate({\n            identity: manifestIdentity, allCandidateLots: reconciledLots, candidateVerifiedLots,')
+  const createCallEnd = pipelineSource.indexOf('\n          })', createCallStart)
+  const createBody = pipelineSource.slice(createCallStart, createCallEnd)
+  assert.match(createBody, /computeFingerprints:\s*computeManifestFingerprints/, 'buildManifestFromCandidate (the manifest-creation path) must receive the SAME shared canonicalization helper as replay')
+})

@@ -1162,3 +1162,84 @@ describe('canonicalPnlSampleManifest — fingerprint-mismatch diagnostic (audit 
     }
   })
 })
+
+describe('canonicalPnlSampleManifest — create/replay shared canonicalization (surgical manifest-replay fix follow-up task)', () => {
+  // Real production shape: 21 verified lots whose RAW per-lot realizedPnlUsd (fifoEngine's own,
+  // pre-allocation output) carries sub-cent noise, e.g. -0.8850539 rather than the canonical
+  // cent-rounded -0.89 — proceeds/cost stay exact so acceptedHistoricalPriceFingerprint (cost/
+  // proceeds only) is unaffected; only the realized total/fingerprint were at risk.
+  function buildLiveShapeLots(): MatchedLot[] {
+    return Array.from({ length: 21 }, (_, i) => {
+      const cost = 100 + i * 3.333333
+      const proceeds = cost - (0.8850539 + i * 0.0001)
+      return lot({
+        lotId: `live-${i}`, token: `0xtoken${i}`, openedTxHash: `0xbuy${i}`, closedTxHash: `0xsell${i}`,
+        openedAt: i, closedAt: 1000 + i,
+        costBasisUsd: cost, proceedsUsd: proceeds,
+        // The RAW, un-rounded difference — exactly what a caller that skips the shared
+        // canonicalization helper would carry, e.g. -0.8850539 rather than -0.89.
+        realizedPnlUsd: proceeds - cost,
+      })
+    })
+  }
+
+  it('HARD ASSERTION (confirmed production bug — the fix this task adds): building a manifest WITHOUT computeFingerprints stores the raw, uncorrected total/fingerprints, and a later replay (which always recomputes via the corrected, cent-rounded per-occurrence shares) then permanently mismatches even though identity/side-evidence/cost/proceeds all agree', async () => {
+    const lots = buildLiveShapeLots()
+    const evidence = seededEvidence(lots)
+    const verified = lots.filter(isCanonicalVerifiedPublishedLot)
+    const rawRealizedTotal = Math.round(verified.reduce((s, l) => s + (l.realizedPnlUsd ?? 0), 0) * 1e8) / 1e8
+
+    // THE BUG, REPRODUCED: buildManifestFromCandidate called the way the broken pipeline wiring did
+    // — `loadEvidence` supplied, but `computeFingerprints` OMITTED — so its own internal correction
+    // never runs and the manifest is written with the caller's raw pre-allocation total/fingerprints.
+    const brokenManifest = await buildManifestFromCandidate({
+      identity: identity('live-shape'), allCandidateLots: lots, candidateVerifiedLots: verified,
+      structuralLotCount: lots.length,
+      fingerprints: computeFingerprints(lots, rawRealizedTotal),
+      realizedPnlUsd: rawRealizedTotal,
+      verifiedPricingCoverage: 1, now: 1000, loadEvidence: evidence.loader,
+      // computeFingerprints intentionally NOT passed — this is the exact bug.
+    })
+    assert.notEqual(brokenManifest.realizedPnlUsd, roundCents(rawRealizedTotal), 'sanity: the raw total really is off-cent noise, not already clean')
+
+    const brokenReplay = await replay(brokenManifest, lots, evidence.loader)
+    assert.equal(brokenReplay.outcome, 'unavailable', 'a manifest written without the shared canonicalization permanently mismatches its own later replay')
+    assert.equal(brokenReplay.reasonCounts.manifest_realized_total_mismatch, 1)
+  })
+
+  it('HARD ASSERTION (required regression): live-shape 21-lot sample — build WITH the shared computeFingerprints helper, then replay applies and publishes all 21, with identical fingerprints', async () => {
+    const lots = buildLiveShapeLots()
+    const { manifest, evidence } = await manifestWithEvidence(lots, identity('live-shape-fixed'))
+
+    // The stored total is the CANONICAL cent-rounded-and-integer-summed figure, never the raw
+    // per-lot noise — this is what "one shared quantized value representation" means in practice.
+    assert.equal(manifest.realizedPnlUsd, roundCents(manifest.realizedPnlUsd!), 'stored total is cent-clean')
+
+    const result = await replay(manifest, lots, evidence.loader)
+    assert.equal(result.outcome, 'applied')
+    assert.equal(result.reasonCounts.manifest_replay_success, 21)
+    assert.equal(result.reasonCounts.manifest_realized_total_mismatch, 0)
+    assert.equal(result.reasonCounts.manifest_fingerprint_mismatch, 0)
+    const published = result.publishedLots.filter(isCanonicalVerifiedPublishedLot)
+    assert.equal(published.length, 21, 'replay applies and publishes all 21 canonical lots')
+
+    // Fingerprints (identity, price, realized total) are stable across create and replay.
+    assert.equal(result.recomputedFingerprints!.verifiedLotIdentityFingerprint, manifest.verifiedLotIdentityFingerprint)
+    assert.equal(result.recomputedFingerprints!.acceptedHistoricalPriceFingerprint, manifest.acceptedHistoricalPriceFingerprint)
+    assert.equal(result.recomputedFingerprints!.realizedPnlFingerprint, manifest.realizedPnlFingerprint)
+    assert.equal(result.recomputedRealizedPnlUsd, manifest.realizedPnlUsd)
+  })
+
+  it('a genuine cost/proceeds mismatch (a real, above-tolerance provider disagreement) must still fail closed under the shared canonicalization', async () => {
+    const lots = buildLiveShapeLots()
+    const { manifest, evidence } = await manifestWithEvidence(lots, identity('live-shape-corrupt'))
+
+    const key = evidence.keyFor(lots[3], 'entry')
+    const envelope = evidence.store.get(key) as { priceUsd: number }
+    evidence.store.set(key, { ...envelope, priceUsd: envelope.priceUsd + 5 })
+
+    const result = await replay(manifest, lots, evidence.loader)
+    assert.equal(result.outcome, 'unavailable')
+    assert.equal(result.publishedLots.filter(isCanonicalVerifiedPublishedLot).length, 0, 'no live PnL escapes on a genuine mismatch')
+  })
+})
