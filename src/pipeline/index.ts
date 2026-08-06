@@ -3456,6 +3456,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     goldrushCallSplit: {
       historicalGoldrushLiveCalls: walletPriceLookups.acceptedEvidenceSkipAudit.goldrushActualLiveCalls,
       currentPriceGoldrushLiveCalls: walletPriceLookups.acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls,
+      currentPriceDexLiveCalls: walletPriceLookups.acceptedEvidenceSkipAudit.currentPriceDexActualLiveCalls,
     },
   }
 }

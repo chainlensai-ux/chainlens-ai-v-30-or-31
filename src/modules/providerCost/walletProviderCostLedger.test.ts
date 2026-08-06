@@ -204,7 +204,10 @@ test('HARD ASSERTION (required regression): 0 historical calls proves 0 unused-h
     recordCallOutcome('goldrush', false)
   }
   const audit = getWalletProviderCostAudit({ historicalGoldrushLiveCalls: 0, currentPriceGoldrushLiveCalls: 8 })
-  assert.equal(audit.outputs.callsWhoseResultWasUnused, 8, 'the ledger-wide total is still honestly reported, unchanged')
+  // THE FIX, DISCLOSED: `outputs.callsWhoseResultWasUnused` now EXCLUDES calls attributable to the
+  // current-price pass — 0 historical calls means the headline figure is honestly 0, never the raw
+  // ledger-wide 8 that used to read as waste on the replay-covered path.
+  assert.equal(audit.outputs.callsWhoseResultWasUnused, 0, 'current-price calls are never counted as historical replay waste in the headline output')
   assert.equal(audit.goldrushCallSplit.historicalGoldrushLiveCalls, 0)
   assert.equal(audit.goldrushCallSplit.currentPriceGoldrushLiveCalls, 8)
   assert.equal(audit.goldrushCallSplit.unusedHistoricalGoldrushCalls, 0, 'zero historical calls means zero unused historical calls — never fabricated waste on the replay-covered path')
@@ -219,7 +222,10 @@ test('a genuine mix of historical and current-price calls attributes unused/used
   }
   const audit = getWalletProviderCostAudit({ historicalGoldrushLiveCalls: 1, currentPriceGoldrushLiveCalls: 3 })
   assert.equal(audit.outputs.callsWhoseResultWasUsed, 1)
-  assert.equal(audit.outputs.callsWhoseResultWasUnused, 3)
+  // outputs.callsWhoseResultWasUnused is now the HISTORICAL-only figure (alchemy's own unused count,
+  // always 0 here, plus the honestly-clamped unusedHistoricalGoldrushCalls) — never the raw
+  // ledger-wide 3, which would count current-price misses as historical replay waste.
+  assert.equal(audit.outputs.callsWhoseResultWasUnused, 1)
   // Honest clamp, never fabricated exact attribution (see the field's own header) — bounded by both
   // the pass's own call count and the ledger-wide total.
   assert.equal(audit.goldrushCallSplit.unusedHistoricalGoldrushCalls, 1)
@@ -232,8 +238,16 @@ test('omitting the split leaves every new field honestly null — never a fabric
   const audit = getWalletProviderCostAudit()
   assert.equal(audit.goldrushCallSplit.historicalGoldrushLiveCalls, null)
   assert.equal(audit.goldrushCallSplit.currentPriceGoldrushLiveCalls, null)
+  assert.equal(audit.goldrushCallSplit.currentPriceDexLiveCalls, null)
   assert.equal(audit.goldrushCallSplit.unusedHistoricalGoldrushCalls, null)
   assert.equal(audit.goldrushCallSplit.currentPriceCallsUsedForUnrealized, null)
   // The pre-existing, unsplit totals are completely unaffected by this task.
   assert.equal(audit.outputs.callsWhoseResultWasUnused, 1)
+})
+
+test('currentPriceDexLiveCalls is passed straight through when the caller supplies it, honestly null when they do not', () => {
+  const withDex = getWalletProviderCostAudit({ historicalGoldrushLiveCalls: 0, currentPriceGoldrushLiveCalls: 0, currentPriceDexLiveCalls: 5 })
+  assert.equal(withDex.goldrushCallSplit.currentPriceDexLiveCalls, 5)
+  const withoutDex = getWalletProviderCostAudit({ historicalGoldrushLiveCalls: 0, currentPriceGoldrushLiveCalls: 0 })
+  assert.equal(withoutDex.goldrushCallSplit.currentPriceDexLiveCalls, null, 'an unwired dex delta is honestly null, never a fabricated 0')
 })

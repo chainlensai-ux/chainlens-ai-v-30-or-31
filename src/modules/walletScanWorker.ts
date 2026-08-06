@@ -49,16 +49,17 @@ function pipelineDiagnosticsFrom(result: unknown): unknown {
 // attribute [wallet-provider-cost-audit]'s own numbers correctly. `undefined` (never a fabricated
 // split) whenever the result shape doesn't carry real, finite numbers — a genuinely missing/failed
 // scan degrades to the ledger's pre-existing, unsplit behavior, never a fabricated 0.
-function goldrushCallSplitFrom(result: unknown): { historicalGoldrushLiveCalls: number; currentPriceGoldrushLiveCalls: number } | undefined {
+function goldrushCallSplitFrom(result: unknown): { historicalGoldrushLiveCalls: number; currentPriceGoldrushLiveCalls: number; currentPriceDexLiveCalls?: number } | undefined {
   if (!result || typeof result !== 'object') return undefined
   const body = result as Record<string, unknown>
   const data = body.data && typeof body.data === 'object' ? body.data as Record<string, unknown> : body
   const split = data.goldrushCallSplit
   if (!split || typeof split !== 'object') return undefined
-  const { historicalGoldrushLiveCalls, currentPriceGoldrushLiveCalls } = split as Record<string, unknown>
+  const { historicalGoldrushLiveCalls, currentPriceGoldrushLiveCalls, currentPriceDexLiveCalls } = split as Record<string, unknown>
   if (typeof historicalGoldrushLiveCalls !== 'number' || !Number.isFinite(historicalGoldrushLiveCalls)) return undefined
   if (typeof currentPriceGoldrushLiveCalls !== 'number' || !Number.isFinite(currentPriceGoldrushLiveCalls)) return undefined
-  return { historicalGoldrushLiveCalls, currentPriceGoldrushLiveCalls }
+  const dexLiveCalls = typeof currentPriceDexLiveCalls === 'number' && Number.isFinite(currentPriceDexLiveCalls) ? currentPriceDexLiveCalls : undefined
+  return { historicalGoldrushLiveCalls, currentPriceGoldrushLiveCalls, currentPriceDexLiveCalls: dexLiveCalls }
 }
 
 async function readWorkerJobId(req: Request): Promise<string | null> {

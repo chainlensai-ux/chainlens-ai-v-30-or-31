@@ -66,7 +66,7 @@ export type RunWalletScanResult = FinalReport & {
   // priceLotsForWallet.ts. Read by walletScanWorker.ts to attribute [wallet-provider-cost-audit]'s
   // own numbers correctly instead of reporting open-position current-price calls as historical
   // replay waste.
-  goldrushCallSplit?: { historicalGoldrushLiveCalls: number; currentPriceGoldrushLiveCalls: number }
+  goldrushCallSplit?: { historicalGoldrushLiveCalls: number; currentPriceGoldrushLiveCalls: number; currentPriceDexLiveCalls: number }
 }
 
 export type PreScanValidation = {

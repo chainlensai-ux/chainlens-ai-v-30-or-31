@@ -20,7 +20,7 @@ import {
   PNL_UNAVAILABLE_MESSAGE, hasGlobalSynthetic, hasPerChainSynthetic, shouldShowSyntheticGlobal, shouldShowSyntheticPerChain,
   resolvePnlDisplayMode, selectBoundedSampleDisclosure, selectDisplayedPnl, PER_CHAIN_BOUNDED_SAMPLE_MESSAGE,
   selectLastKnownSampleDisclosure, CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL, LAST_KNOWN_SAMPLE_LABEL,
-  REALIZED_PNL_LABEL, UNREALIZED_PNL_LABEL, TOTAL_PNL_LABEL, PNL_STABILITY_NOTE,
+  REALIZED_PNL_LABEL, UNREALIZED_PNL_LABEL, TOTAL_PNL_LABEL, PNL_STABILITY_NOTE, LIVE_PRICE_MOVEMENT_NOTE,
 } from './PnlStatusCard'
 import { emptyCanonicalSampleManifestAudit, type CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
@@ -409,6 +409,9 @@ describe('REALIZED_PNL_LABEL / UNREALIZED_PNL_LABEL / TOTAL_PNL_LABEL / PNL_STAB
   })
   it('the stability note explains realized is fixed while unrealized can move, so movement is never mistaken for the verified PnL changing', () => {
     assert.equal(PNL_STABILITY_NOTE, 'Realized PnL is fixed from verified closed lots. Unrealized PnL can move with live prices and partial open-position coverage.')
+  })
+  it('the per-tile live-price-movement caption matches the required exact string', () => {
+    assert.equal(LIVE_PRICE_MOVEMENT_NOTE, 'This changes with live open-position prices.')
   })
 })
 

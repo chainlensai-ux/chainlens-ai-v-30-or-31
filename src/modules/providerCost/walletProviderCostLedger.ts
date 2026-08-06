@@ -256,6 +256,16 @@ export type WalletProviderCostAudit = {
     singleflightHits: number
     negativeCacheHits: number
   }
+  // HISTORICAL-ONLY, DISCLOSED (UI/trust follow-up task — confirmed production confusion: this
+  // headline number kept reporting real, legitimate, unavoidable open-position current-price calls
+  // — e.g. 8 real calls, all missing data — as scan-wide "unused" waste, reading as if the
+  // manifest-replay-covered historical/closed-lot path had wasted 80 calls when it had genuinely
+  // made zero). When `goldrushSplit` is supplied, `callsWhoseResultWasUnused` now excludes every
+  // GoldRush call attributable to the current-price pass — see `goldrushCallSplit` below for the
+  // full split and the honest-clamp caveat. Alchemy's own unused count is always included, unchanged
+  // — this task is scoped to the confirmed GoldRush historical/current-price conflation only. When
+  // `goldrushSplit` is omitted (an older/unwired caller), this is the exact pre-existing, unsplit
+  // total — zero behavior change.
   outputs: {
     callsWhoseResultWasUsed: number
     callsWhoseResultWasUnused: number
@@ -270,9 +280,10 @@ export type WalletProviderCostAudit = {
   // `tryConsume`/`recordCallOutcome` calls identically regardless of which pass invoked it, so this
   // ledger alone cannot attribute a given call/outcome to one pass or the other — the caller (which
   // DOES know, via priceLotsForWallet's own separately-scoped snapshots — see
-  // AcceptedEvidenceSkipAudit's `goldrushActualLiveCalls`/`currentPriceGoldrushLiveCalls`) supplies
-  // the split as an OPTIONAL parameter. `historicalGoldrushLiveCalls`/`currentPriceGoldrushLiveCalls`
-  // are then the caller's own REAL, MEASURED numbers, passed straight through — never derived here.
+  // AcceptedEvidenceSkipAudit's `goldrushActualLiveCalls`/`currentPriceGoldrushLiveCalls`/
+  // `currentPriceDexActualLiveCalls`) supplies the split as an OPTIONAL parameter.
+  // `historicalGoldrushLiveCalls`/`currentPriceGoldrushLiveCalls`/`currentPriceDexLiveCalls` are then
+  // the caller's own REAL, MEASURED numbers, passed straight through — never derived here.
   // `unusedHistoricalGoldrushCalls`/`currentPriceCallsUsedForUnrealized` are honestly clamped
   // (`min(pass count, ledger-wide total)`) rather than fabricated exact per-call attribution this
   // ledger has no way to know — EXACT (not just a bound) whenever the corresponding pass count is 0,
@@ -282,6 +293,7 @@ export type WalletProviderCostAudit = {
   goldrushCallSplit: {
     historicalGoldrushLiveCalls: number | null
     currentPriceGoldrushLiveCalls: number | null
+    currentPriceDexLiveCalls: number | null
     unusedHistoricalGoldrushCalls: number | null
     currentPriceCallsUsedForUnrealized: number | null
   }
@@ -290,6 +302,9 @@ export type WalletProviderCostAudit = {
 export type GoldrushCallSplitInput = {
   historicalGoldrushLiveCalls: number
   currentPriceGoldrushLiveCalls: number
+  // Optional — a caller that hasn't wired the DEX-specific delta yet degrades to null, never a
+  // fabricated 0 (see this field's own consumer in `goldrushCallSplit` above).
+  currentPriceDexLiveCalls?: number
 }
 
 // PURE snapshot — safe to call at any point during or after a scan. `goldrushSplit` is an OPTIONAL,
@@ -300,6 +315,10 @@ export function getWalletProviderCostAudit(goldrushSplit?: GoldrushCallSplitInpu
   const totalGoldrushUsed = state.goldrush.resultUsed
   const unusedHistoricalGoldrushCalls = goldrushSplit ? Math.min(goldrushSplit.historicalGoldrushLiveCalls, totalGoldrushUnused) : null
   const currentPriceCallsUsedForUnrealized = goldrushSplit ? Math.min(goldrushSplit.currentPriceGoldrushLiveCalls, totalGoldrushUsed) : null
+  // HISTORICAL-ONLY UNUSED, DISCLOSED: with a real split, every GoldRush call this ledger cannot
+  // prove is historical is treated as current-price and excluded from the headline unused figure —
+  // see `outputs`' own header above. Alchemy's unused count is always included unchanged.
+  const goldrushUnusedForOutputs = goldrushSplit ? unusedHistoricalGoldrushCalls! : totalGoldrushUnused
   return {
     alchemy: {
       calls: state.alchemy.calls,
@@ -327,11 +346,12 @@ export function getWalletProviderCostAudit(goldrushSplit?: GoldrushCallSplitInpu
     },
     outputs: {
       callsWhoseResultWasUsed: state.alchemy.resultUsed + state.goldrush.resultUsed,
-      callsWhoseResultWasUnused: state.alchemy.resultUnused + state.goldrush.resultUnused,
+      callsWhoseResultWasUnused: state.alchemy.resultUnused + goldrushUnusedForOutputs,
     },
     goldrushCallSplit: {
       historicalGoldrushLiveCalls: goldrushSplit?.historicalGoldrushLiveCalls ?? null,
       currentPriceGoldrushLiveCalls: goldrushSplit?.currentPriceGoldrushLiveCalls ?? null,
+      currentPriceDexLiveCalls: goldrushSplit?.currentPriceDexLiveCalls ?? null,
       unusedHistoricalGoldrushCalls,
       currentPriceCallsUsedForUnrealized,
     },
