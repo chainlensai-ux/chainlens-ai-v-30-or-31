@@ -25,11 +25,12 @@ import {
 import type { ChainHolding } from '../holdings/types'
 import type { PricedHolding } from './types'
 
-// Real, canonical Base USDC/DAI addresses (src/modules/quoteLegPricing/index.ts's own verified
-// registry) — used whenever a test needs a GENUINE, address-verified stablecoin, as opposed to the
-// symbol-spoof shapes this task's own tests exercise separately below.
+// Real, canonical Base USDC/DAI/WETH addresses (src/modules/quoteLegPricing/index.ts's own verified
+// registry) — used whenever a test needs a GENUINE, address-verified stablecoin/native-wrapper, as
+// opposed to the symbol-spoof shapes this task's own tests exercise separately below.
 const CANONICAL_BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
 const CANONICAL_BASE_DAI = '0x50c5725949A6F0c72E6C4a641F24049A917DB0Cb'
+const CANONICAL_BASE_WETH = '0x4200000000000000000000000000000000000006'
 
 function holding(overrides: Partial<ChainHolding>): ChainHolding {
   return {
@@ -76,26 +77,48 @@ describe('fallback prioritisation — likely USD materiality, not raw unit count
     await priceHoldings(
       [
         holding({ tokenAddress: '0xspam', symbol: 'AIRDROP', quantity: '999999999999' }),
-        holding({ tokenAddress: '0xweth', symbol: 'WETH', quantity: '0.04', classification: 'blue_chip' }),
+        holding({ tokenAddress: CANONICAL_BASE_WETH, symbol: 'WETH', quantity: '0.04', classification: 'blue_chip' }),
       ],
       fn,
     )
-    assert.equal(order[0], '0xweth', 'a tiny wrapped-native balance must outrank a huge spam unit count')
+    assert.deepEqual(order, [CANONICAL_BASE_WETH.toLowerCase()], 'a tiny, address-verified wrapped-native balance must be looked up; the huge-unit-count no-signal spam must not spend a call at all')
   })
 })
 
 describe('fallback prioritisation — native / wrapped-native / stablecoin assets receive priority', () => {
-  it('stablecoins rank above blue-chip, which ranks above unclassified tokens', async () => {
+  it('stablecoins rank above blue-chip; a no-signal unclassified token is never selected by default', async () => {
     const { fn, order } = recordingPriceFn()
     await priceHoldings(
       [
+        // 'other', no provider value, no verified address of any kind — no real signal at all.
         holding({ tokenAddress: '0xother', symbol: 'RANDOM', quantity: '5000' }),
-        holding({ tokenAddress: '0xweth', symbol: 'WETH', quantity: '0.01', classification: 'blue_chip' }),
+        holding({ tokenAddress: CANONICAL_BASE_WETH, symbol: 'WETH', quantity: '0.01', classification: 'blue_chip' }),
         holding({ tokenAddress: CANONICAL_BASE_USDC, symbol: 'USDC', quantity: '120', classification: 'stable' }),
       ],
       fn,
     )
-    assert.deepEqual(order, [CANONICAL_BASE_USDC.toLowerCase(), '0xweth', '0xother'])
+    assert.deepEqual(order, [CANONICAL_BASE_USDC.toLowerCase(), CANONICAL_BASE_WETH.toLowerCase()], 'both real, address-verified assets are looked up, in stable-before-blue-chip order; the no-signal token is excluded entirely')
+  })
+
+  it('an address-verified blue-chip alone (no exploratory mode) is looked up even with no other candidates present', async () => {
+    const { fn, order } = recordingPriceFn()
+    await priceHoldings(
+      [holding({ tokenAddress: CANONICAL_BASE_WETH, symbol: 'WETH', quantity: '0.01', classification: 'blue_chip' })],
+      fn,
+    )
+    assert.deepEqual(order, [CANONICAL_BASE_WETH.toLowerCase()])
+  })
+
+  it('HARD ASSERTION (required regression): a symbol-spoofed "WETH" at a non-canonical address never receives blue-chip-tier priority or a default fallback slot', async () => {
+    const { fn, order } = recordingPriceFn()
+    await priceHoldings(
+      [
+        holding({ tokenAddress: '0xspoofweth', symbol: 'WETH', quantity: '900000000000', classification: 'blue_chip' }),
+        holding({ tokenAddress: '0xreal', symbol: 'REAL', quantity: '2', providerValueUsd: 15 }),
+      ],
+      fn,
+    )
+    assert.deepEqual(order, ['0xreal'], 'the spoofed blue-chip must never be selected by default — only the real, provider-value-backed position is looked up')
   })
 
   it('stablecoins are ordered among themselves by their real ~$1/unit materiality estimate', async () => {
@@ -126,7 +149,7 @@ describe('fallback prioritisation — native / wrapped-native / stablecoin asset
     assert.equal(order[0], '0xreal', 'the real, address-unverified-nothing-to-do-with-it position must be looked up first')
   })
 
-  it('a malformed-symbol row ranks below a well-formed one of the same class', async () => {
+  it('neither a malformed-symbol nor a well-formed no-signal row is selected by default (both are pure quantity-only candidates)', async () => {
     const { fn, order } = recordingPriceFn()
     await priceHoldings(
       [
@@ -137,10 +160,23 @@ describe('fallback prioritisation — native / wrapped-native / stablecoin asset
       ],
       fn,
     )
+    assert.deepEqual(order, [], 'neither candidate has any real materiality signal, so neither spends a default-mode call')
+  })
+
+  it('in exploratory mode (opt-in only), a malformed-symbol row still ranks below a well-formed one of the same no-signal class', async () => {
+    const { fn, order } = recordingPriceFn()
+    await priceHoldings(
+      [
+        holding({ tokenAddress: '0xnometa', symbol: '?', quantity: '5000' }),
+        holding({ tokenAddress: '0xnamed', symbol: 'NAMED', quantity: '10' }),
+      ],
+      fn,
+      { allowExploratorySpamLookup: true },
+    )
     assert.equal(order[0], '0xnamed')
   })
 
-  it('an advertising-shaped spam symbol ranks below a well-formed one', async () => {
+  it('in exploratory mode (opt-in only), an advertising-shaped spam symbol still ranks below a well-formed one', async () => {
     const { fn, order } = recordingPriceFn()
     await priceHoldings(
       [
@@ -148,34 +184,72 @@ describe('fallback prioritisation — native / wrapped-native / stablecoin asset
         holding({ tokenAddress: '0xclean', symbol: 'CLEAN', quantity: '3' }),
       ],
       fn,
+      { allowExploratorySpamLookup: true },
     )
     assert.equal(order[0], '0xclean')
   })
 })
 
+describe('production live shape — no-signal spam is genuinely excluded, not merely reordered', () => {
+  it('HARD ASSERTION (required regression): a wallet with 347 no-signal quantity-only holdings and zero material candidates spends zero DexScreener calls, not up to 30', async () => {
+    const { fn, order } = recordingPriceFn()
+    const spamHoldings = Array.from({ length: 347 }, (_, i) =>
+      holding({ tokenAddress: `0xspam${String(i).padStart(4, '0')}`, symbol: `SPAM${i}`, quantity: String(1_000_000_000 - i) }),
+    )
+    const result = await priceHoldings(spamHoldings, fn)
+    assert.equal(order.length, 0, 'no material candidate exists anywhere in this wallet — the budget must go entirely unspent')
+    for (const p of result.pricedHoldings) {
+      assert.equal(p.priceUsd, null)
+      assert.equal(p.valueUsd, null)
+    }
+  })
+
+  it('a mix of real material candidates and no-signal spam only ever spends calls on the material ones, up to the unchanged 30-slot budget', async () => {
+    const { fn, order } = recordingPriceFn()
+    const materialHoldings = Array.from({ length: 5 }, (_, i) =>
+      holding({ tokenAddress: `0xmat${String(i).padStart(4, '0')}`, symbol: `MAT${i}`, quantity: '2', providerValueUsd: 10 + i }),
+    )
+    const spamHoldings = Array.from({ length: 300 }, (_, i) =>
+      holding({ tokenAddress: `0xspam${String(i).padStart(4, '0')}`, symbol: `SPAM${i}`, quantity: String(1_000_000_000 - i) }),
+    )
+    await priceHoldings([...spamHoldings, ...materialHoldings], fn)
+    assert.equal(order.length, 5, 'only the 5 real material candidates are looked up — the 300 no-signal ones never spend budget even though 25 slots remain unused')
+    for (const key of order) assert.ok(key.startsWith('0xmat'), `unexpected non-material key selected: ${key}`)
+  })
+})
+
 describe('fallback budget — exactly 30, never consumed by malformed or zero balances', () => {
-  it('the cap remains exactly 30 real lookups regardless of how many holdings are eligible', async () => {
+  it('the cap remains exactly 30 real lookups regardless of how many material holdings are eligible', async () => {
+    const { fn, order } = recordingPriceFn()
+    const holdings = Array.from({ length: 400 }, (_, i) =>
+      holding({ tokenAddress: `0xtok${String(i).padStart(4, '0')}`, symbol: `T${i}`, quantity: '100', providerValueUsd: 5 }),
+    )
+    await priceHoldings(holdings, fn)
+    assert.equal(order.length, 30, 'the fallback budget must remain exactly 30 — never widened by this change')
+  })
+
+  it('HARD ASSERTION (required regression): with no material candidates at all, the budget is never spent — zero calls, not merely bounded at 30', async () => {
     const { fn, order } = recordingPriceFn()
     const holdings = Array.from({ length: 400 }, (_, i) =>
       holding({ tokenAddress: `0xtok${String(i).padStart(4, '0')}`, symbol: `T${i}`, quantity: '100' }),
     )
     await priceHoldings(holdings, fn)
-    assert.equal(order.length, 30, 'the fallback budget must remain exactly 30 — never widened by this change')
+    assert.equal(order.length, 0, 'no holding here has any real materiality signal — none may spend a default-mode DexScreener call')
   })
 
   it('zero, negative and malformed balances never consume a slot of the budget', async () => {
     const { fn, order } = recordingPriceFn()
     await priceHoldings(
       [
-        holding({ tokenAddress: '0xzero', symbol: 'ZERO', quantity: '0' }),
-        holding({ tokenAddress: '0xnegative', symbol: 'NEG', quantity: '-5' }),
-        holding({ tokenAddress: '0xnan', symbol: 'NAN', quantity: 'not-a-number' }),
-        holding({ tokenAddress: '0xempty', symbol: 'EMPTY', quantity: '' }),
-        holding({ tokenAddress: '0xreal', symbol: 'REAL', quantity: '10' }),
+        holding({ tokenAddress: '0xzero', symbol: 'ZERO', quantity: '0', providerValueUsd: 5 }),
+        holding({ tokenAddress: '0xnegative', symbol: 'NEG', quantity: '-5', providerValueUsd: 5 }),
+        holding({ tokenAddress: '0xnan', symbol: 'NAN', quantity: 'not-a-number', providerValueUsd: 5 }),
+        holding({ tokenAddress: '0xempty', symbol: 'EMPTY', quantity: '', providerValueUsd: 5 }),
+        holding({ tokenAddress: '0xreal', symbol: 'REAL', quantity: '10', providerValueUsd: 5 }),
       ],
       fn,
     )
-    assert.deepEqual(order, ['0xreal'], 'only the one real, non-zero balance may consume budget')
+    assert.deepEqual(order, ['0xreal'], 'only the one real, non-zero balance may consume budget — the dust-quantity ones are excluded regardless of their real materiality signal')
   })
 
   it('a known-negligible provider value never consumes a slot', async () => {
@@ -183,7 +257,7 @@ describe('fallback budget — exactly 30, never consumed by malformed or zero ba
     await priceHoldings(
       [
         holding({ tokenAddress: '0xnegligible', symbol: 'TINY', quantity: '1000', providerValueUsd: 0.02 }),
-        holding({ tokenAddress: '0xreal', symbol: 'REAL', quantity: '10' }),
+        holding({ tokenAddress: '0xreal', symbol: 'REAL', quantity: '10', providerValueUsd: 5 }),
       ],
       fn,
     )
@@ -329,13 +403,17 @@ describe('buildUnpricedHoldingDiagnostics — one record per unpriced holding', 
     const holdings = [
       holding({ tokenAddress: '0xzero', quantity: '0' }),
       holding({ tokenAddress: '0xnegligible', quantity: '10', providerValueUsd: 0.5 }),
-      holding({ tokenAddress: '0xbudget', quantity: '10' }),
+      // A REAL material candidate (providerValueUsd) that simply missed the bounded budget.
+      holding({ tokenAddress: '0xbudget', quantity: '10', providerValueUsd: 3 }),
+      // A no-signal quantity-only candidate that missed the budget — correctly spam-suppressed,
+      // never 'outside_fallback_budget' (which now means "real, just didn't fit").
+      holding({ tokenAddress: '0xnosignalbudget', quantity: '10' }),
       holding({ tokenAddress: '0xnoprice', quantity: '10' }),
     ]
     const diagnostics = buildUnpricedHoldingDiagnostics({
       holdings,
       pricedHoldings: holdings.map((h) => priced({ tokenAddress: h.tokenAddress })),
-      rankedFallbackKeys: ['8453:0xbudget', '8453:0xnoprice'],
+      rankedFallbackKeys: ['8453:0xbudget', '8453:0xnosignalbudget', '8453:0xnoprice'],
       budgetedFallbackKeys: ['8453:0xnoprice'],
       keyOf,
     })
@@ -343,6 +421,7 @@ describe('buildUnpricedHoldingDiagnostics — one record per unpriced holding', 
     assert.equal(byToken.get('0xzero')?.skipReason, 'zero_or_malformed_quantity')
     assert.equal(byToken.get('0xnegligible')?.skipReason, 'known_negligible_provider_value')
     assert.equal(byToken.get('0xbudget')?.skipReason, 'outside_fallback_budget')
+    assert.equal(byToken.get('0xnosignalbudget')?.skipReason, 'quantity_only_spam_suppressed')
     assert.equal(byToken.get('0xnoprice')?.skipReason, 'fallback_lookup_returned_no_price')
   })
 
@@ -371,5 +450,11 @@ describe('buildUnpricedHoldingDiagnostics — one record per unpriced holding', 
     assert.equal(byToken.get('0xspoof')?.selectionReason, 'spoof_stable_symbol')
     assert.equal(byToken.get('0xmaterial')?.selectionReason, 'selected_material_candidate')
     assert.equal(byToken.get('0xfiller')?.selectionReason, 'no_materiality_signal')
+    // HARD ASSERTION (required regression): skipReason itself — not just selectionReason — must
+    // also carry these explicit values in production (this task's own explicit requirement:
+    // "skipReason quantity_only_spam_suppressed" / "spoof stable symbol => skipReason
+    // spoof_stable_symbol").
+    assert.equal(byToken.get('0xspam')?.skipReason, 'quantity_only_spam_suppressed')
+    assert.equal(byToken.get('0xspoof')?.skipReason, 'spoof_stable_symbol')
   })
 })

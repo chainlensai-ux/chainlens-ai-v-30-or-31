@@ -35,9 +35,25 @@ function holding(overrides: Partial<ChainHolding>): ChainHolding {
   }
 }
 
+// EXPLORATORY-MODE TEST HELPER, DISCLOSED (holdings-fallback-spam follow-up task #2): this file's
+// own tests exercise pricing MERGE/dedup/dominant-holding logic, never fallback ranking/eligibility
+// (that is fallbackPrioritisation.test.ts's own job) — most fixtures here are plain quantity-only
+// holdings with no provider value, which the new no-signal eligibility gate would otherwise exclude
+// from a default-mode lookup entirely and break these unrelated assertions. Every call below opts
+// into exploratory mode so a real fallback lookup still runs for them, exactly like before this
+// gate existed.
+function priceHoldingsForTest(
+  holdings: ChainHolding[],
+  priceFn?: (chainId: number, tokenAddress: string) => Promise<number | null>,
+): ReturnType<typeof priceHoldings> {
+  return priceFn
+    ? priceHoldings(holdings, priceFn, { allowExploratorySpamLookup: true })
+    : priceHoldings(holdings, undefined, { allowExploratorySpamLookup: true })
+}
+
 describe('priceHoldings', () => {
   it('priceHoldings([]) -> totalValueUsd 0, chainValueUsd {}, priceStatus "unavailable"', async () => {
-    const result = await priceHoldings([])
+    const result = await priceHoldingsForTest([])
     assert.deepEqual(result.pricedHoldings, [])
     assert.equal(result.totalValueUsd, 0)
     assert.deepEqual(result.chainValueUsd, {})
@@ -46,7 +62,7 @@ describe('priceHoldings', () => {
 
   it('one holding with a mocked known price -> correct valueUsd, priceStatus "ok"', async () => {
     const fakePriceFn = async () => 2.5
-    const result = await priceHoldings([holding({ quantity: '10' })], fakePriceFn)
+    const result = await priceHoldingsForTest([holding({ quantity: '10' })], fakePriceFn)
 
     assert.equal(result.pricedHoldings.length, 1)
     assert.equal(result.pricedHoldings[0].priceUsd, 2.5)
@@ -59,7 +75,7 @@ describe('priceHoldings', () => {
   it('partial pricing (one priced, one unpriced) -> priceStatus "partial"', async () => {
     const fakePriceFn = async (_chainId: number, tokenAddress: string) => (tokenAddress === '0xpriced' ? 3 : null)
 
-    const result = await priceHoldings(
+    const result = await priceHoldingsForTest(
       [
         holding({ tokenAddress: '0xpriced', quantity: '4' }),
         holding({ tokenAddress: '0xunpriced', quantity: '99' }),
@@ -77,7 +93,7 @@ describe('priceHoldings', () => {
 
   it('all holdings unpriced -> priceStatus "unavailable", totalValueUsd 0', async () => {
     const fakePriceFn = async () => null
-    const result = await priceHoldings([holding({}), holding({ tokenAddress: '0xother' })], fakePriceFn)
+    const result = await priceHoldingsForTest([holding({}), holding({ tokenAddress: '0xother' })], fakePriceFn)
     assert.equal(result.priceStatus, 'unavailable')
     assert.equal(result.totalValueUsd, 0)
   })
@@ -85,7 +101,7 @@ describe('priceHoldings', () => {
   it('regression guard: a holding with a known-negligible providerValueUsd (dust) never reaches the DexScreener fallback', async () => {
     let callCount = 0
     const fakePriceFn = async () => { callCount += 1; return 42 }
-    const result = await priceHoldings(
+    const result = await priceHoldingsForTest(
       [holding({ tokenAddress: '0xdust', quantity: '1000', providerValueUsd: 0.02 })],
       fakePriceFn,
     )
@@ -96,7 +112,7 @@ describe('priceHoldings', () => {
   it('regression guard: a holding with a near-zero quantity and no provider value signal at all is treated as dust', async () => {
     let callCount = 0
     const fakePriceFn = async () => { callCount += 1; return 42 }
-    const result = await priceHoldings(
+    const result = await priceHoldingsForTest(
       [holding({ tokenAddress: '0xdustqty', quantity: '0.0000001' })], // below the dust floor, no providerValueUsd
       fakePriceFn,
     )
@@ -107,7 +123,7 @@ describe('priceHoldings', () => {
   it('regression guard: a meaningful holding lacking provider USD still reaches the fallback (dust filtering must not become a blanket suppression)', async () => {
     let callCount = 0
     const fakePriceFn = async () => { callCount += 1; return 7 }
-    const result = await priceHoldings(
+    const result = await priceHoldingsForTest(
       [holding({ tokenAddress: '0xmeaningful', quantity: '500' })], // no providerValueUsd at all, real quantity
       fakePriceFn,
     )
@@ -124,7 +140,7 @@ describe('priceHoldings', () => {
       callCount += 1
       return tokenAddress === '0xshared' ? 5 : null
     }
-    const result = await priceHoldings(
+    const result = await priceHoldingsForTest(
       [
         holding({ tokenAddress: '0xshared', quantity: '2' }),
         holding({ tokenAddress: '0xshared', quantity: '3' }),
@@ -142,7 +158,7 @@ describe('priceHoldings', () => {
       callCount += 1
       return 999 // would poison the result if wrongly invoked
     }
-    const result = await priceHoldings(
+    const result = await priceHoldingsForTest(
       [holding({ tokenAddress: '0xfree', quantity: '10', providerPriceUsd: 1.5 })],
       fakePriceFn,
     )
@@ -157,7 +173,7 @@ describe('priceHoldings', () => {
       const n = Number(tokenAddress.replace('0xtoken', ''))
       return n
     }
-    const result = await priceHoldings(holdings, fakePriceFn)
+    const result = await priceHoldingsForTest(holdings, fakePriceFn)
     assert.equal(result.pricedHoldings.length, 25)
     for (const p of result.pricedHoldings) {
       const n = Number(p.tokenAddress.replace('0xtoken', ''))
@@ -175,7 +191,7 @@ describe('priceHoldings', () => {
       callOrder.push(tokenAddress)
       return 3
     }
-    await priceHoldings(
+    await priceHoldingsForTest(
       [
         holding({ tokenAddress: '0xquiet', quantity: '50', lastActivityAt: null }),
         holding({ tokenAddress: '0xmeaningful', quantity: '10', providerValueUsd: 40, lastActivityAt: new Date(Date.now() - 1000).toISOString() }),
@@ -198,7 +214,7 @@ describe('priceHoldings', () => {
       holding({ tokenAddress: '0xspamB', quantity: '888888', lastActivityAt: null }),
       holding({ tokenAddress: '0xreal', quantity: '5', providerValueUsd: 20, lastActivityAt: new Date().toISOString() }),
     ]
-    const result = await priceHoldings(holdings, fakePriceFn)
+    const result = await priceHoldingsForTest(holdings, fakePriceFn)
     const realHolding = result.pricedHoldings.find((p) => p.tokenAddress === '0xreal')
     assert.equal(realHolding?.priceUsd, 2, 'the meaningful, active holding must still resolve a real price')
     assert.ok(callOrder.includes('0xreal'), 'the meaningful holding must have consumed a real lookup')
@@ -209,7 +225,7 @@ describe('priceHoldings', () => {
     // guarantees at least one falls outside the budget.
     const holdings = Array.from({ length: 31 }, (_, i) => holding({ tokenAddress: `0xtok${i}`, quantity: '1' }))
     const fakePriceFn = async () => 9
-    const result = await priceHoldings(holdings, fakePriceFn)
+    const result = await priceHoldingsForTest(holdings, fakePriceFn)
 
     assert.equal(result.pricedHoldings.length, 31, 'every holding must still appear in pricedHoldings — none hidden')
     const unpriced = result.pricedHoldings.filter((p) => p.priceUsd === null)
@@ -310,7 +326,7 @@ describe('fetchTokenPriceUsd — real default implementation, routed through the
 
 describe('priceHoldings — dominant-holding price provenance (real production evidence: same wallet showing $5.2k/$9k/$13.5k/$6.4k across scans, traced to one dominant token)', () => {
   it('decimals are preserved exactly — never silently defaulted or recomputed away from the real ChainHolding value', async () => {
-    const result = await priceHoldings(
+    const result = await priceHoldingsForTest(
       [holding({ tokenAddress: '0xdecimals', quantity: '2288000000', decimals: 9, providerPriceUsd: 0.000002625, providerValueUsd: 6004.56 })],
       async () => null,
     )
@@ -320,7 +336,7 @@ describe('priceHoldings — dominant-holding price provenance (real production e
   it('a provider-priced holding is never overwritten by a weaker fallback price, even when a fallback is available', async () => {
     let fallbackCalls = 0
     const fakeFallback = async () => { fallbackCalls += 1; return 999 } // would poison the result if wrongly used
-    const result = await priceHoldings(
+    const result = await priceHoldingsForTest(
       [holding({ tokenAddress: '0xprovider', providerPriceUsd: 0.000002625, providerValueUsd: 6004.56, quantity: '2288000000' })],
       fakeFallback,
     )
@@ -334,7 +350,7 @@ describe('priceHoldings — dominant-holding price provenance (real production e
     // very different from providerValueUsd (simulating a decimals/balance inconsistency between
     // GoldRush's own internal math and this module's locally-derived quantity) — the provider's own
     // authoritative valueUsd must win, never the locally recomputed figure.
-    const result = await priceHoldings(
+    const result = await priceHoldingsForTest(
       [holding({ tokenAddress: '0xmismatch', quantity: '1000000', providerPriceUsd: 0.01, providerValueUsd: 6004.56 })],
       async () => null,
     )
@@ -344,7 +360,7 @@ describe('priceHoldings — dominant-holding price provenance (real production e
   })
 
   it('falls back to a locally recomputed value only when the provider never supplied one at all (fallback-priced holdings)', async () => {
-    const result = await priceHoldings(
+    const result = await priceHoldingsForTest(
       [holding({ tokenAddress: '0xfallback', quantity: '10', providerPriceUsd: null, providerValueUsd: null })],
       async () => 5,
     )
@@ -355,7 +371,7 @@ describe('priceHoldings — dominant-holding price provenance (real production e
 describe('priceHoldings — FreeCode valuation + coverage disclosure audit (duplicate balance guard, RPC-verified dominant-holding decimals)', () => {
   it('an exact-duplicate (chainId, tokenAddress, quantity) balance is never double-counted in totalValueUsd/chainValueUsd', async () => {
     const dup = holding({ tokenAddress: '0xfreecode', quantity: '2288000000', providerPriceUsd: 0.000002625, providerValueUsd: 3002.28 })
-    const result = await priceHoldings([dup, { ...dup }], async () => null)
+    const result = await priceHoldingsForTest([dup, { ...dup }], async () => null)
 
     assert.equal(result.pricedHoldings.length, 2, 'both rows must still be visible — never hidden')
     assert.equal(result.totalValueUsd, 3002.28, 'an exact duplicate balance must be counted exactly once toward the total')
@@ -365,7 +381,7 @@ describe('priceHoldings — FreeCode valuation + coverage disclosure audit (dupl
   it('two genuinely distinct sub-balances of the same token (different quantities) are NOT treated as duplicates — both count', async () => {
     const a = holding({ tokenAddress: '0xshared2', quantity: '100', providerPriceUsd: 1, providerValueUsd: 100 })
     const b = holding({ tokenAddress: '0xshared2', quantity: '50', providerPriceUsd: 1, providerValueUsd: 50 })
-    const result = await priceHoldings([a, b], async () => null)
+    const result = await priceHoldingsForTest([a, b], async () => null)
     assert.equal(result.totalValueUsd, 150, 'two real, distinct sub-balances of the same token must both count')
   })
 
@@ -374,7 +390,7 @@ describe('priceHoldings — FreeCode valuation + coverage disclosure audit (dupl
     // Fake an RPC decimals mismatch by pointing at an unsupported chain (no RPC configured) — real
     // verification always resolves null there, so this proves the NO-MISMATCH path leaves the
     // holding fully untouched rather than ever silently guessing.
-    const result = await priceHoldings(
+    const result = await priceHoldingsForTest(
       [holding({ chainId: 999999, tokenAddress: '0xdominant', quantity: '2288000000', decimals: 9, providerPriceUsd: 0.000002625, providerValueUsd: 6004.56, amountRaw: '2288000000000000000' })],
       async () => null,
     )
@@ -391,7 +407,7 @@ describe('priceHoldings — second-largest-holding identity check (real producti
       holding({ chainId: 999999, tokenAddress: '0xsecondlargest', symbol: 'TORIVA', quantity: '1', providerPriceUsd: 256.82, providerValueUsd: 256.82 }), // 7.6% of total — below the 10% dominant threshold
       holding({ chainId: 999999, tokenAddress: '0xnemesis', symbol: 'NEMESIS', quantity: '1', providerPriceUsd: 1.84, providerValueUsd: 1.84 }),
     ]
-    const result = await priceHoldings(holdings, async () => null)
+    const result = await priceHoldingsForTest(holdings, async () => null)
     // No RPC coverage for this test's unsupported chainId — proves the identity check reached these
     // holdings at all (via the diagnostic contract below) without needing a live network call.
     assert.equal(result.totalValueUsd, 3005.73 + 256.82 + 1.84)
@@ -401,7 +417,7 @@ describe('priceHoldings — second-largest-holding identity check (real producti
   it('two DIFFERENT addresses are never merged by symbol — each keeps its own identity, value, and quantity regardless of a shared or expected symbol', async () => {
     const second = holding({ chainId: 999999, tokenAddress: '0xb886cf1444bff05e9a99e00543bc4054d423ebfd', symbol: 'TORIVA', quantity: '1000', providerPriceUsd: 0.25682, providerValueUsd: 256.82 })
     const nemesis = holding({ chainId: 999999, tokenAddress: '0xb235cf255b48500df4459475e054e7beb25cb772', symbol: 'NEMESIS', quantity: '1', providerPriceUsd: 1.84, providerValueUsd: 1.84 })
-    const result = await priceHoldings([second, nemesis], async () => null)
+    const result = await priceHoldingsForTest([second, nemesis], async () => null)
 
     assert.equal(result.pricedHoldings.length, 2, 'two distinct addresses must never be collapsed into one row')
     const row1 = result.pricedHoldings.find((p) => p.tokenAddress === '0xb886cf1444bff05e9a99e00543bc4054d423ebfd')
@@ -418,7 +434,7 @@ describe('priceHoldings — second-largest-holding identity check (real producti
       holding({ chainId: 999999, tokenAddress: '0xmed', symbol: 'MED', quantity: '1', providerPriceUsd: 100, providerValueUsd: 100 }),
       holding({ chainId: 999999, tokenAddress: '0xsmall', symbol: 'SMALL_UNVERIFIED', quantity: '1', providerPriceUsd: 5, providerValueUsd: 5 }),
     ]
-    const result = await priceHoldings(holdings, async () => null)
+    const result = await priceHoldingsForTest(holdings, async () => null)
     const small = result.pricedHoldings.find((p) => p.tokenAddress === '0xsmall')
     assert.equal(small?.symbol, 'SMALL_UNVERIFIED', 'a holding ranked 3rd by value must be left completely untouched by the top-2 identity check')
   })
