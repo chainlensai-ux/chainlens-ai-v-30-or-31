@@ -474,6 +474,23 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       partialSnapshotBlockedReason = 'no_job_id'
     }
 
+    // AUDIT LOG, DISCLOSED (fast-snapshot verification follow-up task, explicit requirement): one
+    // real, compact line per scan proving the fast path actually ran and actually published — never
+    // inferred from silence. Fired regardless of outcome (published or blocked) so a blocked case is
+    // just as visible as a successful one.
+    // eslint-disable-next-line no-console
+    console.warn('[wallet-fast-snapshot-audit]', {
+      jobId: jobId ?? null,
+      partialSnapshotPublished,
+      timeToPartialPortfolioPublishMs,
+      timeToFirstHoldingsMs,
+      timeToFirstPortfolioMs,
+      holdingsCount: chainHoldings.length,
+      topHoldingsCount: portfolioOutput.portfolio.topHoldings.slice(0, 10).length,
+      portfolioTotalUsd: portfolioOutput.portfolio.totalValueUsd,
+      blockedReason: partialSnapshotBlockedReason,
+    })
+
     return {
       chainHoldings, pricing, portfolioOutput,
       timeToFirstHoldingsMs, timeToFirstPortfolioMs, timeToPartialPortfolioPublishMs,
