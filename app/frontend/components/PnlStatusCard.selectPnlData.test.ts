@@ -27,6 +27,7 @@ import { emptyCanonicalSampleManifestAudit, type CanonicalSampleManifestAudit } 
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
 import type { UnrealizedReconciliationSummary } from '@/src/modules/fifoEngine/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
+import { emptyPnlDiscrepancyAudit, PARTIAL_TRUST_GATE_HEADLINE_LABEL, type PnlDiscrepancyAudit } from '@/src/lib/pnlDiscrepancyAudit'
 
 // Minimal, real-shaped PnlReconciliationSummary fixture builder — mirrors the fixture pattern
 // already used in src/lib/pnlReconciliation.test.ts. Only the fields this card's selector actually
@@ -71,6 +72,9 @@ function reconciliationSummary(overrides: Partial<PnlReconciliationSummary> = {}
       existingUpstreamSidesBackedByAcceptedEvidence: 0, existingUpstreamSidesWithoutAcceptedEvidence: 0,
       existingUpstreamSidesConflictingWithAcceptedEvidence: 0,
     },
+    // DEFAULT: no discrepancy audit wired (matches this fixture's own pre-existing "unused
+    // placeholder" convention above) — trust-gate tests below override this explicitly.
+    pnlDiscrepancyAudit: emptyPnlDiscrepancyAudit(),
     ...overrides,
   }
 }
@@ -906,5 +910,82 @@ describe('resolveEffectivePublicPnlStatus (Wallet Scanner final-UI follow-up tas
     assert.equal(resolveEffectivePublicPnlStatus('ok', null, null), 'ok')
     assert.equal(resolveEffectivePublicPnlStatus('limited_verified_sample', null, null), 'limited_verified_sample')
     assert.equal(resolveEffectivePublicPnlStatus(null, null, null), null)
+  })
+})
+
+// TRUST GATE, DISCLOSED (Wallet Scanner trust-gate task — confirmed production report: wallet
+// 0x8de9ac2123c06fb6f8afa2f55a39fb670a50fbc7 showed a headline realized PnL of -$10,667.43 styled
+// exactly like a fully-verified figure despite publicPnlStatus 'partial', a ~68% engine divergence,
+// pricingCoverage 0.6271, and genuine unmatched sells/critical evidence gaps). These tests exercise
+// the UI-layer wiring of reconciliationSummary.pnlDiscrepancyAudit — the underlying gate LOGIC
+// itself is tested exhaustively in src/lib/pnlDiscrepancyAudit.test.ts; these confirm the CARD
+// actually reads and applies it correctly.
+describe('PnlStatusCard trust gate — a discrepancy-gated bounded sample is never styled as official/locked (Wallet Scanner trust-gate task)', () => {
+  function triggeredAudit(overrides: Partial<PnlDiscrepancyAudit> = {}): PnlDiscrepancyAudit {
+    return {
+      ...emptyPnlDiscrepancyAudit(),
+      trustGateTriggered: true,
+      headlineOverrideLabel: PARTIAL_TRUST_GATE_HEADLINE_LABEL,
+      likelyReasonCodes: ['genuine_unmatched_sells_present'],
+      genuineUnmatchedSells: 12,
+      ...overrides,
+    }
+  }
+
+  it('HARD ASSERTION (required regression): selectDisplayedPnl replaces the normal "PARTIAL — VERIFIED N-DAY SAMPLE" integrityLabel with the exact trust-gate headline when triggered', () => {
+    const displayed = selectDisplayedPnl({
+      pnlV2: pnlV2({ realizedPnlUsd: 100 }),
+      publicPnlStatus: 'limited_verified_sample',
+      reconciliationSummary: reconciliationSummary({ realizedPnlUsd: -10667.43, pnlDiscrepancyAudit: triggeredAudit() }),
+    })
+    assert.equal(displayed.integrityLabel, 'Partial verified sample — not comparable to Nansen yet')
+    assert.equal(displayed.realizedPnlTileLabel, 'Partial verified sample — not comparable to Nansen yet')
+    assert.equal(displayed.trustGateTriggered, true)
+    // The real number is NEVER hidden (rule #5) — only the label/styling changes.
+    assert.equal(displayed.realizedPnlUsd, -10667.43)
+  })
+
+  it('a healthy bounded sample (no discrepancy audit wired, or trustGateTriggered false) keeps the normal label and tile — zero behavior change', () => {
+    const displayed = selectDisplayedPnl({
+      pnlV2: pnlV2({ realizedPnlUsd: 100 }),
+      publicPnlStatus: 'limited_verified_sample',
+      reconciliationSummary: reconciliationSummary({ realizedPnlUsd: 608.45 }),
+    })
+    assert.equal(displayed.integrityLabel, 'PARTIAL — VERIFIED 90-DAY SAMPLE')
+    assert.equal(displayed.realizedPnlTileLabel, REALIZED_PNL_LABEL)
+    assert.equal(displayed.trustGateTriggered, false)
+  })
+
+  it('never triggers for "ok"/"unavailable" status even if a discrepancy audit happens to be present with trustGateTriggered true (defensive — the audit itself is publicPnlStatus-gated, but the card must never re-derive it independently)', () => {
+    const displayedOk = selectDisplayedPnl({
+      pnlV2: pnlV2({ realizedPnlUsd: 100 }),
+      publicPnlStatus: 'ok',
+      reconciliationSummary: reconciliationSummary({ realizedPnlUsd: 608.45, publicPnlStatus: 'available', pnlDiscrepancyAudit: triggeredAudit() }),
+    })
+    assert.equal(displayedOk.trustGateTriggered, false)
+    assert.equal(displayedOk.realizedPnlTileLabel, REALIZED_PNL_LABEL)
+  })
+
+  it('HARD ASSERTION (required regression): selectBoundedSampleDisclosure mirrors the same headline label and trustGateTriggered flag', () => {
+    const disclosure = selectBoundedSampleDisclosure(
+      'limited_verified_sample',
+      reconciliationSummary({ realizedPnlUsd: -10667.43, pnlDiscrepancyAudit: triggeredAudit() }),
+    )
+    assert.ok(disclosure)
+    assert.equal(disclosure!.label, 'Partial verified sample — not comparable to Nansen yet')
+    assert.equal(disclosure!.trustGateTriggered, true)
+    assert.equal(disclosure!.realizedPnlUsd, -10667.43, 'the real number is still disclosed, never hidden')
+  })
+
+  it('the trust-gate label wins over the truncated-history label when both conditions are true', () => {
+    const disclosure = selectBoundedSampleDisclosure(
+      'limited_verified_sample',
+      reconciliationSummary({
+        realizedPnlUsd: -10667.43,
+        pnlDiscrepancyAudit: triggeredAudit(),
+        publicPnlGateAudit: { ...reconciliationSummary().publicPnlGateAudit, historyCoverageStatus: 'truncated' },
+      }),
+    )
+    assert.equal(disclosure!.label, 'Partial verified sample — not comparable to Nansen yet')
   })
 })

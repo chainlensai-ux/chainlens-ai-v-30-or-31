@@ -671,6 +671,74 @@ describe('pnlReconciliation', () => {
     assert.ok(summary.publicPnlGateAudit.fullAvailabilityBlockingReasons.some((r2) => r2.rule === 'missing_evidence_count'))
   })
 
+  it('HARD ASSERTION (required regression, trust-gate task, production reproduction: wallet 0x8de9ac2123c06fb6f8afa2f55a39fb670a50fbc7): a partial sample with low pricing coverage, missing critical evidence, genuine unmatched sells, AND engine divergence triggers the trust gate — never presented as if fully verified', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    // Same shape as the exact-production-shaped fixture above: 27 structural / 18 verified
+    // (66.67% coverage, below the 85% trust threshold), genuineUnmatchedSells 4 (> 0).
+    const verifiedLots = Array.from({ length: 18 }, (_, i) => lot({ lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`, realizedPnlUsd: -200.55 }))
+    const unpricedLots = Array.from({ length: 9 }, (_, i) => lot({ lotId: `u${i}`, openedTxHash: `0xub${i}`, closedTxHash: `0xus${i}`, costBasisUsd: null, proceedsUsd: null, realizedPnlUsd: null, evidenceQuality: 'unpriced' }))
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: [...verifiedLots, ...unpricedLots], unmatchedBuys: 94, unmatchedSells: 114 }),
+      // A real, independent alternate-engine figure that diverges materially from the canonical
+      // -3609.90 (matches this task's own confirmed production shape: two engines disagreeing).
+      pnlEngineResult: pnl(9, { realizedPnlUsd: -9200.2 }),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: {
+        genuineUnmatchedBuys: 0, genuineUnmatchedSells: 4,
+        openPositionBuys: 94, preWindowInventoryExits: 110,
+        scanWindowDays: 90, windowBoundaryProven: true,
+      },
+    })
+    assert.equal(summary.publicPnlStatus, 'partial')
+    // The underlying numbers are UNCHANGED by the trust gate — it never touches FIFO/PnL math.
+    assert.equal(summary.realizedPnlUsd, -3609.9)
+    assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 18)
+
+    const audit = summary.pnlDiscrepancyAudit
+    assert.equal(audit.canonicalRealizedPnlUsd, -3609.9)
+    assert.equal(audit.alternateEngineRealizedPnlUsd, -9200.2)
+    assert.ok(audit.engineDivergenceUsd! > 250)
+    assert.ok(audit.pricingCoverage! < 0.85)
+    assert.ok(audit.criticalTradeEvidenceMissing > 0)
+    assert.equal(audit.genuineUnmatchedSells, 4)
+    assert.ok(audit.likelyReasonCodes.includes('engine_divergence_exceeds_threshold'))
+    assert.ok(audit.likelyReasonCodes.includes('pricing_coverage_below_threshold'))
+    assert.ok(audit.likelyReasonCodes.includes('critical_trade_evidence_missing'))
+    assert.ok(audit.likelyReasonCodes.includes('genuine_unmatched_sells_present'))
+    assert.equal(audit.trustGateTriggered, true, 'this exact confirmed-production shape must trip the trust gate')
+    assert.equal(audit.headlineOverrideLabel, 'Partial verified sample — not comparable to Nansen yet')
+    assert.equal(audit.externalComparatorHint, null, 'never auto-set — manual-only per this task\'s own rule #4')
+    // Per-lot contributor debug (requirement #3): the 18 verified lots are all -200.55, so the top
+    // negative list is populated, real, and never empty when negative lots exist.
+    assert.equal(audit.largestNegativeClosedLotsTop10.length, 10)
+    assert.equal(audit.largestNegativeClosedLotsTop10[0].realizedPnlUsd, -200.55)
+    assert.equal(audit.largestNegativeClosedLotsTop10[0].lotId, 'v0')
+  })
+
+  it('HARD ASSERTION (required regression, trust-gate task, negative control): a healthy bounded sample — full pricing coverage, zero missing critical evidence, zero genuine unmatched sells, no meaningful engine divergence — never trips the trust gate even though publicPnlStatus is partial', async () => {
+    const r = createPnlReconciliation({ logger: quiet })
+    // 17 verified lots, ALL priced (17/17 structural — 100% coverage), matching this session's own
+    // stable-wallet baseline (+608.45 / 17 verified lots).
+    const verifiedLots = Array.from({ length: 17 }, (_, i) => lot({ lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`, realizedPnlUsd: 35.79 }))
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: verifiedLots, unmatchedBuys: 0, unmatchedSells: 0 }),
+      pnlEngineResult: pnl(17, { realizedPnlUsd: 608.43 }), // ~$0.02 apart — real float noise, not a divergence
+      syntheticPnlAssemblyOutput: null,
+      // windowBoundaryProven: false (unproven, not truncated-unhealthy) is what keeps this a bounded
+      // 'partial' sample rather than 'available' — same real pattern as this session's own stable
+      // wallet (manifestApplied bounded-sample path), not a coverage/evidence/unmatched-sell problem.
+      structuralCoverageDenominatorAudit: { genuineUnmatchedBuys: 0, genuineUnmatchedSells: 0, scanWindowDays: 90, windowBoundaryProven: false, boundedSampleWindowSafe: true, historyCoverageStatus: 'exhaustive' },
+    })
+    assert.equal(summary.publicPnlStatus, 'partial')
+    assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 17)
+    assert.ok(Math.abs((summary.publicPnlGateAudit.verifiedPricingCoverage ?? 0) - 1) < 1e-9)
+
+    const audit = summary.pnlDiscrepancyAudit
+    assert.deepEqual(audit.likelyReasonCodes, [])
+    assert.equal(audit.trustGateTriggered, false, 'a genuinely healthy bounded sample must never be falsely gated')
+    assert.equal(audit.headlineOverrideLabel, null)
+  })
+
   it('HARD ASSERTION (boundary-model follow-up task, production reproduction): a page-capped-but-healthy fetch (historyCoverageStatus truncated, windowBoundaryProven false) still publishes a verified 23/24-lot bounded sample, with truncated-history disclosure and no false full-window claim', async () => {
     const r = createPnlReconciliation({ logger: quiet })
     const verifiedLots = Array.from({ length: 23 }, (_, i) => lot({ lotId: `v${i}`, openedTxHash: `0xb${i}`, closedTxHash: `0xs${i}`, realizedPnlUsd: -2.564347826086957 }))

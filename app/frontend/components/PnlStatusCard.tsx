@@ -411,6 +411,11 @@ export type BoundedSampleDisclosure = {
   verifiedPricingCoveragePercent: number | null
   unresolvedExitsExcluded: number
   warning: string | null
+  // TRUST GATE, DISCLOSED (Wallet Scanner trust-gate task): mirrors `DisplayedPnl.trustGateTriggered`
+  // — real, from `reconciliationSummary.pnlDiscrepancyAudit.trustGateTriggered`. `label` above is
+  // already overridden to the same non-official wording when this is true; kept as its own field so
+  // the rendered block can also downgrade its own styling (never "official/locked").
+  trustGateTriggered: boolean
 }
 
 // STALE/INTERMEDIATE-STATE RESILIENCE, DISCLOSED (Wallet Scanner final-UI follow-up task —
@@ -468,9 +473,17 @@ export function selectBoundedSampleDisclosure(
   // appears at all for `publicPnlStatus === 'limited_verified_sample'`, never full 'ok'/'available'
   // — the backend gate above already guarantees FULL PnL is never shown unless the window boundary
   // is proven, this label change is display wording only, never a status change).
-  const label = audit.historyCoverageStatus === 'truncated'
-    ? 'Verified bounded sample — transaction history was truncated.'
-    : `Verified ${scanWindowDays}-day sample`
+  // TRUST GATE, DISCLOSED (Wallet Scanner trust-gate task, explicit rule #1): takes priority over
+  // the truncated-history label above — a real engine-divergence/coverage/evidence problem is a
+  // stronger, more specific signal than "history was truncated" and must never be silently
+  // overridden BY it (both can legitimately be true at once; the trust-gate wording always wins).
+  const trustGateTriggered = reconciliationSummary.pnlDiscrepancyAudit?.trustGateTriggered === true
+  const headlineOverrideLabel = reconciliationSummary.pnlDiscrepancyAudit?.headlineOverrideLabel ?? null
+  const label = trustGateTriggered && headlineOverrideLabel
+    ? headlineOverrideLabel
+    : audit.historyCoverageStatus === 'truncated'
+      ? 'Verified bounded sample — transaction history was truncated.'
+      : `Verified ${scanWindowDays}-day sample`
   // COVERAGE CAP, DISCLOSED (requirement #5's "cap confidence/coverage at 100%"): a real backend
   // ratio should never exceed 1.0, but this display-only clamp guards against ever showing a
   // nonsensical >100% figure regardless of cause — it never changes the underlying backend value.
@@ -483,6 +496,7 @@ export function selectBoundedSampleDisclosure(
     verifiedPricingCoveragePercent,
     unresolvedExitsExcluded: audit.invalidOrUnknownUnmatchedEvents,
     warning: reconciliationSummary.warning,
+    trustGateTriggered,
   }
 }
 
@@ -511,6 +525,16 @@ export type DisplayedPnl = {
   roiLabel: string | null
   integrityLabel: string
   source: DisplayedPnlSource
+  // DISCREPANCY/TRUST-GATE, DISCLOSED (Wallet Scanner trust-gate task): real, from
+  // `reconciliationSummary.pnlDiscrepancyAudit.trustGateTriggered` — true only for a bounded
+  // ('limited_verified_sample') result whose own engines disagree or whose evidence coverage is
+  // too thin to present as if fully verified. When true, `realizedPnlTileLabel` replaces the
+  // normal "Realized PnL (Official)" headline — see PARTIAL_TRUST_GATE_HEADLINE_LABEL's own header
+  // in src/lib/pnlDiscrepancyAudit.ts. Never true for 'ok'/'unavailable' — this gate only ever
+  // downgrades a bounded sample's own presentation, never claims a fully-verified result is
+  // untrustworthy.
+  trustGateTriggered: boolean
+  realizedPnlTileLabel: string
 }
 
 // NEVER-FALL-BACK, DISCLOSED (requirement #3): when `publicPnlStatus === 'limited_verified_sample'`,
@@ -548,6 +572,7 @@ export function selectDisplayedPnl(params: {
       costBasisUsd: null, costBasisLabel: 'Not available — canonical sample unavailable',
       roiPercent: null, roiLabel: CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL,
       integrityLabel: CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL, source: 'none',
+      trustGateTriggered: false, realizedPnlTileLabel: REALIZED_PNL_LABEL,
     }
   }
 
@@ -561,17 +586,29 @@ export function selectDisplayedPnl(params: {
         costBasisUsd: null, costBasisLabel: 'Not available for bounded sample',
         roiPercent: null, roiLabel: 'Not calculated for bounded sample',
         integrityLabel: 'PARTIAL — VERIFIED SAMPLE', source: 'none',
+        trustGateTriggered: false, realizedPnlTileLabel: REALIZED_PNL_LABEL,
       }
     }
     const scanWindowDays = summary.publicPnlGateAudit.scanWindowDays ?? 90
     const realizedPnlUsd = summary.realizedPnlUsd
     const unrealizedPnlUsd = summary.unrealizedPnlUsd
     const totalPnlUsd = realizedPnlUsd != null && unrealizedPnlUsd != null ? realizedPnlUsd + unrealizedPnlUsd : null
+    // TRUST GATE, DISCLOSED (Wallet Scanner trust-gate task, explicit rule #1): a bounded sample
+    // whose own discrepancy audit fired (engine divergence, thin pricing coverage, missing
+    // critical evidence, or genuine unmatched sells) never shows the normal "PARTIAL — VERIFIED
+    // N-DAY SAMPLE" / "Realized PnL (Official)" presentation — both are replaced with the same
+    // explicit, non-official label. The underlying numbers themselves are UNCHANGED (still real,
+    // still shown) — only the presentation is downgraded, never hidden (rule #5).
+    const trustGateTriggered = summary.pnlDiscrepancyAudit?.trustGateTriggered === true
+    const headlineOverrideLabel = summary.pnlDiscrepancyAudit?.headlineOverrideLabel ?? null
     return {
       status, realizedPnlUsd, unrealizedPnlUsd, totalPnlUsd,
       costBasisUsd: null, costBasisLabel: 'Not available for bounded sample',
       roiPercent: null, roiLabel: 'Not calculated for bounded sample',
-      integrityLabel: `PARTIAL — VERIFIED ${scanWindowDays}-DAY SAMPLE`, source: 'reconciliationSummary',
+      integrityLabel: trustGateTriggered && headlineOverrideLabel ? headlineOverrideLabel : `PARTIAL — VERIFIED ${scanWindowDays}-DAY SAMPLE`,
+      source: 'reconciliationSummary',
+      trustGateTriggered,
+      realizedPnlTileLabel: trustGateTriggered && headlineOverrideLabel ? headlineOverrideLabel : REALIZED_PNL_LABEL,
     }
   }
 
@@ -590,6 +627,7 @@ export function selectDisplayedPnl(params: {
     roiLabel: pnl.roi.display,
     integrityLabel: 'Not available (V2 engine)',
     source: params.pnlV2 != null ? 'pnlV2' : 'none',
+    trustGateTriggered: false, realizedPnlTileLabel: REALIZED_PNL_LABEL,
   }
 }
 
@@ -745,10 +783,33 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
           Deliberately never labeled "Complete PnL"/"All-time PnL"/"Fully verified" — this IS a
           bounded, disclosed sample, and every string here says so explicitly. */}
       {boundedSample && (
-        <div style={{ background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.25)', borderRadius: '10px', padding: '12px 14px', marginBottom: '16px' }}>
-          <div style={{ fontSize: '11px', fontWeight: 800, color: '#fbbf24', letterSpacing: '0.04em', marginBottom: '6px' }}>
+        <div style={{
+          background: boundedSample.trustGateTriggered ? 'rgba(248,113,113,0.08)' : 'rgba(251,191,36,0.06)',
+          border: `1px solid ${boundedSample.trustGateTriggered ? 'rgba(248,113,113,0.35)' : 'rgba(251,191,36,0.25)'}`,
+          borderRadius: '10px', padding: '12px 14px', marginBottom: '16px',
+        }}>
+          <div style={{ fontSize: '11px', fontWeight: 800, color: boundedSample.trustGateTriggered ? '#f87171' : '#fbbf24', letterSpacing: '0.04em', marginBottom: '6px' }}>
             {boundedSample.label}
           </div>
+          {/* WHY, DISCLOSED (Wallet Scanner trust-gate task, explicit rule #5 — "downgrade
+              confidence and explain why"): the real reason code(s) the discrepancy audit fired on,
+              in plain language — never just a bare label with no explanation. */}
+          {boundedSample.trustGateTriggered && reconciliationSummary?.pnlDiscrepancyAudit && (
+            <div style={{ fontSize: '11px', color: 'rgba(248,113,113,0.85)', lineHeight: 1.6, marginBottom: '8px' }}>
+              {reconciliationSummary.pnlDiscrepancyAudit.likelyReasonCodes.includes('engine_divergence_exceeds_threshold') && (
+                <div>⚠ Two independent PnL engines disagree by {reconciliationSummary.pnlDiscrepancyAudit.engineDivergenceUsd != null ? fmtSignedUsd(reconciliationSummary.pnlDiscrepancyAudit.engineDivergenceUsd) : 'an unresolved amount'}{reconciliationSummary.pnlDiscrepancyAudit.engineDivergencePct != null ? ` (${(reconciliationSummary.pnlDiscrepancyAudit.engineDivergencePct * 100).toFixed(1)}%)` : ''}</div>
+              )}
+              {reconciliationSummary.pnlDiscrepancyAudit.likelyReasonCodes.includes('pricing_coverage_below_threshold') && (
+                <div>⚠ Pricing coverage {reconciliationSummary.pnlDiscrepancyAudit.pricingCoverage != null ? `${(reconciliationSummary.pnlDiscrepancyAudit.pricingCoverage * 100).toFixed(1)}%` : 'unknown'} — below the 85% trust threshold</div>
+              )}
+              {reconciliationSummary.pnlDiscrepancyAudit.likelyReasonCodes.includes('critical_trade_evidence_missing') && (
+                <div>⚠ {reconciliationSummary.pnlDiscrepancyAudit.criticalTradeEvidenceMissing} trade(s) missing critical evidence</div>
+              )}
+              {reconciliationSummary.pnlDiscrepancyAudit.likelyReasonCodes.includes('genuine_unmatched_sells_present') && (
+                <div>⚠ {reconciliationSummary.pnlDiscrepancyAudit.genuineUnmatchedSells} genuinely unmatched sell(s) not yet reconciled</div>
+              )}
+            </div>
+          )}
           <div style={{ fontSize: '13px', fontWeight: 700, color: boundedSample.realizedPnlUsd != null && boundedSample.realizedPnlUsd < 0 ? '#f87171' : '#4ade80', marginBottom: '6px' }}>
             Realized PnL: {fmtSignedUsd(boundedSample.realizedPnlUsd)}
           </div>
@@ -800,12 +861,17 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
         // hasn't wired `reconciliationSummary` at all — shown as PNL_UNAVAILABLE_MESSAGE, never a
         // fabricated $0.00.
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-          <MetricCard label={REALIZED_PNL_LABEL} value={displayed.realizedPnlUsd == null ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(displayed.realizedPnlUsd)} tone={toneFromNumber(displayed.realizedPnlUsd)} index={0} />
+          {/* TRUST GATE, DISCLOSED (Wallet Scanner trust-gate task, explicit rule #1): the headline
+              tile's own label switches away from "Realized PnL (Official)" — and the Integrity
+              badge switches from 'warning' to 'danger' — whenever
+              `displayed.trustGateTriggered` is true, so this exact state can never be styled as
+              official/locked. The number itself is never hidden (rule #5) — only the presentation. */}
+          <MetricCard label={displayed.realizedPnlTileLabel} value={displayed.realizedPnlUsd == null ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(displayed.realizedPnlUsd)} tone={toneFromNumber(displayed.realizedPnlUsd)} index={0} />
           <MetricCard label={UNREALIZED_PNL_LABEL} value={displayed.unrealizedPnlUsd == null ? 'Unavailable' : fmtSignedUsd(displayed.unrealizedPnlUsd)} tone={toneFromNumber(displayed.unrealizedPnlUsd)} sub={LIVE_PRICE_MOVEMENT_NOTE} emphasis="muted" index={1} />
           <MetricCard label={TOTAL_PNL_LABEL} value={displayed.totalPnlUsd == null ? 'Unavailable' : fmtSignedUsd(displayed.totalPnlUsd)} tone={toneFromNumber(displayed.totalPnlUsd)} sub={LIVE_PRICE_MOVEMENT_NOTE} emphasis="muted" index={2} />
           <MetricCard label="ROI" value={displayed.roiLabel ?? 'Not calculated for bounded sample'} tone="neutral" index={3} />
           <MetricCard label="Cost Basis" value={displayed.costBasisLabel ?? 'Not available for bounded sample'} index={4} />
-          <MetricCard label="Integrity" value={<StatusBadge label={displayed.integrityLabel} tone="warning" />} index={5} />
+          <MetricCard label="Integrity" value={<StatusBadge label={displayed.integrityLabel} tone={displayed.trustGateTriggered ? 'danger' : 'warning'} />} index={5} />
         </div>
       ) : (
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>

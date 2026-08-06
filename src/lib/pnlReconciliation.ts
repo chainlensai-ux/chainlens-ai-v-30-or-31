@@ -9,6 +9,7 @@ import {
   type AcceptedEvidenceKvLike, type AcceptedEvidenceSide, type AcceptedEvidenceEnvelope,
 } from './acceptedEvidenceStore'
 import { allocateSideValueAcrossGroup, stablecoinNormalizedGroupTotal, type SideAllocationShare } from './canonicalPnlSampleManifest'
+import { buildPnlDiscrepancyAudit, type PnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
 
 export type PnlMismatchClass = 'missingInboundEvidence' | 'missingOutboundEvidence' | 'routerClusterMismatch' | 'priceUnavailable' | 'dustSuppressedToken' | 'syntheticOnlyToken' | 'priceRecovered'
 export type ReconciledPublicPnlStatus = 'available' | 'partial' | 'unavailable'
@@ -449,6 +450,12 @@ export type PnlReconciliationSummary = {
   // now read THIS array: it is the same array the realized-PnL sum and every gate figure below were
   // computed from, after accepted-evidence reconciliation and after canonical sample selection.
   publishedMatchedLots: MatchedLot[]
+  // DISCREPANCY/TRUST-GATE AUDIT, DISCLOSED (Wallet Scanner trust-gate task): real, computed from
+  // the exact same values every other field above was already computed from — never a second,
+  // independent PnL computation. See src/lib/pnlDiscrepancyAudit.ts's own header for the full
+  // rationale (confirmed production case: a bounded-sample wallet whose canonical and alternate
+  // engines disagreed by ~68% while presenting a headline as if it were fully verified).
+  pnlDiscrepancyAudit: PnlDiscrepancyAudit
 }
 
 const roundUsd = (n: number | null | undefined) => typeof n === 'number' && Number.isFinite(n) ? Math.round(n * 100) / 100 : null
@@ -1591,6 +1598,25 @@ export function createPnlReconciliation(config: Config = {}) {
           : `Verified ${denomAudit?.scanWindowDays ?? 90}-day sample, not complete wallet history`
         : null
 
+      // DISCREPANCY/TRUST-GATE AUDIT, DISCLOSED (Wallet Scanner trust-gate task): built from the
+      // SAME values every field above was already computed from — canonical `realizedPnlUsd`, the
+      // alternate pnlEngine's own `input.pnlEngineResult.realizedPnlUsd`, the public gate's own
+      // coverage/evidence counts, the published matched-lot array, and the real `mismatches`/
+      // `unmatchedSellEvents` this function already tracks. See pnlDiscrepancyAudit.ts's own header.
+      const pnlDiscrepancyAudit = buildPnlDiscrepancyAudit({
+        publicPnlStatus,
+        canonicalRealizedPnlUsd: realizedPnlUsd,
+        alternateEngineRealizedPnlUsd: roundUsd(input.pnlEngineResult.realizedPnlUsd),
+        verifiedLotCount: publicPnlGateAudit.verifiedLotCount,
+        structuralClosedLots: publicPnlGateAudit.structuralClosedLots,
+        pricingCoverage: verifiedPricingCoverage,
+        criticalTradeEvidenceMissing: missingEvidenceBreakdown.criticalTradeEvidenceMissing,
+        genuineUnmatchedSells: publicPnlGateAudit.genuineUnmatchedSells ?? 0,
+        publishedMatchedLots: publishedFifoLots,
+        mismatches,
+        unmatchedSellEvents: input.fifoEngineResult.unmatchedSellEvents,
+      })
+
       const summary: PnlReconciliationSummary = {
         closedLots: totalClosedLots,
         unmatchedBuys: correctedUnmatchedBuys,
@@ -1608,9 +1634,11 @@ export function createPnlReconciliation(config: Config = {}) {
         warning,
         acceptedEvidenceAudit,
         publishedMatchedLots: publishedFifoLots,
+        pnlDiscrepancyAudit,
       }
       logger.warn('[pnl-reconciliation] finalSummary', summary)
       logger.warn('[public-pnl-gate-audit]', publicPnlGateAudit)
+      logger.warn('[pnl-discrepancy-audit]', pnlDiscrepancyAudit)
       return summary
     },
   }

@@ -3,6 +3,7 @@ import { describe, it } from 'node:test'
 import type { MatchedLot } from '../modules/fifoEngine/types'
 import type { PnlReconciliationSummary } from './pnlReconciliation'
 import { createAyriAttribution } from './ayriAttribution'
+import { emptyPnlDiscrepancyAudit } from './pnlDiscrepancyAudit'
 
 const quiet = { warn() {} }
 
@@ -48,6 +49,7 @@ function reconciled(overrides: Partial<PnlReconciliationSummary> = {}): PnlRecon
       existingUpstreamSidesBackedByAcceptedEvidence: 0, existingUpstreamSidesWithoutAcceptedEvidence: 0,
       existingUpstreamSidesConflictingWithAcceptedEvidence: 0,
     },
+    pnlDiscrepancyAudit: emptyPnlDiscrepancyAudit(),
     ...overrides,
   }
 }
