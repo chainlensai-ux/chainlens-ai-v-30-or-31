@@ -13,7 +13,7 @@ import type { NormalizedEvent } from '../modules/normalization/types'
 import {
   goldrushPriceSource, resetGoldrushPriceSourceCallCount, __resetGoldrushPriceSourceCachesForTest,
 } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
-import { resetWalletProviderCostLedger } from '../modules/providerCost/walletProviderCostLedger'
+import { resetWalletProviderCostLedger, getWalletProviderCostAudit } from '../modules/providerCost/walletProviderCostLedger'
 
 function event(overrides: Partial<NormalizedEvent> = {}): NormalizedEvent {
   return {
@@ -78,15 +78,77 @@ test('HARD ASSERTION: a real open-position current-price call is counted separat
   })
 
   // The CLOSED lot's own sides are fully accepted-evidence covered and contribute zero calls to
-  // either figure. The single real historical call that DOES fire is the open position's own entry
-  // (cost-basis) side — never accepted-evidence-coverable (never seeded for an open position) and
-  // genuinely necessary, correctly attributed to the historical figure, never hidden.
-  assert.equal(result.acceptedEvidenceSkipAudit.goldrushActualLiveCalls, 1, 'the one real historical call is the open position\'s own cost-basis lookup, not the covered closed lot')
-  // The open position's CURRENT price is a SEPARATE, genuinely additional, real, unavoidable live
-  // call — this is the one that was previously invisible to goldrushActualLiveCalls entirely.
-  assert.equal(result.acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls, 1, 'the current-price pass for the one open position makes exactly one real, separately-attributed GoldRush call')
+  // either figure. RECLASSIFIED, DISCLOSED (wallet-provider-cost-audit follow-up task #2 — confirmed
+  // production confusion: `historicalGoldrushLiveCalls`/`unusedHistoricalGoldrushCalls` claim to be
+  // provably 0 once every closed-lot side is manifest-covered, yet the open position's own
+  // never-accepted-evidence-coverable entry cost-basis call kept showing up there). Since every
+  // closed-lot side here is covered (`everyMatchedLotSideCovered`), the ONE real call this pass makes
+  // is provably open-position-only — it is now attributed to `currentPriceGoldrushLiveCalls`
+  // (alongside the separate now-price pass below), never to `goldrushActualLiveCalls`.
+  assert.equal(result.acceptedEvidenceSkipAudit.goldrushActualLiveCalls, 0, 'the covered closed lot contributes zero, and the open-position entry cost-basis call is reclassified below, never counted as historical/replay-avoidable waste')
+  // The open position's own entry cost-basis call AND its separate current-market-price call are
+  // both real, genuinely additional, unavoidable live calls — both now attributed here.
+  assert.equal(result.acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls, 2, 'the open position\'s entry cost-basis call and its separate now-price call are both counted here')
   assert.equal(result.manifestFastPathAudit.openPositionRequirementsRetained, 1)
   assert.equal(result.priceUsdLookup(closedBuy), 5)
   assert.equal(result.priceUsdLookup(closedSell), 7)
   assert.equal(result.currentPriceUsdLookup(openBuy.contract, openBuy.chain), 9, 'the real live current price is genuinely used, never discarded')
+})
+
+// HARD ASSERTION (required regression, wallet-provider-cost-audit follow-up task #2): the exact
+// confirmed production shape — manifestApplied/every closed-lot side covered, an open position whose
+// GoldRush entry cost-basis lookup genuinely returns no data (unused). Ledger-level end to end:
+// historicalGoldrushLiveCalls/unusedHistoricalGoldrushCalls/callsWhoseResultWasUnused must all read
+// 0 — the call is real, attributed to currentPriceGoldrushLiveCalls, and correctly not double-counted
+// as replay-avoidable historical waste.
+test('HARD ASSERTION (required regression): a fully manifest-covered scan reports historicalGoldrushLiveCalls 0 / unusedHistoricalGoldrushCalls 0 even when the open position\'s own GoldRush lookup returns no data', async () => {
+  resetGoldrushPriceSourceCallCount()
+  __resetGoldrushPriceSourceCachesForTest()
+  resetWalletProviderCostLedger()
+
+  const closedBuy = event({ txHash: '0xclosedbuy2', direction: 'inbound', contract: '0xclosed2', amount: 1, timestamp: '2026-01-01T00:00:00.000Z' })
+  const closedSell = event({ txHash: '0xclosedsell2', direction: 'outbound', contract: '0xclosed2', amount: 1, timestamp: '2026-01-02T00:00:00.000Z' })
+  const openBuy = event({ txHash: '0xopenbuy2', direction: 'inbound', contract: '0xopen2', amount: 1, timestamp: '2026-01-03T00:00:00.000Z' })
+  const allEvents = [closedBuy, closedSell, openBuy]
+
+  const kv = fakeAcceptedEvidenceKv()
+  const now = 1
+  const base = {
+    chain: closedBuy.chain, token: closedBuy.contract, openedTxHash: closedBuy.txHash, closedTxHash: closedSell.txHash,
+    openedAt: Date.parse(closedBuy.timestamp), closedAt: Date.parse(closedSell.timestamp), amount: closedBuy.amount,
+  }
+  const version = lotIdentityVersion(base)
+  for (const side of ['entry', 'exit'] as const) {
+    const txHash = side === 'entry' ? base.openedTxHash : base.closedTxHash
+    const timestamp = side === 'entry' ? base.openedAt : base.closedAt
+    const envelope = buildAcceptedEvidenceEnvelope({
+      identity: { chain: base.chain, token: base.token, txHash, side, timestamp, lotIdentityVersion: version },
+      priceUsd: side === 'entry' ? 5 : 7, valueUsd: 5, source: 'test', evidenceType: 'chain-aware-historical', providerTimestampBucket: null, now,
+    })
+    await kv.set(`v1:accepted-evidence:${base.chain}:${base.token.toLowerCase()}:${txHash}:${side}:${timestamp}`, envelope)
+  }
+
+  // NO DATA, DISCLOSED: this fake client always returns an empty items array — the open position's
+  // entry cost-basis lookup genuinely finds no price (an honest "unused" real call), exactly the
+  // confirmed production shape (2 historical calls, both unused).
+  const noDataGoldrush = goldrushPriceSource({
+    PricingService: { getTokenPrices: async () => ({ data: [{ items: [] }] }) },
+  } as unknown as Parameters<typeof goldrushPriceSource>[0])
+
+  const result = await priceLotsForWallet({
+    normalizedEvents: allEvents, recoveredEvents: [],
+    priceSources: { primary: noDataGoldrush, fallback: () => null },
+    acceptedEvidenceKv: kv, now: () => now,
+  })
+
+  const audit = getWalletProviderCostAudit({
+    historicalGoldrushLiveCalls: result.acceptedEvidenceSkipAudit.goldrushActualLiveCalls,
+    currentPriceGoldrushLiveCalls: result.acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls,
+  })
+  assert.equal(audit.goldrushCallSplit.historicalGoldrushLiveCalls, 0)
+  assert.equal(audit.goldrushCallSplit.unusedHistoricalGoldrushCalls, 0)
+  assert.equal(audit.outputs.callsWhoseResultWasUnused, 0)
+  // The real, no-data calls are still genuinely made and genuinely counted — just under the correct,
+  // non-historical bucket.
+  assert.ok(audit.goldrushCallSplit.currentPriceGoldrushLiveCalls! >= 1)
 })

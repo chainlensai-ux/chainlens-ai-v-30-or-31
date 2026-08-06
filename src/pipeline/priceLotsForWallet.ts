@@ -1017,16 +1017,39 @@ export async function priceLotsForWallet(params: {
     }
   }
 
-  const atTradeTime = await resolvePricingAtTime({
-    buyEntries: buyRequirementEntries,
-    sellEntries: sellRequirementEntries,
-    priceSources: params.priceSources,
-    // Only applied when the pre-filter above actually ran (schedulerYieldSelected reflects the
-    // selection either way, but the override only matters once entries were curated to it) — see
-    // ResolvePricingAtTimeParams's own header. FAIRNESS_FLOOR_PER_TOKEN, never the flat default, so
-    // the already-curated set is never re-clipped a second time inside pricingAtTimeEngine.
-    maxLookupsPerTokenOverride: process.env.HISTORICAL_PRICING_YIELD_SCHEDULER_ENABLED === 'true' ? FAIRNESS_FLOOR_PER_TOKEN : undefined,
-  })
+  // STAGE ATTRIBUTION, DISCLOSED (wallet-provider-cost-audit follow-up task #2 — confirmed
+  // production confusion: `historicalGoldrushLiveCalls`/`unusedHistoricalGoldrushCalls` claim to be
+  // "provably 0 on a replay-covered scan" — see goldrushCallSplit's own header on
+  // walletProviderCostLedger.ts — yet a fully manifest-covered scan (`everyMatchedLotSideCovered`)
+  // still showed 2. Root cause: this SAME `resolvePricingAtTime` call prices BOTH closed-lot sides
+  // (skippable via accepted evidence, already filtered out of buys/sells above when covered) AND
+  // open-position (currently-held, unmatched buy) cost-basis entries — the deliberately-NEVER-
+  // suppressed inbound events described in `openPositionRequirementsRetained`'s own header (dropping
+  // them would silently zero out unrealized PnL, which is not this task's ask). When
+  // `everyMatchedLotSideCovered` is true, every closed-lot side has already been removed from
+  // `buys`/`sells` by the accepted-evidence skip filter above — whatever remains at THIS call is
+  // therefore provably open-position-only cost-basis work, never historical-replay-avoidable work,
+  // so it is honestly attributed as such rather than counted as "unused historical" waste. When
+  // coverage is NOT yet complete (a first scan, or any closed-lot side still uncovered), this call
+  // genuinely does real closed-lot historical work and keeps the default 'historical_pricing' tag.
+  // Never changes what is priced, matched, or published — attribution only.
+  const historicalPassIsOpenPositionOnly = manifestFastPathAudit.allClosedLotSidesCovered
+  if (historicalPassIsOpenPositionOnly) setGoldrushPriceSourceStage('current_pricing')
+  let atTradeTime: Awaited<ReturnType<typeof resolvePricingAtTime>>
+  try {
+    atTradeTime = await resolvePricingAtTime({
+      buyEntries: buyRequirementEntries,
+      sellEntries: sellRequirementEntries,
+      priceSources: params.priceSources,
+      // Only applied when the pre-filter above actually ran (schedulerYieldSelected reflects the
+      // selection either way, but the override only matters once entries were curated to it) — see
+      // ResolvePricingAtTimeParams's own header. FAIRNESS_FLOOR_PER_TOKEN, never the flat default, so
+      // the already-curated set is never re-clipped a second time inside pricingAtTimeEngine.
+      maxLookupsPerTokenOverride: process.env.HISTORICAL_PRICING_YIELD_SCHEDULER_ENABLED === 'true' ? FAIRNESS_FLOOR_PER_TOKEN : undefined,
+    })
+  } finally {
+    if (historicalPassIsOpenPositionOnly) resetGoldrushPriceSourceStage()
+  }
 
   // ACCEPTED-PRICE HYDRATION, DISCLOSED (requirement #1 — "apply the persisted accepted price to
   // the exact matched-lot side immediately... do not merely remove the requirement while leaving
@@ -1040,7 +1063,20 @@ export async function priceLotsForWallet(params: {
   for (const [txHash, priceUsd] of acceptedPriceByTxHash.costUsd) atTradeTime.costUsd[txHash] = priceUsd
   for (const [txHash, priceUsd] of acceptedPriceByTxHash.proceedsUsd) atTradeTime.proceedsUsd[txHash] = priceUsd
 
-  acceptedEvidenceSkipAudit.goldrushActualLiveCalls = getGoldrushPriceSourceCallCount() - goldrushCallsBeforeResolve
+  // ATTRIBUTION SPLIT, DISCLOSED (wallet-provider-cost-audit follow-up task #2): when this pass was
+  // provably open-position-only (see `historicalPassIsOpenPositionOnly` above), its real GoldRush
+  // spend is counted under `currentPriceGoldrushLiveCalls` — the SAME "not replay-avoidable, needed
+  // only because of a currently-open position" bucket the separate now-price pass below already
+  // reports into — rather than `goldrushActualLiveCalls` (which flows into the ledger's
+  // `historicalGoldrushLiveCalls`/`unusedHistoricalGoldrushCalls`, both of which specifically claim
+  // to be provably 0 once the manifest replay covers every closed-lot side). Accumulates (`+=`) since
+  // the later now-price pass adds its own real calls into this same field afterward.
+  const atTradeTimeGoldrushCalls = getGoldrushPriceSourceCallCount() - goldrushCallsBeforeResolve
+  if (historicalPassIsOpenPositionOnly) {
+    acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls += atTradeTimeGoldrushCalls
+  } else {
+    acceptedEvidenceSkipAudit.goldrushActualLiveCalls = atTradeTimeGoldrushCalls
+  }
   acceptedEvidenceSkipAudit.dexActualLiveCalls = getDexscreenerCallCount() - dexCallsBeforeResolve
 
   // PER-REQUIREMENT ETH-NATIVE DIAGNOSTIC, DISCLOSED, BOUNDED — cross-references
@@ -1856,7 +1892,11 @@ export async function priceLotsForWallet(params: {
   } finally {
     resetGoldrushPriceSourceStage()
   }
-  acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls = getGoldrushPriceSourceCallCount() - goldrushCallsBeforeNow
+  // ACCUMULATES, DISCLOSED: never overwrites — the at-trade-time pass above may already have added
+  // its own real, open-position-only GoldRush spend into this same field (see
+  // `historicalPassIsOpenPositionOnly` above), and this pass's genuinely separate "now" price calls
+  // must be counted alongside it, never replace it.
+  acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls += getGoldrushPriceSourceCallCount() - goldrushCallsBeforeNow
   acceptedEvidenceSkipAudit.currentPriceDexActualLiveCalls = getDexscreenerCallCount() - dexCallsBeforeNow
 
   const priceUsdLookup: PriceUsdLookup = (event) => resolveEventPriceUsd(event, atTradeTime.costUsd, atTradeTime.proceedsUsd)
