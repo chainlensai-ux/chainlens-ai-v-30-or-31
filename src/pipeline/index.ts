@@ -2240,9 +2240,17 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // (and `canonicalPricedFifo`, its explicit alias — see FinalReport's own header) — never a
     // second computation, so this diagnostic itself proves the identity this task's fix requires.
     const finalized = summarizeFifo(fifoAndPnl)
+    // CANONICAL PREDICATE ALIGNMENT, DISCLOSED (smart-money/PnL divergence follow-up task —
+    // confirmed production bug: this audit line counted `evidenceQuality === 'verified'` directly
+    // off the raw, pre-gate `fifoAndPnl.matchedLots`, so it kept reporting the full structural
+    // verified count (e.g. 23/95.83%) even after the public PnL gate's own `isCanonicalVerifiedPublishedLot`
+    // predicate — chronology guard included — dropped lots the public side actually published
+    // (e.g. down to 16/66.67%). Smart Money must reflect the exact same publishable set PnL does,
+    // so this now runs the identical shared predicate over the identical final lot array.
+    const canonicalVerifiedCount = fifoAndPnl.matchedLots.filter(isCanonicalVerifiedPublishedLot).length
 
     const verifiedCoveragePercent = finalized.structuralDenominator > 0
-      ? Math.round((finalized.verifiedCount / finalized.structuralDenominator) * 10000) / 100
+      ? Math.round((canonicalVerifiedCount / finalized.structuralDenominator) * 10000) / 100
       : 0
 
     // eslint-disable-next-line no-console
@@ -2252,7 +2260,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       postPricingLots: finalized.matchedLotsLength,
       postPromotionLots: postPromotion.matchedLotsLength,
       serializedLots: finalized.matchedLotsLength,
-      verifiedLots: finalized.verifiedCount,
+      verifiedLots: canonicalVerifiedCount,
       structuralClosedLots: finalized.structuralDenominator,
       // Both figures are computed from the identical `fifoAndPnl`/`canonicalPricedFifo` object —
       // this is what makes `countsMatch: true` a structural guarantee, not a coincidence.

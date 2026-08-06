@@ -111,6 +111,14 @@ export function matchLotsFIFO(
   const matchedLots: MatchedLot[] = []
   let unmatchedSells = 0
   const unmatchedSellEvents: UnmatchedEventIdentity[] = []
+  // OCCURRENCE COUNTER, DISCLOSED (chronology/duplicate-lotId follow-up task — confirmed production
+  // bug: `publishedMatchedLots` repeated the identical `lotId` for different partial-fill matches of
+  // the same open lot sold across multiple sells, since MatchedLot.lotId was always just the
+  // underlying OpenLot's own id). Each match consuming a given open lot gets a distinct, deterministic
+  // published id (`${lot.lotId}#${occurrence}`) — legitimate partial fills are never merged or
+  // dropped, they just each get their own identity. lotIdentityKey (scanDeterminismAudit.ts) never
+  // reads this field, so canonical fingerprinting/manifest identity is unaffected by this change.
+  const matchOccurrenceByLotId = new Map<string, number>()
 
   const sortedSells = [...sellEvents].sort((a, b) => Date.parse(a.timestamp) - Date.parse(b.timestamp))
 
@@ -120,10 +128,20 @@ export function matchLotsFIFO(
     let remainingToMatch = sell.amount
     let matchedAnyAmount = false
     const proceedsUsdTotal = priceUsdLookup(sell)
+    const sellTimestampMs = Date.parse(sell.timestamp)
 
     for (const lot of tokenLots) {
       if (remainingToMatch <= 0) break
       if (lot.amountRemaining <= 0) continue
+      // CHRONOLOGY GUARD, DISCLOSED (confirmed production bug: FIFO matched a sell against the
+      // oldest STILL-OPEN lot for a token regardless of whether that lot's own openedAt was actually
+      // before the sell — e.g. no genuinely earlier buy existed yet and the engine still consumed a
+      // later-dated lot, fabricating a closedAt < openedAt match). Lots here are ordered ascending by
+      // openedAt (buildLots' own global sort, preserved by groupByToken), so once the next candidate
+      // lot opened AFTER this sell, every remaining lot for this token did too — stop matching this
+      // sell here rather than fabricate an impossible match; any unconsumed quantity flows through
+      // the existing, real unmatchedSells/unmatchedSellEvents path (never silently dropped).
+      if (lot.openedAt > sellTimestampMs) break
 
       const amountFromThisLot = Math.min(lot.amountRemaining, remainingToMatch)
       const proportionOfSell = proceedsUsdTotal != null && sell.amount > 0 ? (amountFromThisLot / sell.amount) * proceedsUsdTotal : null
@@ -131,9 +149,12 @@ export function matchLotsFIFO(
         ? (amountFromThisLot / lot.amountOpened) * lot.costBasisUsd
         : null
       const isVerified = costBasisForPortion != null && proportionOfSell != null
+      const occurrence = matchOccurrenceByLotId.get(lot.lotId) ?? 0
+      matchOccurrenceByLotId.set(lot.lotId, occurrence + 1)
+      const publishedLotId = occurrence === 0 ? lot.lotId : `${lot.lotId}#${occurrence}`
 
       matchedLots.push({
-        lotId: lot.lotId,
+        lotId: publishedLotId,
         token: lot.token,
         chain: lot.chain,
         openedAt: lot.openedAt,
