@@ -34,7 +34,7 @@ import { createCuBudget } from '@/app/api/_shared/cuBudget'
 import { recordCuUsage } from '@/app/api/_shared/cuUsageStore'
 import { logFifoPricingDivergence, shouldSampleThisScan } from '@/lib/server/engineComparison'
 import { setJobProgress } from '@/src/modules/scanJobs'
-import { updateWalletScanJobProgress } from '@/src/modules/walletScanQueue'
+import { updateWalletScanJobProgress, publishWalletScanPartialSnapshot } from '@/src/modules/walletScanQueue'
 import { withScanTimeout } from '@/src/utils/timeout'
 import { alchemyAudit } from '@/lib/server/alchemyAudit'
 import { getGoldrushPriceSourceCallCount } from '@/src/modules/pricingAtTimeEngine/sources/goldrushPriceSource'
@@ -306,23 +306,25 @@ function reportStage(jobId: string | undefined, startTime: number, stage: string
   void updateWalletScanJobProgress(jobId, { stage, label, elapsedMs: Date.now() - startTime })
 }
 
-// TIMING AUDIT, DISCLOSED (perceived-speed follow-up task, explicit requirement): real
-// `Date.now() - startTime` deltas captured at the point each real module/stage genuinely completed
-// — never estimated, never backfilled after the fact. `stagesBlockingInitialRender` /
+// TIMING AUDIT, DISCLOSED (perceived-speed / fast-snapshot follow-up tasks, explicit requirement):
+// real `Date.now() - startTime` deltas captured at the point each real module/stage genuinely
+// completed — never estimated, never backfilled after the fact. `stagesBlockingInitialRender` /
 // `stagesDeferredAfterInitialRender` are REAL module-name lists reflecting this worker's actual
 // execution order, not aspirational ones.
 //
-// HONEST LIMITATION, DISCLOSED: `timeToFirstPortfolioMs`/`timeToFirstHoldingsMs` below are measured
-// AFTER `router.handleScanRequest` (the core FIFO/PnL/manifest replay call) has already fully
-// resolved — that call runs first and is NOT parallelized with the holdings/pricing/portfolio
-// modules that follow it, so these two figures include the full core-call duration, not just the
-// holdings/portfolio work itself. This worker file does not reorder or parallelize that call against
-// the holdings/portfolio modules — doing so safely would require duplicating (not bypassing) the
-// core call's own request validation/sanitization/rate-limiting ahead of it, which is out of scope
-// for this pass and is called out explicitly here rather than silently claimed as fixed. What IS
-// real and true here: holdings/portfolio genuinely never wait on receipt-decoder shadow mode,
-// recovery, Smart Money, open-position unrealized pricing, or deep provider diagnostics — those
-// modules run strictly AFTER holdings/portfolio/PnL, per `stagesDeferredAfterInitialRender` below.
+// FIXED, DISCLOSED (fast-snapshot architecture-audit task — resolves the PRIOR "HONEST LIMITATION"
+// disclosed here, which said holdings/portfolio were sequenced strictly after the core FIFO/PnL/
+// manifest call and could not safely be parallelized without duplicating its own validation/
+// rate-limiting): `runWalletScanV2Worker` now calls `router.validateIncomingRequest` itself ONCE
+// (the exact same rate-limit/sanitize/validate step `router.handleScanRequest` would otherwise run
+// internally), then starts the holdings/pricing/portfolio fast path and the core call
+// (`router.runValidatedScanRequest`, the validation-free half of the same logic) CONCURRENTLY — see
+// this file's own `computeFastSnapshot`/`fastSnapshotPromise`/`corePromise`. `timeToFirstPortfolioMs`
+// /`timeToFirstHoldingsMs`/`timeToPartialPortfolioPublishMs` now measure the REAL, independent
+// holdings/portfolio path — no longer inflated by the core call's own duration. What remains true:
+// holdings/portfolio still never wait on receipt-decoder shadow mode, recovery, Smart Money,
+// open-position unrealized pricing, or deep provider diagnostics — those all run strictly after the
+// core result resolves, per `stagesDeferredAfterInitialRender` below.
 export type WalletScanTimingAudit = {
   timeToFirstPortfolioMs: number | null
   timeToFirstHoldingsMs: number | null
@@ -330,6 +332,16 @@ export type WalletScanTimingAudit = {
   timeToFullScanMs: number
   stagesBlockingInitialRender: string[]
   stagesDeferredAfterInitialRender: string[]
+  // FAST-SNAPSHOT FIELDS, DISCLOSED (this task's own explicit requirement): real timing/outcome for
+  // the early partial portfolio/holdings publish — see publishWalletScanPartialSnapshot's own
+  // header. `coreScanStartedAtMs` is effectively ~0 (the core call starts immediately after
+  // preflight, same moment as the fast snapshot) — kept as a real, explicit field rather than
+  // assumed, so a future change to the startup sequence can't silently make this stale.
+  timeToPartialPortfolioPublishMs: number | null
+  partialSnapshotPublished: boolean
+  partialSnapshotBlockedReason: string | null
+  coreScanStartedAtMs: number
+  coreScanFinishedAtMs: number
 }
 
 // CU-HARDENING WIRING (unchanged from the route file's own history — fixes docs/CU_AUDIT.md
@@ -350,70 +362,37 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   // eslint-disable-next-line no-console
   console.warn('[CU-HARDENING] Cache cleared for new request')
 
+  // PREFLIGHT, EXTRACTED ONCE, DISCLOSED (fast-snapshot architecture-audit task): the SAME
+  // rate-limit/sanitize/validate step router.handleScanRequest itself would run — called through
+  // the shared router.validateIncomingRequest export so it happens EXACTLY ONCE per request. Doing
+  // this ourselves (rather than calling router.handleScanRequest and waiting for it) is what makes
+  // it possible to start the holdings/portfolio fast path before the core FIFO/PnL/manifest call
+  // resolves, without duplicating rate-limit accounting or re-validating the request a second time.
+  const preflight = router.validateIncomingRequest(rawBody, ip)
+  if ('errorResult' in preflight) {
+    return preflight.errorResult
+  }
+  const sanitized = preflight.sanitized
+  const coreScanStartedAtMs = Date.now() - startTime
   reportStage(jobId, startTime, 'core', 'Replaying verified PnL...')
-  // handleScanRequest already never throws internally (rate-limit/validation errors and any
-  // runWalletScanV2 failure are both caught and returned as a structured RouteResult).
-  let result: Awaited<ReturnType<typeof router.handleScanRequest>>
-  try {
-    result = await withScanTimeout(router.handleScanRequest(rawBody, ip), WORKER_GLOBAL_TIMEOUT_MS)
-  } catch (err) {
-    if (err instanceof Error && err.message === `SCAN_TIMEOUT_${WORKER_GLOBAL_TIMEOUT_MS}ms`) {
-      return timedOutPartialResult()
-    }
-    throw err
-  }
-  // REAL, MEASURED — see WalletScanTimingAudit's own header for the honest caveat: this is measured
-  // AFTER the core call resolves, since manifest-replayed realized PnL is only known once it returns.
-  const timeToFirstPnlMs = Date.now() - startTime
 
-  let body = result.body as { success: boolean; data?: { scanMetadata?: { walletAddress?: string } } }
+  // FAST-SNAPSHOT PATH, DISCLOSED (fast-snapshot architecture-audit task): holdings/pricing/
+  // portfolio (modules 1-3, UNCHANGED logic — only moved earlier and no longer gated on the core
+  // scan's own response) started here, CONCURRENTLY with the core call below, using the wallet
+  // address/chain allowlist already known from `sanitized` — the exact same values
+  // `scanMetadata.walletAddress`/`chainsScanned` would echo back later, just available sooner. This
+  // is the SAME single fetchAllHoldings/priceHoldings/buildPortfolio call the final result already
+  // used — moved, never duplicated (see this function's own "no duplicate provider calls" test
+  // coverage). `moduleErrors` is declared here (moved up from inside the old `if (body.success...)`
+  // block) so both this path and the core-result modules below share the one real error map.
+  const moduleErrors: Record<string, string> = {}
+  const walletAddress = sanitized.walletAddress
+  const holdingsAllowedChainIds = resolveHoldingsAllowedChainIds(sanitized.chains)
+  // eslint-disable-next-line no-console
+  console.warn('[CU-TRACK] deep-scan start:', { walletAddress, scanMode: sanitized.scanMode, chainsScanned: sanitized.chains, chains: holdingsAllowedChainIds })
+  const chainOverallStart = performance.now()
 
-  if (body.success && !isValidV2Result(body.data as Record<string, unknown> | undefined)) {
-    logDirectFailure(new Error('Invalid V2 result shape'))
-    return { status: 500, body: { success: false, error: { message: 'invalid_v2_shape', category: 'pipeline' } } }
-  }
-
-  // HEAVY-WALLET FAST-FAIL, DISCLOSED PLACEMENT: `providerDiagnostics` is a real field already
-  // populated by router.handleScanRequest (the old pipeline, src/pipeline/index.ts) above — before
-  // any of the V2 chain's own holdings/pricing/trades/pnl calls run. Checking it here means a
-  // pathological wallet is rejected before the V2 chain's own (separate, additional) provider
-  // calls ever fire, not after — a real fast-fail, not a post-hoc one.
-  const earlyDiagnostics = (body.data as Record<string, unknown> | undefined)?.providerDiagnostics
-  const earlyEventCount = sumProviderEventCount(earlyDiagnostics)
-  if (earlyEventCount > HEAVY_WALLET_EVENT_THRESHOLD) {
-    // eslint-disable-next-line no-console
-    console.warn('[worker] heavy-wallet-fast-fail', { eventCount: earlyEventCount })
-    return { status: 200, body: { success: false, error: { message: 'HEAVY_WALLET_FAST_FAIL' } } }
-  }
-
-  if (body.success && body.data?.scanMetadata?.walletAddress) {
-    const walletAddress = body.data.scanMetadata.walletAddress
-    // CHAIN ALLOWLIST BY EXPLICIT REQUEST, DISCLOSED (Alchemy cost-audit follow-up task, issue #2
-    // — confirmed production regression: gating this allowlist on `scanMode === 'deep'` ALONE
-    // silently unlocked Arbitrum/HyperEVM for every deep-mode scan regardless of which chains the
-    // caller actually requested — "Run Deep Scan" must never silently mean "all chains" by itself.
-    // The REAL signal for "the caller explicitly wants this chain" is `scanMetadata.chainsScanned`
-    // — the wallet's own already-validated `chains` request field (src/deployment/validator.ts),
-    // echoed back unchanged by the pipeline (src/pipeline/index.ts's `chainsScanned`) — never scan
-    // mode alone. A chain only reaches the holdings fetch here if the caller's OWN request actually
-    // named it; `DEFAULT_HOLDINGS_CHAIN_IDS` (Base + ETH) is the floor whenever `chainsScanned` is
-    // missing/empty (an older/unwired caller), never a ceiling this explicit signal can't exceed.
-    const chainsScanned = (body.data.scanMetadata as { chainsScanned?: string[] } | undefined)?.chainsScanned
-    const scanMode = (body.data.scanMetadata as { scanMode?: string } | undefined)?.scanMode
-    const holdingsAllowedChainIds = resolveHoldingsAllowedChainIds(chainsScanned)
-    // eslint-disable-next-line no-console
-    console.warn('[CU-TRACK] deep-scan start:', { walletAddress, scanMode: scanMode ?? 'normal', chainsScanned: chainsScanned ?? null, chains: holdingsAllowedChainIds })
-    // WORKER OBSERVABILITY, DISCLOSED: per-module `performance.now()` timing logs added below, per
-    // explicit instruction — purely additive console.log calls wrapped around each already-existing
-    // module call, in the same order they already ran. No module's logic, arguments, ordering, or
-    // try/catch degrade-shape was changed to add these.
-    const chainOverallStart = performance.now()
-    // MODULE ERRORS, DISCLOSED (stuck-at-module-11 task): collects a real timeout/rejection message
-    // per module (see runWithTimeoutAndRpcAudit above), merged into the final response as `moduleErrors`
-    // — non-fatal, purely additive; a module recorded here still contributed its degrade-shape
-    // fallback to every downstream module exactly as it already did before this change.
-    const moduleErrors: Record<string, string> = {}
-
+  async function computeFastSnapshot() {
     reportProgress(jobId, 1, 'holdings')
     reportStage(jobId, startTime, 'holdings', 'Loading holdings...')
     // eslint-disable-next-line no-console
@@ -466,6 +445,111 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] finished portfolio in', performance.now() - t0, 'ms', 'holdings=', chainHoldings.length)
     const timeToFirstPortfolioMs = Date.now() - startTime
+
+    // PARTIAL PUBLISH, DISCLOSED (fast-snapshot architecture-audit task): a real, small, display-
+    // shaped snapshot — never the full holdings array, never a fabricated value — published to the
+    // SAME job record the poll route reads, WHILE the core FIFO/PnL/manifest call may still be
+    // running. `publishFinal` (src/modules/walletScanWorker.ts) unconditionally overwrites this
+    // whole job record with the terminal result once the scan completes, so this can never be
+    // mistaken for (or survive alongside) the final response.
+    let partialSnapshotPublished = false
+    let partialSnapshotBlockedReason: string | null = null
+    const timeToPartialPortfolioPublishMs = Date.now() - startTime
+    if (jobId) {
+      try {
+        await publishWalletScanPartialSnapshot(jobId, {
+          portfolioTotalValueUsd: portfolioOutput.portfolio.totalValueUsd,
+          holdingsCount: chainHoldings.length,
+          topHoldings: portfolioOutput.portfolio.topHoldings.slice(0, 10).map((h) => ({
+            chainId: h.chainId, tokenAddress: h.tokenAddress, symbol: h.symbol, valueUsd: h.valueUsd,
+          })),
+          activeChainIds: holdingsAllowedChainIds,
+          publishedAtElapsedMs: timeToPartialPortfolioPublishMs,
+        })
+        partialSnapshotPublished = true
+      } catch (err) {
+        partialSnapshotBlockedReason = err instanceof Error ? err.message : String(err)
+      }
+    } else {
+      partialSnapshotBlockedReason = 'no_job_id'
+    }
+
+    return {
+      chainHoldings, pricing, portfolioOutput,
+      timeToFirstHoldingsMs, timeToFirstPortfolioMs, timeToPartialPortfolioPublishMs,
+      partialSnapshotPublished, partialSnapshotBlockedReason,
+    }
+  }
+
+  // PARALLEL START, DISCLOSED: both the fast snapshot above and the core call below begin
+  // immediately, neither awaited yet — this is the actual parallelism this task asked for. If the
+  // core call turns out to reject the request downstream (invalid V2 shape / heavy-wallet fast-fail
+  // below), the fast snapshot's own result is simply discarded — a real, disclosed, bounded-cost
+  // tradeoff (one already-budget-capped Base+ETH holdings/pricing pass on the rare reject path),
+  // never a correctness issue.
+  const fastSnapshotPromise = computeFastSnapshot()
+  // UNHANDLED-REJECTION GUARD, DISCLOSED: an early return below (invalid V2 shape / heavy-wallet
+  // fast-fail) abandons `fastSnapshotPromise` without ever awaiting it. `computeFastSnapshot`'s own
+  // internals are already fully guarded (every real call goes through `runWithTimeoutAndRpcAudit`'s
+  // own try/catch, and the partial-publish call has its own try/catch), so this should never
+  // actually reject — this `.catch` is a pure defensive no-op against Node's unhandled-rejection
+  // warning, and never affects the real, later `await fastSnapshotPromise` below (a promise's
+  // resolution is independent of how many places observe it).
+  fastSnapshotPromise.catch(() => {})
+  const corePromise = withScanTimeout(router.runValidatedScanRequest(sanitized), WORKER_GLOBAL_TIMEOUT_MS)
+
+  // handleScanRequest already never throws internally (rate-limit/validation errors and any
+  // runWalletScanV2 failure are both caught and returned as a structured RouteResult) — the SAME is
+  // true of runValidatedScanRequest, which only omits the validation step handleScanRequest already
+  // ran above via validateIncomingRequest.
+  let result: Awaited<typeof corePromise>
+  try {
+    result = await corePromise
+  } catch (err) {
+    if (err instanceof Error && err.message === `SCAN_TIMEOUT_${WORKER_GLOBAL_TIMEOUT_MS}ms`) {
+      return timedOutPartialResult()
+    }
+    throw err
+  }
+  const coreScanFinishedAtMs = Date.now() - startTime
+  // REAL, MEASURED — see WalletScanTimingAudit's own header for the honest caveat: this is measured
+  // AFTER the core call resolves, since manifest-replayed realized PnL is only known once it returns.
+  const timeToFirstPnlMs = coreScanFinishedAtMs
+
+  let body = result.body as { success: boolean; data?: { scanMetadata?: { walletAddress?: string } } }
+
+  if (body.success && !isValidV2Result(body.data as Record<string, unknown> | undefined)) {
+    logDirectFailure(new Error('Invalid V2 result shape'))
+    return { status: 500, body: { success: false, error: { message: 'invalid_v2_shape', category: 'pipeline' } } }
+  }
+
+  // HEAVY-WALLET FAST-FAIL, DISCLOSED PLACEMENT: `providerDiagnostics` is a real field already
+  // populated by router.handleScanRequest (the old pipeline, src/pipeline/index.ts) above — before
+  // any of the V2 chain's own holdings/pricing/trades/pnl calls run. Checking it here means a
+  // pathological wallet is rejected before the V2 chain's own (separate, additional) provider
+  // calls ever fire, not after — a real fast-fail, not a post-hoc one.
+  const earlyDiagnostics = (body.data as Record<string, unknown> | undefined)?.providerDiagnostics
+  const earlyEventCount = sumProviderEventCount(earlyDiagnostics)
+  if (earlyEventCount > HEAVY_WALLET_EVENT_THRESHOLD) {
+    // eslint-disable-next-line no-console
+    console.warn('[worker] heavy-wallet-fast-fail', { eventCount: earlyEventCount })
+    return { status: 200, body: { success: false, error: { message: 'HEAVY_WALLET_FAST_FAIL' } } }
+  }
+
+  if (body.success && body.data?.scanMetadata?.walletAddress) {
+    // DIVERGENCE CHECK, DISCLOSED: `chainsScanned` (the pipeline's own post-hoc echo of the request
+    // it actually ran) must always agree with `sanitized.chains` (the SAME preflight value the fast
+    // snapshot above already used) — logged, never silently trusted, if they ever disagree.
+    const chainsScanned = (body.data.scanMetadata as { chainsScanned?: string[] } | undefined)?.chainsScanned
+    if (chainsScanned && JSON.stringify([...chainsScanned].sort()) !== JSON.stringify([...sanitized.chains].sort())) {
+      // eslint-disable-next-line no-console
+      console.warn('[fast-snapshot-audit] chainsScanned diverged from preflight-sanitized chains', { chainsScanned, sanitizedChains: sanitized.chains })
+    }
+    const {
+      chainHoldings, pricing, portfolioOutput,
+      timeToFirstHoldingsMs, timeToFirstPortfolioMs, timeToPartialPortfolioPublishMs,
+      partialSnapshotPublished, partialSnapshotBlockedReason,
+    } = await fastSnapshotPromise
     // DIAGNOSTIC, DISCLOSED (portfolio-intelligence $0 bug fix): real counts only — pricedTokens
     // here is the actual number of pricing.pricedHoldings with a non-null valueUsd (not
     // portfolioOutput.portfolio.topHoldings.length, which the frontend's PortfolioIntelligenceCard
@@ -487,8 +571,8 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     reportProgress(jobId, 4, 'trades')
     // eslint-disable-next-line no-console
     console.warn('[V2-worker] starting trades')
-    t0 = performance.now()
-    providerCallsBefore = providerCallSnapshot()
+    let t0 = performance.now()
+    let providerCallsBefore = providerCallSnapshot()
     // BUDGET CHECK, DISCLOSED: if holdings (or anything before this point) already pushed the
     // scan's cumulative real Alchemy call count past MAX_CALLS_PER_SCAN — only plausible if
     // something is genuinely misbehaving — trades is skipped entirely rather than adding its own
@@ -741,10 +825,15 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       timeToFirstHoldingsMs,
       timeToFirstPnlMs,
       timeToFullScanMs: Date.now() - startTime,
+      timeToPartialPortfolioPublishMs,
+      partialSnapshotPublished,
+      partialSnapshotBlockedReason,
+      coreScanStartedAtMs,
+      coreScanFinishedAtMs,
       // REAL, DISCLOSED: nothing in this worker withholds the holdings/portfolio/PnL fields above
-      // pending any of the modules below — see WalletScanTimingAudit's own header for the one
-      // honest caveat (holdings/portfolio are still sequenced after, not parallelized with, the
-      // core FIFO/PnL/manifest replay call).
+      // pending any of the modules below — see WalletScanTimingAudit's own header for the fast-
+      // snapshot parallelization this task added (holdings/portfolio now run concurrently with,
+      // not after, the core FIFO/PnL/manifest replay call).
       stagesBlockingInitialRender: [],
       stagesDeferredAfterInitialRender: [
         'trades', 'pricing', 'chainActivity', 'risk', 'personality', 'behavior', 'signals', 'smartMoneyScore',

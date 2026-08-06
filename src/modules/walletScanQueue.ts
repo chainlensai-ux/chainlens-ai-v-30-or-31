@@ -26,6 +26,20 @@ export type WalletScanJobProgress = {
   elapsedMs: number
 }
 
+// PARTIAL SNAPSHOT, DISCLOSED (fast-snapshot architecture-audit task): real portfolio/holdings data,
+// computed by the SAME single fetchAllHoldings/priceHoldings/buildPortfolio call the final result
+// already uses (see workers/walletScanV2.ts's own fast-snapshot header) — never a fabricated or
+// re-fetched value. Intentionally a SMALL, display-shaped subset (never the full holdings array) to
+// keep this write cheap and to avoid the final result's own shape leaking into the poll response
+// early in a way a caller might mistake for the complete report.
+export type WalletScanPartialSnapshot = {
+  portfolioTotalValueUsd: number | null
+  holdingsCount: number
+  topHoldings: Array<{ chainId: number; tokenAddress: string; symbol: string; valueUsd: number | null }>
+  activeChainIds: number[]
+  publishedAtElapsedMs: number
+}
+
 export type WalletScanJobMetadata = {
   jobId: string
   wallet: string
@@ -38,6 +52,7 @@ export type WalletScanJobMetadata = {
   error?: string
   finishedAt?: number
   progress?: WalletScanJobProgress
+  partial?: WalletScanPartialSnapshot
 }
 
 export type WalletScanJobPayload = {
@@ -129,6 +144,25 @@ export async function updateWalletScanJobProgress(jobId: string, progress: Walle
     await kv.set(walletScanJobKey(jobId), { ...job, progress, updatedAt: Date.now() })
   } catch (err) {
     logQueueFailure('[wallet-scan-queue] update-progress-failure', err)
+  }
+}
+
+// BEST-EFFORT PARTIAL-SNAPSHOT PUBLISH, DISCLOSED (fast-snapshot architecture-audit task): same
+// read-modify-write convention as updateWalletScanJobProgress above, on the same job record. A real
+// early portfolio/holdings snapshot the poll route can surface WHILE the core FIFO/PnL/manifest
+// scan is still running — see workers/walletScanV2.ts's own header for how it is computed (in
+// parallel with, never blocked by, the core scan) and never a fabricated/guessed value. `publishFinal`
+// (src/modules/walletScanWorker.ts) overwrites this ENTIRE job record with the terminal result once
+// the scan completes, so `partial` — like `progress` — naturally disappears the moment a real final
+// result exists; there is no separate "clear partial" step to forget. Never throws.
+export async function publishWalletScanPartialSnapshot(jobId: string, partial: WalletScanPartialSnapshot): Promise<void> {
+  if (!walletScanRedisConfigured()) return
+  try {
+    const job = await kv.get<WalletScanJobMetadata>(walletScanJobKey(jobId))
+    if (!job) return
+    await kv.set(walletScanJobKey(jobId), { ...job, partial, updatedAt: Date.now() })
+  } catch (err) {
+    logQueueFailure('[wallet-scan-queue] publish-partial-snapshot-failure', err)
   }
 }
 

@@ -39,7 +39,17 @@ const RATE_LIMITED_RESPONSE: RouteResult = {
 // Shared by handleScanRequest / handleModulesRequest / handleModuleRequest — rate-limits, records,
 // sanitizes and validates the request the same way for every /scan-v2* entry point. Returns either
 // a ready-made error RouteResult, or the validated request for the caller to act on.
-function validateIncomingRequest(rawBody: unknown, callerIp: string): { errorResult: RouteResult } | { sanitized: SanitizedScanRequest } {
+//
+// EXPORTED, DISCLOSED (Wallet Scanner fast-snapshot architecture-audit task, explicit requirement:
+// "Do not duplicate auth/rate-limit/user validation unless extracted into a shared function"):
+// this is the ONE place rate-limiting/sanitization/shape-validation happens for every /scan-v2*
+// entry point — previously module-private, so a caller that needed the sanitized request BEFORE
+// the rest of handleScanRequest ran (workers/walletScanV2.ts's own fast-snapshot preflight) had no
+// way to reuse it without either duplicating this logic (double-counting isRateLimited/
+// recordRequest — a real correctness bug, not just duplication) or calling handleScanRequest twice
+// (same double-count). Exporting the EXACT same function, called exactly once per request, is the
+// only safe way to share this step. Nothing about its own logic changed.
+export function validateIncomingRequest(rawBody: unknown, callerIp: string): { errorResult: RouteResult } | { sanitized: SanitizedScanRequest } {
   if (isRateLimited(callerIp)) {
     return { errorResult: RATE_LIMITED_RESPONSE }
   }
@@ -53,16 +63,25 @@ function validateIncomingRequest(rawBody: unknown, callerIp: string): { errorRes
   return { sanitized: validation.sanitized }
 }
 
-export async function handleScanRequest(rawBody: unknown, callerIp: string): Promise<RouteResult> {
-  const validated = validateIncomingRequest(rawBody, callerIp)
-  if ('errorResult' in validated) return validated.errorResult
-
+// EXTRACTED, DISCLOSED (same task as validateIncomingRequest's own header): the "run the scan and
+// build the response" half of handleScanRequest, taking an ALREADY-validated request. Exported so
+// a caller that has already called validateIncomingRequest() itself (workers/walletScanV2.ts) can
+// run the actual scan without re-validating/re-rate-limiting. handleScanRequest below is now a
+// thin composition of validateIncomingRequest + this — its own external behavior (what status/body
+// it returns for a given rawBody/callerIp) is completely unchanged.
+export async function runValidatedScanRequest(sanitized: SanitizedScanRequest): Promise<RouteResult> {
   try {
-    const report = await getOrRunWalletScanV2(validated.sanitized)
+    const report = await getOrRunWalletScanV2(sanitized)
     return { status: 200, body: buildApiResponse(report) }
   } catch (error) {
     return { status: 500, body: handleApiError(error) }
   }
+}
+
+export async function handleScanRequest(rawBody: unknown, callerIp: string): Promise<RouteResult> {
+  const validated = validateIncomingRequest(rawBody, callerIp)
+  if ('errorResult' in validated) return validated.errorResult
+  return runValidatedScanRequest(validated.sanitized)
 }
 
 // POST /scan-v2 (all modules) — same scan as handleScanRequest, reshaped into { success, modules }.
