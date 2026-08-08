@@ -669,6 +669,7 @@ export default function HomePage() {
             transition: none !important;
             transform: none !important;
           }
+          .card-pro::after, .card-elite::after { animation: none !important; opacity: 0.7 !important; }
           .home-particles, .home-heavy-visual { display: none !important; }
           .home-ticker-track { animation: none !important; transform: translateX(0) !important; }
         }
@@ -676,6 +677,7 @@ export default function HomePage() {
         @media (max-width: 1200px), (pointer: coarse) {
           .home-heavy-visual, .home-particles { display: none !important; }
           .card-pro, .card-elite, .cortex-badge, .hero-horizon { animation: none !important; }
+          .card-pro::after, .card-elite::after { animation: none !important; box-shadow: none !important; }
           .pricing-card, .feat-card { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
         }
 
@@ -739,35 +741,42 @@ export default function HomePage() {
         }
         .feat-card:hover .feat-top-line { transform: scaleX(1); }
 
-        /* Pricing card animations */
-        @keyframes pro-glow {
-          0%,100% { box-shadow: 0 0 40px rgba(139,92,246,0.18), inset 0 0 0 1px rgba(139,92,246,0.55); }
-          50%      { box-shadow: 0 0 64px rgba(139,92,246,0.32), inset 0 0 0 1px rgba(139,92,246,0.80); }
+        /* Pricing card visuals — static glow + a cheap opacity-only pulse layer.
+           Previously .card-pro/.card-elite animated box-shadow directly every
+           frame (forces paint), which is what caused scroll jank near pricing. */
+        .card-pro   { box-shadow: 0 0 24px rgba(139,92,246,0.16), inset 0 0 0 1px rgba(139,92,246,0.55); }
+        .card-elite { box-shadow: 0 0 28px rgba(251,191,36,0.16), inset 0 0 0 1px rgba(251,191,36,0.42); }
+        @keyframes glow-pulse-opacity {
+          0%,100% { opacity: 0.45; }
+          50%      { opacity: 1; }
         }
-        @keyframes elite-glow {
-          0%,100% { box-shadow: 0 0 50px rgba(251,191,36,0.18), 0 0 100px rgba(251,191,36,0.08), inset 0 0 0 1px rgba(251,191,36,0.40); }
-          50%      { box-shadow: 0 0 80px rgba(251,191,36,0.32), 0 0 140px rgba(251,191,36,0.14), inset 0 0 0 1px rgba(251,191,36,0.70); }
+        .card-pro::after, .card-elite::after {
+          content: ''; position: absolute; inset: 0; border-radius: inherit;
+          pointer-events: none; z-index: 0;
+          animation: glow-pulse-opacity 4.5s ease-in-out infinite;
+          will-change: opacity;
         }
+        .card-pro::after   { box-shadow: 0 0 24px rgba(139,92,246,0.20), inset 0 0 0 1px rgba(139,92,246,0.55); }
+        .card-elite::after { box-shadow: 0 0 28px rgba(251,191,36,0.20), inset 0 0 0 1px rgba(251,191,36,0.42); }
         @keyframes shine-sweep {
           0%   { transform: translateX(-100%) skewX(-15deg); }
           100% { transform: translateX(300%) skewX(-15deg); }
         }
-        .card-pro   { animation: pro-glow   4s ease-in-out infinite; }
-        .card-elite { animation: elite-glow 3.5s ease-in-out infinite; }
         .pricing-card {
-          transition: transform 0.28s cubic-bezier(0.22,1,0.36,1), box-shadow 0.28s ease;
+          transition: transform 0.2s ease, box-shadow 0.2s ease;
           overflow: hidden;
         }
         .pricing-card::before {
           content: ''; position: absolute; top:0; left:0; right:0; bottom:0;
-          background: linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.04) 50%, transparent 60%);
-          opacity: 0; transition: opacity 0.3s; pointer-events: none; z-index: 2;
+          background: linear-gradient(105deg, transparent 45%, rgba(255,255,255,0.03) 50%, transparent 55%);
+          opacity: 0; transition: opacity 0.2s; pointer-events: none; z-index: 2;
         }
-        .pricing-card:hover { transform: translateY(-8px); }
+        .pricing-card:hover { transform: translateY(-4px); }
         .pricing-card:hover::before { opacity: 1; animation: shine-sweep 0.6s ease forwards; }
-        .pricing-card.card-free:hover { box-shadow: 0 20px 60px rgba(0,0,0,0.55), 0 0 40px rgba(236,72,153,0.18); border-color: rgba(236,72,153,0.35) !important; }
-        .pricing-card.card-pro:hover  { box-shadow: 0 14px 38px rgba(0,0,0,0.50), 0 0 36px rgba(139,92,246,0.28), inset 0 0 0 1px rgba(139,92,246,0.82); animation-play-state: paused; }
-        .pricing-card.card-elite:hover { box-shadow: 0 16px 44px rgba(0,0,0,0.56), 0 0 44px rgba(251,191,36,0.30), inset 0 0 0 1px rgba(251,191,36,0.82); animation-play-state: paused; }
+        .pricing-card.card-free:hover { border-color: rgba(236,72,153,0.35) !important; box-shadow: 0 6px 18px rgba(0,0,0,0.35), 0 0 14px rgba(236,72,153,0.14); }
+        .pricing-card.card-pro:hover  { box-shadow: 0 6px 18px rgba(0,0,0,0.35), 0 0 16px rgba(139,92,246,0.22), inset 0 0 0 1px rgba(139,92,246,0.75); }
+        .pricing-card.card-elite:hover { box-shadow: 0 7px 20px rgba(0,0,0,0.38), 0 0 18px rgba(251,191,36,0.24), inset 0 0 0 1px rgba(251,191,36,0.75); }
+        .pricing-card.card-pro:hover::after, .pricing-card.card-elite:hover::after { animation-play-state: paused; opacity: 0.9; }
         .home-heavy-visual * {
           animation-duration: 0s !important;
           animation-iteration-count: 1 !important;
@@ -1429,11 +1438,11 @@ export default function HomePage() {
         {/* ── Pricing ──────────────────────────────────────────────────────── */}
         <section style={{ position: 'relative', zIndex: 1, padding: '88px 24px 96px' }}>
           {/* Glowing horizon separator */}
-          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '1px', background: 'linear-gradient(90deg, transparent 0%, rgba(34,211,238,.52) 25%, rgba(168,85,247,.52) 55%, rgba(251,191,36,.28) 80%, transparent 100%)', boxShadow: '0 0 28px rgba(34,211,238,.28), 0 0 48px rgba(168,85,247,.16)' }} />
+          <div style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '1px', background: 'linear-gradient(90deg, transparent 0%, rgba(34,211,238,.52) 25%, rgba(168,85,247,.52) 55%, rgba(251,191,36,.28) 80%, transparent 100%)', boxShadow: '0 0 16px rgba(34,211,238,.22), 0 0 26px rgba(168,85,247,.12)' }} />
           {/* Cyan arc — bottom-left sweep */}
-          <div className="home-heavy-visual" style={{ position: 'absolute', left: '-30%', right: '-30%', bottom: -180, height: 420, borderTop: '2px solid rgba(34,211,238,.55)', borderRadius: '60% 60% 0 0 / 100% 100% 0 0', boxShadow: '0 -18px 80px rgba(34,211,238,.42), 0 -10px 110px rgba(59,130,246,.22)', pointerEvents: 'none' }} />
+          <div className="home-heavy-visual" style={{ position: 'absolute', left: '-30%', right: '-30%', bottom: -180, height: 420, borderTop: '2px solid rgba(34,211,238,.55)', borderRadius: '60% 60% 0 0 / 100% 100% 0 0', boxShadow: '0 -10px 40px rgba(34,211,238,.34), 0 -6px 56px rgba(59,130,246,.16)', pointerEvents: 'none' }} />
           {/* Purple arc — center sweep */}
-          <div className="home-heavy-visual" style={{ position: 'absolute', left: '-22%', right: '-22%', bottom: -200, height: 420, borderTop: '1px solid rgba(168,85,247,.40)', borderRadius: '56% 56% 0 0 / 100% 100% 0 0', boxShadow: '0 -8px 56px rgba(168,85,247,.18)', pointerEvents: 'none' }} />
+          <div className="home-heavy-visual" style={{ position: 'absolute', left: '-22%', right: '-22%', bottom: -200, height: 420, borderTop: '1px solid rgba(168,85,247,.40)', borderRadius: '56% 56% 0 0 / 100% 100% 0 0', boxShadow: '0 -6px 28px rgba(168,85,247,.14)', pointerEvents: 'none' }} />
           {/* Gold glow — Elite right side */}
           <div className="home-heavy-visual" style={{ position: 'absolute', right: '-8%', top: '10%', bottom: 0, width: '38%', background: 'radial-gradient(ellipse at 95% 60%, rgba(251,191,36,.11) 0%, transparent 55%)', pointerEvents: 'none' }} />
           {/* Purple blob — Pro center-left */}
