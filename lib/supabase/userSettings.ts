@@ -84,14 +84,26 @@ export async function activateUserPlanServerSide(
   userId: string,
   plan: 'pro' | 'elite',
   paymentRef?: string,
+  periodDays = 30,
 ): Promise<{ error: string | null }> {
   const client = createServiceRoleClient()
   if (!client) return { error: 'Service role client unavailable — check SUPABASE_SERVICE_ROLE_KEY' }
 
+  // PAID-PLAN EXPIRY, DISCLOSED (crypto-payment audit fix): a NOWPayments crypto checkout is a
+  // one-time invoice, not a recurring subscription — nothing else in this codebase ever downgrades
+  // a crypto-paid user back to free, so without this the plan granted here never expired. Stamping
+  // current_period_end here and checking it lazily in resolveEffectivePlan (same pattern already
+  // used for trial_ends_at) makes every call to this function — crypto's one-time activation AND
+  // PayPal's recurring BILLING.SUBSCRIPTION.ACTIVATED/PAYMENT.SALE.COMPLETED activations, which both
+  // already call this on every successful billing cycle — refresh a rolling expiry window. PayPal
+  // already downgrades explicitly on BILLING.SUBSCRIPTION.CANCELLED, so this is a pure additive
+  // safety net there (covers a missed cancellation webhook too); for crypto it's the only expiry
+  // mechanism that exists.
   const payload: Record<string, unknown> = {
     user_id: userId,
     plan,
     subscription_status: 'active',
+    current_period_end: new Date(Date.now() + periodDays * 24 * 60 * 60 * 1000).toISOString(),
     updated_at: new Date().toISOString(),
   }
   // Re-use lemon_subscription_id as a generic payment reference column
@@ -250,7 +262,21 @@ const BETA_ALL_ELITE = process.env.BETA_ALL_ELITE === 'true'
 
 export function resolveEffectivePlan(settings: Partial<UserSettings> | null | undefined, nowMs = Date.now()): 'free' | 'pro' | 'elite' {
   const paidPlan: 'free' | 'pro' | 'elite' = settings?.plan === 'elite' ? 'elite' : settings?.plan === 'pro' ? 'pro' : 'free'
-  const paidEliteActive = paidPlan === 'elite' && settings?.subscription_status === 'active'
+
+  // PAID-PLAN EXPIRY, DISCLOSED (crypto-payment audit fix): lazy, read-time check — no cron needed —
+  // same shape as the trial_ends_at check below. A missing/null current_period_end (legacy rows,
+  // admin-granted plans, anything activated before this field existed) never expires: only rows that
+  // HAVE an explicit period end in the past lapse. activateUserPlanServerSide stamps this on every
+  // real activation (crypto one-time grant, PayPal's per-cycle renewal) going forward.
+  const periodEnd = settings?.current_period_end ?? null
+  const periodExpired =
+    paidPlan !== 'free' &&
+    Boolean(periodEnd) &&
+    Number.isFinite(Date.parse(periodEnd ?? '')) &&
+    Date.parse(periodEnd ?? '') <= nowMs
+  const paidPlanActive = paidPlan !== 'free' && !periodExpired
+
+  const paidEliteActive = paidPlan === 'elite' && settings?.subscription_status === 'active' && paidPlanActive
   if (paidEliteActive) return 'elite'
   const trialActive =
     settings?.trial_plan === 'elite' &&
@@ -258,7 +284,7 @@ export function resolveEffectivePlan(settings: Partial<UserSettings> | null | un
     Number.isFinite(Date.parse(settings?.trial_ends_at ?? '')) &&
     Date.parse(settings?.trial_ends_at ?? '') > nowMs
   if (trialActive) return 'elite'
-  return paidPlan
+  return paidPlanActive ? paidPlan : 'free'
 }
 
 export async function getVerifiedUserPlan(request: Request): Promise<'free' | 'pro' | 'elite'> {
@@ -283,7 +309,7 @@ export async function getVerifiedUserPlan(request: Request): Promise<'free' | 'p
     const authedSb = createAuthedSupabaseClient(token) ?? sb
     const { data: row } = await authedSb
       .from('user_settings')
-      .select('plan,subscription_status,trial_plan,trial_ends_at')
+      .select('plan,subscription_status,trial_plan,trial_ends_at,current_period_end')
       .eq('user_id', userData.user.id)
       .maybeSingle()
     const plan = resolveEffectivePlan(row as Partial<UserSettings> | null)

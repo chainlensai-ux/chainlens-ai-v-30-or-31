@@ -64,7 +64,7 @@ export async function getCurrentUserPlanFromBearerToken(token: string) {
   const authed = createAuthedSupabaseClient(token)
   const { data: row } = await (authed ?? anon)
     .from('user_settings')
-    .select('plan,subscription_status,trial_plan,trial_ends_at')
+    .select('plan,subscription_status,trial_plan,trial_ends_at,current_period_end')
     .eq('user_id', user.id)
     .maybeSingle()
   const settingsRowFound = row !== null

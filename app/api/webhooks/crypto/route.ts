@@ -36,13 +36,16 @@ export async function POST(req: NextRequest) {
   }
 
   if (!ACTIVATION_STATUSES.has(paymentStatus)) return NextResponse.json({ ok: true })
+  // In-memory fast path only — see the DB-backed check below for the real, cross-instance guard
+  // (this Set is per-warm-instance and doesn't survive a cold start/redeploy, so it can't be relied
+  // on alone; kept as a cheap short-circuit for repeat deliveries on the same instance).
   if (paymentId && processedPaymentIds.has(paymentId)) return NextResponse.json({ ok: true })
 
   const parsed = parseOrderId(orderId)
   if (!parsed || (parsed.plan !== 'pro' && parsed.plan !== 'elite')) return NextResponse.json({ ok: true })
   if (String(ipn.price_currency ?? '').toLowerCase() !== 'usd' || Math.abs(Number(ipn.price_amount ?? 0) - PLAN_AMOUNTS[parsed.plan]) > 1) return NextResponse.json({ ok: true })
 
-  const { data: pay } = await supabase.from('crypto_payments').select('id,plan,affiliate_id,referral_code,amount_usd,user_email').eq('order_id', orderId).maybeSingle()
+  const { data: pay } = await supabase.from('crypto_payments').select('id,user_id,plan,status,affiliate_id,referral_code,amount_usd,user_email').eq('order_id', orderId).maybeSingle()
   // Require a DB payment row. Activating without one would bypass our own checkout record.
   if (!pay?.id) return NextResponse.json({ ok: true })
   // Use the plan stored in our DB — never trust the encoded plan in the order_id alone.
@@ -50,6 +53,25 @@ export async function POST(req: NextRequest) {
   if (storedPlan !== 'pro' && storedPlan !== 'elite') return NextResponse.json({ ok: true })
   // Reject if the order_id plan and DB plan diverge (should never happen, but fail safe).
   if (storedPlan !== parsed.plan) return NextResponse.json({ ok: true })
+  // AUDIT FIX, DISCLOSED (crypto-payment audit): previously activated whatever userId the order_id
+  // string parsed to, without ever confirming it matches the user_id actually stored on the
+  // crypto_payments row this same order_id looked up. Currently only self-consistent because
+  // order_id sits inside NOWPayments' own HMAC-signed body — this makes that assumption an explicit,
+  // enforced check instead of an implicit one.
+  const storedUserId = String((pay as Record<string, unknown>).user_id ?? '')
+  if (storedUserId !== parsed.userId) {
+    console.error('[webhooks/crypto] order_id userId does not match crypto_payments row — refusing to activate', { orderId })
+    return NextResponse.json({ ok: true })
+  }
+  // AUDIT FIX, DISCLOSED (crypto-payment audit): DB-backed dedupe — the in-memory Set above is
+  // per-instance and resets on every cold start/redeploy, so it cannot be the only guard against
+  // NOWPayments re-delivering the same IPN (or sending both 'confirmed' and 'finished' for one real
+  // payment) on a different instance. If this row was already moved into an activation status by an
+  // earlier delivery, skip straight to success without re-running activation/commission logic again.
+  if (ACTIVATION_STATUSES.has(String(pay.status ?? ''))) {
+    if (paymentId) processedPaymentIds.add(paymentId)
+    return NextResponse.json({ ok: true })
+  }
 
   const { error } = await activateUserPlanServerSide(parsed.userId, storedPlan as 'pro' | 'elite', paymentId || undefined)
   if (error) return NextResponse.json({ ok: false }, { status: 500 })

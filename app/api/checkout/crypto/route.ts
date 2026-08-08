@@ -105,7 +105,18 @@ export async function POST(req: NextRequest) {
     const json = (await res.json()) as { invoice_url?: string }
     if (!json.invoice_url) return NextResponse.json({ error: 'Checkout creation failed. Try again.' }, { status: 502 })
 
-    await supabase.from('crypto_payments').insert({ user_id: userId, order_id: orderId, payment_id: null, user_email: userEmail || null, plan, amount_usd: PLAN_AMOUNTS[plan], status: 'created', referral_code: referralCode, affiliate_id: affiliateId })
+    // AUDIT FIX, DISCLOSED (crypto-payment audit): this insert's error was previously never checked.
+    // The webhook's own activation path requires this exact row (looked up by order_id) to exist
+    // before it will ever call activateUserPlanServerSide — if this insert silently failed, a user
+    // could complete a real NOWPayments payment that the webhook would then accept (200 OK, so
+    // NOWPayments never retries) without ever granting the plan, with no record and no error
+    // anywhere. Fail closed instead: if we can't record the pending payment, don't hand out a
+    // checkout URL for it.
+    const { error: insertError } = await supabase.from('crypto_payments').insert({ user_id: userId, order_id: orderId, payment_id: null, user_email: userEmail || null, plan, amount_usd: PLAN_AMOUNTS[plan], status: 'created', referral_code: referralCode, affiliate_id: affiliateId })
+    if (insertError) {
+      console.error('[checkout/crypto] failed to record pending payment — refusing to hand out checkout URL', { code: insertError.code, orderId })
+      return NextResponse.json({ error: 'Checkout creation failed. Try again.' }, { status: 502 })
+    }
     return NextResponse.json({ checkoutUrl: json.invoice_url })
   } catch {
     return NextResponse.json({ error: 'Checkout creation failed. Try again.' }, { status: 502 })

@@ -11,14 +11,21 @@
 // exact URL given — an anchor tag is the correct, popup-blocker-safe way to open an external
 // payment link, and it means a right-click/"open in new tab"/⌘-click all work the way a user
 // expects from a real link, not a JS-only click handler.
+//
+// UNUSED, DISCLOSED (crypto-payment audit): as of this fix, nothing in the app renders this
+// component — app/pricing/page.tsx has its own handleCryptoPay/handlePayPalPay wired to the real
+// /api/checkout/crypto and /api/paypal/create-subscription flows instead. This previously hardcoded
+// a single static PayPal "Buy Now" link with no plan parameter — if this component is ever reused
+// for a real checkout without noticing that, Pro and Elite would silently land on the same fixed
+// PayPal price regardless of which plan was selected. paypalUrl is now a required prop instead, so
+// any future caller must supply the correct plan-specific link rather than inherit a wrong default.
 import { useState } from 'react'
 
 export type PaymentSelectorProps = {
+  paypalUrl: string
   onCryptoSelect: () => void
   onPayPalSelect: () => void
 }
-
-const PAYPAL_CHECKOUT_URL = 'https://www.paypal.com/ncp/payment/LA29DL2QZQSL'
 
 type PaymentMethod = 'crypto' | 'paypal'
 
@@ -95,7 +102,7 @@ function MethodCard({
   )
 }
 
-export function PaymentSelector({ onCryptoSelect, onPayPalSelect }: PaymentSelectorProps) {
+export function PaymentSelector({ paypalUrl, onCryptoSelect, onPayPalSelect }: PaymentSelectorProps) {
   const [method, setMethod] = useState<PaymentMethod | null>(null)
 
   function selectCrypto() {
@@ -154,7 +161,7 @@ export function PaymentSelector({ onCryptoSelect, onPayPalSelect }: PaymentSelec
           />
 
           <a
-            href={PAYPAL_CHECKOUT_URL}
+            href={paypalUrl}
             target="_blank"
             rel="noopener noreferrer"
             className="relative flex w-full items-center justify-center gap-2.5 overflow-hidden rounded-2xl border bg-[#06060A]/85 px-6 py-4 backdrop-blur-xl transition-transform duration-200 animate-[payBorderShimmer_5s_ease-in-out_infinite] hover:-translate-y-0.5 active:translate-y-0"
