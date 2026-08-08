@@ -139,30 +139,31 @@ export default function Navbar() {
           50%      { opacity: 0.5; box-shadow: 0 0 2px rgba(74,222,128,0.3); }
         }
         @keyframes nav-shell-glow {
-          0%,100% { box-shadow: 0 0 0 1px rgba(45,212,191,0.20), 0 24px 80px rgba(0,0,0,0.62), 0 0 60px rgba(45,212,191,0.10), 0 0 80px rgba(139,92,246,0.08); }
-          50%      { box-shadow: 0 0 0 1px rgba(139,92,246,0.28), 0 24px 80px rgba(0,0,0,0.62), 0 0 80px rgba(45,212,191,0.16), 0 0 110px rgba(139,92,246,0.14); }
+          0%,100% { box-shadow: 0 0 0 1px rgba(45,212,191,0.14), 0 14px 46px rgba(0,0,0,0.55), 0 0 30px rgba(45,212,191,0.06), 0 0 40px rgba(139,92,246,0.05); }
+          50%      { box-shadow: 0 0 0 1px rgba(139,92,246,0.18), 0 14px 46px rgba(0,0,0,0.55), 0 0 40px rgba(45,212,191,0.09), 0 0 54px rgba(139,92,246,0.08); }
         }
-        .nav-shell { animation: nav-shell-glow 5s ease-in-out infinite; overflow: hidden; }
+        .nav-shell { animation: nav-shell-glow 6s ease-in-out infinite; overflow: hidden; }
 
         .nav-link {
-          color: rgba(255,255,255,0.72);
+          color: rgba(255,255,255,0.68);
           text-decoration: none;
-          font-size: 14px;
-          font-weight: 500;
-          letter-spacing: 0.01em;
+          font-size: 13px;
+          font-weight: 600;
+          letter-spacing: 0.02em;
           transition: color 0.15s, text-shadow 0.15s;
-          padding: 8px 0;
+          padding: 6px 0;
           white-space: nowrap;
         }
-        .nav-link:hover { color: #fff; text-shadow: 0 0 16px rgba(45,212,191,0.25); }
+        .nav-link:hover { color: #fff; text-shadow: 0 0 14px rgba(45,212,191,0.22); }
 
         .tools-btn {
           background: none; border: none;
-          color: rgba(255,255,255,0.72);
-          cursor: pointer; font-size: 14px;
-          font-weight: 500; font-family: inherit;
+          color: rgba(255,255,255,0.68);
+          cursor: pointer; font-size: 13px;
+          font-weight: 600; font-family: inherit;
+          letter-spacing: 0.02em;
           display: flex; align-items: center; gap: 4px;
-          padding: 8px 0; transition: color 0.15s, text-shadow 0.15s;
+          padding: 6px 0; transition: color 0.15s, text-shadow 0.15s;
           white-space: nowrap;
         }
         .tools-btn:hover, .tools-btn.open { color: #fff; text-shadow: 0 0 16px rgba(45,212,191,0.25); }
@@ -200,14 +201,14 @@ export default function Navbar() {
         }
 
         .btn-signin {
-          padding: 9px 18px;
-          border: 1px solid rgba(255,255,255,0.20);
+          padding: 8px 16px;
+          border: 1px solid rgba(255,255,255,0.18);
           border-radius: 999px;
-          background: rgba(6,8,20,0.70);
-          color: rgba(255,255,255,0.90);
-          font-size: 12px; font-weight: 700;
+          background: rgba(255,255,255,0.03);
+          color: rgba(255,255,255,0.88);
+          font-size: 11px; font-weight: 700;
           text-decoration: none;
-          letter-spacing: 0.08em;
+          letter-spacing: 0.07em;
           text-transform: uppercase;
           transition: border-color 0.15s, color 0.15s, background 0.15s, box-shadow 0.15s;
           white-space: nowrap;
@@ -215,31 +216,32 @@ export default function Navbar() {
           overflow: hidden;
         }
         .btn-signin:hover {
-          border-color: rgba(255,255,255,0.42);
+          border-color: rgba(255,255,255,0.38);
           color: #fff;
-          background: rgba(255,255,255,0.08);
-          box-shadow: 0 0 28px rgba(45,212,191,0.14);
+          background: rgba(255,255,255,0.07);
+          box-shadow: 0 0 22px rgba(45,212,191,0.12);
         }
 
         .btn-access {
           display: inline-flex; align-items: center; gap: 6px;
-          padding: 10px 20px; border-radius: 999px;
-          background: linear-gradient(115deg, rgba(45,212,191,0.20) 0%, rgba(56,189,248,0.28) 28%, rgba(124,58,237,0.40) 72%, rgba(168,85,247,0.62) 100%);
-          border: 1px solid rgba(167,139,250,0.66);
+          padding: 9px 18px; border-radius: 999px;
+          background: linear-gradient(115deg, rgba(45,212,191,0.22) 0%, rgba(56,189,248,0.28) 28%, rgba(124,58,237,0.42) 72%, rgba(168,85,247,0.62) 100%);
+          border: 1px solid rgba(167,139,250,0.58);
           color: #fff;
-          font-size: 12px; font-weight: 800;
+          font-size: 11px; font-weight: 800;
           text-decoration: none;
-          letter-spacing: 0.08em;
+          letter-spacing: 0.07em;
           text-transform: uppercase;
-          box-shadow: 0 0 18px rgba(45,212,191,0.22), 0 0 30px rgba(139,92,246,0.22);
-          transition: box-shadow 0.15s, border-color 0.15s, background 0.15s;
+          box-shadow: 0 0 14px rgba(45,212,191,0.16), 0 0 20px rgba(139,92,246,0.16);
+          transition: box-shadow 0.15s, border-color 0.15s, background 0.15s, transform 0.15s;
           white-space: nowrap;
           flex-shrink: 0;
         }
         .btn-access:hover {
-          border-color: rgba(196,181,253,0.92);
-          background: linear-gradient(115deg, rgba(45,212,191,0.24) 0%, rgba(56,189,248,0.34) 28%, rgba(124,58,237,0.52) 72%, rgba(168,85,247,0.78) 100%);
-          box-shadow: 0 0 32px rgba(45,212,191,0.34), 0 0 52px rgba(139,92,246,0.34);
+          border-color: rgba(196,181,253,0.86);
+          background: linear-gradient(115deg, rgba(45,212,191,0.26) 0%, rgba(56,189,248,0.34) 28%, rgba(124,58,237,0.52) 72%, rgba(168,85,247,0.76) 100%);
+          box-shadow: 0 0 24px rgba(45,212,191,0.26), 0 0 36px rgba(139,92,246,0.26);
+          transform: translateY(-1px);
         }
 
         .mob-ham {
@@ -280,29 +282,34 @@ export default function Navbar() {
         }
         .mob-tool-link:hover { background: rgba(45,212,191,0.08); border-color: rgba(45,212,191,0.14); color: #fff; }
 
-        /* Account email — hide on narrow desktops/tablets */
-        .nav-account-email { display: inline; max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        /* Account menu chip — compact, avatar-led */
+        .nav-account-chip {
+          transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+        }
+        .nav-account-chip:hover {
+          background: rgba(255,255,255,0.06) !important;
+          border-color: rgba(45,212,191,0.42) !important;
+        }
 
         @media (max-width: 1280px) {
           .nav-live-badge { display: none !important; }
-          .nav-account-email { display: none !important; }
         }
 
         @media (max-width: 1023px) {
           .mob-nav-links { display: none !important; }
           .mob-ham { display: flex !important; }
           .mob-auth-wrap .btn-signin { display: none !important; }
-          .nav-shell { gap: 12px !important; }
+          .nav-shell { gap: 10px !important; }
         }
 
-        .mob-nav-overlay { position: fixed; top: 74px; left: 0; right: 0; bottom: 0; }
+        .mob-nav-overlay { position: fixed; top: 60px; left: 0; right: 0; bottom: 0; }
         @media (max-width: 767px) {
           .tools-dropdown { width: calc(100vw - 32px) !important; left: 0 !important; grid-template-columns: 1fr !important; }
-          .nav-outer { padding: 10px 12px !important; }
-          .nav-shell { height: 58px !important; border-radius: 16px !important; gap: 0 !important; padding: 0 14px !important; animation: none !important; }
+          .nav-outer { padding: 8px 12px !important; }
+          .nav-shell { height: 48px !important; border-radius: 14px !important; gap: 0 !important; padding: 0 12px !important; animation: none !important; }
           .mob-auth-wrap { display: flex !important; gap: 6px !important; margin-left: auto !important; }
-          .btn-access { padding: 8px 12px !important; font-size: 11px !important; }
-          .mob-nav-overlay { top: 58px !important; }
+          .btn-access { padding: 7px 12px !important; font-size: 10px !important; }
+          .mob-nav-overlay { top: 48px !important; }
         }
         @media (prefers-reduced-motion: reduce) {
           .nav-shell, .tools-dropdown, .tools-dropdown-item { animation: none !important; }
@@ -330,16 +337,16 @@ export default function Navbar() {
           style={{
             maxWidth: '1320px',
             margin: '0 auto',
-            background: 'linear-gradient(180deg, rgba(8,12,28,0.90) 0%, rgba(5,8,20,0.84) 100%)',
-            backdropFilter: 'blur(28px)',
-            WebkitBackdropFilter: 'blur(28px)',
-            border: '1px solid rgba(109,40,217,0.36)',
+            background: 'linear-gradient(180deg, rgba(9,12,26,0.82) 0%, rgba(6,8,18,0.76) 100%)',
+            backdropFilter: 'blur(24px)',
+            WebkitBackdropFilter: 'blur(24px)',
+            border: '1px solid rgba(139,92,246,0.16)',
             borderRadius: '999px',
-            padding: '0 20px',
-            height: '74px',
+            padding: '0 18px',
+            height: '60px',
             display: 'flex',
             alignItems: 'center',
-            gap: '16px',
+            gap: '14px',
             pointerEvents: 'auto',
             position: 'relative',
             overflow: 'visible',
@@ -347,16 +354,16 @@ export default function Navbar() {
         >
           {/* Subtle top accent line */}
           <div style={{
-            position: 'absolute', top: 0, left: '6%', right: '6%', height: '1px',
-            background: 'linear-gradient(90deg, transparent 0%, rgba(45,212,191,0.35) 35%, rgba(139,92,246,0.30) 65%, transparent 100%)',
+            position: 'absolute', top: 0, left: '8%', right: '8%', height: '1px',
+            background: 'linear-gradient(90deg, transparent 0%, rgba(45,212,191,0.26) 35%, rgba(139,92,246,0.22) 65%, transparent 100%)',
             borderRadius: '1px',
           }} />
 
           {/* Logo */}
-          <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '9px', textDecoration: 'none', flexShrink: 0 }}>
-            <Image src="/cl-logo.png" alt="ChainLens AI" width={40} height={40} priority />
+          <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none', flexShrink: 0 }}>
+            <Image src="/cl-logo.png" alt="ChainLens AI" width={34} height={34} priority />
             <div>
-              <div style={{ fontFamily: 'var(--font-inter, Inter, sans-serif)', fontWeight: 800, fontSize: '20px', lineHeight: 1.15 }}>
+              <div style={{ fontFamily: 'var(--font-inter, Inter, sans-serif)', fontWeight: 800, fontSize: '17px', lineHeight: 1.15 }}>
                 <span style={{ color: '#f1f5f9' }}>Chain</span>
                 <span style={{
                   background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 60%, #ec4899 100%)',
@@ -364,8 +371,8 @@ export default function Navbar() {
                 }}>Lens</span>
               </div>
               <div style={{
-                fontSize: '9px', color: 'rgba(255,255,255,0.58)',
-                letterSpacing: '0.20em', textTransform: 'uppercase',
+                fontSize: '8px', color: 'rgba(255,255,255,0.52)',
+                letterSpacing: '0.18em', textTransform: 'uppercase',
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
               }}>
                 AI Intelligence
@@ -374,7 +381,7 @@ export default function Navbar() {
           </Link>
 
           {/* Center nav links */}
-          <div className="mob-nav-links" style={{ display: 'flex', alignItems: 'center', gap: '22px', flex: 1, minWidth: 0 }}>
+          <div className="mob-nav-links" style={{ display: 'flex', alignItems: 'center', gap: '20px', flex: 1, minWidth: 0 }}>
             <div style={{ position: 'relative' }}>
               <button
                 className={`tools-btn${open ? ' open' : ''}`}
@@ -478,69 +485,71 @@ export default function Navbar() {
 
           {/* Right: LIVE badge + auth buttons */}
           <div className="mob-auth-wrap" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0, marginLeft: 'auto' }}>
-            {/* LIVE | Powered by CORTEX */}
+            {/* LIVE | CORTEX — compact secondary status chip */}
             <div
               className="nav-live-badge"
               style={{
-                display: 'flex', alignItems: 'center', gap: '6px',
-                padding: '10px 18px',
-                border: '1px solid rgba(45,212,191,0.24)',
+                display: 'flex', alignItems: 'center', gap: '5px',
+                padding: '5px 11px',
+                border: '1px solid rgba(45,212,191,0.16)',
                 borderRadius: '999px',
-                background: 'rgba(8,12,32,0.78)',
-                marginRight: '4px',
-                boxShadow: '0 0 20px rgba(45,212,191,0.10)',
+                background: 'rgba(255,255,255,0.03)',
+                marginRight: '2px',
               }}
             >
               <div style={{
-                width: '6px', height: '6px', borderRadius: '50%',
+                width: '5px', height: '5px', borderRadius: '50%',
                 background: '#4ade80',
-                boxShadow: '0 0 6px rgba(74,222,128,0.85)',
+                boxShadow: '0 0 5px rgba(74,222,128,0.75)',
                 animation: 'nav-live-pulse 2.5s ease-in-out infinite',
                 flexShrink: 0,
               }} />
               <span style={{
-                fontSize: '10px', fontWeight: 600,
+                fontSize: '9px', fontWeight: 600,
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-                letterSpacing: '0.05em',
+                letterSpacing: '0.04em',
                 whiteSpace: 'nowrap',
               }}>
-                <span style={{ color: 'rgba(255,255,255,0.65)' }}>LIVE</span>
-                <span style={{ color: 'rgba(255,255,255,0.18)', margin: '0 6px' }}>|</span>
-                <span style={{ color: 'rgba(139,92,246,0.70)' }}>Powered by CORTEX</span>
+                <span style={{ color: 'rgba(255,255,255,0.55)' }}>LIVE</span>
+                <span style={{ color: 'rgba(255,255,255,0.14)', margin: '0 5px' }}>|</span>
+                <span style={{ color: 'rgba(139,92,246,0.62)' }}>CORTEX</span>
               </span>
             </div>
 
             {accountEmail ? (
-              <Link href="/terminal/settings" className="btn-signin" style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: '7px',
-                borderColor: 'rgba(45,212,191,0.30)',
-                background: 'linear-gradient(135deg, rgba(45,212,191,0.12) 0%, rgba(139,92,246,0.18) 100%)',
-                flexShrink: 0,
-                maxWidth: '240px',
-                overflow: 'hidden',
-              }}>
+              <Link
+                href="/terminal/settings"
+                className="btn-signin nav-account-chip"
+                title={`${accountEmail} · ${planLabel}`}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  borderColor: 'rgba(255,255,255,0.14)',
+                  background: 'rgba(255,255,255,0.03)',
+                  padding: '5px 12px 5px 5px',
+                  textTransform: 'none',
+                  letterSpacing: 'normal',
+                  flexShrink: 0,
+                }}
+              >
                 <span style={{
-                  width: '22px', height: '22px', borderRadius: '50%',
+                  width: '24px', height: '24px', borderRadius: '50%',
                   background: avatarUrl ? '#0f172a' : AVATAR_COLORS[avatarColor],
                   color: '#04101a', fontSize: '11px', fontWeight: 700,
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                   flexShrink: 0, overflow: 'hidden',
+                  boxShadow: `0 0 0 1px ${PLAN_COLOR[displayPlan]}55`,
                 }}>
                   {avatarUrl
                     ? <img src={avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
                     : initials}
                 </span>
-                <span className="nav-account-email">{shortEmail}</span>
                 <span style={{
                   fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
                   color: PLAN_COLOR[displayPlan],
-                  border: `1px solid ${PLAN_COLOR[displayPlan]}44`,
-                  borderRadius: '4px', padding: '1px 5px',
-                  background: `${PLAN_COLOR[displayPlan]}18`,
-                  flexShrink: 0,
-                }}>{planLabel}</span>{trialBadgeDesktop ? <span style={{ marginLeft: 8, fontSize: 10, color: '#fbbf24', whiteSpace: 'nowrap' }}>{trialBadgeDesktop}</span> : null}
+                  whiteSpace: 'nowrap',
+                }}>{planLabel}</span>{trialBadgeDesktop ? <span style={{ marginLeft: 2, fontSize: 9, color: '#fbbf24', whiteSpace: 'nowrap' }}>· {trialBadgeDesktop}</span> : null}
               </Link>
             ) : (
               <Link href="/sign-in" className="btn-signin" prefetch={true}>Sign In</Link>
