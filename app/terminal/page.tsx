@@ -44,6 +44,18 @@ function TerminalPageContent() {
             border-top: 1px solid rgba(123,92,255,0.18);
           }
         }
+        /* SLIGHTLY WIDER ON LARGE DESKTOP ONLY, DISCLOSED (Clark right-panel layout fix task): the
+           Clark panel's own width (min(500px,36vw) idle / min(750px,42vw) typing, inline JS style
+           above) stays the fallback for every viewport up to 1440px — this only nudges it a bit
+           wider on genuinely large desktop screens, where the extra px comes from spare viewport
+           width rather than squeezing the main dashboard column (main stays flex:1, so it simply
+           gets very slightly narrower, never below its own min-w-0 content). !important is required
+           to win over the same element's inline width style at this breakpoint only.
+           */
+        @media (min-width: 1440px) {
+          .clark-radar-aside:not(.is-typing) { width: min(560px, 34vw) !important; }
+          .clark-radar-aside.is-typing { width: min(820px, 40vw) !important; }
+        }
       `}</style>
 
       <div
@@ -86,7 +98,7 @@ function TerminalPageContent() {
         </main>
 
         <aside
-          className="shrink-0 overflow-hidden mob-radar w-full lg:w-auto"
+          className={`shrink-0 overflow-hidden mob-radar clark-radar-aside w-full lg:w-auto${isTyping ? ' is-typing' : ''}`}
           style={{
             width: isTyping ? 'min(750px, 42vw)' : 'min(500px, 36vw)',
             transition: 'width 300ms ease',

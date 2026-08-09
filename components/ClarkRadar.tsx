@@ -297,17 +297,21 @@ function MoverRow({ item, onScan, onWatch, watchState }: {
 }) {
   const positive = (item.change24h ?? 0) >= 0
   const contract = item.tokenAddress ?? item.poolAddress ?? null
+  // TWO-LINE LAYOUT, DISCLOSED (Clark right-panel layout fix task): the right panel is narrow, so
+  // packing rank/symbol/tag/%/vol/liq/contract/actions into one row squeezed everything together.
+  // Split into a top identity row (rank, symbol, tag, 24h%) and a bottom metrics+actions row (vol,
+  // liq, contract chip, Scan/Watch) — same fields, same real data, just given room to breathe.
   return (
     <div className="clark-mover-row">
-      <div className="clark-mover-row-main">
-        <div className="clark-mover-row-top">
-          {item.rank != null && <span className="clark-mover-rank">#{item.rank}</span>}
-          <span className="clark-mover-symbol">{item.symbol}</span>
-          {item.reasonTag && (
-            <span className={`clark-mover-tag clark-mover-tag--${moverTagTone(item.reasonTag)}`}>{item.reasonTag}</span>
-          )}
-          <span className={`clark-mover-change${positive ? ' is-up' : ' is-down'}`}>{fmtPct(item.change24h)}</span>
-        </div>
+      <div className="clark-mover-row-top">
+        {item.rank != null && <span className="clark-mover-rank">#{item.rank}</span>}
+        <span className="clark-mover-symbol">{item.symbol}</span>
+        {item.reasonTag && (
+          <span className={`clark-mover-tag clark-mover-tag--${moverTagTone(item.reasonTag)}`}>{item.reasonTag}</span>
+        )}
+        <span className={`clark-mover-change${positive ? ' is-up' : ' is-down'}`}>{fmtPct(item.change24h)}</span>
+      </div>
+      <div className="clark-mover-row-bottom">
         <div className="clark-mover-row-stats">
           <span>Vol {fmtUsdShort(item.volume24h)}</span>
           <span className="clark-mover-dot">·</span>
@@ -319,17 +323,17 @@ function MoverRow({ item, onScan, onWatch, watchState }: {
             </>
           )}
         </div>
-      </div>
-      <div className="clark-mover-row-actions">
-        <button type="button" className="clark-mover-action" onClick={() => onScan(item)}>Scan</button>
-        <button
-          type="button"
-          className={`clark-mover-action${watchState === 'saved' ? ' is-active' : ''}`}
-          onClick={() => onWatch(item)}
-          disabled={watchState === 'saving'}
-        >
-          {watchState === 'saved' ? 'Watching' : watchState === 'saving' ? '…' : 'Watch'}
-        </button>
+        <div className="clark-mover-row-actions">
+          <button type="button" className="clark-mover-action" onClick={() => onScan(item)}>Scan</button>
+          <button
+            type="button"
+            className={`clark-mover-action${watchState === 'saved' ? ' is-active' : ''}`}
+            onClick={() => onWatch(item)}
+            disabled={watchState === 'saving'}
+          >
+            {watchState === 'saved' ? 'Watching' : watchState === 'saving' ? '…' : 'Watch'}
+          </button>
+        </div>
       </div>
     </div>
   )
@@ -876,16 +880,18 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           max-width: 100%; overflow-x: hidden;
         }
         .clark-mover-row {
-          display: flex; align-items: center; justify-content: space-between; gap: 8px;
-          padding: 9px 11px; border-radius: 9px; min-width: 0;
+          display: flex; flex-direction: column; gap: 6px;
+          padding: 9px 11px; border-radius: 9px; min-width: 0; max-width: 100%;
           background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.055);
         }
-        .clark-mover-row-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 5px; }
         .clark-mover-row-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+        .clark-mover-row-bottom {
+          display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0;
+        }
         .clark-mover-rank { font: 700 9.5px var(--font-plex-mono); color: rgba(148,163,184,0.50); flex-shrink: 0; }
         .clark-mover-symbol {
           font: 800 11.5px var(--font-plex-mono); color: #f1f5f9; letter-spacing: .01em;
-          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 90px;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 120px;
         }
         .clark-mover-tag {
           font: 700 8px var(--font-inter); letter-spacing: .03em; text-transform: uppercase;
@@ -899,23 +905,28 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         .clark-mover-change.is-up { color: rgba(94,234,212,0.90); }
         .clark-mover-change.is-down { color: rgba(251,113,133,0.90); }
         .clark-mover-row-stats {
-          display: flex; align-items: center; gap: 5px; min-width: 0; flex-wrap: wrap; row-gap: 3px;
+          display: flex; align-items: center; gap: 5px; min-width: 0; flex: 1; flex-wrap: wrap; row-gap: 3px;
           font: 600 10px var(--font-plex-mono); color: rgba(255,255,255,0.40);
         }
         .clark-mover-dot { color: rgba(255,255,255,0.18); flex-shrink: 0; }
-        .clark-mover-row-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; margin-left: 6px; }
+        .clark-mover-row-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
         .clark-mover-action {
           font: 700 9px var(--font-inter); letter-spacing: .03em; text-transform: uppercase;
-          color: rgba(255,255,255,0.40); background: transparent;
-          border: 1px solid transparent; border-radius: 6px; padding: 4px 7px;
+          color: rgba(255,255,255,0.36); background: transparent;
+          border: 1px solid transparent; border-radius: 6px; padding: 3px 6px;
           cursor: pointer; transition: color 0.15s, background 0.15s, border-color 0.15s;
         }
-        .clark-mover-action:hover:not(:disabled) { color: #e2e8f0; background: rgba(139,92,246,0.09); border-color: rgba(139,92,246,0.18); }
+        .clark-mover-action:hover:not(:disabled) { color: #e2e8f0; background: rgba(139,92,246,0.08); border-color: rgba(139,92,246,0.16); }
         .clark-mover-action.is-active { color: rgba(94,234,212,0.90); background: rgba(45,212,191,0.07); border-color: rgba(45,212,191,0.18); }
         .clark-mover-action:disabled { cursor: default; opacity: 0.6; }
 
         /* Base Market Read card */
-        .clark-market-card { display: flex; flex-direction: column; }
+        /* max-width/overflow:hidden here are a defensive backstop, DISCLOSED (Clark right-panel
+           layout fix task) — this card only ever renders text nodes (see MarketReadCard/ClarkMessage:
+           no <img>/<canvas>/dangerouslySetInnerHTML/markdown-image parsing anywhere in this file), so
+           there is no code path that could place a screenshot/thumbnail here; this just guarantees
+           nothing this card renders can ever visually escape its own box. */
+        .clark-market-card { display: flex; flex-direction: column; max-width: 100%; overflow: hidden; }
         .clark-market-head {
           display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
           padding-bottom: 8px; margin-bottom: 9px; border-bottom: 1px solid rgba(255,255,255,0.07);
