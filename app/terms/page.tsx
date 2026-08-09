@@ -86,6 +86,13 @@ export default function TermsPage() {
         .terms-section {
           animation: terms-fade-in 0.5s ease-out both;
         }
+        /* MOBILE FRIENDLY PASS, DISCLOSED (mobile audit): this page is already single-column
+           (no grids to break), so the only real gap was too much vertical padding/gap eating
+           screen space on a phone — trimmed here, layout/copy otherwise unchanged. */
+        @media (max-width: 640px) {
+          .terms-container { padding: 44px 16px 64px !important; }
+          .terms-sections { gap: 40px !important; }
+        }
       `}</style>
 
       <Navbar />
@@ -110,7 +117,7 @@ export default function TermsPage() {
           backgroundSize: '60px 60px',
         }} />
 
-        <div style={{ position: 'relative', zIndex: 1, maxWidth: '760px', margin: '0 auto', padding: '72px 24px 96px' }}>
+        <div className='terms-container' style={{ position: 'relative', zIndex: 1, maxWidth: '760px', margin: '0 auto', padding: '72px 24px 96px' }}>
 
           {/* Page header */}
           <div style={{ marginBottom: '64px' }}>
@@ -142,7 +149,7 @@ export default function TermsPage() {
           </div>
 
           {/* Sections */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '56px' }}>
+          <div className='terms-sections' style={{ display: 'flex', flexDirection: 'column', gap: '56px' }}>
             {SECTIONS.map((sec, i) => (
               <div
                 key={sec.label}
@@ -201,7 +208,7 @@ export default function TermsPage() {
               If you have any questions about these terms, please contact us via{' '}
               <Link href="https://x.com/chainlens_ai" target="_blank" rel="noopener noreferrer"
                 style={{ color: '#2DD4BF', textDecoration: 'none' }}>
-                @chainlens__ai
+                @chainlens_ai
               </Link>{' '}
               on X or through the Telegram group.
             </p>
