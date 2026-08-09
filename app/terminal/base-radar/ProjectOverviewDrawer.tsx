@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { assessBaseRadarSeverity, creatorTopHolderDisplay, normalizePairCreatedAt, ageLabelFromIso, extractLpControllerSharePercent, getBaseRadarDetailSeverityCap, getScoreSeverityLabel } from '@/lib/baseRadarSeverity'
 import { getRadarDrawerValuation, getRadarValuationCardDisplay, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '@/lib/baseRadarValuation'
@@ -67,6 +67,13 @@ type DrawerProps = {
   chain?: ChainKey
   onClose: () => void
   onSimulationUpdate?: (address: string, payload: DrawerSimulationPayload) => void
+  // ACTION BAR, DISCLOSED (task #3 — "Add Watchlist if existing action exists"): optional pass-
+  // through to the SAME toggleTrack()/trackedContracts state the feed's TokenCard "Add to
+  // Watchlist" button already uses (app/terminal/base-radar/page.tsx) — no new watchlist logic, just
+  // exposing the existing toggle inside the drawer's action bar too. Omitted entirely if the caller
+  // doesn't pass them (watchlist.tsx below re-uses this same drawer without tracking wired up).
+  tracking?: boolean
+  onTrackToggle?: () => void
 }
 
 type ApiState<T> = { data?: T; isLoading: boolean; error?: unknown }
@@ -372,11 +379,16 @@ function displayLpModelLabel(model: string | null | undefined): string {
   return DISPLAY_LP_MODEL_LABELS[model] ?? publicStatus(model)
 }
 
-function Section({ title, state, children, tone = 'default' }: { title: string; state?: ApiState<unknown>; children: React.ReactNode; tone?: 'default' | 'risk' | 'mint' | 'purple' }) {
+// REPORT-SHELL POLISH, DISCLOSED (Base Radar drawer premium polish task): calmer, thinner border
+// and a flat background instead of the previous heavy gradient + 50px drop shadow repeated on
+// every single card — with a dozen-plus sections stacked in one drawer, that shadow/gradient
+// repetition was the biggest driver of the "stacked cards" feel the task asked to fix. Content and
+// props are unchanged; only the card chrome is lighter.
+function Section({ title, state, children, tone = 'default' }: { title: string; state?: ApiState<unknown>; children: React.ReactNode; tone?: 'default' | 'risk' | 'mint' | 'purple' | 'amber' }) {
   const loading = state?.isLoading
-  const accent = tone === 'risk' ? '#fb7185' : tone === 'purple' ? '#a78bfa' : '#2dd4bf'
+  const accent = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : '#2dd4bf'
   return (
-    <section style={{ border: `1px solid ${tone === 'default' ? 'rgba(148,163,184,0.12)' : `${accent}33`}`, background: 'linear-gradient(180deg, rgba(15,23,42,0.72), rgba(2,6,23,0.58))', borderRadius: '18px', padding: '15px', marginBottom: '12px', boxShadow: '0 18px 50px rgba(0,0,0,0.20)' }}>
+    <section style={{ border: `1px solid ${tone === 'default' ? 'rgba(148,163,184,0.10)' : `${accent}28`}`, background: 'rgba(15,23,42,0.40)', borderRadius: '16px', padding: '16px', marginBottom: '14px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '12px' }}>
         <h3 style={{ margin: 0, color: '#f8fafc', fontSize: '11px', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}><span style={{ color: accent }}>◆</span> {title}</h3>
         {state?.error ? <span style={{ color: '#fbbf24', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>Limited</span> : null}
@@ -386,11 +398,46 @@ function Section({ title, state, children, tone = 'default' }: { title: string; 
   )
 }
 
+// ACCORDION, DISCLOSED (task #7 — grouped/collapsible lower sections): a lighter-weight sibling of
+// Section for the deeper-evidence sections below the fold. Uses a top divider instead of its own
+// bordered box (further reducing border repetition across the report) and is driven entirely by
+// the `open`/`onToggle` props the drawer passes in — see the drawer's own `sectionOpen()`/
+// `toggleSection()` helpers for how each section's default (open vs. collapsed) is decided. Content
+// is always reachable via the toggle; nothing here is ever permanently hidden.
+function CollapsibleSection({ id, title, tone = 'default', open, onToggle, state, badge, children }: { id: string; title: string; tone?: 'default' | 'risk' | 'mint' | 'amber' | 'purple'; open: boolean; onToggle: (id: string) => void; state?: ApiState<unknown>; badge?: React.ReactNode; children: React.ReactNode }) {
+  const accent = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : tone === 'mint' ? '#2dd4bf' : '#64748b'
+  return (
+    <section style={{ borderTop: '1px solid rgba(148,163,184,0.10)', paddingTop: '14px', marginTop: '14px' }}>
+      <button
+        type="button"
+        onClick={() => onToggle(id)}
+        aria-expanded={open}
+        style={{ all: 'unset', boxSizing: 'border-box', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: '10px' }}
+      >
+        <span style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0, flexWrap: 'wrap' }}>
+          <span style={{ color: accent, fontSize: '12px', flexShrink: 0 }}>◆</span>
+          <span style={{ color: '#f8fafc', fontSize: '11px', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', fontWeight: 800 }}>{title}</span>
+          {badge}
+          {state?.error ? <span style={{ color: '#fbbf24', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>Limited</span> : null}
+        </span>
+        <span aria-hidden style={{ color: '#64748b', fontSize: '11px', flexShrink: 0, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s ease' }}>▾</span>
+      </button>
+      {open ? <div style={{ marginTop: '12px' }}>{state?.isLoading ? <SkeletonRows /> : children}</div> : null}
+    </section>
+  )
+}
+
+// WARNING-EMPHASIS FIX, DISCLOSED (task #6 — "emphasize important warnings, not every card
+// equally"): every metric card used to get the same colored-gradient-border treatment regardless of
+// tone, so a routine "Age" card looked exactly as visually loud as a genuine liquidity warning.
+// Only risk/amber (warning) cards now keep a colored border + tint; mint/neutral/purple cards drop
+// to the same calm slate card so real warnings actually stand out. Values/labels/sublabels unchanged.
 function MetricCard({ label, value, sublabel, chip, tone = 'mint' }: { label: string; value: React.ReactNode; sublabel?: React.ReactNode; chip?: string; tone?: 'mint' | 'amber' | 'risk' | 'neutral' | 'purple' }) {
   const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : tone === 'neutral' ? '#94a3b8' : '#2dd4bf'
-  return <div style={{ minWidth: 0, border: `1px solid ${color}26`, background: `linear-gradient(180deg, ${color}10, rgba(15,23,42,0.72))`, borderRadius: '16px', padding: '12px' }}>
+  const isWarning = tone === 'risk' || tone === 'amber'
+  return <div style={{ minWidth: 0, border: isWarning ? `1px solid ${color}40` : '1px solid rgba(148,163,184,0.12)', background: isWarning ? `linear-gradient(180deg, ${color}12, rgba(15,23,42,0.58))` : 'rgba(15,23,42,0.42)', borderRadius: '14px', padding: '12px' }}>
     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 8 }}><span style={{ color: '#94a3b8', fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 800 }}>{label}</span>{chip ? <Chip label={chip} tone={tone} /> : null}</div>
-    <div style={{ color: '#f8fafc', fontSize: 22, lineHeight: 1, fontWeight: 850, letterSpacing: '-.03em', overflowWrap: 'anywhere' }}>{value}</div>
+    <div style={{ color: isWarning ? color : '#f8fafc', fontSize: 22, lineHeight: 1, fontWeight: 850, letterSpacing: '-.03em', overflowWrap: 'anywhere' }}>{value}</div>
     {sublabel ? <div style={{ marginTop: 7, color: '#94a3b8', fontSize: 11, lineHeight: 1.35 }}>{sublabel}</div> : null}
   </div>
 }
@@ -470,7 +517,7 @@ function MiniChart({ points }: { points: ChartPoint[] }) {
   )
 }
 
-export default function ProjectOverviewDrawer({ token, open, chain = 'base', onClose, onSimulationUpdate }: DrawerProps) {
+export default function ProjectOverviewDrawer({ token, open, chain = 'base', onClose, onSimulationUpdate, tracking, onTrackToggle }: DrawerProps) {
   const address = token?.contract ?? ''
   const enabled = open && Boolean(address)
   const query = address ? `contract=${encodeURIComponent(address)}&chain=${chain}` : ''
@@ -756,44 +803,121 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     await navigator.clipboard?.writeText(value)
   }
 
+  // ACCORDION STATE, DISCLOSED (task #7 — grouped/collapsible lower sections, default open:
+  // Verdict + Market Snapshot; default collapsed: deeper evidence "if needed"): only explicit user
+  // toggles are stored here — the actual open/closed state for each section is that override, or
+  // else a smart per-section default computed from the same real evidence already computed above
+  // (never fabricated). That means a section holding a genuine warning (e.g. holder concentration
+  // actually scored 'risk', an active owner/admin actually detected) opens itself automatically
+  // once that evidence loads, satisfying "do not hide critical warnings permanently" without a
+  // fragile effect racing the enrichment fetch. Resets to defaults whenever the drawer is pointed at
+  // a different token, so switching tokens never carries over the previous token's manual toggles.
+  const [sectionOverrides, setSectionOverrides] = useState<Record<string, boolean>>({})
+  const overrideAddressRef = useRef(address)
+  useEffect(() => {
+    if (overrideAddressRef.current !== address) {
+      overrideAddressRef.current = address
+      setSectionOverrides({})
+    }
+  }, [address])
+  const sectionDefaults: Record<string, boolean> = {
+    momentum: false,
+    lp: lpTone === 'risk',
+    holders: holderTone === 'risk',
+    dev: activeOwner,
+    socials: false,
+    cortexRead: false,
+    riskFlags: dedupedRiskFacts.length > 0,
+  }
+  function isSectionOpen(id: string): boolean {
+    return sectionOverrides[id] ?? sectionDefaults[id] ?? false
+  }
+  function toggleSection(id: string) {
+    setSectionOverrides(prev => ({ ...prev, [id]: !isSectionOpen(id) }))
+  }
+
+  // VERDICT-TONE FIX, DISCLOSED (task #8 — "use red only for true danger"): the previous verdict
+  // badge compared severityLabel against literal strings 'High Risk'/'Critical', which this label
+  // never actually equals (its real values are 'VERY LOW'/'LOW'/'MODERATE'/'WATCHLIST'/'STRONGER' —
+  // see getScoreSeverityLabel/baseRadarFeedScoring's riskLabel), so the badge always fell through to
+  // the same hardcoded red styling regardless of the real label. Purely a display mapping over the
+  // same already-computed severityLabel — the label itself, and the score it's derived from, are
+  // untouched.
+  const verdictTone: 'mint' | 'amber' | 'risk' = severityLabel === 'STRONGER' || severityLabel === 'WATCHLIST' ? 'mint' : severityLabel === 'MODERATE' ? 'amber' : 'risk'
+  const verdictColor = verdictTone === 'mint' ? '#2dd4bf' : verdictTone === 'amber' ? '#fbbf24' : '#fb7185'
+  // EVIDENCE-QUALITY CHIP, DISCLOSED (task #4 — "confidence/evidence quality" in the verdict
+  // module): a presentational bucketing of the count of already-computed, real open-evidence items
+  // (dedupedEvidenceGaps) — the same list the Evidence Gaps section lists individually. No new
+  // evidence is invented; this only labels how many gaps already exist.
+  const evidenceQualityLabel = dedupedEvidenceGaps.length === 0 ? 'Full Evidence' : dedupedEvidenceGaps.length <= 2 ? 'Mostly Verified' : 'Limited Evidence'
+  const evidenceQualityTone: 'mint' | 'amber' | 'risk' = dedupedEvidenceGaps.length === 0 ? 'mint' : dedupedEvidenceGaps.length <= 2 ? 'amber' : 'risk'
+
   if (!token) return null
 
   return (
     <div aria-hidden={!open}>
       <style>{`@media (max-width: 640px) { .radar-drawer { width: 100vw !important; padding: 12px !important; border-left: 0 !important; } .radar-drawer-header { margin: -12px -12px 12px !important; padding: 10px 12px !important; } .radar-mini-chart-svg { height: 120px !important; max-height: 120px !important; } .holder-row-list > div { grid-template-columns: 34px minmax(0,1fr) auto !important; overflow-wrap: anywhere; } } @media (prefers-reduced-motion: reduce) { .radar-drawer, .radar-drawer * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }`}</style>
       <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: open ? 'rgba(2,6,23,0.68)' : 'transparent', backdropFilter: open ? 'blur(4px)' : 'none', pointerEvents: open ? 'auto' : 'none', transition: 'background 0.2s, backdrop-filter 0.2s', zIndex: 70 }} />
-      <aside className="radar-drawer" role="dialog" aria-modal="true" aria-label="Project overview" style={{ position: 'fixed', top: 0, right: 0, height: '100dvh', width: 'min(640px, 100vw)', transform: open ? 'translateX(0)' : 'translateX(105%)', transition: 'transform 0.16s cubic-bezier(.22,1,.36,1)', zIndex: 80, background: 'radial-gradient(circle at 20% 0%, rgba(45,212,191,.13), transparent 32%), radial-gradient(circle at 90% 16%, rgba(168,85,247,.12), transparent 28%), linear-gradient(180deg, #07111f, #020617 58%)', borderLeft: '1px solid rgba(45,212,191,0.20)', boxShadow: '-32px 0 100px rgba(0,0,0,0.52)', color: '#e2e8f0', overflowY: 'auto', padding: '18px', overflowX: 'hidden' }}>
-        <header className="radar-drawer-header" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 14px', padding: '14px 18px', background: 'rgba(2,6,23,0.88)', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(148,163,184,0.12)' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, alignItems: 'center' }}>
+      <aside className="radar-drawer" role="dialog" aria-modal="true" aria-label="Project overview" style={{ position: 'fixed', top: 0, right: 0, height: '100dvh', width: 'min(640px, 100vw)', transform: open ? 'translateX(0)' : 'translateX(105%)', transition: 'transform 0.16s cubic-bezier(.22,1,.36,1)', zIndex: 80, background: 'radial-gradient(circle at 20% 0%, rgba(45,212,191,.09), transparent 32%), radial-gradient(circle at 90% 16%, rgba(168,85,247,.07), transparent 28%), linear-gradient(180deg, #07111f, #020617 58%)', borderLeft: '1px solid rgba(45,212,191,0.16)', boxShadow: '-24px 0 64px rgba(0,0,0,0.44)', color: '#e2e8f0', overflowY: 'auto', padding: '18px', overflowX: 'hidden' }}>
+        {/* STICKY SUMMARY HEADER, DISCLOSED (task #2): same identity chips (chain/age), same Radar
+            score, same verdict label, same truncated CA as before — regrouped into one calmer
+            report letterhead instead of two visually separate rows, and the close button is now a
+            plain small ghost circle inline with the title instead of a large boxed control set apart
+            from it. */}
+        <header className="radar-drawer-header" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 14px', padding: '16px 18px 14px', background: 'rgba(2,6,23,0.90)', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(148,163,184,0.12)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
             <div style={{ minWidth: 0 }}>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-                <h2 style={{ margin: 0, fontSize: 20, color: '#f8fafc', letterSpacing: '-.03em', overflowWrap: 'anywhere' }}>{token.name} <span style={{ color: '#94a3b8' }}>/{token.symbol}</span></h2>
-                <Chip label={chain === 'base' ? 'Base' : 'ETH'} tone="mint" />
-                <Chip label={fmtAge(token.ageMinutes)} tone="neutral" />
-              </div>
-              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
-                <div style={{ padding: '9px 12px', borderRadius: 14, background: 'linear-gradient(135deg, rgba(45,212,191,.18), rgba(15,23,42,.62))', border: '1px solid rgba(45,212,191,.28)' }}><span style={{ color: '#99f6e4', fontSize: 10, fontWeight: 900, letterSpacing: '.12em', textTransform: 'uppercase' }}>Radar</span><span style={{ marginLeft: 8, color: '#fff', fontSize: 18, fontWeight: 900 }}>{effectiveScore}</span><span style={{ color: '#64748b', fontSize: 11 }}>/100</span></div>
-                <div style={{ padding: '9px 12px', borderRadius: 14, background: 'linear-gradient(135deg, rgba(251,113,133,.16), rgba(15,23,42,.62))', border: '1px solid rgba(251,113,133,.25)', color: '#fecaca', fontSize: 12, fontWeight: 850 }}>{severityLabel}</div>
-                <span title={token.contract} style={{ color: '#94a3b8', fontSize: 11, fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(token.contract)}</span>
-              </div>
+              <p style={{ margin: '0 0 4px', color: '#5b7186', fontSize: 9, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Intelligence Receipt</p>
+              <h2 style={{ margin: 0, fontSize: 19, color: '#f8fafc', letterSpacing: '-.03em', overflowWrap: 'anywhere', lineHeight: 1.25 }}>{token.name} <span style={{ color: '#94a3b8', fontWeight: 500 }}>/{token.symbol}</span></h2>
             </div>
-            <button onClick={onClose} aria-label="Close project overview" style={{ flex: '0 0 auto', border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.04)', color: '#cbd5e1', borderRadius: 12, width: 36, height: 36, cursor: 'pointer', fontSize: 20 }}>×</button>
+            <button onClick={onClose} aria-label="Close project overview" style={{ flex: '0 0 auto', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.03)', color: '#94a3b8', borderRadius: 999, width: 28, height: 28, cursor: 'pointer', fontSize: 15, lineHeight: 1, display: 'grid', placeItems: 'center' }}>×</button>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 12 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 12 }}>
+            <Chip label={chain === 'base' ? 'Base' : 'ETH'} tone="mint" />
+            <Chip label={fmtAge(token.ageMinutes)} tone="neutral" />
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 999, background: 'rgba(45,212,191,.08)', border: '1px solid rgba(45,212,191,.22)' }}>
+              <span style={{ color: '#5eead4', fontSize: 9, fontWeight: 900, letterSpacing: '.10em', textTransform: 'uppercase' }}>Radar</span>
+              <span style={{ color: '#fff', fontSize: 14, fontWeight: 900 }}>{effectiveScore}</span>
+              <span style={{ color: '#4b6273', fontSize: 10 }}>/100</span>
+            </div>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 999, background: `${verdictColor}14`, border: `1px solid ${verdictColor}38`, color: verdictColor, fontSize: 10, fontWeight: 850, letterSpacing: '.06em' }}>{publicStatus(severityLabel)}</span>
+            <span title={token.contract} style={{ color: '#5b7186', fontSize: 10.5, fontFamily: 'var(--font-plex-mono)', marginLeft: 'auto' }}>{shortAddr(token.contract)}</span>
+          </div>
+          {/* PRIMARY ACTION BAR, DISCLOSED (task #3): identical actions/behaviors to before (Copy CA,
+              Open Explorer, Deep Scan) plus the existing Watchlist toggle when the caller wires it
+              in — no new actions invented. Deep Scan is now the one filled/primary action, the rest
+              are ghost/secondary, so there's a clear default next step instead of four equal-weight
+              buttons. */}
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 12 }}>
+            <a href={`/terminal/token-scanner?contract=${token.contract}`} style={primaryButtonStyle}>Deep Scan</a>
             <button onClick={() => copyText(token.contract)} style={buttonStyle}>Copy CA</button>
             <a href={explorer ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Open Explorer</a>
-            <a href={`/terminal/token-scanner?contract=${token.contract}`} style={{ ...buttonStyle, textDecoration: 'none' }}>Deep Scan</a>
+            {onTrackToggle ? <button onClick={onTrackToggle} style={tracking ? activeButtonStyle : buttonStyle}>{tracking ? 'Watching' : 'Add Watchlist'}</button> : null}
           </div>
         </header>
 
-        <WhyItMattersBox sentences={whyItMatters} />
-
-        <Section title="CORTEX Verdict" tone={severityLabel === 'High Risk' || severityLabel === 'Critical' ? 'risk' : 'mint'}>
-          <p style={{ margin: '0 0 12px', color: '#e2e8f0', fontSize: 14, lineHeight: 1.5, fontWeight: 650 }}>{severity.cortexSevereLine}</p>
-          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 12 }}>{[...marketSignals, ...riskSignals].slice(0, 3).map((x) => <Chip key={x} label={x} tone={/risk|lock|holder|timeout|watch/i.test(x) ? 'risk' : 'mint'} />)}</div>
+        {/* VERDICT MODULE, DISCLOSED (task #4): headline verdict line (unchanged text, same
+            severity.cortexSevereLine), primary risk driver tile (unchanged, same cortexMainRisk),
+            plus a new "Evidence Coverage" chip that only re-labels the already-computed
+            dedupedEvidenceGaps count — see evidenceQualityLabel's own comment above — and the same
+            top status tags, just capped/spaced more like a receipt line than a paragraph block. */}
+        <Section title="CORTEX Verdict" tone={verdictTone}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+            <Chip label={`Evidence: ${evidenceQualityLabel}`} tone={evidenceQualityTone} />
+            {[...marketSignals, ...riskSignals].slice(0, 2).map((x) => <Chip key={x} label={x} tone={/risk|lock|holder|timeout|watch/i.test(x) ? 'risk' : 'mint'} />)}
+          </div>
+          <p style={{ margin: '0 0 12px', color: '#f1f5f9', fontSize: 14.5, lineHeight: 1.5, fontWeight: 650 }}>{severity.cortexSevereLine}</p>
           <ProofTile label="Primary risk driver" value={cortexMainRisk} tone={/High|risk|Active|Extreme|No verified/i.test(cortexMainRisk) ? 'risk' : 'neutral'} />
         </Section>
 
+        {/* WHY IT MATTERS, DISCLOSED (task #5): same WhyItMattersBox component, same sentence
+            content — only its own internal bullet styling changed (subtle dot per line instead of
+            default list markers), see WhyItMattersBox.tsx. */}
+        <WhyItMattersBox sentences={whyItMatters} />
+
+        {/* MARKET SNAPSHOT, DISCLOSED (task #6): same six metrics, same values — MetricCard itself
+            now only visually emphasizes risk/amber (warning) cards, see that component's own
+            comment. */}
         <Section title="Market Snapshot" tone="mint">
           {excludedFromFeed && <div style={{ marginBottom: 10 }}><Chip label="Below default liquidity threshold" tone="risk" /></div>}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
@@ -810,16 +934,18 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           {[['Market Signals', marketSignals, 'mint'], ['Risk Signals', riskSignals, 'risk'], ['Control Signals', controlSignals, 'amber']].map(([title, items, tone]) => <div key={title as string} style={{ marginBottom: 11 }}><p style={{ margin: '0 0 7px', color: '#94a3b8', fontSize: 10, letterSpacing: '.11em', textTransform: 'uppercase', fontWeight: 850 }}>{title as string}</p><div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>{(items as string[]).map((x) => <Chip key={x} label={x} tone={tone as 'mint' | 'amber' | 'risk'} />)}</div></div>)}
         </Section>
 
-        <TimelineMiniChart timeline={radarTimeline} />
+        {/* LOWER SECTIONS — GROUPED ACCORDIONS, DISCLOSED (task #7): each wraps the exact same
+            content/props as before (same components, same computed values) — only the container
+            changed from a standalone bordered card to a collapsible group within one continuous
+            report. Open/collapsed state per section: see sectionDefaults/isSectionOpen above. */}
+        <CollapsibleSection id="momentum" title="Momentum & Timeline" tone="purple" open={isSectionOpen('momentum')} onToggle={toggleSection}>
+          <div style={{ display: 'grid', gap: 12 }}>
+            <TimelineMiniChart timeline={radarTimeline} />
+            <SignalsSidebar signals={radarSignals} />
+          </div>
+        </CollapsibleSection>
 
-        <SignalsSidebar signals={radarSignals} />
-
-        <Section title="Socials" state={enrichmentState}>
-          {projectLinks.length ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 10 }}>{projectLinks.map((link) => <a key={link.label} href={link.href} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', color: '#e2e8f0', padding: 12, borderRadius: 14, border: '1px solid rgba(45,212,191,.20)', background: 'rgba(45,212,191,.07)', fontWeight: 800 }}>{link.label} ↗</a>)}</div> : <div style={{ padding: 14, borderRadius: 15, border: '1px solid rgba(148,163,184,.12)', background: 'rgba(15,23,42,.52)' }}><p style={{ margin: '0 0 5px', color: '#e2e8f0', fontWeight: 750 }}>No public project links found in current metadata.</p><p style={{ margin: 0, color: '#94a3b8', fontSize: 12 }}>CORTEX will keep this as a social-evidence gap.</p></div>}
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}><a href={dexScreener ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Market chart</a><a href={geckoTerminal ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Pool explorer</a></div>
-        </Section>
-
-        <Section title={lp?.lpProofApplicability === 'not_applicable' ? 'LP Position Control' : 'LP Control'} state={enrichmentState} tone={lpTone}>
+        <CollapsibleSection id="lp" title={lp?.lpProofApplicability === 'not_applicable' ? 'Liquidity / LP Position Control' : 'Liquidity / LP Control'} tone={lpTone} open={isSectionOpen('lp')} onToggle={toggleSection} state={enrichmentState}>
           <div style={{ marginBottom: 12 }}><Chip label={lp?.lpProofApplicability === 'not_applicable' ? 'Position verification required' : lpProofLabel} tone={lpTone} /></div>
           <p style={{ margin: '0 0 12px', color: lpTone === 'risk' ? '#fecaca' : '#cbd5e1', fontSize: 13, lineHeight: 1.5 }}>{lp?.lpProofApplicability === 'not_applicable' ? 'Standard LP token lock proof may not apply. Position owner and control route require verification.' : lpRiskLabelValue}</p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: 10 }}>
@@ -830,9 +956,15 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           </div>
           {secondaryLpSignal?.status === 'team_controlled' ? <div style={{ marginTop: 10 }}><ProofTile label="Secondary exposure" value={`Wallet-controlled secondary pool${secondaryLpSignal.poolDex ? ` · ${secondaryLpSignal.poolDex}` : ''}`} tone="risk" /></div> : null}
           <a href={`/terminal/liquidity?address=${token.contract}&chain=${chain}`} style={{ ...buttonStyle, display: 'inline-flex', marginTop: 12, textDecoration: 'none' }}>Open full LP Safety</a>
-        </Section>
+        </CollapsibleSection>
 
-        <Section title="Deployer / Ownership" state={enrichmentState} tone={activeOwner ? 'risk' : 'default'}>
+        <CollapsibleSection id="holders" title="Holders" tone={holderSectionTone} open={isSectionOpen('holders')} onToggle={toggleSection} state={enrichmentState}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}><Chip label={`${concentrationRisk} concentration`} tone={holderTone} /><span style={{ color: '#94a3b8', fontSize: 12 }}>Holders: <strong style={{ color: '#e2e8f0' }}>{concentration.holderCount == null ? 'Open Check' : concentration.holderCount}</strong></span><span style={{ color: '#94a3b8', fontSize: 12 }}>{creatorTopHolderDisplay(concentration.creatorInTopHolders, concentration.creatorHolderPercent)}</span></div>
+          <div style={{ display: 'grid', gap: 10, marginBottom: 12 }}><MiniBar label="Top 1" value={concentration.top1} tone={holderTone === 'risk' ? 'risk' : 'mint'} /><MiniBar label="Top 10" value={concentration.top10} tone={holderTone === 'risk' ? 'risk' : 'amber'} /><MiniBar label="Top 20" value={concentration.top20} tone={holderTone === 'risk' ? 'risk' : 'amber'} /></div>
+          <div className="holder-row-list" style={{ display: 'grid', gap: 7 }}>{topHolders.slice(0, 8).map((h, idx) => <div key={`${h.address}-${idx}`} style={{ display: 'grid', gridTemplateColumns: '38px minmax(0,1fr) auto', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 12, border: '1px solid rgba(148,163,184,.10)', background: 'rgba(2,6,23,.38)' }}><span style={{ color: '#64748b', fontSize: 11, fontFamily: 'var(--font-plex-mono)' }}>#{h.rank ?? idx + 1}</span><span style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(h.address)}</span><span style={{ color: '#99f6e4', fontSize: 12, fontFamily: 'var(--font-plex-mono)', fontWeight: 850 }}>{percent(getHolderPercent(h))}</span></div>)}</div>
+        </CollapsibleSection>
+
+        <CollapsibleSection id="dev" title="Dev / Deployer" tone={activeOwner ? 'risk' : 'default'} open={isSectionOpen('dev')} onToggle={toggleSection} state={enrichmentState}>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10 }}>
             <ProofTile label="Deployer identity" value={`${shortAddr(deployer?.deployerAddress)} · ${deployerMethod}`} />
             <ProofTile label="Ownership/admin" value={ownershipLabel} tone={activeOwner ? 'risk' : 'mint'} />
@@ -840,45 +972,76 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             <ProofTile label="Rug history" value={rugHistoryEvidence.status === 'risk_fact' ? 'Flagged' : rugHistoryEvidence.status === 'checked_not_found' ? 'None found' : 'Open Check'} tone={rugHistoryEvidence.status === 'risk_fact' ? 'risk' : 'mint'} />
           </div>
           <div style={{ marginTop: 12 }}><MiniBar label="Cluster supply control" value={deployer?.clusterEvidence?.devClusterSupplyPercent ?? deployer?.clusterEvidence?.linkedWalletSupplyPercent ?? deployer?.supplyControl?.linkedWalletSupplyPercent ?? null} tone={(deployer?.clusterEvidence?.devClusterSupplyPercent ?? 0) > 30 ? 'risk' : 'mint'} /></div>
-        </Section>
+        </CollapsibleSection>
 
-        <Section title="Holder Distribution" state={enrichmentState} tone={holderSectionTone}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}><Chip label={`${concentrationRisk} concentration`} tone={holderTone} /><span style={{ color: '#94a3b8', fontSize: 12 }}>Holders: <strong style={{ color: '#e2e8f0' }}>{concentration.holderCount == null ? 'Open Check' : concentration.holderCount}</strong></span><span style={{ color: '#94a3b8', fontSize: 12 }}>{creatorTopHolderDisplay(concentration.creatorInTopHolders, concentration.creatorHolderPercent)}</span></div>
-          <div style={{ display: 'grid', gap: 10, marginBottom: 12 }}><MiniBar label="Top 1" value={concentration.top1} tone={holderTone === 'risk' ? 'risk' : 'mint'} /><MiniBar label="Top 10" value={concentration.top10} tone={holderTone === 'risk' ? 'risk' : 'amber'} /><MiniBar label="Top 20" value={concentration.top20} tone={holderTone === 'risk' ? 'risk' : 'amber'} /></div>
-          <div className="holder-row-list" style={{ display: 'grid', gap: 7 }}>{topHolders.slice(0, 8).map((h, idx) => <div key={`${h.address}-${idx}`} style={{ display: 'grid', gridTemplateColumns: '38px minmax(0,1fr) auto', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 12, border: '1px solid rgba(148,163,184,.10)', background: 'rgba(2,6,23,.38)' }}><span style={{ color: '#64748b', fontSize: 11, fontFamily: 'var(--font-plex-mono)' }}>#{h.rank ?? idx + 1}</span><span style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(h.address)}</span><span style={{ color: '#99f6e4', fontSize: 12, fontFamily: 'var(--font-plex-mono)', fontWeight: 850 }}>{percent(getHolderPercent(h))}</span></div>)}</div>
-        </Section>
-
-        <Section title="Mini Chart" state={enrichmentState}>
+        <CollapsibleSection id="socials" title="Socials & Chart" open={isSectionOpen('socials')} onToggle={toggleSection} state={enrichmentState}>
+          {projectLinks.length ? <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(120px,1fr))', gap: 10, marginBottom: 12 }}>{projectLinks.map((link) => <a key={link.label} href={link.href} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', color: '#e2e8f0', padding: 12, borderRadius: 14, border: '1px solid rgba(45,212,191,.20)', background: 'rgba(45,212,191,.07)', fontWeight: 800 }}>{link.label} ↗</a>)}</div> : <div style={{ padding: 14, borderRadius: 15, border: '1px solid rgba(148,163,184,.12)', background: 'rgba(15,23,42,.52)', marginBottom: 12 }}><p style={{ margin: '0 0 5px', color: '#e2e8f0', fontWeight: 750 }}>No public project links found in current metadata.</p><p style={{ margin: 0, color: '#94a3b8', fontSize: 12 }}>CORTEX will keep this as a social-evidence gap.</p></div>}
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}><a href={dexScreener ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Market chart</a><a href={geckoTerminal ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Pool explorer</a></div>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'center', marginBottom: 10 }}><div style={{ display: 'flex', gap: 6 }}>{['1h', '6h', '24h'].map((tf) => <Chip key={tf} label={tf} tone={tf === (enriched?.priceChart?.timeframe ?? '24h') ? 'mint' : 'neutral'} />)}</div>{chartPoints.length < 4 ? <Chip label="Low data" tone="amber" /> : null}</div>
           <MiniChart points={chartPoints} />
-        </Section>
+        </CollapsibleSection>
 
-        <Section title="CORTEX Read" tone="purple">
+        <CollapsibleSection id="cortexRead" title="CORTEX Deep Read" tone="purple" open={isSectionOpen('cortexRead')} onToggle={toggleSection}>
           {[['What CORTEX found', cortexFound], ['Main risk', [cortexMainRisk]], ['Watch next', cortexWatch]].map(([title, lines]) => <div key={title as string} style={{ marginBottom: 12 }}><p style={{ margin: '0 0 7px', color: '#a78bfa', fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 850 }}>{title as string}</p><ul style={{ margin: 0, paddingLeft: 18, color: '#cbd5e1', fontSize: 12, lineHeight: 1.6 }}>{(lines as string[]).slice(0, title === 'What CORTEX found' ? 3 : 2).map((line) => <li key={line}>{line}</li>)}</ul></div>)}
-        </Section>
+        </CollapsibleSection>
 
-        <Section title="Evidence Gaps / Watch Next" tone="risk">
+        <CollapsibleSection
+          id="riskFlags"
+          title="Risk Flags & Watch Next"
+          tone={dedupedRiskFacts.length ? 'risk' : 'default'}
+          open={isSectionOpen('riskFlags')}
+          onToggle={toggleSection}
+          badge={dedupedRiskFacts.length ? <Chip label={`${dedupedRiskFacts.length} Risk Fact${dedupedRiskFacts.length === 1 ? '' : 's'}`} tone="risk" /> : undefined}
+        >
           {[['Risk Facts', dedupedRiskFacts.length ? dedupedRiskFacts : ['No high-confidence risk facts from current structured checks.'], 'risk'], ['Open Checks', dedupedEvidenceGaps.length ? dedupedEvidenceGaps.slice(0, 6) : ['No open evidence gaps from current checks.'], 'amber'], ['Watch Next', dedupedWatchNext.slice(0, 5), 'mint']].map(([title, items, tone]) => <div key={title as string} style={{ marginBottom: 10 }}><p style={{ margin: '0 0 8px', color: tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : '#2dd4bf', fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 900 }}>{title as string}</p><div style={{ display: 'grid', gap: 8 }}>{(items as string[]).map((line) => <div key={line} style={{ display: 'grid', gridTemplateColumns: '14px 1fr', gap: 8, padding: 10, borderRadius: 13, border: '1px solid rgba(148,163,184,.11)', background: 'rgba(15,23,42,.48)' }}><span style={{ marginTop: 4, width: 7, height: 7, borderRadius: 999, background: tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : '#2dd4bf' }} /><span style={{ color: '#cbd5e1', fontSize: 12, lineHeight: 1.45 }}>{line}</span></div>)}</div></div>)}
-        </Section>
+        </CollapsibleSection>
 
-        <NextFiveMinuteCard prediction={nextFiveMinuteRead} />
+        {/* NEXT ACTION, DISCLOSED (task #7 — "Next action" group): kept as a small, always-visible
+            card rather than folded into an accordion — it's a single short, actionable read, not a
+            text wall, and the goal is an "action-oriented" receipt so the next-step read stays in
+            view by default. Same NextFiveMinuteCard component/content as before. */}
+        <div style={{ marginTop: '14px' }}>
+          <NextFiveMinuteCard prediction={nextFiveMinuteRead} />
+        </div>
       </aside>
     </div>
   )
 }
 
+// ACTION-BAR HIERARCHY, DISCLOSED (task #3 — "make primary action visually clear"): buttonStyle is
+// now the calm secondary/ghost treatment (used for Copy CA, Open Explorer, Watchlist, and the
+// existing Market chart/Pool explorer/Open full LP Safety links); primaryButtonStyle is the one
+// filled action (Deep Scan); activeButtonStyle is only for a toggled-on state (Watchlist already
+// added). None of these change what a button does — only how the same actions are visually ranked.
 const buttonStyle: React.CSSProperties = {
-  border: '1px solid rgba(45,212,191,0.28)',
-  background: 'rgba(45,212,191,0.10)',
+  border: '1px solid rgba(148,163,184,0.16)',
+  background: 'rgba(255,255,255,0.03)',
   color: '#99f6e4',
   borderRadius: '10px',
-  padding: '7px 10px',
+  padding: '7px 11px',
   cursor: 'pointer',
   fontSize: '10px',
   fontWeight: 800,
   letterSpacing: '0.08em',
   textTransform: 'uppercase',
   fontFamily: 'var(--font-plex-mono)',
+}
+
+const primaryButtonStyle: React.CSSProperties = {
+  ...buttonStyle,
+  border: '1px solid rgba(45,212,191,0.55)',
+  background: 'linear-gradient(135deg, rgba(45,212,191,0.90), rgba(20,184,166,0.90))',
+  color: '#02110f',
+  textDecoration: 'none',
+  display: 'inline-flex',
+  alignItems: 'center',
+}
+
+const activeButtonStyle: React.CSSProperties = {
+  ...buttonStyle,
+  border: '1px solid rgba(45,212,191,0.40)',
+  background: 'rgba(45,212,191,0.14)',
+  color: '#5eead4',
 }
 
 const tagStyle: React.CSSProperties = {

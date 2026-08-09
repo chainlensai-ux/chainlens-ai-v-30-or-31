@@ -1457,6 +1457,8 @@ export default function BaseRadarPage() {
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         onSimulationUpdate={handleDrawerSimulationUpdate}
+        tracking={selectedToken ? Boolean(trackedContracts[selectedToken.contract]) : false}
+        onTrackToggle={selectedToken ? () => toggleTrack(selectedToken.contract) : undefined}
       />
     </>
   )
