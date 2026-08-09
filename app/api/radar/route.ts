@@ -375,8 +375,13 @@ export async function GET(req: NextRequest) {
   // own 6s timeout + one retry, so this adds no latency beyond the slowest single source. `page`
   // (Load More) now advances by this same page-per-request count, so it continues forward from
   // where the default request left off instead of re-fetching pages the default already covered.
-  const NEW_POOLS_PAGES_PER_REQUEST = 4
-  const TRENDING_PAGES_PER_REQUEST = 2
+  // WIDER-PULL, ROUND 2, DISCLOSED (reported: feed still stuck around 4-6 tokens after round 1):
+  // even at 4+2 pages, Base's real pace of pools that clear the age window and every filter often
+  // wasn't producing much more than a handful. Doubled new_pools again (4->8) since that's the
+  // primary source of genuinely fresh candidates; bumped trending more conservatively (2->3) since
+  // that listing is a smaller universe and deeper pages return less relevant "trending" results.
+  const NEW_POOLS_PAGES_PER_REQUEST = 8
+  const TRENDING_PAGES_PER_REQUEST = 3
   const newPoolsStartPage = (radarPage - 1) * NEW_POOLS_PAGES_PER_REQUEST + 1
   const trendingStartPage = (radarPage - 1) * TRENDING_PAGES_PER_REQUEST + 1
   const sourceSpecs = [
@@ -600,10 +605,16 @@ export async function GET(req: NextRequest) {
       const marketCapFieldPath = resolvedMarketCap.marketCapUsd != null ? resolvedMarketCap.marketCapFieldPath : rescue?.marketCapFieldPath ?? resolvedMarketCap.marketCapFieldPath
       const resolverReason = resolvedMarketCap.marketCapUsd != null ? resolvedMarketCap.reason : rescue?.reason ?? resolvedMarketCap.reason
       const filterResult = tokenPassesRadarValuationFilters({ marketCapUsd, marketCapStatus, fdvUsd, liquidityUsd, minValuationUsd, minLiquidityUsd, allowFdvFallback })
+      // FALLBACK-ACTIVITY-BAR LOOSENED, DISCLOSED (same "still too few tokens" report): the
+      // liquidity floor here is untouched (still the real minLiquidityUsd, same as the strict
+      // path) — only the volume/momentum bar that decides whether a below-valuation-bar pool is
+      // "actually being traded enough to bother showing" was loosened, from $5K/20% down to
+      // $1.5K/8%. Still excludes genuinely dead pools (near-zero volume); just no longer requires
+      // near-strict-path-level activity to qualify for the already-disclosed "Relaxed fallback".
       const shouldHoldAsFallback = !filterResult.included
         && isFallbackAgeWindow
         && liquidityUsd >= minLiquidityUsd
-        && (volume24h >= 5_000 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.2))
+        && (volume24h >= 1_500 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.08))
       if (!filterResult.included && !shouldHoldAsFallback) continue
       const valuation = filterResult.valuation
       const valuationCardDisplay = getRadarValuationCardDisplay(valuation, fmtK)
