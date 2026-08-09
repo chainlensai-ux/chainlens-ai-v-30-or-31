@@ -32,18 +32,43 @@ function inferAnalysisKind(text: string): AnalysisKind {
   if (/\b(token|contract|ca\b|holders?|deployer|rug|safe|scan)\b/.test(t)) return 'token'
   return 'general'
 }
+const CLARK_TRACE_STEPS = ['Context', 'Signals', 'Response']
+
 function ClarkLoadingTrace({ kind }: { kind: AnalysisKind }) {
   const stages = ANALYSIS_STAGES[kind]
   const [stage, setStage] = useState(0)
+  const [reducedMotion, setReducedMotion] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  )
   useEffect(() => {
     setStage(0)
     const id = window.setInterval(() => setStage((current) => Math.min(current + 1, stages.length - 1)), 1200)
     return () => window.clearInterval(id)
   }, [kind, stages.length])
+  useEffect(() => {
+    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const onChange = () => setReducedMotion(mq.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+  const progress = stage / Math.max(1, stages.length - 1)
+  const activeStep = progress < 0.34 ? 0 : progress < 0.75 ? 1 : 2
   return (
     <div className="clark-loading-trace">
-      <ThinkingOrb state="composing" size={64} speed={2.80} />
+      <div className="clark-loading-head">
+        <ThinkingOrb state="composing" size={20} speed={2.2} paused={reducedMotion} />
+        <span className="clark-loading-title">CORTEX processing…</span>
+      </div>
       <div className="clark-loading-stage">{stages[stage] ?? stages[0]}</div>
+      <div className="clark-loading-steps">
+        {CLARK_TRACE_STEPS.map((step, i) => (
+          <span key={step} className={`clark-loading-step${i <= activeStep ? ' is-active' : ''}`}>
+            {step}
+            {i < CLARK_TRACE_STEPS.length - 1 && <span className="clark-loading-step-sep">·</span>}
+          </span>
+        ))}
+      </div>
+      <div className="clark-loading-shimmer" />
     </div>
   )
 }
@@ -374,11 +399,24 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           background: rgba(123,92,255,0.30);
           border-radius: 3px;
         }
-        .clark-loading-trace { min-width: 210px; display: flex; align-items: center; gap: 10px; }
-        .clark-loading-stage { color: #dbeafe; font: 800 11px var(--font-plex-mono); letter-spacing: .04em; }
-        .clark-loading-scan { position: relative; height: 2px; margin-top: 8px; overflow: hidden; background: rgba(148,163,184,.13); }
-        .clark-loading-scan::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 45%; background: linear-gradient(90deg, transparent, rgba(45,212,191,.9), transparent); animation: clarkTraceScan 1.15s linear infinite; }
-        @keyframes clarkTraceScan { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+        .clark-loading-trace { min-width: 210px; display: flex; flex-direction: column; gap: 6px; }
+        .clark-loading-head { display: flex; align-items: center; gap: 7px; }
+        .clark-loading-title {
+          color: #5eead4; font: 800 10px var(--font-plex-mono); letter-spacing: .08em;
+          text-transform: uppercase;
+        }
+        .clark-loading-stage { color: rgba(219,234,254,0.78); font: 600 11px var(--font-plex-mono); letter-spacing: .02em; }
+        .clark-loading-steps { display: flex; align-items: center; gap: 3px; font: 700 8.5px var(--font-plex-mono); letter-spacing: .06em; text-transform: uppercase; }
+        .clark-loading-step { color: rgba(148,163,184,0.42); transition: color 0.3s; display: inline-flex; align-items: center; gap: 3px; }
+        .clark-loading-step.is-active { color: rgba(94,234,212,0.85); }
+        .clark-loading-step-sep { color: rgba(148,163,184,0.30); margin-left: 3px; }
+        .clark-loading-shimmer {
+          height: 2px; border-radius: 2px; margin-top: 2px; overflow: hidden;
+          background: linear-gradient(90deg, rgba(45,212,191,0) 0%, rgba(45,212,191,0.55) 50%, rgba(45,212,191,0) 100%);
+          background-size: 200% 100%;
+          animation: clarkTraceShimmer 1.7s linear infinite;
+        }
+        @keyframes clarkTraceShimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
         @keyframes clarkOrbFloat {
           0%,100% { transform: translateY(0px) scale(1); }
           50% { transform: translateY(-2px) scale(1.02); }
@@ -398,7 +436,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         .clark-msg strong { color: #e2e8f0; font-weight: 600; }
         .clark-msg-label { color: #c4b5fd; font-weight: 600; letter-spacing: 0.01em; }
         @media (prefers-reduced-motion: reduce) {
-          .clark-orb, .clark-orb::before, .clark-loading-scan::before, .clark-radar-send, .clark-radar-arrow { animation: none !important; }
+          .clark-orb, .clark-orb::before, .clark-loading-shimmer, .clark-radar-send, .clark-radar-arrow { animation: none !important; }
         }
         @media (max-width: 768px) {
           .clark-panel-glow { animation: none !important; }
@@ -582,11 +620,11 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                     justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
                   }}
                 >
-                  {msg.role === 'clark' && (
+                  {msg.role === 'clark' && msg.text !== 'Clark is thinking...' && (
                     <ClarkOrb
                       size={20}
                       className="clark-orb"
-                      thinking={msg.text === 'Clark is thinking...'}
+                      thinking={false}
                       style={{ flexShrink: 0, marginRight: '6px', alignSelf: 'flex-end' }}
                     />
                   )}
@@ -595,15 +633,18 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                     padding: '8px 10px',
                     borderRadius: '7px',
                     background: msg.text === 'Clark is thinking...'
-                      ? 'rgba(45,212,191,0.04)'
+                      ? 'linear-gradient(135deg, rgba(45,212,191,0.06) 0%, rgba(45,212,191,0.02) 100%)'
                       : msg.role === 'user'
                       ? 'rgba(45,212,191,0.10)'
                       : 'rgba(123,92,255,0.10)',
                     border: `1px solid ${msg.text === 'Clark is thinking...'
-                      ? 'rgba(45,212,191,0.12)'
+                      ? 'rgba(45,212,191,0.20)'
                       : msg.role === 'user'
                       ? 'rgba(45,212,191,0.18)'
                       : 'rgba(123,92,255,0.18)'}`,
+                    boxShadow: msg.text === 'Clark is thinking...'
+                      ? 'inset 0 0 0 1px rgba(45,212,191,0.06), 0 0 16px rgba(45,212,191,0.05)'
+                      : undefined,
                     color: msg.text === 'Clark is thinking...' ? 'rgba(255,255,255,0.45)' : '#dde4f0',
                     fontSize: '12px',
                     lineHeight: 1.7,
