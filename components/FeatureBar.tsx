@@ -438,6 +438,41 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
         }
         .fb-wallet-chip > div:nth-child(3):nth-last-child(1) { display: none !important; }
         .fb-account-row { border-top: 1px solid rgba(148,163,184,0.10) !important; }
+        /* Plan badge — same premium capsule treatment as the marketing navbar's account pill
+           (components/Navbar.tsx .nav-elite-badge / .nav-pro-badge / .nav-free-badge), kept
+           consistent so Pro/Elite reads as the same "upgraded account" state in both places. */
+        .fb-plan-badge {
+          display: inline-flex; align-items: center; gap: 3px;
+          padding: 2px 7px; border-radius: 999px; flex-shrink: 0;
+        }
+        .fb-plan-badge--elite {
+          background: linear-gradient(135deg, rgba(245,158,11,0.20) 0%, rgba(217,119,6,0.10) 100%);
+          border: 1px solid rgba(245,158,11,0.42);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
+        }
+        .fb-plan-badge--pro {
+          background: linear-gradient(135deg, rgba(45,212,191,0.18) 0%, rgba(20,184,166,0.09) 100%);
+          border: 1px solid rgba(45,212,191,0.40);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
+        }
+        .fb-plan-badge--free {
+          background: rgba(148,163,184,0.08);
+          border: 1px solid rgba(148,163,184,0.18);
+        }
+        .fb-plan-badge-label {
+          font-size: 9px; font-weight: 800; letter-spacing: 0.10em; white-space: nowrap;
+        }
+        .fb-plan-badge--elite .fb-plan-badge-label {
+          background: linear-gradient(100deg, #fde68a 0%, #f59e0b 55%, #fbbf24 100%);
+          -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .fb-plan-badge--pro .fb-plan-badge-label {
+          background: linear-gradient(100deg, #99f6e4 0%, #2dd4bf 55%, #5eead4 100%);
+          -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .fb-plan-badge--free .fb-plan-badge-label { color: rgba(148,163,184,0.80); }
+        .fb-account-row.fb-account-row--elite:hover { border-color: rgba(245,158,11,0.30) !important; background: rgba(245,158,11,0.06) !important; }
+        .fb-account-row.fb-account-row--pro:hover { border-color: rgba(45,212,191,0.28) !important; background: rgba(45,212,191,0.06) !important; }
       `}</style>
 
       {/* ── Mobile close button ───────────────────────────────── */}
@@ -546,7 +581,7 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
           <Link
             href="/terminal/settings"
             prefetch={true}
-            className="fb-account-row"
+            className={`fb-account-row${plan === 'elite' ? ' fb-account-row--elite' : plan === 'pro' ? ' fb-account-row--pro' : ''}`}
             style={{
               height: '32px',
               borderRadius: '7px',
@@ -566,16 +601,6 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
               textDecoration: 'none',
               width: '100%',
             }}
-            onMouseEnter={e => {
-              const el = e.currentTarget as HTMLAnchorElement
-              el.style.background = 'rgba(255,255,255,0.04)'
-              el.style.borderColor = 'rgba(148,163,184,0.16)'
-            }}
-            onMouseLeave={e => {
-              const el = e.currentTarget as HTMLAnchorElement
-              el.style.background = 'transparent'
-              el.style.borderColor = 'transparent'
-            }}
           >
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}>
               <span style={{
@@ -589,18 +614,32 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
                 alignItems: 'center',
                 justifyContent: 'center',
                 fontSize: '10px',
+                boxShadow: plan === 'elite'
+                  ? '0 0 0 1.5px rgba(245,158,11,0.65), 0 0 6px rgba(245,158,11,0.25)'
+                  : plan === 'pro'
+                  ? '0 0 0 1.5px rgba(45,212,191,0.60), 0 0 6px rgba(45,212,191,0.22)'
+                  : undefined,
               }}>{initials}</span>
               <span>{shortEmail}</span>
             </span>
-            <span style={{
-              fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em',
-              color: betaElite ? '#2DD4BF' : plan === 'elite' ? '#fbbf24' : plan === 'pro' ? '#a78bfa' : '#64748b',
-              background: betaElite ? 'rgba(45,212,191,0.12)' : plan === 'elite' ? 'rgba(251,191,36,0.12)' : plan === 'pro' ? 'rgba(139,92,246,0.14)' : 'rgba(100,116,139,0.12)',
-              border: `1px solid ${betaElite ? 'rgba(45,212,191,0.30)' : plan === 'elite' ? 'rgba(251,191,36,0.28)' : plan === 'pro' ? 'rgba(139,92,246,0.30)' : 'rgba(100,116,139,0.22)'}`,
-              borderRadius: '5px', padding: '2px 5px',
-            }}>
-              {betaElite ? 'BETA' : plan.toUpperCase()}
-            </span>
+            {betaElite ? (
+              <span className="fb-plan-badge fb-plan-badge--pro">
+                <span className="fb-plan-badge-label">BETA</span>
+              </span>
+            ) : plan === 'elite' ? (
+              <span className="fb-plan-badge fb-plan-badge--elite">
+                <svg width="7" height="7" viewBox="0 0 24 24" fill="#fbbf24" aria-hidden="true"><path d="M12 2l2.4 7.2H22l-6 4.6 2.3 7.2-6.3-4.6-6.3 4.6 2.3-7.2-6-4.6h7.6z"/></svg>
+                <span className="fb-plan-badge-label">ELITE</span>
+              </span>
+            ) : plan === 'pro' ? (
+              <span className="fb-plan-badge fb-plan-badge--pro">
+                <span className="fb-plan-badge-label">PRO</span>
+              </span>
+            ) : (
+              <span className="fb-plan-badge fb-plan-badge--free">
+                <span className="fb-plan-badge-label">FREE</span>
+              </span>
+            )}
           </Link>
         ) : (
           <div className="flex" style={{ gap: '6px' }}>
