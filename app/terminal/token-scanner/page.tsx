@@ -3899,9 +3899,14 @@ export default function TerminalTokenScanner() {
            shadow so the card reads as the terminal's primary command module, not a glow bloom. */
         .search-card{background:linear-gradient(160deg,rgba(10,18,36,.98) 0%,rgba(6,12,26,.97) 100%);border:1px solid rgba(99,102,241,.28);border-radius:18px;box-shadow:0 0 0 1px rgba(99,102,241,.08) inset,0 20px 48px rgba(2,6,23,.60);}
         .chain-seg{display:inline-flex;padding:3px;border-radius:11px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);gap:2px;}
-        .chain-seg-btn{padding:8px 20px;border-radius:8px;font-size:11px;font-weight:700;letter-spacing:.11em;font-family:var(--font-plex-mono);cursor:pointer;transition:background .15s,color .15s;border:none;background:transparent;color:#3d4f62;}
+        .chain-seg-btn{padding:8px 20px;border-radius:8px;font-size:11px;font-weight:700;letter-spacing:.11em;font-family:var(--font-plex-mono);cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;border:none;background:transparent;color:#3d4f62;}
         .chain-seg-btn:hover:not(.chain-seg-btn--active){color:#64748b;}
-        .chain-seg-btn--active{background:rgba(99,102,241,.20);color:#c7d2fe;box-shadow:inset 0 0 0 1px rgba(99,102,241,.35);}
+        /* Per-chain active color, DISCLOSED (Token Scanner final polish task): BASE keeps the
+           brand teal already used for its header pill/dot elsewhere on this page; ETHEREUM keeps
+           the indigo already used for its pill — same setChain() behavior, just a sharper, more
+           branded "selected" state than one generic indigo for both. */
+        .chain-seg-btn--active-base{background:rgba(34,211,238,.16);color:#a5f3fc;box-shadow:inset 0 0 0 1px rgba(34,211,238,.38);}
+        .chain-seg-btn--active-eth{background:rgba(99,102,241,.20);color:#c7d2fe;box-shadow:inset 0 0 0 1px rgba(99,102,241,.35);}
         .cmd-chip{padding:6px 13px;border-radius:8px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.10);color:#5b7186;font-size:10.5px;font-weight:600;font-family:var(--font-plex-mono);letter-spacing:.03em;cursor:pointer;transition:background .14s,border-color .14s,color .14s;display:inline-flex;align-items:center;gap:5px;}
         .cmd-chip:hover{color:#a5b4fc;border-color:rgba(99,102,241,.35);background:rgba(99,102,241,.06);}
         .cmd-chip-glyph{color:#334155;font-size:10px;}
@@ -3995,8 +4000,12 @@ export default function TerminalTokenScanner() {
               </svg>
             </div>
 
-            {/* Premium search card */}
-            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '22px 22px 18px' }}>
+            {/* Premium search card — thin static top accent line, DISCLOSED (Token Scanner final
+                polish task): same cheap gradient-line treatment already used on other ChainLens
+                panels (e.g. the Clark AI panel header) for a touch of depth without any blur/glow
+                animation. */}
+            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '22px 22px 18px', overflow: 'hidden' }}>
+              <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: '8%', right: '8%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.45), rgba(99,102,241,0.40), transparent)' }} />
 
               {/* Card title + description */}
               <div style={{ marginBottom: '14px' }}>
@@ -4013,48 +4022,57 @@ export default function TerminalTokenScanner() {
                     key={c}
                     type="button"
                     onClick={() => setChain(c)}
-                    className={`chain-seg-btn${chain === c ? ' chain-seg-btn--active' : ''}`}
+                    className={`chain-seg-btn${chain === c ? (c === 'base' ? ' chain-seg-btn--active-base' : ' chain-seg-btn--active-eth') : ''}`}
                   >
                     {c === 'base' ? 'BASE' : 'ETHEREUM'}
                   </button>
                 ))}
               </div>
 
-              {/* Input + button row */}
+              {/* Input + button row — terminal prompt prefix, DISCLOSED (Token Scanner final
+                  polish task): purely presentational ">_" glyph inside the input's own padding,
+                  same value/onChange/onKeyDown/disabled wiring as before, no submit-behavior
+                  change. */}
               <div className="token-input-row" style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
-                <input
-                  value={input}
-                  onChange={e => { setInput(e.target.value); setResolverResult(null) }}
-                  onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
-                  disabled={loading}
-                  placeholder="Paste contract, ticker, or token name"
-                  style={{
-                    flex: 1, padding: '14px 18px',
-                    background: 'rgba(255,255,255,0.04)',
-                    border: '1px solid rgba(255,255,255,0.10)',
-                    borderRadius: '12px',
-                    color: '#e2e8f0', fontSize: '15px',
-                    fontFamily: 'var(--font-plex-mono)',
-                    outline: 'none',
-                    opacity: loading ? 0.6 : 1,
-                    transition: 'border-color 0.15s, box-shadow 0.15s',
-                    minWidth: 0,
-                  }}
-                  onFocus={e => {
-                    e.currentTarget.style.borderColor = 'rgba(45,212,191,0.55)'
-                    e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.08)'
-                  }}
-                  onBlur={e => {
-                    e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'
-                    e.currentTarget.style.boxShadow = 'none'
-                  }}
-                />
+                <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+                  <span aria-hidden="true" style={{ position: 'absolute', left: '16px', top: '50%', transform: 'translateY(-50%)', color: 'rgba(45,212,191,0.55)', fontFamily: 'var(--font-plex-mono)', fontSize: '14px', fontWeight: 700, pointerEvents: 'none' }}>
+                    {'>_'}
+                  </span>
+                  <input
+                    value={input}
+                    onChange={e => { setInput(e.target.value); setResolverResult(null) }}
+                    onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
+                    disabled={loading}
+                    placeholder="Paste contract, ticker, or token name"
+                    style={{
+                      width: '100%', padding: '14px 18px 14px 40px', boxSizing: 'border-box',
+                      background: 'rgba(255,255,255,0.04)',
+                      border: '1px solid rgba(255,255,255,0.10)',
+                      borderRadius: '12px',
+                      color: '#e2e8f0', fontSize: '15px',
+                      fontFamily: 'var(--font-plex-mono)',
+                      outline: 'none',
+                      opacity: loading ? 0.6 : 1,
+                      transition: 'border-color 0.15s, box-shadow 0.15s',
+                      minWidth: 0,
+                    }}
+                    onFocus={e => {
+                      e.currentTarget.style.borderColor = 'rgba(45,212,191,0.55)'
+                      e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.08)'
+                    }}
+                    onBlur={e => {
+                      e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'
+                      e.currentTarget.style.boxShadow = 'none'
+                    }}
+                  />
+                </div>
                 <button
                   onClick={() => handleScan()}
                   disabled={loading || resolving || !input.trim()}
                   className={loading || resolving || !input.trim() ? '' : 'scan-btn-live'}
                   style={{
-                    padding: '14px 32px', borderRadius: '12px', border: '1px solid rgba(0,246,255,0.35)',
+                    display: 'inline-flex', alignItems: 'center', gap: '8px',
+                    padding: '14px 30px', borderRadius: '12px', border: '1px solid rgba(0,246,255,0.35)',
                     background: loading || resolving || !input.trim()
                       ? 'rgba(15,23,42,0.54)'
                       : 'linear-gradient(180deg, rgba(15,23,42,0.94), rgba(2,6,23,0.88))',
@@ -4067,7 +4085,12 @@ export default function TerminalTokenScanner() {
                     boxShadow: loading || resolving || !input.trim() ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.06), 0 0 18px rgba(0,246,255,0.13)',
                   }}
                 >
-                  {loading || resolving ? 'SCANNING…' : 'SCAN TOKEN'}
+                  {loading || resolving ? 'SCANNING…' : (
+                    <>
+                      SCAN TOKEN
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                    </>
+                  )}
                 </button>
               </div>
 
@@ -4181,17 +4204,22 @@ export default function TerminalTokenScanner() {
                   .preview-module-card class (static border, no per-item colored glow bloom, no
                   inline JS hover handlers) — the small colored dot still identifies each module,
                   just without the boxy per-card tinted background/border/shadow. */}
+              {/* Intelligence-module framing, DISCLOSED (Token Scanner final polish task): each
+                  card now shows a numbered index (01–04) and a thin static top accent bar instead
+                  of just a dot, so the four cards read as sequential engine modules rather than
+                  generic feature tiles — no new glow, both additions are static/cheap. */}
               <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '10px', marginBottom: '28px' }}>
                 {[
-                  { label: 'Market Pulse',  color: '#22d3ee', desc: 'Price, liquidity, volume, and pool depth.' },
-                  { label: 'Holder Map',    color: '#a78bfa', desc: 'Top-holder concentration and supply distribution.' },
-                  { label: 'LP Safety',     color: '#34d399', desc: 'Pool lock status, LP control, and exit risk.' },
-                  { label: 'Dev Activity',  color: '#fb923c', desc: 'Contract ownership, dev wallets, and recent activity.' },
+                  { n: '01', label: 'Market Pulse',  color: '#22d3ee', desc: 'Price, liquidity, volume, and pool depth.' },
+                  { n: '02', label: 'Holder Map',    color: '#a78bfa', desc: 'Top-holder concentration and supply distribution.' },
+                  { n: '03', label: 'LP Safety',     color: '#34d399', desc: 'Pool lock status, LP control, and exit risk.' },
+                  { n: '04', label: 'Dev Activity',  color: '#fb923c', desc: 'Contract ownership, dev wallets, and recent activity.' },
                 ].map(mod => (
-                  <div key={mod.label} className="preview-module-card">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '9px' }}>
-                      <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: mod.color, flexShrink: 0 }} />
+                  <div key={mod.label} className="preview-module-card" style={{ position: 'relative', overflow: 'hidden' }}>
+                    <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '2px', background: mod.color, opacity: 0.55 }} />
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '9px' }}>
                       <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: mod.color, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</span>
+                      <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(148,163,184,0.30)', fontFamily: 'var(--font-plex-mono)' }}>{mod.n}</span>
                     </div>
                     <p style={{ margin: 0, fontSize: '11px', color: '#64748b', lineHeight: 1.6 }}>{mod.desc}</p>
                   </div>
@@ -6485,29 +6513,36 @@ export default function TerminalTokenScanner() {
             </div>
           )}
 
-          {/* Idle — CORTEX Receipt checklist */}
+          {/* Idle — CORTEX Receipt checklist, DISCLOSED (Token Scanner final polish task): the
+              old idle state used the SAME filled check-icon as a completed receipt, which read as
+              "already confirmed" for sections that don't exist yet. Now uses a hollow pending dot
+              + an explicit "AWAITING SCAN" tag so the preview honestly reads as a preview, not a
+              fake result. No receipt content is generated here — still just the section names. */}
           {!planLoading && isFullAccess && !clarkLoading && !clarkVerdict && !clarkError && (
             <div style={{ background: 'rgba(8,14,28,.70)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '15px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '7px', marginBottom: '4px' }}>
-                <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(34,211,238,.55)', flexShrink: 0 }} />
-                <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#5b7186', letterSpacing: '.16em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>CORTEX Receipt</p>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '4px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
+                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(34,211,238,.55)', flexShrink: 0 }} />
+                  <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#5b7186', letterSpacing: '.16em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>CORTEX Receipt</p>
+                </div>
+                <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '.10em', padding: '2px 7px', borderRadius: '999px', color: '#4b5d7a', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.10)', fontFamily: 'var(--font-plex-mono)' }}>
+                  AWAITING SCAN
+                </span>
               </div>
               <p style={{ margin: '0 0 14px', fontSize: '10px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
                 Scan a token to generate a structured risk receipt.
               </p>
               {[
-                { label: 'Verdict',              color: '#22d3ee' },
-                { label: 'Market Read',          color: '#22d3ee' },
-                { label: 'Holder / Supply Read', color: '#22d3ee' },
-                { label: 'LP / Risk Read',       color: '#22d3ee' },
-                { label: 'Dev Control',          color: '#22d3ee' },
-                { label: 'Next Action',          color: '#22d3ee' },
+                { label: 'Verdict' },
+                { label: 'Market Read' },
+                { label: 'Holder / Supply Read' },
+                { label: 'LP / Risk Read' },
+                { label: 'Dev Control' },
+                { label: 'Next Action' },
               ].map((sec, idx) => (
                 <div key={sec.label} style={{ display: 'flex', alignItems: 'center', gap: '9px', paddingTop: idx > 0 ? '9px' : 0, marginTop: idx > 0 ? '9px' : 0, borderTop: idx > 0 ? '1px solid rgba(255,255,255,0.04)' : 'none' }}>
-                  <span style={{ width: '16px', height: '16px', borderRadius: '50%', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.34)', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    <svg width="8" height="8" viewBox="0 0 9 9" fill="none"><polyline points="1.5,5 3.5,7 7.5,2" stroke="#22d3ee" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
-                  </span>
-                  <span style={{ fontSize: '10.5px', fontWeight: 600, color: '#8291a3', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.02em' }}>{sec.label}</span>
+                  <span style={{ width: '16px', height: '16px', borderRadius: '50%', border: '1px solid rgba(148,163,184,0.30)', flexShrink: 0 }} />
+                  <span style={{ fontSize: '10.5px', fontWeight: 600, color: '#5b6a7a', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.02em' }}>{sec.label}</span>
                 </div>
               ))}
             </div>
@@ -6723,18 +6758,22 @@ export default function TerminalTokenScanner() {
                           </div>
                         </div>
                       </div>
+                      {/* Scan/Remove hierarchy, DISCLOSED (Token Scanner final polish task): Scan
+                          is now the visually primary action (filled teal), Remove stays a quiet
+                          ghost action — same onClick handlers/behavior, just clearer priority. */}
                       <div style={{ display: 'flex', gap: '6px' }}>
                         <button
                           onClick={() => { setInput(t.contract_address); handleScan(t.contract_address, 'base') }}
-                          className="cmd-chip"
-                          style={{ flex: 1, justifyContent: 'center', padding: '7px 0', color: '#22d3ee', borderColor: 'rgba(34,211,238,0.22)', letterSpacing: '.10em' }}
+                          style={{ flex: 1, justifyContent: 'center', display: 'flex', alignItems: 'center', padding: '7px 0', borderRadius: '8px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.32)', color: '#67e8f9', fontSize: '10.5px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', letterSpacing: '.10em', cursor: 'pointer', transition: 'background .14s, border-color .14s' }}
+                          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(34,211,238,0.16)'; e.currentTarget.style.borderColor = 'rgba(34,211,238,0.50)' }}
+                          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(34,211,238,0.10)'; e.currentTarget.style.borderColor = 'rgba(34,211,238,0.32)' }}
                         >
                           Scan
                         </button>
                         <button
                           onClick={() => removeTrackedToken(t.contract_address)}
                           className="cmd-chip"
-                          style={{ padding: '7px 12px', color: '#f87171', borderColor: 'rgba(248,113,113,0.20)' }}
+                          style={{ padding: '7px 12px', color: '#8291a3', borderColor: 'rgba(255,255,255,0.08)' }}
                         >
                           Remove
                         </button>
