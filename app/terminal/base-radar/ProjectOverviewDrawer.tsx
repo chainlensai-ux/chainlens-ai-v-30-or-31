@@ -803,15 +803,12 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
     await navigator.clipboard?.writeText(value)
   }
 
-  // ACCORDION STATE, DISCLOSED (task #7 — grouped/collapsible lower sections, default open:
-  // Verdict + Market Snapshot; default collapsed: deeper evidence "if needed"): only explicit user
-  // toggles are stored here — the actual open/closed state for each section is that override, or
-  // else a smart per-section default computed from the same real evidence already computed above
-  // (never fabricated). That means a section holding a genuine warning (e.g. holder concentration
-  // actually scored 'risk', an active owner/admin actually detected) opens itself automatically
-  // once that evidence loads, satisfying "do not hide critical warnings permanently" without a
-  // fragile effect racing the enrichment fetch. Resets to defaults whenever the drawer is pointed at
-  // a different token, so switching tokens never carries over the previous token's manual toggles.
+  // ACCORDION STATE, DISCLOSED — REVISED per direct user feedback on the first pass: every lower
+  // section now defaults OPEN (the report reads top-to-bottom with nothing hidden behind a click),
+  // and the section header/chevron only exists so a user who wants to tidy the view can manually
+  // collapse a section they don't care about — collapsing is opt-in, never the default. Only
+  // explicit user collapses are stored; resets whenever the drawer is pointed at a different token
+  // so a previous token's manual collapse never carries over.
   const [sectionOverrides, setSectionOverrides] = useState<Record<string, boolean>>({})
   const overrideAddressRef = useRef(address)
   useEffect(() => {
@@ -820,17 +817,8 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
       setSectionOverrides({})
     }
   }, [address])
-  const sectionDefaults: Record<string, boolean> = {
-    momentum: false,
-    lp: lpTone === 'risk',
-    holders: holderTone === 'risk',
-    dev: activeOwner,
-    socials: false,
-    cortexRead: false,
-    riskFlags: dedupedRiskFacts.length > 0,
-  }
   function isSectionOpen(id: string): boolean {
-    return sectionOverrides[id] ?? sectionDefaults[id] ?? false
+    return sectionOverrides[id] ?? true
   }
   function toggleSection(id: string) {
     setSectionOverrides(prev => ({ ...prev, [id]: !isSectionOpen(id) }))
