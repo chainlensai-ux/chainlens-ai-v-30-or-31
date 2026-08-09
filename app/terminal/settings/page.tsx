@@ -436,7 +436,15 @@ export default function SettingsPage() {
 
   return (
     <div style={({ height: '100%', overflowY: 'auto', background: '#06060a', color: '#e2e8f0', transition: 'background 0.2s ease, color 0.2s ease', ['--cl-card-bg' as string]: '#080c14', ['--cl-card-border' as string]: 'rgba(255,255,255,0.08)', ['--cl-danger-border' as string]: 'rgba(239,68,68,0.25)' } as CSSProperties)} >
-      <div style={{ maxWidth: '720px', margin: '0 auto', padding: '40px 32px 80px' }}>
+      {/* MOBILE FRIENDLY PASS, DISCLOSED (mobile audit): page was already a fluid single-column
+          card stack with no fixed pixel widths, so the only real gap was the 32px side padding
+          eating too much of a phone's width — trimmed under 640px. */}
+      <style>{`
+        @media (max-width: 640px) {
+          .settings-container { padding: 24px 16px 56px !important; }
+        }
+      `}</style>
+      <div className='settings-container' style={{ maxWidth: '720px', margin: '0 auto', padding: '40px 32px 80px' }}>
 
         {/* Page header */}
         <div style={{ marginBottom: '36px' }}>
@@ -825,8 +833,8 @@ export default function SettingsPage() {
           {/* ── Danger Zone ─────────────────────────────── */}
           <Card danger>
             <SectionTitle>Danger Zone</SectionTitle>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px' }}>
-              <div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+              <div style={{ minWidth: 0, flex: '1 1 200px' }}>
                 <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.75)', fontFamily: 'var(--font-inter, Inter, sans-serif)', fontWeight: 500, marginBottom: '4px' }}>
                   Delete Account
                 </div>
