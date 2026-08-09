@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
+import { ThinkingOrb } from 'thinking-orbs'
 import ClarkOrb from '@/components/ClarkOrb'
 import { supabase } from '@/lib/supabaseClient'
 import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList } from '@/lib/client/clarkMemory'
@@ -39,7 +40,12 @@ function ClarkLoadingTrace({ kind }: { kind: AnalysisKind }) {
     const id = window.setInterval(() => setStage((current) => Math.min(current + 1, stages.length - 1)), 1200)
     return () => window.clearInterval(id)
   }, [kind, stages.length])
-  return <div className="clark-loading-trace"><div className="clark-loading-stage">{stages[stage] ?? stages[0]}</div><div className="clark-loading-scan" /></div>
+  return (
+    <div className="clark-loading-trace">
+      <ThinkingOrb state="composing" size={64} speed={2.80} />
+      <div className="clark-loading-stage">{stages[stage] ?? stages[0]}</div>
+    </div>
+  )
 }
 
 type ClarkMode = 'chat' | 'analyst'
@@ -368,7 +374,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           background: rgba(123,92,255,0.30);
           border-radius: 3px;
         }
-        .clark-loading-trace { min-width: 210px; }
+        .clark-loading-trace { min-width: 210px; display: flex; align-items: center; gap: 10px; }
         .clark-loading-stage { color: #dbeafe; font: 800 11px var(--font-plex-mono); letter-spacing: .04em; }
         .clark-loading-scan { position: relative; height: 2px; margin-top: 8px; overflow: hidden; background: rgba(148,163,184,.13); }
         .clark-loading-scan::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 45%; background: linear-gradient(90deg, transparent, rgba(45,212,191,.9), transparent); animation: clarkTraceScan 1.15s linear infinite; }

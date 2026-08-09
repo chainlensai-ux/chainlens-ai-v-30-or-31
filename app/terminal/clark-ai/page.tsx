@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { usePathname, useSearchParams } from 'next/navigation'
+import { ThinkingOrb } from 'thinking-orbs'
 import { supabase } from '@/lib/supabaseClient'
 import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList, persistMarketMomentum, readMarketMomentum } from '@/lib/client/clarkMemory'
 import ClarkHistoryPanel from '@/components/ClarkHistoryPanel'
@@ -554,7 +555,7 @@ function ClarkAiContent() {
         .clk-action { border:1px solid rgba(45,212,191,.25); border-radius:999px; padding:7px 10px; color:#ccfbf1; background:rgba(45,212,191,.07); font-size:12px; font-weight:700; text-decoration:none; }
         .clk-action--disabled { opacity:.45; cursor:not-allowed; pointer-events:none; }
         .clk-action--btn { cursor:pointer; font-family:inherit; }
-        .clk-thinking { display:block; min-width:260px; }
+        .clk-thinking { display:flex; align-items:center; gap:12px; min-width:260px; }
         .clk-thinking-stage { color:#dbeafe; font:800 12px var(--font-plex-mono, monospace); letter-spacing:.04em; transition:opacity .2s; }
         .clk-scanline { position:relative; height:2px; margin-top:10px; overflow:hidden; background:rgba(148,163,184,.12); }
         .clk-scanline::before { content:''; position:absolute; inset:0 auto 0 0; width:42%; background:linear-gradient(90deg, transparent, rgba(45,212,191,.9), transparent); animation:clkScan 1.15s linear infinite; }
@@ -702,8 +703,8 @@ function ClarkAiContent() {
                     <span className='clk-msg-role' data-intent={msg.role === 'user' ? msg.text.slice(0, 34) : (msg.intentBadge ?? (activeMode === 'wallet' ? 'WALLET PROFILE' : activeMode === 'token' ? 'TOKEN READ' : activeMode === 'contract' ? 'RISK READ' : 'INTELLIGENCE'))}>{msg.role === 'user' ? 'USER' : 'CLARK'}</span>
                     {isThinking ? (
                       <div className='clk-thinking'>
+                        <ThinkingOrb state="composing" size={64} speed={2.80} />
                         <div className='clk-thinking-stage'>{loadingStages[loadingStage] ?? loadingStages[0]}</div>
-                        <div className='clk-scanline' />
                       </div>
                     ) : (
                       <>
