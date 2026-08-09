@@ -462,14 +462,8 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
         .fb-plan-badge-label {
           font-size: 9px; font-weight: 800; letter-spacing: 0.10em; white-space: nowrap;
         }
-        .fb-plan-badge--elite .fb-plan-badge-label {
-          background: linear-gradient(100deg, #fde68a 0%, #f59e0b 55%, #fbbf24 100%);
-          -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
-        }
-        .fb-plan-badge--pro .fb-plan-badge-label {
-          background: linear-gradient(100deg, #99f6e4 0%, #2dd4bf 55%, #5eead4 100%);
-          -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
-        }
+        .fb-plan-badge--elite .fb-plan-badge-label { color: #fcd34d; }
+        .fb-plan-badge--pro .fb-plan-badge-label { color: #5eead4; }
         .fb-plan-badge--free .fb-plan-badge-label { color: rgba(148,163,184,0.80); }
         .fb-account-row.fb-account-row--elite:hover { border-color: rgba(245,158,11,0.30) !important; background: rgba(245,158,11,0.06) !important; }
         .fb-account-row.fb-account-row--pro:hover { border-color: rgba(45,212,191,0.28) !important; background: rgba(45,212,191,0.06) !important; }

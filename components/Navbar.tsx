@@ -331,14 +331,9 @@ export default function Navbar() {
         }
         .nav-elite-badge-label, .nav-pro-badge-label {
           font-size: 9px; font-weight: 800; letter-spacing: 0.10em; white-space: nowrap;
-          -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
         }
-        .nav-elite-badge-label {
-          background: linear-gradient(100deg, #fde68a 0%, #f59e0b 55%, #fbbf24 100%);
-        }
-        .nav-pro-badge-label {
-          background: linear-gradient(100deg, #99f6e4 0%, #2dd4bf 55%, #5eead4 100%);
-        }
+        .nav-elite-badge-label { color: #fcd34d; }
+        .nav-pro-badge-label { color: #5eead4; }
         .nav-free-badge-label {
           font-size: 9px; font-weight: 700; letter-spacing: 0.10em; white-space: nowrap;
           color: rgba(148,163,184,0.80);
