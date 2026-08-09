@@ -21,7 +21,7 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 function Card({ children, accent = false }: { children: React.ReactNode; accent?: boolean }) {
   return (
-    <div style={{
+    <div className='about-card' style={{
       background: accent ? 'rgba(45,212,191,0.04)' : 'rgba(255,255,255,0.025)',
       border: `1px solid ${accent ? 'rgba(45,212,191,0.18)' : 'rgba(255,255,255,0.07)'}`,
       borderRadius: '16px',
@@ -74,6 +74,18 @@ export default function AboutPage() {
           0%,100% { opacity:0.50; }
           50%      { opacity:0.75; }
         }
+        /* MOBILE FRIENDLY PASS, DISCLOSED (mobile audit): this page previously had zero @media
+           queries — every multi-column grid below was fixed at 2/3/4 columns regardless of
+           viewport, which crushes text into unreadably narrow columns on a phone. Stacks to 1
+           column (2/3-col grids) or 2 columns (4-col "who we serve" grid) under 640px, and trims
+           outer/card padding so content isn't pushed off-screen or over-padded on small screens. */
+        @media (max-width: 640px) {
+          .about-content { padding: 44px 16px 64px !important; }
+          .about-card { padding: 18px !important; }
+          .about-grid-2, .about-grid-3 { grid-template-columns: 1fr !important; }
+          .about-grid-4 { grid-template-columns: repeat(2,1fr) !important; }
+          .about-vision { padding: 26px 20px !important; }
+        }
       `}</style>
 
       <Navbar />
@@ -112,7 +124,7 @@ export default function AboutPage() {
         }} />
 
         {/* ── Content ─────────────────────────────────── */}
-        <div style={{ position: 'relative', zIndex: 1, maxWidth: '960px', margin: '0 auto', padding: '72px 24px 100px' }}>
+        <div className='about-content' style={{ position: 'relative', zIndex: 1, maxWidth: '960px', margin: '0 auto', padding: '72px 24px 100px' }}>
 
           {/* ── Hero ──────────────────────────────────── */}
           <div style={{ textAlign: 'center', marginBottom: '72px' }}>
@@ -169,7 +181,7 @@ export default function AboutPage() {
           </div>
 
           {/* ── What We Do + Why We Built It ─────────── */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '48px' }}>
+          <div className='about-grid-2' style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '48px' }}>
 
             <div>
               <SectionLabel>What We Do</SectionLabel>
@@ -220,7 +232,7 @@ export default function AboutPage() {
           {/* ── Technology ────────────────────────────── */}
           <div style={{ marginBottom: '48px' }}>
             <SectionLabel>Our Technology</SectionLabel>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '16px' }}>
+            <div className='about-grid-3' style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '16px' }}>
 
               <Card>
                 <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.16em', color: 'rgba(45,212,191,0.65)',
@@ -270,7 +282,7 @@ export default function AboutPage() {
           {/* ── Values ────────────────────────────────── */}
           <div style={{ marginBottom: '48px' }}>
             <SectionLabel>Our Values</SectionLabel>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: '16px' }}>
+            <div className='about-grid-2' style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: '16px' }}>
               {[
                 {
                   title: 'Transparency',
@@ -326,7 +338,7 @@ export default function AboutPage() {
                 fontFamily: 'var(--font-inter,Inter,sans-serif)' }}>
                 ChainLens is built for:
               </p>
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '10px' }}>
+              <div className='about-grid-4' style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '10px' }}>
                 {[
                   'Everyday traders', 'DeFi explorers', 'LP providers', 'Smart money trackers',
                   'Contract researchers', 'Builders', 'Analysts', 'Degens who want real data',
@@ -379,7 +391,7 @@ export default function AboutPage() {
           </div>
 
           {/* ── Vision ────────────────────────────────── */}
-          <div style={{
+          <div className='about-vision' style={{
             background: 'linear-gradient(135deg, rgba(45,212,191,0.06) 0%, rgba(139,92,246,0.08) 50%, rgba(236,72,153,0.06) 100%)',
             border: '1px solid rgba(139,92,246,0.20)',
             borderRadius: '20px', padding: '40px 36px', textAlign: 'center',
