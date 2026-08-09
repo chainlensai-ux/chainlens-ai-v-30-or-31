@@ -288,7 +288,7 @@ export default function PricingPage() {
            a toned-down Elite treatment (dark glass + a restrained gold accent, not a bright yellow
            gradient button) — same three plans/prices/CTAs/payment routes, purely visual. */
         .glass{background:linear-gradient(170deg,rgba(9,13,24,.90),rgba(5,8,17,.86));backdrop-filter:blur(12px);border:1px solid rgba(148,163,184,.14);border-radius:16px}
-        .cta{display:block;width:100%;text-align:center;border-radius:10px;padding:12px 14px;font-weight:700;font-size:12px;letter-spacing:.07em;text-decoration:none;transition:.18s transform,.18s box-shadow,.18s opacity,.18s border-color,.18s background;cursor:pointer;border:none}
+        .cta{display:block;width:100%;text-align:center;border-radius:10px;padding:11px 14px;font-weight:700;font-size:12px;letter-spacing:.07em;text-decoration:none;transition:.18s transform,.18s box-shadow,.18s opacity,.18s border-color,.18s background;cursor:pointer;border:none}
         .cta-free{border:1px solid rgba(148,163,184,.22) !important;color:#e2e8f0;background:rgba(255,255,255,.03)}
         .cta-free:hover{border-color:rgba(103,232,249,.38) !important;background:rgba(103,232,249,.05) !important;transform:translateY(-1px)}
         .cta-pro{color:#fff;background:linear-gradient(98deg,#6d28d9,#8b5cf6,#0891b2);box-shadow:0 8px 22px rgba(139,92,246,.28)}
@@ -327,7 +327,7 @@ export default function PricingPage() {
            more vertical room than before (padding 10→12) so the two options read as clean payment
            choices rather than a cramped strip. */
         .cta-split-row{display:flex;gap:9px}
-        .cta-box{flex:1;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border-radius:10px;padding:12px 8px;font-weight:700;font-size:11px;letter-spacing:.04em;text-decoration:none;text-align:center;cursor:pointer;transition:.18s transform,.18s border-color,.18s background,.18s opacity;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.025);color:#e2e8f0}
+        .cta-box{flex:1;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border-radius:10px;padding:10px 8px;font-weight:700;font-size:11px;letter-spacing:.04em;text-decoration:none;text-align:center;cursor:pointer;transition:.18s transform,.18s border-color,.18s background,.18s opacity;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.025);color:#e2e8f0}
         .cta-box small{font-weight:600;font-size:9px;letter-spacing:.02em;color:#94a3b8;text-transform:none}
         .cta-box-crypto{border-color:rgba(45,212,191,.32);background:rgba(45,212,191,.03)}
         .cta-box-crypto:hover:not(:disabled){border-color:rgba(45,212,191,.55) !important;background:rgba(45,212,191,.06) !important;transform:translateY(-1px)}
@@ -363,30 +363,34 @@ export default function PricingPage() {
       <div style={{ position:'absolute', inset:0, backgroundImage:'radial-gradient(circle,rgba(148,163,184,.038) 1px,transparent 1px)', backgroundSize:'28px 28px', pointerEvents:'none' }} />
 
       {/* ── MAIN CONTENT ── */}
-      <div style={{ position:'relative', zIndex:2, maxWidth:1680, margin:'0 auto', padding:'24px 22px 52px' }}>
+      {/* ABOVE-THE-FOLD FIT, DISCLOSED (pricing above-the-fold CTA task): outer top padding and the
+          card/intro/aside minHeight are all reduced together (24→14, 468→416) so the CTA/payment
+          area sits noticeably higher on common laptop viewport heights, without changing any
+          content, copy, or card proportions relative to each other. */}
+      <div style={{ position:'relative', zIndex:2, maxWidth:1680, margin:'0 auto', padding:'14px 22px 40px' }}>
 
         <section className='hero' style={{ display:'grid', gridTemplateColumns:'1.02fr 2.65fr .72fr', gap:12, alignItems:'stretch' }}>
 
-          {/* Left intro — top padding matches the pricing-card grid's own paddingTop (14px) so the
+          {/* Left intro — top padding matches the pricing-card grid's own paddingTop so the
               "One price. Worldwide." headline starts at the same vertical line as the cards
               instead of floating slightly above them. */}
-          <div className='intro' style={{ padding:'14px 12px 8px 6px', minHeight:468 }}>
-            <div style={{ color:'#67e8f9', fontSize:11, letterSpacing:'.2em', marginBottom:14 }}>• PRICING</div>
-            <div style={{ fontSize:'clamp(40px,3.6vw,66px)', lineHeight:.95, fontWeight:900 }}>
+          <div className='intro' style={{ padding:'10px 12px 8px 6px', minHeight:416 }}>
+            <div style={{ color:'#67e8f9', fontSize:11, letterSpacing:'.2em', marginBottom:10 }}>• PRICING</div>
+            <div style={{ fontSize:'clamp(36px,3.2vw,60px)', lineHeight:.95, fontWeight:900 }}>
               ONE PRICE.<br />
               <span style={{ background:'linear-gradient(90deg,#22d3ee,#a855f7,#ec4899)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>WORLDWIDE.</span>
             </div>
-            <p style={{ marginTop:14, color:'#94a3b8', lineHeight:1.5, fontSize:14 }}>No dark patterns. No regional pricing.<br />Your data stays yours.</p>
-            <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginTop:14 }}>
+            <p style={{ marginTop:11, color:'#94a3b8', lineHeight:1.5, fontSize:14 }}>No dark patterns. No regional pricing.<br />Your data stays yours.</p>
+            <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginTop:11 }}>
               {['Pay with crypto', 'Built for Base', 'Auto activation'].map((chip) => (
                 <span key={chip} style={{ borderRadius:999, border:'1px solid rgba(148,163,184,.20)', padding:'6px 10px', fontSize:11, color:'#cbd5e1', background:'rgba(15,23,42,.45)' }}>{chip}</span>
               ))}
             </div>
-            <div style={{ marginTop:12, fontSize:12, color:'#94a3b8' }}>Powered by <span style={{ color:'#e2e8f0', fontWeight:700 }}>BASE</span></div>
+            <div style={{ marginTop:10, fontSize:12, color:'#94a3b8' }}>Powered by <span style={{ color:'#e2e8f0', fontWeight:700 }}>BASE</span></div>
           </div>
 
           {/* Pricing cards */}
-          <div className='plan-grid' style={{ display:'grid', gridTemplateColumns:'repeat(3,minmax(0,1fr))', gap:14, paddingTop:14 }}>
+          <div className='plan-grid' style={{ display:'grid', gridTemplateColumns:'repeat(3,minmax(0,1fr))', gap:14, paddingTop:10 }}>
             {plans.map((plan) => {
               const isCurrent = userPlan === plan.id
               const isPaid = plan.id === 'pro' || plan.id === 'elite'
@@ -414,8 +418,8 @@ export default function PricingPage() {
                   key={plan.id}
                   className={`glass pricing-card pricing-card-${plan.id}`}
                   style={{
-                    padding:'22px 20px 18px',
-                    minHeight:468,
+                    padding:'17px 20px 15px',
+                    minHeight:416,
                     display:'flex',
                     flexDirection:'column',
                     borderColor,
@@ -432,21 +436,22 @@ export default function PricingPage() {
                       <span className={`plan-badge plan-badge-${plan.id}`}>{plan.badge}</span>
                     )}
                   </div>
-                  <div style={{ fontSize:44, fontWeight:800, marginTop:10, color: plan.id === 'elite' ? '#f3d98a' : '#fff', lineHeight:1 }}>{plan.price}</div>
+                  <div style={{ fontSize:40, fontWeight:800, marginTop:8, color: plan.id === 'elite' ? '#f3d98a' : '#fff', lineHeight:1 }}>{plan.price}</div>
                   <div style={{ color:'#94a3b8', marginTop:3, fontSize:13 }}>{plan.subtext}</div>
-                  {plan.note && <div style={{ marginTop:8, fontSize:11.5, color:'#64748b', lineHeight:1.5 }}>{plan.note}</div>}
-                  <div style={{ marginTop:16, paddingTop:12, borderTop:'1px solid rgba(148,163,184,.10)', fontSize:10, color: plan.id === 'elite' ? '#a88948' : plan.id === 'pro' ? '#8b7dc7' : '#5b7284', letterSpacing:'.14em', fontWeight:700 }}>{plan.sectionTitle}</div>
+                  {plan.note && <div style={{ marginTop:6, fontSize:11.5, color:'#64748b', lineHeight:1.4 }}>{plan.note}</div>}
+                  <div style={{ marginTop:12, paddingTop:9, borderTop:'1px solid rgba(148,163,184,.10)', fontSize:10, color: plan.id === 'elite' ? '#a88948' : plan.id === 'pro' ? '#8b7dc7' : '#5b7284', letterSpacing:'.14em', fontWeight:700 }}>{plan.sectionTitle}</div>
 
                   {/* Features — grouped included vs. unavailable (Free only has both kinds), and
                       spaced by count so a shorter list (Free) fills the shared card height evenly
-                      instead of leaving one big dead gap before the CTA. DISCLOSED (pricing
-                      conversion/spacing polish task): same feature strings, no copy changes. */}
+                      instead of leaving one big dead gap before the CTA. Disabled/unavailable Free
+                      rows render more compactly (smaller text, tighter gap) than included ones,
+                      DISCLOSED (above-the-fold CTA task): still every feature string, unchanged. */}
                   {(() => {
                     const included = plan.features.filter((f) => !f.startsWith('No '))
                     const excluded = plan.features.filter((f) => f.startsWith('No '))
-                    const rowGap = plan.features.length <= 7 ? 15 : plan.features.length <= 8 ? 12 : 9
+                    const rowGap = plan.features.length <= 7 ? 10 : plan.features.length <= 8 ? 8 : 7
                     const row = (f: string, no: boolean) => (
-                      <div key={f} style={{ display:'flex', gap:9, alignItems:'flex-start', color: no ? '#4a5768' : '#cbd5e1', fontSize:12.5, lineHeight:1.5 }}>
+                      <div key={f} style={{ display:'flex', gap: no ? 7 : 9, alignItems:'flex-start', color: no ? '#4a5768' : '#cbd5e1', fontSize: no ? 11.5 : 12.5, lineHeight: no ? 1.35 : 1.45 }}>
                         <span style={{
                           color: no ? '#3a4452' : plan.id === 'elite' ? '#c9a545' : plan.id === 'pro' ? '#a78bfa' : '#67e8f9',
                           flexShrink:0, fontSize:11, marginTop:1,
@@ -455,14 +460,14 @@ export default function PricingPage() {
                       </div>
                     )
                     return (
-                      <div style={{ marginTop:12, flex:1 }}>
+                      <div style={{ marginTop:9, flex:1 }}>
                         <div style={{ display:'grid', gap:rowGap }}>
                           {included.map((f) => row(f, false))}
                         </div>
                         {excluded.length > 0 && (
                           <>
-                            <div style={{ marginTop:14, marginBottom:9, fontSize:9, color:'#3f4a58', letterSpacing:'.14em', fontWeight:700 }}>NOT INCLUDED</div>
-                            <div style={{ display:'grid', gap:rowGap }}>
+                            <div style={{ marginTop:10, marginBottom:6, fontSize:9, color:'#3f4a58', letterSpacing:'.14em', fontWeight:700 }}>NOT INCLUDED</div>
+                            <div style={{ display:'grid', gap: Math.max(5, rowGap - 3) }}>
                               {excluded.map((f) => row(f, true))}
                             </div>
                           </>
@@ -472,7 +477,7 @@ export default function PricingPage() {
                   })()}
 
                   {plan.id === 'elite' && (
-                    <div style={{ border:'1px solid rgba(212,160,23,.20)', background:'rgba(212,160,23,.05)', color:'#d9be82', borderRadius:10, padding:'10px 11px', fontSize:11.5, lineHeight:1.5, marginTop:14 }}>
+                    <div style={{ border:'1px solid rgba(212,160,23,.20)', background:'rgba(212,160,23,.05)', color:'#d9be82', borderRadius:10, padding:'8px 10px', fontSize:11.5, lineHeight:1.4, marginTop:10 }}>
                       Everything in Pro — plus maximum CORTEX access, higher limits, and early feature access.
                     </div>
                   )}
@@ -480,7 +485,7 @@ export default function PricingPage() {
                   {/* CTA block — a top divider ties the payment options to the feature list above
                       them (paid plans only), so Crypto/PayPal read as "how to unlock what's above"
                       rather than a separate, detached block. DISCLOSED (final pricing polish task). */}
-                  <div style={{ marginTop:14, paddingTop: isPaid ? 14 : 0, borderTop: isPaid ? '1px solid rgba(148,163,184,.08)' : 'none' }}>
+                  <div style={{ marginTop:10, paddingTop: isPaid ? 10 : 0, borderTop: isPaid ? '1px solid rgba(148,163,184,.08)' : 'none' }}>
                     {!planReady ? (
                       <span className={`cta ${plan.ctaClass}`} style={{ opacity:0.25, cursor:'default', pointerEvents:'none', display:'block' }}>
                         &nbsp;
@@ -532,19 +537,19 @@ export default function PricingPage() {
               polish task): line-icon rows with consistent spacing/dividers instead of large emoji
               and a loud cyan-glow border, matching the calmer treatment used across the rest of
               the page. */}
-          <aside className='glass stats' style={{ padding:'18px 16px', minHeight:468, borderColor:'rgba(148,163,184,.14)', boxShadow:'none', display:'flex', flexDirection:'column' }}>
+          <aside className='glass stats' style={{ padding:'15px 16px', minHeight:416, borderColor:'rgba(148,163,184,.14)', boxShadow:'none', display:'flex', flexDirection:'column' }}>
             <div style={{ color:'#94a3b8', fontSize:10, letterSpacing:'.15em', fontWeight:700 }}>WHAT&apos;S INCLUDED</div>
             <div style={{ color:'#4a5768', fontSize:11, marginTop:4, lineHeight:1.5 }}>Core platform access</div>
             {PRODUCT_PROOF.map(({ Icon, label }, i) => (
-              <div key={label} style={{ display:'flex', alignItems:'center', gap:11, borderTop: '1px solid rgba(148,163,184,.09)', padding: i === 0 ? '15px 0' : '15px 0' }}>
-                <span style={{ display:'flex', alignItems:'center', justifyContent:'center', width:32, height:32, flexShrink:0, borderRadius:8, background:'rgba(103,232,249,.06)', border:'1px solid rgba(103,232,249,.16)', color:'#67e8f9' }}>
+              <div key={label} style={{ display:'flex', alignItems:'center', gap:11, borderTop: '1px solid rgba(148,163,184,.09)', padding: i === 0 ? '12px 0' : '12px 0' }}>
+                <span style={{ display:'flex', alignItems:'center', justifyContent:'center', width:30, height:30, flexShrink:0, borderRadius:8, background:'rgba(103,232,249,.06)', border:'1px solid rgba(103,232,249,.16)', color:'#67e8f9' }}>
                   <Icon />
                 </span>
                 <div style={{ color:'#dbeafe', fontSize:12.5, fontWeight:600, lineHeight:1.4 }}>{label}</div>
               </div>
             ))}
             <div style={{ flex:1 }} />
-            <div style={{ borderTop:'1px solid rgba(148,163,184,.09)', paddingTop:14, marginTop:6, color:'#3f4a58', fontSize:11, lineHeight:1.6, letterSpacing:'.02em' }}>
+            <div style={{ borderTop:'1px solid rgba(148,163,184,.09)', paddingTop:10, marginTop:4, color:'#3f4a58', fontSize:11, lineHeight:1.6, letterSpacing:'.02em' }}>
               Powered by the same CORTEX engine on every plan.
             </div>
           </aside>
