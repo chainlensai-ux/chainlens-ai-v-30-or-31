@@ -148,6 +148,15 @@ function ClarkAiContent() {
   const [historyErrorCode, setHistoryErrorCode] = useState<ClarkHistoryErrorCode | null>(null)
   const activeChatIdRef = useRef<string | null>(null)
   activeChatIdRef.current = activeChatId
+  // BUG FIX, DISCLOSED (Clark chat history audit): previously, switching to a different chat (or
+  // starting a new one) while Clark was still answering the PREVIOUS chat would show that delayed
+  // answer appended to whichever chat was on screen when it arrived — the reply landed in the wrong
+  // conversation. Persistence to the database was always correct (scoped by the chatId captured at
+  // send-time), this was purely a live-UI display bug. Fixed by tagging each send with the
+  // currently-displayed conversation's "session token" (bumped whenever the visible thread changes
+  // to a different conversation) and only applying the reply to `messages` if that token is still
+  // current when the response arrives — the DB save still always happens regardless.
+  const chatSessionTokenRef = useRef(0)
 
   function reportHistoryFailure(err: unknown) {
     const code = err instanceof ClarkHistoryError ? err.code : 'network_error'
@@ -176,6 +185,7 @@ function ClarkAiContent() {
   async function loadChat(chatId: string, persistAsActive = true) {
     try {
       const rows = await fetchClarkChatMessages(chatId)
+      chatSessionTokenRef.current += 1
       setMessages(rows.map((r) => ({ role: r.role === 'assistant' ? 'clark' : 'user', text: r.content })))
       setActiveChatId(chatId)
       if (persistAsActive && typeof window !== 'undefined') sessionStorage.setItem(ACTIVE_CHAT_ID_KEY, chatId)
@@ -183,6 +193,7 @@ function ClarkAiContent() {
   }
 
   function handleNewChat() {
+    chatSessionTokenRef.current += 1
     setMessages([])
     setActiveChatId(null)
     if (typeof window !== 'undefined') sessionStorage.removeItem(ACTIVE_CHAT_ID_KEY)
@@ -267,6 +278,10 @@ function ClarkAiContent() {
   async function handleSendText(raw: string) {
     const text = raw.trim()
     if (!text || loading) return
+    // BUG FIX, DISCLOSED (Clark chat history audit) — see chatSessionTokenRef's own comment above.
+    // Captured now, before any await, so it reflects exactly which conversation was on screen when
+    // this send began.
+    const sentForToken = chatSessionTokenRef.current
     setLoadingKind(inferAnalysisKind(text, activeMode))
     setLoadingStage(0)
     setMessages((prev) => [...prev, { role: 'user', text }, { role: 'clark', text: THINKING_MESSAGE }])
@@ -388,26 +403,45 @@ function ClarkAiContent() {
         return typeof href === 'string' || typeof prompt === 'string'
       }) : []
       const statusMessage = typeof payload.clarkFollowupStatusMessage === 'string' ? payload.clarkFollowupStatusMessage : null
-      setMessages((prev) => {
-        const next = [...prev]
-        const finalMsg: Message = { role: 'clark', text: String(reply), intentBadge: typeof ui?.intentBadge === 'string' ? ui.intentBadge : null, actions }
-        if (statusMessage) {
-          next[next.length - 1] = { role: 'clark', text: statusMessage }
-          next.push(finalMsg)
-        } else {
-          next[next.length - 1] = finalMsg
-        }
-        return next
-      })
+      // BUG FIX, DISCLOSED (Clark chat history audit): only apply the reply to the visible thread
+      // if the user hasn't switched to a different conversation while this was in flight — see
+      // chatSessionTokenRef's own comment. The history save below is unconditional either way, so
+      // the message is never lost, just not shown in the wrong chat.
+      if (chatSessionTokenRef.current === sentForToken) {
+        setMessages((prev) => {
+          const next = [...prev]
+          const finalMsg: Message = { role: 'clark', text: String(reply), intentBadge: typeof ui?.intentBadge === 'string' ? ui.intentBadge : null, actions }
+          if (statusMessage) {
+            next[next.length - 1] = { role: 'clark', text: statusMessage }
+            next.push(finalMsg)
+          } else {
+            next[next.length - 1] = finalMsg
+          }
+          return next
+        })
+      }
       // Fire-and-forget: persist the exchange without blocking or affecting the Clark UI.
-      void chatIdPromise.then((chatId) => {
+      // BUG FIX, DISCLOSED (Clark chat history audit): previously these two appends fired
+      // concurrently (neither awaited before the next started). The server does a non-atomic
+      // read-current-message_count -> insert -> write-count+1 for each — firing them at the same
+      // time let both reads happen before either write landed, silently dropping one increment.
+      // Awaiting the first before starting the second removes that race for this pair. Each is
+      // still caught independently so a failure on one doesn't block attempting the other, matching
+      // the original best-effort semantics. refreshHistory now runs after both are attempted
+      // instead of racing ahead of them, which also fixes the sidebar briefly showing a stale
+      // preview/count right after sending.
+      void chatIdPromise.then(async (chatId) => {
         if (!chatId) return
-        appendClarkMessage(chatId, 'user', text).catch(reportHistoryFailure)
-        appendClarkMessage(chatId, 'assistant', String(reply), payload).catch(reportHistoryFailure)
+        await appendClarkMessage(chatId, 'user', text).catch(reportHistoryFailure)
+        await appendClarkMessage(chatId, 'assistant', String(reply), payload).catch(reportHistoryFailure)
         void refreshHistory()
       })
     } catch {
-      setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: FALLBACK_ERROR_MESSAGE }; return next })
+      // Same guard as the success path above — don't drop a stale error into a chat the user has
+      // since switched away from.
+      if (chatSessionTokenRef.current === sentForToken) {
+        setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: FALLBACK_ERROR_MESSAGE }; return next })
+      }
     } finally { setLoading(false) }
   }
 
