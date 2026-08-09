@@ -127,6 +127,18 @@ interface RadarSummary {
   hasSecurityData: boolean
 }
 
+// Real row shape from /api/watchlist/tokens (Supabase `watchlist_tokens` table) — same endpoint
+// /terminal/watchlist and ClarkRadar already use, see the WATCHLIST disclosure below.
+interface WatchlistTokenRow {
+  address: string
+  symbol: string | null
+  name: string | null
+  chain: string | null
+  risk_label: string | null
+  score: number | null
+  saved_at?: string
+}
+
 const SUSPICIOUS_BRANDING_WORDS = ['inu', 'elon', 'musk', 'ai', '1000x', 'moon', 'doge', 'pepe', 'pump', 'safe']
 
 const STATUS_COLOR: Record<RadarStatus, string> = {
@@ -703,6 +715,59 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
   )
 }
 
+// WATCHLIST PANEL, DISCLOSED (requested: "fully functional" watchlist on the CORTEX panel): reads
+// the real watchlistTokens state (backed by /api/watchlist/tokens — see the WATCHLIST disclosure on
+// that state in BaseRadarPage). Clicking a saved token opens its live drawer if it's in the current
+// feed, otherwise routes to Token Scanner for a direct lookup (never fabricates feed data for a
+// token that isn't currently on radar). Remove calls the same real DELETE endpoint.
+function WatchlistPanel({ tokens, loading, onOpen, onRemove }: { tokens: WatchlistTokenRow[]; loading: boolean; onOpen: (address: string) => void; onRemove: (address: string) => void }) {
+  return (
+    <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', padding: '13px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+        <p style={{ margin: 0, color: '#94a3b8', fontSize: '10px', fontWeight: 800, letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Watchlist</p>
+        {tokens.length > 0 && <span style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)' }}>{tokens.length}</span>}
+      </div>
+
+      {loading ? (
+        <p style={{ margin: 0, fontSize: '10.5px', color: '#5b7186' }}>Loading…</p>
+      ) : tokens.length === 0 ? (
+        <p style={{ margin: 0, fontSize: '10.5px', color: '#5b7186', lineHeight: 1.5 }}>
+          No tokens watched yet. Click Watchlist on any token below to save it here.
+        </p>
+      ) : (
+        <div style={{ display: 'grid', gap: '6px' }}>
+          {tokens.slice(0, 8).map(t => (
+            <div key={t.address} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 8px', borderRadius: '8px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              <button
+                onClick={() => onOpen(t.address)}
+                style={{ all: 'unset', cursor: 'pointer', flex: 1, minWidth: 0, display: 'flex', alignItems: 'baseline', gap: '6px' }}
+              >
+                <span style={{ fontSize: '11px', fontWeight: 800, color: '#e2e8f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {t.symbol || shortAddr(t.address)}
+                </span>
+                {t.score != null && <span style={{ fontSize: '9.5px', color: '#5eead4', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>{t.score}</span>}
+              </button>
+              <button
+                onClick={() => onRemove(t.address)}
+                aria-label={`Remove ${t.symbol ?? shortAddr(t.address)} from watchlist`}
+                style={{ all: 'unset', cursor: 'pointer', color: '#64748b', fontSize: '13px', lineHeight: 1, padding: '2px', flexShrink: 0 }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {tokens.length > 0 && (
+        <Link href="/terminal/watchlist" style={{ display: 'inline-block', marginTop: '10px', fontSize: '9.5px', color: '#5eead4', fontFamily: 'var(--font-plex-mono)', textDecoration: 'none', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+          View Full Watchlist →
+        </Link>
+      )}
+    </div>
+  )
+}
+
 function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: RadarSummary; fetchedAt: string | null; loading: boolean; showUpsell: boolean }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -962,7 +1027,33 @@ export default function BaseRadarPage() {
   const [activeFilter, setActiveFilter] = useState<RadarFilter>('NEW')
   const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false)
   const [sortMode, setSortMode] = useState<SortMode>('NEWEST')
-  const [trackedContracts, setTrackedContracts] = useState<Record<string, boolean>>({})
+  // WATCHLIST, DISCLOSED (requested: "fully functional" watchlist on the CORTEX panel): the
+  // previous "Add to Watchlist" button on each card only toggled local component state — it never
+  // called the real, already-existing /api/watchlist/tokens endpoint (GET/POST/DELETE, the same one
+  // the standalone /terminal/watchlist page and ClarkRadar's handleWatchMover already use), so
+  // nothing actually persisted and a saved token forgot it was saved on the next page load. Now
+  // backed by that same real endpoint — watchlistTokens is the source of truth for both this panel
+  // and every card's "Watching" state, loaded once on mount and kept in sync with each toggle.
+  const [watchlistTokens, setWatchlistTokens] = useState<WatchlistTokenRow[]>([])
+  const [watchlistLoading, setWatchlistLoading] = useState(true)
+  const loadWatchlist = useCallback(async () => {
+    setWatchlistLoading(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token) { setWatchlistTokens([]); return }
+      const res = await fetch('/api/watchlist/tokens', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
+      const json = await res.json().catch(() => null)
+      if (res.ok && Array.isArray(json?.tokens)) setWatchlistTokens(json.tokens)
+    } catch {
+      // Best-effort — leave whatever was already loaded (or empty) rather than erroring the page.
+    } finally {
+      setWatchlistLoading(false)
+    }
+  }, [])
+  useEffect(() => {
+    queueMicrotask(() => { void loadWatchlist() })
+  }, [loadWatchlist])
   const [selectedToken, setSelectedToken] = useState<TokenIntel | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
   // CHAIN SELECTOR STATE, DISCLOSED (Robinhood Chain radar scaffold task): purely local UI state.
@@ -1170,8 +1261,57 @@ export default function BaseRadarPage() {
     setSelectedToken(prev => prev?.contract === token.contract ? prev : token)
   }
 
-  function toggleTrack(contract: string) {
-    setTrackedContracts(prev => ({ ...prev, [contract]: !prev[contract] }))
+  function isWatched(contract: string): boolean {
+    return watchlistTokens.some(w => w.address.toLowerCase() === contract.toLowerCase())
+  }
+
+  // PERSISTED TOGGLE, DISCLOSED: optimistic local update first (instant UI feedback, same feel as
+  // before), then the real POST/DELETE against /api/watchlist/tokens — the exact same endpoint and
+  // payload shape /terminal/watchlist's own save flow and ClarkRadar's handleWatchMover already use.
+  // Requires a signed-in session (same as every other watchlist entry point in this app); with no
+  // session the toggle still updates the visible state for this tab but has nothing to persist.
+  async function toggleTrack(token: { contract: string; symbol: string; name: string; status: string; radarScore: number }) {
+    const address = token.contract.toLowerCase()
+    const wasWatched = isWatched(address)
+    setWatchlistTokens(prev => wasWatched
+      ? prev.filter(w => w.address.toLowerCase() !== address)
+      : [{ address, symbol: token.symbol, name: token.name, chain: 'base', risk_label: token.status, score: token.radarScore }, ...prev])
+
+    const { data: { session } } = await supabase.auth.getSession()
+    const authToken = session?.access_token
+    if (!authToken) return
+
+    try {
+      if (wasWatched) {
+        await fetch(`/api/watchlist/tokens?address=${encodeURIComponent(address)}`, {
+          method: 'DELETE',
+          headers: { Authorization: `Bearer ${authToken}` },
+        })
+      } else {
+        await fetch('/api/watchlist/tokens', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+          body: JSON.stringify({ address, symbol: token.symbol, name: token.name, chain: 'base', riskLabel: token.status, score: token.radarScore }),
+        })
+      }
+    } catch {
+      // Best-effort — the optimistic local state already reflects the user's action; the next
+      // loadWatchlist() (e.g. a future visit) will reconcile with the server's real state.
+    }
+  }
+
+  function removeFromWatchlist(address: string) {
+    setWatchlistTokens(prev => prev.filter(w => w.address.toLowerCase() !== address.toLowerCase()))
+    void (async () => {
+      const { data: { session } } = await supabase.auth.getSession()
+      const authToken = session?.access_token
+      if (!authToken) return
+      try {
+        await fetch(`/api/watchlist/tokens?address=${encodeURIComponent(address)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` } })
+      } catch {
+        // Best-effort, same as toggleTrack above.
+      }
+    })()
   }
 
   function askCortex(token: TokenIntel) {
@@ -1206,6 +1346,12 @@ export default function BaseRadarPage() {
   const tokens = useMemo(() => data?.tokens ?? [], [data?.tokens])
 
   const intelTokens = useMemo(() => tokens.map(enrichToken), [tokens])
+
+  function openWatchlistToken(address: string) {
+    const found = intelTokens.find(t => t.contract.toLowerCase() === address.toLowerCase())
+    if (found) openProjectOverview(found)
+    else openToken(address)
+  }
 
   const summary = useMemo<RadarSummary>(() => {
     const worthWatching = intelTokens.filter(token => token.status === 'HOT' || token.status === 'WATCH' || token.status === 'EARLY').length
@@ -1564,9 +1710,9 @@ export default function BaseRadarPage() {
                   onScan={() => openToken(token.contract)}
                   onAskCortex={() => askCortex(token)}
                   onOpenOverview={() => openProjectOverview(token)}
-                  onTrackToggle={() => toggleTrack(token.contract)}
+                  onTrackToggle={() => void toggleTrack(token)}
                   onPreload={() => preloadProjectOverview(token)}
-                  tracking={Boolean(trackedContracts[token.contract])}
+                  tracking={isWatched(token.contract)}
                 />
               ))}
             </div>
@@ -1596,6 +1742,8 @@ export default function BaseRadarPage() {
             </p>
             <CortexRadarPanel summary={summary} topTokens={filteredAndSortedTokens} onRescan={handleManualRefresh} />
             <div style={{ height: '12px' }} />
+            <WatchlistPanel tokens={watchlistTokens} loading={watchlistLoading} onOpen={openWatchlistToken} onRemove={removeFromWatchlist} />
+            <div style={{ height: '12px' }} />
             <StatsPanel summary={summary} fetchedAt={data?.fetchedAt ?? null} loading={loading} showUpsell={showUpsell} />
           </div>
         </div>
@@ -1607,8 +1755,8 @@ export default function BaseRadarPage() {
         open={drawerOpen}
         onClose={() => setDrawerOpen(false)}
         onSimulationUpdate={handleDrawerSimulationUpdate}
-        tracking={selectedToken ? Boolean(trackedContracts[selectedToken.contract]) : false}
-        onTrackToggle={selectedToken ? () => toggleTrack(selectedToken.contract) : undefined}
+        tracking={selectedToken ? isWatched(selectedToken.contract) : false}
+        onTrackToggle={selectedToken ? () => void toggleTrack(selectedToken) : undefined}
       />
     </>
   )
