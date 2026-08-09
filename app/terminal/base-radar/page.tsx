@@ -149,6 +149,13 @@ const STATUS_BORDER: Record<RadarStatus, string> = {
   DEAD: 'rgba(248,113,113,0.30)',
 }
 
+// FILTER SIMPLIFICATION, DISCLOSED (Base Radar filter simplification task): FILTER_CHIPS/the
+// underlying per-mode logic in filteredAndSortedTokens below are UNCHANGED and still fully wired —
+// nothing was deleted. Only the main-view UI changed: NEW is now the one always-visible primary
+// mode; VOLUME/LIQUIDITY are dropped from the visible chip row entirely since Sort already covers
+// "order by volume/liquidity" (see SORT_OPTIONS) without needing a separate narrowing filter for
+// them; TRENDING/RISK_WATCH/WATCHLIST move into the "Advanced Filters" popover (ADVANCED_FILTER_
+// CHIPS) instead of sitting in the main row as equal-weight pills.
 const FILTER_CHIPS: Array<{ key: RadarFilter; label: string }> = [
   { key: 'TRENDING', label: 'Trending' },
   { key: 'NEW', label: 'New' },
@@ -158,9 +165,12 @@ const FILTER_CHIPS: Array<{ key: RadarFilter; label: string }> = [
   { key: 'WATCHLIST', label: 'Watchlist Candidates' },
 ]
 
+const ADVANCED_FILTER_KEYS: RadarFilter[] = ['TRENDING', 'RISK_WATCH', 'WATCHLIST']
+const ADVANCED_FILTER_CHIPS = FILTER_CHIPS.filter(chip => ADVANCED_FILTER_KEYS.includes(chip.key))
+
 const SORT_OPTIONS: Array<{ key: SortMode; label: string }> = [
   { key: 'NEWEST', label: 'Newest' },
-  { key: 'HIGHEST_SCORE', label: 'Highest Score' },
+  { key: 'HIGHEST_SCORE', label: 'Strongest' },
   { key: 'HIGHEST_LIQUIDITY', label: 'Highest Liquidity' },
   { key: 'HIGHEST_VOLUME', label: 'Highest Volume' },
   { key: 'HIGHEST_MOMENTUM', label: 'Highest Momentum' },
@@ -872,7 +882,12 @@ export default function BaseRadarPage() {
   // call instead of just being ignored client-side.
   const fetchInFlightRef = useRef(false)
   const abortControllerRef = useRef<AbortController | null>(null)
-  const [activeFilter, setActiveFilter] = useState<RadarFilter>('TRENDING')
+  // NEW-RADAR DEFAULT, DISCLOSED (Base Radar filter simplification task): default mode changed
+  // from TRENDING to NEW — "fresh Base opportunities first" is now the page's default identity
+  // instead of a generic screener landing on whichever tab happened to be first. Filter logic
+  // itself (below) is unchanged; only which mode is selected on load.
+  const [activeFilter, setActiveFilter] = useState<RadarFilter>('NEW')
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false)
   const [sortMode, setSortMode] = useState<SortMode>('NEWEST')
   const [trackedContracts, setTrackedContracts] = useState<Record<string, boolean>>({})
   const [selectedToken, setSelectedToken] = useState<TokenIntel | null>(null)
@@ -1300,8 +1315,11 @@ export default function BaseRadarPage() {
             </span>
           </div>
 
-          <p style={{ fontSize: '13px', color: '#94a3b8', margin: '0 0 12px', maxWidth: '720px', lineHeight: 1.45 }}>
-            Live market discovery for Base tokens
+          <p style={{ fontSize: '13px', color: '#94a3b8', margin: '0 0 4px', maxWidth: '720px', lineHeight: 1.45 }}>
+            Live feed — new Base opportunities
+          </p>
+          <p style={{ fontSize: '12px', color: '#5b7186', margin: '0 0 12px', maxWidth: '720px', lineHeight: 1.45 }}>
+            Fresh pools and early momentum signals
           </p>
           <p style={{ fontSize: '12px', color: '#64748b', margin: '0 0 12px', maxWidth: '760px', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>
             Default feed filters out pools under $15K valuation and shallow liquidity. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
@@ -1354,33 +1372,83 @@ export default function BaseRadarPage() {
             </div>
           </div>
 
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '10px' }}>
-            {FILTER_CHIPS.map(chip => {
-              const active = chip.key === activeFilter
-              return (
+          {/* SIMPLIFIED MODE ROW, DISCLOSED (Base Radar filter simplification task): the previous
+              6-pill row (Trending/New/Volume/Liquidity/Risk Watch/Watchlist Candidates, all equal
+              weight) is replaced by one primary "NEW RADAR" chip plus a single "Advanced Filters"
+              popover holding the 3 non-default modes (Trending, Risk Watch, Watchlist Candidates).
+              Volume/Liquidity are dropped as separate filter chips — Sort already covers "order by
+              volume/liquidity" above, so a redundant narrowing filter for the same axis just added
+              noise. setActiveFilter/RadarFilter/the filtering logic itself are untouched. */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px', marginTop: '10px', position: 'relative' }}>
+            <button
+              className="radar-chip"
+              onClick={() => setActiveFilter('NEW')}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                padding: '6px 12px', borderRadius: '99px',
+                fontSize: '9px', fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase',
+                border: `1px solid ${activeFilter === 'NEW' ? 'rgba(45,212,191,0.45)' : 'rgba(255,255,255,0.10)'}`,
+                background: activeFilter === 'NEW' ? 'rgba(45,212,191,0.16)' : 'rgba(255,255,255,0.03)',
+                color: activeFilter === 'NEW' ? '#2DD4BF' : '#94a3b8',
+                fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+                boxShadow: activeFilter === 'NEW' ? '0 0 18px rgba(45,212,191,0.18)' : 'none',
+              }}
+            >
+              <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: activeFilter === 'NEW' ? '#2DD4BF' : '#64748b', flexShrink: 0 }} />
+              New Radar
+            </button>
+
+            {activeFilter !== 'NEW' && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '5px 10px', borderRadius: '99px', border: '1px solid rgba(168,85,247,0.35)', background: 'rgba(168,85,247,0.12)', color: '#c4b5fd', fontSize: '9px', fontWeight: 750, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>
+                {FILTER_CHIPS.find(c => c.key === activeFilter)?.label}
                 <button
-                  key={chip.key}
-                  className="radar-chip"
-                  onClick={() => setActiveFilter(chip.key)}
-                  style={{
-                    padding: '5px 9px',
-                    borderRadius: '99px',
-                    fontSize: '9px',
-                    fontWeight: 700,
-                    letterSpacing: '0.10em',
-                    textTransform: 'uppercase',
-                    border: `1px solid ${active ? 'rgba(45,212,191,0.40)' : 'rgba(255,255,255,0.10)'}`,
-                    background: active ? 'rgba(45,212,191,0.14)' : 'rgba(255,255,255,0.03)',
-                    color: active ? '#2DD4BF' : '#94a3b8',
-                    fontFamily: 'var(--font-plex-mono)',
-                    cursor: 'pointer',
-                    boxShadow: active ? '0 0 18px rgba(45,212,191,0.16)' : 'none',
-                  }}
-                >
-                  {chip.label}
-                </button>
-              )
-            })}
+                  onClick={() => setActiveFilter('NEW')}
+                  aria-label="Clear advanced filter"
+                  style={{ all: 'unset', cursor: 'pointer', color: '#c4b5fd', fontSize: '11px', lineHeight: 1, display: 'inline-flex' }}
+                >×</button>
+              </span>
+            )}
+
+            <div style={{ position: 'relative' }}>
+              <button
+                className="radar-chip"
+                onClick={() => setAdvancedFiltersOpen(v => !v)}
+                aria-expanded={advancedFiltersOpen}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '5px',
+                  padding: '6px 10px', borderRadius: '99px',
+                  fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase',
+                  border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.03)',
+                  color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+                }}
+              >
+                Advanced Filters
+                <span aria-hidden style={{ fontSize: '8px', transform: advancedFiltersOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s ease' }}>▾</span>
+              </button>
+              {advancedFiltersOpen && (
+                <>
+                  <div onClick={() => setAdvancedFiltersOpen(false)} style={{ position: 'fixed', inset: 0, zIndex: 39 }} />
+                  <div style={{ position: 'absolute', top: 'calc(100% + 6px)', left: 0, zIndex: 40, minWidth: '190px', padding: '6px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(6,10,20,0.98)', backdropFilter: 'blur(12px)', boxShadow: '0 18px 44px rgba(0,0,0,0.44)', display: 'grid', gap: '3px' }}>
+                    {ADVANCED_FILTER_CHIPS.map(chip => (
+                      <button
+                        key={chip.key}
+                        onClick={() => { setActiveFilter(chip.key); setAdvancedFiltersOpen(false) }}
+                        style={{
+                          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
+                          padding: '7px 9px', borderRadius: '8px', border: 'none', textAlign: 'left',
+                          background: chip.key === activeFilter ? 'rgba(45,212,191,0.12)' : 'transparent',
+                          color: chip.key === activeFilter ? '#2DD4BF' : '#cbd5e1',
+                          fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.02em',
+                          fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+                        }}
+                      >
+                        {chip.label}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
         </div>
 
