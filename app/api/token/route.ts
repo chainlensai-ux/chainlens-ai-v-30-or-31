@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
-import { sanitizePublicTokenResponse } from "@/lib/server/tokenPublicResponse";
+import { sanitizePublicTokenResponse, applyTokenScannerPlanGate } from "@/lib/server/tokenPublicResponse";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { buildLpControllerIntel, resolveLpControllerIdentity } from "@/lib/server/lpControllerIntel";
@@ -361,6 +361,20 @@ async function checkRate(req: Request): Promise<boolean> {
   if (cur.count >= limit) return false
   cur.count += 1
   return true
+}
+
+// AUDIT FIX, DISCLOSED (token-scanner audit): previously `debug: true` in the POST body alone
+// unlocked real internal provider names (publicSourceLabel) and raw diagnostics for ANY caller,
+// with no auth check at all. Reuses this codebase's existing admin-override convention (same
+// CHAINLENS_ADMIN_KEY / x-chainlens-admin header pattern already used by
+// app/api/debug-engines/route.ts) rather than inventing a new one. Plain string equality, matching
+// that same existing convention — both sides must be non-empty so an unset env var can never be
+// bypassed by an absent/empty header.
+function isAdminOverride(req: Request): boolean {
+  const adminKey = process.env.CHAINLENS_ADMIN_KEY
+  if (!adminKey) return false
+  const header = req.headers.get('x-chainlens-admin')
+  return header === adminKey
 }
 
 type HolderDistribution = {
@@ -3221,6 +3235,10 @@ function _buildDeterministicSummary(
 // ------------------------------
 export async function POST(req: Request) {
   if (!(await checkRate(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
+  // AUDIT FIX, DISCLOSED (token-scanner audit): computed once and reused for both the cache-read
+  // early-return below and the fresh-computation response at the end of this handler — previously
+  // plan was only ever used to pick a rate-limit tier, never to gate response content.
+  const _requestPlan = await getPlan(req)
 
   // Hoisted outside the main try block so the fatal-error handler can still
   // report accurate resolver diagnostics for address-based scans.
@@ -3242,7 +3260,11 @@ export async function POST(req: Request) {
     const _t0 = Date.now()
 
     const body = await req.json();
-    const { contract: contractInput, debugHolder, debug: debugMode, forceDexFallback: _forceDexFallback, mode: scanMode } = body;
+    const { contract: contractInput, debugHolder, debug: debugRequested, forceDexFallback: _forceDexFallback, mode: scanMode } = body;
+    // AUDIT FIX, DISCLOSED (token-scanner audit): debugMode now requires BOTH `debug: true` in the
+    // body AND the admin override header — see isAdminOverride's own comment. Every one of the 40+
+    // existing `debugMode` usages below is unchanged; only how this value gets set is different.
+    const debugMode = debugRequested === true && isAdminOverride(req);
     const isClarkFastMode = scanMode === 'clark_fast';
     const rawChain = String(body.chain ?? 'base').toLowerCase()
     if (rawChain !== 'base' && rawChain !== 'eth') {
@@ -3423,9 +3445,12 @@ export async function POST(req: Request) {
     // _tokenRouteDebug fields) never gets served back out to a normal caller from cache.
     const _tokenCacheKey = `token:${chain}:${contract.toLowerCase()}`
     if (debugMode !== true) {
-      const _cachedResponse = await getTokenCache(_tokenCacheKey)
+      const _cachedResponse = await getTokenCache<Record<string, unknown>>(_tokenCacheKey)
       if (_cachedResponse) {
-        return NextResponse.json(_cachedResponse)
+        // AUDIT FIX, DISCLOSED (token-scanner audit): this cache is shared across every caller
+        // regardless of plan — without gating here too, a free caller could get a Pro user's
+        // full cached response for the same token within the TTL, bypassing the gate entirely.
+        return NextResponse.json(applyTokenScannerPlanGate(_cachedResponse, _requestPlan))
       }
     }
 
@@ -8187,10 +8212,14 @@ export async function POST(req: Request) {
     const _sanitizedResponse = sanitizePublicTokenResponse(responsePayload as Record<string, any>, debugMode === true)
     // Only cache plain, non-debug, fully-completed successful scans — never an error, never a
     // partial/debug-augmented payload (see the matching read-side guard above).
+    // AUDIT FIX, DISCLOSED (token-scanner audit): cache the FULL (pre-gate) response — the shared
+    // cache must never store a plan-redacted copy, or the next Pro/Elite caller for this token
+    // would incorrectly receive a free-gated response for up to the cache TTL. The plan gate is
+    // applied only to the copy returned for THIS request, below.
     if (debugMode !== true) {
       await setTokenCache(_tokenCacheKey, _sanitizedResponse, 45)
     }
-    return NextResponse.json(_sanitizedResponse)
+    return NextResponse.json(applyTokenScannerPlanGate(_sanitizedResponse, _requestPlan))
   } catch (err) {
     console.error("Fatal backend error:", err);
     const _failureReason = err instanceof Error ? err.message : 'unknown_error'

@@ -159,6 +159,61 @@ function sanitizePublicValue(value: unknown): unknown {
   return out
 }
 
+// PLAN GATE, DISCLOSED (token-scanner audit fix): previously this route had zero plan-based
+// gating — only a per-IP rate limit — so a fully unauthenticated caller got the exact same LP/
+// holder/security/dev-risk analysis as a Pro/Elite user, contradicting the pricing page's own
+// "Free: Basic token and liquidity checks, no AI verdict" / "Pro: Full ... LP, holder, security,
+// tax, and dev-risk analysis" copy.
+//
+// SAFETY, DISCLOSED: this file's own sanitizePublicTokenResponse already deletes several fields
+// (cortexScore, cortexVerdict, holders, securityDiagnostics, etc.) unconditionally for every
+// non-debug caller in production today — proof that deleting THOSE specific fields is safe. The
+// Pro-only sections gated here (holderDistribution, riskEngine, cortexLpRead, lpControllerIntel,
+// etc.) are NOT on that already-proven-safe list — several are accessed by the frontend as
+// `result.x.y` with no optional chaining (e.g. lpMovementWatch.recentTransferCount), so fully
+// deleting the parent key would throw instead of degrading. To stay safe without being able to
+// live-test the free-tier UI, gated sections are replaced with an EMPTY OBJECT (never deleted, so
+// `result.x.y` still resolves — to `undefined`, which every sampled frontend fallback already
+// treats the same as missing evidence via `== null`/`??`) and gated scalars are set to `null`
+// (matching this codebase's existing "number | null" convention for these exact fields).
+const FREE_TIER_GATED_OBJECT_SECTIONS = [
+  'holderDistribution', 'devIntel', 'riskEngine', 'cortexLpRead', 'lpControl', 'lpControlRead',
+  'lpControllerIntel', 'lpLockBurnIntel', 'lpUnlockTimeline', 'lpMovementWatch',
+  'concentratedPositionProof', 'concentratedPositionProofRead', 'supplyControl', 'security',
+] as const
+const FREE_TIER_GATED_SCALAR_FIELDS = [
+  'riskScore', 'riskLabel', 'riskBreakdown', 'devClusterSupplyPercent', 'creatorHolderPercent',
+] as const
+
+// NEVER MUTATES ITS INPUT, DISCLOSED: this route's response cache (lib/server/cache/tokenCache.ts)
+// is shared across every caller regardless of plan — a Pro user's full scan and a free user's
+// gated scan for the same token share one cache entry. Applying this in place on the object that
+// gets cached would leak a free-gated (redacted) response back out to the next Pro/Elite caller
+// that hits the cache within the TTL. Always returns a shallow copy for 'free' so the original
+// (cached) object is untouched; callers must cache the pre-gate response and gate a copy per
+// request, on both the fresh-computation path and the cache-read path.
+export function applyTokenScannerPlanGate<T extends Record<string, unknown>>(payload: T, plan: 'free' | 'pro' | 'elite'): T {
+  if (plan !== 'free') return payload
+  const gated: Record<string, unknown> = { ...payload }
+  for (const key of FREE_TIER_GATED_OBJECT_SECTIONS) {
+    if (gated[key] && typeof gated[key] === 'object') gated[key] = { status: 'requires_pro' }
+  }
+  for (const key of FREE_TIER_GATED_SCALAR_FIELDS) {
+    if (key in gated) gated[key] = null
+  }
+  const sections = gated.sections as Record<string, unknown> | null | undefined
+  if (sections && typeof sections === 'object' && sections.contractChecks) {
+    gated.sections = { ...sections, contractChecks: { status: 'requires_pro' } }
+  }
+  gated.planGate = {
+    plan: 'free',
+    requiredPlan: 'pro',
+    gatedObjectSections: FREE_TIER_GATED_OBJECT_SECTIONS,
+    gatedScalarFields: FREE_TIER_GATED_SCALAR_FIELDS,
+  }
+  return gated as T
+}
+
 export function sanitizePublicTokenResponse<T extends Record<string, any>>(payload: T, debugMode: boolean): T {
   if (debugMode) return payload
   const sanitized = sanitizePublicValue(payload) as T
