@@ -359,14 +359,11 @@ function BehaviorSummary({ report }: { report: WalletV2Report }) {
 
 // EXPORTED, DISCLOSED (Wallet Scanner V3 layout task): additive-only — see WalletOverview's own
 // export disclosure above for the reasoning.
-export function Actions({ loading, isFullRecoveryAdmin, onDeepScan, onAdminAction }: Pick<WalletProfileHeaderProps, 'loading' | 'isFullRecoveryAdmin' | 'onDeepScan' | 'onAdminAction'>) {
+export function Actions({ loading, onDeepScan }: Pick<WalletProfileHeaderProps, 'loading' | 'isFullRecoveryAdmin' | 'onDeepScan' | 'onAdminAction'>) {
   return (
     <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-      {/* Run Deep Scan is the one action every user (not just admins) sees, so it stays the sole
-          solid-filled primary CTA. Smart Recovery / Admin Full Recovery are admin-only and trigger
-          the exact same Deep Scan (see their titles) — kept as subtle, low-contrast secondary
-          actions rather than competing bright outlines, so they don't visually outrank the one
-          action that actually matters to most users. */}
+      {/* Run Deep Scan is the sole action here — Smart Recovery / Admin Full Recovery removed
+          (they only ever triggered the same Deep Scan, so nothing else changes). */}
       <button
         type="button"
         onClick={onDeepScan}
@@ -382,38 +379,6 @@ export function Actions({ loading, isFullRecoveryAdmin, onDeepScan, onAdminActio
       >
         Run Deep Scan
       </button>
-      {isFullRecoveryAdmin && (
-        <>
-          <button
-            type="button"
-            onClick={onAdminAction}
-            disabled={loading}
-            title="V2 has no separate smart-recovery scan mode — this triggers the same Deep Scan."
-            style={{
-              padding: '9px 16px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.10)',
-              background: 'transparent', color: 'rgba(203,213,225,0.75)', fontSize: '11px', fontWeight: 700,
-              letterSpacing: '0.08em', textTransform: 'uppercase', cursor: loading ? 'not-allowed' : 'pointer',
-              fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-            }}
-          >
-            Smart Recovery
-          </button>
-          <button
-            type="button"
-            onClick={onAdminAction}
-            disabled={loading}
-            title="V2 has no separate full-recovery scan mode — this triggers the same Deep Scan."
-            style={{
-              padding: '9px 16px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.10)',
-              background: 'transparent', color: 'rgba(203,213,225,0.75)', fontSize: '11px', fontWeight: 700,
-              letterSpacing: '0.08em', textTransform: 'uppercase', cursor: loading ? 'not-allowed' : 'pointer',
-              fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-            }}
-          >
-            Admin Full Recovery
-          </button>
-        </>
-      )}
     </div>
   )
 }

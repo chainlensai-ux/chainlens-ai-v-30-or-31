@@ -1,18 +1,17 @@
 'use client'
 
 // Wallet Scanner — restored Cortex-style UI (from commit 348d917) running on the ChainLens
-// 180-Day Intelligence Engine (V2). Layout, styling, header, Deep Scan / Admin Full Recovery /
-// Smart Recovery controls, CORTEX Wallet Read panel, and the Wallet Watchlist sidebar are all
-// restored. The scan handler and every results-rendering section were rebuilt against the V2
-// report shape — none of the old profiler fields (walletPnlRead, publicRealizedPnlUsd,
-// walletTradeStatsSummary, etc.) exist anymore, so the old PnL/trade-stats JSX could not be
-// restored verbatim; it is replaced here by the equivalent V2 sections (portfolio, holdings,
-// timelines, behaviorIntel, recoveryPolicy, windowCoverage, finalSummary).
+// 180-Day Intelligence Engine (V2). Layout, styling, header, Deep Scan controls, CORTEX Wallet
+// Read panel, and the Wallet Watchlist sidebar are all restored. The scan handler and every
+// results-rendering section were rebuilt against the V2 report shape — none of the old profiler
+// fields (walletPnlRead, publicRealizedPnlUsd, walletTradeStatsSummary, etc.) exist anymore, so
+// the old PnL/trade-stats JSX could not be restored verbatim; it is replaced here by the
+// equivalent V2 sections (portfolio, holdings, timelines, behaviorIntel, recoveryPolicy,
+// windowCoverage, finalSummary).
 //
-// Admin Full Recovery / Smart Recovery: V2's runWalletScanV2() only accepts scanMode
-// 'normal' | 'deep' — there is no equivalent of the old full_recovery/smart_recovery scan modes.
-// Both admin-only buttons remain visible (still gated on the same admin email check) and both
-// now trigger a V2 deep scan, since that is the closest real capability that exists.
+// Admin Full Recovery / Smart Recovery buttons removed (UI cleanup) — both only ever triggered
+// the same V2 deep scan as the Deep Scan button, since V2's runWalletScanV2() has no separate
+// full_recovery/smart_recovery scan mode. Deep Scan remains the one real capability.
 //
 // QSTASH/WORKER REMOVAL, DISCLOSED (explicit instruction: remove all QStash/worker/job-poll
 // infrastructure without touching scanner logic): this file previously started + polled a
@@ -607,28 +606,6 @@ export default function WalletScannerPage() {
             <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>
               V2 engine · holdings + portfolio + recovery policy
             </span>
-            {isFullRecoveryAdmin && (
-              <button
-                onClick={() => void handleScan('deep')}
-                disabled={loading || !input.trim()}
-                title="V2 has no separate full-recovery scan mode — this triggers the same Deep Scan as the button above."
-                style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: '2px', padding: '7px 13px', borderRadius: '8px', border: '1px solid rgba(251,191,36,0.55)', background: 'rgba(251,191,36,0.10)', color: '#fbbf24', fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', cursor: (loading || !input.trim()) ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}
-              >
-                <span>Admin Full Recovery</span>
-                <span style={{ fontSize: '9px', fontWeight: 600, letterSpacing: 0, textTransform: 'none', color: 'rgba(251,191,36,0.78)' }}>Runs a V2 Deep Scan (no separate recovery mode in V2).</span>
-              </button>
-            )}
-            {isFullRecoveryAdmin && (
-              <button
-                onClick={() => void handleScan('deep')}
-                disabled={loading || !input.trim()}
-                title="V2 has no separate smart-recovery scan mode — this triggers the same Deep Scan as the button above."
-                style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'flex-start', gap: '2px', padding: '7px 13px', borderRadius: '8px', border: '1px solid rgba(168,85,247,0.55)', background: 'rgba(168,85,247,0.10)', color: '#a855f7', fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', cursor: (loading || !input.trim()) ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}
-              >
-                <span>Smart Recovery (Admin)</span>
-                <span style={{ fontSize: '9px', fontWeight: 600, letterSpacing: 0, textTransform: 'none', color: 'rgba(168,85,247,0.78)' }}>Runs a V2 Deep Scan (no separate recovery mode in V2).</span>
-              </button>
-            )}
           </div>
 
           {/* Loading state */}
