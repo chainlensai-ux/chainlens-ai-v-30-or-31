@@ -20,19 +20,27 @@ export default async function PreviewLoginPage({
         background: '#0a0a0a',
         color: '#e5e5e5',
         fontFamily: 'system-ui, sans-serif',
+        padding: '1rem',
+        boxSizing: 'border-box',
       }}
     >
+      {/* MOBILE FRIENDLY FIX, DISCLOSED (mobile audit): width was a fixed 20rem (320px) with no
+          maxWidth:100% fallback and no side padding on <main> — overflows horizontally on any
+          viewport narrower than 320px. width:100% + maxWidth:20rem keeps the same visual size on
+          desktop but lets it shrink to fit on a real phone. */}
       <form
         action={previewLoginAction}
         style={{
           display: 'flex',
           flexDirection: 'column',
           gap: '0.75rem',
-          width: '20rem',
+          width: '100%',
+          maxWidth: '20rem',
           padding: '2rem',
           border: '1px solid #2a2a2a',
           borderRadius: '0.5rem',
           background: '#111',
+          boxSizing: 'border-box',
         }}
       >
         <h1 style={{ fontSize: '1.1rem', margin: 0 }}>Preview Access</h1>
