@@ -1132,7 +1132,20 @@ export default function BaseRadarPage() {
       return true
     })
 
-    const sorted = [...filtered]
+    // TRENDING-EMPTY FALLBACK FIX, DISCLOSED (reported: TRENDING tab — the default landing tab —
+    // shows "No pools match the current filter" even though the feed has real tracked tokens). Root
+    // cause: TRENDING requires HOT status (which itself requires a *passed* honeypot simulation —
+    // often still pending on brand-new pools), HIGH momentum, or $5K+ volume — a genuinely high bar
+    // that a small/early feed can legitimately clear zero of, even though every other tab
+    // (NEW/VOLUME/LIQUIDITY) shows real tokens. Rather than loosen the bar (which would make
+    // "trending" mean less when a real hot token does appear), fall back to the best-momentum
+    // tokens the feed actually has whenever the strict filter comes up empty but tokens exist —
+    // same underlying data, just never a hard wall when there's something real to show.
+    const effectiveFiltered = activeFilter === 'TRENDING' && filtered.length === 0 && intelTokens.length > 0
+      ? [...intelTokens].sort((a, b) => (b.momentumRatio ?? 0) - (a.momentumRatio ?? 0) || b.volume24h - a.volume24h).slice(0, 5)
+      : filtered
+
+    const sorted = [...effectiveFiltered]
 
     if (sortMode === 'NEWEST') sorted.sort((a, b) => a.ageMinutes - b.ageMinutes)
     if (sortMode === 'HIGHEST_SCORE') sorted.sort((a, b) => b.radarScore - a.radarScore)
