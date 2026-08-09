@@ -130,6 +130,9 @@ export default function Navbar() {
   const planLabel = !accountEmail ? '' : planLoading && !plan ? 'CHECKING PLAN…' : (plan ?? 'unknown').toUpperCase()
   const trialBadgeDesktop = displayPlan === 'elite' && trialDaysLeft > 0 ? `Elite trial · ${trialDaysLeft} days left` : null
   const trialBadgeMobile = displayPlan === 'elite' && trialDaysLeft > 0 ? 'Elite trial' : null
+  // Elite badge/account-pill premium polish — planLabel is only ever non-empty once accountEmail
+  // exists and planLoading has resolved, so this can't fire during the "CHECKING PLAN…" state.
+  const isEliteDisplay = displayPlan === 'elite' && planLabel === 'ELITE'
 
   return (
     <>
@@ -289,6 +292,26 @@ export default function Navbar() {
         .nav-account-chip:hover {
           background: rgba(255,255,255,0.06) !important;
           border-color: rgba(45,212,191,0.42) !important;
+        }
+        /* Elite account pill — subtle gold treatment, no animation (static glow only, per the
+           "avoid animating box-shadow/filter" constraint). Higher specificity than the teal
+           default above so it wins for Elite without touching Pro/Free. */
+        .nav-account-chip.nav-account-chip--elite:hover {
+          background: rgba(245,158,11,0.07) !important;
+          border-color: rgba(245,158,11,0.48) !important;
+          box-shadow: inset 0 0 0 1px rgba(245,158,11,0.14), 0 0 16px rgba(245,158,11,0.14) !important;
+        }
+        .nav-elite-badge {
+          display: inline-flex; align-items: center; gap: 3px;
+          padding: 2px 7px 2px 5px; border-radius: 999px;
+          background: linear-gradient(135deg, rgba(245,158,11,0.20) 0%, rgba(217,119,6,0.10) 100%);
+          border: 1px solid rgba(245,158,11,0.42);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
+        }
+        .nav-elite-badge-label {
+          background: linear-gradient(100deg, #fde68a 0%, #f59e0b 55%, #fbbf24 100%);
+          -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+          font-size: 9px; font-weight: 800; letter-spacing: 0.10em; white-space: nowrap;
         }
 
         @media (max-width: 1280px) {
@@ -519,14 +542,17 @@ export default function Navbar() {
             {accountEmail ? (
               <Link
                 href="/terminal/settings"
-                className="btn-signin nav-account-chip"
+                className={`btn-signin nav-account-chip${isEliteDisplay ? ' nav-account-chip--elite' : ''}`}
                 title={`${accountEmail} · ${planLabel}`}
                 style={{
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: '6px',
-                  borderColor: 'rgba(255,255,255,0.14)',
-                  background: 'rgba(255,255,255,0.03)',
+                  borderColor: isEliteDisplay ? 'rgba(245,158,11,0.30)' : 'rgba(255,255,255,0.14)',
+                  background: isEliteDisplay
+                    ? 'linear-gradient(135deg, rgba(245,158,11,0.08) 0%, rgba(255,255,255,0.025) 55%, rgba(245,158,11,0.05) 100%)'
+                    : 'rgba(255,255,255,0.03)',
+                  boxShadow: isEliteDisplay ? 'inset 0 0 0 1px rgba(245,158,11,0.10)' : undefined,
                   padding: '5px 12px 5px 5px',
                   textTransform: 'none',
                   letterSpacing: 'normal',
@@ -539,17 +565,27 @@ export default function Navbar() {
                   color: '#04101a', fontSize: '11px', fontWeight: 700,
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                   flexShrink: 0, overflow: 'hidden',
-                  boxShadow: `0 0 0 1px ${PLAN_COLOR[displayPlan]}55`,
+                  boxShadow: isEliteDisplay
+                    ? '0 0 0 1.5px rgba(245,158,11,0.70), 0 0 7px rgba(245,158,11,0.30)'
+                    : `0 0 0 1px ${PLAN_COLOR[displayPlan]}55`,
                 }}>
                   {avatarUrl
                     ? <img src={avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
                     : initials}
                 </span>
-                <span style={{
-                  fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
-                  color: PLAN_COLOR[displayPlan],
-                  whiteSpace: 'nowrap',
-                }}>{planLabel}</span>{trialBadgeDesktop ? <span style={{ marginLeft: 2, fontSize: 9, color: '#fbbf24', whiteSpace: 'nowrap' }}>· {trialBadgeDesktop}</span> : null}
+                {isEliteDisplay ? (
+                  <span className='nav-elite-badge'>
+                    <svg width='8' height='8' viewBox='0 0 24 24' fill='#fbbf24' aria-hidden='true'><path d='M12 2l2.4 7.2H22l-6 4.6 2.3 7.2-6.3-4.6-6.3 4.6 2.3-7.2-6-4.6h7.6z'/></svg>
+                    <span className='nav-elite-badge-label'>{planLabel}</span>
+                  </span>
+                ) : (
+                  <span style={{
+                    fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
+                    color: PLAN_COLOR[displayPlan],
+                    whiteSpace: 'nowrap',
+                  }}>{planLabel}</span>
+                )}
+                {trialBadgeDesktop ? <span style={{ marginLeft: 2, fontSize: 9, color: '#fbbf24', whiteSpace: 'nowrap' }}>· {trialBadgeDesktop}</span> : null}
               </Link>
             ) : (
               <Link href="/sign-in" className="btn-signin" prefetch={true}>Sign In</Link>
@@ -638,8 +674,10 @@ export default function Navbar() {
               <div style={{
                 display: 'flex', alignItems: 'center', gap: '10px',
                 padding: '12px 14px', borderRadius: '14px', marginBottom: '10px',
-                background: 'linear-gradient(135deg, rgba(45,212,191,0.08) 0%, rgba(139,92,246,0.14) 100%)',
-                border: '1px solid rgba(45,212,191,0.25)',
+                background: isEliteDisplay
+                  ? 'linear-gradient(135deg, rgba(245,158,11,0.10) 0%, rgba(139,92,246,0.10) 100%)'
+                  : 'linear-gradient(135deg, rgba(45,212,191,0.08) 0%, rgba(139,92,246,0.14) 100%)',
+                border: `1px solid ${isEliteDisplay ? 'rgba(245,158,11,0.30)' : 'rgba(45,212,191,0.25)'}`,
               }}>
                 <span style={{
                   width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0,
@@ -647,6 +685,7 @@ export default function Navbar() {
                   color: '#04101a', fontSize: '14px', fontWeight: 700,
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                   overflow: 'hidden',
+                  boxShadow: isEliteDisplay ? '0 0 0 1.5px rgba(245,158,11,0.65), 0 0 8px rgba(245,158,11,0.25)' : undefined,
                 }}>
                   {avatarUrl
                     ? <img src={avatarUrl} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover', borderRadius: '50%' }} />
@@ -655,11 +694,19 @@ export default function Navbar() {
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: '13px', color: '#e2e8f0', fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{accountEmail}</div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px' }}>
-                    <span style={{
-                      fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
-                      color: PLAN_COLOR[displayPlan], border: `1px solid ${PLAN_COLOR[displayPlan]}44`,
-                      borderRadius: '4px', padding: '1px 5px', background: `${PLAN_COLOR[displayPlan]}18`,
-                    }}>{planLabel}</span>{trialBadgeMobile ? <span style={{ marginLeft: 6, fontSize: 10, color: '#fbbf24' }}>{trialBadgeMobile}</span> : null}
+                    {isEliteDisplay ? (
+                      <span className='nav-elite-badge'>
+                        <svg width='8' height='8' viewBox='0 0 24 24' fill='#fbbf24' aria-hidden='true'><path d='M12 2l2.4 7.2H22l-6 4.6 2.3 7.2-6.3-4.6-6.3 4.6 2.3-7.2-6-4.6h7.6z'/></svg>
+                        <span className='nav-elite-badge-label'>{planLabel}</span>
+                      </span>
+                    ) : (
+                      <span style={{
+                        fontSize: '9px', fontWeight: 800, letterSpacing: '0.10em',
+                        color: PLAN_COLOR[displayPlan], border: `1px solid ${PLAN_COLOR[displayPlan]}44`,
+                        borderRadius: '4px', padding: '1px 5px', background: `${PLAN_COLOR[displayPlan]}18`,
+                      }}>{planLabel}</span>
+                    )}
+                    {trialBadgeMobile ? <span style={{ marginLeft: 6, fontSize: 10, color: '#fbbf24' }}>{trialBadgeMobile}</span> : null}
                     <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.40)' }}>Signed in</span>
                   </div>
                 </div>
