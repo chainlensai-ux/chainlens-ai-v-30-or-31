@@ -1475,7 +1475,7 @@ export default function HomePage() {
                 bg: 'rgba(10,10,18,0.72)', radius: '14px', pad: '20px 16px 18px', mt: '0',
                 sections: [
                   { title: 'Token Scanner', items: ['Basic token and liquidity checks', 'No AI verdict'] },
-                  { title: 'Clark AI', items: ['3 prompts per day'] },
+                  { title: 'Clark AI', items: ['5 prompts per day'] },
                   { title: 'Not Included', items: ['No Wallet Scanner', 'No Pump Alerts', 'No Whale Alerts', 'No Base Radar'] },
                 ],
               },
