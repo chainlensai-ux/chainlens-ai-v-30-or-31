@@ -276,6 +276,17 @@ function fmtPct(n: number | null | undefined): string {
   return `${n >= 0 ? '+' : ''}${n.toFixed(1)}%`
 }
 
+// Maps the backend's own reason-tag words (never invented here — see classifyBaseMarketReason()
+// in app/api/clark/route.ts for "liquid mover"/"volume expansion"/"new pool"/"established Base")
+// to a visual tone: teal for the confirmed/liquid case, amber for the higher-risk "new pool" case,
+// purple as the neutral accent for everything else.
+function moverTagTone(tag: string): 'positive' | 'caution' | 'accent' {
+  const t = tag.toLowerCase()
+  if (t.includes('liquid') || t.includes('established')) return 'positive'
+  if (t.includes('new pool') || t.includes('thin')) return 'caution'
+  return 'accent'
+}
+
 // Compact mover row — the structured alternative to a plain "- Token: 24h +x%, vol $y, liq $z"
 // text line, using the SAME real per-item fields the backend's marketContext.items already carries.
 function MoverRow({ item, onScan, onWatch, watchState }: {
@@ -290,8 +301,11 @@ function MoverRow({ item, onScan, onWatch, watchState }: {
     <div className="clark-mover-row">
       <div className="clark-mover-row-main">
         <div className="clark-mover-row-top">
+          {item.rank != null && <span className="clark-mover-rank">#{item.rank}</span>}
           <span className="clark-mover-symbol">{item.symbol}</span>
-          {item.reasonTag && <span className="clark-mover-tag">{item.reasonTag}</span>}
+          {item.reasonTag && (
+            <span className={`clark-mover-tag clark-mover-tag--${moverTagTone(item.reasonTag)}`}>{item.reasonTag}</span>
+          )}
           <span className={`clark-mover-change${positive ? ' is-up' : ' is-down'}`}>{fmtPct(item.change24h)}</span>
         </div>
         <div className="clark-mover-row-stats">
@@ -321,16 +335,174 @@ function MoverRow({ item, onScan, onWatch, watchState }: {
   )
 }
 
+// ── Base Market Read structured card, DISCLOSED (Clark market-read rendering task) ────────────
+// Parses the EXACT, deterministic text shape formatBaseMarketReply() (app/api/clark/route.ts)
+// always produces — never re-interprets meaning, only lifts the same numbers/words already in the
+// message into a structured card. Every field rendered below (rank, symbol, % change, vol, liq,
+// tag, contract, candidate count, short-read lines, next-step lines) is copied verbatim from a
+// regex match against the real reply text; nothing is computed, guessed, or fabricated. If the
+// text doesn't match this exact shape (any other Clark reply, or a future backend wording change),
+// parsing yields null and the caller falls back to the existing generic section renderer untouched.
+type ParsedMarketRead = {
+  extended: boolean
+  candidateCount: number | null
+  movers: MoverItem[]
+  shortRead: string[]
+  next: string[]
+}
+
+const MARKET_READ_HEADER_RE = /^BASE MARKET READ(?:\s*—\s*extended list)?:?\s*$/im
+const MARKET_READ_COUNT_RE = /Clark is seeing\s+(\d+)\s+usable Base candidates/i
+const MARKET_READ_MOVER_RE = /^(\d+)\.\s+(\S+)\s+—\s+(-?[\d.]+%|n\/a)\s*24h,\s*vol\s+([^,]+),\s*liq\s+([^\s—]+)\s+—\s+(.+?)\s*\r?\n\s*Contract:\s*(\S+)\s*$/gim
+
+function parseBaseMarketRead(text: string): ParsedMarketRead | null {
+  if (!MARKET_READ_HEADER_RE.test(text)) return null
+
+  const movingIdx = text.search(/^Moving now:\s*$/im)
+  const shortReadIdx = text.search(/^Short read:\s*$/im)
+  const nextIdx = text.search(/^Next:\s*$/im)
+  if (movingIdx === -1) return null
+
+  const moversBlockEnd = shortReadIdx !== -1 ? shortReadIdx : (nextIdx !== -1 ? nextIdx : text.length)
+  const moversBlock = text.slice(movingIdx, moversBlockEnd)
+
+  const movers: MoverItem[] = []
+  for (const m of moversBlock.matchAll(MARKET_READ_MOVER_RE)) {
+    const [, rankStr, symbol, changeStr, vol, liq, tag, addr] = m
+    movers.push({
+      rank: Number(rankStr) || undefined,
+      symbol,
+      reasonTag: tag.trim() || null,
+      change24h: changeStr === 'n/a' ? null : parseFloat(changeStr),
+      volume24h: parseUsdShort(vol),
+      liquidity: parseUsdShort(liq),
+      tokenAddress: addr.toLowerCase() === 'unresolved' ? null : addr,
+    })
+  }
+  if (movers.length === 0) return null
+
+  const shortRead = shortReadIdx !== -1
+    ? text.slice(shortReadIdx, nextIdx !== -1 ? nextIdx : text.length)
+      .replace(/^Short read:\s*/im, '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+    : []
+
+  const next = nextIdx !== -1
+    ? text.slice(nextIdx)
+      .replace(/^Next:\s*/im, '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+    : []
+
+  const countMatch = text.match(MARKET_READ_COUNT_RE)
+  return {
+    extended: /extended list/i.test(text),
+    candidateCount: countMatch ? Number(countMatch[1]) : null,
+    movers,
+    shortRead,
+    next,
+  }
+}
+
+// Reverses fmtUsdShort's own "$24.0M" / "$9.7K" / "$1.23" formatting back to a number — the same
+// short-form the backend's formatUsdShort() already produced this text with, just parsed back out.
+function parseUsdShort(raw: string): number | null {
+  const m = raw.trim().match(/^\$?([\d.]+)([KM])?$/i)
+  if (!m) return null
+  const n = parseFloat(m[1])
+  if (!Number.isFinite(n)) return null
+  if (m[2]?.toUpperCase() === 'M') return n * 1_000_000
+  if (m[2]?.toUpperCase() === 'K') return n * 1_000
+  return n
+}
+
+function MarketReadCard({ data, onScan, onWatch, watchStateFor, onReplyPrompt }: {
+  data: ParsedMarketRead
+  onScan: (item: MoverItem) => void
+  onWatch: (item: MoverItem) => void
+  watchStateFor: (item: MoverItem) => 'idle' | 'saving' | 'saved' | 'error'
+  onReplyPrompt: () => void
+}) {
+  return (
+    <div className="clark-market-card">
+      <div className="clark-market-head">
+        <div>
+          <div className="clark-market-title">
+            BASE MARKET READ
+            {data.extended && <span className="clark-market-title-suffix"> · extended</span>}
+          </div>
+          {data.candidateCount != null && (
+            <div className="clark-market-subtitle">{data.candidateCount} usable Base candidates</div>
+          )}
+        </div>
+        <span className="clark-market-live-badge">LIVE BASE</span>
+      </div>
+
+      <div className="clark-section">
+        <div className="clark-section-title">Moving Now</div>
+        <div className="clark-mover-list">
+          {data.movers.map((item, i) => (
+            <MoverRow
+              key={`${item.symbol}-${item.rank ?? i}`}
+              item={item}
+              onScan={onScan}
+              onWatch={onWatch}
+              watchState={watchStateFor(item)}
+            />
+          ))}
+        </div>
+      </div>
+
+      {data.shortRead.length > 0 && (
+        <div className="clark-market-shortread">
+          <div className="clark-section-title">Short Read</div>
+          {data.shortRead.map((line, i) => <p key={i}>{line}</p>)}
+        </div>
+      )}
+
+      {data.next.length > 0 && (
+        <div className="clark-market-next">
+          <div className="clark-section-title">Next</div>
+          {data.next.map((line, i) => <p key={i}>{line}</p>)}
+          <button type="button" className="clark-market-next-cta" onClick={onReplyPrompt}>
+            Reply with rank or symbol
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Renders one reply as structured analysis: section headers for label lines, mover-row cards for
 // list lines when this message carries real marketContext.items, plain lines otherwise — same
 // content, never rewritten, just given hierarchy instead of one flat text block.
-function ClarkMessage({ text, movers, onScan, onWatch, watchStateFor }: {
+function ClarkMessage({ text, movers, onScan, onWatch, watchStateFor, onReplyPrompt }: {
   text: string
   movers?: MoverItem[]
   onScan: (item: MoverItem) => void
   onWatch: (item: MoverItem) => void
   watchStateFor: (item: MoverItem) => 'idle' | 'saving' | 'saved' | 'error'
+  onReplyPrompt: () => void
 }) {
+  // Base Market Read gets its own dedicated card when the text matches that exact shape; any other
+  // reply (or a match attempt that comes back empty) falls straight through to the generic,
+  // already-existing section/bullet/mover renderer below — unchanged for every other message type.
+  const marketRead = parseBaseMarketRead(text)
+  if (marketRead) {
+    return (
+      <MarketReadCard
+        data={marketRead}
+        onScan={onScan}
+        onWatch={onWatch}
+        watchStateFor={watchStateFor}
+        onReplyPrompt={onReplyPrompt}
+      />
+    )
+  }
+
   const sections = splitIntoSections(text)
   // A section's own list lines start with "- " (the backend's own bullet convention for
   // mover-style lists). Only the FIRST such section on a message that carries real movers renders
@@ -706,12 +878,15 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         }
         .clark-mover-row-main { min-width: 0; flex: 1; }
         .clark-mover-row-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .clark-mover-rank { font: 700 9.5px var(--font-plex-mono); color: rgba(148,163,184,0.55); }
         .clark-mover-symbol { font: 800 11.5px var(--font-plex-mono); color: #f1f5f9; letter-spacing: .01em; }
         .clark-mover-tag {
           font: 700 8px var(--font-inter); letter-spacing: .04em; text-transform: uppercase;
-          color: rgba(196,181,253,0.80); background: rgba(139,92,246,0.10);
-          border: 1px solid rgba(139,92,246,0.20); border-radius: 4px; padding: 1px 5px;
+          border-radius: 4px; padding: 1px 5px;
         }
+        .clark-mover-tag--positive { color: #5eead4; background: rgba(45,212,191,0.10); border: 1px solid rgba(45,212,191,0.22); }
+        .clark-mover-tag--caution { color: #fbbf24; background: rgba(245,158,11,0.10); border: 1px solid rgba(245,158,11,0.24); }
+        .clark-mover-tag--accent { color: rgba(196,181,253,0.80); background: rgba(139,92,246,0.10); border: 1px solid rgba(139,92,246,0.20); }
         .clark-mover-change { font: 800 10.5px var(--font-plex-mono); margin-left: auto; }
         .clark-mover-change.is-up { color: #5eead4; }
         .clark-mover-change.is-down { color: #fb7185; }
@@ -730,6 +905,42 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         .clark-mover-action:hover:not(:disabled) { color: #fff; background: rgba(139,92,246,0.14); border-color: rgba(139,92,246,0.30); }
         .clark-mover-action.is-active { color: #5eead4; background: rgba(45,212,191,0.10); border-color: rgba(45,212,191,0.28); }
         .clark-mover-action:disabled { cursor: default; opacity: 0.6; }
+
+        /* Base Market Read card */
+        .clark-market-card { display: flex; flex-direction: column; }
+        .clark-market-head {
+          display: flex; align-items: flex-start; justify-content: space-between; gap: 8px;
+          padding-bottom: 8px; margin-bottom: 9px; border-bottom: 1px solid rgba(255,255,255,0.07);
+        }
+        .clark-market-title {
+          font: 800 11px var(--font-plex-mono); letter-spacing: .08em; text-transform: uppercase;
+          color: #f1f5f9;
+        }
+        .clark-market-title-suffix { color: rgba(196,181,253,0.65); text-transform: none; letter-spacing: normal; }
+        .clark-market-subtitle { font-size: 10px; color: rgba(255,255,255,0.42); margin-top: 2px; }
+        .clark-market-live-badge {
+          flex-shrink: 0; font: 800 8.5px var(--font-plex-mono); letter-spacing: .08em;
+          color: #5eead4; background: rgba(45,212,191,0.10); border: 1px solid rgba(45,212,191,0.26);
+          border-radius: 999px; padding: 3px 8px; white-space: nowrap;
+        }
+        .clark-market-shortread {
+          margin-top: 10px; padding-left: 10px; border-left: 2px solid rgba(139,92,246,0.30);
+          color: rgba(255,255,255,0.58); font-size: 11.5px; line-height: 1.75;
+        }
+        .clark-market-shortread p { margin: 0 0 5px; }
+        .clark-market-shortread p:last-child { margin-bottom: 0; }
+        .clark-market-next {
+          margin-top: 10px; padding: 9px 10px; border-radius: 8px;
+          background: rgba(45,212,191,0.05); border: 1px solid rgba(45,212,191,0.16);
+          font-size: 11.5px; line-height: 1.7; color: rgba(255,255,255,0.68);
+        }
+        .clark-market-next p { margin: 0 0 4px; }
+        .clark-market-next-cta {
+          margin-top: 4px; font: 700 9px var(--font-inter); letter-spacing: .03em; text-transform: uppercase;
+          color: #5eead4; background: rgba(45,212,191,0.08); border: 1px solid rgba(45,212,191,0.26);
+          border-radius: 6px; padding: 4px 9px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
+        }
+        .clark-market-next-cta:hover { background: rgba(45,212,191,0.16); border-color: rgba(45,212,191,0.42); }
 
         /* Composer — terminal command-bar treatment */
         .clark-quick-chip {
@@ -983,6 +1194,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                         onScan={handleScanMover}
                         onWatch={handleWatchMover}
                         watchStateFor={watchStateFor}
+                        onReplyPrompt={() => inputRef.current?.focus()}
                       />
                     ) : msg.text}
                   </div>
