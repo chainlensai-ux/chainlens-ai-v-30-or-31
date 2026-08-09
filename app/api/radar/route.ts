@@ -601,7 +601,17 @@ export async function GET(req: NextRequest) {
       else fallbackCandidates.push(candidate)
     }
 
-    if (candidates.length === 0 && fallbackCandidates.length > 0) {
+    // ALWAYS-MERGE-FALLBACK FIX, DISCLOSED (reported: radar only ever shows a handful of tokens —
+    // "should be a ton"). fallbackCandidates are real, already-computed candidates that either
+    // cleared liquidity/volume but not the strict valuation bar, or sit in the wider 24h trending
+    // age window instead of the strict 6h primary window — every one of them already carries the
+    // "Relaxed fallback" evidenceGaps disclosure added above, specifically so they're safe to show
+    // labeled rather than hidden. Previously they were only merged in when the primary list was
+    // COMPLETELY empty, so the moment even 1 token passed strict filtering, every other legitimate
+    // fallback candidate was silently thrown away instead of appended — collapsing what should be a
+    // real, browsable feed down to just the handful that happened to clear every bar at once. No
+    // filter/scoring/risk logic changed: these tokens were already being computed, just discarded.
+    if (fallbackCandidates.length > 0) {
       candidates.push(...fallbackCandidates)
     }
 

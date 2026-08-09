@@ -1139,7 +1139,12 @@ export default function BaseRadarPage() {
   const filteredAndSortedTokens = useMemo(() => {
     const filtered = intelTokens.filter(token => {
       if (activeFilter === 'TRENDING') return token.status === 'HOT' || token.momentum === 'HIGH' || token.volume24h >= 5_000
-      if (activeFilter === 'NEW') return token.ageMinutes <= 120 || token.status === 'EARLY'
+      // NEW-WINDOW WIDENED, DISCLOSED (reported: radar showing too few tokens): 120 minutes was
+      // narrower than the backend's own "new pool" definition (/api/radar's primary age window is
+      // 6 hours — see isPrimaryAgeWindow in app/api/radar/route.ts), so tokens the backend already
+      // fetched and considered fresh were being hidden from the default NEW tab by a stricter
+      // frontend-only cutoff. Widened to match.
+      if (activeFilter === 'NEW') return token.ageMinutes <= 360 || token.status === 'EARLY'
       if (activeFilter === 'VOLUME') return token.volume24h >= 5_000 || token.momentum !== 'NONE'
       if (activeFilter === 'LIQUIDITY') return token.liquidityUsd >= 10_000
       if (activeFilter === 'RISK_WATCH') return token.status === 'RISKY' || token.status === 'UNVERIFIED' || token.simulationStatus !== 'passed'
