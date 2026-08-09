@@ -68,6 +68,14 @@ export function getRadarSimulationReasonLabel(reason: RadarSimulationOpenCheckRe
   return reason ? REASON_LABELS[reason] ?? 'Simulation pending' : 'Tax check clear'
 }
 
+// LEAKED-ENUM-INTO-UI FIX, DISCLOSED (full Base Radar audit): REASON_LABELS/REASON_CORTEX above
+// already have polished human text for every reason code, and getRadarSimulationReasonLabel()
+// correctly uses REASON_LABELS — but this function, the one actually building every simulation
+// result's real `label`/`cortexLine`, ignored both maps and hardcoded the raw internal reason
+// CODE straight into the user-facing string instead (`Simulation open check — insufficient_route`,
+// `...because provider_unavailable.`). Since open_check is the common case for any fresh/unresolved
+// token, this raw-enum text was what most feed cards' "Tax Check" field and the drawer's simulation
+// line actually showed. Now reuses the same maps the rest of this file already defines correctly.
 function openCheck(attempted: boolean, reason: RadarSimulationOpenCheckReason): RadarSimulationResult {
   return {
     attempted,
@@ -76,10 +84,8 @@ function openCheck(attempted: boolean, reason: RadarSimulationOpenCheckReason): 
     sellTax: null,
     isHoneypot: null,
     reason,
-    label: `Simulation open check — ${reason}`,
-    cortexLine: reason === 'timeout_after_retry'
-      ? 'Buy/sell simulation timed out, so tax and honeypot status are not confirmed yet.'
-      : `Buy/sell simulation remains open check because ${reason}.`,
+    label: REASON_LABELS[reason],
+    cortexLine: REASON_CORTEX[reason],
   }
 }
 

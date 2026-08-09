@@ -314,7 +314,14 @@ function getFlags(token: RadarToken, status: RadarStatus, momentum: MomentumLeve
   if (momentum === 'HIGH') flags.push('Momentum')
   if (token.ageMinutes <= 30) flags.push('New Pool')
   if (token.volume24h >= 5_000) flags.push('Volume Spike')
-  if (token.liquidityUsd >= 30_000) flags.push('Liquidity Watch')
+  // FLAG-MEANING BUG, DISCLOSED (full Base Radar audit): this was 'Liquidity Watch', styled amber/
+  // warning in getBadgeStyle below (grouped with genuine caution flags like 'Tax check pending' and
+  // 'Simulation pending') — but the trigger here is $30K+ liquidity, a POSITIVE signal, and
+  // ProjectOverviewDrawer.tsx uses the exact same label 'Liquidity Watch' to mean the opposite
+  // (liquidity BELOW the safety threshold). A token with strong liquidity was getting a warning-
+  // colored badge that told users the opposite of what was actually true. Renamed to a distinct,
+  // correctly-positive label so it can't collide with the drawer's real caution flag.
+  if (token.liquidityUsd >= 30_000) flags.push('Liquidity Strong')
   if (token.liquidityUsd < 2_000) flags.push('Tax check pending')
   if (token.simulationStatus === 'open_check') flags.push('Simulation pending')
   if (token.simulationStatus === 'passed') flags.push('Simulation checked')
@@ -460,8 +467,8 @@ function getPriorityAccent(token: TokenIntel): { color: string; background: stri
 }
 
 function getBadgeStyle(flag: string): { color: string; background: string; border: string } {
-  if (['Momentum', 'Volume Spike', 'Simulation confirmed', 'Simulation checked'].includes(flag)) return { color: '#99f6e4', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.30)' }
-  if (['Tax check pending', 'Simulation pending', 'Pending Evidence', 'Liquidity Watch'].includes(flag)) return { color: '#fde68a', background: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.28)' }
+  if (['Momentum', 'Volume Spike', 'Simulation confirmed', 'Simulation checked', 'Liquidity Strong'].includes(flag)) return { color: '#99f6e4', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.30)' }
+  if (['Tax check pending', 'Simulation pending', 'Pending Evidence'].includes(flag)) return { color: '#fde68a', background: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.28)' }
   if (['High Risk', 'CORTEX Watch'].includes(flag)) return { color: '#fecaca', background: 'rgba(248,113,113,0.11)', border: 'rgba(248,113,113,0.28)' }
   return { color: '#bfdbfe', background: 'rgba(96,165,250,0.13)', border: 'rgba(96,165,250,0.30)' }
 }

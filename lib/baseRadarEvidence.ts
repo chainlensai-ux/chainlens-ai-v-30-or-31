@@ -3,6 +3,7 @@
 // checked, what was found, and (only when nothing was found) why.
 
 import type { RadarValuationBasis } from './baseRadarValuation'
+import { getRadarSimulationReasonLabel, type RadarSimulationOpenCheckReason } from './baseRadarSimulation.ts'
 
 export type RadarEvidenceStatus = 'verified' | 'checked_not_found' | 'risk_fact' | 'open_check'
 
@@ -46,7 +47,7 @@ export function getRadarValuationEvidence(valuation: { basis: RadarValuationBasi
 
 export interface RadarSimulationEvidenceInput {
   status?: 'passed' | 'open_check' | null
-  reason?: string | null
+  reason?: RadarSimulationOpenCheckReason | string | null
 }
 
 /**
@@ -57,17 +58,20 @@ export interface RadarSimulationEvidenceInput {
  */
 export function getRadarSimulationEvidence(input: RadarSimulationEvidenceInput): RadarEvidenceEntry | null {
   if (input.status === 'passed') return null
-  const reason = input.reason ?? 'insufficient route/pool evidence'
-  const reasonLabel = reason === 'timeout'
-    ? 'Buy/sell simulation timed out'
-    : reason === 'missing pair address'
-    ? 'Buy/sell simulation could not run — missing pair address'
-    : reason === 'unsupported pool model'
-    ? 'Buy/sell simulation could not run — unsupported pool model'
-    : 'Buy/sell simulation could not run — insufficient route/pool evidence'
+  // MISMATCHED-REASON-CODES FIX, DISCLOSED (full Base Radar audit): this compared `reason` against
+  // space-separated phrases ('timeout', 'missing pair address', 'unsupported pool model'), but the
+  // real reason codes lib/baseRadarSimulation.ts actually produces are underscored enum values
+  // ('timeout_after_retry', 'missing_pair_address', 'unsupported_pool_model', etc.) — none of these
+  // comparisons could ever match a real value, so this evidence entry always fell through to the
+  // same generic "insufficient route/pool evidence" label regardless of the token's actual reason
+  // (a genuinely timed-out simulation read identically to one with no route at all). Reuses
+  // getRadarSimulationReasonLabel(), the same canonical reason->label map baseRadarSimulation.ts
+  // already defines correctly, instead of a second, broken copy of the same mapping.
+  const reason = (input.reason as RadarSimulationOpenCheckReason | null | undefined) ?? 'insufficient_route'
+  const reasonLabel = getRadarSimulationReasonLabel(reason)
   return {
     status: 'open_check',
-    label: `${reasonLabel}, so tax and honeypot status are not confirmed.`,
+    label: `${reasonLabel} — tax and honeypot status are not confirmed.`,
     known: [],
     missing: ['buy/sell tax', 'honeypot status'],
     reason,

@@ -466,8 +466,14 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
     security: {
       honeypot: sanitizeProviderNames(simulation),
       simulationStatus: lpReconciliation.simulationPairAddress === null ? 'open_check' : security.simulationStatus ?? (simulation ? 'ok' : 'open_check'),
+      // REASON-CODE FIX, DISCLOSED (full Base Radar audit): was 'missing pair address' (a
+      // space-separated phrase) — lib/baseRadarSimulation.ts's real RadarSimulationOpenCheckReason
+      // enum uses 'missing_pair_address' (underscored). Confirmed this exact field isn't currently
+      // read anywhere in the drawer (buildSimulation() reads security.honeypot.failureReason or the
+      // feed's own already-correct reason instead), so this was silently inert rather than visibly
+      // wrong — corrected to the real enum value so it's right if/when something does read it.
       simulationReason: lpReconciliation.simulationPairAddress === null
-        ? 'missing pair address'
+        ? 'missing_pair_address'
         : sanitizeProviderNames(security.simulationReason ?? security.reason ?? null),
       contractFlags: security.contractFlags ?? null,
       devOwnership,
