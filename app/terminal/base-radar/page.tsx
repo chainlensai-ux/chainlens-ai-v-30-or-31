@@ -829,14 +829,19 @@ const RADAR_CHAINS: Array<{ key: RadarChain; label: string }> = [
   { key: 'robinhood', label: 'Robinhood' },
 ]
 
-// CHAIN SELECTOR, DISCLOSED (task #2): compact segmented control, Base selected by default. Uses
-// the existing /logos/base.png asset already in the repo for the Base icon (not a new/external
-// import); Robinhood has no icon asset in the repo so it gets a plain "RH" text badge, per the
-// task's own explicit instruction rather than sourcing a new logo.
-function ChainSelector({ value, onChange }: { value: RadarChain; onChange: (chain: RadarChain) => void }) {
+// CHAIN SELECTOR, DISCLOSED (task #2, revised for env verification + feature flag wiring task):
+// compact segmented control, Base selected by default. Robinhood only renders as an option when
+// `robinhoodAvailable` is true — i.e. ENABLE_ROBINHOOD_CHAIN=true AND ALCHEMY_ROBINHOOD_RPC_URL is
+// configured server-side (checked via /api/base-radar/chain-status, which never returns the RPC
+// URL itself — see that route and lib/server/robinhoodChainConfig.ts). Defaults to hidden (fails
+// closed) until that check resolves. Uses the existing /logos/base.png asset already in the repo
+// for the Base icon; Robinhood has no icon asset in the repo so it gets a plain "RH" text badge,
+// per the task's own explicit instruction rather than sourcing a new logo.
+function ChainSelector({ value, onChange, robinhoodAvailable }: { value: RadarChain; onChange: (chain: RadarChain) => void; robinhoodAvailable: boolean }) {
+  const visibleChains = RADAR_CHAINS.filter(chain => chain.key === 'base' || robinhoodAvailable)
   return (
     <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', padding: '3px', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
-      {RADAR_CHAINS.map(chain => {
+      {visibleChains.map(chain => {
         const active = chain.key === value
         return (
           <button
@@ -955,6 +960,28 @@ export default function BaseRadarPage() {
   // chain is selected — so switching back to Base always shows fresh data instantly — but nothing
   // Base-derived is ever rendered while 'robinhood' is selected (see the render branch below).
   const [selectedRadarChain, setSelectedRadarChain] = useState<RadarChain>('base')
+  // ROBINHOOD AVAILABILITY, DISCLOSED (env verification + feature flag wiring task): defaults to
+  // false (fails closed) until /api/base-radar/chain-status confirms ENABLE_ROBINHOOD_CHAIN=true
+  // AND ALCHEMY_ROBINHOOD_RPC_URL is configured server-side — that route never returns the RPC URL
+  // itself, only booleans. No RPC/provider call happens here or in that route; this only checks
+  // config presence.
+  const [robinhoodAvailable, setRobinhoodAvailable] = useState(false)
+  useEffect(() => {
+    let cancelled = false
+    fetch(`/api/base-radar/chain-status?selectedChain=${selectedRadarChain}`, { cache: 'no-store' })
+      .then(res => res.json())
+      .then(json => { if (!cancelled) setRobinhoodAvailable(Boolean(json?.robinhood?.available)) })
+      .catch(() => { if (!cancelled) setRobinhoodAvailable(false) })
+    return () => { cancelled = true }
+  }, [selectedRadarChain])
+  // DEFENSIVE FALLBACK, DISCLOSED: derived in render (not an effect-triggered setState, which
+  // causes cascading renders) — if Robinhood is somehow selected while it isn't actually available
+  // (e.g. the availability check above hasn't resolved yet, or the flag flips off between checks),
+  // every render branch below reads `effectiveRadarChain` instead of the raw selection, so nothing
+  // Robinhood-labeled is ever shown unless backed by a confirmed-available config. The ChainSelector
+  // itself only ever offers Robinhood as a choice when robinhoodAvailable is already true, so this
+  // is a belt-and-suspenders fallback, not the primary guard.
+  const effectiveRadarChain: RadarChain = selectedRadarChain === 'robinhood' && !robinhoodAvailable ? 'base' : selectedRadarChain
 
   const effectivePlan = elitePass.active ? 'elite' : plan
   const showUpsell = effectivePlan === 'free'
@@ -1312,13 +1339,13 @@ export default function BaseRadarPage() {
         <div style={{ marginBottom: '14px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '5px' }}>
             <h1 style={{ fontSize: '23px', fontWeight: 800, margin: 0, letterSpacing: '-0.02em', backgroundImage: 'linear-gradient(92deg, #f8fafc, #a5f3fc 38%, #c4b5fd 68%, #f8fafc)', WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent' }}>
-              {selectedRadarChain === 'base' ? 'Base Radar' : 'Robinhood Chain Radar'}
+              {effectiveRadarChain === 'base' ? 'Base Radar' : 'Robinhood Chain Radar'}
             </h1>
 
             {/* CHAIN-AWARE LIVE BADGE, DISCLOSED (task #1/#7): only claims "LIVE" for Base, which is
                 the only chain with a real feed right now — Robinhood shows a plain "Beta" badge
                 instead so nothing implies a live Robinhood Chain feed exists yet. */}
-            {selectedRadarChain === 'base' ? (
+            {effectiveRadarChain === 'base' ? (
               <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '4px 10px', borderRadius: '99px', background: 'rgba(236,72,153,0.12)', border: '1px solid rgba(236,72,153,0.30)', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#ec4899', fontFamily: 'var(--font-plex-mono)' }}>
                 <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#ec4899', animation: 'livePulse 1.8s ease-in-out infinite', flexShrink: 0 }} />
                 LIVE
@@ -1330,11 +1357,11 @@ export default function BaseRadarPage() {
             )}
 
             <div style={{ marginLeft: 'auto' }}>
-              <ChainSelector value={selectedRadarChain} onChange={setSelectedRadarChain} />
+              <ChainSelector value={selectedRadarChain} onChange={setSelectedRadarChain} robinhoodAvailable={robinhoodAvailable} />
             </div>
           </div>
 
-          {selectedRadarChain === 'base' ? (
+          {effectiveRadarChain === 'base' ? (
             <>
               <p style={{ fontSize: '12.5px', color: '#94a3b8', margin: '0 0 3px', maxWidth: '720px', lineHeight: 1.4 }}>
                 Live feed — new Base opportunities
@@ -1352,9 +1379,9 @@ export default function BaseRadarPage() {
             </p>
           )}
 
-          {selectedRadarChain === 'base' && <PulseStrip summary={summary} />}
+          {effectiveRadarChain === 'base' && <PulseStrip summary={summary} />}
 
-          {selectedRadarChain === 'base' && (
+          {effectiveRadarChain === 'base' && (
           <>
           <div className="radar-controls" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -1480,7 +1507,7 @@ export default function BaseRadarPage() {
           )}
         </div>
 
-        {selectedRadarChain === 'robinhood' ? (
+        {effectiveRadarChain === 'robinhood' ? (
           <RobinhoodBetaState onBackToBase={() => setSelectedRadarChain('base')} />
         ) : (
         <div className="radar-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: '18px', alignItems: 'start' }}>
