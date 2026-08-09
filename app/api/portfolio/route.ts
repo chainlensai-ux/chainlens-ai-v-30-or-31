@@ -1,6 +1,20 @@
 import { NextResponse } from 'next/server'
 import { getPortfolioLite } from '@/lib/server/walletLite'
 import { getPortfolioFromV2 } from '@/lib/server/v2Adapters'
+import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+
+// PLAN GATE, FIXED (audit: plan-entitlement double-check): portfolio is Pro/Elite-only per
+// lib/planFeatures.ts and the pricing page, but this route had zero auth/plan check — only the
+// frontend page (app/terminal/portfolio/page.tsx) hid the UI for free users via LockedPanel. A
+// direct POST/GET here bypassed that entirely, same class of bug already fixed on
+// /api/wallet-scan and /api/token this session. Mirrors those routes' getPlan() convention.
+async function getPlan(req: Request): Promise<'free' | 'pro' | 'elite'> {
+  const auth = req.headers.get('authorization') ?? ''
+  const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
+  if (!token) return 'free'
+  if (process.env.BETA_ALL_ELITE === 'true') return 'elite'
+  try { return (await getCurrentUserPlanFromBearerToken(token)).plan } catch { return 'free' }
+}
 
 // V2 ENGINE INTEGRATED (route-level only): this route previously called fetchWalletSnapshot()
 // (lib/server/walletSnapshot.ts, V1, Alchemy RPC), then was replaced with the zero-RPC
@@ -20,6 +34,11 @@ function ipOf(req: Request): string {
 
 export async function POST(req: Request) {
   try {
+    const plan = await getPlan(req)
+    if (plan === 'free') {
+      return NextResponse.json({ error: 'Included in Pro and Elite.', planGate: { verifiedPlan: plan, requiredPlan: 'pro' } }, { status: 403 })
+    }
+
     const ip = ipOf(req)
     const now = Date.now()
     const cur = portfolioRate.get(ip)
@@ -63,6 +82,11 @@ export async function POST(req: Request) {
 // validation/rate-limit/cache/fallback behavior, just query-string input instead of a body.
 export async function GET(req: Request) {
   try {
+    const plan = await getPlan(req)
+    if (plan === 'free') {
+      return NextResponse.json({ error: 'Included in Pro and Elite.', planGate: { verifiedPlan: plan, requiredPlan: 'pro' } }, { status: 403 })
+    }
+
     const ip = ipOf(req)
     const now = Date.now()
     const cur = portfolioRate.get(ip)

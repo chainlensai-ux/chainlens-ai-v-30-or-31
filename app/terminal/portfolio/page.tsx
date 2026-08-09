@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useAccount } from 'wagmi'
 import ConnectWallet from '@/components/ConnectWallet'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { supabase } from '@/lib/supabaseClient'
 
 type Holding = { symbol: string; name: string; chain: string; price: number; balance: number; value: number; change24h: number | null }
 type Range = '24H' | '7D' | '30D' | '90D' | 'ALL'
@@ -138,7 +139,16 @@ export default function PortfolioPage() {
     setLoading(true)
     setPortfolioError(null)
     try {
-      const res = await fetch('/api/portfolio', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address }) })
+      // ACCESS TOKEN, FIXED (audit: plan-entitlement double-check): the route now checks the
+      // caller's plan server-side — forward the session token so a real Pro/Elite user isn't
+      // rejected even though this page already confirmed their access via canAccessFeature below.
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      const res = await fetch('/api/portfolio', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ address }),
+      })
       const json = await res.json()
       if (!res.ok) throw new Error('scan_failed')
       const baseHoldings = (json?.holdings ?? []).filter((h: Holding) => (h.chain ?? '').toLowerCase().includes('base')).map((h: Holding) => ({ symbol: h.symbol ?? '?', name: h.name ?? 'Unknown', chain: h.chain ?? 'base', price: Number(h.price ?? 0), balance: Number(h.balance ?? 0), value: Number(h.value ?? 0), change24h: typeof h.change24h === 'number' ? h.change24h : null }))
