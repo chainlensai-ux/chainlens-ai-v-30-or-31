@@ -366,14 +366,29 @@ export async function GET(req: NextRequest) {
         key: `coingecko:base-radar:${spec.key}`,
         ttlMs: shallowMode ? RADAR_SHALLOW_CACHE_TTL_MS : RADAR_FULL_CACHE_TTL_MS,
         onLog: msg => console.info(`[radar] ${msg}`),
+        // ONE-RETRY FIX, DISCLOSED (reported: Base Radar showing zero new tokens): this fetcher
+        // previously made a single attempt per source per cache window — any transient GeckoTerminal
+        // hiccup (a timeout, a momentary 5xx, an occasional 429) silently zeroed that source for the
+        // whole TTL, and with all 3 sources hitting the same upstream, an unlucky moment could empty
+        // the entire feed. One quick retry after a short backoff absorbs that class of transient
+        // failure without meaningfully slowing down the common case (first attempt still usually
+        // succeeds).
         fetcher: async () => {
-          const ac = new AbortController()
-          const tid = setTimeout(() => ac.abort(), 6000)
+          const attempt = async () => {
+            const ac = new AbortController()
+            const tid = setTimeout(() => ac.abort(), 6000)
+            try {
+              const gtRes = await fetch(spec.url, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: ac.signal })
+              if (!gtRes.ok) throw new Error(`market_source_unavailable_${gtRes.status}`)
+              return gtRes.json() as Promise<Record<string, unknown>>
+            } finally { clearTimeout(tid) }
+          }
           try {
-            const gtRes = await fetch(spec.url, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: ac.signal })
-            if (!gtRes.ok) throw new Error(`market_source_unavailable_${gtRes.status}`)
-            return gtRes.json() as Promise<Record<string, unknown>>
-          } finally { clearTimeout(tid) }
+            return await attempt()
+          } catch {
+            await new Promise(resolve => setTimeout(resolve, 400))
+            return attempt()
+          }
         },
       })
       const count = Array.isArray(result.data?.data) ? result.data.data.length : 0
@@ -695,7 +710,16 @@ export async function GET(req: NextRequest) {
       honeypotCacheHits: hpHitCount,
       honeypotCacheMisses: hpCacheHitFlags.length - hpHitCount,
     }
-    radarPayloadCache.set(preferredCacheKey, { cachedAt: Date.now(), ttlMs: shallowMode ? RADAR_SHALLOW_CACHE_TTL_MS : RADAR_FULL_CACHE_TTL_MS, payload: { ...payload, _debug: debugPayload } })
+    // DON'T-CACHE-A-DEAD-FEED FIX, DISCLOSED (same report as the one-retry fix above): a fully
+    // empty result (every upstream source failed even after retrying) used to be cached exactly
+    // like a genuinely quiet feed, so it kept being served to every client for the full 30-100s TTL
+    // window even once GeckoTerminal recovered. Skipping the cache write here means the very next
+    // poll (this client's 120s interval, or another client's) makes a real attempt instead of
+    // echoing the outage back for the rest of the window. A genuinely quiet-but-working feed
+    // (sources succeeded, filters just found nothing) still caches normally.
+    if (sourcesSucceeded > 0) {
+      radarPayloadCache.set(preferredCacheKey, { cachedAt: Date.now(), ttlMs: shallowMode ? RADAR_SHALLOW_CACHE_TTL_MS : RADAR_FULL_CACHE_TTL_MS, payload: { ...payload, _debug: debugPayload } })
+    }
     return NextResponse.json({ ...payload, ...(debug ? { _debug: debugPayload } : {}) })
   } catch (err) {
     console.error('[radar] processing error:', err)
