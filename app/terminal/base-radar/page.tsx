@@ -176,6 +176,18 @@ const SORT_OPTIONS: Array<{ key: SortMode; label: string }> = [
   { key: 'HIGHEST_MOMENTUM', label: 'Highest Momentum' },
 ]
 
+// SPECIFIC-ERROR-MESSAGE FIX, DISCLOSED (reported: "Radar refresh failed" shown for no obvious
+// reason): every failure path — a 429 rate-limit, a 403 plan-gate rejection (e.g. a stale session
+// token), or a genuine outage — collapsed into the exact same generic banner text, so there was no
+// way to tell which one actually happened without reading server logs. Now maps the real HTTP
+// status to a specific, honest message; falls back to the old generic text for anything else.
+function radarErrorMessage(status: number, hasData: boolean): string {
+  const suffix = hasData ? 'Showing last available read.' : 'Try refreshing or scanning a token directly.'
+  if (status === 429) return `Radar is getting a lot of requests right now — please wait a moment. ${suffix}`
+  if (status === 403) return `Radar needs Pro or Elite access. If you already have it, try reconnecting your account. ${suffix}`
+  return `Radar refresh failed. ${suffix}`
+}
+
 function fmtUSD(v: number): string {
   if (!Number.isFinite(v) || v <= 0) return 'Open check'
   if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`
@@ -914,7 +926,7 @@ export default function BaseRadarPage() {
       const res = await fetch('/api/radar', { cache: 'no-store', signal: controller.signal, headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
       const json = await res.json()
       if (!res.ok || json.error) {
-        setError(hasRadarDataRef.current ? 'Radar refresh failed. Showing last available read.' : 'Radar refresh failed. Try refreshing or scanning a token directly.')
+        setError(radarErrorMessage(res.status, hasRadarDataRef.current))
       } else {
         hasRadarDataRef.current = true
         setData(json as RadarData)
@@ -923,7 +935,7 @@ export default function BaseRadarPage() {
       // AbortError means this request was superseded by a newer one (or the component unmounted) —
       // the newer request already owns loading/error state, so this one must not touch it.
       if (err instanceof Error && err.name === 'AbortError') return
-      setError(hasRadarDataRef.current ? 'Radar refresh failed. Showing last available read.' : 'Radar refresh failed. Try refreshing or scanning a token directly.')
+      setError(radarErrorMessage(0, hasRadarDataRef.current))
     } finally {
       if (abortControllerRef.current === controller) {
         fetchInFlightRef.current = false

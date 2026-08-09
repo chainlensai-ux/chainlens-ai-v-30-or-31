@@ -7,7 +7,15 @@ import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFA
 import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type RadarSimulationStatus } from '@/lib/baseRadarSimulation'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-const limiter = createRateLimiter({ windowMs: 60_000, max: 5 })
+// RATE-LIMIT-TOO-TIGHT FIX, DISCLOSED (reported: "Radar refresh failed" for no obvious reason):
+// 5 requests/min per IP is easy to exceed with completely normal single-user interaction on this
+// page — initial load + the Refresh button + Load More (which shares this same route/limiter,
+// see the `page` param below) can hit 5 within a minute on their own, and any shared/CGNAT IP
+// (corporate network, mobile carrier, multiple tabs) compounds it further. The frontend shows the
+// exact same generic "Radar refresh failed" text for a 429 as for any other failure, so a rate-
+// limit hit was indistinguishable from a real outage. Raised to a budget that comfortably covers
+// normal interactive use while still bounding abuse.
+const limiter = createRateLimiter({ windowMs: 60_000, max: 20 })
 
 const EXCLUDED = new Set([
   'USDC', 'USDT', 'DAI', 'WETH', 'WBTC', 'USDBC', 'ETH', 'BUSD', 'FRAX',
