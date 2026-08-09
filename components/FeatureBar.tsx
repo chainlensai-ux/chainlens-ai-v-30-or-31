@@ -378,34 +378,66 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
         borderRight: '1px solid rgba(255,255,255,0.08)',
       }}
     >
-      {/* DESIGN FIX, DISCLOSED (Clark AI polish task — sidebar wallet chip): ConnectWallet's own
-          default styling is a full-width glowing gradient button sized for a hero CTA, not a
-          sidebar footer row — same "huge and distracting" pattern already fixed on the homepage
-          hero (components/home/ReferenceHero.tsx). Wrapper-only CSS override here too — no wallet
-          logic touched, ConnectWallet.tsx untouched. */}
+      {/* DESIGN FIX, DISCLOSED (sidebar wallet cleanup task): ConnectWallet's own default styling
+          is a full-width glowing gradient button sized for a hero CTA, not a compact sidebar
+          status row — same pattern already fixed on the homepage hero
+          (components/home/ReferenceHero.tsx). Wrapper-only CSS override here too — no wallet logic
+          touched, ConnectWallet.tsx untouched, every action (connect/reconnect/disconnect) still
+          calls exactly the same handlers, just restyled. */}
       <style>{`
         /* className lands directly on ConnectWallet's own root element per state — a <button> for
-           disconnected/reconnecting, a <div> wrapping a button for connected/reconnect-state —
-           never a wrapper we control. Same technique already proven safe on the homepage hero
-           (components/home/ReferenceHero.tsx's .ref-wallet-widget). */
+           disconnected/reconnecting, a <div> wrapping a button (+ address/helper text for the
+           reconnect state) for connected/reconnect — never a wrapper we control. Same technique
+           already proven safe on the homepage hero (.ref-wallet-widget). */
         .fb-wallet-chip, button.fb-wallet-chip {
           display: flex !important; align-items: center !important; width: 100% !important;
         }
-        .fb-wallet-chip > button, button.fb-wallet-chip {
-          width: 100% !important; min-width: 0 !important;
-          padding: 8px 12px !important; min-height: 0 !important;
+        /* Connected state (button + text) and disconnected "Connect Wallet" state (className lands
+           on the button directly): a single button is the whole chip — small pill, no glow, fills
+           the row. Matched on :first-child alone (lower specificity than the 3-children reconnect
+           rule below, which wins where both could apply) rather than :only-child — the connected
+           state's div gains a second child (an absolutely-positioned disconnect dropdown) while
+           it's open, and :only-child would stop matching and drop all styling right when the user
+           opens it. :first-child alone still matches with 1 OR 2 children, so no flash either way. */
+        button.fb-wallet-chip,
+        .fb-wallet-chip > button:first-child {
+          width: 100% !important; justify-content: center !important;
+          padding: 7px 10px !important; min-height: 0 !important;
           font-size: 11px !important; font-weight: 700 !important;
-          letter-spacing: 0.04em !important; border-radius: 9px !important;
-          box-shadow: none !important; background: rgba(45,212,191,0.07) !important;
-          color: #5eead4 !important; border: 1px solid rgba(45,212,191,0.22) !important;
+          letter-spacing: 0.03em !important; border-radius: 8px !important;
+          box-shadow: none !important; background: rgba(255,255,255,0.03) !important;
+          color: #cbd5e1 !important; border: 1px solid rgba(148,163,184,0.16) !important;
           transition: background .15s, border-color .15s !important;
         }
-        .fb-wallet-chip > button:hover, button.fb-wallet-chip:hover { background: rgba(45,212,191,0.12) !important; }
-        /* Reconnect state (saved wallet, not currently connected): button, then address line, then
-           an explanatory sentence — the sentence is redundant once this reads as a compact status
-           chip instead of a full card, so it's hidden; the address line (useful) stays. */
-        .fb-wallet-chip { gap: 4px !important; }
-        .fb-wallet-chip > div:nth-of-type(2) { display: none !important; }
+        button.fb-wallet-chip:hover,
+        .fb-wallet-chip > button:first-child:hover { background: rgba(255,255,255,0.06) !important; border-color: rgba(148,163,184,0.26) !important; }
+        /* Reconnect state (saved wallet, not currently connected) always renders exactly 3 children
+           — button, address, helper sentence — the only ConnectWallet state that ever does, so
+           nth-child(1 of 3)/nth-child(2 of 3)/nth-child(3 of 3) singles it out precisely (and, being
+           two pseudo-classes vs one, is more specific than the :first-child rule above, so it wins
+           for this case). Reflowed into one row: address reads as the primary, readable element;
+           "Reconnect" becomes a small secondary pill action beside it instead of a full-width CTA;
+           the helper sentence is dropped as redundant once this reads as a compact status row. */
+        .fb-wallet-chip { gap: 8px !important; }
+        .fb-wallet-chip > button:nth-child(1):nth-last-child(3) {
+          order: 2; width: auto !important; flex-shrink: 0; min-width: 0 !important;
+          padding: 4px 9px !important; min-height: 0 !important;
+          font-size: 9.5px !important; font-weight: 700 !important;
+          letter-spacing: 0.04em !important; border-radius: 999px !important;
+          box-shadow: none !important; background: transparent !important;
+          color: #5eead4 !important; border: 1px solid rgba(45,212,191,0.28) !important;
+          transition: background .15s, border-color .15s !important;
+        }
+        .fb-wallet-chip > button:nth-child(1):nth-last-child(3):hover { background: rgba(45,212,191,0.10) !important; }
+        .fb-wallet-chip > div:nth-child(2):nth-last-child(2) {
+          order: 1; flex: 1 1 auto; min-width: 0;
+          font-size: 11.5px !important; color: #93a2b7 !important;
+          font-family: var(--font-plex-mono, monospace) !important;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+          text-align: left !important;
+        }
+        .fb-wallet-chip > div:nth-child(3):nth-last-child(1) { display: none !important; }
+        .fb-account-row { border-top: 1px solid rgba(148,163,184,0.10) !important; }
       `}</style>
 
       {/* ── Mobile close button ───────────────────────────────── */}
@@ -491,13 +523,20 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
         </div>
       </nav>
 
-      {/* ── Bottom CTAs ───────────────────────────────────────── */}
+      {/* ── Bottom wallet/account module ─────────────────────────
+          DESIGN FIX, DISCLOSED (sidebar wallet cleanup task): wallet chip and account/plan row
+          unified into one compact "status module" card (dark glass background, thin border) per
+          the task's design target, instead of two separately-styled full-width elements
+          competing for attention. Same real elements/actions inside, just one shared frame. */}
       <div
         className="shrink-0 flex flex-col"
         style={{
-          padding: '12px 12px 16px',
-          borderTop: '1px solid rgba(255,255,255,0.07)',
-          gap: '6px',
+          margin: '10px 12px 14px',
+          padding: '8px',
+          borderRadius: '12px',
+          border: '1px solid rgba(148,163,184,0.14)',
+          background: 'linear-gradient(180deg, rgba(255,255,255,0.025) 0%, rgba(255,255,255,0.008) 100%)',
+          gap: '2px',
         }}
       >
         {/* Connect Wallet — full width */}
@@ -507,33 +546,35 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
           <Link
             href="/terminal/settings"
             prefetch={true}
+            className="fb-account-row"
             style={{
-              height: '34px',
-              borderRadius: '8px',
-              background: 'linear-gradient(135deg, rgba(45,212,191,0.10) 0%, rgba(139,92,246,0.14) 100%)',
-              border: '1px solid rgba(45,212,191,0.30)',
-              color: '#d1fae5',
+              height: '32px',
+              borderRadius: '7px',
+              background: 'transparent',
+              border: '1px solid transparent',
+              color: '#cbd5e1',
               fontSize: '11px',
               fontWeight: 500,
               cursor: 'pointer',
               fontFamily: 'var(--font-inter)',
-              transition: 'border-color 0.12s, box-shadow 0.12s',
+              transition: 'background 0.12s, border-color 0.12s',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'space-between',
-              padding: '0 8px',
+              padding: '0 7px',
+              marginTop: '2px',
               textDecoration: 'none',
               width: '100%',
             }}
             onMouseEnter={e => {
               const el = e.currentTarget as HTMLAnchorElement
-              el.style.borderColor = 'rgba(45,212,191,0.48)'
-              el.style.boxShadow = '0 0 18px rgba(45,212,191,0.20)'
+              el.style.background = 'rgba(255,255,255,0.04)'
+              el.style.borderColor = 'rgba(148,163,184,0.16)'
             }}
             onMouseLeave={e => {
               const el = e.currentTarget as HTMLAnchorElement
-              el.style.borderColor = 'rgba(45,212,191,0.30)'
-              el.style.boxShadow = 'none'
+              el.style.background = 'transparent'
+              el.style.borderColor = 'transparent'
             }}
           >
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}>
