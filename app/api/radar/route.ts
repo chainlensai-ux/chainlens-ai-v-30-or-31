@@ -776,6 +776,24 @@ export async function GET(req: NextRequest) {
     if (sourcesSucceeded > 0) {
       radarPayloadCache.set(preferredCacheKey, { cachedAt: Date.now(), ttlMs: shallowMode ? RADAR_SHALLOW_CACHE_TTL_MS : RADAR_FULL_CACHE_TTL_MS, payload: { ...payload, _debug: debugPayload } })
     }
+    // SERVE-STALE-ON-TOTAL-FAILURE FIX, DISCLOSED (reported: feed intermittently flips to "0
+    // tokens tracked" / "no strong radar candidates" between otherwise-normal refreshes): the fix
+    // above stopped a total source failure from being CACHED as an empty result, but this request
+    // still RETURNED an empty one — every source failing this one cycle (a transient GeckoTerminal
+    // blip, or this route's own outbound rate limit) produced a genuinely empty response even when
+    // a perfectly good, only-slightly-expired cached feed from the last successful cycle was sitting
+    // right there. Now: if every source failed this request AND an expired-but-real cached payload
+    // exists for the same query, serve that instead of an empty feed — same already-real,
+    // already-filtered tokens the last successful fetch produced, just a little older, which beats
+    // a blank page. Never used to fabricate a value that was never real; only ever re-serves an
+    // actual prior successful response, and only when this cycle's live fetch came back with
+    // nothing at all.
+    if (sourcesSucceeded === 0 && cachedPayload && cachedPayload.payload.tokens.length > 0) {
+      return NextResponse.json({
+        ...cachedPayload.payload,
+        ...(debug ? { _debug: { ...(cachedPayload.payload._debug ?? {}), servedStaleOnSourceFailure: true, cacheHit: true } } : {}),
+      })
+    }
     return NextResponse.json({ ...payload, ...(debug ? { _debug: debugPayload } : {}) })
   } catch (err) {
     console.error('[radar] processing error:', err)
