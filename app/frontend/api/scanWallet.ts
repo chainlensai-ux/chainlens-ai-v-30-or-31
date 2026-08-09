@@ -132,11 +132,19 @@ export async function scanWalletV2(
   chains: string[],
   scanMode: ScanMode = 'normal',
   onUpdate?: (update: ScanWalletStatusUpdate) => void,
+  // ACCESS TOKEN, FIXED (audit: wallet-scanner plan gate): the enqueue route now checks the
+  // caller's plan server-side (app/api/wallet-scan/route.ts) — without forwarding the caller's
+  // Supabase access token, every request would resolve to 'free' and a legitimate Pro/Elite user
+  // would be rejected even though the page already confirmed their access client-side.
+  accessToken?: string | null,
 ): Promise<ScanWalletApiResponse> {
   try {
     const startRes = await fetch(WALLET_SCAN_ROUTE, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
       body: JSON.stringify({ walletAddress, chains, scanMode }),
     })
 

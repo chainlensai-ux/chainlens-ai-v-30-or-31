@@ -421,6 +421,10 @@ export default function WalletScannerPage() {
     // exact job that produced it, with no dependency on React state timing.
     let scanJobId: string | null = null
     try {
+      // ACCESS TOKEN, FIXED (audit: wallet-scanner plan gate): the enqueue route now checks the
+      // caller's plan server-side — forward the same access token every other authenticated call
+      // in this file already reads via supabase.auth.getSession() (see lines above).
+      const { data: { session: scanSession } } = await supabase.auth.getSession()
       // JOB/POLL CALL: scanWalletV2() enqueues immediately, then polls status while the
       // background queue runs the unchanged full scan worker outside this HTTP request.
       const response = await scanWalletV2(address, ['base', 'eth'], mode, ({ jobId, status, progress }) => {
@@ -432,7 +436,7 @@ export default function WalletScannerPage() {
         // never cleared back to null mid-scan (a later poll simply hasn't reached a new checkpoint
         // yet — the last real stage stays visible rather than the UI reverting to a generic spinner).
         if (progress) setScanProgress(progress)
-      })
+      }, scanSession?.access_token)
       setScanDurationMs(Date.now() - scanStartedAt)
       // CONFIRMED ROOT-CAUSE FIX, DISCLOSED (live-value staleness task): both failure paths below
       // previously left the PRESERVED previous result on screen — the `degraded` branch did a bare
