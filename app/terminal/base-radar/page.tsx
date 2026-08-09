@@ -835,8 +835,8 @@ const RADAR_CHAINS: Array<{ key: RadarChain; label: string }> = [
 // configured server-side (checked via /api/base-radar/chain-status, which never returns the RPC
 // URL itself — see that route and lib/server/robinhoodChainConfig.ts). Defaults to hidden (fails
 // closed) until that check resolves. Uses the existing /logos/base.png asset already in the repo
-// for the Base icon; Robinhood has no icon asset in the repo so it gets a plain "RH" text badge,
-// per the task's own explicit instruction rather than sourcing a new logo.
+// for the Base icon; Robinhood gets a small hand-drawn inline SVG feather badge (see below) instead
+// of a new image file.
 function ChainSelector({ value, onChange, robinhoodAvailable }: { value: RadarChain; onChange: (chain: RadarChain) => void; robinhoodAvailable: boolean }) {
   const visibleChains = RADAR_CHAINS.filter(chain => chain.key === 'base' || robinhoodAvailable)
   return (
@@ -861,7 +861,17 @@ function ChainSelector({ value, onChange, robinhoodAvailable }: { value: RadarCh
               // eslint-disable-next-line @next/next/no-img-element
               <img src="/logos/base.png" alt="" width={14} height={14} style={{ borderRadius: '50%', display: 'block' }} />
             ) : (
-              <span style={{ width: '14px', height: '14px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '7px', fontWeight: 900, background: 'rgba(148,163,184,0.18)', color: '#cbd5e1', flexShrink: 0 }}>RH</span>
+              // ROBINHOOD ICON, DISCLOSED (requested: show an actual Robinhood mark, not an "RH"
+              // text badge): hand-drawn inline SVG approximating Robinhood's public feather
+              // wordmark on their brand lime-green — not an external/fetched asset (no network
+              // request, no new file), just a small vector shape drawn to match, sized to sit
+              // alongside the Base icon at the same 14px badge size.
+              <span style={{ width: '14px', height: '14px', borderRadius: '50%', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: '#d7fe04', flexShrink: 0, overflow: 'hidden' }}>
+                <svg width="9" height="9" viewBox="0 0 24 24" fill="none">
+                  <path d="M20.5 2.2c-5.4.2-10.8 2.9-13 8.6-1.1 2.9-3.3 8.6-3.3 8.6l2.7-1c1.9-6 4.6-9.4 8.6-11.6 2.6-1.4 5-2.3 5-4.6z" fill="#0a0a05" />
+                  <path d="M13.6 6.4L5.6 21" stroke="#d7fe04" strokeWidth="1.3" strokeLinecap="round" />
+                </svg>
+              </span>
             )}
             {chain.label}
           </button>
