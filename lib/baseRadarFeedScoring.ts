@@ -70,11 +70,20 @@ export function applyBaseRadarScoreCaps(input: RadarFeedScoreInput): { score: nu
     })
   }
 
-  // TIERED-CAP HELPER: same liquidity/volume scaling the dual-missing branch below already uses,
-  // reused here for the single-missing branches. `base`/`max` set each branch's own floor/ceiling
-  // so the three cap tiers (both missing / sim missing / LP proof missing) never overlap or invert.
-  const liquidityTier = liquidity != null && liquidity >= 100_000 ? 10 : liquidity != null && liquidity >= 25_000 ? 5 : 0
-  const volumeTier = (input.volume24h ?? 0) >= 100_000 ? 5 : (input.volume24h ?? 0) >= 25_000 ? 3 : 0
+  // CONTINUOUS-TIER FIX, DISCLOSED (reported: many different tokens all showing the identical
+  // "RADAR STATUS 53"): liquidityTier/volumeTier used to be 3-flat-bucket step functions (0 /
+  // $25K-$100K / $100K+), so ANY two tokens whose liquidity and volume both happened to land in the
+  // same bucket — a $54K-liquidity/$752-volume token and a $54K-liquidity/$853-volume token, say —
+  // got the exact same scaledCap and therefore the exact same final score, even though their real
+  // metrics weren't identical. This was the same class of bug already fixed twice for the fully-flat
+  // 49 and 64 caps, just one step more granular (3 buckets instead of 1) and still coarse enough to
+  // collide constantly on the feed's typical microcap range. Replaced with a smooth linear ramp
+  // across the same overall range each tier used before (liquidity 0 at ~$5K rising to 10 at
+  // $150K; volume 0 at ~$500 rising to 5 at $150K) — same direction and rough scale, but now two
+  // tokens only score identically when their real liquidity/volume genuinely are (near-)identical,
+  // not just "in the same bucket."
+  const liquidityTier = liquidity != null ? Math.max(0, Math.min(10, ((liquidity - 5_000) / 145_000) * 10)) : 0
+  const volumeTier = Math.max(0, Math.min(5, (((input.volume24h ?? 0) - 500) / 149_500) * 5))
   const scaledCapFor = (base: number, max: number) => Math.min(max, base + liquidityTier + volumeTier)
 
   if (criticalMissingCount >= 2) {

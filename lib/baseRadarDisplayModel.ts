@@ -81,11 +81,21 @@ function baseScore(raw: AnyRecord, simulation: BaseRadarDisplaySimulation): numb
   const buyTax = taxConfirmed ? (simulation.buyTax ?? 0) : null
   const sellTax = taxConfirmed ? (simulation.sellTax ?? 0) : null
   let score = 50
-  if (liquidityUsd >= 10_000) score += 20
-  if (liquidityUsd >= 30_000) score += 10
+  // CONTINUOUS-SCALE FIX, DISCLOSED (reported: many different tokens all showing the identical
+  // "RADAR STATUS" number): liquidity/volume bonuses used to be flat "+20 if >=$10K, +10 if
+  // >=$30K" step functions with NO further increase above $30K/$20K at all — so a $35K-liquidity
+  // token and a $5M-liquidity token got the exact same +30, and any two tokens landing in the same
+  // bucket (the overwhelmingly common case for the feed's typical microcap range) produced the
+  // same baseScore before caps were even applied, compounding with the sibling fix in
+  // lib/baseRadarFeedScoring.ts's scaledCapFor. Replaced with a log-scaled continuous ramp across
+  // the same overall bonus range (0-30 for liquidity, 0-25 for volume) so magnitude differences
+  // that used to be invisible above the old flat ceiling are now reflected. The hard floor
+  // penalties below (near-zero liquidity/volume) are unchanged.
+  const liquidityBonus = liquidityUsd > 0 ? Math.max(0, Math.min(30, (Math.log10(liquidityUsd) - Math.log10(2_000)) / (Math.log10(500_000) - Math.log10(2_000)) * 30)) : 0
+  const volumeBonus = volume24hUsd > 0 ? Math.max(0, Math.min(25, (Math.log10(volume24hUsd) - Math.log10(1_000)) / (Math.log10(200_000) - Math.log10(1_000)) * 25)) : 0
+  score += liquidityBonus
+  score += volumeBonus
   if (liquidityUsd < 2_000) score -= 20
-  if (volume24hUsd >= 5_000) score += 15
-  if (volume24hUsd >= 20_000) score += 10
   if (volume24hUsd <= 0) score -= 15
   if (poolAgeMinutes <= 120) score += 10
   if (poolAgeMinutes <= 5 && volume24hUsd <= 0) score -= 10
