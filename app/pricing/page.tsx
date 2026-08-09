@@ -28,7 +28,7 @@ const plans: Plan[] = [
     price: '$0',
     subtext: 'forever free · no card required',
     sectionTitle: 'WHAT\'S INCLUDED',
-    note: '',
+    note: 'Great for exploring ChainLens before you commit.',
     badge: 'CORTEX LITE',
     features: [
       'Token Scanner — basic token + liquidity checks',
@@ -477,8 +477,10 @@ export default function PricingPage() {
                     </div>
                   )}
 
-                  {/* CTA block */}
-                  <div style={{ marginTop:14 }}>
+                  {/* CTA block — a top divider ties the payment options to the feature list above
+                      them (paid plans only), so Crypto/PayPal read as "how to unlock what's above"
+                      rather than a separate, detached block. DISCLOSED (final pricing polish task). */}
+                  <div style={{ marginTop:14, paddingTop: isPaid ? 14 : 0, borderTop: isPaid ? '1px solid rgba(148,163,184,.08)' : 'none' }}>
                     {!planReady ? (
                       <span className={`cta ${plan.ctaClass}`} style={{ opacity:0.25, cursor:'default', pointerEvents:'none', display:'block' }}>
                         &nbsp;
@@ -530,16 +532,21 @@ export default function PricingPage() {
               polish task): line-icon rows with consistent spacing/dividers instead of large emoji
               and a loud cyan-glow border, matching the calmer treatment used across the rest of
               the page. */}
-          <aside className='glass stats' style={{ padding:'18px 16px', minHeight:468, borderColor:'rgba(148,163,184,.14)', boxShadow:'none' }}>
-            <div style={{ color:'#94a3b8', fontSize:10, letterSpacing:'.15em', marginBottom:4, fontWeight:700 }}>WHAT&apos;S INCLUDED</div>
+          <aside className='glass stats' style={{ padding:'18px 16px', minHeight:468, borderColor:'rgba(148,163,184,.14)', boxShadow:'none', display:'flex', flexDirection:'column' }}>
+            <div style={{ color:'#94a3b8', fontSize:10, letterSpacing:'.15em', fontWeight:700 }}>WHAT&apos;S INCLUDED</div>
+            <div style={{ color:'#4a5768', fontSize:11, marginTop:4, lineHeight:1.5 }}>Core platform access</div>
             {PRODUCT_PROOF.map(({ Icon, label }, i) => (
-              <div key={label} style={{ display:'flex', alignItems:'center', gap:11, borderTop: '1px solid rgba(148,163,184,.09)', padding: i === 0 ? '16px 0 14px' : '14px 0' }}>
-                <span style={{ display:'flex', alignItems:'center', justifyContent:'center', width:30, height:30, flexShrink:0, borderRadius:8, background:'rgba(103,232,249,.06)', border:'1px solid rgba(103,232,249,.16)', color:'#67e8f9' }}>
+              <div key={label} style={{ display:'flex', alignItems:'center', gap:11, borderTop: '1px solid rgba(148,163,184,.09)', padding: i === 0 ? '15px 0' : '15px 0' }}>
+                <span style={{ display:'flex', alignItems:'center', justifyContent:'center', width:32, height:32, flexShrink:0, borderRadius:8, background:'rgba(103,232,249,.06)', border:'1px solid rgba(103,232,249,.16)', color:'#67e8f9' }}>
                   <Icon />
                 </span>
                 <div style={{ color:'#dbeafe', fontSize:12.5, fontWeight:600, lineHeight:1.4 }}>{label}</div>
               </div>
             ))}
+            <div style={{ flex:1 }} />
+            <div style={{ borderTop:'1px solid rgba(148,163,184,.09)', paddingTop:14, marginTop:6, color:'#3f4a58', fontSize:11, lineHeight:1.6, letterSpacing:'.02em' }}>
+              Powered by the same CORTEX engine on every plan.
+            </div>
           </aside>
         </section>
 
@@ -564,6 +571,20 @@ export default function PricingPage() {
             Pay with crypto. Recommended: USDC on Base, USDC on Ethereum, or ETH. Your plan activates automatically after payment confirmation.
           </p>
         )}
+
+        {/* Trust/payment strip, DISCLOSED (final pricing polish task): existing, already-true copy
+            only — same claims already made elsewhere on this page (crypto/PayPal, no regional
+            pricing, data ownership) plus "Cancel anytime", true for both payment paths (a PayPal
+            subscription can always be cancelled from PayPal; a crypto payment is a single period
+            with no auto-renewal to begin with). Purely a compact restatement, not new promises. */}
+        <div style={{ marginTop:22, display:'flex', flexWrap:'wrap', justifyContent:'center', alignItems:'center', gap:'8px 14px', padding:'14px 12px', borderTop:'1px solid rgba(148,163,184,.08)' }}>
+          {['Cancel anytime', 'Crypto or PayPal subscription', 'Base-native intelligence', 'No regional pricing', 'Your data stays yours'].map((item, i) => (
+            <span key={item} style={{ display:'inline-flex', alignItems:'center', gap:14 }}>
+              {i > 0 && <span style={{ color:'rgba(148,163,184,.18)', fontSize:11 }}>·</span>}
+              <span style={{ fontSize:11, color:'#526073', letterSpacing:'.03em' }}>{item}</span>
+            </span>
+          ))}
+        </div>
       </div>
 
       {/* ══════════════════════════════════════
