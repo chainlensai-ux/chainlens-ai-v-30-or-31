@@ -436,10 +436,14 @@ function getPriorityAccent(token: TokenIntel): { color: string; background: stri
   return { color: STATUS_COLOR[token.status], background: STATUS_BG[token.status], border: STATUS_BORDER[token.status], glow: STATUS_BG[token.status] }
 }
 
+// MICRO-POLISH, DISCLOSED (Base Radar final micro-polish task #3 — "slightly calm red/yellow tag
+// intensity, maintain caution meaning"): only the amber/red colors are dimmed a touch (lower
+// background/border opacity, slightly muted text tone) — which tags count as caution/risk, and
+// which flags exist at all, are completely unchanged.
 function getBadgeStyle(flag: string): { color: string; background: string; border: string } {
   if (['Momentum', 'Volume Spike', 'Simulation confirmed', 'Simulation checked', 'Liquidity Strong'].includes(flag)) return { color: '#99f6e4', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.30)' }
-  if (['Tax check pending', 'Simulation pending', 'Pending Evidence'].includes(flag)) return { color: '#fde68a', background: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.28)' }
-  if (['High Risk', 'CORTEX Watch'].includes(flag)) return { color: '#fecaca', background: 'rgba(248,113,113,0.11)', border: 'rgba(248,113,113,0.28)' }
+  if (['Tax check pending', 'Simulation pending', 'Pending Evidence'].includes(flag)) return { color: '#e8cd8f', background: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.20)' }
+  if (['High Risk', 'CORTEX Watch'].includes(flag)) return { color: '#f2b8b8', background: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.20)' }
   return { color: '#bfdbfe', background: 'rgba(96,165,250,0.13)', border: 'rgba(96,165,250,0.30)' }
 }
 
@@ -497,19 +501,24 @@ function TokenCard({
       style={{
         display: 'flex',
         flexDirection: 'column',
-        gap: '7px',
+        gap: '8px',
         background: 'rgba(255,255,255,0.025)',
         borderTop: '1px solid rgba(255,255,255,0.09)',
         borderRight: '1px solid rgba(255,255,255,0.09)',
         borderBottom: '1px solid rgba(255,255,255,0.09)',
         borderLeft: `3px solid ${accent.color}`,
         borderRadius: '10px',
-        padding: '11px 13px',
+        padding: '13px 15px',
         cursor: 'pointer',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-        <div style={{ width: '28px', height: '28px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10.5px', fontWeight: 800, color: '#e2e8f0', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
+      {/* MICRO-POLISH, DISCLOSED (task #1/#2 — breathing room, rank/avatar/name alignment, score
+          feeling integrated rather than a detached block): avatar centers against the FULL two-line
+          name block (unchanged), and the score/status block now sits against a subtle left divider
+          instead of floating with only whitespace separating it — same score/status values, just a
+          visual connection to the row it belongs to. */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '11px' }}>
+        <div style={{ width: '30px', height: '30px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10.5px', fontWeight: 800, color: '#e2e8f0', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
           {avatarText}
         </div>
         <div style={{ minWidth: 0, flex: 1 }}>
@@ -517,13 +526,16 @@ function TokenCard({
             <span style={{ fontSize: '13.5px', fontWeight: 800, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{identity.primary}</span>
             <span style={{ fontSize: '10.5px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>{identity.symbol}</span>
           </div>
-          <p style={{ margin: '2px 0 0', fontSize: '9.5px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <p style={{ margin: '3px 0 0', fontSize: '9.5px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             #{index + 1} · {shortAddr(token.contract)} · {fmtAge(token.ageMinutes)}
           </p>
         </div>
-        <div style={{ textAlign: 'right', flexShrink: 0 }}>
-          <p style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: accent.color, fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{token.radarScore}</p>
-          <p style={{ margin: '2px 0 0', fontSize: '8.5px', fontWeight: 800, color: accent.color, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)' }}>{token.status}</p>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '11px', flexShrink: 0 }}>
+          <div style={{ width: '1px', alignSelf: 'stretch', background: 'rgba(255,255,255,0.09)' }} />
+          <div style={{ textAlign: 'right' }}>
+            <p style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: accent.color, fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{token.radarScore}</p>
+            <p style={{ margin: '2px 0 0', fontSize: '8.5px', fontWeight: 800, color: accent.color, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)' }}>{token.status}</p>
+          </div>
         </div>
       </div>
 
@@ -534,7 +546,7 @@ function TokenCard({
         <span>MOM <b style={{ color: token.momentum === 'HIGH' ? '#99f6e4' : '#e2e8f0', fontWeight: 700 }}>{token.momentum === 'NONE' ? 'Open check' : token.momentum}</b></span>
       </div>
 
-      <p style={{ margin: 0, fontSize: '11.5px', color: '#94a3b8', lineHeight: 1.4 }}>{insight}</p>
+      <p style={{ margin: 0, fontSize: '11.5px', color: '#a3b4c4', lineHeight: 1.5 }}>{insight}</p>
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', minWidth: 0 }}>
@@ -652,27 +664,26 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
     'Use Token Scanner before acting on any radar signal.',
   ]
 
-  // CALMER PANEL, DISCLOSED (task #7 — "make it calmer and more compact, reduce yellow warning
-  // intensity, make bullets easier to scan, keep Open Token Scanner and Rescan"): same signals/
-  // warnings content and same two actions — only the chrome changed (flat panel instead of a
-  // glowing gradient box, muted amber instead of bright #fbbf24 for warning bullets, tighter
-  // spacing, simple dot markers instead of unicode glyphs).
+  // MICRO-POLISH, DISCLOSED (task #4 — "reduce yellow warning intensity slightly, improve bullet
+  // spacing/readability, keep warning content unchanged"): warning text/dots dimmed one more notch
+  // (#c9a86a -> #a89268) and given more breathing room (gap/line-height up slightly) — the warning
+  // strings themselves, and the signals above them, are byte-for-byte unchanged.
   return (
     <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', padding: '13px' }}>
       <p style={{ margin: '0 0 3px', color: '#5eead4', fontSize: '10px', fontWeight: 800, letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Radar Read</p>
       <p style={{ margin: '0 0 11px', color: '#64748b', fontSize: '10.5px', lineHeight: 1.4 }}>Live interpretation of the visible feed. Not financial advice.</p>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '11px' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginBottom: '12px' }}>
         {signals.slice(0, 4).map(signal => (
-          <div key={signal} style={{ display: 'flex', gap: '7px', alignItems: 'flex-start', color: '#94a3b8', fontSize: '10.5px', lineHeight: 1.4 }}>
-            <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#2DD4BF', flexShrink: 0, marginTop: '5px' }} />
+          <div key={signal} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', color: '#94a3b8', fontSize: '10.5px', lineHeight: 1.5 }}>
+            <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#2DD4BF', flexShrink: 0, marginTop: '6px' }} />
             <span>{signal}</span>
           </div>
         ))}
       </div>
-      <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: '9px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '7px' }}>
         {warnings.slice(0, 3).map(warning => (
-          <div key={warning} style={{ display: 'flex', gap: '7px', alignItems: 'flex-start', color: '#c9a86a', fontSize: '10.5px', lineHeight: 1.4 }}>
-            <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#c9a86a', flexShrink: 0, marginTop: '5px' }} />
+          <div key={warning} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', color: '#a89268', fontSize: '10.5px', lineHeight: 1.5 }}>
+            <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#a89268', flexShrink: 0, marginTop: '6px' }} />
             <span>{warning}</span>
           </div>
         ))}
@@ -1369,7 +1380,7 @@ export default function BaseRadarPage() {
               </div>
             )}
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {filteredAndSortedTokens.map((token, i) => (
                 <TokenCard
                   key={token.contract}
