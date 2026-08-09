@@ -199,7 +199,7 @@ export default function TermsPage() {
           }}>
             <p style={{ fontSize: '13px', color: 'rgba(255,255,255,0.28)', lineHeight: 1.7, margin: '0 0 20px' }}>
               If you have any questions about these terms, please contact us via{' '}
-              <Link href="https://x.com/chainlens__ai" target="_blank" rel="noopener noreferrer"
+              <Link href="https://x.com/chainlens_ai" target="_blank" rel="noopener noreferrer"
                 style={{ color: '#2DD4BF', textDecoration: 'none' }}>
                 @chainlens__ai
               </Link>{' '}

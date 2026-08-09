@@ -1609,7 +1609,7 @@ export default function HomePage() {
             {/* Social pills */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', position: 'relative' }}>
               <Link
-                href="https://x.com/chainlens__ai"
+                href="https://x.com/chainlens_ai"
                 target="_blank" rel="noopener noreferrer"
                 style={{
                   display: 'inline-flex', alignItems: 'center', gap: '7px',
