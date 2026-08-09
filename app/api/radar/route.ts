@@ -504,7 +504,6 @@ export async function GET(req: NextRequest) {
       if (poolId) seenPools.add(poolId)
       const attrs = pool.attributes  as Record<string, unknown>         | undefined
       const rels  = pool.relationships as Record<string, unknown>       | undefined
-      const radarSourceKey = typeof pool.__radarSourceKey === 'string' ? pool.__radarSourceKey : 'unknown'
       const volObj = attrs?.volume_usd as Record<string, string>        | undefined
       const createdAt = attrs?.pool_created_at as string | undefined
       if (!createdAt) continue
@@ -517,7 +516,16 @@ export async function GET(req: NextRequest) {
       if (ageMs < DAY_MS && liquidityUsd >= 1000) allDay24h.push(liquidityUsd)
 
       const isPrimaryAgeWindow = ageMs < 6 * 60 * 60 * 1000
-      const isFallbackAgeWindow = radarSourceKey.startsWith('trending') && ageMs < DAY_MS
+      // FALLBACK-SOURCE-RESTRICTION FIX, DISCLOSED (reported: widening the new_pools page pull
+      // didn't multiply the feed as much as expected): this used to require radarSourceKey to be
+      // 'trending' before a pool could even be CONSIDERED for the relaxed-valuation fallback path
+      // below (shouldHoldAsFallback) — a new_pools-sourced pool that failed the strict valuation
+      // filter had zero fallback route and was dropped outright, no matter how much real liquidity/
+      // volume it had, purely because of which GeckoTerminal endpoint it came from. That's not a
+      // meaningful safety distinction (the fallback's own liquidity/volume checks are what actually
+      // gate it), so dropped the source restriction — any pool under 24h old is now fallback-
+      // eligible, using data already being fetched, no new API calls.
+      const isFallbackAgeWindow = ageMs < DAY_MS
       if (!isPrimaryAgeWindow && !isFallbackAgeWindow) continue
 
       const baseData    = ((rels?.base_token as Record<string, unknown>)?.data) as Record<string, string> | undefined
