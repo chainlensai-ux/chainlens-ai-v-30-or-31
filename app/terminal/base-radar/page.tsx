@@ -405,13 +405,6 @@ function qualityColor(level: QualityLevel): string {
   return '#fbbf24'
 }
 
-function getStageLabel(token: TokenIntel): string {
-  if (token.status === 'HOT') return 'Trending'
-  if (token.ageMinutes <= 15) return 'New Pool'
-  if (token.status === 'EARLY') return 'Early'
-  return 'Watch'
-}
-
 function getSignalInsight(token: TokenIntel): string {
   const needsScan = token.simulationStatus !== 'passed'
   const activeLiquidity = token.liquidityUsd >= 10_000
@@ -426,38 +419,15 @@ function getSignalInsight(token: TokenIntel): string {
   return token.displayModel.whyOnRadar || 'Open check: radar placement comes from current liquidity, volume, and evidence signals.'
 }
 
-function getOpportunityLabel(token: TokenIntel, index: number): string {
-  if (index === 0) return 'Top Opportunity'
-  if (token.momentum === 'HIGH') return 'High Momentum'
-  if (token.ageMinutes <= 30 && token.liquidityUsd >= 10_000) return 'Fresh Liquidity'
-  if (token.status === 'RISKY' || token.status === 'UNVERIFIED' || token.simulationStatus !== 'passed') return 'Risk Watch'
-  return 'Needs Token Scan'
-}
-
-function simulationStatusLabel(token: RadarToken): string {
-  if (token.simulationStatus === 'passed') return token.simulationLabel ?? 'Tax check clear'
-  if (token.simulationReason === 'timeout_after_retry' || token.simulationReason === 'timeout') return 'Tax check timed out'
-  if (token.simulationReason === 'unsupported_pool_model') return 'Simulation unsupported'
-  if (token.simulationReason === 'missing_pair_address') return 'Pair route missing'
-  if (token.simulationReason === 'insufficient_route') return 'Route evidence missing'
-  if (token.simulationReason === 'provider_unavailable') return 'Simulation temporarily unavailable'
-  if (token.simulationReason === 'not_attempted_low_confidence_pair') return 'Simulation pending'
-  return 'Simulation pending'
-}
-
-function getTaxLabel(token: TokenIntel): string {
-  if (token.simulationLabel) return token.simulationLabel
-  if (!token.honeypot?.simulationSuccess) return simulationStatusLabel(token)
-  const buyTax = token.honeypot.buyTax ?? 0
-  const sellTax = token.honeypot.sellTax ?? 0
-  return `B ${buyTax.toFixed(1)}% / S ${sellTax.toFixed(1)}%`
-}
-
 function getValuationCardMetric(token: TokenIntel): { label: string; value: string; sublabel?: string | null; accent?: string } {
   const valuation = token.displayModel.valuation
   return { label: valuation.label, value: valuation.valueUsd != null ? fmtUSD(valuation.valueUsd) : 'Open check', sublabel: valuation.sublabel, accent: valuation.status === 'verified' ? '#99f6e4' : valuation.status === 'fdv_fallback' ? '#fde68a' : undefined }
 }
 
+// PROFESSIONAL SIMPLIFICATION PASS, DISCLOSED (Base Radar professional simplification task):
+// getPriorityAccent's semantic meaning is unchanged (same risk/momentum/score priority order,
+// same colors) — only `glow` is no longer consumed by the redesigned card below (no more box-
+// shadow glow), kept in the return type so nothing else calling this needs to change.
 function getPriorityAccent(token: TokenIntel): { color: string; background: string; border: string; glow: string } {
   if (token.status === 'RISKY' || token.status === 'DEAD' || token.flags.includes('High Risk')) return { color: '#f87171', background: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.34)', glow: 'rgba(248,113,113,0.14)' }
   if (token.flags.some(flag => flag.includes('Pending Evidence') || flag === 'Simulation pending')) return { color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: 'rgba(251,191,36,0.34)', glow: 'rgba(251,191,36,0.14)' }
@@ -473,6 +443,21 @@ function getBadgeStyle(flag: string): { color: string; background: string; borde
   return { color: '#bfdbfe', background: 'rgba(96,165,250,0.13)', border: 'rgba(96,165,250,0.30)' }
 }
 
+// FLAG PRIORITY, DISCLOSED (task #4 — "show max 2-3 most important tags; hide extra tags behind
+// '+N'"): token.flags itself (getFlags above) is unchanged — same set, same meaning, same order
+// they're computed in. This only decides which 2 are worth surface-level attention (risk/caution
+// flags first, since those matter most to see before clicking in) versus quieter "+N" overflow.
+const FLAG_PRIORITY = ['High Risk', 'Pending Evidence', 'Tax check pending', 'Simulation pending', 'CORTEX Watch', 'Momentum', 'Volume Spike', 'Liquidity Strong', 'Simulation checked', 'New Pool']
+function prioritizedFlags(flags: string[]): string[] {
+  return [...flags].sort((a, b) => FLAG_PRIORITY.indexOf(a) - FLAG_PRIORITY.indexOf(b))
+}
+
+// COMPACT CARD REDESIGN, DISCLOSED (task #4/#5/#6): same data, same click behavior (Scan Token,
+// Ask CORTEX, Add to Watchlist, open drawer, preload) — condensed to a 3-row layout (identity +
+// score/status; inline liquidity/volume/market cap/momentum; one-line reason + tags + actions)
+// instead of the previous avatar-header/boxed-metrics-grid/bordered-reason-box/badge-wall stack.
+// No nested metric boxes, no separate "Why on radar" bordered box, no opportunity/stage pills —
+// token.status already conveys what those redundantly restated.
 function TokenCard({
   token,
   index,
@@ -492,114 +477,86 @@ function TokenCard({
   onPreload: () => void
   tracking: boolean
 }) {
-  const [hovered, setHovered] = useState(false)
-  const { preload, registerPreloadTarget, state: preloadState } = useDrawerPreload(token.contract, { liquidityUsd: token.liquidityUsd })
-  const priorityAccent = getPriorityAccent(token)
-  const statusColor = priorityAccent.color
-  const statusBg = priorityAccent.background
-  const statusBorder = priorityAccent.border
+  const { preload, registerPreloadTarget } = useDrawerPreload(token.contract, { liquidityUsd: token.liquidityUsd })
+  const accent = getPriorityAccent(token)
   const identity = getTokenIdentity(token)
   const avatarText = (identity.symbol || identity.primary || '?').slice(0, 2).toUpperCase()
-  const highSignal = token.radarScore >= 75 || index < 3
-  const opportunityLabel = getOpportunityLabel(token, index)
-  const stageLabel = getStageLabel(token)
   const insight = getSignalInsight(token)
   const valuationDisplay = getValuationCardMetric(token)
-  const metrics = [
-    { label: 'Liquidity', value: fmtUSD(token.liquidityUsd), accent: token.liquidityUsd >= 30_000 ? '#99f6e4' : undefined },
-    { label: '24h Volume', value: fmtUSD(token.volume24h), accent: token.volume24h >= 5_000 ? '#99f6e4' : undefined },
-    valuationDisplay,
-    { label: 'Age', value: fmtAge(token.ageMinutes), accent: token.ageMinutes <= 30 ? '#bfdbfe' : undefined },
-    { label: 'Momentum', value: token.momentum === 'NONE' ? 'Open check' : token.momentum, accent: token.momentum === 'HIGH' ? '#99f6e4' : undefined },
-    { label: 'Tax Check', value: getTaxLabel(token), accent: token.simulationStatus === 'passed' ? '#99f6e4' : '#fde68a' },
-  ]
+  const orderedFlags = prioritizedFlags(token.flags)
+  const visibleFlags = orderedFlags.slice(0, 2)
+  const extraFlagCount = orderedFlags.length - visibleFlags.length
 
   return (
     <div
       className='opportunity-card'
       onClick={onOpenOverview}
       ref={registerPreloadTarget}
-      onMouseEnter={() => { setHovered(true); preload(); onPreload() }}
+      onMouseEnter={() => { preload(); onPreload() }}
       onFocus={() => { preload(); onPreload() }}
-      onMouseLeave={() => setHovered(false)}
       style={{
-        background: hovered
-          ? `linear-gradient(135deg, rgba(15,23,42,0.96), rgba(6,13,24,0.92)), radial-gradient(circle at 0% 0%, ${statusBg}, transparent 38%)`
-          : `linear-gradient(135deg, rgba(8,13,24,0.94), rgba(4,9,18,0.90)), radial-gradient(circle at 0% 0%, ${statusBg}, transparent 36%)`,
-        border: `1px solid ${hovered || highSignal ? statusBorder : 'rgba(148,163,184,0.13)'}`,
-        borderRadius: '18px',
-        padding: '12px 13px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '7px',
+        background: 'rgba(255,255,255,0.025)',
+        borderTop: '1px solid rgba(255,255,255,0.09)',
+        borderRight: '1px solid rgba(255,255,255,0.09)',
+        borderBottom: '1px solid rgba(255,255,255,0.09)',
+        borderLeft: `3px solid ${accent.color}`,
+        borderRadius: '10px',
+        padding: '11px 13px',
         cursor: 'pointer',
-        transition: 'transform 0.32s cubic-bezier(0.16,1,0.3,1), background 0.32s ease, border-color 0.32s ease, box-shadow 0.32s ease',
-        transform: hovered ? 'translateY(-3px)' : 'translateY(0)',
-        boxShadow: highSignal ? `0 22px 60px rgba(0,0,0,0.30), 0 0 42px ${priorityAccent.glow}` : '0 16px 42px rgba(0,0,0,0.24)',
-        animation: 'radarSlideIn 0.5s cubic-bezier(0.16,1,0.3,1) both',
-        animationDelay: `${index * 55}ms`,
-        position: 'relative',
-        overflow: 'hidden',
       }}
     >
-      <div style={{ position: 'absolute', inset: '0 auto 0 0', width: highSignal ? '5px' : '4px', background: `linear-gradient(180deg, ${statusColor}, transparent)`, opacity: highSignal ? 0.95 : 0.65 }} />
-
-      <div className='token-card-header' style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '10px', marginBottom: '10px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', minWidth: 0 }}>
-          <div style={{ width: '38px', height: '38px', borderRadius: '13px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '13px', fontWeight: 900, color: '#f8fafc', background: `linear-gradient(135deg, ${statusBg}, rgba(168,85,247,0.20))`, border: `1px solid ${statusBorder}`, boxShadow: `0 0 22px ${statusBg}`, fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
-            {avatarText}
-          </div>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: '7px', minWidth: 0 }}>
-              <span style={{ fontSize: '16px', fontWeight: 850, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{identity.primary}</span>
-              <span style={{ fontSize: '11px', fontWeight: 800, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>{identity.symbol}</span>
-            </div>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '6px' }}>
-              <MiniPill label={`#${index + 1}`} color={index < 3 ? '#99f6e4' : '#94a3b8'} background={index < 3 ? 'rgba(45,212,191,0.13)' : 'rgba(255,255,255,0.06)'} border={index < 3 ? 'rgba(45,212,191,0.30)' : 'rgba(255,255,255,0.10)'} />
-              <span style={{ fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(token.contract)}</span>
-              <MiniPill label={identity.context} />
-              <MiniPill label={opportunityLabel} color={statusColor} background={statusBg} border={statusBorder} />
-              <MiniPill label={stageLabel} color={statusColor} background={statusBg} border={statusBorder} />
-              {preloadState === 'cached' ? <MiniPill label='Drawer Cached' color='#99f6e4' background='rgba(45,212,191,0.11)' border='rgba(45,212,191,0.25)' /> : null}
-            </div>
-          </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        <div style={{ width: '28px', height: '28px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10.5px', fontWeight: 800, color: '#e2e8f0', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.10)', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
+          {avatarText}
         </div>
-
-        <div style={{ minWidth: '86px', borderRadius: '16px', padding: '7px 9px', textAlign: 'center', background: `linear-gradient(180deg, ${statusBg}, rgba(255,255,255,0.035))`, border: `1px solid ${statusBorder}`, boxShadow: highSignal ? `0 0 22px ${statusBg}` : 'none' }}>
-          <p style={{ margin: '0 0 2px', fontSize: '8px', color: '#94a3b8', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', fontWeight: 800 }}>Radar Status</p>
-          <p style={{ margin: 0, color: statusColor, fontSize: '25px', lineHeight: 1, fontWeight: 900, fontFamily: 'var(--font-plex-mono)' }}>{token.radarScore}</p>
-          <p style={{ margin: '3px 0 0', color: statusColor, fontSize: '8px', fontWeight: 900, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.10em' }}>{token.status}</p>
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: '6px', minWidth: 0 }}>
+            <span style={{ fontSize: '13.5px', fontWeight: 800, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{identity.primary}</span>
+            <span style={{ fontSize: '10.5px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>{identity.symbol}</span>
+          </div>
+          <p style={{ margin: '2px 0 0', fontSize: '9.5px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            #{index + 1} · {shortAddr(token.contract)} · {fmtAge(token.ageMinutes)}
+          </p>
+        </div>
+        <div style={{ textAlign: 'right', flexShrink: 0 }}>
+          <p style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: accent.color, fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{token.radarScore}</p>
+          <p style={{ margin: '2px 0 0', fontSize: '8.5px', fontWeight: 800, color: accent.color, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)' }}>{token.status}</p>
         </div>
       </div>
 
-      <div style={{ borderRadius: '14px', padding: '9px 11px', marginBottom: '10px', border: `1px solid ${statusBorder}`, background: `linear-gradient(90deg, ${statusBg}, rgba(255,255,255,0.025))` }}>
-        <p style={{ margin: '0 0 4px', fontSize: '9px', color: statusColor, letterSpacing: '0.14em', textTransform: 'uppercase', fontWeight: 900, fontFamily: 'var(--font-plex-mono)' }}>Why on radar</p>
-        <p style={{ margin: 0, color: '#dbeafe', fontSize: '12px', lineHeight: 1.45, fontWeight: 650 }}>{insight}</p>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px 16px', fontSize: '11px', color: '#7c93a8', fontFamily: 'var(--font-plex-mono)' }}>
+        <span>LIQ <b style={{ color: '#e2e8f0', fontWeight: 700 }}>{fmtUSD(token.liquidityUsd)}</b></span>
+        <span>VOL <b style={{ color: '#e2e8f0', fontWeight: 700 }}>{fmtUSD(token.volume24h)}</b></span>
+        <span>{valuationDisplay.label.toUpperCase()} <b style={{ color: '#e2e8f0', fontWeight: 700 }}>{valuationDisplay.value}</b></span>
+        <span>MOM <b style={{ color: token.momentum === 'HIGH' ? '#99f6e4' : '#e2e8f0', fontWeight: 700 }}>{token.momentum === 'NONE' ? 'Open check' : token.momentum}</b></span>
       </div>
 
-      <div className='token-card-metrics' style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: '7px', marginBottom: '9px' }}>
-        {metrics.map(metric => <Metric key={metric.label} {...metric} />)}
-      </div>
+      <p style={{ margin: 0, fontSize: '11.5px', color: '#94a3b8', lineHeight: 1.4 }}>{insight}</p>
 
-      {token.flags.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
-          {token.flags.map(flag => {
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', minWidth: 0 }}>
+          {visibleFlags.map(flag => {
             const badge = getBadgeStyle(flag)
-            return <span key={flag} style={{ padding: '4px 8px', borderRadius: '99px', fontSize: '9px', fontWeight: 850, letterSpacing: '0.07em', color: badge.color, background: badge.background, border: `1px solid ${badge.border}`, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{flag}</span>
+            return <span key={flag} style={{ padding: '3px 7px', borderRadius: '99px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.05em', color: badge.color, background: badge.background, border: `1px solid ${badge.border}`, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{flag}</span>
           })}
+          {extraFlagCount > 0 && <span style={{ fontSize: '9.5px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>+{extraFlagCount} more</span>}
         </div>
-      )}
-
-      <div className='token-card-actions' style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '9px', borderTop: '1px solid rgba(148,163,184,0.12)' }}>
-        <ActionButton label='Scan Token' variant='primary' onClick={onScan} />
-        <ActionButton label='Ask CORTEX' variant='secondary' hint='Analyze with CORTEX' onClick={onAskCortex} />
-        <ActionButton label={tracking ? 'Watching' : 'Add to Watchlist'} variant='ghost' active={tracking} onClick={onTrackToggle} />
+        <div className='token-card-actions' style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
+          <ActionButton label='Scan Token' variant='primary' onClick={onScan} />
+          <ActionButton label='Ask CORTEX' variant='secondary' hint='Analyze with CORTEX' onClick={onAskCortex} />
+          <ActionButton label={tracking ? 'Watching' : 'Watchlist'} variant='ghost' active={tracking} onClick={onTrackToggle} />
+        </div>
       </div>
     </div>
   )
 }
 
-function MiniPill({ label, color = '#94a3b8', background = 'rgba(255,255,255,0.06)', border = 'rgba(255,255,255,0.10)' }: { label: string; color?: string; background?: string; border?: string }) {
-  return <span style={{ padding: '3px 7px', borderRadius: '99px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.08em', color, background, border: `1px solid ${border}`, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{label}</span>
-}
-
+// SMALLER/CALMER ACTIONS, DISCLOSED (task #6 — "make actions smaller and cleaner"): same three
+// actions, same click behavior (stopPropagation so the card's own onClick doesn't also fire),
+// same primary/secondary/ghost hierarchy — just smaller footprint and no glow.
 function ActionButton({
   label,
   onClick,
@@ -617,9 +574,9 @@ function ActionButton({
 }) {
   const isPrimary = variant === 'primary'
   const isGhost = variant === 'ghost'
-  const border = active ? 'rgba(45,212,191,0.38)' : isPrimary ? 'rgba(45,212,191,0.46)' : isGhost ? 'rgba(148,163,184,0.16)' : 'rgba(96,165,250,0.22)'
-  const background = active ? 'rgba(45,212,191,0.16)' : isPrimary ? 'linear-gradient(135deg, rgba(45,212,191,0.22), rgba(34,211,238,0.14))' : isGhost ? 'rgba(15,23,42,0.38)' : 'rgba(15,23,42,0.72)'
-  const color = disabled ? '#475569' : active ? '#2DD4BF' : isPrimary ? '#dffcf6' : isGhost ? '#94a3b8' : '#cbd5e1'
+  const border = active ? 'rgba(45,212,191,0.35)' : isPrimary ? 'rgba(45,212,191,0.40)' : isGhost ? 'rgba(148,163,184,0.14)' : 'rgba(96,165,250,0.20)'
+  const background = active ? 'rgba(45,212,191,0.14)' : isPrimary ? 'rgba(45,212,191,0.16)' : isGhost ? 'transparent' : 'rgba(255,255,255,0.03)'
+  const color = disabled ? '#475569' : active ? '#2DD4BF' : isPrimary ? '#5eead4' : isGhost ? '#94a3b8' : '#cbd5e1'
 
   return (
     <button
@@ -630,20 +587,19 @@ function ActionButton({
       title={hint}
       disabled={disabled}
       style={{
-        flex: 1,
-        minHeight: '34px',
-        padding: '8px 11px',
-        borderRadius: '11px',
-        fontSize: '10px',
+        minHeight: '27px',
+        padding: '5px 9px',
+        borderRadius: '8px',
+        fontSize: '9px',
         fontWeight: 700,
-        letterSpacing: '0.08em',
+        letterSpacing: '0.06em',
         textTransform: 'uppercase',
         border: `1px solid ${border}`,
         background,
         color,
         fontFamily: 'var(--font-plex-mono)',
         cursor: disabled ? 'not-allowed' : 'pointer',
-        boxShadow: isPrimary ? '0 0 22px rgba(45,212,191,0.12), inset 0 1px 0 rgba(255,255,255,0.08)' : active ? '0 0 18px rgba(45,212,191,0.10)' : 'none',
+        whiteSpace: 'nowrap',
       }}
     >
       {label}
@@ -651,39 +607,17 @@ function ActionButton({
   )
 }
 
-function Metric({ label, value, accent, sublabel }: { label: string; value: string; accent?: string; sublabel?: string | null }) {
+// COMPACT SUMMARY STRIP, DISCLOSED (task #2 — replace the 6 large bordered stat cards with a
+// single calmer strip showing only Tokens Tracked / Strongest Mover / Newest Pool / Evidence Gaps;
+// Highest Volume and Liquidity Leader are dropped from this glanceable strip per the task's own
+// list — both remain fully visible per-token in the feed below, nothing is lost, just not repeated
+// at the top). One shared border/background instead of 6 separately glowing/blurred cards.
+function StripStat({ label, value, caption, accent = '#e2e8f0' }: { label: string; value: string; caption: string; accent?: string }) {
   return (
-    <div style={{ border: `1px solid ${accent ? `${accent}33` : 'rgba(148,163,184,0.12)'}`, borderRadius: '12px', padding: '9px 10px', background: accent ? `${accent}0f` : 'rgba(255,255,255,0.035)', minWidth: 0, transition: 'border-color 0.4s ease, background 0.4s ease' }}>
-      <p style={{ fontSize: '8px', fontWeight: 800, letterSpacing: '0.12em', color: '#64748b', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 5px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        {label}
-      </p>
-      <p style={{ fontSize: '13px', fontWeight: 850, color: accent ?? '#e2e8f0', margin: 0, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', transition: 'color 0.4s ease' }}>
-        {value}
-      </p>
-      {sublabel && (
-        <p style={{ fontSize: '9px', fontWeight: 700, color: '#64748b', margin: '3px 0 0', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '0.06em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-          {sublabel}
-        </p>
-      )}
-    </div>
-  )
-}
-
-function OverviewMetric({ label, value, caption, accent = '#99f6e4' }: { label: string; value: string; caption: string; accent?: string }) {
-  return (
-    <div className="radar-overview-card" style={{
-      background: 'linear-gradient(180deg, rgba(10,16,30,0.72), rgba(10,18,32,0.50))',
-      border: '1px solid rgba(148, 163, 184, 0.14)',
-      borderRadius: '16px',
-      padding: '12px 13px',
-      boxShadow: `inset 0 1px 0 rgba(255,255,255,0.05), 0 18px 45px rgba(0,0,0,0.22)`,
-      backdropFilter: 'blur(10px)',
-      WebkitBackdropFilter: 'blur(10px)',
-      minWidth: 0,
-    }}>
-      <p style={{ margin: '0 0 7px', fontSize: '9px', color: '#64748b', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{label}</p>
-      <p title={value} style={{ margin: 0, fontSize: '15px', color: accent, fontWeight: 850, letterSpacing: '-0.02em', whiteSpace: 'normal', overflowWrap: 'anywhere', lineHeight: 1.12 }}>{value}</p>
-      <p style={{ margin: '6px 0 0', fontSize: '10px', color: '#64748b', lineHeight: 1.25, fontFamily: 'var(--font-plex-mono)' }}>{caption}</p>
+    <div className="radar-strip-item">
+      <p style={{ margin: '0 0 4px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.13em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{label}</p>
+      <p title={value} style={{ margin: 0, fontSize: '13.5px', color: accent, fontWeight: 800, letterSpacing: '-0.01em', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{value}</p>
+      <p style={{ margin: '3px 0 0', fontSize: '10px', color: '#64748b', lineHeight: 1.25, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{caption}</p>
     </div>
   )
 }
@@ -691,17 +625,15 @@ function OverviewMetric({ label, value, caption, accent = '#99f6e4' }: { label: 
 function PulseStrip({ summary }: { summary: RadarSummary }) {
   const items = [
     { label: 'Tokens Tracked', value: String(summary.newPools), caption: 'Current Base results', accent: '#e2e8f0' },
-    { label: 'Strongest Mover', value: summary.hottestToken, caption: summary.hottestValue, accent: '#22d3ee' },
-    { label: 'Highest Volume', value: summary.highestVolumeToken, caption: summary.highestVolumeValue, accent: '#99f6e4' },
+    { label: 'Strongest Mover', value: summary.hottestToken, caption: summary.hottestValue, accent: '#2DD4BF' },
     { label: 'Newest Pool', value: summary.newestToken, caption: summary.newestValue, accent: '#60a5fa' },
-    { label: 'Liquidity Leader', value: summary.highestLiquidityToken, caption: summary.highestLiquidityValue, accent: '#c4b5fd' },
     { label: 'Evidence Gaps', value: String(summary.unverified), caption: 'Needs more evidence', accent: '#fbbf24' },
   ]
 
   return (
-    <div className="radar-overview-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(6, minmax(0, 1fr))', gap: '10px', marginBottom: '14px' }}>
+    <div className="radar-strip">
       {items.map((item) => (
-        <OverviewMetric key={item.label} {...item} />
+        <StripStat key={item.label} {...item} />
       ))}
     </div>
   )
@@ -720,29 +652,34 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
     'Use Token Scanner before acting on any radar signal.',
   ]
 
+  // CALMER PANEL, DISCLOSED (task #7 — "make it calmer and more compact, reduce yellow warning
+  // intensity, make bullets easier to scan, keep Open Token Scanner and Rescan"): same signals/
+  // warnings content and same two actions — only the chrome changed (flat panel instead of a
+  // glowing gradient box, muted amber instead of bright #fbbf24 for warning bullets, tighter
+  // spacing, simple dot markers instead of unicode glyphs).
   return (
-    <div style={{ background: 'linear-gradient(180deg, rgba(6,11,22,0.92), rgba(12,20,36,0.76))', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '18px', padding: '16px', boxShadow: '0 24px 70px rgba(0,0,0,0.28), 0 0 45px rgba(45,212,191,0.08)' }}>
-      <p style={{ margin: '0 0 4px', color: '#99f6e4', fontSize: '11px', fontWeight: 800, letterSpacing: '0.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Radar Read</p>
-      <p style={{ margin: '0 0 14px', color: '#94a3b8', fontSize: '12px', lineHeight: 1.45 }}>Live interpretation of the visible Base Radar feed. Not financial advice.</p>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '14px' }}>
+    <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', padding: '13px' }}>
+      <p style={{ margin: '0 0 3px', color: '#5eead4', fontSize: '10px', fontWeight: 800, letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Radar Read</p>
+      <p style={{ margin: '0 0 11px', color: '#64748b', fontSize: '10.5px', lineHeight: 1.4 }}>Live interpretation of the visible feed. Not financial advice.</p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '11px' }}>
         {signals.slice(0, 4).map(signal => (
-          <div key={signal} style={{ display: 'flex', gap: '8px', color: '#cbd5e1', fontSize: '11px', lineHeight: 1.4 }}>
-            <span style={{ color: '#22d3ee' }}>✦</span>
+          <div key={signal} style={{ display: 'flex', gap: '7px', alignItems: 'flex-start', color: '#94a3b8', fontSize: '10.5px', lineHeight: 1.4 }}>
+            <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#2DD4BF', flexShrink: 0, marginTop: '5px' }} />
             <span>{signal}</span>
           </div>
         ))}
       </div>
-      <div style={{ borderTop: '1px solid rgba(255,255,255,0.08)', paddingTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: '9px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
         {warnings.slice(0, 3).map(warning => (
-          <div key={warning} style={{ display: 'flex', gap: '8px', color: '#fbbf24', fontSize: '11px', lineHeight: 1.4 }}>
-            <span>◇</span>
+          <div key={warning} style={{ display: 'flex', gap: '7px', alignItems: 'flex-start', color: '#c9a86a', fontSize: '10.5px', lineHeight: 1.4 }}>
+            <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#c9a86a', flexShrink: 0, marginTop: '5px' }} />
             <span>{warning}</span>
           </div>
         ))}
       </div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '14px' }}>
-        <Link href="/terminal/token-scanner" style={{ textDecoration: 'none', padding: '7px 10px', borderRadius: '10px', border: '1px solid rgba(45,212,191,0.30)', background: 'rgba(45,212,191,0.12)', color: '#99f6e4', fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Open Token Scanner</Link>
-        <button onClick={onRescan} style={{ padding: '7px 10px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.04)', color: '#cbd5e1', fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', cursor: 'pointer' }}>Rescan</button>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px', marginTop: '12px' }}>
+        <Link href="/terminal/token-scanner" style={{ textDecoration: 'none', padding: '6px 9px', borderRadius: '8px', border: '1px solid rgba(45,212,191,0.24)', background: 'rgba(45,212,191,0.08)', color: '#5eead4', fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.06em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Open Token Scanner</Link>
+        <button onClick={onRescan} style={{ padding: '6px 9px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.10)', background: 'transparent', color: '#94a3b8', fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.06em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', cursor: 'pointer' }}>Rescan</button>
       </div>
     </div>
   )
@@ -751,26 +688,14 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
 function StatsPanel({ summary, fetchedAt, loading, showUpsell }: { summary: RadarSummary; fetchedAt: string | null; loading: boolean; showUpsell: boolean }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '14px' }}>
-        <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 12px' }}>
+      {/* DECORATIVE RING REMOVED, DISCLOSED (task #7/#8 — "calmer", "less neon"): the spinning-
+          look dashed ring + glow here carried no data, purely decorative "cyber-noise" per the
+          task's own framing. Stat list below is unchanged. */}
+      <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', padding: '13px' }}>
+        <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
           Radar Stats
         </p>
-        <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '10px' }}>
-          <div style={{
-            width: '88px',
-            height: '88px',
-            borderRadius: '50%',
-            border: '1px solid rgba(45,212,191,0.30)',
-            background: 'radial-gradient(circle at center, rgba(45,212,191,0.16), rgba(15,23,42,0.3) 65%)',
-            boxShadow: '0 0 20px rgba(45,212,191,0.18)',
-            position: 'relative',
-          }}>
-            <div style={{ position: 'absolute', inset: '14px', borderRadius: '50%', border: '1px dashed rgba(168,85,247,0.30)' }} />
-            <div style={{ position: 'absolute', left: '50%', top: '50%', width: '4px', height: '4px', borderRadius: '50%', background: '#99f6e4', transform: 'translate(-50%, -50%)' }} />
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
           <Stat label='New pools / tokens' value={String(summary.newPools)} loading={loading} />
           <Stat label='Worth watching' value={String(summary.worthWatching)} loading={loading} />
           <Stat label='High momentum' value={String(summary.highMomentum)} loading={loading} />
@@ -1200,15 +1125,12 @@ export default function BaseRadarPage() {
 
   return (
     <>
+      {/* STYLE CLEANUP, DISCLOSED (task #8 — "avoid animated box-shadow/filter/blur", "reduce heavy
+          borders/glows"): removed the decorative-only keyframes/rules that had no informational
+          value (card hover shine sweep, stat-tile hover shine sweep, staggered per-card entrance
+          delays, per-card backdrop-blur). Kept: the small LIVE-dot pulse (a standard, low-weight
+          "live" indicator convention) and the refresh-button spin (functional loading feedback). */}
       <style>{`
-        @keyframes radarSlideIn {
-          from { opacity: 0; transform: translateY(-12px) scale(0.985); }
-          to   { opacity: 1; transform: translateY(0) scale(1); }
-        }
-        @keyframes radarFadeUp {
-          from { opacity: 0; transform: translateY(14px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
         @keyframes livePulse {
           0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(236,72,153,0.6); }
           50%       { opacity: 0.6; box-shadow: 0 0 0 5px rgba(236,72,153,0); }
@@ -1216,21 +1138,6 @@ export default function BaseRadarPage() {
         @keyframes radarSpin {
           0%   { transform: rotate(0deg);   }
           100% { transform: rotate(360deg); }
-        }
-        /* ── UI POLISH, DISCLOSED (frontend/CSS only — no data or backend logic touched): richer
-           motion + glass depth layered onto existing className hooks and pseudo-elements. All new
-           visual sugar is opt-out under prefers-reduced-motion (see media query below). ── */
-        @keyframes radarCardShine {
-          0%   { left: -60%; opacity: 0; }
-          14%  { opacity: 1; }
-          100% { left: 130%; opacity: 0; }
-        }
-        @keyframes radarTitleSheen {
-          to { background-position: 220% center; }
-        }
-        @keyframes radarStatSheen {
-          0%   { transform: translateX(-120%); }
-          100% { transform: translateX(120%); }
         }
 
         /* Smooth momentum + custom scrollbar on the scroll container */
@@ -1245,82 +1152,33 @@ export default function BaseRadarPage() {
           outline: 2px solid rgba(45,212,191,0.55); outline-offset: 2px; border-radius: 8px;
         }
 
-        /* Feed cards — frosted glass + diagonal shine sweep on hover (card already has
-           position:relative + overflow:hidden inline, so the pseudo-element is clipped cleanly) */
-        .opportunity-card { backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); will-change: transform; }
-        .opportunity-card::after {
-          content: ''; position: absolute; top: 0; left: -60%; width: 45%; height: 100%;
-          background: linear-gradient(105deg, transparent, rgba(255,255,255,0.07), transparent);
-          transform: skewX(-16deg); opacity: 0; pointer-events: none; z-index: 2;
-        }
-        .opportunity-card:hover::after { animation: radarCardShine 0.85s cubic-bezier(0.16,1,0.3,1); }
-        .opportunity-card:hover { transform: translateY(-3px) !important; }
-        .opportunity-card:active { transform: translateY(-1px) !important; }
+        /* Feed cards — flat, simple hover lift only (no shine sweep, no blur, no glow) */
+        .opportunity-card { transition: border-color 0.15s ease, transform 0.15s ease; }
+        .opportunity-card:hover { border-color: rgba(255,255,255,0.16); transform: translateY(-1px); }
+        .opportunity-card:active { transform: translateY(0); }
 
-        /* Stat tiles — staggered entrance, top accent line, hover lift + glow, sheen sweep */
-        .radar-overview-card {
-          position: relative; overflow: hidden; will-change: transform;
-          transition: transform 0.32s cubic-bezier(0.16,1,0.3,1), border-color 0.3s ease, box-shadow 0.3s ease;
-          animation: radarFadeUp 0.5s cubic-bezier(0.16,1,0.3,1) both;
-        }
-        .radar-overview-card::before {
-          content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px;
-          background: linear-gradient(90deg, transparent, rgba(148,163,184,0.45), transparent); opacity: 0.7;
-        }
-        .radar-overview-card:nth-child(1) { animation-delay: 0.02s; }
-        .radar-overview-card:nth-child(2) { animation-delay: 0.06s; }
-        .radar-overview-card:nth-child(3) { animation-delay: 0.10s; }
-        .radar-overview-card:nth-child(4) { animation-delay: 0.14s; }
-        .radar-overview-card:nth-child(5) { animation-delay: 0.18s; }
-        .radar-overview-card:nth-child(6) { animation-delay: 0.22s; }
-        .radar-overview-card:hover {
-          /* !important so the hover lift wins over the fill-mode:both entrance animation's
-             retained transform (CSS animations outrank normal author rules, but author !important
-             outranks animations). */
-          transform: translateY(-3px) !important;
-          border-color: rgba(45,212,191,0.32) !important;
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.08), 0 24px 55px rgba(0,0,0,0.34), 0 0 32px rgba(45,212,191,0.10) !important;
-        }
-        .radar-overview-card::after {
-          content: ''; position: absolute; inset: 0; pointer-events: none;
-          background: linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.05), transparent 60%);
-          transform: translateX(-120%); opacity: 0;
-        }
-        .radar-overview-card:hover::after { opacity: 1; animation: radarStatSheen 0.9s cubic-bezier(0.16,1,0.3,1); }
+        /* Compact summary strip */
+        .radar-strip { display: flex; flex-wrap: wrap; border: 1px solid rgba(255,255,255,0.08); border-radius: 12px; background: rgba(255,255,255,0.02); margin-bottom: 12px; overflow: hidden; }
+        .radar-strip-item { flex: 1 1 150px; padding: 9px 15px; min-width: 0; }
+        .radar-strip-item:not(:first-child) { border-left: 1px solid rgba(255,255,255,0.07); }
 
-        /* Filter chips — soft lift + glow on hover */
-        .radar-chip {
-          transition: transform 0.2s cubic-bezier(0.16,1,0.3,1), box-shadow 0.22s ease, border-color 0.22s ease, background 0.22s ease, color 0.22s ease;
-          will-change: transform;
-        }
-        .radar-chip:hover { transform: translateY(-1px); box-shadow: 0 6px 16px rgba(0,0,0,0.28), 0 0 16px rgba(45,212,191,0.14); }
-        .radar-chip:active { transform: translateY(0); }
+        /* Filter chips — simple hover feedback, no glow */
+        .radar-chip { transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease; }
 
-        /* Buttons — subtle lift + brightness on hover across the feed */
-        .radar-main button { transition: transform 0.18s cubic-bezier(0.16,1,0.3,1), box-shadow 0.2s ease, filter 0.2s ease, background 0.2s ease, border-color 0.2s ease; }
+        /* Buttons — subtle brightness on hover, no lift/glow */
+        .radar-main button { transition: filter 0.15s ease, background 0.15s ease, border-color 0.15s ease; }
         .token-card-actions button:hover:not(:disabled),
-        .radar-controls button:hover:not(:disabled) { transform: translateY(-1px); filter: brightness(1.08); }
-        .token-card-actions button:active:not(:disabled),
-        .radar-controls button:active:not(:disabled) { transform: translateY(0); }
-
-        /* Sticky cortex panel — gentle entrance */
-        .radar-stats { animation: radarFadeUp 0.55s cubic-bezier(0.16,1,0.3,1) both; animation-delay: 0.12s; }
-        .radar-pulse-wrap { animation: radarFadeUp 0.5s cubic-bezier(0.16,1,0.3,1) both; }
+        .radar-controls button:hover:not(:disabled) { filter: brightness(1.10); }
 
         @media (max-width: 768px) {
           .radar-main { padding: 18px 12px 120px !important; overflow-x: hidden !important; }
-          .opportunity-card { border-radius: 16px !important; padding: 12px !important; }
+          .opportunity-card { padding: 10px !important; }
           .radar-grid { grid-template-columns: 1fr !important; }
           .radar-stats { position: static !important; }
           .radar-controls { flex-direction: column !important; align-items: flex-start !important; }
           .radar-controls > div { width: 100%; justify-content: space-between; flex-wrap: wrap; }
-          .radar-overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
-          .radar-overview-card { padding: 12px !important; }
-          .token-card-header { flex-direction: column !important; }
-          .token-card-header span { max-width: 100%; }
-          .token-card-header > div:last-child { width: 100%; }
-          .token-card-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
-          .token-card-actions { flex-direction: column !important; align-items: stretch !important; }
+          .radar-strip-item { flex: 1 1 45% !important; }
+          .radar-strip-item:nth-child(odd) { border-left: none !important; }
         }
         @media (prefers-reduced-motion: reduce) {
           .radar-main, .opportunity-card, .radar-mini-chart-svg *, .radar-main *,
@@ -1329,9 +1187,12 @@ export default function BaseRadarPage() {
       `}</style>
 
       <div className="radar-main" style={{ minHeight: '100%', overflowY: 'auto', overflowX: 'hidden', padding: '28px 32px 120px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)', background: 'radial-gradient(1100px 520px at 16% -6%, rgba(34,211,238,0.13), transparent 46%), radial-gradient(900px 480px at 90% 6%, rgba(168,85,247,0.12), transparent 44%), radial-gradient(700px 500px at 62% 108%, rgba(45,212,191,0.07), transparent 50%), #05070f' }}>
-        <div style={{ marginBottom: '20px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '6px' }}>
-            <h1 style={{ fontSize: '25px', fontWeight: 800, margin: 0, letterSpacing: '-0.02em', backgroundImage: 'linear-gradient(92deg, #f8fafc, #a5f3fc 38%, #c4b5fd 68%, #f8fafc)', backgroundSize: '220% auto', WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent', animation: 'radarTitleSheen 7s linear infinite' }}>Base Radar</h1>
+        {/* HEADER TIGHTENED, DISCLOSED (task #1): same title/LIVE badge/copy/refresh/sort — the
+            gradient title no longer animates (static gradient text, calmer per task #8's "less
+            neon"), and vertical spacing is tighter throughout. */}
+        <div style={{ marginBottom: '14px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '5px' }}>
+            <h1 style={{ fontSize: '23px', fontWeight: 800, margin: 0, letterSpacing: '-0.02em', backgroundImage: 'linear-gradient(92deg, #f8fafc, #a5f3fc 38%, #c4b5fd 68%, #f8fafc)', WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent' }}>Base Radar</h1>
 
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '4px 10px', borderRadius: '99px', background: 'rgba(236,72,153,0.12)', border: '1px solid rgba(236,72,153,0.30)', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#ec4899', fontFamily: 'var(--font-plex-mono)' }}>
               <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#ec4899', animation: 'livePulse 1.8s ease-in-out infinite', flexShrink: 0 }} />
@@ -1339,19 +1200,17 @@ export default function BaseRadarPage() {
             </span>
           </div>
 
-          <p style={{ fontSize: '13px', color: '#94a3b8', margin: '0 0 4px', maxWidth: '720px', lineHeight: 1.45 }}>
+          <p style={{ fontSize: '12.5px', color: '#94a3b8', margin: '0 0 3px', maxWidth: '720px', lineHeight: 1.4 }}>
             Live feed — new Base opportunities
           </p>
-          <p style={{ fontSize: '12px', color: '#5b7186', margin: '0 0 12px', maxWidth: '720px', lineHeight: 1.45 }}>
+          <p style={{ fontSize: '11px', color: '#5b7186', margin: '0 0 8px', maxWidth: '720px', lineHeight: 1.4 }}>
             Fresh pools and early momentum signals
           </p>
-          <p style={{ fontSize: '12px', color: '#64748b', margin: '0 0 12px', maxWidth: '760px', lineHeight: 1.45, fontFamily: 'var(--font-plex-mono)' }}>
+          <p style={{ fontSize: '11px', color: '#5b7186', margin: '0 0 10px', maxWidth: '760px', lineHeight: 1.4, fontFamily: 'var(--font-plex-mono)' }}>
             Default feed filters out pools under $15K valuation and shallow liquidity. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
           </p>
 
-          <div className="radar-pulse-wrap">
-            <PulseStrip summary={summary} />
-          </div>
+          <PulseStrip summary={summary} />
 
           <div className="radar-controls" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -1415,7 +1274,6 @@ export default function BaseRadarPage() {
                 background: activeFilter === 'NEW' ? 'rgba(45,212,191,0.16)' : 'rgba(255,255,255,0.03)',
                 color: activeFilter === 'NEW' ? '#2DD4BF' : '#94a3b8',
                 fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
-                boxShadow: activeFilter === 'NEW' ? '0 0 18px rgba(45,212,191,0.18)' : 'none',
               }}
             >
               <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: activeFilter === 'NEW' ? '#2DD4BF' : '#64748b', flexShrink: 0 }} />
