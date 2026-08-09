@@ -84,11 +84,44 @@ const plans: Plan[] = [
   },
 ]
 
+// Simple line icons, DISCLOSED (pricing page professional polish task): inline SVGs matching this
+// codebase's own established icon convention (Navbar.tsx/FeatureBar.tsx use dozens of small inline
+// SVGs already) — replaces the previous emoji icons in the "What's included" panel with something
+// that reads as a professional product feature list rather than a marketing sidebar.
+function IcChain() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M9 17H7a5 5 0 0 1 0-10h2" /><path d="M15 7h2a5 5 0 1 1 0 10h-2" /><line x1="8" y1="12" x2="16" y2="12" />
+    </svg>
+  )
+}
+function IcScan() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  )
+}
+function IcWhale() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" />
+    </svg>
+  )
+}
+function IcClark() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z" /><path d="M19 3v4m2-2h-4" />
+    </svg>
+  )
+}
+
 const PRODUCT_PROOF = [
-  { icon: '⛓', label: 'Base-native terminal' },
-  { icon: '🔍', label: 'Live token scanner' },
-  { icon: '🐋', label: 'Whale + pump alerts' },
-  { icon: '🤖', label: 'Clark AI reports' },
+  { Icon: IcChain, label: 'Base-native terminal' },
+  { Icon: IcScan, label: 'Live token scanner' },
+  { Icon: IcWhale, label: 'Whale + pump alerts' },
+  { Icon: IcClark, label: 'Clark AI reports' },
 ]
 
 const NAV_LINKS = [
@@ -250,46 +283,58 @@ export default function PricingPage() {
   return (
     <div style={{ minHeight: '100vh', background: '#03060f', color: '#f8fafc', position: 'relative', overflow: 'hidden' }}>
       <style>{`
-        /* Base glass + CTA */
-        .glass{background:linear-gradient(170deg,rgba(10,17,33,.88),rgba(5,9,20,.82));backdrop-filter:blur(12px);border:1px solid rgba(148,163,184,.18);border-radius:18px}
-        .cta{display:block;width:100%;text-align:center;border-radius:11px;padding:12px 14px;font-weight:800;font-size:12px;letter-spacing:.09em;text-decoration:none;transition:.22s transform,.22s box-shadow,.22s opacity,.22s border-color;cursor:pointer;border:none}
-        .cta-free{border:1px solid rgba(34,211,238,.32) !important;color:#e2e8f0;background:rgba(15,23,42,.55)}
-        .cta-free:hover{border-color:rgba(34,211,238,.6) !important;box-shadow:0 0 22px rgba(34,211,238,.22) !important;transform:translateY(-2px)}
-        .cta-pro{color:#fff;background:linear-gradient(98deg,#7c3aed,#a855f7,#ec4899);box-shadow:0 12px 30px rgba(168,85,247,.55)}
-        .cta-pro:hover:not(:disabled){box-shadow:0 16px 48px rgba(168,85,247,.78) !important;transform:translateY(-2px)}
-        .cta-elite{color:#221300;background:linear-gradient(120deg,#f59e0b,#fde047,#facc15);box-shadow:0 12px 32px rgba(251,191,36,.5)}
-        .cta-elite:hover:not(:disabled){box-shadow:0 16px 48px rgba(251,191,36,.72) !important;transform:translateY(-2px)}
+        /* PROFESSIONAL POLISH PASS, DISCLOSED (pricing page task): calmer glass cards, static
+           (never animated) shadows, softer badge capsules instead of floating glowing ribbons, and
+           a toned-down Elite treatment (dark glass + a restrained gold accent, not a bright yellow
+           gradient button) — same three plans/prices/CTAs/payment routes, purely visual. */
+        .glass{background:linear-gradient(170deg,rgba(9,13,24,.90),rgba(5,8,17,.86));backdrop-filter:blur(12px);border:1px solid rgba(148,163,184,.14);border-radius:16px}
+        .cta{display:block;width:100%;text-align:center;border-radius:10px;padding:12px 14px;font-weight:700;font-size:12px;letter-spacing:.07em;text-decoration:none;transition:.18s transform,.18s box-shadow,.18s opacity,.18s border-color,.18s background;cursor:pointer;border:none}
+        .cta-free{border:1px solid rgba(148,163,184,.22) !important;color:#e2e8f0;background:rgba(255,255,255,.03)}
+        .cta-free:hover{border-color:rgba(103,232,249,.38) !important;background:rgba(103,232,249,.05) !important;transform:translateY(-1px)}
+        .cta-pro{color:#fff;background:linear-gradient(98deg,#6d28d9,#8b5cf6,#0891b2);box-shadow:0 8px 22px rgba(139,92,246,.28)}
+        .cta-pro:hover:not(:disabled){box-shadow:0 10px 26px rgba(139,92,246,.38) !important;transform:translateY(-1px)}
+        .cta-elite{color:#0c0700;background:linear-gradient(100deg,#d4a017,#e8c15c);box-shadow:0 8px 20px rgba(212,160,23,.22)}
+        .cta-elite:hover:not(:disabled){box-shadow:0 10px 24px rgba(212,160,23,.30) !important;transform:translateY(-1px)}
 
-        /* Pricing card hover lift + glow */
-        .pricing-card{transition:transform .26s ease,box-shadow .26s ease,border-color .26s ease}
-        .pricing-card:hover{transform:translateY(-5px) !important}
-        .pricing-card-free:hover{border-color:rgba(34,211,238,.54) !important;box-shadow:0 0 52px rgba(34,211,238,.26),inset 0 0 0 1px rgba(34,211,238,.22) !important}
-        .pricing-card-pro:hover{border-color:rgba(217,70,239,.98) !important;box-shadow:0 0 88px rgba(217,70,239,.62),inset 0 0 0 1px rgba(217,70,239,.44) !important}
-        .pricing-card-elite:hover{border-color:rgba(251,191,36,.98) !important;box-shadow:0 0 88px rgba(251,191,36,.56),inset 0 0 0 1px rgba(251,191,36,.44) !important}
+        /* Pricing card hover — a small static lift only, no glow pulse */
+        .pricing-card{transition:transform .18s ease,border-color .18s ease}
+        .pricing-card:hover{transform:translateY(-2px) !important}
+        .pricing-card-free:hover{border-color:rgba(103,232,249,.30) !important}
+        .pricing-card-pro:hover{border-color:rgba(167,139,250,.44) !important}
+        .pricing-card-elite:hover{border-color:rgba(212,160,23,.42) !important}
+
+        /* Tier badge capsule — small, inline, near the header (replaces the old floating ribbon) */
+        .plan-badge{display:inline-flex;align-items:center;border-radius:999px;padding:3px 9px;font-size:9px;font-weight:800;letter-spacing:.10em;white-space:nowrap}
+        .plan-badge-free{color:rgba(103,232,249,.85);background:rgba(103,232,249,.07);border:1px solid rgba(103,232,249,.20)}
+        .plan-badge-pro{color:rgba(196,181,253,.90);background:rgba(139,92,246,.09);border:1px solid rgba(139,92,246,.24)}
+        .plan-badge-elite{color:#e8c874;background:rgba(212,160,23,.08);border:1px solid rgba(212,160,23,.26)}
 
         /* Footer link hover */
         .pf-footer-link{color:#475569;font-size:13px;text-decoration:none;transition:color .18s ease;display:block;margin-bottom:11px}
         .pf-footer-link:hover{color:#cbd5e1}
 
-        /* Background helpers */
-        .energy-right{position:absolute;right:-80px;top:120px;width:480px;height:360px;opacity:.17;background:repeating-linear-gradient(135deg,rgba(217,70,239,.45) 0 1px,transparent 1px 14px);filter:blur(1.2px)}
-        .energy-left{position:absolute;left:-130px;top:120px;width:420px;height:340px;opacity:.12;background:radial-gradient(circle at 25% 50%,rgba(56,189,248,.28),transparent 65%)}
+        /* Background helpers — same brand arcs/blobs, lower opacity so cards read as the focus */
+        .energy-right{position:absolute;right:-80px;top:120px;width:480px;height:360px;opacity:.10;background:repeating-linear-gradient(135deg,rgba(217,70,239,.45) 0 1px,transparent 1px 14px);filter:blur(1.2px)}
+        .energy-left{position:absolute;left:-130px;top:120px;width:420px;height:340px;opacity:.08;background:radial-gradient(circle at 25% 50%,rgba(56,189,248,.28),transparent 65%)}
 
         /* Layout responsive */
         @media(max-width:1250px){.hero{grid-template-columns:1fr !important}.plan-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important}.stats{max-width:340px}.intro{min-height:auto !important}}
-        @media(max-width:860px){.plan-grid{grid-template-columns:1fr !important}.pricing-card:hover{transform:translateY(-2px) !important}}
+        @media(max-width:860px){.plan-grid{grid-template-columns:1fr !important}.pricing-card:hover{transform:none !important}}
         @media(max-width:960px){.pf-footer-grid{grid-template-columns:1fr 1fr !important;gap:36px !important}}
         @media(max-width:560px){.pf-footer-grid{grid-template-columns:1fr !important}}
 
-        /* Split crypto/card payment boxes */
-        @keyframes payBoxGlow{0%{box-shadow:0 0 10px rgba(45,212,191,.35)}50%{box-shadow:0 0 20px rgba(139,92,246,.5)}100%{box-shadow:0 0 10px rgba(236,72,153,.35)}}
+        /* Split crypto/card payment boxes — static hover only, no glow-pulse animation */
         .cta-split-row{display:flex;gap:8px}
-        .cta-box{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border-radius:11px;padding:10px 8px;font-weight:800;font-size:11px;letter-spacing:.06em;text-decoration:none;text-align:center;cursor:pointer;transition:.22s transform,.22s box-shadow,.22s border-color,.22s opacity;border:1px solid rgba(255,255,255,.10);background:rgba(255,255,255,.03);color:#e2e8f0}
-        .cta-box small{font-weight:600;font-size:9px;letter-spacing:.03em;color:#94a3b8;text-transform:none}
-        .cta-box-crypto{border-color:rgba(45,212,191,.4);background:linear-gradient(135deg,rgba(45,212,191,.14),rgba(139,92,246,.12))}
-        .cta-box-crypto:hover:not(:disabled){border-color:rgba(45,212,191,.75) !important;transform:translateY(-2px);animation:payBoxGlow 2.4s ease-in-out infinite}
-        .cta-box-card{border-color:rgba(139,92,246,.4);background:linear-gradient(135deg,rgba(139,92,246,.14),rgba(236,72,153,.12))}
-        .cta-box-card:hover{border-color:rgba(236,72,153,.75) !important;transform:translateY(-2px);animation:payBoxGlow 2.4s ease-in-out infinite}
+        .cta-box{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border-radius:10px;padding:10px 8px;font-weight:700;font-size:11px;letter-spacing:.04em;text-decoration:none;text-align:center;cursor:pointer;transition:.18s transform,.18s border-color,.18s background,.18s opacity;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.025);color:#e2e8f0}
+        .cta-box small{font-weight:600;font-size:9px;letter-spacing:.02em;color:#94a3b8;text-transform:none}
+        .cta-box-crypto{border-color:rgba(45,212,191,.30)}
+        .cta-box-crypto:hover:not(:disabled){border-color:rgba(45,212,191,.55) !important;background:rgba(45,212,191,.05) !important;transform:translateY(-1px)}
+        .cta-box-card{border-color:rgba(148,163,184,.18)}
+        .cta-box-card:hover{border-color:rgba(148,163,184,.32) !important;background:rgba(148,163,184,.04) !important;transform:translateY(-1px)}
+
+        @media (prefers-reduced-motion: reduce) {
+          .pricing-card, .cta, .cta-box { transition: none !important; }
+        }
       `}</style>
 
       <Navbar />
@@ -298,18 +343,19 @@ export default function PricingPage() {
       <div style={{ position:'absolute', inset:0, background:'linear-gradient(180deg,rgba(7,12,24,.2) 0%,rgba(3,6,15,0) 55%)', pointerEvents:'none' }} />
       <div className='energy-right' />
       <div className='energy-left' />
-      {/* Upper radial blobs */}
-      <div style={{ position:'absolute', inset:0, background:'radial-gradient(circle at 18% 22%,rgba(34,211,238,.22),transparent 35%),radial-gradient(circle at 84% 20%,rgba(217,70,239,.22),transparent 34%),radial-gradient(circle at 60% 8%,rgba(129,140,248,.15),transparent 38%)', pointerEvents:'none' }} />
+      {/* Upper radial blobs — softened, DISCLOSED (pricing polish task): lower opacity so the
+          cards read as the focal point instead of competing with the background. */}
+      <div style={{ position:'absolute', inset:0, background:'radial-gradient(circle at 18% 22%,rgba(34,211,238,.12),transparent 35%),radial-gradient(circle at 84% 20%,rgba(217,70,239,.10),transparent 34%),radial-gradient(circle at 60% 8%,rgba(129,140,248,.08),transparent 38%)', pointerEvents:'none' }} />
       {/* Deep navy bottom fill */}
       <div style={{ position:'absolute', inset:'auto -28% -320px -28%', height:620, background:'radial-gradient(ellipse at 50% 10%,rgba(11,25,56,.96) 0%,rgba(7,14,33,.92) 38%,rgba(4,8,19,.55) 63%,rgba(3,6,15,.08) 86%,transparent 100%)', pointerEvents:'none' }} />
       {/* Cyan arc horizon */}
-      <div style={{ position:'absolute', left:'-28%', right:'-28%', bottom:-255, height:520, borderTop:'2px solid rgba(56,189,248,.82)', borderRadius:'58% 58% 0 0 / 100% 100% 0 0', boxShadow:'0 -24px 95px rgba(34,211,238,.54),0 -16px 130px rgba(59,130,246,.32)', pointerEvents:'none' }} />
+      <div style={{ position:'absolute', left:'-28%', right:'-28%', bottom:-255, height:520, borderTop:'1px solid rgba(56,189,248,.42)', borderRadius:'58% 58% 0 0 / 100% 100% 0 0', boxShadow:'0 -14px 52px rgba(34,211,238,.22)', pointerEvents:'none' }} />
       {/* Purple arc */}
-      <div style={{ position:'absolute', left:'-20%', right:'-20%', bottom:-276, height:520, borderTop:'1px solid rgba(217,70,239,.48)', borderRadius:'54% 54% 0 0 / 100% 100% 0 0', boxShadow:'0 -10px 68px rgba(217,70,239,.2)', pointerEvents:'none' }} />
-      {/* Gold glow — Elite side */}
-      <div style={{ position:'absolute', right:'-10%', bottom:0, width:'45%', height:400, background:'radial-gradient(ellipse at 90% 80%,rgba(251,191,36,.13) 0%,transparent 58%)', pointerEvents:'none' }} />
+      <div style={{ position:'absolute', left:'-20%', right:'-20%', bottom:-276, height:520, borderTop:'1px solid rgba(217,70,239,.24)', borderRadius:'54% 54% 0 0 / 100% 100% 0 0', pointerEvents:'none' }} />
+      {/* Gold glow — Elite side, restrained */}
+      <div style={{ position:'absolute', right:'-10%', bottom:0, width:'45%', height:400, background:'radial-gradient(ellipse at 90% 80%,rgba(212,160,23,.07) 0%,transparent 58%)', pointerEvents:'none' }} />
       {/* Center glow behind cards */}
-      <div style={{ position:'absolute', left:'-14%', right:'-14%', bottom:-240, height:400, background:'radial-gradient(ellipse at 50% 0%,rgba(34,211,238,.14),rgba(147,197,253,.1) 28%,rgba(217,70,239,.08) 48%,transparent 78%)', pointerEvents:'none' }} />
+      <div style={{ position:'absolute', left:'-14%', right:'-14%', bottom:-240, height:400, background:'radial-gradient(ellipse at 50% 0%,rgba(34,211,238,.08),rgba(147,197,253,.06) 28%,rgba(217,70,239,.05) 48%,transparent 78%)', pointerEvents:'none' }} />
       {/* Subtle dot grid */}
       <div style={{ position:'absolute', inset:0, backgroundImage:'radial-gradient(circle,rgba(148,163,184,.038) 1px,transparent 1px)', backgroundSize:'28px 28px', pointerEvents:'none' }} />
 
@@ -328,7 +374,7 @@ export default function PricingPage() {
             <p style={{ marginTop:14, color:'#94a3b8', lineHeight:1.5, fontSize:14 }}>No dark patterns. No regional pricing.<br />Your data stays yours.</p>
             <div style={{ display:'flex', flexWrap:'wrap', gap:8, marginTop:14 }}>
               {['Pay with crypto', 'Built for Base', 'Auto activation'].map((chip) => (
-                <span key={chip} style={{ borderRadius:999, border:'1px solid rgba(148,163,184,.28)', padding:'6px 10px', fontSize:11, color:'#dbeafe', background:'rgba(15,23,42,.55)', boxShadow:'0 0 16px rgba(34,211,238,.12)' }}>{chip}</span>
+                <span key={chip} style={{ borderRadius:999, border:'1px solid rgba(148,163,184,.20)', padding:'6px 10px', fontSize:11, color:'#cbd5e1', background:'rgba(15,23,42,.45)' }}>{chip}</span>
               ))}
             </div>
             <div style={{ marginTop:12, fontSize:12, color:'#94a3b8' }}>Powered by <span style={{ color:'#e2e8f0', fontWeight:700 }}>BASE</span></div>
@@ -341,68 +387,61 @@ export default function PricingPage() {
               const isPaid = plan.id === 'pro' || plan.id === 'elite'
               const isLoading = checkoutLoading === plan.id
 
+              // CALMER CARD TREATMENT, DISCLOSED (pricing polish task): static borders/shadows only
+              // (no glow pulse), Elite reads as dark glass + a restrained gold accent instead of a
+              // bright yellow-bordered card — "expensive and exclusive", not arcade.
               const borderColor = plan.id === 'pro'
-                ? 'rgba(217,70,239,.72)'
+                ? 'rgba(139,92,246,.34)'
                 : plan.id === 'elite'
-                  ? 'rgba(251,191,36,.66)'
-                  : 'rgba(34,211,238,.3)'
+                  ? 'rgba(212,160,23,.30)'
+                  : 'rgba(148,163,184,.16)'
               const boxShadow = plan.id === 'pro'
-                ? '0 0 56px rgba(217,70,239,.38),inset 0 0 0 1px rgba(217,70,239,.24)'
+                ? '0 8px 32px rgba(139,92,246,.14)'
                 : plan.id === 'elite'
-                  ? '0 0 56px rgba(251,191,36,.35),inset 0 0 0 1px rgba(250,204,21,.22)'
-                  : '0 0 28px rgba(34,211,238,.12)'
+                  ? '0 8px 32px rgba(212,160,23,.10)'
+                  : 'none'
+              const cardBg = plan.id === 'elite'
+                ? 'linear-gradient(170deg,rgba(14,11,4,.94),rgba(7,6,2,.90))'
+                : undefined
 
               return (
                 <div
                   key={plan.id}
                   className={`glass pricing-card pricing-card-${plan.id}`}
                   style={{
-                    padding:'20px 20px 18px',
+                    padding:'22px 20px 18px',
                     minHeight:468,
                     display:'flex',
                     flexDirection:'column',
                     borderColor,
                     boxShadow,
+                    background: cardBg,
                     position:'relative',
-                    transform: plan.id === 'pro' ? 'translateY(-3px)' : 'none',
+                    transform: plan.id === 'pro' ? 'translateY(-2px)' : 'none',
                   }}
                 >
-                  {plan.badge && (
-                    <div style={{
-                      position:'absolute', top:-11, left:'50%', transform:'translateX(-50%)',
-                      borderRadius:999,
-                      background: plan.id === 'elite'
-                        ? 'linear-gradient(90deg,#d97706,#fbbf24)'
-                        : plan.id === 'free'
-                          ? 'linear-gradient(90deg,#0891b2,#22d3ee)'
-                          : 'linear-gradient(90deg,#a855f7,#ec4899)',
-                      color: plan.id === 'elite' ? '#1c0e00' : plan.id === 'free' ? '#022c3a' : '#fff',
-                      fontSize:10, letterSpacing:'.12em', fontWeight:800, padding:'4px 12px',
-                      boxShadow: plan.id === 'elite'
-                        ? '0 0 24px rgba(251,191,36,.6)'
-                        : plan.id === 'free'
-                          ? '0 0 24px rgba(34,211,238,.5)'
-                          : '0 0 24px rgba(217,70,239,.6)',
-                      whiteSpace:'nowrap',
-                    }}>
-                      {plan.badge}
-                    </div>
-                  )}
-
-                  {/* Plan header */}
-                  <div style={{ fontSize:12, letterSpacing:'.18em', color: plan.id === 'elite' ? '#facc15' : plan.id === 'pro' ? '#a78bfa' : '#67e8f9' }}>{plan.label}</div>
-                  <div style={{ fontSize:48, fontWeight:800, marginTop:8, color: plan.id === 'elite' ? '#fde68a' : '#fff', lineHeight:1 }}>{plan.price}</div>
-                  <div style={{ color:'#94a3b8', marginTop:2, fontSize:13 }}>{plan.subtext}</div>
-                  <div style={{ marginTop:8, fontSize:11, color:'#64748b' }}>{plan.note}</div>
-                  <div style={{ marginTop:14, fontSize:10, color: plan.id === 'elite' ? '#fcd34d' : plan.id === 'pro' ? '#67e8f9' : '#22d3ee', letterSpacing:'.15em' }}>{plan.sectionTitle}</div>
+                  {/* Plan header — badge now sits inline next to the label, not a floating ribbon */}
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:8 }}>
+                    <div style={{ fontSize:12, letterSpacing:'.18em', color: plan.id === 'elite' ? '#e8c874' : plan.id === 'pro' ? '#c4b5fd' : '#94a3b8', fontWeight:700 }}>{plan.label}</div>
+                    {plan.badge && (
+                      <span className={`plan-badge plan-badge-${plan.id}`}>{plan.badge}</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize:44, fontWeight:800, marginTop:10, color: plan.id === 'elite' ? '#f3d98a' : '#fff', lineHeight:1 }}>{plan.price}</div>
+                  <div style={{ color:'#94a3b8', marginTop:3, fontSize:13 }}>{plan.subtext}</div>
+                  {plan.note && <div style={{ marginTop:8, fontSize:11.5, color:'#64748b', lineHeight:1.5 }}>{plan.note}</div>}
+                  <div style={{ marginTop:16, paddingTop:12, borderTop:'1px solid rgba(148,163,184,.10)', fontSize:10, color: plan.id === 'elite' ? '#a88948' : plan.id === 'pro' ? '#8b7dc7' : '#5b7284', letterSpacing:'.14em', fontWeight:700 }}>{plan.sectionTitle}</div>
 
                   {/* Features */}
-                  <div style={{ display:'grid', gap:8, marginTop:10, flex:1 }}>
+                  <div style={{ display:'grid', gap:9, marginTop:12, flex:1 }}>
                     {plan.features.map((f) => {
                       const no = f.startsWith('No ')
                       return (
-                        <div key={f} style={{ display:'flex', gap:8, alignItems:'flex-start', color: no ? '#64748b' : '#dbeafe', fontSize:12.5, lineHeight:1.45 }}>
-                          <span style={{ color: no ? '#475569' : plan.id === 'elite' ? '#facc15' : plan.id === 'pro' ? '#22d3ee' : '#67e8f9', flexShrink:0 }}>{no ? '✕' : '✓'}</span>
+                        <div key={f} style={{ display:'flex', gap:9, alignItems:'flex-start', color: no ? '#526073' : '#cbd5e1', fontSize:12.5, lineHeight:1.5 }}>
+                          <span style={{
+                            color: no ? '#3f4a58' : plan.id === 'elite' ? '#c9a545' : plan.id === 'pro' ? '#a78bfa' : '#67e8f9',
+                            flexShrink:0, fontSize:11, marginTop:1,
+                          }}>{no ? '–' : '✓'}</span>
                           <span>{f}</span>
                         </div>
                       )
@@ -410,7 +449,7 @@ export default function PricingPage() {
                   </div>
 
                   {plan.id === 'elite' && (
-                    <div style={{ border:'1px solid rgba(250,204,21,.4)', background:'rgba(250,204,21,.08)', color:'#fde68a', borderRadius:11, padding:10, fontSize:12, marginTop:12 }}>
+                    <div style={{ border:'1px solid rgba(212,160,23,.20)', background:'rgba(212,160,23,.05)', color:'#d9be82', borderRadius:10, padding:'10px 11px', fontSize:11.5, lineHeight:1.5, marginTop:14 }}>
                       Everything in Pro — plus maximum CORTEX access, higher limits, and early feature access.
                     </div>
                   )}
@@ -463,13 +502,18 @@ export default function PricingPage() {
             })}
           </div>
 
-          {/* Right stats aside */}
-          <aside className='glass stats' style={{ padding:14, minHeight:468, borderColor:'rgba(34,211,238,.46)', boxShadow:'0 0 30px rgba(34,211,238,.16)' }}>
-            <div style={{ color:'#67e8f9', fontSize:10, letterSpacing:'.15em', marginBottom:14, fontWeight:700 }}>WHAT'S INCLUDED</div>
-            {PRODUCT_PROOF.map(({ icon, label }, i) => (
-              <div key={label} style={{ borderTop: i === 0 ? '1px solid rgba(148,163,184,.22)' : '1px solid rgba(148,163,184,.14)', padding:'15px 0' }}>
-                <div style={{ fontSize:28, lineHeight:1, marginBottom:6 }}>{icon}</div>
-                <div style={{ color:'#e2e8f0', fontSize:13, fontWeight:600, lineHeight:1.35 }}>{label}</div>
+          {/* Right "What's included" panel — professional feature summary, DISCLOSED (pricing
+              polish task): line-icon rows with consistent spacing/dividers instead of large emoji
+              and a loud cyan-glow border, matching the calmer treatment used across the rest of
+              the page. */}
+          <aside className='glass stats' style={{ padding:'18px 16px', minHeight:468, borderColor:'rgba(148,163,184,.14)', boxShadow:'none' }}>
+            <div style={{ color:'#94a3b8', fontSize:10, letterSpacing:'.15em', marginBottom:4, fontWeight:700 }}>WHAT&apos;S INCLUDED</div>
+            {PRODUCT_PROOF.map(({ Icon, label }, i) => (
+              <div key={label} style={{ display:'flex', alignItems:'center', gap:11, borderTop: '1px solid rgba(148,163,184,.09)', padding: i === 0 ? '16px 0 14px' : '14px 0' }}>
+                <span style={{ display:'flex', alignItems:'center', justifyContent:'center', width:30, height:30, flexShrink:0, borderRadius:8, background:'rgba(103,232,249,.06)', border:'1px solid rgba(103,232,249,.16)', color:'#67e8f9' }}>
+                  <Icon />
+                </span>
+                <div style={{ color:'#dbeafe', fontSize:12.5, fontWeight:600, lineHeight:1.4 }}>{label}</div>
               </div>
             ))}
           </aside>
@@ -502,8 +546,8 @@ export default function PricingPage() {
           PREMIUM FOOTER
       ══════════════════════════════════════ */}
       <footer style={{ position:'relative', zIndex:3, marginTop:24 }}>
-        {/* Glowing horizon line */}
-        <div style={{ height:1, background:'linear-gradient(90deg,transparent 0%,rgba(34,211,238,.52) 25%,rgba(168,85,247,.52) 55%,rgba(251,191,36,.32) 80%,transparent 100%)', boxShadow:'0 0 32px rgba(34,211,238,.3),0 0 52px rgba(168,85,247,.18)' }} />
+        {/* Horizon divider */}
+        <div style={{ height:1, background:'linear-gradient(90deg,transparent 0%,rgba(34,211,238,.28) 25%,rgba(168,85,247,.28) 55%,rgba(212,160,23,.20) 80%,transparent 100%)' }} />
 
         {/* Footer body */}
         <div style={{ background:'rgba(2,5,13,.94)', backdropFilter:'blur(8px)' }}>
