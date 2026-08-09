@@ -468,49 +468,47 @@ function ClarkAiContent() {
             radial-gradient(circle at 18% 2%, rgba(20, 184, 166, .13), transparent 28%),
             linear-gradient(180deg, #020611 0%, #050914 46%, #02040b 100%);
         }
-        .clk-grid { position:absolute; inset:0; pointer-events:none; background-image: linear-gradient(rgba(34,211,238,.055) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.055) 1px, transparent 1px), radial-gradient(rgba(148,163,184,.16) 1px, transparent 1.4px); background-size: 36px 36px, 36px 36px, 18px 18px; mask-image: radial-gradient(ellipse 74% 50% at 58% 5%, black 0%, transparent 76%); }
-        .clk-glow { position:absolute; pointer-events:none; inset:0; background: radial-gradient(circle at 73% 12%, rgba(34,211,238,.14), transparent 20%), radial-gradient(circle at 88% 30%, rgba(168,85,247,.14), transparent 24%), radial-gradient(circle at 8% 60%, rgba(45,212,191,.06), transparent 30%); }
-        .clk-shell { position:relative; z-index:1; width:100%; max-width: 1500px; margin:0 auto; padding: 24px 24px 48px; display:grid; grid-template-columns: minmax(0, 1fr) 340px; gap:22px; align-items:start; }
+        .clk-grid { position:absolute; inset:0; pointer-events:none; background-image: linear-gradient(rgba(34,211,238,.028) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.028) 1px, transparent 1px), radial-gradient(rgba(148,163,184,.08) 1px, transparent 1.4px); background-size: 36px 36px, 36px 36px, 18px 18px; mask-image: radial-gradient(ellipse 60% 40% at 58% 5%, black 0%, transparent 76%); }
+        .clk-glow { position:absolute; pointer-events:none; inset:0; background: radial-gradient(circle at 73% 12%, rgba(34,211,238,.08), transparent 20%), radial-gradient(circle at 88% 30%, rgba(168,85,247,.08), transparent 24%), radial-gradient(circle at 8% 60%, rgba(45,212,191,.04), transparent 30%); }
+        .clk-shell { position:relative; z-index:1; width:100%; max-width: 1500px; margin:0 auto; padding: 22px 24px 44px; display:grid; grid-template-columns: minmax(0, 1fr) 320px; gap:20px; align-items:start; }
         .clk-main { min-width:0; }
-        .clk-hero { display:grid; grid-template-columns: minmax(0, 1fr) 200px; gap:18px; align-items:center; padding: 8px 0 18px; border-bottom:1px solid rgba(148,163,184,.12); }
-        .clk-title-row { display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
-        .clk-title { margin:0; font-size: clamp(42px, 4vw, 58px); font-weight: 850; letter-spacing:-.045em; line-height:.98; color:#f8fafc; }
+        .clk-hero { display:flex; flex-direction:column; gap:12px; padding: 4px 0 14px; border-bottom:1px solid rgba(148,163,184,.12); }
+        .clk-title-row { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
+        .clk-title { margin:0; font-size: clamp(34px, 3.2vw, 46px); font-weight: 850; letter-spacing:-.04em; line-height:.98; color:#f8fafc; }
         .clk-title-ai { background: linear-gradient(110deg, #22d3ee 10%, #7c3aed 58%, #c084fc 96%); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
-        .clk-ready-pill { border:1px solid rgba(45,212,191,.36); border-radius:999px; padding:10px 18px; color:#5eead4; background:rgba(6,20,30,.72); font:700 12px var(--font-plex-mono, monospace); letter-spacing:.12em; box-shadow: inset 0 1px 0 rgba(255,255,255,.04); }
-        .clk-subtitle { margin:18px 0 16px; color:#a8b4c7; font-size:17px; line-height:1.55; }
-        .clk-live-row { display:flex; align-items:center; gap:12px; color:#7c8aa1; font:700 12px var(--font-plex-mono, monospace); letter-spacing:.12em; text-transform:uppercase; }
-        .clk-live-dot { width:10px; height:10px; border-radius:999px; background:#10b981; box-shadow:0 0 0 6px rgba(16,185,129,.12), 0 0 20px rgba(16,185,129,.65); }
-        .clk-live-label { color:#34d399; }
-        .clk-live-sep { color:#334155; }
-        .clk-live-cortex { color:#22d3ee; }
-        .clk-cortex-card { justify-self:end; width:190px; min-height:96px; border:1px solid rgba(148,163,184,.18); border-radius:14px; background:linear-gradient(180deg, rgba(7,13,24,.96), rgba(2,6,14,.98)); box-shadow:inset 0 1px 0 rgba(255,255,255,.05), 0 18px 38px -28px rgba(0,0,0,.9); padding:12px; overflow:hidden; position:relative; }
-        .clk-cortex-card::after { content:''; position:absolute; inset:0; pointer-events:none; background:repeating-linear-gradient(180deg, rgba(255,255,255,.025) 0 1px, transparent 1px 6px); opacity:.45; }
-        .clk-cortex-title { color:#e2e8f0; font:900 11px var(--font-plex-mono, monospace); letter-spacing:.14em; margin-bottom:8px; }
-        .clk-cortex-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; padding:4px 0; border-top:1px solid rgba(148,163,184,.10); font:700 10px var(--font-plex-mono, monospace); text-transform:uppercase; }
-        .clk-cortex-label { color:#7f8ea3; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .clk-cortex-value { color:#34d399; }
-        .clk-cortex-value--muted { color:#94a3b8; }
-        .clk-actions-row { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:12px; margin:14px 0 18px; }
-        .clk-quick-card { position:relative; min-height:96px; height:100%; text-align:left; display:flex; gap:14px; align-items:center; border:1px solid rgba(148,163,184,.14); border-radius:16px; background:linear-gradient(135deg, color-mix(in srgb, var(--accent) 10%, rgba(11,18,32,.86)) 0%, rgba(4,9,20,.9) 58%, rgba(2,6,14,.96) 100%); padding:18px 20px; color:#f8fafc; cursor:pointer; transition: border-color .18s, transform .18s, background .18s, box-shadow .18s; box-shadow: inset 0 1px 0 rgba(255,255,255,.055), 0 18px 34px -24px rgba(0,0,0,.85); overflow:hidden; }
-        .clk-quick-card::before { content:''; position:absolute; inset:0; border-radius:inherit; padding:1px; background:linear-gradient(135deg, color-mix(in srgb, var(--accent) 42%, transparent), rgba(148,163,184,.08), rgba(236,72,153,.14)); -webkit-mask:linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite:xor; mask-composite:exclude; opacity:.62; pointer-events:none; }
-        .clk-quick-card:hover { transform: translateY(-2px); border-color: color-mix(in srgb, var(--accent) 55%, rgba(148,163,184,.35)); background:linear-gradient(135deg, color-mix(in srgb, var(--accent) 15%, rgba(13,24,42,.94)), rgba(5,12,25,.96)); box-shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 16px 34px -14px color-mix(in srgb, var(--accent) 48%, transparent); }
-        .clk-quick-icon { width:44px; height:44px; border-radius:13px; display:grid; place-items:center; border:1px solid color-mix(in srgb, var(--accent) 72%, rgba(255,255,255,.08)); color:var(--accent); background: color-mix(in srgb, var(--accent) 13%, rgba(2,6,23,.7)); box-shadow:0 0 18px -8px var(--accent); flex:0 0 auto; }
+        .clk-ready-pill { border:1px solid rgba(45,212,191,.32); border-radius:999px; padding:6px 13px; color:#5eead4; background:rgba(6,20,30,.6); font:700 10.5px var(--font-plex-mono, monospace); letter-spacing:.10em; }
+        .clk-subtitle { margin:0; color:#93a2b7; font-size:14px; line-height:1.5; }
+        .clk-status-strip { display:flex; align-items:center; flex-wrap:wrap; gap:0; border:1px solid rgba(148,163,184,.14); border-radius:11px; background:rgba(6,11,22,.6); padding:8px 4px; }
+        .clk-status-item { display:flex; align-items:center; gap:7px; padding:0 14px; border-right:1px solid rgba(148,163,184,.12); }
+        .clk-status-item:last-child { border-right:0; }
+        .clk-status-item-dot { width:5px; height:5px; border-radius:999px; flex-shrink:0; }
+        .clk-status-item-label { color:#7f8ea3; font:700 10px var(--font-plex-mono, monospace); letter-spacing:.06em; text-transform:uppercase; white-space:nowrap; }
+        .clk-status-item-value { color:#cbd5e1; font:700 10px var(--font-plex-mono, monospace); letter-spacing:.02em; white-space:nowrap; }
+        .clk-status-item-value--live { color:#34d399; }
+        .clk-status-item-value--muted { color:#5b6b84; }
+        .clk-live-cortex { margin-left:auto; padding:0 4px 0 14px; color:#6d7c94; font:700 9.5px var(--font-plex-mono, monospace); letter-spacing:.10em; white-space:nowrap; }
+        .clk-actions-row { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:9px; margin:14px 0 16px; }
+        .clk-quick-card { position:relative; height:100%; text-align:left; display:flex; gap:10px; align-items:center; border:1px solid rgba(148,163,184,.14); border-radius:10px; background:rgba(9,15,28,.6); padding:11px 13px; color:#f8fafc; cursor:pointer; transition: border-color .15s, background .15s; overflow:hidden; }
+        .clk-quick-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, rgba(148,163,184,.3)); background:rgba(13,21,38,.78); }
+        .clk-quick-icon { width:22px; height:22px; border-radius:6px; display:grid; place-items:center; font-size:12px; border:1px solid color-mix(in srgb, var(--accent) 55%, rgba(255,255,255,.08)); color:var(--accent); background: color-mix(in srgb, var(--accent) 12%, rgba(2,6,23,.7)); flex:0 0 auto; }
         .clk-quick-copy { display:flex; min-width:0; flex:1 1 auto; flex-direction:column; justify-content:center; }
-        .clk-quick-title { display:block; margin:0 0 4px; font-weight:820; font-size:15px; line-height:1.3; letter-spacing:-.01em; white-space:normal; word-break:break-word; }
-        .clk-quick-sub { display:block; margin:0; color:#98a7bb; font-size:12px; font-weight:650; line-height:1.4; white-space:normal; word-break:break-word; }
-        .clk-console { border:1px solid rgba(59,130,246,.22); border-radius:20px; background:linear-gradient(180deg, rgba(8,15,30,.86), rgba(3,7,17,.95)); box-shadow:0 24px 60px rgba(0,0,0,.34), inset 0 1px 0 rgba(255,255,255,.045); overflow:hidden; }
-        .clk-tabs { display:grid; grid-template-columns:1fr 1fr; border-bottom:1px solid rgba(148,163,184,.14); }
-        .clk-tab { min-height:58px; border:0; border-right:1px solid rgba(148,163,184,.12); background:rgba(15,23,42,.22); color:#b7c2d4; font-weight:750; font-size:16px; cursor:pointer; display:flex; gap:10px; align-items:center; justify-content:center; }
+        .clk-quick-title { display:block; margin:0; font-weight:700; font-size:12.5px; line-height:1.3; letter-spacing:-.005em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .clk-quick-sub { display:block; margin:0; color:#71809a; font-size:10.5px; font-weight:600; line-height:1.3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .clk-console { border:1px solid rgba(59,130,246,.16); border-radius:14px; background:rgba(6,11,22,.7); overflow:hidden; }
+        .clk-tabs { display:grid; grid-template-columns:1fr 1fr; border-bottom:1px solid rgba(148,163,184,.12); }
+        .clk-tab { min-height:42px; border:0; border-right:1px solid rgba(148,163,184,.1); background:transparent; color:#8794a8; font-weight:700; font-size:13px; cursor:pointer; display:flex; gap:8px; align-items:center; justify-content:center; transition:background .15s, color .15s; }
+        .clk-tab:hover { color:#b7c2d4; }
         .clk-tab:last-child { border-right:0; }
-        .clk-tab--active { color:#22d3ee; background:linear-gradient(180deg, rgba(34,211,238,.10), rgba(34,211,238,.025)); box-shadow: inset 0 1px 0 rgba(34,211,238,.24); }
-        .clk-thread { position:relative; min-height:360px; max-height:560px; overflow-y:auto; padding:26px 24px 18px; display:flex; flex-direction:column; gap:16px; background-image: linear-gradient(rgba(34,211,238,.035) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.028) 1px, transparent 1px), repeating-linear-gradient(180deg, rgba(255,255,255,.018) 0 1px, transparent 1px 7px); background-size:32px 32px, 32px 32px, 100% 8px; }
+        .clk-tab--active { color:#22d3ee; background:rgba(34,211,238,.06); box-shadow: inset 0 1px 0 rgba(34,211,238,.2); }
+        .clk-tab svg { width:15px; height:15px; }
+        .clk-thread { position:relative; min-height:220px; max-height:560px; overflow-y:auto; padding:20px 22px 14px; display:flex; flex-direction:column; gap:14px; background-image: linear-gradient(rgba(34,211,238,.018) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.014) 1px, transparent 1px); background-size:32px 32px, 32px 32px; }
         .clk-thread-top { display:flex; justify-content:flex-end; }
         .clk-clear-btn { border:0; background:transparent; color:#98a6ba; cursor:pointer; font-size:13px; }
-        .clk-intro { display:grid; grid-template-columns:38px minmax(0,1fr); gap:14px; max-width:720px; padding:16px; border:1px solid rgba(45,212,191,.18); border-radius:16px; background:linear-gradient(135deg, rgba(14,24,42,.78), rgba(4,9,20,.78)); box-shadow:inset 0 1px 0 rgba(255,255,255,.045); }
-        .clk-intro-title { color:#67e8f9; font:800 12px var(--font-plex-mono, monospace); letter-spacing:.12em; text-transform:uppercase; margin:2px 0 7px; }
-        .clk-intro-text { margin:0; color:#c4cede; line-height:1.55; font-size:14px; white-space:pre-line; }
-        .clk-capabilities { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
-        .clk-capability { border:1px solid rgba(45,212,191,.22); border-radius:999px; padding:5px 8px; color:#a7f3d0; background:rgba(45,212,191,.07); font:800 10px var(--font-plex-mono, monospace); letter-spacing:.08em; text-transform:uppercase; }
+        .clk-intro { display:flex; align-items:center; gap:13px; max-width:720px; padding:12px 15px; border:1px solid rgba(45,212,191,.16); border-radius:12px; background:rgba(12,20,36,.5); }
+        .clk-intro-title { color:#67e8f9; font:800 11px var(--font-plex-mono, monospace); letter-spacing:.10em; text-transform:uppercase; margin:0 0 4px; }
+        .clk-intro-text { margin:0; color:#98a7bb; line-height:1.45; font-size:12.5px; white-space:pre-line; }
+        .clk-capabilities { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+        .clk-capability { border:1px solid rgba(45,212,191,.18); border-radius:999px; padding:3px 7px; color:#8fd6c2; background:rgba(45,212,191,.05); font:700 9px var(--font-plex-mono, monospace); letter-spacing:.06em; text-transform:uppercase; }
         .clk-msg { max-width:min(88%, 760px); padding:15px 17px; border-radius:20px; border:1px solid rgba(148,163,184,.13); background:linear-gradient(145deg, rgba(13,22,38,.92), rgba(6,11,24,.88)); box-shadow:0 14px 30px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.05); }
         .clk-msg--user { align-self:flex-end; border-color:rgba(34,211,238,.22); border-bottom-right-radius:8px; background:linear-gradient(145deg, rgba(9,44,55,.82), rgba(7,24,34,.76)); }
         .clk-msg--clark { align-self:flex-start; border-color:rgba(45,212,191,.18); border-bottom-left-radius:8px; }
@@ -527,20 +525,20 @@ function ClarkAiContent() {
         .clk-scanline { position:relative; height:2px; margin-top:10px; overflow:hidden; background:rgba(148,163,184,.12); }
         .clk-scanline::before { content:''; position:absolute; inset:0 auto 0 0; width:42%; background:linear-gradient(90deg, transparent, rgba(45,212,191,.9), transparent); animation:clkScan 1.15s linear infinite; }
         @keyframes clkScan { from{ transform:translateX(-100%);} to{ transform:translateX(260%);} }
-        .clk-input-wrap { margin:0 18px 18px; border:1px solid rgba(34,211,238,.55); border-radius:18px; background:linear-gradient(180deg, rgba(2,8,20,.88), rgba(2,6,16,.96)); box-shadow:0 0 28px rgba(34,211,238,.11), inset 0 1px 0 rgba(255,255,255,.055); }
-        .clk-input-row { display:grid; grid-template-columns:48px minmax(0, 1fr) auto 54px; gap:12px; align-items:center; min-height:78px; padding:10px 12px 10px 14px; }
-        .clk-prompt-mark { height:44px; border-radius:12px; display:grid; place-items:center; color:#22d3ee; font:900 18px var(--font-plex-mono, monospace); background:rgba(34,211,238,.08); border:1px solid rgba(34,211,238,.18); box-shadow:inset 0 1px 0 rgba(255,255,255,.04); }
-        .clk-panel-input { width:100%; background:transparent; border:0; outline:0; color:#e5edf8; font-size:18px; caret-color:#22d3ee; }
-        .clk-panel-input::placeholder { color:#8d99ab; }
-        .clk-helper { color:#94a3b8; font-size:12px; white-space:nowrap; }
-        .clk-send-btn { width:48px; height:48px; border-radius:14px; border:1px solid rgba(34,211,238,.62); color:#67e8f9; background:linear-gradient(180deg, rgba(34,211,238,.14), rgba(14,22,36,.72)); display:grid; place-items:center; cursor:pointer; transition:transform .16s, box-shadow .16s, border-color .16s, background .16s; }
-        .clk-send-btn:not(:disabled):hover { transform:translateY(-1px); box-shadow:0 0 22px rgba(34,211,238,.24); border-color:rgba(94,234,212,.74); }
-        .clk-send-btn:disabled { opacity:.38; cursor:not-allowed; box-shadow:none; }
+        .clk-input-wrap { margin:14px 18px 16px; border:1px solid rgba(34,211,238,.36); border-radius:14px; background:rgba(3,9,20,.9); }
+        .clk-input-row { display:grid; grid-template-columns:40px minmax(0, 1fr) auto 46px; gap:10px; align-items:center; min-height:62px; padding:8px 10px 8px 12px; }
+        .clk-prompt-mark { height:36px; border-radius:9px; display:grid; place-items:center; color:#22d3ee; font:900 15px var(--font-plex-mono, monospace); background:rgba(34,211,238,.06); border:1px solid rgba(34,211,238,.16); }
+        .clk-panel-input { width:100%; background:transparent; border:0; outline:0; color:#e5edf8; font-size:15px; caret-color:#22d3ee; }
+        .clk-panel-input::placeholder { color:#7d899c; }
+        .clk-helper { color:#7f8ea3; font-size:11px; white-space:nowrap; }
+        .clk-send-btn { width:36px; height:36px; border-radius:9px; border:1px solid rgba(34,211,238,.45); color:#67e8f9; background:rgba(34,211,238,.08); display:grid; place-items:center; cursor:pointer; transition:border-color .15s, background .15s; }
+        .clk-send-btn:not(:disabled):hover { background:rgba(34,211,238,.14); border-color:rgba(94,234,212,.6); }
+        .clk-send-btn:disabled { opacity:.35; cursor:not-allowed; }
         .clk-upgrade-note { margin:0 18px 12px; padding:11px 14px; border:1px solid rgba(139,92,246,.28); border-radius:12px; background:rgba(139,92,246,.08); color:#c4b5fd; display:flex; justify-content:space-between; gap:12px; font-size:13px; }
         .clk-upgrade-link { color:#e9d5ff; text-decoration:none; font-weight:800; }
-        .clk-usage { display:flex; align-items:center; gap:12px; padding:0 18px 18px; }
-        .clk-usage-label, .clk-usage-count { font:700 11px var(--font-plex-mono, monospace); color:#728198; white-space:nowrap; }
-        .clk-usage-track { flex:1; height:5px; border-radius:999px; background:rgba(148,163,184,.13); overflow:hidden; }
+        .clk-usage { display:flex; align-items:center; gap:10px; padding:0 18px 14px; }
+        .clk-usage-label, .clk-usage-count { font:700 10px var(--font-plex-mono, monospace); color:#61708a; white-space:nowrap; }
+        .clk-usage-track { flex:1; height:3px; border-radius:999px; background:rgba(148,163,184,.11); overflow:hidden; }
         .clk-usage-fill { height:100%; border-radius:999px; transition:width .5s; }
         .clk-intel { margin-top:20px; }
         .clk-intel-head { margin:0 0 12px; }
@@ -555,23 +553,19 @@ function ClarkAiContent() {
         .clk-intel-card--empty .clk-intel-label { color:#9aa8bb; }
         .clk-intel-sub { color:#94a3b8; font-size:13px; line-height:1.55; margin:8px 0 0; white-space:normal; word-break:break-word; }
         .clk-intel-cta { position:relative; left:auto; right:auto; bottom:auto; margin-top:auto; padding-top:14px; border-top:1px solid rgba(148,163,184,.12); color:#67e8f9; font:800 10px var(--font-plex-mono, monospace); letter-spacing:.10em; text-transform:uppercase; opacity:.78; }
-        .clk-side { display:flex; flex-direction:column; gap:16px; }
-        .clk-side-card { border:1px solid rgba(148,163,184,.16); border-radius:16px; background:linear-gradient(180deg, rgba(10,18,34,.8), rgba(3,7,17,.94)); padding:20px; box-shadow: inset 0 1px 0 rgba(255,255,255,.045), 0 14px 32px -16px rgba(0,0,0,.55); }
-        .clk-side-card:hover { border-color: rgba(34,211,238,.22); }
-        .clk-side-title { display:flex; align-items:center; gap:11px; margin:0 0 16px; padding-bottom:14px; border-bottom:1px solid rgba(148,163,184,.12); color:#f1f5f9; font-size:15px; font-weight:850; letter-spacing:-.01em; }
-        .clk-side-title svg { color:#22d3ee; }
-        .clk-context-row { padding:0 0 15px; margin-bottom:15px; border-bottom:1px solid rgba(148,163,184,.11); }
+        .clk-side { display:flex; flex-direction:column; gap:14px; }
+        .clk-side-card { border:1px solid rgba(148,163,184,.13); border-radius:13px; background:rgba(7,13,25,.6); padding:15px; }
+        .clk-side-title { display:flex; align-items:center; gap:9px; margin:0 0 13px; padding-bottom:11px; border-bottom:1px solid rgba(148,163,184,.1); color:#dbe4f0; font-size:12.5px; font-weight:800; letter-spacing:.02em; text-transform:uppercase; }
+        .clk-side-title svg { width:15px; height:15px; color:#22d3ee; }
+        .clk-context-row { padding:0 0 11px; margin-bottom:11px; border-bottom:1px solid rgba(148,163,184,.09); }
         .clk-context-row:last-child { margin-bottom:0; padding-bottom:0; border-bottom:0; }
-        .clk-context-label { color:#a5b4c8; font:700 11px var(--font-plex-mono, monospace); letter-spacing:.10em; text-transform:uppercase; margin-bottom:8px; }
-        .clk-context-value { color:#f8fafc; font-size:17px; font-weight:780; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .clk-context-sub { color:#93a2b7; font-size:13px; margin-top:5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .clk-history-list { display:flex; flex-direction:column; gap:12px; }
-        .clk-history-row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; color:#cbd5e1; font-size:14px; }
-        .clk-history-row span:first-child { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .clk-history-time { color:#94a3b8; font-size:12px; }
-        .clk-empty { margin:0; color:#8795aa; font-size:13px; line-height:1.55; padding:12px; border:1px dashed rgba(148,163,184,.18); border-radius:12px; background:rgba(148,163,184,.035); }
-        .clk-memory-stat { display:flex; justify-content:space-between; gap:12px; color:#cbd5e1; font-size:14px; padding:8px 0; }
-        .clk-memory-stat strong { color:#34d399; }
+        .clk-context-label { color:#7f8ea3; font:700 9.5px var(--font-plex-mono, monospace); letter-spacing:.08em; text-transform:uppercase; margin-bottom:5px; }
+        .clk-context-value { color:#e5edf8; font-size:14px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .clk-context-sub { color:#6d7c94; font-size:11px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .clk-empty { margin:0; color:#7c8aa1; font-size:12px; line-height:1.5; padding:10px; border:1px dashed rgba(148,163,184,.16); border-radius:10px; background:rgba(148,163,184,.03); }
+        .clk-memory-row { display:flex; align-items:center; gap:10px; padding-top:11px; margin-top:2px; border-top:1px solid rgba(148,163,184,.09); }
+        .clk-memory-stat { display:flex; align-items:baseline; gap:5px; color:#6d7c94; font:700 10px var(--font-plex-mono, monospace); letter-spacing:.02em; }
+        .clk-memory-stat strong { color:#5eead4; font-size:12px; }
         .clark-orb-shell { border-radius:999px; position:relative; display:inline-flex; align-items:center; justify-content:center; background:radial-gradient(circle at 30% 25%, rgba(148,163,184,.24), rgba(2,6,23,.96) 62%); border:1px solid rgba(148,163,184,.34); box-shadow:inset 0 1px 0 rgba(255,255,255,.08), 0 0 20px rgba(45,212,191,.22), 0 0 28px rgba(139,92,246,.20); overflow:hidden; flex-shrink:0; }
         .clark-orb-ring { position:absolute; inset:3px; border-radius:999px; border:1px solid rgba(45,212,191,.25); opacity:.9; }
         .clark-orb-core { position:relative; width:100%; height:100%; border-radius:999px; }
@@ -583,8 +577,8 @@ function ClarkAiContent() {
         @keyframes clarkDotB { 0%,100%{ transform:translate(0,0) scale(1);} 50%{ transform:translate(-2px,2px) scale(1.16);} }
         @keyframes clarkPulse { 0%{ transform:scale(.94); opacity:.7;} 100%{ transform:scale(1.08); opacity:0;} }
         @media (max-width: 1100px) { .clk-shell { grid-template-columns:1fr; } .clk-side { grid-template-columns:repeat(3, minmax(0,1fr)); display:grid; } }
-        @media (max-width: 780px) { .clk-shell { padding:20px 14px 44px; } .clk-hero { grid-template-columns:1fr; } .clk-cortex-card { justify-self:stretch; width:auto; } .clk-actions-row { grid-template-columns:1fr 1fr; } .clk-side { display:flex; } .clk-thread { min-height:220px; padding:16px 14px 12px; } .clk-input-row { grid-template-columns:36px minmax(0,1fr) 44px; } .clk-helper { display:none; } .clk-intel-grid { grid-template-columns:1fr 1fr; } }
-        @media (max-width: 480px) { .clk-actions-row { grid-template-columns:1fr; } .clk-title { font-size:40px; } .clk-ready-pill { padding:8px 12px; } .clk-intel-grid { grid-template-columns:1fr; } }
+        @media (max-width: 780px) { .clk-shell { padding:20px 14px 44px; } .clk-actions-row { grid-template-columns:1fr 1fr; } .clk-side { display:flex; } .clk-thread { min-height:220px; padding:16px 14px 12px; } .clk-input-row { grid-template-columns:36px minmax(0,1fr) 44px; } .clk-helper { display:none; } .clk-intel-grid { grid-template-columns:1fr 1fr; } .clk-live-cortex { display:none; } }
+        @media (max-width: 480px) { .clk-actions-row { grid-template-columns:1fr; } .clk-title { font-size:34px; } .clk-ready-pill { padding:5px 10px; } .clk-intel-grid { grid-template-columns:1fr; } .clk-status-item-label { display:none; } }
       `}</style>
 
       <div aria-hidden='true'>
@@ -595,33 +589,29 @@ function ClarkAiContent() {
       <div className='clk-shell'>
         <main className='clk-main'>
           <section className='clk-hero'>
-            <div>
-              <div className='clk-title-row'>
-                <h1 className='clk-title'>Clark <span className='clk-title-ai'>AI</span></h1>
-                <span className='clk-ready-pill'>CORTEX READY</span>
-              </div>
-              <p className='clk-subtitle'>Base-native AI analyst for tokens, wallets, liquidity, and onchain risk.</p>
-              <div className='clk-live-row'>
-                <span className='clk-live-dot' />
-                <span className='clk-live-label'>LIVE</span>
-                <span className='clk-live-sep'>|</span>
-                <span className='clk-live-cortex'>POWERED BY CORTEX ENGINE</span>
-              </div>
+            <div className='clk-title-row'>
+              <h1 className='clk-title'>Clark <span className='clk-title-ai'>AI</span></h1>
+              <span className='clk-ready-pill'>CORTEX READY</span>
             </div>
-            <div className='clk-cortex-card' aria-label='CORTEX status'>
-              <div className='clk-cortex-title'>CORTEX STATUS</div>
-              {[
-                ['Memory Engine', messages.length > 0 ? 'Active' : 'Ready'],
-                ['Token Context', clientContext.lastToken ? 'Ready' : 'Standby'],
-                ['Wallet Context', clientContext.lastWallet ? 'Ready' : 'Standby'],
-                ['Analysis Mode', activeMode === 'radar' ? 'Radar' : 'Adaptive'],
-                ['System', loading ? 'Working' : 'Online'],
-              ].map(([label, value]) => (
-                <div className='clk-cortex-row' key={label}>
-                  <span className='clk-cortex-label'>{label}</span>
-                  <span className={`clk-cortex-value${value === 'Standby' ? ' clk-cortex-value--muted' : ''}`}>{value}</span>
-                </div>
+            <p className='clk-subtitle'>Base-native AI analyst for tokens, wallets, liquidity, and onchain risk.</p>
+            <div className='clk-status-strip' aria-label='CORTEX status'>
+              <span className='clk-status-item'>
+                <span className='clk-status-item-dot' style={{ background: '#10b981', boxShadow: '0 0 6px rgba(16,185,129,.7)' }} />
+                <span className='clk-status-item-value clk-status-item-value--live'>LIVE</span>
+              </span>
+              {([
+                ['Memory', messages.length > 0 ? 'Active' : 'Ready', messages.length > 0],
+                ['Token', clientContext.lastToken ? 'Ready' : 'Standby', Boolean(clientContext.lastToken)],
+                ['Wallet', clientContext.lastWallet ? 'Ready' : 'Standby', Boolean(clientContext.lastWallet)],
+                ['Mode', activeMode === 'radar' ? 'Radar' : 'Adaptive', true],
+                ['System', loading ? 'Working' : 'Online', true],
+              ] as Array<[string, string, boolean]>).map(([label, value, isActive]) => (
+                <span className='clk-status-item' key={label}>
+                  <span className='clk-status-item-label'>{label}</span>
+                  <span className={`clk-status-item-value${isActive ? '' : ' clk-status-item-value--muted'}`}>{value}</span>
+                </span>
               ))}
+              <span className='clk-live-cortex'>CORTEX ENGINE</span>
             </div>
           </section>
 
@@ -730,7 +720,7 @@ function ClarkAiContent() {
                 />
                 <span className='clk-helper'>Shift + Enter for new line</span>
                 <button className='clk-send-btn' onClick={() => void handleSend()} disabled={loading || !input.trim() || isLimited} aria-label='Send'>
-                  <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.2' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'><path d='M22 2 11 13'/><path d='m22 2-7 20-4-9-9-4Z'/></svg>
+                  <svg width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.2' strokeLinecap='round' strokeLinejoin='round' aria-hidden='true'><path d='M22 2 11 13'/><path d='m22 2-7 20-4-9-9-4Z'/></svg>
                 </button>
               </div>
             </div>
@@ -794,10 +784,19 @@ function ClarkAiContent() {
             <div className='clk-context-row'><div className='clk-context-label'>Last Token</div><div className='clk-context-value'>{formatContextValue(clientContext.lastToken)}</div></div>
             <div className='clk-context-row'><div className='clk-context-label'>Last Wallet</div><div className='clk-context-value'>{formatContextValue(clientContext.lastWallet)}</div></div>
             <div className='clk-context-row'><div className='clk-context-label'>Active Mode</div><div className='clk-context-value'>Adaptive Analysis</div><div className='clk-context-sub'>Analysis adapts based on context & onchain data</div></div>
+            {/* DESIGN FIX, DISCLOSED (Clark AI polish): Memory was previously its own third
+                side-card — task asks for max 2 primary sections (Context, Chat History). Same
+                real memoryStats data, folded into Context as a compact stat row instead of a
+                separate card. */}
+            <div className='clk-memory-row'>
+              {memoryStats.map((stat) => (
+                <span className='clk-memory-stat' key={stat.label}><strong>{stat.value}</strong>{stat.label}</span>
+              ))}
+            </div>
           </section>
 
           <section className='clk-side-card'>
-            <h2 className='clk-side-title'><svg width='19' height='19' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round'><path d='M3 12a9 9 0 1 0 3-6.7'/><path d='M3 3v6h6'/><path d='M12 7v5l3 2'/></svg>Clark Chat History</h2>
+            <h2 className='clk-side-title'><svg width='19' height='19' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round'><path d='M3 12a9 9 0 1 0 3-6.7'/><path d='M3 3v6h6'/><path d='M12 7v5l3 2'/></svg>Chat History</h2>
             <ClarkHistoryPanel
               folders={folders}
               chats={chats}
@@ -815,11 +814,6 @@ function ClarkAiContent() {
               }}
               onDeleteFolder={(id) => { deleteClarkFolder(id).then(() => refreshHistory()).catch(reportHistoryFailure) }}
             />
-          </section>
-
-          <section className='clk-side-card'>
-            <h2 className='clk-side-title'><svg width='19' height='19' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round'><ellipse cx='12' cy='5' rx='9' ry='3'/><path d='M3 5v14c0 1.7 4 3 9 3s9-1.3 9-3V5'/><path d='M3 12c0 1.7 4 3 9 3s9-1.3 9-3'/></svg>Memory <span style={{ color: '#94a3b8', fontWeight: 500 }}>(This Session)</span></h2>
-            {memoryStats.map((stat) => <div className='clk-memory-stat' key={stat.label}><span>{stat.label}</span><strong>{stat.value}</strong></div>)}
           </section>
         </aside>
       </div>

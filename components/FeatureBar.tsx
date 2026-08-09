@@ -378,6 +378,35 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
         borderRight: '1px solid rgba(255,255,255,0.08)',
       }}
     >
+      {/* DESIGN FIX, DISCLOSED (Clark AI polish task — sidebar wallet chip): ConnectWallet's own
+          default styling is a full-width glowing gradient button sized for a hero CTA, not a
+          sidebar footer row — same "huge and distracting" pattern already fixed on the homepage
+          hero (components/home/ReferenceHero.tsx). Wrapper-only CSS override here too — no wallet
+          logic touched, ConnectWallet.tsx untouched. */}
+      <style>{`
+        /* className lands directly on ConnectWallet's own root element per state — a <button> for
+           disconnected/reconnecting, a <div> wrapping a button for connected/reconnect-state —
+           never a wrapper we control. Same technique already proven safe on the homepage hero
+           (components/home/ReferenceHero.tsx's .ref-wallet-widget). */
+        .fb-wallet-chip, button.fb-wallet-chip {
+          display: flex !important; align-items: center !important; width: 100% !important;
+        }
+        .fb-wallet-chip > button, button.fb-wallet-chip {
+          width: 100% !important; min-width: 0 !important;
+          padding: 8px 12px !important; min-height: 0 !important;
+          font-size: 11px !important; font-weight: 700 !important;
+          letter-spacing: 0.04em !important; border-radius: 9px !important;
+          box-shadow: none !important; background: rgba(45,212,191,0.07) !important;
+          color: #5eead4 !important; border: 1px solid rgba(45,212,191,0.22) !important;
+          transition: background .15s, border-color .15s !important;
+        }
+        .fb-wallet-chip > button:hover, button.fb-wallet-chip:hover { background: rgba(45,212,191,0.12) !important; }
+        /* Reconnect state (saved wallet, not currently connected): button, then address line, then
+           an explanatory sentence — the sentence is redundant once this reads as a compact status
+           chip instead of a full card, so it's hidden; the address line (useful) stays. */
+        .fb-wallet-chip { gap: 4px !important; }
+        .fb-wallet-chip > div:nth-of-type(2) { display: none !important; }
+      `}</style>
 
       {/* ── Mobile close button ───────────────────────────────── */}
       {onClose && (
@@ -472,7 +501,7 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
         }}
       >
         {/* Connect Wallet — full width */}
-        <ConnectWallet className="w-full active:scale-[0.98]" onBeforeOpen={onWalletOpen} />
+        <ConnectWallet className="fb-wallet-chip w-full active:scale-[0.98]" onBeforeOpen={onWalletOpen} />
 
         {accountEmail ? (
           <Link
