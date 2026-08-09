@@ -47,7 +47,6 @@ export default function ReferenceHero() {
           <div className="ref-copy">
             <div className="ref-badge"><span />POWERED BY CORTEX ENGINE</div>
             <h1>Find the move<br /><span>before the crowd.</span></h1>
-            <p className="ref-sub">Scan tokens, wallets, whales, and onchain momentum with Clark — your AI onchain analyst.</p>
             <div className="ref-ctas">
               <Link className="ref-btn ref-btn-primary" href="/terminal"><span className="ref-terminal-mark">›_</span> Launch Terminal <span>→</span></Link>
               <Link className="ref-btn ref-btn-secondary" href="/terminal/token-scanner">Scan Token Free</Link>
