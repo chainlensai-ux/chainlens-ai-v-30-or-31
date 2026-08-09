@@ -30,6 +30,16 @@ type CovalentTx = {
 }
 
 const COVALENT_BASE = 'https://api.covalenthq.com/v1/base-mainnet'
+// HOST FALLBACK FIX, DISCLOSED (whale-alerts "no alerts loading" diagnosis): production logs
+// showed providerErrors == walletsChecked (every single wallet in a batch failing, e.g. "10 source
+// delays" out of 10 checked) — a much higher failure rate than this same GoldRush/Covalent
+// transactions_v3 endpoint sees elsewhere in this codebase. lib/server/walletSnapshot.ts's
+// fetchGoldrushPnlEvents already tries api.covalenthq.com first and falls back to api.goldrush.dev
+// on failure for this exact endpoint — proof that api.covalenthq.com alone is not reliable enough
+// on its own for this provider. This route previously had no such fallback: one failed request to
+// api.covalenthq.com permanently failed that wallet for the whole batch. Bringing over the same
+// two-host retry this codebase already relies on elsewhere.
+const COVALENT_HOSTS = ['api.covalenthq.com', 'api.goldrush.dev'] as const
 const PROVIDER_CHAIN = 'base'
 const PROVIDER_PAGE_SIZE = 100
 const PROVIDER_ENDPOINT_PATH = `/v1/base-mainnet/address/{wallet}/transactions_v3/?page-number=0&page-size=${PROVIDER_PAGE_SIZE}&with-logs=true`
@@ -308,8 +318,9 @@ async function fetchWalletTransactions(
   return fetchPromise
 }
 
-async function fetchWalletTransactionsFromProvider(address: string, apiKey: string): Promise<ProviderPayload> {
-  const url = new URL(`${COVALENT_BASE}/address/${address}/transactions_v3/`)
+function buildProviderUrl(host: string, address: string): string {
+  const base = host === 'api.covalenthq.com' ? COVALENT_BASE : `https://${host}/v1/base-mainnet`
+  const url = new URL(`${base}/address/${address}/transactions_v3/`)
   url.searchParams.set('page-number', '0')
   url.searchParams.set('page-size', String(PROVIDER_PAGE_SIZE))
   // WITH-LOGS FIX, DISCLOSED (empty-whale-feed diagnosis): GoldRush's transactions_v3 endpoint does
@@ -320,41 +331,59 @@ async function fetchWalletTransactionsFromProvider(address: string, apiKey: stri
   // working reference call (lib/server/walletSnapshot.ts's fetchGoldrushTransactionsPage), which
   // already sets this same param on the same endpoint for the same reason.
   url.searchParams.set('with-logs', 'true')
+  return url.toString()
+}
 
-  let response: Response
-  try {
-    logRpcCall({ route: '/api/whale-alerts/sync', chain: PROVIDER_CHAIN, method: 'goldrush_transactions_v3' })
-    response = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: 'application/json',
-      },
-      cache: 'no-store',
-      signal: AbortSignal.timeout(PER_WALLET_TIMEOUT_MS),
-    })
-  } catch {
-    throw new ProviderRequestError(null, 'network_error', [])
-  }
+async function fetchWalletTransactionsFromProvider(address: string, apiKey: string): Promise<ProviderPayload> {
+  let lastError: ProviderRequestError = new ProviderRequestError(null, 'network_error', [])
 
-  if (!response.ok) {
-    let responseKeys: string[] = []
+  // HOST FALLBACK FIX, DISCLOSED (whale-alerts "no alerts loading" diagnosis): see COVALENT_HOSTS's
+  // own comment. Only retries the NEXT host on a real failure (network error, non-2xx, bad JSON) —
+  // a successful response short-circuits immediately, so this never doubles latency/cost for the
+  // common case where the first host works.
+  for (const host of COVALENT_HOSTS) {
+    const url = buildProviderUrl(host, address)
+    let response: Response
     try {
-      const payload = (await response.json()) as Record<string, unknown>
-      if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
-        responseKeys = Object.keys(payload).slice(0, 8)
-      }
+      logRpcCall({ route: '/api/whale-alerts/sync', chain: PROVIDER_CHAIN, method: 'goldrush_transactions_v3' })
+      response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          Accept: 'application/json',
+        },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(PER_WALLET_TIMEOUT_MS),
+      })
     } catch {
-      responseKeys = []
+      lastError = new ProviderRequestError(null, 'network_error', [])
+      continue
     }
 
-    throw new ProviderRequestError(response.status, classifyProviderError(response.status), responseKeys)
+    if (!response.ok) {
+      let responseKeys: string[] = []
+      try {
+        const payload = (await response.json()) as Record<string, unknown>
+        if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+          responseKeys = Object.keys(payload).slice(0, 8)
+        }
+      } catch {
+        responseKeys = []
+      }
+      lastError = new ProviderRequestError(response.status, classifyProviderError(response.status), responseKeys)
+      // Auth/allowlist failures are the same on every host (same key) — no point retrying those.
+      if (response.status === 401 || response.status === 403) break
+      continue
+    }
+
+    try {
+      return (await response.json()) as ProviderPayload
+    } catch {
+      lastError = new ProviderRequestError(null, 'invalid_provider_json', [])
+      continue
+    }
   }
 
-  try {
-    return (await response.json()) as ProviderPayload
-  } catch {
-    throw new ProviderRequestError(null, 'invalid_provider_json', [])
-  }
+  throw lastError
 }
 
 // Parse ERC-20 Transfer events from Covalent log_events.
