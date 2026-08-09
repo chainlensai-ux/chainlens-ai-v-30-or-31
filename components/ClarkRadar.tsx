@@ -861,49 +861,57 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         /* Contract address compression */
         .clark-addr-chip {
           display: inline-flex; align-items: center; gap: 4px;
-          padding: 1px 6px; margin: 0 2px; border-radius: 5px;
-          background: rgba(139,92,246,0.10); border: 1px solid rgba(139,92,246,0.22);
-          color: #c4b5fd; font-family: var(--font-plex-mono); font-size: 10.5px;
+          padding: 2px 6px; border-radius: 5px;
+          background: rgba(139,92,246,0.08); border: 1px solid rgba(139,92,246,0.18);
+          color: rgba(196,181,253,0.85); font-family: var(--font-plex-mono); font-size: 10.5px;
           cursor: pointer; transition: background 0.15s, border-color 0.15s;
-          vertical-align: middle;
+          vertical-align: middle; flex-shrink: 0;
         }
-        .clark-addr-chip:hover { background: rgba(139,92,246,0.18); border-color: rgba(139,92,246,0.38); }
+        .clark-addr-chip:hover { background: rgba(139,92,246,0.14); border-color: rgba(139,92,246,0.30); }
 
-        /* Mover rows */
-        .clark-mover-list { display: flex; flex-direction: column; gap: 5px; }
+        /* Mover rows — a little more breathing room, calmer tags, quieter actions (micro-polish
+           pass: same structure/data as before, just less cramped and less button-heavy). */
+        .clark-mover-list {
+          display: flex; flex-direction: column; gap: 6px;
+          max-width: 100%; overflow-x: hidden;
+        }
         .clark-mover-row {
           display: flex; align-items: center; justify-content: space-between; gap: 8px;
-          padding: 7px 9px; border-radius: 8px;
-          background: rgba(255,255,255,0.022); border: 1px solid rgba(255,255,255,0.06);
+          padding: 9px 11px; border-radius: 9px; min-width: 0;
+          background: rgba(255,255,255,0.02); border: 1px solid rgba(255,255,255,0.055);
         }
-        .clark-mover-row-main { min-width: 0; flex: 1; }
-        .clark-mover-row-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-        .clark-mover-rank { font: 700 9.5px var(--font-plex-mono); color: rgba(148,163,184,0.55); }
-        .clark-mover-symbol { font: 800 11.5px var(--font-plex-mono); color: #f1f5f9; letter-spacing: .01em; }
+        .clark-mover-row-main { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 5px; }
+        .clark-mover-row-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+        .clark-mover-rank { font: 700 9.5px var(--font-plex-mono); color: rgba(148,163,184,0.50); flex-shrink: 0; }
+        .clark-mover-symbol {
+          font: 800 11.5px var(--font-plex-mono); color: #f1f5f9; letter-spacing: .01em;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 90px;
+        }
         .clark-mover-tag {
-          font: 700 8px var(--font-inter); letter-spacing: .04em; text-transform: uppercase;
-          border-radius: 4px; padding: 1px 5px;
+          font: 700 8px var(--font-inter); letter-spacing: .03em; text-transform: uppercase;
+          border-radius: 4px; padding: 1.5px 5px; flex-shrink: 1; min-width: 0;
+          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
         }
-        .clark-mover-tag--positive { color: #5eead4; background: rgba(45,212,191,0.10); border: 1px solid rgba(45,212,191,0.22); }
-        .clark-mover-tag--caution { color: #fbbf24; background: rgba(245,158,11,0.10); border: 1px solid rgba(245,158,11,0.24); }
-        .clark-mover-tag--accent { color: rgba(196,181,253,0.80); background: rgba(139,92,246,0.10); border: 1px solid rgba(139,92,246,0.20); }
-        .clark-mover-change { font: 800 10.5px var(--font-plex-mono); margin-left: auto; }
-        .clark-mover-change.is-up { color: #5eead4; }
-        .clark-mover-change.is-down { color: #fb7185; }
+        .clark-mover-tag--positive { color: rgba(94,234,212,0.85); background: rgba(45,212,191,0.06); border: 1px solid rgba(45,212,191,0.16); }
+        .clark-mover-tag--caution { color: rgba(251,191,36,0.85); background: rgba(245,158,11,0.06); border: 1px solid rgba(245,158,11,0.16); }
+        .clark-mover-tag--accent { color: rgba(196,181,253,0.75); background: rgba(139,92,246,0.06); border: 1px solid rgba(139,92,246,0.14); }
+        .clark-mover-change { font: 800 10.5px var(--font-plex-mono); margin-left: auto; flex-shrink: 0; padding-left: 6px; }
+        .clark-mover-change.is-up { color: rgba(94,234,212,0.90); }
+        .clark-mover-change.is-down { color: rgba(251,113,133,0.90); }
         .clark-mover-row-stats {
-          display: flex; align-items: center; gap: 5px; margin-top: 3px;
-          font: 600 10px var(--font-plex-mono); color: rgba(255,255,255,0.45);
+          display: flex; align-items: center; gap: 5px; min-width: 0; flex-wrap: wrap; row-gap: 3px;
+          font: 600 10px var(--font-plex-mono); color: rgba(255,255,255,0.40);
         }
-        .clark-mover-dot { color: rgba(255,255,255,0.20); }
-        .clark-mover-row-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+        .clark-mover-dot { color: rgba(255,255,255,0.18); flex-shrink: 0; }
+        .clark-mover-row-actions { display: flex; align-items: center; gap: 2px; flex-shrink: 0; margin-left: 6px; }
         .clark-mover-action {
           font: 700 9px var(--font-inter); letter-spacing: .03em; text-transform: uppercase;
-          color: rgba(255,255,255,0.55); background: rgba(255,255,255,0.04);
-          border: 1px solid rgba(255,255,255,0.10); border-radius: 6px; padding: 4px 8px;
+          color: rgba(255,255,255,0.40); background: transparent;
+          border: 1px solid transparent; border-radius: 6px; padding: 4px 7px;
           cursor: pointer; transition: color 0.15s, background 0.15s, border-color 0.15s;
         }
-        .clark-mover-action:hover:not(:disabled) { color: #fff; background: rgba(139,92,246,0.14); border-color: rgba(139,92,246,0.30); }
-        .clark-mover-action.is-active { color: #5eead4; background: rgba(45,212,191,0.10); border-color: rgba(45,212,191,0.28); }
+        .clark-mover-action:hover:not(:disabled) { color: #e2e8f0; background: rgba(139,92,246,0.09); border-color: rgba(139,92,246,0.18); }
+        .clark-mover-action.is-active { color: rgba(94,234,212,0.90); background: rgba(45,212,191,0.07); border-color: rgba(45,212,191,0.18); }
         .clark-mover-action:disabled { cursor: default; opacity: 0.6; }
 
         /* Base Market Read card */
@@ -924,23 +932,23 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           border-radius: 999px; padding: 3px 8px; white-space: nowrap;
         }
         .clark-market-shortread {
-          margin-top: 10px; padding-left: 10px; border-left: 2px solid rgba(139,92,246,0.30);
-          color: rgba(255,255,255,0.58); font-size: 11.5px; line-height: 1.75;
+          margin-top: 11px; padding-left: 10px; border-left: 2px solid rgba(139,92,246,0.24);
+          color: rgba(255,255,255,0.56); font-size: 11.5px; line-height: 1.75;
         }
         .clark-market-shortread p { margin: 0 0 5px; }
         .clark-market-shortread p:last-child { margin-bottom: 0; }
         .clark-market-next {
-          margin-top: 10px; padding: 9px 10px; border-radius: 8px;
-          background: rgba(45,212,191,0.05); border: 1px solid rgba(45,212,191,0.16);
-          font-size: 11.5px; line-height: 1.7; color: rgba(255,255,255,0.68);
+          margin-top: 11px; padding: 9px 10px; border-radius: 8px;
+          background: rgba(255,255,255,0.018); border: 1px solid rgba(45,212,191,0.10);
+          font-size: 11.5px; line-height: 1.7; color: rgba(255,255,255,0.62);
         }
         .clark-market-next p { margin: 0 0 4px; }
         .clark-market-next-cta {
-          margin-top: 4px; font: 700 9px var(--font-inter); letter-spacing: .03em; text-transform: uppercase;
-          color: #5eead4; background: rgba(45,212,191,0.08); border: 1px solid rgba(45,212,191,0.26);
-          border-radius: 6px; padding: 4px 9px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
+          margin-top: 4px; font: 700 8.5px var(--font-inter); letter-spacing: .03em; text-transform: uppercase;
+          color: rgba(94,234,212,0.85); background: transparent; border: 1px solid rgba(45,212,191,0.18);
+          border-radius: 6px; padding: 3px 8px; cursor: pointer; transition: background 0.15s, border-color 0.15s;
         }
-        .clark-market-next-cta:hover { background: rgba(45,212,191,0.16); border-color: rgba(45,212,191,0.42); }
+        .clark-market-next-cta:hover { background: rgba(45,212,191,0.09); border-color: rgba(45,212,191,0.32); }
 
         /* Composer — terminal command-bar treatment */
         .clark-quick-chip {
