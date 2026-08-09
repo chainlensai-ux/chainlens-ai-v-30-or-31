@@ -179,10 +179,20 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   const saveFailureReasonRef = useRef<string | null>(null)
   const hydrateFromServerAttemptedRef = useRef(false)
   const hydrateFromServerSucceededRef = useRef(false)
+  // AUDIT FIX, DISCLOSED (wallet-connection audit): mirrors isConnected/isReconnecting for the
+  // delayed WalletConnect passive-reconnect check below, so a timer that was already scheduled
+  // before the connection state changed can read the CURRENT state at fire time instead of the
+  // stale values captured in its effect closure.
+  const isConnectedRef = useRef(false)
+  const isReconnectingRef = useRef(false)
 
   const menuRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => { setMounted(true) }, [])
+  useEffect(() => {
+    isConnectedRef.current = isConnected
+    isReconnectingRef.current = isReconnecting
+  }, [isConnected, isReconnecting])
   useEffect(() => {
     if (!mounted) return
     const ua = navigator.userAgent || ''
@@ -479,9 +489,15 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       }
       return
     }
+    // AUDIT FIX, DISCLOSED (wallet-connection audit): previously fell back to connectors[0] — an
+    // arbitrary guess — whenever the saved connectorId was missing (this happens, e.g. wallet state
+    // hydrated from the server without one). Reconnecting with a blind guess could silently attempt
+    // to connect a different wallet than the one the user actually used. Now skips the silent
+    // reconnect entirely in that case, same as the existing WalletConnect skip below — the user
+    // still sees the normal "Reconnect Wallet" button (showReconnectState), just no auto-attempt.
     const preferred = savedState.connectorId
       ? connectors.find(c => c.id === savedState.connectorId || c.name === savedState.connectorId)
-      : connectors[0]
+      : null
     if (!preferred) return
     // Skip WalletConnect — wagmi's reconnectOnMount handles WC session restore
     if (isWalletConnect(preferred.id)) return
@@ -498,6 +514,15 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
         console.debug('[ConnectWallet] silent reconnect succeeded')
       }
     }).catch((err) => {
+      // AUDIT FIX, DISCLOSED (wallet-connection audit): previously this ref stayed `true` forever
+      // on failure, permanently blocking every future silent-reconnect attempt for the rest of the
+      // page session (the only reset was a tab visibility/focus change). A very common real cause
+      // of failure here is simply that the injected provider (window.ethereum) isn't ready yet at
+      // the moment this effect first runs — a transient race, not a permanent condition. Resetting
+      // the ref lets the next legitimate re-render (e.g. wagmi's connectors list updating once the
+      // provider becomes available) retry, instead of requiring the user to switch tabs away and
+      // back before reconnection can ever work again.
+      reconnectAttemptedRef.current = false
       if (process.env.NODE_ENV !== 'production') {
         console.debug('[ConnectWallet] silent reconnect failed', { reason: err instanceof Error ? err.message : String(err) })
       }
@@ -509,16 +534,29 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     const savedIsWC = !!savedState?.connectorId && isWalletConnect(savedState.connectorId)
     if (!savedIsWC || isConnected || isReconnecting || getManualDisconnectFlag(authUserId)) return
     if (passiveWcCheckDoneRef.current) return
-    passiveWcCheckDoneRef.current = true
     const wcConnector = getWalletConnectConnector()
     if (!wcConnector) return
     const maybeSession = hasLikelyWcSession()
     if (!maybeSession) return
-    void connectAsync({ connector: wcConnector }).then(() => {
-      reconnectResultRef.current = 'restored'
-    }).catch(() => {
-      reconnectResultRef.current = 'failed'
-    })
+    passiveWcCheckDoneRef.current = true
+    // AUDIT FIX, DISCLOSED (wallet-connection audit): previously fired immediately, racing wagmi's
+    // own reconnectOnMount (which the silent-reconnect effect above already defers to for exactly
+    // this WalletConnect case) — two concurrent connectAsync calls against the same WC session can
+    // conflict. A short delay lets wagmi's own mount-time restore resolve first; isConnected/
+    // isReconnecting are re-checked via refs right before actually attempting, so a stale timer
+    // firing after the state already changed becomes a no-op instead of a duplicate attempt.
+    const timer = window.setTimeout(() => {
+      if (isConnectedRef.current || isReconnectingRef.current) return
+      void connectAsync({ connector: wcConnector }).then(() => {
+        reconnectResultRef.current = 'restored'
+      }).catch(() => {
+        reconnectResultRef.current = 'failed'
+        // Same reasoning as the silent-reconnect effect's catch above — don't permanently block
+        // retry on a single transient failure.
+        passiveWcCheckDoneRef.current = false
+      })
+    }, 1000)
+    return () => window.clearTimeout(timer)
   }, [authUserId, connectAsync, getWalletConnectConnector, hasLikelyWcSession, isConnected, isReconnecting, mounted, savedState])
 
   useEffect(() => {
