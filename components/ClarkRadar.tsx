@@ -13,9 +13,27 @@ const HINT_CHIPS = [
   'Liquidity check AERO',
 ]
 
+interface MoverItem {
+  rank?: number
+  symbol: string
+  name?: string | null
+  tokenAddress?: string | null
+  poolAddress?: string | null
+  reasonTag?: string | null
+  price?: number | null
+  liquidity?: number | null
+  volume24h?: number | null
+  change24h?: number | null
+}
+
 interface Message {
   role: 'user' | 'clark'
   text: string
+  // STRUCTURED MOVERS, DISCLOSED (Clark panel redesign — presentational only): the SAME real
+  // marketContext.items array the backend already returns and this component already persisted
+  // into clarkContextRef for follow-up-prompt memory — never fabricated, never re-fetched. Attached
+  // to the specific message that produced it so mover rows render against the right response.
+  movers?: MoverItem[]
 }
 
 type AnalysisKind = 'token' | 'wallet' | 'lp' | 'general'
@@ -141,29 +159,195 @@ interface ClarkRadarProps {
   pendingMessage?: string | null
 }
 
-// Renders a Clark response with section labels (e.g. "Verdict:", "Risk:") highlighted in cyan.
-function ClarkMessage({ text }: { text: string }) {
-  const LABEL_RE = /^([A-Z][^\n:]{0,28}):\s*/
+// ── Structured analysis rendering, DISCLOSED (Clark panel redesign — presentational only) ────
+// Everything below reformats the SAME reply text/marketContext.items the backend already returns.
+// No text is invented, summarized, or reworded — only re-laid-out: label lines become section
+// headers, "0x..." substrings become copy chips, and (when the backend attached real
+// marketContext.items to this response) plain "- Token: ..." list lines are additionally rendered
+// as structured rows using that real data instead of just as text.
+
+type ClarkSection = { title: string | null; lines: string[] }
+
+const SECTION_LABEL_RE = /^([A-Z][^\n:]{0,32}):\s*(.*)$/
+const ADDRESS_RE = /0x[a-fA-F0-9]{40}/g
+
+function isSectionLabel(candidate: string): boolean {
+  const words = candidate.trim().split(/\s+/)
+  return words.length > 0 && words.length <= 5 && !/[,;.!?]/.test(candidate)
+}
+
+// Splits a reply into labeled sections (e.g. "Clark's read:", "Best next step:") the same way the
+// backend already formats multi-part answers — never re-parses meaning, only groups existing lines
+// under their existing headers so each part can render as its own card block.
+function splitIntoSections(text: string): ClarkSection[] {
+  const rawLines = text.split('\n')
+  const sections: ClarkSection[] = []
+  let current: ClarkSection = { title: null, lines: [] }
+  for (const raw of rawLines) {
+    const m = raw.match(SECTION_LABEL_RE)
+    if (m && isSectionLabel(m[1])) {
+      if (current.title !== null || current.lines.some((l) => l.trim())) sections.push(current)
+      current = { title: m[1].trim(), lines: m[2] ? [m[2]] : [] }
+    } else {
+      current.lines.push(raw)
+    }
+  }
+  sections.push(current)
+  return sections.filter((s) => s.title || s.lines.some((l) => l.trim()))
+}
+
+function shortAddr(addr: string): string {
+  return `${addr.slice(0, 6)}…${addr.slice(-4)}`
+}
+
+function CopyContractChip({ address }: { address: string }) {
+  const [copied, setCopied] = useState(false)
   return (
-    <div style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
-      {text.split('\n').map((line, i) => {
-        const m = line.match(LABEL_RE)
-        const isLabel = m != null && m[1].trim().split(/\s+/).length <= 4 && !/[,;.!?]/.test(m[1])
-        if (isLabel && m) {
-          const rest = line.slice(m[0].length)
-          return (
-            <div key={i} style={{ lineHeight: 1.8, marginTop: i === 0 ? 0 : '2px' }}>
-              <span style={{ color: '#5eead4', fontWeight: 700, fontSize: '11.5px', letterSpacing: '0.01em' }}>{m[1]}:</span>
-              {rest ? <span style={{ color: 'inherit' }}> {rest}</span> : ''}
-            </div>
-          )
-        }
-        if (!line) {
-          return <div key={i} style={{ height: '8px' }} />
-        }
+    <button
+      type="button"
+      className="clark-addr-chip"
+      title={address}
+      onClick={() => {
+        void navigator.clipboard?.writeText(address).then(() => {
+          setCopied(true)
+          window.setTimeout(() => setCopied(false), 1400)
+        })
+      }}
+    >
+      {shortAddr(address)}
+      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" style={{ flexShrink: 0 }}>
+        {copied
+          ? <path d="M5 13l4 4L19 7" stroke="#5eead4" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+          : <path d="M9 9h10v10H9zM5 5h10v4H9v6H5z" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />}
+      </svg>
+    </button>
+  )
+}
+
+// Renders one line of reply text, compressing any raw "0x..." contract address into a truncated,
+// monospace copy chip instead of dumping the full 42-character string inline.
+function TextLineWithAddresses({ line }: { line: string }) {
+  const parts = line.split(ADDRESS_RE)
+  const matches = line.match(ADDRESS_RE)
+  if (!matches) return <>{line}</>
+  return (
+    <>
+      {parts.map((part, i) => (
+        <span key={i}>
+          {part}
+          {i < matches.length && <CopyContractChip address={matches[i]} />}
+        </span>
+      ))}
+    </>
+  )
+}
+
+function fmtUsdShort(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return '—'
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(2)}M`
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`
+  return `$${n.toFixed(n < 1 ? 4 : 2)}`
+}
+
+function fmtPct(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return '—'
+  return `${n >= 0 ? '+' : ''}${n.toFixed(1)}%`
+}
+
+// Compact mover row — the structured alternative to a plain "- Token: 24h +x%, vol $y, liq $z"
+// text line, using the SAME real per-item fields the backend's marketContext.items already carries.
+function MoverRow({ item, onScan, onWatch, watchState }: {
+  item: MoverItem
+  onScan: (item: MoverItem) => void
+  onWatch: (item: MoverItem) => void
+  watchState: 'idle' | 'saving' | 'saved' | 'error'
+}) {
+  const positive = (item.change24h ?? 0) >= 0
+  const contract = item.tokenAddress ?? item.poolAddress ?? null
+  return (
+    <div className="clark-mover-row">
+      <div className="clark-mover-row-main">
+        <div className="clark-mover-row-top">
+          <span className="clark-mover-symbol">{item.symbol}</span>
+          {item.reasonTag && <span className="clark-mover-tag">{item.reasonTag}</span>}
+          <span className={`clark-mover-change${positive ? ' is-up' : ' is-down'}`}>{fmtPct(item.change24h)}</span>
+        </div>
+        <div className="clark-mover-row-stats">
+          <span>Vol {fmtUsdShort(item.volume24h)}</span>
+          <span className="clark-mover-dot">·</span>
+          <span>Liq {fmtUsdShort(item.liquidity)}</span>
+          {contract && (
+            <>
+              <span className="clark-mover-dot">·</span>
+              <CopyContractChip address={contract} />
+            </>
+          )}
+        </div>
+      </div>
+      <div className="clark-mover-row-actions">
+        <button type="button" className="clark-mover-action" onClick={() => onScan(item)}>Scan</button>
+        <button
+          type="button"
+          className={`clark-mover-action${watchState === 'saved' ? ' is-active' : ''}`}
+          onClick={() => onWatch(item)}
+          disabled={watchState === 'saving'}
+        >
+          {watchState === 'saved' ? 'Watching' : watchState === 'saving' ? '…' : 'Watch'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// Renders one reply as structured analysis: section headers for label lines, mover-row cards for
+// list lines when this message carries real marketContext.items, plain lines otherwise — same
+// content, never rewritten, just given hierarchy instead of one flat text block.
+function ClarkMessage({ text, movers, onScan, onWatch, watchStateFor }: {
+  text: string
+  movers?: MoverItem[]
+  onScan: (item: MoverItem) => void
+  onWatch: (item: MoverItem) => void
+  watchStateFor: (item: MoverItem) => 'idle' | 'saving' | 'saved' | 'error'
+}) {
+  const sections = splitIntoSections(text)
+  // A section's own list lines start with "- " (the backend's own bullet convention for
+  // mover-style lists). Only the FIRST such section on a message that carries real movers renders
+  // structured rows instead of the raw bullet text; every other section renders as-is. Computed
+  // once up front (not mutated during the render below) so the section list stays pure per render.
+  const firstListSectionIndex = movers && movers.length > 0
+    ? sections.findIndex((section) => section.lines.some((l) => l.trim().startsWith('- ')))
+    : -1
+  return (
+    <div className="clark-analysis" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+      {sections.map((section, si) => {
+        const useStructuredMovers = si === firstListSectionIndex
         return (
-          <div key={i} style={{ lineHeight: 1.8 }}>
-            {line}
+          <div key={si} className="clark-section">
+            {section.title && <div className="clark-section-title">{section.title}</div>}
+            {useStructuredMovers ? (
+              <div className="clark-mover-list">
+                {(movers ?? []).slice(0, 8).map((item, mi) => (
+                  <MoverRow
+                    key={`${item.symbol}-${mi}`}
+                    item={item}
+                    onScan={onScan}
+                    onWatch={onWatch}
+                    watchState={watchStateFor(item)}
+                  />
+                ))}
+              </div>
+            ) : (
+              section.lines.map((line, li) => {
+                if (!line.trim()) return <div key={li} style={{ height: '6px' }} />
+                const isBullet = line.trim().startsWith('- ')
+                return (
+                  <div key={li} className={isBullet ? 'clark-section-bullet' : 'clark-section-line'}>
+                    <TextLineWithAddresses line={isBullet ? line.trim().slice(2) : line} />
+                  </div>
+                )
+              })
+            )}
+            {si < sections.length - 1 && <div className="clark-section-divider" />}
           </div>
         )
       })}
@@ -177,6 +361,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
   const [loading, setLoading] = useState(false)
   const [loadingKind, setLoadingKind] = useState<AnalysisKind>('general')
   const [clarkMode, setClarkMode] = useState<ClarkMode>('chat')
+  const [watchStates, setWatchStates] = useState<Record<string, 'idle' | 'saving' | 'saved' | 'error'>>({})
   const scrollRef = useRef<HTMLDivElement>(null)
   const messagesRef = useRef<Message[]>([])
   const lastSentRef = useRef<string | null>(null)
@@ -267,10 +452,14 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
       const reply = json.ok
         ? String(payload?.reply ?? formatResponse(payload))
         : (json.error ?? 'Something went wrong.')
+      // ATTACH REAL MOVERS, DISCLOSED: nextItems is the same already-extracted, already-persisted
+      // marketContext.items this function computed above — attached here only for display, never
+      // altering the reply text or any of the existing memory/context wiring above.
+      const movers = json.ok && nextItems && nextItems.length > 0 ? (nextItems as MoverItem[]) : undefined
 
       setMessages(prev => {
         const next = [...prev]
-        next[next.length - 1] = { role: 'clark', text: reply }
+        next[next.length - 1] = { role: 'clark', text: reply, movers }
         return next
       })
     } catch {
@@ -284,6 +473,39 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
       inputRef.current?.focus()
     }
   }, [clarkMode])
+
+  // MICRO-ACTIONS, DISCLOSED (Clark panel redesign): "Scan" reuses sendToClark exactly like typing
+  // a prompt would — no new backend path. "Watch" reuses the existing, unmodified
+  // /api/watchlist/tokens endpoint the Watchlist page already calls; this is the same real
+  // add-to-watchlist action, just triggered from a mover row instead of that page.
+  const watchKey = useCallback((item: MoverItem) => (item.tokenAddress ?? item.poolAddress ?? item.symbol).toLowerCase(), [])
+  const watchStateFor = useCallback((item: MoverItem) => watchStates[watchKey(item)] ?? 'idle', [watchStates, watchKey])
+
+  const handleScanMover = useCallback((item: MoverItem) => {
+    const target = item.tokenAddress ?? item.symbol
+    sendToClark(`Scan ${target}`)
+  }, [sendToClark])
+
+  const handleWatchMover = useCallback(async (item: MoverItem) => {
+    const key = watchKey(item)
+    if (watchStates[key] === 'saving' || watchStates[key] === 'saved') return
+    setWatchStates(prev => ({ ...prev, [key]: 'saving' }))
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const token = sessionData.session?.access_token
+      if (!token) { setWatchStates(prev => ({ ...prev, [key]: 'error' })); return }
+      const address = item.tokenAddress ?? item.poolAddress ?? ''
+      if (!address) { setWatchStates(prev => ({ ...prev, [key]: 'error' })); return }
+      const res = await fetch('/api/watchlist/tokens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ address, symbol: item.symbol, chain: 'base' }),
+      })
+      setWatchStates(prev => ({ ...prev, [key]: res.ok ? 'saved' : 'error' }))
+    } catch {
+      setWatchStates(prev => ({ ...prev, [key]: 'error' }))
+    }
+  }, [watchStates, watchKey])
 
   useEffect(() => {
     if (pendingMessage && pendingMessage !== lastSentRef.current) {
@@ -304,28 +526,27 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
     sendToClark(text)
   }
 
+  function applyQuickChip(prefix: string) {
+    setInput(`${prefix} `)
+    inputRef.current?.focus()
+  }
+
   return (
     <>
       <style>{`
-        @keyframes clarkOnlinePulse {
-          0%, 100% { opacity: 1; box-shadow: 0 0 6px rgba(139,92,246,0.9); }
-          50%       { opacity: 0.5; box-shadow: 0 0 3px rgba(139,92,246,0.4); }
+        /* PREMIUM-RESTRAINT PASS, DISCLOSED (Clark panel redesign): the panel previously breathed a
+           continuously-animated inset box-shadow across its whole surface (clarkPanelGlow) and the
+           send button pulsed a candy-glow even at rest (radarSendGlow/radarArrowPulse) — exactly the
+           "flashy/glowy... feels cheap" pattern this task asks to remove. Both are now static; only
+           opacity/transform animate anywhere below (plus the pre-existing, deliberately-kept loading
+           shimmer/online dot, which already used background-position/opacity only).
+           */
+        .clark-online-dot {
+          box-shadow: 0 0 4px rgba(139,92,246,0.55);
         }
-        @keyframes clarkPanelGlow {
-          0%, 100% {
-            box-shadow:
-              inset 0 0 50px rgba(139,92,246,0.09),
-              inset 0 0 26px rgba(236,72,153,0.05);
-          }
-          50% {
-            box-shadow:
-              inset 0 0 80px rgba(139,92,246,0.18),
-              inset 0 0 42px rgba(236,72,153,0.10);
-          }
-        }
-        .clark-panel-glow {
-          animation: clarkPanelGlow 4s ease-in-out infinite;
-        }
+        @keyframes clarkOnlinePulse { 0%,100% { opacity: 1; } 50% { opacity: 0.55; } }
+        .clark-online-dot { animation: clarkOnlinePulse 3s ease-in-out infinite; }
+
         .clark-hint-chip {
           background: rgba(255,255,255,0.03);
           border: 1px solid rgba(255,255,255,0.06);
@@ -340,15 +561,14 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           align-items: center;
           gap: 7px;
           width: 100%;
-          transition: border-color 0.15s, color 0.15s, background 0.15s, box-shadow 0.15s;
+          transition: border-color 0.15s, color 0.15s, background 0.15s;
         }
         .clark-hint-chip:hover {
-          border-color: rgba(139,92,246,0.32);
+          border-color: rgba(139,92,246,0.30);
           color: rgba(255,255,255,0.80);
-          background: rgba(139,92,246,0.08);
-          box-shadow: 0 0 10px rgba(139,92,246,0.12), 0 0 6px rgba(236,72,153,0.06);
+          background: rgba(139,92,246,0.06);
         }
-        .clark-panel-input::placeholder { color: rgba(255,255,255,0.40); }
+        .clark-panel-input::placeholder { color: rgba(255,255,255,0.36); }
         .clark-mode-toggle {
           display: inline-flex;
           gap: 5px;
@@ -368,32 +588,15 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           color: rgba(255,255,255,0.55);
           background: transparent;
           cursor: pointer;
-          transition: all 0.2s ease;
+          transition: color 0.15s, background 0.15s;
           white-space: nowrap;
         }
         .clark-mode-btn.active {
           color: #e2e8f0;
-          background: linear-gradient(90deg, rgba(45,212,191,0.22), rgba(139,92,246,0.22));
-          box-shadow: 0 0 12px rgba(45,212,191,0.24), 0 0 12px rgba(139,92,246,0.18);
+          background: linear-gradient(90deg, rgba(45,212,191,0.20), rgba(139,92,246,0.20));
         }
-        @keyframes radarSendGlow {
-          0%, 100% { box-shadow: 0 0 10px rgba(236,72,153,0.42), 0 0 6px rgba(139,92,246,0.30); }
-          50%       { box-shadow: 0 0 22px rgba(236,72,153,0.72), 0 0 16px rgba(139,92,246,0.52), 0 0 30px rgba(236,72,153,0.20); }
-        }
-        @keyframes radarArrowPulse {
-          0%, 100% { opacity: 1; transform: translateX(0); }
-          50%       { opacity: 0.60; transform: translateX(1.5px); }
-        }
-        .clark-radar-send {
-          animation: radarSendGlow 3s ease-in-out infinite;
-          transition: transform 0.15s;
-        }
-        .clark-radar-send:hover {
-          transform: scale(1.12);
-          box-shadow: 0 0 28px rgba(236,72,153,0.82), 0 0 18px rgba(139,92,246,0.62) !important;
-          animation: none;
-        }
-        .clark-radar-arrow { animation: radarArrowPulse 2.5s ease-in-out infinite; display: inline-flex; }
+        .clark-radar-send { transition: transform 0.15s, background 0.15s; }
+        .clark-radar-send:hover { transform: translateY(-1px); }
         .clark-radar-scroll::-webkit-scrollbar { width: 3px; }
         .clark-radar-scroll::-webkit-scrollbar-thumb {
           background: rgba(123,92,255,0.30);
@@ -417,29 +620,110 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           animation: clarkTraceShimmer 1.7s linear infinite;
         }
         @keyframes clarkTraceShimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
-        @keyframes clarkOrbFloat {
-          0%,100% { transform: translateY(0px) scale(1); }
-          50% { transform: translateY(-2px) scale(1.02); }
-        }
-        @keyframes clarkRadarPulse {
-          0%,100% { opacity: 0.28; transform: scale(0.96); }
-          50% { opacity: 0.55; transform: scale(1.04); }
-        }
-        .clark-orb { position: relative; border-radius: 999px; animation: clarkOrbFloat 4s ease-in-out infinite; }
+        .clark-orb { position: relative; border-radius: 999px; }
         .clark-orb::before {
           content: ''; position: absolute; inset: -5px; border-radius: inherit;
-          background: radial-gradient(circle, rgba(45,212,191,0.20) 0%, rgba(139,92,246,0.08) 52%, transparent 72%);
-          opacity: 0; transform: scale(.95); pointer-events: none;
+          background: radial-gradient(circle, rgba(45,212,191,0.16) 0%, rgba(139,92,246,0.06) 52%, transparent 72%);
+          opacity: 0; pointer-events: none;
         }
+        @keyframes clarkRadarPulse { 0%,100% { opacity: 0.28; } 50% { opacity: 0.55; } }
         .clark-orb-thinking::before { animation: clarkRadarPulse 1.8s ease-in-out infinite; opacity: 1; }
-        .clark-msg p { margin: 0; }
-        .clark-msg strong { color: #e2e8f0; font-weight: 600; }
-        .clark-msg-label { color: #c4b5fd; font-weight: 600; letter-spacing: 0.01em; }
+
+        /* Message shell — bubbles restyled as calmer, structured cards rather than flat chat pills. */
+        .clark-bubble-user {
+          background: linear-gradient(135deg, rgba(45,212,191,0.09) 0%, rgba(45,212,191,0.03) 100%);
+          border: 1px solid rgba(45,212,191,0.20);
+        }
+        .clark-bubble-clark {
+          background: rgba(255,255,255,0.025);
+          border: 1px solid rgba(255,255,255,0.08);
+        }
+        .clark-bubble-role-user { color: #5eead4; }
+        .clark-bubble-role-clark { color: rgba(196,181,253,0.85); }
+
+        /* Structured analysis sections */
+        .clark-section { display: flex; flex-direction: column; }
+        .clark-section-title {
+          font: 800 9.5px var(--font-plex-mono); letter-spacing: .10em; text-transform: uppercase;
+          color: #5eead4; margin-bottom: 4px;
+        }
+        .clark-section-line { line-height: 1.75; color: inherit; }
+        .clark-section-bullet {
+          line-height: 1.75; color: inherit; padding-left: 12px; position: relative;
+        }
+        .clark-section-bullet::before {
+          content: '–'; position: absolute; left: 0; color: rgba(94,234,212,0.55);
+        }
+        .clark-section-divider {
+          height: 1px; margin: 9px 0; background: rgba(255,255,255,0.06);
+        }
+
+        /* Contract address compression */
+        .clark-addr-chip {
+          display: inline-flex; align-items: center; gap: 4px;
+          padding: 1px 6px; margin: 0 2px; border-radius: 5px;
+          background: rgba(139,92,246,0.10); border: 1px solid rgba(139,92,246,0.22);
+          color: #c4b5fd; font-family: var(--font-plex-mono); font-size: 10.5px;
+          cursor: pointer; transition: background 0.15s, border-color 0.15s;
+          vertical-align: middle;
+        }
+        .clark-addr-chip:hover { background: rgba(139,92,246,0.18); border-color: rgba(139,92,246,0.38); }
+
+        /* Mover rows */
+        .clark-mover-list { display: flex; flex-direction: column; gap: 5px; }
+        .clark-mover-row {
+          display: flex; align-items: center; justify-content: space-between; gap: 8px;
+          padding: 7px 9px; border-radius: 8px;
+          background: rgba(255,255,255,0.022); border: 1px solid rgba(255,255,255,0.06);
+        }
+        .clark-mover-row-main { min-width: 0; flex: 1; }
+        .clark-mover-row-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .clark-mover-symbol { font: 800 11.5px var(--font-plex-mono); color: #f1f5f9; letter-spacing: .01em; }
+        .clark-mover-tag {
+          font: 700 8px var(--font-inter); letter-spacing: .04em; text-transform: uppercase;
+          color: rgba(196,181,253,0.80); background: rgba(139,92,246,0.10);
+          border: 1px solid rgba(139,92,246,0.20); border-radius: 4px; padding: 1px 5px;
+        }
+        .clark-mover-change { font: 800 10.5px var(--font-plex-mono); margin-left: auto; }
+        .clark-mover-change.is-up { color: #5eead4; }
+        .clark-mover-change.is-down { color: #fb7185; }
+        .clark-mover-row-stats {
+          display: flex; align-items: center; gap: 5px; margin-top: 3px;
+          font: 600 10px var(--font-plex-mono); color: rgba(255,255,255,0.45);
+        }
+        .clark-mover-dot { color: rgba(255,255,255,0.20); }
+        .clark-mover-row-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+        .clark-mover-action {
+          font: 700 9px var(--font-inter); letter-spacing: .03em; text-transform: uppercase;
+          color: rgba(255,255,255,0.55); background: rgba(255,255,255,0.04);
+          border: 1px solid rgba(255,255,255,0.10); border-radius: 6px; padding: 4px 8px;
+          cursor: pointer; transition: color 0.15s, background 0.15s, border-color 0.15s;
+        }
+        .clark-mover-action:hover:not(:disabled) { color: #fff; background: rgba(139,92,246,0.14); border-color: rgba(139,92,246,0.30); }
+        .clark-mover-action.is-active { color: #5eead4; background: rgba(45,212,191,0.10); border-color: rgba(45,212,191,0.28); }
+        .clark-mover-action:disabled { cursor: default; opacity: 0.6; }
+
+        /* Composer — terminal command-bar treatment */
+        .clark-quick-chip {
+          font: 700 9.5px var(--font-plex-mono); letter-spacing: .03em;
+          color: rgba(255,255,255,0.42); background: rgba(255,255,255,0.03);
+          border: 1px solid rgba(255,255,255,0.08); border-radius: 6px;
+          padding: 3px 7px; cursor: pointer; transition: color 0.15s, background 0.15s, border-color 0.15s;
+          white-space: nowrap;
+        }
+        .clark-quick-chip:hover { color: #5eead4; background: rgba(45,212,191,0.08); border-color: rgba(45,212,191,0.24); }
+        .clark-composer-shell {
+          background: rgba(6,8,18,0.80);
+          border: 1px solid rgba(255,255,255,0.10);
+          transition: border-color 0.15s;
+        }
+        .clark-composer-shell:focus-within { border-color: rgba(45,212,191,0.34); }
+        .clark-composer-prompt { color: rgba(94,234,212,0.65); font-family: var(--font-plex-mono); font-size: 12px; flex-shrink: 0; }
+
         @media (prefers-reduced-motion: reduce) {
-          .clark-orb, .clark-orb::before, .clark-loading-shimmer, .clark-radar-send, .clark-radar-arrow { animation: none !important; }
+          .clark-orb::before, .clark-loading-shimmer, .clark-online-dot { animation: none !important; }
         }
         @media (max-width: 768px) {
-          .clark-panel-glow { animation: none !important; }
           .clark-radar-hdr-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
           .clark-radar-panel-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
           .clark-radar-input-blur { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
@@ -447,7 +731,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
       `}</style>
 
       <div
-        className="clark-panel-glow clark-radar-panel-blur"
+        className="clark-radar-panel-blur"
         style={{
           display: 'flex',
           flexDirection: 'column',
@@ -455,6 +739,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           background: 'rgba(5,8,22,0.72)',
           backdropFilter: 'blur(20px)',
           WebkitBackdropFilter: 'blur(20px)',
+          boxShadow: 'inset 0 0 42px rgba(139,92,246,0.05), inset 0 0 20px rgba(236,72,153,0.03)',
         }}
       >
         {/* Top gradient accent line */}
@@ -476,8 +761,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            padding: '0 12px',
-            height: '44px',
+            padding: '9px 12px',
             background: 'rgba(8,10,20,0.90)',
             backdropFilter: 'blur(16px)',
             WebkitBackdropFilter: 'blur(16px)',
@@ -485,23 +769,40 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
             flexShrink: 0,
           }}
         >
-          {/* Left — icon + title */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '9px' }}>
+          {/* Left — icon + title + role subtitle */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0 }}>
             <ClarkOrb size={26} className="clark-orb" style={{ flexShrink: 0 }} />
-            <span
-              style={{
-                fontSize: '13px',
-                fontWeight: 600,
-                color: '#f1f5f9',
-                fontFamily: 'var(--font-inter)',
-                letterSpacing: '-0.01em',
-              }}
-            >
-              Clark AI
-            </span>
+            <div style={{ minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  color: '#f1f5f9',
+                  fontFamily: 'var(--font-inter)',
+                  letterSpacing: '-0.01em',
+                  lineHeight: 1.2,
+                }}
+              >
+                Clark AI
+              </div>
+              <div
+                style={{
+                  fontSize: '8.5px',
+                  fontWeight: 700,
+                  color: 'rgba(196,181,253,0.55)',
+                  fontFamily: 'var(--font-plex-mono)',
+                  letterSpacing: '0.10em',
+                  textTransform: 'uppercase',
+                  lineHeight: 1.2,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                Onchain Intelligence Analyst
+              </div>
+            </div>
           </div>
 
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
             <div className='clark-mode-toggle'>
               <button type='button' className={`clark-mode-btn ${clarkMode === 'chat' ? 'active' : ''}`} onClick={() => setClarkMode('chat')}>
                 Chat
@@ -515,22 +816,13 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                 display: 'flex',
                 alignItems: 'center',
                 gap: '5px',
-                background: 'rgba(139,92,246,0.09)',
-                border: '1px solid rgba(139,92,246,0.22)',
+                background: 'rgba(139,92,246,0.08)',
+                border: '1px solid rgba(139,92,246,0.20)',
                 borderRadius: '100px',
                 padding: '3px 9px',
-                boxShadow: '0 0 10px rgba(139,92,246,0.12)',
               }}
             >
-              <div
-                style={{
-                  width: '5px',
-                  height: '5px',
-                  borderRadius: '50%',
-                  background: '#a78bfa',
-                  animation: 'clarkOnlinePulse 3s ease-in-out infinite',
-                }}
-              />
+              <div className="clark-online-dot" style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#a78bfa' }} />
               <span
                 style={{
                   fontSize: '9px',
@@ -628,37 +920,42 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                       style={{ flexShrink: 0, marginRight: '6px', alignSelf: 'flex-end' }}
                     />
                   )}
-                  <div className={msg.role === 'clark' ? 'clark-msg' : undefined} style={{
-                    maxWidth: '84%',
-                    padding: '8px 10px',
-                    borderRadius: '7px',
-                    background: msg.text === 'Clark is thinking...'
-                      ? 'linear-gradient(135deg, rgba(45,212,191,0.06) 0%, rgba(45,212,191,0.02) 100%)'
-                      : msg.role === 'user'
-                      ? 'rgba(45,212,191,0.10)'
-                      : 'rgba(123,92,255,0.10)',
-                    border: `1px solid ${msg.text === 'Clark is thinking...'
-                      ? 'rgba(45,212,191,0.20)'
-                      : msg.role === 'user'
-                      ? 'rgba(45,212,191,0.18)'
-                      : 'rgba(123,92,255,0.18)'}`,
-                    boxShadow: msg.text === 'Clark is thinking...'
-                      ? 'inset 0 0 0 1px rgba(45,212,191,0.06), 0 0 16px rgba(45,212,191,0.05)'
-                      : undefined,
-                    color: msg.text === 'Clark is thinking...' ? 'rgba(255,255,255,0.45)' : '#dde4f0',
-                    fontSize: '12px',
-                    lineHeight: 1.7,
-                    fontFamily: (msg.text.startsWith('{') || msg.text.startsWith('['))
-                      ? 'var(--font-plex-mono)'
-                      : 'var(--font-inter), Inter, sans-serif',
-                    whiteSpace: (msg.text.startsWith('{') || msg.text.startsWith('[')) ? 'pre-wrap' : undefined,
-                    wordBreak: 'break-word',
-                    overflowWrap: 'anywhere',
-                  }}>
-                    <div style={{ marginBottom: '5px', color: msg.role === 'user' ? '#67e8f9' : '#5eead4', fontFamily: 'var(--font-plex-mono)', fontSize: '9px', fontWeight: 800, letterSpacing: '.14em' }}>{msg.role === 'user' ? 'USER' : 'CLARK'}</div>
+                  <div
+                    className={`${msg.role === 'clark' ? 'clark-msg clark-bubble-clark' : 'clark-bubble-user'}`}
+                    style={{
+                      maxWidth: msg.role === 'clark' ? '92%' : '84%',
+                      padding: '9px 11px',
+                      borderRadius: '9px',
+                      boxShadow: msg.text === 'Clark is thinking...'
+                        ? 'inset 0 0 0 1px rgba(45,212,191,0.05)'
+                        : undefined,
+                      color: msg.text === 'Clark is thinking...' ? 'rgba(255,255,255,0.45)' : '#dde4f0',
+                      fontSize: '12px',
+                      lineHeight: 1.75,
+                      fontFamily: (msg.text.startsWith('{') || msg.text.startsWith('['))
+                        ? 'var(--font-plex-mono)'
+                        : 'var(--font-inter), Inter, sans-serif',
+                      whiteSpace: (msg.text.startsWith('{') || msg.text.startsWith('[')) ? 'pre-wrap' : undefined,
+                      wordBreak: 'break-word',
+                      overflowWrap: 'anywhere',
+                    }}>
+                    <div
+                      className={msg.role === 'user' ? 'clark-bubble-role-user' : 'clark-bubble-role-clark'}
+                      style={{ marginBottom: '5px', fontFamily: 'var(--font-plex-mono)', fontSize: '9px', fontWeight: 800, letterSpacing: '.14em' }}
+                    >
+                      {msg.role === 'user' ? 'YOU' : 'CLARK'}
+                    </div>
                     {msg.text === 'Clark is thinking...' ? (
                       <ClarkLoadingTrace kind={loadingKind} />
-                    ) : msg.role === 'clark' ? <ClarkMessage text={msg.text} /> : msg.text}
+                    ) : msg.role === 'clark' ? (
+                      <ClarkMessage
+                        text={msg.text}
+                        movers={msg.movers}
+                        onScan={handleScanMover}
+                        onWatch={handleWatchMover}
+                        watchStateFor={watchStateFor}
+                      />
+                    ) : msg.text}
                   </div>
                 </div>
               ))}
@@ -666,30 +963,37 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           )}
         </div>
 
-        {/* ── Input footer ────────────────────────────────── */}
+        {/* ── Input footer — terminal command-bar treatment ─── */}
         <div
           style={{
             flexShrink: 0,
-            padding: '6px 10px 10px',
-            borderTop: '1px solid rgba(139,92,246,0.12)',
+            padding: '7px 10px 10px',
+            borderTop: '1px solid rgba(255,255,255,0.07)',
             background: 'rgba(8,10,20,0.80)',
           }}
         >
+          {/* Quick command chips */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '6px', overflowX: 'auto' }}>
+            {['/token', '/wallet', '/lp', '/base'].map((cmd) => (
+              <button key={cmd} type="button" className="clark-quick-chip" onClick={() => applyQuickChip(cmd)}>
+                {cmd}
+              </button>
+            ))}
+          </div>
+
           <div
-            className="clark-radar-input-blur"
+            className="clark-radar-input-blur clark-composer-shell"
             style={{
               display: 'flex',
               alignItems: 'center',
               gap: '7px',
-              background: 'linear-gradient(135deg, rgba(5,8,22,0.65) 0%, rgba(45,212,191,0.04) 55%, rgba(139,92,246,0.03) 100%)',
-              border: '1px solid rgba(255,255,255,0.10)',
-              borderRadius: '11px',
-              padding: '7px 7px 7px 12px',
+              borderRadius: '9px',
+              padding: '8px 8px 8px 11px',
               backdropFilter: 'blur(24px)',
               WebkitBackdropFilter: 'blur(24px)',
-              boxShadow: 'inset 0 0 20px rgba(45,212,191,0.08), inset 0 0 14px rgba(236,72,153,0.06), inset 0 1px 0 rgba(255,255,255,0.06), 0 0 16px rgba(139,92,246,0.10), 0 0 8px rgba(45,212,191,0.06)',
             }}
           >
+            <span className="clark-composer-prompt">{'>_'}</span>
             <input
               ref={inputRef}
               type="text"
@@ -697,7 +1001,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && !loading) handleSend() }}
               disabled={loading}
-              placeholder={clarkMode === 'chat' ? 'Ask Clark...' : 'Paste Base contract/wallet to analyze...'}
+              placeholder={clarkMode === 'chat' ? 'Ask Clark about a token, wallet, or Base move…' : 'Paste a Base contract or wallet address to analyze…'}
               className="clark-panel-input"
               style={{
                 flex: 1,
@@ -706,8 +1010,8 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                 outline: 'none',
                 color: '#e2e8f0',
                 fontSize: '12px',
-                fontFamily: 'var(--font-inter)',
-                caretColor: '#a78bfa',
+                fontFamily: 'var(--font-plex-mono)',
+                caretColor: '#5eead4',
                 minWidth: 0,
                 opacity: loading ? 0.5 : 1,
               }}
@@ -718,14 +1022,14 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
               className={input.trim() && !loading ? 'clark-radar-send' : undefined}
               style={{
                 flexShrink: 0,
-                width: '28px',
-                height: '28px',
-                borderRadius: '50%',
+                width: '26px',
+                height: '26px',
+                borderRadius: '7px',
                 background: input.trim() && !loading
-                  ? 'linear-gradient(135deg, #ec4899, #8b5cf6)'
+                  ? 'linear-gradient(135deg, #2DD4BF, #8b5cf6)'
                   : 'rgba(255,255,255,0.05)',
                 border: input.trim() && !loading
-                  ? '1px solid rgba(236,72,153,0.40)'
+                  ? '1px solid rgba(45,212,191,0.36)'
                   : '1px solid rgba(255,255,255,0.07)',
                 display: 'flex',
                 alignItems: 'center',
@@ -733,17 +1037,15 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                 cursor: input.trim() && !loading ? 'pointer' : 'default',
               }}
             >
-              <span className={input.trim() && !loading ? 'clark-radar-arrow' : undefined} style={{ display: 'inline-flex' }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-                  <path
-                    d="M5 12h14M13 6l6 6-6 6"
-                    stroke={input.trim() && !loading ? '#fff' : 'rgba(255,255,255,0.22)'}
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M5 12h14M13 6l6 6-6 6"
+                  stroke={input.trim() && !loading ? '#04101a' : 'rgba(255,255,255,0.22)'}
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
             </button>
           </div>
 
