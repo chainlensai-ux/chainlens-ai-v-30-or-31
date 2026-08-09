@@ -66,6 +66,13 @@ type MomentumLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE'
 type RadarFilter = 'TRENDING' | 'NEW' | 'VOLUME' | 'LIQUIDITY' | 'RISK_WATCH' | 'WATCHLIST'
 type SortMode = 'NEWEST' | 'HIGHEST_SCORE' | 'HIGHEST_LIQUIDITY' | 'HIGHEST_VOLUME' | 'HIGHEST_MOMENTUM'
 
+// CHAIN SELECTOR SCAFFOLD, DISCLOSED (Robinhood Chain radar scaffold task): UI/state only — no
+// provider calls exist for Robinhood Chain yet. 'base' keeps 100% of the existing feed/stats/
+// sort/filters/CORTEX panel/token cards untouched; 'robinhood' renders a clearly-labeled beta/
+// coming-soon state only (see RobinhoodBetaState below) and never reuses Base feed data under the
+// Robinhood label.
+type RadarChain = 'base' | 'robinhood'
+
 type QualityLevel = 'Weak' | 'OK' | 'Strong' | 'None' | 'Low' | 'Medium' | 'High' | 'Fresh' | 'New' | 'Older' | 'Clean' | 'Unknown' | 'Verified' | 'Security Unknown'
 
 interface LaunchQuality {
@@ -817,6 +824,102 @@ function LowActivityPanel() {
   )
 }
 
+const RADAR_CHAINS: Array<{ key: RadarChain; label: string }> = [
+  { key: 'base', label: 'Base' },
+  { key: 'robinhood', label: 'Robinhood' },
+]
+
+// CHAIN SELECTOR, DISCLOSED (task #2): compact segmented control, Base selected by default. Uses
+// the existing /logos/base.png asset already in the repo for the Base icon (not a new/external
+// import); Robinhood has no icon asset in the repo so it gets a plain "RH" text badge, per the
+// task's own explicit instruction rather than sourcing a new logo.
+function ChainSelector({ value, onChange }: { value: RadarChain; onChange: (chain: RadarChain) => void }) {
+  return (
+    <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', padding: '3px', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
+      {RADAR_CHAINS.map(chain => {
+        const active = chain.key === value
+        return (
+          <button
+            key={chain.key}
+            onClick={() => onChange(chain.key)}
+            aria-pressed={active}
+            style={{
+              display: 'inline-flex', alignItems: 'center', gap: '6px',
+              padding: '5px 11px', borderRadius: '8px', border: 'none',
+              background: active ? 'rgba(45,212,191,0.14)' : 'transparent',
+              color: active ? '#5eead4' : '#94a3b8',
+              fontSize: '10px', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase',
+              fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+            }}
+          >
+            {chain.key === 'base' ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src="/logos/base.png" alt="" width={14} height={14} style={{ borderRadius: '50%', display: 'block' }} />
+            ) : (
+              <span style={{ width: '14px', height: '14px', borderRadius: '4px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: '7px', fontWeight: 900, background: 'rgba(148,163,184,0.18)', color: '#cbd5e1', flexShrink: 0 }}>RH</span>
+            )}
+            {chain.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// ROBINHOOD BETA STATE, DISCLOSED (task #4/#5/#7): pure UI scaffold — no Robinhood Chain provider
+// calls, no fake token results, no reuse of Base feed/summary data under the Robinhood label.
+// Copy is explicit that this is Robinhood CHAIN (the EVM network), not the Robinhood brokerage
+// app — no claim of access to Robinhood app trades/balances/PnL anywhere here.
+function RobinhoodBetaState({ onBackToBase }: { onBackToBase: () => void }) {
+  const bullets = [
+    'Chain-aware token discovery pending',
+    'DEX/pool indexing pending',
+    'Token Scanner support required before live ranking',
+  ]
+  return (
+    <div className="radar-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: '18px', alignItems: 'start' }}>
+      <div style={{ border: '1px solid rgba(255,255,255,0.09)', borderRadius: '12px', background: 'rgba(255,255,255,0.02)', padding: '22px' }}>
+        <p style={{ margin: '0 0 4px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.14em', color: '#94a3b8', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Beta scaffold</p>
+        <h2 style={{ margin: '0 0 10px', fontSize: '17px', fontWeight: 800, color: '#f8fafc' }}>Robinhood Chain Radar — beta scaffold</h2>
+        <p style={{ margin: '0 0 6px', fontSize: '12.5px', color: '#94a3b8', lineHeight: 1.55, maxWidth: '520px' }}>
+          Robinhood Chain is an on-chain EVM network. Live token discovery will be enabled after provider, explorer, and DEX coverage are verified.
+        </p>
+        <p style={{ margin: '0 0 16px', fontSize: '11px', color: '#5b7186', lineHeight: 1.5, maxWidth: '520px' }}>
+          This is Robinhood Chain (the network), not the Robinhood brokerage app — ChainLens does not access Robinhood app trades, balances, or PnL.
+        </p>
+        <div style={{ display: 'grid', gap: '8px', marginBottom: '18px' }}>
+          {bullets.map(bullet => (
+            <div key={bullet} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '11.5px', color: '#94a3b8', lineHeight: 1.4 }}>
+              <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#64748b', flexShrink: 0, marginTop: '6px' }} />
+              <span>{bullet}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+          <button onClick={onBackToBase} style={{ padding: '8px 14px', borderRadius: '9px', border: '1px solid rgba(45,212,191,0.28)', background: 'rgba(45,212,191,0.10)', color: '#5eead4', fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer' }}>
+            Back to Base Radar
+          </button>
+          <button disabled style={{ padding: '8px 14px', borderRadius: '9px', border: '1px solid rgba(255,255,255,0.08)', background: 'transparent', color: '#475569', fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', cursor: 'not-allowed' }}>
+            Robinhood Radar coming soon
+          </button>
+        </div>
+      </div>
+
+      <div className="radar-stats" style={{ position: 'sticky', top: '0' }}>
+        <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
+          CORTEX Panel
+        </p>
+        <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', padding: '13px' }}>
+          <p style={{ margin: '0 0 3px', color: '#94a3b8', fontSize: '10px', fontWeight: 800, letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Radar Read</p>
+          <p style={{ margin: 0, color: '#64748b', fontSize: '10.5px', lineHeight: 1.5 }}>
+            No live read yet for Robinhood Chain. CORTEX only reads verified feed data — it will not analyze a feed that is not live.
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function BaseRadarPage() {
   const { plan, loading: planLoading, elitePass } = usePlanWithLoading()
   const router = useRouter()
@@ -847,6 +950,11 @@ export default function BaseRadarPage() {
   const [trackedContracts, setTrackedContracts] = useState<Record<string, boolean>>({})
   const [selectedToken, setSelectedToken] = useState<TokenIntel | null>(null)
   const [drawerOpen, setDrawerOpen] = useState(false)
+  // CHAIN SELECTOR STATE, DISCLOSED (Robinhood Chain radar scaffold task): purely local UI state.
+  // fetchData()/the 120s poll below are untouched and keep fetching Base data regardless of which
+  // chain is selected — so switching back to Base always shows fresh data instantly — but nothing
+  // Base-derived is ever rendered while 'robinhood' is selected (see the render branch below).
+  const [selectedRadarChain, setSelectedRadarChain] = useState<RadarChain>('base')
 
   const effectivePlan = elitePass.active ? 'elite' : plan
   const showUpsell = effectivePlan === 'free'
@@ -1203,26 +1311,51 @@ export default function BaseRadarPage() {
             neon"), and vertical spacing is tighter throughout. */}
         <div style={{ marginBottom: '14px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginBottom: '5px' }}>
-            <h1 style={{ fontSize: '23px', fontWeight: 800, margin: 0, letterSpacing: '-0.02em', backgroundImage: 'linear-gradient(92deg, #f8fafc, #a5f3fc 38%, #c4b5fd 68%, #f8fafc)', WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent' }}>Base Radar</h1>
+            <h1 style={{ fontSize: '23px', fontWeight: 800, margin: 0, letterSpacing: '-0.02em', backgroundImage: 'linear-gradient(92deg, #f8fafc, #a5f3fc 38%, #c4b5fd 68%, #f8fafc)', WebkitBackgroundClip: 'text', backgroundClip: 'text', WebkitTextFillColor: 'transparent', color: 'transparent' }}>
+              {selectedRadarChain === 'base' ? 'Base Radar' : 'Robinhood Chain Radar'}
+            </h1>
 
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '4px 10px', borderRadius: '99px', background: 'rgba(236,72,153,0.12)', border: '1px solid rgba(236,72,153,0.30)', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#ec4899', fontFamily: 'var(--font-plex-mono)' }}>
-              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#ec4899', animation: 'livePulse 1.8s ease-in-out infinite', flexShrink: 0 }} />
-              LIVE
-            </span>
+            {/* CHAIN-AWARE LIVE BADGE, DISCLOSED (task #1/#7): only claims "LIVE" for Base, which is
+                the only chain with a real feed right now — Robinhood shows a plain "Beta" badge
+                instead so nothing implies a live Robinhood Chain feed exists yet. */}
+            {selectedRadarChain === 'base' ? (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '4px 10px', borderRadius: '99px', background: 'rgba(236,72,153,0.12)', border: '1px solid rgba(236,72,153,0.30)', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#ec4899', fontFamily: 'var(--font-plex-mono)' }}>
+                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#ec4899', animation: 'livePulse 1.8s ease-in-out infinite', flexShrink: 0 }} />
+                LIVE
+              </span>
+            ) : (
+              <span style={{ display: 'inline-flex', alignItems: 'center', padding: '4px 10px', borderRadius: '99px', background: 'rgba(148,163,184,0.12)', border: '1px solid rgba(148,163,184,0.28)', fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>
+                BETA
+              </span>
+            )}
+
+            <div style={{ marginLeft: 'auto' }}>
+              <ChainSelector value={selectedRadarChain} onChange={setSelectedRadarChain} />
+            </div>
           </div>
 
-          <p style={{ fontSize: '12.5px', color: '#94a3b8', margin: '0 0 3px', maxWidth: '720px', lineHeight: 1.4 }}>
-            Live feed — new Base opportunities
-          </p>
-          <p style={{ fontSize: '11px', color: '#5b7186', margin: '0 0 8px', maxWidth: '720px', lineHeight: 1.4 }}>
-            Fresh pools and early momentum signals
-          </p>
-          <p style={{ fontSize: '11px', color: '#5b7186', margin: '0 0 10px', maxWidth: '760px', lineHeight: 1.4, fontFamily: 'var(--font-plex-mono)' }}>
-            Default feed filters out pools under $15K valuation and shallow liquidity. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
-          </p>
+          {selectedRadarChain === 'base' ? (
+            <>
+              <p style={{ fontSize: '12.5px', color: '#94a3b8', margin: '0 0 3px', maxWidth: '720px', lineHeight: 1.4 }}>
+                Live feed — new Base opportunities
+              </p>
+              <p style={{ fontSize: '11px', color: '#5b7186', margin: '0 0 8px', maxWidth: '720px', lineHeight: 1.4 }}>
+                Fresh pools and early momentum signals
+              </p>
+              <p style={{ fontSize: '11px', color: '#5b7186', margin: '0 0 10px', maxWidth: '760px', lineHeight: 1.4, fontFamily: 'var(--font-plex-mono)' }}>
+                Default feed filters out pools under $15K valuation and shallow liquidity. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
+              </p>
+            </>
+          ) : (
+            <p style={{ fontSize: '12.5px', color: '#94a3b8', margin: '0 0 10px', maxWidth: '720px', lineHeight: 1.4 }}>
+              Robinhood Chain radar is being prepared. Data providers and DEX indexing must be verified before live ranking.
+            </p>
+          )}
 
-          <PulseStrip summary={summary} />
+          {selectedRadarChain === 'base' && <PulseStrip summary={summary} />}
 
+          {selectedRadarChain === 'base' && (
+          <>
           <div className="radar-controls" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <span style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{loading && tokens.length > 0 ? 'Refreshing radar…' : `Refresh in ${countdown}s`}</span>
@@ -1343,8 +1476,13 @@ export default function BaseRadarPage() {
               )}
             </div>
           </div>
+          </>
+          )}
         </div>
 
+        {selectedRadarChain === 'robinhood' ? (
+          <RobinhoodBetaState onBackToBase={() => setSelectedRadarChain('base')} />
+        ) : (
         <div className="radar-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 280px', gap: '18px', alignItems: 'start' }}>
           <div>
             <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
@@ -1424,6 +1562,7 @@ export default function BaseRadarPage() {
             <StatsPanel summary={summary} fetchedAt={data?.fetchedAt ?? null} loading={loading} showUpsell={showUpsell} />
           </div>
         </div>
+        )}
       </div>
 
       <ProjectOverviewDrawer
