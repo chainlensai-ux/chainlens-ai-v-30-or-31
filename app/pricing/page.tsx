@@ -323,14 +323,17 @@ export default function PricingPage() {
         @media(max-width:960px){.pf-footer-grid{grid-template-columns:1fr 1fr !important;gap:36px !important}}
         @media(max-width:560px){.pf-footer-grid{grid-template-columns:1fr !important}}
 
-        /* Split crypto/card payment boxes — static hover only, no glow-pulse animation */
-        .cta-split-row{display:flex;gap:8px}
-        .cta-box{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;border-radius:10px;padding:10px 8px;font-weight:700;font-size:11px;letter-spacing:.04em;text-decoration:none;text-align:center;cursor:pointer;transition:.18s transform,.18s border-color,.18s background,.18s opacity;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.025);color:#e2e8f0}
+        /* Split crypto/card payment boxes — static hover only, no glow-pulse animation. A touch
+           more vertical room than before (padding 10→12) so the two options read as clean payment
+           choices rather than a cramped strip. */
+        .cta-split-row{display:flex;gap:9px}
+        .cta-box{flex:1;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border-radius:10px;padding:12px 8px;font-weight:700;font-size:11px;letter-spacing:.04em;text-decoration:none;text-align:center;cursor:pointer;transition:.18s transform,.18s border-color,.18s background,.18s opacity;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.025);color:#e2e8f0}
         .cta-box small{font-weight:600;font-size:9px;letter-spacing:.02em;color:#94a3b8;text-transform:none}
-        .cta-box-crypto{border-color:rgba(45,212,191,.30)}
-        .cta-box-crypto:hover:not(:disabled){border-color:rgba(45,212,191,.55) !important;background:rgba(45,212,191,.05) !important;transform:translateY(-1px)}
+        .cta-box-crypto{border-color:rgba(45,212,191,.32);background:rgba(45,212,191,.03)}
+        .cta-box-crypto:hover:not(:disabled){border-color:rgba(45,212,191,.55) !important;background:rgba(45,212,191,.06) !important;transform:translateY(-1px)}
         .cta-box-card{border-color:rgba(148,163,184,.18)}
         .cta-box-card:hover{border-color:rgba(148,163,184,.32) !important;background:rgba(148,163,184,.04) !important;transform:translateY(-1px)}
+        .cta-box-tag{position:absolute;top:-8px;right:8px;background:#0a1420;border:1px solid rgba(45,212,191,.40);color:#5eead4;font-size:8px;font-weight:800;letter-spacing:.06em;border-radius:999px;padding:1px 6px;white-space:nowrap}
 
         @media (prefers-reduced-motion: reduce) {
           .pricing-card, .cta, .cta-box { transition: none !important; }
@@ -364,8 +367,10 @@ export default function PricingPage() {
 
         <section className='hero' style={{ display:'grid', gridTemplateColumns:'1.02fr 2.65fr .72fr', gap:12, alignItems:'stretch' }}>
 
-          {/* Left intro */}
-          <div className='intro' style={{ padding:'18px 12px 8px 6px', minHeight:468 }}>
+          {/* Left intro — top padding matches the pricing-card grid's own paddingTop (14px) so the
+              "One price. Worldwide." headline starts at the same vertical line as the cards
+              instead of floating slightly above them. */}
+          <div className='intro' style={{ padding:'14px 12px 8px 6px', minHeight:468 }}>
             <div style={{ color:'#67e8f9', fontSize:11, letterSpacing:'.2em', marginBottom:14 }}>• PRICING</div>
             <div style={{ fontSize:'clamp(40px,3.6vw,66px)', lineHeight:.95, fontWeight:900 }}>
               ONE PRICE.<br />
@@ -432,21 +437,39 @@ export default function PricingPage() {
                   {plan.note && <div style={{ marginTop:8, fontSize:11.5, color:'#64748b', lineHeight:1.5 }}>{plan.note}</div>}
                   <div style={{ marginTop:16, paddingTop:12, borderTop:'1px solid rgba(148,163,184,.10)', fontSize:10, color: plan.id === 'elite' ? '#a88948' : plan.id === 'pro' ? '#8b7dc7' : '#5b7284', letterSpacing:'.14em', fontWeight:700 }}>{plan.sectionTitle}</div>
 
-                  {/* Features */}
-                  <div style={{ display:'grid', gap:9, marginTop:12, flex:1 }}>
-                    {plan.features.map((f) => {
-                      const no = f.startsWith('No ')
-                      return (
-                        <div key={f} style={{ display:'flex', gap:9, alignItems:'flex-start', color: no ? '#526073' : '#cbd5e1', fontSize:12.5, lineHeight:1.5 }}>
-                          <span style={{
-                            color: no ? '#3f4a58' : plan.id === 'elite' ? '#c9a545' : plan.id === 'pro' ? '#a78bfa' : '#67e8f9',
-                            flexShrink:0, fontSize:11, marginTop:1,
-                          }}>{no ? '–' : '✓'}</span>
-                          <span>{f}</span>
+                  {/* Features — grouped included vs. unavailable (Free only has both kinds), and
+                      spaced by count so a shorter list (Free) fills the shared card height evenly
+                      instead of leaving one big dead gap before the CTA. DISCLOSED (pricing
+                      conversion/spacing polish task): same feature strings, no copy changes. */}
+                  {(() => {
+                    const included = plan.features.filter((f) => !f.startsWith('No '))
+                    const excluded = plan.features.filter((f) => f.startsWith('No '))
+                    const rowGap = plan.features.length <= 7 ? 15 : plan.features.length <= 8 ? 12 : 9
+                    const row = (f: string, no: boolean) => (
+                      <div key={f} style={{ display:'flex', gap:9, alignItems:'flex-start', color: no ? '#4a5768' : '#cbd5e1', fontSize:12.5, lineHeight:1.5 }}>
+                        <span style={{
+                          color: no ? '#3a4452' : plan.id === 'elite' ? '#c9a545' : plan.id === 'pro' ? '#a78bfa' : '#67e8f9',
+                          flexShrink:0, fontSize:11, marginTop:1,
+                        }}>{no ? '–' : '✓'}</span>
+                        <span>{f}</span>
+                      </div>
+                    )
+                    return (
+                      <div style={{ marginTop:12, flex:1 }}>
+                        <div style={{ display:'grid', gap:rowGap }}>
+                          {included.map((f) => row(f, false))}
                         </div>
-                      )
-                    })}
-                  </div>
+                        {excluded.length > 0 && (
+                          <>
+                            <div style={{ marginTop:14, marginBottom:9, fontSize:9, color:'#3f4a58', letterSpacing:'.14em', fontWeight:700 }}>NOT INCLUDED</div>
+                            <div style={{ display:'grid', gap:rowGap }}>
+                              {excluded.map((f) => row(f, true))}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )
+                  })()}
 
                   {plan.id === 'elite' && (
                     <div style={{ border:'1px solid rgba(212,160,23,.20)', background:'rgba(212,160,23,.05)', color:'#d9be82', borderRadius:10, padding:'10px 11px', fontSize:11.5, lineHeight:1.5, marginTop:14 }}>
@@ -476,6 +499,7 @@ export default function PricingPage() {
                           onClick={() => handleCryptoPay(plan.id as 'pro' | 'elite')}
                           style={{ opacity: isLoading ? 0.7 : 1 }}
                         >
+                          <span className='cta-box-tag'>Recommended</span>
                           {isLoading ? 'Opening…' : 'Crypto'}
                           <small>USDC · Base</small>
                         </button>
