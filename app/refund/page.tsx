@@ -112,6 +112,12 @@ export default function RefundPage() {
         .policy-section {
           animation: policy-fade-in 0.5s ease-out both;
         }
+        /* MOBILE FRIENDLY PASS, DISCLOSED (mobile audit): already single-column (no grids to
+           break) — trims vertical padding/gap on small screens, layout/copy unchanged otherwise. */
+        @media (max-width: 640px) {
+          .policy-container { padding: 44px 16px 64px !important; }
+          .policy-sections { gap: 40px !important; }
+        }
       `}</style>
 
       <Navbar />
@@ -136,7 +142,7 @@ export default function RefundPage() {
           backgroundSize: '60px 60px',
         }} />
 
-        <div style={{ position: 'relative', zIndex: 1, maxWidth: '760px', margin: '0 auto', padding: '72px 24px 96px' }}>
+        <div className='policy-container' style={{ position: 'relative', zIndex: 1, maxWidth: '760px', margin: '0 auto', padding: '72px 24px 96px' }}>
 
           {/* Page header */}
           <div style={{ marginBottom: '64px' }}>
@@ -168,7 +174,7 @@ export default function RefundPage() {
           </div>
 
           {/* Sections */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '56px' }}>
+          <div className='policy-sections' style={{ display: 'flex', flexDirection: 'column', gap: '56px' }}>
             {SECTIONS.map((sec, i) => (
               <div
                 key={sec.label}
