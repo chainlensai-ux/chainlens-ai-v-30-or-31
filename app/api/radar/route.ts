@@ -363,20 +363,40 @@ export async function GET(req: NextRequest) {
   }
   const shallowMode = requestedMode === 'shallow'
 
-  const newPoolsPageA = radarPage * 2 - 1
-  const newPoolsPageB = radarPage * 2
+  // WIDER-DEFAULT-PULL, DISCLOSED (reported: feed "always the same 2-3 tokens" / "should be a
+  // ton"): the default request (radarPage=1) previously pulled only 2 pages of new_pools + 1 page
+  // of trending_pools (60 raw pools) before any filtering — on Base's real pace of pools that
+  // actually clear the $15K valuation / liquidity bar, that was often too thin a raw pool to find
+  // more than a couple qualifying tokens per refresh, so the same handful kept winning the
+  // momentum/liquidity ranking every cycle. Doubled the per-request page count (4 new_pools pages +
+  // 2 trending pages = 120 raw pools instead of 60) so meaningfully more real candidates get a
+  // chance to clear the filter each refresh — same filters, same safety bar, just a wider net. All
+  // 6 fetches stay parallel (Promise.all below, unchanged), each still independently capped by its
+  // own 6s timeout + one retry, so this adds no latency beyond the slowest single source. `page`
+  // (Load More) now advances by this same page-per-request count, so it continues forward from
+  // where the default request left off instead of re-fetching pages the default already covered.
+  const NEW_POOLS_PAGES_PER_REQUEST = 4
+  const TRENDING_PAGES_PER_REQUEST = 2
+  const newPoolsStartPage = (radarPage - 1) * NEW_POOLS_PAGES_PER_REQUEST + 1
+  const trendingStartPage = (radarPage - 1) * TRENDING_PAGES_PER_REQUEST + 1
   const sourceSpecs = [
-    { key: `new_p${newPoolsPageA}`, url: `https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=${newPoolsPageA}&include=base_token%2Cquote_token&per_page=20` },
-    { key: `new_p${newPoolsPageB}`, url: `https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=${newPoolsPageB}&include=base_token%2Cquote_token&per_page=20` },
-    { key: `trending_p${radarPage}`, url: `https://api.geckoterminal.com/api/v2/networks/base/trending_pools?page=${radarPage}&include=base_token%2Cquote_token&per_page=20` },
-  ] as const
+    ...Array.from({ length: NEW_POOLS_PAGES_PER_REQUEST }, (_, i) => {
+      const page = newPoolsStartPage + i
+      return { key: `new_p${page}`, url: `https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=${page}&include=base_token%2Cquote_token&per_page=20` }
+    }),
+    ...Array.from({ length: TRENDING_PAGES_PER_REQUEST }, (_, i) => {
+      const page = trendingStartPage + i
+      return { key: `trending_p${page}`, url: `https://api.geckoterminal.com/api/v2/networks/base/trending_pools?page=${page}&include=base_token%2Cquote_token&per_page=20` }
+    }),
+  ]
   const sourceCounts: Record<string, number> = {}
   let sourcesSucceeded = 0
   const sourcesAttempted = sourceSpecs.length
   const sourcePayloads: Record<string, unknown>[] = []
-  // TOKEN-SAVER: these 3 source fetches are independent (different URLs/cache
-  // keys) — fetching them in parallel instead of one-by-one cuts radar feed
-  // load latency without changing what is fetched or how results are scored.
+  // TOKEN-SAVER: these source fetches (sourceSpecs.length of them — see the wider-pull comment
+  // above) are independent (different URLs/cache keys) — fetching them in parallel instead of
+  // one-by-one cuts radar feed load latency without changing what is fetched or how results are
+  // scored.
   const sourceResults = await Promise.all(sourceSpecs.map(async (spec) => {
     try {
       const result = await getOrFetchCached<Record<string, unknown>>({
