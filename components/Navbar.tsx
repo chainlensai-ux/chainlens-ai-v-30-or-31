@@ -303,11 +303,11 @@ export default function Navbar() {
           border-color: rgba(245,158,11,0.48) !important;
           box-shadow: inset 0 0 0 1px rgba(245,158,11,0.14), 0 0 16px rgba(245,158,11,0.14) !important;
         }
-        /* Pro account pill — cyan/teal treatment, same static-glow approach as Elite. */
+        /* Pro account pill — purple treatment, same static-glow approach as Elite's gold. */
         .nav-account-chip.nav-account-chip--pro:hover {
-          background: rgba(45,212,191,0.08) !important;
-          border-color: rgba(45,212,191,0.50) !important;
-          box-shadow: inset 0 0 0 1px rgba(45,212,191,0.14), 0 0 16px rgba(45,212,191,0.14) !important;
+          background: rgba(139,92,246,0.08) !important;
+          border-color: rgba(139,92,246,0.50) !important;
+          box-shadow: inset 0 0 0 1px rgba(139,92,246,0.14), 0 0 16px rgba(139,92,246,0.14) !important;
         }
         .nav-elite-badge, .nav-pro-badge, .nav-free-badge {
           display: inline-flex; align-items: center; gap: 3px;
@@ -320,8 +320,8 @@ export default function Navbar() {
           box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
         }
         .nav-pro-badge {
-          background: linear-gradient(135deg, rgba(45,212,191,0.18) 0%, rgba(20,184,166,0.09) 100%);
-          border: 1px solid rgba(45,212,191,0.40);
+          background: linear-gradient(135deg, rgba(139,92,246,0.20) 0%, rgba(109,40,217,0.10) 100%);
+          border: 1px solid rgba(139,92,246,0.42);
           box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
         }
         .nav-free-badge {
@@ -333,7 +333,7 @@ export default function Navbar() {
           font-size: 9px; font-weight: 800; letter-spacing: 0.10em; white-space: nowrap;
         }
         .nav-elite-badge-label { color: #fcd34d; }
-        .nav-pro-badge-label { color: #5eead4; }
+        .nav-pro-badge-label { color: #c4b5fd; }
         .nav-free-badge-label {
           font-size: 9px; font-weight: 700; letter-spacing: 0.10em; white-space: nowrap;
           color: rgba(148,163,184,0.80);
@@ -573,16 +573,16 @@ export default function Navbar() {
                   display: 'inline-flex',
                   alignItems: 'center',
                   gap: '6px',
-                  borderColor: isEliteDisplay ? 'rgba(245,158,11,0.30)' : isProDisplay ? 'rgba(45,212,191,0.28)' : 'rgba(255,255,255,0.14)',
+                  borderColor: isEliteDisplay ? 'rgba(245,158,11,0.30)' : isProDisplay ? 'rgba(139,92,246,0.32)' : 'rgba(255,255,255,0.14)',
                   background: isEliteDisplay
                     ? 'linear-gradient(135deg, rgba(245,158,11,0.08) 0%, rgba(255,255,255,0.025) 55%, rgba(245,158,11,0.05) 100%)'
                     : isProDisplay
-                    ? 'linear-gradient(135deg, rgba(45,212,191,0.07) 0%, rgba(255,255,255,0.025) 55%, rgba(45,212,191,0.04) 100%)'
+                    ? 'linear-gradient(135deg, rgba(139,92,246,0.08) 0%, rgba(255,255,255,0.025) 55%, rgba(139,92,246,0.05) 100%)'
                     : 'rgba(255,255,255,0.03)',
                   boxShadow: isEliteDisplay
                     ? 'inset 0 0 0 1px rgba(245,158,11,0.10)'
                     : isProDisplay
-                    ? 'inset 0 0 0 1px rgba(45,212,191,0.09)'
+                    ? 'inset 0 0 0 1px rgba(139,92,246,0.10)'
                     : undefined,
                   padding: '5px 12px 5px 5px',
                   textTransform: 'none',
@@ -599,7 +599,7 @@ export default function Navbar() {
                   boxShadow: isEliteDisplay
                     ? '0 0 0 1.5px rgba(245,158,11,0.70), 0 0 7px rgba(245,158,11,0.30)'
                     : isProDisplay
-                    ? '0 0 0 1.5px rgba(45,212,191,0.65), 0 0 7px rgba(45,212,191,0.25)'
+                    ? '0 0 0 1.5px rgba(139,92,246,0.70), 0 0 7px rgba(139,92,246,0.30)'
                     : `0 0 0 1px ${PLAN_COLOR[displayPlan]}55`,
                 }}>
                   {avatarUrl
@@ -712,9 +712,9 @@ export default function Navbar() {
                 background: isEliteDisplay
                   ? 'linear-gradient(135deg, rgba(245,158,11,0.10) 0%, rgba(139,92,246,0.10) 100%)'
                   : isProDisplay
-                  ? 'linear-gradient(135deg, rgba(45,212,191,0.09) 0%, rgba(139,92,246,0.10) 100%)'
+                  ? 'linear-gradient(135deg, rgba(139,92,246,0.14) 0%, rgba(139,92,246,0.08) 100%)'
                   : 'linear-gradient(135deg, rgba(148,163,184,0.06) 0%, rgba(139,92,246,0.08) 100%)',
-                border: `1px solid ${isEliteDisplay ? 'rgba(245,158,11,0.30)' : isProDisplay ? 'rgba(45,212,191,0.28)' : 'rgba(148,163,184,0.18)'}`,
+                border: `1px solid ${isEliteDisplay ? 'rgba(245,158,11,0.30)' : isProDisplay ? 'rgba(139,92,246,0.32)' : 'rgba(148,163,184,0.18)'}`,
               }}>
                 <span style={{
                   width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0,
@@ -725,7 +725,7 @@ export default function Navbar() {
                   boxShadow: isEliteDisplay
                     ? '0 0 0 1.5px rgba(245,158,11,0.65), 0 0 8px rgba(245,158,11,0.25)'
                     : isProDisplay
-                    ? '0 0 0 1.5px rgba(45,212,191,0.60), 0 0 8px rgba(45,212,191,0.22)'
+                    ? '0 0 0 1.5px rgba(139,92,246,0.65), 0 0 8px rgba(139,92,246,0.28)'
                     : undefined,
                 }}>
                   {avatarUrl

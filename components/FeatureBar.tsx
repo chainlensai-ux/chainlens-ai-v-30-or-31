@@ -451,6 +451,11 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
           box-shadow: inset 0 1px 0 rgba(255,255,255,0.12);
         }
         .fb-plan-badge--pro {
+          background: linear-gradient(135deg, rgba(139,92,246,0.20) 0%, rgba(109,40,217,0.10) 100%);
+          border: 1px solid rgba(139,92,246,0.42);
+          box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
+        }
+        .fb-plan-badge--beta {
           background: linear-gradient(135deg, rgba(45,212,191,0.18) 0%, rgba(20,184,166,0.09) 100%);
           border: 1px solid rgba(45,212,191,0.40);
           box-shadow: inset 0 1px 0 rgba(255,255,255,0.10);
@@ -463,10 +468,11 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
           font-size: 9px; font-weight: 800; letter-spacing: 0.10em; white-space: nowrap;
         }
         .fb-plan-badge--elite .fb-plan-badge-label { color: #fcd34d; }
-        .fb-plan-badge--pro .fb-plan-badge-label { color: #5eead4; }
+        .fb-plan-badge--pro .fb-plan-badge-label { color: #c4b5fd; }
+        .fb-plan-badge--beta .fb-plan-badge-label { color: #5eead4; }
         .fb-plan-badge--free .fb-plan-badge-label { color: rgba(148,163,184,0.80); }
         .fb-account-row.fb-account-row--elite:hover { border-color: rgba(245,158,11,0.30) !important; background: rgba(245,158,11,0.06) !important; }
-        .fb-account-row.fb-account-row--pro:hover { border-color: rgba(45,212,191,0.28) !important; background: rgba(45,212,191,0.06) !important; }
+        .fb-account-row.fb-account-row--pro:hover { border-color: rgba(139,92,246,0.32) !important; background: rgba(139,92,246,0.06) !important; }
       `}</style>
 
       {/* ── Mobile close button ───────────────────────────────── */}
@@ -611,13 +617,13 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
                 boxShadow: plan === 'elite'
                   ? '0 0 0 1.5px rgba(245,158,11,0.65), 0 0 6px rgba(245,158,11,0.25)'
                   : plan === 'pro'
-                  ? '0 0 0 1.5px rgba(45,212,191,0.60), 0 0 6px rgba(45,212,191,0.22)'
+                  ? '0 0 0 1.5px rgba(139,92,246,0.65), 0 0 6px rgba(139,92,246,0.28)'
                   : undefined,
               }}>{initials}</span>
               <span>{shortEmail}</span>
             </span>
             {betaElite ? (
-              <span className="fb-plan-badge fb-plan-badge--pro">
+              <span className="fb-plan-badge fb-plan-badge--beta">
                 <span className="fb-plan-badge-label">BETA</span>
               </span>
             ) : plan === 'elite' ? (
