@@ -7,9 +7,9 @@ import { supabase } from '@/lib/supabaseClient'
 import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList } from '@/lib/client/clarkMemory'
 
 const HINT_CHIPS = [
-  "What's pumping on Base?",
   'Scan BRETT',
-  'Show Base whales',
+  "What's pumping on Base?",
+  'Analyze this wallet',
   'Liquidity check AERO',
 ]
 
@@ -138,6 +138,28 @@ function extractTokenQuery(text: string): string | null {
 
 function isMobileClient() {
   return typeof window !== 'undefined' && (window.innerWidth < 768 || /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent))
+}
+
+// BARE SLASH-COMMAND HANDLING, DISCLOSED (Clark panel empty/default message polish task): purely
+// client-side — there is no slash-command parser on the backend, so "/wallet" typed alone was
+// previously just forwarded as literal text and fell through to whatever the general prompt path
+// made of it. A bare command (no address/target after it) now short-circuits BEFORE any network
+// call and shows a canned prompt-for-input reply locally — same intent as the task's required
+// copy, zero new API surface. "/base" is the one command that's already actionable on its own
+// (a market read needs no target), so it's rewritten to the same natural-language prompt the
+// existing "What's pumping on Base?" hint chip already sends — still one normal sendToClark() call.
+function bareSlashCommandReply(text: string): string | null {
+  const t = text.trim().toLowerCase()
+  if (/^\/wallet$/.test(t)) return "Paste a wallet address and I'll analyze it."
+  if (/^\/token$/.test(t)) return "Paste a token contract and I'll scan it."
+  if (/^\/lp$/.test(t)) return "Paste a token or pool and I'll check LP control and lock status."
+  return null
+}
+
+function expandSlashCommand(text: string): string {
+  const t = text.trim()
+  if (/^\/base$/i.test(t)) return "What's pumping on Base?"
+  return text
 }
 
 const WALLET_INTENT = /\b(wallet|balance|balances|holdings?|portfolio|hold\b|holds\b|copy[\s-]?trade?|copytrade|follow|smart\s+money|good\s+wallet|whale\s+wallet|wallet\s+quality)\b/i
@@ -522,8 +544,14 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
       window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(text)}&autosend=1`
       return
     }
+    const bareReply = bareSlashCommandReply(text)
+    if (bareReply) {
+      setInput('')
+      setMessages(prev => [...prev, { role: 'user', text }, { role: 'clark', text: bareReply }])
+      return
+    }
     setInput('')
-    sendToClark(text)
+    sendToClark(expandSlashCommand(text))
   }
 
   function applyQuickChip(prefix: string) {
@@ -852,7 +880,9 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           }}
         >
           {messages.length === 0 ? (
-            /* Empty state */
+            /* ── Empty / standby state, DISCLOSED (Clark panel empty-message polish task): compact,
+               single small orb + one status line instead of a big glowing welcome card — no chat
+               history is faked here, this only renders while `messages` is genuinely empty. */
             <div
               style={{
                 flex: 1,
@@ -861,41 +891,40 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                 alignItems: 'center',
                 justifyContent: 'center',
                 textAlign: 'center',
-                padding: '24px 12px',
-                gap: '10px',
+                padding: '20px 14px',
+                gap: '14px',
               }}
             >
-              {/* Orb */}
-              <ClarkOrb size={44} className="clark-orb" style={{ boxShadow: '0 0 22px rgba(139,92,246,0.18), 0 0 10px rgba(236,72,153,0.10)' }} />
-
-              <div>
-                <p
-                  style={{
-                    fontSize: '12px',
-                    fontWeight: 500,
-                    color: 'rgba(255,255,255,0.55)',
-                    fontFamily: 'var(--font-inter)',
-                    marginBottom: '6px',
-                    lineHeight: 1.5,
-                  }}
-                >
-                  Ask Clark anything about wallets,<br />
-                  smart money, tokens, or market moves.
-                </p>
-                <p style={{ fontSize: '10px', color: 'rgba(255,255,255,0.24)', fontFamily: 'var(--font-inter)', lineHeight: 1.6 }}>
-                  Responses will appear here
-                </p>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+                <ClarkOrb size={32} className="clark-orb" style={{ boxShadow: '0 0 14px rgba(139,92,246,0.14), 0 0 6px rgba(45,212,191,0.08)' }} />
+                <div>
+                  <p style={{ fontSize: '12.5px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-inter)', margin: 0, letterSpacing: '-0.005em' }}>
+                    Clark is standing by
+                  </p>
+                  <p style={{ fontSize: '10.5px', color: 'rgba(255,255,255,0.42)', fontFamily: 'var(--font-inter)', lineHeight: 1.5, margin: '4px 0 0', maxWidth: '220px' }}>
+                    Ask for a token read, wallet scan, LP check, or Base market read.
+                  </p>
+                </div>
               </div>
 
-              {/* Hint chips */}
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', width: '100%', marginTop: '6px' }}>
+              {/* Command chips — same slash commands the composer's quick-chip row uses */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                {['/token', '/wallet', '/lp', '/base'].map((cmd) => (
+                  <button key={cmd} type="button" className="clark-quick-chip" onClick={() => applyQuickChip(cmd)}>
+                    {cmd}
+                  </button>
+                ))}
+              </div>
+
+              {/* Example prompts */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', width: '100%' }}>
                 {HINT_CHIPS.map((chip) => (
                   <button
                     key={chip}
                     className="clark-hint-chip"
                     onClick={() => sendToClark(chip)}
                   >
-                    <span style={{ color: 'rgba(192,132,252,0.65)', fontSize: '11px', flexShrink: 0 }}>→</span>
+                    <span style={{ color: 'rgba(94,234,212,0.55)', fontSize: '11px', flexShrink: 0 }}>→</span>
                     {chip}
                   </button>
                 ))}

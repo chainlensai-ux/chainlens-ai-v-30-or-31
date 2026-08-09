@@ -4468,7 +4468,16 @@ function isScanRequestWithoutContext(prompt: string, userContent: string): boole
 }
 
 function buildCasualClarkReply(prompt: string): string {
-  const t = prompt.toLowerCase();
+  const t = prompt.trim().toLowerCase();
+  // BARE-GREETING SHORT REPLY, FIXED (Clark panel empty/default message polish task): a plain "hi"/
+  // "hey"/"yo" previously fell through to the same full "Yo — Clark here. Paste a Base token..."
+  // pitch every single time, which reads as a repeated canned intro rather than a live assistant.
+  // Only this exact bare-greeting shape gets the short reply — "what can you do"/"help"/"who are
+  // you" etc. below are unchanged and still get the fuller explanation, since those are genuine
+  // capability questions, not a hello.
+  if (/^(hi|hey|hello|yo|gm|sup|what'?s up)[!.?]*$/.test(t)) {
+    return "Ready. Send a token, wallet, or command like /base.";
+  }
   if (/\bwhat can you do|help|who are you\b/.test(t)) {
     return "I'm Clark — ChainLens on-chain analyst for Base. I can scan token risk, break down wallet behavior, check liquidity safety, flag dev-wallet links, and summarize what's moving. Drop a contract, wallet, or feature context and I'll give you a clean read.";
   }
