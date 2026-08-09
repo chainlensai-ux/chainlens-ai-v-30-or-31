@@ -326,7 +326,14 @@ export async function GET(req: NextRequest) {
   const allowFdvFallback = req.nextUrl.searchParams.get('allowFdvFallback') === 'false' ? false : DEFAULT_RADAR_ALLOW_FDV_FALLBACK
   const now = Date.now()
   const requestedMode: 'shallow' | 'full' = req.nextUrl.searchParams.get('mode') === 'full' ? 'full' : 'shallow'
-  const cacheKeyBase = `plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}`
+  // LOAD-MORE, DISCLOSED (requested: a "Load More" control on the Base Radar feed): the feed was
+  // always page 1 of GeckoTerminal's new/trending pools — there was no way to reach older-but-still-
+  // recent pools beyond whatever fit in that single page. `page` shifts which GeckoTerminal pages
+  // this request pulls from (page 2 asks GeckoTerminal for its pages 3-4 of new_pools instead of
+  // 1-2, etc.), so "Load More" surfaces genuinely different tokens rather than re-showing the same
+  // top 50. Capped at 5 — GeckoTerminal's own pool listings get sparse/stale much past that.
+  const radarPage = Math.min(5, Math.max(1, Math.floor(Number(req.nextUrl.searchParams.get('page')) || 1)))
+  const cacheKeyBase = `plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:page:${radarPage}`
   const fullCacheKey = `${cacheKeyBase}:mode:full`
   const shallowCacheKey = `${cacheKeyBase}:mode:shallow`
   const preferredCacheKey = requestedMode === 'full' ? fullCacheKey : shallowCacheKey
@@ -348,10 +355,12 @@ export async function GET(req: NextRequest) {
   }
   const shallowMode = requestedMode === 'shallow'
 
+  const newPoolsPageA = radarPage * 2 - 1
+  const newPoolsPageB = radarPage * 2
   const sourceSpecs = [
-    { key: 'new_p1', url: 'https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=1&include=base_token%2Cquote_token&per_page=20' },
-    { key: 'new_p2', url: 'https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=2&include=base_token%2Cquote_token&per_page=20' },
-    { key: 'trending_p1', url: 'https://api.geckoterminal.com/api/v2/networks/base/trending_pools?page=1&include=base_token%2Cquote_token&per_page=20' },
+    { key: `new_p${newPoolsPageA}`, url: `https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=${newPoolsPageA}&include=base_token%2Cquote_token&per_page=20` },
+    { key: `new_p${newPoolsPageB}`, url: `https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=${newPoolsPageB}&include=base_token%2Cquote_token&per_page=20` },
+    { key: `trending_p${radarPage}`, url: `https://api.geckoterminal.com/api/v2/networks/base/trending_pools?page=${radarPage}&include=base_token%2Cquote_token&per_page=20` },
   ] as const
   const sourceCounts: Record<string, number> = {}
   let sourcesSucceeded = 0
@@ -694,7 +703,8 @@ export async function GET(req: NextRequest) {
 
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
     const hpHitCount = hpCacheHitFlags.filter(Boolean).length
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode }
+    const hasMorePages = radarPage < 5 && tokens.length > 0
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,

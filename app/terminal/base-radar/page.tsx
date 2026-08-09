@@ -57,6 +57,8 @@ interface RadarData {
   // that read it instead of being properly typed.
   limitedLiveFeed?: boolean
   mode?: 'shallow' | 'full'
+  page?: number
+  hasMore?: boolean
 }
 
 type RadarStatus = 'HOT' | 'WATCH' | 'EARLY' | 'UNVERIFIED' | 'RISKY' | 'DEAD'
@@ -915,6 +917,35 @@ export default function BaseRadarPage() {
     }
   }, [])
 
+  // LOAD MORE, DISCLOSED (requested: a way to pull in more radar candidates beyond the initial
+  // feed): fetches the next GeckoTerminal page window (see /api/radar's own `page` param comment)
+  // and appends any tokens not already shown — existing tokens/order/scores are untouched, this
+  // only grows the list. Uses its own loading flag so it doesn't fight the main refresh spinner.
+  const [loadingMore, setLoadingMore] = useState(false)
+  const handleLoadMore = useCallback(async () => {
+    if (loadingMore) return
+    const nextPage = (data?.page ?? 1) + 1
+    setLoadingMore(true)
+    try {
+      const { data: _sd } = await supabase.auth.getSession()
+      const _tok = _sd.session?.access_token
+      const res = await fetch(`/api/radar?page=${nextPage}`, { cache: 'no-store', headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
+      const json = await res.json()
+      if (res.ok && !json.error) {
+        setData(prev => {
+          if (!prev) return json as RadarData
+          const seen = new Set(prev.tokens.map(t => t.contract.toLowerCase()))
+          const newTokens = (json.tokens as RadarToken[]).filter(t => !seen.has(t.contract.toLowerCase()))
+          return { ...prev, tokens: [...prev.tokens, ...newTokens], page: json.page ?? nextPage, hasMore: json.hasMore ?? false }
+        })
+      }
+    } catch {
+      // Best-effort — a failed "load more" leaves the existing feed exactly as it was, no error banner needed.
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [data?.page, loadingMore])
+
   useEffect(() => {
     if (!planLoading && canAccessFeature(effectivePlan, 'base-radar')) {
       queueMicrotask(() => {
@@ -1392,6 +1423,22 @@ export default function BaseRadarPage() {
             </div>
 
             {!loading && filteredAndSortedTokens.length <= 2 && !error && <LowActivityPanel />}
+
+            {!loading && tokens.length > 0 && data?.hasMore && (
+              <button
+                onClick={handleLoadMore}
+                disabled={loadingMore}
+                style={{
+                  marginTop: '4px', width: '100%', padding: '11px', borderRadius: '10px',
+                  border: '1px solid rgba(45,212,191,0.24)', background: loadingMore ? 'rgba(45,212,191,0.04)' : 'rgba(45,212,191,0.07)',
+                  color: loadingMore ? 'rgba(153,246,228,0.5)' : '#99f6e4', fontSize: '11px', fontWeight: 700,
+                  letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)',
+                  cursor: loadingMore ? 'not-allowed' : 'pointer', transition: 'background 0.15s, color 0.15s',
+                }}
+              >
+                {loadingMore ? 'Loading…' : 'Load More'}
+              </button>
+            )}
           </div>
 
           <div className="radar-stats" style={{ position: 'sticky', top: '0' }}>

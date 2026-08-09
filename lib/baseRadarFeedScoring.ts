@@ -70,6 +70,13 @@ export function applyBaseRadarScoreCaps(input: RadarFeedScoreInput): { score: nu
     })
   }
 
+  // TIERED-CAP HELPER: same liquidity/volume scaling the dual-missing branch below already uses,
+  // reused here for the single-missing branches. `base`/`max` set each branch's own floor/ceiling
+  // so the three cap tiers (both missing / sim missing / LP proof missing) never overlap or invert.
+  const liquidityTier = liquidity != null && liquidity >= 100_000 ? 10 : liquidity != null && liquidity >= 25_000 ? 5 : 0
+  const volumeTier = (input.volume24h ?? 0) >= 100_000 ? 5 : (input.volume24h ?? 0) >= 25_000 ? 3 : 0
+  const scaledCapFor = (base: number, max: number) => Math.min(max, base + liquidityTier + volumeTier)
+
   if (criticalMissingCount >= 2) {
     // FLAT-CAP FIX, DISCLOSED (all-radar-scores-stuck-at-49 bug): this used to be a single flat
     // `cap: 49` for every token with both critical categories missing — but that's the near-
@@ -83,14 +90,25 @@ export function applyBaseRadarScoreCaps(input: RadarFeedScoreInput): { score: nu
     // categories missing" penalty), but restores differentiation between, say, a $200k-liquidity/
     // $600k-volume fresh pool and a $16k-liquidity/$5k-volume one, instead of collapsing both to
     // the same number.
-    const liquidityTier = liquidity != null && liquidity >= 100_000 ? 10 : liquidity != null && liquidity >= 25_000 ? 5 : 0
-    const volumeTier = (input.volume24h ?? 0) >= 100_000 ? 5 : (input.volume24h ?? 0) >= 25_000 ? 3 : 0
-    const scaledCap = Math.min(64, 44 + liquidityTier + volumeTier)
-    caps.push({ cap: scaledCap, reason: 'LP/burn proof and simulation evidence are both missing.' })
+    caps.push({ cap: scaledCapFor(44, 64), reason: 'LP/burn proof and simulation evidence are both missing.' })
   } else if (simulationUnconfirmed) {
-    caps.push({ cap: 74, reason: 'Simulation or tax evidence is not confirmed.' })
+    // FLAT-CAP FIX, DISCLOSED (all-radar-scores-stuck-at-64 bug, sibling of the fix above): this
+    // branch was still a flat `cap: 74` — since the base radar feed never fetches LP lock/burn
+    // enrichment (see enrichToken()'s own comment in app/terminal/base-radar/page.tsx), almost
+    // every feed token that HAS a confirmed simulation still falls into the sibling
+    // `lpBurnMissing` branch below, but tokens whose simulation itself is still pending land here
+    // and were likewise flattened to one number. Scaled the same way, one tier up from the
+    // dual-missing branch.
+    caps.push({ cap: scaledCapFor(54, 74), reason: 'Simulation or tax evidence is not confirmed.' })
   } else if (lpBurnMissing) {
-    caps.push({ cap: 64, reason: 'ERC20 LP lock/burn proof is missing.' })
+    // FLAT-CAP FIX, DISCLOSED (all-radar-scores-stuck-at-64 bug): reported directly — every card in
+    // the live feed showed the identical "RADAR STATUS 64" regardless of wildly different liquidity
+    // ($17K vs $447K) and volume. Root cause: LP lock/burn proof is never fetched at feed level
+    // (only the on-demand drawer scan can resolve it), so `lpBurnMissing` is true for essentially
+    // every feed token, and this was a flat `cap: 64` with no scaling at all — the single most
+    // common branch in the whole scorer, collapsing nearly the entire feed to one score. Scaled by
+    // the same liquidity/volume tiers as its sibling branches.
+    caps.push({ cap: scaledCapFor(48, 64), reason: 'ERC20 LP lock/burn proof is missing.' })
   }
   if (youngTimeout) caps.push({ cap: 59, reason: 'New token with unresolved simulation.' })
   if (input.activeOwner && (input.highHolderConcentration || (input.top10 != null && input.top10 > 70) || (input.top20 != null && input.top20 > 90))) caps.push({ cap: 59, reason: 'Active owner/admin with high holder concentration.' })
