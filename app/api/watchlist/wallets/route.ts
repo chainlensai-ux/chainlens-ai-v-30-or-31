@@ -47,7 +47,14 @@ export async function POST(req: NextRequest) {
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
   const body = await req.json().catch(() => null)
-  const { address, label, portfolioValue, chainMode, source } = body ?? {}
+  // KEY-NAME FIX, DISCLOSED (wallet watchlist audit): the frontend (app/terminal/wallet-scanner/
+  // page.tsx's handleAddWalletToWatchlist) has only ever sent `portfolio_value` (snake_case,
+  // matching the DB column) — this destructured a different, never-sent `portfolioValue` key, so
+  // every save silently stored null regardless of the real scanned value. Reads both spellings so
+  // any other caller sending the camelCase form (there is none today) keeps working too.
+  const { address, label, portfolio_value, portfolioValue: portfolioValueCamel, chain_mode, chainMode: chainModeCamel, source } = body ?? {}
+  const portfolioValue = portfolio_value ?? portfolioValueCamel
+  const chainMode = chain_mode ?? chainModeCamel
   if (!address || typeof address !== 'string') {
     return NextResponse.json({ error: 'address required' }, { status: 400 })
   }

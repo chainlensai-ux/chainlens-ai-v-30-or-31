@@ -326,7 +326,11 @@ export default function WalletScannerPage() {
         setWatchlistMessage(json?.error ?? 'Could not add wallet to watchlist.')
         return
       }
-      if (json?.exists) {
+      // RESPONSE-KEY FIX, DISCLOSED (wallet watchlist audit): the API (app/api/watchlist/wallets/
+      // route.ts POST) has only ever returned `alreadyExists` — this checked a different,
+      // never-returned `exists` key, so a re-save of an already-watchlisted wallet always fell
+      // through to the "Added to watchlist" branch instead of "Already in watchlist".
+      if (json?.alreadyExists) {
         setWatchlistStatus('exists')
         setWatchlistMessage('Already in watchlist')
       } else {
