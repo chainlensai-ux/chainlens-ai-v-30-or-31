@@ -490,6 +490,7 @@ type NormalizedHolderRow = {
   balanceRaw: string | null
   balanceFormatted?: number | null
   pctOfSupply?: number | null
+  totalSupplyRaw?: string | null
   isContract?: boolean
   source?: string
   confidence?: EvidenceConfidence
@@ -1235,6 +1236,15 @@ function holderRowsFromProvider(raw: any, source: string): NormalizedHolderRow[]
       balanceRaw: balanceRaw != null ? String(balanceRaw) : null,
       balanceFormatted: toNum(balanceRaw) ?? toNum(h.balance_quote) ?? null,
       pctOfSupply: pct,
+      // DISCLOSED: GoldRush's token_holders_v2 rows carry the contract's total_supply on every
+      // item but never a per-holder percent field. This got dropped during normalization, so the
+      // only remaining path to a percent was an RPC totalSupply() read or summing the raw balances
+      // of the returned page (a serious undercount when the page is a small slice of all holders) —
+      // both of which can fail or under/over-shoot, leaving top1/top10/top20 stuck at N/A even
+      // though real holder rows and a real total_supply were both present in the response.
+      // Carrying this through lets the existing provider-supply derivation path (further down,
+      // `_holderProviderSupply`) actually see it instead of always finding it undefined.
+      totalSupplyRaw: h.total_supply != null ? String(h.total_supply) : null,
       source,
       confidence: pct != null ? 'high' as const : 'medium' as const,
     }
@@ -1252,6 +1262,7 @@ function finalizeHolders(chain: ChainKey, tokenAddress: string, rows: Normalized
       balanceRaw: prev.balanceRaw ?? row.balanceRaw,
       balanceFormatted: prev.balanceFormatted ?? row.balanceFormatted,
       pctOfSupply: prev.pctOfSupply ?? row.pctOfSupply,
+      totalSupplyRaw: prev.totalSupplyRaw ?? row.totalSupplyRaw,
       confidence: prev.confidence === 'high' || row.confidence !== 'high' ? prev.confidence : row.confidence,
     })
   }
@@ -4932,6 +4943,7 @@ export async function POST(req: Request) {
           address: h.address,
           percentage: h.pctOfSupply ?? null,
           balance: h.balanceRaw,
+          total_supply: h.totalSupplyRaw ?? null,
           source: h.source,
         }))
       : []
