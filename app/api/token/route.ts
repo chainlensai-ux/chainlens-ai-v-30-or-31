@@ -5088,6 +5088,18 @@ export async function POST(req: Request) {
       displayMarketValueLabel = 'Market Cap'
       displayMarketValueConfidence = 'verified'
       displayMarketValueReason = 'Verified market cap from live token market data.'
+    } else if (estimatedMarketCap != null) {
+      // MARKET-CAP-ESTIMATE-WIRING FIX, DISCLOSED (low-cap/thin-liquidity token audit): this ladder
+      // already had an 'Estimated MC' label defined and estimatedMarketCap was already computed
+      // above (price × on-chain totalSupply minus burn) for exactly this case — a provider that
+      // hasn't indexed market_cap_usd for a thin/unindexed pool — but the branch to actually use it
+      // was never written, so it fell straight through to raw FDV (or nothing) instead. FDV
+      // overstates value for tokens with meaningful burn, so prefer the on-chain estimate over raw
+      // FDV when we have one; still clearly labeled as an estimate, not a verified market cap.
+      displayMarketValue = estimatedMarketCap
+      displayMarketValueLabel = 'Estimated MC'
+      displayMarketValueConfidence = estimatedMarketCapConfidence
+      displayMarketValueReason = estimatedMarketCapReason
     } else if (fdv != null) {
       displayMarketValue = fdv
       displayMarketValueLabel = 'FDV'
@@ -7115,16 +7127,22 @@ export async function POST(req: Request) {
       displayMarketValueConfidence,
       displayMarketValueReason,
       valuationContext: {
-        primaryValuationLabel: marketCapFromGt != null ? 'Market Cap' : (_efdv != null ? 'FDV' : 'Market Cap'),
-        primaryValuationUsd: marketCapFromGt ?? _efdv ?? null,
-        primaryValuationStatus: marketCapFromGt != null ? 'verified_mc' : (_efdv != null ? 'fdv_only' : 'partial'),
+        primaryValuationLabel: marketCapFromGt != null ? 'Market Cap' : (estimatedMarketCap != null ? 'Estimated MC' : (_efdv != null ? 'FDV' : 'Market Cap')),
+        primaryValuationUsd: marketCapFromGt ?? estimatedMarketCap ?? _efdv ?? null,
+        primaryValuationStatus: marketCapFromGt != null ? 'verified_mc' : (estimatedMarketCap != null ? 'estimated_mc' : (_efdv != null ? 'fdv_only' : 'partial')),
         marketCapStatus: marketCapFromGt != null ? 'verified' : 'partial',
         fdvUsd: _efdv ?? null,
-        reason: marketCapFromGt != null ? 'Verified live market data' : (_efdv != null ? 'Market cap not verified live; FDV used as valuation context.' : 'No live valuation context was verified.'),
+        reason: marketCapFromGt != null
+          ? 'Verified live market data'
+          : estimatedMarketCap != null
+            ? estimatedMarketCapReason
+            : (_efdv != null ? 'Market cap not verified live; FDV used as valuation context.' : 'No live valuation context was verified.'),
       },
-      estimatedMarketCap: null,
-      estimatedMarketCapConfidence: null,
-      estimatedMarketCapReason: marketCapFromGt != null ? 'Verified live market data' : 'Circulating supply not verified by live market data',
+      // Was hardcoded to null/null here even though estimatedMarketCap/estimatedMarketCapConfidence
+      // were already computed above — see the displayMarketValue ladder fix for the full rationale.
+      estimatedMarketCap,
+      estimatedMarketCapConfidence: marketCapFromGt != null ? null : estimatedMarketCapConfidence,
+      estimatedMarketCapReason: marketCapFromGt != null ? 'Verified live market data' : estimatedMarketCapReason || 'Circulating supply not verified by live market data',
 
       poolActivity: {
         transactions24h,

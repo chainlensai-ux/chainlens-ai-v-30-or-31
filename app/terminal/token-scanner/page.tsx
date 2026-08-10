@@ -148,9 +148,9 @@ type ScanResult = {
   marketCapSource?: 'geckoterminal' | 'coingecko_terminal' | 'computed' | 'unavailable'
   marketCapStatus?: string | null
   valuationContext?: {
-    primaryValuationLabel: 'Market Cap' | 'FDV'
+    primaryValuationLabel: 'Market Cap' | 'Estimated MC' | 'FDV'
     primaryValuationUsd: number | null
-    primaryValuationStatus: 'verified_mc' | 'fdv_only' | 'partial'
+    primaryValuationStatus: 'verified_mc' | 'estimated_mc' | 'fdv_only' | 'partial'
     marketCapStatus: 'verified' | 'partial'
     fdvUsd: number | null
     reason: string
@@ -4741,12 +4741,23 @@ export default function TerminalTokenScanner() {
                         <StatCard label="24h Change" value={fmtPct(result.priceChange24h)} accent={pctColor(result.priceChange24h)} helper="Price movement" />
                         {(() => {
                           const val = result.valuationContext
+                          const estimated = val?.primaryValuationStatus === 'estimated_mc' && val?.primaryValuationUsd != null
                           const fdvOnly = val?.primaryValuationStatus === 'fdv_only' && val?.primaryValuationUsd != null
                           return (
                             <StatCard
-                              label={fdvOnly ? 'Valuation' : 'Market Cap'}
-                              value={val?.primaryValuationStatus === 'verified_mc' ? fmtLarge(val.primaryValuationUsd) : fdvOnly ? `FDV ${fmtLarge(val.primaryValuationUsd)}` : 'Supply not confirmed'}
-                              helper={val?.primaryValuationStatus === 'verified_mc' ? 'Verified live market data' : fdvOnly ? 'Market cap not verified live' : 'Live valuation not verified'}
+                              label={estimated ? 'Estimated MC' : fdvOnly ? 'Valuation' : 'Market Cap'}
+                              value={
+                                val?.primaryValuationStatus === 'verified_mc' ? fmtLarge(val.primaryValuationUsd)
+                                : estimated ? `~${fmtLarge(val!.primaryValuationUsd)}`
+                                : fdvOnly ? `FDV ${fmtLarge(val.primaryValuationUsd)}`
+                                : 'Supply not confirmed'
+                              }
+                              helper={
+                                val?.primaryValuationStatus === 'verified_mc' ? 'Verified live market data'
+                                : estimated ? 'Estimated from on-chain supply — not a live-verified market cap'
+                                : fdvOnly ? 'Market cap not verified live'
+                                : 'Live valuation not verified'
+                              }
                               accent="#a78bfa"
                             />
                           )
@@ -4757,7 +4768,11 @@ export default function TerminalTokenScanner() {
                     </>
                   )}
                   {result.marketCapStatus !== 'verified' && !result.noActivePools && (
-                    <p style={{ marginTop: '-14px', marginBottom: '16px', color: '#94a3b8', fontSize: '12px' }}>Market cap not confirmed. FDV is shown separately.</p>
+                    <p style={{ marginTop: '-14px', marginBottom: '16px', color: '#94a3b8', fontSize: '12px' }}>
+                      {result.valuationContext?.primaryValuationStatus === 'estimated_mc'
+                        ? 'Market cap not verified live — showing an estimate from on-chain supply. FDV is shown separately.'
+                        : 'Market cap not confirmed. FDV is shown separately.'}
+                    </p>
                   )}
                   {result.fdvUsd != null && result.marketCapUsd != null && result.marketCapUsd !== result.fdvUsd && (
                     <div style={{ marginBottom: '16px', padding: '10px 14px', background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.16)', borderRadius: '10px', fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
