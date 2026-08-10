@@ -671,6 +671,14 @@ export async function GET(req: NextRequest) {
         && (volume24h >= 1_500 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.08))
       if (!filterResult.included && !shouldHoldAsFallback) continue
       if (liquidityUsd < ABSOLUTE_MIN_LIQUIDITY_USD) continue
+      // DEAD-VOLUME FLOOR, DISCLOSED (reported: feed full of tokens with real liquidity/valuation
+      // but $30-70 in 24h volume on six-figure liquidity — essentially untraded pools). The
+      // liquidity/valuation filter above never checked volume at all on the strict path (only the
+      // relaxed fallback did), so a pool could clear liquidity and valuation yet have almost nobody
+      // actually trading it and still get surfaced as a live opportunity. Requires at least minimal
+      // real activity on every candidate, strict or fallback, not just the fallback tier.
+      const hasMeaningfulActivity = volume24h >= 200 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.02)
+      if (!hasMeaningfulActivity) continue
       const valuation = filterResult.valuation
       const valuationCardDisplay = getRadarValuationCardDisplay(valuation, fmtK)
       const valuationEvidenceGap = getRadarValuationEvidenceGap(valuation)
