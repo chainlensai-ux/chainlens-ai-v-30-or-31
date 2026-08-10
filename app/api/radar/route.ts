@@ -725,10 +725,21 @@ export async function GET(req: NextRequest) {
       }
       await Promise.all(Array.from({ length: Math.min(HOLDER_CHECK_CONCURRENCY, rankedCandidates.length) }, () => worker()))
     }
-    const toCheck = rankedCandidates.filter((t) => {
-      const holderCount = holderCountByContract.get(t.contract.toLowerCase())
-      return typeof holderCount === 'number' && holderCount >= MIN_HOLDER_COUNT
-    })
+    // FAIL-OPEN ON PROVIDER OUTAGE, DISCLOSED (reported: Base Radar went completely empty right
+    // after this filter shipped). A hard "unresolved = fails the bar" rule is correct for a normal
+    // per-token miss (a genuinely too-new pool GoldRush hasn't indexed holders for yet), but if
+    // EVERY lookup in this batch failed, that's not 50 unfundeded tokens — it's GoldRush being
+    // down/rate-limited for this request, and silently zeroing the whole feed on a provider blip is
+    // worse than the bug being fixed. When at least one lookup in the batch actually resolved, the
+    // provider is reachable and per-token nulls are trusted misses, so the floor applies normally.
+    const resolvedHolderCounts = [...holderCountByContract.values()].filter((c): c is number => typeof c === 'number')
+    const holderProviderReachable = resolvedHolderCounts.length > 0
+    const toCheck = holderProviderReachable
+      ? rankedCandidates.filter((t) => {
+          const holderCount = holderCountByContract.get(t.contract.toLowerCase())
+          return typeof holderCount === 'number' && holderCount >= MIN_HOLDER_COUNT
+        })
+      : rankedCandidates
 
     // 2. TAX-CHECK-ALWAYS-ATTEMPTED FIX, DISCLOSED (reported: every feed card stuck yellow/
     // "SIMULATION PENDING"): previously shallow mode (the frontend's default) NEVER ran the
