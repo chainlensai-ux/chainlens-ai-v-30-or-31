@@ -101,10 +101,26 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Pro
 // failing the bar too (same unknown-≠-safe principle as the rest of this route's risk scoring) —
 // this filter should never leak a token through just because the provider call errored.
 const MIN_HOLDER_COUNT = 25
-const GOLDRUSH_RADAR_HOSTS = ['api.covalenthq.com', 'api.goldrush.dev'] as const
+// HOST-FIX + RATE-LIMIT-BUDGET, DISCLOSED (reported: after this filter shipped, holder data went
+// dark app-wide — Top1/10/20 stuck at N/A even in the token drawer, not just the feed). Server logs
+// showed api.covalenthq.com returning 429 (rate-limited) and the "fallback" host api.goldrush.dev
+// failing DNS resolution outright (ENOTFOUND) — it never actually served as a working fallback, just
+// added a guaranteed-failing extra hop on every single call. This filter was calling GoldRush once
+// per ranked feed candidate (up to 50) on every refresh, competing for the same shared GoldRush rate
+// limit budget as the real token-scan holder lookups everywhere else in the app (drawer, Token
+// Scanner) — starving them. Fixed by: (1) dropping the dead host, (2) caching results per contract
+// so repeat refreshes of the same tokens don't re-hit GoldRush, (3) capping how many candidates get
+// checked per request.
+const GOLDRUSH_RADAR_HOSTS = ['api.covalenthq.com'] as const
+const HOLDER_COUNT_CACHE_TTL_MS = 10 * 60_000
+const holderCountCache = new Map<string, { count: number | null; expiresAt: number }>()
 async function fetchBaseHolderCount(contract: string): Promise<number | null> {
+  const key = contract.toLowerCase()
+  const cached = holderCountCache.get(key)
+  if (cached && cached.expiresAt > Date.now()) return cached.count
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
   if (!apiKey) return null
+  let result: number | null = null
   for (const host of GOLDRUSH_RADAR_HOSTS) {
     try {
       const res = await fetch(
@@ -114,10 +130,13 @@ async function fetchBaseHolderCount(contract: string): Promise<number | null> {
       if (!res.ok) continue
       const json = await res.json().catch(() => null) as { data?: { pagination?: { total_count?: number } } } | null
       const totalCount = json?.data?.pagination?.total_count
-      if (typeof totalCount === 'number' && Number.isFinite(totalCount)) return totalCount
+      if (typeof totalCount === 'number' && Number.isFinite(totalCount)) { result = totalCount; break }
     } catch { /* try next host */ }
   }
-  return null
+  // Cache negative/failed lookups too (shorter-lived) so a rate-limited burst doesn't get re-tried
+  // on every candidate on the very next refresh, compounding the same rate-limit problem.
+  holderCountCache.set(key, { count: result, expiresAt: Date.now() + (result != null ? HOLDER_COUNT_CACHE_TTL_MS : 60_000) })
+  return result
 }
 
 // ABSOLUTE-LIQUIDITY-FLOOR, DISCLOSED: belt-and-suspenders guard independent of the configurable
@@ -708,22 +727,24 @@ export async function GET(req: NextRequest) {
     })
     const rankedCandidates = candidates.slice(0, 50)
 
-    // Holder-count floor: fetch once per ranked candidate with bounded concurrency, same worker-pool
-    // pattern as the market-cap rescue and honeypot checks above — keeps this to a small, controlled
-    // burst of GoldRush calls instead of one per raw pool.
-    const HOLDER_CHECK_CONCURRENCY = 6
+    // Holder-count floor: only the top HOLDER_CHECK_LIMIT ranked candidates get checked (not all 50)
+    // — this is the set that actually has a shot at appearing in the feed anyway, and the cache above
+    // means a token already checked this cycle won't cost another call on the next refresh regardless.
+    const HOLDER_CHECK_LIMIT = 20
+    const HOLDER_CHECK_CONCURRENCY = 3
+    const holderCheckTargets = rankedCandidates.slice(0, HOLDER_CHECK_LIMIT)
     const holderCountByContract = new Map<string, number | null>()
     {
       let nextIndex = 0
       const worker = async () => {
         for (;;) {
           const i = nextIndex++
-          if (i >= rankedCandidates.length) return
-          const t = rankedCandidates[i]
+          if (i >= holderCheckTargets.length) return
+          const t = holderCheckTargets[i]
           holderCountByContract.set(t.contract.toLowerCase(), await fetchBaseHolderCount(t.contract))
         }
       }
-      await Promise.all(Array.from({ length: Math.min(HOLDER_CHECK_CONCURRENCY, rankedCandidates.length) }, () => worker()))
+      await Promise.all(Array.from({ length: Math.min(HOLDER_CHECK_CONCURRENCY, holderCheckTargets.length) }, () => worker()))
     }
     // FAIL-OPEN ON PROVIDER OUTAGE, DISCLOSED (reported: Base Radar went completely empty right
     // after this filter shipped). A hard "unresolved = fails the bar" rule is correct for a normal
@@ -735,7 +756,7 @@ export async function GET(req: NextRequest) {
     const resolvedHolderCounts = [...holderCountByContract.values()].filter((c): c is number => typeof c === 'number')
     const holderProviderReachable = resolvedHolderCounts.length > 0
     const toCheck = holderProviderReachable
-      ? rankedCandidates.filter((t) => {
+      ? holderCheckTargets.filter((t) => {
           const holderCount = holderCountByContract.get(t.contract.toLowerCase())
           return typeof holderCount === 'number' && holderCount >= MIN_HOLDER_COUNT
         })
