@@ -5,9 +5,10 @@ import { createServiceRoleClient, activateUserPlanServerSide } from '@/lib/supab
 // PayPal recurring-Subscriptions webhook. Reconciles real Subscriptions API events (created via
 // /api/paypal/create-subscription) into Supabase — see docs/paypal-verification.md.
 //
-// PayPal retries webhooks that don't return 2xx, so every branch below returns 200 once the event
-// has been handled (or intentionally ignored) — a 4xx/5xx here just causes pointless retries for
-// events we already understood.
+// PayPal retries webhooks that don't return 2xx. A branch returns 200 once the event has been
+// handled (or intentionally ignored) — but returns 500 if a Supabase write inside that branch
+// failed, so PayPal retries a genuinely unprocessed event instead of the failure being silently
+// swallowed (WRITE-FAILURE FIX, DISCLOSED — payments audit).
 
 type PayPalWebhookBody = {
   id?: string
@@ -109,7 +110,7 @@ export async function POST(request: NextRequest) {
       const subscriptionId = resource.id
       if (!userId || !subscriptionId) break
       if (!planMatchesPlanId(planFromCustomId(resource.custom_id), resource.plan_id)) break
-      await client.from('paypal_subscriptions').upsert(
+      const { error: createdError } = await client.from('paypal_subscriptions').upsert(
         {
           user_id: userId,
           paypal_subscription_id: subscriptionId,
@@ -119,6 +120,10 @@ export async function POST(request: NextRequest) {
         },
         { onConflict: 'paypal_subscription_id' },
       )
+      // WRITE-FAILURE FIX, DISCLOSED: a failed Supabase write must NOT return 200 — the dedupe row
+      // for this event is already committed above, so a silent 200 here means PayPal never retries
+      // and this event is lost forever. Returning 500 lets PayPal's own retry mechanism recover it.
+      if (createdError) return NextResponse.json({ error: 'Failed to record subscription.' }, { status: 500 })
       break
     }
 
@@ -130,8 +135,9 @@ export async function POST(request: NextRequest) {
       if (!planMatchesPlanId(plan, resource.plan_id)) break
       const nextBillingDate = resource.billing_info?.next_billing_time ?? null
 
-      await activateUserPlanServerSide(userId, plan, subscriptionId)
-      await client.from('paypal_subscriptions').upsert(
+      const { error: activateError } = await activateUserPlanServerSide(userId, plan, subscriptionId)
+      if (activateError) return NextResponse.json({ error: 'Failed to activate plan.' }, { status: 500 })
+      const { error: activatedError } = await client.from('paypal_subscriptions').upsert(
         {
           user_id: userId,
           paypal_subscription_id: subscriptionId,
@@ -142,6 +148,7 @@ export async function POST(request: NextRequest) {
         },
         { onConflict: 'paypal_subscription_id' },
       )
+      if (activatedError) return NextResponse.json({ error: 'Failed to record subscription.' }, { status: 500 })
       break
     }
 
@@ -157,11 +164,37 @@ export async function POST(request: NextRequest) {
         .maybeSingle()
       if (!existing) break
 
-      await activateUserPlanServerSide(existing.user_id as string, (existing.plan as 'pro' | 'elite') ?? 'pro', subscriptionId)
-      await client
+      const { error: renewError } = await activateUserPlanServerSide(
+        existing.user_id as string,
+        (existing.plan as 'pro' | 'elite') ?? 'pro',
+        subscriptionId,
+      )
+      if (renewError) return NextResponse.json({ error: 'Failed to activate plan.' }, { status: 500 })
+      const { error: renewedError } = await client
         .from('paypal_subscriptions')
         .update({ status: 'active', updated_at: new Date().toISOString() })
         .eq('paypal_subscription_id', subscriptionId)
+      if (renewedError) return NextResponse.json({ error: 'Failed to record subscription.' }, { status: 500 })
+      break
+    }
+
+    // SUSPENDED/EXPIRED HANDLING, DISCLOSED (payments audit fix): PayPal auto-suspends a
+    // subscription after repeated failed renewal charges via BILLING.SUBSCRIPTION.SUSPENDED (not
+    // CANCELLED) — previously this fell into `default` and was silently ignored, leaving
+    // paypal_subscriptions.status stuck on 'active' forever even though PayPal stopped billing.
+    // activateUserPlanServerSide's rolling current_period_end still lazily expires access, so this
+    // was never a full access-control gap — but the status row was misleading. Marked explicitly so
+    // any admin/support tooling reading paypal_subscriptions reflects PayPal's real state.
+    case 'BILLING.SUBSCRIPTION.SUSPENDED':
+    case 'BILLING.SUBSCRIPTION.EXPIRED': {
+      const subscriptionId = resource.id
+      if (!subscriptionId) break
+      const status = eventType === 'BILLING.SUBSCRIPTION.SUSPENDED' ? 'suspended' : 'expired'
+      const { error: statusError } = await client
+        .from('paypal_subscriptions')
+        .update({ status, updated_at: new Date().toISOString() })
+        .eq('paypal_subscription_id', subscriptionId)
+      if (statusError) return NextResponse.json({ error: 'Failed to record subscription status.' }, { status: 500 })
       break
     }
 
@@ -174,10 +207,11 @@ export async function POST(request: NextRequest) {
         .eq('paypal_subscription_id', subscriptionId)
         .maybeSingle()
 
-      await client
+      const { error: cancelledError } = await client
         .from('paypal_subscriptions')
         .update({ status: 'cancelled', updated_at: new Date().toISOString() })
         .eq('paypal_subscription_id', subscriptionId)
+      if (cancelledError) return NextResponse.json({ error: 'Failed to record subscription.' }, { status: 500 })
 
       // Only downgrade to free if this subscription was actually the source of the user's paid
       // plan — a user who separately paid via crypto or the manual PayPal flow keeps their plan.
@@ -188,10 +222,11 @@ export async function POST(request: NextRequest) {
           .eq('user_id', existing.user_id as string)
           .maybeSingle()
         if (settingsRow?.lemon_subscription_id === subscriptionId) {
-          await client
+          const { error: downgradeError } = await client
             .from('user_settings')
             .update({ plan: 'free', subscription_status: 'cancelled', updated_at: new Date().toISOString() })
             .eq('user_id', existing.user_id as string)
+          if (downgradeError) return NextResponse.json({ error: 'Failed to downgrade plan.' }, { status: 500 })
         }
       }
       break
