@@ -40,6 +40,7 @@ import {
 } from '@/lib/server/lpIntelligence'
 import { calculateCortexScoreV2 } from '@/lib/token/scoring'
 import { getRadarValuationBasis, resolveBaseRadarMarketCap } from '@/lib/baseRadarValuation'
+import { resolveUniswapV4PositionOwners } from '@/lib/server/uniswapV4Subgraph'
 
 // Local LP model/migration proof helper — pure function derived from GeckoTerminal pool data,
 // delegating to the shared classifyPoolModel() so Token Scanner and Liquidity Safety agree
@@ -4254,8 +4255,13 @@ export async function POST(req: Request) {
       // Market pool exists but is V3/concentrated, and no V2/Aerodrome-V2 pool found anywhere →
       // attempt a real position/controller proof instead of stopping at "required".
       concentratedPositionProof = await attemptConcentratedPositionProof(
-        chain as "eth" | "base", primaryPoolAddress, primaryMarketPoolId ?? lpPool?.poolId ?? null,
+        // Was hardcoded to "eth" | "base" here — silently excluded bnb/robinhood from ever
+        // reaching this proof attempt at all, even after LpChain itself was widened earlier this
+        // session. `chain` is already narrowed to one of the four supported ChainKey values by the
+        // request-level gate, so this cast is now accurate rather than lossy.
+        chain as "eth" | "base" | "bnb" | "robinhood", primaryPoolAddress, primaryMarketPoolId ?? lpPool?.poolId ?? null,
         primaryMarketPoolAddressType ?? lpPool?.poolAddressType ?? "unknown", lpDexId ?? lpDexName ?? null,
+        resolveUniswapV4PositionOwners,
       )
       lpControl = {
         status: "concentrated_liquidity",
@@ -4274,8 +4280,9 @@ export async function POST(req: Request) {
       // LP verification pool has no ERC20 LP token (V3/CL NFT, incl. Aerodrome Slipstream) — burn/lock
       // proof not applicable; attempt a real position/controller proof instead of stopping at "required".
       concentratedPositionProof = await attemptConcentratedPositionProof(
-        chain as "eth" | "base", lpVerifyPoolAddress, lpVerifyPool?.poolId ?? null,
+        chain as "eth" | "base" | "bnb" | "robinhood", lpVerifyPoolAddress, lpVerifyPool?.poolId ?? null,
         lpVerifyPool?.poolAddressType ?? "unknown", lpDexId ?? lpDexName ?? null,
+        resolveUniswapV4PositionOwners,
       )
       lpControl = {
         status: 'concentrated_liquidity',
@@ -4564,11 +4571,12 @@ export async function POST(req: Request) {
     // using only the pool identity already resolved above (no new provider calls).
     if (_primaryConcentrated && !concentratedPositionProof) {
       concentratedPositionProof = await attemptConcentratedPositionProof(
-        chain as "eth" | "base",
+        chain as "eth" | "base" | "bnb" | "robinhood",
         primaryPoolAddress ?? lpVerifyPoolAddress ?? null,
         primaryMarketPoolId ?? lpPool?.poolId ?? lpVerifyPool?.poolId ?? null,
         primaryMarketPoolAddressType ?? lpPool?.poolAddressType ?? lpVerifyPool?.poolAddressType ?? "unknown",
         lpDexId ?? lpDexName ?? null,
+        resolveUniswapV4PositionOwners,
       )
       lpControl = {
         ...lpControl,
