@@ -6751,7 +6751,18 @@ export async function POST(req: Request) {
     holderSanityDebug.finalPercentSource = percentSource
 
 
-    const ethOriginDiscovery = chain === 'eth' ? await discoverTokenOrigin(chain, contract) : null
+    // BNB/ROBINHOOD DEPLOYER-DISCOVERY FIX, DISCLOSED: discoverTokenOrigin (creation-record lookup
+    // via Etherscan's unified V2 API + GoldRush/Covalent transaction history + Alchemy
+    // alchemy_getAssetTransfers mint-recipient/earliest-transfer fallbacks — no Moralis anywhere in
+    // it) was already fully chain-generic and already worked for bnb/robinhood once
+    // COVALENT_CHAIN_SLUG/CREATOR_LOOKUP_CHAIN_ID were extended for them earlier this session. It
+    // was just never CALLED for anything but chain === 'eth' — bnb/robinhood fell through to the
+    // much weaker ownerAddr-RPC-call + Moralis-mint-fallback path instead (Moralis doesn't index
+    // either of these chains, so that fallback silently returns nothing). base intentionally keeps
+    // its existing dedicated ownerAddr-based path unchanged here — this fix is scoped to the two
+    // chains that actually had the reported gap.
+    const useOriginDiscovery = chain === 'eth' || chain === 'bnb' || chain === 'robinhood'
+    const ethOriginDiscovery = useOriginDiscovery ? await discoverTokenOrigin(chain, contract) : null
 
     const roundSupplyPct = (value: number): number => Math.round(value * 100) / 100
     const normalizeActorAddress = (value: string | null | undefined): string | null => {
@@ -6762,11 +6773,11 @@ export async function POST(req: Request) {
     const ethOriginCandidate = normalizeActorAddress(ethOriginDiscovery?.candidate.address ?? null)
     // For Base: prefer ownerAddr (current owner/control wallet); fall back to _ownerFromTransfer
     // (initial mint recipient) when ownerAddr is null or zero (renounced).
-    const deployerAddress = chain === 'eth' ? ethOriginCandidate : (normalizeActorAddress(ownerAddr) ?? normalizeActorAddress(_ownerFromTransfer))
-    const ethLinkedWalletResult = chain === 'eth' && deployerAddress
+    const deployerAddress = useOriginDiscovery ? ethOriginCandidate : (normalizeActorAddress(ownerAddr) ?? normalizeActorAddress(_ownerFromTransfer))
+    const ethLinkedWalletResult = useOriginDiscovery && deployerAddress
       ? await findTokenLinkedWallets(chain, deployerAddress, contract)
       : null
-    const linkedWallets: LinkedWallet[] = chain === 'eth'
+    const linkedWallets: LinkedWallet[] = useOriginDiscovery
       ? (ethLinkedWalletResult?.wallets ?? [])
       : [adminAddr]
         .map(normalizeActorAddress)
@@ -6774,18 +6785,18 @@ export async function POST(req: Request) {
         .filter((address, index, arr) => arr.indexOf(address) === index)
         .map((address) => ({ address, amountReceived: null, asset: null, txHash: null, firstSeen: null, reason: 'admin_or_proxy_control_wallet', confidence: 'medium' as const }))
     const ethOrigin = ethOriginDiscovery?.candidate ?? null
-    const devDeployerStatus = chain === 'eth'
+    const devDeployerStatus = useOriginDiscovery
       ? (deployerAddress ? (ethOrigin?.deployerStatus ?? 'possible_match') : 'not_confirmed')
       : (deployerAddress ? 'confirmed' : 'not_confirmed')
-    const devDeployerConfidence = chain === 'eth'
+    const devDeployerConfidence = useOriginDiscovery
       ? (deployerAddress ? (ethOrigin?.confidence ?? 'medium') : 'low')
       : (deployerAddress ? 'high' : 'low')
-    const devMethodUsed = chain === 'eth'
+    const devMethodUsed = useOriginDiscovery
       ? (ethOrigin?.methodUsed ?? 'unknown')
       : (deployerAddress ? (_ownerFromTransfer ? 'moralis_transfer_fallback' : 'rpc_selector') : 'unknown')
-    const devCreationTxHash = chain === 'eth' ? (ethOrigin?.creationTxHash ?? null) : null
-    const devOriginReason = chain === 'eth'
-      ? (ethOrigin?.reason ?? 'No ETH origin candidate found from Token Scanner checks')
+    const devCreationTxHash = useOriginDiscovery ? (ethOrigin?.creationTxHash ?? null) : null
+    const devOriginReason = useOriginDiscovery
+      ? (ethOrigin?.reason ?? 'No origin candidate found from Token Scanner checks')
       : (deployerAddress ? (_ownerFromTransfer ? 'Deployer inferred from earliest mint transfer recipient.' : 'Deployer resolved from ownership/control checks.') : 'Deployer not resolved from token scan data.')
 
     // Reconcile deployerProfile with the resolved deployer/origin wallet (devIntel.deployerAddress).
@@ -7930,7 +7941,7 @@ export async function POST(req: Request) {
         devIntelDiagnostics: {
           originDiscovery: ethOriginDiscovery?.diag ?? null,
           linkedWallets: ethLinkedWalletResult?.diag ?? null,
-          linkedWalletsStatus: ethLinkedWalletResult?.status ?? (chain === 'eth' && !deployerAddress ? 'skipped' : null),
+          linkedWalletsStatus: ethLinkedWalletResult?.status ?? (useOriginDiscovery && !deployerAddress ? 'skipped' : null),
           deployerStatus: devDeployerStatus,
           methodUsed: devMethodUsed,
           originReason: devOriginReason,
