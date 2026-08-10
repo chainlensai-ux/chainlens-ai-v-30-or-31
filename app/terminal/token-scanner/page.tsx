@@ -1775,8 +1775,15 @@ const CMAP_RISK_COLOR: Record<CMapRisk, string> = { low:'#34d399', medium:'#facc
 const CMAP_RISK_BG: Record<CMapRisk, string> = { low:'rgba(52,211,153,0.12)', medium:'rgba(250,204,21,0.12)', high:'rgba(251,113,133,0.14)', open_check:'rgba(168,85,247,0.11)', neutral:'rgba(100,116,139,0.10)' }
 function deriveClusterNodeRisk(node: ClusterNode, clusterRiskScore: number | null): CMapRisk {
   if (node.type === 'holder_wallet' && !node.isLinked && !node.isCluster) {
-    const pct = node.supplyPercent ?? 0
-    if (node.confidence === 'open_check') return 'open_check'
+    // Confidence here means "confirmed linked to the deployer/cluster" — plain indexed holders are
+    // always 'open_check' on that axis. That's a different question from supply-concentration risk,
+    // which IS known once the wallet is indexed with a percent. Previously this short-circuited risk
+    // to 'open_check' whenever confidence was 'open_check', which is every single plain holder node
+    // (lib/clusterMap.ts hardcodes that confidence for all of them) — so risk was always 'Open check'
+    // even for holders with a clearly indexed, low supply percent. Only fall back to 'open_check' risk
+    // when the percent itself is genuinely unknown.
+    if (node.supplyPercent == null) return 'open_check'
+    const pct = node.supplyPercent
     return pct >= 10 ? 'medium' : pct >= 1 ? 'low' : 'neutral'
   }
   const hasSusp = (node.reasons ?? []).some((r: string) => /suspicious|repeated|same.?size|funding|control/i.test(r))
