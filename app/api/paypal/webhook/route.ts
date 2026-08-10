@@ -163,10 +163,18 @@ export async function POST(request: NextRequest) {
         .eq('paypal_subscription_id', subscriptionId)
         .maybeSingle()
       if (!existing) break
+      // NULL-PLAN FIX, DISCLOSED (payments audit): previously defaulted a missing/invalid `plan`
+      // column to 'pro', which would silently downgrade an elite subscriber on every renewal if the
+      // row was ever missing its plan (bad migration, hand-inserted row, future upsert without
+      // `plan`). Treat that as a hard failure instead of guessing — never renews the wrong plan.
+      const renewalPlan = existing.plan === 'pro' || existing.plan === 'elite' ? existing.plan : null
+      if (!renewalPlan) {
+        return NextResponse.json({ error: 'Subscription row missing a valid plan.' }, { status: 500 })
+      }
 
       const { error: renewError } = await activateUserPlanServerSide(
         existing.user_id as string,
-        (existing.plan as 'pro' | 'elite') ?? 'pro',
+        renewalPlan,
         subscriptionId,
       )
       if (renewError) return NextResponse.json({ error: 'Failed to activate plan.' }, { status: 500 })

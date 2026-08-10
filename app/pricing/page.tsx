@@ -139,6 +139,7 @@ export default function PricingPage() {
   const [checkoutLoading, setCheckoutLoading] = useState<PlanId | null>(null)
   const [checkoutError, setCheckoutError] = useState<string | null>(null)
   const [awaitingPayPalActivation, setAwaitingPayPalActivation] = useState(false)
+  const [awaitingCryptoActivation, setAwaitingCryptoActivation] = useState(false)
 
   async function fetchCurrentPlan(token: string): Promise<UserPlan | null> {
     try {
@@ -195,6 +196,40 @@ export default function PricingPage() {
       attempts += 1
       if (attempts >= 8) { setAwaitingPayPalActivation(false); return } // ~24s of polling, then give up quietly
       window.setTimeout(poll, 3000)
+    }
+    poll()
+    return () => { cancelled = true }
+  }, [])
+
+  // CRYPTO-ACTIVATION-POLL FIX, DISCLOSED (payments audit): NOWPayments redirects back to
+  // /pricing?payment=success (see app/api/checkout/crypto/route.ts's success_url) before the IPN
+  // webhook has necessarily landed — on-chain confirmation can take minutes, longer than PayPal's
+  // near-instant activation. Without this, a user who paid with crypto saw a stale "Free" plan with
+  // no indication anything was happening. Mirrors the PayPal poll above with a longer window.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('payment') !== 'success') return
+    window.history.replaceState({}, '', '/pricing')
+
+    let cancelled = false
+    let attempts = 0
+    const poll = async () => {
+      if (cancelled) return
+      setAwaitingCryptoActivation(true)
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      if (!token || cancelled) { setAwaitingCryptoActivation(false); return }
+      const p = await fetchCurrentPlan(token)
+      if (cancelled) return
+      if (p) {
+        setUserPlan(p)
+        setAwaitingCryptoActivation(false)
+        return
+      }
+      attempts += 1
+      if (attempts >= 20) { setAwaitingCryptoActivation(false); return } // ~2min of polling, then give up quietly
+      window.setTimeout(poll, 6000)
     }
     poll()
     return () => { cancelled = true }
@@ -559,6 +594,13 @@ export default function PricingPage() {
         {awaitingPayPalActivation && (
           <div style={{ marginTop:16, maxWidth:480, marginLeft:'auto', marginRight:'auto', background:'rgba(45,212,191,0.08)', border:'1px solid rgba(45,212,191,0.30)', borderRadius:10, padding:'10px 16px', color:'#5eead4', fontSize:13, textAlign:'center' }}>
             PayPal subscription approved — activating your plan…
+          </div>
+        )}
+
+        {/* Crypto payment confirmed, waiting for the IPN webhook to activate the plan */}
+        {awaitingCryptoActivation && (
+          <div style={{ marginTop:16, maxWidth:480, marginLeft:'auto', marginRight:'auto', background:'rgba(45,212,191,0.08)', border:'1px solid rgba(45,212,191,0.30)', borderRadius:10, padding:'10px 16px', color:'#5eead4', fontSize:13, textAlign:'center' }}>
+            Crypto payment received — activating your plan once the network confirms…
           </div>
         )}
 
