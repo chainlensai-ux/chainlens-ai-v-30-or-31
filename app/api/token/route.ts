@@ -2345,6 +2345,18 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
   return p
 }
 
+// HOST-FALLBACK FIX, DISCLOSED (Robinhood-chain holder-fetch consistency): this function had a
+// single host (api.covalenthq.com, or GOLDRUSH_BASE_URL if overridden) and no retry — one
+// transient failure (timeout, 5xx, a hiccup on GoldRush's still-new Robinhood Chain indexer) meant
+// the whole holder distribution silently came back "not returned this scan" for that request, even
+// though a later scan of the same or a different token would work fine. This is the exact same
+// flakiness pattern already diagnosed and fixed for /api/whale-alerts/sync (see that route's
+// COVALENT_HOSTS comment) — api.covalenthq.com and api.goldrush.dev are the same GoldRush/Covalent
+// backend behind two different hostnames, so trying the second on a failure is a real retry, not a
+// guess. Only retries the next host on an actual failure (network error, non-2xx, bad JSON) — a
+// successful response on the first host still returns immediately, so this adds no latency to the
+// common case.
+const GOLDRUSH_HOLDER_HOSTS = ['api.covalenthq.com', 'api.goldrush.dev'] as const
 async function fetchTokenHoldersUncached(_chain: ChainKey, contract: string): Promise<any> {
   const CHAIN_SLUG_MAP: Record<ChainKey, string> = {
     eth: 'eth-mainnet',
@@ -2355,51 +2367,60 @@ async function fetchTokenHoldersUncached(_chain: ChainKey, contract: string): Pr
   }
   const chainSlug = CHAIN_SLUG_MAP[_chain] ?? 'base-mainnet'
   const endpointPath = `/v1/${chainSlug}/tokens/${contract}/token_holders_v2/`
-  let statusCode: number | undefined
-  try {
-    // Use GOLDRUSH_API_KEY first (matches proxy/test routes); fall back to COVALENT_API_KEY
-    const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
-    if (!apiKey) {
-      console.warn('[holder-debug] contract', contract, 'chain', chainSlug, 'result: missing API key')
-      return { __status: 'not_configured', __reason: 'missing_api_key', __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: false }
-    }
-    // page-size max accepted by Covalent: 100. Values above that (e.g. 200) return HTTP 400.
-    const _grBase = (process.env.GOLDRUSH_BASE_URL ?? 'https://api.covalenthq.com').replace(/\/$/, '')
-    const url = `${_grBase}${endpointPath}?page-number=0&page-size=100`
-    console.log('[holder-debug] contract', contract, 'chain', chainSlug, 'path', endpointPath, 'params page-number=0&page-size=100')
-    logRpcCall({ route: "/api/token", chain: chainSlug, method: "goldrush_token_holders_v2" });
-    const res = await fetch(url, {
-      cache: 'no-store',
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(8000),
-    })
-    statusCode = res.status
-    if (!res.ok) {
-      // Try to parse JSON error body for a safe reason; fall back to text snippet
-      let safeReason = statusCode === 400 ? 'bad_request_check_endpoint_params' : 'provider_error'
-      try {
-        const errJson = await res.json()
-        if (errJson?.error_message) safeReason = errJson.error_message
-        console.warn('[holder-debug] non-ok', statusCode, 'error_message:', errJson?.error_message ?? '(none)', 'error_code:', errJson?.error_code ?? '(none)')
-      } catch {
-        const errText = await res.text().catch(() => '').then(t => t.slice(0, 200))
-        console.warn('[holder-debug] non-ok', statusCode, errText)
-      }
-      return { __status: 'error', __reason: safeReason, __statusCode: statusCode, __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: true }
-    }
-    const json = await res.json()
-    const topKeys = Object.keys(json ?? {})
-    const itemCount = json?.data?.items?.length ?? 0
-    console.log('[holder-debug] statusCode', statusCode, 'responseKeys', topKeys, 'data.items.length', itemCount)
-    if (json?.error) {
-      console.warn('[holder-debug] API-level error:', json?.error_message)
-      return { __status: 'error', __reason: json?.error_message ?? 'api_error', __statusCode: statusCode, __endpointPath: endpointPath, __responseKeys: topKeys, __chainUsed: chainSlug, __hasApiKey: true }
-    }
-    return { ...json, __endpointPath: endpointPath, __statusCode: statusCode, __responseKeys: topKeys, __chainUsed: chainSlug, __hasApiKey: true }
-  } catch (err) {
-    console.error('[holder-debug] exception', err)
-    return { __status: 'error', __reason: 'provider_error', __statusCode: statusCode, __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: Boolean(process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY) }
+  const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
+  if (!apiKey) {
+    console.warn('[holder-debug] contract', contract, 'chain', chainSlug, 'result: missing API key')
+    return { __status: 'not_configured', __reason: 'missing_api_key', __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: false }
   }
+  // An explicit GOLDRUSH_BASE_URL override (e.g. for tests) skips the multi-host fallback and uses
+  // exactly the configured host, same as every other GoldRush caller in this file that respects it.
+  const hosts = process.env.GOLDRUSH_BASE_URL
+    ? [process.env.GOLDRUSH_BASE_URL.replace(/^https?:\/\//, '').replace(/\/$/, '')]
+    : GOLDRUSH_HOLDER_HOSTS
+  let statusCode: number | undefined
+  let lastReason = 'provider_error'
+  for (const host of hosts) {
+    try {
+      // page-size max accepted by Covalent: 100. Values above that (e.g. 200) return HTTP 400.
+      const url = `https://${host}${endpointPath}?page-number=0&page-size=100`
+      console.log('[holder-debug] contract', contract, 'chain', chainSlug, 'host', host, 'path', endpointPath, 'params page-number=0&page-size=100')
+      logRpcCall({ route: "/api/token", chain: chainSlug, method: "goldrush_token_holders_v2" });
+      const res = await fetch(url, {
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: AbortSignal.timeout(8000),
+      })
+      statusCode = res.status
+      if (!res.ok) {
+        // Try to parse JSON error body for a safe reason; fall back to text snippet
+        let safeReason = statusCode === 400 ? 'bad_request_check_endpoint_params' : 'provider_error'
+        try {
+          const errJson = await res.json()
+          if (errJson?.error_message) safeReason = errJson.error_message
+          console.warn('[holder-debug] non-ok', statusCode, 'host', host, 'error_message:', errJson?.error_message ?? '(none)', 'error_code:', errJson?.error_code ?? '(none)')
+        } catch {
+          const errText = await res.text().catch(() => '').then(t => t.slice(0, 200))
+          console.warn('[holder-debug] non-ok', statusCode, 'host', host, errText)
+        }
+        lastReason = safeReason
+        continue
+      }
+      const json = await res.json()
+      const topKeys = Object.keys(json ?? {})
+      const itemCount = json?.data?.items?.length ?? 0
+      console.log('[holder-debug] statusCode', statusCode, 'host', host, 'responseKeys', topKeys, 'data.items.length', itemCount)
+      if (json?.error) {
+        console.warn('[holder-debug] API-level error:', 'host', host, json?.error_message)
+        lastReason = json?.error_message ?? 'api_error'
+        continue
+      }
+      return { ...json, __endpointPath: endpointPath, __statusCode: statusCode, __responseKeys: topKeys, __chainUsed: chainSlug, __hasApiKey: true }
+    } catch (err) {
+      console.error('[holder-debug] exception', 'host', host, err)
+      lastReason = 'provider_error'
+    }
+  }
+  return { __status: 'error', __reason: lastReason, __statusCode: statusCode, __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: true }
 }
 
 type LpControlResult = {
