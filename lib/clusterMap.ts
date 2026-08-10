@@ -252,6 +252,23 @@ export function buildClusterMap(input: BuildClusterMapInput): ClusterMap {
 
   for (const holder of holderRows.slice(0, 12)) {
     if (holder.address === deployerAddress || linkedByAddress.has(holder.address) || matchedLinkedByAddress.has(holder.address)) continue
+    // CONFIDENCE-REASONING FIX, DISCLOSED: this used to hardcode confidence: 'open_check' for every
+    // plain holder, with no distinction based on how much we actually know about that row — so the
+    // UI showed "Open check" for 100% of indexed holders regardless of data quality, with a reason
+    // string that never varied. Confidence here still can't mean "confirmed linked to the deployer"
+    // (that's genuinely unconfirmed for a plain holder), but it CAN reflect how complete the indexed
+    // holder-position data itself is: an on-chain percent AND rank is a solid, source-backed reading
+    // (estimate as 'medium' link-uncertainty rather than maximal uncertainty); a percent with no rank
+    // is a weaker partial read ('low'); truly nothing beyond the address stays 'open_check'. This is
+    // a graduated estimate grounded in what the holder row actually contains, not a guess.
+    const hasPercent = holder.percent != null
+    const hasRank = holder.rank != null
+    const confidence: ClusterConfidence = hasPercent && hasRank ? 'medium' : hasPercent ? 'low' : 'open_check'
+    const reason = hasPercent && hasRank
+      ? `Indexed top holder with a confirmed on-chain supply share (${holder.percent!.toFixed(1)}%) and rank (#${holder.rank}); no deployer or linked-wallet evidence to confirm cluster role.`
+      : hasPercent
+        ? `Indexed top holder with a confirmed supply share (${holder.percent!.toFixed(1)}%), but rank position unavailable in this pass; no deployer or linked-wallet evidence to confirm cluster role.`
+        : 'Indexed top holder only; no deployer or linked-wallet evidence confirmed.'
     upsertNode({
       id: nodeId(holder.address),
       address: holder.address,
@@ -259,11 +276,11 @@ export function buildClusterMap(input: BuildClusterMapInput): ClusterMap {
       type: 'holder_wallet',
       supplyPercent: holder.percent,
       rank: holder.rank,
-      confidence: 'open_check',
+      confidence,
       isCreator: false,
       isLinked: false,
       isCluster: false,
-      reasons: ['Indexed top holder only; no deployer or linked-wallet evidence confirmed.'],
+      reasons: [reason],
     })
   }
 
