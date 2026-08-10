@@ -59,6 +59,11 @@ interface RadarData {
   mode?: 'shallow' | 'full'
   page?: number
   hasMore?: boolean
+  // MAIN-FEED-QUALITY-GATE, DISCLOSED: count of candidates the backend's stricter $45K valuation /
+  // 30-holder gate hid from this response (app/api/radar/route.ts's hiddenLowEvidenceCount) — not
+  // the pre-existing liquidity/dead-volume filters, just the two new gates. Optional/undefined on
+  // any cached payload from before this field existed.
+  hiddenLowEvidenceCount?: number
 }
 
 type RadarStatus = 'HOT' | 'WATCH' | 'EARLY' | 'UNVERIFIED' | 'RISKY' | 'DEAD'
@@ -125,6 +130,7 @@ interface RadarSummary {
   hottestToken: string
   hottestValue: string
   hasSecurityData: boolean
+  hiddenLowEvidenceCount: number
 }
 
 // Real row shape from /api/watchlist/tokens (Supabase `watchlist_tokens` table) — same endpoint
@@ -677,9 +683,16 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
     topTokens[0] ? `${topTokens[0].symbol} is leading the current radar score.` : 'Open check: no lead token yet.',
     summary.averageLiquidity > 0 ? `Average visible liquidity is ${fmtUSD(summary.averageLiquidity)}.` : 'Liquidity evidence is still an open check.',
   ]
+  // MAIN-FEED-QUALITY-GATE, DISCLOSED (requested: stricter main-feed gate — $45K minimum valuation,
+  // 30 minimum holders — explained on the CORTEX panel, count shown only when the gate actually hid
+  // something this cycle so the panel doesn't add a permanently-noisy line for an empty case).
+  const gateExplainer = summary.hiddenLowEvidenceCount > 0
+    ? `Main radar filters out candidates below $45K valuation or below 30 holders — ${summary.hiddenLowEvidenceCount} hidden this cycle.`
+    : 'Main radar filters out candidates below $45K valuation or below 30 holders.'
   const warnings = [
     summary.unverified > 0 ? `${summary.unverified} checks need more evidence.` : 'No open verification cluster in the current results.',
     summary.hasSecurityData ? 'Simulation is confirmed for some tokens; unresolved tokens are capped until checks complete.' : 'Simulation checks need more evidence.',
+    gateExplainer,
     'Use Token Scanner before acting on any radar signal.',
   ]
 
@@ -700,7 +713,7 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
         ))}
       </div>
       <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '7px' }}>
-        {warnings.slice(0, 3).map(warning => (
+        {warnings.slice(0, 4).map(warning => (
           <div key={warning} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', color: '#a89268', fontSize: '10.5px', lineHeight: 1.5 }}>
             <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#a89268', flexShrink: 0, marginTop: '6px' }} />
             <span>{warning}</span>
@@ -1386,8 +1399,9 @@ export default function BaseRadarPage() {
       hottestToken: getOverviewTokenTitle(hottest),
       hottestValue: hottest ? `Score ${hottest.radarScore}` : 'Needs data',
       hasSecurityData,
+      hiddenLowEvidenceCount: data?.hiddenLowEvidenceCount ?? 0,
     }
-  }, [intelTokens])
+  }, [intelTokens, data?.hiddenLowEvidenceCount])
 
   const filteredAndSortedTokens = useMemo(() => {
     const filtered = intelTokens.filter(token => {

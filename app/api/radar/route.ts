@@ -5,6 +5,7 @@ import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFAULT_RADAR_MIN_VALUATION_USD, getRadarCortexValuationLine, getRadarValuationCardDisplay, getRadarValuationEvidenceGap, resolveBaseRadarMarketCap, selectDexScreenerMarketCapRescuePair, tokenPassesRadarValuationFilters, type DexScreenerMarketCapRescueResult, type RadarValuationBasis } from '@/lib/baseRadarValuation'
 import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type RadarSimulationStatus } from '@/lib/baseRadarSimulation'
+import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue } from '@/lib/baseRadarMainFeedGate'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 // RATE-LIMIT-TOO-TIGHT FIX, DISCLOSED (reported: "Radar refresh failed" for no obvious reason):
@@ -97,10 +98,15 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Pro
 // no holder-count floor at all — only a liquidity/valuation bar — so a pool could clear liquidity
 // yet still be an almost-uninhabited token. Fetches GoldRush's token_holders_v2 total_count (a
 // single lightweight page-size=1 call, not a full holder pull) for the ranked candidate set and
-// drops anything under MIN_HOLDER_COUNT. An unresolved/failed holder-count lookup is treated as
-// failing the bar too (same unknown-≠-safe principle as the rest of this route's risk scoring) —
+// drops anything under MAIN_FEED_MIN_HOLDERS. An unresolved/failed holder-count lookup is treated
+// as failing the bar too (same unknown-≠-safe principle as the rest of this route's risk scoring) —
 // this filter should never leak a token through just because the provider call errored.
-const MIN_HOLDER_COUNT = 25
+// MAIN-FEED-QUALITY-GATE, DISCLOSED (requested: stricter main-feed gate — $45K minimum valuation,
+// 30 minimum holders, real holder evidence required, no dead-liquidity coins ranking as radar
+// opportunities). Raised from the prior 25-holder floor to the requested 30; unresolved/failed
+// holder-count lookups still fail the bar (unchanged — same unknown-≠-safe principle). Constants and
+// gate predicates live in lib/baseRadarMainFeedGate.ts (imported above) so they're unit-testable
+// without mocking this route's HTTP calls — see scripts/test-base-radar-main-feed-gate.mjs.
 // HOST-FIX + RATE-LIMIT-BUDGET, DISCLOSED (reported: after this filter shipped, holder data went
 // dark app-wide — Top1/10/20 stuck at N/A even in the token drawer, not just the feed). Server logs
 // showed api.covalenthq.com returning 429 (rate-limited) and the "fallback" host api.goldrush.dev
@@ -565,6 +571,8 @@ export async function GET(req: NextRequest) {
     let droppedByValuationOrLiquidity = 0
     let droppedByAbsoluteLiquidityFloor = 0
     let droppedByDeadVolumeFloor = 0
+    let droppedByValuationUnavailable = 0
+    let droppedByMarketCapBelow45k = 0
 
     for (const pool of pooled) {
       const poolId = String(pool.id ?? '').toLowerCase()
@@ -707,11 +715,25 @@ export async function GET(req: NextRequest) {
       const hasMeaningfulActivity = ageMinutes < 20 || volume24h >= 200 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.02)
       if (!hasMeaningfulActivity) { droppedByDeadVolumeFloor++; continue }
       const valuation = filterResult.valuation
+      // MAIN-FEED-QUALITY-GATE, DISCLOSED (requested: stricter main-feed floor — $45K minimum
+      // valuation, real holder evidence required, no dead-liquidity coins ranking as opportunities).
+      // getRadarValuationBasis (lib/baseRadarValuation.ts) flattens a real market cap and an FDV
+      // fallback into a single "verified_market_cap" basis by explicit prior product decision (FDV
+      // is shown as "Market Cap" everywhere with no distinct fallback label) — that shared display
+      // behavior is intentionally left untouched here. This gate instead tracks, locally, whether
+      // THIS candidate's number came from a real marketCapUsd or was FDV-derived, purely to (a)
+      // decide whether the $45K floor was actually cleared and (b) attach an explicit fallback
+      // evidence gap so a FDV-sourced valuation can never look identical to a real confirmed market
+      // cap in the reasons shown for this candidate, without changing the shared valuation display.
+      const isRealVerifiedMarketCap = isRealVerifiedMarketCapValue(marketCapStatus, marketCapUsd)
+      if (valuation.valueUsd == null) { droppedByValuationUnavailable++; continue }
+      if (!passesMainFeedValuationGate(valuation.valueUsd)) { droppedByMarketCapBelow45k++; continue }
       const valuationCardDisplay = getRadarValuationCardDisplay(valuation, fmtK)
       const valuationEvidenceGap = getRadarValuationEvidenceGap(valuation)
       const evidenceGaps = [
         ...(valuationEvidenceGap ? [valuationEvidenceGap] : []),
         ...(!filterResult.included ? ['Relaxed fallback: default valuation filter did not pass, but liquidity/volume is active'] : []),
+        ...(!isRealVerifiedMarketCap ? ['Valuation confirmed via FDV fallback — no separate verified market cap available'] : []),
       ]
       const candidate = {
         name: baseToken.name, symbol: baseToken.symbol, contract: baseToken.address,
@@ -790,10 +812,18 @@ export async function GET(req: NextRequest) {
     // provider is reachable and per-token nulls are trusted misses, so the floor applies normally.
     const resolvedHolderCounts = [...holderCountByContract.values()].filter((c): c is number => typeof c === 'number')
     const holderProviderReachable = resolvedHolderCounts.length > 0
+    // HOLDER-EVIDENCE-MUST-BE-REAL, DISCLOSED: null/N/A/unresolved holder evidence must never count
+    // as passing the 30-holder gate — tracked separately from "resolved but below 30" so the debug
+    // funnel (and the "X hidden for weak holder evidence" UI count) can distinguish a genuinely thin
+    // holder base from GoldRush simply not having an answer yet, without treating the latter as safe.
+    let droppedByHoldersBelow30 = 0
+    let droppedByHoldersUnavailable = 0
     const toCheck = holderProviderReachable
       ? holderCheckTargets.filter((t) => {
           const holderCount = holderCountByContract.get(t.contract.toLowerCase())
-          return typeof holderCount === 'number' && holderCount >= MIN_HOLDER_COUNT
+          if (typeof holderCount !== 'number') { droppedByHoldersUnavailable++; return false }
+          if (!passesMainFeedHolderGate(holderCount)) { droppedByHoldersBelow30++; return false }
+          return true
         })
       : rankedCandidates
 
@@ -883,17 +913,35 @@ export async function GET(req: NextRequest) {
       dangerCount, cautionCount, watchCount, safeCount,
     }
 
+    // MAIN-FEED-QUALITY-GATE, DISCLOSED: candidates hidden specifically by the stricter $45K
+    // valuation / 30-holder gate (not the pre-existing liquidity/dead-volume/V4 filters, which were
+    // already silently dropping candidates before this task). Surfaced to the frontend so the CORTEX
+    // panel can honestly say how many were hidden, instead of the gate being invisible.
+    const hiddenLowEvidenceCount = droppedByMarketCapBelow45k + droppedByValuationUnavailable + droppedByHoldersBelow30 + droppedByHoldersUnavailable
+    const evidenceGapCappedCount = scored.filter(t => t.riskLevel !== 'SAFE' && (t.evidenceGaps?.length ?? 0) > 0).length
+
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
     const hpHitCount = hpCacheHitFlags.filter(Boolean).length
     const hasMorePages = radarPage < 5 && tokens.length > 0
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,
       sourceCounts,
       mergedCount: candidates.length,
-      filters: { minValuationUsd, minLiquidityUsd, allowFdvFallback },
-      filterFunnel: { droppedByV4Pool, droppedByValuationOrLiquidity, droppedByAbsoluteLiquidityFloor, droppedByDeadVolumeFloor },
+      filters: { minValuationUsd, minLiquidityUsd, allowFdvFallback, mainFeedMinValuationUsd: MAIN_FEED_MIN_VALUATION_USD, mainFeedMinHolders: MAIN_FEED_MIN_HOLDERS },
+      filterFunnel: {
+        v4_pool_excluded: droppedByV4Pool,
+        liquidity_below_minimum: droppedByAbsoluteLiquidityFloor,
+        dead_volume_excluded: droppedByDeadVolumeFloor,
+        valuation_or_liquidity_excluded: droppedByValuationOrLiquidity,
+        valuation_unavailable: droppedByValuationUnavailable,
+        market_cap_below_45k: droppedByMarketCapBelow45k,
+        holders_below_30: droppedByHoldersBelow30,
+        holders_unavailable: droppedByHoldersUnavailable,
+        evidence_gap_capped: evidenceGapCappedCount,
+      },
+      hiddenLowEvidenceCount,
       finalTokenCount: tokens.length,
       cacheHit: false,
       mode: requestedMode,
