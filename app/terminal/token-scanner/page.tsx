@@ -1789,10 +1789,14 @@ function deriveClusterNodeRisk(node: ClusterNode, clusterRiskScore: number | nul
   const hasSusp = (node.reasons ?? []).some((r: string) => /suspicious|repeated|same.?size|funding|control/i.test(r))
   if (hasSusp) return 'high'
   if ((clusterRiskScore ?? 0) > 60) return 'high'
+  // Same fix as the holder_wallet branch above: 'open_check' confidence (a linked_wallet/cluster_wallet
+  // node whose link confidence wasn't confirmed upstream) used to force risk to 'open_check' even when
+  // supplyPercent was a real, known number — discarding a perfectly good pct-based risk reading. Only
+  // fall back to 'open_check' risk when the percent itself is genuinely unknown.
+  if (node.supplyPercent == null && node.confidence === 'open_check') return 'open_check'
   const pct = node.supplyPercent ?? 0
   if (pct >= 10 && (node.isCreator || node.isLinked)) return 'high'
   if (pct >= 5 || (clusterRiskScore ?? 0) >= 21) return 'medium'
-  if (node.confidence === 'open_check') return 'open_check'
   if (pct >= 1) return 'medium'
   return 'low'
 }

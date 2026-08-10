@@ -88,7 +88,11 @@ function nodeId(address: string): string {
 
 
 function cleanPercent(value: number | null | undefined): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? Math.round(value * 100) / 100 : null
+  // A negative percent is corrupt upstream data, not a real "0% or below" reading. Treating it as
+  // null (unknown) makes it surface as an open-check rather than silently reading as reassuring
+  // "no dominance / low risk" via dominanceFromSupply/riskFromSupply's <= 0 branches.
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
+  return Math.round(value * 100) / 100
 }
 
 function normalizeConfidence(value: string | null | undefined, fallback: ClusterConfidence = 'medium'): ClusterConfidence {
@@ -155,16 +159,27 @@ export function buildClusterMap(input: BuildClusterMapInput): ClusterMap {
       nodes.set(node.id, node)
       return
     }
+    // CLUSTER-MAP-AUDIT FIX, DISCLOSED: the old merge only protected against a downgrade when the
+    // existing confidence was 'high' or the incoming one was 'open_check' — so e.g. an existing
+    // 'medium' node upserted again with an incoming 'low' (possible if upstream linkedWallets /
+    // matchedLinkedWallets carry duplicate rows for the same address with inconsistent per-row
+    // confidence) silently lost its better reading, even though isCreator/isLinked/isCluster only
+    // ever strengthen (OR-merge) — producing a node the booleans say is confirmed-linked but the
+    // badge says is low-confidence. Always keep whichever confidence is higher instead.
+    const confidenceRank: Record<ClusterConfidence, number> = { open_check: 0, low: 1, medium: 2, high: 3 }
+    const confidence = confidenceRank[node.confidence] > confidenceRank[existing.confidence] ? node.confidence : existing.confidence
     nodes.set(node.id, {
       ...existing,
       ...node,
       supplyPercent: existing.supplyPercent ?? node.supplyPercent,
       rank: existing.rank ?? node.rank,
-      confidence: existing.confidence === 'high' || node.confidence === 'open_check' ? existing.confidence : node.confidence,
+      confidence,
       isCreator: existing.isCreator || node.isCreator,
       isLinked: existing.isLinked || node.isLinked,
       isCluster: existing.isCluster || node.isCluster,
-      reasons: Array.from(new Set([...existing.reasons, ...node.reasons])),
+      // Capped like `signals` below, so a wallet hit by many duplicate/low-quality upstream rows
+      // can't accumulate an unbounded, increasingly redundant reasons list.
+      reasons: Array.from(new Set([...existing.reasons, ...node.reasons])).slice(0, 6),
     })
   }
 

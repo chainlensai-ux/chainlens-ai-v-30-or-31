@@ -694,6 +694,58 @@ function getClusterInfluenceRiskLabel(score: number): ClusterInfluence["clusterR
   return "low"
 }
 
+// SUSPICIOUS-TRANSFER-WIRING FIX, DISCLOSED (cluster map audit): this route always passed
+// suspiciousTransfers: false / suspiciousTransferReasons: [] into buildClusterInfluence and
+// buildClusterMap, unlike /api/dev-wallet's real detectSuspiciousTransfers. That silently
+// understated risk here: same-size repeated transfers, tight funding timing, or heavy holder
+// overlap on the deployer's linked wallets never bumped the cluster risk score, never labeled a
+// wallet's behavior as a wash pattern, and never drew a shared_pattern edge on this route, even
+// though the exact evidence (LinkedWallet.reason/amountReceived/firstSeen/overlapTopHolderRank)
+// was already being computed here. This is a lighter version of dev-wallet's detector using only
+// data this route already has on hand — no new fetches, no new heavy computation.
+function detectClusterSuspiciousTransfers(
+  linkedWallets: LinkedWallet[],
+  clusterSupplyPercent: number | null,
+): { suspiciousTransfers: boolean; suspiciousTransferReasons: string[] } {
+  const reasons: string[] = []
+
+  const tokenWallets = linkedWallets.filter((w) => w.reason === 'token_supply_transfer')
+  const ethWallets = linkedWallets.filter((w) => w.reason === 'eth_funding_transfer')
+  if (tokenWallets.length >= 3) {
+    reasons.push(`Creator sent tokens to ${tokenWallets.length} wallets in checked window`)
+  } else if (ethWallets.length >= 3) {
+    reasons.push(`Creator sent ETH to ${ethWallets.length} wallets around launch`)
+  }
+
+  const holderOverlap = linkedWallets.filter((w) => w.overlapTopHolderRank != null)
+  if (holderOverlap.length >= 2) {
+    reasons.push(`${holderOverlap.length} creator-linked wallets appear in top-holder set`)
+  }
+
+  const numericAmounts = linkedWallets.map((w) => w.amountReceived).filter((v): v is number => typeof v === 'number')
+  if (numericAmounts.length >= 3) {
+    const rounded = numericAmounts.map((v) => Number(v.toFixed(6)))
+    const counts = new Map<number, number>()
+    for (const n of rounded) counts.set(n, (counts.get(n) ?? 0) + 1)
+    const maxGroup = Math.max(...counts.values())
+    if (maxGroup >= 3) reasons.push('Repeated same-size transfers detected')
+  }
+
+  const times = linkedWallets
+    .map((w) => (w.firstSeen ? new Date(w.firstSeen).getTime() : null))
+    .filter((t): t is number => t !== null && Number.isFinite(t))
+    .sort((a, b) => a - b)
+  if (times.length >= 3 && times[times.length - 1] - times[0] <= 2 * 60 * 60 * 1000) {
+    reasons.push('Funded wallets close together in time')
+  }
+
+  if (clusterSupplyPercent !== null && clusterSupplyPercent >= 20) {
+    reasons.push(`Deployer cluster controls ~${clusterSupplyPercent.toFixed(1)}% of visible holder supply`)
+  }
+
+  return { suspiciousTransfers: reasons.length > 0, suspiciousTransferReasons: reasons }
+}
+
 function buildClusterInfluence(params: {
   clusterSupplyPercent: number | null
   creatorInTopHolders: boolean | null
@@ -6755,11 +6807,13 @@ export async function POST(req: Request) {
         : matchedActorAddresses.size === 0
           ? 'creator_and_linked_wallets_checked_against_available_holder_rows_no_supply_found'
           : 'matched_holder_rows_with_percent_values'
+    const { suspiciousTransfers: clusterSuspiciousTransfers, suspiciousTransferReasons: clusterSuspiciousTransferReasons } =
+      detectClusterSuspiciousTransfers(linkedWallets, devClusterSupplyPercent)
     const clusterInfluence = buildClusterInfluence({
       clusterSupplyPercent: devClusterSupplyPercent,
       creatorInTopHolders,
       matchedLinkedWallets,
-      suspiciousTransfers: false,
+      suspiciousTransfers: clusterSuspiciousTransfers,
       holderEvidenceAvailable: holderRowsConfirmed,
       holderEvidencePartial: supplyRowsArePartial,
     })
@@ -6790,8 +6844,8 @@ export async function POST(req: Request) {
       matchedLinkedWallets,
       supplyControl,
       holderDistribution,
-      suspiciousTransfers: false,
-      suspiciousTransferReasons: [],
+      suspiciousTransfers: clusterSuspiciousTransfers,
+      suspiciousTransferReasons: clusterSuspiciousTransferReasons,
       holderRowsAvailable: holderRowsConfirmed,
       lpLockBurnConfirmed: lpProofStatus === 'verified' ? true : lpProofStatus === 'inferred' ? false : null,
       adminFunctionsDetected: [cortexContractFlags.mint.status, cortexContractFlags.pause.status, cortexContractFlags.blacklist.status].some((s) => s === 'verified' || s === 'possible') ? true : null,
@@ -6843,8 +6897,8 @@ export async function POST(req: Request) {
       holderDistributionStatus: holderDistributionStatus.status,
       holderPercentAvailable: holderRowsHaveUsablePercents,
       holderPercentSource: holderDistributionStatus.percentSource,
-      suspiciousTransfers: false,
-      suspiciousTransferReasons: [],
+      suspiciousTransfers: clusterSuspiciousTransfers,
+      suspiciousTransferReasons: clusterSuspiciousTransferReasons,
       transferEvidence: {
         transferCount: transferResolverResult.transfers.length,
         insufficientEvidence: transferResolverResult.insufficientEvidence,
