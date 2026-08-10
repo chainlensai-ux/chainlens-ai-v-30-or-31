@@ -32,6 +32,8 @@ const DIRECT_ANSWER_INTENTS = new Set<ClarkBasicIntent>([
 ])
 
 const GREETING_RE = /^\s*(hi|hello|hey|yo|sup|gm|good\s*morning|good\s*evening|good\s*afternoon)[\s!.,]*$/i
+const SLASH_WALLET_RE = /^\s*\/wallet\s*$/i
+const SLASH_TOKEN_RE = /^\s*\/token\s*$/i
 
 const PRODUCT_HELP_RE = /\b(what\s+can\s+you\s+do|what\s+do\s+you\s+do|help\b|how\s+do\s+i\s+use|how\s+does\s+chainlens\s+work|what\s+is\s+chainlens|what\s+is\s+clark\b|who\s+are\s+you|explain\s+this\s+dashboard|how\s+do\s+i\s+scan\s+a\s+wallet|how\s+do\s+i\s+scan\s+a\s+token|how\s+do\s+i\s+get\s+started)\b/i
 
@@ -68,6 +70,8 @@ export function classifyClarkBasicIntent(message: string): ClarkBasicIntent {
   if (!t) return 'unsupported_request'
 
   if (GREETING_RE.test(t)) return 'greeting'
+  if (SLASH_WALLET_RE.test(t)) return 'wallet_scan_request'
+  if (SLASH_TOKEN_RE.test(t)) return 'token_scan_request'
 
   const hasAddress = ADDRESS_RE.test(raw)
   const wantsToken = SCAN_REQUEST_NO_ADDRESS_TOKEN_RE.test(t)
@@ -96,7 +100,12 @@ export function buildClarkDirectAnswer(intent: ClarkBasicIntent, message: string
   const t = normalize(message)
 
   if (intent === 'greeting') {
-    return "Hey — I'm Clark. Ask me about ChainLens, wallets, tokens, or paste an address and I'll scan it."
+    // COMPACT-GREETING FIX, DISCLOSED (Clark AI conversation polish): the full intro paragraph
+    // used to repeat on every casual "hi"/"hey", producing near-duplicate low-value replies and
+    // chat-history entries. A greeting now gets a short, useful nudge instead — the full intro
+    // is shown once by the page's own empty-state UI (app/terminal/clark-ai/page.tsx), not
+    // re-sent as a chat message every time someone says hi.
+    return "Ready. Send a token, wallet, or command like /base."
   }
   if (intent === 'product_help') {
     if (/what\s+can\s+you\s+do|what\s+do\s+you\s+do/.test(t)) {
@@ -133,7 +142,13 @@ export function buildClarkDirectAnswer(intent: ClarkBasicIntent, message: string
   return null
 }
 
-export function clarkMissingInputPrompt(intent: ClarkBasicIntent): string | null {
+export function clarkMissingInputPrompt(intent: ClarkBasicIntent, message?: string): string | null {
+  const t = normalize(String(message ?? ''))
+  // SLASH-COMMAND WORDING, DISCLOSED (Clark AI conversation polish): /wallet and /token with no
+  // input use the exact short copy the spec asks for; every other route into the same intents
+  // (e.g. "scan wallet" with no address) keeps its existing, slightly more explicit wording.
+  if (intent === 'wallet_scan_request' && SLASH_WALLET_RE.test(t)) return "Paste a wallet address and I'll analyze it."
+  if (intent === 'token_scan_request' && SLASH_TOKEN_RE.test(t)) return "Paste a token contract or symbol and I'll scan it."
   if (intent === 'token_scan_request') return "Paste the token contract address (0x...) and I'll scan it."
   if (intent === 'wallet_scan_request') return "Paste the wallet address (0x...) and I'll scan it."
   if (intent === 'ambiguous_scan_request') return "Do you want me to scan a token contract or a wallet address? Paste the address and tell me which, and I'll run it."

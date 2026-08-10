@@ -6986,7 +6986,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     if (basicIntent === 'token_scan_request' || basicIntent === 'wallet_scan_request' || basicIntent === 'ambiguous_scan_request') {
-      const missing = clarkMissingInputPrompt(basicIntent);
+      const missing = clarkMissingInputPrompt(basicIntent, prompt);
       if (missing) {
         const missingInputLabel = basicIntent === 'token_scan_request' ? 'token_contract' : basicIntent === 'wallet_scan_request' ? 'wallet_address' : 'token_or_wallet_address';
         return {
@@ -10974,6 +10974,29 @@ export async function POST(req: NextRequest) {
     }
     normalized.quotaConsumed = false
     return NextResponse.json(normalized, { status: 200 })
+  }
+
+  // SLASH-COMMAND-NO-INPUT FIX, DISCLOSED (Clark AI conversation polish): a bare "/wallet" or
+  // "/token" (no address) previously matched detectIntent's generic /wallet|token/ keyword rules
+  // below and got treated as a real scan attempt — plan-gated and, for free/unauth users, answered
+  // with the "WALLET SCANNER LOCKED" upsell instead of simply asking for input. These are free,
+  // zero-cost helper prompts (no scan is run), so they must never hit plan gating or rate limits —
+  // short-circuit them here, before both, using the same lib/server/clarkBasicIntent.ts helper
+  // handleClarkAI uses further down for every other "missing input" case.
+  if (body.feature === 'clark-ai' && /^\s*\/(wallet|token)\s*$/i.test(earlyPrompt)) {
+    const slashIntent = /wallet/i.test(earlyPrompt) ? 'wallet_scan_request' : 'token_scan_request';
+    const missing = clarkMissingInputPrompt(slashIntent, earlyPrompt);
+    if (missing) {
+      return NextResponse.json({
+        ok: true, feature: 'clark-ai',
+        data: {
+          feature: 'clark-ai', chain: 'base', mode: 'chat', intent: slashIntent, toolsUsed: [],
+          analysis: missing,
+          clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: [slashIntent === 'wallet_scan_request' ? 'wallet_address' : 'token_contract'], clarkToolLatencyMs: 0,
+        },
+        quotaConsumed: false,
+      }, { status: 200 });
+    }
   }
 
   // Plan gate for clark-ai: check intent against plan BEFORE rate limiting.

@@ -480,10 +480,10 @@ function ClarkAiContent() {
     return String(value)
   }
   const startWithChips = [
-    { label: 'Scan a token', prompt: 'Scan token ' },
-    { label: 'Analyze a wallet', prompt: 'Analyze wallet ' },
-    { label: 'Check LP risk', prompt: 'Check liquidity risk on ' },
-    { label: 'Show Base movers', prompt: "What's pumping on Base?" },
+    { label: 'Token Reads', prompt: 'Scan token ' },
+    { label: 'Wallet Analysis', prompt: 'Analyze wallet ' },
+    { label: 'LP Checks', prompt: 'Check liquidity risk on ' },
+    { label: 'Base Movers', prompt: "What's pumping on Base?" },
   ]
   const recentTokens = (clarkContextRef.current.lastMarketList ?? []).slice(0, 3)
   const recentWalletValue = clientContext.lastWallet ? formatContextValue(clientContext.lastWallet) : null
@@ -626,7 +626,7 @@ function ClarkAiContent() {
         @keyframes clarkDotB { 0%,100%{ transform:translate(0,0) scale(1);} 50%{ transform:translate(-2px,2px) scale(1.16);} }
         @keyframes clarkPulse { 0%{ transform:scale(.94); opacity:.7;} 100%{ transform:scale(1.08); opacity:0;} }
         @media (max-width: 1100px) { .clk-shell { grid-template-columns:1fr; } .clk-side { grid-template-columns:repeat(3, minmax(0,1fr)); display:grid; } }
-        @media (max-width: 780px) { .clk-shell { padding:20px 14px 44px; } .clk-actions-row { grid-template-columns:1fr 1fr; } .clk-side { display:flex; } .clk-thread { min-height:220px; padding:16px 14px 12px; } .clk-input-row { grid-template-columns:36px minmax(0,1fr) 44px; } .clk-helper { display:none; } .clk-intel-grid { grid-template-columns:1fr 1fr; } .clk-live-cortex { display:none; } }
+        @media (max-width: 780px) { .clk-shell { padding:20px 14px 44px; } .clk-actions-row { grid-template-columns:1fr 1fr; } .clk-side { display:flex; } .clk-thread { min-height:0; padding:16px 14px 12px; } .clk-input-row { grid-template-columns:36px minmax(0,1fr) 44px; } .clk-helper { display:none; } .clk-intel-grid { grid-template-columns:1fr 1fr; } .clk-live-cortex { display:none; } }
         @media (max-width: 480px) { .clk-actions-row { grid-template-columns:1fr; } .clk-title { font-size:34px; } .clk-ready-pill { padding:5px 10px; } .clk-intel-grid { grid-template-columns:1fr; } .clk-status-item-label { display:none; } }
       `}</style>
 

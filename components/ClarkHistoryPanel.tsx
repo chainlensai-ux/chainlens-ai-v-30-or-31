@@ -23,7 +23,7 @@ export type ClarkHistoryPanelProps = {
 // "test") were visually identical to real analysis chats, dominating the list. This purely
 // changes presentation (smaller, muted, no preview line) — the chat itself, its data, and every
 // action (rename/move/delete/select) are unchanged and still fully functional.
-const GENERIC_CHAT_TITLES = new Set(['hi', 'hey', 'hello', 'yo', 'sup', 'test', 'hii', 'heyy', 'ok', 'okay'])
+const GENERIC_CHAT_TITLES = new Set(['hi', 'hey', 'hello', 'yo', 'sup', 'test', 'hii', 'heyy', 'ok', 'okay', 'new clark chat'])
 function isGenericChatTitle(title: string): boolean {
   const t = title.trim().toLowerCase()
   return t.length <= 3 || GENERIC_CHAT_TITLES.has(t)

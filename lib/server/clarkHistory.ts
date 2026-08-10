@@ -4,6 +4,10 @@
 
 const ADDRESS_RE = /0x[a-fA-F0-9]{40}/;
 const PROVIDER_RE = /goldrush|covalent|geckoterminal|coingecko|dexscreener|alchemy/i;
+// GREETING-TITLE FIX, DISCLOSED (Clark AI conversation polish): a casual "hi"/"hey" first
+// message previously titled the chat literally "hi", so the sidebar filled up with repeated
+// identical-looking low-value entries. Same greeting set as lib/server/clarkBasicIntent.ts.
+const GREETING_TITLE_RE = /^\s*(hi|hello|hey|yo|sup|gm|good\s*morning|good\s*evening|good\s*afternoon)[\s!.,]*$/i;
 
 function shortenAddress(addr: string): string {
   return `${addr.slice(0, 6)}…`;
@@ -21,6 +25,7 @@ export type ClarkHistoryAppContextLike = {
  */
 export function generateChatTitle(prompt: string, appContext?: ClarkHistoryAppContextLike): string {
   const text = String(prompt ?? "").trim();
+  if (GREETING_TITLE_RE.test(text)) return "New Clark chat";
   const addressMatch = text.match(ADDRESS_RE);
   if (addressMatch) {
     const isWalletWord = /\bwallet\b/i.test(text);
