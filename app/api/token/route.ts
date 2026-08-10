@@ -2901,10 +2901,12 @@ function selectLpVerificationPool(pools: NormalizedPool[], tokenAddress: string)
 function concentratedPoolDisplayLabel(poolModel: string | null | undefined, dexText?: string | null): string {
   if (poolModel === "uniswap_v4") return "Uniswap V4 concentrated";
   if (poolModel === "uniswap_v3") return "Uniswap V3 concentrated";
+  if (poolModel === "pancakeswap_v3") return "PancakeSwap V3 concentrated";
   if (poolModel === "slipstream") return "Aerodrome Slipstream concentrated";
   if (poolModel === "aerodrome") return "Aerodrome concentrated";
   const d = (dexText ?? "").toLowerCase();
   if (/uniswap.*v4/.test(d)) return "Uniswap V4 concentrated";
+  if (/pancakeswap.*v3/.test(d)) return "PancakeSwap V3 concentrated";
   if (/uniswap.*v3/.test(d)) return "Uniswap V3 concentrated";
   return "concentrated";
 }

@@ -746,6 +746,7 @@ export function computeLpExitRisk(params: {
       : "";
     const concentratedLabel = concentratedPoolModel === "uniswap_v4" ? "Uniswap V4 concentrated-liquidity"
       : concentratedPoolModel === "uniswap_v3" ? "Uniswap V3 concentrated-liquidity"
+      : concentratedPoolModel === "pancakeswap_v3" ? "PancakeSwap V3 concentrated-liquidity"
       : concentratedPoolModel === "slipstream" ? "Aerodrome Slipstream concentrated-liquidity"
       : concentratedPoolModel === "aerodrome" ? "Aerodrome concentrated-liquidity"
       : "Concentrated-liquidity (V3/Slipstream)";
@@ -1026,7 +1027,12 @@ export async function classifyPoolByRpc(chain: LpChain, poolAddress: string | nu
 // this never claims "verified" ownership; it reports exactly what was attempted
 // and why individual position ownership could not be resolved further.
 export type ConcentratedPositionProofStatus = "verified" | "partial" | "not_found" | "not_supported" | "failed" | "open_check";
-export type ConcentratedPoolModel = "uniswap_v3" | "uniswap_v4" | "aerodrome" | "slipstream" | "unknown";
+// pancakeswap_v3: PancakeSwap V3 is a Uniswap V3 fork with an interface-compatible
+// NonfungiblePositionManager (confirmed against PancakeSwap's own docs — same method set/ABI
+// shape) but is a distinct deployment/contract address, so it gets its own model label rather
+// than being folded into "uniswap_v3" (which would mislabel it in user-facing text and PancakeSwap
+// governance changes to it independently of Uniswap's own contracts anyway).
+export type ConcentratedPoolModel = "uniswap_v3" | "uniswap_v4" | "pancakeswap_v3" | "aerodrome" | "slipstream" | "unknown";
 
 export type ConcentratedOwnerType = "wallet" | "contract" | "multisig" | "locker" | "burn" | "protocol" | "unknown";
 
@@ -1179,17 +1185,33 @@ export type ConcentratedOwnerResolver = (input: {
 const CONCENTRATED_PROOF_CACHE_TTL_MS = 10 * 60 * 1000;
 const concentratedProofCache = new Map<string, { exp: number; data: ConcentratedPositionProof }>();
 
+// PANCAKESWAP-AND-ROBINHOOD-DEX-ADDRESSES, DISCLOSED: added after independently confirming each
+// address against multiple sources (not from memory — this codebase's own rule is to never guess
+// a contract address it hasn't confirmed):
+//   - PancakeSwap V3 NonfungiblePositionManager (BSC): cross-checked against BscScan's own
+//     contract page, PancakeSwap's official docs (docs.pancakeswap.finance), and an independent
+//     SubQuery verification guide — all three agree on 0x46A15B0b27311cEDf172ab29E4f4766fBE7F4364.
+//   - Robinhood Chain (4663) Uniswap V3 NonfungiblePositionManager, V4 PoolManager, and V4
+//     PositionManager: fetched byte-for-byte from Uniswap's own deployments repo
+//     (raw.githubusercontent.com/Uniswap/contracts/main/deployments/4663.md, the same repo
+//     developers.uniswap.org's own "Robinhood Chain Deployments" doc page is generated from), with
+//     each address's Blockscout link pointing at Robinhood Chain's actual explorer subdomain.
 const KNOWN_PROTOCOL_MANAGERS = new Set([
   "0xc36442b4a4522e871399cd717abdd847ab11fe88", // Uniswap V3 NonfungiblePositionManager (ETH + many chains)
   "0x03a520b32c04bf3beef7beb72e919cf822ed34f1", // Uniswap V3 NonfungiblePositionManager (Base)
+  "0x46a15b0b27311cedf172ab29e4f4766fbe7f4364", // PancakeSwap V3 NonfungiblePositionManager (BNB Chain)
+  "0x73991a25c818bf1f1128deaab1492d45638de0d3", // Uniswap V3 NonfungiblePositionManager (Robinhood Chain)
+  "0x8366a39cc670b4001a1121b8f6a443a643e40951", // Uniswap V4 PoolManager (Robinhood Chain)
+  "0x58daec3116aae6d93017baaea7749052e8a04fa7", // Uniswap V4 PositionManager (Robinhood Chain)
 ]);
 
-// Partial, not Record<LpChain,string> — bnb/robinhood deliberately have no entry here (see the
-// LpChain widening comment above): no verified PancakeSwap V3 or Robinhood-DEX position-manager
-// address, so both call sites below already treat a missing chain as "no manager" (`?? null`).
+// Partial, not Record<LpChain,string> — only chains with a verified position-manager address get
+// an entry here; both call sites below already treat a missing chain as "no manager" (`?? null`).
 const POSITION_MANAGER_BY_CHAIN: Partial<Record<LpChain, string>> = {
   eth: "0xc36442b4a4522e871399cd717abdd847ab11fe88",
   base: "0x03a520b32c04bf3beef7beb72e919cf822ed34f1",
+  bnb: "0x46a15b0b27311cedf172ab29e4f4766fbe7f4364",
+  robinhood: "0x73991a25c818bf1f1128deaab1492d45638de0d3",
 };
 
 /** Stage 1 — protocol resolver. Centralizes the protocol/position-manager knowledge that was
@@ -1216,12 +1238,14 @@ export function resolveConcentratedProtocol(
   poolAddressType: "contract" | "pool_id" | "unknown",
 ): ConcentratedProtocolInfo {
   const protocol = _classifyConcentratedPoolModel(dexId, poolAddressType);
-  // Only Uniswap V3's NonfungiblePositionManager is a verified address in this codebase today.
-  // Aerodrome Slipstream/Pancake V3/other Base concentrated forks are detected and labeled
-  // correctly, but their position-manager addresses are not yet confirmed here — reporting one
-  // without verification would risk probing the wrong contract, so this stays null/low-confidence
-  // for them rather than guessing.
-  const positionManager = protocol === "uniswap_v3" ? (POSITION_MANAGER_BY_CHAIN[chain] ?? null) : null;
+  // Uniswap V3's and PancakeSwap V3's NonfungiblePositionManagers are the verified addresses in
+  // this codebase (POSITION_MANAGER_BY_CHAIN is single-entry per chain, and _classifyConcentratedPoolModel
+  // only ever labels a pool "pancakeswap_v3" on a chain where that's the real deployed protocol, so
+  // there's no ambiguity in looking it up by chain alone). Aerodrome Slipstream/Uniswap V4/other
+  // forks are detected and labeled correctly, but their position-manager addresses are not yet
+  // confirmed here — reporting one without verification would risk probing the wrong contract, so
+  // this stays null/low-confidence for them rather than guessing.
+  const positionManager = (protocol === "uniswap_v3" || protocol === "pancakeswap_v3") ? (POSITION_MANAGER_BY_CHAIN[chain] ?? null) : null;
   return {
     protocol,
     positionManager,
@@ -1404,6 +1428,10 @@ function deriveOwnershipStatus(status: ConcentratedPositionProofStatus, ownerTyp
 function _classifyConcentratedPoolModel(dexId: string | null | undefined, poolAddressType: "contract" | "pool_id" | "unknown"): ConcentratedPoolModel {
   const d = (dexId ?? "").toLowerCase();
   if (/aerodrome|velodrome/.test(d)) return /slipstream/.test(d) ? "slipstream" : "aerodrome";
+  // PancakeSwap only ever shipped a V3 (no V2-concentrated/V4 deployment as of this writing), and
+  // PancakeSwap V2 pools are the plain ERC-20-LP-token constant_product model handled elsewhere
+  // (ordinary hasLpToken=true path) — this branch only needs to catch the V3/concentrated case.
+  if (/pancakeswap/.test(d) && /v3/.test(d)) return "pancakeswap_v3";
   if (/uniswap/.test(d)) {
     if (/v4/.test(d)) return "uniswap_v4";
     if (/v3/.test(d)) return "uniswap_v3";
@@ -1448,7 +1476,7 @@ async function _resolveKnownCandidateOwners(
   poolModel: ConcentratedPoolModel,
   poolAddress: string,
 ): Promise<ConcentratedOwnerRecord[] | null> {
-  if (poolModel !== "uniswap_v3") return null;
+  if (poolModel !== "uniswap_v3" && poolModel !== "pancakeswap_v3") return null;
   const manager = POSITION_MANAGER_BY_CHAIN[chain];
   if (!manager) return null;
 
@@ -1603,11 +1631,11 @@ export async function attemptConcentratedPositionProof(
     samplingDebug: _noSamplingDebug,
   };
 
-  // Bounded position-owner sampling (Stage 14): only meaningful for Uniswap V3 with a verified
-  // position manager and a real pool contract address — V4/other models have no verified manager
-  // to sample against, and this never replaces the full-pool ownership proof below.
+  // Bounded position-owner sampling (Stage 14): only meaningful for Uniswap V3/PancakeSwap V3 with
+  // a verified position manager and a real pool contract address — V4/other models have no
+  // verified manager to sample against, and this never replaces the full-pool ownership proof below.
   const _attemptSampling = async (): Promise<Pick<ConcentratedPositionProofCore, "sampledPositionCount" | "sampledOwnerCount" | "sampledOwners" | "topSampledOwner" | "topSampledOwnerType" | "topSampledOwnerShareOfSamplePercent" | "samplingStatus" | "samplingReason" | "samplingDebug">> => {
-    if (poolModel !== "uniswap_v3" || !base.positionManager) {
+    if ((poolModel !== "uniswap_v3" && poolModel !== "pancakeswap_v3") || !base.positionManager) {
       return { sampledPositionCount: null, sampledOwnerCount: null, sampledOwners: [], topSampledOwner: null, topSampledOwnerType: null, topSampledOwnerShareOfSamplePercent: null, samplingStatus: "not_attempted", samplingReason: base.samplingReason, samplingDebug: _noSamplingDebug };
     }
     if (!sampleCandidates) {
