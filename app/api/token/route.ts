@@ -2271,7 +2271,13 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
 // fallback runs immediately after if this returns null.
 async function fetchCoinGeckoToken(chain: ChainKey, contract: string): Promise<any> {
   try {
-    const platform = chain === 'eth' ? 'ethereum' : chain === 'base' ? 'base' : chain
+    // CoinGecko asset_platform_id fix, DISCLOSED: this was passing the literal chain key ('bnb')
+    // straight through for anything that wasn't eth/base — CoinGecko's actual platform id for BNB
+    // Smart Chain is 'binance-smart-chain', so every BNB Chain token was silently 404ing against
+    // CoinGecko (caught by this function's own try/catch, so it just looked like "no CoinGecko
+    // data" rather than a bug). robinhood has no confirmed CoinGecko platform id yet (the chain is
+    // too new) — passed through as-is, which will legitimately 404 until CoinGecko adds it.
+    const platform = chain === 'eth' ? 'ethereum' : chain === 'base' ? 'base' : chain === 'bnb' ? 'binance-smart-chain' : chain
     const res = await fetch(`https://api.coingecko.com/api/v3/coins/${platform}/contract/${contract}`, { cache: 'no-store', signal: AbortSignal.timeout(7000) })
     return res.ok ? await res.json() : null
   } catch { return null }
@@ -5122,9 +5128,19 @@ export async function POST(req: Request) {
       top10 == null ? 'inferred' : top10 > 35 ? 'elevated' : 'normal'
 
     const poolAttr = mainPool?.attributes ?? {}
+    // COINGECKO-MARKET-CAP FIX, DISCLOSED: coingeckoRaw (fetchCoinGeckoToken's contract-lookup
+    // response) was already fetched every scan and already mined for its price
+    // (market_data.current_price.usd, see _cgMarketData below) — but its market_data.market_cap.usd
+    // field, a real live-verified market cap whenever CoinGecko lists the token, was never checked.
+    // That's a live provider's own reported market cap, not an estimate — so it belongs in the same
+    // "verified" tier as GeckoTerminal's own token-endpoint market cap, ranked second only because
+    // GT's figure is already tied to the specific pool/token data this scan is built around.
+    const _cgMarketDataEarly = (coingeckoRaw as Record<string, unknown> | null | undefined)?.market_data as Record<string, unknown> | null | undefined
+    const coingeckoMarketCap = pickNum((_cgMarketDataEarly?.market_cap as Record<string, unknown> | null | undefined)?.usd)
     // True market cap priority:
     // 1) GeckoTerminal token endpoint attributes.market_cap_usd
     // 2) explicit market cap fields from token metadata responses (never FDV fields)
+    // 3) CoinGecko's own live market cap for this contract, when GT didn't have one
     const tokenEndpointMarketCap = pickNum(
       gtToken?.market_cap_usd,
       gtToken?.market_cap,
@@ -5146,12 +5162,16 @@ export async function POST(req: Request) {
     })
     const marketCapFromGt = (tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0)
       ? tokenEndpointMarketCap
-      : (selectedPoolMarketCapUsd != null && selectedPoolMarketCapUsd > 0 ? selectedPoolMarketCapUsd : null)
+      : (selectedPoolMarketCapUsd != null && selectedPoolMarketCapUsd > 0
+        ? selectedPoolMarketCapUsd
+        : (coingeckoMarketCap != null && coingeckoMarketCap > 0 ? coingeckoMarketCap : null))
     const poolEndpointMarketCapPresent = toNum(poolAttr.market_cap_usd) != null;
     const circulatingSupply = pickNum(gtToken?.circulating_supply, goldItem?.circulating_supply, gmgnItem?.circulating_supply)
     const tokenPrice = pickNum(poolAttr.base_token_price_usd, gtToken?.price_usd, gtToken?.price)
     const marketCapSource = marketCapFromGt != null
-      ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0) ? 'geckoterminal' : 'coingecko_terminal')
+      ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0)
+        ? 'geckoterminal'
+        : (selectedPoolMarketCapUsd != null && selectedPoolMarketCapUsd > 0 ? 'coingecko_terminal' : 'coingecko'))
       : 'none'
     const fdv = pickNum(gtToken?.fdv_usd, gtToken?.fdv, gtToken?.fully_diluted_valuation, poolAttr.fdv_usd, poolAttr.fdv, mainPool?.fdv_usd, goldItem?.fully_diluted_value, gmgnItem?.fdv)
     const fdvSource = fdv != null ? 'geckoterminal' : 'none'
@@ -5291,7 +5311,7 @@ export async function POST(req: Request) {
     // Effective market values:
     // - Normal scan: price priority DS > CG > GT pool > FDV-derived (last resort only)
     // - forceDexFallback (debug only): fallback values override primary
-    const _cgMarketData = (coingeckoRaw as Record<string, unknown> | null | undefined)?.market_data as Record<string, unknown> | null | undefined
+    const _cgMarketData = _cgMarketDataEarly
     const _geckoPrice = pickNum((_cgMarketData?.current_price as Record<string, unknown> | null | undefined)?.usd) ?? null
     const _efdv = forceDexFallback ? (_dexFb?.fdv ?? null) : (fdv ?? _dexFb?.fdv ?? null)
     // FDV-derived price: approximate price = FDV ÷ total supply in token units.
