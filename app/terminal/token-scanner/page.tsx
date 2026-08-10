@@ -783,10 +783,17 @@ function deriveWalletBehavior(node: ClusterNode, relatedEdges: GraphEdge[], allN
       reasons: [(node.supplyPercent ?? 0) > 0 ? `Accumulator signal: wallet holds ${node.supplyPercent?.toFixed(1)}% of supply in indexed holder data.` : 'Accumulator signal: inbound/received wording appears in existing edge evidence.', ...(relatedEdges.find((edge) => ACCUMULATOR_TERMS.test(edge.reason))?.reason ? [relatedEdges.find((edge) => ACCUMULATOR_TERMS.test(edge.reason))!.reason] : []), 'Holding alone is not treated as suspicious.'].slice(0, 3),
     }
   }
-  if (relatedEdges.length === 0 && (node.supplyPercent == null || node.confidence === 'open_check')) {
+  // BEHAVIOR-PATTERN FIX, DISCLOSED: this used to be an OR — no edges AND (no supply OR
+  // unconfirmed node identity) — so a confirmed, HIGH-confidence deployer/linked wallet with
+  // simply no supply-percent reading (common: deployers often don't hold tokens themselves)
+  // still got forced to "open-check" behavior, discarding a fully confirmed identity. "Open check"
+  // should mean we don't know who/what this wallet is; a confirmed wallet with no behavior signal
+  // this pass is "neutral", not unknown. Only fall to open-check when nothing is known on any axis.
+  if (relatedEdges.length === 0 && node.supplyPercent == null && node.confidence === 'open_check') {
     return { label: 'open-check', confidence: 'open_check', reasons: ['No edges, supply position, or behavior pattern confirmed in this pass.'] }
   }
-  return { label: 'neutral', confidence: node.confidence === 'open_check' ? 'open_check' : 'low', reasons: ['Neutral holder — no transfer behavior confirmed in this pass.'] }
+  const neutralSubject = node.type === 'deployer' ? 'this deployer' : node.type === 'linked_wallet' ? 'this linked wallet' : node.type === 'cluster_wallet' ? 'this cluster wallet' : 'this holder'
+  return { label: 'neutral', confidence: node.confidence === 'open_check' ? 'open_check' : 'low', reasons: [`Neutral — no transfer behavior pattern confirmed for ${neutralSubject} in this pass.`] }
 }
 
 type ClusterMap = {
