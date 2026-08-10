@@ -556,6 +556,15 @@ export async function GET(req: NextRequest) {
       needsRescue: boolean
     }
     const drafts: PoolDraft[] = []
+    // FUNNEL-DIAGNOSTICS, DISCLOSED: this route has gone completely empty from filter changes
+    // multiple times this session, each one only diagnosable by the user sending a screenshot and
+    // us guessing. These counters (surfaced via debugPayload.filterFunnel below) show exactly how
+    // many candidates each individual filter dropped, so a future empty-feed report can be
+    // diagnosed from ?debug=1 output directly instead of another round of guesswork.
+    let droppedByV4Pool = 0
+    let droppedByValuationOrLiquidity = 0
+    let droppedByAbsoluteLiquidityFloor = 0
+    let droppedByDeadVolumeFloor = 0
 
     for (const pool of pooled) {
       const poolId = String(pool.id ?? '').toLowerCase()
@@ -577,7 +586,7 @@ export async function GET(req: NextRequest) {
       // than surfacing a number this route cannot actually stand behind.
       const dexRelData = (rels?.dex as { data?: { id?: string } } | undefined)?.data
       const dexId = String(dexRelData?.id ?? '').toLowerCase()
-      if (dexId.includes('v4')) continue
+      if (dexId.includes('v4')) { droppedByV4Pool++; continue }
 
       const ageMs      = now - new Date(createdAt).getTime()
       const ageMinutes = Math.floor(ageMs / 60000)
@@ -681,16 +690,22 @@ export async function GET(req: NextRequest) {
         && isFallbackAgeWindow
         && liquidityUsd >= minLiquidityUsd
         && (volume24h >= 1_500 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.08))
-      if (!filterResult.included && !shouldHoldAsFallback) continue
-      if (liquidityUsd < ABSOLUTE_MIN_LIQUIDITY_USD) continue
+      if (!filterResult.included && !shouldHoldAsFallback) { droppedByValuationOrLiquidity++; continue }
+      if (liquidityUsd < ABSOLUTE_MIN_LIQUIDITY_USD) { droppedByAbsoluteLiquidityFloor++; continue }
       // DEAD-VOLUME FLOOR, DISCLOSED (reported: feed full of tokens with real liquidity/valuation
       // but $30-70 in 24h volume on six-figure liquidity — essentially untraded pools). The
       // liquidity/valuation filter above never checked volume at all on the strict path (only the
       // relaxed fallback did), so a pool could clear liquidity and valuation yet have almost nobody
       // actually trading it and still get surfaced as a live opportunity. Requires at least minimal
       // real activity on every candidate, strict or fallback, not just the fallback tier.
-      const hasMeaningfulActivity = volume24h >= 200 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.02)
-      if (!hasMeaningfulActivity) continue
+      // GRACE-PERIOD FIX, DISCLOSED (reported: feed went completely empty after this floor
+      // shipped). A pool created 10 minutes ago has, by definition, only had 10 minutes to
+      // accumulate the volume GeckoTerminal reports as its "24h" figure — a genuinely brand-new,
+      // legitimate token can easily be under $200 simply because it hasn't existed long enough yet,
+      // not because it's dead. Exempts pools under 20 minutes old from this floor; the dead-volume
+      // check is about spotting stale/abandoned tokens, not punishing freshness.
+      const hasMeaningfulActivity = ageMinutes < 20 || volume24h >= 200 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.02)
+      if (!hasMeaningfulActivity) { droppedByDeadVolumeFloor++; continue }
       const valuation = filterResult.valuation
       const valuationCardDisplay = getRadarValuationCardDisplay(valuation, fmtK)
       const valuationEvidenceGap = getRadarValuationEvidenceGap(valuation)
@@ -878,6 +893,7 @@ export async function GET(req: NextRequest) {
       sourceCounts,
       mergedCount: candidates.length,
       filters: { minValuationUsd, minLiquidityUsd, allowFdvFallback },
+      filterFunnel: { droppedByV4Pool, droppedByValuationOrLiquidity, droppedByAbsoluteLiquidityFloor, droppedByDeadVolumeFloor },
       finalTokenCount: tokens.length,
       cacheHit: false,
       mode: requestedMode,
