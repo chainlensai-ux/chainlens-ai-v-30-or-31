@@ -3675,11 +3675,37 @@ function buildStructuredVerdict(
 
 // ---------- API clients ----------
 
-// In-request dedupe: prevents the same GoldRush/Covalent endpoint from being
-// called twice within a single Clark request (e.g., if two handlers run for
-// the same token/wallet). Keyed by full URL with params; cleared per request.
-const _clarkGoldrushDedupeMap = new Map<string, Promise<unknown>>();
-function _clarkClearGoldrushDedupe() { _clarkGoldrushDedupeMap.clear(); }
+// GOLDRUSH-COST-AUDIT FIX, DISCLOSED: this map used to be cleared at the start of every single
+// Clark request (see the old call site in POST below), so it only ever deduped two handlers
+// hitting the same GoldRush/Covalent endpoint within one request — a repeat chat message asking
+// about the same token/wallet seconds or minutes later re-hit the paid API from scratch every
+// time. GoldRush/Covalent calls are billed per request, and Clark can fire several per message
+// (token_holders_v2 up to page-size=200, transactions_v3, balances_v2, pools), so this was the
+// single biggest avoidable cost path found in the audit. Fix: keep entries across requests with a
+// short TTL (same 45s freshness window the route was already nominally requesting via Next's
+// `revalidate: 30`, which is a no-op for this runtime's dynamic fetches) so back-to-back questions
+// about the same token/wallet reuse the same in-flight/completed call instead of re-billing.
+const CLARK_PROVIDER_CACHE_TTL_MS = 45_000;
+const _clarkGoldrushDedupeMap = new Map<string, { expiresAt: number; promise: Promise<unknown> }>();
+function _clarkGoldrushCacheGet(cacheKey: string) {
+  const entry = _clarkGoldrushDedupeMap.get(cacheKey);
+  if (!entry) return undefined;
+  if (entry.expiresAt <= Date.now()) {
+    _clarkGoldrushDedupeMap.delete(cacheKey);
+    return undefined;
+  }
+  return entry.promise;
+}
+function _clarkGoldrushCacheSet(cacheKey: string, promise: Promise<unknown>) {
+  _clarkGoldrushDedupeMap.set(cacheKey, { expiresAt: Date.now() + CLARK_PROVIDER_CACHE_TTL_MS, promise });
+  // Opportunistic sweep so the map can't grow unbounded across a long-lived server process.
+  if (_clarkGoldrushDedupeMap.size > 500) {
+    const now = Date.now();
+    for (const [key, entry] of _clarkGoldrushDedupeMap) {
+      if (entry.expiresAt <= now) _clarkGoldrushDedupeMap.delete(key);
+    }
+  }
+}
 
 async function callGoldrush(
   path: string,
@@ -3689,7 +3715,8 @@ async function callGoldrush(
   const url = new URL(`https://api.covalenthq.com/v1/${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   const cacheKey = `gr:${url.toString()}`;
-  if (_clarkGoldrushDedupeMap.has(cacheKey)) return _clarkGoldrushDedupeMap.get(cacheKey);
+  const cached = _clarkGoldrushCacheGet(cacheKey);
+  if (cached) return cached;
 
   logRpcCall({ route: "/api/clark", chain: path.split("/")[0] || "unknown", method: `goldrush:${path.split("/").slice(1, 2).join("/") || path}` });
   const promise = fetch(url.toString(), {
@@ -3706,8 +3733,9 @@ async function callGoldrush(
     }
     return res.json();
   });
+  promise.catch(() => _clarkGoldrushDedupeMap.delete(cacheKey));
 
-  _clarkGoldrushDedupeMap.set(cacheKey, promise);
+  _clarkGoldrushCacheSet(cacheKey, promise);
   return promise;
 }
 
@@ -3719,7 +3747,8 @@ async function callCovalent(
   const url = new URL(`https://api.covalenthq.com/v1/${path}`);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
   const cacheKey = `cv:${url.toString()}`;
-  if (_clarkGoldrushDedupeMap.has(cacheKey)) return _clarkGoldrushDedupeMap.get(cacheKey);
+  const cached = _clarkGoldrushCacheGet(cacheKey);
+  if (cached) return cached;
 
   logRpcCall({ route: "/api/clark", chain: path.split("/")[0] || "unknown", method: `covalent:${path.split("/").slice(1, 2).join("/") || path}` });
   const promise = fetch(url.toString(), {
@@ -3736,8 +3765,9 @@ async function callCovalent(
     }
     return res.json();
   });
+  promise.catch(() => _clarkGoldrushDedupeMap.delete(cacheKey));
 
-  _clarkGoldrushDedupeMap.set(cacheKey, promise);
+  _clarkGoldrushCacheSet(cacheKey, promise);
   return promise;
 }
 
@@ -10916,8 +10946,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 // ---------- Main handler ----------
 
 export async function POST(req: NextRequest) {
-  // Clear per-request GoldRush/Covalent dedupe map so each request starts fresh
-  _clarkClearGoldrushDedupe();
   const auth = req.headers.get('authorization') ?? ''
   const authHeader = auth || undefined
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
