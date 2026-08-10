@@ -3747,10 +3747,13 @@ export async function POST(req: Request) {
         (typeof dexFbEarly.pairAddress === 'string' && /^0x[a-f0-9]{40}$/i.test(dexFbEarly.pairAddress)))
     )
     // RPC-classify a synthesized fallback pool whose model is still unknown, using the existing
-    // Base/ETH RPC path (no new providers). Confirms V2/ERC-20 LP vs concentrated so the model is
-    // not left as a generic open check when on-chain data can resolve it.
+    // RPC path (no new providers). Confirms V2/ERC-20 LP vs concentrated so the model is not left
+    // as a generic open check when on-chain data can resolve it. classifyPoolByRpc is a generic
+    // ERC-20/AMM selector probe (token0/token1/getReserves/totalSupply vs slot0/liquidity) — no
+    // chain-specific contract address needed, so bnb/robinhood get the same real classification
+    // eth/base already did (lib/server/lpProof.ts's LpChain type covers all four now).
     let _fallbackRpcModel: 'v2' | 'concentrated' | 'unknown' | null = null
-    if (_dsFbPoolSynthesized && (chain === 'eth' || chain === 'base')) {
+    if (_dsFbPoolSynthesized && (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood')) {
       const _synthPool = normalizedPools[0]
       if (_synthPool && _synthPool.poolType === 'unknown' && _synthPool.address && /^0x[a-f0-9]{40}$/.test(_synthPool.address)) {
         const _rpcCls = await classifyPoolByRpc(chain, _synthPool.address)
@@ -6264,14 +6267,25 @@ export async function POST(req: Request) {
         : lpProofApplicability === 'not_applicable'
           ? 'Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool.'
           : `LP proof skipped: no pool address available for LP proof (status ${lpControl.status}).`
-    } else if (chain === 'eth' || chain === 'base') {
+    } else if (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood') {
+      // BNB/ROBINHOOD LOCK/BURN FIX, DISCLOSED (follow-up to the chain-expansion pass): resolveLpProof
+      // only does two things — a PinkLock API lookup (keyed by pool address only, no chain param,
+      // already worked for any chain) and a generic ERC-20 burn scan via RPC (balanceOf of the
+      // zero/dead address on the pool's own LP-token contract — no chain-specific contract address
+      // needed). Neither requires the position-manager/locker-registry knowledge that's genuinely
+      // still missing for these chains (that's the V3/V4 concentrated-liquidity path, untouched).
+      // This was previously routed to a hardcoded "not yet supported" for bnb/robinhood even though
+      // the underlying checks work fine once lib/server/lpProof.ts's LpChain/getLpRpcUrl (widened
+      // above) can resolve an RPC URL for them — so it was leaving real, honest evidence on the
+      // table. "Unverified" is still the correct and only result when no RPC key is configured for
+      // the chain (ALCHEMY_BNB_KEY / ALCHEMY_ROBINHOOD_RPC_URL) — that's the same graceful
+      // degradation this codebase already uses for every optional RPC key, not new behavior.
       lpProof = await resolveLpProof(chain, _lpProofAddress)
     } else {
-      // bnb/robinhood: no verified lock/burn contract registry for these chains yet (see
-      // COVALENT_CHAIN_SLUG comment above on this chain-expansion pass) — stays an honest
-      // unverified rather than guessing at a PancakeSwap/Robinhood-DEX locker address.
+      // Defensive fallback only — ChainKey still includes 'polygon' for type purposes, but the
+      // request-level chain gate above only ever admits base/eth/bnb/robinhood, so this branch is
+      // not reachable today.
       lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown', reasonCode: 'proofNotApplicable' }
-      _lpProofSkipReason = `LP lock/burn proof is not yet supported for ${chain === 'bnb' ? 'BNB Chain' : 'Robinhood Chain'} — no verified locker registry for this chain yet.`
     }
     const { lpLockStatus, lpLockAmount, lpUnlockTime, lpLockProvider, lpController: _lpControllerFromProof } = lpProof
     // Synthesize lpControllerType/lpControllerAddress from lpControl evidence when the

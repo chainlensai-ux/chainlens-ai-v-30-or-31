@@ -5,8 +5,17 @@
 import { LP_LOCK_BURN_REGISTRY } from "./lpLockBurnIntel.ts";
 import { logRpcCall } from "./rpcDebug";
 import { auditGlobalAlchemyCall } from "./globalRpcAudit";
+import { getRobinhoodRpcUrl } from "./robinhoodChainConfig";
 
-export type LpChain = "eth" | "base";
+// BNB/ROBINHOOD LP-PROOF WIRING, DISCLOSED (Token Scanner chain expansion, follow-up): burn
+// detection (scanLpHoldersOnChain, below) and PinkLock lookup (fetchPinkLockData) are both fully
+// chain-agnostic already — burn detection is a generic ERC-20 balanceOf(zero)/balanceOf(dead) RPC
+// call against the pool's own LP-token contract, and PinkLock is queried by pair address only, no
+// chain param at all. Neither needs a verified per-chain contract address the way the V3/V4
+// concentrated-position-manager path does (that stays deferred — see resolveConcentratedProtocol
+// below, which still only returns a positionManager for uniswap_v3). Widening this type is what
+// actually lets burn/PinkLock proof run for bnb/robinhood; getLpRpcUrl below is the other half.
+export type LpChain = "eth" | "base" | "bnb" | "robinhood";
 
 export interface GTPool {
   id: string;
@@ -37,6 +46,13 @@ function getLpRpcUrl(chain: LpChain): string | null {
     const key = process.env.ALCHEMY_ETHEREUM_KEY
     if (key) return `https://eth-mainnet.g.alchemy.com/v2/${key}`
     return null
+  }
+  if (chain === "bnb") {
+    const key = process.env.ALCHEMY_BNB_KEY
+    return key ? `https://bnb-mainnet.g.alchemy.com/v2/${key}` : null
+  }
+  if (chain === "robinhood") {
+    return getRobinhoodRpcUrl()
   }
   const explicitBase = process.env.BASE_RPC_URL
   if (explicitBase && /^https?:\/\//.test(explicitBase)) return explicitBase
@@ -1168,7 +1184,10 @@ const KNOWN_PROTOCOL_MANAGERS = new Set([
   "0x03a520b32c04bf3beef7beb72e919cf822ed34f1", // Uniswap V3 NonfungiblePositionManager (Base)
 ]);
 
-const POSITION_MANAGER_BY_CHAIN: Record<LpChain, string> = {
+// Partial, not Record<LpChain,string> — bnb/robinhood deliberately have no entry here (see the
+// LpChain widening comment above): no verified PancakeSwap V3 or Robinhood-DEX position-manager
+// address, so both call sites below already treat a missing chain as "no manager" (`?? null`).
+const POSITION_MANAGER_BY_CHAIN: Partial<Record<LpChain, string>> = {
   eth: "0xc36442b4a4522e871399cd717abdd847ab11fe88",
   base: "0x03a520b32c04bf3beef7beb72e919cf822ed34f1",
 };
