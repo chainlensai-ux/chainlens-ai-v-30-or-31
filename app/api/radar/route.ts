@@ -92,6 +92,41 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Pro
   return Promise.race([promise.finally(() => clearTimeout(timer!)), timeout])
 }
 
+// MIN-HOLDER-FLOOR, DISCLOSED (reported: feed surfaced a token with ~10 indexed holders and a
+// separate report of a token with effectively no real liquidity slipping through). Base Radar had
+// no holder-count floor at all — only a liquidity/valuation bar — so a pool could clear liquidity
+// yet still be an almost-uninhabited token. Fetches GoldRush's token_holders_v2 total_count (a
+// single lightweight page-size=1 call, not a full holder pull) for the ranked candidate set and
+// drops anything under MIN_HOLDER_COUNT. An unresolved/failed holder-count lookup is treated as
+// failing the bar too (same unknown-≠-safe principle as the rest of this route's risk scoring) —
+// this filter should never leak a token through just because the provider call errored.
+const MIN_HOLDER_COUNT = 25
+const GOLDRUSH_RADAR_HOSTS = ['api.covalenthq.com', 'api.goldrush.dev'] as const
+async function fetchBaseHolderCount(contract: string): Promise<number | null> {
+  const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
+  if (!apiKey) return null
+  for (const host of GOLDRUSH_RADAR_HOSTS) {
+    try {
+      const res = await fetch(
+        `https://${host}/v1/base-mainnet/tokens/${contract}/token_holders_v2/?page-number=0&page-size=1`,
+        { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(3500) },
+      )
+      if (!res.ok) continue
+      const json = await res.json().catch(() => null) as { data?: { pagination?: { total_count?: number } } } | null
+      const totalCount = json?.data?.pagination?.total_count
+      if (typeof totalCount === 'number' && Number.isFinite(totalCount)) return totalCount
+    } catch { /* try next host */ }
+  }
+  return null
+}
+
+// ABSOLUTE-LIQUIDITY-FLOOR, DISCLOSED: belt-and-suspenders guard independent of the configurable
+// minLiquidityUsd query param — a token with ~$0 real liquidity must never reach the feed no matter
+// how minLiquidityUsd is set. tokenPassesRadarValuationFilters/shouldHoldAsFallback already require
+// liquidityUsd >= minLiquidityUsd, but this floor makes the "no liquidity" case impossible to slip
+// through even under a future param-handling regression.
+const ABSOLUTE_MIN_LIQUIDITY_USD = 500
+
 async function fetchHoneypot(contract: string): Promise<HoneypotResult | null> {
   const ac = new AbortController()
   const tid = setTimeout(() => ac.abort(), 2500)
@@ -616,6 +651,7 @@ export async function GET(req: NextRequest) {
         && liquidityUsd >= minLiquidityUsd
         && (volume24h >= 1_500 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.08))
       if (!filterResult.included && !shouldHoldAsFallback) continue
+      if (liquidityUsd < ABSOLUTE_MIN_LIQUIDITY_USD) continue
       const valuation = filterResult.valuation
       const valuationCardDisplay = getRadarValuationCardDisplay(valuation, fmtK)
       const valuationEvidenceGap = getRadarValuationEvidenceGap(valuation)
@@ -670,7 +706,29 @@ export async function GET(req: NextRequest) {
       const sB = (mB * 40) + Math.log10(Math.max(b.liquidityUsd, 1)) * 18 + Math.log10(Math.max(b.volume24h, 1)) * 18 + (b.ageMinutes <= 120 ? 12 : 0) + (b.fdvUsd && b.fdvUsd > 0 ? 6 : 0)
       return sB - sA
     })
-    const toCheck = candidates.slice(0, 50)
+    const rankedCandidates = candidates.slice(0, 50)
+
+    // Holder-count floor: fetch once per ranked candidate with bounded concurrency, same worker-pool
+    // pattern as the market-cap rescue and honeypot checks above — keeps this to a small, controlled
+    // burst of GoldRush calls instead of one per raw pool.
+    const HOLDER_CHECK_CONCURRENCY = 6
+    const holderCountByContract = new Map<string, number | null>()
+    {
+      let nextIndex = 0
+      const worker = async () => {
+        for (;;) {
+          const i = nextIndex++
+          if (i >= rankedCandidates.length) return
+          const t = rankedCandidates[i]
+          holderCountByContract.set(t.contract.toLowerCase(), await fetchBaseHolderCount(t.contract))
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(HOLDER_CHECK_CONCURRENCY, rankedCandidates.length) }, () => worker()))
+    }
+    const toCheck = rankedCandidates.filter((t) => {
+      const holderCount = holderCountByContract.get(t.contract.toLowerCase())
+      return typeof holderCount === 'number' && holderCount >= MIN_HOLDER_COUNT
+    })
 
     // 2. TAX-CHECK-ALWAYS-ATTEMPTED FIX, DISCLOSED (reported: every feed card stuck yellow/
     // "SIMULATION PENDING"): previously shallow mode (the frontend's default) NEVER ran the
