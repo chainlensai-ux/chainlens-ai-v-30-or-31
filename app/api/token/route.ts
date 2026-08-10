@@ -5186,8 +5186,28 @@ export async function POST(req: Request) {
           ? 'coingecko_terminal'
           : (dexScreenerMarketCap != null && dexScreenerMarketCap > 0 ? 'dexscreener' : 'coingecko')))
       : 'none'
-    const fdv = pickNum(gtToken?.fdv_usd, gtToken?.fdv, gtToken?.fully_diluted_valuation, poolAttr.fdv_usd, poolAttr.fdv, mainPool?.fdv_usd, goldItem?.fully_diluted_value, gmgnItem?.fdv)
-    const fdvSource = fdv != null ? 'geckoterminal' : 'none'
+    // STALE-FDV FIX, DISCLOSED: FDV (fully diluted, uses TOTAL supply) can never be lower than
+    // market cap (uses CIRCULATING supply, which is always <= total) — that's a hard mathematical
+    // invariant, not a heuristic. Reported case: a token that pumped ~80x in a short window (24h
+    // move was +8000%+) showed a correct, fresh, DexScreener-sourced market cap ($417K) next to a
+    // GeckoTerminal-sourced FDV ($14.14K) that hadn't been recomputed since well before the pump —
+    // GT's fdv_usd/fdv fields are apparently not refreshed as often as its live price feed for a
+    // thin/new pool like this one. Rather than trust a GT figure that violates the FDV >= MC
+    // invariant, fall through to DexScreener's own fdv (already fetched alongside its marketCap
+    // above) or CoinGecko's fully_diluted_valuation, whichever is actually consistent with the
+    // verified market cap we're already showing.
+    const gtFdv = pickNum(gtToken?.fdv_usd, gtToken?.fdv, gtToken?.fully_diluted_valuation, poolAttr.fdv_usd, poolAttr.fdv, mainPool?.fdv_usd, goldItem?.fully_diluted_value, gmgnItem?.fdv)
+    const dexScreenerFdv = pickNum((dexFbEarly as DexFallbackResult | null | undefined)?.fdv)
+    const coingeckoFdv = pickNum((_cgMarketDataEarly?.fully_diluted_valuation as Record<string, unknown> | null | undefined)?.usd)
+    const gtFdvIsStale = gtFdv != null && marketCapFromGt != null && gtFdv < marketCapFromGt
+    const fdv = (gtFdv != null && !gtFdvIsStale)
+      ? gtFdv
+      : (dexScreenerFdv != null && (marketCapFromGt == null || dexScreenerFdv >= marketCapFromGt))
+        ? dexScreenerFdv
+        : (coingeckoFdv != null && (marketCapFromGt == null || coingeckoFdv >= marketCapFromGt))
+          ? coingeckoFdv
+          : (gtFdv ?? dexScreenerFdv ?? coingeckoFdv ?? null)
+    const fdvSource = fdv == null ? 'none' : fdv === gtFdv ? 'geckoterminal' : fdv === dexScreenerFdv ? 'dexscreener' : 'coingecko'
     const marketCapValuationBasis = getRadarValuationBasis({
       marketCapUsd: marketCapDiagnosticsResolved.marketCapUsd,
       marketCapStatus: marketCapDiagnosticsResolved.marketCapStatus,
