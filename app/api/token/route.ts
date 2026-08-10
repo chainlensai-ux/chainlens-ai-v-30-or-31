@@ -164,8 +164,32 @@ function getAlchemyRpcUrl(chain: ChainKey): string | null {
   return key ? `https://${domainMap[chain as Exclude<ChainKey, "base" | "eth" | "robinhood">]}.g.alchemy.com/v2/${key}` : null
 }
 
-const COVALENT_BASE_URL = 'https://api.covalenthq.com/v1'
 const CREATOR_LOOKUP_BASE_URL = 'https://api.etherscan.io/v2/api'
+// GOLDRUSH-HOST-FALLBACK, DISCLOSED (recurrence-prevention pass, after a live Robinhood Chain
+// holder-fetch flake): api.covalenthq.com and api.goldrush.dev are the same GoldRush/Covalent
+// backend behind two different hostnames — a transient failure on one (timeout, brief 5xx) is
+// genuinely fixed by retrying the other, not just retrying the same flaky endpoint. This was
+// already proven for /api/whale-alerts/sync's COVALENT_HOSTS and applied to this file's
+// holder-fetch path first; this generic helper extends the same protection to every other
+// GoldRush/Covalent call in this file that was still single-host-no-retry (token metadata,
+// contract security intel, deployer creation-history, balances_v2 lookups) — the class of bug, not
+// just the one instance that got reported, so it can't quietly resurface in a different field next.
+const GOLDRUSH_HOSTS = ['api.covalenthq.com', 'api.goldrush.dev'] as const
+async function fetchGoldRushWithHostFallback(
+  buildUrl: (host: string) => string,
+  init: RequestInit,
+  timeoutMs = 8000,
+): Promise<Response | null> {
+  const override = process.env.GOLDRUSH_BASE_URL
+  const hosts = override ? [override.replace(/^https?:\/\//, '').replace(/\/$/, '')] : GOLDRUSH_HOSTS
+  for (const host of hosts) {
+    try {
+      const res = await fetch(buildUrl(host), { ...init, signal: AbortSignal.timeout(timeoutMs) })
+      if (res.ok) return res
+    } catch { /* try next host */ }
+  }
+  return null
+}
 // bnb: 'bsc-mainnet' is GoldRush/Covalent's confirmed chain_name slug for BNB Smart Chain.
 // robinhood: best-effort slug, NOT independently confirmed against GoldRush's own docs (network
 // access to goldrush.dev was unavailable while wiring this up) — GoldRush's chain-name convention
@@ -1347,10 +1371,16 @@ async function discoverTokenOrigin(chain: ChainKey, contract: string): Promise<{
   if (covalentChain && covalentKey) {
     diag.contract_transaction_history.attempted = true
     try {
-      const txRes = await fetch(
-        `${COVALENT_BASE_URL}/${covalentChain}/address/${contract}/transactions_v2/?key=${covalentKey}&page-size=5&block-signed-at-asc=true&no-logs=true`,
-        { cache: 'no-store', signal: AbortSignal.timeout(10000) },
-      )
+      // Host-fallback, DISCLOSED (recurrence-prevention pass): this call feeds deployer discovery
+      // directly — the exact thing that was just fixed for bnb/robinhood — so it gets the same
+      // two-host retry as the rest of the GoldRush calls in this file rather than staying single-
+      // host. httpStatus in diag reflects the last host tried; a success on the first host still
+      // returns immediately with no extra latency.
+      const txRes = await fetchGoldRushWithHostFallback(
+        (host) => `https://${host}/v1/${covalentChain}/address/${contract}/transactions_v2/?key=${covalentKey}&page-size=5&block-signed-at-asc=true&no-logs=true`,
+        { cache: 'no-store' },
+        10000,
+      ) ?? new Response(null, { status: 0 })
       diag.contract_transaction_history.httpStatus = txRes.status
       if (txRes.ok) {
         const txJson = await txRes.json() as { data?: { items?: CovalentTxItem[] } }
@@ -1543,17 +1573,14 @@ async function findTokenLinkedWallets(
 }
 
 async function fetchGoldRush(chain: ChainKey, contract: string): Promise<any> {
-  try {
-    const _grBase = (process.env.GOLDRUSH_BASE_URL ?? 'https://api.covalenthq.com').replace(/\/$/, '')
-    logRpcCall({ route: "/api/token", chain, method: "goldrush_token_metadata" });
-    const res = await fetch(
-      `${_grBase}/v1/${chain}/tokens/${contract}/`,
-      { headers: { Authorization: `Bearer ${process.env.COVALENT_API_KEY}` }, signal: AbortSignal.timeout(5000) }
-    );
-    return res.ok ? await res.json() : null;
-  } catch {
-    return null;
-  }
+  logRpcCall({ route: "/api/token", chain, method: "goldrush_token_metadata" });
+  const res = await fetchGoldRushWithHostFallback(
+    (host) => `https://${host}/v1/${chain}/tokens/${contract}/`,
+    { headers: { Authorization: `Bearer ${process.env.COVALENT_API_KEY}` } },
+    5000,
+  )
+  if (!res) return null
+  try { return await res.json() } catch { return null }
 }
 
 // GoldRush Contract Intel — calls Covalent security endpoint for mint/blacklist/pause/proxy flags.
@@ -1580,17 +1607,13 @@ async function fetchGoldRushContractIntel(chain: ChainKey, contract: string): Pr
     const chainSlug = CHAIN_SLUG_MAP[chain] ?? 'eth-mainnet'
     const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
     if (!apiKey) return null
-    const _grBase = (process.env.GOLDRUSH_BASE_URL ?? 'https://api.covalenthq.com').replace(/\/$/, '')
     logRpcCall({ route: "/api/token", chain: chainSlug, method: "goldrush_contract_security" });
-    const res = await fetch(
-      `${_grBase}/v1/${chainSlug}/tokens/${contract}/security/`,
-      {
-        headers: { Authorization: `Bearer ${apiKey}` },
-        cache: 'no-store',
-        signal: AbortSignal.timeout(5000),
-      }
+    const res = await fetchGoldRushWithHostFallback(
+      (host) => `https://${host}/v1/${chainSlug}/tokens/${contract}/security/`,
+      { headers: { Authorization: `Bearer ${apiKey}` }, cache: 'no-store' },
+      5000,
     )
-    if (!res.ok) return null
+    if (!res) return null
     const json = await res.json()
     const items = (json?.data?.items ?? json?.data) ?? null
     const item = (Array.isArray(items) ? items[0] : items) as Record<string, unknown> | null
@@ -2310,16 +2333,14 @@ async function fetchGMGN(contract: string): Promise<any> {
 }
 
 async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<any> {
-  try {
-    logRpcCall({ route: "/api/token", chain, method: "goldrush_balances_v2" });
-    const res = await fetch(
-      `https://api.covalenthq.com/v1/${chain}/address/0x0000000000000000000000000000000000000000/balances_v2/?contract-address=${contract}`,
-      { headers: { Authorization: `Bearer ${process.env.COVALENT_API_KEY}` }, signal: AbortSignal.timeout(5000) }
-    );
-    return res.ok ? await res.json() : null;
-  } catch {
-    return null;
-  }
+  logRpcCall({ route: "/api/token", chain, method: "goldrush_balances_v2" });
+  const res = await fetchGoldRushWithHostFallback(
+    (host) => `https://${host}/v1/${chain}/address/0x0000000000000000000000000000000000000000/balances_v2/?contract-address=${contract}`,
+    { headers: { Authorization: `Bearer ${process.env.COVALENT_API_KEY}` } },
+    5000,
+  )
+  if (!res) return null
+  try { return await res.json() } catch { return null }
 }
 
 
@@ -2355,8 +2376,10 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
 // backend behind two different hostnames, so trying the second on a failure is a real retry, not a
 // guess. Only retries the next host on an actual failure (network error, non-2xx, bad JSON) — a
 // successful response on the first host still returns immediately, so this adds no latency to the
-// common case.
-const GOLDRUSH_HOLDER_HOSTS = ['api.covalenthq.com', 'api.goldrush.dev'] as const
+// common case. Shares the GOLDRUSH_HOSTS list (declared near CREATOR_LOOKUP_BASE_URL above) with every
+// other GoldRush caller in this file — this function keeps its own inline loop rather than the
+// fetchGoldRushWithHostFallback() helper because it needs per-host error detail (status code,
+// parsed error_message) for its own diagnostics, not just a pass/fail Response.
 async function fetchTokenHoldersUncached(_chain: ChainKey, contract: string): Promise<any> {
   const CHAIN_SLUG_MAP: Record<ChainKey, string> = {
     eth: 'eth-mainnet',
@@ -2376,7 +2399,7 @@ async function fetchTokenHoldersUncached(_chain: ChainKey, contract: string): Pr
   // exactly the configured host, same as every other GoldRush caller in this file that respects it.
   const hosts = process.env.GOLDRUSH_BASE_URL
     ? [process.env.GOLDRUSH_BASE_URL.replace(/^https?:\/\//, '').replace(/\/$/, '')]
-    : GOLDRUSH_HOLDER_HOSTS
+    : GOLDRUSH_HOSTS
   let statusCode: number | undefined
   let lastReason = 'provider_error'
   for (const host of hosts) {
