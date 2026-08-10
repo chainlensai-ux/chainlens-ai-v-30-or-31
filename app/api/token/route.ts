@@ -2125,6 +2125,11 @@ interface DexFallbackResult {
   // docs.dexscreener.com/api/reference. Previously never extracted here even though this route
   // already parses this exact response for fdv.
   marketCap: number | null
+  // 24h buy/sell counts from DexScreener's pair.txns.h24 — used as a fallback for pool-activity
+  // numbers when GeckoTerminal's own selected pool looks stale (see the pool-activity staleness
+  // fix below).
+  txns24hBuys: number | null
+  txns24hSells: number | null
   pairAddress: string | null
   dexId: string | null
   pairUrl: string | null
@@ -2238,6 +2243,7 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
     const pc = best.priceChange as Record<string, unknown> | null
     const bt = best.baseToken as Record<string, unknown> | null
     const qt = best.quoteToken as Record<string, unknown> | null
+    const txnsH24 = (best.txns as Record<string, unknown> | null | undefined)?.h24 as Record<string, unknown> | null | undefined
 
     // info may be absent on the highest-liquidity pair — scan all matching pairs for social data
     const infoSource = (basePairs as Record<string, unknown>[]).find(p => {
@@ -2254,6 +2260,8 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
       priceChange24h: pc?.h24 != null ? Number(pc.h24) : null,
       fdv:          best.fdv != null ? Number(best.fdv) : null,
       marketCap:    best.marketCap != null ? Number(best.marketCap) : null,
+      txns24hBuys:  txnsH24?.buys != null ? Number(txnsH24.buys) : null,
+      txns24hSells: txnsH24?.sells != null ? Number(txnsH24.sells) : null,
       pairAddress:  best.pairAddress != null ? String(best.pairAddress) : null,
       dexId:        best.dexId != null ? String(best.dexId) : null,
       pairUrl:      best.url != null ? String(best.url) : null,
@@ -5269,15 +5277,39 @@ export async function POST(req: Request) {
       displayMarketValueReason = 'Market value not indexed — price or supply data not returned by active providers.'
     }
 
-    const liquidityUsd = pickNum(mainPool?.attributes?.reserve_in_usd)
-    const volume24hUsd = pickNum((mainPool?.attributes?.volume_usd as Record<string, unknown> | undefined)?.h24)
+    // STALE-POOL-ACTIVITY FIX, DISCLOSED: same class of bug as the FDV fix above. mainPool is
+    // GeckoTerminal's own highest-liquidity pool for this token — but for a thin/new/volatile pool,
+    // GT's own reserve/volume/transaction figures can lag badly behind reality (reported case: a
+    // pool GT reported at $0.01 liquidity / $0.00 24h volume / 1 transaction, on a token whose
+    // market cap, resolved from DexScreener two commits ago, is a real $417K — GT's own pool record
+    // clearly hasn't caught up). Rather than trust a near-zero GT reading when DexScreener's
+    // fallback (already fetched) shows meaningfully more real activity, prefer DexScreener's
+    // numbers for liquidity/volume/buys/sells in that specific case. This does NOT change the
+    // normal case where GT's own pool data is the richer, more current source (most tokens) — only
+    // kicks in when GT's figure is both near-zero AND DexScreener clearly disagrees.
+    const _gtPoolLiquidity = pickNum(mainPool?.attributes?.reserve_in_usd)
+    const _gtPoolVolume = pickNum((mainPool?.attributes?.volume_usd as Record<string, unknown> | undefined)?.h24)
+    const _dexFbLiquidity = pickNum((dexFbEarly as DexFallbackResult | null | undefined)?.liquidityUsd)
+    const _gtPoolLiquidityLooksStale = mainPool != null
+      && (_gtPoolLiquidity == null || _gtPoolLiquidity < 100)
+      && _dexFbLiquidity != null && _dexFbLiquidity > 1000
+      && (_gtPoolLiquidity == null || _dexFbLiquidity > _gtPoolLiquidity * 10)
+    const liquidityUsd = _gtPoolLiquidityLooksStale ? _dexFbLiquidity : _gtPoolLiquidity
+    const volume24hUsd = _gtPoolLiquidityLooksStale
+      ? (pickNum((dexFbEarly as DexFallbackResult | null | undefined)?.volume24h) ?? _gtPoolVolume)
+      : _gtPoolVolume
     // Pool activity — extracted from primary pool attributes, no extra API calls
-    const _txns = mainPoolAttr.transactions as Record<string, unknown> | null | undefined
+    const _txns = _gtPoolLiquidityLooksStale ? null : (mainPoolAttr.transactions as Record<string, unknown> | null | undefined)
     const _txnsH24Any = _txns?.h24
     const _txnsH24Obj = _txnsH24Any && typeof _txnsH24Any === 'object' ? _txnsH24Any as Record<string, unknown> : null
     const _txnsH24Total = _txnsH24Any && typeof _txnsH24Any !== 'object' ? toNum(_txnsH24Any) : null
-    const buys24h: number | null = _txnsH24Obj != null ? (toNum(_txnsH24Obj.buys) ?? toNum(_txnsH24Obj.buy) ?? null) : null
-    const sells24h: number | null = _txnsH24Obj != null ? (toNum(_txnsH24Obj.sells) ?? toNum(_txnsH24Obj.sell) ?? null) : null
+    const _dexFbTxns = dexFbEarly as DexFallbackResult | null | undefined
+    const buys24h: number | null = _txnsH24Obj != null
+      ? (toNum(_txnsH24Obj.buys) ?? toNum(_txnsH24Obj.buy) ?? null)
+      : (_gtPoolLiquidityLooksStale ? (_dexFbTxns?.txns24hBuys ?? null) : null)
+    const sells24h: number | null = _txnsH24Obj != null
+      ? (toNum(_txnsH24Obj.sells) ?? toNum(_txnsH24Obj.sell) ?? null)
+      : (_gtPoolLiquidityLooksStale ? (_dexFbTxns?.txns24hSells ?? null) : null)
     const transactions24h: number | null = buys24h != null && sells24h != null ? buys24h + sells24h : (_txnsH24Total ?? null)
     const _volH24 = (mainPoolAttr.volume_usd as Record<string, unknown> | undefined)?.h24
     const _volH24Obj = typeof _volH24 === 'object' && _volH24 !== null ? _volH24 as Record<string, unknown> : null
