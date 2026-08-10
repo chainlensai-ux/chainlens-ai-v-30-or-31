@@ -256,18 +256,22 @@ export function buildClusterMap(input: BuildClusterMapInput): ClusterMap {
     // plain holder, with no distinction based on how much we actually know about that row — so the
     // UI showed "Open check" for 100% of indexed holders regardless of data quality, with a reason
     // string that never varied. Confidence here still can't mean "confirmed linked to the deployer"
-    // (that's genuinely unconfirmed for a plain holder), but it CAN reflect how complete the indexed
-    // holder-position data itself is: an on-chain percent AND rank is a solid, source-backed reading
-    // (estimate as 'medium' link-uncertainty rather than maximal uncertainty); a percent with no rank
-    // is a weaker partial read ('low'); truly nothing beyond the address stays 'open_check'. This is
-    // a graduated estimate grounded in what the holder row actually contains, not a guess.
+    // (that's genuinely unconfirmed for a plain holder), but it CAN reflect how much is actually
+    // known about the holder-position reading itself:
+    //   - percent AND a real rank confirmed on-chain -> 'medium' (a solid, source-backed reading)
+    //   - rank confirmed but percent could not be safely computed this pass (e.g. the token's supply
+    //     data failed a sanity check upstream, so percentages were withheld to avoid showing a wrong
+    //     number) -> 'low'. The wallet's presence and ranked position are still real on-chain evidence
+    //     even without a percent, so this is a grounded partial read, not a guess.
+    //   - neither is available (defensive floor only; holderRows always assigns a rank in practice,
+    //     via a positional fallback, so this branch should be effectively unreachable) -> 'open_check'
     const hasPercent = holder.percent != null
-    const hasRank = holder.rank != null
-    const confidence: ClusterConfidence = hasPercent && hasRank ? 'medium' : hasPercent ? 'low' : 'open_check'
-    const reason = hasPercent && hasRank
+    const hasRank = typeof holder.rank === 'number' && Number.isFinite(holder.rank)
+    const confidence: ClusterConfidence = hasRank ? (hasPercent ? 'medium' : 'low') : 'open_check'
+    const reason = hasRank && hasPercent
       ? `Indexed top holder with a confirmed on-chain supply share (${holder.percent!.toFixed(1)}%) and rank (#${holder.rank}); no deployer or linked-wallet evidence to confirm cluster role.`
-      : hasPercent
-        ? `Indexed top holder with a confirmed supply share (${holder.percent!.toFixed(1)}%), but rank position unavailable in this pass; no deployer or linked-wallet evidence to confirm cluster role.`
+      : hasRank
+        ? `Indexed top holder at rank #${holder.rank} confirmed on-chain, but the exact supply share could not be safely computed this pass; no deployer or linked-wallet evidence to confirm cluster role.`
         : 'Indexed top holder only; no deployer or linked-wallet evidence confirmed.'
     upsertNode({
       id: nodeId(holder.address),
