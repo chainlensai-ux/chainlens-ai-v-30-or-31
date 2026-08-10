@@ -39,7 +39,27 @@ export async function GET(req: NextRequest) {
     .order('saved_at', { ascending: false })
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ tokens: data ?? [] })
+  // NORMALIZE-WATCHLIST-ROW FIX, DISCLOSED: this route's own POST/DELETE below write/read an
+  // `address` column, but Token Scanner's "Track This Token" button writes directly to this same
+  // table via a separate client-side Supabase insert using `contract_address` instead (see
+  // docs/supabase-watchlist-tokens.sql, the actual documented migration for this table — it only
+  // ever defines `contract_address`, never `address`). Whichever field name the live table
+  // ultimately has, a row saved through one path came back with the other field undefined when
+  // read here — and Base Radar's isWatched() called `.toLowerCase()` on it with no null check,
+  // crashing the entire page on load (reported: "This page couldn't load" + a real browser
+  // console TypeError on that exact line). Normalizing to a single `address` field here, with a
+  // fallback to `contract_address`, fixes it for every consumer of this endpoint without needing
+  // to know which column the live table actually has. Rows with neither are dropped rather than
+  // returned with an empty/fake address.
+  const rows = (data ?? []) as Array<Record<string, unknown>>
+  const tokens = rows
+    .map((row) => {
+      const address = (row.address ?? row.contract_address) as string | null | undefined
+      if (typeof address !== 'string' || !address) return null
+      return { ...row, address }
+    })
+    .filter((row): row is Record<string, unknown> & { address: string } => row != null)
+  return NextResponse.json({ tokens })
 }
 
 export async function POST(req: NextRequest) {

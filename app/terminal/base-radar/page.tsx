@@ -1261,8 +1261,15 @@ export default function BaseRadarPage() {
     setSelectedToken(prev => prev?.contract === token.contract ? prev : token)
   }
 
+  // NULL-SAFE-WATCHLIST-CHECK FIX, DISCLOSED: this crashed the entire page (reported: "This page
+  // couldn't load", console TypeError "Cannot read properties of undefined (reading
+  // 'toLowerCase')" on this exact line) whenever any row in watchlistTokens had no `address` — a
+  // real, reachable case given how that data is populated (see the API route's own fix). Guarding
+  // here too so a malformed/inconsistent row can never crash the whole page again, independent of
+  // whether the API-level fix covers every future write path.
   function isWatched(contract: string): boolean {
-    return watchlistTokens.some(w => w.address.toLowerCase() === contract.toLowerCase())
+    if (!contract) return false
+    return watchlistTokens.some(w => typeof w?.address === 'string' && w.address.toLowerCase() === contract.toLowerCase())
   }
 
   // PERSISTED TOGGLE, DISCLOSED: optimistic local update first (instant UI feedback, same feel as
@@ -1274,7 +1281,7 @@ export default function BaseRadarPage() {
     const address = token.contract.toLowerCase()
     const wasWatched = isWatched(address)
     setWatchlistTokens(prev => wasWatched
-      ? prev.filter(w => w.address.toLowerCase() !== address)
+      ? prev.filter(w => typeof w?.address !== 'string' || w.address.toLowerCase() !== address)
       : [{ address, symbol: token.symbol, name: token.name, chain: 'base', risk_label: token.status, score: token.radarScore }, ...prev])
 
     const { data: { session } } = await supabase.auth.getSession()
@@ -1301,7 +1308,7 @@ export default function BaseRadarPage() {
   }
 
   function removeFromWatchlist(address: string) {
-    setWatchlistTokens(prev => prev.filter(w => w.address.toLowerCase() !== address.toLowerCase()))
+    setWatchlistTokens(prev => prev.filter(w => typeof w?.address !== 'string' || w.address.toLowerCase() !== address.toLowerCase()))
     void (async () => {
       const { data: { session } } = await supabase.auth.getSession()
       const authToken = session?.access_token
