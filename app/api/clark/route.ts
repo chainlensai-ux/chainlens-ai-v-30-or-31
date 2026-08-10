@@ -6672,7 +6672,49 @@ async function callAnthropicWhale(prompt: string, whaleContextXml = ""): Promise
   return sanitizeFreeform((textBlock?.text ?? "Not enough verified data."), { allowProviderNames: false });
 }
 
+// LIVE-WHALE-SYNC FIX, DISCLOSED (Clark AI capability audit): the inner handler below only ever
+// GET-reads whatever /api/whale-alerts had last stored — it never triggered a fresh on-chain
+// check, so "check whale wallets" from Clark could silently answer from stale data. This wrapper
+// adds that: when the user explicitly asks Clark to check/sync/refresh whale wallets, it POSTs the
+// real /api/whale-alerts/sync endpoint first (the same endpoint the Whale Alerts page itself uses)
+// and waits for it, then calls the unchanged inner handler so it reads the now-current data.
+// Best-effort: sync is Pro/Elite-gated and cooldown-limited server-side, so a 403/429/timeout here
+// just prepends an honest note and falls through to the existing read-only behavior — it never
+// fakes or synthesizes a "synced" result.
 async function handleWhaleAlertFeed(prompt: string, body: ClarkRequestBody, origin: string, authHeader?: string | null) {
+  const wantsFreshSync = /\b(check|sync|refresh|update|re[\s-]?check)\b[\s\w]{0,20}\bwhale/i.test(prompt) || /\bwhale[\s\w]{0,20}\b(check|sync|refresh|update)\b/i.test(prompt);
+  let liveSyncNote: string | null = null;
+  if (wantsFreshSync) {
+    if (!authHeader) {
+      liveSyncNote = "Sign in on Pro or Elite for me to run a live whale sync — showing the latest stored read for now.";
+    } else {
+      try {
+        const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\bweek whale\b|\blast 7 days\b/i.test(prompt.toLowerCase());
+        const syncRes = await fetch(`${origin}/api/whale-alerts/sync?window=${is7dQuery ? "7d" : "24h"}`, {
+          method: "POST",
+          signal: AbortSignal.timeout(15000),
+          headers: { Authorization: authHeader, "Content-Type": "application/json" },
+          body: "{}",
+        });
+        if (syncRes.ok) {
+          const syncJson = await syncRes.json().catch(() => null) as { walletsChecked?: number } | null;
+          liveSyncNote = `Synced ${syncJson?.walletsChecked ?? "tracked"} whale wallets just now.`;
+        } else if (syncRes.status === 403) {
+          liveSyncNote = "Live whale sync is included in Pro and Elite — showing the latest stored read instead.";
+        } else if (syncRes.status === 429) {
+          liveSyncNote = "Whale sync just ran recently (cooldown active) — showing the latest stored read.";
+        }
+      } catch { /* best-effort — fall through to the existing stored-feed read below */ }
+    }
+  }
+  const result = await handleWhaleAlertFeedInner(prompt, body, origin, authHeader) as Record<string, unknown>;
+  if (liveSyncNote && result && typeof result.analysis === "string") {
+    result.analysis = `${liveSyncNote}\n\n${result.analysis}`;
+  }
+  return result;
+}
+
+async function handleWhaleAlertFeedInner(prompt: string, body: ClarkRequestBody, origin: string, authHeader?: string | null) {
   const chain = body.chain ?? "base";
   const ROUTING_ONLY_SYMBOLS = new Set(['USDC', 'USDBC', 'EURC', 'DAI', 'USDT', 'WETH', 'ETH', 'CBBTC', 'WSTETH'])
 
