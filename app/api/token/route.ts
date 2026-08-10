@@ -2120,6 +2120,11 @@ interface DexFallbackResult {
   volume24h: number | null
   priceChange24h: number | null
   fdv: number | null
+  // DexScreener's pair object has a real marketCap field distinct from fdv (only populated when
+  // DexScreener has enough data to distinguish circulating from fully-diluted supply) — see
+  // docs.dexscreener.com/api/reference. Previously never extracted here even though this route
+  // already parses this exact response for fdv.
+  marketCap: number | null
   pairAddress: string | null
   dexId: string | null
   pairUrl: string | null
@@ -2248,6 +2253,7 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
       volume24h:    vol?.h24 != null ? Number(vol.h24) : null,
       priceChange24h: pc?.h24 != null ? Number(pc.h24) : null,
       fdv:          best.fdv != null ? Number(best.fdv) : null,
+      marketCap:    best.marketCap != null ? Number(best.marketCap) : null,
       pairAddress:  best.pairAddress != null ? String(best.pairAddress) : null,
       dexId:        best.dexId != null ? String(best.dexId) : null,
       pairUrl:      best.url != null ? String(best.url) : null,
@@ -5128,19 +5134,22 @@ export async function POST(req: Request) {
       top10 == null ? 'inferred' : top10 > 35 ? 'elevated' : 'normal'
 
     const poolAttr = mainPool?.attributes ?? {}
-    // COINGECKO-MARKET-CAP FIX, DISCLOSED: coingeckoRaw (fetchCoinGeckoToken's contract-lookup
-    // response) was already fetched every scan and already mined for its price
-    // (market_data.current_price.usd, see _cgMarketData below) — but its market_data.market_cap.usd
-    // field, a real live-verified market cap whenever CoinGecko lists the token, was never checked.
-    // That's a live provider's own reported market cap, not an estimate — so it belongs in the same
-    // "verified" tier as GeckoTerminal's own token-endpoint market cap, ranked second only because
-    // GT's figure is already tied to the specific pool/token data this scan is built around.
+    // COINGECKO/DEXSCREENER-MARKET-CAP FIX, DISCLOSED: coingeckoRaw (fetchCoinGeckoToken's
+    // contract-lookup response) and dexFbEarly (DexScreener's fallback market read) were already
+    // fetched every scan and already mined for price — but their own real, provider-reported market
+    // cap fields (CoinGecko's market_data.market_cap.usd; DexScreener's pair.marketCap, distinct
+    // from fdv) were never checked. Both are live numbers, not estimates, so they belong ahead of
+    // the on-chain price × supply estimate. DexScreener ranks first among the two because it tends
+    // to index brand-new/thin pools (the exact case this was reported against — a very new,
+    // low-liquidity token) faster than CoinGecko's listing process does.
     const _cgMarketDataEarly = (coingeckoRaw as Record<string, unknown> | null | undefined)?.market_data as Record<string, unknown> | null | undefined
     const coingeckoMarketCap = pickNum((_cgMarketDataEarly?.market_cap as Record<string, unknown> | null | undefined)?.usd)
+    const dexScreenerMarketCap = pickNum((dexFbEarly as DexFallbackResult | null | undefined)?.marketCap)
     // True market cap priority:
     // 1) GeckoTerminal token endpoint attributes.market_cap_usd
     // 2) explicit market cap fields from token metadata responses (never FDV fields)
-    // 3) CoinGecko's own live market cap for this contract, when GT didn't have one
+    // 3) DexScreener's own live market cap for this pair, when GT didn't have one
+    // 4) CoinGecko's own live market cap for this contract, when neither of the above did
     const tokenEndpointMarketCap = pickNum(
       gtToken?.market_cap_usd,
       gtToken?.market_cap,
@@ -5164,14 +5173,18 @@ export async function POST(req: Request) {
       ? tokenEndpointMarketCap
       : (selectedPoolMarketCapUsd != null && selectedPoolMarketCapUsd > 0
         ? selectedPoolMarketCapUsd
-        : (coingeckoMarketCap != null && coingeckoMarketCap > 0 ? coingeckoMarketCap : null))
+        : (dexScreenerMarketCap != null && dexScreenerMarketCap > 0
+          ? dexScreenerMarketCap
+          : (coingeckoMarketCap != null && coingeckoMarketCap > 0 ? coingeckoMarketCap : null)))
     const poolEndpointMarketCapPresent = toNum(poolAttr.market_cap_usd) != null;
     const circulatingSupply = pickNum(gtToken?.circulating_supply, goldItem?.circulating_supply, gmgnItem?.circulating_supply)
     const tokenPrice = pickNum(poolAttr.base_token_price_usd, gtToken?.price_usd, gtToken?.price)
     const marketCapSource = marketCapFromGt != null
       ? ((tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0)
         ? 'geckoterminal'
-        : (selectedPoolMarketCapUsd != null && selectedPoolMarketCapUsd > 0 ? 'coingecko_terminal' : 'coingecko'))
+        : (selectedPoolMarketCapUsd != null && selectedPoolMarketCapUsd > 0
+          ? 'coingecko_terminal'
+          : (dexScreenerMarketCap != null && dexScreenerMarketCap > 0 ? 'dexscreener' : 'coingecko')))
       : 'none'
     const fdv = pickNum(gtToken?.fdv_usd, gtToken?.fdv, gtToken?.fully_diluted_valuation, poolAttr.fdv_usd, poolAttr.fdv, mainPool?.fdv_usd, goldItem?.fully_diluted_value, gmgnItem?.fdv)
     const fdvSource = fdv != null ? 'geckoterminal' : 'none'
