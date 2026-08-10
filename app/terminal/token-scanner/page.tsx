@@ -2043,6 +2043,18 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
     const lineageEdges = graphEdges.filter((edge) => lineageIds.has(edge.source) && lineageIds.has(edge.target))
     const linkedSupply = directLinkedWallets.reduce((sum, node) => sum + (node.supplyPercent ?? 0), 0)
     const suspiciousLinks = lineageEdges.filter(isSuspiciousGraphEdge).length
+    // LINEAGE-LINKED-SUPPLY FIX, DISCLOSED: this used to only look at directLinkedWallets graph
+    // nodes, so when the cluster map has zero linked-wallet nodes (a real, confirmed "no linked
+    // wallets found" result, not missing data) it showed "Open check" instead of the true 0%. The
+    // backend (app/api/token/route.ts) already computes this authoritatively — including the
+    // confirmed-zero case — and passes it down as devIntel.supplyControl.linkedWalletSupplyPercent /
+    // devIntel.linkedWalletSupplyPercent. Prefer that known value; only fall back to summing the
+    // graph nodes locally (and only showing a result once at least one has a known percent) when the
+    // backend genuinely didn't resolve a value.
+    const knownLinkedSupplyPercent = devIntel?.supplyControl?.linkedWalletSupplyPercent ?? devIntel?.linkedWalletSupplyPercent ?? null
+    const linkedSupplyPercent = knownLinkedSupplyPercent != null
+      ? knownLinkedSupplyPercent
+      : directLinkedWallets.some((node) => node.supplyPercent != null) ? linkedSupply : null
     return {
       status: lineageEdges.length > 0 ? map.status : 'partial',
       deployer: deployerNode,
@@ -2054,7 +2066,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
         directLinks: directLinkedWallets.length,
         secondLayerLinks: secondLayerWallets.length,
         suspiciousLinks,
-        linkedSupplyPercent: directLinkedWallets.some((node) => node.supplyPercent != null) ? linkedSupply : null,
+        linkedSupplyPercent,
         clusterSupplyPercent: summary?.clusterSupplyPercent ?? null,
         riskLabel: suspiciousLinks > 0 || (summary?.clusterRiskLabel === 'critical' || summary?.clusterRiskLabel === 'high') ? 'Elevated lineage watch' : lineageEdges.length > 0 ? 'Lineage mapped' : 'Open check',
         reason: lineageEdges.length > 0 ? 'Lineage uses only deployer, linked-wallet, cluster-wallet, holder, and edge evidence already in the cluster map.' : 'No lineage edges confirmed in this pass. Other contracts not available in this pass.',
