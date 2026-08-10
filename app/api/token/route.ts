@@ -13,6 +13,7 @@ import { buildLpUnlockTimeline } from "@/lib/server/lpUnlockTimeline";
 import { buildLpHistoryTimeline } from "@/lib/server/lpHistoryTimeline";
 import { buildSecondaryLpExposure } from "@/lib/server/secondaryLpExposure";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
 import {
@@ -111,7 +112,25 @@ const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-type ChainKey = "eth" | "base" | "polygon" | "bnb";
+// BNB-AND-ROBINHOOD-CHAIN-ADD, DISCLOSED (Token Scanner chain expansion, basic tier): 'bnb' was
+// already present in this union with no scanning logic behind it; 'robinhood' is new here.
+// Robinhood Chain (Base's own L2 pattern, chain ID 4663 — see lib/server/robinhoodChainConfig.ts,
+// previously wired only into Base Radar's chain-status flag check) genuinely has real provider
+// coverage now: DexScreener indexes it under the 'robinhood' slug (dexscreener.com/robinhood/...,
+// confirmed) and GoldRush/Covalent has announced direct-node Robinhood Chain support. This pass
+// wires up price/liquidity/volume/holders/market data (the "basic scan" tier). LP lock/burn proof
+// deliberately stays at its existing generic "pool detected, model requires confirmation" open-check
+// state for both new chains — see lib/server/lpProof.ts, no verified position-manager/locker
+// addresses are hardcoded for either chain, consistent with this codebase's existing rule to never
+// guess a contract address it hasn't confirmed.
+type ChainKey = "eth" | "base" | "polygon" | "bnb" | "robinhood";
+const CHAIN_DISPLAY_NAME: Record<ChainKey, string> = {
+  eth: "Ethereum",
+  base: "Base",
+  polygon: "Polygon",
+  bnb: "BNB Chain",
+  robinhood: "Robinhood Chain",
+}
 function getAlchemyRpcUrl(chain: ChainKey): string | null {
   if (chain === "eth") {
     const explicitEth = process.env.ETH_RPC_URL
@@ -128,27 +147,48 @@ function getAlchemyRpcUrl(chain: ChainKey): string | null {
     if (key) return `https://base-mainnet.g.alchemy.com/v2/${key}`
     return "https://mainnet.base.org"
   }
-  const keyMap: Record<Exclude<ChainKey, "base" | "eth">, string | undefined> = {
+  if (chain === "robinhood") {
+    // Reuses the existing Robinhood Chain config module (feature-flag + RPC URL) rather than a new
+    // env var — same source of truth Base Radar's chain-status route already reads.
+    return getRobinhoodRpcUrl()
+  }
+  const keyMap: Record<Exclude<ChainKey, "base" | "eth" | "robinhood">, string | undefined> = {
     polygon: process.env.ALCHEMY_POLYGON_KEY,
     bnb: process.env.ALCHEMY_BNB_KEY,
   }
-  const domainMap: Record<Exclude<ChainKey, "base" | "eth">, string> = {
+  const domainMap: Record<Exclude<ChainKey, "base" | "eth" | "robinhood">, string> = {
     polygon: "polygon-mainnet",
     bnb: "bnb-mainnet",
   }
-  const key = keyMap[chain as Exclude<ChainKey, "base" | "eth">]
-  return key ? `https://${domainMap[chain as Exclude<ChainKey, "base" | "eth">]}.g.alchemy.com/v2/${key}` : null
+  const key = keyMap[chain as Exclude<ChainKey, "base" | "eth" | "robinhood">]
+  return key ? `https://${domainMap[chain as Exclude<ChainKey, "base" | "eth" | "robinhood">]}.g.alchemy.com/v2/${key}` : null
 }
 
 const COVALENT_BASE_URL = 'https://api.covalenthq.com/v1'
 const CREATOR_LOOKUP_BASE_URL = 'https://api.etherscan.io/v2/api'
-const COVALENT_CHAIN_SLUG: Record<Extract<ChainKey, 'eth' | 'base'>, string> = {
+// bnb: 'bsc-mainnet' is GoldRush/Covalent's confirmed chain_name slug for BNB Smart Chain.
+// robinhood: best-effort slug, NOT independently confirmed against GoldRush's own docs (network
+// access to goldrush.dev was unavailable while wiring this up) — GoldRush's chain-name convention
+// is consistently "{name}-mainnet", and GoldRush has announced direct Robinhood Chain node support,
+// so this follows that pattern. If wrong, GoldRush-sourced calls fail closed and this codebase's
+// existing DexScreener/GeckoTerminal fallback path (already relied on throughout this file) covers
+// price/liquidity/volume/FDV regardless — holder distribution and deployer lookup are the fields
+// that would show "not indexed" if this slug turns out to be incorrect.
+const COVALENT_CHAIN_SLUG: Record<Extract<ChainKey, 'eth' | 'base' | 'bnb' | 'robinhood'>, string> = {
   eth: 'eth-mainnet',
   base: 'base-mainnet',
+  bnb: 'bsc-mainnet',
+  robinhood: 'robinhood-mainnet',
 }
-const CREATOR_LOOKUP_CHAIN_ID: Record<Extract<ChainKey, 'eth' | 'base'>, string> = {
+// Etherscan V2's unified API chain IDs — bnb=56 is well-established/confirmed. robinhood=4663
+// matches ROBINHOOD_CHAIN_ID (lib/server/robinhoodChainConfig.ts) but Etherscan V2 support for this
+// new/obscure chain is unconfirmed; a lookup failure here degrades to the same "deployer not found
+// via this method" fallback already used for any chain when this lookup comes back empty.
+const CREATOR_LOOKUP_CHAIN_ID: Record<Extract<ChainKey, 'eth' | 'base' | 'bnb' | 'robinhood'>, string> = {
   eth: '1',
   base: '8453',
+  bnb: '56',
+  robinhood: '4663',
 }
 
 
@@ -1257,16 +1297,22 @@ async function discoverTokenOrigin(chain: ChainKey, contract: string): Promise<{
     return { candidate, diag }
   }
 
-  if (chain === 'eth' || chain === 'base') {
-    const scanKey = chain === 'eth'
-      ? process.env.ETHERSCAN_API_KEY
-      : (process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY)
+  if (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood') {
+    // base keeps its own BaseScan-specific endpoint (pre-existing). eth/bnb/robinhood all go
+    // through Etherscan's unified V2 API keyed by CREATOR_LOOKUP_CHAIN_ID — bnb=56 is a confirmed
+    // Etherscan V2 chain; robinhood=4663 support on Etherscan V2 is unconfirmed given how new the
+    // chain is, so that lookup may simply come back empty, which this function already handles as
+    // just one candidate source among several (see the rest of the deployer-resolution fallback
+    // chain below this block).
+    const scanKey = chain === 'base'
+      ? (process.env.BASESCAN_API_KEY || process.env.ETHERSCAN_API_KEY)
+      : process.env.ETHERSCAN_API_KEY
     if (scanKey) {
       diag.optional_creation_lookup.attempted = true
       try {
-        const scanUrl = chain === 'eth'
-          ? `${CREATOR_LOOKUP_BASE_URL}?chainid=${CREATOR_LOOKUP_CHAIN_ID.eth}&module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${scanKey}`
-          : `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${scanKey}`
+        const scanUrl = chain === 'base'
+          ? `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${scanKey}`
+          : `${CREATOR_LOOKUP_BASE_URL}?chainid=${CREATOR_LOOKUP_CHAIN_ID[chain]}&module=contract&action=getcontractcreation&contractaddresses=${contract}&apikey=${scanKey}`
         const scanRes = await fetch(scanUrl, { cache: 'no-store', signal: AbortSignal.timeout(6000) })
         diag.optional_creation_lookup.httpStatus = scanRes.status
         if (scanRes.ok) {
@@ -1296,7 +1342,7 @@ async function discoverTokenOrigin(chain: ChainKey, contract: string): Promise<{
     }
   }
 
-  const covalentChain = chain === 'eth' || chain === 'base' ? COVALENT_CHAIN_SLUG[chain] : null
+  const covalentChain = (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood') ? COVALENT_CHAIN_SLUG[chain] : null
   const covalentKey = process.env.COVALENT_API_KEY
   if (covalentChain && covalentKey) {
     diag.contract_transaction_history.attempted = true
@@ -1529,6 +1575,7 @@ async function fetchGoldRushContractIntel(chain: ChainKey, contract: string): Pr
       base: 'base-mainnet',
       polygon: 'matic-mainnet',
       bnb: 'bsc-mainnet',
+      robinhood: 'robinhood-mainnet',
     }
     const chainSlug = CHAIN_SLUG_MAP[chain] ?? 'eth-mainnet'
     const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
@@ -1570,6 +1617,7 @@ async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<an
       base:    'base',
       polygon: 'polygon_pos',
       bnb:     'bsc',
+      robinhood: 'robinhood',
     };
     const network = networkMap[chain] ?? 'base';
     const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
@@ -1599,6 +1647,7 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
       base:    'base',
       polygon: 'polygon_pos',
       bnb:     'bsc',
+      robinhood: 'robinhood',
     };
     const network = networkMap[chain] ?? 'base';
     const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
@@ -1625,6 +1674,7 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
       base: 'base',
       polygon: 'polygon_pos',
       bnb: 'bsc',
+      robinhood: 'robinhood',
     }
     const network = networkMap[chain] ?? 'base'
     const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
@@ -1644,7 +1694,7 @@ async function fetchGeckoTerminalPoolOhlcv(poolAddress: string, chain: ChainKey,
 // More reliable than pool-level for CL/V3 pools where individual pool OHLCV is not indexed.
 async function fetchGeckoTerminalTokenOhlcv(tokenAddress: string, chain: ChainKey, timeframe: { resolution: 'minute'|'hour'|'day'; aggregate: number; limit: number }): Promise<{ json: any | null; httpStatus: number | null }> {
   try {
-    const networkMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc' }
+    const networkMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc', robinhood: 'robinhood' }
     const network = networkMap[chain] ?? 'base'
     const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
     const res = await fetch(
@@ -1703,7 +1753,7 @@ function poolTokenRelationshipDebug(pool: Record<string, unknown>, tokenAddress:
 // Fetches recent trades for a pool — last-resort candle source when indexed OHLCV is unavailable.
 async function fetchGeckoTerminalPoolTrades(poolAddress: string, chain: ChainKey): Promise<{ json: any | null; httpStatus: number | null }> {
   try {
-    const networkMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc' }
+    const networkMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc', robinhood: 'robinhood' }
     const network = networkMap[chain] ?? 'base'
     const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
     const res = await fetch(
@@ -1956,7 +2006,7 @@ function extractProjectSocials(
   return { website, twitter, telegram, discord, github, sourceTrail, status, reason, _foundKeys, _rejectedCount }
 }
 
-const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56 };
+const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 137, bnb: 56, robinhood: 4663 };
 
 // Chain-aware LP lock/burn registry is centralized in lib/server/lpLockBurnIntel.ts.
 // Only verified locker contracts belong in the registry; empty chain lists intentionally
@@ -2096,6 +2146,7 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
     base: 'base',
     polygon: 'polygon',
     bnb: 'bsc',
+    robinhood: 'robinhood',
   }
   const dexChainId = dexChainIdMap[chain] ?? 'base'
   const key = `${chain}:${tokenAddress.toLowerCase()}`
@@ -2205,7 +2256,7 @@ async function fetchCoinGeckoToken(chain: ChainKey, contract: string): Promise<a
 
 async function fetchMoralisHolders(chain: ChainKey, contract: string): Promise<any> {
   try {
-    const chainMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon', bnb: 'bsc' }
+    const chainMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon', bnb: 'bsc', robinhood: 'robinhood' }
     const key = process.env.MORALIS_API_KEY
     if (!key) return { __status: 'not_configured' }
     const res = await fetch(`https://deep-index.moralis.io/api/v2.2/erc20/${contract}/owners?chain=${chainMap[chain]}&limit=100`, {
@@ -2219,7 +2270,7 @@ async function fetchMoralisHolders(chain: ChainKey, contract: string): Promise<a
 
 async function fetchMoralisTransfers(chain: ChainKey, contract: string): Promise<any> {
   try {
-    const chainMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon', bnb: 'bsc' }
+    const chainMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon', bnb: 'bsc', robinhood: 'robinhood' }
     const key = process.env.MORALIS_API_KEY
     if (!key) return { __status: 'not_configured' }
     // order=ASC fetches the EARLIEST transfers — required to find the initial mint (from=0x0)
@@ -2300,6 +2351,7 @@ async function fetchTokenHoldersUncached(_chain: ChainKey, contract: string): Pr
     base: 'base-mainnet',
     polygon: 'matic-mainnet',
     bnb: 'bsc-mainnet',
+    robinhood: 'robinhood-mainnet',
   }
   const chainSlug = CHAIN_SLUG_MAP[_chain] ?? 'base-mainnet'
   const endpointPath = `/v1/${chainSlug}/tokens/${contract}/token_holders_v2/`
@@ -3319,8 +3371,8 @@ export async function POST(req: Request) {
     const debugMode = debugRequested === true && isAdminOverride(req);
     const isClarkFastMode = scanMode === 'clark_fast';
     const rawChain = String(body.chain ?? 'base').toLowerCase()
-    if (rawChain !== 'base' && rawChain !== 'eth') {
-      return NextResponse.json({ error: 'Unsupported chain. Use chain=base or chain=eth.' }, { status: 400 })
+    if (rawChain !== 'base' && rawChain !== 'eth' && rawChain !== 'bnb' && rawChain !== 'robinhood') {
+      return NextResponse.json({ error: 'Unsupported chain. Use chain=base, chain=eth, chain=bnb, or chain=robinhood.' }, { status: 400 })
     }
     let chain: ChainKey = rawChain as ChainKey
     const forceDexFallback = debugMode === true && _forceDexFallback === true
@@ -3506,9 +3558,12 @@ export async function POST(req: Request) {
       }
     }
 
-    // ETH + BASE are the only chains with full provider support.
-    // GoldRush, Moralis, Alchemy RPC, and DexScreener are gated to these chains.
-    const SUPPORTED_FULL_SCAN_CHAINS: ChainKey[] = ['eth', 'base']
+    // ETH, BASE, BNB, and Robinhood Chain have full provider support (GoldRush, Moralis, Alchemy
+    // RPC where configured, and DexScreener). BNB/Robinhood are on the same provider paths as
+    // eth/base here — what's deliberately NOT extended to them yet is LP lock/burn proof, which
+    // needs a verified position-manager/locker contract registry per chain (see the
+    // COVALENT_CHAIN_SLUG comment above and the lpProof gate below).
+    const SUPPORTED_FULL_SCAN_CHAINS: ChainKey[] = ['eth', 'base', 'bnb', 'robinhood']
     const isFullScanChain = SUPPORTED_FULL_SCAN_CHAINS.includes(chain)
     const rpcHealth = isFullScanChain ? await checkRpcHealth(chain) : { ok: false, providerUrl: null, reason: 'chain_not_supported' as string | null }
     const alchemyConfigured = isFullScanChain && rpcHealth.ok
@@ -3882,8 +3937,8 @@ export async function POST(req: Request) {
     const _ownerStatusEarly = _isRenouncedEarly ? 'renounced' : (_ownerEarlyAddr ? 'held' : 'inferred_active')
     // Build rich AI summary prompt with all Phase 1 signals
     const _aiPrompt = [
-      `You are a concise onchain risk analyst. Summarize this ${chain === 'eth' ? 'Ethereum' : 'Base'} token risk in 3-4 sentences. Be specific about detected risks. Plain text only, no markdown, no disclaimers.`,
-      `CONTRACT: ${contract} | CHAIN: ${chain === 'eth' ? 'Ethereum' : 'Base'}`,
+      `You are a concise onchain risk analyst. Summarize this ${CHAIN_DISPLAY_NAME[chain]} token risk in 3-4 sentences. Be specific about detected risks. Plain text only, no markdown, no disclaimers.`,
+      `CONTRACT: ${contract} | CHAIN: ${CHAIN_DISPLAY_NAME[chain]}`,
       `MARKET: price=${_priceEarly != null ? `$${_priceEarly}` : 'unknown'} liquidity=${_liqEarly != null ? `$${(_liqEarly / 1000).toFixed(0)}K` : 'unknown'} pools=${matchingPools.length}`,
       hpResult.ok
         ? `SIMULATION: honeypot=${hpResult.honeypot} buyTax=${hpResult.buyTax ?? '?'}% sellTax=${hpResult.sellTax ?? '?'}%`
@@ -4721,7 +4776,7 @@ export async function POST(req: Request) {
     ].filter(Boolean);
 
     // AI summary from parallel phase 2
-    const _chainName = chain === 'eth' ? 'Ethereum' : 'Base'
+    const _chainName = CHAIN_DISPLAY_NAME[chain]
     const _aiResult = _aiSettled.status === 'fulfilled' ? _aiSettled.value : null
     // Extract AI text early; aiSummary is computed later (after holder data resolves) to avoid stale holder wording
     let _aiTextEarly: string | null = null
@@ -5216,7 +5271,7 @@ export async function POST(req: Request) {
 
     const buySellVolumeSplitAvailable = buyVolume24hUsd != null && sellVolume24hUsd != null
     const buySellVolumeReason = buySellVolumeSplitAvailable ? 'split_exposed' : (resolvedVolume24hUsd != null ? 'only_total_exposed' : 'volume_not_exposed')
-    const _chartNetworkIdMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc' }
+    const _chartNetworkIdMap: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc', robinhood: 'robinhood' }
     const _chartNetworkId = _chartNetworkIdMap[chain] ?? 'base'
     const chartPoolCandidates = [mainPool, ...matchingPools.filter((p) => p !== mainPool)]
       .map((p) => {
@@ -6106,7 +6161,7 @@ export async function POST(req: Request) {
 
     // ── Clark Interpretation — 3-phase contextual summary with risk drivers, open checks, next actions ──
     const clarkInterpretation: RiskEngine["clarkInterpretation"] = (() => {
-      const _chain = chain === 'eth' ? 'Ethereum' : 'Base'
+      const _chain = CHAIN_DISPLAY_NAME[chain]
       const _selectedPoolDexForCtx = String(lpDexName ?? lpDexId ?? '').toLowerCase()
       const _selectedPoolIsConcentratedForCtx = lpPoolType === 'v3' || lpPoolType === 'concentrated' || _selectedPoolDexForCtx.includes('uniswap v4') || _selectedPoolDexForCtx.includes('uniswap_v4') || _selectedPoolDexForCtx.includes('uniswap v3') || _selectedPoolDexForCtx.includes('uniswap_v3')
       const _chainCtx = chain === 'base'
@@ -6212,7 +6267,11 @@ export async function POST(req: Request) {
     } else if (chain === 'eth' || chain === 'base') {
       lpProof = await resolveLpProof(chain, _lpProofAddress)
     } else {
+      // bnb/robinhood: no verified lock/burn contract registry for these chains yet (see
+      // COVALENT_CHAIN_SLUG comment above on this chain-expansion pass) — stays an honest
+      // unverified rather than guessing at a PancakeSwap/Robinhood-DEX locker address.
       lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown', reasonCode: 'proofNotApplicable' }
+      _lpProofSkipReason = `LP lock/burn proof is not yet supported for ${chain === 'bnb' ? 'BNB Chain' : 'Robinhood Chain'} — no verified locker registry for this chain yet.`
     }
     const { lpLockStatus, lpLockAmount, lpUnlockTime, lpLockProvider, lpController: _lpControllerFromProof } = lpProof
     // Synthesize lpControllerType/lpControllerAddress from lpControl evidence when the
@@ -8402,11 +8461,15 @@ export async function GET(req: Request) {
 
   const contract = scan.contract ?? contractInput
   const socials = (scan.projectSocials && typeof scan.projectSocials === 'object') ? scan.projectSocials as Record<string, unknown> : {}
-  const explorerBase = chain === 'eth' || chain === 'ethereum' ? 'https://etherscan.io' : 'https://basescan.org'
-  const gtNetwork = chain === 'eth' || chain === 'ethereum' ? 'eth' : 'base'
   const normalizedChain = chain === 'ethereum' ? 'eth' : chain
+  const explorerBase = normalizedChain === 'eth' ? 'https://etherscan.io'
+    : normalizedChain === 'bnb' ? 'https://bscscan.com'
+    : normalizedChain === 'robinhood' ? ROBINHOOD_CHAIN_EXPLORER_URL
+    : 'https://basescan.org'
+  const gtNetwork = normalizedChain === 'eth' ? 'eth' : normalizedChain === 'bnb' ? 'bsc' : normalizedChain === 'robinhood' ? 'robinhood' : 'base'
+  const dsChain = normalizedChain === 'eth' ? 'ethereum' : normalizedChain === 'bnb' ? 'bsc' : normalizedChain
   const links = {
-    dexscreener: `https://dexscreener.com/${normalizedChain === 'eth' ? 'ethereum' : normalizedChain}/${contract}`,
+    dexscreener: `https://dexscreener.com/${dsChain}/${contract}`,
     geckoterminal: `https://www.geckoterminal.com/${gtNetwork}/tokens/${contract}`,
     explorer: `${explorerBase}/token/${contract}`,
   }

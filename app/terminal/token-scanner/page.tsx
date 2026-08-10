@@ -918,6 +918,10 @@ const formatSignalStateLabel = (state: SignalState): string => {
 
 // ─── Formatters ───────────────────────────────────────────────────────────
 
+function chainDisplayName(chain: string | null | undefined): string {
+  return chain === 'eth' ? 'Ethereum' : chain === 'bnb' ? 'BNB Chain' : chain === 'robinhood' ? 'Robinhood Chain' : 'Base'
+}
+
 function fmtPrice(v: number | null | undefined): string {
   if (v == null || v <= 0) return 'N/A'
   if (v < 0.001) {
@@ -1708,7 +1712,7 @@ function getSummaryReasons(result: ScanResult): string[] {
     const mcStr = result.marketCapUsd != null ? `MC ${fmtLarge(result.marketCapUsd)} verified` : 'market cap not confirmed'
     reasons.push(`Market is live — price ${fmtPrice(result.price)}, liquidity ${fmtLarge(liq)}, ${mcStr}.`)
   } else if (result.noActivePools) {
-    reasons.push(`No active liquidity pool found for this token on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.`)
+    reasons.push(`No active liquidity pool found for this token on ${chainDisplayName(result.chain)}.`)
   } else {
     reasons.push('Market data is unavailable or limited.')
   }
@@ -1769,7 +1773,7 @@ function getNextAction(result: ScanResult): string {
   const liq = result.liquidity ?? 0
   const holderState = deriveHolderState(result)
   if (hp?.isHoneypot === true) return 'Do not trade — honeypot detected in simulation.'
-  if (result.noActivePools) return `No active pool found. Verify the contract is live on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.`
+  if (result.noActivePools) return `No active pool found. Verify the contract is live on ${chainDisplayName(result.chain)}.`
   if (liq > 0 && liq < 10000) return 'Liquidity is very thin — high slippage and exit risk present.'
   if (liq > 0 && liq < 50000) return 'Liquidity is limited. Verify LP lock or burn proof before entering.'
   if (holderState.kind === 'noRowsFallback') return 'Holder concentration not confirmed. Verify top holders before forming conviction on this token.'
@@ -3177,7 +3181,7 @@ function getHolderRead(result: ScanResult): string {
 function getLiquidityRead(result: ScanResult): string {
   const liq = result.liquidity ?? 0
   const poolCount = result.pools?.length ?? 0
-  if (result.noActivePools || poolCount === 0) return `No active liquidity pool detected on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.`
+  if (result.noActivePools || poolCount === 0) return `No active liquidity pool detected on ${chainDisplayName(result.chain)}.`
   const depth = liq > 1_000_000 ? 'Deep' : liq > 200_000 ? 'Moderate' : liq > 50_000 ? 'Limited' : liq > 0 ? 'Thin' : 'Not indexed'
   const poolStr = poolCount > 1 ? `${poolCount} pools found.` : 'Primary pool found.'
   const lpLockStatus = result.lpLockStatus
@@ -3441,7 +3445,7 @@ export default function TerminalTokenScanner() {
   const { loading: planLoading } = usePlanWithLoading()
   const isFullAccess = true
 
-  const [chain, setChain]       = useState<'base' | 'eth'>('base')
+  const [chain, setChain]       = useState<'base' | 'eth' | 'bnb' | 'robinhood'>('base')
   const [input, setInput]       = useState('')
   const [loading, setLoading]   = useState(false)
   const [result, setResult]     = useState<ScanResult | null>(null)
@@ -3642,7 +3646,7 @@ export default function TerminalTokenScanner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function handleScan(override?: string, chainOverride?: 'base' | 'eth') {
+  async function handleScan(override?: string, chainOverride?: 'base' | 'eth' | 'bnb' | 'robinhood') {
     const q             = (override ?? input).trim()
     const effectiveChain = chainOverride ?? chain
     if (!q) {
@@ -3663,8 +3667,15 @@ export default function TerminalTokenScanner() {
     // ── Ticker resolver ─────────────────────────────────────────────────────
     // Skip if: CA provided directly, or override from URL auto-scan / alternate picker
     let scanContract = q
-    let scanChain: 'base' | 'eth' = effectiveChain
+    let scanChain: 'base' | 'eth' | 'bnb' | 'robinhood' = effectiveChain
     if (!override && !isContractAddress(q)) {
+      // Ticker/name search (resolveTokenQuery) only covers base/eth today — BNB and Robinhood
+      // Chain scans require a pasted contract address for now rather than silently searching the
+      // wrong chain for a matching symbol.
+      if (effectiveChain === 'bnb' || effectiveChain === 'robinhood') {
+        setError(`Ticker search isn't available for ${effectiveChain === 'bnb' ? 'BNB Chain' : 'Robinhood Chain'} yet — paste the contract address instead.`)
+        return
+      }
       setResolving(true)
       try {
         const resolved = await resolveTokenQuery(q, effectiveChain)
@@ -3675,7 +3686,7 @@ export default function TerminalTokenScanner() {
           return
         }
         scanContract = resolved.contractAddress
-        scanChain    = (resolved.chain === 'eth' ? 'eth' : 'base') as 'base' | 'eth'
+        scanChain    = resolved.chain === 'eth' ? 'eth' : 'base'
       } catch {
         setResolving(false)
         setError("Couldn't resolve that ticker. Try pasting the contract address.")
@@ -3725,9 +3736,9 @@ export default function TerminalTokenScanner() {
         const isAddrInput = isContractAddress(scanContract)
         if (json?.status === 'invalid_address') setError(json.error ?? 'Invalid contract address.')
         else if (json?.status === 'address_scan_failed') setError(json.error ?? "Token address accepted, but CORTEX could not find enough live data yet.")
-        else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') setError(`Token not found on ${scanChain === 'eth' ? 'Ethereum' : 'Base'}. Try switching chains.`)
+        else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') setError(`Token not found on ${chainDisplayName(scanChain)}. Try switching chains.`)
         else if (json?.status === 'ambiguous') setError('Multiple tokens match this. Paste the contract address or choose one.')
-        else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${scanChain === 'eth' ? 'Ethereum' : 'Base'} for this token.`)
+        else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${chainDisplayName(scanChain)} for this token.`)
         else if (isAddrInput) setError("Token address accepted, but CORTEX could not find enough live data yet.")
         else setError("Couldn't resolve that token. Paste the contract address or try a verified symbol.")
         if (process.env.NODE_ENV !== 'production') {
@@ -3937,6 +3948,8 @@ export default function TerminalTokenScanner() {
            branded "selected" state than one generic indigo for both. */
         .chain-seg-btn--active-base{background:rgba(34,211,238,.16);color:#a5f3fc;box-shadow:inset 0 0 0 1px rgba(34,211,238,.38);}
         .chain-seg-btn--active-eth{background:rgba(99,102,241,.20);color:#c7d2fe;box-shadow:inset 0 0 0 1px rgba(99,102,241,.35);}
+        .chain-seg-btn--active-bnb{background:rgba(240,185,11,.18);color:#fde68a;box-shadow:inset 0 0 0 1px rgba(240,185,11,.40);}
+        .chain-seg-btn--active-robinhood{background:rgba(52,211,153,.18);color:#a7f3d0;box-shadow:inset 0 0 0 1px rgba(52,211,153,.40);}
         .cmd-chip{padding:6px 13px;border-radius:8px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.10);color:#5b7186;font-size:10.5px;font-weight:600;font-family:var(--font-plex-mono);letter-spacing:.03em;cursor:pointer;transition:background .14s,border-color .14s,color .14s;display:inline-flex;align-items:center;gap:5px;}
         .cmd-chip:hover{color:#a5b4fc;border-color:rgba(99,102,241,.35);background:rgba(99,102,241,.06);}
         .cmd-chip-glyph{color:#334155;font-size:10px;}
@@ -4047,14 +4060,14 @@ export default function TerminalTokenScanner() {
                   task): same setChain(c) behavior, restyled from two loud neon-bordered tabs into
                   a single quiet track with a clearly-selected (but not neon) active segment. */}
               <div className="chain-seg" style={{ marginBottom: '14px' }}>
-                {(['base', 'eth'] as const).map(c => (
+                {(['base', 'eth', 'bnb', 'robinhood'] as const).map(c => (
                   <button
                     key={c}
                     type="button"
                     onClick={() => setChain(c)}
-                    className={`chain-seg-btn${chain === c ? (c === 'base' ? ' chain-seg-btn--active-base' : ' chain-seg-btn--active-eth') : ''}`}
+                    className={`chain-seg-btn${chain === c ? ` chain-seg-btn--active-${c}` : ''}`}
                   >
-                    {c === 'base' ? 'BASE' : 'ETHEREUM'}
+                    {c === 'base' ? 'BASE' : c === 'eth' ? 'ETHEREUM' : c === 'bnb' ? 'BNB' : 'ROBINHOOD'}
                   </button>
                 ))}
               </div>
@@ -4188,7 +4201,7 @@ export default function TerminalTokenScanner() {
                     <button
                       key={alt.contractAddress + alt.chainId}
                       onClick={() => {
-                        const altChain: 'base' | 'eth' = alt.chainId === 'ethereum' ? 'eth' : alt.chainId === 'base' ? 'base' : 'base'
+                        const altChain: 'base' | 'eth' | 'bnb' | 'robinhood' = alt.chainId === 'ethereum' ? 'eth' : alt.chainId === 'bnb' ? 'bnb' : alt.chainId === 'robinhood' ? 'robinhood' : 'base'
                         setChain(altChain)
                         handleScan(alt.contractAddress, altChain)
                       }}
@@ -4356,7 +4369,7 @@ export default function TerminalTokenScanner() {
                   holderState.kind === 'noRowsFallback' ? 'Holder concentration not confirmed — open risk check.' : holderState.kind === 'rowsWithoutPercent' ? 'Holder wallets found but percentages not confirmed.' : '',
                   result.marketCapUsd == null ? 'Market cap not verified — supply unconfirmed.' : '',
                   !hp2?.simulationSuccess ? 'Tax simulation unavailable — status is an open check.' : '',
-                  result.noActivePools ? `No active liquidity pool detected on ${result.chain === 'eth' ? 'Ethereum' : 'Base'}.` : '',
+                  result.noActivePools ? `No active liquidity pool detected on ${chainDisplayName(result.chain)}.` : '',
                 ].filter(Boolean).slice(0, 4) as string[]
                 const missing2 = getMissingChecks(result)
                 const next2 = getNextAction(result)
@@ -4730,7 +4743,7 @@ export default function TerminalTokenScanner() {
                         <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#f59e0b', flexShrink: 0 }} />
                         <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '0.12em', color: '#fbbf24', textTransform: 'uppercase' }}>No Active Pool Found</span>
                       </div>
-                      <p style={{ margin: 0, fontSize: '12px', color: '#b7a675', lineHeight: 1.55 }}>No liquidity pools were found for this contract on {result.chain === 'eth' ? 'Ethereum' : 'Base'}. Price, volume, and liquidity data are unavailable.</p>
+                      <p style={{ margin: 0, fontSize: '12px', color: '#b7a675', lineHeight: 1.55 }}>No liquidity pools were found for this contract on {chainDisplayName(result.chain)}. Price, volume, and liquidity data are unavailable.</p>
                     </div>
                   ) : (
                     <>
