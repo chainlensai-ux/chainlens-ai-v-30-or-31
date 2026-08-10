@@ -479,6 +479,12 @@ function ClarkAiContent() {
     }
     return String(value)
   }
+  const startWithChips = [
+    { label: 'Scan a token', prompt: 'Scan token ' },
+    { label: 'Analyze a wallet', prompt: 'Analyze wallet ' },
+    { label: 'Check LP risk', prompt: 'Check liquidity risk on ' },
+    { label: 'Show Base movers', prompt: "What's pumping on Base?" },
+  ]
   const recentTokens = (clarkContextRef.current.lastMarketList ?? []).slice(0, 3)
   const recentWalletValue = clientContext.lastWallet ? formatContextValue(clientContext.lastWallet) : null
   const quickActions = [
@@ -522,7 +528,7 @@ function ClarkAiContent() {
         .clk-status-item-value--live { color:#34d399; }
         .clk-status-item-value--muted { color:#5b6b84; }
         .clk-live-cortex { margin-left:auto; padding:0 4px 0 14px; color:#6d7c94; font:700 9.5px var(--font-plex-mono, monospace); letter-spacing:.10em; white-space:nowrap; }
-        .clk-actions-row { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:9px; margin:14px 0 16px; }
+        .clk-actions-row { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:9px; margin:12px 0 14px; }
         .clk-quick-card { position:relative; height:100%; text-align:left; display:flex; gap:10px; align-items:center; border:1px solid rgba(148,163,184,.14); border-radius:10px; background:rgba(9,15,28,.6); padding:11px 13px; color:#f8fafc; cursor:pointer; transition: border-color .15s, background .15s; overflow:hidden; }
         .clk-quick-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, rgba(148,163,184,.3)); background:rgba(13,21,38,.78); }
         .clk-quick-icon { width:22px; height:22px; border-radius:6px; display:grid; place-items:center; font-size:12px; border:1px solid color-mix(in srgb, var(--accent) 55%, rgba(255,255,255,.08)); color:var(--accent); background: color-mix(in srgb, var(--accent) 12%, rgba(2,6,23,.7)); flex:0 0 auto; }
@@ -536,14 +542,21 @@ function ClarkAiContent() {
         .clk-tab:last-child { border-right:0; }
         .clk-tab--active { color:#22d3ee; background:rgba(34,211,238,.06); box-shadow: inset 0 1px 0 rgba(34,211,238,.2); }
         .clk-tab svg { width:15px; height:15px; }
-        .clk-thread { position:relative; min-height:220px; max-height:560px; overflow-y:auto; padding:20px 22px 14px; display:flex; flex-direction:column; gap:14px; background-image: linear-gradient(rgba(34,211,238,.018) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.014) 1px, transparent 1px); background-size:32px 32px, 32px 32px; }
-        .clk-thread-top { display:flex; justify-content:flex-end; }
+        .clk-thread { position:relative; min-height:0; max-height:560px; overflow-y:auto; padding:16px 22px 12px; display:flex; flex-direction:column; gap:14px; background-image: linear-gradient(rgba(34,211,238,.018) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.014) 1px, transparent 1px); background-size:32px 32px, 32px 32px; }
+        .clk-thread-top { display:flex; justify-content:flex-end; min-height:0; }
         .clk-clear-btn { border:0; background:transparent; color:#98a6ba; cursor:pointer; font-size:13px; }
         .clk-intro { display:flex; align-items:center; gap:13px; max-width:720px; padding:12px 15px; border:1px solid rgba(45,212,191,.16); border-radius:12px; background:rgba(12,20,36,.5); }
         .clk-intro-title { color:#67e8f9; font:800 11px var(--font-plex-mono, monospace); letter-spacing:.10em; text-transform:uppercase; margin:0 0 4px; }
         .clk-intro-text { margin:0; color:#98a7bb; line-height:1.45; font-size:12.5px; white-space:pre-line; }
         .clk-capabilities { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
         .clk-capability { border:1px solid rgba(45,212,191,.18); border-radius:999px; padding:3px 7px; color:#8fd6c2; background:rgba(45,212,191,.05); font:700 9px var(--font-plex-mono, monospace); letter-spacing:.06em; text-transform:uppercase; }
+        .clk-intro--empty { align-items:flex-start; width:100%; max-width:none; padding:22px 24px; gap:18px; }
+        .clk-intro-body { min-width:0; flex:1 1 auto; }
+        .clk-start-with { margin-top:16px; }
+        .clk-start-with-label { display:block; margin-bottom:8px; color:#5b6b84; font:750 10px var(--font-plex-mono, monospace); letter-spacing:.10em; text-transform:uppercase; }
+        .clk-start-with-row { display:flex; flex-wrap:wrap; gap:8px; }
+        .clk-start-chip { border:1px solid rgba(34,211,238,.24); border-radius:9px; background:rgba(34,211,238,.05); color:#a7e8f5; font-weight:700; font-size:12.5px; padding:8px 13px; cursor:pointer; transition:border-color .15s, background .15s, color .15s; }
+        .clk-start-chip:hover { border-color:rgba(45,212,191,.5); background:rgba(45,212,191,.1); color:#ccfbf1; }
         .clk-msg { max-width:min(88%, 760px); padding:15px 17px; border-radius:20px; border:1px solid rgba(148,163,184,.13); background:linear-gradient(145deg, rgba(13,22,38,.92), rgba(6,11,24,.88)); box-shadow:0 14px 30px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.05); }
         .clk-msg--user { align-self:flex-end; border-color:rgba(34,211,238,.22); border-bottom-right-radius:8px; background:linear-gradient(145deg, rgba(9,44,55,.82), rgba(7,24,34,.76)); }
         .clk-msg--clark { align-self:flex-start; border-color:rgba(45,212,191,.18); border-bottom-left-radius:8px; }
@@ -560,7 +573,7 @@ function ClarkAiContent() {
         .clk-scanline { position:relative; height:2px; margin-top:10px; overflow:hidden; background:rgba(148,163,184,.12); }
         .clk-scanline::before { content:''; position:absolute; inset:0 auto 0 0; width:42%; background:linear-gradient(90deg, transparent, rgba(45,212,191,.9), transparent); animation:clkScan 1.15s linear infinite; }
         @keyframes clkScan { from{ transform:translateX(-100%);} to{ transform:translateX(260%);} }
-        .clk-input-wrap { margin:14px 18px 16px; border:1px solid rgba(34,211,238,.36); border-radius:14px; background:rgba(3,9,20,.9); }
+        .clk-input-wrap { margin:10px 18px 14px; border:1px solid rgba(34,211,238,.36); border-radius:14px; background:rgba(3,9,20,.9); }
         .clk-input-row { display:grid; grid-template-columns:40px minmax(0, 1fr) auto 46px; gap:10px; align-items:center; min-height:62px; padding:8px 10px 8px 12px; }
         .clk-prompt-mark { height:36px; border-radius:9px; display:grid; place-items:center; color:#22d3ee; font:900 15px var(--font-plex-mono, monospace); background:rgba(34,211,238,.06); border:1px solid rgba(34,211,238,.16); }
         .clk-panel-input { width:100%; background:transparent; border:0; outline:0; color:#e5edf8; font-size:15px; caret-color:#22d3ee; }
@@ -575,28 +588,29 @@ function ClarkAiContent() {
         .clk-usage-label, .clk-usage-count { font:700 10px var(--font-plex-mono, monospace); color:#61708a; white-space:nowrap; }
         .clk-usage-track { flex:1; height:3px; border-radius:999px; background:rgba(148,163,184,.11); overflow:hidden; }
         .clk-usage-fill { height:100%; border-radius:999px; transition:width .5s; }
-        .clk-intel { margin-top:20px; }
-        .clk-intel-head { margin:0 0 12px; }
-        .clk-intel-title { margin:0; color:#f1f5f9; font-size:17px; font-weight:850; letter-spacing:-.01em; }
-        .clk-intel-desc { margin:4px 0 0; color:#8391a7; font-size:13px; }
-        .clk-intel-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:14px; }
-        .clk-intel-card { position:relative; min-height:158px; height:100%; display:flex; flex-direction:column; border:1px solid rgba(148,163,184,.14); border-radius:16px; background:linear-gradient(145deg, rgba(12,20,36,.82), rgba(5,10,22,.9)); padding:20px; box-shadow: inset 0 1px 0 rgba(255,255,255,.045), 0 18px 36px -28px rgba(0,0,0,.8); overflow:hidden; }
+        .clk-intel { margin-top:16px; }
+        .clk-intel-head { margin:0 0 10px; }
+        .clk-intel-title { margin:0; color:#f1f5f9; font-size:15px; font-weight:850; letter-spacing:-.01em; }
+        .clk-intel-desc { margin:3px 0 0; color:#8391a7; font-size:12px; }
+        .clk-intel-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:10px; }
+        .clk-intel-card { position:relative; min-height:0; height:100%; display:flex; flex-direction:column; border:1px solid rgba(148,163,184,.14); border-radius:12px; background:linear-gradient(145deg, rgba(12,20,36,.82), rgba(5,10,22,.9)); padding:12px 13px; box-shadow: inset 0 1px 0 rgba(255,255,255,.045); overflow:hidden; }
         .clk-intel-card:not(.clk-intel-card--empty) { border-color: color-mix(in srgb, var(--accent) 38%, rgba(148,163,184,.2)); }
-        .clk-intel-icon { display:inline-flex; width:30px; height:30px; border-radius:9px; align-items:center; justify-content:center; margin-bottom:14px; color: var(--accent, #94a3b8); border:1px solid color-mix(in srgb, var(--accent, #475569) 45%, transparent); background: color-mix(in srgb, var(--accent, #475569) 10%, transparent); flex:0 0 auto; }
+        .clk-intel-icon { display:inline-flex; width:22px; height:22px; border-radius:7px; align-items:center; justify-content:center; margin-bottom:8px; font-size:12px; color: var(--accent, #94a3b8); border:1px solid color-mix(in srgb, var(--accent, #475569) 45%, transparent); background: color-mix(in srgb, var(--accent, #475569) 10%, transparent); flex:0 0 auto; }
         .clk-intel-card--empty .clk-intel-icon { color:#7c8aa1; border-color:rgba(148,163,184,.22); background:rgba(148,163,184,.06); }
-        .clk-intel-label { color:#e7edf6; font-weight:700; font-size:14px; line-height:1.4; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .clk-intel-label { color:#e7edf6; font-weight:700; font-size:12.5px; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .clk-intel-card--empty .clk-intel-label { color:#9aa8bb; }
-        .clk-intel-sub { color:#94a3b8; font-size:13px; line-height:1.55; margin:8px 0 0; white-space:normal; word-break:break-word; }
-        .clk-intel-cta { position:relative; left:auto; right:auto; bottom:auto; margin-top:auto; padding-top:14px; border-top:1px solid rgba(148,163,184,.12); color:#67e8f9; font:800 10px var(--font-plex-mono, monospace); letter-spacing:.10em; text-transform:uppercase; opacity:.78; }
+        .clk-intel-sub { color:#94a3b8; font-size:11.5px; line-height:1.4; margin:4px 0 0; white-space:normal; word-break:break-word; }
+        .clk-intel-cta { position:relative; left:auto; right:auto; bottom:auto; margin-top:8px; padding-top:8px; border-top:1px solid rgba(148,163,184,.1); color:#67e8f9; font:800 9px var(--font-plex-mono, monospace); letter-spacing:.09em; text-transform:uppercase; opacity:.7; }
+        .clk-intel-empty-row { border:1px dashed rgba(148,163,184,.18); border-radius:12px; background:rgba(148,163,184,.03); padding:14px 16px; color:#8391a7; font-size:12.5px; line-height:1.5; }
         .clk-side { display:flex; flex-direction:column; gap:14px; }
-        .clk-side-card { border:1px solid rgba(148,163,184,.13); border-radius:13px; background:rgba(7,13,25,.6); padding:15px; }
-        .clk-side-title { display:flex; align-items:center; gap:9px; margin:0 0 13px; padding-bottom:11px; border-bottom:1px solid rgba(148,163,184,.1); color:#dbe4f0; font-size:12.5px; font-weight:800; letter-spacing:.02em; text-transform:uppercase; }
+        .clk-side-card { border:1px solid rgba(148,163,184,.1); border-radius:13px; background:rgba(7,13,25,.6); padding:14px; }
+        .clk-side-title { display:flex; align-items:center; gap:9px; margin:0 0 11px; padding-bottom:9px; border-bottom:1px solid rgba(148,163,184,.08); color:#dbe4f0; font-size:12px; font-weight:800; letter-spacing:.02em; text-transform:uppercase; }
         .clk-side-title svg { width:15px; height:15px; color:#22d3ee; }
-        .clk-context-row { padding:0 0 11px; margin-bottom:11px; border-bottom:1px solid rgba(148,163,184,.09); }
-        .clk-context-row:last-child { margin-bottom:0; padding-bottom:0; border-bottom:0; }
-        .clk-context-label { color:#7f8ea3; font:700 9.5px var(--font-plex-mono, monospace); letter-spacing:.08em; text-transform:uppercase; margin-bottom:5px; }
-        .clk-context-value { color:#e5edf8; font-size:14px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .clk-context-sub { color:#6d7c94; font-size:11px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .clk-context-row { padding:0 0 8px; margin-bottom:8px; border-bottom:0; }
+        .clk-context-row:last-child { margin-bottom:0; padding-bottom:0; }
+        .clk-context-label { color:#7f8ea3; font:700 9.5px var(--font-plex-mono, monospace); letter-spacing:.08em; text-transform:uppercase; margin-bottom:4px; }
+        .clk-context-value { color:#e5edf8; font-size:13px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+        .clk-context-sub { color:#6d7c94; font-size:10.5px; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .clk-empty { margin:0; color:#7c8aa1; font-size:12px; line-height:1.5; padding:10px; border:1px dashed rgba(148,163,184,.16); border-radius:10px; background:rgba(148,163,184,.03); }
         .clk-memory-row { display:flex; align-items:center; gap:10px; padding-top:11px; margin-top:2px; border-top:1px solid rgba(148,163,184,.09); }
         .clk-memory-stat { display:flex; align-items:baseline; gap:5px; color:#6d7c94; font:700 10px var(--font-plex-mono, monospace); letter-spacing:.02em; }
@@ -683,19 +697,44 @@ function ClarkAiContent() {
               <div className='clk-thread-top'>
                 {hasMessages && <button onClick={handleClear} className='clk-clear-btn'>Clear conversation</button>}
               </div>
-              <div className='clk-intro'>
-                <ClarkOrb size={38} thinking={loading && !hasMessages} />
-                <div>
-                  <div className='clk-intro-title'>Clark is ready.</div>
-                  <p className='clk-intro-text'>System boot complete. Ask Clark for token reads, wallet behavior, liquidity checks, or current Base movers.</p>
-                  <div className='clk-capabilities' aria-label='Clark capabilities'>
-                    <span className='clk-capability'>Token reads</span>
-                    <span className='clk-capability'>Wallet analysis</span>
-                    <span className='clk-capability'>LP checks</span>
-                    <span className='clk-capability'>Base movers</span>
+              {!hasMessages ? (
+                <div className='clk-intro clk-intro--empty'>
+                  <ClarkOrb size={44} thinking={loading} />
+                  <div className='clk-intro-body'>
+                    <div className='clk-intro-title'>Clark is ready.</div>
+                    <p className='clk-intro-text'>Base-native analyst online. Give Clark a token, wallet, or contract — or start from a command below.</p>
+                    <div className='clk-start-with' aria-label='Start with a command'>
+                      <span className='clk-start-with-label'>Start with</span>
+                      <div className='clk-start-with-row'>
+                        {startWithChips.map((chip) => (
+                          <button
+                            key={chip.label}
+                            type='button'
+                            className='clk-start-chip'
+                            onClick={() => setInput(chip.prompt)}
+                          >
+                            {chip.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
+              ) : (
+                <div className='clk-intro'>
+                  <ClarkOrb size={38} thinking={loading && !hasMessages} />
+                  <div>
+                    <div className='clk-intro-title'>Clark is ready.</div>
+                    <p className='clk-intro-text'>System boot complete. Ask Clark for token reads, wallet behavior, liquidity checks, or current Base movers.</p>
+                    <div className='clk-capabilities' aria-label='Clark capabilities'>
+                      <span className='clk-capability'>Token reads</span>
+                      <span className='clk-capability'>Wallet analysis</span>
+                      <span className='clk-capability'>LP checks</span>
+                      <span className='clk-capability'>Base movers</span>
+                    </div>
+                  </div>
+                </div>
+              )}
               {messages.map((msg, idx) => {
                 const isThinking = msg.role === 'clark' && loading && msg.text === THINKING_MESSAGE
                 return (
@@ -774,41 +813,45 @@ function ClarkAiContent() {
               <h2 className='clk-intel-title'>Recent Intelligence</h2>
               <p className='clk-intel-desc'>Your latest Clark reads will appear here.</p>
             </div>
-            <div className='clk-intel-grid'>
-              {recentTokens.length > 0 ? (
-                recentTokens.map((t, idx) => (
-                  <div className='clk-intel-card' key={`${t.symbol}-${idx}`} style={{ '--accent': '#22d3ee' } as CSSProperties}>
+            {recentTokens.length === 0 && !recentWalletValue ? (
+              <div className='clk-intel-empty-row'>Your latest token, wallet, and LP reads will appear here.</div>
+            ) : (
+              <div className='clk-intel-grid'>
+                {recentTokens.length > 0 ? (
+                  recentTokens.map((t, idx) => (
+                    <div className='clk-intel-card' key={`${t.symbol}-${idx}`} style={{ '--accent': '#22d3ee' } as CSSProperties}>
+                      <span className='clk-intel-icon'>◎</span>
+                      <div className='clk-intel-label'>{t.symbol}</div>
+                      <div className='clk-intel-sub'>{t.reasonTag ?? 'From recent Base read'}</div><div className='clk-intel-cta'>Open latest context</div>
+                    </div>
+                  ))
+                ) : (
+                  <div className='clk-intel-card clk-intel-card--empty'>
                     <span className='clk-intel-icon'>◎</span>
-                    <div className='clk-intel-label'>{t.symbol}</div>
-                    <div className='clk-intel-sub'>{t.reasonTag ?? 'From recent Base read'}</div><div className='clk-intel-cta'>Open latest context</div>
+                    <div className='clk-intel-label'>No token read yet</div>
+                    <div className='clk-intel-sub'>Run a token scan to populate this module.</div><div className='clk-intel-cta'>Awaiting first read</div>
                   </div>
-                ))
-              ) : (
+                )}
+                {recentWalletValue ? (
+                  <div className='clk-intel-card' style={{ '--accent': '#8b5cf6' } as CSSProperties}>
+                    <span className='clk-intel-icon'>▣</span>
+                    <div className='clk-intel-label'>{recentWalletValue}</div>
+                    <div className='clk-intel-sub'>Last wallet read</div><div className='clk-intel-cta'>Wallet memory active</div>
+                  </div>
+                ) : (
+                  <div className='clk-intel-card clk-intel-card--empty'>
+                    <span className='clk-intel-icon'>▣</span>
+                    <div className='clk-intel-label'>No wallet read yet</div>
+                    <div className='clk-intel-sub'>Scan a wallet to build wallet memory.</div><div className='clk-intel-cta'>Awaiting wallet</div>
+                  </div>
+                )}
                 <div className='clk-intel-card clk-intel-card--empty'>
-                  <span className='clk-intel-icon'>◎</span>
-                  <div className='clk-intel-label'>No token read yet</div>
-                  <div className='clk-intel-sub'>Run a token scan to populate this module.</div><div className='clk-intel-cta'>Awaiting first read</div>
+                  <span className='clk-intel-icon'>⌘</span>
+                  <div className='clk-intel-label'>No LP check yet</div>
+                  <div className='clk-intel-sub'>Run an LP check to track liquidity proof.</div><div className='clk-intel-cta'>Awaiting proof</div>
                 </div>
-              )}
-              {recentWalletValue ? (
-                <div className='clk-intel-card' style={{ '--accent': '#8b5cf6' } as CSSProperties}>
-                  <span className='clk-intel-icon'>▣</span>
-                  <div className='clk-intel-label'>{recentWalletValue}</div>
-                  <div className='clk-intel-sub'>Last wallet read</div><div className='clk-intel-cta'>Wallet memory active</div>
-                </div>
-              ) : (
-                <div className='clk-intel-card clk-intel-card--empty'>
-                  <span className='clk-intel-icon'>▣</span>
-                  <div className='clk-intel-label'>No wallet read yet</div>
-                  <div className='clk-intel-sub'>Scan a wallet to build wallet memory.</div><div className='clk-intel-cta'>Awaiting wallet</div>
-                </div>
-              )}
-              <div className='clk-intel-card clk-intel-card--empty'>
-                <span className='clk-intel-icon'>⌘</span>
-                <div className='clk-intel-label'>No LP check yet</div>
-                <div className='clk-intel-sub'>Run an LP check to track liquidity proof.</div><div className='clk-intel-cta'>Awaiting proof</div>
               </div>
-            </div>
+            )}
           </section>
         </main>
 

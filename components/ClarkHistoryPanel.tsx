@@ -19,6 +19,16 @@ export type ClarkHistoryPanelProps = {
   onDeleteFolder: (id: string) => void
 }
 
+// DESIGN FIX, DISCLOSED (Clark AI final polish): repeated low-value chat titles ("hi", "hey",
+// "test") were visually identical to real analysis chats, dominating the list. This purely
+// changes presentation (smaller, muted, no preview line) — the chat itself, its data, and every
+// action (rename/move/delete/select) are unchanged and still fully functional.
+const GENERIC_CHAT_TITLES = new Set(['hi', 'hey', 'hello', 'yo', 'sup', 'test', 'hii', 'heyy', 'ok', 'okay'])
+function isGenericChatTitle(title: string): boolean {
+  const t = title.trim().toLowerCase()
+  return t.length <= 3 || GENERIC_CHAT_TITLES.has(t)
+}
+
 export default function ClarkHistoryPanel({
   folders, chats, activeChatId, historySaveFailed, historyStatusMessage,
   onNewChat, onSelectChat, onSearch, onCreateFolder, onRenameChat, onMoveChat, onDeleteChat, onDeleteFolder,
@@ -46,6 +56,7 @@ export default function ClarkHistoryPanel({
         .clk-histpanel-item:hover { background:rgba(148,163,184,.05); border-color:rgba(148,163,184,.12); }
         .clk-histpanel-item--active { border-color:rgba(45,212,191,.32); background:rgba(45,212,191,.055); }
         .clk-histpanel-item-title { font-size:12.5px; font-weight:700; color:#dbe4f0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .clk-histpanel-item-title--generic { font-size:11.5px; font-weight:500; color:#5b6b84; }
         .clk-histpanel-item-preview { font-size:10.5px; color:#71809a; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px; }
         .clk-histpanel-item-row { display:flex; align-items:center; justify-content:space-between; gap:6px; }
         /* AUDIT/DESIGN FIX, DISCLOSED (Clark AI polish): rename/move/delete previously rendered as
@@ -127,8 +138,8 @@ export default function ClarkHistoryPanel({
             ) : (
               <div className='clk-histpanel-item-row'>
                 <div style={{ minWidth: 0 }}>
-                  <div className='clk-histpanel-item-title'>{chat.pinned ? '📌 ' : ''}{chat.title}</div>
-                  {chat.last_message_preview && <div className='clk-histpanel-item-preview'>{chat.last_message_preview}</div>}
+                  <div className={`clk-histpanel-item-title${isGenericChatTitle(chat.title) ? ' clk-histpanel-item-title--generic' : ''}`}>{chat.pinned ? '📌 ' : ''}{chat.title}</div>
+                  {chat.last_message_preview && !isGenericChatTitle(chat.title) && <div className='clk-histpanel-item-preview'>{chat.last_message_preview}</div>}
                 </div>
                 <div className='clk-histpanel-item-actions'>
                   <button type='button' className='clk-histpanel-item-btn' onClick={(e) => { e.stopPropagation(); setRenameValue(chat.title); setRenamingId(chat.id) }}>Rename</button>
