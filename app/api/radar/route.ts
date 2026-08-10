@@ -567,6 +567,18 @@ export async function GET(req: NextRequest) {
       const createdAt = attrs?.pool_created_at as string | undefined
       if (!createdAt) continue
 
+      // V4-POOL-EXCLUSION, DISCLOSED (reported, with a live DexScreener screenshot of a token this
+      // feed surfaced: "Liquidity $0" / "This pair has unknown liquidity" on a pool GeckoTerminal
+      // reported six-figure reserve_in_usd for). Uniswap V4's singleton PoolManager architecture
+      // doesn't expose per-pool reserves the way V2/V3 pools do — GeckoTerminal's reserve_in_usd
+      // field for a V4 pool is not a reliable read of real available liquidity (DexScreener itself,
+      // a much larger indexer, shows "unknown" for the same pool rather than trusting it). Excluding
+      // V4 pools from the feed entirely until there's a verified liquidity source for them, rather
+      // than surfacing a number this route cannot actually stand behind.
+      const dexRelData = (rels?.dex as { data?: { id?: string } } | undefined)?.data
+      const dexId = String(dexRelData?.id ?? '').toLowerCase()
+      if (dexId.includes('v4')) continue
+
       const ageMs      = now - new Date(createdAt).getTime()
       const ageMinutes = Math.floor(ageMs / 60000)
       const liquidityUsd = parseFloat(String(attrs?.reserve_in_usd ?? '0')) || 0
