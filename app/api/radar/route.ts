@@ -755,9 +755,14 @@ export async function GET(req: NextRequest) {
       // shipped). A pool created 10 minutes ago has, by definition, only had 10 minutes to
       // accumulate the volume GeckoTerminal reports as its "24h" figure — a genuinely brand-new,
       // legitimate token can easily be under $200 simply because it hasn't existed long enough yet,
-      // not because it's dead. Exempts pools under 20 minutes old from this floor; the dead-volume
-      // check is about spotting stale/abandoned tokens, not punishing freshness.
-      const hasMeaningfulActivity = ageMinutes < 20 || volume24h >= 200 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.02)
+      // not because it's dead. Exempts very-new pools from this floor; the dead-volume check is
+      // about spotting stale/abandoned tokens, not punishing freshness.
+      // GRACE-PERIOD LOWERED 20 -> 15, DISCLOSED (explicitly requested): fewer pools now get this
+      // exemption, so MORE candidates become subject to the dead-volume check below — this makes the
+      // gate stricter, not looser. Flagged this tradeoff before making the change since the intent
+      // was "more tokens," which this alone won't produce; it only changes where the freshness
+      // cutoff sits.
+      const hasMeaningfulActivity = ageMinutes < 15 || volume24h >= 200 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.02)
       if (!hasMeaningfulActivity) { droppedByDeadVolumeFloor++; continue }
       const valuation = filterResult.valuation
       // THRESHOLD-EXPLORATION LOG, DISCLOSED (requested: "would $50K valuation / $15K liquidity /
