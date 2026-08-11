@@ -1481,14 +1481,15 @@ export default function BaseRadarPage() {
   const filteredAndSortedTokens = useMemo(() => {
     const filtered = intelTokens.filter(token => {
       if (activeFilter === 'TRENDING') return token.status === 'HOT' || token.momentum === 'HIGH' || token.volume24h >= 5_000
-      // NEW-WINDOW WIDENED AGAIN, DISCLOSED (explicitly requested: feed staying at 0 after the $80K
-      // gate was verified to be a genuine age-window constraint, not a discovery-depth bug — pools
-      // weren't getting enough real time to organically reach 30 holders + $80K before aging out of
-      // consideration). The backend's own outer cutoff (app/api/radar/route.ts's isFallbackAgeWindow)
-      // was widened 24h -> 3 days at the same time; this frontend NEW-tab filter must match it or a
-      // candidate the backend now legitimately includes would still be invisible on the default tab,
-      // reproducing the exact same "still 0" report from a purely frontend-side mismatch.
-      if (activeFilter === 'NEW') return token.ageMinutes <= 3 * 24 * 60 || token.status === 'EARLY'
+      // NEW-WINDOW WIDENED AGAIN, DISCLOSED (explicitly requested: feed staying at 1 after the $85K/
+      // 100-holder raise was verified to be a genuine age-window constraint, not a discovery-depth
+      // bug — pools weren't getting enough real time to organically reach 100 holders + $85K before
+      // aging out of consideration). The backend's own outer cutoff (app/api/radar/route.ts's
+      // isFallbackAgeWindow) was widened 3 days -> 7 days at the same time; this frontend NEW-tab
+      // filter must match it or a candidate the backend now legitimately includes would still be
+      // invisible on the default tab, reproducing the exact same starved-feed report from a purely
+      // frontend-side mismatch.
+      if (activeFilter === 'NEW') return token.ageMinutes <= 7 * 24 * 60 || token.status === 'EARLY'
       if (activeFilter === 'VOLUME') return token.volume24h >= 5_000 || token.momentum !== 'NONE'
       if (activeFilter === 'LIQUIDITY') return token.liquidityUsd >= 10_000
       if (activeFilter === 'RISK_WATCH') return token.status === 'RISKY' || token.status === 'UNVERIFIED' || token.simulationStatus !== 'passed'

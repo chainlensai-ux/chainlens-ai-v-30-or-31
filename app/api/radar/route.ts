@@ -238,15 +238,16 @@ async function fetchBaseHolderCount(contract: string): Promise<HolderCountResult
 // closed on missing evidence because holder count is itself part of the safety bar), a token's age
 // not being resolvable doesn't mean it's unsafe, just that this particular signal is uninformative
 // this cycle.
-// MAX-AGE TIGHTENED 30 -> 2 DAYS, DISCLOSED (explicitly requested: "should be 2 day new max" — a
-// genuine "new pools" radar shouldn't show anything whose actual token age is more than a couple
-// days old, not just filter out obvious multi-hundred-day outliers like AERO/AVNT). Flipped framing
-// from "exclude only clearly-established tokens" to "only show genuinely fresh ones" — same
-// mechanism, much tighter bar. Unresolved-age candidates still aren't penalized (see above);
-// $80K valuation + 30 holders + real liquidity remain the actual safety gates regardless of age.
+// MAX-AGE TIGHTENED 30 -> 2 -> 7 DAYS, DISCLOSED (explicitly requested each time; most recently:
+// widen back out so more pools have real time to organically reach the 100-holder floor before
+// aging out of consideration, after live audits showed the 85K/100 gates combined with a 2-day cap
+// left the feed at 1 token most cycles). Flipped framing from "exclude only clearly-established
+// tokens" to "only show genuinely fresh ones" remains — same mechanism, just a looser bar.
+// Unresolved-age candidates still aren't penalized (see above); $85K valuation + 100 holders + real
+// liquidity remain the actual safety gates regardless of age.
 const TOKEN_AGE_CACHE_TTL_MS = 24 * 60 * 60_000
 const tokenAgeCache = new Map<string, { ageDays: number | null; expiresAt: number }>()
-const MAX_TOKEN_AGE_DAYS = 2
+const MAX_TOKEN_AGE_DAYS = 7
 async function fetchBaseTokenAgeDays(contract: string): Promise<number | null> {
   const key = contract.toLowerCase()
   const cached = tokenAgeCache.get(key)
@@ -689,14 +690,13 @@ export async function GET(req: NextRequest) {
     const now       = Date.now()
     const TWO_HOURS = 2  * 60 * 60 * 1000
     const DAY_MS    = 24 * 60 * 60 * 1000
-    // AGE-WINDOW WIDENED, DISCLOSED (explicitly requested: "$80K + 30 holders" was starving the
-    // feed to 0 because the outer age cutoff (previously DAY_MS, 24h) didn't give pools enough real
-    // time to organically reach 30 holders and $80K valuation before aging out of consideration
-    // entirely — verified via three rounds of live baseRadarCandidateGateAudit output that this was
-    // a genuine market-timing constraint, not a discovery-depth bug. Widened to 3 days so early-stage
-    // (not just brand-new) pools get a real chance to qualify. $80K valuation and 30-holder floors
-    // are untouched — this only changes how OLD a pool may be and still be considered at all.
-    const THREE_DAY_MS = 3 * DAY_MS
+    // AGE-WINDOW WIDENED 24h -> 3 DAYS -> 7 DAYS, DISCLOSED (explicitly requested each time; most
+    // recently: widen the age window alongside MAX_TOKEN_AGE_DAYS's 2->7 day raise, since this outer
+    // pool-age cutoff was capping any benefit of that change at 3 days — a pool older than 3 days
+    // never reached the token-age check at all, so raising MAX_TOKEN_AGE_DAYS alone would have been
+    // mostly cosmetic. $85K valuation and 100-holder floors are untouched — this only changes how OLD
+    // a pool may be and still be considered at all.
+    const SEVEN_DAY_MS = 7 * DAY_MS
 
     type Candidate = Omit<RadarToken, 'clarkVerdict'> & { pairAddress?: string | null }
     const candidates: Candidate[] = []
@@ -820,8 +820,8 @@ export async function GET(req: NextRequest) {
       // meaningful safety distinction (the fallback's own liquidity/volume checks are what actually
       // gate it), so dropped the source restriction — any pool under the fallback age window is now
       // fallback-eligible, using data already being fetched, no new API calls. Window itself widened
-      // 24h -> 3 days, see THREE_DAY_MS's own header comment above.
-      const isFallbackAgeWindow = ageMs < THREE_DAY_MS
+      // 24h -> 3 days -> 7 days, see SEVEN_DAY_MS's own header comment above.
+      const isFallbackAgeWindow = ageMs < SEVEN_DAY_MS
       if (!isPrimaryAgeWindow && !isFallbackAgeWindow) continue
       passedAgeWindowCount++
 
