@@ -64,6 +64,15 @@ interface RadarData {
   // the pre-existing liquidity/dead-volume filters, just the two new gates. Optional/undefined on
   // any cached payload from before this field existed.
   hiddenLowEvidenceCount?: number
+  // GATE-REASON-BREAKDOWN, DISCLOSED (requested: CORTEX panel should separate low valuation / low
+  // holders / missing holder count / concentration unavailable instead of one combined number).
+  // hiddenConcentrationUnavailable is informational only — concentration is never a hide reason
+  // (see baseRadarCandidateGateAudit in app/api/radar/route.ts), it just counts displayed
+  // candidates carrying that evidence gap.
+  hiddenLowValuation?: number
+  hiddenLowHolders?: number
+  hiddenHolderUnavailable?: number
+  hiddenConcentrationUnavailable?: number
 }
 
 type RadarStatus = 'HOT' | 'WATCH' | 'EARLY' | 'UNVERIFIED' | 'RISKY' | 'DEAD'
@@ -131,6 +140,10 @@ interface RadarSummary {
   hottestValue: string
   hasSecurityData: boolean
   hiddenLowEvidenceCount: number
+  hiddenLowValuation: number
+  hiddenLowHolders: number
+  hiddenHolderUnavailable: number
+  hiddenConcentrationUnavailable: number
 }
 
 // Real row shape from /api/watchlist/tokens (Supabase `watchlist_tokens` table) — same endpoint
@@ -690,13 +703,23 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
   // a passing 30+ holder count does not mean top1/10/20 concentration was checked) and the hidden-
   // count line now names all three real hide reasons (low valuation, low holders, missing holder
   // count) instead of the earlier two-reason phrasing.
-  const gateExplainer = summary.hiddenLowEvidenceCount > 0
-    ? `Main radar filters out candidates below $45K valuation or below 30 holders. Holder concentration may still require deeper Token Scanner confirmation. ${summary.hiddenLowEvidenceCount} candidates hidden for low valuation, low holders, or missing holder count.`
-    : 'Main radar filters out candidates below $45K valuation or below 30 holders. Holder concentration may still require deeper Token Scanner confirmation.'
+  // GATE-REASON-BREAKDOWN, DISCLOSED (requested: separate low valuation / low holders / missing
+  // holder count instead of one combined number, and make explicit that concentration gaps never
+  // remove a candidate that already passed the real 30-holder count gate).
+  const hideReasonParts = [
+    summary.hiddenLowValuation > 0 ? `${summary.hiddenLowValuation} below $45K valuation` : null,
+    summary.hiddenLowHolders > 0 ? `${summary.hiddenLowHolders} below 30 holders` : null,
+    summary.hiddenHolderUnavailable > 0 ? `${summary.hiddenHolderUnavailable} missing holder count` : null,
+  ].filter((p): p is string => p != null)
+  const gateExplainer = hideReasonParts.length > 0
+    ? `Main radar filters out candidates below $45K valuation or below 30 holders — ${hideReasonParts.join(', ')}.`
+    : 'Main radar filters out candidates below $45K valuation or below 30 holders.'
+  const concentrationNote = 'Concentration gaps do not remove candidates that pass holder count.'
   const warnings = [
     summary.unverified > 0 ? `${summary.unverified} checks need more evidence.` : 'No open verification cluster in the current results.',
     summary.hasSecurityData ? 'Simulation is confirmed for some tokens; unresolved tokens are capped until checks complete.' : 'Simulation checks need more evidence.',
     gateExplainer,
+    concentrationNote,
     'Use Token Scanner before acting on any radar signal.',
   ]
 
@@ -717,7 +740,7 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
         ))}
       </div>
       <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '7px' }}>
-        {warnings.slice(0, 4).map(warning => (
+        {warnings.slice(0, 5).map(warning => (
           <div key={warning} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', color: '#a89268', fontSize: '10.5px', lineHeight: 1.5 }}>
             <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#a89268', flexShrink: 0, marginTop: '6px' }} />
             <span>{warning}</span>
@@ -1163,6 +1186,13 @@ export default function BaseRadarPage() {
   // and appends any tokens not already shown — existing tokens/order/scores are untouched, this
   // only grows the list. Uses its own loading flag so it doesn't fight the main refresh spinner.
   const [loadingMore, setLoadingMore] = useState(false)
+  // LOAD-MORE-EXHAUSTED, DISCLOSED (requested: Load More should load/consider more qualified
+  // candidates, not just reveal already-computed results, and should say so honestly when a fresh
+  // page genuinely has nothing new that clears the gate). handleLoadMore already fetches a real new
+  // GeckoTerminal page window (?page=N — a different raw pool, not a re-reveal of the same one), so
+  // the fetch side of this was already correct; this only adds the missing honest message for the
+  // case where that fresh page came back with zero tokens this feed doesn't already have.
+  const [loadMoreExhausted, setLoadMoreExhausted] = useState(false)
   const handleLoadMore = useCallback(async () => {
     if (loadingMore) return
     const nextPage = (data?.page ?? 1) + 1
@@ -1173,12 +1203,15 @@ export default function BaseRadarPage() {
       const res = await fetch(`/api/radar?page=${nextPage}`, { cache: 'no-store', headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
       const json = await res.json()
       if (res.ok && !json.error) {
+        let addedCount = 0
         setData(prev => {
           if (!prev) return json as RadarData
           const seen = new Set(prev.tokens.map(t => t.contract.toLowerCase()))
           const newTokens = (json.tokens as RadarToken[]).filter(t => !seen.has(t.contract.toLowerCase()))
+          addedCount = newTokens.length
           return { ...prev, tokens: [...prev.tokens, ...newTokens], page: json.page ?? nextPage, hasMore: json.hasMore ?? false }
         })
+        setLoadMoreExhausted(addedCount === 0)
       }
     } catch {
       // Best-effort — a failed "load more" leaves the existing feed exactly as it was, no error banner needed.
@@ -1422,8 +1455,12 @@ export default function BaseRadarPage() {
       hottestValue: hottest ? `Score ${hottest.radarScore}` : 'Needs data',
       hasSecurityData,
       hiddenLowEvidenceCount: data?.hiddenLowEvidenceCount ?? 0,
+      hiddenLowValuation: data?.hiddenLowValuation ?? 0,
+      hiddenLowHolders: data?.hiddenLowHolders ?? 0,
+      hiddenHolderUnavailable: data?.hiddenHolderUnavailable ?? 0,
+      hiddenConcentrationUnavailable: data?.hiddenConcentrationUnavailable ?? 0,
     }
-  }, [intelTokens, data?.hiddenLowEvidenceCount])
+  }, [intelTokens, data?.hiddenLowEvidenceCount, data?.hiddenLowValuation, data?.hiddenLowHolders, data?.hiddenHolderUnavailable, data?.hiddenConcentrationUnavailable])
 
   const filteredAndSortedTokens = useMemo(() => {
     const filtered = intelTokens.filter(token => {
@@ -1764,7 +1801,7 @@ export default function BaseRadarPage() {
 
             {!loading && tokens.length > 0 && data?.hasMore && (
               <button
-                onClick={handleLoadMore}
+                onClick={() => { setLoadMoreExhausted(false); void handleLoadMore() }}
                 disabled={loadingMore}
                 style={{
                   marginTop: '4px', width: '100%', padding: '11px', borderRadius: '10px',
@@ -1776,6 +1813,11 @@ export default function BaseRadarPage() {
               >
                 {loadingMore ? 'Loading…' : 'Load More'}
               </button>
+            )}
+            {!loading && !loadingMore && loadMoreExhausted && (
+              <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#64748b', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
+                No more candidates passed the $45K / 30-holder gate in this cycle.
+              </p>
             )}
           </div>
 

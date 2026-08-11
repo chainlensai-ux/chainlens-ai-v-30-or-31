@@ -49,3 +49,29 @@ export function isRealVerifiedMarketCapValue(marketCapStatus: string | null | un
 // missing concentration — this evidence-gap string is attached to every displayed candidate instead,
 // so a passing holder count never looks identical to a token whose full concentration was checked.
 export const CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP = 'Concentration unavailable — deeper Token Scanner confirmation required'
+
+// STARVATION FIX #2, DISCLOSED (reported: raising the old fixed holder-check limit from 20 to 30
+// still left the feed starved to 1 token). A FIXED top-N cutoff is wrong no matter how big N is —
+// candidates are ranked by a momentum score unrelated to valuation/holders, so on a day where most
+// high-momentum Base pools happen to be low-holder tokens, the top N by momentum can legitimately
+// contain almost no 30+-holder candidates even though plenty exist further down the ranked list.
+// Replaced with a budget-driven loop (app/api/radar/route.ts): check ranked candidates in batches,
+// in momentum order, until either DISPLAY_TARGET have actually passed the holder gate (no reason to
+// keep spending provider calls once the feed has enough) or HOLDER_CHECK_BUDGET_CAP total checks
+// have been made (a hard ceiling so a genuinely thin market can't turn into an unbounded/slow
+// request). shouldContinueHolderChecking is the exact stopping condition the loop uses — exported so
+// it's unit-testable directly instead of only inferable from route.ts's source.
+export const DISPLAY_TARGET = 8
+export const HOLDER_CHECK_BUDGET_CAP = 60
+export const HOLDER_CHECK_BATCH_SIZE = 15
+
+export interface HolderCheckLoopState {
+  passingCount: number
+  attemptedCount: number
+  cursor: number
+  poolSize: number
+}
+
+export function shouldContinueHolderChecking(state: HolderCheckLoopState): boolean {
+  return state.passingCount < DISPLAY_TARGET && state.attemptedCount < HOLDER_CHECK_BUDGET_CAP && state.cursor < state.poolSize
+}

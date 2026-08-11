@@ -5,7 +5,7 @@ import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFAULT_RADAR_MIN_VALUATION_USD, getRadarCortexValuationLine, getRadarValuationCardDisplay, getRadarValuationEvidenceGap, resolveBaseRadarMarketCap, selectDexScreenerMarketCapRescuePair, tokenPassesRadarValuationFilters, type DexScreenerMarketCapRescueResult, type RadarValuationBasis } from '@/lib/baseRadarValuation'
 import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type RadarSimulationStatus } from '@/lib/baseRadarSimulation'
-import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP } from '@/lib/baseRadarMainFeedGate'
+import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '@/lib/baseRadarMainFeedGate'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 // RATE-LIMIT-TOO-TIGHT FIX, DISCLOSED (reported: "Radar refresh failed" for no obvious reason):
@@ -802,54 +802,68 @@ export async function GET(req: NextRequest) {
       const sB = (mB * 40) + Math.log10(Math.max(b.liquidityUsd, 1)) * 18 + Math.log10(Math.max(b.volume24h, 1)) * 18 + (b.ageMinutes <= 120 ? 12 : 0) + (b.fdvUsd && b.fdvUsd > 0 ? 6 : 0)
       return sB - sA
     })
-    const RANKED_CANDIDATES_CAP = 50
+    // STARVATION FIX #2, DISCLOSED (reported: raising HOLDER_CHECK_LIMIT from 20 to 30 still left
+    // the feed starved to 1 token). Root cause: a FIXED top-N cutoff is wrong no matter how big N
+    // is, because momentum rank has nothing to do with valuation or holder count — on a day where
+    // most high-momentum Base pools happen to be low-holder degen tokens, the top N by momentum can
+    // legitimately contain almost no 30+-holder tokens even though plenty exist further down the
+    // ranked list. Replaced the fixed cutoff with a budget-driven loop: check ranked candidates in
+    // batches, in momentum order, and STOP as soon as either (a) DISPLAY_TARGET candidates have
+    // actually passed the holder gate — no reason to keep spending provider calls once the feed has
+    // enough — or (b) HOLDER_CHECK_BUDGET_CAP total checks have been made — a hard ceiling so a
+    // genuinely thin market can't turn into an unbounded/slow request. RANKED_CANDIDATES_CAP raised
+    // 50 -> 100 so the loop actually has a larger pool to draw from before hitting the budget cap.
+    const RANKED_CANDIDATES_CAP = 100
     const rankedCandidates = candidates.slice(0, RANKED_CANDIDATES_CAP)
-
-    // Holder-count floor: the top HOLDER_CHECK_LIMIT ranked candidates get checked (not all 50) — the
-    // cache above means a token already checked this cycle won't cost another call on the next
-    // refresh regardless.
-    // STARVATION FIX, DISCLOSED (reported: main feed showing only 1 token even though the market has
-    // more candidates). Root cause: this limit was 20, but candidates are ranked here by a momentum
-    // score (volume/liquidity/age blend) that has nothing to do with valuation or holder count — a
-    // token with a real $45K+ valuation and 30+ real holders but merely average momentum could easily
-    // rank 25th-40th and NEVER get its holder count checked at all, regardless of how many qualifying
-    // candidates actually existed in the pool. Raised to 30 (out of the 50-candidate ranked pool) so
-    // most of the ranked set gets a real shot at the gate, not just the top-momentum fifth of it.
-    // Concurrency raised from 3 to 5 to keep worst-case cold-cache latency in the same ballpark as
-    // before (this call already has its own 3.5s per-request timeout and a 10-minute result cache).
-    const HOLDER_CHECK_LIMIT = 30
-    const HOLDER_CHECK_CONCURRENCY = 5
-    const holderCheckTargets = rankedCandidates.slice(0, HOLDER_CHECK_LIMIT)
+    const HOLDER_CHECK_CONCURRENCY = 8
     const holderCountByContract = new Map<string, number | null>()
+    const holderCheckedCandidates: Candidate[] = []
+    let holderCheckAttemptedCount = 0
+    let passingHolderGateCount = 0
     {
-      let nextIndex = 0
-      const worker = async () => {
-        for (;;) {
-          const i = nextIndex++
-          if (i >= holderCheckTargets.length) return
-          const t = holderCheckTargets[i]
-          holderCountByContract.set(t.contract.toLowerCase(), await fetchBaseHolderCount(t.contract))
+      let cursor = 0
+      while (shouldContinueHolderChecking({ passingCount: passingHolderGateCount, attemptedCount: holderCheckAttemptedCount, cursor, poolSize: rankedCandidates.length })) {
+        const remainingBudget = HOLDER_CHECK_BUDGET_CAP - holderCheckAttemptedCount
+        const batch = rankedCandidates.slice(cursor, cursor + Math.min(HOLDER_CHECK_BATCH_SIZE, remainingBudget))
+        cursor += batch.length
+        let nextIndex = 0
+        const worker = async () => {
+          for (;;) {
+            const i = nextIndex++
+            if (i >= batch.length) return
+            const t = batch[i]
+            holderCountByContract.set(t.contract.toLowerCase(), await fetchBaseHolderCount(t.contract))
+          }
+        }
+        await Promise.all(Array.from({ length: Math.min(HOLDER_CHECK_CONCURRENCY, batch.length) }, () => worker()))
+        for (const t of batch) {
+          holderCheckAttemptedCount++
+          holderCheckedCandidates.push(t)
+          const holderCount = holderCountByContract.get(t.contract.toLowerCase())
+          if (passesMainFeedHolderGate(holderCount)) passingHolderGateCount++
         }
       }
-      await Promise.all(Array.from({ length: Math.min(HOLDER_CHECK_CONCURRENCY, holderCheckTargets.length) }, () => worker()))
     }
     // FAIL-OPEN ON PROVIDER OUTAGE, DISCLOSED (reported: Base Radar went completely empty right
     // after this filter shipped). A hard "unresolved = fails the bar" rule is correct for a normal
     // per-token miss (a genuinely too-new pool GoldRush hasn't indexed holders for yet), but if
-    // EVERY lookup in this batch failed, that's not 50 unfundeded tokens — it's GoldRush being
+    // EVERY lookup in this batch failed, that's not N unfunded tokens — it's GoldRush being
     // down/rate-limited for this request, and silently zeroing the whole feed on a provider blip is
     // worse than the bug being fixed. When at least one lookup in the batch actually resolved, the
     // provider is reachable and per-token nulls are trusted misses, so the floor applies normally.
-    const resolvedHolderCounts = [...holderCountByContract.values()].filter((c): c is number => typeof c === 'number')
-    const holderProviderReachable = resolvedHolderCounts.length > 0
+    const holderCheckSucceededCount = [...holderCountByContract.values()].filter((c): c is number => typeof c === 'number').length
+    const holderProviderReachable = holderCheckSucceededCount > 0
     // HOLDER-EVIDENCE-MUST-BE-REAL, DISCLOSED: null/N/A/unresolved holder evidence must never count
     // as passing the 30-holder gate — tracked separately from "resolved but below 30" so the debug
     // funnel (and the "X hidden for weak holder evidence" UI count) can distinguish a genuinely thin
     // holder base from GoldRush simply not having an answer yet, without treating the latter as safe.
+    // Concentration (top1/10/20) is a completely separate, deeper piece of evidence this route never
+    // fetches at all — its absence NEVER counts toward droppedByHoldersUnavailable (see the
+    // CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP attached to every displayed candidate further below).
     let droppedByHoldersBelow30 = 0
     let droppedByHoldersUnavailable = 0
     const toCheck = holderProviderReachable
-      ? holderCheckTargets.filter((t) => {
+      ? holderCheckedCandidates.filter((t) => {
           const holderCount = holderCountByContract.get(t.contract.toLowerCase())
           if (typeof holderCount !== 'number') { droppedByHoldersUnavailable++; return false }
           if (!passesMainFeedHolderGate(holderCount)) { droppedByHoldersBelow30++; return false }
@@ -959,6 +973,13 @@ export async function GET(req: NextRequest) {
     const hiddenLowValuation = droppedByMarketCapBelow45k + droppedByValuationUnavailable
     const hiddenLowHolders = droppedByHoldersBelow30
     const hiddenHolderUnavailable = droppedByHoldersUnavailable
+    // CONCENTRATION-IS-NOT-HOLDER-UNAVAILABLE, DISCLOSED: concentration (top1/10/20) is never
+    // fetched by this route at all, so it can never be the reason a candidate was hidden — every
+    // DISPLAYED candidate simply carries the CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP as a deeper-
+    // evidence note, not an exclusion reason. This count exists purely so the UI can show that
+    // distinction honestly (concentration gaps vs. actually-missing holder count) instead of
+    // conflating the two the way the drawer's old "Open Check concentration" wording used to.
+    const hiddenConcentrationUnavailable = scored.filter(t => (t.evidenceGaps ?? []).includes(CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP)).length
     const hiddenLowEvidenceCount = hiddenLowValuation + hiddenLowHolders + hiddenHolderUnavailable
     const evidenceGapCappedCount = scored.filter(t => t.riskLevel !== 'SAFE' && (t.evidenceGaps?.length ?? 0) > 0).length
 
@@ -976,6 +997,9 @@ export async function GET(req: NextRequest) {
     const afterHolder30Gate = toCheck.length
     const baseRadarCandidateGateAudit = {
       rawCandidates: drafts.length,
+      rankedCandidatesBeforeHolderCheck: rankedCandidates.length,
+      holderCheckAttemptedCount,
+      holderCheckSucceededCount,
       afterLiquidityGate,
       afterValuation45kGate,
       afterHolder30Gate,
@@ -983,14 +1007,21 @@ export async function GET(req: NextRequest) {
       hiddenLowValuation,
       hiddenLowHolders,
       hiddenHolderUnavailable,
-      rawCandidateCap: { rankedCandidatesCap: RANKED_CANDIDATES_CAP, holderCheckLimit: HOLDER_CHECK_LIMIT },
-      filterStage: 'raw -> dedup/ageWindow -> v4/liquidity/activity -> valuation45k -> holder30 -> rank/display',
+      hiddenConcentrationUnavailable,
+      rawCandidateCap: RANKED_CANDIDATES_CAP,
+      holderCheckCap: HOLDER_CHECK_BUDGET_CAP,
+      displayCap: DISPLAY_TARGET,
+      filterStage: holderCheckAttemptedCount >= HOLDER_CHECK_BUDGET_CAP
+        ? 'holder-check budget exhausted before reaching display target'
+        : passingHolderGateCount >= DISPLAY_TARGET
+          ? 'display target reached'
+          : 'ranked candidate pool exhausted before reaching display target or budget',
     }
 
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
     const hpHitCount = hpCacheHitFlags.filter(Boolean).length
     const hasMorePages = radarPage < 5 && tokens.length > 0
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenLowHolders, hiddenHolderUnavailable, hiddenConcentrationUnavailable }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,
