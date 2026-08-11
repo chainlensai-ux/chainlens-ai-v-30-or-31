@@ -768,6 +768,17 @@ export async function GET(req: NextRequest) {
     // audit object exists to prevent (see the AUDIT-MATH-BUG-FIX comment further down, from an
     // earlier untracked double-count that produced impossible negative numbers).
     let droppedByEstablishedToken = 0
+    // AUDIT-RECONCILIATION FIX, DISCLOSED (found while investigating a reported funnel gap: live
+    // capture showed afterAgeWindow=201 but afterLiquidityMinimum(11) + every documented
+    // rejectionReasons bucket at that stage only summed to 243, a 42-candidate discrepancy in the
+    // wrong direction). Root cause: three real `continue` sites between passedAgeWindowCount++ and
+    // the liquidity gate — missing baseToken, symbol-based EXCLUDED match, and duplicate-contract
+    // dedup via seenContracts — had no counter at all, so candidates passedAgeWindowCount counted
+    // could vanish from the funnel with no rejection reason to explain where they went. These three
+    // counters close that gap; no filtering behavior changes, only what's measured.
+    let droppedByMissingBaseToken = 0
+    let droppedBySymbolExcluded = 0
+    let droppedByDuplicateContract = 0
 
     for (const pool of pooled) {
       const poolId = String(pool.id ?? '').toLowerCase()
@@ -816,13 +827,13 @@ export async function GET(req: NextRequest) {
 
       const baseData    = ((rels?.base_token as Record<string, unknown>)?.data) as Record<string, string> | undefined
       const baseToken   = baseData?.id ? tokenMap.get(baseData.id) : undefined
-      if (!baseToken) continue
+      if (!baseToken) { droppedByMissingBaseToken++; continue }
 
-      if (EXCLUDED.has(baseToken.symbol.toUpperCase())) continue
+      if (EXCLUDED.has(baseToken.symbol.toUpperCase())) { droppedBySymbolExcluded++; continue }
       if (EXCLUDED_ESTABLISHED_CONTRACTS.has(baseToken.address.toLowerCase())) { droppedByEstablishedToken++; continue }
 
       const key = baseToken.address.toLowerCase()
-      if (seenContracts.has(key)) continue
+      if (seenContracts.has(key)) { droppedByDuplicateContract++; continue }
       seenContracts.add(key)
 
       const fdvUsd = parseFloat(String(attrs?.fdv_usd ?? '0')) || null
@@ -1309,6 +1320,9 @@ export async function GET(req: NextRequest) {
         displayCap: DISPLAY_TARGET,
       },
       rejectionReasons: {
+        missing_base_token: droppedByMissingBaseToken,
+        symbol_excluded: droppedBySymbolExcluded,
+        duplicate_contract: droppedByDuplicateContract,
         established_token_excluded: droppedByEstablishedToken,
         established_token_age_excluded: droppedByEstablishedTokenAge,
         v4_liquidity_unverified: droppedByV4Pool,
@@ -1343,6 +1357,9 @@ export async function GET(req: NextRequest) {
       mergedCount: candidates.length,
       filters: { minValuationUsd, minLiquidityUsd, allowFdvFallback, mainFeedMinValuationUsd: MAIN_FEED_MIN_VALUATION_USD, mainFeedMinHolders: MAIN_FEED_MIN_HOLDERS },
       filterFunnel: {
+        missing_base_token: droppedByMissingBaseToken,
+        symbol_excluded: droppedBySymbolExcluded,
+        duplicate_contract: droppedByDuplicateContract,
         established_token_excluded: droppedByEstablishedToken,
         established_token_age_excluded: droppedByEstablishedTokenAge,
         v4_pool_excluded: droppedByV4Pool,
