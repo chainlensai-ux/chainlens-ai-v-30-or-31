@@ -217,6 +217,56 @@ async function fetchBaseHolderCount(contract: string): Promise<HolderCountResult
   return result
 }
 
+// TOKEN-AGE SIGNAL, DISCLOSED (requested: replace the growing manual EXCLUDED_ESTABLISHED_CONTRACTS
+// blocklist — which needed a new hand-added entry each time a live user spotted another case
+// (Aerodrome, then Avantis) — with a real signal, since GeckoTerminal only exposes POOL creation
+// time, never TOKEN creation time, and that mismatch is the actual root cause of both cases: a
+// brand-new pool for a long-established token honestly clears every liquidity/valuation/holder gate
+// while still being misleading to show as a fresh opportunity).
+//
+// Reuses the SAME GoldRush/Covalent call already made for holder counts (transactions_v2, sorted
+// ascending by block time) — no new provider. The earliest indexed transaction's block_signed_at is
+// used as the token's real age; this call is charged against the exact same per-cycle holder-check
+// budget/batch (fetched concurrently alongside the holder-count call for each candidate, not as a
+// separate wider pass), so it can never become a new source of "uncontrolled provider spam" beyond
+// what was already being spent to check holders. Cached for 24h — a contract's creation date never
+// changes, so this is effectively a permanent answer once resolved for a given contract.
+//
+// This is a best-effort FRESHNESS HEURISTIC layered on top of the real $80K/30-holder gates, not a
+// replacement for them and not a new hard requirement: if the age lookup fails or is unavailable,
+// the candidate is neither excluded nor penalized for it — unlike the holder-count gate (which fails
+// closed on missing evidence because holder count is itself part of the safety bar), a token's age
+// not being resolvable doesn't mean it's unsafe, just that this particular signal is uninformative
+// this cycle.
+const TOKEN_AGE_CACHE_TTL_MS = 24 * 60 * 60_000
+const tokenAgeCache = new Map<string, { ageDays: number | null; expiresAt: number }>()
+const ESTABLISHED_TOKEN_MIN_AGE_DAYS = 30
+async function fetchBaseTokenAgeDays(contract: string): Promise<number | null> {
+  const key = contract.toLowerCase()
+  const cached = tokenAgeCache.get(key)
+  if (cached && cached.expiresAt > Date.now()) return cached.ageDays
+  const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
+  if (!apiKey) return null
+  let ageDays: number | null = null
+  for (const host of GOLDRUSH_RADAR_HOSTS) {
+    try {
+      const res = await fetch(
+        `https://${host}/v1/base-mainnet/address/${contract}/transactions_v2/?page-size=1&block-signed-at-asc=true&no-logs=true`,
+        { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(3500) },
+      )
+      if (!res.ok) continue
+      const json = await res.json().catch(() => null) as { data?: { items?: Array<{ block_signed_at?: string }> } } | null
+      const earliest = json?.data?.items?.[0]?.block_signed_at
+      if (earliest) {
+        const earliestMs = new Date(earliest).getTime()
+        if (Number.isFinite(earliestMs)) { ageDays = Math.floor((Date.now() - earliestMs) / (24 * 60 * 60_000)); break }
+      }
+    } catch { /* leave ageDays null — unresolved, not treated as unsafe (see header comment) */ }
+  }
+  tokenAgeCache.set(key, { ageDays, expiresAt: Date.now() + TOKEN_AGE_CACHE_TTL_MS })
+  return ageDays
+}
+
 // ABSOLUTE-LIQUIDITY-FLOOR, DISCLOSED: belt-and-suspenders guard independent of the configurable
 // minLiquidityUsd query param — a token with ~$0 real liquidity must never reach the feed no matter
 // how minLiquidityUsd is set. tokenPassesRadarValuationFilters/shouldHoldAsFallback already require
@@ -978,6 +1028,7 @@ export async function GET(req: NextRequest) {
     const holderCheckedCandidates: Candidate[] = []
     let holderCheckAttemptedCount = 0
     let passingHolderGateCount = 0
+    let droppedByEstablishedTokenAge = 0
     {
       let cursor = 0
       while (shouldContinueHolderChecking({ passingCount: passingHolderGateCount, attemptedCount: holderCheckAttemptedCount, cursor, poolSize: rankedCandidates.length })) {
@@ -985,26 +1036,36 @@ export async function GET(req: NextRequest) {
         const batch = rankedCandidates.slice(cursor, cursor + Math.min(HOLDER_CHECK_BATCH_SIZE, remainingBudget))
         cursor += batch.length
         const resultByContract = new Map<string, HolderCountResult>()
+        const ageDaysByContract = new Map<string, number | null>()
         let nextIndex = 0
         const worker = async () => {
           for (;;) {
             const i = nextIndex++
             if (i >= batch.length) return
             const t = batch[i]
-            const r = await fetchBaseHolderCount(t.contract)
+            // TOKEN-AGE SIGNAL, DISCLOSED: fetched concurrently with the holder-count check, charged
+            // against the exact same batch/budget — see fetchBaseTokenAgeDays's own header for why
+            // this can never become a separate source of provider spam.
+            const [r, ageDays] = await Promise.all([fetchBaseHolderCount(t.contract), fetchBaseTokenAgeDays(t.contract)])
             resultByContract.set(t.contract.toLowerCase(), r)
             holderCountByContract.set(t.contract.toLowerCase(), r.count)
+            ageDaysByContract.set(t.contract.toLowerCase(), ageDays)
           }
         }
         await Promise.all(Array.from({ length: Math.min(HOLDER_CHECK_CONCURRENCY, batch.length) }, () => worker()))
         for (const t of batch) {
           holderCheckAttemptedCount++
-          holderCheckedCandidates.push(t)
           const holderResult = resultByContract.get(t.contract.toLowerCase())
           if (holderResult && holderResult.reason !== 'ok') {
             holderCheckFailureReasons[holderResult.reason] = (holderCheckFailureReasons[holderResult.reason] ?? 0) + 1
             if (holderCheckFailureSample.length < 5) holderCheckFailureSample.push({ httpStatus: holderResult.httpStatus ?? null, errorBody: holderResult.errorBody ?? null })
           }
+          const ageDays = ageDaysByContract.get(t.contract.toLowerCase())
+          if (typeof ageDays === 'number' && ageDays >= ESTABLISHED_TOKEN_MIN_AGE_DAYS) {
+            droppedByEstablishedTokenAge++
+            continue
+          }
+          holderCheckedCandidates.push(t)
           const holderCount = holderCountByContract.get(t.contract.toLowerCase())
           if (passesMainFeedHolderGate(holderCount)) passingHolderGateCount++
         }
@@ -1243,6 +1304,7 @@ export async function GET(req: NextRequest) {
       },
       rejectionReasons: {
         established_token_excluded: droppedByEstablishedToken,
+        established_token_age_excluded: droppedByEstablishedTokenAge,
         v4_liquidity_unverified: droppedByV4Pool,
         liquidity_below_minimum: droppedByAbsoluteLiquidityFloor + droppedByLiquidityFloorSpecifically,
         dead_volume_excluded: droppedByDeadVolumeFloor,
@@ -1275,6 +1337,8 @@ export async function GET(req: NextRequest) {
       mergedCount: candidates.length,
       filters: { minValuationUsd, minLiquidityUsd, allowFdvFallback, mainFeedMinValuationUsd: MAIN_FEED_MIN_VALUATION_USD, mainFeedMinHolders: MAIN_FEED_MIN_HOLDERS },
       filterFunnel: {
+        established_token_excluded: droppedByEstablishedToken,
+        established_token_age_excluded: droppedByEstablishedTokenAge,
         v4_pool_excluded: droppedByV4Pool,
         liquidity_below_minimum: droppedByAbsoluteLiquidityFloor + droppedByLiquidityFloorSpecifically,
         dead_volume_excluded: droppedByDeadVolumeFloor,
