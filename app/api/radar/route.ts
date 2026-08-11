@@ -238,9 +238,15 @@ async function fetchBaseHolderCount(contract: string): Promise<HolderCountResult
 // closed on missing evidence because holder count is itself part of the safety bar), a token's age
 // not being resolvable doesn't mean it's unsafe, just that this particular signal is uninformative
 // this cycle.
+// MAX-AGE TIGHTENED 30 -> 2 DAYS, DISCLOSED (explicitly requested: "should be 2 day new max" — a
+// genuine "new pools" radar shouldn't show anything whose actual token age is more than a couple
+// days old, not just filter out obvious multi-hundred-day outliers like AERO/AVNT). Flipped framing
+// from "exclude only clearly-established tokens" to "only show genuinely fresh ones" — same
+// mechanism, much tighter bar. Unresolved-age candidates still aren't penalized (see above);
+// $80K valuation + 30 holders + real liquidity remain the actual safety gates regardless of age.
 const TOKEN_AGE_CACHE_TTL_MS = 24 * 60 * 60_000
 const tokenAgeCache = new Map<string, { ageDays: number | null; expiresAt: number }>()
-const ESTABLISHED_TOKEN_MIN_AGE_DAYS = 30
+const MAX_TOKEN_AGE_DAYS = 2
 async function fetchBaseTokenAgeDays(contract: string): Promise<number | null> {
   const key = contract.toLowerCase()
   const cached = tokenAgeCache.get(key)
@@ -1061,7 +1067,7 @@ export async function GET(req: NextRequest) {
             if (holderCheckFailureSample.length < 5) holderCheckFailureSample.push({ httpStatus: holderResult.httpStatus ?? null, errorBody: holderResult.errorBody ?? null })
           }
           const ageDays = ageDaysByContract.get(t.contract.toLowerCase())
-          if (typeof ageDays === 'number' && ageDays >= ESTABLISHED_TOKEN_MIN_AGE_DAYS) {
+          if (typeof ageDays === 'number' && ageDays >= MAX_TOKEN_AGE_DAYS) {
             droppedByEstablishedTokenAge++
             continue
           }
