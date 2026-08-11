@@ -175,7 +175,13 @@ const CREATOR_LOOKUP_BASE_URL = 'https://api.etherscan.io/v2/api'
 // GoldRush/Covalent call in this file that was still single-host-no-retry (token metadata,
 // contract security intel, deployer creation-history, balances_v2 lookups) — the class of bug, not
 // just the one instance that got reported, so it can't quietly resurface in a different field next.
-const GOLDRUSH_HOSTS = ['api.covalenthq.com', 'api.goldrush.dev'] as const
+// DEAD-HOST REMOVED, DISCLOSED (found via live server logs: every call through this helper was
+// hitting `getaddrinfo ENOTFOUND api.goldrush.dev` — that hostname doesn't resolve at all from this
+// environment, so it was never a real fallback, just a guaranteed-failing extra hop and wasted
+// latency on every single GoldRush call in this file. Same dead host already removed from the
+// Base Radar route's own separate holder-count list; this is the shared list every other GoldRush
+// call site in this file uses. If GoldRush restores/renames a working second host, add it back here.
+const GOLDRUSH_HOSTS = ['api.covalenthq.com'] as const
 async function fetchGoldRushWithHostFallback(
   buildUrl: (host: string) => string,
   init: RequestInit,
