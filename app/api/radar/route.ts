@@ -557,6 +557,14 @@ export async function GET(req: NextRequest) {
     const now       = Date.now()
     const TWO_HOURS = 2  * 60 * 60 * 1000
     const DAY_MS    = 24 * 60 * 60 * 1000
+    // AGE-WINDOW WIDENED, DISCLOSED (explicitly requested: "$80K + 30 holders" was starving the
+    // feed to 0 because the outer age cutoff (previously DAY_MS, 24h) didn't give pools enough real
+    // time to organically reach 30 holders and $80K valuation before aging out of consideration
+    // entirely — verified via three rounds of live baseRadarCandidateGateAudit output that this was
+    // a genuine market-timing constraint, not a discovery-depth bug. Widened to 3 days so early-stage
+    // (not just brand-new) pools get a real chance to qualify. $80K valuation and 30-holder floors
+    // are untouched — this only changes how OLD a pool may be and still be considered at all.
+    const THREE_DAY_MS = 3 * DAY_MS
 
     type Candidate = Omit<RadarToken, 'clarkVerdict'> & { pairAddress?: string | null }
     const candidates: Candidate[] = []
@@ -649,9 +657,10 @@ export async function GET(req: NextRequest) {
       // filter had zero fallback route and was dropped outright, no matter how much real liquidity/
       // volume it had, purely because of which GeckoTerminal endpoint it came from. That's not a
       // meaningful safety distinction (the fallback's own liquidity/volume checks are what actually
-      // gate it), so dropped the source restriction — any pool under 24h old is now fallback-
-      // eligible, using data already being fetched, no new API calls.
-      const isFallbackAgeWindow = ageMs < DAY_MS
+      // gate it), so dropped the source restriction — any pool under the fallback age window is now
+      // fallback-eligible, using data already being fetched, no new API calls. Window itself widened
+      // 24h -> 3 days, see THREE_DAY_MS's own header comment above.
+      const isFallbackAgeWindow = ageMs < THREE_DAY_MS
       if (!isPrimaryAgeWindow && !isFallbackAgeWindow) continue
 
       const baseData    = ((rels?.base_token as Record<string, unknown>)?.data) as Record<string, string> | undefined
