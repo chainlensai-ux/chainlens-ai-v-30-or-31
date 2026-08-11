@@ -34,8 +34,13 @@ const EXCLUDED = new Set([
 // impersonating "AERO" by symbol, which should still be shown and correctly flagged as a real listed
 // candidate rather than silently hidden by name collision. Verified against Aerodrome's own real,
 // widely-documented Base mainnet contract, not guessed.
+// SECOND CASE, DISCLOSED (reported: Avantis/AVNT — same failure mode, a new liquidity pool for an
+// established, hundreds-of-days-old $30M-market-cap token showing up labeled as a fresh opportunity).
+// Unlike AERO, this contract address is added on the user's direct report, not independent
+// verification against prior knowledge — flag it if this turns out to be the wrong address.
 const EXCLUDED_ESTABLISHED_CONTRACTS = new Set([
   '0x940181a94a35a4569e4529a3cdfb74e38fd98631', // Aerodrome Finance (AERO) — Base-native, live since Aug 2023
+  '0x696f9436b67233384889472cd7cd58a6fb5df4f1', // Avantis (AVNT) — reported established, hundreds of days old, ~$30M market cap
 ])
 
 type RiskLevel = 'DANGER' | 'CAUTION' | 'WATCH' | 'SAFE'
