@@ -233,11 +233,20 @@ async function getClarkVerdicts(tokens: Omit<RadarToken, 'clarkVerdict'>[]): Pro
     lines.join('\n')
 
   try {
+    // BOUNDED-CLARK-CALL, DISCLOSED (reported: Base Radar stuck on "Refreshing radar…" for
+    // minutes with no error). This was the one remaining unbounded network call in the whole
+    // /api/radar pipeline — every other external call already has an explicit timeout
+    // (GeckoTerminal 6s, DexScreener rescue ~3s, GoldRush holder checks 3.5s, honeypot 2.6s) but
+    // this Anthropic call had none, relying only on the SDK's own default (effectively minutes).
+    // A slow/rate-limited Anthropic response could hold the whole request open well past what the
+    // frontend or any reasonable user would wait for. Bounded to 12s — Clark verdicts are a nice-
+    // to-have annotation on top of already-computed real data, not something worth blocking the
+    // entire feed response on.
     const msg = await anthropic.messages.create({
       model:      'claude-sonnet-4-6',
       max_tokens: 400,
       messages:   [{ role: 'user', content: prompt }],
-    })
+    }, { timeout: 12_000 })
 
     const text     = msg.content[0]?.type === 'text' ? msg.content[0].text.trim() : ''
     const verdicts = new Map<string, string>()

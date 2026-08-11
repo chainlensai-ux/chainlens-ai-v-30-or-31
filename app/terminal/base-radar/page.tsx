@@ -1109,6 +1109,15 @@ export default function BaseRadarPage() {
     const controller = new AbortController()
     abortControllerRef.current = controller
     fetchInFlightRef.current = true
+    // HANG-GUARD FIX, DISCLOSED (reported: "Refreshing radar…" stuck for 5+ minutes with no error).
+    // This fetch had no client-side timeout at all — only the manual-abort AbortController used to
+    // cancel a superseded request — so a slow/hung backend response (or a dropped connection the
+    // browser doesn't surface as a network error) could leave `loading` true indefinitely with no
+    // way for the user to know anything had gone wrong short of reloading the page. 25s comfortably
+    // covers a normal cold-cache Base Radar request (the backend's own slowest single external call
+    // is bounded to 12s — see the Clark verdict timeout fix in app/api/radar/route.ts) while
+    // guaranteeing the UI always recovers to a real error state instead of hanging forever.
+    const timeoutId = setTimeout(() => controller.abort(), 25_000)
 
     setLoading(true)
     setError(null)
@@ -1124,11 +1133,20 @@ export default function BaseRadarPage() {
         setData(json as RadarData)
       }
     } catch (err) {
-      // AbortError means this request was superseded by a newer one (or the component unmounted) —
-      // the newer request already owns loading/error state, so this one must not touch it.
-      if (err instanceof Error && err.name === 'AbortError') return
+      if (err instanceof Error && err.name === 'AbortError') {
+        // Two different reasons this fires: (a) a newer fetchData() call superseded this one — by
+        // the time that happens, abortControllerRef.current already points at the newer controller,
+        // so it no longer owns loading/error state and must not touch it; (b) our own timeoutId
+        // above fired because nothing superseded this request — it just took too long. Only (b)
+        // should surface an error, and the abortControllerRef.current check below distinguishes them.
+        if (abortControllerRef.current === controller) {
+          setError(radarErrorMessage(0, hasRadarDataRef.current))
+        }
+        return
+      }
       setError(radarErrorMessage(0, hasRadarDataRef.current))
     } finally {
+      clearTimeout(timeoutId)
       if (abortControllerRef.current === controller) {
         fetchInFlightRef.current = false
         setLoading(false)
