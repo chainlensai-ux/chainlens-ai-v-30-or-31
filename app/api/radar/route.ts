@@ -844,13 +844,18 @@ export async function GET(req: NextRequest) {
         }
       }
     }
-    // FAIL-OPEN ON PROVIDER OUTAGE, DISCLOSED (reported: Base Radar went completely empty right
-    // after this filter shipped). A hard "unresolved = fails the bar" rule is correct for a normal
-    // per-token miss (a genuinely too-new pool GoldRush hasn't indexed holders for yet), but if
-    // EVERY lookup in this batch failed, that's not N unfunded tokens — it's GoldRush being
-    // down/rate-limited for this request, and silently zeroing the whole feed on a provider blip is
-    // worse than the bug being fixed. When at least one lookup in the batch actually resolved, the
-    // provider is reachable and per-token nulls are trusted misses, so the floor applies normally.
+    // FAIL-CLOSED ON PROVIDER OUTAGE, DISCLOSED (reported: a token with only 3 holders and $0 real
+    // liquidity on DexScreener — a textbook fake-pump scam pool — made it into the live feed despite
+    // the 30-holder gate). Root cause: the previous version of this code "failed open" on a total
+    // GoldRush outage — if EVERY holder-count lookup in a request failed, it fell back to showing
+    // ALL ranked candidates completely UNFILTERED by the holder gate, on the theory that a provider
+    // blip shouldn't zero the whole feed. That was true for the empty-feed bug it was fixing, but it
+    // also meant a full outage (which this session has now observed happen for real — GoldRush 429s
+    // and DNS failures) let literally anything through, including a 3-holder scam token, mislabeled
+    // as if it had cleared a gate it never actually passed. Showing nothing is the honest answer when
+    // holder evidence genuinely cannot be verified — never showing an unverified candidate as if it
+    // were verified. toCheck is now always the real, checked, gate-passing set; on a total outage
+    // that set is legitimately empty rather than being backfilled with unverified candidates.
     const holderCheckSucceededCount = [...holderCountByContract.values()].filter((c): c is number => typeof c === 'number').length
     const holderProviderReachable = holderCheckSucceededCount > 0
     // HOLDER-EVIDENCE-MUST-BE-REAL, DISCLOSED: null/N/A/unresolved holder evidence must never count
@@ -862,14 +867,12 @@ export async function GET(req: NextRequest) {
     // CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP attached to every displayed candidate further below).
     let droppedByHoldersBelow30 = 0
     let droppedByHoldersUnavailable = 0
-    const toCheck = holderProviderReachable
-      ? holderCheckedCandidates.filter((t) => {
-          const holderCount = holderCountByContract.get(t.contract.toLowerCase())
-          if (typeof holderCount !== 'number') { droppedByHoldersUnavailable++; return false }
-          if (!passesMainFeedHolderGate(holderCount)) { droppedByHoldersBelow30++; return false }
-          return true
-        })
-      : rankedCandidates
+    const toCheck = holderCheckedCandidates.filter((t) => {
+      const holderCount = holderCountByContract.get(t.contract.toLowerCase())
+      if (typeof holderCount !== 'number') { droppedByHoldersUnavailable++; return false }
+      if (!passesMainFeedHolderGate(holderCount)) { droppedByHoldersBelow30++; return false }
+      return true
+    })
 
     // 2. TAX-CHECK-ALWAYS-ATTEMPTED FIX, DISCLOSED (reported: every feed card stuck yellow/
     // "SIMULATION PENDING"): previously shallow mode (the frontend's default) NEVER ran the
@@ -1011,11 +1014,13 @@ export async function GET(req: NextRequest) {
       rawCandidateCap: RANKED_CANDIDATES_CAP,
       holderCheckCap: HOLDER_CHECK_BUDGET_CAP,
       displayCap: DISPLAY_TARGET,
-      filterStage: holderCheckAttemptedCount >= HOLDER_CHECK_BUDGET_CAP
-        ? 'holder-check budget exhausted before reaching display target'
-        : passingHolderGateCount >= DISPLAY_TARGET
-          ? 'display target reached'
-          : 'ranked candidate pool exhausted before reaching display target or budget',
+      filterStage: !holderProviderReachable && holderCheckAttemptedCount > 0
+        ? 'holder-count provider unreachable this cycle — failed closed, 0 candidates shown unverified'
+        : holderCheckAttemptedCount >= HOLDER_CHECK_BUDGET_CAP
+          ? 'holder-check budget exhausted before reaching display target'
+          : passingHolderGateCount >= DISPLAY_TARGET
+            ? 'display target reached'
+            : 'ranked candidate pool exhausted before reaching display target or budget',
     }
 
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
