@@ -1167,7 +1167,15 @@ export async function GET(req: NextRequest) {
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
     const hpHitCount = hpCacheHitFlags.filter(Boolean).length
     const hasMorePages = radarPage < 5 && tokens.length > 0
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenLowHolders, hiddenHolderUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, holderProviderReachable }
+    // ALWAYS-VISIBLE AUDIT, DISCLOSED (reported: the audit logs are effectively unreachable in
+    // practice — they print far down a long, multi-line-per-request log stream, and Vercel's log
+    // search/pagination has repeatedly failed to surface them even when searching the exact string).
+    // baseRadarSourceAudit and baseRadarCandidateGateAudit were only ever included in the response
+    // body behind ?debug=1, which the actual app UI never sends (it always hits plain /api/radar),
+    // so a real DevTools Network capture — the one method that has reliably worked all session —
+    // never showed them either. Attaching both directly to the normal, always-returned payload
+    // (not gated behind debug=1) so the exact same capture method already in use surfaces them.
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenLowHolders, hiddenHolderUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, holderProviderReachable, baseRadarSourceAudit, baseRadarCandidateGateAudit }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,
