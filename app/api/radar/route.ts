@@ -568,7 +568,7 @@ export async function GET(req: NextRequest) {
       baseToken: NonNullable<ReturnType<typeof tokenMap.get>>
       ageMinutes: number; liquidityUsd: number; volume24h: number; isPrimaryAgeWindow: boolean; isFallbackAgeWindow: boolean
       fdvUsd: number | null; resolvedMarketCap: ReturnType<typeof resolveBaseRadarMarketCap>; primaryPoolAddress: string | null
-      needsRescue: boolean
+      needsRescue: boolean; isV4Pool: boolean
     }
     const drafts: PoolDraft[] = []
     // FUNNEL-DIAGNOSTICS, DISCLOSED: this route has gone completely empty from filter changes
@@ -576,6 +576,21 @@ export async function GET(req: NextRequest) {
     // us guessing. These counters (surfaced via debugPayload.filterFunnel below) show exactly how
     // many candidates each individual filter dropped, so a future empty-feed report can be
     // diagnosed from ?debug=1 output directly instead of another round of guesswork.
+    // V4-POOL-CROSS-CHECK, DISCLOSED (requested: replace the blanket V4 exclusion with a real
+    // DexScreener cross-check — live audit output showed 69 of ~139 raw candidates in one cycle
+    // being blanket-dropped as V4, which given how dominant V4 apparently is on Base right now made
+    // the feed unnecessarily thin). GeckoTerminal's reserve_in_usd is untrustworthy for V4 pools
+    // (V4's singleton PoolManager doesn't expose per-pool reserves the way V2/V3 does), but that's a
+    // GT-specific limitation, not proof the pool has no real liquidity. Instead of dropping every V4
+    // pool outright, they now get the SAME DexScreener rescue call this route already makes for
+    // missing-market-cap pools (no new provider), and their liquidityUsd is sourced ONLY from
+    // DexScreener's own selectedLiquidityUsd — never from GT's unreliable figure for V4. If
+    // DexScreener also can't verify real liquidity, liquidityUsd is honestly 0, which then fails the
+    // exact same liquidity gates every other pool goes through — no special-cased exclusion, no
+    // fabricated pass. droppedByV4Pool now counts V4 pools DexScreener could not verify liquidity
+    // for (informational only — never subtracted in baseRadarCandidateGateAudit's funnel math, since
+    // these pools already flow through and get correctly counted by the normal liquidity-gate
+    // counters below).
     let droppedByV4Pool = 0
     let droppedByValuationOrLiquidity = 0
     let droppedByLiquidityFloorSpecifically = 0
@@ -594,24 +609,24 @@ export async function GET(req: NextRequest) {
       const createdAt = attrs?.pool_created_at as string | undefined
       if (!createdAt) continue
 
-      // V4-POOL-EXCLUSION, DISCLOSED (reported, with a live DexScreener screenshot of a token this
-      // feed surfaced: "Liquidity $0" / "This pair has unknown liquidity" on a pool GeckoTerminal
-      // reported six-figure reserve_in_usd for). Uniswap V4's singleton PoolManager architecture
-      // doesn't expose per-pool reserves the way V2/V3 pools do — GeckoTerminal's reserve_in_usd
-      // field for a V4 pool is not a reliable read of real available liquidity (DexScreener itself,
-      // a much larger indexer, shows "unknown" for the same pool rather than trusting it). Excluding
-      // V4 pools from the feed entirely until there's a verified liquidity source for them, rather
-      // than surfacing a number this route cannot actually stand behind.
+      // V4-POOL-CROSS-CHECK, DISCLOSED — see the header comment near droppedByV4Pool's declaration
+      // above for the full history (this used to be a blanket exclusion; now it's a flag that forces
+      // a DexScreener liquidity cross-check further below instead of trusting GT's reserve_in_usd).
       const dexRelData = (rels?.dex as { data?: { id?: string } } | undefined)?.data
       const dexId = String(dexRelData?.id ?? '').toLowerCase()
-      if (dexId.includes('v4')) { droppedByV4Pool++; continue }
+      const isV4Pool = dexId.includes('v4')
 
       const ageMs      = now - new Date(createdAt).getTime()
       const ageMinutes = Math.floor(ageMs / 60000)
       const liquidityUsd = parseFloat(String(attrs?.reserve_in_usd ?? '0')) || 0
       const volume24h    = parseFloat(volObj?.h24 ?? '0') || 0
 
-      if (ageMs < DAY_MS && liquidityUsd >= 1000) allDay24h.push(liquidityUsd)
+      // V4-POOL-CROSS-CHECK, DISCLOSED: skip V4 pools here — GT's reserve_in_usd isn't trusted for
+      // them (see the header comment near droppedByV4Pool's declaration) and the DexScreener cross-
+      // check hasn't run yet at this point in the pipeline, so there's no verified figure to use for
+      // this stats sample. Matches the prior behavior (V4 was blanket-excluded before this point
+      // entirely) — this stat just never counted V4 pools, same as before.
+      if (!isV4Pool && ageMs < DAY_MS && liquidityUsd >= 1000) allDay24h.push(liquidityUsd)
 
       const isPrimaryAgeWindow = ageMs < 6 * 60 * 60 * 1000
       // FALLBACK-SOURCE-RESTRICTION FIX, DISCLOSED (reported: widening the new_pools page pull
@@ -644,7 +659,7 @@ export async function GET(req: NextRequest) {
 
       drafts.push({
         baseToken, ageMinutes, liquidityUsd, volume24h, isPrimaryAgeWindow, isFallbackAgeWindow,
-        fdvUsd, resolvedMarketCap, primaryPoolAddress, needsRescue: resolvedMarketCap.marketCapUsd == null,
+        fdvUsd, resolvedMarketCap, primaryPoolAddress, needsRescue: resolvedMarketCap.marketCapUsd == null || isV4Pool, isV4Pool,
       })
     }
 
@@ -691,8 +706,17 @@ export async function GET(req: NextRequest) {
     }
 
     for (let i = 0; i < drafts.length; i++) {
-      const { baseToken, ageMinutes, liquidityUsd, volume24h, isPrimaryAgeWindow, isFallbackAgeWindow, fdvUsd, resolvedMarketCap, primaryPoolAddress } = drafts[i]
+      const { baseToken, ageMinutes, volume24h, isPrimaryAgeWindow, isFallbackAgeWindow, fdvUsd, resolvedMarketCap, primaryPoolAddress, isV4Pool } = drafts[i]
       const rescue = rescueResults[i]
+      // V4-POOL-CROSS-CHECK, DISCLOSED: for a V4 pool, liquidityUsd comes ONLY from DexScreener's
+      // own selectedLiquidityUsd (the same rescue call already made above) — GT's reserve_in_usd is
+      // never trusted for V4 (see the header comment near droppedByV4Pool's declaration). If
+      // DexScreener also couldn't verify real liquidity, this is honestly 0, which then fails the
+      // exact same liquidity gates every other pool goes through below — no special-cased pass.
+      const liquidityUsd = isV4Pool
+        ? (typeof rescue?.selectedLiquidityUsd === 'number' && rescue.selectedLiquidityUsd > 0 ? rescue.selectedLiquidityUsd : 0)
+        : drafts[i].liquidityUsd
+      if (isV4Pool && liquidityUsd === 0) droppedByV4Pool++
       const marketCapUsd = resolvedMarketCap.marketCapUsd ?? rescue?.marketCapUsd ?? null
       const marketCapStatus = marketCapUsd != null ? 'verified' : resolvedMarketCap.marketCapStatus
       const marketCapFieldPath = resolvedMarketCap.marketCapUsd != null ? resolvedMarketCap.marketCapFieldPath : rescue?.marketCapFieldPath ?? resolvedMarketCap.marketCapFieldPath
@@ -993,9 +1017,18 @@ export async function GET(req: NextRequest) {
     // afterLiquidityGate/afterValuation45kGate read straight off the counters already incremented at
     // each real `continue` site above — this is bookkeeping on the existing control flow, not a
     // second implementation of it. afterHolder30Gate is `toCheck.length` directly: that array IS the
-    // real post-holder-gate set (or the full ranked set on a provider outage — see the fail-open
-    // comment above), so this can never drift from what actually happened.
-    const afterLiquidityGate = drafts.length - droppedByV4Pool - droppedByLiquidityFloorSpecifically - droppedByAbsoluteLiquidityFloor - droppedByDeadVolumeFloor
+    // real post-holder-gate set (or empty on a provider outage — see the fail-closed comment above),
+    // so this can never drift from what actually happened.
+    // AUDIT-MATH-BUG-FIX, DISCLOSED (found via live output: afterLiquidityGate/afterValuation45kGate
+    // showed impossible negative numbers, e.g. -62 and -68). Root cause: droppedByV4Pool used to be
+    // incremented in the EARLIER per-pool loop that builds `drafts` (dropping V4 pools before they
+    // ever became a draft), so `drafts.length` already excluded them — but this formula subtracted
+    // droppedByV4Pool AGAIN from drafts.length, double-counting the same drop and going negative.
+    // Now that V4 pools are cross-checked via DexScreener instead of blanket-dropped (see the
+    // droppedByV4Pool header comment above), this is moot for that specific counter — it's purely
+    // informational now — but the fix stands: never subtract a counter from a population that
+    // already excludes what it counts.
+    const afterLiquidityGate = drafts.length - droppedByLiquidityFloorSpecifically - droppedByAbsoluteLiquidityFloor - droppedByDeadVolumeFloor
     const afterValuation45kGate = afterLiquidityGate - droppedByValuationOrLiquidity - droppedByValuationUnavailable - droppedByMarketCapBelow45k
     const afterHolder30Gate = toCheck.length
     const baseRadarCandidateGateAudit = {
