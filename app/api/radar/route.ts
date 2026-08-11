@@ -705,6 +705,7 @@ export async function GET(req: NextRequest) {
       else if (r.reason?.includes('HTTP')) rescueHttpFailed++
     }
 
+    const nearMissSample: { symbol: string; contract: string; liquidityUsd: number; valuationUsd: number | null; marketCapStatus: 'verified' | 'unavailable' }[] = []
     for (let i = 0; i < drafts.length; i++) {
       const { baseToken, ageMinutes, volume24h, isPrimaryAgeWindow, isFallbackAgeWindow, fdvUsd, resolvedMarketCap, primaryPoolAddress, isV4Pool } = drafts[i]
       const rescue = rescueResults[i]
@@ -759,6 +760,14 @@ export async function GET(req: NextRequest) {
       const hasMeaningfulActivity = ageMinutes < 20 || volume24h >= 200 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.02)
       if (!hasMeaningfulActivity) { droppedByDeadVolumeFloor++; continue }
       const valuation = filterResult.valuation
+      // THRESHOLD-EXPLORATION LOG, DISCLOSED (requested: "would $50K valuation / $15K liquidity /
+      // 30 holders get us a couple tokens" — the aggregate audit counts can't answer that, only each
+      // candidate's real numbers can). Logs every candidate that's already cleared liquidity/
+      // activity, before the $45K gate decides its fate, so different threshold combinations can be
+      // checked against real live data instead of guessing. Holder count isn't included here (it's
+      // only resolved later, budget-limited, for the ranked subset) — this only answers the
+      // valuation/liquidity half of the question.
+      nearMissSample.push({ symbol: baseToken.symbol, contract: baseToken.address, liquidityUsd: Math.round(liquidityUsd), valuationUsd: valuation.valueUsd != null ? Math.round(valuation.valueUsd) : null, marketCapStatus })
       // MAIN-FEED-QUALITY-GATE, DISCLOSED (requested: stricter main-feed floor — $45K minimum
       // valuation, real holder evidence required, no dead-liquidity coins ranking as opportunities).
       // getRadarValuationBasis (lib/baseRadarValuation.ts) flattens a real market cap and an FDV
@@ -1094,6 +1103,7 @@ export async function GET(req: NextRequest) {
     // in server logs without needing to hit the debug query param from a browser.
     console.info(`[radar] filterFunnel mergedCount=${candidates.length} finalTokenCount=${tokens.length} hiddenLowEvidenceCount=${hiddenLowEvidenceCount}`, debugPayload.filterFunnel)
     console.info('[radar] baseRadarCandidateGateAudit', baseRadarCandidateGateAudit)
+    console.info(`[radar] nearMissSample (${nearMissSample.length} candidates cleared liquidity/activity, before the $45K gate)`, nearMissSample.slice(0, 30))
     // DON'T-CACHE-A-DEAD-FEED FIX, DISCLOSED (same report as the one-retry fix above): a fully
     // empty result (every upstream source failed even after retrying) used to be cached exactly
     // like a genuinely quiet feed, so it kept being served to every client for the full 30-100s TTL
