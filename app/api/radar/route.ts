@@ -122,7 +122,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Pro
 // checked per request.
 const GOLDRUSH_RADAR_HOSTS = ['api.covalenthq.com'] as const
 const HOLDER_COUNT_CACHE_TTL_MS = 10 * 60_000
-const holderCountCache = new Map<string, { count: number | null; expiresAt: number }>()
+const holderCountCache = new Map<string, { count: number | null; reason?: 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data'; expiresAt: number }>()
 // SINGLE-HOST RETRY, DISCLOSED (found via live baseRadarSourceAudit output: 3 real candidates
 // cleared liquidity AND the $80K valuation gate, but all 3 holder-count checks failed the same
 // cycle — holderCheckSucceeded: 0 of 3 — triggering the fail-closed path and zeroing an otherwise-
@@ -131,35 +131,46 @@ const holderCountCache = new Map<string, { count: number | null; expiresAt: numb
 // now takes down the whole cycle's holder evidence instead of just costing one extra request. One
 // retry with a short backoff absorbs that class of transient failure, same pattern already used for
 // the GeckoTerminal source fetch elsewhere in this file.
-async function fetchBaseHolderCount(contract: string): Promise<number | null> {
+// FAILURE-REASON VISIBILITY, DISCLOSED (found via live audit: holderCheckSucceeded stayed 0 of 3
+// even after the retry fix, and the code had no way to tell "still rate-limited/down after a
+// retry" apart from "no API key configured" apart from "genuinely no holder data for this
+// contract" — every one of those looked identical from the outside). Returns the real reason
+// alongside the count so a persistent (not just transient) provider problem is provable from the
+// response instead of guessed at from a bare null.
+type HolderCountResult = { count: number | null; reason: 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data' }
+async function fetchBaseHolderCount(contract: string): Promise<HolderCountResult> {
   const key = contract.toLowerCase()
   const cached = holderCountCache.get(key)
-  if (cached && cached.expiresAt > Date.now()) return cached.count
+  if (cached && cached.expiresAt > Date.now()) return { count: cached.count, reason: cached.count != null ? 'ok' : (cached.reason ?? 'no_data') }
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
-  if (!apiKey) return null
-  const attempt = async (): Promise<number | null> => {
+  if (!apiKey) return { count: null, reason: 'no_api_key' }
+  const attempt = async (): Promise<HolderCountResult> => {
+    let lastReason: HolderCountResult['reason'] = 'no_data'
     for (const host of GOLDRUSH_RADAR_HOSTS) {
       try {
         const res = await fetch(
           `https://${host}/v1/base-mainnet/tokens/${contract}/token_holders_v2/?page-number=0&page-size=1`,
           { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(3500) },
         )
-        if (!res.ok) continue
+        if (!res.ok) { lastReason = res.status === 429 ? 'rate_limited' : 'http_error'; continue }
         const json = await res.json().catch(() => null) as { data?: { pagination?: { total_count?: number } } } | null
         const totalCount = json?.data?.pagination?.total_count
-        if (typeof totalCount === 'number' && Number.isFinite(totalCount)) return totalCount
-      } catch { /* try next host, then the retry below */ }
+        if (typeof totalCount === 'number' && Number.isFinite(totalCount)) return { count: totalCount, reason: 'ok' }
+        lastReason = 'no_data'
+      } catch (err) {
+        lastReason = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError') ? 'timeout' : 'http_error'
+      }
     }
-    return null
+    return { count: null, reason: lastReason }
   }
   let result = await attempt()
-  if (result == null) {
+  if (result.count == null) {
     await new Promise(resolve => setTimeout(resolve, 300))
     result = await attempt()
   }
   // Cache negative/failed lookups too (shorter-lived) so a rate-limited burst doesn't get re-tried
   // on every candidate on the very next refresh, compounding the same rate-limit problem.
-  holderCountCache.set(key, { count: result, expiresAt: Date.now() + (result != null ? HOLDER_COUNT_CACHE_TTL_MS : 60_000) })
+  holderCountCache.set(key, { count: result.count, reason: result.reason, expiresAt: Date.now() + (result.count != null ? HOLDER_COUNT_CACHE_TTL_MS : 60_000) })
   return result
 }
 
@@ -911,6 +922,7 @@ export async function GET(req: NextRequest) {
     const rankedCandidates = candidates.slice(0, RANKED_CANDIDATES_CAP)
     const HOLDER_CHECK_CONCURRENCY = 8
     const holderCountByContract = new Map<string, number | null>()
+    const holderCheckFailureReasons: Record<string, number> = {}
     const holderCheckedCandidates: Candidate[] = []
     let holderCheckAttemptedCount = 0
     let passingHolderGateCount = 0
@@ -920,19 +932,26 @@ export async function GET(req: NextRequest) {
         const remainingBudget = HOLDER_CHECK_BUDGET_CAP - holderCheckAttemptedCount
         const batch = rankedCandidates.slice(cursor, cursor + Math.min(HOLDER_CHECK_BATCH_SIZE, remainingBudget))
         cursor += batch.length
+        const resultByContract = new Map<string, HolderCountResult>()
         let nextIndex = 0
         const worker = async () => {
           for (;;) {
             const i = nextIndex++
             if (i >= batch.length) return
             const t = batch[i]
-            holderCountByContract.set(t.contract.toLowerCase(), await fetchBaseHolderCount(t.contract))
+            const r = await fetchBaseHolderCount(t.contract)
+            resultByContract.set(t.contract.toLowerCase(), r)
+            holderCountByContract.set(t.contract.toLowerCase(), r.count)
           }
         }
         await Promise.all(Array.from({ length: Math.min(HOLDER_CHECK_CONCURRENCY, batch.length) }, () => worker()))
         for (const t of batch) {
           holderCheckAttemptedCount++
           holderCheckedCandidates.push(t)
+          const holderResult = resultByContract.get(t.contract.toLowerCase())
+          if (holderResult && holderResult.reason !== 'ok') {
+            holderCheckFailureReasons[holderResult.reason] = (holderCheckFailureReasons[holderResult.reason] ?? 0) + 1
+          }
           const holderCount = holderCountByContract.get(t.contract.toLowerCase())
           if (passesMainFeedHolderGate(holderCount)) passingHolderGateCount++
         }
@@ -1127,6 +1146,7 @@ export async function GET(req: NextRequest) {
       hiddenConcentrationUnavailable,
       holderCheckBudget: HOLDER_CHECK_BUDGET_CAP,
       holderCheckBudgetExhausted,
+      holderCheckFailureReasons,
       discoverySourceCounts: sourceCounts,
       displayTarget: DISPLAY_TARGET,
       filterStage: !holderProviderReachable && holderCheckAttemptedCount > 0
@@ -1177,6 +1197,7 @@ export async function GET(req: NextRequest) {
         holders_below_30: droppedByHoldersBelow30,
         holders_unavailable: droppedByHoldersUnavailable,
       },
+      holderCheckFailureReasons,
     }
 
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
