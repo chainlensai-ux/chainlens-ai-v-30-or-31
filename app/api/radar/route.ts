@@ -1058,25 +1058,37 @@ export async function GET(req: NextRequest) {
     const afterLiquidityGate = drafts.length - droppedByLiquidityFloorSpecifically - droppedByAbsoluteLiquidityFloor - droppedByDeadVolumeFloor
     const afterValuation80kGate = afterLiquidityGate - droppedByValuationOrLiquidity - droppedByValuationUnavailable - droppedByMarketCapBelow80k
     const afterHolder30Gate = toCheck.length
+    // DISCOVERY-DEPTH AUDIT, DISCLOSED (requested: the exact field-by-field breakdown below, so a
+    // "feed is 0" report is diagnosable as a discovery-depth problem, a liquidity-gate problem, a
+    // valuation-gate problem, or a genuinely-empty market — without guessing). Every field here is
+    // read straight off a counter already incremented at its real `continue`/stopping site elsewhere
+    // in this function — this object does not re-derive or re-implement any gate logic, it only
+    // exposes what already happened. holderCheckBudgetExhausted is the boolean the frontend uses to
+    // pick between the two different empty-state messages requested (task #6): "budget reached this
+    // cycle" vs. "checked everything available, nothing passed."
+    const holderCheckBudgetExhausted = holderCheckAttemptedCount >= HOLDER_CHECK_BUDGET_CAP
     const baseRadarCandidateGateAudit = {
-      rawCandidates: drafts.length,
-      rankedCandidatesBeforeHolderCheck: rankedCandidates.length,
-      holderCheckAttemptedCount,
-      holderCheckSucceededCount,
-      afterLiquidityGate,
-      afterValuation80kGate,
-      afterHolder30Gate,
-      displayedCount: tokens.length,
-      hiddenLowValuation,
-      hiddenLowHolders,
-      hiddenHolderUnavailable,
-      hiddenConcentrationUnavailable,
+      rawCandidatesFetched: drafts.length,
       rawCandidateCap: RANKED_CANDIDATES_CAP,
-      holderCheckCap: HOLDER_CHECK_BUDGET_CAP,
-      displayCap: DISPLAY_TARGET,
+      rankedCandidates: rankedCandidates.length,
+      liquidityPassed: afterLiquidityGate,
+      valuationChecked: afterLiquidityGate,
+      valuationPassed80k: afterValuation80kGate,
+      holderCheckAttempted: holderCheckAttemptedCount,
+      holderCheckSucceeded: holderCheckSucceededCount,
+      holdersPassed30: afterHolder30Gate,
+      displayedCount: tokens.length,
+      hiddenBelow80k: hiddenLowValuation,
+      hiddenBelow30Holders: hiddenLowHolders,
+      hiddenMissingHolderCount: hiddenHolderUnavailable,
+      hiddenConcentrationUnavailable,
+      holderCheckBudget: HOLDER_CHECK_BUDGET_CAP,
+      holderCheckBudgetExhausted,
+      discoverySourceCounts: sourceCounts,
+      displayTarget: DISPLAY_TARGET,
       filterStage: !holderProviderReachable && holderCheckAttemptedCount > 0
         ? 'holder-count provider unreachable this cycle — failed closed, 0 candidates shown unverified'
-        : holderCheckAttemptedCount >= HOLDER_CHECK_BUDGET_CAP
+        : holderCheckBudgetExhausted
           ? 'holder-check budget exhausted before reaching display target'
           : passingHolderGateCount >= DISPLAY_TARGET
             ? 'display target reached'
@@ -1086,7 +1098,7 @@ export async function GET(req: NextRequest) {
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
     const hpHitCount = hpCacheHitFlags.filter(Boolean).length
     const hasMorePages = radarPage < 5 && tokens.length > 0
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenLowHolders, hiddenHolderUnavailable, hiddenConcentrationUnavailable }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenLowHolders, hiddenHolderUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, holderProviderReachable }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,

@@ -176,7 +176,7 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   assert.ok(routeSource.includes('shouldContinueHolderChecking'), 'the live loop must use the same tested stopping condition, not a re-implementation')
   // baseRadarCandidateGateAudit must exist and expose the raw-vs-filtered funnel the task asked for,
   // so "displayed count starved by pre-filter cap" is diagnosable from a log line, not a guess.
-  for (const field of ['rawCandidates', 'rankedCandidatesBeforeHolderCheck', 'holderCheckAttemptedCount', 'holderCheckSucceededCount', 'afterLiquidityGate', 'afterValuation80kGate', 'afterHolder30Gate', 'displayedCount', 'hiddenLowValuation', 'hiddenLowHolders', 'hiddenHolderUnavailable', 'hiddenConcentrationUnavailable', 'rawCandidateCap', 'holderCheckCap', 'displayCap', 'filterStage']) {
+  for (const field of ['rawCandidatesFetched', 'rawCandidateCap', 'rankedCandidates', 'liquidityPassed', 'valuationChecked', 'valuationPassed80k', 'holderCheckAttempted', 'holderCheckSucceeded', 'holdersPassed30', 'displayedCount', 'hiddenBelow80k', 'hiddenBelow30Holders', 'hiddenMissingHolderCount', 'hiddenConcentrationUnavailable', 'holderCheckBudget', 'holderCheckBudgetExhausted', 'discoverySourceCounts', 'displayTarget']) {
     assert.ok(routeSource.includes(field), `baseRadarCandidateGateAudit must expose "${field}"`)
   }
 }

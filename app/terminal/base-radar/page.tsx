@@ -73,6 +73,11 @@ interface RadarData {
   hiddenLowHolders?: number
   hiddenHolderUnavailable?: number
   hiddenConcentrationUnavailable?: number
+  // DISCOVERY-DEPTH AUDIT, DISCLOSED: whether the holder-check budget was exhausted before the
+  // checked pool ran out — distinguishes "checked everything, nothing passed" from "ran out of
+  // budget before finishing" for the empty-state message (see EmptyFeed).
+  holderCheckBudgetExhausted?: boolean
+  holderProviderReachable?: boolean
 }
 
 type RadarStatus = 'HOT' | 'WATCH' | 'EARLY' | 'UNVERIFIED' | 'RISKY' | 'DEAD'
@@ -910,14 +915,22 @@ function StagedRadarLoading() {
   )
 }
 
-function EmptyFeed({ limited }: { limited: boolean }) {
+// EMPTY-STATE-REASON, DISCLOSED (requested: a more useful empty message than a generic "try
+// refreshing" — differentiate "checked everything, nothing passed the gate" from "ran out of
+// holder-check budget before finishing the checked pool"). Sourced from the same audit fields the
+// backend already computes (app/api/radar/route.ts's baseRadarCandidateGateAudit) — this never
+// re-derives a reason, it only picks which of the two real outcomes actually happened.
+function EmptyFeed({ limited, holderCheckBudgetExhausted }: { limited: boolean; holderCheckBudgetExhausted: boolean }) {
   return (
     <div style={{ textAlign: 'center', padding: '42px 20px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', border: '1px solid rgba(148,163,184,0.12)', borderRadius: '16px', background: 'rgba(255,255,255,0.025)' }}>
       <div style={{ fontSize: '30px', marginBottom: '12px', opacity: 0.45 }}>◈</div>
       <p style={{ fontSize: '14px', fontWeight: 800, margin: '0 0 8px', color: '#cbd5e1' }}>No strong radar candidates right now.</p>
       <p style={{ fontSize: '12px', fontWeight: 600, margin: 0, lineHeight: 1.45 }}>
-        {limited ? 'Live feed is limited. Try refreshing, changing filters, or scanning a token directly.' : 'Try refreshing, changing filters, or scanning a token directly.'}
+        {holderCheckBudgetExhausted
+          ? 'Holder-check budget reached for this cycle.'
+          : 'No candidates passed the $80K / 30-holder gate in the checked pool. Try refresh or Advanced Filters.'}
       </p>
+      {limited ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#3a5268' }}>Live feed is limited right now.</p> : null}
     </div>
   )
 }
@@ -1770,7 +1783,7 @@ export default function BaseRadarPage() {
               </div>
             )}
 
-            {!loading && tokens.length === 0 && !error && <EmptyFeed limited={Boolean(data?.limitedLiveFeed)} />}
+            {!loading && tokens.length === 0 && !error && <EmptyFeed limited={Boolean(data?.limitedLiveFeed)} holderCheckBudgetExhausted={Boolean(data?.holderCheckBudgetExhausted)} />}
 
             {!loading && tokens.length > 0 && Boolean(data?.limitedLiveFeed) && (
               <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.20)', color: '#fbbf24', fontSize: '11px', marginBottom: '12px', fontFamily: 'var(--font-plex-mono)' }}>
