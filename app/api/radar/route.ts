@@ -951,6 +951,11 @@ export async function GET(req: NextRequest) {
       honeypotCacheHits: hpHitCount,
       honeypotCacheMisses: hpCacheHitFlags.length - hpHitCount,
     }
+    // FUNNEL-LOG, DISCLOSED (requested: "it's not in the logs, add it to the base radar logs" —
+    // filterFunnel was only visible via ?debug=1 in the JSON response, not in Vercel's function
+    // logs). Always logged (not gated behind debug=1) so every request's gate breakdown is visible
+    // in server logs without needing to hit the debug query param from a browser.
+    console.info(`[radar] filterFunnel mergedCount=${candidates.length} finalTokenCount=${tokens.length} hiddenLowEvidenceCount=${hiddenLowEvidenceCount}`, debugPayload.filterFunnel)
     // DON'T-CACHE-A-DEAD-FEED FIX, DISCLOSED (same report as the one-retry fix above): a fully
     // empty result (every upstream source failed even after retrying) used to be cached exactly
     // like a genuinely quiet feed, so it kept being served to every client for the full 30-100s TTL
