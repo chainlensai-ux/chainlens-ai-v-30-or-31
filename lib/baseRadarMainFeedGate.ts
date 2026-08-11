@@ -5,12 +5,15 @@
 // baseRadarSignals.ts) — purely so these exact gate predicates can be unit tested directly
 // (scripts/test-base-radar-main-feed-gate.mjs) without mocking GeckoTerminal/GoldRush/DexScreener
 // HTTP calls. app/api/radar/route.ts imports and calls these; nothing here re-implements them.
-// VALUATION RAISED $45K -> $80K, DISCLOSED (explicitly requested: "$45K-$50K is still extremely
-// low and lets too many weak/dead liquidity coins into the main Radar feed"). Holder floor (30) and
-// the existing liquidity minimum are unchanged — only this single number moved.
+// VALUATION RAISED $45K -> $80K -> $85K, DISCLOSED (explicitly requested each time, most recently:
+// "change the max to 85k market cap" — clarified with the user as raising this floor from $80K to
+// $85K, not adding a separate upper ceiling). HOLDER FLOOR RAISED 30 -> 100, DISCLOSED (explicitly
+// requested: "for holders to be actually minimum 100 holders" — flagged to the user first that this
+// will almost certainly shrink the feed further, since a 2-day-old token rarely has 100 real holders
+// yet; user confirmed to proceed anyway). The existing liquidity minimum is unchanged.
 
-export const MAIN_FEED_MIN_VALUATION_USD = 80_000
-export const MAIN_FEED_MIN_HOLDERS = 30
+export const MAIN_FEED_MIN_VALUATION_USD = 85_000
+export const MAIN_FEED_MIN_HOLDERS = 100
 
 /**
  * A candidate's resolved valuation (verified market cap, or FDV used as fallback — see

@@ -3,14 +3,14 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '../lib/baseRadarMainFeedGate.ts'
 
-assert.equal(MAIN_FEED_MIN_VALUATION_USD, 80_000)
-assert.equal(MAIN_FEED_MIN_HOLDERS, 30)
+assert.equal(MAIN_FEED_MIN_VALUATION_USD, 85_000)
+assert.equal(MAIN_FEED_MIN_HOLDERS, 100)
 
 // ─── Valuation gate ─────────────────────────────────────────────────────────
-// market cap $79,999 excluded
-assert.equal(passesMainFeedValuationGate(79_999), false)
-// market cap $80,000 included (boundary — inclusive, not exclusive)
-assert.equal(passesMainFeedValuationGate(80_000), true)
+// market cap $84,999 excluded
+assert.equal(passesMainFeedValuationGate(84_999), false)
+// market cap $85,000 included (boundary — inclusive, not exclusive)
+assert.equal(passesMainFeedValuationGate(85_000), true)
 assert.equal(passesMainFeedValuationGate(100_000), true)
 // valuation unavailable (null/undefined) excluded — never bypasses the gate
 assert.equal(passesMainFeedValuationGate(null), false)
@@ -18,11 +18,11 @@ assert.equal(passesMainFeedValuationGate(undefined), false)
 assert.equal(passesMainFeedValuationGate(NaN), false)
 
 // ─── Holder gate ────────────────────────────────────────────────────────────
-// holders 29 excluded
-assert.equal(passesMainFeedHolderGate(29), false)
-// holders 30 included (boundary)
-assert.equal(passesMainFeedHolderGate(30), true)
-assert.equal(passesMainFeedHolderGate(35), true)
+// holders 99 excluded
+assert.equal(passesMainFeedHolderGate(99), false)
+// holders 100 included (boundary)
+assert.equal(passesMainFeedHolderGate(100), true)
+assert.equal(passesMainFeedHolderGate(150), true)
 // holders null/N/A/open-check/unavailable must never count as passing
 assert.equal(passesMainFeedHolderGate(null), false)
 assert.equal(passesMainFeedHolderGate(undefined), false)
@@ -43,10 +43,10 @@ assert.equal(isRealVerifiedMarketCapValue(null, 50_000), false)
 // this is exactly the "FDV fallback does not bypass evidence warnings" case: the gate check and the
 // fallback-labeling check are independent, so passing one never silently satisfies the other.
 {
-  const fdvFallbackValuationUsd = 90_000 // what getRadarValuationBasis's flattening reports for a valid FDV fallback
+  const fdvFallbackValuationUsd = 95_000 // what getRadarValuationBasis's flattening reports for a valid FDV fallback
   const rawMarketCapStatus = null // the real, pre-flattening marketCapStatus for this candidate
   const rawMarketCapUsd = null
-  assert.equal(passesMainFeedValuationGate(fdvFallbackValuationUsd), true, 'FDV-derived valuation still clears the $80K gate')
+  assert.equal(passesMainFeedValuationGate(fdvFallbackValuationUsd), true, 'FDV-derived valuation still clears the $85K gate')
   assert.equal(isRealVerifiedMarketCapValue(rawMarketCapStatus, rawMarketCapUsd), false, 'but is correctly flagged as not a real verified market cap, so the fallback evidence gap still attaches')
 }
 
@@ -73,14 +73,14 @@ assert.ok(!CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP.toLowerCase().includes('open c
 // holders=null fails the holder gate
 assert.equal(passesMainFeedHolderGate(null), false)
 
-// holders=29 fails / holders=30 passes if valuation/liquidity pass (boundary, restated together
+// holders=99 fails / holders=100 passes if valuation/liquidity pass (boundary, restated together
 // with a passing valuation to mirror the exact scenario the task describes)
-assert.equal(passesMainFeedHolderGate(29) && passesMainFeedValuationGate(90_000), false)
-assert.equal(passesMainFeedHolderGate(30) && passesMainFeedValuationGate(90_000), true)
+assert.equal(passesMainFeedHolderGate(99) && passesMainFeedValuationGate(90_000), false)
+assert.equal(passesMainFeedHolderGate(100) && passesMainFeedValuationGate(90_000), true)
 
-// marketCap=79,999 excluded / marketCap=80,000 included if holder/liquidity pass
-assert.equal(passesMainFeedValuationGate(79_999) && passesMainFeedHolderGate(30), false)
-assert.equal(passesMainFeedValuationGate(80_000) && passesMainFeedHolderGate(30), true)
+// marketCap=84,999 excluded / marketCap=85,000 included if holder/liquidity pass
+assert.equal(passesMainFeedValuationGate(84_999) && passesMainFeedHolderGate(100), false)
+assert.equal(passesMainFeedValuationGate(85_000) && passesMainFeedHolderGate(100), true)
 
 // ─── Holder-check budget loop (starvation fix #2) ──────────────────────────
 // shouldContinueHolderChecking IS the exact condition app/api/radar/route.ts's while-loop uses

@@ -59,8 +59,8 @@ interface RadarData {
   mode?: 'shallow' | 'full'
   page?: number
   hasMore?: boolean
-  // MAIN-FEED-QUALITY-GATE, DISCLOSED: count of candidates the backend's stricter $80K valuation /
-  // 30-holder gate hid from this response (app/api/radar/route.ts's hiddenLowEvidenceCount) — not
+  // MAIN-FEED-QUALITY-GATE, DISCLOSED: count of candidates the backend's stricter $85K valuation /
+  // 100-holder gate hid from this response (app/api/radar/route.ts's hiddenLowEvidenceCount) — not
   // the pre-existing liquidity/dead-volume filters, just the two new gates. Optional/undefined on
   // any cached payload from before this field existed.
   hiddenLowEvidenceCount?: number
@@ -711,17 +711,17 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
   // GATE-REASON-BREAKDOWN, DISCLOSED (requested: separate low valuation / low holders / missing
   // holder count instead of one combined number, and make explicit that concentration gaps never
   // remove a candidate that already passed the real 30-holder count gate).
-  // VALUATION RAISED $45K -> $80K, DISCLOSED (explicitly requested: "$45K-$50K is still extremely
-  // low and lets too many weak/dead liquidity coins into the main Radar feed" — main feed should
-  // "feel higher quality"). Holder floor (30) and the liquidity minimum are unchanged.
+  // VALUATION RAISED $45K -> $80K -> $85K, HOLDER FLOOR RAISED 30 -> 100, DISCLOSED (explicitly
+  // requested each time, most recently: "change the max to 85k market cap and for holders to be
+  // actually minimum 100 holders"). The liquidity minimum is unchanged.
   const hideReasonParts = [
-    summary.hiddenLowValuation > 0 ? `${summary.hiddenLowValuation} below $80K valuation` : null,
-    summary.hiddenLowHolders > 0 ? `${summary.hiddenLowHolders} below 30 holders` : null,
+    summary.hiddenLowValuation > 0 ? `${summary.hiddenLowValuation} below $85K valuation` : null,
+    summary.hiddenLowHolders > 0 ? `${summary.hiddenLowHolders} below 100 holders` : null,
     summary.hiddenHolderUnavailable > 0 ? `${summary.hiddenHolderUnavailable} missing holder count` : null,
   ].filter((p): p is string => p != null)
   const gateExplainer = hideReasonParts.length > 0
-    ? `Main radar filters out candidates below $80K valuation or below 30 holders — ${hideReasonParts.join(', ')}.`
-    : 'Main radar filters out candidates below $80K valuation or below 30 holders.'
+    ? `Main radar filters out candidates below $85K valuation or below 100 holders — ${hideReasonParts.join(', ')}.`
+    : 'Main radar filters out candidates below $85K valuation or below 100 holders.'
   const concentrationNote = 'Concentration gaps do not remove candidates that pass holder count.'
   const warnings = [
     summary.unverified > 0 ? `${summary.unverified} checks need more evidence.` : 'No open verification cluster in the current results.',
@@ -928,7 +928,7 @@ function EmptyFeed({ limited, holderCheckBudgetExhausted }: { limited: boolean; 
       <p style={{ fontSize: '12px', fontWeight: 600, margin: 0, lineHeight: 1.45 }}>
         {holderCheckBudgetExhausted
           ? 'Holder-check budget reached for this cycle.'
-          : 'No candidates passed the $80K / 30-holder gate in the checked pool. Try refresh or Advanced Filters.'}
+          : 'No candidates passed the $85K / 100-holder gate in the checked pool. Try refresh or Advanced Filters.'}
       </p>
       {limited ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#3a5268' }}>Live feed is limited right now.</p> : null}
     </div>
@@ -1624,7 +1624,7 @@ export default function BaseRadarPage() {
                 Fresh pools and early momentum signals
               </p>
               <p style={{ fontSize: '11px', color: '#5b7186', margin: '0 0 10px', maxWidth: '760px', lineHeight: 1.4, fontFamily: 'var(--font-plex-mono)' }}>
-                Default feed filters out pools under $80K valuation, below 30 holders, or shallow liquidity. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
+                Default feed filters out pools under $85K valuation, below 100 holders, or shallow liquidity. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
               </p>
             </>
           ) : (
@@ -1834,7 +1834,7 @@ export default function BaseRadarPage() {
             )}
             {!loading && !loadingMore && loadMoreExhausted && (
               <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#64748b', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
-                No more candidates passed the $80K / 30-holder gate in this cycle.
+                No more candidates passed the $85K / 100-holder gate in this cycle.
               </p>
             )}
           </div>
