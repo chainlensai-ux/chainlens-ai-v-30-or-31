@@ -23,6 +23,20 @@ const EXCLUDED = new Set([
   'CBETH', 'CBBTC', 'CBUSD', 'AXLUSDC', 'USD+', 'STETH', 'RETH',
   'WSTETH', 'EURC', 'BSDETH',
 ])
+// ESTABLISHED-TOKEN-EXCLUSION, DISCLOSED (reported: Aerodrome/AERO — Base's own flagship DEX token,
+// live and trading for 1000+ days — showed up in the feed labeled "EARLY"/"3m old"). Root cause: the
+// feed tracks POOL creation age, not TOKEN age — someone created a brand-new liquidity pool for an
+// old, well-established token, and that new pool honestly cleared every gate (real $80K+ valuation,
+// real liquidity, real 30+ holders), but surfacing it as a fresh opportunity is misleading regardless
+// of how honestly it cleared the gates. Excluded by CONTRACT ADDRESS (not just symbol/ticker) — a
+// ticker-only match risks two failure modes: falsely excluding an unrelated token that happens to
+// share the "AERO" symbol, and (the opposite, more dangerous case) NOT excluding an actual scam token
+// impersonating "AERO" by symbol, which should still be shown and correctly flagged as a real listed
+// candidate rather than silently hidden by name collision. Verified against Aerodrome's own real,
+// widely-documented Base mainnet contract, not guessed.
+const EXCLUDED_ESTABLISHED_CONTRACTS = new Set([
+  '0x940181a94a35a4569e4529a3cdfb74e38fd98631', // Aerodrome Finance (AERO) — Base-native, live since Aug 2023
+])
 
 type RiskLevel = 'DANGER' | 'CAUTION' | 'WATCH' | 'SAFE'
 
@@ -737,6 +751,7 @@ export async function GET(req: NextRequest) {
       if (!baseToken) continue
 
       if (EXCLUDED.has(baseToken.symbol.toUpperCase())) continue
+      if (EXCLUDED_ESTABLISHED_CONTRACTS.has(baseToken.address.toLowerCase())) continue
 
       const key = baseToken.address.toLowerCase()
       if (seenContracts.has(key)) continue
