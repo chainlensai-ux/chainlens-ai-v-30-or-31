@@ -123,24 +123,39 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Pro
 const GOLDRUSH_RADAR_HOSTS = ['api.covalenthq.com'] as const
 const HOLDER_COUNT_CACHE_TTL_MS = 10 * 60_000
 const holderCountCache = new Map<string, { count: number | null; expiresAt: number }>()
+// SINGLE-HOST RETRY, DISCLOSED (found via live baseRadarSourceAudit output: 3 real candidates
+// cleared liquidity AND the $80K valuation gate, but all 3 holder-count checks failed the same
+// cycle — holderCheckSucceeded: 0 of 3 — triggering the fail-closed path and zeroing an otherwise-
+// real feed). With the dead fallback host already removed, this call has zero retry on a transient
+// blip of the one remaining host — a single momentary failure (a brief 5xx, a dropped connection)
+// now takes down the whole cycle's holder evidence instead of just costing one extra request. One
+// retry with a short backoff absorbs that class of transient failure, same pattern already used for
+// the GeckoTerminal source fetch elsewhere in this file.
 async function fetchBaseHolderCount(contract: string): Promise<number | null> {
   const key = contract.toLowerCase()
   const cached = holderCountCache.get(key)
   if (cached && cached.expiresAt > Date.now()) return cached.count
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
   if (!apiKey) return null
-  let result: number | null = null
-  for (const host of GOLDRUSH_RADAR_HOSTS) {
-    try {
-      const res = await fetch(
-        `https://${host}/v1/base-mainnet/tokens/${contract}/token_holders_v2/?page-number=0&page-size=1`,
-        { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(3500) },
-      )
-      if (!res.ok) continue
-      const json = await res.json().catch(() => null) as { data?: { pagination?: { total_count?: number } } } | null
-      const totalCount = json?.data?.pagination?.total_count
-      if (typeof totalCount === 'number' && Number.isFinite(totalCount)) { result = totalCount; break }
-    } catch { /* try next host */ }
+  const attempt = async (): Promise<number | null> => {
+    for (const host of GOLDRUSH_RADAR_HOSTS) {
+      try {
+        const res = await fetch(
+          `https://${host}/v1/base-mainnet/tokens/${contract}/token_holders_v2/?page-number=0&page-size=1`,
+          { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(3500) },
+        )
+        if (!res.ok) continue
+        const json = await res.json().catch(() => null) as { data?: { pagination?: { total_count?: number } } } | null
+        const totalCount = json?.data?.pagination?.total_count
+        if (typeof totalCount === 'number' && Number.isFinite(totalCount)) return totalCount
+      } catch { /* try next host, then the retry below */ }
+    }
+    return null
+  }
+  let result = await attempt()
+  if (result == null) {
+    await new Promise(resolve => setTimeout(resolve, 300))
+    result = await attempt()
   }
   // Cache negative/failed lookups too (shorter-lived) so a rate-limited burst doesn't get re-tried
   // on every candidate on the very next refresh, compounding the same rate-limit problem.
