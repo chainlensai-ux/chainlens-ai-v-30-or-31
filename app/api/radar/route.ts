@@ -137,7 +137,7 @@ const holderCountCache = new Map<string, { count: number | null; reason?: 'ok' |
 // contract" — every one of those looked identical from the outside). Returns the real reason
 // alongside the count so a persistent (not just transient) provider problem is provable from the
 // response instead of guessed at from a bare null.
-type HolderCountResult = { count: number | null; reason: 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data' }
+type HolderCountResult = { count: number | null; reason: 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data'; httpStatus?: number | null; errorBody?: string | null }
 async function fetchBaseHolderCount(contract: string): Promise<HolderCountResult> {
   const key = contract.toLowerCase()
   const cached = holderCountCache.get(key)
@@ -146,13 +146,26 @@ async function fetchBaseHolderCount(contract: string): Promise<HolderCountResult
   if (!apiKey) return { count: null, reason: 'no_api_key' }
   const attempt = async (): Promise<HolderCountResult> => {
     let lastReason: HolderCountResult['reason'] = 'no_data'
+    let lastStatus: number | null = null
+    let lastBody: string | null = null
     for (const host of GOLDRUSH_RADAR_HOSTS) {
       try {
         const res = await fetch(
           `https://${host}/v1/base-mainnet/tokens/${contract}/token_holders_v2/?page-number=0&page-size=1`,
           { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(3500) },
         )
-        if (!res.ok) { lastReason = res.status === 429 ? 'rate_limited' : 'http_error'; continue }
+        // STATUS-CODE VISIBILITY, DISCLOSED (found via live audit: holderCheckFailureReasons showed
+        // {http_error: 3} on every single attempted candidate — 'http_error' alone can't distinguish
+        // a bad/expired API key (401), a forbidden key/plan (403), a bad endpoint (404), or a real
+        // provider-side outage (5xx), each of which needs a completely different fix). Captures the
+        // real status code and a short response body snippet so the actual cause is provable from
+        // the next live capture instead of another guess.
+        if (!res.ok) {
+          lastStatus = res.status
+          lastBody = await res.text().catch(() => '').then(t => t.slice(0, 200))
+          lastReason = res.status === 429 ? 'rate_limited' : 'http_error'
+          continue
+        }
         const json = await res.json().catch(() => null) as { data?: { pagination?: { total_count?: number } } } | null
         const totalCount = json?.data?.pagination?.total_count
         if (typeof totalCount === 'number' && Number.isFinite(totalCount)) return { count: totalCount, reason: 'ok' }
@@ -161,7 +174,7 @@ async function fetchBaseHolderCount(contract: string): Promise<HolderCountResult
         lastReason = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError') ? 'timeout' : 'http_error'
       }
     }
-    return { count: null, reason: lastReason }
+    return { count: null, reason: lastReason, httpStatus: lastStatus, errorBody: lastBody }
   }
   let result = await attempt()
   if (result.count == null) {
@@ -923,6 +936,7 @@ export async function GET(req: NextRequest) {
     const HOLDER_CHECK_CONCURRENCY = 8
     const holderCountByContract = new Map<string, number | null>()
     const holderCheckFailureReasons: Record<string, number> = {}
+    const holderCheckFailureSample: { httpStatus: number | null; errorBody: string | null }[] = []
     const holderCheckedCandidates: Candidate[] = []
     let holderCheckAttemptedCount = 0
     let passingHolderGateCount = 0
@@ -951,6 +965,7 @@ export async function GET(req: NextRequest) {
           const holderResult = resultByContract.get(t.contract.toLowerCase())
           if (holderResult && holderResult.reason !== 'ok') {
             holderCheckFailureReasons[holderResult.reason] = (holderCheckFailureReasons[holderResult.reason] ?? 0) + 1
+            if (holderCheckFailureSample.length < 5) holderCheckFailureSample.push({ httpStatus: holderResult.httpStatus ?? null, errorBody: holderResult.errorBody ?? null })
           }
           const holderCount = holderCountByContract.get(t.contract.toLowerCase())
           if (passesMainFeedHolderGate(holderCount)) passingHolderGateCount++
@@ -1147,6 +1162,7 @@ export async function GET(req: NextRequest) {
       holderCheckBudget: HOLDER_CHECK_BUDGET_CAP,
       holderCheckBudgetExhausted,
       holderCheckFailureReasons,
+      holderCheckFailureSample,
       discoverySourceCounts: sourceCounts,
       displayTarget: DISPLAY_TARGET,
       filterStage: !holderProviderReachable && holderCheckAttemptedCount > 0
@@ -1198,6 +1214,7 @@ export async function GET(req: NextRequest) {
         holders_unavailable: droppedByHoldersUnavailable,
       },
       holderCheckFailureReasons,
+      holderCheckFailureSample,
     }
 
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
