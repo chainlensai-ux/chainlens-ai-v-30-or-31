@@ -413,7 +413,14 @@ export async function GET(req: NextRequest) {
   // 1-2, etc.), so "Load More" surfaces genuinely different tokens rather than re-showing the same
   // top 50. Capped at 5 — GeckoTerminal's own pool listings get sparse/stale much past that.
   const radarPage = Math.min(5, Math.max(1, Math.floor(Number(req.nextUrl.searchParams.get('page')) || 1)))
-  const cacheKeyBase = `plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:page:${radarPage}`
+  // CACHE-VERSION, DISCLOSED (requested: ensure a stale cached tiny/empty result can't survive a
+  // threshold/gate change). The in-memory radarPayloadCache Map naturally resets on a cold serverless
+  // start (a new deploy = a new process = a new empty Map) in the normal case, but Vercel's rolling
+  // deploys can briefly keep a warm instance alive across a deploy — folding the actual gate
+  // thresholds into the cache key means any change to them (like this session's $45K -> $80K raise,
+  // or a future one) can never accidentally serve a payload computed under the OLD thresholds; it's
+  // simply a different cache key, so a cold miss forces a real re-run of the current pipeline.
+  const cacheKeyBase = `plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:page:${radarPage}:gate:${MAIN_FEED_MIN_VALUATION_USD}:${MAIN_FEED_MIN_HOLDERS}`
   const fullCacheKey = `${cacheKeyBase}:mode:full`
   const shallowCacheKey = `${cacheKeyBase}:mode:shallow`
   const preferredCacheKey = requestedMode === 'full' ? fullCacheKey : shallowCacheKey
@@ -619,11 +626,22 @@ export async function GET(req: NextRequest) {
     let droppedByDeadVolumeFloor = 0
     let droppedByValuationUnavailable = 0
     let droppedByMarketCapBelow80k = 0
+    // SOURCE-AUDIT, DISCLOSED (requested: a full baseRadarSourceAudit proving whether starvation is
+    // real discovery-depth loss vs. an accidental cap/slice). rawTotalBeforeDedupe is the literal
+    // count of pool entries GeckoTerminal returned across every source this cycle, before ANY
+    // filtering — read directly, not derived. dedupedPoolCount counts entries that survive the very
+    // first filter (duplicate pool listing across sources/pages), and passedAgeWindowCount counts
+    // entries that additionally have a real createdAt and fall inside the age window — both
+    // incremented at their own real `continue` sites below, not re-derived after the fact.
+    const rawTotalBeforeDedupe = pooled.length
+    let dedupedPoolCount = 0
+    let passedAgeWindowCount = 0
 
     for (const pool of pooled) {
       const poolId = String(pool.id ?? '').toLowerCase()
       if (poolId && seenPools.has(poolId)) continue
       if (poolId) seenPools.add(poolId)
+      dedupedPoolCount++
       const attrs = pool.attributes  as Record<string, unknown>         | undefined
       const rels  = pool.relationships as Record<string, unknown>       | undefined
       const volObj = attrs?.volume_usd as Record<string, string>        | undefined
@@ -662,6 +680,7 @@ export async function GET(req: NextRequest) {
       // 24h -> 3 days, see THREE_DAY_MS's own header comment above.
       const isFallbackAgeWindow = ageMs < THREE_DAY_MS
       if (!isPrimaryAgeWindow && !isFallbackAgeWindow) continue
+      passedAgeWindowCount++
 
       const baseData    = ((rels?.base_token as Record<string, unknown>)?.data) as Record<string, string> | undefined
       const baseToken   = baseData?.id ? tokenMap.get(baseData.id) : undefined
@@ -1104,6 +1123,47 @@ export async function GET(req: NextRequest) {
             : 'ranked candidate pool exhausted before reaching display target or budget',
     }
 
+    // SOURCE-AUDIT, DISCLOSED (requested: a full baseRadarSourceAudit to distinguish real upstream
+    // discovery-depth loss from an accidental cap/slice/cache bug — every field here is read
+    // directly off a counter incremented at its own real site above, never re-derived or guessed).
+    // runtimeCommitSha comes from Vercel's own build-time env var (VERCEL_GIT_COMMIT_SHA) so a
+    // report can be matched to the exact deployed code, not assumed. rejectionReasons intentionally
+    // mirrors filterFunnel below rather than duplicating its computation.
+    const baseRadarSourceAudit = {
+      runtimeCommitSha: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
+      discoverySourcesUsed: Object.keys(sourceCounts),
+      rawFromEachSource: sourceCounts,
+      rawTotalBeforeDedupe,
+      afterDedupe: dedupedPoolCount,
+      afterAgeWindow: passedAgeWindowCount,
+      afterLiquidityMinimum: afterLiquidityGate,
+      afterValuationAvailable: afterLiquidityGate - droppedByValuationUnavailable,
+      afterValuation80k: afterValuation80kGate,
+      holderCheckEligible: rankedCandidates.length,
+      holderCheckAttempted: holderCheckAttemptedCount,
+      holderCheckSucceeded: holderCheckSucceededCount,
+      afterHolder30: afterHolder30Gate,
+      displayedCount: tokens.length,
+      caps: {
+        sourceLimit: sourcesAttempted,
+        rawCandidateCap: RANKED_CANDIDATES_CAP,
+        dedupeCap: null,
+        rankingCap: RANKED_CANDIDATES_CAP,
+        holderCheckCap: HOLDER_CHECK_BUDGET_CAP,
+        displayCap: DISPLAY_TARGET,
+      },
+      rejectionReasons: {
+        v4_liquidity_unverified: droppedByV4Pool,
+        liquidity_below_minimum: droppedByAbsoluteLiquidityFloor + droppedByLiquidityFloorSpecifically,
+        dead_volume_excluded: droppedByDeadVolumeFloor,
+        valuation_or_liquidity_excluded: droppedByValuationOrLiquidity,
+        valuation_unavailable: droppedByValuationUnavailable,
+        market_cap_below_80k: droppedByMarketCapBelow80k,
+        holders_below_30: droppedByHoldersBelow30,
+        holders_unavailable: droppedByHoldersUnavailable,
+      },
+    }
+
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
     const hpHitCount = hpCacheHitFlags.filter(Boolean).length
     const hasMorePages = radarPage < 5 && tokens.length > 0
@@ -1126,6 +1186,7 @@ export async function GET(req: NextRequest) {
         evidence_gap_capped: evidenceGapCappedCount,
       },
       baseRadarCandidateGateAudit,
+      baseRadarSourceAudit,
       hiddenLowEvidenceCount,
       finalTokenCount: tokens.length,
       cacheHit: false,
@@ -1142,6 +1203,7 @@ export async function GET(req: NextRequest) {
     // in server logs without needing to hit the debug query param from a browser.
     console.info(`[radar] filterFunnel mergedCount=${candidates.length} finalTokenCount=${tokens.length} hiddenLowEvidenceCount=${hiddenLowEvidenceCount}`, debugPayload.filterFunnel)
     console.info('[radar] baseRadarCandidateGateAudit', baseRadarCandidateGateAudit)
+    console.info('[radar] baseRadarSourceAudit', baseRadarSourceAudit)
     console.info(`[radar] nearMissSample (${nearMissSample.length} candidates cleared liquidity/activity, before the $80K gate)`, nearMissSample.slice(0, 30))
     // DON'T-CACHE-A-DEAD-FEED FIX, DISCLOSED (same report as the one-retry fix above): a fully
     // empty result (every upstream source failed even after retrying) used to be cached exactly

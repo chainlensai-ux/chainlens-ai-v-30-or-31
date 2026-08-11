@@ -179,6 +179,22 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   for (const field of ['rawCandidatesFetched', 'rawCandidateCap', 'rankedCandidates', 'liquidityPassed', 'valuationChecked', 'valuationPassed80k', 'holderCheckAttempted', 'holderCheckSucceeded', 'holdersPassed30', 'displayedCount', 'hiddenBelow80k', 'hiddenBelow30Holders', 'hiddenMissingHolderCount', 'hiddenConcentrationUnavailable', 'holderCheckBudget', 'holderCheckBudgetExhausted', 'discoverySourceCounts', 'displayTarget']) {
     assert.ok(routeSource.includes(field), `baseRadarCandidateGateAudit must expose "${field}"`)
   }
+
+  // ─── baseRadarSourceAudit must exist with the full requested schema ─────────────────────────
+  assert.ok(routeSource.includes('baseRadarSourceAudit'), 'baseRadarSourceAudit must exist')
+  for (const field of ['runtimeCommitSha', 'discoverySourcesUsed', 'rawFromEachSource', 'rawTotalBeforeDedupe', 'afterDedupe', 'afterAgeWindow', 'afterLiquidityMinimum', 'afterValuationAvailable', 'afterValuation80k', 'holderCheckEligible', 'rejectionReasons']) {
+    assert.ok(routeSource.includes(field), `baseRadarSourceAudit must expose "${field}"`)
+  }
+
+  // ─── No accidental pre-filter slice/top-N cap ahead of the valuation/holder gates ────────────
+  // The only small-number .slice(0, N) calls in this file must be for things that run AFTER
+  // filtering (Clark AI verdicts on the top 5 already-final tokens, the debug nearMissSample log
+  // cap) — never a hidden cap on the raw/ranked candidate pool itself before the gates run.
+  const smallSlices = [...routeSource.matchAll(/\.slice\(0,\s*(\d+)\)/g)].map(m => Number(m[1])).filter(n => n <= 30)
+  assert.ok(smallSlices.length <= 2, `found ${smallSlices.length} small-N .slice(0, <=30) calls (expected at most 2: the top-5 Clark verdict slice and the 30-entry nearMissSample log cap) — a new one could be an accidental pre-filter cap: ${smallSlices.join(', ')}`)
+
+  // ─── Cache key includes the gate thresholds (stale-cache-after-threshold-change fix) ─────────
+  assert.ok(routeSource.includes('MAIN_FEED_MIN_VALUATION_USD') && /cacheKeyBase\s*=[\s\S]{0,400}MAIN_FEED_MIN_VALUATION_USD/.test(routeSource), 'the cache key must fold in MAIN_FEED_MIN_VALUATION_USD so a threshold change can never serve a stale payload computed under the old gate')
 }
 
 console.log('test-base-radar-main-feed-gate.mjs: all assertions passed')
