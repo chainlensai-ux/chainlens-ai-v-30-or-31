@@ -700,6 +700,13 @@ export async function GET(req: NextRequest) {
     const rawTotalBeforeDedupe = pooled.length
     let dedupedPoolCount = 0
     let passedAgeWindowCount = 0
+    // AUDIT-COMPLETENESS FIX, DISCLOSED (found via code review after the AERO exclusion shipped):
+    // that exclusion dropped candidates silently, with no counter — after passedAgeWindowCount++,
+    // afterAgeWindow (baseRadarSourceAudit) would no longer reconcile with afterLiquidityMinimum via
+    // any documented rejection reason, reproducing the exact class of unexplained funnel gap this
+    // audit object exists to prevent (see the AUDIT-MATH-BUG-FIX comment further down, from an
+    // earlier untracked double-count that produced impossible negative numbers).
+    let droppedByEstablishedToken = 0
 
     for (const pool of pooled) {
       const poolId = String(pool.id ?? '').toLowerCase()
@@ -751,7 +758,7 @@ export async function GET(req: NextRequest) {
       if (!baseToken) continue
 
       if (EXCLUDED.has(baseToken.symbol.toUpperCase())) continue
-      if (EXCLUDED_ESTABLISHED_CONTRACTS.has(baseToken.address.toLowerCase())) continue
+      if (EXCLUDED_ESTABLISHED_CONTRACTS.has(baseToken.address.toLowerCase())) { droppedByEstablishedToken++; continue }
 
       const key = baseToken.address.toLowerCase()
       if (seenContracts.has(key)) continue
@@ -1230,6 +1237,7 @@ export async function GET(req: NextRequest) {
         displayCap: DISPLAY_TARGET,
       },
       rejectionReasons: {
+        established_token_excluded: droppedByEstablishedToken,
         v4_liquidity_unverified: droppedByV4Pool,
         liquidity_below_minimum: droppedByAbsoluteLiquidityFloor + droppedByLiquidityFloorSpecifically,
         dead_volume_excluded: droppedByDeadVolumeFloor,
