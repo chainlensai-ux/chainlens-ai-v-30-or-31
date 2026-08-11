@@ -101,12 +101,15 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Pro
 // drops anything under MAIN_FEED_MIN_HOLDERS. An unresolved/failed holder-count lookup is treated
 // as failing the bar too (same unknown-≠-safe principle as the rest of this route's risk scoring) —
 // this filter should never leak a token through just because the provider call errored.
-// MAIN-FEED-QUALITY-GATE, DISCLOSED (requested: stricter main-feed gate — $45K minimum valuation,
+// MAIN-FEED-QUALITY-GATE, DISCLOSED (requested: stricter main-feed gate — $80K minimum valuation,
 // 30 minimum holders, real holder evidence required, no dead-liquidity coins ranking as radar
 // opportunities). Raised from the prior 25-holder floor to the requested 30; unresolved/failed
-// holder-count lookups still fail the bar (unchanged — same unknown-≠-safe principle). Constants and
-// gate predicates live in lib/baseRadarMainFeedGate.ts (imported above) so they're unit-testable
-// without mocking this route's HTTP calls — see scripts/test-base-radar-main-feed-gate.mjs.
+// holder-count lookups still fail the bar (unchanged — same unknown-≠-safe principle). Valuation
+// itself later raised again from $45K to $80K (explicitly requested: "$45K-$50K is still extremely
+// low and lets too many weak/dead liquidity coins into the main Radar feed") — holder floor and the
+// existing liquidity minimum untouched by that change. Constants and gate predicates live in
+// lib/baseRadarMainFeedGate.ts (imported above) so they're unit-testable without mocking this
+// route's HTTP calls — see scripts/test-base-radar-main-feed-gate.mjs.
 // HOST-FIX + RATE-LIMIT-BUDGET, DISCLOSED (reported: after this filter shipped, holder data went
 // dark app-wide — Top1/10/20 stuck at N/A even in the token drawer, not just the feed). Server logs
 // showed api.covalenthq.com returning 429 (rate-limited) and the "fallback" host api.goldrush.dev
@@ -597,7 +600,7 @@ export async function GET(req: NextRequest) {
     let droppedByAbsoluteLiquidityFloor = 0
     let droppedByDeadVolumeFloor = 0
     let droppedByValuationUnavailable = 0
-    let droppedByMarketCapBelow45k = 0
+    let droppedByMarketCapBelow80k = 0
 
     for (const pool of pooled) {
       const poolId = String(pool.id ?? '').toLowerCase()
@@ -768,24 +771,24 @@ export async function GET(req: NextRequest) {
       // THRESHOLD-EXPLORATION LOG, DISCLOSED (requested: "would $50K valuation / $15K liquidity /
       // 30 holders get us a couple tokens" — the aggregate audit counts can't answer that, only each
       // candidate's real numbers can). Logs every candidate that's already cleared liquidity/
-      // activity, before the $45K gate decides its fate, so different threshold combinations can be
+      // activity, before the $80K gate decides its fate, so different threshold combinations can be
       // checked against real live data instead of guessing. Holder count isn't included here (it's
       // only resolved later, budget-limited, for the ranked subset) — this only answers the
       // valuation/liquidity half of the question.
       nearMissSample.push({ symbol: baseToken.symbol, contract: baseToken.address, liquidityUsd: Math.round(liquidityUsd), valuationUsd: valuation.valueUsd != null ? Math.round(valuation.valueUsd) : null, marketCapStatus })
-      // MAIN-FEED-QUALITY-GATE, DISCLOSED (requested: stricter main-feed floor — $45K minimum
+      // MAIN-FEED-QUALITY-GATE, DISCLOSED (requested: stricter main-feed floor — $80K minimum
       // valuation, real holder evidence required, no dead-liquidity coins ranking as opportunities).
       // getRadarValuationBasis (lib/baseRadarValuation.ts) flattens a real market cap and an FDV
       // fallback into a single "verified_market_cap" basis by explicit prior product decision (FDV
       // is shown as "Market Cap" everywhere with no distinct fallback label) — that shared display
       // behavior is intentionally left untouched here. This gate instead tracks, locally, whether
       // THIS candidate's number came from a real marketCapUsd or was FDV-derived, purely to (a)
-      // decide whether the $45K floor was actually cleared and (b) attach an explicit fallback
+      // decide whether the $80K floor was actually cleared and (b) attach an explicit fallback
       // evidence gap so a FDV-sourced valuation can never look identical to a real confirmed market
       // cap in the reasons shown for this candidate, without changing the shared valuation display.
       const isRealVerifiedMarketCap = isRealVerifiedMarketCapValue(marketCapStatus, marketCapUsd)
       if (valuation.valueUsd == null) { droppedByValuationUnavailable++; continue }
-      if (!passesMainFeedValuationGate(valuation.valueUsd)) { droppedByMarketCapBelow45k++; continue }
+      if (!passesMainFeedValuationGate(valuation.valueUsd)) { droppedByMarketCapBelow80k++; continue }
       const valuationCardDisplay = getRadarValuationCardDisplay(valuation, fmtK)
       const valuationEvidenceGap = getRadarValuationEvidenceGap(valuation)
       const evidenceGaps = [
@@ -1007,11 +1010,11 @@ export async function GET(req: NextRequest) {
       dangerCount, cautionCount, watchCount, safeCount,
     }
 
-    // MAIN-FEED-QUALITY-GATE, DISCLOSED: candidates hidden specifically by the stricter $45K
+    // MAIN-FEED-QUALITY-GATE, DISCLOSED: candidates hidden specifically by the stricter $80K
     // valuation / 30-holder gate (not the pre-existing liquidity/dead-volume/V4 filters, which were
     // already silently dropping candidates before this task). Surfaced to the frontend so the CORTEX
     // panel can honestly say how many were hidden, instead of the gate being invisible.
-    const hiddenLowValuation = droppedByMarketCapBelow45k + droppedByValuationUnavailable
+    const hiddenLowValuation = droppedByMarketCapBelow80k + droppedByValuationUnavailable
     const hiddenLowHolders = droppedByHoldersBelow30
     const hiddenHolderUnavailable = droppedByHoldersUnavailable
     // CONCENTRATION-IS-NOT-HOLDER-UNAVAILABLE, DISCLOSED: concentration (top1/10/20) is never
@@ -1027,13 +1030,13 @@ export async function GET(req: NextRequest) {
     // CANDIDATE-GATE-AUDIT, DISCLOSED (requested: "add audit baseRadarCandidateGateAudit" — exact
     // funnel counts at each real stage of this pipeline, so a future "feed too thin" report can be
     // diagnosed from a single log line instead of guessing whether the raw pool, the liquidity gate,
-    // the $45K valuation gate, or the 30-holder gate is what's actually starving the feed).
-    // afterLiquidityGate/afterValuation45kGate read straight off the counters already incremented at
+    // the $80K valuation gate, or the 30-holder gate is what's actually starving the feed).
+    // afterLiquidityGate/afterValuation80kGate read straight off the counters already incremented at
     // each real `continue` site above — this is bookkeeping on the existing control flow, not a
     // second implementation of it. afterHolder30Gate is `toCheck.length` directly: that array IS the
     // real post-holder-gate set (or empty on a provider outage — see the fail-closed comment above),
     // so this can never drift from what actually happened.
-    // AUDIT-MATH-BUG-FIX, DISCLOSED (found via live output: afterLiquidityGate/afterValuation45kGate
+    // AUDIT-MATH-BUG-FIX, DISCLOSED (found via live output: afterLiquidityGate/afterValuation80kGate
     // showed impossible negative numbers, e.g. -62 and -68). Root cause: droppedByV4Pool used to be
     // incremented in the EARLIER per-pool loop that builds `drafts` (dropping V4 pools before they
     // ever became a draft), so `drafts.length` already excluded them — but this formula subtracted
@@ -1043,7 +1046,7 @@ export async function GET(req: NextRequest) {
     // informational now — but the fix stands: never subtract a counter from a population that
     // already excludes what it counts.
     const afterLiquidityGate = drafts.length - droppedByLiquidityFloorSpecifically - droppedByAbsoluteLiquidityFloor - droppedByDeadVolumeFloor
-    const afterValuation45kGate = afterLiquidityGate - droppedByValuationOrLiquidity - droppedByValuationUnavailable - droppedByMarketCapBelow45k
+    const afterValuation80kGate = afterLiquidityGate - droppedByValuationOrLiquidity - droppedByValuationUnavailable - droppedByMarketCapBelow80k
     const afterHolder30Gate = toCheck.length
     const baseRadarCandidateGateAudit = {
       rawCandidates: drafts.length,
@@ -1051,7 +1054,7 @@ export async function GET(req: NextRequest) {
       holderCheckAttemptedCount,
       holderCheckSucceededCount,
       afterLiquidityGate,
-      afterValuation45kGate,
+      afterValuation80kGate,
       afterHolder30Gate,
       displayedCount: tokens.length,
       hiddenLowValuation,
@@ -1086,7 +1089,7 @@ export async function GET(req: NextRequest) {
         dead_volume_excluded: droppedByDeadVolumeFloor,
         valuation_or_liquidity_excluded: droppedByValuationOrLiquidity,
         valuation_unavailable: droppedByValuationUnavailable,
-        market_cap_below_45k: droppedByMarketCapBelow45k,
+        market_cap_below_80k: droppedByMarketCapBelow80k,
         holders_below_30: droppedByHoldersBelow30,
         holders_unavailable: droppedByHoldersUnavailable,
         evidence_gap_capped: evidenceGapCappedCount,
@@ -1108,7 +1111,7 @@ export async function GET(req: NextRequest) {
     // in server logs without needing to hit the debug query param from a browser.
     console.info(`[radar] filterFunnel mergedCount=${candidates.length} finalTokenCount=${tokens.length} hiddenLowEvidenceCount=${hiddenLowEvidenceCount}`, debugPayload.filterFunnel)
     console.info('[radar] baseRadarCandidateGateAudit', baseRadarCandidateGateAudit)
-    console.info(`[radar] nearMissSample (${nearMissSample.length} candidates cleared liquidity/activity, before the $45K gate)`, nearMissSample.slice(0, 30))
+    console.info(`[radar] nearMissSample (${nearMissSample.length} candidates cleared liquidity/activity, before the $80K gate)`, nearMissSample.slice(0, 30))
     // DON'T-CACHE-A-DEAD-FEED FIX, DISCLOSED (same report as the one-retry fix above): a fully
     // empty result (every upstream source failed even after retrying) used to be cached exactly
     // like a genuinely quiet feed, so it kept being served to every client for the full 30-100s TTL

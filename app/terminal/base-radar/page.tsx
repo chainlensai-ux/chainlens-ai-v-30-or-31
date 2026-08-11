@@ -59,7 +59,7 @@ interface RadarData {
   mode?: 'shallow' | 'full'
   page?: number
   hasMore?: boolean
-  // MAIN-FEED-QUALITY-GATE, DISCLOSED: count of candidates the backend's stricter $45K valuation /
+  // MAIN-FEED-QUALITY-GATE, DISCLOSED: count of candidates the backend's stricter $80K valuation /
   // 30-holder gate hid from this response (app/api/radar/route.ts's hiddenLowEvidenceCount) — not
   // the pre-existing liquidity/dead-volume filters, just the two new gates. Optional/undefined on
   // any cached payload from before this field existed.
@@ -696,7 +696,7 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
     topTokens[0] ? `${topTokens[0].symbol} is leading the current radar score.` : 'Open check: no lead token yet.',
     summary.averageLiquidity > 0 ? `Average visible liquidity is ${fmtUSD(summary.averageLiquidity)}.` : 'Liquidity evidence is still an open check.',
   ]
-  // MAIN-FEED-QUALITY-GATE, DISCLOSED (requested: stricter main-feed gate — $45K minimum valuation,
+  // MAIN-FEED-QUALITY-GATE, DISCLOSED (requested: stricter main-feed gate — $80K minimum valuation,
   // 30 minimum holders — explained on the CORTEX panel, count shown only when the gate actually hid
   // something this cycle so the panel doesn't add a permanently-noisy line for an empty case).
   // Wording updated (requested: clarify that holder COUNT and holder CONCENTRATION are different —
@@ -706,14 +706,17 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
   // GATE-REASON-BREAKDOWN, DISCLOSED (requested: separate low valuation / low holders / missing
   // holder count instead of one combined number, and make explicit that concentration gaps never
   // remove a candidate that already passed the real 30-holder count gate).
+  // VALUATION RAISED $45K -> $80K, DISCLOSED (explicitly requested: "$45K-$50K is still extremely
+  // low and lets too many weak/dead liquidity coins into the main Radar feed" — main feed should
+  // "feel higher quality"). Holder floor (30) and the liquidity minimum are unchanged.
   const hideReasonParts = [
-    summary.hiddenLowValuation > 0 ? `${summary.hiddenLowValuation} below $45K valuation` : null,
+    summary.hiddenLowValuation > 0 ? `${summary.hiddenLowValuation} below $80K valuation` : null,
     summary.hiddenLowHolders > 0 ? `${summary.hiddenLowHolders} below 30 holders` : null,
     summary.hiddenHolderUnavailable > 0 ? `${summary.hiddenHolderUnavailable} missing holder count` : null,
   ].filter((p): p is string => p != null)
   const gateExplainer = hideReasonParts.length > 0
-    ? `Main radar filters out candidates below $45K valuation or below 30 holders — ${hideReasonParts.join(', ')}.`
-    : 'Main radar filters out candidates below $45K valuation or below 30 holders.'
+    ? `Main radar filters out candidates below $80K valuation or below 30 holders — ${hideReasonParts.join(', ')}.`
+    : 'Main radar filters out candidates below $80K valuation or below 30 holders.'
   const concentrationNote = 'Concentration gaps do not remove candidates that pass holder count.'
   const warnings = [
     summary.unverified > 0 ? `${summary.unverified} checks need more evidence.` : 'No open verification cluster in the current results.',
@@ -1606,7 +1609,7 @@ export default function BaseRadarPage() {
                 Fresh pools and early momentum signals
               </p>
               <p style={{ fontSize: '11px', color: '#5b7186', margin: '0 0 10px', maxWidth: '760px', lineHeight: 1.4, fontFamily: 'var(--font-plex-mono)' }}>
-                Default feed filters out pools under $15K valuation and shallow liquidity. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
+                Default feed filters out pools under $80K valuation, below 30 holders, or shallow liquidity. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
               </p>
             </>
           ) : (
@@ -1816,7 +1819,7 @@ export default function BaseRadarPage() {
             )}
             {!loading && !loadingMore && loadMoreExhausted && (
               <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#64748b', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
-                No more candidates passed the $45K / 30-holder gate in this cycle.
+                No more candidates passed the $80K / 30-holder gate in this cycle.
               </p>
             )}
           </div>

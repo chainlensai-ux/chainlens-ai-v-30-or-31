@@ -1,12 +1,15 @@
-// MAIN-FEED-QUALITY-GATE, DISCLOSED (requested: stricter main-feed gate for Base Radar — $45K
+// MAIN-FEED-QUALITY-GATE, DISCLOSED (requested: stricter main-feed gate for Base Radar — $80K
 // minimum valuation, 30 minimum holders, real holder evidence required, no dead-liquidity coins
 // ranking as radar opportunities). Pulled into its own lib file — same pattern as this codebase's
 // other Base Radar pure-logic modules (baseRadarValuation.ts, baseRadarSimulation.ts,
 // baseRadarSignals.ts) — purely so these exact gate predicates can be unit tested directly
 // (scripts/test-base-radar-main-feed-gate.mjs) without mocking GeckoTerminal/GoldRush/DexScreener
 // HTTP calls. app/api/radar/route.ts imports and calls these; nothing here re-implements them.
+// VALUATION RAISED $45K -> $80K, DISCLOSED (explicitly requested: "$45K-$50K is still extremely
+// low and lets too many weak/dead liquidity coins into the main Radar feed"). Holder floor (30) and
+// the existing liquidity minimum are unchanged — only this single number moved.
 
-export const MAIN_FEED_MIN_VALUATION_USD = 45_000
+export const MAIN_FEED_MIN_VALUATION_USD = 80_000
 export const MAIN_FEED_MIN_HOLDERS = 30
 
 /**
@@ -35,7 +38,7 @@ export function passesMainFeedHolderGate(holderCount: number | null | undefined)
  * is shown as "Market Cap" everywhere with no distinct fallback label in the shared display) — that
  * shared behavior is intentionally left untouched. This function is used only to decide whether an
  * FDV-fallback evidence gap should be attached to a candidate, so an FDV-sourced valuation that
- * cleared the $45K gate is never indistinguishable, in that candidate's own evidence gaps, from a
+ * cleared the $80K gate is never indistinguishable, in that candidate's own evidence gaps, from a
  * real confirmed market cap.
  */
 export function isRealVerifiedMarketCapValue(marketCapStatus: string | null | undefined, marketCapUsd: number | null | undefined): boolean {

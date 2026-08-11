@@ -3,15 +3,15 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '../lib/baseRadarMainFeedGate.ts'
 
-assert.equal(MAIN_FEED_MIN_VALUATION_USD, 45_000)
+assert.equal(MAIN_FEED_MIN_VALUATION_USD, 80_000)
 assert.equal(MAIN_FEED_MIN_HOLDERS, 30)
 
 // ─── Valuation gate ─────────────────────────────────────────────────────────
-// market cap $44,999 excluded
-assert.equal(passesMainFeedValuationGate(44_999), false)
-// market cap $45,000 included (boundary — inclusive, not exclusive)
-assert.equal(passesMainFeedValuationGate(45_000), true)
-assert.equal(passesMainFeedValuationGate(50_000), true)
+// market cap $79,999 excluded
+assert.equal(passesMainFeedValuationGate(79_999), false)
+// market cap $80,000 included (boundary — inclusive, not exclusive)
+assert.equal(passesMainFeedValuationGate(80_000), true)
+assert.equal(passesMainFeedValuationGate(100_000), true)
 // valuation unavailable (null/undefined) excluded — never bypasses the gate
 assert.equal(passesMainFeedValuationGate(null), false)
 assert.equal(passesMainFeedValuationGate(undefined), false)
@@ -33,20 +33,20 @@ assert.equal(passesMainFeedHolderGate(NaN), false)
 assert.equal(isRealVerifiedMarketCapValue('verified', 50_000), true)
 // FDV-derived valuation (marketCapStatus not 'verified', or marketCapUsd itself null) — this is the
 // case app/api/radar/route.ts uses to attach the "Valuation confirmed via FDV fallback" evidence
-// gap even though the candidate clears the $45K gate via FDV. Must never report as a real MC.
+// gap even though the candidate clears the $80K gate via FDV. Must never report as a real MC.
 assert.equal(isRealVerifiedMarketCapValue(null, null), false)
 assert.equal(isRealVerifiedMarketCapValue('unavailable', null), false)
 assert.equal(isRealVerifiedMarketCapValue('verified', null), false)
 assert.equal(isRealVerifiedMarketCapValue(null, 50_000), false)
-// A candidate can pass the $45K valuation gate via FDV fallback (the flattened valuation.valueUsd
+// A candidate can pass the $80K valuation gate via FDV fallback (the flattened valuation.valueUsd
 // used by passesMainFeedValuationGate) while isRealVerifiedMarketCapValue is still false for it —
 // this is exactly the "FDV fallback does not bypass evidence warnings" case: the gate check and the
 // fallback-labeling check are independent, so passing one never silently satisfies the other.
 {
-  const fdvFallbackValuationUsd = 60_000 // what getRadarValuationBasis's flattening reports for a valid FDV fallback
+  const fdvFallbackValuationUsd = 90_000 // what getRadarValuationBasis's flattening reports for a valid FDV fallback
   const rawMarketCapStatus = null // the real, pre-flattening marketCapStatus for this candidate
   const rawMarketCapUsd = null
-  assert.equal(passesMainFeedValuationGate(fdvFallbackValuationUsd), true, 'FDV-derived valuation still clears the $45K gate')
+  assert.equal(passesMainFeedValuationGate(fdvFallbackValuationUsd), true, 'FDV-derived valuation still clears the $80K gate')
   assert.equal(isRealVerifiedMarketCapValue(rawMarketCapStatus, rawMarketCapUsd), false, 'but is correctly flagged as not a real verified market cap, so the fallback evidence gap still attaches')
 }
 
@@ -75,12 +75,12 @@ assert.equal(passesMainFeedHolderGate(null), false)
 
 // holders=29 fails / holders=30 passes if valuation/liquidity pass (boundary, restated together
 // with a passing valuation to mirror the exact scenario the task describes)
-assert.equal(passesMainFeedHolderGate(29) && passesMainFeedValuationGate(50_000), false)
-assert.equal(passesMainFeedHolderGate(30) && passesMainFeedValuationGate(50_000), true)
+assert.equal(passesMainFeedHolderGate(29) && passesMainFeedValuationGate(90_000), false)
+assert.equal(passesMainFeedHolderGate(30) && passesMainFeedValuationGate(90_000), true)
 
-// marketCap=44,999 excluded / marketCap=45,000 included if holder/liquidity pass
-assert.equal(passesMainFeedValuationGate(44_999) && passesMainFeedHolderGate(30), false)
-assert.equal(passesMainFeedValuationGate(45_000) && passesMainFeedHolderGate(30), true)
+// marketCap=79,999 excluded / marketCap=80,000 included if holder/liquidity pass
+assert.equal(passesMainFeedValuationGate(79_999) && passesMainFeedHolderGate(30), false)
+assert.equal(passesMainFeedValuationGate(80_000) && passesMainFeedHolderGate(30), true)
 
 // ─── Holder-check budget loop (starvation fix #2) ──────────────────────────
 // shouldContinueHolderChecking IS the exact condition app/api/radar/route.ts's while-loop uses
@@ -113,7 +113,7 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
 // ─── Simulated end-to-end: valid candidate ranked 40th can still appear ────
 // Mirrors app/api/radar/route.ts's batching loop against a synthetic 50-candidate ranked pool where
 // ranks 1-39 fail the holder gate (e.g. low-holder degen tokens dominating momentum rank that day)
-// and rank 40 is a real $45K+/30-holder candidate. Proves the starvation-fix loop reaches it instead
+// and rank 40 is a real $80K+/30-holder candidate. Proves the starvation-fix loop reaches it instead
 // of stopping at the old fixed top-20/top-30 cutoff.
 {
   const pool = Array.from({ length: 50 }, (_, i) => ({ rank: i + 1, holderCount: i === 39 ? 100 : 5 }))
@@ -176,7 +176,7 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   assert.ok(routeSource.includes('shouldContinueHolderChecking'), 'the live loop must use the same tested stopping condition, not a re-implementation')
   // baseRadarCandidateGateAudit must exist and expose the raw-vs-filtered funnel the task asked for,
   // so "displayed count starved by pre-filter cap" is diagnosable from a log line, not a guess.
-  for (const field of ['rawCandidates', 'rankedCandidatesBeforeHolderCheck', 'holderCheckAttemptedCount', 'holderCheckSucceededCount', 'afterLiquidityGate', 'afterValuation45kGate', 'afterHolder30Gate', 'displayedCount', 'hiddenLowValuation', 'hiddenLowHolders', 'hiddenHolderUnavailable', 'hiddenConcentrationUnavailable', 'rawCandidateCap', 'holderCheckCap', 'displayCap', 'filterStage']) {
+  for (const field of ['rawCandidates', 'rankedCandidatesBeforeHolderCheck', 'holderCheckAttemptedCount', 'holderCheckSucceededCount', 'afterLiquidityGate', 'afterValuation80kGate', 'afterHolder30Gate', 'displayedCount', 'hiddenLowValuation', 'hiddenLowHolders', 'hiddenHolderUnavailable', 'hiddenConcentrationUnavailable', 'rawCandidateCap', 'holderCheckCap', 'displayCap', 'filterStage']) {
     assert.ok(routeSource.includes(field), `baseRadarCandidateGateAudit must expose "${field}"`)
   }
 }
