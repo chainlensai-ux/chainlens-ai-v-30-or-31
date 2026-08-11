@@ -686,9 +686,13 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
   // MAIN-FEED-QUALITY-GATE, DISCLOSED (requested: stricter main-feed gate — $45K minimum valuation,
   // 30 minimum holders — explained on the CORTEX panel, count shown only when the gate actually hid
   // something this cycle so the panel doesn't add a permanently-noisy line for an empty case).
+  // Wording updated (requested: clarify that holder COUNT and holder CONCENTRATION are different —
+  // a passing 30+ holder count does not mean top1/10/20 concentration was checked) and the hidden-
+  // count line now names all three real hide reasons (low valuation, low holders, missing holder
+  // count) instead of the earlier two-reason phrasing.
   const gateExplainer = summary.hiddenLowEvidenceCount > 0
-    ? `Main radar filters out candidates below $45K valuation or below 30 holders — ${summary.hiddenLowEvidenceCount} hidden this cycle.`
-    : 'Main radar filters out candidates below $45K valuation or below 30 holders.'
+    ? `Main radar filters out candidates below $45K valuation or below 30 holders. Holder concentration may still require deeper Token Scanner confirmation. ${summary.hiddenLowEvidenceCount} candidates hidden for low valuation, low holders, or missing holder count.`
+    : 'Main radar filters out candidates below $45K valuation or below 30 holders. Holder concentration may still require deeper Token Scanner confirmation.'
   const warnings = [
     summary.unverified > 0 ? `${summary.unverified} checks need more evidence.` : 'No open verification cluster in the current results.',
     summary.hasSecurityData ? 'Simulation is confirmed for some tokens; unresolved tokens are capped until checks complete.' : 'Simulation checks need more evidence.',

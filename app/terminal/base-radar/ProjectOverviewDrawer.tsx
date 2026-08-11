@@ -947,7 +947,18 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
         </CollapsibleSection>
 
         <CollapsibleSection id="holders" title="Holders" tone={holderSectionTone} open={isSectionOpen('holders')} onToggle={toggleSection} state={enrichmentState}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}><Chip label={`${concentrationRisk} concentration`} tone={holderTone} /><span style={{ color: '#94a3b8', fontSize: 12 }}>Holders: <strong style={{ color: '#e2e8f0' }}>{concentration.holderCount == null ? 'Open Check' : concentration.holderCount}</strong></span><span style={{ color: '#94a3b8', fontSize: 12 }}>{creatorTopHolderDisplay(concentration.creatorInTopHolders, concentration.creatorHolderPercent)}</span></div>
+          {/* HOLDER-COUNT-VS-CONCENTRATION, DISCLOSED (reported: a token can show "Holders: 100" —
+              real, resolved holder count — right next to a chip reading "Open Check concentration",
+              which reads as if holder evidence overall is missing when only the top1/10/20 supply-
+              share breakdown couldn't be resolved. These are two different pieces of evidence:
+              holder COUNT (used for the radar quality gate) and holder CONCENTRATION (top1/10/20,
+              a separate, heavier computation that can legitimately be unavailable even when the
+              count is known). The chip and caption below now say so explicitly instead of using the
+              same "Open Check" wording for both cases. */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}><Chip label={concentration.holderCount != null && concentrationRisk === 'Open Check' ? 'Concentration unavailable' : `${concentrationRisk} concentration`} tone={holderTone} /><span style={{ color: '#94a3b8', fontSize: 12 }}>Holders: <strong style={{ color: '#e2e8f0' }}>{concentration.holderCount == null ? 'Open Check' : concentration.holderCount}</strong></span><span style={{ color: '#94a3b8', fontSize: 12 }}>{creatorTopHolderDisplay(concentration.creatorInTopHolders, concentration.creatorHolderPercent)}</span></div>
+          {concentration.holderCount != null && concentrationRisk === 'Open Check' ? (
+            <p style={{ margin: '0 0 12px', color: '#94a3b8', fontSize: 12, lineHeight: 1.5 }}>Holder count verified — {concentration.holderCount} holders. Top 1/10/20 supply-share concentration is unavailable for this token; that does not mean holder evidence is missing, only that the concentration breakdown was not resolved. Open Token Scanner for a deeper check.</p>
+          ) : null}
           <div style={{ display: 'grid', gap: 10, marginBottom: 12 }}><MiniBar label="Top 1" value={concentration.top1} tone={holderTone === 'risk' ? 'risk' : 'mint'} /><MiniBar label="Top 10" value={concentration.top10} tone={holderTone === 'risk' ? 'risk' : 'amber'} /><MiniBar label="Top 20" value={concentration.top20} tone={holderTone === 'risk' ? 'risk' : 'amber'} /></div>
           <div className="holder-row-list" style={{ display: 'grid', gap: 7 }}>{topHolders.slice(0, 8).map((h, idx) => <div key={`${h.address}-${idx}`} style={{ display: 'grid', gridTemplateColumns: '38px minmax(0,1fr) auto', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 12, border: '1px solid rgba(148,163,184,.10)', background: 'rgba(2,6,23,.38)' }}><span style={{ color: '#64748b', fontSize: 11, fontFamily: 'var(--font-plex-mono)' }}>#{h.rank ?? idx + 1}</span><span style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(h.address)}</span><span style={{ color: '#99f6e4', fontSize: 12, fontFamily: 'var(--font-plex-mono)', fontWeight: 850 }}>{percent(getHolderPercent(h))}</span></div>)}</div>
         </CollapsibleSection>

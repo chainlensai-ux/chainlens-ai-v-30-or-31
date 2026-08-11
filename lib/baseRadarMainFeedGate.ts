@@ -41,3 +41,11 @@ export function passesMainFeedHolderGate(holderCount: number | null | undefined)
 export function isRealVerifiedMarketCapValue(marketCapStatus: string | null | undefined, marketCapUsd: number | null | undefined): boolean {
   return marketCapStatus === 'verified' && typeof marketCapUsd === 'number' && Number.isFinite(marketCapUsd) && marketCapUsd > 0
 }
+
+// HOLDER-COUNT-VS-CONCENTRATION, DISCLOSED (requested: don't reject a candidate from the main feed
+// just because top1/10/20 concentration is unavailable — the feed only ever fetches holder COUNT,
+// never the full concentration breakdown, which needs a heavier per-holder-balance pull this route
+// intentionally doesn't make). A candidate that clears passesMainFeedHolderGate is never hidden for
+// missing concentration — this evidence-gap string is attached to every displayed candidate instead,
+// so a passing holder count never looks identical to a token whose full concentration was checked.
+export const CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP = 'Concentration unavailable — deeper Token Scanner confirmation required'

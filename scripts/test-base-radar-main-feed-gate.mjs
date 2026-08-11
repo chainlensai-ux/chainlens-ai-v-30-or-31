@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
-import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue } from '../lib/baseRadarMainFeedGate.ts'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP } from '../lib/baseRadarMainFeedGate.ts'
 
 assert.equal(MAIN_FEED_MIN_VALUATION_USD, 45_000)
 assert.equal(MAIN_FEED_MIN_HOLDERS, 30)
@@ -56,6 +58,53 @@ assert.equal(isRealVerifiedMarketCapValue(null, 50_000), false)
   assert.equal(passesMainFeedValuationGate(marketCapUsd), true)
   assert.equal(passesMainFeedHolderGate(500), true)
   assert.equal(isRealVerifiedMarketCapValue(marketCapStatus, marketCapUsd), true)
+}
+
+// ─── Holder count vs. holder concentration ─────────────────────────────────
+// holders=100 and concentration N/A: passes the holder gate (concentration is a separate concept
+// this route never even fetches — see CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP's own header) and the
+// evidence-gap string app/api/radar/route.ts attaches to every displayed candidate exists and is
+// worded to say "unavailable", not "open check" (which would read as holder count itself missing).
+assert.equal(passesMainFeedHolderGate(100), true, 'holders=100 passes the holder gate regardless of concentration availability')
+assert.equal(typeof CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, 'string')
+assert.ok(CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP.toLowerCase().includes('concentration'))
+assert.ok(!CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP.toLowerCase().includes('open check'), 'must not read as if holder count itself is missing')
+
+// holders=null fails the holder gate
+assert.equal(passesMainFeedHolderGate(null), false)
+
+// holders=29 fails / holders=30 passes if valuation/liquidity pass (boundary, restated together
+// with a passing valuation to mirror the exact scenario the task describes)
+assert.equal(passesMainFeedHolderGate(29) && passesMainFeedValuationGate(50_000), false)
+assert.equal(passesMainFeedHolderGate(30) && passesMainFeedValuationGate(50_000), true)
+
+// marketCap=44,999 excluded / marketCap=45,000 included if holder/liquidity pass
+assert.equal(passesMainFeedValuationGate(44_999) && passesMainFeedHolderGate(30), false)
+assert.equal(passesMainFeedValuationGate(45_000) && passesMainFeedHolderGate(30), true)
+
+// ─── Raw candidate pool vs. display cap (starvation fix) ───────────────────
+// Reads the actual constants out of app/api/radar/route.ts's source (that file itself can't be
+// imported directly by a plain node script — it pulls in next/server and the Anthropic SDK, which
+// need the Next.js bundler's module resolution) to assert the real fix shipped: the holder-check
+// limit that was capping how many ranked candidates ever got a chance at the holder gate (the
+// actual cause of "main feed only shows 1 token even though the market has more candidates") is
+// raised above its old starved value, and stays below the full ranked-candidate pool it draws from
+// (so it can never itself become the new starvation point by silently exceeding what's available).
+{
+  const routeSource = readFileSync(fileURLToPath(new URL('../app/api/radar/route.ts', import.meta.url)), 'utf8')
+  const holderCheckLimitMatch = routeSource.match(/const HOLDER_CHECK_LIMIT = (\d+)/)
+  const rankedCapMatch = routeSource.match(/const RANKED_CANDIDATES_CAP = (\d+)/)
+  assert.ok(holderCheckLimitMatch, 'HOLDER_CHECK_LIMIT constant must exist in app/api/radar/route.ts')
+  assert.ok(rankedCapMatch, 'RANKED_CANDIDATES_CAP constant must exist in app/api/radar/route.ts')
+  const holderCheckLimit = Number(holderCheckLimitMatch[1])
+  const rankedCandidatesCap = Number(rankedCapMatch[1])
+  assert.ok(holderCheckLimit > 20, `HOLDER_CHECK_LIMIT must be raised above the old starved value of 20 (is ${holderCheckLimit})`)
+  assert.ok(holderCheckLimit <= rankedCandidatesCap, 'the holder-check limit must never exceed the pool of ranked candidates it draws from — a raw pool larger than the display cap must be trimmed by the expansion, not silently overrun')
+  // baseRadarCandidateGateAudit must exist and expose the raw-vs-filtered funnel the task asked for,
+  // so "displayed count starved by pre-filter cap" is diagnosable from a log line, not a guess.
+  for (const field of ['rawCandidates', 'afterLiquidityGate', 'afterValuation45kGate', 'afterHolder30Gate', 'displayedCount', 'hiddenLowValuation', 'hiddenLowHolders', 'hiddenHolderUnavailable', 'rawCandidateCap', 'filterStage']) {
+    assert.ok(routeSource.includes(field), `baseRadarCandidateGateAudit must expose "${field}"`)
+  }
 }
 
 console.log('test-base-radar-main-feed-gate.mjs: all assertions passed')
