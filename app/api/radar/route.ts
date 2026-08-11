@@ -452,8 +452,18 @@ export async function GET(req: NextRequest) {
   // wasn't producing much more than a handful. Doubled new_pools again (4->8) since that's the
   // primary source of genuinely fresh candidates; bumped trending more conservatively (2->3) since
   // that listing is a smaller universe and deeper pages return less relevant "trending" results.
-  const NEW_POOLS_PAGES_PER_REQUEST = 8
-  const TRENDING_PAGES_PER_REQUEST = 3
+  // WIDER-PULL, ROUND 3, DISCLOSED (reported: feed at flat 0 after the $80K valuation raise). This
+  // is the explicitly-permitted remedy for that report ("don't lower the threshold — if too empty,
+  // widen pre-filter candidate consideration within safe caps"). Honest caveat carried over from
+  // round 2's own history: live audit output has repeatedly shown several of the deeper pages
+  // already returning 0 items at the PRIOR page count (e.g. new_p5, new_p8, trending_p2/p3 all
+  // empty in recent runs) — meaning GT's "new pools" listing itself often doesn't have much more
+  // supply at greater depth, so this may have limited effect if the real constraint is that Base's
+  // current new-pool market genuinely doesn't have many $80K+ valued, still-fresh pools. Raised
+  // modestly rather than aggressively to avoid repeating this session's earlier GeckoTerminal
+  // 429-rate-limit incidents from a larger burst of parallel page fetches.
+  const NEW_POOLS_PAGES_PER_REQUEST = 10
+  const TRENDING_PAGES_PER_REQUEST = 4
   const newPoolsStartPage = (radarPage - 1) * NEW_POOLS_PAGES_PER_REQUEST + 1
   const trendingStartPage = (radarPage - 1) * TRENDING_PAGES_PER_REQUEST + 1
   const sourceSpecs = [
