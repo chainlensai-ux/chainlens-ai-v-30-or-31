@@ -97,7 +97,9 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Pro
 // separate report of a token with effectively no real liquidity slipping through). Base Radar had
 // no holder-count floor at all — only a liquidity/valuation bar — so a pool could clear liquidity
 // yet still be an almost-uninhabited token. Fetches GoldRush's token_holders_v2 total_count (a
-// single lightweight page-size=1 call, not a full holder pull) for the ranked candidate set and
+// single page-size=100 call reading only pagination.total_count, not a full holder pull — page-size
+// was originally 1 but that turned out to trigger a consistent HTTP 400 from Covalent, see the
+// PAGE-SIZE-400-FIX comment at the actual call site) for the ranked candidate set and
 // drops anything under MAIN_FEED_MIN_HOLDERS. An unresolved/failed holder-count lookup is treated
 // as failing the bar too (same unknown-≠-safe principle as the rest of this route's risk scoring) —
 // this filter should never leak a token through just because the provider call errored.
@@ -150,8 +152,17 @@ async function fetchBaseHolderCount(contract: string): Promise<HolderCountResult
     let lastBody: string | null = null
     for (const host of GOLDRUSH_RADAR_HOSTS) {
       try {
+        // PAGE-SIZE-400-FIX, DISCLOSED (found via live audit: holderCheckFailureSample showed a
+        // consistent HTTP 400 — a malformed-request error, not auth/rate-limit/outage — on every
+        // single attempt). Root cause: page-size=1. The other GoldRush token_holders_v2 caller in
+        // this codebase (fetchTokenHoldersUncached, app/api/token/route.ts) already has a disclosed
+        // comment noting "page-size max accepted by Covalent: 100" and has used page-size=100
+        // successfully all session — Covalent's API evidently also rejects page-size values outside
+        // its accepted range on the low end, not just above 100. Matched the known-working value;
+        // this call only ever reads pagination.total_count, never the returned holder rows, so the
+        // larger page size costs a slightly bigger response body, not extra requests.
         const res = await fetch(
-          `https://${host}/v1/base-mainnet/tokens/${contract}/token_holders_v2/?page-number=0&page-size=1`,
+          `https://${host}/v1/base-mainnet/tokens/${contract}/token_holders_v2/?page-number=0&page-size=100`,
           { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(3500) },
         )
         // STATUS-CODE VISIBILITY, DISCLOSED (found via live audit: holderCheckFailureReasons showed
