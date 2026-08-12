@@ -224,9 +224,14 @@ async function setDiscoveryBackoff(key: string, until: number): Promise<void> {
 // silently indistinguishable from a fresh pass, and ages out (STICKY_WINDOW_MS) so staleness has a
 // hard ceiling — this is "don't discard verified-recently-enough evidence just because this one
 // request didn't redo the work," not "keep showing things forever" or "fake a re-check."
-const STICKY_WINDOW_MS = 15 * 60_000
+// WIDENED-FOR-SMOOTHING, DISCLOSED (explicitly requested: widen the sticky reservoir further —
+// under real public multi-user traffic, EVERY user's successful cycle feeds this same shared
+// reservoir, so a bigger/longer-lived pool means more real variety survives a thin discovery
+// cycle for whoever hits it next, not staler data — the honesty boundary above is unchanged, this
+// only raises how much verified-recently-enough evidence can accumulate before aging out).
+const STICKY_WINDOW_MS = 30 * 60_000
 const STICKY_FEED_REDIS_PREFIX = 'radar:sticky-feed:'
-const STICKY_FEED_MAX_ENTRIES = DISPLAY_TARGET * 2
+const STICKY_FEED_MAX_ENTRIES = DISPLAY_TARGET * 5
 interface StickyFeedEntry { token: RadarToken; verifiedAt: number }
 async function getStickyFeed(key: string): Promise<StickyFeedEntry[]> {
   if (!redisConfigured()) return []

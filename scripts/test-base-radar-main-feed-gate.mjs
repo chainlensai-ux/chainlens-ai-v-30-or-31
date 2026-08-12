@@ -375,7 +375,7 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   // didn't rediscover it, but a carried-over token must never be indistinguishable from a freshly
   // re-checked one ────────────────────────────────────────────────────────────────────────────────
   assert.ok(routeSource.includes('getStickyFeed') && routeSource.includes('setStickyFeed'), 'sticky-feed read/write helpers must exist')
-  assert.ok(/STICKY_WINDOW_MS = 15 \* 60_000/.test(routeSource), 'the sticky window must have a real, bounded expiry — not carry a token forever')
+  assert.ok(/STICKY_WINDOW_MS = 30 \* 60_000/.test(routeSource), 'the sticky window must have a real, bounded expiry — not carry a token forever')
   assert.ok(routeSource.includes('Shown from a previous cycle — not re-verified this refresh'), 'a carried-over token must be explicitly labeled as such, never silently presented as freshly re-verified')
   assert.ok(/nowTs - e\.verifiedAt <= STICKY_WINDOW_MS/.test(routeSource), 'sticky entries must be filtered against the window before being eligible to carry over')
   assert.ok(/slotsAvailable = Math\.max\(0, DISPLAY_TARGET - tokens\.length\)/.test(routeSource), 'sticky carry-over must only backfill OPEN display slots, never push out or outnumber fresh candidates')
