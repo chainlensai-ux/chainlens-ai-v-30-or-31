@@ -7,24 +7,30 @@ assert.equal(MAIN_FEED_MIN_VALUATION_USD, 80_000)
 assert.equal(MAIN_FEED_MAX_VALUATION_USD, 2_000_000)
 assert.equal(MAIN_FEED_MIN_HOLDERS, 30)
 
-// ─── Valuation band [$80K, $2M], deterministic, both ends inclusive ────────────────────────────
-// $79,999 excluded
+// ─── Valuation: $80K floor is a real exclusion; $2M is a CLASSIFICATION boundary, not an
+// exclusion (explicit product change — see the $2M-IS-A-CLASSIFICATION-NOT-AN-EXCLUSION comment
+// in app/api/radar/route.ts). passesMainFeedValuationMinGate is the real route-level exclusion
+// (droppedByMarketCapBelow80k). passesMainFeedValuationMaxGate/passesMainFeedValuationGate remain
+// pure predicates describing the $80K-$2M "early range" band — route.ts uses
+// !passesMainFeedValuationMaxGate(...) to set isEstablished (a label), never to `continue`/exclude.
+// $79,999 excluded (below the real $80K floor)
+assert.equal(passesMainFeedValuationMinGate(79_999), false)
 assert.equal(passesMainFeedValuationGate(79_999), false)
-// $80,000 included if all other gates pass (this function IS the valuation half of "all other gates")
-assert.equal(passesMainFeedValuationGate(80_000), true)
+// $80,000 included if liquidity passes (boundary — inclusive, not exclusive)
 assert.equal(passesMainFeedValuationMinGate(80_000), true)
-// $2,000,000 included if all other gates pass
+// $2,000,000 is still inside the early-range band (both predicates true)
 assert.equal(passesMainFeedValuationGate(2_000_000), true)
 assert.equal(passesMainFeedValuationMaxGate(2_000_000), true)
-// $2,000,001 excluded from default New Radar
-assert.equal(passesMainFeedValuationGate(2_000_001), false)
-assert.equal(passesMainFeedValuationMaxGate(2_000_001), false)
+// $2,000,001 is NOT excluded only for being above $2M — passesMainFeedValuationMinGate (the real
+// exclusion predicate) is still true; only the max/early-range classification predicate flips.
+assert.equal(passesMainFeedValuationMinGate(2_000_001), true, '$2,000,001 must still clear the real $80K floor — being above $2M is not itself an exclusion')
+assert.equal(passesMainFeedValuationMaxGate(2_000_001), false, 'above $2M correctly falls outside the early-range classification boundary (used for the Established label, not exclusion)')
 // mid-band value passes both halves
 assert.equal(passesMainFeedValuationGate(500_000), true)
-// valuation unavailable (null/undefined/NaN) excluded — never bypasses the gate
-assert.equal(passesMainFeedValuationGate(null), false)
-assert.equal(passesMainFeedValuationGate(undefined), false)
-assert.equal(passesMainFeedValuationGate(NaN), false)
+// valuation unavailable (null/undefined/NaN) excluded — never bypasses the real $80K floor
+assert.equal(passesMainFeedValuationMinGate(null), false)
+assert.equal(passesMainFeedValuationMinGate(undefined), false)
+assert.equal(passesMainFeedValuationMinGate(NaN), false)
 
 // ─── Holder gate ────────────────────────────────────────────────────────────
 // holders 29 excluded
@@ -69,11 +75,23 @@ assert.equal(isRealVerifiedMarketCapValue(null, 500_000), false)
   assert.equal(isRealVerifiedMarketCapValue(marketCapStatus, marketCapUsd), true)
 }
 
-// ─── Above-$2M established/large token is excluded from default New Radar ──────────────────────
+// ─── Above-$2M established/large token gets the Established label, NOT exclusion ────────────────
+// (explicit product change: $2M moved from a hard exclusion to a classification boundary)
 {
-  const marketCapStatus = 'verified'
   const marketCapUsd = 400_000_000 // e.g. an Aerodrome-sized market cap
-  assert.equal(passesMainFeedValuationGate(marketCapUsd), false, 'a large/established-sized market cap must fail the deterministic ceiling regardless of momentum, volume, or name')
+  assert.equal(passesMainFeedValuationMinGate(marketCapUsd), true, 'a large/established-sized market cap still clears the real $80K floor — it is not excluded from default New Radar')
+  assert.equal(passesMainFeedValuationMaxGate(marketCapUsd), false, 'but correctly falls outside the early-range classification boundary — this is what drives isEstablished=true / the "Established" label, not an exclusion')
+}
+
+// ─── An OpenAI-style candidate above $2M displays as Established, not excluded, if it passes
+// liquidity/valuation evidence (explicitly requested scenario) ──────────────────────────────────
+{
+  const openAiStyleMarketCapUsd = 9_500_000 // e.g. a large, liquid, above-early-range token
+  const liquidityUsd = 7_100_000 // real, ample liquidity
+  assert.equal(passesMainFeedValuationMinGate(openAiStyleMarketCapUsd), true)
+  assert.equal(liquidityUsd >= 5_000, true, 'clears the liquidity minimum')
+  const isEstablished = !passesMainFeedValuationMaxGate(openAiStyleMarketCapUsd)
+  assert.equal(isEstablished, true, 'a $9.5M-valuation, liquid candidate must be classified Established, not hidden — it cleared every real requirement (valuation floor + liquidity)')
 }
 
 // ─── Holder count vs. holder concentration ─────────────────────────────────
@@ -209,21 +227,28 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   assert.ok(rankedCandidatesCap >= 100, `RANKED_CANDIDATES_CAP must be expanded to at least 100 (is ${rankedCandidatesCap})`)
   assert.ok(routeSource.includes('shouldContinueHolderChecking'), 'the live loop must use the same tested stopping condition, not a re-implementation')
 
-  // baseRadarCandidateGateAudit must exist and expose exactly the deterministic-gate audit fields
-  // requested, so "displayed count starved by pre-filter cap" is diagnosable from a log line.
+  // baseRadarCandidateGateAudit must exist and expose exactly the requested audit fields (updated:
+  // hiddenAbove2m removed — above-$2M is no longer a hide reason — replaced with
+  // aboveEarlyRangeCount/establishedDisplayedCount/holderProviderReachable/
+  // holderProviderUnavailableCount/sourceBackoffSkippedCount/sourceBackoffTtlMs).
   for (const field of [
     'rawCandidatesFetched', 'afterLiquidityGate', 'afterValuationMin80k', 'afterValuationMax2m',
-    'afterHolder30Gate', 'displayedCount', 'hiddenBelow80k', 'hiddenAbove2m', 'hiddenBelow30Holders',
+    'afterHolder30Gate', 'displayedCount', 'hiddenBelow80k', 'hiddenBelow30Holders',
     'hiddenMissingHolderCount', 'hiddenLiquidityLow', 'hiddenValuationUnavailable',
     'hiddenConcentrationUnavailable', 'holderCheckAttempted', 'holderCheckSucceeded',
     'candidatePoolExhausted', 'holderCheckBudgetExhausted',
+    'aboveEarlyRangeCount', 'establishedDisplayedCount', 'holderProviderReachable',
+    'holderProviderUnavailableCount', 'sourceBackoffSkippedCount', 'sourceBackoffTtlMs',
   ]) {
     assert.ok(routeSource.includes(field), `baseRadarCandidateGateAudit must expose "${field}"`)
   }
+  // hiddenAbove2m must actually be gone from the field list — its reappearance would mean the
+  // $2M-is-a-classification reset regressed back to treating it as a hide reason.
+  assert.ok(!/hiddenAbove2m/.test(routeSource), 'hiddenAbove2m must be removed — above $2M is a classification, not a hide reason')
 
   // ─── baseRadarSourceAudit must exist with the full requested schema ─────────────────────────
   assert.ok(routeSource.includes('baseRadarSourceAudit'), 'baseRadarSourceAudit must exist')
-  for (const field of ['runtimeCommitSha', 'discoverySourcesUsed', 'rawFromEachSource', 'rawTotalBeforeDedupe', 'afterDedupe', 'afterAgeWindow', 'afterLiquidityMinimum', 'afterValuationAvailable', 'afterValuationMin80k', 'afterValuationMax2m', 'holderCheckEligible', 'rejectionReasons']) {
+  for (const field of ['runtimeCommitSha', 'discoverySourcesUsed', 'rawFromEachSource', 'rawTotalBeforeDedupe', 'afterDedupe', 'afterAgeWindow', 'afterLiquidityMinimum', 'afterValuationAvailable', 'afterValuationMin80k', 'afterValuationMax2m', 'holderCheckEligible', 'rejectionReasons', 'sourceBackoffSkippedCount', 'sourceBackoffTtlMs']) {
     assert.ok(routeSource.includes(field), `baseRadarSourceAudit must expose "${field}"`)
   }
 
@@ -308,18 +333,35 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   // UI message — a single failed page combined with a real gate-driven 0 must not be mislabeled.
   assert.ok(/discoveryDegradedSignificant = sourcesFailedCount >= Math\.ceil\(sourcesAttempted \/ 2\)/.test(routeSource), 'discoveryDegradedSignificant must require a majority-or-more failure, not any single failed page')
 
-  // Strict gate still excludes below $80K / above $2M / below 30 holders even once raw candidates
-  // load correctly — re-asserted here (already covered above) specifically in the context of the
-  // discovery-resilience fix, so a future change to the fetch layer can't accidentally loosen the
-  // gate it feeds.
-  assert.equal(passesMainFeedValuationGate(79_999), false)
-  assert.equal(passesMainFeedValuationGate(2_000_001), false)
+  // Gate still excludes below $80K / a real resolved below-30-holders count, even once raw
+  // candidates load correctly — re-asserted here specifically in the context of the discovery-
+  // resilience fix, so a future change to the fetch layer can't accidentally loosen the real
+  // exclusions. Above $2M is deliberately NOT re-asserted as an exclusion here (it isn't one).
+  assert.equal(passesMainFeedValuationMinGate(79_999), false)
   assert.equal(passesMainFeedHolderGate(29), false)
 
   // Source returns 50+ raw candidates then strict gate runs: the per-pool loop applies the same
   // liquidity -> valuation -> holder sequence regardless of how many raw candidates came in — no
   // separate/looser code path keyed on raw candidate volume.
   assert.ok(routeSource.includes('afterLiquidityGateCount') && routeSource.includes('afterValuationMin80kCount') && routeSource.includes('afterValuationMax2mCount'), 'the same liquidity -> valuation -> holder gate sequence must run regardless of raw candidate volume — no separate high-volume code path')
+
+  // ─── $2M is a classification, not an exclusion (route-level) ────────────────────────────────
+  assert.ok(/isEstablished = !passesMainFeedValuationMaxGate/.test(routeSource), 'above-$2M must be computed as a classification flag (isEstablished), not fed into a continue/exclusion')
+  assert.ok(!/passesMainFeedValuationMaxGate\(valuation\.valueUsd\)\)\s*\{\s*droppedByMarketCapAbove2m\+\+;\s*continue/.test(routeSource), 'there must be no continue/exclusion site keyed on the max valuation gate')
+  assert.ok(routeSource.includes('Established — above early range'), 'an above-$2M candidate must be labeled Established, not silently dropped')
+
+  // ─── Holder provider unreachable creates an evidence gap, never a fake holder pass ───────────
+  assert.ok(routeSource.includes('holder_provider_unreachable'), 'holder_provider_unreachable evidence gap must exist')
+  assert.ok(/if \(typeof holderCount !== 'number'\) \{ holderProviderUnavailableCount\+\+; return true \}/.test(routeSource), 'a candidate with an unresolved holder count must be kept (return true), not excluded — but never silently marked verified')
+  assert.ok(/holderVerified = typeof holderCount === 'number'/.test(routeSource), 'holderVerified must be strictly tied to an actually-resolved real number, never assumed true')
+  assert.ok(/if \(!holderVerified\) return 'WATCH'/.test(routeSource), 'no token may be marked holder-verified (reach SAFE) when its holder count could not be confirmed — risk score must be capped')
+
+  // ─── Degraded empty cache is not treated as healthy (already covered above, re-asserted here) ─
+  assert.ok(/EMPTY_RESULT_CACHE_TTL_MS/.test(routeSource))
+
+  // ─── Backoff skipped pages are audited ────────────────────────────────────────────────────────
+  assert.ok(routeSource.includes('sourceBackoffSkippedCount') && routeSource.includes('sourceBackoffTtlMs'), 'backoff-skipped pages and the backoff TTL must both be surfaced in the audit')
+  assert.ok(/DISCOVERY_FAILURE_BACKOFF_MS = 20_000/.test(routeSource), 'the backoff window must be short enough for a realistic refresh gap to actually retry (shortened from 45s to 20s per live report of prolonged degradation)')
 }
 
 console.log('test-base-radar-main-feed-gate.mjs: all assertions passed')

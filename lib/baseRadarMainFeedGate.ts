@@ -8,13 +8,20 @@
 // DETERMINISTIC VALUATION BAND, DISCLOSED (explicit product reset: the gate had drifted through
 // several one-off changes this session — $45K -> $80K -> $85K floor, 30 -> 100 holder floor, plus a
 // separate fuzzy token-age heuristic layered on top to catch "already large" established tokens.
-// Replaced with ONE deterministic rule set, no soft caps, no maybe logic: valuation must sit in a
-// fixed [$80K, $2M] band and holders must be a real, resolved count >= 30. The $2M ceiling is what
-// now deterministically excludes already-large/established tokens (an Aerodrome- or Avantis-sized
-// market cap fails this band outright) — no async age lookup, no fail-open heuristic, no extra
-// per-candidate provider call needed for that purpose anymore. Floor and ceiling are both
-// inclusive: $80,000 passes, $2,000,000 passes; $79,999 and $2,000,001 do not. Liquidity minimum
-// is unchanged by this reset.
+// Replaced with ONE deterministic rule set, no soft caps, no maybe logic: valuation must clear a
+// real $80K floor and holders must be a real, resolved count >= 30. Liquidity minimum is unchanged
+// by this reset.
+// $2M-IS-A-CLASSIFICATION-NOT-AN-EXCLUSION, DISCLOSED (explicit follow-up product change,
+// superseding the original framing of this band as a hard [$80K, $2M] ceiling): a live audit
+// showed the $2M ceiling zeroing out the one real candidate that had cleared $80K before holders
+// were ever even checked. MAIN_FEED_MAX_VALUATION_USD/passesMainFeedValuationMaxGate are NOT an
+// exclusion anymore — app/api/radar/route.ts uses them only to compute isEstablished (a label: a
+// candidate above $2M still has to clear every real requirement — liquidity, the $80K floor, holder
+// evidence — to display, it just displays as "Established" instead of "New Radar"). Only
+// passesMainFeedValuationMinGate is a real route-level exclusion now. Floor and the (classification,
+// not exclusion) ceiling are both inclusive: $80,000 passes the floor; $2,000,000 is still inside
+// the early-range band; $79,999 fails the real floor; $2,000,001 clears the floor but classifies as
+// Established.
 
 export const MAIN_FEED_MIN_VALUATION_USD = 80_000
 export const MAIN_FEED_MAX_VALUATION_USD = 2_000_000
@@ -23,18 +30,24 @@ export const MAIN_FEED_MIN_HOLDERS = 30
 /**
  * A candidate's resolved valuation (verified market cap, or FDV used as fallback — see
  * getRadarValuationBasis in baseRadarValuation.ts for that flattening) must be a finite number
- * inside [MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD], inclusive on both ends.
- * null/undefined/NaN (valuation unavailable) never passes. No exception for momentum, volume, or
- * any other signal — this is the whole rule.
+ * at or above MAIN_FEED_MIN_VALUATION_USD. null/undefined/NaN (valuation unavailable) never
+ * passes. This is the real, route-level exclusion predicate — no exception for momentum, volume,
+ * or any other signal.
  */
 export function passesMainFeedValuationMinGate(valuationValueUsd: number | null | undefined): boolean {
   return typeof valuationValueUsd === 'number' && Number.isFinite(valuationValueUsd) && valuationValueUsd >= MAIN_FEED_MIN_VALUATION_USD
 }
 
+// CLASSIFICATION ONLY, NOT AN EXCLUSION — see the $2M-IS-A-CLASSIFICATION-NOT-AN-EXCLUSION header
+// above. app/api/radar/route.ts uses `!passesMainFeedValuationMaxGate(...)` to set isEstablished, a
+// display label — never to exclude a candidate.
 export function passesMainFeedValuationMaxGate(valuationValueUsd: number | null | undefined): boolean {
   return typeof valuationValueUsd === 'number' && Number.isFinite(valuationValueUsd) && valuationValueUsd <= MAIN_FEED_MAX_VALUATION_USD
 }
 
+// Combined "inside the early-range band" predicate — kept for callers that want the full band in
+// one check (e.g. tests describing a typical in-range candidate). Not used by route.ts as an
+// inclusion/exclusion gate; see passesMainFeedValuationMinGate for the real route-level exclusion.
 export function passesMainFeedValuationGate(valuationValueUsd: number | null | undefined): boolean {
   return passesMainFeedValuationMinGate(valuationValueUsd) && passesMainFeedValuationMaxGate(valuationValueUsd)
 }

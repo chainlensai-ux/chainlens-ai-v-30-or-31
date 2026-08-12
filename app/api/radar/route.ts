@@ -70,6 +70,16 @@ export interface RadarToken {
   valuationVerified: boolean
   valuationReason: string
   valuationCortexLine: string | null
+  // ESTABLISHED-CLASSIFICATION, DISCLOSED: true when valuation is above the $2M early-range
+  // ceiling. This is a LABEL, not an exclusion — an established candidate still cleared every real
+  // requirement (liquidity, valuation floor, holder evidence) to be displayed at all.
+  isEstablished: boolean
+  // HOLDER-EVIDENCE-HONESTY, DISCLOSED: true only when this candidate's holder count was actually
+  // resolved to a real number AND that number cleared MAIN_FEED_MIN_HOLDERS. false covers both "we
+  // know it failed" and "we couldn't check" — the two are told apart via evidenceGaps
+  // (holder_provider_unreachable is only ever attached in the latter case) — never displayed/scored
+  // as if holder-verified when this is false.
+  holderVerified: boolean
   evidenceGaps: string[]
   riskLevel: RiskLevel
   honeypot: HoneypotResult | null
@@ -155,7 +165,14 @@ const GOLDRUSH_RADAR_HOSTS = ['api.covalenthq.com'] as const
 // DISCOVERY_FAILURE_BACKOFF_MS, giving GeckoTerminal's own rate-limit window real time to clear
 // instead of Base Radar re-hammering it every single refresh. A success for that key clears its
 // backoff immediately.
-const DISCOVERY_FAILURE_BACKOFF_MS = 45_000
+// BACKOFF-TOO-LONG FIX, DISCLOSED (reported live: a capture showed 12/18 pages skipped with
+// degradedReason "still in local failure-backoff cooldown from a prior cycle" — the original 45s
+// window meant a user hitting Refresh (which can be sooner than 45s after the failure, especially
+// right after seeing an empty feed) kept getting the SAME skipped sources echoed back with no
+// chance to recover, since the skip itself never re-attempts the network call to find out if
+// GeckoTerminal's rate limit already cleared). Shortened so a refresh a short while later can
+// actually retry instead of being stuck behind a cooldown longer than a realistic refresh gap.
+const DISCOVERY_FAILURE_BACKOFF_MS = 20_000
 const discoverySourceFailureBackoff = new Map<string, number>()
 const HOLDER_COUNT_CACHE_TTL_MS = 10 * 60_000
 const holderCountCache = new Map<string, { count: number | null; reason?: 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data'; expiresAt: number }>()
@@ -282,10 +299,19 @@ function scoreRisk(input: {
   ageMinutes: number
   liquidityUsd: number
   volume24h: number
+  holderVerified: boolean
 }): RiskLevel {
-  const { hp, simulationStatus, ageMinutes, liquidityUsd, volume24h } = input
+  const { hp, simulationStatus, ageMinutes, liquidityUsd, volume24h, holderVerified } = input
 
   if (hp?.isHoneypot === true) return 'DANGER'
+
+  // HOLDER-EVIDENCE-CAPS-SCORE, DISCLOSED (explicitly requested: "Score should be capped or status
+  // should remain unverified/watch" when the holder provider is unreachable for a candidate — "Do
+  // not mark as strong/verified from holder evidence"). A candidate whose holder count couldn't be
+  // confirmed this cycle can never reach SAFE — it's shown, but the risk label itself reflects that
+  // one real piece of evidence is honestly missing, same principle as the honeypot/simulation checks
+  // just below never being skipped.
+  if (!holderVerified) return 'WATCH'
 
   // A verified market cap does not make a token SAFE — simulation must have
   // passed and honeypot must be known before SAFE/CAUTION can be assigned.
@@ -819,6 +845,12 @@ export async function GET(req: NextRequest) {
     skippedByBackoff: r.skippedByBackoff,
   }))
   const fallbackUsed = sourceResults.some(r => r.cacheStatus === 'STALE')
+  // BACKOFF-AUDIT, DISCLOSED (explicitly requested: "Add audit showing backoff TTL / skipped source
+  // pages"). sourceBackoffSkippedCount is a real count of pages skipped this cycle without even
+  // attempting the network call (distinct from pagesFailed, which includes pages that WERE attempted
+  // and genuinely failed) — surfaced alongside sourceBackoffTtlMs (the actual cooldown duration) so a
+  // "why are pages missing" report is diagnosable from the audit instead of guessed.
+  const sourceBackoffSkippedCount = sourceResults.filter(r => r.skippedByBackoff).length
 
   try {
     const pooled: Record<string, unknown>[] = []
@@ -909,11 +941,6 @@ export async function GET(req: NextRequest) {
     let droppedByDeadVolumeFloor = 0
     let droppedByValuationUnavailable = 0
     let droppedByMarketCapBelow80k = 0
-    // DETERMINISTIC-CEILING, DISCLOSED: the new $2M valuation ceiling — see
-    // MAIN_FEED_MAX_VALUATION_USD's own header in lib/baseRadarMainFeedGate.ts. No soft cap, no
-    // momentum/volume exception: a candidate above this line is excluded from default New Radar
-    // exactly like one below the $80K floor is, full stop.
-    let droppedByMarketCapAbove2m = 0
     // CONSOLIDATED-LIQUIDITY-GATE, DISCLOSED: baseRadarCandidateGateAudit needs one deterministic
     // "afterLiquidityGate"/"hiddenLiquidityLow" figure ("liquidity passes existing minimum" is a
     // single hard rule in the new spec) — this sums the three real liquidity-adjacent drop sites
@@ -923,7 +950,13 @@ export async function GET(req: NextRequest) {
     let droppedByLiquidityGate = 0
     let afterLiquidityGateCount = 0
     let afterValuationMin80kCount = 0
+    // AFTER-VALUATION-MAX-2M RENAME, DISCLOSED (explicitly requested: "Rename/remove
+    // afterValuationMax2m as a hard gate"). No longer a gate — it now just counts candidates whose
+    // valuation is $80K-$2M ("early range"); a candidate above $2M is counted separately via
+    // aboveEarlyRangeCount and still gets fully processed (liquidity/holder checks included), never
+    // excluded for being above this number.
     let afterValuationMax2mCount = 0
+    let aboveEarlyRangeCount = 0
     // SOURCE-AUDIT, DISCLOSED (requested: a full baseRadarSourceAudit proving whether starvation is
     // real discovery-depth loss vs. an accidental cap/slice). rawTotalBeforeDedupe is the literal
     // count of pool entries GeckoTerminal returned across every source this cycle, before ANY
@@ -1138,17 +1171,27 @@ export async function GET(req: NextRequest) {
       if (valuation.valueUsd == null) { droppedByValuationUnavailable++; continue }
       if (!passesMainFeedValuationMinGate(valuation.valueUsd)) { droppedByMarketCapBelow80k++; continue }
       afterValuationMin80kCount++
-      if (!passesMainFeedValuationMaxGate(valuation.valueUsd)) { droppedByMarketCapAbove2m++; continue }
-      afterValuationMax2mCount++
+      // $2M-IS-A-CLASSIFICATION-NOT-AN-EXCLUSION FIX, DISCLOSED (reported live: a real audit showed
+      // 1 candidate clearing $80K, immediately zeroed out by the $2M ceiling — 0 candidates ever
+      // reached the holder check, which made the feed look holder-check-blocked when the real cause
+      // was the valuation ceiling removing every candidate before holders were ever checked). $2M no
+      // longer excludes a candidate from default New Radar — it only changes how the candidate is
+      // classified. A candidate above $2M still has to clear every other real requirement (liquidity,
+      // dead-volume floor, a resolved valuation, and the holder check below) exactly like any other
+      // candidate; it's never hidden, faked, or given an easier bar purely for being above $2M.
+      const isEstablished = !passesMainFeedValuationMaxGate(valuation.valueUsd)
+      if (isEstablished) aboveEarlyRangeCount++
+      else afterValuationMax2mCount++
       const valuationCardDisplay = getRadarValuationCardDisplay(valuation, fmtK)
       const valuationEvidenceGap = getRadarValuationEvidenceGap(valuation)
       const evidenceGaps = [
         ...(valuationEvidenceGap ? [valuationEvidenceGap] : []),
         ...(!isRealVerifiedMarketCap ? ['Valuation confirmed via FDV fallback — no separate verified market cap available'] : []),
+        ...(isEstablished ? ['Established — above early range, not a fresh microcap'] : []),
       ]
       const candidate = {
         name: baseToken.name, symbol: baseToken.symbol, contract: baseToken.address,
-        ageMinutes, liquidityUsd, volume24h, fdvUsd, marketCapUsd, marketCapStatus, valuationBasis: valuation.basis, valuationUsd: valuation.valueUsd, valuationLabel: valuation.label, valuationSublabel: valuationCardDisplay.sublabel, valuationVerified: valuation.verified, valuationReason: valuation.reason, valuationCortexLine: getRadarCortexValuationLine(), evidenceGaps, riskLevel: 'SAFE', honeypot: null,
+        ageMinutes, liquidityUsd, volume24h, fdvUsd, marketCapUsd, marketCapStatus, valuationBasis: valuation.basis, valuationUsd: valuation.valueUsd, valuationLabel: valuation.label, valuationSublabel: valuationCardDisplay.sublabel, valuationVerified: valuation.verified, valuationReason: valuation.reason, valuationCortexLine: getRadarCortexValuationLine(), isEstablished, holderVerified: false, evidenceGaps, riskLevel: 'SAFE', honeypot: null,
         simulationStatus: 'open_check', simulationReason: null, simulationLabel: '', simulationCortexLine: '', pairAddress: primaryPoolAddress,
         ...(debug ? { marketCapDiagnostics: {
           selectedMarketCapUsd: marketCapUsd,
@@ -1260,18 +1303,25 @@ export async function GET(req: NextRequest) {
     // that set is legitimately empty rather than being backfilled with unverified candidates.
     const holderCheckSucceededCount = [...holderCountByContract.values()].filter((c): c is number => typeof c === 'number').length
     const holderProviderReachable = holderCheckSucceededCount > 0
-    // HOLDER-EVIDENCE-MUST-BE-REAL, DISCLOSED: null/N/A/unresolved holder evidence must never count
-    // as passing the 30-holder gate — tracked separately from "resolved but below 30" so the debug
-    // funnel (and the "X hidden for weak holder evidence" UI count) can distinguish a genuinely thin
-    // holder base from GoldRush simply not having an answer yet, without treating the latter as safe.
-    // Concentration (top1/10/20) is a completely separate, deeper piece of evidence this route never
-    // fetches at all — its absence NEVER counts toward droppedByHoldersUnavailable (see the
-    // CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP attached to every displayed candidate further below).
+    // HOLDER-GATE-SOFTENED-TO-EVIDENCE-GAP, DISCLOSED (explicitly requested, superseding the old
+    // FAIL-CLOSED behavior below this comment's history: "holder count >= 30 required only when
+    // holder provider is reachable / holder data available... holder count unavailable should still
+    // be evidence-gapped/capped, not silently promoted as verified"). A candidate with a REAL,
+    // resolved holder count below 30 is still excluded outright — that's known, verified evidence of
+    // failing the bar. A candidate whose holder count could not be resolved (provider down, timeout,
+    // no_data) is no longer excluded — it's shown, but holderVerified stays false and
+    // holder_provider_unreachable is attached as an explicit evidence gap, and its risk score is
+    // capped so it can never display as SAFE purely because we couldn't check (see scoreRisk below).
+    // [PRIOR HISTORY] This route previously failed closed here specifically because failing OPEN on
+    // a total provider outage once let a 3-holder scam token through mislabeled as gate-passing. The
+    // fix here is different in kind: the candidate is shown, but never claims holder verification —
+    // it's the "0 candidates, no confirmation either way" outcome swapped for "shown, honestly
+    // labeled as holder-unverified," never "shown as if verified."
     let droppedByHoldersBelow30 = 0
-    let droppedByHoldersUnavailable = 0
+    let holderProviderUnavailableCount = 0
     const toCheck = holderCheckedCandidates.filter((t) => {
       const holderCount = holderCountByContract.get(t.contract.toLowerCase())
-      if (typeof holderCount !== 'number') { droppedByHoldersUnavailable++; return false }
+      if (typeof holderCount !== 'number') { holderProviderUnavailableCount++; return true }
       if (!passesMainFeedHolderGate(holderCount)) { droppedByHoldersBelow30++; return false }
       return true
     })
@@ -1322,21 +1372,32 @@ export async function GET(req: NextRequest) {
       const hp = hpByContract.get(token.contract.toLowerCase()) ?? null
       const simulation = getRadarSimulationDisplay({ contract: token.contract, liquidityUsd: token.liquidityUsd, pairAddress: token.pairAddress ?? null, honeypot: hp })
       const baseGaps = simulation.status === 'passed' ? (token.evidenceGaps ?? []) : [...(token.evidenceGaps ?? []), 'Buy/sell simulation not confirmed', simulation.label, 'Honeypot/tax status not confirmed', ...(token.ageMinutes < 15 ? ['Token is very new'] : [])]
+      // HOLDER-EVIDENCE-HONESTY, DISCLOSED: holderCount typeof number here means it was actually
+      // resolved (and, since below-30-real-counts were already excluded in the toCheck filter above,
+      // any candidate reaching this point with a real number necessarily cleared MAIN_FEED_MIN_HOLDERS).
+      // holderCount not being a number means the provider never answered for this contract this
+      // cycle — holderVerified stays false and holder_provider_unreachable is attached explicitly,
+      // never silently treated as if it had passed.
+      const holderCount = holderCountByContract.get(token.contract.toLowerCase())
+      const holderVerified = typeof holderCount === 'number'
+      const holderGaps = holderVerified ? [] : ['holder_provider_unreachable — holder count could not be confirmed this cycle']
       return {
         ...token,
         honeypot: hp,
+        holderVerified,
         riskLevel: scoreRisk({
           hp,
           simulationStatus: simulation.status,
           ageMinutes: token.ageMinutes,
           liquidityUsd: token.liquidityUsd,
           volume24h: token.volume24h,
+          holderVerified,
         }),
         simulationStatus: simulation.status,
         simulationReason: simulation.reason,
         simulationLabel: simulation.label,
         simulationCortexLine: simulation.cortexLine,
-        evidenceGaps: Array.from(new Set([...baseGaps, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP])),
+        evidenceGaps: Array.from(new Set([...baseGaps, ...holderGaps, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP])),
       }
     })
 
@@ -1348,6 +1409,11 @@ export async function GET(req: NextRequest) {
     const tokens: RadarToken[] = [...scored]
       .sort((a, b) => a.ageMinutes - b.ageMinutes)
       .map(t => { const { pairAddress: _pairAddress, ...rest } = t; return { ...rest, clarkVerdict: verdicts.get(t.contract.toLowerCase()) ?? null } })
+    // ESTABLISHED-DISPLAYED-COUNT, DISCLOSED: how many of the FINAL displayed tokens are labeled
+    // Established (above $2M) — distinct from aboveEarlyRangeCount (declared earlier, during the
+    // per-candidate loop), which counts every above-$2M candidate that reached that stage, before
+    // the holder check/ranking cap could still drop some of them same as any other candidate.
+    const establishedDisplayedCount = tokens.filter(t => t.isEstablished).length
 
     // 5. Stats — counts reflect the final adjusted risk labels (post-scoreRisk),
     // not a raw honeypot-only SAFE default.
@@ -1376,11 +1442,14 @@ export async function GET(req: NextRequest) {
     // were already silently dropping candidates before this task). Surfaced to the frontend so the
     // CORTEX panel can honestly say how many were hidden, instead of the gate being invisible.
     const hiddenBelow80k = droppedByMarketCapBelow80k
-    const hiddenAbove2m = droppedByMarketCapAbove2m
     const hiddenValuationUnavailable = droppedByValuationUnavailable
-    const hiddenLowValuation = hiddenBelow80k + hiddenAbove2m + hiddenValuationUnavailable
+    // $2M IS NO LONGER A HIDE REASON, DISCLOSED: hiddenLowValuation used to include candidates above
+    // $2M — it no longer does, since above-$2M candidates are displayed (labeled Established), not
+    // hidden. aboveEarlyRangeCount/establishedDisplayedCount (declared during the per-candidate loop
+    // and derived from the final `tokens` list below) are the honest replacement signals.
+    const hiddenLowValuation = hiddenBelow80k + hiddenValuationUnavailable
     const hiddenLowHolders = droppedByHoldersBelow30
-    const hiddenHolderUnavailable = droppedByHoldersUnavailable
+    const hiddenHolderUnavailable = holderProviderUnavailableCount
     const hiddenLiquidityLow = droppedByLiquidityGate
     // CONCENTRATION-IS-NOT-HOLDER-UNAVAILABLE, DISCLOSED: concentration (top1/10/20) is never
     // fetched by this route at all, so it can never be the reason a candidate was hidden — every
@@ -1392,14 +1461,12 @@ export async function GET(req: NextRequest) {
     const hiddenLowEvidenceCount = hiddenLowValuation + hiddenLowHolders + hiddenHolderUnavailable
     const evidenceGapCappedCount = scored.filter(t => t.riskLevel !== 'SAFE' && (t.evidenceGaps?.length ?? 0) > 0).length
 
-    // CANDIDATE-GATE-AUDIT, DISCLOSED (deterministic-gate reset: exact field list requested —
-    // rawCandidatesFetched, afterLiquidityGate, afterValuationMin80k, afterValuationMax2m,
-    // afterHolder30Gate, displayedCount, hiddenBelow80k, hiddenAbove2m, hiddenBelow30Holders,
-    // hiddenMissingHolderCount, hiddenLiquidityLow, hiddenValuationUnavailable,
-    // hiddenConcentrationUnavailable, holderCheckAttempted, holderCheckSucceeded,
-    // candidatePoolExhausted, holderCheckBudgetExhausted). Every field reads straight off a counter
-    // already incremented at its own real `continue`/stopping site above — this object does not
-    // re-derive or re-implement any gate logic, it only exposes what already happened.
+    // CANDIDATE-GATE-AUDIT, DISCLOSED (deterministic-gate reset, later softened: $2M and holder-
+    // unavailable moved from hard exclusions to classification/evidence-gap — see the
+    // $2M-IS-A-CLASSIFICATION-NOT-AN-EXCLUSION and HOLDER-GATE-SOFTENED-TO-EVIDENCE-GAP comments
+    // above for the exact live-audit reports that drove each change). Every field reads straight off
+    // a counter already incremented at its own real site above — this object does not re-derive or
+    // re-implement any gate logic, it only exposes what already happened.
     // afterHolder30Gate is `toCheck.length` directly: that array IS the real post-holder-gate set
     // (or empty on a provider outage — see the fail-closed comment above), so it can never drift
     // from what actually happened.
@@ -1412,12 +1479,15 @@ export async function GET(req: NextRequest) {
       afterLiquidityGate: afterLiquidityGateCount,
       afterValuationMin80k: afterValuationMin80kCount,
       afterValuationMax2m: afterValuationMax2mCount,
+      aboveEarlyRangeCount,
+      establishedDisplayedCount,
       afterHolder30Gate,
       holderCheckAttempted: holderCheckAttemptedCount,
       holderCheckSucceeded: holderCheckSucceededCount,
+      holderProviderReachable,
+      holderProviderUnavailableCount,
       displayedCount: tokens.length,
       hiddenBelow80k,
-      hiddenAbove2m,
       hiddenBelow30Holders: hiddenLowHolders,
       hiddenMissingHolderCount: hiddenHolderUnavailable,
       hiddenLiquidityLow,
@@ -1430,13 +1500,19 @@ export async function GET(req: NextRequest) {
       holderCheckFailureSample,
       discoverySourceCounts: sourceCounts,
       sourcesFailedCount,
+      sourceBackoffSkippedCount,
+      sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS,
       discoveryDegraded,
       discoveryDegradedSignificant,
       displayTarget: DISPLAY_TARGET,
+      // FILTERSTAGE-REFLECTS-SOFTENED-GATE, DISCLOSED: the old "failed closed, 0 candidates shown
+      // unverified" wording is gone — that's no longer what happens. A holder-provider outage now
+      // shows candidates labeled unverified/watch with an explicit evidence gap instead of showing
+      // nothing, so filterStage says that instead of describing a behavior this route no longer has.
       filterStage: discoveryDegradedSignificant && tokens.length === 0
         ? `discovery degraded this cycle — ${sourcesFailedCount}/${sourcesAttempted} source pages failed (rate-limit/timeout), raw pool thinner than usual`
         : !holderProviderReachable && holderCheckAttemptedCount > 0
-          ? 'holder-count provider unreachable this cycle — failed closed, 0 candidates shown unverified'
+          ? 'holder-count provider unreachable this cycle — candidates shown unverified with a holder_provider_unreachable evidence gap, never marked as holder-verified'
           : holderCheckBudgetExhausted
             ? 'holder-check budget exhausted before reaching display target'
             : passingHolderGateCount >= DISPLAY_TARGET
@@ -1468,13 +1544,19 @@ export async function GET(req: NextRequest) {
       afterValuationAvailable: afterLiquidityGateCount - droppedByValuationUnavailable,
       afterValuationMin80k: afterValuationMin80kCount,
       afterValuationMax2m: afterValuationMax2mCount,
+      aboveEarlyRangeCount,
+      establishedDisplayedCount,
       holderCheckEligible: rankedCandidates.length,
       holderCheckAttempted: holderCheckAttemptedCount,
       holderCheckSucceeded: holderCheckSucceededCount,
+      holderProviderReachable,
+      holderProviderUnavailableCount,
       afterHolder30: afterHolder30Gate,
       displayedCount: tokens.length,
       candidatePoolExhausted,
       holderCheckBudgetExhausted,
+      sourceBackoffSkippedCount,
+      sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS,
       caps: {
         sourceLimit: sourcesAttempted,
         rawCandidateCap: RANKED_CANDIDATES_CAP,
@@ -1483,6 +1565,11 @@ export async function GET(req: NextRequest) {
         holderCheckCap: HOLDER_CHECK_BUDGET_CAP,
         displayCap: DISPLAY_TARGET,
       },
+      // REJECTION-REASONS-NO-LONGER-INCLUDES-2M-OR-HOLDER-UNAVAILABLE, DISCLOSED: this object is
+      // named rejectionReasons for a reason — market_cap_above_2m and holders_unavailable are
+      // removed from it because neither rejects a candidate anymore (above $2M displays as
+      // Established; holder-unavailable displays unverified). Their real counts live in
+      // aboveEarlyRangeCount/holderProviderUnavailableCount above instead of being misfiled here.
       rejectionReasons: {
         missing_base_token: droppedByMissingBaseToken,
         symbol_excluded: droppedBySymbolExcluded,
@@ -1493,9 +1580,7 @@ export async function GET(req: NextRequest) {
         dead_volume_excluded: droppedByDeadVolumeFloor,
         valuation_unavailable: droppedByValuationUnavailable,
         market_cap_below_80k: droppedByMarketCapBelow80k,
-        market_cap_above_2m: droppedByMarketCapAbove2m,
         holders_below_30: droppedByHoldersBelow30,
-        holders_unavailable: droppedByHoldersUnavailable,
         ranking_cap_excluded: droppedByRankingCap,
       },
       holderCheckFailureReasons,
@@ -1549,7 +1634,7 @@ export async function GET(req: NextRequest) {
     // so a real DevTools Network capture — the one method that has reliably worked all session —
     // never showed them either. Attaching both directly to the normal, always-returned payload
     // (not gated behind debug=1) so the exact same capture method already in use surfaces them.
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenAbove2m, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,
@@ -1566,12 +1651,15 @@ export async function GET(req: NextRequest) {
         dead_volume_excluded: droppedByDeadVolumeFloor,
         valuation_unavailable: droppedByValuationUnavailable,
         market_cap_below_80k: droppedByMarketCapBelow80k,
-        market_cap_above_2m: droppedByMarketCapAbove2m,
         holders_below_30: droppedByHoldersBelow30,
-        holders_unavailable: droppedByHoldersUnavailable,
         ranking_cap_excluded: droppedByRankingCap,
         evidence_gap_capped: evidenceGapCappedCount,
       },
+      aboveEarlyRangeCount,
+      establishedDisplayedCount,
+      holderProviderUnavailableCount,
+      sourceBackoffSkippedCount,
+      sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS,
       baseRadarCandidateGateAudit,
       baseRadarSourceAudit,
       baseRadarDiscoverySourceAudit,

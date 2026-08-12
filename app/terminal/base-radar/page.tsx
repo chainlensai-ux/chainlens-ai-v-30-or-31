@@ -41,6 +41,12 @@ interface RadarToken {
   simulationReason?: string | null
   simulationLabel?: string | null
   simulationCortexLine?: string | null
+  // ESTABLISHED-CLASSIFICATION / HOLDER-EVIDENCE-HONESTY, DISCLOSED: isEstablished labels a
+  // candidate above the $2M early-range ceiling (displayed, never hidden, for being above it).
+  // holderVerified is false when this candidate's holder count couldn't be confirmed this cycle —
+  // shown, but never implying a passed holder check. See getFlags for how these surface as badges.
+  isEstablished?: boolean
+  holderVerified?: boolean
 }
 
 interface RadarStats {
@@ -71,10 +77,15 @@ interface RadarData {
   // candidates carrying that evidence gap.
   hiddenLowValuation?: number
   hiddenBelow80k?: number
-  hiddenAbove2m?: number
   hiddenLowHolders?: number
+  // $2M-IS-A-CLASSIFICATION-NOT-AN-EXCLUSION, DISCLOSED: hiddenHolderUnavailable is no longer a
+  // hide reason either — a holder-unavailable candidate is displayed, labeled unverified (see
+  // holderVerified on RadarToken) — this count is kept purely informational.
   hiddenHolderUnavailable?: number
   hiddenConcentrationUnavailable?: number
+  aboveEarlyRangeCount?: number
+  establishedDisplayedCount?: number
+  holderProviderUnavailableCount?: number
   // DISCOVERY-DEPTH AUDIT, DISCLOSED: whether the holder-check budget was exhausted before the
   // checked pool ran out — distinguishes "checked everything, nothing passed" from "ran out of
   // budget before finishing" for the empty-state message (see EmptyFeed).
@@ -161,7 +172,6 @@ interface RadarSummary {
   hiddenLowEvidenceCount: number
   hiddenLowValuation: number
   hiddenBelow80k: number
-  hiddenAbove2m: number
   hiddenLowHolders: number
   hiddenHolderUnavailable: number
   hiddenConcentrationUnavailable: number
@@ -345,7 +355,10 @@ function getBaseRadarScore(token: RadarToken): number {
 
 function getStatus(token: RadarToken, score: number, momentum: MomentumLevel): RadarStatus {
   const hasEnoughMarketData = Number.isFinite(token.liquidityUsd) && Number.isFinite(token.volume24h) && token.liquidityUsd > 0
-  const insufficientData = !hasEnoughMarketData || token.simulationStatus !== 'passed'
+  // HOLDER-EVIDENCE-CAPS-STATUS, DISCLOSED (explicitly requested: "Score should be capped or status
+  // should remain unverified/watch" when holder count couldn't be confirmed). A candidate never
+  // reaches HOT/EARLY/WATCH purely because everything else looks good if holder evidence is missing.
+  const insufficientData = !hasEnoughMarketData || token.simulationStatus !== 'passed' || token.holderVerified === false
 
   if (insufficientData) return 'UNVERIFIED'
   if (token.volume24h <= 0 && token.ageMinutes > 30) return 'DEAD'
@@ -387,6 +400,11 @@ function getFlags(token: RadarToken, status: RadarStatus, momentum: MomentumLeve
   if (suspiciousBranding) flags.push('CORTEX Watch')
   if (status === 'UNVERIFIED') flags.push('Pending Evidence')
   if (status === 'RISKY') flags.push('High Risk')
+  // ESTABLISHED-CLASSIFICATION / HOLDER-EVIDENCE-HONESTY, DISCLOSED (explicitly requested: label
+  // above-$2M candidates as "Established" instead of hiding them; UI must say holder proof is
+  // unavailable this cycle instead of implying a passed holder check).
+  if (token.isEstablished) flags.push('Established')
+  if (token.holderVerified === false) flags.push('Holder Unverified')
 
   return flags
 }
@@ -501,7 +519,7 @@ function getPriorityAccent(token: TokenIntel): { color: string; background: stri
 // which flags exist at all, are completely unchanged.
 function getBadgeStyle(flag: string): { color: string; background: string; border: string } {
   if (['Momentum', 'Volume Spike', 'Simulation confirmed', 'Simulation checked', 'Liquidity Strong'].includes(flag)) return { color: '#99f6e4', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.30)' }
-  if (['Tax check pending', 'Simulation pending', 'Pending Evidence'].includes(flag)) return { color: '#e8cd8f', background: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.20)' }
+  if (['Tax check pending', 'Simulation pending', 'Pending Evidence', 'Holder Unverified'].includes(flag)) return { color: '#e8cd8f', background: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.20)' }
   if (['High Risk', 'CORTEX Watch'].includes(flag)) return { color: '#f2b8b8', background: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.20)' }
   return { color: '#bfdbfe', background: 'rgba(96,165,250,0.13)', border: 'rgba(96,165,250,0.30)' }
 }
@@ -510,7 +528,7 @@ function getBadgeStyle(flag: string): { color: string; background: string; borde
 // '+N'"): token.flags itself (getFlags above) is unchanged — same set, same meaning, same order
 // they're computed in. This only decides which 2 are worth surface-level attention (risk/caution
 // flags first, since those matter most to see before clicking in) versus quieter "+N" overflow.
-const FLAG_PRIORITY = ['High Risk', 'Pending Evidence', 'Tax check pending', 'Simulation pending', 'CORTEX Watch', 'Momentum', 'Volume Spike', 'Liquidity Strong', 'Simulation checked', 'New Pool']
+const FLAG_PRIORITY = ['High Risk', 'Pending Evidence', 'Holder Unverified', 'Tax check pending', 'Simulation pending', 'CORTEX Watch', 'Momentum', 'Volume Spike', 'Liquidity Strong', 'Simulation checked', 'New Pool', 'Established']
 function prioritizedFlags(flags: string[]): string[] {
   return [...flags].sort((a, b) => FLAG_PRIORITY.indexOf(a) - FLAG_PRIORITY.indexOf(b))
 }
@@ -747,19 +765,20 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
   // GATE-REASON-BREAKDOWN, DISCLOSED (requested: separate low valuation / low holders / missing
   // holder count instead of one combined number, and make explicit that concentration gaps never
   // remove a candidate that already passed the real 30-holder count gate).
-  // DETERMINISTIC VALUATION BAND, DISCLOSED (explicit product reset: "Base Radar deterministic
-  // valuation band only" — the gate had drifted through $45K -> $80K -> $85K and 30 -> 100 holders
-  // across several one-off changes; reset to a single fixed [$80K, $2M] band + 30 real holders, no
-  // soft caps). The liquidity minimum is unchanged.
+  // $2M-IS-A-CLASSIFICATION-NOT-AN-EXCLUSION, DISCLOSED (explicit product change, superseding the
+  // earlier "Base Radar deterministic valuation band only" $80K-$2M reset: a live audit showed the
+  // $2M ceiling zeroing out the one candidate that had cleared $80K before holders were ever
+  // checked. $2M no longer hides anything — it's a label). hideReasonParts now only lists REAL
+  // exclusion reasons (below $80K, a real resolved holder count under 30) — above-$2M and holder-
+  // unavailable are no longer hide reasons, so they're removed from this list; a candidate in
+  // either state is still displayed, just labeled Established / holder-unverified respectively.
   const hideReasonParts = [
     summary.hiddenBelow80k > 0 ? `${summary.hiddenBelow80k} below $80K valuation` : null,
-    summary.hiddenAbove2m > 0 ? `${summary.hiddenAbove2m} above $2M valuation` : null,
     summary.hiddenLowHolders > 0 ? `${summary.hiddenLowHolders} below 30 holders` : null,
-    summary.hiddenHolderUnavailable > 0 ? `${summary.hiddenHolderUnavailable} missing holder count` : null,
   ].filter((p): p is string => p != null)
   const gateExplainer = hideReasonParts.length > 0
-    ? `New Radar shows tokens between $80K and $2M valuation with 30+ holders and real liquidity — ${hideReasonParts.join(', ')}.`
-    : 'New Radar shows tokens between $80K and $2M valuation with 30+ holders and real liquidity.'
+    ? `New Radar requires $80K+ valuation and real liquidity. Tokens above the early range are labelled Established instead of hidden — ${hideReasonParts.join(', ')}.`
+    : 'New Radar requires $80K+ valuation and real liquidity. Tokens above the early range are labelled Established instead of hidden.'
   const concentrationNote = 'Concentration gaps do not remove candidates that pass holder count.'
   const warnings = [
     summary.unverified > 0 ? `${summary.unverified} checks need more evidence.` : 'No open verification cluster in the current results.',
@@ -979,7 +998,7 @@ function EmptyFeed({ limited, holderCheckBudgetExhausted, discoveryDegradedSigni
           ? `Radar source degraded — ${pagesLoaded}/${pagesAttempted} pages loaded${rawCandidatesRecovered > 0 ? ` (${rawCandidatesRecovered} raw candidates recovered from the loaded pages, none cleared the gate)` : ' (no candidates recovered)'}. Try refresh.`
           : holderCheckBudgetExhausted
             ? 'Holder-check budget reached for this cycle.'
-            : 'No candidates passed the $80K–$2M / 30-holder New Radar gate in this cycle.'}
+            : 'No candidates passed the $80K+ valuation / real liquidity gate in this cycle.'}
       </p>
       {limited ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#3a5268' }}>Live feed is limited right now.</p> : null}
     </div>
@@ -1557,12 +1576,11 @@ export default function BaseRadarPage() {
       hiddenLowEvidenceCount: data?.hiddenLowEvidenceCount ?? 0,
       hiddenLowValuation: data?.hiddenLowValuation ?? 0,
       hiddenBelow80k: data?.hiddenBelow80k ?? 0,
-      hiddenAbove2m: data?.hiddenAbove2m ?? 0,
       hiddenLowHolders: data?.hiddenLowHolders ?? 0,
       hiddenHolderUnavailable: data?.hiddenHolderUnavailable ?? 0,
       hiddenConcentrationUnavailable: data?.hiddenConcentrationUnavailable ?? 0,
     }
-  }, [intelTokens, data?.hiddenLowEvidenceCount, data?.hiddenLowValuation, data?.hiddenBelow80k, data?.hiddenAbove2m, data?.hiddenLowHolders, data?.hiddenHolderUnavailable, data?.hiddenConcentrationUnavailable])
+  }, [intelTokens, data?.hiddenLowEvidenceCount, data?.hiddenLowValuation, data?.hiddenBelow80k, data?.hiddenLowHolders, data?.hiddenHolderUnavailable, data?.hiddenConcentrationUnavailable])
 
   const filteredAndSortedTokens = useMemo(() => {
     const filtered = intelTokens.filter(token => {
@@ -1709,7 +1727,7 @@ export default function BaseRadarPage() {
                 Fresh pools and early momentum signals
               </p>
               <p style={{ fontSize: '11px', color: '#5b7186', margin: '0 0 10px', maxWidth: '760px', lineHeight: 1.4, fontFamily: 'var(--font-plex-mono)' }}>
-                New Radar shows tokens between $80K and $2M valuation with 30+ holders and real liquidity. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
+                New Radar requires $80K+ valuation and real liquidity. Tokens above the early range are labelled Established instead of hidden. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
               </p>
             </>
           ) : (
@@ -1919,7 +1937,7 @@ export default function BaseRadarPage() {
             )}
             {!loading && !loadingMore && loadMoreExhausted && (
               <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#64748b', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
-                No more candidates passed the $80K–$2M / 30-holder New Radar gate in this cycle.
+                No more candidates passed the $80K+ valuation / real liquidity gate in this cycle.
               </p>
             )}
           </div>
