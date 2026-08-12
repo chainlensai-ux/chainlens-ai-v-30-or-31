@@ -1242,11 +1242,30 @@ export default function BaseRadarPage() {
     }
   }, [data?.page, loadingMore])
 
+  // REDUNDANT-REFETCH-ON-TAB-REFOCUS FIX, DISCLOSED (reported: switching to another tab for a
+  // while, then back to Base Radar, clears the feed and it doesn't come back). Root cause:
+  // Supabase's client automatically re-checks the session when a tab regains focus after being
+  // backgrounded (a routine, benign event, not a real plan/access change) — usePlanWithLoading's
+  // onAuthStateChange handler sets `loading=true` for the duration of that re-check regardless of
+  // whether the resolved plan actually changes (lib/usePlan.tsx). Since planLoading was a dependency
+  // of this effect, EVERY tab-refocus silently fired a brand-new /api/radar fetch, not because
+  // anything was stale, but purely as a side effect of the auth blip — and since default New Radar
+  // now enforces a real, sometimes-thin deterministic $80K-$2M/30-holder band, that surprise extra
+  // fetch had a real chance of landing on a momentarily-empty cycle and replacing whatever was
+  // already showing with nothing. Now only fires on the actual transition INTO having access
+  // (mount, login, or a real plan upgrade) — tracked via hasFetchedInitialRef — not on every benign
+  // loading blip while access was already granted the whole time. The existing 120s interval poll
+  // and manual Refresh button remain the only intended ways to get a fresh fetch after that.
+  const hasFetchedInitialRef = useRef(false)
   useEffect(() => {
-    if (!planLoading && canAccessFeature(effectivePlan, 'base-radar')) {
+    const hasAccess = !planLoading && canAccessFeature(effectivePlan, 'base-radar')
+    if (hasAccess && !hasFetchedInitialRef.current) {
+      hasFetchedInitialRef.current = true
       queueMicrotask(() => {
         void fetchData()
       })
+    } else if (!hasAccess) {
+      hasFetchedInitialRef.current = false
     }
   }, [effectivePlan, fetchData, planLoading])
 
