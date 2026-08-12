@@ -961,6 +961,8 @@ export async function GET(req: NextRequest) {
     // these pools already flow through and get correctly counted by the normal liquidity-gate
     // counters below).
     let droppedByV4Pool = 0
+    let droppedByV4NoDexScreenerData = 0
+    let droppedByV4PoolMismatch = 0
     let droppedByLiquidityFloorSpecifically = 0
     let droppedByAbsoluteLiquidityFloor = 0
     let droppedByDeadVolumeFloor = 0
@@ -1138,7 +1140,22 @@ export async function GET(req: NextRequest) {
       const liquidityUsd = isV4Pool
         ? (rescueMatchesThisPool && typeof rescue?.selectedLiquidityUsd === 'number' && rescue.selectedLiquidityUsd > 0 ? rescue.selectedLiquidityUsd : 0)
         : drafts[i].liquidityUsd
-      if (isV4Pool && liquidityUsd === 0) droppedByV4Pool++
+      if (isV4Pool && liquidityUsd === 0) {
+        droppedByV4Pool++
+        // V4-MISMATCH-DIAGNOSTIC, DISCLOSED (reported: "should be more tokens, is DexScreener even
+        // working" — v4_liquidity_unverified was consistently ~30-40% of raw candidates across
+        // several live captures, high enough to question whether this is real zero-liquidity or an
+        // address-format/coverage mismatch between GeckoTerminal and DexScreener specifically for
+        // V4 pools (V4 uses a singleton PoolManager with pool-key-derived addressing, structurally
+        // different from V2/V3's per-pool contract addresses — plausible the two providers disagree
+        // on what "this pool's address" even is). Distinguishes "DexScreener has literally zero
+        // pairs for this token" (a coverage/indexing-lag question) from "DexScreener has pairs for
+        // this token but none match the specific pool GeckoTerminal found" (an address-matching
+        // question) — collapsed into one undifferentiated droppedByV4Pool counter before, with no
+        // way to tell which explanation actually dominates.
+        if (!rescue || rescue.pairCount === 0) droppedByV4NoDexScreenerData++
+        else if (!rescueMatchesThisPool) droppedByV4PoolMismatch++
+      }
       const marketCapUsd = resolvedMarketCap.marketCapUsd ?? rescue?.marketCapUsd ?? null
       const marketCapStatus = marketCapUsd != null ? 'verified' : resolvedMarketCap.marketCapStatus
       const marketCapFieldPath = resolvedMarketCap.marketCapUsd != null ? resolvedMarketCap.marketCapFieldPath : rescue?.marketCapFieldPath ?? resolvedMarketCap.marketCapFieldPath
@@ -1601,6 +1618,8 @@ export async function GET(req: NextRequest) {
         duplicate_contract: droppedByDuplicateContract,
         established_token_excluded: droppedByEstablishedToken,
         v4_liquidity_unverified: droppedByV4Pool,
+        v4_no_dexscreener_data: droppedByV4NoDexScreenerData,
+        v4_pool_address_mismatch: droppedByV4PoolMismatch,
         liquidity_below_minimum: droppedByAbsoluteLiquidityFloor + droppedByLiquidityFloorSpecifically,
         dead_volume_excluded: droppedByDeadVolumeFloor,
         valuation_unavailable: droppedByValuationUnavailable,
@@ -1675,6 +1694,8 @@ export async function GET(req: NextRequest) {
         duplicate_contract: droppedByDuplicateContract,
         established_token_excluded: droppedByEstablishedToken,
         v4_pool_excluded: droppedByV4Pool,
+        v4_no_dexscreener_data: droppedByV4NoDexScreenerData,
+        v4_pool_address_mismatch: droppedByV4PoolMismatch,
         liquidity_below_minimum: droppedByAbsoluteLiquidityFloor + droppedByLiquidityFloorSpecifically,
         dead_volume_excluded: droppedByDeadVolumeFloor,
         valuation_unavailable: droppedByValuationUnavailable,
