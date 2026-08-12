@@ -616,20 +616,40 @@ export async function GET(req: NextRequest) {
   // with per-failed-page source/page/status/errorName/errorMessage/retryable/durationMs). `source`/
   // `page` are attached at spec-construction time instead of parsed back out of the `key` string
   // later, so the audit can never drift from what was actually requested.
-  const sourceSpecs = [
-    ...Array.from({ length: NEW_POOLS_PAGES_PER_REQUEST }, (_, i) => {
-      const page = newPoolsStartPage + i
-      return { key: `new_p${page}`, source: 'new_pools', page, url: `https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=${page}&include=base_token%2Cquote_token&per_page=20` }
-    }),
-    ...Array.from({ length: TRENDING_PAGES_PER_REQUEST }, (_, i) => {
-      const page = trendingStartPage + i
-      return { key: `trending_p${page}`, source: 'trending_pools', page, url: `https://api.geckoterminal.com/api/v2/networks/base/trending_pools?page=${page}&include=base_token%2Cquote_token&per_page=20` }
-    }),
-    ...Array.from({ length: VOLUME_POOLS_PAGES_PER_REQUEST }, (_, i) => {
-      const page = volumePoolsStartPage + i
-      return { key: `vol_p${page}`, source: 'pools_by_volume', page, url: `https://api.geckoterminal.com/api/v2/networks/base/pools?page=${page}&include=base_token%2Cquote_token&per_page=20&sort=h24_volume_usd_desc` }
-    }),
-  ]
+  // SOURCE-STARVATION FIX, DISCLOSED (reported: a real, established-but-active token — $291K market
+  // cap, $106K liquidity, $146K 24h volume, 1,090 holders, comfortably clearing every gate — never
+  // appeared on Radar. Traced to the discovery order below: new_pools/trending/volume were
+  // concatenated as three separate blocks (new_p1-4, trending_p1-2, vol_p1-2), and with the
+  // empirically-observed ~6-request-per-wave rate-limit budget, vol_p1/vol_p2 always fell in the
+  // second wave — which failedPages/degradedReason confirms has 429'd in EVERY live capture this
+  // session, not occasionally. "Sorted by volume" is exactly the source most likely to surface an
+  // active-but-not-brand-new pool like this one, so it being permanently starved silently blinded
+  // Radar to a whole category of real, qualifying tokens — a structural bug, not bad luck. Fixed by
+  // round-robin interleaving the three categories so every source gets pages inside the first
+  // (reliably-successful) wave, instead of one category unconditionally absorbing 100% of the
+  // rate-limit risk every single cycle.
+  const buildPageSpecs = (source: string, keyPrefix: string, startPage: number, count: number, urlBuilder: (page: number) => string) =>
+    Array.from({ length: count }, (_, i) => {
+      const page = startPage + i
+      return { key: `${keyPrefix}${page}`, source, page, url: urlBuilder(page) }
+    })
+  const newPoolsSpecs = buildPageSpecs('new_pools', 'new_p', newPoolsStartPage, NEW_POOLS_PAGES_PER_REQUEST,
+    page => `https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=${page}&include=base_token%2Cquote_token&per_page=20`)
+  const trendingSpecs = buildPageSpecs('trending_pools', 'trending_p', trendingStartPage, TRENDING_PAGES_PER_REQUEST,
+    page => `https://api.geckoterminal.com/api/v2/networks/base/trending_pools?page=${page}&include=base_token%2Cquote_token&per_page=20`)
+  const volumeSpecs = buildPageSpecs('pools_by_volume', 'vol_p', volumePoolsStartPage, VOLUME_POOLS_PAGES_PER_REQUEST,
+    page => `https://api.geckoterminal.com/api/v2/networks/base/pools?page=${page}&include=base_token%2Cquote_token&per_page=20&sort=h24_volume_usd_desc`)
+  const sourceSpecs: typeof newPoolsSpecs = []
+  {
+    const queues = [newPoolsSpecs, trendingSpecs, volumeSpecs]
+    let remaining = queues.reduce((sum, q) => sum + q.length, 0)
+    let cursor = 0
+    while (remaining > 0) {
+      const q = queues[cursor % queues.length]
+      if (q.length > 0) { sourceSpecs.push(q.shift()!); remaining-- }
+      cursor++
+    }
+  }
   // DEXSCREENER-BOOST-DISCOVERY FIX, DISCLOSED (explicitly requested: add DexScreener as a fallback
   // discovery source; researched first — DexScreener's public API has no "browse pools on a chain"
   // endpoint the way GeckoTerminal's new_pools/trending_pools/pools do, only lookup-by-token/pair,
