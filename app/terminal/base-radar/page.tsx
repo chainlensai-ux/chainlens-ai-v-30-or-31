@@ -459,7 +459,18 @@ function enrichToken(token: RadarToken): TokenIntel {
     }
   }
   const radarScore = displayModel.score
-  const status = displayModel.simulation.status !== 'passed' ? getRadarFeedStatusFromScore(radarScore) : getStatus(token, radarScore, momentum)
+  // HOLDER-EVIDENCE-CAPS-STATUS-EVERY-BRANCH FIX, DISCLOSED (found during a full filter audit):
+  // getStatus already caps status at UNVERIFIED when holderVerified is false, but that only runs on
+  // the `simulation.status === 'passed'` branch. The far more common case — simulation still
+  // pending — used getRadarFeedStatusFromScore instead, a pure score->status function with zero
+  // awareness of holderVerified (confirmed: not referenced anywhere in lib/baseRadarFeedScoring.ts).
+  // That let a holder-unverified token reach HOT/WATCH purely on liquidity/volume score and pass
+  // the Watchlist tab's radarScore>=60 filter — exactly the "silently promoted as verified" outcome
+  // the backend's own scoreRisk() was built to prevent server-side. Applied uniformly here instead
+  // of duplicating the check into both status functions.
+  const status = token.holderVerified === false
+    ? 'UNVERIFIED'
+    : displayModel.simulation.status !== 'passed' ? getRadarFeedStatusFromScore(radarScore) : getStatus(token, radarScore, momentum)
 
   return {
     ...token,
