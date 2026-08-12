@@ -579,14 +579,16 @@ export async function GET(req: NextRequest) {
   // entries). requestedChain drives every GeckoTerminal/DexScreener network-scoped URL and every
   // cache/backoff/pool key below, so Base and Robinhood run as fully independent discovery cycles —
   // never sharing rate-limit backoff state, cached payloads, or daily pools with each other.
-  // Two real external checks are deliberately SKIPPED (not guessed) for 'robinhood': honeypot.is
-  // requires a numeric EVM chainID (hardcoded 8453 for Base) and GoldRush's holder-count endpoint is
-  // hardcoded to the 'base-mainnet' path — I don't have a verified Robinhood-chain chainID or
-  // confirmation GoldRush indexes it at all, and guessing either risks silently returning data for
-  // the WRONG chain, which is worse than honestly reporting "unavailable." Both already have a real,
-  // honest not-verified evidence-gap path for genuine provider failures — Robinhood tokens flow
-  // through that exact same path, capped at WATCH / never falsely marked verified, same as any other
-  // real provider outage.
+  // HOLDER-COUNT-NOW-SUPPORTED, DISCLOSED (explicitly confirmed: "Robinhood's GoldRush chain support
+  // and covalent full platform support robinhood" — GoldRush's own site confirms real Robinhood
+  // Chain coverage). fetchGoldRushHolderCount (lib/server/goldrushHolderCount.ts) now genuinely
+  // attempts the call for Robinhood too, using Robinhood Chain's verified real numeric chain ID
+  // (4663) in place of a chain-name slug I couldn't confirm — see that module's own header comment.
+  // honeypot.is remains SKIPPED (not guessed) for 'robinhood': it requires a numeric EVM chainID
+  // and I have no verified Robinhood-chain chainID accepted by honeypot.is specifically (a different
+  // provider than GoldRush, with its own separate chain-support question) — guessing risks silently
+  // simulating against the wrong chain. It keeps the same honest not-verified evidence-gap path
+  // genuine provider failures already use, capped at WATCH, never falsely marked verified.
   const requestedChain: 'base' | 'robinhood' = req.nextUrl.searchParams.get('chain') === 'robinhood' ? 'robinhood' : 'base'
   const minValuationUsd = Number(req.nextUrl.searchParams.get('minValuationUsd')) || DEFAULT_RADAR_MIN_VALUATION_USD
   const minLiquidityUsd = Number(req.nextUrl.searchParams.get('minLiquidityUsd')) || DEFAULT_RADAR_MIN_LIQUIDITY_USD
@@ -1532,7 +1534,7 @@ export async function GET(req: NextRequest) {
     const HOLDER_CHECK_CONCURRENCY = 8
     const holderCountByContract = new Map<string, number | null>()
     const holderCheckFailureReasons: Record<string, number> = {}
-    const holderCheckFailureSample: { httpStatus: number | null; errorBody: string | null }[] = []
+    const holderCheckFailureSample: { httpStatus: number | null; errorBody: string | null; chainPathUsed?: string }[] = []
     const holderCheckedCandidates: Candidate[] = []
     let holderCheckAttemptedCount = 0
     let passingHolderGateCount = 0
@@ -1564,7 +1566,7 @@ export async function GET(req: NextRequest) {
           const holderResult = resultByContract.get(t.contract.toLowerCase())
           if (holderResult && holderResult.reason !== 'ok') {
             holderCheckFailureReasons[holderResult.reason] = (holderCheckFailureReasons[holderResult.reason] ?? 0) + 1
-            if (holderCheckFailureSample.length < 5) holderCheckFailureSample.push({ httpStatus: holderResult.httpStatus ?? null, errorBody: holderResult.errorBody ?? null })
+            if (holderCheckFailureSample.length < 5) holderCheckFailureSample.push({ httpStatus: holderResult.httpStatus ?? null, errorBody: holderResult.errorBody ?? null, chainPathUsed: holderResult.chainPathUsed })
           }
           holderCheckedCandidates.push(t)
           const holderCount = holderCountByContract.get(t.contract.toLowerCase())

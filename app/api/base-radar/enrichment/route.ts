@@ -524,9 +524,9 @@ async function scanToken(req: Request, chain: ChainKey, contract: string, debug:
   }
   // GOLDRUSH-HOLDER-COUNT-FALLBACK, DISCLOSED: only fetched when Token Scanner's own scan genuinely
   // has no holder count/rows at all — never an extra request on a scan that already has real data.
-  // fetchGoldRushHolderCount only supports 'base' (see that module's own header comment on why
-  // 'robinhood' isn't guessed) — this ChainKey only has 'base'/'eth' today regardless, so the check
-  // is a plain equality, not a cast.
+  // fetchGoldRushHolderCount supports 'base' and 'robinhood' (confirmed real GoldRush/Covalent
+  // Robinhood Chain coverage — see that module's own header comment); 'eth' isn't wired into that
+  // fetch, so only forward chain when it's one of the two this module actually handles.
   const scanHolderDistribution = scan.holderDistribution ?? {}
   const scanHolderResolver = scan.holderResolver ?? {}
   const scanHasHolderData = finiteNumber(scanHolderDistribution.holderCount) != null
@@ -534,8 +534,8 @@ async function scanToken(req: Request, chain: ChainKey, contract: string, debug:
     || (Array.isArray(scanHolderDistribution.topHolders) && scanHolderDistribution.topHolders.length > 0)
     || (Array.isArray(scanHolderResolver.holders) && scanHolderResolver.holders.length > 0)
   let fallbackHolderCount: number | null = null
-  if (!scanHasHolderData && chain === 'base') {
-    const fallback = await fetchGoldRushHolderCount(contract, 'base')
+  if (!scanHasHolderData && (chain === 'base' || chain === 'robinhood')) {
+    const fallback = await fetchGoldRushHolderCount(contract, chain)
     fallbackHolderCount = fallback.count
   }
   return buildPublicPayload(scan, chain, contract, debug, fallbackHolderCount)
