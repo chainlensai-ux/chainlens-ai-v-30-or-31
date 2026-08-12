@@ -478,6 +478,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       // this is a minimum, never presented as verified even though it can still pass the feed's
       // holder gate; concentration is only ever "resolved" when real top-holder balances (top1/10/20
       // above) actually exist, never inferred from the count. See lib/baseRadarHolderEvidence.ts.
+      const holderProviderLabel = usedFallbackConcentration || (holderCount === fallbackHolderCount && fallbackHolderCount != null) ? 'goldrush_fallback' : 'token_scanner'
       const holderEvidence = buildBaseRadarHolderEvidence({
         holderCount,
         countIsMinimum: holderCountCapped,
@@ -485,6 +486,9 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
         top10Percent: top10,
         top20Percent: top20,
         holderProviderReachable: holderCount != null ? true : fallbackHolderProviderReachable,
+        // usedFallbackConcentration true means fallbackConcentration.reason === 'ok', i.e. these
+        // top1/10/20 came from fetchGoldRushConcentration (GoldRush/Covalent) specifically.
+        concentrationProvider: usedFallbackConcentration ? 'goldrush' : null,
       })
       // AUDIT, DISCLOSED: dev-only structured log of the holder-evidence decision for this token —
       // never sent to the client, mirrors the TOKEN-SAVER debug-log pattern already used elsewhere
@@ -493,14 +497,17 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
         console.debug('[baseRadarHolderEvidenceAudit]', {
           symbol: scan.symbol ?? scan.tokenInfo?.symbol ?? null,
           tokenAddress: contract,
-          holderProvider: usedFallbackConcentration || (holderCount === fallbackHolderCount && fallbackHolderCount != null) ? 'goldrush_fallback' : 'token_scanner',
+          holderProvider: holderProviderLabel,
           holderCountStatus: holderEvidence.holderCountStatus,
           holderCountExact: holderEvidence.holderCountExact ?? null,
           holderCountMinimum: holderEvidence.holderCountMinimum ?? null,
           holderGatePassed: holderEvidence.holderGatePassed,
           holderVerified: holderEvidence.holderVerified,
           concentrationStatus: holderEvidence.concentrationStatus,
-          topHolderBalancesResolved: holderEvidence.concentrationStatus === 'resolved',
+          topHolderBalancesResolved: holderEvidence.topHolderBalancesResolved,
+          top1Percent: holderEvidence.top1Percent ?? null,
+          top10Percent: holderEvidence.top10Percent ?? null,
+          top20Percent: holderEvidence.top20Percent ?? null,
           evidenceGaps: holderEvidence.evidenceGaps,
         })
       }

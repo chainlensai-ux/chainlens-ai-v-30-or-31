@@ -28,6 +28,10 @@ export interface HolderEvidenceInput {
   // rows) — distinguishes "the provider was reachable but had nothing" from "the provider could not
   // be reached at all" (timeout, no API key, rate limited, HTTP error) for the evidence-gap code.
   holderProviderReachable: boolean
+  // Which provider actually produced the resolved top1/10/20 (e.g. 'goldrush'). Only meaningful when
+  // concentration resolves; left null/omitted otherwise. Purely descriptive — never affects the
+  // computed evidence itself.
+  concentrationProvider?: string | null
 }
 
 export interface HolderEvidence {
@@ -38,6 +42,8 @@ export interface HolderEvidence {
   holderGatePassed: boolean
   holderVerified: boolean
   concentrationStatus: ConcentrationStatus
+  concentrationProvider?: string | null
+  topHolderBalancesResolved: boolean
   top1Percent?: number
   top10Percent?: number
   top20Percent?: number
@@ -95,6 +101,8 @@ export function buildBaseRadarHolderEvidence(input: HolderEvidenceInput): Holder
     holderGatePassed,
     holderVerified,
     concentrationStatus,
+    concentrationProvider: concentrationStatus === 'resolved' ? (input.concentrationProvider ?? null) : null,
+    topHolderBalancesResolved: concentrationStatus === 'resolved',
     top1Percent: concentrationStatus === 'resolved' && typeof input.top1Percent === 'number' && Number.isFinite(input.top1Percent) ? input.top1Percent : undefined,
     top10Percent: concentrationStatus === 'resolved' && typeof input.top10Percent === 'number' && Number.isFinite(input.top10Percent) ? input.top10Percent : undefined,
     top20Percent: concentrationStatus === 'resolved' && typeof input.top20Percent === 'number' && Number.isFinite(input.top20Percent) ? input.top20Percent : undefined,
@@ -119,9 +127,12 @@ export function getHolderCountCopy(evidence: Pick<HolderEvidence, 'holderCountSt
   return 'Holder count is an open check — no provider returned a usable count.'
 }
 
-export function getConcentrationCopy(evidence: Pick<HolderEvidence, 'concentrationStatus'>): string {
+export function getConcentrationCopy(evidence: Pick<HolderEvidence, 'concentrationStatus' | 'concentrationProvider'>): string {
   if (evidence.concentrationStatus === 'resolved') {
-    return 'Top 1/10/20 supply concentration is resolved from real indexed holder balances.'
+    const provider = evidence.concentrationProvider === 'goldrush' ? 'GoldRush/Covalent' : evidence.concentrationProvider
+    return provider
+      ? `Top holder balances resolved via ${provider} snapshot.`
+      : 'Top 1/10/20 supply concentration is resolved from real indexed holder balances.'
   }
   return 'The provider confirmed a holder count, but did not return the holder balance list needed for Top 1/10/20 concentration.'
 }

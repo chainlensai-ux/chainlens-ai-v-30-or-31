@@ -25,6 +25,8 @@
 // even though the exact slug string itself is unconfirmed. requestedIdentifier is captured on every
 // result specifically so a live capture can prove whether 4663 actually resolves correctly.
 
+import { fetchOnchainTotalSupply } from './lpProof.ts'
+
 const GOLDRUSH_HOST = 'api.covalenthq.com'
 const HOLDER_COUNT_CACHE_TTL_MS = 10 * 60_000
 // CHAIN-PATH-CONSISTENCY, DISCLOSED (found in a full Base Radar audit): this module used '4663'
@@ -83,15 +85,30 @@ export interface ConcentrationResult {
   reason: HolderCountReason
   chainPathUsed?: string
   httpStatus?: number | null
+  // Which real source produced totalSupply for the percent math — 'goldrush' when Covalent's own
+  // per-row total_supply was usable, 'rpc' when it had to fall back to an on-chain totalSupply()
+  // read (see TOTAL-SUPPLY-RPC-FALLBACK below). Absent when reason isn't 'ok'.
+  totalSupplySource?: 'goldrush' | 'rpc'
+  // Real, measured — true only when this result was served from concentrationCache without any
+  // network call this invocation. Used by aggregate audit objects (cacheHits) so that number is
+  // never guessed/estimated.
+  fromCache?: boolean
 }
 
 const concentrationCache = new Map<string, { value: ConcentrationResult; expiresAt: number }>()
+// COST-GUARDRAIL, DISCLOSED: page-size=100 costs the same one request as page-size=20 on Covalent's
+// per-call pricing, so this uses the larger page for headroom (matches the count endpoint's own
+// page-size), but only the top 20 rows are ever used for top1/10/20 or displayed — Covalent's
+// documented default order for this endpoint is descending by balance, so the top 20 of a 100-row
+// page and the top 20 of a 20-row page are the same rows either way.
+const CONCENTRATION_PAGE_SIZE = 100
+const CONCENTRATION_TIMEOUT_MS = 6_000
 
 export async function fetchGoldRushConcentration(contract: string, chain: 'base' | 'robinhood'): Promise<ConcentrationResult> {
   const chainPaths = CHAIN_PATHS[chain]
   const key = `${chain}:${contract.toLowerCase()}`
   const cached = concentrationCache.get(key)
-  if (cached && cached.expiresAt > Date.now()) return cached.value
+  if (cached && cached.expiresAt > Date.now()) return { ...cached.value, fromCache: true }
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
   const empty = (reason: HolderCountReason, chainPathUsed?: string, httpStatus: number | null = null): ConcentrationResult => ({ top1: null, top10: null, top20: null, topHolders: [], reason, chainPathUsed, httpStatus })
   if (!apiKey) return empty('no_api_key', chainPaths[0])
@@ -99,17 +116,34 @@ export async function fetchGoldRushConcentration(contract: string, chain: 'base'
   const attempt = async (chainPath: string): Promise<ConcentrationResult> => {
     try {
       const res = await fetch(
-        `https://${GOLDRUSH_HOST}/v1/${chainPath}/tokens/${contract}/token_holders_v2/?page-number=0&page-size=20`,
-        { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(3500) },
+        `https://${GOLDRUSH_HOST}/v1/${chainPath}/tokens/${contract}/token_holders_v2/?page-number=0&page-size=${CONCENTRATION_PAGE_SIZE}`,
+        { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(CONCENTRATION_TIMEOUT_MS) },
       )
       if (!res.ok) return empty(res.status === 429 ? 'rate_limited' : 'http_error', chainPath, res.status)
       const json = await res.json().catch(() => null) as { data?: { items?: Array<{ address?: string; balance?: string; total_supply?: string }> } } | null
       const items = Array.isArray(json?.data?.items) ? json!.data!.items! : []
+      if (items.length === 0) return empty('no_data', chainPath)
       const totalSupplyRaw = items.find(i => i?.total_supply != null)?.total_supply
-      if (items.length === 0 || !totalSupplyRaw) return empty('no_data', chainPath)
-      let totalSupplyBig: bigint
-      try { totalSupplyBig = BigInt(totalSupplyRaw) } catch { return empty('no_data', chainPath) }
-      if (totalSupplyBig <= BigInt(0)) return empty('no_data', chainPath)
+      let totalSupplyBig: bigint | null = null
+      let totalSupplySource: 'goldrush' | 'rpc' | null = null
+      if (totalSupplyRaw != null) {
+        try { const v = BigInt(totalSupplyRaw); if (v > BigInt(0)) { totalSupplyBig = v; totalSupplySource = 'goldrush' } } catch { /* fall through to RPC */ }
+      }
+      // TOTAL-SUPPLY-RPC-FALLBACK, DISCLOSED (found live-verifying this: a token can have real,
+      // usable holder-balance rows from GoldRush while every row's total_supply is missing/null —
+      // app/api/token/route.ts's own disclosed comment already names this exact gap ("GoldRush
+      // LP-holder rows sometimes omit total_supply — fall back to an RPC totalSupply") and already
+      // falls back to a cheap read-only eth_call for it. Real balance rows without a usable total
+      // supply were previously a dead end (reason:'no_data', Top 1/10/20 permanently N/A even though
+      // the hard part — the actual balances — was already in hand); now a single bounded RPC call
+      // (lib/server/lpProof.ts's fetchOnchainTotalSupply, the same RPC client every other Base Radar
+      // LP check already uses — no new provider) fills the one missing number.
+      if (totalSupplyBig == null && (chain === 'base' || chain === 'robinhood')) {
+        const rpcSupply = await fetchOnchainTotalSupply(chain, contract)
+        if (rpcSupply != null && rpcSupply > BigInt(0)) { totalSupplyBig = rpcSupply; totalSupplySource = 'rpc' }
+      }
+      if (totalSupplyBig == null) return empty('no_data', chainPath)
+      const totalSupplyFinal: bigint = totalSupplyBig
       // Sort client-side by balance descending rather than trusting response order, since a wrong
       // assumption there would silently understate concentration rather than fail loudly.
       const rows = items
@@ -120,12 +154,21 @@ export async function fetchGoldRushConcentration(contract: string, chain: 'base'
         })
         .filter((r): r is { address: string; balBig: bigint } => r.address != null && r.balBig != null)
         .sort((a, b) => (b.balBig > a.balBig ? 1 : b.balBig < a.balBig ? -1 : 0))
-      const pctOf = (sumBig: bigint) => Number((sumBig * BigInt(1_000_000)) / totalSupplyBig) / 10_000
+      // RATIO-CANCELS-DECIMALS, DISCLOSED: percent = balance / totalSupply, both read as raw base-unit
+      // BigInts from the same provider response (or, for the RPC fallback, the same eth_call ABI
+      // encoding token balances use) — the token's decimals value cancels out of this ratio entirely,
+      // so no separate decimal-normalization step is needed or performed. This also means a provider
+      // that ever reported an already-human-formatted balance/supply pair (rather than raw base
+      // units) would still divide correctly, since both sides would be scaled the same way — the bug
+      // this guards against (dividing one raw and one human-formatted number together, silently
+      // producing a percentage off by 10^decimals) can't occur because both operands always come from
+      // the same source in the same units.
+      const pctOf = (sumBig: bigint) => Number((sumBig * BigInt(1_000_000)) / totalSupplyFinal) / 10_000
       const top1 = rows.length >= 1 ? pctOf(rows[0].balBig) : null
       const top10 = rows.length >= 1 ? pctOf(rows.slice(0, 10).reduce((acc, r) => acc + r.balBig, BigInt(0))) : null
       const top20 = rows.length >= 1 ? pctOf(rows.slice(0, 20).reduce((acc, r) => acc + r.balBig, BigInt(0))) : null
       const topHolders = rows.slice(0, 20).map((r, index) => ({ rank: index + 1, address: r.address, percent: pctOf(r.balBig) }))
-      return { top1, top10, top20, topHolders, reason: 'ok', chainPathUsed: chainPath }
+      return { top1, top10, top20, topHolders, reason: 'ok', chainPathUsed: chainPath, totalSupplySource: totalSupplySource ?? undefined }
     } catch (err) {
       const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
       return empty(timedOut ? 'timeout' : 'http_error', chainPath)

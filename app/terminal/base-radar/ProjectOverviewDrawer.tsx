@@ -143,6 +143,8 @@ type DrawerEnrichmentPayload = {
       holderGatePassed: boolean
       holderVerified: boolean
       concentrationStatus: 'resolved' | 'unavailable'
+      concentrationProvider?: string | null
+      topHolderBalancesResolved?: boolean
       top1Percent?: number
       top10Percent?: number
       top20Percent?: number
@@ -992,7 +994,18 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
               see lib/baseRadarHolderEvidence.ts) is now the single source of truth for both facts,
               kept fully separate — the copy below never calls a minimum count "verified", and
               concentration only ever shows real resolved numbers, never inferred from the count. */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}><Chip label={concentration.holderEvidence?.concentrationStatus === 'unavailable' ? 'Concentration unavailable' : `${concentrationRisk} concentration`} tone={holderTone} />
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+              <Chip label={concentration.holderEvidence?.concentrationStatus === 'unavailable' ? 'Concentration unavailable' : `${concentrationRisk} concentration`} tone={holderTone} />
+              {/* RESOLVED-BADGE, DISCLOSED (explicitly directed: "If concentrationStatus === 'resolved':
+                  show badge 'CONCENTRATION RESOLVED'... remove 'Concentration unavailable'"). Shown
+                  alongside (not instead of) the risk-level chip above, which stays more informative
+                  once real numbers exist — this badge is the explicit "this is real, resolved data"
+                  signal the risk label alone doesn't state outright. */}
+              {concentration.holderEvidence?.concentrationStatus === 'resolved' ? (
+                <Chip label="CONCENTRATION RESOLVED" tone="mint" />
+              ) : null}
+            </div>
               <span style={{ color: '#94a3b8', fontSize: 12 }}>Holders: <strong style={{ color: '#e2e8f0' }}>{concentration.holderEvidence?.holderCountDisplay ?? (concentration.holderCount == null ? 'Open Check' : `${concentration.holderCount}${concentration.holderCountCapped ? '+' : ''}`)}</strong></span><span style={{ color: '#94a3b8', fontSize: 12 }}>{creatorTopHolderDisplay(concentration.creatorInTopHolders, concentration.creatorHolderPercent)}</span></div>
           {concentration.holderEvidence?.holderCountStatus === 'minimum' ? (
             <p style={{ margin: '0 0 4px', color: '#fbbf24', fontSize: 12, lineHeight: 1.5, fontWeight: 650 }}>Partial holder evidence — holder count is a confirmed minimum, not an exact verified total.</p>
@@ -1007,7 +1020,9 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
               {' '}
               {concentration.holderEvidence.concentrationStatus === 'unavailable'
                 ? 'The provider confirmed a holder count, but did not return the holder balance list needed for Top 1/10/20 concentration. Open Token Scanner for a deeper check.'
-                : 'Top 1/10/20 supply concentration below is resolved from real indexed holder balances.'}
+                : concentration.holderEvidence.concentrationProvider === 'goldrush'
+                  ? 'Top holder balances resolved via GoldRush/Covalent snapshot.'
+                  : 'Top 1/10/20 supply concentration below is resolved from real indexed holder balances.'}
             </p>
           ) : null}
           <div style={{ display: 'grid', gap: 10, marginBottom: 12 }}><MiniBar label="Top 1" value={concentration.top1} tone={holderTone === 'risk' ? 'risk' : 'mint'} /><MiniBar label="Top 10" value={concentration.top10} tone={holderTone === 'risk' ? 'risk' : 'amber'} /><MiniBar label="Top 20" value={concentration.top20} tone={holderTone === 'risk' ? 'risk' : 'amber'} /></div>

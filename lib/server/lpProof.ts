@@ -3,9 +3,9 @@
 // No GoPlus, no paid providers. Unknowns are reported as "unverified", never fabricated.
 
 import { LP_LOCK_BURN_REGISTRY } from "./lpLockBurnIntel.ts";
-import { logRpcCall } from "./rpcDebug";
-import { auditGlobalAlchemyCall } from "./globalRpcAudit";
-import { getRobinhoodRpcUrl } from "./robinhoodChainConfig";
+import { logRpcCall } from "./rpcDebug.ts";
+import { auditGlobalAlchemyCall } from "./globalRpcAudit.ts";
+import { getRobinhoodRpcUrl } from "./robinhoodChainConfig.ts";
 
 // BNB/ROBINHOOD LP-PROOF WIRING, DISCLOSED (Token Scanner chain expansion, follow-up): burn
 // detection (scanLpHoldersOnChain, below) and PinkLock lookup (fetchPinkLockData) are both fully
@@ -89,6 +89,24 @@ async function lpRpcCall(chain: LpChain, method: string, params: unknown[]): Pro
     if (!res.ok) return null;
     const json = await res.json();
     return typeof json?.result === "string" ? json.result : null;
+  } catch { return null; }
+}
+
+// TOTAL-SUPPLY-RPC-FALLBACK, DISCLOSED (Base Radar holder-concentration audit: GoldRush's own
+// token_holders_v2 rows sometimes omit total_supply even when the count/pagination fields are
+// present — app/api/token/route.ts already has a disclosed comment for this exact same gap ("GoldRush
+// LP-holder rows sometimes omit total_supply — fall back to an RPC totalSupply") and already falls
+// back to a cheap read-only eth_call. This exports the same selector/pattern scanLpHoldersOnChain
+// above already uses (0x18160ddd = totalSupply()) as a small reusable helper so Base Radar's own
+// concentration resolver (lib/server/baseRadarHolderConcentration.ts) can do the same, without
+// introducing any new provider/dependency — same RPC client this file already uses for every other
+// Base Radar LP check.
+export async function fetchOnchainTotalSupply(chain: LpChain, tokenAddress: string): Promise<bigint | null> {
+  try {
+    const hex = await lpRpcCall(chain, "eth_call", [{ to: tokenAddress, data: "0x18160ddd" }, "latest"]);
+    if (!hex || hex === "0x" || hex === "0x0") return null;
+    const value = BigInt(hex);
+    return value > BigInt(0) ? value : null;
   } catch { return null; }
 }
 

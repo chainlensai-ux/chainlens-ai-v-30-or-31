@@ -9,6 +9,7 @@ import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD, MAIN_FEED_MIN
 import { redis, redisConfigured } from '@/lib/server/cache/redisClient'
 import { fetchGoldRushHolderCount, type HolderCountResult } from '@/lib/server/goldrushHolderCount'
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
+import { resolveBaseRadarHolderConcentration } from '@/lib/server/baseRadarHolderConcentration'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 // RATE-LIMIT-TOO-TIGHT FIX, DISCLOSED (reported: "Radar refresh failed" for no obvious reason):
@@ -102,6 +103,13 @@ export interface RadarToken {
   // (holder_provider_unreachable is only ever attached in the latter case) — never displayed/scored
   // as if holder-verified when this is false.
   holderVerified: boolean
+  // HOLDER-CONCENTRATION-ON-FEED, DISCLOSED (explicitly directed: "Restore real Top 1/10/20
+  // concentration in Base Radar" — resolved only for the small set of candidates about to be newly
+  // admitted into today's daily pool, capped at BASE_RADAR_HOLDER_CONCENTRATION_CAP, never for every
+  // raw candidate). Optional and absent for tokens this cycle didn't have budget to resolve — a
+  // missing holderEvidence here is not itself an error signal; the drawer independently resolves its
+  // own on open regardless of what the feed managed this cycle.
+  holderEvidence?: import('@/lib/baseRadarHolderEvidence').HolderEvidence
   evidenceGaps: string[]
   riskLevel: RiskLevel
   honeypot: HoneypotResult | null
@@ -259,6 +267,15 @@ async function setDiscoveryBackoff(key: string, until: number): Promise<void> {
 const DAILY_POOL_MAX = 10
 const DAILY_POOL_CYCLE_MS = 24 * 60 * 60 * 1000
 const DAILY_POOL_REDIS_PREFIX = 'radar:daily-pool:'
+// HOLDER-CONCENTRATION-COST-GUARDRAIL, DISCLOSED (explicitly directed: "Only run holder concentration
+// after market gates... candidate selected for display/receipt enrichment. Do not call holder
+// concentration for all raw candidates... Add cap"). Concentration is only ever resolved for
+// candidates about to be NEWLY admitted into today's daily pool — i.e. already cleared valuation,
+// liquidity, and the real holder-count gate, and about to actually get one of the limited daily
+// slots — never the full ranked candidate list. Bounded to this cap regardless of how many open
+// slots exist (openSlots is already <= DAILY_POOL_MAX=10; this caps it further).
+const BASE_RADAR_HOLDER_CONCENTRATION_CAP = 8
+const BASE_RADAR_HOLDER_CONCENTRATION_CONCURRENCY = 4
 interface DailyPoolEntry { token: RadarToken; addedAt: number; verifiedAt: number }
 // CYCLE-STARTS-ON-FIRST-TOKEN, DISCLOSED (found in a full Base Radar audit): cycleStartedAt was
 // stamped by the first REQUEST after expiry, not the first token actually admitted — directly
@@ -1571,6 +1588,12 @@ export async function GET(req: NextRequest) {
     const droppedByRankingCap = Math.max(0, candidates.length - rankedCandidates.length)
     const HOLDER_CHECK_CONCURRENCY = 8
     const holderCountByContract = new Map<string, number | null>()
+    // Captured alongside the count so the later capped concentration step (BASE_RADAR_HOLDER_
+    // CONCENTRATION_CAP) can correctly tell resolveBaseRadarHolderConcentration whether this
+    // already-known count is exact or a page-bound minimum ("100+") — reading it from anywhere else
+    // (e.g. re-deriving from evidenceGaps) would silently default to "exact" and misreport minimum
+    // counts as fully verified.
+    const holderCountCappedByContract = new Map<string, boolean>()
     const holderCheckFailureReasons: Record<string, number> = {}
     const holderCheckFailureSample: { httpStatus: number | null; errorBody: string | null; chainPathUsed?: string }[] = []
     const holderCheckedCandidates: Candidate[] = []
@@ -1596,6 +1619,7 @@ export async function GET(req: NextRequest) {
             const r = await fetchBaseHolderCount(t.contract, requestedChain)
             resultByContract.set(t.contract.toLowerCase(), r)
             holderCountByContract.set(t.contract.toLowerCase(), r.count)
+            holderCountCappedByContract.set(t.contract.toLowerCase(), r.isCapped === true)
           }
         }
         await Promise.all(Array.from({ length: Math.min(HOLDER_CHECK_CONCURRENCY, batch.length) }, () => worker()))
@@ -1755,6 +1779,34 @@ export async function GET(req: NextRequest) {
     let dailyPoolCarriedOverCount = 0
     let dailyPoolSize = 0
     let dailyPoolCycleStartedAt: number | null = null
+    // HOLDER-CONCENTRATION-AUDIT, DISCLOSED: aggregate stats for the capped concentration resolution
+    // below — every count here is real/measured (attempted/succeeded/failed/skipped/cacheHits), never
+    // estimated. providerOrder documents the real fallback chain actually used (see
+    // lib/server/baseRadarHolderConcentration.ts's own header for why step 2, Alchemy, is skipped —
+    // no existing ERC20 top-holder path exists in this codebase to reuse).
+    const baseRadarHolderConcentrationAudit = {
+      enabled: true,
+      providerOrder: ['goldrush', 'alchemy_skipped_no_existing_erc20_holder_path', 'minimum_count_fallback', 'unavailable'],
+      attemptedCount: 0,
+      succeededCount: 0,
+      failedCount: 0,
+      skippedCount: 0,
+      cacheHits: 0,
+      providerFailures: {} as Record<string, number>,
+      samples: [] as Array<{
+        symbol: string | null
+        tokenAddress: string
+        provider: string | null
+        holderCountStatus: string
+        holderCountExact: number | null
+        holderCountMinimum: number | null
+        concentrationStatus: string
+        top1Percent: number | null
+        top10Percent: number | null
+        top20Percent: number | null
+        evidenceGaps: string[]
+      }>,
+    }
     {
       const nowTs = Date.now()
       const freshByContract = new Map(tokens.map(t => [t.contract.toLowerCase(), t]))
@@ -1775,6 +1827,68 @@ export async function GET(req: NextRequest) {
         .filter(t => !poolContracts.has(t.contract.toLowerCase()))
         .slice(0, openSlots)
         .map(t => ({ token: t, addedAt: nowTs, verifiedAt: nowTs }))
+
+      // HOLDER-CONCENTRATION-ON-ADMISSION, DISCLOSED (explicitly directed: "Restore real Top 1/10/20
+      // concentration in Base Radar" — reusing the already-proven GoldRush/Covalent path, not a new
+      // provider). Resolved only for tokens that just cleared every gate (valuation, liquidity, real
+      // holder count) and are about to actually occupy one of today's limited daily-pool slots — never
+      // for the full ranked candidate list — bounded to BASE_RADAR_HOLDER_CONCENTRATION_CAP regardless
+      // of how many are newly admitted this cycle. A candidate's holder COUNT was already resolved a
+      // few steps up (holderCountByContract, from the existing count-only gate check) — passed through
+      // as knownHolderCount so this only spends a NEW provider call on the concentration pull itself,
+      // never a redundant count-only call. A failure here never removes the candidate; it just leaves
+      // holderEvidence absent on that token, same as any other feed cycle that hasn't resolved it yet.
+      const concentrationTargets = newlyAdmitted.slice(0, BASE_RADAR_HOLDER_CONCENTRATION_CAP)
+      if (concentrationTargets.length > 0) {
+        let nextIndex = 0
+        const worker = async () => {
+          for (;;) {
+            const i = nextIndex++
+            if (i >= concentrationTargets.length) return
+            const entry = concentrationTargets[i]
+            baseRadarHolderConcentrationAudit.attemptedCount++
+            try {
+              const known = holderCountByContract.get(entry.token.contract.toLowerCase())
+              const knownCapped = holderCountCappedByContract.get(entry.token.contract.toLowerCase()) === true
+              const resolved = await resolveBaseRadarHolderConcentration({
+                chain: requestedChain,
+                tokenAddress: entry.token.contract,
+                knownHolderCount: typeof known === 'number' ? { count: known, isMinimum: knownCapped } : null,
+              })
+              entry.token = { ...entry.token, holderEvidence: resolved }
+              if (resolved.concentrationFromCache) baseRadarHolderConcentrationAudit.cacheHits++
+              if (resolved.concentrationStatus === 'resolved') {
+                baseRadarHolderConcentrationAudit.succeededCount++
+              } else {
+                baseRadarHolderConcentrationAudit.failedCount++
+                baseRadarHolderConcentrationAudit.providerFailures[resolved.concentrationReason] = (baseRadarHolderConcentrationAudit.providerFailures[resolved.concentrationReason] ?? 0) + 1
+              }
+              if (baseRadarHolderConcentrationAudit.samples.length < 10) {
+                baseRadarHolderConcentrationAudit.samples.push({
+                  symbol: entry.token.symbol ?? null,
+                  tokenAddress: entry.token.contract,
+                  provider: resolved.holderProvider,
+                  holderCountStatus: resolved.holderCountStatus,
+                  holderCountExact: resolved.holderCountExact ?? null,
+                  holderCountMinimum: resolved.holderCountMinimum ?? null,
+                  concentrationStatus: resolved.concentrationStatus,
+                  top1Percent: resolved.top1Percent ?? null,
+                  top10Percent: resolved.top10Percent ?? null,
+                  top20Percent: resolved.top20Percent ?? null,
+                  evidenceGaps: resolved.evidenceGaps,
+                })
+              }
+            } catch {
+              // Failure must not remove the candidate — it's already admitted; just no concentration
+              // evidence attached this cycle.
+              baseRadarHolderConcentrationAudit.failedCount++
+              baseRadarHolderConcentrationAudit.providerFailures.unexpected_error = (baseRadarHolderConcentrationAudit.providerFailures.unexpected_error ?? 0) + 1
+            }
+          }
+        }
+        await Promise.all(Array.from({ length: Math.min(BASE_RADAR_HOLDER_CONCENTRATION_CONCURRENCY, concentrationTargets.length) }, () => worker()))
+      }
+      baseRadarHolderConcentrationAudit.skippedCount = newlyAdmitted.length - concentrationTargets.length
 
       const finalPool = [...refreshedPool, ...newlyAdmitted]
       dailyPoolSize = finalPool.length
@@ -2072,7 +2186,7 @@ export async function GET(req: NextRequest) {
     // so a real DevTools Network capture — the one method that has reliably worked all session —
     // never showed them either. Attaching both directly to the normal, always-returned payload
     // (not gated behind debug=1) so the exact same capture method already in use surfaces them.
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, dailyPoolCarriedOverCount, dailyPoolSize, dailyPoolMax: DAILY_POOL_MAX, dailyPoolCycleStartedAt: dailyPoolCycleStartedAt == null ? null : new Date(dailyPoolCycleStartedAt).toISOString(), dailyPoolCycleResetsAt: dailyPoolCycleStartedAt == null ? null : new Date(dailyPoolCycleStartedAt + DAILY_POOL_CYCLE_MS).toISOString(), discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, dailyPoolCarriedOverCount, dailyPoolSize, dailyPoolMax: DAILY_POOL_MAX, dailyPoolCycleStartedAt: dailyPoolCycleStartedAt == null ? null : new Date(dailyPoolCycleStartedAt).toISOString(), dailyPoolCycleResetsAt: dailyPoolCycleStartedAt == null ? null : new Date(dailyPoolCycleStartedAt + DAILY_POOL_CYCLE_MS).toISOString(), discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit, baseRadarHolderConcentrationAudit }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,
