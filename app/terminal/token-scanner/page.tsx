@@ -3938,32 +3938,46 @@ export default function TerminalTokenScanner() {
         /* PREMIUM POLISH, DISCLOSED (Token Scanner UI polish task): the old search-card stacked
            five box-shadow layers (up to 140px blur) — replaced with a calmer, static two-layer
            shadow so the card reads as the terminal's primary command module, not a glow bloom. */
-        .search-card{background:linear-gradient(160deg,rgba(9,16,32,.98) 0%,rgba(5,11,24,.97) 100%);border:1px solid rgba(148,163,184,.15);border-radius:16px;box-shadow:0 14px 36px rgba(2,6,23,.55);}
-        .chain-seg{display:inline-flex;padding:3px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);gap:2px;}
-        .chain-seg-btn{padding:6px 15px;border-radius:7px;font-size:10.5px;font-weight:700;letter-spacing:.10em;font-family:var(--font-plex-mono);cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;border:none;background:transparent;color:#5b7186;}
-        .chain-seg-btn:hover:not([class*="chain-seg-btn--active"]){color:#94a3b8;}
+        .search-card{background:linear-gradient(160deg,rgba(9,16,32,.98) 0%,rgba(5,11,24,.97) 100%);border:1px solid rgba(148,163,184,.16);border-radius:16px;box-shadow:0 14px 36px rgba(2,6,23,.55),inset 0 1px 0 rgba(255,255,255,.03),inset 0 0 40px rgba(2,6,23,.35);}
+        .chain-seg{display:inline-flex;padding:3px;border-radius:10px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);gap:2px;}
+        .chain-seg-btn{padding:6px 15px;border-radius:7px;font-size:10.5px;font-weight:700;letter-spacing:.10em;font-family:var(--font-plex-mono);cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;border:none;background:transparent;color:#63798e;}
+        .chain-seg-btn:hover:not([class*="chain-seg-btn--active"]){color:#9fb2c4;}
         /* Per-chain active color, DISCLOSED (Token Scanner final polish task): BASE keeps the
            brand teal already used for its header pill/dot elsewhere on this page; ETHEREUM keeps
            the indigo already used for its pill — same setChain() behavior, just a sharper, more
-           branded "selected" state than one generic indigo for both. */
-        .chain-seg-btn--active-base{background:rgba(34,211,238,.16);color:#a5f3fc;box-shadow:inset 0 0 0 1px rgba(34,211,238,.38);}
+           branded "selected" state than one generic indigo for both. Base's active contrast raised
+           (explicitly requested, "active Base tab should have stronger contrast") since it's the
+           default/most-used chain. */
+        .chain-seg-btn--active-base{background:rgba(34,211,238,.22);color:#e7feff;box-shadow:inset 0 0 0 1px rgba(34,211,238,.55);}
         .chain-seg-btn--active-eth{background:rgba(99,102,241,.20);color:#c7d2fe;box-shadow:inset 0 0 0 1px rgba(99,102,241,.35);}
         .chain-seg-btn--active-bnb{background:rgba(240,185,11,.18);color:#fde68a;box-shadow:inset 0 0 0 1px rgba(240,185,11,.40);}
         .chain-seg-btn--active-robinhood{background:rgba(52,211,153,.18);color:#a7f3d0;box-shadow:inset 0 0 0 1px rgba(52,211,153,.40);}
         .cmd-chip{padding:6px 13px;border-radius:8px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.10);color:#5b7186;font-size:10.5px;font-weight:600;font-family:var(--font-plex-mono);letter-spacing:.03em;cursor:pointer;transition:background .14s,border-color .14s,color .14s;display:inline-flex;align-items:center;gap:5px;}
         .cmd-chip:hover{color:#a5b4fc;border-color:rgba(99,102,241,.35);background:rgba(99,102,241,.06);}
         .cmd-chip-glyph{color:#334155;font-size:10px;}
-        .preview-module-card{background:linear-gradient(160deg,rgba(8,15,28,.75),rgba(5,10,20,.70));border:1px solid rgba(255,255,255,.09);border-radius:12px;padding:18px 16px;transition:transform .18s ease,border-color .18s ease;cursor:default;}
+        /* Thinner, fading top accent per module card — DISCLOSED (explicitly requested: "card top
+           accent line should be thinner and cleaner"): full-bleed solid bar replaced with a
+           gradient that fades at both edges, same static (no animation) treatment. */
+        .preview-module-card{background:linear-gradient(160deg,rgba(8,15,28,.75),rgba(5,10,20,.70));border:1px solid rgba(255,255,255,.09);border-radius:12px;padding:19px 17px;transition:transform .18s ease,border-color .18s ease;cursor:default;}
         .preview-module-card:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.16);}
+        .token-scan-input::placeholder{color:rgba(148,163,184,0.42);}
         .scan-helper-row{flex-wrap:wrap;}
         @media (max-width:640px){.scan-helper-row{flex-direction:column;align-items:flex-start;gap:8px;}}
         .shimmer-line{background:linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(255,255,255,.10) 50%,rgba(255,255,255,.04) 75%);background-size:300% 100%;border-radius:3px;animation:shimmer 2.6s ease-in-out infinite;}
-        /* STATIC HOVER, DISCLOSED (Token Scanner UI polish task): previously animated its own
-           box-shadow on an infinite loop while hovered — replaced with a single static, slightly
-           brighter glow so the button reads as "ready to fire" without an animated blur. */
-        .scan-btn-live{transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease !important;}
-        .scan-btn-live:hover{transform:translateY(-1px);border-color:rgba(83,243,195,.85) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 0 22px rgba(83,243,195,.18) !important;}
+        /* SCAN-BUTTON, DISCLOSED (Token Scanner premium command-bar task, reported: "the Scan Token
+           button still looks disabled"): moved off per-render inline styles onto two explicit
+           classes — .scan-btn-live (input has text, not loading/resolving) and .scan-btn-off
+           (disabled) — so the active state reads as unmistakably clickable at rest, not just on
+           hover: bright white text, a crisp visible teal border, a dark teal-tinted fill (not flat
+           near-black), and a soft permanent inner glow. Disabled stays visually distinct (dim
+           border/text, no glow, not-allowed cursor). No purple gradient either state.
+           Same height/padding/radius/typography both states so layout never shifts on enable. */
+        .scan-btn-live,.scan-btn-off{display:inline-flex;align-items:center;gap:8px;height:62px;padding:0 28px;border-radius:13px;font-size:12px;font-weight:800;font-family:var(--font-plex-mono);letter-spacing:.12em;flex-shrink:0;white-space:nowrap;}
+        .scan-btn-live{cursor:pointer;color:#ffffff;border:1px solid rgba(83,243,195,.80);background:linear-gradient(180deg,rgba(9,38,42,.92),rgba(5,16,22,.94));box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 0 18px rgba(83,243,195,.16);transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease,background .15s ease;}
+        .scan-btn-live:hover{transform:translateY(-1px);border-color:rgba(120,255,220,1) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.09),0 0 26px rgba(83,243,195,.30) !important;}
+        .scan-btn-live:focus-visible{border-color:rgba(120,255,220,1) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.09),0 0 0 3px rgba(83,243,195,.20) !important;}
         .scan-btn-live:active{transform:translateY(1px) scale(.99) !important;}
+        .scan-btn-off{cursor:not-allowed;color:rgba(148,163,184,.40);border:1px solid rgba(148,163,184,.16);background:rgba(13,20,32,.55);}
         .live-dot{animation:liveDotPulse 2.2s ease-in-out infinite;}
         .clark-section{border-top:1px solid rgba(255,255,255,.04);padding-top:12px;margin-bottom:12px;}
         @media (prefers-reduced-motion:reduce){.live-dot,.radar-ring,.shimmer-line,.scan-btn-live,.cortex-score-hero{animation:none !important;} .scan-btn-live:hover,.cortex-chip:hover{transform:none !important;} .cortex-bdrow:hover{background:none !important;}}
@@ -3982,7 +3996,7 @@ export default function TerminalTokenScanner() {
         <div className="mob-scan-main token-main" style={{ minWidth: 0, overflowY: 'auto', overflowX: 'hidden', padding: '44px clamp(16px, 2.2vw, 34px) 120px', width: '100%' }}>
 
           {/* ── Hero area ─────────────────────────────────────────── */}
-          <div style={{ marginBottom: '28px', maxWidth: '820px' }}>
+          <div style={{ marginBottom: '22px', maxWidth: '820px' }}>
 
             {/* Badge row */}
             <div style={{ marginBottom: '14px' }}>
@@ -4035,14 +4049,27 @@ export default function TerminalTokenScanner() {
               a minimal command bar (chain selector, input + Scan Token, divider, one helper line
               + How CORTEX works anchor). Same input value/onChange/onKeyDown, same handleScan()
               submission, same disabled wiring — presentation-only change, zero behavior change. */}
-          <div style={{ position: 'relative', maxWidth: '820px', marginBottom: '26px' }}>
+          <div style={{ position: 'relative', maxWidth: '820px', marginBottom: '22px' }}>
             <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '18px 20px', overflow: 'hidden' }}>
-              <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: '8%', right: '8%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.40), rgba(99,102,241,0.30), transparent)' }} />
+              <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: '8%', right: '8%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.55), rgba(99,102,241,0.38), transparent)' }} />
+              {/* RADIAL-DEPTH, DISCLOSED (Token Scanner premium command-bar task): a static, very
+                  low-opacity radial glow behind the input row — no animation, no purple bloom, just
+                  enough depth so the card doesn't read as flat/empty. Purely decorative (pointer-
+                  events none, zIndex 0, behind all interactive content). */}
+              <span aria-hidden="true" style={{ position: 'absolute', left: '50%', top: '58px', transform: 'translateX(-50%)', width: '460px', height: '140px', background: 'radial-gradient(ellipse at center, rgba(45,212,191,0.06), transparent 72%)', pointerEvents: 'none', zIndex: 0 }} />
+
+              {/* Command-label strip — tiny uppercase metadata, DISCLOSED (explicitly requested: a
+                  small label, not a title/heading — "the old big 'Scan a token' heading/logo" stays
+                  removed). Purely a label above the chain selector, same size class as other small
+                  uppercase metadata already used elsewhere on this page (status pills). */}
+              <p style={{ position: 'relative', zIndex: 1, margin: '0 0 10px', fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.20em', color: '#3d5468', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+                Token Lookup
+              </p>
 
               {/* Chain selector — compact segmented control, DISCLOSED (Token Scanner UI polish
                   task): same setChain(c) behavior, restyled from two loud neon-bordered tabs into
                   a single quiet track with a clearly-selected (but not neon) active segment. */}
-              <div className="chain-seg" style={{ marginBottom: '14px' }}>
+              <div className="chain-seg" style={{ position: 'relative', zIndex: 1, marginBottom: '14px' }}>
                 {(['base', 'eth', 'bnb', 'robinhood'] as const).map(c => (
                   <button
                     key={c}
@@ -4059,11 +4086,11 @@ export default function TerminalTokenScanner() {
                   as before, no submit-behavior change. No ⌘K hint: no such shortcut is wired on
                   this page, and a fake keyboard chip is exactly the kind of decoration this pass
                   removes. */}
-              <div className="token-input-row" style={{ display: 'flex', gap: '10px' }}>
+              <div className="token-input-row" style={{ position: 'relative', zIndex: 1, display: 'flex', gap: '10px' }}>
                 <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
-                  <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ position: 'absolute', left: '18px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
-                    <circle cx="11" cy="11" r="7" stroke="rgba(148,163,184,0.55)" strokeWidth="1.6" />
-                    <path d="M20 20l-3.2-3.2" stroke="rgba(148,163,184,0.55)" strokeWidth="1.6" strokeLinecap="round" />
+                  <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ position: 'absolute', left: '18px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
+                    <circle cx="11" cy="11" r="7" stroke="rgba(148,163,184,0.50)" strokeWidth="1.8" />
+                    <path d="M20 20l-3.2-3.2" stroke="rgba(148,163,184,0.50)" strokeWidth="1.8" strokeLinecap="round" />
                   </svg>
                   <input
                     value={input}
@@ -4071,10 +4098,11 @@ export default function TerminalTokenScanner() {
                     onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
                     disabled={loading}
                     placeholder="Enter contract address, ticker, or token name…"
+                    className="token-scan-input"
                     style={{
-                      width: '100%', height: '62px', padding: '0 18px 0 46px', boxSizing: 'border-box',
-                      background: 'rgba(4,10,20,0.85)',
-                      border: '1px solid rgba(148,163,184,0.16)',
+                      width: '100%', height: '62px', padding: '0 18px 0 44px', boxSizing: 'border-box',
+                      background: 'rgba(3,8,16,0.92)',
+                      border: '1px solid rgba(148,163,184,0.20)',
                       borderRadius: '13px',
                       color: '#e2e8f0', fontSize: '15px',
                       fontFamily: 'var(--font-plex-mono)',
@@ -4082,56 +4110,38 @@ export default function TerminalTokenScanner() {
                       opacity: loading ? 0.6 : 1,
                       transition: 'border-color 0.15s, box-shadow 0.15s',
                       minWidth: 0,
+                      boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.35)',
                     }}
                     onFocus={e => {
-                      e.currentTarget.style.borderColor = 'rgba(83,243,195,0.55)'
-                      e.currentTarget.style.boxShadow = '0 0 0 3px rgba(83,243,195,0.07)'
+                      e.currentTarget.style.borderColor = 'rgba(83,243,195,0.65)'
+                      e.currentTarget.style.boxShadow = 'inset 0 1px 3px rgba(0,0,0,0.35), 0 0 0 3px rgba(83,243,195,0.12)'
                     }}
                     onBlur={e => {
-                      e.currentTarget.style.borderColor = 'rgba(148,163,184,0.16)'
-                      e.currentTarget.style.boxShadow = 'none'
+                      e.currentTarget.style.borderColor = 'rgba(148,163,184,0.20)'
+                      e.currentTarget.style.boxShadow = 'inset 0 1px 3px rgba(0,0,0,0.35)'
                     }}
                   />
                 </div>
                 <button
                   onClick={() => handleScan()}
                   disabled={loading || resolving || !input.trim()}
-                  className={loading || resolving || !input.trim() ? '' : 'scan-btn-live'}
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', gap: '8px',
-                    height: '62px', padding: '0 28px', borderRadius: '13px',
-                    border: `1px solid ${loading || resolving || !input.trim() ? 'rgba(148,163,184,0.18)' : 'rgba(83,243,195,0.85)'}`,
-                    background: loading || resolving || !input.trim()
-                      ? 'rgba(15,23,42,0.54)'
-                      : 'rgba(7,14,24,0.92)',
-                    color: loading || resolving || !input.trim() ? 'rgba(148,163,184,0.42)' : '#ffffff',
-                    fontSize: '12px', fontWeight: 800,
-                    fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.12em',
-                    cursor: loading || resolving || !input.trim() ? 'not-allowed' : 'pointer',
-                    flexShrink: 0,
-                    whiteSpace: 'nowrap',
-                    boxShadow: loading || resolving || !input.trim() ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.06), 0 0 16px rgba(83,243,195,0.14)',
-                  }}
+                  className={loading || resolving || !input.trim() ? 'scan-btn-off' : 'scan-btn-live'}
                 >
                   {loading || resolving ? 'SCANNING…' : (
                     <>
                       SCAN TOKEN
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
                     </>
                   )}
                 </button>
               </div>
 
               {/* Divider + helper line + How CORTEX works anchor (scrolls to the real "What this
-                  scan checks" section below — not a fake link). CARD-DENSITY, DISCLOSED (Token
-                  Scanner final-polish task): the faint standalone financial-advice line that used
-                  to sit under the card is removed — the "No Financial Advice" hero pill above
-                  already states this at all times, so the extra near-invisible sentence was purely
-                  redundant dead space, not a distinct disclosure. */}
-              <div style={{ height: '1px', background: 'rgba(148,163,184,0.10)', margin: '12px 0 0' }} />
-              <div className="scan-helper-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '10px 0 2px' }}>
+                  scan checks" section below — not a fake link). */}
+              <div style={{ position: 'relative', zIndex: 1, height: '1px', background: 'rgba(148,163,184,0.10)', margin: '12px 0 0' }} />
+              <div className="scan-helper-row" style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '10px 0 2px' }}>
                 <p style={{ margin: 0, fontSize: '11px', color: '#3a4d60', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, letterSpacing: '0.02em' }}>
-                  CORTEX scans liquidity, holders, LP control, dev activity, market signals, and risk patterns.
+                  Checks liquidity, holders, LP control, dev activity, market signals, and risk patterns.
                 </p>
                 <a href="#how-cortex-works" style={{ fontSize: '11px', fontWeight: 700, color: 'rgba(83,243,195,0.75)', fontFamily: 'var(--font-plex-mono)', textDecoration: 'none', letterSpacing: '0.04em', whiteSpace: 'nowrap', flexShrink: 0 }}>
                   How CORTEX works →
@@ -4211,7 +4221,7 @@ export default function TerminalTokenScanner() {
           {/* ── What this scan checks ─────────────────────────────── */}
           {!loading && !resolving && !result && !error && (
             <div id="how-cortex-works" style={{ maxWidth: '820px' }}>
-              <div style={{ marginBottom: '20px' }}>
+              <div style={{ marginBottom: '18px' }}>
                 <p style={{ margin: '0 0 5px', fontSize: '18px', fontWeight: 700, color: '#e2e8f0', lineHeight: 1.35, letterSpacing: '-0.01em' }}>
                   What this scan checks
                 </p>
@@ -4227,8 +4237,10 @@ export default function TerminalTokenScanner() {
               {/* Intelligence-module framing, DISCLOSED (Token Scanner final polish task): each
                   card now shows a numbered index (01–04) and a thin static top accent bar instead
                   of just a dot, so the four cards read as sequential engine modules rather than
-                  generic feature tiles — no new glow, both additions are static/cheap. */}
-              <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '10px', marginBottom: '28px' }}>
+                  generic feature tiles — no new glow, both additions are static/cheap. Accent line
+                  thinned to 1.5px and fades at both edges instead of a full-bleed solid bar
+                  (explicitly requested: "thinner and cleaner"). */}
+              <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '10px', marginBottom: '26px' }}>
                 {[
                   { n: '01', label: 'Market Pulse',  color: '#22d3ee', desc: 'Price, liquidity, volume, and pool depth.' },
                   { n: '02', label: 'Holder Map',    color: '#a78bfa', desc: 'Top-holder concentration and supply distribution.' },
@@ -4236,12 +4248,12 @@ export default function TerminalTokenScanner() {
                   { n: '04', label: 'Dev Activity',  color: '#fb923c', desc: 'Contract ownership, dev wallets, and recent activity.' },
                 ].map(mod => (
                   <div key={mod.label} className="preview-module-card" style={{ position: 'relative', overflow: 'hidden' }}>
-                    <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '2px', background: mod.color, opacity: 0.65 }} />
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '11px' }}>
+                    <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '1.5px', background: `linear-gradient(90deg, transparent, ${mod.color}, transparent)`, opacity: 0.75 }} />
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '13px' }}>
                       <span style={{ fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.12em', color: mod.color, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</span>
-                      <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(148,163,184,0.38)', fontFamily: 'var(--font-plex-mono)' }}>{mod.n}</span>
+                      <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(148,163,184,0.42)', fontFamily: 'var(--font-plex-mono)' }}>{mod.n}</span>
                     </div>
-                    <p style={{ margin: 0, fontSize: '11px', color: '#8496ab', lineHeight: 1.65 }}>{mod.desc}</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#93a5b8', lineHeight: 1.65 }}>{mod.desc}</p>
                   </div>
                 ))}
               </div>
