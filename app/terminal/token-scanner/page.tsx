@@ -3940,8 +3940,8 @@ export default function TerminalTokenScanner() {
            shadow so the card reads as the terminal's primary command module, not a glow bloom. */
         .search-card{background:linear-gradient(160deg,rgba(9,16,32,.98) 0%,rgba(5,11,24,.97) 100%);border:1px solid rgba(148,163,184,.15);border-radius:16px;box-shadow:0 14px 36px rgba(2,6,23,.55);}
         .chain-seg{display:inline-flex;padding:3px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);gap:2px;}
-        .chain-seg-btn{padding:6px 15px;border-radius:7px;font-size:10.5px;font-weight:700;letter-spacing:.10em;font-family:var(--font-plex-mono);cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;border:none;background:transparent;color:#3d4f62;}
-        .chain-seg-btn:hover:not(.chain-seg-btn--active){color:#64748b;}
+        .chain-seg-btn{padding:6px 15px;border-radius:7px;font-size:10.5px;font-weight:700;letter-spacing:.10em;font-family:var(--font-plex-mono);cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;border:none;background:transparent;color:#5b7186;}
+        .chain-seg-btn:hover:not([class*="chain-seg-btn--active"]){color:#94a3b8;}
         /* Per-chain active color, DISCLOSED (Token Scanner final polish task): BASE keeps the
            brand teal already used for its header pill/dot elsewhere on this page; ETHEREUM keeps
            the indigo already used for its pill — same setChain() behavior, just a sharper, more
@@ -3953,8 +3953,10 @@ export default function TerminalTokenScanner() {
         .cmd-chip{padding:6px 13px;border-radius:8px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.10);color:#5b7186;font-size:10.5px;font-weight:600;font-family:var(--font-plex-mono);letter-spacing:.03em;cursor:pointer;transition:background .14s,border-color .14s,color .14s;display:inline-flex;align-items:center;gap:5px;}
         .cmd-chip:hover{color:#a5b4fc;border-color:rgba(99,102,241,.35);background:rgba(99,102,241,.06);}
         .cmd-chip-glyph{color:#334155;font-size:10px;}
-        .preview-module-card{background:linear-gradient(160deg,rgba(8,15,28,.75),rgba(5,10,20,.70));border:1px solid rgba(255,255,255,.09);border-radius:12px;padding:16px;transition:transform .18s ease,border-color .18s ease;cursor:default;}
+        .preview-module-card{background:linear-gradient(160deg,rgba(8,15,28,.75),rgba(5,10,20,.70));border:1px solid rgba(255,255,255,.09);border-radius:12px;padding:18px 16px;transition:transform .18s ease,border-color .18s ease;cursor:default;}
         .preview-module-card:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.16);}
+        .scan-helper-row{flex-wrap:wrap;}
+        @media (max-width:640px){.scan-helper-row{flex-direction:column;align-items:flex-start;gap:8px;}}
         .shimmer-line{background:linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(255,255,255,.10) 50%,rgba(255,255,255,.04) 75%);background-size:300% 100%;border-radius:3px;animation:shimmer 2.6s ease-in-out infinite;}
         /* STATIC HOVER, DISCLOSED (Token Scanner UI polish task): previously animated its own
            box-shadow on an infinite loop while hovered — replaced with a single static, slightly
@@ -4033,14 +4035,14 @@ export default function TerminalTokenScanner() {
               a minimal command bar (chain selector, input + Scan Token, divider, one helper line
               + How CORTEX works anchor). Same input value/onChange/onKeyDown, same handleScan()
               submission, same disabled wiring — presentation-only change, zero behavior change. */}
-          <div style={{ position: 'relative', maxWidth: '820px', marginBottom: '32px' }}>
-            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '18px 20px 14px', overflow: 'hidden' }}>
+          <div style={{ position: 'relative', maxWidth: '820px', marginBottom: '26px' }}>
+            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '18px 20px', overflow: 'hidden' }}>
               <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: '8%', right: '8%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.40), rgba(99,102,241,0.30), transparent)' }} />
 
               {/* Chain selector — compact segmented control, DISCLOSED (Token Scanner UI polish
                   task): same setChain(c) behavior, restyled from two loud neon-bordered tabs into
                   a single quiet track with a clearly-selected (but not neon) active segment. */}
-              <div className="chain-seg" style={{ marginBottom: '12px' }}>
+              <div className="chain-seg" style={{ marginBottom: '14px' }}>
                 {(['base', 'eth', 'bnb', 'robinhood'] as const).map(c => (
                   <button
                     key={c}
@@ -4098,7 +4100,7 @@ export default function TerminalTokenScanner() {
                   style={{
                     display: 'inline-flex', alignItems: 'center', gap: '8px',
                     height: '62px', padding: '0 28px', borderRadius: '13px',
-                    border: `1px solid ${loading || resolving || !input.trim() ? 'rgba(148,163,184,0.18)' : 'rgba(83,243,195,0.55)'}`,
+                    border: `1px solid ${loading || resolving || !input.trim() ? 'rgba(148,163,184,0.18)' : 'rgba(83,243,195,0.85)'}`,
                     background: loading || resolving || !input.trim()
                       ? 'rgba(15,23,42,0.54)'
                       : 'rgba(7,14,24,0.92)',
@@ -4108,7 +4110,7 @@ export default function TerminalTokenScanner() {
                     cursor: loading || resolving || !input.trim() ? 'not-allowed' : 'pointer',
                     flexShrink: 0,
                     whiteSpace: 'nowrap',
-                    boxShadow: loading || resolving || !input.trim() ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.05)',
+                    boxShadow: loading || resolving || !input.trim() ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.06), 0 0 16px rgba(83,243,195,0.14)',
                   }}
                 >
                   {loading || resolving ? 'SCANNING…' : (
@@ -4121,24 +4123,21 @@ export default function TerminalTokenScanner() {
               </div>
 
               {/* Divider + helper line + How CORTEX works anchor (scrolls to the real "What this
-                  scan checks" section below — not a fake link). */}
-              <div style={{ height: '1px', background: 'rgba(148,163,184,0.10)', margin: '14px 0 10px' }} />
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                  scan checks" section below — not a fake link). CARD-DENSITY, DISCLOSED (Token
+                  Scanner final-polish task): the faint standalone financial-advice line that used
+                  to sit under the card is removed — the "No Financial Advice" hero pill above
+                  already states this at all times, so the extra near-invisible sentence was purely
+                  redundant dead space, not a distinct disclosure. */}
+              <div style={{ height: '1px', background: 'rgba(148,163,184,0.10)', margin: '12px 0 0' }} />
+              <div className="scan-helper-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '10px 0 2px' }}>
                 <p style={{ margin: 0, fontSize: '11px', color: '#3a4d60', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, letterSpacing: '0.02em' }}>
                   CORTEX scans liquidity, holders, LP control, dev activity, market signals, and risk patterns.
                 </p>
-                <a href="#how-cortex-works" style={{ fontSize: '11px', fontWeight: 700, color: 'rgba(83,243,195,0.75)', fontFamily: 'var(--font-plex-mono)', textDecoration: 'none', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
+                <a href="#how-cortex-works" style={{ fontSize: '11px', fontWeight: 700, color: 'rgba(83,243,195,0.75)', fontFamily: 'var(--font-plex-mono)', textDecoration: 'none', letterSpacing: '0.04em', whiteSpace: 'nowrap', flexShrink: 0 }}>
                   How CORTEX works →
                 </a>
               </div>
             </div>
-
-            {/* Disclaimer — moved out of the card (same sentence, small muted line) so the card
-                itself stays a minimal command bar; the "No Financial Advice" hero pill above also
-                keeps this visible at all times. */}
-            <p style={{ margin: '10px 2px 0', fontSize: '10px', color: '#33465c', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
-              ChainLens does not give financial advice. CORTEX surfaces evidence, risk signals, and missing checks so you can review before acting.
-            </p>
           </div>
 
           {/* Resolver status */}
@@ -4237,12 +4236,12 @@ export default function TerminalTokenScanner() {
                   { n: '04', label: 'Dev Activity',  color: '#fb923c', desc: 'Contract ownership, dev wallets, and recent activity.' },
                 ].map(mod => (
                   <div key={mod.label} className="preview-module-card" style={{ position: 'relative', overflow: 'hidden' }}>
-                    <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '2px', background: mod.color, opacity: 0.55 }} />
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '9px' }}>
-                      <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: mod.color, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</span>
-                      <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(148,163,184,0.30)', fontFamily: 'var(--font-plex-mono)' }}>{mod.n}</span>
+                    <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '2px', background: mod.color, opacity: 0.65 }} />
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '11px' }}>
+                      <span style={{ fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.12em', color: mod.color, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</span>
+                      <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(148,163,184,0.38)', fontFamily: 'var(--font-plex-mono)' }}>{mod.n}</span>
                     </div>
-                    <p style={{ margin: 0, fontSize: '11px', color: '#64748b', lineHeight: 1.6 }}>{mod.desc}</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#8496ab', lineHeight: 1.65 }}>{mod.desc}</p>
                   </div>
                 ))}
               </div>
