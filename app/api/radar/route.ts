@@ -894,13 +894,30 @@ export async function GET(req: NextRequest) {
     for (let i = 0; i < drafts.length; i++) {
       const { baseToken, ageMinutes, volume24h, isPrimaryAgeWindow, isFallbackAgeWindow, fdvUsd, resolvedMarketCap, primaryPoolAddress, isV4Pool } = drafts[i]
       const rescue = rescueResults[i]
+      // WRONG-POOL LIQUIDITY FIX, DISCLOSED (reported: DexScreener showed "$0 / unknown liquidity"
+      // and a real-liquidity warning banner for the exact pool this route displayed, while the radar
+      // showed a multi-million-dollar liquidity figure for the same token — live-verified against
+      // dexscreener.com directly). Root cause: getDexMarketCapRescue queries DexScreener by TOKEN
+      // address, which can return several unrelated pools for that token across different DEXes/
+      // pairs; selectDexScreenerMarketCapRescuePair only prefers the primary pool when it's present
+      // AND already has DexScreener-reported liquidity > 0 — if the actual pool being shown here has
+      // zero/unknown liquidity (exactly this case), it silently substitutes whichever OTHER pool for
+      // the same token has the highest liquidity, even though that pool is not the one a user acting
+      // on this radar entry would actually be trading. Fail closed instead: a V4 pool's liquidity is
+      // only trusted when DexScreener's rescue actually resolved THIS pool (selectedPairAddress
+      // matches primaryPoolAddress) — any other pool's liquidity number is never attributed to a
+      // pool it doesn't belong to. Same principle as the holder-count gate's fail-closed design.
+      const rescueMatchesThisPool = !!rescue?.selectedPairAddress
+        && !!primaryPoolAddress
+        && rescue.selectedPairAddress.toLowerCase() === primaryPoolAddress.toLowerCase()
       // V4-POOL-CROSS-CHECK, DISCLOSED: for a V4 pool, liquidityUsd comes ONLY from DexScreener's
       // own selectedLiquidityUsd (the same rescue call already made above) — GT's reserve_in_usd is
       // never trusted for V4 (see the header comment near droppedByV4Pool's declaration). If
-      // DexScreener also couldn't verify real liquidity, this is honestly 0, which then fails the
-      // exact same liquidity gates every other pool goes through below — no special-cased pass.
+      // DexScreener also couldn't verify real liquidity FOR THIS SPECIFIC POOL, this is honestly 0,
+      // which then fails the exact same liquidity gates every other pool goes through below — no
+      // special-cased pass, and never another pool's liquidity borrowed to cover the gap.
       const liquidityUsd = isV4Pool
-        ? (typeof rescue?.selectedLiquidityUsd === 'number' && rescue.selectedLiquidityUsd > 0 ? rescue.selectedLiquidityUsd : 0)
+        ? (rescueMatchesThisPool && typeof rescue?.selectedLiquidityUsd === 'number' && rescue.selectedLiquidityUsd > 0 ? rescue.selectedLiquidityUsd : 0)
         : drafts[i].liquidityUsd
       if (isV4Pool && liquidityUsd === 0) droppedByV4Pool++
       const marketCapUsd = resolvedMarketCap.marketCapUsd ?? rescue?.marketCapUsd ?? null
