@@ -443,10 +443,10 @@ async function getCachedHoneypot(contract: string, retry = false): Promise<Honey
   }
 }
 
-async function getDexMarketCapRescue(input: { chain: string; token: string; primaryPoolAddress?: string | null }): Promise<DexScreenerMarketCapRescueResult & { cacheHit: boolean }> {
+async function getDexMarketCapRescue(input: { chain: string; token: string; primaryPoolAddress?: string | null; primaryQuoteTokenAddress?: string | null }): Promise<DexScreenerMarketCapRescueResult & { cacheHit: boolean }> {
   const chain = input.chain.toLowerCase()
   const token = input.token.toLowerCase()
-  const key = `base-radar:market-cap-rescue:${chain}:${token}`
+  const key = `base-radar:market-cap-rescue:${chain}:${token}:${input.primaryQuoteTokenAddress?.toLowerCase() ?? ''}`
   const cached = dexMarketCapRescueCache.get(key)
   if (cached && Date.now() - cached.cachedAt <= DEX_MARKET_CAP_RESCUE_TTL_MS) return { ...cached.result, cacheHit: true }
 
@@ -481,10 +481,11 @@ async function getDexMarketCapRescue(input: { chain: string; token: string; prim
         pairs: pairs.filter((pair): pair is Record<string, unknown> => !!pair && typeof pair === 'object'),
         chain,
         primaryPoolAddress: input.primaryPoolAddress,
+        primaryQuoteTokenAddress: input.primaryQuoteTokenAddress,
       })
     } catch (err) {
       const httpStatus = (err as { httpStatus?: number } | undefined)?.httpStatus ?? null
-      const result = selectDexScreenerMarketCapRescuePair({ pairs: [], chain, primaryPoolAddress: input.primaryPoolAddress })
+      const result = selectDexScreenerMarketCapRescuePair({ pairs: [], chain, primaryPoolAddress: input.primaryPoolAddress, primaryQuoteTokenAddress: input.primaryQuoteTokenAddress })
       return {
         ...result,
         reason: httpStatus === 429
@@ -957,7 +958,7 @@ export async function GET(req: NextRequest) {
       baseToken: NonNullable<ReturnType<typeof tokenMap.get>>
       ageMinutes: number; liquidityUsd: number; volume24h: number
       fdvUsd: number | null; resolvedMarketCap: ReturnType<typeof resolveBaseRadarMarketCap>; primaryPoolAddress: string | null
-      needsRescue: boolean; isV4Pool: boolean
+      needsRescue: boolean; isV4Pool: boolean; quoteTokenAddress: string | null
     }
     const drafts: PoolDraft[] = []
     // FUNNEL-DIAGNOSTICS, DISCLOSED: this route has gone completely empty from filter changes
@@ -1082,6 +1083,18 @@ export async function GET(req: NextRequest) {
       const baseData    = ((rels?.base_token as Record<string, unknown>)?.data) as Record<string, string> | undefined
       const baseToken   = baseData?.id ? tokenMap.get(baseData.id) : undefined
       if (!baseToken) { droppedByMissingBaseToken++; continue }
+      // V4-BASE-QUOTE-DISAMBIGUATION, DISCLOSED (reported: "more digging" after the PoolId-vs-
+      // pairAddress fix — v4MismatchSample showed rescuePairCount routinely 7-30 for popular base
+      // tokens, because getDexMarketCapRescue queries DexScreener by TOKEN address only, returning
+      // every pair across every DEX/quote-token/fee-tier for that token. base_token+quote_token are
+      // both real ERC20 contract addresses in GT's schema (unlike the V4 pool "address", which is a
+      // PoolId hash) and DexScreener reports the same two real addresses per pair — narrowing
+      // DexScreener's raw pairs to only ones sharing this pool's exact quote token (before the
+      // existing "exactly one live pair" trust check runs) turns many previously-ambiguous 10-30-way
+      // ties into a genuine 1-way match, without ever guessing which specific fee tier it is.
+      const quoteData        = ((rels?.quote_token as Record<string, unknown>)?.data) as Record<string, string> | undefined
+      const quoteToken       = quoteData?.id ? tokenMap.get(quoteData.id) : undefined
+      const quoteTokenAddress = quoteToken?.address ?? null
 
       if (EXCLUDED.has(baseToken.symbol.toUpperCase())) { droppedBySymbolExcluded++; continue }
       if (EXCLUDED_ESTABLISHED_CONTRACTS.has(baseToken.address.toLowerCase())) { droppedByEstablishedToken++; continue }
@@ -1099,6 +1112,7 @@ export async function GET(req: NextRequest) {
       drafts.push({
         baseToken, ageMinutes, liquidityUsd, volume24h,
         fdvUsd, resolvedMarketCap, primaryPoolAddress, needsRescue: resolvedMarketCap.marketCapUsd == null || isV4Pool, isV4Pool,
+        quoteTokenAddress,
       })
     }
 
@@ -1124,7 +1138,7 @@ export async function GET(req: NextRequest) {
           if (i >= drafts.length) return
           const d = drafts[i]
           rescueResults[i] = d.needsRescue
-            ? await getDexMarketCapRescue({ chain: 'base', token: d.baseToken.address, primaryPoolAddress: d.primaryPoolAddress })
+            ? await getDexMarketCapRescue({ chain: 'base', token: d.baseToken.address, primaryPoolAddress: d.primaryPoolAddress, primaryQuoteTokenAddress: d.quoteTokenAddress })
             : null
         }
       }

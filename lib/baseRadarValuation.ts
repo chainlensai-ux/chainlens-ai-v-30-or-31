@@ -110,6 +110,17 @@ function getPairChainId(pair: Record<string, unknown>): string | null {
   return typeof chainId === 'string' && chainId.trim() ? chainId.toLowerCase() : null
 }
 
+// V4-BASE-QUOTE-DISAMBIGUATION, DISCLOSED: DexScreener's own pair.quoteToken.address is a real ERC20
+// contract address, same as GeckoTerminal's quote_token relationship — unlike pair addresses, these
+// are directly comparable regardless of AMM version, so they can narrow a token's many DexScreener
+// pairs (across every DEX/quote-token/fee-tier) down to only the ones sharing this specific pool's
+// quote token, without ever guessing which fee tier a V4 pool actually is.
+function getPairQuoteTokenAddress(pair: Record<string, unknown>): string | null {
+  const quoteToken = getRecord(pair.quoteToken)
+  const address = quoteToken.address ?? pair.quoteTokenAddress ?? pair.quote_token_address
+  return typeof address === 'string' && address.trim() ? address.toLowerCase() : null
+}
+
 export function getDexScreenerMarketCapCandidates(pair: Record<string, unknown>, prefix = 'dexPair'): BaseRadarMarketCapCandidate[] {
   const info = getRecord(pair.info)
   return [
@@ -126,16 +137,26 @@ export function selectDexScreenerMarketCapRescuePair(input: {
   pairs: Record<string, unknown>[]
   chain: string
   primaryPoolAddress?: string | null
+  primaryQuoteTokenAddress?: string | null
 }): DexScreenerMarketCapRescueResult {
   const chain = input.chain.toLowerCase()
   const primaryPoolAddress = input.primaryPoolAddress?.toLowerCase() ?? null
+  const primaryQuoteTokenAddress = input.primaryQuoteTokenAddress?.toLowerCase() ?? null
   const sameChainActive = input.pairs
     .filter(pair => {
       const pairChain = getPairChainId(pair)
       return (!pairChain || pairChain === chain) && getPairLiquidityUsd(pair) > 0
     })
+  // Narrow to pairs sharing this pool's exact quote token when we know it and it actually narrows
+  // anything — an empty quote-match result means DexScreener just doesn't have that specific pair, so
+  // falling back to the full same-chain set preserves the prior (still fail-closed) behavior instead
+  // of manufacturing a false "no data" outcome.
+  const quoteMatched = primaryQuoteTokenAddress
+    ? sameChainActive.filter(pair => getPairQuoteTokenAddress(pair) === primaryQuoteTokenAddress)
+    : []
+  const workingSet = quoteMatched.length > 0 ? quoteMatched : sameChainActive
 
-  const sorted = [...sameChainActive].sort((a, b) => {
+  const sorted = [...workingSet].sort((a, b) => {
     const aPrimary = primaryPoolAddress && getPairAddress(a)?.toLowerCase() === primaryPoolAddress ? 1 : 0
     const bPrimary = primaryPoolAddress && getPairAddress(b)?.toLowerCase() === primaryPoolAddress ? 1 : 0
     if (aPrimary !== bPrimary) return bPrimary - aPrimary
