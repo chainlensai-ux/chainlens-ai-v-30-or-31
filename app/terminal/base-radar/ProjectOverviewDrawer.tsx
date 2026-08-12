@@ -205,6 +205,12 @@ type DrawerEnrichmentPayload = {
 type HolderRow = { rank?: number | null; address?: string | null; percent?: number | null; pctOfSupply?: number | null; isContract?: boolean | null; walletType?: string | null }
 type ChartPoint = { timestamp: number | string; price?: number | null; close?: number | null; value?: number | null }
 
+const CHAIN_LABEL: Record<ChainKey, string> = {
+  base: 'Base',
+  eth: 'ETH',
+  robinhood: 'Robinhood',
+}
+
 const EXPLORER: Record<ChainKey, string> = {
   base: 'https://basescan.org',
   eth: 'https://etherscan.io',
@@ -870,7 +876,11 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             <button onClick={onClose} aria-label="Close project overview" style={{ flex: '0 0 auto', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.03)', color: '#94a3b8', borderRadius: 999, width: 28, height: 28, cursor: 'pointer', fontSize: 15, lineHeight: 1, display: 'grid', placeItems: 'center' }}>×</button>
           </div>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 12 }}>
-            <Chip label={chain === 'base' ? 'Base' : 'ETH'} tone="mint" />
+            {/* CHAIN-LABEL, DISCLOSED (found in a full Base Radar audit): this was a two-way
+                `base ? 'Base' : 'ETH'` check, so every Robinhood token was labeled "ETH" — actively
+                misidentifying which chain a contract lives on, the single most misleading thing this
+                header can get wrong. Driven off the real chain key now. */}
+            <Chip label={CHAIN_LABEL[chain]} tone="mint" />
             <Chip label={fmtAge(token.ageMinutes)} tone="neutral" />
             <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 999, background: 'rgba(45,212,191,.08)', border: '1px solid rgba(45,212,191,.22)' }}>
               <span style={{ color: '#5eead4', fontSize: 9, fontWeight: 900, letterSpacing: '.10em', textTransform: 'uppercase' }}>Radar</span>

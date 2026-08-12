@@ -3,10 +3,12 @@
 // never be imported from a 'use client' component. The frontend only ever learns booleans via
 // app/api/base-radar/chain-status/route.ts, never the URL itself.
 //
-// Scope, disclosed: this task is env verification + flag wiring ONLY. No function here performs an
-// RPC/network call, and nothing in the app calls Robinhood Chain from any default scan, the Base
-// Radar feed, or a background refresh — the only caller is the chain-status route, which itself
-// only reports config presence, never fetches from the RPC.
+// Scope, disclosed: no function in THIS module performs an RPC/network call — it only reports
+// config presence. (The original comment here also claimed nothing in the app calls Robinhood Chain
+// from the Base Radar feed; that is no longer true and was corrected in a full Base Radar audit —
+// app/api/radar/route.ts now runs a real Robinhood discovery/gate cycle against GeckoTerminal/
+// DexScreener/GoldRush, and gates it on isRobinhoodChainAvailable() below. Those are HTTP data-
+// provider calls, not RPC calls, and none of them read ALCHEMY_ROBINHOOD_RPC_URL.)
 
 export const ROBINHOOD_CHAIN_ID = 4663
 export const ROBINHOOD_CHAIN_SLUG = 'robinhood'

@@ -8,6 +8,7 @@ import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type Ra
 import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationMinGate, passesMainFeedValuationMaxGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '@/lib/baseRadarMainFeedGate'
 import { redis, redisConfigured } from '@/lib/server/cache/redisClient'
 import { fetchGoldRushHolderCount, type HolderCountResult } from '@/lib/server/goldrushHolderCount'
+import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 // RATE-LIMIT-TOO-TIGHT FIX, DISCLOSED (reported: "Radar refresh failed" for no obvious reason):
@@ -259,25 +260,39 @@ const DAILY_POOL_MAX = 10
 const DAILY_POOL_CYCLE_MS = 24 * 60 * 60 * 1000
 const DAILY_POOL_REDIS_PREFIX = 'radar:daily-pool:'
 interface DailyPoolEntry { token: RadarToken; addedAt: number; verifiedAt: number }
-interface DailyPoolState { cycleStartedAt: number; entries: DailyPoolEntry[] }
+// CYCLE-STARTS-ON-FIRST-TOKEN, DISCLOSED (found in a full Base Radar audit): cycleStartedAt was
+// stamped by the first REQUEST after expiry, not the first token actually admitted — directly
+// contradicting the requested behavior ("24 timer when they find all the tokens they can"). A cycle
+// that rolled over during a GeckoTerminal rate-limit blackout would burn hours of its 24h window
+// while the pool sat empty, so the day's pool got a materially shorter real collection window purely
+// because of when an unrelated empty request happened to land. cycleStartedAt is null until the
+// first real admission; the 24h clock only begins counting from that moment.
+interface DailyPoolState { cycleStartedAt: number | null; entries: DailyPoolEntry[] }
 async function getDailyPool(key: string): Promise<DailyPoolState> {
   const nowTs = Date.now()
   if (redisConfigured()) {
     try {
       const val = await redis.get<DailyPoolState>(`${DAILY_POOL_REDIS_PREFIX}${key}`)
-      if (val && typeof val.cycleStartedAt === 'number' && Array.isArray(val.entries) && nowTs - val.cycleStartedAt < DAILY_POOL_CYCLE_MS) {
-        return val
+      // A not-yet-started cycle (cycleStartedAt null — nothing has ever been admitted) never
+      // expires; only a genuinely started one ages out after its own real 24h.
+      if (val && Array.isArray(val.entries)) {
+        if (val.cycleStartedAt == null) return { cycleStartedAt: null, entries: val.entries }
+        if (typeof val.cycleStartedAt === 'number' && nowTs - val.cycleStartedAt < DAILY_POOL_CYCLE_MS) return val
       }
     } catch { /* fall through to a fresh cycle — never block on a Redis problem */ }
   }
-  // Missing, unreadable, or the current cycle's 24h has genuinely elapsed — a brand new cycle
-  // starts now; cycleStartedAt is only ever set here, at the real moment a cycle begins.
-  return { cycleStartedAt: nowTs, entries: [] }
+  // Missing, unreadable, or the current cycle's 24h has genuinely elapsed — a brand new, not-yet-
+  // started cycle; its clock begins only when a real token is first admitted (see the merge below).
+  return { cycleStartedAt: null, entries: [] }
 }
 async function setDailyPool(key: string, state: DailyPoolState): Promise<void> {
   if (!redisConfigured()) return
   try {
-    const remainingMs = Math.max(0, DAILY_POOL_CYCLE_MS - (Date.now() - state.cycleStartedAt))
+    // A not-yet-started cycle gets the full window as its TTL — its clock hasn't begun, so it must
+    // not be evicted early just for having been created a while ago with nothing in it yet.
+    const remainingMs = state.cycleStartedAt == null
+      ? DAILY_POOL_CYCLE_MS
+      : Math.max(0, DAILY_POOL_CYCLE_MS - (Date.now() - state.cycleStartedAt))
     // +1h buffer past the cycle's own real end so a request arriving right at the boundary can
     // still read the still-technically-valid final moments of the old cycle before it expires.
     await redis.set(`${DAILY_POOL_REDIS_PREFIX}${key}`, { ...state, entries: state.entries.slice(0, DAILY_POOL_MAX) }, { ex: Math.ceil(remainingMs / 1000) + 3600 })
@@ -589,7 +604,14 @@ export async function GET(req: NextRequest) {
   // provider than GoldRush, with its own separate chain-support question) — guessing risks silently
   // simulating against the wrong chain. It keeps the same honest not-verified evidence-gap path
   // genuine provider failures already use, capped at WATCH, never falsely marked verified.
-  const requestedChain: 'base' | 'robinhood' = req.nextUrl.searchParams.get('chain') === 'robinhood' ? 'robinhood' : 'base'
+  // SERVER-SIDE-FLAG-GATE, DISCLOSED (found in a full Base Radar audit): the Robinhood feature flag
+  // was enforced only in the UI (the chain selector hides the option, and effectiveRadarChain falls
+  // back to 'base'), so a direct /api/radar?chain=robinhood call ran a full Robinhood discovery
+  // cycle even with the feature disabled. Mirrors the frontend's own defensive fallback exactly —
+  // an ungated request quietly serves Base rather than erroring, so the API and UI can never
+  // disagree about whether Robinhood is live.
+  const requestedChain: 'base' | 'robinhood' =
+    req.nextUrl.searchParams.get('chain') === 'robinhood' && isRobinhoodChainAvailable() ? 'robinhood' : 'base'
   const minValuationUsd = Number(req.nextUrl.searchParams.get('minValuationUsd')) || DEFAULT_RADAR_MIN_VALUATION_USD
   const minLiquidityUsd = Number(req.nextUrl.searchParams.get('minLiquidityUsd')) || DEFAULT_RADAR_MIN_LIQUIDITY_USD
   const allowFdvFallback = req.nextUrl.searchParams.get('allowFdvFallback') === 'false' ? false : DEFAULT_RADAR_ALLOW_FDV_FALLBACK
@@ -1644,7 +1666,12 @@ export async function GET(req: NextRequest) {
       }
       await Promise.all(Array.from({ length: Math.min(SIM_CONCURRENCY, simTargets.length) }, () => worker()))
     }
-    const hpCacheHitFlags = simTargets.map(t => { const c = honeypotCache.get(t.contract.toLowerCase()); return !!(c && Date.now() - c.cachedAt <= HONEYPOT_CACHE_TTL_MS) })
+    // CACHE-KEY-DRIFT, DISCLOSED (found in a full Base Radar audit): this read the bare contract as
+    // the cache key, but getCachedHoneypot switched to a chain-prefixed key (`${chain}:${contract}`)
+    // when Robinhood support landed — so this lookup always missed and honeypotCacheHits was
+    // permanently 0 in debug output, making the cache look broken when it was working fine. Uses the
+    // same key shape the cache is actually written with.
+    const hpCacheHitFlags = simTargets.map(t => { const c = honeypotCache.get(`${requestedChain}:${t.contract.toLowerCase()}`); return !!(c && Date.now() - c.cachedAt <= HONEYPOT_CACHE_TTL_MS) })
 
     // HOLDER-COUNT-VS-CONCENTRATION, DISCLOSED (requested: don't reject a candidate from the main
     // feed just because top1/10/20 concentration is unavailable — the feed only ever fetches holder
@@ -1711,7 +1738,7 @@ export async function GET(req: NextRequest) {
     // returns.
     let dailyPoolCarriedOverCount = 0
     let dailyPoolSize = 0
-    let dailyPoolCycleStartedAt = 0
+    let dailyPoolCycleStartedAt: number | null = null
     {
       const nowTs = Date.now()
       const freshByContract = new Map(tokens.map(t => [t.contract.toLowerCase(), t]))
@@ -1735,8 +1762,12 @@ export async function GET(req: NextRequest) {
 
       const finalPool = [...refreshedPool, ...newlyAdmitted]
       dailyPoolSize = finalPool.length
-      dailyPoolCycleStartedAt = poolState.cycleStartedAt
-      await setDailyPool(dailyPoolCacheKey, { cycleStartedAt: poolState.cycleStartedAt, entries: finalPool })
+      // CYCLE-STARTS-ON-FIRST-TOKEN, DISCLOSED: the 24h clock begins at the first REAL admission —
+      // never on an empty request (e.g. one that landed mid rate-limit blackout), which would
+      // otherwise silently spend hours of the day's window with an empty pool.
+      const nextCycleStartedAt = poolState.cycleStartedAt ?? (finalPool.length > 0 ? nowTs : null)
+      dailyPoolCycleStartedAt = nextCycleStartedAt
+      await setDailyPool(dailyPoolCacheKey, { cycleStartedAt: nextCycleStartedAt, entries: finalPool })
 
       // Display today's WHOLE pool — not just backfilling gaps — since the pool now defines "today's
       // feed": fresh values where rediscovered this cycle, last known-good values (with an explicit
@@ -2008,7 +2039,15 @@ export async function GET(req: NextRequest) {
     // messaging (loadMoreExhausted, based on actually-deduped addedCount) for the real end-of-data
     // case — that's the correct place for "no new tokens this click," not this backend flag, which
     // instead now answers only "is there a next page number left to try."
-    const hasMorePages = radarPage < 5
+    // POOL-FULL-ENDS-PAGINATION, DISCLOSED (found in a full Base Radar audit): once the daily pool
+    // holds DAILY_POOL_MAX, no further page can admit anything — the response is the whole pool
+    // regardless of which discovery page was fetched, so every additional Load More / Load All page
+    // returns an identical set while still burning a full 8-request GeckoTerminal discovery budget.
+    // "Load All (~2 min)" was spending four more rate-limit budgets to add exactly zero tokens, and
+    // the buttons stayed enabled forever because the page cap alone never accounted for the pool.
+    // Pagination now ends honestly the moment the pool is full — Load More exists to help FILL the
+    // day's pool, and there is nothing left to fill once it's at capacity.
+    const hasMorePages = radarPage < 5 && dailyPoolSize < DAILY_POOL_MAX
     // ALWAYS-VISIBLE AUDIT, DISCLOSED (reported: the audit logs are effectively unreachable in
     // practice — they print far down a long, multi-line-per-request log stream, and Vercel's log
     // search/pagination has repeatedly failed to surface them even when searching the exact string).
@@ -2017,7 +2056,7 @@ export async function GET(req: NextRequest) {
     // so a real DevTools Network capture — the one method that has reliably worked all session —
     // never showed them either. Attaching both directly to the normal, always-returned payload
     // (not gated behind debug=1) so the exact same capture method already in use surfaces them.
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, dailyPoolCarriedOverCount, dailyPoolSize, dailyPoolMax: DAILY_POOL_MAX, dailyPoolCycleStartedAt: new Date(dailyPoolCycleStartedAt).toISOString(), dailyPoolCycleResetsAt: new Date(dailyPoolCycleStartedAt + DAILY_POOL_CYCLE_MS).toISOString(), discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, dailyPoolCarriedOverCount, dailyPoolSize, dailyPoolMax: DAILY_POOL_MAX, dailyPoolCycleStartedAt: dailyPoolCycleStartedAt == null ? null : new Date(dailyPoolCycleStartedAt).toISOString(), dailyPoolCycleResetsAt: dailyPoolCycleStartedAt == null ? null : new Date(dailyPoolCycleStartedAt + DAILY_POOL_CYCLE_MS).toISOString(), discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,

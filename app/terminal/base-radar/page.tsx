@@ -110,11 +110,12 @@ type MomentumLevel = 'HIGH' | 'MEDIUM' | 'LOW' | 'NONE'
 type RadarFilter = 'TRENDING' | 'NEW' | 'VOLUME' | 'LIQUIDITY' | 'RISK_WATCH' | 'WATCHLIST'
 type SortMode = 'NEWEST' | 'HIGHEST_SCORE' | 'HIGHEST_LIQUIDITY' | 'HIGHEST_VOLUME' | 'HIGHEST_MOMENTUM'
 
-// CHAIN SELECTOR SCAFFOLD, DISCLOSED (Robinhood Chain radar scaffold task): UI/state only — no
-// provider calls exist for Robinhood Chain yet. 'base' keeps 100% of the existing feed/stats/
-// sort/filters/CORTEX panel/token cards untouched; 'robinhood' renders a clearly-labeled beta/
-// coming-soon state only (see RobinhoodBetaState below) and never reuses Base feed data under the
-// Robinhood label.
+// CHAIN SELECTOR, DISCLOSED: both chains now run the same real feed — the original "UI/state only,
+// no provider calls exist for Robinhood yet" scaffold (and its RobinhoodBetaState placeholder) is
+// gone. 'robinhood' drives the identical discovery/gate/daily-pool pipeline as 'base', just pointed
+// at GeckoTerminal's 'robinhood' network; see the ROBINHOOD-CHAIN-SUPPORT header comment in
+// app/api/radar/route.ts. Robinhood remains gated behind isRobinhoodChainAvailable() on BOTH the
+// selector and the API route.
 type RadarChain = 'base' | 'robinhood'
 
 type QualityLevel = 'Weak' | 'OK' | 'Strong' | 'None' | 'Low' | 'Medium' | 'High' | 'Fresh' | 'New' | 'Older' | 'Clean' | 'Unknown' | 'Verified' | 'Security Unknown'
@@ -372,7 +373,7 @@ function getStatus(token: RadarToken, score: number, momentum: MomentumLevel): R
 function getCortexSignal(status: RadarStatus): string {
   const map: Record<RadarStatus, string> = {
     HOT: 'Strong early activity relative to liquidity. Worth watching closely, but still verify before entry.',
-    WATCH: 'Fresh Base pool with some traction. Monitor liquidity and volume before making a move.',
+    WATCH: 'Fresh pool with some traction. Monitor liquidity and volume before making a move.',
     EARLY: 'Very new pool. Not enough history yet, but early activity is visible.',
     UNVERIFIED: 'Not enough verified market data yet. Treat as unconfirmed, not automatically reliable.',
     RISKY: 'Weak liquidity, poor activity, or tax/branding flags detected. Approach carefully.',
@@ -405,6 +406,13 @@ function getFlags(token: RadarToken, status: RadarStatus, momentum: MomentumLeve
   // unavailable this cycle instead of implying a passed holder check).
   if (token.isEstablished) flags.push('Established')
   if (token.holderVerified === false) flags.push('Holder Unverified')
+  // NOT-RE-VERIFIED-VISIBILITY, DISCLOSED (found in a full Base Radar audit): a daily-pool token
+  // that this cycle's discovery didn't rediscover is re-emitted with its last known-good liquidity/
+  // volume/market-cap and an explicit 'Shown from earlier today — not re-verified this refresh'
+  // evidence gap — but the feed cards never render evidenceGaps at all, so that honesty marker was
+  // invisible on the card itself and the numbers read as freshly-confirmed. Surfaced as a real
+  // badge so a carried-over row is visibly distinguishable from a live-verified one.
+  if ((token.evidenceGaps ?? []).some(gap => gap.startsWith('Shown from earlier today'))) flags.push('Not Re-verified')
 
   return flags
 }
@@ -530,7 +538,7 @@ function getPriorityAccent(token: TokenIntel): { color: string; background: stri
 // which flags exist at all, are completely unchanged.
 function getBadgeStyle(flag: string): { color: string; background: string; border: string } {
   if (['Momentum', 'Volume Spike', 'Simulation confirmed', 'Simulation checked', 'Liquidity Strong'].includes(flag)) return { color: '#99f6e4', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.30)' }
-  if (['Tax check pending', 'Simulation pending', 'Pending Evidence', 'Holder Unverified'].includes(flag)) return { color: '#e8cd8f', background: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.20)' }
+  if (['Tax check pending', 'Simulation pending', 'Pending Evidence', 'Holder Unverified', 'Not Re-verified'].includes(flag)) return { color: '#e8cd8f', background: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.20)' }
   if (['High Risk', 'CORTEX Watch'].includes(flag)) return { color: '#f2b8b8', background: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.20)' }
   return { color: '#bfdbfe', background: 'rgba(96,165,250,0.13)', border: 'rgba(96,165,250,0.30)' }
 }
@@ -539,7 +547,7 @@ function getBadgeStyle(flag: string): { color: string; background: string; borde
 // '+N'"): token.flags itself (getFlags above) is unchanged — same set, same meaning, same order
 // they're computed in. This only decides which 2 are worth surface-level attention (risk/caution
 // flags first, since those matter most to see before clicking in) versus quieter "+N" overflow.
-const FLAG_PRIORITY = ['High Risk', 'Pending Evidence', 'Holder Unverified', 'Tax check pending', 'Simulation pending', 'CORTEX Watch', 'Momentum', 'Volume Spike', 'Liquidity Strong', 'Simulation checked', 'New Pool', 'Established']
+const FLAG_PRIORITY = ['High Risk', 'Pending Evidence', 'Holder Unverified', 'Not Re-verified', 'Tax check pending', 'Simulation pending', 'CORTEX Watch', 'Momentum', 'Volume Spike', 'Liquidity Strong', 'Simulation checked', 'New Pool', 'Established']
 function prioritizedFlags(flags: string[]): string[] {
   return [...flags].sort((a, b) => FLAG_PRIORITY.indexOf(a) - FLAG_PRIORITY.indexOf(b))
 }
@@ -761,7 +769,7 @@ function PulseStrip({ summary, hasEverLoaded }: { summary: RadarSummary; hasEver
 
 function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSummary; topTokens: TokenIntel[]; onRescan: () => void }) {
   const signals = [
-    summary.highMomentum > 0 ? `${summary.highMomentum} momentum signal${summary.highMomentum === 1 ? '' : 's'} in the current Base feed.` : 'Momentum is still forming across the visible feed.',
+    summary.highMomentum > 0 ? `${summary.highMomentum} momentum signal${summary.highMomentum === 1 ? '' : 's'} in the current feed.` : 'Momentum is still forming across the visible feed.',
     summary.worthWatching > 0 ? `${summary.worthWatching} token${summary.worthWatching === 1 ? '' : 's'} have enough traction to watch.` : 'No strong watch cluster yet; keep radar open.',
     topTokens[0] ? `${topTokens[0].symbol} is leading the current radar score.` : 'Open check: no lead token yet.',
     summary.averageLiquidity > 0 ? `Average visible liquidity is ${fmtUSD(summary.averageLiquidity)}.` : 'Liquidity evidence is still an open check.',
@@ -1025,7 +1033,7 @@ function LowActivityPanel() {
   return (
     <div style={{ borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.02)', padding: '14px 16px', fontFamily: 'var(--font-plex-mono)', marginTop: '10px' }}>
       <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}>
-        Radar is quiet right now. New Base pools will appear here as Market Data detects them.
+        Radar is quiet right now. New pools will appear here as Market Data detects them.
       </p>
     </div>
   )
@@ -1513,12 +1521,17 @@ export default function BaseRadarPage() {
   // payload shape /terminal/watchlist's own save flow and ClarkRadar's handleWatchMover already use.
   // Requires a signed-in session (same as every other watchlist entry point in this app); with no
   // session the toggle still updates the visible state for this tab but has nothing to persist.
+  // WATCHLIST-CHAIN, DISCLOSED (found in a full Base Radar audit): both the optimistic row and the
+  // persisted POST body hardcoded chain: 'base', so saving a Robinhood token wrote it to the
+  // watchlist as a Base token — a wrong-chain record that would later resolve the contract against
+  // the wrong network entirely. Uses the real active chain now.
   async function toggleTrack(token: { contract: string; symbol: string; name: string; status: string; radarScore: number }) {
     const address = token.contract.toLowerCase()
     const wasWatched = isWatched(address)
+    const tokenChain = effectiveRadarChainRef.current
     setWatchlistTokens(prev => wasWatched
       ? prev.filter(w => typeof w?.address !== 'string' || w.address.toLowerCase() !== address)
-      : [{ address, symbol: token.symbol, name: token.name, chain: 'base', risk_label: token.status, score: token.radarScore }, ...prev])
+      : [{ address, symbol: token.symbol, name: token.name, chain: tokenChain, risk_label: token.status, score: token.radarScore }, ...prev])
 
     const { data: { session } } = await supabase.auth.getSession()
     const authToken = session?.access_token
@@ -1534,7 +1547,7 @@ export default function BaseRadarPage() {
         await fetch('/api/watchlist/tokens', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-          body: JSON.stringify({ address, symbol: token.symbol, name: token.name, chain: 'base', riskLabel: token.status, score: token.radarScore }),
+          body: JSON.stringify({ address, symbol: token.symbol, name: token.name, chain: tokenChain, riskLabel: token.status, score: token.radarScore }),
         })
       }
     } catch {
@@ -1561,9 +1574,15 @@ export default function BaseRadarPage() {
     const buyTax = token.honeypot?.buyTax
     const sellTax = token.honeypot?.sellTax
     const security = token.simulationStatus === 'passed' ? 'Verified' : 'Unknown'
+    // CORTEX-PROMPT-CHAIN, DISCLOSED (found in a full Base Radar audit): this prompt asserted "this
+    // Base Radar token" and never stated the chain, so a Robinhood contract was handed to the AI
+    // labeled as Base — the model would reason (and could look up) against the wrong network
+    // entirely. States the real chain explicitly now.
+    const chainName = effectiveRadarChainRef.current === 'robinhood' ? 'Robinhood Chain' : 'Base'
     const prompt = [
       '[mode: base-radar]',
-      'Analyze this Base Radar token and give me a clear verdict: WATCH, PASS, or SCAN DEEPER.',
+      `Analyze this ${chainName} radar token and give me a clear verdict: WATCH, PASS, or SCAN DEEPER.`,
+      `Chain: ${chainName}`,
       `Token: ${token.name} (${token.symbol})`,
       `Contract: ${token.contract}`,
       `Radar Score: ${token.radarScore}`,

@@ -27,9 +27,18 @@
 
 const GOLDRUSH_HOST = 'api.covalenthq.com'
 const HOLDER_COUNT_CACHE_TTL_MS = 10 * 60_000
-const CHAIN_PATH: Record<'base' | 'robinhood', string> = {
-  base: 'base-mainnet',
-  robinhood: '4663',
+// CHAIN-PATH-CONSISTENCY, DISCLOSED (found in a full Base Radar audit): this module used '4663'
+// while app/api/token/route.ts's COVALENT_CHAIN_SLUG uses 'robinhood-mainnet' for the same provider
+// and chain — so the feed and the drawer could disagree about the same token depending on which
+// identifier Covalent actually accepts. Neither is independently confirmed (goldrush.dev is
+// unreachable from this sandbox), so instead of picking one and hoping, each chain lists its
+// candidates in priority order: the '{name}-mainnet' slug convention Token Scanner already uses
+// first (so the two agree whenever it works), then Robinhood Chain's verified real numeric chain ID
+// (4663) as a fallback. A 404 on the first is treated as "wrong identifier, try the next" rather
+// than a hard failure; chainPathUsed reports which one actually resolved.
+const CHAIN_PATHS: Record<'base' | 'robinhood', string[]> = {
+  base: ['base-mainnet'],
+  robinhood: ['robinhood-mainnet', '4663'],
 }
 
 export type HolderCountReason = 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data' | 'chain_unsupported'
@@ -55,13 +64,13 @@ export interface HolderCountResult {
 const holderCountCache = new Map<string, { count: number | null; reason?: HolderCountReason; isCapped?: boolean; expiresAt: number }>()
 
 export async function fetchGoldRushHolderCount(contract: string, chain: 'base' | 'robinhood'): Promise<HolderCountResult> {
-  const chainPath = CHAIN_PATH[chain]
+  const chainPaths = CHAIN_PATHS[chain]
   const key = `${chain}:${contract.toLowerCase()}`
   const cached = holderCountCache.get(key)
-  if (cached && cached.expiresAt > Date.now()) return { count: cached.count, reason: cached.count != null ? 'ok' : (cached.reason ?? 'no_data'), chainPathUsed: chainPath, isCapped: cached.isCapped }
+  if (cached && cached.expiresAt > Date.now()) return { count: cached.count, reason: cached.count != null ? 'ok' : (cached.reason ?? 'no_data'), chainPathUsed: chainPaths[0], isCapped: cached.isCapped }
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
-  if (!apiKey) return { count: null, reason: 'no_api_key', chainPathUsed: chainPath }
-  const attempt = async (): Promise<HolderCountResult> => {
+  if (!apiKey) return { count: null, reason: 'no_api_key', chainPathUsed: chainPaths[0] }
+  const attempt = async (chainPath: string): Promise<HolderCountResult> => {
     try {
       // page-size=100 (not 1) — Covalent rejects page-size values outside its accepted range on the
       // low end too; this only ever reads pagination.total_count, never the returned holder rows.
@@ -77,7 +86,15 @@ export async function fetchGoldRushHolderCount(contract: string, chain: 'base' |
       const pagination = json?.data?.pagination
       const totalCount = pagination?.total_count
       if (typeof totalCount === 'number' && Number.isFinite(totalCount)) {
-        const isCapped = pagination?.has_more === true || totalCount === (pagination?.page_size ?? 100)
+        // EXACT-100-NOT-ALWAYS-CAPPED, DISCLOSED (found in a full Base Radar audit): the previous
+        // check OR'd has_more with `totalCount === page_size`, so a token with exactly 100 real
+        // holders and has_more:false was still rendered "100+" — understating precision we actually
+        // had. has_more is Covalent's own authoritative "more rows exist" signal, so when it's
+        // present as a real boolean it decides on its own; the page-size equality is only a
+        // last-resort heuristic for responses that omit has_more entirely.
+        const isCapped = typeof pagination?.has_more === 'boolean'
+          ? pagination.has_more
+          : totalCount === (pagination?.page_size ?? 100)
         return { count: totalCount, reason: 'ok', chainPathUsed: chainPath, isCapped }
       }
       return { count: null, reason: 'no_data', chainPathUsed: chainPath }
@@ -86,12 +103,19 @@ export async function fetchGoldRushHolderCount(contract: string, chain: 'base' |
       return { count: null, reason: timedOut ? 'timeout' : 'http_error', chainPathUsed: chainPath }
     }
   }
-  let result = await attempt()
+  // Try each candidate chain identifier in priority order; a 404 means "this identifier isn't the
+  // one Covalent knows this chain by", so move on rather than treating it as a real data failure.
+  let result: HolderCountResult = { count: null, reason: 'no_data', chainPathUsed: chainPaths[0] }
+  for (const chainPath of chainPaths) {
+    result = await attempt(chainPath)
+    if (result.count != null) break
+    if (result.httpStatus !== 404) break
+  }
   // One retry after a short backoff — absorbs a transient blip (brief 5xx, dropped connection)
   // instead of letting one momentary failure zero out this contract's holder evidence entirely.
-  if (result.count == null) {
+  if (result.count == null && result.httpStatus !== 404) {
     await new Promise(resolve => setTimeout(resolve, 300))
-    result = await attempt()
+    result = await attempt(result.chainPathUsed ?? chainPaths[0])
   }
   // Cache negative/failed lookups too (shorter-lived) so a rate-limited burst doesn't get re-tried
   // on every request for the same contract, compounding the same rate-limit problem.
