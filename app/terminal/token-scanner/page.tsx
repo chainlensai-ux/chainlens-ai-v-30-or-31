@@ -3938,7 +3938,14 @@ export default function TerminalTokenScanner() {
         /* PREMIUM POLISH, DISCLOSED (Token Scanner UI polish task): the old search-card stacked
            five box-shadow layers (up to 140px blur) — replaced with a calmer, static two-layer
            shadow so the card reads as the terminal's primary command module, not a glow bloom. */
-        .search-card{background:linear-gradient(160deg,rgba(9,16,32,.98) 0%,rgba(5,11,24,.97) 100%);border:1px solid rgba(148,163,184,.16);border-radius:16px;box-shadow:0 14px 36px rgba(2,6,23,.55),inset 0 1px 0 rgba(255,255,255,.03),inset 0 0 40px rgba(2,6,23,.35);}
+        /* CARD-SEPARATION, DISCLOSED (Token Scanner visual-contrast task, reported: "the scan card
+           blends into the background" — the page shell sits on near-black rgba(2,6,23,1); the card
+           was nearly the same navy-black, so its own border was the only thing separating it. Base
+           lightened a full step (rgba(9,16,32)->rgba(15,24,44) at the lightest point) and the border
+           strengthened + given a faint cyan tint so the card reads as its own surface at a glance,
+           plus a tiny ambient cyan/violet glow just outside the border (very low alpha, static, no
+           bloom) for depth without flashiness. */
+        .search-card{background:linear-gradient(160deg,rgba(15,24,44,.98) 0%,rgba(7,13,28,.97) 100%);border:1px solid rgba(148,180,200,.22);border-radius:16px;box-shadow:0 16px 40px rgba(2,6,23,.60),0 0 0 1px rgba(45,212,191,.05),0 0 46px rgba(139,92,246,.05),inset 0 1px 0 rgba(255,255,255,.045),inset 0 0 40px rgba(2,6,23,.30);}
         .chain-seg{display:inline-flex;padding:3px;border-radius:10px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);gap:2px;}
         .chain-seg-btn{padding:6px 15px;border-radius:7px;font-size:10.5px;font-weight:700;letter-spacing:.10em;font-family:var(--font-plex-mono);cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;border:none;background:transparent;color:#63798e;}
         .chain-seg-btn:hover:not([class*="chain-seg-btn--active"]){color:#9fb2c4;}
@@ -3957,27 +3964,30 @@ export default function TerminalTokenScanner() {
         .cmd-chip-glyph{color:#334155;font-size:10px;}
         /* Thinner, fading top accent per module card — DISCLOSED (explicitly requested: "card top
            accent line should be thinner and cleaner"): full-bleed solid bar replaced with a
-           gradient that fades at both edges, same static (no animation) treatment. */
-        .preview-module-card{background:linear-gradient(160deg,rgba(8,15,28,.75),rgba(5,10,20,.70));border:1px solid rgba(255,255,255,.09);border-radius:12px;padding:19px 17px;transition:transform .18s ease,border-color .18s ease;cursor:default;}
-        .preview-module-card:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.16);}
-        .token-scan-input::placeholder{color:rgba(148,163,184,0.42);}
+           gradient that fades at both edges, same static (no animation) treatment. Background
+           lightened one step (same reasoning as .search-card above) so these cards separate from
+           the page background instead of blending in. */
+        .preview-module-card{background:linear-gradient(160deg,rgba(13,22,38,.80),rgba(7,13,26,.76));border:1px solid rgba(255,255,255,.11);border-radius:12px;padding:19px 17px;transition:transform .18s ease,border-color .18s ease;cursor:default;}
+        .preview-module-card:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.20);}
+        .token-scan-input::placeholder{color:rgba(148,163,184,0.46);}
         .scan-helper-row{flex-wrap:wrap;}
         @media (max-width:640px){.scan-helper-row{flex-direction:column;align-items:flex-start;gap:8px;}}
         .shimmer-line{background:linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(255,255,255,.10) 50%,rgba(255,255,255,.04) 75%);background-size:300% 100%;border-radius:3px;animation:shimmer 2.6s ease-in-out infinite;}
-        /* SCAN-BUTTON, DISCLOSED (Token Scanner premium command-bar task, reported: "the Scan Token
-           button still looks disabled"): moved off per-render inline styles onto two explicit
-           classes — .scan-btn-live (input has text, not loading/resolving) and .scan-btn-off
-           (disabled) — so the active state reads as unmistakably clickable at rest, not just on
-           hover: bright white text, a crisp visible teal border, a dark teal-tinted fill (not flat
-           near-black), and a soft permanent inner glow. Disabled stays visually distinct (dim
-           border/text, no glow, not-allowed cursor). No purple gradient either state.
-           Same height/padding/radius/typography both states so layout never shifts on enable. */
+        /* SCAN-BUTTON, DISCLOSED (Token Scanner visual-contrast task, reported a second time: "the
+           Scan Token button still looks disabled" — the prior pass's active fill
+           (rgba(9,38,42)->rgba(5,16,22)) was still nearly as dark as the near-black page background,
+           so a 1px border alone wasn't enough separation to read as "clickable" at a glance. Lifted
+           the active fill to an actually-visible dark-teal gradient, solid near-full-opacity teal
+           border, and a stronger always-on glow — still restrained/no purple, but now unmistakably
+           differentiated from the disabled state, which is barely-there by contrast (dim flat fill,
+           faded border/text, no glow). Same height/padding/radius/typography both states so layout
+           never shifts on enable. */
         .scan-btn-live,.scan-btn-off{display:inline-flex;align-items:center;gap:8px;height:62px;padding:0 28px;border-radius:13px;font-size:12px;font-weight:800;font-family:var(--font-plex-mono);letter-spacing:.12em;flex-shrink:0;white-space:nowrap;}
-        .scan-btn-live{cursor:pointer;color:#ffffff;border:1px solid rgba(83,243,195,.80);background:linear-gradient(180deg,rgba(9,38,42,.92),rgba(5,16,22,.94));box-shadow:inset 0 1px 0 rgba(255,255,255,.07),0 0 18px rgba(83,243,195,.16);transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease,background .15s ease;}
-        .scan-btn-live:hover{transform:translateY(-1px);border-color:rgba(120,255,220,1) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.09),0 0 26px rgba(83,243,195,.30) !important;}
-        .scan-btn-live:focus-visible{border-color:rgba(120,255,220,1) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.09),0 0 0 3px rgba(83,243,195,.20) !important;}
+        .scan-btn-live{cursor:pointer;color:#ffffff;border:1px solid rgba(94,246,209,.92);background:linear-gradient(180deg,rgba(23,79,80,.85),rgba(10,42,46,.92));box-shadow:inset 0 1px 0 rgba(255,255,255,.10),0 0 24px rgba(83,243,195,.24);transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease,background .15s ease;}
+        .scan-btn-live:hover{transform:translateY(-1px);border-color:rgba(150,255,225,1) !important;background:linear-gradient(180deg,rgba(28,94,95,.90),rgba(12,50,54,.94)) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 0 32px rgba(83,243,195,.38) !important;}
+        .scan-btn-live:focus-visible{border-color:rgba(150,255,225,1) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.10),0 0 0 3px rgba(83,243,195,.24) !important;}
         .scan-btn-live:active{transform:translateY(1px) scale(.99) !important;}
-        .scan-btn-off{cursor:not-allowed;color:rgba(148,163,184,.40);border:1px solid rgba(148,163,184,.16);background:rgba(13,20,32,.55);}
+        .scan-btn-off{cursor:not-allowed;color:rgba(148,163,184,.38);border:1px solid rgba(148,163,184,.14);background:rgba(11,17,28,.50);}
         .live-dot{animation:liveDotPulse 2.2s ease-in-out infinite;}
         .clark-section{border-top:1px solid rgba(255,255,255,.04);padding-top:12px;margin-bottom:12px;}
         @media (prefers-reduced-motion:reduce){.live-dot,.radar-ring,.shimmer-line,.scan-btn-live,.cortex-score-hero{animation:none !important;} .scan-btn-live:hover,.cortex-chip:hover{transform:none !important;} .cortex-bdrow:hover{background:none !important;}}
@@ -4062,7 +4072,7 @@ export default function TerminalTokenScanner() {
                   small label, not a title/heading — "the old big 'Scan a token' heading/logo" stays
                   removed). Purely a label above the chain selector, same size class as other small
                   uppercase metadata already used elsewhere on this page (status pills). */}
-              <p style={{ position: 'relative', zIndex: 1, margin: '0 0 10px', fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.20em', color: '#3d5468', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
+              <p style={{ position: 'relative', zIndex: 1, margin: '0 0 10px', fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.14em', color: '#5b7c94', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>
                 Token Lookup
               </p>
 
@@ -4088,9 +4098,9 @@ export default function TerminalTokenScanner() {
                   removes. */}
               <div className="token-input-row" style={{ position: 'relative', zIndex: 1, display: 'flex', gap: '10px' }}>
                 <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
-                  <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" style={{ position: 'absolute', left: '18px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
-                    <circle cx="11" cy="11" r="7" stroke="rgba(148,163,184,0.50)" strokeWidth="1.8" />
-                    <path d="M20 20l-3.2-3.2" stroke="rgba(148,163,184,0.50)" strokeWidth="1.8" strokeLinecap="round" />
+                  <svg aria-hidden="true" width="13" height="13" viewBox="0 0 24 24" fill="none" style={{ position: 'absolute', left: '18px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
+                    <circle cx="11" cy="11" r="7" stroke="rgba(148,197,210,0.70)" strokeWidth="1.8" />
+                    <path d="M20 20l-3.2-3.2" stroke="rgba(148,197,210,0.70)" strokeWidth="1.8" strokeLinecap="round" />
                   </svg>
                   <input
                     value={input}
@@ -4102,7 +4112,7 @@ export default function TerminalTokenScanner() {
                     style={{
                       width: '100%', height: '62px', padding: '0 18px 0 44px', boxSizing: 'border-box',
                       background: 'rgba(3,8,16,0.92)',
-                      border: '1px solid rgba(148,163,184,0.20)',
+                      border: '1px solid rgba(148,163,184,0.28)',
                       borderRadius: '13px',
                       color: '#e2e8f0', fontSize: '15px',
                       fontFamily: 'var(--font-plex-mono)',
@@ -4113,11 +4123,11 @@ export default function TerminalTokenScanner() {
                       boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.35)',
                     }}
                     onFocus={e => {
-                      e.currentTarget.style.borderColor = 'rgba(83,243,195,0.65)'
-                      e.currentTarget.style.boxShadow = 'inset 0 1px 3px rgba(0,0,0,0.35), 0 0 0 3px rgba(83,243,195,0.12)'
+                      e.currentTarget.style.borderColor = 'rgba(83,243,195,0.75)'
+                      e.currentTarget.style.boxShadow = 'inset 0 1px 3px rgba(0,0,0,0.35), 0 0 0 3px rgba(83,243,195,0.16)'
                     }}
                     onBlur={e => {
-                      e.currentTarget.style.borderColor = 'rgba(148,163,184,0.20)'
+                      e.currentTarget.style.borderColor = 'rgba(148,163,184,0.28)'
                       e.currentTarget.style.boxShadow = 'inset 0 1px 3px rgba(0,0,0,0.35)'
                     }}
                   />
@@ -4138,9 +4148,9 @@ export default function TerminalTokenScanner() {
 
               {/* Divider + helper line + How CORTEX works anchor (scrolls to the real "What this
                   scan checks" section below — not a fake link). */}
-              <div style={{ position: 'relative', zIndex: 1, height: '1px', background: 'rgba(148,163,184,0.10)', margin: '12px 0 0' }} />
+              <div style={{ position: 'relative', zIndex: 1, height: '1px', background: 'rgba(148,163,184,0.16)', margin: '12px 0 0' }} />
               <div className="scan-helper-row" style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '10px 0 2px' }}>
-                <p style={{ margin: 0, fontSize: '11px', color: '#3a4d60', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, letterSpacing: '0.02em' }}>
+                <p style={{ margin: 0, fontSize: '11px', color: '#4a6178', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, letterSpacing: '0.02em' }}>
                   Checks liquidity, holders, LP control, dev activity, market signals, and risk patterns.
                 </p>
                 <a href="#how-cortex-works" style={{ fontSize: '11px', fontWeight: 700, color: 'rgba(83,243,195,0.75)', fontFamily: 'var(--font-plex-mono)', textDecoration: 'none', letterSpacing: '0.04em', whiteSpace: 'nowrap', flexShrink: 0 }}>
@@ -4253,7 +4263,7 @@ export default function TerminalTokenScanner() {
                       <span style={{ fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.12em', color: mod.color, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</span>
                       <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(148,163,184,0.42)', fontFamily: 'var(--font-plex-mono)' }}>{mod.n}</span>
                     </div>
-                    <p style={{ margin: 0, fontSize: '11px', color: '#93a5b8', lineHeight: 1.65 }}>{mod.desc}</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#a3b4c5', lineHeight: 1.65 }}>{mod.desc}</p>
                   </div>
                 ))}
               </div>
