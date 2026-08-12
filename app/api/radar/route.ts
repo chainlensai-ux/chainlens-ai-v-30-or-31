@@ -968,9 +968,10 @@ export async function GET(req: NextRequest) {
     // that failed the strict valuation/liquidity band but got shown anyway if it had enough activity
     // — exactly the "maybe logic" this reset removes). A pool either falls inside this window or it
     // doesn't; there is no second, looser tier for it to fall back into.
-    // WINDOW WIDENED 7 -> 15 DAYS, DISCLOSED (explicitly requested alongside the $50K/$4M/60-holder
-    // threshold change: "last 15 days").
-    const POOL_AGE_WINDOW_MS = 15 * DAY_MS
+    // WINDOW WIDENED 7 -> 15 -> 20 DAYS, DISCLOSED (explicitly requested: "up it to 20 days 5 million
+    // mc" — feed too thin at 15 days / $4M given real GeckoTerminal rate-limit-capped discovery this
+    // session).
+    const POOL_AGE_WINDOW_MS = 20 * DAY_MS
 
     type Candidate = Omit<RadarToken, 'clarkVerdict'> & { pairAddress?: string | null }
     const candidates: Candidate[] = []

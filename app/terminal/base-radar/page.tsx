@@ -1599,14 +1599,13 @@ export default function BaseRadarPage() {
   const filteredAndSortedTokens = useMemo(() => {
     const filtered = intelTokens.filter(token => {
       if (activeFilter === 'TRENDING') return token.status === 'HOT' || token.momentum === 'HIGH' || token.volume24h >= 5_000
-      // NEW-WINDOW WIDENED, DISCLOSED (history: feed staying thin was verified to be a genuine
-      // age-window constraint, not a discovery-depth bug — pools weren't getting enough real time to
-      // organically reach 30 holders + the valuation band before aging out of consideration). The
-      // backend's own outer cutoff (app/api/radar/route.ts's POOL_AGE_WINDOW_MS) is 15 days
-      // (widened from 7, explicitly requested alongside the $50K/$4M/60-holder threshold change);
-      // this frontend NEW-tab filter must match it or a candidate the backend legitimately includes
-      // would still be invisible on the default tab.
-      if (activeFilter === 'NEW') return token.ageMinutes <= 15 * 24 * 60 || token.status === 'EARLY'
+      // NEW-WINDOW WIDENED 7 -> 15 -> 20 DAYS, DISCLOSED (history: feed staying thin was verified to
+      // be a genuine age-window constraint, not a discovery-depth bug — pools weren't getting enough
+      // real time to organically reach 60 holders + the valuation band before aging out of
+      // consideration). The backend's own outer cutoff (app/api/radar/route.ts's POOL_AGE_WINDOW_MS)
+      // is 20 days; this frontend NEW-tab filter must match it or a candidate the backend legitimately
+      // includes would still be invisible on the default tab.
+      if (activeFilter === 'NEW') return token.ageMinutes <= 20 * 24 * 60 || token.status === 'EARLY'
       if (activeFilter === 'VOLUME') return token.volume24h >= 5_000 || token.momentum !== 'NONE'
       if (activeFilter === 'LIQUIDITY') return token.liquidityUsd >= 10_000
       if (activeFilter === 'RISK_WATCH') return token.status === 'RISKY' || token.status === 'UNVERIFIED' || token.simulationStatus !== 'passed'

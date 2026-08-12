@@ -19,15 +19,17 @@
 // ceiling still has to clear every real requirement — liquidity, the floor, holder evidence — to
 // display, it just displays as "Established" instead of "New Radar"). Only
 // passesMainFeedValuationMinGate is a real route-level exclusion.
-// THRESHOLD UPDATE $80K/$2M/30 -> $50K/$4M/60, DISCLOSED (explicitly requested: "change the filter
-// 50k to 4 million mc last 15 days and minimum 60 holders"). Floor and the (classification, not
-// exclusion) ceiling are both inclusive: $50,000 passes the floor; $4,000,000 is still inside the
-// early-range band; $49,999 fails the real floor; $4,000,001 clears the floor but classifies as
-// Established. Liquidity minimum and every other mechanism (fail-open unresolved-age, evidence-
-// gapped holder-unavailable, etc.) are unchanged — only these numbers moved.
+// THRESHOLD UPDATE $80K/$2M/30 -> $50K/$4M/60 -> $50K/$5M/60, DISCLOSED (explicitly requested:
+// "change the filter 50k to 4 million mc last 15 days and minimum 60 holders", then later "up it to
+// 20 days 5 million mc" — feed too thin given real GeckoTerminal rate-limit-capped discovery this
+// session). Floor and the (classification, not exclusion) ceiling are both inclusive: $50,000 passes
+// the floor; $5,000,000 is still inside the early-range band; $49,999 fails the real floor;
+// $5,000,001 clears the floor but classifies as Established. Holder minimum and liquidity minimum
+// unchanged — only the ceiling moved this time (age window is a separate constant in
+// app/api/radar/route.ts, moved 15 -> 20 days alongside this).
 
 export const MAIN_FEED_MIN_VALUATION_USD = 50_000
-export const MAIN_FEED_MAX_VALUATION_USD = 4_000_000
+export const MAIN_FEED_MAX_VALUATION_USD = 5_000_000
 export const MAIN_FEED_MIN_HOLDERS = 60
 
 /**

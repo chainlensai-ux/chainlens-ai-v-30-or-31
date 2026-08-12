@@ -3,31 +3,32 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationMinGate, passesMainFeedValuationMaxGate, passesMainFeedValuationGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '../lib/baseRadarMainFeedGate.ts'
 
-// THRESHOLD UPDATE $80K/$2M/30 -> $50K/$4M/60, DISCLOSED (explicitly requested: "change the filter
-// 50k to 4 million mc last 15 days and minimum 60 holders").
+// THRESHOLD UPDATE $80K/$2M/30 -> $50K/$4M/60 -> $50K/$5M/60, DISCLOSED (explicitly requested:
+// "change the filter 50k to 4 million mc last 15 days and minimum 60 holders", then later "up it to
+// 20 days 5 million mc").
 assert.equal(MAIN_FEED_MIN_VALUATION_USD, 50_000)
-assert.equal(MAIN_FEED_MAX_VALUATION_USD, 4_000_000)
+assert.equal(MAIN_FEED_MAX_VALUATION_USD, 5_000_000)
 assert.equal(MAIN_FEED_MIN_HOLDERS, 60)
 
-// ─── Valuation: $50K floor is a real exclusion; $4M is a CLASSIFICATION boundary, not an
+// ─── Valuation: $50K floor is a real exclusion; $5M is a CLASSIFICATION boundary, not an
 // exclusion (explicit product change — see the $2M-IS-A-CLASSIFICATION-NOT-AN-EXCLUSION comment
-// in app/api/radar/route.ts, numbers since updated to $50K/$4M). passesMainFeedValuationMinGate is
+// in app/api/radar/route.ts, numbers since updated to $50K/$5M). passesMainFeedValuationMinGate is
 // the real route-level exclusion (droppedByMarketCapBelow80k — field name unchanged, threshold
 // moved). passesMainFeedValuationMaxGate/passesMainFeedValuationGate remain pure predicates
-// describing the $50K-$4M "early range" band — route.ts uses !passesMainFeedValuationMaxGate(...)
+// describing the $50K-$5M "early range" band — route.ts uses !passesMainFeedValuationMaxGate(...)
 // to set isEstablished (a label), never to `continue`/exclude.
 // $49,999 excluded (below the real $50K floor)
 assert.equal(passesMainFeedValuationMinGate(49_999), false)
 assert.equal(passesMainFeedValuationGate(49_999), false)
 // $50,000 included if liquidity passes (boundary — inclusive, not exclusive)
 assert.equal(passesMainFeedValuationMinGate(50_000), true)
-// $4,000,000 is still inside the early-range band (both predicates true)
-assert.equal(passesMainFeedValuationGate(4_000_000), true)
-assert.equal(passesMainFeedValuationMaxGate(4_000_000), true)
-// $4,000,001 is NOT excluded only for being above $4M — passesMainFeedValuationMinGate (the real
+// $5,000,000 is still inside the early-range band (both predicates true)
+assert.equal(passesMainFeedValuationGate(5_000_000), true)
+assert.equal(passesMainFeedValuationMaxGate(5_000_000), true)
+// $5,000,001 is NOT excluded only for being above $5M — passesMainFeedValuationMinGate (the real
 // exclusion predicate) is still true; only the max/early-range classification predicate flips.
-assert.equal(passesMainFeedValuationMinGate(4_000_001), true, '$4,000,001 must still clear the real $50K floor — being above $4M is not itself an exclusion')
-assert.equal(passesMainFeedValuationMaxGate(4_000_001), false, 'above $4M correctly falls outside the early-range classification boundary (used for the Established label, not exclusion)')
+assert.equal(passesMainFeedValuationMinGate(5_000_001), true, '$5,000,001 must still clear the real $50K floor — being above $5M is not itself an exclusion')
+assert.equal(passesMainFeedValuationMaxGate(5_000_001), false, 'above $5M correctly falls outside the early-range classification boundary (used for the Established label, not exclusion)')
 // mid-band value passes both halves
 assert.equal(passesMainFeedValuationGate(500_000), true)
 // valuation unavailable (null/undefined/NaN) excluded — never bypasses the real $50K floor
@@ -64,7 +65,7 @@ assert.equal(isRealVerifiedMarketCapValue(null, 500_000), false)
   const fdvFallbackValuationUsd = 500_000 // what getRadarValuationBasis's flattening reports for a valid FDV fallback
   const rawMarketCapStatus = null // the real, pre-flattening marketCapStatus for this candidate
   const rawMarketCapUsd = null
-  assert.equal(passesMainFeedValuationGate(fdvFallbackValuationUsd), true, 'FDV-derived valuation still clears the $50K-$4M band')
+  assert.equal(passesMainFeedValuationGate(fdvFallbackValuationUsd), true, 'FDV-derived valuation still clears the $50K-$5M band')
   assert.equal(isRealVerifiedMarketCapValue(rawMarketCapStatus, rawMarketCapUsd), false, 'but is correctly flagged as not a real verified market cap, so the fallback evidence gap still attaches')
 }
 
@@ -78,7 +79,7 @@ assert.equal(isRealVerifiedMarketCapValue(null, 500_000), false)
   assert.equal(isRealVerifiedMarketCapValue(marketCapStatus, marketCapUsd), true)
 }
 
-// ─── Above-$4M established/large token gets the Established label, NOT exclusion ────────────────
+// ─── Above-$5M established/large token gets the Established label, NOT exclusion ────────────────
 // (explicit product change: the ceiling moved from a hard exclusion to a classification boundary)
 {
   const marketCapUsd = 400_000_000 // e.g. an Aerodrome-sized market cap
@@ -86,7 +87,7 @@ assert.equal(isRealVerifiedMarketCapValue(null, 500_000), false)
   assert.equal(passesMainFeedValuationMaxGate(marketCapUsd), false, 'but correctly falls outside the early-range classification boundary — this is what drives isEstablished=true / the "Established" label, not an exclusion')
 }
 
-// ─── An OpenAI-style candidate above $4M displays as Established, not excluded, if it passes
+// ─── An OpenAI-style candidate above $5M displays as Established, not excluded, if it passes
 // liquidity/valuation evidence (explicitly requested scenario) ──────────────────────────────────
 {
   const openAiStyleMarketCapUsd = 9_500_000 // e.g. a large, liquid, above-early-range token
@@ -128,7 +129,7 @@ assert.ok(!CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP.toLowerCase().includes('open c
   assert.equal(
     passesLiquidityGate(10_000, 1_000, 60) && passesMainFeedValuationGate(500_000) && passesMainFeedHolderGate(60),
     true,
-    'a candidate clearing liquidity + $50K-$4M valuation + 60 holders passes every hard rule',
+    'a candidate clearing liquidity + $50K-$5M valuation + 60 holders passes every hard rule',
   )
 }
 
@@ -339,7 +340,7 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   // Gate still excludes below $50K / a real resolved below-60-holders count, even once raw
   // candidates load correctly — re-asserted here specifically in the context of the discovery-
   // resilience fix, so a future change to the fetch layer can't accidentally loosen the real
-  // exclusions. Above $4M is deliberately NOT re-asserted as an exclusion here (it isn't one).
+  // exclusions. Above $5M is deliberately NOT re-asserted as an exclusion here (it isn't one).
   assert.equal(passesMainFeedValuationMinGate(49_999), false)
   assert.equal(passesMainFeedHolderGate(59), false)
 
