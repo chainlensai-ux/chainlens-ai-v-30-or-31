@@ -250,10 +250,17 @@ const ETH_INFRA_EXCLUSIONS = new Set([
   '0x000000000022d473030f116ddee9f6b43ac78ba3',
 ])
 
+// CHAIN-SCOPED-EXCLUSIONS, DISCLOSED (found in a Token Scanner audit): this previously defaulted
+// every non-'eth' chain (bnb, polygon, robinhood) to BASE_INFRA_EXCLUSIONS — Base-specific WETH/
+// Aerodrome addresses that are meaningless as exclusions on those chains, and could even wrongly
+// reject a legitimate address that happens to collide with one of those Base addresses. There is no
+// verified BNB/Polygon/Robinhood infra-address list in this codebase to substitute in its place, so
+// rather than guess one, chains without a real matching list now only get COMMON_INFRA_EXCLUSIONS
+// (zero/dead/0x...01) — narrower than before, but never wrong-chain data.
 function chainInfraExclusions(chain: ChainKey): Set<string> {
   return new Set([
     ...COMMON_INFRA_EXCLUSIONS,
-    ...(chain === 'eth' ? ETH_INFRA_EXCLUSIONS : BASE_INFRA_EXCLUSIONS),
+    ...(chain === 'eth' ? ETH_INFRA_EXCLUSIONS : chain === 'base' ? BASE_INFRA_EXCLUSIONS : []),
   ])
 }
 
@@ -263,15 +270,21 @@ function normalizeEvidenceAddress(value: string | null | undefined): string | nu
   return /^0x[a-f0-9]{40}$/.test(normalized) ? normalized : null
 }
 
-function isRejectedEvidenceAddress(value: string | null | undefined, tokenContract?: string | null): boolean {
+function isRejectedEvidenceAddress(value: string | null | undefined, tokenContract?: string | null, chain?: ChainKey): boolean {
   const normalized = normalizeEvidenceAddress(value)
   if (!normalized) return true
   const tokenLow = normalizeEvidenceAddress(tokenContract ?? null)
-  return normalized === tokenLow || COMMON_INFRA_EXCLUSIONS.has(normalized) || ETH_INFRA_EXCLUSIONS.has(normalized) || BASE_INFRA_EXCLUSIONS.has(normalized)
+  if (normalized === tokenLow || COMMON_INFRA_EXCLUSIONS.has(normalized)) return true
+  // Same chain-scoping as chainInfraExclusions above: only apply a chain's infra list when the
+  // caller identifies the chain, or (unchanged default) both eth+base lists when it doesn't.
+  if (chain === 'eth') return ETH_INFRA_EXCLUSIONS.has(normalized)
+  if (chain === 'base') return BASE_INFRA_EXCLUSIONS.has(normalized)
+  if (chain === 'bnb' || chain === 'robinhood' || chain === 'polygon') return false
+  return ETH_INFRA_EXCLUSIONS.has(normalized) || BASE_INFRA_EXCLUSIONS.has(normalized)
 }
 
-function isValidOriginCandidate(value: string | null | undefined, tokenContract: string): value is string {
-  return !isRejectedEvidenceAddress(value, tokenContract)
+function isValidOriginCandidate(value: string | null | undefined, tokenContract: string, chain?: ChainKey): value is string {
+  return !isRejectedEvidenceAddress(value, tokenContract, chain)
 }
 
 
@@ -1362,7 +1375,7 @@ async function discoverTokenOrigin(chain: ChainKey, contract: string): Promise<{
           const r = scanJson?.result?.[0]
           if (scanJson.status === '1' && r?.contractCreator) {
             const creator = normalizeEvidenceAddress(r.contractCreator)
-            if (isValidOriginCandidate(creator, contract)) {
+            if (isValidOriginCandidate(creator, contract, chain)) {
               diag.optional_creation_lookup.ok = true
               diag.optional_creation_lookup.reason = 'contract_creation_record'
               diag.optional_creation_lookup.candidateAddress = creator
@@ -1405,7 +1418,7 @@ async function discoverTokenOrigin(chain: ChainKey, contract: string): Promise<{
         const txItems = txJson?.data?.items ?? []
         diag.contract_transaction_history.itemCount = txItems.length
         const creationTx = txItems.find(t => t.successful && (t.to_address === null || t.to_address === ''))
-        if (creationTx?.from_address && isValidOriginCandidate(creationTx.from_address, contract)) {
+        if (creationTx?.from_address && isValidOriginCandidate(creationTx.from_address, contract, chain)) {
           const creator = creationTx.from_address.toLowerCase()
           diag.contract_transaction_history.ok = true
           diag.contract_transaction_history.reason = 'creation_tx_found'
@@ -1414,7 +1427,7 @@ async function discoverTokenOrigin(chain: ChainKey, contract: string): Promise<{
           diag.contract_transaction_history.confidence = 'high'
           return finalize({ address: creator, confidence: 'high', deployerStatus: 'confirmed', methodUsed: 'creation_transaction_history', creationTxHash: creationTx.tx_hash ?? null, reason: 'Creation transaction from indexed contract history' })
         }
-        const earliestExternal = txItems.find(t => t.successful && t.from_address && isValidOriginCandidate(t.from_address, contract))
+        const earliestExternal = txItems.find(t => t.successful && t.from_address && isValidOriginCandidate(t.from_address, contract, chain))
         if (earliestExternal?.from_address) {
           const creator = earliestExternal.from_address.toLowerCase()
           diag.contract_transaction_history.ok = true
@@ -1441,7 +1454,7 @@ async function discoverTokenOrigin(chain: ChainKey, contract: string): Promise<{
     order: 'asc', maxCount: '0x32', withMetadata: true,
   })
   diag.initial_token_flow_signal.tokenTransfersFound = mintTransfers.length
-  const firstMint = mintTransfers.find(t => t.to && isValidOriginCandidate(t.to, contract))
+  const firstMint = mintTransfers.find(t => t.to && isValidOriginCandidate(t.to, contract, chain))
   if (firstMint?.to) {
     const addr = firstMint.to.toLowerCase()
     diag.initial_token_flow_signal.ok = true
@@ -1458,10 +1471,10 @@ async function discoverTokenOrigin(chain: ChainKey, contract: string): Promise<{
     category: ['erc20'], contractAddresses: [contract],
     order: 'asc', maxCount: '0x32', withMetadata: true,
   })
-  const firstErc20 = earliestErc20.find(t => isValidOriginCandidate(t.from, contract) || isValidOriginCandidate(t.to, contract))
+  const firstErc20 = earliestErc20.find(t => isValidOriginCandidate(t.from, contract, chain) || isValidOriginCandidate(t.to, contract, chain))
   if (firstErc20) {
-    const addr = (isValidOriginCandidate(firstErc20.from, contract) ? firstErc20.from : firstErc20.to) ?? null
-    if (isValidOriginCandidate(addr, contract)) {
+    const addr = (isValidOriginCandidate(firstErc20.from, contract, chain) ? firstErc20.from : firstErc20.to) ?? null
+    if (isValidOriginCandidate(addr, contract, chain)) {
       const normalized = addr.toLowerCase()
       diag.rpc_fallback.ok = true
       diag.rpc_fallback.reason = 'earliest_erc20_transfer'
@@ -1475,7 +1488,7 @@ async function discoverTokenOrigin(chain: ChainKey, contract: string): Promise<{
     fromBlock: '0x0', toBlock: 'latest', toAddress: contract,
     category: ['external'], order: 'asc', maxCount: '0x5', withMetadata: true,
   })
-  const firstExt = incomingExt.find(t => t.from && isValidOriginCandidate(t.from, contract))
+  const firstExt = incomingExt.find(t => t.from && isValidOriginCandidate(t.from, contract, chain))
   if (firstExt?.from) {
     const normalized = firstExt.from.toLowerCase()
     diag.rpc_fallback.ok = true
@@ -4920,11 +4933,18 @@ export async function POST(req: Request) {
     const finalResolvedName = (resolvedName && resolvedName !== 'Unknown') ? resolvedName : (rpcName ?? 'Unknown')
     const finalResolvedSymbol = (resolvedSymbol && resolvedSymbol !== '?') ? resolvedSymbol : (rpcSymbol ?? '?')
 
+    // FALSY-ZERO FIX, DISCLOSED (found in a Token Scanner audit): this previously used `||`, so a
+    // token with a genuinely valid decimals of 0 was treated as falsy and silently fell through to
+    // the next provider or defaulted to 18 — throwing off every downstream amount/supply calculation
+    // (holder percentages, market cap, circulating supply) by a factor of 10^18. `??` only falls
+    // through on null/undefined, so a real 0 from any provider is now trusted as-is.
+    const decimalsCandidate = (v: unknown): number | null =>
+      typeof v === 'number' && Number.isFinite(v) ? v : null
     const resolvedDecimals =
-      gtToken?.decimals ||
-      metaItem?.contract_decimals ||
-      goldItem?.contract_decimals ||
-      gmgnItem?.decimals ||
+      decimalsCandidate(gtToken?.decimals) ??
+      decimalsCandidate(metaItem?.contract_decimals) ??
+      decimalsCandidate(goldItem?.contract_decimals) ??
+      decimalsCandidate(gmgnItem?.decimals) ??
       18;
 
     
