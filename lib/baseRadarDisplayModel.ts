@@ -1,4 +1,5 @@
 import { applyBaseRadarScoreCaps, getRadarFeedRiskLabel } from './baseRadarFeedScoring.ts'
+import { holderEvidenceBlocksTopTier } from './baseRadarHolderEvidence.ts'
 import { getRadarValuationBasis, type RadarValuationBasis } from './baseRadarValuation.ts'
 import { getRadarSimulationReasonLabel, type RadarSimulationStatus } from './baseRadarSimulation.ts'
 
@@ -192,6 +193,12 @@ export function buildBaseRadarDisplayModel(rawToken: AnyRecord, enrichment?: Any
     lpModel,
     strongProtection: false,
     majorControlOrHolderOrLpRedFlag: false,
+    // Only set from real holderEvidence (drawer path, where enrichment is present) — the plain feed
+    // path (no enrichment) has no holderEvidence to check and leaves scoring unchanged, since it
+    // never had granular holder-verification data to begin with.
+    holderEvidenceUnverified: enrichment?.holders?.holderEvidence
+      ? holderEvidenceBlocksTopTier(enrichment.holders.holderEvidence)
+      : undefined,
   })
   const evidenceGaps = Array.from(new Set([...(Array.isArray(rawToken.evidenceGaps) ? rawToken.evidenceGaps : []), simulation.status === 'open_check' ? simulation.label : null, valuation.warning].filter(Boolean) as string[]))
   const signalChips = Array.from(new Set([valuation.status === 'verified' ? 'Market Cap Verified' : valuation.status === 'fdv_fallback' ? 'FDV Fallback' : 'Valuation Open Check', simulation.status === 'passed' ? 'Simulation Clear' : 'Simulation Pending', scoreResult.riskLabel].filter(Boolean)))

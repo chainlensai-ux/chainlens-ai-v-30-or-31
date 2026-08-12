@@ -22,6 +22,13 @@ export interface RadarFeedScoreInput {
   majorControlOrHolderOrLpRedFlag?: boolean
   simulationReason?: string | null
   missingSocials?: boolean
+  // HOLDER-EVIDENCE-CLARITY, DISCLOSED (reported: the drawer's top severity tier could be reached
+  // even when holder evidence was only a minimum count ("100+", not exact) or top-holder
+  // concentration was never resolved — both are real evidence gaps, not full verification. When
+  // true, this caps the score below the top tier ('STRONGER', score>=75); optional and only ever
+  // set by callers that have real holderEvidence (see lib/baseRadarHolderEvidence.ts) — omitting it
+  // leaves scoring unchanged for existing callers.
+  holderEvidenceUnverified?: boolean
 }
 
 
@@ -136,6 +143,9 @@ export function applyBaseRadarScoreCaps(input: RadarFeedScoreInput): { score: nu
     && !lpBurnMissing
 
   if (!highScoreAllowed) caps.push({ cap: 79, reason: '80+ requires confirmed simulation, sane valuation, liquidity, and no major red flags.' })
+  // Rule: minimum-count holder evidence or unresolved concentration must never reach the top severity
+  // tier (score>=75, 'STRONGER') — cap just under it so WATCHLIST (score>=60) remains reachable.
+  if (input.holderEvidenceUnverified) caps.push({ cap: 74, reason: 'Holder evidence is not fully verified — exact count or concentration is unresolved.' })
 
   let penalties = 0
   const reason = String(input.simulationReason ?? '')

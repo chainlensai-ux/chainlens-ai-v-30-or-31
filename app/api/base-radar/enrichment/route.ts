@@ -4,6 +4,7 @@ import { POST as tokenScannerPost } from '@/app/api/token/route'
 import { reconcileBaseRadarLp } from '@/lib/server/baseRadarLpReconciliation'
 import { getRadarValuationBasis, resolveBaseRadarMarketCap } from '@/lib/baseRadarValuation'
 import { fetchGoldRushHolderCount, fetchGoldRushConcentration, type ConcentrationResult } from '@/lib/server/goldrushHolderCount'
+import { buildBaseRadarHolderEvidence } from '@/lib/baseRadarHolderEvidence'
 
 // ROBINHOOD-CHAIN-SUPPORT, DISCLOSED (explicitly confirmed: "yes the token scanner works with
 // robinhood" — Token Scanner's own engine already supports scanning Robinhood-chain contracts;
@@ -264,7 +265,7 @@ function observedPoolFields(scan: Record<string, any>) {
   return { observedPoolPresent, observedPoolCount, poolCountStatus }
 }
 
-function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract: string, debug = false, fallbackHolderCount: number | null = null, fallbackHolderCountCapped = false, fallbackConcentration: ConcentrationResult | null = null): Record<string, unknown> {
+function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract: string, debug = false, fallbackHolderCount: number | null = null, fallbackHolderCountCapped = false, fallbackConcentration: ConcentrationResult | null = null, fallbackHolderProviderReachable = true): Record<string, unknown> {
   const holderDistribution = scan.holderDistribution ?? {}
   const holderResolver = scan.holderResolver ?? {}
   const holderRows = Array.isArray(holderDistribution.topHolders)
@@ -282,7 +283,20 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
   // (20 real holder balances vs. the contract's real total_supply, both read directly off Covalent's
   // token_holders_v2 rows — see lib/server/goldrushHolderCount.ts's header for how). Used ONLY when
   // Token Scanner's own resolver has no top10 value, never overriding a real one it DID find.
-  const holderCount = finiteNumber(holderDistribution.holderCount) ?? finiteNumber(holderResolver.holderCount) ?? (holderRows.length > 0 ? holderRows.length : null) ?? fallbackHolderCount
+  // ZERO-COUNT-SENTINEL, DISCLOSED (found live-verifying this change: a token with genuinely no
+  // usable holder evidence — holderDistributionStatus.status: 'unavailable_with_reason', holderResolver
+  // .insufficientEvidence: true — still reports a literal holderCount of 0 in both places, which is
+  // Token Scanner's "nothing resolved" sentinel, not "this token genuinely has zero holders".
+  // Treating that 0 as a trustworthy exact count would violate the hard rule against faking holder
+  // evidence, so a count is only trusted when Token Scanner's own status says it actually resolved
+  // something ('ok'/'partial' for holderDistribution, `!insufficientEvidence` for holderResolver);
+  // otherwise this falls through exactly as if no count were reported at all.
+  const distributionStatusOk = scan.holderDistributionStatus?.status === 'ok' || scan.holderDistributionStatus?.status === 'partial'
+  const resolverEvidenceOk = holderResolver.insufficientEvidence !== true
+  const holderCount = (distributionStatusOk ? finiteNumber(holderDistribution.holderCount) : null)
+    ?? (resolverEvidenceOk ? finiteNumber(holderResolver.holderCount) : null)
+    ?? (holderRows.length > 0 ? holderRows.length : null)
+    ?? fallbackHolderCount
   // PAGE-SIZE-CEILING, DISCLOSED (reported: "always says 100" — real, confirmed root cause: GoldRush's
   // token_holders_v2 pagination.total_count is capped at the requested page-size once a token has
   // more holders than that — see lib/server/goldrushHolderCount.ts's own header comment for the
@@ -456,12 +470,47 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       const top1 = finiteNumber(holderDistribution.top1) ?? (usedFallbackConcentration ? fallbackConcentration!.top1 : null)
       const top10 = finiteNumber(holderDistribution.top10) ?? (usedFallbackConcentration ? fallbackConcentration!.top10 : null)
       const top20 = finiteNumber(holderDistribution.top20) ?? (usedFallbackConcentration ? fallbackConcentration!.top20 : null)
+      // HOLDER-EVIDENCE-CLARITY, DISCLOSED (reported: the drawer showed "Holders: 100+" / "Status:
+      // Not confirmed" / "Concentration unavailable" next to copy that said "Holder count verified"
+      // — self-contradictory, since a minimum count ("at least 100") is not exact verified evidence,
+      // and neither implies anything about top-holder concentration). holderEvidence is the single
+      // structured source of truth for both facts, kept fully separate: holderCountCapped=true means
+      // this is a minimum, never presented as verified even though it can still pass the feed's
+      // holder gate; concentration is only ever "resolved" when real top-holder balances (top1/10/20
+      // above) actually exist, never inferred from the count. See lib/baseRadarHolderEvidence.ts.
+      const holderEvidence = buildBaseRadarHolderEvidence({
+        holderCount,
+        countIsMinimum: holderCountCapped,
+        top1Percent: top1,
+        top10Percent: top10,
+        top20Percent: top20,
+        holderProviderReachable: holderCount != null ? true : fallbackHolderProviderReachable,
+      })
+      // AUDIT, DISCLOSED: dev-only structured log of the holder-evidence decision for this token —
+      // never sent to the client, mirrors the TOKEN-SAVER debug-log pattern already used elsewhere
+      // in this codebase (e.g. baseRadarFeedScoring.ts) for tracing scoring/evidence decisions.
+      if (process.env.NODE_ENV !== 'production') {
+        console.debug('[baseRadarHolderEvidenceAudit]', {
+          symbol: scan.symbol ?? scan.tokenInfo?.symbol ?? null,
+          tokenAddress: contract,
+          holderProvider: usedFallbackConcentration || (holderCount === fallbackHolderCount && fallbackHolderCount != null) ? 'goldrush_fallback' : 'token_scanner',
+          holderCountStatus: holderEvidence.holderCountStatus,
+          holderCountExact: holderEvidence.holderCountExact ?? null,
+          holderCountMinimum: holderEvidence.holderCountMinimum ?? null,
+          holderGatePassed: holderEvidence.holderGatePassed,
+          holderVerified: holderEvidence.holderVerified,
+          concentrationStatus: holderEvidence.concentrationStatus,
+          topHolderBalancesResolved: holderEvidence.concentrationStatus === 'resolved',
+          evidenceGaps: holderEvidence.evidenceGaps,
+        })
+      }
       return {
         top1,
         top10,
         top20,
         holderCount,
         holderCountCapped,
+        holderEvidence,
         status: scan.holderDistributionStatus?.status ?? scan.holderStatus ?? null,
         reason: usedFallbackConcentration
           ? 'Top 1/10/20 computed from GoldRush indexed balances (top 20 holders) — an independent fallback, not Token Scanner\'s full resolver.'
@@ -556,16 +605,27 @@ async function scanToken(req: Request, chain: ChainKey, contract: string, debug:
   // fetch, so only forward chain when it's one of the two this module actually handles.
   const scanHolderDistribution = scan.holderDistribution ?? {}
   const scanHolderResolver = scan.holderResolver ?? {}
-  const scanHasHolderData = finiteNumber(scanHolderDistribution.holderCount) != null
-    || finiteNumber(scanHolderResolver.holderCount) != null
+  // ZERO-COUNT-SENTINEL, DISCLOSED (same fix as buildPublicPayload's holderCount resolution below):
+  // a status of 'unavailable_with_reason'/'error', or holderResolver.insufficientEvidence:true, means
+  // Token Scanner found nothing — its reported holderCount of 0 in that case is a "nothing resolved"
+  // sentinel, not real evidence, so it must not block the fallback fetch from running.
+  const scanDistributionStatusOk = scan.holderDistributionStatus?.status === 'ok' || scan.holderDistributionStatus?.status === 'partial'
+  const scanResolverEvidenceOk = scanHolderResolver.insufficientEvidence !== true
+  const scanHasHolderData = (scanDistributionStatusOk && finiteNumber(scanHolderDistribution.holderCount) != null)
+    || (scanResolverEvidenceOk && finiteNumber(scanHolderResolver.holderCount) != null)
     || (Array.isArray(scanHolderDistribution.topHolders) && scanHolderDistribution.topHolders.length > 0)
     || (Array.isArray(scanHolderResolver.holders) && scanHolderResolver.holders.length > 0)
   let fallbackHolderCount: number | null = null
   let fallbackHolderCountCapped = false
+  // REACHABILITY, DISCLOSED (feeds holderEvidence.evidenceGaps' holder_provider_unreachable vs
+  // holder_count_unavailable distinction): a fetch that timed out / had no API key / rate-limited /
+  // errored means the provider itself couldn't be reached; 'no_data'/'ok' mean it responded.
+  let fallbackHolderProviderReachable = true
   if (!scanHasHolderData && (chain === 'base' || chain === 'robinhood')) {
     const fallback = await fetchGoldRushHolderCount(contract, chain)
     fallbackHolderCount = fallback.count
     fallbackHolderCountCapped = fallback.isCapped === true
+    fallbackHolderProviderReachable = !['timeout', 'http_error', 'no_api_key', 'rate_limited'].includes(fallback.reason)
   }
   // CONCENTRATION-FALLBACK, DISCLOSED: only fetched when Token Scanner's own scan genuinely has no
   // top10 value — a real, additional GoldRush call, but only on the gap this was built to close.
@@ -574,7 +634,7 @@ async function scanToken(req: Request, chain: ChainKey, contract: string, debug:
   if (!scanHasTop10 && (chain === 'base' || chain === 'robinhood')) {
     fallbackConcentration = await fetchGoldRushConcentration(contract, chain)
   }
-  return buildPublicPayload(scan, chain, contract, debug, fallbackHolderCount, fallbackHolderCountCapped, fallbackConcentration)
+  return buildPublicPayload(scan, chain, contract, debug, fallbackHolderCount, fallbackHolderCountCapped, fallbackConcentration, fallbackHolderProviderReachable)
 }
 
 function storeCache(key: string, payload: Record<string, unknown>, now: number) {
