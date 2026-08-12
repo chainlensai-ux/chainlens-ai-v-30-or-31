@@ -283,11 +283,18 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
   // PAGE-SIZE-CEILING, DISCLOSED (reported: "always says 100" — real, confirmed root cause: GoldRush's
   // token_holders_v2 pagination.total_count is capped at the requested page-size once a token has
   // more holders than that — see lib/server/goldrushHolderCount.ts's own header comment for the
-  // Covalent-forum confirmation). Only ever true for the fallback path (Token Scanner's own resolver
-  // returning a real count from its own, different pull isn't known to have this specific cap), so
-  // the frontend must show "100+" instead of "100" whenever this is true — never present a page-bound
-  // number as if it were the exact total.
-  const holderCountCapped = holderCount === fallbackHolderCount && fallbackHolderCountCapped
+  // Covalent-forum confirmation). The direct fallback path already detects this precisely via
+  // has_more. STILL-SHOWING-BARE-100, DISCLOSED (reported again on a token whose count came from
+  // Token Scanner's own resolver, not the fallback — it showed a bare "100" with no confirmation
+  // either way): Token Scanner's holder resolver almost certainly hits the same Covalent provider
+  // with its own page-size, and 100 is Covalent's own common default/max across many of their
+  // endpoints. I have no visibility into Token Scanner's exact call to confirm its page-size
+  // precisely (that engine is off-limits), so this is a disclosed HEURISTIC, not a direct
+  // confirmation like the fallback path's has_more check: any resolved count of exactly 100, from
+  // ANY source, is flagged as possibly page-capped rather than shown as a bare, falsely-precise
+  // number. A token that genuinely has exactly 100 holders will very rarely occur in practice, so
+  // this trades a small false-positive rate for never silently understating a token's real reach.
+  const holderCountCapped = (holderCount === fallbackHolderCount && fallbackHolderCountCapped) || holderCount === 100
   const clusterMap = scan.devIntel?.clusterMap ?? scan.clusterMap ?? null
   const clusterEdges = Array.isArray(clusterMap?.edges) ? clusterMap.edges : []
   const clusterNodes = Array.isArray(clusterMap?.nodes) ? clusterMap.nodes : []
