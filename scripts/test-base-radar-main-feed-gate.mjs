@@ -225,6 +225,7 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
 // need the Next.js bundler's module resolution) to assert the real fix shipped.
 {
   const routeSource = readFileSync(fileURLToPath(new URL('../app/api/radar/route.ts', import.meta.url)), 'utf8')
+  const redisClientSource = readFileSync(fileURLToPath(new URL('../lib/server/cache/redisClient.ts', import.meta.url)), 'utf8')
   const rankedCapMatch = routeSource.match(/const RANKED_CANDIDATES_CAP = (\d+)/)
   assert.ok(rankedCapMatch, 'RANKED_CANDIDATES_CAP constant must exist in app/api/radar/route.ts')
   const rankedCandidatesCap = Number(rankedCapMatch[1])
@@ -366,6 +367,16 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   // ─── Backoff skipped pages are audited ────────────────────────────────────────────────────────
   assert.ok(routeSource.includes('sourceBackoffSkippedCount') && routeSource.includes('sourceBackoffTtlMs'), 'backoff-skipped pages and the backoff TTL must both be surfaced in the audit')
   assert.ok(/DISCOVERY_FAILURE_BACKOFF_MS = 20_000/.test(routeSource), 'the backoff window must be short enough for a realistic refresh gap to actually retry (shortened from 45s to 20s per live report of prolonged degradation)')
+
+  // ─── Sticky feed: a legitimately-verified token must not vanish just because one refresh cycle
+  // didn't rediscover it, but a carried-over token must never be indistinguishable from a freshly
+  // re-checked one ────────────────────────────────────────────────────────────────────────────────
+  assert.ok(routeSource.includes('getStickyFeed') && routeSource.includes('setStickyFeed'), 'sticky-feed read/write helpers must exist')
+  assert.ok(/STICKY_WINDOW_MS = 15 \* 60_000/.test(routeSource), 'the sticky window must have a real, bounded expiry — not carry a token forever')
+  assert.ok(routeSource.includes('Shown from a previous cycle — not re-verified this refresh'), 'a carried-over token must be explicitly labeled as such, never silently presented as freshly re-verified')
+  assert.ok(/nowTs - e\.verifiedAt <= STICKY_WINDOW_MS/.test(routeSource), 'sticky entries must be filtered against the window before being eligible to carry over')
+  assert.ok(/slotsAvailable = Math\.max\(0, DISPLAY_TARGET - tokens\.length\)/.test(routeSource), 'sticky carry-over must only backfill OPEN display slots, never push out or outnumber fresh candidates')
+  assert.ok(redisClientSource.includes('async get') && redisClientSource.includes('async set'), 'sticky feed must be backed by the shared Redis client so it works cross-instance, not just per-process memory')
 }
 
 console.log('test-base-radar-main-feed-gate.mjs: all assertions passed')

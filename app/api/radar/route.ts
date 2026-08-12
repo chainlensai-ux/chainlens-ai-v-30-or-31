@@ -205,6 +205,44 @@ async function setDiscoveryBackoff(key: string, until: number): Promise<void> {
     try { await redis.set(`${RADAR_BACKOFF_REDIS_PREFIX}${key}`, until, { ex: Math.ceil(DISCOVERY_FAILURE_BACKOFF_MS / 1000) }) } catch { /* best-effort */ }
   }
 }
+
+// STICKY-FEED, DISCLOSED (explicitly requested: "tokens should never just randomly disappear even
+// from another refresh" — a real, previously-reported problem this whole session has kept surfacing:
+// GeckoTerminal's rate limit means raw discovery is genuinely different from one cycle to the next,
+// so a token that legitimately cleared every gate a minute ago can vanish from the NEXT response
+// purely because that cycle's degraded/rate-limited discovery didn't happen to rediscover it — not
+// because anything about the token actually changed. That's a real UX defect, not honest behavior:
+// disappearing reads as "this token failed a check," when the truth is "we didn't look this time."
+// Backed by the same shared Redis client as the discovery backoff (cross-instance, matching this
+// codebase's own pattern) so this works consistently regardless of which serverless instance serves
+// a given request. Fail-open: any Redis problem just means stickiness doesn't apply this cycle,
+// never blocks or breaks the normal fresh-computation path.
+//
+// Honesty boundary: a carried-over token is NEVER presented as freshly re-verified. It keeps
+// exactly the evidence/values from when it WAS actually verified, gets an explicit
+// 'Shown from a previous cycle — not re-verified this refresh' evidence gap so this is never
+// silently indistinguishable from a fresh pass, and ages out (STICKY_WINDOW_MS) so staleness has a
+// hard ceiling — this is "don't discard verified-recently-enough evidence just because this one
+// request didn't redo the work," not "keep showing things forever" or "fake a re-check."
+const STICKY_WINDOW_MS = 15 * 60_000
+const STICKY_FEED_REDIS_PREFIX = 'radar:sticky-feed:'
+const STICKY_FEED_MAX_ENTRIES = DISPLAY_TARGET * 2
+interface StickyFeedEntry { token: RadarToken; verifiedAt: number }
+async function getStickyFeed(key: string): Promise<StickyFeedEntry[]> {
+  if (!redisConfigured()) return []
+  try {
+    const val = await redis.get<StickyFeedEntry[]>(`${STICKY_FEED_REDIS_PREFIX}${key}`)
+    return Array.isArray(val) ? val : []
+  } catch {
+    return []
+  }
+}
+async function setStickyFeed(key: string, entries: StickyFeedEntry[]): Promise<void> {
+  if (!redisConfigured()) return
+  try {
+    await redis.set(`${STICKY_FEED_REDIS_PREFIX}${key}`, entries.slice(0, STICKY_FEED_MAX_ENTRIES), { ex: Math.ceil(STICKY_WINDOW_MS / 1000) + 60 })
+  } catch { /* best-effort */ }
+}
 const HOLDER_COUNT_CACHE_TTL_MS = 10 * 60_000
 const holderCountCache = new Map<string, { count: number | null; reason?: 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data'; expiresAt: number }>()
 // SINGLE-HOST RETRY, DISCLOSED (found via live baseRadarSourceAudit output: 3 real candidates
@@ -1619,13 +1657,54 @@ export async function GET(req: NextRequest) {
     const verdicts = shallowMode ? new Map<string, string>() : await getClarkVerdicts(top5)
 
     // 4. Final output — newest first for live feed
-    const tokens: RadarToken[] = [...scored]
+    const toRadarToken = (t: Candidate): RadarToken => {
+      const { pairAddress: _pairAddress, ...rest } = t
+      return { ...rest, clarkVerdict: verdicts.get(t.contract.toLowerCase()) ?? null }
+    }
+    let tokens: RadarToken[] = [...scored]
       .sort((a, b) => a.ageMinutes - b.ageMinutes)
-      .map(t => { const { pairAddress: _pairAddress, ...rest } = t; return { ...rest, clarkVerdict: verdicts.get(t.contract.toLowerCase()) ?? null } })
-    // ESTABLISHED-DISPLAYED-COUNT, DISCLOSED: how many of the FINAL displayed tokens are labeled
-    // Established (above $2M) — distinct from aboveEarlyRangeCount (declared earlier, during the
-    // per-candidate loop), which counts every above-$2M candidate that reached that stage, before
-    // the holder check/ranking cap could still drop some of them same as any other candidate.
+      .map(toRadarToken)
+
+    // STICKY-FEED MERGE, DISCLOSED: see the header comment near getStickyFeed's declaration for the
+    // full rationale. Backfills open display slots with recently-verified tokens this cycle's
+    // discovery didn't happen to rediscover, explicitly marked as carried-over — never presented as
+    // freshly re-checked — and ages them out after STICKY_WINDOW_MS. Also refreshes the store with
+    // this cycle's real results so future cycles have something to draw from, even on a cycle where
+    // nothing needed to be carried.
+    let stickyCarriedOverCount = 0
+    {
+      const nowTs = Date.now()
+      const freshContracts = new Set(tokens.map(t => t.contract.toLowerCase()))
+      const stickyEntries = await getStickyFeed(cacheKeyBase)
+      const stillFresh = stickyEntries.filter(e => nowTs - e.verifiedAt <= STICKY_WINDOW_MS)
+      const carryCandidates = stillFresh.filter(e => !freshContracts.has(e.token.contract.toLowerCase()))
+      const slotsAvailable = Math.max(0, DISPLAY_TARGET - tokens.length)
+      const carried = carryCandidates.slice(0, slotsAvailable).map(e => ({
+        ...e.token,
+        ageMinutes: e.token.ageMinutes + Math.floor((nowTs - e.verifiedAt) / 60_000),
+        evidenceGaps: Array.from(new Set([...(e.token.evidenceGaps ?? []), 'Shown from a previous cycle — not re-verified this refresh (still within the recent verification window)'])),
+      }))
+      stickyCarriedOverCount = carried.length
+      tokens = [...tokens, ...carried].sort((a, b) => a.ageMinutes - b.ageMinutes)
+
+      // Fresh candidates always refresh their verifiedAt; sticky entries not shown fresh this cycle
+      // (whether carried into the display or just held in reserve past the display cap) KEEP their
+      // original verifiedAt — the staleness window is measured from when a token was actually last
+      // verified, never reset just by being shown/held again.
+      const freshEntries: StickyFeedEntry[] = scored.map(t => ({ token: toRadarToken(t), verifiedAt: nowTs }))
+      const keptStale = stillFresh.filter(e => !freshContracts.has(e.token.contract.toLowerCase()))
+      const deduped = new Map<string, StickyFeedEntry>()
+      for (const e of [...freshEntries, ...keptStale]) {
+        if (!deduped.has(e.token.contract.toLowerCase())) deduped.set(e.token.contract.toLowerCase(), e)
+      }
+      await setStickyFeed(cacheKeyBase, Array.from(deduped.values()))
+    }
+
+    // ESTABLISHED-DISPLAYED-COUNT, DISCLOSED: how many of the FINAL displayed tokens (fresh + sticky-
+    // carried) are labeled Established (above $2M) — distinct from aboveEarlyRangeCount (declared
+    // earlier, during the per-candidate loop), which counts every above-$2M candidate that reached
+    // that stage, before the holder check/ranking cap could still drop some of them same as any
+    // other candidate.
     const establishedDisplayedCount = tokens.filter(t => t.isEstablished).length
 
     // 5. Stats — counts reflect the final adjusted risk labels (post-scoreRisk),
@@ -1875,7 +1954,7 @@ export async function GET(req: NextRequest) {
     // so a real DevTools Network capture — the one method that has reliably worked all session —
     // never showed them either. Attaching both directly to the normal, always-returned payload
     // (not gated behind debug=1) so the exact same capture method already in use surfaces them.
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, stickyCarriedOverCount, discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,
