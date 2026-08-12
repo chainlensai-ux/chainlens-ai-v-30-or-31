@@ -871,14 +871,12 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 999, background: `${verdictColor}14`, border: `1px solid ${verdictColor}38`, color: verdictColor, fontSize: 10, fontWeight: 850, letterSpacing: '.06em' }}>{publicStatus(severityLabel)}</span>
             <span title={token.contract} style={{ color: '#5b7186', fontSize: 10.5, fontFamily: 'var(--font-plex-mono)', marginLeft: 'auto' }}>{shortAddr(token.contract)}</span>
           </div>
-          {/* PRIMARY ACTION BAR, DISCLOSED (task #3): identical actions/behaviors to before (Copy CA,
-              Open Explorer, Deep Scan) plus the existing Watchlist toggle when the caller wires it
-              in — no new actions invented. Deep Scan is now the one filled/primary action, the rest
-              are ghost/secondary, so there's a clear default next step instead of four equal-weight
-              buttons. */}
+          {/* DEEP-SCAN-REMOVED, DISCLOSED (explicitly requested: "get rid of that deep scan button
+              on the base radar panel for robinhood and base"). Copy CA is now the primary/filled
+              action since it's the most common next step once a candidate's evidence is reviewed
+              here — Open Explorer and Watchlist remain secondary, unchanged otherwise. */}
           <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 12 }}>
-            <a href={`/terminal/token-scanner?contract=${token.contract}`} style={primaryButtonStyle}>Deep Scan</a>
-            <button onClick={() => copyText(token.contract)} style={buttonStyle}>Copy CA</button>
+            <button onClick={() => copyText(token.contract)} style={primaryButtonStyle}>Copy CA</button>
             <a href={explorer ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Open Explorer</a>
             {onTrackToggle ? <button onClick={onTrackToggle} style={tracking ? activeButtonStyle : buttonStyle}>{tracking ? 'Watching' : 'Add Watchlist'}</button> : null}
           </div>

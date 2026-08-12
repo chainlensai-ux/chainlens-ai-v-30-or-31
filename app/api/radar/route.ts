@@ -7,6 +7,7 @@ import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFA
 import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type RadarSimulationStatus } from '@/lib/baseRadarSimulation'
 import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationMinGate, passesMainFeedValuationMaxGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '@/lib/baseRadarMainFeedGate'
 import { redis, redisConfigured } from '@/lib/server/cache/redisClient'
+import { fetchGoldRushHolderCount, type HolderCountResult } from '@/lib/server/goldrushHolderCount'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 // RATE-LIMIT-TOO-TIGHT FIX, DISCLOSED (reported: "Radar refresh failed" for no obvious reason):
@@ -171,7 +172,6 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Pro
 // Scanner) — starving them. Fixed by: (1) dropping the dead host, (2) caching results per contract
 // so repeat refreshes of the same tokens don't re-hit GoldRush, (3) capping how many candidates get
 // checked per request.
-const GOLDRUSH_RADAR_HOSTS = ['api.covalenthq.com'] as const
 // DISCOVERY-FAILURE-BACKOFF, DISCLOSED (live-reproduced: after a wave-based pacing fix still showed
 // waves 2-3 of 3 failing entirely, dug into WHY the failure kept recurring across separate live
 // captures rather than self-healing — getOrFetchCached (lib/coingeckoCache.ts) never caches a
@@ -283,87 +283,13 @@ async function setDailyPool(key: string, state: DailyPoolState): Promise<void> {
     await redis.set(`${DAILY_POOL_REDIS_PREFIX}${key}`, { ...state, entries: state.entries.slice(0, DAILY_POOL_MAX) }, { ex: Math.ceil(remainingMs / 1000) + 3600 })
   } catch { /* best-effort */ }
 }
-const HOLDER_COUNT_CACHE_TTL_MS = 10 * 60_000
-const holderCountCache = new Map<string, { count: number | null; reason?: 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data' | 'chain_unsupported'; expiresAt: number }>()
-// SINGLE-HOST RETRY, DISCLOSED (found via live baseRadarSourceAudit output: 3 real candidates
-// cleared liquidity AND the $80K valuation gate, but all 3 holder-count checks failed the same
-// cycle — holderCheckSucceeded: 0 of 3 — triggering the fail-closed path and zeroing an otherwise-
-// real feed). With the dead fallback host already removed, this call has zero retry on a transient
-// blip of the one remaining host — a single momentary failure (a brief 5xx, a dropped connection)
-// now takes down the whole cycle's holder evidence instead of just costing one extra request. One
-// retry with a short backoff absorbs that class of transient failure, same pattern already used for
-// the GeckoTerminal source fetch elsewhere in this file.
-// FAILURE-REASON VISIBILITY, DISCLOSED (found via live audit: holderCheckSucceeded stayed 0 of 3
-// even after the retry fix, and the code had no way to tell "still rate-limited/down after a
-// retry" apart from "no API key configured" apart from "genuinely no holder data for this
-// contract" — every one of those looked identical from the outside). Returns the real reason
-// alongside the count so a persistent (not just transient) provider problem is provable from the
-// response instead of guessed at from a bare null.
-type HolderCountResult = { count: number | null; reason: 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data' | 'chain_unsupported'; httpStatus?: number | null; errorBody?: string | null }
-// CHAIN-UNSUPPORTED, DISCLOSED (Robinhood-chain support: this endpoint is hardcoded to GoldRush's
-// 'base-mainnet' path — I have no verified confirmation GoldRush indexes a Robinhood chain at all,
-// or what path it would use if it does. Guessing a path risks silently hitting the wrong endpoint;
-// short-circuiting to the same honest 'unavailable' shape genuine provider failures already use is
-// safer — a Robinhood candidate is never falsely marked holder-verified, same fail-open-to-WATCH
-// behavior as any other real holder-count outage, just without wasting a request on a guessed URL.
-async function fetchBaseHolderCount(contract: string, chain: 'base' | 'robinhood'): Promise<HolderCountResult> {
-  if (chain !== 'base') return { count: null, reason: 'chain_unsupported' }
-  const key = `${chain}:${contract.toLowerCase()}`
-  const cached = holderCountCache.get(key)
-  if (cached && cached.expiresAt > Date.now()) return { count: cached.count, reason: cached.count != null ? 'ok' : (cached.reason ?? 'no_data') }
-  const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
-  if (!apiKey) return { count: null, reason: 'no_api_key' }
-  const attempt = async (): Promise<HolderCountResult> => {
-    let lastReason: HolderCountResult['reason'] = 'no_data'
-    let lastStatus: number | null = null
-    let lastBody: string | null = null
-    for (const host of GOLDRUSH_RADAR_HOSTS) {
-      try {
-        // PAGE-SIZE-400-FIX, DISCLOSED (found via live audit: holderCheckFailureSample showed a
-        // consistent HTTP 400 — a malformed-request error, not auth/rate-limit/outage — on every
-        // single attempt). Root cause: page-size=1. The other GoldRush token_holders_v2 caller in
-        // this codebase (fetchTokenHoldersUncached, app/api/token/route.ts) already has a disclosed
-        // comment noting "page-size max accepted by Covalent: 100" and has used page-size=100
-        // successfully all session — Covalent's API evidently also rejects page-size values outside
-        // its accepted range on the low end, not just above 100. Matched the known-working value;
-        // this call only ever reads pagination.total_count, never the returned holder rows, so the
-        // larger page size costs a slightly bigger response body, not extra requests.
-        const res = await fetch(
-          `https://${host}/v1/base-mainnet/tokens/${contract}/token_holders_v2/?page-number=0&page-size=100`,
-          { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(3500) },
-        )
-        // STATUS-CODE VISIBILITY, DISCLOSED (found via live audit: holderCheckFailureReasons showed
-        // {http_error: 3} on every single attempted candidate — 'http_error' alone can't distinguish
-        // a bad/expired API key (401), a forbidden key/plan (403), a bad endpoint (404), or a real
-        // provider-side outage (5xx), each of which needs a completely different fix). Captures the
-        // real status code and a short response body snippet so the actual cause is provable from
-        // the next live capture instead of another guess.
-        if (!res.ok) {
-          lastStatus = res.status
-          lastBody = await res.text().catch(() => '').then(t => t.slice(0, 200))
-          lastReason = res.status === 429 ? 'rate_limited' : 'http_error'
-          continue
-        }
-        const json = await res.json().catch(() => null) as { data?: { pagination?: { total_count?: number } } } | null
-        const totalCount = json?.data?.pagination?.total_count
-        if (typeof totalCount === 'number' && Number.isFinite(totalCount)) return { count: totalCount, reason: 'ok' }
-        lastReason = 'no_data'
-      } catch (err) {
-        lastReason = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError') ? 'timeout' : 'http_error'
-      }
-    }
-    return { count: null, reason: lastReason, httpStatus: lastStatus, errorBody: lastBody }
-  }
-  let result = await attempt()
-  if (result.count == null) {
-    await new Promise(resolve => setTimeout(resolve, 300))
-    result = await attempt()
-  }
-  // Cache negative/failed lookups too (shorter-lived) so a rate-limited burst doesn't get re-tried
-  // on every candidate on the very next refresh, compounding the same rate-limit problem.
-  holderCountCache.set(key, { count: result.count, reason: result.reason, expiresAt: Date.now() + (result.count != null ? HOLDER_COUNT_CACHE_TTL_MS : 60_000) })
-  return result
-}
+// SHARED-HOLDER-COUNT-FETCH, DISCLOSED (reported: the Base Radar drawer's Holders section unreliable
+// per-token — traced to it relying on Token Scanner's much heavier internal resolver, off-limits to
+// modify. Extracted this route's own already-proven-reliable holder-COUNT fetch into
+// lib/server/goldrushHolderCount.ts so app/api/base-radar/enrichment/route.ts can use the identical
+// logic as a fallback, without touching Token Scanner's engine at all — see that file's header
+// comment for the full rationale.
+const fetchBaseHolderCount = fetchGoldRushHolderCount
 
 // TOKEN-AGE SIGNAL RETIRED, DISCLOSED (explicit product reset: "Base Radar deterministic valuation
 // band only" — no soft caps, no maybe logic). This fuzzy async signal (fetchBaseTokenAgeDays, an

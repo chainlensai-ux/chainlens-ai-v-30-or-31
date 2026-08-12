@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { POST as tokenScannerPost } from '@/app/api/token/route'
 import { reconcileBaseRadarLp } from '@/lib/server/baseRadarLpReconciliation'
 import { getRadarValuationBasis, resolveBaseRadarMarketCap } from '@/lib/baseRadarValuation'
+import { fetchGoldRushHolderCount } from '@/lib/server/goldrushHolderCount'
 
 type ChainKey = 'base' | 'eth'
 type SectionKey = 'market' | 'lp' | 'holders' | 'deployer' | 'security' | 'socials'
@@ -258,7 +259,7 @@ function observedPoolFields(scan: Record<string, any>) {
   return { observedPoolPresent, observedPoolCount, poolCountStatus }
 }
 
-function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract: string, debug = false): Record<string, unknown> {
+function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract: string, debug = false, fallbackHolderCount: number | null = null): Record<string, unknown> {
   const holderDistribution = scan.holderDistribution ?? {}
   const holderResolver = scan.holderResolver ?? {}
   const holderRows = Array.isArray(holderDistribution.topHolders)
@@ -266,7 +267,14 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
     : Array.isArray(holderResolver.holders)
       ? holderResolver.holders
       : []
-  const holderCount = finiteNumber(holderDistribution.holderCount) ?? finiteNumber(holderResolver.holderCount) ?? (holderRows.length > 0 ? holderRows.length : null)
+  // GOLDRUSH-HOLDER-COUNT-FALLBACK, DISCLOSED (reported: the drawer's "Holders" section unreliable
+  // for many tokens — Token Scanner's own resolver (holderDistribution/holderResolver) sometimes
+  // comes back with neither a count nor rows). fallbackHolderCount is a real, independently-fetched
+  // GoldRush count (see scanToken below) — used ONLY when Token Scanner's own resolver genuinely has
+  // nothing, never overriding a real value it DID find. Concentration (top1/10/20) still legitimately
+  // needs Token Scanner's full holder-row pull this fallback doesn't provide — that stays honestly
+  // "unavailable" exactly as already designed, this only makes the COUNT itself reliable.
+  const holderCount = finiteNumber(holderDistribution.holderCount) ?? finiteNumber(holderResolver.holderCount) ?? (holderRows.length > 0 ? holderRows.length : null) ?? fallbackHolderCount
   const clusterMap = scan.devIntel?.clusterMap ?? scan.clusterMap ?? null
   const clusterEdges = Array.isArray(clusterMap?.edges) ? clusterMap.edges : []
   const clusterNodes = Array.isArray(clusterMap?.nodes) ? clusterMap.nodes : []
@@ -509,7 +517,23 @@ async function scanToken(req: Request, chain: ChainKey, contract: string, debug:
       fetchedAt: new Date().toISOString(),
     }
   }
-  return buildPublicPayload(scan, chain, contract, debug)
+  // GOLDRUSH-HOLDER-COUNT-FALLBACK, DISCLOSED: only fetched when Token Scanner's own scan genuinely
+  // has no holder count/rows at all — never an extra request on a scan that already has real data.
+  // fetchGoldRushHolderCount only supports 'base' (see that module's own header comment on why
+  // 'robinhood' isn't guessed) — this ChainKey only has 'base'/'eth' today regardless, so the check
+  // is a plain equality, not a cast.
+  const scanHolderDistribution = scan.holderDistribution ?? {}
+  const scanHolderResolver = scan.holderResolver ?? {}
+  const scanHasHolderData = finiteNumber(scanHolderDistribution.holderCount) != null
+    || finiteNumber(scanHolderResolver.holderCount) != null
+    || (Array.isArray(scanHolderDistribution.topHolders) && scanHolderDistribution.topHolders.length > 0)
+    || (Array.isArray(scanHolderResolver.holders) && scanHolderResolver.holders.length > 0)
+  let fallbackHolderCount: number | null = null
+  if (!scanHasHolderData && chain === 'base') {
+    const fallback = await fetchGoldRushHolderCount(contract, 'base')
+    fallbackHolderCount = fallback.count
+  }
+  return buildPublicPayload(scan, chain, contract, debug, fallbackHolderCount)
 }
 
 function storeCache(key: string, payload: Record<string, unknown>, now: number) {
