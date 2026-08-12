@@ -962,6 +962,7 @@ export async function GET(req: NextRequest) {
     // counters below).
     let droppedByV4Pool = 0
     let droppedByV4NoDexScreenerData = 0
+    let droppedByV4NoLiquidPair = 0
     let droppedByV4PoolMismatch = 0
     // V4-MISMATCH-SAMPLE, DISCLOSED: real addresses for a few mismatch cases, so the actual shape
     // of the disagreement is visible without needing ?debug=1 — specifically to check whether
@@ -1150,16 +1151,19 @@ export async function GET(req: NextRequest) {
         droppedByV4Pool++
         // V4-MISMATCH-DIAGNOSTIC, DISCLOSED (reported: "should be more tokens, is DexScreener even
         // working" — v4_liquidity_unverified was consistently ~30-40% of raw candidates across
-        // several live captures, high enough to question whether this is real zero-liquidity or an
-        // address-format/coverage mismatch between GeckoTerminal and DexScreener specifically for
-        // V4 pools (V4 uses a singleton PoolManager with pool-key-derived addressing, structurally
-        // different from V2/V3's per-pool contract addresses — plausible the two providers disagree
-        // on what "this pool's address" even is). Distinguishes "DexScreener has literally zero
-        // pairs for this token" (a coverage/indexing-lag question) from "DexScreener has pairs for
-        // this token but none match the specific pool GeckoTerminal found" (an address-matching
-        // question) — collapsed into one undifferentiated droppedByV4Pool counter before, with no
-        // way to tell which explanation actually dominates.
+        // several live captures). A live-captured v4MismatchSample showed pairCount:1 (DexScreener
+        // DID return a pair for the token) paired with selectedPairAddress: null on every sample —
+        // that combination is NOT an address mismatch (mismatch requires a pair to have actually been
+        // SELECTED, i.e. sortedPairCount > 0). It means the one raw pair DexScreener returned got
+        // filtered out entirely before selection even ran, by selectDexScreenerMarketCapRescuePair's
+        // own chain-match + positive-liquidity filter (lib/baseRadarValuation.ts) — either DexScreener
+        // reports a different chain id for that pair than expected, or reports its liquidity as
+        // zero/unreported. sortedPairCount (added to DexScreenerMarketCapRescueResult specifically to
+        // resolve this) distinguishes "no pairs survived the chain/liquidity filter" (a coverage/
+        // data-quality question, not an addressing bug) from a genuine "a usable pair existed but
+        // wasn't the specific pool GeckoTerminal found" address mismatch.
         if (!rescue || rescue.pairCount === 0) droppedByV4NoDexScreenerData++
+        else if (rescue.sortedPairCount === 0) droppedByV4NoLiquidPair++
         else if (!rescueMatchesThisPool) {
           droppedByV4PoolMismatch++
           if (v4MismatchSample.length < 8) {
@@ -1635,6 +1639,7 @@ export async function GET(req: NextRequest) {
         established_token_excluded: droppedByEstablishedToken,
         v4_liquidity_unverified: droppedByV4Pool,
         v4_no_dexscreener_data: droppedByV4NoDexScreenerData,
+        v4_no_liquid_pair: droppedByV4NoLiquidPair,
         v4_pool_address_mismatch: droppedByV4PoolMismatch,
         liquidity_below_minimum: droppedByAbsoluteLiquidityFloor + droppedByLiquidityFloorSpecifically,
         dead_volume_excluded: droppedByDeadVolumeFloor,
@@ -1712,6 +1717,7 @@ export async function GET(req: NextRequest) {
         established_token_excluded: droppedByEstablishedToken,
         v4_pool_excluded: droppedByV4Pool,
         v4_no_dexscreener_data: droppedByV4NoDexScreenerData,
+        v4_no_liquid_pair: droppedByV4NoLiquidPair,
         v4_pool_address_mismatch: droppedByV4PoolMismatch,
         liquidity_below_minimum: droppedByAbsoluteLiquidityFloor + droppedByLiquidityFloorSpecifically,
         dead_volume_excluded: droppedByDeadVolumeFloor,

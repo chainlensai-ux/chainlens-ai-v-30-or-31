@@ -53,6 +53,14 @@ export interface DexScreenerMarketCapRescueResult {
   marketCapStatus: 'verified' | 'unavailable'
   marketCapFieldPath: string | null
   pairCount: number
+  // V4-MISMATCH-DIAGNOSIS, DISCLOSED: pairCount is the RAW pair count DexScreener returned, before
+  // the chain-match + positive-liquidity filter this function applies. A raw pair existing
+  // (pairCount > 0) does NOT mean it was usable — sortedPairCount is the count AFTER that filter, so
+  // callers can tell "DexScreener had pairs but none had verifiable liquidity/matched our chain"
+  // (sortedPairCount === 0) apart from "a usable pair existed but wasn't our specific pool"
+  // (sortedPairCount > 0, selectedPairAddress !== primaryPoolAddress) — these were previously
+  // indistinguishable and both got selectedPairAddress: null.
+  sortedPairCount: number
   selectedPairAddress: string | null
   selectedDexId: string | null
   selectedLiquidityUsd: number | null
@@ -141,6 +149,7 @@ export function selectDexScreenerMarketCapRescuePair(input: {
           marketCapStatus: 'verified',
           marketCapFieldPath: candidate.path,
           pairCount: input.pairs.length,
+          sortedPairCount: sorted.length,
           selectedPairAddress: pairAddress,
           selectedDexId: typeof pair.dexId === 'string' ? pair.dexId : null,
           selectedLiquidityUsd: getPairLiquidityUsd(pair),
@@ -156,6 +165,7 @@ export function selectDexScreenerMarketCapRescuePair(input: {
     marketCapStatus: 'unavailable',
     marketCapFieldPath: null,
     pairCount: input.pairs.length,
+    sortedPairCount: sorted.length,
     selectedPairAddress: sorted.length ? getPairAddress(sorted[0]) : null,
     selectedDexId: sorted.length && typeof sorted[0].dexId === 'string' ? sorted[0].dexId : null,
     selectedLiquidityUsd: sorted.length ? getPairLiquidityUsd(sorted[0]) : null,
