@@ -1431,8 +1431,20 @@ export async function GET(req: NextRequest) {
     // poll (this client's 120s interval, or another client's) makes a real attempt instead of
     // echoing the outage back for the rest of the window. A genuinely quiet-but-working feed
     // (sources succeeded, filters just found nothing) still caches normally.
+    // SHORT-TTL-FOR-EMPTY-GATE-RESULT FIX, DISCLOSED (reported: "refresh 2 times and it stays no
+    // tokens" — sources succeeded, but the $85K/100-holder/liquidity gates happened to filter down
+    // to 0 displayed tokens that one cycle, e.g. a volatile candidate's valuation briefly dipping
+    // below $85K). That 0-token result was caching for the FULL 30-100s TTL like any other real
+    // result, so every manual refresh clicked within that window kept hitting the same stale-empty
+    // cache entry even after the underlying market recovered a few seconds later, making a brief
+    // real dip look like a stuck outage. A 0-token result (sources succeeded, gates just found
+    // nothing this cycle) now gets a much shorter cache life so the next refresh gets a real
+    // re-check instead of an echo — a genuinely quiet feed still won't flicker on every millisecond,
+    // but it also can't get amplified into feeling stuck for a full 30-100s.
+    const EMPTY_RESULT_CACHE_TTL_MS = 5 * 1000
     if (sourcesSucceeded > 0) {
-      radarPayloadCache.set(preferredCacheKey, { cachedAt: Date.now(), ttlMs: shallowMode ? RADAR_SHALLOW_CACHE_TTL_MS : RADAR_FULL_CACHE_TTL_MS, payload: { ...payload, _debug: debugPayload } })
+      const ttlMs = tokens.length > 0 ? (shallowMode ? RADAR_SHALLOW_CACHE_TTL_MS : RADAR_FULL_CACHE_TTL_MS) : EMPTY_RESULT_CACHE_TTL_MS
+      radarPayloadCache.set(preferredCacheKey, { cachedAt: Date.now(), ttlMs, payload: { ...payload, _debug: debugPayload } })
     }
     // SERVE-STALE-ON-TOTAL-FAILURE FIX, DISCLOSED (reported: feed intermittently flips to "0
     // tokens tracked" / "no strong radar candidates" between otherwise-normal refreshes): the fix
