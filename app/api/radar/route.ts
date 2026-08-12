@@ -598,9 +598,17 @@ export async function GET(req: NextRequest) {
   // provider, no new API key/vendor, just a third listing ordering that surfaces candidates the
   // other two structurally can't. Kept to 4 pages (matching trending's page count) to stay well
   // under the rate-limit burst size that caused the earlier 429 incident.
-  const NEW_POOLS_PAGES_PER_REQUEST = 10
-  const TRENDING_PAGES_PER_REQUEST = 4
-  const VOLUME_POOLS_PAGES_PER_REQUEST = 4
+  // PAGE-COUNT REDUCED 18 -> 8 TOTAL, DISCLOSED (explicitly requested, live-confirmed pattern across
+  // 2 separate captures on 2 separate refreshes: pages 1-6 succeeded both times, every page from #7
+  // onward got a real HTTP 429 both times — not random flakiness, a consistent budget boundary. The
+  // wave-pacing/backoff fixes reduced how OFTEN this happens but didn't eliminate it, because the
+  // total request count (18) still exceeds whatever GeckoTerminal's real per-window budget is.
+  // Trading raw discovery depth for reliability: fewer total requests per cycle, comfortably inside
+  // the empirically-observed ~6-request budget for the first wave, so a cycle is far less likely to
+  // need a second/third wave that gets rate-limited at all.
+  const NEW_POOLS_PAGES_PER_REQUEST = 4
+  const TRENDING_PAGES_PER_REQUEST = 2
+  const VOLUME_POOLS_PAGES_PER_REQUEST = 2
   const newPoolsStartPage = (radarPage - 1) * NEW_POOLS_PAGES_PER_REQUEST + 1
   const trendingStartPage = (radarPage - 1) * TRENDING_PAGES_PER_REQUEST + 1
   const volumePoolsStartPage = (radarPage - 1) * VOLUME_POOLS_PAGES_PER_REQUEST + 1
@@ -637,12 +645,23 @@ export async function GET(req: NextRequest) {
   // request burst the pacing/backoff fixes above exist to control — "no uncontrolled provider
   // spam" per the hard limit.
   const DEXSCREENER_BOOST_DISCOVERY_CAP = 4
+  // BOOST-AUDIT-GAP FIX, DISCLOSED (self-caught: reported "dexscreener should be working" —
+  // investigating found the original comment here claiming a boost-fetch failure "is audited like
+  // any other source via failedPages" was simply false. If the fetch failed, threw, or found 0 Base
+  // tokens, boostedBaseTokens just stayed empty and NOTHING was ever recorded — no source key, no
+  // failedPages entry, nothing — so there was never any way to tell "DexScreener boosts genuinely
+  // had 0 Base tokens right now" apart from "the request silently failed." dexScreenerBoostStatus
+  // now captures the real outcome explicitly, surfaced on baseRadarDiscoverySourceAudit below.
+  let dexScreenerBoostStatus: 'ok' | 'http_error' | 'fetch_failed' | 'no_base_tokens_found' = 'fetch_failed'
+  let dexScreenerBoostHttpStatus: number | null = null
+  let dexScreenerBoostedTokensFound = 0
   try {
     const boostAc = new AbortController()
     const boostTid = setTimeout(() => boostAc.abort(), 5000)
     const boostedBaseTokens: string[] = []
     try {
       const boostRes = await fetch('https://api.dexscreener.com/token-boosts/latest/v1', { headers: { Accept: 'application/json' }, cache: 'no-store', signal: boostAc.signal })
+      dexScreenerBoostHttpStatus = boostRes.status
       if (boostRes.ok) {
         const boostJson = await boostRes.json().catch(() => null)
         const boostList = Array.isArray(boostJson) ? boostJson as Record<string, unknown>[] : []
@@ -656,8 +675,12 @@ export async function GET(req: NextRequest) {
           }
           if (boostedBaseTokens.length >= DEXSCREENER_BOOST_DISCOVERY_CAP) break
         }
+        dexScreenerBoostStatus = boostedBaseTokens.length > 0 ? 'ok' : 'no_base_tokens_found'
+      } else {
+        dexScreenerBoostStatus = 'http_error'
       }
     } finally { clearTimeout(boostTid) }
+    dexScreenerBoostedTokensFound = boostedBaseTokens.length
     boostedBaseTokens.forEach((address, i) => {
       sourceSpecs.push({
         key: `dex_boost_p${i}`,
@@ -667,8 +690,8 @@ export async function GET(req: NextRequest) {
       })
     })
   } catch {
-    // Best-effort — the boost-discovery step failing never affects the 3 primary sources above;
-    // it's audited like any other source via failedPages, never silently retried elsewhere.
+    dexScreenerBoostStatus = 'fetch_failed'
+    // Best-effort — the boost-discovery step failing never affects the 3 primary sources above.
   }
   const sourceCounts: Record<string, number> = {}
   let sourcesSucceeded = 0
@@ -1623,6 +1646,9 @@ export async function GET(req: NextRequest) {
                 : 'mixed/unclassified fetch failures — see failedPages for exact per-page detail',
       cacheHit: false,
       fallbackUsed,
+      dexScreenerBoostStatus,
+      dexScreenerBoostHttpStatus,
+      dexScreenerBoostedTokensFound,
     }
 
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
