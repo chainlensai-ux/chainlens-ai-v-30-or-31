@@ -279,12 +279,14 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   // ─── No accidental pre-filter slice/top-N cap ahead of the valuation/holder gates ────────────
   // The only small-number .slice(0, N) calls in this file must be for things that run AFTER
   // filtering (Clark AI verdicts on the top 5 already-final tokens, the debug nearMissSample log
-  // cap) or on data that was never part of the candidate/gate pipeline at all (the WHY-NO-BASE-
-  // TOKENS diagnostic's small sample of DexScreener's raw external list, added to investigate why
-  // it never has Base entries — sampling 5 raw items for visibility, not filtering candidates) —
-  // never a hidden cap on the raw/ranked candidate pool itself before the gates run.
+  // cap), on data that was never part of the candidate/gate pipeline at all (the WHY-NO-BASE-TOKENS
+  // diagnostic's 5-item sample of DexScreener's raw external list, and todayKeyUTC's .slice(0, 10)
+  // extracting a YYYY-MM-DD calendar date string — not a candidate count at all) — never a hidden
+  // cap on the raw/ranked candidate pool itself before the gates run. (The real, intentional
+  // DAILY_POOL_MAX=10 per-day display cap is asserted directly above by name/identifier, not
+  // counted here, since it's an explicit named constant, not a bare numeric literal.)
   const smallSlices = [...routeSource.matchAll(/\.slice\(0,\s*(\d+)\)/g)].map(m => Number(m[1])).filter(n => n <= 30)
-  assert.ok(smallSlices.length <= 3, `found ${smallSlices.length} small-N .slice(0, <=30) calls (expected at most 3: the top-5 Clark verdict slice, the 30-entry nearMissSample log cap, and the 5-item DexScreener raw-sample diagnostic) — a new one could be an accidental pre-filter cap: ${smallSlices.join(', ')}`)
+  assert.ok(smallSlices.length <= 4, `found ${smallSlices.length} small-N .slice(0, <=30) calls (expected at most 4: the top-5 Clark verdict slice, the 30-entry nearMissSample log cap, the 5-item DexScreener raw-sample diagnostic, and todayKeyUTC's 10-char date-string slice) — a new one could be an accidental pre-filter cap: ${smallSlices.join(', ')}`)
 
   // ─── Cache key includes the gate thresholds (stale-cache-after-threshold-change fix) ─────────
   assert.ok(routeSource.includes('MAIN_FEED_MIN_VALUATION_USD') && /cacheKeyBase\s*=[\s\S]{0,400}MAIN_FEED_MIN_VALUATION_USD/.test(routeSource), 'the cache key must fold in MAIN_FEED_MIN_VALUATION_USD so a threshold change can never serve a stale payload computed under the old gate')
@@ -371,15 +373,19 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   assert.ok(routeSource.includes('sourceBackoffSkippedCount') && routeSource.includes('sourceBackoffTtlMs'), 'backoff-skipped pages and the backoff TTL must both be surfaced in the audit')
   assert.ok(/DISCOVERY_FAILURE_BACKOFF_MS = 20_000/.test(routeSource), 'the backoff window must be short enough for a realistic refresh gap to actually retry (shortened from 45s to 20s per live report of prolonged degradation)')
 
-  // ─── Sticky feed: a legitimately-verified token must not vanish just because one refresh cycle
-  // didn't rediscover it, but a carried-over token must never be indistinguishable from a freshly
-  // re-checked one ────────────────────────────────────────────────────────────────────────────────
-  assert.ok(routeSource.includes('getStickyFeed') && routeSource.includes('setStickyFeed'), 'sticky-feed read/write helpers must exist')
-  assert.ok(/STICKY_WINDOW_MS = 30 \* 60_000/.test(routeSource), 'the sticky window must have a real, bounded expiry — not carry a token forever')
-  assert.ok(routeSource.includes('Shown from a previous cycle — not re-verified this refresh'), 'a carried-over token must be explicitly labeled as such, never silently presented as freshly re-verified')
-  assert.ok(/nowTs - e\.verifiedAt <= STICKY_WINDOW_MS/.test(routeSource), 'sticky entries must be filtered against the window before being eligible to carry over')
-  assert.ok(/slotsAvailable = Math\.max\(0, DISPLAY_TARGET - tokens\.length\)/.test(routeSource), 'sticky carry-over must only backfill OPEN display slots, never push out or outnumber fresh candidates')
-  assert.ok(redisClientSource.includes('async get') && redisClientSource.includes('async set'), 'sticky feed must be backed by the shared Redis client so it works cross-instance, not just per-process memory')
+  // ─── Daily pool: a legitimately-verified token must not vanish just because one refresh cycle
+  // didn't rediscover it, capped at a real per-day maximum, and a carried-over token must never be
+  // indistinguishable from a freshly re-checked one ──────────────────────────────────────────────
+  assert.ok(routeSource.includes('getDailyPool') && routeSource.includes('setDailyPool'), 'daily-pool read/write helpers must exist')
+  assert.ok(/DAILY_POOL_MAX = 10/.test(routeSource), 'the daily pool must have a real, explicit per-day cap')
+  assert.ok(/todayKeyUTC/.test(routeSource), 'the pool must be keyed by a real calendar-day boundary so it resets, not carry forever')
+  assert.ok(routeSource.includes('Shown from earlier today — not re-verified this refresh'), 'a carried-over token must be explicitly labeled as such, never silently presented as freshly re-verified')
+  assert.ok(/openSlots = Math\.max\(0, DAILY_POOL_MAX - refreshedPool\.length\)/.test(routeSource), 'new admissions must only fill OPEN pool slots — once the per-day cap is reached, no more are added today')
+  assert.ok(!/DAILY_POOL_MAX \+\+|refreshedPool\.length > DAILY_POOL_MAX/.test(routeSource), 'nothing should try to exceed the per-day cap')
+  // Do NOT rely on the daily-pool key including the current radarPage — the pool must be ONE shared
+  // reservoir per plan/threshold combo across every Load More page, not fragmented per page.
+  assert.ok(routeSource.includes('dailyPoolCacheKey') && !/dailyPoolCacheKey = `plan:.*page:\$\{radarPage\}/.test(routeSource), 'the daily-pool cache key must exclude radarPage — one shared pool across all pages, not one per page')
+  assert.ok(redisClientSource.includes('async get') && redisClientSource.includes('async set'), 'the daily pool must be backed by the shared Redis client so it works cross-instance, not just per-process memory')
 }
 
 console.log('test-base-radar-main-feed-gate.mjs: all assertions passed')

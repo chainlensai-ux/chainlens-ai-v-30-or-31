@@ -225,46 +225,46 @@ async function setDiscoveryBackoff(key: string, until: number): Promise<void> {
   }
 }
 
-// STICKY-FEED, DISCLOSED (explicitly requested: "tokens should never just randomly disappear even
-// from another refresh" — a real, previously-reported problem this whole session has kept surfacing:
-// GeckoTerminal's rate limit means raw discovery is genuinely different from one cycle to the next,
-// so a token that legitimately cleared every gate a minute ago can vanish from the NEXT response
-// purely because that cycle's degraded/rate-limited discovery didn't happen to rediscover it — not
-// because anything about the token actually changed. That's a real UX defect, not honest behavior:
-// disappearing reads as "this token failed a check," when the truth is "we didn't look this time."
-// Backed by the same shared Redis client as the discovery backoff (cross-instance, matching this
-// codebase's own pattern) so this works consistently regardless of which serverless instance serves
-// a given request. Fail-open: any Redis problem just means stickiness doesn't apply this cycle,
-// never blocks or breaks the normal fresh-computation path.
+// DAILY-POOL, DISCLOSED (explicitly requested, superseding the earlier 30-minute sticky-feed with a
+// clearer, day-scoped spec: "max 10 tokens found a day... once it loads it will always be there for
+// the 24 hours in the day, then the next day we search for new ones"). Root problem this and the
+// prior sticky-feed both address is the same: GeckoTerminal's rate limit means raw discovery
+// genuinely differs cycle to cycle, so a token that legitimately cleared every gate can vanish from
+// the very next response purely because that cycle didn't happen to rediscover it — not because
+// anything about the token changed. This version's semantics are simpler and stronger: once a real
+// candidate is admitted to TODAY's pool, it stays displayed for the rest of the UTC calendar day no
+// matter what any single cycle's discovery finds, up to a hard cap of DAILY_POOL_MAX per day; at UTC
+// day rollover the pool key changes and a fresh, empty pool starts accumulating for the new day.
+// Backed by the same shared Redis client as the discovery backoff/rate-limit fixes (cross-instance,
+// same codebase pattern) so every user sees the same day's pool. Fail-open: any Redis problem just
+// means today's pool doesn't apply this cycle, never blocks the normal fresh-computation path.
 //
-// Honesty boundary: a carried-over token is NEVER presented as freshly re-verified. It keeps
-// exactly the evidence/values from when it WAS actually verified, gets an explicit
-// 'Shown from a previous cycle — not re-verified this refresh' evidence gap so this is never
-// silently indistinguishable from a fresh pass, and ages out (STICKY_WINDOW_MS) so staleness has a
-// hard ceiling — this is "don't discard verified-recently-enough evidence just because this one
-// request didn't redo the work," not "keep showing things forever" or "fake a re-check."
-// WIDENED-FOR-SMOOTHING, DISCLOSED (explicitly requested: widen the sticky reservoir further —
-// under real public multi-user traffic, EVERY user's successful cycle feeds this same shared
-// reservoir, so a bigger/longer-lived pool means more real variety survives a thin discovery
-// cycle for whoever hits it next, not staler data — the honesty boundary above is unchanged, this
-// only raises how much verified-recently-enough evidence can accumulate before aging out).
-const STICKY_WINDOW_MS = 30 * 60_000
-const STICKY_FEED_REDIS_PREFIX = 'radar:sticky-feed:'
-const STICKY_FEED_MAX_ENTRIES = DISPLAY_TARGET * 5
-interface StickyFeedEntry { token: RadarToken; verifiedAt: number }
-async function getStickyFeed(key: string): Promise<StickyFeedEntry[]> {
+// Honesty boundary, unchanged from the sticky-feed this replaces: a pool member is refreshed with
+// real fresh evidence whenever this cycle's discovery actually re-finds it (its numbers stay
+// accurate, not frozen at admission time), but when a cycle DOESN'T rediscover it, the last real
+// values are kept and it's explicitly labeled 'Shown from earlier today — not re-verified this
+// refresh' — never silently presented as freshly re-checked just because it's still on screen.
+const DAILY_POOL_MAX = 10
+const DAILY_POOL_REDIS_PREFIX = 'radar:daily-pool:'
+function todayKeyUTC(): string {
+  return new Date().toISOString().slice(0, 10) // YYYY-MM-DD, UTC — the pool's natural reset boundary
+}
+interface DailyPoolEntry { token: RadarToken; addedAt: number; verifiedAt: number }
+async function getDailyPool(key: string): Promise<DailyPoolEntry[]> {
   if (!redisConfigured()) return []
   try {
-    const val = await redis.get<StickyFeedEntry[]>(`${STICKY_FEED_REDIS_PREFIX}${key}`)
+    const val = await redis.get<DailyPoolEntry[]>(`${DAILY_POOL_REDIS_PREFIX}${key}`)
     return Array.isArray(val) ? val : []
   } catch {
     return []
   }
 }
-async function setStickyFeed(key: string, entries: StickyFeedEntry[]): Promise<void> {
+async function setDailyPool(key: string, entries: DailyPoolEntry[]): Promise<void> {
   if (!redisConfigured()) return
   try {
-    await redis.set(`${STICKY_FEED_REDIS_PREFIX}${key}`, entries.slice(0, STICKY_FEED_MAX_ENTRIES), { ex: Math.ceil(STICKY_WINDOW_MS / 1000) + 60 })
+    // 26h TTL, not 24h — a small buffer past the actual UTC day boundary so a slow/delayed write
+    // near midnight can't get evicted a moment before the day's last legitimate read of it.
+    await redis.set(`${DAILY_POOL_REDIS_PREFIX}${key}`, entries.slice(0, DAILY_POOL_MAX), { ex: 26 * 60 * 60 })
   } catch { /* best-effort */ }
 }
 const HOLDER_COUNT_CACHE_TTL_MS = 10 * 60_000
@@ -635,6 +635,13 @@ export async function GET(req: NextRequest) {
   // or a future one) can never accidentally serve a payload computed under the OLD thresholds; it's
   // simply a different cache key, so a cold miss forces a real re-run of the current pipeline.
   const cacheKeyBase = `plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:page:${radarPage}:gate:${MAIN_FEED_MIN_VALUATION_USD}:${MAIN_FEED_MAX_VALUATION_USD}:${MAIN_FEED_MIN_HOLDERS}`
+  // DAILY-POOL-KEY-EXCLUDES-PAGE, DISCLOSED: cacheKeyBase deliberately includes `page:${radarPage}`
+  // (each Load More page fetches genuinely different raw GeckoTerminal pages, so it needs its own
+  // burst-dedup cache entry) — but the daily pool must be ONE shared pool per plan/threshold
+  // combination across every page number and every user, not fragmented per page. Using cacheKeyBase
+  // directly for the daily pool would silently split today's pool into up to 5 disconnected pools
+  // (one per Load More page), defeating the whole point of a single shared day-scoped reservoir.
+  const dailyPoolCacheKey = `plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:gate:${MAIN_FEED_MIN_VALUATION_USD}:${MAIN_FEED_MAX_VALUATION_USD}:${MAIN_FEED_MIN_HOLDERS}`
   const fullCacheKey = `${cacheKeyBase}:mode:full`
   const shallowCacheKey = `${cacheKeyBase}:mode:shallow`
   const preferredCacheKey = requestedMode === 'full' ? fullCacheKey : shallowCacheKey
@@ -1711,46 +1718,62 @@ export async function GET(req: NextRequest) {
       .sort((a, b) => a.ageMinutes - b.ageMinutes)
       .map(toRadarToken)
 
-    // STICKY-FEED MERGE, DISCLOSED: see the header comment near getStickyFeed's declaration for the
-    // full rationale. Backfills open display slots with recently-verified tokens this cycle's
-    // discovery didn't happen to rediscover, explicitly marked as carried-over — never presented as
-    // freshly re-checked — and ages them out after STICKY_WINDOW_MS. Also refreshes the store with
-    // this cycle's real results so future cycles have something to draw from, even on a cycle where
-    // nothing needed to be carried.
-    let stickyCarriedOverCount = 0
+    // DAILY-POOL MERGE, DISCLOSED: see the header comment near getDailyPool's declaration for the
+    // full day-scoped rationale. Every fresh candidate this cycle either refreshes its existing spot
+    // in today's pool (real updated evidence/values) or, if today's pool has an open slot (under
+    // DAILY_POOL_MAX), gets newly admitted. Once a token is in today's pool it stays displayed for
+    // the rest of the UTC day regardless of whether later cycles rediscover it — a full pool means
+    // no MORE admissions today, but nothing already admitted is ever evicted early. Resets naturally
+    // at the next UTC day's pool key.
+    let dailyPoolCarriedOverCount = 0
+    let dailyPoolSize = 0
     {
       const nowTs = Date.now()
-      const freshContracts = new Set(tokens.map(t => t.contract.toLowerCase()))
-      const stickyEntries = await getStickyFeed(cacheKeyBase)
-      const stillFresh = stickyEntries.filter(e => nowTs - e.verifiedAt <= STICKY_WINDOW_MS)
-      const carryCandidates = stillFresh.filter(e => !freshContracts.has(e.token.contract.toLowerCase()))
-      const slotsAvailable = Math.max(0, DISPLAY_TARGET - tokens.length)
-      const carried = carryCandidates.slice(0, slotsAvailable).map(e => ({
-        ...e.token,
-        ageMinutes: e.token.ageMinutes + Math.floor((nowTs - e.verifiedAt) / 60_000),
-        evidenceGaps: Array.from(new Set([...(e.token.evidenceGaps ?? []), 'Shown from a previous cycle — not re-verified this refresh (still within the recent verification window)'])),
-      }))
-      stickyCarriedOverCount = carried.length
-      tokens = [...tokens, ...carried].sort((a, b) => a.ageMinutes - b.ageMinutes)
+      const dailyPoolKey = `${dailyPoolCacheKey}:${todayKeyUTC()}`
+      const freshByContract = new Map(tokens.map(t => [t.contract.toLowerCase(), t]))
+      const poolEntries = await getDailyPool(dailyPoolKey)
 
-      // Fresh candidates always refresh their verifiedAt; sticky entries not shown fresh this cycle
-      // (whether carried into the display or just held in reserve past the display cap) KEEP their
-      // original verifiedAt — the staleness window is measured from when a token was actually last
-      // verified, never reset just by being shown/held again.
-      const freshEntries: StickyFeedEntry[] = scored.map(t => ({ token: toRadarToken(t), verifiedAt: nowTs }))
-      const keptStale = stillFresh.filter(e => !freshContracts.has(e.token.contract.toLowerCase()))
-      const deduped = new Map<string, StickyFeedEntry>()
-      for (const e of [...freshEntries, ...keptStale]) {
-        if (!deduped.has(e.token.contract.toLowerCase())) deduped.set(e.token.contract.toLowerCase(), e)
-      }
-      await setStickyFeed(cacheKeyBase, Array.from(deduped.values()))
+      // Refresh existing pool members with real fresh values wherever this cycle rediscovered them;
+      // otherwise keep their last known-good token/verifiedAt exactly as stored.
+      const refreshedPool: DailyPoolEntry[] = poolEntries.map(e => {
+        const fresh = freshByContract.get(e.token.contract.toLowerCase())
+        return fresh ? { token: fresh, addedAt: e.addedAt, verifiedAt: nowTs } : e
+      })
+      const poolContracts = new Set(refreshedPool.map(e => e.token.contract.toLowerCase()))
+
+      // Admit brand-new candidates into any open slots, in this cycle's ranked order — once
+      // DAILY_POOL_MAX is reached for today, later candidates simply don't get a slot today.
+      const openSlots = Math.max(0, DAILY_POOL_MAX - refreshedPool.length)
+      const newlyAdmitted: DailyPoolEntry[] = tokens
+        .filter(t => !poolContracts.has(t.contract.toLowerCase()))
+        .slice(0, openSlots)
+        .map(t => ({ token: t, addedAt: nowTs, verifiedAt: nowTs }))
+
+      const finalPool = [...refreshedPool, ...newlyAdmitted]
+      dailyPoolSize = finalPool.length
+      await setDailyPool(dailyPoolKey, finalPool)
+
+      // Display today's WHOLE pool — not just backfilling gaps — since the pool now defines "today's
+      // feed": fresh values where rediscovered this cycle, last known-good values (with an explicit
+      // not-re-verified evidence gap) for pool members this cycle's discovery didn't happen to find.
+      dailyPoolCarriedOverCount = finalPool.filter(e => !freshByContract.has(e.token.contract.toLowerCase())).length
+      tokens = finalPool
+        .map(e => {
+          if (freshByContract.has(e.token.contract.toLowerCase())) return e.token
+          return {
+            ...e.token,
+            ageMinutes: e.token.ageMinutes + Math.floor((nowTs - e.verifiedAt) / 60_000),
+            evidenceGaps: Array.from(new Set([...(e.token.evidenceGaps ?? []), 'Shown from earlier today — not re-verified this refresh'])),
+          }
+        })
+        .sort((a, b) => a.ageMinutes - b.ageMinutes)
     }
 
-    // ESTABLISHED-DISPLAYED-COUNT, DISCLOSED: how many of the FINAL displayed tokens (fresh + sticky-
-    // carried) are labeled Established (above $2M) — distinct from aboveEarlyRangeCount (declared
-    // earlier, during the per-candidate loop), which counts every above-$2M candidate that reached
-    // that stage, before the holder check/ranking cap could still drop some of them same as any
-    // other candidate.
+    // ESTABLISHED-DISPLAYED-COUNT, DISCLOSED: how many of the FINAL displayed tokens (today's full
+    // daily pool, fresh + carried) are labeled Established (above $2M) — distinct from
+    // aboveEarlyRangeCount (declared earlier, during the per-candidate loop), which counts every
+    // above-$2M candidate that reached that stage, before the holder check/ranking cap could still
+    // drop some of them same as any other candidate.
     const establishedDisplayedCount = tokens.filter(t => t.isEstablished).length
 
     // 5. Stats — counts reflect the final adjusted risk labels (post-scoreRisk),
@@ -2009,7 +2032,7 @@ export async function GET(req: NextRequest) {
     // so a real DevTools Network capture — the one method that has reliably worked all session —
     // never showed them either. Attaching both directly to the normal, always-returned payload
     // (not gated behind debug=1) so the exact same capture method already in use surfaces them.
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, stickyCarriedOverCount, discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, dailyPoolCarriedOverCount, dailyPoolSize, dailyPoolMax: DAILY_POOL_MAX, discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,
