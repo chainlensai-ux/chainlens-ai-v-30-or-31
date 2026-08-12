@@ -1,86 +1,120 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '../lib/baseRadarMainFeedGate.ts'
+import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationMinGate, passesMainFeedValuationMaxGate, passesMainFeedValuationGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '../lib/baseRadarMainFeedGate.ts'
 
-assert.equal(MAIN_FEED_MIN_VALUATION_USD, 85_000)
-assert.equal(MAIN_FEED_MIN_HOLDERS, 100)
+assert.equal(MAIN_FEED_MIN_VALUATION_USD, 80_000)
+assert.equal(MAIN_FEED_MAX_VALUATION_USD, 2_000_000)
+assert.equal(MAIN_FEED_MIN_HOLDERS, 30)
 
-// ─── Valuation gate ─────────────────────────────────────────────────────────
-// market cap $84,999 excluded
-assert.equal(passesMainFeedValuationGate(84_999), false)
-// market cap $85,000 included (boundary — inclusive, not exclusive)
-assert.equal(passesMainFeedValuationGate(85_000), true)
-assert.equal(passesMainFeedValuationGate(100_000), true)
-// valuation unavailable (null/undefined) excluded — never bypasses the gate
+// ─── Valuation band [$80K, $2M], deterministic, both ends inclusive ────────────────────────────
+// $79,999 excluded
+assert.equal(passesMainFeedValuationGate(79_999), false)
+// $80,000 included if all other gates pass (this function IS the valuation half of "all other gates")
+assert.equal(passesMainFeedValuationGate(80_000), true)
+assert.equal(passesMainFeedValuationMinGate(80_000), true)
+// $2,000,000 included if all other gates pass
+assert.equal(passesMainFeedValuationGate(2_000_000), true)
+assert.equal(passesMainFeedValuationMaxGate(2_000_000), true)
+// $2,000,001 excluded from default New Radar
+assert.equal(passesMainFeedValuationGate(2_000_001), false)
+assert.equal(passesMainFeedValuationMaxGate(2_000_001), false)
+// mid-band value passes both halves
+assert.equal(passesMainFeedValuationGate(500_000), true)
+// valuation unavailable (null/undefined/NaN) excluded — never bypasses the gate
 assert.equal(passesMainFeedValuationGate(null), false)
 assert.equal(passesMainFeedValuationGate(undefined), false)
 assert.equal(passesMainFeedValuationGate(NaN), false)
 
 // ─── Holder gate ────────────────────────────────────────────────────────────
-// holders 99 excluded
-assert.equal(passesMainFeedHolderGate(99), false)
-// holders 100 included (boundary)
-assert.equal(passesMainFeedHolderGate(100), true)
+// holders 29 excluded
+assert.equal(passesMainFeedHolderGate(29), false)
+// holders 30 included if all other gates pass (boundary)
+assert.equal(passesMainFeedHolderGate(30), true)
 assert.equal(passesMainFeedHolderGate(150), true)
-// holders null/N/A/open-check/unavailable must never count as passing
+// missing holder count excluded — null/undefined/NaN must never count as passing
 assert.equal(passesMainFeedHolderGate(null), false)
 assert.equal(passesMainFeedHolderGate(undefined), false)
 assert.equal(passesMainFeedHolderGate(NaN), false)
 
 // ─── FDV fallback must not be indistinguishable from a real verified market cap ────────────────
 // A real verified market cap: isRealVerifiedMarketCapValue is true.
-assert.equal(isRealVerifiedMarketCapValue('verified', 50_000), true)
+assert.equal(isRealVerifiedMarketCapValue('verified', 500_000), true)
 // FDV-derived valuation (marketCapStatus not 'verified', or marketCapUsd itself null) — this is the
 // case app/api/radar/route.ts uses to attach the "Valuation confirmed via FDV fallback" evidence
-// gap even though the candidate clears the $80K gate via FDV. Must never report as a real MC.
+// gap even though the candidate clears the valuation band via FDV. Must never report as a real MC.
 assert.equal(isRealVerifiedMarketCapValue(null, null), false)
 assert.equal(isRealVerifiedMarketCapValue('unavailable', null), false)
 assert.equal(isRealVerifiedMarketCapValue('verified', null), false)
-assert.equal(isRealVerifiedMarketCapValue(null, 50_000), false)
-// A candidate can pass the $80K valuation gate via FDV fallback (the flattened valuation.valueUsd
-// used by passesMainFeedValuationGate) while isRealVerifiedMarketCapValue is still false for it —
-// this is exactly the "FDV fallback does not bypass evidence warnings" case: the gate check and the
+assert.equal(isRealVerifiedMarketCapValue(null, 500_000), false)
+// A candidate can pass the valuation band via FDV fallback (the flattened valuation.valueUsd used
+// by passesMainFeedValuationGate) while isRealVerifiedMarketCapValue is still false for it — this
+// is exactly the "FDV fallback does not bypass evidence warnings" case: the gate check and the
 // fallback-labeling check are independent, so passing one never silently satisfies the other.
 {
-  const fdvFallbackValuationUsd = 95_000 // what getRadarValuationBasis's flattening reports for a valid FDV fallback
+  const fdvFallbackValuationUsd = 500_000 // what getRadarValuationBasis's flattening reports for a valid FDV fallback
   const rawMarketCapStatus = null // the real, pre-flattening marketCapStatus for this candidate
   const rawMarketCapUsd = null
-  assert.equal(passesMainFeedValuationGate(fdvFallbackValuationUsd), true, 'FDV-derived valuation still clears the $85K gate')
+  assert.equal(passesMainFeedValuationGate(fdvFallbackValuationUsd), true, 'FDV-derived valuation still clears the $80K-$2M band')
   assert.equal(isRealVerifiedMarketCapValue(rawMarketCapStatus, rawMarketCapUsd), false, 'but is correctly flagged as not a real verified market cap, so the fallback evidence gap still attaches')
 }
 
 // ─── Existing strong candidate still appears ───────────────────────────────
-// A token with a real verified $200K market cap and 500 holders clears every part of the gate.
+// A token with a real verified $500K market cap and 500 holders clears every part of the gate.
 {
   const marketCapStatus = 'verified'
-  const marketCapUsd = 200_000
+  const marketCapUsd = 500_000
   assert.equal(passesMainFeedValuationGate(marketCapUsd), true)
   assert.equal(passesMainFeedHolderGate(500), true)
   assert.equal(isRealVerifiedMarketCapValue(marketCapStatus, marketCapUsd), true)
 }
 
+// ─── Above-$2M established/large token is excluded from default New Radar ──────────────────────
+{
+  const marketCapStatus = 'verified'
+  const marketCapUsd = 400_000_000 // e.g. an Aerodrome-sized market cap
+  assert.equal(passesMainFeedValuationGate(marketCapUsd), false, 'a large/established-sized market cap must fail the deterministic ceiling regardless of momentum, volume, or name')
+}
+
 // ─── Holder count vs. holder concentration ─────────────────────────────────
-// holders=100 and concentration N/A: passes the holder gate (concentration is a separate concept
+// holders=30 and concentration N/A: passes the holder gate (concentration is a separate concept
 // this route never even fetches — see CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP's own header) and the
 // evidence-gap string app/api/radar/route.ts attaches to every displayed candidate exists and is
 // worded to say "unavailable", not "open check" (which would read as holder count itself missing).
-assert.equal(passesMainFeedHolderGate(100), true, 'holders=100 passes the holder gate regardless of concentration availability')
+// Concentration unavailable does not exclude a candidate that already passed the real holder gate.
+assert.equal(passesMainFeedHolderGate(30), true, 'holders=30 passes the holder gate regardless of concentration availability')
 assert.equal(typeof CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, 'string')
 assert.ok(CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP.toLowerCase().includes('concentration'))
 assert.ok(!CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP.toLowerCase().includes('open check'), 'must not read as if holder count itself is missing')
 
-// holders=null fails the holder gate
-assert.equal(passesMainFeedHolderGate(null), false)
+// ─── Liquidity below minimum excluded (combined-gate scenario) ─────────────
+// The valuation/holder gates are pure functions with no liquidity parameter — liquidity is checked
+// separately in app/api/radar/route.ts (droppedByLiquidityFloorSpecifically/droppedByAbsoluteLiquidityFloor/
+// droppedByDeadVolumeFloor, all rolled into droppedByLiquidityGate). This asserts the combined
+// real-world scenario: a candidate can clear valuation AND holders and still be correctly excluded
+// once liquidity is below minimum, by simulating the route's own three-part liquidity check.
+{
+  const minLiquidityUsd = 5_000
+  const absoluteMinLiquidityUsd = 500
+  function passesLiquidityGate(liquidityUsd, volume24h, ageMinutes) {
+    if (liquidityUsd < minLiquidityUsd) return false
+    if (liquidityUsd < absoluteMinLiquidityUsd) return false
+    const hasMeaningfulActivity = ageMinutes < 15 || volume24h >= 200 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.02)
+    return hasMeaningfulActivity
+  }
+  assert.equal(passesLiquidityGate(4_999, 1_000, 60), false, 'liquidity below the configured minimum is excluded even with valuation/holders passing')
+  assert.equal(passesLiquidityGate(10_000, 1_000, 60), true)
+  assert.equal(
+    passesLiquidityGate(10_000, 1_000, 60) && passesMainFeedValuationGate(500_000) && passesMainFeedHolderGate(30),
+    true,
+    'a candidate clearing liquidity + $80K-$2M valuation + 30 holders passes every hard rule',
+  )
+}
 
-// holders=99 fails / holders=100 passes if valuation/liquidity pass (boundary, restated together
+// holders=29 fails / holders=30 passes if valuation/liquidity pass (boundary, restated together
 // with a passing valuation to mirror the exact scenario the task describes)
-assert.equal(passesMainFeedHolderGate(99) && passesMainFeedValuationGate(90_000), false)
-assert.equal(passesMainFeedHolderGate(100) && passesMainFeedValuationGate(90_000), true)
-
-// marketCap=84,999 excluded / marketCap=85,000 included if holder/liquidity pass
-assert.equal(passesMainFeedValuationGate(84_999) && passesMainFeedHolderGate(100), false)
-assert.equal(passesMainFeedValuationGate(85_000) && passesMainFeedHolderGate(100), true)
+assert.equal(passesMainFeedHolderGate(29) && passesMainFeedValuationGate(500_000), false)
+assert.equal(passesMainFeedHolderGate(30) && passesMainFeedValuationGate(500_000), true)
 
 // ─── Holder-check budget loop (starvation fix #2) ──────────────────────────
 // shouldContinueHolderChecking IS the exact condition app/api/radar/route.ts's while-loop uses
@@ -110,13 +144,13 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: HOL
 // don't exist. This is the honest "only 1 genuinely passed" case: the loop tried everything it had.
 assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12, cursor: 12, poolSize: 12 }), false)
 
-// ─── Simulated end-to-end: valid candidate ranked 40th can still appear ────
+// ─── Valid candidate ranked lower by momentum still appears if it passes gates ─────────────────
 // Mirrors app/api/radar/route.ts's batching loop against a synthetic 50-candidate ranked pool where
 // ranks 1-39 fail the holder gate (e.g. low-holder degen tokens dominating momentum rank that day)
-// and rank 40 is a real $80K+/30-holder candidate. Proves the starvation-fix loop reaches it instead
-// of stopping at the old fixed top-20/top-30 cutoff.
+// and rank 40 is a real $80K-$2M/30-holder candidate. Proves the starvation-fix loop reaches it
+// instead of stopping at an old fixed top-20/top-30 cutoff — momentum decides ORDER, never inclusion.
 {
-  const pool = Array.from({ length: 50 }, (_, i) => ({ rank: i + 1, holderCount: i === 39 ? 100 : 5 }))
+  const pool = Array.from({ length: 50 }, (_, i) => ({ rank: i + 1, holderCount: i === 39 ? 30 : 5 }))
   let cursor = 0, attemptedCount = 0, passingCount = 0
   const checked = []
   while (shouldContinueHolderChecking({ passingCount, attemptedCount, cursor, poolSize: pool.length })) {
@@ -132,9 +166,9 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   assert.equal(passingCount, 1, 'exactly the one real candidate (rank 40) passes')
 }
 
-// ─── Feed does not starve to 1 when 5+ passing candidates exist ───────────
+// ─── Feed does not starve due to a pre-filter cap when multiple valid candidates exist ──────────
 {
-  const pool = Array.from({ length: 50 }, (_, i) => ({ rank: i + 1, holderCount: i < 6 ? 100 : 5 })) // ranks 1-6 pass
+  const pool = Array.from({ length: 50 }, (_, i) => ({ rank: i + 1, holderCount: i < 6 ? 30 : 5 })) // ranks 1-6 pass
   let cursor = 0, attemptedCount = 0, passingCount = 0
   while (shouldContinueHolderChecking({ passingCount, attemptedCount, cursor, poolSize: pool.length })) {
     const batch = pool.slice(cursor, cursor + HOLDER_CHECK_BATCH_SIZE)
@@ -149,7 +183,7 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
 
 // ─── If only 1 genuinely passes, the loop still proves it exhausted the pool/budget ────────────
 {
-  const pool = Array.from({ length: 20 }, (_, i) => ({ rank: i + 1, holderCount: i === 0 ? 100 : 5 })) // only rank 1 passes, pool is small
+  const pool = Array.from({ length: 20 }, (_, i) => ({ rank: i + 1, holderCount: i === 0 ? 30 : 5 })) // only rank 1 passes, pool is small
   let cursor = 0, attemptedCount = 0, passingCount = 0
   while (shouldContinueHolderChecking({ passingCount, attemptedCount, cursor, poolSize: pool.length })) {
     const batch = pool.slice(cursor, cursor + HOLDER_CHECK_BATCH_SIZE)
@@ -163,7 +197,7 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   assert.equal(cursor, pool.length, 'the entire (small) pool was exhausted trying to find more — 1 passing is honest, not a starved cutoff')
 }
 
-// ─── Raw candidate pool vs. display cap (starvation fix) ───────────────────
+// ─── Raw candidate pool vs. display cap (starvation fix), plus deterministic-gate audit surface ──
 // Reads the actual constants out of app/api/radar/route.ts's source (that file itself can't be
 // imported directly by a plain node script — it pulls in next/server and the Anthropic SDK, which
 // need the Next.js bundler's module resolution) to assert the real fix shipped.
@@ -174,17 +208,43 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   const rankedCandidatesCap = Number(rankedCapMatch[1])
   assert.ok(rankedCandidatesCap >= 100, `RANKED_CANDIDATES_CAP must be expanded to at least 100 (is ${rankedCandidatesCap})`)
   assert.ok(routeSource.includes('shouldContinueHolderChecking'), 'the live loop must use the same tested stopping condition, not a re-implementation')
-  // baseRadarCandidateGateAudit must exist and expose the raw-vs-filtered funnel the task asked for,
-  // so "displayed count starved by pre-filter cap" is diagnosable from a log line, not a guess.
-  for (const field of ['rawCandidatesFetched', 'rawCandidateCap', 'rankedCandidates', 'liquidityPassed', 'valuationChecked', 'valuationPassed80k', 'holderCheckAttempted', 'holderCheckSucceeded', 'holdersPassed30', 'displayedCount', 'hiddenBelow80k', 'hiddenBelow30Holders', 'hiddenMissingHolderCount', 'hiddenConcentrationUnavailable', 'holderCheckBudget', 'holderCheckBudgetExhausted', 'discoverySourceCounts', 'displayTarget']) {
+
+  // baseRadarCandidateGateAudit must exist and expose exactly the deterministic-gate audit fields
+  // requested, so "displayed count starved by pre-filter cap" is diagnosable from a log line.
+  for (const field of [
+    'rawCandidatesFetched', 'afterLiquidityGate', 'afterValuationMin80k', 'afterValuationMax2m',
+    'afterHolder30Gate', 'displayedCount', 'hiddenBelow80k', 'hiddenAbove2m', 'hiddenBelow30Holders',
+    'hiddenMissingHolderCount', 'hiddenLiquidityLow', 'hiddenValuationUnavailable',
+    'hiddenConcentrationUnavailable', 'holderCheckAttempted', 'holderCheckSucceeded',
+    'candidatePoolExhausted', 'holderCheckBudgetExhausted',
+  ]) {
     assert.ok(routeSource.includes(field), `baseRadarCandidateGateAudit must expose "${field}"`)
   }
 
   // ─── baseRadarSourceAudit must exist with the full requested schema ─────────────────────────
   assert.ok(routeSource.includes('baseRadarSourceAudit'), 'baseRadarSourceAudit must exist')
-  for (const field of ['runtimeCommitSha', 'discoverySourcesUsed', 'rawFromEachSource', 'rawTotalBeforeDedupe', 'afterDedupe', 'afterAgeWindow', 'afterLiquidityMinimum', 'afterValuationAvailable', 'afterValuation80k', 'holderCheckEligible', 'rejectionReasons']) {
+  for (const field of ['runtimeCommitSha', 'discoverySourcesUsed', 'rawFromEachSource', 'rawTotalBeforeDedupe', 'afterDedupe', 'afterAgeWindow', 'afterLiquidityMinimum', 'afterValuationAvailable', 'afterValuationMin80k', 'afterValuationMax2m', 'holderCheckEligible', 'rejectionReasons']) {
     assert.ok(routeSource.includes(field), `baseRadarSourceAudit must expose "${field}"`)
   }
+
+  // ─── No leftover soft-fallback machinery ─────────────────────────────────────────────────────
+  // "Base Radar deterministic valuation band only" — no soft caps, no maybe logic. The relaxed-
+  // fallback path (a candidate shown anyway if it had activity, despite failing strict valuation/
+  // liquidity) was explicitly retired; its reappearance would mean the reset regressed. Only checks
+  // for actual functional identifiers, not the disclosure comments explaining the retirement (which
+  // legitimately reference the removed names by history).
+  for (const removed of ['fallbackCandidates', 'shouldHoldAsFallback']) {
+    assert.ok(!routeSource.includes(removed), `deterministic-gate reset must remove "${removed}" — no soft caps, no maybe logic`)
+  }
+  // "Relaxed fallback" as an actual evidenceGaps entry (not the disclosure-comment history mentions
+  // explaining why it was retired) must be gone — checked as the literal array-string form it used
+  // to appear in.
+  assert.ok(!routeSource.includes("'Relaxed fallback:"), 'the "Relaxed fallback" evidenceGaps entry must be removed — no soft caps, no maybe logic')
+  // The fuzzy async token-age heuristic (fetchBaseTokenAgeDays/MAX_TOKEN_AGE_DAYS) is retired too —
+  // asserted by absence of the actual function declaration, not just the name (which the disclosure
+  // comment above it legitimately still mentions for history).
+  assert.ok(!/function fetchBaseTokenAgeDays/.test(routeSource), 'the fuzzy token-age heuristic function must be removed — the $2M deterministic ceiling replaces it')
+  assert.ok(!/const MAX_TOKEN_AGE_DAYS/.test(routeSource), 'the fuzzy token-age threshold constant must be removed')
 
   // ─── No accidental pre-filter slice/top-N cap ahead of the valuation/holder gates ────────────
   // The only small-number .slice(0, N) calls in this file must be for things that run AFTER

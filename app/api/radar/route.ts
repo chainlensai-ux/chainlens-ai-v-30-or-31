@@ -5,7 +5,7 @@ import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFAULT_RADAR_MIN_VALUATION_USD, getRadarCortexValuationLine, getRadarValuationCardDisplay, getRadarValuationEvidenceGap, resolveBaseRadarMarketCap, selectDexScreenerMarketCapRescuePair, tokenPassesRadarValuationFilters, type DexScreenerMarketCapRescueResult, type RadarValuationBasis } from '@/lib/baseRadarValuation'
 import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type RadarSimulationStatus } from '@/lib/baseRadarSimulation'
-import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '@/lib/baseRadarMainFeedGate'
+import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationMinGate, passesMainFeedValuationMaxGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '@/lib/baseRadarMainFeedGate'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 // RATE-LIMIT-TOO-TIGHT FIX, DISCLOSED (reported: "Radar refresh failed" for no obvious reason):
@@ -217,68 +217,21 @@ async function fetchBaseHolderCount(contract: string): Promise<HolderCountResult
   return result
 }
 
-// TOKEN-AGE SIGNAL, DISCLOSED (requested: replace the growing manual EXCLUDED_ESTABLISHED_CONTRACTS
-// blocklist — which needed a new hand-added entry each time a live user spotted another case
-// (Aerodrome, then Avantis) — with a real signal, since GeckoTerminal only exposes POOL creation
-// time, never TOKEN creation time, and that mismatch is the actual root cause of both cases: a
-// brand-new pool for a long-established token honestly clears every liquidity/valuation/holder gate
-// while still being misleading to show as a fresh opportunity).
+// TOKEN-AGE SIGNAL RETIRED, DISCLOSED (explicit product reset: "Base Radar deterministic valuation
+// band only" — no soft caps, no maybe logic). This fuzzy async signal (fetchBaseTokenAgeDays, an
+// extra GoldRush call per candidate, fail-open on unresolved age) used to catch "already large"
+// established tokens like Aerodrome/Avantis by estimating real token age. It's retired: the
+// deterministic $2M valuation ceiling (see lib/baseRadarMainFeedGate.ts) now does that job with no
+// async lookup, no heuristic, no extra provider call — an Aerodrome- or Avantis-sized market cap
+// simply fails the valuation band outright. EXCLUDED_ESTABLISHED_CONTRACTS above stays as a
+// deterministic, exact-match belt-and-suspenders backstop (not "maybe logic" — a hard address
+// match), unchanged.
 //
-// Reuses the SAME GoldRush/Covalent call already made for holder counts (transactions_v2, sorted
-// ascending by block time) — no new provider. The earliest indexed transaction's block_signed_at is
-// used as the token's real age; this call is charged against the exact same per-cycle holder-check
-// budget/batch (fetched concurrently alongside the holder-count call for each candidate, not as a
-// separate wider pass), so it can never become a new source of "uncontrolled provider spam" beyond
-// what was already being spent to check holders. Cached for 24h — a contract's creation date never
-// changes, so this is effectively a permanent answer once resolved for a given contract.
-//
-// This is a best-effort FRESHNESS HEURISTIC layered on top of the real $80K/30-holder gates, not a
-// replacement for them and not a new hard requirement: if the age lookup fails or is unavailable,
-// the candidate is neither excluded nor penalized for it — unlike the holder-count gate (which fails
-// closed on missing evidence because holder count is itself part of the safety bar), a token's age
-// not being resolvable doesn't mean it's unsafe, just that this particular signal is uninformative
-// this cycle.
-// MAX-AGE TIGHTENED 30 -> 2 -> 7 DAYS, DISCLOSED (explicitly requested each time; most recently:
-// widen back out so more pools have real time to organically reach the 100-holder floor before
-// aging out of consideration, after live audits showed the 85K/100 gates combined with a 2-day cap
-// left the feed at 1 token most cycles). Flipped framing from "exclude only clearly-established
-// tokens" to "only show genuinely fresh ones" remains — same mechanism, just a looser bar.
-// Unresolved-age candidates still aren't penalized (see above); $85K valuation + 100 holders + real
-// liquidity remain the actual safety gates regardless of age.
-const TOKEN_AGE_CACHE_TTL_MS = 24 * 60 * 60_000
-const tokenAgeCache = new Map<string, { ageDays: number | null; expiresAt: number }>()
-const MAX_TOKEN_AGE_DAYS = 7
-async function fetchBaseTokenAgeDays(contract: string): Promise<number | null> {
-  const key = contract.toLowerCase()
-  const cached = tokenAgeCache.get(key)
-  if (cached && cached.expiresAt > Date.now()) return cached.ageDays
-  const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
-  if (!apiKey) return null
-  let ageDays: number | null = null
-  for (const host of GOLDRUSH_RADAR_HOSTS) {
-    try {
-      const res = await fetch(
-        `https://${host}/v1/base-mainnet/address/${contract}/transactions_v2/?page-size=1&block-signed-at-asc=true&no-logs=true`,
-        { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(3500) },
-      )
-      if (!res.ok) continue
-      const json = await res.json().catch(() => null) as { data?: { items?: Array<{ block_signed_at?: string }> } } | null
-      const earliest = json?.data?.items?.[0]?.block_signed_at
-      if (earliest) {
-        const earliestMs = new Date(earliest).getTime()
-        if (Number.isFinite(earliestMs)) { ageDays = Math.floor((Date.now() - earliestMs) / (24 * 60 * 60_000)); break }
-      }
-    } catch { /* leave ageDays null — unresolved, not treated as unsafe (see header comment) */ }
-  }
-  tokenAgeCache.set(key, { ageDays, expiresAt: Date.now() + TOKEN_AGE_CACHE_TTL_MS })
-  return ageDays
-}
-
 // ABSOLUTE-LIQUIDITY-FLOOR, DISCLOSED: belt-and-suspenders guard independent of the configurable
 // minLiquidityUsd query param — a token with ~$0 real liquidity must never reach the feed no matter
-// how minLiquidityUsd is set. tokenPassesRadarValuationFilters/shouldHoldAsFallback already require
-// liquidityUsd >= minLiquidityUsd, but this floor makes the "no liquidity" case impossible to slip
-// through even under a future param-handling regression.
+// how minLiquidityUsd is set. The route's own `liquidityUsd < minLiquidityUsd` check already
+// requires liquidityUsd >= minLiquidityUsd, but this floor makes the "no liquidity" case impossible
+// to slip through even under a future param-handling regression.
 const ABSOLUTE_MIN_LIQUIDITY_USD = 500
 
 async function fetchHoneypot(contract: string): Promise<HoneypotResult | null> {
@@ -546,7 +499,7 @@ export async function GET(req: NextRequest) {
   // thresholds into the cache key means any change to them (like this session's $45K -> $80K raise,
   // or a future one) can never accidentally serve a payload computed under the OLD thresholds; it's
   // simply a different cache key, so a cold miss forces a real re-run of the current pipeline.
-  const cacheKeyBase = `plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:page:${radarPage}:gate:${MAIN_FEED_MIN_VALUATION_USD}:${MAIN_FEED_MIN_HOLDERS}`
+  const cacheKeyBase = `plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:page:${radarPage}:gate:${MAIN_FEED_MIN_VALUATION_USD}:${MAIN_FEED_MAX_VALUATION_USD}:${MAIN_FEED_MIN_HOLDERS}`
   const fullCacheKey = `${cacheKeyBase}:mode:full`
   const shallowCacheKey = `${cacheKeyBase}:mode:shallow`
   const preferredCacheKey = requestedMode === 'full' ? fullCacheKey : shallowCacheKey
@@ -705,17 +658,18 @@ export async function GET(req: NextRequest) {
     const now       = Date.now()
     const TWO_HOURS = 2  * 60 * 60 * 1000
     const DAY_MS    = 24 * 60 * 60 * 1000
-    // AGE-WINDOW WIDENED 24h -> 3 DAYS -> 7 DAYS, DISCLOSED (explicitly requested each time; most
-    // recently: widen the age window alongside MAX_TOKEN_AGE_DAYS's 2->7 day raise, since this outer
-    // pool-age cutoff was capping any benefit of that change at 3 days — a pool older than 3 days
-    // never reached the token-age check at all, so raising MAX_TOKEN_AGE_DAYS alone would have been
-    // mostly cosmetic. $85K valuation and 100-holder floors are untouched — this only changes how OLD
-    // a pool may be and still be considered at all.
-    const SEVEN_DAY_MS = 7 * DAY_MS
+    // POOL-AGE-WINDOW, DISCLOSED (deterministic reset — see the DETERMINISTIC-GATE header near
+    // EXCLUDED_ESTABLISHED_CONTRACTS): this is the ONE age window left in the pipeline — how old a
+    // pool may be and still be considered for New Radar at all — collapsed from the old two-tier
+    // primary(6h)/fallback(7d) split into a single deterministic cutoff, since the "primary vs
+    // fallback" distinction only existed to support the now-removed soft "Relaxed fallback" merge
+    // (a candidate that failed the strict valuation/liquidity band but got shown anyway if it had
+    // enough activity — exactly the "maybe logic" this reset removes). A pool either falls inside
+    // this window or it doesn't; there is no second, looser tier for it to fall back into.
+    const POOL_AGE_WINDOW_MS = 7 * DAY_MS
 
     type Candidate = Omit<RadarToken, 'clarkVerdict'> & { pairAddress?: string | null }
     const candidates: Candidate[] = []
-    const fallbackCandidates: Candidate[] = []
     const allDay24h:  number[]    = []
     const seenContracts = new Set<string>()
     const seenPools = new Set<string>()
@@ -734,7 +688,7 @@ export async function GET(req: NextRequest) {
     // rescue result instead of a fresh await.
     type PoolDraft = {
       baseToken: NonNullable<ReturnType<typeof tokenMap.get>>
-      ageMinutes: number; liquidityUsd: number; volume24h: number; isPrimaryAgeWindow: boolean; isFallbackAgeWindow: boolean
+      ageMinutes: number; liquidityUsd: number; volume24h: number
       fdvUsd: number | null; resolvedMarketCap: ReturnType<typeof resolveBaseRadarMarketCap>; primaryPoolAddress: string | null
       needsRescue: boolean; isV4Pool: boolean
     }
@@ -760,12 +714,26 @@ export async function GET(req: NextRequest) {
     // these pools already flow through and get correctly counted by the normal liquidity-gate
     // counters below).
     let droppedByV4Pool = 0
-    let droppedByValuationOrLiquidity = 0
     let droppedByLiquidityFloorSpecifically = 0
     let droppedByAbsoluteLiquidityFloor = 0
     let droppedByDeadVolumeFloor = 0
     let droppedByValuationUnavailable = 0
     let droppedByMarketCapBelow80k = 0
+    // DETERMINISTIC-CEILING, DISCLOSED: the new $2M valuation ceiling — see
+    // MAIN_FEED_MAX_VALUATION_USD's own header in lib/baseRadarMainFeedGate.ts. No soft cap, no
+    // momentum/volume exception: a candidate above this line is excluded from default New Radar
+    // exactly like one below the $80K floor is, full stop.
+    let droppedByMarketCapAbove2m = 0
+    // CONSOLIDATED-LIQUIDITY-GATE, DISCLOSED: baseRadarCandidateGateAudit needs one deterministic
+    // "afterLiquidityGate"/"hiddenLiquidityLow" figure ("liquidity passes existing minimum" is a
+    // single hard rule in the new spec) — this sums the three real liquidity-adjacent drop sites
+    // (below the configurable minLiquidityUsd floor, below the absolute $500 floor, and the dead-
+    // volume floor) without collapsing their individual counters, which stay available in
+    // filterFunnel for finer-grained diagnosis.
+    let droppedByLiquidityGate = 0
+    let afterLiquidityGateCount = 0
+    let afterValuationMin80kCount = 0
+    let afterValuationMax2mCount = 0
     // SOURCE-AUDIT, DISCLOSED (requested: a full baseRadarSourceAudit proving whether starvation is
     // real discovery-depth loss vs. an accidental cap/slice). rawTotalBeforeDedupe is the literal
     // count of pool entries GeckoTerminal returned across every source this cycle, before ANY
@@ -825,19 +793,7 @@ export async function GET(req: NextRequest) {
       // entirely) — this stat just never counted V4 pools, same as before.
       if (!isV4Pool && ageMs < DAY_MS && liquidityUsd >= 1000) allDay24h.push(liquidityUsd)
 
-      const isPrimaryAgeWindow = ageMs < 6 * 60 * 60 * 1000
-      // FALLBACK-SOURCE-RESTRICTION FIX, DISCLOSED (reported: widening the new_pools page pull
-      // didn't multiply the feed as much as expected): this used to require radarSourceKey to be
-      // 'trending' before a pool could even be CONSIDERED for the relaxed-valuation fallback path
-      // below (shouldHoldAsFallback) — a new_pools-sourced pool that failed the strict valuation
-      // filter had zero fallback route and was dropped outright, no matter how much real liquidity/
-      // volume it had, purely because of which GeckoTerminal endpoint it came from. That's not a
-      // meaningful safety distinction (the fallback's own liquidity/volume checks are what actually
-      // gate it), so dropped the source restriction — any pool under the fallback age window is now
-      // fallback-eligible, using data already being fetched, no new API calls. Window itself widened
-      // 24h -> 3 days -> 7 days, see SEVEN_DAY_MS's own header comment above.
-      const isFallbackAgeWindow = ageMs < SEVEN_DAY_MS
-      if (!isPrimaryAgeWindow && !isFallbackAgeWindow) continue
+      if (ageMs >= POOL_AGE_WINDOW_MS) continue
       passedAgeWindowCount++
 
       const baseData    = ((rels?.base_token as Record<string, unknown>)?.data) as Record<string, string> | undefined
@@ -858,7 +814,7 @@ export async function GET(req: NextRequest) {
         : poolId.includes('_') ? poolId.split('_').pop() ?? null : null
 
       drafts.push({
-        baseToken, ageMinutes, liquidityUsd, volume24h, isPrimaryAgeWindow, isFallbackAgeWindow,
+        baseToken, ageMinutes, liquidityUsd, volume24h,
         fdvUsd, resolvedMarketCap, primaryPoolAddress, needsRescue: resolvedMarketCap.marketCapUsd == null || isV4Pool, isV4Pool,
       })
     }
@@ -907,7 +863,7 @@ export async function GET(req: NextRequest) {
 
     const nearMissSample: { symbol: string; contract: string; liquidityUsd: number; valuationUsd: number | null; marketCapStatus: 'verified' | 'unavailable' }[] = []
     for (let i = 0; i < drafts.length; i++) {
-      const { baseToken, ageMinutes, volume24h, isPrimaryAgeWindow, isFallbackAgeWindow, fdvUsd, resolvedMarketCap, primaryPoolAddress, isV4Pool } = drafts[i]
+      const { baseToken, ageMinutes, volume24h, fdvUsd, resolvedMarketCap, primaryPoolAddress, isV4Pool } = drafts[i]
       const rescue = rescueResults[i]
       // WRONG-POOL LIQUIDITY FIX, DISCLOSED (reported: DexScreener showed "$0 / unknown liquidity"
       // and a real-liquidity warning banner for the exact pool this route displayed, while the radar
@@ -939,75 +895,65 @@ export async function GET(req: NextRequest) {
       const marketCapStatus = marketCapUsd != null ? 'verified' : resolvedMarketCap.marketCapStatus
       const marketCapFieldPath = resolvedMarketCap.marketCapUsd != null ? resolvedMarketCap.marketCapFieldPath : rescue?.marketCapFieldPath ?? resolvedMarketCap.marketCapFieldPath
       const resolverReason = resolvedMarketCap.marketCapUsd != null ? resolvedMarketCap.reason : rescue?.reason ?? resolvedMarketCap.reason
-      const filterResult = tokenPassesRadarValuationFilters({ marketCapUsd, marketCapStatus, fdvUsd, liquidityUsd, minValuationUsd, minLiquidityUsd, allowFdvFallback })
-      // FALLBACK-ACTIVITY-BAR LOOSENED, DISCLOSED (same "still too few tokens" report): the
-      // liquidity floor here is untouched (still the real minLiquidityUsd, same as the strict
-      // path) — only the volume/momentum bar that decides whether a below-valuation-bar pool is
-      // "actually being traded enough to bother showing" was loosened, from $5K/20% down to
-      // $1.5K/8%. Still excludes genuinely dead pools (near-zero volume); just no longer requires
-      // near-strict-path-level activity to qualify for the already-disclosed "Relaxed fallback".
-      const shouldHoldAsFallback = !filterResult.included
-        && isFallbackAgeWindow
-        && liquidityUsd >= minLiquidityUsd
-        && (volume24h >= 1_500 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.08))
-      if (!filterResult.included && !shouldHoldAsFallback) {
-        // AUDIT-BOOKKEEPING, DISCLOSED: this check bundles a liquidity requirement and a valuation/
-        // activity requirement into one boolean (tokenPassesRadarValuationFilters + the fallback
-        // activity bar both already require liquidityUsd >= minLiquidityUsd) — the control flow
-        // itself is untouched, this just separately notes which requirement actually failed so
-        // baseRadarCandidateGateAudit's afterLiquidityGate count is accurate instead of lumping
-        // liquidity and valuation failures into one undifferentiated bucket.
-        if (liquidityUsd < minLiquidityUsd) droppedByLiquidityFloorSpecifically++
-        else droppedByValuationOrLiquidity++
-        continue
-      }
-      if (liquidityUsd < ABSOLUTE_MIN_LIQUIDITY_USD) { droppedByAbsoluteLiquidityFloor++; continue }
+      // DETERMINISTIC LIQUIDITY GATE, DISCLOSED ("Base Radar deterministic valuation band only" —
+      // liquidity passes existing minimum, no soft caps, no maybe logic, no fallback tier). A
+      // candidate either clears every real liquidity check or it's excluded — there is no longer a
+      // second, looser "Relaxed fallback" path that showed a candidate anyway if it had enough
+      // volume/momentum. All three real liquidity-adjacent checks roll into droppedByLiquidityGate
+      // for the audit's single hiddenLiquidityLow/afterLiquidityGate figure; their individual
+      // counters stay available in filterFunnel for diagnosis.
+      if (liquidityUsd < minLiquidityUsd) { droppedByLiquidityFloorSpecifically++; droppedByLiquidityGate++; continue }
+      if (liquidityUsd < ABSOLUTE_MIN_LIQUIDITY_USD) { droppedByAbsoluteLiquidityFloor++; droppedByLiquidityGate++; continue }
       // DEAD-VOLUME FLOOR, DISCLOSED (reported: feed full of tokens with real liquidity/valuation
-      // but $30-70 in 24h volume on six-figure liquidity — essentially untraded pools). The
-      // liquidity/valuation filter above never checked volume at all on the strict path (only the
-      // relaxed fallback did), so a pool could clear liquidity and valuation yet have almost nobody
-      // actually trading it and still get surfaced as a live opportunity. Requires at least minimal
-      // real activity on every candidate, strict or fallback, not just the fallback tier.
+      // but $30-70 in 24h volume on six-figure liquidity — essentially untraded pools). Requires at
+      // least minimal real activity on every candidate — "candidate has enough basic market evidence
+      // to rank" is one of the hard rules, and a pool nobody is trading doesn't clear that bar just
+      // because its liquidity number looks fine.
       // GRACE-PERIOD FIX, DISCLOSED (reported: feed went completely empty after this floor
       // shipped). A pool created 10 minutes ago has, by definition, only had 10 minutes to
       // accumulate the volume GeckoTerminal reports as its "24h" figure — a genuinely brand-new,
       // legitimate token can easily be under $200 simply because it hasn't existed long enough yet,
       // not because it's dead. Exempts very-new pools from this floor; the dead-volume check is
       // about spotting stale/abandoned tokens, not punishing freshness.
-      // GRACE-PERIOD LOWERED 20 -> 15, DISCLOSED (explicitly requested): fewer pools now get this
-      // exemption, so MORE candidates become subject to the dead-volume check below — this makes the
-      // gate stricter, not looser. Flagged this tradeoff before making the change since the intent
-      // was "more tokens," which this alone won't produce; it only changes where the freshness
-      // cutoff sits.
       const hasMeaningfulActivity = ageMinutes < 15 || volume24h >= 200 || (liquidityUsd > 0 && volume24h / liquidityUsd >= 0.02)
-      if (!hasMeaningfulActivity) { droppedByDeadVolumeFloor++; continue }
+      if (!hasMeaningfulActivity) { droppedByDeadVolumeFloor++; droppedByLiquidityGate++; continue }
+      afterLiquidityGateCount++
+
+      // VALUATION RESOLUTION, DISCLOSED: reuses tokenPassesRadarValuationFilters purely to get the
+      // resolved valuation basis (verified market cap preferred, FDV fallback only if allowed and
+      // clearly labeled below) — its own `included` boolean is ignored here; the deterministic
+      // $80K-$2M band decides inclusion, not the query-param-configurable minValuationUsd this
+      // shared helper was built around.
+      const filterResult = tokenPassesRadarValuationFilters({ marketCapUsd, marketCapStatus, fdvUsd, liquidityUsd, minValuationUsd, minLiquidityUsd, allowFdvFallback })
       const valuation = filterResult.valuation
       // THRESHOLD-EXPLORATION LOG, DISCLOSED (requested: "would $50K valuation / $15K liquidity /
       // 30 holders get us a couple tokens" — the aggregate audit counts can't answer that, only each
       // candidate's real numbers can). Logs every candidate that's already cleared liquidity/
-      // activity, before the $80K gate decides its fate, so different threshold combinations can be
-      // checked against real live data instead of guessing. Holder count isn't included here (it's
-      // only resolved later, budget-limited, for the ranked subset) — this only answers the
+      // activity, before the valuation band decides its fate, so different threshold combinations
+      // can be checked against real live data instead of guessing. Holder count isn't included here
+      // (it's only resolved later, budget-limited, for the ranked subset) — this only answers the
       // valuation/liquidity half of the question.
       nearMissSample.push({ symbol: baseToken.symbol, contract: baseToken.address, liquidityUsd: Math.round(liquidityUsd), valuationUsd: valuation.valueUsd != null ? Math.round(valuation.valueUsd) : null, marketCapStatus })
-      // MAIN-FEED-QUALITY-GATE, DISCLOSED (requested: stricter main-feed floor — $80K minimum
-      // valuation, real holder evidence required, no dead-liquidity coins ranking as opportunities).
+      // DETERMINISTIC VALUATION BAND, DISCLOSED (requested: "Base Radar deterministic valuation band
+      // only" — [$80K, $2M], no soft caps, no maybe logic, no exception for momentum/volume/name).
       // getRadarValuationBasis (lib/baseRadarValuation.ts) flattens a real market cap and an FDV
       // fallback into a single "verified_market_cap" basis by explicit prior product decision (FDV
       // is shown as "Market Cap" everywhere with no distinct fallback label) — that shared display
       // behavior is intentionally left untouched here. This gate instead tracks, locally, whether
       // THIS candidate's number came from a real marketCapUsd or was FDV-derived, purely to (a)
-      // decide whether the $80K floor was actually cleared and (b) attach an explicit fallback
-      // evidence gap so a FDV-sourced valuation can never look identical to a real confirmed market
-      // cap in the reasons shown for this candidate, without changing the shared valuation display.
+      // decide whether the band was actually cleared and (b) attach an explicit fallback evidence
+      // gap so an FDV-sourced valuation can never look identical to a real confirmed market cap in
+      // the reasons shown for this candidate, without changing the shared valuation display.
       const isRealVerifiedMarketCap = isRealVerifiedMarketCapValue(marketCapStatus, marketCapUsd)
       if (valuation.valueUsd == null) { droppedByValuationUnavailable++; continue }
-      if (!passesMainFeedValuationGate(valuation.valueUsd)) { droppedByMarketCapBelow80k++; continue }
+      if (!passesMainFeedValuationMinGate(valuation.valueUsd)) { droppedByMarketCapBelow80k++; continue }
+      afterValuationMin80kCount++
+      if (!passesMainFeedValuationMaxGate(valuation.valueUsd)) { droppedByMarketCapAbove2m++; continue }
+      afterValuationMax2mCount++
       const valuationCardDisplay = getRadarValuationCardDisplay(valuation, fmtK)
       const valuationEvidenceGap = getRadarValuationEvidenceGap(valuation)
       const evidenceGaps = [
         ...(valuationEvidenceGap ? [valuationEvidenceGap] : []),
-        ...(!filterResult.included ? ['Relaxed fallback: default valuation filter did not pass, but liquidity/volume is active'] : []),
         ...(!isRealVerifiedMarketCap ? ['Valuation confirmed via FDV fallback — no separate verified market cap available'] : []),
       ]
       const candidate = {
@@ -1031,25 +977,12 @@ export async function GET(req: NextRequest) {
           rescueRawCandidates: rescue?.rawCandidates ?? [],
         } } : {}),
       } satisfies Candidate
-      if (filterResult.included && isPrimaryAgeWindow) candidates.push(candidate)
-      else fallbackCandidates.push(candidate)
+      candidates.push(candidate)
     }
 
-    // ALWAYS-MERGE-FALLBACK FIX, DISCLOSED (reported: radar only ever shows a handful of tokens —
-    // "should be a ton"). fallbackCandidates are real, already-computed candidates that either
-    // cleared liquidity/volume but not the strict valuation bar, or sit in the wider 24h trending
-    // age window instead of the strict 6h primary window — every one of them already carries the
-    // "Relaxed fallback" evidenceGaps disclosure added above, specifically so they're safe to show
-    // labeled rather than hidden. Previously they were only merged in when the primary list was
-    // COMPLETELY empty, so the moment even 1 token passed strict filtering, every other legitimate
-    // fallback candidate was silently thrown away instead of appended — collapsing what should be a
-    // real, browsable feed down to just the handful that happened to clear every bar at once. No
-    // filter/scoring/risk logic changed: these tokens were already being computed, just discarded.
-    if (fallbackCandidates.length > 0) {
-      candidates.push(...fallbackCandidates)
-    }
-
-    // Sort by blend of momentum/liquidity/volume/freshness
+    // Sort by blend of momentum/liquidity/volume/freshness. This is ranking ORDER only, applied
+    // strictly among candidates that already passed every deterministic gate above — momentum can
+    // never let a failing candidate appear, it only decides where a passing one lands in the list.
     candidates.sort((a, b) => {
       const mA = a.liquidityUsd > 0 ? a.volume24h / a.liquidityUsd : 0
       const mB = b.liquidityUsd > 0 ? b.volume24h / b.liquidityUsd : 0
@@ -1077,28 +1010,26 @@ export async function GET(req: NextRequest) {
     const holderCheckedCandidates: Candidate[] = []
     let holderCheckAttemptedCount = 0
     let passingHolderGateCount = 0
-    let droppedByEstablishedTokenAge = 0
+    // CANDIDATE-POOL-EXHAUSTED, DISCLOSED: distinct from holderCheckBudgetExhausted (spending cap
+    // hit) — this is true when the loop stopped because it ran out of ranked candidates to check,
+    // not because it hit HOLDER_CHECK_BUDGET_CAP. Captured from the loop's own final cursor position
+    // so it can never drift from what actually happened.
+    let holderCheckCursor = 0
     {
-      let cursor = 0
-      while (shouldContinueHolderChecking({ passingCount: passingHolderGateCount, attemptedCount: holderCheckAttemptedCount, cursor, poolSize: rankedCandidates.length })) {
+      while (shouldContinueHolderChecking({ passingCount: passingHolderGateCount, attemptedCount: holderCheckAttemptedCount, cursor: holderCheckCursor, poolSize: rankedCandidates.length })) {
         const remainingBudget = HOLDER_CHECK_BUDGET_CAP - holderCheckAttemptedCount
-        const batch = rankedCandidates.slice(cursor, cursor + Math.min(HOLDER_CHECK_BATCH_SIZE, remainingBudget))
-        cursor += batch.length
+        const batch = rankedCandidates.slice(holderCheckCursor, holderCheckCursor + Math.min(HOLDER_CHECK_BATCH_SIZE, remainingBudget))
+        holderCheckCursor += batch.length
         const resultByContract = new Map<string, HolderCountResult>()
-        const ageDaysByContract = new Map<string, number | null>()
         let nextIndex = 0
         const worker = async () => {
           for (;;) {
             const i = nextIndex++
             if (i >= batch.length) return
             const t = batch[i]
-            // TOKEN-AGE SIGNAL, DISCLOSED: fetched concurrently with the holder-count check, charged
-            // against the exact same batch/budget — see fetchBaseTokenAgeDays's own header for why
-            // this can never become a separate source of provider spam.
-            const [r, ageDays] = await Promise.all([fetchBaseHolderCount(t.contract), fetchBaseTokenAgeDays(t.contract)])
+            const r = await fetchBaseHolderCount(t.contract)
             resultByContract.set(t.contract.toLowerCase(), r)
             holderCountByContract.set(t.contract.toLowerCase(), r.count)
-            ageDaysByContract.set(t.contract.toLowerCase(), ageDays)
           }
         }
         await Promise.all(Array.from({ length: Math.min(HOLDER_CHECK_CONCURRENCY, batch.length) }, () => worker()))
@@ -1109,17 +1040,13 @@ export async function GET(req: NextRequest) {
             holderCheckFailureReasons[holderResult.reason] = (holderCheckFailureReasons[holderResult.reason] ?? 0) + 1
             if (holderCheckFailureSample.length < 5) holderCheckFailureSample.push({ httpStatus: holderResult.httpStatus ?? null, errorBody: holderResult.errorBody ?? null })
           }
-          const ageDays = ageDaysByContract.get(t.contract.toLowerCase())
-          if (typeof ageDays === 'number' && ageDays >= MAX_TOKEN_AGE_DAYS) {
-            droppedByEstablishedTokenAge++
-            continue
-          }
           holderCheckedCandidates.push(t)
           const holderCount = holderCountByContract.get(t.contract.toLowerCase())
           if (passesMainFeedHolderGate(holderCount)) passingHolderGateCount++
         }
       }
     }
+    const candidatePoolExhausted = holderCheckCursor >= rankedCandidates.length && passingHolderGateCount < DISPLAY_TARGET
     // FAIL-CLOSED ON PROVIDER OUTAGE, DISCLOSED (reported: a token with only 3 holders and $0 real
     // liquidity on DexScreener — a textbook fake-pump scam pool — made it into the live feed despite
     // the 30-holder gate). Root cause: the previous version of this code "failed open" on a total
@@ -1245,13 +1172,17 @@ export async function GET(req: NextRequest) {
       dangerCount, cautionCount, watchCount, safeCount,
     }
 
-    // MAIN-FEED-QUALITY-GATE, DISCLOSED: candidates hidden specifically by the stricter $80K
-    // valuation / 30-holder gate (not the pre-existing liquidity/dead-volume/V4 filters, which were
-    // already silently dropping candidates before this task). Surfaced to the frontend so the CORTEX
-    // panel can honestly say how many were hidden, instead of the gate being invisible.
-    const hiddenLowValuation = droppedByMarketCapBelow80k + droppedByValuationUnavailable
+    // MAIN-FEED-QUALITY-GATE, DISCLOSED: candidates hidden specifically by the deterministic $80K-$2M
+    // valuation band / 30-holder gate (not the pre-existing liquidity/dead-volume/V4 filters, which
+    // were already silently dropping candidates before this task). Surfaced to the frontend so the
+    // CORTEX panel can honestly say how many were hidden, instead of the gate being invisible.
+    const hiddenBelow80k = droppedByMarketCapBelow80k
+    const hiddenAbove2m = droppedByMarketCapAbove2m
+    const hiddenValuationUnavailable = droppedByValuationUnavailable
+    const hiddenLowValuation = hiddenBelow80k + hiddenAbove2m + hiddenValuationUnavailable
     const hiddenLowHolders = droppedByHoldersBelow30
     const hiddenHolderUnavailable = droppedByHoldersUnavailable
+    const hiddenLiquidityLow = droppedByLiquidityGate
     // CONCENTRATION-IS-NOT-HOLDER-UNAVAILABLE, DISCLOSED: concentration (top1/10/20) is never
     // fetched by this route at all, so it can never be the reason a candidate was hidden — every
     // DISPLAYED candidate simply carries the CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP as a deeper-
@@ -1262,51 +1193,38 @@ export async function GET(req: NextRequest) {
     const hiddenLowEvidenceCount = hiddenLowValuation + hiddenLowHolders + hiddenHolderUnavailable
     const evidenceGapCappedCount = scored.filter(t => t.riskLevel !== 'SAFE' && (t.evidenceGaps?.length ?? 0) > 0).length
 
-    // CANDIDATE-GATE-AUDIT, DISCLOSED (requested: "add audit baseRadarCandidateGateAudit" — exact
-    // funnel counts at each real stage of this pipeline, so a future "feed too thin" report can be
-    // diagnosed from a single log line instead of guessing whether the raw pool, the liquidity gate,
-    // the $80K valuation gate, or the 30-holder gate is what's actually starving the feed).
-    // afterLiquidityGate/afterValuation80kGate read straight off the counters already incremented at
-    // each real `continue` site above — this is bookkeeping on the existing control flow, not a
-    // second implementation of it. afterHolder30Gate is `toCheck.length` directly: that array IS the
-    // real post-holder-gate set (or empty on a provider outage — see the fail-closed comment above),
-    // so this can never drift from what actually happened.
-    // AUDIT-MATH-BUG-FIX, DISCLOSED (found via live output: afterLiquidityGate/afterValuation80kGate
-    // showed impossible negative numbers, e.g. -62 and -68). Root cause: droppedByV4Pool used to be
-    // incremented in the EARLIER per-pool loop that builds `drafts` (dropping V4 pools before they
-    // ever became a draft), so `drafts.length` already excluded them — but this formula subtracted
-    // droppedByV4Pool AGAIN from drafts.length, double-counting the same drop and going negative.
-    // Now that V4 pools are cross-checked via DexScreener instead of blanket-dropped (see the
-    // droppedByV4Pool header comment above), this is moot for that specific counter — it's purely
-    // informational now — but the fix stands: never subtract a counter from a population that
-    // already excludes what it counts.
-    const afterLiquidityGate = drafts.length - droppedByLiquidityFloorSpecifically - droppedByAbsoluteLiquidityFloor - droppedByDeadVolumeFloor
-    const afterValuation80kGate = afterLiquidityGate - droppedByValuationOrLiquidity - droppedByValuationUnavailable - droppedByMarketCapBelow80k
+    // CANDIDATE-GATE-AUDIT, DISCLOSED (deterministic-gate reset: exact field list requested —
+    // rawCandidatesFetched, afterLiquidityGate, afterValuationMin80k, afterValuationMax2m,
+    // afterHolder30Gate, displayedCount, hiddenBelow80k, hiddenAbove2m, hiddenBelow30Holders,
+    // hiddenMissingHolderCount, hiddenLiquidityLow, hiddenValuationUnavailable,
+    // hiddenConcentrationUnavailable, holderCheckAttempted, holderCheckSucceeded,
+    // candidatePoolExhausted, holderCheckBudgetExhausted). Every field reads straight off a counter
+    // already incremented at its own real `continue`/stopping site above — this object does not
+    // re-derive or re-implement any gate logic, it only exposes what already happened.
+    // afterHolder30Gate is `toCheck.length` directly: that array IS the real post-holder-gate set
+    // (or empty on a provider outage — see the fail-closed comment above), so it can never drift
+    // from what actually happened.
     const afterHolder30Gate = toCheck.length
-    // DISCOVERY-DEPTH AUDIT, DISCLOSED (requested: the exact field-by-field breakdown below, so a
-    // "feed is 0" report is diagnosable as a discovery-depth problem, a liquidity-gate problem, a
-    // valuation-gate problem, or a genuinely-empty market — without guessing). Every field here is
-    // read straight off a counter already incremented at its real `continue`/stopping site elsewhere
-    // in this function — this object does not re-derive or re-implement any gate logic, it only
-    // exposes what already happened. holderCheckBudgetExhausted is the boolean the frontend uses to
-    // pick between the two different empty-state messages requested (task #6): "budget reached this
-    // cycle" vs. "checked everything available, nothing passed."
     const holderCheckBudgetExhausted = holderCheckAttemptedCount >= HOLDER_CHECK_BUDGET_CAP
     const baseRadarCandidateGateAudit = {
       rawCandidatesFetched: drafts.length,
       rawCandidateCap: RANKED_CANDIDATES_CAP,
       rankedCandidates: rankedCandidates.length,
-      liquidityPassed: afterLiquidityGate,
-      valuationChecked: afterLiquidityGate,
-      valuationPassed80k: afterValuation80kGate,
+      afterLiquidityGate: afterLiquidityGateCount,
+      afterValuationMin80k: afterValuationMin80kCount,
+      afterValuationMax2m: afterValuationMax2mCount,
+      afterHolder30Gate,
       holderCheckAttempted: holderCheckAttemptedCount,
       holderCheckSucceeded: holderCheckSucceededCount,
-      holdersPassed30: afterHolder30Gate,
       displayedCount: tokens.length,
-      hiddenBelow80k: hiddenLowValuation,
+      hiddenBelow80k,
+      hiddenAbove2m,
       hiddenBelow30Holders: hiddenLowHolders,
       hiddenMissingHolderCount: hiddenHolderUnavailable,
+      hiddenLiquidityLow,
+      hiddenValuationUnavailable,
       hiddenConcentrationUnavailable,
+      candidatePoolExhausted,
       holderCheckBudget: HOLDER_CHECK_BUDGET_CAP,
       holderCheckBudgetExhausted,
       holderCheckFailureReasons,
@@ -1319,7 +1237,9 @@ export async function GET(req: NextRequest) {
           ? 'holder-check budget exhausted before reaching display target'
           : passingHolderGateCount >= DISPLAY_TARGET
             ? 'display target reached'
-            : 'ranked candidate pool exhausted before reaching display target or budget',
+            : candidatePoolExhausted
+              ? 'ranked candidate pool exhausted before reaching display target or budget'
+              : 'cycle ended',
     }
 
     // SOURCE-AUDIT, DISCLOSED (requested: a full baseRadarSourceAudit to distinguish real upstream
@@ -1335,14 +1255,17 @@ export async function GET(req: NextRequest) {
       rawTotalBeforeDedupe,
       afterDedupe: dedupedPoolCount,
       afterAgeWindow: passedAgeWindowCount,
-      afterLiquidityMinimum: afterLiquidityGate,
-      afterValuationAvailable: afterLiquidityGate - droppedByValuationUnavailable,
-      afterValuation80k: afterValuation80kGate,
+      afterLiquidityMinimum: afterLiquidityGateCount,
+      afterValuationAvailable: afterLiquidityGateCount - droppedByValuationUnavailable,
+      afterValuationMin80k: afterValuationMin80kCount,
+      afterValuationMax2m: afterValuationMax2mCount,
       holderCheckEligible: rankedCandidates.length,
       holderCheckAttempted: holderCheckAttemptedCount,
       holderCheckSucceeded: holderCheckSucceededCount,
       afterHolder30: afterHolder30Gate,
       displayedCount: tokens.length,
+      candidatePoolExhausted,
+      holderCheckBudgetExhausted,
       caps: {
         sourceLimit: sourcesAttempted,
         rawCandidateCap: RANKED_CANDIDATES_CAP,
@@ -1356,13 +1279,12 @@ export async function GET(req: NextRequest) {
         symbol_excluded: droppedBySymbolExcluded,
         duplicate_contract: droppedByDuplicateContract,
         established_token_excluded: droppedByEstablishedToken,
-        established_token_age_excluded: droppedByEstablishedTokenAge,
         v4_liquidity_unverified: droppedByV4Pool,
         liquidity_below_minimum: droppedByAbsoluteLiquidityFloor + droppedByLiquidityFloorSpecifically,
         dead_volume_excluded: droppedByDeadVolumeFloor,
-        valuation_or_liquidity_excluded: droppedByValuationOrLiquidity,
         valuation_unavailable: droppedByValuationUnavailable,
         market_cap_below_80k: droppedByMarketCapBelow80k,
+        market_cap_above_2m: droppedByMarketCapAbove2m,
         holders_below_30: droppedByHoldersBelow30,
         holders_unavailable: droppedByHoldersUnavailable,
       },
@@ -1381,25 +1303,24 @@ export async function GET(req: NextRequest) {
     // so a real DevTools Network capture — the one method that has reliably worked all session —
     // never showed them either. Attaching both directly to the normal, always-returned payload
     // (not gated behind debug=1) so the exact same capture method already in use surfaces them.
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenLowHolders, hiddenHolderUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, holderProviderReachable, baseRadarSourceAudit, baseRadarCandidateGateAudit }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenAbove2m, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, baseRadarSourceAudit, baseRadarCandidateGateAudit }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,
       sourceCounts,
       mergedCount: candidates.length,
-      filters: { minValuationUsd, minLiquidityUsd, allowFdvFallback, mainFeedMinValuationUsd: MAIN_FEED_MIN_VALUATION_USD, mainFeedMinHolders: MAIN_FEED_MIN_HOLDERS },
+      filters: { minValuationUsd, minLiquidityUsd, allowFdvFallback, mainFeedMinValuationUsd: MAIN_FEED_MIN_VALUATION_USD, mainFeedMaxValuationUsd: MAIN_FEED_MAX_VALUATION_USD, mainFeedMinHolders: MAIN_FEED_MIN_HOLDERS },
       filterFunnel: {
         missing_base_token: droppedByMissingBaseToken,
         symbol_excluded: droppedBySymbolExcluded,
         duplicate_contract: droppedByDuplicateContract,
         established_token_excluded: droppedByEstablishedToken,
-        established_token_age_excluded: droppedByEstablishedTokenAge,
         v4_pool_excluded: droppedByV4Pool,
         liquidity_below_minimum: droppedByAbsoluteLiquidityFloor + droppedByLiquidityFloorSpecifically,
         dead_volume_excluded: droppedByDeadVolumeFloor,
-        valuation_or_liquidity_excluded: droppedByValuationOrLiquidity,
         valuation_unavailable: droppedByValuationUnavailable,
         market_cap_below_80k: droppedByMarketCapBelow80k,
+        market_cap_above_2m: droppedByMarketCapAbove2m,
         holders_below_30: droppedByHoldersBelow30,
         holders_unavailable: droppedByHoldersUnavailable,
         evidence_gap_capped: evidenceGapCappedCount,

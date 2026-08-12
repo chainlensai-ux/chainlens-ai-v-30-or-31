@@ -5,23 +5,38 @@
 // baseRadarSignals.ts) — purely so these exact gate predicates can be unit tested directly
 // (scripts/test-base-radar-main-feed-gate.mjs) without mocking GeckoTerminal/GoldRush/DexScreener
 // HTTP calls. app/api/radar/route.ts imports and calls these; nothing here re-implements them.
-// VALUATION RAISED $45K -> $80K -> $85K, DISCLOSED (explicitly requested each time, most recently:
-// "change the max to 85k market cap" — clarified with the user as raising this floor from $80K to
-// $85K, not adding a separate upper ceiling). HOLDER FLOOR RAISED 30 -> 100, DISCLOSED (explicitly
-// requested: "for holders to be actually minimum 100 holders" — flagged to the user first that this
-// will almost certainly shrink the feed further, since a 2-day-old token rarely has 100 real holders
-// yet; user confirmed to proceed anyway). The existing liquidity minimum is unchanged.
+// DETERMINISTIC VALUATION BAND, DISCLOSED (explicit product reset: the gate had drifted through
+// several one-off changes this session — $45K -> $80K -> $85K floor, 30 -> 100 holder floor, plus a
+// separate fuzzy token-age heuristic layered on top to catch "already large" established tokens.
+// Replaced with ONE deterministic rule set, no soft caps, no maybe logic: valuation must sit in a
+// fixed [$80K, $2M] band and holders must be a real, resolved count >= 30. The $2M ceiling is what
+// now deterministically excludes already-large/established tokens (an Aerodrome- or Avantis-sized
+// market cap fails this band outright) — no async age lookup, no fail-open heuristic, no extra
+// per-candidate provider call needed for that purpose anymore. Floor and ceiling are both
+// inclusive: $80,000 passes, $2,000,000 passes; $79,999 and $2,000,001 do not. Liquidity minimum
+// is unchanged by this reset.
 
-export const MAIN_FEED_MIN_VALUATION_USD = 85_000
-export const MAIN_FEED_MIN_HOLDERS = 100
+export const MAIN_FEED_MIN_VALUATION_USD = 80_000
+export const MAIN_FEED_MAX_VALUATION_USD = 2_000_000
+export const MAIN_FEED_MIN_HOLDERS = 30
 
 /**
  * A candidate's resolved valuation (verified market cap, or FDV used as fallback — see
  * getRadarValuationBasis in baseRadarValuation.ts for that flattening) must be a finite number
- * at or above MAIN_FEED_MIN_VALUATION_USD. null/undefined/NaN (valuation unavailable) never passes.
+ * inside [MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD], inclusive on both ends.
+ * null/undefined/NaN (valuation unavailable) never passes. No exception for momentum, volume, or
+ * any other signal — this is the whole rule.
  */
-export function passesMainFeedValuationGate(valuationValueUsd: number | null | undefined): boolean {
+export function passesMainFeedValuationMinGate(valuationValueUsd: number | null | undefined): boolean {
   return typeof valuationValueUsd === 'number' && Number.isFinite(valuationValueUsd) && valuationValueUsd >= MAIN_FEED_MIN_VALUATION_USD
+}
+
+export function passesMainFeedValuationMaxGate(valuationValueUsd: number | null | undefined): boolean {
+  return typeof valuationValueUsd === 'number' && Number.isFinite(valuationValueUsd) && valuationValueUsd <= MAIN_FEED_MAX_VALUATION_USD
+}
+
+export function passesMainFeedValuationGate(valuationValueUsd: number | null | undefined): boolean {
+  return passesMainFeedValuationMinGate(valuationValueUsd) && passesMainFeedValuationMaxGate(valuationValueUsd)
 }
 
 /**

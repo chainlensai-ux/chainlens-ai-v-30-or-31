@@ -59,9 +59,9 @@ interface RadarData {
   mode?: 'shallow' | 'full'
   page?: number
   hasMore?: boolean
-  // MAIN-FEED-QUALITY-GATE, DISCLOSED: count of candidates the backend's stricter $85K valuation /
-  // 100-holder gate hid from this response (app/api/radar/route.ts's hiddenLowEvidenceCount) — not
-  // the pre-existing liquidity/dead-volume filters, just the two new gates. Optional/undefined on
+  // MAIN-FEED-QUALITY-GATE, DISCLOSED: count of candidates the backend's deterministic $80K-$2M
+  // valuation band / 30-holder gate hid from this response (app/api/radar/route.ts's
+  // hiddenLowEvidenceCount) — not the pre-existing liquidity/dead-volume filters. Optional/undefined on
   // any cached payload from before this field existed.
   hiddenLowEvidenceCount?: number
   // GATE-REASON-BREAKDOWN, DISCLOSED (requested: CORTEX panel should separate low valuation / low
@@ -70,6 +70,8 @@ interface RadarData {
   // (see baseRadarCandidateGateAudit in app/api/radar/route.ts), it just counts displayed
   // candidates carrying that evidence gap.
   hiddenLowValuation?: number
+  hiddenBelow80k?: number
+  hiddenAbove2m?: number
   hiddenLowHolders?: number
   hiddenHolderUnavailable?: number
   hiddenConcentrationUnavailable?: number
@@ -146,6 +148,8 @@ interface RadarSummary {
   hasSecurityData: boolean
   hiddenLowEvidenceCount: number
   hiddenLowValuation: number
+  hiddenBelow80k: number
+  hiddenAbove2m: number
   hiddenLowHolders: number
   hiddenHolderUnavailable: number
   hiddenConcentrationUnavailable: number
@@ -711,17 +715,19 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
   // GATE-REASON-BREAKDOWN, DISCLOSED (requested: separate low valuation / low holders / missing
   // holder count instead of one combined number, and make explicit that concentration gaps never
   // remove a candidate that already passed the real 30-holder count gate).
-  // VALUATION RAISED $45K -> $80K -> $85K, HOLDER FLOOR RAISED 30 -> 100, DISCLOSED (explicitly
-  // requested each time, most recently: "change the max to 85k market cap and for holders to be
-  // actually minimum 100 holders"). The liquidity minimum is unchanged.
+  // DETERMINISTIC VALUATION BAND, DISCLOSED (explicit product reset: "Base Radar deterministic
+  // valuation band only" — the gate had drifted through $45K -> $80K -> $85K and 30 -> 100 holders
+  // across several one-off changes; reset to a single fixed [$80K, $2M] band + 30 real holders, no
+  // soft caps). The liquidity minimum is unchanged.
   const hideReasonParts = [
-    summary.hiddenLowValuation > 0 ? `${summary.hiddenLowValuation} below $85K valuation` : null,
-    summary.hiddenLowHolders > 0 ? `${summary.hiddenLowHolders} below 100 holders` : null,
+    summary.hiddenBelow80k > 0 ? `${summary.hiddenBelow80k} below $80K valuation` : null,
+    summary.hiddenAbove2m > 0 ? `${summary.hiddenAbove2m} above $2M valuation` : null,
+    summary.hiddenLowHolders > 0 ? `${summary.hiddenLowHolders} below 30 holders` : null,
     summary.hiddenHolderUnavailable > 0 ? `${summary.hiddenHolderUnavailable} missing holder count` : null,
   ].filter((p): p is string => p != null)
   const gateExplainer = hideReasonParts.length > 0
-    ? `Main radar filters out candidates below $85K valuation or below 100 holders — ${hideReasonParts.join(', ')}.`
-    : 'Main radar filters out candidates below $85K valuation or below 100 holders.'
+    ? `New Radar shows tokens between $80K and $2M valuation with 30+ holders and real liquidity — ${hideReasonParts.join(', ')}.`
+    : 'New Radar shows tokens between $80K and $2M valuation with 30+ holders and real liquidity.'
   const concentrationNote = 'Concentration gaps do not remove candidates that pass holder count.'
   const warnings = [
     summary.unverified > 0 ? `${summary.unverified} checks need more evidence.` : 'No open verification cluster in the current results.',
@@ -928,7 +934,7 @@ function EmptyFeed({ limited, holderCheckBudgetExhausted }: { limited: boolean; 
       <p style={{ fontSize: '12px', fontWeight: 600, margin: 0, lineHeight: 1.45 }}>
         {holderCheckBudgetExhausted
           ? 'Holder-check budget reached for this cycle.'
-          : 'No candidates passed the $85K / 100-holder gate in the checked pool. Try refresh or Advanced Filters.'}
+          : 'No candidates passed the $80K–$2M / 30-holder New Radar gate in this cycle.'}
       </p>
       {limited ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#3a5268' }}>Live feed is limited right now.</p> : null}
     </div>
@@ -1472,23 +1478,23 @@ export default function BaseRadarPage() {
       hasSecurityData,
       hiddenLowEvidenceCount: data?.hiddenLowEvidenceCount ?? 0,
       hiddenLowValuation: data?.hiddenLowValuation ?? 0,
+      hiddenBelow80k: data?.hiddenBelow80k ?? 0,
+      hiddenAbove2m: data?.hiddenAbove2m ?? 0,
       hiddenLowHolders: data?.hiddenLowHolders ?? 0,
       hiddenHolderUnavailable: data?.hiddenHolderUnavailable ?? 0,
       hiddenConcentrationUnavailable: data?.hiddenConcentrationUnavailable ?? 0,
     }
-  }, [intelTokens, data?.hiddenLowEvidenceCount, data?.hiddenLowValuation, data?.hiddenLowHolders, data?.hiddenHolderUnavailable, data?.hiddenConcentrationUnavailable])
+  }, [intelTokens, data?.hiddenLowEvidenceCount, data?.hiddenLowValuation, data?.hiddenBelow80k, data?.hiddenAbove2m, data?.hiddenLowHolders, data?.hiddenHolderUnavailable, data?.hiddenConcentrationUnavailable])
 
   const filteredAndSortedTokens = useMemo(() => {
     const filtered = intelTokens.filter(token => {
       if (activeFilter === 'TRENDING') return token.status === 'HOT' || token.momentum === 'HIGH' || token.volume24h >= 5_000
-      // NEW-WINDOW WIDENED AGAIN, DISCLOSED (explicitly requested: feed staying at 1 after the $85K/
-      // 100-holder raise was verified to be a genuine age-window constraint, not a discovery-depth
-      // bug — pools weren't getting enough real time to organically reach 100 holders + $85K before
-      // aging out of consideration). The backend's own outer cutoff (app/api/radar/route.ts's
-      // isFallbackAgeWindow) was widened 3 days -> 7 days at the same time; this frontend NEW-tab
-      // filter must match it or a candidate the backend now legitimately includes would still be
-      // invisible on the default tab, reproducing the exact same starved-feed report from a purely
-      // frontend-side mismatch.
+      // NEW-WINDOW WIDENED, DISCLOSED (history: feed staying thin was verified to be a genuine
+      // age-window constraint, not a discovery-depth bug — pools weren't getting enough real time to
+      // organically reach 30 holders + the valuation band before aging out of consideration). The
+      // backend's own outer cutoff (app/api/radar/route.ts's POOL_AGE_WINDOW_MS) is 7 days; this
+      // frontend NEW-tab filter must match it or a candidate the backend legitimately includes would
+      // still be invisible on the default tab.
       if (activeFilter === 'NEW') return token.ageMinutes <= 7 * 24 * 60 || token.status === 'EARLY'
       if (activeFilter === 'VOLUME') return token.volume24h >= 5_000 || token.momentum !== 'NONE'
       if (activeFilter === 'LIQUIDITY') return token.liquidityUsd >= 10_000
@@ -1625,7 +1631,7 @@ export default function BaseRadarPage() {
                 Fresh pools and early momentum signals
               </p>
               <p style={{ fontSize: '11px', color: '#5b7186', margin: '0 0 10px', maxWidth: '760px', lineHeight: 1.4, fontFamily: 'var(--font-plex-mono)' }}>
-                Default feed filters out pools under $85K valuation, below 100 holders, or shallow liquidity. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
+                New Radar shows tokens between $80K and $2M valuation with 30+ holders and real liquidity. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
               </p>
             </>
           ) : (
@@ -1835,7 +1841,7 @@ export default function BaseRadarPage() {
             )}
             {!loading && !loadingMore && loadMoreExhausted && (
               <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#64748b', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
-                No more candidates passed the $85K / 100-holder gate in this cycle.
+                No more candidates passed the $80K–$2M / 30-holder New Radar gate in this cycle.
               </p>
             )}
           </div>
