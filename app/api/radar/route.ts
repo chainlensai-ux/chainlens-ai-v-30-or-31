@@ -6,6 +6,7 @@ import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { DEFAULT_RADAR_ALLOW_FDV_FALLBACK, DEFAULT_RADAR_MIN_LIQUIDITY_USD, DEFAULT_RADAR_MIN_VALUATION_USD, getRadarCortexValuationLine, getRadarValuationCardDisplay, getRadarValuationEvidenceGap, resolveBaseRadarMarketCap, selectDexScreenerMarketCapRescuePair, tokenPassesRadarValuationFilters, type DexScreenerMarketCapRescueResult, type RadarValuationBasis } from '@/lib/baseRadarValuation'
 import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type RadarSimulationStatus } from '@/lib/baseRadarSimulation'
 import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationMinGate, passesMainFeedValuationMaxGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '@/lib/baseRadarMainFeedGate'
+import { redis, redisConfigured } from '@/lib/server/cache/redisClient'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 // RATE-LIMIT-TOO-TIGHT FIX, DISCLOSED (reported: "Radar refresh failed" for no obvious reason):
@@ -174,6 +175,36 @@ const GOLDRUSH_RADAR_HOSTS = ['api.covalenthq.com'] as const
 // actually retry instead of being stuck behind a cooldown longer than a realistic refresh gap.
 const DISCOVERY_FAILURE_BACKOFF_MS = 20_000
 const discoverySourceFailureBackoff = new Map<string, number>()
+// SHARED-BACKOFF FIX, DISCLOSED (bug hunt: reported "randomly barely any tokens" with no pattern
+// the user could see). discoverySourceFailureBackoff above is a plain in-memory Map at module
+// scope — on Vercel serverless, that memory is per-instance, not shared across the whole
+// deployment. Under real traffic, multiple instances run concurrently, each with its own empty-at-
+// cold-start copy. GeckoTerminal's actual rate limit is a real, shared budget (tied to this
+// server's outbound IP/API key), but the backoff meant to protect it was purely local — instance A
+// has no idea instance B just burned the shared budget serving a different user seconds earlier, so
+// A's request looks "fresh," fires its own full burst, and gets 429'd across the board for reasons
+// entirely outside that user's own actions. That's exactly what would read as "random" from any one
+// user's perspective. Backed by the Redis client already used elsewhere in this codebase
+// (lib/server/cache/redisClient.ts) so the cooldown is now actually shared across instances;
+// falls back to the local Map (best-effort, not cross-instance) when Redis is unconfigured or
+// briefly unavailable — a Redis hiccup degrades to the old per-instance behavior, it never blocks
+// or fails a discovery fetch outright.
+const RADAR_BACKOFF_REDIS_PREFIX = 'radar:discovery-backoff:'
+async function getDiscoveryBackoffUntil(key: string): Promise<number | null> {
+  if (redisConfigured()) {
+    try {
+      const val = await redis.get<number>(`${RADAR_BACKOFF_REDIS_PREFIX}${key}`)
+      if (typeof val === 'number') return val
+    } catch { /* fall through to local map — never block discovery on a Redis problem */ }
+  }
+  return discoverySourceFailureBackoff.get(key) ?? null
+}
+async function setDiscoveryBackoff(key: string, until: number): Promise<void> {
+  discoverySourceFailureBackoff.set(key, until)
+  if (redisConfigured()) {
+    try { await redis.set(`${RADAR_BACKOFF_REDIS_PREFIX}${key}`, until, { ex: Math.ceil(DISCOVERY_FAILURE_BACKOFF_MS / 1000) }) } catch { /* best-effort */ }
+  }
+}
 const HOLDER_COUNT_CACHE_TTL_MS = 10 * 60_000
 const holderCountCache = new Map<string, { count: number | null; reason?: 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data'; expiresAt: number }>()
 // SINGLE-HOST RETRY, DISCLOSED (found via live baseRadarSourceAudit output: 3 real candidates
@@ -830,7 +861,7 @@ export async function GET(req: NextRequest) {
   }
   async function fetchOneSource(spec: { key: string; source: string; page: number; url: string }): Promise<SourceFetchResult> {
     const startedAt = Date.now()
-    const backoffUntil = discoverySourceFailureBackoff.get(spec.key)
+    const backoffUntil = await getDiscoveryBackoffUntil(spec.key)
     if (backoffUntil && Date.now() < backoffUntil) {
       return {
         key: spec.key, source: spec.source, page: spec.page, count: 0, data: null, ok: false,
@@ -885,7 +916,7 @@ export async function GET(req: NextRequest) {
         durationMs: Date.now() - startedAt, skippedByBackoff: false, cacheStatus: result.cache,
       }
     } catch (err) {
-      discoverySourceFailureBackoff.set(spec.key, Date.now() + DISCOVERY_FAILURE_BACKOFF_MS)
+      await setDiscoveryBackoff(spec.key, Date.now() + DISCOVERY_FAILURE_BACKOFF_MS)
       // FAILED-SOURCE-VS-GENUINELY-EMPTY FIX, DISCLOSED (reported: raw candidate count dropped from
       // ~200-360 to 72 in one cycle, with several source pages returning 0 scattered between pages
       // that returned a full 20 — e.g. new_p2/p3/p7/p8/p9 empty while new_p1/p4/p5/p6 full. That
@@ -1814,6 +1845,11 @@ export async function GET(req: NextRequest) {
       dexScreenerProfileStatus,
       dexScreenerProfileHttpStatus,
       dexScreenerProfileTokensFound,
+      // SHARED-BACKOFF-VISIBILITY, DISCLOSED: whether the cross-instance discovery backoff (see the
+      // SHARED-BACKOFF FIX comment near discoverySourceFailureBackoff's declaration) is actually
+      // backed by Redis this cycle, or silently degraded to the old per-instance-only Map. false
+      // here on a deployment where Redis env vars ARE set would indicate the fix isn't taking effect.
+      sharedBackoffStoreConfigured: redisConfigured(),
     }
 
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
