@@ -1295,32 +1295,82 @@ export default function BaseRadarPage() {
   // the fetch side of this was already correct; this only adds the missing honest message for the
   // case where that fresh page came back with zero tokens this feed doesn't already have.
   const [loadMoreExhausted, setLoadMoreExhausted] = useState(false)
-  const handleLoadMore = useCallback(async () => {
-    if (loadingMore) return
-    const nextPage = (data?.page ?? 1) + 1
-    setLoadingMore(true)
+  // LOAD-ONE-PAGE, DISCLOSED: extracted so handleLoadMore (one click, one page) and handleLoadAll
+  // (below — automatically clicks through every remaining page) share the exact same fetch/merge/
+  // dedupe logic instead of drifting apart. Returns what actually happened so a calling loop can
+  // decide whether to continue — state itself is read back via the return value, not by racing
+  // React's own (batched, async) state updates.
+  const loadOnePage = useCallback(async (page: number): Promise<{ ok: boolean; addedCount: number; hasMore: boolean }> => {
     try {
       const { data: _sd } = await supabase.auth.getSession()
       const _tok = _sd.session?.access_token
-      const res = await fetch(`/api/radar?page=${nextPage}`, { cache: 'no-store', headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
+      const res = await fetch(`/api/radar?page=${page}`, { cache: 'no-store', headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
       const json = await res.json()
-      if (res.ok && !json.error) {
-        let addedCount = 0
-        setData(prev => {
-          if (!prev) return json as RadarData
-          const seen = new Set(prev.tokens.map(t => t.contract.toLowerCase()))
-          const newTokens = (json.tokens as RadarToken[]).filter(t => !seen.has(t.contract.toLowerCase()))
-          addedCount = newTokens.length
-          return { ...prev, tokens: [...prev.tokens, ...newTokens], page: json.page ?? nextPage, hasMore: json.hasMore ?? false }
-        })
-        setLoadMoreExhausted(addedCount === 0)
-      }
+      if (!res.ok || json.error) return { ok: false, addedCount: 0, hasMore: false }
+      let addedCount = 0
+      let hasMore = false
+      setData(prev => {
+        if (!prev) return json as RadarData
+        const seen = new Set(prev.tokens.map(t => t.contract.toLowerCase()))
+        const newTokens = (json.tokens as RadarToken[]).filter(t => !seen.has(t.contract.toLowerCase()))
+        addedCount = newTokens.length
+        hasMore = json.hasMore ?? false
+        return { ...prev, tokens: [...prev.tokens, ...newTokens], page: json.page ?? page, hasMore }
+      })
+      return { ok: true, addedCount, hasMore }
     } catch {
-      // Best-effort — a failed "load more" leaves the existing feed exactly as it was, no error banner needed.
+      // Best-effort — a failed page fetch leaves the existing feed exactly as it was.
+      return { ok: false, addedCount: 0, hasMore: false }
+    }
+  }, [])
+  const handleLoadMore = useCallback(async () => {
+    if (loadingMore) return
+    setLoadingMore(true)
+    try {
+      const result = await loadOnePage((data?.page ?? 1) + 1)
+      setLoadMoreExhausted(result.ok && result.addedCount === 0)
     } finally {
       setLoadingMore(false)
     }
-  }, [data?.page, loadingMore])
+  }, [data?.page, loadingMore, loadOnePage])
+  // LOAD-ALL, DISCLOSED (requested: "check it all and get it from one load instead of going on
+  // each page" — one control that automatically clicks through every remaining page instead of the
+  // user doing it by hand). Deliberately NOT one giant server-side request: this route has no
+  // extended maxDuration configured (see vercel.json — only /api/scan* routes get one) and a single
+  // page already takes several real seconds (paced GeckoTerminal discovery waves + DexScreener
+  // rescue calls + holder checks + honeypot simulations); firing 5 pages' worth of upstream requests
+  // inside one server call would very likely blow the default function timeout and return nothing —
+  // worse than today. Looping client-side instead keeps every individual request inside its normal,
+  // already-safe budget and lets each one use the existing rate-limit backoff/pacing exactly as
+  // designed — this only automates clicking Load More repeatedly, with a real pause between clicks
+  // so it doesn't fire pages back-to-back faster than a human would (which is exactly the pattern
+  // this session's rate-limit fixes exist to avoid).
+  const [loadingAll, setLoadingAll] = useState(false)
+  const [loadAllProgress, setLoadAllProgress] = useState<{ page: number; totalAdded: number } | null>(null)
+  const LOAD_ALL_PAGE_DELAY_MS = 2500
+  const handleLoadAll = useCallback(async () => {
+    if (loadingAll || loadingMore) return
+    setLoadingAll(true)
+    setLoadMoreExhausted(false)
+    let totalAdded = 0
+    try {
+      let page = data?.page ?? 1
+      let hasMore = data?.hasMore ?? false
+      while (hasMore) {
+        page += 1
+        setLoadAllProgress({ page, totalAdded })
+        const result = await loadOnePage(page)
+        if (!result.ok) break
+        totalAdded += result.addedCount
+        hasMore = result.hasMore
+        if (hasMore) await new Promise(resolve => setTimeout(resolve, LOAD_ALL_PAGE_DELAY_MS))
+      }
+      setLoadMoreExhausted(totalAdded === 0)
+    } finally {
+      setLoadingAll(false)
+      setLoadAllProgress(null)
+    }
+  }, [data?.page, data?.hasMore, loadingAll, loadingMore, loadOnePage])
 
   // REDUNDANT-REFETCH-ON-TAB-REFOCUS FIX, DISCLOSED (reported: switching to another tab for a
   // while, then back to Base Radar, clears the feed and it doesn't come back). Root cause:
@@ -1937,21 +1987,37 @@ export default function BaseRadarPage() {
             {!loading && filteredAndSortedTokens.length <= 2 && !error && <LowActivityPanel />}
 
             {!loading && tokens.length > 0 && data?.hasMore && (
-              <button
-                onClick={() => { setLoadMoreExhausted(false); void handleLoadMore() }}
-                disabled={loadingMore}
-                style={{
-                  marginTop: '4px', width: '100%', padding: '11px', borderRadius: '10px',
-                  border: '1px solid rgba(45,212,191,0.24)', background: loadingMore ? 'rgba(45,212,191,0.04)' : 'rgba(45,212,191,0.07)',
-                  color: loadingMore ? 'rgba(153,246,228,0.5)' : '#99f6e4', fontSize: '11px', fontWeight: 700,
-                  letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)',
-                  cursor: loadingMore ? 'not-allowed' : 'pointer', transition: 'background 0.15s, color 0.15s',
-                }}
-              >
-                {loadingMore ? 'Loading…' : 'Load More'}
-              </button>
+              <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
+                <button
+                  onClick={() => { setLoadMoreExhausted(false); void handleLoadMore() }}
+                  disabled={loadingMore || loadingAll}
+                  style={{
+                    flex: 1, padding: '11px', borderRadius: '10px',
+                    border: '1px solid rgba(45,212,191,0.24)', background: (loadingMore || loadingAll) ? 'rgba(45,212,191,0.04)' : 'rgba(45,212,191,0.07)',
+                    color: (loadingMore || loadingAll) ? 'rgba(153,246,228,0.5)' : '#99f6e4', fontSize: '11px', fontWeight: 700,
+                    letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)',
+                    cursor: (loadingMore || loadingAll) ? 'not-allowed' : 'pointer', transition: 'background 0.15s, color 0.15s',
+                  }}
+                >
+                  {loadingMore ? 'Loading…' : 'Load More'}
+                </button>
+                <button
+                  onClick={() => void handleLoadAll()}
+                  disabled={loadingMore || loadingAll}
+                  title="Automatically loads every remaining page — takes a bit longer since each page still respects the same rate-limit pacing."
+                  style={{
+                    flex: 1, padding: '11px', borderRadius: '10px',
+                    border: '1px solid rgba(45,212,191,0.24)', background: (loadingMore || loadingAll) ? 'rgba(45,212,191,0.04)' : 'rgba(45,212,191,0.07)',
+                    color: (loadingMore || loadingAll) ? 'rgba(153,246,228,0.5)' : '#99f6e4', fontSize: '11px', fontWeight: 700,
+                    letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)',
+                    cursor: (loadingMore || loadingAll) ? 'not-allowed' : 'pointer', transition: 'background 0.15s, color 0.15s',
+                  }}
+                >
+                  {loadingAll ? (loadAllProgress ? `Loading page ${loadAllProgress.page}/5…` : 'Loading…') : 'Load All Remaining'}
+                </button>
+              </div>
             )}
-            {!loading && !loadingMore && loadMoreExhausted && (
+            {!loading && !loadingMore && !loadingAll && loadMoreExhausted && (
               <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#64748b', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
                 No more candidates passed the $50K+ valuation / real liquidity gate in this cycle.
               </p>
