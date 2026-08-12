@@ -3938,9 +3938,9 @@ export default function TerminalTokenScanner() {
         /* PREMIUM POLISH, DISCLOSED (Token Scanner UI polish task): the old search-card stacked
            five box-shadow layers (up to 140px blur) — replaced with a calmer, static two-layer
            shadow so the card reads as the terminal's primary command module, not a glow bloom. */
-        .search-card{background:linear-gradient(160deg,rgba(10,18,36,.98) 0%,rgba(6,12,26,.97) 100%);border:1px solid rgba(99,102,241,.28);border-radius:18px;box-shadow:0 0 0 1px rgba(99,102,241,.08) inset,0 20px 48px rgba(2,6,23,.60);}
-        .chain-seg{display:inline-flex;padding:3px;border-radius:11px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);gap:2px;}
-        .chain-seg-btn{padding:8px 20px;border-radius:8px;font-size:11px;font-weight:700;letter-spacing:.11em;font-family:var(--font-plex-mono);cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;border:none;background:transparent;color:#3d4f62;}
+        .search-card{background:linear-gradient(160deg,rgba(9,16,32,.98) 0%,rgba(5,11,24,.97) 100%);border:1px solid rgba(148,163,184,.15);border-radius:16px;box-shadow:0 14px 36px rgba(2,6,23,.55);}
+        .chain-seg{display:inline-flex;padding:3px;border-radius:10px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);gap:2px;}
+        .chain-seg-btn{padding:6px 15px;border-radius:7px;font-size:10.5px;font-weight:700;letter-spacing:.10em;font-family:var(--font-plex-mono);cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;border:none;background:transparent;color:#3d4f62;}
         .chain-seg-btn:hover:not(.chain-seg-btn--active){color:#64748b;}
         /* Per-chain active color, DISCLOSED (Token Scanner final polish task): BASE keeps the
            brand teal already used for its header pill/dot elsewhere on this page; ETHEREUM keeps
@@ -3959,8 +3959,8 @@ export default function TerminalTokenScanner() {
         /* STATIC HOVER, DISCLOSED (Token Scanner UI polish task): previously animated its own
            box-shadow on an infinite loop while hovered — replaced with a single static, slightly
            brighter glow so the button reads as "ready to fire" without an animated blur. */
-        .scan-btn-live{transition:transform .15s ease,border-color .15s ease,background .15s ease !important;}
-        .scan-btn-live:hover{transform:translateY(-1px);background:linear-gradient(180deg,rgba(8,30,44,.96),rgba(2,10,21,.92)) !important;border-color:rgba(0,246,255,.55) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.08),0 0 20px rgba(0,246,255,.20) !important;}
+        .scan-btn-live{transition:transform .15s ease,border-color .15s ease,box-shadow .15s ease !important;}
+        .scan-btn-live:hover{transform:translateY(-1px);border-color:rgba(83,243,195,.85) !important;box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 0 22px rgba(83,243,195,.18) !important;}
         .scan-btn-live:active{transform:translateY(1px) scale(.99) !important;}
         .live-dot{animation:liveDotPulse 2.2s ease-in-out infinite;}
         .clark-section{border-top:1px solid rgba(255,255,255,.04);padding-top:12px;margin-bottom:12px;}
@@ -4026,40 +4026,21 @@ export default function TerminalTokenScanner() {
             </div>
           </div>
 
-          {/* ── Search card with hologram ─────────────────────────── */}
+          {/* ── Search card ───────────────────────────────────────── */}
+          {/* COMMAND-BAR REDESIGN, DISCLOSED (Token Scanner premium-polish task): removed the
+              decorative radar hologram, the inner "Scan a token" title/helper block, and the
+              Try VIRTUAL / Scan by contract / Check LP risk quick-action pills — the card is now
+              a minimal command bar (chain selector, input + Scan Token, divider, one helper line
+              + How CORTEX works anchor). Same input value/onChange/onKeyDown, same handleScan()
+              submission, same disabled wiring — presentation-only change, zero behavior change. */}
           <div style={{ position: 'relative', maxWidth: '820px', marginBottom: '32px' }}>
-
-            {/* Decorative radar hologram (behind card) */}
-            <div style={{ position: 'absolute', left: '50%', top: '-32px', transform: 'translateX(-50%)', pointerEvents: 'none', zIndex: 0, width: '260px', height: '88px', overflow: 'hidden', opacity: 0.48 }} aria-hidden="true">
-              <svg width="260" height="88" viewBox="0 0 260 88" fill="none">
-                <circle cx="130" cy="44" r="4.5" fill="#2DD4BF" className="live-dot" />
-                <circle cx="130" cy="44" r="3" fill="rgba(139,92,246,0.55)" />
-                {([0, 0.5, 1.0] as const).map((delay, i) => (
-                  <circle key={i} cx="130" cy="44" r={16 + i * 16} stroke="#2DD4BF" strokeWidth="0.5" className="radar-ring"
-                    style={{ animation: `radarRing 2.6s ${delay}s ease-out infinite`, transformOrigin: '130px 44px' }} />
-                ))}
-                <circle cx="130" cy="44" r={64} stroke="rgba(139,92,246,0.22)" strokeWidth="0.5" className="radar-ring"
-                  style={{ animation: 'radarRing 2.6s 1.0s ease-out infinite', transformOrigin: '130px 44px' }} />
-              </svg>
-            </div>
-
-            {/* Premium search card — thin static top accent line, DISCLOSED (Token Scanner final
-                polish task): same cheap gradient-line treatment already used on other ChainLens
-                panels (e.g. the Clark AI panel header) for a touch of depth without any blur/glow
-                animation. */}
-            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '22px 22px 18px', overflow: 'hidden' }}>
-              <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: '8%', right: '8%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.45), rgba(99,102,241,0.40), transparent)' }} />
-
-              {/* Card title + description */}
-              <div style={{ marginBottom: '14px' }}>
-                <p style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em' }}>Scan a token</p>
-                <p style={{ margin: 0, fontSize: '11px', color: '#3a4d60', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>Resolve a token and build a live risk receipt from market, holder, LP, and dev-control evidence.</p>
-              </div>
+            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '18px 20px 14px', overflow: 'hidden' }}>
+              <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: '8%', right: '8%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.40), rgba(99,102,241,0.30), transparent)' }} />
 
               {/* Chain selector — compact segmented control, DISCLOSED (Token Scanner UI polish
                   task): same setChain(c) behavior, restyled from two loud neon-bordered tabs into
                   a single quiet track with a clearly-selected (but not neon) active segment. */}
-              <div className="chain-seg" style={{ marginBottom: '14px' }}>
+              <div className="chain-seg" style={{ marginBottom: '12px' }}>
                 {(['base', 'eth', 'bnb', 'robinhood'] as const).map(c => (
                   <button
                     key={c}
@@ -4072,26 +4053,27 @@ export default function TerminalTokenScanner() {
                 ))}
               </div>
 
-              {/* Input + button row — terminal prompt prefix, DISCLOSED (Token Scanner final
-                  polish task): purely presentational ">_" glyph inside the input's own padding,
-                  same value/onChange/onKeyDown/disabled wiring as before, no submit-behavior
-                  change. */}
-              <div className="token-input-row" style={{ display: 'flex', gap: '10px', marginBottom: '12px' }}>
+              {/* Input + button row — command bar. Same value/onChange/onKeyDown/disabled wiring
+                  as before, no submit-behavior change. No ⌘K hint: no such shortcut is wired on
+                  this page, and a fake keyboard chip is exactly the kind of decoration this pass
+                  removes. */}
+              <div className="token-input-row" style={{ display: 'flex', gap: '10px' }}>
                 <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
-                  <span aria-hidden="true" style={{ position: 'absolute', left: '16px', top: '50%', transform: 'translateY(-50%)', color: 'rgba(45,212,191,0.55)', fontFamily: 'var(--font-plex-mono)', fontSize: '14px', fontWeight: 700, pointerEvents: 'none' }}>
-                    {'>_'}
-                  </span>
+                  <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" style={{ position: 'absolute', left: '18px', top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none' }}>
+                    <circle cx="11" cy="11" r="7" stroke="rgba(148,163,184,0.55)" strokeWidth="1.6" />
+                    <path d="M20 20l-3.2-3.2" stroke="rgba(148,163,184,0.55)" strokeWidth="1.6" strokeLinecap="round" />
+                  </svg>
                   <input
                     value={input}
                     onChange={e => { setInput(e.target.value); setResolverResult(null) }}
                     onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
                     disabled={loading}
-                    placeholder="Paste contract, ticker, or token name"
+                    placeholder="Enter contract address, ticker, or token name…"
                     style={{
-                      width: '100%', padding: '14px 18px 14px 40px', boxSizing: 'border-box',
-                      background: 'rgba(255,255,255,0.04)',
-                      border: '1px solid rgba(255,255,255,0.10)',
-                      borderRadius: '12px',
+                      width: '100%', height: '62px', padding: '0 18px 0 46px', boxSizing: 'border-box',
+                      background: 'rgba(4,10,20,0.85)',
+                      border: '1px solid rgba(148,163,184,0.16)',
+                      borderRadius: '13px',
                       color: '#e2e8f0', fontSize: '15px',
                       fontFamily: 'var(--font-plex-mono)',
                       outline: 'none',
@@ -4100,11 +4082,11 @@ export default function TerminalTokenScanner() {
                       minWidth: 0,
                     }}
                     onFocus={e => {
-                      e.currentTarget.style.borderColor = 'rgba(45,212,191,0.55)'
-                      e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.08)'
+                      e.currentTarget.style.borderColor = 'rgba(83,243,195,0.55)'
+                      e.currentTarget.style.boxShadow = '0 0 0 3px rgba(83,243,195,0.07)'
                     }}
                     onBlur={e => {
-                      e.currentTarget.style.borderColor = 'rgba(255,255,255,0.10)'
+                      e.currentTarget.style.borderColor = 'rgba(148,163,184,0.16)'
                       e.currentTarget.style.boxShadow = 'none'
                     }}
                   />
@@ -4115,17 +4097,18 @@ export default function TerminalTokenScanner() {
                   className={loading || resolving || !input.trim() ? '' : 'scan-btn-live'}
                   style={{
                     display: 'inline-flex', alignItems: 'center', gap: '8px',
-                    padding: '14px 30px', borderRadius: '12px', border: '1px solid rgba(0,246,255,0.35)',
+                    height: '62px', padding: '0 28px', borderRadius: '13px',
+                    border: `1px solid ${loading || resolving || !input.trim() ? 'rgba(148,163,184,0.18)' : 'rgba(83,243,195,0.55)'}`,
                     background: loading || resolving || !input.trim()
                       ? 'rgba(15,23,42,0.54)'
-                      : 'linear-gradient(180deg, rgba(15,23,42,0.94), rgba(2,6,23,0.88))',
-                    color: loading || resolving || !input.trim() ? 'rgba(148,163,184,0.42)' : '#a5f3fc',
+                      : 'rgba(7,14,24,0.92)',
+                    color: loading || resolving || !input.trim() ? 'rgba(148,163,184,0.42)' : '#ffffff',
                     fontSize: '12px', fontWeight: 800,
                     fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.12em',
                     cursor: loading || resolving || !input.trim() ? 'not-allowed' : 'pointer',
                     flexShrink: 0,
                     whiteSpace: 'nowrap',
-                    boxShadow: loading || resolving || !input.trim() ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.06), 0 0 18px rgba(0,246,255,0.13)',
+                    boxShadow: loading || resolving || !input.trim() ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.05)',
                   }}
                 >
                   {loading || resolving ? 'SCANNING…' : (
@@ -4137,30 +4120,25 @@ export default function TerminalTokenScanner() {
                 </button>
               </div>
 
-              {/* Quick action buttons */}
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '7px', marginBottom: '10px' }}>
-                {[
-                  { label: 'Try VIRTUAL', action: () => { setInput('VIRTUAL'); setTimeout(() => handleScan('VIRTUAL'), 0) } },
-                  { label: 'Scan by contract', action: () => setInput('') },
-                  { label: 'Check LP risk', action: () => setInput('') },
-                ].map(btn => (
-                  <button key={btn.label} type="button" onClick={btn.action} className="cmd-chip">
-                    <span className="cmd-chip-glyph">›</span>{btn.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Helper text */}
-              <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#2a3d4d', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, letterSpacing: '0.02em' }}>
-                CORTEX checks liquidity, holders, LP control, dev activity, and risk evidence.
-              </p>
-
-              {/* Disclaimer strip */}
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '10px 14px', borderRadius: '10px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.18)' }}>
-                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" style={{ flexShrink: 0, marginTop: '1px' }}><circle cx="6.5" cy="6.5" r="5.5" stroke="#6366f1" strokeWidth="1"/><path d="M6.5 5.5v3M6.5 4h.01" stroke="#6366f1" strokeWidth="1.2" strokeLinecap="round"/></svg>
-                <p style={{ margin: 0, fontSize: '10px', color: '#4b5d7a', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>ChainLens does not give financial advice. CORTEX surfaces evidence, risk signals, and missing checks so you can review before acting.</p>
+              {/* Divider + helper line + How CORTEX works anchor (scrolls to the real "What this
+                  scan checks" section below — not a fake link). */}
+              <div style={{ height: '1px', background: 'rgba(148,163,184,0.10)', margin: '14px 0 10px' }} />
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+                <p style={{ margin: 0, fontSize: '11px', color: '#3a4d60', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5, letterSpacing: '0.02em' }}>
+                  CORTEX scans liquidity, holders, LP control, dev activity, market signals, and risk patterns.
+                </p>
+                <a href="#how-cortex-works" style={{ fontSize: '11px', fontWeight: 700, color: 'rgba(83,243,195,0.75)', fontFamily: 'var(--font-plex-mono)', textDecoration: 'none', letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>
+                  How CORTEX works →
+                </a>
               </div>
             </div>
+
+            {/* Disclaimer — moved out of the card (same sentence, small muted line) so the card
+                itself stays a minimal command bar; the "No Financial Advice" hero pill above also
+                keeps this visible at all times. */}
+            <p style={{ margin: '10px 2px 0', fontSize: '10px', color: '#33465c', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
+              ChainLens does not give financial advice. CORTEX surfaces evidence, risk signals, and missing checks so you can review before acting.
+            </p>
           </div>
 
           {/* Resolver status */}
@@ -4233,7 +4211,7 @@ export default function TerminalTokenScanner() {
 
           {/* ── What this scan checks ─────────────────────────────── */}
           {!loading && !resolving && !result && !error && (
-            <div style={{ maxWidth: '820px' }}>
+            <div id="how-cortex-works" style={{ maxWidth: '820px' }}>
               <div style={{ marginBottom: '20px' }}>
                 <p style={{ margin: '0 0 5px', fontSize: '18px', fontWeight: 700, color: '#e2e8f0', lineHeight: 1.35, letterSpacing: '-0.01em' }}>
                   What this scan checks
