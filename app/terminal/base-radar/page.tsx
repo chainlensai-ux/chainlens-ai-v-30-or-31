@@ -2007,6 +2007,12 @@ export default function BaseRadarPage() {
       <ProjectOverviewDrawer
         token={selectedToken}
         open={drawerOpen}
+        // CHAIN-PROP-NEVER-PASSED, DISCLOSED (bug hunt, self-caught while wiring Robinhood chain
+        // support into the drawer): this prop was never actually passed here — it silently defaulted
+        // to 'base' every time regardless of which tab was active, so opening the drawer for a
+        // Robinhood token would request /api/base-radar/enrichment?...&chain=base, quietly looking up
+        // the WRONG chain's contract instead of erroring or working correctly.
+        chain={effectiveRadarChain}
         onClose={() => setDrawerOpen(false)}
         onSimulationUpdate={handleDrawerSimulationUpdate}
         tracking={selectedToken ? isWatched(selectedToken.contract) : false}

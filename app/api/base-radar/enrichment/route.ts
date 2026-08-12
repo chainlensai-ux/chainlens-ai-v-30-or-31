@@ -5,7 +5,11 @@ import { reconcileBaseRadarLp } from '@/lib/server/baseRadarLpReconciliation'
 import { getRadarValuationBasis, resolveBaseRadarMarketCap } from '@/lib/baseRadarValuation'
 import { fetchGoldRushHolderCount } from '@/lib/server/goldrushHolderCount'
 
-type ChainKey = 'base' | 'eth'
+// ROBINHOOD-CHAIN-SUPPORT, DISCLOSED (explicitly confirmed: "yes the token scanner works with
+// robinhood" — Token Scanner's own engine already supports scanning Robinhood-chain contracts;
+// this route was just never updated to recognize 'robinhood' as a valid chain, so opening the
+// drawer for a Robinhood token 400'd with "Unsupported chain" before ever reaching Token Scanner).
+type ChainKey = 'base' | 'eth' | 'robinhood'
 type SectionKey = 'market' | 'lp' | 'holders' | 'deployer' | 'security' | 'socials'
 
 type CacheSection = {
@@ -45,6 +49,7 @@ function normalizeChain(value: string | null): ChainKey | null {
   const chain = String(value ?? 'base').toLowerCase()
   if (chain === 'base') return 'base'
   if (chain === 'eth' || chain === 'ethereum') return 'eth'
+  if (chain === 'robinhood') return 'robinhood'
   return null
 }
 

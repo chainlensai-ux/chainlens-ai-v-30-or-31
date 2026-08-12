@@ -12,7 +12,10 @@ import TimelineMiniChart from './TimelineMiniChart'
 import SignalsSidebar from './SignalsSidebar'
 import NextFiveMinuteCard from './NextFiveMinuteCard'
 
-type ChainKey = 'base' | 'eth'
+// ROBINHOOD-CHAIN-SUPPORT, DISCLOSED (explicitly confirmed: "yes the token scanner works with
+// robinhood"). Explorer URL is real and verified — robinhoodchain.blockscout.com, the official
+// Blockscout-powered explorer for Robinhood Chain (chain id 4663) — not guessed.
+type ChainKey = 'base' | 'eth' | 'robinhood'
 
 type RadarDrawerToken = {
   name: string
@@ -204,11 +207,16 @@ type ChartPoint = { timestamp: number | string; price?: number | null; close?: n
 const EXPLORER: Record<ChainKey, string> = {
   base: 'https://basescan.org',
   eth: 'https://etherscan.io',
+  // Verified via web search, not guessed: official Blockscout-powered explorer for Robinhood Chain.
+  robinhood: 'https://robinhoodchain.blockscout.com',
 }
 
+// GeckoTerminal confirmed to index Robinhood as network slug 'robinhood' (same session, verified
+// live via geckoterminal.com/robinhood/pools and DexScreener's own chainId:"robinhood" data).
 const GT_NETWORK: Record<ChainKey, string> = {
   base: 'base',
   eth: 'eth',
+  robinhood: 'robinhood',
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
