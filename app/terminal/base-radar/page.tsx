@@ -1345,9 +1345,19 @@ export default function BaseRadarPage() {
   // designed — this only automates clicking Load More repeatedly, with a real pause between clicks
   // so it doesn't fire pages back-to-back faster than a human would (which is exactly the pattern
   // this session's rate-limit fixes exist to avoid).
+  // DELAY-TOO-SHORT FIX, DISCLOSED (live-reproduced immediately after shipping: a real capture
+  // showed pages 2, 3, and 5 ALL coming back sourcesFailedCount 8/8 — a full GeckoTerminal lockout —
+  // with only page 4 partially recovering. The original 2.5s inter-page delay was nowhere near this
+  // route's real recovery window; each page already fires up to 8 GeckoTerminal requests on its own
+  // (the same burst a single refresh uses), so five pages 2.5s apart is a much bigger, faster burst
+  // than anything this session's other rate-limit fixes were tuned against. Raised to align with the
+  // one empirically-safe cadence this session has actually observed recovering reliably: the
+  // frontend's own 120s auto-refresh interval (RADAR_FULL_CACHE_TTL_MS's poll-interval comment). Full
+  // Load All now realistically takes ~2 minutes for 4 additional pages, not seconds — slower, but it
+  // should actually recover between pages instead of guaranteeing its own lockout.
   const [loadingAll, setLoadingAll] = useState(false)
   const [loadAllProgress, setLoadAllProgress] = useState<{ page: number; totalAdded: number } | null>(null)
-  const LOAD_ALL_PAGE_DELAY_MS = 2500
+  const LOAD_ALL_PAGE_DELAY_MS = 30_000
   const handleLoadAll = useCallback(async () => {
     if (loadingAll || loadingMore) return
     setLoadingAll(true)
@@ -2004,7 +2014,7 @@ export default function BaseRadarPage() {
                 <button
                   onClick={() => void handleLoadAll()}
                   disabled={loadingMore || loadingAll}
-                  title="Automatically loads every remaining page — takes a bit longer since each page still respects the same rate-limit pacing."
+                  title="Automatically loads every remaining page, ~30s apart so each page gets a real chance to clear GeckoTerminal's rate limit — takes about 2 minutes total."
                   style={{
                     flex: 1, padding: '11px', borderRadius: '10px',
                     border: '1px solid rgba(45,212,191,0.24)', background: (loadingMore || loadingAll) ? 'rgba(45,212,191,0.04)' : 'rgba(45,212,191,0.07)',
@@ -2013,7 +2023,7 @@ export default function BaseRadarPage() {
                     cursor: (loadingMore || loadingAll) ? 'not-allowed' : 'pointer', transition: 'background 0.15s, color 0.15s',
                   }}
                 >
-                  {loadingAll ? (loadAllProgress ? `Loading page ${loadAllProgress.page}/5…` : 'Loading…') : 'Load All Remaining'}
+                  {loadingAll ? (loadAllProgress ? `Page ${loadAllProgress.page}/5 — waiting for rate limit…` : 'Loading…') : 'Load All (~2 min)'}
                 </button>
               </div>
             )}
