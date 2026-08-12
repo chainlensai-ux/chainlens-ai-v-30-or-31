@@ -665,7 +665,15 @@ export async function GET(req: NextRequest) {
   // 4th source." Kept to a small, fixed cap (4 tokens) so this never meaningfully adds to the
   // request burst the pacing/backoff fixes above exist to control — "no uncontrolled provider
   // spam" per the hard limit.
-  const DEXSCREENER_BOOST_DISCOVERY_CAP = 4
+  // NOT-JUST-BOOSTED, DISCLOSED (reported: "we don't need base boosted just base tokens" — boosts
+  // are paid promotion, a narrow and often-empty list unrelated to token quality). DexScreener's
+  // token-profiles/latest/v1 returns recently-submitted profiles (free to submit, no payment
+  // required), a meaningfully bigger and more representative "real new Base tokens" list than boosts
+  // alone. Added as a second supplementary source alongside boosts, both feeding the same combined
+  // cap below — NOT additive on top of it — so the total GeckoTerminal cross-reference request count
+  // this adds stays exactly what it was before (4), preserving the page-count-reduction work above
+  // this comment block that exists specifically to stay under GeckoTerminal's rate-limit budget.
+  const DEXSCREENER_SUPPLEMENTARY_DISCOVERY_CAP = 4
   // BOOST-AUDIT-GAP FIX, DISCLOSED (self-caught: reported "dexscreener should be working" —
   // investigating found the original comment here claiming a boost-fetch failure "is audited like
   // any other source via failedPages" was simply false. If the fetch failed, threw, or found 0 Base
@@ -676,43 +684,71 @@ export async function GET(req: NextRequest) {
   let dexScreenerBoostStatus: 'ok' | 'http_error' | 'fetch_failed' | 'no_base_tokens_found' = 'fetch_failed'
   let dexScreenerBoostHttpStatus: number | null = null
   let dexScreenerBoostedTokensFound = 0
+  let dexScreenerProfileStatus: 'ok' | 'http_error' | 'fetch_failed' | 'no_base_tokens_found' = 'fetch_failed'
+  let dexScreenerProfileHttpStatus: number | null = null
+  let dexScreenerProfileTokensFound = 0
   try {
-    const boostAc = new AbortController()
-    const boostTid = setTimeout(() => boostAc.abort(), 5000)
-    const boostedBaseTokens: string[] = []
+    const supplementaryAc = new AbortController()
+    const supplementaryTid = setTimeout(() => supplementaryAc.abort(), 5000)
+    const seenSupplementary = new Set<string>()
+    const supplementaryBaseTokens: string[] = []
+    const extractBaseTokens = (list: Record<string, unknown>[]) => {
+      const found: string[] = []
+      for (const item of list) {
+        const chainId = typeof item.chainId === 'string' ? item.chainId.toLowerCase() : ''
+        const tokenAddress = typeof item.tokenAddress === 'string' ? item.tokenAddress : ''
+        if (chainId === 'base' && tokenAddress) found.push(tokenAddress)
+      }
+      return found
+    }
     try {
-      const boostRes = await fetch('https://api.dexscreener.com/token-boosts/latest/v1', { headers: { Accept: 'application/json' }, cache: 'no-store', signal: boostAc.signal })
+      // Fetched in parallel — both are cheap, fixed, single-page requests, not part of the paced
+      // GeckoTerminal discovery burst these run alongside.
+      const [profileRes, boostRes] = await Promise.all([
+        fetch('https://api.dexscreener.com/token-profiles/latest/v1', { headers: { Accept: 'application/json' }, cache: 'no-store', signal: supplementaryAc.signal }),
+        fetch('https://api.dexscreener.com/token-boosts/latest/v1', { headers: { Accept: 'application/json' }, cache: 'no-store', signal: supplementaryAc.signal }),
+      ])
+      dexScreenerProfileHttpStatus = profileRes.status
       dexScreenerBoostHttpStatus = boostRes.status
+      let profileBaseTokens: string[] = []
+      let boostBaseTokens: string[] = []
+      if (profileRes.ok) {
+        const profileJson = await profileRes.json().catch(() => null)
+        profileBaseTokens = extractBaseTokens(Array.isArray(profileJson) ? profileJson as Record<string, unknown>[] : [])
+        dexScreenerProfileStatus = profileBaseTokens.length > 0 ? 'ok' : 'no_base_tokens_found'
+      } else {
+        dexScreenerProfileStatus = 'http_error'
+      }
       if (boostRes.ok) {
         const boostJson = await boostRes.json().catch(() => null)
-        const boostList = Array.isArray(boostJson) ? boostJson as Record<string, unknown>[] : []
-        const seen = new Set<string>()
-        for (const b of boostList) {
-          const chainId = typeof b.chainId === 'string' ? b.chainId.toLowerCase() : ''
-          const tokenAddress = typeof b.tokenAddress === 'string' ? b.tokenAddress : ''
-          if (chainId === 'base' && tokenAddress && !seen.has(tokenAddress.toLowerCase())) {
-            seen.add(tokenAddress.toLowerCase())
-            boostedBaseTokens.push(tokenAddress)
-          }
-          if (boostedBaseTokens.length >= DEXSCREENER_BOOST_DISCOVERY_CAP) break
-        }
-        dexScreenerBoostStatus = boostedBaseTokens.length > 0 ? 'ok' : 'no_base_tokens_found'
+        boostBaseTokens = extractBaseTokens(Array.isArray(boostJson) ? boostJson as Record<string, unknown>[] : [])
+        dexScreenerBoostStatus = boostBaseTokens.length > 0 ? 'ok' : 'no_base_tokens_found'
       } else {
         dexScreenerBoostStatus = 'http_error'
       }
-    } finally { clearTimeout(boostTid) }
-    dexScreenerBoostedTokensFound = boostedBaseTokens.length
-    boostedBaseTokens.forEach((address, i) => {
+      dexScreenerProfileTokensFound = profileBaseTokens.length
+      dexScreenerBoostedTokensFound = boostBaseTokens.length
+      // Profiles first (bigger, unpaid list), boosts fill remaining slots — combined cap unchanged.
+      for (const address of [...profileBaseTokens, ...boostBaseTokens]) {
+        const lower = address.toLowerCase()
+        if (seenSupplementary.has(lower)) continue
+        seenSupplementary.add(lower)
+        supplementaryBaseTokens.push(address)
+        if (supplementaryBaseTokens.length >= DEXSCREENER_SUPPLEMENTARY_DISCOVERY_CAP) break
+      }
+    } finally { clearTimeout(supplementaryTid) }
+    supplementaryBaseTokens.forEach((address, i) => {
       sourceSpecs.push({
-        key: `dex_boost_p${i}`,
-        source: 'dexscreener_boosted_token',
+        key: `dex_supp_p${i}`,
+        source: 'dexscreener_supplementary_token',
         page: i,
         url: `https://api.geckoterminal.com/api/v2/networks/base/tokens/${address}/pools?include=base_token%2Cquote_token&per_page=5`,
       })
     })
   } catch {
-    dexScreenerBoostStatus = 'fetch_failed'
-    // Best-effort — the boost-discovery step failing never affects the 3 primary sources above.
+    if (dexScreenerProfileHttpStatus == null) dexScreenerProfileStatus = 'fetch_failed'
+    if (dexScreenerBoostHttpStatus == null) dexScreenerBoostStatus = 'fetch_failed'
+    // Best-effort — this supplementary-discovery step failing never affects the 3 primary sources above.
   }
   const sourceCounts: Record<string, number> = {}
   let sourcesSucceeded = 0
@@ -1749,6 +1785,9 @@ export async function GET(req: NextRequest) {
       dexScreenerBoostStatus,
       dexScreenerBoostHttpStatus,
       dexScreenerBoostedTokensFound,
+      dexScreenerProfileStatus,
+      dexScreenerProfileHttpStatus,
+      dexScreenerProfileTokensFound,
     }
 
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
