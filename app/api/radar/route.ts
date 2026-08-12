@@ -284,7 +284,7 @@ async function setDailyPool(key: string, state: DailyPoolState): Promise<void> {
   } catch { /* best-effort */ }
 }
 const HOLDER_COUNT_CACHE_TTL_MS = 10 * 60_000
-const holderCountCache = new Map<string, { count: number | null; reason?: 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data'; expiresAt: number }>()
+const holderCountCache = new Map<string, { count: number | null; reason?: 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data' | 'chain_unsupported'; expiresAt: number }>()
 // SINGLE-HOST RETRY, DISCLOSED (found via live baseRadarSourceAudit output: 3 real candidates
 // cleared liquidity AND the $80K valuation gate, but all 3 holder-count checks failed the same
 // cycle — holderCheckSucceeded: 0 of 3 — triggering the fail-closed path and zeroing an otherwise-
@@ -299,9 +299,16 @@ const holderCountCache = new Map<string, { count: number | null; reason?: 'ok' |
 // contract" — every one of those looked identical from the outside). Returns the real reason
 // alongside the count so a persistent (not just transient) provider problem is provable from the
 // response instead of guessed at from a bare null.
-type HolderCountResult = { count: number | null; reason: 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data'; httpStatus?: number | null; errorBody?: string | null }
-async function fetchBaseHolderCount(contract: string): Promise<HolderCountResult> {
-  const key = contract.toLowerCase()
+type HolderCountResult = { count: number | null; reason: 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data' | 'chain_unsupported'; httpStatus?: number | null; errorBody?: string | null }
+// CHAIN-UNSUPPORTED, DISCLOSED (Robinhood-chain support: this endpoint is hardcoded to GoldRush's
+// 'base-mainnet' path — I have no verified confirmation GoldRush indexes a Robinhood chain at all,
+// or what path it would use if it does. Guessing a path risks silently hitting the wrong endpoint;
+// short-circuiting to the same honest 'unavailable' shape genuine provider failures already use is
+// safer — a Robinhood candidate is never falsely marked holder-verified, same fail-open-to-WATCH
+// behavior as any other real holder-count outage, just without wasting a request on a guessed URL.
+async function fetchBaseHolderCount(contract: string, chain: 'base' | 'robinhood'): Promise<HolderCountResult> {
+  if (chain !== 'base') return { count: null, reason: 'chain_unsupported' }
+  const key = `${chain}:${contract.toLowerCase()}`
   const cached = holderCountCache.get(key)
   if (cached && cached.expiresAt > Date.now()) return { count: cached.count, reason: cached.count != null ? 'ok' : (cached.reason ?? 'no_data') }
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
@@ -375,7 +382,15 @@ async function fetchBaseHolderCount(contract: string): Promise<HolderCountResult
 // to slip through even under a future param-handling regression.
 const ABSOLUTE_MIN_LIQUIDITY_USD = 500
 
-async function fetchHoneypot(contract: string): Promise<HoneypotResult | null> {
+// CHAIN-UNSUPPORTED, DISCLOSED (Robinhood-chain support: honeypot.is requires a numeric EVM
+// chainID — 8453 is Base's real, verified chainID, but I have no verified Robinhood-chain chainID
+// and guessing one risks silently simulating against the WRONG chain, which could produce a
+// confidently-wrong SAFE/DANGER verdict — far worse than an honest "unavailable." Short-circuits to
+// the same provider_unavailable shape a genuine honeypot.is outage already produces; Robinhood
+// candidates get the same honest simulationStatus: 'open_check' / capped-risk treatment as any real
+// provider failure, never a fabricated result.
+async function fetchHoneypot(contract: string, chain: 'base' | 'robinhood'): Promise<HoneypotResult | null> {
+  if (chain !== 'base') return { isHoneypot: null, buyTax: null, sellTax: null, simulationSuccess: null, failureReason: 'provider_unavailable' }
   const ac = new AbortController()
   const tid = setTimeout(() => ac.abort(), 2500)
   try {
@@ -530,17 +545,17 @@ const honeypotInflight = new Map<string, Promise<HoneypotResult | null>>()
 const dexMarketCapRescueCache = new Map<string, { result: DexScreenerMarketCapRescueResult; cachedAt: number }>()
 const dexMarketCapRescueInflight = new Map<string, Promise<DexScreenerMarketCapRescueResult>>()
 
-async function getCachedHoneypot(contract: string, retry = false): Promise<HoneypotResult | null> {
-  const key = contract.toLowerCase()
+async function getCachedHoneypot(contract: string, chain: 'base' | 'robinhood', retry = false): Promise<HoneypotResult | null> {
+  const key = `${chain}:${contract.toLowerCase()}`
   const now = Date.now()
   const cached = honeypotCache.get(key)
   if (cached && now - cached.cachedAt <= HONEYPOT_CACHE_TTL_MS && !(retry && cached.result == null)) return cached.result
   const existing = honeypotInflight.get(key)
   if (existing) return existing
   const promise = (async () => {
-    const first = await fetchHoneypot(contract)
+    const first = await fetchHoneypot(contract, chain)
     if (first || !retry) return first
-    return withTimeout(fetchHoneypot(contract), 2500, { isHoneypot: null, buyTax: null, sellTax: null, simulationSuccess: null, failureReason: 'timeout_after_retry' })
+    return withTimeout(fetchHoneypot(contract, chain), 2500, { isHoneypot: null, buyTax: null, sellTax: null, simulationSuccess: null, failureReason: 'timeout_after_retry' })
   })()
   honeypotInflight.set(key, promise)
   try {
@@ -631,6 +646,22 @@ export async function GET(req: NextRequest) {
   }
   if (plan === 'free') return NextResponse.json({ error: 'Included in Pro and Elite.' }, { status: 403 })
   const debug = req.nextUrl.searchParams.get('debug') === 'true'
+  // ROBINHOOD-CHAIN-SUPPORT, DISCLOSED (explicitly requested: "the same thing we did for the base
+  // chain with the robinhood chain for the base radar" — GeckoTerminal indexes 'robinhood' as its
+  // own network slug, same API shape as 'base', confirmed live via geckoterminal.com/robinhood/pools
+  // and via DexScreener's own boost/profile sample this session showing real chainId:"robinhood"
+  // entries). requestedChain drives every GeckoTerminal/DexScreener network-scoped URL and every
+  // cache/backoff/pool key below, so Base and Robinhood run as fully independent discovery cycles —
+  // never sharing rate-limit backoff state, cached payloads, or daily pools with each other.
+  // Two real external checks are deliberately SKIPPED (not guessed) for 'robinhood': honeypot.is
+  // requires a numeric EVM chainID (hardcoded 8453 for Base) and GoldRush's holder-count endpoint is
+  // hardcoded to the 'base-mainnet' path — I don't have a verified Robinhood-chain chainID or
+  // confirmation GoldRush indexes it at all, and guessing either risks silently returning data for
+  // the WRONG chain, which is worse than honestly reporting "unavailable." Both already have a real,
+  // honest not-verified evidence-gap path for genuine provider failures — Robinhood tokens flow
+  // through that exact same path, capped at WATCH / never falsely marked verified, same as any other
+  // real provider outage.
+  const requestedChain: 'base' | 'robinhood' = req.nextUrl.searchParams.get('chain') === 'robinhood' ? 'robinhood' : 'base'
   const minValuationUsd = Number(req.nextUrl.searchParams.get('minValuationUsd')) || DEFAULT_RADAR_MIN_VALUATION_USD
   const minLiquidityUsd = Number(req.nextUrl.searchParams.get('minLiquidityUsd')) || DEFAULT_RADAR_MIN_LIQUIDITY_USD
   const allowFdvFallback = req.nextUrl.searchParams.get('allowFdvFallback') === 'false' ? false : DEFAULT_RADAR_ALLOW_FDV_FALLBACK
@@ -650,14 +681,14 @@ export async function GET(req: NextRequest) {
   // thresholds into the cache key means any change to them (like this session's $45K -> $80K raise,
   // or a future one) can never accidentally serve a payload computed under the OLD thresholds; it's
   // simply a different cache key, so a cold miss forces a real re-run of the current pipeline.
-  const cacheKeyBase = `plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:page:${radarPage}:gate:${MAIN_FEED_MIN_VALUATION_USD}:${MAIN_FEED_MAX_VALUATION_USD}:${MAIN_FEED_MIN_HOLDERS}`
+  const cacheKeyBase = `chain:${requestedChain}:plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:page:${radarPage}:gate:${MAIN_FEED_MIN_VALUATION_USD}:${MAIN_FEED_MAX_VALUATION_USD}:${MAIN_FEED_MIN_HOLDERS}`
   // DAILY-POOL-KEY-EXCLUDES-PAGE, DISCLOSED: cacheKeyBase deliberately includes `page:${radarPage}`
   // (each Load More page fetches genuinely different raw GeckoTerminal pages, so it needs its own
   // burst-dedup cache entry) — but the daily pool must be ONE shared pool per plan/threshold
   // combination across every page number and every user, not fragmented per page. Using cacheKeyBase
   // directly for the daily pool would silently split today's pool into up to 5 disconnected pools
   // (one per Load More page), defeating the whole point of a single shared day-scoped reservoir.
-  const dailyPoolCacheKey = `plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:gate:${MAIN_FEED_MIN_VALUATION_USD}:${MAIN_FEED_MAX_VALUATION_USD}:${MAIN_FEED_MIN_HOLDERS}`
+  const dailyPoolCacheKey = `chain:${requestedChain}:plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:gate:${MAIN_FEED_MIN_VALUATION_USD}:${MAIN_FEED_MAX_VALUATION_USD}:${MAIN_FEED_MIN_HOLDERS}`
   const fullCacheKey = `${cacheKeyBase}:mode:full`
   const shallowCacheKey = `${cacheKeyBase}:mode:shallow`
   const preferredCacheKey = requestedMode === 'full' ? fullCacheKey : shallowCacheKey
@@ -745,17 +776,21 @@ export async function GET(req: NextRequest) {
   // round-robin interleaving the three categories so every source gets pages inside the first
   // (reliably-successful) wave, instead of one category unconditionally absorbing 100% of the
   // rate-limit risk every single cycle.
+  // CHAIN-SCOPED-SOURCE-KEYS, DISCLOSED: keys are prefixed with requestedChain so Base and Robinhood
+  // never share discovery-cache/backoff state — without this, 'new_p1' for Base and 'new_p1' for
+  // Robinhood would collide in discoverySourceFailureBackoff/getOrFetchCached, wrongly treating a
+  // rate-limit hit on one chain as if it happened on the other.
   const buildPageSpecs = (source: string, keyPrefix: string, startPage: number, count: number, urlBuilder: (page: number) => string) =>
     Array.from({ length: count }, (_, i) => {
       const page = startPage + i
-      return { key: `${keyPrefix}${page}`, source, page, url: urlBuilder(page) }
+      return { key: `${requestedChain}_${keyPrefix}${page}`, source, page, url: urlBuilder(page) }
     })
   const newPoolsSpecs = buildPageSpecs('new_pools', 'new_p', newPoolsStartPage, NEW_POOLS_PAGES_PER_REQUEST,
-    page => `https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=${page}&include=base_token%2Cquote_token&per_page=20`)
+    page => `https://api.geckoterminal.com/api/v2/networks/${requestedChain}/new_pools?page=${page}&include=base_token%2Cquote_token&per_page=20`)
   const trendingSpecs = buildPageSpecs('trending_pools', 'trending_p', trendingStartPage, TRENDING_PAGES_PER_REQUEST,
-    page => `https://api.geckoterminal.com/api/v2/networks/base/trending_pools?page=${page}&include=base_token%2Cquote_token&per_page=20`)
+    page => `https://api.geckoterminal.com/api/v2/networks/${requestedChain}/trending_pools?page=${page}&include=base_token%2Cquote_token&per_page=20`)
   const volumeSpecs = buildPageSpecs('pools_by_volume', 'vol_p', volumePoolsStartPage, VOLUME_POOLS_PAGES_PER_REQUEST,
-    page => `https://api.geckoterminal.com/api/v2/networks/base/pools?page=${page}&include=base_token%2Cquote_token&per_page=20&sort=h24_volume_usd_desc`)
+    page => `https://api.geckoterminal.com/api/v2/networks/${requestedChain}/pools?page=${page}&include=base_token%2Cquote_token&per_page=20&sort=h24_volume_usd_desc`)
   const sourceSpecs: typeof newPoolsSpecs = []
   {
     const queues = [newPoolsSpecs, trendingSpecs, volumeSpecs]
@@ -829,7 +864,7 @@ export async function GET(req: NextRequest) {
       for (const item of list) {
         const chainId = typeof item.chainId === 'string' ? item.chainId.toLowerCase() : ''
         const tokenAddress = typeof item.tokenAddress === 'string' ? item.tokenAddress : ''
-        if (chainId === 'base' && tokenAddress) found.push(tokenAddress)
+        if (chainId === requestedChain && tokenAddress) found.push(tokenAddress)
       }
       return found
     }
@@ -899,10 +934,10 @@ export async function GET(req: NextRequest) {
       const interval = Math.max(1, Math.floor((sourceSpecs.length + supplementaryBaseTokens.length) / supplementaryBaseTokens.length))
       supplementaryBaseTokens.forEach((address, i) => {
         const spec = {
-          key: `dex_supp_p${i}`,
+          key: `${requestedChain}_dex_supp_p${i}`,
           source: 'dexscreener_supplementary_token',
           page: i,
-          url: `https://api.geckoterminal.com/api/v2/networks/base/tokens/${address}/pools?include=base_token%2Cquote_token&per_page=5`,
+          url: `https://api.geckoterminal.com/api/v2/networks/${requestedChain}/tokens/${address}/pools?include=base_token%2Cquote_token&per_page=5`,
         }
         const insertAt = Math.min(sourceSpecs.length, (i + 1) * interval - 1)
         sourceSpecs.splice(insertAt, 0, spec)
@@ -1297,7 +1332,10 @@ export async function GET(req: NextRequest) {
       const quoteTokenAddress = quoteToken?.address ?? null
 
       if (EXCLUDED.has(baseToken.symbol.toUpperCase())) { droppedBySymbolExcluded++; continue }
-      if (EXCLUDED_ESTABLISHED_CONTRACTS.has(baseToken.address.toLowerCase())) { droppedByEstablishedToken++; continue }
+      // CHAIN-SCOPED-EXCLUSION, DISCLOSED: EXCLUDED_ESTABLISHED_CONTRACTS (AERO/AVNT) are verified
+      // Base-mainnet addresses — meaningless (and, on a different chain, a real address-collision
+      // risk) applied to Robinhood pools, so this hard-coded exclusion only ever applies on 'base'.
+      if (requestedChain === 'base' && EXCLUDED_ESTABLISHED_CONTRACTS.has(baseToken.address.toLowerCase())) { droppedByEstablishedToken++; continue }
 
       const key = baseToken.address.toLowerCase()
       if (seenContracts.has(key)) { droppedByDuplicateContract++; continue }
@@ -1338,7 +1376,7 @@ export async function GET(req: NextRequest) {
           if (i >= drafts.length) return
           const d = drafts[i]
           rescueResults[i] = d.needsRescue
-            ? await getDexMarketCapRescue({ chain: 'base', token: d.baseToken.address, primaryPoolAddress: d.primaryPoolAddress, primaryQuoteTokenAddress: d.quoteTokenAddress })
+            ? await getDexMarketCapRescue({ chain: requestedChain, token: d.baseToken.address, primaryPoolAddress: d.primaryPoolAddress, primaryQuoteTokenAddress: d.quoteTokenAddress })
             : null
         }
       }
@@ -1589,7 +1627,7 @@ export async function GET(req: NextRequest) {
             const i = nextIndex++
             if (i >= batch.length) return
             const t = batch[i]
-            const r = await fetchBaseHolderCount(t.contract)
+            const r = await fetchBaseHolderCount(t.contract, requestedChain)
             resultByContract.set(t.contract.toLowerCase(), r)
             holderCountByContract.set(t.contract.toLowerCase(), r.count)
           }
@@ -1672,7 +1710,7 @@ export async function GET(req: NextRequest) {
           // Single-attempt, cache-backed, tight-timeout check for the feed — the drawer runs the
           // thorough retry version on demand. Successive polls hit the warm honeypot cache, so this
           // real cost is only paid on a cold cache once per payload-cache window.
-          const hp = await withTimeout(getCachedHoneypot(t.contract, false), 2600, null)
+          const hp = await withTimeout(getCachedHoneypot(t.contract, requestedChain, false), 2600, null)
           hpByContract.set(t.contract.toLowerCase(), hp)
         }
       }
@@ -1981,7 +2019,7 @@ export async function GET(req: NextRequest) {
     // rawTotalBeforeDedupe/dedupedPoolCount) — this does not re-derive or re-run discovery.
     const baseRadarDiscoverySourceAudit = {
       runtimeCommitSha: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
-      selectedChain: 'base',
+      selectedChain: requestedChain,
       requestUrl: req.nextUrl.toString(),
       discoverySourcesUsed: Object.keys(sourceCounts),
       pagesRequested: sourcesAttempted,
