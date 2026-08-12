@@ -1036,7 +1036,25 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             <ProofTile label="Past launches" value={pastLaunchesEvidence.status === 'verified' || pastLaunchesEvidence.status === 'checked_not_found' ? `${deployer?.pastLaunches?.count ?? 0} found` : 'Open Check'} />
             <ProofTile label="Rug history" value={rugHistoryEvidence.status === 'risk_fact' ? 'Flagged' : rugHistoryEvidence.status === 'checked_not_found' ? 'None found' : 'Open Check'} tone={rugHistoryEvidence.status === 'risk_fact' ? 'risk' : 'mint'} />
           </div>
-          <div style={{ marginTop: 12 }}><MiniBar label="Cluster supply control" value={deployer?.clusterEvidence?.devClusterSupplyPercent ?? deployer?.clusterEvidence?.linkedWalletSupplyPercent ?? deployer?.supplyControl?.linkedWalletSupplyPercent ?? null} tone={(deployer?.clusterEvidence?.devClusterSupplyPercent ?? 0) > 30 ? 'risk' : 'mint'} /></div>
+          {(() => {
+            const clusterSupplyValue = deployer?.clusterEvidence?.devClusterSupplyPercent ?? deployer?.clusterEvidence?.linkedWalletSupplyPercent ?? deployer?.supplyControl?.linkedWalletSupplyPercent ?? null
+            return (
+              <div style={{ marginTop: 12 }}>
+                <MiniBar label="Cluster supply control" value={clusterSupplyValue} tone={(deployer?.clusterEvidence?.devClusterSupplyPercent ?? 0) > 30 ? 'risk' : 'mint'} />
+                {/* CLUSTER-N/A-CLARITY, DISCLOSED (reported: a bare "N/A" here next to an already-
+                    resolved deployer identity read as broken rather than as a real result). No
+                    percentage is fabricated when Token Scanner's cluster analysis didn't return one —
+                    but a bare N/A doesn't distinguish "this was checked and found nothing" from "this
+                    was never checked at all". clusterEvidence.reason (server-computed, real) makes
+                    that explicit instead. */}
+                {clusterSupplyValue == null ? (
+                  <p style={{ margin: '6px 0 0', color: '#64748b', fontSize: 11, lineHeight: 1.5 }}>
+                    {deployer?.clusterEvidence?.reason ?? 'No linked-wallet cluster supply percentage was resolved for this token.'}
+                  </p>
+                ) : null}
+              </div>
+            )
+          })()}
         </CollapsibleSection>
 
         <CollapsibleSection id="socials" title="Socials & Chart" open={isSectionOpen('socials')} onToggle={toggleSection} state={enrichmentState}>

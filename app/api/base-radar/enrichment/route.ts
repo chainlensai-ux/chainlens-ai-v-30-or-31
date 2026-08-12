@@ -5,6 +5,7 @@ import { reconcileBaseRadarLp } from '@/lib/server/baseRadarLpReconciliation'
 import { getRadarValuationBasis, resolveBaseRadarMarketCap } from '@/lib/baseRadarValuation'
 import { fetchGoldRushHolderCount, fetchGoldRushConcentration, type ConcentrationResult } from '@/lib/server/goldrushHolderCount'
 import { buildBaseRadarHolderEvidence } from '@/lib/baseRadarHolderEvidence'
+import { resolveBaseRadarOwnershipFallback, type BaseRadarOwnershipFallback } from '@/lib/server/baseRadarOwnership'
 
 // ROBINHOOD-CHAIN-SUPPORT, DISCLOSED (explicitly confirmed: "yes the token scanner works with
 // robinhood" — Token Scanner's own engine already supports scanning Robinhood-chain contracts;
@@ -106,13 +107,28 @@ function teamControlledLpController(lpControl: unknown): string | null {
   return firstPublicAddress(raw.controller, raw.lpController, raw.topHolder, raw.top_holder, raw.owner, raw.wallet, raw.holder) ?? evidenceAddress(raw.evidence, 'top_holder') ?? null
 }
 
-function ownershipSummary(devOwnership: unknown): Record<string, unknown> {
+// OWNERSHIP-RPC-FALLBACK, DISCLOSED: fallbackOwnership is a real, independently-fetched on-chain
+// owner() read (see lib/server/baseRadarOwnership.ts) — used ONLY when Token Scanner's own resolver
+// genuinely has no verified answer, never overriding a real value it DID find.
+function ownershipSummary(devOwnership: unknown, fallbackOwnership: BaseRadarOwnershipFallback | null): Record<string, unknown> {
   const raw = devOwnership && typeof devOwnership === 'object' ? devOwnership as Record<string, unknown> : {}
   const ownershipVerified = raw.ownershipVerified === true
   const ownerAddress = publicAddress(raw.ownerAddress)
   const adminAddress = publicAddress(raw.adminAddress)
   const isRenounced = ownershipVerified && raw.isRenounced === true
   const ownershipStatus = !ownershipVerified ? 'open_check' : isRenounced ? 'renounced' : (ownerAddress || adminAddress) ? 'active_owner' : 'open_check'
+  if (!ownershipVerified && fallbackOwnership) {
+    return {
+      ...raw,
+      ownerAddress: fallbackOwnership.ownerAddress,
+      adminAddress,
+      isRenounced: fallbackOwnership.isRenounced,
+      ownershipVerified: fallbackOwnership.ownershipVerified,
+      ownershipStatus: fallbackOwnership.ownershipStatus,
+      ownershipLabel: fallbackOwnership.ownershipLabel,
+      ownershipSource: fallbackOwnership.source,
+    }
+  }
   const ownershipLabel = ownershipStatus === 'renounced' ? 'Renounced ownership' : ownershipStatus === 'active_owner' ? 'Active owner/admin verified' : 'Open Check / Not verified'
   return { ...raw, ownerAddress, adminAddress, isRenounced, ownershipVerified, ownershipStatus, ownershipLabel }
 }
@@ -265,7 +281,7 @@ function observedPoolFields(scan: Record<string, any>) {
   return { observedPoolPresent, observedPoolCount, poolCountStatus }
 }
 
-function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract: string, debug = false, fallbackHolderCount: number | null = null, fallbackHolderCountCapped = false, fallbackConcentration: ConcentrationResult | null = null, fallbackHolderProviderReachable = true): Record<string, unknown> {
+function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract: string, debug = false, fallbackHolderCount: number | null = null, fallbackHolderCountCapped = false, fallbackConcentration: ConcentrationResult | null = null, fallbackHolderProviderReachable = true, fallbackOwnership: BaseRadarOwnershipFallback | null = null): Record<string, unknown> {
   const holderDistribution = scan.holderDistribution ?? {}
   const holderResolver = scan.holderResolver ?? {}
   const holderRows = Array.isArray(holderDistribution.topHolders)
@@ -340,7 +356,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
   const derivedLpController = teamControlledLpController(scan.lpControl)
   const publicLpController = firstPublicAddress(scan.lpController, derivedLpController, scan.lpControl?.controller, scan.lpControl?.topHolder, scan.lpControl?.owner)
   const teamControlledUnlockedLp = sanitizedLpControl?.status === 'team_controlled' && publicLpController && scan.lpLockStatus !== 'locked' && scan.lpLockStatus !== 'burned'
-  const devOwnership = ownershipSummary(security.devOwnership)
+  const devOwnership = ownershipSummary(security.devOwnership, fallbackOwnership)
   const deployerStatus = scan.deployerStatus ?? scan.devIntel?.deployerStatus ?? null
   const matchedLinkedWallets = Array.isArray(scan.matchedLinkedWallets)
     ? scan.matchedLinkedWallets.length
@@ -641,7 +657,15 @@ async function scanToken(req: Request, chain: ChainKey, contract: string, debug:
   if (!scanHasTop10 && (chain === 'base' || chain === 'robinhood')) {
     fallbackConcentration = await fetchGoldRushConcentration(contract, chain)
   }
-  return buildPublicPayload(scan, chain, contract, debug, fallbackHolderCount, fallbackHolderCountCapped, fallbackConcentration, fallbackHolderProviderReachable)
+  // OWNERSHIP-RPC-FALLBACK, DISCLOSED: only fetched when Token Scanner's own devOwnership genuinely
+  // didn't verify anything — a single cheap read-only eth_call, never overriding a real answer Token
+  // Scanner's fuller analysis DID find. Valid for all three chains this route serves (base/eth/
+  // robinhood all resolve to real RPC endpoints in lib/server/lpProof.ts's LpChain type).
+  let fallbackOwnership: BaseRadarOwnershipFallback | null = null
+  if (scan.security?.devOwnership?.ownershipVerified !== true) {
+    fallbackOwnership = await resolveBaseRadarOwnershipFallback(chain, contract)
+  }
+  return buildPublicPayload(scan, chain, contract, debug, fallbackHolderCount, fallbackHolderCountCapped, fallbackConcentration, fallbackHolderProviderReachable, fallbackOwnership)
 }
 
 function storeCache(key: string, payload: Record<string, unknown>, now: number) {

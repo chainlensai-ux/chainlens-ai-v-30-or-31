@@ -110,6 +110,34 @@ export async function fetchOnchainTotalSupply(chain: LpChain, tokenAddress: stri
   } catch { return null; }
 }
 
+export type OnchainOwnerResult =
+  | { status: "active"; ownerAddress: string }
+  | { status: "renounced" }
+  | { status: "no_owner_function" }
+  | { status: "unavailable" };
+
+// OWNER-RPC-FALLBACK, DISCLOSED (Base Radar Dev/Deployer audit: "Ownership/admin" showed "Open
+// Check / Not verified" for tokens Token Scanner's own devOwnership genuinely never resolved).
+// owner() (selector 0x8da5cb5b, OpenZeppelin Ownable's standard getter) is the exact same selector
+// Token Scanner's own engine already reads for this same purpose (see app/api/token/route.ts's own
+// ownerCheck RPC call) — this is a small, independent, Base-Radar-owned replication of that same
+// well-known standard pattern, not a new heuristic and not a substitute for Token Scanner's fuller
+// analysis (proxy-admin slots, AccessControl roles, etc.) — it only ever adds a real on-chain fact
+// when Token Scanner's own richer check didn't already provide a verified answer. A revert/empty
+// result most often means the contract has no owner() function at all (immutable or a different
+// admin pattern entirely) — reported as its own honest status, never conflated with "unknown".
+export async function fetchOnchainOwner(chain: LpChain, tokenAddress: string): Promise<OnchainOwnerResult> {
+  try {
+    const hex = await lpRpcCall(chain, "eth_call", [{ to: tokenAddress, data: "0x8da5cb5b" }, "latest"]);
+    if (hex == null) return { status: "unavailable" };
+    if (hex === "0x" || hex.length < 66) return { status: "no_owner_function" };
+    const addressHex = `0x${hex.slice(-40)}`.toLowerCase();
+    if (!/^0x[0-9a-f]{40}$/.test(addressHex)) return { status: "no_owner_function" };
+    if (addressHex === LP_ZERO_ADDRESS) return { status: "renounced" };
+    return { status: "active", ownerAddress: addressHex };
+  } catch { return { status: "unavailable" }; }
+}
+
 const LP_ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 const LP_DEAD_ADDRESS = "0x000000000000000000000000000000000000dead";
 
