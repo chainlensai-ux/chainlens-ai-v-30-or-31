@@ -595,18 +595,28 @@ export async function GET(req: NextRequest) {
   // every request at once; each source still independently retries and is still fetched exactly
   // once per cache window (getOrFetchCached's own cache/in-flight map is unchanged) — this only
   // changes how many requests are in flight to GeckoTerminal at the same instant.
+  // WAVE-PACING FIX, DISCLOSED (live-reproduced immediately after the concurrency-cap fix above
+  // shipped: failedSourceKeys was exactly the LAST 9 of 18 sources — new_p10 through every
+  // trending_*/vol_* page — while the first 9 all succeeded). That pattern rules out an instant-
+  // concurrency problem (a pure concurrency cap still dispatches the next request the moment a slot
+  // frees, so a nextIndex-based worker pool still pushes out close to 18 requests in quick
+  // succession) and points at a request-RATE budget instead — GeckoTerminal's public API tolerating
+  // roughly the first ~9 requests in a short window before rejecting the rest, regardless of how
+  // many were concurrent at any single instant. Switched from a continuous worker pool to explicit
+  // waves of DISCOVERY_CONCURRENCY_LIMIT with a real pause between waves — this spreads the same 18
+  // total requests over more wall-clock time instead of trying to push them all out as fast as
+  // possible, which is what actually respects a requests-per-window limit rather than just an
+  // instant-concurrency one.
   const DISCOVERY_CONCURRENCY_LIMIT = 6
+  const DISCOVERY_WAVE_DELAY_MS = 400
   const sourceResults: { key: string; count: number; data: Record<string, unknown> | null; ok: boolean }[] = new Array(sourceSpecs.length)
-  {
-    let nextIndex = 0
-    const worker = async () => {
-      for (;;) {
-        const i = nextIndex++
-        if (i >= sourceSpecs.length) return
-        sourceResults[i] = await fetchOneSource(sourceSpecs[i])
-      }
+  for (let waveStart = 0; waveStart < sourceSpecs.length; waveStart += DISCOVERY_CONCURRENCY_LIMIT) {
+    const wave = sourceSpecs.slice(waveStart, waveStart + DISCOVERY_CONCURRENCY_LIMIT)
+    const waveResults = await Promise.all(wave.map(spec => fetchOneSource(spec)))
+    waveResults.forEach((r, i) => { sourceResults[waveStart + i] = r })
+    if (waveStart + DISCOVERY_CONCURRENCY_LIMIT < sourceSpecs.length) {
+      await new Promise(resolve => setTimeout(resolve, DISCOVERY_WAVE_DELAY_MS))
     }
-    await Promise.all(Array.from({ length: Math.min(DISCOVERY_CONCURRENCY_LIMIT, sourceSpecs.length) }, () => worker()))
   }
   async function fetchOneSource(spec: { key: string; url: string }) {
     try {
