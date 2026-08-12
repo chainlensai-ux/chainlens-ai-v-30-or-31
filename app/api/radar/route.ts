@@ -1854,7 +1854,19 @@ export async function GET(req: NextRequest) {
 
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
     const hpHitCount = hpCacheHitFlags.filter(Boolean).length
-    const hasMorePages = radarPage < 5 && tokens.length > 0
+    // HAS-MORE-FALSE-EXHAUSTION FIX, DISCLOSED (bug hunt, reported: "Load More" acting exhausted
+    // despite real candidates existing further out). hasMorePages required tokens.length > 0 THIS
+    // specific attempt — but a page can legitimately return 0 tokens purely from a transient
+    // GeckoTerminal rate-limit cycle (live-confirmed: a captured page=3 response had
+    // sourcesFailedCount: 8/8 and tokens: [] this exact way), which permanently told the frontend
+    // "no more pages exist" even though a retry of the SAME page moments later could easily surface
+    // real candidates. Whether more pages exist is a function of the page cap alone
+    // (radarPage < 5) — it must never be conflated with "did this one attempt happen to fail." The
+    // frontend's own handleLoadMore already has honest per-attempt "nothing NEW this click"
+    // messaging (loadMoreExhausted, based on actually-deduped addedCount) for the real end-of-data
+    // case — that's the correct place for "no new tokens this click," not this backend flag, which
+    // instead now answers only "is there a next page number left to try."
+    const hasMorePages = radarPage < 5
     // ALWAYS-VISIBLE AUDIT, DISCLOSED (reported: the audit logs are effectively unreachable in
     // practice — they print far down a long, multi-line-per-request log stream, and Vercel's log
     // search/pagination has repeatedly failed to surface them even when searching the exact string).
