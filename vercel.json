@@ -11,6 +11,10 @@
     "app/api/scan/route.ts": { "maxDuration": 60 },
     "app/api/scan-v2/route.ts": { "maxDuration": 60 },
     "app/api/scan-v2/modules/*/route.ts": { "maxDuration": 60 },
-    "app/api/scan-v2/full-scan/route.ts": { "maxDuration": 300 }
-  }
+    "app/api/scan-v2/full-scan/route.ts": { "maxDuration": 300 },
+    "app/api/base-radar/cron/route.ts": { "maxDuration": 60 }
+  },
+  "crons": [
+    { "path": "/api/base-radar/cron", "schedule": "0 6 * * *" }
+  ]
 }

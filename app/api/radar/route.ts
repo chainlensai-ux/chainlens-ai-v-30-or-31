@@ -575,17 +575,33 @@ async function getDexMarketCapRescue(input: { chain: string; token: string; prim
   }
 }
 
+// DAILY-REDISCOVERY-CRON, DISCLOSED (explicitly requested: "make sure every 24 hours it does a mass
+// finding of new tokens... so it's not just the same shit forever" — before this, discovery only ran
+// lazily on whatever request happened to land after a 24h cycle expired; with zero page traffic in
+// that window, the pool would just sit stale until someone finally opened Base Radar). This header
+// lets the internal cron trigger (app/api/base-radar/cron/route.ts) run a real discovery pass without
+// needing a paying user's bearer token — gated on a server-only shared secret that only this app's
+// own cron endpoint knows, so it can never be used to bypass the Pro/Elite paywall for a real user
+// (the header name is not a standard one an end user would send, and even if they did, it only works
+// when BASE_RADAR_CRON_SECRET is configured to a real value that matches).
+function isTrustedCronTrigger(req: NextRequest): boolean {
+  const secret = process.env.BASE_RADAR_CRON_SECRET
+  if (!secret) return false
+  return req.headers.get('x-base-radar-cron-secret') === secret
+}
+
 export async function GET(req: NextRequest) {
   if (!limiter.check(getClientIp(req))) {
     return NextResponse.json({ error: 'Too many requests' }, { status: 429 })
   }
+  const isCronTrigger = isTrustedCronTrigger(req)
   const auth = req.headers.get('authorization') ?? ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
   let plan: 'free' | 'pro' | 'elite' = 'free'
   if (token) {
     try { plan = (await getCurrentUserPlanFromBearerToken(token)).plan } catch { plan = 'free' }
   }
-  if (plan === 'free') return NextResponse.json({ error: 'Included in Pro and Elite.' }, { status: 403 })
+  if (plan === 'free' && !isCronTrigger) return NextResponse.json({ error: 'Included in Pro and Elite.' }, { status: 403 })
   const debug = req.nextUrl.searchParams.get('debug') === 'true'
   // ROBINHOOD-CHAIN-SUPPORT, DISCLOSED (explicitly requested: "the same thing we did for the base
   // chain with the robinhood chain for the base radar" — GeckoTerminal indexes 'robinhood' as its
