@@ -702,29 +702,43 @@ export async function GET(req: NextRequest) {
       return found
     }
     try {
-      // Fetched in parallel — both are cheap, fixed, single-page requests, not part of the paced
-      // GeckoTerminal discovery burst these run alongside.
-      const [profileRes, boostRes] = await Promise.all([
+      // INDEPENDENT-FETCH FIX, DISCLOSED (bug hunt: fetch() rejects on a network-level failure —
+      // DNS, timeout, connection reset — not just on a non-2xx HTTP status. Promise.all rejects the
+      // whole pair the instant either promise rejects, which would silently discard the OTHER
+      // source's already-successful data too — the exact "one source's failure shouldn't take down
+      // an unrelated source" bug this whole session's discovery fixes exist to prevent. allSettled
+      // keeps the two genuinely independent.
+      const [profileOutcome, boostOutcome] = await Promise.allSettled([
         fetch('https://api.dexscreener.com/token-profiles/latest/v1', { headers: { Accept: 'application/json' }, cache: 'no-store', signal: supplementaryAc.signal }),
         fetch('https://api.dexscreener.com/token-boosts/latest/v1', { headers: { Accept: 'application/json' }, cache: 'no-store', signal: supplementaryAc.signal }),
       ])
-      dexScreenerProfileHttpStatus = profileRes.status
-      dexScreenerBoostHttpStatus = boostRes.status
       let profileBaseTokens: string[] = []
       let boostBaseTokens: string[] = []
-      if (profileRes.ok) {
-        const profileJson = await profileRes.json().catch(() => null)
-        profileBaseTokens = extractBaseTokens(Array.isArray(profileJson) ? profileJson as Record<string, unknown>[] : [])
-        dexScreenerProfileStatus = profileBaseTokens.length > 0 ? 'ok' : 'no_base_tokens_found'
+      if (profileOutcome.status === 'fulfilled') {
+        const profileRes = profileOutcome.value
+        dexScreenerProfileHttpStatus = profileRes.status
+        if (profileRes.ok) {
+          const profileJson = await profileRes.json().catch(() => null)
+          profileBaseTokens = extractBaseTokens(Array.isArray(profileJson) ? profileJson as Record<string, unknown>[] : [])
+          dexScreenerProfileStatus = profileBaseTokens.length > 0 ? 'ok' : 'no_base_tokens_found'
+        } else {
+          dexScreenerProfileStatus = 'http_error'
+        }
       } else {
-        dexScreenerProfileStatus = 'http_error'
+        dexScreenerProfileStatus = 'fetch_failed'
       }
-      if (boostRes.ok) {
-        const boostJson = await boostRes.json().catch(() => null)
-        boostBaseTokens = extractBaseTokens(Array.isArray(boostJson) ? boostJson as Record<string, unknown>[] : [])
-        dexScreenerBoostStatus = boostBaseTokens.length > 0 ? 'ok' : 'no_base_tokens_found'
+      if (boostOutcome.status === 'fulfilled') {
+        const boostRes = boostOutcome.value
+        dexScreenerBoostHttpStatus = boostRes.status
+        if (boostRes.ok) {
+          const boostJson = await boostRes.json().catch(() => null)
+          boostBaseTokens = extractBaseTokens(Array.isArray(boostJson) ? boostJson as Record<string, unknown>[] : [])
+          dexScreenerBoostStatus = boostBaseTokens.length > 0 ? 'ok' : 'no_base_tokens_found'
+        } else {
+          dexScreenerBoostStatus = 'http_error'
+        }
       } else {
-        dexScreenerBoostStatus = 'http_error'
+        dexScreenerBoostStatus = 'fetch_failed'
       }
       dexScreenerProfileTokensFound = profileBaseTokens.length
       dexScreenerBoostedTokensFound = boostBaseTokens.length
@@ -737,14 +751,25 @@ export async function GET(req: NextRequest) {
         if (supplementaryBaseTokens.length >= DEXSCREENER_SUPPLEMENTARY_DISCOVERY_CAP) break
       }
     } finally { clearTimeout(supplementaryTid) }
-    supplementaryBaseTokens.forEach((address, i) => {
-      sourceSpecs.push({
-        key: `dex_supp_p${i}`,
-        source: 'dexscreener_supplementary_token',
-        page: i,
-        url: `https://api.geckoterminal.com/api/v2/networks/base/tokens/${address}/pools?include=base_token%2Cquote_token&per_page=5`,
+    // SUPPLEMENTARY-STARVATION FIX, DISCLOSED (bug hunt: appending these to the tail of sourceSpecs
+    // means they always land in the same later wave as new_p3/new_p4 — the exact wave that has
+    // 429'd in nearly every live capture this session, per the interleave fix a few commits back for
+    // new_pools/trending/volume. Unconditionally starving these DexScreener-derived candidates
+    // defeats the point of adding them. Spliced in at spread-out positions instead of pushed, so
+    // each gets a real chance to land in the first, reliably-successful wave.
+    if (supplementaryBaseTokens.length > 0) {
+      const interval = Math.max(1, Math.floor((sourceSpecs.length + supplementaryBaseTokens.length) / supplementaryBaseTokens.length))
+      supplementaryBaseTokens.forEach((address, i) => {
+        const spec = {
+          key: `dex_supp_p${i}`,
+          source: 'dexscreener_supplementary_token',
+          page: i,
+          url: `https://api.geckoterminal.com/api/v2/networks/base/tokens/${address}/pools?include=base_token%2Cquote_token&per_page=5`,
+        }
+        const insertAt = Math.min(sourceSpecs.length, (i + 1) * interval - 1)
+        sourceSpecs.splice(insertAt, 0, spec)
       })
-    })
+    }
   } catch {
     if (dexScreenerProfileHttpStatus == null) dexScreenerProfileStatus = 'fetch_failed'
     if (dexScreenerBoostHttpStatus == null) dexScreenerBoostStatus = 'fetch_failed'
