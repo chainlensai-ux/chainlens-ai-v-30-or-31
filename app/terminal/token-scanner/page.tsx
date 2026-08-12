@@ -3969,6 +3969,14 @@ export default function TerminalTokenScanner() {
            the page background instead of blending in. */
         .preview-module-card{background:linear-gradient(160deg,rgba(15,25,43,.82),rgba(8,15,29,.78));border:1px solid rgba(255,255,255,.13);border-radius:12px;padding:22px 17px;transition:transform .18s ease,border-color .18s ease;cursor:default;}
         .preview-module-card:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.22);}
+        /* AFTER-SCAN-CARDS, DISCLOSED (Token Scanner final-polish task, explicitly requested: "the
+           plain full-width rows read as filler" — redesigned into a compact 3-card strip, same
+           visual language/restraint as .preview-module-card above (subtle dark fill, static border,
+           small dot instead of a numbered accent bar, no glow bloom) so the two sections read as one
+           system. Static hover lift only, no color animation. */
+        .after-scan-card{position:relative;background:rgba(10,18,32,.62);border:1px solid rgba(255,255,255,.09);border-radius:12px;padding:16px;transition:transform .18s ease,border-color .18s ease;cursor:default;}
+        .after-scan-card:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.17);}
+        .after-scan-dot{display:inline-block;width:6px;height:6px;border-radius:50%;}
         .token-scan-input::placeholder{color:rgba(148,163,184,0.58);}
         .scan-helper-row{flex-wrap:wrap;}
         @media (max-width:640px){.scan-helper-row{flex-direction:column;align-items:flex-start;gap:8px;}}
@@ -3997,7 +4005,7 @@ export default function TerminalTokenScanner() {
         @media (min-width:1280px) and (max-width:1535px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(300px,24vw,360px);column-gap:24px;} .token-main{max-width:1120px;margin:0 auto;} .token-shell .mob-verdict-panel{width:auto !important;max-width:360px !important;padding:24px 16px !important;font-size:12px;} .activity-grid{gap:8px;}}
         @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;}}
         @media (max-width:1023px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
-        @media (max-width:768px){.token-main{padding:36px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
+        @media (max-width:768px){.token-main{padding:36px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .after-scan-grid{grid-template-columns:1fr !important;}}
       `}</style>
 
       <div className="token-shell" style={{ color: '#e2e8f0' }}>
@@ -4239,7 +4247,7 @@ export default function TerminalTokenScanner() {
           {/* ── What this scan checks ─────────────────────────────── */}
           {!loading && !resolving && !result && !error && (
             <div id="how-cortex-works" style={{ maxWidth: '820px' }}>
-              <div style={{ marginBottom: '18px' }}>
+              <div style={{ marginBottom: '20px' }}>
                 <p style={{ margin: '0 0 5px', fontSize: '18px', fontWeight: 700, color: '#e2e8f0', lineHeight: 1.35, letterSpacing: '-0.01em' }}>
                   What this scan checks
                 </p>
@@ -4256,9 +4264,9 @@ export default function TerminalTokenScanner() {
                   card now shows a numbered index (01–04) and a thin static top accent bar instead
                   of just a dot, so the four cards read as sequential engine modules rather than
                   generic feature tiles — no new glow, both additions are static/cheap. Accent line
-                  thinned to 1.5px and fades at both edges instead of a full-bleed solid bar
-                  (explicitly requested: "thinner and cleaner"). */}
-              <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '10px', marginBottom: '22px' }}>
+                  thinned to 1px and fades at both edges (explicitly requested again: "thinner/
+                  sharper"), and card padding raised once more for a touch more breathing room. */}
+              <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '10px', marginBottom: '30px' }}>
                 {[
                   { n: '01', label: 'Market Pulse',  color: '#22d3ee', desc: 'Price, liquidity, volume, and pool depth.' },
                   { n: '02', label: 'Holder Map',    color: '#a78bfa', desc: 'Top-holder concentration and supply distribution.' },
@@ -4266,36 +4274,37 @@ export default function TerminalTokenScanner() {
                   { n: '04', label: 'Dev Activity',  color: '#fb923c', desc: 'Contract ownership, dev wallets, and recent activity.' },
                 ].map(mod => (
                   <div key={mod.label} className="preview-module-card" style={{ position: 'relative', overflow: 'hidden' }}>
-                    <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '1.5px', background: `linear-gradient(90deg, transparent, ${mod.color}, transparent)`, opacity: 0.90 }} />
-                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '14px' }}>
+                    <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '1px', background: `linear-gradient(90deg, transparent, ${mod.color}, transparent)`, opacity: 0.95 }} />
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '15px' }}>
                       <span style={{ fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.12em', color: mod.color, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</span>
                       <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(148,163,184,0.46)', fontFamily: 'var(--font-plex-mono)' }}>{mod.n}</span>
                     </div>
-                    <p style={{ margin: 0, fontSize: '11px', color: '#b6c6db', lineHeight: 1.68 }}>{mod.desc}</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#bdccdf', lineHeight: 1.7 }}>{mod.desc}</p>
                   </div>
                 ))}
               </div>
 
               {/* ── After scan, CORTEX builds ─────────────────────────
-                  DISCLOSED (Token Scanner final-polish task, explicitly requested: reduce the
-                  "unfinished empty page" feeling under the four module cards). This is a STATIC
-                  explanation of what a completed scan produces — not fake/sample scan data, no
-                  numbers, no verdicts, no addresses. Same restrained treatment as the module cards
-                  above (no new colors, no glow, no redesign). */}
-              <div style={{ marginBottom: '8px' }}>
-                <p style={{ margin: '0 0 14px', fontSize: '13px', fontWeight: 700, color: '#94a8bd', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em' }}>
+                  DISCLOSED (Token Scanner final-polish task, explicitly requested: the plain
+                  full-width rows read as filler — redesigned into the same card-grid language as
+                  "What this scan checks" above, so the two sections read as one deliberate system
+                  instead of a feature grid followed by a bolted-on list. Still a STATIC explanation
+                  of what a completed scan produces — no numbers, verdicts, addresses, or sample
+                  data; the small dot is a static bullet, not a status indicator. */}
+              <div>
+                <p style={{ margin: '0 0 14px', fontSize: '13px', fontWeight: 700, color: '#9fb3c8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em' }}>
                   After scan, CORTEX builds
                 </p>
-                <div style={{ display: 'grid', gap: '8px' }}>
+                <div className="after-scan-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '10px' }}>
                   {[
-                    { label: 'Risk receipt', desc: 'Verdict, confidence, evidence gaps, and next action.' },
-                    { label: 'Holder + LP read', desc: 'Top-holder concentration, LP control, lock/burn status.' },
-                    { label: 'Dev control', desc: 'Deployer evidence, ownership/admin checks, recent activity.' },
+                    { label: 'Risk receipt', desc: 'Verdict, confidence, evidence gaps, and next action.', color: '#2dd4bf' },
+                    { label: 'Holder + LP read', desc: 'Top-holder concentration, LP control, lock/burn status.', color: '#a78bfa' },
+                    { label: 'Dev control', desc: 'Deployer evidence, ownership/admin checks, recent activity.', color: '#fb923c' },
                   ].map(row => (
-                    <div key={row.label} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '11px 14px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
-                      <span aria-hidden="true" style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(45,212,191,0.55)', flexShrink: 0 }} />
-                      <span style={{ fontSize: '11px', fontWeight: 700, color: '#7e93a9', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.02em', flexShrink: 0, minWidth: '140px' }}>{row.label}</span>
-                      <span style={{ fontSize: '11px', color: '#4a5f78', lineHeight: 1.5 }}>{row.desc}</span>
+                    <div key={row.label} className="after-scan-card">
+                      <span aria-hidden="true" className="after-scan-dot" style={{ background: row.color, boxShadow: `0 0 6px ${row.color}66` }} />
+                      <p style={{ margin: '10px 0 6px', fontSize: '12px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.01em' }}>{row.label}</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#7e93a9', lineHeight: 1.65 }}>{row.desc}</p>
                     </div>
                   ))}
                 </div>
@@ -6634,9 +6643,9 @@ export default function TerminalTokenScanner() {
                 { label: 'Dev Control' },
                 { label: 'Next Action' },
               ].map((sec, idx) => (
-                <div key={sec.label} style={{ display: 'flex', alignItems: 'center', gap: '9px', paddingTop: idx > 0 ? '9px' : 0, marginTop: idx > 0 ? '9px' : 0, borderTop: idx > 0 ? '1px solid rgba(255,255,255,0.07)' : 'none' }}>
-                  <span style={{ width: '16px', height: '16px', borderRadius: '50%', border: '1px solid rgba(148,163,184,0.42)', flexShrink: 0 }} />
-                  <span style={{ fontSize: '10.5px', fontWeight: 600, color: '#7c8ea2', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.02em' }}>{sec.label}</span>
+                <div key={sec.label} style={{ display: 'flex', alignItems: 'center', gap: '9px', paddingTop: idx > 0 ? '9px' : 0, marginTop: idx > 0 ? '9px' : 0, borderTop: idx > 0 ? '1px solid rgba(255,255,255,0.09)' : 'none' }}>
+                  <span style={{ width: '16px', height: '16px', borderRadius: '50%', border: '1px solid rgba(148,163,184,0.50)', flexShrink: 0 }} />
+                  <span style={{ fontSize: '10.5px', fontWeight: 600, color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.02em' }}>{sec.label}</span>
                 </div>
               ))}
             </div>
