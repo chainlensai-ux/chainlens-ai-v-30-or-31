@@ -19,18 +19,21 @@
 // ceiling still has to clear every real requirement — liquidity, the floor, holder evidence — to
 // display, it just displays as "Established" instead of "New Radar"). Only
 // passesMainFeedValuationMinGate is a real route-level exclusion.
-// THRESHOLD UPDATE $80K/$2M/30 -> $50K/$4M/60 -> $50K/$5M/60, DISCLOSED (explicitly requested:
-// "change the filter 50k to 4 million mc last 15 days and minimum 60 holders", then later "up it to
-// 20 days 5 million mc" — feed too thin given real GeckoTerminal rate-limit-capped discovery this
-// session). Floor and the (classification, not exclusion) ceiling are both inclusive: $50,000 passes
-// the floor; $5,000,000 is still inside the early-range band; $49,999 fails the real floor;
-// $5,000,001 clears the floor but classifies as Established. Holder minimum and liquidity minimum
-// unchanged — only the ceiling moved this time (age window is a separate constant in
-// app/api/radar/route.ts, moved 15 -> 20 days alongside this).
+// THRESHOLD UPDATE $80K/$2M/30 -> $50K/$4M/60 -> $50K/$5M/60 -> $50K/$5M/30, DISCLOSED (explicitly
+// requested: "change the filter 50k to 4 million mc last 15 days and minimum 60 holders", then "up
+// it to 20 days 5 million mc", then "do whatever to make it better" — reported the feed reusing the
+// same 2-3 large/established tokens every cycle. Root cause: 60 holders is a real, meaningful bar
+// that most genuinely fresh/small tokens simply haven't accumulated yet this early, while the
+// handful of larger tokens that always clear it (and every other gate) keep winning the same ranked
+// slots every cycle regardless of what GeckoTerminal's rate-limited discovery happens to surface —
+// the 60-holder floor was systematically filtering OUT the variety being asked for, not filtering
+// for quality the smaller ones lacked. Lowered back to 30 (the value this session had before it was
+// explicitly raised to 60) to reopen the funnel to fresher, smaller-but-real candidates. Valuation
+// floor/ceiling and liquidity minimum unchanged — only the holder bar moved this time.
 
 export const MAIN_FEED_MIN_VALUATION_USD = 50_000
 export const MAIN_FEED_MAX_VALUATION_USD = 5_000_000
-export const MAIN_FEED_MIN_HOLDERS = 60
+export const MAIN_FEED_MIN_HOLDERS = 30
 
 /**
  * A candidate's resolved valuation (verified market cap, or FDV used as fallback — see

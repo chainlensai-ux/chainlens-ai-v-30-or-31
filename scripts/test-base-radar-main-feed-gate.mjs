@@ -8,7 +8,7 @@ import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD, MAIN_FEED_MIN
 // 20 days 5 million mc").
 assert.equal(MAIN_FEED_MIN_VALUATION_USD, 50_000)
 assert.equal(MAIN_FEED_MAX_VALUATION_USD, 5_000_000)
-assert.equal(MAIN_FEED_MIN_HOLDERS, 60)
+assert.equal(MAIN_FEED_MIN_HOLDERS, 30)
 
 // ─── Valuation: $50K floor is a real exclusion; $5M is a CLASSIFICATION boundary, not an
 // exclusion (explicit product change — see the $2M-IS-A-CLASSIFICATION-NOT-AN-EXCLUSION comment
@@ -37,10 +37,10 @@ assert.equal(passesMainFeedValuationMinGate(undefined), false)
 assert.equal(passesMainFeedValuationMinGate(NaN), false)
 
 // ─── Holder gate ────────────────────────────────────────────────────────────
-// holders 59 excluded
-assert.equal(passesMainFeedHolderGate(59), false)
-// holders 60 included if all other gates pass (boundary)
-assert.equal(passesMainFeedHolderGate(60), true)
+// holders 29 excluded
+assert.equal(passesMainFeedHolderGate(29), false)
+// holders 30 included if all other gates pass (boundary)
+assert.equal(passesMainFeedHolderGate(30), true)
 assert.equal(passesMainFeedHolderGate(150), true)
 // missing holder count excluded — null/undefined/NaN must never count as passing
 assert.equal(passesMainFeedHolderGate(null), false)
@@ -99,12 +99,12 @@ assert.equal(isRealVerifiedMarketCapValue(null, 500_000), false)
 }
 
 // ─── Holder count vs. holder concentration ─────────────────────────────────
-// holders=60 and concentration N/A: passes the holder gate (concentration is a separate concept
+// holders=30 and concentration N/A: passes the holder gate (concentration is a separate concept
 // this route never even fetches — see CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP's own header) and the
 // evidence-gap string app/api/radar/route.ts attaches to every displayed candidate exists and is
 // worded to say "unavailable", not "open check" (which would read as holder count itself missing).
 // Concentration unavailable does not exclude a candidate that already passed the real holder gate.
-assert.equal(passesMainFeedHolderGate(60), true, 'holders=60 passes the holder gate regardless of concentration availability')
+assert.equal(passesMainFeedHolderGate(30), true, 'holders=30 passes the holder gate regardless of concentration availability')
 assert.equal(typeof CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, 'string')
 assert.ok(CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP.toLowerCase().includes('concentration'))
 assert.ok(!CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP.toLowerCase().includes('open check'), 'must not read as if holder count itself is missing')
@@ -127,16 +127,16 @@ assert.ok(!CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP.toLowerCase().includes('open c
   assert.equal(passesLiquidityGate(4_999, 1_000, 60), false, 'liquidity below the configured minimum is excluded even with valuation/holders passing')
   assert.equal(passesLiquidityGate(10_000, 1_000, 60), true)
   assert.equal(
-    passesLiquidityGate(10_000, 1_000, 60) && passesMainFeedValuationGate(500_000) && passesMainFeedHolderGate(60),
+    passesLiquidityGate(10_000, 1_000, 60) && passesMainFeedValuationGate(500_000) && passesMainFeedHolderGate(30),
     true,
-    'a candidate clearing liquidity + $50K-$5M valuation + 60 holders passes every hard rule',
+    'a candidate clearing liquidity + $50K-$5M valuation + 30 holders passes every hard rule',
   )
 }
 
-// holders=59 fails / holders=60 passes if valuation/liquidity pass (boundary, restated together
+// holders=29 fails / holders=30 passes if valuation/liquidity pass (boundary, restated together
 // with a passing valuation to mirror the exact scenario the task describes)
-assert.equal(passesMainFeedHolderGate(59) && passesMainFeedValuationGate(500_000), false)
-assert.equal(passesMainFeedHolderGate(60) && passesMainFeedValuationGate(500_000), true)
+assert.equal(passesMainFeedHolderGate(29) && passesMainFeedValuationGate(500_000), false)
+assert.equal(passesMainFeedHolderGate(30) && passesMainFeedValuationGate(500_000), true)
 
 // ─── Holder-check budget loop (starvation fix #2) ──────────────────────────
 // shouldContinueHolderChecking IS the exact condition app/api/radar/route.ts's while-loop uses
@@ -337,12 +337,12 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   // UI message — a single failed page combined with a real gate-driven 0 must not be mislabeled.
   assert.ok(/discoveryDegradedSignificant = sourcesFailedCount >= Math\.ceil\(sourcesAttempted \/ 2\)/.test(routeSource), 'discoveryDegradedSignificant must require a majority-or-more failure, not any single failed page')
 
-  // Gate still excludes below $50K / a real resolved below-60-holders count, even once raw
+  // Gate still excludes below $50K / a real resolved below-30-holders count, even once raw
   // candidates load correctly — re-asserted here specifically in the context of the discovery-
   // resilience fix, so a future change to the fetch layer can't accidentally loosen the real
   // exclusions. Above $5M is deliberately NOT re-asserted as an exclusion here (it isn't one).
   assert.equal(passesMainFeedValuationMinGate(49_999), false)
-  assert.equal(passesMainFeedHolderGate(59), false)
+  assert.equal(passesMainFeedHolderGate(29), false)
 
   // Source returns 50+ raw candidates then strict gate runs: the per-pool loop applies the same
   // liquidity -> valuation -> holder sequence regardless of how many raw candidates came in — no

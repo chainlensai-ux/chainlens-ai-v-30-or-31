@@ -783,12 +783,14 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
   // exclusion reasons (below $80K, a real resolved holder count under 30) — above-$2M and holder-
   // unavailable are no longer hide reasons, so they're removed from this list; a candidate in
   // either state is still displayed, just labeled Established / holder-unverified respectively.
-  // THRESHOLD UPDATE $80K/$2M/30 -> $50K/$4M/60, DISCLOSED (explicitly requested). Field names
-  // (hiddenBelow80k etc.) are unchanged on the backend/frontend data shape — only the displayed
-  // numbers moved, to avoid an unnecessary rename ripple across both files.
+  // THRESHOLD UPDATE $80K/$2M/30 -> $50K/$4M/60 -> $50K/$5M/30, DISCLOSED (explicitly requested,
+  // holder minimum lowered back to 30 after the 60-holder bar was found to be systematically
+  // filtering out the variety being asked for). Field names (hiddenBelow80k etc.) are unchanged on
+  // the backend/frontend data shape — only the displayed numbers moved, to avoid an unnecessary
+  // rename ripple across both files.
   const hideReasonParts = [
     summary.hiddenBelow80k > 0 ? `${summary.hiddenBelow80k} below $50K valuation` : null,
-    summary.hiddenLowHolders > 0 ? `${summary.hiddenLowHolders} below 60 holders` : null,
+    summary.hiddenLowHolders > 0 ? `${summary.hiddenLowHolders} below 30 holders` : null,
   ].filter((p): p is string => p != null)
   const gateExplainer = hideReasonParts.length > 0
     ? `New Radar requires $50K+ valuation and real liquidity. Tokens above the early range are labelled Established instead of hidden — ${hideReasonParts.join(', ')}.`
