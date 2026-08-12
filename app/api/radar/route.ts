@@ -970,6 +970,12 @@ export async function GET(req: NextRequest) {
     // would make primaryPoolAddress structurally meaningless for V4, not a real per-pool identifier)
     // versus a genuinely pool-specific address that just doesn't match DexScreener's own.
     const v4MismatchSample: { contract: string; primaryPoolAddress: string | null; rescueSelectedPairAddress: string | null; rescuePairCount: number }[] = []
+    // V4-NO-LIQUID-PAIR-SAMPLE, DISCLOSED: v4_no_liquid_pair became the dominant V4 rejection reason
+    // once the PoolId-vs-pairAddress comparison bug was fixed — this captures the raw, unfiltered
+    // DexScreener pair values (chainId/liquidityUsd/dexId, via rawPairDiagnostics on the rescue
+    // result) for a few of those cases, so a live capture can show whether they're being filtered by
+    // a chain-id string mismatch or a genuine zero/unreported liquidity value.
+    const v4NoLiquidPairSample: { contract: string; rawPairDiagnostics: { chainId: string | null; liquidityUsd: number; dexId: string | null }[] | null }[] = []
     let droppedByLiquidityFloorSpecifically = 0
     let droppedByAbsoluteLiquidityFloor = 0
     let droppedByDeadVolumeFloor = 0
@@ -1176,7 +1182,12 @@ export async function GET(req: NextRequest) {
         // genuinely this specific pool is unresolvable; stays fail-closed rather than guessing/
         // borrowing another pool's liquidity, per the WRONG-POOL LIQUIDITY FIX above).
         if (!rescue || rescue.pairCount === 0) droppedByV4NoDexScreenerData++
-        else if (rescue.sortedPairCount === 0) droppedByV4NoLiquidPair++
+        else if (rescue.sortedPairCount === 0) {
+          droppedByV4NoLiquidPair++
+          if (v4NoLiquidPairSample.length < 8) {
+            v4NoLiquidPairSample.push({ contract: baseToken.address, rawPairDiagnostics: rescue.rawPairDiagnostics })
+          }
+        }
         else if (!rescueMatchesThisPool) {
           droppedByV4PoolMismatch++
           if (v4MismatchSample.length < 8) {
@@ -1662,6 +1673,7 @@ export async function GET(req: NextRequest) {
         ranking_cap_excluded: droppedByRankingCap,
       },
       v4MismatchSample,
+      v4NoLiquidPairSample,
       holderCheckFailureReasons,
       holderCheckFailureSample,
     }

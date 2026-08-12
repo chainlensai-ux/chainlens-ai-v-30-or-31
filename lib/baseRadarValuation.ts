@@ -66,6 +66,13 @@ export interface DexScreenerMarketCapRescueResult {
   selectedLiquidityUsd: number | null
   rawCandidates: BaseRadarMarketCapCandidate[]
   reason: string
+  // V4-NO-LIQUID-PAIR-DIAGNOSIS, DISCLOSED: when sortedPairCount is 0 despite pairCount > 0, the raw
+  // pair(s) DexScreener returned were filtered out before selection by the chain-match +
+  // positive-liquidity check — but until now nothing captured WHY (wrong chain id string vs. a real
+  // zero/unreported liquidity value are very different explanations). Populated only in that case,
+  // capped to a handful of raw pairs, so a live capture can show the actual chainId/liquidity values
+  // that got filtered instead of us having to guess.
+  rawPairDiagnostics: { chainId: string | null; liquidityUsd: number; dexId: string | null }[] | null
 }
 
 export type BaseRadarMarketCapSourceKind = 'market_api' | null
@@ -135,6 +142,14 @@ export function selectDexScreenerMarketCapRescuePair(input: {
     return getPairLiquidityUsd(b) - getPairLiquidityUsd(a)
   })
 
+  const rawPairDiagnostics = sorted.length === 0 && input.pairs.length > 0
+    ? input.pairs.slice(0, 5).map(pair => ({
+        chainId: getPairChainId(pair),
+        liquidityUsd: getPairLiquidityUsd(pair),
+        dexId: typeof pair.dexId === 'string' ? pair.dexId : null,
+      }))
+    : null
+
   const rawCandidates: BaseRadarMarketCapCandidate[] = []
   for (const pair of sorted) {
     const pairAddress = getPairAddress(pair)
@@ -155,6 +170,7 @@ export function selectDexScreenerMarketCapRescuePair(input: {
           selectedLiquidityUsd: getPairLiquidityUsd(pair),
           rawCandidates,
           reason: `Explicit DexScreener market cap found at ${candidate.path}.`,
+          rawPairDiagnostics: null,
         }
       }
     }
@@ -171,6 +187,7 @@ export function selectDexScreenerMarketCapRescuePair(input: {
     selectedLiquidityUsd: sorted.length ? getPairLiquidityUsd(sorted[0]) : null,
     rawCandidates,
     reason: 'No explicit market cap field present in DexScreener rescue pairs.',
+    rawPairDiagnostics,
   }
 }
 
