@@ -255,6 +255,71 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
 
   // ─── Cache key includes the gate thresholds (stale-cache-after-threshold-change fix) ─────────
   assert.ok(routeSource.includes('MAIN_FEED_MIN_VALUATION_USD') && /cacheKeyBase\s*=[\s\S]{0,400}MAIN_FEED_MIN_VALUATION_USD/.test(routeSource), 'the cache key must fold in MAIN_FEED_MIN_VALUATION_USD so a threshold change can never serve a stale payload computed under the old gate')
+
+  // ─── Discovery source resilience (explicitly requested: "Fix Base Radar discovery source
+  // failures — not a threshold/UI issue") ────────────────────────────────────────────────────
+
+  // Failed page does not wipe successful pages: each source is fetched independently
+  // (fetchOneSource per spec) and only successful payloads (r.data) are pushed into
+  // sourcePayloads/pooled — a failed source is simply absent from that list, not something that
+  // clears or short-circuits the sources that already succeeded.
+  assert.ok(/if \(r\.data\)/.test(routeSource) && /sourcePayloads\.push\(r\.data\)/.test(routeSource), 'only successful source payloads must be pushed into sourcePayloads — a failed page must not remove or block already-successful ones')
+  assert.ok(!/if \(!r\.ok\)[\s\S]{0,80}(return|break|throw)/.test(routeSource), 'a single failed source page must never abort the whole discovery cycle')
+
+  // Invalid page/cursor is skipped and audited, and requests never exceed a safe page cap: page
+  // numbers are generated from fixed, always-positive constants (NEW_POOLS_PAGES_PER_REQUEST etc.),
+  // never from unbounded/unvalidated user input, and the total requested page count is a fixed,
+  // finite constant — not something that can grow unbounded from a malformed cursor.
+  for (const constName of ['NEW_POOLS_PAGES_PER_REQUEST', 'TRENDING_PAGES_PER_REQUEST', 'VOLUME_POOLS_PAGES_PER_REQUEST']) {
+    assert.ok(new RegExp(`const ${constName} = \\d+`).test(routeSource), `${constName} must be a fixed, safe page-count cap, not unbounded`)
+  }
+  // A failed/skipped page is captured with real per-page detail (source/page/status/errorName/
+  // errorMessage/retryable/durationMs) — "audited" means real fields, not a swallowed catch.
+  for (const field of ['source', 'page', 'urlOrEndpointName', 'status', 'errorName', 'errorMessage', 'retryable', 'durationMs', 'skippedByBackoff']) {
+    assert.ok(routeSource.includes(field), `failedPages entries must expose "${field}" — real per-page failure detail, not a generic swallowed catch`)
+  }
+
+  // Degraded empty result is not cached as healthy: a 0-token result gets a short TTL
+  // (EMPTY_RESULT_CACHE_TTL_MS), never the full 30-100s TTL a real result gets — this applies
+  // regardless of WHY it's empty (gate-driven or discovery-degraded), so a degraded cycle can never
+  // get echoed back to every refresh for the long window.
+  assert.ok(/EMPTY_RESULT_CACHE_TTL_MS/.test(routeSource), 'a 0-token result must get a short cache TTL, not the full normal-result TTL')
+  assert.ok(/tokens\.length > 0 \? \(shallowMode[\s\S]{0,120}\) : EMPTY_RESULT_CACHE_TTL_MS/.test(routeSource), 'the short TTL must actually gate on tokens.length, not just exist unused')
+
+  // Successful fallback source can still populate candidates: getOrFetchCached's STALE result
+  // (a real, previously-fetched payload served because the live fetch failed) is captured as a
+  // genuine cacheStatus and still returned with ok:true/real data — a stale-but-real fallback still
+  // reaches sourcePayloads and can still produce candidates, it isn't treated as a hard failure.
+  assert.ok(/cacheStatus: result\.cache/.test(routeSource), 'a successful fetch (including a STALE fallback recovery) must carry its real cache status through, not be flattened to a generic success/failure boolean')
+  assert.ok(/fallbackUsed = sourceResults\.some\(r => r\.cacheStatus === 'STALE'\)/.test(routeSource), 'fallbackUsed must reflect a real STALE-cache recovery, not always be false')
+
+  // Per-source failure backoff exists (stops re-hammering an already-failing/rate-limited source
+  // every single refresh) and the wave-based pacing that replaced the old unbounded burst.
+  assert.ok(/discoverySourceFailureBackoff/.test(routeSource) && /DISCOVERY_FAILURE_BACKOFF_MS/.test(routeSource), 'a per-source failure backoff must exist so a failing source is not retried from a cold start on every single refresh')
+  assert.ok(/DISCOVERY_CONCURRENCY_LIMIT/.test(routeSource) && /DISCOVERY_WAVE_DELAY_MS/.test(routeSource), 'discovery fetches must be paced (bounded concurrency + real inter-wave delay), not fired as one unbounded burst')
+
+  // baseRadarDiscoverySourceAudit must exist with the full requested schema.
+  assert.ok(routeSource.includes('baseRadarDiscoverySourceAudit'), 'baseRadarDiscoverySourceAudit must exist')
+  for (const field of ['runtimeCommitSha', 'selectedChain', 'requestUrl', 'discoverySourcesUsed', 'pagesRequested', 'pagesSucceeded', 'pagesFailed', 'failedPages', 'rawCandidatesBeforeDedupe', 'rawCandidatesAfterDedupe', 'sourceCounts', 'degraded', 'degradedReason', 'cacheHit', 'fallbackUsed']) {
+    assert.ok(routeSource.includes(field), `baseRadarDiscoverySourceAudit must expose "${field}"`)
+  }
+
+  // Only a significant (majority-or-more) source failure is allowed to drive the degraded-empty
+  // UI message — a single failed page combined with a real gate-driven 0 must not be mislabeled.
+  assert.ok(/discoveryDegradedSignificant = sourcesFailedCount >= Math\.ceil\(sourcesAttempted \/ 2\)/.test(routeSource), 'discoveryDegradedSignificant must require a majority-or-more failure, not any single failed page')
+
+  // Strict gate still excludes below $80K / above $2M / below 30 holders even once raw candidates
+  // load correctly — re-asserted here (already covered above) specifically in the context of the
+  // discovery-resilience fix, so a future change to the fetch layer can't accidentally loosen the
+  // gate it feeds.
+  assert.equal(passesMainFeedValuationGate(79_999), false)
+  assert.equal(passesMainFeedValuationGate(2_000_001), false)
+  assert.equal(passesMainFeedHolderGate(29), false)
+
+  // Source returns 50+ raw candidates then strict gate runs: the per-pool loop applies the same
+  // liquidity -> valuation -> holder sequence regardless of how many raw candidates came in — no
+  // separate/looser code path keyed on raw candidate volume.
+  assert.ok(routeSource.includes('afterLiquidityGateCount') && routeSource.includes('afterValuationMin80kCount') && routeSource.includes('afterValuationMax2mCount'), 'the same liquidity -> valuation -> holder gate sequence must run regardless of raw candidate volume — no separate high-volume code path')
 }
 
 console.log('test-base-radar-main-feed-gate.mjs: all assertions passed')

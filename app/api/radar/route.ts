@@ -578,18 +578,22 @@ export async function GET(req: NextRequest) {
   const newPoolsStartPage = (radarPage - 1) * NEW_POOLS_PAGES_PER_REQUEST + 1
   const trendingStartPage = (radarPage - 1) * TRENDING_PAGES_PER_REQUEST + 1
   const volumePoolsStartPage = (radarPage - 1) * VOLUME_POOLS_PAGES_PER_REQUEST + 1
+  // PER-PAGE AUDIT FIELDS, DISCLOSED (explicitly requested: a detailed baseRadarDiscoverySourceAudit
+  // with per-failed-page source/page/status/errorName/errorMessage/retryable/durationMs). `source`/
+  // `page` are attached at spec-construction time instead of parsed back out of the `key` string
+  // later, so the audit can never drift from what was actually requested.
   const sourceSpecs = [
     ...Array.from({ length: NEW_POOLS_PAGES_PER_REQUEST }, (_, i) => {
       const page = newPoolsStartPage + i
-      return { key: `new_p${page}`, url: `https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=${page}&include=base_token%2Cquote_token&per_page=20` }
+      return { key: `new_p${page}`, source: 'new_pools', page, url: `https://api.geckoterminal.com/api/v2/networks/base/new_pools?page=${page}&include=base_token%2Cquote_token&per_page=20` }
     }),
     ...Array.from({ length: TRENDING_PAGES_PER_REQUEST }, (_, i) => {
       const page = trendingStartPage + i
-      return { key: `trending_p${page}`, url: `https://api.geckoterminal.com/api/v2/networks/base/trending_pools?page=${page}&include=base_token%2Cquote_token&per_page=20` }
+      return { key: `trending_p${page}`, source: 'trending_pools', page, url: `https://api.geckoterminal.com/api/v2/networks/base/trending_pools?page=${page}&include=base_token%2Cquote_token&per_page=20` }
     }),
     ...Array.from({ length: VOLUME_POOLS_PAGES_PER_REQUEST }, (_, i) => {
       const page = volumePoolsStartPage + i
-      return { key: `vol_p${page}`, url: `https://api.geckoterminal.com/api/v2/networks/base/pools?page=${page}&include=base_token%2Cquote_token&per_page=20&sort=h24_volume_usd_desc` }
+      return { key: `vol_p${page}`, source: 'pools_by_volume', page, url: `https://api.geckoterminal.com/api/v2/networks/base/pools?page=${page}&include=base_token%2Cquote_token&per_page=20&sort=h24_volume_usd_desc` }
     }),
   ]
   const sourceCounts: Record<string, number> = {}
@@ -624,7 +628,19 @@ export async function GET(req: NextRequest) {
   // instant-concurrency one.
   const DISCOVERY_CONCURRENCY_LIMIT = 6
   const DISCOVERY_WAVE_DELAY_MS = 400
-  const sourceResults: { key: string; count: number; data: Record<string, unknown> | null; ok: boolean }[] = new Array(sourceSpecs.length)
+  interface SourceFetchResult {
+    key: string; source: string; page: number
+    count: number; data: Record<string, unknown> | null; ok: boolean
+    status: number | null; errorName: string | null; errorMessage: string | null
+    retryable: boolean; durationMs: number; skippedByBackoff: boolean
+    // FALLBACK-USED, DISCLOSED: getOrFetchCached's own STALE result (lib/coingeckoCache.ts) means
+    // the live fetch actually failed this cycle but a real, previously-fetched cached payload was
+    // served instead of erroring out — a genuine "fallback source" hit, not a new/different
+    // provider. Captured here so baseRadarDiscoverySourceAudit's fallbackUsed field reflects a real
+    // signal instead of always being false.
+    cacheStatus: 'HIT' | 'MISS' | 'STALE' | 'SKIPPED'
+  }
+  const sourceResults: SourceFetchResult[] = new Array(sourceSpecs.length)
   for (let waveStart = 0; waveStart < sourceSpecs.length; waveStart += DISCOVERY_CONCURRENCY_LIMIT) {
     const wave = sourceSpecs.slice(waveStart, waveStart + DISCOVERY_CONCURRENCY_LIMIT)
     const waveResults = await Promise.all(wave.map(spec => fetchOneSource(spec)))
@@ -633,10 +649,15 @@ export async function GET(req: NextRequest) {
       await new Promise(resolve => setTimeout(resolve, DISCOVERY_WAVE_DELAY_MS))
     }
   }
-  async function fetchOneSource(spec: { key: string; url: string }) {
+  async function fetchOneSource(spec: { key: string; source: string; page: number; url: string }): Promise<SourceFetchResult> {
+    const startedAt = Date.now()
     const backoffUntil = discoverySourceFailureBackoff.get(spec.key)
     if (backoffUntil && Date.now() < backoffUntil) {
-      return { key: spec.key, count: 0, data: null, ok: false }
+      return {
+        key: spec.key, source: spec.source, page: spec.page, count: 0, data: null, ok: false,
+        status: null, errorName: 'backoff_skip', errorMessage: `skipped — this source failed recently and is in cooldown until ${new Date(backoffUntil).toISOString()}`,
+        retryable: true, durationMs: 0, skippedByBackoff: true, cacheStatus: 'SKIPPED',
+      }
     }
     try {
       const result = await getOrFetchCached<Record<string, unknown>>({
@@ -656,7 +677,15 @@ export async function GET(req: NextRequest) {
             const tid = setTimeout(() => ac.abort(), 6000)
             try {
               const gtRes = await fetch(spec.url, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: ac.signal })
-              if (!gtRes.ok) throw new Error(`market_source_unavailable_${gtRes.status}`)
+              if (!gtRes.ok) {
+                // PER-PAGE-ERROR-DETAIL FIX, DISCLOSED (explicitly requested: baseRadarDiscoverySourceAudit
+                // needs real status/errorName/errorMessage per failed page, not a generic swallowed
+                // catch). httpStatus is attached to the thrown error so it survives back out to the
+                // outer catch below.
+                const err = new Error(`market_source_unavailable_${gtRes.status}`) as Error & { httpStatus?: number }
+                err.httpStatus = gtRes.status
+                throw err
+              }
               return gtRes.json() as Promise<Record<string, unknown>>
             } finally { clearTimeout(tid) }
           }
@@ -670,8 +699,13 @@ export async function GET(req: NextRequest) {
       })
       const count = Array.isArray(result.data?.data) ? result.data.data.length : 0
       discoverySourceFailureBackoff.delete(spec.key)
-      return { key: spec.key, count, data: count > 0 ? { ...result.data, __radarSourceKey: spec.key } : null, ok: true }
-    } catch {
+      return {
+        key: spec.key, source: spec.source, page: spec.page, count,
+        data: count > 0 ? { ...result.data, __radarSourceKey: spec.key } : null, ok: true,
+        status: 200, errorName: null, errorMessage: null, retryable: false,
+        durationMs: Date.now() - startedAt, skippedByBackoff: false, cacheStatus: result.cache,
+      }
+    } catch (err) {
       discoverySourceFailureBackoff.set(spec.key, Date.now() + DISCOVERY_FAILURE_BACKOFF_MS)
       // FAILED-SOURCE-VS-GENUINELY-EMPTY FIX, DISCLOSED (reported: raw candidate count dropped from
       // ~200-360 to 72 in one cycle, with several source pages returning 0 scattered between pages
@@ -683,7 +717,14 @@ export async function GET(req: NextRequest) {
       // tokens with no way to tell "discovery was degraded this cycle" apart from "the market is
       // genuinely this thin." `ok: false` marks a real fetch failure distinctly from a real 0-count
       // success, surfaced via sourcesFailedCount/discoveryDegraded below.
-      return { key: spec.key, count: 0, data: null, ok: false }
+      const status = (err as { httpStatus?: number } | undefined)?.httpStatus ?? null
+      const errorName = err instanceof Error ? err.name : 'unknown_error'
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      const retryable = status == null || status === 429 || status >= 500
+      return {
+        key: spec.key, source: spec.source, page: spec.page, count: 0, data: null, ok: false,
+        status, errorName, errorMessage, retryable, durationMs: Date.now() - startedAt, skippedByBackoff: false, cacheStatus: 'MISS',
+      }
     }
   }
   let sourcesFailedCount = 0
@@ -700,6 +741,36 @@ export async function GET(req: NextRequest) {
     }
   }
   const discoveryDegraded = sourcesFailedCount > 0
+  // SIGNIFICANT-VS-MINOR-DEGRADATION FIX, DISCLOSED (explicitly requested: "Only show degraded
+  // empty state if all/most source pages fail" — the prior version flagged the UI's degraded
+  // message on ANY single failed page combined with 0 displayed tokens, which could misleadingly
+  // blame source failure for an outcome the deterministic $80K-$2M/30-holder gate actually caused
+  // on a cycle with, say, 1 failed page out of 18 and plenty of real raw candidates). Only a
+  // majority-or-more failure is treated as the explanatory cause in filterStage/the frontend empty
+  // state; a minor failure still gets recorded fully in the audit (sourcesFailedCount/failedPages)
+  // but doesn't override the real gate-driven explanation.
+  const discoveryDegradedSignificant = sourcesFailedCount >= Math.ceil(sourcesAttempted / 2)
+  // PAGES-SUCCEEDED/FAILED, DISCLOSED: `ok` (a real HTTP 200 vs. a real failure) is the authoritative
+  // per-page success signal for the new baseRadarDiscoverySourceAudit — distinct from the legacy
+  // `sourcesSucceeded` counter above (incremented only when `r.data` is truthy, i.e. a successful
+  // page that also had >0 pools; a successful-but-genuinely-empty page doesn't increment it). Left
+  // that legacy counter's semantics untouched since existing cache-write logic depends on it;
+  // pagesSucceeded/pagesFailed here answer "did the HTTP request itself succeed," which is what the
+  // requested audit shape asks for.
+  const pagesSucceeded = sourceResults.filter(r => r.ok).length
+  const pagesFailed = sourceResults.filter(r => !r.ok).length
+  const failedPages = sourceResults.filter(r => !r.ok).map(r => ({
+    source: r.source,
+    page: r.page,
+    urlOrEndpointName: r.key,
+    status: r.status,
+    errorName: r.errorName,
+    errorMessage: r.errorMessage,
+    retryable: r.retryable,
+    durationMs: r.durationMs,
+    skippedByBackoff: r.skippedByBackoff,
+  }))
+  const fallbackUsed = sourceResults.some(r => r.cacheStatus === 'STALE')
 
   try {
     const pooled: Record<string, unknown>[] = []
@@ -1312,8 +1383,9 @@ export async function GET(req: NextRequest) {
       discoverySourceCounts: sourceCounts,
       sourcesFailedCount,
       discoveryDegraded,
+      discoveryDegradedSignificant,
       displayTarget: DISPLAY_TARGET,
-      filterStage: discoveryDegraded && tokens.length === 0
+      filterStage: discoveryDegradedSignificant && tokens.length === 0
         ? `discovery degraded this cycle — ${sourcesFailedCount}/${sourcesAttempted} source pages failed (rate-limit/timeout), raw pool thinner than usual`
         : !holderProviderReachable && holderCheckAttemptedCount > 0
           ? 'holder-count provider unreachable this cycle — failed closed, 0 candidates shown unverified'
@@ -1382,6 +1454,42 @@ export async function GET(req: NextRequest) {
       holderCheckFailureSample,
     }
 
+    // DISCOVERY-SOURCE-AUDIT, DISCLOSED (explicitly requested: a dedicated
+    // baseRadarDiscoverySourceAudit — separate from baseRadarSourceAudit's broader funnel view —
+    // focused specifically on per-page discovery fetch outcomes, so "0 tokens" can be diagnosed as
+    // either a real source-fetch failure (exact endpoint/status/error) or a legitimate deterministic-
+    // gate result, without guessing). Every field is read from the same real counters/results
+    // already computed above (sourceResults, pagesSucceeded/pagesFailed/failedPages,
+    // rawTotalBeforeDedupe/dedupedPoolCount) — this does not re-derive or re-run discovery.
+    const baseRadarDiscoverySourceAudit = {
+      runtimeCommitSha: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
+      selectedChain: 'base',
+      requestUrl: req.nextUrl.toString(),
+      discoverySourcesUsed: Object.keys(sourceCounts),
+      pagesRequested: sourcesAttempted,
+      pagesSucceeded,
+      pagesFailed,
+      failedPages,
+      rawCandidatesBeforeDedupe: rawTotalBeforeDedupe,
+      rawCandidatesAfterDedupe: dedupedPoolCount,
+      sourceCounts,
+      degraded: discoveryDegraded,
+      degradedSignificant: discoveryDegradedSignificant,
+      degradedReason: pagesFailed === 0
+        ? null
+        : failedPages.every(p => p.status === 429)
+          ? 'GeckoTerminal rate-limited this cycle (HTTP 429 on every failed page)'
+          : failedPages.every(p => p.skippedByBackoff)
+            ? 'sources skipped — still in local failure-backoff cooldown from a prior cycle'
+            : failedPages.some(p => p.status != null && p.status >= 500)
+              ? 'GeckoTerminal returned server errors (5xx) on one or more pages'
+              : failedPages.some(p => p.errorName === 'AbortError')
+                ? 'one or more requests timed out (6s fetch timeout)'
+                : 'mixed/unclassified fetch failures — see failedPages for exact per-page detail',
+      cacheHit: false,
+      fallbackUsed,
+    }
+
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
     const hpHitCount = hpCacheHitFlags.filter(Boolean).length
     const hasMorePages = radarPage < 5 && tokens.length > 0
@@ -1393,7 +1501,7 @@ export async function GET(req: NextRequest) {
     // so a real DevTools Network capture — the one method that has reliably worked all session —
     // never showed them either. Attaching both directly to the normal, always-returned payload
     // (not gated behind debug=1) so the exact same capture method already in use surfaces them.
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenAbove2m, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, discoveryDegraded, sourcesFailedCount, baseRadarSourceAudit, baseRadarCandidateGateAudit }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenAbove2m, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,
@@ -1418,6 +1526,7 @@ export async function GET(req: NextRequest) {
       },
       baseRadarCandidateGateAudit,
       baseRadarSourceAudit,
+      baseRadarDiscoverySourceAudit,
       hiddenLowEvidenceCount,
       finalTokenCount: tokens.length,
       cacheHit: false,
