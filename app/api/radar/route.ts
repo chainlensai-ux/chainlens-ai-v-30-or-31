@@ -963,6 +963,12 @@ export async function GET(req: NextRequest) {
     let droppedByV4Pool = 0
     let droppedByV4NoDexScreenerData = 0
     let droppedByV4PoolMismatch = 0
+    // V4-MISMATCH-SAMPLE, DISCLOSED: real addresses for a few mismatch cases, so the actual shape
+    // of the disagreement is visible without needing ?debug=1 — specifically to check whether
+    // GeckoTerminal is reporting the same PoolManager singleton address for every V4 pool (which
+    // would make primaryPoolAddress structurally meaningless for V4, not a real per-pool identifier)
+    // versus a genuinely pool-specific address that just doesn't match DexScreener's own.
+    const v4MismatchSample: { contract: string; primaryPoolAddress: string | null; rescueSelectedPairAddress: string | null; rescuePairCount: number }[] = []
     let droppedByLiquidityFloorSpecifically = 0
     let droppedByAbsoluteLiquidityFloor = 0
     let droppedByDeadVolumeFloor = 0
@@ -1154,7 +1160,17 @@ export async function GET(req: NextRequest) {
         // question) — collapsed into one undifferentiated droppedByV4Pool counter before, with no
         // way to tell which explanation actually dominates.
         if (!rescue || rescue.pairCount === 0) droppedByV4NoDexScreenerData++
-        else if (!rescueMatchesThisPool) droppedByV4PoolMismatch++
+        else if (!rescueMatchesThisPool) {
+          droppedByV4PoolMismatch++
+          if (v4MismatchSample.length < 8) {
+            v4MismatchSample.push({
+              contract: baseToken.address,
+              primaryPoolAddress,
+              rescueSelectedPairAddress: rescue?.selectedPairAddress ?? null,
+              rescuePairCount: rescue?.pairCount ?? 0,
+            })
+          }
+        }
       }
       const marketCapUsd = resolvedMarketCap.marketCapUsd ?? rescue?.marketCapUsd ?? null
       const marketCapStatus = marketCapUsd != null ? 'verified' : resolvedMarketCap.marketCapStatus
@@ -1627,6 +1643,7 @@ export async function GET(req: NextRequest) {
         holders_below_30: droppedByHoldersBelow30,
         ranking_cap_excluded: droppedByRankingCap,
       },
+      v4MismatchSample,
       holderCheckFailureReasons,
       holderCheckFailureSample,
     }
