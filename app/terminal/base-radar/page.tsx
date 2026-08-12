@@ -681,13 +681,33 @@ function StripStat({ label, value, caption, accent = '#e2e8f0' }: { label: strin
   )
 }
 
-function PulseStrip({ summary }: { summary: RadarSummary }) {
-  const items = [
-    { label: 'Tokens Tracked', value: String(summary.newPools), caption: 'Current Base results', accent: '#e2e8f0' },
-    { label: 'Strongest Mover', value: summary.hottestToken, caption: summary.hottestValue, accent: '#2DD4BF' },
-    { label: 'Newest Pool', value: summary.newestToken, caption: summary.newestValue, accent: '#60a5fa' },
-    { label: 'Evidence Gaps', value: String(summary.unverified), caption: 'Needs more evidence', accent: '#fbbf24' },
-  ]
+// LOADING-READS-AS-EMPTY FIX, DISCLOSED (reported: "showed no tokens for a bit, that's a glitch" —
+// live-reproduced as a real UX bug, not a network/backend issue: on the very first load before any
+// response has ever arrived, this strip derived every value straight from an empty token list —
+// "Tokens Tracked" showed the literal number 0, "Strongest Mover"/"Newest Pool" showed "Open
+// check", identical in appearance to a confirmed, completed "we checked and genuinely found
+// nothing" result. There was no way to visually tell "still loading" apart from "checked, zero
+// candidates" — the exact ambiguity a user would reasonably call a glitch even though the backend
+// was working correctly. `hasEverLoaded` (true once the first response has ever arrived, false only
+// before that) now gates this: while true loading with no data yet, every card shows a neutral
+// "Checking…" placeholder instead of a zero/empty-looking real value. Once real data has arrived at
+// least once, subsequent background refreshes keep showing the last real numbers (matching the
+// existing "Refreshing…" button label logic) — this only fixes the genuinely-ambiguous first load.
+function PulseStrip({ summary, hasEverLoaded }: { summary: RadarSummary; hasEverLoaded: boolean }) {
+  const stillLoadingFirstFetch = !hasEverLoaded
+  const items = stillLoadingFirstFetch
+    ? [
+      { label: 'Tokens Tracked', value: '–', caption: 'Checking…', accent: '#3a5268' },
+      { label: 'Strongest Mover', value: '–', caption: 'Checking…', accent: '#3a5268' },
+      { label: 'Newest Pool', value: '–', caption: 'Checking…', accent: '#3a5268' },
+      { label: 'Evidence Gaps', value: '–', caption: 'Checking…', accent: '#3a5268' },
+    ]
+    : [
+      { label: 'Tokens Tracked', value: String(summary.newPools), caption: 'Current Base results', accent: '#e2e8f0' },
+      { label: 'Strongest Mover', value: summary.hottestToken, caption: summary.hottestValue, accent: '#2DD4BF' },
+      { label: 'Newest Pool', value: summary.newestToken, caption: summary.newestValue, accent: '#60a5fa' },
+      { label: 'Evidence Gaps', value: String(summary.unverified), caption: 'Needs more evidence', accent: '#fbbf24' },
+    ]
 
   return (
     <div className="radar-strip">
@@ -1659,7 +1679,7 @@ export default function BaseRadarPage() {
             </p>
           )}
 
-          {effectiveRadarChain === 'base' && <PulseStrip summary={summary} />}
+          {effectiveRadarChain === 'base' && <PulseStrip summary={summary} hasEverLoaded={data !== null} />}
 
           {effectiveRadarChain === 'base' && (
           <>
