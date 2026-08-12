@@ -39,15 +39,26 @@ export interface HolderCountResult {
   httpStatus?: number | null
   errorBody?: string | null
   chainPathUsed?: string
+  // PAGE-SIZE-CEILING, DISCLOSED (reported: "every single token in base radar always says 100" —
+  // real, confirmed root cause, not a bug that fetches nothing: Covalent's own community governance
+  // forum has an open, unresolved request titled "Return absolute total amount from 'Get token
+  // holders'" — their token_holders_v2 pagination.total_count is NOT a true global distinct-holder
+  // count once a token has more holders than the requested page-size; it reflects (or is capped at)
+  // the page itself. Every token with 100+ real holders was showing exactly "100" for this reason —
+  // an honest page-bound number displayed as if it were an exact total. isCapped is true whenever
+  // pagination.has_more confirms more holders exist beyond this page (falls back to count===pageSize
+  // if has_more isn't present in the response) — callers must show "100+" rather than "100" when
+  // this is true, never presenting a capped page count as an exact figure.
+  isCapped?: boolean
 }
 
-const holderCountCache = new Map<string, { count: number | null; reason?: HolderCountReason; expiresAt: number }>()
+const holderCountCache = new Map<string, { count: number | null; reason?: HolderCountReason; isCapped?: boolean; expiresAt: number }>()
 
 export async function fetchGoldRushHolderCount(contract: string, chain: 'base' | 'robinhood'): Promise<HolderCountResult> {
   const chainPath = CHAIN_PATH[chain]
   const key = `${chain}:${contract.toLowerCase()}`
   const cached = holderCountCache.get(key)
-  if (cached && cached.expiresAt > Date.now()) return { count: cached.count, reason: cached.count != null ? 'ok' : (cached.reason ?? 'no_data'), chainPathUsed: chainPath }
+  if (cached && cached.expiresAt > Date.now()) return { count: cached.count, reason: cached.count != null ? 'ok' : (cached.reason ?? 'no_data'), chainPathUsed: chainPath, isCapped: cached.isCapped }
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
   if (!apiKey) return { count: null, reason: 'no_api_key', chainPathUsed: chainPath }
   const attempt = async (): Promise<HolderCountResult> => {
@@ -62,9 +73,13 @@ export async function fetchGoldRushHolderCount(contract: string, chain: 'base' |
         const body = await res.text().catch(() => '').then(t => t.slice(0, 200))
         return { count: null, reason: res.status === 429 ? 'rate_limited' : 'http_error', httpStatus: res.status, errorBody: body, chainPathUsed: chainPath }
       }
-      const json = await res.json().catch(() => null) as { data?: { pagination?: { total_count?: number } } } | null
-      const totalCount = json?.data?.pagination?.total_count
-      if (typeof totalCount === 'number' && Number.isFinite(totalCount)) return { count: totalCount, reason: 'ok', chainPathUsed: chainPath }
+      const json = await res.json().catch(() => null) as { data?: { pagination?: { total_count?: number; has_more?: boolean; page_size?: number } } } | null
+      const pagination = json?.data?.pagination
+      const totalCount = pagination?.total_count
+      if (typeof totalCount === 'number' && Number.isFinite(totalCount)) {
+        const isCapped = pagination?.has_more === true || totalCount === (pagination?.page_size ?? 100)
+        return { count: totalCount, reason: 'ok', chainPathUsed: chainPath, isCapped }
+      }
       return { count: null, reason: 'no_data', chainPathUsed: chainPath }
     } catch (err) {
       const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
@@ -80,6 +95,6 @@ export async function fetchGoldRushHolderCount(contract: string, chain: 'base' |
   }
   // Cache negative/failed lookups too (shorter-lived) so a rate-limited burst doesn't get re-tried
   // on every request for the same contract, compounding the same rate-limit problem.
-  holderCountCache.set(key, { count: result.count, reason: result.reason, expiresAt: Date.now() + (result.count != null ? HOLDER_COUNT_CACHE_TTL_MS : 60_000) })
+  holderCountCache.set(key, { count: result.count, reason: result.reason, isCapped: result.isCapped, expiresAt: Date.now() + (result.count != null ? HOLDER_COUNT_CACHE_TTL_MS : 60_000) })
   return result
 }

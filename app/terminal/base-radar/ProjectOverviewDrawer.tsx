@@ -134,6 +134,7 @@ type DrawerEnrichmentPayload = {
     top10?: number | null
     top20?: number | null
     holderCount?: number | null
+    holderCountCapped?: boolean
     status?: string | null
     reason?: string | null
     confidence?: string | null
@@ -961,9 +962,16 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
               a separate, heavier computation that can legitimately be unavailable even when the
               count is known). The chip and caption below now say so explicitly instead of using the
               same "Open Check" wording for both cases. */}
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}><Chip label={concentration.holderCount != null && concentrationRisk === 'Open Check' ? 'Concentration unavailable' : `${concentrationRisk} concentration`} tone={holderTone} /><span style={{ color: '#94a3b8', fontSize: 12 }}>Holders: <strong style={{ color: '#e2e8f0' }}>{concentration.holderCount == null ? 'Open Check' : concentration.holderCount}</strong></span><span style={{ color: '#94a3b8', fontSize: 12 }}>{creatorTopHolderDisplay(concentration.creatorInTopHolders, concentration.creatorHolderPercent)}</span></div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}><Chip label={concentration.holderCount != null && concentrationRisk === 'Open Check' ? 'Concentration unavailable' : `${concentrationRisk} concentration`} tone={holderTone} />{/* PAGE-SIZE-CEILING-DISPLAY, DISCLOSED (reported: "always says 100" — real, confirmed root
+                cause is Covalent's own pagination.total_count being capped at the requested
+                page-size once a token has more holders than that; see
+                lib/server/goldrushHolderCount.ts's own header comment for the Covalent-forum
+                confirmation). holderCountCapped means this number is real but page-bound, not the
+                exact total — showing "100+" instead of "100" is the honest fix, never presenting a
+                capped page count as if it were precise. */}
+              <span style={{ color: '#94a3b8', fontSize: 12 }}>Holders: <strong style={{ color: '#e2e8f0' }}>{concentration.holderCount == null ? 'Open Check' : `${concentration.holderCount}${concentration.holderCountCapped ? '+' : ''}`}</strong></span><span style={{ color: '#94a3b8', fontSize: 12 }}>{creatorTopHolderDisplay(concentration.creatorInTopHolders, concentration.creatorHolderPercent)}</span></div>
           {concentration.holderCount != null && concentrationRisk === 'Open Check' ? (
-            <p style={{ margin: '0 0 12px', color: '#94a3b8', fontSize: 12, lineHeight: 1.5 }}>Holder count verified — {concentration.holderCount} holders. Top 1/10/20 supply-share concentration is unavailable for this token; that does not mean holder evidence is missing, only that the concentration breakdown was not resolved. Open Token Scanner for a deeper check.</p>
+            <p style={{ margin: '0 0 12px', color: '#94a3b8', fontSize: 12, lineHeight: 1.5 }}>Holder count verified — {concentration.holderCount}{concentration.holderCountCapped ? '+' : ''} holders{concentration.holderCountCapped ? ' (this provider reports at least this many; exact total not confirmed)' : ''}. Top 1/10/20 supply-share concentration is unavailable for this token; that does not mean holder evidence is missing, only that the concentration breakdown was not resolved. Open Token Scanner for a deeper check.</p>
           ) : null}
           <div style={{ display: 'grid', gap: 10, marginBottom: 12 }}><MiniBar label="Top 1" value={concentration.top1} tone={holderTone === 'risk' ? 'risk' : 'mint'} /><MiniBar label="Top 10" value={concentration.top10} tone={holderTone === 'risk' ? 'risk' : 'amber'} /><MiniBar label="Top 20" value={concentration.top20} tone={holderTone === 'risk' ? 'risk' : 'amber'} /></div>
           <div className="holder-row-list" style={{ display: 'grid', gap: 7 }}>{topHolders.slice(0, 8).map((h, idx) => <div key={`${h.address}-${idx}`} style={{ display: 'grid', gridTemplateColumns: '38px minmax(0,1fr) auto', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 12, border: '1px solid rgba(148,163,184,.10)', background: 'rgba(2,6,23,.38)' }}><span style={{ color: '#64748b', fontSize: 11, fontFamily: 'var(--font-plex-mono)' }}>#{h.rank ?? idx + 1}</span><span style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(h.address)}</span><span style={{ color: '#99f6e4', fontSize: 12, fontFamily: 'var(--font-plex-mono)', fontWeight: 850 }}>{percent(getHolderPercent(h))}</span></div>)}</div>

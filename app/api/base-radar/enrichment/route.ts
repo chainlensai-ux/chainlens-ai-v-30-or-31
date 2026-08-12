@@ -264,7 +264,7 @@ function observedPoolFields(scan: Record<string, any>) {
   return { observedPoolPresent, observedPoolCount, poolCountStatus }
 }
 
-function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract: string, debug = false, fallbackHolderCount: number | null = null): Record<string, unknown> {
+function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract: string, debug = false, fallbackHolderCount: number | null = null, fallbackHolderCountCapped = false): Record<string, unknown> {
   const holderDistribution = scan.holderDistribution ?? {}
   const holderResolver = scan.holderResolver ?? {}
   const holderRows = Array.isArray(holderDistribution.topHolders)
@@ -280,6 +280,14 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
   // needs Token Scanner's full holder-row pull this fallback doesn't provide — that stays honestly
   // "unavailable" exactly as already designed, this only makes the COUNT itself reliable.
   const holderCount = finiteNumber(holderDistribution.holderCount) ?? finiteNumber(holderResolver.holderCount) ?? (holderRows.length > 0 ? holderRows.length : null) ?? fallbackHolderCount
+  // PAGE-SIZE-CEILING, DISCLOSED (reported: "always says 100" — real, confirmed root cause: GoldRush's
+  // token_holders_v2 pagination.total_count is capped at the requested page-size once a token has
+  // more holders than that — see lib/server/goldrushHolderCount.ts's own header comment for the
+  // Covalent-forum confirmation). Only ever true for the fallback path (Token Scanner's own resolver
+  // returning a real count from its own, different pull isn't known to have this specific cap), so
+  // the frontend must show "100+" instead of "100" whenever this is true — never present a page-bound
+  // number as if it were the exact total.
+  const holderCountCapped = holderCount === fallbackHolderCount && fallbackHolderCountCapped
   const clusterMap = scan.devIntel?.clusterMap ?? scan.clusterMap ?? null
   const clusterEdges = Array.isArray(clusterMap?.edges) ? clusterMap.edges : []
   const clusterNodes = Array.isArray(clusterMap?.nodes) ? clusterMap.nodes : []
@@ -438,6 +446,7 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       top10: finiteNumber(holderDistribution.top10),
       top20: finiteNumber(holderDistribution.top20),
       holderCount,
+      holderCountCapped,
       status: scan.holderDistributionStatus?.status ?? scan.holderStatus ?? null,
       reason: sanitizeProviderNames(scan.holderDistributionStatus?.reason ?? holderResolver.reason ?? null),
       confidence: holderResolver.confidence ?? scan.holderDistributionStatus?.confidence ?? null,
@@ -534,11 +543,13 @@ async function scanToken(req: Request, chain: ChainKey, contract: string, debug:
     || (Array.isArray(scanHolderDistribution.topHolders) && scanHolderDistribution.topHolders.length > 0)
     || (Array.isArray(scanHolderResolver.holders) && scanHolderResolver.holders.length > 0)
   let fallbackHolderCount: number | null = null
+  let fallbackHolderCountCapped = false
   if (!scanHasHolderData && (chain === 'base' || chain === 'robinhood')) {
     const fallback = await fetchGoldRushHolderCount(contract, chain)
     fallbackHolderCount = fallback.count
+    fallbackHolderCountCapped = fallback.isCapped === true
   }
-  return buildPublicPayload(scan, chain, contract, debug, fallbackHolderCount)
+  return buildPublicPayload(scan, chain, contract, debug, fallbackHolderCount, fallbackHolderCountCapped)
 }
 
 function storeCache(key: string, payload: Record<string, unknown>, now: number) {
