@@ -44,6 +44,10 @@ export const metadata: Metadata = {
     description: DESCRIPTION,
     images: ['/icon.png'],
   },
+  // BASE-APP-VERIFICATION, DISCLOSED (explicitly requested: Base dashboard domain verification).
+  other: {
+    'base:app_id': '6a7bfc563d490b7a57a0672c',
+  },
 }
 
 export const viewport: Viewport = {
