@@ -225,19 +225,30 @@ async function setDiscoveryBackoff(key: string, until: number): Promise<void> {
   }
 }
 
-// DAILY-POOL, DISCLOSED (explicitly requested, superseding the earlier 30-minute sticky-feed with a
-// clearer, day-scoped spec: "max 10 tokens found a day... once it loads it will always be there for
-// the 24 hours in the day, then the next day we search for new ones"). Root problem this and the
-// prior sticky-feed both address is the same: GeckoTerminal's rate limit means raw discovery
-// genuinely differs cycle to cycle, so a token that legitimately cleared every gate can vanish from
-// the very next response purely because that cycle didn't happen to rediscover it — not because
-// anything about the token changed. This version's semantics are simpler and stronger: once a real
-// candidate is admitted to TODAY's pool, it stays displayed for the rest of the UTC calendar day no
-// matter what any single cycle's discovery finds, up to a hard cap of DAILY_POOL_MAX per day; at UTC
-// day rollover the pool key changes and a fresh, empty pool starts accumulating for the new day.
+// DAILY-POOL, DISCLOSED (explicitly requested, superseding the earlier 30-minute sticky-feed:
+// "max 10 tokens found a day... once it loads it will always be there for the 24 hours in the day,
+// then the next day we search for new ones"). Root problem this and the prior sticky-feed both
+// address is the same: GeckoTerminal's rate limit means raw discovery genuinely differs cycle to
+// cycle, so a token that legitimately cleared every gate can vanish from the very next response
+// purely because that cycle didn't happen to rediscover it — not because anything about the token
+// changed. Once a real candidate is admitted to the pool, it stays displayed for the rest of that
+// pool's cycle no matter what any single cycle's discovery finds, up to a hard cap of
+// DAILY_POOL_MAX total.
+//
+// ROLLING-24H-NOT-CALENDAR-DAY, DISCLOSED (explicit follow-up correction: "not by time just 24
+// timer when they find all the tokens they can" — a UTC-calendar-day boundary was the wrong
+// anchor, since a token admitted at 11:58pm UTC would only survive 2 minutes before an arbitrary
+// clock rollover, while one admitted at 12:01am UTC gets nearly a full day. The real cycle must be
+// a genuine rolling 24 hours measured from when THIS pool actually started accumulating — the
+// first token found for a fresh cycle — not from a fixed wall-clock boundary unrelated to when
+// discovery actually happened). The pool now stores its own cycleStartedAt; every read checks
+// whether 24h have elapsed since THAT timestamp (not "did the calendar date change") and starts a
+// brand new empty cycle if so — a single fixed Redis key, not one keyed by date, since the cycle
+// boundary is now data-driven, not clock-driven.
+//
 // Backed by the same shared Redis client as the discovery backoff/rate-limit fixes (cross-instance,
-// same codebase pattern) so every user sees the same day's pool. Fail-open: any Redis problem just
-// means today's pool doesn't apply this cycle, never blocks the normal fresh-computation path.
+// same codebase pattern) so every user sees the same pool. Fail-open: any Redis problem just means
+// pooling doesn't apply this cycle, never blocks the normal fresh-computation path.
 //
 // Honesty boundary, unchanged from the sticky-feed this replaces: a pool member is refreshed with
 // real fresh evidence whenever this cycle's discovery actually re-finds it (its numbers stay
@@ -245,26 +256,31 @@ async function setDiscoveryBackoff(key: string, until: number): Promise<void> {
 // values are kept and it's explicitly labeled 'Shown from earlier today — not re-verified this
 // refresh' — never silently presented as freshly re-checked just because it's still on screen.
 const DAILY_POOL_MAX = 10
+const DAILY_POOL_CYCLE_MS = 24 * 60 * 60 * 1000
 const DAILY_POOL_REDIS_PREFIX = 'radar:daily-pool:'
-function todayKeyUTC(): string {
-  return new Date().toISOString().slice(0, 10) // YYYY-MM-DD, UTC — the pool's natural reset boundary
-}
 interface DailyPoolEntry { token: RadarToken; addedAt: number; verifiedAt: number }
-async function getDailyPool(key: string): Promise<DailyPoolEntry[]> {
-  if (!redisConfigured()) return []
-  try {
-    const val = await redis.get<DailyPoolEntry[]>(`${DAILY_POOL_REDIS_PREFIX}${key}`)
-    return Array.isArray(val) ? val : []
-  } catch {
-    return []
+interface DailyPoolState { cycleStartedAt: number; entries: DailyPoolEntry[] }
+async function getDailyPool(key: string): Promise<DailyPoolState> {
+  const nowTs = Date.now()
+  if (redisConfigured()) {
+    try {
+      const val = await redis.get<DailyPoolState>(`${DAILY_POOL_REDIS_PREFIX}${key}`)
+      if (val && typeof val.cycleStartedAt === 'number' && Array.isArray(val.entries) && nowTs - val.cycleStartedAt < DAILY_POOL_CYCLE_MS) {
+        return val
+      }
+    } catch { /* fall through to a fresh cycle — never block on a Redis problem */ }
   }
+  // Missing, unreadable, or the current cycle's 24h has genuinely elapsed — a brand new cycle
+  // starts now; cycleStartedAt is only ever set here, at the real moment a cycle begins.
+  return { cycleStartedAt: nowTs, entries: [] }
 }
-async function setDailyPool(key: string, entries: DailyPoolEntry[]): Promise<void> {
+async function setDailyPool(key: string, state: DailyPoolState): Promise<void> {
   if (!redisConfigured()) return
   try {
-    // 26h TTL, not 24h — a small buffer past the actual UTC day boundary so a slow/delayed write
-    // near midnight can't get evicted a moment before the day's last legitimate read of it.
-    await redis.set(`${DAILY_POOL_REDIS_PREFIX}${key}`, entries.slice(0, DAILY_POOL_MAX), { ex: 26 * 60 * 60 })
+    const remainingMs = Math.max(0, DAILY_POOL_CYCLE_MS - (Date.now() - state.cycleStartedAt))
+    // +1h buffer past the cycle's own real end so a request arriving right at the boundary can
+    // still read the still-technically-valid final moments of the old cycle before it expires.
+    await redis.set(`${DAILY_POOL_REDIS_PREFIX}${key}`, { ...state, entries: state.entries.slice(0, DAILY_POOL_MAX) }, { ex: Math.ceil(remainingMs / 1000) + 3600 })
   } catch { /* best-effort */ }
 }
 const HOLDER_COUNT_CACHE_TTL_MS = 10 * 60_000
@@ -1719,30 +1735,32 @@ export async function GET(req: NextRequest) {
       .map(toRadarToken)
 
     // DAILY-POOL MERGE, DISCLOSED: see the header comment near getDailyPool's declaration for the
-    // full day-scoped rationale. Every fresh candidate this cycle either refreshes its existing spot
-    // in today's pool (real updated evidence/values) or, if today's pool has an open slot (under
-    // DAILY_POOL_MAX), gets newly admitted. Once a token is in today's pool it stays displayed for
-    // the rest of the UTC day regardless of whether later cycles rediscover it — a full pool means
-    // no MORE admissions today, but nothing already admitted is ever evicted early. Resets naturally
-    // at the next UTC day's pool key.
+    // full rolling-24h rationale. Every fresh candidate this cycle either refreshes its existing spot
+    // in the pool (real updated evidence/values) or, if the pool has an open slot (under
+    // DAILY_POOL_MAX), gets newly admitted. Once a token is in the pool it stays displayed for the
+    // rest of that pool's 24h cycle regardless of whether later cycles rediscover it — a full pool
+    // means no MORE admissions until the cycle rolls over, but nothing already admitted is ever
+    // evicted early. getDailyPool itself decides whether to hand back the current cycle or start a
+    // brand new one (24h genuinely elapsed since cycleStartedAt) — this block just uses whichever it
+    // returns.
     let dailyPoolCarriedOverCount = 0
     let dailyPoolSize = 0
+    let dailyPoolCycleStartedAt = 0
     {
       const nowTs = Date.now()
-      const dailyPoolKey = `${dailyPoolCacheKey}:${todayKeyUTC()}`
       const freshByContract = new Map(tokens.map(t => [t.contract.toLowerCase(), t]))
-      const poolEntries = await getDailyPool(dailyPoolKey)
+      const poolState = await getDailyPool(dailyPoolCacheKey)
 
       // Refresh existing pool members with real fresh values wherever this cycle rediscovered them;
       // otherwise keep their last known-good token/verifiedAt exactly as stored.
-      const refreshedPool: DailyPoolEntry[] = poolEntries.map(e => {
+      const refreshedPool: DailyPoolEntry[] = poolState.entries.map(e => {
         const fresh = freshByContract.get(e.token.contract.toLowerCase())
         return fresh ? { token: fresh, addedAt: e.addedAt, verifiedAt: nowTs } : e
       })
       const poolContracts = new Set(refreshedPool.map(e => e.token.contract.toLowerCase()))
 
       // Admit brand-new candidates into any open slots, in this cycle's ranked order — once
-      // DAILY_POOL_MAX is reached for today, later candidates simply don't get a slot today.
+      // DAILY_POOL_MAX is reached, later candidates simply don't get a slot until the next cycle.
       const openSlots = Math.max(0, DAILY_POOL_MAX - refreshedPool.length)
       const newlyAdmitted: DailyPoolEntry[] = tokens
         .filter(t => !poolContracts.has(t.contract.toLowerCase()))
@@ -1751,7 +1769,8 @@ export async function GET(req: NextRequest) {
 
       const finalPool = [...refreshedPool, ...newlyAdmitted]
       dailyPoolSize = finalPool.length
-      await setDailyPool(dailyPoolKey, finalPool)
+      dailyPoolCycleStartedAt = poolState.cycleStartedAt
+      await setDailyPool(dailyPoolCacheKey, { cycleStartedAt: poolState.cycleStartedAt, entries: finalPool })
 
       // Display today's WHOLE pool — not just backfilling gaps — since the pool now defines "today's
       // feed": fresh values where rediscovered this cycle, last known-good values (with an explicit
@@ -2032,7 +2051,7 @@ export async function GET(req: NextRequest) {
     // so a real DevTools Network capture — the one method that has reliably worked all session —
     // never showed them either. Attaching both directly to the normal, always-returned payload
     // (not gated behind debug=1) so the exact same capture method already in use surfaces them.
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, dailyPoolCarriedOverCount, dailyPoolSize, dailyPoolMax: DAILY_POOL_MAX, discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, dailyPoolCarriedOverCount, dailyPoolSize, dailyPoolMax: DAILY_POOL_MAX, dailyPoolCycleStartedAt: new Date(dailyPoolCycleStartedAt).toISOString(), dailyPoolCycleResetsAt: new Date(dailyPoolCycleStartedAt + DAILY_POOL_CYCLE_MS).toISOString(), discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,

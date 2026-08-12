@@ -279,14 +279,14 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   // ─── No accidental pre-filter slice/top-N cap ahead of the valuation/holder gates ────────────
   // The only small-number .slice(0, N) calls in this file must be for things that run AFTER
   // filtering (Clark AI verdicts on the top 5 already-final tokens, the debug nearMissSample log
-  // cap), on data that was never part of the candidate/gate pipeline at all (the WHY-NO-BASE-TOKENS
-  // diagnostic's 5-item sample of DexScreener's raw external list, and todayKeyUTC's .slice(0, 10)
-  // extracting a YYYY-MM-DD calendar date string — not a candidate count at all) — never a hidden
-  // cap on the raw/ranked candidate pool itself before the gates run. (The real, intentional
-  // DAILY_POOL_MAX=10 per-day display cap is asserted directly above by name/identifier, not
-  // counted here, since it's an explicit named constant, not a bare numeric literal.)
+  // cap) or on data that was never part of the candidate/gate pipeline at all (the WHY-NO-BASE-
+  // TOKENS diagnostic's 5-item sample of DexScreener's raw external list) — never a hidden cap on
+  // the raw/ranked candidate pool itself before the gates run. (The real, intentional
+  // DAILY_POOL_MAX=10 pool cap is asserted directly above by name/identifier, not counted here,
+  // since it's an explicit named constant used via .slice(0, DAILY_POOL_MAX), not a bare numeric
+  // literal the regex below would even match.)
   const smallSlices = [...routeSource.matchAll(/\.slice\(0,\s*(\d+)\)/g)].map(m => Number(m[1])).filter(n => n <= 30)
-  assert.ok(smallSlices.length <= 4, `found ${smallSlices.length} small-N .slice(0, <=30) calls (expected at most 4: the top-5 Clark verdict slice, the 30-entry nearMissSample log cap, the 5-item DexScreener raw-sample diagnostic, and todayKeyUTC's 10-char date-string slice) — a new one could be an accidental pre-filter cap: ${smallSlices.join(', ')}`)
+  assert.ok(smallSlices.length <= 3, `found ${smallSlices.length} small-N .slice(0, <=30) calls (expected at most 3: the top-5 Clark verdict slice, the 30-entry nearMissSample log cap, and the 5-item DexScreener raw-sample diagnostic) — a new one could be an accidental pre-filter cap: ${smallSlices.join(', ')}`)
 
   // ─── Cache key includes the gate thresholds (stale-cache-after-threshold-change fix) ─────────
   assert.ok(routeSource.includes('MAIN_FEED_MIN_VALUATION_USD') && /cacheKeyBase\s*=[\s\S]{0,400}MAIN_FEED_MIN_VALUATION_USD/.test(routeSource), 'the cache key must fold in MAIN_FEED_MIN_VALUATION_USD so a threshold change can never serve a stale payload computed under the old gate')
@@ -374,14 +374,19 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   assert.ok(/DISCOVERY_FAILURE_BACKOFF_MS = 20_000/.test(routeSource), 'the backoff window must be short enough for a realistic refresh gap to actually retry (shortened from 45s to 20s per live report of prolonged degradation)')
 
   // ─── Daily pool: a legitimately-verified token must not vanish just because one refresh cycle
-  // didn't rediscover it, capped at a real per-day maximum, and a carried-over token must never be
-  // indistinguishable from a freshly re-checked one ──────────────────────────────────────────────
+  // didn't rediscover it, capped at a real maximum, reset by a genuine ROLLING 24h timer measured
+  // from when the pool itself actually started accumulating (not a fixed UTC-calendar-day boundary
+  // — explicitly corrected: "not by time just 24 timer when they find all the tokens they can"),
+  // and a carried-over token must never be indistinguishable from a freshly re-checked one ───────
   assert.ok(routeSource.includes('getDailyPool') && routeSource.includes('setDailyPool'), 'daily-pool read/write helpers must exist')
-  assert.ok(/DAILY_POOL_MAX = 10/.test(routeSource), 'the daily pool must have a real, explicit per-day cap')
-  assert.ok(/todayKeyUTC/.test(routeSource), 'the pool must be keyed by a real calendar-day boundary so it resets, not carry forever')
+  assert.ok(/DAILY_POOL_MAX = 10/.test(routeSource), 'the daily pool must have a real, explicit cap')
+  assert.ok(/DAILY_POOL_CYCLE_MS = 24 \* 60 \* 60 \* 1000/.test(routeSource), 'the pool cycle must be a real, explicit 24h duration')
+  assert.ok(/cycleStartedAt/.test(routeSource), 'the pool must track its own real cycle-start timestamp, not rely on a fixed calendar boundary')
+  assert.ok(/nowTs - val\.cycleStartedAt < DAILY_POOL_CYCLE_MS/.test(routeSource), 'a cycle must be considered current only while genuinely inside its own rolling 24h window from when IT started, never a fixed clock boundary unrelated to that')
+  assert.ok(!/todayKeyUTC|toISOString\(\)\.slice\(0, 10\)/.test(routeSource), 'the pool must not fall back to a UTC-calendar-day key — the reset must be the rolling 24h timer, not the wall clock')
   assert.ok(routeSource.includes('Shown from earlier today — not re-verified this refresh'), 'a carried-over token must be explicitly labeled as such, never silently presented as freshly re-verified')
-  assert.ok(/openSlots = Math\.max\(0, DAILY_POOL_MAX - refreshedPool\.length\)/.test(routeSource), 'new admissions must only fill OPEN pool slots — once the per-day cap is reached, no more are added today')
-  assert.ok(!/DAILY_POOL_MAX \+\+|refreshedPool\.length > DAILY_POOL_MAX/.test(routeSource), 'nothing should try to exceed the per-day cap')
+  assert.ok(/openSlots = Math\.max\(0, DAILY_POOL_MAX - refreshedPool\.length\)/.test(routeSource), 'new admissions must only fill OPEN pool slots — once the cap is reached, no more are added until the cycle rolls over')
+  assert.ok(!/DAILY_POOL_MAX \+\+|refreshedPool\.length > DAILY_POOL_MAX/.test(routeSource), 'nothing should try to exceed the pool cap')
   // Do NOT rely on the daily-pool key including the current radarPage — the pool must be ONE shared
   // reservoir per plan/threshold combo across every Load More page, not fragmented per page.
   assert.ok(routeSource.includes('dailyPoolCacheKey') && !/dailyPoolCacheKey = `plan:.*page:\$\{radarPage\}/.test(routeSource), 'the daily-pool cache key must exclude radarPage — one shared pool across all pages, not one per page')
