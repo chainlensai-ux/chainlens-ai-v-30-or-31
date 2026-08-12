@@ -142,6 +142,21 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Pro
 // so repeat refreshes of the same tokens don't re-hit GoldRush, (3) capping how many candidates get
 // checked per request.
 const GOLDRUSH_RADAR_HOSTS = ['api.covalenthq.com'] as const
+// DISCOVERY-FAILURE-BACKOFF, DISCLOSED (live-reproduced: after a wave-based pacing fix still showed
+// waves 2-3 of 3 failing entirely, dug into WHY the failure kept recurring across separate live
+// captures rather than self-healing — getOrFetchCached (lib/coingeckoCache.ts) never caches a
+// failure, only a success; a source that fails gets retried from a completely cold start on the
+// very next request, with zero cooldown. Every refresh during a GeckoTerminal rate-limit window was
+// re-triggering the exact same burst against a budget that hadn't recovered yet, which is why this
+// kept failing across multiple captures instead of clearing up on its own — each retry was actively
+// extending the outage, not just failing to fix it). This is a small, LOCAL backoff scoped to Base
+// Radar's own discovery fetch only (not a change to the shared coingeckoCache.ts utility other
+// routes also use) — once a source key fails, it's skipped (no network call at all) for
+// DISCOVERY_FAILURE_BACKOFF_MS, giving GeckoTerminal's own rate-limit window real time to clear
+// instead of Base Radar re-hammering it every single refresh. A success for that key clears its
+// backoff immediately.
+const DISCOVERY_FAILURE_BACKOFF_MS = 45_000
+const discoverySourceFailureBackoff = new Map<string, number>()
 const HOLDER_COUNT_CACHE_TTL_MS = 10 * 60_000
 const holderCountCache = new Map<string, { count: number | null; reason?: 'ok' | 'no_api_key' | 'rate_limited' | 'http_error' | 'timeout' | 'no_data'; expiresAt: number }>()
 // SINGLE-HOST RETRY, DISCLOSED (found via live baseRadarSourceAudit output: 3 real candidates
@@ -619,6 +634,10 @@ export async function GET(req: NextRequest) {
     }
   }
   async function fetchOneSource(spec: { key: string; url: string }) {
+    const backoffUntil = discoverySourceFailureBackoff.get(spec.key)
+    if (backoffUntil && Date.now() < backoffUntil) {
+      return { key: spec.key, count: 0, data: null, ok: false }
+    }
     try {
       const result = await getOrFetchCached<Record<string, unknown>>({
         key: `coingecko:base-radar:${spec.key}`,
@@ -650,8 +669,10 @@ export async function GET(req: NextRequest) {
         },
       })
       const count = Array.isArray(result.data?.data) ? result.data.data.length : 0
+      discoverySourceFailureBackoff.delete(spec.key)
       return { key: spec.key, count, data: count > 0 ? { ...result.data, __radarSourceKey: spec.key } : null, ok: true }
     } catch {
+      discoverySourceFailureBackoff.set(spec.key, Date.now() + DISCOVERY_FAILURE_BACKOFF_MS)
       // FAILED-SOURCE-VS-GENUINELY-EMPTY FIX, DISCLOSED (reported: raw candidate count dropped from
       // ~200-360 to 72 in one cycle, with several source pages returning 0 scattered between pages
       // that returned a full 20 — e.g. new_p2/p3/p7/p8/p9 empty while new_p1/p4/p5/p6 full. That
