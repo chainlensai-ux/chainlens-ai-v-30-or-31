@@ -581,11 +581,34 @@ export async function GET(req: NextRequest) {
   let sourcesSucceeded = 0
   const sourcesAttempted = sourceSpecs.length
   const sourcePayloads: Record<string, unknown>[] = []
-  // TOKEN-SAVER: these source fetches (sourceSpecs.length of them — see the wider-pull comment
-  // above) are independent (different URLs/cache keys) — fetching them in parallel instead of
-  // one-by-one cuts radar feed load latency without changing what is fetched or how results are
-  // scored.
-  const sourceResults = await Promise.all(sourceSpecs.map(async (spec) => {
+  // DISCOVERY-BURST-CONCURRENCY-CAP FIX, DISCLOSED (live-reproduced: a capture showed 18/18 source
+  // pages failing simultaneously — discoveryDegraded's own visibility, added the commit before this
+  // one, is what made this pattern visible instead of just looking like "the market is empty").
+  // All-or-nothing failure across every source at once isn't random flakiness, it's a rate-limit
+  // wall: these sourceSpecs.length (18) fetches used to fire in one unbounded Promise.all burst,
+  // and each source's own one-retry-on-failure (see the ONE-RETRY FIX comment inside the fetcher
+  // below) meant up to 2x that many near-simultaneous requests to GeckoTerminal's public API within
+  // a fraction of a second. Adding the third discovery source a few commits ago (14 -> 18 pages)
+  // widened this burst right when total-lockout failures started appearing. The DexScreener rescue
+  // calls already use a bounded worker pool for exactly this reason (RESCUE_CONCURRENCY_LIMIT) —
+  // this fetch never got the same treatment. Capped to the same modest concurrency instead of firing
+  // every request at once; each source still independently retries and is still fetched exactly
+  // once per cache window (getOrFetchCached's own cache/in-flight map is unchanged) — this only
+  // changes how many requests are in flight to GeckoTerminal at the same instant.
+  const DISCOVERY_CONCURRENCY_LIMIT = 6
+  const sourceResults: { key: string; count: number; data: Record<string, unknown> | null; ok: boolean }[] = new Array(sourceSpecs.length)
+  {
+    let nextIndex = 0
+    const worker = async () => {
+      for (;;) {
+        const i = nextIndex++
+        if (i >= sourceSpecs.length) return
+        sourceResults[i] = await fetchOneSource(sourceSpecs[i])
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(DISCOVERY_CONCURRENCY_LIMIT, sourceSpecs.length) }, () => worker()))
+  }
+  async function fetchOneSource(spec: { key: string; url: string }) {
     try {
       const result = await getOrFetchCached<Record<string, unknown>>({
         key: `coingecko:base-radar:${spec.key}`,
@@ -631,7 +654,7 @@ export async function GET(req: NextRequest) {
       // success, surfaced via sourcesFailedCount/discoveryDegraded below.
       return { key: spec.key, count: 0, data: null, ok: false }
     }
-  }))
+  }
   let sourcesFailedCount = 0
   const failedSourceKeys: string[] = []
   for (const r of sourceResults) {
