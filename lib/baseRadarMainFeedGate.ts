@@ -12,20 +12,23 @@
 // real $80K floor and holders must be a real, resolved count >= 30. Liquidity minimum is unchanged
 // by this reset.
 // $2M-IS-A-CLASSIFICATION-NOT-AN-EXCLUSION, DISCLOSED (explicit follow-up product change,
-// superseding the original framing of this band as a hard [$80K, $2M] ceiling): a live audit
-// showed the $2M ceiling zeroing out the one real candidate that had cleared $80K before holders
-// were ever even checked. MAIN_FEED_MAX_VALUATION_USD/passesMainFeedValuationMaxGate are NOT an
-// exclusion anymore — app/api/radar/route.ts uses them only to compute isEstablished (a label: a
-// candidate above $2M still has to clear every real requirement — liquidity, the $80K floor, holder
-// evidence — to display, it just displays as "Established" instead of "New Radar"). Only
-// passesMainFeedValuationMinGate is a real route-level exclusion now. Floor and the (classification,
-// not exclusion) ceiling are both inclusive: $80,000 passes the floor; $2,000,000 is still inside
-// the early-range band; $79,999 fails the real floor; $2,000,001 clears the floor but classifies as
-// Established.
+// superseding the original framing of this band as a hard ceiling): a live audit showed the
+// ceiling zeroing out the one real candidate that had cleared the floor before holders were ever
+// even checked. MAIN_FEED_MAX_VALUATION_USD/passesMainFeedValuationMaxGate are NOT an exclusion —
+// app/api/radar/route.ts uses them only to compute isEstablished (a label: a candidate above the
+// ceiling still has to clear every real requirement — liquidity, the floor, holder evidence — to
+// display, it just displays as "Established" instead of "New Radar"). Only
+// passesMainFeedValuationMinGate is a real route-level exclusion.
+// THRESHOLD UPDATE $80K/$2M/30 -> $50K/$4M/60, DISCLOSED (explicitly requested: "change the filter
+// 50k to 4 million mc last 15 days and minimum 60 holders"). Floor and the (classification, not
+// exclusion) ceiling are both inclusive: $50,000 passes the floor; $4,000,000 is still inside the
+// early-range band; $49,999 fails the real floor; $4,000,001 clears the floor but classifies as
+// Established. Liquidity minimum and every other mechanism (fail-open unresolved-age, evidence-
+// gapped holder-unavailable, etc.) are unchanged — only these numbers moved.
 
-export const MAIN_FEED_MIN_VALUATION_USD = 80_000
-export const MAIN_FEED_MAX_VALUATION_USD = 2_000_000
-export const MAIN_FEED_MIN_HOLDERS = 30
+export const MAIN_FEED_MIN_VALUATION_USD = 50_000
+export const MAIN_FEED_MAX_VALUATION_USD = 4_000_000
+export const MAIN_FEED_MIN_HOLDERS = 60
 
 /**
  * A candidate's resolved valuation (verified market cap, or FDV used as fallback — see

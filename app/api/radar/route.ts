@@ -883,12 +883,14 @@ export async function GET(req: NextRequest) {
     // POOL-AGE-WINDOW, DISCLOSED (deterministic reset — see the DETERMINISTIC-GATE header near
     // EXCLUDED_ESTABLISHED_CONTRACTS): this is the ONE age window left in the pipeline — how old a
     // pool may be and still be considered for New Radar at all — collapsed from the old two-tier
-    // primary(6h)/fallback(7d) split into a single deterministic cutoff, since the "primary vs
-    // fallback" distinction only existed to support the now-removed soft "Relaxed fallback" merge
-    // (a candidate that failed the strict valuation/liquidity band but got shown anyway if it had
-    // enough activity — exactly the "maybe logic" this reset removes). A pool either falls inside
-    // this window or it doesn't; there is no second, looser tier for it to fall back into.
-    const POOL_AGE_WINDOW_MS = 7 * DAY_MS
+    // primary(6h)/fallback split into a single deterministic cutoff, since the "primary vs fallback"
+    // distinction only existed to support the now-removed soft "Relaxed fallback" merge (a candidate
+    // that failed the strict valuation/liquidity band but got shown anyway if it had enough activity
+    // — exactly the "maybe logic" this reset removes). A pool either falls inside this window or it
+    // doesn't; there is no second, looser tier for it to fall back into.
+    // WINDOW WIDENED 7 -> 15 DAYS, DISCLOSED (explicitly requested alongside the $50K/$4M/60-holder
+    // threshold change: "last 15 days").
+    const POOL_AGE_WINDOW_MS = 15 * DAY_MS
 
     type Candidate = Omit<RadarToken, 'clarkVerdict'> & { pairAddress?: string | null }
     const candidates: Candidate[] = []

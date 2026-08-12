@@ -772,13 +772,16 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
   // exclusion reasons (below $80K, a real resolved holder count under 30) — above-$2M and holder-
   // unavailable are no longer hide reasons, so they're removed from this list; a candidate in
   // either state is still displayed, just labeled Established / holder-unverified respectively.
+  // THRESHOLD UPDATE $80K/$2M/30 -> $50K/$4M/60, DISCLOSED (explicitly requested). Field names
+  // (hiddenBelow80k etc.) are unchanged on the backend/frontend data shape — only the displayed
+  // numbers moved, to avoid an unnecessary rename ripple across both files.
   const hideReasonParts = [
-    summary.hiddenBelow80k > 0 ? `${summary.hiddenBelow80k} below $80K valuation` : null,
-    summary.hiddenLowHolders > 0 ? `${summary.hiddenLowHolders} below 30 holders` : null,
+    summary.hiddenBelow80k > 0 ? `${summary.hiddenBelow80k} below $50K valuation` : null,
+    summary.hiddenLowHolders > 0 ? `${summary.hiddenLowHolders} below 60 holders` : null,
   ].filter((p): p is string => p != null)
   const gateExplainer = hideReasonParts.length > 0
-    ? `New Radar requires $80K+ valuation and real liquidity. Tokens above the early range are labelled Established instead of hidden — ${hideReasonParts.join(', ')}.`
-    : 'New Radar requires $80K+ valuation and real liquidity. Tokens above the early range are labelled Established instead of hidden.'
+    ? `New Radar requires $50K+ valuation and real liquidity. Tokens above the early range are labelled Established instead of hidden — ${hideReasonParts.join(', ')}.`
+    : 'New Radar requires $50K+ valuation and real liquidity. Tokens above the early range are labelled Established instead of hidden.'
   const concentrationNote = 'Concentration gaps do not remove candidates that pass holder count.'
   const warnings = [
     summary.unverified > 0 ? `${summary.unverified} checks need more evidence.` : 'No open verification cluster in the current results.',
@@ -998,7 +1001,7 @@ function EmptyFeed({ limited, holderCheckBudgetExhausted, discoveryDegradedSigni
           ? `Radar source degraded — ${pagesLoaded}/${pagesAttempted} pages loaded${rawCandidatesRecovered > 0 ? ` (${rawCandidatesRecovered} raw candidates recovered from the loaded pages, none cleared the gate)` : ' (no candidates recovered)'}. Try refresh.`
           : holderCheckBudgetExhausted
             ? 'Holder-check budget reached for this cycle.'
-            : 'No candidates passed the $80K+ valuation / real liquidity gate in this cycle.'}
+            : 'No candidates passed the $50K+ valuation / real liquidity gate in this cycle.'}
       </p>
       {limited ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#3a5268' }}>Live feed is limited right now.</p> : null}
     </div>
@@ -1588,10 +1591,11 @@ export default function BaseRadarPage() {
       // NEW-WINDOW WIDENED, DISCLOSED (history: feed staying thin was verified to be a genuine
       // age-window constraint, not a discovery-depth bug — pools weren't getting enough real time to
       // organically reach 30 holders + the valuation band before aging out of consideration). The
-      // backend's own outer cutoff (app/api/radar/route.ts's POOL_AGE_WINDOW_MS) is 7 days; this
-      // frontend NEW-tab filter must match it or a candidate the backend legitimately includes would
-      // still be invisible on the default tab.
-      if (activeFilter === 'NEW') return token.ageMinutes <= 7 * 24 * 60 || token.status === 'EARLY'
+      // backend's own outer cutoff (app/api/radar/route.ts's POOL_AGE_WINDOW_MS) is 15 days
+      // (widened from 7, explicitly requested alongside the $50K/$4M/60-holder threshold change);
+      // this frontend NEW-tab filter must match it or a candidate the backend legitimately includes
+      // would still be invisible on the default tab.
+      if (activeFilter === 'NEW') return token.ageMinutes <= 15 * 24 * 60 || token.status === 'EARLY'
       if (activeFilter === 'VOLUME') return token.volume24h >= 5_000 || token.momentum !== 'NONE'
       if (activeFilter === 'LIQUIDITY') return token.liquidityUsd >= 10_000
       if (activeFilter === 'RISK_WATCH') return token.status === 'RISKY' || token.status === 'UNVERIFIED' || token.simulationStatus !== 'passed'
@@ -1727,7 +1731,7 @@ export default function BaseRadarPage() {
                 Fresh pools and early momentum signals
               </p>
               <p style={{ fontSize: '11px', color: '#5b7186', margin: '0 0 10px', maxWidth: '760px', lineHeight: 1.4, fontFamily: 'var(--font-plex-mono)' }}>
-                New Radar requires $80K+ valuation and real liquidity. Tokens above the early range are labelled Established instead of hidden. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
+                New Radar requires $50K+ valuation and real liquidity. Tokens above the early range are labelled Established instead of hidden. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
               </p>
             </>
           ) : (
@@ -1937,7 +1941,7 @@ export default function BaseRadarPage() {
             )}
             {!loading && !loadingMore && loadMoreExhausted && (
               <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#64748b', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
-                No more candidates passed the $80K+ valuation / real liquidity gate in this cycle.
+                No more candidates passed the $50K+ valuation / real liquidity gate in this cycle.
               </p>
             )}
           </div>
