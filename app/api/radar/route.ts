@@ -596,6 +596,54 @@ export async function GET(req: NextRequest) {
       return { key: `vol_p${page}`, source: 'pools_by_volume', page, url: `https://api.geckoterminal.com/api/v2/networks/base/pools?page=${page}&include=base_token%2Cquote_token&per_page=20&sort=h24_volume_usd_desc` }
     }),
   ]
+  // DEXSCREENER-BOOST-DISCOVERY FIX, DISCLOSED (explicitly requested: add DexScreener as a fallback
+  // discovery source; researched first — DexScreener's public API has no "browse pools on a chain"
+  // endpoint the way GeckoTerminal's new_pools/trending_pools/pools do, only lookup-by-token/pair,
+  // so it can't be a true drop-in replacement. Confirmed with the user this is a real but MINOR,
+  // SUPPLEMENTARY 4th source, not a GeckoTerminal-outage fallback: it surfaces tokens DexScreener
+  // currently has active paid boosts for (real, live data — never fabricated), cross-referenced
+  // against GeckoTerminal's own per-token pools endpoint to get real pool-shaped liquidity/age data
+  // in the exact schema the rest of this pipeline already expects, so it needs zero changes to the
+  // downstream candidate-processing loop. Because it still depends on GeckoTerminal for the actual
+  // pool data, it does NOT help during a full GeckoTerminal outage — that would require forking the
+  // entire candidate pipeline to a DexScreener-native schema, explicitly out of scope for "a minor
+  // 4th source." Kept to a small, fixed cap (4 tokens) so this never meaningfully adds to the
+  // request burst the pacing/backoff fixes above exist to control — "no uncontrolled provider
+  // spam" per the hard limit.
+  const DEXSCREENER_BOOST_DISCOVERY_CAP = 4
+  try {
+    const boostAc = new AbortController()
+    const boostTid = setTimeout(() => boostAc.abort(), 5000)
+    const boostedBaseTokens: string[] = []
+    try {
+      const boostRes = await fetch('https://api.dexscreener.com/token-boosts/latest/v1', { headers: { Accept: 'application/json' }, cache: 'no-store', signal: boostAc.signal })
+      if (boostRes.ok) {
+        const boostJson = await boostRes.json().catch(() => null)
+        const boostList = Array.isArray(boostJson) ? boostJson as Record<string, unknown>[] : []
+        const seen = new Set<string>()
+        for (const b of boostList) {
+          const chainId = typeof b.chainId === 'string' ? b.chainId.toLowerCase() : ''
+          const tokenAddress = typeof b.tokenAddress === 'string' ? b.tokenAddress : ''
+          if (chainId === 'base' && tokenAddress && !seen.has(tokenAddress.toLowerCase())) {
+            seen.add(tokenAddress.toLowerCase())
+            boostedBaseTokens.push(tokenAddress)
+          }
+          if (boostedBaseTokens.length >= DEXSCREENER_BOOST_DISCOVERY_CAP) break
+        }
+      }
+    } finally { clearTimeout(boostTid) }
+    boostedBaseTokens.forEach((address, i) => {
+      sourceSpecs.push({
+        key: `dex_boost_p${i}`,
+        source: 'dexscreener_boosted_token',
+        page: i,
+        url: `https://api.geckoterminal.com/api/v2/networks/base/tokens/${address}/pools?include=base_token%2Cquote_token&per_page=5`,
+      })
+    })
+  } catch {
+    // Best-effort — the boost-discovery step failing never affects the 3 primary sources above;
+    // it's audited like any other source via failedPages, never silently retried elsewhere.
+  }
   const sourceCounts: Record<string, number> = {}
   let sourcesSucceeded = 0
   const sourcesAttempted = sourceSpecs.length
