@@ -3967,7 +3967,7 @@ export default function TerminalTokenScanner() {
            gradient that fades at both edges, same static (no animation) treatment. Background
            lightened one step (same reasoning as .search-card above) so these cards separate from
            the page background instead of blending in. */
-        .preview-module-card{background:linear-gradient(160deg,rgba(15,25,43,.82),rgba(8,15,29,.78));border:1px solid rgba(255,255,255,.13);border-radius:12px;padding:19px 17px;transition:transform .18s ease,border-color .18s ease;cursor:default;}
+        .preview-module-card{background:linear-gradient(160deg,rgba(15,25,43,.82),rgba(8,15,29,.78));border:1px solid rgba(255,255,255,.13);border-radius:12px;padding:22px 17px;transition:transform .18s ease,border-color .18s ease;cursor:default;}
         .preview-module-card:hover{transform:translateY(-2px);border-color:rgba(255,255,255,.22);}
         .token-scan-input::placeholder{color:rgba(148,163,184,0.58);}
         .scan-helper-row{flex-wrap:wrap;}
@@ -4146,6 +4146,14 @@ export default function TerminalTokenScanner() {
                 </button>
               </div>
 
+              {/* Enter-to-scan hint, DISCLOSED (Token Scanner final-polish task): onKeyDown above
+                  already submits on Enter (unchanged) — this just makes that existing behavior
+                  discoverable. Compact, muted, left-aligned under the input so it doesn't add real
+                  vertical weight. */}
+              <p style={{ position: 'relative', zIndex: 1, margin: '7px 0 0', fontSize: '10px', color: '#3d5468', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.02em' }}>
+                Press Enter to scan
+              </p>
+
               {/* Divider + helper line + How CORTEX works anchor (scrolls to the real "What this
                   scan checks" section below — not a fake link). */}
               <div style={{ position: 'relative', zIndex: 1, height: '1px', background: 'rgba(148,163,184,0.16)', margin: '12px 0 0' }} />
@@ -4250,7 +4258,7 @@ export default function TerminalTokenScanner() {
                   generic feature tiles — no new glow, both additions are static/cheap. Accent line
                   thinned to 1.5px and fades at both edges instead of a full-bleed solid bar
                   (explicitly requested: "thinner and cleaner"). */}
-              <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '10px', marginBottom: '26px' }}>
+              <div className="preview-module-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '10px', marginBottom: '22px' }}>
                 {[
                   { n: '01', label: 'Market Pulse',  color: '#22d3ee', desc: 'Price, liquidity, volume, and pool depth.' },
                   { n: '02', label: 'Holder Map',    color: '#a78bfa', desc: 'Top-holder concentration and supply distribution.' },
@@ -4258,14 +4266,39 @@ export default function TerminalTokenScanner() {
                   { n: '04', label: 'Dev Activity',  color: '#fb923c', desc: 'Contract ownership, dev wallets, and recent activity.' },
                 ].map(mod => (
                   <div key={mod.label} className="preview-module-card" style={{ position: 'relative', overflow: 'hidden' }}>
-                    <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '1.5px', background: `linear-gradient(90deg, transparent, ${mod.color}, transparent)`, opacity: 0.75 }} />
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '13px' }}>
+                    <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: 0, right: 0, height: '1.5px', background: `linear-gradient(90deg, transparent, ${mod.color}, transparent)`, opacity: 0.90 }} />
+                    <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', marginBottom: '14px' }}>
                       <span style={{ fontSize: '9.5px', fontWeight: 700, letterSpacing: '0.12em', color: mod.color, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{mod.label}</span>
-                      <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(148,163,184,0.42)', fontFamily: 'var(--font-plex-mono)' }}>{mod.n}</span>
+                      <span style={{ fontSize: '9px', fontWeight: 700, color: 'rgba(148,163,184,0.46)', fontFamily: 'var(--font-plex-mono)' }}>{mod.n}</span>
                     </div>
-                    <p style={{ margin: 0, fontSize: '11px', color: '#aebfd6', lineHeight: 1.65 }}>{mod.desc}</p>
+                    <p style={{ margin: 0, fontSize: '11px', color: '#b6c6db', lineHeight: 1.68 }}>{mod.desc}</p>
                   </div>
                 ))}
+              </div>
+
+              {/* ── After scan, CORTEX builds ─────────────────────────
+                  DISCLOSED (Token Scanner final-polish task, explicitly requested: reduce the
+                  "unfinished empty page" feeling under the four module cards). This is a STATIC
+                  explanation of what a completed scan produces — not fake/sample scan data, no
+                  numbers, no verdicts, no addresses. Same restrained treatment as the module cards
+                  above (no new colors, no glow, no redesign). */}
+              <div style={{ marginBottom: '8px' }}>
+                <p style={{ margin: '0 0 14px', fontSize: '13px', fontWeight: 700, color: '#94a8bd', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em' }}>
+                  After scan, CORTEX builds
+                </p>
+                <div style={{ display: 'grid', gap: '8px' }}>
+                  {[
+                    { label: 'Risk receipt', desc: 'Verdict, confidence, evidence gaps, and next action.' },
+                    { label: 'Holder + LP read', desc: 'Top-holder concentration, LP control, lock/burn status.' },
+                    { label: 'Dev control', desc: 'Deployer evidence, ownership/admin checks, recent activity.' },
+                  ].map(row => (
+                    <div key={row.label} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '11px 14px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                      <span aria-hidden="true" style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(45,212,191,0.55)', flexShrink: 0 }} />
+                      <span style={{ fontSize: '11px', fontWeight: 700, color: '#7e93a9', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.02em', flexShrink: 0, minWidth: '140px' }}>{row.label}</span>
+                      <span style={{ fontSize: '11px', color: '#4a5f78', lineHeight: 1.5 }}>{row.desc}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           )}
@@ -6576,17 +6609,21 @@ export default function TerminalTokenScanner() {
               + an explicit "AWAITING SCAN" tag so the preview honestly reads as a preview, not a
               fake result. No receipt content is generated here — still just the section names. */}
           {!planLoading && isFullAccess && !clarkLoading && !clarkVerdict && !clarkError && (
-            <div style={{ background: 'rgba(8,14,28,.70)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '14px', padding: '15px' }}>
+            /* RECEIPT-IDLE-POLISH, DISCLOSED (Token Scanner final polish task, explicitly requested:
+               "the right receipt looks like a real waiting system, not faded/dead" — brighter
+               checklist labels/separators and a more readable AWAITING SCAN badge, still honestly a
+               preview: hollow pending dots, no fake completed state, no invented content). */
+            <div style={{ background: 'rgba(9,16,30,.75)', border: '1px solid rgba(255,255,255,0.09)', borderRadius: '14px', padding: '15px' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px', marginBottom: '4px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(34,211,238,.55)', flexShrink: 0 }} />
-                  <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#5b7186', letterSpacing: '.16em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>CORTEX Receipt</p>
+                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: 'rgba(34,211,238,.70)', flexShrink: 0 }} />
+                  <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#7690a8', letterSpacing: '.16em', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>CORTEX Receipt</p>
                 </div>
-                <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '.10em', padding: '2px 7px', borderRadius: '999px', color: '#4b5d7a', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.10)', fontFamily: 'var(--font-plex-mono)' }}>
+                <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '.10em', padding: '3px 8px', borderRadius: '999px', color: 'rgba(34,211,238,.85)', background: 'rgba(34,211,238,0.08)', border: '1px solid rgba(34,211,238,0.28)', fontFamily: 'var(--font-plex-mono)' }}>
                   AWAITING SCAN
                 </span>
               </div>
-              <p style={{ margin: '0 0 14px', fontSize: '10px', color: '#334155', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
+              <p style={{ margin: '0 0 14px', fontSize: '10px', color: '#4a5f78', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
                 Scan a token to generate a structured risk receipt.
               </p>
               {[
@@ -6597,9 +6634,9 @@ export default function TerminalTokenScanner() {
                 { label: 'Dev Control' },
                 { label: 'Next Action' },
               ].map((sec, idx) => (
-                <div key={sec.label} style={{ display: 'flex', alignItems: 'center', gap: '9px', paddingTop: idx > 0 ? '9px' : 0, marginTop: idx > 0 ? '9px' : 0, borderTop: idx > 0 ? '1px solid rgba(255,255,255,0.04)' : 'none' }}>
-                  <span style={{ width: '16px', height: '16px', borderRadius: '50%', border: '1px solid rgba(148,163,184,0.30)', flexShrink: 0 }} />
-                  <span style={{ fontSize: '10.5px', fontWeight: 600, color: '#5b6a7a', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.02em' }}>{sec.label}</span>
+                <div key={sec.label} style={{ display: 'flex', alignItems: 'center', gap: '9px', paddingTop: idx > 0 ? '9px' : 0, marginTop: idx > 0 ? '9px' : 0, borderTop: idx > 0 ? '1px solid rgba(255,255,255,0.07)' : 'none' }}>
+                  <span style={{ width: '16px', height: '16px', borderRadius: '50%', border: '1px solid rgba(148,163,184,0.42)', flexShrink: 0 }} />
+                  <span style={{ fontSize: '10.5px', fontWeight: 600, color: '#7c8ea2', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.02em' }}>{sec.label}</span>
                 </div>
               ))}
             </div>
