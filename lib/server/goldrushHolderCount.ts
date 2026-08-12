@@ -132,11 +132,23 @@ export async function fetchGoldRushConcentration(contract: string, chain: 'base'
     }
   }
 
+  // CHAIN-PATH-RETRY-ON-NO-DATA, DISCLOSED (reported live: a Robinhood-chain token showed a real
+  // "Holders: 508+" — proof fetchGoldRushHolderCount's own count-only call against 'robinhood-mainnet'
+  // succeeded via pagination.total_count — while Top 1/10/20 stayed permanently N/A. Root cause: this
+  // loop previously only advanced to the next candidate chain path ('4663') on a literal HTTP 404,
+  // treating any other outcome — including 'no_data' — as terminal. But 'no_data' here specifically
+  // means "this identifier responded (not 404) yet returned no items or no per-item total_supply" —
+  // exactly the shape a chain identifier that resolves for the lightweight count endpoint but isn't
+  // fully indexed for per-holder balance rows would produce. Since 'robinhood-mainnet' is tried
+  // first and can match that shape for a still-new chain, the loop stopped there and never tried
+  // '4663', which may have the real balance rows. Now also retries on 'no_data', not just 404 — genuine
+  // infra failures (timeout/http_error/rate_limited) still stop immediately, since a different chain
+  // identifier wouldn't fix a network-level problem.
   let result = empty('no_data', chainPaths[0])
   for (const chainPath of chainPaths) {
     result = await attempt(chainPath)
     if (result.reason === 'ok') break
-    if (result.httpStatus !== 404) break
+    if (result.reason !== 'no_data' && result.httpStatus !== 404) break
   }
   concentrationCache.set(key, { value: result, expiresAt: Date.now() + (result.reason === 'ok' ? HOLDER_COUNT_CACHE_TTL_MS : 60_000) })
   return result
