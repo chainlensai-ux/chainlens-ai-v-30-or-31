@@ -63,6 +63,85 @@ export interface HolderCountResult {
 
 const holderCountCache = new Map<string, { count: number | null; reason?: HolderCountReason; isCapped?: boolean; expiresAt: number }>()
 
+// CONCENTRATION-FALLBACK, DISCLOSED (reported: Top 1/10/20 concentration shows "N/A" for most Base
+// Radar tokens, even when Holders count is real — traced to top1/10/20 coming ONLY from Token
+// Scanner's own full holder-list resolver, which frequently has no rows even when it has a count.
+// This is a SEPARATE, Base-Radar-owned fallback, not a Token Scanner engine change: it re-uses the
+// exact same token_holders_v2 call already proven reliable for the count above, just requesting
+// page-size=20 (sorted by balance descending — Covalent's documented default order for this
+// endpoint) instead of reading only pagination.total_count. Each returned row already carries the
+// contract's total_supply (confirmed via app/api/token/route.ts's own disclosed comment: "GoldRush's
+// token_holders_v2 rows carry the contract's total_supply on every row"), so top1/10/20 percentages
+// are computed directly from these 20 real balances with no extra call and no guessing. Fetching
+// only 20 rows means top20 is exact whenever the token has >=20 holders (fewer holders makes top20
+// trivially 100%); it is never extrapolated or estimated from a partial sample.
+export interface ConcentrationResult {
+  top1: number | null
+  top10: number | null
+  top20: number | null
+  topHolders: Array<{ rank: number; address: string; percent: number | null }>
+  reason: HolderCountReason
+  chainPathUsed?: string
+  httpStatus?: number | null
+}
+
+const concentrationCache = new Map<string, { value: ConcentrationResult; expiresAt: number }>()
+
+export async function fetchGoldRushConcentration(contract: string, chain: 'base' | 'robinhood'): Promise<ConcentrationResult> {
+  const chainPaths = CHAIN_PATHS[chain]
+  const key = `${chain}:${contract.toLowerCase()}`
+  const cached = concentrationCache.get(key)
+  if (cached && cached.expiresAt > Date.now()) return cached.value
+  const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
+  const empty = (reason: HolderCountReason, chainPathUsed?: string, httpStatus: number | null = null): ConcentrationResult => ({ top1: null, top10: null, top20: null, topHolders: [], reason, chainPathUsed, httpStatus })
+  if (!apiKey) return empty('no_api_key', chainPaths[0])
+
+  const attempt = async (chainPath: string): Promise<ConcentrationResult> => {
+    try {
+      const res = await fetch(
+        `https://${GOLDRUSH_HOST}/v1/${chainPath}/tokens/${contract}/token_holders_v2/?page-number=0&page-size=20`,
+        { cache: 'no-store', headers: { Authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(3500) },
+      )
+      if (!res.ok) return empty(res.status === 429 ? 'rate_limited' : 'http_error', chainPath, res.status)
+      const json = await res.json().catch(() => null) as { data?: { items?: Array<{ address?: string; balance?: string; total_supply?: string }> } } | null
+      const items = Array.isArray(json?.data?.items) ? json!.data!.items! : []
+      const totalSupplyRaw = items.find(i => i?.total_supply != null)?.total_supply
+      if (items.length === 0 || !totalSupplyRaw) return empty('no_data', chainPath)
+      let totalSupplyBig: bigint
+      try { totalSupplyBig = BigInt(totalSupplyRaw) } catch { return empty('no_data', chainPath) }
+      if (totalSupplyBig <= BigInt(0)) return empty('no_data', chainPath)
+      // Sort client-side by balance descending rather than trusting response order, since a wrong
+      // assumption there would silently understate concentration rather than fail loudly.
+      const rows = items
+        .map(i => {
+          let balBig: bigint | null = null
+          try { balBig = i?.balance != null ? BigInt(i.balance) : null } catch { balBig = null }
+          return { address: i?.address ?? null, balBig }
+        })
+        .filter((r): r is { address: string; balBig: bigint } => r.address != null && r.balBig != null)
+        .sort((a, b) => (b.balBig > a.balBig ? 1 : b.balBig < a.balBig ? -1 : 0))
+      const pctOf = (sumBig: bigint) => Number((sumBig * BigInt(1_000_000)) / totalSupplyBig) / 10_000
+      const top1 = rows.length >= 1 ? pctOf(rows[0].balBig) : null
+      const top10 = rows.length >= 1 ? pctOf(rows.slice(0, 10).reduce((acc, r) => acc + r.balBig, BigInt(0))) : null
+      const top20 = rows.length >= 1 ? pctOf(rows.slice(0, 20).reduce((acc, r) => acc + r.balBig, BigInt(0))) : null
+      const topHolders = rows.slice(0, 20).map((r, index) => ({ rank: index + 1, address: r.address, percent: pctOf(r.balBig) }))
+      return { top1, top10, top20, topHolders, reason: 'ok', chainPathUsed: chainPath }
+    } catch (err) {
+      const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
+      return empty(timedOut ? 'timeout' : 'http_error', chainPath)
+    }
+  }
+
+  let result = empty('no_data', chainPaths[0])
+  for (const chainPath of chainPaths) {
+    result = await attempt(chainPath)
+    if (result.reason === 'ok') break
+    if (result.httpStatus !== 404) break
+  }
+  concentrationCache.set(key, { value: result, expiresAt: Date.now() + (result.reason === 'ok' ? HOLDER_COUNT_CACHE_TTL_MS : 60_000) })
+  return result
+}
+
 export async function fetchGoldRushHolderCount(contract: string, chain: 'base' | 'robinhood'): Promise<HolderCountResult> {
   const chainPaths = CHAIN_PATHS[chain]
   const key = `${chain}:${contract.toLowerCase()}`

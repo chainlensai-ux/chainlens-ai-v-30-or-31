@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { POST as tokenScannerPost } from '@/app/api/token/route'
 import { reconcileBaseRadarLp } from '@/lib/server/baseRadarLpReconciliation'
 import { getRadarValuationBasis, resolveBaseRadarMarketCap } from '@/lib/baseRadarValuation'
-import { fetchGoldRushHolderCount } from '@/lib/server/goldrushHolderCount'
+import { fetchGoldRushHolderCount, fetchGoldRushConcentration, type ConcentrationResult } from '@/lib/server/goldrushHolderCount'
 
 // ROBINHOOD-CHAIN-SUPPORT, DISCLOSED (explicitly confirmed: "yes the token scanner works with
 // robinhood" — Token Scanner's own engine already supports scanning Robinhood-chain contracts;
@@ -264,21 +264,24 @@ function observedPoolFields(scan: Record<string, any>) {
   return { observedPoolPresent, observedPoolCount, poolCountStatus }
 }
 
-function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract: string, debug = false, fallbackHolderCount: number | null = null, fallbackHolderCountCapped = false): Record<string, unknown> {
+function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract: string, debug = false, fallbackHolderCount: number | null = null, fallbackHolderCountCapped = false, fallbackConcentration: ConcentrationResult | null = null): Record<string, unknown> {
   const holderDistribution = scan.holderDistribution ?? {}
   const holderResolver = scan.holderResolver ?? {}
   const holderRows = Array.isArray(holderDistribution.topHolders)
     ? holderDistribution.topHolders
     : Array.isArray(holderResolver.holders)
       ? holderResolver.holders
-      : []
+      : (fallbackConcentration?.reason === 'ok' ? fallbackConcentration.topHolders : [])
   // GOLDRUSH-HOLDER-COUNT-FALLBACK, DISCLOSED (reported: the drawer's "Holders" section unreliable
   // for many tokens — Token Scanner's own resolver (holderDistribution/holderResolver) sometimes
   // comes back with neither a count nor rows). fallbackHolderCount is a real, independently-fetched
   // GoldRush count (see scanToken below) — used ONLY when Token Scanner's own resolver genuinely has
-  // nothing, never overriding a real value it DID find. Concentration (top1/10/20) still legitimately
-  // needs Token Scanner's full holder-row pull this fallback doesn't provide — that stays honestly
-  // "unavailable" exactly as already designed, this only makes the COUNT itself reliable.
+  // nothing, never overriding a real value it DID find. CONCENTRATION-FALLBACK, DISCLOSED (reported:
+  // "Top 1/10/20 concentration" showed N/A for nearly every Base Radar token even when Holders was
+  // real): fallbackConcentration is fetchGoldRushConcentration's own independent top1/10/20 pull
+  // (20 real holder balances vs. the contract's real total_supply, both read directly off Covalent's
+  // token_holders_v2 rows — see lib/server/goldrushHolderCount.ts's header for how). Used ONLY when
+  // Token Scanner's own resolver has no top10 value, never overriding a real one it DID find.
   const holderCount = finiteNumber(holderDistribution.holderCount) ?? finiteNumber(holderResolver.holderCount) ?? (holderRows.length > 0 ? holderRows.length : null) ?? fallbackHolderCount
   // PAGE-SIZE-CEILING, DISCLOSED (reported: "always says 100" — real, confirmed root cause: GoldRush's
   // token_holders_v2 pagination.total_count is capped at the requested page-size once a token has
@@ -448,27 +451,35 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
       rugRiskStatus: lpReconciliation.rugRiskDisplay?.status ?? null,
       rugRiskReason: lpReconciliation.rugRiskDisplay?.reason ?? null,
     },
-    holders: {
-      top1: finiteNumber(holderDistribution.top1),
-      top10: finiteNumber(holderDistribution.top10),
-      top20: finiteNumber(holderDistribution.top20),
-      holderCount,
-      holderCountCapped,
-      status: scan.holderDistributionStatus?.status ?? scan.holderStatus ?? null,
-      reason: sanitizeProviderNames(scan.holderDistributionStatus?.reason ?? holderResolver.reason ?? null),
-      confidence: holderResolver.confidence ?? scan.holderDistributionStatus?.confidence ?? null,
-      topHolders: holderRows.slice(0, 20).map((h: Record<string, any>, index: number) => ({
-        rank: finiteNumber(h.rank) ?? index + 1,
-        address: h.address ?? null,
-        percent: finiteNumber(h.percent ?? h.pctOfSupply),
-        isContract: typeof h.isContract === 'boolean' ? h.isContract : null,
-        walletType: h.walletType ?? null,
-      })),
-      concentration: deriveConcentrationRisk(finiteNumber(holderDistribution.top10), finiteNumber(holderDistribution.top20))
-        ?? scan.cortexRiskEngine?.holderIntelligence?.concentration ?? scan.holderIntelligence?.concentration ?? null,
-      creatorInTopHolders: typeof scan.creatorInTopHolders === 'boolean' ? scan.creatorInTopHolders : null,
-      creatorHolderPercent,
-    },
+    holders: (() => {
+      const usedFallbackConcentration = !hasValue(holderDistribution.top10) && fallbackConcentration?.reason === 'ok'
+      const top1 = finiteNumber(holderDistribution.top1) ?? (usedFallbackConcentration ? fallbackConcentration!.top1 : null)
+      const top10 = finiteNumber(holderDistribution.top10) ?? (usedFallbackConcentration ? fallbackConcentration!.top10 : null)
+      const top20 = finiteNumber(holderDistribution.top20) ?? (usedFallbackConcentration ? fallbackConcentration!.top20 : null)
+      return {
+        top1,
+        top10,
+        top20,
+        holderCount,
+        holderCountCapped,
+        status: scan.holderDistributionStatus?.status ?? scan.holderStatus ?? null,
+        reason: usedFallbackConcentration
+          ? 'Top 1/10/20 computed from GoldRush indexed balances (top 20 holders) — an independent fallback, not Token Scanner\'s full resolver.'
+          : sanitizeProviderNames(scan.holderDistributionStatus?.reason ?? holderResolver.reason ?? null),
+        confidence: usedFallbackConcentration ? 'fallback_indexed' : (holderResolver.confidence ?? scan.holderDistributionStatus?.confidence ?? null),
+        topHolders: holderRows.slice(0, 20).map((h: Record<string, any>, index: number) => ({
+          rank: finiteNumber(h.rank) ?? index + 1,
+          address: h.address ?? null,
+          percent: finiteNumber(h.percent ?? h.pctOfSupply),
+          isContract: typeof h.isContract === 'boolean' ? h.isContract : null,
+          walletType: h.walletType ?? null,
+        })),
+        concentration: deriveConcentrationRisk(top10, top20)
+          ?? scan.cortexRiskEngine?.holderIntelligence?.concentration ?? scan.holderIntelligence?.concentration ?? null,
+        creatorInTopHolders: typeof scan.creatorInTopHolders === 'boolean' ? scan.creatorInTopHolders : null,
+        creatorHolderPercent,
+      }
+    })(),
     deployer: {
       deployerAddress: scan.deployerAddress ?? scan.devIntel?.deployerAddress ?? null,
       deployerStatus,
@@ -556,7 +567,14 @@ async function scanToken(req: Request, chain: ChainKey, contract: string, debug:
     fallbackHolderCount = fallback.count
     fallbackHolderCountCapped = fallback.isCapped === true
   }
-  return buildPublicPayload(scan, chain, contract, debug, fallbackHolderCount, fallbackHolderCountCapped)
+  // CONCENTRATION-FALLBACK, DISCLOSED: only fetched when Token Scanner's own scan genuinely has no
+  // top10 value — a real, additional GoldRush call, but only on the gap this was built to close.
+  const scanHasTop10 = finiteNumber(scanHolderDistribution.top10) != null
+  let fallbackConcentration: ConcentrationResult | null = null
+  if (!scanHasTop10 && (chain === 'base' || chain === 'robinhood')) {
+    fallbackConcentration = await fetchGoldRushConcentration(contract, chain)
+  }
+  return buildPublicPayload(scan, chain, contract, debug, fallbackHolderCount, fallbackHolderCountCapped, fallbackConcentration)
 }
 
 function storeCache(key: string, payload: Record<string, unknown>, now: number) {
