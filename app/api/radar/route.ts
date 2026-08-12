@@ -19,6 +19,25 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 // normal interactive use while still bounding abuse.
 const limiter = createRateLimiter({ windowMs: 60_000, max: 20 })
 
+// GECKOTERMINAL-API-KEY FIX, DISCLOSED (reported: "I think dex screener is better in every echelon"
+// — investigated whether DexScreener could replace GeckoTerminal as primary discovery first, and it
+// structurally can't: its public API has no "browse pools on a chain" endpoint, only lookup-by-
+// specific-token/pair (confirmed earlier this session, still true — DEXSCREENER-BOOST-DISCOVERY FIX
+// comment near DEXSCREENER_SUPPLEMENTARY_DISCOVERY_CAP). Investigating the REAL root cause instead
+// found this: every GeckoTerminal request all session has been fully unauthenticated — no API key
+// header at all — despite a real COINGECKO_API_KEY (a CoinGecko Demo plan key) already sitting
+// configured in this project's environment, unused anywhere in the codebase. GeckoTerminal is a
+// CoinGecko product and its public API accepts a CoinGecko Demo/Pro key via the x-cg-demo-api-key
+// header for a meaningfully higher rate-limit budget than the fully anonymous public tier this
+// route has been hitting every single cycle this whole session. This is the real fix for the
+// repeated 429 lockouts — not a replacement discovery source, an actual missing credential.
+// Fails open: if the key is absent/invalid, this is just the same unauthenticated request as
+// before, never a hard failure.
+const GECKOTERMINAL_HEADERS: Record<string, string> = {
+  Accept: 'application/json;version=20230302',
+  ...(process.env.COINGECKO_API_KEY ? { 'x-cg-demo-api-key': process.env.COINGECKO_API_KEY } : {}),
+}
+
 const EXCLUDED = new Set([
   'USDC', 'USDT', 'DAI', 'WETH', 'WBTC', 'USDBC', 'ETH', 'BUSD', 'FRAX',
   'CBETH', 'CBBTC', 'CBUSD', 'AXLUSDC', 'USD+', 'STETH', 'RETH',
@@ -951,7 +970,7 @@ export async function GET(req: NextRequest) {
             const ac = new AbortController()
             const tid = setTimeout(() => ac.abort(), 6000)
             try {
-              const gtRes = await fetch(spec.url, { headers: { Accept: 'application/json;version=20230302' }, cache: 'no-store', signal: ac.signal })
+              const gtRes = await fetch(spec.url, { headers: GECKOTERMINAL_HEADERS, cache: 'no-store', signal: ac.signal })
               if (!gtRes.ok) {
                 // PER-PAGE-ERROR-DETAIL FIX, DISCLOSED (explicitly requested: baseRadarDiscoverySourceAudit
                 // needs real status/errorName/errorMessage per failed page, not a generic swallowed
@@ -1960,6 +1979,11 @@ export async function GET(req: NextRequest) {
       // backed by Redis this cycle, or silently degraded to the old per-instance-only Map. false
       // here on a deployment where Redis env vars ARE set would indicate the fix isn't taking effect.
       sharedBackoffStoreConfigured: redisConfigured(),
+      // GECKOTERMINAL-API-KEY-VISIBILITY, DISCLOSED: whether every GeckoTerminal discovery request
+      // this cycle actually carried the CoinGecko Demo key (see GECKOTERMINAL_HEADERS's header
+      // comment) — false here despite COINGECKO_API_KEY being set in the environment would mean the
+      // key isn't reaching this route for some other reason (wrong env var name, not deployed, etc.).
+      geckoTerminalApiKeyConfigured: Boolean(process.env.COINGECKO_API_KEY),
     }
 
     const limitedLiveFeed = tokens.length > 0 && tokens.length < 5
