@@ -80,6 +80,12 @@ interface RadarData {
   // budget before finishing" for the empty-state message (see EmptyFeed).
   holderCheckBudgetExhausted?: boolean
   holderProviderReachable?: boolean
+  // FAILED-SOURCE-VS-GENUINELY-EMPTY, DISCLOSED: whether one or more GeckoTerminal discovery pages
+  // failed this cycle (rate-limit/timeout/5xx, even after the backend's own retry) rather than the
+  // raw pool genuinely being thin — see EmptyFeed's own header for the live capture that surfaced
+  // this gap.
+  discoveryDegraded?: boolean
+  sourcesFailedCount?: number
 }
 
 type RadarStatus = 'HOT' | 'WATCH' | 'EARLY' | 'UNVERIFIED' | 'RISKY' | 'DEAD'
@@ -946,15 +952,22 @@ function StagedRadarLoading() {
 // holder-check budget before finishing the checked pool"). Sourced from the same audit fields the
 // backend already computes (app/api/radar/route.ts's baseRadarCandidateGateAudit) — this never
 // re-derives a reason, it only picks which of the two real outcomes actually happened.
-function EmptyFeed({ limited, holderCheckBudgetExhausted }: { limited: boolean; holderCheckBudgetExhausted: boolean }) {
+// DISCOVERY-DEGRADED DISTINCTION, DISCLOSED (found during a full-pipeline audit: a live capture
+// showed raw candidates drop from ~200-360 to 72 in one cycle, several GeckoTerminal source pages
+// failing under this route's 18-way concurrent burst — rate-limit/timeout, not real end-of-data —
+// with no way to tell that apart from "the market genuinely has nothing right now" in the UI). A
+// degraded-discovery empty cycle now says so explicitly instead of implying nothing is out there.
+function EmptyFeed({ limited, holderCheckBudgetExhausted, discoveryDegraded, sourcesFailedCount }: { limited: boolean; holderCheckBudgetExhausted: boolean; discoveryDegraded: boolean; sourcesFailedCount: number }) {
   return (
     <div style={{ textAlign: 'center', padding: '42px 20px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', border: '1px solid rgba(148,163,184,0.12)', borderRadius: '16px', background: 'rgba(255,255,255,0.025)' }}>
       <div style={{ fontSize: '30px', marginBottom: '12px', opacity: 0.45 }}>◈</div>
       <p style={{ fontSize: '14px', fontWeight: 800, margin: '0 0 8px', color: '#cbd5e1' }}>No strong radar candidates right now.</p>
       <p style={{ fontSize: '12px', fontWeight: 600, margin: 0, lineHeight: 1.45 }}>
-        {holderCheckBudgetExhausted
-          ? 'Holder-check budget reached for this cycle.'
-          : 'No candidates passed the $80K–$2M / 30-holder New Radar gate in this cycle.'}
+        {discoveryDegraded
+          ? `Discovery was degraded this cycle — ${sourcesFailedCount} source page${sourcesFailedCount === 1 ? '' : 's'} failed to load. Try refresh.`
+          : holderCheckBudgetExhausted
+            ? 'Holder-check budget reached for this cycle.'
+            : 'No candidates passed the $80K–$2M / 30-holder New Radar gate in this cycle.'}
       </p>
       {limited ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#3a5268' }}>Live feed is limited right now.</p> : null}
     </div>
@@ -1845,7 +1858,7 @@ export default function BaseRadarPage() {
               </div>
             )}
 
-            {!loading && tokens.length === 0 && !error && <EmptyFeed limited={Boolean(data?.limitedLiveFeed)} holderCheckBudgetExhausted={Boolean(data?.holderCheckBudgetExhausted)} />}
+            {!loading && tokens.length === 0 && !error && <EmptyFeed limited={Boolean(data?.limitedLiveFeed)} holderCheckBudgetExhausted={Boolean(data?.holderCheckBudgetExhausted)} discoveryDegraded={Boolean(data?.discoveryDegraded)} sourcesFailedCount={data?.sourcesFailedCount ?? 0} />}
 
             {!loading && tokens.length > 0 && Boolean(data?.limitedLiveFeed) && (
               <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.20)', color: '#fbbf24', fontSize: '11px', marginBottom: '12px', fontFamily: 'var(--font-plex-mono)' }}>

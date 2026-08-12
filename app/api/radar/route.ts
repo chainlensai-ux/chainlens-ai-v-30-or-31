@@ -617,18 +617,35 @@ export async function GET(req: NextRequest) {
         },
       })
       const count = Array.isArray(result.data?.data) ? result.data.data.length : 0
-      return { key: spec.key, count, data: count > 0 ? { ...result.data, __radarSourceKey: spec.key } : null }
+      return { key: spec.key, count, data: count > 0 ? { ...result.data, __radarSourceKey: spec.key } : null, ok: true }
     } catch {
-      return { key: spec.key, count: 0, data: null }
+      // FAILED-SOURCE-VS-GENUINELY-EMPTY FIX, DISCLOSED (reported: raw candidate count dropped from
+      // ~200-360 to 72 in one cycle, with several source pages returning 0 scattered between pages
+      // that returned a full 20 — e.g. new_p2/p3/p7/p8/p9 empty while new_p1/p4/p5/p6 full. That
+      // non-monotonic pattern is the signature of transient failures under this route's 18-way
+      // concurrent GeckoTerminal burst (rate-limit/timeout/5xx, even after the existing one retry),
+      // not real end-of-pagination — but a failed source and a genuinely empty page were previously
+      // recorded identically as count:0, so the resulting thin raw pool cascaded to 0 displayed
+      // tokens with no way to tell "discovery was degraded this cycle" apart from "the market is
+      // genuinely this thin." `ok: false` marks a real fetch failure distinctly from a real 0-count
+      // success, surfaced via sourcesFailedCount/discoveryDegraded below.
+      return { key: spec.key, count: 0, data: null, ok: false }
     }
   }))
+  let sourcesFailedCount = 0
+  const failedSourceKeys: string[] = []
   for (const r of sourceResults) {
     sourceCounts[r.key] = r.count
     if (r.data) {
       sourcesSucceeded += 1
       sourcePayloads.push(r.data)
     }
+    if (!r.ok) {
+      sourcesFailedCount += 1
+      failedSourceKeys.push(r.key)
+    }
   }
+  const discoveryDegraded = sourcesFailedCount > 0
 
   try {
     const pooled: Record<string, unknown>[] = []
@@ -1239,13 +1256,17 @@ export async function GET(req: NextRequest) {
       holderCheckFailureReasons,
       holderCheckFailureSample,
       discoverySourceCounts: sourceCounts,
+      sourcesFailedCount,
+      discoveryDegraded,
       displayTarget: DISPLAY_TARGET,
-      filterStage: !holderProviderReachable && holderCheckAttemptedCount > 0
-        ? 'holder-count provider unreachable this cycle — failed closed, 0 candidates shown unverified'
-        : holderCheckBudgetExhausted
-          ? 'holder-check budget exhausted before reaching display target'
-          : passingHolderGateCount >= DISPLAY_TARGET
-            ? 'display target reached'
+      filterStage: discoveryDegraded && tokens.length === 0
+        ? `discovery degraded this cycle — ${sourcesFailedCount}/${sourcesAttempted} source pages failed (rate-limit/timeout), raw pool thinner than usual`
+        : !holderProviderReachable && holderCheckAttemptedCount > 0
+          ? 'holder-count provider unreachable this cycle — failed closed, 0 candidates shown unverified'
+          : holderCheckBudgetExhausted
+            ? 'holder-check budget exhausted before reaching display target'
+            : passingHolderGateCount >= DISPLAY_TARGET
+              ? 'display target reached'
             : candidatePoolExhausted
               ? 'ranked candidate pool exhausted before reaching display target or budget'
               : 'cycle ended',
@@ -1261,6 +1282,11 @@ export async function GET(req: NextRequest) {
       runtimeCommitSha: process.env.VERCEL_GIT_COMMIT_SHA ?? null,
       discoverySourcesUsed: Object.keys(sourceCounts),
       rawFromEachSource: sourceCounts,
+      sourcesAttempted,
+      sourcesSucceeded,
+      sourcesFailedCount,
+      failedSourceKeys,
+      discoveryDegraded,
       rawTotalBeforeDedupe,
       afterDedupe: dedupedPoolCount,
       afterAgeWindow: passedAgeWindowCount,
@@ -1313,7 +1339,7 @@ export async function GET(req: NextRequest) {
     // so a real DevTools Network capture — the one method that has reliably worked all session —
     // never showed them either. Attaching both directly to the normal, always-returned payload
     // (not gated behind debug=1) so the exact same capture method already in use surfaces them.
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenAbove2m, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, baseRadarSourceAudit, baseRadarCandidateGateAudit }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenAbove2m, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, discoveryDegraded, sourcesFailedCount, baseRadarSourceAudit, baseRadarCandidateGateAudit }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,
