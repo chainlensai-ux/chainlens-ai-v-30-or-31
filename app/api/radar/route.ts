@@ -1003,6 +1003,15 @@ export async function GET(req: NextRequest) {
     // 50 -> 100 so the loop actually has a larger pool to draw from before hitting the budget cap.
     const RANKED_CANDIDATES_CAP = 100
     const rankedCandidates = candidates.slice(0, RANKED_CANDIDATES_CAP)
+    // RANKING-CAP AUDIT GAP, DISCLOSED (found during a full-pipeline audit): candidates beyond
+    // RANKED_CANDIDATES_CAP were silently dropped here with no counter at all — on a cycle where
+    // more than 100 candidates clear the full liquidity+valuation band (plausible now that
+    // discovery pulls 18 GeckoTerminal pages and the band is $80K-$2M), afterValuationMax2mCount
+    // would report the full uncapped count while rankedCandidates.length stayed capped at 100, so
+    // summing every documented hidden/rejection reason against afterValuationMax2m would stop
+    // reconciling — the exact class of unexplained funnel gap this audit exists to prevent (see the
+    // AUDIT-RECONCILIATION FIX comment near droppedByMissingBaseToken above).
+    const droppedByRankingCap = Math.max(0, candidates.length - rankedCandidates.length)
     const HOLDER_CHECK_CONCURRENCY = 8
     const holderCountByContract = new Map<string, number | null>()
     const holderCheckFailureReasons: Record<string, number> = {}
@@ -1287,6 +1296,7 @@ export async function GET(req: NextRequest) {
         market_cap_above_2m: droppedByMarketCapAbove2m,
         holders_below_30: droppedByHoldersBelow30,
         holders_unavailable: droppedByHoldersUnavailable,
+        ranking_cap_excluded: droppedByRankingCap,
       },
       holderCheckFailureReasons,
       holderCheckFailureSample,
@@ -1323,6 +1333,7 @@ export async function GET(req: NextRequest) {
         market_cap_above_2m: droppedByMarketCapAbove2m,
         holders_below_30: droppedByHoldersBelow30,
         holders_unavailable: droppedByHoldersUnavailable,
+        ranking_cap_excluded: droppedByRankingCap,
         evidence_gap_capped: evidenceGapCappedCount,
       },
       baseRadarCandidateGateAudit,

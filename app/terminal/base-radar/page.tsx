@@ -1276,15 +1276,29 @@ export default function BaseRadarPage() {
   // (mount, login, or a real plan upgrade) — tracked via hasFetchedInitialRef — not on every benign
   // loading blip while access was already granted the whole time. The existing 120s interval poll
   // and manual Refresh button remain the only intended ways to get a fresh fetch after that.
+  // SELF-CAUGHT REGRESSION, DISCLOSED (found during a full-pipeline audit of this exact fix, same
+  // session): the first version reset hasFetchedInitialRef to false on ANY `!hasAccess`, but
+  // hasAccess is `!planLoading && canAccessFeature(...)` — so the instant planLoading blips true
+  // (the benign auth re-check this fix exists to ignore), hasAccess goes false too, the ref got
+  // reset, and the moment planLoading resolved back to false a beat later this effect re-entered
+  // the "just gained access" branch and fired fetchData() again — reproducing the exact bug this
+  // fix claimed to solve. Fixed by not touching the ref at all while planLoading is still
+  // unresolved (an in-progress check is never "lost access") — only a SETTLED state (planLoading
+  // false) with access genuinely denied resets the ref, so a real plan downgrade/upgrade cycle
+  // still refetches correctly, but a momentary loading blip while access never actually changed
+  // does nothing.
   const hasFetchedInitialRef = useRef(false)
   useEffect(() => {
-    const hasAccess = !planLoading && canAccessFeature(effectivePlan, 'base-radar')
-    if (hasAccess && !hasFetchedInitialRef.current) {
-      hasFetchedInitialRef.current = true
-      queueMicrotask(() => {
-        void fetchData()
-      })
-    } else if (!hasAccess) {
+    if (planLoading) return
+    const hasAccess = canAccessFeature(effectivePlan, 'base-radar')
+    if (hasAccess) {
+      if (!hasFetchedInitialRef.current) {
+        hasFetchedInitialRef.current = true
+        queueMicrotask(() => {
+          void fetchData()
+        })
+      }
+    } else {
       hasFetchedInitialRef.current = false
     }
   }, [effectivePlan, fetchData, planLoading])
