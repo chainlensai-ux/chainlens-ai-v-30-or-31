@@ -595,10 +595,21 @@ export async function GET(req: NextRequest) {
   // current new-pool market genuinely doesn't have many $80K+ valued, still-fresh pools. Raised
   // modestly rather than aggressively to avoid repeating this session's earlier GeckoTerminal
   // 429-rate-limit incidents from a larger burst of parallel page fetches.
+  // THIRD SOURCE ADDED, DISCLOSED (explicitly requested: "is there a way where api searches for
+  // more" — a real token, FTWO, cleared every gate but only 1-2 candidates were surfacing per
+  // cycle). new_pools and trending_pools are both listing-order endpoints — a pool that's neither
+  // brand-new enough for the first nor hot enough for the second (e.g. a few days old, steady real
+  // volume, no longer "trending" but still a legitimate $85K+/100-holder candidate) never appears in
+  // either. Added GeckoTerminal's general Base `/pools` endpoint sorted by 24h volume — same
+  // provider, no new API key/vendor, just a third listing ordering that surfaces candidates the
+  // other two structurally can't. Kept to 4 pages (matching trending's page count) to stay well
+  // under the rate-limit burst size that caused the earlier 429 incident.
   const NEW_POOLS_PAGES_PER_REQUEST = 10
   const TRENDING_PAGES_PER_REQUEST = 4
+  const VOLUME_POOLS_PAGES_PER_REQUEST = 4
   const newPoolsStartPage = (radarPage - 1) * NEW_POOLS_PAGES_PER_REQUEST + 1
   const trendingStartPage = (radarPage - 1) * TRENDING_PAGES_PER_REQUEST + 1
+  const volumePoolsStartPage = (radarPage - 1) * VOLUME_POOLS_PAGES_PER_REQUEST + 1
   const sourceSpecs = [
     ...Array.from({ length: NEW_POOLS_PAGES_PER_REQUEST }, (_, i) => {
       const page = newPoolsStartPage + i
@@ -607,6 +618,10 @@ export async function GET(req: NextRequest) {
     ...Array.from({ length: TRENDING_PAGES_PER_REQUEST }, (_, i) => {
       const page = trendingStartPage + i
       return { key: `trending_p${page}`, url: `https://api.geckoterminal.com/api/v2/networks/base/trending_pools?page=${page}&include=base_token%2Cquote_token&per_page=20` }
+    }),
+    ...Array.from({ length: VOLUME_POOLS_PAGES_PER_REQUEST }, (_, i) => {
+      const page = volumePoolsStartPage + i
+      return { key: `vol_p${page}`, url: `https://api.geckoterminal.com/api/v2/networks/base/pools?page=${page}&include=base_token%2Cquote_token&per_page=20&sort=h24_volume_usd_desc` }
     }),
   ]
   const sourceCounts: Record<string, number> = {}
