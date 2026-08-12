@@ -1131,13 +1131,30 @@ export async function GET(req: NextRequest) {
       // AND already has DexScreener-reported liquidity > 0 — if the actual pool being shown here has
       // zero/unknown liquidity (exactly this case), it silently substitutes whichever OTHER pool for
       // the same token has the highest liquidity, even though that pool is not the one a user acting
-      // on this radar entry would actually be trading. Fail closed instead: a V4 pool's liquidity is
+      // on this radar entry would actually be trading. Fail closed instead: a pool's liquidity is
       // only trusted when DexScreener's rescue actually resolved THIS pool (selectedPairAddress
       // matches primaryPoolAddress) — any other pool's liquidity number is never attributed to a
       // pool it doesn't belong to. Same principle as the holder-count gate's fail-closed design.
-      const rescueMatchesThisPool = !!rescue?.selectedPairAddress
-        && !!primaryPoolAddress
-        && rescue.selectedPairAddress.toLowerCase() === primaryPoolAddress.toLowerCase()
+      // V4-POOLID-VS-PAIRADDRESS, DISCLOSED (confirmed via live v4MismatchSample data: GeckoTerminal's
+      // reported "address" for a V4 pool is a 64-hex-char value — a bytes32 Uniswap V4 PoolId hash,
+      // since V4 pools are accounting entries inside one shared PoolManager singleton with no true
+      // per-pool contract address — while DexScreener's pairAddress is always a normal 40-hex-char
+      // contract address. These are two different identifier types in two different address spaces;
+      // a direct string/lowercase equality check between them can never succeed for ANY V4 pool,
+      // regardless of real liquidity. The address-equality check above was silently zeroing out every
+      // V4 pool's liquidity unconditionally — not a data-quality gap, a structural bug. For V4 only,
+      // "this is the right pool" can't be proven by address, so the fail-closed criterion instead
+      // requires DexScreener to report EXACTLY ONE pair with real liquidity on this chain for the
+      // token (rescue.sortedPairCount === 1) — an unambiguous single-pool case where there is no other
+      // candidate liquidity number that could be wrongly borrowed. When DexScreener shows more than
+      // one live pair for the token, which one is genuinely this V4 pool is still unresolvable, so it
+      // still fails closed exactly as before — the wrong-pool protection is preserved for the
+      // ambiguous case, only the previously-impossible unambiguous case is now unblocked.
+      const rescueMatchesThisPool = isV4Pool
+        ? rescue?.sortedPairCount === 1
+        : !!rescue?.selectedPairAddress
+          && !!primaryPoolAddress
+          && rescue.selectedPairAddress.toLowerCase() === primaryPoolAddress.toLowerCase()
       // V4-POOL-CROSS-CHECK, DISCLOSED: for a V4 pool, liquidityUsd comes ONLY from DexScreener's
       // own selectedLiquidityUsd (the same rescue call already made above) — GT's reserve_in_usd is
       // never trusted for V4 (see the header comment near droppedByV4Pool's declaration). If
@@ -1151,17 +1168,13 @@ export async function GET(req: NextRequest) {
         droppedByV4Pool++
         // V4-MISMATCH-DIAGNOSTIC, DISCLOSED (reported: "should be more tokens, is DexScreener even
         // working" — v4_liquidity_unverified was consistently ~30-40% of raw candidates across
-        // several live captures). A live-captured v4MismatchSample showed pairCount:1 (DexScreener
-        // DID return a pair for the token) paired with selectedPairAddress: null on every sample —
-        // that combination is NOT an address mismatch (mismatch requires a pair to have actually been
-        // SELECTED, i.e. sortedPairCount > 0). It means the one raw pair DexScreener returned got
-        // filtered out entirely before selection even ran, by selectDexScreenerMarketCapRescuePair's
-        // own chain-match + positive-liquidity filter (lib/baseRadarValuation.ts) — either DexScreener
-        // reports a different chain id for that pair than expected, or reports its liquidity as
-        // zero/unreported. sortedPairCount (added to DexScreenerMarketCapRescueResult specifically to
-        // resolve this) distinguishes "no pairs survived the chain/liquidity filter" (a coverage/
-        // data-quality question, not an addressing bug) from a genuine "a usable pair existed but
-        // wasn't the specific pool GeckoTerminal found" address mismatch.
+        // several live captures). Two real, distinct causes remain even after the V4-POOLID-VS-
+        // PAIRADDRESS fix above unblocked the unambiguous single-pair case: v4_no_liquid_pair (the raw
+        // DexScreener pair(s) that exist never survive the chain-match + positive-liquidity filter —
+        // a coverage/data-quality question) vs v4_pool_address_mismatch (DexScreener reports MULTIPLE
+        // live pairs for the token, so — since V4 has no comparable per-pool address — which one is
+        // genuinely this specific pool is unresolvable; stays fail-closed rather than guessing/
+        // borrowing another pool's liquidity, per the WRONG-POOL LIQUIDITY FIX above).
         if (!rescue || rescue.pairCount === 0) droppedByV4NoDexScreenerData++
         else if (rescue.sortedPairCount === 0) droppedByV4NoLiquidPair++
         else if (!rescueMatchesThisPool) {
