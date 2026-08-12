@@ -279,9 +279,12 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   // ─── No accidental pre-filter slice/top-N cap ahead of the valuation/holder gates ────────────
   // The only small-number .slice(0, N) calls in this file must be for things that run AFTER
   // filtering (Clark AI verdicts on the top 5 already-final tokens, the debug nearMissSample log
-  // cap) — never a hidden cap on the raw/ranked candidate pool itself before the gates run.
+  // cap) or on data that was never part of the candidate/gate pipeline at all (the WHY-NO-BASE-
+  // TOKENS diagnostic's small sample of DexScreener's raw external list, added to investigate why
+  // it never has Base entries — sampling 5 raw items for visibility, not filtering candidates) —
+  // never a hidden cap on the raw/ranked candidate pool itself before the gates run.
   const smallSlices = [...routeSource.matchAll(/\.slice\(0,\s*(\d+)\)/g)].map(m => Number(m[1])).filter(n => n <= 30)
-  assert.ok(smallSlices.length <= 2, `found ${smallSlices.length} small-N .slice(0, <=30) calls (expected at most 2: the top-5 Clark verdict slice and the 30-entry nearMissSample log cap) — a new one could be an accidental pre-filter cap: ${smallSlices.join(', ')}`)
+  assert.ok(smallSlices.length <= 3, `found ${smallSlices.length} small-N .slice(0, <=30) calls (expected at most 3: the top-5 Clark verdict slice, the 30-entry nearMissSample log cap, and the 5-item DexScreener raw-sample diagnostic) — a new one could be an accidental pre-filter cap: ${smallSlices.join(', ')}`)
 
   // ─── Cache key includes the gate thresholds (stale-cache-after-threshold-change fix) ─────────
   assert.ok(routeSource.includes('MAIN_FEED_MIN_VALUATION_USD') && /cacheKeyBase\s*=[\s\S]{0,400}MAIN_FEED_MIN_VALUATION_USD/.test(routeSource), 'the cache key must fold in MAIN_FEED_MIN_VALUATION_USD so a threshold change can never serve a stale payload computed under the old gate')

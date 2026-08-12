@@ -756,11 +756,27 @@ export async function GET(req: NextRequest) {
   let dexScreenerProfileStatus: 'ok' | 'http_error' | 'fetch_failed' | 'no_base_tokens_found' = 'fetch_failed'
   let dexScreenerProfileHttpStatus: number | null = null
   let dexScreenerProfileTokensFound = 0
+  // WHY-NO-BASE-TOKENS DIAGNOSTIC, DISCLOSED (reported: dexScreenerBoostStatus/dexScreenerProfileStatus
+  // have read "no_base_tokens_found" on every single live capture this whole session, despite both
+  // requests succeeding (HTTP 200) every time — suspicious enough not to just be bad luck, but I have
+  // no live network access to inspect the raw response myself. Two real, distinct explanations are
+  // possible: (a) these lists are genuinely global/short and Base just isn't currently represented in
+  // them (real, no fix needed), or (b) our chainId-field parsing is silently wrong — e.g. DexScreener
+  // uses a different field name or casing than assumed. Rather than guess at a fix, capture a small
+  // raw sample of whatever chain-identifying value(s) DexScreener's response actually contains
+  // (regardless of whether they match 'base') plus the total list size, so the NEXT live capture
+  // proves which explanation is real instead of another blind guess.
+  let dexScreenerProfileListSize = 0
+  let dexScreenerProfileRawSample: { chainId: unknown; chain: unknown; tokenAddress: unknown; keys: string[] }[] = []
+  let dexScreenerBoostListSize = 0
+  let dexScreenerBoostRawSample: { chainId: unknown; chain: unknown; tokenAddress: unknown; keys: string[] }[] = []
   try {
     const supplementaryAc = new AbortController()
     const supplementaryTid = setTimeout(() => supplementaryAc.abort(), 5000)
     const seenSupplementary = new Set<string>()
     const supplementaryBaseTokens: string[] = []
+    const rawSample = (list: Record<string, unknown>[]) =>
+      list.slice(0, 5).map(item => ({ chainId: item.chainId, chain: (item as { chain?: unknown }).chain, tokenAddress: item.tokenAddress, keys: Object.keys(item) }))
     const extractBaseTokens = (list: Record<string, unknown>[]) => {
       const found: string[] = []
       for (const item of list) {
@@ -788,7 +804,10 @@ export async function GET(req: NextRequest) {
         dexScreenerProfileHttpStatus = profileRes.status
         if (profileRes.ok) {
           const profileJson = await profileRes.json().catch(() => null)
-          profileBaseTokens = extractBaseTokens(Array.isArray(profileJson) ? profileJson as Record<string, unknown>[] : [])
+          const profileList = Array.isArray(profileJson) ? profileJson as Record<string, unknown>[] : []
+          dexScreenerProfileListSize = profileList.length
+          dexScreenerProfileRawSample = rawSample(profileList)
+          profileBaseTokens = extractBaseTokens(profileList)
           dexScreenerProfileStatus = profileBaseTokens.length > 0 ? 'ok' : 'no_base_tokens_found'
         } else {
           dexScreenerProfileStatus = 'http_error'
@@ -801,7 +820,10 @@ export async function GET(req: NextRequest) {
         dexScreenerBoostHttpStatus = boostRes.status
         if (boostRes.ok) {
           const boostJson = await boostRes.json().catch(() => null)
-          boostBaseTokens = extractBaseTokens(Array.isArray(boostJson) ? boostJson as Record<string, unknown>[] : [])
+          const boostList = Array.isArray(boostJson) ? boostJson as Record<string, unknown>[] : []
+          dexScreenerBoostListSize = boostList.length
+          dexScreenerBoostRawSample = rawSample(boostList)
+          boostBaseTokens = extractBaseTokens(boostList)
           dexScreenerBoostStatus = boostBaseTokens.length > 0 ? 'ok' : 'no_base_tokens_found'
         } else {
           dexScreenerBoostStatus = 'http_error'
@@ -1924,6 +1946,10 @@ export async function GET(req: NextRequest) {
       dexScreenerProfileStatus,
       dexScreenerProfileHttpStatus,
       dexScreenerProfileTokensFound,
+      dexScreenerProfileListSize,
+      dexScreenerProfileRawSample,
+      dexScreenerBoostListSize,
+      dexScreenerBoostRawSample,
       // SHARED-BACKOFF-VISIBILITY, DISCLOSED: whether the cross-instance discovery backoff (see the
       // SHARED-BACKOFF FIX comment near discoverySourceFailureBackoff's declaration) is actually
       // backed by Redis this cycle, or silently degraded to the old per-instance-only Map. false
