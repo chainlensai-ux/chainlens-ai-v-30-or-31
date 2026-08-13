@@ -5468,19 +5468,44 @@ export default function TerminalTokenScanner() {
                             </div>
                           </div>
                         )}
-                        <div style={{ marginBottom: '14px', padding: '6px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(148,163,184,0.10)', borderRadius: '12px' }}>
-                          {rows.map(({ label, value, color, note }, i) => (
-                            <div key={label} style={{ display: 'grid', gridTemplateColumns: '128px 1fr', gap: '14px', alignItems: 'start', padding: '11px 2px', borderBottom: i < rows.length - 1 ? '1px solid rgba(148,163,184,.07)' : 'none' }}>
-                              <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em', paddingTop: '1px' }}>{label}</span>
-                              <span style={{ fontSize: '11.5px', color: color ?? (value === 'Open Check' ? '#fbbf24' : value === 'Confirmed' ? '#34d399' : '#e2e8f0'), fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}{note && <span style={{ display: 'block', marginTop: '4px', color: '#7c8aa0', fontWeight: 500, lineHeight: 1.55 }}>{note}</span>}</span>
-                            </div>
-                          ))}
-                        </div>
+                        {/* DETAILED-LP-EVIDENCE-COLLAPSED, DISCLOSED (Token Scanner detail-polish
+                            task, explicitly requested: "move the long detailed LP evidence rows
+                            into a visually secondary area, label 'Detailed LP evidence', collapsed
+                            by default if simple"): same <details>/<summary> pattern already used
+                            for "ADVANCED CORTEX DETAILS" on the Overview tab. LP Quick Read above
+                            stays fully visible; nothing here is removed, just tucked behind one
+                            click since the quick read already answers the 3-second question. */}
+                        <details style={{ marginBottom: '14px' }}>
+                          <summary style={{ cursor: 'pointer', listStyle: 'none', fontSize: '10px', letterSpacing: '.12em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.14)', background: 'rgba(8,14,28,0.50)' }}>DETAILED LP EVIDENCE</summary>
+                          <div style={{ marginTop: '10px', padding: '6px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(148,163,184,0.10)', borderRadius: '12px' }}>
+                            {rows.map(({ label, value, color, note }, i) => (
+                              <div key={label} style={{ display: 'grid', gridTemplateColumns: '128px 1fr', gap: '14px', alignItems: 'start', padding: '11px 2px', borderBottom: i < rows.length - 1 ? '1px solid rgba(148,163,184,.07)' : 'none' }}>
+                                <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em', paddingTop: '1px' }}>{label}</span>
+                                <span style={{ fontSize: '11.5px', color: color ?? (value === 'Open Check' ? '#fbbf24' : value === 'Confirmed' ? '#34d399' : '#e2e8f0'), fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}{note && <span style={{ display: 'block', marginTop: '4px', color: '#7c8aa0', fontWeight: 500, lineHeight: 1.55 }}>{note}</span>}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </details>
                       </>
                     )
                   })()}
 
 
+                  {/* PROTOCOL-SPECIFIC-LP-SECONDARY, DISCLOSED (Token Scanner detail-polish task,
+                      explicitly requested: "long protocol-specific explanation should be
+                      secondary... default visible LP section should prioritize LP model/lock-burn
+                      proof/position ownership/exit risk/liquidity depth/primary pool/good signs/
+                      risk signs/missing proofs/next action"): LP Elite Intelligence, LP Controller
+                      Intelligence, LP Lock/Burn Intelligence, LP History/Migration, LP Unlock
+                      Timeline, LP Movement Watch, Secondary LP Exposure, and the Elite evidence-gaps
+                      summary are the long protocol-specific blocks — wrapped in one collapsed-by-
+                      default <details> so Good Signs/Risk Signs/Missing Proofs/Next Action (which
+                      follow right after this block, unchanged) land on the first visible screen.
+                      Nothing here is removed or reworded — one click reveals the exact same content
+                      as before. */}
+                  <details style={{ marginBottom: '14px' }}>
+                  <summary style={{ cursor: 'pointer', listStyle: 'none', fontSize: '10px', letterSpacing: '.12em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.14)', background: 'rgba(8,14,28,0.50)' }}>PROTOCOL-SPECIFIC LP INTELLIGENCE</summary>
+                  <div style={{ marginTop: '10px' }}>
                   {/* ══════════ LP ELITE INTELLIGENCE ══════════ */}
                   {(result.lpControllerIntel || result.lpMovementWatch || result.lpLockBurnIntel || result.lpUnlockTimeline || result.lpHistoryTimeline) && (() => {
                     const elite = getLpEliteSummary(result)
@@ -5813,6 +5838,8 @@ export default function TerminalTokenScanner() {
                       </div>
                     )
                   })()}
+                  </div>
+                  </details>
 
                   {/* ── Data mode / confidence + Evidence Gaps ────────── */}
                   {(result.lpDataMode || (result.lpEvidenceGaps && result.lpEvidenceGaps.length > 0)) && (
@@ -6120,9 +6147,18 @@ export default function TerminalTokenScanner() {
                                   const proofType = lpMode2 === 'protocol' ? 'Position NFT / controller' : result.lpControl?.proofStatus === 'not_applicable' ? 'Not applicable' : 'LP token'
                                   const liquidityDepth = result.lpControllerIntel?.poolLiquidityUsd ?? result.lpHistoryTimeline?.liquidityUsd ?? result.liquidity ?? null
                                   const exitRisk = result.lpExitRiskReason ?? result.lpControllerIntel?.summary ?? (lpState === 'team_controlled' || lpState === 'wallet_controlled' ? 'Pull risk: dominant LP position sits with a normal wallet.' : lpMode2 === 'protocol' ? 'LP token proof may not apply; verify position ownership.' : result.lpControl?.lockBurnReason ?? 'Confirm lock, burn, or controller proof before relying on liquidity.')
-                                  const reason = lpMode2 === 'protocol'
+                                  // COPY-COMPRESSION, DISCLOSED (Token Scanner detail-polish task,
+                                  // explicitly requested: compress "Concentrated primary pool:
+                                  // ERC-20 LP token lock/burn proof may not apply." into a shorter
+                                  // trader-readable phrase without changing meaning). The fuller
+                                  // wording stays available via the `title` tooltip below — nothing
+                                  // is deleted, only the default-visible text is shorter.
+                                  const reasonFull = lpMode2 === 'protocol'
                                     ? 'Concentrated primary pool: ERC-20 LP token lock/burn proof may not apply.'
                                     : result.lpControl?.reason ?? result.lpControllerIntel?.summary ?? (result.lpControl?.poolAddressPresent ? 'LP controller evidence is incomplete from current providers.' : 'Pool not found from current providers.')
+                                  const reason = lpMode2 === 'protocol'
+                                    ? 'Standard lock/burn proof may not apply to this pool model.'
+                                    : reasonFull
                                   const compactRows: Array<[string, string]> = [
                                     ['Status', lpMode2==='protocol' ? 'Concentrated Liquidity' : (lpLabelMap[lpState] ?? cleanStatusLabel(lpState))],
                                     ['Confidence', cleanStatusLabel(result.lpControl?.confidence ?? result.lpControllerIntel?.confidence ?? result.lpDataConfidence)],
@@ -6142,7 +6178,7 @@ export default function TerminalTokenScanner() {
                                       </div>
                                       <div style={{ paddingTop:'8px', borderTop:'1px solid rgba(255,255,255,0.06)', display:'flex', flexDirection:'column', gap:'4px' }}>
                                         <div style={{ fontSize:'9px',color:'#5b7590',fontFamily:'var(--font-plex-mono)' }}>Reason</div>
-                                        <p style={{ margin:0,fontSize:'10.5px',color:'#94a3b8',lineHeight:1.45,fontFamily:'var(--font-plex-mono)' }}>{reason}</p>
+                                        <p style={{ margin:0,fontSize:'10.5px',color:'#94a3b8',lineHeight:1.45,fontFamily:'var(--font-plex-mono)' }} title={reasonFull !== reason ? reasonFull : undefined}>{reason}</p>
                                         <div style={{ fontSize:'9px',color:'#5b7590',fontFamily:'var(--font-plex-mono)',marginTop:'4px' }}>Exit risk</div>
                                         <p style={{ margin:0,fontSize:'10.5px',color:(lpState==='team_controlled'||lpState==='wallet_controlled') ? '#fda4af' : '#94a3b8',lineHeight:1.45,fontFamily:'var(--font-plex-mono)' }}>{exitRisk}</p>
                                       </div>
