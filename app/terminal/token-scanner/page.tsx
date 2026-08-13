@@ -5042,7 +5042,6 @@ export default function TerminalTokenScanner() {
                         const whalePressure = holderState.kind !== 'rowsWithPercent' || top10h == null
                           ? 'UNVERIFIED'
                           : top10h >= 70 ? 'EXTREME' : top10h >= 50 ? 'HIGH' : top10h >= 20 ? 'MEDIUM' : 'LOW'
-                        const whalePressureColor = whalePressure === 'EXTREME' ? '#f87171' : whalePressure === 'HIGH' ? '#fb923c' : whalePressure === 'MEDIUM' ? '#fbbf24' : whalePressure === 'LOW' ? '#34d399' : '#94a3b8'
                         // HOLDER-MAP-DEDUP, DISCLOSED (Token Scanner Holder Map readability polish
                         // task, explicitly requested: "avoid showing the same meaning in too many
                         // separate boxes... group better: summary card (verdict + top1/10/20 +
