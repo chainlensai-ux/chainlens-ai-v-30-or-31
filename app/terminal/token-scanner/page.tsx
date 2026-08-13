@@ -1599,14 +1599,18 @@ function deriveVerdictInput(result: ScanResult): VerdictInput {
 
 // ─── StatCard ─────────────────────────────────────────────────────────────
 
-function StatCard({ label, value, accent, helper }: { label: string; value: string; accent?: string; helper?: string }) {
+function StatCard({ label, value, accent, helper, dim }: { label: string; value: string; accent?: string; helper?: string; dim?: boolean }) {
+  {/* DIM-VARIANT, DISCLOSED (Token Scanner section-readability polish task, explicitly requested:
+      "make secondary Market data slightly quieter than the primary Price/Liquidity/Volume/Change
+      row"): an opt-in `dim` prop only — every existing call site is unaffected unless it passes
+      dim, so all other StatCard usages on this page render exactly as before. */}
   return (
     <div style={{
-      background: 'linear-gradient(160deg, rgba(10,18,34,.93), rgba(3,8,19,.90))',
-      border: `1px solid ${accent ? `${accent}1e` : 'rgba(255,255,255,0.07)'}`,
+      background: dim ? 'linear-gradient(160deg, rgba(9,15,28,.80), rgba(3,7,16,.78))' : 'linear-gradient(160deg, rgba(10,18,34,.93), rgba(3,8,19,.90))',
+      border: `1px solid ${accent ? `${accent}${dim ? '14' : '1e'}` : 'rgba(255,255,255,0.05)'}`,
       borderRadius: '14px',
-      padding: '18px 20px',
-      display: 'flex', flexDirection: 'column', gap: '6px',
+      padding: dim ? '14px 16px' : '18px 20px',
+      display: 'flex', flexDirection: 'column', gap: dim ? '4px' : '6px',
     }}>
       <p style={{
         fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em',
@@ -1616,8 +1620,8 @@ function StatCard({ label, value, accent, helper }: { label: string; value: stri
         {label}
       </p>
       <p style={{
-        fontSize: '22px', fontWeight: 800, lineHeight: 1,
-        color: accent ?? '#e2e8f0',
+        fontSize: dim ? '16px' : '22px', fontWeight: dim ? 700 : 800, lineHeight: 1,
+        color: dim ? (accent ? `${accent}c0` : '#94a3b8') : (accent ?? '#e2e8f0'),
         fontFamily: 'var(--font-plex-mono)', margin: 0,
       }}>
         {value}
@@ -2157,7 +2161,21 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
     <div style={{ display:'grid', gap:'12px' }}>
       <div>
         <p style={{ margin:'0 0 5px', fontSize:'14px', color:'#e2e8f0', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>Cluster Map</p>
-        <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>Wallet relationship graph across deployer, linked wallets, and indexed holders. Click a node to inspect wallet-level evidence.</p>
+        <p style={{ margin:'0 0 8px', fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.55 }}>Wallet relationship graph across deployer, linked wallets, and indexed holders. Click a node to inspect wallet-level evidence.</p>
+        {/* DEV-GRAPH-TAKEAWAY, DISCLOSED (Token Scanner section-readability polish task, explicitly
+            requested: "add a clearer one-line trader takeaway above or beside the graph, based on
+            existing data only"): built entirely from counts already derived above (linked/cluster
+            node arrays, suspiciousGraphEdges) — no new evidence, no new fields. */}
+        <div style={{ display:'inline-flex', alignItems:'center', gap:'7px', padding:'6px 12px', borderRadius:'999px', background: suspiciousGraphEdges.length > 0 ? 'rgba(251,113,133,0.08)' : (linked.length > 0 || cluster.length > 0) ? 'rgba(251,191,36,0.08)' : 'rgba(52,211,153,0.08)', border: `1px solid ${suspiciousGraphEdges.length > 0 ? 'rgba(251,113,133,0.28)' : (linked.length > 0 || cluster.length > 0) ? 'rgba(251,191,36,0.28)' : 'rgba(52,211,153,0.28)'}` }}>
+          <span style={{ width:6, height:6, borderRadius:'50%', flexShrink:0, background: suspiciousGraphEdges.length > 0 ? '#fb7185' : (linked.length > 0 || cluster.length > 0) ? '#fbbf24' : '#34d399' }} />
+          <span style={{ fontSize:'10.5px', fontWeight:700, color: suspiciousGraphEdges.length > 0 ? '#fca5b5' : (linked.length > 0 || cluster.length > 0) ? '#fde68a' : '#86efac', fontFamily:'var(--font-plex-mono)' }}>
+            {suspiciousGraphEdges.length > 0
+              ? `${suspiciousGraphEdges.length} suspicious wallet link${suspiciousGraphEdges.length === 1 ? '' : 's'} detected in indexed evidence.`
+              : (linked.length + cluster.length) > 0
+                ? `${linked.length + cluster.length} linked/cluster wallet${(linked.length + cluster.length) === 1 ? '' : 's'} mapped — no suspicious transfer pattern flagged.`
+                : 'No linked dev-wallet cluster detected in indexed evidence.'}
+          </span>
+        </div>
       </div>
       <div style={{ display:'grid', gridTemplateColumns:selectedClusterNodeId ? 'repeat(auto-fit,minmax(min(100%,280px),1fr))' : 'repeat(auto-fit,minmax(min(100%,280px),1fr))', gap:'12px', alignItems:'start' }}>
         <div ref={clusterGraphRef} onClick={() => { setSelectedClusterNodeId(null); setHoveredClusterNodeId(null); setClusterTooltipPos(null); clearEdgeHover() }} onMouseMove={e => { if (!clusterIsTouch.current && hoveredClusterNodeId) { const r = clusterGraphRef.current?.getBoundingClientRect(); if (r) setClusterTooltipPos({x:e.clientX-r.left,y:e.clientY-r.top}) } }} style={{ position:'relative', minHeight:'390px', borderRadius:'16px', overflow:'hidden', background:`radial-gradient(circle at 50% 48%, ${riskTint}, transparent 42%), linear-gradient(145deg, rgba(3,10,24,.98), rgba(8,16,32,.95))`, border:'1px solid rgba(125,211,252,.16)' }}>
@@ -4376,7 +4394,7 @@ export default function TerminalTokenScanner() {
                   { id: 'deployer-intel', label: 'Dev' },
                 ]
                 return (
-                  <div className="result-tabs-wrap" style={{ marginBottom: '22px', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.90)', backdropFilter: 'blur(6px)', paddingTop: '4px', paddingBottom: '0px', borderBottom: '1px solid rgba(148,180,200,.14)' }}>
+                  <div className="result-tabs-wrap" style={{ marginBottom: '22px', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.55)', backdropFilter: 'blur(10px)', paddingTop: '4px', paddingBottom: '0px', borderBottom: '1px solid rgba(148,180,200,.12)' }}>
                     <div className="result-tabs-scroll" style={{
                       display: 'flex', gap: '2px', overflowX: 'auto', whiteSpace: 'nowrap',
                     }}>
@@ -4742,14 +4760,20 @@ export default function TerminalTokenScanner() {
                         <StatCard label="Volume 24h" value={fmtLarge(result.volume24h)} helper="24h trading activity" />
                         <StatCard label="24h Change" value={fmtPct(result.priceChange24h)} accent={pctColor(result.priceChange24h)} helper="Price movement" />
                       </div>
-                      {/* Row 2 — Market Cap, FDV, Pool Protocol, Pair Age. */}
-                      <div className="metric-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '10px', marginBottom: '10px' }}>
+                      {/* Row 2 — Market Cap, FDV, Pool Protocol, Pair Age. MARKET-HIERARCHY, DISCLOSED
+                          (Token Scanner section-readability polish task, explicitly requested: "make
+                          top trader metrics (Price/Liquidity/Volume/Change) visually primary, make
+                          secondary data (Market Cap/FDV/Pool Protocol/Pair Age) slightly quieter"):
+                          same StatCard component/data, just rendered with dim={true} so this row
+                          reads as secondary context beneath row 1 — no values changed. */}
+                      <div className="metric-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '8px', marginBottom: '10px' }}>
                         {(() => {
                           const val = result.valuationContext
                           const estimated = val?.primaryValuationStatus === 'estimated_mc' && val?.primaryValuationUsd != null
                           const fdvOnly = val?.primaryValuationStatus === 'fdv_only' && val?.primaryValuationUsd != null
                           return (
                             <StatCard
+                              dim
                               label={estimated ? 'Estimated MC' : fdvOnly ? 'Valuation' : 'Market Cap'}
                               value={
                                 val?.primaryValuationStatus === 'verified_mc' ? fmtLarge(val.primaryValuationUsd)
@@ -4767,9 +4791,9 @@ export default function TerminalTokenScanner() {
                             />
                           )
                         })()}
-                        <StatCard label="FDV" value={result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Not indexed'} helper="Fully Diluted Valuation" accent="#a78bfa" />
-                        <StatCard label="Pool Protocol" value={result.primaryDexName ?? 'Protocol not confirmed'} helper={result.primaryDexName ? 'Primary liquidity pool' : 'Pool found · protocol metadata missing'} accent={result.primaryDexName ? '#67e8f9' : '#64748b'} />
-                        <StatCard label="Pair Age" value={result.poolActivity?.pairAgeLabel ?? 'Not indexed'} helper="Time since pool creation" accent="#a78bfa" />
+                        <StatCard dim label="FDV" value={result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Not indexed'} helper="Fully Diluted Valuation" accent="#a78bfa" />
+                        <StatCard dim label="Pool Protocol" value={result.primaryDexName ?? 'Protocol not confirmed'} helper={result.primaryDexName ? 'Primary liquidity pool' : 'Pool found · protocol metadata missing'} accent={result.primaryDexName ? '#67e8f9' : '#64748b'} />
+                        <StatCard dim label="Pair Age" value={result.poolActivity?.pairAgeLabel ?? 'Not indexed'} helper="Time since pool creation" accent="#a78bfa" />
                       </div>
                       {/* Compact notes — MC not verified, MC vs FDV, Vol/Liq read. Same wording as
                           before, just consolidated into short notes under the grid instead of a
@@ -5418,15 +5442,41 @@ export default function TerminalTokenScanner() {
                       { label: 'Migration Risk', value: migrationRisk, color: migrationRiskColor },
                       { label: 'Primary Pool', value: result.primaryDexName ?? result.pools?.[0]?.name ?? 'Pool detected' },
                     ]
+                    // LP-QUICK-READ, DISCLOSED (Token Scanner section-readability polish task,
+                    // explicitly requested: "compact LP quick read summary at the top using
+                    // existing values: LP model, Lock/burn proof, Position ownership, Exit risk,
+                    // Liquidity depth, Primary pool... then keep detailed evidence below"): pulled
+                    // straight from the same `rows` array the detailed list below already renders
+                    // — no new derivation, no duplicated logic, just the 6 highest-signal rows
+                    // surfaced as short label:value chips before the full evidence list.
+                    const quickReadLabels = ['Primary Liquidity', 'Lock/Burn Proof', 'Position Ownership', 'Exit Risk', 'Liquidity Depth', 'Primary Pool']
+                    const quickRead = quickReadLabels
+                      .map(l => rows.find(r => r.label === l))
+                      .filter((r): r is { label: string; value: string; color?: string; note?: string } => r != null)
                     return (
-                      <div style={{ marginBottom: '14px', padding: '6px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(148,163,184,0.10)', borderRadius: '12px' }}>
-                        {rows.map(({ label, value, color, note }, i) => (
-                          <div key={label} style={{ display: 'grid', gridTemplateColumns: '128px 1fr', gap: '14px', alignItems: 'start', padding: '11px 2px', borderBottom: i < rows.length - 1 ? '1px solid rgba(148,163,184,.07)' : 'none' }}>
-                            <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em', paddingTop: '1px' }}>{label}</span>
-                            <span style={{ fontSize: '11.5px', color: color ?? (value === 'Open Check' ? '#fbbf24' : value === 'Confirmed' ? '#34d399' : '#e2e8f0'), fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}{note && <span style={{ display: 'block', marginTop: '4px', color: '#7c8aa0', fontWeight: 500, lineHeight: 1.55 }}>{note}</span>}</span>
+                      <>
+                        {quickRead.length > 0 && (
+                          <div style={{ marginBottom: '12px', padding: '14px 16px', background: 'rgba(52,211,153,0.04)', border: '1px solid rgba(52,211,153,0.16)', borderRadius: '14px' }}>
+                            <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '.16em', color: '#34d399', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>LP Quick Read</p>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '8px' }}>
+                              {quickRead.map(({ label, value, color }) => (
+                                <div key={label} style={{ padding: '8px 10px', borderRadius: '9px', background: 'rgba(10,18,32,0.55)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                                  <div style={{ fontSize: '9px', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>{label === 'Primary Liquidity' ? 'LP Model' : label}</div>
+                                  <div style={{ fontSize: '11px', fontWeight: 700, color: color ?? (value === 'Open Check' ? '#fbbf24' : value === 'Confirmed' ? '#34d399' : '#cbd5e1'), fontFamily: 'var(--font-plex-mono)', lineHeight: 1.35, overflowWrap: 'anywhere' }}>{value}</div>
+                                </div>
+                              ))}
+                            </div>
                           </div>
-                        ))}
-                      </div>
+                        )}
+                        <div style={{ marginBottom: '14px', padding: '6px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(148,163,184,0.10)', borderRadius: '12px' }}>
+                          {rows.map(({ label, value, color, note }, i) => (
+                            <div key={label} style={{ display: 'grid', gridTemplateColumns: '128px 1fr', gap: '14px', alignItems: 'start', padding: '11px 2px', borderBottom: i < rows.length - 1 ? '1px solid rgba(148,163,184,.07)' : 'none' }}>
+                              <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em', paddingTop: '1px' }}>{label}</span>
+                              <span style={{ fontSize: '11.5px', color: color ?? (value === 'Open Check' ? '#fbbf24' : value === 'Confirmed' ? '#34d399' : '#e2e8f0'), fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}{note && <span style={{ display: 'block', marginTop: '4px', color: '#7c8aa0', fontWeight: 500, lineHeight: 1.55 }}>{note}</span>}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </>
                     )
                   })()}
 
@@ -6741,8 +6791,11 @@ export default function TerminalTokenScanner() {
             const sbody = {margin:0,fontSize:'11px',color:'#a3b4c5',lineHeight:1.65 as const,fontFamily:'var(--font-plex-mono)'}
             return (
               <div style={{display:'flex',flexDirection:'column',gap:'9px'}}>
-                {/* CORTEX Receipt header */}
-                <div style={{padding:'16px',border:`1px solid ${verdictColor}30`,borderRadius:'14px',background:'linear-gradient(135deg,rgba(8,20,38,.92),rgba(14,12,38,.90))',boxShadow:`0 0 28px ${verdictColor}0e`}}>
+                {/* CORTEX Receipt header — RIGHT-RAIL-CALM, DISCLOSED (Token Scanner
+                    section-readability polish task, explicitly requested: "slightly reduce visual
+                    competition while scrolling... avoid overly bright borders"): border alpha and
+                    glow shadow both toned down; same verdict color/score/content. */}
+                <div style={{padding:'16px',border:`1px solid ${verdictColor}22`,borderRadius:'14px',background:'linear-gradient(135deg,rgba(8,20,38,.92),rgba(14,12,38,.90))',boxShadow:`0 0 18px ${verdictColor}08`}}>
                   <div style={{fontSize:'9px',letterSpacing:'.16em',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'10px'}}>CORTEX RECEIPT</div>
                   <div style={{display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
                     <div style={{flexShrink:0}}>
@@ -6759,7 +6812,7 @@ export default function TerminalTokenScanner() {
                 </div>
                 {/* Top 3 Risks */}
                 {criticalRisks.length > 0 && (
-                  <div style={{padding:'10px 12px',border:'1px solid rgba(248,113,113,0.22)',borderRadius:'10px',background:'rgba(248,113,113,0.04)'}}>
+                  <div style={{padding:'10px 12px',border:'1px solid rgba(248,113,113,0.16)',borderRadius:'10px',background:'rgba(248,113,113,0.03)'}}>
                     <p style={{...stitle,color:'#f87171'}}>Top 3 Risks</p>
                     <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
                       {criticalRisks.map((r,i)=>(
@@ -6802,7 +6855,7 @@ export default function TerminalTokenScanner() {
                   <p style={{...sbody, display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical' as const, overflow:'hidden'}} title={getHolderRead(result)}>{getHolderRead(result)}</p>
                 </div>
                 {/* Next Action */}
-                <div style={{padding:'11px 14px',border:'1px solid rgba(45,212,191,.32)',borderRadius:'12px',background:'rgba(45,212,191,.05)'}}>
+                <div style={{padding:'11px 14px',border:'1px solid rgba(45,212,191,.22)',borderRadius:'12px',background:'rgba(45,212,191,.04)'}}>
                   <p style={{...stitle,color:'#2DD4BF',marginBottom:'5px'}}>Next Action</p>
                   <p style={{...sbody,color:'#67e8f9'}}>{getNextAction(result)}</p>
                 </div>
