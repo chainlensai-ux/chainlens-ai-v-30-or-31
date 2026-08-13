@@ -41,6 +41,21 @@ import {
 import { calculateCortexScoreV2 } from '@/lib/token/scoring'
 import { getRadarValuationBasis, resolveBaseRadarMarketCap } from '@/lib/baseRadarValuation'
 import { resolveUniswapV4PositionOwners } from '@/lib/server/uniswapV4Subgraph'
+import { resolveUniswapV3PositionOwners } from '@/lib/server/uniswapV3Subgraph'
+import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
+
+// COMBINED-CONCENTRATED-OWNER-RESOLVER, DISCLOSED (fix for "Position Ownership: Attempted — open
+// check" on every single V3 scan): attemptConcentratedPositionProof only accepts one
+// ConcentratedOwnerResolver. V4/Robinhood and V3/eth-base-bnb are each real, independently-gated
+// integrations (lib/server/uniswapV4Subgraph.ts, lib/server/uniswapV3Subgraph.ts) that only ever
+// activate for their own chain+pool-model combination and return null otherwise — dispatching
+// through both in sequence is safe: at most one of them can ever return non-null for a given
+// input, and both fall through to null (never fabricated data) when unconfigured.
+const resolveConcentratedPositionOwners: ConcentratedOwnerResolver = async (input) => {
+  const v4 = await resolveUniswapV4PositionOwners(input)
+  if (v4 != null) return v4
+  return resolveUniswapV3PositionOwners(input)
+}
 
 // Local LP model/migration proof helper — pure function derived from GeckoTerminal pool data,
 // delegating to the shared classifyPoolModel() so Token Scanner and Liquidity Safety agree
@@ -4296,7 +4311,7 @@ export async function POST(req: Request) {
         // request-level gate, so this cast is now accurate rather than lossy.
         chain as "eth" | "base" | "bnb" | "robinhood", primaryPoolAddress, primaryMarketPoolId ?? lpPool?.poolId ?? null,
         primaryMarketPoolAddressType ?? lpPool?.poolAddressType ?? "unknown", lpDexId ?? lpDexName ?? null,
-        resolveUniswapV4PositionOwners,
+        resolveConcentratedPositionOwners,
       )
       lpControl = {
         status: "concentrated_liquidity",
@@ -4317,7 +4332,7 @@ export async function POST(req: Request) {
       concentratedPositionProof = await attemptConcentratedPositionProof(
         chain as "eth" | "base" | "bnb" | "robinhood", lpVerifyPoolAddress, lpVerifyPool?.poolId ?? null,
         lpVerifyPool?.poolAddressType ?? "unknown", lpDexId ?? lpDexName ?? null,
-        resolveUniswapV4PositionOwners,
+        resolveConcentratedPositionOwners,
       )
       lpControl = {
         status: 'concentrated_liquidity',
@@ -4611,7 +4626,7 @@ export async function POST(req: Request) {
         primaryMarketPoolId ?? lpPool?.poolId ?? lpVerifyPool?.poolId ?? null,
         primaryMarketPoolAddressType ?? lpPool?.poolAddressType ?? lpVerifyPool?.poolAddressType ?? "unknown",
         lpDexId ?? lpDexName ?? null,
-        resolveUniswapV4PositionOwners,
+        resolveConcentratedPositionOwners,
       )
       lpControl = {
         ...lpControl,
