@@ -4362,13 +4362,9 @@ export default function TerminalTokenScanner() {
                   { id: 'deployer-intel', label: 'Dev Control' },
                 ]
                 return (
-                  <div className="result-tabs-wrap" style={{ marginBottom: '22px', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.90)', backdropFilter: 'blur(6px)', paddingTop: '4px', paddingBottom: '4px' }}>
+                  <div className="result-tabs-wrap" style={{ marginBottom: '22px', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.90)', backdropFilter: 'blur(6px)', paddingTop: '4px', paddingBottom: '0px', borderBottom: '1px solid rgba(148,180,200,.14)' }}>
                     <div className="result-tabs-scroll" style={{
-                      display: 'flex', gap: '3px', overflowX: 'auto', whiteSpace: 'nowrap',
-                      padding: '5px', borderRadius: '15px',
-                      background: 'linear-gradient(160deg,rgba(15,24,44,.88) 0%,rgba(7,13,28,.90) 100%)',
-                      border: '1px solid rgba(148,180,200,.16)',
-                      boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.35), inset 0 0 0 1px rgba(255,255,255,0.02)',
+                      display: 'flex', gap: '2px', overflowX: 'auto', whiteSpace: 'nowrap',
                     }}>
                       {cmds.map(s => {
                         const active = activeSection === s.id
@@ -4377,19 +4373,18 @@ export default function TerminalTokenScanner() {
                             style={{
                               position: 'relative',
                               display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-                              height: '40px', padding: '0 16px', borderRadius: '10px', cursor: 'pointer',
+                              height: '38px', padding: '0 14px', borderRadius: '8px 8px 0 0', cursor: 'pointer',
                               whiteSpace: 'nowrap', flexShrink: 0,
                               fontFamily: 'var(--font-plex-mono)', fontSize: '11px',
                               fontWeight: active ? 750 : 550, letterSpacing: '0.06em',
                               transition: 'all 0.14s',
-                              background: active ? 'rgba(83,243,195,0.10)' : 'transparent',
-                              border: active ? '1px solid rgba(83,243,195,0.45)' : '1px solid transparent',
+                              background: active ? 'rgba(83,243,195,0.08)' : 'transparent',
+                              border: 'none',
                               color: active ? '#EFFFFA' : '#7c93aa',
-                              boxShadow: active ? '0 0 14px rgba(83,243,195,0.12)' : 'none',
                             }}
                           >
                             {s.label}
-                            {active && <span aria-hidden="true" style={{ position: 'absolute', left: '12px', right: '12px', bottom: '-1px', height: '2px', borderRadius: '2px', background: 'rgba(83,243,195,0.85)' }} />}
+                            {active && <span aria-hidden="true" style={{ position: 'absolute', left: '10px', right: '10px', bottom: '-1px', height: '2px', borderRadius: '2px', background: 'rgba(83,243,195,0.85)', boxShadow: '0 0 8px rgba(83,243,195,0.45)' }} />}
                           </button>
                         )
                       })}
