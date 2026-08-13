@@ -2081,7 +2081,12 @@ async function resolveSimulation(chain: string, address: string): Promise<{
   source: string;
 } | null> {
   try {
-    const r = await fetchHoneypotSecurity(address, CHAIN_ID_MAP[chain as ChainKey])
+    // TIMEOUT-EXTENDED, DISCLOSED (bug report: "Trading Simulation always shows Open check"): the
+    // full scan already waits on several other slower calls, so it isn't bound by Base Radar
+    // drawer's snappy-UI 3.5s budget — pass a longer timeout here so honeypot.is has a fair chance
+    // to actually respond instead of being cut off early. fetchHoneypotSecurity's other callers
+    // (Base Radar's live simulation query) keep the fast 3500ms default.
+    const r = await fetchHoneypotSecurity(address, CHAIN_ID_MAP[chain as ChainKey], 8000)
     if (!r.ok) return null
     return {
       honeypot: r.honeypot,

@@ -1511,23 +1511,26 @@ function deriveHolderState(result: ScanResult): DerivedHolderState {
   }
 }
 
-function deriveOwnerStatus(gp: Record<string, unknown> | null): OwnerStatus {
-  const owner = gp?.owner_address
-  if (owner == null) return 'Open check'
-  const addr = String(owner)
-  if (!addr || addr === '0x0000000000000000000000000000000000000000') return 'Renounced'
-  return 'Held'
+// DEV-CONTROL-WIRING-FIX, DISCLOSED (bug report: "Dev Control shouldn't be Open check when it's
+// working" — LP Control correctly reads live owner-check data, but Dev Control always showed Open
+// check). Root cause: this used to read `gp = result.contractSecurity[contract]`, but the API
+// always sends `contractSecurity: null` — that field is dead and never populated. The real,
+// already-resolved owner data lives at `result.security.devOwnership` (same source LP Control's
+// "Dev Control" reasoning elsewhere on the page already uses, e.g. line ~6335). Switched to read
+// from there instead — no backend/API change, just pointing the UI at the live field.
+function deriveOwnerStatus(devOwnership: NonNullable<ScanResult['security']>['devOwnership']): OwnerStatus {
+  if (!devOwnership) return 'Open check'
+  if (devOwnership.isRenounced) return 'Renounced'
+  if (devOwnership.ownerAddress != null) return 'Held'
+  return 'Open check'
 }
 
 function deriveHolderFallbackEvidence(result: ScanResult): HolderFallbackEvidence {
-  const gp = result.contractSecurity && result.contract
-    ? (result.contractSecurity[result.contract.toLowerCase()] ?? null) as Record<string, unknown> | null
-    : null
   const ratio = result.marketCapUsd != null && result.fdvUsd != null && result.fdvUsd > 0
     ? (result.marketCapUsd / result.fdvUsd) * 100
     : null
   return {
-    ownerStatus: deriveOwnerStatus(gp),
+    ownerStatus: deriveOwnerStatus(result.security?.devOwnership),
     poolCount: result.pools?.length ?? 0,
     liquidityDepth: result.liquidity ?? null,
     marketCapToFdvPct: ratio,

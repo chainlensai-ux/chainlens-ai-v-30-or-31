@@ -164,7 +164,7 @@ function normalize(raw: Record<string, unknown>): HoneypotSecurityResult {
   };
 }
 
-export async function fetchHoneypotSecurity(tokenAddress: string, chainIdOrNetwork: string | number = "base"): Promise<HoneypotSecurityResult> {
+export async function fetchHoneypotSecurity(tokenAddress: string, chainIdOrNetwork: string | number = "base", timeoutMs = 3500): Promise<HoneypotSecurityResult> {
   if (!/^0x[a-fA-F0-9]{40}$/.test(tokenAddress)) {
     return { ...UNVERIFIED, honeypotProvider: "error", warnings: ["Invalid token address"], ok: false };
   }
@@ -173,18 +173,18 @@ export async function fetchHoneypotSecurity(tokenAddress: string, chainIdOrNetwo
   const endpoint = `/v2/IsHoneypot?address=${tokenAddress}&chainID=${chainID}`;
   const url = `https://api.honeypot.is${endpoint}`;
 
-  // TIMEOUT REDUCTION, DISCLOSED (Base Radar drawer speed issue): was 6000ms. Confirmed via a real
-  // user report — an 8-minute-old pool's drawer took ~7s to open, and even after that full wait,
-  // the simulation section still showed "pending" (i.e. the 6s timeout was hit with nothing to show
-  // for it). This function is shared by app/api/token/route.ts's full scan (itself the OTHER
-  // parallel cold-path cost the drawer waits on via app/api/base-radar/enrichment) and
-  // app/api/radar/simulation/route.ts (the drawer's separate live simulation query), so lowering it
-  // here cuts worst-case latency on both at once. 3500ms still gives a real simulation a fair chance
-  // to complete; anything slower than that was, in the observed case, timing out anyway with no
-  // useful result — this trades a narrow band of "would have succeeded between 3.5s-6s" cases for a
-  // faster, more honest "still pending" fallback in the common slow/never-responds case.
+  // TIMEOUT REDUCTION, DISCLOSED (Base Radar drawer speed issue): was 6000ms, reduced to 3500ms for
+  // the drawer's snappy live-simulation query. That reasoning still holds for Base Radar's own
+  // callers (app/api/radar/simulation/route.ts, and the base-radar enrichment path), which keep the
+  // 3500ms default below.
+  //
+  // TIMEOUT-PARAM, DISCLOSED (bug report: "Trading Simulation always shows Open check"): the full
+  // token-scan path (app/api/token/route.ts resolveSimulation) doesn't share the drawer's snappy-UI
+  // constraint — it already waits on several other slower calls — so it now passes a longer
+  // `timeoutMs` explicitly instead of inheriting the drawer's 3.5s budget, giving the simulation a
+  // fair chance to actually complete instead of being cut off before honeypot.is responds.
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 3500);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(url, {
       method: "GET",
