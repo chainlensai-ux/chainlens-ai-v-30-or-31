@@ -4025,6 +4025,9 @@ export default function TerminalTokenScanner() {
         .live-dot{animation:liveDotPulse 2.2s ease-in-out infinite;}
         .clark-section{border-top:1px solid rgba(255,255,255,.04);padding-top:12px;margin-bottom:12px;}
         .result-tabs-scroll{scrollbar-width:none;-ms-overflow-style:none;}
+        .detail-summary::-webkit-details-marker{display:none;}
+        .detail-chevron{transition:transform 0.15s ease;}
+        details[open] > .detail-summary .detail-chevron{transform:rotate(90deg);}
         .result-tabs-scroll::-webkit-scrollbar{display:none;}
         .result-tab-btn:focus-visible{outline:2px solid rgba(83,243,195,0.55);outline-offset:2px;}
         @media (prefers-reduced-motion:reduce){.live-dot,.radar-ring,.shimmer-line,.scan-btn-live,.cortex-score-hero{animation:none !important;} .scan-btn-live:hover,.cortex-chip:hover{transform:none !important;} .cortex-bdrow:hover{background:none !important;}}
@@ -4594,7 +4597,7 @@ export default function TerminalTokenScanner() {
                         Token Safety Score and the compact CORTEX Engine Read strip above are
                         the only scores shown by default. */}
                     <details style={{ marginBottom: '20px' }}>
-                    <summary style={{ cursor: 'pointer', listStyle: 'none', fontSize: '11px', letterSpacing: '.14em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(8,14,28,0.55)' }}>ADVANCED CORTEX DETAILS</summary>
+                    <summary className="detail-summary" style={{ cursor: 'pointer', listStyle: 'none', fontSize: '11px', letterSpacing: '.14em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(8,14,28,0.55)', display: 'flex', alignItems: 'center', gap: '8px' }}><span className="detail-chevron" aria-hidden="true" style={{ display: 'inline-block', fontSize: '9px' }}>▶</span>ADVANCED CORTEX DETAILS</summary>
                     <div style={{ marginTop: '14px' }}>
                     <div className="cortex-score-hero" style={{ marginBottom: '20px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${scoreColor}32`, borderRadius: '18px', padding: '22px 24px', boxShadow: `0 0 60px ${scoreColor}12, 0 0 24px ${scoreColor}08, 0 0 0 1px ${scoreColor}06 inset` }}>
                       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '20px', flexWrap: 'wrap', marginBottom: '18px' }}>
@@ -5476,7 +5479,7 @@ export default function TerminalTokenScanner() {
                             stays fully visible; nothing here is removed, just tucked behind one
                             click since the quick read already answers the 3-second question. */}
                         <details style={{ marginBottom: '14px' }}>
-                          <summary style={{ cursor: 'pointer', listStyle: 'none', fontSize: '10px', letterSpacing: '.12em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.14)', background: 'rgba(8,14,28,0.50)' }}>DETAILED LP EVIDENCE</summary>
+                          <summary className="detail-summary" style={{ cursor: 'pointer', listStyle: 'none', fontSize: '10px', letterSpacing: '.12em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.14)', background: 'rgba(8,14,28,0.50)', display: 'flex', alignItems: 'center', gap: '8px' }}><span className="detail-chevron" aria-hidden="true" style={{ display: 'inline-block', fontSize: '9px' }}>▶</span>DETAILED LP EVIDENCE</summary>
                           <div style={{ marginTop: '10px', padding: '6px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(148,163,184,0.10)', borderRadius: '12px' }}>
                             {rows.map(({ label, value, color, note }, i) => (
                               <div key={label} style={{ display: 'grid', gridTemplateColumns: '128px 1fr', gap: '14px', alignItems: 'start', padding: '11px 2px', borderBottom: i < rows.length - 1 ? '1px solid rgba(148,163,184,.07)' : 'none' }}>
@@ -5504,7 +5507,7 @@ export default function TerminalTokenScanner() {
                       Nothing here is removed or reworded — one click reveals the exact same content
                       as before. */}
                   <details style={{ marginBottom: '14px' }}>
-                  <summary style={{ cursor: 'pointer', listStyle: 'none', fontSize: '10px', letterSpacing: '.12em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.14)', background: 'rgba(8,14,28,0.50)' }}>PROTOCOL-SPECIFIC LP INTELLIGENCE</summary>
+                  <summary className="detail-summary" style={{ cursor: 'pointer', listStyle: 'none', fontSize: '10px', letterSpacing: '.12em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.14)', background: 'rgba(8,14,28,0.50)', display: 'flex', alignItems: 'center', gap: '8px' }}><span className="detail-chevron" aria-hidden="true" style={{ display: 'inline-block', fontSize: '9px' }}>▶</span>PROTOCOL-SPECIFIC LP INTELLIGENCE</summary>
                   <div style={{ marginTop: '10px' }}>
                   {/* ══════════ LP ELITE INTELLIGENCE ══════════ */}
                   {(result.lpControllerIntel || result.lpMovementWatch || result.lpLockBurnIntel || result.lpUnlockTimeline || result.lpHistoryTimeline) && (() => {
