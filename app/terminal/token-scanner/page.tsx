@@ -4078,8 +4078,14 @@ export default function TerminalTokenScanner() {
               a minimal command bar (chain selector, input + Scan Token, divider, one helper line
               + How CORTEX works anchor). Same input value/onChange/onKeyDown, same handleScan()
               submission, same disabled wiring — presentation-only change, zero behavior change. */}
-          <div style={{ position: 'relative', maxWidth: '820px', marginBottom: '22px' }}>
-            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: '18px 20px', overflow: 'hidden' }}>
+          {/* RESULT-FIRST-HIERARCHY, DISCLOSED (Token Scanner readability polish task, explicitly
+              requested: "after result loads, slightly reduce scan input's visual weight so token
+              header + score area feel like the primary content"): once a result exists, the card
+              shrinks its padding/margin slightly and dims a touch via opacity — same input/button/
+              onKeyDown/onChange wiring, still fully usable, just visually secondary to the result
+              below it. No change when there is no result yet (first-load state is untouched). */}
+          <div style={{ position: 'relative', maxWidth: '820px', marginBottom: result ? '14px' : '22px', transition: 'margin 0.2s ease' }}>
+            <div className="search-card" style={{ position: 'relative', zIndex: 1, padding: result ? '13px 18px' : '18px 20px', overflow: 'hidden', opacity: result ? 0.92 : 1, transition: 'padding 0.2s ease, opacity 0.2s ease' }}>
               <span aria-hidden="true" style={{ position: 'absolute', top: 0, left: '8%', right: '8%', height: '1px', background: 'linear-gradient(90deg, transparent, rgba(45,212,191,0.55), rgba(99,102,241,0.38), transparent)' }} />
               {/* RADIAL-DEPTH, DISCLOSED (Token Scanner premium command-bar task): a static, very
                   low-opacity radial glow behind the input row — no animation, no purple bloom, just
@@ -4362,12 +4368,12 @@ export default function TerminalTokenScanner() {
                   activeSection state/onClick, same six tabs, same order — presentation only. */}
               {(() => {
                 const cmds: Array<{ id: typeof activeSection; label: string }> = [
-                  { id: 'cortex-read',    label: 'CORTEX Read' },
+                  { id: 'cortex-read',    label: 'Overview' },
                   { id: 'market-pulse',   label: 'Market' },
                   { id: 'holder-map',     label: 'Holders' },
                   { id: 'lp-safety',      label: 'LP Safety' },
                   { id: 'risk-engine',    label: 'Risk Engine' },
-                  { id: 'deployer-intel', label: 'Dev Control' },
+                  { id: 'deployer-intel', label: 'Dev' },
                 ]
                 return (
                   <div className="result-tabs-wrap" style={{ marginBottom: '22px', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.90)', backdropFilter: 'blur(6px)', paddingTop: '4px', paddingBottom: '0px', borderBottom: '1px solid rgba(148,180,200,.14)' }}>
@@ -4522,11 +4528,21 @@ export default function TerminalTokenScanner() {
                             const pct = max > 0 ? Math.max(0, Math.min(100, (sc / max) * 100)) : 0
                             const barColor = pct >= 70 ? '#2DD4BF' : pct >= 40 ? '#fbbf24' : '#f87171'
                             const reasons = (data?.reasons ?? []).slice(0, 3)
+                            {/* TRADER-STATUS-LABEL, DISCLOSED (Token Scanner readability polish
+                                task, explicitly requested: "simple readable status labels beside
+                                each score category... do not change score math"): label derived
+                                purely from the same pct/max already used for barColor above — no
+                                new data, no scoring change, just a 3-second-readable word next to
+                                the exact existing sc/max numbers. */}
+                            const statusLabel = !data || max <= 0 ? 'Open Check' : pct >= 70 ? 'Strong' : pct >= 40 ? 'Moderate' : 'Weak'
                             return (
                               <div key={label} style={{ paddingBottom: '10px', borderBottom: rIdx < riskBreakdownRows.length - 1 ? '1px solid rgba(255,255,255,0.045)' : 'none' }}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px', gap: '8px' }}>
                                   <span style={{ fontSize: '11px', color: '#d3dfec', fontFamily: 'var(--font-plex-mono)', fontWeight: 650 }}>{label}</span>
-                                  <span style={{ fontSize: '11px', color: barColor, fontWeight: 800, letterSpacing: '.06em', fontFamily: 'var(--font-plex-mono)' }}>{sc}/{max}</span>
+                                  <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: '7px' }}>
+                                    <span style={{ padding: '2px 8px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '.05em', color: barColor, background: `${barColor}14`, border: `1px solid ${barColor}38`, fontFamily: 'var(--font-plex-mono)' }}>{statusLabel}</span>
+                                    <span style={{ fontSize: '11px', color: barColor, fontWeight: 800, letterSpacing: '.06em', fontFamily: 'var(--font-plex-mono)' }}>{sc}/{max}</span>
+                                  </span>
                                 </div>
                                 <div style={{ height: '4px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginBottom: '7px' }}>
                                   <div style={{ height: '100%', width: `${pct}%`, borderRadius: '999px', background: `linear-gradient(90deg,${barColor},${barColor}80)`, transition: 'width 0.7s ease' }} />
@@ -6783,7 +6799,7 @@ export default function TerminalTokenScanner() {
                       {top20 != null && <span style={{padding:'2px 8px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:'#94a3b8',border:'1px solid rgba(148,163,184,.22)',fontFamily:'var(--font-plex-mono)'}}>Top 20: {top20.toFixed(1)}%</span>}
                     </div>
                   )}
-                  <p style={sbody}>{getHolderRead(result)}</p>
+                  <p style={{...sbody, display:'-webkit-box', WebkitLineClamp:2, WebkitBoxOrient:'vertical' as const, overflow:'hidden'}} title={getHolderRead(result)}>{getHolderRead(result)}</p>
                 </div>
                 {/* Next Action */}
                 <div style={{padding:'11px 14px',border:'1px solid rgba(45,212,191,.32)',borderRadius:'12px',background:'rgba(45,212,191,.05)'}}>
