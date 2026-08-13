@@ -3998,12 +3998,15 @@ export default function TerminalTokenScanner() {
         .scan-btn-off{cursor:not-allowed;color:rgba(148,163,184,.38);border:1px solid rgba(148,163,184,.14);background:rgba(11,17,28,.50);}
         .live-dot{animation:liveDotPulse 2.2s ease-in-out infinite;}
         .clark-section{border-top:1px solid rgba(255,255,255,.04);padding-top:12px;margin-bottom:12px;}
+        .result-tabs-scroll{scrollbar-width:none;-ms-overflow-style:none;}
+        .result-tabs-scroll::-webkit-scrollbar{display:none;}
+        .result-tab-btn:focus-visible{outline:2px solid rgba(83,243,195,0.55);outline-offset:2px;}
         @media (prefers-reduced-motion:reduce){.live-dot,.radar-ring,.shimmer-line,.scan-btn-live,.cortex-score-hero{animation:none !important;} .scan-btn-live:hover,.cortex-chip:hover{transform:none !important;} .cortex-bdrow:hover{background:none !important;}}
         .metric-grid{grid-template-columns:repeat(auto-fit,minmax(150px,1fr)) !important;gap:clamp(8px,1vw,12px) !important;}
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
         @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);column-gap:28px;} .token-main{max-width:1180px;margin:0 auto;} .token-shell .mob-verdict-panel{width:auto !important;max-width:420px !important;}}
         @media (min-width:1280px) and (max-width:1535px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(300px,24vw,360px);column-gap:24px;} .token-main{max-width:1120px;margin:0 auto;} .token-shell .mob-verdict-panel{width:auto !important;max-width:360px !important;padding:24px 16px !important;font-size:12px;} .activity-grid{gap:8px;}}
-        @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;} .result-tabs{position:static !important;background:none !important;backdrop-filter:none !important;}}
+        @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;} .result-tabs-wrap{position:static !important;background:none !important;backdrop-filter:none !important;}}
         @media (max-width:1023px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
         @media (max-width:768px){.token-main{padding:36px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .after-scan-grid{grid-template-columns:1fr !important;}}
       `}</style>
@@ -4350,40 +4353,47 @@ export default function TerminalTokenScanner() {
                   under the header on desktop (simple `position:sticky`, no new scroll logic). Same
                   activeSection state/onClick, same six tabs, same order — presentation only. */}
               {(() => {
-                const cmds: Array<{ id: typeof activeSection; label: string; dot: string }> = [
-                  { id: 'cortex-read',  label: 'CORTEX Read',  dot: '#2DD4BF' },
-                  { id: 'market-pulse', label: 'Market Pulse',  dot: '#67e8f9' },
-                  { id: 'holder-map',   label: 'Holder Map',    dot: '#a78bfa' },
-                  { id: 'lp-safety',    label: 'LP Safety Analyzer', dot: '#34d399' },
-                  { id: 'risk-engine',  label: 'CORTEX Risk Engine', dot: '#f87171' },
-                  { id: 'deployer-intel', label: 'Dev Control', dot: '#fbbf24' },
+                const cmds: Array<{ id: typeof activeSection; label: string }> = [
+                  { id: 'cortex-read',    label: 'CORTEX Read' },
+                  { id: 'market-pulse',   label: 'Market' },
+                  { id: 'holder-map',     label: 'Holders' },
+                  { id: 'lp-safety',      label: 'LP Safety' },
+                  { id: 'risk-engine',    label: 'Risk Engine' },
+                  { id: 'deployer-intel', label: 'Dev Control' },
                 ]
                 return (
-                  <div className="result-tabs" style={{ display: 'flex', gap: '4px', marginBottom: '22px', overflowX: 'auto', paddingBottom: '10px', borderBottom: '1px solid rgba(255,255,255,0.08)', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.90)', backdropFilter: 'blur(6px)', paddingTop: '4px' }}>
-                    {cmds.map(s => {
-                      const active = activeSection === s.id
-                      return (
-                        <button key={s.id} onClick={() => setActiveSection(s.id)}
-                          style={{
-                            position: 'relative',
-                            display: 'inline-flex', alignItems: 'center', gap: '6px',
-                            padding: '8px 14px', borderRadius: '9px', cursor: 'pointer',
-                            whiteSpace: 'nowrap', flexShrink: 0,
-                            fontFamily: 'var(--font-plex-mono)', fontSize: '10.5px',
-                            fontWeight: active ? 800 : 650, letterSpacing: '0.10em',
-                            transition: 'all 0.14s',
-                            background: active ? `${s.dot}1f` : 'rgba(255,255,255,0.025)',
-                            border: active ? `1px solid ${s.dot}70` : '1px solid rgba(255,255,255,0.07)',
-                            color: active ? '#f1f5f9' : '#7386a0',
-                            boxShadow: active ? `0 0 16px ${s.dot}22` : 'none',
-                          }}
-                        >
-                          <span style={{ width: '5px', height: '5px', borderRadius: '50%', flexShrink: 0, background: active ? s.dot : '#33475c', boxShadow: active ? `0 0 6px ${s.dot}` : 'none' }} />
-                          {s.label}
-                          {active && <span aria-hidden="true" style={{ position: 'absolute', left: '10px', right: '10px', bottom: '-11px', height: '2px', borderRadius: '2px', background: s.dot }} />}
-                        </button>
-                      )
-                    })}
+                  <div className="result-tabs-wrap" style={{ marginBottom: '22px', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.90)', backdropFilter: 'blur(6px)', paddingTop: '4px', paddingBottom: '4px' }}>
+                    <div className="result-tabs-scroll" style={{
+                      display: 'flex', gap: '3px', overflowX: 'auto', whiteSpace: 'nowrap',
+                      padding: '5px', borderRadius: '15px',
+                      background: 'linear-gradient(160deg,rgba(15,24,44,.88) 0%,rgba(7,13,28,.90) 100%)',
+                      border: '1px solid rgba(148,180,200,.16)',
+                      boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.35), inset 0 0 0 1px rgba(255,255,255,0.02)',
+                    }}>
+                      {cmds.map(s => {
+                        const active = activeSection === s.id
+                        return (
+                          <button key={s.id} className="result-tab-btn" onClick={() => setActiveSection(s.id)}
+                            style={{
+                              position: 'relative',
+                              display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                              height: '40px', padding: '0 16px', borderRadius: '10px', cursor: 'pointer',
+                              whiteSpace: 'nowrap', flexShrink: 0,
+                              fontFamily: 'var(--font-plex-mono)', fontSize: '11px',
+                              fontWeight: active ? 750 : 550, letterSpacing: '0.06em',
+                              transition: 'all 0.14s',
+                              background: active ? 'rgba(83,243,195,0.10)' : 'transparent',
+                              border: active ? '1px solid rgba(83,243,195,0.45)' : '1px solid transparent',
+                              color: active ? '#EFFFFA' : '#7c93aa',
+                              boxShadow: active ? '0 0 14px rgba(83,243,195,0.12)' : 'none',
+                            }}
+                          >
+                            {s.label}
+                            {active && <span aria-hidden="true" style={{ position: 'absolute', left: '12px', right: '12px', bottom: '-1px', height: '2px', borderRadius: '2px', background: 'rgba(83,243,195,0.85)' }} />}
+                          </button>
+                        )
+                      })}
+                    </div>
                   </div>
                 )
               })()}
