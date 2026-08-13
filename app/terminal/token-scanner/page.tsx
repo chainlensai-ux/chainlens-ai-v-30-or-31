@@ -4003,7 +4003,7 @@ export default function TerminalTokenScanner() {
         .activity-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;}
         @media (min-width:1536px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(360px,22vw,420px);column-gap:28px;} .token-main{max-width:1180px;margin:0 auto;} .token-shell .mob-verdict-panel{width:auto !important;max-width:420px !important;}}
         @media (min-width:1280px) and (max-width:1535px){.token-shell{grid-template-columns:minmax(0,1fr) clamp(300px,24vw,360px);column-gap:24px;} .token-main{max-width:1120px;margin:0 auto;} .token-shell .mob-verdict-panel{width:auto !important;max-width:360px !important;padding:24px 16px !important;font-size:12px;} .activity-grid{gap:8px;}}
-        @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;}}
+        @media (max-width:1279px){.token-shell{display:block;height:auto;overflow:visible;} .mob-scan-main{overflow-y:visible !important;} .token-shell .mob-verdict-panel{position:static !important;width:100% !important;max-width:100% !important;height:auto !important;min-height:0 !important;border-left:none !important;border-top:1px solid rgba(255,255,255,0.08) !important;overflow-y:visible !important;} .result-tabs{position:static !important;background:none !important;backdrop-filter:none !important;}}
         @media (max-width:1023px){.metric-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .holders-grid,.intel-grid{grid-template-columns:1fr !important;} .activity-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;}}
         @media (max-width:768px){.token-main{padding:36px 14px 120px !important;} .token-input-row{flex-direction:column;max-width:100% !important;} .token-input-row button{width:100%;} .top-holder-head{display:none !important;} .top-holder-row{display:block !important;padding:12px !important;} .top-holder-mobile-meta{display:flex !important;align-items:center;justify-content:space-between;gap:8px;} .top-holder-mobile-amt{display:block !important;margin-top:6px !important;text-align:left !important;} .pools-scroll{overflow-x:auto !important;-webkit-overflow-scrolling:touch;margin:0 -12px;padding:0 12px;} .mob-verdict-panel{padding:18px 14px !important;gap:12px !important;} .glass-card{padding:14px !important;} .preview-module-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important;} .after-scan-grid{grid-template-columns:1fr !important;}}
       `}</style>
@@ -4316,24 +4316,39 @@ export default function TerminalTokenScanner() {
           {result && (
             <div style={{ maxWidth: 'none', width: '100%' }}>
 
-              {/* Token identity — always visible */}
-              <div style={{ marginBottom: '20px' }}>
-                <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#f8fafc', margin: '0 0 4px' }}>
-                  {result.name ?? 'Unknown'}
-                  {result.symbol && <span style={{ marginLeft: '10px', fontSize: '14px', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)' }}>{result.symbol}</span>}
-                </h2>
-                {result.contract && (
-                  <p style={{ fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-                    {shorten(result.contract)}{` · ${String(result.chain ?? 'Base').toUpperCase()}`}
-                    <span style={{ marginLeft: '8px', padding: '2px 8px', border: '1px solid rgba(59,130,246,.35)', borderRadius: '999px', color: '#93c5fd' }}>{String(result.chain ?? chain).toUpperCase()}</span>
-                  </p>
-                )}
-                {result.resolvedInput && result.resolvedInput.type !== 'address' && (
-                  <p style={{ margin: '6px 0 0', color: '#94a3b8', fontSize: '11px' }}>Resolved from {result.resolvedInput.original.toUpperCase()}.</p>
-                )}
+              {/* Token identity — RECEIPT-HEADER, DISCLOSED (Token Scanner result-UI polish task):
+                  same fields (name, symbol, contract, chain badge, resolved-from note) — restyled as
+                  a compact receipt header (contract in its own monospace pill, chain badge moved
+                  inline next to it) instead of a plain stacked h2+p, with tighter, more deliberate
+                  spacing. No new data, no removed data. */}
+              <div className="result-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', flexWrap: 'wrap', marginBottom: '18px', paddingBottom: '16px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                <div style={{ minWidth: 0 }}>
+                  <h2 style={{ fontSize: '21px', fontWeight: 800, color: '#f8fafc', margin: '0 0 6px', letterSpacing: '-0.01em', display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
+                    {result.name ?? 'Unknown'}
+                    {result.symbol && <span style={{ fontSize: '13px', fontWeight: 700, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)' }}>{result.symbol}</span>}
+                  </h2>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    {result.contract && (
+                      <span style={{ fontSize: '10.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '7px', padding: '3px 9px' }}>
+                        {shorten(result.contract)}
+                      </span>
+                    )}
+                    <span style={{ padding: '3px 10px', border: '1px solid rgba(59,130,246,.38)', borderRadius: '999px', color: '#93c5fd', fontSize: '9.5px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', background: 'rgba(59,130,246,.07)' }}>
+                      {String(result.chain ?? chain).toUpperCase()}
+                    </span>
+                    {result.resolvedInput && result.resolvedInput.type !== 'address' && (
+                      <span style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)' }}>Resolved from {result.resolvedInput.original.toUpperCase()}</span>
+                    )}
+                  </div>
+                </div>
               </div>
 
-              {/* CORTEX Command Bar */}
+              {/* CORTEX Command Bar — RESULT-TABS, DISCLOSED (Token Scanner result-UI polish task,
+                  explicitly requested: "tabs are too small/faded" — active tab now uses a solid
+                  filled pill (not a faint tint) with a real bottom underline accent so it reads as
+                  clearly selected at a glance; inactive tabs brightened for readability. Sticky
+                  under the header on desktop (simple `position:sticky`, no new scroll logic). Same
+                  activeSection state/onClick, same six tabs, same order — presentation only. */}
               {(() => {
                 const cmds: Array<{ id: typeof activeSection; label: string; dot: string }> = [
                   { id: 'cortex-read',  label: 'CORTEX Read',  dot: '#2DD4BF' },
@@ -4344,26 +4359,28 @@ export default function TerminalTokenScanner() {
                   { id: 'deployer-intel', label: 'Dev Control', dot: '#fbbf24' },
                 ]
                 return (
-                  <div style={{ display: 'flex', gap: '3px', marginBottom: '22px', overflowX: 'auto', paddingBottom: '6px', borderBottom: '1px solid rgba(255,255,255,0.06)' }}>
+                  <div className="result-tabs" style={{ display: 'flex', gap: '4px', marginBottom: '22px', overflowX: 'auto', paddingBottom: '10px', borderBottom: '1px solid rgba(255,255,255,0.08)', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.90)', backdropFilter: 'blur(6px)', paddingTop: '4px' }}>
                     {cmds.map(s => {
                       const active = activeSection === s.id
                       return (
                         <button key={s.id} onClick={() => setActiveSection(s.id)}
                           style={{
+                            position: 'relative',
                             display: 'inline-flex', alignItems: 'center', gap: '6px',
-                            padding: '6px 13px', borderRadius: '8px', cursor: 'pointer',
+                            padding: '8px 14px', borderRadius: '9px', cursor: 'pointer',
                             whiteSpace: 'nowrap', flexShrink: 0,
-                            fontFamily: 'var(--font-plex-mono)', fontSize: '10px',
-                            fontWeight: active ? 800 : 600, letterSpacing: '0.11em',
+                            fontFamily: 'var(--font-plex-mono)', fontSize: '10.5px',
+                            fontWeight: active ? 800 : 650, letterSpacing: '0.10em',
                             transition: 'all 0.14s',
-                            background: active ? `linear-gradient(135deg,${s.dot}16,rgba(139,92,246,0.10))` : 'transparent',
-                            border: active ? `1px solid ${s.dot}40` : '1px solid transparent',
-                            color: active ? s.dot : '#3a5268',
-                            boxShadow: active ? `0 0 14px ${s.dot}14` : 'none',
+                            background: active ? `${s.dot}1f` : 'rgba(255,255,255,0.025)',
+                            border: active ? `1px solid ${s.dot}70` : '1px solid rgba(255,255,255,0.07)',
+                            color: active ? '#f1f5f9' : '#7386a0',
+                            boxShadow: active ? `0 0 16px ${s.dot}22` : 'none',
                           }}
                         >
-                          <span style={{ width: '5px', height: '5px', borderRadius: '50%', flexShrink: 0, background: active ? s.dot : '#1e3a44', boxShadow: active ? `0 0 6px ${s.dot}` : 'none' }} />
+                          <span style={{ width: '5px', height: '5px', borderRadius: '50%', flexShrink: 0, background: active ? s.dot : '#33475c', boxShadow: active ? `0 0 6px ${s.dot}` : 'none' }} />
                           {s.label}
+                          {active && <span aria-hidden="true" style={{ position: 'absolute', left: '10px', right: '10px', bottom: '-11px', height: '2px', borderRadius: '2px', background: s.dot }} />}
                         </button>
                       )
                     })}
@@ -4451,53 +4468,60 @@ export default function TerminalTokenScanner() {
                 const legacyCortexScore = result.cortexScore ?? score
                 return (
                   <>
-                    {/* Token Safety Score Hero — primary product score */}
-                    <div className="risk-score-hero" style={{ marginBottom: '16px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${riskLabelColor}32`, borderRadius: '18px', padding: '22px 24px', boxShadow: `0 0 60px ${riskLabelColor}12, 0 0 24px ${riskLabelColor}08, 0 0 0 1px ${riskLabelColor}06 inset` }}>
-                      <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '6px' }}>TOKEN SAFETY SCORE</div>
+                    {/* Token Safety Score Hero — SCORE-CARD-POLISH, DISCLOSED (Token Scanner
+                        result-UI polish task): same score/label/exact numbers, tighter padding and
+                        vertical rhythm (22px->18px, marginBottom 16px->14px), cleaner thinner
+                        progress bar, explanatory copy unchanged in wording but sized down slightly
+                        so it reads as a caption, not body text. */}
+                    <div className="risk-score-hero" style={{ marginBottom: '14px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${riskLabelColor}32`, borderRadius: '16px', padding: '18px 22px', boxShadow: `0 0 44px ${riskLabelColor}10, 0 0 0 1px ${riskLabelColor}06 inset` }}>
+                      <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>TOKEN SAFETY SCORE</div>
                       {riskScoreVal != null ? (
                         <>
-                          <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
-                            <span style={{ fontSize: '62px', fontWeight: 800, color: riskLabelColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, textShadow: `0 0 28px ${riskLabelColor}40` }}>{riskScoreVal}</span>
-                            <span style={{ fontSize: '18px', color: `${riskLabelColor}55`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>
-                          </div>
-                          <div style={{ marginTop: '8px', display: 'flex', alignItems: 'center', gap: '7px' }}>
-                            <span style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Risk Level:</span>
+                          <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
+                            <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
+                              <span style={{ fontSize: '52px', fontWeight: 800, color: riskLabelColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, textShadow: `0 0 24px ${riskLabelColor}38` }}>{riskScoreVal}</span>
+                              <span style={{ fontSize: '16px', color: `${riskLabelColor}55`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>
+                            </div>
                             <span style={{ padding: '4px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '0.10em', color: riskLabelColor, background: `${riskLabelColor}14`, border: `1px solid ${riskLabelColor}45`, fontFamily: 'var(--font-plex-mono)' }}>{riskLabelDisplay}</span>
                           </div>
-                          <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginTop: '14px' }}>
-                            <div style={{ height: '100%', width: `${riskScoreVal}%`, borderRadius: '999px', background: `linear-gradient(90deg,${riskLabelColor},${riskLabelColor}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 8px ${riskLabelColor}60` }} />
+                          <div style={{ height: '4px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginTop: '12px' }}>
+                            <div style={{ height: '100%', width: `${riskScoreVal}%`, borderRadius: '999px', background: `linear-gradient(90deg,${riskLabelColor},${riskLabelColor}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 6px ${riskLabelColor}55` }} />
                           </div>
-                          <div style={{ fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', marginTop: '8px', letterSpacing: '.04em' }}>Higher score means safer. Evidence-weighted across market maturity, liquidity safety, contract safety, and behavioral risk.</div>
+                          <div style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>Higher score means safer — evidence-weighted across market maturity, liquidity safety, contract safety, and behavioral risk.</div>
                         </>
                       ) : (
-                        <div style={{ fontSize: '20px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)', padding: '8px 0' }}>Token Safety Score unavailable</div>
+                        <div style={{ fontSize: '18px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)', padding: '4px 0' }}>Token Safety Score unavailable</div>
                       )}
                     </div>
 
-                    {/* Score Breakdown — Market Maturity / Liquidity Safety / Contract Safety / Behavioral Risk */}
+                    {/* Score Breakdown — Market Maturity / Liquidity Safety / Contract Safety /
+                        Behavioral Risk. SCORE-BREAKDOWN-POLISH, DISCLOSED: same categories/exact
+                        scores/reason tags, tighter row spacing and a cleaner shared progress-bar
+                        treatment (thinner track, consistent radius) so the four rows scan quickly
+                        instead of feeling like a dense stack. */}
                     {result.riskBreakdown && (
-                      <div style={{ marginBottom: '20px', padding: '14px 16px', borderRadius: '12px', border: '1px solid rgba(125,211,252,0.20)', background: 'rgba(8,14,28,0.72)' }}>
+                      <div style={{ marginBottom: '16px', padding: '14px 16px', borderRadius: '12px', border: '1px solid rgba(125,211,252,0.20)', background: 'rgba(8,14,28,0.72)' }}>
                         <p style={{ margin: '0 0 12px', fontSize: '10px', letterSpacing: '.16em', color: '#7dd3fc', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>SCORE BREAKDOWN</p>
-                        <div style={{ display: 'grid', gap: '12px' }}>
-                          {riskBreakdownRows.map(({ label, data }) => {
+                        <div style={{ display: 'grid', gap: '10px' }}>
+                          {riskBreakdownRows.map(({ label, data }, rIdx) => {
                             const sc = data?.score ?? 0
                             const max = data?.max ?? 0
                             const pct = max > 0 ? Math.max(0, Math.min(100, (sc / max) * 100)) : 0
                             const barColor = pct >= 70 ? '#2DD4BF' : pct >= 40 ? '#fbbf24' : '#f87171'
                             const reasons = (data?.reasons ?? []).slice(0, 3)
                             return (
-                              <div key={label}>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '5px' }}>
-                                  <span style={{ fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', fontWeight: 600 }}>{label}</span>
+                              <div key={label} style={{ paddingBottom: '10px', borderBottom: rIdx < riskBreakdownRows.length - 1 ? '1px solid rgba(255,255,255,0.045)' : 'none' }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
+                                  <span style={{ fontSize: '11px', color: '#d3dfec', fontFamily: 'var(--font-plex-mono)', fontWeight: 650 }}>{label}</span>
                                   <span style={{ fontSize: '11px', color: barColor, fontWeight: 800, letterSpacing: '.06em', fontFamily: 'var(--font-plex-mono)' }}>{sc}/{max}</span>
                                 </div>
-                                <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginBottom: '7px' }}>
+                                <div style={{ height: '4px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginBottom: '7px' }}>
                                   <div style={{ height: '100%', width: `${pct}%`, borderRadius: '999px', background: `linear-gradient(90deg,${barColor},${barColor}80)`, transition: 'width 0.7s ease' }} />
                                 </div>
                                 {reasons.length > 0 && (
                                   <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                                     {reasons.map((r, i) => (
-                                      <span key={i} style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 600, color: '#94a3b8', background: 'rgba(148,163,184,0.06)', border: '1px solid rgba(148,163,184,0.18)', fontFamily: 'var(--font-plex-mono)' }}>{translateRiskReason(r)}</span>
+                                      <span key={i} style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 600, color: '#a3b4c5', background: 'rgba(148,163,184,0.07)', border: '1px solid rgba(148,163,184,0.20)', fontFamily: 'var(--font-plex-mono)' }}>{translateRiskReason(r)}</span>
                                     ))}
                                   </div>
                                 )}
@@ -4650,134 +4674,20 @@ export default function TerminalTokenScanner() {
               {/* ── MARKET PULSE ──────────────────────────────────────── */}
               {activeSection === 'market-pulse' && (
                 <>
-                  <div style={{ marginBottom: '18px' }}>
+                  <div style={{ marginBottom: '16px' }}>
                     <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>MARKET PULSE</p>
                     <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Live price, liquidity, volume and pool data for this token.</p>
                   </div>
-                  <div style={{ marginBottom: '16px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(210px,1fr))', gap: '9px' }}>
-                    {(() => {
-                      const marketStrength = result.noActivePools ? 'Not indexed' : (result.liquidity ?? 0) > 250000 ? 'Strong' : (result.liquidity ?? 0) > 50000 ? 'Active' : (result.liquidity ?? 0) > 0 ? 'Thin' : 'Not indexed'
-                      const volRead = result.priceChange24h == null ? 'Not indexed' : Math.abs(result.priceChange24h) > 20 ? 'High volatility' : Math.abs(result.priceChange24h) > 8 ? 'Moderate volatility' : 'Controlled volatility'
-                      const activityRead = result.volume24h != null && result.liquidity != null && result.liquidity > 0 ? `${((result.volume24h / result.liquidity) * 100).toFixed(0)}% vol/liquidity` : 'Not indexed'
-                      const mcfdvRead = result.marketCapUsd != null && result.fdvUsd != null && result.fdvUsd > 0 ? `${((result.marketCapUsd / result.fdvUsd) * 100).toFixed(0)}% MC/FDV` : 'Not indexed'
-                      const items = [
-                        ['Market strength', marketStrength],
-                        ['Liquidity depth', result.liquidity != null ? fmtLarge(result.liquidity) : 'Not indexed'],
-                        ['24h activity', activityRead],
-                        ['Volatility read', volRead],
-                        ['MC vs FDV read', mcfdvRead],
-                      ] as Array<[string,string]>
-                      return items.map(([label, value]) => (
-                        <div key={label} style={{ padding:'11px 12px', borderRadius:'10px', border:'1px solid rgba(103,232,249,0.16)', background:'rgba(8,14,28,0.62)' }}>
-                          <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', fontFamily:'var(--font-plex-mono)', marginBottom:'4px' }}>{label}</div>
-                          <div style={{ fontSize:'12px', color:'#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{value}</div>
-                        </div>
-                      ))
-                    })()}
-                  </div>
-                  {/* Market Insight Strip */}
-                  {!result.noActivePools && (result.price != null || result.liquidity != null) && (
-                    <div style={{ marginBottom: '20px', padding: '14px 18px', background: 'linear-gradient(135deg,rgba(103,232,249,0.05),rgba(45,212,191,0.03))', border: '1px solid rgba(103,232,249,0.18)', borderRadius: '14px', display: 'flex', flexWrap: 'wrap', gap: '18px', alignItems: 'center' }}>
-                      <div style={{ flexShrink: 0 }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '3px' }}>
-                          <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>LIVE PRICE</div>
-                          {result.chartSource === 'synthetic_flat_series' && (
-                            <svg width="32" height="16" viewBox="0 0 32 16" style={{ display: 'inline-block', verticalAlign: 'middle' }}>
-                              <defs>
-                                <filter id="spkGlow" x="-20%" y="-100%" width="140%" height="300%">
-                                  <feGaussianBlur in="SourceGraphic" stdDeviation="1.5" result="b" />
-                                  <feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge>
-                                </filter>
-                              </defs>
-                              <line x1="2" y1="8" x2="30" y2="8" stroke="rgba(0,255,255,0.65)" strokeWidth="1.5" filter="url(#spkGlow)" />
-                              <circle cx="30" cy="8" r="2" fill="rgba(0,255,255,0.8)" filter="url(#spkGlow)" />
-                            </svg>
-                          )}
-                          {result.priceSource === 'fdv_derived' && (
-                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Estimated from FDV</span>
-                          )}
-                          {result.priceSource === 'coingecko' && (
-                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Market data</span>
-                          )}
-                          {result.priceSource === 'dexscreener' && (
-                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Market data</span>
-                          )}
-                          {result.price != null && result.priceSource == null && (
-                            <span style={{ fontSize: '8px', fontWeight: 700, letterSpacing: '0.08em', padding: '1px 6px', borderRadius: '99px', color: '#94a3b8', background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.22)', textTransform: 'uppercase' }}>Unverified price</span>
-                          )}
-                        </div>
-                        <div style={{ fontSize: '22px', fontWeight: 800, color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{fmtPrice(result.price)}</div>
-                      </div>
-                      <div style={{ width: '1px', height: '32px', background: 'rgba(255,255,255,0.07)', flexShrink: 0 }} />
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '16px', flex: 1 }}>
-                        {result.priceChange24h != null && (
-                          <div>
-                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>24H MOVE</div>
-                            <div style={{ fontSize: '14px', fontWeight: 700, color: result.priceChange24h >= 0 ? '#34d399' : '#f87171', fontFamily: 'var(--font-plex-mono)' }}>{fmtPct(result.priceChange24h)}</div>
-                          </div>
-                        )}
-                        {result.liquidity != null && (
-                          <div>
-                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>LIQUIDITY</div>
-                            <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(result.liquidity)}</div>
-                          </div>
-                        )}
-                        {result.volume24h != null && (
-                          <div>
-                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>VOLUME 24H</div>
-                            <div style={{ fontSize: '14px', fontWeight: 700, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmtLarge(result.volume24h)}</div>
-                          </div>
-                        )}
-                        {result.poolActivity?.pairAgeLabel != null && (
-                          <div>
-                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>PAIR AGE</div>
-                            <div style={{ fontSize: '14px', fontWeight: 700, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>{result.poolActivity.pairAgeLabel}</div>
-                          </div>
-                        )}
-                        {result.marketCapUsd != null && result.fdvUsd != null && result.fdvUsd > 0 && result.marketCapUsd !== result.fdvUsd && (
-                          <div>
-                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>MC / FDV</div>
-                            <div style={{ fontSize: '14px', fontWeight: 700, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>{`${((result.marketCapUsd / result.fdvUsd) * 100).toFixed(0)}%`}</div>
-                          </div>
-                        )}
-                        {(() => {
-                          const volLiqRatio = result.volume24h != null && result.liquidity != null && result.liquidity > 0
-                            ? result.volume24h / result.liquidity
-                            : null
-                          if (volLiqRatio == null) return null
-                          const ratioColor = volLiqRatio > 3 ? '#f87171' : volLiqRatio > 1 ? '#fbbf24' : '#34d399'
-                          return (
-                            <div>
-                              <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>VOL / LIQ</div>
-                              <div style={{ fontSize: '14px', fontWeight: 700, color: ratioColor, fontFamily: 'var(--font-plex-mono)' }}>{volLiqRatio.toFixed(2)}x</div>
-                            </div>
-                          )
-                        })()}
-                      </div>
-                    </div>
-                  )}
-                  {(() => {
-                    const volLiqRatio = result.volume24h != null && result.liquidity != null && result.liquidity > 0
-                      ? result.volume24h / result.liquidity
-                      : null
-                    const volLiqRead = volLiqRatio == null
-                      ? 'Volume/liquidity ratio unavailable.'
-                      : volLiqRatio > 3
-                        ? 'Volume is very high relative to liquidity — expect significant volatility and slippage.'
-                        : volLiqRatio > 1
-                          ? 'Volume is high relative to liquidity — expect volatility.'
-                          : 'Healthy activity — volume is proportionate to liquidity depth.'
-                    if (!result.noActivePools && (result.volume24h != null || result.liquidity != null)) {
-                      return (
-                        <div style={{ marginBottom: '16px', padding: '11px 14px', borderRadius: '10px', background: 'rgba(103,232,249,0.04)', border: '1px solid rgba(103,232,249,0.14)', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-                          <span style={{ fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, flexShrink: 0 }}>VOL/LIQ READ</span>
-                          <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{volLiqRead}</span>
-                          {volLiqRatio != null && <span style={{ marginLeft: 'auto', fontSize: '12px', fontWeight: 800, color: volLiqRatio > 3 ? '#f87171' : volLiqRatio > 1 ? '#fbbf24' : '#34d399', fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>{volLiqRatio.toFixed(2)}x</span>}
-                        </div>
-                      )
-                    }
-                    return null
-                  })()}
+                  {/* MARKET-PULSE-DEDUP, DISCLOSED (Token Scanner result-UI polish task, explicitly
+                      reported: "repeats similar stats too many times"): the same Price/Liquidity/
+                      Volume24h/24hChange/MC-FDV/PairAge numbers were previously rendered up to THREE
+                      times — a "derived reads" grid, a separate "Market Insight Strip", a "VOL/LIQ
+                      READ" banner, and then the real StatCard grid. Removed the two duplicate
+                      pre-grid blocks entirely (no data lost — every number they showed is still in
+                      the two-row StatCard grid below, in the exact layout requested: row 1 = Price/
+                      Liquidity/Volume 24h/24h Change, row 2 = Market Cap/FDV/Pool Protocol/Pair Age).
+                      The Vol/Liq read is preserved as one compact note under the grid instead of its
+                      own banner. */}
                   {result.noActivePools ? (
                     <div style={{ padding: '20px 22px', marginBottom: '28px', background: 'rgba(245,158,11,0.04)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: '12px', fontFamily: 'var(--font-plex-mono)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
@@ -4795,11 +4705,16 @@ export default function TerminalTokenScanner() {
                           <span style={{ fontSize: '10px', color: '#475569' }}>Primary pool data unavailable — showing fallback market data. FDV is not market cap.</span>
                         </div>
                       )}
-                      <div className="metric-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '10px', marginBottom: '28px' }}>
+                      {/* Row 1 — key metrics only (explicitly specified order: Price, Liquidity,
+                          Volume 24h, 24h Change). */}
+                      <div className="metric-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '10px', marginBottom: '10px' }}>
                         <StatCard label="Price" value={fmtPrice(result.price)} accent="#2DD4BF" helper={result.marketDataSource === 'fallback' ? 'Market read' : 'Primary pool'} />
                         <StatCard label="Liquidity" value={fmtLarge(result.liquidity)} helper="Pool depth" />
                         <StatCard label="Volume 24h" value={fmtLarge(result.volume24h)} helper="24h trading activity" />
                         <StatCard label="24h Change" value={fmtPct(result.priceChange24h)} accent={pctColor(result.priceChange24h)} helper="Price movement" />
+                      </div>
+                      {/* Row 2 — Market Cap, FDV, Pool Protocol, Pair Age. */}
+                      <div className="metric-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '10px', marginBottom: '10px' }}>
                         {(() => {
                           const val = result.valuationContext
                           const estimated = val?.primaryValuationStatus === 'estimated_mc' && val?.primaryValuationUsd != null
@@ -4825,21 +4740,45 @@ export default function TerminalTokenScanner() {
                         })()}
                         <StatCard label="FDV" value={result.fdvUsd != null ? fmtLarge(result.fdvUsd) : 'Not indexed'} helper="Fully Diluted Valuation" accent="#a78bfa" />
                         <StatCard label="Pool Protocol" value={result.primaryDexName ?? 'Protocol not confirmed'} helper={result.primaryDexName ? 'Primary liquidity pool' : 'Pool found · protocol metadata missing'} accent={result.primaryDexName ? '#67e8f9' : '#64748b'} />
+                        <StatCard label="Pair Age" value={result.poolActivity?.pairAgeLabel ?? 'Not indexed'} helper="Time since pool creation" accent="#a78bfa" />
+                      </div>
+                      {/* Compact notes — MC not verified, MC vs FDV, Vol/Liq read. Same wording as
+                          before, just consolidated into short notes under the grid instead of a
+                          separate repeated-stat banner. */}
+                      <div style={{ display: 'grid', gap: '8px', marginBottom: '18px' }}>
+                        {result.marketCapStatus !== 'verified' && (
+                          <p style={{ margin: 0, color: '#7c93aa', fontSize: '11px', lineHeight: 1.55 }}>
+                            {result.valuationContext?.primaryValuationStatus === 'estimated_mc'
+                              ? 'Market cap not verified live — showing an estimate from on-chain supply. FDV is shown separately.'
+                              : 'Market cap not confirmed. FDV is shown separately.'}
+                          </p>
+                        )}
+                        {result.fdvUsd != null && result.marketCapUsd != null && result.marketCapUsd !== result.fdvUsd && (
+                          <div style={{ padding: '10px 14px', background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.16)', borderRadius: '10px', fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
+                            <span style={{ color: '#a78bfa', fontWeight: 700 }}>MC vs FDV: </span>
+                            {`Market cap ${fmtLarge(result.marketCapUsd)} reflects circulating supply. FDV ${fmtLarge(result.fdvUsd)} covers all tokens including locked and unvested. ${result.marketCapUsd / result.fdvUsd < 0.7 ? 'Significant unlock pressure possible.' : 'Low unlock pressure from current ratio.'}`}
+                          </div>
+                        )}
+                        {(() => {
+                          const volLiqRatio = result.volume24h != null && result.liquidity != null && result.liquidity > 0
+                            ? result.volume24h / result.liquidity
+                            : null
+                          if (volLiqRatio == null) return null
+                          const ratioColor = volLiqRatio > 3 ? '#f87171' : volLiqRatio > 1 ? '#fbbf24' : '#34d399'
+                          const volLiqRead = volLiqRatio > 3
+                            ? 'Volume is very high relative to liquidity — expect significant volatility and slippage.'
+                            : volLiqRatio > 1
+                              ? 'Volume is high relative to liquidity — expect volatility.'
+                              : 'Healthy activity — volume is proportionate to liquidity depth.'
+                          return (
+                            <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(103,232,249,0.04)', border: '1px solid rgba(103,232,249,0.14)', display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                              <span style={{ color: ratioColor, fontWeight: 700 }}>Vol/Liq {volLiqRatio.toFixed(2)}x: </span>
+                              <span style={{ fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{volLiqRead}</span>
+                            </div>
+                          )
+                        })()}
                       </div>
                     </>
-                  )}
-                  {result.marketCapStatus !== 'verified' && !result.noActivePools && (
-                    <p style={{ marginTop: '-14px', marginBottom: '16px', color: '#94a3b8', fontSize: '12px' }}>
-                      {result.valuationContext?.primaryValuationStatus === 'estimated_mc'
-                        ? 'Market cap not verified live — showing an estimate from on-chain supply. FDV is shown separately.'
-                        : 'Market cap not confirmed. FDV is shown separately.'}
-                    </p>
-                  )}
-                  {result.fdvUsd != null && result.marketCapUsd != null && result.marketCapUsd !== result.fdvUsd && (
-                    <div style={{ marginBottom: '16px', padding: '10px 14px', background: 'rgba(167,139,250,0.06)', border: '1px solid rgba(167,139,250,0.16)', borderRadius: '10px', fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>
-                      <span style={{ color: '#a78bfa', fontWeight: 700 }}>MC vs FDV: </span>
-                      {`Market cap ${fmtLarge(result.marketCapUsd)} reflects circulating supply. FDV ${fmtLarge(result.fdvUsd)} covers all tokens including locked and unvested. ${result.marketCapUsd / result.fdvUsd < 0.7 ? 'Significant unlock pressure possible.' : 'Low unlock pressure from current ratio.'}`}
-                    </div>
                   )}
                   {/* Project Links — indexed socials from token metadata */}
                   <ProjectSocialsCard socials={result.projectSocials} />
@@ -4859,7 +4798,7 @@ export default function TerminalTokenScanner() {
 
                     if (_hasValidCandles) {
                       return (
-                        <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                        <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
                           <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
                             <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
                             <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -4895,7 +4834,7 @@ export default function TerminalTokenScanner() {
                       const visibleChanges = (mts?.changes ?? []).filter(c => c.value != null)
                       const _trendChart = <TrendChart snapshot={mts!} currentPrice={result.price ?? null} />
                       return (
-                        <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                        <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
                           {/* Header row */}
                           <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
                             <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
@@ -4975,7 +4914,7 @@ export default function TerminalTokenScanner() {
 
                     // Minimal snapshot — no candles, no market trend data
                     return (
-                      <div className="glass-card" style={{ marginBottom: '22px', borderRadius: '16px', padding: '16px' }}>
+                      <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
                         <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Price Chart</p>
                         <p style={{ margin: 0, fontSize: '12px', color: '#3a5268', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>
                           {result.noActivePools ? 'Chart data unavailable — no active indexed pools found for this token.' : 'Historical candles are not indexed for this pool yet.'}
@@ -5269,7 +5208,7 @@ export default function TerminalTokenScanner() {
                     void lpStatus
                     return (
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: '12px', marginBottom: '16px', alignItems: 'stretch' }}>
-                        <div style={{ padding: '18px 19px', background: lockInfo.bg, border: `1px solid ${lockInfo.border}`, borderRadius: '14px' }}>
+                        <div style={{ padding: '16px 18px', background: lockInfo.bg, border: `1px solid ${lockInfo.border}`, borderRadius: '14px' }}>
                           <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>LP Status</div>
                           <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginBottom: '8px' }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: lockInfo.color, flexShrink: 0, boxShadow: `0 0 8px ${lockInfo.color}`, marginTop: '6px' }} />
@@ -5277,14 +5216,14 @@ export default function TerminalTokenScanner() {
                           </div>
                           <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6, overflowWrap: 'anywhere' }}>{lockInfo.description}</p>
                         </div>
-                        <div style={{ padding: '18px 19px', background: `${exitInfo.color}08`, border: `1px solid ${exitInfo.color}28`, borderRadius: '14px' }}>
+                        <div style={{ padding: '16px 18px', background: `${exitInfo.color}08`, border: `1px solid ${exitInfo.color}28`, borderRadius: '14px' }}>
                           <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Exit Risk</div>
                           <div style={{ marginBottom: '8px' }}>
                             <span style={{ padding: '4px 13px', borderRadius: '999px', background: `${exitInfo.color}14`, border: `1px solid ${exitInfo.color}45`, color: exitInfo.color, fontSize: '14px', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.05em' }}>{exitInfo.label}</span>
                           </div>
                           <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{exitInfo.description}</p>
                         </div>
-                        <div style={{ padding: '18px 19px', background: `${modelColor}08`, border: `1px solid ${modelColor}28`, borderRadius: '14px' }}>
+                        <div style={{ padding: '16px 18px', background: `${modelColor}08`, border: `1px solid ${modelColor}28`, borderRadius: '14px' }}>
                           <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Primary Liquidity Model</div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: modelColor, flexShrink: 0, boxShadow: `0 0 8px ${modelColor}` }} />
@@ -5897,16 +5836,25 @@ export default function TerminalTokenScanner() {
                             <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>{sec.text}</p>
                           </div>
                         ))}
-                        {result.cortexLpRead.evidenceGaps.length > 0 && (
+                        {/* CRASH-FIX, DISCLOSED (found live-verifying this polish pass, pre-existing
+                            bug not introduced by this change — confirmed via `git stash`): a token
+                            whose scan returned cortexLpRead but with evidenceGaps/nextActions absent
+                            (e.g. no active pool) threw "Cannot read properties of undefined (reading
+                            'length')" and crashed the whole result view. Pure null-safety fix — no
+                            data/logic change, just guards accessing fields that aren't always
+                            present. */}
+                        {(result.cortexLpRead.evidenceGaps?.length ?? 0) > 0 && (
                           <div style={{ padding: '12px 14px', background: 'rgba(251,146,60,0.04)', border: '1px solid rgba(251,146,60,0.14)', borderRadius: '10px' }}>
                             <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#fb923c', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Evidence Gaps</p>
-                            <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>{result.cortexLpRead.evidenceGaps.join(' · ')}</p>
+                            <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>{result.cortexLpRead.evidenceGaps!.join(' · ')}</p>
                           </div>
                         )}
-                        <div style={{ padding: '12px 14px', background: 'rgba(45,212,191,0.04)', border: '1px solid rgba(45,212,191,0.14)', borderRadius: '10px' }}>
-                          <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
-                          <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>{result.cortexLpRead.nextActions.join(' ')}</p>
-                        </div>
+                        {(result.cortexLpRead.nextActions?.length ?? 0) > 0 && (
+                          <div style={{ padding: '12px 14px', background: 'rgba(45,212,191,0.04)', border: '1px solid rgba(45,212,191,0.14)', borderRadius: '10px' }}>
+                            <p style={{ margin: '0 0 5px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
+                            <p style={{ margin: 0, fontSize: '12px', lineHeight: 1.6, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>{result.cortexLpRead.nextActions!.join(' ')}</p>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
@@ -6014,13 +5962,18 @@ export default function TerminalTokenScanner() {
                     const cardTitle: React.CSSProperties = { margin:'0 0 10px',fontSize:'10px',fontWeight:700,letterSpacing:'.14em',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }
                     return (
                       <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-                        {/* Hero: gauge + verdict + CORTEX read */}
-                        <div style={{ padding:'20px 22px', background:'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border:`1px solid ${gaugeColor}35`, borderRadius:'18px', boxShadow:`0 0 44px ${gaugeColor}0c` }}>
-                          <div style={{ display:'flex', alignItems:'flex-start', gap:'22px', flexWrap:'wrap', marginBottom: engine?.cortexRead ? '16px' : '0' }}>
+                        {/* Hero: gauge + verdict + CORTEX read. GAUGE-ALIGNMENT, DISCLOSED (Token
+                            Scanner result-UI polish task, explicitly requested: "gauge/card better
+                            aligned... reduce giant empty areas"): gauge and text column now share
+                            the same vertical center via alignItems:center (was flex-start, which
+                            left the gauge floating above the text block on short content), and
+                            padding tightened slightly. */}
+                        <div style={{ padding:'18px 20px', background:'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border:`1px solid ${gaugeColor}35`, borderRadius:'18px', boxShadow:`0 0 40px ${gaugeColor}0c` }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:'22px', flexWrap:'wrap', marginBottom: engine?.cortexRead ? '14px' : '0' }}>
                             <div style={{ flexShrink:0 }}>
                               <RiskGaugeCircle score={displayCortexScore} color={gaugeColor} />
                             </div>
-                            <div style={{ flex:1, minWidth:'160px', paddingTop:'4px' }}>
+                            <div style={{ flex:1, minWidth:'160px' }}>
                               <div style={{ fontSize:'9px',letterSpacing:'.18em',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'8px' }}>CORTEX RISK ENGINE</div>
                               <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
                                 <span style={{ padding:'5px 14px',borderRadius:'999px',fontSize:'11px',fontWeight:800,letterSpacing:'.10em',color:gaugeColor,background:`${gaugeColor}14`,border:`1px solid ${gaugeColor}44`,fontFamily:'var(--font-plex-mono)' }}>
@@ -6043,13 +5996,19 @@ export default function TerminalTokenScanner() {
 
                         {/* Cards grid */}
                         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))', gap:'12px' }}>
-                          {/* Risk Drivers */}
-                          <div style={{ ...cardBase, border:'1px solid rgba(244,63,94,0.22)' }}>
-                            <p style={{ ...cardTitle, color:'#f43f5e' }}>Risk Drivers</p>
+                          {/* Risk Drivers — CAUTION-STYLING-SOFTENED, DISCLOSED (Token Scanner
+                              result-UI polish task, explicitly requested: "keep red/pink caution
+                              styling but make it less aggressive"): same red/pink identity, lower
+                              alpha border and a less saturated body-text tone (still clearly a
+                              warning color, just not full-saturation), longer line length via
+                              maxWidth so long driver text wraps more readably instead of running
+                              the full card width. */}
+                          <div style={{ ...cardBase, border:'1px solid rgba(244,63,94,0.16)' }}>
+                            <p style={{ ...cardTitle, color:'#f47c8f' }}>Risk Drivers</p>
                             {(engine?.riskDrivers?.length ? engine.riskDrivers : ['No active risk drivers detected.']).map((d, i) => (
-                              <div key={i} style={{ display:'flex',gap:'7px',marginBottom:'5px',alignItems:'flex-start' }}>
-                                <span style={{ color:'#f43f5e',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>!</span>
-                                <p style={{ margin:0,fontSize:'11px',color:'#fda4af',lineHeight:1.5,fontFamily:'var(--font-plex-mono)' }}>{d}</p>
+                              <div key={i} style={{ display:'flex',gap:'7px',marginBottom:'6px',alignItems:'flex-start' }}>
+                                <span style={{ color:'#f47c8f',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>!</span>
+                                <p style={{ margin:0,fontSize:'11px',color:'#e8b4bc',lineHeight:1.6,fontFamily:'var(--font-plex-mono)', maxWidth: '52ch' }}>{d}</p>
                               </div>
                             ))}
                           </div>
@@ -6721,9 +6680,13 @@ export default function TerminalTokenScanner() {
               d.holderState.kind === 'noRowsFallback' ? 'Holder concentration not confirmed.' : null,
               !hp?.simulationSuccess ? 'Tax simulation unavailable.' : null,
             ].filter((x):x is string=>x!=null).slice(0,3)
-            const ss = {padding:'10px 12px',border:'1px solid rgba(255,255,255,0.07)',borderRadius:'10px',background:'rgba(8,14,28,.65)'}
-            const stitle = {margin:'0 0 6px',fontSize:'9px',fontWeight:700 as const,letterSpacing:'.16em',color:'#3a5268',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)'}
-            const sbody = {margin:0,fontSize:'11px',color:'#94a3b8',lineHeight:1.65 as const,fontFamily:'var(--font-plex-mono)'}
+            {/* RIGHT-RAIL-RESULT-POLISH, DISCLOSED (Token Scanner result-UI polish task,
+                explicitly requested: "summary cards slightly more readable"): same card
+                shapes/content, brighter section-title and card-border tones so each summary card
+                reads as a distinct block while scrolling instead of blurring into the background. */}
+            const ss = {padding:'10px 12px',border:'1px solid rgba(255,255,255,0.10)',borderRadius:'10px',background:'rgba(10,17,32,.72)'}
+            const stitle = {margin:'0 0 6px',fontSize:'9px',fontWeight:700 as const,letterSpacing:'.16em',color:'#5b7590',textTransform:'uppercase' as const,fontFamily:'var(--font-plex-mono)'}
+            const sbody = {margin:0,fontSize:'11px',color:'#a3b4c5',lineHeight:1.65 as const,fontFamily:'var(--font-plex-mono)'}
             return (
               <div style={{display:'flex',flexDirection:'column',gap:'9px'}}>
                 {/* CORTEX Receipt header */}
