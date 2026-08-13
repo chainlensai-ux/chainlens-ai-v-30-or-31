@@ -3251,28 +3251,36 @@ function CortexSummaryCard({ result }: { result: ScanResult }) {
 // ─── Risk Gauge Circle ───────────────────────────────────────────────
 
 function RiskGaugeCircle({ score, color }: { score: number | null; color: string }) {
-  const size = 130
-  const sw = 10
+  const size = 152
+  const sw = 9
   const r = (size - sw) / 2
   const circ = 2 * Math.PI * r
   const pct = score != null ? Math.max(0, Math.min(100, score)) / 100 : 0
   const offset = circ - pct * circ
+  const gradId = `riskGaugeGrad-${color.replace('#', '')}`
   return (
     <div style={{ position: 'relative', width: size, height: size }}>
-      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform: 'rotate(-90deg)' }}>
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.06)" strokeWidth={sw} />
-        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={color} strokeWidth={sw}
+      <div style={{ position: 'absolute', inset: '10px', borderRadius: '50%', background: `radial-gradient(circle, ${color}14 0%, transparent 70%)` }} />
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ transform: 'rotate(-90deg)', position: 'relative' }}>
+        <defs>
+          <linearGradient id={gradId} x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor={color} stopOpacity="0.55" />
+            <stop offset="100%" stopColor={color} stopOpacity="1" />
+          </linearGradient>
+        </defs>
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke="rgba(255,255,255,0.045)" strokeWidth={sw} />
+        <circle cx={size/2} cy={size/2} r={r} fill="none" stroke={`url(#${gradId})`} strokeWidth={sw}
           strokeLinecap="round"
           strokeDasharray={circ}
           strokeDashoffset={score != null ? offset : circ}
-          style={{ transition: 'stroke-dashoffset 0.8s ease, stroke 0.4s ease', filter: `drop-shadow(0 0 8px ${color}80)` }}
+          style={{ transition: 'stroke-dashoffset 0.8s ease, stroke 0.4s ease', filter: `drop-shadow(0 0 10px ${color}70)` }}
         />
       </svg>
-      <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '2px' }}>
-        <span style={{ fontSize: '28px', fontWeight: 800, color, fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>
+      <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '3px' }}>
+        <span style={{ fontSize: '34px', fontWeight: 800, color, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, letterSpacing: '-0.01em' }}>
           {score != null ? score : '—'}
         </span>
-        <span style={{ fontSize: '8px', color: '#3a5268', letterSpacing: '.14em', fontFamily: 'var(--font-plex-mono)' }}>RUG RISK</span>
+        <span style={{ fontSize: '8px', color: '#4a6178', letterSpacing: '.16em', fontFamily: 'var(--font-plex-mono)' }}>/ 100 SCORE</span>
       </div>
     </div>
   )
@@ -5967,20 +5975,21 @@ export default function TerminalTokenScanner() {
                     const cardTitle: React.CSSProperties = { margin:'0 0 10px',fontSize:'10px',fontWeight:700,letterSpacing:'.14em',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }
                     return (
                       <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-                        {/* Hero: gauge + verdict + CORTEX read. GAUGE-ALIGNMENT, DISCLOSED (Token
-                            Scanner result-UI polish task, explicitly requested: "gauge/card better
-                            aligned... reduce giant empty areas"): gauge and text column now share
-                            the same vertical center via alignItems:center (was flex-start, which
-                            left the gauge floating above the text block on short content), and
-                            padding tightened slightly. */}
-                        <div style={{ padding:'18px 20px', background:'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border:`1px solid ${gaugeColor}35`, borderRadius:'18px', boxShadow:`0 0 40px ${gaugeColor}0c` }}>
-                          <div style={{ display:'flex', alignItems:'center', gap:'22px', flexWrap:'wrap', marginBottom: engine?.cortexRead ? '14px' : '0' }}>
+                        {/* Hero: gauge + verdict + CORTEX read. RISK-HERO-REDESIGN, DISCLOSED (Token
+                            Scanner CORTEX Risk Engine polish task, explicitly requested: "premium
+                            hero score card... left side gauge, right side concise summary stack"):
+                            gauge sits in its own left column, right column carries the section
+                            label, verdict/confidence pills, a static explanatory sentence about how
+                            the score is derived, and the CORTEX read note — all vertically centered
+                            against the gauge. Same displayCortexScore/Verdict/Confidence values. */}
+                        <div style={{ padding:'22px 24px', background:'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border:`1px solid ${gaugeColor}35`, borderRadius:'20px', boxShadow:`0 0 44px ${gaugeColor}0c` }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:'28px', flexWrap:'wrap' }}>
                             <div style={{ flexShrink:0 }}>
                               <RiskGaugeCircle score={displayCortexScore} color={gaugeColor} />
                             </div>
-                            <div style={{ flex:1, minWidth:'160px' }}>
-                              <div style={{ fontSize:'9px',letterSpacing:'.18em',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'8px' }}>CORTEX RISK ENGINE</div>
-                              <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', marginBottom:'12px' }}>
+                            <div style={{ flex:1, minWidth:'200px', display:'flex', flexDirection:'column', gap:'11px' }}>
+                              <div style={{ fontSize:'9px',letterSpacing:'.18em',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>CORTEX RISK ENGINE</div>
+                              <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
                                 <span style={{ padding:'5px 14px',borderRadius:'999px',fontSize:'11px',fontWeight:800,letterSpacing:'.10em',color:gaugeColor,background:`${gaugeColor}14`,border:`1px solid ${gaugeColor}44`,fontFamily:'var(--font-plex-mono)' }}>
                                   {displayCortexVerdict ?? (rugLabelMap[engine?.rugRiskLabel ?? 'unavailable_with_reason'] ?? 'OPEN CHECK')}
                                 </span>
@@ -5988,6 +5997,7 @@ export default function TerminalTokenScanner() {
                                   {displayCortexConfidence === 'insufficient' ? 'Insufficient confidence' : displayCortexConfidence === 'low' ? 'Partial confidence' : `${displayCortexConfidence.toUpperCase()} CONFIDENCE`}
                                 </span>
                               </div>
+                              <p style={{ margin:0,fontSize:'10.5px',color:'#4a6178',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>Score calculated from available evidence. Missing checks reduce confidence.</p>
                               {engine?.cortexRead ? (
                                 <div style={{ padding:'10px 12px',borderRadius:'10px',background:'rgba(45,212,191,0.05)',border:'1px solid rgba(45,212,191,0.18)' }}>
                                   <p style={{ margin:0,fontSize:'11px',color:'#99f6e4',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{engine.cortexRead}</p>
@@ -5999,32 +6009,36 @@ export default function TerminalTokenScanner() {
                           </div>
                         </div>
 
-                        {/* Cards grid */}
-                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))', gap:'12px' }}>
-                          {/* Risk Drivers — CAUTION-STYLING-SOFTENED, DISCLOSED (Token Scanner
-                              result-UI polish task, explicitly requested: "keep red/pink caution
-                              styling but make it less aggressive"): same red/pink identity, lower
-                              alpha border and a less saturated body-text tone (still clearly a
-                              warning color, just not full-saturation), longer line length via
-                              maxWidth so long driver text wraps more readably instead of running
-                              the full card width. */}
-                          <div style={{ ...cardBase, border:'1px solid rgba(244,63,94,0.16)' }}>
+                        {/* Why this score */}
+                        <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'2px' }}>
+                          <p style={{ margin:0,fontSize:'9.5px',fontWeight:700,letterSpacing:'.16em',color:'#5b7590',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Why this score</p>
+                          <div style={{ flex:1, height:'1px', background:'rgba(255,255,255,0.06)' }} />
+                        </div>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))', gap:'12px', alignItems:'start' }}>
+                          {/* Risk Drivers — chip/mini-row style instead of a plain text blob. */}
+                          <div style={{ ...cardBase, border:'1px solid rgba(244,63,94,0.16)', display:'flex', flexDirection:'column' }}>
                             <p style={{ ...cardTitle, color:'#f47c8f' }}>Risk Drivers</p>
-                            {(engine?.riskDrivers?.length ? engine.riskDrivers : ['No active risk drivers detected.']).map((d, i) => (
-                              <div key={i} style={{ display:'flex',gap:'7px',marginBottom:'6px',alignItems:'flex-start' }}>
-                                <span style={{ color:'#f47c8f',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>!</span>
-                                <p style={{ margin:0,fontSize:'11px',color:'#e8b4bc',lineHeight:1.6,fontFamily:'var(--font-plex-mono)', maxWidth: '52ch' }}>{d}</p>
-                              </div>
-                            ))}
+                            <div style={{ display:'flex', flexDirection:'column', gap:'7px' }}>
+                              {(engine?.riskDrivers?.length ? engine.riskDrivers : ['No active risk drivers detected.']).map((d, i) => (
+                                <div key={i} style={{ display:'flex',gap:'8px',alignItems:'flex-start',padding:'8px 10px',borderRadius:'9px',background:'rgba(244,63,94,0.05)',border:'1px solid rgba(244,63,94,0.10)' }}>
+                                  <span style={{ color:'#f47c8f',flexShrink:0,fontSize:'11px',lineHeight:'16px' }}>!</span>
+                                  <p style={{ margin:0,fontSize:'11px',color:'#e8b4bc',lineHeight:1.55,fontFamily:'var(--font-plex-mono)' }}>{d}</p>
+                                </div>
+                              ))}
+                            </div>
                           </div>
 
-                          {/* LP Control */}
+                          {/* LP Control — LP-CONTROL-COMPACTED, DISCLOSED (same polish task, "lower
+                              cards too tall/awkward, break long text into bullets or short rows"):
+                              the status header row is kept as-is; the key/value list below is now a
+                              tighter 2-column mini-grid with smaller gaps/line-height (no fields
+                              removed — same rows, same values, just denser presentation). */}
                           {(() => {
                             const lpMode2 = deriveLpMode(result)
                             return (
                               <div style={{ ...cardBase, border:`1px solid ${lpMode2==='protocol'?'rgba(168,85,247,0.22)':'rgba(52,211,153,0.18)'}` }}>
                                 <p style={{ ...cardTitle, color: lpMode2==='protocol'?'#a855f7':'#34d399' }}>LP Control</p>
-                                <div style={{ display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px',flexWrap:'wrap' }}>
+                                <div style={{ display:'flex',alignItems:'center',gap:'8px',marginBottom:'10px',flexWrap:'wrap' }}>
                                   <span style={{ fontSize:'13px',fontWeight:800,color:'#f8fafc',fontFamily:'var(--font-plex-mono)' }}>
                                     {lpMode2==='protocol' ? 'Concentrated Liquidity (v3/v4)' : (lpLabelMap[lpState] ?? lpState.replace(/_/g,' '))}
                                   </span>
@@ -6043,21 +6057,31 @@ export default function TerminalTokenScanner() {
                                   const reason = lpMode2 === 'protocol'
                                     ? 'Concentrated primary pool: ERC-20 LP token lock/burn proof may not apply.'
                                     : result.lpControl?.reason ?? result.lpControllerIntel?.summary ?? (result.lpControl?.poolAddressPresent ? 'LP controller evidence is incomplete from current providers.' : 'Pool not found from current providers.')
-                                  const rows: Array<[string, string]> = [
+                                  const compactRows: Array<[string, string]> = [
                                     ['Status', lpMode2==='protocol' ? 'Concentrated Liquidity' : (lpLabelMap[lpState] ?? cleanStatusLabel(lpState))],
-                                    ['Reason', reason],
                                     ['Confidence', cleanStatusLabel(result.lpControl?.confidence ?? result.lpControllerIntel?.confidence ?? result.lpDataConfidence)],
                                     ['Pool model', poolModel],
                                     ['Proof type', proofType],
-                                    ['Liquidity depth', liquidityDepth != null ? fmtLiquidity(liquidityDepth) : 'Open Check'],
-                                    ['Exit risk', exitRisk],
+                                    ['Depth', liquidityDepth != null ? fmtLiquidity(liquidityDepth) : 'Open Check'],
                                   ]
-                                  return <div style={{ display:'grid', gap:'6px' }}>{rows.map(([label, value]) => (
-                                    <div key={label} style={{ display:'grid', gridTemplateColumns:'92px 1fr', gap:'8px', alignItems:'start' }}>
-                                      <span style={{ fontSize:'10px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
-                                      <span style={{ fontSize:'11px',color:label==='Exit risk' && (lpState==='team_controlled'||lpState==='wallet_controlled') ? '#fda4af' : '#cbd5e1',lineHeight:1.45,fontFamily:'var(--font-plex-mono)' }}>{value}</span>
+                                  return (
+                                    <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+                                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'6px 10px' }}>
+                                        {compactRows.map(([label, value]) => (
+                                          <div key={label} style={{ minWidth:0 }}>
+                                            <div style={{ fontSize:'9px',color:'#5b7590',fontFamily:'var(--font-plex-mono)',marginBottom:'2px' }}>{label}</div>
+                                            <div style={{ fontSize:'10.5px',color:'#cbd5e1',lineHeight:1.35,fontFamily:'var(--font-plex-mono)',overflowWrap:'anywhere' }} title={value}>{value}</div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                      <div style={{ paddingTop:'8px', borderTop:'1px solid rgba(255,255,255,0.06)', display:'flex', flexDirection:'column', gap:'4px' }}>
+                                        <div style={{ fontSize:'9px',color:'#5b7590',fontFamily:'var(--font-plex-mono)' }}>Reason</div>
+                                        <p style={{ margin:0,fontSize:'10.5px',color:'#94a3b8',lineHeight:1.45,fontFamily:'var(--font-plex-mono)' }}>{reason}</p>
+                                        <div style={{ fontSize:'9px',color:'#5b7590',fontFamily:'var(--font-plex-mono)',marginTop:'4px' }}>Exit risk</div>
+                                        <p style={{ margin:0,fontSize:'10.5px',color:(lpState==='team_controlled'||lpState==='wallet_controlled') ? '#fda4af' : '#94a3b8',lineHeight:1.45,fontFamily:'var(--font-plex-mono)' }}>{exitRisk}</p>
+                                      </div>
                                     </div>
-                                  ))}</div>
+                                  )
                                 })()}
                               </div>
                             )
@@ -6078,7 +6102,14 @@ export default function TerminalTokenScanner() {
                               ))}
                             </div>
                           </div>
+                        </div>
 
+                        {/* Supporting evidence */}
+                        <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'4px' }}>
+                          <p style={{ margin:0,fontSize:'9.5px',fontWeight:700,letterSpacing:'.16em',color:'#5b7590',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }}>Supporting evidence</p>
+                          <div style={{ flex:1, height:'1px', background:'rgba(255,255,255,0.06)' }} />
+                        </div>
+                        <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(240px,1fr))', gap:'12px', alignItems:'stretch' }}>
                           {/* Trading Simulation */}
                           <div style={{ ...cardBase, border:`1px solid ${simVerified?'rgba(45,212,191,0.25)':simUnavailable?'rgba(100,116,139,0.18)':'rgba(251,191,36,0.20)'}` }}>
                             <p style={{ ...cardTitle, color:'#67e8f9' }}>Trading Simulation</p>
