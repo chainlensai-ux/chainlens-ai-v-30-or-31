@@ -2,11 +2,12 @@ import { NextResponse, type NextRequest } from 'next/server'
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
 
 // DAILY-REDISCOVERY-CRON, DISCLOSED (explicitly requested: "make sure every 24 hours it does a mass
-// finding of new tokens safely on base radar so it's not just the same shit forever" — before this,
-// /api/radar's own 24h daily-pool cycle (see app/api/radar/route.ts's DAILY_POOL_CYCLE_MS) only ever
-// re-ran discovery lazily, on whatever real page request happened to land after the previous cycle
-// expired. With low/zero traffic in that window, the pool would sit stale — still technically correct
-// (nothing fake), just not proactively refreshed — until the next visitor finally triggered it.
+// finding of new tokens safely on base radar so it's not just the same shit forever"). /api/radar's
+// feed is now live/uncapped per request (the 24h daily-pool cycle this comment used to describe was
+// replaced — real usage showed it trickling in far too slowly), so this cron's original "wake a
+// stale pool" purpose no longer applies as literally, but it still serves a real function: warming
+// discovery caches once a day even during low/zero-traffic windows, so the very next real visitor
+// doesn't land on a cold cache.
 //
 // This is a Vercel Cron target (see vercel.json's "crons" entry, scheduled once daily — Vercel's
 // Hobby-plan cron limit is exactly one invocation/day per job, which matches this feature's actual

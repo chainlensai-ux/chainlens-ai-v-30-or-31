@@ -234,87 +234,21 @@ async function setDiscoveryBackoff(key: string, until: number): Promise<void> {
   }
 }
 
-// DAILY-POOL, DISCLOSED (explicitly requested, superseding the earlier 30-minute sticky-feed:
-// "max 10 tokens found a day... once it loads it will always be there for the 24 hours in the day,
-// then the next day we search for new ones"). Root problem this and the prior sticky-feed both
-// address is the same: GeckoTerminal's rate limit means raw discovery genuinely differs cycle to
-// cycle, so a token that legitimately cleared every gate can vanish from the very next response
-// purely because that cycle didn't happen to rediscover it — not because anything about the token
-// changed. Once a real candidate is admitted to the pool, it stays displayed for the rest of that
-// pool's cycle no matter what any single cycle's discovery finds, up to a hard cap of
-// DAILY_POOL_MAX total.
-//
-// ROLLING-24H-NOT-CALENDAR-DAY, DISCLOSED (explicit follow-up correction: "not by time just 24
-// timer when they find all the tokens they can" — a UTC-calendar-day boundary was the wrong
-// anchor, since a token admitted at 11:58pm UTC would only survive 2 minutes before an arbitrary
-// clock rollover, while one admitted at 12:01am UTC gets nearly a full day. The real cycle must be
-// a genuine rolling 24 hours measured from when THIS pool actually started accumulating — the
-// first token found for a fresh cycle — not from a fixed wall-clock boundary unrelated to when
-// discovery actually happened). The pool now stores its own cycleStartedAt; every read checks
-// whether 24h have elapsed since THAT timestamp (not "did the calendar date change") and starts a
-// brand new empty cycle if so — a single fixed Redis key, not one keyed by date, since the cycle
-// boundary is now data-driven, not clock-driven.
-//
-// Backed by the same shared Redis client as the discovery backoff/rate-limit fixes (cross-instance,
-// same codebase pattern) so every user sees the same pool. Fail-open: any Redis problem just means
-// pooling doesn't apply this cycle, never blocks the normal fresh-computation path.
-//
-// Honesty boundary, unchanged from the sticky-feed this replaces: a pool member is refreshed with
-// real fresh evidence whenever this cycle's discovery actually re-finds it (its numbers stay
-// accurate, not frozen at admission time), but when a cycle DOESN'T rediscover it, the last real
-// values are kept and it's explicitly labeled 'Shown from earlier today — not re-verified this
-// refresh' — never silently presented as freshly re-checked just because it's still on screen.
-const DAILY_POOL_MAX = 10
-const DAILY_POOL_CYCLE_MS = 24 * 60 * 60 * 1000
-const DAILY_POOL_REDIS_PREFIX = 'radar:daily-pool:'
+// LIVE-FEED, DISCLOSED (explicitly requested — replacing the daily pool below: "we should be
+// getting tokens a lot instantly, you really want users to get 1 and wait hours for a couple
+// more"). The earlier design (capped at 10/day, accumulating slowly, resetting once every 24h)
+// was itself an explicit, deliberate request at the time, but real usage showed it trickling in
+// far too slowly for a live discovery feed — a new user could land on an early cycle and see a
+// single token for hours. The feed now simply shows every candidate that clears every gate THIS
+// cycle, live, uncapped, no persistence — the Redis-backed daily-pool machinery this comment used
+// to describe has been removed.
 // HOLDER-CONCENTRATION-COST-GUARDRAIL, DISCLOSED (explicitly directed: "Only run holder concentration
 // after market gates... candidate selected for display/receipt enrichment. Do not call holder
 // concentration for all raw candidates... Add cap"). Concentration is only ever resolved for
-// candidates about to be NEWLY admitted into today's daily pool — i.e. already cleared valuation,
-// liquidity, and the real holder-count gate, and about to actually get one of the limited daily
-// slots — never the full ranked candidate list. Bounded to this cap regardless of how many open
-// slots exist (openSlots is already <= DAILY_POOL_MAX=10; this caps it further).
+// candidates about to actually be displayed this cycle — i.e. already cleared valuation,
+// liquidity, and the real holder-count gate — never the full ranked candidate list.
 const BASE_RADAR_HOLDER_CONCENTRATION_CAP = 8
 const BASE_RADAR_HOLDER_CONCENTRATION_CONCURRENCY = 4
-interface DailyPoolEntry { token: RadarToken; addedAt: number; verifiedAt: number }
-// CYCLE-STARTS-ON-FIRST-TOKEN, DISCLOSED (found in a full Base Radar audit): cycleStartedAt was
-// stamped by the first REQUEST after expiry, not the first token actually admitted — directly
-// contradicting the requested behavior ("24 timer when they find all the tokens they can"). A cycle
-// that rolled over during a GeckoTerminal rate-limit blackout would burn hours of its 24h window
-// while the pool sat empty, so the day's pool got a materially shorter real collection window purely
-// because of when an unrelated empty request happened to land. cycleStartedAt is null until the
-// first real admission; the 24h clock only begins counting from that moment.
-interface DailyPoolState { cycleStartedAt: number | null; entries: DailyPoolEntry[] }
-async function getDailyPool(key: string): Promise<DailyPoolState> {
-  const nowTs = Date.now()
-  if (redisConfigured()) {
-    try {
-      const val = await redis.get<DailyPoolState>(`${DAILY_POOL_REDIS_PREFIX}${key}`)
-      // A not-yet-started cycle (cycleStartedAt null — nothing has ever been admitted) never
-      // expires; only a genuinely started one ages out after its own real 24h.
-      if (val && Array.isArray(val.entries)) {
-        if (val.cycleStartedAt == null) return { cycleStartedAt: null, entries: val.entries }
-        if (typeof val.cycleStartedAt === 'number' && nowTs - val.cycleStartedAt < DAILY_POOL_CYCLE_MS) return val
-      }
-    } catch { /* fall through to a fresh cycle — never block on a Redis problem */ }
-  }
-  // Missing, unreadable, or the current cycle's 24h has genuinely elapsed — a brand new, not-yet-
-  // started cycle; its clock begins only when a real token is first admitted (see the merge below).
-  return { cycleStartedAt: null, entries: [] }
-}
-async function setDailyPool(key: string, state: DailyPoolState): Promise<void> {
-  if (!redisConfigured()) return
-  try {
-    // A not-yet-started cycle gets the full window as its TTL — its clock hasn't begun, so it must
-    // not be evicted early just for having been created a while ago with nothing in it yet.
-    const remainingMs = state.cycleStartedAt == null
-      ? DAILY_POOL_CYCLE_MS
-      : Math.max(0, DAILY_POOL_CYCLE_MS - (Date.now() - state.cycleStartedAt))
-    // +1h buffer past the cycle's own real end so a request arriving right at the boundary can
-    // still read the still-technically-valid final moments of the old cycle before it expires.
-    await redis.set(`${DAILY_POOL_REDIS_PREFIX}${key}`, { ...state, entries: state.entries.slice(0, DAILY_POOL_MAX) }, { ex: Math.ceil(remainingMs / 1000) + 3600 })
-  } catch { /* best-effort */ }
-}
 // SHARED-HOLDER-COUNT-FETCH, DISCLOSED (reported: the Base Radar drawer's Holders section unreliable
 // per-token — traced to it relying on Token Scanner's much heavier internal resolver, off-limits to
 // modify. Extracted this route's own already-proven-reliable holder-COUNT fetch into
@@ -665,13 +599,6 @@ export async function GET(req: NextRequest) {
   // or a future one) can never accidentally serve a payload computed under the OLD thresholds; it's
   // simply a different cache key, so a cold miss forces a real re-run of the current pipeline.
   const cacheKeyBase = `chain:${requestedChain}:plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:page:${radarPage}:gate:${MAIN_FEED_MIN_VALUATION_USD}:${MAIN_FEED_MAX_VALUATION_USD}:${MAIN_FEED_MIN_HOLDERS}`
-  // DAILY-POOL-KEY-EXCLUDES-PAGE, DISCLOSED: cacheKeyBase deliberately includes `page:${radarPage}`
-  // (each Load More page fetches genuinely different raw GeckoTerminal pages, so it needs its own
-  // burst-dedup cache entry) — but the daily pool must be ONE shared pool per plan/threshold
-  // combination across every page number and every user, not fragmented per page. Using cacheKeyBase
-  // directly for the daily pool would silently split today's pool into up to 5 disconnected pools
-  // (one per Load More page), defeating the whole point of a single shared day-scoped reservoir.
-  const dailyPoolCacheKey = `chain:${requestedChain}:plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:gate:${MAIN_FEED_MIN_VALUATION_USD}:${MAIN_FEED_MAX_VALUATION_USD}:${MAIN_FEED_MIN_HOLDERS}`
   const fullCacheKey = `${cacheKeyBase}:mode:full`
   const shallowCacheKey = `${cacheKeyBase}:mode:shallow`
   const preferredCacheKey = requestedMode === 'full' ? fullCacheKey : shallowCacheKey
@@ -1763,22 +1690,16 @@ export async function GET(req: NextRequest) {
       const { pairAddress: _pairAddress, ...rest } = t
       return { ...rest, clarkVerdict: verdicts.get(t.contract.toLowerCase()) ?? null }
     }
-    let tokens: RadarToken[] = [...scored]
+    const tokens: RadarToken[] = [...scored]
       .sort((a, b) => a.ageMinutes - b.ageMinutes)
       .map(toRadarToken)
 
-    // DAILY-POOL MERGE, DISCLOSED: see the header comment near getDailyPool's declaration for the
-    // full rolling-24h rationale. Every fresh candidate this cycle either refreshes its existing spot
-    // in the pool (real updated evidence/values) or, if the pool has an open slot (under
-    // DAILY_POOL_MAX), gets newly admitted. Once a token is in the pool it stays displayed for the
-    // rest of that pool's 24h cycle regardless of whether later cycles rediscover it — a full pool
-    // means no MORE admissions until the cycle rolls over, but nothing already admitted is ever
-    // evicted early. getDailyPool itself decides whether to hand back the current cycle or start a
-    // brand new one (24h genuinely elapsed since cycleStartedAt) — this block just uses whichever it
-    // returns.
-    let dailyPoolCarriedOverCount = 0
-    let dailyPoolSize = 0
-    let dailyPoolCycleStartedAt: number | null = null
+    // LIVE-FEED, DISCLOSED (explicitly requested: replace the 24h daily pool — "we should be getting
+    // tokens a lot instantly, you really want users to get 1 and wait hours for a couple more" —
+    // capped at 10/day was a deliberate earlier design, but real usage showed it trickling in far too
+    // slowly). Every refresh now shows exactly what currently qualifies THIS cycle — no persisted
+    // pool, no daily cap, no carry-over of stale entries from earlier in the day. `tokens` above
+    // already holds every candidate that cleared every gate this cycle; nothing further to merge.
     // HOLDER-CONCENTRATION-AUDIT, DISCLOSED: aggregate stats for the capped concentration resolution
     // below — every count here is real/measured (attempted/succeeded/failed/skipped/cacheHits), never
     // estimated. providerOrder documents the real fallback chain actually used (see
@@ -1808,37 +1729,19 @@ export async function GET(req: NextRequest) {
       }>,
     }
     {
-      const nowTs = Date.now()
-      const freshByContract = new Map(tokens.map(t => [t.contract.toLowerCase(), t]))
-      const poolState = await getDailyPool(dailyPoolCacheKey)
-
-      // Refresh existing pool members with real fresh values wherever this cycle rediscovered them;
-      // otherwise keep their last known-good token/verifiedAt exactly as stored.
-      const refreshedPool: DailyPoolEntry[] = poolState.entries.map(e => {
-        const fresh = freshByContract.get(e.token.contract.toLowerCase())
-        return fresh ? { token: fresh, addedAt: e.addedAt, verifiedAt: nowTs } : e
-      })
-      const poolContracts = new Set(refreshedPool.map(e => e.token.contract.toLowerCase()))
-
-      // Admit brand-new candidates into any open slots, in this cycle's ranked order — once
-      // DAILY_POOL_MAX is reached, later candidates simply don't get a slot until the next cycle.
-      const openSlots = Math.max(0, DAILY_POOL_MAX - refreshedPool.length)
-      const newlyAdmitted: DailyPoolEntry[] = tokens
-        .filter(t => !poolContracts.has(t.contract.toLowerCase()))
-        .slice(0, openSlots)
-        .map(t => ({ token: t, addedAt: nowTs, verifiedAt: nowTs }))
-
-      // HOLDER-CONCENTRATION-ON-ADMISSION, DISCLOSED (explicitly directed: "Restore real Top 1/10/20
-      // concentration in Base Radar" — reusing the already-proven GoldRush/Covalent path, not a new
-      // provider). Resolved only for tokens that just cleared every gate (valuation, liquidity, real
-      // holder count) and are about to actually occupy one of today's limited daily-pool slots — never
-      // for the full ranked candidate list — bounded to BASE_RADAR_HOLDER_CONCENTRATION_CAP regardless
-      // of how many are newly admitted this cycle. A candidate's holder COUNT was already resolved a
-      // few steps up (holderCountByContract, from the existing count-only gate check) — passed through
-      // as knownHolderCount so this only spends a NEW provider call on the concentration pull itself,
-      // never a redundant count-only call. A failure here never removes the candidate; it just leaves
-      // holderEvidence absent on that token, same as any other feed cycle that hasn't resolved it yet.
-      const concentrationTargets = newlyAdmitted.slice(0, BASE_RADAR_HOLDER_CONCENTRATION_CAP)
+      // HOLDER-CONCENTRATION-ON-DISPLAY, DISCLOSED (carried over from the daily-pool version:
+      // "Restore real Top 1/10/20 concentration in Base Radar" — reusing the already-proven
+      // GoldRush/Covalent path, not a new provider). Resolved for tokens that just cleared every
+      // gate (valuation, liquidity, real holder count) and are about to actually be displayed this
+      // cycle — bounded to BASE_RADAR_HOLDER_CONCENTRATION_CAP regardless of how many qualify, same
+      // cost guardrail as before, just applied to the live list instead of only "newly admitted"
+      // pool slots. A candidate's holder COUNT was already resolved a few steps up
+      // (holderCountByContract, from the existing count-only gate check) — passed through as
+      // knownHolderCount so this only spends a NEW provider call on the concentration pull itself,
+      // never a redundant count-only call. A failure here never removes the candidate; it just
+      // leaves holderEvidence absent on that token, same as any other feed cycle that hasn't
+      // resolved it yet.
+      const concentrationTargets = tokens.slice(0, BASE_RADAR_HOLDER_CONCENTRATION_CAP)
       if (concentrationTargets.length > 0) {
         let nextIndex = 0
         const worker = async () => {
@@ -1848,14 +1751,14 @@ export async function GET(req: NextRequest) {
             const entry = concentrationTargets[i]
             baseRadarHolderConcentrationAudit.attemptedCount++
             try {
-              const known = holderCountByContract.get(entry.token.contract.toLowerCase())
-              const knownCapped = holderCountCappedByContract.get(entry.token.contract.toLowerCase()) === true
+              const known = holderCountByContract.get(entry.contract.toLowerCase())
+              const knownCapped = holderCountCappedByContract.get(entry.contract.toLowerCase()) === true
               const resolved = await resolveBaseRadarHolderConcentration({
                 chain: requestedChain,
-                tokenAddress: entry.token.contract,
+                tokenAddress: entry.contract,
                 knownHolderCount: typeof known === 'number' ? { count: known, isMinimum: knownCapped } : null,
               })
-              entry.token = { ...entry.token, holderEvidence: resolved }
+              entry.holderEvidence = resolved
               if (resolved.concentrationFromCache) baseRadarHolderConcentrationAudit.cacheHits++
               if (resolved.concentrationStatus === 'resolved') {
                 baseRadarHolderConcentrationAudit.succeededCount++
@@ -1865,8 +1768,8 @@ export async function GET(req: NextRequest) {
               }
               if (baseRadarHolderConcentrationAudit.samples.length < 10) {
                 baseRadarHolderConcentrationAudit.samples.push({
-                  symbol: entry.token.symbol ?? null,
-                  tokenAddress: entry.token.contract,
+                  symbol: entry.symbol ?? null,
+                  tokenAddress: entry.contract,
                   provider: resolved.holderProvider,
                   holderCountStatus: resolved.holderCountStatus,
                   holderCountExact: resolved.holderCountExact ?? null,
@@ -1879,8 +1782,8 @@ export async function GET(req: NextRequest) {
                 })
               }
             } catch {
-              // Failure must not remove the candidate — it's already admitted; just no concentration
-              // evidence attached this cycle.
+              // Failure must not remove the candidate — it's already qualified; just no
+              // concentration evidence attached this cycle.
               baseRadarHolderConcentrationAudit.failedCount++
               baseRadarHolderConcentrationAudit.providerFailures.unexpected_error = (baseRadarHolderConcentrationAudit.providerFailures.unexpected_error ?? 0) + 1
             }
@@ -1888,31 +1791,7 @@ export async function GET(req: NextRequest) {
         }
         await Promise.all(Array.from({ length: Math.min(BASE_RADAR_HOLDER_CONCENTRATION_CONCURRENCY, concentrationTargets.length) }, () => worker()))
       }
-      baseRadarHolderConcentrationAudit.skippedCount = newlyAdmitted.length - concentrationTargets.length
-
-      const finalPool = [...refreshedPool, ...newlyAdmitted]
-      dailyPoolSize = finalPool.length
-      // CYCLE-STARTS-ON-FIRST-TOKEN, DISCLOSED: the 24h clock begins at the first REAL admission —
-      // never on an empty request (e.g. one that landed mid rate-limit blackout), which would
-      // otherwise silently spend hours of the day's window with an empty pool.
-      const nextCycleStartedAt = poolState.cycleStartedAt ?? (finalPool.length > 0 ? nowTs : null)
-      dailyPoolCycleStartedAt = nextCycleStartedAt
-      await setDailyPool(dailyPoolCacheKey, { cycleStartedAt: nextCycleStartedAt, entries: finalPool })
-
-      // Display today's WHOLE pool — not just backfilling gaps — since the pool now defines "today's
-      // feed": fresh values where rediscovered this cycle, last known-good values (with an explicit
-      // not-re-verified evidence gap) for pool members this cycle's discovery didn't happen to find.
-      dailyPoolCarriedOverCount = finalPool.filter(e => !freshByContract.has(e.token.contract.toLowerCase())).length
-      tokens = finalPool
-        .map(e => {
-          if (freshByContract.has(e.token.contract.toLowerCase())) return e.token
-          return {
-            ...e.token,
-            ageMinutes: e.token.ageMinutes + Math.floor((nowTs - e.verifiedAt) / 60_000),
-            evidenceGaps: Array.from(new Set([...(e.token.evidenceGaps ?? []), 'Shown from earlier today — not re-verified this refresh'])),
-          }
-        })
-        .sort((a, b) => a.ageMinutes - b.ageMinutes)
+      baseRadarHolderConcentrationAudit.skippedCount = tokens.length - concentrationTargets.length
     }
 
     // ESTABLISHED-DISPLAYED-COUNT, DISCLOSED: how many of the FINAL displayed tokens (today's full
@@ -2169,15 +2048,10 @@ export async function GET(req: NextRequest) {
     // messaging (loadMoreExhausted, based on actually-deduped addedCount) for the real end-of-data
     // case — that's the correct place for "no new tokens this click," not this backend flag, which
     // instead now answers only "is there a next page number left to try."
-    // POOL-FULL-ENDS-PAGINATION, DISCLOSED (found in a full Base Radar audit): once the daily pool
-    // holds DAILY_POOL_MAX, no further page can admit anything — the response is the whole pool
-    // regardless of which discovery page was fetched, so every additional Load More / Load All page
-    // returns an identical set while still burning a full 8-request GeckoTerminal discovery budget.
-    // "Load All (~2 min)" was spending four more rate-limit budgets to add exactly zero tokens, and
-    // the buttons stayed enabled forever because the page cap alone never accounted for the pool.
-    // Pagination now ends honestly the moment the pool is full — Load More exists to help FILL the
-    // day's pool, and there is nothing left to fill once it's at capacity.
-    const hasMorePages = radarPage < 5 && dailyPoolSize < DAILY_POOL_MAX
+    // LIVE-FEED-PAGINATION, DISCLOSED: the daily-pool-capacity check this comment used to describe
+    // no longer applies now that there is no persisted daily pool (see the LIVE-FEED comment
+    // above) — whether more pages exist is purely a function of the page cap.
+    const hasMorePages = radarPage < 5
     // ALWAYS-VISIBLE AUDIT, DISCLOSED (reported: the audit logs are effectively unreachable in
     // practice — they print far down a long, multi-line-per-request log stream, and Vercel's log
     // search/pagination has repeatedly failed to surface them even when searching the exact string).
@@ -2186,7 +2060,7 @@ export async function GET(req: NextRequest) {
     // so a real DevTools Network capture — the one method that has reliably worked all session —
     // never showed them either. Attaching both directly to the normal, always-returned payload
     // (not gated behind debug=1) so the exact same capture method already in use surfaces them.
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, dailyPoolCarriedOverCount, dailyPoolSize, dailyPoolMax: DAILY_POOL_MAX, dailyPoolCycleStartedAt: dailyPoolCycleStartedAt == null ? null : new Date(dailyPoolCycleStartedAt).toISOString(), dailyPoolCycleResetsAt: dailyPoolCycleStartedAt == null ? null : new Date(dailyPoolCycleStartedAt + DAILY_POOL_CYCLE_MS).toISOString(), discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit, baseRadarHolderConcentrationAudit }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit, baseRadarHolderConcentrationAudit }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,

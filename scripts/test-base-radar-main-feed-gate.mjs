@@ -373,24 +373,18 @@ assert.equal(shouldContinueHolderChecking({ passingCount: 1, attemptedCount: 12,
   assert.ok(routeSource.includes('sourceBackoffSkippedCount') && routeSource.includes('sourceBackoffTtlMs'), 'backoff-skipped pages and the backoff TTL must both be surfaced in the audit')
   assert.ok(/DISCOVERY_FAILURE_BACKOFF_MS = 20_000/.test(routeSource), 'the backoff window must be short enough for a realistic refresh gap to actually retry (shortened from 45s to 20s per live report of prolonged degradation)')
 
-  // ─── Daily pool: a legitimately-verified token must not vanish just because one refresh cycle
-  // didn't rediscover it, capped at a real maximum, reset by a genuine ROLLING 24h timer measured
-  // from when the pool itself actually started accumulating (not a fixed UTC-calendar-day boundary
-  // — explicitly corrected: "not by time just 24 timer when they find all the tokens they can"),
-  // and a carried-over token must never be indistinguishable from a freshly re-checked one ───────
-  assert.ok(routeSource.includes('getDailyPool') && routeSource.includes('setDailyPool'), 'daily-pool read/write helpers must exist')
-  assert.ok(/DAILY_POOL_MAX = 10/.test(routeSource), 'the daily pool must have a real, explicit cap')
-  assert.ok(/DAILY_POOL_CYCLE_MS = 24 \* 60 \* 60 \* 1000/.test(routeSource), 'the pool cycle must be a real, explicit 24h duration')
-  assert.ok(/cycleStartedAt/.test(routeSource), 'the pool must track its own real cycle-start timestamp, not rely on a fixed calendar boundary')
-  assert.ok(/nowTs - val\.cycleStartedAt < DAILY_POOL_CYCLE_MS/.test(routeSource), 'a cycle must be considered current only while genuinely inside its own rolling 24h window from when IT started, never a fixed clock boundary unrelated to that')
-  assert.ok(!/todayKeyUTC|toISOString\(\)\.slice\(0, 10\)/.test(routeSource), 'the pool must not fall back to a UTC-calendar-day key — the reset must be the rolling 24h timer, not the wall clock')
-  assert.ok(routeSource.includes('Shown from earlier today — not re-verified this refresh'), 'a carried-over token must be explicitly labeled as such, never silently presented as freshly re-verified')
-  assert.ok(/openSlots = Math\.max\(0, DAILY_POOL_MAX - refreshedPool\.length\)/.test(routeSource), 'new admissions must only fill OPEN pool slots — once the cap is reached, no more are added until the cycle rolls over')
-  assert.ok(!/DAILY_POOL_MAX \+\+|refreshedPool\.length > DAILY_POOL_MAX/.test(routeSource), 'nothing should try to exceed the pool cap')
-  // Do NOT rely on the daily-pool key including the current radarPage — the pool must be ONE shared
-  // reservoir per plan/threshold combo across every Load More page, not fragmented per page.
-  assert.ok(routeSource.includes('dailyPoolCacheKey') && !/dailyPoolCacheKey = `plan:.*page:\$\{radarPage\}/.test(routeSource), 'the daily-pool cache key must exclude radarPage — one shared pool across all pages, not one per page')
-  assert.ok(redisClientSource.includes('async get') && redisClientSource.includes('async set'), 'the daily pool must be backed by the shared Redis client so it works cross-instance, not just per-process memory')
+  // ─── Live feed (replaced the daily pool), DISCLOSED: explicitly requested — "we should be getting
+  // tokens a lot instantly, you really want users to get 1 and wait hours for a couple more". The
+  // daily-pool design this block used to assert (capped at 10/day, accumulating slowly, resetting
+  // every rolling 24h) was itself an earlier explicit request, but real usage showed it far too
+  // slow for a live discovery feed. The Redis-backed daily-pool machinery (getDailyPool/
+  // setDailyPool/DAILY_POOL_MAX/DAILY_POOL_CYCLE_MS/dailyPoolCacheKey) must no longer exist —
+  // every refresh shows exactly what qualifies THIS cycle, live and uncapped.
+  assert.ok(!/getDailyPool|setDailyPool/.test(routeSource), 'the daily-pool read/write helpers must be gone — replaced by a live, uncapped feed')
+  assert.ok(!/DAILY_POOL_MAX|DAILY_POOL_CYCLE_MS|dailyPoolCacheKey/.test(routeSource), 'no daily-pool cap, cycle duration, or cache key should remain — the feed is live per-cycle, not pooled/capped')
+  assert.ok(!/cycleStartedAt/.test(routeSource), 'no rolling-24h cycle-start tracking should remain now that the feed has no daily cycle')
+  assert.ok(!/Shown from earlier today — not re-verified this refresh/.test(routeSource), 'no carried-over-token labeling should remain — nothing is carried over between cycles anymore')
+  assert.ok(/const hasMorePages = radarPage < 5$/m.test(routeSource), 'pagination must be based purely on the page cap now, with no pool-capacity condition attached')
 }
 
 console.log('test-base-radar-main-feed-gate.mjs: all assertions passed')
