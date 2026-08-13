@@ -4397,7 +4397,7 @@ export default function TerminalTokenScanner() {
                   { id: 'deployer-intel', label: 'Dev' },
                 ]
                 return (
-                  <div className="result-tabs-wrap" style={{ marginBottom: '22px', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.55)', backdropFilter: 'blur(10px)', paddingTop: '4px', paddingBottom: '0px', borderBottom: '1px solid rgba(148,180,200,.12)' }}>
+                  <div className="result-tabs-wrap" style={{ marginBottom: '22px', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.32)', backdropFilter: 'blur(12px)', paddingTop: '4px', paddingBottom: '0px', borderBottom: '1px solid rgba(148,180,200,.09)' }}>
                     <div className="result-tabs-scroll" style={{
                       display: 'flex', gap: '2px', overflowX: 'auto', whiteSpace: 'nowrap',
                     }}>
@@ -5040,15 +5040,41 @@ export default function TerminalTokenScanner() {
                           ? 'UNVERIFIED'
                           : top10h >= 70 ? 'EXTREME' : top10h >= 50 ? 'HIGH' : top10h >= 20 ? 'MEDIUM' : 'LOW'
                         const whalePressureColor = whalePressure === 'EXTREME' ? '#f87171' : whalePressure === 'HIGH' ? '#fb923c' : whalePressure === 'MEDIUM' ? '#fbbf24' : whalePressure === 'LOW' ? '#34d399' : '#94a3b8'
+                        // HOLDER-MAP-DEDUP, DISCLOSED (Token Scanner Holder Map readability polish
+                        // task, explicitly requested: "avoid showing the same meaning in too many
+                        // separate boxes... group better: summary card (verdict + top1/10/20 +
+                        // holders), visual concentration card (bars), top holders table, evidence
+                        // notes"): previously Whale Pressure + a fully-duplicate Top10/Top20/
+                        // Holder-Count/Supply-Spread grid + the bars card's own three stacked
+                        // warning paragraphs all repeated the same top10/top20 numbers up to three
+                        // times. Consolidated into: (A) one Summary card — a plain-language
+                        // takeaway sentence, the concRisk verdict pill, and the top1/10/20/holders
+                        // stat grid (reusing concRisk/concColor, same thresholds as before); (B) a
+                        // trimmed Visual Concentration card — same top1/5/10/20 bars, now with a
+                        // single highest-priority note instead of three overlapping ones. No values
+                        // changed, no evidence removed — same underlying top1h/top10h/top20h/
+                        // holderCount/concRisk.
+                        const takeaway = concRisk === 'HIGH'
+                          ? `High concentration — top 10 holders control ${top10h != null ? top10h.toFixed(1) : '—'}%.`
+                          : concRisk === 'MEDIUM'
+                            ? `Moderate concentration — top 10 holders control ${top10h != null ? top10h.toFixed(1) : '—'}%.`
+                            : concRisk === 'LOW'
+                              ? `Spread looks reasonable — top 10 holders control ${top10h != null ? top10h.toFixed(1) : '—'}%.`
+                              : 'Holder concentration verdict is an open check for this scan.'
                         return (
-                          <div className="holders-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
-                            {/* Whale Pressure Card */}
-                            <div style={{ gridColumn:'1 / -1', marginBottom:'4px', padding:'14px 16px', borderRadius:'12px', background:'rgba(167,139,250,0.05)', border:`1px solid ${whalePressureColor}28` }}>
+                          <>
+                        <div style={{ padding: '14px 16px', borderRadius: '12px', background: `${concColor}0c`, border: `1px solid ${concColor}30`, marginBottom: '12px' }}>
+                          <p style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 800, color: concColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.4 }}>{takeaway}</p>
+                          <p style={{ margin: 0, fontSize: '10.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)' }}>Whale pressure: {whalePressure.charAt(0) + whalePressure.slice(1).toLowerCase()}</p>
+                        </div>
+                        <div className="holders-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '20px' }}>
+                            {/* Summary card — merged Whale Pressure + the old duplicate grid */}
+                            <div style={{ gridColumn:'1 / -1', padding:'14px 16px', borderRadius:'12px', background:'rgba(167,139,250,0.05)', border:`1px solid ${concColor}28` }}>
                               <div style={{ display:'flex', alignItems:'center', gap:'10px', marginBottom:'12px', flexWrap:'wrap' }}>
-                                <span style={{ fontSize:'9px', fontWeight:700, letterSpacing:'.16em', color:'#a78bfa', fontFamily:'var(--font-plex-mono)' }}>WHALE PRESSURE</span>
-                                <span style={{ padding:'3px 10px', borderRadius:'999px', fontSize:'9px', fontWeight:800, letterSpacing:'.12em', color:whalePressureColor, background:`${whalePressureColor}12`, border:`1px solid ${whalePressureColor}40`, fontFamily:'var(--font-plex-mono)' }}>{whalePressure}</span>
+                                <span style={{ fontSize:'9px', fontWeight:700, letterSpacing:'.16em', color:'#a78bfa', fontFamily:'var(--font-plex-mono)' }}>CONCENTRATION SUMMARY</span>
+                                <span style={{ padding:'3px 10px', borderRadius:'999px', fontSize:'9px', fontWeight:800, letterSpacing:'.12em', color:concColor, background:`${concColor}12`, border:`1px solid ${concColor}40`, fontFamily:'var(--font-plex-mono)' }}>{concRisk ?? 'OPEN CHECK'} CONCENTRATION</span>
                               </div>
-                              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(110px,1fr))', gap:'8px', marginBottom: (top10h != null && top10h > 50) || (top20h != null && top20h > 50) ? '10px' : '0' }}>
+                              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(110px,1fr))', gap:'8px' }}>
                                 {[
                                   ['Top 1', top1h != null ? `${top1h.toFixed(1)}%` : 'N/A'],
                                   ['Top 10', top10h != null ? `${top10h.toFixed(1)}%` : 'N/A'],
@@ -5061,40 +5087,12 @@ export default function TerminalTokenScanner() {
                                   </div>
                                 ))}
                               </div>
-                              {top10h != null && top10h > 50 && (
-                                <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', padding:'7px 10px', borderRadius:'8px', background:'rgba(248,113,113,0.06)', border:'1px solid rgba(248,113,113,0.18)' }}>
-                                  <span style={{ color:'#f87171', fontSize:'11px', flexShrink:0 }}>!</span>
-                                  <span style={{ fontSize:'11px', color:'#fca5a5', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>Top wallets control majority supply.</span>
-                                </div>
-                              )}
-                              {top20h != null && top20h > 50 && !(top10h != null && top10h > 50) && (
-                                <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', padding:'7px 10px', borderRadius:'8px', background:'rgba(251,191,36,0.06)', border:'1px solid rgba(251,191,36,0.18)' }}>
-                                  <span style={{ color:'#fbbf24', fontSize:'11px', flexShrink:0 }}>!</span>
-                                  <span style={{ fontSize:'11px', color:'#fde68a', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>Watch for coordinated holder movement.</span>
-                                </div>
-                              )}
-                            </div>
-                            <div style={{ gridColumn:'1 / -1', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(145px,1fr))', gap:'8px' }}>
-                              {[
-                                ['Holder Risk', concRisk ?? 'Open check'],
-                                ['Top 10 Control', top10h != null ? `${top10h.toFixed(1)}%` : 'Open check'],
-                                ['Top 20 Control', top20h != null ? `${top20h.toFixed(1)}%` : 'Open check'],
-                                ['Holder Count', holderCount != null ? holderCount.toLocaleString() : 'Open check'],
-                                ['Supply Spread', concRead ?? 'Open check'],
-                              ].map(([label,val])=>(
-                                <div key={label} style={{ padding:'10px 11px', borderRadius:'10px', border:'1px solid rgba(167,139,250,0.22)', background:'rgba(15,23,42,0.55)' }}>
-                                  <div style={{ fontSize:'9px', letterSpacing:'.12em', color:'#64748b', marginBottom:'4px', fontFamily:'var(--font-plex-mono)' }}>{label}</div>
-                                  <div style={{ fontSize:'11px', color:'#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{val}</div>
-                                </div>
-                              ))}
                             </div>
                             <div className="glass-card" style={{ padding: '18px' }}>
                               <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
-                                <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', margin: 0, fontFamily: 'var(--font-plex-mono)' }}>HOLDER CONCENTRATION</p>
+                                <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', margin: 0, fontFamily: 'var(--font-plex-mono)' }}>VISUAL CONCENTRATION</p>
                                 <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: `1px solid ${holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.5)' : 'rgba(251,191,36,.4)'}`, color: holderState.kind === 'rowsWithPercent' ? '#2dd4bf' : '#fbbf24', background: holderState.kind === 'rowsWithPercent' ? 'rgba(45,212,191,.1)' : 'rgba(251,191,36,.1)' }}>{holderState.kind === 'rowsWithPercent' ? 'VERIFIED' : 'PARTIAL'}</span>
-                                {concRisk != null && <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: `1px solid ${concColor}44`, color: concColor, background: `${concColor}10` }}>{concRisk} CONC</span>}
                               </div>
-                              {result.holderDistribution?.holderCount != null && <div style={{ margin: '0 0 12px', fontSize: '13px', color: '#67e8f9', border: '1px solid rgba(45,212,191,.3)', background: 'rgba(6,78,59,.16)', padding: '8px 10px', borderRadius: '10px', display: 'inline-flex', gap: '8px' }}><span style={{ color: '#99f6e4' }}>Holder count</span><strong style={{ fontFamily: 'var(--font-plex-mono)', color: '#e6fffa' }}>{result.holderDistribution.holderCount.toLocaleString()}</strong></div>}
                               {holderState.kind === 'rowsWithoutPercent' && <p style={{ margin: '0 0 10px', fontSize: '11px', color: '#fbbf24' }}>{holderState.safeReason} Addresses and amounts shown below.</p>}
                               {holderState.kind === 'rowsWithPercent' && <div style={{ display: 'grid', gap: '10px' }}>
                                 {[['Top 1',result.holderDistribution?.top1],['Top 5',result.holderDistribution?.top5],['Top 10',result.holderDistribution?.top10],['Top 20',result.holderDistribution?.top20]].map(([l,v])=>(
@@ -5105,17 +5103,16 @@ export default function TerminalTokenScanner() {
                                   </div>
                                 ))}
                               </div>}
-                              {(top10h != null && top10h > 50) && (
-                                <p style={{ margin: '10px 0 0', fontSize: '12px', color: '#fca5a5', lineHeight: 1.5, border: '1px solid rgba(248,113,113,0.28)', background: 'rgba(248,113,113,0.08)', borderRadius: '10px', padding: '8px 10px' }}>
+                              {/* One consolidated note instead of the previous 3 stacked warnings. */}
+                              {(top10h != null && top10h > 50) ? (
+                                <p style={{ margin: '10px 0 0', fontSize: '11.5px', color: '#fca5a5', lineHeight: 1.5, border: '1px solid rgba(248,113,113,0.28)', background: 'rgba(248,113,113,0.08)', borderRadius: '10px', padding: '8px 10px' }}>
                                   High concentration — top wallets control majority supply.
                                 </p>
-                              )}
-                              {(top1h != null && top1h > 20) && (
-                                <p style={{ margin: '8px 0 0', fontSize: '12px', color: '#fecaca', lineHeight: 1.5, border: '1px solid rgba(248,113,113,0.22)', background: 'rgba(248,113,113,0.06)', borderRadius: '10px', padding: '8px 10px' }}>
+                              ) : (top1h != null && top1h > 20) ? (
+                                <p style={{ margin: '10px 0 0', fontSize: '11.5px', color: '#fecaca', lineHeight: 1.5, border: '1px solid rgba(248,113,113,0.22)', background: 'rgba(248,113,113,0.06)', borderRadius: '10px', padding: '8px 10px' }}>
                                   Largest holder has meaningful supply control.
                                 </p>
-                              )}
-                              {holderState.kind === 'rowsWithPercent' && top10h != null && <p style={{ margin: '10px 0 0', fontSize: '11px', color: concColor, lineHeight: 1.5 }}>{`Top 10 controls ${top10h.toFixed(1)}%. Monitor concentration before trusting supply distribution.`}</p>}
+                              ) : null}
                               <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#8aa3b8' }}>{holderState.kind === 'rowsWithPercent' ? 'Top holder concentration from live holder data' : 'Holder distribution based on available live holder rows'}</p>
                             </div>
                             <div className="glass-card" style={{ padding: '18px', minWidth: 0, overflow: 'hidden' }}>
@@ -5162,6 +5159,7 @@ export default function TerminalTokenScanner() {
                               </div>
                             </div>
                           </div>
+                          </>
                         )
                       }
                       const fb = buildHolderFallbackRead(fallback)
@@ -6183,7 +6181,15 @@ export default function TerminalTokenScanner() {
                                         <div style={{ fontSize:'9px',color:'#5b7590',fontFamily:'var(--font-plex-mono)' }}>Reason</div>
                                         <p style={{ margin:0,fontSize:'10.5px',color:'#94a3b8',lineHeight:1.45,fontFamily:'var(--font-plex-mono)' }} title={reasonFull !== reason ? reasonFull : undefined}>{reason}</p>
                                         <div style={{ fontSize:'9px',color:'#5b7590',fontFamily:'var(--font-plex-mono)',marginTop:'4px' }}>Exit risk</div>
-                                        <p style={{ margin:0,fontSize:'10.5px',color:(lpState==='team_controlled'||lpState==='wallet_controlled') ? '#fda4af' : '#94a3b8',lineHeight:1.45,fontFamily:'var(--font-plex-mono)' }}>{exitRisk}</p>
+                                        {/* COPY-COMPRESSION, DISCLOSED (Token Scanner Holder Map + Risk
+                                            Engine polish task, explicitly requested: "compress visible
+                                            LP Control rows... use short text by default, move longer
+                                            explanation into tooltip/title"): exitRisk text is dynamic
+                                            (varies by provider/state), so instead of hardcoding a
+                                            compressed string per case, it's clamped to 2 lines
+                                            visually with the full text always available via title —
+                                            same approach as the Reason row above. */}
+                                        <p style={{ margin:0,fontSize:'10.5px',color:(lpState==='team_controlled'||lpState==='wallet_controlled') ? '#fda4af' : '#94a3b8',lineHeight:1.45,fontFamily:'var(--font-plex-mono)',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical' as const,overflow:'hidden' }} title={exitRisk}>{exitRisk}</p>
                                       </div>
                                     </div>
                                   )
