@@ -5218,7 +5218,7 @@ export default function TerminalTokenScanner() {
                     void lpStatus
                     return (
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: '12px', marginBottom: '16px', alignItems: 'stretch' }}>
-                        <div style={{ padding: '16px 18px', background: lockInfo.bg, border: `1px solid ${lockInfo.border}`, borderRadius: '14px' }}>
+                        <div style={{ padding: '16px 18px', background: 'rgba(10,18,32,0.62)', border: `1px solid ${lockInfo.border}`, borderRadius: '14px' }}>
                           <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>LP Status</div>
                           <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginBottom: '8px' }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: lockInfo.color, flexShrink: 0, boxShadow: `0 0 8px ${lockInfo.color}`, marginTop: '6px' }} />
@@ -5226,14 +5226,14 @@ export default function TerminalTokenScanner() {
                           </div>
                           <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6, overflowWrap: 'anywhere' }}>{lockInfo.description}</p>
                         </div>
-                        <div style={{ padding: '16px 18px', background: `${exitInfo.color}08`, border: `1px solid ${exitInfo.color}28`, borderRadius: '14px' }}>
+                        <div style={{ padding: '16px 18px', background: 'rgba(10,18,32,0.62)', border: `1px solid ${exitInfo.color}28`, borderRadius: '14px' }}>
                           <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Exit Risk</div>
                           <div style={{ marginBottom: '8px' }}>
                             <span style={{ padding: '4px 13px', borderRadius: '999px', background: `${exitInfo.color}14`, border: `1px solid ${exitInfo.color}45`, color: exitInfo.color, fontSize: '14px', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.05em' }}>{exitInfo.label}</span>
                           </div>
                           <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{exitInfo.description}</p>
                         </div>
-                        <div style={{ padding: '16px 18px', background: `${modelColor}08`, border: `1px solid ${modelColor}28`, borderRadius: '14px' }}>
+                        <div style={{ padding: '16px 18px', background: 'rgba(10,18,32,0.62)', border: `1px solid ${modelColor}28`, borderRadius: '14px' }}>
                           <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Primary Liquidity Model</div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: modelColor, flexShrink: 0, boxShadow: `0 0 8px ${modelColor}` }} />
