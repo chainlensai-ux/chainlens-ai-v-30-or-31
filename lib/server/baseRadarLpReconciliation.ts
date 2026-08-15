@@ -351,11 +351,37 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
   // 6. Build a clear LP proof display for V2/ERC-20 LP and concentrated pools.
   // Avoids leaving a generic "Open Check" when a check actually ran and found
   // no lock/burn proof for an erc20_lp_token pool with a known pool address.
+  //
+  // ERC20-EXIT-RISK-CONTRADICTION FIX, DISCLOSED (reported: a token's "Pool model" tile read
+  // "Standard ERC-20 LP token" (this module's own reconciled displayLpModel) right next to LP risk
+  // copy reading "Protocol-managed pool — standard LP lock/burn proof does not apply" — the exact
+  // "not applicable" language this module only ever produces for concentrated_liquidity pools).
+  // Root cause: this branch previously only built lpProofDisplay (and therefore its exitRisk text)
+  // when displayLpModel === 'erc20_lp_token' AND hasPrimaryPoolIdentity AND !lockBurnConfirmed. Any
+  // erc20_lp_token pool that didn't hit all three conditions (e.g. no primary pool address resolved
+  // yet, even though other sources already reconciled the model to erc20_lp_token) left
+  // lpProofDisplay null, and the drawer's own fallback chain (lpProofDisplay?.exitRisk ??
+  // lpRiskLabel(...)) then fell through to scan.lpExitRiskReason — a RAW, pre-reconciliation string
+  // computed upstream under whatever poolModel value the token-scanner pipeline used at the time,
+  // which can legitimately disagree with the model this module just reconciled to. Now every
+  // erc20_lp_token case builds a display whose exitRisk text is consistent with "standard lock/burn
+  // proof applies" — never leaking a concentrated-pool-shaped "does not apply" sentence for a model
+  // this module itself calls Standard ERC-20 LP token.
   let lpProofDisplay: LpProofDisplay | null = null
   const lockBurnConfirmed = scan.lpLockStatus === 'locked' || scan.lpLockStatus === 'burned'
   const hasPrimaryPoolIdentity = Boolean(primaryAddr || primaryId)
 
-  if (displayLpModel === 'erc20_lp_token' && hasPrimaryPoolIdentity && !lockBurnConfirmed) {
+  if (displayLpModel === 'erc20_lp_token' && lockBurnConfirmed) {
+    lpProofDisplay = {
+      proofLabel: 'Confirmed lock/burn proof',
+      lockStatus: scan.lpLockStatus === 'burned' ? 'Burned' : 'Locked',
+      lockAmount: asString(scan.lpLockAmount) ?? (typeof scan.lpLockAmount === 'number' ? String(scan.lpLockAmount) : null),
+      unlockTime: asString(scan.lpUnlockTime) ?? 'No unlock schedule found',
+      burnProof: scan.lpLockStatus === 'burned' ? 'Confirmed burned' : 'Not required — LP is locked',
+      controller: scan.lpLockStatus === 'burned' ? 'Burn controlled' : 'Lock controlled',
+      exitRisk: 'Lower exit-liquidity risk from current LP lock/burn proof.',
+    }
+  } else if (displayLpModel === 'erc20_lp_token' && hasPrimaryPoolIdentity) {
     const lpControllerSharePercent = extractLpControllerSharePercent(evidence)
     lpProofDisplay = {
       proofLabel: 'Checked',
@@ -365,6 +391,16 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
       burnProof: 'Not burned',
       controller: lpControllerSharePercent != null ? `Wallet controlled · ${lpControllerSharePercent}%` : 'Wallet controlled',
       exitRisk: 'High — LP can be removed unless locked or burned',
+    }
+  } else if (displayLpModel === 'erc20_lp_token') {
+    lpProofDisplay = {
+      proofLabel: 'Checked',
+      lockStatus: 'Open Check',
+      lockAmount: null,
+      unlockTime: 'Open Check',
+      burnProof: null,
+      controller: null,
+      exitRisk: 'Open Check — this pool uses a standard ERC-20 LP token, but a primary pool address was not resolved to check lock/burn proof.',
     }
   } else if (displayLpModel === 'concentrated_liquidity') {
     lpProofDisplay = {
