@@ -880,7 +880,20 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const evidenceQualityLabel = dedupedEvidenceGaps.length === 0 ? 'Full Evidence' : dedupedEvidenceGaps.length <= 2 ? 'Mostly Verified' : 'Limited Evidence'
   const evidenceQualityTone: 'mint' | 'amber' | 'risk' = dedupedEvidenceGaps.length === 0 ? 'mint' : dedupedEvidenceGaps.length <= 2 ? 'amber' : 'risk'
 
-  if (!token) return null
+  // WHOLE-PAGE-UNCLICKABLE FIX, DISCLOSED (reported: "still cant scroll down and click buttons and
+  // cant click on it no panel opens up nothing" — persisted even after the sibling fix in
+  // QuickPreviewPanel, app/terminal/base-radar/page.tsx). Root cause here: this component's `token`
+  // prop is now passed unconditionally at the page level (`<ProjectOverviewDrawer token=
+  // {selectedToken} ... />`, no longer wrapped in a `{selectedToken && ...}` guard), and
+  // selectedToken is set on plain HOVER (preloadProjectOverview), not just on click — so `token`
+  // becomes truthy, and this component starts rendering its fixed, full-viewport backdrop <div>
+  // below, the moment a user hovers ANY card, regardless of whether `open` (drawerOpen/
+  // fullReportOpen) is actually true. That backdrop relied purely on pointerEvents: open ? 'auto' :
+  // 'none' to stay inert while closed — same latent class of bug as the QuickPreviewPanel fix, just
+  // in this component instead. Not rendering anything at all unless BOTH a token exists AND it's
+  // actually open removes the backdrop DOM node entirely while closed, the same structural
+  // guarantee applied there.
+  if (!token || !open) return null
 
   return (
     <div aria-hidden={!open}>
