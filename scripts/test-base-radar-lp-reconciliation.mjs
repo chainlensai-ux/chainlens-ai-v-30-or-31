@@ -292,7 +292,17 @@ function reconcileBaseRadarLp(scan) {
   const lockBurnConfirmed = scan.lpLockStatus === 'locked' || scan.lpLockStatus === 'burned'
   const hasPrimaryPoolIdentity = Boolean(primaryAddr || primaryId)
 
-  if (displayLpModel === 'erc20_lp_token' && hasPrimaryPoolIdentity && !lockBurnConfirmed) {
+  if (displayLpModel === 'erc20_lp_token' && lockBurnConfirmed) {
+    lpProofDisplay = {
+      proofLabel: 'Confirmed lock/burn proof',
+      lockStatus: scan.lpLockStatus === 'burned' ? 'Burned' : 'Locked',
+      lockAmount: asString(scan.lpLockAmount) ?? (typeof scan.lpLockAmount === 'number' ? String(scan.lpLockAmount) : null),
+      unlockTime: asString(scan.lpUnlockTime) ?? 'No unlock schedule found',
+      burnProof: scan.lpLockStatus === 'burned' ? 'Confirmed burned' : 'Not required — LP is locked',
+      controller: scan.lpLockStatus === 'burned' ? 'Burn controlled' : 'Lock controlled',
+      exitRisk: 'Lower exit-liquidity risk from current LP lock/burn proof.',
+    }
+  } else if (displayLpModel === 'erc20_lp_token' && hasPrimaryPoolIdentity) {
     const lpControllerSharePercent = extractLpControllerSharePercent(evidence)
     lpProofDisplay = {
       proofLabel: 'Checked',
@@ -303,15 +313,53 @@ function reconcileBaseRadarLp(scan) {
       controller: lpControllerSharePercent != null ? `Wallet controlled · ${lpControllerSharePercent}%` : 'Wallet controlled',
       exitRisk: 'High — LP can be removed unless locked or burned',
     }
-  } else if (displayLpModel === 'concentrated_liquidity') {
+  } else if (displayLpModel === 'erc20_lp_token') {
     lpProofDisplay = {
-      proofLabel: 'Position verification required',
-      lockStatus: 'Protocol-specific',
+      proofLabel: 'Checked',
+      lockStatus: 'Open Check',
       lockAmount: null,
-      unlockTime: 'Position check required',
+      unlockTime: 'Open Check',
       burnProof: null,
       controller: null,
-      exitRisk: null,
+      exitRisk: 'Open Check — this pool uses a standard ERC-20 LP token, but a primary pool address was not resolved to check lock/burn proof.',
+    }
+  } else if (displayLpModel === 'concentrated_liquidity') {
+    const proof = scan.concentratedPositionProof && typeof scan.concentratedPositionProof === 'object'
+      ? scan.concentratedPositionProof
+      : null
+    const ownershipStatus = asString(proof?.ownershipStatus)
+    const hasResolvedOwner = Boolean(ownershipStatus?.startsWith('ownership_verified'))
+    const OWNERSHIP_CONTROLLER_LABEL = {
+      ownership_verified: 'Wallet-controlled position',
+      ownership_verified_protocol: 'Protocol-controlled position',
+      ownership_verified_burned: 'Burn-controlled position',
+      ownership_verified_locked: 'Lock-controlled position',
+      ownership_verified_team: 'Team-wallet-controlled position',
+      ownership_verified_multisig: 'Multisig-controlled position',
+      ownership_verified_contract: 'Contract-controlled position',
+    }
+    const topOwnerSharePercent = typeof proof?.topPositionSharePercent === 'number' && Number.isFinite(proof.topPositionSharePercent)
+      ? proof.topPositionSharePercent
+      : null
+    const controllerRisk = asString(proof?.controllerRisk)
+    const CONTROLLER_RISK_EXIT_TEXT = {
+      high: 'High — a single normal wallet controls the dominant concentrated-liquidity position.',
+      caution: 'Monitor — a wallet holds a meaningful concentrated-liquidity position share.',
+      watch: 'Monitor — a wallet holds a meaningful concentrated-liquidity position share.',
+      low: 'Lower exit-liquidity risk — the dominant concentrated-liquidity position is not single-wallet controlled.',
+    }
+    lpProofDisplay = {
+      proofLabel: hasResolvedOwner ? 'Position ownership verified' : 'Position verification required',
+      lockStatus: 'Protocol-specific',
+      lockAmount: null,
+      unlockTime: 'Not applicable — concentrated-liquidity positions have no lock/unlock schedule',
+      burnProof: null,
+      controller: hasResolvedOwner
+        ? `${OWNERSHIP_CONTROLLER_LABEL[ownershipStatus] ?? 'Position owner resolved'}${topOwnerSharePercent != null ? ` · ${topOwnerSharePercent.toFixed(1)}%` : ''}`
+        : null,
+      exitRisk: hasResolvedOwner
+        ? (controllerRisk ? CONTROLLER_RISK_EXIT_TEXT[controllerRisk] ?? 'Open Check — concentrated-liquidity position control tier could not be classified.' : null)
+        : null,
     }
   }
 
@@ -675,6 +723,30 @@ assert('Orbit burn proof says Not burned', orbitLp.lpProofDisplay?.burnProof ===
 assert('Orbit controller shows Wallet controlled · 100%', orbitLp.lpProofDisplay?.controller === 'Wallet controlled · 100%', orbitLp.lpProofDisplay)
 assert('Orbit exit risk is High — LP can be removed unless locked or burned', orbitLp.lpProofDisplay?.exitRisk === 'High — LP can be removed unless locked or burned', orbitLp.lpProofDisplay)
 
+// E2: same erc20_lp_token pool, but this time lock/burn IS confirmed — must not fall
+// through to the "No lock detected" text (reported class of bug: a resolved model with
+// no matching lpProofDisplay branch used to leak a stale/contradictory raw string).
+const orbitLockedScan = { ...orbitScan, lpLockStatus: 'locked' }
+const orbitLockedLp = reconcileBaseRadarLp(orbitLockedScan)
+assert('Orbit (locked) proof label says confirmed lock/burn proof', orbitLockedLp.lpProofDisplay?.proofLabel === 'Confirmed lock/burn proof', orbitLockedLp.lpProofDisplay)
+assert('Orbit (locked) lock status says Locked', orbitLockedLp.lpProofDisplay?.lockStatus === 'Locked', orbitLockedLp.lpProofDisplay)
+assert('Orbit (locked) exit risk reads lower exit-liquidity risk', orbitLockedLp.lpProofDisplay?.exitRisk === 'Lower exit-liquidity risk from current LP lock/burn proof.', orbitLockedLp.lpProofDisplay)
+
+// E3: erc20_lp_token model resolved from another source, but no primary pool address —
+// this is the exact reported bug: Pool model tile said "Standard ERC-20 LP token" while
+// the risk text said "Protocol-managed pool ... does not apply" (a concentrated-only
+// phrase). Must never say "does not apply" for an erc20_lp_token model.
+const orbitNoPoolScan = {
+  liquidityUsd: 85259,
+  lpLockStatus: 'unverified',
+  lpControl: { status: 'open_check', evidence: [] },
+  lpModelProof: { model: 'constant_product' },
+}
+const orbitNoPoolLp = reconcileBaseRadarLp(orbitNoPoolScan)
+assert('Orbit (no pool identity) model is still erc20_lp_token', orbitNoPoolLp.displayLpModel === 'erc20_lp_token', orbitNoPoolLp.displayLpModel)
+assert('Orbit (no pool identity) exit risk never says "does not apply"', !/does not apply/i.test(orbitNoPoolLp.lpProofDisplay?.exitRisk ?? ''), orbitNoPoolLp.lpProofDisplay)
+assert('Orbit (no pool identity) exit risk is an honest Open Check', /^Open Check/.test(orbitNoPoolLp.lpProofDisplay?.exitRisk ?? ''), orbitNoPoolLp.lpProofDisplay)
+
 // ─── Section F: Concentrated (V3/V4) LP proof display ──────────────────────
 
 console.log('\nSection F: Concentrated (V3/V4) LP proof display')
@@ -682,7 +754,38 @@ console.log('\nSection F: Concentrated (V3/V4) LP proof display')
 const concentratedLp = reconcileBaseRadarLp(bitcockScan)
 assert('Concentrated LP proof says Position verification required', concentratedLp.lpProofDisplay?.proofLabel === 'Position verification required', concentratedLp.lpProofDisplay)
 assert('Concentrated lock status says Protocol-specific', concentratedLp.lpProofDisplay?.lockStatus === 'Protocol-specific', concentratedLp.lpProofDisplay)
-assert('Concentrated unlock time says Position check required', concentratedLp.lpProofDisplay?.unlockTime === 'Position check required', concentratedLp.lpProofDisplay)
+assert('Concentrated unlock time says no lock/unlock schedule applies', concentratedLp.lpProofDisplay?.unlockTime === 'Not applicable — concentrated-liquidity positions have no lock/unlock schedule', concentratedLp.lpProofDisplay)
+assert('Concentrated (unresolved) controller stays null, not fabricated', concentratedLp.lpProofDisplay?.controller === null, concentratedLp.lpProofDisplay)
+assert('Concentrated (unresolved) exit risk stays null, not fabricated', concentratedLp.lpProofDisplay?.exitRisk === null, concentratedLp.lpProofDisplay)
+
+// F2: same concentrated pool, but this time a real Uniswap V3/V4 position-owner proof
+// resolved a dominant wallet controller — reported bug: Base Radar always showed the
+// generic "Position verification required" placeholder even when this real evidence
+// existed on the same scan (scan.concentratedPositionProof), because it was never read.
+const concentratedResolvedScan = {
+  ...bitcockScan,
+  concentratedPositionProof: {
+    ownershipStatus: 'ownership_verified',
+    topPositionOwner: '0xabc0000000000000000000000000000000000a',
+    topPositionOwnerType: 'wallet',
+    topPositionSharePercent: 61.4,
+    controllerRisk: 'high',
+  },
+}
+const concentratedResolvedLp = reconcileBaseRadarLp(concentratedResolvedScan)
+assert('Concentrated (resolved) proof label says ownership verified', concentratedResolvedLp.lpProofDisplay?.proofLabel === 'Position ownership verified', concentratedResolvedLp.lpProofDisplay)
+assert('Concentrated (resolved) controller shows Wallet-controlled position · 61.4%', concentratedResolvedLp.lpProofDisplay?.controller === 'Wallet-controlled position · 61.4%', concentratedResolvedLp.lpProofDisplay)
+assert('Concentrated (resolved) exit risk reflects high controller risk', concentratedResolvedLp.lpProofDisplay?.exitRisk === 'High — a single normal wallet controls the dominant concentrated-liquidity position.', concentratedResolvedLp.lpProofDisplay)
+
+// F3: concentrated proof attempted but NOT verified (open_check) — must stay honest
+// Open Check, never upgraded to a resolved controller on a guess.
+const concentratedOpenCheckScan = {
+  ...bitcockScan,
+  concentratedPositionProof: { ownershipStatus: 'ownership_open_check', controllerRisk: 'unknown' },
+}
+const concentratedOpenCheckLp = reconcileBaseRadarLp(concentratedOpenCheckScan)
+assert('Concentrated (open_check proof) stays Position verification required', concentratedOpenCheckLp.lpProofDisplay?.proofLabel === 'Position verification required', concentratedOpenCheckLp.lpProofDisplay)
+assert('Concentrated (open_check proof) controller stays null', concentratedOpenCheckLp.lpProofDisplay?.controller === null, concentratedOpenCheckLp.lpProofDisplay)
 
 // ─── Section G: fallback pairAddress + dexId uniswap_v2 (task fixture B) ───
 

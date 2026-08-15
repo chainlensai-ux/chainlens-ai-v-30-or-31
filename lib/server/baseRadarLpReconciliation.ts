@@ -403,14 +403,53 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
       exitRisk: 'Open Check — this pool uses a standard ERC-20 LP token, but a primary pool address was not resolved to check lock/burn proof.',
     }
   } else if (displayLpModel === 'concentrated_liquidity') {
+    // CONCENTRATED-POSITION-PROOF-WIRING, DISCLOSED (reported: Base Radar's LP section always
+    // shows "Position verification required" / Open Check for concentrated pools — dug in via a
+    // live lpMeta debug pull and found `concentratedProofAttempted: true` on the SAME scan, meaning
+    // the real Uniswap V3/V4 subgraph position-owner resolver (attemptConcentratedPositionProof,
+    // wired earlier this session) actually ran and can produce a genuinely resolved controller/risk
+    // — but scan.concentratedPositionProof was never read here at all, so this branch unconditionally
+    // discarded that result and always showed the same generic placeholder regardless of whether
+    // real evidence existed. Now reads the same proof object Token Scanner's own LP tab already
+    // uses, via its own deterministic `ownershipStatus` field (never inferred/guessed here) — an
+    // "ownership_verified*" status means a real owner was resolved; anything else stays the same
+    // honest "Open Check" this branch always showed before, never upgraded on a guess.
+    const proof = scan.concentratedPositionProof && typeof scan.concentratedPositionProof === 'object'
+      ? scan.concentratedPositionProof as Record<string, unknown>
+      : null
+    const ownershipStatus = asString(proof?.ownershipStatus)
+    const hasResolvedOwner = Boolean(ownershipStatus?.startsWith('ownership_verified'))
+    const OWNERSHIP_CONTROLLER_LABEL: Record<string, string> = {
+      ownership_verified: 'Wallet-controlled position',
+      ownership_verified_protocol: 'Protocol-controlled position',
+      ownership_verified_burned: 'Burn-controlled position',
+      ownership_verified_locked: 'Lock-controlled position',
+      ownership_verified_team: 'Team-wallet-controlled position',
+      ownership_verified_multisig: 'Multisig-controlled position',
+      ownership_verified_contract: 'Contract-controlled position',
+    }
+    const topOwnerSharePercent = typeof proof?.topPositionSharePercent === 'number' && Number.isFinite(proof.topPositionSharePercent)
+      ? proof.topPositionSharePercent as number
+      : null
+    const controllerRisk = asString(proof?.controllerRisk)
+    const CONTROLLER_RISK_EXIT_TEXT: Record<string, string> = {
+      high: 'High — a single normal wallet controls the dominant concentrated-liquidity position.',
+      caution: 'Monitor — a wallet holds a meaningful concentrated-liquidity position share.',
+      watch: 'Monitor — a wallet holds a meaningful concentrated-liquidity position share.',
+      low: 'Lower exit-liquidity risk — the dominant concentrated-liquidity position is not single-wallet controlled.',
+    }
     lpProofDisplay = {
-      proofLabel: 'Position verification required',
+      proofLabel: hasResolvedOwner ? 'Position ownership verified' : 'Position verification required',
       lockStatus: 'Protocol-specific',
       lockAmount: null,
-      unlockTime: 'Position check required',
+      unlockTime: 'Not applicable — concentrated-liquidity positions have no lock/unlock schedule',
       burnProof: null,
-      controller: null,
-      exitRisk: null,
+      controller: hasResolvedOwner
+        ? `${OWNERSHIP_CONTROLLER_LABEL[ownershipStatus as string] ?? 'Position owner resolved'}${topOwnerSharePercent != null ? ` · ${topOwnerSharePercent.toFixed(1)}%` : ''}`
+        : null,
+      exitRisk: hasResolvedOwner
+        ? (controllerRisk ? CONTROLLER_RISK_EXIT_TEXT[controllerRisk] ?? 'Open Check — concentrated-liquidity position control tier could not be classified.' : null)
+        : null,
     }
   }
 
