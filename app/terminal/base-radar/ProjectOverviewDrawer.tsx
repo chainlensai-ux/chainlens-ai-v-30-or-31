@@ -854,8 +854,28 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   // and watch list the rest of the report shows — the first genuinely positive-sounding signal (not
   // an "Open Check"/"Not Verified" placeholder) becomes the "main positive" line, and the first
   // watch-next item becomes "check next". No new evidence, purely a summary of what's already here.
-  const verdictPositiveSignal = [...marketSignals, ...controlSignals].find((x) => !/open check|not verified|pending/i.test(x)) ?? null
-  const verdictNextCheck = cortexWatch[0] ?? null
+  // MAIN-POSITIVE-WHITELIST FIX, DISCLOSED (reported: verdict summary showed "Main positive: New
+  // Pool" — neutral metadata every candidate with pool-age evidence gets, not a real strength; dug
+  // deeper and found a more serious latent bug in the same line — the old check only excluded
+  // "open check"-worded labels, so "Cluster Evidence" (this file's OWN label for a CONFIRMED
+  // dev-wallet cluster — a real risk, already correctly colored red via signalChipTone below) could
+  // have been surfaced as "Main positive" had marketSignals ever come up empty of exclusion
+  // matches, directly contradicting its own red chip a few lines down. Replaced the exclusion
+  // regex with an explicit whitelist of labels that are genuine strengths — a verified market cap,
+  // renounced ownership, or a burned/locked LP — so "Main positive" is either a real strength or
+  // omitted entirely (existing conditional render below already handles null), never neutral
+  // metadata and never a mislabeled risk finding.
+  const verdictPositiveSignal = [...marketSignals, ...controlSignals].find((x) => /market cap verified|renounced ownership|^burned$|^locked$/i.test(x)) ?? null
+  // SPECIFIC-CHECK-NEXT FIX, DISCLOSED (same dig-in as the Main-positive fix above — reported
+  // verdict read "Check next: Monitor radar flags: Momentum, Volume Spike, Liquidity Strong, Safety
+  // Sim Unavailable, Coverage Limited." for swappy). Root cause: cortexWatch[0] (dedupedWatchNext's
+  // first entry) is only ever the generic "Monitor radar flags: <every flag joined>" catch-all when
+  // severity.watchNext (the more specific, curated source — see watchNext construction above) is
+  // empty and holder concentration isn't High/Extreme, since that catch-all is always appended
+  // last. For a 3-second first-read line, a comma-joined dump of every flag isn't a "next check" —
+  // prefer the first non-generic watch item when one exists; the catch-all is still shown if it's
+  // genuinely the only thing available, same as before.
+  const verdictNextCheck = cortexWatch.find((x) => !/^monitor radar flags:/i.test(x)) ?? cortexWatch[0] ?? null
   const valuationTone = marketValuation.basis === 'verified_market_cap' ? 'mint' : marketValuation.basis === 'fdv_fallback' ? 'amber' : 'neutral'
   const holderTone = concentrationRisk === 'Extreme' || concentrationRisk === 'High' ? 'risk' : concentrationRisk === 'Medium' ? 'amber' : 'mint'
   const holderSectionTone = holderTone === 'amber' ? 'purple' : holderTone
