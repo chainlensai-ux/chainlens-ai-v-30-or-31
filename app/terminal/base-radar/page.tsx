@@ -872,9 +872,22 @@ function QuickPreviewPanel({
     : 'Review LP and holder evidence in the full report before acting.'
   const explorer = EXPLORER[chain]
 
+  // WHOLE-PAGE-UNCLICKABLE FIX, DISCLOSED (reported: "cant scroll or anything even click buttons
+  // cant click on the token"): this component previously always mounted its fixed, full-viewport
+  // backdrop <div> whenever a token was selected — including merely HOVERING a card, since
+  // preloadProjectOverview sets selectedToken on hover, not just on click — relying purely on
+  // pointerEvents:'none' to make it inert while closed. Something in that always-mounted-but-
+  // toggled-inert approach was leaving an invisible, full-page click-blocking layer in place even
+  // though nothing was visibly open (matches the report exactly: the feed rendered normally, but
+  // nothing on the page responded to clicks or scroll). Hardened by simply not rendering the
+  // backdrop/panel DOM at all unless actually open — trades the panel's slide-out close animation
+  // (now closes instantly) for a guarantee that a closed preview can never intercept a single
+  // pointer event on the rest of the page.
+  if (!open) return null
+
   return (
     <>
-      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: open ? 'rgba(2,6,23,0.55)' : 'transparent', backdropFilter: open ? 'blur(3px)' : 'none', pointerEvents: open ? 'auto' : 'none', transition: 'background 0.18s, backdrop-filter 0.18s', zIndex: 70 }} />
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: 'rgba(2,6,23,0.55)', backdropFilter: 'blur(3px)', zIndex: 70 }} />
       <aside role="dialog" aria-modal="true" aria-label={`${token.name} quick preview`} style={{
         position: 'fixed', top: 0, right: 0, height: '100dvh', width: 'min(360px, 100vw)',
         transform: open ? 'translateX(0)' : 'translateX(105%)', transition: 'transform 0.16s cubic-bezier(.22,1,.36,1)',
