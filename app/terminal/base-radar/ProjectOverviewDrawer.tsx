@@ -264,6 +264,23 @@ function fmtUSD(v: number | null | undefined): string {
   return `$${v.toFixed(0)}`
 }
 
+// TINY-PRICE-CHART-LABELS, DISCLOSED (Radar Full Report polish task #4 — "chart shows Min $0 / Now
+// $0 / Max $0 for tiny prices, which looks broken"). fmtUSD rounds anything under $1 to whole
+// dollars, so a real $0.00000123 price collapsed to "$0". This only changes how an already-real,
+// already-computed number is displayed in the chart header — no chart data is invented, and
+// stats.min/max/current here are always derived from real values.length>=4 chart points (see
+// MiniChart below); this never fabricates a min/max that doesn't exist.
+function fmtTinyPrice(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return 'Open check'
+  if (v === 0) return '$0'
+  const abs = Math.abs(v)
+  if (abs >= 1) return fmtUSD(v)
+  if (abs >= 0.01) return `$${v.toFixed(4)}`
+  const leadingZeros = Math.max(0, -Math.floor(Math.log10(abs)) - 1)
+  const decimals = Math.min(18, leadingZeros + 3)
+  return `$${v.toFixed(decimals)}`
+}
+
 function fmtAge(minutes: number): string {
   if (!Number.isFinite(minutes)) return 'N/A'
   if (minutes < 60) return `${minutes}m`
@@ -418,6 +435,22 @@ function displayLpModelLabel(model: string | null | undefined): string {
   return DISPLAY_LP_MODEL_LABELS[model] ?? publicStatus(model)
 }
 
+// SIGNAL-CHIP-TONE, DISCLOSED (Radar Full Report polish task #5 — "avoid making unsupported provider
+// coverage look like confirmed danger"). Previously every chip in a Signal Stack group inherited one
+// fixed color for the whole group, so e.g. "Simulation Checked Inconclusive" (a coverage limitation,
+// not a finding) rendered in the same red as "Extreme Holder Control" (a real risk fact), and an
+// "Open Check" placeholder in Control Signals rendered the same amber as a genuinely limited-but-real
+// evidence tag. This only re-colors each already-computed label string based on its own wording —
+// no signal is added, removed, or reworded, and the group's fallback tone still applies to anything
+// this function doesn't recognize.
+function signalChipTone(label: string, fallback: 'mint' | 'amber' | 'risk'): 'mint' | 'amber' | 'risk' | 'neutral' {
+  if (/inconclusive|not applicable/i.test(label)) return 'neutral'
+  if (/open check|not verified|pending|unavailable/i.test(label)) return 'amber'
+  if (/verified|renounced|burned|checked$|^locked$/i.test(label)) return 'mint'
+  if (/active owner|cluster evidence|extreme|no lock detected|team controlled/i.test(label)) return 'risk'
+  return fallback
+}
+
 // REPORT-SHELL POLISH, DISCLOSED (Base Radar drawer premium polish task): calmer, thinner border
 // and a flat background instead of the previous heavy gradient + 50px drop shadow repeated on
 // every single card — with a dozen-plus sections stacked in one drawer, that shadow/gradient
@@ -427,8 +460,8 @@ function Section({ title, state, children, tone = 'default' }: { title: string; 
   const loading = state?.isLoading
   const accent = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : '#2dd4bf'
   return (
-    <section style={{ border: `1px solid ${tone === 'default' ? 'rgba(148,163,184,0.10)' : `${accent}28`}`, background: 'rgba(15,23,42,0.40)', borderRadius: '16px', padding: '16px', marginBottom: '14px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '12px' }}>
+    <section style={{ border: `1px solid ${tone === 'default' ? 'rgba(148,163,184,0.10)' : `${accent}28`}`, background: 'rgba(15,23,42,0.40)', borderRadius: '16px', padding: '14px', marginBottom: '11px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '10px' }}>
         <h3 style={{ margin: 0, color: '#f8fafc', fontSize: '11px', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}><span style={{ color: accent }}>◆</span> {title}</h3>
         {state?.error ? <span style={{ color: '#fbbf24', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>Limited</span> : null}
       </div>
@@ -446,7 +479,7 @@ function Section({ title, state, children, tone = 'default' }: { title: string; 
 function CollapsibleSection({ id, title, tone = 'default', open, onToggle, state, badge, children }: { id: string; title: string; tone?: 'default' | 'risk' | 'mint' | 'amber' | 'purple'; open: boolean; onToggle: (id: string) => void; state?: ApiState<unknown>; badge?: React.ReactNode; children: React.ReactNode }) {
   const accent = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : tone === 'mint' ? '#2dd4bf' : '#64748b'
   return (
-    <section style={{ borderTop: '1px solid rgba(148,163,184,0.10)', paddingTop: '14px', marginTop: '14px' }}>
+    <section style={{ borderTop: '1px solid rgba(148,163,184,0.10)', paddingTop: '12px', marginTop: '12px' }}>
       <button
         type="button"
         onClick={() => onToggle(id)}
@@ -539,7 +572,7 @@ function MiniChart({ points }: { points: ChartPoint[] }) {
   return (
     <div style={{ borderRadius: 16, border: '1px solid rgba(45,212,191,0.14)', background: 'linear-gradient(180deg, rgba(15,23,42,0.78), rgba(2,6,23,0.56))', padding: 10, overflow: 'hidden' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, marginBottom: 8, color: '#94a3b8', fontSize: 10, fontFamily: 'var(--font-plex-mono)' }}>
-        <span>Min {fmtUSD(stats.min)}</span><span style={{ color: '#99f6e4' }}>Now {fmtUSD(stats.current)}</span><span>Max {fmtUSD(stats.max)}</span>
+        <span>Min {fmtTinyPrice(stats.min)}</span><span style={{ color: '#99f6e4' }}>Now {fmtTinyPrice(stats.current)}</span><span>Max {fmtTinyPrice(stats.max)}</span>
       </div>
       <svg viewBox="0 0 320 112" width="100%" height="150" role="img" aria-label="Token mini chart" className="radar-mini-chart-svg" style={{ display: 'block', maxHeight: 150 }}>
         <defs>
@@ -817,6 +850,12 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const cortexFound = [severity.cortexSevereLine, poolDistributionLine, holderCortexLine].filter(Boolean).slice(0, 3)
   const cortexMainRisk = activeOwner ? 'Active owner/admin remains the primary control risk.' : concentrationRisk === 'Extreme' ? 'Extreme holder concentration is the primary risk driver.' : lpRiskLabelValue
   const cortexWatch = dedupedWatchNext.slice(0, 3)
+  // FIRST-READ SUMMARY INPUTS, DISCLOSED (task #2): reuses the same already-computed signal arrays
+  // and watch list the rest of the report shows — the first genuinely positive-sounding signal (not
+  // an "Open Check"/"Not Verified" placeholder) becomes the "main positive" line, and the first
+  // watch-next item becomes "check next". No new evidence, purely a summary of what's already here.
+  const verdictPositiveSignal = [...marketSignals, ...controlSignals].find((x) => !/open check|not verified|pending/i.test(x)) ?? null
+  const verdictNextCheck = cortexWatch[0] ?? null
   const valuationTone = marketValuation.basis === 'verified_market_cap' ? 'mint' : marketValuation.basis === 'fdv_fallback' ? 'amber' : 'neutral'
   const holderTone = concentrationRisk === 'Extreme' || concentrationRisk === 'High' ? 'risk' : concentrationRisk === 'Medium' ? 'amber' : 'mint'
   const holderSectionTone = holderTone === 'amber' ? 'purple' : holderTone
@@ -918,34 +957,39 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             report letterhead instead of two visually separate rows, and the close button is now a
             plain small ghost circle inline with the title instead of a large boxed control set apart
             from it. */}
-        <header className="radar-drawer-header" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 14px', padding: '16px 18px 14px', background: 'rgba(2,6,23,0.90)', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(148,163,184,0.12)' }}>
+        {/* HEADER-COMPACTION, DISCLOSED (Radar Full Report polish task #1 — "too much empty vertical
+            space... user should reach the verdict/market snapshot faster"): identity, chain/age
+            chips, score, verdict, address, and all three actions are unchanged — only spacing is
+            tightened (smaller top label, reduced gaps between rows, thinner overall padding) so the
+            header takes noticeably less vertical room before the report body starts. */}
+        <header className="radar-drawer-header" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 12px', padding: '12px 18px 10px', background: 'rgba(2,6,23,0.90)', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(148,163,184,0.12)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
             <div style={{ minWidth: 0 }}>
-              <p style={{ margin: '0 0 4px', color: '#5b7186', fontSize: 9, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Intelligence Receipt</p>
-              <h2 style={{ margin: 0, fontSize: 19, color: '#f8fafc', letterSpacing: '-.03em', overflowWrap: 'anywhere', lineHeight: 1.25 }}>{token.name} <span style={{ color: '#94a3b8', fontWeight: 500 }}>/{token.symbol}</span></h2>
+              <p style={{ margin: '0 0 2px', color: '#5b7186', fontSize: 8.5, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Intelligence Receipt</p>
+              <h2 style={{ margin: 0, fontSize: 17, color: '#f8fafc', letterSpacing: '-.03em', overflowWrap: 'anywhere', lineHeight: 1.2 }}>{token.name} <span style={{ color: '#94a3b8', fontWeight: 500 }}>/{token.symbol}</span></h2>
             </div>
-            <button onClick={onClose} aria-label="Close project overview" style={{ flex: '0 0 auto', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.03)', color: '#94a3b8', borderRadius: 999, width: 28, height: 28, cursor: 'pointer', fontSize: 15, lineHeight: 1, display: 'grid', placeItems: 'center' }}>×</button>
+            <button onClick={onClose} aria-label="Close project overview" style={{ flex: '0 0 auto', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.03)', color: '#94a3b8', borderRadius: 999, width: 26, height: 26, cursor: 'pointer', fontSize: 14, lineHeight: 1, display: 'grid', placeItems: 'center' }}>×</button>
           </div>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginTop: 12 }}>
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center', marginTop: 9 }}>
             {/* CHAIN-LABEL, DISCLOSED (found in a full Base Radar audit): this was a two-way
                 `base ? 'Base' : 'ETH'` check, so every Robinhood token was labeled "ETH" — actively
                 misidentifying which chain a contract lives on, the single most misleading thing this
                 header can get wrong. Driven off the real chain key now. */}
             <Chip label={CHAIN_LABEL[chain]} tone="mint" />
             <Chip label={fmtAge(token.ageMinutes)} tone="neutral" />
-            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 999, background: 'rgba(45,212,191,.08)', border: '1px solid rgba(45,212,191,.22)' }}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 9px', borderRadius: 999, background: 'rgba(45,212,191,.08)', border: '1px solid rgba(45,212,191,.22)' }}>
               <span style={{ color: '#5eead4', fontSize: 9, fontWeight: 900, letterSpacing: '.10em', textTransform: 'uppercase' }}>Radar</span>
-              <span style={{ color: '#fff', fontSize: 14, fontWeight: 900 }}>{effectiveScore}</span>
+              <span style={{ color: '#fff', fontSize: 13, fontWeight: 900 }}>{effectiveScore}</span>
               <span style={{ color: '#4b6273', fontSize: 10 }}>/100</span>
             </div>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 999, background: `${verdictColor}14`, border: `1px solid ${verdictColor}38`, color: verdictColor, fontSize: 10, fontWeight: 850, letterSpacing: '.06em' }}>{publicStatus(severityLabel)}</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 9px', borderRadius: 999, background: `${verdictColor}14`, border: `1px solid ${verdictColor}38`, color: verdictColor, fontSize: 10, fontWeight: 850, letterSpacing: '.06em' }}>{publicStatus(severityLabel)}</span>
             <span title={token.contract} style={{ color: '#5b7186', fontSize: 10.5, fontFamily: 'var(--font-plex-mono)', marginLeft: 'auto' }}>{shortAddr(token.contract)}</span>
           </div>
           {/* DEEP-SCAN-REMOVED, DISCLOSED (explicitly requested: "get rid of that deep scan button
               on the base radar panel for robinhood and base"). Copy CA is now the primary/filled
               action since it's the most common next step once a candidate's evidence is reviewed
               here — Open Explorer and Watchlist remain secondary, unchanged otherwise. */}
-          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 12 }}>
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 9 }}>
             <button onClick={() => copyText(token.contract)} style={primaryButtonStyle}>Copy CA</button>
             <a href={explorer ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Open Explorer</a>
             {onTrackToggle ? <button onClick={onTrackToggle} style={tracking ? activeButtonStyle : buttonStyle}>{tracking ? 'Watching' : 'Add Watchlist'}</button> : null}
@@ -962,6 +1006,17 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             <Chip label={`Evidence: ${evidenceQualityLabel}`} tone={evidenceQualityTone} />
             {[...marketSignals, ...riskSignals].slice(0, 2).map((x) => <Chip key={x} label={x} tone={/risk|lock|holder|timeout|watch/i.test(x) ? 'risk' : 'mint'} />)}
           </div>
+          {/* FIRST-READ SUMMARY, DISCLOSED (Radar Full Report polish task #2 — "main CORTEX verdict
+              paragraph is too long for traders... add a short first-read summary above it using
+              existing data only"). Every value referenced here is already computed above in this same
+              render (cortexMainRisk, marketSignals/controlSignals, dedupedWatchNext/cortexWatch) — no
+              new evidence, no new copy about risk that isn't already stated elsewhere in the report.
+              The full explanation paragraph right below is completely unchanged. */}
+          <p style={{ margin: '0 0 10px', color: '#e2e8f0', fontSize: 12.5, lineHeight: 1.6 }}>
+            <span style={{ color: verdictColor, fontWeight: 800 }}>Primary risk:</span> {cortexMainRisk}
+            {verdictPositiveSignal ? <><span style={{ color: '#5b7186' }}> · </span><span style={{ color: '#5eead4', fontWeight: 800 }}>Main positive:</span> {verdictPositiveSignal}</> : null}
+            {verdictNextCheck ? <><span style={{ color: '#5b7186' }}> · </span><span style={{ color: '#94a3b8', fontWeight: 800 }}>Check next:</span> {verdictNextCheck}</> : null}
+          </p>
           <p style={{ margin: '0 0 12px', color: '#f1f5f9', fontSize: 14.5, lineHeight: 1.5, fontWeight: 650 }}>{severity.cortexSevereLine}</p>
           <ProofTile label="Primary risk driver" value={cortexMainRisk} tone={/High|risk|Active|Extreme|No verified/i.test(cortexMainRisk) ? 'risk' : 'neutral'} />
         </Section>
@@ -987,7 +1042,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
         </Section>
 
         <Section title="Signal Stack" tone="purple">
-          {[['Market Signals', marketSignals, 'mint'], ['Risk Signals', riskSignals, 'risk'], ['Control Signals', controlSignals, 'amber']].map(([title, items, tone]) => <div key={title as string} style={{ marginBottom: 11 }}><p style={{ margin: '0 0 7px', color: '#94a3b8', fontSize: 10, letterSpacing: '.11em', textTransform: 'uppercase', fontWeight: 850 }}>{title as string}</p><div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>{(items as string[]).map((x) => <Chip key={x} label={x} tone={tone as 'mint' | 'amber' | 'risk'} />)}</div></div>)}
+          {[['Market Signals', marketSignals, 'mint'], ['Risk Signals', riskSignals, 'risk'], ['Control Signals', controlSignals, 'amber']].map(([title, items, tone]) => <div key={title as string} style={{ marginBottom: 11 }}><p style={{ margin: '0 0 7px', color: '#94a3b8', fontSize: 10, letterSpacing: '.11em', textTransform: 'uppercase', fontWeight: 850 }}>{title as string}</p><div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>{(items as string[]).map((x) => <Chip key={x} label={x} tone={signalChipTone(x, tone as 'mint' | 'amber' | 'risk')} />)}</div></div>)}
         </Section>
 
         {/* LOWER SECTIONS — GROUPED ACCORDIONS, DISCLOSED (task #7): each wraps the exact same
@@ -1043,23 +1098,34 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
               ) : null}
             </div>
               <span style={{ color: '#94a3b8', fontSize: 12 }}>Holders: <strong style={{ color: '#e2e8f0' }}>{concentration.holderEvidence?.holderCountDisplay ?? (concentration.holderCount == null ? 'Open Check' : `${concentration.holderCount}${concentration.holderCountCapped ? '+' : ''}`)}</strong></span><span style={{ color: '#94a3b8', fontSize: 12 }}>{creatorTopHolderDisplay(concentration.creatorInTopHolders, concentration.creatorHolderPercent)}</span></div>
-          {concentration.holderEvidence?.holderCountStatus === 'minimum' ? (
-            <p style={{ margin: '0 0 4px', color: '#fbbf24', fontSize: 12, lineHeight: 1.5, fontWeight: 650 }}>Partial holder evidence — holder count is a confirmed minimum, not an exact verified total.</p>
-          ) : null}
+          {/* HOLDER-EVIDENCE-CLARITY-V2, DISCLOSED (Radar Full Report polish task #3 — "current holder
+              copy can feel contradictory because it says partial holder evidence but also
+              concentration resolved"). Replaced the single narrative paragraph with three separate,
+              explicitly labeled facts — holder count, concentration, and exact total — each stating
+              only what it actually is. Concentration is never hidden when top-holder balances really
+              did resolve, and the exact total is never called confirmed unless holderCountStatus is
+              genuinely 'exact'. Same underlying holderEvidence fields as before; wording only. */}
           {concentration.holderEvidence ? (
-            <p style={{ margin: '0 0 12px', color: '#94a3b8', fontSize: 12, lineHeight: 1.5 }}>
-              {concentration.holderEvidence.holderCountStatus === 'exact'
-                ? `Holder count verified — ${concentration.holderEvidence.holderCountDisplay} holders.`
-                : concentration.holderEvidence.holderCountStatus === 'minimum'
-                  ? `Holder count minimum confirmed — at least ${concentration.holderEvidence.holderCountDisplay.replace('+', '')} holders. This provider confirmed a floor, not the exact total.`
-                  : 'Holder count is an open check — no provider returned a usable count.'}
-              {' '}
-              {concentration.holderEvidence.concentrationStatus === 'unavailable'
-                ? 'The provider confirmed a holder count, but did not return the holder balance list needed for Top 1/10/20 concentration. Open Token Scanner for a deeper check.'
-                : concentration.holderEvidence.concentrationProvider === 'goldrush'
-                  ? 'Top holder balances resolved via GoldRush/Covalent snapshot.'
-                  : 'Top 1/10/20 supply concentration below is resolved from real indexed holder balances.'}
-            </p>
+            <div style={{ display: 'grid', gap: 4, marginBottom: 12 }}>
+              <p style={{ margin: 0, color: '#94a3b8', fontSize: 12, lineHeight: 1.55 }}>
+                <span style={{ color: '#e2e8f0', fontWeight: 800 }}>Holder count:</span>{' '}
+                {concentration.holderEvidence.holderCountStatus === 'exact'
+                  ? `${concentration.holderEvidence.holderCountDisplay} confirmed exact.`
+                  : concentration.holderEvidence.holderCountStatus === 'minimum'
+                    ? `minimum confirmed — at least ${concentration.holderEvidence.holderCountDisplay.replace('+', '')} holders (provider confirmed a floor, not the exact total).`
+                    : 'Open Check — no provider returned a usable count.'}
+              </p>
+              <p style={{ margin: 0, color: '#94a3b8', fontSize: 12, lineHeight: 1.55 }}>
+                <span style={{ color: '#e2e8f0', fontWeight: 800 }}>Concentration:</span>{' '}
+                {concentration.holderEvidence.concentrationStatus === 'resolved'
+                  ? `resolved from top-holder snapshot${concentration.holderEvidence.concentrationProvider === 'goldrush' ? ' via GoldRush/Covalent.' : '.'}`
+                  : 'unavailable — the provider did not return the holder balance list needed for Top 1/10/20. Open Token Scanner for a deeper check.'}
+              </p>
+              <p style={{ margin: 0, color: '#94a3b8', fontSize: 12, lineHeight: 1.55 }}>
+                <span style={{ color: '#e2e8f0', fontWeight: 800 }}>Exact holder total:</span>{' '}
+                {concentration.holderEvidence.holderCountStatus === 'exact' ? 'confirmed.' : 'not confirmed.'}
+              </p>
+            </div>
           ) : null}
           <div style={{ display: 'grid', gap: 10, marginBottom: 12 }}><MiniBar label="Top 1" value={concentration.top1} tone={holderTone === 'risk' ? 'risk' : 'mint'} /><MiniBar label="Top 10" value={concentration.top10} tone={holderTone === 'risk' ? 'risk' : 'amber'} /><MiniBar label="Top 20" value={concentration.top20} tone={holderTone === 'risk' ? 'risk' : 'amber'} /></div>
           <div className="holder-row-list" style={{ display: 'grid', gap: 7 }}>{topHolders.slice(0, 8).map((h, idx) => <div key={`${h.address}-${idx}`} style={{ display: 'grid', gridTemplateColumns: '38px minmax(0,1fr) auto', gap: 8, alignItems: 'center', padding: '8px 10px', borderRadius: 12, border: '1px solid rgba(148,163,184,.10)', background: 'rgba(2,6,23,.38)' }}><span style={{ color: '#64748b', fontSize: 11, fontFamily: 'var(--font-plex-mono)' }}>#{h.rank ?? idx + 1}</span><span style={{ color: '#e2e8f0', fontSize: 12, fontFamily: 'var(--font-plex-mono)' }}>{shortAddr(h.address)}</span><span style={{ color: '#99f6e4', fontSize: 12, fontFamily: 'var(--font-plex-mono)', fontWeight: 850 }}>{percent(getHolderPercent(h))}</span></div>)}</div>
