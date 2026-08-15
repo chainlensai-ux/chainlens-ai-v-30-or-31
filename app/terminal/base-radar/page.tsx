@@ -138,6 +138,12 @@ interface TokenIntel extends RadarToken {
   suspiciousBranding: boolean
   launchQuality: LaunchQuality
   displayModel: BaseRadarDisplayModel
+  // CHAIN-ON-TOKEN, DISCLOSED (Robinhood Radar UI polish task): the raw RadarToken payload from
+  // /api/radar doesn't carry a per-token chain field — chain is a page-level selection, not part of
+  // each token record. Threaded through explicitly at enrichToken() time (which chain the feed was
+  // fetched for) so per-token display logic (flags/status label/copy) can branch on it without
+  // guessing or inventing a value.
+  chain: RadarChain
 }
 
 
@@ -370,6 +376,19 @@ function getStatus(token: RadarToken, score: number, momentum: MomentumLevel): R
   return 'WATCH'
 }
 
+// STATUS-DISPLAY-LABEL, DISCLOSED (Robinhood Radar UI polish task, explicitly requested: "score
+// label like Watch / Unverified / Coverage Limited... never show SAFE if safety checks are
+// missing"): the underlying RadarStatus value (used everywhere else — filters, sorting, the
+// existing STATUS_COLOR/BG/BORDER maps) is completely unchanged; this only maps the ON-CARD text
+// label. For Robinhood, 'UNVERIFIED' displays as 'Coverage Limited' — same honest meaning (safety
+// checks aren't confirmed), worded as a chain-coverage fact instead of a generic warning. RISKY/
+// DEAD keep their real, unchanged label on every chain — a genuine risk signal must never be
+// softened just because the chain also lacks simulation coverage.
+function getStatusDisplayLabel(token: TokenIntel): string {
+  if (token.chain === 'robinhood' && token.status === 'UNVERIFIED') return 'COVERAGE LIMITED'
+  return token.status
+}
+
 function getCortexSignal(status: RadarStatus): string {
   const map: Record<RadarStatus, string> = {
     HOT: 'Strong early activity relative to liquidity. Worth watching closely, but still verify before entry.',
@@ -382,8 +401,9 @@ function getCortexSignal(status: RadarStatus): string {
   return map[status]
 }
 
-function getFlags(token: RadarToken, status: RadarStatus, momentum: MomentumLevel, suspiciousBranding: boolean): string[] {
+function getFlags(token: RadarToken, status: RadarStatus, momentum: MomentumLevel, suspiciousBranding: boolean, chain: RadarChain): string[] {
   const flags: string[] = []
+  const isRobinhood = chain === 'robinhood'
   if (momentum === 'HIGH') flags.push('Momentum')
   if (token.ageMinutes <= 30) flags.push('New Pool')
   if (token.volume24h >= 5_000) flags.push('Volume Spike')
@@ -395,11 +415,27 @@ function getFlags(token: RadarToken, status: RadarStatus, momentum: MomentumLeve
   // colored badge that told users the opposite of what was actually true. Renamed to a distinct,
   // correctly-positive label so it can't collide with the drawer's real caution flag.
   if (token.liquidityUsd >= 30_000) flags.push('Liquidity Strong')
-  if (token.liquidityUsd < 2_000) flags.push('Tax check pending')
-  if (token.simulationStatus === 'open_check') flags.push('Simulation pending')
-  if (token.simulationStatus === 'passed') flags.push('Simulation checked')
+  // ROBINHOOD-COVERAGE-TERMINOLOGY, DISCLOSED (explicitly requested: Robinhood Radar UI polish —
+  // "lots of yellow/orange pending evidence / simulation pending / unverified" made the feed look
+  // broken, when the real reason is a genuine, honest chain-coverage limitation, not a failure).
+  // On Robinhood, honeypot/tax simulation isn't provider-supported at all yet — 'Tax check
+  // pending'/'Simulation pending' (worded like a temporary in-progress check) is replaced with
+  // 'Safety Sim Unavailable' (a calmer, accurate "this chain doesn't have this coverage yet" chip,
+  // styled neutral blue below, never green/"safe"). Base's wording/coloring is completely
+  // unchanged — this only branches for token.chain === 'robinhood'.
+  if (isRobinhood) {
+    if (token.simulationStatus !== 'passed') flags.push('Safety Sim Unavailable')
+    else flags.push('Simulation checked')
+  } else {
+    if (token.liquidityUsd < 2_000) flags.push('Tax check pending')
+    if (token.simulationStatus === 'open_check') flags.push('Simulation pending')
+    if (token.simulationStatus === 'passed') flags.push('Simulation checked')
+  }
   if (suspiciousBranding) flags.push('CORTEX Watch')
-  if (status === 'UNVERIFIED') flags.push('Pending Evidence')
+  // Same coverage-terminology reasoning as above: on Robinhood, 'UNVERIFIED' status is virtually
+  // always driven by the missing safety simulation, not a genuine "we don't have evidence yet"
+  // gap — 'Coverage Limited' says that honestly without reading as a warning.
+  if (status === 'UNVERIFIED') flags.push(isRobinhood ? 'Coverage Limited' : 'Pending Evidence')
   if (status === 'RISKY') flags.push('High Risk')
   // ESTABLISHED-CLASSIFICATION / HOLDER-EVIDENCE-HONESTY, DISCLOSED (explicitly requested: label
   // above-$2M candidates as "Established" instead of hiding them; UI must say holder proof is
@@ -439,7 +475,7 @@ function getLaunchQuality(token: RadarToken): LaunchQuality {
   return { liquidity, volume, age, taxes, security }
 }
 
-function enrichToken(token: RadarToken): TokenIntel {
+function enrichToken(token: RadarToken, chain: RadarChain): TokenIntel {
   const suspiciousBranding = hasSuspiciousBranding(token.name, token.symbol)
   const { level: momentum, ratio: momentumRatio } = getMomentum(token.volume24h, token.liquidityUsd)
   // TOKEN-SAVER: the feed list only carries the evidence the /api/radar scan already
@@ -482,12 +518,13 @@ function enrichToken(token: RadarToken): TokenIntel {
 
   return {
     ...token,
+    chain,
     suspiciousBranding,
     momentum,
     momentumRatio,
     radarScore,
     status,
-    flags: getFlags(token, status, momentum, suspiciousBranding),
+    flags: getFlags(token, status, momentum, suspiciousBranding, chain),
     clarkSignal: getCortexSignal(status),
     launchQuality: getLaunchQuality(token),
     displayModel,
@@ -506,6 +543,18 @@ function getSignalInsight(token: TokenIntel): string {
   const activeLiquidity = token.liquidityUsd >= 10_000
   const highVolume = token.volume24h >= 5_000
   const fresh = token.ageMinutes <= 30
+
+  // ROBINHOOD-CARD-COPY, DISCLOSED (Robinhood Radar UI polish task, explicitly requested copy):
+  // on Robinhood, `needsScan` is virtually always true (safety simulation isn't provider-supported
+  // on this chain yet) — the generic "Needs Token Scanner confirmation before trusting risk" reads
+  // like every single card failed a check. Chain-specific copy instead frames it as what it
+  // honestly is: real market signal, with a known, named chain-coverage limitation — never implying
+  // the token itself is unsafe or that the app is broken.
+  if (token.chain === 'robinhood') {
+    if (token.momentum === 'HIGH' || activeLiquidity || highVolume) return 'Market momentum detected. Some safety checks are unavailable on Robinhood Chain — scan token for deeper evidence.'
+    if (fresh) return 'Live market signal found. Safety coverage is limited on Robinhood Chain — scan token for deeper evidence.'
+    return token.displayModel.whyOnRadar || 'Live market signal found. Safety coverage is limited on Robinhood Chain.'
+  }
 
   if (token.momentum === 'HIGH' && activeLiquidity) return `Volume is rising while liquidity remains active. ${needsScan ? 'Needs Token Scanner confirmation before trusting risk.' : 'Risk checks are visible, but keep monitoring holders and liquidity.'}`
   if (fresh && token.momentum !== 'NONE') return `Fresh momentum detected${activeLiquidity ? ' with active liquidity' : ''}. ${needsScan ? 'Holder and liquidity safety still need deeper scan.' : 'Still a watchlist candidate, not a confirmed safe token.'}`
@@ -536,10 +585,15 @@ function getPriorityAccent(token: TokenIntel): { color: string; background: stri
 // intensity, maintain caution meaning"): only the amber/red colors are dimmed a touch (lower
 // background/border opacity, slightly muted text tone) — which tags count as caution/risk, and
 // which flags exist at all, are completely unchanged.
+// COVERAGE-CHIP-STYLING, DISCLOSED (Robinhood Radar UI polish task): 'Safety Sim Unavailable' and
+// 'Coverage Limited' get their own neutral blue/slate treatment — distinct from both the green
+// "confirmed good" bucket and the amber "in-progress/caution" bucket, since neither is a warning
+// (nothing bad was found) nor a pass (nothing was confirmed safe either). Never green/"safe".
 function getBadgeStyle(flag: string): { color: string; background: string; border: string } {
-  if (['Momentum', 'Volume Spike', 'Simulation confirmed', 'Simulation checked', 'Liquidity Strong'].includes(flag)) return { color: '#99f6e4', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.30)' }
+  if (['Momentum', 'Volume Spike', 'Simulation confirmed', 'Simulation checked', 'Liquidity Strong', 'Market Data Live'].includes(flag)) return { color: '#99f6e4', background: 'rgba(45,212,191,0.13)', border: 'rgba(45,212,191,0.30)' }
+  if (['Safety Sim Unavailable', 'Coverage Limited', 'Chain Beta', 'Needs Token Scanner', 'Provider Degraded'].includes(flag)) return { color: '#93c5fd', background: 'rgba(96,165,250,0.09)', border: 'rgba(96,165,250,0.24)' }
   if (['Tax check pending', 'Simulation pending', 'Pending Evidence', 'Holder Unverified', 'Not Re-verified'].includes(flag)) return { color: '#e8cd8f', background: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.20)' }
-  if (['High Risk', 'CORTEX Watch'].includes(flag)) return { color: '#f2b8b8', background: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.20)' }
+  if (['High Risk', 'CORTEX Watch', 'Risk Detected'].includes(flag)) return { color: '#f2b8b8', background: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.20)' }
   return { color: '#bfdbfe', background: 'rgba(96,165,250,0.13)', border: 'rgba(96,165,250,0.30)' }
 }
 
@@ -547,7 +601,7 @@ function getBadgeStyle(flag: string): { color: string; background: string; borde
 // '+N'"): token.flags itself (getFlags above) is unchanged — same set, same meaning, same order
 // they're computed in. This only decides which 2 are worth surface-level attention (risk/caution
 // flags first, since those matter most to see before clicking in) versus quieter "+N" overflow.
-const FLAG_PRIORITY = ['High Risk', 'Pending Evidence', 'Holder Unverified', 'Not Re-verified', 'Tax check pending', 'Simulation pending', 'CORTEX Watch', 'Momentum', 'Volume Spike', 'Liquidity Strong', 'Simulation checked', 'New Pool', 'Established']
+const FLAG_PRIORITY = ['High Risk', 'Risk Detected', 'Pending Evidence', 'Coverage Limited', 'Holder Unverified', 'Not Re-verified', 'Tax check pending', 'Simulation pending', 'Safety Sim Unavailable', 'CORTEX Watch', 'Momentum', 'Volume Spike', 'Liquidity Strong', 'Market Data Live', 'Simulation checked', 'New Pool', 'Established']
 function prioritizedFlags(flags: string[]): string[] {
   return [...flags].sort((a, b) => FLAG_PRIORITY.indexOf(a) - FLAG_PRIORITY.indexOf(b))
 }
@@ -630,7 +684,7 @@ function TokenCard({
           <div style={{ width: '1px', alignSelf: 'stretch', background: 'rgba(255,255,255,0.09)' }} />
           <div style={{ textAlign: 'right' }}>
             <p style={{ margin: 0, fontSize: '16px', fontWeight: 800, color: accent.color, fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{token.radarScore}</p>
-            <p style={{ margin: '2px 0 0', fontSize: '8.5px', fontWeight: 800, color: accent.color, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)' }}>{token.status}</p>
+            <p style={{ margin: '2px 0 0', fontSize: '8.5px', fontWeight: 800, color: accent.color, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)' }}>{getStatusDisplayLabel(token)}</p>
           </div>
         </div>
       </div>
@@ -742,8 +796,9 @@ function StripStat({ label, value, caption, accent = '#e2e8f0' }: { label: strin
 // "Checking…" placeholder instead of a zero/empty-looking real value. Once real data has arrived at
 // least once, subsequent background refreshes keep showing the last real numbers (matching the
 // existing "Refreshing…" button label logic) — this only fixes the genuinely-ambiguous first load.
-function PulseStrip({ summary, hasEverLoaded }: { summary: RadarSummary; hasEverLoaded: boolean }) {
+function PulseStrip({ summary, hasEverLoaded, chain }: { summary: RadarSummary; hasEverLoaded: boolean; chain: RadarChain }) {
   const stillLoadingFirstFetch = !hasEverLoaded
+  const isRobinhood = chain === 'robinhood'
   const items = stillLoadingFirstFetch
     ? [
       { label: 'Tokens Tracked', value: '–', caption: 'Checking…', accent: '#3a5268' },
@@ -752,10 +807,18 @@ function PulseStrip({ summary, hasEverLoaded }: { summary: RadarSummary; hasEver
       { label: 'Evidence Gaps', value: '–', caption: 'Checking…', accent: '#3a5268' },
     ]
     : [
-      { label: 'Tokens Tracked', value: String(summary.newPools), caption: 'Current Base results', accent: '#e2e8f0' },
+      // CHAIN-AWARE-CAPTION FIX, DISCLOSED (found while polishing Robinhood Radar): this caption
+      // read "Current Base results" unconditionally, even while viewing Robinhood Chain — a real,
+      // pre-existing labeling bug, not something this task introduced.
+      { label: 'Tokens Tracked', value: String(summary.newPools), caption: `Current ${isRobinhood ? 'Robinhood Chain' : 'Base'} results`, accent: '#e2e8f0' },
       { label: 'Strongest Mover', value: summary.hottestToken, caption: summary.hottestValue, accent: '#2DD4BF' },
       { label: 'Newest Pool', value: summary.newestToken, caption: summary.newestValue, accent: '#60a5fa' },
-      { label: 'Evidence Gaps', value: String(summary.unverified), caption: 'Needs more evidence', accent: '#fbbf24' },
+      // ROBINHOOD-COVERAGE-STRIP, DISCLOSED (Robinhood Radar UI polish task): same underlying count
+      // (summary.unverified), relabeled + recolored calm blue on Robinhood — most of that count is
+      // driven by the known chain-coverage gap (missing safety simulation), not open evidence work.
+      isRobinhood
+        ? { label: 'Coverage Limited', value: String(summary.unverified), caption: 'Safety sim unavailable', accent: '#22d3ee' }
+        : { label: 'Evidence Gaps', value: String(summary.unverified), caption: 'Needs more evidence', accent: '#fbbf24' },
     ]
 
   return (
@@ -767,7 +830,8 @@ function PulseStrip({ summary, hasEverLoaded }: { summary: RadarSummary; hasEver
   )
 }
 
-function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSummary; topTokens: TokenIntel[]; onRescan: () => void }) {
+function CortexRadarPanel({ summary, topTokens, onRescan, chain }: { summary: RadarSummary; topTokens: TokenIntel[]; onRescan: () => void; chain: RadarChain }) {
+  const isRobinhood = chain === 'robinhood'
   const signals = [
     summary.highMomentum > 0 ? `${summary.highMomentum} momentum signal${summary.highMomentum === 1 ? '' : 's'} in the current feed.` : 'Momentum is still forming across the visible feed.',
     summary.worthWatching > 0 ? `${summary.worthWatching} token${summary.worthWatching === 1 ? '' : 's'} have enough traction to watch.` : 'No strong watch cluster yet; keep radar open.',
@@ -804,6 +868,18 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
     ? `New Radar requires $50K+ valuation and real liquidity. Tokens above the early range are labelled Established instead of hidden — ${hideReasonParts.join(', ')}.`
     : 'New Radar requires $50K+ valuation and real liquidity. Tokens above the early range are labelled Established instead of hidden.'
   const concentrationNote = 'Concentration gaps do not remove candidates that pass holder count.'
+  // ROBINHOOD-CORTEX-PANEL, DISCLOSED (Robinhood Radar UI polish task, explicitly requested: "make
+  // the right panel explain the situation clearly... instead of making it sound like 11 failures").
+  // Same underlying facts as the Base warnings list (evidence-gap count, gate explainer, "use Token
+  // Scanner") — reframed as a chain-coverage explanation with its own calmer bullet color, not
+  // reusing the amber "warning" styling below (nothing failed; this chain genuinely doesn't have
+  // simulation coverage yet, a fact, not a caution).
+  const robinhoodNotes = [
+    'Market discovery active.',
+    'Liquidity data detected.',
+    'Safety simulation unavailable for Robinhood Chain.',
+    'Use Token Scanner for deeper checks.',
+  ]
   const warnings = [
     summary.unverified > 0 ? `${summary.unverified} checks need more evidence.` : 'No open verification cluster in the current results.',
     summary.hasSecurityData ? 'Simulation is confirmed for some tokens; unresolved tokens are capped until checks complete.' : 'Simulation checks need more evidence.',
@@ -819,7 +895,11 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
   return (
     <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px', padding: '13px' }}>
       <p style={{ margin: '0 0 3px', color: '#5eead4', fontSize: '10px', fontWeight: 800, letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Radar Read</p>
-      <p style={{ margin: '0 0 11px', color: '#64748b', fontSize: '10.5px', lineHeight: 1.4 }}>Live interpretation of the visible feed. Not financial advice.</p>
+      <p style={{ margin: '0 0 11px', color: '#64748b', fontSize: '10.5px', lineHeight: 1.4 }}>
+        {isRobinhood
+          ? `${summary.newPools} token${summary.newPools === 1 ? '' : 's'} found. Market/liquidity data is live. Some safety simulations are unavailable for Robinhood Chain.`
+          : 'Live interpretation of the visible feed. Not financial advice.'}
+      </p>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '7px', marginBottom: '12px' }}>
         {signals.slice(0, 4).map(signal => (
           <div key={signal} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', color: '#94a3b8', fontSize: '10.5px', lineHeight: 1.5 }}>
@@ -828,6 +908,16 @@ function CortexRadarPanel({ summary, topTokens, onRescan }: { summary: RadarSumm
           </div>
         ))}
       </div>
+      {isRobinhood && (
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: '10px', marginBottom: '10px', display: 'flex', flexDirection: 'column', gap: '7px' }}>
+          {robinhoodNotes.map(note => (
+            <div key={note} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', color: '#7dd3fc', fontSize: '10.5px', lineHeight: 1.5 }}>
+              <span style={{ width: '4px', height: '4px', borderRadius: '50%', background: '#22d3ee', flexShrink: 0, marginTop: '6px' }} />
+              <span>{note}</span>
+            </div>
+          ))}
+        </div>
+      )}
       <div style={{ borderTop: '1px solid rgba(255,255,255,0.07)', paddingTop: '10px', display: 'flex', flexDirection: 'column', gap: '7px' }}>
         {warnings.slice(0, 5).map(warning => (
           <div key={warning} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', color: '#a89268', fontSize: '10.5px', lineHeight: 1.5 }}>
@@ -1525,10 +1615,10 @@ export default function BaseRadarPage() {
       }
     }
 
-    setData((prev) => prev ? { ...prev, tokens: prev.tokens.map((token) => enrichToken(mergeTokenEvidence(token))) } : prev)
+    setData((prev) => prev ? { ...prev, tokens: prev.tokens.map((token) => enrichToken(mergeTokenEvidence(token), effectiveRadarChainRef.current)) } : prev)
     setSelectedToken((prev) => {
       if (!prev || prev.contract.toLowerCase() !== normalizedAddress) return prev
-      return enrichToken(mergeTokenEvidence(prev))
+      return enrichToken(mergeTokenEvidence(prev), effectiveRadarChainRef.current)
     })
   }, [])
 
@@ -1643,7 +1733,7 @@ export default function BaseRadarPage() {
 
   const tokens = useMemo(() => data?.tokens ?? [], [data?.tokens])
 
-  const intelTokens = useMemo(() => tokens.map(enrichToken), [tokens])
+  const intelTokens = useMemo(() => tokens.map(t => enrichToken(t, effectiveRadarChain)), [tokens, effectiveRadarChain])
 
   function openWatchlistToken(address: string) {
     const found = intelTokens.find(t => t.contract.toLowerCase() === address.toLowerCase())
@@ -1829,7 +1919,22 @@ export default function BaseRadarPage() {
             New Radar requires $50K+ valuation and real liquidity. Tokens above the early range are labelled Established instead of hidden. When verified market cap is unavailable, FDV is used only as a fallback and clearly labeled.
           </p>
 
-          <PulseStrip summary={summary} hasEverLoaded={data !== null} />
+          {/* ROBINHOOD-COVERAGE-BANNER, DISCLOSED (Robinhood Radar UI polish task, explicitly
+              requested copy + tone: "compact, premium, not scary, blue/cyan information tone"):
+              only renders on Robinhood — Base's header is completely unchanged. States the real,
+              honest chain-coverage gap once, clearly, so individual cards don't have to re-explain
+              it via yellow/orange chip spam. */}
+          {effectiveRadarChain === 'robinhood' && (
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '9px', padding: '9px 13px', marginBottom: '10px', maxWidth: '760px', borderRadius: '10px', background: 'rgba(34,211,238,0.06)', border: '1px solid rgba(34,211,238,0.22)' }}>
+              <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#22d3ee', flexShrink: 0, marginTop: '4px' }} />
+              <p style={{ margin: 0, fontSize: '11px', color: '#a5f3fc', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>
+                <span style={{ fontWeight: 800, letterSpacing: '0.04em' }}>ROBINHOOD CHAIN — BETA · </span>
+                Market/liquidity discovery is live. Tax/honeypot simulation may be unavailable until provider support improves.
+              </p>
+            </div>
+          )}
+
+          <PulseStrip summary={summary} hasEverLoaded={data !== null} chain={effectiveRadarChain} />
 
           <>
           <div className="radar-controls" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
@@ -2079,7 +2184,7 @@ export default function BaseRadarPage() {
             <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', margin: '0 0 10px' }}>
               CORTEX Panel
             </p>
-            <CortexRadarPanel summary={summary} topTokens={filteredAndSortedTokens} onRescan={handleManualRefresh} />
+            <CortexRadarPanel summary={summary} topTokens={filteredAndSortedTokens} onRescan={handleManualRefresh} chain={effectiveRadarChain} />
             <div style={{ height: '12px' }} />
             <WatchlistPanel tokens={watchlistTokens} loading={watchlistLoading} onOpen={openWatchlistToken} onRemove={removeFromWatchlist} />
             <div style={{ height: '12px' }} />
