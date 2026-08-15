@@ -89,8 +89,16 @@ export function applyBaseRadarScoreCaps(input: RadarFeedScoreInput): { score: nu
   // $150K; volume 0 at ~$500 rising to 5 at $150K) — same direction and rough scale, but now two
   // tokens only score identically when their real liquidity/volume genuinely are (near-)identical,
   // not just "in the same bucket."
-  const liquidityTier = liquidity != null ? Math.max(0, Math.min(10, ((liquidity - 5_000) / 145_000) * 10)) : 0
-  const volumeTier = Math.max(0, Math.min(5, (((input.volume24h ?? 0) - 500) / 149_500) * 5))
+  //
+  // SATURATION-CEILING FIX, DISCLOSED (same bug class, reported again on Robinhood — see the sibling
+  // fix in lib/baseRadarDisplayModel.ts's baseScore() for the full diagnosis): $150K was still low
+  // enough that tokens with $100K-$8.9M liquidity all hit the same maxed-out tier, same as
+  // baseScore's own bonuses did. Widened the ramp's upper bound (liquidity $150K -> $2M, volume
+  // $150K -> $1M) so the cap itself keeps differentiating real tokens across a realistic range
+  // instead of flattening everything above the old, too-low ceiling. Same 0-10/0-5 magnitude and
+  // floor behavior below the new ceiling.
+  const liquidityTier = liquidity != null ? Math.max(0, Math.min(10, ((liquidity - 5_000) / 1_995_000) * 10)) : 0
+  const volumeTier = Math.max(0, Math.min(5, (((input.volume24h ?? 0) - 500) / 999_500) * 5))
   const scaledCapFor = (base: number, max: number) => Math.min(max, base + liquidityTier + volumeTier)
 
   if (criticalMissingCount >= 2) {

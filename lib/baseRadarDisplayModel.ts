@@ -92,8 +92,21 @@ function baseScore(raw: AnyRecord, simulation: BaseRadarDisplaySimulation): numb
   // the same overall bonus range (0-30 for liquidity, 0-25 for volume) so magnitude differences
   // that used to be invisible above the old flat ceiling are now reflected. The hard floor
   // penalties below (near-zero liquidity/volume) are unchanged.
-  const liquidityBonus = liquidityUsd > 0 ? Math.max(0, Math.min(30, (Math.log10(liquidityUsd) - Math.log10(2_000)) / (Math.log10(500_000) - Math.log10(2_000)) * 30)) : 0
-  const volumeBonus = volume24hUsd > 0 ? Math.max(0, Math.min(25, (Math.log10(volume24hUsd) - Math.log10(1_000)) / (Math.log10(200_000) - Math.log10(1_000)) * 25)) : 0
+  //
+  // SATURATION-CEILING FIX, DISCLOSED (same bug class, reported again — this time on Robinhood:
+  // "there all rated 59" across tokens ranging $104.9K-$8.9M liquidity / $326.9K-$3.7M volume, all
+  // landing on the identical final score). The ramp above fixed the flat-bucket collapse for
+  // typical microcap tokens, but its own saturation points ($500K liquidity, $200K volume) were
+  // still low enough that any token past them — exactly this dataset's range — got the same maxed-
+  // out +30/+25 bonus regardless of real magnitude, so baseScore itself saturated at/near 100 for
+  // all of them. Combined with Robinhood's simulation penalty being universal (never confirmed on
+  // that chain), the fixed penalty stack in applyBaseRadarScoreCaps then produced the same final
+  // score for every one of them. Raised the saturation points an order of magnitude (liquidity
+  // $500K -> $10M, volume $200K -> $5M) so real differences stay visible across the actual range
+  // this feed surfaces, not just the sub-$500K range the original fix was tuned against. Below-
+  // saturation behavior for typical microcap tokens is unchanged (same log curve, same floor).
+  const liquidityBonus = liquidityUsd > 0 ? Math.max(0, Math.min(30, (Math.log10(liquidityUsd) - Math.log10(2_000)) / (Math.log10(10_000_000) - Math.log10(2_000)) * 30)) : 0
+  const volumeBonus = volume24hUsd > 0 ? Math.max(0, Math.min(25, (Math.log10(volume24hUsd) - Math.log10(1_000)) / (Math.log10(5_000_000) - Math.log10(1_000)) * 25)) : 0
   score += liquidityBonus
   score += volumeBonus
   if (liquidityUsd < 2_000) score -= 20
