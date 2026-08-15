@@ -431,7 +431,40 @@ const HONEYPOT_CACHE_TTL_MS = 5 * 60 * 1000
 const RADAR_FULL_CACHE_TTL_MS = 100 * 1000
 const RADAR_SHALLOW_CACHE_TTL_MS = 30 * 1000
 export const DEX_MARKET_CAP_RESCUE_TTL_MS = 2 * 60 * 1000
-const radarPayloadCache = new Map<string, { cachedAt: number; ttlMs: number; payload: { tokens: RadarToken[]; stats: RadarStats; fetchedAt: string; limitedLiveFeed: boolean; mode: 'shallow' | 'full'; _debug?: Record<string, unknown> } }>()
+type RadarPayloadCacheEntry = { cachedAt: number; ttlMs: number; payload: { tokens: RadarToken[]; stats: RadarStats; fetchedAt: string; limitedLiveFeed: boolean; mode: 'shallow' | 'full'; _debug?: Record<string, unknown> } }
+const radarPayloadCache = new Map<string, RadarPayloadCacheEntry>()
+// CROSS-INSTANCE-PAYLOAD-FALLBACK, DISCLOSED (investigated: Robinhood Radar consistently showed
+// "0/12 pages loaded" while Base rarely did — traced past the per-page GeckoTerminal cache fix to a
+// deeper, same-class asymmetry here. radarPayloadCache is a plain per-process Map, and this route's
+// own SERVE-STALE-ON-TOTAL-FAILURE fallback (below, near the final response) only ever re-serves a
+// prior successful payload if THIS SAME warm instance happened to have one cached. Base's heavy
+// traffic means most warm instances already have a recent successful Base payload to fall back on
+// when live discovery 429s; Robinhood's much lower traffic means a given instance frequently has
+// never served a successful Robinhood payload at all, so the exact same total-source-failure event
+// that Base quietly survives via stale-serve produces a hard, visible "0 tokens" for Robinhood.
+// Backed by the same Redis client already used for discovery backoff and the per-page cache, so a
+// successful payload from any instance becomes reachable as a fallback from every instance.
+// Retention (20 min) is intentionally much longer than the live TTLs (5-100s) so this stale-fallback
+// safety net survives real gaps between successful Robinhood cycles, not just within one TTL window
+// — this never fabricates data, it only ever re-serves an actual prior successful response, same as
+// the existing local-Map fallback it extends. Fully best-effort: any Redis failure here just falls
+// back to the original per-instance-only behavior.
+const RADAR_PAYLOAD_REDIS_PREFIX = 'radar:payload:'
+const RADAR_PAYLOAD_REDIS_RETENTION_SECONDS = 20 * 60
+async function readRadarPayloadRedis(key: string): Promise<RadarPayloadCacheEntry | null> {
+  if (!redisConfigured()) return null
+  try {
+    return (await redis.get<RadarPayloadCacheEntry>(`${RADAR_PAYLOAD_REDIS_PREFIX}${key}`)) ?? null
+  } catch {
+    return null
+  }
+}
+async function writeRadarPayloadRedis(key: string, entry: RadarPayloadCacheEntry): Promise<void> {
+  if (!redisConfigured()) return
+  try {
+    await redis.set(`${RADAR_PAYLOAD_REDIS_PREFIX}${key}`, entry, { ex: RADAR_PAYLOAD_REDIS_RETENTION_SECONDS })
+  } catch { /* best-effort — never block the response on a Redis problem */ }
+}
 const honeypotCache = new Map<string, { result: HoneypotResult | null; cachedAt: number }>()
 const honeypotInflight = new Map<string, Promise<HoneypotResult | null>>()
 const dexMarketCapRescueCache = new Map<string, { result: DexScreenerMarketCapRescueResult; cachedAt: number }>()
@@ -611,7 +644,11 @@ export async function GET(req: NextRequest) {
   const fullCacheKey = `${cacheKeyBase}:mode:full`
   const shallowCacheKey = `${cacheKeyBase}:mode:shallow`
   const preferredCacheKey = requestedMode === 'full' ? fullCacheKey : shallowCacheKey
-  const fullCachedPayload = radarPayloadCache.get(fullCacheKey)
+  let fullCachedPayload = radarPayloadCache.get(fullCacheKey)
+  if (!fullCachedPayload) {
+    const redisEntry = await readRadarPayloadRedis(fullCacheKey)
+    if (redisEntry) { radarPayloadCache.set(fullCacheKey, redisEntry); fullCachedPayload = redisEntry }
+  }
   if (fullCachedPayload && now - fullCachedPayload.cachedAt <= fullCachedPayload.ttlMs) {
     const payload = fullCachedPayload.payload
     return NextResponse.json({
@@ -619,7 +656,11 @@ export async function GET(req: NextRequest) {
       ...(debug ? { _debug: { ...(payload._debug ?? {}), cacheHit: true, cacheMode: 'full', effectivePlan: plan, upsellVisible: false } } : {}),
     })
   }
-  const cachedPayload = radarPayloadCache.get(preferredCacheKey)
+  let cachedPayload = radarPayloadCache.get(preferredCacheKey)
+  if (!cachedPayload) {
+    const redisEntry = await readRadarPayloadRedis(preferredCacheKey)
+    if (redisEntry) { radarPayloadCache.set(preferredCacheKey, redisEntry); cachedPayload = redisEntry }
+  }
   if (cachedPayload && now - cachedPayload.cachedAt <= cachedPayload.ttlMs) {
     const payload = cachedPayload.payload
     return NextResponse.json({
@@ -2139,7 +2180,9 @@ export async function GET(req: NextRequest) {
     const EMPTY_RESULT_CACHE_TTL_MS = 5 * 1000
     if (sourcesSucceeded > 0) {
       const ttlMs = tokens.length > 0 ? (shallowMode ? RADAR_SHALLOW_CACHE_TTL_MS : RADAR_FULL_CACHE_TTL_MS) : EMPTY_RESULT_CACHE_TTL_MS
-      radarPayloadCache.set(preferredCacheKey, { cachedAt: Date.now(), ttlMs, payload: { ...payload, _debug: debugPayload } })
+      const entry: RadarPayloadCacheEntry = { cachedAt: Date.now(), ttlMs, payload: { ...payload, _debug: debugPayload } }
+      radarPayloadCache.set(preferredCacheKey, entry)
+      if (tokens.length > 0) await writeRadarPayloadRedis(preferredCacheKey, entry)
     }
     // SERVE-STALE-ON-TOTAL-FAILURE FIX, DISCLOSED (reported: feed intermittently flips to "0
     // tokens tracked" / "no strong radar candidates" between otherwise-normal refreshes): the fix
