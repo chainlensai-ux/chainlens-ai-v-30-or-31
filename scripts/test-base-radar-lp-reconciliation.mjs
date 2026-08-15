@@ -151,6 +151,7 @@ function reconcileBaseRadarLp(scan) {
 
   const displayLpModel = reconcileLpModel([
     lpControl.displayLpModel,
+    lpControl.status === 'concentrated_liquidity' ? lpControl.status : null,
     scan.displayLpModel,
     scan.lpControlRead?.selectedPoolModel,
     lpControl.primaryPoolType,
@@ -349,17 +350,21 @@ function reconcileBaseRadarLp(scan) {
       low: 'Lower exit-liquidity risk — the dominant concentrated-liquidity position is not single-wallet controlled.',
     }
     lpProofDisplay = {
-      proofLabel: hasResolvedOwner ? 'Position ownership verified' : 'Position verification required',
-      lockStatus: 'Protocol-specific',
+      proofLabel: hasResolvedOwner
+        ? 'Position ownership verified'
+        : proof
+          ? 'Position proof attempted — ownership not verified'
+          : 'Position verification required',
+      lockStatus: 'Not applicable',
       lockAmount: null,
       unlockTime: 'Not applicable — concentrated-liquidity positions have no lock/unlock schedule',
-      burnProof: null,
+      burnProof: 'Not applicable',
       controller: hasResolvedOwner
         ? `${OWNERSHIP_CONTROLLER_LABEL[ownershipStatus] ?? 'Position owner resolved'}${topOwnerSharePercent != null ? ` · ${topOwnerSharePercent.toFixed(1)}%` : ''}`
         : null,
       exitRisk: hasResolvedOwner
-        ? (controllerRisk ? CONTROLLER_RISK_EXIT_TEXT[controllerRisk] ?? 'Open Check — concentrated-liquidity position control tier could not be classified.' : null)
-        : null,
+        ? (CONTROLLER_RISK_EXIT_TEXT[controllerRisk ?? ''] ?? 'Open Check — concentrated-liquidity position control tier could not be classified.')
+        : 'Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Review position ownership, liquidity depth, pool age, volume, and holder concentration.',
     }
   }
 
@@ -752,11 +757,12 @@ assert('Orbit (no pool identity) exit risk is an honest Open Check', /^Open Chec
 console.log('\nSection F: Concentrated (V3/V4) LP proof display')
 
 const concentratedLp = reconcileBaseRadarLp(bitcockScan)
-assert('Concentrated LP proof says Position verification required', concentratedLp.lpProofDisplay?.proofLabel === 'Position verification required', concentratedLp.lpProofDisplay)
-assert('Concentrated lock status says Protocol-specific', concentratedLp.lpProofDisplay?.lockStatus === 'Protocol-specific', concentratedLp.lpProofDisplay)
+assert('Concentrated (no proof attempted) proof label says verification required', concentratedLp.lpProofDisplay?.proofLabel === 'Position verification required', concentratedLp.lpProofDisplay)
+assert('Concentrated lock/burn proof says Not applicable, not "No lock detected"', concentratedLp.lpProofDisplay?.lockStatus === 'Not applicable', concentratedLp.lpProofDisplay)
+assert('Concentrated burn proof says Not applicable, not "Not burned"', concentratedLp.lpProofDisplay?.burnProof === 'Not applicable', concentratedLp.lpProofDisplay)
 assert('Concentrated unlock time says no lock/unlock schedule applies', concentratedLp.lpProofDisplay?.unlockTime === 'Not applicable — concentrated-liquidity positions have no lock/unlock schedule', concentratedLp.lpProofDisplay)
 assert('Concentrated (unresolved) controller stays null, not fabricated', concentratedLp.lpProofDisplay?.controller === null, concentratedLp.lpProofDisplay)
-assert('Concentrated (unresolved) exit risk stays null, not fabricated', concentratedLp.lpProofDisplay?.exitRisk === null, concentratedLp.lpProofDisplay)
+assert('Concentrated (unresolved) exit risk uses required "does not apply" copy, not null/legacy fallback', concentratedLp.lpProofDisplay?.exitRisk === 'Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Review position ownership, liquidity depth, pool age, volume, and holder concentration.', concentratedLp.lpProofDisplay)
 
 // F2: same concentrated pool, but this time a real Uniswap V3/V4 position-owner proof
 // resolved a dominant wallet controller — reported bug: Base Radar always showed the
@@ -784,7 +790,7 @@ const concentratedOpenCheckScan = {
   concentratedPositionProof: { ownershipStatus: 'ownership_open_check', controllerRisk: 'unknown' },
 }
 const concentratedOpenCheckLp = reconcileBaseRadarLp(concentratedOpenCheckScan)
-assert('Concentrated (open_check proof) stays Position verification required', concentratedOpenCheckLp.lpProofDisplay?.proofLabel === 'Position verification required', concentratedOpenCheckLp.lpProofDisplay)
+assert('Concentrated (open_check proof) says attempted, not the same as never-attempted', concentratedOpenCheckLp.lpProofDisplay?.proofLabel === 'Position proof attempted — ownership not verified', concentratedOpenCheckLp.lpProofDisplay)
 assert('Concentrated (open_check proof) controller stays null', concentratedOpenCheckLp.lpProofDisplay?.controller === null, concentratedOpenCheckLp.lpProofDisplay)
 
 // ─── Section G: fallback pairAddress + dexId uniswap_v2 (task fixture B) ───
@@ -867,7 +873,7 @@ assert('concentrated V4: no fake "Secondary ERC-20 LP exposure pool: none" line'
 assert('concentrated V4: secondaryLpControlSignals is null', concentratedV4.secondaryLpControlSignals === null, concentratedV4.secondaryLpControlSignals)
 assert('concentrated V4: displayLpModel remains concentrated_liquidity', concentratedV4.displayLpModel === 'concentrated_liquidity', concentratedV4.displayLpModel)
 assert('concentrated V4: LP proof says Position verification required', concentratedV4.lpProofDisplay?.proofLabel === 'Position verification required', concentratedV4.lpProofDisplay)
-assert('concentrated V4: lock status says Protocol-specific', concentratedV4.lpProofDisplay?.lockStatus === 'Protocol-specific', concentratedV4.lpProofDisplay)
+assert('concentrated V4: lock status says Not applicable', concentratedV4.lpProofDisplay?.lockStatus === 'Not applicable', concentratedV4.lpProofDisplay)
 assert('concentrated V4: rug/LP risk is position-control open check, not fake ERC20 lock proof', concentratedV4.rugRiskDisplay?.status === 'position_control_open_check', concentratedV4.rugRiskDisplay)
 assert('concentrated V4: poolAddressPresent is true', concentratedV4.poolAddressPresent === true, concentratedV4.poolAddressPresent)
 
@@ -913,6 +919,41 @@ assert('Drooling Dog exposes primaryMarketPoolId consistently', droolingDog.prim
 assert('Drooling Dog top-level primaryMarketPool remains null without address', droolingDog.primaryMarketPool === null, droolingDog.primaryMarketPool)
 assert('Drooling Dog evidence includes poolId=<id>', droolingDog.evidence.includes('poolId=base_0xpoolmanager_droolingdog_1234'), droolingDog.evidence)
 assert('Drooling Dog rug risk remains position_control_open_check', droolingDog.rugRiskDisplay?.status === 'position_control_open_check', droolingDog.rugRiskDisplay)
+
+// ─── Section J: RobinPanda-style fixture — lpControl.status is the ONLY source that
+// correctly says concentrated_liquidity; lpModelProof.model is a stale/wrong early
+// guess (reported live bug: a real Robinhood/Uniswap V4 pool showed "Standard ERC-20
+// LP token" and "a primary pool address was not resolved to check lock/burn proof"
+// even though lpMeta's own diagnostics — lpControlState/selectedPoolModel — both said
+// concentrated). lpControl.displayLpModel / scan.displayLpModel / scan.lpControlRead
+// .selectedPoolModel are deliberately left unset here, matching production reality
+// (verified: none of those fields are ever actually set anywhere in the real
+// token-scanner pipeline) — this exercises the exact fallthrough that used to reach
+// the stale lpModelProof.model source first. ──────────────────────────────────────
+
+console.log('\nSection J: RobinPanda-style — lpControl.status as the sole correct source')
+
+const robinPandaScan = {
+  liquidityUsd: 264500,
+  lpControl: {
+    status: 'concentrated_liquidity',
+    confidence: 'medium',
+    poolType: 'v3',
+    evidence: [],
+    // primaryMarketPool intentionally absent — matches the live case where market data
+    // (liquidity/volume) resolved via a different path than LP-control pool selection.
+  },
+  // A stale/wrong early guess — this is exactly what used to win before lpControl.status
+  // was added as a source, since nothing earlier in the priority chain was ever real.
+  lpModelProof: { model: 'constant_product', dexName: 'uniswap-v4-robinhood', standardLockApplies: true },
+  concentratedPositionProof: { ownershipStatus: 'ownership_open_check', controllerRisk: 'unknown' },
+}
+const robinPandaLp = reconcileBaseRadarLp(robinPandaScan)
+assert('RobinPanda: displayLpModel is concentrated_liquidity, not erc20_lp_token', robinPandaLp.displayLpModel === 'concentrated_liquidity', robinPandaLp.displayLpModel)
+assert('RobinPanda: proofApplicability is not_applicable', robinPandaLp.proofApplicability === 'not_applicable', robinPandaLp.proofApplicability)
+assert('RobinPanda: lock/burn proof never says the erc20 "primary pool address not resolved" text', !/primary pool address was not resolved/i.test(robinPandaLp.lpProofDisplay?.exitRisk ?? ''), robinPandaLp.lpProofDisplay)
+assert('RobinPanda: exit risk uses the required concentrated-pool copy', robinPandaLp.lpProofDisplay?.exitRisk === 'Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Review position ownership, liquidity depth, pool age, volume, and holder concentration.', robinPandaLp.lpProofDisplay)
+assert('RobinPanda: proof label reflects the attempted-but-unresolved position proof', robinPandaLp.lpProofDisplay?.proofLabel === 'Position proof attempted — ownership not verified', robinPandaLp.lpProofDisplay)
 
 // ─── Summary ────────────────────────────────────────────────────────────
 

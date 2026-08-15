@@ -172,8 +172,29 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
 
   // 1. Reconcile the canonical model from the priority-ordered sources. A fallback
   // pool's dex-based model hint is used only when it has a real pair address.
+  //
+  // MISSING-AUTHORITATIVE-SOURCE FIX, DISCLOSED (reported: a real Robinhood/Uniswap V4
+  // concentrated-liquidity pool — confirmed via a live lpMeta debug pull showing
+  // lpControlState: "concentrated_liquidity" and selectedPoolModel: "concentrated" — was
+  // still showing "Standard ERC-20 LP token" on the Base Radar report). Root cause: none
+  // of `lpControl.displayLpModel` / `scan.displayLpModel` / `scan.lpControlRead?.
+  // selectedPoolModel` are ever actually set anywhere in the token-scanner pipeline
+  // (verified against app/api/token/route.ts — `LpControlRead` has no `selectedPoolModel`
+  // field at all, and no `lpControl = {...}` literal ever sets `displayLpModel`), so all
+  // three always resolved to null and the priority chain silently fell through to
+  // `lpModelProofRaw?.model` — a value computed EARLY from a single DEX-id guess, before
+  // the pipeline's own later, more careful canonical-pool selection runs, and it can
+  // legitimately disagree with that later, correct classification (exactly the class of
+  // drift this file's own header comment describes). `lpControl.status` is the one field
+  // that IS always set to the literal string "concentrated_liquidity" by every real
+  // concentrated-pool branch in the token-scanner pipeline — added as a source. Safe by
+  // construction: none of `lpControl.status`'s other possible values ("burned", "locked",
+  // "team_controlled", "open_check", "partial", "no_pool", "protocol", ...) match either
+  // keyword list in normalizeModelToken below, so this can only ever contribute a
+  // correct positive concentrated_liquidity signal — never a false erc20_lp_token one.
   const displayLpModel = reconcileLpModel([
     lpControl.displayLpModel,
+    lpControl.status === 'concentrated_liquidity' ? lpControl.status : null,
     scan.displayLpModel,
     scan.lpControlRead?.selectedPoolModel,
     lpControl.primaryPoolType,
@@ -438,18 +459,33 @@ export function reconcileBaseRadarLp(scan: Record<string, any>): BaseRadarLpReco
       watch: 'Monitor — a wallet holds a meaningful concentrated-liquidity position share.',
       low: 'Lower exit-liquidity risk — the dominant concentrated-liquidity position is not single-wallet controlled.',
     }
+    // CONCENTRATED-COPY-FIX, DISCLOSED (Radar/Token Scanner LP status wording task — explicitly
+    // requested: never frame a concentrated pool as a failed V2 lock/burn check; lock/burn proof
+    // must read "Not applicable", not "Open Check"/"No lock detected"/"Not burned", since those
+    // words imply a check RAN and failed rather than a check that structurally doesn't apply).
+    // `proof` truthy (regardless of ownershipStatus) means attemptConcentratedPositionProof
+    // actually ran this scan — surfaced as "attempted" wording instead of collapsing an attempted-
+    // but-unresolved check into the same generic text as one that was never attempted at all.
     lpProofDisplay = {
-      proofLabel: hasResolvedOwner ? 'Position ownership verified' : 'Position verification required',
-      lockStatus: 'Protocol-specific',
+      proofLabel: hasResolvedOwner
+        ? 'Position ownership verified'
+        : proof
+          ? 'Position proof attempted — ownership not verified'
+          : 'Position verification required',
+      lockStatus: 'Not applicable',
       lockAmount: null,
       unlockTime: 'Not applicable — concentrated-liquidity positions have no lock/unlock schedule',
-      burnProof: null,
+      burnProof: 'Not applicable',
       controller: hasResolvedOwner
         ? `${OWNERSHIP_CONTROLLER_LABEL[ownershipStatus as string] ?? 'Position owner resolved'}${topOwnerSharePercent != null ? ` · ${topOwnerSharePercent.toFixed(1)}%` : ''}`
         : null,
+      // REQUIRED-COPY, DISCLOSED: exact wording requested for the unresolved case — this also
+      // fixes the earlier "does not apply"-style contradiction class of bug for good, since it's
+      // no longer possible for this field to fall through to the drawer's raw/legacy fallback
+      // text (lpRiskLabel) the way an unset `exitRisk: null` here previously could.
       exitRisk: hasResolvedOwner
-        ? (controllerRisk ? CONTROLLER_RISK_EXIT_TEXT[controllerRisk] ?? 'Open Check — concentrated-liquidity position control tier could not be classified.' : null)
-        : null,
+        ? (CONTROLLER_RISK_EXIT_TEXT[controllerRisk ?? ''] ?? 'Open Check — concentrated-liquidity position control tier could not be classified.')
+        : 'Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool. Review position ownership, liquidity depth, pool age, volume, and holder concentration.',
     }
   }
 

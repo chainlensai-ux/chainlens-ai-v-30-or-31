@@ -435,6 +435,24 @@ function displayLpModelLabel(model: string | null | undefined): string {
   return DISPLAY_LP_MODEL_LABELS[model] ?? publicStatus(model)
 }
 
+// CONCENTRATED-POOL-MODEL-LABEL, DISCLOSED (Radar/Token Scanner LP status wording task — task #2:
+// "LP model: Uniswap V4 concentrated" instead of the generic "Concentrated liquidity position").
+// Purely a display formatting of the same already-resolved DEX name (lp.lpModelProof.dexName) —
+// strips a trailing chain-scoped suffix like "-robinhood" (GeckoTerminal DEX ids are often
+// chain-suffixed) and title-cases the rest, falling back to the generic label when no DEX name
+// is available. No new data, no guessing which protocol — if the name isn't there, says so plainly.
+function concentratedPoolModelLabel(dexName: string | null | undefined, fallback: string): string {
+  if (!dexName) return fallback
+  const cleaned = dexName.replace(/-\w+$/, '').trim()
+  if (!cleaned) return fallback
+  const titled = cleaned
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((word) => (/^v\d+$/i.test(word) ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1).toLowerCase()))
+    .join(' ')
+  return `${titled} concentrated`
+}
+
 // SIGNAL-CHIP-TONE, DISCLOSED (Radar Full Report polish task #5 — "avoid making unsupported provider
 // coverage look like confirmed danger"). Previously every chip in a Signal Stack group inherited one
 // fixed color for the whole group, so e.g. "Simulation Checked Inconclusive" (a coverage limitation,
@@ -880,6 +898,13 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const holderTone = concentrationRisk === 'Extreme' || concentrationRisk === 'High' ? 'risk' : concentrationRisk === 'Medium' ? 'amber' : 'mint'
   const holderSectionTone = holderTone === 'amber' ? 'purple' : holderTone
   const lpTone = !hasVerifiedLock(lp?.lpLockStatus) && lp?.lpProofApplicability !== 'not_applicable' ? 'risk' : 'mint'
+  // CONCENTRATED-LP-COPY, DISCLOSED: gates the concentrated-pool-specific tile/badge layout below —
+  // same `lpProofApplicability === 'not_applicable'` check already used elsewhere in this file
+  // (section title, burn-proof fallback), named for readability. hasResolvedConcentratedOwner
+  // mirrors the exact same 'Position ownership verified' string lib/server/baseRadarLpReconciliation.ts
+  // only ever sets when a real owner was resolved, never inferred independently here.
+  const isConcentratedLp = lp?.lpProofApplicability === 'not_applicable'
+  const hasResolvedConcentratedOwner = lpProofDisplay?.proofLabel === 'Position ownership verified'
 
   const radarSignals = useMemo(
     () => buildRadarSignals(token, enriched),
@@ -1076,14 +1101,32 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
           </div>
         </CollapsibleSection>
 
-        <CollapsibleSection id="lp" title={lp?.lpProofApplicability === 'not_applicable' ? 'Liquidity / LP Position Control' : 'Liquidity / LP Control'} tone={lpTone} open={isSectionOpen('lp')} onToggle={toggleSection} state={enrichmentState}>
-          <div style={{ marginBottom: 12 }}><Chip label={lp?.lpProofApplicability === 'not_applicable' ? 'Position verification required' : lpProofLabel} tone={lpTone} /></div>
-          <p style={{ margin: '0 0 12px', color: lpTone === 'risk' ? '#fecaca' : '#cbd5e1', fontSize: 13, lineHeight: 1.5 }}>{lp?.lpProofApplicability === 'not_applicable' ? 'Standard LP token lock proof may not apply. Position owner and control route require verification.' : lpRiskLabelValue}</p>
+        {/* CONCENTRATED-LP-COPY, DISCLOSED (Radar/Token Scanner LP status wording task): a
+            concentrated-liquidity pool (Uniswap V3/V4-style — common on Robinhood, a newer chain
+            with more V3/V4 pools than V2) has no ERC-20 LP token to lock or burn, so the old badge/
+            summary text here HARDCODED generic "Position verification required" / "Standard LP
+            token lock proof may not apply" copy regardless of what lpProofDisplay actually resolved
+            — silently discarding real position-ownership evidence when it existed, and never
+            distinguishing "not applicable" from "checked and failed" the way plain "Open Check" /
+            "No lock detected" wording reads. Both lines below now use the real, already-computed
+            lpProofLabel/lpRiskLabelValue (backed by lib/server/baseRadarLpReconciliation.ts's
+            concentrated_liquidity branch) unconditionally, so a resolved position owner is actually
+            shown, and the required "does not apply" framing only appears when that's genuinely true. */}
+        <CollapsibleSection id="lp" title={isConcentratedLp ? 'Liquidity / LP Position Control' : 'Liquidity / LP Control'} tone={lpTone} open={isSectionOpen('lp')} onToggle={toggleSection} state={enrichmentState}>
+          <div style={{ marginBottom: 12, display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+            {isConcentratedLp ? <Chip label="Protocol / Concentrated" tone="purple" /> : null}
+            <Chip label={lpProofLabel} tone={lpTone} />
+          </div>
+          <p style={{ margin: '0 0 12px', color: lpTone === 'risk' ? '#fecaca' : '#cbd5e1', fontSize: 13, lineHeight: 1.5 }}>{lpRiskLabelValue}</p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(130px,1fr))', gap: 10 }}>
-            <ProofTile label="Pool model" value={displayLpModelLabel(lp?.displayLpModel)} tone="purple" />
-            <ProofTile label="Lock proof" value={lpLockStatusLabel} tone={lpTone} />
-            <ProofTile label="Burn proof" value={lpProofDisplay?.burnProof ?? (hasVerifiedLock(lp?.lpLockStatus) ? 'Not required' : 'No burn proof')} tone={lpTone} />
-            <ProofTile label="Controller" value={lpControllerLabel} tone={lpTone} />
+            <ProofTile label="Pool model" value={isConcentratedLp ? concentratedPoolModelLabel(lp?.lpModelProof?.dexName, displayLpModelLabel(lp?.displayLpModel)) : displayLpModelLabel(lp?.displayLpModel)} tone="purple" />
+            <ProofTile label="Lock/burn proof" value={lpLockStatusLabel} tone={isConcentratedLp ? 'purple' : lpTone} />
+            {isConcentratedLp ? (
+              <ProofTile label="Position ownership" value={lpProofLabel} tone={lpProofLabel === 'Position ownership verified' ? 'mint' : 'purple'} />
+            ) : (
+              <ProofTile label="Burn proof" value={lpProofDisplay?.burnProof ?? (hasVerifiedLock(lp?.lpLockStatus) ? 'Not required' : 'No burn proof')} tone={lpTone} />
+            )}
+            <ProofTile label="Controller" value={lpControllerLabel} tone={isConcentratedLp && !hasResolvedConcentratedOwner ? 'purple' : lpTone} />
           </div>
           {secondaryLpSignal?.status === 'team_controlled' ? <div style={{ marginTop: 10 }}><ProofTile label="Secondary exposure" value={`Wallet-controlled secondary pool${secondaryLpSignal.poolDex ? ` · ${secondaryLpSignal.poolDex}` : ''}`} tone="risk" /></div> : null}
           <a href={`/terminal/liquidity?address=${token.contract}&chain=${chain}`} style={{ ...buttonStyle, display: 'inline-flex', marginTop: 12, textDecoration: 'none' }}>Open full LP Safety</a>
