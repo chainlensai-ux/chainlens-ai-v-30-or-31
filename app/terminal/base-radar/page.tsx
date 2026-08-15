@@ -1297,6 +1297,42 @@ export default function BaseRadarPage() {
       setLoadingMore(false)
     }
   }, [data?.page, loadingMore, loadOnePage])
+
+  // FIND-NEW-TOKENS, DISCLOSED (explicitly requested: "a button at the bottom to find new tokens
+  // cause a lot are the same tokens from days ago" — the default mixed discovery interleaves
+  // new_pools with trending_pools/pools-by-volume, and the latter two structurally keep resurfacing
+  // the same established, already-active pools). Hits /api/radar with freshOnly=1 — restricts that
+  // one request to ONLY the new_pools source, server-side (see app/api/radar/route.ts) — and appends
+  // whatever isn't already shown. Deliberately does NOT touch data.page/hasMore (Load More's own
+  // pagination cursor); this is an independent, explicit "give me the freshest pools right now"
+  // action, not part of the regular page-by-page flow.
+  const [findingNew, setFindingNew] = useState(false)
+  const [findNewExhausted, setFindNewExhausted] = useState(false)
+  const handleFindNewTokens = useCallback(async () => {
+    if (findingNew) return
+    setFindingNew(true)
+    setFindNewExhausted(false)
+    try {
+      const { data: _sd } = await supabase.auth.getSession()
+      const _tok = _sd.session?.access_token
+      const res = await fetch(`/api/radar?page=1&freshOnly=1&chain=${effectiveRadarChainRef.current}`, { cache: 'no-store', headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
+      const json = await res.json()
+      if (!res.ok || json.error) { setFindNewExhausted(true); return }
+      let addedCount = 0
+      setData(prev => {
+        if (!prev) return json as RadarData
+        const seen = new Set(prev.tokens.map(t => t.contract.toLowerCase()))
+        const newTokens = (json.tokens as RadarToken[]).filter(t => !seen.has(t.contract.toLowerCase()))
+        addedCount = newTokens.length
+        return { ...prev, tokens: [...newTokens, ...prev.tokens] }
+      })
+      setFindNewExhausted(addedCount === 0)
+    } catch {
+      setFindNewExhausted(true)
+    } finally {
+      setFindingNew(false)
+    }
+  }, [findingNew])
   // LOAD-ALL, DISCLOSED (requested: "check it all and get it from one load instead of going on
   // each page" — one control that automatically clicks through every remaining page instead of the
   // user doing it by hand). Deliberately NOT one giant server-side request: this route has no
@@ -2007,6 +2043,35 @@ export default function BaseRadarPage() {
               <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#64748b', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
                 No more candidates passed the $50K+ valuation / real liquidity gate in this cycle.
               </p>
+            )}
+
+            {/* FIND-NEW-TOKENS BUTTON, DISCLOSED (explicitly requested: "a button at the bottom to
+                find new tokens cause a lot are the same tokens from days ago") — always visible
+                once the feed has loaded at least once, independent of Load More's hasMore state,
+                since it queries a distinct source (new_pools only, see handleFindNewTokens above)
+                rather than paginating deeper into the same mixed discovery. */}
+            {!loading && tokens.length > 0 && (
+              <div style={{ marginTop: '10px' }}>
+                <button
+                  onClick={() => void handleFindNewTokens()}
+                  disabled={findingNew}
+                  style={{
+                    width: '100%', padding: '11px', borderRadius: '10px',
+                    border: '1px solid rgba(167,139,250,0.28)', background: findingNew ? 'rgba(167,139,250,0.05)' : 'rgba(167,139,250,0.08)',
+                    color: findingNew ? 'rgba(196,181,253,0.5)' : '#c4b5fd', fontSize: '11px', fontWeight: 700,
+                    letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)',
+                    cursor: findingNew ? 'not-allowed' : 'pointer', transition: 'background 0.15s, color 0.15s',
+                  }}
+                  title="Checks only the freshest new-pool listings — skips trending/volume sources, which tend to resurface the same established tokens."
+                >
+                  {findingNew ? 'Finding New Tokens…' : '+ Find New Tokens'}
+                </button>
+                {findNewExhausted && (
+                  <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#64748b', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
+                    No new tokens beyond what&apos;s already shown cleared the gate this check.
+                  </p>
+                )}
+              </div>
             )}
           </div>
 

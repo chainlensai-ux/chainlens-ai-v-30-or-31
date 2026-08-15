@@ -591,6 +591,15 @@ export async function GET(req: NextRequest) {
   // 1-2, etc.), so "Load More" surfaces genuinely different tokens rather than re-showing the same
   // top 50. Capped at 5 — GeckoTerminal's own pool listings get sparse/stale much past that.
   const radarPage = Math.min(5, Math.max(1, Math.floor(Number(req.nextUrl.searchParams.get('page')) || 1)))
+  // FIND-NEW-TOKENS, DISCLOSED (explicitly requested: "a button at the bottom to find new tokens
+  // cause a lot are the same tokens from days ago" — the default mixed discovery interleaves
+  // new_pools with trending_pools/pools-by-volume, and those latter two sources structurally favor
+  // already-established, repeatedly-active pools over genuinely fresh ones, which is exactly what
+  // was showing up over and over). freshOnly restricts discovery to ONLY the new_pools source for
+  // this one request — no trending/volume pages at all — so a user who explicitly wants the
+  // freshest pools right now gets exactly that, without the two sources most likely to resurface
+  // the same familiar high-volume tokens.
+  const freshOnly = req.nextUrl.searchParams.get('freshOnly') === '1'
   // CACHE-VERSION, DISCLOSED (requested: ensure a stale cached tiny/empty result can't survive a
   // threshold/gate change). The in-memory radarPayloadCache Map naturally resets on a cold serverless
   // start (a new deploy = a new process = a new empty Map) in the normal case, but Vercel's rolling
@@ -598,7 +607,7 @@ export async function GET(req: NextRequest) {
   // thresholds into the cache key means any change to them (like this session's $45K -> $80K raise,
   // or a future one) can never accidentally serve a payload computed under the OLD thresholds; it's
   // simply a different cache key, so a cold miss forces a real re-run of the current pipeline.
-  const cacheKeyBase = `chain:${requestedChain}:plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:page:${radarPage}:gate:${MAIN_FEED_MIN_VALUATION_USD}:${MAIN_FEED_MAX_VALUATION_USD}:${MAIN_FEED_MIN_HOLDERS}`
+  const cacheKeyBase = `chain:${requestedChain}:plan:${plan}:minValuation:${minValuationUsd}:minLiquidity:${minLiquidityUsd}:fdvFallback:${allowFdvFallback}:page:${radarPage}:freshOnly:${freshOnly}:gate:${MAIN_FEED_MIN_VALUATION_USD}:${MAIN_FEED_MAX_VALUATION_USD}:${MAIN_FEED_MIN_HOLDERS}`
   const fullCacheKey = `${cacheKeyBase}:mode:full`
   const shallowCacheKey = `${cacheKeyBase}:mode:shallow`
   const preferredCacheKey = requestedMode === 'full' ? fullCacheKey : shallowCacheKey
@@ -703,7 +712,7 @@ export async function GET(req: NextRequest) {
     page => `https://api.geckoterminal.com/api/v2/networks/${requestedChain}/pools?page=${page}&include=base_token%2Cquote_token&per_page=20&sort=h24_volume_usd_desc`)
   const sourceSpecs: typeof newPoolsSpecs = []
   {
-    const queues = [newPoolsSpecs, trendingSpecs, volumeSpecs]
+    const queues = freshOnly ? [newPoolsSpecs] : [newPoolsSpecs, trendingSpecs, volumeSpecs]
     let remaining = queues.reduce((sum, q) => sum + q.length, 0)
     let cursor = 0
     while (remaining > 0) {
