@@ -1585,8 +1585,14 @@ export default function BaseRadarPage() {
     fetchData()
   }
 
-  function openToken(contract: string) {
-    router.push(`/terminal/token-scanner?contract=${contract}`)
+  // CHAIN-AWARE-SCAN-LINK FIX, DISCLOSED (reported: "Scan Token"/watchlist working for Base but not
+  // Robinhood): this never passed a chain param at all, so Token Scanner's own URL-autodetect logic
+  // (see that page's chainParam handling) fell back to its default, Base — silently scanning a
+  // Robinhood-chain token against the wrong network. Passes the real active chain now; still omits
+  // the param entirely for Base so existing bookmarked/shared Base links are byte-for-byte unchanged.
+  function openToken(contract: string, chain: RadarChain = effectiveRadarChainRef.current) {
+    const chainQuery = chain === 'base' ? '' : `&chain=${chain}`
+    router.push(`/terminal/token-scanner?contract=${contract}${chainQuery}`)
   }
 
   const handleDrawerSimulationUpdate = useCallback((address: string, payload: DrawerSimulationPayload) => {
@@ -1737,8 +1743,13 @@ export default function BaseRadarPage() {
 
   function openWatchlistToken(address: string) {
     const found = intelTokens.find(t => t.contract.toLowerCase() === address.toLowerCase())
-    if (found) openProjectOverview(found)
-    else openToken(address)
+    if (found) { openProjectOverview(found); return }
+    // Not in the currently-loaded feed (e.g. saved on a different chain, or from an earlier
+    // session) — use the chain it was actually saved under, same fix as openToken above, so this
+    // never silently re-scans a Robinhood-saved token as Base.
+    const savedRow = watchlistTokens.find(w => typeof w?.address === 'string' && w.address.toLowerCase() === address.toLowerCase())
+    const savedChain: RadarChain = savedRow?.chain === 'robinhood' ? 'robinhood' : 'base'
+    openToken(address, savedChain)
   }
 
   const summary = useMemo<RadarSummary>(() => {

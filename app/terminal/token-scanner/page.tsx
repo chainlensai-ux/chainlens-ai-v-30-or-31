@@ -3667,8 +3667,14 @@ export default function TerminalTokenScanner() {
     const params      = new URLSearchParams(window.location.search)
     const contract    = params.get('contract')
     const chainParam  = params.get('chain')
-    const autoChain   = chainParam === 'eth' ? 'eth' : 'base'
-    if (chainParam === 'eth') setChain('eth')
+    // CHAIN-PARAM-COVERAGE FIX, DISCLOSED (found via a real Base Radar report: "Scan Token"/watchlist
+    // reopen for a Robinhood-chain token silently scanned it as Base instead — this URL-autodetect
+    // only ever recognized `chain=eth`, defaulting every other value, including 'bnb'/'robinhood', to
+    // 'base', even though this page's own chain selector and handleScan already fully support all
+    // four chains via the `chain` state below). Widened to accept any of the four real supported
+    // values instead of a single hardcoded special case.
+    const autoChain: 'base' | 'eth' | 'bnb' | 'robinhood' = chainParam === 'eth' || chainParam === 'bnb' || chainParam === 'robinhood' ? chainParam : 'base'
+    if (autoChain !== 'base') setChain(autoChain)
     if (contract && /^0x[a-fA-F0-9]{40}$/.test(contract)) {
       handleScan(contract, autoChain)
     }
