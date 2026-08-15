@@ -77,6 +77,15 @@ type DrawerProps = {
   // doesn't pass them (watchlist.tsx below re-uses this same drawer without tracking wired up).
   tracking?: boolean
   onTrackToggle?: () => void
+  // FULL-REPORT-MODE, DISCLOSED (Radar token detail UX polish task, explicitly requested: "Open
+  // Full Report... wide readable cards, no cramped narrow text blocks" instead of the existing
+  // narrow right-docked panel): 'side' (default, unchanged) keeps every existing caller — this
+  // component's own watchlist.tsx usage included — byte-for-byte identical. 'full' only changes
+  // this file's OUTER <aside> positioning/size below (a centered, wide modal instead of a
+  // right-docked strip); every section/query/render inside the aside is completely untouched, so
+  // the "full report" is the exact same real data/evidence this drawer has always shown, just given
+  // room to breathe instead of a new report built from scratch.
+  mode?: 'side' | 'full'
 }
 
 type ApiState<T> = { data?: T; isLoading: boolean; error?: unknown }
@@ -226,7 +235,7 @@ const CHAIN_LABEL: Record<ChainKey, string> = {
   robinhood: 'Robinhood',
 }
 
-const EXPLORER: Record<ChainKey, string> = {
+export const EXPLORER: Record<ChainKey, string> = {
   base: 'https://basescan.org',
   eth: 'https://etherscan.io',
   // Verified via web search, not guessed: official Blockscout-powered explorer for Robinhood Chain.
@@ -547,7 +556,8 @@ function MiniChart({ points }: { points: ChartPoint[] }) {
   )
 }
 
-export default function ProjectOverviewDrawer({ token, open, chain = 'base', onClose, onSimulationUpdate, tracking, onTrackToggle }: DrawerProps) {
+export default function ProjectOverviewDrawer({ token, open, chain = 'base', onClose, onSimulationUpdate, tracking, onTrackToggle, mode = 'side' }: DrawerProps) {
+  const isFull = mode === 'full'
   const address = token?.contract ?? ''
   const enabled = open && Boolean(address)
   const query = address ? `contract=${encodeURIComponent(address)}&chain=${chain}` : ''
@@ -874,9 +884,22 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
 
   return (
     <div aria-hidden={!open}>
-      <style>{`@media (max-width: 640px) { .radar-drawer { width: 100vw !important; padding: 12px !important; border-left: 0 !important; } .radar-drawer-header { margin: -12px -12px 12px !important; padding: 10px 12px !important; } .radar-mini-chart-svg { height: 120px !important; max-height: 120px !important; } .holder-row-list > div { grid-template-columns: 34px minmax(0,1fr) auto !important; overflow-wrap: anywhere; } } @media (prefers-reduced-motion: reduce) { .radar-drawer, .radar-drawer * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }`}</style>
-      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: open ? 'rgba(2,6,23,0.68)' : 'transparent', backdropFilter: open ? 'blur(4px)' : 'none', pointerEvents: open ? 'auto' : 'none', transition: 'background 0.2s, backdrop-filter 0.2s', zIndex: 70 }} />
-      <aside className="radar-drawer" role="dialog" aria-modal="true" aria-label="Project overview" style={{ position: 'fixed', top: 0, right: 0, height: '100dvh', width: 'min(640px, 100vw)', transform: open ? 'translateX(0)' : 'translateX(105%)', transition: 'transform 0.16s cubic-bezier(.22,1,.36,1)', zIndex: 80, background: 'radial-gradient(circle at 20% 0%, rgba(45,212,191,.09), transparent 32%), radial-gradient(circle at 90% 16%, rgba(168,85,247,.07), transparent 28%), linear-gradient(180deg, #07111f, #020617 58%)', borderLeft: '1px solid rgba(45,212,191,0.16)', boxShadow: '-24px 0 64px rgba(0,0,0,0.44)', color: '#e2e8f0', overflowY: 'auto', padding: '18px', overflowX: 'hidden' }}>
+      <style>{`@media (max-width: 640px) { .radar-drawer { width: 100vw !important; height: 100dvh !important; max-height: 100dvh !important; top: 0 !important; left: 0 !important; transform: ${open ? 'translateX(0)' : 'translateX(105%)'} !important; border-radius: 0 !important; padding: 12px !important; border-left: 0 !important; border: 0 !important; } .radar-drawer-header { margin: -12px -12px 12px !important; padding: 10px 12px !important; } .radar-mini-chart-svg { height: 120px !important; max-height: 120px !important; } .holder-row-list > div { grid-template-columns: 34px minmax(0,1fr) auto !important; overflow-wrap: anywhere; } } @media (prefers-reduced-motion: reduce) { .radar-drawer, .radar-drawer * { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }`}</style>
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: open ? (isFull ? 'rgba(2,6,23,0.78)' : 'rgba(2,6,23,0.68)') : 'transparent', backdropFilter: open ? 'blur(4px)' : 'none', pointerEvents: open ? 'auto' : 'none', transition: 'background 0.2s, backdrop-filter 0.2s', zIndex: 70 }} />
+      {/* FULL-REPORT-MODE, DISCLOSED: see the DrawerProps.mode comment above — only this element's
+          own style object branches on mode; everything rendered inside (all children below) is
+          identical in both modes. 'full' centers a wide (max 1120px), tall, rounded modal instead
+          of docking a narrow strip to the right edge — same open/close transform-based animation
+          approach, just animating a vertical lift instead of a horizontal slide-in so it reads as
+          "opening a report" rather than "a panel sliding over." */}
+      <aside className="radar-drawer" role="dialog" aria-modal="true" aria-label="Project overview" style={isFull ? {
+        position: 'fixed', top: '4vh', left: '50%', height: 'min(92vh, 940px)', width: 'min(1120px, 94vw)',
+        transform: open ? 'translate(-50%, 0)' : 'translate(-50%, 24px)', opacity: open ? 1 : 0,
+        transition: 'transform 0.18s cubic-bezier(.22,1,.36,1), opacity 0.18s ease',
+        zIndex: 80, background: 'radial-gradient(circle at 20% 0%, rgba(45,212,191,.09), transparent 32%), radial-gradient(circle at 90% 16%, rgba(168,85,247,.07), transparent 28%), linear-gradient(180deg, #07111f, #020617 58%)',
+        border: '1px solid rgba(45,212,191,0.18)', borderRadius: '20px', boxShadow: '0 40px 100px rgba(0,0,0,0.55)',
+        color: '#e2e8f0', overflowY: 'auto', padding: '24px 28px', overflowX: 'hidden',
+      } : { position: 'fixed', top: 0, right: 0, height: '100dvh', width: 'min(640px, 100vw)', transform: open ? 'translateX(0)' : 'translateX(105%)', transition: 'transform 0.16s cubic-bezier(.22,1,.36,1)', zIndex: 80, background: 'radial-gradient(circle at 20% 0%, rgba(45,212,191,.09), transparent 32%), radial-gradient(circle at 90% 16%, rgba(168,85,247,.07), transparent 28%), linear-gradient(180deg, #07111f, #020617 58%)', borderLeft: '1px solid rgba(45,212,191,0.16)', boxShadow: '-24px 0 64px rgba(0,0,0,0.44)', color: '#e2e8f0', overflowY: 'auto', padding: '18px', overflowX: 'hidden' }}>
         {/* STICKY SUMMARY HEADER, DISCLOSED (task #2): same identity chips (chain/age), same Radar
             score, same verdict label, same truncated CA as before — regrouped into one calmer
             report letterhead instead of two visually separate rows, and the close button is now a

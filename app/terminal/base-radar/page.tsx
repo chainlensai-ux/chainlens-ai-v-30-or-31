@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
-import ProjectOverviewDrawer from './ProjectOverviewDrawer'
+import ProjectOverviewDrawer, { EXPLORER } from './ProjectOverviewDrawer'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { getRadarFeedStatusFromScore } from '@/lib/baseRadarFeedScoring'
@@ -830,6 +830,123 @@ function PulseStrip({ summary, hasEverLoaded, chain }: { summary: RadarSummary; 
   )
 }
 
+// QUICK-PREVIEW-PANEL, DISCLOSED (Radar token detail UX polish task, explicitly requested: "the
+// side panel should be a quick preview, not the full intelligence report... cramped and less
+// impressive because the report is too large for the panel width"). Replaces the OLD behavior of
+// clicking a card immediately opening the full ProjectOverviewDrawer (narrow, but crammed with
+// every section) — this now opens first: a short, skimmable summary built entirely from data
+// already resolved client-side in TokenIntel (score/status/flags/liquidity/volume/valuation/
+// clarkSignal) with zero new fetches, zero new evidence, zero changed values. "Open Full Report"
+// hands off to the exact same ProjectOverviewDrawer used before, just rendered in mode="full"
+// (see that file's own disclosure) instead of skipping straight to it.
+function QuickPreviewPanel({
+  token,
+  chain,
+  open,
+  tracking,
+  onTrackToggle,
+  onScan,
+  onOpenFullReport,
+  onClose,
+}: {
+  token: TokenIntel
+  chain: RadarChain
+  open: boolean
+  tracking: boolean
+  onTrackToggle: () => void
+  onScan: () => void
+  onOpenFullReport: () => void
+  onClose: () => void
+}) {
+  const accent = getPriorityAccent(token)
+  const valuationDisplay = getValuationCardMetric(token)
+  const isRobinhood = chain === 'robinhood'
+  // Same positive/risk flag vocabulary already established for feed cards (getBadgeStyle/
+  // FLAG_PRIORITY) — "top risk"/"top positive" just pick the single highest-priority match from
+  // token.flags instead of showing all of them, since this panel is meant to be skimmed in
+  // seconds, not read section by section (that's what Open Full Report is for).
+  const riskFlag = token.flags.find(f => ['High Risk', 'Risk Detected', 'CORTEX Watch'].includes(f))
+  const positiveFlag = token.flags.find(f => ['Momentum', 'Volume Spike', 'Liquidity Strong', 'Simulation checked', 'Market Data Live', 'Established'].includes(f))
+  const nextAction = token.simulationStatus !== 'passed'
+    ? (isRobinhood ? 'Safety simulation unavailable on Robinhood Chain — open the full report for liquidity/holder evidence.' : 'Scan Token for full safety evidence before trusting this signal.')
+    : 'Review LP and holder evidence in the full report before acting.'
+  const explorer = EXPLORER[chain]
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position: 'fixed', inset: 0, background: open ? 'rgba(2,6,23,0.55)' : 'transparent', backdropFilter: open ? 'blur(3px)' : 'none', pointerEvents: open ? 'auto' : 'none', transition: 'background 0.18s, backdrop-filter 0.18s', zIndex: 70 }} />
+      <aside role="dialog" aria-modal="true" aria-label={`${token.name} quick preview`} style={{
+        position: 'fixed', top: 0, right: 0, height: '100dvh', width: 'min(360px, 100vw)',
+        transform: open ? 'translateX(0)' : 'translateX(105%)', transition: 'transform 0.16s cubic-bezier(.22,1,.36,1)',
+        zIndex: 80, background: 'linear-gradient(180deg, #07111f, #020617 58%)',
+        borderLeft: `1px solid ${accent.color}2e`, boxShadow: '-20px 0 52px rgba(0,0,0,0.4)',
+        color: '#e2e8f0', overflowY: 'auto', padding: '16px',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px', marginBottom: '14px' }}>
+          <div style={{ minWidth: 0 }}>
+            <p style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#f8fafc', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{token.name}</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '3px' }}>
+              <span style={{ fontSize: '10.5px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{token.symbol}</span>
+              <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: isRobinhood ? '#d7fe04' : '#5eead4', background: isRobinhood ? 'rgba(215,254,4,0.10)' : 'rgba(45,212,191,0.10)', border: `1px solid ${isRobinhood ? 'rgba(215,254,4,0.30)' : 'rgba(45,212,191,0.30)'}`, fontFamily: 'var(--font-plex-mono)' }}>{isRobinhood ? 'Robinhood' : 'Base'}</span>
+            </div>
+          </div>
+          <button onClick={onClose} aria-label="Close preview" style={{ all: 'unset', cursor: 'pointer', color: '#64748b', fontSize: '18px', lineHeight: 1, padding: '2px', flexShrink: 0 }}>×</button>
+        </div>
+
+        {/* Score + status */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 14px', borderRadius: '12px', background: `${accent.color}0f`, border: `1px solid ${accent.color}30`, marginBottom: '10px' }}>
+          <p style={{ margin: 0, fontSize: '26px', fontWeight: 800, color: accent.color, fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>{token.radarScore}</p>
+          <div style={{ minWidth: 0 }}>
+            <p style={{ margin: 0, fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', color: accent.color, fontFamily: 'var(--font-plex-mono)' }}>{getStatusDisplayLabel(token)}</p>
+            <p style={{ margin: '2px 0 0', fontSize: '9.5px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)' }}>#{shortAddr(token.contract)} · {fmtAge(token.ageMinutes)}</p>
+          </div>
+        </div>
+
+        {/* Top risk / top positive — 1-2 line summaries, not full evidence sections */}
+        <div style={{ display: 'grid', gap: '7px', marginBottom: '10px' }}>
+          <div style={{ padding: '9px 11px', borderRadius: '10px', background: 'rgba(248,113,113,0.05)', border: '1px solid rgba(248,113,113,0.16)' }}>
+            <p style={{ margin: '0 0 2px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.10em', color: '#f2b8b8', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Top Risk</p>
+            <p style={{ margin: 0, fontSize: '11px', color: '#e2e8f0', lineHeight: 1.4 }}>{riskFlag ?? 'No confirmed risk signal this cycle.'}</p>
+          </div>
+          <div style={{ padding: '9px 11px', borderRadius: '10px', background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.16)' }}>
+            <p style={{ margin: '0 0 2px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.10em', color: '#99f6e4', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Top Positive</p>
+            <p style={{ margin: 0, fontSize: '11px', color: '#e2e8f0', lineHeight: 1.4 }}>{positiveFlag ?? 'No standout positive signal yet.'}</p>
+          </div>
+        </div>
+
+        {/* Market snapshot — one compact row, not the full Market Snapshot section */}
+        <div style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.08)', marginBottom: '10px' }}>
+          <p style={{ margin: '0 0 6px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.10em', color: '#5b7186', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Market Snapshot</p>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '3px 14px', fontSize: '10.5px', color: '#7c93a8', fontFamily: 'var(--font-plex-mono)' }}>
+            <span>LIQ <b style={{ color: '#e2e8f0', fontWeight: 700 }}>{fmtUSD(token.liquidityUsd)}</b></span>
+            <span>VOL <b style={{ color: '#e2e8f0', fontWeight: 700 }}>{fmtUSD(token.volume24h)}</b></span>
+            <span>{valuationDisplay.label.toUpperCase()} <b style={{ color: '#e2e8f0', fontWeight: 700 }}>{valuationDisplay.value}</b></span>
+          </div>
+        </div>
+
+        {/* Next action — one line, same spirit as the feed card's insight text */}
+        <div style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(34,211,238,0.05)', border: '1px solid rgba(34,211,238,0.18)', marginBottom: '14px' }}>
+          <p style={{ margin: '0 0 3px', fontSize: '8.5px', fontWeight: 800, letterSpacing: '0.10em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Next Action</p>
+          <p style={{ margin: 0, fontSize: '11px', color: '#a5f3fc', lineHeight: 1.4 }}>{nextAction}</p>
+        </div>
+
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '8px' }}>
+          <ActionButton label="Scan Token" variant="primary" onClick={onScan} />
+          <a href={explorer} target="_blank" rel="noreferrer" style={{ textDecoration: 'none', minHeight: '27px', padding: '5px 9px', borderRadius: '8px', fontSize: '9px', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', border: '1px solid rgba(96,165,250,0.20)', background: 'rgba(255,255,255,0.03)', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', display: 'inline-flex', alignItems: 'center' }}>Open Explorer</a>
+          <ActionButton label={tracking ? 'Watching' : 'Watchlist'} variant="ghost" active={tracking} onClick={onTrackToggle} />
+        </div>
+
+        <button
+          onClick={onOpenFullReport}
+          style={{ width: '100%', padding: '11px', borderRadius: '10px', border: '1px solid rgba(45,212,191,0.30)', background: 'rgba(45,212,191,0.10)', color: '#5eead4', fontSize: '11px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer' }}
+        >
+          Open Full Report →
+        </button>
+      </aside>
+    </>
+  )
+}
+
 function CortexRadarPanel({ summary, topTokens, onRescan, chain }: { summary: RadarSummary; topTokens: TokenIntel[]; onRescan: () => void; chain: RadarChain }) {
   const isRobinhood = chain === 'robinhood'
   const signals = [
@@ -1241,7 +1358,12 @@ export default function BaseRadarPage() {
     queueMicrotask(() => { void loadWatchlist() })
   }, [loadWatchlist])
   const [selectedToken, setSelectedToken] = useState<TokenIntel | null>(null)
+  // QUICK-PREVIEW / FULL-REPORT, DISCLOSED (Radar token detail UX polish task): `drawerOpen` now
+  // controls the compact QuickPreviewPanel (opened first, on every card click — same trigger as
+  // before) instead of jumping straight to the full ProjectOverviewDrawer. `fullReportOpen` is the
+  // new, separate step reached only via the preview's "Open Full Report" button.
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [fullReportOpen, setFullReportOpen] = useState(false)
   // CHAIN SELECTOR STATE, DISCLOSED (originally a Robinhood scaffold task — Robinhood now has the
   // same real discovery/gate pipeline as Base, see the ROBINHOOD-CHAIN-SUPPORT header comment in
   // app/api/radar/route.ts). fetchData()/loadOnePage read effectiveRadarChainRef.current so they
@@ -2204,16 +2326,35 @@ export default function BaseRadarPage() {
         </div>
       </div>
 
+      {/* QUICK-PREVIEW-THEN-FULL-REPORT, DISCLOSED (Radar token detail UX polish task): the
+          preview renders whenever a token is selected and the full report isn't open — clicking
+          "Open Full Report" swaps to the real ProjectOverviewDrawer (mode="full") with the exact
+          same data; closing the full report returns straight to the feed (matches the explicit
+          "close/back returns to feed" acceptance criterion) rather than back to the preview. */}
+      {selectedToken && (
+        <QuickPreviewPanel
+          token={selectedToken}
+          chain={effectiveRadarChain}
+          open={drawerOpen && !fullReportOpen}
+          tracking={isWatched(selectedToken.contract)}
+          onTrackToggle={() => void toggleTrack(selectedToken)}
+          onScan={() => openToken(selectedToken.contract, effectiveRadarChain)}
+          onOpenFullReport={() => setFullReportOpen(true)}
+          onClose={() => setDrawerOpen(false)}
+        />
+      )}
+
       <ProjectOverviewDrawer
         token={selectedToken}
-        open={drawerOpen}
+        open={fullReportOpen}
+        mode="full"
         // CHAIN-PROP-NEVER-PASSED, DISCLOSED (bug hunt, self-caught while wiring Robinhood chain
         // support into the drawer): this prop was never actually passed here — it silently defaulted
         // to 'base' every time regardless of which tab was active, so opening the drawer for a
         // Robinhood token would request /api/base-radar/enrichment?...&chain=base, quietly looking up
         // the WRONG chain's contract instead of erroring or working correctly.
         chain={effectiveRadarChain}
-        onClose={() => setDrawerOpen(false)}
+        onClose={() => { setFullReportOpen(false); setDrawerOpen(false) }}
         onSimulationUpdate={handleDrawerSimulationUpdate}
         tracking={selectedToken ? isWatched(selectedToken.contract) : false}
         onTrackToggle={selectedToken ? () => void toggleTrack(selectedToken) : undefined}
