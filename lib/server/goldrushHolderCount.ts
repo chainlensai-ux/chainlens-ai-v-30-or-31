@@ -77,11 +77,33 @@ const holderCountCache = new Map<string, { count: number | null; reason?: Holder
 // are computed directly from these 20 real balances with no extra call and no guessing. Fetching
 // only 20 rows means top20 is exact whenever the token has >=20 holders (fewer holders makes top20
 // trivially 100%); it is never extrapolated or estimated from a partial sample.
+// PROTOCOL-CUSTODY-EXCLUSION, DISCLOSED (reported live: a Robinhood token's Top 1 holder showed
+// 0x8366...0951 at 38.5% — this is the real, independently-verified Uniswap V4 PoolManager
+// address for Robinhood Chain (see lib/server/uniswapV4RobinhoodRpc.ts's own header for the full
+// verification: real, verified source code matching Uniswap's public v4-core repo, 14,921
+// transactions, $12M+ live balance — not guessed). V4 is a singleton design — EVERY V4 pool on
+// the chain deposits its liquidity into this ONE shared contract, so it will recur as "top
+// holder" across many unrelated tokens, reading exactly like a single dangerous wallet
+// controlling a large share of supply when it's actually the pool custody contract itself (the
+// same conceptual role a V2 pair address plays, just shared across every V4 pool instead of one
+// pair per pool). Counting it toward Top 1/10/20% inflates the concentration-risk score/label for
+// every V4 token — a real scoring distortion, not just a display nit. Excluded from the
+// percentage math below; still surfaced (not hidden) via protocolHeldPercent and a labeled
+// topHolders row, so this evidence isn't silently thrown away, just correctly recategorized as
+// protocol custody rather than wallet concentration.
+const KNOWN_NON_WALLET_HOLDER_ADDRESSES: Record<'base' | 'robinhood', Set<string>> = {
+  base: new Set(),
+  robinhood: new Set(['0x8366a39cc670b4001a1121b8f6a443a643e40951']),
+}
+const KNOWN_NON_WALLET_HOLDER_LABELS: Record<string, string> = {
+  '0x8366a39cc670b4001a1121b8f6a443a643e40951': 'Uniswap V4 Pool Custody (PoolManager)',
+}
+
 export interface ConcentrationResult {
   top1: number | null
   top10: number | null
   top20: number | null
-  topHolders: Array<{ rank: number; address: string; percent: number | null }>
+  topHolders: Array<{ rank: number; address: string; percent: number | null; label?: string }>
   reason: HolderCountReason
   chainPathUsed?: string
   httpStatus?: number | null
@@ -93,6 +115,10 @@ export interface ConcentrationResult {
   // network call this invocation. Used by aggregate audit objects (cacheHits) so that number is
   // never guessed/estimated.
   fromCache?: boolean
+  // Sum of raw balance held by known-non-wallet (protocol custody) addresses, as a percent of
+  // total supply — real, measured from the same rows top1/10/20 are computed from, just excluded
+  // from those wallet-concentration figures. Null when none were found among the fetched rows.
+  protocolHeldPercent?: number | null
 }
 
 const concentrationCache = new Map<string, { value: ConcentrationResult; expiresAt: number }>()
@@ -164,11 +190,23 @@ export async function fetchGoldRushConcentration(contract: string, chain: 'base'
       // producing a percentage off by 10^decimals) can't occur because both operands always come from
       // the same source in the same units.
       const pctOf = (sumBig: bigint) => Number((sumBig * BigInt(1_000_000)) / totalSupplyFinal) / 10_000
-      const top1 = rows.length >= 1 ? pctOf(rows[0].balBig) : null
-      const top10 = rows.length >= 1 ? pctOf(rows.slice(0, 10).reduce((acc, r) => acc + r.balBig, BigInt(0))) : null
-      const top20 = rows.length >= 1 ? pctOf(rows.slice(0, 20).reduce((acc, r) => acc + r.balBig, BigInt(0))) : null
-      const topHolders = rows.slice(0, 20).map((r, index) => ({ rank: index + 1, address: r.address, percent: pctOf(r.balBig) }))
-      return { top1, top10, top20, topHolders, reason: 'ok', chainPathUsed: chainPath, totalSupplySource: totalSupplySource ?? undefined }
+      // PROTOCOL-CUSTODY-EXCLUSION, DISCLOSED (see the const declarations above this function for
+      // the full verification/rationale): top1/10/20 — the figures that actually drive the
+      // concentration-risk label/score — are computed from real wallet rows only. Nothing is
+      // hidden: topHolders below still includes the excluded row(s) at their real rank, just
+      // labeled, and protocolHeldPercent surfaces the excluded share as its own honest figure.
+      const nonWalletAddresses = KNOWN_NON_WALLET_HOLDER_ADDRESSES[chain]
+      const walletRows = rows.filter(r => !nonWalletAddresses.has(r.address.toLowerCase()))
+      const protocolRows = rows.filter(r => nonWalletAddresses.has(r.address.toLowerCase()))
+      const top1 = walletRows.length >= 1 ? pctOf(walletRows[0].balBig) : null
+      const top10 = walletRows.length >= 1 ? pctOf(walletRows.slice(0, 10).reduce((acc, r) => acc + r.balBig, BigInt(0))) : null
+      const top20 = walletRows.length >= 1 ? pctOf(walletRows.slice(0, 20).reduce((acc, r) => acc + r.balBig, BigInt(0))) : null
+      const protocolHeldPercent = protocolRows.length > 0 ? pctOf(protocolRows.reduce((acc, r) => acc + r.balBig, BigInt(0))) : null
+      const topHolders = rows.slice(0, 20).map((r, index) => {
+        const label = KNOWN_NON_WALLET_HOLDER_LABELS[r.address.toLowerCase()]
+        return { rank: index + 1, address: r.address, percent: pctOf(r.balBig), ...(label ? { label } : {}) }
+      })
+      return { top1, top10, top20, topHolders, reason: 'ok', chainPathUsed: chainPath, totalSupplySource: totalSupplySource ?? undefined, protocolHeldPercent }
     } catch (err) {
       const timedOut = err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')
       return empty(timedOut ? 'timeout' : 'http_error', chainPath)

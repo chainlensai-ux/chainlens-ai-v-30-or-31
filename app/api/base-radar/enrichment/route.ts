@@ -544,12 +544,22 @@ function buildPublicPayload(scan: Record<string, any>, chain: ChainKey, contract
           address: h.address ?? null,
           percent: finiteNumber(h.percent ?? h.pctOfSupply),
           isContract: typeof h.isContract === 'boolean' ? h.isContract : null,
-          walletType: h.walletType ?? null,
+          // PROTOCOL-CUSTODY-LABEL, DISCLOSED: h.label is fetchGoldRushConcentration's own
+          // known-non-wallet-address label (e.g. "Uniswap V4 Pool Custody (PoolManager)") — set
+          // only for the one independently-verified Robinhood V4 PoolManager address today, never
+          // guessed. Reuses the existing walletType field (already part of this row's shape,
+          // previously always null/unrendered) rather than adding a new one.
+          walletType: h.label ?? h.walletType ?? null,
         })),
         concentration: deriveConcentrationRisk(top10, top20)
           ?? scan.cortexRiskEngine?.holderIntelligence?.concentration ?? scan.holderIntelligence?.concentration ?? null,
         creatorInTopHolders: typeof scan.creatorInTopHolders === 'boolean' ? scan.creatorInTopHolders : null,
         creatorHolderPercent,
+        // PROTOCOL-CUSTODY-EXCLUSION, DISCLOSED: real, measured share of supply held by known
+        // non-wallet (protocol custody) addresses excluded from top1/10/20 above — see
+        // lib/server/goldrushHolderCount.ts's own header for the full rationale. Only ever set
+        // when fallbackConcentration actually found one among its fetched rows; never inferred.
+        protocolHeldPercent: usedFallbackConcentration ? (fallbackConcentration!.protocolHeldPercent ?? null) : null,
       }
     })(),
     deployer: {
