@@ -296,6 +296,41 @@ html, body {
   }
 }
 
+/* ── Homepage scroll reveal ────────────────────────────────────────────────
+   Applied by components/home/Reveal.tsx only — hero copy, feature/pricing cards, market
+   overview card. Restrained on purpose: a soft fade + short rise + faint blur, no bounce, no
+   scale, no glow. .reveal-skip is the immediate/no-op state (prefers-reduced-motion, or this
+   session already completed a reveal pass) and always wins via the reduced-motion block below,
+   which the site-wide 767px/transition-duration rule above already backs up. */
+.reveal-ready {
+  opacity: 0;
+  transform: translateY(18px);
+  filter: blur(4px);
+  transition: opacity 620ms cubic-bezier(0.22, 1, 0.36, 1),
+              transform 620ms cubic-bezier(0.22, 1, 0.36, 1),
+              filter 620ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.reveal-ready.reveal-visible {
+  opacity: 1;
+  transform: translateY(0);
+  filter: blur(0);
+}
+.reveal-skip {
+  opacity: 1;
+  transform: none;
+  filter: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal-ready,
+  .reveal-ready.reveal-visible,
+  .reveal-skip {
+    opacity: 1 !important;
+    transform: none !important;
+    filter: none !important;
+    transition: none !important;
+  }
+}
+
 @media (max-width: 767px) {
   .home-page {
     background: #050814 !important;

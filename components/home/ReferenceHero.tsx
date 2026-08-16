@@ -3,6 +3,7 @@
 // Reversible homepage experiment: flip USE_REFERENCE_HERO to false to restore legacy homepage.
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
+import Reveal from './Reveal'
 
 const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
 
@@ -45,17 +46,21 @@ export default function ReferenceHero() {
         <div className="ref-bg" aria-hidden="true" />
         <main className="ref-hero">
           <div className="ref-copy">
-            <div className="ref-badge"><span />POWERED BY CORTEX ENGINE</div>
-            <h1>Find the move<br /><span>before the crowd.</span></h1>
-            <div className="ref-ctas">
+            {/* SCROLL REVEAL, DISCLOSED (homepage reveal task): badge -> title -> buttons -> trust
+                line, staggered per the task's required order. The wallet-connection line is
+                deliberately left OUT of the reveal (always rendered, never animated) — this is a
+                live, clickable control (ConnectWallet), not decorative copy. */}
+            <Reveal><div className="ref-badge"><span />POWERED BY CORTEX ENGINE</div></Reveal>
+            <Reveal delayMs={70}><h1>Find the move<br /><span>before the crowd.</span></h1></Reveal>
+            <Reveal delayMs={160}><div className="ref-ctas">
               <Link className="ref-btn ref-btn-primary" href="/terminal"><span className="ref-terminal-mark">›_</span> Launch Terminal <span>→</span></Link>
               <Link className="ref-btn ref-btn-secondary" href="/terminal/token-scanner">Scan Token Free</Link>
-            </div>
+            </div></Reveal>
             <div className="ref-wallet-line" aria-label="Wallet connection status"><span className="ref-wallet-dot" /><div className="ref-wallet-mini"><ConnectWallet className="ref-wallet-widget" /></div></div>
-            <p className="ref-trust">No hype. No fake scores. ChainLens shows evidence, gaps, and risk before you trade.</p>
+            <Reveal delayMs={220}><p className="ref-trust">No hype. No fake scores. ChainLens shows evidence, gaps, and risk before you trade.</p></Reveal>
           </div>
 
-          <aside className="ref-market-card" aria-label="Market overview">
+          <Reveal delayMs={100}><aside className="ref-market-card" aria-label="Market overview">
             <div className="ref-card-head"><span>MARKET OVERVIEW</span><button type="button"><span />Base Network <svg width="10" height="6" viewBox="0 0 10 6"><path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" /></svg></button></div>
             <div className="ref-market-list">
               {marketRows.map((row, index) => (
@@ -67,10 +72,14 @@ export default function ReferenceHero() {
               ))}
             </div>
             <div className="ref-card-foot"><span>Live data from onchain activity and liquidity, not hype.</span><span className="ref-updated"><i />Updated just now</span></div>
-          </aside>
+          </aside></Reveal>
 
           <div className="ref-features">
-            {featureCards.map((item, index) => <div className="ref-feature" key={item.title}><div className="ref-feature-icon" style={{ color: item.color, borderColor: `${item.color}55`, boxShadow: `0 0 18px ${item.color}24` }}><Icon name={item.icon} /></div><div><strong>{item.title}</strong><span>{item.desc}</span></div>{index < featureCards.length - 1 ? <em /> : null}</div>)}
+            {featureCards.map((item, index) => (
+              <Reveal key={item.title} delayMs={260 + index * 70}>
+                <div className="ref-feature"><div className="ref-feature-icon" style={{ color: item.color, borderColor: `${item.color}55`, boxShadow: `0 0 18px ${item.color}24` }}><Icon name={item.icon} /></div><div><strong>{item.title}</strong><span>{item.desc}</span></div>{index < featureCards.length - 1 ? <em /> : null}</div>
+              </Reveal>
+            ))}
           </div>
         </main>
       </section>
