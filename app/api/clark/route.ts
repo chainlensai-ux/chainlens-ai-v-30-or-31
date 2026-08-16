@@ -1534,6 +1534,23 @@ function buildClarkToolPlan(input: {
   if (routedIntent.intent === 'base_radar') return { intent: "market", tools: [{ name: "market_get_base_movers", args: { page: 1, perPage: 20 }, required: false }], depth: "normal", followupContext: { address: null, lastTokenAddress: null, lastWalletAddress: null, marketFollowup: true, selectedOptionIndex: null } };
   if (routedIntent.intent === 'wallet_scan' || routedIntent.intent === 'portfolio') return { intent: routedIntent.intent === 'portfolio' ? "wallet_balance" : "wallet_quality", tools: routedIntent.address ? [{ name: "wallet_get_snapshot", args: { address: routedIntent.address }, required: true }] : [], depth: "normal", followupContext: { address: routedIntent.address, lastTokenAddress: null, lastWalletAddress: routedIntent.address, marketFollowup: false, selectedOptionIndex: null } };
   if (routedIntent.intent === 'liquidity_scan' && routedIntent.address) return { intent: "liquidity_safety", tools: [{ name: "liquidity_analyze", args: { address: routedIntent.address }, required: true }], depth: "normal", followupContext: { address: routedIntent.address, lastTokenAddress: routedIntent.address, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
+  // DEV-WALLET QUESTION WITH AN ADDRESS ALREADY PASTED, DISCLOSED (Clark right-panel audit
+  // follow-up — confirmed production bug): "who is the deployer for this token 0x..." has an
+  // address, so resolveClarkIntent (lib/clarkIntent.ts — it has no dev_wallet concept at all)
+  // always defaulted it to 'token_scan', and the line right below this one would then early-
+  // return a PLAIN token_scan tool plan before the deployer question was ever read — silently
+  // answering a deployer question with a generic token safety scan instead of running
+  // dev_wallet_analyze. The existing "HARD PRIORITY OVERRIDE" a few lines down already handles
+  // this exact phrase correctly, but only `if (!directAddress)` — i.e. only when NO address is
+  // present, the opposite of this case, so it never got a chance to fire either. Same regex
+  // detectIntent() already uses for its own (separately-computed, only used for the
+  // basic-intent/missing-address gate) "dev_wallet" ClarkIntent, reused here for the one thing
+  // that was actually missing: routing an address-bearing deployer question to
+  // dev_wallet_analyze instead of the generic token_scan default.
+  const DEV_WALLET_QUESTION_RE = /\b(dev\s+wallet|deployer|who\s+deployed|who\s+made\s+this|who\s+built|who\s+created|check\s+creator|origin\s+wallet|is\s+the\s+dev|check\s+dev|deployer\s+of)\b/i;
+  if (directAddress && DEV_WALLET_QUESTION_RE.test(message)) {
+    return { intent: "dev_wallet", tools: [{ name: "dev_wallet_analyze", args: { address: directAddress }, required: true }], depth: "normal", followupContext: { address: directAddress, lastTokenAddress: directAddress, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
+  }
   if (routedIntent.intent === 'token_scan' && routedIntent.address) return { intent: "token_analysis", tools: [{ name: "token_scan", args: { address: routedIntent.address }, required: true }], depth: "normal", followupContext: { address: routedIntent.address, lastTokenAddress: routedIntent.address, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
   // HARD PRIORITY OVERRIDE — dev_wallet and liquidity_safety by token name, before any classification
   if (!directAddress) {
