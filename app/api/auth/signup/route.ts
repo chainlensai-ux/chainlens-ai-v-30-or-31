@@ -105,11 +105,18 @@ export async function POST(request: NextRequest) {
     const msg = signUpError.message.toLowerCase()
     console.error('[signup] error status:', signUpError.status)
 
+    // USER-ENUMERATION FIX, DISCLOSED (security audit): this branch previously returned a
+    // distinct 409 "email_exists" response with an explicit "already exists" message, letting
+    // anyone submit arbitrary email addresses here to learn which ones already have a ChainLens
+    // account — a standard, OWASP-recognized enumeration vector, and a real targeting/phishing
+    // risk for a financial product. Supabase's own signUp() call itself already doesn't leak this
+    // (it returns a fake unconfirmed user object for an existing email rather than an error in
+    // most configurations) — this route was the one adding the distinguishable signal back in.
+    // Now responds with the exact same shape a genuine new signup gets, so an existing-email
+    // attempt is indistinguishable from a real one; Supabase does not send a new confirmation
+    // email to an already-verified address, so no account state or notification is fabricated.
     if (msg.includes('already registered') || msg.includes('already exists')) {
-      return NextResponse.json(
-        { error: 'email_exists', message: 'An account with this email already exists. Try signing in.' },
-        { status: 409 },
-      )
+      return NextResponse.json({ ok: true, requiresEmailVerification: true })
     }
     if (msg.includes('invalid email') || msg.includes('valid email') || msg.includes('email address')) {
       return NextResponse.json(

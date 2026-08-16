@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
+import { isSafeInternalPath } from '@/lib/safeNextPath';
 
 export default function AuthCallbackPage() {
   const router = useRouter();
@@ -57,7 +58,7 @@ export default function AuthCallbackPage() {
         router.replace('/reset-password');
         return;
       }
-      router.replace(nextPath.startsWith('/') ? nextPath : '/terminal');
+      router.replace(isSafeInternalPath(nextPath) ? nextPath : '/terminal');
     }
 
     completeAuth();

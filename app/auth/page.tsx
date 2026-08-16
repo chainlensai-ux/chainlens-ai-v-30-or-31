@@ -5,6 +5,7 @@ import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
+import { isSafeInternalPath } from '@/lib/safeNextPath';
 
 type Mode = 'signin' | 'signup' | 'forgot';
 
@@ -76,7 +77,7 @@ export default function AuthPage() {
           return;
         }
         const nextParam = new URLSearchParams(window.location.search).get('next')
-        router.replace(nextParam?.startsWith('/') ? nextParam : '/terminal');
+        router.replace(isSafeInternalPath(nextParam) ? nextParam : '/terminal');
         return;
       }
 
@@ -94,7 +95,7 @@ export default function AuthPage() {
           return;
         }
         const nextParam = new URLSearchParams(window.location.search).get('next')
-        router.replace(nextParam?.startsWith('/') ? nextParam : '/terminal');
+        router.replace(isSafeInternalPath(nextParam) ? nextParam : '/terminal');
       }
     });
 
@@ -108,7 +109,7 @@ export default function AuthPage() {
     setError(null);
     setLoading(true); // immediate visual feedback — INP: state update before any async work
     const nextParam = new URLSearchParams(window.location.search).get('next')
-    if (nextParam?.startsWith('/')) {
+    if (isSafeInternalPath(nextParam)) {
       try { sessionStorage.setItem('cl_auth_next', nextParam) } catch {}
       try { localStorage.setItem('cl_auth_next', nextParam) } catch {}
       document.cookie = `cl_auth_next=${encodeURIComponent(nextParam)}; Max-Age=3600; Path=/; SameSite=Lax`
