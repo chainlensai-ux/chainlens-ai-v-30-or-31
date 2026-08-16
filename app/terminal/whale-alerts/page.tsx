@@ -205,6 +205,10 @@ function Pill({ children, color = 'slate', dot }: { children: React.ReactNode; c
   )
 }
 
+// DESIGN, DISCLOSED (Whale Alerts UI redesign): the sparkline is deliberately kept as SUPPORT, not
+// a feature — no gradient area fill, hairline stroke, low opacity, no end-cap dot. Same fixed paths
+// as before (these have always been decorative shape, never plotted data — unchanged, and no data
+// claim is made about them anywhere in the UI).
 function CardSpark({ color, seed = 0 }: { color: string; seed?: number }) {
   const paths = [
     'M0 30 L18 22 L36 16 L54 20 L72 11 L90 14 L108 7 L126 10 L144 3 L160 2',
@@ -213,21 +217,41 @@ function CardSpark({ color, seed = 0 }: { color: string; seed?: number }) {
     'M0 26 L18 19 L36 14 L54 21 L72 10 L90 15 L108 6 L126 11 L144 2 L160 5',
   ]
   const d = paths[seed % 4]
-  const uid = `csp${seed}${color.replace('#', '')}`
   return (
-    <svg width="160" height="40" viewBox="0 0 160 40" fill="none"
-      style={{ position: 'absolute', bottom: 0, right: 0, opacity: 0.48, pointerEvents: 'none' }}>
-      <defs>
-        <linearGradient id={uid} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity="0.26" />
-          <stop offset="100%" stopColor={color} stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path d={`${d} L160 40 L0 40Z`} fill={`url(#${uid})`} />
-      <path d={d} stroke={color} strokeWidth="1.5" strokeLinecap="round" fill="none" />
-      <circle cx="160" cy="2" r="2" fill={color} />
+    <svg width="120" height="32" viewBox="0 0 160 40" fill="none" preserveAspectRatio="none"
+      style={{ position: 'absolute', bottom: 12, right: 14, opacity: 0.22, pointerEvents: 'none' }}>
+      <path d={d} stroke={color} strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" fill="none" />
     </svg>
   )
+}
+
+// Crisp segmented control — flat surface, solid selected state, no glow. Replaces the previous
+// soft/glowy pill rows for Time Window and Feed Mode.
+function Segmented<T extends string>({ options, value, onChange, className }: {
+  options: ReadonlyArray<{ value: T; label: string }>
+  value: T
+  onChange: (v: T) => void
+  className?: string
+}) {
+  return (
+    <div className={`wa-seg inline-flex${className ? ` ${className}` : ''}`} role="tablist">
+      {options.map((o) => {
+        const active = value === o.value
+        return (
+          <button key={o.value} type="button" role="tab" aria-selected={active}
+            onClick={() => onChange(o.value)}
+            className={`wa-seg-btn${active ? ' is-active' : ''}`}>
+            {o.label}
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+// Small uppercase field label — one consistent treatment for every control group and stat.
+function FieldLabel({ children }: { children: React.ReactNode }) {
+  return <span className="wa-label">{children}</span>
 }
 
 function SymBubble({ label, size, avatarBg, line, small }: { label: string; size: number; avatarBg: string; line: string; small?: boolean }) {
@@ -301,6 +325,10 @@ export default function WhaleAlertsPage() {
   const [feedError, setFeedError]     = useState(false)
   const [feedDiagnostics, setFeedDiagnostics] = useState<FeedDiagnostics | null>(null)
   const [intelligence, setIntelligence] = useState<AlertIntelligence | null>(null)
+  // UI-ONLY DISCLOSURE STATE, DISCLOSED (Whale Alerts UI redesign): drives the collapsed/expanded
+  // state of the diagnostics disclosure in the sync module. No fetch, no backend involvement — it
+  // only reveals `feedDiagnostics`, which this page already receives from /api/whale-alerts today.
+  const [showDiagnostics, setShowDiagnostics] = useState(false)
   const [syncCooldownLeftMs, setSyncCooldownLeftMs] = useState(0)
   const [fullSyncCooldownLeftMs, setFullSyncCooldownLeftMs] = useState(0)
 
@@ -567,407 +595,439 @@ export default function WhaleAlertsPage() {
   }
   const goClark = () => { window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(buildClarkPrompt())}&autosend=1` }
 
+  // COPY TIGHTENED, DISCLOSED (Whale Alerts UI redesign): sub-labels were restating the label in
+  // words ("Last quarter hour" under "ALERTS · 15M"). Now each carries a distinct unit/scope line.
   const metrics = [
-    { label: 'ALERTS · 15M',    val: stats.alerts15m,      sub: 'Last quarter hour',   color: '#2dd4bf' },
-    { label: 'ALERTS · 1H',     val: stats.alerts1h,       sub: 'Past 60 minutes',      color: '#2dd4bf' },
-    { label: 'ALERTS · 24H',    val: stats.alerts24h,      sub: 'Rolling day window',   color: '#8b5cf6' },
-    { label: 'TRACKED WALLETS', val: '60+', sub: 'Smart money + manual', color: '#ec4899' },
+    { label: 'Alerts',          unit: '15m', val: stats.alerts15m, sub: 'Rolling',        color: '#2dd4bf' },
+    { label: 'Alerts',          unit: '1h',  val: stats.alerts1h,  sub: 'Rolling',        color: '#2dd4bf' },
+    { label: 'Alerts',          unit: '24h', val: stats.alerts24h, sub: 'Rolling',        color: '#8b5cf6' },
+    { label: 'Tracked wallets', unit: null,  val: '60+',           sub: 'Smart money + manual', color: '#94a3b8' },
   ]
 
-  const cardBg   = 'rgba(7,16,27,0.92)'
-  const innerBg  = 'rgba(4,10,18,0.95)'
-  const bdr      = '1px solid rgba(255,255,255,0.09)'
-  const bdrInner = '1px solid rgba(255,255,255,0.06)'
+  // SURFACE SYSTEM, DISCLOSED (Whale Alerts UI redesign): three flat, neutral surfaces + two border
+  // weights, replacing the previous per-card gradients/glows. Engineered, not decorated.
+  const cardBg   = 'rgba(9,14,24,0.90)'
+  const innerBg  = 'rgba(5,9,17,0.80)'
+  const bdr      = '1px solid rgba(148,163,184,0.12)'
+  const bdrInner = '1px solid rgba(148,163,184,0.07)'
 
   if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
   if (!betaEliteActive && !canAccessFeature(plan, 'whale-alerts')) return <LockedPanel feature="whale-alerts" />
 
   return (
     <div className="whale-alerts-page min-h-dvh overflow-x-hidden"
-      style={{ background: 'radial-gradient(ellipse 90% 60% at 50% -8%,rgba(45,212,191,0.09) 0%,transparent 52%),radial-gradient(ellipse 55% 45% at 88% 6%,rgba(139,92,246,0.07) 0%,transparent 46%),#060810', color: '#f1f5f9' }}>
+      style={{ background: 'radial-gradient(ellipse 120% 50% at 50% -10%,rgba(45,212,191,0.045) 0%,transparent 60%),#05070d', color: '#e2e8f0' }}>
 
       <style>{`
         @keyframes spin { to { transform: rotate(360deg) } }
+
+        /* ── Typography scale ─────────────────────────────────────────────── */
+        .wa-label {
+          font-size: 10px; font-weight: 700; letter-spacing: 0.13em; text-transform: uppercase;
+          color: #55647d; line-height: 1;
+        }
+        .wa-sec-title { font-size: 13px; font-weight: 700; letter-spacing: -0.005em; color: #e8eef7; margin: 0; }
+        .wa-help { font-size: 11.5px; line-height: 1.55; color: #5d6b82; margin: 0; }
+
+        /* ── Segmented control — flat, crisp, no glow ─────────────────────── */
+        .wa-seg {
+          gap: 2px; padding: 3px; border-radius: 9px;
+          background: rgba(2,6,14,0.60); border: 1px solid rgba(148,163,184,0.10);
+        }
+        .wa-seg-btn {
+          padding: 6px 14px; border-radius: 6px; border: 1px solid transparent;
+          font-size: 12px; font-weight: 600; line-height: 1; white-space: nowrap;
+          background: transparent; color: #64748b; cursor: pointer;
+          transition: color .13s, background .13s;
+        }
+        .wa-seg-btn:hover:not(.is-active) { color: #a9b6c9; background: rgba(148,163,184,0.05); }
+        .wa-seg-btn.is-active {
+          background: rgba(45,212,191,0.13); border-color: rgba(45,212,191,0.30); color: #5eead4;
+        }
+
+        /* ── Filter chips ─────────────────────────────────────────────────── */
+        .wa-chip {
+          padding: 6px 12px; border-radius: 7px; font-size: 12px; font-weight: 600; line-height: 1;
+          background: rgba(148,163,184,0.045); border: 1px solid rgba(148,163,184,0.10);
+          color: #64748b; cursor: pointer; transition: color .13s, background .13s, border-color .13s;
+        }
+        .wa-chip:hover:not(.is-active) { color: #a9b6c9; border-color: rgba(148,163,184,0.20); }
+        .wa-chip.is-active { background: rgba(45,212,191,0.13); border-color: rgba(45,212,191,0.30); color: #5eead4; }
+
+        /* ── Buttons ──────────────────────────────────────────────────────── */
+        .wa-btn {
+          display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+          border-radius: 8px; font-weight: 600; line-height: 1; cursor: pointer;
+          transition: background .13s, border-color .13s, color .13s, opacity .13s;
+          white-space: nowrap;
+        }
+        .wa-btn:disabled { cursor: not-allowed; }
+        .wa-btn-primary {
+          padding: 9px 16px; font-size: 12.5px; font-weight: 700;
+          background: #14b8a6; border: 1px solid #14b8a6; color: #04120f;
+        }
+        .wa-btn-primary:hover:not(:disabled) { background: #2dd4bf; border-color: #2dd4bf; }
+        .wa-btn-primary:disabled { background: rgba(20,184,166,0.20); border-color: rgba(20,184,166,0.22); color: rgba(4,18,15,0.55); }
+        .wa-btn-secondary {
+          padding: 8px 13px; font-size: 12px;
+          background: rgba(148,163,184,0.06); border: 1px solid rgba(148,163,184,0.14); color: #93a3ba;
+        }
+        .wa-btn-secondary:hover:not(:disabled) { background: rgba(148,163,184,0.11); color: #cbd5e1; }
+        .wa-btn-secondary:disabled { opacity: 0.42; }
+        .wa-btn-quiet {
+          padding: 6px 9px; font-size: 11px; font-weight: 600;
+          background: transparent; border: 1px solid transparent; color: #55647d;
+        }
+        .wa-btn-quiet:hover:not(:disabled) { color: #93a3ba; background: rgba(148,163,184,0.06); }
+        .wa-btn-quiet:disabled { opacity: 0.4; }
+
+        /* ── Feed row hover ───────────────────────────────────────────────── */
+        .wa-row { transition: background .12s; }
+        .wa-row:hover { background: rgba(148,163,184,0.028); }
+
+        @media (max-width: 900px) {
+          .wa-controls  { grid-template-columns: 1fr !important; }
+        }
         @media (max-width: 767px) {
-          .wa-main-wrap  { padding-top: 60px !important; }
-          .wa-hero       { grid-template-columns: 1fr !important; }
-          .wa-metrics    { grid-template-columns: repeat(2, 1fr) !important; }
-          .wa-controls   { grid-template-columns: 1fr !important; }
-          .wa-dropdowns  { grid-template-columns: 1fr 1fr !important; }
-          .wa-sync-btns  { flex-wrap: wrap !important; }
-          .wa-sync-btns > button { flex: 1 1 auto !important; min-width: 0 !important; }
-          .wa-timewin, .wa-feedmode { width: 100% !important; flex-wrap: wrap !important; }
-          .wa-hero-right { min-width: 0 !important; }
+          .wa-main-wrap { padding-top: 60px !important; }
+          .wa-head      { flex-direction: column !important; align-items: flex-start !important; }
+          .wa-metrics   { grid-template-columns: repeat(2, 1fr) !important; }
+          .wa-dropdowns { grid-template-columns: 1fr !important; }
+          .wa-ctl-row   { flex-direction: column !important; align-items: flex-start !important; }
+          .wa-sync-btns { flex-wrap: wrap !important; }
+          .wa-feed-actions { width: 100%; justify-content: flex-start !important; flex-wrap: wrap; }
         }
       `}</style>
 
-      <div className="wa-main-wrap mx-auto w-full flex flex-col" style={{ maxWidth: 1280, gap: 24, padding: '24px 16px' }}>
+      <div className="wa-main-wrap mx-auto w-full flex flex-col" style={{ maxWidth: 1280, gap: 16, padding: '20px 16px 40px' }}>
 
-        {/* ═══ 1. HERO ═══════════════════════════════════════════════════════ */}
-        <div className="wa-hero grid rounded-[28px]"
-          style={{ gridTemplateColumns: '1.4fr 360px', gap: 24, border: bdr, background: cardBg, padding: 24, boxShadow: '0 0 80px rgba(45,212,191,0.05),0 24px 64px rgba(0,0,0,0.55)' }}>
-
-          <div className="flex flex-col justify-center">
-            <div className="flex items-center" style={{ gap: 8, marginBottom: 12 }}>
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        {/* ═══ 1. CONTROL HEADER ═════════════════════════════════════════════
+            Compressed from a 2-column marketing hero (large h1, duplicated eyebrow, decorative
+            radar rings + fake sparkline) into a single-row operator header. Same information,
+            roughly a third of the vertical space, no decorative SVG. */}
+        <header className="wa-head flex items-center justify-between" style={{ gap: 16, paddingBottom: 2 }}>
+          <div className="flex items-center" style={{ gap: 11, minWidth: 0 }}>
+            <div className="flex shrink-0 items-center justify-center rounded-[9px]"
+              style={{ width: 32, height: 32, background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.22)' }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
               </svg>
-              <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#2dd4bf' }}>Whale Alerts</span>
-              <span style={{ color: '#1e293b' }}>·</span>
-              <span style={{ fontSize: 11, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#334155' }}>base mainnet</span>
             </div>
-            <h1 style={{ fontSize: '2.6rem', fontWeight: 800, lineHeight: 1.1, letterSpacing: '-0.02em', color: '#f8fafc', margin: 0 }}>Whale Alerts</h1>
-            <p style={{ marginTop: 8, maxWidth: 420, fontSize: 14, lineHeight: 1.6, color: '#64748b' }}>
-              Track selected Base wallets for meaningful token movement.
-            </p>
-            <div className="flex flex-wrap" style={{ gap: 8, marginTop: 16 }}>
-              <Pill color="cyan" dot>Base Mainnet</Pill>
-              <Pill color="slate">
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ marginRight: 2, opacity: 0.6 }}>
-                  <rect x="1" y="4" width="22" height="16" rx="2"/><line x1="1" y1="10" x2="23" y2="10"/>
-                </svg>
-                60+ tracked wallets
-              </Pill>
-              <Pill color="teal" dot>{syncing ? 'Syncing…' : 'On-demand sync mode'}</Pill>
-              <Pill color="purple" dot>CORTEX Watching</Pill>
+            <div style={{ minWidth: 0 }}>
+              <h1 style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.015em', lineHeight: 1.2, color: '#f1f5f9', margin: 0 }}>Whale Alerts</h1>
+              <p className="wa-help" style={{ marginTop: 2 }}>Tracked Base wallets, monitored for meaningful token movement.</p>
             </div>
           </div>
-
-          <div className="wa-hero-right flex flex-col justify-center rounded-[16px]" style={{ background: innerBg, border: bdrInner, padding: 16 }}>
-            <div className="flex items-start" style={{ gap: 16 }}>
-              <div className="relative shrink-0" style={{ width: 76, height: 76, marginTop: 2 }}>
-                {([0, 9, 18, 27] as const).map((ins, ri) => (
-                  <div key={ri} className="absolute rounded-full" style={{
-                    inset: ins,
-                    border: `1px solid rgba(45,212,191,${[0.10, 0.14, 0.21, 0.31][ri]})`,
-                    background: ri === 3 ? 'rgba(45,212,191,0.09)' : 'transparent',
-                  }}/>
-                ))}
-                <div className="absolute rounded-full" style={{ inset: 34, background: 'rgba(45,212,191,0.80)', boxShadow: '0 0 10px rgba(45,212,191,0.85)' }}/>
-                <div className="absolute rounded-full" style={{ width: 7, height: 7, top: 9, left: '50%', transform: 'translateX(-50%)', background: '#22c55e', boxShadow: '0 0 8px #22c55e' }}/>
-              </div>
-              <div className="flex-1" style={{ minWidth: 0 }}>
-                <p style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.16em', color: '#4ade80' }}>● Live Wallet Movement</p>
-                <p style={{ marginTop: 4, fontSize: 12, lineHeight: 1.5, color: '#475569' }}>Listening for high-signal wallet moves on Base.</p>
-                <div style={{ marginTop: 12 }}>
-                  <svg width="100%" height="28" viewBox="0 0 200 28" preserveAspectRatio="none" fill="none">
-                    <defs>
-                      <linearGradient id="hero-sp" x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="0%" stopColor="#2dd4bf" stopOpacity="0.20"/>
-                        <stop offset="100%" stopColor="#2dd4bf" stopOpacity="0"/>
-                      </linearGradient>
-                    </defs>
-                    <path d="M0 25 L22 20 L44 15 L66 18 L88 10 L110 13 L132 6 L154 9 L176 3 L200 2"
-                      stroke="#2dd4bf" strokeWidth="1.4" strokeLinecap="round" fill="none" opacity="0.70"/>
-                    <path d="M0 25 L22 20 L44 15 L66 18 L88 10 L110 13 L132 6 L154 9 L176 3 L200 2 L200 28 L0 28Z"
-                      fill="url(#hero-sp)"/>
-                    <circle cx="200" cy="2" r="2.2" fill="#2dd4bf" opacity="0.9"/>
-                  </svg>
-                </div>
-              </div>
-            </div>
+          <div className="flex flex-wrap items-center justify-end" style={{ gap: 6 }}>
+            <Pill color="cyan" dot>Base Mainnet</Pill>
+            <Pill color="slate">60+ wallets</Pill>
+            <Pill color={syncing ? 'amber' : 'teal'} dot>{syncing ? 'Syncing' : 'On-demand sync'}</Pill>
+            <Pill color="purple" dot>CORTEX</Pill>
           </div>
+        </header>
 
-        </div>
-
-        {/* ═══ 2. METRICS ════════════════════════════════════════════════════ */}
-        <div className="wa-metrics grid" style={{ gridTemplateColumns: 'repeat(4,1fr)', gap: 16 }}>
+        {/* ═══ 2. KPI ROW ════════════════════════════════════════════════════
+            Flat surfaces, no per-card icon tile, no bottom accent bar, no gradient spark fill.
+            The number is the only loud element; label and unit sit on one baseline above it. */}
+        <div className="wa-metrics grid" style={{ gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
           {metrics.map((m, idx) => (
-            <div key={m.label} className="relative overflow-hidden rounded-[16px]"
-              style={{ minHeight: 132, border: bdr, background: cardBg, padding: 20 }}>
-              <div className="flex items-center justify-center rounded-[12px]"
-                style={{ width: 32, height: 32, background: `${m.color}14`, border: `1px solid ${m.color}28` }}>
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={m.color} strokeWidth="2.2">
-                  <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-                </svg>
+            <div key={`${m.label}-${m.unit ?? 'total'}`} className="relative overflow-hidden rounded-[12px]"
+              style={{ border: bdr, background: cardBg, padding: '15px 16px 14px' }}>
+              <div className="flex items-baseline" style={{ gap: 6 }}>
+                <FieldLabel>{m.label}</FieldLabel>
+                {m.unit && (
+                  <span className="tabular-nums" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', color: m.color, opacity: 0.85 }}>
+                    {m.unit}
+                  </span>
+                )}
               </div>
-              <p style={{ marginTop: 12, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.14em', color: '#475569' }}>{m.label}</p>
-              <p className="tabular-nums" style={{ marginTop: 2, fontSize: '2.6rem', fontWeight: 800, lineHeight: 1, color: '#f8fafc' }}>{m.val}</p>
-              <p style={{ marginTop: 6, fontSize: 12, color: '#475569' }}>{m.sub}</p>
+              <p className="tabular-nums" style={{ marginTop: 10, fontSize: 30, fontWeight: 700, lineHeight: 1, letterSpacing: '-0.02em', color: '#f1f5f9' }}>{m.val}</p>
+              <p style={{ marginTop: 7, fontSize: 11, color: '#4a5769' }}>{m.sub}</p>
               <CardSpark color={m.color} seed={idx}/>
-              <div className="absolute" style={{ bottom: 0, left: 0, right: 0, height: 2, background: `linear-gradient(90deg,${m.color}55,transparent)` }}/>
             </div>
           ))}
         </div>
 
-        {/* ═══ 3. CONTROLS + SYNC ════════════════════════════════════════════ */}
-        <div className="rounded-[24px]" style={{ border: bdr, background: cardBg, padding: 20 }}>
-          <div className="wa-controls grid" style={{ gridTemplateColumns: '1.35fr 0.95fr', gap: 20 }}>
+        {/* ═══ 3. CONTROL BAR + SYNC MODULE ══════════════════════════════════
+            Previously one large card wrapping a 4-row stacked filter column and a heavy purple
+            gradient sync card. Now two peer modules: a grouped control bar (rows read left→right,
+            each group labelled once) and a compact operations module. */}
+        <div className="wa-controls grid" style={{ gridTemplateColumns: 'minmax(0,1.5fr) minmax(0,0.85fr)', gap: 10, alignItems: 'start' }}>
 
-            {/* left: filters */}
-            <div className="flex flex-col" style={{ gap: 16 }}>
-              <div>
-                <p style={{ marginBottom: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#475569' }}>Time Window</p>
-                <div className="wa-timewin flex w-fit rounded-[12px]" style={{ gap: 4, background: 'rgba(255,255,255,0.025)', border: bdrInner, padding: 4 }}>
-                  {WINDOWS.map(w => (
-                    <button key={w} onClick={() => setWindowValue(w)}
-                      className="rounded-[9px]"
-                      style={windowValue === w
-                        ? { padding: '6px 16px', fontSize: 12, fontWeight: 600, background: 'rgba(45,212,191,0.14)', border: '1px solid rgba(45,212,191,0.42)', color: '#2dd4bf', boxShadow: '0 0 14px rgba(45,212,191,0.12)' }
-                        : { padding: '6px 16px', fontSize: 12, fontWeight: 600, background: 'transparent', border: '1px solid transparent', color: '#475569' }}>
-                      {w}
-                    </button>
-                  ))}
-                </div>
+          {/* ── Control bar ── */}
+          <div className="rounded-[12px] flex flex-col" style={{ border: bdr, background: cardBg, padding: '14px 16px', gap: 14 }}>
+
+            <div className="wa-ctl-row flex flex-wrap items-center" style={{ gap: 22, rowGap: 12 }}>
+              <div className="flex items-center" style={{ gap: 10 }}>
+                <FieldLabel>Window</FieldLabel>
+                <Segmented
+                  options={WINDOWS.map(w => ({ value: w, label: w }))}
+                  value={windowValue}
+                  onChange={setWindowValue}
+                />
               </div>
-
-              <div>
-                <p style={{ marginBottom: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#475569' }}>Value Range</p>
-                <div className="flex flex-wrap" style={{ gap: 8 }}>
-                  {RANGE_OPTIONS.map(opt => (
-                    <button key={opt.value} onClick={() => setValueRange(opt.value)}
-                      className="rounded-full"
-                      style={valueRange === opt.value
-                        ? { padding: '6px 14px', fontSize: 12, fontWeight: 600, background: 'rgba(45,212,191,0.14)', border: '1px solid rgba(45,212,191,0.42)', color: '#2dd4bf' }
-                        : { padding: '6px 14px', fontSize: 12, fontWeight: 600, background: 'rgba(255,255,255,0.03)', border: bdrInner, color: '#475569' }}>
-                      {opt.label}
-                    </button>
-                  ))}
-                </div>
-                {valueRange !== 'all' && (
-                  <p style={{ marginTop: 6, fontSize: 11, color: '#475569' }}>Showing alerts inside selected value range.</p>
-                )}
+              <div className="flex items-center" style={{ gap: 10 }}>
+                <FieldLabel>Feed</FieldLabel>
+                <Segmented
+                  options={[{ value: 'interesting' as const, label: 'Interesting' }, { value: 'all' as const, label: 'All activity' }]}
+                  value={feedMode}
+                  onChange={setFeedMode}
+                />
               </div>
+            </div>
 
-              <div>
-                <p style={{ marginBottom: 8, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.18em', color: '#475569' }}>Feed Mode</p>
-                <div className="wa-feedmode flex w-fit rounded-[12px]" style={{ gap: 4, background: 'rgba(255,255,255,0.025)', border: bdrInner, padding: 4 }}>
-                  {(['interesting', 'all'] as const).map(mode => (
-                    <button key={mode} onClick={() => setFeedMode(mode)}
-                      className="rounded-[9px]"
-                      style={feedMode === mode
-                        ? { padding: '6px 16px', fontSize: 12, fontWeight: 600, background: 'rgba(45,212,191,0.14)', border: '1px solid rgba(45,212,191,0.42)', color: '#2dd4bf', boxShadow: '0 0 14px rgba(45,212,191,0.12)' }
-                        : { padding: '6px 16px', fontSize: 12, fontWeight: 600, background: 'transparent', border: '1px solid transparent', color: '#475569' }}>
-                      {mode === 'interesting' ? 'Interesting' : 'All activity'}
-                    </button>
-                  ))}
-                </div>
-                {feedMode === 'interesting' && (
-                  <p style={{ marginTop: 6, fontSize: 11, color: '#475569' }}>Hiding small WETH/USDC/cbBTC moves under $1k. Switch to All activity to see everything.</p>
-                )}
-              </div>
+            <div style={{ height: 1, background: 'rgba(148,163,184,0.07)' }} />
 
-              <div className="wa-dropdowns grid" style={{ gridTemplateColumns: 'repeat(3,1fr)', gap: 12 }}>
-                {[
-                  { label: 'Alert Type', val: typeFilter, set: setTypeFilter, opts: types },
-                  { label: 'Severity',   val: sevFilter,  set: setSevFilter,  opts: sevs  },
-                  { label: 'Side',       val: sideFilter, set: setSideFilter, opts: sides },
-                ].map(({ label, val, set, opts }) => (
-                  <div key={label} className="flex flex-col" style={{ gap: 6 }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.16em', color: '#475569' }}>{label}</span>
-                    <div className="relative">
-                      <select value={val} onChange={e => set(e.target.value)}
-                        className="wa-select w-full appearance-none rounded-[12px]"
-                        style={{ background: innerBg, border: bdr, color: '#94a3b8', padding: '10px 12px', fontSize: 14, outline: 'none' }}>
-                        {opts.map(o => <option key={o} value={o}>{o === 'all' ? `All ${label}s` : o}</option>)}
-                      </select>
-                      <span className="pointer-events-none absolute" style={{ right: 12, top: '50%', transform: 'translateY(-50%)', color: '#475569' }}>
-                        <svg width="9" height="5" viewBox="0 0 9 5" fill="currentColor"><path d="M0 0l4.5 5L9 0z"/></svg>
-                      </span>
-                    </div>
-                  </div>
+            <div className="flex flex-col" style={{ gap: 8 }}>
+              <FieldLabel>Value range</FieldLabel>
+              <div className="flex flex-wrap" style={{ gap: 6 }}>
+                {RANGE_OPTIONS.map(opt => (
+                  <button key={opt.value} type="button" onClick={() => setValueRange(opt.value)}
+                    className={`wa-chip${valueRange === opt.value ? ' is-active' : ''}`}>
+                    {opt.label}
+                  </button>
                 ))}
               </div>
             </div>
 
-            {/* right: wallet sync panel */}
-            <div className="flex flex-col rounded-[18px]"
-              style={{ gap: 14, border: '1px solid rgba(139,92,246,0.24)', background: 'linear-gradient(160deg,rgba(13,18,33,0.98),rgba(9,15,30,0.94) 60%,rgba(8,12,24,0.98))', padding: 18, boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04), 0 14px 40px rgba(0,0,0,0.38)' }}>
-
-              <div className="flex items-center justify-between">
-                <div className="flex items-center" style={{ gap: 10 }}>
-                  <div className="flex items-center justify-center rounded-[12px]"
-                    style={{ width: 34, height: 34, background: 'rgba(139,92,246,0.16)', border: '1px solid rgba(139,92,246,0.30)' }}>
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#c4b5fd" strokeWidth="2">
-                      <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-                    </svg>
-                  </div>
-                  <div>
-                    <p style={{ fontSize: 14, fontWeight: 700, letterSpacing: '0.01em', color: '#f8fafc', margin: 0 }}>Whale sync</p>
-                    <p style={{ fontSize: 11, color: '#64748b', margin: 0 }}>Refreshes latest tracked-wallet activity</p>
-                  </div>
-                </div>
-                <Pill color={syncing || isFullInProgress ? 'amber' : 'teal'} dot>{syncStatusText}</Pill>
-              </div>
-
-              <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
-                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Tracked set</p>
-                  <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>60+ wallets</p>
-                </div>
-                <div className="rounded-[14px]" style={{ padding: 13, background: 'rgba(7,13,25,0.72)', border: '1px solid rgba(148,163,184,0.16)' }}>
-                  <p style={{ fontSize: 9, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.12em', color: '#64748b', margin: 0 }}>Signals found</p>
-                  <p className="tabular-nums" style={{ fontSize: 24, fontWeight: 800, color: '#f8fafc', margin: '8px 0 0' }}>
-                    {effectiveInserted != null ? effectiveInserted : <span style={{ color: '#334155' }}>—</span>}
-                  </p>
-                </div>
-              </div>
-
-              {covPct !== null ? (
-                <div className="rounded-[12px]" style={{ padding: 10, background: 'rgba(5,10,20,0.55)', border: '1px solid rgba(148,163,184,0.12)' }}>
-                  <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
-                    <span style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#64748b' }}>Coverage</span>
-                    <span style={{ fontSize: 10, fontWeight: 700, color: '#cbd5e1' }}>{covPct}%</span>
-                  </div>
-                  <div className="w-full overflow-hidden rounded-full" style={{ height: 5, background: 'rgba(255,255,255,0.08)' }}>
-                    <div className="rounded-full" style={{ width: `${covPct}%`, height: '100%', background: 'linear-gradient(90deg,#2dd4bf,#8b5cf6)', transition: 'width 0.3s ease' }}/>
+            <div className="wa-dropdowns grid" style={{ gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 10 }}>
+              {[
+                { label: 'Alert type', val: typeFilter, set: setTypeFilter, opts: types },
+                { label: 'Severity',   val: sevFilter,  set: setSevFilter,  opts: sevs  },
+                { label: 'Side',       val: sideFilter, set: setSideFilter, opts: sides },
+              ].map(({ label, val, set, opts }) => (
+                <div key={label} className="flex flex-col" style={{ gap: 7, minWidth: 0 }}>
+                  <FieldLabel>{label}</FieldLabel>
+                  <div className="relative">
+                    <select value={val} onChange={e => set(e.target.value)}
+                      className="wa-select w-full appearance-none rounded-[8px]"
+                      style={{ background: innerBg, border: bdr, color: val === 'all' ? '#64748b' : '#cbd5e1', padding: '8px 28px 8px 11px', fontSize: 12.5, fontWeight: 500, outline: 'none' }}>
+                      {opts.map(o => <option key={o} value={o}>{o === 'all' ? `All` : o}</option>)}
+                    </select>
+                    <span className="pointer-events-none absolute" style={{ right: 11, top: '50%', transform: 'translateY(-50%)', color: '#475569' }}>
+                      <svg width="8" height="5" viewBox="0 0 9 5" fill="currentColor"><path d="M0 0l4.5 5L9 0z"/></svg>
+                    </span>
                   </div>
                 </div>
-              ) : (
-                <p style={{ fontSize: 11, color: '#475569' }}>Run a sync to see coverage progress.</p>
-              )}
-              {syncState && (
-                <p style={{ margin: 0, fontSize: 11, color: '#94a3b8' }}>
-                  {syncing && syncState.mode === 'full'
-                    ? `Scanning ${scannedCount} / ${trackedCount || stats.trackedWallets} wallets…`
-                    : isFullInProgress
-                      ? `Full refresh progress: ${scannedCount} / ${trackedCount || stats.trackedWallets}`
-                      : `Last refresh checked ${scannedCount} / ${trackedCount || stats.trackedWallets} tracked wallets`}
-                </p>
-              )}
-
-              {(syncState?.providerErrors ?? 0) > 0 && (
-                <p className="rounded-[12px]"
-                  style={{ padding: '8px 12px', fontSize: 11, background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.18)', color: '#fcd34d' }}>
-                  {syncState?.providerErrors} source delay{(syncState?.providerErrors ?? 0) > 1 ? 's' : ''} — some alerts may be delayed.
-                </p>
-              )}
-
-              <div className="wa-sync-btns flex" style={{ gap: 8 }}>
-                <button onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined, 'batch') }} disabled={syncing || (syncCooldownLeftMs > 0 && !syncState?.hasMore)}
-                  className="flex flex-1 items-center justify-center rounded-[12px]"
-                  style={{ gap: 8, padding: '10px 0', fontSize: 14, fontWeight: 700, background: 'linear-gradient(135deg,#1aa99c,#8b5cf6)', color: '#fff', boxShadow: '0 0 22px rgba(45,212,191,0.14)', opacity: syncing || (syncCooldownLeftMs > 0 && !syncState?.hasMore) ? 0.5 : 1, border: 'none' }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-                  </svg>
-                  {syncing ? 'Scanning…' : syncState?.hasMore ? 'Continue refresh' : syncCooldownLeftMs > 0 ? `Please wait ${Math.ceil(syncCooldownLeftMs / 1000)}s before syncing again.` : 'Sync wallets'}
-                </button>
-                <button onClick={() => { void runSync(syncState?.mode === 'full' && isFullInProgress ? computedFullNextOffset : 0, 'full') }} disabled={syncing || (fullSyncCooldownLeftMs > 0 && !isFullInProgress)}
-                  className="flex items-center rounded-[12px]"
-                  style={{ gap: 6, padding: '10px 12px', fontSize: 12, fontWeight: 600, background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.30)', color: '#fcd34d', opacity: syncing ? 0.5 : 1 }}>
-                  {syncState?.mode === 'full' && isFullInProgress
-                    ? (fullSyncCooldownLeftMs > 0 ? `Please wait ${Math.ceil(fullSyncCooldownLeftMs / 1000)}s before syncing again.` : 'Continue refresh')
-                    : (syncState?.mode === 'full' && syncState?.done === true && !syncState?.hasMore ? `Sync complete. Checked ${scannedCount} wallets.` : 'Full refresh')}
-                </button>
-                <button onClick={resetFilters} disabled={syncing}
-                  className="flex items-center rounded-[12px]"
-                  style={{ gap: 6, padding: '10px 16px', fontSize: 14, fontWeight: 500, background: 'rgba(255,255,255,0.05)', border: bdr, color: '#64748b', opacity: syncing ? 0.4 : 1 }}>
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-                  </svg>
-                  Reset
-                </button>
-                <button onClick={clearSyncState} disabled={syncing}
-                  className="flex items-center rounded-[12px]"
-                  style={{ gap: 6, padding: '10px 12px', fontSize: 12, fontWeight: 600, background: 'rgba(148,163,184,0.10)', border: '1px solid rgba(148,163,184,0.28)', color: '#cbd5e1', opacity: syncing ? 0.4 : 1 }}>
-                  Clear sync state
-                </button>
-              </div>
-
-              <button className="text-left hover:opacity-80"
-                style={{ fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#475569', background: 'none', border: 'none' }}>
-                + Advanced Diagnostics
-              </button>
-              <p style={{ margin: 0, fontSize: 11, color: '#fbbf24' }}>
-                Full sync refreshes the complete tracked-wallet set.
-              </p>
-              {syncState?.mode === 'full' && syncState?.hasMore && (
-                <p style={{ margin: 0, fontSize: 11, color: '#94a3b8' }}>
-                  Full refresh in progress.
-                </p>
-              )}
-              {syncState?.mode === 'full' && syncState?.done === true && !syncState?.hasMore && (
-                <p style={{ margin: 0, fontSize: 11, color: '#86efac' }}>
-                  Full refresh complete — {scannedCount} / {trackedCount} checked
-                </p>
-              )}
+              ))}
             </div>
 
+            {/* Active-filter context line — replaces the two separate always-on helper paragraphs
+                that previously sat under Value Range and Feed Mode. */}
+            {(feedMode === 'interesting' || valueRange !== 'all') && (
+              <p className="wa-help">
+                {feedMode === 'interesting' && 'Hiding sub-$1k WETH/USDC/cbBTC moves.'}
+                {feedMode === 'interesting' && valueRange !== 'all' && ' '}
+                {valueRange !== 'all' && `Limited to ${RANGE_OPTIONS.find(o => o.value === valueRange)?.label} verified value.`}
+              </p>
+            )}
           </div>
+
+          {/* ── Sync operations module ── */}
+          <aside className="rounded-[12px] flex flex-col" style={{ border: bdr, background: cardBg, padding: '14px 16px', gap: 12 }}>
+
+            <div className="flex items-center justify-between" style={{ gap: 8 }}>
+              <h2 className="wa-sec-title">Wallet sync</h2>
+              <Pill color={syncing || isFullInProgress ? 'amber' : syncState ? 'teal' : 'slate'} dot>{syncStatusText}</Pill>
+            </div>
+
+            <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+              <div className="rounded-[9px]" style={{ padding: '10px 12px', background: innerBg, border: bdrInner }}>
+                <FieldLabel>Tracked set</FieldLabel>
+                <p className="tabular-nums" style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.015em', color: '#e8eef7', margin: '7px 0 0' }}>60+</p>
+              </div>
+              <div className="rounded-[9px]" style={{ padding: '10px 12px', background: innerBg, border: bdrInner }}>
+                <FieldLabel>Signals</FieldLabel>
+                <p className="tabular-nums" style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.015em', color: effectiveInserted > 0 ? '#5eead4' : '#3f4a5c', margin: '7px 0 0' }}>
+                  {syncState ? effectiveInserted : '—'}
+                </p>
+              </div>
+            </div>
+
+            {covPct !== null ? (
+              <div>
+                <div className="flex items-baseline justify-between" style={{ marginBottom: 6 }}>
+                  <FieldLabel>Coverage</FieldLabel>
+                  <span className="tabular-nums" style={{ fontSize: 11, fontWeight: 700, color: '#93a3ba' }}>
+                    {scannedCount}/{trackedCount || stats.trackedWallets} · {covPct}%
+                  </span>
+                </div>
+                <div className="w-full overflow-hidden rounded-full" style={{ height: 3, background: 'rgba(148,163,184,0.12)' }}>
+                  <div style={{ width: `${covPct}%`, height: '100%', background: '#2dd4bf', transition: 'width 0.3s ease' }}/>
+                </div>
+              </div>
+            ) : (
+              <p className="wa-help">No sync run yet. Coverage appears after the first scan.</p>
+            )}
+
+            {(syncState?.providerErrors ?? 0) > 0 && (
+              <p className="rounded-[8px]"
+                style={{ margin: 0, padding: '7px 10px', fontSize: 11, lineHeight: 1.5, background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.16)', color: '#e0b44a' }}>
+                {syncState?.providerErrors} source delay{(syncState?.providerErrors ?? 0) > 1 ? 's' : ''} — some wallets may lag.
+              </p>
+            )}
+
+            {/* Primary action stands alone; every secondary action is quiet and on one row below. */}
+            <button onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined, 'batch') }}
+              disabled={syncing || (syncCooldownLeftMs > 0 && !syncState?.hasMore)}
+              className="wa-btn wa-btn-primary w-full">
+              {syncing
+                ? <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0"/></svg>
+                : <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>}
+              {syncing ? 'Scanning…' : syncState?.hasMore ? 'Continue refresh' : syncCooldownLeftMs > 0 ? `Wait ${Math.ceil(syncCooldownLeftMs / 1000)}s` : 'Sync wallets'}
+            </button>
+
+            <div className="wa-sync-btns flex items-center" style={{ gap: 4, marginTop: -2 }}>
+              <button onClick={() => { void runSync(syncState?.mode === 'full' && isFullInProgress ? computedFullNextOffset : 0, 'full') }}
+                disabled={syncing || (fullSyncCooldownLeftMs > 0 && !isFullInProgress)}
+                className="wa-btn wa-btn-quiet"
+                title="Refreshes the complete tracked-wallet set">
+                {syncState?.mode === 'full' && isFullInProgress
+                  ? (fullSyncCooldownLeftMs > 0 ? `Wait ${Math.ceil(fullSyncCooldownLeftMs / 1000)}s` : 'Continue full')
+                  : 'Full refresh'}
+              </button>
+              <span style={{ color: '#243040' }}>·</span>
+              <button onClick={resetFilters} disabled={syncing} className="wa-btn wa-btn-quiet">Reset filters</button>
+              <span style={{ color: '#243040' }}>·</span>
+              <button onClick={clearSyncState} disabled={syncing} className="wa-btn wa-btn-quiet">Clear state</button>
+            </div>
+
+            {syncState && (
+              <p className="wa-help" style={{ borderTop: bdrInner, paddingTop: 10 }}>
+                {syncing && syncState.mode === 'full'
+                  ? `Scanning ${scannedCount} of ${trackedCount || stats.trackedWallets}…`
+                  : isFullInProgress
+                    ? `Full refresh paused at ${scannedCount} of ${trackedCount || stats.trackedWallets}.`
+                    : syncState.mode === 'full' && syncState.done === true && !syncState.hasMore
+                      ? `Full refresh complete — ${scannedCount} of ${trackedCount} checked.`
+                      : `Last refresh checked ${scannedCount} of ${trackedCount || stats.trackedWallets} wallets.`}
+              </p>
+            )}
+
+            {/* DIAGNOSTICS DISCLOSURE, DISCLOSED: the previous "+ Advanced Diagnostics" button had
+                no onClick at all — it rendered but did nothing. Kept (per the redesign brief's
+                "should not dominate the card") as a quiet, collapsed-by-default disclosure that now
+                actually works, rendering the REAL `feedDiagnostics` this page already receives from
+                /api/whale-alerts. No new request and no fabricated values — each row is omitted
+                entirely when the API didn't supply that field. */}
+            {feedDiagnostics && (
+              <div style={{ borderTop: bdrInner, paddingTop: 10 }}>
+                <button type="button" onClick={() => setShowDiagnostics(v => !v)}
+                  className="wa-btn wa-btn-quiet" style={{ padding: '2px 0', gap: 5 }}
+                  aria-expanded={showDiagnostics}>
+                  <svg width="8" height="8" viewBox="0 0 9 5" fill="currentColor"
+                    style={{ transform: showDiagnostics ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}>
+                    <path d="M0 0l4.5 5L9 0z"/>
+                  </svg>
+                  Diagnostics
+                </button>
+                {showDiagnostics && (
+                  <div className="flex flex-col tabular-nums" style={{ gap: 5, marginTop: 9 }}>
+                    {([
+                      ['Rows returned',  feedDiagnostics.rawRows],
+                      ['After cap',      feedDiagnostics.afterDiversityCap],
+                      ['Hidden: low signal', feedDiagnostics.hiddenAsBoring],
+                      ['Hidden: filters', feedDiagnostics.hiddenByFilter],
+                      ['Hidden: dust',   feedDiagnostics.hiddenAsDust],
+                      ['Enrichment',     feedDiagnostics.enrichmentBudget?.liveEnrichmentEnabled == null
+                        ? undefined
+                        : (feedDiagnostics.enrichmentBudget.liveEnrichmentEnabled ? 'live' : 'cached')],
+                      ['Cache hits',     feedDiagnostics.enrichmentBudget?.cacheHits],
+                    ] as Array<[string, number | string | undefined]>)
+                      .filter(([, v]) => v !== undefined && v !== null)
+                      .map(([k, v]) => (
+                        <div key={k} className="flex items-baseline justify-between" style={{ gap: 10, fontSize: 11 }}>
+                          <span style={{ color: '#4a5769' }}>{k}</span>
+                          <span style={{ color: '#93a3ba', fontWeight: 600 }}>{v}</span>
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </aside>
+
         </div>
 
-        {/* ═══ 4. ALERT FEED ══════════════════════════════════════════════════ */}
-        <div className="overflow-hidden rounded-[24px]" style={{ border: bdr, background: cardBg }}>
+        {/* ═══ 4. ALERT FEED — page focus ═════════════════════════════════════
+            Given the strongest border, its own sticky operational header and the most internal
+            room on the page, so it reads as the product rather than one card among five. */}
+        <section className="overflow-hidden rounded-[12px]"
+          style={{ border: '1px solid rgba(148,163,184,0.17)', background: cardBg, boxShadow: '0 1px 0 rgba(255,255,255,0.03) inset, 0 18px 48px rgba(0,0,0,0.36)' }}>
 
           {/* feed header */}
           <div className="flex flex-wrap items-center justify-between"
-            style={{ gap: 12, padding: '16px 20px', borderBottom: bdrInner, background: 'rgba(255,255,255,0.012)' }}>
-            <div className="flex items-center" style={{ gap: 12 }}>
-              <h2 style={{ fontSize: 15, fontWeight: 700, color: '#f8fafc', margin: 0 }}>Alert feed</h2>
-              <Pill color="green" dot>Auto-update</Pill>
-              {alerts.length > 0 && (
-                <span style={{ fontSize: 12, color: '#475569' }}>
-                  {alerts.length} shown{(feedDiagnostics?.afterDiversityCap ?? 0) > alerts.length ? ` of ${feedDiagnostics?.afterDiversityCap} matching` : ' matching'}
+            style={{ gap: 12, padding: '13px 18px', borderBottom: '1px solid rgba(148,163,184,0.11)', background: 'rgba(148,163,184,0.022)' }}>
+            <div className="flex flex-wrap items-center" style={{ gap: 10 }}>
+              <h2 className="wa-sec-title" style={{ fontSize: 14 }}>Alert feed</h2>
+              <span aria-hidden style={{ width: 1, height: 12, background: 'rgba(148,163,184,0.16)' }} />
+              <span className="flex items-center" style={{ gap: 5, fontSize: 11, fontWeight: 600, color: '#5eead4' }}>
+                <span className="rounded-full" style={{ width: 5, height: 5, background: '#2dd4bf', display: 'inline-block' }} />
+                Auto-update
+              </span>
+              {feedDiagnostics != null && (
+                <span style={{ fontSize: 11, color: feedDiagnostics.enrichmentBudget?.liveEnrichmentEnabled ? '#5eead4' : '#8b7a4a' }}>
+                  · Signals {feedDiagnostics.enrichmentBudget?.liveEnrichmentEnabled ? 'live' : 'cached'}
                 </span>
               )}
-              {feedDiagnostics != null && (
-                <Pill color={feedDiagnostics.enrichmentBudget?.liveEnrichmentEnabled ? 'teal' : 'amber'} dot>
-                  {feedDiagnostics.enrichmentBudget?.liveEnrichmentEnabled ? 'Signals: live' : 'Signals: cached'}
-                </Pill>
+              {alerts.length > 0 && (
+                <span className="tabular-nums" style={{ fontSize: 11, color: '#55647d' }}>
+                  · {alerts.length} shown{(feedDiagnostics?.afterDiversityCap ?? 0) > alerts.length ? ` of ${feedDiagnostics?.afterDiversityCap}` : ''}
+                </span>
               )}
             </div>
-            <div className="flex items-center" style={{ gap: 8 }}>
-              <button className="flex items-center justify-center rounded-[8px]"
-                style={{ width: 28, height: 28, background: 'rgba(255,255,255,0.04)', border: bdrInner, color: '#475569' }}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
-                </svg>
-              </button>
-              <button className="flex items-center rounded-[8px]"
-                style={{ gap: 6, padding: '6px 12px', fontSize: 11, fontWeight: 500, color: '#64748b', background: 'rgba(255,255,255,0.04)', border: bdrInner }}>
+            <div className="wa-feed-actions flex items-center" style={{ gap: 6 }}>
+              <button className="wa-btn wa-btn-quiet" title="Pause auto-update">
                 <svg width="9" height="9" viewBox="0 0 24 24" fill="currentColor">
                   <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
                 </svg>
                 Pause
               </button>
-              <button onClick={() => void loadAlerts({ enrich: true })}
-                disabled={enrichLoading || loading}
-                className="flex items-center rounded-[8px] hover:opacity-90"
-                style={{ gap: 6, padding: '6px 12px', fontSize: 11, fontWeight: 600, background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.28)', color: '#2dd4bf', opacity: (enrichLoading || loading) ? 0.5 : 1 }}>
-                {enrichLoading
-                  ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0"/></svg>
-                  : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-                }
-                {enrichLoading ? 'Loading…' : 'Refresh signals'}
-              </button>
-              <button onClick={goClark}
-                className="flex items-center rounded-[8px] hover:opacity-90"
-                style={{ gap: 6, padding: '6px 12px', fontSize: 11, fontWeight: 600, background: 'rgba(139,92,246,0.12)', border: '1px solid rgba(139,92,246,0.28)', color: '#c4b5fd' }}>
+              <button onClick={goClark} className="wa-btn wa-btn-secondary">
                 <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                 </svg>
                 Ask Clark
               </button>
+              <button onClick={() => void loadAlerts({ enrich: true })}
+                disabled={enrichLoading || loading}
+                className="wa-btn wa-btn-primary" style={{ padding: '8px 14px', fontSize: 12 }}>
+                {enrichLoading
+                  ? <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" style={{ animation: 'spin 1s linear infinite' }}><path d="M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0"/></svg>
+                  : <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                }
+                {enrichLoading ? 'Loading…' : 'Refresh'}
+              </button>
             </div>
           </div>
 
           {/* skeleton */}
-          {loading && Array.from({ length: 4 }).map((_, i) => (
+          {loading && Array.from({ length: 5 }).map((_, i) => (
             <div key={i} className="flex items-center"
-              style={{ gap: 16, padding: '16px 20px', borderBottom: bdrInner, borderLeft: '3px solid rgba(255,255,255,0.04)', opacity: 0.6 }}>
-              <div className="shrink-0 rounded-[12px]" style={{ width: 36, height: 36, background: 'rgba(255,255,255,0.05)' }}/>
-              <div className="flex-1 flex flex-col" style={{ gap: 8 }}>
-                <div className="rounded-full" style={{ height: 12, width: '60%', background: 'rgba(255,255,255,0.05)' }}/>
-                <div className="rounded-full" style={{ height: 10, width: '40%', background: 'rgba(255,255,255,0.04)' }}/>
+              style={{ gap: 12, padding: '13px 18px', borderBottom: bdrInner, borderLeft: '2px solid rgba(148,163,184,0.07)', opacity: 1 - i * 0.14 }}>
+              <div className="shrink-0 rounded-[10px]" style={{ width: 36, height: 36, background: 'rgba(148,163,184,0.06)' }}/>
+              <div className="flex-1 flex flex-col" style={{ gap: 7 }}>
+                <div className="rounded-full" style={{ height: 10, width: '52%', background: 'rgba(148,163,184,0.06)' }}/>
+                <div className="rounded-full" style={{ height: 8, width: '34%', background: 'rgba(148,163,184,0.04)' }}/>
               </div>
-              <div className="rounded-full" style={{ height: 20, width: 56, background: 'rgba(255,255,255,0.05)' }}/>
+              <div className="rounded-full" style={{ height: 16, width: 52, background: 'rgba(148,163,184,0.06)' }}/>
             </div>
           ))}
 
           {/* error */}
           {feedError && !loading && (
-            <div style={{ padding: '48px 20px', textAlign: 'center' }}>
-              <div className="mx-auto flex items-center justify-center rounded-[16px]"
-                style={{ width: 48, height: 48, marginBottom: 16, background: 'rgba(244,63,94,0.08)', border: '1px solid rgba(244,63,94,0.18)' }}>
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f43f5e" strokeWidth="1.8">
+            <div className="flex flex-col items-center" style={{ padding: '56px 24px 52px', textAlign: 'center' }}>
+              <div className="flex items-center justify-center rounded-[10px]"
+                style={{ width: 40, height: 40, marginBottom: 16, background: 'rgba(244,63,94,0.07)', border: '1px solid rgba(244,63,94,0.18)' }}>
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f43f5e" strokeWidth="1.7" strokeLinecap="round">
                   <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
                 </svg>
               </div>
-              <p style={{ fontSize: 14, fontWeight: 700, color: '#fda4af' }}>No fresh signal in the checked window</p>
-              <p style={{ marginTop: 4, fontSize: 12, color: '#475569' }}>The request failed. Sync may still be active.</p>
-              <button onClick={() => void loadAlerts()}
-                className="rounded-[12px] hover:opacity-80"
-                style={{ marginTop: 16, padding: '8px 20px', fontSize: 12, fontWeight: 600, color: '#f8fafc', background: 'rgba(255,255,255,0.06)', border: bdr }}>
+              <p style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', color: '#e8eef7', margin: 0 }}>Feed request failed</p>
+              <p style={{ marginTop: 7, maxWidth: 420, fontSize: 12.5, lineHeight: 1.6, color: '#5d6b82' }}>
+                The alert feed could not be reached. Tracked wallets are unaffected and any sync in progress continues.
+              </p>
+              <button onClick={() => void loadAlerts()} className="wa-btn wa-btn-primary" style={{ marginTop: 18 }}>
                 Retry
               </button>
             </div>
@@ -1016,49 +1076,66 @@ export default function WhaleAlertsPage() {
                     : allDone
                       ? 'No qualifying recent whale activity found in this batch.'
                       : 'ChainLens is watching selected Base wallets. Run a sync to index recent movements.'
+            // A filtered-out result always offers a widening action; an un-synced/empty result
+            // offers the sync that would actually produce data. There is never a dead end.
+            const filterBlocked = unpricedHidden || hiddenByFilters || rangeActive || uiFiltersActive
             return (
-              <div style={{ padding: '64px 20px', textAlign: 'center' }}>
-                <div className="mx-auto flex items-center justify-center rounded-[16px]"
-                  style={{ width: 56, height: 56, marginBottom: 20, background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.15)', boxShadow: '0 0 28px rgba(45,212,191,0.07)' }}>
-                  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <div className="flex flex-col items-center" style={{ padding: '56px 24px 52px', textAlign: 'center' }}>
+                <div className="flex items-center justify-center rounded-[10px]"
+                  style={{ width: 40, height: 40, marginBottom: 16, background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.16)' }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" opacity="0.9">
                     <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
                     <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
                   </svg>
                 </div>
-                <p style={{ fontSize: 15, fontWeight: 700, color: '#f8fafc' }}>{title}</p>
-                <p className="mx-auto" style={{ marginTop: 8, maxWidth: 400, fontSize: 14, lineHeight: 1.6, color: '#64748b' }}>
+                <p style={{ fontSize: 15, fontWeight: 700, letterSpacing: '-0.01em', color: '#e8eef7', margin: 0 }}>{title}</p>
+                <p style={{ marginTop: 7, maxWidth: 420, fontSize: 12.5, lineHeight: 1.6, color: '#5d6b82' }}>
                   {body}
                 </p>
-                {(unpricedHidden || hiddenByFilters) && (
-                  <div className="flex flex-wrap items-center justify-center" style={{ gap: 8, marginTop: 20 }}>
-                    <button onClick={showAllAlerts}
-                      className="rounded-[12px] hover:opacity-90"
-                      style={{ padding: '9px 20px', fontSize: 13, fontWeight: 700, color: '#fff', background: 'linear-gradient(135deg,#1aa99c,#8b5cf6)', border: 'none', boxShadow: '0 0 18px rgba(45,212,191,0.18)' }}>
-                      {unpricedHidden ? 'Show all unpriced activity' : 'Show all alerts'}
-                    </button>
-                    <button onClick={resetFilters}
-                      className="rounded-[12px] hover:opacity-80"
-                      style={{ padding: '9px 20px', fontSize: 13, fontWeight: 600, color: '#94a3b8', background: 'rgba(255,255,255,0.05)', border: bdr }}>
-                      Reset filters
-                    </button>
-                  </div>
-                )}
+
+                <div className="flex flex-wrap items-center justify-center" style={{ gap: 7, marginTop: 18 }}>
+                  {filterBlocked ? (
+                    <>
+                      <button onClick={showAllAlerts} className="wa-btn wa-btn-primary">
+                        {unpricedHidden ? 'Show unpriced activity' : 'Broaden filters'}
+                      </button>
+                      <button onClick={resetFilters} className="wa-btn wa-btn-secondary">Reset all</button>
+                    </>
+                  ) : (
+                    <>
+                      <button onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined, 'batch') }}
+                        disabled={syncing || (syncCooldownLeftMs > 0 && !syncState?.hasMore)}
+                        className="wa-btn wa-btn-primary">
+                        {syncing ? 'Scanning…' : syncState?.hasMore ? 'Continue refresh' : syncCooldownLeftMs > 0 ? `Wait ${Math.ceil(syncCooldownLeftMs / 1000)}s` : 'Run sync'}
+                      </button>
+                      <button onClick={showAllAlerts} className="wa-btn wa-btn-secondary">Broaden filters</button>
+                    </>
+                  )}
+                </div>
+
                 {hasProviderErrors && (
-                  <p className="mx-auto rounded-[10px]"
-                    style={{ marginTop: 12, maxWidth: 400, padding: '8px 14px', fontSize: 12, background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.18)', color: '#fcd34d' }}>
+                  <p className="rounded-[8px]"
+                    style={{ marginTop: 14, maxWidth: 420, padding: '7px 12px', fontSize: 11.5, lineHeight: 1.5, background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.16)', color: '#e0b44a' }}>
                     {syncState!.providerErrors} source delay{(syncState!.providerErrors ?? 0) > 1 ? 's' : ''} — some wallets may be delayed.
                   </p>
                 )}
-                <div className="flex flex-wrap items-center justify-center" style={{ gap: 8, marginTop: 20 }}>
-                  <Pill color="slate">60+ tracked wallets</Pill>
-                  {syncState
-                    ? <Pill color="teal">{scanned} of {total || stats.trackedWallets} scanned</Pill>
-                    : <Pill color="teal">No sync yet</Pill>}
-                  {syncState && insertedSoFar > 0 && <Pill color="purple">{insertedSoFar} qualifying alerts found</Pill>}
-                  {syncState && <Pill color="amber">{syncState.skipped ?? 0} skipped</Pill>}
-                  <Pill color={hasProviderErrors ? 'amber' : 'purple'}>
-                    {hasProviderErrors ? 'Source delay' : 'Feed healthy'}
-                  </Pill>
+
+                {/* Status strip — proves the monitor is alive and what it has actually done, so an
+                    empty feed reads as "no signal yet", never as "nothing is running". */}
+                <div className="flex flex-wrap items-center justify-center tabular-nums"
+                  style={{ gap: '6px 14px', marginTop: 22, paddingTop: 16, borderTop: bdrInner, maxWidth: 480, width: '100%', fontSize: 11 }}>
+                  {[
+                    { k: 'Tracked', v: '60+ wallets' },
+                    { k: 'Scanned', v: syncState ? `${scanned} of ${total || stats.trackedWallets}` : 'No sync yet' },
+                    ...(syncState && insertedSoFar > 0 ? [{ k: 'Found', v: `${insertedSoFar} signals` }] : []),
+                    ...(syncState ? [{ k: 'Skipped', v: String(syncState.skipped ?? 0) }] : []),
+                    { k: 'Feed', v: hasProviderErrors ? 'Source delay' : 'Healthy' },
+                  ].map(({ k, v }) => (
+                    <span key={k} className="flex items-center" style={{ gap: 5 }}>
+                      <span style={{ color: '#3f4a5c' }}>{k}</span>
+                      <span style={{ color: '#93a3ba', fontWeight: 600 }}>{v}</span>
+                    </span>
+                  ))}
                 </div>
               </div>
             )
@@ -1137,9 +1214,9 @@ export default function WhaleAlertsPage() {
 
             return (
               <div key={alert.id ?? `${alert.tx_hash ?? ''}-${i}`}
-                className="transition-opacity hover:opacity-90"
-                style={{ borderBottom: bdrInner, borderLeft: `3px solid ${sideStyle.line}` }}>
-                <div className="flex items-start" style={{ gap: 12, padding: '14px 20px' }}>
+                className="wa-row"
+                style={{ borderBottom: bdrInner, borderLeft: `2px solid ${sideStyle.line}` }}>
+                <div className="flex items-start" style={{ gap: 12, padding: '13px 18px' }}>
 
                   <TokenAvatar tok={tok} logoUrl={logoUrl} avatarBg={sideStyle.avatarBg} line={sideStyle.line} />
 
@@ -1239,20 +1316,21 @@ export default function WhaleAlertsPage() {
 
           {/* feed footer */}
           {alerts.length > 0 && (
-            <div className="flex items-center justify-between" style={{ padding: '12px 20px', borderTop: bdrInner }}>
-              <span style={{ fontFamily: 'var(--font-plex-mono,monospace)', fontSize: 10, color: '#334155' }}>stream · base.alerts.v2</span>
-              <div className="flex items-center" style={{ gap: 16, fontSize: 11 }}>
-                {[{ c: '#2dd4bf', l: 'BUY' }, { c: '#f43f5e', l: 'SELL' }, { c: '#8b5cf6', l: 'TRANSFER' }].map(({ c, l }) => (
-                  <span key={l} className="flex items-center" style={{ gap: 6 }}>
-                    <span className="inline-block rounded-full" style={{ width: 6, height: 6, background: c }}/>
-                    <span style={{ color: '#475569' }}>{l}</span>
+            <div className="flex flex-wrap items-center justify-between"
+              style={{ gap: 10, padding: '10px 18px', borderTop: '1px solid rgba(148,163,184,0.09)', background: 'rgba(148,163,184,0.015)' }}>
+              <span style={{ fontFamily: 'var(--font-plex-mono,monospace)', fontSize: 10, letterSpacing: '0.04em', color: '#3a4557' }}>base.alerts.v2</span>
+              <div className="flex items-center" style={{ gap: 14, fontSize: 10.5 }}>
+                {[{ c: '#2dd4bf', l: 'Buy' }, { c: '#f43f5e', l: 'Sell' }, { c: '#8b5cf6', l: 'Transfer' }].map(({ c, l }) => (
+                  <span key={l} className="flex items-center" style={{ gap: 5 }}>
+                    <span className="inline-block rounded-full" style={{ width: 5, height: 5, background: c, opacity: 0.85 }}/>
+                    <span style={{ color: '#55647d' }}>{l}</span>
                   </span>
                 ))}
               </div>
             </div>
           )}
 
-        </div>
+        </section>
 
       </div>
     </div>
