@@ -295,7 +295,22 @@ export function classifyClarkPrompt(prompt: string): {
   const walletScanRe = /\b(scan\s+(?:this\s+)?wallet|scan\s+wallet|analyze\s+(?:this\s+)?wallet|wallet\s+pnl|wallet\s+(?:scan|check|report|analysis))\b/i;
   // token keywords prevent wallet routing even if WALLET_DEEP_RE fires
   const hasExplicitTokenKeyword = /\b(token|coin|contract|ticker|\bca\b|scan\s+this\s+token|token\s+scan|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon)\b/i.test(t);
-  if (address && !hasExplicitTokenKeyword && (walletScanRe.test(t) || WALLET_DEEP_RE.test(t))) {
+  // AMBIGUOUS DEPTH MODIFIERS EXCLUDED FROM THIS GATE, DISCLOSED (Clark routing audit follow-up
+  // — confirmed production bug): WALLET_DEEP_RE's own bare "deep"/"deep scan"/"full scan"
+  // alternatives are genuinely ambiguous on their own — "deep scan 0x..." with no other signal
+  // reads at least as naturally as "run a thorough scan on this token" as it does "scan my wallet
+  // deeply", and app/api/clark/route.ts's OWN separate classifyPlannerIntent already treats "deep
+  // scan"/"full analysis"/"run all checks" as TOKEN full-report triggers, not wallet ones — this
+  // gate was the one place still routing them to a wallet scan by default. Every message that
+  // ALSO says "wallet" (e.g. "deep scan this wallet 0x...", "deep scan wallet 0x...") is
+  // completely unaffected — it already matches walletScanRe above regardless of this change (see
+  // scripts/test-clark-intent.mjs / test-clark-execution.mjs's own existing coverage, all of
+  // which pair "deep scan" with an explicit "wallet"). WALLET_DEEP_RE itself is untouched and
+  // still used as-is for the `deep` boolean flag a few lines up — that only takes effect once
+  // wallet_scan is already the resolved intent, so widening/narrowing it there is harmless; this
+  // narrower check applies ONLY to this one classification gate.
+  const WALLET_DEEP_UNAMBIGUOUS_RE = /\b(pnl|p&l|trades?|historical|dig\s+deeper|recover\s+(?:more\s+)?history|history\s+recovery|why\s+(?:is|are|no|the)\s+pnl|why\s+is\s+pnl\s+(?:missing|zero|wrong)|why\s+no\s+pnl|cost\s+basis|analyze\s+(?:this\s+)?wallet|full\s+wallet\s+scan|scan\s+all\s+chains)\b/i;
+  if (address && !hasExplicitTokenKeyword && (walletScanRe.test(t) || WALLET_DEEP_UNAMBIGUOUS_RE.test(t))) {
     return { intent: "wallet_scan", address, addresses, deep, symbol: null };
   }
   // Plain EOA address alone (no other strong intent keywords) → wallet scan
@@ -309,8 +324,15 @@ export function classifyClarkPrompt(prompt: string): {
     // wallet is never described as a "honeypot" or "rug"), so adding them here only prevents this
     // one default from claiming an address as a wallet scan; it does not change what happens once
     // getClarkAddressRouteHint/downstream token-safety routing takes over from here.
+    // "deep scan/full analysis/run all checks/scan this properly" ADDED, DISCLOSED (same follow-
+    // up task, same pattern): removing these ambiguous depth modifiers from the WALLET_DEEP gate
+    // above only helps if a bare "deep scan 0x..." doesn't then fall straight through into THIS
+    // gate's own wallet-scan default — it did, since these words weren't recognized as a strong
+    // signal here either. app/api/clark/route.ts's own classifyPlannerIntent already treats every
+    // one of these exact phrases as a TOKEN full-report trigger, never a wallet one — reused
+    // verbatim here for consistency, not invented.
     const hasOtherStrongIntent =
-      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon|base\s+token|eth\s+token|ethereum\s+token|bnb\s+token|bsc\s+token|polygon\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address|safe|safety|\brug\b|honeypot|scam)\b/i.test(t);
+      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon|base\s+token|eth\s+token|ethereum\s+token|bnb\s+token|bsc\s+token|polygon\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address|safe|safety|\brug\b|honeypot|scam|deep\s+scan|full\s+scan|full\s+analysis|run\s+all\s+checks|scan\s+this\s+properly|full\s+report|complete\s+report)\b/i.test(t);
     if (!hasOtherStrongIntent) {
       return { intent: "wallet_scan", address, addresses, deep, symbol: null };
     }
