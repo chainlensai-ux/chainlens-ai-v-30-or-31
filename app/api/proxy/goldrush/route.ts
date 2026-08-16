@@ -2,21 +2,39 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
 import { logRpcCall } from "@/lib/server/rpcDebug";
+import { createAnonSupabaseClient } from "@/lib/supabase/userSettings";
 
 const limiter = createRateLimiter({ windowMs: 60_000, max: 30 });
 
 // Only allow alphanumeric chars, slashes, dots, hyphens, underscores, and query strings
 const SAFE_PATH = /^[a-zA-Z0-9/_\-:.?=&%+]+$/;
 
+// AUTH-CHECK FIX, DISCLOSED (security audit): the previous check only verified the Authorization
+// header was "Bearer "-prefixed and >=20 characters long — never validated against Supabase, so
+// any request with e.g. "Bearer aaaaaaaaaaaaaaaaaaaaaa" passed. Since this proxy spends this
+// server's own paid GOLDRUSH_API_KEY credits against an operator-chosen upstream path (SAFE_PATH
+// allows any Covalent API path, not one fixed endpoint), that made it a real, unauthenticated open
+// proxy against a paid credential. Replaced with the same real Supabase token verification every
+// other authenticated route in this codebase uses (anon.auth.getUser(token)), and — since this
+// route's own comment already confirms its one caller (Balances.tsx) is dead code, meaning there is
+// no legitimate unauthenticated caller today — applied in every environment, not just production.
+async function verifyBearerToken(req: NextRequest): Promise<boolean> {
+  const auth = req.headers.get("authorization") ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  if (!token) return false;
+  const anon = createAnonSupabaseClient();
+  if (!anon) return false;
+  try {
+    const { data } = await anon.auth.getUser(token);
+    return Boolean(data.user);
+  } catch {
+    return false;
+  }
+}
+
 export async function GET(request: NextRequest) {
-  // Require a bearer token in production — this proxy exposes server API credits.
-  // Balances.tsx (the only client that calls this) is dead code, so in production
-  // we block unauthenticated access entirely.
-  if (process.env.NODE_ENV === "production") {
-    const auth = request.headers.get("authorization") ?? "";
-    if (!auth.startsWith("Bearer ") || auth.length < 20) {
-      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-    }
+  if (!(await verifyBearerToken(request))) {
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
   if (!limiter.check(getClientIp(request))) {
