@@ -67,6 +67,70 @@ export type RunWalletScanResult = FinalReport & {
   // own numbers correctly instead of reporting open-position current-price calls as historical
   // replay waste.
   goldrushCallSplit?: { historicalGoldrushLiveCalls: number; currentPriceGoldrushLiveCalls: number; currentPriceDexLiveCalls: number }
+  // WALLET SCANNER PROVIDER/DEX-MODEL SUPPORT AUDIT, DISCLOSED (Wallet Scanner graph/API + DEX
+  // model support audit task): additive, real-values-only diagnostic — computed entirely from data
+  // this scan already produced (providerDiagnostics, the same structural-coverage event
+  // classification pass finalReportAssembler's own gate already runs, normalizationErrors, and the
+  // requested-vs-sanitized chain lists) — no new provider calls, no change to FIFO/PnL. See
+  // WalletScannerProviderSupportAudit's own header for exactly which fields are real counts vs
+  // honestly `null` because this codebase doesn't currently thread that evidence up to this layer.
+  walletScannerProviderSupportAudit?: WalletScannerProviderSupportAudit
+}
+
+// See RunWalletScanResult.walletScannerProviderSupportAudit's own disclosure above for the "why"
+// of this field set. Every non-null field here is a real, already-computed value reused (never
+// recomputed) from this same scan.
+export type WalletScannerProviderSupportAudit = {
+  runtimeCommitSha: string | null
+  selectedChainMode: ScanModeInput
+  enabledChains: SupportedChain[]
+  // The raw chain strings the caller actually requested, before SUPPORTED_CHAINS filtering — kept
+  // alongside enabledChains so a caller can see exactly what was dropped (e.g. 'bnb'/'robinhood',
+  // which this pipeline's providerFetchWindow/holdings/dedupe layer has zero integration for today
+  // — see SUPPORTED_CHAINS above; a request for them is an honest, disclosed coverage gap below,
+  // never a silent no-op or a fabricated result).
+  requestedChains: string[]
+  // Real — the only two graph/event-history providers actually integrated anywhere in this
+  // pipeline (see providerFetchWindow/types.ts's own ProviderName union). Never lists a provider
+  // this codebase doesn't call (e.g. Moralis) — this codebase has no such integration to report.
+  providerSourcesConfigured: string[]
+  providerSourcesAttempted: string[]
+  providerSourcesSucceeded: string[]
+  providerSourcesFailed: string[]
+  graphSourcesUsed: string[]
+  // NOT CURRENTLY WIRED TO THIS LAYER, HONESTLY NULL, DISCLOSED: real per-protocol (V2/V3/V4/
+  // concentrated) swap/LP event counts exist only as SHADOW/DEBUG-ONLY diagnostics deep inside
+  // src/modules/receiptSwapDecoder (see forensicClassifier.ts's own "never fed into FIFO/pricing/
+  // PnL/canonical events" header) and are never threaded up to this report today. Rather than
+  // fabricate a count (or a misleading `0`, which would read as "checked, found none" instead of
+  // "not tracked here"), these stay `null` — plumbing that evidence up to this layer is a real,
+  // separate follow-up, not a same-pass audit wiring fix.
+  dexModelsDetected: string[] | null
+  v2EventsDetected: number | null
+  v3EventsDetected: number | null
+  v4EventsDetected: number | null
+  concentratedEventsDetected: number | null
+  // Real — reused from src/modules/eventClassification's own classification pass (the SAME pass
+  // finalReportAssembler's structural-coverage gate already runs this scan, never a second one).
+  // `lp_staking` is a real category this classifier can assign (see eventClassification/index.ts),
+  // though it currently has no verified LP-contract registry to positively assign it from — an
+  // honest 0 here means "none positively identified", never "none exist".
+  lpActionsDetected: number
+  lpActionsExcludedFromOfficialPnl: number
+  // Sum of every non-`genuine_trade_leg`/`unknown`/`dust_non_economic` classified event this scan
+  // saw (ordinary_transfer + distribution_airdrop + router_intermediary + bridge + lp_staking) —
+  // exactly eventClassification's own FIFO_ELIGIBLE exclusion set, real and already-enforced, not a
+  // new gate.
+  uncertainEventsExcludedFromOfficialPnl: number
+  // Real — normalizationErrors entries with reason === 'duplicate_event' (src/modules/normalization
+  // reports these as INFORMATIONAL diagnostics; the actual removal already happened deterministically
+  // before FIFO ever saw them — see normalizeEvents' own seen-set dedupe).
+  duplicateEventsRemovedBeforeCap: number
+  providerFailures: Array<{ chain: SupportedChain; provider: 'goldrush' | 'alchemy'; errorReason: string | null }>
+  // Real — every requested-but-unsupported chain (never reaches providerFetchWindow at all) plus
+  // every enabled chain whose real fetch came back 'provider_unavailable' this scan. Each entry
+  // names WHY, so a caller never has to infer "coverage gap" from an empty result alone.
+  coverageGaps: Array<{ chain: string; reason: 'chain_not_supported_by_wallet_scanner' | 'provider_unavailable_this_scan' }>
 }
 
 export type PreScanValidation = {

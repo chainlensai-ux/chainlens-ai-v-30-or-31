@@ -31,8 +31,22 @@ export function parseAmount(amountRaw: string | null, tokenDecimals: number | nu
   return Number.isFinite(value) ? value : null
 }
 
+// CHAIN-SCOPED DEDUPE KEY, DISCLOSED (Wallet Scanner graph/API support audit): the caller
+// (src/pipeline/index.ts) fetches every requested chain concurrently and flattens all chains'
+// raw events into ONE array (`allRawEvents`) before this dedupe key is ever applied — confirmed by
+// reading the call site, and the live wallet-scanner UI does request multiple chains
+// (['base','eth']) in a single scan. The key previously omitted `chain`, so two structurally
+// distinct events on different chains that happened to share the same txHash/contract/from/to/
+// amountRaw would collide and the second chain's real event would be dropped as
+// 'duplicate_event' — silently under-counting that chain's FIFO evidence. In practice this needs
+// an exact txHash collision across chains, which EIP-155 (chain ID baked into what's signed) makes
+// vanishingly unlikely for real wallet-signed transactions — but it is a real, closable gap in the
+// key's own stated scope, not a hypothetical one, and adding the field the caller already has on
+// every event is a same-shape, zero-behavior-change fix for the (overwhelmingly common) single-chain
+// or non-colliding case: it only changes the outcome for the specific colliding case this key exists
+// to prevent.
 export function normalizedDedupeKey(event: RawProviderEvent): string {
-  return `${event.txHash ?? ''}|${(event.contract ?? '').toLowerCase()}|${(event.fromAddress ?? '').toLowerCase()}|${(event.toAddress ?? '').toLowerCase()}|${event.amountRaw ?? ''}`
+  return `${event.chain ?? ''}|${event.txHash ?? ''}|${(event.contract ?? '').toLowerCase()}|${(event.fromAddress ?? '').toLowerCase()}|${(event.toAddress ?? '').toLowerCase()}|${event.amountRaw ?? ''}`
 }
 
 export function firstFailingReason(event: RawProviderEvent): NormalizationErrorReason | null {

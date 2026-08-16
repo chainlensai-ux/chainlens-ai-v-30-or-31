@@ -107,8 +107,8 @@ import { buildWalletConditionMessages } from './walletConditionMessages'
 import { buildSyntheticPoolPriceData, discoverAerodromePools, mapAerodromeToken, priceBaseTokenFromAerodrome, resolvePipelinePrice } from './pricing'
 import type { AerodromePool } from './metadata'
 
-import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
-import { INTEL_WINDOW_DAYS } from './types'
+import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult, WalletScannerProviderSupportAudit } from './types'
+import { INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from './types'
 import {
   behaviorIntelFallback,
   bridgeTimelineFallback,
@@ -874,6 +874,76 @@ export function buildProviderFetchWindowDiagnostics(
   }
 }
 
+// PURE, EXPORTED, DISCLOSED (Wallet Scanner graph/API + DEX model support audit task) — see
+// WalletScannerProviderSupportAudit's own header in ./types.ts for the full field-by-field
+// disclosure of what's real vs honestly null. Every input here is data this scan already computed
+// upstream — this function makes zero provider calls and recomputes nothing.
+export function buildWalletScannerProviderSupportAudit(input: {
+  requestedChains: string[]
+  enabledChains: SupportedChain[]
+  scanMode: RunWalletScanParams['scanMode']
+  providerDiagnostics: ReadonlyArray<{ chain: SupportedChain; providerStatus: string; goldrush: { ok: boolean; errorReason: string | null }; alchemy: { ok: boolean; errorReason: string | null } }>
+  eventsByClassification: Record<EventClassification, number>
+  duplicateEventCount: number
+  runtimeCommitSha: string | null
+}): WalletScannerProviderSupportAudit {
+  const providerSourcesConfigured = ['goldrush', 'alchemy']
+  const providerSourcesAttempted: string[] = []
+  const providerSourcesSucceeded: string[] = []
+  const providerSourcesFailed: string[] = []
+  const providerFailures: WalletScannerProviderSupportAudit['providerFailures'] = []
+  for (const entry of input.providerDiagnostics) {
+    for (const provider of ['goldrush', 'alchemy'] as const) {
+      const outcome = entry[provider]
+      providerSourcesAttempted.push(provider)
+      if (outcome.ok) {
+        providerSourcesSucceeded.push(provider)
+      } else {
+        providerSourcesFailed.push(provider)
+        providerFailures.push({ chain: entry.chain, provider, errorReason: outcome.errorReason })
+      }
+    }
+  }
+
+  const requestedButUnsupported = input.requestedChains.filter(
+    (c) => !SUPPORTED_CHAINS.includes(c as SupportedChain),
+  )
+  const failedEnabledChains = input.providerDiagnostics
+    .filter((r) => r.providerStatus === 'provider_unavailable')
+    .map((r) => r.chain)
+  const coverageGaps: WalletScannerProviderSupportAudit['coverageGaps'] = [
+    ...requestedButUnsupported.map((chain) => ({ chain, reason: 'chain_not_supported_by_wallet_scanner' as const })),
+    ...failedEnabledChains.map((chain) => ({ chain, reason: 'provider_unavailable_this_scan' as const })),
+  ]
+
+  const NON_TRADE: EventClassification[] = ['ordinary_transfer', 'distribution_airdrop', 'router_intermediary', 'bridge', 'lp_staking']
+  const uncertainEventsExcludedFromOfficialPnl = NON_TRADE.reduce((sum, k) => sum + (input.eventsByClassification[k] ?? 0), 0)
+  const lpActionsDetected = input.eventsByClassification.lp_staking ?? 0
+
+  return {
+    runtimeCommitSha: input.runtimeCommitSha,
+    selectedChainMode: input.scanMode,
+    enabledChains: input.enabledChains,
+    requestedChains: input.requestedChains,
+    providerSourcesConfigured,
+    providerSourcesAttempted: [...new Set(providerSourcesAttempted)],
+    providerSourcesSucceeded: [...new Set(providerSourcesSucceeded)],
+    providerSourcesFailed: [...new Set(providerSourcesFailed)],
+    graphSourcesUsed: [...new Set(providerSourcesSucceeded)],
+    dexModelsDetected: null,
+    v2EventsDetected: null,
+    v3EventsDetected: null,
+    v4EventsDetected: null,
+    concentratedEventsDetected: null,
+    lpActionsDetected,
+    lpActionsExcludedFromOfficialPnl: lpActionsDetected,
+    uncertainEventsExcludedFromOfficialPnl,
+    duplicateEventsRemovedBeforeCap: input.duplicateEventCount,
+    providerFailures,
+    coverageGaps,
+  }
+}
+
 // EXTRACTED, DISCLOSED: was previously inlined at the priceLotsForWallet call site (an
 // `isSuppressedInboundEvent` arrow + two near-identical filter calls). Pulled out into a named,
 // exported, pure function so the actual filtering rule is directly unit-testable (see
@@ -1312,8 +1382,21 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // in lib/server/cache/v2StageCache.ts) plus a swallowed catch preserves the original
   // "never let a KV hiccup affect the real scan" guarantee — this only removes the RACE (not
   // awaiting at all), it does not turn a KV failure into a scan failure.
+  // DEGRADED RESULT NOT CACHED AS HEALTHY, DISCLOSED (Wallet Scanner graph/API support audit): this
+  // write previously ran for EVERY chain unconditionally, including a chain whose `providerStatus`
+  // is 'provider_unavailable' (both GoldRush and Alchemy failed — see runLiveFetchSafely's own safe
+  // wrapper, which resolves rather than throws on a total provider failure, specifically so this
+  // pipeline degrades instead of crashing). That meant a transient full-provider outage got written
+  // to this 30s KV cache exactly like a genuine "wallet has zero events" result — app/api/_shared/
+  // walletChainPipeline.ts's own reader (see this comment block's own header) would then read that
+  // cached empty/unavailable result back as if it were healthy for up to 30s, even after the
+  // providers had already recovered. Filtering it out of the write here does not change what gets
+  // returned to THIS caller (providerResults/providerDiagnostics/report below are already built from
+  // the real, unfiltered `providerResults` array) — it only stops the degraded outcome from being
+  // replayed to a later reader as a false "provider succeeded with zero events" cache hit; that
+  // reader now genuinely cache-misses and retries live instead.
   await Promise.all(
-    providerResults.map((r) =>
+    providerResults.filter((r) => r.providerStatus !== 'provider_unavailable').map((r) =>
       Promise.race([
         providerFetchWindowKvWriter.write(
           `v2:providerFetchWindow:${r.chain}:${params.walletAddress.toLowerCase()}`,
@@ -3446,9 +3529,26 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // has completed, independent of the earlier immediate post-assembly log.
   logSyntheticPnlSummary(syntheticPnl)
 
+  // WALLET SCANNER PROVIDER/DEX-MODEL SUPPORT AUDIT, DISCLOSED (Wallet Scanner graph/API + DEX
+  // model support audit task) — reuses `structuralCoverageClassified` (already computed above for
+  // the structural-coverage gate, never recomputed) and `providerDiagnostics`/`normalizationErrors`
+  // (already computed at stage 1/2). See buildWalletScannerProviderSupportAudit's own header and
+  // WalletScannerProviderSupportAudit's type-level disclosure for exactly what's real vs honestly
+  // null.
+  const walletScannerProviderSupportAudit = buildWalletScannerProviderSupportAudit({
+    requestedChains: params.chains,
+    enabledChains: preScan.sanitizedChains,
+    scanMode: params.scanMode,
+    providerDiagnostics,
+    eventsByClassification: countByClassification(structuralCoverageClassified),
+    duplicateEventCount: normalizationErrors.filter((e) => e.reason === 'duplicate_event').length,
+    runtimeCommitSha: DEPLOYMENT_RUNTIME_COMMIT_SHA,
+  })
+
   return {
     ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated,
     manifestFastPathAudit: walletPriceLookups.manifestFastPathAudit,
+    walletScannerProviderSupportAudit,
     // GOLDRUSH CALL SPLIT, DISCLOSED (UI/trust follow-up task) — the real, measured
     // historical-vs-current-price split (see AcceptedEvidenceSkipAudit's own header), exposed on the
     // final result so the worker's own [wallet-provider-cost-audit] log can attribute calls

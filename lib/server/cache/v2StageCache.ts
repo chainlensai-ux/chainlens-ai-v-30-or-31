@@ -140,13 +140,28 @@ export async function withStageCache<T>(
   key: string,
   ttlSeconds: number,
   compute: () => Promise<T>,
-  options?: { writer?: SimpleKvWriter; awaitWrite?: boolean; skipWrite?: boolean },
+  options?: {
+    writer?: SimpleKvWriter
+    awaitWrite?: boolean
+    skipWrite?: boolean
+    // DEGRADED-RESULT-NOT-CACHED-AS-HEALTHY, DISCLOSED, ADDITIVE (Wallet Scanner graph/API support
+    // audit): optional, backward-compatible — every existing caller that omits this keeps writing
+    // every successful `compute()` result exactly as before (unchanged). A caller whose `T` carries
+    // its own real degraded/failure signal (e.g. providerFetchWindow's or holdings'
+    // `providerStatus: 'provider_unavailable'`, meaning every real provider failed and the result is
+    // an honest empty/unavailable shape, never a fabricated success) can pass this to stop THAT
+    // specific outcome from being written to the shared KV cache — so a retry within the TTL window
+    // genuinely re-attempts the live fetch instead of replaying a frozen failure as if it were a
+    // verified "wallet has zero events" result. Never affects the read path or `compute()` itself.
+    shouldCache?: (result: T) => boolean
+  },
 ): Promise<T> {
   const cached = await getStageCache<T>(key)
   if (cached !== null) return cached
 
   const result = await compute()
   if (options?.skipWrite) return result
+  if (options?.shouldCache && !options.shouldCache(result)) return result
 
   const effectiveTtl = resolveEffectiveTtl(ttlSeconds, process.env.NODE_ENV)
   if (options?.writer) {

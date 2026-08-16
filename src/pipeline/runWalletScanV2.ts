@@ -192,13 +192,19 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
   // fetchHoldings' own source is never touched. 20s TTL: shortest of the 4 wrapped stages, since
   // current balances are the most time-sensitive of the cached data (a stale balance is more
   // visibly wrong to a user than a slightly-stale historical event window).
+  // DEGRADED RESULT NOT CACHED AS HEALTHY, DISCLOSED (Wallet Scanner graph/API support audit): a
+  // chain whose holdings fetch fully failed (`providerStatus: 'provider_unavailable'` — both
+  // GoldRush and Alchemy failed) is an honest empty result, not a verified "wallet holds nothing on
+  // this chain" fact. Excluding it from the write (shouldCache below) stops that failure from being
+  // replayed as a cached "healthy, zero holdings" hit for the next 20s — a caller within that window
+  // now genuinely retries live instead.
   const holdingsResults = preScan.valid
     ? await Promise.all(preScan.sanitizedChains.map((chain) =>
         withStageCache(
           `v2:holdings:${chain}:${params.walletAddress.toLowerCase()}`,
           20,
           () => fetchHoldings(chain, params.walletAddress),
-          { writer: holdingsKvWriter },
+          { writer: holdingsKvWriter, shouldCache: (r) => r.providerStatus !== 'provider_unavailable' },
         ),
       ))
     : []
