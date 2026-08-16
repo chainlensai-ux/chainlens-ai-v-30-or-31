@@ -720,19 +720,15 @@ export default function WhaleAlertsPage() {
         {/* ═══ 1. CONTROL HEADER ═════════════════════════════════════════════
             Compressed from a 2-column marketing hero (large h1, duplicated eyebrow, decorative
             radar rings + fake sparkline) into a single-row operator header. Same information,
-            roughly a third of the vertical space, no decorative SVG. */}
+            roughly a third of the vertical space, no decorative SVG.
+            ICON REMOVED, DISCLOSED (header polish): the boxed/glowing bell icon next to the title
+            read as template filler — dropped entirely rather than replaced, per this task's own
+            "no replacement icon unless absolutely necessary" instruction. Title/subtitle now lead
+            the header directly; spacing tightened to close the gap the icon left behind. */}
         <header className="wa-head flex items-center justify-between" style={{ gap: 16, paddingBottom: 2 }}>
-          <div className="flex items-center" style={{ gap: 11, minWidth: 0 }}>
-            <div className="flex shrink-0 items-center justify-center rounded-[9px]"
-              style={{ width: 32, height: 32, background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.22)' }}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#2dd4bf" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>
-              </svg>
-            </div>
-            <div style={{ minWidth: 0 }}>
-              <h1 style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.015em', lineHeight: 1.2, color: '#f1f5f9', margin: 0 }}>Whale Alerts</h1>
-              <p className="wa-help" style={{ marginTop: 2 }}>Tracked Base wallets, monitored for meaningful token movement.</p>
-            </div>
+          <div style={{ minWidth: 0 }}>
+            <h1 style={{ fontSize: 19, fontWeight: 700, letterSpacing: '-0.015em', lineHeight: 1.2, color: '#f1f5f9', margin: 0 }}>Whale Alerts</h1>
+            <p className="wa-help" style={{ marginTop: 3 }}>Tracked Base wallets, monitored for meaningful token movement.</p>
           </div>
           <div className="flex flex-wrap items-center justify-end" style={{ gap: 6 }}>
             <Pill color="cyan" dot>Base Mainnet</Pill>
