@@ -2,6 +2,7 @@
 import { NextResponse } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
+import { fetchGoPlusHoneypotFallback } from "@/lib/server/goplusSecurity";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
 import { sanitizePublicTokenResponse, applyTokenScannerPlanGate } from "@/lib/server/tokenPublicResponse";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
@@ -3783,17 +3784,26 @@ export async function POST(req: Request) {
       // GoldRush Contract Intel: ETH + BASE only — ABI scan for mint, blacklist, pause, withdraw, proxy
       goldrushEnabled ? fetchGoldRushContractIntel(chain, contract) : Promise.resolve(null),
     ]);
+    // GOPLUS-FALLBACK, DISCLOSED: honeypot.is (resolveSimulation/_simResult above) is the primary
+    // and preferred provider — only reached for when it returned nothing, so the happy path never
+    // pays for a second network call. Real secondary read via lib/server/goplusSecurity.ts, not a
+    // fabricated result — stays null if GoPlus also has no data, the chain isn't supported, or the
+    // request fails.
+    const _gpFallback = _simResult == null && isFullScanChain
+      ? await fetchGoPlusHoneypotFallback(CHAIN_ID_MAP[chain], contract).catch(() => null)
+      : null;
     // Compatibility wrapper: adapts resolveSimulation result to hpResult shape used throughout
     const hpResult = {
-      ok: _simResult != null,
-      honeypot: _simResult?.honeypot ?? null,
-      honeypotStatus: _simResult?.honeypotStatus ?? 'unavailable' as const,
-      honeypotReason: _simResult?.honeypotReason ?? null,
-      buyTax: _simResult?.buyTax ?? null,
-      sellTax: _simResult?.sellTax ?? null,
-      transferTax: _simResult?.transferTax ?? null,
-      simulationSuccess: _simResult?.simulationSuccess ?? null,
-      honeypotProvider: _simResult != null ? 'ok' as const : 'partial' as const,
+      ok: _simResult != null || _gpFallback != null,
+      honeypot: _simResult?.honeypot ?? _gpFallback?.honeypot ?? null,
+      honeypotStatus: _simResult?.honeypotStatus ?? _gpFallback?.honeypotStatus ?? 'unavailable' as const,
+      honeypotReason: _simResult?.honeypotReason ?? _gpFallback?.honeypotReason ?? null,
+      buyTax: _simResult?.buyTax ?? _gpFallback?.buyTax ?? null,
+      sellTax: _simResult?.sellTax ?? _gpFallback?.sellTax ?? null,
+      transferTax: _simResult?.transferTax ?? _gpFallback?.transferTax ?? null,
+      simulationSuccess: _simResult?.simulationSuccess ?? _gpFallback?.simulationSuccess ?? null,
+      honeypotProvider: _simResult != null ? 'ok' as const : _gpFallback != null ? 'partial' as const : 'partial' as const,
+      honeypotSourceUsed: _simResult != null ? 'honeypot_is' as const : _gpFallback != null ? 'goplus' as const : 'none' as const,
     };
     const alchemyMandatoryReads = await Promise.all([
       countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[0] }, 'latest'], 'ownerCheck.owner', false),
@@ -5886,12 +5896,13 @@ export async function POST(req: Request) {
     if (process.env.NODE_ENV === "development") {
       console.log('[gt-market] contract', contract, '[gt-market] token status', gtTokenInfo ? 'ok' : 'empty', '[gt-market] pools count', matchingPools.length, '[gt-market] tokenEndpointMarketCapPresent', tokenEndpointMarketCap != null && tokenEndpointMarketCap > 0, '[gt-market] poolEndpointMarketCapPresent', poolEndpointMarketCapPresent, '[gt-market] marketCap available', marketCapFromGt != null, '[gt-market] fdv available', fdv != null)
     }
-    // Security fallbacks are disabled: risk layer uses active scan providers only.
-    const gpHasData = false
-    const gpHoneypot: null = null
-    const gpMint = null
-    const gpUpgradeable = null
-    const gpBlacklist = null
+    // GOPLUS-FALLBACK, DISCLOSED: gpHasData now reflects whether the real GoPlus fallback
+    // (lib/server/goplusSecurity.ts, wired above into hpResult) actually supplied honeypot/tax
+    // data — previously hardcoded `false` alongside a hardcoded-null "fallback" that never made a
+    // real call. Contract flags (mint/proxy/blacklist/pause/withdraw) are unaffected by this — they
+    // already come from real active providers via resolveContractFlags (GoldRush ABI scan +
+    // bytecode-selector RPC checks), not from GoPlus.
+    const gpHasData = hpResult.honeypotSourceUsed === 'goplus'
 
     // Final JSON response
     const marketStatus: "ok" | "fallback_ok" | "partial" | "no_pool_found" | "error" =
@@ -7765,10 +7776,13 @@ export async function POST(req: Request) {
         sellTax:           hpResult.sellTax,
         transferTax:       hpResult.transferTax,
         simulationSuccess: hpResult.simulationSuccess,
-      } : gpHoneypot,
+      } : null,
       securityDiagnostics: {
         honeypotProvider: hpResult.ok ? "ok" : hpResult.honeypotProvider,
-        honeypotSource:   hpResult.ok ? "risk_layer" : "inferred",
+        // GOPLUS-FALLBACK, DISCLOSED: reflects which provider actually supplied the honeypot
+        // field above — "risk_layer" (honeypot.is) is the primary source; "goplus_fallback" is
+        // the real secondary read when honeypot.is had nothing; "inferred" only when neither did.
+        honeypotSource:   hpResult.honeypotSourceUsed === 'honeypot_is' ? "risk_layer" : hpResult.honeypotSourceUsed === 'goplus' ? "goplus_fallback" : "inferred",
         honeypotChecked:  true,
       },
 
