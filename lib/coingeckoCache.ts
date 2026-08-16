@@ -90,7 +90,14 @@ export async function getOrFetchCached<T>(params: {
     await writeRedisEntry(key, entry)
     return { data, cache: 'MISS' }
   } catch (error) {
-    const staleEntry = localCached ?? redisCached ?? (await readRedisEntry<T>(key))
+    // REDUNDANT-REFETCH FIX, DISCLOSED (cache audit): redisCached was already fetched above (the
+    // `localCached ? null : await readRedisEntry(key)` line) — a null redisCached there means
+    // Redis genuinely had nothing for this key, and nothing could have written a value in the few
+    // milliseconds since (the only write path is this same function's own success branch, which we
+    // never reached — the fetcher just threw). Re-querying Redis here was a guaranteed-to-repeat-
+    // null network round-trip on every real failure, adding latency in exactly the failure path
+    // this fallback exists to make faster, not slower.
+    const staleEntry = localCached ?? redisCached
     if (staleEntry) {
       onLog?.(`[cache] STALE ${key}`)
       store.set(key, staleEntry)
