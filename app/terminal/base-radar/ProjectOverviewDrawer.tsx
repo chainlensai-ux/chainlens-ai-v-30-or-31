@@ -307,6 +307,19 @@ function shortAddr(addr: string | null | undefined): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`
 }
 
+// WIDE-SCRIPT-DETECTION, DISCLOSED (Radar full report final polish task — "ensure non-English token
+// names/symbols format cleanly without looking awkward"): the hero title used a fixed negative
+// letter-spacing tuned for Latin type, which visually cramps CJK/Hangul/Thai glyphs (those scripts
+// don't use kerning/tracking the same way). Purely a display check on the token's own real name
+// string — no name is ever altered, only whether the negative tracking is applied.
+function hasWideScript(text: string | null | undefined): boolean {
+  if (!text) return false
+  // Explicit \u-escaped code-point ranges (CJK symbols/punctuation, CJK unified ideographs +
+  // extension A, Hangul syllables, full-width forms, Thai) rather than raw literal glyphs in
+  // source, so this stays correct regardless of editor/file encoding.
+  return /[\u3000-\u303f\u3400-\u9fff\uac00-\ud7a3\uff00-\uffef\u0e00-\u0e7f]/.test(text)
+}
+
 function asLink(value: unknown): string | null {
   return typeof value === 'string' && /^https?:\/\//i.test(value) ? value : null
 }
@@ -498,7 +511,7 @@ function Section({ title, state, children, tone = 'default' }: { title: string; 
     // top-to-bottom gradient (instead of a flat single color) plus a hairline-thinner border gives
     // this middle tier of the hierarchy (below the hero header, above MetricCard/ProofTile/
     // VerdictTile's own lighter treatment) a touch of depth without changing spacing/content.
-    <section style={{ border: `1px solid ${tone === 'default' ? 'rgba(148,163,184,0.09)' : `${accent}26`}`, background: 'linear-gradient(180deg, rgba(17,26,42,0.44), rgba(13,20,33,0.36))', borderRadius: '16px', padding: '14px', marginBottom: '11px' }}>
+    <section style={{ border: `1px solid ${tone === 'default' ? 'rgba(148,163,184,0.09)' : `${accent}26`}`, background: 'linear-gradient(180deg, rgba(17,26,42,0.44), rgba(13,20,33,0.36))', borderRadius: '16px', padding: '13px 14px', marginBottom: '9px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '10px' }}>
         <h3 style={{ margin: 0, color: '#f8fafc', fontSize: '11px', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}><span style={{ color: accent }}>◆</span> {title}</h3>
         {state?.error ? <span style={{ color: '#fbbf24', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>Limited</span> : null}
@@ -574,12 +587,15 @@ function ProofTile({ label, value, tone = 'neutral' }: { label: string; value: R
 // a colored top rule (the accent color already computed for each of the three states, e.g.
 // verdictColor for risk) instead of a full colored border, so all three tiles read as one
 // coherent row without turning into three more identical bordered boxes.
+// FINAL-POLISH, DISCLOSED (Radar full report final polish task — "sharpen Primary Risk / Main
+// Positive / Next Check copy spacing"): tighter eyebrow-to-value gap and line-height so the tile
+// reads as one crisp unit instead of two loosely-related lines — same content/props, spacing only.
 function VerdictTile({ eyebrow, value, tone = 'neutral', accent }: { eyebrow: string; value: React.ReactNode; tone?: 'mint' | 'risk' | 'neutral'; accent: string }) {
   return (
-    <div style={{ position: 'relative', overflow: 'hidden', border: '1px solid rgba(148,163,184,.12)', background: 'rgba(2,6,23,.46)', borderRadius: 13, padding: '11px 12px 12px' }}>
+    <div style={{ position: 'relative', overflow: 'hidden', border: '1px solid rgba(148,163,184,.12)', background: 'rgba(2,6,23,.46)', borderRadius: 13, padding: '10px 12px 11px' }}>
       <div aria-hidden style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 2.5, background: accent }} />
-      <div style={{ color: '#5b7186', fontSize: 9.5, fontWeight: 850, letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 6 }}>{eyebrow}</div>
-      <div style={{ color: tone === 'risk' ? '#fecaca' : tone === 'mint' ? '#a7f3d0' : '#e2e8f0', fontSize: 12.5, fontWeight: 650, lineHeight: 1.4 }}>{value}</div>
+      <div style={{ color: '#5b7186', fontSize: 9.5, fontWeight: 850, letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 4.5 }}>{eyebrow}</div>
+      <div style={{ color: tone === 'risk' ? '#fecaca' : tone === 'mint' ? '#a7f3d0' : '#e2e8f0', fontSize: 12.5, fontWeight: 650, lineHeight: 1.35 }}>{value}</div>
     </div>
   )
 }
@@ -1063,35 +1079,42 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             the same real headline sentence the verdict section already showed, single-line
             truncated here) now sits directly under the identity row so the read-in-3-seconds intent
             starts at the very top of the panel, not several sections down. */}
-        <header className="radar-drawer-header" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 14px', padding: '14px 18px 12px', background: 'linear-gradient(180deg, rgba(3,10,20,0.96), rgba(2,6,23,0.90))', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(148,163,184,0.14)' }}>
+        {/* FINAL-POLISH, DISCLOSED (Radar full report final polish task — explicitly "small pass,
+            do not redesign"): header padding/margins trimmed slightly further, the Radar score
+            pill is a touch larger/bolder so it reads as the header's second focal point after the
+            title, and the title now uses a script-aware letter-spacing (see hasWideScript below)
+            so CJK/other wide-script names don't get the same negative Latin tracking that looks
+            cramped on those glyphs. Same chips, same summary line, same actions — nothing removed
+            or restructured. */}
+        <header className="radar-drawer-header" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 12px', padding: '11px 18px 9px', background: 'linear-gradient(180deg, rgba(3,10,20,0.96), rgba(2,6,23,0.90))', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(148,163,184,0.14)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
             <div style={{ minWidth: 0 }}>
-              <p style={{ margin: '0 0 3px', color: '#5b7186', fontSize: 8.5, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Intelligence Receipt</p>
-              <h2 style={{ margin: 0, fontSize: 21, fontWeight: 800, color: '#f8fafc', letterSpacing: '-.03em', overflowWrap: 'anywhere', lineHeight: 1.15 }}>{token.name} <span style={{ color: '#7c93a8', fontWeight: 600, fontSize: '0.72em' }}>/{token.symbol}</span></h2>
+              <p style={{ margin: '0 0 2px', color: '#5b7186', fontSize: 8.5, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Intelligence Receipt</p>
+              <h2 style={{ margin: 0, fontSize: 21, fontWeight: 800, color: '#f8fafc', letterSpacing: hasWideScript(token.name) ? 'normal' : '-.03em', overflowWrap: 'anywhere', wordBreak: 'break-word', lineHeight: 1.15 }}>{token.name} <span style={{ color: '#7c93a8', fontWeight: 600, fontSize: '0.72em', letterSpacing: 'normal' }}>/{token.symbol}</span></h2>
             </div>
             <button onClick={onClose} aria-label="Close project overview" style={{ flex: '0 0 auto', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.03)', color: '#94a3b8', borderRadius: 999, width: 26, height: 26, cursor: 'pointer', fontSize: 14, lineHeight: 1, display: 'grid', placeItems: 'center' }}>×</button>
           </div>
-          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center', marginTop: 8 }}>
             {/* CHAIN-LABEL, DISCLOSED (found in a full Base Radar audit): this was a two-way
                 `base ? 'Base' : 'ETH'` check, so every Robinhood token was labeled "ETH" — actively
                 misidentifying which chain a contract lives on, the single most misleading thing this
                 header can get wrong. Driven off the real chain key now. */}
             <Chip label={CHAIN_LABEL[chain]} tone="mint" />
             <Chip label={fmtAge(token.ageMinutes)} tone="neutral" />
-            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 9px', borderRadius: 999, background: 'rgba(45,212,191,.08)', border: '1px solid rgba(45,212,191,.22)' }}>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 999, background: 'rgba(45,212,191,.11)', border: '1px solid rgba(45,212,191,.32)' }}>
               <span style={{ color: '#5eead4', fontSize: 9, fontWeight: 900, letterSpacing: '.10em', textTransform: 'uppercase' }}>Radar</span>
-              <span style={{ color: '#fff', fontSize: 13, fontWeight: 900 }}>{effectiveScore}</span>
-              <span style={{ color: '#4b6273', fontSize: 10 }}>/100</span>
+              <span style={{ color: '#fff', fontSize: 15, fontWeight: 900 }}>{effectiveScore}</span>
+              <span style={{ color: '#5b7186', fontSize: 10 }}>/100</span>
             </div>
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 9px', borderRadius: 999, background: `${verdictColor}14`, border: `1px solid ${verdictColor}38`, color: verdictColor, fontSize: 10, fontWeight: 850, letterSpacing: '.06em' }}>{publicStatus(severityLabel)}</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '5px 10px', borderRadius: 999, background: `${verdictColor}1c`, border: `1px solid ${verdictColor}48`, color: verdictColor, fontSize: 10.5, fontWeight: 900, letterSpacing: '.06em' }}>{publicStatus(severityLabel)}</span>
             <span title={token.contract} style={{ color: '#5b7186', fontSize: 10.5, fontFamily: 'var(--font-plex-mono)', marginLeft: 'auto' }}>{shortAddr(token.contract)}</span>
           </div>
-          <p style={{ margin: '9px 0 0', color: '#9fb3c4', fontSize: 12, lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical' }}>{severity.cortexSevereLine}</p>
+          <p style={{ margin: '8px 0 0', color: '#9fb3c4', fontSize: 12, lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical' }}>{severity.cortexSevereLine}</p>
           {/* DEEP-SCAN-REMOVED, DISCLOSED (explicitly requested: "get rid of that deep scan button
               on the base radar panel for robinhood and base"). Copy CA is now the primary/filled
               action since it's the most common next step once a candidate's evidence is reviewed
               here — Open Explorer and Watchlist remain secondary, unchanged otherwise. */}
-          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 10 }}>
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 9 }}>
             <button onClick={() => copyText(token.contract)} style={primaryButtonStyle}>Copy CA</button>
             <a href={explorer ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Open Explorer</a>
             {onTrackToggle ? <button onClick={onTrackToggle} style={tracking ? activeButtonStyle : buttonStyle}>{tracking ? 'Watching' : 'Add Watchlist'}</button> : null}

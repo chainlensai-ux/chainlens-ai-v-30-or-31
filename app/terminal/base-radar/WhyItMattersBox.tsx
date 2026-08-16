@@ -25,7 +25,7 @@ function splitLeadingPhrase(sentence: string): { lead: string; rest: string } {
 
 export default function WhyItMattersBox({ sentences }: { sentences: string[] }) {
   return (
-    <section style={{ border: '1px solid rgba(45,212,191,0.14)', background: 'rgba(45,212,191,0.03)', borderRadius: '14px', padding: '14px 15px', marginBottom: '14px' }}>
+    <section style={{ border: '1px solid rgba(45,212,191,0.14)', background: 'rgba(45,212,191,0.03)', borderRadius: '14px', padding: '13px 15px', marginBottom: '9px' }}>
       <h3 style={{ margin: '0 0 11px', color: '#99f6e4', fontSize: '11px', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Why It Matters</h3>
       <div style={{ display: 'grid', gap: '7px' }}>
         {sentences.map((sentence) => {
