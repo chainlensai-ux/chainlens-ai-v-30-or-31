@@ -41,6 +41,7 @@ import {
 import { calculateCortexScoreV2 } from '@/lib/token/scoring'
 import { getRadarValuationBasis, resolveBaseRadarMarketCap } from '@/lib/baseRadarValuation'
 import { resolveUniswapV4PositionOwners } from '@/lib/server/uniswapV4Subgraph'
+import { resolveUniswapV4RobinhoodRpc } from '@/lib/server/uniswapV4RobinhoodRpc'
 import { resolveUniswapV3PositionOwners } from '@/lib/server/uniswapV3Subgraph'
 import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
 
@@ -51,9 +52,21 @@ import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
 // activate for their own chain+pool-model combination and return null otherwise — dispatching
 // through both in sequence is safe: at most one of them can ever return non-null for a given
 // input, and both fall through to null (never fabricated data) when unconfigured.
+//
+// RPC-FALLBACK-FOR-ROBINHOOD-V4, DISCLOSED: resolveUniswapV4PositionOwners's subgraph ID was
+// confirmed (live, by the user) to point at a generic/mainnet Uniswap V4 subgraph, not one
+// indexing Robinhood Chain — it will keep returning null/empty for Robinhood pools regardless of
+// whether the env var stays configured. resolveUniswapV4RobinhoodRpc (lib/server/
+// uniswapV4RobinhoodRpc.ts) reads the same ModifyLiquidity event history directly from the chain
+// via the already-working Robinhood RPC instead, against a real, independently-verified
+// PoolManager address (see that file's own header for the verification steps taken). Same
+// null-means-"no real source" contract, same chain+poolModel gating — tried after the subgraph so
+// a real subgraph ID, if one is ever configured later, still takes priority over the RPC read.
 const resolveConcentratedPositionOwners: ConcentratedOwnerResolver = async (input) => {
-  const v4 = await resolveUniswapV4PositionOwners(input)
-  if (v4 != null) return v4
+  const v4Subgraph = await resolveUniswapV4PositionOwners(input)
+  if (v4Subgraph != null) return v4Subgraph
+  const v4Rpc = await resolveUniswapV4RobinhoodRpc(input)
+  if (v4Rpc != null) return v4Rpc
   return resolveUniswapV3PositionOwners(input)
 }
 

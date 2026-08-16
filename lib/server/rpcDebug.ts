@@ -12,11 +12,12 @@
 // COVERAGE (kept current — update this note whenever a new call site is instrumented, so it never
 // goes stale again the way the first version of this comment did): as of this update, every real
 // Alchemy/GoldRush/Covalent call site in the codebase logs here — lib/server/v2Adapters.ts,
-// lib/server/walletSnapshot.ts, lib/server/lpProof.ts, the 3 V2 engine fetch modules
-// (src/modules/providerFetchWindow, holdings, recoveryPolicy), src/modules/pricingAtTimeEngine's
-// basedex.ts (viem RPC) and goldrushPriceSource.ts (GoldRush SDK), and 7 legacy app/api/* routes
-// (token, clark, dev-wallet, scan-holder, whale-alerts, test/alchemy, test/alchemy-multichain) plus
-// app/api/whale-alerts/sync, app/api/proxy/goldrush, app/api/test/goldrush, app/api/test/covalent.
+// lib/server/walletSnapshot.ts, lib/server/lpProof.ts, lib/server/uniswapV4RobinhoodRpc.ts, the 3
+// V2 engine fetch modules (src/modules/providerFetchWindow, holdings, recoveryPolicy),
+// src/modules/pricingAtTimeEngine's basedex.ts (viem RPC) and goldrushPriceSource.ts (GoldRush
+// SDK), and 7 legacy app/api/* routes (token, clark, dev-wallet, scan-holder, whale-alerts,
+// test/alchemy, test/alchemy-multichain) plus app/api/whale-alerts/sync, app/api/proxy/goldrush,
+// app/api/test/goldrush, app/api/test/covalent.
 
 export type RpcDebugEntry = {
   timestamp: number
