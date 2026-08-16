@@ -597,11 +597,16 @@ export default function WhaleAlertsPage() {
 
   // COPY TIGHTENED, DISCLOSED (Whale Alerts UI redesign): sub-labels were restating the label in
   // words ("Last quarter hour" under "ALERTS · 15M"). Now each carries a distinct unit/scope line.
+  // ZERO-STATE COPY, DISCLOSED (final polish): a bare "0" with a generic "Rolling" caption reads as
+  // broken. `zeroSub` gives each counter an intentional, factual line for the 0 case — it states
+  // only what a 0 in that window literally means (no signal recorded), never a claim about sync
+  // health or upcoming data. Tracked wallets has no zeroSub: its value is the fixed "60+" label,
+  // so it can never be 0.
   const metrics = [
-    { label: 'Alerts',          unit: '15m', val: stats.alerts15m, sub: 'Rolling',        color: '#2dd4bf' },
-    { label: 'Alerts',          unit: '1h',  val: stats.alerts1h,  sub: 'Rolling',        color: '#2dd4bf' },
-    { label: 'Alerts',          unit: '24h', val: stats.alerts24h, sub: 'Rolling',        color: '#8b5cf6' },
-    { label: 'Tracked wallets', unit: null,  val: '60+',           sub: 'Smart money + manual', color: '#94a3b8' },
+    { label: 'Alerts',          unit: '15m', val: stats.alerts15m, sub: 'Rolling', zeroSub: 'Quiet this window',   color: '#2dd4bf' },
+    { label: 'Alerts',          unit: '1h',  val: stats.alerts1h,  sub: 'Rolling', zeroSub: 'No signal past hour',  color: '#2dd4bf' },
+    { label: 'Alerts',          unit: '24h', val: stats.alerts24h, sub: 'Rolling', zeroSub: 'None in last 24h',     color: '#8b5cf6' },
+    { label: 'Tracked wallets', unit: null,  val: '60+',           sub: 'Smart money + manual', zeroSub: null,      color: '#94a3b8' },
   ]
 
   // SURFACE SYSTEM, DISCLOSED (Whale Alerts UI redesign): three flat, neutral surfaces + two border
@@ -680,6 +685,17 @@ export default function WhaleAlertsPage() {
         }
         .wa-btn-quiet:hover:not(:disabled) { color: #93a3ba; background: rgba(148,163,184,0.06); }
         .wa-btn-quiet:disabled { opacity: 0.4; }
+        /* Sync card's tertiary row (full refresh / reset / clear state) — deliberately the quietest
+           interactive element on the page: smaller, dimmer, no hover fill, reveals only on hover.
+           A separate class from .wa-btn-quiet so the feed's Pause and the empty state's Ask Clark
+           keep their existing, more visible weight. */
+        .wa-btn-micro {
+          padding: 3px 0; font-size: 10.5px; font-weight: 600; letter-spacing: 0.005em;
+          background: transparent; border: none; color: #465469;
+          transition: color .13s;
+        }
+        .wa-btn-micro:hover:not(:disabled) { color: #9fb0c6; }
+        .wa-btn-micro:disabled { opacity: 0.4; }
 
         /* ── Feed row hover ───────────────────────────────────────────────── */
         .wa-row { transition: background .12s; }
@@ -730,22 +746,27 @@ export default function WhaleAlertsPage() {
             Flat surfaces, no per-card icon tile, no bottom accent bar, no gradient spark fill.
             The number is the only loud element; label and unit sit on one baseline above it. */}
         <div className="wa-metrics grid" style={{ gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
-          {metrics.map((m, idx) => (
-            <div key={`${m.label}-${m.unit ?? 'total'}`} className="relative overflow-hidden rounded-[12px]"
-              style={{ border: bdr, background: cardBg, padding: '15px 16px 14px' }}>
-              <div className="flex items-baseline" style={{ gap: 6 }}>
-                <FieldLabel>{m.label}</FieldLabel>
-                {m.unit && (
-                  <span className="tabular-nums" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', color: m.color, opacity: 0.85 }}>
-                    {m.unit}
-                  </span>
-                )}
+          {metrics.map((m, idx) => {
+            const isZero = m.val === 0
+            return (
+              <div key={`${m.label}-${m.unit ?? 'total'}`} className="relative overflow-hidden rounded-[12px]"
+                style={{ border: bdr, background: cardBg, padding: '15px 16px 14px' }}>
+                <div className="flex items-baseline" style={{ gap: 6 }}>
+                  <FieldLabel>{m.label}</FieldLabel>
+                  {m.unit && (
+                    <span className="tabular-nums" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', color: m.color, opacity: isZero ? 0.45 : 0.85 }}>
+                      {m.unit}
+                    </span>
+                  )}
+                </div>
+                {/* A zero is dimmed rather than shown at full weight — it is a real reading, but not
+                    a headline number, so it stops competing with populated counters. */}
+                <p className="tabular-nums" style={{ marginTop: 10, fontSize: 30, fontWeight: 700, lineHeight: 1, letterSpacing: '-0.02em', color: isZero ? '#3f4a5c' : '#f1f5f9' }}>{m.val}</p>
+                <p style={{ marginTop: 7, fontSize: 11, color: '#4a5769' }}>{isZero && m.zeroSub ? m.zeroSub : m.sub}</p>
+                {!isZero && <CardSpark color={m.color} seed={idx}/>}
               </div>
-              <p className="tabular-nums" style={{ marginTop: 10, fontSize: 30, fontWeight: 700, lineHeight: 1, letterSpacing: '-0.02em', color: '#f1f5f9' }}>{m.val}</p>
-              <p style={{ marginTop: 7, fontSize: 11, color: '#4a5769' }}>{m.sub}</p>
-              <CardSpark color={m.color} seed={idx}/>
-            </div>
-          ))}
+            )
+          })}
         </div>
 
         {/* ═══ 3. CONTROL BAR + SYNC MODULE ══════════════════════════════════
@@ -755,10 +776,12 @@ export default function WhaleAlertsPage() {
         <div className="wa-controls grid" style={{ gridTemplateColumns: 'minmax(0,1.5fr) minmax(0,0.85fr)', gap: 10, alignItems: 'start' }}>
 
           {/* ── Control bar ── */}
-          <div className="rounded-[12px] flex flex-col" style={{ border: bdr, background: cardBg, padding: '14px 16px', gap: 14 }}>
+          {/* SPACING, DISCLOSED (final polish): row gap 14→11, group gap 22→18, label→control gap
+              10→8, divider margin removed. Denser and more deliberate; no control moved or changed. */}
+          <div className="rounded-[12px] flex flex-col" style={{ border: bdr, background: cardBg, padding: '13px 15px', gap: 11 }}>
 
-            <div className="wa-ctl-row flex flex-wrap items-center" style={{ gap: 22, rowGap: 12 }}>
-              <div className="flex items-center" style={{ gap: 10 }}>
+            <div className="wa-ctl-row flex flex-wrap items-center" style={{ gap: 18, rowGap: 10 }}>
+              <div className="flex items-center" style={{ gap: 8 }}>
                 <FieldLabel>Window</FieldLabel>
                 <Segmented
                   options={WINDOWS.map(w => ({ value: w, label: w }))}
@@ -766,7 +789,7 @@ export default function WhaleAlertsPage() {
                   onChange={setWindowValue}
                 />
               </div>
-              <div className="flex items-center" style={{ gap: 10 }}>
+              <div className="flex items-center" style={{ gap: 8 }}>
                 <FieldLabel>Feed</FieldLabel>
                 <Segmented
                   options={[{ value: 'interesting' as const, label: 'Interesting' }, { value: 'all' as const, label: 'All activity' }]}
@@ -778,9 +801,9 @@ export default function WhaleAlertsPage() {
 
             <div style={{ height: 1, background: 'rgba(148,163,184,0.07)' }} />
 
-            <div className="flex flex-col" style={{ gap: 8 }}>
+            <div className="flex flex-col" style={{ gap: 7 }}>
               <FieldLabel>Value range</FieldLabel>
-              <div className="flex flex-wrap" style={{ gap: 6 }}>
+              <div className="flex flex-wrap" style={{ gap: 5 }}>
                 {RANGE_OPTIONS.map(opt => (
                   <button key={opt.value} type="button" onClick={() => setValueRange(opt.value)}
                     className={`wa-chip${valueRange === opt.value ? ' is-active' : ''}`}>
@@ -790,21 +813,21 @@ export default function WhaleAlertsPage() {
               </div>
             </div>
 
-            <div className="wa-dropdowns grid" style={{ gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 10 }}>
+            <div className="wa-dropdowns grid" style={{ gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: 8 }}>
               {[
                 { label: 'Alert type', val: typeFilter, set: setTypeFilter, opts: types },
                 { label: 'Severity',   val: sevFilter,  set: setSevFilter,  opts: sevs  },
                 { label: 'Side',       val: sideFilter, set: setSideFilter, opts: sides },
               ].map(({ label, val, set, opts }) => (
-                <div key={label} className="flex flex-col" style={{ gap: 7, minWidth: 0 }}>
+                <div key={label} className="flex flex-col" style={{ gap: 6, minWidth: 0 }}>
                   <FieldLabel>{label}</FieldLabel>
                   <div className="relative">
                     <select value={val} onChange={e => set(e.target.value)}
                       className="wa-select w-full appearance-none rounded-[8px]"
-                      style={{ background: innerBg, border: bdr, color: val === 'all' ? '#64748b' : '#cbd5e1', padding: '8px 28px 8px 11px', fontSize: 12.5, fontWeight: 500, outline: 'none' }}>
+                      style={{ background: innerBg, border: bdr, color: val === 'all' ? '#64748b' : '#cbd5e1', padding: '7px 26px 7px 10px', fontSize: 12.5, fontWeight: 500, outline: 'none' }}>
                       {opts.map(o => <option key={o} value={o}>{o === 'all' ? `All` : o}</option>)}
                     </select>
-                    <span className="pointer-events-none absolute" style={{ right: 11, top: '50%', transform: 'translateY(-50%)', color: '#475569' }}>
+                    <span className="pointer-events-none absolute" style={{ right: 10, top: '50%', transform: 'translateY(-50%)', color: '#475569' }}>
                       <svg width="8" height="5" viewBox="0 0 9 5" fill="currentColor"><path d="M0 0l4.5 5L9 0z"/></svg>
                     </span>
                   </div>
@@ -877,19 +900,19 @@ export default function WhaleAlertsPage() {
               {syncing ? 'Scanning…' : syncState?.hasMore ? 'Continue refresh' : syncCooldownLeftMs > 0 ? `Wait ${Math.ceil(syncCooldownLeftMs / 1000)}s` : 'Sync wallets'}
             </button>
 
-            <div className="wa-sync-btns flex items-center" style={{ gap: 4, marginTop: -2 }}>
+            <div className="wa-sync-btns flex items-center" style={{ gap: 9, marginTop: -3 }}>
               <button onClick={() => { void runSync(syncState?.mode === 'full' && isFullInProgress ? computedFullNextOffset : 0, 'full') }}
                 disabled={syncing || (fullSyncCooldownLeftMs > 0 && !isFullInProgress)}
-                className="wa-btn wa-btn-quiet"
+                className="wa-btn wa-btn-micro"
                 title="Refreshes the complete tracked-wallet set">
                 {syncState?.mode === 'full' && isFullInProgress
                   ? (fullSyncCooldownLeftMs > 0 ? `Wait ${Math.ceil(fullSyncCooldownLeftMs / 1000)}s` : 'Continue full')
                   : 'Full refresh'}
               </button>
-              <span style={{ color: '#243040' }}>·</span>
-              <button onClick={resetFilters} disabled={syncing} className="wa-btn wa-btn-quiet">Reset filters</button>
-              <span style={{ color: '#243040' }}>·</span>
-              <button onClick={clearSyncState} disabled={syncing} className="wa-btn wa-btn-quiet">Clear state</button>
+              <span aria-hidden style={{ width: 1, height: 9, background: 'rgba(148,163,184,0.14)' }} />
+              <button onClick={resetFilters} disabled={syncing} className="wa-btn wa-btn-micro">Reset filters</button>
+              <span aria-hidden style={{ width: 1, height: 9, background: 'rgba(148,163,184,0.14)' }} />
+              <button onClick={clearSyncState} disabled={syncing} className="wa-btn wa-btn-micro">Clear state</button>
             </div>
 
             {syncState && (
@@ -1093,25 +1116,45 @@ export default function WhaleAlertsPage() {
                   {body}
                 </p>
 
-                <div className="flex flex-wrap items-center justify-center" style={{ gap: 7, marginTop: 18 }}>
-                  {filterBlocked ? (
-                    <>
-                      <button onClick={showAllAlerts} className="wa-btn wa-btn-primary">
-                        {unpricedHidden ? 'Show unpriced activity' : 'Broaden filters'}
-                      </button>
-                      <button onClick={resetFilters} className="wa-btn wa-btn-secondary">Reset all</button>
-                    </>
-                  ) : (
-                    <>
-                      <button onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined, 'batch') }}
-                        disabled={syncing || (syncCooldownLeftMs > 0 && !syncState?.hasMore)}
-                        className="wa-btn wa-btn-primary">
-                        {syncing ? 'Scanning…' : syncState?.hasMore ? 'Continue refresh' : syncCooldownLeftMs > 0 ? `Wait ${Math.ceil(syncCooldownLeftMs / 1000)}s` : 'Run sync'}
-                      </button>
-                      <button onClick={showAllAlerts} className="wa-btn wa-btn-secondary">Broaden filters</button>
-                    </>
-                  )}
-                </div>
+                {/* ACTIONS, DISCLOSED (final polish): all three routes out of an empty feed are
+                    always offered — sync (produce data), broaden (stop hiding data), Ask Clark
+                    (explain the state). Only the EMPHASIS changes: whichever action actually
+                    addresses the current cause takes the primary slot, so the card never presents
+                    a dead end or a misleading "fix". Every handler here already existed. */}
+                {(() => {
+                  const syncBtn = (
+                    <button key="sync"
+                      onClick={() => { void runSync(syncState?.hasMore ? (syncState?.nextOffset ?? 0) : undefined, 'batch') }}
+                      disabled={syncing || (syncCooldownLeftMs > 0 && !syncState?.hasMore)}
+                      className={`wa-btn ${filterBlocked ? 'wa-btn-secondary' : 'wa-btn-primary'}`}>
+                      {syncing ? 'Scanning…' : syncState?.hasMore ? 'Continue refresh' : syncCooldownLeftMs > 0 ? `Wait ${Math.ceil(syncCooldownLeftMs / 1000)}s` : 'Sync wallets'}
+                    </button>
+                  )
+                  const broadenBtn = (
+                    <button key="broaden" onClick={showAllAlerts}
+                      className={`wa-btn ${filterBlocked ? 'wa-btn-primary' : 'wa-btn-secondary'}`}>
+                      {unpricedHidden ? 'Show unpriced activity' : 'Broaden filters'}
+                    </button>
+                  )
+                  const clarkBtn = (
+                    <button key="clark" onClick={goClark} className="wa-btn wa-btn-quiet" style={{ padding: '8px 11px' }}>
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                      </svg>
+                      Ask Clark
+                    </button>
+                  )
+                  return (
+                    <div className="flex flex-wrap items-center justify-center" style={{ gap: 7, marginTop: 18 }}>
+                      {filterBlocked ? [broadenBtn, syncBtn, clarkBtn] : [syncBtn, broadenBtn, clarkBtn]}
+                    </div>
+                  )
+                })()}
+                {filterBlocked && (
+                  <button onClick={resetFilters} className="wa-btn wa-btn-quiet" style={{ marginTop: 8, fontSize: 11 }}>
+                    Reset all filters
+                  </button>
+                )}
 
                 {hasProviderErrors && (
                   <p className="rounded-[8px]"
@@ -1223,28 +1266,46 @@ export default function WhaleAlertsPage() {
                   {/* Content */}
                   <div className="flex-1" style={{ minWidth: 0 }}>
 
-                    {/* Primary line */}
-                    <div className="flex flex-wrap items-center" style={{ gap: '0 6px' }}>
-                      <span className="rounded-[4px]"
-                        style={{ padding: '2px 8px', fontSize: 10, fontWeight: 800, letterSpacing: '0.1em', background: sideStyle.chipBg, border: `1px solid ${sideStyle.chipBd}`, color: sideStyle.chipTx }}>
+                    {/* Primary line — HIERARCHY, DISCLOSED (final polish): previously wallet name,
+                        verb, amount and token all rendered at one size/weight, separated only by
+                        colour, so nothing led the row. Now the VALUE and TOKEN (what actually
+                        happened) carry the weight, the wallet name is secondary, and the verb is
+                        connective tissue. Amount uses tabular-nums so figures align down the feed.
+                        Identical content and identical conditional logic — type only. */}
+                    <div className="flex flex-wrap items-baseline" style={{ gap: '0 6px' }}>
+                      <span className="rounded-[4px]" style={{
+                        padding: '2px 7px', fontSize: 9.5, fontWeight: 800, letterSpacing: '0.09em',
+                        background: sideStyle.chipBg, border: `1px solid ${sideStyle.chipBd}`, color: sideStyle.chipTx,
+                        alignSelf: 'center',
+                      }}>
                         {chipLabel}
                       </span>
-                      <span style={{ fontSize: 14, fontWeight: 600, color: '#f8fafc' }}>
-                        {walletName}{' '}
-                        <span style={{ color: '#64748b' }}>{baseVerb}</span>
-                        {amtShow
-                          ? <>{' '}<span style={{ fontWeight: 700, color: amtShow === 'value unverified' ? '#475569' : '#5eead4' }}>{amtShow}</span>{isSwap ? <span style={{ color: '#64748b' }}>{' '}into</span> : null}</>
-                          : isSwap ? <span style={{ color: '#64748b' }}>{' '}into</span> : null}
-                        {' '}<span style={{ fontWeight: 700, color: '#f8fafc' }}>{tok}</span>
-                      </span>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: '#b9c6d8' }}>{walletName}</span>
+                      <span style={{ fontSize: 12.5, color: '#55647d' }}>{baseVerb}</span>
+                      {amtShow && (
+                        <span className={amtShow === 'value unverified' ? undefined : 'tabular-nums'}
+                          style={{
+                            fontSize: amtShow === 'value unverified' ? 12.5 : 14.5,
+                            fontWeight: amtShow === 'value unverified' ? 500 : 700,
+                            letterSpacing: '-0.01em',
+                            color: amtShow === 'value unverified' ? '#4a5769' : '#5eead4',
+                            fontStyle: amtShow === 'value unverified' ? 'italic' : undefined,
+                          }}>
+                          {amtShow}
+                        </span>
+                      )}
+                      {isSwap && <span style={{ fontSize: 12.5, color: '#55647d' }}>into</span>}
+                      <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: '-0.01em', color: '#f1f5f9' }}>{tok}</span>
                     </div>
 
-                    {/* Subline: plain-text metadata */}
-                    <p style={{ marginTop: 5, fontSize: 11, color: '#475569' }}>
-                      Tracked wallet · Base
+                    {/* Subline — time pulled to the front as the anchor a live feed is scanned by;
+                        the rest stays in the same order, one quieter tone. */}
+                    <p style={{ marginTop: 5, fontSize: 11, color: '#4a5769' }}>
+                      <span style={{ color: '#7c8ba1', fontWeight: 600 }}>{timeAgo(alert.occurred_at)}</span>
+                      {' · '}Tracked wallet · Base
                       {(alert.legs ?? 1) > 1 ? ` · ${alert.legs} legs` : ''}
                       {(alert.repeats ?? 1) > 1 ? ` · ×${alert.repeats} in 5m` : ''}
-                      {' · '}{timeAgo(alert.occurred_at)}{' · '}{signalReason}
+                      {' · '}{signalReason}
                     </p>
                     {/* Wallet behavior tags */}
                     {alert.walletContext && (() => {
