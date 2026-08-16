@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { supabase } from '@/lib/supabaseClient'
 import { assessBaseRadarSeverity, creatorTopHolderDisplay, normalizePairCreatedAt, ageLabelFromIso, extractLpControllerSharePercent, getBaseRadarDetailSeverityCap, getScoreSeverityLabel } from '@/lib/baseRadarSeverity'
 import { getRadarDrawerValuation, getRadarValuationCardDisplay, DEFAULT_RADAR_MIN_LIQUIDITY_USD } from '@/lib/baseRadarValuation'
 import { getRadarValuationEvidence, getRadarSocialsEvidence, getRadarOwnershipEvidence, getRadarPastLaunchesEvidence, getRadarRugHistoryEvidence, getRadarSimulationEvidence, getRadarAgeEvidence, getRadarLpPositionEvidence, type RadarEvidenceEntry } from '@/lib/baseRadarEvidence'
@@ -250,8 +251,22 @@ const GT_NETWORK: Record<ChainKey, string> = {
   robinhood: 'robinhood',
 }
 
+// PLAN-GATE-AUTH-FIX, DISCLOSED (traced live: a Robinhood token's lpControl came back
+// {status:'requires_pro'} in a raw debug pull — not a data-source bug, app/api/token/route.ts's
+// own getPlan() reads an `Authorization: Bearer <token>` header and silently defaults to 'free'
+// when it's absent, and lib/server/tokenPublicResponse.ts's plan gate then replaces lpControl/
+// concentratedPositionProof/holderDistribution/security with that placeholder for free-tier
+// requests — regardless of the actual signed-in user's real plan). This drawer's fetchJson never
+// attached that header at all, so every Base Radar drawer request — for every user, Pro/Elite
+// included — was silently treated as unauthenticated free-tier here, even though the exact same
+// page's own main feed (app/terminal/base-radar/page.tsx's /api/radar calls) already correctly
+// attaches the signed-in user's Supabase session token this same way. Mirrors that established
+// pattern exactly; a signed-out or session-fetch-failure case still falls through to no header
+// (same free-tier behavior as before this fix, never breaks or throws).
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { cache: 'no-store' })
+  const { data: { session } } = await supabase.auth.getSession()
+  const token = session?.access_token
+  const res = await fetch(url, { cache: 'no-store', headers: token ? { Authorization: `Bearer ${token}` } : {} })
   const json = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(typeof json?.error === 'string' ? json.error : `Request failed (${res.status})`)
   return json as T
