@@ -42,6 +42,7 @@ import { calculateCortexScoreV2 } from '@/lib/token/scoring'
 import { getRadarValuationBasis, resolveBaseRadarMarketCap } from '@/lib/baseRadarValuation'
 import { resolveUniswapV4PositionOwners } from '@/lib/server/uniswapV4Subgraph'
 import { resolveUniswapV4RobinhoodRpc } from '@/lib/server/uniswapV4RobinhoodRpc'
+import { resolveUniswapV4BaseRpc } from '@/lib/server/uniswapV4BaseRpc'
 import { resolveUniswapV3PositionOwners } from '@/lib/server/uniswapV3Subgraph'
 import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
 
@@ -62,11 +63,22 @@ import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
 // PoolManager address (see that file's own header for the verification steps taken). Same
 // null-means-"no real source" contract, same chain+poolModel gating — tried after the subgraph so
 // a real subgraph ID, if one is ever configured later, still takes priority over the RPC read.
+//
+// RPC-FOR-BASE-V4, DISCLOSED: no subgraph ID is configured for Base V4 anywhere in this codebase
+// (only GRAPH_UNISWAP_V4_SUBGRAPH_ID_ROBINHOOD exists), so Base V4 pools previously had no real
+// position-ownership source at all — resolveUniswapV4PositionOwners and resolveUniswapV4RobinhoodRpc
+// both gate strictly on their own chain and always return null for chain === 'base'.
+// resolveUniswapV4BaseRpc (lib/server/uniswapV4BaseRpc.ts) reads the same ModifyLiquidity event
+// history directly via the already-working Base RPC (RPC.base), against a real,
+// independently-verified PoolManager address (see that file's own header for the verification
+// steps taken) — same null-means-"no real source" contract, same chain+poolModel gating.
 const resolveConcentratedPositionOwners: ConcentratedOwnerResolver = async (input) => {
   const v4Subgraph = await resolveUniswapV4PositionOwners(input)
   if (v4Subgraph != null) return v4Subgraph
   const v4Rpc = await resolveUniswapV4RobinhoodRpc(input)
   if (v4Rpc != null) return v4Rpc
+  const v4BaseRpc = await resolveUniswapV4BaseRpc(input)
+  if (v4BaseRpc != null) return v4BaseRpc
   return resolveUniswapV3PositionOwners(input)
 }
 
