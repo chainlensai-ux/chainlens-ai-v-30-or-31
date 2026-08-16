@@ -129,7 +129,15 @@ function ownershipSummary(devOwnership: unknown, fallbackOwnership: BaseRadarOwn
       ownershipSource: fallbackOwnership.source,
     }
   }
-  const ownershipLabel = ownershipStatus === 'renounced' ? 'Renounced ownership' : ownershipStatus === 'active_owner' ? 'Active owner/admin verified' : 'Open Check / Not verified'
+  // OWNERSHIP-LABEL-WORDING, DISCLOSED (reported: "Open Check / Not verified" reads like something
+  // broken rather than an honest gap — especially confusing since Token Scanner's own resolver AND
+  // the independent RPC owner() fallback above both already tried before landing here). Neither
+  // check found a standard Ownable owner/admin address for this token — most commonly because the
+  // contract genuinely doesn't implement that pattern at all (very common; not every token has an
+  // owner() function), not because a check failed to run. Reworded to say exactly that, without
+  // overstating confidence that no privileged control exists via a different pattern (AccessControl
+  // roles, a proxy admin slot, etc. — this only ever checked the standard Ownable selector).
+  const ownershipLabel = ownershipStatus === 'renounced' ? 'Renounced ownership' : ownershipStatus === 'active_owner' ? 'Active owner/admin verified' : 'No standard owner/admin pattern confirmed'
   return { ...raw, ownerAddress, adminAddress, isRenounced, ownershipVerified, ownershipStatus, ownershipLabel }
 }
 

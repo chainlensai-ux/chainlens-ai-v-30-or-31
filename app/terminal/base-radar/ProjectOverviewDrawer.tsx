@@ -717,7 +717,12 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
   const clusterLabel = clusterEvidenceLabel(deployer?.clusterEvidence)
   const deployerMethod = publicMethodLabel(deployer?.methodLabel)
   const holderStatusLabel = holderStatus(concentration.status, concentration.confidence, concentration.reason)
-  const ownershipLabel = security?.devOwnership?.ownershipLabel ?? (security?.devOwnership?.ownershipVerified === true && security.devOwnership.isRenounced === true ? 'Renounced ownership' : security?.devOwnership?.ownershipVerified === true && (security.devOwnership.ownerAddress || security.devOwnership.adminAddress) ? 'Active owner/admin verified' : 'Open Check / Not verified')
+  // OWNERSHIP-LABEL-WORDING, DISCLOSED (reported: "Open Check / Not verified" reads like something
+  // broken instead of an honest gap — see the matching fix/full rationale in
+  // app/api/base-radar/enrichment/route.ts's ownershipSummary; this is the frontend's own rarer
+  // fallback branch, used only when neither Token Scanner's resolver nor the RPC fallback produced
+  // any label at all — kept in sync with that same wording.
+  const ownershipLabel = security?.devOwnership?.ownershipLabel ?? (security?.devOwnership?.ownershipVerified === true && security.devOwnership.isRenounced === true ? 'Renounced ownership' : security?.devOwnership?.ownershipVerified === true && (security.devOwnership.ownerAddress || security.devOwnership.adminAddress) ? 'Active owner/admin verified' : 'No standard owner/admin pattern confirmed')
 
   const normalizedPairCreatedAt = normalizePairCreatedAt(market?.poolActivity?.pairCreatedAt ?? null)
   const pairAgeLabel = ageLabelFromIso(normalizedPairCreatedAt)
