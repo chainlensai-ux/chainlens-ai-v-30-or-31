@@ -103,7 +103,7 @@ export function resolveClarkIntent(message: string, context?: ClarkIntentContext
   const q = resolvedAddress ? `?address=${resolvedAddress}&chain=${chain}` : ''
   const cta = intent === 'base_radar' ? [{ label: 'Open Base Radar', href: '/terminal/base-radar' }, { label: 'Scan top token', href: '/terminal/token-scanner' }]
     : intent === 'wallet_scan' || intent === 'portfolio' ? [{ label: 'Scan Wallet', href: `/terminal/wallet-scanner${q || '?chain=auto'}`, requiresInput: !resolvedAddress }]
-    : intent === 'liquidity_scan' ? [{ label: 'Run LP Check', href: `/terminal/liquidity${q}`, requiresInput: !resolvedAddress }, { label: 'Scan Token', href: `/terminal/token-scanner${q}`, requiresInput: !resolvedAddress }]
+    : intent === 'liquidity_scan' ? [{ label: 'Scan Token', href: `/terminal/token-scanner${q}`, requiresInput: !resolvedAddress }]
     : intent === 'whale_alerts' ? [{ label: 'Open Whale Alerts', href: '/terminal/whale-alerts' }]
     : intent === 'token_scan' ? [{ label: 'Scan Token', href: `/terminal/token-scanner${q}`, requiresInput: !resolvedAddress }]
     : [{ label: 'Open CORTEX Terminal', href: '/terminal' }]

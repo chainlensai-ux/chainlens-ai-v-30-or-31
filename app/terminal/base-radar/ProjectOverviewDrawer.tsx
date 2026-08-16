@@ -1208,7 +1208,7 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             <ProofTile label="Controller" value={lpControllerLabel} tone={isConcentratedLp && !hasResolvedConcentratedOwner ? 'purple' : lpTone} />
           </div>
           {secondaryLpSignal?.status === 'team_controlled' ? <div style={{ marginTop: 10 }}><ProofTile label="Secondary exposure" value={`Wallet-controlled secondary pool${secondaryLpSignal.poolDex ? ` · ${secondaryLpSignal.poolDex}` : ''}`} tone="risk" /></div> : null}
-          <a href={`/terminal/liquidity?address=${token.contract}&chain=${chain}`} style={{ ...buttonStyle, display: 'inline-flex', marginTop: 12, textDecoration: 'none' }}>Open full LP Safety</a>
+          <a href={`/terminal/token-scanner?contract=${token.contract}${chain === 'base' ? '' : `&chain=${chain}`}`} style={{ ...buttonStyle, display: 'inline-flex', marginTop: 12, textDecoration: 'none' }}>Open in Token Scanner</a>
         </CollapsibleSection>
 
         <CollapsibleSection id="holders" title="Holders" tone={holderSectionTone} open={isSectionOpen('holders')} onToggle={toggleSection} state={enrichmentState}>

@@ -3620,10 +3620,6 @@ function tokenScannerDeepLink(address: string): string {
   return `/terminal/token-scanner?address=${address}&chain=base`;
 }
 
-function liquidityDeepLink(address: string): string {
-  return `/terminal/liquidity?address=${address}&chain=base`;
-}
-
 function missingAddressReply(intent: ClarkIntent): string {
   if (intent === "wallet_analysis" || intent === "whale_alert") {
     return "I can run that, but I need a wallet address first. Paste a full 0x wallet and I'll analyze the available data.";
@@ -10656,7 +10652,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         "- Controller/position verification: Unverified.",
         "- Liquidity depth: Unverified",
         "- Exit risk: Unknown until LP depth and control are verified",
-        `CTA: Open Liquidity Safety — ${liquidityDeepLink(resolvedAddress)} / Open Token Scanner — ${tokenScannerDeepLink(resolvedAddress)}`,
+        `CTA: Open Token Scanner (LP Safety tab) — ${tokenScannerDeepLink(resolvedAddress)}`,
       ].join("\n"),
       intent: plan.intent,
       toolsUsed,
