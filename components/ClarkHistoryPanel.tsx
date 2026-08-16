@@ -43,7 +43,7 @@ export default function ClarkHistoryPanel({
   return (
     <div className='clk-histpanel'>
       <style>{`
-        .clk-histpanel { display:flex; flex-direction:column; gap:10px; }
+        .clk-histpanel { display:flex; flex-direction:column; gap:11px; }
         .clk-histpanel-new { border:1px solid rgba(34,211,238,.28); border-radius:9px; background:rgba(34,211,238,.06); color:#67e8f9; font-weight:750; font-size:12.5px; padding:8px 11px; cursor:pointer; transition:background .15s, border-color .15s; }
         .clk-histpanel-new:hover { background:rgba(34,211,238,.11); border-color:rgba(34,211,238,.42); }
         .clk-histpanel-search { border:1px solid rgba(148,163,184,.16); border-radius:9px; background:rgba(2,6,14,.6); color:#e2e8f0; font-size:12.5px; padding:7px 10px; }
@@ -52,7 +52,7 @@ export default function ClarkHistoryPanel({
         .clk-histpanel-folder-chip { border:1px solid rgba(148,163,184,.16); border-radius:999px; padding:3px 8px; font-size:10.5px; font-weight:700; color:#a8b4c7; background:rgba(15,23,42,.35); cursor:pointer; }
         .clk-histpanel-folder-chip--active { color:#67e8f9; border-color:rgba(34,211,238,.4); background:rgba(34,211,238,.08); }
         .clk-histpanel-list { display:flex; flex-direction:column; gap:3px; overflow-y:auto; max-height:360px; }
-        .clk-histpanel-item { border:1px solid transparent; border-radius:9px; padding:8px 9px; cursor:pointer; background:transparent; transition:background .15s, border-color .15s; }
+        .clk-histpanel-item { border:1px solid transparent; border-radius:9px; padding:9px 10px; cursor:pointer; background:transparent; transition:background .15s, border-color .15s; }
         .clk-histpanel-item:hover { background:rgba(148,163,184,.05); border-color:rgba(148,163,184,.12); }
         .clk-histpanel-item--active { border-color:rgba(45,212,191,.32); background:rgba(45,212,191,.055); }
         .clk-histpanel-item-title { font-size:12.5px; font-weight:700; color:#dbe4f0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }

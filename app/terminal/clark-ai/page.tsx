@@ -108,19 +108,6 @@ function decodePrompt(value: string | null): string | null {
   try { return decodeURIComponent(value) } catch { return value }
 }
 
-// ── Clark Orb (unchanged visual) ─────────────────────────────────────────────
-function ClarkOrb({ size = 44, thinking = false }: { size?: number; thinking?: boolean }) {
-  return (
-    <div className={`clark-orb-shell${thinking ? ' thinking' : ''}`} style={{ width: size, height: size }}>
-      <div className='clark-orb-ring' />
-      <div className='clark-orb-core'>
-        <span className='clark-orb-dot clark-orb-dot-a' />
-        <span className='clark-orb-dot clark-orb-dot-b' />
-      </div>
-    </div>
-  )
-}
-
 // ── Main content ─────────────────────────────────────────────────────────────
 function ClarkAiContent() {
   const pathname          = usePathname()
@@ -460,15 +447,7 @@ function ClarkAiContent() {
   const isLimited   = planLimit !== null && clarkUsed >= planLimit
   const usagePct    = planLimit ? Math.min(100, (clarkUsed / planLimit) * 100) : 0
   const chips       = uiTab === 'analyst' ? ANALYST_CHIPS : CHAT_CHIPS
-  const placeholder = uiTab === 'analyst'
-    ? 'Ask Clark anything about tokens, wallets, liquidity, dev wallets, or Base movers...'
-    : 'Chat with Clark about Base, wallets, tokens, or risk...'
   const hasMessages = messages.length > 0
-  const memoryStats = [
-    { label: 'Tokens analyzed', value: clarkContextRef.current.lastMarketList?.length ?? 0 },
-    { label: 'Wallet scanned', value: getClientClarkContext().lastWallet ? 1 : 0 },
-    { label: 'Messages', value: messages.length },
-  ]
   const clientContext = getClientClarkContext() as { lastToken?: unknown; lastWallet?: unknown }
   const formatContextValue = (value: unknown) => {
     if (!value) return 'None yet'
@@ -488,10 +467,10 @@ function ClarkAiContent() {
   const recentTokens = (clarkContextRef.current.lastMarketList ?? []).slice(0, 3)
   const recentWalletValue = clientContext.lastWallet ? formatContextValue(clientContext.lastWallet) : null
   const quickActions = [
-    { title: "What's pumping on Base?", sub: 'Top tokens today', icon: '✧', accent: '#ec4899', prompt: "What's pumping on Base?" },
-    { title: 'Scan BRETT', sub: 'Run Token Scanner', icon: '◎', accent: '#22d3ee', prompt: 'Scan BRETT' },
-    { title: 'Show Base whales', sub: 'Open whale flow read', icon: '▣', accent: '#8b5cf6', prompt: 'Show Base whales' },
-    { title: 'Liquidity check AERO', sub: 'Run LP safety check', icon: '⌘', accent: '#34d399', prompt: 'Liquidity check AERO' },
+    { title: 'Market movers', sub: "Find what's moving on Base.", icon: '◈', accent: '#22d3ee', prompt: "What's pumping on Base?" },
+    { title: 'Scan token', sub: 'Run a token intelligence read.', icon: '◎', accent: '#2dd4bf', prompt: 'Scan BRETT' },
+    { title: 'Wallet read', sub: 'Analyze wallet behavior.', icon: '▣', accent: '#a78bfa', prompt: 'Show Base whales' },
+    { title: 'LP safety', sub: 'Check liquidity and control risk.', icon: '⌘', accent: '#22d3ee', prompt: 'Liquidity check AERO' },
   ]
   void activeModeConfig; void applyMode; void handleImportFromRadar; void handlePasteContract; void handlePasteWallet; void chips
 
@@ -513,21 +492,15 @@ function ClarkAiContent() {
         .clk-glow { position:absolute; pointer-events:none; inset:0; background: radial-gradient(circle at 73% 12%, rgba(34,211,238,.08), transparent 20%), radial-gradient(circle at 88% 30%, rgba(168,85,247,.08), transparent 24%), radial-gradient(circle at 8% 60%, rgba(45,212,191,.04), transparent 30%); }
         .clk-shell { position:relative; z-index:1; width:100%; max-width: 1500px; margin:0 auto; padding: 22px 24px 44px; display:grid; grid-template-columns: minmax(0, 1fr) 320px; gap:20px; align-items:start; }
         .clk-main { min-width:0; }
-        .clk-hero { display:flex; flex-direction:column; gap:12px; padding: 4px 0 14px; border-bottom:1px solid rgba(148,163,184,.12); }
+        .clk-hero { display:flex; flex-direction:column; gap:9px; padding: 2px 0 12px; border-bottom:1px solid rgba(148,163,184,.1); }
         .clk-title-row { display:flex; align-items:center; gap:14px; flex-wrap:wrap; }
-        .clk-title { margin:0; font-size: clamp(34px, 3.2vw, 46px); font-weight: 850; letter-spacing:-.04em; line-height:.98; color:#f8fafc; }
+        .clk-title { margin:0; font-size: clamp(30px, 2.7vw, 40px); font-weight: 850; letter-spacing:-.04em; line-height:.98; color:#f8fafc; }
         .clk-title-ai { background: linear-gradient(110deg, #22d3ee 10%, #7c3aed 58%, #c084fc 96%); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
-        .clk-ready-pill { border:1px solid rgba(45,212,191,.32); border-radius:999px; padding:6px 13px; color:#5eead4; background:rgba(6,20,30,.6); font:700 10.5px var(--font-plex-mono, monospace); letter-spacing:.10em; }
-        .clk-subtitle { margin:0; color:#93a2b7; font-size:14px; line-height:1.5; }
-        .clk-status-strip { display:flex; align-items:center; flex-wrap:wrap; gap:0; border:1px solid rgba(148,163,184,.14); border-radius:11px; background:rgba(6,11,22,.6); padding:8px 4px; }
-        .clk-status-item { display:flex; align-items:center; gap:7px; padding:0 14px; border-right:1px solid rgba(148,163,184,.12); }
-        .clk-status-item:last-child { border-right:0; }
-        .clk-status-item-dot { width:5px; height:5px; border-radius:999px; flex-shrink:0; }
-        .clk-status-item-label { color:#7f8ea3; font:700 10px var(--font-plex-mono, monospace); letter-spacing:.06em; text-transform:uppercase; white-space:nowrap; }
-        .clk-status-item-value { color:#cbd5e1; font:700 10px var(--font-plex-mono, monospace); letter-spacing:.02em; white-space:nowrap; }
-        .clk-status-item-value--live { color:#34d399; }
-        .clk-status-item-value--muted { color:#5b6b84; }
-        .clk-live-cortex { margin-left:auto; padding:0 4px 0 14px; color:#6d7c94; font:700 9.5px var(--font-plex-mono, monospace); letter-spacing:.10em; white-space:nowrap; }
+        .clk-ready-pill { border:1px solid rgba(45,212,191,.32); border-radius:999px; padding:5px 12px; color:#5eead4; background:rgba(6,20,30,.6); font:700 10px var(--font-plex-mono, monospace); letter-spacing:.10em; }
+        .clk-subtitle { margin:0; color:#8b99ae; font-size:13.5px; line-height:1.5; }
+        .clk-status-row { display:flex; align-items:center; flex-wrap:wrap; gap:14px; margin-top:2px; }
+        .clk-status-chip { display:inline-flex; align-items:center; gap:6px; color:#8b99ae; font:700 10.5px var(--font-plex-mono, monospace); letter-spacing:.04em; white-space:nowrap; }
+        .clk-status-dot { width:5px; height:5px; border-radius:999px; flex-shrink:0; }
         .clk-actions-row { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:9px; margin:12px 0 14px; }
         .clk-quick-card { position:relative; height:100%; text-align:left; display:flex; gap:10px; align-items:center; border:1px solid rgba(148,163,184,.14); border-radius:10px; background:rgba(9,15,28,.6); padding:11px 13px; color:#f8fafc; cursor:pointer; transition: border-color .15s, background .15s; overflow:hidden; }
         .clk-quick-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, rgba(148,163,184,.3)); background:rgba(13,21,38,.78); }
@@ -535,28 +508,23 @@ function ClarkAiContent() {
         .clk-quick-copy { display:flex; min-width:0; flex:1 1 auto; flex-direction:column; justify-content:center; }
         .clk-quick-title { display:block; margin:0; font-weight:700; font-size:12.5px; line-height:1.3; letter-spacing:-.005em; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
         .clk-quick-sub { display:block; margin:0; color:#71809a; font-size:10.5px; font-weight:600; line-height:1.3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .clk-console { border:1px solid rgba(59,130,246,.16); border-radius:14px; background:rgba(6,11,22,.7); overflow:hidden; }
-        .clk-tabs { display:grid; grid-template-columns:1fr 1fr; border-bottom:1px solid rgba(148,163,184,.12); }
-        .clk-tab { min-height:42px; border:0; border-right:1px solid rgba(148,163,184,.1); background:transparent; color:#8794a8; font-weight:700; font-size:13px; cursor:pointer; display:flex; gap:8px; align-items:center; justify-content:center; transition:background .15s, color .15s; }
-        .clk-tab:hover { color:#b7c2d4; }
-        .clk-tab:last-child { border-right:0; }
-        .clk-tab--active { color:#22d3ee; background:rgba(34,211,238,.06); box-shadow: inset 0 1px 0 rgba(34,211,238,.2); }
-        .clk-tab svg { width:15px; height:15px; }
+        .clk-console { border:1px solid rgba(59,130,246,.14); border-radius:14px; background:rgba(6,11,22,.7); overflow:hidden; }
+        .clk-tabs { display:flex; align-items:center; gap:4px; padding:10px 14px; border-bottom:1px solid rgba(148,163,184,.1); }
+        .clk-tab { min-height:0; border:1px solid transparent; border-radius:8px; background:transparent; color:#7f8ea3; font-weight:700; font-size:12px; letter-spacing:.01em; cursor:pointer; padding:6px 13px; display:flex; gap:6px; align-items:center; justify-content:center; transition:background .15s, color .15s, border-color .15s; }
+        .clk-tab:hover { color:#c3ccdb; }
+        .clk-tab--active { color:#67e8f9; background:rgba(34,211,238,.09); border-color:rgba(34,211,238,.22); }
+        .clk-tab svg { width:13px; height:13px; }
         .clk-thread { position:relative; min-height:0; max-height:560px; overflow-y:auto; padding:16px 22px 12px; display:flex; flex-direction:column; gap:14px; background-image: linear-gradient(rgba(34,211,238,.018) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.014) 1px, transparent 1px); background-size:32px 32px, 32px 32px; }
         .clk-thread-top { display:flex; justify-content:flex-end; min-height:0; }
         .clk-clear-btn { border:0; background:transparent; color:#98a6ba; cursor:pointer; font-size:13px; }
-        .clk-intro { display:flex; align-items:center; gap:13px; max-width:720px; padding:12px 15px; border:1px solid rgba(45,212,191,.16); border-radius:12px; background:rgba(12,20,36,.5); }
-        .clk-intro-title { color:#67e8f9; font:800 11px var(--font-plex-mono, monospace); letter-spacing:.10em; text-transform:uppercase; margin:0 0 4px; }
-        .clk-intro-text { margin:0; color:#98a7bb; line-height:1.45; font-size:12.5px; white-space:pre-line; }
-        .clk-capabilities { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
-        .clk-capability { border:1px solid rgba(45,212,191,.18); border-radius:999px; padding:3px 7px; color:#8fd6c2; background:rgba(45,212,191,.05); font:700 9px var(--font-plex-mono, monospace); letter-spacing:.06em; text-transform:uppercase; }
-        .clk-intro--empty { align-items:flex-start; width:100%; max-width:none; padding:22px 24px; gap:18px; }
-        .clk-intro-body { min-width:0; flex:1 1 auto; }
-        .clk-start-with { margin-top:16px; }
+        .clk-intro--empty { display:flex; flex-direction:column; align-items:flex-start; width:100%; padding:20px 22px 6px; gap:14px; }
+        .clk-intro-title { color:#c3ccdb; font-weight:700; font-size:14px; margin:0; }
+        .clk-intro-text { margin:0; color:#7f8ea3; line-height:1.5; font-size:12.5px; max-width:520px; }
+        .clk-start-with { width:100%; }
         .clk-start-with-label { display:block; margin-bottom:8px; color:#5b6b84; font:750 10px var(--font-plex-mono, monospace); letter-spacing:.10em; text-transform:uppercase; }
         .clk-start-with-row { display:flex; flex-wrap:wrap; gap:8px; }
-        .clk-start-chip { border:1px solid rgba(34,211,238,.24); border-radius:9px; background:rgba(34,211,238,.05); color:#a7e8f5; font-weight:700; font-size:12.5px; padding:8px 13px; cursor:pointer; transition:border-color .15s, background .15s, color .15s; }
-        .clk-start-chip:hover { border-color:rgba(45,212,191,.5); background:rgba(45,212,191,.1); color:#ccfbf1; }
+        .clk-start-chip { border:1px solid rgba(34,211,238,.2); border-radius:9px; background:rgba(34,211,238,.04); color:#a7e8f5; font-weight:700; font-size:12.5px; padding:8px 13px; cursor:pointer; transition:border-color .15s, background .15s, color .15s; }
+        .clk-start-chip:hover { border-color:rgba(45,212,191,.45); background:rgba(45,212,191,.09); color:#ccfbf1; }
         .clk-msg { max-width:min(88%, 760px); padding:15px 17px; border-radius:20px; border:1px solid rgba(148,163,184,.13); background:linear-gradient(145deg, rgba(13,22,38,.92), rgba(6,11,24,.88)); box-shadow:0 14px 30px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.05); }
         .clk-msg--user { align-self:flex-end; border-color:rgba(34,211,238,.22); border-bottom-right-radius:8px; background:linear-gradient(145deg, rgba(9,44,55,.82), rgba(7,24,34,.76)); }
         .clk-msg--clark { align-self:flex-start; border-color:rgba(45,212,191,.18); border-bottom-left-radius:8px; }
@@ -573,7 +541,11 @@ function ClarkAiContent() {
         .clk-scanline { position:relative; height:2px; margin-top:10px; overflow:hidden; background:rgba(148,163,184,.12); }
         .clk-scanline::before { content:''; position:absolute; inset:0 auto 0 0; width:42%; background:linear-gradient(90deg, transparent, rgba(45,212,191,.9), transparent); animation:clkScan 1.15s linear infinite; }
         @keyframes clkScan { from{ transform:translateX(-100%);} to{ transform:translateX(260%);} }
-        .clk-input-wrap { margin:10px 18px 14px; border:1px solid rgba(34,211,238,.36); border-radius:14px; background:rgba(3,9,20,.9); }
+        .clk-command { margin:14px 18px 0; }
+        .clk-command-label { display:block; margin:0 0 5px; color:#5eead4; font:800 10px var(--font-plex-mono, monospace); letter-spacing:.14em; text-transform:uppercase; }
+        .clk-command-line { margin:0; color:#8b99ae; font-size:12.5px; line-height:1.4; }
+        .clk-input-wrap { margin:12px 18px 14px; border:1px solid rgba(34,211,238,.32); border-radius:14px; background:rgba(3,9,20,.9); transition:border-color .15s; }
+        .clk-input-wrap:focus-within { border-color:rgba(34,211,238,.55); }
         .clk-input-row { display:grid; grid-template-columns:40px minmax(0, 1fr) auto 46px; gap:10px; align-items:center; min-height:62px; padding:8px 10px 8px 12px; }
         .clk-prompt-mark { height:36px; border-radius:9px; display:grid; place-items:center; color:#22d3ee; font:900 15px var(--font-plex-mono, monospace); background:rgba(34,211,238,.06); border:1px solid rgba(34,211,238,.16); }
         .clk-panel-input { width:100%; background:transparent; border:0; outline:0; color:#e5edf8; font-size:15px; caret-color:#22d3ee; }
@@ -600,7 +572,6 @@ function ClarkAiContent() {
         .clk-intel-label { color:#e7edf6; font-weight:700; font-size:12.5px; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .clk-intel-card--empty .clk-intel-label { color:#9aa8bb; }
         .clk-intel-sub { color:#94a3b8; font-size:11.5px; line-height:1.4; margin:4px 0 0; white-space:normal; word-break:break-word; }
-        .clk-intel-cta { position:relative; left:auto; right:auto; bottom:auto; margin-top:8px; padding-top:8px; border-top:1px solid rgba(148,163,184,.1); color:#67e8f9; font:800 9px var(--font-plex-mono, monospace); letter-spacing:.09em; text-transform:uppercase; opacity:.7; }
         .clk-intel-empty-row { border:1px dashed rgba(148,163,184,.18); border-radius:12px; background:rgba(148,163,184,.03); padding:14px 16px; color:#8391a7; font-size:12.5px; line-height:1.5; }
         .clk-side { display:flex; flex-direction:column; gap:14px; }
         .clk-side-card { border:1px solid rgba(148,163,184,.1); border-radius:13px; background:rgba(7,13,25,.6); padding:14px; }
@@ -612,22 +583,9 @@ function ClarkAiContent() {
         .clk-context-value { color:#e5edf8; font-size:13px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .clk-context-sub { color:#6d7c94; font-size:10.5px; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .clk-empty { margin:0; color:#7c8aa1; font-size:12px; line-height:1.5; padding:10px; border:1px dashed rgba(148,163,184,.16); border-radius:10px; background:rgba(148,163,184,.03); }
-        .clk-memory-row { display:flex; align-items:center; gap:10px; padding-top:11px; margin-top:2px; border-top:1px solid rgba(148,163,184,.09); }
-        .clk-memory-stat { display:flex; align-items:baseline; gap:5px; color:#6d7c94; font:700 10px var(--font-plex-mono, monospace); letter-spacing:.02em; }
-        .clk-memory-stat strong { color:#5eead4; font-size:12px; }
-        .clark-orb-shell { border-radius:999px; position:relative; display:inline-flex; align-items:center; justify-content:center; background:radial-gradient(circle at 30% 25%, rgba(148,163,184,.24), rgba(2,6,23,.96) 62%); border:1px solid rgba(148,163,184,.34); box-shadow:inset 0 1px 0 rgba(255,255,255,.08), 0 0 20px rgba(45,212,191,.22), 0 0 28px rgba(139,92,246,.20); overflow:hidden; flex-shrink:0; }
-        .clark-orb-ring { position:absolute; inset:3px; border-radius:999px; border:1px solid rgba(45,212,191,.25); opacity:.9; }
-        .clark-orb-core { position:relative; width:100%; height:100%; border-radius:999px; }
-        .clark-orb-dot { position:absolute; width:7px; height:7px; border-radius:999px; filter:blur(.1px); }
-        .clark-orb-dot-a { left:34%; top:44%; background:#67e8f9; box-shadow:0 0 16px rgba(103,232,249,.95); animation:clarkDotA 2.4s ease-in-out infinite; }
-        .clark-orb-dot-b { right:30%; top:44%; background:#c4b5fd; box-shadow:0 0 16px rgba(196,181,253,.9); animation:clarkDotB 2.1s ease-in-out infinite; }
-        .clark-orb-shell.thinking::after { content:''; position:absolute; inset:-6px; border-radius:999px; border:1px solid rgba(45,212,191,.22); animation:clarkPulse 1.6s ease-out infinite; }
-        @keyframes clarkDotA { 0%,100%{ transform:translate(0,0) scale(1);} 50%{ transform:translate(2px,-2px) scale(1.18);} }
-        @keyframes clarkDotB { 0%,100%{ transform:translate(0,0) scale(1);} 50%{ transform:translate(-2px,2px) scale(1.16);} }
-        @keyframes clarkPulse { 0%{ transform:scale(.94); opacity:.7;} 100%{ transform:scale(1.08); opacity:0;} }
         @media (max-width: 1100px) { .clk-shell { grid-template-columns:1fr; } .clk-side { grid-template-columns:repeat(3, minmax(0,1fr)); display:grid; } }
-        @media (max-width: 780px) { .clk-shell { padding:20px 14px 44px; } .clk-actions-row { grid-template-columns:1fr 1fr; } .clk-side { display:flex; } .clk-thread { min-height:0; padding:16px 14px 12px; } .clk-input-row { grid-template-columns:36px minmax(0,1fr) 44px; } .clk-helper { display:none; } .clk-intel-grid { grid-template-columns:1fr 1fr; } .clk-live-cortex { display:none; } }
-        @media (max-width: 480px) { .clk-actions-row { grid-template-columns:1fr; } .clk-title { font-size:34px; } .clk-ready-pill { padding:5px 10px; } .clk-intel-grid { grid-template-columns:1fr; } .clk-status-item-label { display:none; } }
+        @media (max-width: 780px) { .clk-shell { padding:20px 14px 44px; } .clk-actions-row { grid-template-columns:1fr 1fr; } .clk-side { display:flex; } .clk-thread { min-height:0; padding:16px 14px 12px; } .clk-input-row { grid-template-columns:36px minmax(0,1fr) 44px; } .clk-helper { display:none; } .clk-intel-grid { grid-template-columns:1fr 1fr; } }
+        @media (max-width: 480px) { .clk-actions-row { grid-template-columns:1fr; } .clk-title { font-size:30px; } .clk-ready-pill { padding:5px 10px; } .clk-intel-grid { grid-template-columns:1fr; } }
       `}</style>
 
       <div aria-hidden='true'>
@@ -642,25 +600,12 @@ function ClarkAiContent() {
               <h1 className='clk-title'>Clark <span className='clk-title-ai'>AI</span></h1>
               <span className='clk-ready-pill'>CORTEX READY</span>
             </div>
-            <p className='clk-subtitle'>Base-native AI analyst for tokens, wallets, liquidity, and onchain risk.</p>
-            <div className='clk-status-strip' aria-label='CORTEX status'>
-              <span className='clk-status-item'>
-                <span className='clk-status-item-dot' style={{ background: '#10b981', boxShadow: '0 0 6px rgba(16,185,129,.7)' }} />
-                <span className='clk-status-item-value clk-status-item-value--live'>LIVE</span>
-              </span>
-              {([
-                ['Memory', messages.length > 0 ? 'Active' : 'Ready', messages.length > 0],
-                ['Token', clientContext.lastToken ? 'Ready' : 'Standby', Boolean(clientContext.lastToken)],
-                ['Wallet', clientContext.lastWallet ? 'Ready' : 'Standby', Boolean(clientContext.lastWallet)],
-                ['Mode', activeMode === 'radar' ? 'Radar' : 'Adaptive', true],
-                ['System', loading ? 'Working' : 'Online', true],
-              ] as Array<[string, string, boolean]>).map(([label, value, isActive]) => (
-                <span className='clk-status-item' key={label}>
-                  <span className='clk-status-item-label'>{label}</span>
-                  <span className={`clk-status-item-value${isActive ? '' : ' clk-status-item-value--muted'}`}>{value}</span>
-                </span>
-              ))}
-              <span className='clk-live-cortex'>CORTEX ENGINE</span>
+            <p className='clk-subtitle'>Base-native onchain analyst for tokens, wallets, liquidity, and risk.</p>
+            <div className='clk-status-row' aria-label='Clark status'>
+              <span className='clk-status-chip'><span className='clk-status-dot' style={{ background: '#22d3ee' }} />Base</span>
+              <span className='clk-status-chip'><span className='clk-status-dot' style={{ background: (messages.length > 0 || clientContext.lastToken || clientContext.lastWallet) ? '#34d399' : '#475569' }} />Memory {(messages.length > 0 || clientContext.lastToken || clientContext.lastWallet) ? 'On' : 'Idle'}</span>
+              <span className='clk-status-chip'><span className='clk-status-dot' style={{ background: '#a78bfa' }} />{activeMode === 'radar' ? 'Radar Mode' : 'Adaptive Mode'}</span>
+              <span className='clk-status-chip'><span className='clk-status-dot' style={{ background: loading ? '#f59e0b' : '#5eead4' }} />{loading ? 'CORTEX Working' : 'CORTEX Ready'}</span>
             </div>
           </section>
 
@@ -697,40 +642,25 @@ function ClarkAiContent() {
               <div className='clk-thread-top'>
                 {hasMessages && <button onClick={handleClear} className='clk-clear-btn'>Clear conversation</button>}
               </div>
-              {!hasMessages ? (
-                <div className='clk-intro clk-intro--empty'>
-                  <ClarkOrb size={44} thinking={loading} />
-                  <div className='clk-intro-body'>
-                    <div className='clk-intro-title'>Clark is ready.</div>
-                    <p className='clk-intro-text'>Base-native analyst online. Give Clark a token, wallet, or contract — or start from a command below.</p>
-                    <div className='clk-start-with' aria-label='Start with a command'>
-                      <span className='clk-start-with-label'>Start with</span>
-                      <div className='clk-start-with-row'>
-                        {startWithChips.map((chip) => (
-                          <button
-                            key={chip.label}
-                            type='button'
-                            className='clk-start-chip'
-                            onClick={() => setInput(chip.prompt)}
-                          >
-                            {chip.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <div className='clk-intro'>
-                  <ClarkOrb size={38} thinking={loading && !hasMessages} />
+              {!hasMessages && (
+                <div className='clk-intro--empty'>
                   <div>
-                    <div className='clk-intro-title'>Clark is ready.</div>
-                    <p className='clk-intro-text'>System boot complete. Ask Clark for token reads, wallet behavior, liquidity checks, or current Base movers.</p>
-                    <div className='clk-capabilities' aria-label='Clark capabilities'>
-                      <span className='clk-capability'>Token reads</span>
-                      <span className='clk-capability'>Wallet analysis</span>
-                      <span className='clk-capability'>LP checks</span>
-                      <span className='clk-capability'>Base movers</span>
+                    <p className='clk-intro-title'>Clark is ready.</p>
+                    <p className='clk-intro-text'>Ask for a token read, wallet read, LP check, or Base market summary.</p>
+                  </div>
+                  <div className='clk-start-with' aria-label='Start with a command'>
+                    <span className='clk-start-with-label'>Start with</span>
+                    <div className='clk-start-with-row'>
+                      {startWithChips.map((chip) => (
+                        <button
+                          key={chip.label}
+                          type='button'
+                          className='clk-start-chip'
+                          onClick={() => setInput(chip.prompt)}
+                        >
+                          {chip.label}
+                        </button>
+                      ))}
                     </div>
                   </div>
                 </div>
@@ -781,6 +711,12 @@ function ClarkAiContent() {
               </div>
             )}
 
+            {!hasMessages && (
+              <div className='clk-command'>
+                <span className='clk-command-label'>Ask Clark</span>
+                <p className='clk-command-line'>Ask about a token, wallet, LP position, or Base market move.</p>
+              </div>
+            )}
             <div className='clk-input-wrap'>
               <div className='clk-input-row'>
                 <span className='clk-prompt-mark'>›</span>
@@ -790,7 +726,7 @@ function ClarkAiContent() {
                   onChange={(e) => setInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && !loading) { e.preventDefault(); void handleSend() } }}
                   disabled={loading}
-                  placeholder='Enter onchain command…'
+                  placeholder='Ask Clark about a token, wallet, contract, or market move…'
                 />
                 <span className='clk-helper'>Shift + Enter for new line</span>
                 <button className='clk-send-btn' onClick={() => void handleSend()} disabled={loading || !input.trim() || isLimited} aria-label='Send'>
@@ -811,10 +747,10 @@ function ClarkAiContent() {
           <section className='clk-intel'>
             <div className='clk-intel-head'>
               <h2 className='clk-intel-title'>Recent Intelligence</h2>
-              <p className='clk-intel-desc'>Your latest Clark reads will appear here.</p>
+              <p className='clk-intel-desc'>Recent Clark reads will appear here after scans or chats.</p>
             </div>
             {recentTokens.length === 0 && !recentWalletValue ? (
-              <div className='clk-intel-empty-row'>Your latest token, wallet, and LP reads will appear here.</div>
+              <div className='clk-intel-empty-row'>Recent Clark reads will appear here after scans or chats.</div>
             ) : (
               <div className='clk-intel-grid'>
                 {recentTokens.length > 0 ? (
@@ -822,33 +758,33 @@ function ClarkAiContent() {
                     <div className='clk-intel-card' key={`${t.symbol}-${idx}`} style={{ '--accent': '#22d3ee' } as CSSProperties}>
                       <span className='clk-intel-icon'>◎</span>
                       <div className='clk-intel-label'>{t.symbol}</div>
-                      <div className='clk-intel-sub'>{t.reasonTag ?? 'From recent Base read'}</div><div className='clk-intel-cta'>Open latest context</div>
+                      <div className='clk-intel-sub'>{t.reasonTag ?? 'From recent Base read'}</div>
                     </div>
                   ))
                 ) : (
                   <div className='clk-intel-card clk-intel-card--empty'>
                     <span className='clk-intel-icon'>◎</span>
                     <div className='clk-intel-label'>No token read yet</div>
-                    <div className='clk-intel-sub'>Run a token scan to populate this module.</div><div className='clk-intel-cta'>Awaiting first read</div>
+                    <div className='clk-intel-sub'>Run a token scan to populate this module.</div>
                   </div>
                 )}
                 {recentWalletValue ? (
                   <div className='clk-intel-card' style={{ '--accent': '#8b5cf6' } as CSSProperties}>
                     <span className='clk-intel-icon'>▣</span>
                     <div className='clk-intel-label'>{recentWalletValue}</div>
-                    <div className='clk-intel-sub'>Last wallet read</div><div className='clk-intel-cta'>Wallet memory active</div>
+                    <div className='clk-intel-sub'>Last wallet read</div>
                   </div>
                 ) : (
                   <div className='clk-intel-card clk-intel-card--empty'>
                     <span className='clk-intel-icon'>▣</span>
                     <div className='clk-intel-label'>No wallet read yet</div>
-                    <div className='clk-intel-sub'>Scan a wallet to build wallet memory.</div><div className='clk-intel-cta'>Awaiting wallet</div>
+                    <div className='clk-intel-sub'>Scan a wallet to build wallet memory.</div>
                   </div>
                 )}
                 <div className='clk-intel-card clk-intel-card--empty'>
                   <span className='clk-intel-icon'>⌘</span>
                   <div className='clk-intel-label'>No LP check yet</div>
-                  <div className='clk-intel-sub'>Run an LP check to track liquidity proof.</div><div className='clk-intel-cta'>Awaiting proof</div>
+                  <div className='clk-intel-sub'>Run an LP check to track liquidity proof.</div>
                 </div>
               </div>
             )}
@@ -861,16 +797,7 @@ function ClarkAiContent() {
             <div className='clk-context-row'><div className='clk-context-label'>Current Chain</div><div className='clk-context-value'>Base</div><div className='clk-context-sub'>Chain ID: 8453</div></div>
             <div className='clk-context-row'><div className='clk-context-label'>Last Token</div><div className='clk-context-value'>{formatContextValue(clientContext.lastToken)}</div></div>
             <div className='clk-context-row'><div className='clk-context-label'>Last Wallet</div><div className='clk-context-value'>{formatContextValue(clientContext.lastWallet)}</div></div>
-            <div className='clk-context-row'><div className='clk-context-label'>Active Mode</div><div className='clk-context-value'>Adaptive Analysis</div><div className='clk-context-sub'>Analysis adapts based on context & onchain data</div></div>
-            {/* DESIGN FIX, DISCLOSED (Clark AI polish): Memory was previously its own third
-                side-card — task asks for max 2 primary sections (Context, Chat History). Same
-                real memoryStats data, folded into Context as a compact stat row instead of a
-                separate card. */}
-            <div className='clk-memory-row'>
-              {memoryStats.map((stat) => (
-                <span className='clk-memory-stat' key={stat.label}><strong>{stat.value}</strong>{stat.label}</span>
-              ))}
-            </div>
+            <div className='clk-context-row'><div className='clk-context-label'>Active Mode</div><div className='clk-context-value'>{activeMode === 'radar' ? 'Radar Mode' : 'Adaptive'}</div><div className='clk-context-sub'>Analysis adapts based on context & onchain data</div></div>
           </section>
 
           <section className='clk-side-card'>
