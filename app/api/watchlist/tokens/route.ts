@@ -1,5 +1,15 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
+import { createRateLimiter } from '@/lib/server/rateLimit'
+import { isValidAddress, isAllowedChain, isValidLabel } from '@/lib/server/watchlistValidation'
+
+// HARDENING, DISCLOSED (security hardening pass): watchlist writes had no rate limit and no
+// address/chain format validation — an authenticated caller (or a compromised/scripted session)
+// could hammer this endpoint with unbounded upsert calls, or store arbitrary non-address strings
+// in the address column. Rate-limited per user (not IP, since this route is already
+// auth-gated — a per-user limit targets abuse-by-account directly and doesn't punish users behind
+// a shared IP).
+const writeLimiter = createRateLimiter({ windowMs: 60_000, max: 20 })
 
 function getServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -66,10 +76,24 @@ export async function POST(req: NextRequest) {
   const userId = await getUserId(req)
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  if (!writeLimiter.check(userId)) {
+    return NextResponse.json({ error: 'Too many watchlist writes. Try again shortly.' }, { status: 429 })
+  }
+
   const body = await req.json().catch(() => null)
   const { address, symbol, name, chain, riskLabel, score } = body ?? {}
-  if (!address || typeof address !== 'string') {
-    return NextResponse.json({ error: 'address required' }, { status: 400 })
+  if (!isValidAddress(address)) {
+    return NextResponse.json({ error: 'A valid token contract address is required.' }, { status: 400 })
+  }
+  const chainValue = typeof chain === 'string' ? chain : 'base'
+  if (!isAllowedChain(chainValue)) {
+    return NextResponse.json({ error: 'Unsupported chain.' }, { status: 400 })
+  }
+  if (!isValidLabel(symbol)) {
+    return NextResponse.json({ error: 'symbol is too long.' }, { status: 400 })
+  }
+  if (!isValidLabel(name)) {
+    return NextResponse.json({ error: 'name is too long.' }, { status: 400 })
   }
 
   const db = getServiceClient()
@@ -82,7 +106,7 @@ export async function POST(req: NextRequest) {
       address: address.toLowerCase(),
       symbol: symbol ?? null,
       name: name ?? null,
-      chain: chain ?? 'base',
+      chain: chainValue,
       risk_label: riskLabel ?? null,
       score: score ?? null,
       saved_at: new Date().toISOString(),
@@ -98,9 +122,15 @@ export async function DELETE(req: NextRequest) {
   const userId = await getUserId(req)
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  if (!writeLimiter.check(userId)) {
+    return NextResponse.json({ error: 'Too many watchlist writes. Try again shortly.' }, { status: 429 })
+  }
+
   const { searchParams } = new URL(req.url)
   const address = searchParams.get('address')
-  if (!address) return NextResponse.json({ error: 'address required' }, { status: 400 })
+  if (!isValidAddress(address)) {
+    return NextResponse.json({ error: 'A valid token contract address is required.' }, { status: 400 })
+  }
 
   const db = getServiceClient()
   if (!db) return NextResponse.json({ error: 'Service unavailable' }, { status: 503 })

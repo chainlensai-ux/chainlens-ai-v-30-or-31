@@ -1,5 +1,12 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
+import { createRateLimiter } from '@/lib/server/rateLimit'
+import { isValidAddress, isValidLabel } from '@/lib/server/watchlistValidation'
+
+// HARDENING, DISCLOSED (security hardening pass): same fix as watchlist/tokens/route.ts — no
+// rate limit and no address format validation on watchlist writes previously. Rate-limited per
+// user (this route is already auth-gated).
+const writeLimiter = createRateLimiter({ windowMs: 60_000, max: 20 })
 
 function getServiceClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -46,6 +53,10 @@ export async function POST(req: NextRequest) {
   const userId = await getUserId(req)
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  if (!writeLimiter.check(userId)) {
+    return NextResponse.json({ error: 'Too many watchlist writes. Try again shortly.' }, { status: 429 })
+  }
+
   const body = await req.json().catch(() => null)
   // KEY-NAME FIX, DISCLOSED (wallet watchlist audit): the frontend (app/terminal/wallet-scanner/
   // page.tsx's handleAddWalletToWatchlist) has only ever sent `portfolio_value` (snake_case,
@@ -55,8 +66,11 @@ export async function POST(req: NextRequest) {
   const { address, label, portfolio_value, portfolioValue: portfolioValueCamel, chain_mode, chainMode: chainModeCamel, source } = body ?? {}
   const portfolioValue = portfolio_value ?? portfolioValueCamel
   const chainMode = chain_mode ?? chainModeCamel
-  if (!address || typeof address !== 'string') {
-    return NextResponse.json({ error: 'address required' }, { status: 400 })
+  if (!isValidAddress(address)) {
+    return NextResponse.json({ error: 'A valid wallet address is required.' }, { status: 400 })
+  }
+  if (!isValidLabel(label)) {
+    return NextResponse.json({ error: 'label is too long.' }, { status: 400 })
   }
 
   const db = getServiceClient()
@@ -99,9 +113,15 @@ export async function DELETE(req: NextRequest) {
   const userId = await getUserId(req)
   if (!userId) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
 
+  if (!writeLimiter.check(userId)) {
+    return NextResponse.json({ error: 'Too many watchlist writes. Try again shortly.' }, { status: 429 })
+  }
+
   const { searchParams } = new URL(req.url)
   const address = searchParams.get('address')
-  if (!address) return NextResponse.json({ error: 'address required' }, { status: 400 })
+  if (!isValidAddress(address)) {
+    return NextResponse.json({ error: 'A valid wallet address is required.' }, { status: 400 })
+  }
 
   const db = getServiceClient()
   if (!db) return NextResponse.json({ error: 'Service unavailable' }, { status: 503 })
