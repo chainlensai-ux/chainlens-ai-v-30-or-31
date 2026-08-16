@@ -493,7 +493,12 @@ function Section({ title, state, children, tone = 'default' }: { title: string; 
   const loading = state?.isLoading
   const accent = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : '#2dd4bf'
   return (
-    <section style={{ border: `1px solid ${tone === 'default' ? 'rgba(148,163,184,0.10)' : `${accent}28`}`, background: 'rgba(15,23,42,0.40)', borderRadius: '16px', padding: '14px', marginBottom: '11px' }}>
+    // SECTION-CARD-DEPTH, DISCLOSED (Robinhood/Base Radar panel premium polish task #5 — "reduce
+    // repetitive border-box feeling... hero card / section cards / lighter stat tiles"): a subtle
+    // top-to-bottom gradient (instead of a flat single color) plus a hairline-thinner border gives
+    // this middle tier of the hierarchy (below the hero header, above MetricCard/ProofTile/
+    // VerdictTile's own lighter treatment) a touch of depth without changing spacing/content.
+    <section style={{ border: `1px solid ${tone === 'default' ? 'rgba(148,163,184,0.09)' : `${accent}26`}`, background: 'linear-gradient(180deg, rgba(17,26,42,0.44), rgba(13,20,33,0.36))', borderRadius: '16px', padding: '14px', marginBottom: '11px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '10px' }}>
         <h3 style={{ margin: 0, color: '#f8fafc', fontSize: '11px', letterSpacing: '0.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}><span style={{ color: accent }}>◆</span> {title}</h3>
         {state?.error ? <span style={{ color: '#fbbf24', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>Limited</span> : null}
@@ -537,13 +542,21 @@ function CollapsibleSection({ id, title, tone = 'default', open, onToggle, state
 // tone, so a routine "Age" card looked exactly as visually loud as a genuine liquidity warning.
 // Only risk/amber (warning) cards now keep a colored border + tint; mint/neutral/purple cards drop
 // to the same calm slate card so real warnings actually stand out. Values/labels/sublabels unchanged.
-function MetricCard({ label, value, sublabel, chip, tone = 'mint' }: { label: string; value: React.ReactNode; sublabel?: React.ReactNode; chip?: string; tone?: 'mint' | 'amber' | 'risk' | 'neutral' | 'purple' }) {
+// SIZE-VARIANT, DISCLOSED (Robinhood/Base Radar panel premium polish task #4 — "visually
+// prioritize Liquidity, Market Cap, 24h Volume... make Age, Momentum, and Market Evidence feel
+// secondary/lighter... reduce the feeling of six equal heavy boxes"): same component, same
+// values/props — `size='sm'` (used only for the three secondary metrics below) shrinks padding/
+// value size and drops the background tint, so the primary three keep the full heavy-card
+// treatment they had before while the other three visually recede without becoming a different
+// component or losing any data.
+function MetricCard({ label, value, sublabel, chip, tone = 'mint', size = 'lg' }: { label: string; value: React.ReactNode; sublabel?: React.ReactNode; chip?: string; tone?: 'mint' | 'amber' | 'risk' | 'neutral' | 'purple'; size?: 'lg' | 'sm' }) {
   const color = tone === 'risk' ? '#fb7185' : tone === 'amber' ? '#fbbf24' : tone === 'purple' ? '#a78bfa' : tone === 'neutral' ? '#94a3b8' : '#2dd4bf'
   const isWarning = tone === 'risk' || tone === 'amber'
-  return <div style={{ minWidth: 0, border: isWarning ? `1px solid ${color}40` : '1px solid rgba(148,163,184,0.12)', background: isWarning ? `linear-gradient(180deg, ${color}12, rgba(15,23,42,0.58))` : 'rgba(15,23,42,0.42)', borderRadius: '14px', padding: '12px' }}>
-    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: 8 }}><span style={{ color: '#94a3b8', fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 800 }}>{label}</span>{chip ? <Chip label={chip} tone={tone} /> : null}</div>
-    <div style={{ color: isWarning ? color : '#f8fafc', fontSize: 22, lineHeight: 1, fontWeight: 850, letterSpacing: '-.03em', overflowWrap: 'anywhere' }}>{value}</div>
-    {sublabel ? <div style={{ marginTop: 7, color: '#94a3b8', fontSize: 11, lineHeight: 1.35 }}>{sublabel}</div> : null}
+  const compact = size === 'sm'
+  return <div style={{ minWidth: 0, border: isWarning ? `1px solid ${color}40` : compact ? '1px solid rgba(148,163,184,0.08)' : '1px solid rgba(148,163,184,0.12)', background: isWarning ? `linear-gradient(180deg, ${color}12, rgba(15,23,42,0.58))` : compact ? 'rgba(15,23,42,0.22)' : 'rgba(15,23,42,0.42)', borderRadius: compact ? '12px' : '14px', padding: compact ? '10px 11px' : '12px' }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', marginBottom: compact ? 6 : 8 }}><span style={{ color: '#7c93a8', fontSize: compact ? 9 : 10, letterSpacing: '.12em', textTransform: 'uppercase', fontWeight: 800 }}>{label}</span>{chip ? <Chip label={chip} tone={tone} /> : null}</div>
+    <div style={{ color: isWarning ? color : compact ? '#cbd5e1' : '#f8fafc', fontSize: compact ? 15 : 22, lineHeight: 1, fontWeight: compact ? 750 : 850, letterSpacing: '-.03em', overflowWrap: 'anywhere' }}>{value}</div>
+    {sublabel ? <div style={{ marginTop: compact ? 5 : 7, color: '#7c93a8', fontSize: compact ? 10 : 11, lineHeight: 1.35 }}>{sublabel}</div> : null}
   </div>
 }
 
@@ -554,6 +567,21 @@ function Chip({ label, tone = 'neutral' }: { label: React.ReactNode; tone?: 'min
 
 function ProofTile({ label, value, tone = 'neutral' }: { label: string; value: React.ReactNode; tone?: 'mint' | 'amber' | 'risk' | 'neutral' | 'purple' }) {
   return <div style={{ border: '1px solid rgba(148,163,184,.12)', background: 'rgba(2,6,23,.42)', borderRadius: 13, padding: 10 }}><div style={{ color: '#64748b', fontSize: 10, marginBottom: 5 }}>{label}</div><div style={{ color: tone === 'risk' ? '#fecaca' : tone === 'amber' ? '#fde68a' : '#e2e8f0', fontSize: 12, fontWeight: 750, lineHeight: 1.3 }}>{value}</div></div>
+}
+
+// VERDICT-TILE, DISCLOSED (Robinhood/Base Radar panel premium polish task #2): a slightly
+// heavier-weight sibling of ProofTile purpose-built for the verdict module's 3-tile summary —
+// a colored top rule (the accent color already computed for each of the three states, e.g.
+// verdictColor for risk) instead of a full colored border, so all three tiles read as one
+// coherent row without turning into three more identical bordered boxes.
+function VerdictTile({ eyebrow, value, tone = 'neutral', accent }: { eyebrow: string; value: React.ReactNode; tone?: 'mint' | 'risk' | 'neutral'; accent: string }) {
+  return (
+    <div style={{ position: 'relative', overflow: 'hidden', border: '1px solid rgba(148,163,184,.12)', background: 'rgba(2,6,23,.46)', borderRadius: 13, padding: '11px 12px 12px' }}>
+      <div aria-hidden style={{ position: 'absolute', top: 0, left: 0, right: 0, height: 2.5, background: accent }} />
+      <div style={{ color: '#5b7186', fontSize: 9.5, fontWeight: 850, letterSpacing: '.1em', textTransform: 'uppercase', marginBottom: 6 }}>{eyebrow}</div>
+      <div style={{ color: tone === 'risk' ? '#fecaca' : tone === 'mint' ? '#a7f3d0' : '#e2e8f0', fontSize: 12.5, fontWeight: 650, lineHeight: 1.4 }}>{value}</div>
+    </div>
+  )
 }
 
 function MiniBar({ label, value, tone = 'mint' }: { label: string; value: number | null | undefined; tone?: 'mint' | 'amber' | 'risk' }) {
@@ -1022,15 +1050,23 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             chips, score, verdict, address, and all three actions are unchanged — only spacing is
             tightened (smaller top label, reduced gaps between rows, thinner overall padding) so the
             header takes noticeably less vertical room before the report body starts. */}
-        <header className="radar-drawer-header" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 12px', padding: '12px 18px 10px', background: 'rgba(2,6,23,0.90)', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(148,163,184,0.12)' }}>
+        {/* HERO-HIERARCHY, DISCLOSED (Robinhood/Base Radar panel premium polish task #1 — "top area
+            lacks strong hero hierarchy... add a concise one-line summary under the header"): same
+            identity/chips/score/status/address/actions as before, no new data — the title reads as
+            a real hero line (bigger, bolder, its own row) instead of competing with the eyebrow
+            label and chip row for attention, and a one-line summary (severity.cortexSevereLine,
+            the same real headline sentence the verdict section already showed, single-line
+            truncated here) now sits directly under the identity row so the read-in-3-seconds intent
+            starts at the very top of the panel, not several sections down. */}
+        <header className="radar-drawer-header" style={{ position: 'sticky', top: 0, zIndex: 3, margin: '-18px -18px 14px', padding: '14px 18px 12px', background: 'linear-gradient(180deg, rgba(3,10,20,0.96), rgba(2,6,23,0.90))', backdropFilter: 'blur(18px)', borderBottom: '1px solid rgba(148,163,184,0.14)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
             <div style={{ minWidth: 0 }}>
-              <p style={{ margin: '0 0 2px', color: '#5b7186', fontSize: 8.5, fontWeight: 800, letterSpacing: '.16em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Intelligence Receipt</p>
-              <h2 style={{ margin: 0, fontSize: 17, color: '#f8fafc', letterSpacing: '-.03em', overflowWrap: 'anywhere', lineHeight: 1.2 }}>{token.name} <span style={{ color: '#94a3b8', fontWeight: 500 }}>/{token.symbol}</span></h2>
+              <p style={{ margin: '0 0 3px', color: '#5b7186', fontSize: 8.5, fontWeight: 800, letterSpacing: '.18em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Intelligence Receipt</p>
+              <h2 style={{ margin: 0, fontSize: 21, fontWeight: 800, color: '#f8fafc', letterSpacing: '-.03em', overflowWrap: 'anywhere', lineHeight: 1.15 }}>{token.name} <span style={{ color: '#7c93a8', fontWeight: 600, fontSize: '0.72em' }}>/{token.symbol}</span></h2>
             </div>
             <button onClick={onClose} aria-label="Close project overview" style={{ flex: '0 0 auto', border: '1px solid rgba(255,255,255,0.10)', background: 'rgba(255,255,255,0.03)', color: '#94a3b8', borderRadius: 999, width: 26, height: 26, cursor: 'pointer', fontSize: 14, lineHeight: 1, display: 'grid', placeItems: 'center' }}>×</button>
           </div>
-          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center', marginTop: 9 }}>
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', alignItems: 'center', marginTop: 10 }}>
             {/* CHAIN-LABEL, DISCLOSED (found in a full Base Radar audit): this was a two-way
                 `base ? 'Base' : 'ETH'` check, so every Robinhood token was labeled "ETH" — actively
                 misidentifying which chain a contract lives on, the single most misleading thing this
@@ -1045,40 +1081,36 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 9px', borderRadius: 999, background: `${verdictColor}14`, border: `1px solid ${verdictColor}38`, color: verdictColor, fontSize: 10, fontWeight: 850, letterSpacing: '.06em' }}>{publicStatus(severityLabel)}</span>
             <span title={token.contract} style={{ color: '#5b7186', fontSize: 10.5, fontFamily: 'var(--font-plex-mono)', marginLeft: 'auto' }}>{shortAddr(token.contract)}</span>
           </div>
+          <p style={{ margin: '9px 0 0', color: '#9fb3c4', fontSize: 12, lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical' }}>{severity.cortexSevereLine}</p>
           {/* DEEP-SCAN-REMOVED, DISCLOSED (explicitly requested: "get rid of that deep scan button
               on the base radar panel for robinhood and base"). Copy CA is now the primary/filled
               action since it's the most common next step once a candidate's evidence is reviewed
               here — Open Explorer and Watchlist remain secondary, unchanged otherwise. */}
-          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 9 }}>
+          <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginTop: 10 }}>
             <button onClick={() => copyText(token.contract)} style={primaryButtonStyle}>Copy CA</button>
             <a href={explorer ?? '#'} target="_blank" rel="noreferrer" style={{ ...buttonStyle, textDecoration: 'none' }}>Open Explorer</a>
             {onTrackToggle ? <button onClick={onTrackToggle} style={tracking ? activeButtonStyle : buttonStyle}>{tracking ? 'Watching' : 'Add Watchlist'}</button> : null}
           </div>
         </header>
 
-        {/* VERDICT MODULE, DISCLOSED (task #4): headline verdict line (unchanged text, same
-            severity.cortexSevereLine), primary risk driver tile (unchanged, same cortexMainRisk),
-            plus a new "Evidence Coverage" chip that only re-labels the already-computed
-            dedupedEvidenceGaps count — see evidenceQualityLabel's own comment above — and the same
-            top status tags, just capped/spaced more like a receipt line than a paragraph block. */}
+        {/* VERDICT MODULE, DISCLOSED (Robinhood/Base Radar panel premium polish task #2 — "replace
+            the long verdict paragraph presentation with 3 concise summary tiles... keep the same
+            underlying data/copy intent, just restructure for fast reading"): cortexMainRisk/
+            verdictPositiveSignal/verdictNextCheck are the exact same already-computed values the
+            prior inline " · "-joined paragraph read from — same copy intent, now three distinct
+            tiles instead of one dense run-on line. The headline sentence (severity.cortexSevereLine)
+            now lives once, in the hero header above, instead of being repeated here too — removing
+            that duplication is itself part of "too text-heavy and repetitive." */}
         <Section title="CORTEX Verdict" tone={verdictTone}>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
             <Chip label={`Evidence: ${evidenceQualityLabel}`} tone={evidenceQualityTone} />
             {[...marketSignals, ...riskSignals].slice(0, 2).map((x) => <Chip key={x} label={x} tone={/risk|lock|holder|timeout|watch/i.test(x) ? 'risk' : 'mint'} />)}
           </div>
-          {/* FIRST-READ SUMMARY, DISCLOSED (Radar Full Report polish task #2 — "main CORTEX verdict
-              paragraph is too long for traders... add a short first-read summary above it using
-              existing data only"). Every value referenced here is already computed above in this same
-              render (cortexMainRisk, marketSignals/controlSignals, dedupedWatchNext/cortexWatch) — no
-              new evidence, no new copy about risk that isn't already stated elsewhere in the report.
-              The full explanation paragraph right below is completely unchanged. */}
-          <p style={{ margin: '0 0 10px', color: '#e2e8f0', fontSize: 12.5, lineHeight: 1.6 }}>
-            <span style={{ color: verdictColor, fontWeight: 800 }}>Primary risk:</span> {cortexMainRisk}
-            {verdictPositiveSignal ? <><span style={{ color: '#5b7186' }}> · </span><span style={{ color: '#5eead4', fontWeight: 800 }}>Main positive:</span> {verdictPositiveSignal}</> : null}
-            {verdictNextCheck ? <><span style={{ color: '#5b7186' }}> · </span><span style={{ color: '#94a3b8', fontWeight: 800 }}>Check next:</span> {verdictNextCheck}</> : null}
-          </p>
-          <p style={{ margin: '0 0 12px', color: '#f1f5f9', fontSize: 14.5, lineHeight: 1.5, fontWeight: 650 }}>{severity.cortexSevereLine}</p>
-          <ProofTile label="Primary risk driver" value={cortexMainRisk} tone={/High|risk|Active|Extreme|No verified/i.test(cortexMainRisk) ? 'risk' : 'neutral'} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+            <VerdictTile eyebrow="Primary Risk" value={cortexMainRisk} tone={/High|risk|Active|Extreme|No verified/i.test(cortexMainRisk) ? 'risk' : 'neutral'} accent={verdictColor} />
+            <VerdictTile eyebrow="Main Positive" value={verdictPositiveSignal ?? 'No confirmed strength yet'} tone={verdictPositiveSignal ? 'mint' : 'neutral'} accent={verdictPositiveSignal ? '#5eead4' : '#5b7186'} />
+            <VerdictTile eyebrow="Next Check" value={verdictNextCheck ?? 'Continue monitoring liquidity and holder activity.'} tone="neutral" accent="#94a3b8" />
+          </div>
         </Section>
 
         {/* WHY IT MATTERS, DISCLOSED (task #5): same WhyItMattersBox component, same sentence
@@ -1086,18 +1118,22 @@ export default function ProjectOverviewDrawer({ token, open, chain = 'base', onC
             default list markers), see WhyItMattersBox.tsx. */}
         <WhyItMattersBox sentences={whyItMatters} />
 
-        {/* MARKET SNAPSHOT, DISCLOSED (task #6): same six metrics, same values — MetricCard itself
-            now only visually emphasizes risk/amber (warning) cards, see that component's own
-            comment. */}
+        {/* MARKET SNAPSHOT, DISCLOSED (Robinhood/Base Radar panel premium polish task #4): same six
+            metrics, same values — split into a primary row (Liquidity/Valuation/24h Volume, the
+            full-weight MetricCard treatment) and a secondary row (Age/Momentum/Market Evidence,
+            size="sm") instead of six visually identical boxes, per the explicit request to
+            de-prioritize the latter three without hiding or changing any of them. */}
         <Section title="Market Snapshot" tone="mint">
           {excludedFromFeed && <div style={{ marginBottom: 10 }}><Chip label="Below default liquidity threshold" tone="risk" /></div>}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 10 }}>
             <MetricCard label="Liquidity" value={fmtUSD(liquidityUsd)} sublabel={excludedFromFeed ? 'Below $5K feed threshold' : 'Primary observed depth'} chip={excludedFromFeed ? 'Watch' : 'Depth'} tone={excludedFromFeed ? 'risk' : 'mint'} />
             <MetricCard label={displayModel?.valuation.label ?? (marketValuationCard.label === 'FDV' ? 'FDV' : marketValuation.basis === 'unavailable' ? 'Valuation' : 'Market Cap')} value={marketValuationCard.value} sublabel={displayModel?.valuation.sublabel ?? (marketValuation.basis === 'verified_market_cap' ? 'Verified' : marketValuation.basis === 'fdv_fallback' ? 'Market cap unavailable' : 'Open check')} chip={displayModel?.valuation.status === 'verified' ? 'Verified' : displayModel?.valuation.status === 'fdv_fallback' ? 'Fallback' : marketValuation.basis === 'verified_market_cap' ? 'Verified' : marketValuation.basis === 'fdv_fallback' ? 'Fallback' : 'Open'} tone={valuationTone} />
             <MetricCard label="24h Volume" value={fmtUSD(market?.volume24hUsd ?? token.volume24h)} sublabel="Recent market activity" chip="24h" tone="purple" />
-            <MetricCard label="Age" value={pairAgeLabel ?? fmtAge(token.ageMinutes)} sublabel="Pool age evidence" chip="Launch" tone="neutral" />
-            <MetricCard label="Momentum" value={publicStatus(token.momentum)} sublabel={`Radar ${effectiveScore}/100`} chip={token.status} tone="mint" />
-            <MetricCard label="Market Evidence" value={market?.marketConfidence ? publicStatus(market.marketConfidence) : 'Open Check'} sublabel={marketValuationCard.sublabel} chip={market?.marketStatus ? publicStatus(market.marketStatus) : 'Evidence'} tone={market?.marketConfidence?.toLowerCase().includes('open') ? 'amber' : 'mint'} />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 8 }}>
+            <MetricCard size="sm" label="Age" value={pairAgeLabel ?? fmtAge(token.ageMinutes)} sublabel="Pool age evidence" tone="neutral" />
+            <MetricCard size="sm" label="Momentum" value={publicStatus(token.momentum)} sublabel={`Radar ${effectiveScore}/100`} tone="neutral" />
+            <MetricCard size="sm" label="Market Evidence" value={market?.marketConfidence ? publicStatus(market.marketConfidence) : 'Open Check'} sublabel={marketValuationCard.sublabel} tone={market?.marketConfidence?.toLowerCase().includes('open') ? 'amber' : 'neutral'} />
           </div>
         </Section>
 
