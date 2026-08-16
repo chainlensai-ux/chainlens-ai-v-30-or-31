@@ -55,8 +55,19 @@ const GLOSSARY: Array<{ re: RegExp; answer: string }> = [
 
 const GENERAL_CRYPTO_RE = /\b(what\s+is\s+(?:a\s+)?(?:gas|wallet|smart\s+contract|dex|liquidity|market\s+cap|slippage|stablecoin|airdrop|bridge)|how\s+does\s+(?:a\s+)?(?:dex|swap|gas|bridge)\s+work)\b/i
 
-const SCAN_REQUEST_NO_ADDRESS_TOKEN_RE = /\b(scan\s+(?:this\s+)?token|check\s+(?:this\s+)?token|token\s+scan)\b/i
-const SCAN_REQUEST_NO_ADDRESS_WALLET_RE = /\b(scan\s+(?:this\s+)?wallet|check\s+(?:this\s+)?wallet|wallet\s+scan|scan\s+wallet|or\s+wallet)\b/i
+// "analyze" ADDED, DISCLOSED (Clark right-panel suggestion-button audit): the right panel's own
+// "Analyze this wallet" suggestion (components/ClarkRadar.tsx's HINT_CHIPS) previously matched
+// neither this regex nor route.ts's own WALLET_SCAN_PATTERNS_RE (both required "scan"/"check"
+// immediately before "wallet", or "analyze wallet" with no "this" in between — "analyze this
+// wallet" satisfies none of them). It still ultimately reached a correct "ask for a wallet
+// address" answer via detectIntent()'s broad `/wallet/.test(t)` fallback deep in route.ts, but
+// only by missing this module's own explicit guarantee (see this file's header) of a zero-
+// provider-call direct answer for a no-address scan request — a real, narrow gap for the one
+// prompt this module exists to catch that it didn't. Adding "analyze" as a synonym alongside
+// "scan"/"check" (both directions, for symmetry) closes it without changing anything else this
+// regex already matched.
+const SCAN_REQUEST_NO_ADDRESS_TOKEN_RE = /\b(scan\s+(?:this\s+)?token|check\s+(?:this\s+)?token|analyze\s+(?:this\s+)?token|token\s+scan)\b/i
+const SCAN_REQUEST_NO_ADDRESS_WALLET_RE = /\b(scan\s+(?:this\s+)?wallet|check\s+(?:this\s+)?wallet|analyze\s+(?:this\s+)?wallet|wallet\s+scan|scan\s+wallet|or\s+wallet)\b/i
 const WHALE_RE = /\b(whale\s+alerts?|whales?|big\s+wallets?|large\s+wallets?)\b/i
 const BASE_RADAR_RE = /\b(base\s+radar|what'?s\s+pumping|trending\s+on\s+base)\b/i
 
