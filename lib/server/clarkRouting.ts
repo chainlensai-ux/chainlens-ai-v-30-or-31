@@ -300,8 +300,17 @@ export function classifyClarkPrompt(prompt: string): {
   }
   // Plain EOA address alone (no other strong intent keywords) → wallet scan
   if (address) {
+    // "safe/safety/rug/honeypot/scam" ADDED, DISCLOSED (Clark routing audit follow-up — same
+    // pattern class as the dev-wallet fix): a bare "is 0x... safe" (a very common real phrasing
+    // for pasting a token contract and asking about it, with no explicit "token" word) previously
+    // matched none of these strong-intent keywords, so it fell to this rule's own wallet-scan
+    // default — running Wallet Scanner against what's usually actually a token contract instead
+    // of a token safety read. These five words are real, unambiguous token-safety vocabulary (a
+    // wallet is never described as a "honeypot" or "rug"), so adding them here only prevents this
+    // one default from claiming an address as a wallet scan; it does not change what happens once
+    // getClarkAddressRouteHint/downstream token-safety routing takes over from here.
     const hasOtherStrongIntent =
-      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon|base\s+token|eth\s+token|ethereum\s+token|bnb\s+token|bsc\s+token|polygon\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address)\b/i.test(t);
+      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon|base\s+token|eth\s+token|ethereum\s+token|bnb\s+token|bsc\s+token|polygon\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address|safe|safety|\brug\b|honeypot|scam)\b/i.test(t);
     if (!hasOtherStrongIntent) {
       return { intent: "wallet_scan", address, addresses, deep, symbol: null };
     }
