@@ -1499,13 +1499,13 @@ export default function BaseRadarPage() {
   // dedupe logic instead of drifting apart. Returns what actually happened so a calling loop can
   // decide whether to continue — state itself is read back via the return value, not by racing
   // React's own (batched, async) state updates.
-  const loadOnePage = useCallback(async (page: number): Promise<{ ok: boolean; addedCount: number; hasMore: boolean }> => {
+  const loadOnePage = useCallback(async (page: number): Promise<{ ok: boolean; addedCount: number; hasMore: boolean; degraded: boolean }> => {
     try {
       const { data: _sd } = await supabase.auth.getSession()
       const _tok = _sd.session?.access_token
       const res = await fetch(`/api/radar?page=${page}&chain=${effectiveRadarChainRef.current}`, { cache: 'no-store', headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
       const json = await res.json()
-      if (!res.ok || json.error) return { ok: false, addedCount: 0, hasMore: false }
+      if (!res.ok || json.error) return { ok: false, addedCount: 0, hasMore: false, degraded: false }
       let addedCount = 0
       let hasMore = false
       setData(prev => {
@@ -1516,18 +1516,26 @@ export default function BaseRadarPage() {
         hasMore = json.hasMore ?? false
         return { ...prev, tokens: [...prev.tokens, ...newTokens], page: json.page ?? page, hasMore }
       })
-      return { ok: true, addedCount, hasMore }
+      // DEGRADED-PAGE FIX, DISCLOSED (reported: "load more" appears not to work). A page can come
+      // back HTTP 200 with zero new tokens for two very different reasons — it genuinely reached the
+      // end of what qualifies (real exhaustion), or GeckoTerminal rate-limited every source for this
+      // page (json.discoveryDegraded, already computed server-side from sourcesFailedCount). Both
+      // used to render the same "no more candidates" copy, which reads as broken when it was
+      // actually a rate-limit hit that a retry a bit later would very likely clear.
+      return { ok: true, addedCount, hasMore, degraded: addedCount === 0 && json.discoveryDegraded === true }
     } catch {
       // Best-effort — a failed page fetch leaves the existing feed exactly as it was.
-      return { ok: false, addedCount: 0, hasMore: false }
+      return { ok: false, addedCount: 0, hasMore: false, degraded: false }
     }
   }, [])
+  const [loadMoreRateLimited, setLoadMoreRateLimited] = useState(false)
   const handleLoadMore = useCallback(async () => {
     if (loadingMore) return
     setLoadingMore(true)
     try {
       const result = await loadOnePage((data?.page ?? 1) + 1)
-      setLoadMoreExhausted(result.ok && result.addedCount === 0)
+      setLoadMoreExhausted(result.ok && result.addedCount === 0 && !result.degraded)
+      setLoadMoreRateLimited(result.ok && result.degraded)
     } finally {
       setLoadingMore(false)
     }
@@ -1592,12 +1600,21 @@ export default function BaseRadarPage() {
   // should actually recover between pages instead of guaranteeing its own lockout.
   const [loadingAll, setLoadingAll] = useState(false)
   const [loadAllProgress, setLoadAllProgress] = useState<{ page: number; totalAdded: number } | null>(null)
-  const LOAD_ALL_PAGE_DELAY_MS = 30_000
+  // DELAY-DIDN'T-MATCH-ITS-OWN-EVIDENCE FIX, DISCLOSED (reported: "load more" still not pulling in
+  // new tokens, stuck on "waiting for rate limit"). The comment above already documents that 30s
+  // was live-reproduced as NOT enough — pages 2, 3, and 5 still came back 8/8 GeckoTerminal
+  // failures at that cadence — and that the one cadence actually observed recovering reliably is
+  // the frontend's own 120s auto-refresh interval. The constant itself was left at 30_000 despite
+  // that conclusion, so every Load All run was still using the exact cadence already proven to
+  // fail. Corrected to match the cadence the investigation actually validated.
+  const LOAD_ALL_PAGE_DELAY_MS = 120_000
   const handleLoadAll = useCallback(async () => {
     if (loadingAll || loadingMore) return
     setLoadingAll(true)
     setLoadMoreExhausted(false)
+    setLoadMoreRateLimited(false)
     let totalAdded = 0
+    let anyDegraded = false
     try {
       let page = data?.page ?? 1
       let hasMore = data?.hasMore ?? false
@@ -1607,10 +1624,12 @@ export default function BaseRadarPage() {
         const result = await loadOnePage(page)
         if (!result.ok) break
         totalAdded += result.addedCount
+        anyDegraded = anyDegraded || result.degraded
         hasMore = result.hasMore
         if (hasMore) await new Promise(resolve => setTimeout(resolve, LOAD_ALL_PAGE_DELAY_MS))
       }
-      setLoadMoreExhausted(totalAdded === 0)
+      setLoadMoreExhausted(totalAdded === 0 && !anyDegraded)
+      setLoadMoreRateLimited(totalAdded === 0 && anyDegraded)
     } finally {
       setLoadingAll(false)
       setLoadAllProgress(null)
@@ -2272,7 +2291,7 @@ export default function BaseRadarPage() {
             {!loading && tokens.length > 0 && data?.hasMore && (
               <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
                 <button
-                  onClick={() => { setLoadMoreExhausted(false); void handleLoadMore() }}
+                  onClick={() => { setLoadMoreExhausted(false); setLoadMoreRateLimited(false); void handleLoadMore() }}
                   disabled={loadingMore || loadingAll}
                   style={{
                     flex: 1, padding: '11px', borderRadius: '10px',
@@ -2287,7 +2306,7 @@ export default function BaseRadarPage() {
                 <button
                   onClick={() => void handleLoadAll()}
                   disabled={loadingMore || loadingAll}
-                  title="Automatically loads every remaining page, ~30s apart so each page gets a real chance to clear GeckoTerminal's rate limit — takes about 2 minutes total."
+                  title="Automatically loads every remaining page, 2 minutes apart so each page gets a real chance to clear GeckoTerminal's rate limit."
                   style={{
                     flex: 1, padding: '11px', borderRadius: '10px',
                     border: '1px solid rgba(45,212,191,0.24)', background: (loadingMore || loadingAll) ? 'rgba(45,212,191,0.04)' : 'rgba(45,212,191,0.07)',
@@ -2296,13 +2315,18 @@ export default function BaseRadarPage() {
                     cursor: (loadingMore || loadingAll) ? 'not-allowed' : 'pointer', transition: 'background 0.15s, color 0.15s',
                   }}
                 >
-                  {loadingAll ? (loadAllProgress ? `Page ${loadAllProgress.page}/5 — waiting for rate limit…` : 'Loading…') : 'Load All (~2 min)'}
+                  {loadingAll ? (loadAllProgress ? `Page ${loadAllProgress.page}/5 — waiting for rate limit…` : 'Loading…') : 'Load All (~8 min)'}
                 </button>
               </div>
             )}
             {!loading && !loadingMore && !loadingAll && loadMoreExhausted && (
               <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#64748b', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
                 No more candidates passed the $50K+ valuation / real liquidity gate in this cycle.
+              </p>
+            )}
+            {!loading && !loadingMore && !loadingAll && loadMoreRateLimited && (
+              <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#f59e0b', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
+                GeckoTerminal rate-limited this page — not exhausted, just throttled. Wait about 2 minutes and try Load More again.
               </p>
             )}
 
