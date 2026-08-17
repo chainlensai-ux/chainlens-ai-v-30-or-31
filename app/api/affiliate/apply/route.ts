@@ -1,29 +1,10 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
+import { validateAffiliateApplication, type AffiliateApplicationInput } from '@/lib/server/affiliateValidation'
 import { randomBytes } from 'crypto'
 
 const limiter = createRateLimiter({ windowMs: 3_600_000, max: 3 })
-
-type AffiliatePayload = {
-  name?: string
-  email?: string
-  telegram?: string
-  x_handle?: string
-  audience_size?: string
-  audience_type?: string
-  promotion_plan?: string
-  payout_wallet?: string
-  website?: string
-}
-
-const MAX = { name: 100, email: 200, telegram: 100, x_handle: 100, audience_size: 120, audience_type: 160, payout_wallet: 120, promotion_plan: 1200, website: 300 }
-const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-
-function sanitize(value: unknown, max: number): string {
-  const text = typeof value === 'string' ? value.trim() : ''
-  return text.slice(0, max)
-}
 
 function unavailableResponse(status: number) {
   return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status })
@@ -35,21 +16,13 @@ export async function POST(req: Request) {
   }
 
   try {
-    const body = (await req.json()) as AffiliatePayload
-    const website = sanitize(body.website, MAX.website)
-    if (website) return NextResponse.json({ error: 'Invalid submission.' }, { status: 400 })
+    const body = (await req.json()) as AffiliateApplicationInput
 
-    const name = sanitize(body.name, MAX.name)
-    const email = sanitize(body.email, MAX.email).toLowerCase()
-    const telegram = sanitize(body.telegram, MAX.telegram)
-    const xHandle = sanitize(body.x_handle, MAX.x_handle)
-    const audienceSize = sanitize(body.audience_size, MAX.audience_size)
-    const audienceType = sanitize(body.audience_type, MAX.audience_type)
-    const payoutWallet = sanitize(body.payout_wallet, MAX.payout_wallet)
-    const promotionPlan = sanitize(body.promotion_plan, MAX.promotion_plan)
-
-    if (!name || !email || !xHandle || !audienceSize || !promotionPlan) return NextResponse.json({ error: 'Missing required fields.' }, { status: 400 })
-    if (!emailRegex.test(email)) return NextResponse.json({ error: 'Please enter a valid email.' }, { status: 400 })
+    const validation = validateAffiliateApplication(body)
+    if (!validation.ok) {
+      return NextResponse.json({ error: validation.error }, { status: validation.status })
+    }
+    const { name, email, telegram, xHandle, audienceSize, audienceType, payoutWallet, promotionPlan } = validation.fields
 
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     const serviceRole = process.env.SUPABASE_SERVICE_ROLE_KEY

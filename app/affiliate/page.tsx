@@ -81,33 +81,36 @@ const STEPS = [
 
 const FIELD_GROUPS: Array<{
   legend: string
-  fields: Array<{ label: string; key: keyof FormState; required: boolean; type?: string; placeholder: string; span?: 2 }>
+  fields: Array<{ label: string; key: keyof FormState; required: boolean; type?: string; placeholder: string; span?: 2; maxLength: number }>
 }> = [
+  // maxLength values mirror the server's own MAX table in app/api/affiliate/apply/route.ts.
+  // The server sanitizes by SLICING to those limits, so without a matching client cap anything
+  // typed past them is silently discarded with no indication it was dropped.
   {
     legend: 'Who you are',
     fields: [
-      { label: 'Full name', key: 'name', required: true, placeholder: 'Your name' },
-      { label: 'Email address', key: 'email', required: true, type: 'email', placeholder: 'you@example.com' },
+      { label: 'Full name', key: 'name', required: true, placeholder: 'Your name', maxLength: 100 },
+      { label: 'Email address', key: 'email', required: true, type: 'email', placeholder: 'you@example.com', maxLength: 200 },
     ],
   },
   {
     legend: 'Where you create',
     fields: [
-      { label: 'X / Twitter handle', key: 'x_handle', required: true, placeholder: '@yourhandle' },
-      { label: 'Telegram (optional)', key: 'telegram', required: false, placeholder: '@yourusername' },
+      { label: 'X / Twitter handle', key: 'x_handle', required: true, placeholder: '@yourhandle', maxLength: 100 },
+      { label: 'Telegram (optional)', key: 'telegram', required: false, placeholder: '@yourusername', maxLength: 100 },
     ],
   },
   {
     legend: 'Your audience',
     fields: [
-      { label: 'Audience size', key: 'audience_size', required: true, placeholder: 'e.g. 12,000 X followers' },
-      { label: 'Audience type / niche', key: 'audience_type', required: true, placeholder: 'e.g. Base traders, DeFi analysts' },
+      { label: 'Audience size', key: 'audience_size', required: true, placeholder: 'e.g. 12,000 X followers', maxLength: 120 },
+      { label: 'Audience type / niche', key: 'audience_type', required: true, placeholder: 'e.g. Base traders, DeFi analysts', maxLength: 160 },
     ],
   },
   {
     legend: 'Payout (optional)',
     fields: [
-      { label: 'Payout wallet', key: 'payout_wallet', required: false, placeholder: '0x…', span: 2 },
+      { label: 'Payout wallet', key: 'payout_wallet', required: false, placeholder: '0x…', span: 2, maxLength: 120 },
     ],
   },
 ]
@@ -119,8 +122,19 @@ export default function AffiliatePage() {
   const [error, setError] = useState<string | null>(null)
   const [openFaq, setOpenFaq] = useState<number | null>(null)
 
+  // Generic failure copy. Used for network errors and non-actionable server failures (5xx), where
+  // the user can't fix anything by editing the form — so the only useful next step is retry or
+  // email. Actionable validation errors (400/429) keep the server's specific message instead,
+  // since replacing "Please enter a valid email" with this would hide what actually needs fixing.
+  const SUBMIT_FAILED_MESSAGE = "We couldn't submit your application. Please try again or contact chainlensai@gmail.com."
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
+    // DOUBLE-SUBMIT GUARD, DISCLOSED (affiliate QA): the submit button is disabled while loading,
+    // but a disabled submit button does not reliably block implicit form submission (Enter key in
+    // a text input) across browsers. This state check is the actual guarantee — without it a fast
+    // double Enter could file two applications, each burning a slot against the 3/hour rate limit.
+    if (loading) return
     setLoading(true)
     setSuccess(null)
     setError(null)
@@ -132,17 +146,27 @@ export default function AffiliatePage() {
       })
       const data = await res.json().catch(() => null)
       if (!res.ok) {
-        setError(typeof data?.error === 'string' ? data.error : 'Submission is temporarily unavailable. Please try again soon.')
+        const serverMessage = typeof data?.error === 'string' ? data.error : null
+        const isActionable = res.status === 400 || res.status === 429
+        setError(isActionable && serverMessage ? serverMessage : SUBMIT_FAILED_MESSAGE)
       } else {
         const code = typeof data?.referral_code === 'string' ? data.referral_code : ''
-        setSuccess({ message: 'Application received. Your referral code is reserved pending approval.', referralCode: code })
+        setSuccess({ message: 'Application received. We manually review affiliate applications and will contact you by email.', referralCode: code })
         setForm(initialForm)
       }
     } catch {
-      setError('Submission is temporarily unavailable. Please try again soon.')
+      setError(SUBMIT_FAILED_MESSAGE)
     } finally {
       setLoading(false)
     }
+  }
+
+  // Clear a stale submission error as soon as the user edits any field — otherwise a "Please enter
+  // a valid email" banner stays on screen after the email has already been corrected, which reads
+  // as though the fix didn't register.
+  function updateField(key: keyof FormState, value: string) {
+    setForm(prev => ({ ...prev, [key]: value }))
+    if (error) setError(null)
   }
 
   return (
@@ -181,6 +205,12 @@ export default function AffiliatePage() {
         .aff-faq-btn { width:100%; background:none; border:none; cursor:pointer; padding:22px 4px; display:flex; justify-content:space-between; align-items:center; gap:20px; text-align:left; }
 
         .aff-eyebrow { font-family:var(--font-plex-mono,monospace); font-size:11px; font-weight:600; letter-spacing:.16em; margin:0 0 14px; color:#5eead4; text-transform:uppercase; }
+
+        /* ANCHOR OFFSET, DISCLOSED (affiliate QA): the navbar is position:sticky and occupies 80px
+           (10px pad + 60px shell + 10px pad). Without scroll-margin-top the "Apply Now" and
+           "How It Works" anchors scroll their target's heading directly underneath it, so the
+           section looks like it starts mid-content. 96px = navbar height + breathing room. */
+        #apply, #how-it-works { scroll-margin-top:96px; }
 
         .aff-benefit-row + .aff-benefit-row,
         .aff-tool-row + .aff-tool-row { border-top:1px solid rgba(255,255,255,.06); }
@@ -363,7 +393,9 @@ export default function AffiliatePage() {
                 We review every application manually. Tell us who your audience is, where you create content, and why ChainLens fits your community.
               </p>
 
-              <form onSubmit={onSubmit}>
+              {/* position:relative scopes the off-screen honeypot's absolute positioning to this
+                  form instead of letting it resolve against the page/viewport. */}
+              <form onSubmit={onSubmit} style={{ position:'relative' }}>
                 {/* Honeypot */}
                 <input type="text" name="website" value={form.website} onChange={e => setForm({ ...form, website: e.target.value })} tabIndex={-1} autoComplete="off" style={{ position:'absolute', left:'-9999px', opacity:0 }} aria-hidden="true" />
 
@@ -371,10 +403,10 @@ export default function AffiliatePage() {
                   <div key={group.legend} style={{ paddingTop: gi > 0 ? '20px' : 0, marginTop: gi > 0 ? '20px' : 0, borderTop: gi > 0 ? '1px solid rgba(255,255,255,.06)' : 'none' }}>
                     <p style={{ margin:'0 0 14px', fontSize:'11px', fontWeight:600, letterSpacing:'.09em', color:'#3f4b5e', textTransform:'uppercase' }}>{group.legend}</p>
                     <div className="aff-form-cols" style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'16px' }}>
-                      {group.fields.map(({ label, key, required, type, placeholder, span }) => (
+                      {group.fields.map(({ label, key, required, type, placeholder, span, maxLength }) => (
                         <label key={key} className="aff-label" style={span === 2 ? { gridColumn:'1 / -1' } : undefined}>
                           {label}{required && <span className="aff-label-req">Required</span>}
-                          <input className="aff-input" type={type ?? 'text'} required={required} placeholder={placeholder} value={form[key]} onChange={e => setForm({ ...form, [key]: e.target.value })} />
+                          <input className="aff-input" type={type ?? 'text'} required={required} maxLength={maxLength} placeholder={placeholder} value={form[key]} onChange={e => updateField(key, e.target.value)} />
                         </label>
                       ))}
                     </div>
@@ -385,7 +417,7 @@ export default function AffiliatePage() {
                   <p style={{ margin:'0 0 14px', fontSize:'11px', fontWeight:600, letterSpacing:'.09em', color:'#3f4b5e', textTransform:'uppercase' }}>Your plan</p>
                   <label className="aff-label">
                     How would you promote ChainLens?<span className="aff-label-req">Required</span>
-                    <textarea className="aff-input" required rows={5} placeholder="Tell us your exact plan: content style, platform, audience fit, post frequency, etc." value={form.promo_plan} onChange={e => setForm({ ...form, promo_plan: e.target.value })} style={{ resize:'vertical', fontFamily:'inherit' }} />
+                    <textarea className="aff-input" required rows={5} maxLength={1200} placeholder="Tell us your exact plan: content style, platform, audience fit, post frequency, etc." value={form.promo_plan} onChange={e => updateField('promo_plan', e.target.value)} style={{ resize:'vertical', fontFamily:'inherit' }} />
                   </label>
                 </div>
 
