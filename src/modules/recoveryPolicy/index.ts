@@ -80,6 +80,19 @@ export type CandidateEvaluation = {
   chain: SupportedChain
   triggeredBy: RecoveryTriggeredBy[]
   recoveryTriggered: boolean
+  // COVERAGE MATERIALITY, DISCLOSED, OPTIONAL (verified-coverage recovery task). Both figures are
+  // already computed by evaluateRecoveryTriggers for its own trigger rules — they are recorded here
+  // rather than recomputed, so this adds zero work and zero provider calls. Used ONLY to decide
+  // which triggered candidates get the scarce wallet page budget first (see planRecoveryFetches);
+  // it never changes WHETHER a candidate is triggered, and never affects FIFO/pricing/dedupe.
+  //
+  // sellCount is the primary signal because verified coverage's denominator is CLOSED lots: one
+  // token sold 12 times can convert up to 12 closed lots from unpriced to verified when its entry
+  // buys are recovered, while a token sold once can convert at most one — so per page spent,
+  // repeatedly-sold tokens are strictly the higher-yield target for the coverage gate.
+  // Optional so existing callers/tests that construct a candidate without it keep working; absent
+  // means "unknown materiality", which sorts last-but-stable (never ahead of a measured candidate).
+  coverageMateriality?: { sellCount: number; cumulativeBuyUsd: number }
 }
 
 // PURE. Evaluates the three OR-combined trigger rules for every distinct (chain, token) pair
@@ -128,7 +141,14 @@ export function evaluateRecoveryTriggers(
       })
     }
 
-    return { token, chain, triggeredBy, recoveryTriggered: triggeredBy.length > 0 }
+    return {
+      token,
+      chain,
+      triggeredBy,
+      recoveryTriggered: triggeredBy.length > 0,
+      // Reuses the two figures already computed above for the trigger rules — not a second pass.
+      coverageMateriality: { sellCount, cumulativeBuyUsd: cumulativeUsd },
+    }
   })
 }
 
@@ -181,23 +201,65 @@ export async function fetchHistoricalPages(
 // is the EXACT same running-total/capping arithmetic the old sequential version used (same caps,
 // same order-dependent allocation, byte-identical totalPagesUsedThisWallet), just computed ahead of
 // time so every candidate's real fetch can then run concurrently instead of one after another.
+// MATERIALITY-ORDERED ALLOCATION, DISCLOSED (verified-coverage recovery task — confirmed
+// production defect). The wallet page budget is genuinely scarce: DEFAULT_RECOVERY_CAPS allows 6
+// pages per wallet and fetchHistoricalPages consumes 2 per candidate, so exactly
+// floor(6 / 2) = 3 triggered tokens can ever receive recovery, no matter how many trigger. That
+// ceiling is intentional cost control and is NOT changed here.
+//
+// What WAS wrong is which 3 got it. Candidates arrive in distinctTokensFromTimelines' Map
+// insertion order — i.e. whichever token happens to appear first in the buy/sell timelines — which
+// is chronological and completely unrelated to how much a token contributes to the verified
+// coverage gate. So the scarce budget was routinely spent on an incidental single-sell token while
+// a repeatedly-sold token (worth many closed lots) got nothing. Confirmed live shape: 5 tokens
+// triggered, 3 recovered, coverage stalled at 46.36%.
+//
+// This orders the SAME budget by measured coverage materiality first. It does not raise any cap,
+// does not fetch more pages, and does not change how many candidates get budget — identical
+// provider call volume, aimed at the tokens that can actually move the gate.
+//
+// The sort is STABLE and only ever reorders ALLOCATION: the returned array stays in the caller's
+// original candidate order, so output shape/ordering downstream is byte-identical to before.
+// Candidates with equal (or absent) materiality keep their original relative order, which is why
+// existing allocation behaviour for unmeasured candidates is unchanged.
+function materialityRank(candidate: CandidateEvaluation): { sellCount: number; cumulativeBuyUsd: number } {
+  return candidate.coverageMateriality ?? { sellCount: 0, cumulativeBuyUsd: 0 }
+}
+
 export function planRecoveryFetches(
   candidates: CandidateEvaluation[],
   caps: RecoveryPolicyCaps,
 ): Array<{ candidate: CandidateEvaluation; pageBudget: number }> {
+  // Stable descending sort by materiality, carrying the original index so the result can be
+  // restored to input order after allocation.
+  const allocationOrder = candidates
+    .map((candidate, index) => ({ candidate, index }))
+    .sort((a, b) => {
+      const ra = materialityRank(a.candidate)
+      const rb = materialityRank(b.candidate)
+      if (rb.sellCount !== ra.sellCount) return rb.sellCount - ra.sellCount
+      if (rb.cumulativeBuyUsd !== ra.cumulativeBuyUsd) return rb.cumulativeBuyUsd - ra.cumulativeBuyUsd
+      return a.index - b.index // stable tiebreak — preserves original order for equal materiality
+    })
+
+  const budgetByIndex = new Array<number>(candidates.length).fill(0)
   let remainingWalletBudget = caps.maxHistoricalPagesPerWallet
-  return candidates.map((candidate) => {
+
+  for (const { candidate, index } of allocationOrder) {
     if (!candidate.recoveryTriggered || remainingWalletBudget <= 0) {
-      return { candidate, pageBudget: 0 }
+      budgetByIndex[index] = 0
+      continue
     }
     const pageBudget = Math.min(caps.maxHistoricalPagesPerToken, remainingWalletBudget)
     // fetchHistoricalPages never actually consumes more than 2 pages regardless of pageBudget (see
     // its own header) — mirror that exact cap here so the NEXT candidate's remainingWalletBudget
-    // matches what the old sequential code would have computed from the real pagesUsed it awaited.
+    // matches the real pagesUsed that will be reported.
     const actualPagesForThisCandidate = Math.min(Math.max(0, pageBudget), 2)
     remainingWalletBudget -= actualPagesForThisCandidate
-    return { candidate, pageBudget }
-  })
+    budgetByIndex[index] = pageBudget
+  }
+
+  return candidates.map((candidate, index) => ({ candidate, pageBudget: budgetByIndex[index] }))
 }
 
 // Orchestrates evaluation + capped, triggered historical fetches into the final recoveryPolicy

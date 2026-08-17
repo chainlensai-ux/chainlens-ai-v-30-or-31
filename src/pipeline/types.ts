@@ -75,6 +75,13 @@ export type RunWalletScanResult = FinalReport & {
   // WalletScannerProviderSupportAudit's own header for exactly which fields are real counts vs
   // honestly `null` because this codebase doesn't currently thread that evidence up to this layer.
   walletScannerProviderSupportAudit?: WalletScannerProviderSupportAudit
+  // WALLET PnL COVERAGE / RECOVERY AUDIT, DISCLOSED (verified-coverage recovery task): additive,
+  // read-only diagnostic explaining per lot why official PnL is withheld when verified coverage is
+  // under the gate. Built from the same finalized matchedLots and the same shared canonical
+  // predicate the public gate itself uses, so it cannot disagree with that gate. Zero provider
+  // calls, zero pricing, no lot created or reclassified. See the module header for the honest
+  // limits on which taxonomy reasons this lot-level pass can and cannot populate.
+  walletPnlCoverageRecoveryAudit?: import('../lib/walletPnlCoverageRecoveryAudit').WalletPnlCoverageRecoveryAudit
 }
 
 // See RunWalletScanResult.walletScannerProviderSupportAudit's own disclosure above for the "why"

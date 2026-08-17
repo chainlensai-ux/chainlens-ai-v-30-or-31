@@ -69,3 +69,66 @@ describe('planRecoveryFetches', () => {
     assert.equal(plan[1].pageBudget, 0, 'wallet budget fully exhausted by a\'s single page')
   })
 })
+
+// ── Coverage-materiality allocation (verified-coverage recovery task) ────────────────────────
+// The wallet budget only ever covers floor(6/2) = 3 triggered tokens. These assert the scarce
+// budget goes to the tokens that can actually move the verified-coverage gate, rather than to
+// whichever token happened to appear first in the timelines.
+
+function materialCandidate(token: string, sellCount: number, cumulativeBuyUsd = 0): CandidateEvaluation {
+  return {
+    ...candidate(token),
+    coverageMateriality: { sellCount, cumulativeBuyUsd },
+  }
+}
+
+describe('planRecoveryFetches — coverage materiality ordering', () => {
+  it('THE REAL BUG: a high-sell-count token later in the list is funded over earlier single-sell tokens', () => {
+    // 5 triggered tokens, budget for only 3. 'e' is worth 12 closed lots but appears last.
+    const plan = planRecoveryFetches([
+      materialCandidate('a', 1), materialCandidate('b', 1), materialCandidate('c', 1),
+      materialCandidate('d', 9), materialCandidate('e', 12),
+    ], CAPS)
+    const funded = plan.filter((p) => p.pageBudget > 0).map((p) => p.candidate.token)
+    assert.deepEqual(funded.sort(), ['a', 'd', 'e'], 'the two highest-sell tokens must be funded, plus one of the equal-materiality remainder')
+    assert.ok(plan.find((p) => p.candidate.token === 'e')!.pageBudget > 0, 'the 12-sell token must not be starved')
+    assert.ok(plan.find((p) => p.candidate.token === 'd')!.pageBudget > 0, 'the 9-sell token must not be starved')
+  })
+
+  it('returns the plan in the caller\'s original candidate order, not the allocation order', () => {
+    const plan = planRecoveryFetches([
+      materialCandidate('a', 1), materialCandidate('b', 12), materialCandidate('c', 5),
+    ], CAPS)
+    assert.deepEqual(plan.map((p) => p.candidate.token), ['a', 'b', 'c'], 'output order is unchanged')
+  })
+
+  it('cumulative buy USD breaks ties when sell counts are equal', () => {
+    const plan = planRecoveryFetches([
+      materialCandidate('low', 2, 100), materialCandidate('high', 2, 50_000),
+    ], { maxHistoricalPagesPerWallet: 2, maxHistoricalPagesPerToken: 4 })
+    assert.ok(plan.find((p) => p.candidate.token === 'high')!.pageBudget > 0, 'higher-value token wins the single available slot')
+    assert.equal(plan.find((p) => p.candidate.token === 'low')!.pageBudget, 0)
+  })
+
+  it('never funds a non-triggered candidate regardless of how material it looks', () => {
+    const untriggered: CandidateEvaluation = { ...candidate('x', false), coverageMateriality: { sellCount: 999, cumulativeBuyUsd: 1e9 } }
+    const plan = planRecoveryFetches([untriggered, materialCandidate('y', 1)], CAPS)
+    assert.equal(plan[0].pageBudget, 0, 'materiality never overrides the trigger gate')
+    assert.ok(plan[1].pageBudget > 0)
+  })
+
+  it('total pages allocated never exceeds the wallet cap — ordering must not raise spend', () => {
+    const plan = planRecoveryFetches([
+      materialCandidate('a', 5), materialCandidate('b', 4), materialCandidate('c', 3),
+      materialCandidate('d', 2), materialCandidate('e', 1),
+    ], CAPS)
+    const actualPagesConsumed = plan.reduce((sum, p) => sum + Math.min(p.pageBudget, 2), 0)
+    assert.ok(actualPagesConsumed <= CAPS.maxHistoricalPagesPerWallet, `consumed ${actualPagesConsumed} must stay within the ${CAPS.maxHistoricalPagesPerWallet}-page wallet cap`)
+    assert.equal(plan.filter((p) => p.pageBudget > 0).length, 3, 'still exactly 3 funded candidates — same volume, better targeting')
+  })
+
+  it('candidates with no materiality data keep first-come order (backward compatible)', () => {
+    const plan = planRecoveryFetches([candidate('a'), candidate('b'), candidate('c'), candidate('d')], CAPS)
+    assert.deepEqual(plan.map((p) => p.pageBudget), [4, 4, 2, 0], 'unmeasured candidates allocate exactly as before')
+  })
+})

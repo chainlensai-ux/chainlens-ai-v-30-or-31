@@ -30,6 +30,7 @@ import {
   type CanonicalSampleManifestKvLike, type CanonicalSampleManifestAudit, type AcceptedEvidenceLoader,
 } from '../lib/canonicalPnlSampleManifest'
 import { isCanonicalVerifiedPublishedLot, buildCanonicalVerifiedPredicateReasonCounts } from '../lib/canonicalVerifiedLot'
+import { buildWalletPnlCoverageRecoveryAudit } from '../lib/walletPnlCoverageRecoveryAudit'
 import { buildCanonicalPnlDiffAudit, logCanonicalPnlDiffAudit } from '../lib/canonicalPnlDiffAudit'
 import { isVerifiedStablecoinAddress } from '../modules/quoteLegPricing/index'
 import { readAcceptedEvidence, readAcceptedEvidenceAnyLotVersion, type AcceptedEvidenceKvLike } from '../lib/acceptedEvidenceStore'
@@ -3545,10 +3546,25 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     runtimeCommitSha: DEPLOYMENT_RUNTIME_COMMIT_SHA,
   })
 
+  // WALLET PnL COVERAGE / RECOVERY AUDIT, DISCLOSED (verified-coverage recovery task). Explains, per
+  // lot, exactly why official PnL is withheld when verified coverage sits under the 50% gate —
+  // replacing the single opaque "missing evidence" line. Built from the SAME finalized
+  // `reconciledFifoAndPnl.matchedLots` the public gate publishes from, using the SAME shared
+  // canonical predicate, so it structurally cannot disagree with the gate it explains. Pure and
+  // read-only: zero provider calls, zero pricing, no lot ever created/promoted/reclassified here.
+  const walletPnlCoverageRecoveryAudit = buildWalletPnlCoverageRecoveryAudit({
+    wallet: params.walletAddress,
+    chains: preScan.sanitizedChains,
+    matchedLots: reconciledFifoAndPnl.matchedLots,
+    recoveryPolicy,
+  })
+  console.warn('[wallet-pnl-coverage-recovery-audit]', walletPnlCoverageRecoveryAudit)
+
   return {
     ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated,
     manifestFastPathAudit: walletPriceLookups.manifestFastPathAudit,
     walletScannerProviderSupportAudit,
+    walletPnlCoverageRecoveryAudit,
     // GOLDRUSH CALL SPLIT, DISCLOSED (UI/trust follow-up task) — the real, measured
     // historical-vs-current-price split (see AcceptedEvidenceSkipAudit's own header), exposed on the
     // final result so the worker's own [wallet-provider-cost-audit] log can attribute calls
