@@ -55,7 +55,7 @@ export default function ReferenceHero() {
             {/* MISSING SUBTITLE, DISCLOSED (homepage polish): .ref-sub was already fully styled in
                 this file's own CSS but never used in the JSX — the h1 jumped straight to the CTA
                 buttons with no supporting line. Added using the existing, already-tuned class. */}
-            <Reveal delayMs={120}><p className="ref-sub">Base-native token, wallet, and liquidity intelligence — real onchain evidence, not scores made up to sound smart.</p></Reveal>
+            <Reveal delayMs={120}><p className="ref-sub">Base-native token, wallet, and liquidity intelligence, backed by real onchain evidence, not scores made up to sound smart.</p></Reveal>
             <Reveal delayMs={170}><div className="ref-ctas">
               <Link className="ref-btn ref-btn-primary" href="/terminal"><span className="ref-terminal-mark">›_</span> Launch Terminal <span>→</span></Link>
               <Link className="ref-btn ref-btn-secondary" href="/terminal/token-scanner">Scan Token Free</Link>

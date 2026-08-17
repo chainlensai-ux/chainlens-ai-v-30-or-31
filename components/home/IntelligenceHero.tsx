@@ -104,7 +104,7 @@ export default function IntelligenceHero() {
           </h1>
 
           <p style={{ fontSize: '17px', color: 'rgba(255,255,255,0.66)', lineHeight: 1.62, maxWidth: '520px', margin: '0 0 30px', fontWeight: 400 }}>
-            Scan tokens, wallets, whales, and Base momentum with Clark — your AI onchain analyst.
+            Scan tokens, wallets, whales, and Base momentum with Clark, your AI onchain analyst.
           </p>
 
           {/* CTA hierarchy: one clear primary, one secondary, wallet connect demoted */}
@@ -132,7 +132,7 @@ export default function IntelligenceHero() {
 
           {/* Wallet connect demoted to a small, secondary line per the reversible hero spec */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '22px' }}>
-            <span style={{ fontSize: '13px', color: 'rgba(255,255,255,0.42)' }}>Connect wallet later —</span>
+            <span style={{ fontSize: '13px', color: 'rgba(255,255,255,0.42)' }}>Connect wallet later:</span>
             <div style={{ transform: 'scale(0.86)', transformOrigin: 'left center' }}>
               <ConnectWallet />
             </div>

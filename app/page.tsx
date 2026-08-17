@@ -125,7 +125,7 @@ const FEATURES = [
     hoverBg: 'linear-gradient(145deg, rgba(129,140,248,0.06) 0%, rgba(45,212,191,0.03) 100%)',
     href: '/terminal/clark-ai',
     title: 'Clark AI',
-    body: 'Ask Clark anything onchain. Get plain-English verdicts on tokens, wallets, and market moves — powered by CORTEX.',
+    body: 'Ask Clark anything onchain. Get plain-English verdicts on tokens, wallets, and market moves, powered by CORTEX.',
     icon: (
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
         <rect x="3" y="8" width="18" height="12" rx="2"/>
@@ -405,7 +405,7 @@ function LegacyHomeHero() {
             margin: '0 0 min(36px, 3.6vh)',
             fontWeight: 400,
           }}>
-            Ask Clark anything — scan wallets, find early pumps, track
+            Ask Clark anything: scan wallets, find early pumps, track
             smart money, and get real-time onchain intelligence.
           </p>
 
@@ -1153,7 +1153,7 @@ export default function HomePage() {
           {/* Steps row */}
           <div className="feat-grid mob-grid-1" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px' }}>
             {[
-              { step: '01', title: 'Paste any wallet or token',       desc: 'Drop in any address, contract, or token — Clark handles the rest.' },
+              { step: '01', title: 'Paste any wallet or token',       desc: 'Drop in any address, contract, or token. Clark handles the rest.' },
               { step: '02', title: 'CORTEX analyses the data',        desc: 'Our engine pulls onchain data, scores risk, and maps smart money in seconds.' },
               { step: '03', title: 'Clark tells you what it means',   desc: 'No charts to decode. Clark gives you clear, plain-English intelligence.' },
             ].map((s, i) => (
@@ -1213,7 +1213,7 @@ export default function HomePage() {
               Live Intelligence Preview
             </h2>
             <p style={{ fontSize: '15px', color: 'rgba(255,255,255,0.38)', maxWidth: '420px', margin: '0 auto', lineHeight: 1.65 }}>
-              A glimpse of the intelligence ChainLens surfaces — live, onchain, and AI-powered.
+              A glimpse of the intelligence ChainLens surfaces: live, onchain, and AI-powered.
             </p>
           </div></Reveal>
 
@@ -1331,7 +1331,7 @@ export default function HomePage() {
             <div style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: '7px', padding: '5px 14px', borderRadius: '999px', background: 'rgba(45,212,191,0.08)', border: '1px solid rgba(45,212,191,0.22)', marginBottom: '28px' }}>
               <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#4ade80', boxShadow: '0 0 8px rgba(74,222,128,0.85)', display: 'inline-block', flexShrink: 0 }} />
               <span style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.18em', color: 'rgba(45,212,191,0.85)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                Live on Base — V3
+                Live on Base V3
               </span>
             </div>
 
@@ -1342,7 +1342,7 @@ export default function HomePage() {
 
             {/* Sub copy */}
             <p style={{ position: 'relative', fontSize: 'clamp(14px, 1.8vw, 17px)', color: 'rgba(255,255,255,0.48)', maxWidth: '520px', margin: '0 auto 44px', lineHeight: 1.65, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-              Clark AI, CORTEX Engine, whale tracking, and real-time Base analytics — all in one terminal. Built for traders who need an edge.
+              Clark AI, CORTEX Engine, whale tracking, and real-time Base analytics, all in one terminal. Built for traders who need an edge.
             </p>
 
             {/* CTA buttons */}
@@ -1485,7 +1485,7 @@ export default function HomePage() {
                 cta: 'Pay with Crypto', ctaStyle: 'gradient', border: 'rgba(139,92,246,0.55)', badge: 'MOST POPULAR',
                 bg: 'rgba(12,10,26,0.92)', radius: '14px', pad: '20px 16px 18px', mt: '-8px',
                 sections: [
-                  { title: 'Everything in Free, plus', items: ['Token security, liquidity, holder, tax, LP, and dev-risk analysis where available', 'Wallet Scanner', 'Pump Alerts', 'Whale Alerts', 'Base Radar', 'Clark AI — 50 prompts / day'] },
+                  { title: 'Everything in Free, plus', items: ['Token security, liquidity, holder, tax, LP, and dev-risk analysis where available', 'Wallet Scanner', 'Pump Alerts', 'Whale Alerts', 'Base Radar', 'Clark AI: 50 prompts / day'] },
                 ],
               },
               {
@@ -1494,7 +1494,7 @@ export default function HomePage() {
                 cta: 'Pay with Crypto', ctaStyle: 'gold', border: 'rgba(251,191,36,0.40)', badge: 'FULL INTELLIGENCE',
                 bg: 'rgba(16,12,4,0.95)', radius: '18px', pad: '24px 22px 20px', mt: '-14px',
                 sections: [
-                  { title: 'Everything in Pro, plus', items: ['Clark AI — unlimited prompts', 'Auto Clark verdict on every scan', 'Smart money tracking', 'Advanced whale alerts', 'Priority CORTEX processing', 'Early access to new features'] },
+                  { title: 'Everything in Pro, plus', items: ['Clark AI: unlimited prompts', 'Auto Clark verdict on every scan', 'Smart money tracking', 'Advanced whale alerts', 'Priority CORTEX processing', 'Early access to new features'] },
                 ],
               },
             ].map(plan => {
@@ -1567,7 +1567,7 @@ export default function HomePage() {
                   {isElite && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '10px', padding: '8px 12px', marginBottom: '12px' }}>
                       <span style={{ fontSize: '13px', flexShrink: 0 }}>⭐</span>
-                      <span style={{ fontSize: '11px', fontWeight: 600, color: 'rgba(251,191,36,0.85)', lineHeight: 1.4 }}>Everything in Pro included — plus full CORTEX intelligence.</span>
+                      <span style={{ fontSize: '11px', fontWeight: 600, color: 'rgba(251,191,36,0.85)', lineHeight: 1.4 }}>Everything in Pro included, plus full CORTEX intelligence.</span>
                     </div>
                   )}
                   {/* CTA */}
@@ -1604,7 +1604,7 @@ export default function HomePage() {
               onchain intelligence for Base traders
             </div>
             <div style={{ fontSize: '13px', color: 'rgba(148,163,184,0.48)', lineHeight: 1.62, marginBottom: '22px', position: 'relative', maxWidth: '280px' }}>
-              Scan wallets, track whales, detect pumps, and get AI-powered analysis from Clark — all in one terminal.
+              Scan wallets, track whales, detect pumps, and get AI-powered analysis from Clark, all in one terminal.
             </div>
             {/* Social pills */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', position: 'relative' }}>
