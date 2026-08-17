@@ -3060,6 +3060,72 @@ export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): st
   return lines.join("\n");
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// CLARK INTERNAL TOOL-CALLING, DISCLOSED (explicitly requested: wire Clark to Base Radar and
+// Whale Alerts as real internal tool calls, not generic chat). Purely additive — none of the
+// existing ClarkRoutedIntent/classifyClarkPrompt/CLARK_ACTIONS logic above this block is
+// touched, so every existing routing test keeps passing unchanged. This is a separate, narrower
+// classifier that app/api/clark/route.ts checks BEFORE its existing intent cascade; when it
+// matches, the caller dispatches straight to a Base Radar/Whale Alerts tool handler instead of
+// falling through to generic chat.
+// ─────────────────────────────────────────────────────────────────────────
+
+export type ClarkToolIntent =
+  | "base_radar_movers"
+  | "base_radar_low_caps"
+  | "base_radar_robinhood"
+  | "base_radar_explain_candidate"
+  | "whale_alerts_summary"
+  | "whale_alerts_sync"
+  | "whale_alerts_recent"
+  | "whale_alerts_explain_signal"
+  | "none";
+
+export type ClarkToolIntentResult = { intent: ClarkToolIntent };
+
+const RADAR_ROBINHOOD_RE = /\brobinhood\b/i;
+const RADAR_LOW_CAP_RE = /\blow[\s-]?caps?\b|\bsmall[\s-]?caps?\b|\bmicro[\s-]?caps?\b/i;
+const RADAR_EXPLAIN_CANDIDATE_RE = /\bexplain\s+(?:this\s+|the\s+)?(?:radar\s+)?candidate\b|\bwhy\s+(?:is\s+)?(?:it|this)\s+(?:on\s+)?radar\b|\bexplain\s+(?:the\s+)?radar\s+(?:result|score|signal)\b/i;
+const RADAR_MOVERS_RE = /\b(what'?s\s+pumping|whats\s+pumping|base\s+movers?|movers\s+on\s+base|new\s+base\s+(?:tokens?|pools?)|trending\s+on\s+base|radar\s+candidates?|best\s+radar|high\s+volume|high\s+liquidity|find\s+(?:new\s+)?(?:base\s+)?tokens?\b|find\s+tokens?\s+with|show\s+me\s+base|base\s+radar|open\s+(?:the\s+)?radar|radar\s+read|radar\s+movers|what'?s\s+trending)\b/i;
+
+// Whale explain-signal checked first so "explain that alert/signal" never gets swallowed by the
+// broader summary/recent/sync matchers below.
+const WHALE_EXPLAIN_SIGNAL_RE = /\bexplain\s+(?:this\s+|that\s+)?(?:whale\s+)?(?:signal|alert|movement|move)\b|\bwhy\s+is\s+(?:this|that)\s+(?:whale\s+)?(?:signal|alert)\b/i;
+const WHALE_SYNC_RE = /\b(sync\s+whale|refresh\s+whale|whale\s+sync|whale\s+refresh|re[\s-]?check\s+whale)\b/i;
+const WHALE_RECENT_RE = /\b(what\s+wallets?\s+moved|recent(?:ly)?\s+whale|whale\s+(?:movement|moves)\s+(?:today|recently|now)|what\s+happened\s+in\s+whale|any\s+big\s+(?:buys?|sells?)|big\s+buys?\s*(?:\/|or)\s*sells?|whale\s+activity\s+today)\b/i;
+const WHALE_SUMMARY_RE = /\b(any\s+whale\s+alerts?|show\s+whale\s+(?:movement|alerts?)|whale\s+alerts?|whale\s+movement|open\s+whale\s+alerts?)\b/i;
+
+/**
+ * Classifies a free-form Clark prompt into one of the new Base Radar / Whale Alerts tool-call
+ * intents. Returns "none" when the prompt doesn't match — callers fall back to the existing
+ * classifyClarkPrompt()/detectIntent() routing untouched, so this never displaces existing
+ * behavior, it only intercepts the specific new phrasings it's built for.
+ */
+export function classifyClarkToolIntent(prompt: string): ClarkToolIntentResult {
+  const t = String(prompt ?? "").trim();
+  if (!t) return { intent: "none" };
+
+  if (WHALE_EXPLAIN_SIGNAL_RE.test(t)) return { intent: "whale_alerts_explain_signal" };
+  if (WHALE_SYNC_RE.test(t)) return { intent: "whale_alerts_sync" };
+  if (WHALE_RECENT_RE.test(t)) return { intent: "whale_alerts_recent" };
+  if (WHALE_SUMMARY_RE.test(t)) return { intent: "whale_alerts_summary" };
+
+  if (RADAR_EXPLAIN_CANDIDATE_RE.test(t)) return { intent: "base_radar_explain_candidate" };
+  if (RADAR_ROBINHOOD_RE.test(t) && (RADAR_MOVERS_RE.test(t) || /\bradar\b|\bchain\b/i.test(t))) return { intent: "base_radar_robinhood" };
+  if (RADAR_LOW_CAP_RE.test(t) && (RADAR_MOVERS_RE.test(t) || /\bbase\b|\bradar\b/i.test(t))) return { intent: "base_radar_low_caps" };
+  if (RADAR_MOVERS_RE.test(t)) return { intent: "base_radar_movers" };
+
+  return { intent: "none" };
+}
+
+// "Add that to watchlist" — a real, actionable command (not just a UI button), distinct from the
+// existing CLARK_ACTIONS link set because it triggers a POST tool call rather than opening a page.
+const WATCHLIST_ADD_RE = /\b(add\s+(?:that|this|it)\s+to\s+(?:my\s+)?watchlist|add\s+to\s+watchlist|watch\s+(?:that|this|it))\b/i;
+
+export function isClarkWatchlistAddCommand(prompt: string): boolean {
+  return WATCHLIST_ADD_RE.test(String(prompt ?? "").trim());
+}
+
 export function formatNoTokenInMemory(): string {
   return [
     "I need a token to check.",

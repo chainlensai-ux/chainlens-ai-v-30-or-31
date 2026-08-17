@@ -82,7 +82,11 @@ import {
   tokenEvidenceCoverage,
   tokenRiskSections,
   type ClarkUiAction,
+  classifyClarkToolIntent,
+  type ClarkToolIntent,
+  isClarkWatchlistAddCommand,
 } from "@/lib/server/clarkRouting";
+import { buildBaseRadarDisplayModel } from "@/lib/baseRadarDisplayModel";
 
 const {
   GOLDRUSH_API_KEY,
@@ -217,6 +221,38 @@ type ClarkSessionMemory = {
   lastActiveTool: string | null;
   currentPage?: string | null;
   lastDevWallet?: { address: string; summary: string | null; ts: number } | null;
+  // CLARK TOOL-CALLING MEMORY, DISCLOSED: added for the Base Radar / Whale Alerts tool-call
+  // integration. lastSelectedToken/lastSelectedWallet are intentionally NOT separate fields —
+  // they map straight onto the existing lastToken/lastWallet above, the same "last scanned
+  // thing" memory every other Clark flow already reads/writes; duplicating that state here would
+  // just create a second copy that could drift out of sync with the real one.
+  lastRadarList: Array<{
+    rank: number;
+    symbol: string;
+    name: string | null;
+    address: string;
+    chain: "base" | "robinhood";
+    score: number;
+    liquidityUsd: number | null;
+    volume24hUsd: number | null;
+    marketCapUsd: number | null;
+    riskLabel: string;
+    evidenceGaps: string[];
+  }>;
+  lastRadarChain: "base" | "robinhood" | null;
+  lastRadarTs: number;
+  lastWhaleAlerts: Array<{
+    rank: number;
+    tokenSymbol: string | null;
+    walletLabel: string | null;
+    walletAddress: string | null;
+    side: string | null;
+    amountUsd: number | null;
+    signalScore: string | null;
+    occurredAt: string | null;
+  }>;
+  lastWhaleAlertsTs: number;
+  lastWhaleSyncStatus: { ran: boolean; walletsChecked: number | null; ts: number } | null;
 };
 const SESSION_MEMORY = new Map<string, ClarkSessionMemory>();
 const SESSION_MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min
@@ -227,7 +263,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   const now = Date.now();
   const existing = SESSION_MEMORY.get(key);
   if (!existing) {
-    const fresh: ClarkSessionMemory = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null };
+    const fresh: ClarkSessionMemory = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null };
     SESSION_MEMORY.set(key, fresh);
     return fresh;
   }
@@ -7034,9 +7070,440 @@ async function handleWhaleAlertFeedInner(prompt: string, body: ClarkRequestBody,
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// CLARK INTERNAL TOOL-CALLING: BASE RADAR / WHALE ALERTS, DISCLOSED (explicitly requested — make
+// Clark call the existing Base Radar and Whale Alerts routes as real tools instead of chatting
+// generically). Both handlers below fetch the SAME internal routes the terminal pages themselves
+// use (/api/radar, /api/whale-alerts, /api/whale-alerts/sync) — no new provider, no new
+// discovery/scoring logic, no bypass of existing gates. Base Radar scoring reuses
+// buildBaseRadarDisplayModel (lib/baseRadarDisplayModel.ts), the exact same pure function
+// app/terminal/base-radar/page.tsx uses to compute score/riskLabel/evidenceGaps client-side, so
+// Clark's numbers can never drift from what the Radar page itself shows for the same token.
+// ─────────────────────────────────────────────────────────────────────────
+
+type ClarkToolCallAudit = {
+  intent: string;
+  toolCalled: string;
+  chain: string | null;
+  resultCount: number;
+  success: boolean;
+  degraded: boolean;
+  errorReason: string | null;
+  latencyMs: number;
+  memoryUpdated: boolean;
+  actionsBuilt: number;
+};
+
+function buildClarkToolCallAudit(partial: ClarkToolCallAudit): ClarkToolCallAudit {
+  return partial;
+}
+
+function fmtUsd(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n)) return "unavailable";
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `$${(n / 1_000).toFixed(1)}K`;
+  return `$${Math.round(n)}`;
+}
+
+// ---------- Base Radar tool call ----------
+
+async function fetchBaseRadarForClark(origin: string, chain: "base" | "robinhood", authHeader?: string | null) {
+  const res = await fetch(`${origin}/api/radar?chain=${chain}&page=1`, {
+    cache: "no-store",
+    signal: AbortSignal.timeout(20000),
+    headers: authHeader ? { Authorization: authHeader } : {},
+  });
+  const json = await res.json().catch(() => null);
+  return { ok: res.ok, status: res.status, json: json as Record<string, unknown> | null };
+}
+
+async function handleClarkRadarToolCall(
+  toolIntent: ClarkToolIntent,
+  prompt: string,
+  origin: string,
+  authHeader: string | null,
+  fallbackChain: SupportedChain,
+  sessionMem: ClarkSessionMemory,
+  verifiedPlan: 'free' | 'pro' | 'elite' | undefined,
+  clarkDebugMode: boolean,
+) {
+  const t0 = Date.now();
+  const chain: "base" | "robinhood" = toolIntent === "base_radar_robinhood" ? "robinhood" : "base";
+
+  // EXPLAIN-CANDIDATE, DISCLOSED: answers strictly from what's already in session memory (the
+  // last Radar read this session actually surfaced) rather than re-fetching — "explain this
+  // candidate" is a follow-up about a result the user just saw, not a new discovery request.
+  if (toolIntent === "base_radar_explain_candidate") {
+    if (sessionMem.lastRadarList.length === 0) {
+      return {
+        feature: "clark-ai", chain: sessionMem.lastRadarChain ?? fallbackChain, mode: "analysis", intent: toolIntent, toolsUsed: [],
+        analysis: "I don't have a recent Base Radar read to explain yet. Ask me for Base Radar movers first, then I can walk you through a candidate.",
+        clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: ["no_radar_memory"], clarkToolLatencyMs: Date.now() - t0,
+        ui: { intentBadge: "Base Radar", actions: [{ label: "Open Base Radar", href: "/terminal/base-radar", kind: "link" as const }] },
+      };
+    }
+    const rankMatch = prompt.match(/\bnumber\s+([1-9]\d{0,2})\b/i) ?? prompt.match(/\b([1-9]\d{0,2})\b/);
+    const ordinalWord = prompt.match(/\b(first|second|third|fourth|fifth)\b/i)?.[1]?.toLowerCase();
+    const ordinalMap: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
+    const rank = ordinalWord ? ordinalMap[ordinalWord] : (rankMatch ? Number(rankMatch[1]) : 1);
+    const cand = sessionMem.lastRadarList.find((c) => c.rank === rank) ?? sessionMem.lastRadarList[0];
+    const lines = [
+      `${cand.symbol} on ${cand.chain === "robinhood" ? "Robinhood Chain" : "Base"} — Radar ${cand.score}/100 (${cand.riskLabel}).`,
+      `Liquidity ${fmtUsd(cand.liquidityUsd)}, volume ${fmtUsd(cand.volume24hUsd)}${cand.marketCapUsd != null ? `, market cap ${fmtUsd(cand.marketCapUsd)}` : ""}.`,
+      cand.evidenceGaps.length ? `Still open: ${cand.evidenceGaps.slice(0, 3).join("; ")}.` : "No open evidence gaps recorded for this read.",
+      "",
+      "Treat as market evidence, not advice.",
+    ];
+    return {
+      feature: "clark-ai", chain: cand.chain, mode: "analysis", intent: toolIntent, toolsUsed: ["base_radar_snapshot"],
+      analysis: lines.join("\n"),
+      clarkToolPlan: null, clarkToolsExecuted: ["base_radar_snapshot"], clarkToolStatuses: { base_radar_snapshot: "cached" }, clarkEvidenceMissing: cand.evidenceGaps, clarkToolLatencyMs: Date.now() - t0,
+      ui: { intentBadge: "Base Radar", actions: [
+        { label: "Scan Token", prompt: `scan ${cand.address}`, kind: "prompt" as const },
+        { label: "Open Base Radar", href: "/terminal/base-radar", kind: "link" as const },
+        { label: "Add Watchlist", prompt: "add that to watchlist", kind: "prompt" as const },
+        { label: "Ask why risky", prompt: `why is ${cand.symbol} risky`, kind: "prompt" as const },
+      ] },
+    };
+  }
+
+  const planFull = planAllows(verifiedPlan, "base_radar_full");
+  const { ok, status, json } = await fetchBaseRadarForClark(origin, chain, authHeader);
+  const latencyMs = Date.now() - t0;
+
+  if (!ok || !json) {
+    const errorReason = status === 429 ? "rate_limited" : status === 403 ? "plan_gated" : "fetch_failed";
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: toolIntent, toolsUsed: ["base_radar_snapshot"],
+      analysis: status === 429
+        ? "Base Radar just refreshed and is cooling down — try again in about a minute."
+        : "Base Radar refresh failed. The pipeline may be mid-refresh or rate-limited by an upstream provider — try again shortly.",
+      clarkToolPlan: null, clarkToolsExecuted: ["base_radar_snapshot"], clarkToolStatuses: { base_radar_snapshot: "failed" }, clarkEvidenceMissing: [errorReason], clarkToolLatencyMs: latencyMs,
+      ui: { intentBadge: "Base Radar", actions: [{ label: "Open Base Radar", href: "/terminal/base-radar", kind: "link" as const }] },
+      clarkToolCallAudit: clarkDebugMode ? buildClarkToolCallAudit({ intent: toolIntent, toolCalled: "GET /api/radar", chain, resultCount: 0, success: false, degraded: false, errorReason, latencyMs, memoryUpdated: false, actionsBuilt: 1 }) : undefined,
+    };
+  }
+
+  const rawTokens = Array.isArray(json.tokens) ? (json.tokens as Record<string, unknown>[]) : [];
+  const discoveryDegraded = json.discoveryDegraded === true;
+
+  if (rawTokens.length === 0) {
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: toolIntent, toolsUsed: ["base_radar_snapshot"],
+      analysis: "Base Radar did not find candidates passing the current gates. The checked pool was empty/degraded or candidates failed liquidity/evidence thresholds.",
+      clarkToolPlan: null, clarkToolsExecuted: ["base_radar_snapshot"], clarkToolStatuses: { base_radar_snapshot: discoveryDegraded ? "degraded" : "ok" }, clarkEvidenceMissing: discoveryDegraded ? ["discovery_degraded"] : [], clarkToolLatencyMs: latencyMs,
+      ui: { intentBadge: "Base Radar", actions: [{ label: "Open Base Radar", href: `/terminal/base-radar${chain === "robinhood" ? "?chain=robinhood" : ""}`, kind: "link" as const }] },
+      clarkToolCallAudit: clarkDebugMode ? buildClarkToolCallAudit({ intent: toolIntent, toolCalled: "GET /api/radar", chain, resultCount: 0, success: true, degraded: discoveryDegraded, errorReason: null, latencyMs, memoryUpdated: false, actionsBuilt: 1 }) : undefined,
+    };
+  }
+
+  // Compute each candidate through the SAME pure display model the Radar page itself uses —
+  // never a separately-invented "Clark score."
+  let ranked = rawTokens.map((raw, i) => {
+    const model = buildBaseRadarDisplayModel(raw);
+    return {
+      rank: i + 1,
+      symbol: String(raw.symbol ?? "?"),
+      name: typeof raw.name === "string" ? raw.name : null,
+      address: String(raw.contract ?? ""),
+      chain,
+      score: model.score,
+      liquidityUsd: model.marketSnapshot.liquidityUsd,
+      volume24hUsd: model.marketSnapshot.volume24hUsd,
+      marketCapUsd: model.marketSnapshot.marketCapUsd,
+      riskLabel: String(model.riskLabel ?? "Unrated"),
+      evidenceGaps: model.evidenceGaps ?? [],
+    };
+  }).filter((c) => c.address);
+
+  if (toolIntent === "base_radar_low_caps") {
+    // Filtering only — never widens or bypasses the gates /api/radar already applied.
+    ranked = ranked.filter((c) => c.marketCapUsd == null || c.marketCapUsd < 1_000_000);
+  }
+  ranked.sort((a, b) => b.score - a.score);
+  ranked = ranked.map((c, i) => ({ ...c, rank: i + 1 }));
+
+  if (ranked.length === 0) {
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: toolIntent, toolsUsed: ["base_radar_snapshot"],
+      analysis: toolIntent === "base_radar_low_caps"
+        ? "Base Radar has candidates this cycle, but none currently read as low-cap (under $1M market cap)."
+        : "Base Radar did not find candidates passing the current gates. The checked pool was empty/degraded or candidates failed liquidity/evidence thresholds.",
+      clarkToolPlan: null, clarkToolsExecuted: ["base_radar_snapshot"], clarkToolStatuses: { base_radar_snapshot: "ok" }, clarkEvidenceMissing: [], clarkToolLatencyMs: latencyMs,
+      ui: { intentBadge: "Base Radar", actions: [{ label: "Open Base Radar", href: "/terminal/base-radar", kind: "link" as const }] },
+    };
+  }
+
+  const wantsMore = /\b(more|all|full\s+list|everything)\b/i.test(prompt);
+  const showLimit = wantsMore ? Math.min(ranked.length, 15) : Math.min(ranked.length, 5);
+  const shown = ranked.slice(0, showLimit);
+  const top = shown[0];
+
+  const lines: string[] = [];
+  lines.push(`Base Radar found ${ranked.length} candidate${ranked.length === 1 ? "" : "s"}${chain === "robinhood" ? " on Robinhood Chain" : ""}${discoveryDegraded ? " (discovery degraded this cycle — treat as partial)" : ""}.`);
+  lines.push(`Highest signal right now is ${top.symbol} with Radar ${top.score}/100 (${top.riskLabel}). Liquidity is ${fmtUsd(top.liquidityUsd)}, volume is ${fmtUsd(top.volume24hUsd)}${top.marketCapUsd != null ? `, market cap ${fmtUsd(top.marketCapUsd)}` : ""}.`);
+  if (top.evidenceGaps.length) lines.push(`Still open: ${top.evidenceGaps.slice(0, 2).join("; ")}.`);
+  if (shown.length > 1) {
+    lines.push("", "Also worth watching:");
+    for (const c of shown.slice(1)) {
+      lines.push(`- ${c.symbol}: Radar ${c.score}/100 (${c.riskLabel}), liquidity ${fmtUsd(c.liquidityUsd)}, volume ${fmtUsd(c.volume24hUsd)}`);
+    }
+  }
+  if (ranked.length > shown.length) lines.push("", `${ranked.length - shown.length} more candidate${ranked.length - shown.length === 1 ? "" : "s"} available — ask for "more" to see up to 15.`);
+  lines.push("", "Treat as market evidence, not advice.");
+
+  // Store BOTH the richer radar-specific list (for radar-native follow-ups) and the shared
+  // lastMomentumList (the existing session-memory pattern every other Clark follow-up — "scan
+  // the first one", "number 2" — already reads from) so ranked follow-ups work immediately
+  // without duplicating that resolution logic.
+  sessionMem.lastRadarList = ranked;
+  sessionMem.lastRadarChain = chain;
+  sessionMem.lastRadarTs = Date.now();
+  updateMemMomentum(sessionMem, ranked.map((c) => ({
+    rank: c.rank, symbol: c.symbol, name: c.name, address: c.address,
+    liquidity: c.liquidityUsd, volume24h: c.volume24hUsd, change24h: null, tag: c.riskLabel,
+  })));
+  updateMemIntent(sessionMem, "base_radar");
+
+  const actions: ClarkUiAction[] = [
+    { label: "Scan Token", prompt: `scan ${top.address}`, kind: "prompt" },
+    { label: "Open Base Radar", href: `/terminal/base-radar${chain === "robinhood" ? "?chain=robinhood" : ""}`, kind: "link" },
+    { label: "Add Watchlist", prompt: "add that to watchlist", kind: "prompt" },
+    { label: "Ask why risky", prompt: `why is ${top.symbol} risky`, kind: "prompt" },
+  ];
+  if (!planFull) lines.push("", "Free preview — upgrade to Pro/Elite for the full Radar candidate list.");
+
+  return {
+    feature: "clark-ai", chain, mode: "analysis", intent: toolIntent, toolsUsed: ["base_radar_snapshot"],
+    analysis: lines.join("\n"),
+    clarkToolPlan: null, clarkToolsExecuted: ["base_radar_snapshot"], clarkToolStatuses: { base_radar_snapshot: discoveryDegraded ? "degraded" : "ok" },
+    clarkEvidenceMissing: discoveryDegraded ? ["discovery_degraded"] : [], clarkToolLatencyMs: latencyMs,
+    ui: { intentBadge: "Base Radar", actions },
+    clarkToolCallAudit: clarkDebugMode ? buildClarkToolCallAudit({ intent: toolIntent, toolCalled: "GET /api/radar", chain, resultCount: ranked.length, success: true, degraded: discoveryDegraded, errorReason: null, latencyMs, memoryUpdated: true, actionsBuilt: actions.length }) : undefined,
+  };
+}
+
+// ---------- Whale Alerts tool call ----------
+
+async function handleClarkWhaleToolCall(
+  toolIntent: ClarkToolIntent,
+  prompt: string,
+  origin: string,
+  authHeader: string | null,
+  chain: SupportedChain,
+  sessionMem: ClarkSessionMemory,
+  clarkDebugMode: boolean,
+) {
+  const t0 = Date.now();
+
+  if (toolIntent === "whale_alerts_explain_signal") {
+    if (sessionMem.lastWhaleAlerts.length === 0) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: toolIntent, toolsUsed: [],
+        analysis: "I don't have a recent Whale Alerts read to explain yet. Ask me for whale alerts first, then I can walk you through a signal.",
+        clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: ["no_whale_memory"], clarkToolLatencyMs: Date.now() - t0,
+        ui: { intentBadge: "Whale Alerts", actions: [{ label: "Open Whale Alerts", href: "/terminal/whale-alerts", kind: "link" as const }] },
+      };
+    }
+    const rankMatch = prompt.match(/\bnumber\s+([1-9]\d{0,2})\b/i) ?? prompt.match(/\b([1-9]\d{0,2})\b/);
+    const ordinalWord = prompt.match(/\b(first|second|third|fourth|fifth)\b/i)?.[1]?.toLowerCase();
+    const ordinalMap: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5 };
+    const rank = ordinalWord ? ordinalMap[ordinalWord] : (rankMatch ? Number(rankMatch[1]) : 1);
+    const a = sessionMem.lastWhaleAlerts.find((x) => x.rank === rank) ?? sessionMem.lastWhaleAlerts[0];
+    const lines = [
+      `${a.walletLabel ?? "Tracked wallet"} ${a.walletAddress ? `(${shortAddress(a.walletAddress)})` : ""} ${a.side ?? "moved"} ${a.amountUsd != null ? fmtUsd(a.amountUsd) : "an unverified amount"} of ${a.tokenSymbol ?? "an unknown token"}${a.occurredAt ? `, ${new Date(a.occurredAt).toLocaleString()}` : ""}.`,
+      `Signal: ${a.signalScore ?? "unrated"}.`,
+      "wallet_label is an internal ChainLens tracking label, not a verified public identity. I'd review token liquidity and holder concentration before trusting the move.",
+    ];
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: toolIntent, toolsUsed: ["whale_feed_stored"],
+      analysis: lines.join("\n"),
+      clarkToolPlan: null, clarkToolsExecuted: ["whale_feed_stored"], clarkToolStatuses: { whale_feed_stored: "cached" }, clarkEvidenceMissing: [], clarkToolLatencyMs: Date.now() - t0,
+      ui: { intentBadge: "Whale Alerts", actions: [
+        { label: "Open Whale Alerts", href: "/terminal/whale-alerts", kind: "link" as const },
+        ...(a.tokenSymbol ? [{ label: "Scan Token", prompt: `scan ${a.tokenSymbol}`, kind: "prompt" as const }] : []),
+      ] },
+    };
+  }
+
+  let liveSyncNote: string | null = null;
+  let syncRan = false;
+  let walletsChecked: number | null = null;
+  if (toolIntent === "whale_alerts_sync") {
+    if (!authHeader) {
+      liveSyncNote = "Sign in on Pro or Elite for me to run a live whale sync — showing the latest stored read for now.";
+    } else {
+      try {
+        const syncRes = await fetch(`${origin}/api/whale-alerts/sync?window=24h`, {
+          method: "POST",
+          signal: AbortSignal.timeout(15000),
+          headers: { Authorization: authHeader, "Content-Type": "application/json" },
+          body: "{}",
+        });
+        if (syncRes.ok) {
+          const syncJson = await syncRes.json().catch(() => null) as { walletsChecked?: number } | null;
+          walletsChecked = syncJson?.walletsChecked ?? null;
+          syncRan = true;
+          liveSyncNote = `Synced ${walletsChecked ?? "tracked"} whale wallets just now.`;
+        } else if (syncRes.status === 403) {
+          liveSyncNote = "Live whale sync is included in Pro and Elite — showing the latest stored read instead.";
+        } else if (syncRes.status === 429) {
+          liveSyncNote = "Whale sync just ran recently (cooldown active) — showing the latest stored read.";
+        } else {
+          liveSyncNote = "Whale sync did not complete — showing the latest stored read instead.";
+        }
+      } catch {
+        liveSyncNote = "Whale sync did not complete — showing the latest stored read instead.";
+      }
+    }
+    sessionMem.lastWhaleSyncStatus = { ran: syncRan, walletsChecked, ts: Date.now() };
+  }
+
+  const window = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b/i.test(prompt) ? "7d" : "24h";
+  let res: Response;
+  try {
+    res = await fetch(`${origin}/api/whale-alerts?window=${window}&interesting=true&valueRange=all&limit=25&t=${Date.now()}`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(8000),
+      headers: authHeader ? { Authorization: authHeader } : {},
+    });
+  } catch {
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: toolIntent, toolsUsed: ["whale_feed_stored"],
+      analysis: `${liveSyncNote ? `${liveSyncNote}\n\n` : ""}I couldn't reach the Whale Alerts feed right now. Try again shortly.`,
+      clarkToolPlan: null, clarkToolsExecuted: ["whale_feed_stored"], clarkToolStatuses: { whale_feed_stored: "failed" }, clarkEvidenceMissing: ["fetch_failed"], clarkToolLatencyMs: Date.now() - t0,
+      ui: { intentBadge: "Whale Alerts", actions: [{ label: "Open Whale Alerts", href: "/terminal/whale-alerts", kind: "link" as const }] },
+      clarkToolCallAudit: clarkDebugMode ? buildClarkToolCallAudit({ intent: toolIntent, toolCalled: "GET /api/whale-alerts", chain, resultCount: 0, success: false, degraded: false, errorReason: "fetch_failed", latencyMs: Date.now() - t0, memoryUpdated: false, actionsBuilt: 1 }) : undefined,
+    };
+  }
+  const latencyMs = Date.now() - t0;
+
+  if (res.status === 403) {
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: toolIntent, toolsUsed: ["whale_feed_stored"],
+      analysis: buildLockedResponse("whale_alerts", "ask how whale alerts work or what whale activity means."),
+      clarkToolPlan: null, clarkToolsExecuted: ["whale_feed_stored"], clarkToolStatuses: { whale_feed_stored: "plan_gated" }, clarkEvidenceMissing: [], clarkToolLatencyMs: latencyMs,
+    };
+  }
+  const json = res.ok ? await res.json().catch(() => null) : null;
+  const intel = json?.intelligence as { walletCount?: number; activeWalletCount?: number } | undefined;
+  const rawAlerts: WhaleAlertRow[] = Array.isArray(json?.alerts) ? json.alerts : [];
+  const trackedWalletCount = intel?.walletCount ?? null;
+
+  if (rawAlerts.length === 0) {
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: toolIntent, toolsUsed: ["whale_feed_stored"],
+      analysis: `${liveSyncNote ? `${liveSyncNote}\n\n` : ""}No whale alerts matched the current filters.${trackedWalletCount != null ? ` ChainLens is watching ${trackedWalletCount}+ Base wallets, but no movements passed the selected window/value filters.` : ""} Try broadening filters or running full refresh.`,
+      clarkToolPlan: null, clarkToolsExecuted: ["whale_feed_stored"], clarkToolStatuses: { whale_feed_stored: "ok" }, clarkEvidenceMissing: ["no_recent_alerts"], clarkToolLatencyMs: latencyMs,
+      ui: { intentBadge: "Whale Alerts", actions: [
+        { label: "Open Whale Alerts", href: "/terminal/whale-alerts", kind: "link" as const },
+        { label: "Refresh Whale Alerts", prompt: "sync whale alerts", kind: "prompt" as const },
+      ] },
+      clarkToolCallAudit: clarkDebugMode ? buildClarkToolCallAudit({ intent: toolIntent, toolCalled: "GET /api/whale-alerts", chain, resultCount: 0, success: true, degraded: false, errorReason: null, latencyMs, memoryUpdated: false, actionsBuilt: 2 }) : undefined,
+    };
+  }
+
+  const ranked = rawAlerts.slice(0, 10).map((a, i) => ({
+    rank: i + 1,
+    tokenSymbol: a.focus_token_symbol ?? a.token_symbol ?? null,
+    walletLabel: a.wallet_label ?? null,
+    walletAddress: a.wallet_address ?? null,
+    side: a.side ?? null,
+    amountUsd: (a.amount_usd != null && a.amount_usd > 0) ? a.amount_usd : null,
+    signalScore: a.signal_score ?? null,
+    occurredAt: a.occurred_at ?? null,
+  }));
+  sessionMem.lastWhaleAlerts = ranked;
+  sessionMem.lastWhaleAlertsTs = Date.now();
+  updateMemIntent(sessionMem, "whale_alert");
+
+  const top = ranked[0];
+  const lines: string[] = [];
+  lines.push(`${liveSyncNote ? `${liveSyncNote}\n\n` : ""}Whale Alerts found ${ranked.length} movement${ranked.length === 1 ? "" : "s"} in the last ${window === "7d" ? "7d" : "24h"}.`.trim());
+  lines.push(`Largest signal: ${top.walletLabel ?? "tracked wallet"}${top.walletAddress ? ` ${shortAddress(top.walletAddress)}` : ""} ${top.side ?? "moved"} ${top.amountUsd != null ? fmtUsd(top.amountUsd) : "an unverified amount"} of ${top.tokenSymbol ?? "an unknown token"}${top.occurredAt ? ` ${new Date(top.occurredAt).toLocaleString()}` : ""}. Severity: ${top.signalScore ?? "unrated"}.`);
+  lines.push("I'd review token liquidity and holder concentration before trusting the move.");
+  if (ranked.length > 1) {
+    lines.push("", "Other recent movements:");
+    for (const a of ranked.slice(1, 5)) {
+      lines.push(`- ${a.walletLabel ?? "tracked wallet"}${a.walletAddress ? ` ${shortAddress(a.walletAddress)}` : ""}: ${a.side ?? "move"} ${a.amountUsd != null ? fmtUsd(a.amountUsd) : "unverified"} ${a.tokenSymbol ?? "?"} (${a.signalScore ?? "unrated"})`);
+    }
+  }
+  lines.push("", "Not financial advice.");
+
+  const actions: ClarkUiAction[] = [
+    { label: "Open Whale Alerts", href: "/terminal/whale-alerts", kind: "link" },
+    ...(syncRan ? [] : [{ label: "Refresh Whale Alerts", prompt: "sync whale alerts", kind: "prompt" as const }]),
+    ...(top.tokenSymbol ? [{ label: "Scan Token", prompt: `scan ${top.tokenSymbol}`, kind: "prompt" as const }] : []),
+  ];
+
+  return {
+    feature: "clark-ai", chain, mode: "analysis", intent: toolIntent, toolsUsed: ["whale_feed_stored"],
+    analysis: lines.join("\n"),
+    clarkToolPlan: null, clarkToolsExecuted: ["whale_feed_stored"], clarkToolStatuses: { whale_feed_stored: "ok" }, clarkEvidenceMissing: [], clarkToolLatencyMs: latencyMs,
+    ui: { intentBadge: "Whale Alerts", actions },
+    clarkToolCallAudit: clarkDebugMode ? buildClarkToolCallAudit({ intent: toolIntent, toolCalled: "GET /api/whale-alerts", chain, resultCount: ranked.length, success: true, degraded: false, errorReason: null, latencyMs, memoryUpdated: true, actionsBuilt: actions.length }) : undefined,
+  };
+}
+
+// ---------- Add to watchlist tool call ----------
+
+async function handleClarkWatchlistAdd(origin: string, authHeader: string | null, chain: SupportedChain, sessionMem: ClarkSessionMemory) {
+  const target = sessionMem.lastRadarList[0] ?? (sessionMem.lastToken ? {
+    address: sessionMem.lastToken.address, symbol: sessionMem.lastToken.symbol ?? "TOKEN", name: sessionMem.lastToken.name, chain: "base" as const, score: null as number | null, riskLabel: null as string | null,
+  } : null);
+  if (!target) {
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "watchlist_add", toolsUsed: [],
+      analysis: "I don't have a token in memory to add. Scan a token or pull up Base Radar first, then ask me to add it.",
+      clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: ["no_token_in_memory"], clarkToolLatencyMs: 0,
+    };
+  }
+  if (!authHeader) {
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "watchlist_add", toolsUsed: [],
+      analysis: "Sign in to add tokens to your watchlist.",
+      clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: ["not_authenticated"], clarkToolLatencyMs: 0,
+    };
+  }
+  const t0 = Date.now();
+  try {
+    const res = await fetch(`${origin}/api/watchlist/tokens`, {
+      method: "POST",
+      signal: AbortSignal.timeout(8000),
+      headers: { Authorization: authHeader, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        address: target.address, symbol: target.symbol, name: target.name,
+        chain: "chain" in target && target.chain === "robinhood" ? "robinhood" : "base",
+        riskLabel: "riskLabel" in target ? target.riskLabel : null,
+        score: "score" in target ? target.score : null,
+      }),
+    });
+    if (res.ok) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "watchlist_add", toolsUsed: ["watchlist_add"],
+        analysis: `Added ${target.symbol} to your watchlist.`,
+        clarkToolPlan: null, clarkToolsExecuted: ["watchlist_add"], clarkToolStatuses: { watchlist_add: "ok" }, clarkEvidenceMissing: [], clarkToolLatencyMs: Date.now() - t0,
+        ui: { intentBadge: "Watchlist", actions: [{ label: "Open Base Radar", href: "/terminal/base-radar", kind: "link" as const }] },
+      };
+    }
+    const errJson = await res.json().catch(() => null) as { error?: string } | null;
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "watchlist_add", toolsUsed: ["watchlist_add"],
+      analysis: `Couldn't add ${target.symbol} to your watchlist${errJson?.error ? ` (${errJson.error})` : ""}. Try again shortly.`,
+      clarkToolPlan: null, clarkToolsExecuted: ["watchlist_add"], clarkToolStatuses: { watchlist_add: "failed" }, clarkEvidenceMissing: ["watchlist_write_failed"], clarkToolLatencyMs: Date.now() - t0,
+    };
+  } catch {
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "watchlist_add", toolsUsed: ["watchlist_add"],
+      analysis: `Couldn't add ${target.symbol} to your watchlist right now. Try again shortly.`,
+      clarkToolPlan: null, clarkToolsExecuted: ["watchlist_add"], clarkToolStatuses: { watchlist_add: "failed" }, clarkEvidenceMissing: ["watchlist_write_failed"], clarkToolLatencyMs: Date.now() - t0,
+    };
+  }
+}
+
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory) {
   // Ensure we always have a session memory object even for recursive calls
-  if (!sessionMem) sessionMem = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null };
+  if (!sessionMem) sessionMem = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null };
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   // Chain priority: 1) explicit chain named in the prompt, 2) explicit UI chain param,
   // 3) selectedChain from session memory, 4) base default. Prompt wording must never
@@ -7084,6 +7551,29 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           }),
         };
       }
+    }
+  }
+
+  // CLARK INTERNAL TOOL-CALLING, DISCLOSED: intercepts Base Radar / Whale Alerts phrasings before
+  // the existing intent cascade below so they always call the real internal route instead of
+  // falling through to generic chat. Purely additive — nothing below this block changes.
+  {
+    const toolIntent = classifyClarkToolIntent(prompt);
+    if (toolIntent.intent !== "none") {
+      if (toolIntent.intent.startsWith("base_radar_")) {
+        return await handleClarkRadarToolCall(toolIntent.intent, prompt, origin, authHeader ?? null, chain, sessionMem, verifiedPlan, clarkDebugMode);
+      }
+      if (!planAllows(verifiedPlan, "whale_alerts")) {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: toolIntent.intent, toolsUsed: [],
+          analysis: buildLockedResponse("whale_alerts", "ask how whale alerts work or check Base Radar movers instead."),
+          clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: [], clarkToolLatencyMs: 0,
+        };
+      }
+      return await handleClarkWhaleToolCall(toolIntent.intent, prompt, origin, authHeader ?? null, chain, sessionMem, clarkDebugMode);
+    }
+    if (isClarkWatchlistAddCommand(prompt)) {
+      return await handleClarkWatchlistAdd(origin, authHeader ?? null, chain, sessionMem);
     }
   }
 
