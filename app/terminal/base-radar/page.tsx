@@ -1431,11 +1431,21 @@ export default function BaseRadarPage() {
     // This fetch had no client-side timeout at all — only the manual-abort AbortController used to
     // cancel a superseded request — so a slow/hung backend response (or a dropped connection the
     // browser doesn't surface as a network error) could leave `loading` true indefinitely with no
-    // way for the user to know anything had gone wrong short of reloading the page. 25s comfortably
-    // covers a normal cold-cache Base Radar request (the backend's own slowest single external call
-    // is bounded to 12s — see the Clark verdict timeout fix in app/api/radar/route.ts) while
-    // guaranteeing the UI always recovers to a real error state instead of hanging forever.
-    const timeoutId = setTimeout(() => controller.abort(), 25_000)
+    // way for the user to know anything had gone wrong short of reloading the page.
+    // 25s -> 55s, DISCLOSED (Robinhood Chain radar "refresh failed" bug fix): the original 25s was
+    // sized off "the backend's own slowest SINGLE external call is bounded to 12s" — a real bound,
+    // but not the relevant one; a cold-cache request makes many such calls (GeckoTerminal across
+    // several sources/pages, then a per-token GoldRush holder-count call for every candidate, which
+    // tries TWO sequential URL candidates for Robinhood specifically — see CHAIN_PATHS in
+    // lib/server/goldrushHolderCount.ts), so total wall-clock time is not bounded by that one number.
+    // Confirmed via vercel.json: app/api/base-radar/cron/route.ts, which triggers this exact same
+    // /api/radar pipeline server-side, was already given a 60s maxDuration — proving the pipeline
+    // itself was already known to sometimes need close to a minute, while this client-side abort was
+    // still cutting it off at 25s and every real user hit was racing (and often losing to) that
+    // budget the platform itself considered too short. app/api/radar/route.ts now also carries an
+    // explicit 60s maxDuration (it previously had none, silently falling back to the platform
+    // default of far less than 60s); 55s here stays under that with headroom for response overhead.
+    const timeoutId = setTimeout(() => controller.abort(), 55_000)
 
     setLoading(true)
     setError(null)
