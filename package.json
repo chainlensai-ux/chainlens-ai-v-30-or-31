@@ -36,6 +36,7 @@
     "react-dom": "19.2.4",
     "thinking-orbs": "^0.2.0",
     "tsx": "^4.19.2",
+    "ui-ux-pro-max-cli": "^2.15.0",
     "viem": "2.7.0",
     "wagmi": "2.12.2",
     "zod": "4.3.6"
