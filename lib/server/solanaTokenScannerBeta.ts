@@ -27,6 +27,7 @@
 import {
   SPL_TOKEN_PROGRAM_ID,
   SPL_TOKEN_2022_PROGRAM_ID,
+  KNOWN_SOLANA_AMM_PROGRAMS,
   getSolanaRpcUrl,
   isSolanaBetaFeatureEnabled,
   isSolanaRpcConfigured,
@@ -184,6 +185,21 @@ export type SolanaProviderWiringAudit = {
   confidenceLimits: string[]
 }
 
+/**
+ * LP Safety follow-up, DISCLOSED: real, on-chain-verified identity of the program that owns the
+ * primary pool account — a single cheap getAccountInfo read, compared against
+ * KNOWN_SOLANA_AMM_PROGRAMS. `label` is null when the owner isn't one of the small set of
+ * programs this codebase recognizes — `owner` still carries the real address either way, so
+ * nothing here ever guesses a wrong program name.
+ */
+export type SolanaPoolProgram = {
+  resolved: boolean
+  poolAddress: string | null
+  owner: string | null
+  label: string | null
+  errorReason: string | null
+}
+
 export type SolanaBetaScanResult = {
   solanaBeta: true
   chain: 'solana'
@@ -191,6 +207,7 @@ export type SolanaBetaScanResult = {
   /** Header identity, resolved Jupiter first, DexScreener fallback, null (mint) last. */
   resolvedTokenName: string | null
   resolvedTokenSymbol: string | null
+  poolProgram: SolanaPoolProgram
   jupiter: SolanaJupiterResult
   helius: SolanaHeliusResult
   goldrushOrCovalent: SolanaGoldrushResult
@@ -608,6 +625,21 @@ export async function scanSolanaTokenBeta(
   const ohlcv = await fetchSolanaOhlcv(market.data?.primaryPoolAddress ?? null, fetchImpl)
   if (market.data?.primaryPoolAddress && !ohlcv.success) evidenceGaps.push('Candle history could not be indexed for this pool — Price Chart shows a live snapshot only.')
 
+  // ── 7c. Pool program identity (LP Safety follow-up — real getAccountInfo owner read) ─
+  const poolAddress = market.data?.primaryPoolAddress ?? null
+  let poolProgram: SolanaPoolProgram = { resolved: false, poolAddress, owner: null, label: null, errorReason: poolAddress ? null : 'No indexed pool address to verify.' }
+  if (poolAddress) {
+    const poolInfo = await solanaRpc<{ value?: { owner?: string } | null }>(rpcUrl, 'getAccountInfo', [poolAddress, { encoding: 'base64' }], fetchImpl)
+    if (poolInfo.ok && poolInfo.result?.value?.owner) {
+      const owner = poolInfo.result.value.owner
+      poolProgram = { resolved: true, poolAddress, owner, label: KNOWN_SOLANA_AMM_PROGRAMS[owner] ?? null, errorReason: null }
+      if (!poolProgram.label) evidenceGaps.push('Pool program is not one of the AMM programs this codebase recognizes — its identity is unverified, not claimed as any specific DEX.')
+    } else {
+      poolProgram = { resolved: false, poolAddress, owner: null, label: null, errorReason: poolInfo.ok ? 'pool_account_missing' : poolInfo.error }
+      evidenceGaps.push('Pool program identity could not be verified on-chain — the DEX label shown is unverified market-data metadata, not a confirmed program read.')
+    }
+  }
+
   // ── 8. Beta risk ───────────────────────────────────────────────────────────
   const betaRisk = scoreSolanaBeta({
     mintAuthority,
@@ -639,7 +671,7 @@ export async function scanSolanaTokenBeta(
       alchemy: {
         called: true,
         success: authorityReadSucceeded && totalSupply != null,
-        endpointsUsed: ['getAccountInfo', 'getTokenSupply', 'getTokenLargestAccounts'],
+        endpointsUsed: poolAddress ? ['getAccountInfo', 'getTokenSupply', 'getTokenLargestAccounts', 'getAccountInfo (pool)'] : ['getAccountInfo', 'getTokenSupply', 'getTokenLargestAccounts'],
         resolved: {
           tokenProgram,
           decimals,
@@ -703,6 +735,7 @@ export async function scanSolanaTokenBeta(
     mintAddress,
     resolvedTokenName,
     resolvedTokenSymbol,
+    poolProgram,
     jupiter,
     helius,
     goldrushOrCovalent,

@@ -23,6 +23,28 @@ export const SOLANA_PUBLIC_RPC_URL = 'https://api.mainnet-beta.solana.com'
 export const SPL_TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA'
 export const SPL_TOKEN_2022_PROGRAM_ID = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb'
 
+// KNOWN SOLANA AMM PROGRAMS, DISCLOSED (LP Safety follow-up: "verify which program actually owns
+// the pool" rather than trusting DexScreener's dexId string alone).
+//
+// DELIBERATELY SMALL, DISCLOSED: only programs I'm confident are correct, stable, widely-published
+// mainnet program IDs are listed here. This list is NOT live-verified from this sandbox (outbound
+// network is blocked) — worth confirming against a real scan before trusting it fully. A pool
+// owned by any program NOT in this map is reported honestly as an unrecognized/unverified program
+// (its real on-chain owner address is still shown), never guessed into one of these labels.
+//
+// SCOPE, DISCLOSED: this map identifies the POOL'S OWNING PROGRAM ONLY — real, cheap evidence from
+// a single getAccountInfo read. It does NOT attempt to parse any program's internal account layout
+// (e.g. Raydium's LP-mint field), which would require byte-offset struct parsing this codebase
+// cannot safely verify without live testing. Full LP lock/burn proof is a separate, harder problem
+// this map does not solve.
+export const KNOWN_SOLANA_AMM_PROGRAMS: Readonly<Record<string, string>> = {
+  '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8': 'Raydium AMM V4',
+  'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc': 'Orca Whirlpool',
+  'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA': 'PumpSwap AMM',
+  'LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo': 'Meteora DLMM',
+  '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P': 'Pump.fun Bonding Curve',
+}
+
 export function isSolanaBetaFeatureEnabled(): boolean {
   return process.env.ENABLE_SOLANA_BETA === 'true'
 }

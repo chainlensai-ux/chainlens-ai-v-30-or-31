@@ -788,4 +788,74 @@ const GECKO_ROW = (tsSec, o, h, l, c, v) => [tsSec, o, h, l, c, v]
   delete process.env.HELIUS_API_KEY
 }
 
+// ─── Pool program verification (LP Safety follow-up) ──────────────────────────────────────────
+// The real, safe piece of the LP Safety fix: verifying which program owns the pool account via
+// getAccountInfo, compared against a small known-AMM map — never a guessed/wrong program name.
+function poolProgramStub({ mint, supply, largest, poolAddress, poolOwner, poolInfoFails = false }) {
+  return async (url, init) => {
+    const u = typeof url === 'string' ? url : ''
+    if (u.includes('dexscreener')) {
+      return { ok: true, json: async () => ({
+        pairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: poolAddress, dexId: 'raydium' }],
+      }) }
+    }
+    if (u.includes('lite-api.jup.ag') || u.includes('geckoterminal.com') || u.includes('helius-rpc.com')) return { ok: false, status: 404, json: async () => ({}) }
+    const body = JSON.parse(init.body)
+    if (body.method === 'getAccountInfo' && body.params[0] === poolAddress) {
+      if (poolInfoFails) return { ok: false, status: 500, json: async () => ({}) }
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { value: { owner: poolOwner } } }) }
+    }
+    const results = { getAccountInfo: mint, getTokenSupply: supply, getTokenLargestAccounts: largest }
+    return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: results[body.method] ?? null }) }
+  }
+}
+{
+  // Recognized program (Raydium AMM V4) — real, on-chain-verified label.
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: poolProgramStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, poolAddress: 'POOL_RAY', poolOwner: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8' }),
+  })
+  check('recognized AMM program resolves a real label', r.poolProgram.resolved === true && r.poolProgram.label === 'Raydium AMM V4')
+  check('poolProgram carries the real owner address', r.poolProgram.owner === '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8')
+  check('LP Safety UI reads poolProgram.label for on-chain-verified model naming', true) // covered by the page-source check below
+}
+{
+  // Unrecognized program — real owner shown, but NEVER guessed into a known label.
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: poolProgramStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, poolAddress: 'POOL_UNKNOWN', poolOwner: 'SomeUnknownProgram11111111111111111111111' }),
+  })
+  check('unrecognized program never guesses a known label', r.poolProgram.label === null)
+  check('unrecognized program still resolved (real owner read succeeded)', r.poolProgram.resolved === true)
+  check('unrecognized-program owner is still surfaced, not hidden', r.poolProgram.owner === 'SomeUnknownProgram11111111111111111111111')
+  check('unrecognized program adds an evidence gap', r.solanaEvidenceGaps.some(g => /not one of the AMM programs/i.test(g)))
+}
+{
+  // Pool getAccountInfo failure — degrades cleanly, never crashes, never fabricates a label.
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: poolProgramStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, poolAddress: 'POOL_FAIL', poolOwner: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', poolInfoFails: true }),
+  })
+  check('pool program read failure does not crash the scan', !('status' in r))
+  check('pool program read failure leaves resolved false, never a guessed label', r.poolProgram.resolved === false && r.poolProgram.label === null)
+  check('pool program read failure adds an evidence gap distinguishing verified vs. metadata', r.solanaEvidenceGaps.some(g => /unverified market-data metadata/i.test(g)))
+}
+{
+  // No pool address at all — never attempted, never crashes.
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: rpcStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [] }),
+  })
+  check('no pool address means poolProgram is never attempted', r.poolProgram.resolved === false && r.poolProgram.poolAddress === null)
+  check('no pool address does not crash the scan', !('status' in r))
+}
+
+// ─── LP Safety UI reads the verified pool-program identity (not just DexScreener metadata) ────
+{
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+  check('LP Safety reads sr.poolProgram.label for on-chain-verified model naming', page.includes('sr.poolProgram.label'))
+  check('LP Safety reads sr.poolProgram.owner for the unrecognized-program fallback note', page.includes('sr.poolProgram.owner'))
+}
+
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)

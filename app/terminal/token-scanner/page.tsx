@@ -4800,11 +4800,25 @@ export default function TerminalTokenScanner() {
                           ? { label: 'Monitor', color: '#fbbf24', description: `Liquidity is moderate (${fmtLarge(liq)}) — watch for withdrawal.` }
                           : { label: 'Low', color: '#34d399', description: `Liquidity is deep (${fmtLarge(liq)}) relative to typical Solana pools.` }
 
-                  const modelLabel = sr.marketData?.primaryDexLabel ? `${sr.marketData.primaryDexLabel} AMM` : 'Solana AMM'
-                  const modelInfo = { label: modelLabel, color: '#c084fc', description: 'Solana AMM pool liquidity — not a standard ERC-20 LP-token model, so lock/burn proof does not apply.' }
+                  // POOL-PROGRAM-VERIFICATION, DISCLOSED (LP Safety follow-up: "fix LP Safety" —
+                  // this is the safe, real piece of that fix). sr.poolProgram.label is a real,
+                  // on-chain-verified program identity (getAccountInfo owner vs. a small known-AMM
+                  // map) — strictly stronger evidence than DexScreener's dexId string, which is
+                  // market-data metadata, not a program read. Falls back to the DexScreener label
+                  // (still real data, just unverified) when the program isn't recognized or the
+                  // read failed — never silently upgrades an unverified label to "verified".
+                  const dexLabel = sr.marketData?.primaryDexLabel ? `${sr.marketData.primaryDexLabel} AMM` : 'Solana AMM'
+                  const modelLabel = sr.poolProgram.label ?? dexLabel
+                  const modelVerified = sr.poolProgram.label != null
+                  const modelInfo = {
+                    label: modelLabel, color: '#c084fc',
+                    description: modelVerified
+                      ? 'On-chain verified pool program — not a standard ERC-20 LP-token model, so lock/burn proof does not apply.'
+                      : 'Solana AMM pool liquidity (unverified — from market-data metadata, not a confirmed program read). Not a standard ERC-20 LP-token model, so lock/burn proof does not apply.',
+                  }
 
                   const quickRead: Array<{ label: string; value: string; color?: string }> = [
-                    { label: 'LP Model', value: modelLabel, color: '#c084fc' },
+                    { label: 'LP Model', value: modelLabel + (modelVerified ? ' ✓' : ''), color: '#c084fc' },
                     { label: 'Lock/Burn Proof', value: 'Not Applicable', color: '#94a3b8' },
                     { label: 'Pool Authority', value: 'Open Check', color: '#fbbf24' },
                     { label: 'Exit Risk', value: exitRiskInfo.label, color: exitRiskInfo.color },
@@ -4814,6 +4828,16 @@ export default function TerminalTokenScanner() {
 
                   const detailRows: Array<{ label: string; value: string; color?: string; note?: string }> = [
                     { label: 'Primary Liquidity', value: modelLabel, color: '#c084fc', note: modelInfo.description },
+                    {
+                      label: 'Pool Program',
+                      value: modelVerified ? 'On-Chain Verified' : sr.poolProgram.resolved ? 'Unrecognized Program' : 'Unverified',
+                      color: modelVerified ? '#34d399' : '#fbbf24',
+                      note: modelVerified
+                        ? `Pool account owner confirmed as ${modelLabel} via getAccountInfo.`
+                        : sr.poolProgram.resolved && sr.poolProgram.owner
+                          ? `Pool owner ${shorten(sr.poolProgram.owner)} is not one of the AMM programs this codebase recognizes yet.`
+                          : 'Pool program identity could not be read on-chain — falling back to unverified market-data metadata.',
+                    },
                     { label: 'Pool Authority', value: 'Open Check', color: '#fbbf24', note: 'Solana pool/vault authority verification is not supported in Beta — treat as unverified, not safe.' },
                     { label: 'Lock/Burn Proof', value: 'Not Applicable', note: 'ERC-20 LP-token lock/burn proof does not apply to Solana AMM pools.' },
                     { label: 'Exit Risk', value: exitRiskInfo.label, color: exitRiskInfo.color, note: exitRiskInfo.description },
