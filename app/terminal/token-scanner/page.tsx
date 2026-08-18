@@ -4731,64 +4731,187 @@ export default function TerminalTokenScanner() {
                 )}
 
                 {/* ── LP Safety ───────────────────────────────────────── */}
-                {activeSection === 'lp-safety' && (
-                  <>
-                    <div style={{ marginBottom: '18px' }}>
-                      <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP SAFETY</p>
-                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Solana pool liquidity and authority evidence — not an EVM-style LP lock/burn proof.</p>
-                    </div>
-                    {/* Hero cards, DISCLOSED (Token Scanner Solana final-polish task, explicitly
-                        requested: "make LP Safety feel closer to EVM LP quality" via hero cards
-                        instead of plain rows). Reuses StatCard — the same component the EVM Market
-                        tab uses — so LP Safety visually matches the rest of the shell instead of
-                        looking like a flat settings list. */}
-                    <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '12px', marginBottom: '14px' }}>
-                      <StatCard label="Liquidity Model" value="Solana pool / AMM" accent="#5eead4" />
-                      <StatCard label="Pool Evidence" value={sr.marketData ? 'Available' : 'Open Check'} accent={sr.marketData ? '#34d399' : '#fbbf24'} />
-                      <StatCard label="Pool Authority" value="Open Check" accent="#fbbf24" dim />
-                    </div>
-                    {/* EVM -> Solana concept mapping, DISCLOSED (Token Scanner Solana premium-
-                        parity task, explicitly requested: "map EVM LP concepts into Solana
-                        equivalents" as chips). Each chip's status is real: pool existence/depth
-                        come straight from sr.marketData, the rest are the same honest
-                        not-applicable/open-check facts shown elsewhere on this page — just
-                        surfaced as scannable chips instead of only prose. */}
-                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
-                      {[
-                        { label: 'LP model', status: 'Solana AMM', tone: 'ok' as const },
-                        { label: 'Lock/burn proof', status: 'Not applicable', tone: 'na' as const },
-                        { label: 'Pool authority', status: 'Open check', tone: 'open' as const },
-                        { label: 'Pool depth', status: sr.marketData?.liquidityUsd != null ? fmtLarge(sr.marketData.liquidityUsd) : 'Open check', tone: sr.marketData?.liquidityUsd != null ? 'ok' as const : 'open' as const },
-                      ].map((chip) => {
-                        const chipColor = chip.tone === 'ok' ? '#34d399' : chip.tone === 'na' ? '#94a3b8' : '#fbbf24'
-                        return (
-                          <span key={chip.label} style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '5px 12px', borderRadius: '999px', fontSize: '10.5px', fontWeight: 700, background: `${chipColor}12`, border: `1px solid ${chipColor}38`, color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>
-                            {chip.label}<span style={{ color: chipColor, fontWeight: 800 }}>{chip.status}</span>
-                          </span>
-                        )
-                      })}
-                    </div>
-                    <div style={{ display: 'grid', gap: '10px' }}>
-                      <div style={cardBase}>
-                        <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>ERC-20 LP lock/burn proof does not apply to Solana. Solana Beta reviews pool liquidity and authority evidence where available.</p>
+                {activeSection === 'lp-safety' && (() => {
+                  // LP-ANALYZER-PARITY, DISCLOSED (Solana provider-wiring follow-up: "why is LP
+                  // Safety not working like the EVM LP Safety Analyzer — I want it like that").
+                  // Rebuilds the Solana LP tab with the EXACT EVM structure — hero 3-card, LP Quick
+                  // Read chips, Scan Mode/Evidence Confidence chips, Good Signs/Risk Signs/Missing
+                  // Proofs — using only fields solanaTokenScannerBeta.ts already returns. No new
+                  // evidence is invented: "Locked"/"Burned"/"Verified" are never used because
+                  // Solana has no ERC-20 LP-token lock/burn concept — every value below maps to a
+                  // real read (liquidity, authority, unsupportedChecks) or an honest "Open Check".
+                  const liq = sr.marketData?.liquidityUsd ?? null
+                  const hasPool = sr.marketData != null
+
+                  // LP Status hero: Solana pools have no lock/burn proof to check, so the honest
+                  // status is whether a real pool was even found — never "Locked"/"Burned".
+                  const lpStatusInfo = hasPool
+                    ? { label: 'Pool Found — Authority Open Check', color: '#fbbf24', description: 'An indexed Solana pool exists, but ERC-20-style LP lock/burn proof does not apply — pool authority is an open check.' }
+                    : { label: 'No Pool Found', color: '#94a3b8', description: 'No indexed Solana pool was found for this mint — liquidity evidence is unavailable.' }
+
+                  // Exit Risk hero: same liquidity-depth thresholds scoreSolanaBeta already uses
+                  // (>=50k / >=5k / <5k), so this label never contradicts the Risk Engine tab.
+                  const exitRiskInfo = !hasPool
+                    ? { label: 'Open Check', color: '#94a3b8', description: 'No pool evidence to assess exit risk from.' }
+                    : liq == null
+                      ? { label: 'Open Check', color: '#94a3b8', description: 'Pool found, but liquidity depth is unverified.' }
+                      : liq < 5_000
+                        ? { label: 'Elevated', color: '#f87171', description: `Thin liquidity (${fmtLarge(liq)}) — a small sell can move price sharply.` }
+                        : liq < 50_000
+                          ? { label: 'Monitor', color: '#fbbf24', description: `Liquidity is moderate (${fmtLarge(liq)}) — watch for withdrawal.` }
+                          : { label: 'Low', color: '#34d399', description: `Liquidity is deep (${fmtLarge(liq)}) relative to typical Solana pools.` }
+
+                  const modelLabel = sr.marketData?.primaryDexLabel ? `${sr.marketData.primaryDexLabel} AMM` : 'Solana AMM'
+                  const modelInfo = { label: modelLabel, color: '#c084fc', description: 'Solana AMM pool liquidity — not a standard ERC-20 LP-token model, so lock/burn proof does not apply.' }
+
+                  const quickRead: Array<{ label: string; value: string; color?: string }> = [
+                    { label: 'LP Model', value: modelLabel, color: '#c084fc' },
+                    { label: 'Lock/Burn Proof', value: 'Not Applicable', color: '#94a3b8' },
+                    { label: 'Pool Authority', value: 'Open Check', color: '#fbbf24' },
+                    { label: 'Exit Risk', value: exitRiskInfo.label, color: exitRiskInfo.color },
+                    { label: 'Liquidity Depth', value: liq != null ? fmtLarge(liq) : 'Open Check', color: liq != null ? '#67e8f9' : '#94a3b8' },
+                    { label: 'Primary Pool', value: sr.marketData?.primaryPoolAddress ? shorten(sr.marketData.primaryPoolAddress) : 'Open Check' },
+                  ]
+
+                  const detailRows: Array<{ label: string; value: string; color?: string; note?: string }> = [
+                    { label: 'Primary Liquidity', value: modelLabel, color: '#c084fc', note: modelInfo.description },
+                    { label: 'Pool Authority', value: 'Open Check', color: '#fbbf24', note: 'Solana pool/vault authority verification is not supported in Beta — treat as unverified, not safe.' },
+                    { label: 'Lock/Burn Proof', value: 'Not Applicable', note: 'ERC-20 LP-token lock/burn proof does not apply to Solana AMM pools.' },
+                    { label: 'Exit Risk', value: exitRiskInfo.label, color: exitRiskInfo.color, note: exitRiskInfo.description },
+                    { label: 'Liquidity Depth', value: liq != null ? fmtLarge(liq) : 'Open Check', note: sr.marketData?.volume24hUsd != null ? `24h volume ${fmtLarge(sr.marketData.volume24hUsd)} across indexed Solana pairs.` : undefined },
+                    { label: 'Primary Pool', value: sr.marketData?.primaryDexLabel ?? 'Open Check', note: sr.marketData?.primaryPoolAddress ?? undefined },
+                    { label: 'Top-Account Concentration', value: conc?.top10Percent != null ? `Top 10 hold ${conc.top10Percent.toFixed(1)}%` : 'Open Check', note: 'Reflects top token ACCOUNTS (max 20), not a full holder count — pool vaults are included.' },
+                  ]
+
+                  const goodSigns = [
+                    sr.authorityReadSucceeded && !sr.mintAuthority ? 'Mint authority is revoked — supply cannot be increased.' : '',
+                    sr.authorityReadSucceeded && !sr.freezeAuthority ? 'Freeze authority is revoked — token accounts cannot be frozen.' : '',
+                    hasPool ? `Indexed Solana pool found${sr.marketData?.primaryDexLabel ? ` on ${sr.marketData.primaryDexLabel}` : ''}.` : '',
+                    liq != null && liq >= 50_000 ? `Liquidity is deep (${fmtLarge(liq)}).` : '',
+                  ].filter(Boolean)
+                  const riskSigns = [
+                    sr.authorityReadSucceeded && sr.mintAuthority ? 'Mint authority is still active — supply can be increased.' : '',
+                    sr.authorityReadSucceeded && sr.freezeAuthority ? 'Freeze authority is still active — token accounts can be frozen.' : '',
+                    !hasPool ? 'No indexed Solana pool found — token may be unlaunched or illiquid.' : '',
+                    liq != null && liq < 5_000 ? `Liquidity is thin (${fmtLarge(liq)}).` : '',
+                    !sr.authorityReadSucceeded ? 'Mint/freeze authority could not be read — treat as unknown, not safe.' : '',
+                  ].filter(Boolean)
+                  const missingProofs = sr.unsupportedChecks.map((u) => `${u.check} — ${u.reason}`)
+
+                  return (
+                    <>
+                      <div style={{ marginBottom: '18px' }}>
+                        <p style={{ margin: '0 0 3px', fontSize: '13px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP SAFETY ANALYZER · SOLANA BETA</p>
+                        <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Solana pool liquidity and authority evidence — not an EVM-style LP lock/burn proof.</p>
                       </div>
-                      <div style={cardBase}>
-                        <p style={{ ...cardTitle, color: sr.marketData ? '#34d399' : '#fbbf24' }}>Pool Evidence</p>
-                        {sr.marketData ? (
-                          <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>
-                            Indexed pool: {sr.marketData.primaryDexLabel ?? 'Solana AMM'} · liquidity {sr.marketData.liquidityUsd != null ? fmtLarge(sr.marketData.liquidityUsd) : 'unverified'}.
-                          </p>
-                        ) : (
-                          gapLine('No indexed pool found — liquidity evidence unavailable.', 'no-pool')
+
+                      {/* ── 3-card hero: LP Status · Exit Risk · Primary Liquidity Model — SAME markup as EVM ── */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: '12px', marginBottom: '16px', alignItems: 'stretch' }}>
+                        <div style={{ padding: '16px 18px', background: 'rgba(10,18,32,0.62)', border: `1px solid ${lpStatusInfo.color}28`, borderRadius: '14px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>LP Status</div>
+                          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', marginBottom: '8px' }}>
+                            <span style={{ width: 7, height: 7, borderRadius: '50%', background: lpStatusInfo.color, flexShrink: 0, boxShadow: `0 0 8px ${lpStatusInfo.color}`, marginTop: '6px' }} />
+                            <span style={{ minWidth: 0, fontSize: '16px', fontWeight: 800, color: lpStatusInfo.color, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{lpStatusInfo.label}</span>
+                          </div>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6, overflowWrap: 'anywhere' }}>{lpStatusInfo.description}</p>
+                        </div>
+                        <div style={{ padding: '16px 18px', background: 'rgba(10,18,32,0.62)', border: `1px solid ${exitRiskInfo.color}28`, borderRadius: '14px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Exit Risk</div>
+                          <div style={{ marginBottom: '8px' }}>
+                            <span style={{ padding: '4px 13px', borderRadius: '999px', background: `${exitRiskInfo.color}14`, border: `1px solid ${exitRiskInfo.color}45`, color: exitRiskInfo.color, fontSize: '14px', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.05em' }}>{exitRiskInfo.label}</span>
+                          </div>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{exitRiskInfo.description}</p>
+                        </div>
+                        <div style={{ padding: '16px 18px', background: 'rgba(10,18,32,0.62)', border: `1px solid ${modelInfo.color}28`, borderRadius: '14px' }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Primary Liquidity Model</div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                            <span style={{ width: 7, height: 7, borderRadius: '50%', background: modelInfo.color, flexShrink: 0, boxShadow: `0 0 8px ${modelInfo.color}` }} />
+                            <span style={{ minWidth: 0, fontSize: '16px', fontWeight: 800, color: modelInfo.color, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{modelInfo.label}</span>
+                          </div>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{modelInfo.description}</p>
+                        </div>
+                      </div>
+
+                      {/* ── LP Quick Read chips — same footprint as EVM's ── */}
+                      <div style={{ marginBottom: '12px', padding: '14px 16px', background: 'rgba(52,211,153,0.04)', border: '1px solid rgba(52,211,153,0.16)', borderRadius: '14px' }}>
+                        <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '.16em', color: '#34d399', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>LP Quick Read</p>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: '8px' }}>
+                          {quickRead.map(({ label, value, color }) => (
+                            <div key={label} style={{ padding: '8px 10px', borderRadius: '9px', background: 'rgba(10,18,32,0.55)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                              <div style={{ fontSize: '9px', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>{label}</div>
+                              <div style={{ fontSize: '11px', fontWeight: 700, color: color ?? '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.35, overflowWrap: 'anywhere' }}>{value}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* ── Detailed LP Evidence — collapsed by default, same <details> pattern ── */}
+                      <details style={{ marginBottom: '14px' }}>
+                        <summary className="detail-summary" style={{ cursor: 'pointer', listStyle: 'none', fontSize: '10px', letterSpacing: '.12em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '9px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.14)', background: 'rgba(8,14,28,0.50)', display: 'flex', alignItems: 'center', gap: '8px' }}><span className="detail-chevron" aria-hidden="true" style={{ display: 'inline-block', fontSize: '9px' }}>▶</span>DETAILED LP EVIDENCE</summary>
+                        <div style={{ marginTop: '10px', padding: '6px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(148,163,184,0.10)', borderRadius: '12px' }}>
+                          {detailRows.map(({ label, value, color, note }, i) => (
+                            <div key={label} style={{ display: 'grid', gridTemplateColumns: '160px 1fr', gap: '14px', alignItems: 'start', padding: '11px 2px', borderBottom: i < detailRows.length - 1 ? '1px solid rgba(148,163,184,.07)' : 'none' }}>
+                              <span style={{ fontSize: '10px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', letterSpacing: '.08em', paddingTop: '1px' }}>{label}</span>
+                              <span style={{ fontSize: '11.5px', color: color ?? '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{value}{note && <span style={{ display: 'block', marginTop: '4px', color: '#7c8aa0', fontWeight: 500, lineHeight: 1.55 }}>{note}</span>}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+
+                      {/* ── Scan Mode / Evidence Confidence chips — same style as EVM ── */}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
+                        <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>
+                          SCAN MODE: SOLANA BETA
+                        </span>
+                        <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: `1px solid ${sr.betaRisk.confidence === 'MEDIUM' ? '#fbbf2440' : '#fb923c40'}`, fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: sr.betaRisk.confidence === 'MEDIUM' ? '#fbbf24' : '#fb923c', fontFamily: 'var(--font-plex-mono)' }}>
+                          EVIDENCE CONFIDENCE: {sr.betaRisk.confidence}
+                        </span>
+                        {!hasPool && (
+                          <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(251,146,60,0.08)', border: '1px solid rgba(251,146,60,0.25)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#fb923c', fontFamily: 'var(--font-plex-mono)' }}>
+                            POOL: NOT FOUND
+                          </span>
                         )}
                       </div>
-                      <div style={cardBase}>
-                        <p style={{ ...cardTitle, color: '#7c93aa' }}>Next Action</p>
-                        <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Review pool depth, authority status, top-account concentration, and liquidity movement before treating this pool as safe.</p>
+
+                      {/* ── Good Signs / Risk Signs / Missing Proofs — same 3-col layout as EVM ── */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '8px', marginBottom: '14px' }}>
+                        <div style={{ padding: '12px 14px', background: 'rgba(52,211,153,0.04)', border: '1px solid rgba(52,211,153,0.15)', borderRadius: '12px' }}>
+                          <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#34d399', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Good Signs</p>
+                          {goodSigns.length > 0 ? goodSigns.map((s, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '5px' }}>
+                              <span style={{ color: '#34d399', flexShrink: 0, fontWeight: 800, fontSize: '11px', lineHeight: '16px' }}>✓</span>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#86efac', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                            </div>
+                          )) : <p style={{ margin: 0, fontSize: '11px', color: '#2a4438', fontFamily: 'var(--font-plex-mono)' }}>No confirmed signal in this category.</p>}
+                        </div>
+                        <div style={{ padding: '12px 14px', background: 'rgba(248,113,113,0.04)', border: '1px solid rgba(248,113,113,0.15)', borderRadius: '12px' }}>
+                          <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#f87171', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Risk Signs</p>
+                          {riskSigns.length > 0 ? riskSigns.map((s, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '5px' }}>
+                              <span style={{ color: '#f87171', flexShrink: 0, fontWeight: 800, fontSize: '11px', lineHeight: '16px' }}>!</span>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#fca5a5', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                            </div>
+                          )) : <p style={{ margin: 0, fontSize: '11px', color: '#3a2020', fontFamily: 'var(--font-plex-mono)' }}>No confirmed risk signals in this pass.</p>}
+                        </div>
+                        <div style={{ padding: '12px 14px', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.15)', borderRadius: '12px' }}>
+                          <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Missing Proofs</p>
+                          {missingProofs.map((s, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '5px' }}>
+                              <span style={{ color: '#fbbf24', flexShrink: 0, fontWeight: 800, fontSize: '11px', lineHeight: '16px' }}>—</span>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#fde68a', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  </>
-                )}
+
+                      {/* ── Next Action ── */}
+                      <div style={{ marginBottom: '20px', padding: '14px 18px', background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.20)', borderRadius: '12px' }}>
+                        <p style={{ margin: '0 0 7px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
+                        <p style={{ margin: 0, fontSize: '11px', color: '#67e8f9', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono)' }}>Review pool depth, authority status, top-account concentration, and liquidity movement before treating this pool as safe.</p>
+                      </div>
+                    </>
+                  )
+                })()}
 
                 {/* ── Risk Engine ─────────────────────────────────────── */}
                 {activeSection === 'risk-engine' && (() => {
