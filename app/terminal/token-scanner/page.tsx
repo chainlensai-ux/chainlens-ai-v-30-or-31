@@ -4378,14 +4378,33 @@ export default function TerminalTokenScanner() {
                 <span style={{ position: 'absolute', left: 0, color: '#3a5268' }}>—</span>{text}
               </p>
             )
+            // COMPACT UNSUPPORTED LIST, DISCLOSED (Token Scanner Solana final-polish task,
+            // explicitly requested: "too text-heavy... use compact rows or chips, not a long
+            // paragraph block"). These five rows are static, unchanging facts about what this
+            // scan path does and doesn't do (backed 1:1 by sr.unsupportedChecks — same five
+            // EVM-only checks, plus the Solana pool-authority open check already shown
+            // elsewhere on LP Safety) — not scan-specific data, so presenting them as a fixed,
+            // short-label list rather than the longer per-item reason text from the API is a
+            // presentation choice, not an invented claim.
+            const unsupportedRows: Array<{ label: string; status: string; tone: 'unsupported' | 'na' | 'open' }> = [
+              { label: 'Honeypot / tax simulation', status: 'Unsupported', tone: 'unsupported' },
+              { label: 'ERC-20 LP lock/burn proof', status: 'Not applicable', tone: 'na' },
+              { label: 'EVM proxy/admin checks', status: 'Not applicable', tone: 'na' },
+              { label: 'EVM deployer history', status: 'Not available', tone: 'unsupported' },
+              { label: 'Solana pool authority', status: 'Open check', tone: 'open' },
+            ]
+            const toneColor: Record<typeof unsupportedRows[number]['tone'], string> = { unsupported: '#f87171', na: '#94a3b8', open: '#fbbf24' }
             const unsupportedCard = (
               <div style={cardBase}>
                 <p style={{ ...cardTitle, color: '#f43f5e' }}>Unsupported in Solana Beta</p>
-                {sr.unsupportedChecks.map((u) => (
-                  <p key={u.check} style={{ margin: '0 0 8px', fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>
-                    <strong style={{ color: '#cbd5e1' }}>{u.check}:</strong> {u.reason}
-                  </p>
-                ))}
+                <div style={{ display: 'grid', gap: '6px' }}>
+                  {unsupportedRows.map((row) => (
+                    <div key={row.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: '7px 10px', borderRadius: '8px', background: 'rgba(15,23,42,0.5)' }}>
+                      <span style={{ fontSize: '11.5px', color: '#cbd5e1' }}>{row.label}</span>
+                      <span style={{ fontSize: '9.5px', fontWeight: 800, letterSpacing: '.06em', color: toneColor[row.tone], flexShrink: 0 }}>{row.status.toUpperCase()}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
             )
 
@@ -4459,17 +4478,17 @@ export default function TerminalTokenScanner() {
                         <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: verdictColor, background: `${verdictColor}14`, border: `1px solid ${verdictColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{verdictLabel.toUpperCase()}</span>
                         <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: confColor, background: `${confColor}14`, border: `1px solid ${confColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{sr.betaRisk.confidence} CONFIDENCE</span>
                       </div>
-                      <p style={{ margin: 0, fontSize: '12px', color: '#a3b4c5', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono)', maxWidth: '640px' }}>
-                        Beta Confidence Read — this scan reads real Solana mint/authority/market evidence, but cannot run the honeypot, tax, LP-lock, or deployer-history checks the EVM scan does. A high score here would overstate what was actually verified, so the best possible read is Open Check, never Safe.
+                      <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)', maxWidth: '640px' }}>
+                        Solana Beta verifies mint authority, freeze authority, market data, and top-account concentration where available. EVM-only checks are marked unsupported.
                       </p>
                     </div>
 
                     <div className="after-scan-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '10px' }}>
                       {[
-                        { label: 'Authority status', value: !sr.authorityReadSucceeded ? 'Unavailable' : (sr.mintAuthority || sr.freezeAuthority) ? 'Active authority' : 'Revoked', color: !sr.authorityReadSucceeded ? '#94a3b8' : (sr.mintAuthority || sr.freezeAuthority) ? '#f87171' : '#34d399' },
-                        { label: 'Market data', value: sr.marketDataAvailable ? 'Available' : 'Open check', color: sr.marketDataAvailable ? '#34d399' : '#fbbf24' },
-                        { label: 'Top-account concentration', value: sr.holderConcentrationAvailable ? 'Available' : 'Open check', color: sr.holderConcentrationAvailable ? '#34d399' : '#fbbf24' },
-                        { label: 'Unsupported checks', value: String(sr.unsupportedChecks.length), color: '#f43f5e' },
+                        { label: 'Authority', value: !sr.authorityReadSucceeded ? 'Open Check' : (sr.mintAuthority || sr.freezeAuthority) ? 'Active' : 'Revoked', color: !sr.authorityReadSucceeded ? '#fbbf24' : (sr.mintAuthority || sr.freezeAuthority) ? '#f87171' : '#34d399' },
+                        { label: 'Market Data', value: sr.marketDataAvailable ? 'Available' : 'Unavailable', color: sr.marketDataAvailable ? '#34d399' : '#fbbf24' },
+                        { label: 'Top Accounts', value: sr.holderConcentrationAvailable ? 'Available' : 'Open Check', color: sr.holderConcentrationAvailable ? '#34d399' : '#fbbf24' },
+                        { label: 'Unsupported Checks', value: String(sr.unsupportedChecks.length), color: '#f43f5e' },
                       ].map(m => (
                         <div key={m.label} style={{ padding: '13px 14px', borderRadius: '12px', background: 'rgba(15,23,42,0.55)', border: `1px solid ${m.color}30` }}>
                           <div style={{ fontSize: '9px', letterSpacing: '.10em', color: '#5b7590', marginBottom: '5px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{m.label}</div>
@@ -4567,9 +4586,10 @@ export default function TerminalTokenScanner() {
                         <p style={{ margin: 0, fontSize: '12.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Top-account concentration unavailable for this mint — shown as an open check, never a fabricated 0%.</p>
                       </div>
                     )}
-                    <div style={{ padding: '12px 14px', borderRadius: '10px', background: 'rgba(148,163,184,0.04)', border: '1px solid rgba(148,163,184,0.14)' }}>
-                      <p style={{ margin: 0, fontSize: '11px', color: '#7c93aa', lineHeight: 1.65 }}>
-                        Top token accounts only — not a full holder count. AMM pool vaults and exchange custodial accounts may be included, so a high Top 1 share can mean a liquidity pool rather than a single whale.
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '10px', background: 'rgba(148,163,184,0.04)', border: '1px solid rgba(148,163,184,0.14)' }}>
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7c93aa" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><circle cx="12" cy="12" r="9" /><path d="M12 8v5" /><path d="M12 16h.01" /></svg>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#7c93aa', lineHeight: 1.5 }}>
+                        Top token account concentration, not full holder count. AMM pool vaults and exchange custody accounts may be included.
                       </p>
                     </div>
                   </>
@@ -4580,26 +4600,27 @@ export default function TerminalTokenScanner() {
                   <>
                     <div style={{ marginBottom: '18px' }}>
                       <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP SAFETY</p>
-                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>ERC-20 LP lock/burn proof does not apply to Solana tokens. Solana Beta reviews market liquidity and authority evidence where available.</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Solana pool liquidity and authority evidence — not an EVM-style LP lock/burn proof.</p>
+                    </div>
+                    {/* Hero cards, DISCLOSED (Token Scanner Solana final-polish task, explicitly
+                        requested: "make LP Safety feel closer to EVM LP quality" via hero cards
+                        instead of plain rows). Reuses StatCard — the same component the EVM Market
+                        tab uses — so LP Safety visually matches the rest of the shell instead of
+                        looking like a flat settings list. */}
+                    <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '12px', marginBottom: '14px' }}>
+                      <StatCard label="Liquidity Model" value="Solana pool / AMM" accent="#5eead4" />
+                      <StatCard label="Pool Evidence" value={sr.marketData ? 'Available' : 'Open Check'} accent={sr.marketData ? '#34d399' : '#fbbf24'} />
+                      <StatCard label="Pool Authority" value="Open Check" accent="#fbbf24" dim />
                     </div>
                     <div style={{ display: 'grid', gap: '10px' }}>
-                      <div style={{ ...cardBase, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: '11.5px', color: '#8ea0b5' }}>Liquidity model</span>
-                        <span style={{ fontSize: '12px', color: '#5eead4', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>Solana pool / AMM</span>
-                      </div>
-                      <div style={{ ...cardBase, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: '11.5px', color: '#8ea0b5' }}>EVM ERC-20 LP lock/burn proof</span>
-                        <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>Not applicable</span>
-                      </div>
-                      <div style={{ ...cardBase, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                        <span style={{ fontSize: '11.5px', color: '#8ea0b5' }}>Pool authority / liquidity control</span>
-                        <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '10px', fontWeight: 800, letterSpacing: '.08em', color: '#fbbf24', background: 'rgba(251,191,36,.08)', border: '1px solid rgba(251,191,36,.30)', fontFamily: 'var(--font-plex-mono)' }}>OPEN CHECK</span>
+                      <div style={cardBase}>
+                        <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>ERC-20 LP lock/burn proof does not apply to Solana. Solana Beta reviews pool liquidity and authority evidence where available.</p>
                       </div>
                       <div style={cardBase}>
-                        <p style={{ ...cardTitle, color: '#34d399' }}>Pool / Liquidity Evidence</p>
+                        <p style={{ ...cardTitle, color: sr.marketData ? '#34d399' : '#fbbf24' }}>Pool Evidence</p>
                         {sr.marketData ? (
                           <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>
-                            An indexed pool exists: {sr.marketData.primaryDexLabel ?? 'Solana AMM'}, liquidity {sr.marketData.liquidityUsd != null ? fmtLarge(sr.marketData.liquidityUsd) : 'unverified'}. This confirms a pool is live — it does not confirm who controls it, since Solana pool-authority verification is not fully supported in Beta.
+                            Indexed pool: {sr.marketData.primaryDexLabel ?? 'Solana AMM'} · liquidity {sr.marketData.liquidityUsd != null ? fmtLarge(sr.marketData.liquidityUsd) : 'unverified'}.
                           </p>
                         ) : (
                           gapLine('No indexed pool found — liquidity evidence unavailable.', 'no-pool')
@@ -4630,18 +4651,23 @@ export default function TerminalTokenScanner() {
                   ]
                   return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      {/* NON-SCORE HERO, DISCLOSED (Token Scanner Solana final-polish task,
+                          explicitly requested: no circular "-/100" gauge — it reads as broken
+                          when there's genuinely no score to show). Same verdict/confidence
+                          values as before, presented as a clean status card instead of an empty
+                          gauge. */}
                       <div style={{ padding: '22px 24px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border: `1px solid ${verdictColor}35`, borderRadius: '20px', boxShadow: `0 0 44px ${verdictColor}0c` }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '28px', flexWrap: 'wrap' }}>
-                          <div style={{ flexShrink: 0 }}>
-                            <RiskGaugeCircle score={null} color={verdictColor} />
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                          <div style={{ width: '56px', height: '56px', borderRadius: '50%', flexShrink: 0, display: 'grid', placeItems: 'center', background: `${verdictColor}12`, border: `1.5px solid ${verdictColor}45` }}>
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={verdictColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 8v5" /><path d="M12 16h.01" /></svg>
                           </div>
-                          <div style={{ flex: 1, minWidth: '200px', display: 'flex', flexDirection: 'column', gap: '11px' }}>
-                            <div style={{ fontSize: '9px', letterSpacing: '.18em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>CORTEX RISK ENGINE · SOLANA BETA</div>
+                          <div style={{ flex: 1, minWidth: '200px', display: 'flex', flexDirection: 'column', gap: '9px' }}>
+                            <div style={{ fontSize: '13px', fontWeight: 800, color: '#f8fafc', fontFamily: 'var(--font-plex-mono)' }}>Solana Beta Risk Read</div>
                             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                               <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: verdictColor, background: `${verdictColor}14`, border: `1px solid ${verdictColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{verdictLabel.toUpperCase()}</span>
                               <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: confColor, background: `${confColor}14`, border: `1px solid ${confColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{sr.betaRisk.confidence} CONFIDENCE</span>
                             </div>
-                            <p style={{ margin: 0, fontSize: '11px', color: '#7c93aa', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>No numeric score is shown — Solana Beta&apos;s evidence set (no honeypot/tax/LP-lock/deployer checks) is not sufficient for a Base/ETH/BNB-style CORTEX score.</p>
+                            <p style={{ margin: 0, fontSize: '11px', color: '#7c93aa', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>No full numeric score is shown because Solana Beta does not yet support EVM-style honeypot, tax, LP-lock, proxy/admin, and deployer-history checks.</p>
                           </div>
                         </div>
                       </div>
@@ -7171,14 +7197,14 @@ export default function TerminalTokenScanner() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
                 <div style={{ padding: '16px', border: `1px solid ${verdictColor}22`, borderRadius: '14px', background: 'linear-gradient(135deg,rgba(8,20,38,.92),rgba(14,12,38,.90))', boxShadow: `0 0 18px ${verdictColor}08` }}>
                   <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '10px' }}>CORTEX RECEIPT · SOLANA BETA</div>
-                  <div style={{ fontSize: '15px', fontWeight: 800, color: verdictColor, fontFamily: 'var(--font-plex-mono)' }}>{verdictLabel}</div>
-                  <div style={{ fontSize: '10px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', marginTop: '2px' }}>Solana Beta Read · {sr.betaRisk.confidence} confidence</div>
+                  <div style={{ fontSize: '15px', fontWeight: 800, color: verdictColor, fontFamily: 'var(--font-plex-mono)' }}>Solana Beta Read</div>
+                  <div style={{ fontSize: '10px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', marginTop: '2px' }}>{verdictLabel} · {sr.betaRisk.confidence} confidence</div>
                 </div>
-                <div style={ss}><p style={stitle}>Market Read</p><p style={sbody}>{sr.marketDataAvailable ? 'Available — live Solana pool data found.' : 'Open Check — no indexed pool found.'}</p></div>
-                <div style={ss}><p style={stitle}>Holder / Supply Read</p><p style={sbody}>{sr.holderConcentrationAvailable ? `Top-account concentration available (top 1: ${sr.topAccountConcentration?.top1Percent ?? '—'}%).` : 'Top-account concentration unavailable.'}</p></div>
-                <div style={ss}><p style={stitle}>LP / Risk Read</p><p style={sbody}>EVM ERC-20 LP proof not applicable — Solana pool authority is an open check in Beta.</p></div>
-                <div style={ss}><p style={stitle}>Dev Control</p><p style={sbody}>{!sr.authorityReadSucceeded ? 'Authority checks unavailable.' : `Mint authority ${sr.mintAuthority ? 'active' : 'revoked'}, freeze authority ${sr.freezeAuthority ? 'active' : 'revoked'}.`}</p></div>
-                <div style={ss}><p style={stitle}>Next Action</p><p style={sbody}>Review market liquidity, authority status, top-account concentration, and the {sr.unsupportedChecks.length} unsupported checks before treating this token as reviewed.</p></div>
+                <div style={ss}><p style={stitle}>Market Read</p><p style={sbody}>{sr.marketDataAvailable ? 'Available' : 'Open Check'}</p></div>
+                <div style={ss}><p style={stitle}>Holder / Supply Read</p><p style={sbody}>Top-account concentration{sr.holderConcentrationAvailable ? '' : ' — open check'}</p></div>
+                <div style={ss}><p style={stitle}>LP / Risk Read</p><p style={sbody}>Solana pool authority open check</p></div>
+                <div style={ss}><p style={stitle}>Dev Control</p><p style={sbody}>{!sr.authorityReadSucceeded ? 'Authority checks open' : `Mint/freeze authority ${sr.mintAuthority || sr.freezeAuthority ? 'active' : 'revoked'}`}</p></div>
+                <div style={ss}><p style={stitle}>Next Action</p><p style={sbody}>Review liquidity, authority, and top-account concentration</p></div>
               </div>
             )
           })()}
