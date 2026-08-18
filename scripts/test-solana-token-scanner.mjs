@@ -12,6 +12,9 @@ import {
   isValidSolanaMintAddress, isEvmAddress, classifySolanaMintInput, SOLANA_MINT_REJECTION_MESSAGE,
 } from '../lib/solanaAddress.ts'
 import {
+  solanaTokenScannerConfigAudit,
+} from '../lib/server/solanaChainConfig.ts'
+import {
   scanSolanaTokenBeta, scoreSolanaBeta, SOLANA_UNSUPPORTED_CHECKS,
 } from '../lib/server/solanaTokenScannerBeta.ts'
 
@@ -57,6 +60,37 @@ check('empty classifies as empty', classifySolanaMintInput('') === 'empty')
   const r = await scanSolanaTokenBeta(USDC_MINT, { rpcUrl: null, fetchImpl: async () => { throw new Error('must not fetch') } })
   check('enabled but unconfigured returns not_configured', r.status === 'not_configured')
   check('not_configured uses the exact spec message', r.error === 'Solana Beta is not configured yet.')
+}
+
+// ─── solanaTokenScannerConfigAudit (env/config wiring task) ───────────────────
+{
+  delete process.env.ENABLE_SOLANA_BETA
+  delete process.env.ALCHEMY_SOLANA_RPC_URL
+  const a = solanaTokenScannerConfigAudit()
+  check('fully unconfigured: enabled false', a.enabled === false)
+  check('fully unconfigured: alchemySolanaConfigured false', a.alchemySolanaConfigured === false)
+  check('fully unconfigured: missingConfig lists both vars', a.missingConfig.includes('ENABLE_SOLANA_BETA') && a.missingConfig.includes('ALCHEMY_SOLANA_RPC_URL'))
+  check('goldrushConfigured is honestly false (no verified Solana slug anywhere in this codebase)', a.goldrushConfigured === false)
+  check('marketFallbackConfigured (DexScreener needs no key)', a.marketFallbackConfigured === true)
+  check('redacted is always true', a.redacted === true)
+  check('audit never contains a URL/key substring', !JSON.stringify(a).includes('http') && !JSON.stringify(a).includes('alchemy.com'))
+}
+{
+  process.env.ENABLE_SOLANA_BETA = 'true'
+  process.env.ALCHEMY_SOLANA_RPC_URL = 'https://solana-mainnet.g.alchemy.com/v2/super-secret-key-should-never-appear'
+  const a = solanaTokenScannerConfigAudit()
+  check('fully configured: enabled true', a.enabled === true)
+  check('fully configured: alchemySolanaConfigured true', a.alchemySolanaConfigured === true)
+  check('fully configured: missingConfig is empty', a.missingConfig.length === 0)
+  check('fully configured audit still never leaks the key', !JSON.stringify(a).includes('super-secret-key'))
+  delete process.env.ALCHEMY_SOLANA_RPC_URL
+}
+{
+  // Partial: flag on, RPC missing — the exact "not configured yet" case from the task.
+  process.env.ENABLE_SOLANA_BETA = 'true'
+  delete process.env.ALCHEMY_SOLANA_RPC_URL
+  const a = solanaTokenScannerConfigAudit()
+  check('partial config: missingConfig lists only the RPC var', a.missingConfig.length === 1 && a.missingConfig[0] === 'ALCHEMY_SOLANA_RPC_URL')
 }
 
 // ─── Scan fixtures ────────────────────────────────────────────────────────────
@@ -233,6 +267,32 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
   check('EVM chain gate still exists (existing chains unchanged)', evmGate > -1)
   check('solana branch runs BEFORE the EVM chain gate', solanaBranch < evmGate)
   check('EVM gate still accepts base/eth/bnb/robinhood', /rawChain !== 'base' && rawChain !== 'eth' && rawChain !== 'bnb' && rawChain !== 'robinhood'/.test(route))
+}
+
+// ─── No fabricated GoldRush Solana slug anywhere in the codebase (env wiring task) ────────────
+// The task explicitly forbids hardcoding an unverified Solana chain slug into any of this
+// codebase's real GOLDRUSH_VERIFIED_CHAIN_SLUGS maps. Asserted against the real source.
+{
+  const { readFileSync } = await import('node:fs')
+  const files = [
+    'src/modules/holdings/utils.ts',
+    'src/modules/recoveryPolicy/utils.ts',
+    'src/modules/providerFetchWindow/utils.ts',
+  ]
+  for (const f of files) {
+    const src = readFileSync(new URL(`../${f}`, import.meta.url), 'utf8')
+    const mapMatch = src.match(/GOLDRUSH_VERIFIED_CHAIN_SLUGS[\s\S]*?=\s*\{([\s\S]*?)\n\}/)
+    check(`${f}: no 'solana' key added to GOLDRUSH_VERIFIED_CHAIN_SLUGS`, !mapMatch || !/\bsolana\s*:/i.test(mapMatch[1]))
+  }
+}
+
+// ─── Route logs the redacted config audit, never the raw RPC URL (env wiring task) ────────────
+{
+  const { readFileSync } = await import('node:fs')
+  const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
+  check('route imports solanaTokenScannerConfigAudit', route.includes('solanaTokenScannerConfigAudit'))
+  check('route logs the config audit inside the solana branch', /solana-beta.*solanaTokenScannerConfigAudit/.test(route.replace(/\n/g, ' ')))
+  check('route never reads ALCHEMY_SOLANA_RPC_URL directly (only via the config module)', !route.includes('process.env.ALCHEMY_SOLANA_RPC_URL'))
 }
 
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)

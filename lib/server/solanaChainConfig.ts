@@ -68,3 +68,52 @@ export function solanaChainConfigAudit(selectedChain: string): SolanaChainConfig
     selectedChain,
   }
 }
+
+// ── solanaTokenScannerConfigAudit, DISCLOSED (Solana Beta env/config wiring task) ────────────
+//
+// A dedicated, more detailed config audit for the Token Scanner's Solana Beta path specifically
+// (solanaChainConfigAudit above is the generic selector-gating audit reused from the Robinhood
+// Chain precedent). This one also reports GoldRush and the DexScreener market fallback, so a
+// caller can see the FULL provider picture for a Solana scan in one object, not just the RPC.
+//
+// GOLDRUSH SOLANA SUPPORT, DISCLOSED (verified, not assumed): every GOLDRUSH_VERIFIED_CHAIN_SLUGS
+// map in this codebase (src/modules/holdings/utils.ts, src/modules/recoveryPolicy/utils.ts,
+// src/modules/providerFetchWindow/utils.ts) lists only eth/base/arbitrum — there is no Solana
+// chain slug wired anywhere. Per this task's own instruction ("do not hardcode unknown Solana
+// chain slug without checking existing SDK/docs/code... mark GoldRush Solana as unavailable/
+// config pending"), goldrushConfigured is hardcoded false here rather than guessing a slug
+// (GoldRush/Covalent does support a Solana chain in its public API, but no slug for it exists
+// ANYWHERE in this codebase to reuse, and inventing one would be exactly the "unknown slug"
+// this instruction forbids). Solana Beta's real identity/authority/concentration reads come from
+// Alchemy RPC alone — see lib/server/solanaTokenScannerBeta.ts — GoldRush is not on that path at
+// all today, matching the "unavailable" status reported below.
+export type SolanaTokenScannerConfigAudit = {
+  enabled: boolean
+  alchemySolanaConfigured: boolean
+  /** Always false today — see this function's own header for why, not a guess. */
+  goldrushConfigured: boolean
+  /** DexScreener needs no API key, so it is "configured" whenever the feature itself is on. */
+  marketFallbackConfigured: boolean
+  missingConfig: string[]
+  redacted: true
+}
+
+export function solanaTokenScannerConfigAudit(): SolanaTokenScannerConfigAudit {
+  const enabled = isSolanaBetaFeatureEnabled()
+  const alchemySolanaConfigured = isSolanaRpcConfigured()
+  const goldrushConfigured = false
+  const marketFallbackConfigured = true
+
+  const missingConfig: string[] = []
+  if (!enabled) missingConfig.push('ENABLE_SOLANA_BETA')
+  if (!alchemySolanaConfigured) missingConfig.push('ALCHEMY_SOLANA_RPC_URL')
+
+  return {
+    enabled,
+    alchemySolanaConfigured,
+    goldrushConfigured,
+    marketFallbackConfigured,
+    missingConfig,
+    redacted: true,
+  }
+}

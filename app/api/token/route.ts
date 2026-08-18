@@ -17,6 +17,7 @@ import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
 import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
 import { classifySolanaMintInput, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
+import { solanaTokenScannerConfigAudit } from '@/lib/server/solanaChainConfig'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
 import {
@@ -3524,6 +3525,9 @@ export async function POST(req: Request) {
     // scanSolanaTokenBeta imports none of those helpers, so a Solana mint can never be pushed
     // through EVM contract logic.
     if (rawChain === 'solana') {
+      // Full provider-config picture (flag/RPC/GoldRush/market-fallback) logged once per request —
+      // redacted: true by construction (solanaTokenScannerConfigAudit never returns the RPC URL).
+      console.info('[solana-beta] solanaTokenScannerConfigAudit', solanaTokenScannerConfigAudit())
       const solanaInput = String(contractInput ?? '').trim()
       const rejection = classifySolanaMintInput(solanaInput)
       if (rejection) {
