@@ -460,7 +460,10 @@ function baseSr(overrides = {}) {
 // Jupiter/Helius/GoldRush provider integration into scanSolanaTokenBeta — every assertion here
 // defends "missing/disabled provider never crashes the scan" and "no fabricated evidence".
 
-function providerStub({ mint, supply, largest, dexPairs, jupiterMeta, jupiterPrice, heliusSignatures, heliusFail = false, jupiterFail = false }) {
+function providerStub({
+  mint, supply, largest, dexPairs, jupiterMeta, jupiterPrice, heliusSignatures, heliusFail = false, jupiterFail = false,
+  geckoRows, geckoFail = false, heliusHolderPages, heliusHoldersFail = false,
+}) {
   return async (url, init) => {
     const u = typeof url === 'string' ? url : ''
     if (u.includes('dexscreener')) return { ok: true, json: async () => ({ pairs: dexPairs ?? [] }) }
@@ -472,7 +475,18 @@ function providerStub({ mint, supply, largest, dexPairs, jupiterMeta, jupiterPri
       if (jupiterFail) return { ok: false, status: 500, json: async () => ({}) }
       return { ok: true, json: async () => ({ data: jupiterPrice ?? {} }) }
     }
+    if (u.includes('geckoterminal.com')) {
+      if (geckoFail) return { ok: false, status: 500, json: async () => ({}) }
+      return { ok: true, json: async () => ({ data: { attributes: { ohlcv_list: geckoRows ?? [] } } }) }
+    }
     if (u.includes('helius-rpc.com')) {
+      const body = JSON.parse(init.body)
+      if (body.method === 'getTokenAccounts') {
+        if (heliusHoldersFail) return { ok: false, status: 500, json: async () => ({}) }
+        const page = body.params.page
+        const accounts = (heliusHolderPages ?? [[]])[page - 1] ?? []
+        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { token_accounts: accounts } }) }
+      }
       if (heliusFail) return { ok: false, status: 500, json: async () => ({}) }
       return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: heliusSignatures ?? [] }) }
     }
@@ -633,7 +647,8 @@ function providerStub({ mint, supply, largest, dexPairs, jupiterMeta, jupiterPri
   check('page reads resolvedTokenName/resolvedTokenSymbol for the Solana header (Jupiter-first identity)', page.includes('sr.resolvedTokenName') && page.includes('sr.resolvedTokenSymbol'))
   check('page reads sr.jupiter for the Market tab price fallback', page.includes('sr.jupiter.resolved.price'))
   check('page reads sr.helius for the Dev tab activity signal', page.includes('sr.helius.'))
-  check('page reads sr.goldrushOrCovalent for the Holders tab holder-count distinction', page.includes('sr.goldrushOrCovalent.resolved.holderCount'))
+  check('page reads sr.heliusHolders for the Holders tab holder-count distinction', page.includes('sr.heliusHolders.holderCount'))
+  check('page reads sr.ohlcv for the Market tab Price Chart', page.includes('sr.ohlcv.success') && page.includes('CandlestickChart'))
   // Same result-tabs-wrap / result-header shell classes used by the Solana branch as by EVM chains.
   check('solana branch still uses the shared result-header shell class', page.includes("className=\"result-header\""))
   check('solana branch still uses the shared result-tabs-wrap shell class', page.includes("className=\"result-tabs-wrap\""))
@@ -645,6 +660,132 @@ function providerStub({ mint, supply, largest, dexPairs, jupiterMeta, jupiterPri
   const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
   check('EVM chain gate untouched by provider wiring', /rawChain !== 'base' && rawChain !== 'eth' && rawChain !== 'bnb' && rawChain !== 'robinhood'/.test(route))
   check('solana branch still returns before EVM logic runs', route.indexOf("if (rawChain === 'solana')") < route.indexOf("rawChain !== 'base' && rawChain !== 'eth'"))
+}
+
+// ─── GeckoTerminal OHLCV (Price Chart provider-wiring follow-up) ──────────────────────────────
+const GECKO_ROW = (tsSec, o, h, l, c, v) => [tsSec, o, h, l, c, v]
+{
+  // Newest-first rows from the real API must come out chronological-ascending for the chart.
+  const rows = [GECKO_ROW(3000, 1.2, 1.3, 1.1, 1.25, 500), GECKO_ROW(2000, 1.1, 1.2, 1.0, 1.15, 400), GECKO_ROW(1000, 1.0, 1.1, 0.9, 1.05, 300)]
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
+      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'POOL1', dexId: 'raydium' }],
+      geckoRows: rows,
+    }),
+  })
+  check('geckoterminal called when a pool address is known', r.ohlcv.called === true)
+  check('geckoterminal candles resolve successfully', r.ohlcv.success === true)
+  check('candles are reordered chronological-ascending (oldest first)', r.ohlcv.candles[0].timestamp < r.ohlcv.candles[2].timestamp)
+  check('candle OHLC values map correctly', r.ohlcv.candles[2].close === 1.25 && r.ohlcv.candles[2].volume === 500)
+  check('solanaProviderWiringAudit reports geckoTerminal candle count', r.solanaProviderWiringAudit.providerCalls.geckoTerminal.candleCount === 3)
+}
+{
+  // No pool address at all (no market data) — must not attempt a call, never crash.
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [] }),
+  })
+  check('geckoterminal not called with no pool address', r.ohlcv.called === false)
+  check('missing pool address does not crash the scan', !('status' in r))
+}
+{
+  // Transient/HTTP failure and unexpected shape both degrade cleanly — never fabricated candles.
+  const rHttp = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
+      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'POOL1', dexId: 'raydium' }],
+      geckoFail: true,
+    }),
+  })
+  check('geckoterminal HTTP failure degrades cleanly, never crashes', !('status' in rHttp) && rHttp.ohlcv.success === false && rHttp.ohlcv.candles.length === 0)
+  check('geckoterminal failure adds an evidence gap', rHttp.solanaEvidenceGaps.some(g => /candle history/i.test(g)))
+  const rShape = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
+      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'POOL1', dexId: 'raydium' }],
+      geckoRows: null, // simulates an unexpected/missing ohlcv_list shape
+    }),
+  })
+  check('geckoterminal unexpected shape degrades cleanly (empty array is valid JSON, resolves to insufficient candles)', rShape.ohlcv.candles.length === 0 && rShape.ohlcv.success === false)
+}
+
+// ─── Helius holder count (Holders provider-wiring follow-up) ──────────────────────────────────
+{
+  // Single short page — real, exact count, never a lower bound.
+  process.env.ENABLE_HELIUS_SOLANA = 'true'
+  process.env.HELIUS_API_KEY = 'test-helius-key'
+  const accounts = [{ amount: '100' }, { amount: '200' }, { amount: '0' }] // one zero-balance account must not count
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [], heliusHolderPages: [accounts] }),
+  })
+  check('helius holder count called when enabled', r.heliusHolders.called === true)
+  check('holder count excludes zero-balance accounts', r.heliusHolders.holderCount === 2)
+  check('a single short page is not reported as a lower bound', r.heliusHolders.isLowerBound === false)
+  check('mergedResult.holderCount reflects the real Helius count', r.solanaProviderWiringAudit.mergedResult.holderCount === 2)
+  delete process.env.ENABLE_HELIUS_SOLANA
+  delete process.env.HELIUS_API_KEY
+}
+{
+  // Pagination: page 1 full (1000), page 2 short — sums across pages, still an exact count.
+  process.env.ENABLE_HELIUS_SOLANA = 'true'
+  process.env.HELIUS_API_KEY = 'test-helius-key'
+  const page1 = Array.from({ length: 1000 }, () => ({ amount: '1' }))
+  const page2 = [{ amount: '1' }, { amount: '1' }]
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [], heliusHolderPages: [page1, page2] }),
+  })
+  check('pagination sums across pages correctly', r.heliusHolders.holderCount === 1002)
+  check('a short final page is not a lower bound', r.heliusHolders.isLowerBound === false)
+  check('exactly 2 pages fetched', r.heliusHolders.pagesFetched === 2)
+  delete process.env.ENABLE_HELIUS_SOLANA
+  delete process.env.HELIUS_API_KEY
+}
+{
+  // Hitting the page cap with a still-full last page — must be an honest lower bound, never
+  // presented as the true total (cost-control cap, not a real end-of-data signal).
+  process.env.ENABLE_HELIUS_SOLANA = 'true'
+  process.env.HELIUS_API_KEY = 'test-helius-key'
+  const fullPage = Array.from({ length: 1000 }, () => ({ amount: '1' }))
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [], heliusHolderPages: [fullPage, fullPage, fullPage, fullPage, fullPage] }),
+  })
+  check('page cap produces a lower-bound count, never claimed as exact', r.heliusHolders.isLowerBound === true)
+  check('page cap is bounded to exactly 3 pages, never unbounded pagination', r.heliusHolders.pagesFetched === 3)
+  check('lower-bound flag is disclosed as an evidence gap', r.solanaEvidenceGaps.some(g => /lower bound/i.test(g)))
+  delete process.env.ENABLE_HELIUS_SOLANA
+  delete process.env.HELIUS_API_KEY
+}
+{
+  // Disabled/missing key — never called, never crashes.
+  delete process.env.ENABLE_HELIUS_SOLANA
+  delete process.env.HELIUS_API_KEY
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [] }),
+  })
+  check('helius holder count not called when disabled', r.heliusHolders.called === false)
+  check('disabled holder count does not crash the scan', !('status' in r))
+  check('mergedResult.holderCount falls back to goldrush (null) when Helius is off', r.solanaProviderWiringAudit.mergedResult.holderCount === null)
+}
+{
+  // First-page failure — clean unavailable state, never a fabricated count.
+  process.env.ENABLE_HELIUS_SOLANA = 'true'
+  process.env.HELIUS_API_KEY = 'test-helius-key'
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [], heliusHoldersFail: true }),
+  })
+  check('a first-page failure degrades to a clean unavailable state', r.heliusHolders.success === false && r.heliusHolders.holderCount === null)
+  check('a first-page failure does not crash the scan', !('status' in r))
+  delete process.env.ENABLE_HELIUS_SOLANA
+  delete process.env.HELIUS_API_KEY
 }
 
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)

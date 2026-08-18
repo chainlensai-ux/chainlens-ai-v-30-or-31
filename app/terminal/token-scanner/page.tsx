@@ -4585,19 +4585,33 @@ export default function TerminalTokenScanner() {
                       <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#22d3ee', fontFamily: 'var(--font-plex-mono)' }}>MARKET PULSE</p>
                       <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Price, liquidity, volume, and pool depth from indexed Solana pools.</p>
                     </div>
-                    {/* CHART SHELL, DISCLOSED (Token Scanner Solana premium-parity task): same
-                        "glass-card" chart-card footprint EVM's own minimal-snapshot fallback uses
-                        (see the `_hasValidCandles`/`_hasMarketTrend`/minimal-snapshot cascade
-                        above) when it genuinely has no OHLCV history either — never a fabricated
-                        candle series. Solana Beta has no candle/OHLCV source wired at all (only a
-                        single current-snapshot read from DexScreener), so this always renders the
-                        honest label, matching EXACTLY what EVM shows in that same no-history case. */}
-                    <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
-                      <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Price Chart</p>
-                      <p style={{ margin: 0, fontSize: '12px', color: '#3a5268', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>
-                        {sr.marketData ? 'Historical candles are not indexed for Solana Beta yet — current price is live.' : 'Chart data unavailable — no indexed Solana pool found for this mint.'}
-                      </p>
-                    </div>
+                    {/* CHART, DISCLOSED (Solana provider-wiring follow-up: "make the price chart
+                        work"): real OHLCV candles from GeckoTerminal's free, keyless public API,
+                        keyed off the same pool address DexScreener already resolved — no new key,
+                        no fabricated series. Reuses CandlestickChart, the exact same component EVM
+                        renders through, so a real Solana chart looks identical to an EVM one. Falls
+                        back to the prior honest label — never a broken/empty chart card — when
+                        GeckoTerminal has no indexed candles for this pool yet. */}
+                    {sr.ohlcv.success && sr.ohlcv.candles.length >= 2 ? (
+                      <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '8px' }}>
+                          <p style={{ margin: 0, fontSize: '12px', fontWeight: 700, letterSpacing: '0.08em', color: '#cbd5e1', textTransform: 'uppercase' }}>Price Chart</p>
+                          <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.10em', padding: '2px 8px', borderRadius: '99px', color: '#34d399', background: 'rgba(52,211,153,0.07)', border: '1px solid rgba(52,211,153,0.20)', textTransform: 'uppercase' }}>Live Candles · GeckoTerminal</span>
+                        </div>
+                        <div style={{ display: 'inline-flex', marginBottom: '10px', border: '1px solid rgba(148,163,184,.3)', borderRadius: '999px', padding: '2px 8px', fontSize: '10px', color: '#cbd5e1' }}>1H</div>
+                        <CandlestickChart
+                          candles={sr.ohlcv.candles.map((c) => ({ timestamp: c.timestamp, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume, priceUsd: c.close }))}
+                          timeframe="1H"
+                        />
+                      </div>
+                    ) : (
+                      <div className="glass-card" style={{ marginBottom: '16px', borderRadius: '16px', padding: '18px' }}>
+                        <p style={{ margin: '0 0 6px', fontSize: '12px', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Price Chart</p>
+                        <p style={{ margin: 0, fontSize: '12px', color: '#3a5268', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>
+                          {!sr.marketData ? 'Chart data unavailable — no indexed Solana pool found for this mint.' : 'Historical candles are not indexed for this pool yet — current price is live.'}
+                        </p>
+                      </div>
+                    )}
                     {(() => {
                       // Jupiter is a PRICE FALLBACK only — DexScreener stays primary per the
                       // provider-wiring task. priceSource labels which provider the number is
@@ -4651,7 +4665,14 @@ export default function TerminalTokenScanner() {
                           </p>
                           <p style={{ margin: 0, fontSize: '10.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)' }}>Sampled {conc.accountsSampled} top accounts (max 20 — this is the RPC method&apos;s own cap).</p>
                           <p style={{ margin: '4px 0 0', fontSize: '10px', color: '#5b7387', fontFamily: 'var(--font-plex-mono)' }}>
-                            Total holder count: {sr.goldrushOrCovalent.resolved.holderCount != null ? sr.goldrushOrCovalent.resolved.holderCount : 'not available (no confirmed GoldRush/Covalent Solana endpoint)'} — distinct from the top-account sample above.
+                            {/* HOLDER-COUNT, DISCLOSED (Solana provider-wiring follow-up: "make
+                                holders work"): sourced from Helius's paginated getTokenAccounts —
+                                a real count of SPL token accounts with a positive balance, not a
+                                top-20 sample and not a fabricated 0. Labelled "accounts" (not
+                                "holders") because AMM pool vaults/exchange custody accounts are
+                                counted too — same honesty caveat as the top-account sample above.
+                                "+" means capped for cost control; the real count may be higher. */}
+                            Token accounts with balance: {sr.heliusHolders.holderCount != null ? `${sr.heliusHolders.holderCount}${sr.heliusHolders.isLowerBound ? '+' : ''}` : 'not available (Helius holder read did not resolve or is not enabled)'} — distinct from the top-account sample above.
                           </p>
                         </div>
                         <div className="holders-grid" style={{ gridColumn: '1 / -1', padding: '14px 16px', borderRadius: '12px', background: 'rgba(167,139,250,0.05)', border: `1px solid ${concColor}28`, marginBottom: '16px' }}>

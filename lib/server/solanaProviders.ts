@@ -188,3 +188,137 @@ export function solanaGoldrushEnrichment(): SolanaGoldrushResult {
     errorReason: 'No verified GoldRush/Covalent Solana chain slug exists in this codebase — skipped rather than guessed.',
   }
 }
+
+// ── GeckoTerminal: OHLCV candles for the Price Chart ────────────────────────────
+//
+// LIVE-VERIFICATION DISCLOSED: this integration was written from documented GeckoTerminal API
+// shape, not confirmed against a live response from this sandbox (outbound network to
+// api.geckoterminal.com is blocked here). It is defensive by construction — any unexpected
+// response shape (missing fields, wrong types, HTTP error) degrades to `success: false` with a
+// clean errorReason, never a crash and never fabricated candles — but the FIRST real scan after
+// this ships should be checked to confirm candles actually render, same as every other provider
+// added in this thread.
+//
+// Free, keyless, public endpoint — no API key, no env flag. Runs whenever a Solana pool address
+// is known (from DexScreener), mirroring DexScreener's own no-separate-flag precedent.
+
+export type SolanaOhlcvCandle = { timestamp: string; open: number; high: number; low: number; close: number; volume: number | null }
+export type SolanaOhlcvResult = {
+  called: boolean
+  success: boolean
+  candles: SolanaOhlcvCandle[]
+  timeframe: string
+  errorReason: string | null
+}
+
+function emptyOhlcvResult(called: boolean, errorReason: string | null): SolanaOhlcvResult {
+  return { called, success: false, candles: [], timeframe: '1h', errorReason }
+}
+
+export async function fetchSolanaOhlcv(poolAddress: string | null, fetchImpl: FetchImpl): Promise<SolanaOhlcvResult> {
+  if (!poolAddress) return emptyOhlcvResult(false, 'No indexed pool address to fetch candle history for.')
+  try {
+    const res = await fetchImpl(`https://api.geckoterminal.com/api/v2/networks/solana/pools/${poolAddress}/ohlcv/hour?aggregate=1&limit=48`, {
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) return emptyOhlcvResult(true, `geckoterminal_http_${res.status}`)
+    const json = await res.json().catch(() => null) as { data?: { attributes?: { ohlcv_list?: unknown } } } | null
+    const rows = Array.isArray(json?.data?.attributes?.ohlcv_list) ? json!.data!.attributes!.ohlcv_list as unknown[] : null
+    if (!rows) return emptyOhlcvResult(true, 'geckoterminal_unexpected_shape')
+    const num = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+    // GeckoTerminal rows are [unix_seconds, open, high, low, close, volume], newest-first.
+    const candles = rows
+      .map((row) => (Array.isArray(row) && row.length >= 6 ? row : null))
+      .filter((row): row is unknown[] => row != null)
+      .map((row): SolanaOhlcvCandle | null => {
+        const ts = num(row[0]); const o = num(row[1]); const h = num(row[2]); const l = num(row[3]); const c = num(row[4]); const v = num(row[5])
+        if (ts == null || o == null || h == null || l == null || c == null) return null
+        return { timestamp: new Date(ts * 1000).toISOString(), open: o, high: h, low: l, close: c, volume: v }
+      })
+      .filter((c): c is SolanaOhlcvCandle => c != null)
+      .reverse() // chronological ascending, for the chart
+    if (candles.length < 2) return emptyOhlcvResult(true, 'geckoterminal_insufficient_candles')
+    return { called: true, success: true, candles, timeframe: '1h', errorReason: null }
+  } catch {
+    return emptyOhlcvResult(true, 'geckoterminal_unreachable')
+  }
+}
+
+// ── Helius: real (paginated) holder count via the DAS getTokenAccounts method ──
+//
+// LIVE-VERIFICATION DISCLOSED: same caveat as GeckoTerminal above — written from documented
+// Helius DAS API shape, not confirmed live. Defensive by construction.
+//
+// HONESTY, DISCLOSED: this counts SPL token ACCOUNTS with a positive balance for the mint — the
+// same caveat as topAccountConcentration applies (AMM pool vaults and exchange custody accounts
+// are token accounts too, so this is not a KYC-verified unique-human count). It IS a real,
+// paginated count from live on-chain data, unlike the top-20 sample — call sites must still label
+// it as an account count, never claim it as verified unique holders.
+//
+// COST CONTROL, DISCLOSED: capped at 3 pages of 1000 accounts (3 Helius DAS calls, NOT Enhanced
+// Transactions) — cheap and bounded. A token with more accounts than the cap gets an honest
+// lower-bound count (isLowerBound: true) rather than either paying for unbounded pagination or
+// silently under-reporting as if it were the true total.
+
+const HELIUS_HOLDER_MAX_PAGES = 3
+const HELIUS_HOLDER_PAGE_LIMIT = 1000
+
+export type SolanaHeliusHolderResult = {
+  called: boolean
+  success: boolean
+  holderCount: number | null
+  isLowerBound: boolean
+  pagesFetched: number
+  errorReason: string | null
+}
+
+function emptyHolderResult(called: boolean, errorReason: string | null): SolanaHeliusHolderResult {
+  return { called, success: false, holderCount: null, isLowerBound: false, pagesFetched: 0, errorReason }
+}
+
+export async function fetchHeliusHolderCount(mintAddress: string, fetchImpl: FetchImpl): Promise<SolanaHeliusHolderResult> {
+  if (!isHeliusConfigured()) return emptyHolderResult(false, 'Helius Solana enrichment is not enabled (ENABLE_HELIUS_SOLANA is not "true", or HELIUS_API_KEY is missing).')
+  const apiKey = getHeliusApiKey()
+  if (!apiKey) return emptyHolderResult(false, 'HELIUS_API_KEY missing.')
+
+  const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`
+  let holderCount = 0
+  let pagesFetched = 0
+  try {
+    for (let page = 1; page <= HELIUS_HOLDER_MAX_PAGES; page++) {
+      const res = await fetchImpl(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTokenAccounts', params: { mint: mintAddress, page, limit: HELIUS_HOLDER_PAGE_LIMIT } }),
+        signal: AbortSignal.timeout(8000),
+      })
+      if (!res.ok) return pagesFetched > 0
+        ? { called: true, success: true, holderCount, isLowerBound: true, pagesFetched, errorReason: null }
+        : emptyHolderResult(true, `helius_holders_http_${res.status}`)
+      const json = await res.json().catch(() => null) as { result?: { token_accounts?: unknown[] }; error?: { message?: string } } | null
+      if (!json) return pagesFetched > 0
+        ? { called: true, success: true, holderCount, isLowerBound: true, pagesFetched, errorReason: null }
+        : emptyHolderResult(true, 'helius_holders_bad_json')
+      if (json.error) return pagesFetched > 0
+        ? { called: true, success: true, holderCount, isLowerBound: true, pagesFetched, errorReason: null }
+        : emptyHolderResult(true, `helius_holders_rpc_error:${json.error.message ?? 'unknown'}`)
+      const accounts = Array.isArray(json.result?.token_accounts) ? json.result!.token_accounts! : []
+      pagesFetched++
+      const positive = accounts.filter((a) => {
+        const amt = (a as Record<string, unknown> | null)?.amount
+        const n = typeof amt === 'string' ? Number(amt) : typeof amt === 'number' ? amt : 0
+        return Number.isFinite(n) && n > 0
+      })
+      holderCount += positive.length
+      if (accounts.length < HELIUS_HOLDER_PAGE_LIMIT) {
+        return { called: true, success: true, holderCount, isLowerBound: false, pagesFetched, errorReason: null }
+      }
+    }
+    // Hit the page cap with a full last page — more accounts likely exist beyond it.
+    return { called: true, success: true, holderCount, isLowerBound: true, pagesFetched, errorReason: null }
+  } catch {
+    return pagesFetched > 0
+      ? { called: true, success: true, holderCount, isLowerBound: true, pagesFetched, errorReason: null }
+      : emptyHolderResult(true, 'helius_holders_unreachable')
+  }
+}

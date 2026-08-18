@@ -39,9 +39,13 @@ import {
   fetchJupiterSolanaData,
   fetchHeliusSolanaActivity,
   solanaGoldrushEnrichment,
+  fetchSolanaOhlcv,
+  fetchHeliusHolderCount,
   type SolanaJupiterResult,
   type SolanaHeliusResult,
   type SolanaGoldrushResult,
+  type SolanaOhlcvResult,
+  type SolanaHeliusHolderResult,
 } from './solanaProviders.ts'
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -152,6 +156,8 @@ export type SolanaProviderWiringAudit = {
     jupiter: SolanaJupiterResult
     helius: SolanaHeliusResult
     goldrushOrCovalent: SolanaGoldrushResult
+    geckoTerminal: { called: boolean; success: boolean; candleCount: number; timeframe: string; errorReason: string | null }
+    heliusHolders: SolanaHeliusHolderResult
   }
   mergedResult: {
     tokenName: string | null
@@ -168,6 +174,7 @@ export type SolanaProviderWiringAudit = {
     top10: number | null
     top20: number | null
     holderCount: number | null
+    holderCountIsLowerBound: boolean
     poolDex: string | null
     poolAge: string | null
     riskReadAvailable: boolean
@@ -187,6 +194,8 @@ export type SolanaBetaScanResult = {
   jupiter: SolanaJupiterResult
   helius: SolanaHeliusResult
   goldrushOrCovalent: SolanaGoldrushResult
+  ohlcv: SolanaOhlcvResult
+  heliusHolders: SolanaHeliusHolderResult
   solanaProviderWiringAudit: SolanaProviderWiringAudit
   /** 'spl-token' | 'spl-token-2022' | null when the owning program could not be read. */
   tokenProgram: string | null
@@ -586,8 +595,18 @@ export async function scanSolanaTokenBeta(
   if (isHeliusConfigured() && !helius.success) evidenceGaps.push('Helius activity read did not resolve — dev/creator activity signal unavailable.')
   if (helius.called) evidenceGaps.push('Creator/dev-wallet activity requires Helius Enhanced Transactions, which is not called by default (cost control) — only recent on-chain signature presence is checked.')
 
+  // ── 6b. Helius holder count (real, paginated getTokenAccounts — capped, never Enhanced Transactions) ─
+  const heliusHolders = await fetchHeliusHolderCount(mintAddress, fetchImpl)
+  if (isHeliusConfigured() && !heliusHolders.success) evidenceGaps.push('Helius holder-account count did not resolve — holder count unavailable.')
+  if (heliusHolders.success) evidenceGaps.push('Holder count reflects SPL token ACCOUNTS with a positive balance (AMM pool vaults and exchange custody accounts are included), not a KYC-verified unique-holder count.')
+  if (heliusHolders.isLowerBound) evidenceGaps.push(`Holder count is a lower bound — capped at ${heliusHolders.pagesFetched} page(s) of accounts for cost control; the real count may be higher.`)
+
   // ── 7. GoldRush / Covalent (no verified Solana endpoint — cleanly unavailable) ─
   const goldrushOrCovalent = solanaGoldrushEnrichment()
+
+  // ── 7b. GeckoTerminal OHLCV candles (free, keyless — real Price Chart data) ────
+  const ohlcv = await fetchSolanaOhlcv(market.data?.primaryPoolAddress ?? null, fetchImpl)
+  if (market.data?.primaryPoolAddress && !ohlcv.success) evidenceGaps.push('Candle history could not be indexed for this pool — Price Chart shows a live snapshot only.')
 
   // ── 8. Beta risk ───────────────────────────────────────────────────────────
   const betaRisk = scoreSolanaBeta({
@@ -650,6 +669,8 @@ export async function scanSolanaTokenBeta(
       jupiter,
       helius,
       goldrushOrCovalent,
+      geckoTerminal: { called: ohlcv.called, success: ohlcv.success, candleCount: ohlcv.candles.length, timeframe: ohlcv.timeframe, errorReason: ohlcv.errorReason },
+      heliusHolders,
     },
     mergedResult: {
       tokenName: resolvedTokenName,
@@ -665,7 +686,8 @@ export async function scanSolanaTokenBeta(
       top1: concentration?.top1Percent ?? null,
       top10: concentration?.top10Percent ?? null,
       top20: concentration?.top20Percent ?? null,
-      holderCount: goldrushOrCovalent.resolved.holderCount,
+      holderCount: heliusHolders.holderCount ?? goldrushOrCovalent.resolved.holderCount,
+      holderCountIsLowerBound: heliusHolders.isLowerBound,
       poolDex: market.data?.primaryDexLabel ?? null,
       poolAge: market.data?.pairAgeLabel ?? null,
       riskReadAvailable: authorityReadSucceeded || market.data != null,
@@ -684,6 +706,8 @@ export async function scanSolanaTokenBeta(
     jupiter,
     helius,
     goldrushOrCovalent,
+    ohlcv,
+    heliusHolders,
     solanaProviderWiringAudit: wiringAudit,
     tokenProgram,
     decimals,
