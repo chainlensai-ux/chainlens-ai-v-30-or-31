@@ -235,12 +235,30 @@ export type SolanaBetaScanFailure = {
 
 type RpcFetch = typeof fetch
 
-async function solanaRpc<T>(
+// RELIABILITY FIX, DISCLOSED: a live comparison of two back-to-back scans of the SAME mint showed
+// getTokenLargestAccounts resolve once and then report "unavailable" moments later — with zero
+// retry, a single transient Alchemy hiccup (429 rate limit, brief timeout, momentary 5xx) silently
+// downgraded the whole scan to an evidence gap, which reads as "Solana holders are broken" even
+// though the RPC itself is healthy. This retries once, only for failure classes that are plausibly
+// transient (never for a clean JSON-RPC error message, which is a real answer from the node, not a
+// hiccup) — still counts as a single logical RPC attempt for the audit, and still degrades to an
+// honest evidence gap (never a fabricated value) if the retry also fails.
+const SOLANA_RPC_TRANSIENT_ERRORS = new Set(['rpc_bad_json', 'rpc_null_result', 'rpc_unreachable'])
+function isTransientSolanaRpcError(error: string): boolean {
+  if (SOLANA_RPC_TRANSIENT_ERRORS.has(error)) return true
+  if (error.startsWith('rpc_http_')) {
+    const status = Number(error.slice('rpc_http_'.length))
+    return status === 429 || (status >= 500 && status < 600)
+  }
+  return false
+}
+
+async function solanaRpcOnce<T>(
   rpcUrl: string,
   method: string,
   params: unknown[],
   fetchImpl: RpcFetch,
-  timeoutMs = 9000,
+  timeoutMs: number,
 ): Promise<{ ok: true; result: T } | { ok: false; error: string }> {
   try {
     const res = await fetchImpl(rpcUrl, {
@@ -258,6 +276,19 @@ async function solanaRpc<T>(
   } catch {
     return { ok: false, error: 'rpc_unreachable' }
   }
+}
+
+async function solanaRpc<T>(
+  rpcUrl: string,
+  method: string,
+  params: unknown[],
+  fetchImpl: RpcFetch,
+  timeoutMs = 9000,
+): Promise<{ ok: true; result: T } | { ok: false; error: string }> {
+  const first = await solanaRpcOnce<T>(rpcUrl, method, params, fetchImpl, timeoutMs)
+  if (first.ok || !isTransientSolanaRpcError(first.error)) return first
+  await new Promise((resolve) => setTimeout(resolve, 350))
+  return solanaRpcOnce<T>(rpcUrl, method, params, fetchImpl, timeoutMs)
 }
 
 function tokenProgramLabel(owner: string | null): string | null {

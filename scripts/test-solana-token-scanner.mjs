@@ -252,6 +252,63 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
   check('rpc failure does not return a verdict', r.betaRisk === undefined)
 }
 
+// ─── RPC retry reliability (found live: two back-to-back scans of the SAME mint gave
+// different concentration results — traced to zero retry on a transient Alchemy failure) ────
+{
+  // Transient (HTTP 429) failure on getTokenLargestAccounts, once, then succeeds — must recover.
+  let largestCalls = 0
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: async (url, init) => {
+      if (typeof url === 'string' && url.includes('dexscreener')) return { ok: true, json: async () => ({ pairs: [] }) }
+      const body = JSON.parse(init.body)
+      if (body.method === 'getTokenLargestAccounts') {
+        largestCalls++
+        if (largestCalls === 1) return { ok: false, status: 429, json: async () => ({}) }
+        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: HEALTHY_LARGEST }) }
+      }
+      const results = { getAccountInfo: HEALTHY_MINT, getTokenSupply: HEALTHY_SUPPLY }
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: results[body.method] ?? null }) }
+    },
+  })
+  check('a transient 429 on getTokenLargestAccounts is retried, not surfaced as a permanent gap', r.holderConcentrationAvailable === true)
+  check('concentration resolves correctly after the retry', r.topAccountConcentration.top1Percent === 40)
+  check('exactly one retry happened (2 total calls), not unbounded retrying', largestCalls === 2)
+}
+{
+  // Non-vacuous: a PERMANENT (non-transient) 429-shaped failure that never recovers must still
+  // degrade to an honest gap, never hang or fabricate data — confirms retry is bounded to 1.
+  let largestCalls = 0
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: async (url, init) => {
+      if (typeof url === 'string' && url.includes('dexscreener')) return { ok: true, json: async () => ({ pairs: [] }) }
+      const body = JSON.parse(init.body)
+      if (body.method === 'getTokenLargestAccounts') { largestCalls++; return { ok: false, status: 429, json: async () => ({}) } }
+      const results = { getAccountInfo: HEALTHY_MINT, getTokenSupply: HEALTHY_SUPPLY }
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: results[body.method] ?? null }) }
+    },
+  })
+  check('a persistently failing call still degrades to an honest gap, never fabricated data', r.holderConcentrationAvailable === false && r.topAccountConcentration === null)
+  check('retry is bounded to exactly 2 attempts total, not unbounded', largestCalls === 2)
+}
+{
+  // A real JSON-RPC error (the node answered, with an error) must NOT be retried — that's a real
+  // answer, not a network hiccup, so retrying it would just be a wasted extra Alchemy call.
+  let mintCalls = 0
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: async (url, init) => {
+      if (typeof url === 'string' && url.includes('dexscreener')) return { ok: true, json: async () => ({ pairs: [] }) }
+      const body = JSON.parse(init.body)
+      if (body.method === 'getAccountInfo') { mintCalls++; return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, error: { message: 'Invalid param: could not find account' } }) } }
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: null }) }
+    },
+  })
+  check('a real JSON-RPC error response still fails the scan', r.status === 'rpc_error')
+  check('a real JSON-RPC error is NOT retried (exactly 1 call)', mintCalls === 1)
+}
+
 // ─── Unread authority must never read as "revoked" ───────────────────────────
 {
   const unparsed = { value: { owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA', data: {} } }
