@@ -943,4 +943,37 @@ function poolProgramStub({ mint, supply, largest, poolAddress, poolOwner, poolIn
   check('ProjectSocialsCard renders a Discord link when present', page.includes("label: 'Discord'"))
 }
 
+// ─── Pool Activity — real buys/sells counts (provider-wiring follow-up: "Pool Activity isn't
+// giving info") ─────────────────────────────────────────────────────────────────────────────
+{
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: rpcStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
+      dexPairs: [{
+        chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium',
+        txns: { h24: { buys: 120, sells: 80 } },
+      }],
+    }),
+  })
+  check('real buys count resolves from the same DexScreener response', r.marketData.txns24h.buys === 120)
+  check('real sells count resolves from the same DexScreener response', r.marketData.txns24h.sells === 80)
+}
+{
+  // Absent txns field — null, never fabricated as 0 (0 would falsely imply "confirmed zero activity").
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: rpcStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
+      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium' }],
+    }),
+  })
+  check('missing txns.h24 resolves to null, never a fabricated 0', r.marketData.txns24h.buys === null && r.marketData.txns24h.sells === null)
+}
+{
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+  check('Pool Activity reads sr.marketData.txns24h for real buys/sells', page.includes('sr.marketData.txns24h'))
+}
+
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)

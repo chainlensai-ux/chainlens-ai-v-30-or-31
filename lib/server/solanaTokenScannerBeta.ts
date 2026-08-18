@@ -94,6 +94,14 @@ export type SolanaMarketData = {
   /** Pair age, human-readable (e.g. "42d"), derived from DexScreener's pairCreatedAt. Null if absent. */
   pairAgeLabel: string | null
   /**
+   * POOL ACTIVITY, DISCLOSED (Solana provider-wiring follow-up: "Pool Activity isn't giving
+   * info"). Read from the SAME already-fetched DexScreener pair response's `txns.h24` field —
+   * never a second/new call. DexScreener does NOT split volume by buy/sell in this endpoint, so
+   * there is no honest way to show a "buy/sell volume" figure — only transaction COUNTS are
+   * real here. buys/sells are null, honestly, when the pair doesn't carry that field (never 0).
+   */
+  txns24h: { buys: number | null; sells: number | null }
+  /**
    * SOCIAL LINKS, DISCLOSED (Solana provider-wiring follow-up: "make sure a Sol coin scan shows
    * its X/website/Reddit links"). Read from the SAME already-fetched DexScreener pair response
    * (`pair.info.websites[]` / `pair.info.socials[]`) — never a second/new provider call, matching
@@ -373,6 +381,8 @@ async function fetchSolanaMarketData(
     // be meaningless).
     const liquidityUsd = solPairs.reduce((sum, p) => sum + (num((p.liquidity as Record<string, unknown> | undefined)?.usd) ?? 0), 0)
     const volume24hUsd = solPairs.reduce((sum, p) => sum + (num((p.volume as Record<string, unknown> | undefined)?.h24) ?? 0), 0)
+    const topTxns24h = (top.txns as Record<string, unknown> | undefined)?.h24 as Record<string, unknown> | undefined
+    const txns24h = { buys: num(topTxns24h?.buys), sells: num(topTxns24h?.sells) }
     const pairCreatedAt = num(top.pairCreatedAt)
     const pairAgeLabel = pairCreatedAt != null
       ? (() => {
@@ -422,6 +432,7 @@ async function fetchSolanaMarketData(
         tokenName,
         tokenSymbol,
         pairAgeLabel,
+        txns24h,
         socials: { website, twitter, telegram, discord, reddit },
       },
     }

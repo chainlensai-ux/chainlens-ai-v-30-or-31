@@ -4653,20 +4653,28 @@ export default function TerminalTokenScanner() {
                         </div>
                       )
                     })()}
-                    {/* Pool activity — same slot as EVM's "Pool Activity" row. Solana Beta's market
-                        provider does not expose per-pool buy/sell counts, so every field here is
-                        an honest "Not indexed in Beta" rather than a guessed number. */}
-                    {sr.marketData && (
-                      <div style={{ marginTop: '18px' }}>
-                        <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', marginBottom: '10px', fontFamily: 'var(--font-plex-mono)' }}>Pool Activity</p>
-                        <div className="activity-grid">
-                          <StatCard label="Transactions 24H" value="Not indexed in Beta" accent="#94a3b8" dim />
-                          <StatCard label="Buys / Sells" value="Not indexed in Beta" accent="#94a3b8" dim />
-                          <StatCard label="Buy / Sell Vol" value="Not indexed in Beta" accent="#94a3b8" dim />
-                          <StatCard label="Pair Age" value={sr.marketData.pairAgeLabel ?? 'Not tracked in Beta'} accent="#94a3b8" dim />
+                    {/* Pool activity, DISCLOSED (Solana provider-wiring follow-up: "Pool Activity
+                        isn't giving info"): buys/sells are REAL now, read from the SAME
+                        already-fetched DexScreener response's txns.h24 field — no new call.
+                        DexScreener does not split volume by buy/sell in this endpoint, so "Buy /
+                        Sell Vol" is replaced with a Buy/Sell Ratio computed from the real counts
+                        instead of a fabricated split-volume figure. */}
+                    {sr.marketData && (() => {
+                      const { buys, sells } = sr.marketData.txns24h
+                      const total = buys != null && sells != null ? buys + sells : null
+                      const ratio = buys != null && sells != null && sells > 0 ? (buys / sells).toFixed(2) : null
+                      return (
+                        <div style={{ marginTop: '18px' }}>
+                          <p style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', color: '#3a5268', textTransform: 'uppercase', marginBottom: '10px', fontFamily: 'var(--font-plex-mono)' }}>Pool Activity</p>
+                          <div className="activity-grid">
+                            <StatCard label="Transactions 24H" value={total != null ? String(total) : 'Not indexed in Beta'} accent={total != null ? '#67e8f9' : '#94a3b8'} dim={total == null} />
+                            <StatCard label="Buys / Sells" value={buys != null && sells != null ? `${buys} / ${sells}` : 'Not indexed in Beta'} accent={buys != null ? '#34d399' : '#94a3b8'} dim={buys == null} />
+                            <StatCard label="Buy / Sell Ratio" value={ratio ?? 'Not indexed in Beta'} accent={ratio != null ? '#a78bfa' : '#94a3b8'} dim={ratio == null} helper={ratio != null ? 'From DexScreener tx counts, not volume' : undefined} />
+                            <StatCard label="Pair Age" value={sr.marketData.pairAgeLabel ?? 'Not tracked in Beta'} accent="#94a3b8" dim />
+                          </div>
                         </div>
-                      </div>
-                    )}
+                      )
+                    })()}
                   </>
                 )}
 
