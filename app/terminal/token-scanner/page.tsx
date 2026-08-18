@@ -5,6 +5,13 @@ import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
 import { calculateCortexScoreV2, type CortexScoreResultV2 } from '@/lib/token/scoring'
+// Client-safe: lib/solanaAddress.ts reads no env var and holds no secret (unlike
+// lib/server/solanaChainConfig.ts, which must never be imported here).
+import { classifySolanaMintInput, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
+import type { SolanaBetaScanResult } from '@/lib/server/solanaTokenScannerBeta'
+
+// Type-only import above is erased at build time, so no server module is bundled into the client.
+type SolanaBetaResult = SolanaBetaScanResult
 
 // ─── Canonical status ─────────────────────────────────────────────────────
 type CanonicalStatus =
@@ -3474,7 +3481,17 @@ export default function TerminalTokenScanner() {
   const { loading: planLoading } = usePlanWithLoading()
   const isFullAccess = true
 
-  const [chain, setChain]       = useState<'base' | 'eth' | 'bnb' | 'robinhood'>('base')
+  // SOLANA BETA, DISCLOSED (Token Scanner Solana Beta task): 'solana' is additive to the existing
+  // four EVM chains — every existing branch that compares against 'base'/'eth'/'bnb'/'robinhood'
+  // is unchanged and simply never matches 'solana', which is routed separately in handleScan.
+  const [chain, setChain]       = useState<'base' | 'eth' | 'bnb' | 'robinhood' | 'solana'>('base')
+  // Gated on the server's own feature flag + RPC config (via /api/token/chain-status) — the flag
+  // and RPC URL are server-only and never shipped to the client.
+  const [solanaAvailable, setSolanaAvailable] = useState(false)
+  // Solana results are kept in their OWN state, never coerced into ScanResult — the EVM result
+  // shape carries LP-lock/honeypot/tax/owner fields that have no honest Solana value, and forcing
+  // them would be exactly the fake-parity this task forbids.
+  const [solanaResult, setSolanaResult] = useState<SolanaBetaResult | null>(null)
   const [input, setInput]       = useState('')
   const [loading, setLoading]   = useState(false)
   const [result, setResult]     = useState<ScanResult | null>(null)
@@ -3661,6 +3678,20 @@ export default function TerminalTokenScanner() {
     }
   }
 
+  // SOLANA BETA AVAILABILITY, DISCLOSED: one cheap boolean read on mount. Makes no provider call —
+  // /api/token/chain-status only reports whether the server-side flag and RPC URL are present, so
+  // the selector can hide Solana Beta entirely when it isn't configured.
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/token/chain-status')
+      .then(r => r.ok ? r.json() : null)
+      .then((j: { solana?: { available?: boolean } } | null) => {
+        if (!cancelled && j?.solana?.available === true) setSolanaAvailable(true)
+      })
+      .catch(() => { /* selector simply stays hidden — never a blocking failure */ })
+    return () => { cancelled = true }
+  }, [])
+
   // Auto-scan when opened from Base Radar with ?contract= param
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -3697,6 +3728,35 @@ export default function TerminalTokenScanner() {
     setDevIntel(null)
     setDevIntelError(null)
     devIntelCacheRef.current = {}  // clear cached devIntel so no stale data bleeds across scans
+    // ────────────────────────────────────────────────────────────────────────
+
+    // ── SOLANA BETA PATH, DISCLOSED (Token Scanner Solana Beta task) ─────────
+    // Returns before the ticker resolver and before any EVM scan wiring below. Validation is the
+    // same shared implementation the API enforces (lib/solanaAddress.ts), so an EVM 0x address is
+    // rejected here with a specific message rather than being sent to a Solana RPC.
+    if (effectiveChain === 'solana') {
+      const rejection = classifySolanaMintInput(q)
+      if (rejection) { setError(SOLANA_MINT_REJECTION_MESSAGE[rejection]); return }
+      setLoading(true)
+      try {
+        const res = await fetch('/api/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contract: q, chain: 'solana' }),
+        })
+        const json = await res.json().catch(() => null)
+        if (!res.ok || !json || 'status' in (json ?? {})) {
+          setError(typeof json?.error === 'string' ? json.error : 'Solana Beta scan failed. Try again shortly.')
+          setSolanaResult(null)
+        } else {
+          setSolanaResult(json as SolanaBetaResult)
+        }
+      } catch {
+        setError('Solana Beta scan failed. Try again shortly.')
+        setSolanaResult(null)
+      } finally { setLoading(false) }
+      return
+    }
     // ────────────────────────────────────────────────────────────────────────
 
     // ── Ticker resolver ─────────────────────────────────────────────────────
@@ -3994,6 +4054,18 @@ export default function TerminalTokenScanner() {
         .chain-seg-btn--active-eth{background:rgba(99,102,241,.20);color:#c7d2fe;box-shadow:inset 0 0 0 1px rgba(99,102,241,.35);}
         .chain-seg-btn--active-bnb{background:rgba(240,185,11,.18);color:#fde68a;box-shadow:inset 0 0 0 1px rgba(240,185,11,.40);}
         .chain-seg-btn--active-robinhood{background:rgba(52,211,153,.18);color:#a7f3d0;box-shadow:inset 0 0 0 1px rgba(52,211,153,.40);}
+        .chain-seg-btn--active-solana{background:rgba(153,69,255,.20);color:#ddd0ff;box-shadow:inset 0 0 0 1px rgba(153,69,255,.42);}
+        /* Solana Beta result panel — deliberately plain: this path has far less evidence than an
+           EVM scan, so it must not borrow the full scanner's visual authority. */
+        .sol-card{border:1px solid rgba(148,163,184,.14);border-radius:12px;background:rgba(9,15,28,.6);padding:16px 18px;}
+        .sol-h{margin:0 0 12px;font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#a78bfa;font-family:var(--font-plex-mono);}
+        .sol-row{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid rgba(148,163,184,.07);font-size:12.5px;}
+        .sol-row:first-of-type{border-top:0;}
+        .sol-k{color:#64748b;}
+        .sol-v{color:#e2e8f0;font-weight:600;text-align:right;word-break:break-all;}
+        .sol-gap{font-size:11.5px;color:#94a3b8;line-height:1.6;padding:5px 0 5px 14px;position:relative;}
+        .sol-gap::before{content:'—';position:absolute;left:0;color:#475569;}
+        .sol-unsupported{font-size:11.5px;color:#7c8aa1;line-height:1.55;padding:6px 0;border-top:1px solid rgba(148,163,184,.06);}
         .cmd-chip{padding:6px 13px;border-radius:8px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.10);color:#5b7186;font-size:10.5px;font-weight:600;font-family:var(--font-plex-mono);letter-spacing:.03em;cursor:pointer;transition:background .14s,border-color .14s,color .14s;display:inline-flex;align-items:center;gap:5px;}
         .cmd-chip:hover{color:#a5b4fc;border-color:rgba(99,102,241,.35);background:rgba(99,102,241,.06);}
         .cmd-chip-glyph{color:#334155;font-size:10px;}
@@ -4135,14 +4207,17 @@ export default function TerminalTokenScanner() {
                   task): same setChain(c) behavior, restyled from two loud neon-bordered tabs into
                   a single quiet track with a clearly-selected (but not neon) active segment. */}
               <div className="chain-seg" style={{ position: 'relative', zIndex: 1, marginBottom: '14px' }}>
-                {(['base', 'eth', 'bnb', 'robinhood'] as const).map(c => (
+                {/* SOLANA BETA, DISCLOSED: appended only when the server reports the flag AND an
+                    RPC URL are both configured, so it never appears as a dead option. The four
+                    existing EVM segments are unchanged. */}
+                {([...(['base', 'eth', 'bnb', 'robinhood'] as const), ...(solanaAvailable ? ['solana' as const] : [])]).map(c => (
                   <button
                     key={c}
                     type="button"
-                    onClick={() => setChain(c)}
+                    onClick={() => { setChain(c); setError(null); setSolanaResult(null) }}
                     className={`chain-seg-btn${chain === c ? ` chain-seg-btn--active-${c}` : ''}`}
                   >
-                    {c === 'base' ? 'BASE' : c === 'eth' ? 'ETHEREUM' : c === 'bnb' ? 'BNB' : 'ROBINHOOD'}
+                    {c === 'base' ? 'BASE' : c === 'eth' ? 'ETHEREUM' : c === 'bnb' ? 'BNB' : c === 'robinhood' ? 'ROBINHOOD' : 'SOLANA BETA'}
                   </button>
                 ))}
               </div>
@@ -4162,7 +4237,7 @@ export default function TerminalTokenScanner() {
                     onChange={e => { setInput(e.target.value); setResolverResult(null) }}
                     onKeyDown={e => { if (e.key === 'Enter') handleScan() }}
                     disabled={loading}
-                    placeholder="Enter contract address, ticker, or token name…"
+                    placeholder={chain === 'solana' ? 'Paste Solana mint address…' : 'Enter contract address, ticker, or token name…'}
                     className="token-scan-input"
                     style={{
                       width: '100%', height: '62px', padding: '0 18px 0 44px', boxSizing: 'border-box',
@@ -4291,8 +4366,87 @@ export default function TerminalTokenScanner() {
             </div>
           )}
 
+          {/* ── SOLANA BETA RESULT, DISCLOSED (Token Scanner Solana Beta task) ──────────────
+              Rendered from its own state and its own markup — never coerced into the EVM result
+              card, which carries LP-lock / honeypot / tax / owner sections that have no honest
+              Solana value. Every unsupported EVM check is named explicitly rather than shown as
+              a passed or failed check. */}
+          {solanaResult && !loading && (
+            <div style={{ maxWidth: '820px', display: 'grid', gap: 14, marginBottom: 24 }}>
+              <div className="sol-card">
+                <p className="sol-h">Solana Beta · Mint read</p>
+                <div className="sol-row"><span className="sol-k">Mint address</span><span className="sol-v">{solanaResult.mintAddress}</span></div>
+                <div className="sol-row"><span className="sol-k">Token program</span><span className="sol-v">{solanaResult.tokenProgram ?? 'Unavailable'}</span></div>
+                <div className="sol-row"><span className="sol-k">Decimals</span><span className="sol-v">{solanaResult.decimals ?? 'Unavailable'}</span></div>
+                <div className="sol-row"><span className="sol-k">Total supply</span><span className="sol-v">{solanaResult.totalSupply != null ? solanaResult.totalSupply.toLocaleString() : 'Unavailable'}</span></div>
+              </div>
+
+              <div className="sol-card">
+                <p className="sol-h">Authority checks</p>
+                <div className="sol-row">
+                  <span className="sol-k">Mint authority</span>
+                  <span className="sol-v">{!solanaResult.authorityReadSucceeded ? 'Unavailable' : (solanaResult.mintAuthority ?? 'Revoked')}</span>
+                </div>
+                <div className="sol-row">
+                  <span className="sol-k">Freeze authority</span>
+                  <span className="sol-v">{!solanaResult.authorityReadSucceeded ? 'Unavailable' : (solanaResult.freezeAuthority ?? 'Revoked')}</span>
+                </div>
+              </div>
+
+              <div className="sol-card">
+                <p className="sol-h">Top account concentration</p>
+                {solanaResult.topAccountConcentration ? (
+                  <>
+                    <div className="sol-row"><span className="sol-k">Top 1 account</span><span className="sol-v">{solanaResult.topAccountConcentration.top1Percent != null ? `${solanaResult.topAccountConcentration.top1Percent}%` : 'Unavailable'}</span></div>
+                    <div className="sol-row"><span className="sol-k">Top 10 accounts</span><span className="sol-v">{solanaResult.topAccountConcentration.top10Percent != null ? `${solanaResult.topAccountConcentration.top10Percent}%` : 'Unavailable'}</span></div>
+                    <div className="sol-row"><span className="sol-k">Top 20 accounts</span><span className="sol-v">{solanaResult.topAccountConcentration.top20Percent != null ? `${solanaResult.topAccountConcentration.top20Percent}%` : 'Unavailable'}</span></div>
+                    <p className="sol-gap" style={{ marginTop: 8 }}>
+                      Top token accounts only ({solanaResult.topAccountConcentration.accountsSampled} sampled) — not a holder count. AMM pool vaults and exchange custody accounts are included.
+                    </p>
+                  </>
+                ) : (
+                  <p className="sol-gap">Top-account concentration unavailable for this mint.</p>
+                )}
+              </div>
+
+              <div className="sol-card">
+                <p className="sol-h">Market data</p>
+                {solanaResult.marketData ? (
+                  <>
+                    <div className="sol-row"><span className="sol-k">Price</span><span className="sol-v">{solanaResult.marketData.priceUsd != null ? `$${solanaResult.marketData.priceUsd}` : 'Unavailable'}</span></div>
+                    <div className="sol-row"><span className="sol-k">Liquidity</span><span className="sol-v">{solanaResult.marketData.liquidityUsd != null ? `$${solanaResult.marketData.liquidityUsd.toLocaleString()}` : 'Unavailable'}</span></div>
+                    <div className="sol-row"><span className="sol-k">24h volume</span><span className="sol-v">{solanaResult.marketData.volume24hUsd != null ? `$${solanaResult.marketData.volume24hUsd.toLocaleString()}` : 'Unavailable'}</span></div>
+                    <div className="sol-row"><span className="sol-k">Market cap / FDV</span><span className="sol-v">{solanaResult.marketData.marketCapUsd != null ? `$${solanaResult.marketData.marketCapUsd.toLocaleString()}` : (solanaResult.marketData.fdvUsd != null ? `$${solanaResult.marketData.fdvUsd.toLocaleString()} (FDV)` : 'Unavailable')}</span></div>
+                    <div className="sol-row"><span className="sol-k">Primary pool</span><span className="sol-v">{solanaResult.marketData.primaryDexLabel ?? 'Solana pool / AMM'}</span></div>
+                  </>
+                ) : (
+                  <p className="sol-gap">No Solana market data found for this mint.</p>
+                )}
+              </div>
+
+              <div className="sol-card">
+                <p className="sol-h">Beta read · {solanaResult.betaRisk.verdict.replace('_', ' ')} · {solanaResult.betaRisk.confidence} confidence</p>
+                {solanaResult.betaRisk.reasons.map((r, i) => <p key={i} className="sol-gap">{r}</p>)}
+              </div>
+
+              <div className="sol-card">
+                <p className="sol-h">Unsupported EVM checks</p>
+                {solanaResult.unsupportedChecks.map((u) => (
+                  <p key={u.check} className="sol-unsupported"><strong style={{ color: '#94a3b8' }}>{u.check}:</strong> {u.reason}</p>
+                ))}
+              </div>
+
+              {solanaResult.solanaEvidenceGaps.length > 0 && (
+                <div className="sol-card">
+                  <p className="sol-h">Evidence gaps</p>
+                  {solanaResult.solanaEvidenceGaps.map((g, i) => <p key={i} className="sol-gap">{g}</p>)}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* ── What this scan checks ─────────────────────────────── */}
-          {!loading && !resolving && !result && !error && (
+          {!loading && !resolving && !result && !error && !solanaResult && (
             <div id="how-cortex-works" style={{ maxWidth: '820px' }}>
               <div style={{ marginBottom: '20px' }}>
                 <p style={{ margin: '0 0 5px', fontSize: '18px', fontWeight: 700, color: '#e2e8f0', lineHeight: 1.35, letterSpacing: '-0.01em' }}>

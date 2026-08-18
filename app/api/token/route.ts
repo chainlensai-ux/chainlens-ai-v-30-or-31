@@ -15,6 +15,8 @@ import { buildLpHistoryTimeline } from "@/lib/server/lpHistoryTimeline";
 import { buildSecondaryLpExposure } from "@/lib/server/secondaryLpExposure";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
+import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
+import { classifySolanaMintInput, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
 import {
@@ -3514,8 +3516,32 @@ export async function POST(req: Request) {
     const debugMode = debugRequested === true && isAdminOverride(req);
     const isClarkFastMode = scanMode === 'clark_fast';
     const rawChain = String(body.chain ?? 'base').toLowerCase()
+
+    // ── SOLANA BETA BRANCH, DISCLOSED (Token Scanner Solana Beta task) ───────────────────────
+    // Intercepts BEFORE any EVM code path runs. Everything below this block — address parsing,
+    // EVM scanners, LP lock/burn proof, honeypot/tax simulation, deployer/ownership reads — is
+    // untouched and unreachable for chain=solana, by construction: this returns first.
+    // scanSolanaTokenBeta imports none of those helpers, so a Solana mint can never be pushed
+    // through EVM contract logic.
+    if (rawChain === 'solana') {
+      const solanaInput = String(contractInput ?? '').trim()
+      const rejection = classifySolanaMintInput(solanaInput)
+      if (rejection) {
+        return NextResponse.json({
+          solanaBeta: true, chain: 'solana', status: 'invalid_address',
+          error: SOLANA_MINT_REJECTION_MESSAGE[rejection],
+        }, { status: 400 })
+      }
+      const solanaResult = await scanSolanaTokenBeta(solanaInput)
+      // Safe to log verbatim — the audit object contains only booleans/numbers/labels, never the
+      // RPC URL or any secret (see solanaTokenScannerBeta.ts's audit contract).
+      console.info('[solana-beta] solanaTokenScannerAudit', solanaResult.solanaTokenScannerAudit)
+      const failed = 'status' in solanaResult
+      return NextResponse.json(solanaResult, { status: failed ? (solanaResult.status === 'rpc_error' ? 502 : 400) : 200 })
+    }
+
     if (rawChain !== 'base' && rawChain !== 'eth' && rawChain !== 'bnb' && rawChain !== 'robinhood') {
-      return NextResponse.json({ error: 'Unsupported chain. Use chain=base, chain=eth, chain=bnb, or chain=robinhood.' }, { status: 400 })
+      return NextResponse.json({ error: 'Unsupported chain. Use chain=base, chain=eth, chain=bnb, chain=robinhood, or chain=solana.' }, { status: 400 })
     }
     let chain: ChainKey = rawChain as ChainKey
     const forceDexFallback = debugMode === true && _forceDexFallback === true
