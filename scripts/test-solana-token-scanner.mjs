@@ -127,7 +127,12 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
     rpcUrl: 'https://stub',
     fetchImpl: rpcStub({
       mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
-      dexPairs: [{ chainId: 'solana', priceUsd: '1.00', liquidity: { usd: 50000 }, volume: { h24: 12000 }, pairAddress: 'POOL1', dexId: 'raydium', fdv: 1000000, marketCap: 1000000 }],
+      dexPairs: [{
+        chainId: 'solana', priceUsd: '1.00', liquidity: { usd: 50000 }, volume: { h24: 12000 },
+        pairAddress: 'POOL1', dexId: 'raydium', fdv: 1000000, marketCap: 1000000,
+        baseToken: { address: USDC_MINT, name: 'USD Coin', symbol: 'USDC' },
+        quoteToken: { address: 'So11111111111111111111111111111111111111', name: 'Wrapped SOL', symbol: 'SOL' },
+      }],
     }),
   })
   check('successful scan is not a failure shape', !('status' in r))
@@ -141,6 +146,8 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
   check('top10 concentration computed', r.topAccountConcentration.top10Percent === 55)
   check('market data resolved', r.marketDataAvailable === true && r.marketData.priceUsd === 1)
   check('primary dex label surfaced', r.marketData.primaryDexLabel === 'raydium')
+  check('token name mapped from the matched (base) side of the pair — no new fetch, UI header fix', r.marketData.tokenName === 'USD Coin')
+  check('token symbol mapped from the matched side', r.marketData.tokenSymbol === 'USDC')
 
   // Honesty contract
   const blob = JSON.stringify(r).toLowerCase()
@@ -162,6 +169,37 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
   check('audit records top1Percent', a.top1Percent === 40)
   check('audit lists unsupported checks', a.unsupportedChecks.length > 0)
   check('audit never leaks an rpc url', !JSON.stringify(a).includes('http'))
+}
+
+// ─── Name/symbol correctly resolve when the scanned mint is the QUOTE side ────
+{
+  const r = await scanSolanaTokenBeta(BONK_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: rpcStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
+      dexPairs: [{
+        chainId: 'solana', priceUsd: '0.00002', liquidity: { usd: 9000 }, volume: { h24: 500 }, pairAddress: 'P2', dexId: 'orca',
+        baseToken: { address: 'So11111111111111111111111111111111111111', name: 'Wrapped SOL', symbol: 'SOL' },
+        quoteToken: { address: BONK_MINT, name: 'Bonk', symbol: 'BONK' },
+      }],
+    }),
+  })
+  check('name/symbol resolve correctly when the mint is the QUOTE token, not just base', r.marketData.tokenName === 'Bonk' && r.marketData.tokenSymbol === 'BONK')
+}
+{
+  // Neither side matches (shouldn't happen in practice, but must degrade honestly, not guess).
+  const r = await scanSolanaTokenBeta(BONK_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: rpcStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
+      dexPairs: [{
+        chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P3', dexId: 'x',
+        baseToken: { address: 'unrelated1', name: 'Unrelated', symbol: 'UNR' },
+        quoteToken: { address: 'unrelated2', name: 'Other', symbol: 'OTH' },
+      }],
+    }),
+  })
+  check('unmatched pair sides never guess a name — stays null', r.marketData.tokenName === null && r.marketData.tokenSymbol === null)
 }
 
 // ─── Missing market data becomes an evidence gap, never a fake value ──────────

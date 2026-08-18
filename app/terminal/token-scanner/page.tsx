@@ -4055,17 +4055,6 @@ export default function TerminalTokenScanner() {
         .chain-seg-btn--active-bnb{background:rgba(240,185,11,.18);color:#fde68a;box-shadow:inset 0 0 0 1px rgba(240,185,11,.40);}
         .chain-seg-btn--active-robinhood{background:rgba(52,211,153,.18);color:#a7f3d0;box-shadow:inset 0 0 0 1px rgba(52,211,153,.40);}
         .chain-seg-btn--active-solana{background:rgba(153,69,255,.20);color:#ddd0ff;box-shadow:inset 0 0 0 1px rgba(153,69,255,.42);}
-        /* Solana Beta result panel — deliberately plain: this path has far less evidence than an
-           EVM scan, so it must not borrow the full scanner's visual authority. */
-        .sol-card{border:1px solid rgba(148,163,184,.14);border-radius:12px;background:rgba(9,15,28,.6);padding:16px 18px;}
-        .sol-h{margin:0 0 12px;font-size:11px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#a78bfa;font-family:var(--font-plex-mono);}
-        .sol-row{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-top:1px solid rgba(148,163,184,.07);font-size:12.5px;}
-        .sol-row:first-of-type{border-top:0;}
-        .sol-k{color:#64748b;}
-        .sol-v{color:#e2e8f0;font-weight:600;text-align:right;word-break:break-all;}
-        .sol-gap{font-size:11.5px;color:#94a3b8;line-height:1.6;padding:5px 0 5px 14px;position:relative;}
-        .sol-gap::before{content:'—';position:absolute;left:0;color:#475569;}
-        .sol-unsupported{font-size:11.5px;color:#7c8aa1;line-height:1.55;padding:6px 0;border-top:1px solid rgba(148,163,184,.06);}
         .cmd-chip{padding:6px 13px;border-radius:8px;background:rgba(255,255,255,.025);border:1px solid rgba(255,255,255,.10);color:#5b7186;font-size:10.5px;font-weight:600;font-family:var(--font-plex-mono);letter-spacing:.03em;cursor:pointer;transition:background .14s,border-color .14s,color .14s;display:inline-flex;align-items:center;gap:5px;}
         .cmd-chip:hover{color:#a5b4fc;border-color:rgba(99,102,241,.35);background:rgba(99,102,241,.06);}
         .cmd-chip-glyph{color:#334155;font-size:10px;}
@@ -4366,84 +4355,332 @@ export default function TerminalTokenScanner() {
             </div>
           )}
 
-          {/* ── SOLANA BETA RESULT, DISCLOSED (Token Scanner Solana Beta task) ──────────────
-              Rendered from its own state and its own markup — never coerced into the EVM result
-              card, which carries LP-lock / honeypot / tax / owner sections that have no honest
-              Solana value. Every unsupported EVM check is named explicitly rather than shown as
-              a passed or failed check. */}
-          {solanaResult && !loading && (
-            <div style={{ maxWidth: '820px', display: 'grid', gap: 14, marginBottom: 24 }}>
-              <div className="sol-card">
-                <p className="sol-h">Solana Beta · Mint read</p>
-                <div className="sol-row"><span className="sol-k">Mint address</span><span className="sol-v">{solanaResult.mintAddress}</span></div>
-                <div className="sol-row"><span className="sol-k">Token program</span><span className="sol-v">{solanaResult.tokenProgram ?? 'Unavailable'}</span></div>
-                <div className="sol-row"><span className="sol-k">Decimals</span><span className="sol-v">{solanaResult.decimals ?? 'Unavailable'}</span></div>
-                <div className="sol-row"><span className="sol-k">Total supply</span><span className="sol-v">{solanaResult.totalSupply != null ? solanaResult.totalSupply.toLocaleString() : 'Unavailable'}</span></div>
-              </div>
-
-              <div className="sol-card">
-                <p className="sol-h">Authority checks</p>
-                <div className="sol-row">
-                  <span className="sol-k">Mint authority</span>
-                  <span className="sol-v">{!solanaResult.authorityReadSucceeded ? 'Unavailable' : (solanaResult.mintAuthority ?? 'Revoked')}</span>
-                </div>
-                <div className="sol-row">
-                  <span className="sol-k">Freeze authority</span>
-                  <span className="sol-v">{!solanaResult.authorityReadSucceeded ? 'Unavailable' : (solanaResult.freezeAuthority ?? 'Revoked')}</span>
-                </div>
-              </div>
-
-              <div className="sol-card">
-                <p className="sol-h">Top account concentration</p>
-                {solanaResult.topAccountConcentration ? (
-                  <>
-                    <div className="sol-row"><span className="sol-k">Top 1 account</span><span className="sol-v">{solanaResult.topAccountConcentration.top1Percent != null ? `${solanaResult.topAccountConcentration.top1Percent}%` : 'Unavailable'}</span></div>
-                    <div className="sol-row"><span className="sol-k">Top 10 accounts</span><span className="sol-v">{solanaResult.topAccountConcentration.top10Percent != null ? `${solanaResult.topAccountConcentration.top10Percent}%` : 'Unavailable'}</span></div>
-                    <div className="sol-row"><span className="sol-k">Top 20 accounts</span><span className="sol-v">{solanaResult.topAccountConcentration.top20Percent != null ? `${solanaResult.topAccountConcentration.top20Percent}%` : 'Unavailable'}</span></div>
-                    <p className="sol-gap" style={{ marginTop: 8 }}>
-                      Top token accounts only ({solanaResult.topAccountConcentration.accountsSampled} sampled) — not a holder count. AMM pool vaults and exchange custody accounts are included.
-                    </p>
-                  </>
-                ) : (
-                  <p className="sol-gap">Top-account concentration unavailable for this mint.</p>
-                )}
-              </div>
-
-              <div className="sol-card">
-                <p className="sol-h">Market data</p>
-                {solanaResult.marketData ? (
-                  <>
-                    <div className="sol-row"><span className="sol-k">Price</span><span className="sol-v">{solanaResult.marketData.priceUsd != null ? `$${solanaResult.marketData.priceUsd}` : 'Unavailable'}</span></div>
-                    <div className="sol-row"><span className="sol-k">Liquidity</span><span className="sol-v">{solanaResult.marketData.liquidityUsd != null ? `$${solanaResult.marketData.liquidityUsd.toLocaleString()}` : 'Unavailable'}</span></div>
-                    <div className="sol-row"><span className="sol-k">24h volume</span><span className="sol-v">{solanaResult.marketData.volume24hUsd != null ? `$${solanaResult.marketData.volume24hUsd.toLocaleString()}` : 'Unavailable'}</span></div>
-                    <div className="sol-row"><span className="sol-k">Market cap / FDV</span><span className="sol-v">{solanaResult.marketData.marketCapUsd != null ? `$${solanaResult.marketData.marketCapUsd.toLocaleString()}` : (solanaResult.marketData.fdvUsd != null ? `$${solanaResult.marketData.fdvUsd.toLocaleString()} (FDV)` : 'Unavailable')}</span></div>
-                    <div className="sol-row"><span className="sol-k">Primary pool</span><span className="sol-v">{solanaResult.marketData.primaryDexLabel ?? 'Solana pool / AMM'}</span></div>
-                  </>
-                ) : (
-                  <p className="sol-gap">No Solana market data found for this mint.</p>
-                )}
-              </div>
-
-              <div className="sol-card">
-                <p className="sol-h">Beta read · {solanaResult.betaRisk.verdict.replace('_', ' ')} · {solanaResult.betaRisk.confidence} confidence</p>
-                {solanaResult.betaRisk.reasons.map((r, i) => <p key={i} className="sol-gap">{r}</p>)}
-              </div>
-
-              <div className="sol-card">
-                <p className="sol-h">Unsupported EVM checks</p>
-                {solanaResult.unsupportedChecks.map((u) => (
-                  <p key={u.check} className="sol-unsupported"><strong style={{ color: '#94a3b8' }}>{u.check}:</strong> {u.reason}</p>
+          {/* ── SOLANA BETA RESULT, DISCLOSED (Token Scanner Solana UI parity task) ──────────
+              UI-PARITY, DISCLOSED: rebuilt to reuse the SAME result shell as every other chain —
+              result-header, the six-tab bar (same activeSection state), the same StatCard/
+              gauge-container/summary-card visual language used by the EVM tabs below. Still
+              rendered from its OWN data (solanaResult) and its OWN markup for every tab body —
+              never coerced into the EVM `ScanResult` shape, which carries LP-lock/honeypot/tax/
+              owner fields with no honest Solana value. Every EVM-only check stays an explicit
+              "unsupported" line, never a passed/failed one. */}
+          {solanaResult && !loading && (() => {
+            const sr = solanaResult
+            const verdictColor = sr.betaRisk.verdict === 'HIGH_RISK' ? '#f87171' : sr.betaRisk.verdict === 'CAUTION' ? '#fbbf24' : '#94a3b8'
+            const verdictLabel = sr.betaRisk.verdict === 'HIGH_RISK' ? 'High Risk' : sr.betaRisk.verdict === 'CAUTION' ? 'Caution' : 'Open Check'
+            const confColor = sr.betaRisk.confidence === 'MEDIUM' ? '#fbbf24' : '#94a3b8'
+            const conc = sr.topAccountConcentration
+            const concRisk: 'HIGH' | 'MEDIUM' | 'LOW' | null = conc?.top10Percent != null ? (conc.top10Percent > 50 ? 'HIGH' : conc.top10Percent > 30 ? 'MEDIUM' : 'LOW') : null
+            const concColor = concRisk === 'HIGH' ? '#f87171' : concRisk === 'MEDIUM' ? '#fbbf24' : concRisk === 'LOW' ? '#34d399' : '#94a3b8'
+            const cardBase: React.CSSProperties = { padding: '14px 16px', background: 'linear-gradient(145deg,rgba(6,12,24,.94),rgba(14,16,32,.84))', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.07)' }
+            const cardTitle: React.CSSProperties = { margin: '0 0 10px', fontSize: '10px', fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }
+            const gapLine = (text: string, key: string | number) => (
+              <p key={key} style={{ margin: '0 0 6px', fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6, paddingLeft: '13px', position: 'relative' }}>
+                <span style={{ position: 'absolute', left: 0, color: '#3a5268' }}>—</span>{text}
+              </p>
+            )
+            const unsupportedCard = (
+              <div style={cardBase}>
+                <p style={{ ...cardTitle, color: '#f43f5e' }}>Unsupported in Solana Beta</p>
+                {sr.unsupportedChecks.map((u) => (
+                  <p key={u.check} style={{ margin: '0 0 8px', fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>
+                    <strong style={{ color: '#cbd5e1' }}>{u.check}:</strong> {u.reason}
+                  </p>
                 ))}
               </div>
+            )
 
-              {solanaResult.solanaEvidenceGaps.length > 0 && (
-                <div className="sol-card">
-                  <p className="sol-h">Evidence gaps</p>
-                  {solanaResult.solanaEvidenceGaps.map((g, i) => <p key={i} className="sol-gap">{g}</p>)}
+            return (
+              <div style={{ maxWidth: 'none', width: '100%' }}>
+                {/* Header — RECEIPT-HEADER parity with the EVM result-header: name/symbol lead,
+                    shortened mint pill + chain/status badges, never the mint-read table as header. */}
+                <div className="result-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', flexWrap: 'wrap', marginBottom: '18px', paddingBottom: '16px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
+                  <div style={{ minWidth: 0 }}>
+                    <h2 style={{ fontSize: '21px', fontWeight: 800, color: '#f8fafc', margin: '0 0 6px', letterSpacing: '-0.01em', display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
+                      {sr.marketData?.tokenName ?? sr.marketData?.tokenSymbol ?? 'Unknown Solana Token'}
+                      {/* Symbol only shown as a separate badge when name is present — otherwise the
+                          symbol IS the heading above and repeating it here would be a duplicate. */}
+                      {sr.marketData?.tokenName && sr.marketData?.tokenSymbol && (
+                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#c084fc', fontFamily: 'var(--font-plex-mono)' }}>{sr.marketData.tokenSymbol}</span>
+                      )}
+                    </h2>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '10.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '7px', padding: '3px 9px' }}>
+                        {shorten(sr.mintAddress)}
+                      </span>
+                      <span style={{ padding: '3px 10px', border: '1px solid rgba(153,69,255,.42)', borderRadius: '999px', color: '#ddd0ff', fontSize: '9.5px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', background: 'rgba(153,69,255,.10)' }}>
+                        SOLANA BETA
+                      </span>
+                      <span style={{ padding: '3px 10px', border: '1px solid rgba(94,234,212,.35)', borderRadius: '999px', color: '#5eead4', fontSize: '9.5px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', background: 'rgba(45,212,191,.07)' }}>
+                        {sr.tokenProgram === 'spl-token-2022' ? 'TOKEN-2022' : sr.tokenProgram === 'spl-token' ? 'SPL TOKEN' : 'PROGRAM UNKNOWN'}
+                      </span>
+                      <span style={{ padding: '3px 10px', border: '1px solid rgba(251,191,36,.35)', borderRadius: '999px', color: '#fcd34d', fontSize: '9.5px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', background: 'rgba(251,191,36,.07)' }}>
+                        EVIDENCE LIMITED · BETA
+                      </span>
+                    </div>
+                  </div>
                 </div>
-              )}
-            </div>
-          )}
+
+                {/* Same six-tab bar every other chain uses — same activeSection state, same order. */}
+                <div className="result-tabs-wrap" style={{ marginBottom: '22px', position: 'sticky', top: 0, zIndex: 5, background: 'rgba(2,6,23,0.32)', backdropFilter: 'blur(12px)', paddingTop: '4px', paddingBottom: '0px', borderBottom: '1px solid rgba(148,180,200,.09)' }}>
+                  <div className="result-tabs-scroll" style={{ display: 'flex', gap: '2px', overflowX: 'auto', whiteSpace: 'nowrap' }}>
+                    {([
+                      { id: 'cortex-read' as const, label: 'Overview' },
+                      { id: 'market-pulse' as const, label: 'Market' },
+                      { id: 'holder-map' as const, label: 'Holders' },
+                      { id: 'lp-safety' as const, label: 'LP Safety' },
+                      { id: 'risk-engine' as const, label: 'Risk Engine' },
+                      { id: 'deployer-intel' as const, label: 'Dev' },
+                    ]).map(s => {
+                      const active = activeSection === s.id
+                      return (
+                        <button key={s.id} className="result-tab-btn" onClick={() => setActiveSection(s.id)}
+                          style={{
+                            position: 'relative', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
+                            height: '38px', padding: '0 14px', borderRadius: '8px 8px 0 0', cursor: 'pointer',
+                            whiteSpace: 'nowrap', flexShrink: 0, fontFamily: 'var(--font-plex-mono)', fontSize: '11px',
+                            fontWeight: active ? 750 : 550, letterSpacing: '0.06em', transition: 'all 0.14s',
+                            background: active ? 'rgba(153,69,255,0.09)' : 'transparent', border: 'none',
+                            color: active ? '#ddd0ff' : '#7c93aa',
+                          }}>
+                          {s.label}
+                          {active && <span aria-hidden="true" style={{ position: 'absolute', left: '10px', right: '10px', bottom: '-1px', height: '2px', borderRadius: '2px', background: 'rgba(153,69,255,0.85)', boxShadow: '0 0 8px rgba(153,69,255,0.45)' }} />}
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                {/* ── Overview ────────────────────────────────────────── */}
+                {activeSection === 'cortex-read' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                    <div style={{ padding: '22px 24px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border: `1px solid ${verdictColor}35`, borderRadius: '20px', boxShadow: `0 0 44px ${verdictColor}0c` }}>
+                      <div style={{ fontSize: '9px', letterSpacing: '.18em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '11px' }}>SOLANA BETA READ</div>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                        <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: verdictColor, background: `${verdictColor}14`, border: `1px solid ${verdictColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{verdictLabel.toUpperCase()}</span>
+                        <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: confColor, background: `${confColor}14`, border: `1px solid ${confColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{sr.betaRisk.confidence} CONFIDENCE</span>
+                      </div>
+                      <p style={{ margin: 0, fontSize: '12px', color: '#a3b4c5', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono)', maxWidth: '640px' }}>
+                        Beta Confidence Read — this scan reads real Solana mint/authority/market evidence, but cannot run the honeypot, tax, LP-lock, or deployer-history checks the EVM scan does. A high score here would overstate what was actually verified, so the best possible read is Open Check, never Safe.
+                      </p>
+                    </div>
+
+                    <div className="after-scan-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '10px' }}>
+                      {[
+                        { label: 'Authority status', value: !sr.authorityReadSucceeded ? 'Unavailable' : (sr.mintAuthority || sr.freezeAuthority) ? 'Active authority' : 'Revoked', color: !sr.authorityReadSucceeded ? '#94a3b8' : (sr.mintAuthority || sr.freezeAuthority) ? '#f87171' : '#34d399' },
+                        { label: 'Market data', value: sr.marketDataAvailable ? 'Available' : 'Open check', color: sr.marketDataAvailable ? '#34d399' : '#fbbf24' },
+                        { label: 'Top-account concentration', value: sr.holderConcentrationAvailable ? 'Available' : 'Open check', color: sr.holderConcentrationAvailable ? '#34d399' : '#fbbf24' },
+                        { label: 'Unsupported checks', value: String(sr.unsupportedChecks.length), color: '#f43f5e' },
+                      ].map(m => (
+                        <div key={m.label} style={{ padding: '13px 14px', borderRadius: '12px', background: 'rgba(15,23,42,0.55)', border: `1px solid ${m.color}30` }}>
+                          <div style={{ fontSize: '9px', letterSpacing: '.10em', color: '#5b7590', marginBottom: '5px', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{m.label}</div>
+                          <div style={{ fontSize: '13px', color: m.color, fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>{m.value}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {sr.solanaEvidenceGaps.length > 0 && (
+                      <div style={cardBase}>
+                        <p style={{ ...cardTitle, color: '#fbbf24' }}>Evidence Gaps</p>
+                        {sr.solanaEvidenceGaps.map((g, i) => gapLine(g, i))}
+                      </div>
+                    )}
+
+                    {unsupportedCard}
+                  </div>
+                )}
+
+                {/* ── Market ──────────────────────────────────────────── */}
+                {activeSection === 'market-pulse' && (
+                  <>
+                    <div style={{ marginBottom: '18px' }}>
+                      <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#22d3ee', fontFamily: 'var(--font-plex-mono)' }}>MARKET PULSE</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Price, liquidity, volume, and pool depth from indexed Solana pools.</p>
+                    </div>
+                    {sr.marketData ? (
+                      <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '12px' }}>
+                        <StatCard label="Price" value={sr.marketData.priceUsd != null ? `$${sr.marketData.priceUsd}` : 'Unavailable'} accent="#2DD4BF" helper="DexScreener" />
+                        <StatCard label="Liquidity" value={sr.marketData.liquidityUsd != null ? fmtLarge(sr.marketData.liquidityUsd) : 'Unavailable'} accent="#22d3ee" />
+                        <StatCard label="24h Volume" value={sr.marketData.volume24hUsd != null ? fmtLarge(sr.marketData.volume24hUsd) : 'Unavailable'} accent="#a78bfa" />
+                        <StatCard label={sr.marketData.marketCapUsd != null ? 'Market Cap' : 'FDV'} value={sr.marketData.marketCapUsd != null ? fmtLarge(sr.marketData.marketCapUsd) : sr.marketData.fdvUsd != null ? fmtLarge(sr.marketData.fdvUsd) : 'Unavailable'} accent="#fb923c" dim />
+                        <StatCard label="Primary Pool / DEX" value={sr.marketData.primaryDexLabel ?? 'Solana pool / AMM'} accent="#94a3b8" dim />
+                        <StatCard label="Pair Age" value="Not tracked in Beta" accent="#94a3b8" dim />
+                      </div>
+                    ) : (
+                      <div style={{ padding: '20px', border: '1px dashed rgba(148,163,184,0.24)', borderRadius: '14px', background: 'rgba(148,163,184,0.03)' }}>
+                        <p style={{ margin: 0, fontSize: '12.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Market data unavailable for this Solana mint. No pool was found via the indexed Solana market provider — this is shown as an open check, never a fake price or liquidity figure.</p>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {/* ── Holders (top-account concentration) ──────────────── */}
+                {activeSection === 'holder-map' && (
+                  <>
+                    <div style={{ marginBottom: '18px' }}>
+                      <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>HOLDER MAP</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Top-account distribution and supply concentration — see the note below on what this does and doesn&apos;t prove.</p>
+                    </div>
+                    {conc ? (
+                      <>
+                        <div style={{ padding: '14px 16px', borderRadius: '12px', background: `${concColor}0c`, border: `1px solid ${concColor}30`, marginBottom: '12px' }}>
+                          <p style={{ margin: '0 0 4px', fontSize: '13px', fontWeight: 800, color: concColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.4 }}>
+                            {concRisk === 'HIGH' ? `High concentration — top 10 accounts hold ${conc.top10Percent?.toFixed(1)}%.` : concRisk === 'MEDIUM' ? `Moderate concentration — top 10 accounts hold ${conc.top10Percent?.toFixed(1)}%.` : concRisk === 'LOW' ? `Spread looks reasonable — top 10 accounts hold ${conc.top10Percent?.toFixed(1)}%.` : 'Concentration verdict is an open check for this scan.'}
+                          </p>
+                          <p style={{ margin: 0, fontSize: '10.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)' }}>Sampled {conc.accountsSampled} top accounts (max 20 — this is the RPC method&apos;s own cap).</p>
+                        </div>
+                        <div className="holders-grid" style={{ gridColumn: '1 / -1', padding: '14px 16px', borderRadius: '12px', background: 'rgba(167,139,250,0.05)', border: `1px solid ${concColor}28`, marginBottom: '16px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>TOP-ACCOUNT CONCENTRATION</span>
+                            <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: concColor, background: `${concColor}12`, border: `1px solid ${concColor}40`, fontFamily: 'var(--font-plex-mono)' }}>{concRisk ?? 'OPEN CHECK'}</span>
+                          </div>
+                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(110px,1fr))', gap: '8px', marginBottom: '10px' }}>
+                            {[
+                              ['Top 1', conc.top1Percent != null ? `${conc.top1Percent.toFixed(1)}%` : 'N/A'],
+                              ['Top 10', conc.top10Percent != null ? `${conc.top10Percent.toFixed(1)}%` : 'N/A'],
+                              ['Top 20', conc.top20Percent != null ? `${conc.top20Percent.toFixed(1)}%` : 'N/A'],
+                              ['Accounts sampled', String(conc.accountsSampled)],
+                            ].map(([label, val]) => (
+                              <div key={label} style={{ padding: '8px 10px', borderRadius: '8px', background: 'rgba(15,23,42,0.55)', border: '1px solid rgba(167,139,250,0.16)' }}>
+                                <div style={{ fontSize: '9px', letterSpacing: '.12em', color: '#64748b', marginBottom: '3px', fontFamily: 'var(--font-plex-mono)' }}>{label}</div>
+                                <div style={{ fontSize: '12px', color: '#e2e8f0', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>{val}</div>
+                              </div>
+                            ))}
+                          </div>
+                          {[
+                            ['Top 1', conc.top1Percent],
+                            ['Top 10', conc.top10Percent],
+                            ['Top 20', conc.top20Percent],
+                          ].map(([label, pct]) => (
+                            <div key={label as string} style={{ marginBottom: '6px' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '10px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>
+                                <span>{label}</span><span>{pct != null ? `${(pct as number).toFixed(1)}%` : 'N/A'}</span>
+                              </div>
+                              <div style={{ height: '5px', borderRadius: '999px', background: 'rgba(148,163,184,0.10)', overflow: 'hidden' }}>
+                                <div style={{ height: '100%', width: `${pct != null ? Math.min(100, pct as number) : 0}%`, background: concColor, borderRadius: '999px' }} />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ padding: '20px', border: '1px dashed rgba(148,163,184,0.24)', borderRadius: '14px', background: 'rgba(148,163,184,0.03)', marginBottom: '16px' }}>
+                        <p style={{ margin: 0, fontSize: '12.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Top-account concentration unavailable for this mint — shown as an open check, never a fabricated 0%.</p>
+                      </div>
+                    )}
+                    <div style={{ padding: '12px 14px', borderRadius: '10px', background: 'rgba(148,163,184,0.04)', border: '1px solid rgba(148,163,184,0.14)' }}>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#7c93aa', lineHeight: 1.65 }}>
+                        Top token accounts only — not a full holder count. AMM pool vaults and exchange custodial accounts may be included, so a high Top 1 share can mean a liquidity pool rather than a single whale.
+                      </p>
+                    </div>
+                  </>
+                )}
+
+                {/* ── LP Safety ───────────────────────────────────────── */}
+                {activeSection === 'lp-safety' && (
+                  <>
+                    <div style={{ marginBottom: '18px' }}>
+                      <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP SAFETY</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>ERC-20 LP lock/burn proof does not apply to Solana tokens. Solana Beta reviews market liquidity and authority evidence where available.</p>
+                    </div>
+                    <div style={{ display: 'grid', gap: '10px' }}>
+                      <div style={{ ...cardBase, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '11.5px', color: '#8ea0b5' }}>Liquidity model</span>
+                        <span style={{ fontSize: '12px', color: '#5eead4', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>Solana pool / AMM</span>
+                      </div>
+                      <div style={{ ...cardBase, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '11.5px', color: '#8ea0b5' }}>EVM ERC-20 LP lock/burn proof</span>
+                        <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>Not applicable</span>
+                      </div>
+                      <div style={{ ...cardBase, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '11.5px', color: '#8ea0b5' }}>Pool authority / liquidity control</span>
+                        <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '10px', fontWeight: 800, letterSpacing: '.08em', color: '#fbbf24', background: 'rgba(251,191,36,.08)', border: '1px solid rgba(251,191,36,.30)', fontFamily: 'var(--font-plex-mono)' }}>OPEN CHECK</span>
+                      </div>
+                      <div style={cardBase}>
+                        <p style={{ ...cardTitle, color: '#34d399' }}>Pool / Liquidity Evidence</p>
+                        {sr.marketData ? (
+                          <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>
+                            An indexed pool exists: {sr.marketData.primaryDexLabel ?? 'Solana AMM'}, liquidity {sr.marketData.liquidityUsd != null ? fmtLarge(sr.marketData.liquidityUsd) : 'unverified'}. This confirms a pool is live — it does not confirm who controls it, since Solana pool-authority verification is not fully supported in Beta.
+                          </p>
+                        ) : (
+                          gapLine('No indexed pool found — liquidity evidence unavailable.', 'no-pool')
+                        )}
+                      </div>
+                      <div style={cardBase}>
+                        <p style={{ ...cardTitle, color: '#7c93aa' }}>Next Action</p>
+                        <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Review pool depth, authority status, top-account concentration, and liquidity movement before treating this pool as safe.</p>
+                      </div>
+                    </div>
+                  </>
+                )}
+
+                {/* ── Risk Engine ─────────────────────────────────────── */}
+                {activeSection === 'risk-engine' && (() => {
+                  const drivers: string[] = [
+                    sr.mintAuthority ? 'Active mint authority — supply can be increased.' : '',
+                    sr.freezeAuthority ? 'Active freeze authority — token accounts can be frozen.' : '',
+                    concRisk === 'HIGH' ? `High top-account concentration — top 10 hold ${conc?.top10Percent?.toFixed(1)}%.` : '',
+                    !sr.marketDataAvailable ? 'Missing market data — no indexed Solana pool found.' : '',
+                    sr.marketData?.liquidityUsd != null && sr.marketData.liquidityUsd < 5000 ? `Low liquidity — ${fmtLarge(sr.marketData.liquidityUsd)}.` : '',
+                  ].filter(Boolean)
+                  const openChecks: string[] = [
+                    'Honeypot / tax simulation unavailable for Solana Beta.',
+                    'ERC-20 LP lock/burn proof not applicable to Solana.',
+                    'Creator/deployer history unavailable in Solana Beta.',
+                    'Pool authority not fully verified in Solana Beta.',
+                  ]
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                      <div style={{ padding: '22px 24px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border: `1px solid ${verdictColor}35`, borderRadius: '20px', boxShadow: `0 0 44px ${verdictColor}0c` }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '28px', flexWrap: 'wrap' }}>
+                          <div style={{ flexShrink: 0 }}>
+                            <RiskGaugeCircle score={null} color={verdictColor} />
+                          </div>
+                          <div style={{ flex: 1, minWidth: '200px', display: 'flex', flexDirection: 'column', gap: '11px' }}>
+                            <div style={{ fontSize: '9px', letterSpacing: '.18em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>CORTEX RISK ENGINE · SOLANA BETA</div>
+                            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                              <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: verdictColor, background: `${verdictColor}14`, border: `1px solid ${verdictColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{verdictLabel.toUpperCase()}</span>
+                              <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: confColor, background: `${confColor}14`, border: `1px solid ${confColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{sr.betaRisk.confidence} CONFIDENCE</span>
+                            </div>
+                            <p style={{ margin: 0, fontSize: '11px', color: '#7c93aa', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>No numeric score is shown — Solana Beta&apos;s evidence set (no honeypot/tax/LP-lock/deployer checks) is not sufficient for a Base/ETH/BNB-style CORTEX score.</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="risk-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: '14px' }}>
+                        <div style={cardBase}>
+                          <p style={{ ...cardTitle, color: '#f87171' }}>Risk Drivers</p>
+                          {drivers.length > 0 ? drivers.map((d, i) => gapLine(d, i)) : <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5' }}>No active risk drivers found in the evidence collected.</p>}
+                        </div>
+                        <div style={cardBase}>
+                          <p style={{ ...cardTitle, color: '#fbbf24' }}>Open Checks</p>
+                          {openChecks.map((c, i) => gapLine(c, i))}
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })()}
+
+                {/* ── Dev (authority / developer evidence) ─────────────── */}
+                {activeSection === 'deployer-intel' && (
+                  <>
+                    <div style={{ marginBottom: '18px' }}>
+                      <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#fb923c', fontFamily: 'var(--font-plex-mono)' }}>AUTHORITY / DEVELOPER EVIDENCE</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Solana has no EVM-style deployer/owner model — mint and freeze authority are the real, checkable equivalents.</p>
+                    </div>
+                    <div className="dev-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: '12px', marginBottom: '14px' }}>
+                      <StatCard label="Mint Authority" value={!sr.authorityReadSucceeded ? 'Unavailable' : sr.mintAuthority ? 'Active' : 'Revoked'} accent={!sr.authorityReadSucceeded ? '#94a3b8' : sr.mintAuthority ? '#f87171' : '#34d399'} helper={sr.mintAuthority ? shorten(sr.mintAuthority) : undefined} />
+                      <StatCard label="Freeze Authority" value={!sr.authorityReadSucceeded ? 'Unavailable' : sr.freezeAuthority ? 'Active' : 'Revoked'} accent={!sr.authorityReadSucceeded ? '#94a3b8' : sr.freezeAuthority ? '#f87171' : '#34d399'} helper={sr.freezeAuthority ? shorten(sr.freezeAuthority) : undefined} />
+                      <StatCard label="Token Program" value={sr.tokenProgram === 'spl-token-2022' ? 'Token-2022' : sr.tokenProgram === 'spl-token' ? 'SPL Token' : 'Unavailable'} accent="#5eead4" dim />
+                      <StatCard label="Creator / Update Authority" value="Unavailable in Solana Beta" accent="#94a3b8" dim />
+                    </div>
+                    <div style={cardBase}>
+                      <p style={{ ...cardTitle, color: '#94a3b8' }}>Deployer History</p>
+                      <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Creator/deployer evidence unavailable in Solana Beta — Solana has no EVM-style deployer transaction history to reconstruct.</p>
+                    </div>
+                  </>
+                )}
+              </div>
+            )
+          })()}
 
           {/* ── What this scan checks ─────────────────────────────── */}
           {!loading && !resolving && !result && !error && !solanaResult && (
@@ -6885,7 +7122,7 @@ export default function TerminalTokenScanner() {
               "already confirmed" for sections that don't exist yet. Now uses a hollow pending dot
               + an explicit "AWAITING SCAN" tag so the preview honestly reads as a preview, not a
               fake result. No receipt content is generated here — still just the section names. */}
-          {!planLoading && isFullAccess && !clarkLoading && !clarkVerdict && !clarkError && (
+          {!planLoading && isFullAccess && !clarkLoading && !clarkVerdict && !clarkError && !solanaResult && (
             /* RECEIPT-IDLE-POLISH, DISCLOSED (Token Scanner final polish task, explicitly requested:
                "the right receipt looks like a real waiting system, not faded/dead" — brighter
                checklist labels/separators and a more readable AWAITING SCAN badge, still honestly a
@@ -6918,6 +7155,33 @@ export default function TerminalTokenScanner() {
               ))}
             </div>
           )}
+
+          {/* SOLANA BETA RECEIPT, DISCLOSED (Token Scanner Solana UI parity task): updates the
+              right rail exactly like every other chain does once a scan completes — replaces the
+              "AWAITING SCAN" checklist rather than leaving it stuck idle. Built from solanaResult
+              only; never coerced through deriveVerdictInput/calculateCortexScoreV2 (EVM-shaped). */}
+          {!planLoading && isFullAccess && solanaResult && (() => {
+            const sr = solanaResult
+            const verdictColor = sr.betaRisk.verdict === 'HIGH_RISK' ? '#f87171' : sr.betaRisk.verdict === 'CAUTION' ? '#fbbf24' : '#94a3b8'
+            const verdictLabel = sr.betaRisk.verdict === 'HIGH_RISK' ? 'High Risk' : sr.betaRisk.verdict === 'CAUTION' ? 'Caution' : 'Open Check'
+            const ss: React.CSSProperties = { padding: '10px 12px', border: '1px solid rgba(255,255,255,0.10)', borderRadius: '10px', background: 'rgba(10,17,32,.72)' }
+            const stitle: React.CSSProperties = { margin: '0 0 6px', fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#5b7590', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }
+            const sbody: React.CSSProperties = { margin: 0, fontSize: '11px', color: '#a3b4c5', lineHeight: 1.65, fontFamily: 'var(--font-plex-mono)' }
+            return (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
+                <div style={{ padding: '16px', border: `1px solid ${verdictColor}22`, borderRadius: '14px', background: 'linear-gradient(135deg,rgba(8,20,38,.92),rgba(14,12,38,.90))', boxShadow: `0 0 18px ${verdictColor}08` }}>
+                  <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '10px' }}>CORTEX RECEIPT · SOLANA BETA</div>
+                  <div style={{ fontSize: '15px', fontWeight: 800, color: verdictColor, fontFamily: 'var(--font-plex-mono)' }}>{verdictLabel}</div>
+                  <div style={{ fontSize: '10px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', marginTop: '2px' }}>Solana Beta Read · {sr.betaRisk.confidence} confidence</div>
+                </div>
+                <div style={ss}><p style={stitle}>Market Read</p><p style={sbody}>{sr.marketDataAvailable ? 'Available — live Solana pool data found.' : 'Open Check — no indexed pool found.'}</p></div>
+                <div style={ss}><p style={stitle}>Holder / Supply Read</p><p style={sbody}>{sr.holderConcentrationAvailable ? `Top-account concentration available (top 1: ${sr.topAccountConcentration?.top1Percent ?? '—'}%).` : 'Top-account concentration unavailable.'}</p></div>
+                <div style={ss}><p style={stitle}>LP / Risk Read</p><p style={sbody}>EVM ERC-20 LP proof not applicable — Solana pool authority is an open check in Beta.</p></div>
+                <div style={ss}><p style={stitle}>Dev Control</p><p style={sbody}>{!sr.authorityReadSucceeded ? 'Authority checks unavailable.' : `Mint authority ${sr.mintAuthority ? 'active' : 'revoked'}, freeze authority ${sr.freezeAuthority ? 'active' : 'revoked'}.`}</p></div>
+                <div style={ss}><p style={stitle}>Next Action</p><p style={sbody}>Review market liquidity, authority status, top-account concentration, and the {sr.unsupportedChecks.length} unsupported checks before treating this token as reviewed.</p></div>
+              </div>
+            )
+          })()}
 
           {/* Loading dots */}
           {!planLoading && isFullAccess && clarkLoading && (

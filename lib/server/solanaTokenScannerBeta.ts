@@ -65,6 +65,15 @@ export type SolanaMarketData = {
   marketCapUsd: number | null
   primaryPoolAddress: string | null
   primaryDexLabel: string | null
+  /**
+   * MAPPING FIX, DISCLOSED (Token Scanner Solana UI parity task): the RPC mint account carries no
+   * name/symbol — SPL mints don't store one on-chain. name/symbol below are read from the SAME
+   * already-fetched DexScreener pair response (never a second/new call), matched to whichever side
+   * of the pair is actually this mint. Null, honestly, when the deepest indexed pair doesn't carry
+   * that field or the queried mint isn't cleanly identifiable as base or quote.
+   */
+  tokenName: string | null
+  tokenSymbol: string | null
 }
 
 export type SolanaTokenScannerAudit = {
@@ -195,6 +204,16 @@ async function fetchSolanaMarketData(
       const n = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN
       return Number.isFinite(n) ? n : null
     }
+    // Identify which side of the pair is the mint we scanned — never assume it's always "base".
+    const baseToken = top.baseToken as Record<string, unknown> | undefined
+    const quoteToken = top.quoteToken as Record<string, unknown> | undefined
+    const matchedToken = String(baseToken?.address ?? '').toLowerCase() === mintAddress.toLowerCase()
+      ? baseToken
+      : String(quoteToken?.address ?? '').toLowerCase() === mintAddress.toLowerCase()
+        ? quoteToken
+        : null
+    const tokenName = typeof matchedToken?.name === 'string' ? matchedToken.name : null
+    const tokenSymbol = typeof matchedToken?.symbol === 'string' ? matchedToken.symbol : null
     // Liquidity/volume are summed across every Solana pair — a token's real depth is not just its
     // deepest pool. Price/FDV/marketCap are read from the deepest pool only (summing those would
     // be meaningless).
@@ -210,6 +229,8 @@ async function fetchSolanaMarketData(
         marketCapUsd: num(top.marketCap),
         primaryPoolAddress: typeof top.pairAddress === 'string' ? top.pairAddress : null,
         primaryDexLabel: typeof top.dexId === 'string' ? top.dexId : null,
+        tokenName,
+        tokenSymbol,
       },
     }
   } catch {
