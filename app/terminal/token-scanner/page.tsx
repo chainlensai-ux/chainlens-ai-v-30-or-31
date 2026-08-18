@@ -4207,7 +4207,25 @@ export default function TerminalTokenScanner() {
                   <button
                     key={c}
                     type="button"
-                    onClick={() => { setChain(c); setError(null); setSolanaResult(null) }}
+                    onClick={() => {
+                      // CROSS-CHAIN STALE-RESULT FIX, DISCLOSED: switching the chain pill only ever
+                      // cleared solanaResult, never the EVM `result` (or resolver/dev/Clark state).
+                      // Since the EVM result panel (`{result && (...)}`) has no chain guard, scanning
+                      // an EVM chain and then clicking "SOLANA BETA" without re-scanning left the old
+                      // EVM result rendered underneath the Solana-labelled input — reading as "Solana
+                      // doesn't work" when it was actually stale EVM state bleeding through. Clearing
+                      // every per-scan result on every chain switch (both directions) matches the
+                      // exact reset handleScan already does at the start of a real scan.
+                      setChain(c)
+                      setError(null)
+                      setResult(null)
+                      setSolanaResult(null)
+                      setResolverResult(null)
+                      setDevIntel(null)
+                      setDevIntelError(null)
+                      setClarkVerdict(null)
+                      setClarkError(null)
+                    }}
                     className={`chain-seg-btn${chain === c ? ` chain-seg-btn--active-${c}` : ''}`}
                   >
                     {c === 'base' ? 'BASE' : c === 'eth' ? 'ETHEREUM' : c === 'bnb' ? 'BNB' : c === 'robinhood' ? 'ROBINHOOD' : 'SOLANA BETA'}
