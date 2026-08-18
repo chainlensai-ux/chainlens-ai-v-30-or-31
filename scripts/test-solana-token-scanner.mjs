@@ -17,6 +17,7 @@ import {
 import {
   scanSolanaTokenBeta, scoreSolanaBeta, SOLANA_UNSUPPORTED_CHECKS,
 } from '../lib/server/solanaTokenScannerBeta.ts'
+import { computeSolanaConfidenceScore } from '../lib/solanaConfidenceScore.ts'
 
 let passed = 0
 function check(label, condition) { assert.ok(condition, label); passed++ }
@@ -331,6 +332,70 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
   check('route imports solanaTokenScannerConfigAudit', route.includes('solanaTokenScannerConfigAudit'))
   check('route logs the config audit inside the solana branch', /solana-beta.*solanaTokenScannerConfigAudit/.test(route.replace(/\n/g, ' ')))
   check('route never reads ALCHEMY_SOLANA_RPC_URL directly (only via the config module)', !route.includes('process.env.ALCHEMY_SOLANA_RPC_URL'))
+}
+
+// ─── computeSolanaConfidenceScore (Token Scanner Solana premium-parity task) ──────────────────
+// The number that replaced the earlier "no score shown" design in Overview/Risk Engine. Every
+// assertion here defends the honesty contract this task explicitly requires of that number.
+function baseSr(overrides = {}) {
+  return {
+    authorityReadSucceeded: true, mintAuthority: null, freezeAuthority: null,
+    topAccountConcentration: { top1Percent: 10, top10Percent: 20, top20Percent: 30, accountsSampled: 20, accounts: [] },
+    marketDataAvailable: true, marketData: { liquidityUsd: 100_000, priceUsd: 1, volume24hUsd: 1, fdvUsd: null, marketCapUsd: null, primaryPoolAddress: null, primaryDexLabel: null, tokenName: null, tokenSymbol: null },
+    unsupportedChecks: SOLANA_UNSUPPORTED_CHECKS,
+    ...overrides,
+  }
+}
+
+{
+  const best = computeSolanaConfidenceScore(baseSr())
+  check('best-case inputs never reach 100 — evidence coverage caps it', best.score < 100)
+  check('best-case inputs still cap out well under 100 (evidence coverage ceiling)', best.score <= 85)
+  check('best-case verdict is Open Check, never Safe/Strong/Verified', best.verdict === 'Open Check')
+  check('score color for Open Check is neutral, not green "safe" styling', best.color === '#94a3b8')
+}
+{
+  const worst = computeSolanaConfidenceScore(baseSr({
+    authorityReadSucceeded: true, mintAuthority: 'X', freezeAuthority: 'Y',
+    topAccountConcentration: { top1Percent: 80, top10Percent: 90, top20Percent: 95, accountsSampled: 20, accounts: [] },
+    marketDataAvailable: false, marketData: null,
+  }))
+  check('worst-case inputs floor near the bottom', worst.score < 35)
+  check('worst-case verdict is High Risk', worst.verdict === 'High Risk')
+}
+{
+  const noEvidence = computeSolanaConfidenceScore(baseSr({
+    authorityReadSucceeded: false, mintAuthority: null, freezeAuthority: null,
+    topAccountConcentration: null, marketDataAvailable: false, marketData: null,
+  }))
+  check('zero-evidence scan scores low, never implies safety', noEvidence.score <= 30)
+  check('zero-evidence scan is never Open Check (that label is reserved for genuinely good evidence)', noEvidence.verdict !== 'Open Check')
+}
+{
+  const sc = computeSolanaConfidenceScore(baseSr())
+  check('exactly 4 categories returned', sc.categories.length === 4)
+  check('every category max is 25 (100-point scale)', sc.categories.every(c => c.max === 25))
+  check('category scores sum to the total score', sc.categories.reduce((s, c) => s + c.score, 0) === sc.score)
+  check('every category carries at least one real reason string', sc.categories.every(c => c.reasons.length > 0 && typeof c.reasons[0] === 'string'))
+  const evidenceCat = sc.categories.find(c => c.label === 'Evidence Coverage')
+  check('Evidence Coverage category is present and reflects real unsupportedChecks length', evidenceCat && evidenceCat.reasons[0].includes(String(SOLANA_UNSUPPORTED_CHECKS.length)))
+}
+{
+  // Monotonicity: revoking authority must never LOWER the score relative to active authority.
+  const activeAuth = computeSolanaConfidenceScore(baseSr({ mintAuthority: 'X', freezeAuthority: 'Y' }))
+  const revokedAuth = computeSolanaConfidenceScore(baseSr({ mintAuthority: null, freezeAuthority: null }))
+  check('revoked authority scores at least as high as active authority (same other inputs)', revokedAuth.score >= activeAuth.score)
+  // Same for concentration: tighter concentration must never score higher than spread supply.
+  const concentrated = computeSolanaConfidenceScore(baseSr({ topAccountConcentration: { top1Percent: 60, top10Percent: 80, top20Percent: 90, accountsSampled: 20, accounts: [] } }))
+  const spread = computeSolanaConfidenceScore(baseSr({ topAccountConcentration: { top1Percent: 5, top10Percent: 10, top20Percent: 15, accountsSampled: 20, accounts: [] } }))
+  check('spread supply scores at least as high as concentrated supply (same other inputs)', spread.score >= concentrated.score)
+}
+{
+  // Non-vacuous guard on the evidence-coverage cap itself: fewer unsupported checks must raise
+  // the ceiling, more must lower it — this is the actual mechanism keeping the score honest.
+  const fewerUnsupported = computeSolanaConfidenceScore(baseSr({ unsupportedChecks: SOLANA_UNSUPPORTED_CHECKS.slice(0, 1) }))
+  const moreUnsupported = computeSolanaConfidenceScore(baseSr({ unsupportedChecks: [...SOLANA_UNSUPPORTED_CHECKS, ...SOLANA_UNSUPPORTED_CHECKS] }))
+  check('fewer unsupported checks scores higher than more, same other inputs', fewerUnsupported.score > moreUnsupported.score)
 }
 
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)
