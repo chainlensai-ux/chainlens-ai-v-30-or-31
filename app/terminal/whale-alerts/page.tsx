@@ -698,8 +698,24 @@ export default function WhaleAlertsPage() {
         .wa-btn-micro:disabled { opacity: 0.4; }
 
         /* ── Feed row hover ───────────────────────────────────────────────── */
-        .wa-row { transition: background .12s; }
+        .wa-row { transition: background .12s, opacity .12s; }
         .wa-row:hover { background: rgba(148,163,184,0.028); }
+        /* ROW SIGNAL TIER, DISCLOSED (feed polish): purely visual weighting layered on top of the
+           existing per-side left accent — no severity/signal classification changed, no rows
+           hidden. HIGH SIGNAL / WATCH rows get a slightly stronger hover fill (reads as "this one
+           matters"); low-signal rows keep the same quiet hover as before so they never call
+           attention to themselves. */
+        .wa-row--strong:hover { background: rgba(148,163,184,0.05); }
+        .wa-row--quiet:hover { background: rgba(148,163,184,0.022); }
+        /* COMPACT METADATA CHIP, DISCLOSED (feed polish): replaces the old run-on text line
+           ("Tracked wallet · Base · 2 legs · Repeated activity…") with short bounded segments —
+           same underlying facts, no new/removed data, just less repeated boilerplate per row. */
+        .wa-meta-chip {
+          display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 4px;
+          font-size: 9.5px; font-weight: 600; color: #5b6b84;
+          background: rgba(148,163,184,0.06); border: 1px solid rgba(148,163,184,0.13);
+          white-space: nowrap;
+        }
 
         @media (max-width: 900px) {
           .wa-controls  { grid-template-columns: 1fr !important; }
@@ -1197,7 +1213,7 @@ export default function WhaleAlertsPage() {
             const amtUnverified = alert.amount_usd == null || alert.amount_usd === 0
             const amtU    = (!amtUnverified && alert.amount_usd != null) ? fmtUsd(alert.amount_usd) : null
             const amtTNum = isMultiTok ? null : fmtAmtNum(alert.amount_token)
-            const amtShow = amtU ?? (amtTNum ? `${amtTNum} ${primarySym}` : (amtUnverified ? 'value unverified' : null))
+            const amtShow = amtU ?? (amtTNum ? `${amtTNum} ${primarySym}` : (amtUnverified ? 'Value unverified' : null))
 
             // Verb and preposition split so amount fits between them for swaps
             const isSwap   = isMultiTok || (focusTok != null && s !== 'buy')
@@ -1207,11 +1223,50 @@ export default function WhaleAlertsPage() {
 
             const walletName = alert.wallet_label || 'Tracked Wallet'
             const signal     = alert.signal_score ?? 'LOW SIGNAL'
+
+            // ROW TIER, DISCLOSED (feed polish): derived purely from the existing signal_score —
+            // no new classification, just a visual weight bucket so HIGH SIGNAL/WATCH rows read
+            // stronger and LOW SIGNAL/NOISE rows read quieter, per the task's hierarchy spec.
+            const tier: 'strong' | 'quiet' = (signal === 'HIGH SIGNAL' || signal === 'WATCH') ? 'strong' : 'quiet'
+            // Same side colour used for the chip/verb accent, just a stronger vs. quieter alpha so
+            // the left accent bar reflects BOTH which side the move was (colour) and how much it
+            // matters (opacity/width) — buy/sell/transfer meaning is preserved, not replaced.
+            const ACCENT_ALPHA: Record<string, { strong: string; quiet: string }> = {
+              '#2dd4bf': { strong: 'rgba(45,212,191,0.85)', quiet: 'rgba(45,212,191,0.30)' },
+              '#f43f5e': { strong: 'rgba(244,63,94,0.85)',  quiet: 'rgba(244,63,94,0.30)'  },
+              '#8b5cf6': { strong: 'rgba(139,92,246,0.85)', quiet: 'rgba(139,92,246,0.30)' },
+            }
+            const accentColor = ACCENT_ALPHA[sideStyle.line]?.[tier] ?? sideStyle.line
+            const accentWidth = tier === 'strong' ? 3 : 2
+
             const signalReason =
               signal === 'HIGH SIGNAL' ? ((alert.token_symbol ?? '').toUpperCase().includes('USDC') ? 'Large stablecoin move' : 'High-value tracked-wallet movement')
               : signal === 'WATCH' ? 'Repeated activity from tracked wallet'
               : signal === 'NOISE' ? 'Value unverified'
               : (amtUnverified ? 'Value unverified' : 'Low-value token movement')
+
+            // COMPACT METADATA CHIPS, DISCLOSED (feed polish): replaces the old run-on subline
+            // ("Tracked wallet · Base · 2 legs · Repeated activity from tracked wallet") plus the
+            // separate wallet-behavior paragraph below it with one bounded chip row. Same facts —
+            // chain, legs, repeats, behavior type, monitor flag, 7d alert count, 7d flow — just
+            // segmented instead of concatenated into one long sentence. "Tracked wallet" itself is
+            // dropped as a chip since the wallet name already leads the row above.
+            const WALLET_BEHAVIOR_LABEL: Record<string, string> = {
+              repeat_accumulator: 'Repeat accumulator', active_rotator: 'Active rotator',
+              fresh_wallet: 'Fresh wallet', seller_distribution: 'Seller / distribution',
+              mixed_flow: 'Mixed flow', contract_or_router: 'Contract / router',
+              one_off: 'One-off',
+            }
+            const ctx = alert.walletContext ?? null
+            const metaChips: Array<{ label: string; tone?: 'positive' }> = [
+              { label: 'Base' },
+              ...((alert.legs ?? 1) > 1 ? [{ label: `${alert.legs} legs` }] : []),
+              ...((alert.repeats ?? 1) > 1 ? [{ label: `Repeat ×${alert.repeats}` }] : []),
+              ...(ctx && WALLET_BEHAVIOR_LABEL[ctx.behaviorType] ? [{ label: WALLET_BEHAVIOR_LABEL[ctx.behaviorType] }] : []),
+              ...(ctx && ctx.behaviorScore >= 60 && ctx.confidence !== 'low' ? [{ label: 'Worth monitoring', tone: 'positive' as const }] : []),
+              ...(ctx && ctx.alertCount7d > 1 ? [{ label: `${ctx.alertCount7d} alerts/7d` }] : []),
+              ...(ctx && (ctx.verifiedUsdFlow7d ?? 0) > 0 ? [{ label: `${fmtUsd(ctx.verifiedUsdFlow7d)} 7d flow` }] : []),
+            ]
 
             // Per-row Clark prompt — full structured context
             const alertAge = ageStr(alert.occurred_at)
@@ -1253,9 +1308,9 @@ export default function WhaleAlertsPage() {
 
             return (
               <div key={alert.id ?? `${alert.tx_hash ?? ''}-${i}`}
-                className="wa-row"
-                style={{ borderBottom: bdrInner, borderLeft: `2px solid ${sideStyle.line}` }}>
-                <div className="flex items-start" style={{ gap: 12, padding: '13px 18px' }}>
+                className={`wa-row wa-row--${tier}`}
+                style={{ borderBottom: bdrInner, borderLeft: `${accentWidth}px solid ${accentColor}`, opacity: tier === 'quiet' ? 0.88 : 1 }}>
+                <div className="flex items-start" style={{ gap: 12, padding: '14px 18px' }}>
 
                   <TokenAvatar tok={tok} logoUrl={logoUrl} avatarBg={sideStyle.avatarBg} line={sideStyle.line} />
 
@@ -1279,13 +1334,13 @@ export default function WhaleAlertsPage() {
                       <span style={{ fontSize: 13, fontWeight: 600, color: '#b9c6d8' }}>{walletName}</span>
                       <span style={{ fontSize: 12.5, color: '#55647d' }}>{baseVerb}</span>
                       {amtShow && (
-                        <span className={amtShow === 'value unverified' ? undefined : 'tabular-nums'}
+                        <span className={amtShow === 'Value unverified' ? undefined : 'tabular-nums'}
                           style={{
-                            fontSize: amtShow === 'value unverified' ? 12.5 : 14.5,
-                            fontWeight: amtShow === 'value unverified' ? 500 : 700,
+                            fontSize: amtShow === 'Value unverified' ? 12.5 : 14.5,
+                            fontWeight: amtShow === 'Value unverified' ? 500 : 700,
                             letterSpacing: '-0.01em',
-                            color: amtShow === 'value unverified' ? '#4a5769' : '#5eead4',
-                            fontStyle: amtShow === 'value unverified' ? 'italic' : undefined,
+                            color: amtShow === 'Value unverified' ? '#4a5769' : '#5eead4',
+                            fontStyle: amtShow === 'Value unverified' ? 'italic' : undefined,
                           }}>
                           {amtShow}
                         </span>
@@ -1294,54 +1349,33 @@ export default function WhaleAlertsPage() {
                       <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: '-0.01em', color: '#f1f5f9' }}>{tok}</span>
                     </div>
 
-                    {/* Subline — time pulled to the front as the anchor a live feed is scanned by;
-                        the rest stays in the same order, one quieter tone. */}
+                    {/* Time + signal reason — the two quiet descriptive facts stay as one readable
+                        line; time leads as the anchor a live feed is scanned by. */}
                     <p style={{ marginTop: 5, fontSize: 11, color: '#4a5769' }}>
                       <span style={{ color: '#7c8ba1', fontWeight: 600 }}>{timeAgo(alert.occurred_at)}</span>
-                      {' · '}Tracked wallet · Base
-                      {(alert.legs ?? 1) > 1 ? ` · ${alert.legs} legs` : ''}
-                      {(alert.repeats ?? 1) > 1 ? ` · ×${alert.repeats} in 5m` : ''}
                       {' · '}{signalReason}
                     </p>
-                    {/* Wallet behavior tags */}
-                    {alert.walletContext && (() => {
-                      const ctx = alert.walletContext!
-                      const TYPE_LABEL: Record<string, string> = {
-                        repeat_accumulator: 'Repeat accumulator', active_rotator: 'Active rotator',
-                        fresh_wallet: 'Fresh wallet', seller_distribution: 'Seller / distribution',
-                        mixed_flow: 'Mixed flow', contract_or_router: 'Contract / router',
-                        one_off: 'One-off',
-                      }
-                      const typeLabel = TYPE_LABEL[ctx.behaviorType] ?? ''
-                      const showMonitor = ctx.behaviorScore >= 60 && ctx.confidence !== 'low'
-                      if (!typeLabel && !showMonitor) return null
-                      return (
-                        <div className="flex flex-wrap items-center" style={{ gap: 4, marginTop: 4 }}>
-                          {typeLabel && (
-                            <span style={{ fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(148,163,184,0.07)', border: '1px solid rgba(148,163,184,0.14)', color: '#475569' }}>
-                              {typeLabel}
-                            </span>
-                          )}
-                          {showMonitor && (
-                            <span style={{ fontSize: 9, fontWeight: 600, padding: '2px 6px', borderRadius: 4, background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.20)', color: '#34d399' }}>
-                              Worth monitoring
-                            </span>
-                          )}
-                          {ctx.alertCount7d > 1 && (
-                            <span style={{ fontSize: 9, color: '#334155' }}>· {ctx.alertCount7d} alerts/7d</span>
-                          )}
-                          {(ctx.verifiedUsdFlow7d ?? 0) > 0 && (
-                            <span style={{ fontSize: 9, color: '#334155' }}>· {fmtUsd(ctx.verifiedUsdFlow7d)} 7d flow</span>
-                          )}
-                        </div>
-                      )
-                    })()}
+                    {/* Compact metadata — chain / legs / repeats / wallet-behavior stats, one
+                        bounded chip per fact instead of a concatenated sentence. */}
+                    <div className="flex flex-wrap items-center" style={{ gap: 5, marginTop: 5 }}>
+                      {metaChips.map((c, idx) => (
+                        <span key={idx} className="wa-meta-chip"
+                          style={c.tone === 'positive' ? { background: 'rgba(16,185,129,0.07)', border: '1px solid rgba(16,185,129,0.20)', color: '#34d399' } : undefined}>
+                          {c.label}
+                        </span>
+                      ))}
+                    </div>
                   </div>
 
                   {/* Right column */}
                   <div className="shrink-0 flex flex-col items-end" style={{ marginTop: 2, gap: 6 }}>
-                    <span className="rounded-full"
-                      style={{ padding: '2px 10px', fontSize: 9, fontWeight: 800, letterSpacing: '0.1em', ...signalStyle(signal) }}>
+                    {/* SIGNAL BADGE, DISCLOSED (feed polish): unchanged severity/signal value and
+                        colour — a small filled dot is added only for HIGH SIGNAL/WATCH so the
+                        badges that actually matter carry one extra, immediate visual cue, matching
+                        the task's "clearer WATCH badge" ask without touching the classification. */}
+                    <span className="rounded-full flex items-center"
+                      style={{ gap: 4, padding: '2px 10px', fontSize: 9, fontWeight: 800, letterSpacing: '0.1em', ...signalStyle(signal) }}>
+                      {tier === 'strong' && <span className="rounded-full" style={{ width: 5, height: 5, background: 'currentColor', display: 'inline-block' }} />}
                       {signal}
                     </span>
                     <div className="flex items-center" style={{ gap: 6 }}>
@@ -1355,9 +1389,14 @@ export default function WhaleAlertsPage() {
                           </svg>
                         </a>
                       )}
+                      {/* ASK CLARK, DISCLOSED (feed polish): swapped from a heavy purple fill to the
+                          same quiet teal/slate treatment used elsewhere on this page (e.g. the
+                          external-link button above) — still an obviously clickable bordered chip,
+                          just no longer the most saturated colour on the row. Same handler, same
+                          per-row prompt, unchanged. */}
                       <button onClick={goRowClark}
                         className="flex items-center rounded-[8px] hover:opacity-90"
-                        style={{ gap: 4, padding: '4px 10px', fontSize: 10, fontWeight: 700, background: 'rgba(139,92,246,0.10)', border: '1px solid rgba(139,92,246,0.24)', color: '#c4b5fd' }}>
+                        style={{ gap: 4, padding: '4px 10px', fontSize: 10, fontWeight: 700, background: 'rgba(45,212,191,0.07)', border: '1px solid rgba(45,212,191,0.20)', color: '#99f6e4' }}>
                         <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
                         </svg>
