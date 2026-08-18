@@ -4427,11 +4427,12 @@ export default function TerminalTokenScanner() {
                 <div className="result-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', flexWrap: 'wrap', marginBottom: '18px', paddingBottom: '16px', borderBottom: '1px solid rgba(255,255,255,0.07)' }}>
                   <div style={{ minWidth: 0 }}>
                     <h2 style={{ fontSize: '21px', fontWeight: 800, color: '#f8fafc', margin: '0 0 6px', letterSpacing: '-0.01em', display: 'flex', alignItems: 'baseline', gap: '10px', flexWrap: 'wrap' }}>
-                      {sr.marketData?.tokenName ?? sr.marketData?.tokenSymbol ?? 'Unknown Solana Token'}
+                      {/* Provider wiring task: Jupiter name first, DexScreener fallback, mint last. */}
+                      {sr.resolvedTokenName ?? sr.resolvedTokenSymbol ?? 'Unknown Solana Token'}
                       {/* Symbol only shown as a separate badge when name is present — otherwise the
                           symbol IS the heading above and repeating it here would be a duplicate. */}
-                      {sr.marketData?.tokenName && sr.marketData?.tokenSymbol && (
-                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#c084fc', fontFamily: 'var(--font-plex-mono)' }}>{sr.marketData.tokenSymbol}</span>
+                      {sr.resolvedTokenName && sr.resolvedTokenSymbol && (
+                        <span style={{ fontSize: '13px', fontWeight: 700, color: '#c084fc', fontFamily: 'var(--font-plex-mono)' }}>{sr.resolvedTokenSymbol}</span>
                       )}
                     </h2>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
@@ -4579,20 +4580,27 @@ export default function TerminalTokenScanner() {
                         {sr.marketData ? 'Historical candles are not indexed for Solana Beta yet — current price is live.' : 'Chart data unavailable — no indexed Solana pool found for this mint.'}
                       </p>
                     </div>
-                    {sr.marketData ? (
-                      <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '12px', marginBottom: '10px' }}>
-                        <StatCard label="Price" value={sr.marketData.priceUsd != null ? `$${sr.marketData.priceUsd}` : 'Unavailable'} accent="#2DD4BF" helper="DexScreener" />
-                        <StatCard label="Liquidity" value={sr.marketData.liquidityUsd != null ? fmtLarge(sr.marketData.liquidityUsd) : 'Unavailable'} accent="#22d3ee" />
-                        <StatCard label="24h Volume" value={sr.marketData.volume24hUsd != null ? fmtLarge(sr.marketData.volume24hUsd) : 'Unavailable'} accent="#a78bfa" />
-                        <StatCard label={sr.marketData.marketCapUsd != null ? 'Market Cap' : 'FDV'} value={sr.marketData.marketCapUsd != null ? fmtLarge(sr.marketData.marketCapUsd) : sr.marketData.fdvUsd != null ? fmtLarge(sr.marketData.fdvUsd) : 'Unavailable'} accent="#fb923c" dim />
-                        <StatCard label="Primary Pool / DEX" value={sr.marketData.primaryDexLabel ?? 'Solana pool / AMM'} accent="#94a3b8" dim />
-                        <StatCard label="Pair Age" value="Not tracked in Beta" accent="#94a3b8" dim />
-                      </div>
-                    ) : (
-                      <div style={{ padding: '20px', border: '1px dashed rgba(148,163,184,0.24)', borderRadius: '14px', background: 'rgba(148,163,184,0.03)' }}>
-                        <p style={{ margin: 0, fontSize: '12.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Market data unavailable for this Solana mint. No pool was found via the indexed Solana market provider — this is shown as an open check, never a fake price or liquidity figure.</p>
-                      </div>
-                    )}
+                    {(() => {
+                      // Jupiter is a PRICE FALLBACK only — DexScreener stays primary per the
+                      // provider-wiring task. priceSource labels which provider the number is
+                      // actually from, so the fallback is never silently indistinguishable.
+                      const price = sr.marketData?.priceUsd ?? sr.jupiter.resolved.price
+                      const priceSource = sr.marketData?.priceUsd != null ? 'DexScreener' : sr.jupiter.resolved.price != null ? 'Jupiter (fallback)' : undefined
+                      return sr.marketData || price != null ? (
+                        <div className="stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,minmax(0,1fr))', gap: '12px', marginBottom: '10px' }}>
+                          <StatCard label="Price" value={price != null ? `$${price}` : 'Unavailable'} accent="#2DD4BF" helper={priceSource} />
+                          <StatCard label="Liquidity" value={sr.marketData?.liquidityUsd != null ? fmtLarge(sr.marketData.liquidityUsd) : 'Unavailable'} accent="#22d3ee" />
+                          <StatCard label="24h Volume" value={sr.marketData?.volume24hUsd != null ? fmtLarge(sr.marketData.volume24hUsd) : 'Unavailable'} accent="#a78bfa" />
+                          <StatCard label={sr.marketData?.marketCapUsd != null ? 'Market Cap' : 'FDV'} value={sr.marketData?.marketCapUsd != null ? fmtLarge(sr.marketData.marketCapUsd) : sr.marketData?.fdvUsd != null ? fmtLarge(sr.marketData.fdvUsd) : 'Unavailable'} accent="#fb923c" dim />
+                          <StatCard label="Primary Pool / DEX" value={sr.marketData?.primaryDexLabel ?? 'Solana pool / AMM'} accent="#94a3b8" dim />
+                          <StatCard label="Pair Age" value={sr.marketData?.pairAgeLabel ?? 'Unavailable'} accent="#94a3b8" dim />
+                        </div>
+                      ) : (
+                        <div style={{ padding: '20px', border: '1px dashed rgba(148,163,184,0.24)', borderRadius: '14px', background: 'rgba(148,163,184,0.03)' }}>
+                          <p style={{ margin: 0, fontSize: '12.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Market data unavailable for this Solana mint. No pool was found via the indexed Solana market provider — this is shown as an open check, never a fake price or liquidity figure.</p>
+                        </div>
+                      )
+                    })()}
                     {/* Pool activity — same slot as EVM's "Pool Activity" row. Solana Beta's market
                         provider does not expose per-pool buy/sell counts, so every field here is
                         an honest "Not indexed in Beta" rather than a guessed number. */}
@@ -4603,7 +4611,7 @@ export default function TerminalTokenScanner() {
                           <StatCard label="Transactions 24H" value="Not indexed in Beta" accent="#94a3b8" dim />
                           <StatCard label="Buys / Sells" value="Not indexed in Beta" accent="#94a3b8" dim />
                           <StatCard label="Buy / Sell Vol" value="Not indexed in Beta" accent="#94a3b8" dim />
-                          <StatCard label="Pair Age" value="Not tracked in Beta" accent="#94a3b8" dim />
+                          <StatCard label="Pair Age" value={sr.marketData.pairAgeLabel ?? 'Not tracked in Beta'} accent="#94a3b8" dim />
                         </div>
                       </div>
                     )}
@@ -4624,6 +4632,9 @@ export default function TerminalTokenScanner() {
                             {concRisk === 'HIGH' ? `High concentration — top 10 accounts hold ${conc.top10Percent?.toFixed(1)}%.` : concRisk === 'MEDIUM' ? `Moderate concentration — top 10 accounts hold ${conc.top10Percent?.toFixed(1)}%.` : concRisk === 'LOW' ? `Spread looks reasonable — top 10 accounts hold ${conc.top10Percent?.toFixed(1)}%.` : 'Concentration verdict is an open check for this scan.'}
                           </p>
                           <p style={{ margin: 0, fontSize: '10.5px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)' }}>Sampled {conc.accountsSampled} top accounts (max 20 — this is the RPC method&apos;s own cap).</p>
+                          <p style={{ margin: '4px 0 0', fontSize: '10px', color: '#5b7387', fontFamily: 'var(--font-plex-mono)' }}>
+                            Total holder count: {sr.goldrushOrCovalent.resolved.holderCount != null ? sr.goldrushOrCovalent.resolved.holderCount : 'not available (no confirmed GoldRush/Covalent Solana endpoint)'} — distinct from the top-account sample above.
+                          </p>
                         </div>
                         <div className="holders-grid" style={{ gridColumn: '1 / -1', padding: '14px 16px', borderRadius: '12px', background: 'rgba(167,139,250,0.05)', border: `1px solid ${concColor}28`, marginBottom: '16px' }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
@@ -4848,6 +4859,19 @@ export default function TerminalTokenScanner() {
                     <div style={cardBase}>
                       <p style={{ ...cardTitle, color: '#94a3b8' }}>Deployer History</p>
                       <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Creator/deployer evidence unavailable in Solana Beta — Solana has no EVM-style deployer transaction history to reconstruct.</p>
+                    </div>
+                    {/* Helius, DISCLOSED: a lightweight signature-presence check only — never the
+                        paid Enhanced Transactions API, so creator/dev-wallet identity stays an
+                        honest gap even when this card resolves. */}
+                    <div style={{ ...cardBase, marginTop: '12px' }}>
+                      <p style={{ ...cardTitle, color: sr.helius.called && sr.helius.success ? '#5eead4' : '#94a3b8' }}>On-Chain Activity Signal</p>
+                      <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>
+                        {!sr.helius.called
+                          ? 'Helius activity signal not enabled for this scan.'
+                          : sr.helius.success
+                            ? `${sr.helius.resolved.recentTransfers ?? 0} recent on-chain signatures found via Helius. Creator/dev-wallet identity requires Enhanced Transactions, not run by default.`
+                            : 'Helius activity read did not resolve — open check.'}
+                      </p>
                     </div>
                   </>
                 )}

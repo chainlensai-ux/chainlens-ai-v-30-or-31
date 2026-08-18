@@ -3540,6 +3540,11 @@ export async function POST(req: Request) {
       // Safe to log verbatim — the audit object contains only booleans/numbers/labels, never the
       // RPC URL or any secret (see solanaTokenScannerBeta.ts's audit contract).
       console.info('[solana-beta] solanaTokenScannerAudit', solanaResult.solanaTokenScannerAudit)
+      // solanaProviderWiringAudit only exists on a successful scan (providers are never called on
+      // the not_enabled/not_configured/mint_not_found/rpc_error early-return paths above).
+      if ('solanaProviderWiringAudit' in solanaResult) {
+        console.info('[solana-beta] solanaProviderWiringAudit', solanaResult.solanaProviderWiringAudit)
+      }
       const failed = 'status' in solanaResult
       return NextResponse.json(solanaResult, { status: failed ? (solanaResult.status === 'rpc_error' ? 502 : 400) : 200 })
     }

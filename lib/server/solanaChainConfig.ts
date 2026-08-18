@@ -117,3 +117,63 @@ export function solanaTokenScannerConfigAudit(): SolanaTokenScannerConfigAudit {
     redacted: true,
   }
 }
+
+// ── Provider wiring config (Solana provider wiring task) ───────────────────────
+//
+// One helper per provider, all server-only (never imported from a 'use client' file), all
+// returning booleans or redacted structures only — never a key, never a URL that embeds a key.
+// Every helper defaults CLOSED: a missing flag or a missing key both read as "not configured",
+// so a provider that isn't explicitly turned on is simply never called (see solanaProviders.ts).
+
+export function isHeliusSolanaFeatureEnabled(): boolean {
+  return process.env.ENABLE_HELIUS_SOLANA === 'true'
+}
+
+export function getHeliusApiKey(): string | null {
+  const key = process.env.HELIUS_API_KEY
+  return typeof key === 'string' && key.trim().length > 0 ? key.trim() : null
+}
+
+/** Both the feature flag AND a configured key are required — same shape as isSolanaChainAvailable. */
+export function isHeliusConfigured(): boolean {
+  return isHeliusSolanaFeatureEnabled() && getHeliusApiKey() != null
+}
+
+export function isJupiterSolanaFeatureEnabled(): boolean {
+  return process.env.ENABLE_JUPITER_SOLANA === 'true'
+}
+
+export function getJupiterApiKey(): string | null {
+  const key = process.env.JUPITER_API_KEY
+  return typeof key === 'string' && key.trim().length > 0 ? key.trim() : null
+}
+
+/**
+ * Jupiter's token/price endpoints used here (lite-api.jup.ag) are public and work without a key —
+ * JUPITER_API_KEY only raises rate limits when present. So "configured" here means only the
+ * feature flag, matching the honesty contract: Jupiter enrichment runs whenever explicitly turned
+ * on, key or no key, rather than reporting "unconfigured" for a provider that would work anyway.
+ */
+export function isJupiterConfigured(): boolean {
+  return isJupiterSolanaFeatureEnabled()
+}
+
+/**
+ * DexScreener needs no key at all — "available" tracks only whether Solana Beta itself is on,
+ * since DexScreener is not a separately gated provider.
+ */
+export function isDexScreenerAvailable(): boolean {
+  return isSolanaBetaFeatureEnabled()
+}
+
+/**
+ * GOLDRUSH SOLANA SUPPORT, DISCLOSED (see solanaTokenScannerConfigAudit's own header above for the
+ * full reasoning): no GOLDRUSH_VERIFIED_CHAIN_SLUGS map anywhere in this codebase lists a Solana
+ * slug. isGoldrushKeyPresent reports whether a key exists at all (useful for the audit's
+ * "configured" bit), but this alone never authorizes a call — solanaProviders.ts's GoldRush
+ * enrichment is unconditionally `called: false` until a real, verified Solana chain slug exists.
+ */
+export function isGoldrushKeyPresent(): boolean {
+  const key = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY
+  return typeof key === 'string' && key.trim().length > 0
+}

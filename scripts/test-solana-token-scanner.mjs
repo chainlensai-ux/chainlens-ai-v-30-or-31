@@ -291,7 +291,8 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
     check(`solana scanner imports nothing EVM-specific: ${forbidden}`, !specifiers.some(s => s.includes(forbidden)))
   }
   check('solana scanner imports its own chain config', specifiers.some(s => s.includes('solanachainconfig')))
-  check('solana scanner has no other runtime dependency', specifiers.length === 1)
+  check('solana scanner imports its own provider wiring module', specifiers.some(s => s.includes('solanaproviders')))
+  check('solana scanner has no other runtime dependency', specifiers.length === 2)
 }
 
 // ─── ROUTE ORDER: chain=solana returns before EVM validation ─────────────────
@@ -396,6 +397,197 @@ function baseSr(overrides = {}) {
   const fewerUnsupported = computeSolanaConfidenceScore(baseSr({ unsupportedChecks: SOLANA_UNSUPPORTED_CHECKS.slice(0, 1) }))
   const moreUnsupported = computeSolanaConfidenceScore(baseSr({ unsupportedChecks: [...SOLANA_UNSUPPORTED_CHECKS, ...SOLANA_UNSUPPORTED_CHECKS] }))
   check('fewer unsupported checks scores higher than more, same other inputs', fewerUnsupported.score > moreUnsupported.score)
+}
+
+// ─── Provider wiring (Solana provider wiring task) ────────────────────────────
+// Jupiter/Helius/GoldRush provider integration into scanSolanaTokenBeta — every assertion here
+// defends "missing/disabled provider never crashes the scan" and "no fabricated evidence".
+
+function providerStub({ mint, supply, largest, dexPairs, jupiterMeta, jupiterPrice, heliusSignatures, heliusFail = false, jupiterFail = false }) {
+  return async (url, init) => {
+    const u = typeof url === 'string' ? url : ''
+    if (u.includes('dexscreener')) return { ok: true, json: async () => ({ pairs: dexPairs ?? [] }) }
+    if (u.includes('lite-api.jup.ag/tokens')) {
+      if (jupiterFail) return { ok: false, status: 500, json: async () => ({}) }
+      return { ok: true, json: async () => (jupiterMeta ?? {}) }
+    }
+    if (u.includes('lite-api.jup.ag/price')) {
+      if (jupiterFail) return { ok: false, status: 500, json: async () => ({}) }
+      return { ok: true, json: async () => ({ data: jupiterPrice ?? {} }) }
+    }
+    if (u.includes('helius-rpc.com')) {
+      if (heliusFail) return { ok: false, status: 500, json: async () => ({}) }
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: heliusSignatures ?? [] }) }
+    }
+    const body = JSON.parse(init.body)
+    const results = { getAccountInfo: mint, getTokenSupply: supply, getTokenLargestAccounts: largest }
+    return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: results[body.method] ?? null }) }
+  }
+}
+
+// ─── Missing/disabled Jupiter and Helius never crash a scan ───────────────────
+{
+  delete process.env.ENABLE_JUPITER_SOLANA
+  delete process.env.JUPITER_API_KEY
+  delete process.env.ENABLE_HELIUS_SOLANA
+  delete process.env.HELIUS_API_KEY
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
+      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium' }],
+    }),
+  })
+  check('scan with no Jupiter/Helius config does not crash', !('status' in r))
+  check('jupiter not called when disabled', r.jupiter.called === false)
+  check('helius not called when disabled', r.helius.called === false)
+  check('jupiter reports a clean errorReason, not a crash', typeof r.jupiter.errorReason === 'string')
+  check('helius reports a clean errorReason, not a crash', typeof r.helius.errorReason === 'string')
+  check('header identity still resolves via DexScreener fallback when Jupiter is off', r.resolvedTokenName === null && r.resolvedTokenSymbol === null)
+}
+
+// ─── Jupiter enabled: metadata maps name/symbol correctly, becomes header identity ─────────────
+{
+  process.env.ENABLE_JUPITER_SOLANA = 'true'
+  delete process.env.ENABLE_HELIUS_SOLANA
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
+      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium' }],
+      jupiterMeta: { name: 'USD Coin', symbol: 'USDC', logoURI: 'https://x/logo.png', tags: ['verified'] },
+      jupiterPrice: { [USDC_MINT]: { price: '1.001' } },
+    }),
+  })
+  check('jupiter called when enabled', r.jupiter.called === true)
+  check('jupiter metadata maps name/symbol correctly', r.jupiter.resolved.name === 'USD Coin' && r.jupiter.resolved.symbol === 'USDC')
+  check('jupiter maps verified tag', r.jupiter.resolved.verified === true)
+  check('jupiter maps price', r.jupiter.resolved.price === 1.001)
+  check('jupiter identity takes header precedence over DexScreener', r.resolvedTokenName === 'USD Coin' && r.resolvedTokenSymbol === 'USDC')
+  check('DexScreener market data maps price/liquidity/volume correctly', r.marketData.priceUsd === 1 && r.marketData.liquidityUsd === 1000 && r.marketData.volume24hUsd === 1)
+  check('alchemy authority read maps mint/freeze authority correctly', r.mintAuthority === null && r.freezeAuthority === null && r.authorityReadSucceeded === true)
+  delete process.env.ENABLE_JUPITER_SOLANA
+}
+
+// ─── Jupiter failure degrades to an evidence gap, never a fake identity ────────
+{
+  process.env.ENABLE_JUPITER_SOLANA = 'true'
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [], jupiterFail: true }),
+  })
+  check('jupiter failure reported as unsuccessful, not thrown', r.jupiter.called === true && r.jupiter.success === false)
+  check('jupiter failure adds an evidence gap', r.solanaEvidenceGaps.some(g => /jupiter/i.test(g)))
+  delete process.env.ENABLE_JUPITER_SOLANA
+}
+
+// ─── Helius: not called when ENABLE_HELIUS_SOLANA=false, even with a key present ───────────────
+{
+  process.env.ENABLE_HELIUS_SOLANA = 'false'
+  process.env.HELIUS_API_KEY = 'test-helius-key-should-never-appear'
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [] }),
+  })
+  check('helius not called when flag is false, regardless of key', r.helius.called === false)
+  check('scan never leaks the helius key', !JSON.stringify(r).includes('test-helius-key-should-never-appear'))
+  delete process.env.ENABLE_HELIUS_SOLANA
+  delete process.env.HELIUS_API_KEY
+}
+
+// ─── Helius enabled: lightweight call resolves, Enhanced Transactions never used by default ────
+{
+  process.env.ENABLE_HELIUS_SOLANA = 'true'
+  process.env.HELIUS_API_KEY = 'test-helius-key'
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [],
+      heliusSignatures: [{ signature: 'sig1' }, { signature: 'sig2' }],
+    }),
+  })
+  check('helius called when enabled with a key', r.helius.called === true)
+  check('helius resolves recentTransfers from signature count', r.helius.resolved.recentTransfers === 2)
+  check('helius Enhanced Transactions are never used by default', r.helius.enhancedTransactionsUsed === false)
+  check('helius creator/dev signals stay null (Enhanced Transactions gap), never guessed', r.helius.resolved.creatorSignals === null && r.helius.resolved.devActivity === null)
+  check('helius credit estimate is a small fixed number, not unbounded', r.helius.estimatedCredits > 0 && r.helius.estimatedCredits <= 5)
+  check('scan never leaks the helius key', !JSON.stringify(r).includes('test-helius-key'))
+  delete process.env.ENABLE_HELIUS_SOLANA
+  delete process.env.HELIUS_API_KEY
+}
+
+// ─── Helius failure degrades cleanly, never crashes ────────────────────────────
+{
+  process.env.ENABLE_HELIUS_SOLANA = 'true'
+  process.env.HELIUS_API_KEY = 'test-helius-key'
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [], heliusFail: true }),
+  })
+  check('helius failure does not crash the scan', !('status' in r))
+  check('helius failure reported unsuccessful with an error reason', r.helius.success === false && typeof r.helius.errorReason === 'string')
+  delete process.env.ENABLE_HELIUS_SOLANA
+  delete process.env.HELIUS_API_KEY
+}
+
+// ─── GoldRush/Covalent: unsupported endpoint creates a clean unavailable state ─────────────────
+{
+  process.env.GOLDRUSH_API_KEY = 'test-goldrush-key'
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [] }),
+  })
+  check('goldrush never called (no verified Solana endpoint)', r.goldrushOrCovalent.called === false)
+  check('goldrush reports a clean, non-crashing unavailable state', r.goldrushOrCovalent.success === false && typeof r.goldrushOrCovalent.errorReason === 'string')
+  check('goldrush holder count stays null, never fabricated', r.goldrushOrCovalent.resolved.holderCount === null)
+  delete process.env.GOLDRUSH_API_KEY
+}
+
+// ─── solanaProviderWiringAudit shape and honesty ───────────────────────────────
+{
+  process.env.ENABLE_JUPITER_SOLANA = 'true'
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: providerStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
+      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium' }],
+      jupiterMeta: { name: 'USD Coin', symbol: 'USDC' },
+    }),
+  })
+  const wa = r.solanaProviderWiringAudit
+  check('wiring audit carries the mint', wa.mint === USDC_MINT)
+  check('wiring audit reports alchemy always enabled', wa.enabledProviders.alchemySolana === true)
+  check('wiring audit reports jupiter enabled to match config', wa.enabledProviders.jupiter === true)
+  check('wiring audit reports helius disabled to match config', wa.enabledProviders.helius === false)
+  check('wiring audit alchemy resolved block carries real values', wa.providerCalls.alchemy.resolved.decimals === 6 && wa.providerCalls.alchemy.resolved.supply === 1000000)
+  check('wiring audit dexScreener pairsFound reflects real pairs', wa.providerCalls.dexScreener.pairsFound === 1)
+  check('wiring audit mergedResult tokenName prefers jupiter', wa.mergedResult.tokenName === 'USD Coin')
+  check('wiring audit mergedResult carries top1/top10/top20', wa.mergedResult.top1 === 40 && wa.mergedResult.top10 === 55)
+  check('wiring audit missingEvidence is the real evidence-gap list', Array.isArray(wa.missingEvidence))
+  check('wiring audit unsupportedChecks matches the real unsupported-check list', wa.unsupportedChecks.length === SOLANA_UNSUPPORTED_CHECKS.length)
+  check('wiring audit never leaks a key or URL', !JSON.stringify(wa).includes('http') && !JSON.stringify(wa).toLowerCase().includes('alchemy.com'))
+  delete process.env.ENABLE_JUPITER_SOLANA
+}
+
+// ─── Solana result still renders through the normal Token Scanner shell (UI mapping) ───────────
+{
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+  check('page reads resolvedTokenName/resolvedTokenSymbol for the Solana header (Jupiter-first identity)', page.includes('sr.resolvedTokenName') && page.includes('sr.resolvedTokenSymbol'))
+  check('page reads sr.jupiter for the Market tab price fallback', page.includes('sr.jupiter.resolved.price'))
+  check('page reads sr.helius for the Dev tab activity signal', page.includes('sr.helius.'))
+  check('page reads sr.goldrushOrCovalent for the Holders tab holder-count distinction', page.includes('sr.goldrushOrCovalent.resolved.holderCount'))
+  // Same result-tabs-wrap / result-header shell classes used by the Solana branch as by EVM chains.
+  check('solana branch still uses the shared result-header shell class', page.includes("className=\"result-header\""))
+  check('solana branch still uses the shared result-tabs-wrap shell class', page.includes("className=\"result-tabs-wrap\""))
+}
+
+// ─── Base/ETH/BNB/Robinhood scan routing unchanged (provider wiring task) ──────────────────────
+{
+  const { readFileSync } = await import('node:fs')
+  const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
+  check('EVM chain gate untouched by provider wiring', /rawChain !== 'base' && rawChain !== 'eth' && rawChain !== 'bnb' && rawChain !== 'robinhood'/.test(route))
+  check('solana branch still returns before EVM logic runs', route.indexOf("if (rawChain === 'solana')") < route.indexOf("rawChain !== 'base' && rawChain !== 'eth'"))
 }
 
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)

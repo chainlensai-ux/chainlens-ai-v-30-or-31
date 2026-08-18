@@ -30,7 +30,19 @@ import {
   getSolanaRpcUrl,
   isSolanaBetaFeatureEnabled,
   isSolanaRpcConfigured,
+  isHeliusConfigured,
+  isJupiterConfigured,
+  isDexScreenerAvailable,
+  isGoldrushKeyPresent,
 } from './solanaChainConfig.ts'
+import {
+  fetchJupiterSolanaData,
+  fetchHeliusSolanaActivity,
+  solanaGoldrushEnrichment,
+  type SolanaJupiterResult,
+  type SolanaHeliusResult,
+  type SolanaGoldrushResult,
+} from './solanaProviders.ts'
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -74,6 +86,8 @@ export type SolanaMarketData = {
    */
   tokenName: string | null
   tokenSymbol: string | null
+  /** Pair age, human-readable (e.g. "42d"), derived from DexScreener's pairCreatedAt. Null if absent. */
+  pairAgeLabel: string | null
 }
 
 export type SolanaTokenScannerAudit = {
@@ -95,10 +109,85 @@ export type SolanaTokenScannerAudit = {
   evidenceGaps: string[]
 }
 
+export type SolanaProviderWiringAudit = {
+  mint: string
+  enabledProviders: {
+    alchemySolana: boolean
+    dexScreener: boolean
+    jupiter: boolean
+    helius: boolean
+    goldrushOrCovalent: boolean
+  }
+  providerCalls: {
+    alchemy: {
+      called: boolean
+      success: boolean
+      endpointsUsed: string[]
+      resolved: {
+        tokenProgram: string | null
+        decimals: number | null
+        supply: number | null
+        mintAuthority: string | null
+        freezeAuthority: string | null
+        topAccounts: number | null
+      }
+      errorReason: string | null
+    }
+    dexScreener: {
+      called: boolean
+      success: boolean
+      pairsFound: number
+      selectedPair: string | null
+      resolved: {
+        price: number | null
+        liquidity: number | null
+        volume24h: number | null
+        marketCap: number | null
+        fdv: number | null
+        dex: string | null
+        pairAge: string | null
+      }
+      errorReason: string | null
+    }
+    jupiter: SolanaJupiterResult
+    helius: SolanaHeliusResult
+    goldrushOrCovalent: SolanaGoldrushResult
+  }
+  mergedResult: {
+    tokenName: string | null
+    tokenSymbol: string | null
+    price: number | null
+    liquidity: number | null
+    volume24h: number | null
+    marketCap: number | null
+    supply: number | null
+    tokenProgram: string | null
+    mintAuthority: string | null
+    freezeAuthority: string | null
+    top1: number | null
+    top10: number | null
+    top20: number | null
+    holderCount: number | null
+    poolDex: string | null
+    poolAge: string | null
+    riskReadAvailable: boolean
+  }
+  missingEvidence: string[]
+  unsupportedChecks: string[]
+  confidenceLimits: string[]
+}
+
 export type SolanaBetaScanResult = {
   solanaBeta: true
   chain: 'solana'
   mintAddress: string
+  /** Header identity, resolved Jupiter first, DexScreener fallback, null (mint) last. */
+  resolvedTokenName: string | null
+  resolvedTokenSymbol: string | null
+  jupiter: SolanaJupiterResult
+  helius: SolanaHeliusResult
+  goldrushOrCovalent: SolanaGoldrushResult
+  solanaProviderWiringAudit: SolanaProviderWiringAudit
   /** 'spl-token' | 'spl-token-2022' | null when the owning program could not be read. */
   tokenProgram: string | null
   decimals: number | null
@@ -182,12 +271,12 @@ function tokenProgramLabel(owner: string | null): string | null {
 async function fetchSolanaMarketData(
   mintAddress: string,
   fetchImpl: RpcFetch,
-): Promise<{ data: SolanaMarketData | null; provider: string | null }> {
+): Promise<{ data: SolanaMarketData | null; provider: string | null; pairsFound: number; errorReason: string | null }> {
   try {
     const res = await fetchImpl(`https://api.dexscreener.com/latest/dex/tokens/${mintAddress}`, {
       signal: AbortSignal.timeout(8000),
     })
-    if (!res.ok) return { data: null, provider: 'dexscreener' }
+    if (!res.ok) return { data: null, provider: 'dexscreener', pairsFound: 0, errorReason: `dexscreener_http_${res.status}` }
     const json = await res.json().catch(() => null) as { pairs?: unknown } | null
     const pairs = Array.isArray(json?.pairs) ? json!.pairs as Array<Record<string, unknown>> : []
     // Solana-only pairs, highest liquidity first — the primary pool is the deepest one.
@@ -198,7 +287,7 @@ async function fetchSolanaMarketData(
         const lb = Number((b.liquidity as Record<string, unknown> | undefined)?.usd ?? 0)
         return lb - la
       })
-    if (solPairs.length === 0) return { data: null, provider: 'dexscreener' }
+    if (solPairs.length === 0) return { data: null, provider: 'dexscreener', pairsFound: 0, errorReason: 'no_solana_pairs' }
     const top = solPairs[0]
     const num = (v: unknown): number | null => {
       const n = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN
@@ -219,8 +308,19 @@ async function fetchSolanaMarketData(
     // be meaningless).
     const liquidityUsd = solPairs.reduce((sum, p) => sum + (num((p.liquidity as Record<string, unknown> | undefined)?.usd) ?? 0), 0)
     const volume24hUsd = solPairs.reduce((sum, p) => sum + (num((p.volume as Record<string, unknown> | undefined)?.h24) ?? 0), 0)
+    const pairCreatedAt = num(top.pairCreatedAt)
+    const pairAgeLabel = pairCreatedAt != null
+      ? (() => {
+          const days = Math.floor((Date.now() - pairCreatedAt) / 86_400_000)
+          if (days < 0) return null
+          if (days < 1) return '<1d'
+          return `${days}d`
+        })()
+      : null
     return {
       provider: 'dexscreener',
+      pairsFound: solPairs.length,
+      errorReason: null,
       data: {
         priceUsd: num(top.priceUsd),
         liquidityUsd: liquidityUsd > 0 ? Math.round(liquidityUsd) : null,
@@ -231,10 +331,11 @@ async function fetchSolanaMarketData(
         primaryDexLabel: typeof top.dexId === 'string' ? top.dexId : null,
         tokenName,
         tokenSymbol,
+        pairAgeLabel,
       },
     }
   } catch {
-    return { data: null, provider: 'dexscreener' }
+    return { data: null, provider: 'dexscreener', pairsFound: 0, errorReason: 'dexscreener_unreachable' }
   }
 }
 
@@ -439,13 +540,25 @@ export async function scanSolanaTokenBeta(
     evidenceGaps.push('Top token accounts could not be read — concentration unavailable.')
   }
 
-  // ── 4. Market data ─────────────────────────────────────────────────────────
+  // ── 4. Market data (DexScreener — primary) ────────────────────────────────
   const market = await fetchSolanaMarketData(mintAddress, fetchImpl)
   audit.marketProviderUsed = market.provider
   audit.marketDataResolved = market.data != null
   if (!market.data) evidenceGaps.push('No Solana market/pool data found via DexScreener — price, liquidity and volume unavailable.')
 
-  // ── 5. Beta risk ───────────────────────────────────────────────────────────
+  // ── 5. Jupiter (identity enrichment + price fallback) ────────────────────
+  const jupiter = await fetchJupiterSolanaData(mintAddress, fetchImpl)
+  if (isJupiterConfigured() && !jupiter.success) evidenceGaps.push('Jupiter identity/price enrichment did not resolve — token identity relies on DexScreener and the mint address only.')
+
+  // ── 6. Helius (lightweight activity signal — never Enhanced Transactions) ─
+  const helius = await fetchHeliusSolanaActivity(mintAddress, fetchImpl)
+  if (isHeliusConfigured() && !helius.success) evidenceGaps.push('Helius activity read did not resolve — dev/creator activity signal unavailable.')
+  if (helius.called) evidenceGaps.push('Creator/dev-wallet activity requires Helius Enhanced Transactions, which is not called by default (cost control) — only recent on-chain signature presence is checked.')
+
+  // ── 7. GoldRush / Covalent (no verified Solana endpoint — cleanly unavailable) ─
+  const goldrushOrCovalent = solanaGoldrushEnrichment()
+
+  // ── 8. Beta risk ───────────────────────────────────────────────────────────
   const betaRisk = scoreSolanaBeta({
     mintAuthority,
     freezeAuthority,
@@ -458,10 +571,89 @@ export async function scanSolanaTokenBeta(
 
   audit.evidenceGaps = evidenceGaps
 
+  // Header identity precedence, per the provider-wiring task: Jupiter first, DexScreener
+  // fallback, mint address last (the mint fallback itself is a UI concern, not resolved here).
+  const resolvedTokenName = jupiter.resolved.name ?? market.data?.tokenName ?? null
+  const resolvedTokenSymbol = jupiter.resolved.symbol ?? market.data?.tokenSymbol ?? null
+
+  const wiringAudit: SolanaProviderWiringAudit = {
+    mint: mintAddress,
+    enabledProviders: {
+      alchemySolana: true,
+      dexScreener: isDexScreenerAvailable(),
+      jupiter: isJupiterConfigured(),
+      helius: isHeliusConfigured(),
+      goldrushOrCovalent: isGoldrushKeyPresent(),
+    },
+    providerCalls: {
+      alchemy: {
+        called: true,
+        success: authorityReadSucceeded && totalSupply != null,
+        endpointsUsed: ['getAccountInfo', 'getTokenSupply', 'getTokenLargestAccounts'],
+        resolved: {
+          tokenProgram,
+          decimals,
+          supply: totalSupply,
+          mintAuthority,
+          freezeAuthority,
+          topAccounts: concentration?.accountsSampled ?? null,
+        },
+        errorReason: authorityReadSucceeded ? null : 'mint_authority_parse_failed',
+      },
+      dexScreener: {
+        called: true,
+        success: market.data != null,
+        pairsFound: market.pairsFound,
+        selectedPair: market.data?.primaryPoolAddress ?? null,
+        resolved: {
+          price: market.data?.priceUsd ?? null,
+          liquidity: market.data?.liquidityUsd ?? null,
+          volume24h: market.data?.volume24hUsd ?? null,
+          marketCap: market.data?.marketCapUsd ?? null,
+          fdv: market.data?.fdvUsd ?? null,
+          dex: market.data?.primaryDexLabel ?? null,
+          pairAge: market.data?.pairAgeLabel ?? null,
+        },
+        errorReason: market.errorReason,
+      },
+      jupiter,
+      helius,
+      goldrushOrCovalent,
+    },
+    mergedResult: {
+      tokenName: resolvedTokenName,
+      tokenSymbol: resolvedTokenSymbol,
+      price: market.data?.priceUsd ?? jupiter.resolved.price ?? null,
+      liquidity: market.data?.liquidityUsd ?? null,
+      volume24h: market.data?.volume24hUsd ?? null,
+      marketCap: market.data?.marketCapUsd ?? null,
+      supply: totalSupply,
+      tokenProgram,
+      mintAuthority,
+      freezeAuthority,
+      top1: concentration?.top1Percent ?? null,
+      top10: concentration?.top10Percent ?? null,
+      top20: concentration?.top20Percent ?? null,
+      holderCount: goldrushOrCovalent.resolved.holderCount,
+      poolDex: market.data?.primaryDexLabel ?? null,
+      poolAge: market.data?.pairAgeLabel ?? null,
+      riskReadAvailable: authorityReadSucceeded || market.data != null,
+    },
+    missingEvidence: evidenceGaps,
+    unsupportedChecks: SOLANA_UNSUPPORTED_CHECKS.map((u) => u.check),
+    confidenceLimits: betaRisk.reasons,
+  }
+
   return {
     solanaBeta: true,
     chain: 'solana',
     mintAddress,
+    resolvedTokenName,
+    resolvedTokenSymbol,
+    jupiter,
+    helius,
+    goldrushOrCovalent,
+    solanaProviderWiringAudit: wiringAudit,
     tokenProgram,
     decimals,
     totalSupply,
