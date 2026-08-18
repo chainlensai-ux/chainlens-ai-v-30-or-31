@@ -858,4 +858,89 @@ function poolProgramStub({ mint, supply, largest, poolAddress, poolOwner, poolIn
   check('LP Safety reads sr.poolProgram.owner for the unrecognized-program fallback note', page.includes('sr.poolProgram.owner'))
 }
 
+// ─── Social links (provider-wiring follow-up: "show X/website/Reddit links") ──────────────────
+// Sourced from the SAME already-fetched DexScreener pair response (pair.info.websites/socials) —
+// no new provider call. Every assertion here defends "real or null, never guessed."
+{
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: rpcStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
+      dexPairs: [{
+        chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium',
+        info: {
+          websites: [{ url: 'https://dexscreener.com/solana/p' }, { url: 'https://realtoken.io' }],
+          socials: [
+            { type: 'twitter', url: 'https://x.com/realtoken' },
+            { type: 'telegram', url: 'https://t.me/realtoken' },
+            { type: 'discord', url: 'https://discord.gg/realtoken' },
+            { type: 'reddit', url: 'https://reddit.com/r/realtoken' },
+          ],
+        },
+      }],
+    }),
+  })
+  check('twitter/x social link resolves', r.marketData.socials.twitter === 'https://x.com/realtoken')
+  check('telegram social link resolves', r.marketData.socials.telegram === 'https://t.me/realtoken')
+  check('discord social link resolves', r.marketData.socials.discord === 'https://discord.gg/realtoken')
+  check('reddit social link resolves', r.marketData.socials.reddit === 'https://reddit.com/r/realtoken')
+  check('website resolves, skipping the dexscreener.com self-link', r.marketData.socials.website === 'https://realtoken.io')
+}
+{
+  // "x" as the type (DexScreener sometimes uses "x" instead of "twitter") must also map to twitter.
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: rpcStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
+      dexPairs: [{
+        chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium',
+        info: { socials: [{ type: 'x', url: 'https://x.com/realtoken2' }] },
+      }],
+    }),
+  })
+  check('"x" type also maps to twitter', r.marketData.socials.twitter === 'https://x.com/realtoken2')
+}
+{
+  // No info block at all — every field null, never guessed from the token name/symbol.
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: rpcStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
+      dexPairs: [{ chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium' }],
+    }),
+  })
+  check('no info block: every social field is null, never guessed', Object.values(r.marketData.socials).every(v => v === null))
+}
+{
+  // A non-http string (e.g. a bare handle) must never be accepted as a URL.
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: rpcStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST,
+      dexPairs: [{
+        chainId: 'solana', priceUsd: '1', liquidity: { usd: 1000 }, volume: { h24: 1 }, pairAddress: 'P', dexId: 'raydium',
+        info: { socials: [{ type: 'twitter', url: '@realtoken' }] },
+      }],
+    }),
+  })
+  check('a non-URL social value is rejected, never passed through as a link', r.marketData.socials.twitter === null)
+}
+{
+  // Missing market data entirely — no crash, ProjectSocialsCard gets undefined gracefully.
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: rpcStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [] }),
+  })
+  check('no market data means marketData is null, socials access must not crash the page', r.marketData === null)
+}
+
+// ─── Solana Market tab renders Project Links via the shared card component ────────────────────
+{
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+  check('Solana Market tab renders ProjectSocialsCard from sr.marketData.socials', page.includes('<ProjectSocialsCard socials={sr.marketData?.socials} />'))
+  check('ProjectSocialsCard renders a Reddit link when present', page.includes("label: 'Reddit'"))
+  check('ProjectSocialsCard renders a Discord link when present', page.includes("label: 'Discord'"))
+}
+
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)

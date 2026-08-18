@@ -93,6 +93,14 @@ export type SolanaMarketData = {
   tokenSymbol: string | null
   /** Pair age, human-readable (e.g. "42d"), derived from DexScreener's pairCreatedAt. Null if absent. */
   pairAgeLabel: string | null
+  /**
+   * SOCIAL LINKS, DISCLOSED (Solana provider-wiring follow-up: "make sure a Sol coin scan shows
+   * its X/website/Reddit links"). Read from the SAME already-fetched DexScreener pair response
+   * (`pair.info.websites[]` / `pair.info.socials[]`) — never a second/new provider call, matching
+   * the tokenName/tokenSymbol mapping fix above. Each field is null, honestly, when that provider
+   * doesn't carry it — never a placeholder link, never guessed from the token name.
+   */
+  socials: { website: string | null; twitter: string | null; telegram: string | null; discord: string | null; reddit: string | null }
 }
 
 export type SolanaTokenScannerAudit = {
@@ -374,6 +382,31 @@ async function fetchSolanaMarketData(
           return `${days}d`
         })()
       : null
+
+    // Social links from the SAME pair response — see SolanaMarketData.socials's own header.
+    const validUrl = (v: unknown): string | null => (typeof v === 'string' && /^https?:\/\//i.test(v.trim()) ? v.trim() : null)
+    const info = top.info as Record<string, unknown> | undefined
+    const websites = Array.isArray(info?.websites) ? info!.websites as Array<Record<string, unknown>> : []
+    const socialsRaw = Array.isArray(info?.socials) ? info!.socials as Array<Record<string, unknown>> : []
+    let website: string | null = null
+    for (const w of websites) {
+      const u = validUrl(w.url)
+      if (u && !/dexscreener\.com/i.test(u)) { website = u; break }
+    }
+    let twitter: string | null = null
+    let telegram: string | null = null
+    let discord: string | null = null
+    let reddit: string | null = null
+    for (const s of socialsRaw) {
+      const type = String(s.type ?? '').toLowerCase()
+      const u = validUrl(s.url)
+      if (!u) continue
+      if (!twitter && (type === 'twitter' || type === 'x')) twitter = u
+      else if (!telegram && type === 'telegram') telegram = u
+      else if (!discord && type === 'discord') discord = u
+      else if (!reddit && type === 'reddit') reddit = u
+    }
+
     return {
       provider: 'dexscreener',
       pairsFound: solPairs.length,
@@ -389,6 +422,7 @@ async function fetchSolanaMarketData(
         tokenName,
         tokenSymbol,
         pairAgeLabel,
+        socials: { website, twitter, telegram, discord, reddit },
       },
     }
   } catch {

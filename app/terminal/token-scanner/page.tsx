@@ -1648,11 +1648,25 @@ function StatCard({ label, value, accent, helper, dim }: { label: string; value:
 // ─── Project Socials Card ─────────────────────────────────────────────────
 
 type SocialLink = { href: string; label: string; abbr: string; color: string }
+// Loosened from ScanResult['projectSocials'] so the Solana result (which builds this object
+// straight from DexScreener's pair.info, not the EVM multi-provider resolver) can reuse the
+// exact same card component — same premium presentation for both, one component to maintain.
+// sourceTrail/status/github were never read by this component's render logic (see below), so
+// this is a pure widening, not a behavior change for existing EVM callers.
+type ProjectSocialsInput = {
+  website?: string | null
+  twitter?: string | null
+  telegram?: string | null
+  discord?: string | null
+  reddit?: string | null
+} | null | undefined
 
-function ProjectSocialsCard({ socials }: { socials: ScanResult['projectSocials'] }) {
+function ProjectSocialsCard({ socials }: { socials: ProjectSocialsInput }) {
   const links: SocialLink[] = [
     socials?.twitter  ? { href: socials.twitter,  label: 'X',        abbr: 'X',   color: '#60a5fa' } : null,
     socials?.telegram ? { href: socials.telegram, label: 'Telegram', abbr: 'TG',  color: '#38bdf8' } : null,
+    socials?.discord  ? { href: socials.discord,  label: 'Discord',  abbr: 'DC',  color: '#818cf8' } : null,
+    socials?.reddit   ? { href: socials.reddit,   label: 'Reddit',   abbr: 'RD',  color: '#fb923c' } : null,
     socials?.website  ? { href: socials.website,  label: 'Website',  abbr: 'WEB', color: '#2DD4BF' } : null,
   ].filter((l): l is SocialLink => l !== null)
 
@@ -4585,6 +4599,12 @@ export default function TerminalTokenScanner() {
                       <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#22d3ee', fontFamily: 'var(--font-plex-mono)' }}>MARKET PULSE</p>
                       <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Price, liquidity, volume, and pool depth from indexed Solana pools.</p>
                     </div>
+                    {/* Project Links, DISCLOSED (Solana provider-wiring follow-up: "make sure a
+                        Sol coin scan shows its X/website/Reddit links"): reuses the exact same
+                        card EVM renders through, sourced from sr.marketData.socials — the SAME
+                        already-fetched DexScreener pair response, no new provider call. Same
+                        "No socials found" empty state as EVM when the pair carries none. */}
+                    <ProjectSocialsCard socials={sr.marketData?.socials} />
                     {/* CHART, DISCLOSED (Solana provider-wiring follow-up: "make the price chart
                         work"): real OHLCV candles from GeckoTerminal's free, keyless public API,
                         keyed off the same pool address DexScreener already resolved — no new key,
