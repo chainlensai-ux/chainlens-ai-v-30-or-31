@@ -1,0 +1,243 @@
+// SOLANA-NATIVE INTELLIGENCE ENGINE — SHARED TYPES, DISCLOSED (Solana-native architecture task).
+//
+// Single source of truth for every type the lib/server/solana/* analyzer modules and
+// lib/server/solanaTokenScannerBeta.ts's public facade share. Centralized here (rather than
+// re-declared per-analyzer) so every module reasons about the exact same shapes and nothing
+// silently drifts between mintAnalyzer/holderAnalyzer/poolAnalyzer/etc.
+//
+// HONESTY CONTRACT — read before adding a field here: every value this engine reports must be
+// real, provider-sourced evidence or an explicit, honest gap. Never a placeholder, never a
+// zero standing in for "unknown", never a guessed classification. See each analyzer module's own
+// header for what it does and does not attempt.
+
+import type {
+  SolanaJupiterResult,
+  SolanaHeliusResult,
+  SolanaGoldrushResult,
+  SolanaOhlcvResult,
+  SolanaHeliusHolderResult,
+} from '../solanaProviders.ts'
+
+export type SolanaUnsupportedCheck = {
+  check: string
+  reason: string
+}
+
+/** The EVM checks Token Scanner runs that have no valid Solana equivalent. */
+export const SOLANA_UNSUPPORTED_CHECKS: readonly SolanaUnsupportedCheck[] = [
+  { check: 'LP lock / burn proof', reason: 'Solana AMM pools do not use ERC-20-style LP tokens — pool authority verification is not fully supported yet.' },
+  { check: 'Honeypot simulation', reason: 'Honeypot simulation unavailable on this path.' },
+  { check: 'Buy / sell tax simulation', reason: 'Tax simulation unavailable on this path.' },
+  { check: 'Contract owner / renounced ownership', reason: 'Solana has no EVM ownership model — mint and freeze authority are checked instead.' },
+  { check: 'Deployer transaction history', reason: 'Creator/deployer transaction history is unavailable without Helius Enhanced Transactions (not called by default).' },
+]
+
+export type SolanaTopAccountShare = {
+  /** Rank, 1-based, by balance descending. */
+  rank: number
+  /** Raw base-unit amount as returned by the RPC (string to avoid precision loss). */
+  amountRaw: string
+  /** Share of total supply, 0-100, rounded to 2dp. Null when supply is unknown. */
+  percentOfSupply: number | null
+}
+
+export type SolanaMarketData = {
+  priceUsd: number | null
+  liquidityUsd: number | null
+  volume24hUsd: number | null
+  fdvUsd: number | null
+  marketCapUsd: number | null
+  primaryPoolAddress: string | null
+  primaryDexLabel: string | null
+  /** SPL mints carry no name/symbol on-chain — read from the matched side of the DexScreener pair. */
+  tokenName: string | null
+  tokenSymbol: string | null
+  /** Pair age, human-readable (e.g. "42d"), derived from DexScreener's pairCreatedAt. Null if absent. */
+  pairAgeLabel: string | null
+  /** Real transaction counts from the same DexScreener pair response's txns.h24 field. */
+  txns24h: { buys: number | null; sells: number | null }
+  /** Real social links from the same DexScreener pair response's info.websites/info.socials. */
+  socials: { website: string | null; twitter: string | null; telegram: string | null; discord: string | null; reddit: string | null }
+}
+
+export type SolanaTokenScannerAudit = {
+  enabled: boolean
+  rpcConfigured: boolean
+  mintAddress: string
+  tokenProgram: string | null
+  supplyResolved: boolean
+  decimalsResolved: boolean
+  largestAccountsResolved: boolean
+  top1Percent: number | null
+  top10Percent: number | null
+  top20Percent: number | null
+  marketProviderUsed: string | null
+  marketDataResolved: boolean
+  mintAuthorityResolved: boolean
+  freezeAuthorityResolved: boolean
+  unsupportedChecks: string[]
+  evidenceGaps: string[]
+}
+
+export type SolanaProviderWiringAudit = {
+  mint: string
+  enabledProviders: {
+    alchemySolana: boolean
+    dexScreener: boolean
+    jupiter: boolean
+    helius: boolean
+    goldrushOrCovalent: boolean
+  }
+  providerCalls: {
+    alchemy: {
+      called: boolean
+      success: boolean
+      endpointsUsed: string[]
+      resolved: {
+        tokenProgram: string | null
+        decimals: number | null
+        supply: number | null
+        mintAuthority: string | null
+        freezeAuthority: string | null
+        topAccounts: number | null
+      }
+      errorReason: string | null
+    }
+    dexScreener: {
+      called: boolean
+      success: boolean
+      pairsFound: number
+      selectedPair: string | null
+      resolved: {
+        price: number | null
+        liquidity: number | null
+        volume24h: number | null
+        marketCap: number | null
+        fdv: number | null
+        dex: string | null
+        pairAge: string | null
+      }
+      errorReason: string | null
+    }
+    jupiter: SolanaJupiterResult
+    helius: SolanaHeliusResult
+    goldrushOrCovalent: SolanaGoldrushResult
+    geckoTerminal: { called: boolean; success: boolean; candleCount: number; timeframe: string; errorReason: string | null }
+    heliusHolders: SolanaHeliusHolderResult
+  }
+  mergedResult: {
+    tokenName: string | null
+    tokenSymbol: string | null
+    price: number | null
+    liquidity: number | null
+    volume24h: number | null
+    marketCap: number | null
+    supply: number | null
+    tokenProgram: string | null
+    mintAuthority: string | null
+    freezeAuthority: string | null
+    top1: number | null
+    top10: number | null
+    top20: number | null
+    holderCount: number | null
+    holderCountIsLowerBound: boolean
+    poolDex: string | null
+    poolAge: string | null
+    riskReadAvailable: boolean
+  }
+  missingEvidence: string[]
+  unsupportedChecks: string[]
+  confidenceLimits: string[]
+}
+
+/**
+ * Real, on-chain-verified identity of the program that owns the primary pool account — a single
+ * cheap getAccountInfo read, compared against a small map of known, stable, publicly documented
+ * Solana AMM program IDs. `label` is null when the owner isn't recognized — `owner` still carries
+ * the real address either way, so nothing here ever guesses a wrong program name.
+ */
+export type SolanaPoolProgram = {
+  resolved: boolean
+  poolAddress: string | null
+  owner: string | null
+  label: string | null
+  errorReason: string | null
+}
+
+export type SolanaBetaScanResult = {
+  solanaBeta: true
+  chain: 'solana'
+  mintAddress: string
+  /** Header identity, resolved Jupiter first, DexScreener fallback, null (mint) last. */
+  resolvedTokenName: string | null
+  resolvedTokenSymbol: string | null
+  poolProgram: SolanaPoolProgram
+  jupiter: SolanaJupiterResult
+  helius: SolanaHeliusResult
+  goldrushOrCovalent: SolanaGoldrushResult
+  ohlcv: SolanaOhlcvResult
+  heliusHolders: SolanaHeliusHolderResult
+  solanaProviderWiringAudit: SolanaProviderWiringAudit
+  /** 'spl-token' | 'spl-token-2022' | null when the owning program could not be read. */
+  tokenProgram: string | null
+  decimals: number | null
+  /** Total supply in whole tokens (decimals applied). Null when unresolved. */
+  totalSupply: number | null
+  /**
+   * null means "no authority" (revoked) ONLY when authorityReadSucceeded is true. When the read
+   * failed, both fields are null and the corresponding evidence gap is present — so a caller can
+   * never mistake "couldn't check" for "revoked".
+   */
+  mintAuthority: string | null
+  freezeAuthority: string | null
+  authorityReadSucceeded: boolean
+  holderConcentrationAvailable: boolean
+  topAccountConcentration: {
+    /** Always labelled as ACCOUNTS, never holders — see holderAnalyzer.ts's own header. */
+    accountsSampled: number
+    top1Percent: number | null
+    top10Percent: number | null
+    top20Percent: number | null
+    accounts: SolanaTopAccountShare[]
+  } | null
+  marketDataAvailable: boolean
+  marketData: SolanaMarketData | null
+  /** Reduced-confidence risk read. Never 'SAFE'/'verified' — see riskEngine.ts. */
+  betaRisk: {
+    verdict: 'OPEN_CHECK' | 'CAUTION' | 'HIGH_RISK'
+    confidence: 'LOW' | 'MEDIUM'
+    reasons: string[]
+  }
+  solanaEvidenceGaps: string[]
+  unsupportedChecks: SolanaUnsupportedCheck[]
+  solanaTokenScannerAudit: SolanaTokenScannerAudit
+}
+
+export type SolanaBetaScanFailure = {
+  solanaBeta: true
+  chain: 'solana'
+  status: 'not_enabled' | 'not_configured' | 'mint_not_found' | 'rpc_error'
+  error: string
+  solanaTokenScannerAudit: SolanaTokenScannerAudit
+}
+
+export function emptySolanaAudit(mintAddress: string, enabled: boolean, rpcConfigured: boolean): SolanaTokenScannerAudit {
+  return {
+    enabled,
+    rpcConfigured,
+    mintAddress,
+    tokenProgram: null,
+    supplyResolved: false,
+    decimalsResolved: false,
+    largestAccountsResolved: false,
+    top1Percent: null,
+    top10Percent: null,
+    top20Percent: null,
+    marketProviderUsed: null,
+    marketDataResolved: false,
+    mintAuthorityResolved: false,
+    freezeAuthorityResolved: false,
+    unsupportedChecks: SOLANA_UNSUPPORTED_CHECKS.map((u) => u.check),
+    evidenceGaps: [],
+  }
+}

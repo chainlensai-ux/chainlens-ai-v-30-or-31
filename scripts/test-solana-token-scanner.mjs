@@ -334,22 +334,50 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
 
 // ─── STRUCTURAL: the Solana path cannot reach EVM logic ──────────────────────
 // The strongest guarantee that a Solana mint is never pushed through EVM contract logic is that
-// this module imports none of it. Asserted against the real source so a future edit that wires an
-// EVM helper in here fails loudly instead of silently degrading the honesty contract.
+// this module (and, since the Solana-native architecture task, its whole lib/server/solana/*
+// dependency graph) imports none of it. Asserted against the real source, walked recursively, so
+// a future edit that wires an EVM helper into any analyzer fails loudly instead of silently
+// degrading the honesty contract.
 {
   const { readFileSync } = await import('node:fs')
-  const raw = readFileSync(new URL('../lib/server/solanaTokenScannerBeta.ts', import.meta.url), 'utf8')
-  // Strip // line comments and /* */ blocks first — this file's own prose discusses things like
-  // distinguishing revoked `from "unread"`, which would otherwise false-match as an import.
-  const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
-  // Every module specifier this file imports from (handles multi-line import blocks).
-  const specifiers = [...src.matchAll(/from\s+['"]([^'"]+)['"]/g)].map(m => m[1].toLowerCase())
-  for (const forbidden of ['honeypot', 'lplock', 'lp-lock', 'deployer', 'goplus', 'ethers', 'viem', 'covalent', 'robinhood']) {
-    check(`solana scanner imports nothing EVM-specific: ${forbidden}`, !specifiers.some(s => s.includes(forbidden)))
+  const path = await import('node:path')
+  const rootDir = path.dirname(new URL(import.meta.url).pathname)
+
+  function localSpecifiers(relPath) {
+    const abs = new URL(relPath, import.meta.url)
+    const raw = readFileSync(abs, 'utf8')
+    // Strip // line comments and /* */ blocks first — these files' own prose discusses things
+    // like distinguishing revoked `from "unread"`, which would otherwise false-match as an import.
+    const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+    return [...src.matchAll(/from\s+['"]([^'"]+)['"]/g)].map(m => m[1])
   }
-  check('solana scanner imports its own chain config', specifiers.some(s => s.includes('solanachainconfig')))
-  check('solana scanner imports its own provider wiring module', specifiers.some(s => s.includes('solanaproviders')))
-  check('solana scanner has no other runtime dependency', specifiers.length === 2)
+
+  // BFS the whole real dependency graph starting from the facade, following only relative
+  // ('./...' / '../...') specifiers — external/package imports are irrelevant to this guarantee.
+  const visited = new Set()
+  const queue = ['../lib/server/solanaTokenScannerBeta.ts']
+  const allSpecifiers = []
+  while (queue.length > 0) {
+    const relPath = queue.shift()
+    const absPath = path.resolve(rootDir, relPath)
+    if (visited.has(absPath)) continue
+    visited.add(absPath)
+    const specs = localSpecifiers(relPath)
+    for (const spec of specs) {
+      allSpecifiers.push(spec.toLowerCase())
+      if (spec.startsWith('.')) {
+        const nextRel = path.join(path.dirname(relPath), spec)
+        queue.push(nextRel.startsWith('.') ? nextRel : `./${nextRel}`)
+      }
+    }
+  }
+
+  for (const forbidden of ['honeypot', 'lplock', 'lp-lock', 'deployer', 'goplus', 'ethers', 'viem', 'covalent', 'robinhood']) {
+    check(`solana engine imports nothing EVM-specific anywhere in its dependency graph: ${forbidden}`, !allSpecifiers.some(s => s.includes(forbidden)))
+  }
+  check('solana engine visited its native analyzer modules', visited.size >= 11)
+  check('solana engine (still) imports its own chain config', allSpecifiers.some(s => s.includes('solanachainconfig')))
+  check('solana engine (still) imports its own provider wiring module', allSpecifiers.some(s => s.includes('solanaproviders')))
 }
 
 // ─── ROUTE ORDER: chain=solana returns before EVM validation ─────────────────
@@ -974,6 +1002,80 @@ function poolProgramStub({ mint, supply, largest, poolAddress, poolOwner, poolIn
   const { readFileSync } = await import('node:fs')
   const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
   check('Pool Activity reads sr.marketData.txns24h for real buys/sells', page.includes('sr.marketData.txns24h'))
+}
+
+// ─── Solana-native architecture: each analyzer module is independently real and testable ───────
+// Direct unit tests against the new lib/server/solana/* modules — not just via the orchestrated
+// scanSolanaTokenBeta() facade. Confirms the refactor is a genuine decomposition (each piece
+// works standalone) and not a cosmetic file split around one still-monolithic function.
+{
+  const { analyzeSolanaAuthority } = await import('../lib/server/solana/authorityAnalyzer.ts')
+  const revoked = analyzeSolanaAuthority({ mintAuthority: null, freezeAuthority: null, authorityReadSucceeded: true })
+  check('authorityAnalyzer: both revoked classifies correctly', revoked.mintStatus === 'revoked' && revoked.freezeStatus === 'revoked')
+  const active = analyzeSolanaAuthority({ mintAuthority: 'X', freezeAuthority: 'Y', authorityReadSucceeded: true })
+  check('authorityAnalyzer: both active classifies correctly', active.mintStatus === 'active' && active.freezeStatus === 'active')
+  const unread = analyzeSolanaAuthority({ mintAuthority: null, freezeAuthority: null, authorityReadSucceeded: false })
+  check('authorityAnalyzer: unread authority is "unknown", never silently "revoked"', unread.mintStatus === 'unknown' && unread.freezeStatus === 'unknown')
+}
+{
+  const { analyzeSolanaPool } = await import('../lib/server/solana/poolAnalyzer.ts')
+  const noAddr = await analyzeSolanaPool({ poolAddress: null, rpcUrl: 'https://stub', fetchImpl: async () => { throw new Error('must not fetch') } })
+  check('poolAnalyzer: no pool address never calls out', noAddr.poolProgram.resolved === false && noAddr.poolProgram.poolAddress === null)
+  const recognized = await analyzeSolanaPool({
+    poolAddress: 'POOL1', rpcUrl: 'https://stub',
+    fetchImpl: async () => ({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { value: { owner: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8' } } }) }),
+  })
+  check('poolAnalyzer: recognized program resolves a real label directly', recognized.poolProgram.label === 'Raydium AMM V4')
+}
+{
+  const { analyzeSolanaMarket } = await import('../lib/server/solana/marketAnalyzer.ts')
+  const m = await analyzeSolanaMarket(USDC_MINT, async (url) => {
+    if (String(url).includes('dexscreener')) {
+      return { ok: true, json: async () => ({ pairs: [{ chainId: 'solana', priceUsd: '2.5', liquidity: { usd: 5000 }, volume: { h24: 100 }, pairAddress: 'P', dexId: 'orca' }] }) }
+    }
+    throw new Error('unexpected fetch')
+  })
+  check('marketAnalyzer: resolves real price/liquidity directly', m.data.priceUsd === 2.5 && m.data.liquidityUsd === 5000)
+}
+{
+  const { computeSolanaConfidenceScore } = await import('../lib/server/solana/scoreEngine.ts')
+  check('scoreEngine.ts re-exports the real confidence score engine (not a stub)', typeof computeSolanaConfidenceScore === 'function')
+  const sc = computeSolanaConfidenceScore({
+    authorityReadSucceeded: true, mintAuthority: null, freezeAuthority: null,
+    topAccountConcentration: { top1Percent: 5, top10Percent: 10, top20Percent: 15, accountsSampled: 20, accounts: [] },
+    marketDataAvailable: true, marketData: { liquidityUsd: 100_000, priceUsd: 1, volume24hUsd: 1, fdvUsd: null, marketCapUsd: null, primaryPoolAddress: null, primaryDexLabel: null, tokenName: null, tokenSymbol: null },
+    unsupportedChecks: SOLANA_UNSUPPORTED_CHECKS,
+  })
+  check('scoreEngine.ts produces a real score via the re-export', typeof sc.score === 'number' && sc.score > 0)
+}
+
+// ─── Solana-native architecture: directory layout matches the requested module list ────────────
+{
+  const { readFileSync, existsSync } = await import('node:fs')
+  const dir = '../lib/server/solana/'
+  const expectedModules = [
+    'mintAnalyzer.ts', 'authorityAnalyzer.ts', 'holderAnalyzer.ts', 'poolAnalyzer.ts',
+    'marketAnalyzer.ts', 'creatorAnalyzer.ts', 'riskEngine.ts', 'scoreEngine.ts',
+    'metadataResolver.ts', 'providerMerge.ts', 'types.ts', 'rpcClient.ts',
+  ]
+  for (const mod of expectedModules) {
+    check(`lib/server/solana/${mod} exists`, existsSync(new URL(dir + mod, import.meta.url)))
+  }
+  // Every analyzer module's own header discloses what it does and does not attempt — spot-check
+  // the two riskiest-to-overclaim ones (holders, creator) actually carry that disclosure.
+  const holderSrc = readFileSync(new URL(dir + 'holderAnalyzer.ts', import.meta.url), 'utf8')
+  check('holderAnalyzer.ts discloses it does not classify snipers/bundlers/insiders', /snipers|bundlers|insiders/i.test(holderSrc) && /does not/i.test(holderSrc))
+  const creatorSrc = readFileSync(new URL(dir + 'creatorAnalyzer.ts', import.meta.url), 'utf8')
+  check('creatorAnalyzer.ts discloses it does not resolve creator/deployer identity', /does NOT/.test(creatorSrc) && /creator\/deployer/i.test(creatorSrc))
+}
+
+// ─── EVM chains (Base/ETH/BNB/Robinhood) are completely unaffected by the Solana-native refactor ──
+{
+  const { readFileSync } = await import('node:fs')
+  const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
+  check('EVM chain gate untouched by the Solana-native architecture task', /rawChain !== 'base' && rawChain !== 'eth' && rawChain !== 'bnb' && rawChain !== 'robinhood'/.test(route))
+  check('solana branch still returns before EVM logic runs', route.indexOf("if (rawChain === 'solana')") < route.indexOf("rawChain !== 'base' && rawChain !== 'eth'"))
+  check('route still imports scanSolanaTokenBeta from the same (now facade) path — no call-site changes needed', route.includes("from '@/lib/server/solanaTokenScannerBeta'"))
 }
 
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)
