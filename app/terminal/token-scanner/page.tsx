@@ -4810,11 +4810,30 @@ export default function TerminalTokenScanner() {
                   const liq = sr.marketData?.liquidityUsd ?? null
                   const hasPool = sr.marketData != null
 
+                  // POOL-AUTHORITY-ENGINE, DISCLOSED (Solana-native intelligence follow-up:
+                  // "replace Open Check with a real authority verification engine"). This is the
+                  // safely-real piece of that ask: sr.poolProgram.verdict is computed purely from
+                  // an on-chain-verified program-owner read (see poolAnalyzer.ts). It genuinely
+                  // differentiates "program identity confirmed" from "unrecognized"/"unverified"
+                  // — but it does NOT claim vault-authority, PDA immutability, or withdrawal
+                  // safety, which would require binary account-layout parsing this codebase
+                  // cannot safely verify without live testing. The description text says exactly
+                  // that, so this can never be misread as a safety guarantee.
+                  const poolAuthorityLabel = sr.poolProgram.verdict === 'verified_official_pool' ? 'Verified Official Pool'
+                    : sr.poolProgram.verdict === 'unrecognized_program' ? 'Unrecognized Program'
+                    : 'Unverified'
+                  const poolAuthorityColor = sr.poolProgram.verdict === 'verified_official_pool' ? '#34d399'
+                    : sr.poolProgram.verdict === 'unrecognized_program' ? '#fb923c'
+                    : '#94a3b8'
+
                   // LP Status hero: Solana pools have no lock/burn proof to check, so the honest
-                  // status is whether a real pool was even found — never "Locked"/"Burned".
-                  const lpStatusInfo = hasPool
-                    ? { label: 'Pool Found — Authority Open Check', color: '#fbbf24', description: 'An indexed Solana pool exists, but ERC-20-style LP lock/burn proof does not apply — pool authority is an open check.' }
-                    : { label: 'No Pool Found', color: '#94a3b8', description: 'No indexed Solana pool was found for this mint — liquidity evidence is unavailable.' }
+                  // status is whether a real pool was even found — never "Locked"/"Burned". Now
+                  // reflects the real pool-authority verdict instead of a flat "Open Check".
+                  const lpStatusInfo = !hasPool
+                    ? { label: 'No Pool Found', color: '#94a3b8', description: 'No indexed Solana pool was found for this mint — liquidity evidence is unavailable.' }
+                    : sr.poolProgram.verdict === 'verified_official_pool'
+                      ? { label: `Pool Found — ${poolAuthorityLabel}`, color: poolAuthorityColor, description: `On-chain confirmed as ${sr.poolProgram.label}. This verifies pool program identity, not vault authority or withdrawal safety — ERC-20-style LP lock/burn proof still does not apply.` }
+                      : { label: `Pool Found — ${poolAuthorityLabel}`, color: poolAuthorityColor, description: 'An indexed Solana pool exists, but its owning program could not be confirmed against known AMM programs — treat authority as unverified, not safe.' }
 
                   // Exit Risk hero: same liquidity-depth thresholds scoreSolanaBeta already uses
                   // (>=50k / >=5k / <5k), so this label never contradicts the Risk Engine tab.
@@ -4848,7 +4867,7 @@ export default function TerminalTokenScanner() {
                   const quickRead: Array<{ label: string; value: string; color?: string }> = [
                     { label: 'LP Model', value: modelLabel + (modelVerified ? ' ✓' : ''), color: '#c084fc' },
                     { label: 'Lock/Burn Proof', value: 'Not Applicable', color: '#94a3b8' },
-                    { label: 'Pool Authority', value: 'Open Check', color: '#fbbf24' },
+                    { label: 'Pool Authority', value: poolAuthorityLabel, color: poolAuthorityColor },
                     { label: 'Exit Risk', value: exitRiskInfo.label, color: exitRiskInfo.color },
                     { label: 'Liquidity Depth', value: liq != null ? fmtLarge(liq) : 'Open Check', color: liq != null ? '#67e8f9' : '#94a3b8' },
                     { label: 'Primary Pool', value: sr.marketData?.primaryPoolAddress ? shorten(sr.marketData.primaryPoolAddress) : 'Open Check' },
@@ -4866,7 +4885,18 @@ export default function TerminalTokenScanner() {
                           ? `Pool owner ${shorten(sr.poolProgram.owner)} is not one of the AMM programs this codebase recognizes yet.`
                           : 'Pool program identity could not be read on-chain — falling back to unverified market-data metadata.',
                     },
-                    { label: 'Pool Authority', value: 'Open Check', color: '#fbbf24', note: 'Solana pool/vault authority verification is not supported in Beta — treat as unverified, not safe.' },
+                    {
+                      label: 'Pool Authority',
+                      value: poolAuthorityLabel,
+                      color: poolAuthorityColor,
+                      note: sr.poolProgram.verdict === 'verified_official_pool'
+                        ? 'Program identity is on-chain confirmed. Vault authority and withdrawal-safety verification are not supported yet — treat as unverified, not safe.'
+                        : 'Solana pool/vault authority verification is not supported yet — treat as unverified, not safe.',
+                    },
+                    ...(sr.poolProgram.migratedFromPumpFun ? [{
+                      label: 'Migration Status', value: 'Migrated from Pump.fun', color: '#34d399',
+                      note: 'PumpSwap is exclusively Pump.fun’s post-graduation AMM — this pool resolving to PumpSwap confirms the token graduated off the bonding curve.',
+                    }] : []),
                     { label: 'Lock/Burn Proof', value: 'Not Applicable', note: 'ERC-20 LP-token lock/burn proof does not apply to Solana AMM pools.' },
                     { label: 'Exit Risk', value: exitRiskInfo.label, color: exitRiskInfo.color, note: exitRiskInfo.description },
                     { label: 'Liquidity Depth', value: liq != null ? fmtLarge(liq) : 'Open Check', note: sr.marketData?.volume24hUsd != null ? `24h volume ${fmtLarge(sr.marketData.volume24hUsd)} across indexed Solana pairs.` : undefined },

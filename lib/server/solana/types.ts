@@ -156,12 +156,30 @@ export type SolanaProviderWiringAudit = {
  * Solana AMM program IDs. `label` is null when the owner isn't recognized — `owner` still carries
  * the real address either way, so nothing here ever guesses a wrong program name.
  */
+export type SolanaPoolVerdict = 'verified_official_pool' | 'unrecognized_program' | 'unverified'
+
 export type SolanaPoolProgram = {
   resolved: boolean
   poolAddress: string | null
   owner: string | null
   label: string | null
   errorReason: string | null
+  /**
+   * Pool Authority Engine follow-up, DISCLOSED: a real, differentiated verdict computed purely
+   * from the fields above — no new evidence, no PDA/vault-authority derivation (that would need
+   * byte-offset struct parsing this codebase can't safely verify without live testing; see this
+   * module's own header). 'verified_official_pool' means the pool's owning PROGRAM is confirmed
+   * as one of the known AMM programs — it does NOT mean liquidity is locked or withdrawal-proof;
+   * see poolVerdictDescription for the exact, non-overclaiming wording.
+   */
+  verdict: SolanaPoolVerdict
+  /**
+   * PumpSwap is exclusively Pump.fun's own post-graduation AMM — a pool resolving to that program
+   * is a real, definitional fact that the token graduated off the Pump.fun bonding curve, not an
+   * inference. Null for every other program (Raydium/Orca/Meteora tokens can launch without ever
+   * touching Pump.fun, so migration cannot be safely claimed there).
+   */
+  migratedFromPumpFun: boolean | null
 }
 
 export type SolanaBetaScanResult = {

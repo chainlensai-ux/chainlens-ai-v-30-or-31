@@ -1078,4 +1078,46 @@ function poolProgramStub({ mint, supply, largest, poolAddress, poolOwner, poolIn
   check('route still imports scanSolanaTokenBeta from the same (now facade) path — no call-site changes needed', route.includes("from '@/lib/server/solanaTokenScannerBeta'"))
 }
 
+// ─── Pool Authority Engine: real, differentiated verdicts (no PDA/vault fabrication) ───────────
+{
+  const { analyzeSolanaPool, poolVerdictDescription } = await import('../lib/server/solana/poolAnalyzer.ts')
+  const recognized = await analyzeSolanaPool({
+    poolAddress: 'POOL1', rpcUrl: 'https://stub',
+    fetchImpl: async () => ({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { value: { owner: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8' } } }) }),
+  })
+  check('recognized program gets verified_official_pool verdict', recognized.poolProgram.verdict === 'verified_official_pool')
+  check('verdict description never overclaims vault authority/withdrawal safety', /not vault authority|not.*withdrawal/i.test(poolVerdictDescription(recognized.poolProgram)))
+  check('non-PumpSwap program never claims migration', recognized.poolProgram.migratedFromPumpFun === null)
+
+  const unrecognized = await analyzeSolanaPool({
+    poolAddress: 'POOL2', rpcUrl: 'https://stub',
+    fetchImpl: async () => ({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { value: { owner: 'SomeUnknownProgram11111111111111111111111' } } }) }),
+  })
+  check('unrecognized program gets unrecognized_program verdict, never verified', unrecognized.poolProgram.verdict === 'unrecognized_program')
+  check('unrecognized program never claims migration', unrecognized.poolProgram.migratedFromPumpFun === null)
+
+  const unverified = await analyzeSolanaPool({ poolAddress: null, rpcUrl: 'https://stub', fetchImpl: async () => { throw new Error('must not fetch') } })
+  check('no pool address gets unverified verdict', unverified.poolProgram.verdict === 'unverified')
+
+  // PumpSwap IS Pump.fun's exclusive post-graduation AMM — this is a real fact, not a guess.
+  const pumpswap = await analyzeSolanaPool({
+    poolAddress: 'POOL3', rpcUrl: 'https://stub',
+    fetchImpl: async () => ({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { value: { owner: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA' } } }) }),
+  })
+  check('PumpSwap AMM resolves migratedFromPumpFun as a real fact, not a guess', pumpswap.poolProgram.migratedFromPumpFun === true)
+  check('PumpSwap resolves as verified_official_pool', pumpswap.poolProgram.verdict === 'verified_official_pool')
+}
+{
+  // End-to-end: the LP Safety UI reads the real verdict instead of a hardcoded "Open Check".
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: poolProgramStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, poolAddress: 'POOL_RAY', poolOwner: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8' }),
+  })
+  check('scan result carries the real pool verdict', r.poolProgram.verdict === 'verified_official_pool')
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+  check('LP Safety reads sr.poolProgram.verdict for the Pool Authority verdict (not a hardcoded Open Check)', page.includes('sr.poolProgram.verdict'))
+  check('LP Safety reads sr.poolProgram.migratedFromPumpFun for the migration row', page.includes('sr.poolProgram.migratedFromPumpFun'))
+}
+
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)
