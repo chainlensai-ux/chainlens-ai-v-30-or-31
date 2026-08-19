@@ -17,6 +17,7 @@ import type {
   SolanaOhlcvResult,
   SolanaHeliusHolderResult,
 } from '../solanaProviders.ts'
+import type { SolanaDeepCreatorAnalysis } from './deepCreatorAnalyzer.ts'
 
 export type SolanaUnsupportedCheck = {
   check: string
@@ -195,6 +196,12 @@ export type SolanaBetaScanResult = {
   goldrushOrCovalent: SolanaGoldrushResult
   ohlcv: SolanaOhlcvResult
   heliusHolders: SolanaHeliusHolderResult
+  /**
+   * DEEP MODE, DISCLOSED: null unless the caller explicitly requested `deep: true` — never run by
+   * default. See deepCreatorAnalyzer.ts's own header for the full cost/honesty disclosure. This is
+   * the ONLY place Helius Enhanced Transactions (a paid, more expensive API) is ever called.
+   */
+  deepCreator: SolanaDeepCreatorAnalysis | null
   solanaProviderWiringAudit: SolanaProviderWiringAudit
   /** 'spl-token' | 'spl-token-2022' | null when the owning program could not be read. */
   tokenProgram: string | null

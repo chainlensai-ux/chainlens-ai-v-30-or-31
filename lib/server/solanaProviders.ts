@@ -322,3 +322,131 @@ export async function fetchHeliusHolderCount(mintAddress: string, fetchImpl: Fet
       : emptyHolderResult(true, 'helius_holders_unreachable')
   }
 }
+
+// ── Helius: Deep Mode creator trace — Enhanced Transactions, EXPLICITLY OPT-IN ONLY ────────────
+//
+// COST DISCLOSURE, CRITICAL: this is the ONE function in this codebase allowed to call Helius's
+// paid Enhanced Transactions API. It must NEVER be invoked from the default scan path — only from
+// an explicit user action ("Deep Creator Check" on the Dev tab), which the caller is responsible
+// for gating. See lib/server/solana/deepCreatorAnalyzer.ts and the API route's own `deep` opt-in
+// flag for where that gate actually lives.
+//
+// WHAT THIS DOES: (1) paginates getSignaturesForAddress (standard RPC, cheap) backwards from the
+// mint address, capped at DEEP_CREATOR_MAX_PAGES, to find the EARLIEST known transaction; (2)
+// calls Helius's Enhanced Transactions REST API on that one signature to get its parsed fee payer
+// and the source program it interacted with.
+//
+// HONESTY, DISCLOSED: `likelyCreatorWallet` is the fee payer of the mint's earliest FOUND
+// transaction — a real, on-chain, disclosed value, not a guess about identity. It is a strong
+// signal for a token whose full history was reached (reachedGenesis: true), but is explicitly
+// NOT asserted as a certainty: a sponsored/relayed transaction would show a different payer than
+// the actual deployer, and a token with more history than the page cap allows may not have its
+// TRUE earliest transaction found at all (reachedGenesis: false covers that case honestly).
+//
+// LIVE-VERIFICATION DISCLOSED: written from documented Helius Enhanced Transactions API shape
+// (POST /v0/transactions/?api-key=... with {"transactions": [signature]}, returning an array with
+// a `feePayer` and `source` field per transaction) — not confirmed against a live response from
+// this sandbox. Defensive by construction: any unexpected shape degrades to `success: false` with
+// a clean errorReason, never a crash, never a fabricated wallet address.
+
+const DEEP_CREATOR_MAX_SIGNATURE_PAGES = 5
+const DEEP_CREATOR_SIGNATURE_PAGE_LIMIT = 1000
+
+export type SolanaCreatorTraceResult = {
+  called: boolean
+  success: boolean
+  enhancedTransactionsUsed: boolean
+  estimatedCredits: number
+  pagesFetched: number
+  /** True only if signature pagination ran out (fewer than a full page) — i.e. genuinely reached the start. */
+  reachedGenesis: boolean
+  resolved: {
+    earliestSignature: string | null
+    earliestTimestamp: string | null
+    likelyCreatorWallet: string | null
+    transactionSource: string | null
+  }
+  errorReason: string | null
+}
+
+function emptyCreatorTraceResult(called: boolean, errorReason: string | null, pagesFetched = 0): SolanaCreatorTraceResult {
+  return {
+    called, success: false, enhancedTransactionsUsed: false, estimatedCredits: pagesFetched, pagesFetched, reachedGenesis: false,
+    resolved: { earliestSignature: null, earliestTimestamp: null, likelyCreatorWallet: null, transactionSource: null },
+    errorReason,
+  }
+}
+
+export async function fetchHeliusCreatorTrace(mintAddress: string, fetchImpl: FetchImpl): Promise<SolanaCreatorTraceResult> {
+  if (!isHeliusConfigured()) return emptyCreatorTraceResult(false, 'Helius Solana enrichment is not enabled (ENABLE_HELIUS_SOLANA is not "true", or HELIUS_API_KEY is missing).')
+  const apiKey = getHeliusApiKey()
+  if (!apiKey) return emptyCreatorTraceResult(false, 'HELIUS_API_KEY missing.')
+
+  const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`
+  let before: string | undefined
+  let earliestSignature: string | null = null
+  let earliestBlockTime: number | null = null
+  let pagesFetched = 0
+  let reachedGenesis = false
+
+  try {
+    for (let page = 1; page <= DEEP_CREATOR_MAX_SIGNATURE_PAGES; page++) {
+      const params = before ? [mintAddress, { limit: DEEP_CREATOR_SIGNATURE_PAGE_LIMIT, before }] : [mintAddress, { limit: DEEP_CREATOR_SIGNATURE_PAGE_LIMIT }]
+      const res = await fetchImpl(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params }),
+        signal: AbortSignal.timeout(9000),
+      })
+      if (!res.ok) return earliestSignature ? { ...emptyCreatorTraceResult(true, null, pagesFetched), success: false, errorReason: `helius_sig_page_http_${res.status}` } : emptyCreatorTraceResult(true, `helius_sig_page_http_${res.status}`, pagesFetched)
+      const json = await res.json().catch(() => null) as { result?: Array<{ signature?: string; blockTime?: number | null }>; error?: { message?: string } } | null
+      if (!json) break
+      if (json.error) return emptyCreatorTraceResult(true, `helius_sig_page_rpc_error:${json.error.message ?? 'unknown'}`, pagesFetched)
+      const rows = Array.isArray(json.result) ? json.result : []
+      if (rows.length === 0) { reachedGenesis = pagesFetched > 0; break }
+      pagesFetched++
+      const last = rows[rows.length - 1]
+      if (typeof last?.signature === 'string') { earliestSignature = last.signature; earliestBlockTime = typeof last.blockTime === 'number' ? last.blockTime : null }
+      before = last?.signature
+      if (rows.length < DEEP_CREATOR_SIGNATURE_PAGE_LIMIT) { reachedGenesis = true; break }
+    }
+  } catch {
+    return earliestSignature ? { ...emptyCreatorTraceResult(true, null, pagesFetched), errorReason: 'helius_sig_page_unreachable' } : emptyCreatorTraceResult(true, 'helius_sig_page_unreachable', pagesFetched)
+  }
+
+  if (!earliestSignature) return emptyCreatorTraceResult(true, 'no_signature_history_found', pagesFetched)
+
+  const earliestTimestamp = earliestBlockTime != null ? new Date(earliestBlockTime * 1000).toISOString() : null
+
+  // Enhanced Transactions call — the one paid lookup this whole engine allows, and only here.
+  try {
+    const res = await fetchImpl(`https://api.helius.xyz/v0/transactions/?api-key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transactions: [earliestSignature] }),
+      signal: AbortSignal.timeout(9000),
+    })
+    if (!res.ok) {
+      return {
+        called: true, success: false, enhancedTransactionsUsed: true, estimatedCredits: pagesFetched + 1, pagesFetched, reachedGenesis,
+        resolved: { earliestSignature, earliestTimestamp, likelyCreatorWallet: null, transactionSource: null },
+        errorReason: `helius_enhanced_http_${res.status}`,
+      }
+    }
+    const parsed = await res.json().catch(() => null) as unknown
+    const tx = Array.isArray(parsed) ? parsed[0] as Record<string, unknown> | undefined : undefined
+    const feePayer = typeof tx?.feePayer === 'string' ? tx.feePayer : null
+    const source = typeof tx?.source === 'string' ? tx.source : null
+    return {
+      called: true, success: feePayer != null, enhancedTransactionsUsed: true, estimatedCredits: pagesFetched + 1, pagesFetched, reachedGenesis,
+      resolved: { earliestSignature, earliestTimestamp, likelyCreatorWallet: feePayer, transactionSource: source },
+      errorReason: feePayer != null ? null : 'helius_enhanced_no_fee_payer_in_response',
+    }
+  } catch {
+    return {
+      called: true, success: false, enhancedTransactionsUsed: true, estimatedCredits: pagesFetched + 1, pagesFetched, reachedGenesis,
+      resolved: { earliestSignature, earliestTimestamp, likelyCreatorWallet: null, transactionSource: null },
+      errorReason: 'helius_enhanced_unreachable',
+    }
+  }
+}

@@ -22,6 +22,7 @@ import { analyzeSolanaHolders } from './holderAnalyzer.ts'
 import { analyzeSolanaMarket, analyzeSolanaCandles } from './marketAnalyzer.ts'
 import { resolveSolanaMetadata } from './metadataResolver.ts'
 import { analyzeSolanaCreator } from './creatorAnalyzer.ts'
+import { analyzeSolanaDeepCreator } from './deepCreatorAnalyzer.ts'
 import { analyzeSolanaPool } from './poolAnalyzer.ts'
 import { scoreSolanaBeta } from './riskEngine.ts'
 import {
@@ -40,7 +41,7 @@ import {
  */
 export async function runSolanaProviderMerge(
   mintAddress: string,
-  opts: { fetchImpl?: RpcFetch; rpcUrl?: string | null } = {},
+  opts: { fetchImpl?: RpcFetch; rpcUrl?: string | null; deep?: boolean } = {},
 ): Promise<SolanaBetaScanResult | SolanaBetaScanFailure> {
   const fetchImpl = opts.fetchImpl ?? fetch
   const enabled = isSolanaBetaFeatureEnabled()
@@ -93,6 +94,12 @@ export async function runSolanaProviderMerge(
   // ── 5. Creator/dev activity signal (Helius, lightweight only) ──────────────
   const creator = await analyzeSolanaCreator(mintAddress, fetchImpl)
   evidenceGaps.push(...creator.evidenceGaps)
+
+  // ── 5b. Deep Mode creator trace — EXPLICIT OPT-IN ONLY, never run by default ──
+  // See deepCreatorAnalyzer.ts's header: this is the ONLY path that calls Helius Enhanced
+  // Transactions (paid, more expensive) anywhere in this engine, and only when opts.deep is true.
+  const deepCreator = opts.deep === true ? await analyzeSolanaDeepCreator(mintAddress, fetchImpl) : null
+  if (deepCreator) evidenceGaps.push(...deepCreator.evidenceGaps)
 
   // ── 6. GoldRush / Covalent (no verified Solana endpoint — cleanly unavailable) ─
   const goldrushOrCovalent = solanaGoldrushEnrichment()
@@ -202,6 +209,7 @@ export async function runSolanaProviderMerge(
     goldrushOrCovalent,
     ohlcv,
     heliusHolders: holders.heliusHolders,
+    deepCreator,
     solanaProviderWiringAudit: wiringAudit,
     tokenProgram: mint.tokenProgram,
     decimals: mint.decimals,

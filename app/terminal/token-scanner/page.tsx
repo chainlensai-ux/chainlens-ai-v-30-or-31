@@ -3510,6 +3510,11 @@ export default function TerminalTokenScanner() {
   // shape carries LP-lock/honeypot/tax/owner fields that have no honest Solana value, and forcing
   // them would be exactly the fake-parity this task forbids.
   const [solanaResult, setSolanaResult] = useState<SolanaBetaResult | null>(null)
+  // DEEP MODE, DISCLOSED ("do Helius Enhanced" follow-up): tracks the explicit, user-triggered
+  // deep creator check separately from the normal scan's loading state — this never fires from
+  // handleScan itself, only from runSolanaDeepCreatorCheck below, on a button click.
+  const [solanaDeepLoading, setSolanaDeepLoading] = useState(false)
+  const [solanaDeepError, setSolanaDeepError] = useState<string | null>(null)
   const [input, setInput]       = useState('')
   const [loading, setLoading]   = useState(false)
   const [result, setResult]     = useState<ScanResult | null>(null)
@@ -3985,6 +3990,31 @@ export default function TerminalTokenScanner() {
     } finally {
       setLoading(false)
     }
+  }
+
+  // DEEP MODE, DISCLOSED ("do Helius Enhanced" follow-up): called ONLY from the Dev tab's "Run
+  // Deep Creator Check" button — never from handleScan. Re-runs the full Solana scan with
+  // deepDev:true, the ONLY way deepCreator ever gets populated; a normal scan never sets that
+  // flag (see app/api/token/route.ts's own gating and lib/server/solana/deepCreatorAnalyzer.ts).
+  async function runSolanaDeepCreatorCheck() {
+    if (!solanaResult || solanaDeepLoading) return
+    setSolanaDeepLoading(true)
+    setSolanaDeepError(null)
+    try {
+      const res = await fetch('/api/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contract: solanaResult.mintAddress, chain: 'solana', deepDev: true }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok || !json || 'status' in (json ?? {})) {
+        setSolanaDeepError(typeof json?.error === 'string' ? json.error : 'Deep creator check failed. Try again shortly.')
+      } else {
+        setSolanaResult(json as SolanaBetaResult)
+      }
+    } catch {
+      setSolanaDeepError('Deep creator check failed. Try again shortly.')
+    } finally { setSolanaDeepLoading(false) }
   }
 
   useEffect(() => {
@@ -5117,6 +5147,52 @@ export default function TerminalTokenScanner() {
                             : 'Helius activity read did not resolve — open check.'}
                       </p>
                     </div>
+                    {/* DEEP MODE, DISCLOSED ("do Helius Enhanced" follow-up): the ONLY UI trigger
+                        for Helius Enhanced Transactions anywhere in this engine. Never runs on
+                        page load or on a normal scan — only on this explicit click, with the
+                        cost disclosed up front. */}
+                    {!sr.deepCreator ? (
+                      <div style={{ ...cardBase, marginTop: '12px', border: '1px dashed rgba(167,139,250,0.30)' }}>
+                        <p style={{ ...cardTitle, color: '#c4b5fd' }}>Deep Creator Check</p>
+                        <p style={{ margin: '0 0 10px', fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>
+                          Resolves a likely creator wallet by tracing this mint&apos;s earliest on-chain transaction via Helius Enhanced Transactions — a paid, more expensive lookup, not run by default.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => { void runSolanaDeepCreatorCheck() }}
+                          disabled={solanaDeepLoading}
+                          style={{
+                            padding: '8px 16px', borderRadius: '10px', border: '1px solid rgba(167,139,250,0.45)',
+                            background: solanaDeepLoading ? 'rgba(167,139,250,0.08)' : 'linear-gradient(135deg,rgba(167,139,250,0.20),rgba(96,165,250,0.14))',
+                            color: '#e9d5ff', fontSize: '11px', fontWeight: 700, letterSpacing: '0.06em',
+                            fontFamily: 'var(--font-plex-mono)', cursor: solanaDeepLoading ? 'default' : 'pointer',
+                          }}
+                        >
+                          {solanaDeepLoading ? 'RUNNING DEEP CHECK…' : 'RUN DEEP CREATOR CHECK →'}
+                        </button>
+                        {solanaDeepError && <p style={{ margin: '10px 0 0', fontSize: '11px', color: '#f87171' }}>{solanaDeepError}</p>}
+                      </div>
+                    ) : (() => {
+                      const dc = sr.deepCreator.creatorTrace
+                      return (
+                        <div style={{ ...cardBase, marginTop: '12px' }}>
+                          <p style={{ ...cardTitle, color: dc.success ? '#5eead4' : '#94a3b8' }}>Deep Creator Check · Helius Enhanced</p>
+                          {dc.success ? (
+                            <>
+                              <p style={{ margin: '0 0 8px', fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>
+                                Likely creator wallet: <span style={{ color: '#e9d5ff', fontWeight: 700 }}>{shorten(dc.resolved.likelyCreatorWallet ?? '')}</span> — the fee payer of the earliest found transaction{dc.resolved.transactionSource ? ` (source: ${dc.resolved.transactionSource})` : ''}. A strong signal, not a certainty.
+                              </p>
+                              {!dc.reachedGenesis && (
+                                <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#fbbf24' }}>Lookback capped at {dc.pagesFetched} page(s) for cost control — this may not be the token&apos;s true genesis transaction.</p>
+                              )}
+                              <p style={{ margin: 0, fontSize: '10px', color: '#5b7590', fontFamily: 'var(--font-plex-mono)' }}>~{dc.estimatedCredits} Helius credit(s) used for this check.</p>
+                            </>
+                          ) : (
+                            <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Deep creator check did not resolve a likely creator wallet — open check.</p>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </>
                 )}
               </div>

@@ -1120,4 +1120,139 @@ function poolProgramStub({ mint, supply, largest, poolAddress, poolOwner, poolIn
   check('LP Safety reads sr.poolProgram.migratedFromPumpFun for the migration row', page.includes('sr.poolProgram.migratedFromPumpFun'))
 }
 
+// ─── Deep Mode: Helius Enhanced Transactions, EXPLICIT OPT-IN ONLY ("do Helius Enhanced" ask) ──
+function deepStub({ mint, supply, largest, dexPairs, sigPages, enhancedTx, enhancedFail = false, sigPageFail = false }) {
+  let sigCallCount = 0
+  return async (url, init) => {
+    const u = typeof url === 'string' ? url : ''
+    if (u.includes('dexscreener')) return { ok: true, json: async () => ({ pairs: dexPairs ?? [] }) }
+    if (u.includes('api.helius.xyz/v0/transactions')) {
+      if (enhancedFail) return { ok: false, status: 500, json: async () => ({}) }
+      return { ok: true, json: async () => (enhancedTx ?? []) }
+    }
+    if (u.includes('helius-rpc.com')) {
+      const body = JSON.parse(init.body)
+      if (body.method === 'getSignaturesForAddress') {
+        const limit = body.params[1]?.limit
+        if (limit === 10) return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: [] }) } // lightweight creatorAnalyzer call
+        if (sigPageFail) return { ok: false, status: 500, json: async () => ({}) }
+        const page = (sigPages ?? [])[sigCallCount] ?? []
+        sigCallCount++
+        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: page }) }
+      }
+      if (body.method === 'getTokenAccounts') return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { token_accounts: [] } }) }
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: [] }) }
+    }
+    const body = JSON.parse(init.body)
+    const results = { getAccountInfo: mint, getTokenSupply: supply, getTokenLargestAccounts: largest }
+    return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: results[body.method] ?? null }) }
+  }
+}
+{
+  // Default (no deep flag) — deepCreator must stay null, Enhanced Transactions never called.
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: deepStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [] }),
+  })
+  check('deepCreator stays null when deep mode is not requested', r.deepCreator === null)
+}
+{
+  // deep:true, Helius not configured — must degrade cleanly, never crash.
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub', deep: true,
+    fetchImpl: deepStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [] }),
+  })
+  check('deep mode with Helius disabled degrades cleanly, never crashes', !('status' in r))
+  check('deepCreator.creatorTrace.called is false when Helius is not configured', r.deepCreator.creatorTrace.called === false)
+}
+{
+  // deep:true, Helius configured, short signature history (reaches genesis) — resolves a real creator.
+  process.env.ENABLE_HELIUS_SOLANA = 'true'
+  process.env.HELIUS_API_KEY = 'test-helius-key-should-never-appear'
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub', deep: true,
+    fetchImpl: deepStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [],
+      sigPages: [[{ signature: 'genesis_sig', blockTime: 1700000000 }]], // fewer than page limit => reached genesis
+      enhancedTx: [{ feePayer: 'CreatorWallet1111111111111111111111111111', source: 'PUMP_FUN' }],
+    }),
+  })
+  check('deep mode resolves a real likely creator wallet', r.deepCreator.creatorTrace.resolved.likelyCreatorWallet === 'CreatorWallet1111111111111111111111111111')
+  check('deep mode captures the real transaction source when Helius provides one', r.deepCreator.creatorTrace.resolved.transactionSource === 'PUMP_FUN')
+  check('deep mode marks enhancedTransactionsUsed true — the ONLY path allowed to', r.deepCreator.creatorTrace.enhancedTransactionsUsed === true)
+  check('short signature history is correctly marked as having reached genesis', r.deepCreator.creatorTrace.reachedGenesis === true)
+  check('deep mode result never leaks the Helius key', !JSON.stringify(r).includes('test-helius-key-should-never-appear'))
+  check('evidence gap discloses the fee-payer heuristic honestly, not as a certainty', r.solanaEvidenceGaps.some(g => /strong signal, not a certainty/i.test(g)))
+  delete process.env.ENABLE_HELIUS_SOLANA
+  delete process.env.HELIUS_API_KEY
+}
+{
+  // Full page hit repeatedly — page cap reached, must be honestly marked as NOT reaching genesis.
+  process.env.ENABLE_HELIUS_SOLANA = 'true'
+  process.env.HELIUS_API_KEY = 'test-helius-key'
+  const fullPage = Array.from({ length: 1000 }, (_, i) => ({ signature: `sig${i}`, blockTime: 1700000000 - i }))
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub', deep: true,
+    fetchImpl: deepStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [],
+      sigPages: [fullPage, fullPage, fullPage, fullPage, fullPage], // 5 full pages = hits the cap
+      enhancedTx: [{ feePayer: 'SomeEarlyFeePayer111111111111111111111111', source: null }],
+    }),
+  })
+  check('page-cap-hit case is honestly marked as NOT having reached genesis', r.deepCreator.creatorTrace.reachedGenesis === false)
+  check('page cap is bounded (5 pages), never unbounded pagination', r.deepCreator.creatorTrace.pagesFetched === 5)
+  check('lookback-cap evidence gap is disclosed when genesis was not reached', r.solanaEvidenceGaps.some(g => /lookback capped/i.test(g)))
+  delete process.env.ENABLE_HELIUS_SOLANA
+  delete process.env.HELIUS_API_KEY
+}
+{
+  // No signature history at all — clean unavailable state, never a crash, never a guessed wallet.
+  process.env.ENABLE_HELIUS_SOLANA = 'true'
+  process.env.HELIUS_API_KEY = 'test-helius-key'
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub', deep: true,
+    fetchImpl: deepStub({ mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [], sigPages: [[]] }),
+  })
+  check('no signature history resolves to a clean unavailable state', r.deepCreator.creatorTrace.success === false && r.deepCreator.creatorTrace.resolved.likelyCreatorWallet === null)
+  check('no signature history does not crash the scan', !('status' in r))
+  delete process.env.ENABLE_HELIUS_SOLANA
+  delete process.env.HELIUS_API_KEY
+}
+{
+  // Enhanced Transactions call itself fails — degrades cleanly, still reports the signature found.
+  process.env.ENABLE_HELIUS_SOLANA = 'true'
+  process.env.HELIUS_API_KEY = 'test-helius-key'
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub', deep: true,
+    fetchImpl: deepStub({
+      mint: HEALTHY_MINT, supply: HEALTHY_SUPPLY, largest: HEALTHY_LARGEST, dexPairs: [],
+      sigPages: [[{ signature: 'genesis_sig', blockTime: 1700000000 }]],
+      enhancedFail: true,
+    }),
+  })
+  check('Enhanced Transactions failure degrades cleanly, never crashes', !('status' in r))
+  check('Enhanced Transactions failure still surfaces the earliest signature found', r.deepCreator.creatorTrace.resolved.earliestSignature === 'genesis_sig')
+  check('Enhanced Transactions failure never fabricates a creator wallet', r.deepCreator.creatorTrace.resolved.likelyCreatorWallet === null)
+  delete process.env.ENABLE_HELIUS_SOLANA
+  delete process.env.HELIUS_API_KEY
+}
+{
+  // Route-level gating: deepDev must come from the request body as an explicit boolean.
+  const { readFileSync } = await import('node:fs')
+  const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
+  check('route gates deep mode on an explicit body.deepDev === true check', route.includes('body.deepDev === true'))
+  check('route never defaults deep mode on for a normal scan', route.includes('scanSolanaTokenBeta(solanaInput, { deep: deepDev })'))
+}
+{
+  // UI: the deep-check trigger and result card read the real fields, and the button is the only
+  // place deepDev:true is ever sent from the client.
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+  check('the deep-check trigger sends deepDev: true to the API', page.includes('deepDev: true'))
+  check('the normal scan fetch body (contract: q) never includes deepDev', !/contract:\s*q,\s*chain:\s*'solana'\s*,\s*deepDev/.test(page))
+  check('Dev tab reads sr.deepCreator to decide between the trigger button and the result card', page.includes('!sr.deepCreator'))
+  check('Deep Creator Check card reads the real resolved creator wallet', page.includes('dc.resolved.likelyCreatorWallet'))
+  check('Deep Creator Check UI discloses the cost up front', /paid, more expensive/i.test(page))
+}
+
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)

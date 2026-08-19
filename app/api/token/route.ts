@@ -3536,7 +3536,12 @@ export async function POST(req: Request) {
           error: SOLANA_MINT_REJECTION_MESSAGE[rejection],
         }, { status: 400 })
       }
-      const solanaResult = await scanSolanaTokenBeta(solanaInput)
+      // DEEP MODE, DISCLOSED: `deepDev` must be an explicit `true` sent by a user action (the Dev
+      // tab's "Run Deep Creator Check" button) — never inferred, never defaulted on. This is the
+      // only path that reaches Helius Enhanced Transactions (paid, more expensive) anywhere in
+      // this engine; see lib/server/solana/deepCreatorAnalyzer.ts for the full disclosure.
+      const deepDev = body.deepDev === true
+      const solanaResult = await scanSolanaTokenBeta(solanaInput, { deep: deepDev })
       // Safe to log verbatim — the audit object contains only booleans/numbers/labels, never the
       // RPC URL or any secret (see solanaTokenScannerBeta.ts's audit contract).
       console.info('[solana-beta] solanaTokenScannerAudit', solanaResult.solanaTokenScannerAudit)
@@ -3544,6 +3549,17 @@ export async function POST(req: Request) {
       // the not_enabled/not_configured/mint_not_found/rpc_error early-return paths above).
       if ('solanaProviderWiringAudit' in solanaResult) {
         console.info('[solana-beta] solanaProviderWiringAudit', solanaResult.solanaProviderWiringAudit)
+      }
+      if ('deepCreator' in solanaResult && solanaResult.deepCreator) {
+        // Exact-reason audit for the one path that spends extra Helius credit, per this engine's
+        // own cost-control contract — logged only when deep mode actually ran.
+        console.info('[solana-beta] deepCreatorTrace', {
+          reason: 'explicit user-requested deep creator check (deepDev=true)',
+          enhancedTransactionsUsed: solanaResult.deepCreator.creatorTrace.enhancedTransactionsUsed,
+          estimatedCredits: solanaResult.deepCreator.creatorTrace.estimatedCredits,
+          reachedGenesis: solanaResult.deepCreator.creatorTrace.reachedGenesis,
+          success: solanaResult.deepCreator.creatorTrace.success,
+        })
       }
       const failed = 'status' in solanaResult
       return NextResponse.json(solanaResult, { status: failed ? (solanaResult.status === 'rpc_error' ? 502 : 400) : 200 })
