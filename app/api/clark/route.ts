@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { getBaseMarketUniverse, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
+import { fetchCoinGeckoBaseTrending } from "@/lib/server/coingeckoBaseTrending";
 import { getMergedTrendingTokens } from "@/app/api/trending/route";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { buildTokenFullReportPlan, executeClarkToolPlan as executeClarkToolLayerPlan, normalizeClarkScannerCacheKey } from "@/lib/clark/tools";
@@ -1602,6 +1603,20 @@ function buildClarkToolPlan(input: {
     }
     const _HOLDER_RE = /\b(?:holder(?:s|\s+concentration|\s+distribution|\s+count)?|top\s+holders?|supply\s+concentration)\b/i;
     if (_HOLDER_RE.test(message)) {
+      const _tq = extractTokenLookupQuery(message);
+      if (_tq) return { intent: "token_analysis", tools: [{ name: "token_resolve", args: { query: _tq }, required: true }, { name: "token_scan", args: { address: "" }, required: true }], depth: "normal", followupContext: { address: null, lastTokenAddress: null, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
+    }
+    // VOLUME / PUMP-OVER-TIMEFRAME, DISCLOSED ("ask volume, ask how much a token pumped" follow-
+    // up): reported gap — a specific-token volume or "how much did X pump" question had no
+    // dedicated routing, so it could fall into 'market' (the Base-wide movers list, not this
+    // token) or 'educational' (a canned "what is volume" definition) instead of an actual number.
+    // Same HARD PRIORITY OVERRIDE pattern as _HOLDER_RE right above — resolve the named token,
+    // then run token_scan, which already populates evidence.tokenScan.market.volume24h/change24h
+    // (see app/api/clark/route.ts's own token_scan tool handler) — the LLM reply step then answers
+    // the literal question asked from that real evidence, same as it already does for holders.
+    const _VOLUME_RE = /\b(?:24h\s+)?volume\b|trading\s+volume|how\s+much\s+(?:volume|is\s+trading)/i;
+    const _PUMP_TIMEFRAME_RE = /how\s+much\s+(?:has\s+|did\s+)?[a-z0-9._-]{0,20}\s*(?:pump|pumped|moved?|up|gain(?:ed)?)|price\s+change|% ?change|percent\s+change|how\s+much\s+(?:is\s+it\s+)?up|24h\s+(?:change|move|performance)|1h\s+(?:change|move)|7d\s+(?:change|move|performance)/i;
+    if (_VOLUME_RE.test(message) || _PUMP_TIMEFRAME_RE.test(message)) {
       const _tq = extractTokenLookupQuery(message);
       if (_tq) return { intent: "token_analysis", tools: [{ name: "token_resolve", args: { query: _tq }, required: true }, { name: "token_scan", args: { address: "" }, required: true }], depth: "normal", followupContext: { address: null, lastTokenAddress: null, lastWalletAddress: null, marketFollowup: false, selectedOptionIndex: null } };
     }
@@ -8944,6 +8959,31 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (routed.intent === "base_market_discovery") {
+    // COINGECKO-PRIMARY, DISCLOSED ("what's pumping" vs "Base Radar" follow-up): "what's pumping"
+    // now answers from CoinGecko's Base-ecosystem category — real, independent market data, not
+    // Base Radar's own internal pool feed (which base_radar, above, still uses unchanged). Falls
+    // through to the pre-existing dashboardRows/getBaseMarketUniverse path unchanged whenever
+    // CoinGecko has nothing (network failure, empty category, rate limit) — never a regression.
+    const cgTrending = await fetchCoinGeckoBaseTrending().catch(() => ({ ok: false as const, reason: "coingecko_exception" }));
+    if (cgTrending.ok && cgTrending.rows.length > 0) {
+      const mappedCg = cgTrending.rows.map((r) => ({
+        symbol: r.symbol, name: r.name, change24h: r.change24h, volume24hUsd: r.volume24hUsd,
+        priceUsd: r.priceUsd, marketCapUsd: r.marketCapUsd, liquidityUsd: null,
+        tokenAddress: null, poolAddress: null, reasonTags: ["CoinGecko Base-ecosystem 24h mover"],
+      }));
+      const formattedCg = formatBaseMarketReadFromCandidates(mappedCg);
+      if (formattedCg) {
+        const actions = buildRoutedActions(["Open Token Scanner", "Refresh Market Data"]);
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: ["coingecko_base_trending"],
+          analysis: formattedCg,
+          intentBadge: "base_market_discovery",
+          actions,
+          ui: { intentBadge: "Base Market Read", actions: toClarkUiActions(actions) },
+          quotaConsumed: true,
+        };
+      }
+    }
     const dashboardRows = Array.isArray(body.appContext?.dashboardMarketRows) ? body.appContext.dashboardMarketRows : body.dashboardMarketRows;
     if (Array.isArray(dashboardRows) && dashboardRows.length > 0) {
       const formatted = formatBaseMarketReadFromRows(dashboardRows);
