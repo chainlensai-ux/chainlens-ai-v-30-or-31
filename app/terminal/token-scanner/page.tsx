@@ -5266,83 +5266,231 @@ export default function TerminalTokenScanner() {
                 })()}
 
                 {/* ── Dev (authority / developer evidence) ─────────────── */}
-                {activeSection === 'deployer-intel' && (
-                  <>
-                    <div style={{ marginBottom: '18px' }}>
-                      <p style={{ margin: '0 0 3px', fontSize: '12px', fontWeight: 800, letterSpacing: '0.10em', color: '#fb923c', fontFamily: 'var(--font-plex-mono)' }}>AUTHORITY / DEVELOPER EVIDENCE</p>
-                      <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Solana has no EVM-style deployer/owner model — mint and freeze authority are the real, checkable equivalents.</p>
+                {activeSection === 'deployer-intel' && (() => {
+                  // SOLANA CORTEX DEV CONTROL READ, DISCLOSED ("make the Solana Dev section work
+                  // like the EVM CORTEX Dev Control Read" follow-up). Mirrors the EVM Dev Control
+                  // hero/tab structure exactly (score hero, 4-stat row, Dev Map/Supply Control/
+                  // Cluster Map/History/Watch Plan tabs) — but every value is Solana-native real
+                  // evidence, never the EVM feature's data reused. Two tabs (Cluster Map, and the
+                  // "linked wallets" node/list) are honestly marked "Not yet supported": Solana
+                  // has no wallet-clustering or transfer-pattern data source wired anywhere in
+                  // this codebase, and fabricating a wallet list (the way EVM's "3 mapped" comes
+                  // from real transfer-graph evidence) would be exactly the kind of invented data
+                  // this engine's honesty contract forbids.
+                  const dc = sr.deepCreator?.creatorTrace ?? null
+                  const creatorResolved = !!(dc?.success && dc.resolved.likelyCreatorWallet)
+                  const mintRevoked = sr.authorityReadSucceeded && !sr.mintAuthority
+                  const freezeRevoked = sr.authorityReadSucceeded && !sr.freezeAuthority
+                  const devScore = (mintRevoked ? 35 : 5) + (freezeRevoked ? 35 : 5) + (creatorResolved ? 30 : 15)
+                  const devVerdict = devScore >= 80 ? 'LOW RISK' : devScore >= 56 ? 'WATCH' : devScore >= 35 ? 'HIGH RISK' : 'CRITICAL'
+                  const devVerdictColor = devVerdict === 'LOW RISK' ? '#34d399' : devVerdict === 'WATCH' ? '#fbbf24' : devVerdict === 'HIGH RISK' ? '#fb923c' : '#f87171'
+                  const devConfidence = sr.authorityReadSucceeded && creatorResolved ? 'HIGH' : sr.authorityReadSucceeded ? 'MEDIUM' : 'LOW'
+                  const cxForDev = computeSolanaCortexRisk(sr)
+                  const fmtAddr = (addr: string | null | undefined) => addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : null
+                  const originAddr = dc?.resolved.likelyCreatorWallet ?? null
+                  const originChip = creatorResolved
+                    ? { label: 'Likely matched', color: '#fbbf24', bg: 'rgba(251,191,36,.1)', border: 'rgba(251,191,36,.3)' }
+                    : { label: 'Not run', color: '#94a3b8', bg: 'rgba(148,163,184,.08)', border: 'rgba(148,163,184,.25)' }
+                  const tabStyle = (active: boolean) => ({ padding: '8px 12px', borderRadius: '10px', border: active ? '1px solid rgba(125,211,252,0.45)' : '1px solid rgba(148,163,184,0.2)', background: active ? 'rgba(14,29,47,0.95)' : 'rgba(8,14,28,0.6)', color: active ? '#7dd3fc' : '#94a3b8', fontSize: '10px', letterSpacing: '.10em' as const, textTransform: 'uppercase' as const, fontWeight: 700, fontFamily: 'var(--font-plex-mono)' })
+                  const notSupportedPanel = (title: string, reason: string) => (
+                    <div style={{ padding: '13px 15px', borderRadius: '11px', background: 'rgba(148,163,184,.04)', border: '1px solid rgba(148,163,184,.14)' }}>
+                      <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.14em', color: '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{title}</p>
+                      <p style={{ margin: 0, fontSize: '11px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{reason}</p>
                     </div>
-                    <div className="dev-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: '12px', marginBottom: '14px' }}>
-                      <StatCard label="Mint Authority" value={!sr.authorityReadSucceeded ? 'Unavailable' : sr.mintAuthority ? 'Active' : 'Revoked'} accent={!sr.authorityReadSucceeded ? '#94a3b8' : sr.mintAuthority ? '#f87171' : '#34d399'} helper={sr.mintAuthority ? shorten(sr.mintAuthority) : undefined} />
-                      <StatCard label="Freeze Authority" value={!sr.authorityReadSucceeded ? 'Unavailable' : sr.freezeAuthority ? 'Active' : 'Revoked'} accent={!sr.authorityReadSucceeded ? '#94a3b8' : sr.freezeAuthority ? '#f87171' : '#34d399'} helper={sr.freezeAuthority ? shorten(sr.freezeAuthority) : undefined} />
-                      <StatCard label="Token Program" value={sr.tokenProgram === 'spl-token-2022' ? 'Token-2022' : sr.tokenProgram === 'spl-token' ? 'SPL Token' : 'Unavailable'} accent="#5eead4" dim />
-                      <StatCard label="Creator / Update Authority" value="Unavailable in Solana Beta" accent="#94a3b8" dim />
-                    </div>
-                    <div style={cardBase}>
-                      <p style={{ ...cardTitle, color: '#94a3b8' }}>Deployer History</p>
-                      <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Creator/deployer evidence unavailable in Solana Beta — Solana has no EVM-style deployer transaction history to reconstruct.</p>
-                    </div>
-                    {/* Helius, DISCLOSED: a lightweight signature-presence check only — never the
-                        paid Enhanced Transactions API, so creator/dev-wallet identity stays an
-                        honest gap even when this card resolves. */}
-                    <div style={{ ...cardBase, marginTop: '12px' }}>
-                      <p style={{ ...cardTitle, color: sr.helius.called && sr.helius.success ? '#5eead4' : '#94a3b8' }}>On-Chain Activity Signal</p>
-                      <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>
-                        {!sr.helius.called
-                          ? 'Helius activity signal not enabled for this scan.'
-                          : sr.helius.success
-                            ? `${sr.helius.resolved.recentTransfers ?? 0} recent on-chain signatures found via Helius. Creator/dev-wallet identity requires Enhanced Transactions, not run by default.`
-                            : 'Helius activity read did not resolve — open check.'}
-                      </p>
-                    </div>
-                    {/* DEEP MODE, DISCLOSED ("do Helius Enhanced" follow-up): the ONLY UI trigger
-                        for Helius Enhanced Transactions anywhere in this engine. Never runs on
-                        page load or on a normal scan — only on this explicit click, with the
-                        cost disclosed up front. */}
-                    {!sr.deepCreator ? (
-                      <div style={{ ...cardBase, marginTop: '12px', border: '1px dashed rgba(167,139,250,0.30)' }}>
-                        <p style={{ ...cardTitle, color: '#c4b5fd' }}>Deep Creator Check</p>
-                        <p style={{ margin: '0 0 10px', fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>
-                          Resolves a likely creator wallet by tracing this mint&apos;s earliest on-chain transaction via Helius Enhanced Transactions — a paid, more expensive lookup, not run by default.
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => { void runSolanaDeepCreatorCheck() }}
-                          disabled={solanaDeepLoading}
-                          style={{
-                            padding: '8px 16px', borderRadius: '10px', border: '1px solid rgba(167,139,250,0.45)',
-                            background: solanaDeepLoading ? 'rgba(167,139,250,0.08)' : 'linear-gradient(135deg,rgba(167,139,250,0.20),rgba(96,165,250,0.14))',
-                            color: '#e9d5ff', fontSize: '11px', fontWeight: 700, letterSpacing: '0.06em',
-                            fontFamily: 'var(--font-plex-mono)', cursor: solanaDeepLoading ? 'default' : 'pointer',
-                          }}
-                        >
-                          {solanaDeepLoading ? 'RUNNING DEEP CHECK…' : 'RUN DEEP CREATOR CHECK →'}
-                        </button>
-                        {solanaDeepError && <p style={{ margin: '10px 0 0', fontSize: '11px', color: '#f87171' }}>{solanaDeepError}</p>}
-                      </div>
-                    ) : (() => {
-                      const dc = sr.deepCreator.creatorTrace
-                      return (
-                        <div style={{ ...cardBase, marginTop: '12px' }}>
-                          <p style={{ ...cardTitle, color: dc.success ? '#5eead4' : '#94a3b8' }}>Deep Creator Check · Helius Enhanced</p>
-                          {dc.success ? (
-                            <>
-                              <p style={{ margin: '0 0 8px', fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>
-                                Likely creator wallet: <span style={{ color: '#e9d5ff', fontWeight: 700 }}>{shorten(dc.resolved.likelyCreatorWallet ?? '')}</span> — the fee payer of the earliest found transaction{dc.resolved.transactionSource ? ` (source: ${dc.resolved.transactionSource})` : ''}. A strong signal, not a certainty.
-                              </p>
-                              {!dc.reachedGenesis && (
-                                <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#fbbf24' }}>Lookback capped at {dc.pagesFetched} page(s) for cost control — this may not be the token&apos;s true genesis transaction.</p>
-                              )}
-                              <p style={{ margin: 0, fontSize: '10px', color: '#5b7590', fontFamily: 'var(--font-plex-mono)' }}>~{dc.estimatedCredits} Helius credit(s) used for this check.</p>
-                            </>
-                          ) : (
-                            <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Deep creator check did not resolve a likely creator wallet — open check.</p>
-                          )}
+                  )
+                  return (
+                    <>
+                      {/* Hero — same shape as EVM's CORTEX Dev Control Read: score/100, verdict,
+                          confidence, progress bar. Score is a dedicated Solana-native formula
+                          (authority state + Deep Creator Check resolution), not the overall
+                          Cortex Risk Engine score. */}
+                      <div style={{ marginBottom: '12px', padding: '18px', borderRadius: '14px', border: '1px solid rgba(125,211,252,0.22)', background: 'linear-gradient(165deg, rgba(14,24,43,0.95), rgba(8,14,26,0.95))', boxShadow: '0 10px 28px rgba(5,10,25,0.45)' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px', marginBottom: '12px' }}>
+                          <div>
+                            <p style={{ margin: '0 0 6px', fontSize: '10px', letterSpacing: '.14em', color: '#7dd3fc', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>CORTEX Dev Control Read · Solana</p>
+                            <p style={{ margin: 0, fontSize: '12px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>Mint/freeze authority state and Deep Creator Check evidence — Solana-native dev intelligence, not an EVM deployer model.</p>
+                          </div>
+                          <p style={{ margin: 0, fontSize: '28px', fontWeight: 800, color: '#f8fafc', fontFamily: 'var(--font-plex-mono)' }}>{devScore}<span style={{ fontSize: '12px', color: '#64748b' }}>/100</span></p>
                         </div>
-                      )
-                    })()}
-                  </>
-                )}
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '10px' }}>
+                          <span style={{ padding: '4px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 700, color: devVerdictColor, background: `${devVerdictColor}1a`, border: `1px solid ${devVerdictColor}55`, fontFamily: 'var(--font-plex-mono)' }}>{devVerdict}</span>
+                          <span style={{ padding: '4px 9px', borderRadius: '999px', fontSize: '10px', fontWeight: 700, color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.26)', fontFamily: 'var(--font-plex-mono)' }}>CONFIDENCE {devConfidence}</span>
+                        </div>
+                        <div style={{ height: '8px', borderRadius: '999px', background: 'rgba(15,23,42,0.9)', border: '1px solid rgba(255,255,255,0.08)', overflow: 'hidden' }}><div style={{ width: `${devScore}%`, height: '100%', background: 'linear-gradient(90deg, #2dd4bf, #7dd3fc)' }} /></div>
+                      </div>
+
+                      {/* Stat row — Deployer/Linked Wallets/Supply Control/Patterns, matching EVM's
+                          layout. Linked Wallets and Patterns are honestly "Not supported" — no
+                          wallet-clustering or transfer-pattern data source exists for Solana. */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '10px', marginBottom: '14px' }}>
+                        {([
+                          ['Deployer', creatorResolved ? 'Likely matched' : dc && !dc.success ? 'Not resolved' : 'Not run'],
+                          ['Linked Wallets', 'Not supported'],
+                          ['Supply Control', !sr.authorityReadSucceeded ? 'Open check' : mintRevoked ? 'Revoked (fixed supply)' : 'Active (mutable supply)'],
+                          ['Patterns', 'Not supported'],
+                        ]).map(([k, v]) => (
+                          <div key={k} style={{ padding: '12px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(9,15,29,0.82)' }}>
+                            <p style={{ margin: '0 0 5px', fontSize: '9px', letterSpacing: '.12em', color: '#64748b', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{k}</p>
+                            <p style={{ margin: 0, fontSize: '12px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{v}</p>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Tabs — same five as EVM. Dev Map/Supply Control/Watch Plan/History are
+                          real, Solana-native content. Cluster Map is honestly unsupported. */}
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
+                        {([['dev-map', 'Dev Map'], ['cluster-map', 'Cluster Map'], ['supply-control', 'Supply Control'], ['history', 'History'], ['watch-plan', 'Watch Plan']] as Array<[typeof devControlTab, string]>).map(([id, label]) => (
+                          <button key={id} type="button" onClick={() => setDevControlTab(id)} style={tabStyle(devControlTab === id)}>{label}</button>
+                        ))}
+                      </div>
+                      <div style={{ border: '1px solid rgba(148,163,184,0.2)', borderRadius: '14px', padding: '14px', background: 'rgba(7,12,24,0.8)' }}>
+                        {devControlTab === 'dev-map' && (
+                          <div style={{ display: 'grid', gap: '16px' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto 1fr auto 1fr', alignItems: 'stretch', gap: '6px' }}>
+                              <div style={{ padding: '12px 14px', borderRadius: '12px', background: 'linear-gradient(145deg,rgba(14,24,43,.9),rgba(8,16,32,.85))', border: '1px solid rgba(125,211,252,.28)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#7dd3fc', flexShrink: 0 }} />
+                                  <span style={{ fontSize: '9px', letterSpacing: '.14em', color: '#7dd3fc', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>TOKEN CONTRACT</span>
+                                </div>
+                                <span title={sr.mintAddress} style={{ fontSize: '10px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', background: 'rgba(125,211,252,.08)', border: '1px solid rgba(125,211,252,.18)', borderRadius: '6px', padding: '3px 7px' }}>{fmtAddr(sr.mintAddress)}</span>
+                                <span style={{ fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>SOLANA mainnet</span>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', paddingTop: '6px' }}><span style={{ color: '#2dd4bf', fontSize: '14px', lineHeight: 1 }}>→</span></div>
+                              <div style={{ padding: '12px 14px', borderRadius: '12px', background: 'linear-gradient(145deg,rgba(30,20,10,.85),rgba(18,14,6,.9))', border: `1px solid ${originAddr ? 'rgba(251,191,36,.32)' : 'rgba(148,163,184,.18)'}`, display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: originAddr ? '#fbbf24' : '#475569', flexShrink: 0 }} />
+                                  <span style={{ fontSize: '9px', letterSpacing: '.14em', color: originAddr ? '#fbbf24' : '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>ORIGIN WALLET</span>
+                                </div>
+                                {originAddr ? (
+                                  <span title={originAddr} style={{ fontSize: '10px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', background: 'rgba(251,191,36,.08)', border: '1px solid rgba(251,191,36,.18)', borderRadius: '6px', padding: '3px 7px' }}>{fmtAddr(originAddr)}</span>
+                                ) : (
+                                  <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{dc ? 'Not resolved' : 'Deep Creator Check not run'}</span>
+                                )}
+                                <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: originChip.color, background: originChip.bg, border: `1px solid ${originChip.border}`, width: 'fit-content' }}>{originChip.label}</span>
+                              </div>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', paddingTop: '6px' }}><span style={{ color: '#2dd4bf', fontSize: '14px', lineHeight: 1 }}>→</span></div>
+                              <div style={{ padding: '12px 14px', borderRadius: '12px', background: 'linear-gradient(145deg,rgba(9,15,29,.9),rgba(6,10,20,.85))', border: '1px solid rgba(148,163,184,.18)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#475569', flexShrink: 0 }} />
+                                  <span style={{ fontSize: '9px', letterSpacing: '.14em', color: '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>LINKED WALLETS</span>
+                                </div>
+                                <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Not supported</span>
+                                <span style={{ fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>No wallet-clustering data source connected</span>
+                              </div>
+                            </div>
+
+                            {/* Likely Deployer evidence card — same 4-field layout as EVM
+                                (Address/Detection Confidence/Evidence Source/Network), sourced
+                                entirely from the real Deep Creator Check result. */}
+                            <div>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '10px' }}>
+                                <span style={{ fontSize: '10px', letterSpacing: '.14em', color: originAddr ? '#fbbf24' : '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>LIKELY DEPLOYER</span>
+                                <span style={{ padding: '3px 9px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, color: originChip.color, background: originChip.bg, border: `1px solid ${originChip.border}` }}>{originChip.label}</span>
+                              </div>
+                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: '10px' }}>
+                                {([
+                                  ['Address', originAddr ? fmtAddr(originAddr) : 'Not resolved'],
+                                  ['Detection Confidence', creatorResolved ? 'Medium confidence' : dc ? 'Unavailable' : 'Not run'],
+                                  ['Evidence Source', dc ? 'Earliest indexed transaction fee payer (Helius Enhanced Transactions); not a confirmed creator' : 'Run Deep Creator Check from the button below'],
+                                  ['Network', 'SOLANA'],
+                                ]).map(([k, v]) => (
+                                  <div key={k} style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(9,15,29,0.7)' }}>
+                                    <p style={{ margin: '0 0 4px', fontSize: '9px', letterSpacing: '.10em', color: '#64748b', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{k}</p>
+                                    <p style={{ margin: 0, fontSize: '11px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.4 }}>{v}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+
+                            {/* DEEP MODE, DISCLOSED ("do Helius Enhanced" follow-up): the ONLY UI
+                                trigger for Helius Enhanced Transactions anywhere in this engine.
+                                Never runs on page load or on a normal scan — only on this click. */}
+                            {!sr.deepCreator ? (
+                              <div style={{ padding: '13px 15px', borderRadius: '11px', border: '1px dashed rgba(167,139,250,0.30)', background: 'rgba(167,139,250,0.03)' }}>
+                                <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#8ea0b5', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>Resolves a likely creator wallet by tracing this mint&apos;s earliest transaction via Helius Enhanced Transactions — a paid, more expensive lookup, not run by default.</p>
+                                <button
+                                  type="button"
+                                  onClick={() => { void runSolanaDeepCreatorCheck() }}
+                                  disabled={solanaDeepLoading}
+                                  style={{ padding: '8px 16px', borderRadius: '10px', border: '1px solid rgba(167,139,250,0.45)', background: solanaDeepLoading ? 'rgba(167,139,250,0.08)' : 'linear-gradient(135deg,rgba(167,139,250,0.20),rgba(96,165,250,0.14))', color: '#e9d5ff', fontSize: '11px', fontWeight: 700, letterSpacing: '0.06em', fontFamily: 'var(--font-plex-mono)', cursor: solanaDeepLoading ? 'default' : 'pointer' }}
+                                >
+                                  {solanaDeepLoading ? 'RUNNING DEEP CHECK…' : 'RUN DEEP CREATOR CHECK →'}
+                                </button>
+                                {solanaDeepError && <p style={{ margin: '10px 0 0', fontSize: '11px', color: '#f87171' }}>{solanaDeepError}</p>}
+                              </div>
+                            ) : dc && !dc.success && (
+                              <p style={{ margin: 0, fontSize: '11px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)' }}>Deep Creator Check ran but did not resolve a likely creator wallet — open check.</p>
+                            )}
+
+                            {notSupportedPanel('Linked Wallet Cluster', 'Not yet supported — no wallet-relationship or clustering data source is connected for Solana. This is different from EVM\'s transfer-graph analysis, which this codebase does not replicate here.')}
+                          </div>
+                        )}
+
+                        {devControlTab === 'supply-control' && (
+                          <div style={{ display: 'grid', gap: '12px' }}>
+                            <div className="dev-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: '12px' }}>
+                              <StatCard label="Mint Authority" value={!sr.authorityReadSucceeded ? 'Unavailable' : sr.mintAuthority ? 'Active' : 'Revoked'} accent={!sr.authorityReadSucceeded ? '#94a3b8' : sr.mintAuthority ? '#f87171' : '#34d399'} helper={sr.mintAuthority ? shorten(sr.mintAuthority) : undefined} />
+                              <StatCard label="Freeze Authority" value={!sr.authorityReadSucceeded ? 'Unavailable' : sr.freezeAuthority ? 'Active' : 'Revoked'} accent={!sr.authorityReadSucceeded ? '#94a3b8' : sr.freezeAuthority ? '#f87171' : '#34d399'} helper={sr.freezeAuthority ? shorten(sr.freezeAuthority) : undefined} />
+                              <StatCard label="Token Program" value={sr.tokenProgram === 'spl-token-2022' ? 'Token-2022' : sr.tokenProgram === 'spl-token' ? 'SPL Token' : 'Unavailable'} accent="#5eead4" dim />
+                              <StatCard label="On-Chain Activity" value={sr.helius.called && sr.helius.success ? `${sr.helius.resolved.recentTransfers ?? 0} signatures` : 'Not available'} accent={sr.helius.called && sr.helius.success ? '#5eead4' : '#94a3b8'} dim={!(sr.helius.called && sr.helius.success)} />
+                            </div>
+                            <p style={{ margin: 0, fontSize: '11px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>Mint authority controls supply inflation; freeze authority controls whether token accounts can be frozen — the real, checkable Solana equivalents of EVM&apos;s supply-control checks. Solana has no separate on-chain &quot;update authority&quot; field for fungible SPL tokens to read here.</p>
+                          </div>
+                        )}
+
+                        {devControlTab === 'cluster-map' && notSupportedPanel('Cluster Map', 'Not yet supported — wallet-cluster mapping requires a wallet-relationship data source this codebase does not have access to for Solana.')}
+
+                        {devControlTab === 'history' && (
+                          <div style={{ display: 'grid', gap: '10px' }}>
+                            <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
+                              <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Deployer identity</p>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>
+                                {creatorResolved
+                                  ? `Likely creator wallet identified from the mint's earliest found transaction (fee payer${dc?.resolved.transactionSource ? `, source: ${dc.resolved.transactionSource}` : ''}) — a strong signal, not a certainty.`
+                                  : dc && !dc.success
+                                    ? 'Deep Creator Check ran but did not resolve a likely creator wallet.'
+                                    : 'Deployer identity is an open check — run Deep Creator Check from the Dev Map tab.'}
+                              </p>
+                            </div>
+                            {notSupportedPanel('Transfer patterns', 'Not yet supported — no transfer-pattern analysis (wash trading, bundling, sniper detection) is connected for Solana. This is reported as unsupported, never as "no suspicious pattern found".')}
+                          </div>
+                        )}
+
+                        {devControlTab === 'watch-plan' && (
+                          <div style={{ display: 'grid', gap: '10px' }}>
+                            <div style={{ padding: '13px 16px', borderRadius: '12px', background: 'rgba(125,211,252,.04)', border: '1px solid rgba(125,211,252,.2)' }}>
+                              <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.14em', color: '#7dd3fc', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>CORTEX DEV SUMMARY</p>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+                                {`Deployer ${creatorResolved ? 'likely matched' : 'open check'}. Mint authority ${mintRevoked ? 'revoked' : 'active'}, freeze authority ${freezeRevoked ? 'revoked' : 'active'}. Wallet clustering not supported.`}
+                              </p>
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: '8px' }}>
+                              <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(52,211,153,.04)', border: '1px solid rgba(52,211,153,.18)' }}>
+                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#34d399', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>CONFIRMED SIGNALS</p>
+                                {cxForDev.factors.filter(f => f.kind === 'positive').slice(0, 4).map((f, i) => (
+                                  <p key={i} style={{ margin: i === 0 ? 0 : '4px 0 0', fontSize: '11px', color: '#86efac', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{f.label}</p>
+                                ))}
+                              </div>
+                              <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(251,191,36,.04)', border: '1px solid rgba(251,191,36,.18)' }}>
+                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#fbbf24', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>OPEN CHECKS</p>
+                                {cxForDev.factors.filter(f => f.kind === 'negative').slice(0, 4).map((f, i) => (
+                                  <p key={i} style={{ margin: i === 0 ? 0 : '4px 0 0', fontSize: '11px', color: '#fde68a', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{f.label}</p>
+                                ))}
+                              </div>
+                            </div>
+                            <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(45,212,191,.04)', border: '1px solid rgba(45,212,191,.18)' }}>
+                              <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#2dd4bf', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>NEXT ACTION</p>
+                              {cxForDev.nextActions.map((a) => (
+                                <p key={a} style={{ margin: 0, fontSize: '11px', color: '#99f6e4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{a}</p>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      <p style={{ margin: '10px 2px 0', fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Open verification items: Wallet cluster analysis · Transfer pattern analysis — neither is supported for Solana yet.</p>
+                    </>
+                  )
+                })()}
               </div>
             )
           })()}

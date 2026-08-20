@@ -1498,4 +1498,28 @@ function cortexSr(overrides = {}) {
   check('Solana Risk Engine tab renders Next Action', solanaRiskBlock.includes('Next Action'))
 }
 
+// ─── Solana CORTEX Dev Control Read (mirrors EVM's Dev Control hero/tab structure) ─────────────
+{
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+  const devStart = page.indexOf("activeSection === 'deployer-intel' && (() => {\n                  // SOLANA CORTEX DEV CONTROL READ")
+  const devBlockRaw = devStart > -1 ? page.slice(devStart, devStart + 40000) : ''
+  check('located the Solana Dev Control block', devStart > -1)
+  check('Dev Control renders the CORTEX Dev Control Read hero, matching the EVM feature name', devBlockRaw.includes('CORTEX Dev Control Read'))
+  check('Dev Control renders the same 5 tabs as EVM (Dev Map/Cluster Map/Supply Control/History/Watch Plan)', ['Dev Map', 'Cluster Map', 'Supply Control', 'History', 'Watch Plan'].every(t => devBlockRaw.includes(`'${t}'`)))
+  check('Dev Control renders a Token Contract -> Origin Wallet -> Linked Wallets map, like EVM', devBlockRaw.includes('TOKEN CONTRACT') && devBlockRaw.includes('ORIGIN WALLET') && devBlockRaw.includes('LINKED WALLETS'))
+  check('Dev Control renders a Likely Deployer evidence card with Address/Detection Confidence/Evidence Source/Network, matching EVM\'s 4-field layout', devBlockRaw.includes('LIKELY DEPLOYER') && devBlockRaw.includes('Detection Confidence') && devBlockRaw.includes('Evidence Source'))
+  check('Linked Wallets / Cluster Map are honestly marked unsupported, never a fabricated wallet list', devBlockRaw.includes('Not supported') && /wallet-clustering data source/i.test(devBlockRaw))
+  check('Transfer patterns are honestly marked unsupported, never "no suspicious pattern found"', devBlockRaw.includes('never as "no suspicious pattern found"'))
+  check('Watch Plan reuses the real Cortex Risk Engine factors/nextActions, not fabricated data', devBlockRaw.includes('cxForDev.factors') && devBlockRaw.includes('cxForDev.nextActions'))
+  check('Deep Creator Check trigger still lives inside the Dev Map tab', devBlockRaw.includes('RUN DEEP CREATOR CHECK'))
+}
+{
+  // The Dev Control score is a dedicated Solana-native formula (authority + Deep Creator Check),
+  // never the EVM feature's score reused, and never a fabricated number independent of evidence.
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+  check('Dev Control score is derived from real authority + creator evidence (mintRevoked/freezeRevoked/creatorResolved)', page.includes('const devScore = (mintRevoked ? 35 : 5) + (freezeRevoked ? 35 : 5) + (creatorResolved ? 30 : 15)'))
+}
+
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)
