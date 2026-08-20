@@ -5067,15 +5067,18 @@ export default function TerminalTokenScanner() {
 
                 {/* ── Risk Engine ─────────────────────────────────────── */}
                 {activeSection === 'risk-engine' && (() => {
-                  // SOLANA CORTEX RISK ENGINE, DISCLOSED (Solana-native Risk Engine task):
-                  // replaces the prior "Risk Drivers / Open Checks" cards — which mostly listed
-                  // EVM concepts Solana can't check — with a Solana-native read that only ever
-                  // talks about what CAN be verified. See lib/solanaCortexRisk.ts for the full
-                  // honesty contract behind every field used below.
+                  // SOLANA CORTEX RISK ENGINE, DISCLOSED (institutional-grade upgrade task):
+                  // a reasoning engine, not a card list — per-module confidence, a weighted
+                  // explainable score breakdown, provider-attributed factors, a composed
+                  // reasoning paragraph, and a real evidence-coverage/summary readout. See
+                  // lib/solanaCortexRisk.ts's own header for the full honesty contract and the
+                  // two disclosed deviations from the literal spec (Behaviour always scores 0,
+                  // most "Deep Scan" items are marked unsupported, not available).
                   const cx = computeSolanaCortexRisk(sr)
+                  const confColor = (c: typeof cx.overallConfidence) => c === 'High' ? '#34d399' : c === 'Medium' ? '#fbbf24' : c === 'Low' ? '#fb923c' : '#64748b'
                   return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                      {/* Hero — gauge + 5-tier verdict + confidence, driven by the real score. */}
+                      {/* Hero — gauge + 5-tier verdict + overall (weighted-aggregate) confidence. */}
                       <div style={{ padding: '22px 24px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border: `1px solid ${cx.verdictColor}35`, borderRadius: '20px', boxShadow: `0 0 44px ${cx.verdictColor}0c` }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '28px', flexWrap: 'wrap' }}>
                           <div style={{ flexShrink: 0 }}>
@@ -5085,76 +5088,176 @@ export default function TerminalTokenScanner() {
                             <div style={{ fontSize: '9px', letterSpacing: '.18em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>SOLANA CORTEX RISK ENGINE</div>
                             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                               <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: cx.verdictColor, background: `${cx.verdictColor}14`, border: `1px solid ${cx.verdictColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{cx.verdict}</span>
-                              <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: '#67e8f9', background: 'rgba(103,232,249,0.10)', border: '1px solid rgba(103,232,249,0.30)', fontFamily: 'var(--font-plex-mono)' }}>{cx.confidence.toUpperCase()} CONFIDENCE</span>
+                              <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: confColor(cx.overallConfidence), background: `${confColor(cx.overallConfidence)}14`, border: `1px solid ${confColor(cx.overallConfidence)}44`, fontFamily: 'var(--font-plex-mono)' }}>{cx.overallConfidence.toUpperCase()} OVERALL CONFIDENCE</span>
                             </div>
-                            <p style={{ margin: 0, fontSize: '11px', color: '#7c93aa', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>Scored entirely from verified Solana-native evidence — mint/freeze authority, on-chain-verified pool identity, real market data, and holder concentration.</p>
+                            {/* REASONING ENGINE, DISCLOSED: composed from conditional branches over
+                                this scan's real evidence — see composeReasoning in
+                                lib/solanaCortexRisk.ts. Not an LLM call, not a fixed template. */}
+                            <p style={{ margin: 0, fontSize: '11.5px', color: '#9db3c8', lineHeight: 1.65, fontFamily: 'var(--font-plex-mono)' }}>{cx.reasoning}</p>
                           </div>
                         </div>
                       </div>
 
-                      {/* Evidence Coverage — replaces the old "Open Check" catch-all with a real % + reason. */}
+                      {/* Evidence Summary — live counts, matching the requested Bloomberg-style readout. */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(110px,1fr))', gap: '8px' }}>
+                        {([
+                          ['Verified Evidence', String(cx.summary.verifiedEvidence), '#34d399'],
+                          ['Warning Signals', String(cx.summary.warningSignals), '#fbbf24'],
+                          ['Unknown Checks', String(cx.summary.unknownChecks), '#94a3b8'],
+                          ['Providers Used', String(cx.summary.providersUsed), '#67e8f9'],
+                          ['Evidence Confidence', `${cx.summary.evidenceConfidencePercent}%`, '#c4b5fd'],
+                        ] as const).map(([label, value, color]) => (
+                          <div key={label} style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(10,18,32,0.55)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                            <div style={{ fontSize: '9px', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px' }}>{label}</div>
+                            <div style={{ fontSize: '16px', fontWeight: 800, color, fontFamily: 'var(--font-plex-mono)' }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      {cx.providerDisagreement.detected && (
+                        <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(251,146,60,0.06)', border: '1px solid rgba(251,146,60,0.25)' }}>
+                          <span style={{ fontSize: '11px', fontWeight: 800, color: '#fb923c', fontFamily: 'var(--font-plex-mono)' }}>PROVIDER DISAGREEMENT DETECTED — CONFIDENCE REDUCED</span>
+                          <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#94a3b8', lineHeight: 1.5 }}>{cx.providerDisagreement.detail}</p>
+                        </div>
+                      )}
+
+                      {/* Module Confidence — one row per subsystem: status/confidence/provider/reason. */}
+                      <div style={cardBase}>
+                        <p style={{ ...cardTitle, color: '#67e8f9' }}>Module Confidence</p>
+                        <div style={{ display: 'grid', gap: '10px', marginTop: '4px' }}>
+                          {cx.modules.map((m) => (
+                            <div key={m.module} style={{ display: 'grid', gridTemplateColumns: '110px 90px 1fr auto', alignItems: 'start', gap: '10px', paddingBottom: '8px', borderBottom: '1px solid rgba(148,163,184,.07)' }}>
+                              <span style={{ fontSize: '11.5px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{m.module}</span>
+                              <span style={{ fontSize: '11px', fontWeight: 700, color: confColor(m.confidence), fontFamily: 'var(--font-plex-mono)' }}>{m.confidence}</span>
+                              <span style={{ fontSize: '11px', color: '#8ea0b5', lineHeight: 1.5 }}>{m.reason} <span style={{ color: '#5b7590' }}>({m.provider})</span></span>
+                              <span style={{ fontSize: '11px', fontWeight: 700, color: '#c4b5fd', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>{m.scoreEarned} / {m.scoreMax}</span>
+                            </div>
+                          ))}
+                          <div style={{ display: 'grid', gridTemplateColumns: '110px 90px 1fr auto', alignItems: 'center', gap: '10px', paddingTop: '2px' }}>
+                            <span style={{ fontSize: '11.5px', fontWeight: 800, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>Total</span>
+                            <span />
+                            <span />
+                            <span style={{ fontSize: '13px', fontWeight: 800, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>{cx.score} / {cx.scoreMax}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Evidence Coverage — completed vs unavailable evidence MODULES, each with why. */}
                       <div style={{ padding: '16px 18px', background: 'rgba(103,232,249,0.04)', border: '1px solid rgba(103,232,249,0.16)', borderRadius: '14px' }}>
-                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '18px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '10px', marginBottom: '10px' }}>
+                          <span style={{ fontSize: '9px', letterSpacing: '.14em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)' }}>EVIDENCE COVERAGE</span>
+                          <span style={{ fontSize: '18px', fontWeight: 800, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>{cx.evidenceCoveragePercent}%</span>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: '14px' }}>
                           <div>
-                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>COVERAGE</div>
-                            <div style={{ fontSize: '20px', fontWeight: 800, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>{cx.evidenceCoveragePercent}%</div>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: '#34d399', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Completed</p>
+                            {cx.completedEvidence.map((c) => (
+                              <div key={c.label} style={{ display: 'flex', gap: '6px', marginBottom: '4px' }}>
+                                <span style={{ color: '#34d399', fontSize: '11px' }}>✓</span>
+                                <span style={{ fontSize: '11px', color: '#86efac', fontFamily: 'var(--font-plex-mono)' }}>{c.label}</span>
+                              </div>
+                            ))}
                           </div>
                           <div>
-                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>CONFIDENCE</div>
-                            <div style={{ fontSize: '20px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{cx.confidence}</div>
+                            <p style={{ margin: '0 0 6px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Unavailable</p>
+                            {cx.unavailableEvidence.map((u) => (
+                              <div key={u.label} style={{ marginBottom: '6px' }}>
+                                <span style={{ fontSize: '11px', color: '#cbd5e1', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{u.label}</span>
+                                {u.reason && <p style={{ margin: '2px 0 0', fontSize: '10.5px', color: '#7c8aa0', lineHeight: 1.5 }}>{u.reason}</p>}
+                              </div>
+                            ))}
                           </div>
                         </div>
-                        <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>REASON</div>
-                        <p style={{ margin: 0, fontSize: '11.5px', color: '#94a3b8', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{cx.evidenceCoverageReason}</p>
                       </div>
 
-                      {/* Positive / Negative / Unknown evidence — real facts only, same visual
-                          language as LP Safety's Good Signs/Risk Signs/Missing Proofs. */}
-                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: '8px' }}>
+                      {/* Weighted evidence factors — each carries weight/confidence/source/reason,
+                          split into Negative (real risk factors, never an empty "no signals"
+                          placeholder — see lib/solanaCortexRisk.ts) vs Unknown (with WHY). */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: '8px' }}>
                         <div style={{ padding: '12px 14px', background: 'rgba(52,211,153,0.04)', border: '1px solid rgba(52,211,153,0.15)', borderRadius: '12px' }}>
                           <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#34d399', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Positive Evidence</p>
-                          {cx.positiveSignals.length > 0 ? cx.positiveSignals.map((s, i) => (
-                            <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '5px' }}>
-                              <span style={{ color: '#34d399', flexShrink: 0, fontWeight: 800, fontSize: '11px', lineHeight: '16px' }}>✓</span>
-                              <p style={{ margin: 0, fontSize: '11px', color: '#86efac', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                          {cx.factors.filter(f => f.kind === 'positive').map((f, i) => (
+                            <div key={i} style={{ marginBottom: '7px' }}>
+                              <div style={{ display: 'flex', gap: '7px', alignItems: 'baseline' }}>
+                                <span style={{ color: '#34d399', flexShrink: 0, fontWeight: 800, fontSize: '11px' }}>✓</span>
+                                <span style={{ fontSize: '11px', color: '#86efac', fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{f.label}</span>
+                                <span style={{ fontSize: '10px', color: '#34d399', fontFamily: 'var(--font-plex-mono)', marginLeft: 'auto' }}>+{f.weight}</span>
+                              </div>
+                              <p style={{ margin: '2px 0 0 18px', fontSize: '10.5px', color: '#7c8aa0', lineHeight: 1.5 }}>{f.reason} <span style={{ color: '#4a627e' }}>· {f.confidence} · {f.source}</span></p>
                             </div>
-                          )) : <p style={{ margin: 0, fontSize: '11px', color: '#2a4438', fontFamily: 'var(--font-plex-mono)' }}>No confirmed positive signals in this pass.</p>}
+                          ))}
                         </div>
                         <div style={{ padding: '12px 14px', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.15)', borderRadius: '12px' }}>
                           <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Negative Evidence</p>
-                          {cx.negativeSignals.length > 0 ? cx.negativeSignals.map((s, i) => (
-                            <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '5px' }}>
-                              <span style={{ color: '#fbbf24', flexShrink: 0, fontWeight: 800, fontSize: '11px', lineHeight: '16px' }}>⚠</span>
-                              <p style={{ margin: 0, fontSize: '11px', color: '#fde68a', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                          {cx.factors.filter(f => f.kind === 'negative').map((f, i) => (
+                            <div key={i} style={{ marginBottom: '7px' }}>
+                              <div style={{ display: 'flex', gap: '7px', alignItems: 'baseline' }}>
+                                <span style={{ color: '#fbbf24', flexShrink: 0, fontWeight: 800, fontSize: '11px' }}>⚠</span>
+                                <span style={{ fontSize: '11px', color: '#fde68a', fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{f.label}</span>
+                                <span style={{ fontSize: '10px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', marginLeft: 'auto' }}>{f.weight}</span>
+                              </div>
+                              <p style={{ margin: '2px 0 0 18px', fontSize: '10.5px', color: '#7c8aa0', lineHeight: 1.5 }}>{f.reason} <span style={{ color: '#4a627e' }}>· {f.confidence} · {f.source}</span></p>
                             </div>
-                          )) : <p style={{ margin: 0, fontSize: '11px', color: '#3a2f10', fontFamily: 'var(--font-plex-mono)' }}>No confirmed negative signals in this pass.</p>}
+                          ))}
                         </div>
                         <div style={{ padding: '12px 14px', background: 'rgba(148,163,184,0.04)', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '12px' }}>
                           <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Unknown</p>
-                          {cx.unknownSignals.map((s, i) => (
-                            <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '5px' }}>
-                              <span style={{ color: '#64748b', flexShrink: 0, fontWeight: 800, fontSize: '11px', lineHeight: '16px' }}>?</span>
-                              <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                          {cx.unknownFactors.map((u, i) => (
+                            <div key={i} style={{ marginBottom: '7px' }}>
+                              <div style={{ display: 'flex', gap: '7px' }}>
+                                <span style={{ color: '#64748b', flexShrink: 0, fontWeight: 800, fontSize: '11px' }}>?</span>
+                                <span style={{ fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{u.label}</span>
+                              </div>
+                              <p style={{ margin: '2px 0 0 18px', fontSize: '10.5px', color: '#7c8aa0', lineHeight: 1.5 }}>{u.reason}</p>
                             </div>
                           ))}
                         </div>
                       </div>
 
-                      {/* Deep Analysis Available — replaces "Honeypot unavailable"-style EVM-gap
-                          wording with genuinely optional deep scans. Only ever lists capabilities
-                          that actually exist (available: true) alongside honest "not yet
-                          supported" entries — never implies a scan is runnable when it isn't. */}
+                      {/* Deep Analysis — Already Completed / Available / Unsupported, honestly split. */}
                       <div style={cardBase}>
-                        <p style={{ ...cardTitle, color: '#c4b5fd' }}>Deep Analysis Available</p>
-                        <div style={{ display: 'grid', gap: '8px', marginTop: '4px' }}>
-                          {cx.deepAnalysis.map((d) => (
+                        <p style={{ ...cardTitle, color: '#c4b5fd' }}>Deep Analysis</p>
+                        <p style={{ margin: '0 0 4px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: '#34d399', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Already Completed</p>
+                        <div style={{ marginBottom: '10px' }}>
+                          {cx.deepAnalysisCompleted.map((label) => (
+                            <div key={label} style={{ display: 'flex', gap: '7px', marginBottom: '3px' }}>
+                              <span style={{ color: '#34d399', fontSize: '11px' }}>✓</span>
+                              <span style={{ fontSize: '11.5px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{label}</span>
+                            </div>
+                          ))}
+                        </div>
+                        {cx.deepAnalysisAvailable.length > 0 && (
+                          <>
+                            <p style={{ margin: '0 0 4px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: '#67e8f9', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Deep Scan Available</p>
+                            <div style={{ marginBottom: '10px' }}>
+                              {cx.deepAnalysisAvailable.map((d) => (
+                                <div key={d.label} style={{ marginBottom: '5px' }}>
+                                  <span style={{ fontSize: '11.5px', color: '#e2e8f0', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{d.label}</span>
+                                  <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#7c8aa0', lineHeight: 1.5 }}>{d.reason}</p>
+                                </div>
+                              ))}
+                            </div>
+                          </>
+                        )}
+                        <p style={{ margin: '0 0 4px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Not Yet Supported</p>
+                        <div style={{ display: 'grid', gap: '6px' }}>
+                          {cx.deepAnalysisUnsupported.map((d) => (
                             <div key={d.label} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
-                              <span style={{ flexShrink: 0, fontSize: '11px', fontWeight: 800, color: d.available ? '#34d399' : '#4a627e' }}>{d.available ? '✓' : '—'}</span>
+                              <span style={{ flexShrink: 0, fontSize: '11px', fontWeight: 800, color: '#4a627e' }}>—</span>
                               <div>
-                                <span style={{ fontSize: '11.5px', color: d.available ? '#e2e8f0' : '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{d.label}</span>
-                                <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#7c8aa0', lineHeight: 1.5 }}>{d.reason}</p>
+                                <span style={{ fontSize: '11.5px', color: '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{d.label}</span>
+                                <p style={{ margin: '2px 0 0', fontSize: '10.5px', color: '#5b7590', lineHeight: 1.5 }}>{d.reason}</p>
                               </div>
                             </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Next Action — generated from real gaps, never generic advice. */}
+                      <div style={{ padding: '14px 18px', background: 'rgba(45,212,191,0.05)', border: '1px solid rgba(45,212,191,0.20)', borderRadius: '12px' }}>
+                        <p style={{ margin: '0 0 7px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Next Action</p>
+                        <div style={{ display: 'grid', gap: '5px' }}>
+                          {cx.nextActions.map((a) => (
+                            <p key={a} style={{ margin: 0, fontSize: '11.5px', color: '#67e8f9', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>→ {a}</p>
                           ))}
                         </div>
                       </div>
