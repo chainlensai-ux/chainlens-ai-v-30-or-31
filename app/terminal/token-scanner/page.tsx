@@ -13,6 +13,7 @@ import type { SolanaBetaScanResult } from '@/lib/server/solanaTokenScannerBeta'
 // the full disclosure on why a capped, clearly-labeled score replaced the earlier "no score shown"
 // design (this task explicitly permits it). Client-safe, no env var, no secret.
 import { computeSolanaConfidenceScore } from '@/lib/solanaConfidenceScore'
+import { computeSolanaCortexRisk } from '@/lib/solanaCortexRisk'
 
 // Type-only import above is erased at build time, so no server module is bundled into the client.
 type SolanaBetaResult = SolanaBetaScanResult
@@ -5066,51 +5067,95 @@ export default function TerminalTokenScanner() {
 
                 {/* ── Risk Engine ─────────────────────────────────────── */}
                 {activeSection === 'risk-engine' && (() => {
-                  const drivers: string[] = [
-                    sr.mintAuthority ? 'Active mint authority — supply can be increased.' : '',
-                    sr.freezeAuthority ? 'Active freeze authority — token accounts can be frozen.' : '',
-                    concRisk === 'HIGH' ? `High top-account concentration — top 10 hold ${conc?.top10Percent?.toFixed(1)}%.` : '',
-                    !sr.marketDataAvailable ? 'Missing market data — no indexed Solana pool found.' : '',
-                    sr.marketData?.liquidityUsd != null && sr.marketData.liquidityUsd < 5000 ? `Low liquidity — ${fmtLarge(sr.marketData.liquidityUsd)}.` : '',
-                  ].filter(Boolean)
-                  const openChecks: string[] = [
-                    'Honeypot / tax simulation unavailable for Solana Beta.',
-                    'ERC-20 LP lock/burn proof not applicable to Solana.',
-                    'Creator/deployer history unavailable in Solana Beta.',
-                    'Pool authority not fully verified in Solana Beta.',
-                  ]
+                  // SOLANA CORTEX RISK ENGINE, DISCLOSED (Solana-native Risk Engine task):
+                  // replaces the prior "Risk Drivers / Open Checks" cards — which mostly listed
+                  // EVM concepts Solana can't check — with a Solana-native read that only ever
+                  // talks about what CAN be verified. See lib/solanaCortexRisk.ts for the full
+                  // honesty contract behind every field used below.
+                  const cx = computeSolanaCortexRisk(sr)
                   return (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                      {/* RISK-HERO PARITY, DISCLOSED (Token Scanner Solana premium-parity task):
-                          same hero layout as the EVM Risk Engine (gauge left, verdict/confidence/
-                          explanation right) — reusing the SAME RiskGaugeCircle component with a
-                          real computed sc.score, never null. The prior pass omitted the gauge
-                          entirely to avoid a "— /100" placeholder; this task explicitly allows (and
-                          this composite score satisfies) a controlled, capped, clearly-labeled
-                          fallback that still looks premium instead of leaving an empty ring. */}
-                      <div style={{ padding: '22px 24px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border: `1px solid ${sc.color}35`, borderRadius: '20px', boxShadow: `0 0 44px ${sc.color}0c` }}>
+                      {/* Hero — gauge + 5-tier verdict + confidence, driven by the real score. */}
+                      <div style={{ padding: '22px 24px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border: `1px solid ${cx.verdictColor}35`, borderRadius: '20px', boxShadow: `0 0 44px ${cx.verdictColor}0c` }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: '28px', flexWrap: 'wrap' }}>
                           <div style={{ flexShrink: 0 }}>
-                            <RiskGaugeCircle score={sc.score} color={sc.color} />
+                            <RiskGaugeCircle score={cx.score} color={cx.verdictColor} />
                           </div>
                           <div style={{ flex: 1, minWidth: '200px', display: 'flex', flexDirection: 'column', gap: '11px' }}>
-                            <div style={{ fontSize: '9px', letterSpacing: '.18em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>CORTEX RISK READ · SOLANA BETA</div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.18em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>SOLANA CORTEX RISK ENGINE</div>
                             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                              <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: verdictColor, background: `${verdictColor}14`, border: `1px solid ${verdictColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{verdictLabel.toUpperCase()}</span>
-                              <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: confColor, background: `${confColor}14`, border: `1px solid ${confColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{sr.betaRisk.confidence} CONFIDENCE</span>
+                              <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: cx.verdictColor, background: `${cx.verdictColor}14`, border: `1px solid ${cx.verdictColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{cx.verdict}</span>
+                              <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: '#67e8f9', background: 'rgba(103,232,249,0.10)', border: '1px solid rgba(103,232,249,0.30)', fontFamily: 'var(--font-plex-mono)' }}>{cx.confidence.toUpperCase()} CONFIDENCE</span>
                             </div>
-                            <p style={{ margin: 0, fontSize: '11px', color: '#7c93aa', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>Called &quot;CORTEX Risk Read,&quot; not the full CORTEX score — computed from supported evidence only. Honeypot, tax, LP-lock, proxy/admin, and deployer-history checks are unsupported and are not part of this number.</p>
+                            <p style={{ margin: 0, fontSize: '11px', color: '#7c93aa', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>Scored entirely from verified Solana-native evidence — mint/freeze authority, on-chain-verified pool identity, real market data, and holder concentration.</p>
                           </div>
                         </div>
                       </div>
-                      <div className="risk-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: '14px' }}>
-                        <div style={cardBase}>
-                          <p style={{ ...cardTitle, color: '#f87171' }}>Risk Drivers</p>
-                          {drivers.length > 0 ? drivers.map((d, i) => gapLine(d, i)) : <p style={{ margin: 0, fontSize: '11.5px', color: '#8ea0b5' }}>No active risk drivers found in the evidence collected.</p>}
+
+                      {/* Evidence Coverage — replaces the old "Open Check" catch-all with a real % + reason. */}
+                      <div style={{ padding: '16px 18px', background: 'rgba(103,232,249,0.04)', border: '1px solid rgba(103,232,249,0.16)', borderRadius: '14px' }}>
+                        <div style={{ display: 'flex', alignItems: 'baseline', gap: '18px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                          <div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>COVERAGE</div>
+                            <div style={{ fontSize: '20px', fontWeight: 800, color: '#67e8f9', fontFamily: 'var(--font-plex-mono)' }}>{cx.evidenceCoveragePercent}%</div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>CONFIDENCE</div>
+                            <div style={{ fontSize: '20px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{cx.confidence}</div>
+                          </div>
                         </div>
-                        <div style={cardBase}>
-                          <p style={{ ...cardTitle, color: '#fbbf24' }}>Open Checks</p>
-                          {openChecks.map((c, i) => gapLine(c, i))}
+                        <div style={{ fontSize: '9px', letterSpacing: '.14em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', marginBottom: '2px' }}>REASON</div>
+                        <p style={{ margin: 0, fontSize: '11.5px', color: '#94a3b8', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{cx.evidenceCoverageReason}</p>
+                      </div>
+
+                      {/* Positive / Negative / Unknown evidence — real facts only, same visual
+                          language as LP Safety's Good Signs/Risk Signs/Missing Proofs. */}
+                      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: '8px' }}>
+                        <div style={{ padding: '12px 14px', background: 'rgba(52,211,153,0.04)', border: '1px solid rgba(52,211,153,0.15)', borderRadius: '12px' }}>
+                          <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#34d399', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Positive Evidence</p>
+                          {cx.positiveSignals.length > 0 ? cx.positiveSignals.map((s, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '5px' }}>
+                              <span style={{ color: '#34d399', flexShrink: 0, fontWeight: 800, fontSize: '11px', lineHeight: '16px' }}>✓</span>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#86efac', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                            </div>
+                          )) : <p style={{ margin: 0, fontSize: '11px', color: '#2a4438', fontFamily: 'var(--font-plex-mono)' }}>No confirmed positive signals in this pass.</p>}
+                        </div>
+                        <div style={{ padding: '12px 14px', background: 'rgba(251,191,36,0.04)', border: '1px solid rgba(251,191,36,0.15)', borderRadius: '12px' }}>
+                          <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Negative Evidence</p>
+                          {cx.negativeSignals.length > 0 ? cx.negativeSignals.map((s, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '5px' }}>
+                              <span style={{ color: '#fbbf24', flexShrink: 0, fontWeight: 800, fontSize: '11px', lineHeight: '16px' }}>⚠</span>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#fde68a', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                            </div>
+                          )) : <p style={{ margin: 0, fontSize: '11px', color: '#3a2f10', fontFamily: 'var(--font-plex-mono)' }}>No confirmed negative signals in this pass.</p>}
+                        </div>
+                        <div style={{ padding: '12px 14px', background: 'rgba(148,163,184,0.04)', border: '1px solid rgba(148,163,184,0.15)', borderRadius: '12px' }}>
+                          <p style={{ margin: '0 0 8px', fontSize: '9px', fontWeight: 800, letterSpacing: '.15em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Unknown</p>
+                          {cx.unknownSignals.map((s, i) => (
+                            <div key={i} style={{ display: 'flex', gap: '7px', marginBottom: '5px' }}>
+                              <span style={{ color: '#64748b', flexShrink: 0, fontWeight: 800, fontSize: '11px', lineHeight: '16px' }}>?</span>
+                              <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', lineHeight: 1.5, fontFamily: 'var(--font-plex-mono)' }}>{s}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Deep Analysis Available — replaces "Honeypot unavailable"-style EVM-gap
+                          wording with genuinely optional deep scans. Only ever lists capabilities
+                          that actually exist (available: true) alongside honest "not yet
+                          supported" entries — never implies a scan is runnable when it isn't. */}
+                      <div style={cardBase}>
+                        <p style={{ ...cardTitle, color: '#c4b5fd' }}>Deep Analysis Available</p>
+                        <div style={{ display: 'grid', gap: '8px', marginTop: '4px' }}>
+                          {cx.deepAnalysis.map((d) => (
+                            <div key={d.label} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                              <span style={{ flexShrink: 0, fontSize: '11px', fontWeight: 800, color: d.available ? '#34d399' : '#4a627e' }}>{d.available ? '✓' : '—'}</span>
+                              <div>
+                                <span style={{ fontSize: '11.5px', color: d.available ? '#e2e8f0' : '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{d.label}</span>
+                                <p style={{ margin: '2px 0 0', fontSize: '11px', color: '#7c8aa0', lineHeight: 1.5 }}>{d.reason}</p>
+                              </div>
+                            </div>
+                          ))}
                         </div>
                       </div>
                     </div>

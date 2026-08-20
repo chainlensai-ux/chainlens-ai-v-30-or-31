@@ -18,6 +18,7 @@ import {
   scanSolanaTokenBeta, scoreSolanaBeta, SOLANA_UNSUPPORTED_CHECKS,
 } from '../lib/server/solanaTokenScannerBeta.ts'
 import { computeSolanaConfidenceScore } from '../lib/solanaConfidenceScore.ts'
+import { computeSolanaCortexRisk } from '../lib/solanaCortexRisk.ts'
 
 let passed = 0
 function check(label, condition) { assert.ok(condition, label); passed++ }
@@ -1253,6 +1254,144 @@ function deepStub({ mint, supply, largest, dexPairs, sigPages, enhancedTx, enhan
   check('Dev tab reads sr.deepCreator to decide between the trigger button and the result card', page.includes('!sr.deepCreator'))
   check('Deep Creator Check card reads the real resolved creator wallet', page.includes('dc.resolved.likelyCreatorWallet'))
   check('Deep Creator Check UI discloses the cost up front', /paid, more expensive/i.test(page))
+}
+
+// ─── Solana CORTEX Risk Engine (replaces "Risk Drivers / Open Checks") ─────────────────────────
+function cortexSr(overrides = {}) {
+  return {
+    ...baseSr(),
+    // Genuinely distributed for the "best case" — baseSr's default top1Percent (10) sits right at
+    // this engine's whale threshold and would otherwise contaminate the best-case fixture.
+    topAccountConcentration: { top1Percent: 5, top10Percent: 20, top20Percent: 30, accountsSampled: 20, accounts: [] },
+    tokenProgram: 'spl-token',
+    poolProgram: { resolved: true, poolAddress: 'POOL1', owner: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', label: 'Raydium AMM V4', errorReason: null, verdict: 'verified_official_pool', migratedFromPumpFun: null },
+    marketData: { liquidityUsd: 100_000, priceUsd: 1, volume24hUsd: 50_000, fdvUsd: null, marketCapUsd: null, primaryPoolAddress: 'POOL1', primaryDexLabel: 'raydium', tokenName: null, tokenSymbol: null, pairAgeLabel: '10d', txns24h: { buys: 120, sells: 40 }, socials: { website: null, twitter: null, telegram: null, discord: null, reddit: null } },
+    heliusHolders: { called: true, success: true, holderCount: 500, isLowerBound: false, pagesFetched: 1, errorReason: null },
+    jupiter: { called: true, success: true, resolved: { name: 'X', symbol: 'X', logo: null, verified: true, price: 1 }, errorReason: null },
+    helius: { called: true, success: true, enhancedTransactionsUsed: false, estimatedCredits: 1, resolved: { parsedActivity: true, creatorSignals: null, devActivity: null, recentTransfers: 5 }, errorReason: null },
+    ohlcv: { called: true, success: true, candles: [{ timestamp: '2024-01-01T00:00:00Z', open: 1, high: 1, low: 1, close: 1, volume: 1 }, { timestamp: '2024-01-01T01:00:00Z', open: 1, high: 1, low: 1, close: 1, volume: 1 }], timeframe: '1h', errorReason: null },
+    deepCreator: null,
+    ...overrides,
+  }
+}
+{
+  // Best-case: everything verified, healthy — must land at LOW RISK, near-full coverage, no
+  // negative signals, and never claim "SAFE" wording anywhere.
+  const cx = computeSolanaCortexRisk(cortexSr())
+  check('best-case verdict is LOW RISK', cx.verdict === 'LOW RISK')
+  check('best-case has zero negative signals', cx.negativeSignals.length === 0)
+  check('best-case has strong positive signals (authority + pool + liquidity + holders)', cx.positiveSignals.length >= 4)
+  check('best-case evidence coverage is high (>= 80%)', cx.evidenceCoveragePercent >= 80)
+  check('best-case confidence is High, matching the coverage %', cx.confidence === 'High')
+  check('best-case evidence coverage reason names real providers', /Alchemy/.test(cx.evidenceCoverageReason) && /DexScreener/.test(cx.evidenceCoverageReason))
+  check('never claims "SAFE" anywhere in the verdict or signals', !JSON.stringify(cx).toUpperCase().includes('SAFE'))
+}
+{
+  // Freeze authority active alone must force at least HIGH RISK, regardless of score — the same
+  // hard-override principle scoreSolanaBeta already enforces, now expressed in the 5-tier ladder.
+  const cx = computeSolanaCortexRisk(cortexSr({ freezeAuthority: 'FreezeAuth111' }))
+  check('active freeze authority forces at least HIGH RISK', ['HIGH RISK', 'EXTREME RISK'].includes(cx.verdict))
+  check('freeze authority active is a negative signal, not silently dropped', cx.negativeSignals.some(s => /freeze authority/i.test(s)))
+}
+{
+  // Both mint and freeze authority active — the worst case — must be EXTREME RISK.
+  const cx = computeSolanaCortexRisk(cortexSr({ mintAuthority: 'MintAuth111', freezeAuthority: 'FreezeAuth111' }))
+  check('both authorities active forces EXTREME RISK', cx.verdict === 'EXTREME RISK')
+}
+{
+  // Mint authority active alone (freeze revoked) must be at least MEDIUM RISK, never LOW/WATCH.
+  const cx = computeSolanaCortexRisk(cortexSr({ mintAuthority: 'MintAuth111' }))
+  check('active mint authority alone forces at least MEDIUM RISK', ['MEDIUM RISK', 'HIGH RISK', 'EXTREME RISK'].includes(cx.verdict))
+}
+{
+  // Zero-evidence case: everything unresolved — must degrade to EXTREME/HIGH RISK with low
+  // coverage and low confidence, never crash, never claim high confidence from no evidence.
+  const cx = computeSolanaCortexRisk(cortexSr({
+    authorityReadSucceeded: false, mintAuthority: null, freezeAuthority: null, tokenProgram: null,
+    poolProgram: { resolved: false, poolAddress: null, owner: null, label: null, errorReason: 'none', verdict: 'unverified', migratedFromPumpFun: null },
+    marketDataAvailable: false, marketData: null,
+    heliusHolders: { called: false, success: false, holderCount: null, isLowerBound: false, pagesFetched: 0, errorReason: 'not configured' },
+    jupiter: { called: false, success: false, resolved: { name: null, symbol: null, logo: null, verified: null, price: null }, errorReason: 'not configured' },
+    helius: { called: false, success: false, enhancedTransactionsUsed: false, estimatedCredits: 0, resolved: { parsedActivity: null, creatorSignals: null, devActivity: null, recentTransfers: null }, errorReason: 'not configured' },
+    ohlcv: { called: false, success: false, candles: [], timeframe: '1h', errorReason: 'no pool' },
+  }))
+  check('zero-evidence coverage is low', cx.evidenceCoveragePercent <= 30)
+  check('zero-evidence confidence is Low', cx.confidence === 'Low')
+  check('zero-evidence unknown signals include authority', cx.unknownSignals.some(s => /authority/i.test(s)))
+  check('zero-evidence never crashes and still returns a verdict', typeof cx.verdict === 'string')
+}
+{
+  // Pool program NOT recognized — real negative signal, never silently upgraded to "verified".
+  const cx = computeSolanaCortexRisk(cortexSr({
+    poolProgram: { resolved: true, poolAddress: 'POOL2', owner: 'SomeUnknownProgram11111111111111111111111', label: null, errorReason: null, verdict: 'unrecognized_program', migratedFromPumpFun: null },
+  }))
+  check('unrecognized pool program is a real negative signal', cx.negativeSignals.some(s => /not fully verified/i.test(s)))
+  check('unrecognized pool program never claims a verified label', !cx.positiveSignals.some(s => /verified$/i.test(s)))
+}
+{
+  // PumpSwap migration signal surfaces as a real positive fact, not a guess.
+  const cx = computeSolanaCortexRisk(cortexSr({
+    poolProgram: { resolved: true, poolAddress: 'POOL3', owner: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', label: 'PumpSwap AMM', errorReason: null, verdict: 'verified_official_pool', migratedFromPumpFun: true },
+  }))
+  check('PumpSwap migration is surfaced as a real positive signal', cx.positiveSignals.some(s => /Migrated from Pump\.fun/i.test(s)))
+}
+{
+  // Whale concentration example from the spec ("Whale owns 11%") — real threshold-based signal.
+  const cx = computeSolanaCortexRisk(cortexSr({
+    topAccountConcentration: { top1Percent: 11, top10Percent: 25, top20Percent: 35, accountsSampled: 20, accounts: [] },
+  }))
+  check('whale concentration >=10% surfaces the exact spec-style signal', cx.negativeSignals.some(s => /Whale owns 11\.0%/.test(s)))
+}
+{
+  // Moderate liquidity is a negative (warning) signal, per the spec's own example — not positive.
+  const cx = computeSolanaCortexRisk(cortexSr({ marketData: { ...cortexSr().marketData, liquidityUsd: 20_000 } }))
+  check('moderate liquidity (5k-50k) is a negative/warning signal, matching the spec example', cx.negativeSignals.some(s => /Moderate liquidity/i.test(s)))
+}
+{
+  // Behavioral signals (wash trading, snipers, bundles, bots, clustering) are NEVER fabricated —
+  // they must never appear as positive or negative claims anywhere in the output.
+  const cx = computeSolanaCortexRisk(cortexSr())
+  const blob = JSON.stringify([...cx.positiveSignals, ...cx.negativeSignals]).toLowerCase()
+  for (const forbidden of ['wash trading', 'sniper', 'bundled buys', 'bot activity', 'wallet clustering']) {
+    check(`behavioral signal never fabricated: ${forbidden}`, !blob.includes(forbidden))
+  }
+}
+{
+  // Creator identity: Unknown by default, resolves to a positive signal ONLY when Deep Creator
+  // Check actually ran and succeeded — never claimed otherwise.
+  const withoutDeep = computeSolanaCortexRisk(cortexSr())
+  check('creator launch history is Unknown when Deep Creator Check did not run', withoutDeep.unknownSignals.includes('Creator launch history'))
+  const withDeep = computeSolanaCortexRisk(cortexSr({
+    deepCreator: { creatorTrace: { called: true, success: true, enhancedTransactionsUsed: true, estimatedCredits: 2, pagesFetched: 1, reachedGenesis: true, resolved: { earliestSignature: 'sig1', earliestTimestamp: '2024-01-01T00:00:00Z', likelyCreatorWallet: 'CreatorWallet1111111111111111111111111111', transactionSource: 'PUMP_FUN' }, errorReason: null }, evidenceGaps: [] },
+  }))
+  check('a successful Deep Creator Check becomes a real positive signal', withDeep.positiveSignals.some(s => /creator wallet identified/i.test(s)))
+}
+{
+  // Deep Analysis Available: only "Creator wallet trace" is real — everything else must be
+  // honestly marked unavailable, never implied as a runnable scan.
+  const cx = computeSolanaCortexRisk(cortexSr())
+  const creatorTrace = cx.deepAnalysis.find(d => d.label === 'Creator wallet trace')
+  check('Creator wallet trace is marked available — it genuinely exists (Deep Creator Check)', creatorTrace?.available === true)
+  const notReal = cx.deepAnalysis.filter(d => d.label !== 'Creator wallet trace')
+  check('every other Deep Analysis item is honestly marked unavailable — none are fabricated capabilities', notReal.every(d => d.available === false))
+  check('unavailable Deep Analysis items explain why, not just "unavailable"', notReal.every(d => d.reason.length > 20))
+}
+{
+  // No EVM wording anywhere in the Risk Engine tab's new rendering.
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+  check('page reads computeSolanaCortexRisk for the Risk Engine tab', page.includes('computeSolanaCortexRisk(sr)'))
+  // Scope strictly to the SOLANA risk-engine IIFE — EVM's own Risk Engine tab legitimately still
+  // says "Risk Drivers"/"Open Checks" elsewhere in this file and must stay completely untouched.
+  const solanaRiskStart = page.indexOf("activeSection === 'risk-engine' && (() => {\n                  // SOLANA CORTEX RISK ENGINE")
+  const solanaRiskEnd = page.indexOf("Dev (authority / developer evidence)", solanaRiskStart)
+  check('located the Solana risk-engine block to scope the next checks', solanaRiskStart > -1 && solanaRiskEnd > solanaRiskStart)
+  const solanaRiskBlock = page.slice(solanaRiskStart, solanaRiskEnd)
+  check('Solana Risk Engine tab no longer renders "Risk Drivers"', !solanaRiskBlock.includes('>Risk Drivers<'))
+  check('Solana Risk Engine tab no longer renders the old EVM-flavored "Open Checks" card', !solanaRiskBlock.includes('>Open Checks<'))
+  check('Solana Risk Engine tab renders Positive/Negative/Unknown evidence', solanaRiskBlock.includes('Positive Evidence') && solanaRiskBlock.includes('Negative Evidence'))
+  check('Solana Risk Engine tab renders Evidence Coverage, not a generic Open Check', solanaRiskBlock.includes('COVERAGE'))
+  check('Solana Risk Engine tab renders Deep Analysis Available', solanaRiskBlock.includes('Deep Analysis Available'))
 }
 
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)
