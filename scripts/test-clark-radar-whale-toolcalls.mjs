@@ -6,12 +6,23 @@ import {
 import { classifyClarkBasicIntent, clarkMissingInputPrompt } from '../lib/server/clarkBasicIntent.ts'
 
 // ─── Base Radar tool intent routing ───────────────────────────────────────
-assert.equal(classifyClarkToolIntent("What's pumping on Base?").intent, 'base_radar_movers')
-assert.equal(classifyClarkToolIntent('Show me Base movers').intent, 'base_radar_movers')
-assert.equal(classifyClarkToolIntent('Find new Base tokens').intent, 'base_radar_movers')
-assert.equal(classifyClarkToolIntent("What's trending on Base?").intent, 'base_radar_movers')
-assert.equal(classifyClarkToolIntent('Find tokens with high volume/liquidity').intent, 'base_radar_movers')
-assert.equal(classifyClarkToolIntent('What are the best radar candidates?').intent, 'base_radar_movers')
+// PUMPING-VS-RADAR SPLIT, DISCLOSED (reported live: "what's pumping on Base?" answered with Base
+// Radar's own internal feed/scoring even though base_market_discovery was already wired to an
+// independent CoinGecko source — root cause traced to THIS classifier running first and treating
+// "pumping"/"trending"/"movers" as radar triggers, so those prompts never reached the later,
+// correct routing at all). Updated: "pumping"/"trending"/"movers"/"tokens"/"volume-liquidity"
+// phrasing WITHOUT the literal word "radar" now returns 'none' here so it falls through to
+// app/api/clark/route.ts's base_market_discovery branch (CoinGecko-backed) — see that test's own
+// coverage in scripts/test-clark-market-metric-routing.mjs. Only unambiguous radar-specific
+// phrasing stays routed to base_radar_movers.
+assert.equal(classifyClarkToolIntent("What's pumping on Base?").intent, 'none', 'a bare "what\'s pumping" question must fall through to base_market_discovery (CoinGecko), not Base Radar\'s own feed')
+assert.equal(classifyClarkToolIntent('Show me Base movers').intent, 'none')
+assert.equal(classifyClarkToolIntent('Find new Base tokens').intent, 'none')
+assert.equal(classifyClarkToolIntent("What's trending on Base?").intent, 'none')
+assert.equal(classifyClarkToolIntent('Find tokens with high volume/liquidity').intent, 'none')
+assert.equal(classifyClarkToolIntent('What are the best radar candidates?').intent, 'base_radar_movers', 'explicit "radar" wording must still route to Base Radar\'s own feed')
+assert.equal(classifyClarkToolIntent('Open the radar').intent, 'base_radar_movers')
+assert.equal(classifyClarkToolIntent('Base radar').intent, 'base_radar_movers')
 assert.equal(classifyClarkToolIntent('Any low caps on Base?').intent, 'base_radar_low_caps')
 assert.equal(classifyClarkToolIntent('Show Robinhood Chain movers').intent, 'base_radar_robinhood')
 assert.equal(classifyClarkToolIntent('Explain this radar candidate').intent, 'base_radar_explain_candidate')
@@ -29,12 +40,21 @@ assert.equal(classifyClarkToolIntent('Explain this whale signal').intent, 'whale
 
 // ─── Never routes to generic chat (none) for these explicit phrasings ─────
 for (const p of [
-  "What's pumping on Base?", 'Show me Base movers', 'Find new Base tokens', 'Any low caps on Base?',
-  "What's trending on Base?", 'Show Robinhood Chain movers', 'Find tokens with high volume/liquidity',
-  'What are the best radar candidates?', 'Any whale alerts?', 'Sync whale alerts', 'Show whale movement',
+  'Any low caps on Base?', 'Show Robinhood Chain movers', 'What are the best radar candidates?',
+  'Open the radar', 'Base radar', 'Any whale alerts?', 'Sync whale alerts', 'Show whale movement',
   'What wallets moved recently?', 'Any big buys/sells?', 'Refresh whale alerts', 'What happened in whale alerts today?',
 ]) {
   assert.notEqual(classifyClarkToolIntent(p).intent, 'none', `"${p}" must not fall through to generic chat`)
+}
+
+// ─── DOES route to generic-chat 'none' for pumping/trending phrasing WITHOUT "radar" — this is
+// the fix itself: these must escape classifyClarkToolIntent so base_market_discovery (CoinGecko)
+// gets a chance to answer them, instead of Base Radar's own feed. ─────────────────────────────
+for (const p of [
+  "What's pumping on Base?", 'Show me Base movers', 'Find new Base tokens',
+  "What's trending on Base?", 'Find tokens with high volume/liquidity',
+]) {
+  assert.equal(classifyClarkToolIntent(p).intent, 'none', `"${p}" must fall through to base_market_discovery, not Base Radar`)
 }
 
 // ─── Irrelevant prompts stay "none" (never hijack unrelated intents) ──────

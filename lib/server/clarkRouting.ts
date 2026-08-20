@@ -3086,7 +3086,21 @@ export type ClarkToolIntentResult = { intent: ClarkToolIntent };
 const RADAR_ROBINHOOD_RE = /\brobinhood\b/i;
 const RADAR_LOW_CAP_RE = /\blow[\s-]?caps?\b|\bsmall[\s-]?caps?\b|\bmicro[\s-]?caps?\b/i;
 const RADAR_EXPLAIN_CANDIDATE_RE = /\bexplain\s+(?:this\s+|the\s+)?(?:radar\s+)?candidate\b|\bwhy\s+(?:is\s+)?(?:it|this)\s+(?:on\s+)?radar\b|\bexplain\s+(?:the\s+)?radar\s+(?:result|score|signal)\b/i;
-const RADAR_MOVERS_RE = /\b(what'?s\s+pumping|whats\s+pumping|base\s+movers?|movers\s+on\s+base|new\s+base\s+(?:tokens?|pools?)|trending\s+on\s+base|radar\s+candidates?|best\s+radar|high\s+volume|high\s+liquidity|find\s+(?:new\s+)?(?:base\s+)?tokens?\b|find\s+tokens?\s+with|show\s+me\s+base|base\s+radar|open\s+(?:the\s+)?radar|radar\s+read|radar\s+movers|what'?s\s+trending)\b/i;
+// "PUMPING" vs "RADAR" SPLIT, DISCLOSED (reported live: "what's pumping on Base?" answered with
+// Base Radar's own internal feed/scoring — "Base Radar found 3 candidates... Radar 59/100" — even
+// after base_market_discovery was already wired to a real, independent CoinGecko source. Root
+// cause: THIS regex ran first (app/api/clark/route.ts checks classifyClarkToolIntent before the
+// later base_market_discovery routing) and explicitly listed "what's pumping"/"trending" as radar
+// triggers, so those prompts short-circuited straight to handleClarkRadarToolCall and never
+// reached the CoinGecko-backed path at all. Split into two regexes: RADAR_MOVERS_RE now requires
+// the literal word "radar" (or an unambiguous radar-only phrase like "best radar candidates") —
+// exactly the rule resolveClarkIntent already uses a few hundred lines up (`/\bradar\b/i`) for the
+// same distinction. MARKET_DISCOVERY_TOOL_RE holds the pumping/trending/movers/gainers phrasing
+// that must NOT go to Base Radar — matching it here returns intent:"none" (see
+// classifyClarkToolIntent below) so the prompt falls through to the later base_market_discovery
+// route, which now answers from CoinGecko's Base-ecosystem data, independent of Base Radar.
+const RADAR_MOVERS_RE = /\b(radar\s+candidates?|best\s+radar|base\s+radar|open\s+(?:the\s+)?radar|radar\s+read|radar\s+movers)\b/i;
+const MARKET_DISCOVERY_TOOL_RE = /\b(what'?s\s+pumping|whats\s+pumping|base\s+movers?|movers\s+on\s+base|new\s+base\s+(?:tokens?|pools?)|trending\s+on\s+base|high\s+volume|high\s+liquidity|find\s+(?:new\s+)?(?:base\s+)?tokens?\b|find\s+tokens?\s+with|show\s+me\s+base|what'?s\s+trending)\b/i;
 
 // Whale explain-signal checked first so "explain that alert/signal" never gets swallowed by the
 // broader summary/recent/sync matchers below.
@@ -3111,9 +3125,17 @@ export function classifyClarkToolIntent(prompt: string): ClarkToolIntentResult {
   if (WHALE_SUMMARY_RE.test(t)) return { intent: "whale_alerts_summary" };
 
   if (RADAR_EXPLAIN_CANDIDATE_RE.test(t)) return { intent: "base_radar_explain_candidate" };
+  // Robinhood/low-cap sub-intents keep requiring an explicit radar/chain word (never bare
+  // "pumping") — a "what's pumping" prompt has no way to name a specific chain, so it belongs to
+  // the general market-discovery path below, not a chain-specific radar variant.
   if (RADAR_ROBINHOOD_RE.test(t) && (RADAR_MOVERS_RE.test(t) || /\bradar\b|\bchain\b/i.test(t))) return { intent: "base_radar_robinhood" };
   if (RADAR_LOW_CAP_RE.test(t) && (RADAR_MOVERS_RE.test(t) || /\bbase\b|\bradar\b/i.test(t))) return { intent: "base_radar_low_caps" };
   if (RADAR_MOVERS_RE.test(t)) return { intent: "base_radar_movers" };
+  // "What's pumping"/"trending"/"movers"/"gainers" WITHOUT the word "radar" — intentionally NOT
+  // dispatched here. Returning "none" lets it fall through to the later base_market_discovery
+  // route (app/api/clark/route.ts), which answers from CoinGecko's independent Base-ecosystem
+  // data — never Base Radar's own feed. See this const's own header for the full disclosure.
+  if (MARKET_DISCOVERY_TOOL_RE.test(t)) return { intent: "none" };
 
   return { intent: "none" };
 }
