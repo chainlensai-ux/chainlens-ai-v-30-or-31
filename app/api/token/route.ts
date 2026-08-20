@@ -2480,70 +2480,105 @@ async function fetchTokenHolders(_chain: ChainKey, contract: string): Promise<an
 // other GoldRush caller in this file — this function keeps its own inline loop rather than the
 // fetchGoldRushWithHostFallback() helper because it needs per-host error detail (status code,
 // parsed error_message) for its own diagnostics, not just a pass/fail Response.
+// CHAIN-IDENTIFIER-FALLBACK, DISCLOSED (reported: Holders commonly comes back "not returned this
+// scan" / "CONCENTRATION UNVERIFIED" specifically for Robinhood Chain scans, never for Base/ETH/
+// BNB). Root cause: this map previously sent exactly ONE chain identifier per chain to Covalent's
+// token_holders_v2 endpoint, with no fallback if it was wrong. eth-mainnet/base-mainnet/bsc-mainnet
+// are long-established, independently-confirmed GoldRush/Covalent chain-name slugs; 'robinhood-
+// mainnet' was only ever a guessed slug following GoldRush's naming *convention*, never confirmed
+// against their docs (network access to goldrush.dev was unavailable while wiring it up — see this
+// file's own CREATOR_LOOKUP_BASE_URL-area comment). lib/server/goldrushHolderCount.ts hit this
+// exact ambiguity for the Base Radar drawer and proved the fix: try the slug first, then Robinhood
+// Chain's independently-verified real numeric chain ID (4663, confirmed via
+// robinhoodchain.blockscout.com) as a fallback, advancing on a 404 OR an empty-but-successful
+// response (a wrong-but-recognized identifier can return 200 with zero items rather than a clean
+// 404) rather than failing closed after one guess. Every other chain keeps its single, already-
+// confirmed slug — this changes behavior for Robinhood only.
+const CHAIN_SLUG_CANDIDATES: Record<ChainKey, string[]> = {
+  eth: ['eth-mainnet'],
+  base: ['base-mainnet'],
+  polygon: ['matic-mainnet'],
+  bnb: ['bsc-mainnet'],
+  robinhood: ['robinhood-mainnet', '4663'],
+}
+
 async function fetchTokenHoldersUncached(_chain: ChainKey, contract: string): Promise<any> {
-  const CHAIN_SLUG_MAP: Record<ChainKey, string> = {
-    eth: 'eth-mainnet',
-    base: 'base-mainnet',
-    polygon: 'matic-mainnet',
-    bnb: 'bsc-mainnet',
-    robinhood: 'robinhood-mainnet',
-  }
-  const chainSlug = CHAIN_SLUG_MAP[_chain] ?? 'base-mainnet'
-  const endpointPath = `/v1/${chainSlug}/tokens/${contract}/token_holders_v2/`
+  const chainSlugCandidates = CHAIN_SLUG_CANDIDATES[_chain] ?? ['base-mainnet']
   const apiKey = process.env.GOLDRUSH_API_KEY ?? process.env.COVALENT_API_KEY ?? ''
   if (!apiKey) {
-    console.warn('[holder-debug] contract', contract, 'chain', chainSlug, 'result: missing API key')
-    return { __status: 'not_configured', __reason: 'missing_api_key', __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: false }
+    const endpointPath = `/v1/${chainSlugCandidates[0]}/tokens/${contract}/token_holders_v2/`
+    console.warn('[holder-debug] contract', contract, 'chain', chainSlugCandidates[0], 'result: missing API key')
+    return { __status: 'not_configured', __reason: 'missing_api_key', __endpointPath: endpointPath, __chainUsed: chainSlugCandidates[0], __hasApiKey: false }
   }
   // An explicit GOLDRUSH_BASE_URL override (e.g. for tests) skips the multi-host fallback and uses
   // exactly the configured host, same as every other GoldRush caller in this file that respects it.
   const hosts = process.env.GOLDRUSH_BASE_URL
     ? [process.env.GOLDRUSH_BASE_URL.replace(/^https?:\/\//, '').replace(/\/$/, '')]
     : GOLDRUSH_HOSTS
-  let statusCode: number | undefined
-  let lastReason = 'provider_error'
-  for (const host of hosts) {
-    try {
-      // page-size max accepted by Covalent: 100. Values above that (e.g. 200) return HTTP 400.
-      const url = `https://${host}${endpointPath}?page-number=0&page-size=100`
-      console.log('[holder-debug] contract', contract, 'chain', chainSlug, 'host', host, 'path', endpointPath, 'params page-number=0&page-size=100')
-      logRpcCall({ route: "/api/token", chain: chainSlug, method: "goldrush_token_holders_v2" });
-      const res = await fetch(url, {
-        cache: 'no-store',
-        headers: { Authorization: `Bearer ${apiKey}` },
-        signal: AbortSignal.timeout(8000),
-      })
-      statusCode = res.status
-      if (!res.ok) {
-        // Try to parse JSON error body for a safe reason; fall back to text snippet
-        let safeReason = statusCode === 400 ? 'bad_request_check_endpoint_params' : 'provider_error'
-        try {
-          const errJson = await res.json()
-          if (errJson?.error_message) safeReason = errJson.error_message
-          console.warn('[holder-debug] non-ok', statusCode, 'host', host, 'error_message:', errJson?.error_message ?? '(none)', 'error_code:', errJson?.error_code ?? '(none)')
-        } catch {
-          const errText = await res.text().catch(() => '').then(t => t.slice(0, 200))
-          console.warn('[holder-debug] non-ok', statusCode, 'host', host, errText)
+
+  let lastFailure: any = null
+  for (const chainSlug of chainSlugCandidates) {
+    const endpointPath = `/v1/${chainSlug}/tokens/${contract}/token_holders_v2/`
+    let statusCode: number | undefined
+    let lastReason = 'provider_error'
+    let sawEmptyButOk = false
+    for (const host of hosts) {
+      try {
+        // page-size max accepted by Covalent: 100. Values above that (e.g. 200) return HTTP 400.
+        const url = `https://${host}${endpointPath}?page-number=0&page-size=100`
+        console.log('[holder-debug] contract', contract, 'chain', chainSlug, 'host', host, 'path', endpointPath, 'params page-number=0&page-size=100')
+        logRpcCall({ route: "/api/token", chain: chainSlug, method: "goldrush_token_holders_v2" });
+        const res = await fetch(url, {
+          cache: 'no-store',
+          headers: { Authorization: `Bearer ${apiKey}` },
+          signal: AbortSignal.timeout(8000),
+        })
+        statusCode = res.status
+        if (!res.ok) {
+          // Try to parse JSON error body for a safe reason; fall back to text snippet
+          let safeReason = statusCode === 400 ? 'bad_request_check_endpoint_params' : 'provider_error'
+          try {
+            const errJson = await res.json()
+            if (errJson?.error_message) safeReason = errJson.error_message
+            console.warn('[holder-debug] non-ok', statusCode, 'host', host, 'error_message:', errJson?.error_message ?? '(none)', 'error_code:', errJson?.error_code ?? '(none)')
+          } catch {
+            const errText = await res.text().catch(() => '').then(t => t.slice(0, 200))
+            console.warn('[holder-debug] non-ok', statusCode, 'host', host, errText)
+          }
+          lastReason = safeReason
+          continue
         }
-        lastReason = safeReason
-        continue
+        const json = await res.json()
+        const topKeys = Object.keys(json ?? {})
+        const itemCount = json?.data?.items?.length ?? 0
+        console.log('[holder-debug] statusCode', statusCode, 'host', host, 'responseKeys', topKeys, 'data.items.length', itemCount)
+        if (json?.error) {
+          console.warn('[holder-debug] API-level error:', 'host', host, json?.error_message)
+          lastReason = json?.error_message ?? 'api_error'
+          continue
+        }
+        if (itemCount === 0) {
+          // A wrong-but-recognized chain identifier can return 200 with zero items rather than a
+          // clean 404 — treat this the same as a 404 for the purpose of trying the next candidate,
+          // but keep the response as a fallback result in case every candidate comes back empty.
+          sawEmptyButOk = true
+          lastFailure = { ...json, __endpointPath: endpointPath, __statusCode: statusCode, __responseKeys: topKeys, __chainUsed: chainSlug, __hasApiKey: true }
+          continue
+        }
+        return { ...json, __endpointPath: endpointPath, __statusCode: statusCode, __responseKeys: topKeys, __chainUsed: chainSlug, __hasApiKey: true }
+      } catch (err) {
+        console.error('[holder-debug] exception', 'host', host, err)
+        lastReason = 'provider_error'
       }
-      const json = await res.json()
-      const topKeys = Object.keys(json ?? {})
-      const itemCount = json?.data?.items?.length ?? 0
-      console.log('[holder-debug] statusCode', statusCode, 'host', host, 'responseKeys', topKeys, 'data.items.length', itemCount)
-      if (json?.error) {
-        console.warn('[holder-debug] API-level error:', 'host', host, json?.error_message)
-        lastReason = json?.error_message ?? 'api_error'
-        continue
-      }
-      return { ...json, __endpointPath: endpointPath, __statusCode: statusCode, __responseKeys: topKeys, __chainUsed: chainSlug, __hasApiKey: true }
-    } catch (err) {
-      console.error('[holder-debug] exception', 'host', host, err)
-      lastReason = 'provider_error'
     }
+    lastFailure = lastFailure ?? { __status: 'error', __reason: lastReason, __statusCode: statusCode, __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: true }
+    // Advance to the next chain-identifier candidate on a 404 or an empty-but-successful response
+    // (both indicate "this identifier didn't have the data", not a real infra failure) — a genuine
+    // network/rate-limit/5xx failure (already retried across every host above) still stops here,
+    // since a different chain identifier wouldn't fix a network-level problem.
+    if (!sawEmptyButOk && lastFailure.__statusCode !== 404) break
   }
-  return { __status: 'error', __reason: lastReason, __statusCode: statusCode, __endpointPath: endpointPath, __chainUsed: chainSlug, __hasApiKey: true }
+  return lastFailure
 }
 
 type LpControlResult = {
