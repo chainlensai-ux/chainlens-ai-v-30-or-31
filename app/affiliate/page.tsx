@@ -82,6 +82,7 @@ const STEPS = [
 
 const FIELD_GROUPS: Array<{
   legend: string
+  note?: string
   fields: Array<{ label: string; key: keyof FormState; required: boolean; type?: string; placeholder: string; span?: 2; maxLength: number }>
 }> = [
   // maxLength values mirror the server's own MAX table in app/api/affiliate/apply/route.ts.
@@ -109,9 +110,15 @@ const FIELD_GROUPS: Array<{
     ],
   },
   {
-    legend: 'Payout (optional)',
+    legend: 'Payout — crypto only',
+    // CLARITY FIX, DISCLOSED (reported live: "it says optional on it make it clear we only pay
+    // out in crypto"): the field itself stays optional — an applicant reasonably may not have a
+    // wallet ready at application time and can add one after approval — but "optional" alone left
+    // the payout METHOD ambiguous. This note states plainly that crypto is the only payout rail,
+    // so nobody applies expecting a card/bank payout that was never going to happen.
+    note: 'We pay commissions in crypto only (USDC on Base) — no bank transfers or PayPal payouts. You can leave this blank now and add your wallet after approval.',
     fields: [
-      { label: 'Payout wallet', key: 'payout_wallet', required: false, placeholder: '0x…', span: 2, maxLength: 120 },
+      { label: 'Crypto payout wallet (optional)', key: 'payout_wallet', required: false, placeholder: '0x… — USDC on Base', span: 2, maxLength: 120 },
     ],
   },
 ]
@@ -213,6 +220,14 @@ export default function AffiliatePage() {
 
         /* faq */
         .aff-faq-btn { width:100%; background:none; border:none; cursor:pointer; padding:22px 4px; display:flex; justify-content:space-between; align-items:center; gap:20px; text-align:left; }
+
+        /* Submit button — solid fill, quiet lift on hover, no gradient. Same restrained treatment
+           as pricing/page.tsx's .cta and .cta-box, so this page's buttons don't stand out as a
+           different, louder design language from the rest of the product. */
+        .aff-submit-btn { transition: transform .15s ease, filter .15s ease, box-shadow .15s ease; box-shadow: 0 1px 0 rgba(0,0,0,.15); }
+        .aff-submit-btn:not(:disabled):hover { transform: translateY(-1px); filter: brightness(1.06); box-shadow: 0 6px 16px rgba(45,212,191,.22); }
+        .aff-submit-btn:not(:disabled):active { transform: translateY(0); filter: brightness(0.97); }
+        @media (prefers-reduced-motion: reduce) { .aff-submit-btn { transition: none; } .aff-submit-btn:not(:disabled):hover { transform: none; } }
 
         .aff-eyebrow { font-family:var(--font-plex-mono,monospace); font-size:11px; font-weight:600; letter-spacing:.16em; margin:0 0 14px; color:#5eead4; text-transform:uppercase; }
 
@@ -412,6 +427,11 @@ export default function AffiliatePage() {
                 {FIELD_GROUPS.map((group, gi) => (
                   <div key={group.legend} style={{ paddingTop: gi > 0 ? '20px' : 0, marginTop: gi > 0 ? '20px' : 0, borderTop: gi > 0 ? '1px solid rgba(255,255,255,.06)' : 'none' }}>
                     <p style={{ margin:'0 0 14px', fontSize:'11px', fontWeight:600, letterSpacing:'.09em', color:'#3f4b5e', textTransform:'uppercase' }}>{group.legend}</p>
+                    {group.note && (
+                      <p style={{ margin:'-6px 0 14px', fontSize:'12px', color:'#5eead4', lineHeight:1.6, background:'rgba(45,212,191,.05)', border:'1px solid rgba(45,212,191,.18)', borderRadius:'9px', padding:'9px 12px' }}>
+                        {group.note}
+                      </p>
+                    )}
                     <div className="aff-form-cols" style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'16px' }}>
                       {group.fields.map(({ label, key, required, type, placeholder, span, maxLength }) => (
                         <label key={key} className="aff-label" style={span === 2 ? { gridColumn:'1 / -1' } : undefined}>
@@ -482,8 +502,16 @@ export default function AffiliatePage() {
                   </div>
                 )}
 
-                <button type="submit" disabled={loading} style={{ width:'100%', marginTop:'26px', border:0, borderRadius:'11px', padding:'16px 20px', fontWeight:700, fontSize:'15px', letterSpacing:'.02em', background: loading ? 'rgba(45,212,191,.3)' : 'linear-gradient(135deg,#2DD4BF 0%,#8b5cf6 100%)', color:'#04060d', cursor: loading ? 'not-allowed' : 'pointer', transition:'opacity .2s' }}>
-                  {loading ? 'Submitting…' : 'Submit application →'}
+                {/* SUBMIT BUTTON, DISCLOSED (reported live: "the button to submit looks shit and
+                    ai slop"). The previous version was a diagonal teal→purple gradient paired with
+                    a trailing arrow glyph — a combination common enough in AI-generated UI to read
+                    as a template rather than a considered design. Replaced with a solid fill in the
+                    page's own teal accent (the same color used throughout — aff-eyebrow, aff-who-
+                    primary, the FAQ, the success box) and the same quiet lift-on-hover treatment
+                    every other button on this page and pricing/page.tsx's .cta already use, instead
+                    of a one-off animation invented just for this button. */}
+                <button type="submit" disabled={loading} className="aff-submit-btn" style={{ width:'100%', marginTop:'26px', border:0, borderRadius:'11px', padding:'15px 20px', fontWeight:700, fontSize:'14.5px', letterSpacing:'.02em', background: loading ? 'rgba(45,212,191,.25)' : '#2DD4BF', color:'#04241f', cursor: loading ? 'not-allowed' : 'pointer' }}>
+                  {loading ? 'Submitting…' : 'Submit application'}
                 </button>
               </form>
             </div>
