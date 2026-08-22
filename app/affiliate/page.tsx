@@ -21,6 +21,17 @@ import { buildAffiliateReferralLink } from '@/lib/affiliate/referral'
 // that"): the pitch mockup included its own wordmark/nav row to show the identity in isolation.
 // That row is intentionally absent here — this page renders the SAME <Navbar /> every other page
 // uses, unchanged, exactly as it already did before this redesign.
+//
+// BACKGROUND SEAM, DISCLOSED (reported live, with a screenshot: "it feels imported into the page
+// cause the background at the top of it... it just looks weird"). Root cause: Navbar renders as a
+// floating pill directly against html/body's own background (globals.css sets
+// "html, body { background: #07070f !important }"), while everything BELOW the navbar sits inside
+// this page's own background div. The first version of this redesign gave that div a background
+// of #0b0e13 — a near-black I invented for the Ledger palette that was subtly lighter/bluer than
+// the real body color. The two tones met exactly at the navbar's lower edge, producing a visible
+// horizontal seam — the effect the report described as looking "imported." Fixed by setting --ink
+// to the SAME literal value body already uses, so the navbar's background and the page's
+// background are pixel-identical and the seam is gone, not just less visible.
 const fraunces = Fraunces({ subsets: ['latin'], weight: ['500', '600'], style: ['normal', 'italic'], variable: '--font-fraunces', display: 'swap' })
 
 type FormState = {
@@ -211,7 +222,9 @@ export default function AffiliatePage() {
            Navbar.tsx and every terminal page) — never blended into a gradient. Graphite-blue-biased
            neutrals (not pure grey) so the palette reads as chosen, not inherited. ── */
         :root {
-          --ink: #0b0e13;
+          /* Matches html/body's own background (globals.css: "background: #07070f !important")
+             exactly — see the BACKGROUND SEAM note below. */
+          --ink: #07070f;
           --panel: #10141b;
           --line: rgba(226,232,240,.11);
           --line-strong: rgba(226,232,240,.18);
