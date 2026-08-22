@@ -139,10 +139,6 @@ export default function Navbar() {
   return (
     <>
       <style>{`
-        @keyframes nav-live-pulse {
-          0%,100% { opacity: 1; box-shadow: 0 0 5px rgba(74,222,128,0.8); }
-          50%      { opacity: 0.5; box-shadow: 0 0 2px rgba(74,222,128,0.3); }
-        }
         .nav-shell { position: relative; box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 18px 44px rgba(0,0,0,0.42); overflow: hidden; }
         .nav-shell::before {
           content: ''; position: absolute; inset: 0; border-radius: 999px; padding: 1px; pointer-events: none;
@@ -550,9 +546,8 @@ export default function Navbar() {
             >
               <div style={{
                 width: '5px', height: '5px', borderRadius: '50%',
-                background: '#4ade80',
-                boxShadow: '0 0 5px rgba(74,222,128,0.75)',
-                animation: 'nav-live-pulse 2.5s ease-in-out infinite',
+                background: '#53F3C3',
+                boxShadow: '0 0 6px rgba(83,243,195,0.7)',
                 flexShrink: 0,
               }} />
               <span style={{
