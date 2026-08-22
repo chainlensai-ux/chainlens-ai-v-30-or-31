@@ -5093,7 +5093,8 @@ export default function TerminalTokenScanner() {
                         <div style={{ height: '100%', width: `${sc.score}%`, borderRadius: '999px', background: `linear-gradient(90deg,${sc.color},${sc.color}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 6px ${sc.color}55` }} />
                       </div>
                       <div style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>
-                        Computed from supported Solana evidence only — authority status, top-account concentration, and market health. Capped well below 100 while EVM-only checks remain unsupported, so this can never read as a full safety verdict.
+                        Computed from supported Solana evidence only — authority status, top-account concentration, market health, and track record (creator verification + pool age). Capped well below the top band while EVM-only checks remain unsupported or the creator/token age is unverified, so this can never read as a full safety verdict.
+                        {sc.scoreCapReasons.length > 0 && <span style={{ display: 'block', marginTop: '6px', color: '#8ea0b5' }}>{sc.scoreCapReasons.join(' ')}</span>}
                       </div>
                     </div>
 

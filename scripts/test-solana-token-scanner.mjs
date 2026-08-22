@@ -445,25 +445,51 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
   check('route never reads ALCHEMY_SOLANA_RPC_URL directly (only via the config module)', !route.includes('process.env.ALCHEMY_SOLANA_RPC_URL'))
 }
 
-// ─── computeSolanaConfidenceScore (Token Scanner Solana premium-parity task) ──────────────────
-// The number that replaced the earlier "no score shown" design in Overview/Risk Engine. Every
-// assertion here defends the honesty contract this task explicitly requires of that number.
+// ─── computeSolanaConfidenceScore (rebalanced: fixed a constant-not-measured Evidence Coverage
+// category, and added Track Record so authority+concentration+market alone can no longer produce
+// a near-top score for a young, creator-unverified token — see lib/solanaConfidenceScore.ts's own
+// header for the full "score read too high" report this fixes). ──────────────────────────────────
 function baseSr(overrides = {}) {
   return {
     authorityReadSucceeded: true, mintAuthority: null, freezeAuthority: null,
     topAccountConcentration: { top1Percent: 10, top10Percent: 20, top20Percent: 30, accountsSampled: 20, accounts: [] },
-    marketDataAvailable: true, marketData: { liquidityUsd: 100_000, priceUsd: 1, volume24hUsd: 1, fdvUsd: null, marketCapUsd: null, primaryPoolAddress: null, primaryDexLabel: null, tokenName: null, tokenSymbol: null },
+    marketDataAvailable: true, marketData: { liquidityUsd: 100_000, priceUsd: 1, volume24hUsd: 1, fdvUsd: null, marketCapUsd: null, primaryPoolAddress: null, primaryDexLabel: null, tokenName: null, tokenSymbol: null, pairAgeLabel: '10d', pairAgeDays: 10 },
     unsupportedChecks: SOLANA_UNSUPPORTED_CHECKS,
+    resolvedTokenName: 'Test Token',
+    creatorConfidence: { tier: 'UNKNOWN', confidencePercent: 0, wallet: null, reason: 'Deep Creator Check has not been run for this mint.' },
+    deepCreator: null,
+    clusterMap: null,
     ...overrides,
   }
 }
+function verifiedSr(overrides = {}) {
+  return baseSr({
+    marketData: { liquidityUsd: 100_000, priceUsd: 1, volume24hUsd: 1, fdvUsd: null, marketCapUsd: null, primaryPoolAddress: null, primaryDexLabel: null, tokenName: null, tokenSymbol: null, pairAgeLabel: '120d', pairAgeDays: 120 },
+    creatorConfidence: { tier: 'CONFIRMED', confidencePercent: 90, wallet: 'CreatorWallet1111111111111111111111111111', reason: 'Confirmed via PUMP_FUN launch instruction.' },
+    deepCreator: { creatorTrace: { called: true, success: true, enhancedTransactionsUsed: true, estimatedCredits: 2, pagesFetched: 1, reachedGenesis: true, resolved: { earliestSignature: 'sig1', earliestTimestamp: '2024-01-01T00:00:00Z', likelyCreatorWallet: 'CreatorWallet1111111111111111111111111111', transactionSource: 'PUMP_FUN' }, errorReason: null }, evidenceGaps: [] },
+    clusterMap: { attempted: true, nodes: [], edges: [], evidenceCount: 1, clusterConfidence: 'medium', fundingPath: ['CreatorWallet1111111111111111111111111111'], fundingDepth: 0, riskLevel: 'standard', riskReason: 'Funded above the disposable-wallet threshold.', summary: '1 verified relationship found across 1 node.', fundingTrace: null },
+    ...overrides,
+  })
+}
 
 {
-  const best = computeSolanaConfidenceScore(baseSr())
-  check('best-case inputs never reach 100 — evidence coverage caps it', best.score < 100)
-  check('best-case inputs still cap out well under 100 (evidence coverage ceiling)', best.score <= 85)
-  check('best-case verdict is Open Check, never Safe/Strong/Verified', best.verdict === 'Open Check')
-  check('score color for Open Check is neutral, not green "safe" styling', best.color === '#94a3b8')
+  // THE HEADLINE FIX, DISCLOSED: clean authority + concentration + market alone, WITHOUT a
+  // verified creator or an established pool, must not reach Open Check — the exact scenario a real
+  // scan reported as reading too high (85/100, "Open Check") for a young Token-2022 meme coin.
+  const base = computeSolanaConfidenceScore(baseSr())
+  check('clean authority/concentration/market alone (no deep checks, young pool) does NOT reach Open Check', base.verdict !== 'Open Check')
+  check('the score is genuinely capped below the raw weighted total', base.score < base.uncappedScore)
+  check('a cap reason is disclosed, not a silent number change', base.scoreCapReasons.length > 0)
+  check('score color for a capped scan is not the neutral "Open Check" styling', base.color !== '#94a3b8')
+}
+{
+  // Only with a confirmed creator, a clean cluster check, and an established pool can the top
+  // "Open Check" band be reached — proving the cap is reachable, not a permanently-stuck ceiling.
+  const verified = computeSolanaConfidenceScore(verifiedSr())
+  check('fully verified, mature, evidenced scan reaches Open Check', verified.verdict === 'Open Check')
+  check('fully verified scan has no active cap reasons', verified.scoreCapReasons.length === 0)
+  check('fully verified scan never claims a "Safe"/"Strong"/"Verified" wording', !JSON.stringify(verified).match(/\b(safe|strong|verified as)\b/i))
+  check('score color for Open Check is neutral, not green "safe" styling', verified.color === '#94a3b8')
 }
 {
   const worst = computeSolanaConfidenceScore(baseSr({
@@ -477,19 +503,29 @@ function baseSr(overrides = {}) {
 {
   const noEvidence = computeSolanaConfidenceScore(baseSr({
     authorityReadSucceeded: false, mintAuthority: null, freezeAuthority: null,
-    topAccountConcentration: null, marketDataAvailable: false, marketData: null,
+    topAccountConcentration: null, marketDataAvailable: false, marketData: null, resolvedTokenName: null,
   }))
   check('zero-evidence scan scores low, never implies safety', noEvidence.score <= 30)
   check('zero-evidence scan is never Open Check (that label is reserved for genuinely good evidence)', noEvidence.verdict !== 'Open Check')
 }
 {
   const sc = computeSolanaConfidenceScore(baseSr())
-  check('exactly 4 categories returned', sc.categories.length === 4)
-  check('every category max is 25 (100-point scale)', sc.categories.every(c => c.max === 25))
-  check('category scores sum to the total score', sc.categories.reduce((s, c) => s + c.score, 0) === sc.score)
+  check('exactly 5 categories returned (Authority/Concentration/Market/Track Record/Evidence)', sc.categories.length === 5)
+  check('Track Record category is present — the category the previous 4-category version lacked', sc.categories.some(c => c.label === 'Track Record'))
+  check('every category max is 20 (100-point scale across 5 categories)', sc.categories.every(c => c.max === 20))
+  check('category scores sum to the real uncapped total', sc.categories.reduce((s, c) => s + c.score, 0) === sc.uncappedScore)
+  check('score never exceeds uncappedScore (caps only ever lower it)', sc.score <= sc.uncappedScore)
   check('every category carries at least one real reason string', sc.categories.every(c => c.reasons.length > 0 && typeof c.reasons[0] === 'string'))
-  const evidenceCat = sc.categories.find(c => c.label === 'Evidence Coverage')
-  check('Evidence Coverage category is present and reflects real unsupportedChecks length', evidenceCat && evidenceCat.reasons[0].includes(String(SOLANA_UNSUPPORTED_CHECKS.length)))
+}
+{
+  // THE BUG FIX, DISCLOSED: Evidence Coverage used to be a CONSTANT (unsupportedChecks.length is
+  // fixed for every Solana scan) — it must now genuinely vary with how much of THIS scan resolved.
+  const fewerSignals = computeSolanaConfidenceScore(baseSr({ resolvedTokenName: null, deepCreator: null }))
+  const moreSignals = computeSolanaConfidenceScore(baseSr({ resolvedTokenName: 'Test Token', deepCreator: verifiedSr().deepCreator }))
+  const fewerEv = fewerSignals.categories.find(c => c.label === 'Evidence Coverage')
+  const moreEv = moreSignals.categories.find(c => c.label === 'Evidence Coverage')
+  check('Evidence Coverage genuinely rises when more real scan signals resolve — no longer a constant', moreEv.score > fewerEv.score)
+  check('unsupportedChecks.length alone no longer drives the score (same for every Solana scan, cannot be the mechanism)', computeSolanaConfidenceScore(baseSr({ unsupportedChecks: SOLANA_UNSUPPORTED_CHECKS.slice(0, 1) })).score === computeSolanaConfidenceScore(baseSr({ unsupportedChecks: [...SOLANA_UNSUPPORTED_CHECKS, ...SOLANA_UNSUPPORTED_CHECKS] })).score)
 }
 {
   // Monotonicity: revoking authority must never LOWER the score relative to active authority.
@@ -502,11 +538,17 @@ function baseSr(overrides = {}) {
   check('spread supply scores at least as high as concentrated supply (same other inputs)', spread.score >= concentrated.score)
 }
 {
-  // Non-vacuous guard on the evidence-coverage cap itself: fewer unsupported checks must raise
-  // the ceiling, more must lower it — this is the actual mechanism keeping the score honest.
-  const fewerUnsupported = computeSolanaConfidenceScore(baseSr({ unsupportedChecks: SOLANA_UNSUPPORTED_CHECKS.slice(0, 1) }))
-  const moreUnsupported = computeSolanaConfidenceScore(baseSr({ unsupportedChecks: [...SOLANA_UNSUPPORTED_CHECKS, ...SOLANA_UNSUPPORTED_CHECKS] }))
-  check('fewer unsupported checks scores higher than more, same other inputs', fewerUnsupported.score > moreUnsupported.score)
+  // Track Record itself must genuinely vary with creator confidence and pool age.
+  const unknownCreator = computeSolanaConfidenceScore(baseSr())
+  const confirmedCreator = computeSolanaConfidenceScore(baseSr({ creatorConfidence: { tier: 'CONFIRMED', confidencePercent: 90, wallet: 'W1', reason: 'x' } }))
+  const trUnknown = unknownCreator.categories.find(c => c.label === 'Track Record')
+  const trConfirmed = confirmedCreator.categories.find(c => c.label === 'Track Record')
+  check('a confirmed creator scores higher Track Record than an unverified one', trConfirmed.score > trUnknown.score)
+  const young = computeSolanaConfidenceScore(baseSr({ marketData: { ...baseSr().marketData, pairAgeDays: 0 } }))
+  const mature = computeSolanaConfidenceScore(baseSr({ marketData: { ...baseSr().marketData, pairAgeDays: 120 } }))
+  const trYoung = young.categories.find(c => c.label === 'Track Record')
+  const trMature = mature.categories.find(c => c.label === 'Track Record')
+  check('a mature pool scores higher Track Record than a brand-new one', trMature.score > trYoung.score)
 }
 
 // ─── Provider wiring (Solana provider wiring task) ────────────────────────────
@@ -1068,8 +1110,12 @@ function poolProgramStub({ mint, supply, largest, poolAddress, poolOwner, poolIn
   const sc = computeSolanaConfidenceScore({
     authorityReadSucceeded: true, mintAuthority: null, freezeAuthority: null,
     topAccountConcentration: { top1Percent: 5, top10Percent: 10, top20Percent: 15, accountsSampled: 20, accounts: [] },
-    marketDataAvailable: true, marketData: { liquidityUsd: 100_000, priceUsd: 1, volume24hUsd: 1, fdvUsd: null, marketCapUsd: null, primaryPoolAddress: null, primaryDexLabel: null, tokenName: null, tokenSymbol: null },
+    marketDataAvailable: true, marketData: { liquidityUsd: 100_000, priceUsd: 1, volume24hUsd: 1, fdvUsd: null, marketCapUsd: null, primaryPoolAddress: null, primaryDexLabel: null, tokenName: null, tokenSymbol: null, pairAgeLabel: '10d', pairAgeDays: 10 },
     unsupportedChecks: SOLANA_UNSUPPORTED_CHECKS,
+    resolvedTokenName: 'Test Token',
+    creatorConfidence: { tier: 'UNKNOWN', confidencePercent: 0, wallet: null, reason: 'Deep Creator Check has not been run for this mint.' },
+    deepCreator: null,
+    clusterMap: null,
   })
   check('scoreEngine.ts produces a real score via the re-export', typeof sc.score === 'number' && sc.score > 0)
 }
