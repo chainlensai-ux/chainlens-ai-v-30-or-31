@@ -590,7 +590,7 @@ export default function Navbar() {
               >
                 <span style={{
                   width: '24px', height: '24px', borderRadius: '50%',
-                  background: avatarUrl ? '#0f172a' : AVATAR_COLORS[avatarColor],
+                  background: avatarUrl ? '#0f172a' : isEliteDisplay ? 'linear-gradient(140deg, #E053C2, #B666F3)' : AVATAR_COLORS[avatarColor],
                   color: '#04101a', fontSize: '11px', fontWeight: 700,
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                   flexShrink: 0, overflow: 'hidden',
@@ -718,7 +718,7 @@ export default function Navbar() {
               }}>
                 <span style={{
                   width: '34px', height: '34px', borderRadius: '50%', flexShrink: 0,
-                  background: avatarUrl ? '#0f172a' : AVATAR_COLORS[avatarColor],
+                  background: avatarUrl ? '#0f172a' : isEliteDisplay ? 'linear-gradient(140deg, #E053C2, #B666F3)' : AVATAR_COLORS[avatarColor],
                   color: '#04101a', fontSize: '14px', fontWeight: 700,
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                   overflow: 'hidden',
