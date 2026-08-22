@@ -233,7 +233,7 @@ export default function AffiliateDashboardPage() {
     { label: 'Referred accounts', value: d.referredAccounts == null ? 'Unavailable' : String(d.referredAccounts), sub: 'Signed-up users attributed to you', accent: '#7dd3fc' },
     { label: 'Paid conversions', value: d.stats.unavailable ? 'Unavailable' : String(d.stats.conversions), sub: 'Referrals that became paying subscribers', accent: '#c4b5fd' },
     { label: 'Commission earned', value: d.stats.unavailable ? 'Unavailable' : usd(d.stats.earnedTotalUsd), sub: d.stats.unavailable ? undefined : `${usd(d.stats.earnedPaidUsd)} paid out so far`, accent: 'var(--affd-teal)' },
-    { label: 'Awaiting payout', value: d.stats.unavailable ? 'Unavailable' : usd(d.stats.earnedPendingUsd), sub: 'Paid manually each month', accent: '#fbbf24' },
+    { label: 'Awaiting payout', value: d.stats.unavailable ? 'Unavailable' : usd(d.stats.earnedPendingUsd), sub: 'Paid manually, 24–72h after funds arrive', accent: '#fbbf24' },
   ]
 
   return shell(

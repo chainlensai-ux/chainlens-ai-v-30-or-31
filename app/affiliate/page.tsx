@@ -58,7 +58,7 @@ const faqs = [
   },
   {
     q: 'When and how do I get paid?',
-    a: 'Payouts are processed manually each month after a 30-day hold period. We pay in crypto to your on-chain wallet. Full payout instructions are provided after approval.',
+    a: 'Payouts are processed manually, within 24–72 hours once the funds reach us — no monthly batching, no hold period. We pay in crypto to your on-chain wallet. Full payout instructions are provided after approval.',
   },
   {
     q: 'What audience size do I need?',
@@ -88,7 +88,7 @@ const WHO = [
 
 const BENEFITS = [
   { title: '20% recurring commission', body: 'Earn monthly on every referred subscription, not just the first sale. Genuine recurring income for as long as they stay subscribed.' },
-  { title: 'Monthly manual payouts', body: 'Commissions are paid each month in crypto. Full payout structure is shared privately once you are approved.' },
+  { title: 'Fast manual payouts', body: 'Commissions are paid within 24–72 hours of funds reaching us, in crypto. Full payout structure is shared privately once you are approved.' },
   { title: 'Founding partner access', body: 'Joining early means founding status. Top founding partners get first access to campaigns and new features.' },
   { title: 'A premium product to promote', body: 'Clark AI, CORTEX scoring, whale tracking, and a real token scanner. Genuine onchain utility that actually converts.' },
   { title: 'Custom terms for top creators', body: 'High-volume or premium-audience partners can negotiate custom commission structures and co-marketing.' },
@@ -354,7 +354,7 @@ export default function AffiliatePage() {
 
               <div>
                 {([
-                  ['Payouts', 'Monthly · manual · crypto'],
+                  ['Payouts', '24–72h · manual · crypto'],
                   ['Approval', '24–72h manual review'],
                   ['Tracking', 'Referral / invite link'],
                   ['Custom terms', 'Available for top creators'],
@@ -373,7 +373,7 @@ export default function AffiliatePage() {
           <div className="aff-value-row" style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: '0', marginBottom: '88px', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
             {([
               { value: '20%', label: 'Recurring commission' },
-              { value: 'Monthly', label: 'Manual crypto payouts' },
+              { value: '24–72h', label: 'Manual crypto payouts' },
               { value: 'Manual', label: 'Every application reviewed' },
               { value: 'Native', label: 'Built for X, Telegram, Base' },
             ]).map(({ value, label }, i) => (
