@@ -278,7 +278,10 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
 }
 {
   // Non-vacuous: a PERMANENT (non-transient) 429-shaped failure that never recovers must still
-  // degrade to an honest gap, never hang or fabricate data — confirms retry is bounded to 1.
+  // degrade to an honest gap, never hang or fabricate data — confirms retry is bounded, not
+  // unbounded. getTokenLargestAccounts specifically gets 2 retries (3 total attempts) — see
+  // rpcClient.ts's own header on why this specific call was raised from the shared 1-retry
+  // default (documented, real production flakiness under concurrent load on a shared RPC key).
   let largestCalls = 0
   const r = await scanSolanaTokenBeta(USDC_MINT, {
     rpcUrl: 'https://stub',
@@ -291,7 +294,28 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
     },
   })
   check('a persistently failing call still degrades to an honest gap, never fabricated data', r.holderConcentrationAvailable === false && r.topAccountConcentration === null)
-  check('retry is bounded to exactly 2 attempts total, not unbounded', largestCalls === 2)
+  check('the real failure reason is surfaced in the evidence gap, not a generic "unavailable"', r.solanaEvidenceGaps.some((g) => g.includes('rpc_http_429')))
+  check('retry is bounded to exactly 3 attempts total (2 retries), not unbounded', largestCalls === 3)
+}
+{
+  // A transient failure that recovers only on the THIRD attempt (2nd retry) must still succeed —
+  // proves the raised retry count is actually being used, not silently capped back to 1.
+  let largestCalls = 0
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: async (url, init) => {
+      if (typeof url === 'string' && url.includes('dexscreener')) return { ok: true, json: async () => ({ pairs: [] }) }
+      const body = JSON.parse(init.body)
+      if (body.method === 'getTokenLargestAccounts') {
+        largestCalls++
+        if (largestCalls < 3) return { ok: false, status: 429, json: async () => ({}) }
+        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: HEALTHY_LARGEST }) }
+      }
+      const results = { getAccountInfo: HEALTHY_MINT, getTokenSupply: HEALTHY_SUPPLY }
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: results[body.method] ?? null }) }
+    },
+  })
+  check('recovers on the 2nd retry (3rd total attempt), proving the raised retry count is real', r.holderConcentrationAvailable === true && largestCalls === 3)
 }
 {
   // A real JSON-RPC error (the node answered, with an error) must NOT be retried — that's a real

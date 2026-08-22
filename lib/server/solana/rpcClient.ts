@@ -47,16 +47,25 @@ async function solanaRpcOnce<T>(
   }
 }
 
-/** One retry, only for plausibly-transient failures. See this module's own header. */
+/**
+ * One retry by default, only for plausibly-transient failures — see this module's own header.
+ * `maxRetries` raises that for a specific, known-flakier call site (getTokenLargestAccounts —
+ * see holderAnalyzer.ts) without slowing down every other RPC call in this engine by default.
+ * Backoff grows per attempt (350ms, 700ms, ...) so repeated retries don't hammer a rate-limited
+ * endpoint identically each time.
+ */
 export async function solanaRpc<T>(
   rpcUrl: string,
   method: string,
   params: unknown[],
   fetchImpl: RpcFetch,
   timeoutMs = 9000,
+  maxRetries = 1,
 ): Promise<{ ok: true; result: T } | { ok: false; error: string }> {
-  const first = await solanaRpcOnce<T>(rpcUrl, method, params, fetchImpl, timeoutMs)
-  if (first.ok || !isTransientSolanaRpcError(first.error)) return first
-  await new Promise((resolve) => setTimeout(resolve, 350))
-  return solanaRpcOnce<T>(rpcUrl, method, params, fetchImpl, timeoutMs)
+  let attempt = await solanaRpcOnce<T>(rpcUrl, method, params, fetchImpl, timeoutMs)
+  for (let retry = 0; retry < maxRetries && !attempt.ok && isTransientSolanaRpcError(attempt.error); retry++) {
+    await new Promise((resolve) => setTimeout(resolve, 350 * (retry + 1)))
+    attempt = await solanaRpcOnce<T>(rpcUrl, method, params, fetchImpl, timeoutMs)
+  }
+  return attempt
 }

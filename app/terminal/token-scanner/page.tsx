@@ -5343,6 +5343,10 @@ export default function TerminalTokenScanner() {
                     ) : (
                       <div style={{ padding: '20px', border: '1px dashed rgba(148,163,184,0.24)', borderRadius: '14px', background: 'rgba(148,163,184,0.03)', marginBottom: '16px' }}>
                         <p style={{ margin: 0, fontSize: '12.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Top-account concentration unavailable for this mint — shown as an open check, never a fabricated 0%.</p>
+                        {(() => {
+                          const gap = sr.solanaEvidenceGaps.find((g) => g.startsWith('Top token accounts could not be read'))
+                          return gap ? <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{gap}</p> : null
+                        })()}
                       </div>
                     )}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '10px', background: 'rgba(148,163,184,0.04)', border: '1px solid rgba(148,163,184,0.14)' }}>

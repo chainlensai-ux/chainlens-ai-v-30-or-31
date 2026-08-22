@@ -46,8 +46,12 @@ export async function analyzeSolanaHolders(params: {
   const { mintAddress, rpcUrl, fetchImpl, rawSupply, rawSupplyExact } = params
 
   // ── Top-account concentration (never a holder count — see module header) ───
+  // maxRetries: 2 (3 total attempts), DISCLOSED: this specific call is documented in
+  // rpcClient.ts's own header as the flakiest endpoint this engine calls — a single retry was
+  // sometimes not enough under real concurrent load on a shared RPC key. Raised only here, not
+  // for every RPC call in this engine.
   type LargestResp = { value?: Array<{ address?: string; amount?: string; uiAmount?: number | null }> }
-  const largestRes = await solanaRpc<LargestResp>(rpcUrl, 'getTokenLargestAccounts', [mintAddress], fetchImpl)
+  const largestRes = await solanaRpc<LargestResp>(rpcUrl, 'getTokenLargestAccounts', [mintAddress], fetchImpl, 9000, 2)
   let topAccountConcentration: SolanaTopAccountConcentration = null
 
   if (largestRes.ok && Array.isArray(largestRes.result?.value) && largestRes.result.value.length > 0) {
@@ -96,7 +100,8 @@ export async function analyzeSolanaHolders(params: {
     if (rawSupply == null) evidenceGaps.push('Top-account shares could not be expressed as a percent — supply unknown.')
     evidenceGaps.push('Concentration reflects the top token ACCOUNTS only (max 20), not a full holder count. AMM pool vaults and exchange custody accounts are included.')
   } else {
-    evidenceGaps.push('Top token accounts could not be read — concentration unavailable.')
+    const reason = !largestRes.ok ? largestRes.error : 'empty_response'
+    evidenceGaps.push(`Top token accounts could not be read (${reason}) — concentration unavailable.`)
   }
 
   // ── Real, paginated holder-account count (Helius) ───────────────────────────
