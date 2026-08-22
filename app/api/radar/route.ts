@@ -234,6 +234,38 @@ async function setDiscoveryBackoff(key: string, until: number): Promise<void> {
   }
 }
 
+// CROSS-CHAIN-WAVE-GATE FIX, DISCLOSED (reported: sudden GeckoTerminal 429s on a shared/free
+// endpoint that "never really happens" — traced via live Vercel logs showing a full wave of
+// [cache] MISS lines for one chain's sourceSpecs firing together, same pattern the
+// DISCOVERY_CONCURRENCY_LIMIT/DISCOVERY_WAVE_DELAY_MS wave loop below was built to stay under).
+// That wave loop only paces ONE chain's own 6-per-wave burst against itself — per the
+// CHAIN-SCOPED-SOURCE-KEYS comment above, requestedChain prefixes every cache/backoff key so Base
+// and Robinhood (added this session) run as fully independent discovery cycles that never
+// coordinate with each other. GeckoTerminal's real rate limit doesn't know or care which chain
+// slug a request is for — it's one shared budget tied to this deployment's outbound IP/API key. So
+// a Base wave and a Robinhood wave landing in the same window (different users, or the same user's
+// auto-refresh overlapping a tab switch) can burst 12 concurrent requests against a budget tuned
+// for 6, tripping 429s neither chain's own pacing "should" have caused on its own. Fixed with one
+// additional Redis-backed gate, orthogonal to the existing per-source-key backoff, that every wave
+// (any chain, any request, any instance) reserves a slot from before firing — same best-effort
+// philosophy as getDiscoveryBackoffUntil/setDiscoveryBackoff above: a Redis hiccup or unconfigured
+// Redis just skips the wait entirely, it never blocks or fails a request. Deliberately NOT a hard
+// lock (a plain read-then-write has a benign race under heavy concurrency) — this only needs to
+// meaningfully reduce simultaneous cross-chain bursts, not perfectly serialize every request.
+const RADAR_GLOBAL_WAVE_GATE_KEY = 'radar:discovery-wave:global-next-at'
+const RADAR_GLOBAL_WAVE_GATE_MAX_WAIT_MS = 2_500
+async function reserveGlobalDiscoveryWaveSlot(gapMs: number): Promise<void> {
+  if (!redisConfigured()) return
+  try {
+    const now = Date.now()
+    const reservedUntil = await redis.get<number>(RADAR_GLOBAL_WAVE_GATE_KEY)
+    const nextSlot = Math.max(typeof reservedUntil === 'number' ? reservedUntil : 0, now)
+    await redis.set(RADAR_GLOBAL_WAVE_GATE_KEY, nextSlot + gapMs, { ex: 30 })
+    const waitMs = Math.min(nextSlot - now, RADAR_GLOBAL_WAVE_GATE_MAX_WAIT_MS)
+    if (waitMs > 0) await new Promise(resolve => setTimeout(resolve, waitMs))
+  } catch { /* best-effort — never block discovery on a Redis problem */ }
+}
+
 // LIVE-FEED, DISCLOSED (explicitly requested — replacing the daily pool below: "we should be
 // getting tokens a lot instantly, you really want users to get 1 and wait hours for a couple
 // more"). The earlier design (capped at 10/day, accumulating slowly, resetting once every 24h)
@@ -955,6 +987,7 @@ export async function GET(req: NextRequest) {
   const sourceResults: SourceFetchResult[] = new Array(sourceSpecs.length)
   for (let waveStart = 0; waveStart < sourceSpecs.length; waveStart += DISCOVERY_CONCURRENCY_LIMIT) {
     const wave = sourceSpecs.slice(waveStart, waveStart + DISCOVERY_CONCURRENCY_LIMIT)
+    await reserveGlobalDiscoveryWaveSlot(DISCOVERY_WAVE_DELAY_MS)
     const waveResults = await Promise.all(wave.map(spec => fetchOneSource(spec)))
     waveResults.forEach((r, i) => { sourceResults[waveStart + i] = r })
     if (waveStart + DISCOVERY_CONCURRENCY_LIMIT < sourceSpecs.length) {
