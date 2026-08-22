@@ -35,7 +35,18 @@ export function readReferralCodeFromCookie(cookieHeader: string | null | undefin
   if (!cookieHeader) return null
   const match = cookieHeader.match(/(?:^|; )chainlens_affiliate_ref=([^;]+)/)
   if (!match) return null
-  const decoded = decodeURIComponent(match[1])
-  return isValidReferralCode(decoded) ? normalizeReferralCode(decoded) : null
+  // AUDIT FIX, DISCLOSED (affiliate system audit): decodeURIComponent throws on a malformed
+  // percent-encoding (e.g. a truncated "%E0" sequence), and this cookie's value is
+  // browser/user-controlled — a stale half-written cookie, a devtools edit, or a browser extension
+  // could all produce one. This function's contract is "parse a cookie, or return null" — it must
+  // never throw. Before this fix it could: app/api/checkout/crypto/route.ts calls this OUTSIDE its
+  // own try/catch (which only wraps the NOWPayments API call further down), so a single malformed
+  // cookie value would crash checkout with an unhandled 500 for that visitor until they cleared it.
+  try {
+    const decoded = decodeURIComponent(match[1])
+    return isValidReferralCode(decoded) ? normalizeReferralCode(decoded) : null
+  } catch {
+    return null
+  }
 }
 

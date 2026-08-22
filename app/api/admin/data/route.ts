@@ -156,11 +156,23 @@ export async function GET(req: NextRequest) {
       .select('affiliate_id, commission_amount')
       .eq('status', 'paid'),
 
-    // Payments with referral codes — per-affiliate checkout + revenue stats
-    // user_email included to exclude internal payments from affiliate revenue
+    // Payments attributed to an affiliate — per-affiliate checkout + revenue stats.
+    // AUDIT FIX, DISCLOSED (affiliate system audit): this used to select only referral_code and
+    // filter .not('referral_code', 'is', null) — grouping per-affiliate stats by the STRING code
+    // present on that one specific checkout row. affiliate_id is the durable, correct attribution
+    // (resolved from user_settings.referred_by_affiliate_id — first-referral-wins, survives a
+    // cleared cookie, a login-time attribution with no cookie left by the time of purchase, or a
+    // renewal checkout weeks later with no code in the request at all). referral_code is ONLY set
+    // when a code happened to be present in that one request; affiliate_id is set whenever this
+    // payment is attributed to someone, by ANY resolution path. Grouping by referral_code silently
+    // excluded every payment attributed via the durable path from the leaderboard's checkout/
+    // revenue/conversion numbers, while the SAME payment correctly counted toward that affiliate's
+    // pendingCommissionOwed/paidCommissionUsd below (which are correctly keyed by affiliate_id) —
+    // an internally inconsistent dashboard where an affiliate could show real money owed against
+    // zero confirmed sales. user_email is still included to exclude internal/test payments.
     sb.from('crypto_payments')
-      .select('referral_code, amount_usd, status, user_email')
-      .not('referral_code', 'is', null),
+      .select('affiliate_id, amount_usd, status, user_email')
+      .not('affiliate_id', 'is', null),
 
     sb.from('affiliates').select('id', { count: 'exact', head: true }).eq('status', 'approved'),
     sb.from('affiliates').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
@@ -184,7 +196,7 @@ export async function GET(req: NextRequest) {
   const allPaymentsAgg       = (allPaymentsAggRes.data ?? []) as Array<{ user_email: unknown; status: unknown; plan: unknown; amount_usd: unknown }>
   const allPendingComms      = (allPendingCommsRes.data ?? []) as Array<{ affiliate_id: unknown; commission_amount: unknown }>
   const allPaidComms         = (allPaidCommsRes.data ?? []) as Array<{ affiliate_id: unknown; commission_amount: unknown }>
-  const allAffiliatePayments = (allAffiliatePaymentsRes.data ?? []) as Array<{ referral_code: unknown; amount_usd: unknown; status: unknown; user_email: unknown }>
+  const allAffiliatePayments = (allAffiliatePaymentsRes.data ?? []) as Array<{ affiliate_id: unknown; amount_usd: unknown; status: unknown; user_email: unknown }>
 
   // ── Aggregate all metrics in a single pass ────────────────────────────────
   let totalCheckoutAttempts  = 0
@@ -244,17 +256,18 @@ export async function GET(req: NextRequest) {
   const pendingCommissionAmountUsd = allPendingComms.reduce((s, r) => s + (Number(r.commission_amount) || 0), 0)
   const totalPaidCommissionUsd     = allPaidComms.reduce((s, r) => s + (Number(r.commission_amount) || 0), 0)
 
-  // ── Per-affiliate performance — real customers only ───────────────────────
-  const codeStats: Record<string, { checkouts: number; revenue: number; confirmedCount: number }> = {}
+  // ── Per-affiliate performance — real customers only, keyed by affiliate_id (see the AUDIT FIX
+  // note on the query above for why this is affiliate_id and not referral_code). ────────────────
+  const affStats: Record<string, { checkouts: number; revenue: number; confirmedCount: number }> = {}
   for (const p of allAffiliatePayments) {
-    const code       = String(p.referral_code ?? '')
+    const affId      = String(p.affiliate_id ?? '')
     const isInternal = INTERNAL_EMAILS.has(String(p.user_email ?? '').toLowerCase())
-    if (!code || isInternal) continue
-    if (!codeStats[code]) codeStats[code] = { checkouts: 0, revenue: 0, confirmedCount: 0 }
-    codeStats[code].checkouts++
+    if (!affId || isInternal) continue
+    if (!affStats[affId]) affStats[affId] = { checkouts: 0, revenue: 0, confirmedCount: 0 }
+    affStats[affId].checkouts++
     if (CONFIRMED_STATUSES.has(String(p.status ?? '').toLowerCase())) {
-      codeStats[code].revenue += Number(p.amount_usd) || 0
-      codeStats[code].confirmedCount++
+      affStats[affId].revenue += Number(p.amount_usd) || 0
+      affStats[affId].confirmedCount++
     }
   }
 
@@ -274,9 +287,8 @@ export async function GET(req: NextRequest) {
   const approvedAffiliates: AffiliateWithStats[] = allAffiliates
     .filter((a) => a.status === 'approved' || a.status === 'active')
     .map((a) => {
-      const code  = String(a.referral_code ?? '')
       const id    = String(a.id ?? '')
-      const stats = codeStats[code] ?? { checkouts: 0, revenue: 0, confirmedCount: 0 }
+      const stats = affStats[id] ?? { checkouts: 0, revenue: 0, confirmedCount: 0 }
       return {
         ...a,
         referredCheckoutCount:   stats.checkouts,

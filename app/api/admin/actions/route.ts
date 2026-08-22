@@ -92,11 +92,23 @@ export async function POST(req: NextRequest) {
   const act = action as Action
   const now = new Date().toISOString()
 
-  // 3. Perform the action — each update guards on both id AND expected current status
+  // 3. Perform the action — each update guards on both id AND expected current status.
+  //
+  // AUDIT FIX, DISCLOSED (affiliate system audit): every .update() below destructures `count` and
+  // checks `count === 0` to detect a stale click (an id that doesn't exist, or one already in a
+  // different state — e.g. double-clicking APPROVE, or approving an affiliate someone already
+  // rejected in another tab). Supabase-js only populates `count` when explicitly asked for it via
+  // an options argument — `{ count: 'exact' }` — as every other count-reading call in this codebase
+  // already does (see app/api/admin/data/route.ts's `.select('id', { count: 'exact', head: true })`
+  // calls). None of the four updates below were passing that option, so `count` was always `null`,
+  // never `0` — the `count === 0` check could never fire, and every action always reported success
+  // even when it silently matched zero rows. The UPDATE itself was still safe (the WHERE clause on
+  // status genuinely prevents a wrong-state row from being touched), but the guard meant to SURFACE
+  // that to the admin was dead code. Fixed by passing `{ count: 'exact' }` to each `.update()`.
   if (act === 'approve_affiliate') {
     const { error, count } = await sb
       .from('affiliates')
-      .update({ status: 'approved', approved_at: now })
+      .update({ status: 'approved', approved_at: now }, { count: 'exact' })
       .eq('id', id)
       .eq('status', 'pending')
     if (error) return NextResponse.json({ error: 'Database error' }, { status: 500 })
@@ -107,7 +119,7 @@ export async function POST(req: NextRequest) {
   if (act === 'reject_affiliate') {
     const { error, count } = await sb
       .from('affiliates')
-      .update({ status: 'rejected' })
+      .update({ status: 'rejected' }, { count: 'exact' })
       .eq('id', id)
       .eq('status', 'pending')
     if (error) return NextResponse.json({ error: 'Database error' }, { status: 500 })
@@ -118,7 +130,7 @@ export async function POST(req: NextRequest) {
   if (act === 'mark_commission_paid') {
     const { error, count } = await sb
       .from('affiliate_commissions')
-      .update({ status: 'paid', paid_at: now })
+      .update({ status: 'paid', paid_at: now }, { count: 'exact' })
       .eq('id', id)
       .eq('status', 'pending')
     if (error) return NextResponse.json({ error: 'Database error' }, { status: 500 })
@@ -129,7 +141,7 @@ export async function POST(req: NextRequest) {
   if (act === 'mark_commission_pending') {
     const { error, count } = await sb
       .from('affiliate_commissions')
-      .update({ status: 'pending', paid_at: null })
+      .update({ status: 'pending', paid_at: null }, { count: 'exact' })
       .eq('id', id)
       .eq('status', 'paid')
     if (error) return NextResponse.json({ error: 'Database error' }, { status: 500 })

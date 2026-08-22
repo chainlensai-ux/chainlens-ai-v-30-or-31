@@ -69,34 +69,58 @@ export async function GET(req: NextRequest) {
 
   // Applications are stored with whatever casing the applicant typed, so match case-insensitively
   // on the verified address. ilike with no wildcard characters is an exact, case-insensitive match.
-  const { data: affRow, error: affErr } = await sb
+  //
+  // AUDIT FIX, DISCLOSED (affiliate system audit): affiliates.email carries NO unique constraint
+  // (only referral_code is unique — see docs/supabase-affiliate-applications.sql), so the same
+  // person genuinely can have more than one row: a real, plausible case is a first application
+  // rejected for being thin, then a second, better application later approved. This used to fetch
+  // `.order('created_at', { ascending: true }).limit(1)` — the OLDEST row — so that person's
+  // dashboard would show "Not approved" and their (working, approved) referral link would never
+  // even be surfaced, permanently, despite a real approved application existing. Fixed by fetching
+  // every row for the email (there are only ever a handful) and picking the one that actually
+  // matters: an approved row always wins if one exists (that is the live, earning application,
+  // full stop) — else the most recent pending, else the most recent rejected.
+  const { data: affRows, error: affErr } = await sb
     .from('affiliates')
     .select('id, referral_code, status, commission_rate, created_at, approved_at')
     .ilike('email', email)
-    .order('created_at', { ascending: true })
-    .limit(1)
-    .maybeSingle()
+    .order('created_at', { ascending: false })
 
   if (affErr) {
     console.error('affiliate_me_lookup_failed', { code: affErr.code, message: affErr.message })
     return NextResponse.json({ error: 'Could not load your affiliate account.' }, { status: 500 })
   }
   // Not an affiliate — an ordinary, expected state, not an error. The dashboard renders a join CTA.
-  if (!affRow) return NextResponse.json({ isAffiliate: false })
+  if (!affRows || affRows.length === 0) return NextResponse.json({ isAffiliate: false })
 
-  const aff = affRow as AffiliateRow
+  const rows = affRows as AffiliateRow[]
+  const aff = rows.find((r) => r.status === 'approved') ?? rows.find((r) => r.status === 'pending') ?? rows[0]
 
   // ── Real tracking numbers, each scoped to THIS affiliate id ────────────────────────────────────
   // Every figure below is a count/sum over rows the attribution pipeline actually wrote; nothing is
   // projected, estimated, or back-filled. A query that errors reports null (unknown), never 0 —
   // showing a hard 0 for a failed read would tell an affiliate they earned nothing when the truth
   // is that the number could not be loaded.
-  const [commissionsRes, referredUsersRes, paymentsRes] = await Promise.all([
+  // AUDIT FIX, DISCLOSED (affiliate system audit): this used to be ONE query
+  // (.limit(100).order(created_at desc)) whose rows fed BOTH the recent-conversions list AND the
+  // earnings totals (earnedTotalUsd/earnedPaidUsd/earnedPendingUsd/conversions). A founding
+  // affiliate with more than 100 commissions ever (entirely plausible for someone successful,
+  // across every referred user's every recurring renewal) would have had their own dashboard
+  // silently UNDERCOUNT what they've earned — the exact "never show a wrong number" contract this
+  // file's own header promises, broken by a limit that existed only to bound the display list.
+  // Split into two queries: allCommissionsRes is uncapped (a generous sanity ceiling, not a real
+  // limit — no realistic affiliate is anywhere near it) and drives every total; recentRes is the
+  // separate, cheap, limit(10) query purely for the "recent conversions" display list.
+  const [allCommissionsRes, recentRes, referredUsersRes, paymentsRes] = await Promise.all([
+    sb.from('affiliate_commissions')
+      .select('commission_amount, payment_amount_usd, status')
+      .eq('affiliate_id', aff.id)
+      .limit(20_000),
     sb.from('affiliate_commissions')
       .select('commission_amount, payment_amount_usd, status, plan, created_at, paid_at')
       .eq('affiliate_id', aff.id)
       .order('created_at', { ascending: false })
-      .limit(100),
+      .limit(10),
     sb.from('user_settings')
       .select('user_id', { count: 'exact', head: true })
       .eq('referred_by_affiliate_id', aff.id),
@@ -105,7 +129,12 @@ export async function GET(req: NextRequest) {
       .eq('affiliate_id', aff.id),
   ])
 
-  const commissionRows = (commissionsRes.data ?? []) as Array<{
+  const allCommissionRows = (allCommissionsRes.data ?? []) as Array<{
+    commission_amount: number | null
+    payment_amount_usd: number | null
+    status: string | null
+  }>
+  const recentRows = (recentRes.data ?? []) as Array<{
     commission_amount: number | null
     payment_amount_usd: number | null
     status: string | null
@@ -114,21 +143,21 @@ export async function GET(req: NextRequest) {
     paid_at: string | null
   }>
 
-  const sum = (rows: typeof commissionRows) => rows.reduce((t, r) => t + Number(r.commission_amount ?? 0), 0)
-  const paidRows = commissionRows.filter((r) => r.status === 'paid')
-  const pendingRows = commissionRows.filter((r) => r.status !== 'paid')
+  const sum = (rows: typeof allCommissionRows) => rows.reduce((t, r) => t + Number(r.commission_amount ?? 0), 0)
+  const paidRows = allCommissionRows.filter((r) => r.status === 'paid')
+  const pendingRows = allCommissionRows.filter((r) => r.status !== 'paid')
 
-  const stats = commissionsRes.error
+  const stats = (allCommissionsRes.error || recentRes.error)
     ? { unavailable: true as const, reason: 'Commission history could not be loaded this request.' }
     : {
         unavailable: false as const,
-        conversions: commissionRows.length,
-        earnedTotalUsd: sum(commissionRows),
+        conversions: allCommissionRows.length,
+        earnedTotalUsd: sum(allCommissionRows),
         earnedPaidUsd: sum(paidRows),
         earnedPendingUsd: sum(pendingRows),
-        revenueGeneratedUsd: commissionRows.reduce((t, r) => t + Number(r.payment_amount_usd ?? 0), 0),
+        revenueGeneratedUsd: allCommissionRows.reduce((t, r) => t + Number(r.payment_amount_usd ?? 0), 0),
         // Most recent conversions only — enough to recognise activity without shipping a full ledger.
-        recent: commissionRows.slice(0, 10).map((r) => ({
+        recent: recentRows.map((r) => ({
           plan: r.plan,
           paymentUsd: Number(r.payment_amount_usd ?? 0),
           commissionUsd: Number(r.commission_amount ?? 0),
