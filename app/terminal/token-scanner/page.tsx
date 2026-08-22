@@ -2465,65 +2465,172 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
   )
 }
 
-// ─── Solana Cluster Graph, DISCLOSED (real interactive node graph follow-up — replaces the
-// text-only funding-path summary). Solana-native only: nodes/edges come exclusively from
-// lib/server/solana/clusterAnalyzer.ts's real evidence (Helius Enhanced, Alchemy/Solana RPC pool
-// + authority reads) — no EVM heuristics, no lib/clusterMap.ts reuse. Clicking a node fetches a
-// real, on-demand wallet snapshot (balance + latest signature) from /api/solana-wallet-detail. ──
+// ─── Solana Cluster Graph, DISCLOSED (premium intelligence-graph rebuild — visualization layer
+// only, over the exact same real evidence lib/server/solana/clusterAnalyzer.ts has always produced;
+// no backend/API change). Solana-native only: nodes/edges come exclusively from that module's real
+// evidence (Helius Enhanced, Alchemy/Solana RPC pool + authority reads) — no EVM heuristics, no
+// lib/clusterMap.ts reuse. Node roles/edge relationships are the exact union types
+// clusterAnalyzer.ts exports (SolanaClusterNodeRole / SolanaClusterRelationship) — every color/
+// label/position map below is typed as Record<ThatUnion, …>, so TypeScript itself refuses to
+// compile if a role or relationship this engine can actually emit is left unhandled, and it is
+// equally impossible to add a role/relationship here that the backend doesn't really produce
+// (there's no such key in the union). That's the mechanism that keeps this "never fabricate a
+// relationship" honest under a UI rewrite — not a promise, a compiler constraint.
+//
+// TAXONOMY, DISCLOSED: this engine only ever verifies Creator / Funding / Mint Authority / Freeze
+// Authority / LP roles (see clusterAnalyzer.ts's own header for exactly why Treasury / Exchange /
+// Market Maker / Unknown wallet-role classification is NOT attempted — it would require either
+// unbounded cross-mint transaction indexing or heuristics with no verifiable ground truth). The
+// role legend below still lists those reserved categories, explicitly greyed out as "not verified
+// this scan" — so the fuller intelligence-graph taxonomy is visible without a single fabricated
+// node ever being drawn under it.
 type SolanaCMap = NonNullable<SolanaBetaScanResult['clusterMap']>
 type SolanaCNode = SolanaCMap['nodes'][number]
+type SolanaCEdge = SolanaCMap['edges'][number]
 type SolanaWalletSnapshotUI = { address: string; balanceResolved: boolean; balanceSol: number | null; lastActivityResolved: boolean; lastActivitySignature: string | null; lastActivityTimestamp: string | null; errorReason: string | null }
+/** Absent from the map = still loading (or not a wallet node) — see the preload effect below. */
+type SolanaBalanceState = SolanaWalletSnapshotUI | 'error'
 
 const SOLANA_CNODE_ROLE_LABEL: Record<SolanaCNode['role'], string> = {
-  mint: 'Token mint', creator_wallet: 'Creator wallet', funding_wallet: 'Funding wallet',
-  mint_authority: 'Mint authority', freeze_authority: 'Freeze authority', lp_pool: 'LP pool',
+  mint: 'Token Contract', creator_wallet: 'Creator', funding_wallet: 'Funding',
+  mint_authority: 'Mint Authority', freeze_authority: 'Freeze Authority', lp_pool: 'LP',
 }
 const SOLANA_CNODE_ROLE_COLOR: Record<SolanaCNode['role'], string> = {
   mint: '#7dd3fc', creator_wallet: '#fbbf24', funding_wallet: '#a855f7',
   mint_authority: '#fb7185', freeze_authority: '#fb7185', lp_pool: '#2dd4bf',
 }
+// Fixed angle (degrees, screen convention: 0=east, 90=south) each role anchors to around the
+// always-centered mint — "position nodes by role" without any force-graph randomness. Multiple
+// nodes sharing a role fan out from this anchor rather than colliding (see the layout below).
+const SOLANA_CNODE_ROLE_ANGLE: Record<SolanaCNode['role'], number> = {
+  mint: 0, funding_wallet: -125, creator_wallet: -90, lp_pool: -20, mint_authority: 55, freeze_authority: 130,
+}
+// Reserved taxonomy shown in the legend even when this scan verified nothing under it — see this
+// component's header. Never rendered as an actual node; there is no data path that could produce one.
+const SOLANA_RESERVED_ROLE_LEGEND: Array<{ label: string; reason: string }> = [
+  { label: 'Treasury', reason: 'Not verified — would require an unimplemented Metaplex metadata-authority read.' },
+  { label: 'Exchange', reason: 'Not verified — no wallet-labeling/exchange-attribution provider is connected.' },
+  { label: 'Market Maker', reason: 'Not verified — no wallet-labeling provider is connected.' },
+  { label: 'Unknown', reason: 'Not verified — this scan found no relationship this engine could not classify above.' },
+]
 const SOLANA_CNODE_RISK_COLOR: Record<SolanaCNode['risk'], string> = { elevated: '#f87171', standard: '#34d399', neutral: '#94a3b8', unknown: '#64748b' }
+const SOLANA_CNODE_CONFIDENCE_COLOR: Record<SolanaCNode['confidence'], string> = { high: '#34d399', medium: '#fbbf24', low: '#94a3b8' }
+const SOLANA_EDGE_LABEL: Record<SolanaCEdge['relationship'], string> = {
+  funding_wallet: 'Funded', first_sol_sender: 'First SOL Sender', shared_fee_payer: 'Fee Payer',
+  mint_authority: 'Mint Authority', freeze_authority: 'Freeze Authority', lp_creation: 'LP Provider', pumpfun_migration: 'Migration',
+}
+const SOLANA_EDGE_COLOR: Record<SolanaCEdge['relationship'], string> = {
+  funding_wallet: '#a855f7', first_sol_sender: '#a855f7', shared_fee_payer: '#38bdf8',
+  mint_authority: '#fb7185', freeze_authority: '#fb7185', lp_creation: '#2dd4bf', pumpfun_migration: '#facc15',
+}
 
-function SolanaClusterGraphPanel({ clusterMap }: { clusterMap: SolanaCMap }) {
+// Small inline glyphs, one per real role — no icon-font/library dependency added.
+function SolanaRoleGlyph({ role, size = 14, color }: { role: SolanaCNode['role']; size?: number; color: string }) {
+  const common = { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: color, strokeWidth: 2, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const }
+  switch (role) {
+    case 'mint':
+      return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M9 12a3 3 0 1 0 6 0 3 3 0 0 0-6 0Z" /></svg>
+    case 'creator_wallet':
+      return <svg {...common}><circle cx="12" cy="8" r="3.5" /><path d="M5 20c0-3.9 3.1-7 7-7s7 3.1 7 7" /></svg>
+    case 'funding_wallet':
+      return <svg {...common}><circle cx="12" cy="12" r="9" /><path d="M12 7v7M8.5 11 12 14.5 15.5 11" /></svg>
+    case 'mint_authority':
+      return <svg {...common}><circle cx="8" cy="8" r="3" /><path d="M10.2 10.2 20 20M15 15l2-2M18 18l2-2" /></svg>
+    case 'freeze_authority':
+      return <svg {...common}><path d="M12 3v18M5 7l14 10M19 7 5 17" /></svg>
+    case 'lp_pool':
+      return <svg {...common}><path d="M12 3c3.5 4.2 6 7.6 6 10.5A6 6 0 1 1 6 13.5C6 10.6 8.5 7.2 12 3Z" /></svg>
+  }
+}
+
+function SolanaClusterGraphPanel({ clusterMap, creatorConfidence }: { clusterMap: SolanaCMap; creatorConfidence: SolanaBetaScanResult['creatorConfidence'] }) {
   const nodes = clusterMap.nodes
   const edges = clusterMap.edges
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [snapshot, setSnapshot] = useState<SolanaWalletSnapshotUI | null>(null)
-  const [snapshotLoading, setSnapshotLoading] = useState(false)
-  const [snapshotError, setSnapshotError] = useState<string | null>(null)
+  const [hoveredId, setHoveredId] = useState<string | null>(null)
+  const [balances, setBalances] = useState<Map<string, SolanaBalanceState>>(new Map())
+  const [entered, setEntered] = useState(false)
   const fmt = (addr: string | null | undefined) => addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '—'
 
-  // Pure function of nodes/edges (no randomness, no external state) — computed with useMemo
-  // rather than useEffect+setState, so the layout is ready on first render with no extra pass.
+  // Staggered load-in animation — purely cosmetic, one render pass after mount. Keyed by the
+  // parent (see the callsite's `key`) so a new node set remounts this component and `entered`
+  // naturally starts false again, instead of resetting it synchronously inside an effect.
+  useEffect(() => {
+    const t = setTimeout(() => setEntered(true), 30)
+    return () => clearTimeout(t)
+  }, [])
+
+  // Preload every wallet node's real balance/last-activity snapshot from the existing, rate-
+  // limited /api/solana-wallet-detail endpoint (same endpoint, same shape — see
+  // app/api/solana-wallet-detail/route.ts) so premium node cards can show balance without
+  // requiring a click. Sequential, cancel-safe, skips nodes already resolved. A node absent from
+  // `balances` reads as "loading" in the UI below — no separate 'loading' sentinel needs writing
+  // synchronously here, so this effect only ever calls setState from inside the async fetch loop.
+  const fetchedBalanceIds = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    let cancelled = false
+    const toFetch = nodes.filter((n) => n.role !== 'mint' && !fetchedBalanceIds.current.has(n.id))
+    if (toFetch.length === 0) return
+    for (const n of toFetch) fetchedBalanceIds.current.add(n.id)
+    ;(async () => {
+      for (const node of toFetch) {
+        if (cancelled) return
+        try {
+          const res = await fetch('/api/solana-wallet-detail', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: node.address }) })
+          const json = await res.json().catch(() => null)
+          if (cancelled) return
+          if (!res.ok || !json?.ok) setBalances((prev) => new Map(prev).set(node.id, 'error'))
+          else setBalances((prev) => new Map(prev).set(node.id, json.snapshot as SolanaWalletSnapshotUI))
+        } catch {
+          if (!cancelled) setBalances((prev) => new Map(prev).set(node.id, 'error'))
+        }
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodes.map((n) => n.id).join(',')])
+
+  // Role-anchored layout: each node starts at its role's fixed angle/radius around the always-
+  // centered mint, then a light relaxation pass (mutual repulsion + edge-length spring + a soft
+  // pull back toward its role anchor) spreads same-role clusters apart instead of stacking them —
+  // "position nodes by role" AND "intelligently spread small clusters" from one pure function of
+  // nodes/edges, computed with useMemo rather than useEffect+setState.
   const positions = useMemo<Map<string, { x: number; y: number }>>(() => {
     if (!nodes.length) return new Map()
-    type SN = { id: string; x: number; y: number; vx: number; vy: number; fx: number | null; fy: number | null }
+    type SN = { id: string; x: number; y: number; vx: number; vy: number; anchorX: number; anchorY: number; fixed: boolean }
     const n = nodes.length
-    const sn: SN[] = nodes.map((node, i) => {
-      const isFixed = node.role === 'mint'
-      const angle = (i / Math.max(1, n)) * 2 * Math.PI
-      const ring = Math.max(22, n * 8)
-      return { id: node.id, x: isFixed ? 50 : 50 + Math.cos(angle) * ring, y: isFixed ? 50 : 50 + Math.sin(angle) * ring, vx: 0, vy: 0, fx: isFixed ? 50 : null, fy: isFixed ? 50 : null }
+    const baseRadius = Math.min(40, 24 + n * 2.6)
+    const roleSeen = new Map<string, number>()
+    const sn: SN[] = nodes.map((node) => {
+      if (node.role === 'mint') return { id: node.id, x: 50, y: 50, vx: 0, vy: 0, anchorX: 50, anchorY: 50, fixed: true }
+      const idx = roleSeen.get(node.role) ?? 0
+      roleSeen.set(node.role, idx + 1)
+      const angleDeg = SOLANA_CNODE_ROLE_ANGLE[node.role] + idx * 18
+      const rad = (angleDeg * Math.PI) / 180
+      const radius = baseRadius + idx * 8
+      const ax = 50 + Math.cos(rad) * radius
+      const ay = 50 + Math.sin(rad) * radius
+      return { id: node.id, x: ax, y: ay, vx: 0, vy: 0, anchorX: ax, anchorY: ay, fixed: false }
     })
     const ea = edges.map((e) => ({ si: sn.findIndex((nd) => nd.id === e.from), ti: sn.findIndex((nd) => nd.id === e.to) })).filter((e) => e.si >= 0 && e.ti >= 0)
     let alpha = 1
-    for (let iter = 0; iter < 260 && alpha > 0.001; iter++) {
-      for (const nd of sn) { if (nd.fx !== null) continue; nd.vx += (50 - nd.x) * 0.03 * alpha; nd.vy += (50 - nd.y) * 0.03 * alpha }
+    for (let iter = 0; iter < 220 && alpha > 0.001; iter++) {
+      for (const nd of sn) { if (nd.fixed) continue; nd.vx += (nd.anchorX - nd.x) * 0.06 * alpha; nd.vy += (nd.anchorY - nd.y) * 0.06 * alpha }
       for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
-        const a = sn[i], b = sn[j], dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy + 0.01, invD = 1 / Math.sqrt(d2), f = -42 * alpha / d2, fx = dx * invD * f, fy = dy * invD * f
-        if (a.fx === null) { a.vx -= fx; a.vy -= fy }
-        if (b.fx === null) { b.vx += fx; b.vy += fy }
+        const a = sn[i], b = sn[j], dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy + 0.01, invD = 1 / Math.sqrt(d2), f = -30 * alpha / d2, fx = dx * invD * f, fy = dy * invD * f
+        if (!a.fixed) { a.vx -= fx; a.vy -= fy }
+        if (!b.fixed) { b.vx += fx; b.vy += fy }
       }
       for (const e of ea) {
         const s = sn[e.si], t = sn[e.ti], dx = t.x - s.x, dy = t.y - s.y, d = Math.sqrt(dx * dx + dy * dy) || 0.01
-        const tgt = 24, str = 0.4 * alpha, delta = (d - tgt) / d * str, fx = dx * delta, fy = dy * delta
-        if (s.fx === null) { s.vx += fx; s.vy += fy }
-        if (t.fx === null) { t.vx -= fx; t.vy -= fy }
+        const tgt = 26, str = 0.25 * alpha, delta = (d - tgt) / d * str, fx = dx * delta, fy = dy * delta
+        if (!s.fixed) { s.vx += fx; s.vy += fy }
+        if (!t.fixed) { t.vx -= fx; t.vy -= fy }
       }
       for (const nd of sn) {
-        if (nd.fx !== null) { nd.x = nd.fx; nd.y = nd.fy!; continue }
-        nd.vx *= 0.5; nd.vy *= 0.5; nd.x += nd.vx; nd.y += nd.vy
-        nd.x = Math.max(8, Math.min(92, nd.x)); nd.y = Math.max(8, Math.min(92, nd.y))
+        if (nd.fixed) continue
+        nd.vx *= 0.55; nd.vy *= 0.55; nd.x += nd.vx; nd.y += nd.vy
+        nd.x = Math.max(10, Math.min(90, nd.x)); nd.y = Math.max(10, Math.min(90, nd.y))
       }
       alpha -= alpha * 0.05
     }
@@ -2532,24 +2639,25 @@ function SolanaClusterGraphPanel({ clusterMap }: { clusterMap: SolanaCMap }) {
     return m
   }, [nodes, edges])
 
-  async function openNode(node: SolanaCNode) {
-    setSelectedId(node.id)
-    setSnapshot(null)
-    setSnapshotError(null)
-    if (node.role === 'mint') return // the mint itself has no wallet balance/activity to fetch
-    setSnapshotLoading(true)
-    try {
-      const res = await fetch('/api/solana-wallet-detail', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: node.address }) })
-      const json = await res.json().catch(() => null)
-      if (!res.ok || !json?.ok) setSnapshotError(typeof json?.error === 'string' ? json.error : 'Could not load wallet details.')
-      else setSnapshot(json.snapshot as SolanaWalletSnapshotUI)
-    } catch {
-      setSnapshotError('Could not load wallet details.')
-    } finally { setSnapshotLoading(false) }
-  }
+  const nodesById = useMemo(() => new Map(nodes.map((nd) => [nd.id, nd] as const)), [nodes])
+
+  // Hover (or, absent a hover, the selection) drives connected-path highlighting.
+  const focusId = hoveredId ?? selectedId
+  const connectedIds = useMemo(() => {
+    if (!focusId) return null
+    const ids = new Set<string>([focusId])
+    for (const e of edges) { if (e.from === focusId) ids.add(e.to); if (e.to === focusId) ids.add(e.from) }
+    return ids
+  }, [focusId, edges])
 
   const selectedNode = nodes.find((n) => n.id === selectedId) ?? null
-  const connectedWallets = selectedNode ? edges.filter((e) => e.from === selectedNode.id || e.to === selectedNode.id).map((e) => (e.from === selectedNode.id ? e.to : e.from)) : []
+  const connectedEdges = selectedNode ? edges.filter((e) => e.from === selectedNode.id || e.to === selectedNode.id) : []
+  // "Funding source" for the intelligence panel: the edge, if any, that fed evidence INTO this
+  // node (funded it, or paid its fees) — real edges only, never inferred.
+  const fundingEdge = selectedNode
+    ? edges.find((e) => e.to === selectedNode.id && (e.relationship === 'funding_wallet' || e.relationship === 'first_sol_sender' || e.relationship === 'shared_fee_payer'))
+    : null
+  const selectedBalance = selectedNode ? balances.get(selectedNode.id) ?? null : null
 
   if (nodes.length === 0) {
     return (
@@ -2559,78 +2667,213 @@ function SolanaClusterGraphPanel({ clusterMap }: { clusterMap: SolanaCMap }) {
     )
   }
 
+  const riskColor = clusterMap.riskLevel === 'elevated' ? '#f87171' : clusterMap.riskLevel === 'standard' ? '#34d399' : '#94a3b8'
+  const confColor = clusterMap.clusterConfidence === 'medium' ? '#34d399' : clusterMap.clusterConfidence === 'low' ? '#fbbf24' : '#94a3b8'
+  const creatorConfColor = creatorConfidence.tier === 'CONFIRMED' ? '#34d399' : creatorConfidence.tier === 'LIKELY' ? '#fbbf24' : creatorConfidence.tier === 'POSSIBLE' ? '#fb923c' : '#94a3b8'
+  const metrics: Array<{ label: string; value: string; accent: string }> = [
+    { label: 'Cluster Confidence', value: clusterMap.clusterConfidence.toUpperCase(), accent: confColor },
+    { label: 'Cluster Risk', value: clusterMap.riskLevel === 'unknown' ? 'UNKNOWN' : clusterMap.riskLevel.toUpperCase(), accent: riskColor },
+    { label: 'Evidence Count', value: String(clusterMap.evidenceCount), accent: '#2dd4bf' },
+    { label: 'Funding Depth', value: `${clusterMap.fundingDepth} hop${clusterMap.fundingDepth === 1 ? '' : 's'}`, accent: '#5eead4' },
+    { label: 'Relationship Count', value: String(edges.length), accent: '#7dd3fc' },
+    { label: 'Creator Confidence', value: creatorConfidence.tier === 'UNKNOWN' ? 'UNKNOWN' : `${creatorConfidence.tier} (${creatorConfidence.confidencePercent}%)`, accent: creatorConfColor },
+  ]
+
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: selectedNode ? '1fr 260px' : '1fr', gap: '12px' }}>
-      <div style={{ position: 'relative', height: '280px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.18)', background: 'radial-gradient(circle at 50% 50%, rgba(45,212,191,0.06), rgba(7,12,24,0.9))', overflow: 'hidden' }}>
-        <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%' }}>
+    <div style={{ display: 'grid', gap: '12px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '8px' }} className="sol-cluster-metrics">
+        {metrics.map((m) => <StatCard key={m.label} label={m.label} value={m.value} accent={m.accent} />)}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: selectedNode ? '1fr 280px' : '1fr', gap: '12px' }}>
+        <div style={{ position: 'relative', height: '420px', borderRadius: '14px', border: '1px solid rgba(148,163,184,0.18)', background: 'radial-gradient(circle at 50% 50%, rgba(45,212,191,0.07), rgba(6,10,20,0.94))', overflow: 'hidden' }}>
+          <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%', position: 'absolute', inset: 0 }}>
+            <defs>
+              <marker id="sol-cluster-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+                <path d="M0,0 L6,3 L0,6 Z" fill="#7dd3fc" opacity={0.75} />
+              </marker>
+            </defs>
+            {edges.map((e, i) => {
+              const s = positions.get(e.from), t = positions.get(e.to)
+              if (!s || !t) return null
+              const color = SOLANA_EDGE_COLOR[e.relationship]
+              const isFocusEdge = !focusId || e.from === focusId || e.to === focusId
+              const originNode = nodesById.get(e.from)
+              const riskFlow = (originNode?.risk === 'elevated') || nodesById.get(e.to)?.risk === 'elevated'
+              return (
+                <line
+                  key={e.id}
+                  x1={s.x} y1={s.y} x2={t.x} y2={t.y}
+                  stroke={color}
+                  strokeWidth={isFocusEdge ? 0.7 : 0.4}
+                  opacity={entered ? (isFocusEdge ? 0.85 : 0.18) : 0}
+                  markerEnd="url(#sol-cluster-arrow)"
+                  className={riskFlow ? 'sol-cluster-edge-flow' : undefined}
+                  style={{ transition: `opacity 420ms ease ${i * 60}ms, stroke-width 200ms ease` }}
+                />
+              )
+            })}
+          </svg>
+
           {edges.map((e) => {
             const s = positions.get(e.from), t = positions.get(e.to)
             if (!s || !t) return null
-            const color = e.relationship === 'pumpfun_migration' ? '#facc15' : e.relationship === 'funding_wallet' || e.relationship === 'first_sol_sender' ? '#a855f7' : e.relationship === 'mint_authority' || e.relationship === 'freeze_authority' ? '#fb7185' : '#38bdf8'
-            return <line key={e.id} x1={s.x} y1={s.y} x2={t.x} y2={t.y} stroke={color} strokeWidth={0.6} opacity={0.6} />
-          })}
-          {nodes.map((node) => {
-            const p = positions.get(node.id) ?? { x: 50, y: 50 }
-            const isSelected = node.id === selectedId
-            const r = node.role === 'mint' ? 5.5 : 4.5
+            const isFocusEdge = !focusId || e.from === focusId || e.to === focusId
+            if (!isFocusEdge && focusId) return null // decluttered: only show labels on the highlighted path once something is focused
+            const mx = (s.x + t.x) / 2, my = (s.y + t.y) / 2
+            let angle = Math.atan2(t.y - s.y, t.x - s.x) * (180 / Math.PI)
+            if (angle > 90 || angle < -90) angle += 180
+            const originConfidence = nodesById.get(e.from)?.confidence ?? 'low'
             return (
-              <g key={node.id} transform={`translate(${p.x},${p.y})`} style={{ cursor: 'pointer' }} onClick={() => openNode(node)}>
-                <circle r={r} fill={`${SOLANA_CNODE_ROLE_COLOR[node.role]}33`} stroke={isSelected ? '#f8fafc' : SOLANA_CNODE_ROLE_COLOR[node.role]} strokeWidth={isSelected ? 0.9 : 0.5} />
-                <circle r={1.1} fill={SOLANA_CNODE_RISK_COLOR[node.risk]} />
-              </g>
+              <div
+                key={`label-${e.id}`}
+                title={e.evidence}
+                style={{
+                  position: 'absolute', left: `${mx}%`, top: `${my}%`, transform: `translate(-50%,-50%) rotate(${angle}deg)`,
+                  fontSize: '8px', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '0.04em',
+                  color: SOLANA_EDGE_COLOR[e.relationship], background: 'rgba(6,10,20,0.88)', padding: '1.5px 5px', borderRadius: '5px',
+                  border: `1px solid ${SOLANA_EDGE_COLOR[e.relationship]}40`, whiteSpace: 'nowrap', pointerEvents: 'none',
+                  opacity: entered ? (isFocusEdge ? 1 : 0) : 0, transition: 'opacity 300ms ease',
+                }}
+              >
+                {SOLANA_EDGE_LABEL[e.relationship]} · {originConfidence}
+              </div>
             )
           })}
-        </svg>
-        <div style={{ position: 'absolute', left: '8px', bottom: '8px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-          {(Object.keys(SOLANA_CNODE_ROLE_LABEL) as SolanaCNode['role'][]).filter((role) => nodes.some((n) => n.role === role)).map((role) => (
-            <div key={role} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: SOLANA_CNODE_ROLE_COLOR[role] }} />
-              <span style={{ fontSize: '8.5px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)' }}>{SOLANA_CNODE_ROLE_LABEL[role]}</span>
-            </div>
-          ))}
-        </div>
-      </div>
 
-      {selectedNode && (
-        <div style={{ padding: '12px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(9,15,29,0.9)', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '280px', overflowY: 'auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <p style={{ margin: 0, fontSize: '9px', letterSpacing: '.12em', color: SOLANA_CNODE_ROLE_COLOR[selectedNode.role], fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{SOLANA_CNODE_ROLE_LABEL[selectedNode.role]}</p>
-            <button type="button" onClick={() => setSelectedId(null)} style={{ background: 'none', border: 'none', color: '#64748b', fontSize: '12px', cursor: 'pointer', padding: 0 }}>✕</button>
-          </div>
-          <p title={selectedNode.address} style={{ margin: 0, fontSize: '10px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', wordBreak: 'break-all' }}>{selectedNode.address}</p>
-          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-            <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.3)' }}>CONFIDENCE {selectedNode.confidence.toUpperCase()}</span>
-            <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: SOLANA_CNODE_RISK_COLOR[selectedNode.risk], border: `1px solid ${SOLANA_CNODE_RISK_COLOR[selectedNode.risk]}55` }}>RISK {selectedNode.risk.toUpperCase()}</span>
-          </div>
-          <div>
-            <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Evidence</p>
-            {selectedNode.evidence.map((ev, i) => (
-              <p key={i} style={{ margin: i === 0 ? 0 : '4px 0 0', fontSize: '10px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{ev}</p>
+          {nodes.map((node, i) => {
+            const p = positions.get(node.id) ?? { x: 50, y: 50 }
+            const isSelected = node.id === selectedId
+            const isDimmed = !!focusId && !connectedIds?.has(node.id)
+            const roleColor = SOLANA_CNODE_ROLE_COLOR[node.role]
+            const riskColorNode = SOLANA_CNODE_RISK_COLOR[node.risk]
+            const bal = balances.get(node.id)
+            const balanceLabel = node.role === 'mint'
+              ? 'Token'
+              : bal === undefined ? '…'
+              : bal === 'error' ? 'Balance unavailable'
+              : bal.balanceResolved ? `${bal.balanceSol!.toFixed(4)} SOL` : 'Balance unavailable'
+            return (
+              <div
+                key={node.id}
+                onClick={() => setSelectedId(node.id)}
+                onMouseEnter={() => setHoveredId(node.id)}
+                onMouseLeave={() => setHoveredId((h) => (h === node.id ? null : h))}
+                style={{
+                  position: 'absolute', left: `${p.x}%`, top: `${p.y}%`,
+                  transform: `translate(-50%,-50%) scale(${entered ? (isSelected ? 1.08 : 1) : 0.4})`,
+                  opacity: entered ? (isDimmed ? 0.35 : 1) : 0,
+                  transition: `transform 380ms cubic-bezier(.2,.9,.3,1.3) ${i * 70}ms, opacity 380ms ease ${i * 70}ms`,
+                  cursor: 'pointer', zIndex: isSelected ? 5 : isDimmed ? 1 : 2,
+                  width: node.role === 'mint' ? '118px' : '104px',
+                  padding: '7px 9px', borderRadius: '11px',
+                  background: isSelected ? 'linear-gradient(160deg, rgba(18,30,52,.98), rgba(6,11,22,.98))' : 'linear-gradient(160deg, rgba(13,22,40,.94), rgba(5,9,18,.94))',
+                  border: `1px solid ${isSelected ? '#f8fafc' : `${roleColor}55`}`,
+                  boxShadow: isSelected ? `0 0 0 1px ${roleColor}80, 0 8px 20px rgba(0,0,0,0.5)` : '0 4px 10px rgba(0,0,0,0.35)',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '4px' }}>
+                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '18px', height: '18px', borderRadius: '50%', background: `${roleColor}22`, border: `1px solid ${roleColor}66`, flexShrink: 0 }}>
+                    <SolanaRoleGlyph role={node.role} size={11} color={roleColor} />
+                  </span>
+                  <span style={{ fontSize: '7.5px', fontWeight: 800, letterSpacing: '.08em', color: roleColor, textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{SOLANA_CNODE_ROLE_LABEL[node.role]}</span>
+                  <span title={`Risk: ${node.risk}`} style={{ marginLeft: 'auto', width: '6px', height: '6px', borderRadius: '50%', background: riskColorNode, flexShrink: 0 }} />
+                </div>
+                <p title={node.address} style={{ margin: '0 0 4px', fontSize: '9px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmt(node.address)}</p>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px' }}>
+                  <span style={{ fontSize: '7px', fontWeight: 700, color: SOLANA_CNODE_CONFIDENCE_COLOR[node.confidence], textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{node.confidence}</span>
+                  <span style={{ fontSize: '7.5px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', textAlign: 'right' }} className={node.role !== 'mint' && bal === undefined ? 'sol-cluster-balance-pulse' : undefined}>{balanceLabel}</span>
+                </div>
+              </div>
+            )
+          })}
+
+          <div style={{ position: 'absolute', left: '10px', bottom: '10px', display: 'flex', gap: '10px', flexWrap: 'wrap', maxWidth: '92%' }}>
+            {(Object.keys(SOLANA_CNODE_ROLE_LABEL) as SolanaCNode['role'][]).filter((role) => nodes.some((n) => n.role === role)).map((role) => (
+              <div key={role} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: SOLANA_CNODE_ROLE_COLOR[role] }} />
+                <span style={{ fontSize: '8px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)' }}>{SOLANA_CNODE_ROLE_LABEL[role]}</span>
+              </div>
+            ))}
+            {SOLANA_RESERVED_ROLE_LEGEND.map((r) => (
+              <div key={r.label} title={r.reason} style={{ display: 'flex', alignItems: 'center', gap: '4px', opacity: 0.4 }}>
+                <span style={{ width: '7px', height: '7px', borderRadius: '50%', border: '1px dashed #64748b' }} />
+                <span style={{ fontSize: '8px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>{r.label}</span>
+              </div>
             ))}
           </div>
-          {selectedNode.role !== 'mint' && (
-            <div>
-              <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Wallet Snapshot</p>
-              {snapshotLoading && <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Loading…</p>}
-              {snapshotError && <p style={{ margin: 0, fontSize: '10px', color: '#f87171', fontFamily: 'var(--font-plex-mono)' }}>{snapshotError}</p>}
-              {snapshot && (
-                <>
-                  <p style={{ margin: 0, fontSize: '10px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>Balance: {snapshot.balanceResolved ? `${snapshot.balanceSol!.toFixed(4)} SOL` : 'Unavailable'}</p>
-                  <p style={{ margin: '4px 0 0', fontSize: '10px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>Last activity: {snapshot.lastActivityResolved ? (snapshot.lastActivityTimestamp ?? snapshot.lastActivitySignature) : 'Unavailable'}</p>
-                </>
-              )}
+        </div>
+
+        {selectedNode && (
+          <div style={{ padding: '12px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(9,15,29,0.9)', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '420px', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <SolanaRoleGlyph role={selectedNode.role} size={13} color={SOLANA_CNODE_ROLE_COLOR[selectedNode.role]} />
+                <p style={{ margin: 0, fontSize: '9px', letterSpacing: '.12em', color: SOLANA_CNODE_ROLE_COLOR[selectedNode.role], fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{SOLANA_CNODE_ROLE_LABEL[selectedNode.role]}</p>
+              </div>
+              <button type="button" onClick={() => setSelectedId(null)} style={{ background: 'none', border: 'none', color: '#64748b', fontSize: '12px', cursor: 'pointer', padding: 0 }}>✕</button>
             </div>
-          )}
-          {connectedWallets.length > 0 && (
+            <p title={selectedNode.address} style={{ margin: 0, fontSize: '10px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', wordBreak: 'break-all' }}>{selectedNode.address}</p>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: SOLANA_CNODE_CONFIDENCE_COLOR[selectedNode.confidence], border: `1px solid ${SOLANA_CNODE_CONFIDENCE_COLOR[selectedNode.confidence]}55` }}>CONFIDENCE {selectedNode.confidence.toUpperCase()}</span>
+              <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: SOLANA_CNODE_RISK_COLOR[selectedNode.risk], border: `1px solid ${SOLANA_CNODE_RISK_COLOR[selectedNode.risk]}55` }}>RISK {selectedNode.risk.toUpperCase()}</span>
+            </div>
+
+            {selectedNode.role !== 'mint' && (
+              <div>
+                <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Wallet Snapshot</p>
+                {selectedBalance === null && <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Loading…</p>}
+                {selectedBalance === 'error' && <p style={{ margin: 0, fontSize: '10px', color: '#f87171', fontFamily: 'var(--font-plex-mono)' }}>Could not load wallet details.</p>}
+                {selectedBalance && selectedBalance !== 'error' && (
+                  <>
+                    <p style={{ margin: 0, fontSize: '10px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>Balance: {selectedBalance.balanceResolved ? `${selectedBalance.balanceSol!.toFixed(4)} SOL` : 'Unavailable'}</p>
+                    <p style={{ margin: '4px 0 0', fontSize: '10px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>Last activity: {selectedBalance.lastActivityResolved ? (selectedBalance.lastActivityTimestamp ?? selectedBalance.lastActivitySignature) : 'Unavailable'}</p>
+                  </>
+                )}
+              </div>
+            )}
+
+            {fundingEdge && (
+              <div>
+                <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Funding Source</p>
+                <p title={fundingEdge.from} style={{ margin: 0, fontSize: '10px', color: SOLANA_EDGE_COLOR[fundingEdge.relationship], fontFamily: 'var(--font-plex-mono)' }}>{fmt(fundingEdge.from)} — {SOLANA_EDGE_LABEL[fundingEdge.relationship]}</p>
+                <p style={{ margin: '4px 0 0', fontSize: '9.5px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{fundingEdge.evidence}</p>
+              </div>
+            )}
+
             <div>
-              <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Connected</p>
-              {connectedWallets.map((addr) => (
-                <p key={addr} title={addr} style={{ margin: 0, fontSize: '10px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono)' }}>{fmt(addr)}</p>
+              <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Evidence</p>
+              {selectedNode.evidence.map((ev, i) => (
+                <p key={i} style={{ margin: i === 0 ? 0 : '4px 0 0', fontSize: '10px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{ev}</p>
               ))}
             </div>
-          )}
-        </div>
-      )}
+
+            {connectedEdges.length > 0 && (
+              <div>
+                <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Connected Wallets</p>
+                {connectedEdges.map((e) => {
+                  const otherId = e.from === selectedNode.id ? e.to : e.from
+                  const other = nodesById.get(otherId)
+                  return (
+                    <div key={e.id} style={{ marginTop: '4px' }}>
+                      <p title={otherId} style={{ margin: 0, fontSize: '10px', color: SOLANA_CNODE_ROLE_COLOR[other?.role ?? 'mint'], fontFamily: 'var(--font-plex-mono)' }}>{fmt(otherId)} <span style={{ color: '#475569' }}>· {other ? SOLANA_CNODE_ROLE_LABEL[other.role] : 'Unknown'}</span></p>
+                      <p style={{ margin: 0, fontSize: '9px', color: SOLANA_EDGE_COLOR[e.relationship], fontFamily: 'var(--font-plex-mono)' }}>{SOLANA_EDGE_LABEL[e.relationship]}</p>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+      <style>{`
+        .sol-cluster-edge-flow { stroke-dasharray: 2 1.4; animation: solClusterFlow 2.4s linear infinite; }
+        @keyframes solClusterFlow { to { stroke-dashoffset: -20; } }
+        .sol-cluster-balance-pulse { animation: solClusterPulse 1.2s ease-in-out infinite; }
+        @keyframes solClusterPulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.9; } }
+        @media (max-width: 720px) { .sol-cluster-metrics { grid-template-columns: repeat(2,minmax(0,1fr)) !important; } }
+        @media (prefers-reduced-motion: reduce) { .sol-cluster-edge-flow, .sol-cluster-balance-pulse { animation: none; } }
+      `}</style>
     </div>
   )
 }
@@ -5682,18 +5925,12 @@ export default function TerminalTokenScanner() {
                                 </div>
                               ) : (
                                 <>
-                                  <div className="dev-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: '12px' }}>
-                                    <StatCard label="Evidence Count" value={String(cm.evidenceCount)} accent={cm.evidenceCount > 0 ? '#2dd4bf' : '#94a3b8'} dim={cm.evidenceCount === 0} />
-                                    <StatCard label="Cluster Confidence" value={cm.clusterConfidence.toUpperCase()} accent={cm.clusterConfidence === 'medium' ? '#34d399' : cm.clusterConfidence === 'low' ? '#fbbf24' : '#94a3b8'} dim={cm.clusterConfidence === 'none'} />
-                                    <StatCard label="Cluster Risk" value={cm.riskLevel === 'unknown' ? 'Unknown' : cm.riskLevel.toUpperCase()} accent={riskColor} dim={cm.riskLevel === 'unknown'} />
-                                    <StatCard label="Funding Depth" value={`${cm.fundingDepth} hop(s)`} accent="#5eead4" dim={cm.fundingDepth === 0} />
-                                  </div>
                                   <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
                                     <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Summary</p>
                                     <p style={{ margin: 0, fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{cm.summary}</p>
                                     {cm.riskLevel !== 'unknown' && <p style={{ margin: '8px 0 0', fontSize: '11px', color: riskColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{cm.riskReason}</p>}
                                   </div>
-                                  <SolanaClusterGraphPanel clusterMap={cm} />
+                                  <SolanaClusterGraphPanel key={cm.nodes.map((n) => n.id).join(',')} clusterMap={cm} creatorConfidence={sr.creatorConfidence} />
                                   <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>Scope: nodes/edges come from real, verified evidence — creator + funding-wallet trace (Helius Enhanced Transactions), mint/freeze authority (Alchemy/Solana RPC), and LP pool identity (Solana RPC). Shared-signer, shared-token-creation, shared-ATA-creation and shared-authority-history relationships across OTHER mints, plus metadata authority/treasury/liquidity-wallet/market-maker roles, are not attempted — verifying those would require indexing every candidate wallet&apos;s full transaction history or a Metaplex metadata read this codebase does not perform.</p>
                                 </>
                               )}
