@@ -1242,7 +1242,8 @@ function deepStub({ mint, supply, largest, dexPairs, sigPages, enhancedTx, enhan
   const { readFileSync } = await import('node:fs')
   const route = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
   check('route gates deep mode on an explicit body.deepDev === true check', route.includes('body.deepDev === true'))
-  check('route never defaults deep mode on for a normal scan', route.includes('scanSolanaTokenBeta(solanaInput, { deep: deepDev })'))
+  check('route gates deep cluster mode on an explicit body.deepCluster === true check', route.includes('body.deepCluster === true'))
+  check('route never defaults deep mode on for a normal scan (deep only turns on for deepDev or deepCluster)', route.includes('scanSolanaTokenBeta(solanaInput, { deep: deepDev || deepCluster, deepCluster })'))
 }
 {
   // UI: the deep-check trigger and result card read the real fields, and the button is the only
@@ -1509,7 +1510,8 @@ function cortexSr(overrides = {}) {
   check('Dev Control renders the same 5 tabs as EVM (Dev Map/Cluster Map/Supply Control/History/Watch Plan)', ['Dev Map', 'Cluster Map', 'Supply Control', 'History', 'Watch Plan'].every(t => devBlockRaw.includes(`'${t}'`)))
   check('Dev Control renders a Token Contract -> Origin Wallet -> Linked Wallets map, like EVM', devBlockRaw.includes('TOKEN CONTRACT') && devBlockRaw.includes('ORIGIN WALLET') && devBlockRaw.includes('LINKED WALLETS'))
   check('Dev Control renders a Likely Deployer evidence card with Address/Detection Confidence/Evidence Source/Network, matching EVM\'s 4-field layout', devBlockRaw.includes('LIKELY DEPLOYER') && devBlockRaw.includes('Detection Confidence') && devBlockRaw.includes('Evidence Source'))
-  check('Linked Wallets / Cluster Map are honestly marked unsupported, never a fabricated wallet list', devBlockRaw.includes('Not supported') && /wallet-clustering data source/i.test(devBlockRaw))
+  check('Cluster Map renders real evidence (clusterMap.evidenceCount/clusterConfidence/riskLevel) via Deep Cluster Check, never a fabricated wallet list', devBlockRaw.includes('sr.clusterMap') && devBlockRaw.includes('RUN DEEP CLUSTER CHECK'))
+  check('Cluster Map discloses its real scope limit (one funding hop only, no cross-mint shared-signer claims)', devBlockRaw.includes('does not have an indexer for'))
   check('History tab renders the real Supply Timeline (mint creation / pool identity / authority state) and its honest reconstruction gaps, not a placeholder', devBlockRaw.includes('sr.supplyTimeline') && devBlockRaw.includes("What can&apos;t be reconstructed"))
   check('Watch Plan reuses the real Cortex Risk Engine factors/nextActions, not fabricated data', devBlockRaw.includes('cxForDev.factors') && devBlockRaw.includes('cxForDev.nextActions'))
   check('Deep Creator Check trigger still lives inside the Dev Map tab', devBlockRaw.includes('RUN DEEP CREATOR CHECK'))

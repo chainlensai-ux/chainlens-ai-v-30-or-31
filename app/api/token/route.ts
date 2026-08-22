@@ -3576,7 +3576,11 @@ export async function POST(req: Request) {
       // only path that reaches Helius Enhanced Transactions (paid, more expensive) anywhere in
       // this engine; see lib/server/solana/deepCreatorAnalyzer.ts for the full disclosure.
       const deepDev = body.deepDev === true
-      const solanaResult = await scanSolanaTokenBeta(solanaInput, { deep: deepDev })
+      // DEEP CLUSTER MODE, DISCLOSED: same explicit-opt-in-only contract as deepDev above — the Dev
+      // tab's "Run Deep Cluster Check" button, never inferred. Traces one funding hop past the
+      // likely creator wallet; see lib/server/solana/clusterAnalyzer.ts for scope.
+      const deepCluster = body.deepCluster === true
+      const solanaResult = await scanSolanaTokenBeta(solanaInput, { deep: deepDev || deepCluster, deepCluster })
       // Safe to log verbatim — the audit object contains only booleans/numbers/labels, never the
       // RPC URL or any secret (see solanaTokenScannerBeta.ts's audit contract).
       console.info('[solana-beta] solanaTokenScannerAudit', solanaResult.solanaTokenScannerAudit)

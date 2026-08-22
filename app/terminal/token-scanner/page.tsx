@@ -3516,6 +3516,8 @@ export default function TerminalTokenScanner() {
   // handleScan itself, only from runSolanaDeepCreatorCheck below, on a button click.
   const [solanaDeepLoading, setSolanaDeepLoading] = useState(false)
   const [solanaDeepError, setSolanaDeepError] = useState<string | null>(null)
+  const [solanaClusterLoading, setSolanaClusterLoading] = useState(false)
+  const [solanaClusterError, setSolanaClusterError] = useState<string | null>(null)
   const [input, setInput]       = useState('')
   const [loading, setLoading]   = useState(false)
   const [result, setResult]     = useState<ScanResult | null>(null)
@@ -4016,6 +4018,31 @@ export default function TerminalTokenScanner() {
     } catch {
       setSolanaDeepError('Deep creator check failed. Try again shortly.')
     } finally { setSolanaDeepLoading(false) }
+  }
+
+  // DEEP CLUSTER MODE, DISCLOSED: called ONLY from the Cluster Map tab's "Run Deep Cluster Check"
+  // button — traces one funding hop past the likely creator wallet. See
+  // lib/server/solana/clusterAnalyzer.ts for exactly what relationship types this does and does
+  // not verify.
+  async function runSolanaDeepClusterCheck() {
+    if (!solanaResult || solanaClusterLoading) return
+    setSolanaClusterLoading(true)
+    setSolanaClusterError(null)
+    try {
+      const res = await fetch('/api/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contract: solanaResult.mintAddress, chain: 'solana', deepCluster: true }),
+      })
+      const json = await res.json().catch(() => null)
+      if (!res.ok || !json || 'status' in (json ?? {})) {
+        setSolanaClusterError(typeof json?.error === 'string' ? json.error : 'Deep cluster check failed. Try again shortly.')
+      } else {
+        setSolanaResult(json as SolanaBetaResult)
+      }
+    } catch {
+      setSolanaClusterError('Deep cluster check failed. Try again shortly.')
+    } finally { setSolanaClusterLoading(false) }
   }
 
   useEffect(() => {
@@ -5292,12 +5319,6 @@ export default function TerminalTokenScanner() {
                     ? { label: 'Likely matched', color: '#fbbf24', bg: 'rgba(251,191,36,.1)', border: 'rgba(251,191,36,.3)' }
                     : { label: 'Not run', color: '#94a3b8', bg: 'rgba(148,163,184,.08)', border: 'rgba(148,163,184,.25)' }
                   const tabStyle = (active: boolean) => ({ padding: '8px 12px', borderRadius: '10px', border: active ? '1px solid rgba(125,211,252,0.45)' : '1px solid rgba(148,163,184,0.2)', background: active ? 'rgba(14,29,47,0.95)' : 'rgba(8,14,28,0.6)', color: active ? '#7dd3fc' : '#94a3b8', fontSize: '10px', letterSpacing: '.10em' as const, textTransform: 'uppercase' as const, fontWeight: 700, fontFamily: 'var(--font-plex-mono)' })
-                  const notSupportedPanel = (title: string, reason: string) => (
-                    <div style={{ padding: '13px 15px', borderRadius: '11px', background: 'rgba(148,163,184,.04)', border: '1px solid rgba(148,163,184,.14)' }}>
-                      <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.14em', color: '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{title}</p>
-                      <p style={{ margin: 0, fontSize: '11px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{reason}</p>
-                    </div>
-                  )
                   return (
                     <>
                       {/* Hero — same shape as EVM's CORTEX Dev Control Read: score/100, verdict,
@@ -5325,7 +5346,7 @@ export default function TerminalTokenScanner() {
                       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: '10px', marginBottom: '14px' }}>
                         {([
                           ['Deployer', creatorResolved ? 'Likely matched' : dc && !dc.success ? 'Not resolved' : 'Not run'],
-                          ['Linked Wallets', 'Not supported'],
+                          ['Linked Wallets', sr.clusterMap ? (sr.clusterMap.evidenceCount > 0 ? `${sr.clusterMap.evidenceCount} verified` : 'None found') : 'Not run'],
                           ['Supply Control', !sr.authorityReadSucceeded ? 'Open check' : mintRevoked ? 'Revoked (fixed supply)' : 'Active (mutable supply)'],
                           ['Patterns', 'Not supported'],
                         ]).map(([k, v]) => (
@@ -5374,8 +5395,12 @@ export default function TerminalTokenScanner() {
                                   <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#475569', flexShrink: 0 }} />
                                   <span style={{ fontSize: '9px', letterSpacing: '.14em', color: '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>LINKED WALLETS</span>
                                 </div>
-                                <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Not supported</span>
-                                <span style={{ fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>No wallet-clustering data source connected</span>
+                                {sr.clusterMap && sr.clusterMap.fundingPath.length > 0 ? (
+                                  <span title={sr.clusterMap.fundingPath[0]} style={{ fontSize: '10px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', background: 'rgba(45,212,191,.08)', border: '1px solid rgba(45,212,191,.18)', borderRadius: '6px', padding: '3px 7px' }}>{fmtAddr(sr.clusterMap.fundingPath[0])}</span>
+                                ) : (
+                                  <span style={{ fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>{sr.clusterMap ? 'No verified wallet relationships found' : 'Deep Cluster Check not run'}</span>
+                                )}
+                                <span style={{ fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>{sr.clusterMap ? `${sr.clusterMap.evidenceCount} verified relationship(s)` : 'Run Deep Cluster Check from the Cluster Map tab'}</span>
                               </div>
                             </div>
 
@@ -5422,7 +5447,18 @@ export default function TerminalTokenScanner() {
                               <p style={{ margin: 0, fontSize: '11px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)' }}>Deep Creator Check ran but did not resolve a likely creator wallet — open check.</p>
                             )}
 
-                            {notSupportedPanel('Linked Wallet Cluster', 'Not yet supported — no wallet-relationship or clustering data source is connected for Solana. This is different from EVM\'s transfer-graph analysis, which this codebase does not replicate here.')}
+                            {sr.clusterMap ? (
+                              <div style={{ padding: '13px 15px', borderRadius: '11px', background: 'rgba(45,212,191,.04)', border: '1px solid rgba(45,212,191,.16)' }}>
+                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.14em', color: '#2dd4bf', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Linked Wallet Cluster</p>
+                                <p style={{ margin: 0, fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{sr.clusterMap.summary}</p>
+                                {sr.clusterMap.evidenceCount > 0 && <p style={{ margin: '6px 0 0', fontSize: '10px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)' }}>See the Cluster Map tab for the full relationship graph and risk read.</p>}
+                              </div>
+                            ) : (
+                              <div style={{ padding: '13px 15px', borderRadius: '11px', background: 'rgba(148,163,184,.04)', border: '1px solid rgba(148,163,184,.14)' }}>
+                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.14em', color: '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Linked Wallet Cluster</p>
+                                <p style={{ margin: 0, fontSize: '11px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>Not run yet — open the Cluster Map tab and run Deep Cluster Check to trace a real, evidence-backed funding path for this mint&apos;s likely creator wallet.</p>
+                              </div>
+                            )}
                           </div>
                         )}
 
@@ -5454,7 +5490,54 @@ export default function TerminalTokenScanner() {
                           )
                         })()}
 
-                        {devControlTab === 'cluster-map' && notSupportedPanel('Cluster Map', 'Not yet supported — wallet-cluster mapping requires a wallet-relationship data source this codebase does not have access to for Solana.')}
+                        {devControlTab === 'cluster-map' && (() => {
+                          const cm = sr.clusterMap
+                          const riskColor = cm?.riskLevel === 'elevated' ? '#fb923c' : cm?.riskLevel === 'standard' ? '#34d399' : '#94a3b8'
+                          return (
+                            <div style={{ display: 'grid', gap: '12px' }}>
+                              {!cm ? (
+                                <div style={{ padding: '13px 15px', borderRadius: '11px', border: '1px dashed rgba(45,212,191,0.30)', background: 'rgba(45,212,191,0.03)' }}>
+                                  <p style={{ margin: '0 0 8px', fontSize: '11px', color: '#8ea0b5', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>Traces the mint&apos;s likely creator wallet (resolving it first via Deep Creator Check if needed), then one further hop: who first funded that wallet with SOL. Real, verified relationships only — never a fabricated wallet graph.</p>
+                                  <button
+                                    type="button"
+                                    onClick={() => { void runSolanaDeepClusterCheck() }}
+                                    disabled={solanaClusterLoading}
+                                    style={{ padding: '8px 16px', borderRadius: '10px', border: '1px solid rgba(45,212,191,0.45)', background: solanaClusterLoading ? 'rgba(45,212,191,0.08)' : 'linear-gradient(135deg,rgba(45,212,191,0.20),rgba(96,165,250,0.14))', color: '#99f6e4', fontSize: '11px', fontWeight: 700, letterSpacing: '0.06em', fontFamily: 'var(--font-plex-mono)', cursor: solanaClusterLoading ? 'default' : 'pointer' }}
+                                  >
+                                    {solanaClusterLoading ? 'RUNNING DEEP CLUSTER CHECK…' : 'RUN DEEP CLUSTER CHECK →'}
+                                  </button>
+                                  {solanaClusterError && <p style={{ margin: '10px 0 0', fontSize: '11px', color: '#f87171' }}>{solanaClusterError}</p>}
+                                </div>
+                              ) : (
+                                <>
+                                  <div className="dev-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: '12px' }}>
+                                    <StatCard label="Evidence Count" value={String(cm.evidenceCount)} accent={cm.evidenceCount > 0 ? '#2dd4bf' : '#94a3b8'} dim={cm.evidenceCount === 0} />
+                                    <StatCard label="Cluster Confidence" value={cm.clusterConfidence.toUpperCase()} accent={cm.clusterConfidence === 'medium' ? '#34d399' : cm.clusterConfidence === 'low' ? '#fbbf24' : '#94a3b8'} dim={cm.clusterConfidence === 'none'} />
+                                    <StatCard label="Risk Level" value={cm.riskLevel === 'unknown' ? 'Unknown' : cm.riskLevel.toUpperCase()} accent={riskColor} dim={cm.riskLevel === 'unknown'} />
+                                    <StatCard label="Funding Path Depth" value={`${cm.fundingPath.length} wallet(s)`} accent="#5eead4" dim={cm.fundingPath.length === 0} />
+                                  </div>
+                                  <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
+                                    <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Funding Path</p>
+                                    <p style={{ margin: 0, fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{cm.summary}</p>
+                                    {cm.riskLevel !== 'unknown' && <p style={{ margin: '8px 0 0', fontSize: '11px', color: riskColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{cm.riskReason}</p>}
+                                  </div>
+                                  {cm.edges.length > 0 && (
+                                    <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
+                                      <p style={{ margin: '0 0 8px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Relationship Graph</p>
+                                      {cm.edges.map((e, i) => (
+                                        <div key={i} style={{ marginTop: i === 0 ? 0 : '8px' }}>
+                                          <p style={{ margin: 0, fontSize: '10.5px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono)' }}>{fmtAddr(e.from)} → {fmtAddr(e.to)} <span style={{ color: '#64748b' }}>({e.relationship.replace(/_/g, ' ')})</span></p>
+                                          <p style={{ margin: '2px 0 0', fontSize: '10px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{e.evidence}</p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                  <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>Scope: this traces ONE funding hop past the likely creator wallet. Shared-signer, shared-LP-creation, shared-ATA-creation and shared-authority-history relationships across OTHER mints are not attempted — verifying those would require indexing every candidate wallet&apos;s full transaction history, which this codebase does not have an indexer for.</p>
+                                </>
+                              )}
+                            </div>
+                          )
+                        })()}
 
                         {devControlTab === 'history' && (() => {
                           const tl = sr.supplyTimeline

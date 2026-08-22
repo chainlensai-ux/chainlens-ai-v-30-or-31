@@ -450,3 +450,116 @@ export async function fetchHeliusCreatorTrace(mintAddress: string, fetchImpl: Fe
     }
   }
 }
+
+// SOLANA WALLET FUNDING TRACE, DISCLOSED (Cluster Map / Linked Wallets follow-up, Deep Mode only).
+//
+// Same cost/opt-in contract as fetchHeliusCreatorTrace above — never called outside an explicit
+// Deep Cluster Check action. Given a WALLET address (typically the likely creator wallet already
+// resolved by fetchHeliusCreatorTrace), this paginates that wallet's OWN signature history back to
+// its earliest found transaction, then reads the Enhanced Transactions parse of that one signature
+// for its `nativeTransfers` array to find the first SOL transfer INTO the wallet — that sender is
+// real, on-chain evidence of a "funding wallet" relationship, not a guess.
+//
+// SCOPE, DISCLOSED: this resolves exactly ONE hop (who funded this wallet first, in SOL). It does
+// NOT attempt shared-signer / shared-fee-payer / shared-token-creation / shared-LP-creation /
+// shared-ATA-creation / shared-authority-history relationships across OTHER mints — those would
+// require indexing the full transaction history of every related wallet across the entire chain,
+// which is unbounded and not safely attempted without a dedicated indexer this codebase does not
+// have. See clusterAnalyzer.ts for how this one real hop is combined with the creator trace into a
+// disclosed, honestly-scoped cluster read.
+export type SolanaWalletFundingTraceResult = {
+  called: boolean
+  success: boolean
+  pagesFetched: number
+  reachedGenesis: boolean
+  resolved: {
+    walletEarliestSignature: string | null
+    walletEarliestTimestamp: string | null
+    fundingWallet: string | null
+    fundingAmountSol: number | null
+  }
+  errorReason: string | null
+}
+
+function emptyWalletFundingTraceResult(called: boolean, errorReason: string | null, pagesFetched = 0): SolanaWalletFundingTraceResult {
+  return {
+    called, success: false, pagesFetched, reachedGenesis: false,
+    resolved: { walletEarliestSignature: null, walletEarliestTimestamp: null, fundingWallet: null, fundingAmountSol: null },
+    errorReason,
+  }
+}
+
+export async function fetchHeliusWalletFundingTrace(walletAddress: string, fetchImpl: FetchImpl): Promise<SolanaWalletFundingTraceResult> {
+  if (!isHeliusConfigured()) return emptyWalletFundingTraceResult(false, 'Helius Solana enrichment is not enabled (ENABLE_HELIUS_SOLANA is not "true", or HELIUS_API_KEY is missing).')
+  const apiKey = getHeliusApiKey()
+  if (!apiKey) return emptyWalletFundingTraceResult(false, 'HELIUS_API_KEY missing.')
+
+  const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`
+  let before: string | undefined
+  let earliestSignature: string | null = null
+  let earliestBlockTime: number | null = null
+  let pagesFetched = 0
+  let reachedGenesis = false
+
+  try {
+    for (let page = 1; page <= DEEP_CREATOR_MAX_SIGNATURE_PAGES; page++) {
+      const params = before ? [walletAddress, { limit: DEEP_CREATOR_SIGNATURE_PAGE_LIMIT, before }] : [walletAddress, { limit: DEEP_CREATOR_SIGNATURE_PAGE_LIMIT }]
+      const res = await fetchImpl(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params }),
+        signal: AbortSignal.timeout(9000),
+      })
+      if (!res.ok) return earliestSignature ? { ...emptyWalletFundingTraceResult(true, null, pagesFetched), errorReason: `helius_wallet_sig_page_http_${res.status}` } : emptyWalletFundingTraceResult(true, `helius_wallet_sig_page_http_${res.status}`, pagesFetched)
+      const json = await res.json().catch(() => null) as { result?: Array<{ signature?: string; blockTime?: number | null }>; error?: { message?: string } } | null
+      if (!json) break
+      if (json.error) return emptyWalletFundingTraceResult(true, `helius_wallet_sig_page_rpc_error:${json.error.message ?? 'unknown'}`, pagesFetched)
+      const rows = Array.isArray(json.result) ? json.result : []
+      if (rows.length === 0) { reachedGenesis = pagesFetched > 0; break }
+      pagesFetched++
+      const last = rows[rows.length - 1]
+      if (typeof last?.signature === 'string') { earliestSignature = last.signature; earliestBlockTime = typeof last.blockTime === 'number' ? last.blockTime : null }
+      before = last?.signature
+      if (rows.length < DEEP_CREATOR_SIGNATURE_PAGE_LIMIT) { reachedGenesis = true; break }
+    }
+  } catch {
+    return earliestSignature ? { ...emptyWalletFundingTraceResult(true, null, pagesFetched), errorReason: 'helius_wallet_sig_page_unreachable' } : emptyWalletFundingTraceResult(true, 'helius_wallet_sig_page_unreachable', pagesFetched)
+  }
+
+  if (!earliestSignature) return emptyWalletFundingTraceResult(true, 'no_signature_history_found', pagesFetched)
+  const earliestTimestamp = earliestBlockTime != null ? new Date(earliestBlockTime * 1000).toISOString() : null
+
+  try {
+    const res = await fetchImpl(`https://api.helius.xyz/v0/transactions/?api-key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transactions: [earliestSignature] }),
+      signal: AbortSignal.timeout(9000),
+    })
+    if (!res.ok) {
+      return {
+        called: true, success: false, pagesFetched, reachedGenesis,
+        resolved: { walletEarliestSignature: earliestSignature, walletEarliestTimestamp: earliestTimestamp, fundingWallet: null, fundingAmountSol: null },
+        errorReason: `helius_enhanced_http_${res.status}`,
+      }
+    }
+    const parsed = await res.json().catch(() => null) as unknown
+    const tx = Array.isArray(parsed) ? parsed[0] as Record<string, unknown> | undefined : undefined
+    const transfers = Array.isArray(tx?.nativeTransfers) ? tx.nativeTransfers as Array<Record<string, unknown>> : []
+    const incoming = transfers.find((t) => typeof t.toUserAccount === 'string' && t.toUserAccount === walletAddress && typeof t.fromUserAccount === 'string' && t.fromUserAccount !== walletAddress)
+    const fundingWallet = incoming && typeof incoming.fromUserAccount === 'string' ? incoming.fromUserAccount : null
+    const lamports = incoming && typeof incoming.amount === 'number' ? incoming.amount : null
+    const fundingAmountSol = lamports != null ? lamports / 1_000_000_000 : null
+    return {
+      called: true, success: fundingWallet != null, pagesFetched, reachedGenesis,
+      resolved: { walletEarliestSignature: earliestSignature, walletEarliestTimestamp: earliestTimestamp, fundingWallet, fundingAmountSol },
+      errorReason: fundingWallet != null ? null : 'helius_enhanced_no_incoming_native_transfer_in_response',
+    }
+  } catch {
+    return {
+      called: true, success: false, pagesFetched, reachedGenesis,
+      resolved: { walletEarliestSignature: earliestSignature, walletEarliestTimestamp: earliestTimestamp, fundingWallet: null, fundingAmountSol: null },
+      errorReason: 'helius_enhanced_unreachable',
+    }
+  }
+}

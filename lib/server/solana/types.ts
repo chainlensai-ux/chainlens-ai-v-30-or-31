@@ -21,6 +21,7 @@ import type { SolanaDeepCreatorAnalysis } from './deepCreatorAnalyzer.ts'
 import type { SolanaSupplyControl } from './supplyControlAnalyzer.ts'
 import type { SolanaWatchItem } from './watchPlanAnalyzer.ts'
 import type { SolanaSupplyTimeline } from './supplyTimelineAnalyzer.ts'
+import type { SolanaClusterMap } from './clusterAnalyzer.ts'
 
 export type SolanaUnsupportedCheck = {
   check: string
@@ -245,6 +246,8 @@ export type SolanaBetaScanResult = {
   watchPlan: SolanaWatchItem[]
   /** Real, honestly-scoped mint/pool history — see supplyTimelineAnalyzer.ts for what can and cannot be reconstructed. */
   supplyTimeline: SolanaSupplyTimeline
+  /** null unless opts.deepCluster was explicitly requested — see clusterAnalyzer.ts for scope. */
+  clusterMap: SolanaClusterMap | null
 }
 
 export type SolanaBetaScanFailure = {

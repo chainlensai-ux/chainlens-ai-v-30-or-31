@@ -28,6 +28,7 @@ import { scoreSolanaBeta } from './riskEngine.ts'
 import { buildSolanaSupplyControl } from './supplyControlAnalyzer.ts'
 import { buildSolanaWatchPlan } from './watchPlanAnalyzer.ts'
 import { buildSolanaSupplyTimeline } from './supplyTimelineAnalyzer.ts'
+import { analyzeSolanaCluster, type SolanaClusterMap } from './clusterAnalyzer.ts'
 import {
   SOLANA_UNSUPPORTED_CHECKS,
   emptySolanaAudit,
@@ -44,7 +45,7 @@ import {
  */
 export async function runSolanaProviderMerge(
   mintAddress: string,
-  opts: { fetchImpl?: RpcFetch; rpcUrl?: string | null; deep?: boolean } = {},
+  opts: { fetchImpl?: RpcFetch; rpcUrl?: string | null; deep?: boolean; deepCluster?: boolean } = {},
 ): Promise<SolanaBetaScanResult | SolanaBetaScanFailure> {
   const fetchImpl = opts.fetchImpl ?? fetch
   const enabled = isSolanaBetaFeatureEnabled()
@@ -99,10 +100,22 @@ export async function runSolanaProviderMerge(
   evidenceGaps.push(...creator.evidenceGaps)
 
   // ── 5b. Deep Mode creator trace — EXPLICIT OPT-IN ONLY, never run by default ──
-  // See deepCreatorAnalyzer.ts's header: this is the ONLY path that calls Helius Enhanced
-  // Transactions (paid, more expensive) anywhere in this engine, and only when opts.deep is true.
+  // See deepCreatorAnalyzer.ts's header: this is the ONLY OTHER path (besides 5c below) that calls
+  // Helius Enhanced Transactions (paid, more expensive) anywhere in this engine, and only when
+  // opts.deep is true.
   const deepCreator = opts.deep === true ? await analyzeSolanaDeepCreator(mintAddress, fetchImpl) : null
   if (deepCreator) evidenceGaps.push(...deepCreator.evidenceGaps)
+
+  // ── 5c. Deep Mode cluster/funding trace — EXPLICIT OPT-IN ONLY, one further hop past the
+  // creator wallet. Requires the creator trace above (runs it if not already present via opts.deep
+  // so a caller only needs to pass opts.deepCluster). See clusterAnalyzer.ts's header for exactly
+  // what relationship types are and are not attempted.
+  let clusterMap: SolanaClusterMap | null = null
+  if (opts.deepCluster === true) {
+    const creatorTraceForCluster = deepCreator?.creatorTrace ?? (await analyzeSolanaDeepCreator(mintAddress, fetchImpl)).creatorTrace
+    clusterMap = await analyzeSolanaCluster({ mintAddress, creatorTrace: creatorTraceForCluster, fetchImpl })
+    if (clusterMap.evidenceCount === 0) evidenceGaps.push('No verified wallet relationships found for this mint\'s creator wallet.')
+  }
 
   // ── 6. GoldRush / Covalent (no verified Solana endpoint — cleanly unavailable) ─
   const goldrushOrCovalent = solanaGoldrushEnrichment()
@@ -244,5 +257,6 @@ export async function runSolanaProviderMerge(
     supplyControl,
     watchPlan,
     supplyTimeline,
+    clusterMap,
   }
 }

@@ -59,7 +59,7 @@ import type { SolanaBetaScanResult, SolanaBetaScanFailure } from './solana/types
  */
 export async function scanSolanaTokenBeta(
   mintAddress: string,
-  opts: { fetchImpl?: RpcFetch; rpcUrl?: string | null; deep?: boolean } = {},
+  opts: { fetchImpl?: RpcFetch; rpcUrl?: string | null; deep?: boolean; deepCluster?: boolean } = {},
 ): Promise<SolanaBetaScanResult | SolanaBetaScanFailure> {
   return runSolanaProviderMerge(mintAddress, opts)
 }
