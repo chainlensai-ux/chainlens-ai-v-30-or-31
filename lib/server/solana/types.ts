@@ -62,6 +62,8 @@ export type SolanaMarketData = {
   tokenSymbol: string | null
   /** Pair age, human-readable (e.g. "42d"), derived from DexScreener's pairCreatedAt. Null if absent. */
   pairAgeLabel: string | null
+  /** Same real pairCreatedAt evidence as pairAgeLabel, kept as a whole-day integer for scoring (Token Maturity category in solanaCortexRisk.ts) — never re-derived from the label string. Null if absent. */
+  pairAgeDays: number | null
   /** Real transaction counts from the same DexScreener pair response's txns.h24 field. */
   txns24h: { buys: number | null; sells: number | null }
   /** Real social links from the same DexScreener pair response's info.websites/info.socials. */

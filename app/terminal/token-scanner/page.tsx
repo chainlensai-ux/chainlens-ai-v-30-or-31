@@ -13,7 +13,7 @@ import type { SolanaBetaScanResult } from '@/lib/server/solanaTokenScannerBeta'
 // the full disclosure on why a capped, clearly-labeled score replaced the earlier "no score shown"
 // design (this task explicitly permits it). Client-safe, no env var, no secret.
 import { computeSolanaConfidenceScore } from '@/lib/solanaConfidenceScore'
-import { computeSolanaCortexRisk } from '@/lib/solanaCortexRisk'
+import { computeSolanaCortexRisk, classifySolanaExtensionRisk } from '@/lib/solanaCortexRisk'
 
 // Type-only import above is erased at build time, so no server module is bundled into the client.
 type SolanaBetaResult = SolanaBetaScanResult
@@ -5611,7 +5611,7 @@ export default function TerminalTokenScanner() {
                             <RiskGaugeCircle score={cx.score} color={cx.verdictColor} />
                           </div>
                           <div style={{ flex: 1, minWidth: '200px', display: 'flex', flexDirection: 'column', gap: '11px' }}>
-                            <div style={{ fontSize: '9px', letterSpacing: '.18em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>SOLANA CORTEX RISK ENGINE</div>
+                            <div style={{ fontSize: '9px', letterSpacing: '.18em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>SOLANA CORTEX RISK ENGINE · INVESTMENT RISK</div>
                             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                               <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: cx.verdictColor, background: `${cx.verdictColor}14`, border: `1px solid ${cx.verdictColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{cx.verdict}</span>
                               <span style={{ padding: '5px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.10em', color: confColor(cx.overallConfidence), background: `${confColor(cx.overallConfidence)}14`, border: `1px solid ${confColor(cx.overallConfidence)}44`, fontFamily: 'var(--font-plex-mono)' }}>{cx.overallConfidence.toUpperCase()} OVERALL CONFIDENCE</span>
@@ -5622,6 +5622,24 @@ export default function TerminalTokenScanner() {
                             <p style={{ margin: 0, fontSize: '11.5px', color: '#9db3c8', lineHeight: 1.65, fontFamily: 'var(--font-plex-mono)' }}>{cx.reasoning}</p>
                           </div>
                         </div>
+                      </div>
+
+                      {/* SECURITY vs INVESTMENT RISK, DISCLOSED: two independently computed reads —
+                          securityRead comes ONLY from Contract Security + Supply Control (can this
+                          contract be manipulated at the protocol level), while the hero verdict above
+                          is the full 9-category composite, capped by token age / evidence depth /
+                          creator verification. A token can score cleanly here while still reading as
+                          Speculative or worse above — that gap IS the signal: clean code, unproven
+                          track record. See lib/solanaCortexRisk.ts's own header for the full rationale. */}
+                      <div style={{ padding: '14px 18px', borderRadius: '14px', background: `linear-gradient(160deg, ${cx.securityRead.verdictColor}10, rgba(6,10,20,0.7))`, border: `1px solid ${cx.securityRead.verdictColor}30`, display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+                        <div>
+                          <p style={{ margin: '0 0 5px', fontSize: '9px', letterSpacing: '.16em', color: '#5b7590', fontFamily: 'var(--font-plex-mono)' }}>CONTRACT SECURITY (Mint/Freeze Authority + Token-2022 Extensions Only)</p>
+                          <span style={{ padding: '4px 12px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '.08em', color: cx.securityRead.verdictColor, background: `${cx.securityRead.verdictColor}18`, border: `1px solid ${cx.securityRead.verdictColor}44`, fontFamily: 'var(--font-plex-mono)' }}>{cx.securityRead.verdict}</span>
+                          <span style={{ marginLeft: '8px', fontSize: '11px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)' }}>{cx.securityRead.score}/{cx.securityRead.scoreMax} ({cx.securityRead.percent}%)</span>
+                        </div>
+                        {cx.verdict !== cx.securityRead.verdict && (
+                          <p style={{ margin: 0, fontSize: '10.5px', color: '#7c8aa0', lineHeight: 1.5, flex: 1, minWidth: '220px' }}>Contract security and overall investment risk disagree here — the contract itself reads {cx.securityRead.verdict.toLowerCase()}, but the overall verdict is {cx.verdict.toLowerCase()} once token age, evidence depth, and creator verification are weighed in.</p>
+                        )}
                       </div>
 
                       {/* Evidence Summary — live counts, matching the requested Bloomberg-style readout. */}
@@ -5861,7 +5879,7 @@ export default function TerminalTokenScanner() {
                       {/* Tabs — same five as EVM. Dev Map/Supply Control/Watch Plan/History are
                           real, Solana-native content. Cluster Map is honestly unsupported. */}
                       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
-                        {([['dev-map', 'Dev Map'], ['cluster-map', 'Cluster Map'], ['supply-control', 'Supply Control'], ['history', 'History'], ['watch-plan', 'Watch Plan']] as Array<[typeof devControlTab, string]>).map(([id, label]) => (
+                        {([['dev-map', 'Dev Map'], ['cluster-map', 'Cluster Map'], ['supply-control', 'Supply Intelligence'], ['history', 'History'], ['watch-plan', 'Watch Plan']] as Array<[typeof devControlTab, string]>).map(([id, label]) => (
                           <button key={id} type="button" onClick={() => setDevControlTab(id)} style={tabStyle(devControlTab === id)}>{label}</button>
                         ))}
                       </div>
@@ -5964,9 +5982,71 @@ export default function TerminalTokenScanner() {
                         )}
 
                         {devControlTab === 'supply-control' && (() => {
+                          // SUPPLY INTELLIGENCE, DISCLOSED (Supply Control -> Supply Intelligence
+                          // redesign): conclusions FIRST, raw values SECOND — the four questions
+                          // that actually matter (can supply inflate, can wallets be frozen, do
+                          // Token-2022 extensions introduce risk, is tokenomics permanently fixed)
+                          // answered in plain language before the underlying numbers. Every
+                          // conclusion is a direct read of already-gathered evidence
+                          // (supplyControlAnalyzer.ts / tokenExtensions.ts) — no new data, no
+                          // fabricated verdict; "Unknown" is a real, honest answer when the
+                          // authority read itself failed, never guessed either way.
                           const sc = sr.supplyControl
+                          const extRisk = classifySolanaExtensionRisk(sc.extensions)
+                          const freezeKnown = sr.authorityReadSucceeded
+                          type Conclusion = { question: string; answer: string; verdict: 'safe' | 'risk' | 'unknown'; detail: string }
+                          const conclusions: Conclusion[] = [
+                            {
+                              question: 'Can supply inflate?',
+                              answer: sc.inflationPossible == null ? 'Unknown' : sc.inflationPossible ? 'Yes — inflatable' : 'No — fixed forever',
+                              verdict: sc.inflationPossible == null ? 'unknown' : sc.inflationPossible ? 'risk' : 'safe',
+                              detail: sc.inflationReason,
+                            },
+                            {
+                              question: 'Can wallets be frozen?',
+                              answer: !freezeKnown ? 'Unknown' : sr.freezeAuthority ? 'Yes — freeze authority active' : 'No — freeze authority revoked',
+                              verdict: !freezeKnown ? 'unknown' : sr.freezeAuthority ? 'risk' : 'safe',
+                              detail: !freezeKnown
+                                ? 'Freeze authority could not be read from the Solana RPC for this mint — whether accounts can be frozen is unknown, not confirmed either way.'
+                                : sr.freezeAuthority
+                                  ? `Freeze authority ${sr.freezeAuthority} is still active on this mint — that wallet can freeze any holder's token account at any time.`
+                                  : 'Freeze authority has been revoked (set to null) — no wallet can freeze any holder\'s token account. Verified directly from the mint account, not inferred.',
+                            },
+                            {
+                              question: 'Do Token-2022 extensions introduce risk?',
+                              answer: !sc.extensionsResolved ? (sc.tokenProgram === 'spl-token' ? 'No — classic SPL token' : 'Unknown') : extRisk.severe.length > 0 ? `Yes — ${extRisk.severe.length} severe extension${extRisk.severe.length === 1 ? '' : 's'}` : extRisk.moderate.length > 0 ? `Moderate — ${extRisk.moderate.length} extension${extRisk.moderate.length === 1 ? '' : 's'}` : 'No — none present or none risky',
+                              verdict: !sc.extensionsResolved ? (sc.tokenProgram === 'spl-token' ? 'safe' : 'unknown') : extRisk.severe.length > 0 ? 'risk' : extRisk.moderate.length > 0 ? 'unknown' : 'safe',
+                              detail: !sc.extensionsResolved
+                                ? (sc.tokenProgram === 'spl-token' ? 'Token Program is spl-token (classic) — Token-2022 extensions do not exist on this mint.' : 'Token Program could not be identified — extension support is unknown.')
+                                : extRisk.severe.length > 0
+                                  ? `Severe: ${extRisk.severe.map((e) => e.label).join(', ')} — can move, block, or hide token activity without holder consent.`
+                                  : extRisk.moderate.length > 0
+                                    ? `Moderate: ${extRisk.moderate.map((e) => e.label).join(', ')} — changes economics or default behavior but is not a seizure vector.`
+                                    : sc.extensions.length > 0
+                                      ? `Present, non-risky: ${sc.extensions.map((e) => e.label).join(', ')}.`
+                                      : 'Token Program is spl-token-2022, but no extensions are present on this mint — it behaves like a classic SPL token.',
+                            },
+                            {
+                              question: 'Is tokenomics permanently fixed?',
+                              answer: sc.supplyPermanentlyFixed == null ? 'Unknown' : sc.supplyPermanentlyFixed ? 'Yes — permanently fixed' : 'No — can still change',
+                              verdict: sc.supplyPermanentlyFixed == null ? 'unknown' : sc.supplyPermanentlyFixed ? 'safe' : 'risk',
+                              detail: sc.supplyFixedReason,
+                            },
+                          ]
+                          const verdictColor = (v: Conclusion['verdict']) => v === 'safe' ? '#34d399' : v === 'risk' ? '#f87171' : '#94a3b8'
                           return (
-                            <div style={{ display: 'grid', gap: '12px' }}>
+                            <div style={{ display: 'grid', gap: '14px' }}>
+                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(260px,1fr))', gap: '10px' }}>
+                                {conclusions.map((c) => (
+                                  <div key={c.question} style={{ padding: '14px 16px', borderRadius: '13px', background: `linear-gradient(160deg, ${verdictColor(c.verdict)}0e, rgba(6,10,20,0.75))`, border: `1px solid ${verdictColor(c.verdict)}35` }}>
+                                    <p style={{ margin: '0 0 7px', fontSize: '10px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', fontWeight: 700 }}>{c.question}</p>
+                                    <p style={{ margin: '0 0 8px', fontSize: '15px', fontWeight: 800, color: verdictColor(c.verdict), fontFamily: 'var(--font-plex-mono)' }}>{c.answer}</p>
+                                    <p style={{ margin: 0, fontSize: '10.5px', color: '#7c8aa0', lineHeight: 1.55, fontFamily: 'var(--font-plex-mono)' }}>{c.detail}</p>
+                                  </div>
+                                ))}
+                              </div>
+
+                              <p style={{ margin: '4px 0 0', fontSize: '9px', letterSpacing: '.14em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Raw Evidence</p>
                               <div className="dev-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: '12px' }}>
                                 <StatCard label="Current Supply" value={sc.currentSupply != null ? sc.currentSupply.toLocaleString('en-US') : 'Unavailable'} accent="#5eead4" dim={sc.currentSupply == null} />
                                 <StatCard label="Max Supply" value={sc.maxSupply != null ? sc.maxSupply.toLocaleString('en-US') : 'No fixed cap'} accent={sc.maxSupply != null ? '#34d399' : '#94a3b8'} dim={sc.maxSupply == null} />
@@ -5977,12 +6057,7 @@ export default function TerminalTokenScanner() {
                                 <StatCard label="On-Chain Activity" value={sr.helius.called && sr.helius.success ? `${sr.helius.resolved.recentTransfers ?? 0} signatures` : 'Not available'} accent={sr.helius.called && sr.helius.success ? '#5eead4' : '#94a3b8'} dim={!(sr.helius.called && sr.helius.success)} />
                               </div>
                               <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
-                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Why</p>
-                                <p style={{ margin: 0, fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>{sc.inflationReason}</p>
-                                <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>{sc.supplyFixedReason}</p>
-                              </div>
-                              <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
-                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Token-2022 Extensions</p>
+                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Token-2022 Extensions (Raw)</p>
                                 {sc.extensionExplanations.map((line, i) => (
                                   <p key={i} style={{ margin: i === 0 ? 0 : '6px 0 0', fontSize: '11px', color: sc.extensions.length > 0 ? '#fde68a' : '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>{line}</p>
                                 ))}

@@ -56,14 +56,9 @@ export async function analyzeSolanaMarket(mintAddress: string, fetchImpl: RpcFet
     const topTxns24h = (top.txns as Record<string, unknown> | undefined)?.h24 as Record<string, unknown> | undefined
     const txns24h = { buys: num(topTxns24h?.buys), sells: num(topTxns24h?.sells) }
     const pairCreatedAt = num(top.pairCreatedAt)
-    const pairAgeLabel = pairCreatedAt != null
-      ? (() => {
-          const days = Math.floor((Date.now() - pairCreatedAt) / 86_400_000)
-          if (days < 0) return null
-          if (days < 1) return '<1d'
-          return `${days}d`
-        })()
-      : null
+    const pairAgeDaysRaw = pairCreatedAt != null ? Math.floor((Date.now() - pairCreatedAt) / 86_400_000) : null
+    const pairAgeDays = pairAgeDaysRaw != null && pairAgeDaysRaw >= 0 ? pairAgeDaysRaw : null
+    const pairAgeLabel = pairAgeDays != null ? (pairAgeDays < 1 ? '<1d' : `${pairAgeDays}d`) : null
 
     // Social links from the SAME pair response — see SolanaMarketData.socials's own header.
     const validUrl = (v: unknown): string | null => (typeof v === 'string' && /^https?:\/\//i.test(v.trim()) ? v.trim() : null)
@@ -104,6 +99,7 @@ export async function analyzeSolanaMarket(mintAddress: string, fetchImpl: RpcFet
         tokenName,
         tokenSymbol,
         pairAgeLabel,
+        pairAgeDays,
         txns24h,
         socials: { website, twitter, telegram, discord, reddit },
       },

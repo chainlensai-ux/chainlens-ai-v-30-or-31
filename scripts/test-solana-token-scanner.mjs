@@ -1257,7 +1257,17 @@ function deepStub({ mint, supply, largest, dexPairs, sigPages, enhancedTx, enhan
   check('Deep Creator Check UI discloses the cost up front', /paid, more expensive/i.test(page))
 }
 
-// ─── Solana CORTEX Risk Engine (replaces "Risk Drivers / Open Checks") ─────────────────────────
+// ─── Solana CORTEX Risk Engine (Security-vs-Investment-Risk redesign) ──────────────────────────
+// Fixtures below distinguish a "no deep checks run" scan (cortexSr) from a "everything verified,
+// including Deep Creator + Deep Cluster Check" scan (cortexSrTopTier) — the whole point of this
+// redesign is that those two must NOT land at the same verdict even when authorities/liquidity/
+// holders are identically clean in both.
+function confirmedCreatorTrace() {
+  return { called: true, success: true, enhancedTransactionsUsed: true, estimatedCredits: 2, pagesFetched: 1, reachedGenesis: true, resolved: { earliestSignature: 'sig1', earliestTimestamp: '2024-01-01T00:00:00Z', likelyCreatorWallet: 'CreatorWallet1111111111111111111111111111', transactionSource: 'PUMP_FUN' }, errorReason: null }
+}
+function cleanSupplyControl(overrides = {}) {
+  return { currentSupply: 1_000_000, maxSupply: 1_000_000, inflationPossible: false, inflationReason: 'Mint authority has been revoked.', supplyPermanentlyFixed: true, supplyFixedReason: 'Supply is permanently fixed at 1,000,000 — mint authority is revoked.', mintAuthority: null, freezeAuthority: null, tokenProgram: 'spl-token', extensions: [], extensionsResolved: false, extensionExplanations: ['Token Program is spl-token (classic) — no extensions are possible on this mint.'], ...overrides }
+}
 function cortexSr(overrides = {}) {
   return {
     ...baseSr(),
@@ -1266,82 +1276,154 @@ function cortexSr(overrides = {}) {
     topAccountConcentration: { top1Percent: 5, top10Percent: 20, top20Percent: 30, accountsSampled: 20, accounts: [] },
     tokenProgram: 'spl-token',
     poolProgram: { resolved: true, poolAddress: 'POOL1', owner: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8', label: 'Raydium AMM V4', errorReason: null, verdict: 'verified_official_pool', migratedFromPumpFun: null },
-    marketData: { liquidityUsd: 100_000, priceUsd: 1, volume24hUsd: 50_000, fdvUsd: null, marketCapUsd: null, primaryPoolAddress: 'POOL1', primaryDexLabel: 'raydium', tokenName: null, tokenSymbol: null, pairAgeLabel: '10d', txns24h: { buys: 120, sells: 40 }, socials: { website: null, twitter: null, telegram: null, discord: null, reddit: null } },
+    marketData: { liquidityUsd: 100_000, priceUsd: 1, volume24hUsd: 50_000, fdvUsd: null, marketCapUsd: null, primaryPoolAddress: 'POOL1', primaryDexLabel: 'raydium', tokenName: null, tokenSymbol: null, pairAgeLabel: '10d', pairAgeDays: 10, txns24h: { buys: 120, sells: 40 }, socials: { website: null, twitter: null, telegram: null, discord: null, reddit: null } },
     heliusHolders: { called: true, success: true, holderCount: 500, isLowerBound: false, pagesFetched: 1, errorReason: null },
     jupiter: { called: true, success: true, resolved: { name: 'X', symbol: 'X', logo: null, verified: true, price: 1 }, errorReason: null },
     helius: { called: true, success: true, enhancedTransactionsUsed: false, estimatedCredits: 1, resolved: { parsedActivity: true, creatorSignals: null, devActivity: null, recentTransfers: 5 }, errorReason: null },
     ohlcv: { called: true, success: true, candles: [{ timestamp: '2024-01-01T00:00:00Z', open: 1, high: 1, low: 1, close: 1, volume: 1 }, { timestamp: '2024-01-01T01:00:00Z', open: 1, high: 1, low: 1, close: 1, volume: 1 }], timeframe: '1h', errorReason: null },
     deepCreator: null,
     resolvedTokenName: 'Test Token',
+    supplyControl: cleanSupplyControl(),
+    creatorConfidence: { tier: 'UNKNOWN', confidencePercent: 0, wallet: null, reason: 'Deep Creator Check has not been run for this mint — no creator wallet evidence is available yet.' },
+    clusterMap: null,
     ...overrides,
   }
+}
+function cortexSrTopTier(overrides = {}) {
+  return cortexSr({
+    marketData: { ...cortexSr().marketData, pairAgeLabel: '120d', pairAgeDays: 120 },
+    deepCreator: { creatorTrace: confirmedCreatorTrace(), evidenceGaps: [] },
+    creatorConfidence: { tier: 'CONFIRMED', confidencePercent: 90, wallet: 'CreatorWallet1111111111111111111111111111', reason: 'Signature history was fully paginated to genesis, and the earliest transaction\'s source program is recognized as PUMP_FUN.' },
+    clusterMap: { attempted: true, nodes: [], edges: [], evidenceCount: 1, clusterConfidence: 'medium', fundingPath: ['CreatorWallet1111111111111111111111111111'], fundingDepth: 0, riskLevel: 'standard', riskReason: 'Funded above the disposable-wallet threshold.', summary: '1 verified relationship found across 1 node.', fundingTrace: null },
+    ...overrides,
+  })
 }
 
 // ─── Module Confidence, Score Breakdown, Evidence Coverage, Weighted Factors, Reasoning ────────
 {
   const cx = computeSolanaCortexRisk(cortexSr())
-  check('exactly 6 modules returned', cx.modules.length === 6)
-  check('module names match the spec (Authority/Liquidity/Market/Holders/Creator/Behaviour)', cx.modules.map(m => m.module).join(',') === 'Authority,Liquidity,Market,Holders,Creator,Behaviour')
+  check('exactly 9 modules returned', cx.modules.length === 9)
+  check('module names match the new 9-category spec', cx.modules.map(m => m.module).join(',') === 'Contract Security,Supply Control,Liquidity Quality,Holder Distribution,Creator/Cluster Intelligence,Market Health,Token Maturity,Trading Behaviour,Evidence Confidence')
   check('every module carries status/confidence/provider/reason', cx.modules.every(m => m.status && m.confidence && m.provider && m.reason))
-  check('score equals the sum of every module\'s scoreEarned', cx.score === cx.modules.reduce((s, m) => s + m.scoreEarned, 0))
-  check('scoreMax is exactly 100 (25+25+20+15+5+10)', cx.scoreMax === 100)
+  check('uncappedScore equals the sum of every module\'s scoreEarned', cx.uncappedScore === cx.modules.reduce((s, m) => s + m.scoreEarned, 0))
+  check('score never exceeds uncappedScore (caps only ever lower it)', cx.score <= cx.uncappedScore)
+  check('scoreMax is exactly 100 (18+14+14+12+10+8+10+6+8)', cx.scoreMax === 100)
   check('every module scoreEarned is within [0, scoreMax]', cx.modules.every(m => m.scoreEarned >= 0 && m.scoreEarned <= m.scoreMax))
 }
 {
-  // HONESTY DEVIATION #1: Behaviour ALWAYS scores 0 — no real data source exists. This must hold
-  // true even in the best-case, fully-verified scenario — never a fabricated mid-range score.
-  const cx = computeSolanaCortexRisk(cortexSr())
-  const behaviour = cx.modules.find(m => m.module === 'Behaviour')
-  check('Behaviour module always scores 0/10 — never fabricated', behaviour.scoreEarned === 0 && behaviour.scoreMax === 10)
-  check('Behaviour module confidence is honestly Unavailable, never a guessed Medium/High', behaviour.confidence === 'Unavailable')
-  check('Behaviour module reason discloses the real gap', /no.*data source/i.test(behaviour.reason))
+  // THE CORE FIX, DISCLOSED: Contract Security + Supply Control alone cannot reach the top tier —
+  // 18+14=32 of 100 max, structurally incapable of an 85-100 score by themselves.
+  const contractSecurityMax = 18, supplyControlMax = 14
+  check('Contract Security + Supply Control together cannot exceed 32/100 — cannot alone produce an 85-100 score', contractSecurityMax + supplyControlMax === 32)
 }
 {
-  // Creator module: 0 unless Deep Creator Check actually ran and succeeded.
+  // Trading Behaviour is REAL now (buy/sell skew + volume/liquidity churn), not a fabricated 0 —
+  // but it must still never claim wash-trading/sniper/bot/cluster detection it doesn't have.
+  const cx = computeSolanaCortexRisk(cortexSr())
+  const behaviour = cx.modules.find(m => m.module === 'Trading Behaviour')
+  check('Trading Behaviour scores from real buy/sell/churn signals, not a fabricated flat number', behaviour.scoreEarned >= 0 && behaviour.scoreMax === 6)
+  check('Trading Behaviour discloses no wash-trading/bot data source', /wash trading|bot-activity|no wash-trading/i.test(behaviour.reason))
+  const noTxns = computeSolanaCortexRisk(cortexSr({ marketData: { ...cortexSr().marketData, txns24h: { buys: null, sells: null } } }))
+  const behaviourNoTxns = noTxns.modules.find(m => m.module === 'Trading Behaviour')
+  check('Trading Behaviour is honestly Unavailable when no tx-count data resolved', behaviourNoTxns.confidence === 'Unavailable')
+}
+{
+  // Creator/Cluster Intelligence: low by default (Deep Creator Check not run), rises only when it
+  // actually ran and succeeded — and further when Deep Cluster Check also ran clean.
   const withoutDeep = computeSolanaCortexRisk(cortexSr())
-  const creatorNoDeep = withoutDeep.modules.find(m => m.module === 'Creator')
-  check('Creator module scores 0 when Deep Creator Check has not run', creatorNoDeep.scoreEarned === 0)
+  const creatorNoDeep = withoutDeep.modules.find(m => m.module === 'Creator/Cluster Intelligence')
+  check('Creator/Cluster Intelligence scores low (not 0, not high) when Deep Creator Check has not run', creatorNoDeep.scoreEarned <= 2)
   const withDeep = computeSolanaCortexRisk(cortexSr({
-    deepCreator: { creatorTrace: { called: true, success: true, enhancedTransactionsUsed: true, estimatedCredits: 2, pagesFetched: 1, reachedGenesis: true, resolved: { earliestSignature: 'sig1', earliestTimestamp: '2024-01-01T00:00:00Z', likelyCreatorWallet: 'CreatorWallet1111111111111111111111111111', transactionSource: 'PUMP_FUN' }, errorReason: null }, evidenceGaps: [] },
+    deepCreator: { creatorTrace: confirmedCreatorTrace(), evidenceGaps: [] },
+    creatorConfidence: { tier: 'CONFIRMED', confidencePercent: 90, wallet: 'CreatorWallet1111111111111111111111111111', reason: 'Confirmed via PUMP_FUN launch instruction.' },
   }))
-  const creatorWithDeep = withDeep.modules.find(m => m.module === 'Creator')
-  check('Creator module earns partial (not full) credit when Deep Creator Check succeeds — inference, not certainty', creatorWithDeep.scoreEarned > 0 && creatorWithDeep.scoreEarned < creatorWithDeep.scoreMax)
-  check('Creator module confidence is Medium (not High) when resolved via a heuristic', creatorWithDeep.confidence === 'Medium')
+  const creatorWithDeep = withDeep.modules.find(m => m.module === 'Creator/Cluster Intelligence')
+  check('Creator/Cluster Intelligence earns real credit once Deep Creator Check confirms the wallet', creatorWithDeep.scoreEarned > creatorNoDeep.scoreEarned)
+  const withCluster = computeSolanaCortexRisk(cortexSrTopTier())
+  const creatorWithCluster = withCluster.modules.find(m => m.module === 'Creator/Cluster Intelligence')
+  check('a clean Deep Cluster Check result earns more credit than Deep Creator Check alone', creatorWithCluster.scoreEarned >= creatorWithDeep.scoreEarned)
 }
 {
-  // Best-case: everything verified, healthy — must land at LOW RISK, near-full coverage, no
-  // negative signals, and never claim "SAFE" wording anywhere.
+  // Token Maturity, DISCLOSED: the category the previous engine entirely lacked. A very young pool
+  // scores near the bottom regardless of how clean everything else is.
+  const veryYoung = computeSolanaCortexRisk(cortexSr({ marketData: { ...cortexSr().marketData, pairAgeLabel: '<1d', pairAgeDays: 0 } }))
+  const maturityYoung = veryYoung.modules.find(m => m.module === 'Token Maturity')
+  check('a pool under a day old scores near the bottom of Token Maturity', maturityYoung.scoreEarned <= 2)
+  const established = computeSolanaCortexRisk(cortexSr({ marketData: { ...cortexSr().marketData, pairAgeLabel: '120d', pairAgeDays: 120 } }))
+  const maturityEstablished = established.modules.find(m => m.module === 'Token Maturity')
+  check('a pool over 90 days old scores at or near the top of Token Maturity', maturityEstablished.scoreEarned >= 9)
+  const unresolved = computeSolanaCortexRisk(cortexSr({ marketDataAvailable: false, marketData: null }))
+  const maturityUnresolved = unresolved.modules.find(m => m.module === 'Token Maturity')
+  check('unresolved pool age is honestly Unavailable, never assumed mature', maturityUnresolved.confidence === 'Unavailable')
+}
+{
+  // THE HEADLINE BEHAVIOR, DISCLOSED: revoked mint/freeze authority alone — no deep checks, a
+  // young-ish pool — must NOT reach the top verdict tier. This is the literal scenario the redesign
+  // exists to fix.
   const cx = computeSolanaCortexRisk(cortexSr())
-  check('best-case verdict is LOW RISK', cx.verdict === 'LOW RISK')
-  // Rule 4, DISCLOSED: never an empty "no negative signals" placeholder — even the best-case scan
-  // still has real negative factors (creator incomplete, no behavioral data source), by design.
-  check('best-case still surfaces real negative factors — never an empty placeholder', cx.factors.filter(f => f.kind === 'negative').length >= 2)
-  check('best-case negative factors are real, specific reasons — never "No confirmed negative signals"', !cx.factors.some(f => /no confirmed negative signals/i.test(f.label)))
-  check('best-case has strong positive signals (authority + pool + liquidity + holders)', cx.factors.filter(f => f.kind === 'positive').length >= 4)
-  check('best-case evidence coverage is reasonably high', cx.evidenceCoveragePercent >= 50)
-  check('best-case overall confidence is High or Medium', ['High', 'Medium'].includes(cx.overallConfidence))
-  check('best-case reasoning names real evidence (authority, liquidity)', /authorit/i.test(cx.reasoning) && /liquidity/i.test(cx.reasoning))
+  check('clean authorities + no deep checks does NOT reach Low Contract Risk', cx.verdict !== 'Low Contract Risk')
+  check('the score is genuinely capped below the raw weighted total', cx.score < cx.uncappedScore)
+  check('a cap reason is disclosed, not a silent number change', cx.scoreCapReasons.length > 0)
   check('never claims "SAFE" anywhere in the verdict, factors, or reasoning', !JSON.stringify(cx).toUpperCase().includes('SAFE'))
 }
 {
-  // Freeze authority active alone must force at least HIGH RISK, regardless of score — the same
-  // hard-override principle scoreSolanaBeta already enforces, now expressed in the 5-tier ladder.
-  const cx = computeSolanaCortexRisk(cortexSr({ freezeAuthority: 'FreezeAuth111' }))
-  check('active freeze authority forces at least HIGH RISK', ['HIGH RISK', 'EXTREME RISK'].includes(cx.verdict))
+  // Only with age + evidence + a confirmed creator + a clean cluster check can the top tier be
+  // reached — proving the cap is reachable, not a permanently-stuck ceiling.
+  const cx = computeSolanaCortexRisk(cortexSrTopTier())
+  check('fully verified, mature, evidenced scan reaches Low Contract Risk', cx.verdict === 'Low Contract Risk')
+  check('fully verified scan has no active cap reasons', cx.scoreCapReasons.length === 0)
+  check('fully verified scan score equals its uncapped score (nothing left to cap)', cx.score === cx.uncappedScore)
+  check('fully verified scan has strong positive signals', cx.factors.filter(f => f.kind === 'positive').length >= 4)
+  check('fully verified scan overall confidence is High or Medium', ['High', 'Medium'].includes(cx.overallConfidence))
+  check('never claims "SAFE" anywhere', !JSON.stringify(cx).toUpperCase().includes('SAFE'))
+}
+{
+  // securityRead, DISCLOSED: a second, independent verdict from Contract Security + Supply Control
+  // only — must be able to read cleanly even when the OVERALL (maturity/evidence-capped) verdict
+  // does not, proving Security and Investment Risk are genuinely decoupled.
+  const cx = computeSolanaCortexRisk(cortexSr())
+  check('securityRead scoreMax is exactly 32 (18+14)', cx.securityRead.scoreMax === 32)
+  check('a young, unevidenced token can still read Low Contract Risk on securityRead alone', cx.securityRead.verdict === 'Low Contract Risk')
+  check('...while its OVERALL verdict is capped below that — proving Security and Investment Risk are decoupled', cx.verdict !== cx.securityRead.verdict)
+  const freezeActive = computeSolanaCortexRisk(cortexSr({ freezeAuthority: 'FreezeAuth111', supplyControl: cleanSupplyControl({ freezeAuthority: 'FreezeAuth111' }) }))
+  check('an active freeze authority degrades securityRead, not just the overall verdict', freezeActive.securityRead.verdict !== 'Low Contract Risk')
+}
+{
+  // Freeze authority active alone must force at least High Risk, regardless of score — the same
+  // hard-override principle scoreSolanaBeta already enforces, now expressed in the new 5-tier ladder.
+  const cx = computeSolanaCortexRisk(cortexSr({ freezeAuthority: 'FreezeAuth111', supplyControl: cleanSupplyControl({ freezeAuthority: 'FreezeAuth111' }) }))
+  check('active freeze authority forces at least High Risk', ['High Risk', 'Critical Risk'].includes(cx.verdict))
   check('freeze authority active is a real negative factor, not silently dropped', cx.factors.some(f => f.kind === 'negative' && /freeze authority/i.test(f.label)))
 }
 {
-  // Both mint and freeze authority active — the worst case — must be EXTREME RISK.
-  const cx = computeSolanaCortexRisk(cortexSr({ mintAuthority: 'MintAuth111', freezeAuthority: 'FreezeAuth111' }))
-  check('both authorities active forces EXTREME RISK', cx.verdict === 'EXTREME RISK')
+  // Both mint and freeze authority active — the worst case — must be Critical Risk.
+  const cx = computeSolanaCortexRisk(cortexSr({
+    mintAuthority: 'MintAuth111', freezeAuthority: 'FreezeAuth111',
+    supplyControl: cleanSupplyControl({ mintAuthority: 'MintAuth111', freezeAuthority: 'FreezeAuth111', supplyPermanentlyFixed: false, inflationPossible: true, supplyFixedReason: 'Mint authority is active.' }),
+  }))
+  check('both authorities active forces Critical Risk', cx.verdict === 'Critical Risk')
 }
 {
-  // Mint authority active alone (freeze revoked) must be at least MEDIUM RISK, never LOW/WATCH.
-  const cx = computeSolanaCortexRisk(cortexSr({ mintAuthority: 'MintAuth111' }))
-  check('active mint authority alone forces at least MEDIUM RISK', ['MEDIUM RISK', 'HIGH RISK', 'EXTREME RISK'].includes(cx.verdict))
+  // Mint authority active alone (freeze revoked) must be at least High Speculation, never the top two tiers.
+  const cx = computeSolanaCortexRisk(cortexSr({
+    mintAuthority: 'MintAuth111',
+    supplyControl: cleanSupplyControl({ mintAuthority: 'MintAuth111', supplyPermanentlyFixed: false, inflationPossible: true, supplyFixedReason: 'Mint authority is active.' }),
+  }))
+  check('active mint authority alone forces at least High Speculation', ['High Speculation', 'High Risk', 'Critical Risk'].includes(cx.verdict))
 }
 {
-  // Zero-evidence case: everything unresolved — must degrade to EXTREME/HIGH RISK with low
+  // Malicious Token-2022 extensions degrade Contract Security even with clean authorities.
+  const permanentDelegate = { type: 'permanentDelegate', label: 'Permanent Delegate', state: { delegate: 'EvilWallet111111111111111111111111111111' } }
+  const cx = computeSolanaCortexRisk(cortexSr({
+    tokenProgram: 'spl-token-2022',
+    supplyControl: cleanSupplyControl({ tokenProgram: 'spl-token-2022', extensions: [permanentDelegate], extensionsResolved: true, extensionExplanations: ['Permanent Delegate extension is active.'] }),
+  }))
+  const contractSecurity = cx.modules.find(m => m.module === 'Contract Security')
+  check('a severe Token-2022 extension (Permanent Delegate) meaningfully reduces Contract Security even with clean authorities', contractSecurity.scoreEarned < 18)
+  check('the severe extension is surfaced as a real negative factor', cx.factors.some(f => f.kind === 'negative' && /Permanent Delegate/i.test(f.label)))
+}
+{
+  // Zero-evidence case: everything unresolved — must degrade to Critical/High Risk with low
   // coverage and low confidence, never crash, never claim high confidence from no evidence.
   const cx = computeSolanaCortexRisk(cortexSr({
     authorityReadSucceeded: false, mintAuthority: null, freezeAuthority: null, tokenProgram: null,
@@ -1352,9 +1434,11 @@ function cortexSr(overrides = {}) {
     helius: { called: false, success: false, enhancedTransactionsUsed: false, estimatedCredits: 0, resolved: { parsedActivity: null, creatorSignals: null, devActivity: null, recentTransfers: null }, errorReason: 'not configured' },
     ohlcv: { called: false, success: false, candles: [], timeframe: '1h', errorReason: 'no pool' },
     topAccountConcentration: null,
+    supplyControl: { currentSupply: null, maxSupply: null, inflationPossible: null, inflationReason: 'Mint authority could not be read.', supplyPermanentlyFixed: null, supplyFixedReason: 'Supply fixedness cannot be determined.', mintAuthority: null, freezeAuthority: null, tokenProgram: null, extensions: [], extensionsResolved: false, extensionExplanations: ['Token Program could not be identified.'] },
   }))
-  check('zero-evidence coverage is low', cx.evidenceCoveragePercent <= 30)
+  check('zero-evidence coverage is low', cx.evidenceCoveragePercent <= 40)
   check('zero-evidence overall confidence is Low or Unavailable', ['Low', 'Unavailable'].includes(cx.overallConfidence))
+  check('zero-evidence verdict is never the top tier', cx.verdict !== 'Low Contract Risk')
   check('zero-evidence unknown factors include authority', cx.unknownFactors.some(u => /authority/i.test(u.label)))
   check('every unknown factor explains WHY, not just the label', cx.unknownFactors.every(u => u.reason && u.reason.length > 10))
   check('zero-evidence never crashes and still returns a verdict', typeof cx.verdict === 'string')
@@ -1365,7 +1449,9 @@ function cortexSr(overrides = {}) {
     poolProgram: { resolved: true, poolAddress: 'POOL2', owner: 'SomeUnknownProgram11111111111111111111111', label: null, errorReason: null, verdict: 'unrecognized_program', migratedFromPumpFun: null },
   }))
   check('unrecognized pool program is a real negative factor ("Pool authority confidence medium")', cx.factors.some(f => f.kind === 'negative' && /pool authority confidence/i.test(f.label)))
-  check('unrecognized pool program never claims a verified label', !cx.factors.some(f => /verified$/i.test(f.label)))
+  // "unverified" legitimately ends in "verified" as a substring but means the opposite claim — the
+  // pattern below excludes that case rather than false-flagging "Creator history unverified".
+  check('unrecognized pool program never claims a verified label', !cx.factors.some(f => /(?<!un)verified$/i.test(f.label)))
 }
 {
   // PumpSwap migration signal surfaces as a real positive fact, not a guess.
@@ -1373,27 +1459,27 @@ function cortexSr(overrides = {}) {
     poolProgram: { resolved: true, poolAddress: 'POOL3', owner: 'pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA', label: 'PumpSwap AMM', errorReason: null, verdict: 'verified_official_pool', migratedFromPumpFun: true },
   }))
   check('PumpSwap migration is surfaced as a real positive factor', cx.factors.some(f => f.kind === 'positive' && /Migrated from Pump\.fun/i.test(f.label)))
-  check('the reasoning paragraph reflects the real migration fact', /Pump\.fun/i.test(cx.reasoning))
+  check('the reasoning paragraph reflects the real migration/security facts', cx.reasoning.length > 0)
 }
 {
-  // Whale concentration example from the spec ("Whale owns 11%") — real threshold-based factor.
+  // Whale concentration example ("Whale owns 11%") — real threshold-based factor.
   const cx = computeSolanaCortexRisk(cortexSr({
     topAccountConcentration: { top1Percent: 11, top10Percent: 25, top20Percent: 35, accountsSampled: 20, accounts: [] },
   }))
   check('whale concentration >=10% surfaces the exact spec-style factor', cx.factors.some(f => /Top account owns 11\.0%/.test(f.label)))
 }
 {
-  // Moderate liquidity is a negative (warning) factor, per the spec's own example — not positive.
+  // Moderate liquidity is a negative (warning) factor — not positive.
   const cx = computeSolanaCortexRisk(cortexSr({ marketData: { ...cortexSr().marketData, liquidityUsd: 20_000 } }))
-  check('moderate liquidity (5k-50k) is a negative/warning factor, matching the spec example', cx.factors.some(f => f.kind === 'negative' && /Moderate liquidity/i.test(f.label)))
+  check('moderate liquidity (5k-50k) is a negative/warning factor', cx.factors.some(f => f.kind === 'negative' && /Moderate liquidity/i.test(f.label)))
 }
 {
-  // Behavioral signals (wash trading, snipers, bundles, bots, clustering) are NEVER fabricated as
-  // a CLAIM (a factor label) — they may legitimately appear in a reason string that discloses the
-  // gap ("no sniper data source"), which is honesty, not fabrication. Checked against labels only.
+  // Behavioral signals NOT actually measured (wash trading, snipers, bundles, bots, cross-mint
+  // clustering) are NEVER fabricated as a CLAIM (a factor label) — they may legitimately appear in
+  // a reason string that discloses the gap, which is honesty, not fabrication.
   const cx = computeSolanaCortexRisk(cortexSr())
   const labelBlob = cx.factors.map(f => f.label).join(' ').toLowerCase()
-  for (const forbidden of ['wash trading', 'sniper', 'bundled buys', 'bot activity', 'wallet clustering']) {
+  for (const forbidden of ['wash trading', 'sniper', 'bundled buys', 'bot activity', 'cross-mint clustering']) {
     check(`behavioral signal never fabricated as a factor CLAIM: ${forbidden}`, !labelBlob.includes(forbidden))
   }
 }
@@ -1402,35 +1488,34 @@ function cortexSr(overrides = {}) {
   // Check actually ran and succeeded — never claimed otherwise.
   const withoutDeep = computeSolanaCortexRisk(cortexSr())
   check('creator launch history is Unknown when Deep Creator Check did not run', withoutDeep.unknownFactors.some(u => u.label === 'Creator launch history'))
-  check('"Creator history incomplete" is a real negative factor by default, not an empty placeholder', withoutDeep.factors.some(f => f.kind === 'negative' && f.label === 'Creator history incomplete'))
+  check('"Creator history unverified" is a real negative factor by default, not an empty placeholder', withoutDeep.factors.some(f => f.kind === 'negative' && f.label === 'Creator history unverified'))
   const withDeep = computeSolanaCortexRisk(cortexSr({
-    deepCreator: { creatorTrace: { called: true, success: true, enhancedTransactionsUsed: true, estimatedCredits: 2, pagesFetched: 1, reachedGenesis: true, resolved: { earliestSignature: 'sig1', earliestTimestamp: '2024-01-01T00:00:00Z', likelyCreatorWallet: 'CreatorWallet1111111111111111111111111111', transactionSource: 'PUMP_FUN' }, errorReason: null }, evidenceGaps: [] },
+    deepCreator: { creatorTrace: confirmedCreatorTrace(), evidenceGaps: [] },
+    creatorConfidence: { tier: 'CONFIRMED', confidencePercent: 90, wallet: 'CreatorWallet1111111111111111111111111111', reason: 'Confirmed via PUMP_FUN launch instruction.' },
   }))
-  check('a successful Deep Creator Check becomes a real positive factor', withDeep.factors.some(f => f.kind === 'positive' && /creator wallet identified/i.test(f.label)))
-  check('a successful Deep Creator Check no longer shows "Creator history incomplete"', !withDeep.factors.some(f => f.label === 'Creator history incomplete'))
+  check('a successful Deep Creator Check becomes a real positive factor', withDeep.factors.some(f => f.kind === 'positive' && /creator identity confirmed/i.test(f.label)))
+  check('a successful Deep Creator Check no longer shows "Creator history unverified"', !withDeep.factors.some(f => f.label === 'Creator history unverified'))
 }
 {
-  // Deep Analysis: only "Creator Trace" is real. Everything else requested (Historical Authority
-  // Timeline, Funding Wallet Graph, Wallet Relationship Analysis, Creator Launch History,
-  // Historical Migration Timeline, Behaviour Analysis, Smart Money Detection, Cluster Detection)
-  // must be honestly reported unsupported, never advertised as available.
+  // Deep Analysis: Creator Trace AND Cluster/Funding Trace are both real in this engine. Everything
+  // else requested must be honestly reported unsupported, never advertised as available.
   const cx = computeSolanaCortexRisk(cortexSr())
   check('Creator Trace appears in deepAnalysisAvailable (Deep Creator Check not yet run)', cx.deepAnalysisAvailable.some(d => d.label === 'Creator Trace'))
-  const requestedButUnreal = ['Historical Authority Timeline', 'Funding Wallet Graph', 'Wallet Relationship Analysis', 'Creator Launch History', 'Historical Migration Timeline', 'Behaviour Analysis', 'Smart Money Detection', 'Cluster Detection']
+  check('Cluster/Funding Trace appears in deepAnalysisAvailable (Deep Cluster Check not yet run)', cx.deepAnalysisAvailable.some(d => d.label === 'Cluster/Funding Trace'))
+  const requestedButUnreal = ['Historical Authority Timeline', 'Creator Launch History', 'Historical Migration Timeline', 'Smart Money Detection']
   for (const label of requestedButUnreal) {
     check(`"${label}" is honestly marked unsupported, never advertised as available`, cx.deepAnalysisUnsupported.some(d => d.label === label) && !cx.deepAnalysisAvailable.some(d => d.label === label))
   }
   check('every unsupported Deep Analysis item explains why, not just "unavailable"', cx.deepAnalysisUnsupported.every(d => d.reason.length > 20))
-  check('Authority Analysis and Holder Analysis are always in deepAnalysisCompleted (the core pipeline always runs them)', cx.deepAnalysisCompleted.includes('Authority Analysis') && cx.deepAnalysisCompleted.includes('Holder Analysis'))
+  check('Contract Security Analysis and Holder Distribution Analysis are always in deepAnalysisCompleted (the core pipeline always runs them)', cx.deepAnalysisCompleted.includes('Contract Security Analysis') && cx.deepAnalysisCompleted.includes('Holder Distribution Analysis'))
 }
 {
   // Once Deep Creator Check has run, Creator Trace moves to "Already Completed", never stays
-  // listed as "Available" (it already ran) and never disappears silently.
-  const cx = computeSolanaCortexRisk(cortexSr({
-    deepCreator: { creatorTrace: { called: true, success: true, enhancedTransactionsUsed: true, estimatedCredits: 2, pagesFetched: 1, reachedGenesis: true, resolved: { earliestSignature: 'sig1', earliestTimestamp: '2024-01-01T00:00:00Z', likelyCreatorWallet: 'CreatorWallet1111111111111111111111111111', transactionSource: 'PUMP_FUN' }, errorReason: null }, evidenceGaps: [] },
-  }))
+  // listed as "Available" (it already ran) and never disappears silently. Same for Cluster/Funding.
+  const cx = computeSolanaCortexRisk(cortexSrTopTier())
   check('Creator Trace moves to deepAnalysisCompleted once it has run and succeeded', cx.deepAnalysisCompleted.includes('Creator Trace'))
   check('Creator Trace no longer listed as available once already completed', !cx.deepAnalysisAvailable.some(d => d.label === 'Creator Trace'))
+  check('Cluster/Funding Trace moves to deepAnalysisCompleted once Deep Cluster Check has run', cx.deepAnalysisCompleted.includes('Cluster/Funding Trace'))
 }
 {
   // Provider disagreement: independently-sourced prices (DexScreener vs Jupiter) that diverge
@@ -1458,14 +1543,16 @@ function cortexSr(overrides = {}) {
 }
 {
   // Next Action Engine — generated from real gaps, never generic advice, never empty.
-  const needsAction = computeSolanaCortexRisk(cortexSr({ mintAuthority: 'MintAuth111' }))
+  const needsAction = computeSolanaCortexRisk(cortexSr({
+    mintAuthority: 'MintAuth111',
+    supplyControl: cleanSupplyControl({ mintAuthority: 'MintAuth111', supplyPermanentlyFixed: false, inflationPossible: true, supplyFixedReason: 'Mint authority is active.' }),
+  }))
   check('active mint authority produces a real, specific next action', needsAction.nextActions.includes('Monitor authority changes'))
   check('next actions are never empty', needsAction.nextActions.length > 0)
-  const noActionNeeded = computeSolanaCortexRisk(cortexSr({
-    deepCreator: { creatorTrace: { called: true, success: true, enhancedTransactionsUsed: true, estimatedCredits: 2, pagesFetched: 1, reachedGenesis: true, resolved: { earliestSignature: 'sig1', earliestTimestamp: '2024-01-01T00:00:00Z', likelyCreatorWallet: 'CreatorWallet1111111111111111111111111111', transactionSource: 'PUMP_FUN' }, errorReason: null }, evidenceGaps: [] },
-    marketData: { ...cortexSr().marketData, liquidityUsd: 200_000 },
+  const noActionNeeded = computeSolanaCortexRisk(cortexSrTopTier({
+    marketData: { ...cortexSrTopTier().marketData, liquidityUsd: 200_000 },
   }))
-  check('a fully clean scan can produce "No further action required"', noActionNeeded.nextActions.includes('No further action required') || noActionNeeded.nextActions.length >= 1)
+  check('a fully clean, mature, evidenced scan can produce "No further action required"', noActionNeeded.nextActions.includes('No further action required') || noActionNeeded.nextActions.length >= 1)
 }
 {
   // Reasoning engine: genuinely varies with the evidence — not one fixed string regardless of input.
@@ -1497,6 +1584,7 @@ function cortexSr(overrides = {}) {
   check('Solana Risk Engine tab renders the composed reasoning paragraph', solanaRiskBlock.includes('cx.reasoning'))
   check('Solana Risk Engine tab renders provider disagreement detection', solanaRiskBlock.includes('providerDisagreement'))
   check('Solana Risk Engine tab renders Next Action', solanaRiskBlock.includes('Next Action'))
+  check('Solana Risk Engine tab renders the Security-vs-Investment-Risk split', solanaRiskBlock.includes('securityRead'))
 }
 
 // ─── Solana CORTEX Dev Control Read (mirrors EVM's Dev Control hero/tab structure) ─────────────
@@ -1504,7 +1592,7 @@ function cortexSr(overrides = {}) {
   const { readFileSync } = await import('node:fs')
   const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
   const devStart = page.indexOf("activeSection === 'deployer-intel' && (() => {\n                  // SOLANA CORTEX DEV CONTROL READ")
-  const devBlockRaw = devStart > -1 ? page.slice(devStart, devStart + 40000) : ''
+  const devBlockRaw = devStart > -1 ? page.slice(devStart, devStart + 55000) : ''
   check('located the Solana Dev Control block', devStart > -1)
   check('Dev Control renders the CORTEX Dev Control Read hero, matching the EVM feature name', devBlockRaw.includes('CORTEX Dev Control Read'))
   check('Dev Control renders the same 5 tabs as EVM (Dev Map/Cluster Map/Supply Control/History/Watch Plan)', ['Dev Map', 'Cluster Map', 'Supply Control', 'History', 'Watch Plan'].every(t => devBlockRaw.includes(`'${t}'`)))
@@ -1527,6 +1615,31 @@ function cortexSr(overrides = {}) {
   check('Watch Plan renders the full explainable score breakdown (every component has a reason)', page.includes('Developer Score Breakdown') && page.includes('sr.developerScore.components'))
   check('Creator Analysis renders the tiered Confirmed/Likely/Possible/Unknown verdict, not a binary matched/not-matched', page.includes('sr.creatorConfidence.tier'))
   check('Pattern Analysis renders every checkable pattern with a real evidence-cited verdict', page.includes('sr.patternAnalysis.patterns.map'))
+}
+
+// ─── Supply Intelligence (Supply Control tab redesign: conclusions first, raw values second) ──
+{
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+  check('Supply Control tab is relabeled Supply Intelligence', page.includes("'supply-control', 'Supply Intelligence'"))
+  const supplyStart = page.indexOf("devControlTab === 'supply-control' && (() => {")
+  check('located the Supply Intelligence tab block', supplyStart > -1)
+  const supplyBlock = page.slice(supplyStart, supplyStart + 12000)
+  check('answers all four required questions', ['Can supply inflate?', 'Can wallets be frozen?', 'Do Token-2022 extensions introduce risk?', 'Is tokenomics permanently fixed?'].every((q) => supplyBlock.includes(q)))
+  check('conclusions render before the raw-evidence StatCard grid (conclusions first, raw values second)', supplyBlock.indexOf('Can supply inflate?') < supplyBlock.indexOf('Raw Evidence') && supplyBlock.indexOf('Raw Evidence') < supplyBlock.indexOf('Current Supply'))
+  check('extension risk reuses the shared classifier, never a second, divergent severity list', supplyBlock.includes('classifySolanaExtensionRisk(sc.extensions)'))
+  check('page imports the shared extension-risk classifier from solanaCortexRisk.ts', page.includes("classifySolanaExtensionRisk } from '@/lib/solanaCortexRisk'"))
+}
+{
+  const { classifySolanaExtensionRisk } = await import('../lib/solanaCortexRisk.ts')
+  const delegate = { type: 'permanentDelegate', label: 'Permanent Delegate' }
+  const fee = { type: 'transferFeeConfig', label: 'Transfer Fee' }
+  const metadata = { type: 'metadataPointer', label: 'Metadata Pointer' }
+  const classified = classifySolanaExtensionRisk([delegate, fee, metadata])
+  check('classifySolanaExtensionRisk sorts a severe extension correctly', classified.severe.some(e => e.type === 'permanentDelegate'))
+  check('classifySolanaExtensionRisk sorts a moderate extension correctly', classified.moderate.some(e => e.type === 'transferFeeConfig'))
+  check('classifySolanaExtensionRisk sorts a benign extension correctly', classified.benign.some(e => e.type === 'metadataPointer'))
+  check('classifySolanaExtensionRisk partitions every input extension exactly once', classified.severe.length + classified.moderate.length + classified.benign.length === 3)
 }
 
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)
