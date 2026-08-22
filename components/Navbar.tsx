@@ -418,7 +418,7 @@ export default function Navbar() {
               <Image src="/cl-logo.png" alt="ChainLens AI" width={44} height={44} priority style={{ objectFit: 'contain' }} />
             </span>
             <div>
-              <div style={{ fontFamily: 'var(--font-inter, Inter, sans-serif)', fontWeight: 800, fontSize: '17px', lineHeight: 1.15 }}>
+              <div style={{ fontFamily: 'var(--font-sora, Sora, sans-serif)', fontWeight: 700, fontSize: '17px', lineHeight: 1.15 }}>
                 <span style={{ color: '#f1f5f9' }}>Chain</span>
                 <span style={{ color: '#f1f5f9' }}>Lens</span>
               </div>

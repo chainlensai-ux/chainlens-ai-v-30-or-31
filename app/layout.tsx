@@ -3,7 +3,16 @@ import { Suspense } from 'react'
 import Script from 'next/script'
 import { headers } from 'next/headers'
 import { cookieToInitialState } from 'wagmi'
+import { Sora, Plus_Jakarta_Sans } from 'next/font/google'
 import './globals.css'
+
+// SORA/JAKARTA, DISCLOSED: the Aurora Terminal homepage redesign was designed against Sora
+// (headings) and Plus Jakarta Sans (body) so it wouldn't fall back to a generic system sans —
+// but nothing in the app ever loaded either family, so the real page silently fell back to
+// system-ui and read visibly different from the approved mockup. Loaded here as CSS vars
+// (additive, doesn't touch the existing --font-inter default) so ReferenceHero/Navbar can opt in.
+const sora = Sora({ subsets: ['latin'], weight: ['600', '700', '800'], variable: '--font-sora' })
+const jakarta = Plus_Jakarta_Sans({ subsets: ['latin'], weight: ['400', '500', '600'], variable: '--font-jakarta' })
 import { SupabaseProvider } from '@/app/providers/SupabaseProvider'
 import { Providers } from './providers'
 import AffiliateRefCapture from '@/components/AffiliateRefCapture'
@@ -68,7 +77,7 @@ export default async function RootLayout({
 
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className="w-full min-h-dvh overflow-x-hidden" suppressHydrationWarning>
+      <body className={`w-full min-h-dvh overflow-x-hidden ${sora.variable} ${jakarta.variable}`} suppressHydrationWarning>
         <Script id="android-safe-prehydrate" strategy="beforeInteractive">
           {`(function(){try{var ua=navigator.userAgent||'';var isAndroid=/Android/i.test(ua);var isMobile=(window.innerWidth||0)<768;var forced=(new URLSearchParams(window.location.search)).get('mobileSafe')==='android';if((isAndroid&&isMobile)||forced){document.documentElement.classList.add('android-safe-mode');document.body&&document.body.classList.add('android-safe-mode');}}catch(e){}})();`}
         </Script>
