@@ -388,15 +388,15 @@ export default function Navbar() {
         <div
           className="nav-shell"
           style={{
-            maxWidth: '1320px',
+            maxWidth: '1220px',
             margin: '0 auto',
             background: 'linear-gradient(180deg, rgba(9,12,26,0.82) 0%, rgba(6,8,18,0.76) 100%)',
             backdropFilter: 'blur(24px)',
             WebkitBackdropFilter: 'blur(24px)',
-            border: '1px solid rgba(139,92,246,0.16)',
+            border: '1px solid rgba(182,102,243,0.18)',
             borderRadius: '999px',
             padding: '0 18px',
-            height: '60px',
+            height: '56px',
             display: 'flex',
             alignItems: 'center',
             gap: '14px',
