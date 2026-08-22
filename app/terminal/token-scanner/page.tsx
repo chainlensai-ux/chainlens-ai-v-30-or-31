@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useRef, type MouseEvent } from 'react'
+import { useState, useEffect, useMemo, useRef, type MouseEvent } from 'react'
 import { usePlanWithLoading, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { resolveTokenQuery, isContractAddress, fmtLiquidity, type ResolverResult, type ResolverCandidate } from '@/lib/tickerResolver'
@@ -2461,6 +2461,176 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
         .cluster-flow-faint { animation-duration: 5.6s; }
         @media (prefers-reduced-motion: reduce) { .cluster-suspicious-flow { animation: none; } }
       `}</style>
+    </div>
+  )
+}
+
+// ─── Solana Cluster Graph, DISCLOSED (real interactive node graph follow-up — replaces the
+// text-only funding-path summary). Solana-native only: nodes/edges come exclusively from
+// lib/server/solana/clusterAnalyzer.ts's real evidence (Helius Enhanced, Alchemy/Solana RPC pool
+// + authority reads) — no EVM heuristics, no lib/clusterMap.ts reuse. Clicking a node fetches a
+// real, on-demand wallet snapshot (balance + latest signature) from /api/solana-wallet-detail. ──
+type SolanaCMap = NonNullable<SolanaBetaScanResult['clusterMap']>
+type SolanaCNode = SolanaCMap['nodes'][number]
+type SolanaWalletSnapshotUI = { address: string; balanceResolved: boolean; balanceSol: number | null; lastActivityResolved: boolean; lastActivitySignature: string | null; lastActivityTimestamp: string | null; errorReason: string | null }
+
+const SOLANA_CNODE_ROLE_LABEL: Record<SolanaCNode['role'], string> = {
+  mint: 'Token mint', creator_wallet: 'Creator wallet', funding_wallet: 'Funding wallet',
+  mint_authority: 'Mint authority', freeze_authority: 'Freeze authority', lp_pool: 'LP pool',
+}
+const SOLANA_CNODE_ROLE_COLOR: Record<SolanaCNode['role'], string> = {
+  mint: '#7dd3fc', creator_wallet: '#fbbf24', funding_wallet: '#a855f7',
+  mint_authority: '#fb7185', freeze_authority: '#fb7185', lp_pool: '#2dd4bf',
+}
+const SOLANA_CNODE_RISK_COLOR: Record<SolanaCNode['risk'], string> = { elevated: '#f87171', standard: '#34d399', neutral: '#94a3b8', unknown: '#64748b' }
+
+function SolanaClusterGraphPanel({ clusterMap }: { clusterMap: SolanaCMap }) {
+  const nodes = clusterMap.nodes
+  const edges = clusterMap.edges
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [snapshot, setSnapshot] = useState<SolanaWalletSnapshotUI | null>(null)
+  const [snapshotLoading, setSnapshotLoading] = useState(false)
+  const [snapshotError, setSnapshotError] = useState<string | null>(null)
+  const fmt = (addr: string | null | undefined) => addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '—'
+
+  // Pure function of nodes/edges (no randomness, no external state) — computed with useMemo
+  // rather than useEffect+setState, so the layout is ready on first render with no extra pass.
+  const positions = useMemo<Map<string, { x: number; y: number }>>(() => {
+    if (!nodes.length) return new Map()
+    type SN = { id: string; x: number; y: number; vx: number; vy: number; fx: number | null; fy: number | null }
+    const n = nodes.length
+    const sn: SN[] = nodes.map((node, i) => {
+      const isFixed = node.role === 'mint'
+      const angle = (i / Math.max(1, n)) * 2 * Math.PI
+      const ring = Math.max(22, n * 8)
+      return { id: node.id, x: isFixed ? 50 : 50 + Math.cos(angle) * ring, y: isFixed ? 50 : 50 + Math.sin(angle) * ring, vx: 0, vy: 0, fx: isFixed ? 50 : null, fy: isFixed ? 50 : null }
+    })
+    const ea = edges.map((e) => ({ si: sn.findIndex((nd) => nd.id === e.from), ti: sn.findIndex((nd) => nd.id === e.to) })).filter((e) => e.si >= 0 && e.ti >= 0)
+    let alpha = 1
+    for (let iter = 0; iter < 260 && alpha > 0.001; iter++) {
+      for (const nd of sn) { if (nd.fx !== null) continue; nd.vx += (50 - nd.x) * 0.03 * alpha; nd.vy += (50 - nd.y) * 0.03 * alpha }
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+        const a = sn[i], b = sn[j], dx = b.x - a.x, dy = b.y - a.y, d2 = dx * dx + dy * dy + 0.01, invD = 1 / Math.sqrt(d2), f = -42 * alpha / d2, fx = dx * invD * f, fy = dy * invD * f
+        if (a.fx === null) { a.vx -= fx; a.vy -= fy }
+        if (b.fx === null) { b.vx += fx; b.vy += fy }
+      }
+      for (const e of ea) {
+        const s = sn[e.si], t = sn[e.ti], dx = t.x - s.x, dy = t.y - s.y, d = Math.sqrt(dx * dx + dy * dy) || 0.01
+        const tgt = 24, str = 0.4 * alpha, delta = (d - tgt) / d * str, fx = dx * delta, fy = dy * delta
+        if (s.fx === null) { s.vx += fx; s.vy += fy }
+        if (t.fx === null) { t.vx -= fx; t.vy -= fy }
+      }
+      for (const nd of sn) {
+        if (nd.fx !== null) { nd.x = nd.fx; nd.y = nd.fy!; continue }
+        nd.vx *= 0.5; nd.vy *= 0.5; nd.x += nd.vx; nd.y += nd.vy
+        nd.x = Math.max(8, Math.min(92, nd.x)); nd.y = Math.max(8, Math.min(92, nd.y))
+      }
+      alpha -= alpha * 0.05
+    }
+    const m = new Map<string, { x: number; y: number }>()
+    sn.forEach((nd) => m.set(nd.id, { x: nd.x, y: nd.y }))
+    return m
+  }, [nodes, edges])
+
+  async function openNode(node: SolanaCNode) {
+    setSelectedId(node.id)
+    setSnapshot(null)
+    setSnapshotError(null)
+    if (node.role === 'mint') return // the mint itself has no wallet balance/activity to fetch
+    setSnapshotLoading(true)
+    try {
+      const res = await fetch('/api/solana-wallet-detail', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: node.address }) })
+      const json = await res.json().catch(() => null)
+      if (!res.ok || !json?.ok) setSnapshotError(typeof json?.error === 'string' ? json.error : 'Could not load wallet details.')
+      else setSnapshot(json.snapshot as SolanaWalletSnapshotUI)
+    } catch {
+      setSnapshotError('Could not load wallet details.')
+    } finally { setSnapshotLoading(false) }
+  }
+
+  const selectedNode = nodes.find((n) => n.id === selectedId) ?? null
+  const connectedWallets = selectedNode ? edges.filter((e) => e.from === selectedNode.id || e.to === selectedNode.id).map((e) => (e.from === selectedNode.id ? e.to : e.from)) : []
+
+  if (nodes.length === 0) {
+    return (
+      <div style={{ padding: '13px 15px', borderRadius: '11px', background: 'rgba(148,163,184,.04)', border: '1px solid rgba(148,163,184,.14)' }}>
+        <p style={{ margin: 0, fontSize: '11px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>No verified wallet relationships found.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: selectedNode ? '1fr 260px' : '1fr', gap: '12px' }}>
+      <div style={{ position: 'relative', height: '280px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.18)', background: 'radial-gradient(circle at 50% 50%, rgba(45,212,191,0.06), rgba(7,12,24,0.9))', overflow: 'hidden' }}>
+        <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%' }}>
+          {edges.map((e) => {
+            const s = positions.get(e.from), t = positions.get(e.to)
+            if (!s || !t) return null
+            const color = e.relationship === 'pumpfun_migration' ? '#facc15' : e.relationship === 'funding_wallet' || e.relationship === 'first_sol_sender' ? '#a855f7' : e.relationship === 'mint_authority' || e.relationship === 'freeze_authority' ? '#fb7185' : '#38bdf8'
+            return <line key={e.id} x1={s.x} y1={s.y} x2={t.x} y2={t.y} stroke={color} strokeWidth={0.6} opacity={0.6} />
+          })}
+          {nodes.map((node) => {
+            const p = positions.get(node.id) ?? { x: 50, y: 50 }
+            const isSelected = node.id === selectedId
+            const r = node.role === 'mint' ? 5.5 : 4.5
+            return (
+              <g key={node.id} transform={`translate(${p.x},${p.y})`} style={{ cursor: 'pointer' }} onClick={() => openNode(node)}>
+                <circle r={r} fill={`${SOLANA_CNODE_ROLE_COLOR[node.role]}33`} stroke={isSelected ? '#f8fafc' : SOLANA_CNODE_ROLE_COLOR[node.role]} strokeWidth={isSelected ? 0.9 : 0.5} />
+                <circle r={1.1} fill={SOLANA_CNODE_RISK_COLOR[node.risk]} />
+              </g>
+            )
+          })}
+        </svg>
+        <div style={{ position: 'absolute', left: '8px', bottom: '8px', display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          {(Object.keys(SOLANA_CNODE_ROLE_LABEL) as SolanaCNode['role'][]).filter((role) => nodes.some((n) => n.role === role)).map((role) => (
+            <div key={role} style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: SOLANA_CNODE_ROLE_COLOR[role] }} />
+              <span style={{ fontSize: '8.5px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)' }}>{SOLANA_CNODE_ROLE_LABEL[role]}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {selectedNode && (
+        <div style={{ padding: '12px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(9,15,29,0.9)', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '280px', overflowY: 'auto' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+            <p style={{ margin: 0, fontSize: '9px', letterSpacing: '.12em', color: SOLANA_CNODE_ROLE_COLOR[selectedNode.role], fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>{SOLANA_CNODE_ROLE_LABEL[selectedNode.role]}</p>
+            <button type="button" onClick={() => setSelectedId(null)} style={{ background: 'none', border: 'none', color: '#64748b', fontSize: '12px', cursor: 'pointer', padding: 0 }}>✕</button>
+          </div>
+          <p title={selectedNode.address} style={{ margin: 0, fontSize: '10px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', wordBreak: 'break-all' }}>{selectedNode.address}</p>
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: '#7dd3fc', border: '1px solid rgba(125,211,252,0.3)' }}>CONFIDENCE {selectedNode.confidence.toUpperCase()}</span>
+            <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: SOLANA_CNODE_RISK_COLOR[selectedNode.risk], border: `1px solid ${SOLANA_CNODE_RISK_COLOR[selectedNode.risk]}55` }}>RISK {selectedNode.risk.toUpperCase()}</span>
+          </div>
+          <div>
+            <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Evidence</p>
+            {selectedNode.evidence.map((ev, i) => (
+              <p key={i} style={{ margin: i === 0 ? 0 : '4px 0 0', fontSize: '10px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{ev}</p>
+            ))}
+          </div>
+          {selectedNode.role !== 'mint' && (
+            <div>
+              <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Wallet Snapshot</p>
+              {snapshotLoading && <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Loading…</p>}
+              {snapshotError && <p style={{ margin: 0, fontSize: '10px', color: '#f87171', fontFamily: 'var(--font-plex-mono)' }}>{snapshotError}</p>}
+              {snapshot && (
+                <>
+                  <p style={{ margin: 0, fontSize: '10px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>Balance: {snapshot.balanceResolved ? `${snapshot.balanceSol!.toFixed(4)} SOL` : 'Unavailable'}</p>
+                  <p style={{ margin: '4px 0 0', fontSize: '10px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)' }}>Last activity: {snapshot.lastActivityResolved ? (snapshot.lastActivityTimestamp ?? snapshot.lastActivitySignature) : 'Unavailable'}</p>
+                </>
+              )}
+            </div>
+          )}
+          {connectedWallets.length > 0 && (
+            <div>
+              <p style={{ margin: '0 0 4px', fontSize: '8.5px', letterSpacing: '.1em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Connected</p>
+              {connectedWallets.map((addr) => (
+                <p key={addr} title={addr} style={{ margin: 0, fontSize: '10px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono)' }}>{fmt(addr)}</p>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -5515,26 +5685,16 @@ export default function TerminalTokenScanner() {
                                   <div className="dev-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: '12px' }}>
                                     <StatCard label="Evidence Count" value={String(cm.evidenceCount)} accent={cm.evidenceCount > 0 ? '#2dd4bf' : '#94a3b8'} dim={cm.evidenceCount === 0} />
                                     <StatCard label="Cluster Confidence" value={cm.clusterConfidence.toUpperCase()} accent={cm.clusterConfidence === 'medium' ? '#34d399' : cm.clusterConfidence === 'low' ? '#fbbf24' : '#94a3b8'} dim={cm.clusterConfidence === 'none'} />
-                                    <StatCard label="Risk Level" value={cm.riskLevel === 'unknown' ? 'Unknown' : cm.riskLevel.toUpperCase()} accent={riskColor} dim={cm.riskLevel === 'unknown'} />
-                                    <StatCard label="Funding Path Depth" value={`${cm.fundingPath.length} wallet(s)`} accent="#5eead4" dim={cm.fundingPath.length === 0} />
+                                    <StatCard label="Cluster Risk" value={cm.riskLevel === 'unknown' ? 'Unknown' : cm.riskLevel.toUpperCase()} accent={riskColor} dim={cm.riskLevel === 'unknown'} />
+                                    <StatCard label="Funding Depth" value={`${cm.fundingDepth} hop(s)`} accent="#5eead4" dim={cm.fundingDepth === 0} />
                                   </div>
                                   <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
-                                    <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Funding Path</p>
+                                    <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Summary</p>
                                     <p style={{ margin: 0, fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{cm.summary}</p>
                                     {cm.riskLevel !== 'unknown' && <p style={{ margin: '8px 0 0', fontSize: '11px', color: riskColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{cm.riskReason}</p>}
                                   </div>
-                                  {cm.edges.length > 0 && (
-                                    <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
-                                      <p style={{ margin: '0 0 8px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Relationship Graph</p>
-                                      {cm.edges.map((e, i) => (
-                                        <div key={i} style={{ marginTop: i === 0 ? 0 : '8px' }}>
-                                          <p style={{ margin: 0, fontSize: '10.5px', color: '#7dd3fc', fontFamily: 'var(--font-plex-mono)' }}>{fmtAddr(e.from)} → {fmtAddr(e.to)} <span style={{ color: '#64748b' }}>({e.relationship.replace(/_/g, ' ')})</span></p>
-                                          <p style={{ margin: '2px 0 0', fontSize: '10px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{e.evidence}</p>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  )}
-                                  <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>Scope: this traces ONE funding hop past the likely creator wallet. Shared-signer, shared-LP-creation, shared-ATA-creation and shared-authority-history relationships across OTHER mints are not attempted — verifying those would require indexing every candidate wallet&apos;s full transaction history, which this codebase does not have an indexer for.</p>
+                                  <SolanaClusterGraphPanel clusterMap={cm} />
+                                  <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>Scope: nodes/edges come from real, verified evidence — creator + funding-wallet trace (Helius Enhanced Transactions), mint/freeze authority (Alchemy/Solana RPC), and LP pool identity (Solana RPC). Shared-signer, shared-token-creation, shared-ATA-creation and shared-authority-history relationships across OTHER mints, plus metadata authority/treasury/liquidity-wallet/market-maker roles, are not attempted — verifying those would require indexing every candidate wallet&apos;s full transaction history or a Metaplex metadata read this codebase does not perform.</p>
                                 </>
                               )}
                             </div>

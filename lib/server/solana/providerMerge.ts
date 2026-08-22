@@ -109,17 +109,6 @@ export async function runSolanaProviderMerge(
   const deepCreator = opts.deep === true ? await analyzeSolanaDeepCreator(mintAddress, fetchImpl) : null
   if (deepCreator) evidenceGaps.push(...deepCreator.evidenceGaps)
 
-  // ── 5c. Deep Mode cluster/funding trace — EXPLICIT OPT-IN ONLY, one further hop past the
-  // creator wallet. Requires the creator trace above (runs it if not already present via opts.deep
-  // so a caller only needs to pass opts.deepCluster). See clusterAnalyzer.ts's header for exactly
-  // what relationship types are and are not attempted.
-  let clusterMap: SolanaClusterMap | null = null
-  if (opts.deepCluster === true) {
-    const creatorTraceForCluster = deepCreator?.creatorTrace ?? (await analyzeSolanaDeepCreator(mintAddress, fetchImpl)).creatorTrace
-    clusterMap = await analyzeSolanaCluster({ mintAddress, creatorTrace: creatorTraceForCluster, fetchImpl })
-    if (clusterMap.evidenceCount === 0) evidenceGaps.push('No verified wallet relationships found for this mint\'s creator wallet.')
-  }
-
   // ── 6. GoldRush / Covalent (no verified Solana endpoint — cleanly unavailable) ─
   const goldrushOrCovalent = solanaGoldrushEnrichment()
 
@@ -131,6 +120,17 @@ export async function runSolanaProviderMerge(
   const poolAddress = market.data?.primaryPoolAddress ?? null
   const pool = await analyzeSolanaPool({ poolAddress, rpcUrl, fetchImpl })
   evidenceGaps.push(...pool.evidenceGaps)
+
+  // ── 8b. Deep Mode cluster/funding trace — EXPLICIT OPT-IN ONLY, one further hop past the
+  // creator wallet, plus mint/freeze-authority and LP-pool nodes. Requires the creator trace above
+  // (runs it if not already present via opts.deep so a caller only needs to pass opts.deepCluster).
+  // See clusterAnalyzer.ts's header for exactly what relationship types are and are not attempted.
+  let clusterMap: SolanaClusterMap | null = null
+  if (opts.deepCluster === true) {
+    const creatorTraceForCluster = deepCreator?.creatorTrace ?? (await analyzeSolanaDeepCreator(mintAddress, fetchImpl)).creatorTrace
+    clusterMap = await analyzeSolanaCluster({ mintAddress, creatorTrace: creatorTraceForCluster, mintAuthority: mint.mintAuthority, freezeAuthority: mint.freezeAuthority, poolProgram: pool.poolProgram, fetchImpl })
+    if (clusterMap.evidenceCount === 0) evidenceGaps.push('No verified wallet relationships found for this mint\'s creator wallet.')
+  }
 
   // ── 9. Risk read (Solana-native — see riskEngine.ts) ────────────────────────
   const betaRisk = scoreSolanaBeta({
