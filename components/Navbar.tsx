@@ -143,11 +143,7 @@ export default function Navbar() {
           0%,100% { opacity: 1; box-shadow: 0 0 5px rgba(74,222,128,0.8); }
           50%      { opacity: 0.5; box-shadow: 0 0 2px rgba(74,222,128,0.3); }
         }
-        @keyframes nav-shell-glow {
-          0%,100% { box-shadow: 0 0 0 1px rgba(45,212,191,0.14), 0 14px 46px rgba(0,0,0,0.55), 0 0 30px rgba(45,212,191,0.06), 0 0 40px rgba(139,92,246,0.05); }
-          50%      { box-shadow: 0 0 0 1px rgba(139,92,246,0.18), 0 14px 46px rgba(0,0,0,0.55), 0 0 40px rgba(45,212,191,0.09), 0 0 54px rgba(139,92,246,0.08); }
-        }
-        .nav-shell { animation: nav-shell-glow 6s ease-in-out infinite; overflow: hidden; }
+        .nav-shell { box-shadow: 0 0 0 1px rgba(182,102,243,0.16), 0 14px 46px rgba(0,0,0,0.55), 0 0 30px rgba(182,102,243,0.06), 0 0 40px rgba(224,83,194,0.05); overflow: hidden; }
 
         .nav-link {
           color: rgba(255,255,255,0.68);
@@ -159,7 +155,7 @@ export default function Navbar() {
           padding: 6px 0;
           white-space: nowrap;
         }
-        .nav-link:hover { color: #fff; text-shadow: 0 0 14px rgba(45,212,191,0.22); }
+        .nav-link:hover { color: #fff; text-shadow: 0 0 14px rgba(182,102,243,0.24); }
 
         .tools-btn {
           background: none; border: none;
@@ -171,7 +167,7 @@ export default function Navbar() {
           padding: 6px 0; transition: color 0.15s, text-shadow 0.15s;
           white-space: nowrap;
         }
-        .tools-btn:hover, .tools-btn.open { color: #fff; text-shadow: 0 0 16px rgba(45,212,191,0.25); }
+        .tools-btn:hover, .tools-btn.open { color: #fff; text-shadow: 0 0 16px rgba(182,102,243,0.26); }
 
         .tools-item {
           display: flex; align-items: center; justify-content: space-between;
@@ -182,8 +178,8 @@ export default function Navbar() {
           border: 1px solid transparent;
         }
         .tools-item:hover {
-          background: rgba(45,212,191,0.07);
-          border-color: rgba(45,212,191,0.14);
+          background: rgba(182,102,243,0.08);
+          border-color: rgba(182,102,243,0.16);
           color: #fff;
           transform: translateX(3px);
         }
@@ -224,30 +220,39 @@ export default function Navbar() {
           border-color: rgba(255,255,255,0.38);
           color: #fff;
           background: rgba(255,255,255,0.07);
-          box-shadow: 0 0 22px rgba(45,212,191,0.12);
+          box-shadow: 0 0 22px rgba(182,102,243,0.14);
         }
 
         .btn-access {
+          position: relative; overflow: hidden;
           display: inline-flex; align-items: center; gap: 6px;
           padding: 9px 18px; border-radius: 999px;
-          background: linear-gradient(115deg, rgba(45,212,191,0.22) 0%, rgba(56,189,248,0.28) 28%, rgba(124,58,237,0.42) 72%, rgba(168,85,247,0.62) 100%);
-          border: 1px solid rgba(167,139,250,0.58);
-          color: #fff;
+          background: rgba(83,243,195,0.04);
+          border: 1.5px solid rgba(83,243,195,0.4);
+          color: #bdf5e6;
           font-size: 11px; font-weight: 800;
           text-decoration: none;
           letter-spacing: 0.07em;
           text-transform: uppercase;
-          box-shadow: 0 0 14px rgba(45,212,191,0.16), 0 0 20px rgba(139,92,246,0.16);
-          transition: box-shadow 0.15s, border-color 0.15s, background 0.15s, transform 0.15s;
+          transition: box-shadow 0.18s, border-color 0.18s, background 0.18s, color 0.18s, transform 0.18s;
           white-space: nowrap;
           flex-shrink: 0;
         }
         .btn-access:hover {
-          border-color: rgba(196,181,253,0.86);
-          background: linear-gradient(115deg, rgba(45,212,191,0.26) 0%, rgba(56,189,248,0.34) 28%, rgba(124,58,237,0.52) 72%, rgba(168,85,247,0.76) 100%);
-          box-shadow: 0 0 24px rgba(45,212,191,0.26), 0 0 36px rgba(139,92,246,0.26);
+          border-color: rgba(83,243,195,0.65);
+          background: rgba(83,243,195,0.09);
+          color: #53F3C3;
+          box-shadow: 0 6px 18px rgba(83,243,195,0.16);
           transform: translateY(-1px);
         }
+        .btn-access::after {
+          content: ''; position: absolute; top: 0; left: -70%; width: 45%; height: 100%;
+          background: linear-gradient(115deg, transparent, rgba(255,255,255,0.5), transparent);
+          transform: skewX(-18deg); transition: left 0.55s ease;
+        }
+        .btn-access:hover::after { left: 130%; }
+        .btn-access-go { display: inline-flex; transition: transform 0.25s ease; }
+        .btn-access:hover .btn-access-go { transform: translateX(3px); }
 
         .mob-ham {
           display: none;
@@ -285,7 +290,7 @@ export default function Navbar() {
           transition: background 0.15s, color 0.15s;
           border: 1px solid transparent;
         }
-        .mob-tool-link:hover { background: rgba(45,212,191,0.08); border-color: rgba(45,212,191,0.14); color: #fff; }
+        .mob-tool-link:hover { background: rgba(182,102,243,0.08); border-color: rgba(182,102,243,0.16); color: #fff; }
 
         /* Account menu chip — compact, avatar-led */
         .nav-account-chip {
@@ -293,7 +298,7 @@ export default function Navbar() {
         }
         .nav-account-chip:hover {
           background: rgba(255,255,255,0.06) !important;
-          border-color: rgba(45,212,191,0.42) !important;
+          border-color: rgba(182,102,243,0.42) !important;
         }
         /* Elite account pill — subtle gold treatment, no animation (static glow only, per the
            "avoid animating box-shadow/filter" constraint). Higher specificity than the teal
@@ -403,20 +408,19 @@ export default function Navbar() {
           {/* Subtle top accent line */}
           <div style={{
             position: 'absolute', top: 0, left: '8%', right: '8%', height: '1px',
-            background: 'linear-gradient(90deg, transparent 0%, rgba(45,212,191,0.26) 35%, rgba(139,92,246,0.22) 65%, transparent 100%)',
+            background: 'linear-gradient(90deg, transparent 0%, rgba(182,102,243,0.30) 35%, rgba(224,83,194,0.24) 65%, transparent 100%)',
             borderRadius: '1px',
           }} />
 
           {/* Logo */}
-          <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none', flexShrink: 0 }}>
-            <Image src="/cl-logo.png" alt="ChainLens AI" width={34} height={34} priority />
+          <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none', flexShrink: 0 }}>
+            <span style={{ position: 'relative', width: 44, height: 44, margin: '-6px -2px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Image src="/cl-logo.png" alt="ChainLens AI" width={44} height={44} priority style={{ objectFit: 'contain' }} />
+            </span>
             <div>
               <div style={{ fontFamily: 'var(--font-inter, Inter, sans-serif)', fontWeight: 800, fontSize: '17px', lineHeight: 1.15 }}>
                 <span style={{ color: '#f1f5f9' }}>Chain</span>
-                <span style={{
-                  background: 'linear-gradient(135deg, #2DD4BF 0%, #8b5cf6 60%, #ec4899 100%)',
-                  WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text',
-                }}>Lens</span>
+                <span style={{ color: '#f1f5f9' }}>Lens</span>
               </div>
               <div style={{
                 fontSize: '8px', color: 'rgba(255,255,255,0.52)',
@@ -462,14 +466,14 @@ export default function Navbar() {
                     display: 'grid',
                     gridTemplateColumns: '1fr 1fr 1fr',
                     gap: '10px',
-                    boxShadow: '0 20px 60px rgba(0,0,0,0.85), 0 0 0 0.5px rgba(45,212,191,0.06)',
+                    boxShadow: '0 20px 60px rgba(0,0,0,0.85), 0 0 0 0.5px rgba(182,102,243,0.08)',
                     zIndex: 200,
                   }}
                   onMouseDown={e => e.preventDefault()}
                 >
                   <div style={{
                     position: 'absolute', top: 0, left: '10%', right: '10%', height: '1px',
-                    background: 'linear-gradient(90deg, transparent, rgba(236,72,153,0.35), rgba(45,212,191,0.35), rgba(251,191,36,0.35), transparent)',
+                    background: 'linear-gradient(90deg, transparent, rgba(182,102,243,0.35), rgba(224,83,194,0.35), rgba(83,243,195,0.35), transparent)',
                   }} />
 
                   {TIER_COLUMNS.map((col, ci) => (
@@ -539,7 +543,7 @@ export default function Navbar() {
               style={{
                 display: 'flex', alignItems: 'center', gap: '5px',
                 padding: '5px 11px',
-                border: '1px solid rgba(45,212,191,0.16)',
+                border: '1px solid rgba(83,243,195,0.18)',
                 borderRadius: '999px',
                 background: 'rgba(255,255,255,0.03)',
                 marginRight: '2px',
@@ -560,7 +564,7 @@ export default function Navbar() {
               }}>
                 <span style={{ color: 'rgba(255,255,255,0.55)' }}>LIVE</span>
                 <span style={{ color: 'rgba(255,255,255,0.14)', margin: '0 5px' }}>|</span>
-                <span style={{ color: 'rgba(139,92,246,0.62)' }}>CORTEX</span>
+                <span style={{ color: 'rgba(182,102,243,0.68)' }}>CORTEX</span>
               </span>
             </div>
 
@@ -627,9 +631,11 @@ export default function Navbar() {
             )}
             <Link href="/pricing" className="btn-access" prefetch={true}>
               Get Access
-              <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
-                <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
+              <span className="btn-access-go">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none">
+                  <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </span>
             </Link>
           </div>
 
@@ -774,10 +780,10 @@ export default function Navbar() {
               <Link href="/sign-up" onClick={() => setMobileOpen(false)} style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 padding: '14px 20px', borderRadius: '999px',
-                border: '1px solid rgba(45,212,191,0.25)',
-                color: 'rgba(45,212,191,0.90)', fontSize: '15px', fontWeight: 600,
+                border: '1px solid rgba(83,243,195,0.30)',
+                color: 'rgba(83,243,195,0.90)', fontSize: '15px', fontWeight: 600,
                 textDecoration: 'none', marginBottom: '10px',
-                background: 'rgba(45,212,191,0.06)',
+                background: 'rgba(83,243,195,0.06)',
               }}>Sign Up</Link>
             </>
           )}
@@ -785,11 +791,10 @@ export default function Navbar() {
           <Link href="/pricing" onClick={() => setMobileOpen(false)} style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px',
             padding: '14px 20px', borderRadius: '999px',
-            background: 'linear-gradient(115deg, rgba(45,212,191,0.20) 0%, rgba(56,189,248,0.28) 28%, rgba(124,58,237,0.40) 72%, rgba(168,85,247,0.62) 100%)',
-            border: '1px solid rgba(167,139,250,0.66)',
-            color: '#fff', fontSize: '15px', fontWeight: 800,
+            background: 'rgba(83,243,195,0.06)',
+            border: '1.5px solid rgba(83,243,195,0.45)',
+            color: '#bdf5e6', fontSize: '15px', fontWeight: 800,
             textDecoration: 'none',
-            boxShadow: '0 0 18px rgba(45,212,191,0.18), 0 0 30px rgba(139,92,246,0.18)',
           }}>
             Get Access
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
