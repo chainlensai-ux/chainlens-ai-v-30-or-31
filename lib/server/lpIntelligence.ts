@@ -361,7 +361,7 @@ export interface SharedLpMeta {
 export function buildSharedLpMeta(params: {
   selection: CanonicalPoolSelection
   display: DisplayLpModelResult
-  chain: 'eth' | 'base'
+  chain: 'eth' | 'base' | 'robinhood'
 }): SharedLpMeta {
   const { selection, display, chain } = params
   const notApplicable = display.displayLpModel === 'concentrated_liquidity' || display.displayLpModel === 'no_pool'
@@ -374,11 +374,15 @@ export function buildSharedLpMeta(params: {
     verificationPoolType: notApplicable ? null : (selection.verifyPool?.poolType ?? null),
     v2PoolCandidatesCount: selection.v2Candidates.length,
     protocolPoolCandidatesCount: selection.protocolCandidates.length,
-    // No verified Base LP-locker registry is configured yet — never fabricate "locked"
-    // via locker-address detection on Base.
-    lockerRegistryStatus: chain === 'base' ? 'empty' : 'configured',
-    lockerDetectionAvailable: chain !== 'base',
-    lockProofCoverage: display.lockBurnApplicable ? (chain === 'base' ? 'limited' : 'full') : 'none',
+    // No verified LP-locker registry is configured for Base or Robinhood Chain — never fabricate
+    // "locked" via locker-address detection on a chain whose locker set this codebase has not
+    // verified. Ethereum is the only chain with a real, verified locker list
+    // (LP_LOCK_BURN_REGISTRY.lockersByChain), so it is the only one reporting full coverage.
+    // Robinhood joins Base here (rather than defaulting into the 'configured'/'full' branch) as
+    // part of making Robinhood a real ChainKey — see app/api/liquidity-safety/route.ts's header.
+    lockerRegistryStatus: chain === 'eth' ? 'configured' : 'empty',
+    lockerDetectionAvailable: chain === 'eth',
+    lockProofCoverage: display.lockBurnApplicable ? (chain === 'eth' ? 'full' : 'limited') : 'none',
     reason: display.lockBurnReason,
   }
 }

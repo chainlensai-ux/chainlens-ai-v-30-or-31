@@ -512,22 +512,26 @@ function verifiedSr(overrides = {}) {
 
 {
   // THE HEADLINE FIX, DISCLOSED: clean authority + concentration + market alone, WITHOUT a
-  // verified creator or an established pool, must not reach Open Check — the exact scenario a real
-  // scan reported as reading too high (85/100, "Open Check") for a young Token-2022 meme coin.
+  // verified creator or an established pool, must not reach the top band — the exact scenario a real
+  // scan reported as reading too high (85/100) for a young Token-2022 meme coin. (The top band was
+  // labelled "Open Check" when this test was written; it is now "Low Risk Signals" — same band,
+  // clearer wording, see solanaConfidenceScore.ts's VERDICT VOCABULARY note.)
   const base = computeSolanaConfidenceScore(baseSr())
-  check('clean authority/concentration/market alone (no deep checks, young pool) does NOT reach Open Check', base.verdict !== 'Open Check')
+  check('clean authority/concentration/market alone (no deep checks, young pool) does NOT reach the top band', base.verdict !== 'Low Risk Signals')
   check('the score is genuinely capped below the raw weighted total', base.score < base.uncappedScore)
   check('a cap reason is disclosed, not a silent number change', base.scoreCapReasons.length > 0)
-  check('score color for a capped scan is not the neutral "Open Check" styling', base.color !== '#94a3b8')
+  check('the top band label never appears on a scaled-down scan', base.verdict === 'Caution' || base.verdict === 'High Risk')
 }
 {
   // Only with a confirmed creator, a clean cluster check, and an established pool can the top
-  // "Open Check" band be reached — proving the cap is reachable, not a permanently-stuck ceiling.
+  // band be reached — proving the cap is reachable, not a permanently-stuck ceiling.
   const verified = computeSolanaConfidenceScore(verifiedSr())
-  check('fully verified, mature, evidenced scan reaches Open Check', verified.verdict === 'Open Check')
+  check('fully verified, mature, evidenced scan reaches the top band', verified.verdict === 'Low Risk Signals')
   check('fully verified scan has no active cap reasons', verified.scoreCapReasons.length === 0)
   check('fully verified scan never claims a "Safe"/"Strong"/"Verified" wording', !JSON.stringify(verified).match(/\b(safe|strong|verified as)\b/i))
-  check('score color for Open Check is neutral, not green "safe" styling', verified.color === '#94a3b8')
+  // WORDING GUARD, DISCLOSED: the top label states what was actually found (few risk signals in the
+  // supported checks) and must never drift into an unqualified safety claim.
+  check('the top band label is a finding, never a safety guarantee', verified.verdict === 'Low Risk Signals' && !/safe|guaranteed/i.test(verified.verdict))
 }
 {
   // REGRESSION, DISCLOSED: a live report that the score reads "the same or extremely similar for
@@ -559,7 +563,7 @@ function verifiedSr(overrides = {}) {
     topAccountConcentration: null, marketDataAvailable: false, marketData: null, resolvedTokenName: null,
   }))
   check('zero-evidence scan scores low, never implies safety', noEvidence.score <= 30)
-  check('zero-evidence scan is never Open Check (that label is reserved for genuinely good evidence)', noEvidence.verdict !== 'Open Check')
+  check('zero-evidence scan never reaches the top band (that label is reserved for genuinely good evidence)', noEvidence.verdict !== 'Low Risk Signals')
 }
 {
   const sc = computeSolanaConfidenceScore(baseSr())
@@ -1488,6 +1492,29 @@ function cortexSrTopTier(overrides = {}) {
   check('the score is genuinely capped below the raw weighted total', cx.score < cx.uncappedScore)
   check('a cap reason is disclosed, not a silent number change', cx.scoreCapReasons.length > 0)
   check('never claims "SAFE" anywhere in the verdict, factors, or reasoning', !JSON.stringify(cx).toUpperCase().includes('SAFE'))
+}
+{
+  // REGRESSION, DISCLOSED: a live report that "SOLANA CORTEX RISK ENGINE · INVESTMENT RISK" reads
+  // "always the same" traced to applyMaturityAndEvidenceCaps imposing FIXED ceilings. Two of them
+  // fire on nearly every real scan — creatorConfidence.tier === 'UNKNOWN' is the DEFAULT (Deep
+  // Creator Check is opt-in) and pinned the score to exactly 70; an under-a-day pool pinned it to
+  // exactly 58. A ceiling DISCARDS the raw score, so every token tripping the same gate landed on
+  // the SAME number regardless of its nine categories. Fixed by replacing each ceiling with a
+  // continuous multiplier. These assertions prove tokens that share a gate still score apart.
+  const base = cortexSr()
+  const young = computeSolanaCortexRisk(cortexSr({ marketData: { ...base.marketData, pairAgeLabel: '2d', pairAgeDays: 2 } }))
+  const older = computeSolanaCortexRisk(cortexSr({ marketData: { ...base.marketData, pairAgeLabel: '20d', pairAgeDays: 20 } }))
+  const oldest = computeSolanaCortexRisk(cortexSr({ marketData: { ...base.marketData, pairAgeLabel: '120d', pairAgeDays: 120 } }))
+  check('all three scans share the same UNKNOWN creator tier — the common, default case that caused the collapse', base.creatorConfidence.tier === 'UNKNOWN')
+  check('a 2-day, a 20-day and a 120-day-old token no longer collapse onto one shared number', new Set([young.score, older.score, oldest.score]).size === 3)
+  check('the score still rises with real maturity, in the right order', young.score < older.score && older.score < oldest.score)
+  check('no scan lands on the old fixed 70 ceiling purely because the creator tier is UNKNOWN', !(young.score === 70 && older.score === 70 && oldest.score === 70))
+  // Differing ONLY in a non-maturity category must also still move the final score — proving the
+  // scaling multiplies the real category total instead of replacing it.
+  const thinLiquidity = computeSolanaCortexRisk(cortexSr({ marketData: { ...base.marketData, pairAgeDays: 20, liquidityUsd: 900 } }))
+  const deepLiquidity = computeSolanaCortexRisk(cortexSr({ marketData: { ...base.marketData, pairAgeDays: 20, liquidityUsd: 250_000 } }))
+  check('two same-age tokens differing only in real liquidity depth still score differently', thinLiquidity.score !== deepLiquidity.score)
+  check('the deeper-liquidity token scores higher, not merely different', deepLiquidity.score > thinLiquidity.score)
 }
 {
   // Only with age + evidence + a confirmed creator + a clean cluster check can the top tier be

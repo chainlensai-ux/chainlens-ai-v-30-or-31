@@ -150,6 +150,21 @@ const fullTopAccounts = [
   check('healthy funding + revoked authorities + vault-adjusted concentration => risk factors include standard reads', cm.riskFactors.some((f) => /revoked/i.test(f)))
   check('every node has at least one real evidence string', cm.nodes.every((n) => n.evidence.length > 0 && n.evidence.every((e) => typeof e === 'string' && e.length > 0)))
   check('every edge id is unique', new Set(cm.edges.map((e) => e.id)).size === cm.edges.length)
+
+  // ── supplyPercent, DISCLOSED: added so the Dev tab's bubblemap can size a bubble by a wallet's
+  // REAL share of supply instead of a decorative constant. The honesty rule this must hold to is
+  // that null means "not applicable or not measured", never "holds zero" — a bubble sized off a
+  // fabricated 0 would silently assert a fact the scan never established.
+  const vaultNode = cm.nodes.find((n) => n.role === 'lp_vault')
+  const whaleNode = cm.nodes.find((n) => n.address === 'WhaleAta11111111111111111111111111111111' || (n.role === 'top_holder' && n.supplyPercent === 8))
+  check('the LP vault node carries its real measured share (50%), matching its own evidence text', vaultNode.supplyPercent === 50)
+  check('a top-holder node carries its real measured share (8%)', whaleNode != null && whaleNode.supplyPercent === 8)
+  check('the creator node, which entered the graph before its holdings were known, is back-filled with its real 6% share', cm.nodes.find((n) => n.address === CREATOR).supplyPercent === 6)
+  check('the scanned mint itself has a NULL share — it holds none of its own supply, and null is never rendered as 0%', cm.nodes.find((n) => n.role === 'mint').supplyPercent === null)
+  check('prior-launch nodes (a different token entirely) carry null, not a fabricated share of THIS supply', cm.nodes.filter((n) => n.role === 'prior_mint').every((n) => n.supplyPercent === null))
+  check('no node ever reports a negative share', cm.nodes.every((n) => n.supplyPercent === null || n.supplyPercent >= 0))
+  check('every node defines supplyPercent explicitly — a missing field would size a bubble off undefined', cm.nodes.every((n) => 'supplyPercent' in n))
+  check('a measured share always agrees with the percent cited in that node\'s own evidence', cm.nodes.filter((n) => n.supplyPercent != null).every((n) => n.evidence.join(' ').includes(`${n.supplyPercent.toFixed(2)}%`)))
 }
 
 // ─── Serial-launch pattern (3+ launch events in sample) => elevated, sample-scoped wording ──────

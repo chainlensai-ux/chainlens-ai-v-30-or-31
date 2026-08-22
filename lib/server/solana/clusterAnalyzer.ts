@@ -77,6 +77,19 @@ export type SolanaClusterNode = {
   confidence: SolanaClusterNodeConfidence
   risk: SolanaClusterNodeRisk
   evidence: string[]
+  /**
+   * This node's REAL share of tracked supply, when that is a meaningful and measured fact for it —
+   * i.e. top-holder, LP-vault, and any wallet whose owner-verified token account(s) were found in
+   * the getTokenLargestAccounts sample (including a creator/funder/authority that also turns out to
+   * hold supply). Summed across every token account resolving to the same owner, exactly the value
+   * already cited in that node's own evidence text.
+   *
+   * Null means NOT APPLICABLE OR NOT MEASURED, never "zero": the mint itself has no share of its
+   * own supply, and a wallet outside the largest-accounts sample has an unmeasured (not absent)
+   * balance. Consumers sizing a bubble by this MUST render null as a neutral default size, never as
+   * an empty/minimal bubble that would read as a verified "holds nothing" claim.
+   */
+  supplyPercent: number | null
 }
 
 export type SolanaClusterConfidence = 'none' | 'low' | 'medium' | 'high'
@@ -178,6 +191,7 @@ export async function analyzeSolanaCluster(params: {
   addNode({
     id: mintAddress, address: mintAddress, label: 'Token mint', role: 'mint', confidence: 'high', risk: 'neutral',
     evidence: ['This is the scanned mint account.'],
+    supplyPercent: null, // Not applicable: a mint holds no share of its own supply.
   })
 
   // ── Creator wallet + parallel deep reads (funding hop 1, recent launches, owner resolution) ──
@@ -194,6 +208,7 @@ export async function analyzeSolanaCluster(params: {
     addNode({
       id: creatorWallet, address: creatorWallet, label: 'Creator wallet', role: 'creator_wallet', confidence: creatorConfidence, risk: 'unknown',
       evidence: [`Paid fees for this mint's earliest found transaction${creatorTrace.resolved.transactionSource ? ` (source: ${creatorTrace.resolved.transactionSource})` : ''}.`],
+      supplyPercent: null, // Unmeasured here; set below only if this wallet also appears in the largest-accounts sample.
     })
     addEdge({
       id: `${creatorWallet}->${mintAddress}:shared_fee_payer`,
@@ -220,6 +235,7 @@ export async function analyzeSolanaCluster(params: {
       confidence: fundingTrace.reachedGenesis ? 'medium' : 'low',
       risk: isFresh ? 'elevated' : 'standard',
       evidence: [`Sent the first SOL transfer into ${creatorWallet}${amountLabel}, found in that wallet's earliest transaction.`],
+      supplyPercent: null, // Unmeasured here; set below only if this wallet also appears in the largest-accounts sample.
     })
     const creatorNode = nodesByAddress.get(creatorWallet)
     if (creatorNode) {
@@ -243,6 +259,7 @@ export async function analyzeSolanaCluster(params: {
         id: funder2, address: funder2, label: 'Funding wallet (hop 2)', role: 'funding_wallet',
         confidence: fundingTraceHop2.reachedGenesis ? 'medium' : 'low', risk: 'neutral',
         evidence: [`Sent the first SOL transfer into ${funder}${amount2} — the second verified hop up the funding chain.`],
+        supplyPercent: null, // Unmeasured here; set below only if this wallet also appears in the largest-accounts sample.
       })
       addEdge({
         id: `${funder2}->${funder}:funding_wallet`,
@@ -260,6 +277,7 @@ export async function analyzeSolanaCluster(params: {
     addNode({
       id: mintAuthority, address: mintAuthority, label: 'Mint authority', role: 'mint_authority', confidence: 'high', risk: 'elevated',
       evidence: [`Verified on-chain as the active mint authority for ${mintAddress} — can mint additional supply at any time${merged ? '. SHARED ROLE: this wallet already appears in this graph in another verified role' : ''}.`],
+      supplyPercent: null, // Unmeasured here; set below only if this wallet also appears in the largest-accounts sample.
     })
     addEdge({
       id: `${mintAuthority}->${mintAddress}:mint_authority`,
@@ -273,6 +291,7 @@ export async function analyzeSolanaCluster(params: {
     addNode({
       id: freezeAuthority, address: freezeAuthority, label: 'Freeze authority', role: 'freeze_authority', confidence: 'high', risk: 'elevated',
       evidence: [`Verified on-chain as the active freeze authority for ${mintAddress} — can freeze any holder's token account${merged ? '. SHARED ROLE: this wallet already appears in this graph in another verified role' : ''}.`],
+      supplyPercent: null, // Unmeasured here; set below only if this wallet also appears in the largest-accounts sample.
     })
     addEdge({
       id: `${freezeAuthority}->${mintAddress}:freeze_authority`,
@@ -289,6 +308,7 @@ export async function analyzeSolanaCluster(params: {
       id: poolAddress, address: poolAddress, label: poolProgram.label ?? 'Pool (unrecognized program)', role: 'lp_pool',
       confidence: poolProgram.verdict === 'verified_official_pool' ? 'high' : 'low', risk: 'neutral',
       evidence: [`Pool account's owning program verified on-chain${poolProgram.label ? ` as ${poolProgram.label}` : ''} (Solana RPC getAccountInfo).`],
+      supplyPercent: null, // The pool program account itself; its vault's real share is carried by the lp_vault node.
     })
     addEdge({
       id: `${mintAddress}->${poolAddress}:lp_creation`,
@@ -334,6 +354,7 @@ export async function analyzeSolanaCluster(params: {
         addNode({
           id: ata, address: ata, label: 'LP vault', role: 'lp_vault', confidence: 'high', risk: 'neutral',
           evidence: [`Token account ${rankLabel} holding ${pctLabel} of supply, owner-verified on-chain as the pool itself (${poolAddress}) — a real LP vault, not a whale.`],
+          supplyPercent: agg.totalPercent, // Real measured share — the exact value cited in the evidence above.
         })
         addEdge({ id: `${ata}->${poolAddress}:vault_of`, from: ata, to: poolAddress, relationship: 'vault_of', evidence: `Token account's owner is the verified pool address — this is the pool's own vault.`, signature: null })
         addEdge({ id: `${ata}->${mintAddress}:holds_supply`, from: ata, to: mintAddress, relationship: 'holds_supply', evidence: `Holds ${pctLabel} of supply (pool-owned vault, verified via getMultipleAccounts owner read).`, signature: null })
@@ -345,6 +366,10 @@ export async function analyzeSolanaCluster(params: {
         // Real insider-holding discovery: a wallet already in the graph (creator/funder/authority)
         // owns a top token account — verified by address equality from the owner read.
         existing.evidence.push(`ALSO holds ${pctLabel} of this token's supply (token account ${ataLabel}, rank ${rankLabel}) — owner-verified on-chain.`)
+        // The node was created before its holdings were known (it entered the graph as a creator/
+        // funder/authority). This is the point at which its share becomes a MEASURED fact, so the
+        // previously-null supplyPercent is filled in with the real value.
+        existing.supplyPercent = agg.totalPercent
         if (agg.totalPercent != null && agg.totalPercent >= 5) { existing.risk = 'elevated'; insiderHoldingPercent = Math.max(insiderHoldingPercent, agg.totalPercent) }
         addEdge({ id: `${agg.owner}->${mintAddress}:holds_supply`, from: agg.owner, to: mintAddress, relationship: 'holds_supply', evidence: `Holds ${pctLabel} of supply across token account(s) ${ataLabel} — owner-verified on-chain.`, signature: null })
         continue
@@ -359,6 +384,7 @@ export async function analyzeSolanaCluster(params: {
         evidence: [ownerKnown
           ? `Owner wallet of token account ${rankLabel} (${ataLabel}), holding ${pctLabel} of supply — owner resolved via one on-chain getMultipleAccounts read.`
           : `Token account holding ${pctLabel} of supply — its owner wallet could not be resolved this scan (${ownerResolution.attempted ? `owner read failed: ${ownerResolution.errorReason ?? 'account not parsed'}` : 'owner resolution was not attempted — RPC endpoint unavailable to the cluster engine'}), so the account address itself is shown.`],
+        supplyPercent: agg.totalPercent, // Real measured share — the exact value cited in the evidence above.
       })
       addEdge({ id: `${nodeAddr}->${mintAddress}:holds_supply`, from: nodeAddr, to: mintAddress, relationship: 'holds_supply', evidence: `Holds ${pctLabel} of supply${dominant ? ' — a dominant single-holder share, not identified as a pool vault' : ''}.`, signature: null })
     }
@@ -373,6 +399,7 @@ export async function analyzeSolanaCluster(params: {
       addNode({
         id: mint, address: mint, label: 'Prior launch (recent sample)', role: 'prior_mint', confidence: 'medium', risk: 'neutral',
         evidence: [`A ${ev.type}${ev.source ? ` (${ev.source})` : ''} event naming this mint appears in the creator wallet's most recent activity sample${ev.timestamp ? ` at ${ev.timestamp}` : ''}. Sample-scoped evidence — not a full launch history.`],
+        supplyPercent: null, // A different token's mint — a share of THIS token's supply is not applicable.
       })
       addEdge({ id: `${creatorWallet}->${mint}:prior_launch`, from: creatorWallet, to: mint, relationship: 'prior_launch', evidence: `Launch-shaped ${ev.type} event in the creator's recent activity sample.`, signature: ev.signature || null })
     }

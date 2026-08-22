@@ -2509,15 +2509,14 @@ const SOLANA_CNODE_ROLE_ANGLE: Record<SolanaCNode['role'], number> = {
   mint: 0, funding_wallet: -125, creator_wallet: -90, lp_pool: -20, mint_authority: 165, freeze_authority: 195,
   top_holder: 90, lp_vault: 25, prior_mint: -155,
 }
-// Roles this engine genuinely cannot verify, shown greyed-out in the legend — see
-// clusterAnalyzer.ts's unresolvedRelationships for the data-side version of this list. Never
-// rendered as an actual node; there is no data path that could produce one.
-const SOLANA_RESERVED_ROLE_LEGEND: Array<{ label: string; reason: string }> = [
-  { label: 'Treasury', reason: 'Not verified — no wallet-labeling provider is connected.' },
-  { label: 'Exchange', reason: 'Not verified — no wallet-labeling/exchange-attribution provider is connected.' },
-  { label: 'Market Maker', reason: 'Not verified — no wallet-labeling provider is connected.' },
-  { label: 'Update Authority', reason: 'Not verified — deriving the Metaplex metadata PDA requires ed25519 math no dependency in this codebase provides.' },
-]
+// The hardcoded SOLANA_RESERVED_ROLE_LEGEND (Treasury / Exchange / Market Maker / Update Authority,
+// drawn as four greyed-out chips on the graph canvas) was removed with the bubblemap redesign: it
+// put four permanently-dead entries in the legend of the very picture being simplified, and it was
+// a SECOND, hand-maintained copy of a list the backend already returns. The same disclosure is
+// still shown — sourced from clusterAnalyzer.ts's own UNRESOLVED_RELATIONSHIPS, which names each
+// unverifiable relationship AND its concrete reason — in the "Cannot be verified (and why)" panel
+// above the graph, rendered from clusterMap.unresolvedRelationships. One source of truth instead of
+// two that could silently drift apart.
 const SOLANA_CNODE_RISK_COLOR: Record<SolanaCNode['risk'], string> = { elevated: '#f87171', standard: '#34d399', neutral: '#94a3b8', unknown: '#64748b' }
 const SOLANA_CNODE_CONFIDENCE_COLOR: Record<SolanaCNode['confidence'], string> = { high: '#34d399', medium: '#fbbf24', low: '#94a3b8' }
 const SOLANA_EDGE_LABEL: Record<SolanaCEdge['relationship'], string> = {
@@ -2529,6 +2528,40 @@ const SOLANA_EDGE_COLOR: Record<SolanaCEdge['relationship'], string> = {
   funding_wallet: '#a855f7', first_sol_sender: '#a855f7', shared_fee_payer: '#38bdf8',
   mint_authority: '#fb7185', freeze_authority: '#fb7185', lp_creation: '#2dd4bf', pumpfun_migration: '#facc15',
   holds_supply: '#60a5fa', vault_of: '#14b8a6', prior_launch: '#f472b6',
+}
+// BUBBLEMAP LAYOUT, DISCLOSED (requested: "make the dev map simpler, easier to read, like
+// bubblemaps, to make more sense from a user's perspective"). The graph previously drew every node
+// as a rectangular card carrying four lines of text at once — role, address, confidence tier and
+// SOL balance — so a 15-node graph presented ~60 competing strings and read as a wiring diagram.
+// It now draws BUBBLES: one circle per node, sized by the thing users actually came to see, with
+// the role name underneath and everything else moved into the click-through detail panel (which
+// already existed and is unchanged — no evidence is hidden, it is one click away instead of
+// permanently on screen).
+//
+// WHAT THE SIZE MEANS, DISCLOSED — this is the part that must not become decorative: a bubble's
+// area is proportional to that wallet's REAL measured share of supply (SolanaClusterNode.
+// supplyPercent, the same value cited in its own evidence text), using sqrt scaling so area, not
+// radius, tracks the percentage — the standard for an honestly-readable bubble chart. A node whose
+// share is null is NOT "zero": null means not applicable (the mint itself, a prior launch) or not
+// measured (a wallet outside the largest-accounts sample). Those render at a fixed neutral
+// role-based size and are explicitly excluded from the "sized by share" legend, so a small bubble
+// never silently asserts "this wallet holds almost nothing".
+const SOLANA_BUBBLE_ROLE_SIZE: Record<SolanaCNode['role'], number> = {
+  mint: 128, creator_wallet: 66, funding_wallet: 62, mint_authority: 64, freeze_authority: 64,
+  lp_pool: 68, top_holder: 56, lp_vault: 58, prior_mint: 52,
+}
+/** Approximate canvas px per layout unit — the graph canvas is a fixed 420px tall and typically
+ *  ~650px wide, and layout coordinates run 0-100. Used only to convert a bubble's px diameter into
+ *  the layout's own units for collision spacing; an imprecise estimate simply spaces bubbles a
+ *  little more or less generously, and can never change a bubble's size or what it reports. */
+const BUBBLE_PX_PER_UNIT = 6.5
+function solanaBubbleSize(node: SolanaCNode): number {
+  if (node.role === 'mint') return SOLANA_BUBBLE_ROLE_SIZE.mint
+  if (node.supplyPercent == null) return SOLANA_BUBBLE_ROLE_SIZE[node.role]
+  // Area-proportional: radius grows with sqrt(share). Clamped so a 0.01% dust holder is still
+  // clickable and a 60% whale cannot swallow the canvas.
+  const scaled = 44 + Math.sqrt(Math.max(0, node.supplyPercent)) * 10
+  return Math.max(44, Math.min(118, scaled))
 }
 /** Balances preload only for these roles — a 20-holder graph must not burn the wallet-detail rate limit (20/min) on load; other nodes fetch on click. */
 const SOLANA_BALANCE_PRELOAD_ROLES = new Set<SolanaCNode['role']>(['creator_wallet', 'funding_wallet', 'mint_authority', 'freeze_authority'])
@@ -2719,6 +2752,40 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
       }
       alpha -= alpha * 0.05
     }
+
+    // BUBBLE SEPARATION, DISCLOSED: the relaxation above is size-agnostic — it was tuned when every
+    // node was the same fixed-width card. Now that a bubble's diameter encodes its real share, a
+    // whale bubble can be more than twice a dust bubble's size and the old spacing let them overlap,
+    // which is exactly the unreadability this redesign is meant to remove. These passes push any
+    // two bubbles apart until the gap between their RIMS is positive, using each node's own radius.
+    // Purely positional — it moves circles on screen and changes no value, evidence, or size.
+    const radii = new Map(nodes.map((nd) => [nd.id, solanaBubbleSize(nd) / 2 / BUBBLE_PX_PER_UNIT] as const))
+    for (let pass = 0; pass < 60; pass++) {
+      let moved = false
+      for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
+        const a = sn[i], b = sn[j]
+        const need = (radii.get(a.id) ?? 4) + (radii.get(b.id) ?? 4) + 1.6
+        let dx = b.x - a.x, dy = b.y - a.y
+        let d = Math.sqrt(dx * dx + dy * dy)
+        if (d >= need) continue
+        if (d < 0.01) { dx = Math.cos(i * 2.4); dy = Math.sin(i * 2.4); d = 1 }
+        const push = (need - d) / d / 2
+        const ox = dx * push, oy = dy * push
+        // The mint is pinned at center — when it collides, the other bubble absorbs the full push.
+        if (a.fixed) { b.x += ox * 2; b.y += oy * 2 }
+        else if (b.fixed) { a.x -= ox * 2; a.y -= oy * 2 }
+        else { a.x -= ox; a.y -= oy; b.x += ox; b.y += oy }
+        moved = true
+      }
+      for (const nd of sn) {
+        if (nd.fixed) continue
+        const r = radii.get(nd.id) ?? 4
+        nd.x = Math.max(2 + r, Math.min(98 - r, nd.x))
+        nd.y = Math.max(4 + r, Math.min(94 - r, nd.y))
+      }
+      if (!moved) break
+    }
+
     const m = new Map<string, { x: number; y: number }>()
     sn.forEach((nd) => m.set(nd.id, { x: nd.x, y: nd.y }))
     return m
@@ -2755,20 +2822,37 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
   const riskColor = clusterMap.riskLevel === 'elevated' ? '#f87171' : clusterMap.riskLevel === 'standard' ? '#34d399' : '#94a3b8'
   const confColor = clusterMap.clusterConfidence === 'high' ? '#34d399' : clusterMap.clusterConfidence === 'medium' ? '#a3e635' : clusterMap.clusterConfidence === 'low' ? '#fbbf24' : '#94a3b8'
   const creatorConfColor = creatorConfidence.tier === 'CONFIRMED' ? '#34d399' : creatorConfidence.tier === 'LIKELY' ? '#fbbf24' : creatorConfidence.tier === 'POSSIBLE' ? '#fb923c' : '#94a3b8'
+  // HEADER SIMPLIFIED, DISCLOSED (same "make it simpler / more sense to a user" request): this row
+  // was six StatCards of engine vocabulary — Cluster Confidence, Cluster Risk, Evidence Count,
+  // Funding Depth, Relationship Count, Creator Confidence — four of which were raw internal counts
+  // a reader cannot act on. It is now the three that answer a real question ("how risky does this
+  // wallet cluster look", "how sure is it", "who made it"), each with a plain-English value. The
+  // dropped counts were not evidence and nothing referenced them; evidence/funding/relationship
+  // detail is still fully present in the Why-this-confidence and Why-this-risk panels below, which
+  // are unchanged.
+  const riskWord = clusterMap.riskLevel === 'elevated' ? 'Elevated' : clusterMap.riskLevel === 'standard' ? 'Nothing unusual' : 'Not enough evidence'
+  const confWord = clusterMap.clusterConfidence === 'high' ? 'Strong evidence' : clusterMap.clusterConfidence === 'medium' ? 'Decent evidence' : clusterMap.clusterConfidence === 'low' ? 'Thin evidence' : 'No evidence'
+  const creatorWord = creatorConfidence.tier === 'UNKNOWN' ? 'Not identified' : `${creatorConfidence.tier.charAt(0)}${creatorConfidence.tier.slice(1).toLowerCase()} (${creatorConfidence.confidencePercent}%)`
   const metrics: Array<{ label: string; value: string; accent: string }> = [
-    { label: 'Cluster Confidence', value: clusterMap.clusterConfidence.toUpperCase(), accent: confColor },
-    { label: 'Cluster Risk', value: clusterMap.riskLevel === 'unknown' ? 'UNKNOWN' : clusterMap.riskLevel.toUpperCase(), accent: riskColor },
-    { label: 'Evidence Count', value: String(clusterMap.evidenceCount), accent: '#2dd4bf' },
-    { label: 'Funding Depth', value: `${clusterMap.fundingDepth} hop${clusterMap.fundingDepth === 1 ? '' : 's'}`, accent: '#5eead4' },
-    { label: 'Relationship Count', value: String(clusterMap.edges.length), accent: '#7dd3fc' },
-    { label: 'Creator Confidence', value: creatorConfidence.tier === 'UNKNOWN' ? 'UNKNOWN' : `${creatorConfidence.tier} (${creatorConfidence.confidencePercent}%)`, accent: creatorConfColor },
+    { label: 'Wallet Cluster Risk', value: riskWord, accent: riskColor },
+    { label: 'How Sure Is This?', value: confWord, accent: confColor },
+    { label: 'Creator Identified?', value: creatorWord, accent: creatorConfColor },
   ]
+
+  const sizedNodeCount = nodes.filter((nd) => nd.supplyPercent != null).length
 
   return (
     <div style={{ display: 'grid', gap: '12px' }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '8px' }} className="sol-cluster-metrics">
         {metrics.map((m) => <StatCard key={m.label} label={m.label} value={m.value} accent={m.accent} />)}
       </div>
+
+      {/* One plain sentence telling a first-time reader how to read the picture below. */}
+      <p style={{ margin: 0, padding: '9px 12px', borderRadius: '10px', background: 'rgba(125,211,252,0.05)', border: '1px solid rgba(125,211,252,0.16)', fontSize: '11px', color: '#9db3c8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
+        Your token sits in the middle. Every bubble around it is a wallet or account this scan
+        verified a real on-chain link to — click any bubble for its address, balance and the exact
+        evidence.{sizedNodeCount > 0 ? ` ${sizedNodeCount} of them hold some of the supply, and those are sized by how much they hold.` : ''}
+      </p>
 
       {/* WHY these numbers — the real factors behind confidence and risk, plus what genuinely
           cannot be verified and why. Confidence/risk are computed, never placeholder defaults —
@@ -2795,7 +2879,9 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: selectedNode ? '1fr 280px' : '1fr', gap: '12px' }}>
-        <div style={{ position: 'relative', height: '420px', borderRadius: '14px', border: '1px solid rgba(148,163,184,0.18)', background: 'radial-gradient(circle at 50% 50%, rgba(45,212,191,0.07), rgba(6,10,20,0.94))', overflow: 'hidden' }}>
+        {/* Taller than the old 420px card canvas: bubbles carry their role name OUTSIDE the circle
+            now, so the extra vertical room keeps those labels off each other. */}
+        <div style={{ position: 'relative', height: '470px', borderRadius: '14px', border: '1px solid rgba(148,163,184,0.18)', background: 'radial-gradient(circle at 50% 50%, rgba(45,212,191,0.07), rgba(6,10,20,0.94))', overflow: 'hidden' }}>
           <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%', position: 'absolute', inset: 0 }}>
             <defs>
               {/* One arrowhead per real relationship type, colored to match its edge — real
@@ -2873,80 +2959,77 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
           {nodes.map((node, i) => {
             const p = positions.get(node.id) ?? { x: 50, y: 50 }
             const isMint = node.role === 'mint'
-            const isCompact = SOLANA_EXPANDABLE_ROLES.has(node.role)
             const isSelected = node.id === selectedId
             const isDimmed = !!focusId && !connectedIds?.has(node.id)
             const roleColor = SOLANA_CNODE_ROLE_COLOR[node.role]
             const riskColorNode = SOLANA_CNODE_RISK_COLOR[node.risk]
-            const bal = balances.get(node.id)
-            const balanceLabel = isMint
-              ? 'Token'
-              : bal === undefined ? (SOLANA_BALANCE_PRELOAD_ROLES.has(node.role) ? '…' : 'Click for details')
-              : bal === 'error' ? 'Balance unavailable'
-              : bal.balanceResolved ? `${bal.balanceSol!.toFixed(4)} SOL` : 'Balance unavailable'
-            const displayName = isMint ? (tokenName ?? tokenSymbol ?? null) : null
-            const displaySymbol = isMint && tokenSymbol ? (tokenSymbol.startsWith('$') ? tokenSymbol : `$${tokenSymbol}`) : null
+            const size = solanaBubbleSize(node)
             const stagger = Math.min(i, 12) * 55
+            // The one number worth carrying ON the bubble: a real measured share. Everything else
+            // (address, confidence tier, SOL balance, full evidence) lives in the detail panel.
+            const pctLabel = node.supplyPercent != null
+              ? (node.supplyPercent >= 10 ? `${node.supplyPercent.toFixed(0)}%` : `${node.supplyPercent.toFixed(1)}%`)
+              : null
             return (
               <div
                 key={node.id}
                 onClick={() => setSelectedId(node.id)}
                 onMouseEnter={() => setHoveredId(node.id)}
                 onMouseLeave={() => setHoveredId((h) => (h === node.id ? null : h))}
+                title={`${SOLANA_CNODE_ROLE_LABEL[node.role]} — ${fmt(node.address)}${pctLabel ? ` · holds ${pctLabel} of supply` : ''}`}
                 style={{
                   position: 'absolute', left: `${p.x}%`, top: `${p.y}%`,
                   transform: `translate(-50%,-50%) scale(${entered ? (isSelected ? 1.08 : 1) : 0.4})`,
-                  opacity: entered ? (isDimmed ? 0.32 : 1) : 0,
+                  opacity: entered ? (isDimmed ? 0.3 : 1) : 0,
                   transition: `transform 380ms cubic-bezier(.2,.9,.3,1.3) ${stagger}ms, opacity 380ms ease ${stagger}ms`,
                   cursor: 'pointer', zIndex: isMint ? 6 : isSelected ? 5 : isDimmed ? 1 : 2,
-                  width: isMint ? '176px' : isCompact ? '84px' : '104px',
-                  padding: isMint ? '14px 16px 12px' : isCompact ? '5px 7px' : '7px 9px',
-                  borderRadius: isMint ? '18px' : isCompact ? '9px' : '11px',
+                  width: `${size}px`, height: `${size}px`, borderRadius: '50%',
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1px',
                   background: isMint
-                    ? 'linear-gradient(165deg, rgba(20,42,58,.98), rgba(6,16,24,.98))'
-                    : isSelected ? 'linear-gradient(160deg, rgba(18,30,52,.98), rgba(6,11,22,.98))' : 'linear-gradient(160deg, rgba(13,22,40,.94), rgba(5,9,18,.94))',
-                  border: isMint ? '1.5px solid #67e8f9' : `1px solid ${isSelected ? '#f8fafc' : `${roleColor}55`}`,
+                    ? 'radial-gradient(circle at 35% 28%, rgba(45,212,191,.34), rgba(6,16,24,.98))'
+                    : `radial-gradient(circle at 35% 28%, ${roleColor}2e, rgba(6,11,22,.96))`,
+                  border: isMint ? '1.5px solid #67e8f9' : `1.5px solid ${isSelected ? '#f8fafc' : `${roleColor}70`}`,
                   boxShadow: isMint
-                    ? (isDimmed ? '0 0 0 1px rgba(103,232,249,0.4), 0 8px 22px rgba(0,0,0,0.5)' : '0 0 0 1px rgba(103,232,249,0.55), 0 0 26px rgba(45,212,191,0.45), 0 10px 26px rgba(0,0,0,0.55)')
-                    : isSelected ? `0 0 0 1px ${roleColor}80, 0 8px 20px rgba(0,0,0,0.5)` : '0 4px 10px rgba(0,0,0,0.35)',
+                    ? (isDimmed ? '0 0 0 1px rgba(103,232,249,0.4), 0 8px 22px rgba(0,0,0,0.5)' : '0 0 0 1px rgba(103,232,249,0.55), 0 0 30px rgba(45,212,191,0.42), 0 10px 26px rgba(0,0,0,0.55)')
+                    : isSelected ? `0 0 0 2px ${roleColor}80, 0 8px 20px rgba(0,0,0,0.5)` : `0 0 14px ${roleColor}22, 0 4px 10px rgba(0,0,0,0.35)`,
                 }}
                 className={isMint && !isDimmed ? 'sol-cluster-mint-glow' : undefined}
               >
                 {isMint && (
-                  <div style={{ position: 'absolute', top: '-24px', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: '4px', padding: '3px 9px', borderRadius: '999px', background: 'rgba(45,212,191,0.16)', border: '1px solid rgba(45,212,191,0.5)', whiteSpace: 'nowrap' }}>
+                  <div style={{ position: 'absolute', top: '-22px', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: '4px', padding: '3px 9px', borderRadius: '999px', background: 'rgba(45,212,191,0.16)', border: '1px solid rgba(45,212,191,0.5)', whiteSpace: 'nowrap' }}>
                     <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2dd4bf' }} className="sol-cluster-balance-pulse" />
                     <span style={{ fontSize: '7px', fontWeight: 800, letterSpacing: '.14em', color: '#5eead4', fontFamily: 'var(--font-plex-mono)' }}>YOU ARE HERE</span>
                   </div>
                 )}
                 {isMint ? (
                   <>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-                      <SolanaTokenLogoPlaceholder symbol={tokenSymbol} name={tokenName} size={34} />
-                      <div style={{ minWidth: 0 }}>
-                        <p style={{ margin: 0, fontSize: '12px', fontWeight: 800, color: '#f0fdfa', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={displayName ?? undefined}>{displayName ?? 'Unnamed Token'}</p>
-                        {displaySymbol && <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#5eead4', fontFamily: 'var(--font-plex-mono)' }}>{displaySymbol}</p>}
-                      </div>
-                    </div>
-                    <p style={{ margin: '0 0 6px', fontSize: '8px', fontWeight: 800, letterSpacing: '.1em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{SOLANA_CNODE_ROLE_LABEL.mint}</p>
-                    <p title={node.address} style={{ margin: 0, fontSize: '8px', color: '#5b7284', fontFamily: 'var(--font-plex-mono)' }}>{fmt(node.address)}</p>
+                    <SolanaTokenLogoPlaceholder symbol={tokenSymbol} name={tokenName} size={38} />
+                    <p style={{ margin: '5px 6px 0', fontSize: '11px', fontWeight: 800, color: '#f0fdfa', fontFamily: 'var(--font-plex-mono)', textAlign: 'center', lineHeight: 1.2, maxWidth: '108px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {tokenSymbol ? (tokenSymbol.startsWith('$') ? tokenSymbol : `$${tokenSymbol}`) : (tokenName ?? 'This Token')}
+                    </p>
+                    <p style={{ margin: 0, fontSize: '7.5px', fontWeight: 700, letterSpacing: '.1em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>This Token</p>
                   </>
                 ) : (
                   <>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '4px' }}>
-                      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '18px', height: '18px', borderRadius: '50%', background: `${roleColor}22`, border: `1px solid ${roleColor}66`, flexShrink: 0 }}>
-                        <SolanaRoleGlyph role={node.role} size={11} color={roleColor} />
-                      </span>
-                      <span style={{ fontSize: '8px', fontWeight: 800, letterSpacing: '.05em', color: roleColor, fontFamily: 'var(--font-plex-mono)' }}>{SOLANA_CNODE_ROLE_LABEL[node.role]}</span>
-                      <span title={`Risk: ${node.risk}`} style={{ marginLeft: 'auto', width: '6px', height: '6px', borderRadius: '50%', background: riskColorNode, flexShrink: 0 }} />
-                    </div>
-                    {/* Address is secondary evidence, not the headline — role label above carries the
-                        primary meaning; the address is smaller/dimmer and only for verification. */}
-                    <p title={node.address} style={{ margin: '0 0 4px', fontSize: '8px', color: '#5b7284', fontFamily: 'var(--font-plex-mono)' }}>{fmt(node.address)}</p>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px' }}>
-                      <span style={{ fontSize: '7px', fontWeight: 700, color: SOLANA_CNODE_CONFIDENCE_COLOR[node.confidence], textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{node.confidence}</span>
-                      <span style={{ fontSize: '7.5px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', textAlign: 'right' }} className={bal === undefined && SOLANA_BALANCE_PRELOAD_ROLES.has(node.role) ? 'sol-cluster-balance-pulse' : undefined}>{balanceLabel}</span>
-                    </div>
+                    <SolanaRoleGlyph role={node.role} size={size >= 62 ? 16 : 13} color={roleColor} />
+                    {/* A measured share is the headline when there is one; otherwise the bubble
+                        stays clean rather than printing a stand-in number. */}
+                    {pctLabel && (
+                      <span style={{ fontSize: size >= 62 ? '13px' : '11px', fontWeight: 800, color: '#f1f5f9', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.1 }}>{pctLabel}</span>
+                    )}
+                    {/* Risk dot rides the rim so an elevated-risk wallet is visible at a glance
+                        without adding a word of text. */}
+                    {node.risk === 'elevated' && (
+                      <span title="Elevated risk — open this wallet for the evidence" style={{ position: 'absolute', top: '6%', right: '6%', width: '9px', height: '9px', borderRadius: '50%', background: riskColorNode, border: '1.5px solid rgba(6,11,22,.9)' }} />
+                    )}
                   </>
+                )}
+                {/* Role name sits OUTSIDE the bubble — the plain-English answer to "what is this?",
+                    always legible regardless of how small the bubble's share made it. */}
+                {!isMint && (
+                  <span style={{ position: 'absolute', top: `${size + 3}px`, left: '50%', transform: 'translateX(-50%)', whiteSpace: 'nowrap', fontSize: '8.5px', fontWeight: 700, color: isDimmed ? '#475569' : '#9db3c8', fontFamily: 'var(--font-plex-mono)', pointerEvents: 'none' }}>
+                    {SOLANA_CNODE_ROLE_LABEL[node.role]}
+                  </span>
                 )}
               </div>
             )
@@ -2969,17 +3052,24 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
                 <span style={{ fontSize: '8px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)' }}>{SOLANA_CNODE_ROLE_LABEL[role]}</span>
               </div>
             ))}
-            {SOLANA_RESERVED_ROLE_LEGEND.map((r) => (
-              <div key={r.label} title={r.reason} style={{ display: 'flex', alignItems: 'center', gap: '4px', opacity: 0.4 }}>
-                <span style={{ width: '7px', height: '7px', borderRadius: '50%', border: '1px dashed #64748b' }} />
-                <span style={{ fontSize: '8px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>{r.label}</span>
+            {/* The greyed "reserved role" chips that used to sit here are gone — see the note on
+                the removed SOLANA_RESERVED_ROLE_LEGEND above. Nothing was hidden: the same
+                unverifiable relationships, each with its reason, are listed in the "Cannot be
+                verified (and why)" panel above the graph, straight from the engine. */}
+            {sizedNodeCount > 0 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: '2px' }}>
+                  <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#64748b' }} />
+                  <span style={{ width: '9px', height: '9px', borderRadius: '50%', background: '#94a3b8' }} />
+                </span>
+                <span style={{ fontSize: '8px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)' }}>Bigger = holds more supply</span>
               </div>
-            ))}
+            )}
           </div>
         </div>
 
         {selectedNode && (
-          <div style={{ padding: '12px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(9,15,29,0.9)', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '420px', overflowY: 'auto' }}>
+          <div style={{ padding: '12px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(9,15,29,0.9)', display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '470px', overflowY: 'auto' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                 <SolanaRoleGlyph role={selectedNode.role} size={13} color={SOLANA_CNODE_ROLE_COLOR[selectedNode.role]} />
@@ -3000,6 +3090,11 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
             <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
               <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: SOLANA_CNODE_CONFIDENCE_COLOR[selectedNode.confidence], border: `1px solid ${SOLANA_CNODE_CONFIDENCE_COLOR[selectedNode.confidence]}55` }}>CONFIDENCE {selectedNode.confidence.toUpperCase()}</span>
               <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: SOLANA_CNODE_RISK_COLOR[selectedNode.risk], border: `1px solid ${SOLANA_CNODE_RISK_COLOR[selectedNode.risk]}55` }}>RISK {selectedNode.risk.toUpperCase()}</span>
+              {/* The number driving this bubble's size, stated exactly. Rendered only when it is a
+                  measured fact — a null share is not shown as "0%", it is simply absent. */}
+              {selectedNode.supplyPercent != null && (
+                <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: '#7dd3fc', border: '1px solid #7dd3fc55' }}>HOLDS {selectedNode.supplyPercent.toFixed(2)}% OF SUPPLY</span>
+              )}
             </div>
 
             {selectedNode.role !== 'mint' && (
@@ -3193,7 +3288,10 @@ function getLpExitRiskInfo(result: ScanResult): { label: string; color: string; 
     if (liqDepth != null && liqDepth > 500_000) return { label: 'Monitor', color: '#a78bfa', description: `${baseDesc} Pool depth is strong — monitor liquidity concentration and position migration.` }
     if (liqDepth != null && liqDepth > 50_000) return { label: 'Monitor', color: '#a78bfa', description: `${baseDesc} Monitor pool depth, volume, and holder concentration.` }
     if (liqDepth != null && liqDepth > 0) return { label: 'Watch', color: '#fbbf24', description: `${baseDesc} Liquidity is thin — monitor closely before committing size.` }
-    return { label: 'Open Check', color: '#c084fc', description: `${baseDesc} Insufficient pool depth data — verify on-chain before trading.` }
+    // Label wording, DISCLOSED (same reported "open check isn't a fact" issue): the description
+    // below already states the real situation; the label now matches it instead of reading as a
+    // rating of its own. The branch, color, and conditions are unchanged.
+    return { label: 'Unrated', color: '#c084fc', description: `${baseDesc} Pool depth data is insufficient to rate exit risk — verify on-chain before trading.` }
   }
 
   const lockStatus = result.lpLockStatus
@@ -3204,7 +3302,7 @@ function getLpExitRiskInfo(result: ScanResult): { label: string; color: string; 
   // No proven lock/burn/wallet-control state — open check, not an inferred "High".
   if (liqDepth != null && liqDepth < 10_000) return { label: 'Watch', color: '#fbbf24', description: 'LP proof unconfirmed and liquidity is very thin — open check with elevated caution warranted.' }
   if (liqDepth != null && liqDepth < 50_000) return { label: 'Watch', color: '#fbbf24', description: 'LP proof unconfirmed and liquidity is thin — open check, monitor closely.' }
-  return { label: 'Open Check', color: '#fbbf24', description: 'Exit risk cannot be rated until lock, burn, or controller proof is confirmed — verify on-chain.' }
+  return { label: 'Unrated', color: '#fbbf24', description: 'Exit risk cannot be rated until lock, burn, or controller proof is confirmed — verify on-chain.' }
 }
 
 const CONCENTRATED_OWNER_GAPS = [
@@ -5061,8 +5159,9 @@ export default function TerminalTokenScanner() {
           {solanaResult && !loading && (() => {
             const sr = solanaResult
             const sc = computeSolanaConfidenceScore(sr)
-            const verdictColor = sr.betaRisk.verdict === 'HIGH_RISK' ? '#f87171' : sr.betaRisk.verdict === 'CAUTION' ? '#fbbf24' : '#94a3b8'
-            const verdictLabel = sr.betaRisk.verdict === 'HIGH_RISK' ? 'High Risk' : sr.betaRisk.verdict === 'CAUTION' ? 'Caution' : 'Open Check'
+            // The betaRisk verdict/color pair that used to live here is gone: its top label was the
+            // literal string "Open Check", and every surface that showed it now reads the real
+            // graded computeSolanaCortexRisk verdict instead (see the CORTEX RISK READ strip).
             const confColor = sr.betaRisk.confidence === 'MEDIUM' ? '#fbbf24' : '#94a3b8'
             const copySolanaAddress = async (address: string) => {
               try {
@@ -5080,35 +5179,6 @@ export default function TerminalTokenScanner() {
               <p key={key} style={{ margin: '0 0 6px', fontSize: '11.5px', color: '#8ea0b5', lineHeight: 1.6, paddingLeft: '13px', position: 'relative' }}>
                 <span style={{ position: 'absolute', left: 0, color: '#3a5268' }}>—</span>{text}
               </p>
-            )
-            // COMPACT UNSUPPORTED LIST, DISCLOSED (Token Scanner Solana final-polish task,
-            // explicitly requested: "too text-heavy... use compact rows or chips, not a long
-            // paragraph block"). These five rows are static, unchanging facts about what this
-            // scan path does and doesn't do (backed 1:1 by sr.unsupportedChecks — same five
-            // EVM-only checks, plus the Solana pool-authority open check already shown
-            // elsewhere on LP Safety) — not scan-specific data, so presenting them as a fixed,
-            // short-label list rather than the longer per-item reason text from the API is a
-            // presentation choice, not an invented claim.
-            const unsupportedRows: Array<{ label: string; status: string; tone: 'unsupported' | 'na' | 'open' }> = [
-              { label: 'Honeypot / tax simulation', status: 'Unsupported', tone: 'unsupported' },
-              { label: 'ERC-20 LP lock/burn proof', status: 'Not applicable', tone: 'na' },
-              { label: 'EVM proxy/admin checks', status: 'Not applicable', tone: 'na' },
-              { label: 'EVM deployer history', status: 'Not available', tone: 'unsupported' },
-              { label: 'Solana pool authority', status: 'Open check', tone: 'open' },
-            ]
-            const toneColor: Record<typeof unsupportedRows[number]['tone'], string> = { unsupported: '#f87171', na: '#94a3b8', open: '#fbbf24' }
-            const unsupportedCard = (
-              <div style={cardBase}>
-                <p style={{ ...cardTitle, color: '#f43f5e' }}>Unsupported in Solana Beta</p>
-                <div style={{ display: 'grid', gap: '6px' }}>
-                  {unsupportedRows.map((row) => (
-                    <div key={row.label} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', padding: '7px 10px', borderRadius: '8px', background: 'rgba(15,23,42,0.5)' }}>
-                      <span style={{ fontSize: '11.5px', color: '#cbd5e1' }}>{row.label}</span>
-                      <span style={{ fontSize: '9.5px', fontWeight: 800, letterSpacing: '.06em', color: toneColor[row.tone], flexShrink: 0 }}>{row.status.toUpperCase()}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
             )
 
             return (
@@ -5178,7 +5248,11 @@ export default function TerminalTokenScanner() {
                     mirrors the EVM Overview's exact three-tier structure — a main score hero,
                     a Score Breakdown card underneath, then a secondary CORTEX read — instead of
                     a single status card. Same underlying data, real computed sc/betaRisk values. */}
-                {activeSection === 'cortex-read' && (
+                {activeSection === 'cortex-read' && (() => {
+                  // Same engine the Risk Engine tab and the side receipt read — see the CORTEX RISK
+                  // READ strip below for why this replaced sr.betaRisk here.
+                  const overviewCx = computeSolanaCortexRisk(sr)
+                  return (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                     {/* Main score hero — same footprint/typography as EVM's "TOKEN SAFETY SCORE"
                         card, never a "— /100" placeholder: sc.score is always a real number. */}
@@ -5231,13 +5305,21 @@ export default function TerminalTokenScanner() {
                       </div>
                     </div>
 
-                    {/* Secondary read — same slot as EVM's "CORTEX ENGINE READ" strip, reusing the
-                        already-real betaRisk verdict/confidence computed server-side. */}
+                    {/* Secondary read — same slot as EVM's "CORTEX ENGINE READ" strip.
+                        SOURCE CHANGED, DISCLOSED (reported: "a lot of it is open check and not
+                        actual facts"): this strip used to print sr.betaRisk, whose best label is
+                        the literal string "Open Check" — so a token with fully clean, fully
+                        resolved evidence still showed "Open Check" here while the Risk Engine tab
+                        showed a real graded verdict from the 9-category engine. Same scan, two
+                        different answers, and the vaguer one led. It now reads the SAME
+                        computeSolanaCortexRisk result the Risk Engine tab and the side receipt use,
+                        so all three agree and every state is a real graded verdict. */}
                     <div style={{ padding: '12px 16px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(8,14,28,0.55)' }}>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', alignItems: 'baseline' }}>
                         <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>CORTEX RISK READ</div>
-                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Verdict: <span style={{ color: verdictColor, fontWeight: 700 }}>{verdictLabel}</span></div>
-                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Confidence: <span style={{ color: confColor, fontWeight: 700 }}>{sr.betaRisk.confidence}</span></div>
+                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Verdict: <span style={{ color: overviewCx.verdictColor, fontWeight: 700 }}>{overviewCx.verdict}</span></div>
+                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Score: <span style={{ color: overviewCx.verdictColor, fontWeight: 700 }}>{overviewCx.score}/{overviewCx.scoreMax}</span></div>
+                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Evidence: <span style={{ color: confColor, fontWeight: 700 }}>{overviewCx.overallConfidence}</span></div>
                       </div>
                     </div>
 
@@ -5247,10 +5329,14 @@ export default function TerminalTokenScanner() {
                         {sr.solanaEvidenceGaps.map((g, i) => gapLine(g, i))}
                       </div>
                     )}
-
-                    {unsupportedCard}
+                    {/* The "Unsupported in Solana Beta" card that used to close this tab was
+                        removed on request. Nothing verified was lost: it listed only static
+                        EVM-only checks (honeypot simulation, ERC-20 LP lock/burn, proxy/admin,
+                        deployer history) that never applied to Solana, and the Solana pool
+                        authority open check, which LP Safety already reports from real data. */}
                   </div>
-                )}
+                  )
+                })()}
 
                 {/* ── Market ──────────────────────────────────────────── */}
                 {activeSection === 'market-pulse' && (
@@ -5501,10 +5587,14 @@ export default function TerminalTokenScanner() {
 
                   // Exit Risk hero: same liquidity-depth thresholds scoreSolanaBeta already uses
                   // (>=50k / >=5k / <5k), so this label never contradicts the Risk Engine tab.
+                  // PLACEHOLDER-WORDING, DISCLOSED (reported: "a lot of it is open check and not
+                  // actual facts"): these two branches are genuine non-results — there is no pool,
+                  // or its depth did not resolve. They now SAY that specifically instead of
+                  // labelling both with the same "Open Check" jargon, which read as a rating.
                   const exitRiskInfo = !hasPool
-                    ? { label: 'Open Check', color: '#94a3b8', description: 'No pool evidence to assess exit risk from.' }
+                    ? { label: 'No Pool Data', color: '#94a3b8', description: 'No indexed pool was found, so exit risk cannot be rated from anything real.' }
                     : liq == null
-                      ? { label: 'Open Check', color: '#94a3b8', description: 'Pool found, but liquidity depth is unverified.' }
+                      ? { label: 'Depth Unknown', color: '#94a3b8', description: 'A pool was found, but its liquidity depth did not resolve this scan — exit risk is unrated, not low.' }
                       : liq < 5_000
                         ? { label: 'Elevated', color: '#f87171', description: `Thin liquidity (${fmtLarge(liq)}) — a small sell can move price sharply.` }
                         : liq < 50_000
@@ -5533,8 +5623,8 @@ export default function TerminalTokenScanner() {
                     { label: 'Lock/Burn Proof', value: 'Not Applicable', color: '#94a3b8' },
                     { label: 'Pool Authority', value: poolAuthorityLabel, color: poolAuthorityColor },
                     { label: 'Exit Risk', value: exitRiskInfo.label, color: exitRiskInfo.color },
-                    { label: 'Liquidity Depth', value: liq != null ? fmtLarge(liq) : 'Open Check', color: liq != null ? '#67e8f9' : '#94a3b8' },
-                    { label: 'Primary Pool', value: sr.marketData?.primaryPoolAddress ? shorten(sr.marketData.primaryPoolAddress) : 'Open Check' },
+                    { label: 'Liquidity Depth', value: liq != null ? fmtLarge(liq) : 'Did not load', color: liq != null ? '#67e8f9' : '#94a3b8' },
+                    { label: 'Primary Pool', value: sr.marketData?.primaryPoolAddress ? shorten(sr.marketData.primaryPoolAddress) : 'Did not load' },
                   ]
 
                   const detailRows: Array<{ label: string; value: string; color?: string; note?: string }> = [
@@ -5563,9 +5653,9 @@ export default function TerminalTokenScanner() {
                     }] : []),
                     { label: 'Lock/Burn Proof', value: 'Not Applicable', note: 'ERC-20 LP-token lock/burn proof does not apply to Solana AMM pools.' },
                     { label: 'Exit Risk', value: exitRiskInfo.label, color: exitRiskInfo.color, note: exitRiskInfo.description },
-                    { label: 'Liquidity Depth', value: liq != null ? fmtLarge(liq) : 'Open Check', note: sr.marketData?.volume24hUsd != null ? `24h volume ${fmtLarge(sr.marketData.volume24hUsd)} across indexed Solana pairs.` : undefined },
-                    { label: 'Primary Pool', value: sr.marketData?.primaryDexLabel ?? 'Open Check', note: sr.marketData?.primaryPoolAddress ?? undefined },
-                    { label: 'Top-Account Concentration', value: conc?.top10Percent != null ? `Top 10 hold ${conc.top10Percent.toFixed(1)}%` : 'Open Check', note: 'Reflects top token ACCOUNTS (max 20), not a full holder count — pool vaults are included.' },
+                    { label: 'Liquidity Depth', value: liq != null ? fmtLarge(liq) : 'Did not load', note: sr.marketData?.volume24hUsd != null ? `24h volume ${fmtLarge(sr.marketData.volume24hUsd)} across indexed Solana pairs.` : 'Liquidity depth did not resolve this scan.' },
+                    { label: 'Primary Pool', value: sr.marketData?.primaryDexLabel ?? 'Did not load', note: sr.marketData?.primaryPoolAddress ?? 'No pool was indexed for this mint this scan.' },
+                    { label: 'Top-Account Concentration', value: conc?.top10Percent != null ? `Top 10 hold ${conc.top10Percent.toFixed(1)}%` : 'Did not load', note: 'Reflects top token ACCOUNTS (max 20), not a full holder count — pool vaults are included.' },
                   ]
 
                   const goodSigns = [
@@ -6597,7 +6687,9 @@ export default function TerminalTokenScanner() {
                                 purely from the same pct/max already used for barColor above — no
                                 new data, no scoring change, just a 3-second-readable word next to
                                 the exact existing sc/max numbers. */}
-                            const statusLabel = !data || max <= 0 ? 'Open Check' : pct >= 70 ? 'Strong' : pct >= 40 ? 'Moderate' : 'Weak'
+                            // "Open Check" here meant "this category produced no data at all" —
+                            // renamed to say that plainly, per the same reported wording issue.
+                            const statusLabel = !data || max <= 0 ? 'No Data' : pct >= 70 ? 'Strong' : pct >= 40 ? 'Moderate' : 'Weak'
                             return (
                               <div key={label} style={{ paddingBottom: '10px', borderBottom: rIdx < riskBreakdownRows.length - 1 ? '1px solid rgba(255,255,255,0.045)' : 'none' }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px', gap: '8px' }}>
@@ -8802,25 +8894,86 @@ export default function TerminalTokenScanner() {
               right rail exactly like every other chain does once a scan completes — replaces the
               "AWAITING SCAN" checklist rather than leaving it stuck idle. Built from solanaResult
               only; never coerced through deriveVerdictInput/calculateCortexScoreV2 (EVM-shaped). */}
+          {/* PLAIN-LANGUAGE RECEIPT REWRITE, DISCLOSED (reported live: "a lot of it is open check
+              and not actual facts", and "make the CORTEX verdict on the side very simple to read
+              for users and factual and beneficial").
+              WHAT CHANGED AND WHY: the previous version of this rail printed FIVE fixed strings —
+              "Solana pool authority remains open check" and "Review concentration, pool depth, and
+              authority status" were hardcoded and IDENTICAL on every scan, and the other three only
+              said whether a check had *data*, never what the data actually was. That is what read
+              as "open check, not facts": a token with a verified Raydium pool, $180K liquidity and
+              revoked authorities produced word-for-word the same rail as a token with none of it.
+              This version states the REAL resolved values (liquidity, age, top-10 share, holder
+              count, pool program, authority state) in plain sentences, and where a value genuinely
+              did not resolve it says so specifically ("Holder data didn't load this scan") instead
+              of the "open check" placeholder. Nothing new is fetched and nothing is inferred —
+              every line below reads a field the scan already carried, and the verdict is the same
+              9-category engine the Risk Engine tab shows, so the two can never disagree. */}
           {!planLoading && isFullAccess && solanaResult && (() => {
             const sr = solanaResult
-            const verdictColor = sr.betaRisk.verdict === 'HIGH_RISK' ? '#f87171' : sr.betaRisk.verdict === 'CAUTION' ? '#fbbf24' : '#94a3b8'
-            const verdictLabel = sr.betaRisk.verdict === 'HIGH_RISK' ? 'High Risk' : sr.betaRisk.verdict === 'CAUTION' ? 'Caution' : 'Open Check'
+            const cx = computeSolanaCortexRisk(sr)
+            const md = sr.marketData
+            const conc = sr.topAccountConcentration
+            const usd = (v: number | null | undefined) =>
+              v == null || !Number.isFinite(v) ? null
+              : v >= 1e9 ? `$${(v / 1e9).toFixed(2)}B` : v >= 1e6 ? `$${(v / 1e6).toFixed(2)}M`
+              : v >= 1e3 ? `$${(v / 1e3).toFixed(1)}K` : `$${v.toFixed(0)}`
             const ss: React.CSSProperties = { padding: '10px 12px', border: '1px solid rgba(255,255,255,0.10)', borderRadius: '10px', background: 'rgba(10,17,32,.72)' }
             const stitle: React.CSSProperties = { margin: '0 0 6px', fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#5b7590', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }
-            const sbody: React.CSSProperties = { margin: 0, fontSize: '11px', color: '#a3b4c5', lineHeight: 1.65, fontFamily: 'var(--font-plex-mono)' }
+            const sbody: React.CSSProperties = { margin: 0, fontSize: '11px', color: '#cbd5e1', lineHeight: 1.65, fontFamily: 'var(--font-plex-mono)' }
+
+            // One plain sentence per verdict tier — what this actually means for a person, in
+            // words, mapped 1:1 off the engine's own five-tier vocabulary (no new judgement).
+            const verdictMeaning: Record<typeof cx.verdict, string> = {
+              'Low Contract Risk': 'The contract checks came back clean and this token has real trading history behind it.',
+              Speculative: 'Nothing broken in the contract, but this is still a speculative token — size positions accordingly.',
+              'High Speculation': 'Tradeable, but the evidence points to a highly speculative token. Treat it as high risk.',
+              'High Risk': 'Real risk signals showed up in this scan. Read the warnings below before buying.',
+              'Critical Risk': 'Critical risk signals showed up — the owner can still take actions that cost holders money.',
+            }
+
+            // Every line is a real resolved value, or a specific reason it did not resolve.
+            const authorityLine = !sr.authorityReadSucceeded
+              ? 'The mint account could not be read this scan, so authority status is genuinely unknown — not confirmed safe.'
+              : sr.mintAuthority && sr.freezeAuthority ? 'The owner can still mint new supply AND freeze your tokens. Both authorities are active.'
+              : sr.mintAuthority ? 'The owner can still mint new supply. Freeze authority is revoked.'
+              : sr.freezeAuthority ? 'The owner can still freeze your tokens. Mint authority is revoked.'
+              : 'Mint and freeze authority are both revoked — supply is fixed and your tokens cannot be frozen.'
+
+            const liq = usd(md?.liquidityUsd)
+            const marketLine = !sr.marketDataAvailable ? 'No trading pool for this token is indexed yet, so there is no market to read.'
+              : [
+                  liq ? `${liq} liquidity` : null,
+                  usd(md?.volume24hUsd) ? `${usd(md?.volume24hUsd)} traded in 24h` : null,
+                  md?.pairAgeDays != null ? (md.pairAgeDays < 1 ? 'pool opened under a day ago' : `pool is ${md.pairAgeDays} day${md.pairAgeDays === 1 ? '' : 's'} old`) : null,
+                ].filter(Boolean).join(' · ') || 'A pool is indexed, but its depth and volume did not resolve this scan.'
+
+            const holderLine = conc?.top10Percent == null
+              ? 'Holder data did not load this scan, so concentration is unknown — not confirmed healthy.'
+              : `${conc.top10Percent < 30 ? 'Well spread' : conc.top10Percent < 50 ? 'Somewhat concentrated' : 'Heavily concentrated'} — the top 10 accounts hold ${conc.top10Percent.toFixed(1)}% of supply${sr.heliusHolders?.success && sr.heliusHolders.holderCount != null ? `, across ${sr.heliusHolders.holderCount}${sr.heliusHolders.isLowerBound ? '+' : ''} holders` : ''}. Some of that can be the pool's own vault.`
+
+            const poolLine = sr.poolProgram.resolved && sr.poolProgram.label
+              ? `Liquidity sits in a verified ${sr.poolProgram.label} pool${liq ? ` holding ${liq}` : ''}.`
+              : sr.poolProgram.poolAddress
+                ? 'A pool exists, but it is not run by an AMM program this scanner recognises — verify it before trading.'
+                : 'No pool contract was confirmed on-chain this scan.'
+
+            // The single highest-value next step, taken from the engine's own real gap list.
+            const nextAction = cx.nextActions[0] ?? 'No further action required'
+
             return (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
-                <div style={{ padding: '16px', border: `1px solid ${verdictColor}22`, borderRadius: '14px', background: 'linear-gradient(135deg,rgba(8,20,38,.92),rgba(14,12,38,.90))', boxShadow: `0 0 18px ${verdictColor}08` }}>
+                <div style={{ padding: '16px', border: `1px solid ${cx.verdictColor}22`, borderRadius: '14px', background: 'linear-gradient(135deg,rgba(8,20,38,.92),rgba(14,12,38,.90))', boxShadow: `0 0 18px ${cx.verdictColor}08` }}>
                   <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '10px' }}>CORTEX RECEIPT · SOLANA BETA</div>
-                  <div style={{ fontSize: '15px', fontWeight: 800, color: verdictColor, fontFamily: 'var(--font-plex-mono)' }}>Solana Beta Read</div>
-                  <div style={{ fontSize: '10px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', marginTop: '2px' }}>{verdictLabel} · {sr.betaRisk.confidence} confidence</div>
+                  <div style={{ fontSize: '17px', fontWeight: 800, color: cx.verdictColor, fontFamily: 'var(--font-plex-mono)' }}>{cx.verdict}</div>
+                  <div style={{ fontSize: '10px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', marginTop: '3px' }}>{cx.score}/{cx.scoreMax} overall · {cx.overallConfidence.toLowerCase()} evidence confidence</div>
+                  <p style={{ margin: '10px 0 0', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{verdictMeaning[cx.verdict]}</p>
                 </div>
-                <div style={ss}><p style={stitle}>Market Read</p><p style={sbody}>{sr.marketDataAvailable ? 'Live Solana pool data found' : 'No indexed pool found — open check'}</p></div>
-                <div style={ss}><p style={stitle}>Holder / Supply Read</p><p style={sbody}>{sr.holderConcentrationAvailable ? 'Top-account concentration available' : 'Top-account concentration open check'}</p></div>
-                <div style={ss}><p style={stitle}>LP / Risk Read</p><p style={sbody}>Solana pool authority remains open check</p></div>
-                <div style={ss}><p style={stitle}>Dev Control</p><p style={sbody}>{!sr.authorityReadSucceeded ? 'Authority checks open' : (sr.mintAuthority || sr.freezeAuthority) ? 'Mint and/or freeze authority still active' : 'Mint and freeze authority revoked'}</p></div>
-                <div style={ss}><p style={stitle}>Next Action</p><p style={sbody}>Review concentration, pool depth, and authority status</p></div>
+                <div style={ss}><p style={stitle}>Can the owner touch your tokens?</p><p style={sbody}>{authorityLine}</p></div>
+                <div style={ss}><p style={stitle}>Is there a real market?</p><p style={sbody}>{marketLine}</p></div>
+                <div style={ss}><p style={stitle}>Who holds the supply?</p><p style={sbody}>{holderLine}</p></div>
+                <div style={ss}><p style={stitle}>Where is the liquidity?</p><p style={sbody}>{poolLine}</p></div>
+                <div style={ss}><p style={stitle}>Do this next</p><p style={sbody}>{nextAction}</p></div>
               </div>
             )
           })()}

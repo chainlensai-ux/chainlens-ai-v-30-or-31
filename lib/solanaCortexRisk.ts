@@ -20,8 +20,10 @@
 //    all — a token minted an hour ago and one trading for a year could reach the same score. This
 //    adds a real Token Maturity category (from DexScreener's pairCreatedAt, already-gathered
 //    evidence, never a new call) and an Evidence Confidence category (how much of the full picture
-//    actually resolved), AND applies both as a HARD CAP on the overall score — see
-//    applyMaturityAndEvidenceCaps below. A token cannot read as low-risk purely because its
+//    actually resolved), AND applies both as a PROPORTIONAL REDUCTION of the overall score — see
+//    applyMaturityAndEvidenceCaps below, including its disclosed regression note on why these are
+//    continuous multipliers rather than the fixed ceilings the first version used. A token cannot
+//    read as low-risk purely because its
 //    authorities are clean; it must also be old enough, evidenced enough, and have at least a
 //    plausible creator trace. This is the literal mechanism behind "cap immature meme coins
 //    regardless of authority status."
@@ -105,9 +107,9 @@ export type SolanaCortexRisk = {
 
   /** Contract-security-only read (Contract Security + Supply Control) — see this file's header. */
   securityRead: SolanaSecurityRead
-  /** Raw weighted score before any maturity/evidence/creator cap was applied — for transparency only; `score` above is the real, capped number. */
+  /** Raw weighted score before the maturity/evidence/creator scaling was applied — for transparency only; `score` above is the real, scaled number. */
   uncappedScore: number
-  /** Empty when no cap applied. Each entry names the ceiling it imposed and why. */
+  /** Empty when the scaling was negligible. Each entry names a gate that reduced the score and why — see applyMaturityAndEvidenceCaps. */
   scoreCapReasons: string[]
 
   modules: SolanaModuleReport[]
@@ -371,43 +373,74 @@ function composeReasoning(sr: ScanInput, modules: SolanaModuleReport[], capReaso
   clauses.push(`Creator/Cluster Intelligence scores ${creatorM.scoreEarned}/${creatorM.scoreMax}: ${creatorM.reason}`)
 
   if (capReasons.length > 0) {
-    clauses.push(`The overall score is capped regardless of the categories above: ${capReasons.join(' ')}`)
+    clauses.push(`The overall score is scaled down regardless of the categories above: ${capReasons.join(' ')}`)
   }
   clauses.push('No trading-behavior data source (wash trading, sniper activity, bundling, or bot detection) is connected, so behavioral risk beyond transaction-count skew cannot be assessed.')
 
   return clauses.join(' ')
 }
 
-// ── Maturity/evidence/creator caps, DISCLOSED: applied to the raw weighted score BEFORE verdict
+// ── Maturity/evidence/creator SCALING, DISCLOSED: applied to the raw weighted score BEFORE verdict
 // banding — the literal mechanism behind "cap immature meme coins regardless of authority status."
 // A token cannot reach the top tier on clean authorities alone; it must also be old enough,
-// evidenced enough, and have at least a plausible creator trace. ─────────────────────────────────
+// evidenced enough, and have at least a plausible creator trace.
+//
+// REGRESSION FIXED, DISCLOSED (reported live: "SOLANA CORTEX RISK ENGINE · INVESTMENT RISK always
+// the same"): this function previously imposed FIXED ceilings — Math.min(rawScore, 58/62/68/70/78/
+// 82). Two of those trigger on almost every real scan: `creatorConfidence.tier === 'UNKNOWN'` is
+// the DEFAULT state (Deep Creator Check is opt-in and never runs automatically) and pinned the
+// score to exactly 70, and a pool under a day old pinned it to exactly 58. Because a ceiling
+// DISCARDS the raw score entirely, every token that tripped the same ceiling landed on the SAME
+// number no matter how differently its nine categories actually scored — the engine stopped
+// discriminating precisely where it mattered. This is the identical bug already fixed in
+// lib/solanaConfidenceScore.ts, and it is fixed the same structural way here: each gate now
+// contributes a CONTINUOUS MULTIPLIER (< 1) instead of a fixed ceiling, so the raw category score
+// is scaled down proportionally and two tokens differing in ANY category still differ in the final
+// score. The severity ordering of the old ceilings is preserved in the multiplier magnitudes (an
+// unresolved/under-a-day token is still penalised hardest), so "immature meme coins are capped
+// regardless of authority status" remains true — it is now a proportional cap, not a shared one. ──
 function applyMaturityAndEvidenceCaps(rawScore: number, modules: SolanaModuleReport[], creatorConfidence: ScanInput['creatorConfidence']): { score: number; reasons: string[] } {
-  const caps: Array<{ cap: number; reason: string }> = []
+  const reasons: string[] = []
   const maturityM = modules.find((m) => m.module === 'Token Maturity')!
   const evidenceM = modules.find((m) => m.module === 'Evidence Confidence')!
 
+  // Maturity: scales continuously with the real, already-scored pool age rather than snapping to
+  // one of three ceilings — a 2-day-old and a 6-day-old token no longer land on the same number.
+  const maturityFraction = maturityM.scoreMax > 0 ? maturityM.scoreEarned / maturityM.scoreMax : 0
+  let maturityFactor: number
   if (maturityM.status === 'unavailable' || maturityM.scoreEarned <= 1) {
-    caps.push({ cap: 58, reason: 'Token age is unresolved or under a day — capped well below the top tier.' })
-  } else if (maturityM.scoreEarned / maturityM.scoreMax < 0.5) {
-    caps.push({ cap: 68, reason: 'Token is under 7 days old — capped below the top tier until more trading history accumulates.' })
-  } else if (maturityM.scoreEarned / maturityM.scoreMax < 0.7) {
-    caps.push({ cap: 78, reason: 'Token is under 30 days old — capped just below the top tier.' })
+    maturityFactor = 0.62
+    reasons.push('Token age is unresolved or under a day — scales the score down sharply, proportionally to the rest of the evidence.')
+  } else if (maturityFraction < 0.5) {
+    maturityFactor = 0.72 + (maturityFraction / 0.5) * 0.10
+    reasons.push('Token is under 7 days old — scales the score down until more trading history accumulates.')
+  } else if (maturityFraction < 0.7) {
+    maturityFactor = 0.86 + ((maturityFraction - 0.5) / 0.2) * 0.08
+    reasons.push('Token is under 30 days old — scales the score down slightly.')
+  } else {
+    maturityFactor = 0.94 + ((maturityFraction - 0.7) / 0.3) * 0.06
   }
 
-  if (evidenceM.scoreEarned / evidenceM.scoreMax < 0.5) {
-    caps.push({ cap: 62, reason: 'Evidence coverage is limited — capped below the top tier until more checks resolve.' })
-  }
+  // Evidence coverage: proportional to how much of the picture actually resolved.
+  const evidenceFraction = evidenceM.scoreMax > 0 ? evidenceM.scoreEarned / evidenceM.scoreMax : 0
+  const evidenceFactor = 0.80 + evidenceFraction * 0.20
+  if (evidenceFraction < 0.5) reasons.push('Evidence coverage is limited — scales the score down until more checks resolve.')
 
-  if (creatorConfidence.tier === 'UNKNOWN') {
-    caps.push({ cap: 70, reason: 'Creator identity has not been verified (Deep Creator Check not run) — capped below the top tier.' })
-  } else if (creatorConfidence.tier === 'POSSIBLE') {
-    caps.push({ cap: 82, reason: 'Creator identity is only possibly resolved (signature history did not reach genesis) — capped just below the top tier.' })
-  }
+  // Creator identity: UNKNOWN is the DEFAULT (Deep Creator Check is opt-in), so this must never be
+  // a shared ceiling — it is the single largest contributor to the convergence bug above.
+  const creatorFactor =
+    creatorConfidence.tier === 'CONFIRMED' ? 1
+    : creatorConfidence.tier === 'LIKELY' ? 0.97
+    : creatorConfidence.tier === 'POSSIBLE' ? 0.92
+    : 0.86
+  if (creatorConfidence.tier === 'UNKNOWN') reasons.push('Creator identity has not been verified (Deep Creator Check not run) — scales the score down proportionally, not to a fixed ceiling.')
+  else if (creatorConfidence.tier === 'POSSIBLE') reasons.push('Creator identity is only possibly resolved (signature history did not reach genesis) — scales the score down slightly.')
 
-  if (caps.length === 0) return { score: rawScore, reasons: [] }
-  const tightest = Math.min(rawScore, ...caps.map((c) => c.cap))
-  return { score: tightest, reasons: caps.filter((c) => c.cap === tightest || c.cap < rawScore).map((c) => c.reason) }
+  const multiplier = maturityFactor * evidenceFactor * creatorFactor
+  const score = Math.round(rawScore * multiplier)
+  // Below ~3% total reduction the scaling is not materially changing the read — don't clutter the
+  // UI with "why is this capped" copy the user cannot act on.
+  return { score, reasons: multiplier < 0.97 ? reasons : [] }
 }
 
 export function computeSolanaCortexRisk(sr: ScanInput): SolanaCortexRisk {

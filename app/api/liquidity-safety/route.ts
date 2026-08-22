@@ -16,6 +16,7 @@ import {
   gtPoolToCandidate,
   buildSharedLpMeta,
 } from '@/lib/server/lpIntelligence'
+import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
 
 export const dynamic = "force-dynamic";
 
@@ -50,7 +51,22 @@ interface GTPool {
   };
 }
 
-type ChainKey = "base" | "eth"
+// ROBINHOOD LIQUIDITY SAFETY, DISCLOSED (reported live: "we have a liquidity safety problem for
+// the chain robinhood"). ROOT CAUSE: this type was "base" | "eth" only, and normalizeChain below
+// coerced EVERY other value — including "robinhood" — to "base" silently. The consequences were
+// not "no result", they were WRONG-CHAIN results: pool discovery queried GeckoTerminal with
+// network=base (so a Robinhood token found nothing, or worse, matched a DIFFERENT token that
+// happens to share the address on Base), and resolveLpProof ran its burn/lock reads against the
+// BASE RPC rather than the Robinhood RPC — reporting another chain's state as this token's.
+//
+// FIX: "robinhood" is now a first-class ChainKey. Everything downstream was already chain-generic
+// and needed no change: GeckoTerminal indexes 'robinhood' under that exact network slug (the same
+// slug app/api/radar/route.ts already uses for real Robinhood discovery), lpProof.ts's LpChain
+// already includes "robinhood" and getLpRpcUrl already resolves it to the Robinhood RPC, and
+// lpLockBurnIntel.ts already treats a chain with no locker registry honestly rather than assuming
+// one. Gated on isRobinhoodChainAvailable() so a deployment without the feature flag / RPC URL
+// falls back to Base exactly as before instead of querying a chain it cannot actually read.
+type ChainKey = "base" | "eth" | "robinhood"
 
 interface GTToken {
   id: string;
@@ -72,7 +88,12 @@ function idToAddress(id: string): string {
 }
 
 function normalizeChain(raw: string | null | undefined): ChainKey {
-  return raw === "eth" || raw === "ethereum" ? "eth" : "base"
+  if (raw === "eth" || raw === "ethereum") return "eth"
+  // Only honor "robinhood" when the chain is genuinely available to this deployment (feature flag
+  // AND a configured RPC URL) — without the RPC there is no way to run LP proof against it, and
+  // falling back to Base is the same behavior every caller had before this branch existed.
+  if (raw === "robinhood" && isRobinhoodChainAvailable()) return "robinhood"
+  return "base"
 }
 
 async function resolveNameToContract(query: string, chain: ChainKey): Promise<string | null> {

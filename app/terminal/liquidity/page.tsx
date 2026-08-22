@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import LiquiditySafetyVerdictCard, {
   type LiquiditySafetyResult,
 } from '@/components/LiquiditySafetyVerdictCard'
@@ -8,12 +8,38 @@ import LPSafetyExtendedBox from '@/components/LPSafetyExtendedBox'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 
+// CHAIN SELECTOR, DISCLOSED (reported live: "we have a liquidity safety problem for the chain
+// robinhood"). This page previously sent NO chain at all, so /api/liquidity-safety always fell
+// through to its "base" default — a Robinhood token could not be analyzed here at any URL, and a
+// Robinhood address that happened to also exist on Base would have been reported using BASE's
+// pools and BASE's LP proof. The route half of this fix makes "robinhood" a real ChainKey (see its
+// header); this half gives users a way to actually select it. Robinhood only appears once
+// /api/base-radar/chain-status confirms the deployment has it enabled AND RPC-configured — the
+// same gate the Base Radar selector uses, and the same boolean the route itself enforces, so the
+// option can never be offered for a chain the backend would silently downgrade to Base.
+type LiquidityChain = 'base' | 'eth' | 'robinhood'
+const CHAIN_LABEL: Record<LiquidityChain, string> = { base: 'Base', eth: 'Ethereum', robinhood: 'Robinhood' }
+
 export default function LiquiditySafetyPage() {
   const { plan, loading: planLoading } = usePlanWithLoading()
   const [input, setInput]     = useState('')
   const [loading, setLoading] = useState(false)
   const [result, setResult]   = useState<LiquiditySafetyResult | null>(null)
   const [error, setError]     = useState<string | null>(null)
+  const [chain, setChain]     = useState<LiquidityChain>('base')
+  const [robinhoodAvailable, setRobinhoodAvailable] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await fetch('/api/base-radar/chain-status?selectedChain=base')
+        const json = await res.json().catch(() => null)
+        if (!cancelled && json?.robinhood?.available === true) setRobinhoodAvailable(true)
+      } catch { /* best-effort: on failure Robinhood simply stays hidden, never shown unverified */ }
+    })()
+    return () => { cancelled = true }
+  }, [])
 
   async function handleScan() {
     const q = input.trim()
@@ -24,7 +50,7 @@ export default function LiquiditySafetyPage() {
 
     try {
       const isContract = /^0x[a-fA-F0-9]{40}$/.test(q)
-      const body = isContract ? { contract: q } : { query: q }
+      const body = isContract ? { contract: q, chain } : { query: q, chain }
 
       const { data: { session } } = await supabase.auth.getSession()
       const token = session?.access_token
@@ -39,7 +65,7 @@ export default function LiquiditySafetyPage() {
       const json = await res.json()
 
       if (!res.ok || !json.ok) {
-        setError(json.error ?? 'Token not found on Base.')
+        setError(json.error ?? `Token not found on ${CHAIN_LABEL[chain]}.`)
       } else {
         setResult(json.data)
       }
@@ -106,7 +132,7 @@ export default function LiquiditySafetyPage() {
               LP Safety <span style={{ color: '#2DD4BF' }}>Analyzer</span>
             </h1>
             <p style={{ fontSize: '13px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: 0 }}>
-              Analyze on-chain liquidity depth, fragmentation, and stability risk for any Base token.
+              Analyze on-chain liquidity depth, fragmentation, and stability risk for any {CHAIN_LABEL[chain]} token.
             </p>
           </div>
 
@@ -121,6 +147,32 @@ export default function LiquiditySafetyPage() {
             }}>
               Token Address or Name
             </p>
+            {/* Chain chips. 'eth' and 'base' were always accepted by the route; only 'robinhood' is
+                new, and only shown when the deployment genuinely has it available. */}
+            <div style={{ display: 'flex', gap: '6px', marginBottom: '12px', flexWrap: 'wrap' }}>
+              {(['base', 'eth', ...(robinhoodAvailable ? ['robinhood' as const] : [])] as LiquidityChain[]).map((c) => {
+                const active = chain === c
+                return (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => { setChain(c); setResult(null); setError(null) }}
+                    disabled={loading}
+                    style={{
+                      padding: '6px 14px', borderRadius: '999px', cursor: loading ? 'not-allowed' : 'pointer',
+                      background: active ? 'rgba(45,212,191,0.12)' : 'rgba(255,255,255,0.03)',
+                      border: `1px solid ${active ? 'rgba(45,212,191,0.45)' : 'rgba(255,255,255,0.08)'}`,
+                      color: active ? '#2DD4BF' : '#64748b',
+                      fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em',
+                      fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase',
+                      transition: 'all 0.15s',
+                    }}
+                  >
+                    {CHAIN_LABEL[c]}
+                  </button>
+                )
+              })}
+            </div>
             <div className="lp-input-row" style={{ display: 'flex', gap: '10px' }}>
               <input
                 value={input}

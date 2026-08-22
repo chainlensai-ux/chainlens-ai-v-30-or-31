@@ -37,8 +37,15 @@
 //    function) — two tokens both lacking a Deep Creator Check now land at genuinely different
 //    scores whenever their age or evidence coverage genuinely differs, which is the common case.
 //
-// The verdict LABEL is capped independently of the number for the same reason as before — the
-// best reachable label is still "Open Check", never "Safe"/"Strong"/"Verified".
+// VERDICT VOCABULARY, DISCLOSED (reported live: "a lot of it is open check and not actual facts"):
+// the top label used to be the literal string "Open Check", which reads as "we didn't check" — the
+// exact opposite of what it means here, since the top band is reached only when the supported
+// checks came back clean AND the token has real age and evidence behind it. It is now
+// "Low Risk Signals", which states the actual finding (few risk signals in what was checked) and
+// matches the CORTEX engine's own "Low Contract Risk" vocabulary so the two surfaces read
+// consistently. The honesty ceiling is unchanged and unchanged in spirit: the best reachable label
+// still never says "Safe"/"Strong"/"Verified", because this score is built from supported Solana
+// evidence only.
 //
 // Client-safe: no env var read, no secret, importable from both the Token Scanner page component
 // and this module's own test script.
@@ -52,7 +59,7 @@ export type SolanaConfidenceRead = {
   uncappedScore: number
   /** Empty when the multiplier was effectively 1 (no meaningful discount applied). */
   scoreCapReasons: string[]
-  verdict: 'Open Check' | 'Caution' | 'High Risk'
+  verdict: 'Low Risk Signals' | 'Caution' | 'High Risk'
   color: string
   categories: SolanaConfidenceCategory[]
 }
@@ -166,7 +173,7 @@ export function computeSolanaConfidenceScore(
   const score = Math.round(uncappedScore * multiplier)
   const activeCapReasons = multiplier < 0.97 ? capReasons : []
 
-  const verdict: SolanaConfidenceRead['verdict'] = score >= 75 ? 'Open Check' : score >= 40 ? 'Caution' : 'High Risk'
-  const color = verdict === 'Open Check' ? '#94a3b8' : verdict === 'Caution' ? '#fbbf24' : '#f87171'
+  const verdict: SolanaConfidenceRead['verdict'] = score >= 75 ? 'Low Risk Signals' : score >= 40 ? 'Caution' : 'High Risk'
+  const color = verdict === 'Low Risk Signals' ? '#34d399' : verdict === 'Caution' ? '#fbbf24' : '#f87171'
   return { score, uncappedScore, scoreCapReasons: activeCapReasons, verdict, color, categories }
 }
