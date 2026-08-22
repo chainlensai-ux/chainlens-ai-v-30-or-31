@@ -318,6 +318,44 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
   check('recovers on the 2nd retry (3rd total attempt), proving the raised retry count is real', r.holderConcentrationAvailable === true && largestCalls === 3)
 }
 {
+  // LIVE PRODUCTION FIX, DISCLOSED: a real scan report (Holders tab showing "unavailable") — made
+  // diagnosable by the previous fix's exposed error reason — surfaced `rpc_error:Internal error`
+  // on getTokenLargestAccounts. That generic -32603 code carries no query-specific content (unlike
+  // a real answer such as "Invalid params"), so it must now be retried, not treated as permanent.
+  let largestCalls = 0
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: async (url, init) => {
+      if (typeof url === 'string' && url.includes('dexscreener')) return { ok: true, json: async () => ({ pairs: [] }) }
+      const body = JSON.parse(init.body)
+      if (body.method === 'getTokenLargestAccounts') {
+        largestCalls++
+        if (largestCalls === 1) return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, error: { message: 'Internal error' } }) }
+        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: HEALTHY_LARGEST }) }
+      }
+      const results = { getAccountInfo: HEALTHY_MINT, getTokenSupply: HEALTHY_SUPPLY }
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: results[body.method] ?? null }) }
+    },
+  })
+  check('a generic "Internal error" JSON-RPC response is retried and recovers, not treated as a permanent answer', r.holderConcentrationAvailable === true && largestCalls === 2)
+}
+{
+  // A different, SPECIFIC JSON-RPC error message must still NOT be retried — only the exact
+  // generic "Internal error" string is treated as transient, nothing broader.
+  let largestCalls = 0
+  const r = await scanSolanaTokenBeta(USDC_MINT, {
+    rpcUrl: 'https://stub',
+    fetchImpl: async (url, init) => {
+      if (typeof url === 'string' && url.includes('dexscreener')) return { ok: true, json: async () => ({ pairs: [] }) }
+      const body = JSON.parse(init.body)
+      if (body.method === 'getTokenLargestAccounts') { largestCalls++; return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, error: { message: 'Invalid param: could not find account' } }) } }
+      const results = { getAccountInfo: HEALTHY_MINT, getTokenSupply: HEALTHY_SUPPLY }
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: results[body.method] ?? null }) }
+    },
+  })
+  check('a specific, non-generic JSON-RPC error is still NOT retried (real answer, not a hiccup)', largestCalls === 1 && r.holderConcentrationAvailable === false)
+}
+{
   // A real JSON-RPC error (the node answered, with an error) must NOT be retried — that's a real
   // answer, not a network hiccup, so retrying it would just be a wasted extra Alchemy call.
   let mintCalls = 0

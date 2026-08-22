@@ -9,10 +9,20 @@ export type RpcFetch = typeof fetch
 // retry, a single transient Alchemy hiccup (429 rate limit, brief timeout, momentary 5xx) silently
 // downgraded the whole scan to an evidence gap, which reads as "Solana holders are broken" even
 // though the RPC itself is healthy. This retries once, only for failure classes that are plausibly
-// transient (never for a clean JSON-RPC error message, which is a real answer from the node, not a
-// hiccup) — still counts as a single logical RPC attempt for the audit, and still degrades to an
-// honest evidence gap (never a fabricated value) if the retry also fails.
-const SOLANA_RPC_TRANSIENT_ERRORS = new Set(['rpc_bad_json', 'rpc_null_result', 'rpc_unreachable'])
+// transient (never for a clean, SPECIFIC JSON-RPC error message, which is a real answer from the
+// node, not a hiccup) — still counts as a single logical RPC attempt for the audit, and still
+// degrades to an honest evidence gap (never a fabricated value) if the retry also fails.
+//
+// GENERIC "Internal error" EXCEPTION, DISCLOSED: a live production report of exactly this
+// evidence-gap message surfaced the real reason for the first time (see holderAnalyzer.ts's own
+// error-reason plumbing) — `rpc_error:Internal error`. That is Solana JSON-RPC's generic -32603
+// code with no query-specific content (unlike, say, "Invalid params" or a real "account not
+// found" answer), and is documented node-side behavior for a request the node couldn't complete in
+// time — most often on getTokenLargestAccounts for a mint with many token accounts, or under node
+// load. Since it carries no actual information about the mint, treating it as a permanent "real
+// answer" (as every other rpc_error message correctly is) was itself the bug — it belongs in the
+// transient set, narrowly, by its exact generic message only.
+const SOLANA_RPC_TRANSIENT_ERRORS = new Set(['rpc_bad_json', 'rpc_null_result', 'rpc_unreachable', 'rpc_error:Internal error'])
 function isTransientSolanaRpcError(error: string): boolean {
   if (SOLANA_RPC_TRANSIENT_ERRORS.has(error)) return true
   if (error.startsWith('rpc_http_')) {
