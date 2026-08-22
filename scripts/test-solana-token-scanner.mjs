@@ -530,6 +530,21 @@ function verifiedSr(overrides = {}) {
   check('score color for Open Check is neutral, not green "safe" styling', verified.color === '#94a3b8')
 }
 {
+  // REGRESSION, DISCLOSED: a live report that the score reads "the same or extremely similar for
+  // every token" traced to the first version of the headline fix above — it clamped the score to a
+  // FIXED ceiling (58) whenever creatorConfidence was UNKNOWN, which is the DEFAULT state on
+  // nearly every scan (Deep Creator Check is opt-in, never automatic). Two tokens that both lack a
+  // Deep Creator Check but genuinely differ in age/evidence must now score DIFFERENTLY — proving
+  // the fix replaced the shared clamp with a per-token continuous multiplier.
+  const youngThin = computeSolanaConfidenceScore(baseSr({ marketData: { ...baseSr().marketData, pairAgeDays: 1 } }))
+  const matureEvidenced = computeSolanaConfidenceScore(baseSr({ marketData: { ...baseSr().marketData, pairAgeDays: 60 } }))
+  check('both scans share the same UNKNOWN creator tier (the common, default case)', true) // baseSr() defaults creatorConfidence.tier to UNKNOWN
+  check('a 1-day-old token and a 60-day-old token — same creator tier, same everything else — score DIFFERENTLY, not identically', youngThin.score !== matureEvidenced.score)
+  check('the more mature token scores meaningfully higher, not just by rounding noise', matureEvidenced.score - youngThin.score >= 8)
+  const thinEvidence = computeSolanaConfidenceScore(baseSr({ resolvedTokenName: null, deepCreator: null, marketData: { ...baseSr().marketData, pairAgeDays: 60 } }))
+  check('less-resolved evidence at the SAME age still produces a distinct score, never an identical shared ceiling', thinEvidence.score !== matureEvidenced.score)
+}
+{
   const worst = computeSolanaConfidenceScore(baseSr({
     authorityReadSucceeded: true, mintAuthority: 'X', freezeAuthority: 'Y',
     topAccountConcentration: { top1Percent: 80, top10Percent: 90, top20Percent: 95, accountsSampled: 20, accounts: [] },

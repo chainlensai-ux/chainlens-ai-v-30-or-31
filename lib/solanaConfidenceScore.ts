@@ -6,7 +6,7 @@
 // creator confidence, token age). No new provider call, no change to
 // lib/server/solanaTokenScannerBeta.ts — this module reads its output, never re-derives it.
 //
-// REBALANCE, DISCLOSED — two real problems in the previous 4-category version:
+// REBALANCE, DISCLOSED — three real problems found across two rounds of live-scan reports:
 //
 // 1. "Evidence Coverage" was a CONSTANT, not a measurement, DISCLOSED: it scored
 //    `25 - unsupportedChecks.length * 3`, but `unsupportedChecks` is the fixed, always-5-item list
@@ -22,10 +22,20 @@
 //    about who created it or how long it has traded — the same category of problem already fixed
 //    in lib/solanaCortexRisk.ts's redesign (see that file's header for the fuller rationale).
 //    Fixed here the same way: a new Track Record category (creator confidence + real pool age,
-//    both already-gathered evidence) is now a genuine 20 of 100 points, and — because a category
-//    alone isn't a strong enough guarantee — an unverified creator or a very young pool also caps
-//    the total score below the top "Open Check" band, regardless of how clean the other four
-//    categories read.
+//    both already-gathered evidence) is now a genuine 20 of 100 points.
+//
+// 3. THE FIX FOR #2 ITSELF THEN CAUSED A NEW, WORSE PROBLEM, DISCLOSED: the first version of this
+//    rebalance added hard clamps — an unverified creator OR a young/unresolved pool each capped
+//    the total score at the SAME fixed ceiling (58). Deep Creator Check is opt-in and never runs
+//    automatically (see deepCreatorAnalyzer.ts), so `creatorConfidence.tier === 'UNKNOWN'` is the
+//    DEFAULT state on nearly every first-view scan — not an exceptional finding. Combined with most
+//    freshly-scanned tokens also being young, nearly every scan hit one or both clamps and
+//    collapsed onto the identical 58 ceiling: "every token reads the same score" was a direct,
+//    reproducible consequence of that design, not a coincidence. Fixed here by replacing the fixed
+//    clamps with a CONTINUOUS multiplier (creatorFactor × maturityFactor × evidenceFactor, each a
+//    smooth function of the token's OWN real age/evidence/creator-tier, never a shared step
+//    function) — two tokens both lacking a Deep Creator Check now land at genuinely different
+//    scores whenever their age or evidence coverage genuinely differs, which is the common case.
 //
 // The verdict LABEL is capped independently of the number for the same reason as before — the
 // best reachable label is still "Open Check", never "Safe"/"Strong"/"Verified".
@@ -38,9 +48,9 @@ import type { SolanaBetaScanResult } from './server/solanaTokenScannerBeta'
 export type SolanaConfidenceCategory = { label: string; score: number; max: number; reasons: string[] }
 export type SolanaConfidenceRead = {
   score: number
-  /** Raw weighted score before any track-record/evidence cap — for transparency; `score` is the real, capped number. */
+  /** Raw weighted score before the confidence multiplier — for transparency; `score` is the real, adjusted number. */
   uncappedScore: number
-  /** Empty when no cap applied. */
+  /** Empty when the multiplier was effectively 1 (no meaningful discount applied). */
   scoreCapReasons: string[]
   verdict: 'Open Check' | 'Caution' | 'High Risk'
   color: string
@@ -128,19 +138,33 @@ export function computeSolanaConfidenceScore(
   const categories = [authorityCat, concentrationCat, marketCat, trackRecordCat, evidenceCat]
   const uncappedScore = categories.reduce((sum, c) => sum + c.score, 0)
 
-  // ── Caps, DISCLOSED: an unverified creator, a very young pool, or thin evidence each cap the
-  // TOTAL score below the top verdict band, regardless of how clean authority/concentration/
-  // market read — the mechanism that keeps a young, unevidenced token from reading "Open Check"
-  // on authority-and-liquidity alone. Mirrors lib/solanaCortexRisk.ts's own cap logic. ───────────
+  // ── Confidence multiplier, DISCLOSED: replaces the previous fixed-clamp caps — see this file's
+  // header, deviation #3, for exactly why a shared clamp value made most scans converge on the
+  // same number. Each factor is a smooth, continuous function of THIS token's own real evidence
+  // (age in days, evidence-signal fraction, creator tier), never a step function shared across
+  // tokens, so the final score spreads naturally instead of piling onto one ceiling. ─────────────
   const capReasons: string[] = []
-  const caps: number[] = []
-  if (sr.creatorConfidence.tier === 'UNKNOWN') { caps.push(58); capReasons.push('Creator identity has not been verified (Deep Creator Check not run) — capped below the top band.') }
   const days = sr.marketData?.pairAgeDays ?? null
-  if (days == null || days < 7) { caps.push(58); capReasons.push('Token is very young or its age is unresolved — capped below the top band.') }
-  else if (days < 30) { caps.push(74); capReasons.push('Token is under 30 days old — capped just below the top band.') }
-  if (evidenceCat.score / evidenceCat.max < 0.5) { caps.push(58); capReasons.push('Evidence coverage is limited for this scan — capped below the top band.') }
-  const score = caps.length > 0 ? Math.min(uncappedScore, ...caps) : uncappedScore
-  const activeCapReasons = caps.length > 0 && score < uncappedScore ? capReasons : []
+
+  const creatorFactor = sr.creatorConfidence.tier === 'CONFIRMED' ? 1
+    : sr.creatorConfidence.tier === 'LIKELY' ? 0.97
+    : sr.creatorConfidence.tier === 'POSSIBLE' ? 0.93
+    : 0.88
+  if (creatorFactor < 1) capReasons.push('Creator identity has not been verified (Deep Creator Check not run) — reduces the score proportionally, not to a fixed ceiling.')
+
+  const maturityFactor = days == null ? 0.80
+    : days >= 30 ? 1
+    : days >= 7 ? 0.85 + ((days - 7) / 23) * 0.15
+    : 0.65 + (days / 7) * 0.20
+  if (maturityFactor < 0.98) capReasons.push(days == null ? 'Pool age could not be resolved — reduces the score proportionally.' : `Pool is only ${days < 1 ? 'under a day' : `${days} day(s)`} old — reduces the score proportionally the younger it is.`)
+
+  const evidenceFraction = evidenceCat.max > 0 ? evidenceCat.score / evidenceCat.max : 0
+  const evidenceFactor = 0.85 + evidenceFraction * 0.15
+  if (evidenceFactor < 0.98) capReasons.push('Evidence coverage is limited for this scan — reduces the score proportionally.')
+
+  const multiplier = creatorFactor * maturityFactor * evidenceFactor
+  const score = Math.round(uncappedScore * multiplier)
+  const activeCapReasons = multiplier < 0.97 ? capReasons : []
 
   const verdict: SolanaConfidenceRead['verdict'] = score >= 75 ? 'Open Check' : score >= 40 ? 'Caution' : 'High Risk'
   const color = verdict === 'Open Check' ? '#94a3b8' : verdict === 'Caution' ? '#fbbf24' : '#f87171'
