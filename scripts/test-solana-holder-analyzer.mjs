@@ -70,4 +70,35 @@ function fetchWithLargestAccounts(rows) {
   check('evidence gap recorded on failure', res.evidenceGaps.some((g) => g.includes('could not be read')))
 }
 
+// ─── getTokenLargestAccounts and the Helius holder count run CONCURRENTLY, not sequentially ─────
+// Latency fix, DISCLOSED: these are independent reads that previously ran one after the other,
+// which (combined with getTokenLargestAccounts' own retries) could push a single scan close to
+// api/token/route.ts's platform time budget and read to a user as "holders randomly doesn't
+// work". Proven here by observing both calls START before either RESOLVES.
+{
+  process.env.ENABLE_HELIUS_SOLANA = 'true'
+  process.env.HELIUS_API_KEY = 'test-key'
+  const startedAt = { largest: null, helius: null }
+  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+  const fetchImpl = async (url, opts) => {
+    if (typeof url === 'string' && url.includes('helius-rpc.com')) {
+      startedAt.helius = Date.now()
+      await delay(30)
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { token_accounts: [] } }) }
+    }
+    const body = JSON.parse(opts.body)
+    if (body.method === 'getTokenLargestAccounts') {
+      startedAt.largest = Date.now()
+      await delay(30)
+      return { ok: true, json: async () => ({ result: { value: [{ address: 'A1', amount: '100' }] } }) }
+    }
+    throw new Error(`unexpected fetch: ${url}`)
+  }
+  await analyzeSolanaHolders({ mintAddress: MINT, rpcUrl: RPC, fetchImpl, rawSupply: 100, rawSupplyExact: '100' })
+  check('both the largest-accounts and Helius holder-count reads started, proving both ran this scan', startedAt.largest != null && startedAt.helius != null)
+  check('both reads started within a few ms of each other (concurrent), not one after the 30ms delay of the other (sequential)', Math.abs(startedAt.largest - startedAt.helius) < 20)
+  delete process.env.ENABLE_HELIUS_SOLANA
+  delete process.env.HELIUS_API_KEY
+}
+
 console.log(`test-solana-holder-analyzer.mjs: all ${passed} assertions passed`)

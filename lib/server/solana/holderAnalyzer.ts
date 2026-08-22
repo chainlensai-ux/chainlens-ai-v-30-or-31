@@ -45,13 +45,24 @@ export async function analyzeSolanaHolders(params: {
   const evidenceGaps: string[] = []
   const { mintAddress, rpcUrl, fetchImpl, rawSupply, rawSupplyExact } = params
 
-  // ── Top-account concentration (never a holder count — see module header) ───
-  // maxRetries: 2 (3 total attempts), DISCLOSED: this specific call is documented in
-  // rpcClient.ts's own header as the flakiest endpoint this engine calls — a single retry was
-  // sometimes not enough under real concurrent load on a shared RPC key. Raised only here, not
-  // for every RPC call in this engine.
+  // ── Top-account concentration + Helius holder count run CONCURRENTLY, DISCLOSED: these are two
+  // fully independent reads (different providers, neither depends on the other's result) that
+  // previously ran sequentially — worst case (3 retried attempts on getTokenLargestAccounts, THEN
+  // up to 3 paginated Helius calls) could take ~50s end to end. Running them together roughly
+  // halves worst-case latency, which matters directly: app/api/token/route.ts has no maxDuration
+  // override, so a scan that runs long risks the PLATFORM killing the whole request before this
+  // module's own retries even get to finish — which reads to a user as "holders randomly doesn't
+  // work" even though every individual read is behaving exactly as designed.
+  //
+  // maxRetries: 2 (3 total attempts) on getTokenLargestAccounts, DISCLOSED: this specific call is
+  // documented in rpcClient.ts's own header as the flakiest endpoint this engine calls — a single
+  // retry was sometimes not enough under real concurrent load on a shared RPC key. Raised only
+  // here, not for every RPC call in this engine.
   type LargestResp = { value?: Array<{ address?: string; amount?: string; uiAmount?: number | null }> }
-  const largestRes = await solanaRpc<LargestResp>(rpcUrl, 'getTokenLargestAccounts', [mintAddress], fetchImpl, 9000, 2)
+  const [largestRes, heliusHolders] = await Promise.all([
+    solanaRpc<LargestResp>(rpcUrl, 'getTokenLargestAccounts', [mintAddress], fetchImpl, 9000, 2),
+    fetchHeliusHolderCount(mintAddress, fetchImpl),
+  ])
   let topAccountConcentration: SolanaTopAccountConcentration = null
 
   if (largestRes.ok && Array.isArray(largestRes.result?.value) && largestRes.result.value.length > 0) {
@@ -105,8 +116,8 @@ export async function analyzeSolanaHolders(params: {
     evidenceGaps.push(`Top token accounts could not be read (${reason}) — concentration unavailable.`)
   }
 
-  // ── Real, paginated holder-account count (Helius) ───────────────────────────
-  const heliusHolders = await fetchHeliusHolderCount(mintAddress, fetchImpl)
+  // ── Real, paginated holder-account count (Helius) — fetched above, alongside the largest-
+  // accounts read (see this function's own header for why they now run concurrently). ──────────
   if (heliusHolders.called && !heliusHolders.success) evidenceGaps.push('Helius holder-account count did not resolve — holder count unavailable.')
   if (heliusHolders.success) evidenceGaps.push('Holder count reflects SPL token ACCOUNTS with a positive balance (AMM pool vaults and exchange custody accounts are included), not a KYC-verified unique-holder count.')
   if (heliusHolders.isLowerBound) evidenceGaps.push(`Holder count is a lower bound — capped at ${heliusHolders.pagesFetched} page(s) of accounts for cost control; the real count may be higher.`)
