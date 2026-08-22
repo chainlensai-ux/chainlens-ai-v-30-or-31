@@ -451,6 +451,112 @@ export async function fetchHeliusCreatorTrace(mintAddress: string, fetchImpl: Fe
   }
 }
 
+// SOLANA CREATOR RECENT LAUNCHES, DISCLOSED (Dev Intelligence engine completion task, Deep Mode
+// only — same explicit opt-in contract as fetchHeliusCreatorTrace above).
+//
+// WHAT THIS DOES: one standard getSignaturesForAddress call on the CREATOR wallet (newest-first,
+// 100 signatures — cheap), then ONE batched Enhanced Transactions call parsing up to 25 of those
+// signatures, extracting launch-shaped events: TOKEN_MINT parses, and CREATE parses from a
+// recognized launch program (Pump.fun). Each extracted event carries the real parsed mint address
+// where the parse exposes one.
+//
+// HONESTY, CRITICAL — THIS IS A RECENT SAMPLE, NOT A LAUNCH HISTORY: 100 signatures of an active
+// wallet may span minutes. `sampleOnly: true` is permanent and every consumer must present these
+// as "launch-like events observed in the creator's most recent activity sample", never as "this
+// creator has launched N tokens" — a full launch history requires indexing the wallet's entire
+// life, which this codebase cannot do. Zero events found in the sample is also NOT evidence of no
+// prior launches. The scanned mint's own creation event is excluded (it is not a PRIOR launch).
+//
+// COST, DISCLOSED: 1 standard RPC call + 1 Enhanced batch parsing ≤25 transactions per Deep
+// Cluster Check click. Bounded, opt-in, never on a default scan.
+
+const RECENT_LAUNCHES_SIGNATURE_LIMIT = 100
+const RECENT_LAUNCHES_ENHANCED_PARSE_CAP = 25
+const RECENT_LAUNCH_SOURCES = new Set(['PUMP_FUN', 'PUMP_AMM'])
+
+export type SolanaCreatorLaunchEvent = {
+  signature: string
+  timestamp: string | null
+  /** Parsed mint address of the launched token, when the Enhanced parse exposes one. Null when the event is launch-shaped but its mint could not be read from the parse. */
+  mint: string | null
+  source: string | null
+  type: string
+}
+
+export type SolanaCreatorRecentLaunchesResult = {
+  called: boolean
+  success: boolean
+  /** Permanent: this is a bounded recent-activity sample, never a full launch history. */
+  sampleOnly: true
+  signaturesSampled: number
+  transactionsParsed: number
+  events: SolanaCreatorLaunchEvent[]
+  errorReason: string | null
+}
+
+function emptyRecentLaunchesResult(called: boolean, errorReason: string | null): SolanaCreatorRecentLaunchesResult {
+  return { called, success: false, sampleOnly: true, signaturesSampled: 0, transactionsParsed: 0, events: [], errorReason }
+}
+
+export async function fetchHeliusCreatorRecentLaunches(creatorWallet: string, scannedMint: string, fetchImpl: FetchImpl): Promise<SolanaCreatorRecentLaunchesResult> {
+  if (!isHeliusConfigured()) return emptyRecentLaunchesResult(false, 'Helius Solana enrichment is not enabled (ENABLE_HELIUS_SOLANA is not "true", or HELIUS_API_KEY is missing).')
+  const apiKey = getHeliusApiKey()
+  if (!apiKey) return emptyRecentLaunchesResult(false, 'HELIUS_API_KEY missing.')
+
+  const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`
+  let signatures: string[] = []
+  try {
+    const res = await fetchImpl(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [creatorWallet, { limit: RECENT_LAUNCHES_SIGNATURE_LIMIT }] }),
+      signal: AbortSignal.timeout(9000),
+    })
+    if (!res.ok) return emptyRecentLaunchesResult(true, `helius_launch_sig_http_${res.status}`)
+    const json = await res.json().catch(() => null) as { result?: Array<{ signature?: string }>; error?: { message?: string } } | null
+    if (!json) return emptyRecentLaunchesResult(true, 'helius_launch_sig_bad_json')
+    if (json.error) return emptyRecentLaunchesResult(true, `helius_launch_sig_rpc_error:${json.error.message ?? 'unknown'}`)
+    signatures = (Array.isArray(json.result) ? json.result : []).map((r) => r?.signature).filter((s): s is string => typeof s === 'string')
+  } catch {
+    return emptyRecentLaunchesResult(true, 'helius_launch_sig_unreachable')
+  }
+  if (signatures.length === 0) return { called: true, success: true, sampleOnly: true, signaturesSampled: 0, transactionsParsed: 0, events: [], errorReason: null }
+
+  const toParse = signatures.slice(0, RECENT_LAUNCHES_ENHANCED_PARSE_CAP)
+  try {
+    const res = await fetchImpl(`https://api.helius.xyz/v0/transactions/?api-key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transactions: toParse }),
+      signal: AbortSignal.timeout(9000),
+    })
+    if (!res.ok) return { ...emptyRecentLaunchesResult(true, `helius_launch_enhanced_http_${res.status}`), signaturesSampled: signatures.length }
+    const parsed = await res.json().catch(() => null) as unknown
+    const txs = Array.isArray(parsed) ? parsed as Array<Record<string, unknown>> : []
+    const events: SolanaCreatorLaunchEvent[] = []
+    const seenMints = new Set<string>()
+    for (const tx of txs) {
+      const type = typeof tx?.type === 'string' ? tx.type : null
+      const source = typeof tx?.source === 'string' ? tx.source : null
+      if (!type) continue
+      const isLaunchShaped = type === 'TOKEN_MINT' || (type === 'CREATE' && source != null && RECENT_LAUNCH_SOURCES.has(source))
+      if (!isLaunchShaped) continue
+      const transfers = Array.isArray(tx.tokenTransfers) ? tx.tokenTransfers as Array<Record<string, unknown>> : []
+      const mintRaw = transfers.map((t) => t?.mint).find((m): m is string => typeof m === 'string' && m.length > 0) ?? null
+      const mint = mintRaw !== scannedMint ? mintRaw : null
+      if (mintRaw === scannedMint) continue // the scanned token's own creation is not a PRIOR launch
+      if (mint && seenMints.has(mint)) continue
+      if (mint) seenMints.add(mint)
+      const ts = typeof tx.timestamp === 'number' ? new Date(tx.timestamp * 1000).toISOString() : null
+      const sig = typeof tx.signature === 'string' ? tx.signature : ''
+      events.push({ signature: sig, timestamp: ts, mint, source, type })
+    }
+    return { called: true, success: true, sampleOnly: true, signaturesSampled: signatures.length, transactionsParsed: txs.length, events, errorReason: null }
+  } catch {
+    return { ...emptyRecentLaunchesResult(true, 'helius_launch_enhanced_unreachable'), signaturesSampled: signatures.length }
+  }
+}
+
 // SOLANA WALLET FUNDING TRACE, DISCLOSED (Cluster Map / Linked Wallets follow-up, Deep Mode only).
 //
 // Same cost/opt-in contract as fetchHeliusCreatorTrace above — never called outside an explicit

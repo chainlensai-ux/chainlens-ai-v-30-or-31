@@ -43,6 +43,8 @@ export const SOLANA_UNSUPPORTED_CHECKS: readonly SolanaUnsupportedCheck[] = [
 export type SolanaTopAccountShare = {
   /** Rank, 1-based, by balance descending. */
   rank: number
+  /** The token ACCOUNT address (an ATA/vault, not necessarily a wallet) as returned by the RPC — real on-chain data, kept so the Cluster Map can render holder nodes and resolve their owner wallets. */
+  address: string
   /** Raw base-unit amount as returned by the RPC (string to avoid precision loss). */
   amountRaw: string
   /** Share of total supply, 0-100, rounded to 2dp. Null when supply is unknown. */

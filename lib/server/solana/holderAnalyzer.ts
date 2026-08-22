@@ -93,6 +93,7 @@ export async function analyzeSolanaHolders(params: {
       top20Percent: pct(sumOf(20)),
       accounts: rows.slice(0, 20).map((r, i) => ({
         rank: i + 1,
+        address: typeof r.address === 'string' ? r.address : '',
         amountRaw: typeof r.amount === 'string' ? r.amount : '0',
         percentOfSupply: pct(rawAmounts[i] ?? ZERO),
       })),

@@ -87,6 +87,21 @@ function check(label, condition) { assert.ok(condition, label); passed++ }
   check('scaledMaxScore equals full maxScore (100) when cluster actually ran', score.scaledMaxScore === score.maxScore && score.maxScore === 100)
 }
 {
+  // HIGH cluster confidence (the intelligence-graph engine's new top tier) must earn MORE than
+  // medium, never fall through to 0 — the exact bug a naive ternary would have introduced.
+  const sc = buildSolanaSupplyControl({ ok: true, tokenProgram: 'spl-token', decimals: 6, totalSupply: 1000, rawSupply: 1000, mintAuthority: null, freezeAuthority: null, authorityReadSucceeded: true, rawExtensions: null, evidenceGaps: [] })
+  const mk = (clusterConfidence) => buildSolanaDeveloperScore({
+    creatorConfidence: { tier: 'CONFIRMED', confidencePercent: 90, wallet: 'W1', reason: 'test' },
+    supplyControl: sc, authorityReadSucceeded: true, freezeAuthority: null,
+    clusterMap: { attempted: true, evidenceCount: 9, clusterConfidence, riskLevel: 'standard', summary: 's', riskReason: 'r' },
+    patterns: { patterns: [] },
+  })
+  const high = mk('high').components.find(c => c.label === 'Cluster / Funding Confidence')
+  const medium = mk('medium').components.find(c => c.label === 'Cluster / Funding Confidence')
+  check('high cluster confidence earns more than medium, never 0', high.points > medium.points && high.points > 0)
+  check('cluster component never exceeds its own maxPoints', high.points <= high.maxPoints)
+}
+{
   // Authority-unresolved and mint-active cases never silently score high.
   const scActive = buildSolanaSupplyControl({ ok: true, tokenProgram: 'spl-token', decimals: 6, totalSupply: 1000, rawSupply: 1000, mintAuthority: 'Auth1', freezeAuthority: 'Freeze1', authorityReadSucceeded: true, rawExtensions: null, evidenceGaps: [] })
   const score = buildSolanaDeveloperScore({ creatorConfidence: { tier: 'UNKNOWN', confidencePercent: 0, wallet: null, reason: 'not run' }, supplyControl: scActive, authorityReadSucceeded: true, freezeAuthority: 'Freeze1', clusterMap: null, patterns: { patterns: [] } })

@@ -70,9 +70,9 @@ export function buildSolanaDeveloperScore(input: {
   } else if (clusterMap.evidenceCount === 0) {
     clusterReason = 'Deep Cluster Check ran but found no verified wallet relationships.'
   } else {
-    const confidencePoints = clusterMap.clusterConfidence === 'medium' ? 10 : clusterMap.clusterConfidence === 'low' ? 5 : 0
+    const confidencePoints = clusterMap.clusterConfidence === 'high' ? 12 : clusterMap.clusterConfidence === 'medium' ? 9 : clusterMap.clusterConfidence === 'low' ? 5 : 0
     const riskPenalty = clusterMap.riskLevel === 'elevated' ? 5 : 0
-    clusterPoints = Math.max(0, confidencePoints - riskPenalty + (clusterMap.riskLevel === 'standard' ? 5 : 0))
+    clusterPoints = Math.max(0, Math.min(15, confidencePoints - riskPenalty + (clusterMap.riskLevel === 'standard' ? 3 : 0)))
     clusterReason = `${clusterMap.summary} Risk read: ${clusterMap.riskLevel === 'unknown' ? 'unknown' : clusterMap.riskReason}`
   }
   components.push({ label: 'Cluster / Funding Confidence', points: clusterPoints, maxPoints: 15, reason: clusterReason, skipped: clusterSkipped })

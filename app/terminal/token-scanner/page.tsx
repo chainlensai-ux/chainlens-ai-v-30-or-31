@@ -2494,35 +2494,47 @@ type SolanaBalanceState = SolanaWalletSnapshotUI | 'error'
 const SOLANA_CNODE_ROLE_LABEL: Record<SolanaCNode['role'], string> = {
   mint: 'Scanned Token', creator_wallet: 'Creator', funding_wallet: 'Funding Wallet',
   mint_authority: 'Mint Authority', freeze_authority: 'Freeze Authority', lp_pool: 'LP Pool',
+  top_holder: 'Top Holder', lp_vault: 'LP Vault', prior_mint: 'Prior Launch',
 }
 const SOLANA_CNODE_ROLE_COLOR: Record<SolanaCNode['role'], string> = {
   mint: '#7dd3fc', creator_wallet: '#fbbf24', funding_wallet: '#a855f7',
   mint_authority: '#fb7185', freeze_authority: '#fb7185', lp_pool: '#2dd4bf',
+  top_holder: '#60a5fa', lp_vault: '#14b8a6', prior_mint: '#f472b6',
 }
 // Fixed angle (degrees, screen convention: 0=east, 90=south) each role anchors to around the
 // always-centered mint — "position nodes by role" without any force-graph randomness. Multiple
-// nodes sharing a role fan out from this anchor rather than colliding (see the layout below).
+// nodes sharing a role fan out from this anchor rather than colliding; top_holder/lp_vault get a
+// dedicated wide bottom arc in the layout so a 10-20-holder graph spreads instead of stacking.
 const SOLANA_CNODE_ROLE_ANGLE: Record<SolanaCNode['role'], number> = {
-  mint: 0, funding_wallet: -125, creator_wallet: -90, lp_pool: -20, mint_authority: 55, freeze_authority: 130,
+  mint: 0, funding_wallet: -125, creator_wallet: -90, lp_pool: -20, mint_authority: 165, freeze_authority: 195,
+  top_holder: 90, lp_vault: 25, prior_mint: -155,
 }
-// Reserved taxonomy shown in the legend even when this scan verified nothing under it — see this
-// component's header. Never rendered as an actual node; there is no data path that could produce one.
+// Roles this engine genuinely cannot verify, shown greyed-out in the legend — see
+// clusterAnalyzer.ts's unresolvedRelationships for the data-side version of this list. Never
+// rendered as an actual node; there is no data path that could produce one.
 const SOLANA_RESERVED_ROLE_LEGEND: Array<{ label: string; reason: string }> = [
-  { label: 'Treasury', reason: 'Not verified — would require an unimplemented Metaplex metadata-authority read.' },
+  { label: 'Treasury', reason: 'Not verified — no wallet-labeling provider is connected.' },
   { label: 'Exchange', reason: 'Not verified — no wallet-labeling/exchange-attribution provider is connected.' },
   { label: 'Market Maker', reason: 'Not verified — no wallet-labeling provider is connected.' },
-  { label: 'Unknown', reason: 'Not verified — this scan found no relationship this engine could not classify above.' },
+  { label: 'Update Authority', reason: 'Not verified — deriving the Metaplex metadata PDA requires ed25519 math no dependency in this codebase provides.' },
 ]
 const SOLANA_CNODE_RISK_COLOR: Record<SolanaCNode['risk'], string> = { elevated: '#f87171', standard: '#34d399', neutral: '#94a3b8', unknown: '#64748b' }
 const SOLANA_CNODE_CONFIDENCE_COLOR: Record<SolanaCNode['confidence'], string> = { high: '#34d399', medium: '#fbbf24', low: '#94a3b8' }
 const SOLANA_EDGE_LABEL: Record<SolanaCEdge['relationship'], string> = {
   funding_wallet: 'Funded', first_sol_sender: 'First SOL Sender', shared_fee_payer: 'Fee Payer',
   mint_authority: 'Mint Authority', freeze_authority: 'Freeze Authority', lp_creation: 'LP Provider', pumpfun_migration: 'Migration',
+  holds_supply: 'Holds Supply', vault_of: 'Vault Of', prior_launch: 'Prior Launch',
 }
 const SOLANA_EDGE_COLOR: Record<SolanaCEdge['relationship'], string> = {
   funding_wallet: '#a855f7', first_sol_sender: '#a855f7', shared_fee_payer: '#38bdf8',
   mint_authority: '#fb7185', freeze_authority: '#fb7185', lp_creation: '#2dd4bf', pumpfun_migration: '#facc15',
+  holds_supply: '#60a5fa', vault_of: '#14b8a6', prior_launch: '#f472b6',
 }
+/** Balances preload only for these roles — a 20-holder graph must not burn the wallet-detail rate limit (20/min) on load; other nodes fetch on click. */
+const SOLANA_BALANCE_PRELOAD_ROLES = new Set<SolanaCNode['role']>(['creator_wallet', 'funding_wallet', 'mint_authority', 'freeze_authority'])
+/** Compact-card roles that collapse behind the "show all" toggle when the graph is large. */
+const SOLANA_EXPANDABLE_ROLES = new Set<SolanaCNode['role']>(['top_holder', 'lp_vault', 'prior_mint'])
+const SOLANA_COLLAPSED_EXPANDABLE_LIMIT = 8
 
 // Small inline glyphs, one per real role — no icon-font/library dependency added.
 function SolanaRoleGlyph({ role, size = 14, color }: { role: SolanaCNode['role']; size?: number; color: string }) {
@@ -2540,6 +2552,12 @@ function SolanaRoleGlyph({ role, size = 14, color }: { role: SolanaCNode['role']
       return <svg {...common}><path d="M12 3v18M5 7l14 10M19 7 5 17" /></svg>
     case 'lp_pool':
       return <svg {...common}><path d="M12 3c3.5 4.2 6 7.6 6 10.5A6 6 0 1 1 6 13.5C6 10.6 8.5 7.2 12 3Z" /></svg>
+    case 'top_holder':
+      return <svg {...common}><path d="M4 20V10M10 20V4M16 20v-8M21 20H3" /></svg>
+    case 'lp_vault':
+      return <svg {...common}><rect x="4" y="6" width="16" height="14" rx="2" /><circle cx="12" cy="13" r="3" /><path d="M8 6V4h8v2" /></svg>
+    case 'prior_mint':
+      return <svg {...common}><circle cx="9" cy="9" r="5.5" /><path d="M17 7a5.5 5.5 0 1 1-4 9.3M9 6.5V9l1.8 1.8" /></svg>
   }
 }
 
@@ -2566,8 +2584,6 @@ function SolanaTokenLogoPlaceholder({ symbol, name, size = 34 }: { symbol: strin
 }
 
 function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tokenSymbol }: { clusterMap: SolanaCMap; creatorConfidence: SolanaBetaScanResult['creatorConfidence']; tokenName: string | null; tokenSymbol: string | null }) {
-  const nodes = clusterMap.nodes
-  const edges = clusterMap.edges
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [hoveredId, setHoveredId] = useState<string | null>(null)
   const [balances, setBalances] = useState<Map<string, SolanaBalanceState>>(new Map())
@@ -2582,35 +2598,69 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
     return () => clearTimeout(t)
   }, [])
 
-  // Preload every wallet node's real balance/last-activity snapshot from the existing, rate-
+  // EXPANDABLE GRAPH: a 20+-node graph collapses its holder/vault/prior-launch fan behind a
+  // "show all" toggle (top SOLANA_COLLAPSED_EXPANDABLE_LIMIT shown by default, ordered as the
+  // engine emitted them — holders arrive rank-ordered). Core nodes (creator/funding/authorities/
+  // pool/mint) are never collapsed. Layout, edges, and highlighting all run on the visible set.
+  const [expanded, setExpanded] = useState(false)
+  const expandableCount = clusterMap.nodes.filter((n) => SOLANA_EXPANDABLE_ROLES.has(n.role)).length
+  const nodes = useMemo(() => {
+    if (expanded || expandableCount <= SOLANA_COLLAPSED_EXPANDABLE_LIMIT) return clusterMap.nodes
+    let kept = 0
+    return clusterMap.nodes.filter((n) => {
+      if (!SOLANA_EXPANDABLE_ROLES.has(n.role)) return true
+      kept++
+      return kept <= SOLANA_COLLAPSED_EXPANDABLE_LIMIT
+    })
+  }, [clusterMap.nodes, expanded, expandableCount])
+  const visibleIds = useMemo(() => new Set(nodes.map((n) => n.id)), [nodes])
+  const edges = useMemo(() => clusterMap.edges.filter((e) => visibleIds.has(e.from) && visibleIds.has(e.to)), [clusterMap.edges, visibleIds])
+
+  // Preload core wallet nodes' real balance/last-activity snapshots from the existing, rate-
   // limited /api/solana-wallet-detail endpoint (same endpoint, same shape — see
-  // app/api/solana-wallet-detail/route.ts) so premium node cards can show balance without
-  // requiring a click. Sequential, cancel-safe, skips nodes already resolved. A node absent from
-  // `balances` reads as "loading" in the UI below — no separate 'loading' sentinel needs writing
-  // synchronously here, so this effect only ever calls setState from inside the async fetch loop.
+  // app/api/solana-wallet-detail/route.ts). ONLY the core roles preload (see
+  // SOLANA_BALANCE_PRELOAD_ROLES) — a 20-holder graph must not burn the endpoint's 20/min rate
+  // limit on page load; holder/vault/prior-launch nodes fetch on click instead (below).
+  // Sequential, cancel-safe, skips nodes already resolved. A node absent from `balances` reads as
+  // "loading"/"—" in the UI below, so this effect only calls setState from inside the async loop.
   const fetchedBalanceIds = useRef<Set<string>>(new Set())
+  const fetchBalance = async (node: SolanaCNode, isCancelled: () => boolean) => {
+    try {
+      const res = await fetch('/api/solana-wallet-detail', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: node.address }) })
+      const json = await res.json().catch(() => null)
+      if (isCancelled()) return
+      if (!res.ok || !json?.ok) setBalances((prev) => new Map(prev).set(node.id, 'error'))
+      else setBalances((prev) => new Map(prev).set(node.id, json.snapshot as SolanaWalletSnapshotUI))
+    } catch {
+      if (!isCancelled()) setBalances((prev) => new Map(prev).set(node.id, 'error'))
+    }
+  }
   useEffect(() => {
     let cancelled = false
-    const toFetch = nodes.filter((n) => n.role !== 'mint' && !fetchedBalanceIds.current.has(n.id))
+    const toFetch = clusterMap.nodes.filter((n) => SOLANA_BALANCE_PRELOAD_ROLES.has(n.role) && !fetchedBalanceIds.current.has(n.id))
     if (toFetch.length === 0) return
     for (const n of toFetch) fetchedBalanceIds.current.add(n.id)
     ;(async () => {
       for (const node of toFetch) {
         if (cancelled) return
-        try {
-          const res = await fetch('/api/solana-wallet-detail', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ address: node.address }) })
-          const json = await res.json().catch(() => null)
-          if (cancelled) return
-          if (!res.ok || !json?.ok) setBalances((prev) => new Map(prev).set(node.id, 'error'))
-          else setBalances((prev) => new Map(prev).set(node.id, json.snapshot as SolanaWalletSnapshotUI))
-        } catch {
-          if (!cancelled) setBalances((prev) => new Map(prev).set(node.id, 'error'))
-        }
+        await fetchBalance(node, () => cancelled)
       }
     })()
     return () => { cancelled = true }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes.map((n) => n.id).join(',')])
+  }, [clusterMap.nodes.map((n) => n.id).join(',')])
+
+  // On-click balance fetch for the non-preloaded roles (holders/vaults/prior launches).
+  useEffect(() => {
+    if (!selectedId) return
+    const node = clusterMap.nodes.find((n) => n.id === selectedId)
+    if (!node || node.role === 'mint' || fetchedBalanceIds.current.has(node.id)) return
+    fetchedBalanceIds.current.add(node.id)
+    let cancelled = false
+    void fetchBalance(node, () => cancelled)
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId])
 
   // Role-anchored layout: each node starts at its role's fixed angle/radius around the always-
   // centered mint, then a light relaxation pass (mutual repulsion + edge-length spring + a soft
@@ -2621,15 +2671,28 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
     if (!nodes.length) return new Map()
     type SN = { id: string; x: number; y: number; vx: number; vy: number; anchorX: number; anchorY: number; fixed: boolean }
     const n = nodes.length
-    const baseRadius = Math.min(40, 24 + n * 2.6)
+    const baseRadius = Math.min(40, 24 + n * 1.4)
     const roleSeen = new Map<string, number>()
+    const roleTotals = new Map<string, number>()
+    for (const node of nodes) roleTotals.set(node.role, (roleTotals.get(node.role) ?? 0) + 1)
     const sn: SN[] = nodes.map((node) => {
       if (node.role === 'mint') return { id: node.id, x: 50, y: 50, vx: 0, vy: 0, anchorX: 50, anchorY: 50, fixed: true }
       const idx = roleSeen.get(node.role) ?? 0
       roleSeen.set(node.role, idx + 1)
-      const angleDeg = SOLANA_CNODE_ROLE_ANGLE[node.role] + idx * 18
+      const total = roleTotals.get(node.role) ?? 1
+      // A role with many nodes (top holders, vaults) spreads across a wide arc CENTERED on its
+      // anchor angle, with staggered radii so cards don't overlap; small roles keep the tight fan.
+      let angleDeg: number
+      let radius: number
+      if (SOLANA_EXPANDABLE_ROLES.has(node.role) && total > 3) {
+        const arc = Math.min(170, total * 17)
+        angleDeg = SOLANA_CNODE_ROLE_ANGLE[node.role] - arc / 2 + (total > 1 ? (idx / (total - 1)) * arc : 0)
+        radius = baseRadius + 6 + (idx % 2) * 10
+      } else {
+        angleDeg = SOLANA_CNODE_ROLE_ANGLE[node.role] + idx * 18
+        radius = baseRadius + idx * 8
+      }
       const rad = (angleDeg * Math.PI) / 180
-      const radius = baseRadius + idx * 8
       const ax = 50 + Math.cos(rad) * radius
       const ay = 50 + Math.sin(rad) * radius
       return { id: node.id, x: ax, y: ay, vx: 0, vy: 0, anchorX: ax, anchorY: ay, fixed: false }
@@ -2690,14 +2753,14 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
   }
 
   const riskColor = clusterMap.riskLevel === 'elevated' ? '#f87171' : clusterMap.riskLevel === 'standard' ? '#34d399' : '#94a3b8'
-  const confColor = clusterMap.clusterConfidence === 'medium' ? '#34d399' : clusterMap.clusterConfidence === 'low' ? '#fbbf24' : '#94a3b8'
+  const confColor = clusterMap.clusterConfidence === 'high' ? '#34d399' : clusterMap.clusterConfidence === 'medium' ? '#a3e635' : clusterMap.clusterConfidence === 'low' ? '#fbbf24' : '#94a3b8'
   const creatorConfColor = creatorConfidence.tier === 'CONFIRMED' ? '#34d399' : creatorConfidence.tier === 'LIKELY' ? '#fbbf24' : creatorConfidence.tier === 'POSSIBLE' ? '#fb923c' : '#94a3b8'
   const metrics: Array<{ label: string; value: string; accent: string }> = [
     { label: 'Cluster Confidence', value: clusterMap.clusterConfidence.toUpperCase(), accent: confColor },
     { label: 'Cluster Risk', value: clusterMap.riskLevel === 'unknown' ? 'UNKNOWN' : clusterMap.riskLevel.toUpperCase(), accent: riskColor },
     { label: 'Evidence Count', value: String(clusterMap.evidenceCount), accent: '#2dd4bf' },
     { label: 'Funding Depth', value: `${clusterMap.fundingDepth} hop${clusterMap.fundingDepth === 1 ? '' : 's'}`, accent: '#5eead4' },
-    { label: 'Relationship Count', value: String(edges.length), accent: '#7dd3fc' },
+    { label: 'Relationship Count', value: String(clusterMap.edges.length), accent: '#7dd3fc' },
     { label: 'Creator Confidence', value: creatorConfidence.tier === 'UNKNOWN' ? 'UNKNOWN' : `${creatorConfidence.tier} (${creatorConfidence.confidencePercent}%)`, accent: creatorConfColor },
   ]
 
@@ -2705,6 +2768,30 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
     <div style={{ display: 'grid', gap: '12px' }}>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '8px' }} className="sol-cluster-metrics">
         {metrics.map((m) => <StatCard key={m.label} label={m.label} value={m.value} accent={m.accent} />)}
+      </div>
+
+      {/* WHY these numbers — the real factors behind confidence and risk, plus what genuinely
+          cannot be verified and why. Confidence/risk are computed, never placeholder defaults —
+          see clusterAnalyzer.ts's confidence/risk engines. */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: '8px' }}>
+        <div style={{ padding: '11px 13px', borderRadius: '11px', background: `${confColor}08`, border: `1px solid ${confColor}28` }}>
+          <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: confColor, fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Why this confidence</p>
+          {clusterMap.confidenceFactors.map((f, i) => (
+            <p key={i} style={{ margin: i === 0 ? 0 : '5px 0 0', fontSize: '10px', color: '#9db3c8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{f}</p>
+          ))}
+        </div>
+        <div style={{ padding: '11px 13px', borderRadius: '11px', background: `${riskColor}08`, border: `1px solid ${riskColor}28` }}>
+          <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: riskColor, fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Why this risk read</p>
+          {(clusterMap.riskFactors.length > 0 ? clusterMap.riskFactors : [clusterMap.riskReason]).map((f, i) => (
+            <p key={i} style={{ margin: i === 0 ? 0 : '5px 0 0', fontSize: '10px', color: '#9db3c8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{f}</p>
+          ))}
+        </div>
+        <div style={{ padding: '11px 13px', borderRadius: '11px', background: 'rgba(148,163,184,0.04)', border: '1px solid rgba(148,163,184,0.16)' }}>
+          <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#94a3b8', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Cannot be verified (and why)</p>
+          {clusterMap.unresolvedRelationships.map((u, i) => (
+            <p key={i} style={{ margin: i === 0 ? 0 : '5px 0 0', fontSize: '10px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}><span style={{ color: '#a3b4c5', fontWeight: 700 }}>{u.label}:</span> {u.reason}</p>
+          ))}
+        </div>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: selectedNode ? '1fr 280px' : '1fr', gap: '12px' }}>
@@ -2759,6 +2846,9 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
             if (!s || !t) return null
             const isFocusEdge = !focusId || e.from === focusId || e.to === focusId
             if (!isFocusEdge && focusId) return null // decluttered: only show labels on the highlighted path once something is focused
+            // A dense (13+ edge) graph would drown in always-on labels — labels then appear only
+            // on hover/selection, where the highlighted path makes them readable.
+            if (!focusId && edges.length > 12) return null
             const mx = (s.x + t.x) / 2, my = (s.y + t.y) / 2
             let angle = Math.atan2(t.y - s.y, t.x - s.x) * (180 / Math.PI)
             if (angle > 90 || angle < -90) angle += 180
@@ -2783,6 +2873,7 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
           {nodes.map((node, i) => {
             const p = positions.get(node.id) ?? { x: 50, y: 50 }
             const isMint = node.role === 'mint'
+            const isCompact = SOLANA_EXPANDABLE_ROLES.has(node.role)
             const isSelected = node.id === selectedId
             const isDimmed = !!focusId && !connectedIds?.has(node.id)
             const roleColor = SOLANA_CNODE_ROLE_COLOR[node.role]
@@ -2790,11 +2881,12 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
             const bal = balances.get(node.id)
             const balanceLabel = isMint
               ? 'Token'
-              : bal === undefined ? '…'
+              : bal === undefined ? (SOLANA_BALANCE_PRELOAD_ROLES.has(node.role) ? '…' : 'Click for details')
               : bal === 'error' ? 'Balance unavailable'
               : bal.balanceResolved ? `${bal.balanceSol!.toFixed(4)} SOL` : 'Balance unavailable'
             const displayName = isMint ? (tokenName ?? tokenSymbol ?? null) : null
             const displaySymbol = isMint && tokenSymbol ? (tokenSymbol.startsWith('$') ? tokenSymbol : `$${tokenSymbol}`) : null
+            const stagger = Math.min(i, 12) * 55
             return (
               <div
                 key={node.id}
@@ -2805,11 +2897,11 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
                   position: 'absolute', left: `${p.x}%`, top: `${p.y}%`,
                   transform: `translate(-50%,-50%) scale(${entered ? (isSelected ? 1.08 : 1) : 0.4})`,
                   opacity: entered ? (isDimmed ? 0.32 : 1) : 0,
-                  transition: `transform 380ms cubic-bezier(.2,.9,.3,1.3) ${i * 70}ms, opacity 380ms ease ${i * 70}ms`,
+                  transition: `transform 380ms cubic-bezier(.2,.9,.3,1.3) ${stagger}ms, opacity 380ms ease ${stagger}ms`,
                   cursor: 'pointer', zIndex: isMint ? 6 : isSelected ? 5 : isDimmed ? 1 : 2,
-                  width: isMint ? '176px' : '104px',
-                  padding: isMint ? '14px 16px 12px' : '7px 9px',
-                  borderRadius: isMint ? '18px' : '11px',
+                  width: isMint ? '176px' : isCompact ? '84px' : '104px',
+                  padding: isMint ? '14px 16px 12px' : isCompact ? '5px 7px' : '7px 9px',
+                  borderRadius: isMint ? '18px' : isCompact ? '9px' : '11px',
                   background: isMint
                     ? 'linear-gradient(165deg, rgba(20,42,58,.98), rgba(6,16,24,.98))'
                     : isSelected ? 'linear-gradient(160deg, rgba(18,30,52,.98), rgba(6,11,22,.98))' : 'linear-gradient(160deg, rgba(13,22,40,.94), rgba(5,9,18,.94))',
@@ -2852,13 +2944,23 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tok
                     <p title={node.address} style={{ margin: '0 0 4px', fontSize: '8px', color: '#5b7284', fontFamily: 'var(--font-plex-mono)' }}>{fmt(node.address)}</p>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px' }}>
                       <span style={{ fontSize: '7px', fontWeight: 700, color: SOLANA_CNODE_CONFIDENCE_COLOR[node.confidence], textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{node.confidence}</span>
-                      <span style={{ fontSize: '7.5px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', textAlign: 'right' }} className={bal === undefined ? 'sol-cluster-balance-pulse' : undefined}>{balanceLabel}</span>
+                      <span style={{ fontSize: '7.5px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', textAlign: 'right' }} className={bal === undefined && SOLANA_BALANCE_PRELOAD_ROLES.has(node.role) ? 'sol-cluster-balance-pulse' : undefined}>{balanceLabel}</span>
                     </div>
                   </>
                 )}
               </div>
             )
           })}
+
+          {expandableCount > SOLANA_COLLAPSED_EXPANDABLE_LIMIT && (
+            <button
+              type="button"
+              onClick={() => setExpanded((e) => !e)}
+              style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 7, padding: '5px 11px', borderRadius: '999px', border: '1px solid rgba(96,165,250,0.45)', background: 'rgba(8,14,28,0.9)', color: '#93c5fd', fontSize: '9px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer' }}
+            >
+              {expanded ? 'COLLAPSE GRAPH' : `SHOW ALL ${clusterMap.nodes.length} NODES →`}
+            </button>
+          )}
 
           <div style={{ position: 'absolute', left: '10px', bottom: '10px', display: 'flex', gap: '10px', flexWrap: 'wrap', maxWidth: '92%' }}>
             {(Object.keys(SOLANA_CNODE_ROLE_LABEL) as SolanaCNode['role'][]).filter((role) => nodes.some((n) => n.role === role)).map((role) => (
@@ -6097,7 +6199,7 @@ export default function TerminalTokenScanner() {
                                     {cm.riskLevel !== 'unknown' && <p style={{ margin: '8px 0 0', fontSize: '11px', color: riskColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{cm.riskReason}</p>}
                                   </div>
                                   <SolanaClusterGraphPanel key={cm.nodes.map((n) => n.id).join(',')} clusterMap={cm} creatorConfidence={sr.creatorConfidence} tokenName={sr.resolvedTokenName} tokenSymbol={sr.resolvedTokenSymbol} />
-                                  <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>Scope: nodes/edges come from real, verified evidence — creator + funding-wallet trace (Helius Enhanced Transactions), mint/freeze authority (Alchemy/Solana RPC), and LP pool identity (Solana RPC). Shared-signer, shared-token-creation, shared-ATA-creation and shared-authority-history relationships across OTHER mints, plus metadata authority/treasury/liquidity-wallet/market-maker roles, are not attempted — verifying those would require indexing every candidate wallet&apos;s full transaction history or a Metaplex metadata read this codebase does not perform.</p>
+                                  <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>Scope: nodes/edges come from real, verified evidence — creator + two-hop funding trace and a bounded recent-launch sample (Helius Enhanced Transactions), mint/freeze authority (Alchemy/Solana RPC), LP pool identity, and top-holder / LP-vault nodes with on-chain owner resolution (Solana RPC). A wallet appearing in multiple roles is merged into one node — that address-equality merge is the shared-authority discovery. Cross-mint shared-signer/shared-ATA-creation relationships, full launch history, treasury/exchange/market-maker labels, and Metaplex update authority are not attempted — verifying those would require indexing every candidate wallet&apos;s full transaction history, a wallet-labeling provider, or a Metaplex metadata-PDA derivation this codebase does not perform. See the &quot;Cannot be verified&quot; card above for each reason.</p>
                                 </>
                               )}
                             </div>

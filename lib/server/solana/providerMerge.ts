@@ -131,7 +131,19 @@ export async function runSolanaProviderMerge(
   let clusterMap: SolanaClusterMap | null = null
   if (opts.deepCluster === true) {
     const creatorTraceForCluster = deepCreator?.creatorTrace ?? (await analyzeSolanaDeepCreator(mintAddress, fetchImpl)).creatorTrace
-    clusterMap = await analyzeSolanaCluster({ mintAddress, creatorTrace: creatorTraceForCluster, mintAuthority: mint.mintAuthority, freezeAuthority: mint.freezeAuthority, poolProgram: pool.poolProgram, fetchImpl })
+    clusterMap = await analyzeSolanaCluster({
+      mintAddress,
+      creatorTrace: creatorTraceForCluster,
+      mintAuthority: mint.mintAuthority,
+      freezeAuthority: mint.freezeAuthority,
+      authorityReadSucceeded: mint.authorityReadSucceeded,
+      poolProgram: pool.poolProgram,
+      fetchImpl,
+      // The scan's own RPC + real top-account sample — enables the graph's owner-resolution,
+      // LP-vault, and top-holder evidence (see clusterAnalyzer.ts's own header).
+      rpcUrl,
+      topAccounts: holders.topAccountConcentration?.accounts ?? null,
+    })
     if (clusterMap.evidenceCount === 0) evidenceGaps.push('No verified wallet relationships found for this mint\'s creator wallet.')
   }
 
