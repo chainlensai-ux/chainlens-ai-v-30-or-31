@@ -1517,11 +1517,15 @@ function cortexSr(overrides = {}) {
   check('Deep Creator Check trigger still lives inside the Dev Map tab', devBlockRaw.includes('RUN DEEP CREATOR CHECK'))
 }
 {
-  // The Dev Control score is a dedicated Solana-native formula (authority + Deep Creator Check),
-  // never the EVM feature's score reused, and never a fabricated number independent of evidence.
+  // The Dev Control score is the real, explainable Developer Score composite (creator confidence +
+  // authority safety + supply safety + cluster confidence + pattern safety) — never the EVM
+  // feature's score reused, and never a fabricated number independent of evidence.
   const { readFileSync } = await import('node:fs')
   const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
-  check('Dev Control score is derived from real authority + creator evidence (mintRevoked/freezeRevoked/creatorResolved)', page.includes('const devScore = (mintRevoked ? 35 : 5) + (freezeRevoked ? 35 : 5) + (creatorResolved ? 30 : 15)'))
+  check('Dev Control score is derived from the real sr.developerScore composite', page.includes('const devScore = sr.developerScore.score'))
+  check('Watch Plan renders the full explainable score breakdown (every component has a reason)', page.includes('Developer Score Breakdown') && page.includes('sr.developerScore.components'))
+  check('Creator Analysis renders the tiered Confirmed/Likely/Possible/Unknown verdict, not a binary matched/not-matched', page.includes('sr.creatorConfidence.tier'))
+  check('Pattern Analysis renders every checkable pattern with a real evidence-cited verdict', page.includes('sr.patternAnalysis.patterns.map'))
 }
 
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)

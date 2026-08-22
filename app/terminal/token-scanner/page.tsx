@@ -5308,16 +5308,18 @@ export default function TerminalTokenScanner() {
                   const creatorResolved = !!(dc?.success && dc.resolved.likelyCreatorWallet)
                   const mintRevoked = sr.authorityReadSucceeded && !sr.mintAuthority
                   const freezeRevoked = sr.authorityReadSucceeded && !sr.freezeAuthority
-                  const devScore = (mintRevoked ? 35 : 5) + (freezeRevoked ? 35 : 5) + (creatorResolved ? 30 : 15)
+                  // Real, explainable composite — see developerScoreAnalyzer.ts. Each component
+                  // (creator confidence / authority safety / supply safety / cluster confidence /
+                  // pattern safety) is rendered with its own reason in the Watch Plan tab below.
+                  const devScore = sr.developerScore.score
                   const devVerdict = devScore >= 80 ? 'LOW RISK' : devScore >= 56 ? 'WATCH' : devScore >= 35 ? 'HIGH RISK' : 'CRITICAL'
                   const devVerdictColor = devVerdict === 'LOW RISK' ? '#34d399' : devVerdict === 'WATCH' ? '#fbbf24' : devVerdict === 'HIGH RISK' ? '#fb923c' : '#f87171'
                   const devConfidence = sr.authorityReadSucceeded && creatorResolved ? 'HIGH' : sr.authorityReadSucceeded ? 'MEDIUM' : 'LOW'
                   const cxForDev = computeSolanaCortexRisk(sr)
                   const fmtAddr = (addr: string | null | undefined) => addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : null
                   const originAddr = dc?.resolved.likelyCreatorWallet ?? null
-                  const originChip = creatorResolved
-                    ? { label: 'Likely matched', color: '#fbbf24', bg: 'rgba(251,191,36,.1)', border: 'rgba(251,191,36,.3)' }
-                    : { label: 'Not run', color: '#94a3b8', bg: 'rgba(148,163,184,.08)', border: 'rgba(148,163,184,.25)' }
+                  const creatorTierColor = sr.creatorConfidence.tier === 'CONFIRMED' ? '#34d399' : sr.creatorConfidence.tier === 'LIKELY' ? '#fbbf24' : sr.creatorConfidence.tier === 'POSSIBLE' ? '#fb923c' : '#94a3b8'
+                  const originChip = { label: sr.creatorConfidence.tier === 'UNKNOWN' ? 'Not run' : `${sr.creatorConfidence.tier} (${sr.creatorConfidence.confidencePercent}%)`, color: creatorTierColor, bg: `${creatorTierColor}1a`, border: `${creatorTierColor}55` }
                   const tabStyle = (active: boolean) => ({ padding: '8px 12px', borderRadius: '10px', border: active ? '1px solid rgba(125,211,252,0.45)' : '1px solid rgba(148,163,184,0.2)', background: active ? 'rgba(14,29,47,0.95)' : 'rgba(8,14,28,0.6)', color: active ? '#7dd3fc' : '#94a3b8', fontSize: '10px', letterSpacing: '.10em' as const, textTransform: 'uppercase' as const, fontWeight: 700, fontFamily: 'var(--font-plex-mono)' })
                   return (
                     <>
@@ -5348,7 +5350,7 @@ export default function TerminalTokenScanner() {
                           ['Deployer', creatorResolved ? 'Likely matched' : dc && !dc.success ? 'Not resolved' : 'Not run'],
                           ['Linked Wallets', sr.clusterMap ? (sr.clusterMap.evidenceCount > 0 ? `${sr.clusterMap.evidenceCount} verified` : 'None found') : 'Not run'],
                           ['Supply Control', !sr.authorityReadSucceeded ? 'Open check' : mintRevoked ? 'Revoked (fixed supply)' : 'Active (mutable supply)'],
-                          ['Patterns', 'Not supported'],
+                          ['Patterns', `${sr.patternAnalysis.patterns.filter(p => p.detected !== null).length}/${sr.patternAnalysis.patterns.length} checkable`],
                         ]).map(([k, v]) => (
                           <div key={k} style={{ padding: '12px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.2)', background: 'rgba(9,15,29,0.82)' }}>
                             <p style={{ margin: '0 0 5px', fontSize: '9px', letterSpacing: '.12em', color: '#64748b', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{k}</p>
@@ -5415,8 +5417,8 @@ export default function TerminalTokenScanner() {
                               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: '10px' }}>
                                 {([
                                   ['Address', originAddr ? fmtAddr(originAddr) : 'Not resolved'],
-                                  ['Detection Confidence', creatorResolved ? 'Medium confidence' : dc ? 'Unavailable' : 'Not run'],
-                                  ['Evidence Source', dc ? 'Earliest indexed transaction fee payer (Helius Enhanced Transactions); not a confirmed creator' : 'Run Deep Creator Check from the button below'],
+                                  ['Detection Confidence', `${sr.creatorConfidence.tier} (${sr.creatorConfidence.confidencePercent}%)`],
+                                  ['Evidence Source', sr.creatorConfidence.reason],
                                   ['Network', 'SOLANA'],
                                 ]).map(([k, v]) => (
                                   <div key={k} style={{ padding: '10px 12px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(9,15,29,0.7)' }}>
@@ -5571,6 +5573,18 @@ export default function TerminalTokenScanner() {
                                   ))}
                                 </div>
                               )}
+                              <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
+                                <p style={{ margin: '0 0 8px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Pattern Analysis</p>
+                                {sr.patternAnalysis.patterns.map((p) => (
+                                  <div key={p.key} style={{ marginBottom: '8px' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+                                      <p style={{ margin: 0, fontSize: '10.5px', color: p.detected === null ? '#64748b' : p.detected ? '#fb923c' : '#5eead4', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{p.label}</p>
+                                      <p style={{ margin: 0, fontSize: '9.5px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{p.detected === null ? 'UNAVAILABLE' : p.detected ? `DETECTED · ${p.confidence}` : `NOT DETECTED · ${p.confidence}`}</p>
+                                    </div>
+                                    <p style={{ margin: '2px 0 0', fontSize: '10px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{p.evidence}</p>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
                           )
                         })()}
@@ -5580,8 +5594,23 @@ export default function TerminalTokenScanner() {
                             <div style={{ padding: '13px 16px', borderRadius: '12px', background: 'rgba(125,211,252,.04)', border: '1px solid rgba(125,211,252,.2)' }}>
                               <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.14em', color: '#7dd3fc', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>CORTEX DEV SUMMARY</p>
                               <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
-                                {`Deployer ${creatorResolved ? 'likely matched' : 'open check'}. Mint authority ${mintRevoked ? 'revoked' : 'active'}, freeze authority ${freezeRevoked ? 'revoked' : 'active'}. Wallet clustering not supported.`}
+                                {`Deployer ${sr.creatorConfidence.tier.toLowerCase()}${sr.creatorConfidence.tier !== 'UNKNOWN' ? ` (${sr.creatorConfidence.confidencePercent}%)` : ''}. Mint authority ${mintRevoked ? 'revoked' : 'active'}, freeze authority ${freezeRevoked ? 'revoked' : 'active'}. ${sr.clusterMap ? sr.clusterMap.summary : 'Wallet clustering not run — see Cluster Map tab.'}`}
                               </p>
+                            </div>
+                            <div style={{ padding: '13px 16px', borderRadius: '12px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
+                              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '8px' }}>
+                                <p style={{ margin: 0, fontSize: '9px', letterSpacing: '.14em', color: '#475569', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Developer Score Breakdown</p>
+                                <p style={{ margin: 0, fontSize: '14px', color: '#f8fafc', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>{sr.developerScore.score}<span style={{ fontSize: '10px', color: '#64748b' }}>/{sr.developerScore.maxScore}</span></p>
+                              </div>
+                              {sr.developerScore.components.map((c, i) => (
+                                <div key={i} style={{ marginTop: i === 0 ? 0 : '8px' }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
+                                    <p style={{ margin: 0, fontSize: '10.5px', color: '#cbd5e1', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{c.label}</p>
+                                    <p style={{ margin: 0, fontSize: '10.5px', color: '#5eead4', fontFamily: 'var(--font-plex-mono)' }}>{c.points}/{c.maxPoints}</p>
+                                  </div>
+                                  <p style={{ margin: '2px 0 0', fontSize: '9.5px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{c.reason}</p>
+                                </div>
+                              ))}
                             </div>
                             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: '8px' }}>
                               <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(52,211,153,.04)', border: '1px solid rgba(52,211,153,.18)' }}>

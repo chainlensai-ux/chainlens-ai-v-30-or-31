@@ -22,6 +22,9 @@ import type { SolanaSupplyControl } from './supplyControlAnalyzer.ts'
 import type { SolanaWatchItem } from './watchPlanAnalyzer.ts'
 import type { SolanaSupplyTimeline } from './supplyTimelineAnalyzer.ts'
 import type { SolanaClusterMap } from './clusterAnalyzer.ts'
+import type { SolanaCreatorConfidence } from './creatorConfidenceAnalyzer.ts'
+import type { SolanaPatternAnalysis } from './patternAnalyzer.ts'
+import type { SolanaDeveloperScore } from './developerScoreAnalyzer.ts'
 
 export type SolanaUnsupportedCheck = {
   check: string
@@ -248,6 +251,12 @@ export type SolanaBetaScanResult = {
   supplyTimeline: SolanaSupplyTimeline
   /** null unless opts.deepCluster was explicitly requested — see clusterAnalyzer.ts for scope. */
   clusterMap: SolanaClusterMap | null
+  /** Tiered Confirmed/Likely/Possible/Unknown creator verdict — see creatorConfidenceAnalyzer.ts. */
+  creatorConfidence: SolanaCreatorConfidence
+  /** Real, honestly-scoped pattern checks — see patternAnalyzer.ts for what can and cannot be verified. */
+  patternAnalysis: SolanaPatternAnalysis
+  /** Explainable composite score built from every signal above — see developerScoreAnalyzer.ts. */
+  developerScore: SolanaDeveloperScore
 }
 
 export type SolanaBetaScanFailure = {

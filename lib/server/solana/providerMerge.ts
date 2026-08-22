@@ -29,6 +29,9 @@ import { buildSolanaSupplyControl } from './supplyControlAnalyzer.ts'
 import { buildSolanaWatchPlan } from './watchPlanAnalyzer.ts'
 import { buildSolanaSupplyTimeline } from './supplyTimelineAnalyzer.ts'
 import { analyzeSolanaCluster, type SolanaClusterMap } from './clusterAnalyzer.ts'
+import { analyzeSolanaCreatorConfidence } from './creatorConfidenceAnalyzer.ts'
+import { analyzeSolanaPatterns } from './patternAnalyzer.ts'
+import { buildSolanaDeveloperScore } from './developerScoreAnalyzer.ts'
 import {
   SOLANA_UNSUPPORTED_CHECKS,
   emptySolanaAudit,
@@ -155,6 +158,24 @@ export async function runSolanaProviderMerge(
   })
   const supplyTimeline = buildSolanaSupplyTimeline({ mint, poolProgram: pool.poolProgram, marketData: market.data, deepCreator })
 
+  // ── 11. Creator Confidence / Pattern Analysis / Developer Score — derived purely from evidence
+  // already gathered above (plus deepCreator/clusterMap when those opt-ins ran). No new calls. ──
+  const creatorConfidence = analyzeSolanaCreatorConfidence(deepCreator?.creatorTrace ?? null)
+  const patternAnalysisResult = analyzeSolanaPatterns({
+    poolProgram: pool.poolProgram,
+    supplyControl,
+    top1Percent: holders.topAccountConcentration?.top1Percent ?? null,
+    helius: creator.helius,
+  })
+  const developerScore = buildSolanaDeveloperScore({
+    creatorConfidence,
+    supplyControl,
+    authorityReadSucceeded: mint.authorityReadSucceeded,
+    freezeAuthority: mint.freezeAuthority,
+    clusterMap,
+    patterns: patternAnalysisResult,
+  })
+
   const wiringAudit: SolanaProviderWiringAudit = {
     mint: mintAddress,
     enabledProviders: {
@@ -258,5 +279,8 @@ export async function runSolanaProviderMerge(
     watchPlan,
     supplyTimeline,
     clusterMap,
+    creatorConfidence,
+    patternAnalysis: patternAnalysisResult,
+    developerScore,
   }
 }
