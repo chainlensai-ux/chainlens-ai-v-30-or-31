@@ -143,7 +143,13 @@ export default function Navbar() {
           0%,100% { opacity: 1; box-shadow: 0 0 5px rgba(74,222,128,0.8); }
           50%      { opacity: 0.5; box-shadow: 0 0 2px rgba(74,222,128,0.3); }
         }
-        .nav-shell { box-shadow: 0 0 0 1px rgba(182,102,243,0.16), 0 14px 46px rgba(0,0,0,0.55), 0 0 30px rgba(182,102,243,0.06), 0 0 40px rgba(224,83,194,0.05); overflow: hidden; }
+        .nav-shell { position: relative; box-shadow: 0 1px 0 rgba(255,255,255,0.04) inset, 0 18px 44px rgba(0,0,0,0.42); overflow: hidden; }
+        .nav-shell::before {
+          content: ''; position: absolute; inset: 0; border-radius: 999px; padding: 1px; pointer-events: none;
+          background: linear-gradient(120deg, rgba(182,102,243,0.28), rgba(224,83,194,0.14) 45%, transparent 72%);
+          -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+          -webkit-mask-composite: xor; mask-composite: exclude;
+        }
 
         .nav-link {
           color: rgba(255,255,255,0.68);
@@ -393,10 +399,9 @@ export default function Navbar() {
             background: 'linear-gradient(180deg, rgba(9,12,26,0.82) 0%, rgba(6,8,18,0.76) 100%)',
             backdropFilter: 'blur(24px)',
             WebkitBackdropFilter: 'blur(24px)',
-            border: '1px solid rgba(182,102,243,0.18)',
+            border: '1px solid rgba(255,255,255,0.09)',
             borderRadius: '999px',
-            padding: '0 18px',
-            height: '56px',
+            padding: '11px 18px',
             display: 'flex',
             alignItems: 'center',
             gap: '14px',
@@ -405,17 +410,11 @@ export default function Navbar() {
             overflow: 'visible',
           }}
         >
-          {/* Subtle top accent line */}
-          <div style={{
-            position: 'absolute', top: 0, left: '8%', right: '8%', height: '1px',
-            background: 'linear-gradient(90deg, transparent 0%, rgba(182,102,243,0.30) 35%, rgba(224,83,194,0.24) 65%, transparent 100%)',
-            borderRadius: '1px',
-          }} />
 
           {/* Logo */}
           <Link href="/" style={{ display: 'flex', alignItems: 'center', gap: '4px', textDecoration: 'none', flexShrink: 0 }}>
-            <span style={{ position: 'relative', width: 44, height: 44, margin: '-6px -2px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Image src="/cl-logo.png" alt="ChainLens AI" width={44} height={44} priority style={{ objectFit: 'contain' }} />
+            <span style={{ position: 'relative', width: 56, height: 56, margin: '-10px -2px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Image src="/cl-logo.png" alt="ChainLens AI" width={56} height={56} priority style={{ objectFit: 'contain' }} />
             </span>
             <div>
               <div style={{ fontFamily: 'var(--font-sora, Sora, sans-serif)', fontWeight: 700, fontSize: '17px', lineHeight: 1.15 }}>
