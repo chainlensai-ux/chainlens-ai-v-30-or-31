@@ -97,31 +97,58 @@ export async function POST(req: Request) {
       return unavailableResponse(500)
     }
 
+    // NOTIFICATION FAILURE ISOLATION, DISCLOSED (fixed a real bug reported live: a real applicant
+    // hit "We couldn't submit your application" and it did not work "even after doing it again").
+    //
+    // ROOT CAUSE: the Resend notification call below sat OUTSIDE its own try/catch, inside the same
+    // function whose top-level catch turns any thrown error into `unavailableResponse(500)` — the
+    // generic client-facing failure message. At the point this call runs, the affiliate row has
+    // ALREADY been inserted successfully (`insertError` was checked and cleared above). But if
+    // `fetch()` itself threw for ANY reason reaching api.resend.com — a transient network blip on
+    // Vercel's infra, a DNS hiccup, a timeout — that throw propagated all the way to the outer catch
+    // and the applicant was told their submission failed, when in fact it had already been saved.
+    // Retrying then either silently created a second row, or (once the referral_code unique
+    // retry logic no longer applied, since name/email aren't unique-constrained) just failed the
+    // same way again if the underlying network issue was still present — matching exactly what was
+    // reported: "did it once, still doesn't work."
+    //
+    // FIX: wrap the notification in its own try/catch. This is a best-effort internal alert, not
+    // part of the applicant-facing contract — a failure here must never turn a successful
+    // application into a reported failure. Every failure mode (non-2xx response OR a thrown
+    // exception) is now logged and swallowed, never re-thrown.
     const resendApiKey = process.env.RESEND_API_KEY
     if (resendApiKey) {
-      const notifyEmail = process.env.AFFILIATE_NOTIFY_EMAIL || 'chainlensai@gmail.com'
-      const submittedAt = new Date().toISOString()
-      const message = `New ChainLens Affiliate Application\n\nname: ${name}\nemail: ${email}\ntelegram: ${telegram || 'N/A'}\nX handle: ${xHandle}\naudience size: ${audienceSize}\npromo plan: ${promotionPlan}\npayout wallet: ${payoutWallet || 'N/A'}\nreferral code: ${code}\nsubmitted at: ${submittedAt}`
+      try {
+        const notifyEmail = process.env.AFFILIATE_NOTIFY_EMAIL || 'chainlensai@gmail.com'
+        const submittedAt = new Date().toISOString()
+        const message = `New ChainLens Affiliate Application\n\nname: ${name}\nemail: ${email}\ntelegram: ${telegram || 'N/A'}\nX handle: ${xHandle}\naudience size: ${audienceSize}\npromo plan: ${promotionPlan}\npayout wallet: ${payoutWallet || 'N/A'}\nreferral code: ${code}\nsubmitted at: ${submittedAt}`
 
-      const mailResp = await fetch('https://api.resend.com/emails', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${resendApiKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          from: process.env.AFFILIATE_FROM_EMAIL || 'ChainLens Affiliate <onboarding@resend.dev>',
-          to: [notifyEmail],
-          subject: 'New ChainLens Affiliate Application',
-          text: message,
-        }),
-      })
+        const mailResp = await fetch('https://api.resend.com/emails', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${resendApiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            from: process.env.AFFILIATE_FROM_EMAIL || 'ChainLens Affiliate <onboarding@resend.dev>',
+            to: [notifyEmail],
+            subject: 'New ChainLens Affiliate Application',
+            text: message,
+          }),
+        })
 
-      if (!mailResp.ok) {
+        if (!mailResp.ok) {
+          console.error('affiliate_apply_failed', {
+            code: `resend_${mailResp.status}`,
+            message: 'Resend notification failed after successful DB insert',
+            details: null,
+          })
+        }
+      } catch (notifyErr) {
         console.error('affiliate_apply_failed', {
-          code: `resend_${mailResp.status}`,
-          message: 'Resend notification failed after successful DB insert',
-          details: null,
+          code: 'resend_threw',
+          message: 'Resend notification call threw after successful DB insert — application was still saved',
+          details: notifyErr instanceof Error ? notifyErr.message : String(notifyErr),
         })
       }
     }
