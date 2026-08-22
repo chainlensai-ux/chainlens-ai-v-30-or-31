@@ -2492,8 +2492,8 @@ type SolanaWalletSnapshotUI = { address: string; balanceResolved: boolean; balan
 type SolanaBalanceState = SolanaWalletSnapshotUI | 'error'
 
 const SOLANA_CNODE_ROLE_LABEL: Record<SolanaCNode['role'], string> = {
-  mint: 'Token Contract', creator_wallet: 'Creator', funding_wallet: 'Funding',
-  mint_authority: 'Mint Authority', freeze_authority: 'Freeze Authority', lp_pool: 'LP',
+  mint: 'Scanned Token', creator_wallet: 'Creator', funding_wallet: 'Funding Wallet',
+  mint_authority: 'Mint Authority', freeze_authority: 'Freeze Authority', lp_pool: 'LP Pool',
 }
 const SOLANA_CNODE_ROLE_COLOR: Record<SolanaCNode['role'], string> = {
   mint: '#7dd3fc', creator_wallet: '#fbbf24', funding_wallet: '#a855f7',
@@ -2543,7 +2543,29 @@ function SolanaRoleGlyph({ role, size = 14, color }: { role: SolanaCNode['role']
   }
 }
 
-function SolanaClusterGraphPanel({ clusterMap, creatorConfidence }: { clusterMap: SolanaCMap; creatorConfidence: SolanaBetaScanResult['creatorConfidence'] }) {
+// Placeholder "logo" for the scanned token, DISCLOSED: this codebase's Solana metadata resolver
+// (lib/server/solana/metadataResolver.ts) never resolves a logo/image URL — only name/symbol — so
+// there is no real image to show here. Rather than fetch one from an unverified third-party image
+// host (which this engine's evidence contract does not permit), this renders a deterministic
+// typographic badge from the token's real, already-resolved ticker/name initials — a placeholder,
+// clearly not a claim of a verified brand asset.
+function SolanaTokenLogoPlaceholder({ symbol, name, size = 34 }: { symbol: string | null; name: string | null; size?: number }) {
+  const source = symbol ?? name ?? ''
+  const initials = source.replace(/^\$/, '').slice(0, 2).toUpperCase() || '?'
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: '50%', flexShrink: 0,
+      background: 'linear-gradient(145deg, rgba(45,212,191,0.35), rgba(56,189,248,0.25))',
+      border: '1px solid rgba(125,211,252,0.55)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontSize: size * 0.36, fontWeight: 800, color: '#f0fdfa', fontFamily: 'var(--font-plex-mono)', letterSpacing: '-0.02em',
+    }}>
+      {initials}
+    </div>
+  )
+}
+
+function SolanaClusterGraphPanel({ clusterMap, creatorConfidence, tokenName, tokenSymbol }: { clusterMap: SolanaCMap; creatorConfidence: SolanaBetaScanResult['creatorConfidence']; tokenName: string | null; tokenSymbol: string | null }) {
   const nodes = clusterMap.nodes
   const edges = clusterMap.edges
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -2689,9 +2711,16 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence }: { clusterMap
         <div style={{ position: 'relative', height: '420px', borderRadius: '14px', border: '1px solid rgba(148,163,184,0.18)', background: 'radial-gradient(circle at 50% 50%, rgba(45,212,191,0.07), rgba(6,10,20,0.94))', overflow: 'hidden' }}>
           <svg viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" style={{ width: '100%', height: '100%', position: 'absolute', inset: 0 }}>
             <defs>
-              <marker id="sol-cluster-arrow" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
-                <path d="M0,0 L6,3 L0,6 Z" fill="#7dd3fc" opacity={0.75} />
-              </marker>
+              {/* One arrowhead per real relationship type, colored to match its edge — real
+                  evidence direction only (e.g. "Mint Authority" and "Fee Payer" edges correctly
+                  point INTO the centered token, since that's who acted on it; "LP Provider" points
+                  OUT, since the token created the pool). Never reversed for cosmetic effect — see
+                  this component's header on why direction always tracks the real evidence. */}
+              {(Object.keys(SOLANA_EDGE_COLOR) as SolanaCEdge['relationship'][]).map((rel) => (
+                <marker key={rel} id={`sol-cluster-arrow-${rel}`} markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+                  <path d="M0,0 L7,3.5 L0,7 Z" fill={SOLANA_EDGE_COLOR[rel]} />
+                </marker>
+              ))}
             </defs>
             {edges.map((e, i) => {
               const s = positions.get(e.from), t = positions.get(e.to)
@@ -2699,15 +2728,25 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence }: { clusterMap
               const color = SOLANA_EDGE_COLOR[e.relationship]
               const isFocusEdge = !focusId || e.from === focusId || e.to === focusId
               const originNode = nodesById.get(e.from)
-              const riskFlow = (originNode?.risk === 'elevated') || nodesById.get(e.to)?.risk === 'elevated'
+              const targetNode = nodesById.get(e.to)
+              const riskFlow = (originNode?.risk === 'elevated') || targetNode?.risk === 'elevated'
+              // Pull the line's endpoints back off each node's center so the arrowhead lands in
+              // the gap before the (larger, HTML-rendered) destination card instead of hiding
+              // underneath it — bigger pullback into the always-larger, dominant mint node.
+              const dx = t.x - s.x, dy = t.y - s.y, d = Math.sqrt(dx * dx + dy * dy) || 1
+              const ux = dx / d, uy = dy / d
+              const startPad = originNode?.role === 'mint' ? 9 : 5.5
+              const endPad = targetNode?.role === 'mint' ? 10 : 6
+              const x1 = s.x + ux * startPad, y1 = s.y + uy * startPad
+              const x2 = t.x - ux * endPad, y2 = t.y - uy * endPad
               return (
                 <line
                   key={e.id}
-                  x1={s.x} y1={s.y} x2={t.x} y2={t.y}
+                  x1={x1} y1={y1} x2={x2} y2={y2}
                   stroke={color}
                   strokeWidth={isFocusEdge ? 0.7 : 0.4}
-                  opacity={entered ? (isFocusEdge ? 0.85 : 0.18) : 0}
-                  markerEnd="url(#sol-cluster-arrow)"
+                  opacity={entered ? (isFocusEdge ? 0.9 : 0.14) : 0}
+                  markerEnd={`url(#sol-cluster-arrow-${e.relationship})`}
                   className={riskFlow ? 'sol-cluster-edge-flow' : undefined}
                   style={{ transition: `opacity 420ms ease ${i * 60}ms, stroke-width 200ms ease` }}
                 />
@@ -2743,16 +2782,19 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence }: { clusterMap
 
           {nodes.map((node, i) => {
             const p = positions.get(node.id) ?? { x: 50, y: 50 }
+            const isMint = node.role === 'mint'
             const isSelected = node.id === selectedId
             const isDimmed = !!focusId && !connectedIds?.has(node.id)
             const roleColor = SOLANA_CNODE_ROLE_COLOR[node.role]
             const riskColorNode = SOLANA_CNODE_RISK_COLOR[node.risk]
             const bal = balances.get(node.id)
-            const balanceLabel = node.role === 'mint'
+            const balanceLabel = isMint
               ? 'Token'
               : bal === undefined ? '…'
               : bal === 'error' ? 'Balance unavailable'
               : bal.balanceResolved ? `${bal.balanceSol!.toFixed(4)} SOL` : 'Balance unavailable'
+            const displayName = isMint ? (tokenName ?? tokenSymbol ?? null) : null
+            const displaySymbol = isMint && tokenSymbol ? (tokenSymbol.startsWith('$') ? tokenSymbol : `$${tokenSymbol}`) : null
             return (
               <div
                 key={node.id}
@@ -2762,28 +2804,58 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence }: { clusterMap
                 style={{
                   position: 'absolute', left: `${p.x}%`, top: `${p.y}%`,
                   transform: `translate(-50%,-50%) scale(${entered ? (isSelected ? 1.08 : 1) : 0.4})`,
-                  opacity: entered ? (isDimmed ? 0.35 : 1) : 0,
+                  opacity: entered ? (isDimmed ? 0.32 : 1) : 0,
                   transition: `transform 380ms cubic-bezier(.2,.9,.3,1.3) ${i * 70}ms, opacity 380ms ease ${i * 70}ms`,
-                  cursor: 'pointer', zIndex: isSelected ? 5 : isDimmed ? 1 : 2,
-                  width: node.role === 'mint' ? '118px' : '104px',
-                  padding: '7px 9px', borderRadius: '11px',
-                  background: isSelected ? 'linear-gradient(160deg, rgba(18,30,52,.98), rgba(6,11,22,.98))' : 'linear-gradient(160deg, rgba(13,22,40,.94), rgba(5,9,18,.94))',
-                  border: `1px solid ${isSelected ? '#f8fafc' : `${roleColor}55`}`,
-                  boxShadow: isSelected ? `0 0 0 1px ${roleColor}80, 0 8px 20px rgba(0,0,0,0.5)` : '0 4px 10px rgba(0,0,0,0.35)',
+                  cursor: 'pointer', zIndex: isMint ? 6 : isSelected ? 5 : isDimmed ? 1 : 2,
+                  width: isMint ? '176px' : '104px',
+                  padding: isMint ? '14px 16px 12px' : '7px 9px',
+                  borderRadius: isMint ? '18px' : '11px',
+                  background: isMint
+                    ? 'linear-gradient(165deg, rgba(20,42,58,.98), rgba(6,16,24,.98))'
+                    : isSelected ? 'linear-gradient(160deg, rgba(18,30,52,.98), rgba(6,11,22,.98))' : 'linear-gradient(160deg, rgba(13,22,40,.94), rgba(5,9,18,.94))',
+                  border: isMint ? '1.5px solid #67e8f9' : `1px solid ${isSelected ? '#f8fafc' : `${roleColor}55`}`,
+                  boxShadow: isMint
+                    ? (isDimmed ? '0 0 0 1px rgba(103,232,249,0.4), 0 8px 22px rgba(0,0,0,0.5)' : '0 0 0 1px rgba(103,232,249,0.55), 0 0 26px rgba(45,212,191,0.45), 0 10px 26px rgba(0,0,0,0.55)')
+                    : isSelected ? `0 0 0 1px ${roleColor}80, 0 8px 20px rgba(0,0,0,0.5)` : '0 4px 10px rgba(0,0,0,0.35)',
                 }}
+                className={isMint && !isDimmed ? 'sol-cluster-mint-glow' : undefined}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '4px' }}>
-                  <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '18px', height: '18px', borderRadius: '50%', background: `${roleColor}22`, border: `1px solid ${roleColor}66`, flexShrink: 0 }}>
-                    <SolanaRoleGlyph role={node.role} size={11} color={roleColor} />
-                  </span>
-                  <span style={{ fontSize: '7.5px', fontWeight: 800, letterSpacing: '.08em', color: roleColor, textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{SOLANA_CNODE_ROLE_LABEL[node.role]}</span>
-                  <span title={`Risk: ${node.risk}`} style={{ marginLeft: 'auto', width: '6px', height: '6px', borderRadius: '50%', background: riskColorNode, flexShrink: 0 }} />
-                </div>
-                <p title={node.address} style={{ margin: '0 0 4px', fontSize: '9px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{fmt(node.address)}</p>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px' }}>
-                  <span style={{ fontSize: '7px', fontWeight: 700, color: SOLANA_CNODE_CONFIDENCE_COLOR[node.confidence], textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{node.confidence}</span>
-                  <span style={{ fontSize: '7.5px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', textAlign: 'right' }} className={node.role !== 'mint' && bal === undefined ? 'sol-cluster-balance-pulse' : undefined}>{balanceLabel}</span>
-                </div>
+                {isMint && (
+                  <div style={{ position: 'absolute', top: '-24px', left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: '4px', padding: '3px 9px', borderRadius: '999px', background: 'rgba(45,212,191,0.16)', border: '1px solid rgba(45,212,191,0.5)', whiteSpace: 'nowrap' }}>
+                    <span style={{ width: '5px', height: '5px', borderRadius: '50%', background: '#2dd4bf' }} className="sol-cluster-balance-pulse" />
+                    <span style={{ fontSize: '7px', fontWeight: 800, letterSpacing: '.14em', color: '#5eead4', fontFamily: 'var(--font-plex-mono)' }}>YOU ARE HERE</span>
+                  </div>
+                )}
+                {isMint ? (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                      <SolanaTokenLogoPlaceholder symbol={tokenSymbol} name={tokenName} size={34} />
+                      <div style={{ minWidth: 0 }}>
+                        <p style={{ margin: 0, fontSize: '12px', fontWeight: 800, color: '#f0fdfa', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} title={displayName ?? undefined}>{displayName ?? 'Unnamed Token'}</p>
+                        {displaySymbol && <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#5eead4', fontFamily: 'var(--font-plex-mono)' }}>{displaySymbol}</p>}
+                      </div>
+                    </div>
+                    <p style={{ margin: '0 0 6px', fontSize: '8px', fontWeight: 800, letterSpacing: '.1em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{SOLANA_CNODE_ROLE_LABEL.mint}</p>
+                    <p title={node.address} style={{ margin: 0, fontSize: '8px', color: '#5b7284', fontFamily: 'var(--font-plex-mono)' }}>{fmt(node.address)}</p>
+                  </>
+                ) : (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '4px' }}>
+                      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: '18px', height: '18px', borderRadius: '50%', background: `${roleColor}22`, border: `1px solid ${roleColor}66`, flexShrink: 0 }}>
+                        <SolanaRoleGlyph role={node.role} size={11} color={roleColor} />
+                      </span>
+                      <span style={{ fontSize: '8px', fontWeight: 800, letterSpacing: '.05em', color: roleColor, fontFamily: 'var(--font-plex-mono)' }}>{SOLANA_CNODE_ROLE_LABEL[node.role]}</span>
+                      <span title={`Risk: ${node.risk}`} style={{ marginLeft: 'auto', width: '6px', height: '6px', borderRadius: '50%', background: riskColorNode, flexShrink: 0 }} />
+                    </div>
+                    {/* Address is secondary evidence, not the headline — role label above carries the
+                        primary meaning; the address is smaller/dimmer and only for verification. */}
+                    <p title={node.address} style={{ margin: '0 0 4px', fontSize: '8px', color: '#5b7284', fontFamily: 'var(--font-plex-mono)' }}>{fmt(node.address)}</p>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '4px' }}>
+                      <span style={{ fontSize: '7px', fontWeight: 700, color: SOLANA_CNODE_CONFIDENCE_COLOR[node.confidence], textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{node.confidence}</span>
+                      <span style={{ fontSize: '7.5px', color: '#8ea0b5', fontFamily: 'var(--font-plex-mono)', textAlign: 'right' }} className={bal === undefined ? 'sol-cluster-balance-pulse' : undefined}>{balanceLabel}</span>
+                    </div>
+                  </>
+                )}
               </div>
             )
           })}
@@ -2813,7 +2885,16 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence }: { clusterMap
               </div>
               <button type="button" onClick={() => setSelectedId(null)} style={{ background: 'none', border: 'none', color: '#64748b', fontSize: '12px', cursor: 'pointer', padding: 0 }}>✕</button>
             </div>
-            <p title={selectedNode.address} style={{ margin: 0, fontSize: '10px', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)', wordBreak: 'break-all' }}>{selectedNode.address}</p>
+            {selectedNode.role === 'mint' && (tokenName || tokenSymbol) && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <SolanaTokenLogoPlaceholder symbol={tokenSymbol} name={tokenName} size={28} />
+                <div style={{ minWidth: 0 }}>
+                  <p style={{ margin: 0, fontSize: '12px', fontWeight: 800, color: '#f0fdfa', fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{tokenName ?? tokenSymbol}</p>
+                  {tokenSymbol && <p style={{ margin: 0, fontSize: '10px', fontWeight: 700, color: '#5eead4', fontFamily: 'var(--font-plex-mono)' }}>{tokenSymbol.startsWith('$') ? tokenSymbol : `$${tokenSymbol}`}</p>}
+                </div>
+              </div>
+            )}
+            <p title={selectedNode.address} style={{ margin: 0, fontSize: selectedNode.role === 'mint' ? '9px' : '10px', color: selectedNode.role === 'mint' ? '#5b7284' : '#e2e8f0', fontFamily: 'var(--font-plex-mono)', wordBreak: 'break-all' }}>{selectedNode.address}</p>
             <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
               <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: SOLANA_CNODE_CONFIDENCE_COLOR[selectedNode.confidence], border: `1px solid ${SOLANA_CNODE_CONFIDENCE_COLOR[selectedNode.confidence]}55` }}>CONFIDENCE {selectedNode.confidence.toUpperCase()}</span>
               <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '8.5px', fontWeight: 700, color: SOLANA_CNODE_RISK_COLOR[selectedNode.risk], border: `1px solid ${SOLANA_CNODE_RISK_COLOR[selectedNode.risk]}55` }}>RISK {selectedNode.risk.toUpperCase()}</span>
@@ -2871,8 +2952,13 @@ function SolanaClusterGraphPanel({ clusterMap, creatorConfidence }: { clusterMap
         @keyframes solClusterFlow { to { stroke-dashoffset: -20; } }
         .sol-cluster-balance-pulse { animation: solClusterPulse 1.2s ease-in-out infinite; }
         @keyframes solClusterPulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 0.9; } }
+        .sol-cluster-mint-glow { animation: solClusterMintGlow 2.6s ease-in-out infinite; }
+        @keyframes solClusterMintGlow {
+          0%, 100% { box-shadow: 0 0 0 1px rgba(103,232,249,0.55), 0 0 22px rgba(45,212,191,0.4), 0 10px 26px rgba(0,0,0,0.55); }
+          50% { box-shadow: 0 0 0 1px rgba(103,232,249,0.8), 0 0 36px rgba(45,212,191,0.65), 0 10px 26px rgba(0,0,0,0.55); }
+        }
         @media (max-width: 720px) { .sol-cluster-metrics { grid-template-columns: repeat(2,minmax(0,1fr)) !important; } }
-        @media (prefers-reduced-motion: reduce) { .sol-cluster-edge-flow, .sol-cluster-balance-pulse { animation: none; } }
+        @media (prefers-reduced-motion: reduce) { .sol-cluster-edge-flow, .sol-cluster-balance-pulse, .sol-cluster-mint-glow { animation: none; } }
       `}</style>
     </div>
   )
@@ -5930,7 +6016,7 @@ export default function TerminalTokenScanner() {
                                     <p style={{ margin: 0, fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{cm.summary}</p>
                                     {cm.riskLevel !== 'unknown' && <p style={{ margin: '8px 0 0', fontSize: '11px', color: riskColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{cm.riskReason}</p>}
                                   </div>
-                                  <SolanaClusterGraphPanel key={cm.nodes.map((n) => n.id).join(',')} clusterMap={cm} creatorConfidence={sr.creatorConfidence} />
+                                  <SolanaClusterGraphPanel key={cm.nodes.map((n) => n.id).join(',')} clusterMap={cm} creatorConfidence={sr.creatorConfidence} tokenName={sr.resolvedTokenName} tokenSymbol={sr.resolvedTokenSymbol} />
                                   <p style={{ margin: 0, fontSize: '10px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>Scope: nodes/edges come from real, verified evidence — creator + funding-wallet trace (Helius Enhanced Transactions), mint/freeze authority (Alchemy/Solana RPC), and LP pool identity (Solana RPC). Shared-signer, shared-token-creation, shared-ATA-creation and shared-authority-history relationships across OTHER mints, plus metadata authority/treasury/liquidity-wallet/market-maker roles, are not attempted — verifying those would require indexing every candidate wallet&apos;s full transaction history or a Metaplex metadata read this codebase does not perform.</p>
                                 </>
                               )}
