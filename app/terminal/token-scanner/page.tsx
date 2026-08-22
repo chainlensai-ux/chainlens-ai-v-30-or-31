@@ -5426,35 +5426,71 @@ export default function TerminalTokenScanner() {
                           </div>
                         )}
 
-                        {devControlTab === 'supply-control' && (
-                          <div style={{ display: 'grid', gap: '12px' }}>
-                            <div className="dev-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: '12px' }}>
-                              <StatCard label="Mint Authority" value={!sr.authorityReadSucceeded ? 'Unavailable' : sr.mintAuthority ? 'Active' : 'Revoked'} accent={!sr.authorityReadSucceeded ? '#94a3b8' : sr.mintAuthority ? '#f87171' : '#34d399'} helper={sr.mintAuthority ? shorten(sr.mintAuthority) : undefined} />
-                              <StatCard label="Freeze Authority" value={!sr.authorityReadSucceeded ? 'Unavailable' : sr.freezeAuthority ? 'Active' : 'Revoked'} accent={!sr.authorityReadSucceeded ? '#94a3b8' : sr.freezeAuthority ? '#f87171' : '#34d399'} helper={sr.freezeAuthority ? shorten(sr.freezeAuthority) : undefined} />
-                              <StatCard label="Token Program" value={sr.tokenProgram === 'spl-token-2022' ? 'Token-2022' : sr.tokenProgram === 'spl-token' ? 'SPL Token' : 'Unavailable'} accent="#5eead4" dim />
-                              <StatCard label="On-Chain Activity" value={sr.helius.called && sr.helius.success ? `${sr.helius.resolved.recentTransfers ?? 0} signatures` : 'Not available'} accent={sr.helius.called && sr.helius.success ? '#5eead4' : '#94a3b8'} dim={!(sr.helius.called && sr.helius.success)} />
+                        {devControlTab === 'supply-control' && (() => {
+                          const sc = sr.supplyControl
+                          return (
+                            <div style={{ display: 'grid', gap: '12px' }}>
+                              <div className="dev-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2,minmax(0,1fr))', gap: '12px' }}>
+                                <StatCard label="Current Supply" value={sc.currentSupply != null ? sc.currentSupply.toLocaleString('en-US') : 'Unavailable'} accent="#5eead4" dim={sc.currentSupply == null} />
+                                <StatCard label="Max Supply" value={sc.maxSupply != null ? sc.maxSupply.toLocaleString('en-US') : 'No fixed cap'} accent={sc.maxSupply != null ? '#34d399' : '#94a3b8'} dim={sc.maxSupply == null} />
+                                <StatCard label="Mint Authority" value={!sr.authorityReadSucceeded ? 'Unavailable' : sr.mintAuthority ? 'Active' : 'Revoked'} accent={!sr.authorityReadSucceeded ? '#94a3b8' : sr.mintAuthority ? '#f87171' : '#34d399'} helper={sr.mintAuthority ? shorten(sr.mintAuthority) : undefined} />
+                                <StatCard label="Freeze Authority" value={!sr.authorityReadSucceeded ? 'Unavailable' : sr.freezeAuthority ? 'Active' : 'Revoked'} accent={!sr.authorityReadSucceeded ? '#94a3b8' : sr.freezeAuthority ? '#f87171' : '#34d399'} helper={sr.freezeAuthority ? shorten(sr.freezeAuthority) : undefined} />
+                                <StatCard label="Token Program" value={sc.tokenProgram === 'spl-token-2022' ? 'Token-2022' : sc.tokenProgram === 'spl-token' ? 'SPL Token' : 'Unavailable'} accent="#5eead4" dim />
+                                <StatCard label="Future Inflation" value={sc.inflationPossible == null ? 'Unknown' : sc.inflationPossible ? 'Possible' : 'Not possible'} accent={sc.inflationPossible == null ? '#94a3b8' : sc.inflationPossible ? '#f87171' : '#34d399'} dim={sc.inflationPossible == null} />
+                                <StatCard label="On-Chain Activity" value={sr.helius.called && sr.helius.success ? `${sr.helius.resolved.recentTransfers ?? 0} signatures` : 'Not available'} accent={sr.helius.called && sr.helius.success ? '#5eead4' : '#94a3b8'} dim={!(sr.helius.called && sr.helius.success)} />
+                              </div>
+                              <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
+                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Why</p>
+                                <p style={{ margin: 0, fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>{sc.inflationReason}</p>
+                                <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>{sc.supplyFixedReason}</p>
+                              </div>
+                              <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
+                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Token-2022 Extensions</p>
+                                {sc.extensionExplanations.map((line, i) => (
+                                  <p key={i} style={{ margin: i === 0 ? 0 : '6px 0 0', fontSize: '11px', color: sc.extensions.length > 0 ? '#fde68a' : '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>{line}</p>
+                                ))}
+                              </div>
                             </div>
-                            <p style={{ margin: 0, fontSize: '11px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>Mint authority controls supply inflation; freeze authority controls whether token accounts can be frozen — the real, checkable Solana equivalents of EVM&apos;s supply-control checks. Solana has no separate on-chain &quot;update authority&quot; field for fungible SPL tokens to read here.</p>
-                          </div>
-                        )}
+                          )
+                        })()}
 
                         {devControlTab === 'cluster-map' && notSupportedPanel('Cluster Map', 'Not yet supported — wallet-cluster mapping requires a wallet-relationship data source this codebase does not have access to for Solana.')}
 
-                        {devControlTab === 'history' && (
-                          <div style={{ display: 'grid', gap: '10px' }}>
-                            <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
-                              <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Deployer identity</p>
-                              <p style={{ margin: 0, fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>
-                                {creatorResolved
-                                  ? `Likely creator wallet identified from the mint's earliest found transaction (fee payer${dc?.resolved.transactionSource ? `, source: ${dc.resolved.transactionSource}` : ''}) — a strong signal, not a certainty.`
-                                  : dc && !dc.success
-                                    ? 'Deep Creator Check ran but did not resolve a likely creator wallet.'
-                                    : 'Deployer identity is an open check — run Deep Creator Check from the Dev Map tab.'}
-                              </p>
+                        {devControlTab === 'history' && (() => {
+                          const tl = sr.supplyTimeline
+                          return (
+                            <div style={{ display: 'grid', gap: '10px' }}>
+                              <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
+                                <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#475569', fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Deployer identity</p>
+                                <p style={{ margin: 0, fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>
+                                  {creatorResolved
+                                    ? `Likely creator wallet identified from the mint's earliest found transaction (fee payer${dc?.resolved.transactionSource ? `, source: ${dc.resolved.transactionSource}` : ''}) — a strong signal, not a certainty.`
+                                    : dc && !dc.success
+                                      ? 'Deep Creator Check ran but did not resolve a likely creator wallet.'
+                                      : 'Deployer identity is an open check — run Deep Creator Check from the Dev Map tab.'}
+                                </p>
+                              </div>
+                              {tl.events.map((ev, i) => (
+                                <div key={i} style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
+                                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px', flexWrap: 'wrap' }}>
+                                    <p style={{ margin: 0, fontSize: '10.5px', color: '#7dd3fc', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{ev.label}</p>
+                                    <p style={{ margin: 0, fontSize: '9.5px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>{ev.timestamp ?? ev.approxAge ?? ''}</p>
+                                  </div>
+                                  <p style={{ margin: '6px 0 0', fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{ev.detail}</p>
+                                  <p style={{ margin: '4px 0 0', fontSize: '9px', color: '#475569', fontFamily: 'var(--font-plex-mono)' }}>Source: {ev.source}</p>
+                                </div>
+                              ))}
+                              {tl.reconstructionGaps.length > 0 && (
+                                <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(148,163,184,.04)', border: '1px solid rgba(148,163,184,.14)' }}>
+                                  <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#64748b', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>What can&apos;t be reconstructed</p>
+                                  {tl.reconstructionGaps.map((g, i) => (
+                                    <p key={i} style={{ margin: i === 0 ? 0 : '6px 0 0', fontSize: '11px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{g}</p>
+                                  ))}
+                                </div>
+                              )}
                             </div>
-                            {notSupportedPanel('Transfer patterns', 'Not yet supported — no transfer-pattern analysis (wash trading, bundling, sniper detection) is connected for Solana. This is reported as unsupported, never as "no suspicious pattern found".')}
-                          </div>
-                        )}
+                          )
+                        })()}
 
                         {devControlTab === 'watch-plan' && (
                           <div style={{ display: 'grid', gap: '10px' }}>
@@ -5483,6 +5519,17 @@ export default function TerminalTokenScanner() {
                               {cxForDev.nextActions.map((a) => (
                                 <p key={a} style={{ margin: 0, fontSize: '11px', color: '#99f6e4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{a}</p>
                               ))}
+                            </div>
+                            <div style={{ padding: '12px 14px', borderRadius: '11px', background: 'rgba(45,212,191,.04)', border: '1px solid rgba(45,212,191,.18)' }}>
+                              <p style={{ margin: '0 0 6px', fontSize: '9px', letterSpacing: '.12em', color: '#2dd4bf', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>WATCH PLAN</p>
+                              {sr.watchPlan.length > 0 ? sr.watchPlan.map((w, i) => (
+                                <div key={i} style={{ marginTop: i === 0 ? 0 : '8px' }}>
+                                  <p style={{ margin: 0, fontSize: '11px', color: '#99f6e4', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{w.item}</p>
+                                  <p style={{ margin: '2px 0 0', fontSize: '10.5px', color: '#7ee0c9', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{w.reason}</p>
+                                </div>
+                              )) : (
+                                <p style={{ margin: 0, fontSize: '11px', color: '#99f6e4', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>No active risk signals to monitor based on available evidence.</p>
+                              )}
                             </div>
                           </div>
                         )}

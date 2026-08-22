@@ -25,6 +25,8 @@ export type SolanaMintAnalysis =
       freezeAuthority: string | null
       /** Distinguishes "revoked" (real evidence) from "couldn't parse" (unknown, not revoked). */
       authorityReadSucceeded: boolean
+      /** Raw `extensions` field from the same jsonParsed response — null for spl-token (no such field), [] if spl-token-2022 but the field was absent/malformed. See tokenExtensions.ts for parsing. */
+      rawExtensions: unknown[] | null
       evidenceGaps: string[]
     }
   | { ok: false; status: 'rpc_error' | 'mint_not_found'; error: string; evidenceGaps: string[] }
@@ -81,5 +83,7 @@ export async function analyzeSolanaMint(mintAddress: string, rpcUrl: string, fet
   }
   if (totalSupply == null) evidenceGaps.push('Total supply could not be read.')
 
-  return { ok: true, tokenProgram, decimals, totalSupply, rawSupply, mintAuthority, freezeAuthority, authorityReadSucceeded, evidenceGaps }
+  const rawExtensions = tokenProgram === 'spl-token-2022' ? (Array.isArray(parsedInfo.extensions) ? parsedInfo.extensions as unknown[] : []) : null
+
+  return { ok: true, tokenProgram, decimals, totalSupply, rawSupply, mintAuthority, freezeAuthority, authorityReadSucceeded, rawExtensions, evidenceGaps }
 }

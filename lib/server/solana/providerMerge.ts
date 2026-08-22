@@ -25,6 +25,9 @@ import { analyzeSolanaCreator } from './creatorAnalyzer.ts'
 import { analyzeSolanaDeepCreator } from './deepCreatorAnalyzer.ts'
 import { analyzeSolanaPool } from './poolAnalyzer.ts'
 import { scoreSolanaBeta } from './riskEngine.ts'
+import { buildSolanaSupplyControl } from './supplyControlAnalyzer.ts'
+import { buildSolanaWatchPlan } from './watchPlanAnalyzer.ts'
+import { buildSolanaSupplyTimeline } from './supplyTimelineAnalyzer.ts'
 import {
   SOLANA_UNSUPPORTED_CHECKS,
   emptySolanaAudit,
@@ -126,6 +129,19 @@ export async function runSolanaProviderMerge(
 
   audit.evidenceGaps = evidenceGaps
 
+  // ── 10. Supply Control / Watch Plan / Supply Timeline — derived purely from evidence already
+  // gathered above, no new provider calls. ────────────────────────────────────────────────────
+  const supplyControl = buildSolanaSupplyControl(mint)
+  const watchPlan = buildSolanaWatchPlan({
+    supplyControl,
+    top1Percent: holders.topAccountConcentration?.top1Percent ?? null,
+    top10Percent: holders.topAccountConcentration?.top10Percent ?? null,
+    marketData: market.data,
+    poolProgram: pool.poolProgram,
+    deepCreator,
+  })
+  const supplyTimeline = buildSolanaSupplyTimeline({ mint, poolProgram: pool.poolProgram, marketData: market.data, deepCreator })
+
   const wiringAudit: SolanaProviderWiringAudit = {
     mint: mintAddress,
     enabledProviders: {
@@ -225,5 +241,8 @@ export async function runSolanaProviderMerge(
     solanaEvidenceGaps: evidenceGaps,
     unsupportedChecks: [...SOLANA_UNSUPPORTED_CHECKS],
     solanaTokenScannerAudit: audit,
+    supplyControl,
+    watchPlan,
+    supplyTimeline,
   }
 }

@@ -18,6 +18,9 @@ import type {
   SolanaHeliusHolderResult,
 } from '../solanaProviders.ts'
 import type { SolanaDeepCreatorAnalysis } from './deepCreatorAnalyzer.ts'
+import type { SolanaSupplyControl } from './supplyControlAnalyzer.ts'
+import type { SolanaWatchItem } from './watchPlanAnalyzer.ts'
+import type { SolanaSupplyTimeline } from './supplyTimelineAnalyzer.ts'
 
 export type SolanaUnsupportedCheck = {
   check: string
@@ -236,6 +239,12 @@ export type SolanaBetaScanResult = {
   solanaEvidenceGaps: string[]
   unsupportedChecks: SolanaUnsupportedCheck[]
   solanaTokenScannerAudit: SolanaTokenScannerAudit
+  /** Real supply/inflation analysis (Token-2022 extensions included) — see supplyControlAnalyzer.ts. */
+  supplyControl: SolanaSupplyControl
+  /** Evidence-driven monitoring recommendations, empty array when no active risk signal is present — see watchPlanAnalyzer.ts. */
+  watchPlan: SolanaWatchItem[]
+  /** Real, honestly-scoped mint/pool history — see supplyTimelineAnalyzer.ts for what can and cannot be reconstructed. */
+  supplyTimeline: SolanaSupplyTimeline
 }
 
 export type SolanaBetaScanFailure = {

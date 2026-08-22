@@ -1510,7 +1510,7 @@ function cortexSr(overrides = {}) {
   check('Dev Control renders a Token Contract -> Origin Wallet -> Linked Wallets map, like EVM', devBlockRaw.includes('TOKEN CONTRACT') && devBlockRaw.includes('ORIGIN WALLET') && devBlockRaw.includes('LINKED WALLETS'))
   check('Dev Control renders a Likely Deployer evidence card with Address/Detection Confidence/Evidence Source/Network, matching EVM\'s 4-field layout', devBlockRaw.includes('LIKELY DEPLOYER') && devBlockRaw.includes('Detection Confidence') && devBlockRaw.includes('Evidence Source'))
   check('Linked Wallets / Cluster Map are honestly marked unsupported, never a fabricated wallet list', devBlockRaw.includes('Not supported') && /wallet-clustering data source/i.test(devBlockRaw))
-  check('Transfer patterns are honestly marked unsupported, never "no suspicious pattern found"', devBlockRaw.includes('never as "no suspicious pattern found"'))
+  check('History tab renders the real Supply Timeline (mint creation / pool identity / authority state) and its honest reconstruction gaps, not a placeholder', devBlockRaw.includes('sr.supplyTimeline') && devBlockRaw.includes("What can&apos;t be reconstructed"))
   check('Watch Plan reuses the real Cortex Risk Engine factors/nextActions, not fabricated data', devBlockRaw.includes('cxForDev.factors') && devBlockRaw.includes('cxForDev.nextActions'))
   check('Deep Creator Check trigger still lives inside the Dev Map tab', devBlockRaw.includes('RUN DEEP CREATOR CHECK'))
 }
