@@ -4,14 +4,31 @@ import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
 import { validateAffiliateApplication, type AffiliateApplicationInput } from '@/lib/server/affiliateValidation'
 import { randomBytes } from 'crypto'
 
-const limiter = createRateLimiter({ windowMs: 3_600_000, max: 3 })
+// RATE LIMITING, DISCLOSED (fixed a real bug reported live: a legitimate applicant hit "Too many
+// requests" and could not submit at all).
+//
+// ROOT CAUSE: a single limiter (3/hour/IP) was checked BEFORE the request body was even parsed, so
+// EVERY attempt consumed a slot — a typo, an empty required field, a double-click, a retry after a
+// dropped connection. Three ordinary mistakes while filling out the form and a real applicant was
+// hard-locked out for an hour with no way to actually apply. This is exactly what the screenshot
+// showed: a normal person testing/filling the form, not abuse.
+//
+// FIX: split into two limiters with two different jobs.
+//  - rawLimiter is the actual anti-flood guard — generous, because it exists only to stop a script
+//    hammering this endpoint, not to throttle a human. Checked immediately, before any work.
+//  - validatedLimiter is the "how many real applications from one IP" cap, checked ONLY after the
+//    submission has passed validation — so mistakes and retries are free, and the cap only ever
+//    counts genuine, well-formed submission attempts.
+const rawLimiter = createRateLimiter({ windowMs: 3_600_000, max: 20 })
+const validatedLimiter = createRateLimiter({ windowMs: 3_600_000, max: 5 })
 
 function unavailableResponse(status: number) {
   return NextResponse.json({ error: 'Submission is temporarily unavailable. Please try again soon.' }, { status })
 }
 
 export async function POST(req: Request) {
-  if (!limiter.check(getClientIp(req))) {
+  const ip = getClientIp(req)
+  if (!rawLimiter.check(ip)) {
     return NextResponse.json({ error: 'Too many requests. Please try again later.' }, { status: 429 })
   }
 
@@ -21,6 +38,12 @@ export async function POST(req: Request) {
     const validation = validateAffiliateApplication(body)
     if (!validation.ok) {
       return NextResponse.json({ error: validation.error }, { status: validation.status })
+    }
+
+    // Only a well-formed submission reaches here, so only well-formed submissions count against
+    // this cap — a typo two minutes ago never blocks the corrected resubmission.
+    if (!validatedLimiter.check(ip)) {
+      return NextResponse.json({ error: 'Too many applications submitted recently. Please try again in a bit, or email chainlensai@gmail.com.' }, { status: 429 })
     }
     const { name, email, telegram, xHandle, audienceSize, audienceType, payoutWallet, promotionPlan } = validation.fields
 
