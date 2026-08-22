@@ -13,11 +13,24 @@
 // referred_by_affiliate_id). Nothing is projected or estimated. Where a value could not be loaded
 // the API returns null and this page shows an explicit "unavailable" state — never a 0, which
 // would tell an ambassador they earned nothing when the truth is the number failed to load.
+//
+// LEDGER REDESIGN, DISCLOSED (requested: "make it look not ai clean and beautiful but simple
+// design", after this exact system was already applied to /affiliate). This page still used the
+// PREVIOUS look — a diagonal teal→purple gradient on the copy/sign-in/join buttons and soft
+// translucent rounded-16px "glass" cards — the same cluster of choices already replaced on the
+// apply page. Brought into the same financial-statement register: hairline-bordered panels instead
+// of glass, ChainLens teal (#2DD4BF) as the ONLY accent (never blended into a gradient), Fraunces
+// for the page thesis and stat figures, sharp 3-4px radii, rectangular tags instead of pill badges.
+// The background token (--ink) is set to the exact literal value html/body already uses
+// (#07070f) — see the BACKGROUND SEAM note on the apply page for why that specific match matters.
 
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
+import { Fraunces } from 'next/font/google'
 import Navbar from '@/components/Navbar'
 import { supabase } from '@/lib/supabaseClient'
+
+const fraunces = Fraunces({ subsets: ['latin'], weight: ['500', '600'], style: ['normal', 'italic'], variable: '--font-fraunces', display: 'swap' })
 
 type RecentRow = {
   plan: string | null
@@ -114,23 +127,55 @@ export default function AffiliateDashboardPage() {
   const shell = (children: React.ReactNode) => (
     <>
       <style>{`
-        .affd-page {
-          min-height:100vh;
-          background:
-            radial-gradient(ellipse 1200px 700px at 8% -8%, rgba(139,92,246,.08) 0%, transparent 55%),
-            radial-gradient(ellipse 900px 600px at 100% 6%, rgba(45,212,191,.06) 0%, transparent 55%),
-            #05070f;
+        :root {
+          --affd-ink: #07070f;
+          --affd-panel: #10141b;
+          --affd-line: rgba(226,232,240,.11);
+          --affd-line-strong: rgba(226,232,240,.18);
+          --affd-text: #e7e9ee;
+          --affd-muted: #8b93a3;
+          --affd-teal: #2DD4BF;
+          --affd-teal-soft: rgba(45,212,191,.11);
+          --affd-teal-text: #04241f;
         }
-        .affd-surface { background:rgba(255,255,255,.022); border:1px solid rgba(255,255,255,.07); border-radius:16px; }
-        .affd-stat-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
-        .affd-link-row { display:flex; gap:10px; align-items:stretch; }
+        .affd-page { min-height: 100vh; background: var(--affd-ink); }
+        .affd-serif { font-family: var(--font-fraunces), Georgia, 'Iowan Old Style', serif; }
+        .affd-surface { background: var(--affd-panel); border: 1px solid var(--affd-line); border-radius: 4px; }
+        .affd-eyebrow {
+          font-family: var(--font-plex-mono,monospace); font-size: 11px; font-weight: 600;
+          letter-spacing: .16em; margin: 0 0 12px; color: var(--affd-teal); text-transform: uppercase;
+          display: flex; align-items: center; gap: 10px;
+        }
+        .affd-eyebrow::before { content: ''; width: 16px; height: 1px; background: var(--affd-teal); flex-shrink: 0; }
+        .affd-tag { border-radius: 3px; padding: 3px 11px; font-size: 10.5px; font-weight: 700; font-family: var(--font-plex-mono,monospace); letter-spacing: .02em; }
+        .affd-btn-primary {
+          display: inline-flex; align-items: center; gap: 8px; background: var(--affd-teal); color: var(--affd-teal-text);
+          border: none; border-radius: 3px; padding: 12px 24px; font-weight: 700; font-size: 13.5px;
+          cursor: pointer; text-decoration: none; transition: transform .15s ease, filter .15s ease, box-shadow .15s ease;
+        }
+        .affd-btn-primary:hover { transform: translateY(-1px); filter: brightness(1.06); box-shadow: 0 6px 16px rgba(45,212,191,.22); }
+        .affd-btn-primary:active { transform: translateY(0); filter: brightness(.97); }
+        .affd-btn-secondary {
+          padding: 10px 18px; border-radius: 3px; border: 1px solid var(--affd-line-strong); background: transparent;
+          color: var(--affd-text); font-size: 13px; font-weight: 600; cursor: pointer; transition: border-color .15s, color .15s;
+        }
+        .affd-btn-secondary:hover { border-color: var(--affd-muted); }
+        @media (prefers-reduced-motion: reduce) { .affd-btn-primary { transition: none; } .affd-btn-primary:hover { transform: none; } }
+        .affd-stat-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 0; border-top: 1px solid var(--affd-line); border-bottom: 1px solid var(--affd-line); }
+        .affd-stat-cell { padding: 20px 22px; border-left: 1px solid var(--affd-line); }
+        .affd-stat-cell:first-child { border-left: none; }
+        .affd-link-row { display: flex; gap: 10px; align-items: stretch; }
         @media (max-width:820px) {
-          .affd-stat-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
-          .affd-link-row { flex-direction:column; }
-          .affd-wrap { padding:28px 16px 90px !important; }
+          .affd-stat-grid { grid-template-columns: repeat(2,1fr); }
+          .affd-stat-cell:nth-child(3) { border-left: none; }
+          .affd-stat-cell:nth-child(odd) { border-left: none; }
+          .affd-stat-cell:nth-child(even) { border-left: 1px solid var(--affd-line); }
+          .affd-stat-cell:nth-child(n+3) { border-top: 1px solid var(--affd-line); }
+          .affd-link-row { flex-direction: column; }
+          .affd-wrap { padding: 28px 16px 90px !important; }
         }
       `}</style>
-      <div className="affd-page">
+      <div className={`affd-page ${fraunces.variable}`}>
         <Navbar />
         <div className="affd-wrap" style={{ maxWidth: '980px', margin: '0 auto', padding: '48px 32px 120px' }}>
           {children}
@@ -140,41 +185,41 @@ export default function AffiliateDashboardPage() {
   )
 
   const heading = (
-    <div style={{ marginBottom: '28px' }}>
-      <p style={{ fontFamily: 'var(--font-plex-mono,monospace)', fontSize: '11px', fontWeight: 600, letterSpacing: '.16em', margin: '0 0 12px', color: '#5eead4', textTransform: 'uppercase' }}>
-        Affiliate Dashboard
-      </p>
-      <h1 style={{ fontSize: '30px', fontWeight: 700, color: '#f8fafc', margin: 0, lineHeight: 1.2 }}>Your referral link &amp; earnings</h1>
+    <div style={{ marginBottom: '32px' }}>
+      <p className="affd-eyebrow">Affiliate Dashboard</p>
+      <h1 className="affd-serif" style={{ fontSize: 'clamp(26px,3vw,34px)', fontWeight: 500, letterSpacing: '-.01em', color: '#f4f5f7', margin: 0, lineHeight: 1.2 }}>
+        Your referral link &amp; earnings
+      </h1>
     </div>
   )
 
-  if (loading) return shell(<>{heading}<div className="affd-surface" style={{ padding: '32px' }}><p style={{ margin: 0, color: '#64748b', fontSize: '14px' }}>Loading your affiliate account…</p></div></>)
+  if (loading) return shell(<>{heading}<div className="affd-surface" style={{ padding: '32px' }}><p style={{ margin: 0, color: 'var(--affd-muted)', fontSize: '14px' }}>Loading your affiliate account…</p></div></>)
 
   if (signedOut) return shell(<>{heading}
     <div className="affd-surface" style={{ padding: '32px' }}>
-      <p style={{ margin: '0 0 8px', color: '#e2e8f0', fontSize: '15px', fontWeight: 600 }}>Sign in to see your link</p>
-      <p style={{ margin: '0 0 18px', color: '#7c8aa0', fontSize: '13.5px', lineHeight: 1.7 }}>
+      <p style={{ margin: '0 0 8px', color: 'var(--affd-text)', fontSize: '15px', fontWeight: 600 }}>Sign in to see your link</p>
+      <p style={{ margin: '0 0 20px', color: 'var(--affd-muted)', fontSize: '13.5px', lineHeight: 1.7 }}>
         Sign in with the same email address you used on your affiliate application, and your referral link and earnings will appear here.
       </p>
-      <Link href="/login" style={{ display: 'inline-block', padding: '12px 24px', borderRadius: '11px', background: 'linear-gradient(135deg,#2DD4BF 0%,#8b5cf6 100%)', color: '#04060d', fontWeight: 700, fontSize: '14px', textDecoration: 'none' }}>Sign in →</Link>
+      <Link href="/login" className="affd-btn-primary">Sign in →</Link>
     </div>
   </>)
 
   if (error) return shell(<>{heading}
     <div className="affd-surface" style={{ padding: '28px', borderColor: 'rgba(248,113,113,.22)', background: 'rgba(248,113,113,.05)' }}>
-      <p style={{ margin: '0 0 14px', color: '#fca5a5', fontSize: '14px' }}>{error}</p>
-      <button onClick={retry} style={{ padding: '10px 20px', borderRadius: '10px', border: '1px solid rgba(255,255,255,.14)', background: 'transparent', color: '#e2e8f0', fontSize: '13px', fontWeight: 600, cursor: 'pointer' }}>Try again</button>
+      <p style={{ margin: '0 0 16px', color: '#fca5a5', fontSize: '14px' }}>{error}</p>
+      <button onClick={retry} className="affd-btn-secondary">Try again</button>
     </div>
   </>)
 
   // Signed in, but this email has no affiliate application — an ordinary state, not an error.
   if (!data || data.isAffiliate === false) return shell(<>{heading}
     <div className="affd-surface" style={{ padding: '32px' }}>
-      <p style={{ margin: '0 0 8px', color: '#e2e8f0', fontSize: '15px', fontWeight: 600 }}>No affiliate account on this email</p>
-      <p style={{ margin: '0 0 18px', color: '#7c8aa0', fontSize: '13.5px', lineHeight: 1.7 }}>
+      <p style={{ margin: '0 0 8px', color: 'var(--affd-text)', fontSize: '15px', fontWeight: 600 }}>No affiliate account on this email</p>
+      <p style={{ margin: '0 0 20px', color: 'var(--affd-muted)', fontSize: '13.5px', lineHeight: 1.7 }}>
         We could not find an affiliate application for the email you are signed in with. If you applied using a different address, sign in with that one — otherwise you can apply now and your referral link is created straight away.
       </p>
-      <Link href="/affiliate#apply" style={{ display: 'inline-block', padding: '12px 24px', borderRadius: '11px', background: 'linear-gradient(135deg,#2DD4BF 0%,#8b5cf6 100%)', color: '#04060d', fontWeight: 700, fontSize: '14px', textDecoration: 'none' }}>Join the affiliate program →</Link>
+      <Link href="/affiliate#apply" className="affd-btn-primary">Join the affiliate program →</Link>
     </div>
   </>)
 
@@ -184,8 +229,8 @@ export default function AffiliateDashboardPage() {
 
   const statCards: Array<{ label: string; value: string; sub?: string; accent: string }> = [
     { label: 'Referred accounts', value: d.referredAccounts == null ? 'Unavailable' : String(d.referredAccounts), sub: 'Signed-up users attributed to you', accent: '#7dd3fc' },
-    { label: 'Paid conversions', value: d.stats.unavailable ? 'Unavailable' : String(d.stats.conversions), sub: 'Referrals that became paying subscribers', accent: '#a78bfa' },
-    { label: 'Commission earned', value: d.stats.unavailable ? 'Unavailable' : usd(d.stats.earnedTotalUsd), sub: d.stats.unavailable ? undefined : `${usd(d.stats.earnedPaidUsd)} paid out so far`, accent: '#2dd4bf' },
+    { label: 'Paid conversions', value: d.stats.unavailable ? 'Unavailable' : String(d.stats.conversions), sub: 'Referrals that became paying subscribers', accent: '#c4b5fd' },
+    { label: 'Commission earned', value: d.stats.unavailable ? 'Unavailable' : usd(d.stats.earnedTotalUsd), sub: d.stats.unavailable ? undefined : `${usd(d.stats.earnedPaidUsd)} paid out so far`, accent: 'var(--affd-teal)' },
     { label: 'Awaiting payout', value: d.stats.unavailable ? 'Unavailable' : usd(d.stats.earnedPendingUsd), sub: 'Paid manually each month', accent: '#fbbf24' },
   ]
 
@@ -194,12 +239,12 @@ export default function AffiliateDashboardPage() {
       {heading}
 
       {/* ── The link itself — the headline of this page ─────────────────────────────────────── */}
-      <div className="affd-surface" style={{ padding: '26px 28px', marginBottom: '14px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '16px' }}>
-          <span style={{ fontSize: '11px', fontWeight: 700, letterSpacing: '.14em', color: '#94a3b8', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono,monospace)' }}>Your referral link</span>
-          <span style={{ padding: '3px 11px', borderRadius: '999px', fontSize: '10.5px', fontWeight: 700, color: statusColor, background: `${statusColor}14`, border: `1px solid ${statusColor}44`, fontFamily: 'var(--font-plex-mono,monospace)' }}>{statusLabel}</span>
+      <div className="affd-surface" style={{ padding: '28px 30px', marginBottom: '0' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '18px' }}>
+          <span style={{ fontSize: '10.5px', fontWeight: 600, letterSpacing: '.12em', color: 'var(--affd-muted)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono,monospace)' }}>Your referral link</span>
+          <span className="affd-tag" style={{ color: statusColor, background: `${statusColor}14`, border: `1px solid ${statusColor}44` }}>{statusLabel}</span>
           {d.commissionRate != null && (
-            <span style={{ padding: '3px 11px', borderRadius: '999px', fontSize: '10.5px', fontWeight: 700, color: '#5eead4', background: 'rgba(45,212,191,.08)', border: '1px solid rgba(45,212,191,.3)', fontFamily: 'var(--font-plex-mono,monospace)' }}>{Math.round(d.commissionRate * 100)}% recurring</span>
+            <span className="affd-tag" style={{ color: '#7ce8d8', background: 'var(--affd-teal-soft)', border: '1px solid rgba(45,212,191,.32)' }}>{Math.round(d.commissionRate * 100)}% recurring</span>
           )}
         </div>
 
@@ -208,17 +253,14 @@ export default function AffiliateDashboardPage() {
             readOnly
             value={d.referralLink}
             onFocus={(e) => e.currentTarget.select()}
-            style={{ flex: 1, minWidth: 0, background: 'rgba(255,255,255,.03)', border: '1px solid rgba(255,255,255,.09)', borderRadius: '10px', padding: '13px 15px', color: '#e2e8f0', fontSize: '14px', fontFamily: 'var(--font-plex-mono,monospace)', outline: 'none' }}
+            style={{ flex: 1, minWidth: 0, background: 'var(--affd-ink)', border: '1px solid var(--affd-line-strong)', borderRadius: '3px', padding: '13px 15px', color: 'var(--affd-text)', fontSize: '14px', fontFamily: 'var(--font-plex-mono,monospace)', outline: 'none' }}
           />
-          <button
-            onClick={() => void copyLink(d.referralLink)}
-            style={{ flexShrink: 0, padding: '13px 26px', borderRadius: '10px', border: 0, background: copied ? 'rgba(45,212,191,.16)' : 'linear-gradient(135deg,#2DD4BF 0%,#8b5cf6 100%)', color: copied ? '#5eead4' : '#04060d', fontSize: '13.5px', fontWeight: 700, cursor: 'pointer', transition: 'all .15s', whiteSpace: 'nowrap' }}
-          >
+          <button onClick={() => void copyLink(d.referralLink)} className="affd-btn-primary" style={{ flexShrink: 0, whiteSpace: 'nowrap', background: copied ? 'rgba(45,212,191,.22)' : 'var(--affd-teal)', color: copied ? '#7ce8d8' : 'var(--affd-teal-text)' }}>
             {copied ? '✓ Copied' : 'Copy link'}
           </button>
         </div>
 
-        <p style={{ margin: '14px 0 0', color: '#7c8aa0', fontSize: '12.5px', lineHeight: 1.7 }}>
+        <p style={{ margin: '16px 0 0', color: 'var(--affd-muted)', fontSize: '12.5px', lineHeight: 1.7 }}>
           Share this anywhere. Anyone who opens it is credited to you for <strong style={{ color: '#a3b4c5' }}>60 days</strong>, and you keep earning for as long as they stay subscribed — the first affiliate to refer a buyer keeps that buyer on every future payment.
         </p>
 
@@ -226,61 +268,61 @@ export default function AffiliateDashboardPage() {
             'approved'. Telling a pending applicant to "start promoting immediately" without saying
             so would cost them real conversions silently, so the state is stated plainly here. */}
         {!d.linkIsLive && d.status !== 'rejected' && (
-          <div style={{ marginTop: '16px', padding: '13px 15px', borderRadius: '11px', background: 'rgba(251,191,36,.05)', border: '1px solid rgba(251,191,36,.22)' }}>
+          <div style={{ marginTop: '18px', padding: '13px 15px', background: 'rgba(251,191,36,.05)', borderLeft: '2px solid #fbbf24' }}>
             <p style={{ margin: 0, color: '#fcd34d', fontSize: '12.5px', lineHeight: 1.7 }}>
               <strong>Your link is not tracking yet.</strong> Applications are reviewed manually, and referrals are only credited once your account is approved — usually within 24–72 hours. The link above is permanently yours and will not change, so you can set up your content now, but conversions before approval will not be counted.
             </p>
           </div>
         )}
         {d.status === 'rejected' && (
-          <div style={{ marginTop: '16px', padding: '13px 15px', borderRadius: '11px', background: 'rgba(248,113,113,.05)', border: '1px solid rgba(248,113,113,.22)' }}>
+          <div style={{ marginTop: '18px', padding: '13px 15px', background: 'rgba(248,113,113,.05)', borderLeft: '2px solid #f87171' }}>
             <p style={{ margin: 0, color: '#fca5a5', fontSize: '12.5px', lineHeight: 1.7 }}>This application was not approved, so this link does not track referrals. Reach out if you believe this was a mistake.</p>
           </div>
         )}
       </div>
 
       {/* ── Tracking ──────────────────────────────────────────────────────────────────────── */}
-      <div className="affd-stat-grid" style={{ marginBottom: '14px' }}>
+      <div className="affd-stat-grid" style={{ marginTop: '22px', marginBottom: '22px' }}>
         {statCards.map((c) => (
-          <div key={c.label} className="affd-surface" style={{ padding: '18px 18px 16px' }}>
-            <p style={{ margin: '0 0 8px', fontSize: '10px', fontWeight: 700, letterSpacing: '.12em', color: '#64748b', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono,monospace)' }}>{c.label}</p>
-            <p style={{ margin: 0, fontSize: c.value === 'Unavailable' ? '15px' : '24px', fontWeight: 800, color: c.value === 'Unavailable' ? '#64748b' : c.accent, fontFamily: 'var(--font-plex-mono,monospace)', lineHeight: 1.15 }}>{c.value}</p>
-            {c.sub && <p style={{ margin: '7px 0 0', fontSize: '11px', color: '#64748b', lineHeight: 1.5 }}>{c.sub}</p>}
+          <div key={c.label} className="affd-stat-cell">
+            <p style={{ margin: '0 0 8px', fontSize: '10px', fontWeight: 600, letterSpacing: '.1em', color: 'var(--affd-muted)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono,monospace)' }}>{c.label}</p>
+            <p className={c.value === 'Unavailable' ? undefined : 'affd-serif'} style={{ margin: 0, fontSize: c.value === 'Unavailable' ? '14px' : '26px', fontWeight: c.value === 'Unavailable' ? 600 : 500, color: c.value === 'Unavailable' ? 'var(--affd-muted)' : c.accent, letterSpacing: c.value === 'Unavailable' ? 'normal' : '-.01em', lineHeight: 1.15 }}>{c.value}</p>
+            {c.sub && <p style={{ margin: '8px 0 0', fontSize: '11px', color: 'var(--affd-muted)', lineHeight: 1.5 }}>{c.sub}</p>}
           </div>
         ))}
       </div>
 
-      <div className="affd-surface" style={{ padding: '24px 26px' }}>
-        <p style={{ margin: '0 0 4px', fontSize: '11px', fontWeight: 700, letterSpacing: '.14em', color: '#94a3b8', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono,monospace)' }}>Recent conversions</p>
-        <p style={{ margin: '0 0 18px', fontSize: '12px', color: '#64748b' }}>Every referred subscription that has been paid for.</p>
+      <div className="affd-surface" style={{ padding: '26px 28px' }}>
+        <p style={{ margin: '0 0 4px', fontSize: '10.5px', fontWeight: 600, letterSpacing: '.12em', color: 'var(--affd-muted)', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono,monospace)' }}>Recent conversions</p>
+        <p style={{ margin: '0 0 20px', fontSize: '12px', color: 'var(--affd-muted)' }}>Every referred subscription that has been paid for.</p>
 
         {d.stats.unavailable ? (
-          <p style={{ margin: 0, color: '#8ea0b5', fontSize: '13px' }}>{d.stats.reason} Refresh to try again — this does not affect what you have earned.</p>
+          <p style={{ margin: 0, color: 'var(--affd-muted)', fontSize: '13px' }}>{d.stats.reason} Refresh to try again — this does not affect what you have earned.</p>
         ) : d.stats.recent.length === 0 ? (
-          <p style={{ margin: 0, color: '#64748b', fontSize: '13px', lineHeight: 1.7 }}>
+          <p style={{ margin: 0, color: 'var(--affd-muted)', fontSize: '13px', lineHeight: 1.7 }}>
             No conversions yet.{d.linkIsLive ? ' Once someone subscribes through your link it appears here, usually within a few minutes of their payment confirming.' : ' Referrals start being recorded as soon as your account is approved.'}
           </p>
         ) : (
           <div style={{ overflowX: 'auto' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
               <thead>
-                <tr style={{ textAlign: 'left', color: '#64748b', fontSize: '10.5px', letterSpacing: '.1em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono,monospace)' }}>
-                  <th style={{ padding: '0 12px 10px 0', fontWeight: 700 }}>Date</th>
-                  <th style={{ padding: '0 12px 10px 0', fontWeight: 700 }}>Plan</th>
-                  <th style={{ padding: '0 12px 10px 0', fontWeight: 700 }}>Their payment</th>
-                  <th style={{ padding: '0 12px 10px 0', fontWeight: 700 }}>Your commission</th>
-                  <th style={{ padding: '0 0 10px', fontWeight: 700 }}>Payout</th>
+                <tr style={{ textAlign: 'left', color: 'var(--affd-muted)', fontSize: '10.5px', letterSpacing: '.1em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono,monospace)' }}>
+                  <th style={{ padding: '0 12px 12px 0', fontWeight: 600, borderBottom: '1px solid var(--affd-line)' }}>Date</th>
+                  <th style={{ padding: '0 12px 12px 0', fontWeight: 600, borderBottom: '1px solid var(--affd-line)' }}>Plan</th>
+                  <th style={{ padding: '0 12px 12px 0', fontWeight: 600, borderBottom: '1px solid var(--affd-line)' }}>Their payment</th>
+                  <th style={{ padding: '0 12px 12px 0', fontWeight: 600, borderBottom: '1px solid var(--affd-line)' }}>Your commission</th>
+                  <th style={{ padding: '0 0 12px', fontWeight: 600, borderBottom: '1px solid var(--affd-line)' }}>Payout</th>
                 </tr>
               </thead>
               <tbody>
                 {d.stats.recent.map((r, i) => (
-                  <tr key={i} style={{ borderTop: '1px solid rgba(255,255,255,.07)' }}>
-                    <td style={{ padding: '11px 12px 11px 0', color: '#94a3b8', whiteSpace: 'nowrap' }}>{shortDate(r.createdAt)}</td>
-                    <td style={{ padding: '11px 12px 11px 0', color: '#cbd5e1', textTransform: 'capitalize' }}>{r.plan ?? '—'}</td>
-                    <td style={{ padding: '11px 12px 11px 0', color: '#94a3b8', fontFamily: 'var(--font-plex-mono,monospace)' }}>{usd(r.paymentUsd)}</td>
-                    <td style={{ padding: '11px 12px 11px 0', color: '#2dd4bf', fontWeight: 700, fontFamily: 'var(--font-plex-mono,monospace)' }}>{usd(r.commissionUsd)}</td>
-                    <td style={{ padding: '11px 0' }}>
-                      <span style={{ padding: '2px 9px', borderRadius: '999px', fontSize: '10.5px', fontWeight: 700, color: r.status === 'paid' ? '#2dd4bf' : '#fbbf24', background: r.status === 'paid' ? 'rgba(45,212,191,.1)' : 'rgba(251,191,36,.1)', border: `1px solid ${r.status === 'paid' ? 'rgba(45,212,191,.3)' : 'rgba(251,191,36,.3)'}`, fontFamily: 'var(--font-plex-mono,monospace)' }}>
+                  <tr key={i} style={{ borderTop: '1px solid var(--affd-line)' }}>
+                    <td style={{ padding: '12px 12px 12px 0', color: 'var(--affd-muted)', whiteSpace: 'nowrap' }}>{shortDate(r.createdAt)}</td>
+                    <td style={{ padding: '12px 12px 12px 0', color: 'var(--affd-text)', textTransform: 'capitalize' }}>{r.plan ?? '—'}</td>
+                    <td style={{ padding: '12px 12px 12px 0', color: 'var(--affd-muted)', fontFamily: 'var(--font-plex-mono,monospace)' }}>{usd(r.paymentUsd)}</td>
+                    <td style={{ padding: '12px 12px 12px 0', color: 'var(--affd-teal)', fontWeight: 700, fontFamily: 'var(--font-plex-mono,monospace)' }}>{usd(r.commissionUsd)}</td>
+                    <td style={{ padding: '12px 0' }}>
+                      <span className="affd-tag" style={{ color: r.status === 'paid' ? '#7ce8d8' : '#fbbf24', background: r.status === 'paid' ? 'var(--affd-teal-soft)' : 'rgba(251,191,36,.1)', border: `1px solid ${r.status === 'paid' ? 'rgba(45,212,191,.3)' : 'rgba(251,191,36,.3)'}` }}>
                         {r.status === 'paid' ? `Paid ${shortDate(r.paidAt)}` : 'Pending'}
                       </span>
                     </td>
@@ -292,8 +334,8 @@ export default function AffiliateDashboardPage() {
         )}
       </div>
 
-      <p style={{ margin: '20px 0 0', fontSize: '12px', color: '#475569', lineHeight: 1.7 }}>
-        Applied {shortDate(d.appliedAt)}{d.approvedAt ? ` · approved ${shortDate(d.approvedAt)}` : ''} · referral code <span style={{ fontFamily: 'var(--font-plex-mono,monospace)', color: '#64748b' }}>{d.referralCode}</span>
+      <p style={{ margin: '24px 0 0', fontSize: '12px', color: '#526075', lineHeight: 1.7, fontFamily: 'var(--font-plex-mono,monospace)' }}>
+        Applied {shortDate(d.appliedAt)}{d.approvedAt ? ` · approved ${shortDate(d.approvedAt)}` : ''} · referral code {d.referralCode}
       </p>
     </>
   )
