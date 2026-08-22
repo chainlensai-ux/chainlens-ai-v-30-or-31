@@ -28,6 +28,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Fraunces } from 'next/font/google'
 import Navbar from '@/components/Navbar'
+import AffiliateHubNav from '@/components/AffiliateHubNav'
 import { supabase } from '@/lib/supabaseClient'
 
 const fraunces = Fraunces({ subsets: ['latin'], weight: ['500', '600'], style: ['normal', 'italic'], variable: '--font-fraunces', display: 'swap' })
@@ -177,7 +178,8 @@ export default function AffiliateDashboardPage() {
       `}</style>
       <div className={`affd-page ${fraunces.variable}`}>
         <Navbar />
-        <div className="affd-wrap" style={{ maxWidth: '980px', margin: '0 auto', padding: '48px 32px 120px' }}>
+        <AffiliateHubNav />
+        <div className="affd-wrap" style={{ maxWidth: '980px', margin: '0 auto', padding: '40px 32px 120px' }}>
           {children}
         </div>
       </div>

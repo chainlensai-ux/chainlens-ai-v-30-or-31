@@ -4,6 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { Fraunces } from 'next/font/google'
 import Navbar from '@/components/Navbar'
+import AffiliateHubNav from '@/components/AffiliateHubNav'
 import { buildAffiliateReferralLink } from '@/lib/affiliate/referral'
 
 // LEDGER REDESIGN, DISCLOSED (requested: "the button to submit looks shit and ai slop... make it
@@ -316,8 +317,9 @@ export default function AffiliatePage() {
       `}</style>
 
       <Navbar />
+      <AffiliateHubNav />
 
-      <div className={`aff-page ${fraunces.variable}`} style={{ minHeight: '100vh', color: '#f8fafc', padding: '96px 20px 120px' }}>
+      <div className={`aff-page ${fraunces.variable}`} style={{ minHeight: '100vh', color: '#f8fafc', padding: '56px 20px 120px' }}>
         <div style={{ maxWidth: 1080, margin: '0 auto' }}>
 
           {/* ══ HERO ════════════════════════════════════════════════════════════ */}
