@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
+import { buildAffiliateReferralLink } from '@/lib/affiliate/referral'
 
 type FormState = {
   name: string
@@ -121,6 +122,15 @@ export default function AffiliatePage() {
   const [success, setSuccess] = useState<{ message: string; referralCode: string } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [openFaq, setOpenFaq] = useState<number | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  async function copyReferralLink(link: string) {
+    try {
+      if (navigator?.clipboard?.writeText) await navigator.clipboard.writeText(link)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1800)
+    } catch { /* clipboard access can be denied — the link stays selectable on screen either way */ }
+  }
 
   // Generic failure copy. Used for network errors and non-actionable server failures (5xx), where
   // the user can't fix anything by editing the form — so the only useful next step is retry or
@@ -421,13 +431,48 @@ export default function AffiliatePage() {
                   </label>
                 </div>
 
+                {/* SUCCESS BOX, DISCLOSED (requested: "they should automatically get their own
+                    referral link that they can copy and start sharing immediately"). The link was
+                    already generated here, but it was rendered as un-copyable plain text with a
+                    hardcoded origin, and it was shown EXACTLY ONCE — a refresh lost it forever,
+                    because no other surface in the app could ever display it again. It is now
+                    one-click copyable, built from the shared buildAffiliateReferralLink helper
+                    (single source of truth for the origin), and paired with a permanent route to
+                    /affiliate/dashboard so the link is never lost again. */}
                 {success && (
                   <div style={{ marginTop:'24px', padding:'16px 18px', borderRadius:'12px', background:'rgba(45,212,191,.05)', border:'1px solid rgba(45,212,191,.22)', display:'flex', gap:'12px', alignItems:'flex-start' }}>
                     <span style={{ fontSize:'16px', flexShrink:0, color:'#2dd4bf' }}>✓</span>
-                    <div>
-                      <p style={{ margin:'0 0 8px', color:'#5eead4', fontSize:'13px', lineHeight:1.65 }}>{success.message}</p>
-                      {success.referralCode && <p style={{ margin:'0 0 8px', color:'#a5f3fc', fontSize:'12px' }}>https://www.chainlensai.app/pricing?ref={success.referralCode}</p>}
-                      <p style={{ margin:0, color:'#7c8aa0', fontSize:'12px' }}>Links start tracking commissions after approval.</p>
+                    <div style={{ minWidth:0, flex:1 }}>
+                      <p style={{ margin:'0 0 12px', color:'#5eead4', fontSize:'13px', lineHeight:1.65 }}>{success.message}</p>
+                      {success.referralCode && (
+                        <>
+                          <p style={{ margin:'0 0 7px', color:'#94a3b8', fontSize:'11px', fontWeight:700, letterSpacing:'.1em', textTransform:'uppercase' }}>Your referral link</p>
+                          <div style={{ display:'flex', gap:'8px', alignItems:'stretch', flexWrap:'wrap', marginBottom:'10px' }}>
+                            <input
+                              readOnly
+                              value={buildAffiliateReferralLink(success.referralCode)}
+                              onFocus={e => e.currentTarget.select()}
+                              style={{ flex:'1 1 240px', minWidth:0, background:'rgba(255,255,255,.03)', border:'1px solid rgba(255,255,255,.12)', borderRadius:'9px', padding:'10px 12px', color:'#a5f3fc', fontSize:'12.5px', fontFamily:'var(--font-plex-mono,monospace)', outline:'none' }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => void copyReferralLink(buildAffiliateReferralLink(success.referralCode))}
+                              style={{ flexShrink:0, padding:'10px 18px', borderRadius:'9px', border:'1px solid rgba(45,212,191,.4)', background: copied ? 'rgba(45,212,191,.2)' : 'rgba(45,212,191,.1)', color:'#5eead4', fontSize:'12.5px', fontWeight:700, cursor:'pointer', whiteSpace:'nowrap', transition:'background .15s' }}
+                            >
+                              {copied ? '✓ Copied' : 'Copy'}
+                            </button>
+                          </div>
+                        </>
+                      )}
+                      <p style={{ margin:'0 0 10px', color:'#7c8aa0', fontSize:'12px', lineHeight:1.65 }}>
+                        This link is permanently yours and will not change. It starts tracking commissions once your application is approved.
+                      </p>
+                      <Link href="/affiliate/dashboard" style={{ color:'#5eead4', fontSize:'12px', fontWeight:600, textDecoration:'underline' }}>
+                        Open your affiliate dashboard →
+                      </Link>
+                      <p style={{ margin:'6px 0 0', color:'#64748b', fontSize:'11.5px', lineHeight:1.6 }}>
+                        Sign in with this same email any time to get your link back and track referrals and commissions.
+                      </p>
                     </div>
                   </div>
                 )}
