@@ -70,6 +70,21 @@ function check(label, condition) { assert.ok(condition, label); passed++ }
   check('supply permanently fixed => full 15 supply points', score.components.find(c => c.label === 'Supply Safety').points === 15)
   check('cluster not attempted => 0 points with an explicit reason, never guessed', score.components.find(c => c.label === 'Cluster / Funding Confidence').points === 0)
   check('no risky pattern detected => full 10 pattern points', score.components.find(c => c.label === 'Pattern Safety').points === 10)
+  // scaledMaxScore excludes the never-run Cluster/Funding component (15 pts) from the denominator,
+  // so a scan that never opted into Deep Cluster Check isn't silently capped below every other
+  // scan's ceiling — see docs/token-scanner-audit-solana-2026-08-22.md finding #3.
+  check('cluster skipped => marked skipped on its component', score.components.find(c => c.label === 'Cluster / Funding Confidence').skipped === true)
+  check('scaledMaxScore excludes the skipped 15-pt cluster component (85, not 100)', score.scaledMaxScore === 85)
+  check('score never exceeds scaledMaxScore', score.score <= score.scaledMaxScore)
+}
+{
+  // When Deep Cluster Check DID run and found evidence, its points count normally and nothing is
+  // excluded from the denominator.
+  const sc = buildSolanaSupplyControl({ ok: true, tokenProgram: 'spl-token', decimals: 6, totalSupply: 1000, rawSupply: 1000, mintAuthority: null, freezeAuthority: null, authorityReadSucceeded: true, rawExtensions: null, evidenceGaps: [] })
+  const clusterMap = { attempted: true, evidenceCount: 2, clusterConfidence: 'medium', riskLevel: 'standard', summary: 'test summary', riskReason: 'test risk reason' }
+  const score = buildSolanaDeveloperScore({ creatorConfidence: { tier: 'CONFIRMED', confidencePercent: 90, wallet: 'W1', reason: 'test' }, supplyControl: sc, authorityReadSucceeded: true, freezeAuthority: null, clusterMap, patterns: { patterns: [] } })
+  check('cluster attempted with evidence => not skipped', score.components.find(c => c.label === 'Cluster / Funding Confidence').skipped !== true)
+  check('scaledMaxScore equals full maxScore (100) when cluster actually ran', score.scaledMaxScore === score.maxScore && score.maxScore === 100)
 }
 {
   // Authority-unresolved and mint-active cases never silently score high.

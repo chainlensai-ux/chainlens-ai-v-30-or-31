@@ -39,9 +39,11 @@ export async function analyzeSolanaHolders(params: {
   rpcUrl: string
   fetchImpl: RpcFetch
   rawSupply: number | null
+  /** Exact u64 base-unit supply string — preferred over rawSupply for precision. */
+  rawSupplyExact?: string | null
 }): Promise<SolanaHolderAnalysis> {
   const evidenceGaps: string[] = []
-  const { mintAddress, rpcUrl, fetchImpl, rawSupply } = params
+  const { mintAddress, rpcUrl, fetchImpl, rawSupply, rawSupplyExact } = params
 
   // ── Top-account concentration (never a holder count — see module header) ───
   type LargestResp = { value?: Array<{ address?: string; amount?: string; uiAmount?: number | null }> }
@@ -50,13 +52,36 @@ export async function analyzeSolanaHolders(params: {
 
   if (largestRes.ok && Array.isArray(largestRes.result?.value) && largestRes.result.value.length > 0) {
     const rows = largestRes.result.value
-    const pct = (sumRaw: number): number | null =>
-      rawSupply != null && rawSupply > 0 ? Math.round((sumRaw / rawSupply) * 10000) / 100 : null
+    // BigInt throughout: raw SPL balances are u64 base-unit amounts and routinely exceed
+    // Number.MAX_SAFE_INTEGER (2^53) for high-decimal/high-supply memecoins — converting via
+    // Number() before summing loses precision that then propagates into every downstream
+    // consumer (risk engine, pattern analyzer, watch plan, both client scorers). Only the final
+    // percentage — not the raw amount itself — is ever narrowed to a JS number.
+    const ZERO = BigInt(0)
+    const rawSupplyBig = (() => {
+      if (rawSupplyExact) {
+        try {
+          const v = BigInt(rawSupplyExact)
+          if (v > ZERO) return v
+        } catch {
+          /* fall through to the lossy number below */
+        }
+      }
+      return rawSupply != null && rawSupply > 0 ? BigInt(Math.trunc(rawSupply)) : null
+    })()
+    const pct = (sumRaw: bigint): number | null =>
+      rawSupplyBig != null && rawSupplyBig > ZERO
+        ? Math.round(Number((sumRaw * BigInt(1000000)) / rawSupplyBig)) / 10000
+        : null
     const rawAmounts = rows.map((r) => {
-      const n = typeof r.amount === 'string' ? Number(r.amount) : NaN
-      return Number.isFinite(n) ? n : 0
+      if (typeof r.amount !== 'string') return ZERO
+      try {
+        return BigInt(r.amount)
+      } catch {
+        return ZERO
+      }
     })
-    const sumOf = (n: number) => rawAmounts.slice(0, n).reduce((s, v) => s + v, 0)
+    const sumOf = (n: number) => rawAmounts.slice(0, n).reduce((s, v) => s + v, ZERO)
     topAccountConcentration = {
       accountsSampled: rows.length,
       top1Percent: pct(sumOf(1)),
@@ -65,7 +90,7 @@ export async function analyzeSolanaHolders(params: {
       accounts: rows.slice(0, 20).map((r, i) => ({
         rank: i + 1,
         amountRaw: typeof r.amount === 'string' ? r.amount : '0',
-        percentOfSupply: pct(rawAmounts[i] ?? 0),
+        percentOfSupply: pct(rawAmounts[i] ?? ZERO),
       })),
     }
     if (rawSupply == null) evidenceGaps.push('Top-account shares could not be expressed as a percent — supply unknown.')

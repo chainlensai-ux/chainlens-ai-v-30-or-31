@@ -8,8 +8,17 @@ import { NextResponse } from 'next/server'
 import { isSolanaChainAvailable, getSolanaRpcUrl } from '@/lib/server/solanaChainConfig'
 import { fetchSolanaWalletSnapshot } from '@/lib/server/solana/walletDetailAnalyzer'
 import { isValidSolanaMintAddress } from '@/lib/solanaAddress'
+import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
+
+// Per-IP throttle: each click on a Cluster Map node fires 2 RPC calls (getBalance + latest
+// signature). Without this, a scripted client could cheaply burn the shared Alchemy quota — see
+// docs/token-scanner-audit-solana-2026-08-22.md finding #5.
+const limiter = createRateLimiter({ windowMs: 60_000, max: 20 })
 
 export async function POST(req: Request) {
+  if (!limiter.check(getClientIp(req))) {
+    return NextResponse.json({ ok: false, error: 'Too many requests' }, { status: 429 })
+  }
   if (!isSolanaChainAvailable()) {
     return NextResponse.json({ ok: false, error: 'Solana Beta is not enabled.' }, { status: 400 })
   }

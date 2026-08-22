@@ -76,31 +76,33 @@ export async function runSolanaProviderMerge(
   audit.supplyResolved = mint.totalSupply != null
   const evidenceGaps: string[] = [...mint.evidenceGaps]
 
-  // ── 2. Holder intelligence (Alchemy top accounts + Helius real holder count) ─
-  const holders = await analyzeSolanaHolders({ mintAddress, rpcUrl, fetchImpl, rawSupply: mint.rawSupply })
+  // ── 2/3/5. Holder intelligence, market data, and creator/dev signal — all three depend only on
+  // the mint identity resolved in step 1, not on each other, so they run concurrently instead of
+  // as three sequential RPC round-trips (see docs/token-scanner-audit-solana-2026-08-22.md #2).
+  const [holders, market, creator] = await Promise.all([
+    analyzeSolanaHolders({ mintAddress, rpcUrl, fetchImpl, rawSupply: mint.rawSupply, rawSupplyExact: mint.rawSupplyExact }),
+    analyzeSolanaMarket(mintAddress, fetchImpl),
+    analyzeSolanaCreator(mintAddress, fetchImpl),
+  ])
   audit.largestAccountsResolved = holders.topAccountConcentration != null
   audit.top1Percent = holders.topAccountConcentration?.top1Percent ?? null
   audit.top10Percent = holders.topAccountConcentration?.top10Percent ?? null
   audit.top20Percent = holders.topAccountConcentration?.top20Percent ?? null
   evidenceGaps.push(...holders.evidenceGaps)
 
-  // ── 3. Market data (DexScreener — primary) ──────────────────────────────────
-  const market = await analyzeSolanaMarket(mintAddress, fetchImpl)
   audit.marketProviderUsed = market.provider
   audit.marketDataResolved = market.data != null
   if (!market.data) evidenceGaps.push('No Solana market/pool data found via DexScreener — price, liquidity and volume unavailable.')
 
-  // ── 4. Metadata identity (Jupiter first, DexScreener fallback) ─────────────
+  evidenceGaps.push(...creator.evidenceGaps)
+
+  // ── 4. Metadata identity (Jupiter first, DexScreener fallback) — depends on market.data above ─
   const metadata = await resolveSolanaMetadata({
     mintAddress, fetchImpl,
     dexScreenerName: market.data?.tokenName ?? null,
     dexScreenerSymbol: market.data?.tokenSymbol ?? null,
   })
   evidenceGaps.push(...metadata.evidenceGaps)
-
-  // ── 5. Creator/dev activity signal (Helius, lightweight only) ──────────────
-  const creator = await analyzeSolanaCreator(mintAddress, fetchImpl)
-  evidenceGaps.push(...creator.evidenceGaps)
 
   // ── 5b. Deep Mode creator trace — EXPLICIT OPT-IN ONLY, never run by default ──
   // See deepCreatorAnalyzer.ts's header: this is the ONLY OTHER path (besides 5c below) that calls
@@ -112,13 +114,14 @@ export async function runSolanaProviderMerge(
   // ── 6. GoldRush / Covalent (no verified Solana endpoint — cleanly unavailable) ─
   const goldrushOrCovalent = solanaGoldrushEnrichment()
 
-  // ── 7. GeckoTerminal OHLCV candles (free, keyless — real Price Chart data) ──
-  const ohlcv = await analyzeSolanaCandles(market.data?.primaryPoolAddress ?? null, fetchImpl)
-  if (market.data?.primaryPoolAddress && !ohlcv.success) evidenceGaps.push('Candle history could not be indexed for this pool — Price Chart shows a live snapshot only.')
-
-  // ── 8. Pool program identity (real getAccountInfo owner read) ──────────────
+  // ── 7/8. GeckoTerminal OHLCV candles + pool program identity — both depend only on the pool
+  // address already resolved by market data, not on each other, so they run concurrently. ──────
   const poolAddress = market.data?.primaryPoolAddress ?? null
-  const pool = await analyzeSolanaPool({ poolAddress, rpcUrl, fetchImpl })
+  const [ohlcv, pool] = await Promise.all([
+    analyzeSolanaCandles(poolAddress, fetchImpl),
+    analyzeSolanaPool({ poolAddress, rpcUrl, fetchImpl }),
+  ])
+  if (poolAddress && !ohlcv.success) evidenceGaps.push('Candle history could not be indexed for this pool — Price Chart shows a live snapshot only.')
   evidenceGaps.push(...pool.evidenceGaps)
 
   // ── 8b. Deep Mode cluster/funding trace — EXPLICIT OPT-IN ONLY, one further hop past the

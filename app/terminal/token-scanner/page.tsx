@@ -5760,13 +5760,18 @@ export default function TerminalTokenScanner() {
                             <div style={{ padding: '13px 16px', borderRadius: '12px', background: 'rgba(9,15,29,.8)', border: '1px solid rgba(148,163,184,.14)' }}>
                               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '8px' }}>
                                 <p style={{ margin: 0, fontSize: '9px', letterSpacing: '.14em', color: '#475569', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase' }}>Developer Score Breakdown</p>
-                                <p style={{ margin: 0, fontSize: '14px', color: '#f8fafc', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>{sr.developerScore.score}<span style={{ fontSize: '10px', color: '#64748b' }}>/{sr.developerScore.maxScore}</span></p>
+                                <p style={{ margin: 0, fontSize: '14px', color: '#f8fafc', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>{sr.developerScore.score}<span style={{ fontSize: '10px', color: '#64748b' }}>/{sr.developerScore.scaledMaxScore}</span></p>
                               </div>
+                              {sr.developerScore.scaledMaxScore !== sr.developerScore.maxScore && (
+                                <p style={{ margin: '0 0 8px', fontSize: '9.5px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>
+                                  Scored out of {sr.developerScore.scaledMaxScore} — checks not yet run for this scan are excluded, not counted against it.
+                                </p>
+                              )}
                               {sr.developerScore.components.map((c, i) => (
-                                <div key={i} style={{ marginTop: i === 0 ? 0 : '8px' }}>
+                                <div key={i} style={{ marginTop: i === 0 ? 0 : '8px', opacity: c.skipped ? 0.55 : 1 }}>
                                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: '8px' }}>
-                                    <p style={{ margin: 0, fontSize: '10.5px', color: '#cbd5e1', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{c.label}</p>
-                                    <p style={{ margin: 0, fontSize: '10.5px', color: '#5eead4', fontFamily: 'var(--font-plex-mono)' }}>{c.points}/{c.maxPoints}</p>
+                                    <p style={{ margin: 0, fontSize: '10.5px', color: '#cbd5e1', fontWeight: 700, fontFamily: 'var(--font-plex-mono)' }}>{c.label}{c.skipped ? ' (not run)' : ''}</p>
+                                    <p style={{ margin: 0, fontSize: '10.5px', color: c.skipped ? '#64748b' : '#5eead4', fontFamily: 'var(--font-plex-mono)' }}>{c.skipped ? 'excluded' : `${c.points}/${c.maxPoints}`}</p>
                                   </div>
                                   <p style={{ margin: '2px 0 0', fontSize: '9.5px', color: '#7c8aa0', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{c.reason}</p>
                                 </div>

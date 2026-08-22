@@ -17,11 +17,15 @@ export type SolanaDeveloperScoreComponent = {
   points: number
   maxPoints: number
   reason: string
+  /** True when this component never ran (e.g. Deep Cluster Check not requested) — excluded from scaledMaxScore so an un-run check never silently caps every normal scan's score. */
+  skipped?: boolean
 }
 
 export type SolanaDeveloperScore = {
   score: number
   maxScore: number
+  /** Sum of maxPoints across components that actually ran, excluding skipped ones like Cluster/Funding Confidence when Deep Cluster Check was never requested. This is the denominator score is scaled against — never penalize a scan for evidence it never had the chance to collect. */
+  scaledMaxScore: number
   components: SolanaDeveloperScoreComponent[]
 }
 
@@ -60,8 +64,9 @@ export function buildSolanaDeveloperScore(input: {
   // ── Cluster / funding confidence (0-15) ──────────────────────────────────────────────────────
   let clusterPoints = 0
   let clusterReason: string
-  if (!clusterMap || !clusterMap.attempted) {
-    clusterReason = 'Deep Cluster Check has not been run for this mint — funding-path evidence is unavailable.'
+  const clusterSkipped = !clusterMap || !clusterMap.attempted
+  if (clusterSkipped) {
+    clusterReason = 'Deep Cluster Check has not been run for this mint — funding-path evidence is unavailable. Not counted against this score (see scaledMaxScore).'
   } else if (clusterMap.evidenceCount === 0) {
     clusterReason = 'Deep Cluster Check ran but found no verified wallet relationships.'
   } else {
@@ -70,7 +75,7 @@ export function buildSolanaDeveloperScore(input: {
     clusterPoints = Math.max(0, confidencePoints - riskPenalty + (clusterMap.riskLevel === 'standard' ? 5 : 0))
     clusterReason = `${clusterMap.summary} Risk read: ${clusterMap.riskLevel === 'unknown' ? 'unknown' : clusterMap.riskReason}`
   }
-  components.push({ label: 'Cluster / Funding Confidence', points: clusterPoints, maxPoints: 15, reason: clusterReason })
+  components.push({ label: 'Cluster / Funding Confidence', points: clusterPoints, maxPoints: 15, reason: clusterReason, skipped: clusterSkipped })
 
   // ── Pattern safety (0-10): any HIGH/MEDIUM-confidence pattern actually detected as risky ──────
   const riskyPattern = patterns.patterns.find((p) => p.detected === true && (p.key === 'holder_concentration'))
@@ -82,5 +87,6 @@ export function buildSolanaDeveloperScore(input: {
 
   const score = components.reduce((s, c) => s + c.points, 0)
   const maxScore = components.reduce((s, c) => s + c.maxPoints, 0)
-  return { score, maxScore, components }
+  const scaledMaxScore = components.reduce((s, c) => s + (c.skipped ? 0 : c.maxPoints), 0)
+  return { score, maxScore, scaledMaxScore, components }
 }

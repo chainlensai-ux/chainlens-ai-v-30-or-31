@@ -19,8 +19,10 @@ export type SolanaMintAnalysis =
       tokenProgram: string | null
       decimals: number | null
       totalSupply: number | null
-      /** Raw base-unit supply, kept for holderAnalyzer's percent-of-supply math. */
+      /** Raw base-unit supply, kept for holderAnalyzer's percent-of-supply math. May lose precision beyond 2^53 — prefer rawSupplyExact for math. */
       rawSupply: number | null
+      /** Exact raw base-unit supply as returned by the RPC (u64 string) — use this, not rawSupply, for any BigInt-precision math. */
+      rawSupplyExact: string | null
       mintAuthority: string | null
       freezeAuthority: string | null
       /** Distinguishes "revoked" (real evidence) from "couldn't parse" (unknown, not revoked). */
@@ -75,15 +77,17 @@ export async function analyzeSolanaMint(mintAddress: string, rpcUrl: string, fet
   const supplyRes = await solanaRpc<SupplyResp>(rpcUrl, 'getTokenSupply', [mintAddress], fetchImpl)
   let totalSupply: number | null = null
   let rawSupply: number | null = null
+  let rawSupplyExact: string | null = null
   if (supplyRes.ok && supplyRes.result?.value) {
     const v = supplyRes.result.value
     totalSupply = typeof v.uiAmount === 'number' && Number.isFinite(v.uiAmount) ? v.uiAmount : null
     const amt = typeof v.amount === 'string' ? Number(v.amount) : NaN
     rawSupply = Number.isFinite(amt) ? amt : null
+    rawSupplyExact = typeof v.amount === 'string' ? v.amount : null
   }
   if (totalSupply == null) evidenceGaps.push('Total supply could not be read.')
 
   const rawExtensions = tokenProgram === 'spl-token-2022' ? (Array.isArray(parsedInfo.extensions) ? parsedInfo.extensions as unknown[] : []) : null
 
-  return { ok: true, tokenProgram, decimals, totalSupply, rawSupply, mintAuthority, freezeAuthority, authorityReadSucceeded, rawExtensions, evidenceGaps }
+  return { ok: true, tokenProgram, decimals, totalSupply, rawSupply, rawSupplyExact, mintAuthority, freezeAuthority, authorityReadSucceeded, rawExtensions, evidenceGaps }
 }

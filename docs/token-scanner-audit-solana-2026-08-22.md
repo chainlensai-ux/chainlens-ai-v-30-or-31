@@ -174,14 +174,44 @@ optional-provider evidence (holder count, creator signal) won't be available.
 
 ## Prioritized Remediation Plan
 
-1. **P0**: Reconcile or clearly separate the three risk-scoring surfaces (Finding 1).
-2. **P0**: Add rate limiting to `/api/solana-wallet-detail` (Finding 5).
-3. **P1**: Add caching + parallelize independent provider calls in `providerMerge.ts` (Finding 2).
-4. **P1**: Fix Developer Score's `maxScore` denominator for un-run components (Finding 3).
-5. **P1**: Switch raw-balance math to BigInt (Finding 4).
-6. **P2**: Exclude the primary pool address from top-account concentration before risk scoring (Finding 6).
+1. **P0**: Reconcile or clearly separate the three risk-scoring surfaces (Finding 1). — **Open.**
+   Deliberately not touched in this pass: collapsing/renaming three live, user-facing verdict
+   surfaces is a product decision (which labels survive, how existing users' bookmarked reads are
+   affected), not a pure engineering fix, so it's left for a follow-up with product sign-off.
+2. **P0**: Add rate limiting to `/api/solana-wallet-detail` (Finding 5). — **Fixed.** Reused the
+   existing `lib/server/rateLimit.ts` per-IP token bucket (20 req/min), same pattern already used
+   by `app/api/scan-holder/route.ts`.
+3. **P1**: Parallelize independent provider calls in `providerMerge.ts` (Finding 2, partial). —
+   **Fixed** (parallelization only). Holders/market/creator now run via `Promise.all` (all three
+   only depend on step 1's mint identity, not each other); OHLCV candles + pool-program identity
+   likewise now run concurrently (both depend only on the resolved pool address). Metadata still
+   runs after market since it consumes market's token name/symbol as a fallback. A caching layer
+   was **not** added in this pass — worth a follow-up given how cheap the wins were here.
+4. **P1**: Fix Developer Score's `maxScore` denominator for un-run components (Finding 3). —
+   **Fixed.** Added `scaledMaxScore` (denominator excluding components marked `skipped`, currently
+   only Cluster/Funding Confidence when Deep Cluster Check wasn't run) and a `skipped` flag per
+   component; the Watch Plan tab UI now shows score against `scaledMaxScore` and visually
+   de-emphasizes skipped rows instead of silently including them in a 100-point ceiling.
+5. **P1**: Switch raw-balance math to BigInt (Finding 4). — **Fixed** for the holder-concentration
+   path: `mintAnalyzer.ts` now also returns `rawSupplyExact` (the untouched RPC string), and
+   `holderAnalyzer.ts` sums top-account balances and computes percentages entirely in BigInt,
+   falling back to the pre-existing lossy `Number()` path only if `rawSupplyExact` is absent/
+   malformed. Added `scripts/test-solana-holder-analyzer.mjs` covering a >2^53 balance case.
+6. **P2**: Exclude the primary pool address from top-account concentration before risk scoring
+   (Finding 6). — **Open.** `holderAnalyzer.ts`'s `accounts` list doesn't currently carry the raw
+   address per row (only rank/amount/percent), so this needs a small type change before the fix;
+   deferred rather than done as a rushed follow-on to the BigInt change above.
 7. **P2**: Add test scripts for `marketAnalyzer.ts`, `poolAnalyzer.ts`, `rpcClient.ts` (Finding 9).
-8. **P2**: Surface provider-level config detail via `chain-status` (Finding 10).
+   — **Open** for those three; `holderAnalyzer.ts` (also flagged as untested) now has
+   `scripts/test-solana-holder-analyzer.mjs`.
+8. **P2**: Surface provider-level config detail via `chain-status` (Finding 10). — **Fixed.**
+   `/api/token/chain-status` now also returns `solana.providers.{alchemy,goldrush,marketFallback,
+   helius,jupiter}`, sourced from the existing `solanaTokenScannerConfigAudit()` /
+   `isHeliusConfigured()` / `isJupiterConfigured()` helpers that were previously only logged
+   server-side.
+
+Remaining open items (1, 6, 7's other three modules) are unchanged from the original audit and are
+tracked above for a follow-up pass.
 
 ## Suggested Regression Checklist
 
