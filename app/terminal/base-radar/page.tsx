@@ -1529,9 +1529,33 @@ export default function BaseRadarPage() {
     }
   }, [])
   const [loadMoreRateLimited, setLoadMoreRateLimited] = useState(false)
+  // LOAD-MORE-COOLDOWN FIX, DISCLOSED (reported: rate-limit throttling suddenly appearing that
+  // "never really happens" specifically when clicking Load/Load More — dug into it and found the
+  // real gap: the main Refresh button re-requests the SAME page/cache key, so rapid re-clicks
+  // mostly just hit the server-side cache (RADAR_FULL_CACHE_TTL_MS) and never re-hit GeckoTerminal
+  // at all. Load More is structurally different — every click targets the NEXT page (?page=N+1), a
+  // cache key that has never been fetched before, so it is NEVER a cache hit. The only thing that
+  // was ever standing between a user and back-to-back fresh GeckoTerminal bursts was `disabled={
+  // loadingMore}`, which just prevents a concurrent double-click — it does nothing to stop clicking
+  // again the moment the previous click resolves (which can be under a second on a cache/backoff
+  // skip). This route's own LOAD_ALL_PAGE_DELAY_MS was raised to 120s after being live-reproduced
+  // as the one cadence that actually recovers reliably — Load More had zero enforced cadence at
+  // all, the exact gap Load All's fix was built around. Adds a real client-side cooldown so a human
+  // clicking Load More repeatedly can't do what Load All's own fix exists to prevent.
+  const LOAD_MORE_COOLDOWN_MS = 60_000
+  const [loadMoreCooldownUntil, setLoadMoreCooldownUntil] = useState(0)
+  const [loadMoreCooldownRemaining, setLoadMoreCooldownRemaining] = useState(0)
+  useEffect(() => {
+    if (loadMoreCooldownUntil <= Date.now()) { setLoadMoreCooldownRemaining(0); return }
+    const tick = () => setLoadMoreCooldownRemaining(Math.max(0, Math.ceil((loadMoreCooldownUntil - Date.now()) / 1000)))
+    tick()
+    const id = setInterval(tick, 1000)
+    return () => clearInterval(id)
+  }, [loadMoreCooldownUntil])
   const handleLoadMore = useCallback(async () => {
-    if (loadingMore) return
+    if (loadingMore || Date.now() < loadMoreCooldownUntil) return
     setLoadingMore(true)
+    setLoadMoreCooldownUntil(Date.now() + LOAD_MORE_COOLDOWN_MS)
     try {
       const result = await loadOnePage((data?.page ?? 1) + 1)
       setLoadMoreExhausted(result.ok && result.addedCount === 0 && !result.degraded)
@@ -1539,7 +1563,7 @@ export default function BaseRadarPage() {
     } finally {
       setLoadingMore(false)
     }
-  }, [data?.page, loadingMore, loadOnePage])
+  }, [data?.page, loadingMore, loadMoreCooldownUntil, loadOnePage])
 
   // FIND-NEW-TOKENS, DISCLOSED (explicitly requested: "a button at the bottom to find new tokens
   // cause a lot are the same tokens from days ago" — the default mixed discovery interleaves
@@ -1609,8 +1633,13 @@ export default function BaseRadarPage() {
   // fail. Corrected to match the cadence the investigation actually validated.
   const LOAD_ALL_PAGE_DELAY_MS = 120_000
   const handleLoadAll = useCallback(async () => {
-    if (loadingAll || loadingMore) return
+    // Shares Load More's cooldown for its own first page — same underlying loadOnePage burst, so a
+    // Load More click immediately followed by Load All would otherwise fire two fresh bursts
+    // back-to-back with no gap at all (Load All's own 120s pacing only applies BETWEEN its pages,
+    // not before the first one).
+    if (loadingAll || loadingMore || Date.now() < loadMoreCooldownUntil) return
     setLoadingAll(true)
+    setLoadMoreCooldownUntil(Date.now() + LOAD_MORE_COOLDOWN_MS)
     setLoadMoreExhausted(false)
     setLoadMoreRateLimited(false)
     let totalAdded = 0
@@ -1634,7 +1663,7 @@ export default function BaseRadarPage() {
       setLoadingAll(false)
       setLoadAllProgress(null)
     }
-  }, [data?.page, data?.hasMore, loadingAll, loadingMore, loadOnePage])
+  }, [data?.page, data?.hasMore, loadingAll, loadingMore, loadMoreCooldownUntil, loadOnePage])
 
   // REDUNDANT-REFETCH-ON-TAB-REFOCUS FIX, DISCLOSED (reported: switching to another tab for a
   // while, then back to Base Radar, clears the feed and it doesn't come back). Root cause:
@@ -2292,30 +2321,31 @@ export default function BaseRadarPage() {
               <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>
                 <button
                   onClick={() => { setLoadMoreExhausted(false); setLoadMoreRateLimited(false); void handleLoadMore() }}
-                  disabled={loadingMore || loadingAll}
+                  disabled={loadingMore || loadingAll || loadMoreCooldownRemaining > 0}
+                  title={loadMoreCooldownRemaining > 0 ? 'Each Load More click fetches a brand-new page from GeckoTerminal — this short pause stops rapid re-clicks from tripping its rate limit.' : undefined}
                   style={{
                     flex: 1, padding: '11px', borderRadius: '10px',
-                    border: '1px solid rgba(45,212,191,0.24)', background: (loadingMore || loadingAll) ? 'rgba(45,212,191,0.04)' : 'rgba(45,212,191,0.07)',
-                    color: (loadingMore || loadingAll) ? 'rgba(153,246,228,0.5)' : '#99f6e4', fontSize: '11px', fontWeight: 700,
+                    border: '1px solid rgba(45,212,191,0.24)', background: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'rgba(45,212,191,0.04)' : 'rgba(45,212,191,0.07)',
+                    color: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'rgba(153,246,228,0.5)' : '#99f6e4', fontSize: '11px', fontWeight: 700,
                     letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)',
-                    cursor: (loadingMore || loadingAll) ? 'not-allowed' : 'pointer', transition: 'background 0.15s, color 0.15s',
+                    cursor: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'not-allowed' : 'pointer', transition: 'background 0.15s, color 0.15s',
                   }}
                 >
-                  {loadingMore ? 'Loading…' : 'Load More'}
+                  {loadingMore ? 'Loading…' : loadMoreCooldownRemaining > 0 ? `Wait ${loadMoreCooldownRemaining}s` : 'Load More'}
                 </button>
                 <button
                   onClick={() => void handleLoadAll()}
-                  disabled={loadingMore || loadingAll}
-                  title="Automatically loads every remaining page, 2 minutes apart so each page gets a real chance to clear GeckoTerminal's rate limit."
+                  disabled={loadingMore || loadingAll || loadMoreCooldownRemaining > 0}
+                  title={loadMoreCooldownRemaining > 0 ? 'Each Load More click fetches a brand-new page from GeckoTerminal — this short pause stops rapid re-clicks from tripping its rate limit.' : "Automatically loads every remaining page, 2 minutes apart so each page gets a real chance to clear GeckoTerminal's rate limit."}
                   style={{
                     flex: 1, padding: '11px', borderRadius: '10px',
-                    border: '1px solid rgba(45,212,191,0.24)', background: (loadingMore || loadingAll) ? 'rgba(45,212,191,0.04)' : 'rgba(45,212,191,0.07)',
-                    color: (loadingMore || loadingAll) ? 'rgba(153,246,228,0.5)' : '#99f6e4', fontSize: '11px', fontWeight: 700,
+                    border: '1px solid rgba(45,212,191,0.24)', background: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'rgba(45,212,191,0.04)' : 'rgba(45,212,191,0.07)',
+                    color: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'rgba(153,246,228,0.5)' : '#99f6e4', fontSize: '11px', fontWeight: 700,
                     letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)',
-                    cursor: (loadingMore || loadingAll) ? 'not-allowed' : 'pointer', transition: 'background 0.15s, color 0.15s',
+                    cursor: (loadingMore || loadingAll || loadMoreCooldownRemaining > 0) ? 'not-allowed' : 'pointer', transition: 'background 0.15s, color 0.15s',
                   }}
                 >
-                  {loadingAll ? (loadAllProgress ? `Page ${loadAllProgress.page}/5 — waiting for rate limit…` : 'Loading…') : 'Load All (~8 min)'}
+                  {loadingAll ? (loadAllProgress ? `Page ${loadAllProgress.page}/5 — waiting for rate limit…` : 'Loading…') : loadMoreCooldownRemaining > 0 ? `Wait ${loadMoreCooldownRemaining}s` : 'Load All (~8 min)'}
                 </button>
               </div>
             )}
