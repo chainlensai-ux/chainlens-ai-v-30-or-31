@@ -1,24 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAnonSupabaseClient } from '@/lib/supabase/userSettings'
+import { meetsPasswordPolicy, PASSWORD_POLICY_MESSAGE } from '@/lib/authPolicy'
+import { authRedirectUrl } from '@/lib/authFlow'
 
 // ── Password policy ───────────────────────────────────────────────────────────
-
-const BANNED_PASSWORDS = new Set([
-  '123456', '12345678', '123456789', 'password', 'password123',
-  'qwerty', 'qwerty123', 'chainlens', 'chainlens123', 'letmein', 'admin123',
-])
-
-function meetsPolicy(pw: string): boolean {
-  if (typeof pw !== 'string') return false
-  if (BANNED_PASSWORDS.has(pw.toLowerCase())) return false
-  return (
-    pw.length >= 10 &&
-    /[A-Z]/.test(pw) &&
-    /[a-z]/.test(pw) &&
-    /[0-9]/.test(pw) &&
-    /[^A-Za-z0-9]/.test(pw)
-  )
-}
 
 // ── IP-based in-memory rate limit: 5 attempts per 10 minutes ─────────────────
 
@@ -77,9 +62,9 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  if (!meetsPolicy(password as string)) {
+  if (!meetsPasswordPolicy(password)) {
     return NextResponse.json(
-      { error: 'weak_password', message: 'Use at least 10 characters with uppercase, lowercase, a number, and a symbol.' },
+      { error: 'weak_password', message: PASSWORD_POLICY_MESSAGE },
       { status: 400 },
     )
   }
@@ -92,8 +77,16 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  const origin = request.headers.get('origin') || ''
-  const redirectTo = origin ? `${origin}/auth/callback` : undefined
+  let redirectTo: string | undefined
+  try {
+    // Build from NextRequest's parsed origin rather than the caller-controlled Origin header.
+    redirectTo = authRedirectUrl(request.nextUrl.origin, '/auth/callback')
+  } catch {
+    return NextResponse.json(
+      { error: 'signup_unavailable', message: 'Unable to create account. Please try again.' },
+      { status: 400 },
+    )
+  }
 
   const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
     email: email.trim().toLowerCase(),

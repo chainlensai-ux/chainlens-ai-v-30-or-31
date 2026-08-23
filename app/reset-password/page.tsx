@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
+import { hasRecoveryIntent, resolveSupabaseAuthCallback } from '@/lib/authFlow';
+import { meetsPasswordPolicy, PASSWORD_POLICY_MESSAGE } from '@/lib/authPolicy';
 
 type Status = 'loading' | 'ready' | 'success' | 'error';
 
@@ -20,24 +22,19 @@ export default function ResetPasswordPage() {
 
     async function init() {
       const url = window.location.href;
-      const hasCode = /[?&]code=/.test(url);
-
-      if (hasCode) {
-        const { error: exchError } = await supabase.auth.exchangeCodeForSession(url);
-        if (!active) return;
-        if (exchError) {
-          setStatus('error');
-          setError('This reset link is invalid or has expired. Please request a new one.');
-          return;
-        }
-        setStatus('ready');
+      let forwardedRecovery = false;
+      try { forwardedRecovery = sessionStorage.getItem('cl_password_recovery') === '1' } catch {}
+      if (!hasRecoveryIntent(url) && !forwardedRecovery) {
+        setStatus('error');
+        setError('This reset link is invalid or has expired. Please request a new one.');
         return;
       }
 
-      // Hash-based flow: check if session already set by SDK parsing the fragment
-      const { data: { session } } = await supabase.auth.getSession();
+      // Handles both supported Supabase shapes: exchange the exact ?code= for PKCE, or wait for
+      // the SDK to consume the implicit-flow hash and expose its recovery session.
+      const result = await resolveSupabaseAuthCallback(supabase, url);
       if (!active) return;
-      if (session) { setStatus('ready'); return; }
+      if (result.session && !result.error) { setStatus('ready'); return; }
 
       // Wait for PASSWORD_RECOVERY event from hash fragment
       const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -66,17 +63,11 @@ export default function ResetPasswordPage() {
     };
   }, []);
 
-  function meetsPolicy(pw: string): boolean {
-    const banned = new Set(['123456','12345678','123456789','password','password123','qwerty','qwerty123','chainlens','chainlens123','letmein','admin123'])
-    if (banned.has(pw.toLowerCase())) return false
-    return pw.length >= 10 && /[A-Z]/.test(pw) && /[a-z]/.test(pw) && /[0-9]/.test(pw) && /[^A-Za-z0-9]/.test(pw)
-  }
-
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
-    if (!meetsPolicy(password)) {
-      setError('Use at least 10 characters with uppercase, lowercase, a number, and a symbol.');
+    if (!meetsPasswordPolicy(password)) {
+      setError(PASSWORD_POLICY_MESSAGE);
       return;
     }
     if (password !== confirm) {
@@ -88,8 +79,10 @@ export default function ResetPasswordPage() {
     if (updateError) {
       setError('Unable to update password. The reset link may have expired — please request a new one.');
     } else {
+      try { sessionStorage.removeItem('cl_password_recovery') } catch {}
+      await supabase.auth.signOut({ scope: 'local' });
       setStatus('success');
-      setTimeout(() => router.replace('/auth'), 2000);
+      setTimeout(() => router.replace('/auth?message=password-updated'), 2000);
     }
     setSubmitting(false);
   }

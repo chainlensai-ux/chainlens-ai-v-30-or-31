@@ -2,62 +2,40 @@
 
 import Image from 'next/image';
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';
 import { isSafeInternalPath } from '@/lib/safeNextPath';
+import { authCallbackError, authRedirectUrl, initialAuthMode } from '@/lib/authFlow';
+import { checkPasswordPolicy, getPasswordStrength, meetsPasswordPolicy, PASSWORD_POLICY_MESSAGE } from '@/lib/authPolicy';
 
 type Mode = 'signin' | 'signup' | 'forgot';
 
-const BANNED_PASSWORDS = new Set([
-  '123456','12345678','123456789','password','password123',
-  'qwerty','qwerty123','chainlens','chainlens123','letmein','admin123',
-])
-
-// Use the configured app URL so OAuth callbacks always land on the canonical
-// production domain rather than whichever origin the page is served from.
-const CANONICAL_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://www.chainlensai.app'
-
-function checkPolicy(pw: string) {
-  return {
-    minLen: pw.length >= 10,
-    hasUpper: /[A-Z]/.test(pw),
-    hasLower: /[a-z]/.test(pw),
-    hasNum: /[0-9]/.test(pw),
-    hasSpecial: /[^A-Za-z0-9]/.test(pw),
-    notBanned: !BANNED_PASSWORDS.has(pw.toLowerCase()),
-  }
-}
-
-function getStrength(pw: string): 'weak' | 'medium' | 'strong' {
-  if (!pw) return 'weak'
-  const c = checkPolicy(pw)
-  if (c.notBanned && c.minLen && c.hasUpper && c.hasLower && c.hasNum && c.hasSpecial) return 'strong'
-  const met = [c.minLen, c.hasUpper, c.hasLower, c.hasNum, c.hasSpecial].filter(Boolean).length
-  return met >= 3 ? 'medium' : 'weak'
-}
-
 export default function AuthPage() {
   const router = useRouter();
-  const [mode, setMode] = useState<Mode>('signin');
+  const pathname = usePathname();
+  const [mode, setMode] = useState<Mode>(() => initialAuthMode(pathname));
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [authCheckLoading, setAuthCheckLoading] = useState(true);
   const [error, setError] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
-    const params = new URLSearchParams(window.location.search);
-    const oauthErr = params.get('error_description') || params.get('error');
-    return oauthErr ? decodeURIComponent(oauthErr.replace(/\+/g, ' ')) : null;
+    return authCallbackError(window.location.href);
   });
-  const [success, setSuccess] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return new URLSearchParams(window.location.search).get('message') === 'password-updated'
+      ? 'Password updated. Sign in with your new password.'
+      : null;
+  });
   const [confirmPassword, setConfirmPassword] = useState('');
 
-  const policy = checkPolicy(password);
-  const strength = getStrength(password);
-  const policyPassed = policy.minLen && policy.hasUpper && policy.hasLower && policy.hasNum && policy.hasSpecial && policy.notBanned;
+  const policy = checkPasswordPolicy(password);
+  const strength = getPasswordStrength(password);
+  const policyPassed = meetsPasswordPolicy(password);
   const confirmMismatch = mode === 'signup' && confirmPassword.length > 0 && confirmPassword !== password;
-  const submitDisabled = loading || !email.trim() || (mode === 'signup' && (!policyPassed || password !== confirmPassword));
+  const submitDisabled = loading || !email.trim() || !password || (mode === 'signup' && (!policyPassed || password !== confirmPassword));
 
   useEffect(() => {
     let isMounted = true;
@@ -114,7 +92,9 @@ export default function AuthPage() {
       try { localStorage.setItem('cl_auth_next', nextParam) } catch {}
       document.cookie = `cl_auth_next=${encodeURIComponent(nextParam)}; Max-Age=3600; Path=/; SameSite=Lax`
     }
-    const callbackBase = `${CANONICAL_URL}/auth/callback`
+    // OAuth state/session storage is origin-scoped. Returning to a hard-coded production origin
+    // breaks sign-in when the flow starts on a preview, alias, or local deployment.
+    const callbackBase = authRedirectUrl(window.location.origin, '/auth/callback')
     if (process.env.NODE_ENV !== 'production') {
       console.info('[handleGoogle] redirectTo:', callbackBase, '| stored next:', nextParam ?? '(none)')
     }
@@ -134,11 +114,16 @@ export default function AuthPage() {
     setSuccess(null);
     setLoading(true);
     const cleanEmail = email.trim().toLowerCase();
-    // Always show success to avoid leaking whether email exists
-    await supabase.auth.resetPasswordForEmail(cleanEmail, {
-      redirectTo: `${CANONICAL_URL}/reset-password`,
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(cleanEmail, {
+      redirectTo: authRedirectUrl(window.location.origin, '/reset-password?type=recovery'),
     });
-    setSuccess('If this email has an account, a reset link has been sent. Check your inbox.');
+    if (resetError) {
+      // Keep the message independent of account existence while honestly reporting delivery
+      // failures such as rate limits, missing provider configuration, or network outages.
+      setError('Unable to send a reset link right now. Please wait a moment and try again.');
+    } else {
+      setSuccess('If this email has an account, a reset link has been sent. Check your inbox.');
+    }
     setLoading(false);
   }
 
@@ -162,18 +147,23 @@ export default function AuthPage() {
           setError(data.message ?? 'Too many login attempts. Please wait before trying again.');
         } else if (res.status === 403 && data.error === 'unverified') {
           setError(data.message ?? 'Please verify your email before signing in. Check your inbox for a confirmation link.');
+        } else if (res.status === 503) {
+          setError(data.error ?? 'Login is temporarily unavailable. Please try again.');
         } else if (!res.ok) {
           setError('Email or password is incorrect. Try again or reset your password.');
         } else if (data.session) {
           // Establish session in browser — onAuthStateChange fires SIGNED_IN → redirect
-          await supabase.auth.setSession(data.session);
+          const { error: sessionError } = await supabase.auth.setSession(data.session);
+          if (sessionError) setError('Signed in, but the browser session could not be saved. Please try again.');
+        } else {
+          setError('Login is temporarily unavailable. Please try again.');
         }
       } catch {
         setError('Network error — please check your connection and try again.');
       }
     } else {
       if (!policyPassed) {
-        setError('Use at least 10 characters with uppercase, lowercase, a number, and a symbol.');
+        setError(PASSWORD_POLICY_MESSAGE);
         setLoading(false);
         return;
       }
@@ -393,6 +383,7 @@ export default function AuthPage() {
           {(['signin', 'signup'] as Mode[]).map(m => (
             <button
               key={m}
+              type="button"
               onClick={() => { setMode(m); setError(null); setSuccess(null); setConfirmPassword(''); }}
               style={{
                 flex: 1,
@@ -416,6 +407,7 @@ export default function AuthPage() {
         {/* Google OAuth */}
         <div style={{ marginBottom: '20px' }}>
           <button
+            type="button"
             onClick={handleGoogle}
             disabled={loading}
             aria-label="Continue with Google"

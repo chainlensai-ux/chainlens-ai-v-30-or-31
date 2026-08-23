@@ -4,6 +4,7 @@ import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '@/lib/supabaseClient';
 import { isSafeInternalPath } from '@/lib/safeNextPath';
+import { resolveSupabaseAuthCallback } from '@/lib/authFlow';
 
 export default function AuthCallbackPage() {
   const router = useRouter();
@@ -13,27 +14,29 @@ export default function AuthCallbackPage() {
 
     async function completeAuth() {
       const callbackUrl = new URL(window.location.href);
-      const hasCode = Boolean(callbackUrl.searchParams.get('code'));
+      const callbackHref = window.location.href;
 
       // Resolve return path: URL ?next= → sessionStorage → localStorage → cookie → ref-based pricing → /terminal
       let nextPath = callbackUrl.searchParams.get('next') ?? ''
-      if (!nextPath.startsWith('/')) {
+      if (!isSafeInternalPath(nextPath)) {
         try { nextPath = sessionStorage.getItem('cl_auth_next') ?? '' } catch {}
       }
-      if (!nextPath.startsWith('/')) {
+      if (!isSafeInternalPath(nextPath)) {
         try { nextPath = localStorage.getItem('cl_auth_next') ?? '' } catch {}
       }
-      if (!nextPath.startsWith('/')) {
+      if (!isSafeInternalPath(nextPath)) {
         const m = document.cookie.match(/(?:^|; )cl_auth_next=([^;]+)/)
-        if (m) nextPath = decodeURIComponent(m[1])
+        if (m) {
+          try { nextPath = decodeURIComponent(m[1]) } catch { nextPath = '' }
+        }
       }
-      if (!nextPath.startsWith('/')) {
+      if (!isSafeInternalPath(nextPath)) {
         try {
           const storedRef = localStorage.getItem('chainlens_affiliate_ref')
           if (storedRef) nextPath = `/pricing?ref=${encodeURIComponent(storedRef)}`
         } catch {}
       }
-      if (!nextPath.startsWith('/')) nextPath = '/terminal'
+      if (!isSafeInternalPath(nextPath)) nextPath = '/terminal'
 
       // Clear all navigation state regardless of which source was used
       try { sessionStorage.removeItem('cl_auth_next') } catch {}
@@ -41,20 +44,19 @@ export default function AuthCallbackPage() {
       document.cookie = 'cl_auth_next=; Max-Age=0; Path=/'
 
       if (process.env.NODE_ENV !== 'production') {
-        console.info('[auth-callback] reached', { hasCode, nextPath });
+        console.info('[auth-callback] reached', { hasCode: callbackUrl.searchParams.has('code'), nextPath });
       }
 
-      const { data: sessionData, error } = await supabase.auth.exchangeCodeForSession(window.location.href);
+      const result = await resolveSupabaseAuthCallback(supabase, callbackHref);
       if (!active) return;
-      if (error) {
+      if (result.error || !result.session) {
         router.replace(`/auth?error=${encodeURIComponent('Sign-in link expired or invalid. Please try again.')}`);
         return;
       }
-      // Password recovery flow — send to reset page instead of terminal
-      const tokenType = sessionData?.session?.user?.app_metadata?.provider;
-      const urlType = callbackUrl.searchParams.get('type');
-      const isRecovery = urlType === 'recovery' || tokenType === 'recovery';
-      if (isRecovery) {
+      // Keep old reset emails that target /auth/callback?type=recovery working. New reset emails
+      // go directly to /reset-password, but this marker proves intent after this page navigates.
+      if (result.isRecovery) {
+        try { sessionStorage.setItem('cl_password_recovery', '1') } catch {}
         router.replace('/reset-password');
         return;
       }
