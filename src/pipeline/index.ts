@@ -1634,13 +1634,34 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // stage below (which runs much later, after real FIFO/pricing exist). Never exposed as canonical
   // events — this is a plain local array, never written into normalizedEvents or any FinalReport
   // field.
+  //
+  // PERF-SPRINT TASK, DISCLOSED (moved earlier, same value, same env var — see this const's
+  // original declaration site below stage 5c for the full "gated behind
+  // RECEIPT_SWAP_CANONICAL_PROMOTION_ENABLED, defaulting OFF" disclosure): read here, BEFORE the
+  // shadow receipt-decode block below, so that block's own cost (up to 50 real
+  // eth_getTransactionReceipt calls per completionBudget.ts's own header, plus a structural
+  // fifoEngine pre-pass, plus two more diagnostic-only fifoEngine reruns further down) can be kept
+  // OFF the critical path in the default (flag-off) configuration, where its output is PROVABLY
+  // unused — see stage "RECEIPT-SWAP CANONICAL PROMOTION" below: "When off (the default),
+  // canonicalNormalizedEvents is literally normalizedEvents itself and everything downstream ...
+  // runs byte-identical to before this task." That guarantee is exactly what makes deferring this
+  // block safe: canonicalNormalizedEvents/receiptSwapPromotionResult never read
+  // shadowExactReceiptSwaps/receiptCompletionPhase2Summary unless this flag is true, so a deferred
+  // (still-running-in-the-background) shadow block can never race with or change the real result.
+  const receiptSwapCanonicalPromotionEnabled = process.env.RECEIPT_SWAP_CANONICAL_PROMOTION_ENABLED === 'true'
   let shadowExactReceiptSwaps: DecodedReceiptSwap[] = []
   // CAPTURED FOR THE LATER [receipt-completion-phase2] DIAGNOSTIC, DISCLOSED: same "capture-early,
   // use-late" pattern as shadowExactReceiptSwaps above — fifoLotsUnlocked/fullyPricedLots/coverage
   // fields require fifoAndPnl, which doesn't exist yet at this point in the file. Never exposed on
   // FinalReport; a plain local var read once, later, by the diagnostic block near
   // [smart-money-source-audit]/[fifo-structure-audit].
-  let receiptCompletionPhase2Summary: {
+  // PERF-SPRINT TASK, DISCLOSED: extracted from an inline object type into a named type alias so
+  // the `as ReceiptCompletionPhase2Summary | null` cast further below can restate this variable's
+  // real declared type explicitly — needed only because TypeScript's control-flow narrowing no
+  // longer tracks this `let`'s sole non-null assignment once it moved inside a separately-defined
+  // function (runShadowReceiptDecodeBlock); see that cast's own comment for the full explanation.
+  // Field list is completely unchanged from the inline type this replaces.
+  type ReceiptCompletionPhase2Summary = {
     candidatesConsidered: number
     candidatesSelected: number
     normalBudgetUsed: number
@@ -1663,9 +1684,18 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // fresh/cached split computed later (once fifoAndPnl exists) — never re-derived, always the
     // exact same set walletScanShadowWiring itself used for its own fresh/cached counters.
     freshlyFetchedTxHashes: ReadonlySet<string>
-  } | null = null
-  try {
-    const existingSwapCandidateTxHashes = new Set(
+  }
+  let receiptCompletionPhase2Summary: ReceiptCompletionPhase2Summary | null = null
+  // PERF-SPRINT TASK, DISCLOSED ("move [expensive, output-irrelevant work] to a background task" /
+  // "reduce deep scan latency without changing scan results"): the entire shadow receipt-decode
+  // block (candidate evidence build — including its own structural fifoEngine pre-pass — real
+  // receipt acquisition, pool/factory validation, phase-2 forensics) is wrapped in a plain async
+  // function rather than left as an inline `try` so it can be called two different ways below,
+  // depending on whether its output can actually reach the real response (see the const's own header
+  // above). Body is completely unchanged from before this task — only its execution timing moves.
+  const runShadowReceiptDecodeBlock = async (): Promise<void> => {
+    try {
+      const existingSwapCandidateTxHashes = new Set(
       routerTradeReconstruction.candidateTrades.map((t) => swapLegGroupKey(t.chain as SupportedChain, t.txHash)),
     )
     const bridgeCandidateTxHashes = new Set<string>()
@@ -1882,15 +1912,41 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         freshlyFetchedTxHashes: shadowPayload.freshlyFetchedTxHashes,
       }
     }
-  } catch (err) {
-    // Guarantees the log is truly unconditional — an unexpected throw from the shadow module never
-    // silently disappears, and never propagates into the real scan result either.
-    // eslint-disable-next-line no-console
-    console.error('[pipeline] receiptSwapDecoder shadow mode', {
-      enabled: false,
-      skipReason: 'wiring_not_reached',
-      error: err instanceof Error ? err.message : String(err),
-    })
+    } catch (err) {
+      // Guarantees the log is truly unconditional — an unexpected throw from the shadow module never
+      // silently disappears, and never propagates into the real scan result either.
+      // eslint-disable-next-line no-console
+      console.error('[pipeline] receiptSwapDecoder shadow mode', {
+        enabled: false,
+        skipReason: 'wiring_not_reached',
+        error: err instanceof Error ? err.message : String(err),
+      })
+    }
+  }
+
+  // PERF-SPRINT TASK, DISCLOSED: when canonical promotion can actually change the real result
+  // (flag on), the block above must finish before "RECEIPT-SWAP CANONICAL PROMOTION" below reads
+  // shadowExactReceiptSwaps — kept synchronous/awaited, byte-identical timing to before this task.
+  // When it CANNOT change the result (flag off, the default — see the const's own header above),
+  // running it inline would only add its real network/CPU cost (receipt fetches, structural
+  // fifoEngine pre-pass) to the critical path for zero benefit to this scan's own response, so it's
+  // deferred via setImmediate — same "pure/output-irrelevant work deferred off the response path"
+  // pattern already used for router discovery earlier in this file. UNHANDLED-REJECTION GUARD,
+  // DISCLOSED: the block's own try/catch already swallows every real error into a console.error
+  // (never rethrows), so this `.catch` is defensive-only, matching the fastSnapshotPromise.catch
+  // convention in workers/walletScanV2.ts.
+  // PERF-SPRINT TASK, DISCLOSED ("Measure receipt decoding time"): `receiptDecoding` is only ever
+  // marked in the awaited (canonical-promotion-enabled) branch — that's the only case where this
+  // block's cost is genuinely on this scan's own critical path. In the deferred (default) branch its
+  // real cost is deliberately NOT on the critical path at all (that's the whole point of deferring
+  // it), so `stages.receiptDecoding` is honestly absent from scanPerformanceSummary for that scan
+  // rather than reporting a number that never actually delayed the response.
+  const receiptDecodingStart = performance.now()
+  if (receiptSwapCanonicalPromotionEnabled) {
+    await runShadowReceiptDecodeBlock()
+    scanTimer.mark('receiptDecoding', receiptDecodingStart)
+  } else {
+    setImmediate(() => { runShadowReceiptDecodeBlock().catch(() => {}) })
   }
 
   // 4c. Pre-recovery sell pass — pure, zero-cost, recovery-independent. Computes exactly
@@ -1999,7 +2055,9 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // itself makes ZERO new provider calls.
   let canonicalNormalizedEvents: NormalizedEvent[] = normalizedEvents
   let receiptSwapPromotionResult: ReturnType<typeof promoteVerifiedReceiptSwaps> | null = null
-  const receiptSwapCanonicalPromotionEnabled = process.env.RECEIPT_SWAP_CANONICAL_PROMOTION_ENABLED === 'true'
+  // PERF-SPRINT TASK, DISCLOSED: `receiptSwapCanonicalPromotionEnabled` is now declared earlier
+  // (before the shadow receipt-decode block above), same value, same env var — reused here rather
+  // than re-read, so there is exactly one source of truth for this flag within one scan.
   if (receiptSwapCanonicalPromotionEnabled && shadowExactReceiptSwaps.length > 0) {
     receiptSwapPromotionResult = promoteVerifiedReceiptSwaps({
       normalizedEvents,
@@ -2076,6 +2134,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // already-fetched recoveredEvents, now WITH real pricing (stage 5c) wired into its existing
   // priceUsdLookup/currentPriceUsdLookup injection points — the actual fix for "PnL always
   // unavailable". fifoEngine's own source is unmodified.
+  // PERF-SPRINT TASK, DISCLOSED ("Measure FIFO/PnL time"): this is the ONE real fifoAndPnl this
+  // scan's response actually uses — the diagnostic-only reruns further down (beforePromotion,
+  // promotionBeforeSnapshot, cachedOnlyFifo — all gated behind console.warn-only blocks, never
+  // read into the returned report) are NOT included in this mark, so `stages.fifoEngine` reports
+  // the real, load-bearing FIFO cost only, not inflated by shadow/diagnostic re-runs.
+  const fifoEngineStart = performance.now()
   const fifoAndPnl = safeRunFifoEngine({
     normalizedEvents: canonicalNormalizedEvents,
     recoveryPolicy,
@@ -2099,6 +2163,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       contradictoryLegsAfter: null,
     },
   })
+  scanTimer.mark('fifoEngine', fifoEngineStart)
 
   // RECEIPT-SWAP CANONICAL PROMOTION DIAGNOSTICS, DISCLOSED, BOUNDED: one unconditional log
   // whenever the feature flag is on (even if this scan had nothing to promote), giving the exact
@@ -2156,7 +2221,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // promotion diagnostic above already computed (zero new provider calls, zero new FIFO run) when
   // promotion is enabled; when promotion is off, before and after are honestly identical (nothing
   // this scan could have changed FIFO's own structural output).
-  if (receiptCompletionPhase2Summary) {
+  // PERF-SPRINT TASK, DISCLOSED: captured into a local const so TypeScript's control-flow narrowing
+  // (this closure-captured `let`'s ONLY non-null assignment now lives inside runShadowReceiptDecodeBlock,
+  // a separately-defined function — TS does not narrow a `let` across a call to a function value the
+  // same way it does for code inlined directly in this scope) still gives a real, non-null type for
+  // every reference below, instead of widening back to `null`. Zero behavior change — same value,
+  // same truthiness check, same everything else.
+  const receiptCompletionPhase2SummarySnapshot = receiptCompletionPhase2Summary as ReceiptCompletionPhase2Summary | null
+  if (receiptCompletionPhase2SummarySnapshot) {
     const promotionBeforeSnapshot = receiptSwapCanonicalPromotionEnabled && receiptSwapPromotionResult
       ? safeRunFifoEngine({
           normalizedEvents,
@@ -2185,7 +2257,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // never the real ones — this is diagnostic-only and never replaces or alters the real
     // `receiptSwapPromotionResult`/`fifoAndPnl` this scan's actual canonical output uses.
     const cachedOnlySwaps = shadowExactReceiptSwaps.filter(
-      (s) => !receiptCompletionPhase2Summary!.freshlyFetchedTxHashes.has(s.txHash),
+      (s) => !receiptCompletionPhase2SummarySnapshot.freshlyFetchedTxHashes.has(s.txHash),
     )
     const cachedOnlyPromotion = receiptSwapCanonicalPromotionEnabled
       ? promoteVerifiedReceiptSwaps({
@@ -2216,21 +2288,21 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
 
     // eslint-disable-next-line no-console
     console.warn('[receipt-completion-phase2]', {
-      candidatesConsidered: receiptCompletionPhase2Summary.candidatesConsidered,
-      candidatesSelected: receiptCompletionPhase2Summary.candidatesSelected,
-      normalBudgetUsed: receiptCompletionPhase2Summary.normalBudgetUsed,
-      conditionalBudgetUsed: receiptCompletionPhase2Summary.conditionalBudgetUsed,
-      receiptsFetched: receiptCompletionPhase2Summary.receiptsFetched,
-      cacheHits: receiptCompletionPhase2Summary.cacheHits,
-      decodedByVenue: receiptCompletionPhase2Summary.decodedByVenue,
-      rejectionReasons: receiptCompletionPhase2Summary.rejectionReasons,
-      exactSwapsRecovered: receiptCompletionPhase2Summary.exactSwapsRecovered,
+      candidatesConsidered: receiptCompletionPhase2SummarySnapshot.candidatesConsidered,
+      candidatesSelected: receiptCompletionPhase2SummarySnapshot.candidatesSelected,
+      normalBudgetUsed: receiptCompletionPhase2SummarySnapshot.normalBudgetUsed,
+      conditionalBudgetUsed: receiptCompletionPhase2SummarySnapshot.conditionalBudgetUsed,
+      receiptsFetched: receiptCompletionPhase2SummarySnapshot.receiptsFetched,
+      cacheHits: receiptCompletionPhase2SummarySnapshot.cacheHits,
+      decodedByVenue: receiptCompletionPhase2SummarySnapshot.decodedByVenue,
+      rejectionReasons: receiptCompletionPhase2SummarySnapshot.rejectionReasons,
+      exactSwapsRecovered: receiptCompletionPhase2SummarySnapshot.exactSwapsRecovered,
       // FRESH-VS-CACHED SPLIT, DISCLOSED (Phase 2 budget-allocation fix) — production proof: the
       // one swap this pipeline "recovered" was in fact served from the permanent cache (persisted
       // from a prior scan), not a new recovery this scan itself earned. Reported separately so that
       // distinction is never blended into one undifferentiated count again.
-      exactSwapsRecoveredFresh: receiptCompletionPhase2Summary.exactSwapsRecoveredFresh,
-      exactSwapsRecoveredFromCache: receiptCompletionPhase2Summary.exactSwapsRecoveredFromCache,
+      exactSwapsRecoveredFresh: receiptCompletionPhase2SummarySnapshot.exactSwapsRecoveredFresh,
+      exactSwapsRecoveredFromCache: receiptCompletionPhase2SummarySnapshot.exactSwapsRecoveredFromCache,
       // MISSING-LEGS-ADDED / FIFO-LOTS-UNLOCKED, DISCLOSED: real counts from the SAME promotion
       // result the "receipt swap canonical promotion" diagnostic above already computed — never a
       // second promotion pass. Both are honestly 0 when RECEIPT_SWAP_CANONICAL_PROMOTION_ENABLED is
@@ -2243,10 +2315,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       fullyPricedLotsAfter,
       verifiedCoverageBefore: Math.round(verifiedCoverage(promotionBeforeSnapshot.matchedLots) * 10000) / 100,
       verifiedCoverageAfter: Math.round(verifiedCoverage(fifoAndPnl.matchedLots) * 10000) / 100,
-      providerCalls: receiptCompletionPhase2Summary.providerCalls,
-      marginalYieldByBatch: receiptCompletionPhase2Summary.marginalYieldByBatch,
-      permanentReceiptCacheSeeded: receiptCompletionPhase2Summary.permanentCacheSeeded,
-      permanentReceiptCacheRecorded: receiptCompletionPhase2Summary.permanentCacheRecorded,
+      providerCalls: receiptCompletionPhase2SummarySnapshot.providerCalls,
+      marginalYieldByBatch: receiptCompletionPhase2SummarySnapshot.marginalYieldByBatch,
+      permanentReceiptCacheSeeded: receiptCompletionPhase2SummarySnapshot.permanentCacheSeeded,
+      permanentReceiptCacheRecorded: receiptCompletionPhase2SummarySnapshot.permanentCacheRecorded,
     })
   }
 

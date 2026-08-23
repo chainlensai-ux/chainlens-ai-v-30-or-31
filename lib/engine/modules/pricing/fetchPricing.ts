@@ -887,7 +887,14 @@ export async function priceHoldings(
     .sort((a, b) => (b.p.valueUsd ?? 0) - (a.p.valueUsd ?? 0))
     .slice(0, TOP_N_FOR_IDENTITY_CHECK)
 
-  for (const { p, h } of topByValue) {
+  // PERF-SPRINT TASK, DISCLOSED ("detect sequential operations that could safely run in parallel"):
+  // bounded to TOP_N_FOR_IDENTITY_CHECK = 2 rows, each iteration reads/writes only its OWN `p`/`h`
+  // (distinct objects per row — `topByValue` is built via `.map`, never shared/aliased across rows)
+  // and never accumulates into any variable shared across rows (unlike the dominant-holding block
+  // above, which deliberately stays sequential because it DOES mutate a shared `totalValueUsd`
+  // accumulator) — safe to run concurrently with zero correctness change, only real wall-clock
+  // savings on the RPC/DexScreener calls inside each iteration.
+  await Promise.all(topByValue.map(async ({ p, h }) => {
     const providerSymbol = h.symbol
     // RPC ground truth, DISCLOSED: real on-chain symbol() for this exact address — cached
     // permanently by rpcDecimals.ts, so a repeat check for the same token across scans costs zero
@@ -933,7 +940,7 @@ export async function priceHoldings(
     if (selectedSymbol !== p.symbol) {
       p.symbol = selectedSymbol
     }
-  }
+  }))
 
   return { pricedHoldings, totalValueUsd, chainValueUsd, priceStatus }
 }

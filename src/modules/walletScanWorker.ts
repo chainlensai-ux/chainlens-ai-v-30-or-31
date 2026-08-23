@@ -114,59 +114,86 @@ export async function verifyWalletScanKvConnection(): Promise<void> {
 }
 
 async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jobState: WalletScanJobState; result: unknown }> {
-  const { resetAlchemyAudit, printAlchemyAuditSummary } = await import('@/lib/server/alchemyAudit')
-  const { runWalletScanV2Worker } = await import('@/workers/walletScanV2')
-  const { resetBaseDexRpcBudgetForScan } = await import('@/src/modules/pricingAtTimeEngine/sources/basedex')
-  // PER-SCAN RESET, DISCLOSED (provider-call-audit task): same reasoning as resetAlchemyAudit/
-  // resetBaseDexRpcBudgetForScan above — these two counters are process-global, so a warm
-  // serverless instance serving a second, unrelated scan must start each fresh, not inherit the
-  // previous scan's cumulative total. Without this, the new per-stage provider-call diagnostic
-  // (workers/walletScanV2.ts) would report stale cross-request counts on any warm instance.
-  const { resetGoldrushPriceSourceCallCount } = await import('@/src/modules/pricingAtTimeEngine/sources/goldrushPriceSource')
-  const { resetDexscreenerCallCount } = await import('@/src/modules/pricingAtTimeEngine/sources/dexscreener')
-  // SOURCE-RETRY-AVOIDANCE RESETS, DISCLOSED (source-retry-avoidance task): same per-job reset
-  // convention as every other scan-scoped provider state above — a warm serverless instance's
-  // PREVIOUS scan (a different wallet, possibly a different chain mix) must never bias this scan's
-  // CoinGecko circuit state, GeckoTerminal no-pool cache, or Base DEX prioritisation.
-  const { resetCoingeckoCircuitBreaker } = await import('@/src/modules/pricingAtTimeEngine/sources/coingecko')
-  const { resetGeckoTerminalNoPoolCache } = await import('@/src/pipeline/providers/geckoTerminalPriceSource')
-  const { resetPricingAtTimeAdapterScanState } = await import('@/src/pipeline/pricingAtTimeAdapter')
-  // REQUEST-SCOPED FETCH COALESCING RESET, DISCLOSED (provider-call-audit follow-up task): same
-  // per-job reset convention as the counters above — see providerFetchWindow/index.ts's own header
-  // for why this must be cleared at the start of every scan job (never leak a coalesced result
-  // across unrelated wallets/scans on a warm serverless instance).
-  const { resetProviderFetchWindowRequestCache, getProviderFetchWindowCoalescingCounters, getProviderFetchWindowKeyAudits } = await import('@/src/modules/providerFetchWindow/index')
-  // RECOVERY-PAGE COALESCING RESET, DISCLOSED (provider-call-audit follow-up task, confirmed
-  // duplicate-call cause): same per-job reset convention as the counters/coalescing above — see
-  // recoveryPolicy/utils.ts's own header for why multiple triggered candidates on one chain must
-  // share ONE real GoldRush historical-page fetch, and why that sharing must reset per job.
-  const { resetRecoveryHistoricalPageRequestCache } = await import('@/src/modules/recoveryPolicy/utils')
-  // SHARED DEXSCREENER CACHE RESET, DISCLOSED (this task's explicit requirement): same per-job
-  // reset convention as every other request-scoped cache above — see
-  // src/lib/dexscreenerRequestCache.ts's own header for the confirmed root cause this closes (two
-  // entirely separate, uncoordinated DexScreener implementations, neither aware of the other's
-  // calls or budget).
-  const { resetDexscreenerRequestCache, getDexscreenerRequestDiagnostics } = await import('@/src/lib/dexscreenerRequestCache')
-  // SHADOW-MODE ALCHEMY HISTORICAL PRICING RESET, DISCLOSED: same per-job reset convention as every
-  // other request-scoped provider budget/cache above — see alchemyHistoricalPriceSource.ts's own
-  // header for why this scan's live-request budget/singleflight cache must never leak into an
-  // unrelated later scan on a warm serverless instance. This module is shadow-mode only (records
-  // results, never feeds official pricing) — resetting it has no effect on FIFO/PnL/coverage.
-  const { resetAlchemyHistoricalPricingState } = await import('@/src/modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource')
-  // SHARED NATIVE-PRICE RESOLVER RESET, DISCLOSED (Phase 1) — clears ONLY this scan's transient
-  // failure memory and counters. Deliberately does NOT clear the accepted-price cache: a real
-  // historical ETH price for a past UTC day is immutable, so carrying it across scans on a warm
-  // instance is correct AND is the entire point of the module (see nativePriceResolver/index.ts's
-  // own header — repeatedly re-fetching immutable prices is what exhausted the rate limit that
-  // produced this phase's production baseline).
-  const { resetNativePriceResolverForScan } = await import('@/src/modules/nativePriceResolver/index')
-  // SHARED PROVIDER COST LEDGER RESET, DISCLOSED (cost-audit task): the single request-scoped
-  // Alchemy+GoldRush budget every provider call site now gates on — see
-  // src/modules/providerCost/walletProviderCostLedger.ts and docs/wallet-provider-cost-audit.md.
-  // Same per-job reset convention as every other request-scoped budget above: a warm serverless
-  // instance serving a second, unrelated scan must start with a fresh budget rather than inherit
-  // the previous scan's exhausted one.
-  const { resetWalletProviderCostLedger, logWalletProviderCostAudit } = await import('@/src/modules/providerCost/walletProviderCostLedger')
+  // PERF-SPRINT TASK, DISCLOSED ("detect sequential operations that could safely run in parallel"):
+  // these ~15 dynamic imports were previously each individually `await`ed, one after another, even
+  // though none of them depends on another's resolved value (every import target is an independent
+  // module, and none of their reset-function calls below need to happen in any particular order
+  // relative to each other — only "before runWalletScanV2Worker starts", which Promise.all already
+  // guarantees). Real cost on a genuinely cold serverless instance: each `await import()` is its own
+  // microtask/module-resolution step; running them concurrently instead of serially removes that
+  // sequential tax with zero change to which resets fire or what they do — every comment explaining
+  // WHY each individual reset exists (per-job counter isolation on a warm instance) is preserved
+  // below, unchanged, only regrouped onto the destructuring of Promise.all's resolved array.
+  const [
+    { resetAlchemyAudit, printAlchemyAuditSummary },
+    { runWalletScanV2Worker },
+    { resetBaseDexRpcBudgetForScan },
+    // PER-SCAN RESET, DISCLOSED (provider-call-audit task): same reasoning as resetAlchemyAudit/
+    // resetBaseDexRpcBudgetForScan above — these two counters are process-global, so a warm
+    // serverless instance serving a second, unrelated scan must start each fresh, not inherit the
+    // previous scan's cumulative total. Without this, the new per-stage provider-call diagnostic
+    // (workers/walletScanV2.ts) would report stale cross-request counts on any warm instance.
+    { resetGoldrushPriceSourceCallCount },
+    { resetDexscreenerCallCount },
+    // SOURCE-RETRY-AVOIDANCE RESETS, DISCLOSED (source-retry-avoidance task): same per-job reset
+    // convention as every other scan-scoped provider state above — a warm serverless instance's
+    // PREVIOUS scan (a different wallet, possibly a different chain mix) must never bias this scan's
+    // CoinGecko circuit state, GeckoTerminal no-pool cache, or Base DEX prioritisation.
+    { resetCoingeckoCircuitBreaker },
+    { resetGeckoTerminalNoPoolCache },
+    { resetPricingAtTimeAdapterScanState },
+    // REQUEST-SCOPED FETCH COALESCING RESET, DISCLOSED (provider-call-audit follow-up task): same
+    // per-job reset convention as the counters above — see providerFetchWindow/index.ts's own header
+    // for why this must be cleared at the start of every scan job (never leak a coalesced result
+    // across unrelated wallets/scans on a warm serverless instance).
+    { resetProviderFetchWindowRequestCache, getProviderFetchWindowCoalescingCounters, getProviderFetchWindowKeyAudits },
+    // RECOVERY-PAGE COALESCING RESET, DISCLOSED (provider-call-audit follow-up task, confirmed
+    // duplicate-call cause): same per-job reset convention as the counters/coalescing above — see
+    // recoveryPolicy/utils.ts's own header for why multiple triggered candidates on one chain must
+    // share ONE real GoldRush historical-page fetch, and why that sharing must reset per job.
+    { resetRecoveryHistoricalPageRequestCache },
+    // SHARED DEXSCREENER CACHE RESET, DISCLOSED (this task's explicit requirement): same per-job
+    // reset convention as every other request-scoped cache above — see
+    // src/lib/dexscreenerRequestCache.ts's own header for the confirmed root cause this closes (two
+    // entirely separate, uncoordinated DexScreener implementations, neither aware of the other's
+    // calls or budget).
+    { resetDexscreenerRequestCache, getDexscreenerRequestDiagnostics },
+    // SHADOW-MODE ALCHEMY HISTORICAL PRICING RESET, DISCLOSED: same per-job reset convention as every
+    // other request-scoped provider budget/cache above — see alchemyHistoricalPriceSource.ts's own
+    // header for why this scan's live-request budget/singleflight cache must never leak into an
+    // unrelated later scan on a warm serverless instance. This module is shadow-mode only (records
+    // results, never feeds official pricing) — resetting it has no effect on FIFO/PnL/coverage.
+    { resetAlchemyHistoricalPricingState },
+    // SHARED NATIVE-PRICE RESOLVER RESET, DISCLOSED (Phase 1) — clears ONLY this scan's transient
+    // failure memory and counters. Deliberately does NOT clear the accepted-price cache: a real
+    // historical ETH price for a past UTC day is immutable, so carrying it across scans on a warm
+    // instance is correct AND is the entire point of the module (see nativePriceResolver/index.ts's
+    // own header — repeatedly re-fetching immutable prices is what exhausted the rate limit that
+    // produced this phase's production baseline).
+    { resetNativePriceResolverForScan },
+    // SHARED PROVIDER COST LEDGER RESET, DISCLOSED (cost-audit task): the single request-scoped
+    // Alchemy+GoldRush budget every provider call site now gates on — see
+    // src/modules/providerCost/walletProviderCostLedger.ts and docs/wallet-provider-cost-audit.md.
+    // Same per-job reset convention as every other request-scoped budget above: a warm serverless
+    // instance serving a second, unrelated scan must start with a fresh budget rather than inherit
+    // the previous scan's exhausted one.
+    { resetWalletProviderCostLedger, logWalletProviderCostAudit },
+  ] = await Promise.all([
+    import('@/lib/server/alchemyAudit'),
+    import('@/workers/walletScanV2'),
+    import('@/src/modules/pricingAtTimeEngine/sources/basedex'),
+    import('@/src/modules/pricingAtTimeEngine/sources/goldrushPriceSource'),
+    import('@/src/modules/pricingAtTimeEngine/sources/dexscreener'),
+    import('@/src/modules/pricingAtTimeEngine/sources/coingecko'),
+    import('@/src/pipeline/providers/geckoTerminalPriceSource'),
+    import('@/src/pipeline/pricingAtTimeAdapter'),
+    import('@/src/modules/providerFetchWindow/index'),
+    import('@/src/modules/recoveryPolicy/utils'),
+    import('@/src/lib/dexscreenerRequestCache'),
+    import('@/src/modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource'),
+    import('@/src/modules/nativePriceResolver/index'),
+    import('@/src/modules/providerCost/walletProviderCostLedger'),
+  ])
 
   const startedAt = Date.now()
   console.warn('[wallet-scan-worker] job started', { jobId: payload.jobId })
