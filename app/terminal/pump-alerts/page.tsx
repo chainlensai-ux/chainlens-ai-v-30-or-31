@@ -12,13 +12,18 @@ interface PumpAlert {
   symbol: string
   name: string
   contract: string
+  chain: string
   priceUsd: number | null
   change24h: number | null
+  change7d: number | null
   volume24hUsd: number | null
   liquidityUsd: number | null
   fdvUsd: number | null
+  marketCapUsd: number | null
+  tokenAgeDays: number | null
   category: PumpCategory
   reason: string
+  qualifyingReason: string
   riskLevel: PumpRisk
   tags: string[]
 }
@@ -228,6 +233,15 @@ function AlertCard({ alert, onScan, onAskClark, onReport }: {
       >
         <div className="pump-metric-band" style={{ display: 'flex', gap: '9px', flexWrap: 'wrap', alignItems: 'center', padding: '6px', borderRadius: '16px', background: 'rgba(2,6,23,0.22)', border: '1px solid rgba(45,212,191,0.085)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.032), 0 0 22px rgba(45,212,191,0.025)' }}>
           <StatMetric label="Price" value={fmtPrice(alert.priceUsd)} />
+          {alert.change7d != null && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '7px 9px', borderRadius: '12px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.33)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.045), 0 0 16px rgba(34,211,238,0.14)' }}>
+              <span style={{ fontSize: '11px', color: '#22d3ee' }}>↗</span>
+              <span style={{ fontSize: '8px', fontWeight: 850, color: '#58708a', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>7d</span>
+              <span style={{ fontSize: '13.5px', fontWeight: 900, color: '#22d3ee', fontFamily: 'var(--font-plex-mono)' }}>
+                ▲{alert.change7d.toFixed(1)}%
+              </span>
+            </div>
+          )}
           {alert.change24h != null && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '7px 9px', borderRadius: '12px', background: changeBg, border: `1px solid ${changeColor}33`, boxShadow: `inset 0 1px 0 rgba(255,255,255,0.045), 0 0 16px ${changeColor}14` }}>
               <span style={{ fontSize: '11px', color: changeColor, filter: `drop-shadow(0 0 8px ${changeColor}55)` }}>{changePositive ? '↗' : '↘'}</span>
@@ -244,15 +258,22 @@ function AlertCard({ alert, onScan, onAskClark, onReport }: {
             <MiniMetricBar value={alert.liquidityUsd} color="#2DD4BF" cap={250_000} depth />
           </StatMetric>
           <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-            <StatMetric label="FDV" value={fmtUSD(alert.fdvUsd)} dimValue={alert.fdvUsd == null} />
+            <StatMetric label="FDV" value={fmtUSD(alert.fdvUsd ?? alert.marketCapUsd)} dimValue={alert.fdvUsd == null && alert.marketCapUsd == null} />
             <span style={{ padding: '5px 9px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 800, letterSpacing: '0.10em', textTransform: 'uppercase', color: fdvStyle.color, background: fdvStyle.bg, border: `1px solid ${fdvStyle.border}`, boxShadow: `inset 0 1px 0 rgba(255,255,255,0.045), 0 0 16px ${fdvStyle.glow}`, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.15 }}>
               {fdvStyle.label}
             </span>
           </div>
+          {alert.tokenAgeDays != null && (
+            <StatMetric label="Age" value={alert.tokenAgeDays < 1 ? '<1d' : `${Math.round(alert.tokenAgeDays)}d`} />
+          )}
+          <StatMetric label="Chain" value={alert.chain} />
         </div>
         <p style={{ margin: 0, fontSize: '10.5px', color: '#6f8498', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {showRiskIcon && <span style={{ color: riskColor }}>△ </span>}
           {alert.reason}
+        </p>
+        <p title={alert.qualifyingReason} style={{ margin: 0, fontSize: '9px', color: '#3f7a6e', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--font-plex-mono)' }}>
+          Qualifies: {alert.qualifyingReason}
         </p>
       </div>
 

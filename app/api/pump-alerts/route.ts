@@ -12,10 +12,58 @@ function getIp(req: Request): string {
   return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
 }
 
-const EXCLUDED = new Set([
+// ─── Configurable low-cap-momentum thresholds ──────────────────────────────
+// PUMP QUALITY OVERHAUL, DISCLOSED (reported live: Pump Alerts was surfacing Aerodrome and other
+// established Base tokens because the only gate was a flat stablecoin/wrapped-asset symbol
+// denylist plus 24h-only momentum thresholds — no cap ceiling, no 7-day confirmation, no
+// established-token category filter). All thresholds below are env-overridable so ops can tune
+// without a redeploy; every default matches what was requested.
+function envNumber(name: string, fallback: number): number {
+  const raw = process.env[name]
+  if (raw == null || raw.trim() === '') return fallback
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : fallback
+}
+function envOptionalNumber(name: string): number | null {
+  const raw = process.env[name]
+  if (raw == null || raw.trim() === '') return null
+  const n = Number(raw)
+  return Number.isFinite(n) ? n : null
+}
+function envBool(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]
+  if (raw == null || raw.trim() === '') return fallback
+  return raw.trim().toLowerCase() === 'true'
+}
+
+const PUMP_ALERT_MAX_FDV_USD = envNumber('PUMP_ALERT_MAX_FDV_USD', 5_000_000)
+const PUMP_ALERT_MAX_MARKET_CAP_USD = envNumber('PUMP_ALERT_MAX_MARKET_CAP_USD', 5_000_000)
+const PUMP_ALERT_MIN_7D_CHANGE_PCT = envNumber('PUMP_ALERT_MIN_7D_CHANGE_PCT', 25)
+const PUMP_ALERT_MIN_LIQUIDITY_USD = envNumber('PUMP_ALERT_MIN_LIQUIDITY_USD', 10_000)
+const PUMP_ALERT_MIN_24H_VOLUME_USD = envNumber('PUMP_ALERT_MIN_24H_VOLUME_USD', 10_000)
+const PUMP_ALERT_MAX_TOKEN_AGE_DAYS = envOptionalNumber('PUMP_ALERT_MAX_TOKEN_AGE_DAYS')
+const PUMP_ALERT_EXCLUDE_ESTABLISHED_TOKENS = envBool('PUMP_ALERT_EXCLUDE_ESTABLISHED_TOKENS', true)
+
+// Stablecoins / wrapped-majors / LST-LSD (kept from the original denylist, still symbol-exact).
+const STABLE_AND_WRAPPED_DENYLIST = new Set([
   'USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'BTC', 'WBTC',
   'BUSD', 'FRAX', 'CBETH', 'STETH', 'RETH', 'WSTETH', 'EURC', 'BSDETH', 'USD+', 'AXLUSDC',
+  'LSETH', 'SFRXETH', 'ANKRETH', 'OSETH', 'SWETH', 'METH', 'WEETH', 'EZETH', 'RSETH',
 ])
+
+// Established Base protocol / governance / infrastructure tokens (the AERO gap that let
+// Aerodrome and its peers leak through — none of these are ever a legitimate low-cap pump).
+const ESTABLISHED_PROTOCOL_DENYLIST = new Set([
+  'AERO', 'VAERO', 'UNI', 'CRV', 'BAL', 'COMP', 'MKR', 'SNX', 'LDO', 'RPL', 'GMX', 'PENDLE',
+  'WELL', 'SEAM', 'MORPHO', 'PRIME', 'AAVE', 'SUSHI', 'CAKE', 'GRT', 'LINK', 'MATIC', 'POL',
+  'ARB', 'OP', 'AXL', 'STG', 'LAYER', 'ENA', 'PYTH', 'JUP', 'RAY', 'DEGEN', 'BRETT', 'TOSHI',
+])
+const EXCLUDED = new Set([...STABLE_AND_WRAPPED_DENYLIST, ...ESTABLISHED_PROTOCOL_DENYLIST])
+
+// Name-based check for LP/pool-share tokens and bridge/yield wrapper naming patterns that a bare
+// symbol denylist can't catch (e.g. "Aerodrome LP", "xyz-USDC LP", "Bridged USDC").
+const ESTABLISHED_NAME_PATTERN = /\b(aerodrome|uniswap|velodrome|lp\s*token|liquidity\s*pool|bridged|wrapped|staked|yield\s*bearing)\b/i
+const LP_SYMBOL_PATTERN = /(^|[-_/])lp($|[-_/])|vamm-|vlp-/i
 
 export type PumpCategory = 'HIGH_MOMENTUM' | 'VOLUME_EXPANSION' | 'THIN_MOONSHOT' | 'WATCH'
 export type PumpRisk = 'HIGH' | 'MEDIUM' | 'LOW'
@@ -24,24 +72,54 @@ export interface PumpAlert {
   symbol: string
   name: string
   contract: string
+  chain: string
   priceUsd: number | null
   change24h: number | null
+  change7d: number | null
   volume24hUsd: number | null
   liquidityUsd: number | null
   fdvUsd: number | null
+  marketCapUsd: number | null
+  tokenAgeDays: number | null
   category: PumpCategory
   reason: string
+  qualifyingReason: string
   riskLevel: PumpRisk
   tags: string[]
 }
 
+// Per-candidate eligibility audit — every raw candidate GeckoTerminal returned gets one entry,
+// whether it made the final cut or not, so "why isn't X showing" is always answerable from data.
+export interface PumpDiscoveryEligibilityAudit {
+  token: string
+  chain: string
+  symbol: string
+  fdvUsd: number | null
+  marketCapUsd: number | null
+  liquidityUsd: number | null
+  volume24hUsd: number | null
+  priceChange7dPct: number | null
+  priceChange24hPct: number | null
+  tokenAgeDays: number | null
+  excluded: boolean
+  exclusionReason: string | null
+  qualifiesAsLowCap: boolean
+  qualifiesAs7dPump: boolean
+  categoryBlocked: boolean
+  finalRankScore: number | null
+}
+
 type GTIncluded = { id?: string; attributes?: { address?: string; symbol?: string; name?: string } }
 type GTPool = {
+  id?: string
   relationships?: { base_token?: { data?: { id?: string } } }
   attributes?: {
+    address?: string
     base_token_price_usd?: number | string
     reserve_in_usd?: number | string
     fdv_usd?: number | string
+    market_cap_usd?: number | string
+    pool_created_at?: string
     volume_usd?: { h24?: number | string }
     price_change_percentage?: { h24?: number | string }
   }
@@ -62,11 +140,185 @@ function parseNum(v: unknown): number | null {
   return null
 }
 
+function isEstablishedOrCategoryBlocked(symbol: string, name: string): boolean {
+  if (!PUMP_ALERT_EXCLUDE_ESTABLISHED_TOKENS) return false
+  if (EXCLUDED.has(symbol)) return true
+  if (ESTABLISHED_NAME_PATTERN.test(name)) return true
+  if (LP_SYMBOL_PATTERN.test(symbol)) return true
+  return false
+}
+
+// ─── Pure, exported evaluation stages ───────────────────────────────────────────────────────────
+// Split out from the GET handler (and exported) so eligibility/exclusion behavior — the actual
+// business logic this fix is about — can be exercised directly in tests without mocking network
+// calls or a Next.js request. GET below is a thin orchestration wrapper over these two stages.
+export type Stage1Candidate = {
+  symbol: string; name: string; addr: string; poolAddr: string | null
+  price: number | null; change24h: number | null; volume: number | null; liquidity: number | null
+  fdv: number | null; marketCap: number | null; ageDays: number | null
+}
+export type Stage1Input = { symbol: string; name: string; addr: string; poolAddr: string | null } & {
+  price: number | null; change24h: number | null; volume: number | null; liquidity: number | null
+  fdv: number | null; marketCap: number | null; ageDays: number | null
+}
+export type Stage1Result =
+  | { passed: true; candidate: Stage1Candidate }
+  | { passed: false; audit: PumpDiscoveryEligibilityAudit }
+
+export function evaluateStage1Candidate(input: Stage1Input): Stage1Result {
+  const sym = input.symbol.toUpperCase()
+  const categoryBlocked = isEstablishedOrCategoryBlocked(sym, input.name)
+  const qualifiesAsLowCap =
+    (input.fdv != null && input.fdv > 0 && input.fdv <= PUMP_ALERT_MAX_FDV_USD) ||
+    (input.marketCap != null && input.marketCap > 0 && input.marketCap <= PUMP_ALERT_MAX_MARKET_CAP_USD)
+  const capDataMissing = input.fdv == null && input.marketCap == null
+  const liquidityOk = input.liquidity != null && input.liquidity >= PUMP_ALERT_MIN_LIQUIDITY_USD
+  const volumeOk = input.volume != null && input.volume >= PUMP_ALERT_MIN_24H_VOLUME_USD
+  const ageOk = PUMP_ALERT_MAX_TOKEN_AGE_DAYS == null || (input.ageDays != null && input.ageDays <= PUMP_ALERT_MAX_TOKEN_AGE_DAYS)
+
+  let exclusionReason: string | null = null
+  if (categoryBlocked) exclusionReason = 'establishedOrCategoryBlocked'
+  else if (capDataMissing) exclusionReason = 'capDataMissing'
+  else if (!qualifiesAsLowCap) exclusionReason = 'capExceedsLowCapCeiling'
+  else if (!liquidityOk) exclusionReason = 'liquidityBelowMinimum'
+  else if (!volumeOk) exclusionReason = 'volumeBelowMinimum'
+  else if (!ageOk) exclusionReason = 'tokenAgeExceedsMaximum'
+
+  if (exclusionReason) {
+    return {
+      passed: false,
+      audit: {
+        token: input.addr, chain: 'base', symbol: input.symbol,
+        fdvUsd: input.fdv, marketCapUsd: input.marketCap, liquidityUsd: input.liquidity, volume24hUsd: input.volume,
+        priceChange7dPct: null, priceChange24hPct: input.change24h, tokenAgeDays: input.ageDays,
+        excluded: true, exclusionReason,
+        qualifiesAsLowCap: qualifiesAsLowCap && !capDataMissing, qualifiesAs7dPump: false,
+        categoryBlocked, finalRankScore: null,
+      },
+    }
+  }
+  return {
+    passed: true,
+    candidate: {
+      symbol: input.symbol, name: input.name, addr: input.addr, poolAddr: input.poolAddr,
+      price: input.price, change24h: input.change24h, volume: input.volume, liquidity: input.liquidity,
+      fdv: input.fdv, marketCap: input.marketCap, ageDays: input.ageDays,
+    },
+  }
+}
+
+export type Stage2Result =
+  | { included: true; alert: PumpAlert; audit: PumpDiscoveryEligibilityAudit }
+  | { included: false; audit: PumpDiscoveryEligibilityAudit }
+
+export function evaluateStage2Candidate(c: Stage1Candidate, change7d: number | null): Stage2Result {
+  const qualifiesAs7dPump = change7d != null && change7d >= PUMP_ALERT_MIN_7D_CHANGE_PCT
+
+  if (!qualifiesAs7dPump) {
+    return {
+      included: false,
+      audit: {
+        token: c.addr, chain: 'base', symbol: c.symbol,
+        fdvUsd: c.fdv, marketCapUsd: c.marketCap, liquidityUsd: c.liquidity, volume24hUsd: c.volume,
+        priceChange7dPct: change7d, priceChange24hPct: c.change24h, tokenAgeDays: c.ageDays,
+        excluded: true, exclusionReason: change7d == null ? 'missing7dData' : 'change7dBelowMinimum',
+        qualifiesAsLowCap: true, qualifiesAs7dPump: false, categoryBlocked: false, finalRankScore: null,
+      },
+    }
+  }
+
+  const scored = categorize(c.change24h, c.volume, c.liquidity)
+  if (!scored) {
+    return {
+      included: false,
+      audit: {
+        token: c.addr, chain: 'base', symbol: c.symbol,
+        fdvUsd: c.fdv, marketCapUsd: c.marketCap, liquidityUsd: c.liquidity, volume24hUsd: c.volume,
+        priceChange7dPct: change7d, priceChange24hPct: c.change24h, tokenAgeDays: c.ageDays,
+        excluded: true, exclusionReason: 'noCategoryMatch',
+        qualifiesAsLowCap: true, qualifiesAs7dPump: true, categoryBlocked: false, finalRankScore: null,
+      },
+    }
+  }
+
+  const tags: string[] = []
+  if (c.fdv != null && c.fdv > 0 && c.fdv < 100_000) tags.push('Microcap')
+  if (c.volume == null || c.liquidity == null) tags.push('Needs Review')
+
+  const alert: PumpAlert = {
+    symbol: c.symbol, name: c.name, contract: c.addr, chain: 'base',
+    priceUsd: c.price, change24h: c.change24h, change7d,
+    volume24hUsd: c.volume, liquidityUsd: c.liquidity, fdvUsd: c.fdv, marketCapUsd: c.marketCap,
+    tokenAgeDays: c.ageDays,
+    qualifyingReason: `+${change7d.toFixed(1)}% over 7d, low-cap (${c.fdv != null ? `$${(c.fdv / 1_000_000).toFixed(2)}M FDV` : `$${((c.marketCap ?? 0) / 1_000_000).toFixed(2)}M MC`}), $${((c.liquidity ?? 0) / 1000).toFixed(0)}K liquidity, $${((c.volume ?? 0) / 1000).toFixed(0)}K 24h volume`,
+    ...scored,
+    tags,
+  }
+  return {
+    included: true,
+    alert,
+    audit: {
+      token: c.addr, chain: 'base', symbol: c.symbol,
+      fdvUsd: c.fdv, marketCapUsd: c.marketCap, liquidityUsd: c.liquidity, volume24hUsd: c.volume,
+      priceChange7dPct: change7d, priceChange24hPct: c.change24h, tokenAgeDays: c.ageDays,
+      excluded: false, exclusionReason: null,
+      qualifiesAsLowCap: true, qualifiesAs7dPump: true, categoryBlocked: false,
+      finalRankScore: qualityScore(alert),
+    },
+  }
+}
+
+async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length)
+  let nextIndex = 0
+  async function worker(): Promise<void> {
+    for (;;) {
+      const i = nextIndex++
+      if (i >= items.length) return
+      results[i] = await fn(items[i], i)
+    }
+  }
+  const workerCount = Math.min(limit, items.length)
+  await Promise.all(Array.from({ length: workerCount }, () => worker()))
+  return results
+}
+
+// 7-DAY CHANGE, DISCLOSED: GeckoTerminal's /pools list endpoint only returns h24 price change —
+// there is no 7d field to read. Faking it from 24h data would violate "do not fake 7-day
+// performance," so we fetch real daily OHLCV candles per candidate and compute the actual 7-day
+// close-to-close change. This is only ever called for candidates that already cleared the cheap
+// cap/liquidity/volume/category filters, keeping the extra network cost bounded to a small set.
+const SEVEN_DAY_OHLCV_CONCURRENCY_LIMIT = 4
+
+async function fetchPoolSevenDayChange(poolAddress: string, signal: AbortSignal): Promise<number | null> {
+  try {
+    const res = await fetch(
+      `https://api.geckoterminal.com/api/v2/networks/base/pools/${poolAddress}/ohlcv/day?limit=8&currency=usd`,
+      { headers: { accept: 'application/json' }, cache: 'no-store', signal },
+    )
+    if (!res.ok) return null
+    const json = await res.json()
+    const list = json?.data?.attributes?.ohlcv_list
+    if (!Array.isArray(list) || list.length < 6) return null
+    // Each row is [timestamp, open, high, low, close, volume]. GeckoTerminal returns newest-first;
+    // sort explicitly by timestamp so we never depend on that ordering being stable.
+    const sorted = [...list].sort((a: number[], b: number[]) => a[0] - b[0])
+    const oldestClose = Number(sorted[0]?.[4])
+    const newestClose = Number(sorted[sorted.length - 1]?.[4])
+    if (!Number.isFinite(oldestClose) || !Number.isFinite(newestClose) || oldestClose <= 0) return null
+    return ((newestClose - oldestClose) / oldestClose) * 100
+  } catch {
+    return null
+  }
+}
+
 function qualityScore(a: PumpAlert): number {
   let s = 0
   const liq = a.liquidityUsd ?? 0
   const vol = a.volume24hUsd ?? 0
   const fdv = a.fdvUsd ?? 0
+  const ch7d = a.change7d ?? 0
+  s += Math.min(ch7d / 10, 10) // 7d change is the primary ranking signal
   if (liq >= 100_000) s += 3; else if (liq >= 25_000) s += 2
   if (vol >= 500_000) s += 3; else if (vol >= 100_000) s += 2
   if (fdv >= 100_000) s += 2; else if (fdv >= 50_000) s += 1
@@ -109,20 +361,19 @@ function categorize(
       riskLevel: 'HIGH',
     }
   }
-  if (liq >= 25_000 || vol >= 75_000 || Math.abs(ch) >= 8) {
-    const volFmt = vol >= 1_000_000 ? `$${(vol / 1_000_000).toFixed(1)}M` : `$${(vol / 1000).toFixed(0)}K`
-    const liqFmt = `$${(liq / 1000).toFixed(0)}K`
-    const parts: string[] = []
-    if (Math.abs(ch) >= 8) parts.push(`${ch >= 0 ? '+' : ''}${ch.toFixed(1)}% move`)
-    if (vol >= 75_000) parts.push(`${volFmt} volume`)
-    if (liq >= 25_000) parts.push(`${liqFmt} liquidity`)
-    return {
-      category: 'WATCH',
-      reason: parts.join(' · ') || `${liqFmt} liquidity`,
-      riskLevel: liq >= 50_000 ? 'LOW' : 'MEDIUM',
-    }
+  // Every candidate reaching categorize() already cleared the low-cap + confirmed-7d-pump gate,
+  // so WATCH is the floor category for a real, evidenced low-cap mover — never a generic filler.
+  const volFmt = vol >= 1_000_000 ? `$${(vol / 1_000_000).toFixed(1)}M` : `$${(vol / 1000).toFixed(0)}K`
+  const liqFmt = `$${(liq / 1000).toFixed(0)}K`
+  const parts: string[] = []
+  if (Math.abs(ch) >= 8) parts.push(`${ch >= 0 ? '+' : ''}${ch.toFixed(1)}% 24h move`)
+  parts.push(`${volFmt} volume`)
+  parts.push(`${liqFmt} liquidity`)
+  return {
+    category: 'WATCH',
+    reason: parts.join(' · '),
+    riskLevel: liq >= 50_000 ? 'LOW' : 'MEDIUM',
   }
-  return null
 }
 
 const CATEGORY_ORDER: Record<PumpCategory, number> = {
@@ -285,12 +536,16 @@ export async function GET(req: Request) {
       included = Array.isArray(result.data?.included) ? (result.data.included as GTIncluded[]) : []
     } catch {
       providerStatus = 'unavailable'
-      return NextResponse.json({ alerts: [], fetchedAt: new Date().toISOString() })
+      return NextResponse.json({ alerts: [], fetchedAt: new Date().toISOString(), pumpDiscoveryEligibilityAudit: [] })
     }
   }
 
   const seen = new Set<string>()
-  const allScored: PumpAlert[] = []
+  const audit: PumpDiscoveryEligibilityAudit[] = []
+
+  // ─── Stage 1: cheap synchronous filters (category, cap, liquidity, volume, age) ───────────────
+  // No network calls yet — only candidates surviving this stage pay the cost of a 7d OHLCV fetch.
+  const stage1Passed: Stage1Candidate[] = []
 
   for (const pool of pools) {
     const tokenId = pool.relationships?.base_token?.data?.id
@@ -298,10 +553,7 @@ export async function GET(req: Request) {
     const meta = included.find(i => i.id === tokenId)
     if (!meta?.attributes?.address) continue
 
-    const sym = (meta.attributes.symbol ?? '').toUpperCase()
     const addr = meta.attributes.address.toLowerCase()
-
-    if (EXCLUDED.has(sym)) continue
     if (seen.has(addr)) continue
     seen.add(addr)
 
@@ -311,34 +563,50 @@ export async function GET(req: Request) {
     const liquidity = parseNum(attrs?.reserve_in_usd)
     const price = parseNum(attrs?.base_token_price_usd)
     const fdv = parseNum(attrs?.fdv_usd)
+    const marketCap = parseNum(attrs?.market_cap_usd)
+    const createdAt = attrs?.pool_created_at ? Date.parse(attrs.pool_created_at) : NaN
+    const ageDays = Number.isFinite(createdAt) ? (Date.now() - createdAt) / (1000 * 60 * 60 * 24) : null
 
-    const scored = categorize(change24h, volume, liquidity)
-    if (!scored) continue
-
-    const tags: string[] = []
-    if (fdv != null && fdv > 0 && fdv < 100_000) tags.push('Microcap')
-    if (volume == null || liquidity == null) tags.push('Needs Review')
-
-    allScored.push({
-      symbol: meta.attributes.symbol ?? '?',
-      name: meta.attributes.name ?? 'Unknown',
-      contract: meta.attributes.address,
-      priceUsd: price,
-      change24h,
-      volume24hUsd: volume,
-      liquidityUsd: liquidity,
-      fdvUsd: fdv,
-      ...scored,
-      tags,
+    const result = evaluateStage1Candidate({
+      symbol: meta.attributes.symbol ?? '?', name: meta.attributes.name ?? 'Unknown', addr,
+      poolAddr: pool.attributes?.address ?? null,
+      price, change24h, volume, liquidity, fdv, marketCap, ageDays,
     })
+    if (!result.passed) {
+      audit.push(result.audit)
+      continue
+    }
+    stage1Passed.push(result.candidate)
   }
+
+  // ─── Stage 2: confirm real 7-day pump performance (bounded network fan-out) ────────────────────
+  const ac7d = new AbortController()
+  const tid7d = setTimeout(() => ac7d.abort(), 12_000)
+  let sevenDayResults: (number | null)[] = []
+  try {
+    sevenDayResults = await mapWithConcurrencyLimit(stage1Passed, SEVEN_DAY_OHLCV_CONCURRENCY_LIMIT, async c => {
+      if (!c.poolAddr) return null
+      return fetchPoolSevenDayChange(c.poolAddr, ac7d.signal)
+    })
+  } finally {
+    clearTimeout(tid7d)
+  }
+
+  const allScored: PumpAlert[] = []
+
+  stage1Passed.forEach((c, i) => {
+    const change7d = sevenDayResults[i] ?? null
+    const result = evaluateStage2Candidate(c, change7d)
+    audit.push(result.audit)
+    if (result.included) allScored.push(result.alert)
+  })
 
   // Quality-sort before rotation so rotation prioritises best candidates
   allScored.sort((a, b) => {
     const od = CATEGORY_ORDER[a.category] - CATEGORY_ORDER[b.category]
     if (od !== 0) return od
     const qd = qualityScore(b) - qualityScore(a)
-    return qd !== 0 ? qd : (b.volume24hUsd ?? 0) - (a.volume24hUsd ?? 0)
+    return qd !== 0 ? qd : (b.change7d ?? 0) - (a.change7d ?? 0)
   })
 
   const { alerts, freshCount, staleCount, fallbackUsed } = applyRotationAndDiversity(allScored)
@@ -347,8 +615,10 @@ export async function GET(req: Request) {
     alerts,
     fetchedAt: new Date().toISOString(),
     diagnostics: process.env.NODE_ENV === 'development' ? { cacheHit: false, providerStatus, rateLimited: false } : undefined,
+    pumpDiscoveryEligibilityAudit: audit,
     _debug: {
       rawCount: pools.length,
+      eligibleFor7dCheck: stage1Passed.length,
       scoredCount: allScored.length,
       freshCount,
       staleCount,
