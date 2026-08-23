@@ -3078,6 +3078,8 @@ export type ClarkToolIntent =
   | "whale_alerts_summary"
   | "whale_alerts_sync"
   | "whale_alerts_recent"
+  | "whale_alerts_buying"
+  | "whale_alerts_selling"
   | "whale_alerts_explain_signal"
   | "none";
 
@@ -3108,6 +3110,18 @@ const WHALE_EXPLAIN_SIGNAL_RE = /\bexplain\s+(?:this\s+|that\s+)?(?:whale\s+)?(?
 const WHALE_SYNC_RE = /\b(sync\s+whale|refresh\s+whale|whale\s+sync|whale\s+refresh|re[\s-]?check\s+whale)\b/i;
 const WHALE_RECENT_RE = /\b(what\s+wallets?\s+moved|recent(?:ly)?\s+whale|whale\s+(?:movement|moves)\s+(?:today|recently|now)|what\s+happened\s+in\s+whale|any\s+big\s+(?:buys?|sells?)|big\s+buys?\s*(?:\/|or)\s*sells?|whale\s+activity\s+today)\b/i;
 const WHALE_SUMMARY_RE = /\b(any\s+whale\s+alerts?|show\s+whale\s+(?:movement|alerts?)|whale\s+alerts?|whale\s+movement|open\s+whale\s+alerts?)\b/i;
+// DIRECTIONAL WHALE INTENTS, DISCLOSED (reported live: "What are whales buying" returned the same
+// dead-end "no alerts matched the current filters" text as the plain feed question). Root cause:
+// these phrasings matched NO tool intent at all (verified by running classifyClarkToolIntent over
+// the real reported prompts), so they fell through to the older LLM whale path — which reads the
+// same stored feed but has no way to run a wallet sync when that store is empty, so an empty store
+// dead-ends there too. Routing them here sends them through handleClarkWhaleToolCall's real
+// fetch -> broaden -> sync recovery ladder, and lets the answer be grouped by token/side from the
+// SAME feed rows the summary question just pulled (see resolveClarkWhaleFeed).
+// Deliberately checked AFTER sync/recent above so "sync whale alerts" and "any big buys/sells"
+// keep their existing, more specific routing.
+const WHALE_BUYING_RE = /\bwhales?\s+(?:are\s+)?buy(?:ing|s)?\b|\bwhale\s+buys?\b|\bwhat\s+are\s+(?:base\s+)?whales?\s+buying\b|\bwhat\s+are\s+smart\s+(?:money|wallets?)\s+buying\b|\bwhales?\s+(?:rotating|accumulating)\s+into\b|\bwhat\s+are\s+whales?\s+accumulating\b/i;
+const WHALE_SELLING_RE = /\bwhales?\s+(?:are\s+)?sell(?:ing|s)?\b|\bwhale\s+sells?\b|\bsell[\s-]?side\s+whale\b|\bwhat\s+are\s+whales?\s+dumping\b|\bwhales?\s+dumping\b/i;
 
 /**
  * Classifies a free-form Clark prompt into one of the new Base Radar / Whale Alerts tool-call
@@ -3122,6 +3136,10 @@ export function classifyClarkToolIntent(prompt: string): ClarkToolIntentResult {
   if (WHALE_EXPLAIN_SIGNAL_RE.test(t)) return { intent: "whale_alerts_explain_signal" };
   if (WHALE_SYNC_RE.test(t)) return { intent: "whale_alerts_sync" };
   if (WHALE_RECENT_RE.test(t)) return { intent: "whale_alerts_recent" };
+  // Sell checked before buy: "are whales selling or buying" reads as a sell-pressure question, and
+  // the sell-side answer already reports both sides' totals, so this never loses the buy detail.
+  if (WHALE_SELLING_RE.test(t)) return { intent: "whale_alerts_selling" };
+  if (WHALE_BUYING_RE.test(t)) return { intent: "whale_alerts_buying" };
   if (WHALE_SUMMARY_RE.test(t)) return { intent: "whale_alerts_summary" };
 
   if (RADAR_EXPLAIN_CANDIDATE_RE.test(t)) return { intent: "base_radar_explain_candidate" };

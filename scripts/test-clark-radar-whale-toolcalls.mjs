@@ -38,6 +38,30 @@ assert.equal(classifyClarkToolIntent('Any big buys/sells?').intent, 'whale_alert
 assert.equal(classifyClarkToolIntent('What happened in whale alerts today?').intent, 'whale_alerts_recent')
 assert.equal(classifyClarkToolIntent('Explain this whale signal').intent, 'whale_alerts_explain_signal')
 
+// ─── Directional whale intents ────────────────────────────────────────────
+// DISCLOSED (reported live): "What are whales buying" matched NO tool intent, so it fell through
+// to the older LLM whale path, which reads the same stored feed but can never run a wallet sync —
+// so an empty stored feed dead-ended there exactly like the plain feed question did. These route
+// to handleClarkWhaleToolCall's real fetch -> broaden -> sync recovery ladder instead.
+assert.equal(classifyClarkToolIntent('What are whales buying').intent, 'whale_alerts_buying')
+assert.equal(classifyClarkToolIntent('what are whales buying?').intent, 'whale_alerts_buying')
+assert.equal(classifyClarkToolIntent('What are Base whales buying').intent, 'whale_alerts_buying')
+assert.equal(classifyClarkToolIntent('whale buys').intent, 'whale_alerts_buying')
+assert.equal(classifyClarkToolIntent('what are smart money buying').intent, 'whale_alerts_buying')
+assert.equal(classifyClarkToolIntent('what are whales accumulating').intent, 'whale_alerts_buying')
+assert.equal(classifyClarkToolIntent('are whales selling').intent, 'whale_alerts_selling')
+assert.equal(classifyClarkToolIntent('whales dumping').intent, 'whale_alerts_selling')
+assert.equal(classifyClarkToolIntent('sell-side whale pressure').intent, 'whale_alerts_selling')
+// The reported feed question must keep its existing routing, unchanged.
+assert.equal(classifyClarkToolIntent('Show the latest whale alerts').intent, 'whale_alerts_summary')
+// Directional matchers must never steal the more specific sync/explain/recent phrasings above.
+assert.equal(classifyClarkToolIntent('sync whale alerts').intent, 'whale_alerts_sync')
+assert.equal(classifyClarkToolIntent('explain that whale alert').intent, 'whale_alerts_explain_signal')
+assert.equal(classifyClarkToolIntent('Any big buys/sells?').intent, 'whale_alerts_recent')
+// Non-whale buying questions must NOT be captured by the new directional matchers.
+assert.equal(classifyClarkToolIntent('should i buy this token').intent, 'none')
+assert.equal(classifyClarkToolIntent('what are people buying').intent, 'none')
+
 // ─── Never routes to generic chat (none) for these explicit phrasings ─────
 for (const p of [
   'Any low caps on Base?', 'Show Robinhood Chain movers', 'What are the best radar candidates?',
