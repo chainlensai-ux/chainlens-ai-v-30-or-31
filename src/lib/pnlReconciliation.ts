@@ -323,11 +323,17 @@ export type PublicPnlGateAudit = {
   invalidOrUnknownUnmatchedEvents: number
   scanWindowDays: number | null
   verifiedPricingCoverage: number | null
-  // ENGINE DIVERGENCE, DIAGNOSTIC ONLY, DISCLOSED (bounded-history follow-up task, requirement #5):
-  // fifoEngine vs pnlEngine closed-lot-count agreement is no longer a public-gate veto — fifoEngine
-  // is already the canonical source (see structuralConsistent's own disclosure below). This field
-  // preserves full visibility into the divergence without it ever blocking publication.
-  engineDivergenceDiagnostic: { fifoClosedLots: number; pnlClosedLots: number; agrees: boolean }
+  // READ-MODEL SHAPE, DIAGNOSTIC ONLY: FIFO emits one row per consumed buy-lot fragment while
+  // pnlEngine emits one row per deduped sell entry. These counts have different units and are never
+  // compared for equality or read by a public PnL gate.
+  engineDivergenceDiagnostic: {
+    fifoFragmentCount: number
+    uniqueClosingTxCount: number
+    uniqueClosingTxTokenCount: number
+    pnlSellEntryCount: number
+    avgFragmentsPerSell: number | null
+    diagnosticOnly: true
+  }
   // BOUNDED-SAMPLE GATE AUDIT, DISCLOSED (bounded-sample-gate follow-up task, requirement #6): the
   // bounded verified-sample ('partial') path evaluated and reported on its OWN terms — it is
   // deliberately NOT required to satisfy `blockingReasons`/`fullAvailabilityBlockingReasons` (e.g.
@@ -1065,9 +1071,17 @@ export function createPnlReconciliation(config: Config = {}) {
       const fifoLots = [...input.fifoEngineResult.matchedLots].sort((a, b) => lotKey(a).localeCompare(lotKey(b)))
       const pnlLots = [...input.pnlEngineResult.closedLots].sort((a, b) => `${a.chain}:${a.token.toLowerCase()}:${a.txHash}:${a.timestamp}`.localeCompare(`${b.chain}:${b.token.toLowerCase()}:${b.txHash}:${b.timestamp}`))
       const mismatches = new Map<string, PnlMismatchClass>()
-      if (fifoLots.length !== pnlLots.length || input.fifoEngineResult.unmatchedBuys > 0 || input.fifoEngineResult.unmatchedSells > 0) {
-        logger.warn('[pnl-reconciliation] structuralMismatch', { fifoClosedLots: fifoLots.length, pnlClosedLots: pnlLots.length, unmatchedBuys: input.fifoEngineResult.unmatchedBuys, unmatchedSells: input.fifoEngineResult.unmatchedSells })
+      const uniqueClosingTxCount = new Set(fifoLots.map((lot) => `${lot.chain}:${lot.closedTxHash.toLowerCase()}`)).size
+      const uniqueClosingTxTokenCount = new Set(fifoLots.map((lot) => `${lot.chain}:${lot.token.toLowerCase()}:${lot.closedTxHash.toLowerCase()}`)).size
+      const engineDivergenceDiagnostic: PublicPnlGateAudit['engineDivergenceDiagnostic'] = {
+        fifoFragmentCount: fifoLots.length,
+        uniqueClosingTxCount,
+        uniqueClosingTxTokenCount,
+        pnlSellEntryCount: pnlLots.length,
+        avgFragmentsPerSell: pnlLots.length > 0 ? fifoLots.length / pnlLots.length : null,
+        diagnosticOnly: true,
       }
+      logger.warn('[pnl-reconciliation] readModelShape', engineDivergenceDiagnostic)
       for (const lot of fifoLots) {
         const key = lotKey(lot)
         if (lot.costBasisUsd === null || lot.proceedsUsd === null) mismatches.set(key, 'priceUnavailable')
@@ -1338,16 +1352,6 @@ export function createPnlReconciliation(config: Config = {}) {
       // already fixed elsewhere this session (walletConditionMessages, SellActivitySummary).
       // Requiring realizedPnlUsd !== null here closes that gap explicitly rather than relying on it
       // being merely unlikely.
-      // ENGINE LOT-COUNT AGREEMENT REMOVED AS A PUBLIC VETO, DISCLOSED (bounded-history follow-up
-      // task, requirement #5): fifoEngine is already the canonical source for every closed lot,
-      // its own realized PnL figure, and every other per-lot mechanism in this pipeline — pnlEngine
-      // is a separate, independent read model that can legitimately diverge (different matching
-      // implementation, only partly-overlapping input set — see the "TWO-DISAGREEING-ENGINES FIX"
-      // disclosure above). Divergence is still logged (`[pnl-reconciliation] structuralMismatch`
-      // above) and surfaced via `engineDivergenceDiagnostic` below, but it can no longer by itself
-      // block public PnL — only a specific, canonical FIFO lot proven invalid would (this codebase
-      // has no such proof mechanism today, so this never silently fabricates one).
-      const engineLotCountsAgree = fifoLots.length === pnlLots.length
       // SAME PREDICATE AS THE VERIFIED COUNT, DISCLOSED (requirement #6's explicit "do not let the
       // gate count 'fully priced' while AYRI requires a different evidenceQuality value"): these two
       // figures previously answered subtly different questions on the same array, which is how three
@@ -1459,7 +1463,7 @@ export function createPnlReconciliation(config: Config = {}) {
       // estimated — computed from the exact same formulas as the live gate above, just with
       // correctedUnmatchedBuys/Sells substituted back in for the raw side. This is a REPORTING
       // comparison only; `rawGateStatus`/`rawStructuralCoverage` never feed back into the live gate.
-      const rawStructuralConsistent = fifoLots.length === pnlLots.length && correctedUnmatchedBuys === 0 && correctedUnmatchedSells === 0
+      const rawStructuralConsistent = correctedUnmatchedBuys === 0 && correctedUnmatchedSells === 0
         && (input.pnlEngineResult.evidenceMissingCount + correctedUnmatchedBuys + correctedUnmatchedSells + Math.max(0, priceUnavailableCount - recovered.size)) === 0
         && realizedPnlUsd !== null
       const rawMissingEvidenceCount = input.pnlEngineResult.evidenceMissingCount + correctedUnmatchedBuys + correctedUnmatchedSells + Math.max(0, priceUnavailableCount - recovered.size)
@@ -1575,7 +1579,7 @@ export function createPnlReconciliation(config: Config = {}) {
         invalidOrUnknownUnmatchedEvents: gateUnmatchedBuys + gateUnmatchedSells,
         scanWindowDays: denomAudit?.scanWindowDays ?? null,
         verifiedPricingCoverage,
-        engineDivergenceDiagnostic: { fifoClosedLots: fifoLots.length, pnlClosedLots: pnlLots.length, agrees: engineLotCountsAgree },
+        engineDivergenceDiagnostic,
         boundedSampleEligible,
         boundedSampleBlockingReasons,
         fullAvailabilityBlockingReasons,

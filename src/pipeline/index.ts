@@ -102,6 +102,7 @@ import { priceLotsForWallet, partitionAlreadyPricedEntries } from './priceLotsFo
 import { createProviderWindowKvWriter, withStageCache } from '../../lib/server/cache/v2StageCache'
 import { createRequestPriceKvClient } from '../lib/kvClient'
 import type { MatchedLot } from '../modules/fifoEngine/types'
+import { buildFifoBackedPnlResolvers } from './fifoBackedPnlResolvers'
 import { getCheapCurrentPriceForDustCheck, type CheapDustPriceResult } from '../../lib/server/dustPriceCheck'
 import { rpcDebugLog, type RpcDebugEntry } from '../../lib/server/rpcDebug'
 import { buildWalletConditionMessages } from './walletConditionMessages'
@@ -128,6 +129,7 @@ import {
 
 export type { PreScanValidation, RunWalletScanParams, RunWalletScanResult, ScanPerformanceSummary } from './types'
 export { INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from './types'
+export { buildFifoBackedPnlResolvers } from './fifoBackedPnlResolvers'
 
 const PROVIDER_FETCH_WINDOW_DAYS_USED = 90
 
@@ -559,28 +561,6 @@ export function safeRunFifoEngine(params: {
     })
   } catch {
     return fifoEngineFallback(params.buyTimeline, params.sellTimeline)
-  }
-}
-
-// PURE. Real cost basis / proceeds per sell, sourced from fifoEngine's own matched lots (grouped
-// by closedTxHash — a single sell transaction can consume more than one lot on a partial fill, so
-// this sums each portion's real costBasisUsd/proceedsUsd). A sell with no matched lots (or whose
-// lots are unpriced, evidenceQuality: 'unpriced') simply has no entry here — never a fabricated 0.
-export function buildFifoBackedPnlResolvers(matchedLots: MatchedLot[]): {
-  resolveCostUsdEstimate: NonNullable<BuildPnlSummaryParams['resolveCostUsdEstimate']>
-  resolveProceedsUsdEstimate: NonNullable<BuildPnlSummaryParams['resolveProceedsUsdEstimate']>
-} {
-  const costByTxHash = new Map<string, number>()
-  const proceedsByTxHash = new Map<string, number>()
-
-  for (const lot of matchedLots) {
-    if (lot.costBasisUsd != null) costByTxHash.set(lot.closedTxHash, (costByTxHash.get(lot.closedTxHash) ?? 0) + lot.costBasisUsd)
-    if (lot.proceedsUsd != null) proceedsByTxHash.set(lot.closedTxHash, (proceedsByTxHash.get(lot.closedTxHash) ?? 0) + lot.proceedsUsd)
-  }
-
-  return {
-    resolveCostUsdEstimate: (sell) => costByTxHash.get(sell.txHash) ?? null,
-    resolveProceedsUsdEstimate: (sell) => proceedsByTxHash.get(sell.txHash) ?? null,
   }
 }
 
@@ -2625,7 +2605,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // can borrow fifoEngine's real, now-priced matchedLots for resolveCostUsdEstimate/
   // resolveProceedsUsdEstimate (see buildFifoBackedPnlResolvers) instead of leaving them stubbed.
   // pnlEngine's own source is still never modified and still never imports fifoEngine directly.
-  const pnlResolvers = buildFifoBackedPnlResolvers(fifoAndPnl.matchedLots)
+  const pnlResolvers = buildFifoBackedPnlResolvers(fifoAndPnl.matchedLots, sellTimelineV2.entries)
   const pnlSummaryV2 = safeRunPnlSummaryV2({
     sellEntries: sellTimelineV2.entries,
     buyEntries: timelines.buyTimeline.entries,
@@ -3419,8 +3399,6 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   console.warn('[pipeline] scanDeterminismAudit', scanDeterminismAudit)
   const reconciledPnlSummaryV2: PnlSummaryResult = {
     ...adaptedPnlSummary,
-    realizedPnlUsd: reconciledPnlSummary.realizedPnlUsd,
-    evidenceMissingCount: reconciledPnlSummary.missingEvidenceCount,
   }
   const priceRecoveryMap = new Set(reconciledPnlSummary.mismatches.filter((m) => m.classification === 'priceRecovered').map((m) => m.key))
   const ayriAttribution = createAyriAttribution().build({

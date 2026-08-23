@@ -82,11 +82,10 @@ function buildReconciledFifo(input: BuildInput): FifoOutput {
 }
 
 function buildReconciledPnlSummary(input: BuildInput): PnlSummaryResult {
-  return {
-    ...input.pnlSummaryV2,
-    realizedPnlUsd: input.reconciledPnL.realizedPnlUsd,
-    evidenceMissingCount: input.reconciledPnL.missingEvidenceCount,
-  }
+  // pnlSummaryV2 is the alternate sell-entry read model. Its total, rows, and evidence count must
+  // remain one internally-consistent unit. Canonical FIFO values are already published separately
+  // through fifoAndPnl/reconciliationSummary and must never overwrite only part of this object.
+  return input.pnlSummaryV2
 }
 
 function buildPricingSummary(ayri: AyriAttributionOutput) {
