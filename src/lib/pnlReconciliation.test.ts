@@ -595,18 +595,33 @@ describe('pnlReconciliation', () => {
     assert.ok(summary.publicPnlGateAudit.blockingReasons.some((r2) => r2.rule === 'unmatched_sells'))
   })
 
-  it('HARD ASSERTION: pnlEngine lot-count disagreement is diagnostic only — never a public veto — while canonical realized PnL and matched lots stay unchanged', async () => {
+  it('HARD ASSERTION: 124 FIFO fragments vs 48 sell entries is a valid read-model shape and never a public veto', async () => {
     const r = createPnlReconciliation({ logger: quiet })
-    // fifoEngine reports 1 closed lot; pnlEngine (a separate, independent read model) reports 9 —
-    // a real divergence that must be visible but must never by itself block publication.
-    const summary = await r.reconcile({ fifoEngineResult: fifo(), pnlEngineResult: pnl(9), syntheticPnlAssemblyOutput: null, structuralCoverageDenominatorAudit: provenAudit() })
-    assert.equal(summary.publicPnlStatus, 'available', 'engine disagreement alone must not block public PnL')
+    const fragments = Array.from({ length: 124 }, (_, i) => lot({
+      lotId: `fragment-${i}`,
+      openedTxHash: `0xbuy-${i}`,
+      closedTxHash: `0xsell-${i % 48}`,
+    }))
+    const summary = await r.reconcile({
+      fifoEngineResult: fifo({ matchedLots: fragments, realizedPnlUsd: 248 }),
+      pnlEngineResult: pnl(48),
+      syntheticPnlAssemblyOutput: null,
+      structuralCoverageDenominatorAudit: provenAudit(),
+    })
+    assert.equal(summary.publicPnlStatus, 'available', 'different row units must not block public PnL')
     assert.ok(!summary.publicPnlGateAudit.blockingReasons.some((r2) => r2.rule === 'engine_lot_count_agreement'), 'engine agreement is no longer a gate rule at all')
-    assert.deepEqual(summary.publicPnlGateAudit.engineDivergenceDiagnostic, { fifoClosedLots: 1, pnlClosedLots: 9, agrees: false })
-    // Canonical figures are computed from fifoEngine alone and are untouched by the divergence.
-    assert.equal(summary.realizedPnlUsd, 2)
-    assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 1)
-    assert.equal(summary.publicPnlGateAudit.structuralClosedLots, 1)
+    assert.deepEqual(summary.publicPnlGateAudit.engineDivergenceDiagnostic, {
+      fifoFragmentCount: 124,
+      uniqueClosingTxCount: 48,
+      uniqueClosingTxTokenCount: 48,
+      pnlSellEntryCount: 48,
+      avgFragmentsPerSell: 124 / 48,
+      diagnosticOnly: true,
+    })
+    // Canonical figures still come from the 124 FIFO fragments only.
+    assert.equal(summary.realizedPnlUsd, 248)
+    assert.equal(summary.publicPnlGateAudit.verifiedClosedLots, 124)
+    assert.equal(summary.publicPnlGateAudit.structuralClosedLots, 124)
   })
 
   it('HARD ASSERTION: production-shaped bounded verified sample (17/27 verified, 62.96% pricing coverage) is published as a clearly-labelled partial sample, never available, never unavailable', async () => {

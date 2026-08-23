@@ -14,6 +14,7 @@
     "test:inp": "node scripts/inp-audit.js",
     "test:lighthouse": "node scripts/lighthouse-sim.js",
     "test:desktop": "node scripts/desktop-perf-sim.js",
+    "test:clark-routing": "tsx scripts/test-clark-routing-suite.mjs",
     "test:security": "node scripts/security-audit.js",
     "env:check": "node scripts/env-check.js",
     "perf:wallet-scan": "tsx scripts/perfBenchmark/run.ts",

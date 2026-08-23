@@ -31,6 +31,7 @@ import type { RunWalletScanV2Result } from '@/src/pipeline/runWalletScanV2'
 import { getTokenCache, setTokenCache } from '@/lib/server/cache/tokenCache'
 import type { WalletLiteResult } from '@/lib/server/walletLite'
 import { logRpcCall } from '@/lib/server/rpcDebug'
+import { isCanonicalVerifiedPublishedLot } from '@/src/lib/canonicalVerifiedLot'
 
 // Strips this machine's absolute filesystem prefix from a stack trace before it's ever logged or
 // returned in a diagnostic JSON response — "sanitized" per the request. Capped to 5 frames; a full
@@ -103,26 +104,124 @@ async function runV2Scan(address: string, route: string): Promise<RunWalletScanV
   }
 }
 
-// Real, honest mapping from V2's actual report shape into walletLite.ts's unified shape — never
-// fabricates a field V2 doesn't provide. `positions` has no clean V2 equivalent (V2's matched
-// lots/closed-lot PnL data represent CLOSED trades, not open positions in the sense implied by
-// this shape) so it's left honestly empty rather than force-mapped to something misleading.
+// Base portfolio mapping kept byte-for-byte narrow for non-Clark callers. Clark's richer wallet
+// projection below is selected only by getWalletFromV2, so /api/portfolio does not unexpectedly
+// gain analyst/PnL fields as a side effect of this routing fix.
 function toUnifiedShape(address: string, report: RunWalletScanV2Result): WalletLiteResult {
   return {
     ok: true,
     address,
-    balances: report.holdings.map((h) => ({
-      chain: h.chain,
-      contract: h.contract,
-      symbol: h.symbol,
-      name: h.name,
-      amount: h.amount,
-      valueUsd: h.providerValueUsd,
+    balances: report.holdings.map((holding) => ({
+      chain: holding.chain,
+      contract: holding.contract,
+      symbol: holding.symbol,
+      name: holding.name,
+      amount: holding.amount,
+      valueUsd: holding.providerValueUsd,
     })),
     positions: [],
     chains: report.scanMetadata.chainsScanned,
     identity: {},
     labels: {},
+  }
+}
+
+// Real, honest Clark projection from the V2 report. No provider call or PnL recomputation occurs:
+// it reshapes the same canonical published lots, portfolio, behavior and coverage already returned
+// by runWalletScanV2. Missing evidence remains null/Open Check.
+export function projectWalletV2ForClark(address: string, report: RunWalletScanV2Result): WalletLiteResult {
+  const base = toUnifiedShape(address, report)
+  const reconciliation = report.reconciliationSummary
+  const publishedLots = reconciliation?.publishedMatchedLots ?? report.canonicalPricedFifo.matchedLots
+  const verifiedLots = publishedLots.filter(isCanonicalVerifiedPublishedLot)
+  const pnlStatus = reconciliation?.publicPnlStatus ?? (report.canonicalPricedFifo.publicPnlStatus === 'ok' ? 'available' : report.canonicalPricedFifo.publicPnlStatus === 'limited_verified_sample' ? 'partial' : 'unavailable')
+  const realizedPnlUsd = reconciliation?.realizedPnlUsd ?? report.canonicalPricedFifo.realizedPnlUsd
+  const wins = verifiedLots.filter((lot) => (lot.realizedPnlUsd ?? 0) > 0).length
+  const losses = verifiedLots.filter((lot) => (lot.realizedPnlUsd ?? 0) < 0).length
+  const evaluated = wins + losses
+  const publicWinRatePercent = evaluated > 0 ? Math.round((wins / evaluated) * 10_000) / 100 : null
+  const symbolByKey = new Map<string, string>(report.portfolio.tokens.map((token) => [`${token.chain}:${token.contract.toLowerCase()}`, token.symbol]))
+  const tokenRows = new Map<string, { symbol: string; chain: string; token: string; realizedPnlUsd: number; totalBoughtUsd: number; totalSoldUsd: number; closedFragments: number }>()
+  for (const lot of verifiedLots) {
+    const key = `${lot.chain}:${lot.token.toLowerCase()}`
+    const existing = tokenRows.get(key) ?? { symbol: symbolByKey.get(key) ?? lot.token.slice(0, 8), chain: lot.chain, token: lot.token, realizedPnlUsd: 0, totalBoughtUsd: 0, totalSoldUsd: 0, closedFragments: 0 }
+    existing.realizedPnlUsd += lot.realizedPnlUsd ?? 0
+    existing.totalBoughtUsd += lot.costBasisUsd ?? 0
+    existing.totalSoldUsd += lot.proceedsUsd ?? 0
+    existing.closedFragments += 1
+    tokenRows.set(key, existing)
+  }
+  const buys = report.timelines.buyTimeline.entries
+  const sells = report.timelines.sellTimelineV2.entries
+  const uniqueTransactions = new Set([...buys.map((row) => row.txHash), ...sells.map((row) => row.txHash)]).size
+  const coverageAudit = report.walletPnlCoverageRecoveryAudit
+  const evidenceGaps = coverageAudit
+    ? Object.entries(coverageAudit.missingLotsByReason).filter(([, count]) => count > 0).map(([reason, count]) => `${reason}: ${count}`)
+    : []
+  const totalValue = report.portfolio.totalValueUsd
+  const walletCategory = totalValue == null ? null : totalValue >= 250_000 ? 'Whale' : totalValue >= 10_000 ? 'Mid Portfolio' : 'Small Portfolio'
+  const rotation = report.behaviorIntel.rotationStyle.value
+  const concentration = report.behaviorIntel.concentrationSignals
+  const publicStatus = pnlStatus === 'available' ? 'ok' : pnlStatus === 'partial' ? 'limited_verified_sample' : 'unavailable'
+  const fifoStatus = pnlStatus === 'available' ? 'ok' : publishedLots.length > 0 ? 'locked_insufficient_trades' : 'locked_no_closed_lots'
+  const profileSignals = [
+    ...(totalValue != null ? [`Portfolio value: $${Math.round(totalValue).toLocaleString()}.`] : []),
+    `Rotation style: ${rotation}; ${report.behaviorIntel.rotationStyle.basis.buyCount} buys / ${report.behaviorIntel.rotationStyle.basis.sellCount} sells.`,
+    ...(concentration ? [`Top holding concentration: ${concentration.topHoldingPercent.toFixed(1)}% (${concentration.concentrationLabel}).`] : []),
+  ]
+  return {
+    ...base,
+    totalValue,
+    holdings: report.portfolio.tokens.map((token) => ({ symbol: token.symbol, value: token.valueUsd, chain: token.chain })),
+    txCount: uniqueTransactions,
+    pnlCoverage: coverageAudit ?? reconciliation?.publicPnlGateAudit ?? null,
+    historicalRecoveryStatus: report.recoveryPolicy.totalPagesUsedThisWallet > 0 ? 'recovery_attempted' : 'not_triggered',
+    openLots: null,
+    closedLots: publishedLots.length,
+    walletScanHealth: { status: pnlStatus === 'available' ? 'ok' : 'limited_pnl', summary: pnlStatus === 'available' ? 'Canonical public PnL is available.' : reconciliation?.warning ?? coverageAudit?.officialPnlStillBlockedReason ?? 'Canonical PnL evidence is incomplete.' },
+    walletModuleCoverage: {
+      portfolio: { status: report.portfolio.tokens.length ? 'ok' : 'open_check' },
+      activity: { status: 'ok' },
+      fifoPnL: { status: fifoStatus, reason: coverageAudit?.officialPnlStillBlockedReason ?? reconciliation?.warning ?? null },
+      tradeStats: { status: pnlStatus === 'available' ? 'ok' : publishedLots.length ? 'partial' : 'open_check' },
+      chains: { status: report.scanMetadata.chainsScanned.length ? 'ok' : 'open_check' },
+      priceEvidence: { status: verifiedLots.length === publishedLots.length && publishedLots.length > 0 ? 'ok' : 'open_check' },
+    },
+    walletTokenPnlSummary: { status: publicStatus, realizedPnlUsd: pnlStatus === 'available' ? realizedPnlUsd : null, reason: coverageAudit?.officialPnlStillBlockedReason ?? reconciliation?.warning ?? null },
+    walletTokenPnlRead: [...tokenRows.values()].map((row) => ({ ...row, status: pnlStatus === 'available' ? 'verified' : 'limited_sample' })),
+    walletTradeStatsSummary: {
+      status: pnlStatus === 'available' ? 'ok' : publishedLots.length ? 'partial' : 'open_check',
+      closedLots: publishedLots.length,
+      publicPerformanceClosedLots: verifiedLots.length,
+      publicClosedLots: verifiedLots.length,
+      publicRealizedPnlUsd: pnlStatus === 'available' ? realizedPnlUsd : null,
+      publicWinRatePercent,
+      publicPnlStatus: publicStatus,
+      pnlIntegrityStatus: report.canonicalPricedFifo.integrityFlags.hardInvalid || reconciliation?.pnlDiscrepancyAudit.trustGateTriggered ? 'invalid' : 'ok',
+      scoreUnlocked: pnlStatus === 'available' && verifiedLots.length >= 10,
+    },
+    walletHistoricalCoverageSummary: { status: report.windowCoverage.coverageBasis, realDataDays: report.windowCoverage.realDataDays, recoveredExtraDays: report.windowCoverage.recoveredExtraDays },
+    walletRecoveryRecommendation: coverageAudit ? { reason: coverageAudit.officialPnlStillBlockedReason, recoveryFailedTokens: coverageAudit.recoveryFailedTokens } : null,
+    walletLotSummary: { status: publicStatus, closedLots: publishedLots.length, verifiedClosedLots: verifiedLots.length, unmatchedBuys: report.canonicalPricedFifo.unmatchedBuys, unmatchedSells: report.canonicalPricedFifo.unmatchedSells, realizedPnlUsd: pnlStatus === 'available' ? realizedPnlUsd : null },
+    publicPnlStatus: publicStatus,
+    publicPerformanceClosedLots: verifiedLots.length,
+    publicRealizedPnlUsd: pnlStatus === 'available' ? realizedPnlUsd : null,
+    publicWinRatePercent,
+    publicSamplePerformanceRead: pnlStatus === 'partial' && verifiedLots.length ? { status: 'available', closedLots: verifiedLots.length, realizedPnlUsd, winRatePercent: publicWinRatePercent, excludedFrom: ['profit_skill', 'wallet_score', 'official_win_rate'] } : null,
+    evidenceGaps,
+    walletProfile: {
+      walletCategory,
+      portfolioBehavior: concentration ? `${concentration.concentrationLabel} concentration` : null,
+      tradingBehavior: rotation === 'unknown' ? null : rotation.charAt(0).toUpperCase() + rotation.slice(1),
+      portfolioConfidence: totalValue == null ? 'low' : report.behaviorIntel.confidence,
+      tradingConfidence: report.behaviorIntel.confidence,
+      followability: pnlStatus === 'available' && report.behaviorIntel.confidence === 'high' ? 'Moderate' : 'Low',
+      signals: profileSignals,
+      strengths: [],
+      weaknesses: evidenceGaps,
+      nextAction: pnlStatus === 'available' ? 'Monitor new verified activity before following.' : 'Run a deep Wallet Scanner scan to improve PnL and identity evidence.',
+    },
+    dataFreshness: 'live',
   }
 }
 
@@ -137,7 +236,9 @@ async function getCachedOrCompute(
   const report = await runV2Scan(address, route)
   if (!report) return null
 
-  const unified = toUnifiedShape(address, report)
+  const unified = route === 'getWalletFromV2'
+    ? projectWalletV2ForClark(address, report)
+    : toUnifiedShape(address, report)
   await writeToKv(cacheKey, unified)
   return unified
 }

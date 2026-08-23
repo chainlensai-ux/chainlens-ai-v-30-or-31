@@ -84,7 +84,7 @@ export default function ClaimTrialButton() {
     const session = data.session
     if (!session?.access_token) {
       setState('login_required')
-      router.push('/auth?redirect=/')
+      router.push('/auth?next=/')
       return
     }
 
@@ -97,7 +97,7 @@ export default function ClaimTrialButton() {
 
       if (res.status === 401 || json.error === 'unauthorized') {
         setState('login_required')
-        router.push('/auth?redirect=/')
+        router.push('/auth?next=/')
         return
       }
       if (res.status === 429 || json.error === 'rate_limited') {

@@ -40,6 +40,16 @@ const PRODUCT_HELP_RE = /\b(what\s+can\s+you\s+do|what\s+do\s+you\s+do|help\b|ho
 // Glossary covers the explicit "basic examples" the spec lists; keys are matched as substrings
 // against the normalized prompt. Order matters — first match wins.
 const GLOSSARY: Array<{ re: RegExp; answer: string }> = [
+  { re: /\b(?:explain|what\s+is)\s+verified\s+pnl\b/i, answer: "Verified PnL\n- Value: realized FIFO PnL from public-grade closed lots\n- Status: shown only when integrity and coverage gates pass\n- Evidence: Wallet Scanner → PnL coverage" },
+  { re: /\b(?:explain|what\s+is|why\s+is)\s+partial\s+pnl\b/i, answer: "Partial PnL\n- Status: some closed trades are priced, but coverage is incomplete\n- Missing: cost basis, price evidence, or enough public-grade lots\n- Next: run Wallet Scanner deep scan" },
+  { re: /\b(?:explain|what\s+is)\s+liquidity\s+risk\b/i, answer: "Liquidity risk\n- Metric: exit depth and slippage\n- Risk rises when liquidity is thin, removable, or concentrated\n- Next: run Token Scanner → LP check" },
+  { re: /\b(?:explain|what\s+is|what\s+does)\s+holder\s+concentration(?:\s+mean)?\b/i, answer: "Holder concentration\n- Metric: supply owned by top wallets\n- Risk: a few holders can dominate voting or sell pressure\n- Evidence: Token Scanner → holder distribution" },
+  { re: /\b(?:explain|what\s+is)\s+cortex\s+confidence\b/i, answer: "CORTEX confidence\n- High: core evidence resolved and consistent\n- Partial/Open Check: required evidence is missing or conflicting\n- Missing evidence never counts as safe" },
+  { re: /\b(?:explain|what\s+is)\s+wallet\s+scanner\b/i, answer: "Wallet Scanner\n- Reads: holdings, activity, realized PnL, lots, coverage, and wallet profile\n- Input: wallet address\n- CTA: Open Wallet Scanner" },
+  { re: /\b(?:explain|what\s+is)\s+token\s+scanner\b/i, answer: "Token Scanner\n- Reads: contract, LP, holders, taxes, honeypot, and deployer risk\n- Input: token contract\n- CTA: Open Token Scanner" },
+  { re: /\b(?:explain|what\s+is)\s+base\s+radar\b/i, answer: "Base Radar\n- Reads: live Base candidates ranked by the Radar model\n- Evidence: liquidity, volume, market cap, pool age, and open checks\n- CTA: Open Base Radar" },
+  { re: /\b(?:explain|what\s+is|how\s+do)\s+pump\s+alerts?\b/i, answer: "Pump Alerts\n- Reads: live momentum candidates plus price, volume, liquidity, and risk evidence\n- Token reports add buy/sell pressure and verified wallet events where available\n- CTA: Open Pump Alerts" },
+  { re: /\b(?:explain|what\s+is|how\s+do)\s+whale\s+alerts?\b/i, answer: "Whale Alerts\n- Reads: stored tracked-wallet movements, side, value, repeats, and signal rank\n- Identity labels are internal, not verified public identities\n- CTA: Open Whale Alerts" },
   { re: /\bwhat\s+is\s+base\b/i, answer: "Base is a low-cost Ethereum Layer 2 chain built by Coinbase. ChainLens scans tokens and wallets on Base by default, alongside Ethereum and other supported chains." },
   { re: /\bwhat\s+is\s+a?\s*token\s+scanner\b/i, answer: "Token Scanner checks a token contract for safety signals — liquidity lock, ownership/mint risk, holder concentration, and honeypot/tax checks — and gives a risk read. It needs a token contract address." },
   { re: /\bwhat\s+is\s+pnl\b/i, answer: "PnL (profit and loss) is how much a wallet has made or lost on its closed trades. ChainLens only reports PnL as \"verified\" once enough closed lots with known cost basis exist — otherwise it stays locked or shown as a limited/estimated read." },
@@ -92,11 +102,15 @@ export function classifyClarkBasicIntent(message: string): ClarkBasicIntent {
   if (wantsToken) return 'token_scan_request'
   if (wantsWallet) return 'wallet_scan_request'
   if (hasAddress) return 'unsupported_request' // has address + no explicit scan word — let existing routing decide
+
+  // Exact ChainLens glossary questions are education, not live-feed commands. This must precede
+  // the broad whale/radar keyword routes so "Explain Whale Alerts" and "Explain Base Radar"
+  // describe the product instead of unexpectedly opening/fetching a feed.
+  if (GLOSSARY.some((g) => g.re.test(t))) return 'basic_question'
   if (WHALE_RE.test(t)) return 'whale_alerts_request'
   if (BASE_RADAR_RE.test(t)) return 'base_radar_request'
 
   if (PRODUCT_HELP_RE.test(t)) return 'product_help'
-  if (GLOSSARY.some((g) => g.re.test(t))) return 'basic_question'
   if (GENERAL_CRYPTO_RE.test(t)) return 'general_crypto_question'
 
   // Short, question-shaped prompts with no scan/tool keyword default to basic_question so
@@ -154,7 +168,12 @@ export function buildClarkDirectAnswer(intent: ClarkBasicIntent, message: string
 }
 
 export function clarkMissingInputPrompt(intent: ClarkBasicIntent, message?: string): string | null {
-  const t = normalize(String(message ?? ''))
+  const raw = String(message ?? '')
+  const t = normalize(raw)
+  // A classified scan request that already contains a valid address must continue to the real
+  // scanner route. Previously this helper still returned "paste an address", blocking both
+  // "analyze this wallet: 0x..." and "scan this token: 0x..." before tool execution.
+  if (ADDRESS_RE.test(raw)) return null
   // SLASH-COMMAND WORDING, DISCLOSED (Clark AI conversation polish): /wallet and /token with no
   // input use the exact short copy the spec asks for; every other route into the same intents
   // (e.g. "scan wallet" with no address) keeps its existing, slightly more explicit wording.

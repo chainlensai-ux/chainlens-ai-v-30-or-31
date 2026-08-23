@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { logRpcCall } from "@/lib/server/rpcDebug";
-import { getBaseMarketUniverse, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
+import { getBaseMarketUniverse, NEW_BASE_POOL_MAX_AGE_HOURS, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
 import { fetchCoinGeckoBaseTrending } from "@/lib/server/coingeckoBaseTrending";
 import { getMergedTrendingTokens } from "@/app/api/trending/route";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
@@ -17,6 +17,8 @@ import {
   buildWalletApiRequestBody,
   formatBaseMarketReadFromRows,
   formatBaseMarketReadFromCandidates,
+  formatNewBasePoolReadFromCandidates,
+  isNewBaseLaunchPrompt,
   formatBaseRadarRead,
   formatWalletScanResult,
   formatWalletCompareUnsupported,
@@ -88,6 +90,8 @@ import {
   isClarkWatchlistAddCommand,
 } from "@/lib/server/clarkRouting";
 import { buildBaseRadarDisplayModel } from "@/lib/baseRadarDisplayModel";
+import { classifyClarkAnalystIntent, isChainLensAnalystPrompt } from "@/lib/server/clarkAnalystIntent";
+import type { PumpIntelligenceReport } from "@/lib/server/pumpIntelligence";
 
 const {
   GOLDRUSH_API_KEY,
@@ -1435,7 +1439,7 @@ function parseMarketRequest(prompt: string): { count: number; mode: BaseMarketMo
   const includePoolVariants = /\b(pools|all pools|same token pools|every pool|show all .* pools)\b/i.test(t);
   const count = explicit ? Math.min(100, explicit) : (wantsMore ? 10 : 10);
   const mode: BaseMarketMode =
-    /new launch|new base launch/.test(t) ? "new_launches" :
+    isNewBaseLaunchPrompt(t) ? "new_launches" :
     /microcap|degen|low cap|early/.test(t) ? "microcaps" :
     /cooling|pullback/.test(t) ? "cooling_watchlist" :
     /liquid/.test(t) ? "liquid_movers" :
@@ -2124,8 +2128,8 @@ function isBaseMomentumPrompt(prompt: string): boolean {
   // Broad "what's pumping / running / moving on Base" → live Base market data, not pump-alerts feed
   // Normalize apostrophes/smart-quotes so what's / what's both match
   const t = prompt.toLowerCase().replace(/[‘’ʼ`´]/g, "'");
-  return /(?:^|\s|[^a-z])(what's pumping on base|what tokens are pumping|what's running on base|what's moving up on base|show base pumps|base pumps|early movers on base|early movers|what tokens are running|momentum scan|base pump map|base momentum read|new deployments on base|new base deployments|what's hot on base right now|top base tokens|base runners|base gainers|what tokens are moving|what's moving|what's happening on base)/i.test(t)
-    || /\b(pumping on base|base momentum|momentum on base)\b/i.test(t);
+  return /(?:^|\s|[^a-z])(what's pumping on base|what tokens are pumping|what's running on base|what's moving up on base|show base pumps|base pumps|early movers on base|early movers|what tokens are running|momentum scan|base pump map|base momentum read|what's hot on base right now|top base tokens|base runners|base gainers|what tokens are moving|what's moving|what's happening on base|which tokens have the strongest momentum|which tokens have strong momentum)/i.test(t)
+    || /\b(pumping on base|base momentum|momentum on base|tokens?\s+(?:with|have)\s+(?:the\s+)?strong(?:est)?\s+momentum|(?:the\s+)?strong(?:est)?\s+momentum\s+tokens?)\b/i.test(t);
 }
 
 function isPumpSourceFollowupPrompt(prompt: string): boolean {
@@ -2271,6 +2275,106 @@ async function handlePumpFeedSnapshot(origin: string) {
     "Risk notes: thin-liquidity and microcap names can print large % moves without stable follow-through.",
     "Next action: scan the cleanest non-stable mover first, then verify dev wallet + holders. No trade call — this is a watchlist read.",
   ].join("\n");
+}
+
+function promptField(prompt: string, label: string): string | null {
+  const match = prompt.match(new RegExp(`^${label}:\\s*(.+)$`, "im"));
+  const value = match?.[1]?.trim();
+  return value && value.toLowerCase() !== "n/a" && value !== "—" ? value : null;
+}
+
+async function handlePumpIntelligenceQuestion(
+  origin: string,
+  contract: string,
+  prompt: string,
+  authHeader?: string | null,
+): Promise<{ analysis: string; missing: string[]; status: "ok" | "partial" | "failed"; symbol: string | null }> {
+  const qs = new URLSearchParams({ contract, chain: "base" });
+  const inlineFields: Array<[string, string]> = [
+    ["symbol", "Token"], ["reason", "Signal"], ["riskLevel", "Risk"],
+    ["change24h", "24h Change"], ["volume24hUsd", "Volume 24h"],
+    ["liquidityUsd", "Liquidity"], ["fdvUsd", "FDV"],
+  ];
+  for (const [key, label] of inlineFields) {
+    const value = promptField(prompt, label);
+    if (value) qs.set(key, value.replace(/[$,%+]/g, ""));
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${origin}/api/pump-alerts/intelligence?${qs.toString()}`, {
+      cache: "no-store",
+      signal: AbortSignal.timeout(25_000),
+      headers: authHeader ? { Authorization: authHeader } : {},
+    });
+  } catch {
+    return {
+      analysis: `PUMP INTELLIGENCE — ${contract}\nStatus: unavailable\nMissing: live Pump Intelligence report could not be reached\nNext: open Pump Alerts and retry the token report.`,
+      missing: ["pump_intelligence_fetch_failed"], status: "failed", symbol: null,
+    };
+  }
+
+  const json = await res.json().catch(() => null) as Record<string, unknown> | null;
+  if (!res.ok || !json?.report) {
+    const reason = typeof json?.error === "string" ? json.error : `Pump Intelligence returned ${res.status}`;
+    return {
+      analysis: `PUMP INTELLIGENCE — ${contract}\nStatus: unavailable\nMissing: ${reason}\nNext: open Pump Alerts and run the token report.`,
+      missing: [res.status === 403 ? "pump_intelligence_plan_required" : "pump_intelligence_unavailable"], status: "failed", symbol: null,
+    };
+  }
+
+  const report = json.report as unknown as PumpIntelligenceReport;
+  const executive = report.executiveSummary;
+  const market = report.marketStructure;
+  const wallet = report.walletIntelligence;
+  const catalysts = report.catalysts;
+  const kills = report.killSignals;
+  const risks = report.riskAnalysis;
+  const watchlist = report.watchlist;
+  const gaps = Array.isArray(report.evidenceGaps) ? report.evidenceGaps.map(String) : [];
+  const symbol = String(report.symbol ?? "TOKEN").toUpperCase();
+  const fmtNum = (v: unknown) => typeof v === "number" && Number.isFinite(v) ? String(v) : "Not detected";
+  const fmtMoneyLocal = (v: unknown) => typeof v === "number" && Number.isFinite(v) ? formatUsdShort(v) : "Not detected";
+  const t = prompt.toLowerCase();
+  const lines: string[] = [`PUMP INTELLIGENCE — ${symbol}`, `Contract: ${contract}`];
+
+  if (/why\s+is|why\s+did|\[mode:\s*pump-alerts\]/i.test(prompt)) {
+    lines.push("Why it pumped:");
+    if (catalysts.length) {
+      for (const [i, c] of catalysts.slice(0, 5).entries()) lines.push(`${i + 1}. ${c.label ?? "Catalyst"} — ${c.impact ?? "unknown"} impact / ${c.confidence ?? "unknown"} confidence — ${c.evidence ?? "Not detected"} — Source: ${c.source ?? "ChainLens"}`);
+    } else lines.push("- Not detected — no verified catalyst evidence returned.");
+  }
+  if (/continue|continuation/.test(t)) lines.push(`Continuation: ${executive.continuationProbability ?? "unavailable"}${executive.continuationScore != null ? ` (${executive.continuationScore}/100)` : ""} — ${executive.continuationEvidence ?? "Missing buy/sell evidence."}`);
+  if (/kill|pullback/.test(t)) {
+    lines.push("What could kill it:");
+    if (kills.length) for (const k of kills.slice(0, 5)) lines.push(`- ${k.label ?? "Risk"}: ${k.probability ?? "unknown"} — ${k.evidence ?? "Not detected"}`);
+    else lines.push("- Not detected — no calibrated kill-signal evidence returned.");
+  }
+  if (/pressure|liquidity\s+change|volume\s+acceleration|top\s+buyers?|top\s+sellers?|whale/.test(t)) {
+    lines.push(`Market: buys ${fmtNum(market.buys24h)} / sells ${fmtNum(market.sells24h)} / ratio ${market.buySellRatio != null ? Number(market.buySellRatio).toFixed(2) : "Not detected"} / volume ${fmtMoneyLocal(market.volume24hUsd)} / liquidity ${fmtMoneyLocal(market.liquidityUsd)}`);
+    if (/liquidity\s+change|volume\s+acceleration/.test(t)) lines.push("Trend evidence: Not detected unless a stored historical series is present; current report is a snapshot.");
+    if (/top\s+buyers?|top\s+sellers?|whale/.test(t)) {
+      const buyers = Array.isArray(wallet.largestBuyers) ? wallet.largestBuyers : [];
+      const sellers = Array.isArray(wallet.largestSellers) ? wallet.largestSellers : [];
+      lines.push(`Top buyers: ${buyers.length ? buyers.slice(0, 3).map((row) => `${shortAddress(row.address)} ${fmtMoneyLocal(row.amountUsd)}`).join(" · ") : "No verified wallet evidence yet."}`);
+      lines.push(`Top sellers: ${sellers.length ? sellers.slice(0, 3).map((row) => `${shortAddress(row.address)} ${fmtMoneyLocal(row.amountUsd)}`).join(" · ") : "No verified wallet evidence yet."}`);
+      lines.push(`Net whale flow: ${fmtMoneyLocal(wallet.netWhaleFlowUsd)} — Source: ${wallet.dataSource ?? "tracked Whale Alerts"}`);
+    }
+  }
+  if (/organic|fake/.test(t)) {
+    const knownRisks = risks.filter((r) => r.status === "confirmed" || r.status === "possible").slice(0, 3);
+    lines.push(`Organic vs fake: ${market.buySellRatio == null ? "Open Check" : "Evidence mixed"} — no unsupported binary claim.`);
+    lines.push(`Evidence: buy/sell ratio ${market.buySellRatio != null ? Number(market.buySellRatio).toFixed(2) : "Not detected"}; ${knownRisks.length ? knownRisks.map((r) => `${r.label}: ${r.status}`).join("; ") : "wash/bot/cluster evidence not detected"}.`);
+  }
+  if (/watch\s+next|what\s+should\s+i\s+watch/.test(t)) {
+    lines.push("Watch next:");
+    if (watchlist.length) for (const w of watchlist.slice(0, 4)) lines.push(`- ${w.label ?? "Signal"}: ${w.threshold ?? "No threshold available"}`);
+    else lines.push("- No verified watch thresholds returned; refresh the report before acting.");
+  }
+  if (lines.length === 2) lines.push(`Momentum ${executive.momentumScore ?? "Not detected"} / Continuation ${executive.continuationScore ?? "Not detected"} / Pullback risk ${executive.pullbackRiskScore ?? "Not detected"} / Confidence ${executive.confidenceScore ?? "Not detected"}`);
+  if (gaps.length) lines.push(`Missing: ${gaps.slice(0, 3).join("; ")}`);
+  lines.push("CTA: Open Pump Alerts report / Scan Token");
+  return { analysis: lines.join("\n"), missing: gaps, status: gaps.length ? "partial" : "ok", symbol };
 }
 
 // Builds an absolute URL for an internal route, preferring the request origin, then a
@@ -7785,7 +7889,7 @@ async function handleClarkWatchlistAdd(origin: string, authHeader: string | null
   }
 }
 
-async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory) {
+async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory): Promise<Record<string, unknown>> {
   // Ensure we always have a session memory object even for recursive calls
   if (!sessionMem) sessionMem = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null };
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
@@ -7798,6 +7902,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   const appIntent = resolveClarkIntent(prompt, body.appContext);
   const routedClassification = classifyClarkPrompt(prompt);
+  const analystRouting = classifyClarkAnalystIntent(prompt);
   const routeHint = getClarkAddressRouteHint(prompt);
   const clarkDebugMode = Boolean((body as unknown as Record<string, unknown>).debug) || process.env.NODE_ENV !== 'production';
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
@@ -7809,7 +7914,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // fall through unchanged to the existing routing below — this never overrides that behavior.
   {
     const basicIntent = classifyClarkBasicIntent(prompt);
-    const directAnswer = buildClarkDirectAnswer(basicIntent, prompt);
+    // ChainLens analyst questions must reach their scanner/feed/context route. The old broad
+    // "short question" fallback otherwise answered them with generic chat before live evidence
+    // or session memory had a chance to run. Glossary questions remain direct and deterministic.
+    const hasAnalystContext = Boolean(
+      sessionMem.lastToken?.address || sessionMem.lastWallet?.address || sessionMem.lastMomentumList.length ||
+      sessionMem.lastWhaleAlerts.length || body.appContext?.tokenSummary || body.appContext?.walletSummary || body.appContext?.marketContext,
+    );
+    const contextualShortFollowup = hasAnalystContext && /^\s*(?:why|scan\s+it|is\s+it\s+safe|explain\s+the\s+risk|what\s+should\s+i\s+watch)\??\s*$/i.test(prompt);
+    const directAnswer = isChainLensAnalystPrompt(prompt) || contextualShortFollowup ? null : buildClarkDirectAnswer(basicIntent, prompt);
     if (directAnswer) {
       return {
         feature: "clark-ai", chain, mode: "chat", intent: basicIntent, toolsUsed: [],
@@ -7859,6 +7972,106 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (isClarkWatchlistAddCommand(prompt)) {
       return await handleClarkWatchlistAdd(origin, authHeader ?? null, chain, sessionMem);
     }
+  }
+
+  // Pump questions use the dedicated Pump Intelligence read-model, which already joins the
+  // Token Scanner analysis and verified per-token Whale Alerts. Never answer these from generic
+  // model knowledge. A context-free "what should I watch?" is left to the active market/token
+  // follow-up logic below; every explicit pump-metric question is handled here.
+  const explicitPumpQuestion = /\[mode:\s*pump-alerts\]|\bpump\b|buy\/?sell\s+pressure|buy\s+and\s+sell\s+pressure|liquidity\s+change|volume\s+acceleration|top\s+buyers?\/?sellers?|top\s+buyers?\s+and\s+sellers?|organic\s+or\s+fake/i.test(prompt);
+  if (analystRouting.route === "pump_analysis" && explicitPumpQuestion) {
+    const selectedToken = typeof body.appContext?.selectedToken === "string"
+      ? body.appContext.selectedToken
+      : body.appContext?.selectedToken?.address ?? body.appContext?.selectedToken?.contract ?? null;
+    const target = analystRouting.address
+      ?? body.appContext?.currentTokenAddress
+      ?? body.appContext?.tokenSummary?.address
+      ?? selectedToken
+      ?? sessionMem.lastToken?.address
+      ?? null;
+    if (!target) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "pump_analysis", toolsUsed: [],
+        analysis: "PUMP INTELLIGENCE\nMissing: token contract or selected Pump Alert\nNext: paste the token contract, or open a Pump Alert and choose Ask Clark.\nCTA: Open Pump Alerts",
+        clarkEvidenceMissing: ["token_contract_or_pump_alert_context"], quotaConsumed: false,
+        ui: { intentBadge: "Pump Intelligence", actions: [{ label: "Open Pump Alerts", href: "/terminal/pump-alerts", kind: "link" as const }] },
+      };
+    }
+    if (!planAllows(verifiedPlan, "pump_alerts")) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "pump_analysis", toolsUsed: [],
+        analysis: buildLockedResponse("pump_alerts", "open the token in Token Scanner for contract, LP, and holder checks."),
+      };
+    }
+    const pumpRead = await handlePumpIntelligenceQuestion(origin, target, prompt, authHeader ?? null);
+    const sameTokenInMemory = sessionMem.lastToken?.address.toLowerCase() === target.toLowerCase();
+    updateMemToken(sessionMem, target, pumpRead.symbol ?? (sameTokenInMemory ? sessionMem.lastToken?.symbol ?? null : null), sameTokenInMemory ? sessionMem.lastToken?.name ?? null : null, pumpRead.analysis);
+    updateMemIntent(sessionMem, "pump_analysis");
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "pump_analysis",
+      toolsUsed: ["pump_intelligence_report", "token_scan", "whale_feed_stored"],
+      analysis: pumpRead.analysis,
+      clarkToolStatuses: { pump_intelligence_report: pumpRead.status },
+      clarkEvidenceMissing: pumpRead.missing,
+      quotaConsumed: pumpRead.status !== "failed",
+      ui: { intentBadge: "Pump Intelligence", actions: [
+        { label: "Open Pump Report", href: `/terminal/pump-alerts/report?contract=${target}&chain=base`, kind: "link" as const },
+        { label: "Scan Token", href: `/terminal/token-scanner?contract=${target}`, kind: "link" as const },
+      ] },
+    };
+  }
+
+  if (/^\s*why\??\s*$/i.test(prompt)) {
+    const lastIntent = String(sessionMem.lastIntent ?? sessionMem.lastActionableIntent ?? "").toLowerCase();
+    const preferWhale = /whale/.test(lastIntent);
+    const preferMarket = /market|momentum|radar/.test(lastIntent);
+    const preferPump = /pump/.test(lastIntent);
+    const preferToken = /token|risk|liquidity|dev_rug|lp_lock/.test(lastIntent);
+    const preferWallet = /wallet/.test(lastIntent);
+    if (preferWhale && sessionMem.lastWhaleAlerts.length) {
+      return await handleClarkWhaleToolCall("whale_alerts_explain_signal", prompt, origin, authHeader ?? null, chain, sessionMem, clarkDebugMode);
+    }
+    if (preferPump && sessionMem.lastToken?.scanSummary?.startsWith("PUMP INTELLIGENCE")) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "pump_analysis", toolsUsed: ["memory"],
+        analysis: sessionMem.lastToken.scanSummary, quotaConsumed: false,
+      };
+    }
+    const mover = (preferMarket || (!preferToken && !preferWallet && !preferWhale)) ? sessionMem.lastMomentumList[0] ?? null : null;
+    if (mover) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["market_context"],
+        analysis: [
+          `WHY IT RANKED — ${mover.symbol}`,
+          `24h change: ${mover.change24h != null ? `${mover.change24h >= 0 ? "+" : ""}${mover.change24h.toFixed(1)}%` : "Not detected"}`,
+          `Volume: ${mover.volume24h != null ? formatUsdShort(mover.volume24h) : "Not detected"}`,
+          `Liquidity: ${mover.liquidity != null ? formatUsdShort(mover.liquidity) : "Not detected"}`,
+          `Evidence: ${mover.tag ?? "current Base momentum ranking"}`,
+          "Next: scan it to verify holders, LP control, and contract risk.",
+        ].join("\n"),
+      };
+    }
+    if ((preferToken || (!preferWallet && !preferWhale)) && sessionMem.lastToken?.cachedEvidence) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "risk_explanation", toolsUsed: ["memory"],
+        analysis: formatRiskExplanation(sessionMem.lastToken.cachedEvidence, chainDisplayLabel(chain)), quotaConsumed: false,
+      };
+    }
+    if ((preferWallet || !sessionMem.lastToken?.cachedEvidence) && sessionMem.lastWallet?.address) {
+      const walletResult = buildWalletMemoryResult(sessionMem.lastWallet);
+      if (walletResult) return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "wallet_summary", toolsUsed: ["memory"],
+        analysis: formatWalletFollowupFromMemory(sessionMem.lastWallet.address, walletResult, "wallet_summary"), quotaConsumed: false,
+      };
+    }
+    if (sessionMem.lastWhaleAlerts.length) {
+      return await handleClarkWhaleToolCall("whale_alerts_explain_signal", prompt, origin, authHeader ?? null, chain, sessionMem, clarkDebugMode);
+    }
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "feature_context", toolsUsed: [],
+      analysis: "I need the result you mean. Scan a wallet/token or load Pump, Radar, or Whale data, then ask why.",
+      clarkEvidenceMissing: ["active_chainlens_context"], quotaConsumed: false,
+    };
   }
 
   if (routedClassification.intent === "token_full_report") {
@@ -8000,12 +8213,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   {
     const hasExplicitAddress = Boolean(extractAddress(prompt));
     if (!hasExplicitAddress) {
+      const followupIntent = String(sessionMem.lastIntent ?? "").toLowerCase();
       const followupAc = {
-        route: body.appContext?.route ?? null,
+        route: body.appContext?.route ?? (/wallet/.test(followupIntent) ? "/terminal/wallet-scanner" : /token|risk|liquidity|dev_rug|lp_lock|pump/.test(followupIntent) ? "/terminal/token-scanner" : null),
         activeFeature: body.appContext?.activeFeature ?? null,
         currentTool: body.appContext?.currentTool ?? null,
-        walletSummary: (body.appContext?.walletSummary && typeof body.appContext.walletSummary === "object") ? body.appContext.walletSummary : null,
-        tokenSummary: (body.appContext?.tokenSummary && typeof body.appContext.tokenSummary === "object") ? body.appContext.tokenSummary : null,
+        walletSummary: (body.appContext?.walletSummary && typeof body.appContext.walletSummary === "object")
+          ? body.appContext.walletSummary
+          : sessionMem.lastWallet?.address ? { address: sessionMem.lastWallet.address } : null,
+        tokenSummary: (body.appContext?.tokenSummary && typeof body.appContext.tokenSummary === "object")
+          ? body.appContext.tokenSummary
+          : sessionMem.lastToken?.address ? { address: sessionMem.lastToken.address, symbol: sessionMem.lastToken.symbol, name: sessionMem.lastToken.name, chain: sessionMem.lastToken.chain } : null,
         marketContext: extractStructuredMarketItems(body).length ? { items: extractStructuredMarketItems(body) } : null,
       };
       const memMomentumForFollowup = sessionMem.lastMomentumList.map((m) => ({ rank: m.rank, symbol: m.symbol, name: m.name, scanTarget: m.address }));
@@ -8127,28 +8345,58 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         };
       }
 
+      if (cmd.intent === "explain_rank_momentum") {
+        const item = sessionMem.lastMomentumList.find((m) => m.rank === cmd.rank) ?? null;
+        if (!item) {
+          return {
+            feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: [], source: "feature_context",
+            analysis: "I don't have that ranked Base row in context. Ask \"what's pumping on Base?\" first, then ask why a rank is trending.",
+            ...cmdDebug,
+          };
+        }
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "market", toolsUsed: ["market_context"], source: "feature_context",
+          analysis: [
+            `WHY #${item.rank} IS TRENDING — ${item.symbol}`,
+            `24h change: ${item.change24h != null ? `${item.change24h >= 0 ? "+" : ""}${item.change24h.toFixed(1)}%` : "Not detected"}`,
+            `Volume: ${item.volume24h != null ? formatUsdShort(item.volume24h) : "Not detected"}`,
+            `Liquidity: ${item.liquidity != null ? formatUsdShort(item.liquidity) : "Not detected"}`,
+            `Rank evidence: ${item.tag ?? "current Base momentum score"}`,
+            "Missing: holder, LP-control, and contract safety remain unverified until Token Scanner runs.",
+            `CTA: scan ${item.rank}`,
+          ].join("\n"),
+          ...cmdDebug,
+        };
+      }
+
       if (cmd.intent === "rescan_current_token" && cmd.address) {
+        const scanResult: Record<string, unknown> = await handleClarkAI(
+          { ...body, prompt: `scan token ${cmd.address}`, forcedTokenScan: { address: cmd.address, chain: "base" } },
+          origin, authHeader, verifiedPlan, sessionMem,
+        );
         const { actions: rescanActions } = buildClarkContextActions(
           { tokenSummary: { address: cmd.address, chain: "base" }, promptActionsEnabled: true },
           "token_analysis",
           { scanTarget: cmd.address, chain: "base" },
         );
         return {
-          feature: "clark-ai", chain, mode: "analysis", intent: "token_analysis", toolsUsed: [], source: "feature_context",
-          analysis: "Open Token Scanner to rescan this token with the latest data.",
+          ...scanResult,
           ui: { intentBadge: "Token Read", actions: rescanActions },
           ...cmdDebug,
         };
       }
       if (cmd.intent === "rescan_current_wallet" && cmd.address) {
+        const scanResult: Record<string, unknown> = await handleClarkAI(
+          { ...body, prompt: `analyze this wallet: ${cmd.address}` },
+          origin, authHeader, verifiedPlan, sessionMem,
+        );
         const { actions: rescanActions } = buildClarkContextActions(
           { walletSummary: { address: cmd.address }, promptActionsEnabled: true },
           "wallet_analysis",
           null,
         );
         return {
-          feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: [], source: "feature_context",
-          analysis: "Open Wallet Scanner to rescan this wallet with the latest data.",
+          ...scanResult,
           ui: { intentBadge: "Wallet Read", actions: rescanActions },
           ...cmdDebug,
         };
@@ -9228,6 +9476,27 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (routed.intent === "base_market_discovery") {
+    const wantsNewBasePools = isNewBaseLaunchPrompt(prompt);
+    if (wantsNewBasePools) {
+      const universe = await getBaseMarketUniverse({ origin, mode: "new_launches", requestedCount: 30, followup: false, excludeAddresses: [], includePoolVariants: false }).catch(() => null);
+      const candidates = universe?.candidates ?? [];
+      const mappedCandidates = candidates.map((c) => ({
+        symbol: c.symbol, name: c.name, change24h: c.change24h, volume24hUsd: c.volume24h,
+        priceUsd: c.priceUsd, marketCapUsd: c.marketCap, liquidityUsd: c.liquidityUsd,
+        tokenAddress: c.tokenAddress, poolAddress: c.poolAddress, reasonTags: c.reasonTags,
+        poolAgeHours: c.poolAgeHours, sourceTags: c.sourceTags,
+      }));
+      const formatted = formatNewBasePoolReadFromCandidates(mappedCandidates, NEW_BASE_POOL_MAX_AGE_HOURS);
+      const actions = buildRoutedActions(["Open Base Radar", "Refresh Market Data"]);
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: ["base_market_universe"],
+        analysis: formatted ?? `NEW BASE POOLS\nNo Base pools with verified age ≤${NEW_BASE_POOL_MAX_AGE_HOURS}h were returned by the live feed. Unknown-age pools were excluded.\nCTA: Refresh Market Data / Open Base Radar`,
+        intentBadge: "new_base_pools",
+        actions,
+        ui: { intentBadge: "New Base Pools", actions: toClarkUiActions(actions) },
+        quotaConsumed: Boolean(formatted),
+      };
+    }
     // COINGECKO-PRIMARY, DISCLOSED ("what's pumping" vs "Base Radar" follow-up): "what's pumping"
     // now answers from CoinGecko's Base-ecosystem category — real, independent market data, not
     // Base Radar's own internal pool feed (which base_radar, above, still uses unchanged). Falls

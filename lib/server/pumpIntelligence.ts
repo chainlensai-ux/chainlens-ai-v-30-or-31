@@ -39,6 +39,7 @@ export interface EvidenceItem<T> {
 export interface Catalyst {
   label: string
   evidence: string
+  source: string
   confidence: Confidence
   impact: 'high' | 'medium' | 'low'
 }
@@ -92,10 +93,13 @@ export interface PumpIntelligenceReport {
   executiveSummary: {
     momentumScore: number | null
     momentumConfidence: Confidence
+    continuationScore: number | null
     continuationProbability: 'high' | 'medium' | 'low' | 'unavailable'
     continuationEvidence: string
+    pullbackRiskScore: number | null
     pullbackRisk: 'high' | 'medium' | 'low' | 'unavailable'
     pullbackEvidence: string
+    confidenceScore: number
     overallConfidence: Confidence
     verdict: string
   }
@@ -123,6 +127,7 @@ export interface PumpIntelligenceReport {
   walletIntelligence: {
     largestBuyers: WalletRow[]
     largestSellers: WalletRow[]
+    netWhaleFlowUsd: number | null
     newWalletBuyerCount: number | null
     trackedWalletActivity: WalletRow[]
     creatorActivity: EvidenceItem<null>
@@ -225,6 +230,10 @@ export function buildPumpIntelligenceReport(params: {
   // ── 1. Executive Summary ────────────────────────────────────────────────────────────────
   const buySellRatio = buys24h != null && sells24h != null && sells24h > 0 ? buys24h / sells24h : null
   const momentumScore = rugRiskScore != null ? Math.max(0, 100 - rugRiskScore) : null
+  const continuationScore = buys24h != null && sells24h != null && buys24h + sells24h > 0
+    ? Math.round((buys24h / (buys24h + sells24h)) * 100)
+    : null
+  const pullbackRiskScore = rugRiskScore ?? null
   if (rugRiskScore == null) gap('Momentum score unavailable — CORTEX risk read did not resolve for this token.')
 
   let continuationProbability: 'high' | 'medium' | 'low' | 'unavailable' = 'unavailable'
@@ -257,6 +266,8 @@ export function buildPumpIntelligenceReport(params: {
   const overallConfidence: Confidence = tokenAnalysis == null ? 'unavailable'
     : (rugRiskLabel === 'partial_data' || openChecks.length > 3) ? 'low'
     : openChecks.length > 0 ? 'medium' : 'high'
+  const confidenceChecks = [rugRiskScore != null, buySellRatio != null, lpRisk != null, holderDistribution != null, riskEngine != null]
+  const confidenceScore = Math.round((confidenceChecks.filter(Boolean).length / confidenceChecks.length) * 100)
 
   const verdictParts: string[] = []
   verdictParts.push(`${alert.symbol} ${alert.reason.toLowerCase()}.`)
@@ -275,6 +286,7 @@ export function buildPumpIntelligenceReport(params: {
     catalysts.push({
       label: 'Whale accumulation',
       evidence: `${whaleBuys.length} tracked whale buy(s) totaling ~$${Math.round(totalUsd).toLocaleString()} in the monitored window.`,
+      source: 'Whale monitor',
       confidence: 'high',
       impact: whaleBuys.length >= 3 ? 'high' : 'medium',
     })
@@ -283,6 +295,7 @@ export function buildPumpIntelligenceReport(params: {
     catalysts.push({
       label: 'Buy pressure',
       evidence: `${buys24h} buy transactions vs ${sells24h} sell transactions in the last 24h (GeckoTerminal).`,
+      source: 'GeckoTerminal',
       confidence: 'high',
       impact: 'medium',
     })
@@ -291,6 +304,7 @@ export function buildPumpIntelligenceReport(params: {
     catalysts.push({
       label: 'Volume expansion',
       evidence: `24h volume of $${Math.round(alert.volume24hUsd ?? 0).toLocaleString()}.`,
+      source: 'GeckoTerminal',
       confidence: 'high',
       impact: (alert.volume24hUsd ?? 0) >= 1_000_000 ? 'high' : 'medium',
     })
@@ -300,6 +314,7 @@ export function buildPumpIntelligenceReport(params: {
     catalysts.push({
       label: 'Liquidity secured',
       evidence: `LP is ${lpLockStatus} — reduces one common rug vector, which may support continued trading confidence.`,
+      source: 'LP proof / CORTEX',
       confidence: pick<string>(lpRisk, ['confidence']) as Confidence ?? 'medium',
       impact: 'low',
     })
@@ -308,6 +323,7 @@ export function buildPumpIntelligenceReport(params: {
     catalysts.push({
       label: 'Smart-money activity',
       evidence: pick<string>(smartMoney, ['reason']) ?? 'Wallets with a prior track record were detected trading this token.',
+      source: 'CORTEX wallet intelligence',
       confidence: pick<string>(smartMoney, ['confidence']) as Confidence ?? 'medium',
       impact: 'medium',
     })
@@ -349,10 +365,16 @@ export function buildPumpIntelligenceReport(params: {
   const largestBuyers = sortedByUsd.filter(r => r.side === 'buy').slice(0, 5).map(toWalletRow)
   const largestSellers = sortedByUsd.filter(r => r.side === 'sell').slice(0, 5).map(toWalletRow)
   const trackedWalletActivity = whaleRows.filter(r => trackedAddresses.has(r.wallet_address.toLowerCase())).map(toWalletRow)
+  const pricedWhaleRows = whaleRows.filter((r): r is WhaleAlertRow & { amount_usd: number } =>
+    r.amount_usd != null && (r.side === 'buy' || r.side === 'sell'))
+  const netWhaleFlowUsd = pricedWhaleRows.length > 0
+    ? pricedWhaleRows.reduce((sum, row) => sum + (row.side === 'sell' ? -row.amount_usd : row.amount_usd), 0)
+    : null
 
   const walletIntelligence = {
     largestBuyers,
     largestSellers,
+    netWhaleFlowUsd,
     newWalletBuyerCount: null as number | null,
     trackedWalletActivity,
     creatorActivity: { value: null, confidence: 'unavailable' as Confidence, evidence: 'Creator/deployer wallet resolution is built for Solana tokens only — no equivalent exists for Base tokens in this system yet.' },
@@ -495,10 +517,13 @@ export function buildPumpIntelligenceReport(params: {
     executiveSummary: {
       momentumScore,
       momentumConfidence: momentumScore != null ? 'medium' : 'unavailable',
+      continuationScore,
       continuationProbability,
       continuationEvidence,
+      pullbackRiskScore,
       pullbackRisk,
       pullbackEvidence,
+      confidenceScore,
       overallConfidence,
       verdict,
     },

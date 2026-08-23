@@ -20,6 +20,31 @@ export type WalletLiteResult = {
   chains: unknown[]
   identity: Record<string, unknown>
   labels: Record<string, unknown>
+  // Optional analyst projection populated only by the real V2 adapter. The zero-RPC lite
+  // fallback deliberately leaves these absent so callers can distinguish missing evidence.
+  totalValue?: number | null
+  holdings?: Array<{ symbol: string; value: number | null; chain: string }>
+  txCount?: number | null
+  pnlCoverage?: unknown
+  historicalRecoveryStatus?: unknown
+  openLots?: number | null
+  closedLots?: number | null
+  walletScanHealth?: unknown
+  walletModuleCoverage?: unknown
+  walletTokenPnlSummary?: unknown
+  walletTokenPnlRead?: unknown[]
+  walletTradeStatsSummary?: unknown
+  walletHistoricalCoverageSummary?: unknown
+  walletRecoveryRecommendation?: unknown
+  walletLotSummary?: unknown
+  publicPnlStatus?: string
+  publicPerformanceClosedLots?: number
+  publicRealizedPnlUsd?: number | null
+  publicWinRatePercent?: number | null
+  publicSamplePerformanceRead?: unknown
+  evidenceGaps?: string[]
+  walletProfile?: unknown
+  dataFreshness?: string
 }
 
 export async function getWalletLite(address: string): Promise<WalletLiteResult> {

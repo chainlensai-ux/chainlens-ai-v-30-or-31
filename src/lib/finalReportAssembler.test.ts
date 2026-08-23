@@ -78,4 +78,26 @@ describe('finalReportAssembler', () => {
     assert.equal(report.walletConditionInputs.closedLots, 7)
     assert.equal(report.walletConditionInputs.currentPnL, 123.45)
   })
+
+  it('keeps pnlSummaryV2 alternate rows and alternate total internally consistent', () => {
+    const closedLots = [
+      { lotId: 'alt-a', matchedBuyLotId: null, token: '0xa', symbol: 'A', chain: 'base', timestamp: 1, txHash: '0xsa', amount: '1', costUsdEstimate: 10, proceedsUsdEstimate: 14, realizedPnlUsd: 4, confidence: 'high', evidence: 'complete' },
+      { lotId: 'alt-b', matchedBuyLotId: null, token: '0xb', symbol: 'B', chain: 'base', timestamp: 2, txHash: '0xsb', amount: '1', costUsdEstimate: 8, proceedsUsdEstimate: 6, realizedPnlUsd: -2, confidence: 'high', evidence: 'complete' },
+    ]
+    const report = createFinalReportAssembler({ logger: quiet }).assemble(baseInput({
+      pnlSummaryV2: {
+        realizedPnlUsd: 2,
+        closedLots,
+        winLossRate: { wins: 1, losses: 1, evaluated: 2, rate: 0.5 },
+        chainBreakdown: [{ chain: 'base', closedLotCount: 2, realizedPnlUsd: 2 }],
+        confidenceBasis: { high: 2, medium: 0, low: 0, aggregate: 'high' },
+        evidenceMissingCount: 0,
+      },
+    }))
+
+    const rowTotal = report.pnlSummaryV2.closedLots.reduce((sum, row) => sum + (row.realizedPnlUsd ?? 0), 0)
+    assert.equal(report.pnlSummaryV2.realizedPnlUsd, rowTotal)
+    assert.equal(report.pnlSummaryV2.realizedPnlUsd, 2, 'alternate rows keep their own alternate total')
+    assert.equal(report.fifoAndPnl.realizedPnlUsd, 123.45, 'canonical public FIFO output is unchanged')
+  })
 })

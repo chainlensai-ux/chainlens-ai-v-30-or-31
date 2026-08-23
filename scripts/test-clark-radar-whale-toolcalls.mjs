@@ -53,7 +53,12 @@ assert.equal(classifyClarkToolIntent('are whales selling').intent, 'whale_alerts
 assert.equal(classifyClarkToolIntent('whales dumping').intent, 'whale_alerts_selling')
 assert.equal(classifyClarkToolIntent('sell-side whale pressure').intent, 'whale_alerts_selling')
 // The reported feed question must keep its existing routing, unchanged.
-assert.equal(classifyClarkToolIntent('Show the latest whale alerts').intent, 'whale_alerts_summary')
+// MERGE NOTE, DISCLOSED: a concurrent fix independently added "latest whale alerts" to
+// WHALE_RECENT_RE, so this now classifies as whale_alerts_recent rather than _summary — both
+// intents fall through to the exact same resolveClarkWhaleFeed() ladder in
+// handleClarkWhaleToolCall (only explain_signal/sync/buying/selling get their own branch), so this
+// is a routing-label change only, not a behavior change for the reported prompt.
+assert.equal(classifyClarkToolIntent('Show the latest whale alerts').intent, 'whale_alerts_recent')
 // Directional matchers must never steal the more specific sync/explain/recent phrasings above.
 assert.equal(classifyClarkToolIntent('sync whale alerts').intent, 'whale_alerts_sync')
 assert.equal(classifyClarkToolIntent('explain that whale alert').intent, 'whale_alerts_explain_signal')

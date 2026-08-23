@@ -29,7 +29,9 @@ function check(label, condition) { assert.ok(condition, label); passed++ }
   const baseMarketDiscoveryIdx = routeFile.indexOf('if (routed.intent === "base_market_discovery")')
   const cgCallIdx = routeFile.indexOf('await fetchCoinGeckoBaseTrending()')
   const baseRadarIdx = routeFile.indexOf('if (routed.intent === "base_radar")')
-  const universeCallIdx = routeFile.indexOf('await getBaseMarketUniverse(', baseMarketDiscoveryIdx)
+  // New-launch discovery has its own age-verified universe call before CoinGecko. For ordinary
+  // momentum discovery, verify the existing universe fallback that appears after the CG call.
+  const universeCallIdx = routeFile.indexOf('await getBaseMarketUniverse(', cgCallIdx)
 
   check('coingeckoBaseTrending is imported', importIdx > -1)
   check('base_market_discovery branch exists', baseMarketDiscoveryIdx > -1)

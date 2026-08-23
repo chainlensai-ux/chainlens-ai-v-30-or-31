@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, type CSSProperties } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import type { UserSettingsUpdate } from '@/lib/supabase/userSettings'
+import { authRedirectUrl } from '@/lib/authFlow'
 
 function isValidAvatarUrl(url: string): boolean {
   if (!url || url.trim() === '') return true
@@ -332,8 +333,15 @@ export default function SettingsPage() {
 
   async function handleSignOut() {
     setSigningOut(true)
-    await supabase.auth.signOut()
+    const { error } = await supabase.auth.signOut()
+    if (error) {
+      setSigningOut(false)
+      setSavingState('error')
+      setSaveMessage('Could not sign out. Please try again.')
+      return
+    }
     router.replace('/')
+    router.refresh()
   }
 
   async function handleSaveSettings() {
@@ -421,7 +429,7 @@ export default function SettingsPage() {
     if (!userEmail) return
     setResetState('sending')
     const { error } = await supabase.auth.resetPasswordForEmail(userEmail, {
-      redirectTo: `${window.location.origin}/auth/callback?type=recovery`,
+      redirectTo: authRedirectUrl(window.location.origin, '/reset-password?type=recovery'),
     })
     setResetState(error ? 'error' : 'sent')
   }

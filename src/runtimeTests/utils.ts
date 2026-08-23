@@ -152,7 +152,7 @@ async function runSyntheticPipeline(wallet: WalletTestConfig): Promise<RunWallet
 
   // Mirrors pipeline/index.ts's stage 6b: pnlSummaryV2 now runs after fifoAndPnl so it can borrow
   // fifoEngine's real matched-lot cost basis/proceeds.
-  const pnlResolvers = buildFifoBackedPnlResolvers(fifoAndPnl.matchedLots as MatchedLot[])
+  const pnlResolvers = buildFifoBackedPnlResolvers(fifoAndPnl.matchedLots as MatchedLot[], sellTimelineV2.entries)
   let pnlSummaryV2: ReturnType<typeof buildPnlSummary>
   try {
     pnlSummaryV2 = buildPnlSummary({
