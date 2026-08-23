@@ -137,10 +137,11 @@ function StatMetric({ label, value, dimValue, children }: { label: string; value
   )
 }
 
-function AlertCard({ alert, onScan, onAskClark }: {
+function AlertCard({ alert, onScan, onAskClark, onReport }: {
   alert: PumpAlert
   onScan: () => void
   onAskClark: () => void
+  onReport: () => void
 }) {
   const [hovered, setHovered] = useState(false)
   const catColor = CATEGORY_COLOR[alert.category]
@@ -316,6 +317,19 @@ function AlertCard({ alert, onScan, onAskClark }: {
           >
             ✦ Clark
           </button>
+          <button
+            onClick={onReport}
+            className="pump-action-btn"
+            style={{
+              padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800,
+              letterSpacing: '0.07em', textTransform: 'uppercase',
+              border: '1px solid rgba(168,85,247,0.32)', background: 'rgba(168,85,247,0.09)',
+              color: '#c084fc', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+              transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease', boxShadow: hovered ? '0 0 18px rgba(168,85,247,0.18), inset 0 1px 0 rgba(255,255,255,0.05)' : 'inset 0 1px 0 rgba(255,255,255,0.035)', transform: hovered ? 'translateY(-1px) scale(1.03)' : 'translateY(0) scale(1)',
+            }}
+          >
+            ◈ Report
+          </button>
         </div>
       </div>
       <div className="pump-clark-preview" style={{ flexBasis: '100%' }}>
@@ -412,6 +426,23 @@ export default function PumpAlertsPage() {
 
   function openToken(contract: string) {
     router.push(`/terminal/token-scanner?contract=${contract}`)
+  }
+
+  function openReport(alert: PumpAlert) {
+    const qs = new URLSearchParams({
+      contract: alert.contract,
+      chain: 'base',
+      symbol: alert.symbol,
+      name: alert.name,
+      reason: alert.reason,
+      riskLevel: alert.riskLevel,
+      ...(alert.priceUsd != null ? { priceUsd: String(alert.priceUsd) } : {}),
+      ...(alert.change24h != null ? { change24h: String(alert.change24h) } : {}),
+      ...(alert.volume24hUsd != null ? { volume24hUsd: String(alert.volume24hUsd) } : {}),
+      ...(alert.liquidityUsd != null ? { liquidityUsd: String(alert.liquidityUsd) } : {}),
+      ...(alert.fdvUsd != null ? { fdvUsd: String(alert.fdvUsd) } : {}),
+    })
+    router.push(`/terminal/pump-alerts/report?${qs.toString()}`)
   }
 
   function openClark(alert: PumpAlert) {
@@ -674,6 +705,7 @@ export default function PumpAlertsPage() {
                   alert={alert}
                   onScan={() => openToken(alert.contract)}
                   onAskClark={() => openClark(alert)}
+                  onReport={() => openReport(alert)}
                 />
               </div>
             ))}
