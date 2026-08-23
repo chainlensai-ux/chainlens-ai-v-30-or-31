@@ -131,6 +131,41 @@
 .dataGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)) !important; gap: 11px !important; }
 .twoColumn { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) !important; gap: 20px !important; }
 
+.gaugeGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px; }
+.gaugeCard { min-width: 0; padding: 16px; border: 1px solid; border-radius: 14px; background: linear-gradient(145deg, rgba(18, 29, 49, 0.86), rgba(5, 11, 24, 0.82)); }
+.gaugeTop { display: flex; justify-content: space-between; gap: 8px; color: #8ea0b7; font-family: var(--font-plex-mono); font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.gaugeValue { margin: 13px 0 9px; font-family: var(--font-plex-mono); font-size: clamp(27px, 3vw, 38px); font-weight: 900; line-height: 1; }
+.gaugeValue::after { margin-left: 3px; color: #53657a; font-size: 10px; content: "/100"; }
+.gaugeTrack { height: 6px; overflow: hidden; border-radius: 999px; background: rgba(148, 163, 184, .12); }
+.gaugeTrack span { display: block; height: 100%; border-radius: inherit; }
+.gaugeReason { margin-top: 9px; color: #65768b; font-family: var(--font-plex-mono); font-size: 8px; }
+
+.marketGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; }
+.metricCard { min-width: 0; padding: 13px; border: 1px solid rgba(148, 163, 184, .13); border-radius: 12px; background: linear-gradient(145deg, rgba(16, 27, 46, .76), rgba(4, 10, 22, .72)); }
+.metricLabel { color: #708197; font-family: var(--font-plex-mono); font-size: 8px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.metricValue { margin-top: 8px; overflow: hidden; color: #f1f5f9; font-family: var(--font-plex-mono); font-size: 18px; font-weight: 850; text-overflow: ellipsis; white-space: nowrap; }
+.metricDelta { margin-top: 4px; color: #94a3b8; font-family: var(--font-plex-mono); font-size: 9px; }
+.metricFooter { display: flex; justify-content: space-between; gap: 8px; margin-top: 11px; padding-top: 8px; border-top: 1px solid rgba(148, 163, 184, .1); color: #526276; font-family: var(--font-plex-mono); font-size: 7px; text-transform: uppercase; }
+
+.catalystGrid, .riskGrid, .probabilityGrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; }
+.rankedCard { position: relative; min-width: 0; }
+.rank { position: absolute; z-index: 1; top: 12px; left: 12px; color: #2dd4bf; font-family: var(--font-plex-mono); font-size: 13px; font-weight: 900; }
+.catalystCard, .riskCard, .probabilityCard { height: 100%; padding: 13px; border: 1px solid rgba(45, 212, 191, .19); border-radius: 12px; background: linear-gradient(145deg, rgba(15, 28, 46, .72), rgba(4, 10, 21, .7)); }
+.catalystCard { padding-left: 47px; }
+.cardTitle { color: #e7eef8; font-size: 11px; font-weight: 800; }
+.cardEvidence { margin-top: 5px; color: #91a0b3; font-family: var(--font-plex-mono); font-size: 9px; line-height: 1.45; }
+.source { margin-top: 9px; color: #526276; font-family: var(--font-plex-mono); font-size: 7px; font-weight: 750; letter-spacing: .06em; text-transform: uppercase; }
+.notDetectedGrid { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 9px; }
+.empty { padding: 10px 12px; border: 1px dashed rgba(100, 116, 139, .26); border-radius: 10px; color: #64748b; background: rgba(2, 6, 23, .26); font-family: var(--font-plex-mono); font-size: 9px; }
+
+.walletSummary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin-bottom: 16px; }
+.compactEvidence { display: block; color: #65768b; font-family: var(--font-plex-mono); font-size: 9px; }
+.probabilityCard { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.calibrationNote { margin-top: 10px; color: #526276; font-family: var(--font-plex-mono); font-size: 8px; text-align: right; text-transform: uppercase; }
+.clarkList { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; margin: 0; padding: 0; list-style: none; }
+.clarkList li { padding: 11px 12px; border: 1px solid rgba(167, 139, 250, .22); border-radius: 11px; color: #cbd5e1; background: rgba(139, 92, 246, .07); font-family: var(--font-plex-mono); font-size: 9px; }
+.clarkList strong { display: block; margin-bottom: 4px; color: #a78bfa; font-size: 8px; letter-spacing: .06em; text-transform: uppercase; }
+
 .loading { display: grid; gap: 14px; }
 .loadingCard { position: relative; height: 170px; overflow: hidden; border: 1px solid rgba(148, 163, 184, 0.1); border-radius: 20px; background: rgba(10, 16, 30, 0.7); }
 .loadingCard:first-child { height: 180px; }
@@ -142,6 +177,7 @@
 
 @media (max-width: 900px) {
   .dataGrid { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .gaugeGrid, .marketGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 720px) {
@@ -150,6 +186,7 @@
   .identity { align-items: flex-start; gap: 13px; }
   .tokenMark { flex-basis: 48px; width: 48px; height: 48px; border-radius: 15px; font-size: 18px; }
   .twoColumn { grid-template-columns: 1fr !important; }
+  .catalystGrid, .riskGrid, .probabilityGrid, .clarkList { grid-template-columns: 1fr; }
   .sectionPanel { padding: 16px !important; border-radius: 16px !important; }
 }
 
@@ -161,6 +198,7 @@
   .title { font-size: 28px; }
   .symbol { display: block; margin: 6px 0 0; font-size: 12px; vertical-align: initial; }
   .dataGrid { grid-template-columns: 1fr !important; }
+  .gaugeGrid, .marketGrid, .walletSummary { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -34,9 +34,10 @@ function ConfBadge({ confidence }: { confidence: Confidence }) {
 
 function ImpactBadge({ impact }: { impact: 'high' | 'medium' | 'low' }) {
   const color = impact === 'high' ? '#f87171' : impact === 'medium' ? '#fbbf24' : '#94a3b8'
+  const score = impact === 'high' ? 3 : impact === 'medium' ? 2 : 1
   return (
     <span style={{ padding: '3px 8px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', color, background: `${color}14`, border: `1px solid ${color}33`, fontFamily: 'var(--font-plex-mono)' }}>
-      {impact} impact
+      {score}/3 impact
     </span>
   )
 }
@@ -60,7 +61,7 @@ function Section({ title, subtitle, children }: { title: string; subtitle?: stri
 }
 
 function Empty({ text }: { text: string }) {
-  return <p style={{ margin: 0, fontSize: '11.5px', color: '#64748b', fontStyle: 'italic' }}>{text}</p>
+  return <div className={styles.empty}>{text}</div>
 }
 
 function fmtUsd(n: number | null): string {
@@ -80,6 +81,41 @@ function fmtTime(iso: string): string {
 }
 function shortAddr(a: string): string { return a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a }
 
+function compactEvidence(value: string): string {
+  const first = value.split(/[.!?](?:\s|$)/)[0]?.trim()
+  return first || 'Not detected'
+}
+
+function scoreTone(score: number | null, inverse = false): string {
+  if (score == null) return '#64748b'
+  const value = inverse ? 100 - score : score
+  return value >= 65 ? '#4ade80' : value >= 40 ? '#fbbf24' : '#f87171'
+}
+
+function GaugeCard({ label, score, band, reason, inverse = false }: { label: string; score: number | null; band: string; reason: string; inverse?: boolean }) {
+  const color = scoreTone(score, inverse)
+  return (
+    <div className={styles.gaugeCard} style={{ borderColor: `${color}44` }}>
+      <div className={styles.gaugeTop}><span>{label}</span><span style={{ color }}>{band}</span></div>
+      <div className={styles.gaugeValue} style={{ color }}>{score == null ? '—' : `${score}`}</div>
+      <div className={styles.gaugeTrack}><span style={{ width: `${score ?? 0}%`, background: color, boxShadow: `0 0 14px ${color}88` }} /></div>
+      <div className={styles.gaugeReason}>{reason}</div>
+    </div>
+  )
+}
+
+function MetricCard({ label, value, delta, status, source }: { label: string; value: string; delta: string; status: string; source: string }) {
+  const color = status === 'Bullish' ? '#4ade80' : status === 'Risk' ? '#f87171' : status === 'Watch' ? '#fbbf24' : '#94a3b8'
+  return (
+    <div className={styles.metricCard}>
+      <div className={styles.metricLabel}>{label}</div>
+      <div className={styles.metricValue}>{value}</div>
+      <div className={styles.metricDelta}>{delta}</div>
+      <div className={styles.metricFooter}><span style={{ color }}>{status}</span><span>{source}</span></div>
+    </div>
+  )
+}
+
 function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className={styles.statTile} style={{ padding: '10px 12px', borderRadius: '12px', background: 'rgba(2,6,23,0.3)', border: '1px solid rgba(255,255,255,0.06)' }}>
@@ -92,10 +128,11 @@ function StatTile({ label, value, sub }: { label: string; value: string; sub?: s
 
 function CatalystRow({ c }: { c: Catalyst }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', padding: '10px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+    <div className={styles.catalystCard}>
       <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#f1f5f9', marginBottom: '3px' }}>{c.label}</div>
-        <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: 1.4 }}>{c.evidence}</div>
+        <div className={styles.cardTitle}>{c.label}</div>
+        <div className={styles.cardEvidence}>{compactEvidence(c.evidence)}</div>
+        <div className={styles.source}>SOURCE · {c.source}</div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', alignItems: 'flex-end', flexShrink: 0 }}>
         <ImpactBadge impact={c.impact} />
@@ -110,12 +147,13 @@ const STATUS_LABEL: Record<RiskFactor['status'], string> = { confirmed: 'Confirm
 
 function RiskRow({ r }: { r: RiskFactor }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '10px', padding: '10px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+    <div className={styles.riskCard} style={{ borderColor: `${STATUS_COLOR[r.status]}38` }}>
       <div style={{ display: 'flex', gap: '10px', minWidth: 0, flex: 1 }}>
         <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: STATUS_COLOR[r.status], marginTop: '5px', flexShrink: 0, boxShadow: `0 0 6px ${STATUS_COLOR[r.status]}66` }} />
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: '12.5px', fontWeight: 700, color: '#f1f5f9', marginBottom: '3px' }}>{r.label} <span style={{ color: STATUS_COLOR[r.status], fontWeight: 800, fontSize: '10px' }}>· {STATUS_LABEL[r.status]}</span></div>
-          <div style={{ fontSize: '11px', color: '#94a3b8', lineHeight: 1.4 }}>{r.evidence}</div>
+          <div className={styles.cardTitle}>{r.label} <span style={{ color: STATUS_COLOR[r.status] }}>· {STATUS_LABEL[r.status]}</span></div>
+          <div className={styles.cardEvidence}>{compactEvidence(r.evidence)}</div>
+          <div className={styles.source}>IMPACT · {r.impact.toUpperCase()}</div>
         </div>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: '5px', alignItems: 'flex-end', flexShrink: 0 }}>
@@ -130,13 +168,13 @@ const PROB_COLOR: Record<KillSignal['probability'], string> = { high: '#f87171',
 
 function KillRow({ k }: { k: KillSignal }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', padding: '9px 0', borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+    <div className={styles.probabilityCard} style={{ borderColor: `${PROB_COLOR[k.probability]}38` }}>
       <div style={{ minWidth: 0 }}>
-        <div style={{ fontSize: '12px', fontWeight: 700, color: '#f1f5f9' }}>{k.label}</div>
-        <div style={{ fontSize: '10.5px', color: '#94a3b8', marginTop: '2px' }}>{k.evidence}</div>
+        <div className={styles.cardTitle}>{k.label}</div>
+        <div className={styles.cardEvidence}>{compactEvidence(k.evidence)}</div>
       </div>
       <span style={{ padding: '4px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: PROB_COLOR[k.probability], background: `${PROB_COLOR[k.probability]}14`, border: `1px solid ${PROB_COLOR[k.probability]}33`, fontFamily: 'var(--font-plex-mono)', flexShrink: 0 }}>
-        {k.probability}
+        {k.probability === 'unknown' ? 'NOT DETECTED' : `${k.probability} BAND`}
       </span>
     </div>
   )
@@ -197,6 +235,24 @@ function WatchRow({ w }: { w: WatchItem }) {
 function ReportView({ report }: { report: PumpIntelligenceReport }) {
   const es = report.executiveSummary
   const ms = report.marketStructure
+  const impactOrder = { high: 0, medium: 1, low: 2 }
+  const sortedCatalysts = [...report.catalysts].sort((a, b) => impactOrder[a.impact] - impactOrder[b.impact])
+  const topRisk = report.riskAnalysis.find(r => r.status === 'confirmed') ?? report.riskAnalysis.find(r => r.status === 'possible')
+  const txCount = ms.buys24h != null && ms.sells24h != null ? ms.buys24h + ms.sells24h : null
+  const marketMetrics = [
+    { label: 'Price change', value: ms.priceChange24h == null ? '—' : `${ms.priceChange24h > 0 ? '+' : ''}${ms.priceChange24h.toFixed(1)}%`, delta: '24h', status: ms.priceChange24h == null ? 'No data' : ms.priceChange24h >= 0 ? 'Bullish' : 'Risk', source: 'DexScreener / GeckoTerminal' },
+    { label: 'Liquidity', value: fmtUsd(ms.liquidityUsd), delta: 'No stored delta', status: ms.liquidityUsd == null ? 'No data' : 'Live', source: 'DexScreener / GeckoTerminal' },
+    { label: 'Volume', value: fmtUsd(ms.volume24hUsd), delta: '24h total', status: ms.volume24hUsd == null ? 'No data' : 'Live', source: 'GeckoTerminal' },
+    { label: 'Buys / Sells', value: ms.buys24h != null && ms.sells24h != null ? `${ms.buys24h} / ${ms.sells24h}` : '—', delta: ms.buySellRatio == null ? 'No ratio' : `${ms.buySellRatio.toFixed(2)}:1 ratio`, status: ms.buySellRatio == null ? 'No data' : ms.buySellRatio > 1 ? 'Bullish' : 'Watch', source: 'GeckoTerminal' },
+    { label: 'Transactions', value: txCount == null ? '—' : txCount.toLocaleString(), delta: '24h total', status: txCount == null ? 'No data' : 'Live', source: 'GeckoTerminal' },
+    { label: 'FDV', value: fmtUsd(ms.fdvUsd), delta: 'Snapshot', status: ms.fdvUsd == null ? 'No data' : 'Live', source: 'DexScreener' },
+    { label: 'Market cap', value: fmtUsd(ms.marketCapUsd), delta: 'Snapshot', status: ms.marketCapUsd == null ? 'No data' : 'Live', source: 'Token analysis' },
+    { label: 'Pool age', value: fmtAge(ms.ageHours), delta: 'Since creation', status: ms.ageHours == null ? 'No data' : 'Live', source: 'GeckoTerminal' },
+    { label: 'Holders', value: ms.holderCount == null ? '—' : `${ms.holderCount.toLocaleString()}${ms.holderCountCapped ? '+' : ''}`, delta: 'No stored delta', status: ms.holderCount == null ? 'No data' : 'Live', source: 'GoldRush' },
+    { label: 'Top holder', value: ms.top1HolderPercent == null ? '—' : `${ms.top1HolderPercent.toFixed(1)}%`, delta: 'Supply share', status: ms.top1HolderPercent == null ? 'No data' : ms.top1HolderPercent > 20 ? 'Risk' : 'Live', source: 'Holder analysis' },
+    { label: 'Top 10 holders', value: ms.top10HolderPercent == null ? '—' : `${ms.top10HolderPercent.toFixed(1)}%`, delta: 'Supply share', status: ms.top10HolderPercent == null ? 'No data' : ms.top10HolderPercent > 50 ? 'Risk' : 'Live', source: 'Holder analysis' },
+    { label: 'Buy / sell ratio', value: ms.buySellRatio == null ? '—' : `${ms.buySellRatio.toFixed(2)}x`, delta: '24h', status: ms.buySellRatio == null ? 'No data' : ms.buySellRatio > 1 ? 'Bullish' : 'Watch', source: 'GeckoTerminal' },
+  ]
   return (
     <div className={styles.report}>
       {/* Header */}
@@ -219,74 +275,67 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
         </div>
       </header>
 
-      {/* 1. Executive Summary */}
-      <Section title="Executive Summary">
-        <div className={styles.dataGrid} style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '14px' }}>
-          <StatTile label="Momentum Score" value={es.momentumScore != null ? `${es.momentumScore}/100` : '—'} />
-          <StatTile label="Continuation" value={es.continuationProbability === 'unavailable' ? '—' : es.continuationProbability.toUpperCase()} />
-          <StatTile label="Pullback Risk" value={es.pullbackRisk === 'unavailable' ? '—' : es.pullbackRisk.toUpperCase()} />
-          <StatTile label="Confidence" value={es.overallConfidence === 'unavailable' ? '—' : es.overallConfidence.toUpperCase()} />
+      <Section title="Executive Summary" subtitle="Evidence scores · no synthetic estimates">
+        <div className={styles.gaugeGrid}>
+          <GaugeCard label="Momentum Score" score={es.momentumScore} band={es.momentumConfidence} reason="CORTEX inverse risk score" />
+          <GaugeCard label="Continuation Probability" score={es.continuationScore} band={es.continuationProbability} reason="24h buy-side transaction share" />
+          <GaugeCard label="Pullback Risk" score={es.pullbackRiskScore} band={es.pullbackRisk} reason="CORTEX verified risk score" inverse />
+          <GaugeCard label="Confidence" score={es.confidenceScore} band={es.overallConfidence} reason="Core evidence coverage" />
         </div>
-        <p style={{ margin: '0 0 8px', fontSize: '13px', lineHeight: 1.6, color: '#e2e8f0' }}>{es.verdict}</p>
-        <p style={{ margin: 0, fontSize: '11px', color: '#64748b' }}><strong style={{ color: '#94a3b8' }}>Continuation:</strong> {es.continuationEvidence}</p>
-        <p style={{ margin: '4px 0 0', fontSize: '11px', color: '#64748b' }}><strong style={{ color: '#94a3b8' }}>Pullback:</strong> {es.pullbackEvidence}</p>
       </Section>
 
       {/* 2. Why It Pumped */}
       <Section title="Why It Pumped" subtitle="Verified catalysts, ranked by impact">
-        {report.catalysts.length === 0 ? <Empty text="No catalyst could be verified with real evidence for this token." /> : report.catalysts.map((c, i) => <CatalystRow key={i} c={c} />)}
+        {sortedCatalysts.length === 0 ? <Empty text="Not detected — no catalyst cleared verification." /> : <div className={styles.catalystGrid}>{sortedCatalysts.map((c, i) => <div key={`${c.label}-${i}`} className={styles.rankedCard}><span className={styles.rank}>#{i + 1}</span><CatalystRow c={c} /></div>)}</div>}
+        <div className={styles.notDetectedGrid}>
+          {!sortedCatalysts.some(c => /liquidity/i.test(c.label)) && <Empty text="Liquidity increase · Not detected" />}
+          {!sortedCatalysts.some(c => /holder/i.test(c.label)) && <Empty text="Holder growth · Not detected" />}
+          {!sortedCatalysts.some(c => /volume/i.test(c.label)) && <Empty text="Volume acceleration · Not detected" />}
+        </div>
       </Section>
 
       {/* 3. Market Structure */}
       <Section title="Market Structure">
-        <div className={styles.dataGrid} style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
-          <StatTile label="Buys / Sells (24h)" value={ms.buys24h != null && ms.sells24h != null ? `${ms.buys24h} / ${ms.sells24h}` : '—'} sub={ms.buySellRatio != null ? `${ms.buySellRatio.toFixed(2)}:1` : undefined} />
-          <StatTile label="Liquidity" value={fmtUsd(ms.liquidityUsd)} sub="Snapshot only" />
-          <StatTile label="Volume (24h)" value={fmtUsd(ms.volume24hUsd)} />
-          <StatTile label="Holders" value={ms.holderCount != null ? `${ms.holderCount}${ms.holderCountCapped ? '+' : ''}` : '—'} sub="Snapshot only" />
-          <StatTile label="FDV" value={fmtUsd(ms.fdvUsd)} />
-          <StatTile label="Market Cap" value={fmtUsd(ms.marketCapUsd)} />
-          <StatTile label="Pool Age" value={fmtAge(ms.ageHours)} />
-          <StatTile label="24h Change" value={ms.priceChange24h != null ? `${ms.priceChange24h > 0 ? '+' : ''}${ms.priceChange24h.toFixed(1)}%` : '—'} />
-        </div>
-        <div style={{ marginTop: '12px', display: 'flex', gap: '18px', flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '10.5px', color: '#64748b' }}>Top 1 holder: <strong style={{ color: '#e2e8f0' }}>{ms.top1HolderPercent != null ? `${ms.top1HolderPercent.toFixed(1)}%` : '—'}</strong></span>
-          <span style={{ fontSize: '10.5px', color: '#64748b' }}>Top 10 holders: <strong style={{ color: '#e2e8f0' }}>{ms.top10HolderPercent != null ? `${ms.top10HolderPercent.toFixed(1)}%` : '—'}</strong></span>
-        </div>
-        <p style={{ margin: '10px 0 0', fontSize: '10px', color: '#475569', fontStyle: 'italic' }}>Liquidity and holder trends are not shown — both are point-in-time snapshots in this system, with no stored history to compute a real trend from.</p>
+        <div className={styles.marketGrid}>{marketMetrics.map(metric => <MetricCard key={metric.label} {...metric} />)}</div>
       </Section>
 
       {/* 4. Wallet Intelligence */}
-      <Section title="Wallet Intelligence" subtitle={report.walletIntelligence.dataSource}>
+      <Section title="Wallet Intelligence" subtitle={`${report.walletIntelligence.eventCount} verified monitored events`}>
+        <div className={styles.walletSummary}>
+          <StatTile label="Net whale flow" value={report.walletIntelligence.netWhaleFlowUsd == null ? '—' : `${report.walletIntelligence.netWhaleFlowUsd >= 0 ? '+' : '-'}${fmtUsd(Math.abs(report.walletIntelligence.netWhaleFlowUsd))}`} sub="Monitored wallet feed" />
+          <StatTile label="Smart wallet events" value={report.walletIntelligence.trackedWalletActivity.length.toLocaleString()} sub="Tracked addresses" />
+          <StatTile label="Suspicious clusters" value="—" sub="No verified EVM evidence" />
+        </div>
         <div className={styles.twoColumn} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '18px' }}>
           <div>
             <div style={{ fontSize: '10px', fontWeight: 700, color: '#4ade80', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '4px' }}>Largest Buyers</div>
-            {report.walletIntelligence.largestBuyers.length === 0 ? <Empty text="None tracked." /> : report.walletIntelligence.largestBuyers.map((w, i) => <WalletRowView key={i} w={w} />)}
+            {report.walletIntelligence.largestBuyers.length === 0 ? <Empty text="No verified wallet evidence yet." /> : report.walletIntelligence.largestBuyers.map((w, i) => <WalletRowView key={i} w={w} />)}
           </div>
           <div>
             <div style={{ fontSize: '10px', fontWeight: 700, color: '#f87171', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '4px' }}>Largest Sellers</div>
-            {report.walletIntelligence.largestSellers.length === 0 ? <Empty text="None tracked." /> : report.walletIntelligence.largestSellers.map((w, i) => <WalletRowView key={i} w={w} />)}
+            {report.walletIntelligence.largestSellers.length === 0 ? <Empty text="No verified wallet evidence yet." /> : report.walletIntelligence.largestSellers.map((w, i) => <WalletRowView key={i} w={w} />)}
           </div>
         </div>
         <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ fontSize: '11px', color: '#94a3b8' }}>Creator activity</span><ConfBadge confidence={report.walletIntelligence.creatorActivity.confidence} /></div>
-          <p style={{ margin: 0, fontSize: '10px', color: '#475569' }}>{report.walletIntelligence.creatorActivity.evidence}</p>
+          <span className={styles.compactEvidence}>{compactEvidence(report.walletIntelligence.creatorActivity.evidence)}</span>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px' }}><span style={{ fontSize: '11px', color: '#94a3b8' }}>Cluster / insider concentration</span><ConfBadge confidence={report.walletIntelligence.clusterAnalysis.confidence} /></div>
-          <p style={{ margin: 0, fontSize: '10px', color: '#475569' }}>{report.walletIntelligence.clusterAnalysis.evidence}</p>
+          <span className={styles.compactEvidence}>{compactEvidence(report.walletIntelligence.clusterAnalysis.evidence)}</span>
         </div>
       </Section>
 
       {/* 5. Risk Analysis */}
       <Section title="Risk Analysis">
-        {report.riskAnalysis.map((r, i) => <RiskRow key={i} r={r} />)}
+        <div className={styles.riskGrid}>{report.riskAnalysis.map((r, i) => <RiskRow key={i} r={r} />)}</div>
       </Section>
 
       {/* 6. What Could Kill This Pump */}
       <Section title="What Could Kill This Pump" subtitle="Ordered by highest probability first">
-        {[...report.killSignals].sort((a, b) => {
+        <div className={styles.probabilityGrid}>{[...report.killSignals].sort((a, b) => {
           const order = { high: 0, medium: 1, low: 2, unknown: 3 }
           return order[a.probability] - order[b.probability]
-        }).map((k, i) => <KillRow key={i} k={k} />)}
+        }).map((k, i) => <KillRow key={i} k={k} />)}</div>
+        <div className={styles.calibrationNote}>Probability bands only · calibrated percentages are not available</div>
       </Section>
 
       {/* 7. Continuation Signals */}
@@ -296,11 +345,7 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
 
       {/* 8. Historical Similarity */}
       <Section title="Historical Similarity">
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '4px 0' }}>
-          <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#64748b', flexShrink: 0 }} />
-          <span style={{ fontSize: '12px', fontWeight: 700, color: '#94a3b8' }}>Not Available</span>
-        </div>
-        <p style={{ margin: '8px 0 0', fontSize: '11px', color: '#64748b', lineHeight: 1.5 }}>{report.historicalSimilarity.reason}</p>
+        <Empty text="Not detected · no verified pump-outcome history" />
       </Section>
 
       {/* 9. Actionable Watchlist */}
@@ -311,17 +356,20 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
       {/* 10. Timeline */}
       <Section title="Timeline" subtitle="Chronological, most recent first">
         {report.timeline.length === 0 ? <Empty text="No timed events captured for this token yet." /> : report.timeline.map((e, i) => <TimelineRow key={i} e={e} />)}
+        <div className={styles.notDetectedGrid}>
+          <Empty text="Liquidity event · Not timestamped" />
+          <Empty text="Holder milestone · Not timestamped" />
+          <Empty text="Creator movement · Not detected" />
+        </div>
       </Section>
 
-      {/* Evidence gaps footer */}
-      {report.evidenceGaps.length > 0 && (
-        <div style={{ marginTop: '24px', padding: '14px 16px', borderRadius: '14px', background: 'rgba(100,116,139,0.06)', border: '1px dashed rgba(100,116,139,0.25)' }}>
-          <div style={{ fontSize: '10px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', marginBottom: '8px' }}>What this report couldn&apos;t verify</div>
-          <ul style={{ margin: 0, paddingLeft: '18px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-            {report.evidenceGaps.map((g, i) => <li key={i} style={{ fontSize: '10.5px', color: '#64748b', lineHeight: 1.4 }}>{g}</li>)}
-          </ul>
-        </div>
-      )}
+      <Section title="Clark Verdict" subtitle="Data shown above · 40-word maximum">
+        <ul className={styles.clarkList}>
+          <li><strong>Main reason:</strong> {sortedCatalysts[0]?.label ?? 'No verified catalyst'}</li>
+          <li><strong>Biggest risk:</strong> {topRisk?.label ?? 'No confirmed risk'}</li>
+          <li><strong>Watch next:</strong> {report.watchlist[0]?.label ?? 'Fresh evidence'}</li>
+        </ul>
+      </Section>
     </div>
   )
 }
@@ -336,7 +384,7 @@ function ReportPageInner() {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!contract) { setError('No contract specified.'); setLoading(false); return }
+    if (!contract) return
     let cancelled = false
     async function run() {
       setLoading(true)
@@ -377,9 +425,10 @@ function ReportPageInner() {
       >
         <span className={styles.backArrow}>←</span> Back to Pump Alerts
       </button>
-      {loading && <div className={styles.loading} aria-label="Building intelligence report"><div className={styles.loadingCard} /><div className={styles.loadingCard} /><div className={styles.loadingCard} /></div>}
-      {!loading && error && <div className={styles.error}><strong>Report evidence unavailable</strong><br />{error}</div>}
-      {!loading && !error && report && <ReportView report={report} />}
+      {!contract && <div className={styles.error}><strong>Report evidence unavailable</strong><br />No contract specified.</div>}
+      {contract && loading && <div className={styles.loading} aria-label="Building intelligence report"><div className={styles.loadingCard} /><div className={styles.loadingCard} /><div className={styles.loadingCard} /></div>}
+      {contract && !loading && error && <div className={styles.error}><strong>Report evidence unavailable</strong><br />{error}</div>}
+      {contract && !loading && !error && report && <ReportView report={report} />}
       </div>
     </main>
   )
