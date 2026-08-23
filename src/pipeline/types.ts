@@ -82,6 +82,32 @@ export type RunWalletScanResult = FinalReport & {
   // calls, zero pricing, no lot created or reclassified. See the module header for the honest
   // limits on which taxonomy reasons this lot-level pass can and cannot populate.
   walletPnlCoverageRecoveryAudit?: import('../lib/walletPnlCoverageRecoveryAudit').WalletPnlCoverageRecoveryAudit
+  // SCAN PERFORMANCE SUMMARY, DISCLOSED (perf-sprint task: "a final scanPerformanceSummary showing
+  // per-stage timings, percentage of total runtime, critical path, provider latency, cache hit
+  // rate, and total scan duration"). Built entirely from real, already-measured values this scan
+  // produced — scanTimer's own per-stage marks (see startStageTimer's own header for the honest
+  // limit of what it can observe: this orchestration layer's own await points, not time spent
+  // inside protected modules' internal call graphs), the real per-chain provider latencies, and
+  // real cache hit/miss counts from the two stage caches this file wraps directly. Never estimated
+  // or fabricated — a stage this scan didn't reach (e.g. recoveryPolicy on a 'normal' scan) is
+  // simply absent from `stages`, not zero-filled.
+  scanPerformanceSummary?: ScanPerformanceSummary
+}
+
+export type ScanPerformanceSummary = {
+  totalMs: number
+  // Ordered exactly as this pipeline's own stages executed (JS object key insertion order,
+  // matching scanTimer.stages) — this pipeline is a mostly-linear dependency chain (see
+  // safeRunRecoveryPolicy/resolveDustSuppressionKeys/priceLotsForWallet's own headers on why each
+  // stage's real input depends on the previous stage's real output), so this list IS the critical
+  // path, not a heuristic guess at one.
+  stages: Array<{ name: string; ms: number; percentOfTotal: number }>
+  criticalPath: string[]
+  providerLatencyMs: Array<{ chain: string; ms: number }>
+  cacheHitRate: {
+    providerFetchWindow: { hits: number; misses: number; hitRatePercent: number | null }
+    recoveryPolicy: { hits: number; misses: number; hitRatePercent: number | null }
+  }
 }
 
 // See RunWalletScanResult.walletScannerProviderSupportAudit's own disclosure above for the "why"

@@ -124,3 +124,44 @@ describe('withStageCache shouldCache predicate', () => {
     assert.deepEqual(kvSetCalls[0].value, value)
   })
 })
+
+// PERF-SPRINT TASK, DISCLOSED (scanPerformanceSummary's "cache hit rate" field): these cover
+// trackHit in isolation from the real pipeline (which needs extensive fixture setup other test
+// files already own) — the same "test the real, addable hook in isolation" approach this file
+// already uses for shouldCache above.
+describe('withStageCache trackHit callback', () => {
+  it('fires trackHit(false) on a genuine cache miss, and never writes trackHit into the cached value', async () => {
+    const key = `test:trackHit-miss:${Date.now()}`
+    const calls: boolean[] = []
+
+    const result = await withStageCache(key, 30, async () => ({ real: 'value' }), {
+      trackHit: (hit) => calls.push(hit),
+    })
+
+    assert.deepEqual(calls, [false], 'a cold key must report exactly one miss, never a hit')
+    assert.deepEqual(result, { real: 'value' })
+    assert.deepEqual(kvSetCalls[0].value, { real: 'value' }, 'trackHit must never leak into the cached payload itself')
+  })
+
+  it('fires trackHit(true) on a genuine cache hit, and never calls compute() on a hit', async () => {
+    const key = `test:trackHit-hit:${Date.now()}`
+    kvStore.set(key, { cached: 'already here' })
+    const calls: boolean[] = []
+    let computeCallCount = 0
+
+    const result = await withStageCache(key, 30, async () => { computeCallCount += 1; return { cached: 'should never see this' } }, {
+      trackHit: (hit) => calls.push(hit),
+    })
+
+    assert.deepEqual(calls, [true], 'a warm key must report exactly one hit, never a miss')
+    assert.equal(computeCallCount, 0, 'compute() must never run on a real cache hit')
+    assert.deepEqual(result, { cached: 'already here' }, 'a hit must return the cached value, not a freshly computed one')
+  })
+
+  it('a caller that omits trackHit behaves exactly as before — no error, no change in read/write behavior', async () => {
+    const key = `test:trackHit-omitted:${Date.now()}`
+    const result = await withStageCache(key, 30, async () => ({ untouched: true }))
+    assert.deepEqual(result, { untouched: true })
+    assert.equal(kvSetCalls.length, 1)
+  })
+})

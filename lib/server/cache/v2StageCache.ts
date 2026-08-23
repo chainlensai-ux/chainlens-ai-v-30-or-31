@@ -154,10 +154,22 @@ export async function withStageCache<T>(
     // genuinely re-attempts the live fetch instead of replaying a frozen failure as if it were a
     // verified "wallet has zero events" result. Never affects the read path or `compute()` itself.
     shouldCache?: (result: T) => boolean
+    // CACHE-HIT-RATE VISIBILITY, DISCLOSED, ADDITIVE (perf-summary task: "cache hit rate" is one of
+    // the requested scanPerformanceSummary fields). Optional, backward-compatible — every existing
+    // caller that omits this keeps behaving exactly as before. Fired synchronously with a single
+    // boolean (true = served from cache, false = compute() ran) right before this function returns
+    // on either path, so a caller can accumulate real hit/miss counts without this module needing
+    // to own any cross-call aggregation state itself (this file has no per-scan lifetime to hang
+    // that state off of — the caller does).
+    trackHit?: (hit: boolean) => void
   },
 ): Promise<T> {
   const cached = await getStageCache<T>(key)
-  if (cached !== null) return cached
+  if (cached !== null) {
+    options?.trackHit?.(true)
+    return cached
+  }
+  options?.trackHit?.(false)
 
   const result = await compute()
   if (options?.skipWrite) return result

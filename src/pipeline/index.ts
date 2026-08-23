@@ -108,7 +108,7 @@ import { buildWalletConditionMessages } from './walletConditionMessages'
 import { buildSyntheticPoolPriceData, discoverAerodromePools, mapAerodromeToken, priceBaseTokenFromAerodrome, resolvePipelinePrice } from './pricing'
 import type { AerodromePool } from './metadata'
 
-import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult, WalletScannerProviderSupportAudit } from './types'
+import type { PreScanValidation, RunWalletScanParams, RunWalletScanResult, WalletScannerProviderSupportAudit, ScanPerformanceSummary } from './types'
 import { INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from './types'
 import {
   behaviorIntelFallback,
@@ -126,10 +126,24 @@ import {
   validatePreScan,
 } from './utils'
 
-export type { PreScanValidation, RunWalletScanParams, RunWalletScanResult } from './types'
+export type { PreScanValidation, RunWalletScanParams, RunWalletScanResult, ScanPerformanceSummary } from './types'
 export { INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from './types'
 
 const PROVIDER_FETCH_WINDOW_DAYS_USED = 90
+
+// REPEAT-SCAN CACHE TTL, DISCLOSED (perf-sprint task: "cache provider history windows for repeat
+// scans (5-10 min TTL)"). Was 30s for providerFetchWindow and 45s for recoveryPolicy — both tuned
+// only against "don't serve minutes-stale data on an accidental double-click", never against
+// "a user re-scanning the same wallet a few minutes later should hit cache instead of re-paying
+// the two most expensive real network calls in this pipeline" (providerFetchWindow's own comment:
+// "the single most expensive real network call in the whole pipeline"; recoveryPolicy's own
+// comment: "recovery's historical page fetches are the most expensive real network calls this
+// pipeline can make"). Both cache genuinely historical data (a past block's transfer history
+// doesn't change), so a longer window doesn't trade away correctness — it was simply never raised.
+// Kept as its own named constant (not reusing DEV_WARM_TTL_SECONDS in v2StageCache.ts, which is a
+// dev-only floor applied on top of whatever TTL a caller passes) so this specific "repeat scan"
+// intent stays visible at the call site instead of being buried in a shared cache-layer constant.
+const REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS = 300
 
 // DEPLOYMENT/VERSION AUDIT, DISCLOSED (stale-manifest self-heal follow-up task): a live scan's own
 // logs are the only way to prove which build actually served it — the two confirmed production
@@ -1299,6 +1313,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const scanStartedAtMs = performance.now()
   const scanTimer = startStageTimer()
   const providerFetchWindowKvWriter = createProviderWindowKvWriter()
+  // CACHE-HIT-RATE TRACKING, DISCLOSED, ADDITIVE: real hit/miss counts for the two stage caches
+  // this file wraps directly (providerFetchWindow, recoveryPolicy) via withStageCache's optional
+  // trackHit callback — see that option's own header in lib/server/cache/v2StageCache.ts. Scoped
+  // to this one scanTimer's lifetime (a fresh object per runWalletScan call), so concurrent scans
+  // on the same server instance never share or race on this counter.
+  const cacheStats = { providerFetchWindowHits: 0, providerFetchWindowMisses: 0, recoveryPolicyHits: 0, recoveryPolicyMisses: 0 }
 
   // 0. Pre-scan validation (Architecture Step 6 §1). An invalid request never reaches any
   // provider call — it degrades immediately to a fully-shaped, honestly-labeled report.
@@ -1335,9 +1355,12 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       const chainStart = performance.now()
       const result = await withStageCache(
         `v2:providerFetchWindow:${chain}:${params.walletAddress.toLowerCase()}`,
-        30,
+        REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS,
         () => fetchProviderWindow(chain, params.walletAddress, PROVIDER_FETCH_WINDOW_DAYS_USED, 'old-pipeline'),
-        { skipWrite: true },
+        {
+          skipWrite: true,
+          trackHit: (hit) => { if (hit) cacheStats.providerFetchWindowHits += 1; else cacheStats.providerFetchWindowMisses += 1 },
+        },
       )
       return { result, chain, latencyMs: Math.round(performance.now() - chainStart) }
     }),
@@ -1402,7 +1425,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         providerFetchWindowKvWriter.write(
           `v2:providerFetchWindow:${r.chain}:${params.walletAddress.toLowerCase()}`,
           r,
-          30
+          REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS
         ),
         new Promise<void>((resolve) => setTimeout(resolve, 300)),
       ]).catch(() => {
@@ -1520,7 +1543,19 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // or same-tx swap shape) — never auto-added to the registry, never consulted by
   // safeRunSellTimelineV2/dust suppression/FIFO/pricing below. Purely for a human to review in logs
   // and manually promote a real candidate later.
-  {
+  //
+  // BACKGROUNDED, DISCLOSED (perf-sprint task: "move router discovery to a background task"). This
+  // block is synchronous CPU work, not I/O — there's no provider call to move off-thread — but it
+  // was still running inline on the response-building critical path despite this comment's own
+  // header saying its output is consulted by nothing downstream. Deferred via setImmediate so it
+  // runs after this event-loop tick instead of before the response is assembled. Safe specifically
+  // BECAUSE nothing reads recordRouterCandidate's output within this function (or anywhere the
+  // returned report is built from) — `normalizedEvents` and `inferredRouterAddresses` are both
+  // treated as read-only/pass-through by every other comment in this file from this point on, so a
+  // deferred read of them here cannot observe a different value than an inline read would have.
+  // Zero effect on `normalizedEvents`, FIFO, pricing, or the final report shape — verified nothing
+  // in this function awaits or reads this block's result.
+  setImmediate(() => {
     const eventsByTx = new Map<string, NormalizedEvent[]>()
     for (const e of normalizedEvents) {
       const list = eventsByTx.get(e.txHash) ?? []
@@ -1544,7 +1579,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         })
       }
     }
-  }
+  })
 
   // 3. chainSelection — pure. visible_value_usd / swapCandidateEvents default to 0 (no
   // holdings-pricing or swap-detection module exists yet in this delivery — Architecture Step 7 §3).
@@ -1888,13 +1923,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   const recoveryPolicyStart = performance.now()
   const recoveryPolicy = await withStageCache(
     `v2:recoveryPolicy:${params.walletAddress.toLowerCase()}:${[...preScan.sanitizedChains].sort().join(',')}:${params.scanMode}`,
-    45,
+    REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS,
     () => safeRunRecoveryPolicy({
       buyTimeline: timelines.buyTimeline,
       sellTimeline: adaptSellTimelineV2ForRecoveryTrigger(preRecoverySellTimelineV2),
       walletAddress: params.walletAddress,
       scanMode: params.scanMode,
     }),
+    { trackHit: (hit) => { if (hit) cacheStats.recoveryPolicyHits += 1; else cacheStats.recoveryPolicyMisses += 1 } },
   )
   scanTimer.mark('recoveryPolicy', recoveryPolicyStart)
 
@@ -3560,11 +3596,44 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   })
   console.warn('[wallet-pnl-coverage-recovery-audit]', walletPnlCoverageRecoveryAudit)
 
+  // SCAN PERFORMANCE SUMMARY, DISCLOSED (perf-sprint task) — see ScanPerformanceSummary's own type
+  // header (src/pipeline/types.ts) for what each field means and why the stage order IS the
+  // critical path in this pipeline, not a heuristic. Built last, from values already computed
+  // above — no new measurement, no new provider calls.
+  const scanTotalMs = Math.round(performance.now() - scanStartedAtMs)
+  const stageEntries = Object.entries(scanTimer.stages)
+  const hitRate = (hits: number, misses: number): number | null =>
+    hits + misses > 0 ? Math.round((hits / (hits + misses)) * 1000) / 10 : null
+  const scanPerformanceSummary: ScanPerformanceSummary = {
+    totalMs: scanTotalMs,
+    stages: stageEntries.map(([name, ms]) => ({
+      name,
+      ms,
+      percentOfTotal: scanTotalMs > 0 ? Math.round((ms / scanTotalMs) * 1000) / 10 : 0,
+    })),
+    criticalPath: stageEntries.map(([name]) => name),
+    providerLatencyMs: chainLatencies.map((c) => ({ chain: c.chain, ms: c.latencyMs })),
+    cacheHitRate: {
+      providerFetchWindow: {
+        hits: cacheStats.providerFetchWindowHits,
+        misses: cacheStats.providerFetchWindowMisses,
+        hitRatePercent: hitRate(cacheStats.providerFetchWindowHits, cacheStats.providerFetchWindowMisses),
+      },
+      recoveryPolicy: {
+        hits: cacheStats.recoveryPolicyHits,
+        misses: cacheStats.recoveryPolicyMisses,
+        hitRatePercent: hitRate(cacheStats.recoveryPolicyHits, cacheStats.recoveryPolicyMisses),
+      },
+    },
+  }
+  console.warn('[pipeline] scanPerformanceSummary', scanPerformanceSummary)
+
   return {
     ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated,
     manifestFastPathAudit: walletPriceLookups.manifestFastPathAudit,
     walletScannerProviderSupportAudit,
     walletPnlCoverageRecoveryAudit,
+    scanPerformanceSummary,
     // GOLDRUSH CALL SPLIT, DISCLOSED (UI/trust follow-up task) — the real, measured
     // historical-vs-current-price split (see AcceptedEvidenceSkipAudit's own header), exposed on the
     // final result so the worker's own [wallet-provider-cost-audit] log can attribute calls
