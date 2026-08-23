@@ -73,8 +73,8 @@ export function extractRequestedChainFromPrompt(prompt: string): ClarkPromptChai
   if (BASE_CHAIN_WORD_RE.test(t)) return "base";
   return null;
 }
-const TOKEN_SAFETY_RE = /\b(is\s+this\s+(?:token\s+)?safe|is\s+it\s+safe|should\s+i\s+buy(?:\s+this(?:\s+token)?)?|is\s+this\s+(?:a\s+)?rug(?:\s+pull)?|is\s+this\s+token\s+risky|is\s+(?:it|this)\s+risky|safe\s+to\s+buy|rug\s+check|is\s+it\s+legit)\b/i;
-const DEV_RUG_RE = /\b(can\s+(?:the\s+)?dev(?:s?|eloper)?\s+rug|can\s+deployer\s+rug|does\s+dev\s+control|dev\s+control(?:s?|led)?|is\s+ownership\s+renounced|ownership\s+renounced|can\s+they\s+mint|dev\s+(?:wallet\s+)?risk|deployer\s+risk|mint\s+risk|blacklist\s+risk|proxy\s+risk|is\s+owner\s+renounced|who\s+controls\s+(?:the\s+)?supply|supply\s+control)\b/i;
+const TOKEN_SAFETY_RE = /\b(is\s+this\s+(?:token\s+)?safe|is\s+it\s+safe|should\s+i\s+buy(?:\s+this(?:\s+token)?)?|is\s+this\s+(?:a\s+)?rug(?:\s+pull|\s+risk)?|is\s+this\s+token\s+risky|is\s+(?:it|this)\s+risky|safe\s+to\s+buy|rug\s+(?:check|risk)|is\s+it\s+legit)\b/i;
+const DEV_RUG_RE = /\b(can\s+(?:the\s+)?dev(?:s?|eloper)?\s+(?:rug|dump)|can\s+deployer\s+(?:rug|dump)|does\s+dev\s+control|dev\s+control(?:s?|led)?|is\s+ownership\s+renounced|ownership\s+renounced|can\s+they\s+mint|dev\s+(?:wallet\s+)?risk|deployer\s+risk|mint\s+risk|blacklist\s+risk|proxy\s+risk|is\s+owner\s+renounced|who\s+controls\s+(?:the\s+)?supply|supply\s+control)\b/i;
 
 // "Ape"/"full risk breakdown"/"is this CA safe" — natural high-intent token-ape-risk prompts.
 // Kept separate from TOKEN_SAFETY_RE so the existing token_safety formatting/behavior is untouched.
@@ -101,9 +101,10 @@ export function isDevRugHistoryPrompt(prompt: string): boolean {
 export function classifyTokenOrWalletAddress(prompt: string): "token" | "wallet" | "ambiguous" | "none" {
   return getClarkAddressRouteHint(prompt);
 }
-const LP_LOCK_RE = /\b(is\s+lp\s+locked|lp\s+locked|can\s+liquidity\s+be\s+pulled|is\s+liquidity\s+safe|who\s+controls\s+(?:the\s+)?(?:lp|liquidity)|lp\s+(?:burned|burn)|burned\s+lp|explain\s+(?:the\s+)?(?:lp|liquidity)|what\s+about\s+lp|lp\s+(?:lock|control|safety)|liquidity\s+(?:lock|locked|safety|control|pulled))\b/i;
-const RISK_EXPL_RE = /\b(why\s+(?:is\s+(?:this|it)\s+)?(?:high|low)\s+risk|why\s+did\s+it\s+score\s+low|explain\s+(?:the\s+)?risk|what\s+are\s+the\s+red\s+flags|red\s+flags|why\s+(?:the\s+)?caution|why\s+risky|explain\s+(?:the\s+)?score|what\s+makes\s+(?:it|this)\s+risky|what\s+are\s+the\s+risks|explain\s+(?:the\s+)?verdict)\b/i;
-const TOKEN_NAME_RE = /\b([Ss]can|[Cc]heck|[Aa]nalyze|[Tt]ell\s+me\s+about|[Tt]oken\s+scan|[Ii]s|[Ll]ook\s+up)\s+\$?([A-Z][A-Z0-9]{1,10})\b/;
+const LP_LOCK_RE = /\b(is\s+lp\s+locked|lp\s+locked|run\s+lp\s+check|check\s+lp|lp\s+check|can\s+liquidity\s+be\s+pulled|is\s+liquidity\s+safe|who\s+controls\s+(?:the\s+)?(?:lp|liquidity)|lp\s+(?:burned|burn)|burned\s+lp|explain\s+(?:the\s+)?(?:lp|liquidity)|what\s+about\s+lp|lp\s+(?:lock|control|safety)|liquidity\s+(?:lock|locked|safety|control|pulled))\b/i;
+const RISK_EXPL_RE = /\b(why\s+(?:is\s+(?:this|it)\s+)?(?:high|low)\s+risk|why\s+did\s+it\s+score\s+low|explain\s+(?:the\s+)?(?:risk|lp\s+risk|holder\s+risk|contract\s+risk|risk\s+score)|what\s+are\s+the\s+red\s+flags|red\s+flags|why\s+(?:the\s+)?caution|why\s+risky|explain\s+(?:the\s+)?score|what\s+makes\s+(?:it|this)\s+risky|what\s+are\s+the\s+risks|explain\s+(?:the\s+)?verdict|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+concentration|contract\s+risk|risk\s+score)\b/i;
+const TOKEN_NAME_RE = /\b(scan|check|analyze|tell\s+me\s+about|token\s+scan|is|look\s+up)\s+\$?([a-z][a-z0-9]{1,10})\b/i;
+const TOKEN_NAME_STOPWORDS = new Set(["THIS", "THAT", "IT", "TOKEN", "WALLET", "LIQUIDITY", "LP", "SAFE", "RISK", "BE", "CHANGE", "CHECK", "LOCKED", "PULLED"]);
 
 /**
  * Single source of truth for address routing hint.
@@ -138,13 +139,15 @@ export type WalletFollowupKind =
   | "wallet_evidence_gaps"
   | "wallet_risk"
   | "wallet_profile"
+  | "wallet_trades"
+  | "wallet_activity"
   | "wallet_summary";
 
 // Only genuine imperative re-scan commands skip the followup-memory path — questions about
 // deep scan ("should I deep scan", "deep scan?") are handled below as advice from memory, not
 // as a trigger to actually re-run the wallet scanner.
 const WALLET_REFRESH_RE = /\b(refresh|rescan|run\s+full\s+scan|scan\s+again|run\s+deep\s+scan(?:\s+now)?|do\s+a\s+deep\s+scan(?:\s+now)?)\b/i;
-const WALLET_FOLLOWUP_CORE_RE = /\b(is\s+this\s+wallet\s+good|is\s+this\s+wallet\s+profitable|why\s+no\s+pnl|why\s+is\s+pnl\s+missing|explain\s+pnl|top\s+holdings?|what\s+are\s+the\s+top\s+holdings?|what\s+chains\s+is\s+it\s+active\s+on|active\s+chains?|should\s+i\s+deep\s+scan|what\s+evidence\s+is\s+missing|what\s+is\s+missing|is\s+this\s+wallet\s+risky|summarize\s+this\s+wallet|wallet\s+summary|wallet\s+risk|wallet\s+quality|wallet\s+profitability|what\s+type\s+of\s+trader|wallet\s+profile|should\s+i\s+follow|why\s+this\s+score|why\s+smart\s+money|why\s+not\s+smart\s+money|smart\s+money)\b/i;
+const WALLET_FOLLOWUP_CORE_RE = /\b(is\s+this\s+wallet\s+good|is\s+this\s+wallet\s+profitable|wallet\s+profitable|realized\s+pnl|why\s+(?:is\s+)?pnl\s+partial|partial\s+pnl|why\s+no\s+pnl|why\s+is\s+pnl\s+missing|explain\s+pnl|top\s+holdings?|what\s+are\s+the\s+top\s+holdings?|what\s+tokens?\s+is\s+(?:this|the)\s+wallet\s+holding|what\s+is\s+(?:this|the)\s+wallet\s+holding|what\s+chains\s+is\s+it\s+active\s+on|active\s+chains?|should\s+i\s+deep\s+scan|what\s+evidence\s+is\s+missing|what\s+is\s+missing|missing\s+evidence|coverage|excluded\s+lots?|is\s+this\s+wallet\s+risky|summarize\s+this\s+wallet|wallet\s+summary|wallet\s+risk|wallet\s+quality|wallet\s+profitability|best\/?worst\s+trade|best\s+or\s+worst\s+trade|biggest\s+buys?\/?sells?|biggest\s+buys?\s+and\s+sells?|what\s+type\s+of\s+trader|wallet\s+profile|is\s+this\s+wallet\s+(?:a\s+)?(?:whale|sniper|dev\s+wallet)|should\s+i\s+follow|why\s+this\s+score|why\s+smart\s+money|why\s+not\s+smart\s+money|smart\s+money)\b/i;
 // A bare "deep scan" / "deep scan?" with nothing else (no address, no "this wallet ...") is a
 // question asking for advice, not a command — must not be confused with "deep scan this wallet 0x...".
 const WALLET_DEEP_SCAN_QUESTION_RE = /^deep\s+scan\??$/i;
@@ -160,14 +163,16 @@ export function isWalletFollowupPrompt(prompt: string): boolean {
 
 export function classifyWalletFollowupKind(prompt: string): WalletFollowupKind {
   const t = String(prompt ?? "").toLowerCase();
-  if (/why\s+no\s+pnl|why\s+is\s+pnl\s+missing|explain\s+pnl|pnl\s+(?:missing|coverage|reason)/.test(t)) return "wallet_pnl_explanation";
-  if (/profitable|profitability|profit\b/.test(t)) return "wallet_profitability";
-  if (/top\s+holdings?|holdings?/.test(t)) return "wallet_holdings";
+  if (/why\s+no\s+pnl|why\s+(?:is\s+)?pnl\s+(?:missing|partial)|explain\s+pnl|pnl\s+(?:missing|coverage|reason|partial)|excluded\s+lots?|coverage/.test(t)) return "wallet_pnl_explanation";
+  if (/profitable|profitability|profit\b|realized\s+pnl/.test(t)) return "wallet_profitability";
+  if (/best\/?worst\s+trade|best\s+or\s+worst\s+trade/.test(t)) return "wallet_trades";
+  if (/biggest\s+buys?\/?sells?|biggest\s+buys?\s+and\s+sells?/.test(t)) return "wallet_activity";
+  if (/top\s+holdings?|holdings?|tokens?.*wallet.*holding|wallet.*holding/.test(t)) return "wallet_holdings";
   if (/chains?.*active|active\s+on|active\s+chains?/.test(t)) return "wallet_chains";
   if (/deep\s+scan|full\s+scan/.test(t)) return "wallet_deep_scan_advice";
   if (/evidence.*missing|missing.*evidence|gaps?|what\s+is\s+missing/.test(t)) return "wallet_evidence_gaps";
   if (/risky|risk/.test(t)) return "wallet_risk";
-  if (/what\s+type\s+of\s+trader|wallet\s+profile|should\s+i\s+follow|why\s+this\s+score|why\s+smart\s+money|why\s+not\s+smart\s+money|smart\s+money/.test(t)) return "wallet_profile";
+  if (/what\s+type\s+of\s+trader|wallet\s+profile|should\s+i\s+follow|why\s+this\s+score|why\s+smart\s+money|why\s+not\s+smart\s+money|smart\s+money|wallet\s+(?:a\s+)?(?:whale|sniper|dev\s+wallet)/.test(t)) return "wallet_profile";
   if (/good|quality|worth\s+monitoring/.test(t)) return "wallet_quality";
   return "wallet_summary";
 }
@@ -181,7 +186,7 @@ export function isWalletComparePrompt(text: string): boolean {
 
 // Task 1 (Pack 1 hard fix): token follow-up prompts that must always resolve against
 // the last scanned token in memory, never fall through to a wallet branch.
-const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+rug|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+liquidity\s+locked|explain\s+lp|explain\s+holders|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+red\s+flags|explain\s+risk|explain\s+verdict|bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check)\b/i;
+const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|safe\s+to\s+ape|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|rug\s+risk|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+(?:rug|dump)|who\s+controls\s+(?:the\s+)?supply|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+liquidity\s+locked|explain\s+lp|explain\s+holders|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+risk|contract\s+risk|risk\s+score|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+red\s+flags|explain\s+(?:the\s+)?risk|explain\s+verdict|bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check)\b/i;
 
 // Task 3: explicit wallet language must override token-memory follow-up routing — a user
 // who says "wallet pnl", "scan wallet <address>", "portfolio", or "holdings" clearly wants
@@ -205,10 +210,10 @@ export type TokenFollowupKind = "safety" | "dev_rug" | "lp_lock" | "risk" | "ana
 /** Maps a token follow-up prompt to the formatter/intent it should use. */
 export function classifyTokenFollowupKind(prompt: string): TokenFollowupKind {
   const t = String(prompt ?? "").toLowerCase();
-  if (/\b(can\s+(?:the\s+)?dev\s+rug|explain\s+dev(?:\s+control)?)\b/.test(t)) return "dev_rug";
+  if (/\b(can\s+(?:the\s+)?dev\s+(?:rug|dump)|who\s+controls\s+(?:the\s+)?supply|explain\s+dev(?:\s+control)?)\b/.test(t)) return "dev_rug";
   if (/\b(is\s+lp\s+locked|explain\s+lp|can\s+liquidity\s+be\s+pulled|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check)\b/.test(t)) return "lp_lock";
   if (/\b(bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|should\s+i\s+buy)\b/.test(t)) return "analyst";
-  if (/\b(why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|what\s+are\s+red\s+flags|explain\s+risk|explain\s+verdict|explain\s+holders)\b/.test(t)) return "risk";
+  if (/\b(why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|what\s+are\s+red\s+flags|explain\s+(?:the\s+)?risk|explain\s+verdict|explain\s+holders|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+risk|contract\s+risk|risk\s+score)\b/.test(t)) return "risk";
   return "safety";
 }
 
@@ -250,9 +255,15 @@ export function classifyClarkPrompt(prompt: string): {
   const addresses = extractAllAddressesForRouting(raw);
   const deep = WALLET_DEEP_RE.test(t);
   const tokenNameMatch = raw.match(TOKEN_NAME_RE);
-  const liquiditySymbolMatch = raw.match(/\b(?:liquidity|lp)\s+(?:check\s+)?\$?([A-Z][A-Z0-9]{1,10})\b/)
-    ?? raw.match(/\b(?:explain\s+liquidity|check\s+lp|lp\s+check)\s+\$?([A-Z][A-Z0-9]{1,10})\b/);
-  const symbol = (tokenNameMatch?.[2] ?? liquiditySymbolMatch?.[1] ?? null)?.toUpperCase() ?? null;
+  const liquiditySymbolMatch = raw.match(/\b(?:liquidity|lp)\s+(?:check\s+)?\$?([a-z][a-z0-9]{1,10})\b/i)
+    ?? raw.match(/\b(?:explain\s+liquidity|check\s+lp|lp\s+check)\s+\$?([a-z][a-z0-9]{1,10})\b/i);
+  const tokenSymbolCandidate = tokenNameMatch?.[2]?.toUpperCase() ?? null;
+  const liquiditySymbolCandidate = liquiditySymbolMatch?.[1]?.toUpperCase() ?? null;
+  const symbol = tokenSymbolCandidate && !TOKEN_NAME_STOPWORDS.has(tokenSymbolCandidate)
+    ? tokenSymbolCandidate
+    : liquiditySymbolCandidate && !TOKEN_NAME_STOPWORDS.has(liquiditySymbolCandidate)
+      ? liquiditySymbolCandidate
+      : null;
 
   // ---- Wallet compare (must run before generic wallet_scan) ----
   if (WALLET_COMPARE_RE.test(t)) {
@@ -269,14 +280,14 @@ export function classifyClarkPrompt(prompt: string): {
     return { intent: "wallet_pnl_followup", address, addresses, deep: false, symbol: null };
   }
 
-  // ---- Deterministic full token report (must run before address-based wallet_scan fallback) ----
-  if (TOKEN_FULL_REPORT_RE.test(t) && (address || symbol) && getClarkAddressRouteHint(raw) !== "wallet") {
-    return { intent: "token_full_report", address, addresses, deep: false, symbol };
-  }
-
   // ---- Token ape-risk / full risk breakdown (must run before address-based wallet_scan fallback) ----
   if (TOKEN_APE_RISK_RE.test(t)) {
     return { intent: "token_ape_risk", address, addresses, deep: false, symbol };
+  }
+
+  // ---- Deterministic full token report (must run before address-based wallet_scan fallback) ----
+  if (TOKEN_FULL_REPORT_RE.test(t) && (address || symbol) && getClarkAddressRouteHint(raw) !== "wallet") {
+    return { intent: "token_full_report", address, addresses, deep: false, symbol };
   }
 
   // ---- Dev rug HISTORY ("has this dev ever rugged before") — distinct from dev_rug_check ----
@@ -345,7 +356,7 @@ export function classifyClarkPrompt(prompt: string): {
 
   // ---- Base market discovery (generic "pumping/trending on base", no "radar") ----
   const BASE_MARKET_DISCOVERY_RE =
-    /(?:who'?s\s+pumping\s+on\s+base|whos\s+pumping\s+on\s+base|what\s+is\s+pumping\s+on\s+base|what'?s\s+pumping\s+on\s+base|base\s+pairs?\s+(?:are\s+)?pumping|(?:show\s+me\s+)?trending\s+base\s+tokens?|hot\s+base\s+tokens?|base\s+gainers|base\s+pumps|trending\s+base|base\s+(?:movers|trending)|new\s+base\s+pools|what'?s\s+(?:moving|hot|running|happening)\s+on\s+base|base\s+market|top\s+base\s+tokens|base\s+momentum|top\s+gainers\s+on\s+base|highest\s+volume\s+base\s+tokens|what\s+(?:tokens|coins)\s+are\s+moving|what\s+should\s+i\s+scan\s+on\s+base)/i;
+    /(?:who'?s\s+pumping\s+on\s+base|whos\s+pumping\s+on\s+base|what\s+is\s+pumping\s+on\s+base|what'?s\s+pumping\s+on\s+base|base\s+pairs?\s+(?:are\s+)?pumping|(?:show\s+me\s+)?trending\s+base\s+tokens?|(?:show\s+me\s+)?new\s+base\s+tokens?|hot\s+base\s+tokens?|base\s+gainers|base\s+pumps|trending\s+base|base\s+(?:movers|trending)|new\s+base\s+pools|what'?s\s+(?:moving|hot|running|happening)\s+on\s+base|base\s+market|top\s+base\s+tokens|base\s+momentum|tokens?\s+(?:with|have|show)\s+strong\s+momentum|strong\s+momentum\s+(?:tokens?|on\s+base)|top\s+gainers\s+on\s+base|highest\s+volume\s+base\s+tokens|what\s+(?:tokens|coins)\s+are\s+moving|what\s+should\s+i\s+scan\s+on\s+base)/i;
   if (BASE_MARKET_DISCOVERY_RE.test(t)) {
     return { intent: "base_market_discovery", address: null, addresses, deep: false, symbol: null };
   }
@@ -1031,6 +1042,48 @@ export function formatWalletFollowupFromMemory(address: string, result: WalletAp
     ...(canProfit ? [] : [`Reason: ${q.reason}`])
   ].join("\n");
   if (kind === "wallet_pnl_explanation") return ["PNL EXPLANATION", `PnL status: ${pnlStatus}`, "Why:", ...reasons.map(r => `- ${r}`)].join("\n");
+  if (kind === "wallet_trades") {
+    const rows = (Array.isArray(result.walletTokenPnlRead) ? result.walletTokenPnlRead : [])
+      .map((row) => {
+        const r = row && typeof row === "object" ? row as Record<string, unknown> : {};
+        const pnl = [r.realizedPnlUsd, r.realizedPnl, r.pnlUsd].find((v) => typeof v === "number" && Number.isFinite(v)) as number | undefined;
+        return { symbol: String(r.symbol ?? r.tokenSymbol ?? "?"), pnl };
+      })
+      .filter((row): row is { symbol: string; pnl: number } => row.pnl != null)
+      .sort((a, b) => b.pnl - a.pnl);
+    if (!rows.length) return [
+      "WALLET TRADES", "Best trade: Not available", "Worst trade: Not available",
+      `Missing: token-level realized PnL rows in the cached ${pnlStatus.toLowerCase()} scan.`,
+      "Next: run Wallet Scanner deep scan to recover closed-lot trade evidence.",
+    ].join("\n");
+    const best = rows[0];
+    const worst = rows[rows.length - 1];
+    return [
+      "WALLET TRADES", `Best: ${best.symbol} — ${fmtUsdShort(best.pnl)}`,
+      `Worst: ${worst.symbol} — ${fmtUsdShort(worst.pnl)}`,
+      `Evidence: ${rows.length} token-level realized PnL rows from Wallet Scanner`,
+      `Coverage: ${pnlStatus}`,
+    ].join("\n");
+  }
+  if (kind === "wallet_activity") {
+    const rows = (Array.isArray(result.walletTokenPnlRead) ? result.walletTokenPnlRead : [])
+      .map((row) => {
+        const r = row && typeof row === "object" ? row as Record<string, unknown> : {};
+        const buy = [r.totalBoughtUsd, r.boughtUsd, r.costBasisUsd].find((v) => typeof v === "number" && Number.isFinite(v)) as number | undefined;
+        const sell = [r.totalSoldUsd, r.soldUsd, r.proceedsUsd].find((v) => typeof v === "number" && Number.isFinite(v)) as number | undefined;
+        return { symbol: String(r.symbol ?? r.tokenSymbol ?? "?"), buy, sell };
+      });
+    const buys = rows.filter((r): r is typeof r & { buy: number } => r.buy != null).sort((a, b) => b.buy - a.buy).slice(0, 3);
+    const sells = rows.filter((r): r is typeof r & { sell: number } => r.sell != null).sort((a, b) => b.sell - a.sell).slice(0, 3);
+    return [
+      "WALLET BUY/SELL ACTIVITY",
+      `Largest closed-lot cost bases: ${buys.length ? buys.map((r) => `${r.symbol} ${fmtUsdShort(r.buy)}`).join(" · ") : "Not available"}`,
+      `Largest closed-lot proceeds: ${sells.length ? sells.map((r) => `${r.symbol} ${fmtUsdShort(r.sell)}`).join(" · ") : "Not available"}`,
+      `Evidence: ${rows.length ? `${rows.length} token-level canonical FIFO rows` : "missing token-level activity rows"}`,
+      "Limit: these are token aggregates, not individual biggest transactions.",
+      ...(!buys.length || !sells.length ? ["Next: run Wallet Scanner deep scan to recover transaction-side amounts."] : ["Next: open Wallet Scanner activity for exact transaction-level buys/sells."]),
+    ].join("\n");
+  }
   if (kind === "wallet_deep_scan_advice") {
     const f = walletEvidenceGapFlags(result);
     const whyLines: string[] = [];
@@ -1106,6 +1159,9 @@ export function formatWalletFollowupFromMemory(address: string, result: WalletAp
     return [
       "WALLET PROFILE",
       `Category: ${category}`,
+      `Whale: ${category === "Whale" ? "Yes — portfolio value meets the Wallet Scanner whale threshold." : category === "Not Yet Classified" ? "Open Check — portfolio value is missing." : "No — current portfolio value is below the whale threshold."}`,
+      "Sniper: Open Check — verified acquisition-timing identity evidence is not available in this read.",
+      "Dev wallet: Open Check — verified deployer/link evidence is not available in this read.",
       `Portfolio Behavior: ${portfolioBehavior}`,
       `Trading Behavior: ${tradingBehavior}`,
       `Portfolio Confidence: ${portfolioConfidence}`,
@@ -1633,6 +1689,7 @@ export type ClarkFollowupCommandIntent =
   | "scan_symbol"
   | "open_rank"
   | "explain_rank_risk"
+  | "explain_rank_momentum"
   | "rescan_current_token"
   | "rescan_current_wallet"
   | "explain_current_wallet"
@@ -1678,7 +1735,7 @@ function parseFollowupRank(text: string): number | null {
   const t = text.trim().toLowerCase();
   const ordinal = t.match(new RegExp(`\\b${RANK_VERB_RE}\\s+(?:the\\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)(?:\\s+one)?\\b`));
   if (ordinal) return ORDINAL_WORD_MAP[ordinal[1]] ?? null;
-  const numbered = t.match(new RegExp(`\\b${RANK_VERB_RE}\\s+(?:number\\s+)?([1-9]\\d{0,2})\\b`));
+  const numbered = t.match(new RegExp(`\\b${RANK_VERB_RE}\\s+(?:token\\s+)?(?:number\\s+)?([1-9]\\d{0,2})\\b`));
   if (numbered) return Number(numbered[1]);
   const bare = t.match(/^([1-9]\d{0,2})$/);
   if (bare) return Number(bare[1]);
@@ -1686,6 +1743,7 @@ function parseFollowupRank(text: string): number | null {
 }
 
 const EXPLAIN_RANK_RISK_RE = /\bexplain\s+risk\s+on\s+(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|number\s+)?([1-9]\d{0,2})?\b|\bwhy\s+is\s+(?:number\s+)?([1-9]\d{0,2})\s+risky\b|\bwhy\s+is\s+(?:the\s+)?(first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)\s+(?:one\s+)?risky\b/;
+const EXPLAIN_RANK_MOMENTUM_RE = /\bwhy\s+is\s+(?:rank\s*#?\s*|token\s+number\s+|number\s+)?([1-9]\d{0,2})\s+(?:trending|pumping|ranked\s+first|on\s+top)\b/i;
 
 function parseExplainRankRisk(text: string): number | null {
   const t = text.trim().toLowerCase();
@@ -1698,6 +1756,7 @@ function parseExplainRankRisk(text: string): number | null {
 }
 
 const RESCAN_THIS_RE = /^\s*rescan\s+(?:this|it)\b.*$|^\s*rescan\??\s*$/i;
+const SCAN_IT_RE = /^\s*(?:scan|check)\s+(?:it|this)\??\s*$/i;
 const SCAN_SYMBOL_RE = new RegExp(`\\b${RANK_VERB_RE}\\s+(?:this\\s+)?([a-zA-Z][a-zA-Z0-9]{1,14})\\b`);
 const STOPWORDS = new Set(["this", "that", "it", "token", "wallet", "one", "number"]);
 
@@ -1735,6 +1794,18 @@ export function resolveClarkFollowupCommand(
 
   const routeTag = String(ac.route ?? ac.activeFeature ?? ac.currentTool ?? "").toLowerCase();
 
+  // "scan it" binds to the active scanner context. If both token and wallet are present with no
+  // route hint, do not guess which kind of 0x address the user meant.
+  if (SCAN_IT_RE.test(t)) {
+    const isWalletRoute = /wallet/.test(routeTag);
+    const isTokenRoute = /token|pump/.test(routeTag);
+    if (isWalletRoute && ac.walletSummary?.address) return { ...empty, intent: "rescan_current_wallet", address: ac.walletSummary.address, resolvedFrom: "wallet_context" };
+    if (isTokenRoute && ac.tokenSummary?.address) return { ...empty, intent: "rescan_current_token", address: ac.tokenSummary.address, resolvedFrom: "token_context" };
+    if (ac.tokenSummary?.address && !ac.walletSummary?.address) return { ...empty, intent: "rescan_current_token", address: ac.tokenSummary.address, resolvedFrom: "token_context" };
+    if (ac.walletSummary?.address && !ac.tokenSummary?.address) return { ...empty, intent: "rescan_current_wallet", address: ac.walletSummary.address, resolvedFrom: "wallet_context" };
+    return { ...empty, omittedReason: "ambiguous_scan_target" };
+  }
+
   // 1. PnL-locked — wallet context only, never guesses from a token.
   if (/\bpnl\s+(?:is\s+)?locked\b/.test(t.toLowerCase()) || /\bwhy\s+(?:is\s+|are\s+)?(?:the\s+|my\s+)?(?:pnl|win\s*rate|profit)\b[^.?!]*\b(lock|locked|hidden|missing|unavailable|not\s+show)/i.test(t)) {
     if (ac.walletSummary) return { ...empty, intent: "explain_pnl_lock", resolvedFrom: "wallet_context" };
@@ -1749,6 +1820,19 @@ export function resolveClarkFollowupCommand(
     const addr = match.scanTarget ?? match.tokenAddress ?? null;
     if (!addr) return { ...empty, intent: "explain_rank_risk", rank: riskRank, symbol: match.symbol ?? null, resolvedFrom: listSource, omittedReason: "no_scan_target_for_rank" };
     return { ...empty, intent: "explain_rank_risk", rank: riskRank, symbol: match.symbol ?? null, address: addr, resolvedFrom: listSource };
+  }
+
+  const momentumRankMatch = t.match(EXPLAIN_RANK_MOMENTUM_RE);
+  if (momentumRankMatch) {
+    const momentumRank = Number(momentumRankMatch[1]);
+    const match = list.find((m) => m.rank === momentumRank) ?? null;
+    if (!match) return { ...empty, intent: "explain_rank_momentum", rank: momentumRank, omittedReason: list.length ? "rank_not_in_list" : "no_market_context" };
+    return {
+      ...empty, intent: "explain_rank_momentum", rank: momentumRank,
+      symbol: match.symbol ?? null, address: match.scanTarget ?? match.tokenAddress ?? null,
+      resolvedFrom: listSource,
+      omittedReason: match.scanTarget || match.tokenAddress ? null : "no_scan_target_for_rank",
+    };
   }
 
   // 3. "rescan this" — current token or wallet page, never both.
@@ -2107,8 +2191,8 @@ function lpStatusLine(ev: TokenScanEvidence): string {
   // couldn't be confirmed" (that case stays Open Check below).
   if (concentrated) {
     const proof = concentratedControllerProofStatus(lp);
-    if (proof.hasProof) return `LP proof: Open Check — Concentrated liquidity detected. Controller/position evidence: ${proof.state}.`;
-    return "LP proof: Open Check — Concentrated liquidity detected. Standard LP-token lock/burn proof does not apply. Position/controller proof is still Open Check.";
+    if (proof.hasProof) return `LP proof: Not Applicable — Concentrated liquidity detected. Standard LP-token lock/burn proof does not apply. Controller/position evidence: ${proof.state}.`;
+    return "LP proof: Not Applicable — Concentrated liquidity detected. Standard LP-token lock/burn proof does not apply. Position/controller proof is still Open Check.";
   }
   if (status === "locked" || lp.lockStatus === "locked") return `LP proof: Locked/Burned — confirmed by LP proof${reason ? ` (${reason})` : ""}`;
   if (status === "burned" || lp.burnStatus === "burned") return `LP proof: Locked/Burned — confirmed by LP proof${reason ? ` (${reason})` : ""}`;
@@ -2128,13 +2212,13 @@ function verdictLabel(ev: TokenScanEvidence): ClarkVerdict {
   const lp = ev.lpControl;
   if (sec?.honeypot === true) return "Avoid";
   if (sec?.riskLevel === "high") return "Caution";
-  if (isConcentratedLp(lp) && !concentratedControllerProofStatus(lp).hasProof) return "Open Check";
   if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") return "Caution";
   if (sec?.mintable === true && sec?.ownerRenounced === false) return "Caution";
   // Active (non-renounced) owner is a confirmed risk signal on its own, even without a
   // confirmed mint flag — the owner can still change behavior the token can't undo.
   if (sec?.ownerRenounced === false) return "Caution";
   if (h?.top10 != null && h.top10 > 80) return "Caution";
+  if (isConcentratedLp(lp) && !concentratedControllerProofStatus(lp).hasProof) return "Open Check";
   if (sec?.honeypot === false && sec?.ownerRenounced === true && (lp?.status === "locked" || lp?.status === "burned")) return "Cleaner";
   return "Open Check";
 }
@@ -2167,8 +2251,8 @@ export function formatTokenSecurityStatus(sec: NonNullable<TokenScanEvidence["se
   if (sec.buyTax != null || sec.sellTax != null) return "Tax data returned, honeypot simulation unavailable";
   // simulationStatus explains why no honeypot verdict exists — prefer it over
   // the generic securityStatus field.
-  if (sec.simulationStatus === "not_supported") return "Open Check — Security simulation unavailable.";
-  if (sec.simulationStatus === "timeout" || sec.simulationStatus === "timed_out") return "Open Check — Simulation timed out.";
+  if (sec.simulationStatus === "not_supported") return "Open Check — simulation not supported for this chain yet.";
+  if (sec.simulationStatus === "timeout" || sec.simulationStatus === "timed_out") return "Open Check — simulation timed out.";
   if (sec.simulationStatus === "failed" || sec.simulationStatus === "unavailable") return "Open Check — Security simulation unavailable.";
   const reason = sec.securityStatus && sec.securityStatus !== "unverified" && sec.securityStatus !== "unknown"
     ? sec.securityStatus
@@ -2964,7 +3048,7 @@ export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string
   if (!lp?.reason) missing.push("controller/holder identity");
   if (missing.length > 0) lines.push(`- Missing: ${missing.join(", ")}`);
 
-  lines.push("", "CTA: Run LP Check")
+  lines.push("", "CTA: Run LP Check / Open Token Scanner")
   return lines.join("\n");
 }
 
@@ -3021,6 +3105,7 @@ export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): st
     `RISK EXPLANATION — ${sym} (${chain})`,
     "",
     `Verdict: ${verdict}`,
+    ...(h?.top10 != null ? [`Holder evidence: top-10 holders control ${h.top10.toFixed(1)}% of supply.`] : []),
     "",
   ];
 
@@ -3106,8 +3191,8 @@ const MARKET_DISCOVERY_TOOL_RE = /\b(what'?s\s+pumping|whats\s+pumping|base\s+mo
 // broader summary/recent/sync matchers below.
 const WHALE_EXPLAIN_SIGNAL_RE = /\bexplain\s+(?:this\s+|that\s+)?(?:whale\s+)?(?:signal|alert|movement|move)\b|\bwhy\s+is\s+(?:this|that)\s+(?:whale\s+)?(?:signal|alert)\b/i;
 const WHALE_SYNC_RE = /\b(sync\s+whale|refresh\s+whale|whale\s+sync|whale\s+refresh|re[\s-]?check\s+whale)\b/i;
-const WHALE_RECENT_RE = /\b(what\s+wallets?\s+moved|recent(?:ly)?\s+whale|whale\s+(?:movement|moves)\s+(?:today|recently|now)|what\s+happened\s+in\s+whale|any\s+big\s+(?:buys?|sells?)|big\s+buys?\s*(?:\/|or)\s*sells?|whale\s+activity\s+today)\b/i;
-const WHALE_SUMMARY_RE = /\b(any\s+whale\s+alerts?|show\s+whale\s+(?:movement|alerts?)|whale\s+alerts?|whale\s+movement|open\s+whale\s+alerts?)\b/i;
+const WHALE_RECENT_RE = /\b(what\s+wallets?\s+moved|recent(?:ly)?\s+whale|latest\s+whale\s+alerts?|whale\s+(?:movement|moves)\s+(?:today|recently|now)|what\s+happened\s+in\s+whale|what\s+did\s+whales?\s+(?:buy|sell)|what\s+are\s+whales?\s+(?:buying|selling)|which\s+wallets?\s+are\s+accumulating|wallets?\s+accumulating|any\s+big\s+(?:buys?|sells?)|big\s+buys?\s*(?:\/|or)\s*sells?|whale\s+activity\s+today)\b/i;
+const WHALE_SUMMARY_RE = /\b(any\s+whale\s+alerts?|show\s+whale\s+(?:movement|alerts?)|whale\s+alerts?|whale\s+movement|open\s+whale\s+alerts?|which\s+(?:whale\s+)?alerts?\s+matter\s+most)\b/i;
 
 /**
  * Classifies a free-form Clark prompt into one of the new Base Radar / Whale Alerts tool-call

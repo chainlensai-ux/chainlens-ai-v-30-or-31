@@ -133,7 +133,10 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
   assert.ok(!routeFile.includes('No data available right now'), 'stale fallback string must be removed')
   assert.ok(!routeFile.includes('const walletRes = await callInternalApi(origin, "/api/wallet", scanPayload'), 'routed Clark wallet execution must not use unauthenticated internal wallet API path')
-  assert.ok(routeFile.includes('runWalletScanner'), 'Clark wallet execution should call the Wallet Scanner runner')
+  assert.ok(
+    routeFile.includes('runWalletScanner') || routeFile.includes('getWalletFromV2'),
+    'Clark wallet execution should call the current Wallet Scanner runner/adapter',
+  )
 }
 
 // ─── wallet scan formatting surfaces scanner modules ─────────────────────────
@@ -431,7 +434,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // Failure message must not just say "Token data unavailable right now."
   assert.ok(!routeFile.includes('"Token data unavailable right now."'), 'stale "unavailable" fallback removed from fetchTokenEvidence')
   assert.ok(routeFile.includes('Market, LP, and holder data'), 'specific failure message for route failure covers market/LP/holders')
-  assert.ok(routeFile.includes('Token not found on Base'), 'specific failure message for no pool data')
+  assert.ok(routeFile.includes('Token not found on ${chainDisplayLabel(chain)}'), 'specific chain-aware failure message for no pool data')
 
   // Provider names must not appear in public Clark answers
   const publicFormatterCode = routeFile.match(/function formatTokenScan[\s\S]*?^}/m)?.[0] ?? ''
@@ -615,19 +618,19 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   // Task 4: formatPartialTokenRead exists and has correct output structure
   assert.ok(routeFile.includes('formatPartialTokenRead'), 'partial token read formatter exists')
-  assert.ok(routeFile.includes('TOKEN READ — ${sym} (partial evidence)'), 'partial formatter header uses partial evidence label')
+  assert.ok(routeFile.includes('TOKEN READ — ${title}'), 'partial formatter header uses the section-aware status title')
   assert.ok(routeFile.includes('Open Check'), 'partial formatter emits Open Check for missing sections')
   assert.ok(routeFile.includes('Missing evidence:'), 'partial formatter lists missing evidence')
 
   // Task 1 partial behavior: /api/token success + honeypot timeout → partial TOKEN READ
   // Simulated by checking the routing logic: partialEvidenceUsed when one branch failed
-  assert.ok(routeFile.includes('partialEvidenceUsed = !totalFailure && (tokenRouteFailed || honeypotFailed'), 'partial evidence condition covers mixed success/fail')
+  assert.ok(routeFile.includes('partialEvidenceUsed = !totalFailure && (tokenRouteFailed || (!hasHoneypot && honeypotFailed) || noPoolData)'), 'partial evidence condition covers mixed success/fail without discarding mapped security evidence')
 
   // /api/token timeout + honeypot success → partial with market/LP/holders open_check
   assert.ok(routeFile.includes('tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable"'), 'market/holders missing reason references token route status')
 
-  // Total/no-usable-evidence failure → TOKEN READ — failed (quota-safe, never charged)
-  assert.ok(routeFile.includes('TOKEN READ — failed'), 'no-usable-evidence outputs failed header')
+  // Total/no-usable-evidence failure → TOKEN READ — open check (quota-safe, never charged)
+  assert.ok(routeFile.includes('if (!usableEvidence) return "open check"'), 'no-usable-evidence outputs an Open Check header')
 
   // No fake safe/clean/LP locked when evidence missing
   const partialReadStart = routeFile.indexOf('formatPartialTokenRead')
@@ -644,7 +647,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes('missingEvidence:'), 'lastToken stores missingEvidence')
   assert.ok(routeFile.includes("confidence:"), 'lastToken stores confidence')
   assert.ok(routeFile.includes('cachedEvidence:'), 'lastToken stores cachedEvidence')
-  assert.ok(routeFile.includes('cachedEvidence: memConfidence !== "none" ? ev : null'), 'cachedEvidence stored when evidence is present')
+  assert.ok(routeFile.includes('cachedEvidence: memConfidence !== "failed" ? ev : null'), 'cachedEvidence stored when evidence is present')
 
   // Task 6: follow-up intents use memory-first
   assert.ok(routeFile.includes('fromMemory: true'), 'resolveTokenForFollowup returns fromMemory flag')
@@ -1075,22 +1078,22 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   assert.ok(safetyOut.includes('- Ownership: active owner — privileged functions may still be callable.'), 'active owner is a safety risk signal')
   assert.ok(!safetyOut.includes('Ownership/dev control: status not confirmed'), 'confirmed active owner is not treated as missing')
-  assert.ok(safetyOut.includes('Security: Open Check — simulation unavailable from current provider.') || safetyOut.includes('Honeypot/security: simulation unavailable from current provider.'), 'safety uses canonical security wording')
-  assert.ok(scanOut.includes('Security: Open Check — simulation unavailable from current provider.'), 'token read uses canonical security wording')
+  assert.ok(safetyOut.includes('Honeypot/security: Security simulation unavailable.'), 'safety uses canonical provider-free security wording')
+  assert.ok(scanOut.includes('Security: Open Check — Security simulation unavailable.'), 'token read uses canonical provider-free security wording')
   assert.ok(!safetyOut.includes('simulation not returned'), 'safety does not use stale simulation wording')
 
   assert.ok(lpOut.includes('Status: Concentrated liquidity / protocol-specific proof required'), 'concentrated LP follow-up has protocol-specific status')
   assert.ok(lpOut.includes('Lock/burn proof: Not Applicable'), 'concentrated LP follow-up says Not Applicable')
-  assert.ok(lpOut.includes('Position/controller proof required'), 'concentrated LP follow-up requires position proof')
+  assert.ok(lpOut.includes('Position/controller proof is still Open Check.'), 'concentrated LP follow-up keeps missing position proof open')
   assert.ok(!lpOut.includes('Status: LP proof not confirmed'), 'concentrated LP follow-up does not mislabel proof as unconfirmed')
   assert.ok(devOut.includes('LP control: concentrated liquidity — standard LP lock/burn proof does not apply; position/controller proof required.'), 'dev/rug check has clean concentrated LP explanation')
   assert.ok(!devOut.includes('open check (concentrated_liquidity)'), 'dev/rug check does not print raw concentrated_liquidity open check')
   assert.ok(riskOut.includes('Ownership: NOT renounced'), 'risk explanation includes active owner')
-  assert.ok(riskOut.includes('LP control: concentrated liquidity — position/controller proof required.'), 'risk explanation includes concentrated LP context')
+  assert.ok(riskOut.includes('LP control: concentrated liquidity — position/controller proof is Open Check.'), 'risk explanation includes concentrated LP context')
   assert.ok(riskOut.includes('top-10 holders control 20.0% of supply'), 'risk explanation includes top-10 holder context')
   assert.ok(riskOut.includes('Mint authority: no mint authority detected.'), 'risk explanation includes no mint')
   assert.ok(riskOut.includes('Proxy: no proxy detected.'), 'risk explanation includes no proxy')
-  assert.ok(riskOut.includes('Security: Open Check — simulation unavailable from current provider.'), 'risk explanation includes security simulation unavailable')
+  assert.ok(riskOut.includes('Security: Open Check — Security simulation unavailable.'), 'risk explanation includes provider-free security simulation status')
 
   assert.ok(routeFile.includes('tokenEvidenceChain(ev, chain)'), 'Clark derives formatter labels from actual token evidence chain')
   assert.ok(routeFile.includes('opts.cachedEvidence.chain = evidenceChain'), 'lastToken cached evidence stores corrected chain')
@@ -1395,7 +1398,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes("isn't available yet"), 'unsupported requested chain gets an honest message instead of a silent Base fallback')
 
   // Failure/partial read wording must reflect the requested chain, not a hardcoded Base label.
-  assert.ok(routeFile.includes('`- Chain: ${chainDisplayLabel(chain)}`'), 'token read chain line uses the resolved chain label')
+  assert.ok(routeFile.includes('`Chain: ${chainDisplayLabel(tokenEvidenceChain(ev, chain))}.`'), 'token read chain line uses the evidence-resolved chain label')
   assert.ok(!routeFile.includes('`- Chain: Base`'), 'no hardcoded Base chain label remains in token read output')
   assert.ok(routeFile.includes('formatFastTokenRead(ev, chainDisplayLabel(tokenEvidenceChain(ev, chain)))'), 'fast token read uses the resolved chain label')
   assert.ok(routeFile.includes('formatTokenScanResult(ev, chainDisplayLabel(tokenEvidenceChain(ev, chain)))'), 'full token read uses the resolved chain label')
@@ -1417,7 +1420,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // Existing token-follow-up memory behavior (Task B/C) must still work after the chain fix.
   const { classifyClarkPrompt } = await import('../lib/server/clarkRouting.ts')
   const r = classifyClarkPrompt('run lp check')
-  assert.equal(r.intent, 'none')
+  assert.equal(r.intent, 'lp_lock_check')
 }
 
 // ─── Polish pass: canonical verdict + concentrated-LP + security wording ──────
@@ -1452,7 +1455,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(/Not Applicable.*(position|controller)/i.test(out), 'Not Applicable LP still explains position/controller proof may be needed')
 
   // Goal 3: security wording is specific, not a generic "not returned".
-  assert.ok(out.includes('Security: Open Check — simulation unavailable from current provider.'), 'security unavailable reason is specific')
+  assert.ok(out.includes('Security: Open Check — Security simulation unavailable.'), 'security unavailable reason is specific and provider-free')
   assert.ok(!out.toLowerCase().includes('honeypot not detected'), 'never fakes honeypot-false when honeypot is unconfirmed')
 
   // Chain compatibility: no Base-only wording leaks into the Ethereum read.
@@ -1534,7 +1537,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFileForWalletMemory.includes('toolsUsed: ["memory"]'), 'wallet memory follow-up returns toolsUsed memory')
   assert.ok(routeFileForWalletMemory.includes('quotaConsumed: false'), 'wallet memory follow-up does not consume quota')
   const guardIdx = routeFileForWalletMemory.indexOf('sessionMem.lastWallet?.address && !routed.address && isWalletFollowupPrompt(prompt)')
-  const walletCallIdx = routeFileForWalletMemory.indexOf('runWalletScanner({ address: routed.address', guardIdx)
+  const walletCallIdx = routeFileForWalletMemory.indexOf('getWalletFromV2(routed.address)', guardIdx)
   assert.ok(guardIdx >= 0 && walletCallIdx > guardIdx, 'wallet memory guard runs before wallet scan call')
   assert.ok(routeFileForWalletMemory.includes('routed.intent === "wallet_scan" && routed.address'), 'explicit new wallet address still runs wallet scan')
   assert.ok(routeFileForWalletMemory.includes('routed.intent === "token_scan"'), 'explicit token route remains available after wallet memory')
@@ -2131,7 +2134,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
     walletFacts: { status: 'ok', summary: { totalValueUsd: 8000, holdingsCount: 2, chainExposure: [{ chain: 'base', valueUsd: 8000, percent: 100 }], topHoldings: [], largestHolding: 'USDC', concentrationLabel: 'balanced', stablecoinExposurePercent: 50, nativeExposurePercent: 0 } },
     walletBehavior: { status: 'ok', source: 'activity_layer', txCount: 40, activeDays: 20, topTokens: ['WETH'], topContracts: [], inboundCount: 20, outboundCount: 20, stablecoinActivity: true, recentActivitySummary: 'active', reason: 'ok' },
     estimatedPnl: { status: 'ok', confidence: 'high', coveragePercent: 90, source: 'activity_layer', totalEstimatedPnlUsd: 500, unrealizedPnlUsd: 100, realizedPnlUsd: 400, method: 'average_cost_estimate', tokens: [], reason: 'ok' },
-    walletTradeStatsSummary: { ...baseSnapshot.walletTradeStatsSummary, status: 'ok', closedLots: 12, uniqueTokensTraded: 5, winRatePercent: 66.7, confidence: 'high', avgHoldingTimeSeconds: 3600 * 48, economicSignificance: 'meaningful', economicSignificanceReason: 'meaningful sample' },
+    walletTradeStatsSummary: { ...baseSnapshot.walletTradeStatsSummary, status: 'ok', closedLots: 12, performanceClosedLots: 12, publicClosedLots: 12, uniqueTokensTraded: 5, winRatePercent: 66.7, publicWinRatePercent: 66.7, publicRealizedPnlUsd: 400, publicPnlStatus: 'verified', scoreUnlocked: true, readyForWalletScore: true, pnlIntegrityStatus: 'valid', confidence: 'high', avgHoldingTimeSeconds: 3600 * 48, economicSignificance: 'meaningful', economicSignificanceReason: 'meaningful sample' },
     walletLotSummary: { ...baseSnapshot.walletLotSummary, status: 'ok', realizedPnlUsd: 400 },
   }
   const strongProfile = computeWalletProfile(strongSnapshot)
@@ -2262,13 +2265,12 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
     'updateMemWallet(sessionMem, resolvedAddress, null, qualityAnalysis);',
     'updateMemWallet(sessionMem, resolvedAddress, null, walletAnalysis);',
   ]
-  // Generation-side regression guard: fetchWalletSnapshot() computes snapshot.walletProfile, but the
-  // Clark wallet-scan path goes through lib/server/walletScannerRunner.ts's runWalletScanner(), which
-  // builds its own narrow return object instead of returning the snapshot directly. That object MUST
-  // forward walletProfile, or mapWalletRunnerResult's `w.walletProfile ?? null` always sees undefined
-  // and silently coerces to null before memory/persistence is ever involved.
+  // Adapter regression guard: the current runner returns the selected V2/lite result by spread,
+  // while Clark's mapper forwards walletProfile only when that source genuinely supplied it.
+  // Missing profile evidence must remain null rather than being synthesized by the adapter.
   const runnerFile = fs.readFileSync(path.join(__dirname, '..', 'lib', 'server', 'walletScannerRunner.ts'), 'utf8')
-  assert.ok(runnerFile.includes('walletProfile: snapshot.walletProfile ?? null'), 'runWalletScanner forwards snapshot.walletProfile into its return object')
+  assert.ok(runnerFile.includes('return { ...result, status: 200 as const }'), 'runWalletScanner preserves fields supplied by the selected source')
+  assert.ok(routeFile.includes('walletProfile: w.walletProfile ?? null'), 'Clark forwards real walletProfile evidence and keeps missing evidence null')
 
   for (const bareCall of previouslyBareCalls) {
     assert.ok(!routeFile.includes(bareCall), `updateMemWallet call site must pass a snapshot arg, found bare call still present: ${bareCall}`)
@@ -2277,8 +2279,9 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(updateMemWalletCallCount >= 6, 'found the expected updateMemWallet call sites to audit')
 
   const wsPage = fs.readFileSync(path.join(__dirname, '..', 'app', 'terminal', 'wallet-scanner', 'page.tsx'), 'utf8')
-  assert.ok(wsPage.includes('Wallet Profile'), 'wallet scanner page renders a Wallet Profile section')
-  assert.ok(wsPage.includes('Open Check') && wsPage.includes('Insufficient evidence'), 'wallet scanner page falls back to Open Check / Insufficient evidence when unavailable')
+  assert.ok(wsPage.includes('<WalletProfileHeader'), 'wallet scanner page renders the current Wallet Profile header')
+  const profileHeader = fs.readFileSync(path.join(__dirname, '..', 'app', 'frontend', 'components', 'WalletProfileHeader.tsx'), 'utf8')
+  assert.ok(profileHeader.includes('Nothing is invented') || profileHeader.includes('Nothing is invented'.toLowerCase()), 'wallet profile header documents its evidence-only contract')
 }
 
 // ─── Wallet Profile V2 follow-up routing audit ───
