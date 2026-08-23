@@ -47,3 +47,7 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 scan.json
+
+# perf benchmark — real wallet addresses and locally-measured run data, never committed
+/scripts/perfBenchmark/wallets.json
+/scripts/perfBenchmark/baseline.json

@@ -1,0 +1,6 @@
+{
+  "_comment": "Representative wallet set for scripts/perfBenchmark/run.ts. Copy this file to wallets.json (gitignored — never commit real user wallet addresses) and fill in real addresses you have permission to scan repeatedly. A representative set should mix wallet sizes/shapes: a few small/simple wallets (few trades, 1-2 chains), a few dense/heavy-trading wallets, and at least one deep-history wallet, since different pipeline stages dominate for different wallet shapes.",
+  "wallets": [
+    { "address": "0x0000000000000000000000000000000000dEaD", "chains": ["base", "eth"], "scanMode": "deep" }
+  ]
+}

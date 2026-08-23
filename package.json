@@ -15,7 +15,9 @@
     "test:lighthouse": "node scripts/lighthouse-sim.js",
     "test:desktop": "node scripts/desktop-perf-sim.js",
     "test:security": "node scripts/security-audit.js",
-    "env:check": "node scripts/env-check.js"
+    "env:check": "node scripts/env-check.js",
+    "perf:wallet-scan": "tsx scripts/perfBenchmark/run.ts",
+    "perf:wallet-scan:save-baseline": "tsx scripts/perfBenchmark/run.ts --save-baseline"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.88.0",
