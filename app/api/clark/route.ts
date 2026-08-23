@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { logRpcCall } from "@/lib/server/rpcDebug";
-import { getBaseMarketUniverse, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
+import { getBaseMarketUniverse, NEW_BASE_POOL_MAX_AGE_HOURS, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
 import { fetchCoinGeckoBaseTrending } from "@/lib/server/coingeckoBaseTrending";
 import { getMergedTrendingTokens } from "@/app/api/trending/route";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
@@ -17,6 +17,8 @@ import {
   buildWalletApiRequestBody,
   formatBaseMarketReadFromRows,
   formatBaseMarketReadFromCandidates,
+  formatNewBasePoolReadFromCandidates,
+  isNewBaseLaunchPrompt,
   formatBaseRadarRead,
   formatWalletScanResult,
   formatWalletCompareUnsupported,
@@ -1428,7 +1430,7 @@ function parseMarketRequest(prompt: string): { count: number; mode: BaseMarketMo
   const includePoolVariants = /\b(pools|all pools|same token pools|every pool|show all .* pools)\b/i.test(t);
   const count = explicit ? Math.min(100, explicit) : (wantsMore ? 10 : 10);
   const mode: BaseMarketMode =
-    /new launch|new base launch/.test(t) ? "new_launches" :
+    isNewBaseLaunchPrompt(t) ? "new_launches" :
     /microcap|degen|low cap|early/.test(t) ? "microcaps" :
     /cooling|pullback/.test(t) ? "cooling_watchlist" :
     /liquid/.test(t) ? "liquid_movers" :
@@ -2117,8 +2119,8 @@ function isBaseMomentumPrompt(prompt: string): boolean {
   // Broad "what's pumping / running / moving on Base" → live Base market data, not pump-alerts feed
   // Normalize apostrophes/smart-quotes so what's / what's both match
   const t = prompt.toLowerCase().replace(/[‘’ʼ`´]/g, "'");
-  return /(?:^|\s|[^a-z])(what's pumping on base|what tokens are pumping|what's running on base|what's moving up on base|show base pumps|base pumps|early movers on base|early movers|what tokens are running|momentum scan|base pump map|base momentum read|new deployments on base|new base deployments|what's hot on base right now|top base tokens|base runners|base gainers|what tokens are moving|what's moving|what's happening on base)/i.test(t)
-    || /\b(pumping on base|base momentum|momentum on base)\b/i.test(t);
+  return /(?:^|\s|[^a-z])(what's pumping on base|what tokens are pumping|what's running on base|what's moving up on base|show base pumps|base pumps|early movers on base|early movers|what tokens are running|momentum scan|base pump map|base momentum read|what's hot on base right now|top base tokens|base runners|base gainers|what tokens are moving|what's moving|what's happening on base|which tokens have the strongest momentum|which tokens have strong momentum)/i.test(t)
+    || /\b(pumping on base|base momentum|momentum on base|tokens?\s+(?:with|have)\s+(?:the\s+)?strong(?:est)?\s+momentum|(?:the\s+)?strong(?:est)?\s+momentum\s+tokens?)\b/i.test(t);
 }
 
 function isPumpSourceFollowupPrompt(prompt: string): boolean {
@@ -9205,6 +9207,27 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (routed.intent === "base_market_discovery") {
+    const wantsNewBasePools = isNewBaseLaunchPrompt(prompt);
+    if (wantsNewBasePools) {
+      const universe = await getBaseMarketUniverse({ origin, mode: "new_launches", requestedCount: 30, followup: false, excludeAddresses: [], includePoolVariants: false }).catch(() => null);
+      const candidates = universe?.candidates ?? [];
+      const mappedCandidates = candidates.map((c) => ({
+        symbol: c.symbol, name: c.name, change24h: c.change24h, volume24hUsd: c.volume24h,
+        priceUsd: c.priceUsd, marketCapUsd: c.marketCap, liquidityUsd: c.liquidityUsd,
+        tokenAddress: c.tokenAddress, poolAddress: c.poolAddress, reasonTags: c.reasonTags,
+        poolAgeHours: c.poolAgeHours, sourceTags: c.sourceTags,
+      }));
+      const formatted = formatNewBasePoolReadFromCandidates(mappedCandidates, NEW_BASE_POOL_MAX_AGE_HOURS);
+      const actions = buildRoutedActions(["Open Base Radar", "Refresh Market Data"]);
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "base_market_discovery", toolsUsed: ["base_market_universe"],
+        analysis: formatted ?? `NEW BASE POOLS\nNo Base pools with verified age ≤${NEW_BASE_POOL_MAX_AGE_HOURS}h were returned by the live feed. Unknown-age pools were excluded.\nCTA: Refresh Market Data / Open Base Radar`,
+        intentBadge: "new_base_pools",
+        actions,
+        ui: { intentBadge: "New Base Pools", actions: toClarkUiActions(actions) },
+        quotaConsumed: Boolean(formatted),
+      };
+    }
     // COINGECKO-PRIMARY, DISCLOSED ("what's pumping" vs "Base Radar" follow-up): "what's pumping"
     // now answers from CoinGecko's Base-ecosystem category — real, independent market data, not
     // Base Radar's own internal pool feed (which base_radar, above, still uses unchanged). Falls

@@ -10,7 +10,10 @@ import {
   formatWalletFollowupFromMemory,
   isTokenFollowupPrompt,
   resolveClarkFollowupCommand,
+  formatNewBasePoolReadFromCandidates,
+  isNewBaseLaunchPrompt,
 } from '../lib/server/clarkRouting.ts'
+import { NEW_BASE_POOL_MAX_AGE_HOURS, rankBaseMarketCandidates } from '../lib/server/baseMarketUniverse.ts'
 
 const wallet = `0x${'1'.repeat(40)}`
 const token = `0x${'2'.repeat(40)}`
@@ -49,6 +52,7 @@ const domainMatrix = {
     'What is pumping on Base?',
     'Show new Base tokens.',
     'Which tokens have strong momentum?',
+    'Which tokens have the strongest momentum?',
     'Why is rank 1 trending?',
     'Scan token number 3.',
   ],
@@ -111,6 +115,23 @@ assert.equal(isTokenFollowupPrompt('Explain contract risk.'), true)
 assert.equal(classifyClarkPrompt('What is pumping on Base?').intent, 'base_market_discovery')
 assert.equal(classifyClarkPrompt('Show new Base tokens.').intent, 'base_market_discovery')
 assert.equal(classifyClarkPrompt('Which tokens have strong momentum?').intent, 'base_market_discovery')
+assert.equal(classifyClarkPrompt('Which tokens have the strongest momentum?').intent, 'base_market_discovery')
+assert.equal(classifyClarkAnalystIntent('Which tokens have the strongest momentum?').route, 'base_market')
+
+// "New Base tokens" is an age-verified pool query, never a renamed ecosystem/momentum list.
+assert.equal(isNewBaseLaunchPrompt('Show new Base tokens.'), true)
+const marketFixture = [
+  { tokenAddress: token, poolAddress: `0x${'5'.repeat(40)}`, symbol: 'FRESH', name: 'Fresh', priceUsd: 1, change1h: 2, change6h: 5, change24h: 10, volume24h: 50_000, liquidityUsd: 25_000, fdv: null, marketCap: null, txns24h: 20, buys24h: 14, sells24h: 6, poolAgeHours: 2, dex: 'uniswap-v3', sourceTags: ['gt_new'], reasonTags: [] },
+  { tokenAddress: `0x${'6'.repeat(40)}`, poolAddress: `0x${'7'.repeat(40)}`, symbol: 'OLD', name: 'Old', priceUsd: 1, change1h: 20, change6h: 30, change24h: 100, volume24h: 5_000_000, liquidityUsd: 2_000_000, fdv: null, marketCap: null, txns24h: 200, buys24h: 140, sells24h: 60, poolAgeHours: 24 * 365, dex: 'uniswap-v3', sourceTags: ['gt_trending'], reasonTags: [] },
+  { tokenAddress: `0x${'8'.repeat(40)}`, poolAddress: null, symbol: 'UNKNOWN', name: 'Unknown', priceUsd: 1, change1h: null, change6h: null, change24h: 50, volume24h: 2_000_000, liquidityUsd: 1_000_000, fdv: null, marketCap: null, txns24h: null, buys24h: null, sells24h: null, poolAgeHours: null, dex: null, sourceTags: ['trending_feed'], reasonTags: [] },
+]
+const newOnly = rankBaseMarketCandidates(marketFixture, 'new_launches')
+assert.deepEqual(newOnly.map((row) => row.symbol), ['FRESH'])
+assert.ok(rankBaseMarketCandidates(marketFixture, 'pumping').some((row) => row.symbol === 'OLD'), 'age filtering applies only to new-launch discovery')
+const newRead = formatNewBasePoolReadFromCandidates(newOnly.map((row) => ({ ...row, volume24hUsd: row.volume24h })), NEW_BASE_POOL_MAX_AGE_HOURS)
+assert.match(newRead ?? '', /FRESH — 2\.0h old/)
+assert.doesNotMatch(newRead ?? '', /OLD|UNKNOWN/)
+assert.match(newRead ?? '', /Unknown-age pools were excluded/)
 assert.equal(classifyClarkToolIntent('Show latest whale alerts.').intent, 'whale_alerts_recent')
 assert.equal(classifyClarkToolIntent('What did whales buy/sell?').intent, 'whale_alerts_recent')
 assert.equal(classifyClarkToolIntent('Which wallets are accumulating?').intent, 'whale_alerts_recent')
@@ -152,6 +173,7 @@ assert.match(routeSource, /isChainLensAnalystPrompt\(prompt\)/)
 assert.match(routeSource, /handlePumpIntelligenceQuestion/)
 assert.match(routeSource, /pump_intelligence_report/)
 assert.match(routeSource, /\^\\s\*why\\\?\?\\s\*\$/)
+assert.ok(routeSource.indexOf('const wantsNewBasePools = isNewBaseLaunchPrompt(prompt)') < routeSource.indexOf('const cgTrending = await fetchCoinGeckoBaseTrending()'), 'new-pool routing must bypass the CoinGecko ecosystem mover list')
 
 // The V2 adapter must not discard live portfolio/canonical PnL evidence before Clark sees it.
 const v2AdapterSource = fs.readFileSync(new URL('../lib/server/v2Adapters.ts', import.meta.url), 'utf8')

@@ -1,5 +1,7 @@
 export type BaseMarketMode = "pumping" | "new_launches" | "liquid_movers" | "microcaps" | "cooling_watchlist";
 
+export const NEW_BASE_POOL_MAX_AGE_HOURS = 72;
+
 export type BaseMarketCandidate = {
   tokenAddress: string | null;
   poolAddress: string | null;
@@ -102,7 +104,7 @@ function normalizePool(raw: Record<string, unknown>, source: string): BaseMarket
   };
 }
 
-function rankAndTag(items: BaseMarketCandidate[], mode: BaseMarketMode): BaseMarketCandidate[] {
+export function rankBaseMarketCandidates(items: BaseMarketCandidate[], mode: BaseMarketMode): BaseMarketCandidate[] {
   const micro = mode === "microcaps";
   const filtered = items.filter((t) => {
     if (!t.symbol || !t.name) return false;
@@ -110,6 +112,10 @@ function rankAndTag(items: BaseMarketCandidate[], mode: BaseMarketMode): BaseMar
     if (!micro && MAJORS.has(t.symbol)) return false;
     if ((t.volume24h ?? 0) <= 0 && (t.liquidityUsd ?? 0) <= 0) return false;
     if (!micro && (t.liquidityUsd ?? 0) < 500) return false;
+    // "New Base tokens" is a time-bounded discovery request, not a momentum alias.
+    // Only rows with provider-backed pool creation evidence may enter this mode.
+    // Unknown-age and established pools are excluded instead of being guessed as new.
+    if (mode === "new_launches" && (t.poolAgeHours == null || t.poolAgeHours > NEW_BASE_POOL_MAX_AGE_HOURS)) return false;
     return true;
   });
 
@@ -123,14 +129,14 @@ function rankAndTag(items: BaseMarketCandidate[], mode: BaseMarketMode): BaseMar
     if ((t.volume24h ?? 0) > 0 && (t.liquidityUsd ?? 0) > 0) score += Math.min(6, (t.volume24h! / t.liquidityUsd!) * 3);
     if ((t.liquidityUsd ?? 0) < 2_000 && (t.change24h ?? 0) > 80) score -= 10;
     if ((t.volume24h ?? 0) < 3_000) score -= 4;
-    if (mode === "new_launches" && (t.poolAgeHours ?? 1e6) < 72) score += 7;
+    if (mode === "new_launches" && (t.poolAgeHours ?? 1e6) <= NEW_BASE_POOL_MAX_AGE_HOURS) score += 7;
     if (mode === "cooling_watchlist" && (t.change24h ?? 0) < 0 && (t.volume24h ?? 0) > 10_000) score += 4;
 
     const reasonTags: string[] = [];
     if ((t.liquidityUsd ?? 0) > 100_000 && (t.volume24h ?? 0) > 100_000) reasonTags.push("liquid mover");
     if ((t.volume24h ?? 0) > 0 && (t.liquidityUsd ?? 0) > 0 && (t.volume24h! / t.liquidityUsd!) > 1.2) reasonTags.push("volume expansion");
     if ((t.liquidityUsd ?? 0) < 10_000 && (t.change24h ?? 0) > 40) reasonTags.push("thin-liquidity moonshot");
-    if ((t.poolAgeHours ?? 9999) < 72) reasonTags.push("new pool");
+    if ((t.poolAgeHours ?? 9999) <= NEW_BASE_POOL_MAX_AGE_HOURS) reasonTags.push("new pool");
     if ((t.change24h ?? 0) < 0 && (t.liquidityUsd ?? 0) > 40_000) reasonTags.push("cooling but liquid");
     if (reasonTags.length === 0) reasonTags.push("established Base name");
 
@@ -154,6 +160,8 @@ function mergeCandidate(prev: BaseMarketCandidate, next: BaseMarketCandidate): B
     reasonTags: better.reasonTags.length ? better.reasonTags : other.reasonTags,
     tokenAddress: better.tokenAddress ?? other.tokenAddress,
     poolAddress: better.poolAddress ?? other.poolAddress,
+    poolAgeHours: better.poolAgeHours ?? other.poolAgeHours,
+    dex: better.dex ?? other.dex,
   };
 }
 
@@ -308,7 +316,12 @@ export async function getBaseMarketUniverse(input: {
     new Promise((resolve) => setTimeout(resolve, timeoutMs)),
   ]);
 
-  const ranked = dedupeRanked(rankAndTag(dedupe(all), input.mode), input.includePoolVariants);
+  // Filter verified-new pools before token-level dedupe. Otherwise an established, deeper pool
+  // for the same token can win the merge and hide a genuinely new pool's creation timestamp.
+  const modeEligible = input.mode === "new_launches"
+    ? all.filter((item) => item.poolAgeHours != null && item.poolAgeHours <= NEW_BASE_POOL_MAX_AGE_HOURS)
+    : all;
+  const ranked = dedupeRanked(rankBaseMarketCandidates(dedupe(modeEligible), input.mode), input.includePoolVariants);
   cache.set(key, { at: Date.now(), data: ranked });
   let out = ranked;
   const ex = new Set((input.excludeAddresses ?? []).map((x) => x.toLowerCase()));

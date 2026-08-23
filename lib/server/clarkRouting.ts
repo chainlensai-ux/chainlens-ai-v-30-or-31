@@ -356,7 +356,7 @@ export function classifyClarkPrompt(prompt: string): {
 
   // ---- Base market discovery (generic "pumping/trending on base", no "radar") ----
   const BASE_MARKET_DISCOVERY_RE =
-    /(?:who'?s\s+pumping\s+on\s+base|whos\s+pumping\s+on\s+base|what\s+is\s+pumping\s+on\s+base|what'?s\s+pumping\s+on\s+base|base\s+pairs?\s+(?:are\s+)?pumping|(?:show\s+me\s+)?trending\s+base\s+tokens?|(?:show\s+me\s+)?new\s+base\s+tokens?|hot\s+base\s+tokens?|base\s+gainers|base\s+pumps|trending\s+base|base\s+(?:movers|trending)|new\s+base\s+pools|what'?s\s+(?:moving|hot|running|happening)\s+on\s+base|base\s+market|top\s+base\s+tokens|base\s+momentum|tokens?\s+(?:with|have|show)\s+strong\s+momentum|strong\s+momentum\s+(?:tokens?|on\s+base)|top\s+gainers\s+on\s+base|highest\s+volume\s+base\s+tokens|what\s+(?:tokens|coins)\s+are\s+moving|what\s+should\s+i\s+scan\s+on\s+base)/i;
+    /(?:who'?s\s+pumping\s+on\s+base|whos\s+pumping\s+on\s+base|what\s+is\s+pumping\s+on\s+base|what'?s\s+pumping\s+on\s+base|base\s+pairs?\s+(?:are\s+)?pumping|(?:show\s+me\s+)?trending\s+base\s+tokens?|(?:show\s+me\s+)?new\s+base\s+tokens?|hot\s+base\s+tokens?|base\s+gainers|base\s+pumps|trending\s+base|base\s+(?:movers|trending)|new\s+base\s+pools|what'?s\s+(?:moving|hot|running|happening)\s+on\s+base|base\s+market|top\s+base\s+tokens|base\s+momentum|tokens?\s+(?:with|have|show)\s+(?:the\s+)?strong(?:est)?\s+momentum|(?:the\s+)?strong(?:est)?\s+momentum\s+(?:tokens?|on\s+base)|which\s+tokens?\s+have\s+(?:the\s+)?strong(?:est)?\s+momentum|top\s+gainers\s+on\s+base|highest\s+volume\s+base\s+tokens|what\s+(?:tokens|coins)\s+are\s+moving|what\s+should\s+i\s+scan\s+on\s+base)/i;
   if (BASE_MARKET_DISCOVERY_RE.test(t)) {
     return { intent: "base_market_discovery", address: null, addresses, deep: false, symbol: null };
   }
@@ -458,7 +458,13 @@ export type MarketLikeRow = {
   contract?: string | null;
   pairAddress?: string | null;
   reasonTags?: string[] | null;
+  poolAgeHours?: number | null;
+  sourceTags?: string[] | null;
 };
+
+export function isNewBaseLaunchPrompt(prompt: string): boolean {
+  return /\b(?:new|fresh|recent(?:ly)?\s+launched)\s+(?:base\s+)?(?:tokens?|pools?|launches?|deployments?)\b/i.test(String(prompt ?? ""));
+}
 
 const MAJOR_BASE_SYMBOLS = new Set([
   "ETH", "WETH", "CBETH", "CBBTC", "BTC", "WBTC", "USDC", "USDBC", "USDT", "DAI",
@@ -526,6 +532,27 @@ export function formatBaseMarketReadFromRows(rows: MarketLikeRow[] | undefined |
 export function formatBaseMarketReadFromCandidates(candidates: MarketLikeRow[] | undefined | null): string | null {
   if (!candidates || candidates.length === 0) return null;
   return formatBaseMarketReadFromRows(candidates);
+}
+
+export function formatNewBasePoolReadFromCandidates(candidates: MarketLikeRow[] | undefined | null, maxAgeHours = 72): string | null {
+  if (!candidates || candidates.length === 0) return null;
+  const verified = candidates
+    .filter((row) => row.poolAgeHours != null && Number.isFinite(row.poolAgeHours) && row.poolAgeHours >= 0 && row.poolAgeHours <= maxAgeHours)
+    .sort((a, b) => (a.poolAgeHours ?? Infinity) - (b.poolAgeHours ?? Infinity))
+    .slice(0, 10);
+  if (verified.length === 0) return null;
+
+  const lines = [`NEW BASE POOLS — verified age ≤${maxAgeHours}h`];
+  verified.forEach((row, index) => {
+    const sym = String(row.symbol ?? "?").toUpperCase();
+    const age = row.poolAgeHours! < 1 ? `${Math.max(1, Math.round(row.poolAgeHours! * 60))}m` : `${row.poolAgeHours!.toFixed(1)}h`;
+    const target = row.tokenAddress ?? row.poolAddress ?? row.contract ?? row.pairAddress ?? null;
+    lines.push(`${index + 1}. ${sym} — ${age} old | ${fmtPct(row.change24h)} 24h | vol ${fmtUsdShort(row.volume24hUsd)} | liq ${fmtUsdShort(row.liquidityUsd)}`);
+    if (target) lines.push(`   Contract/pool: ${target}`);
+    lines.push(`   Source: GeckoTerminal pool_created_at${row.sourceTags?.length ? ` · ${row.sourceTags.join(", ")}` : ""}`);
+  });
+  lines.push("", "Unknown-age pools were excluded. New pool does not mean safe.", "CTA: Scan a rank / Open Base Radar / Refresh Market Data");
+  return lines.join("\n");
 }
 
 // ─────────────────────────────────────────────────────────────────────────
