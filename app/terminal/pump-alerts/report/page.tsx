@@ -15,6 +15,7 @@ import type {
   PumpIntelligenceReport, Confidence, Catalyst, RiskFactor, KillSignal,
   ContinuationSignal, WalletRow, TimelineEvent, WatchItem,
 } from '@/lib/server/pumpIntelligence'
+import styles from './report.module.css'
 
 const CONF_COLOR: Record<Confidence, string> = { high: '#4ade80', medium: '#fbbf24', low: '#fb923c', unavailable: '#64748b' }
 const CONF_BG: Record<Confidence, string> = { high: 'rgba(74,222,128,0.10)', medium: 'rgba(251,191,36,0.10)', low: 'rgba(251,146,60,0.10)', unavailable: 'rgba(100,116,139,0.10)' }
@@ -42,12 +43,12 @@ function ImpactBadge({ impact }: { impact: 'high' | 'medium' | 'low' }) {
 
 function Section({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   return (
-    <section style={{ marginBottom: '22px' }}>
-      <div style={{ marginBottom: '10px' }}>
+    <section className={styles.section} style={{ marginBottom: '22px' }}>
+      <div className={styles.sectionHeader} style={{ marginBottom: '10px' }}>
         <h2 style={{ margin: 0, fontSize: '13px', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase', color: '#e2e8f0', fontFamily: 'var(--font-plex-mono)' }}>{title}</h2>
         {subtitle && <p style={{ margin: '3px 0 0', fontSize: '11px', color: '#64748b' }}>{subtitle}</p>}
       </div>
-      <div style={{
+      <div className={styles.sectionPanel} style={{
         background: 'linear-gradient(135deg, rgba(255,255,255,0.04), rgba(255,255,255,0.015))',
         border: '1px solid rgba(255,255,255,0.08)', borderRadius: '16px', padding: '16px',
         boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04)',
@@ -81,7 +82,7 @@ function shortAddr(a: string): string { return a.length > 12 ? `${a.slice(0, 6)}
 
 function StatTile({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div style={{ padding: '10px 12px', borderRadius: '12px', background: 'rgba(2,6,23,0.3)', border: '1px solid rgba(255,255,255,0.06)' }}>
+    <div className={styles.statTile} style={{ padding: '10px 12px', borderRadius: '12px', background: 'rgba(2,6,23,0.3)', border: '1px solid rgba(255,255,255,0.06)' }}>
       <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '4px' }}>{label}</div>
       <div style={{ fontSize: '15px', fontWeight: 800, color: '#f1f5f9', fontFamily: 'var(--font-plex-mono)' }}>{value}</div>
       {sub && <div style={{ fontSize: '9.5px', color: '#64748b', marginTop: '2px' }}>{sub}</div>}
@@ -197,17 +198,30 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
   const es = report.executiveSummary
   const ms = report.marketStructure
   return (
-    <div style={{ maxWidth: '860px' }}>
+    <div className={styles.report}>
       {/* Header */}
-      <div style={{ marginBottom: '22px' }}>
-        <div style={{ fontSize: '10px', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#c4b5fd', fontFamily: 'var(--font-plex-mono)', marginBottom: '6px' }}>Pump Intelligence Report</div>
-        <h1 style={{ margin: 0, fontSize: '24px', fontWeight: 900, color: '#f8fafc' }}>{report.name} <span style={{ color: '#64748b', fontWeight: 700, fontSize: '16px' }}>{report.symbol}</span></h1>
-        <div style={{ fontSize: '10.5px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginTop: '4px' }}>{shortAddr(report.contract)} · {report.chain} · Generated {fmtTime(report.generatedAt)}</div>
-      </div>
+      <header className={styles.hero}>
+        <div className={styles.identity}>
+          <div className={styles.tokenMark} aria-hidden="true">{(report.symbol || report.name || 'T').charAt(0).toUpperCase()}</div>
+          <div style={{ minWidth: 0 }}>
+            <p className={styles.eyebrow}>ChainLens intelligence dossier</p>
+            <h1 className={styles.title}>{report.name} <span className={styles.symbol}>{report.symbol}</span></h1>
+            <div className={styles.metaRow}>
+              <span className={styles.metaChip}>{shortAddr(report.contract)}</span>
+              <span className={styles.metaChip}>{report.chain.toUpperCase()} NETWORK</span>
+              <span className={styles.metaChip}>GENERATED {fmtTime(report.generatedAt)}</span>
+            </div>
+          </div>
+        </div>
+        <div className={styles.statusWrap}>
+          <span className={styles.status}><span className={styles.statusDot} />LIVE EVIDENCE</span>
+          <span className={styles.statusCaption}>Evidence-grounded · real-time scan</span>
+        </div>
+      </header>
 
       {/* 1. Executive Summary */}
       <Section title="Executive Summary">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '14px' }}>
+        <div className={styles.dataGrid} style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px', marginBottom: '14px' }}>
           <StatTile label="Momentum Score" value={es.momentumScore != null ? `${es.momentumScore}/100` : '—'} />
           <StatTile label="Continuation" value={es.continuationProbability === 'unavailable' ? '—' : es.continuationProbability.toUpperCase()} />
           <StatTile label="Pullback Risk" value={es.pullbackRisk === 'unavailable' ? '—' : es.pullbackRisk.toUpperCase()} />
@@ -225,7 +239,7 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
 
       {/* 3. Market Structure */}
       <Section title="Market Structure">
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
+        <div className={styles.dataGrid} style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
           <StatTile label="Buys / Sells (24h)" value={ms.buys24h != null && ms.sells24h != null ? `${ms.buys24h} / ${ms.sells24h}` : '—'} sub={ms.buySellRatio != null ? `${ms.buySellRatio.toFixed(2)}:1` : undefined} />
           <StatTile label="Liquidity" value={fmtUsd(ms.liquidityUsd)} sub="Snapshot only" />
           <StatTile label="Volume (24h)" value={fmtUsd(ms.volume24hUsd)} />
@@ -244,7 +258,7 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
 
       {/* 4. Wallet Intelligence */}
       <Section title="Wallet Intelligence" subtitle={report.walletIntelligence.dataSource}>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '18px' }}>
+        <div className={styles.twoColumn} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '18px' }}>
           <div>
             <div style={{ fontSize: '10px', fontWeight: 700, color: '#4ade80', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '4px' }}>Largest Buyers</div>
             {report.walletIntelligence.largestBuyers.length === 0 ? <Empty text="None tracked." /> : report.walletIntelligence.largestBuyers.map((w, i) => <WalletRowView key={i} w={w} />)}
@@ -354,17 +368,20 @@ function ReportPageInner() {
   if (!canAccessFeature(plan, 'pump-alerts')) return <LockedPanel feature="pump-alerts" />
 
   return (
-    <div style={{ padding: '28px 32px 120px', color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
+    <main className={styles.page}>
+      <div className={styles.content}>
       <button
+        type="button"
         onClick={() => router.push('/terminal/pump-alerts')}
-        style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', marginBottom: '18px', padding: '7px 13px', borderRadius: '999px', border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.03)', color: '#94a3b8', fontSize: '11px', fontWeight: 700, cursor: 'pointer', fontFamily: 'var(--font-plex-mono)' }}
+        className={styles.backButton}
       >
-        ← Back to Pump Alerts
+        <span className={styles.backArrow}>←</span> Back to Pump Alerts
       </button>
-      {loading && <div style={{ color: '#64748b', fontFamily: 'var(--font-plex-mono)', fontSize: '12px' }}>Building intelligence report…</div>}
-      {!loading && error && <div style={{ color: '#f87171', fontFamily: 'var(--font-plex-mono)', fontSize: '12px' }}>{error}</div>}
+      {loading && <div className={styles.loading} aria-label="Building intelligence report"><div className={styles.loadingCard} /><div className={styles.loadingCard} /><div className={styles.loadingCard} /></div>}
+      {!loading && error && <div className={styles.error}><strong>Report evidence unavailable</strong><br />{error}</div>}
       {!loading && !error && report && <ReportView report={report} />}
-    </div>
+      </div>
+    </main>
   )
 }
 
