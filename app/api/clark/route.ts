@@ -88,6 +88,8 @@ import {
   classifyClarkToolIntent,
   type ClarkToolIntent,
   isClarkWatchlistAddCommand,
+  formatPumpAnalysisRead,
+  isPumpAnalysisPrompt,
 } from "@/lib/server/clarkRouting";
 import { buildBaseRadarDisplayModel } from "@/lib/baseRadarDisplayModel";
 import { classifyClarkAnalystIntent, isChainLensAnalystPrompt } from "@/lib/server/clarkAnalystIntent";
@@ -9578,6 +9580,71 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       intentBadge: "base_market_discovery",
       actions: noDataActions,
       ui: { intentBadge: "Base Market Read", actions: toClarkUiActions(noDataActions) },
+      quotaConsumed: false,
+    };
+  }
+
+  // ── Pump analysis (specific active pump) — reads real Pump Alerts / Intelligence data ──
+  // Data sources, in order: an address in the prompt or session memory → /api/pump-alerts/intelligence
+  // (full report; Pro/Elite-gated upstream — a 403 is surfaced honestly, never downgraded);
+  // otherwise the live /api/pump-alerts list so Clark can name what's pumping right now and ask
+  // which one to analyze. No fabricated momentum/continuation/pressure values, ever.
+  if (routed.intent === "pump_analysis") {
+    const pumpAddress = routed.address ?? extractAddress(prompt) ?? null;
+    if (pumpAddress) {
+      const intel = await callInternalApi(origin, `/api/pump-alerts/intelligence?contract=${encodeURIComponent(pumpAddress)}&chain=${chain === "ethereum" ? "eth" : chain}`, {}, authHeader ?? undefined, verifiedPlan, 12_000).catch(() => null);
+      const intelJson = (intel?.json && typeof intel.json === "object" ? intel.json : null) as Record<string, unknown> | null;
+      const formatted = formatPumpAnalysisRead(intelJson as never);
+      if (formatted) {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "pump_analysis", toolsUsed: ["pump_intelligence_report"],
+          analysis: formatted,
+          intentBadge: "pump_analysis",
+          actions: buildRoutedActions(["Open Token Scanner", "Refresh Market Data"]),
+          quotaConsumed: true,
+        };
+      }
+      // Intelligence unavailable (plan gate, no data, or fetch failure) — say exactly why.
+      const gateNote = intel?.status === 403
+        ? "Pump Intelligence Reports are included in Pro and Elite."
+        : "No Pump Intelligence report is available for this contract right now.";
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "pump_analysis", toolsUsed: ["pump_intelligence_report"],
+        analysis: `${gateNote}\nMissing data: momentum score, continuation probability, buy/sell pressure, whale flow.\nWhat fixes it: open Pump Alerts and generate the report from there${intel?.status === 403 ? " (requires Pro/Elite)" : ", or paste the token contract once a report exists"}.`,
+        intentBadge: "pump_analysis",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+      };
+    }
+    // No address — show what's pumping right now from the live Pump Alerts feed.
+    try {
+      const res = await fetch(`${origin}/api/pump-alerts?t=${Date.now()}`, { signal: AbortSignal.timeout(6000), cache: "no-store", headers: authHeader ? { Authorization: authHeader } : {} });
+      if (res.ok) {
+        const json = await res.json();
+        const alerts: Array<Record<string, unknown>> = Array.isArray(json?.alerts) ? json.alerts : [];
+        if (alerts.length > 0) {
+          const top = alerts.slice(0, 5).map((a, i) => {
+            const sym = String(a.symbol ?? "?").toUpperCase();
+            const chg = typeof a.change24h === "number" ? ` ${a.change24h > 0 ? "+" : ""}${a.change24h.toFixed(1)}%` : "";
+            const liq = typeof a.liquidityUsd === "number" ? ` · LP ${formatUsdShort(a.liquidityUsd)}` : "";
+            const cat = typeof a.category === "string" ? ` · ${a.category}` : "";
+            return `${i + 1}. ${sym}${chg}${liq}${cat} — ${String(a.contract ?? "")}`;
+          });
+          return {
+            feature: "clark-ai", chain, mode: "analysis", intent: "pump_analysis", toolsUsed: ["pump_alerts_feed"],
+            analysis: `PUMP ALERTS — LIVE\n${top.join("\n")}\n\nWhich one should I break down? Give me the number, symbol, or contract and I'll pull the full pump intelligence read.`,
+            intentBadge: "pump_analysis",
+            actions: buildRoutedActions(["Refresh Market Data", "Open Token Scanner"]),
+            quotaConsumed: false,
+          };
+        }
+      }
+    } catch { /* fall through to honest empty state */ }
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "pump_analysis", toolsUsed: ["pump_alerts_feed"],
+      analysis: formatNoPumpCandidates(),
+      intentBadge: "pump_analysis",
+      actions: buildRoutedActions(["Refresh Market Data"]),
       quotaConsumed: false,
     };
   }

@@ -39,6 +39,7 @@ export type ClarkRoutedIntent =
   | "wallet_compare"
   | "liquidity_scan"
   | "whale_alert"
+  | "pump_analysis"
   | "token_scan"
   | "token_full_report"
   | "token_safety"
@@ -242,6 +243,16 @@ export function extractAllAddressesForRouting(text: string): string[] {
  * Returns "none" when the prompt does not match any of the new routing rules
  * (callers should fall back to the existing detectIntent()/detectLiveIntent()).
  */
+// Pump-analysis prompts — questions about WHY a token is pumping, whether a pump will
+// continue, buy/sell pressure, and what to watch. Distinct from base_market_discovery
+// ("what's pumping on Base" = discovery list) — these are about a specific active pump.
+const PUMP_ANALYSIS_RE = /\b(why\s+is\s+(?:this|it|the)?\s*(?:token|coin)?\s*pumping|is\s+the\s+pump\s+likely\s+to\s+continue|will\s+the\s+pump\s+continue|pump\s+continuation|buy(?:\/|\s+or\s+|\s*\/\s*)?sell(?:ing)?\s+pressure|what\s+could\s+kill\s+(?:this|the)\s+pump|what\s+should\s+i\s+watch\s+on\s+(?:this|the)\s+pump|is\s+(?:this|the)\s+pump\s+(?:organic|fake|real)|top\s+(?:buyers?|sellers?)\s+(?:on|of|for)\s+(?:this|the)\s+pump|show\s+(?:me\s+)?(?:whale\s+)?(?:buys?|sells?|flow)\s+on\s+(?:this|the)\s+pump|volume\s+acceleration|liquidity\s+change)\b/i;
+
+/** True for pump-specific analysis prompts (why pumping / continuation / pressure). */
+export function isPumpAnalysisPrompt(prompt: string): boolean {
+  return PUMP_ANALYSIS_RE.test(String(prompt ?? "").trim());
+}
+
 export function classifyClarkPrompt(prompt: string): {
   intent: ClarkRoutedIntent;
   address: string | null;
@@ -276,7 +287,9 @@ export function classifyClarkPrompt(prompt: string): {
   // ---- Wallet PnL / history follow-up ("why is pnl missing", "dig deeper", "recover more history") ----
   // These rely on session memory (lastWallet). We still classify them so the caller
   // can resolve the address from memory instead of asking again.
-  if (isWalletFollowupPrompt(t)) {
+  // Educational guard: "What does partial PnL mean?" is a definition question, not a
+  // session follow-up — it must reach the educational handlers, never wallet memory.
+  if (isWalletFollowupPrompt(t) && !/^\s*what\s+(?:does|is)\b/i.test(t)) {
     return { intent: "wallet_pnl_followup", address, addresses, deep: false, symbol: null };
   }
 
@@ -361,8 +374,15 @@ export function classifyClarkPrompt(prompt: string): {
     return { intent: "base_market_discovery", address: null, addresses, deep: false, symbol: null };
   }
 
+  // ---- Pump analysis (specific active pump) BEFORE whale so "show whale buys on this
+  // pump" routes to pump_analysis (it carries whale flow evidence anyway); plain whale
+  // prompts never match PUMP_ANALYSIS_RE and fall through to whale_alert below.
+  if (PUMP_ANALYSIS_RE.test(t)) {
+    return { intent: "pump_analysis", address, addresses, deep: false, symbol };
+  }
+
   // ---- Whale / smart money ----
-  if (/\b(whale|whales|big\s+wallet|smart\s+money)\b/i.test(t)) {
+  if (/\b(whale|whales|big\s+wallet|smart\s+money|accumulat(?:ing|ion|e)|distribut(?:ing|ion))\b/i.test(t)) {
     return { intent: "whale_alert", address: null, addresses, deep: false, symbol: null };
   }
 
@@ -398,7 +418,11 @@ export function classifyClarkPrompt(prompt: string): {
   // ---- Bare named-token fallback ("Scan BRETT") — symbol extracted but no other intent
   // matched (no literal "token" keyword required). Caller resolves the symbol to a
   // Base-preferred contract before calling the token scan tool.
-  if (symbol) {
+  // Educational guard: "What is CORTEX confidence?" / "What does FDV mean?" extract a bogus
+  // symbol (CORTEX/FDV) and must NOT become a token scan — they belong to the educational
+  // handlers downstream.
+  const EDUCATIONAL_QUESTION_RE = /^\s*(?:what\s+(?:is|are|does|do)|explain\s+why|why\s+is\b|define)\b/i;
+  if (symbol && !EDUCATIONAL_QUESTION_RE.test(t)) {
     return { intent: "token_scan", address: null, addresses, deep: false, symbol };
   }
 
@@ -591,6 +615,102 @@ export function formatBaseRadarRead(items: RadarLikeItem[] | undefined | null, e
     "",
     "CTA: Open Base Radar / Scan top token",
   ].join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Pump Intelligence read formatting (data-first, no AI yap)
+// ─────────────────────────────────────────────────────────────────────────
+
+export type PumpReportLike = {
+  symbol?: string;
+  executiveSummary?: {
+    momentumScore?: number | null;
+    momentumConfidence?: string;
+    continuationProbability?: string;
+    continuationEvidence?: string;
+    pullbackRisk?: string;
+    pullbackEvidence?: string;
+    overallConfidence?: string;
+    verdict?: string;
+  } | null;
+  marketStructure?: {
+    buys24h?: number | null;
+    sells24h?: number | null;
+    buySellRatio?: number | null;
+    liquidityUsd?: number | null;
+    volume24hUsd?: number | null;
+    holderCount?: number | null;
+    fdvUsd?: number | null;
+    marketCapUsd?: number | null;
+    ageHours?: number | null;
+    priceChange24h?: number | null;
+    top1HolderPercent?: number | null;
+  } | null;
+  walletIntelligence?: {
+    largestBuyers?: Array<{ address: string; side: string; amountUsd: number | null; isTracked: boolean }>;
+    largestSellers?: Array<{ address: string; side: string; amountUsd: number | null; isTracked: boolean }>;
+    netWhaleFlowUsd?: number | null;
+    creatorActivity?: { value?: unknown; confidence?: string; source?: string } | null;
+  } | null;
+  riskAnalysis?: Array<{ label?: string; severity?: string; evidence?: string }> | null;
+  killSignals?: Array<{ label?: string; detail?: string }> | null;
+  watchlist?: Array<{ label: string; threshold: string }> | null;
+  evidenceGaps?: string[] | null;
+};
+
+function fmtNum(n: number | null | undefined): string {
+  return n == null ? "n/a" : String(n);
+}
+
+/**
+ * Deterministic data-first PUMP READ from a PumpIntelligenceReport.
+ * Every line is either a real value with its source or an explicit gap — never a claim.
+ */
+export function formatPumpAnalysisRead(report: PumpReportLike | null | undefined): string | null {
+  if (!report) return null;
+  const sym = String(report.symbol ?? "?").toUpperCase();
+  const ex = report.executiveSummary ?? {};
+  const ms = report.marketStructure ?? {};
+  const wi = report.walletIntelligence ?? {};
+  const lines: string[] = [`PUMP INTELLIGENCE READ — ${sym}`];
+
+  // Scores
+  lines.push(
+    `- Momentum Score: ${fmtNum(ex.momentumScore)}/100${ex.momentumConfidence ? ` (${ex.momentumConfidence} confidence)` : ""}`,
+    `- Continuation Probability: ${ex.continuationProbability ?? "unavailable"}`,
+    `- Pullback Risk: ${ex.pullbackRisk ?? "unavailable"}`,
+    `- Overall Confidence: ${ex.overallConfidence ?? "unavailable"}`,
+  );
+
+  // Market structure
+  lines.push(
+    `- Liquidity: ${fmtUsdShort(ms.liquidityUsd)} · Volume 24h: ${fmtUsdShort(ms.volume24hUsd)} · FDV: ${fmtUsdShort(ms.fdvUsd)}${ms.marketCapUsd != null ? ` · MCap: ${fmtUsdShort(ms.marketCapUsd)}` : ""}`,
+    `- Buy/sell ratio: ${ms.buySellRatio != null ? ms.buySellRatio.toFixed(2) : "n/a"} (${fmtNum(ms.buys24h)} buys vs ${fmtNum(ms.sells24h)} sells, 24h)`,
+    `- Holders: ${fmtNum(ms.holderCount)}${ms.top1HolderPercent != null ? ` · Top holder: ${ms.top1HolderPercent}%` : ""}${ms.ageHours != null ? ` · Pool age: ${ms.ageHours.toFixed(1)}h` : ""}`,
+  );
+
+  // Wallet intelligence
+  if (wi.netWhaleFlowUsd != null) lines.push(`- Whale flow (net): ${fmtUsdShort(wi.netWhaleFlowUsd)}`);
+  if (wi.largestBuyers?.length) {
+    const b = wi.largestBuyers.slice(0, 3).map((r) => `${r.address.slice(0, 6)}…${fmtUsdShort(r.amountUsd)}`).join(", ");
+    lines.push(`- Top buyers: ${b}`);
+  }
+  if (wi.largestSellers?.length) {
+    const s = wi.largestSellers.slice(0, 3).map((r) => `${r.address.slice(0, 6)}…${fmtUsdShort(r.amountUsd)}`).join(", ");
+    lines.push(`- Top sellers: ${s}`);
+  }
+
+  // Evidence / gaps / watch thresholds
+  if (report.evidenceGaps && report.evidenceGaps.length > 0) {
+    lines.push(`- Missing data: ${report.evidenceGaps.join("; ")}`);
+  }
+  if (report.watchlist && report.watchlist.length > 0) {
+    lines.push("- Watch:", ...report.watchlist.slice(0, 4).map((w) => `  • ${w.label}: ${w.threshold}`));
+  }
+  // Verdict — max 3 bullets handled by caller; here keep the single-line verdict only if present
+  if (ex.verdict) lines.push(`- Read: ${ex.verdict}`);
+
+  return lines.join("\n");
 }
 
 // ─────────────────────────────────────────────────────────────────────────
