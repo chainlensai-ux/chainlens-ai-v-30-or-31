@@ -13,21 +13,29 @@ import { fileURLToPath } from 'node:url'
 
 const src = readFileSync(fileURLToPath(new URL('./index.ts', import.meta.url)), 'utf8')
 
-describe('repeat-scan cache TTL (perf-sprint: "cache provider history windows for repeat scans (5-10 min TTL)")', () => {
-  it('providerFetchWindow and recoveryPolicy both use the 300s (5 min) repeat-scan constant, not their old 30s/45s literals', () => {
-    assert.match(src, /const REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS = 300/, 'the shared TTL constant must exist and be 300s (5 min), inside the requested 5-10 min range')
+describe('repeat-scan cache TTL (perf-sprint task, NARROWED by perf-guardrails follow-up task: "Keep the 300s cache only for immutable or historical data. Do not cache live wallet activity, transfers, swaps, balances, or provider event fetches beyond the existing short TTL.")', () => {
+  it('recoveryPolicy (a bounded, deterministic recomputation over a fixed past window) uses the 300s repeat-scan constant', () => {
+    assert.match(src, /const REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS = 300/, 'the shared TTL constant must exist and be 300s (5 min)')
+
+    const recoveryPolicyCallMatch = src.match(/const recoveryPolicy = await withStageCache\(\s*`v2:recoveryPolicy:[^`]*`,\s*(\S+),/)
+    assert.ok(recoveryPolicyCallMatch, 'could not locate the recoveryPolicy withStageCache call')
+    assert.equal(recoveryPolicyCallMatch[1], 'REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS', 'recoveryPolicy must use the 5-10min repeat-scan constant')
+  })
+
+  it('providerFetchWindow (live, open-ended wallet activity) is REVERTED to its own short 30s TTL — never the 300s constant, to avoid hiding a brand-new transaction on a rescan', () => {
+    assert.match(src, /const PROVIDER_FETCH_WINDOW_CACHE_TTL_SECONDS = 30/, 'the dedicated short TTL constant must exist and be 30s')
 
     // The real write call is providerFetchWindowKvWriter.write(key, r, <ttl>) — this is the one
     // that actually controls how long providerFetchWindow stays cached (the read-side call passes
     // `skipWrite: true`, so ITS ttl argument is inert; the write call's ttl is the real one).
     const writeCallMatch = src.match(/providerFetchWindowKvWriter\.write\(\s*`v2:providerFetchWindow:\$\{r\.chain\}:\$\{params\.walletAddress\.toLowerCase\(\)\}`,\s*r,\s*(\S+)\s*\)/)
     assert.ok(writeCallMatch, 'could not locate the real providerFetchWindow KV write call')
-    assert.equal(writeCallMatch[1], 'REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS', 'the real providerFetchWindow write must use the 5-10min repeat-scan constant, not a hardcoded 30')
-    assert.doesNotMatch(src, /providerFetchWindowKvWriter\.write\(\s*`v2:providerFetchWindow[^)]*,\s*30\s*\)/, 'must not regress back to the old hardcoded 30s TTL')
+    assert.equal(writeCallMatch[1], 'PROVIDER_FETCH_WINDOW_CACHE_TTL_SECONDS', 'the real providerFetchWindow write must use its own short-TTL constant, never the 300s repeat-scan one')
+    assert.doesNotMatch(src, /providerFetchWindowKvWriter\.write\(\s*`v2:providerFetchWindow[^)]*,\s*REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS\s*\)/, 'must not regress back to sharing the 300s constant — that hides live wallet activity on a rescan')
 
-    const recoveryPolicyCallMatch = src.match(/const recoveryPolicy = await withStageCache\(\s*`v2:recoveryPolicy:[^`]*`,\s*(\S+),/)
-    assert.ok(recoveryPolicyCallMatch, 'could not locate the recoveryPolicy withStageCache call')
-    assert.equal(recoveryPolicyCallMatch[1], 'REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS', 'recoveryPolicy must use the 5-10min repeat-scan constant, not its old hardcoded 45')
+    const readCallMatch = src.match(/const result = await withStageCache\(\s*`v2:providerFetchWindow:\$\{chain\}:\$\{params\.walletAddress\.toLowerCase\(\)\}`,\s*(\S+),/)
+    assert.ok(readCallMatch, 'could not locate the providerFetchWindow read-side withStageCache call')
+    assert.equal(readCallMatch[1], 'PROVIDER_FETCH_WINDOW_CACHE_TTL_SECONDS', 'the read-side call must also use the short-TTL constant (kept consistent with the write side, even though its own ttl argument is inert under skipWrite: true)')
   })
 
   it('holdings (current balances, not history) is deliberately left untouched at its own short TTL — this task only covers "provider history windows"', () => {

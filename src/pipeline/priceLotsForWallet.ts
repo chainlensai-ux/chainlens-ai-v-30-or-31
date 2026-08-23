@@ -427,7 +427,6 @@ export type HistoricalPricingPerformanceSummary = {
   historicalCacheHitRatePercent: number | null
   providerCallsAvoided: number
   liveProviderCallsMade: number
-  dustLotsSkippedForPricing: number
   estimatedTimeSavedMs: number | null
 }
 
@@ -952,31 +951,17 @@ export async function priceLotsForWallet(params: {
   const ethNativeSelectedCount = sortedNativeCandidates.slice(0, assumedCapSlots).filter((c) => c.chain === 'eth').length
   reserveCoingeckoSlotsForNativeEth(ethNativeSelectedCount)
 
-  // PERF-SPRINT TASK, DISCLOSED ("Skip historical pricing for immaterial dust lots that cannot
-  // change realized PnL"): filters OUT a requirement whose decimal-adjusted quantity
-  // (NormalizedEvent.amount — already human-readable token units, not raw wei) is below
-  // DUST_LOT_AMOUNT_FLOOR before it is ever handed to toPriceableEntry/the pricing scheduler below.
-  // DELIBERATELY NARROW, DISCLOSED: this is NOT a value-based ("quantity x price < $X") materiality
-  // check — no USD value exists yet at this pre-pricing stage (see this file's own "TIE-BREAK"
-  // comment above assignClosedLotPairRanks for the same honest limitation), and inventing a
-  // price-dependent proxy here would risk the exact "reduce PnL accuracy" outcome this task
-  // forbids. Instead this is a QUANTITY floor set so far below any real trade that no plausible
-  // price could ever make a filtered lot material: even a token priced at $1,000,000/unit, a
-  // quantity below 1e-9 is worth under $0.000001 — this only ever removes genuine dust/rounding-
-  // remainder amounts (the last few wei of an AMM swap's fee/slippage math, decoded into human
-  // units), never a real, sized trade. A filtered entry gets the exact same honest null cost basis/
-  // proceeds fifoEngine already falls back to for any other unpriced event — no new code path.
-  // NEVER applied to nativeQuoteEntries below: those are the OTHER leg of a same-tx swap used
-  // specifically to price a DIFFERENT, real requirement (see nativeQuoteRequirementKey's own
-  // header) — filtering them by their own quantity would be answering the wrong question.
-  const DUST_LOT_AMOUNT_FLOOR = 1e-9
-  let dustLotsSkippedForPricing = 0
-  const isNotDustLot = (e: NormalizedEvent): boolean => {
-    if (Number.isFinite(e.amount) && e.amount < DUST_LOT_AMOUNT_FLOOR) { dustLotsSkippedForPricing += 1; return false }
-    return true
-  }
-  let buyRequirementEntries = buys.filter(isNotDustLot).map((e) => toPriceableEntry(e, rankForEvent(e)))
-  let sellRequirementEntries = [...sells.filter(isNotDustLot).map((e) => toPriceableEntry(e, rankForEvent(e))), ...nativeQuoteEntries]
+  // PERF-SPRINT TASK, DISCLOSED, REVERTED (perf-guardrails follow-up task: "Performance
+  // optimizations must be performance-only... Do NOT accept any optimization that changes...
+  // realized PnL... The outputs must be identical"): a quantity-floor dust-lot skip was added and
+  // shipped here, then reverted on user review — even a lot filtered at 1e-9 units guarantees a
+  // null cost basis/proceeds where previously it got a real pricing attempt (which could resolve to
+  // a real, if tiny, non-null number). That is a genuine output difference, not a bug fix, so it
+  // fails this codebase's now-explicit "identical outputs only" bar regardless of how small the
+  // dollar impact provably is. Every requirement is priced exactly as it was before that change —
+  // no quantity-based filtering anywhere in this pass.
+  let buyRequirementEntries = buys.map((e) => toPriceableEntry(e, rankForEvent(e)))
+  let sellRequirementEntries = [...sells.map((e) => toPriceableEntry(e, rankForEvent(e))), ...nativeQuoteEntries]
 
   // COMPLETION-YIELD HISTORICAL-PRICING SCHEDULER, DISCLOSED — see completionYieldScheduler.ts's own
   // header. Production baseline: 219 structural lots, 11 verified (5.02%), ~500 total pricing
@@ -2048,7 +2033,6 @@ export async function priceLotsForWallet(params: {
       : null,
     providerCallsAvoided,
     liveProviderCallsMade,
-    dustLotsSkippedForPricing,
     estimatedTimeSavedMs: goldrushLatencyStats.avgMs !== null
       ? Math.round(duplicateRequestsEliminated * goldrushLatencyStats.avgMs)
       : null,

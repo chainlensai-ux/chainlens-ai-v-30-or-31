@@ -132,18 +132,31 @@ export { INTEL_WINDOW_DAYS, SUPPORTED_CHAINS } from './types'
 const PROVIDER_FETCH_WINDOW_DAYS_USED = 90
 
 // REPEAT-SCAN CACHE TTL, DISCLOSED (perf-sprint task: "cache provider history windows for repeat
-// scans (5-10 min TTL)"). Was 30s for providerFetchWindow and 45s for recoveryPolicy — both tuned
-// only against "don't serve minutes-stale data on an accidental double-click", never against
-// "a user re-scanning the same wallet a few minutes later should hit cache instead of re-paying
-// the two most expensive real network calls in this pipeline" (providerFetchWindow's own comment:
-// "the single most expensive real network call in the whole pipeline"; recoveryPolicy's own
-// comment: "recovery's historical page fetches are the most expensive real network calls this
-// pipeline can make"). Both cache genuinely historical data (a past block's transfer history
-// doesn't change), so a longer window doesn't trade away correctness — it was simply never raised.
-// Kept as its own named constant (not reusing DEV_WARM_TTL_SECONDS in v2StageCache.ts, which is a
-// dev-only floor applied on top of whatever TTL a caller passes) so this specific "repeat scan"
-// intent stays visible at the call site instead of being buried in a shared cache-layer constant.
+// scans (5-10 min TTL)"), NARROWED (perf-guardrails follow-up task: "Keep the 300s cache only for
+// immutable or historical data. Do not cache live wallet activity, transfers, swaps, balances, or
+// provider event fetches beyond the existing short TTL. ... Historical pricing, recovery policy,
+// and other deterministic computations may keep the longer cache."):
+//
+// recoveryPolicy's own historical-page fetches are a bounded, capped-depth backfill over a FIXED
+// past window (buildRecoveryPolicyObject's maxHistoricalPagesPerWallet/PerToken) — the same past
+// transactions are re-fetched and re-evaluated the same way every time, so a longer cache window is
+// safe: it never omits a page recoveryPolicy would otherwise have fetched, it only re-serves the
+// same completed computation.
+//
+// providerFetchWindow is different, and was WRONGLY included in this constant's scope in the prior
+// pass: it is the live, open-ended "every transaction since 90 days ago, including ones that
+// happened seconds before this exact call" fetch (PROVIDER_FETCH_WINDOW_DAYS_USED, above) — a user
+// who scans, then trades, then rescans within this window would have that brand-new transaction
+// silently hidden by a stale cache hit until the TTL expires. That is a real, disclosed event-
+// coverage regression this codebase's own perf-guardrails now explicitly forbid ("The scanner must
+// always return fresh wallet activity"), so providerFetchWindow reverts to its own short,
+// undslept-on 30s TTL (PROVIDER_FETCH_WINDOW_CACHE_TTL_SECONDS below) — unchanged from before the
+// prior pass, and no longer sharing this constant with recoveryPolicy.
 const REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS = 300
+// LIVE WALLET ACTIVITY, DISCLOSED — see REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS's own header above
+// for the full "why this is intentionally NOT the same constant" reasoning. This is the original,
+// pre-perf-sprint value, restored.
+const PROVIDER_FETCH_WINDOW_CACHE_TTL_SECONDS = 30
 
 // DEPLOYMENT/VERSION AUDIT, DISCLOSED (stale-manifest self-heal follow-up task): a live scan's own
 // logs are the only way to prove which build actually served it — the two confirmed production
@@ -1355,7 +1368,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
       const chainStart = performance.now()
       const result = await withStageCache(
         `v2:providerFetchWindow:${chain}:${params.walletAddress.toLowerCase()}`,
-        REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS,
+        PROVIDER_FETCH_WINDOW_CACHE_TTL_SECONDS,
         () => fetchProviderWindow(chain, params.walletAddress, PROVIDER_FETCH_WINDOW_DAYS_USED, 'old-pipeline'),
         {
           skipWrite: true,
@@ -1425,7 +1438,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
         providerFetchWindowKvWriter.write(
           `v2:providerFetchWindow:${r.chain}:${params.walletAddress.toLowerCase()}`,
           r,
-          REPEAT_SCAN_HISTORY_CACHE_TTL_SECONDS
+          PROVIDER_FETCH_WINDOW_CACHE_TTL_SECONDS
         ),
         new Promise<void>((resolve) => setTimeout(resolve, 300)),
       ]).catch(() => {

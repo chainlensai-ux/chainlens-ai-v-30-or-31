@@ -15,20 +15,19 @@ import { fileURLToPath } from 'node:url'
 
 const src = readFileSync(fileURLToPath(new URL('./priceLotsForWallet.ts', import.meta.url)), 'utf8')
 
-describe('dust-lot skip (perf-sprint: "Skip historical pricing for immaterial dust lots that cannot change realized PnL")', () => {
-  it('filters buys/sells by a tiny, universal quantity floor BEFORE toPriceableEntry — never a price-dependent/value-based check', () => {
-    assert.match(src, /const DUST_LOT_AMOUNT_FLOOR = 1e-9/, 'the dust floor constant must exist and be a tiny, universal quantity (not a USD-value threshold — no price exists yet at this stage)')
-    assert.match(src, /buys\.filter\(isNotDustLot\)\.map\(\(e\) => toPriceableEntry/, 'buys must be filtered by the dust check before becoming pricing requirements')
-    assert.match(src, /sells\.filter\(isNotDustLot\)\.map\(\(e\) => toPriceableEntry/, 'sells must be filtered by the dust check before becoming pricing requirements')
-  })
-
-  it('nativeQuoteEntries are never passed through the dust filter — they price a DIFFERENT requirement, not their own quantity', () => {
-    assert.match(src, /sellRequirementEntries = \[\.\.\.sells\.filter\(isNotDustLot\)\.map\(\(e\) => toPriceableEntry\(e, rankForEvent\(e\)\)\), \.\.\.nativeQuoteEntries\]/, 'nativeQuoteEntries must be spread in AFTER filtering, untouched by isNotDustLot')
-  })
-
-  it('dustLotsSkippedForPricing is a real counter, incremented exactly where a lot is filtered, and surfaced in the performance summary', () => {
-    assert.match(src, /dustLotsSkippedForPricing \+= 1/, 'the counter must be incremented at the real filter point')
-    assert.match(src, /dustLotsSkippedForPricing,\n\s*estimatedTimeSavedMs/, 'the real counter must be attached to the returned summary, not just tracked locally')
+// PERF-GUARDRAILS FOLLOW-UP TASK, DISCLOSED ("Performance optimizations must be performance-only
+// ... Do NOT accept any optimization that changes realized PnL ... outputs must be identical"): the
+// dust-lot quantity-floor skip that USED to live here was reverted — even a lot filtered at a tiny
+// quantity guarantees a null cost basis/proceeds where previously it got a real pricing attempt
+// (which could resolve to a real, if tiny, non-null number). That is a genuine output difference,
+// not a bug fix, so it failed this codebase's "identical outputs only" bar. This regression test
+// proves the skip stays gone — every buy/sell requirement must reach toPriceableEntry unfiltered.
+describe('no dust-lot quantity filtering (perf-guardrails: reverted — outputs must be identical, not "close enough")', () => {
+  it('buys/sells are mapped to pricing requirements directly — no quantity-based .filter() before toPriceableEntry', () => {
+    assert.match(src, /let buyRequirementEntries = buys\.map\(\(e\) => toPriceableEntry\(e, rankForEvent\(e\)\)\)/, 'every buy must become a pricing requirement — no filtering by amount/quantity')
+    assert.match(src, /let sellRequirementEntries = \[\.\.\.sells\.map\(\(e\) => toPriceableEntry\(e, rankForEvent\(e\)\)\), \.\.\.nativeQuoteEntries\]/, 'every sell must become a pricing requirement — no filtering by amount/quantity')
+    assert.doesNotMatch(src, /DUST_LOT_AMOUNT_FLOOR/, 'the reverted dust-floor constant must not reappear')
+    assert.doesNotMatch(src, /isNotDustLot/, 'the reverted dust filter predicate must not reappear')
   })
 })
 
