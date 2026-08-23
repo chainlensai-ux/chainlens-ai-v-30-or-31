@@ -11,6 +11,7 @@ const tests = [
   'test-clark-intent.mjs',
   'test-clark-market-metric-routing.mjs',
   'test-clark-market-persistence.mjs',
+  'test-clark-pump-intent.mjs',
   'test-clark-radar-whale-toolcalls.mjs',
   'test-clark-risk-intent.mjs',
   'test-clark-safety-address-routing.mjs',
