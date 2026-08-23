@@ -1432,7 +1432,17 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // the real, unfiltered `providerResults` array) — it only stops the degraded outcome from being
   // replayed to a later reader as a false "provider succeeded with zero events" cache hit; that
   // reader now genuinely cache-misses and retries live instead.
-  await Promise.all(
+  // PERF-SPRINT TASK, DISCLOSED ("Find every await ... that can safely overlap CPU work with
+  // provider/network I/O"): this promise is IDENTICAL to before — same writes, same 300ms
+  // Promise.race cap per chain, same fail-open .catch() — only WHEN it is awaited changed. It used
+  // to block here, before any of the pure CPU work below (allRawEvents/normalizeEvents/
+  // providerDiagnostics/providerFetchWindowDiagnostics — all of which read only from
+  // `providerResults`, already fully computed above, never from this write's own result). The one
+  // real requirement (see this block's own original disclosure, preserved below) is that the cache
+  // be genuinely populated before runWalletScan RETURNS, so this promise is instead awaited right
+  // before that return statement, letting every awaited/CPU step in between run concurrently with
+  // this write's own in-flight KV round trip instead of strictly after it.
+  const providerFetchWindowKvWriteSettled = Promise.all(
     providerResults.filter((r) => r.providerStatus !== 'provider_unavailable').map((r) =>
       Promise.race([
         providerFetchWindowKvWriter.write(
@@ -2047,10 +2057,18 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   // unchanged (it still opens the same lot; only the pricing ATTEMPT for that lot's cost is
   // skipped, landing on the same honest null cost basis fifoEngine already falls back to for any
   // unpriced event).
+  // PERF-SPRINT TASK, DISCLOSED ("Find every await ... that can safely overlap CPU work with
+  // provider/network I/O"): this call's own real network sub-step (getCheapCurrentPriceForDustCheck,
+  // inside resolveDustSuppressionKeys) is kicked off here, UNAWAITED, so the pure CPU work below —
+  // recoveredRawEventsForPricing/recoveredNormalizedForPricing, and (when the canonical-promotion
+  // flag is on) promoteVerifiedReceiptSwaps — can run while it's in flight. Neither of those reads
+  // dustSuppressedKeys/noMarketFoundCount/liquidityZeroCount; they depend only on
+  // recoveryPolicy.evaluation (already computed above) and normalizedEvents/shadowExactReceiptSwaps
+  // (also already computed above). The promise is awaited below, at the exact point
+  // dustSuppressedKeys is first actually read (buildFilteredEventsForPricing) — same call, same
+  // result, only WHEN it resolves relative to this unrelated CPU work changed.
   const dustSuppressionStart = performance.now()
-  const { suppressedKeys: dustSuppressedKeys, noMarketFoundCount, liquidityZeroCount } =
-    await resolveDustSuppressionKeys(timelines.buyTimeline.entries, sellTimelineV2.entries)
-  scanTimer.mark('dustSuppression', dustSuppressionStart)
+  const dustSuppressionPromise = resolveDustSuppressionKeys(timelines.buyTimeline.entries, sellTimelineV2.entries)
 
   const recoveredRawEventsForPricing = recoveryPolicy.evaluation.flatMap((e) => e.recoveredEvents)
   const { normalizedEvents: recoveredNormalizedForPricing } = normalizeEvents(recoveredRawEventsForPricing, params.walletAddress)
@@ -2084,6 +2102,13 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     })
     canonicalNormalizedEvents = receiptSwapPromotionResult.promotedEvents
   }
+
+  // PERF-SPRINT TASK, DISCLOSED: awaited here, at the exact point this stage's own result is first
+  // actually read (buildFilteredEventsForPricing below) — see dustSuppressionPromise's own
+  // declaration above for why everything between there and here was safe to run concurrently with
+  // it.
+  const { suppressedKeys: dustSuppressedKeys, noMarketFoundCount, liquidityZeroCount } = await dustSuppressionPromise
+  scanTimer.mark('dustSuppression', dustSuppressionStart)
 
   const normalizedEventsForPricing = buildFilteredEventsForPricing(canonicalNormalizedEvents, dustSuppressedKeys)
   const recoveredEventsForPricing = buildFilteredEventsForPricing(recoveredNormalizedForPricing, dustSuppressedKeys)
@@ -3680,6 +3705,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     recoveryPolicy,
   })
   console.warn('[wallet-pnl-coverage-recovery-audit]', walletPnlCoverageRecoveryAudit)
+
+  // PERF-SPRINT TASK, DISCLOSED: the real requirement this write exists for (see its own original
+  // disclosure at the call site above) is "genuinely populated before runWalletScan returns" — this
+  // is the latest point that still satisfies that, after every stage that would otherwise have
+  // forced it to resolve early has already run. Awaited BEFORE scanTotalMs below so the reported
+  // total honestly includes any residual wait (capped at 300ms per chain, same as before) rather
+  // than silently undercounting it.
+  await providerFetchWindowKvWriteSettled
 
   // SCAN PERFORMANCE SUMMARY, DISCLOSED (perf-sprint task) — see ScanPerformanceSummary's own type
   // header (src/pipeline/types.ts) for what each field means and why the stage order IS the
