@@ -81,7 +81,8 @@ import {
 import {
   buildAcceptedEvidenceKey, readAcceptedEvidenceBatch, type AcceptedEvidenceKvLike, type AcceptedEvidenceBatchIdentity,
 } from '../lib/acceptedEvidenceStore'
-import { getGoldrushPriceSourceCallCount, setGoldrushPriceSourceStage, resetGoldrushPriceSourceStage } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
+import { getGoldrushPriceSourceCallCount, setGoldrushPriceSourceStage, resetGoldrushPriceSourceStage, getGoldrushLiveCallLatencyStats } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
+import { getWalletProviderCostAudit } from '../modules/providerCost/walletProviderCostLedger'
 import { getDexscreenerCallCount } from '../modules/pricingAtTimeEngine/sources/dexscreener'
 
 // ADDRESS-BASED NATIVE/WETH RECOGNITION, DISCLOSED (confirmed production bug: nativeQuoteRequirementsFound
@@ -288,6 +289,9 @@ export type WalletPriceLookups = {
   // real counters from the pre-scheduler accepted-evidence skip pass — see its own header below.
   acceptedEvidenceSkipAudit: AcceptedEvidenceSkipAudit
   manifestFastPathAudit: ManifestFastPathAudit
+  // PERF-SPRINT TASK, DISCLOSED — see HistoricalPricingPerformanceSummary's own header for the full
+  // set of fields and why every one is real/measured, not fabricated.
+  historicalPricingPerformanceSummary: HistoricalPricingPerformanceSummary
 }
 
 // ACCEPTED-EVIDENCE SKIP AUDIT, DISCLOSED (requirement #5): every field here is incremented at the
@@ -401,6 +405,32 @@ function emptyManifestFastPathAudit(): ManifestFastPathAudit {
   }
 }
 
+// PERF-SPRINT TASK, DISCLOSED — "Add diagnostics: Historical pricing elapsed time, Unique
+// token+timestamp requests, Duplicate requests eliminated, Historical cache hit rate, Provider
+// calls avoided, Time saved." Every field here is real and measured (a snapshot/delta of an
+// already-existing counter, or a direct count of this call's own submitted requirement arrays) —
+// this file's own established convention (see AcceptedEvidenceSkipAudit/ManifestFastPathAudit
+// above) — never fabricated. `estimatedTimeSavedMs` is the one field that is explicitly an
+// ESTIMATE (labeled as such, never presented as measured): duplicatesEliminated multiplied by
+// THIS SCAN's own real average live-call latency (getGoldrushLiveCallLatencyStats) — an honest
+// order-of-magnitude figure derived from real timings, not a guessed constant.
+export type HistoricalPricingPerformanceSummary = {
+  elapsedMs: number
+  uniqueTokenTimestampRequests: number
+  duplicateRequestsEliminated: number
+  // Split, DISCLOSED: `duplicateRequestsEliminated` above is specifically "an identical (token,
+  // timestamp-bucket) request this call already had the answer for" (request-cache + singleflight
+  // hits) — genuinely a DUPLICATE. `negativeCacheHitsAvoided` is a different, real avoidance (a
+  // token already known to have no data at all, this process's own negative cache) — reported
+  // separately so the two are never conflated into one inflated "duplicates" number.
+  negativeCacheHitsAvoided: number
+  historicalCacheHitRatePercent: number | null
+  providerCallsAvoided: number
+  liveProviderCallsMade: number
+  dustLotsSkippedForPricing: number
+  estimatedTimeSavedMs: number | null
+}
+
 // ESTIMATED COST PER SKIPPED REQUIREMENT, DISCLOSED: a real, disclosed, DELIBERATELY CONSERVATIVE
 // estimate — this pass has no per-provider credit/CU ledger to read a real figure from (that
 // bookkeeping happens inside each provider's own client, never surfaced back here), so this reports
@@ -424,6 +454,17 @@ export async function priceLotsForWallet(params: {
   acceptedEvidenceKv?: AcceptedEvidenceKvLike
   now?: () => number
 }): Promise<WalletPriceLookups> {
+  // PERF-SPRINT TASK, DISCLOSED ("Profile every historical pricing request" — see
+  // historicalPricingPerformanceSummary's own construction near this function's return for the
+  // full set of fields this feeds): real elapsed ms for this ENTIRE call (both the at-trade-time
+  // and current-price resolvePricingAtTime passes, plus every stage between them), and a snapshot
+  // of the shared GoldRush provider-cost ledger's cache counters taken BEFORE any of this call's own
+  // work runs, so the delta computed near the return is scoped to exactly this call — never
+  // cross-request/cross-stage cumulative drift, same "snapshot before / delta after" convention this
+  // file already uses for goldrushCallsBeforeResolve/goldrushCallsBeforeNow above.
+  const historicalPricingStartedAtMs = performance.now()
+  const providerCostAuditBefore = getWalletProviderCostAudit()
+
   const merged = mergeNormalizedEvents(params.normalizedEvents, params.recoveredEvents)
   const buys = merged.filter((e) => e.direction === 'inbound')
   const sells = merged.filter((e) => e.direction === 'outbound')
@@ -911,8 +952,31 @@ export async function priceLotsForWallet(params: {
   const ethNativeSelectedCount = sortedNativeCandidates.slice(0, assumedCapSlots).filter((c) => c.chain === 'eth').length
   reserveCoingeckoSlotsForNativeEth(ethNativeSelectedCount)
 
-  let buyRequirementEntries = buys.map((e) => toPriceableEntry(e, rankForEvent(e)))
-  let sellRequirementEntries = [...sells.map((e) => toPriceableEntry(e, rankForEvent(e))), ...nativeQuoteEntries]
+  // PERF-SPRINT TASK, DISCLOSED ("Skip historical pricing for immaterial dust lots that cannot
+  // change realized PnL"): filters OUT a requirement whose decimal-adjusted quantity
+  // (NormalizedEvent.amount — already human-readable token units, not raw wei) is below
+  // DUST_LOT_AMOUNT_FLOOR before it is ever handed to toPriceableEntry/the pricing scheduler below.
+  // DELIBERATELY NARROW, DISCLOSED: this is NOT a value-based ("quantity x price < $X") materiality
+  // check — no USD value exists yet at this pre-pricing stage (see this file's own "TIE-BREAK"
+  // comment above assignClosedLotPairRanks for the same honest limitation), and inventing a
+  // price-dependent proxy here would risk the exact "reduce PnL accuracy" outcome this task
+  // forbids. Instead this is a QUANTITY floor set so far below any real trade that no plausible
+  // price could ever make a filtered lot material: even a token priced at $1,000,000/unit, a
+  // quantity below 1e-9 is worth under $0.000001 — this only ever removes genuine dust/rounding-
+  // remainder amounts (the last few wei of an AMM swap's fee/slippage math, decoded into human
+  // units), never a real, sized trade. A filtered entry gets the exact same honest null cost basis/
+  // proceeds fifoEngine already falls back to for any other unpriced event — no new code path.
+  // NEVER applied to nativeQuoteEntries below: those are the OTHER leg of a same-tx swap used
+  // specifically to price a DIFFERENT, real requirement (see nativeQuoteRequirementKey's own
+  // header) — filtering them by their own quantity would be answering the wrong question.
+  const DUST_LOT_AMOUNT_FLOOR = 1e-9
+  let dustLotsSkippedForPricing = 0
+  const isNotDustLot = (e: NormalizedEvent): boolean => {
+    if (Number.isFinite(e.amount) && e.amount < DUST_LOT_AMOUNT_FLOOR) { dustLotsSkippedForPricing += 1; return false }
+    return true
+  }
+  let buyRequirementEntries = buys.filter(isNotDustLot).map((e) => toPriceableEntry(e, rankForEvent(e)))
+  let sellRequirementEntries = [...sells.filter(isNotDustLot).map((e) => toPriceableEntry(e, rankForEvent(e))), ...nativeQuoteEntries]
 
   // COMPLETION-YIELD HISTORICAL-PRICING SCHEDULER, DISCLOSED — see completionYieldScheduler.ts's own
   // header. Production baseline: 219 structural lots, 11 verified (5.02%), ~500 total pricing
@@ -1958,6 +2022,40 @@ export async function priceLotsForWallet(params: {
   // eslint-disable-next-line no-console
   console.warn('[manifest-fast-path-audit]', manifestFastPathAudit)
 
+  // PERF-SPRINT TASK, DISCLOSED: built last, from real values already computed/measured above — see
+  // HistoricalPricingPerformanceSummary's own header for what each field means and why. Deltas
+  // against `providerCostAuditBefore` (snapshotted at this function's very start) scope every
+  // counter to exactly this one call, never a cross-request/cross-stage cumulative total.
+  const providerCostAuditAfter = getWalletProviderCostAudit()
+  const duplicateRequestsEliminated =
+    (providerCostAuditAfter.cache.requestHits - providerCostAuditBefore.cache.requestHits) +
+    (providerCostAuditAfter.cache.singleflightHits - providerCostAuditBefore.cache.singleflightHits)
+  const negativeCacheHitsAvoided = providerCostAuditAfter.cache.negativeCacheHits - providerCostAuditBefore.cache.negativeCacheHits
+  const liveProviderCallsMade = providerCostAuditAfter.goldrush.calls - providerCostAuditBefore.goldrush.calls
+  const providerCallsAvoided = duplicateRequestsEliminated + negativeCacheHitsAvoided
+  const totalHistoricalCacheChecks = liveProviderCallsMade + providerCallsAvoided
+  const uniqueTokenTimestampRequests = new Set(
+    [...buyRequirementEntries, ...sellRequirementEntries].map((e) => `${e.chain}:${e.token.toLowerCase()}:${e.timestamp}`),
+  ).size
+  const goldrushLatencyStats = getGoldrushLiveCallLatencyStats()
+  const historicalPricingPerformanceSummary: HistoricalPricingPerformanceSummary = {
+    elapsedMs: Math.round(performance.now() - historicalPricingStartedAtMs),
+    uniqueTokenTimestampRequests,
+    duplicateRequestsEliminated,
+    negativeCacheHitsAvoided,
+    historicalCacheHitRatePercent: totalHistoricalCacheChecks > 0
+      ? Math.round((providerCallsAvoided / totalHistoricalCacheChecks) * 1000) / 10
+      : null,
+    providerCallsAvoided,
+    liveProviderCallsMade,
+    dustLotsSkippedForPricing,
+    estimatedTimeSavedMs: goldrushLatencyStats.avgMs !== null
+      ? Math.round(duplicateRequestsEliminated * goldrushLatencyStats.avgMs)
+      : null,
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[historical-pricing-performance-summary]', historicalPricingPerformanceSummary)
+
   return {
     priceUsdLookup,
     currentPriceUsdLookup,
@@ -1968,5 +2066,6 @@ export async function priceLotsForWallet(params: {
     historicalPricingFailures,
     acceptedEvidenceSkipAudit,
     manifestFastPathAudit,
+    historicalPricingPerformanceSummary,
   }
 }

@@ -214,7 +214,11 @@ describe('RequestPriceKvClient — recovery lane (provider-call-audit follow-up 
 })
 
 describe('RequestPriceKvClient — historical price determinism (determinism follow-up task)', () => {
-  it('HARD ASSERTION: a historical price is written with the long (30-day) TTL, never the short 45s primary TTL', async () => {
+  // PERF-SPRINT TASK, DISCLOSED ("Persist historical prices indefinitely"): raised 30 days -> 2
+  // years — see HISTORICAL_TTL_SECONDS's own header in kvClient.ts for the full disclosure. This
+  // test's own point (a historical price gets a MUCH longer TTL than the 45s primary/current price)
+  // is unchanged; only the exact figure moved.
+  it('HARD ASSERTION: a historical price is written with the long (2-year) TTL, never the short 45s primary TTL', async () => {
     const setCalls: Array<{ key: string; opts: { ex?: number } | undefined }> = []
     const kv = { get: async () => null, set: async (key: string, _value: unknown, opts?: { ex?: number }) => { setCalls.push({ key, opts }); return 'OK' } }
     const client = createRequestPriceKvClient({ kv: kv as never, maxLookupsPerToken: 10, random: () => 0 })
@@ -224,7 +228,7 @@ describe('RequestPriceKvClient — historical price determinism (determinism fol
 
     const historicalSet = setCalls.find((c) => c.key.includes('chain-aware-historical'))!
     const primarySet = setCalls.find((c) => c.key.includes(':primary:'))!
-    assert.equal(historicalSet.opts?.ex, 60 * 60 * 24 * 30)
+    assert.equal(historicalSet.opts?.ex, 60 * 60 * 24 * 365 * 2)
     assert.equal(primarySet.opts?.ex, 45)
   })
 

@@ -113,6 +113,49 @@ const negativeGoldrushPriceCache = new Map<string, number>() // `${chain}:${toke
 // must not be conflated into sharing one date's specific result.
 const inFlightGoldrushPriceLookups = new Map<string, Promise<number | null>>()
 
+// PERF-SPRINT TASK, DISCLOSED ("Deduplicate identical token+timestamp lookups before any provider
+// call" / "Reuse a single historical price across every lot sharing the same token and timestamp
+// bucket" / "Persist historical prices indefinitely (historical prices are immutable)"): a REAL,
+// confirmed gap — `inFlightGoldrushPriceLookups` above only coalesces CONCURRENT duplicate lookups
+// (the promise is deleted from that map in its own `finally` the instant it settles), so two lots
+// needing the same (chain, token, UTC day) that are NOT in flight at the same moment — the common
+// case, since pricingAtTimeEngine's worker pool processes entries as a queue, not in lockstep —
+// still each pay a full live GoldRush call, even though the SECOND call's answer is provably
+// identical to the first (see this file's own "TIME-BUCKET DEDUPE KEY" comment below: the real
+// query itself is date-scoped, `from === to === dateString`, so two requirements for the same
+// token on the same day genuinely cannot produce different answers). This positive cache closes
+// that gap: once a real call resolves to a genuine, finite price for a (chain, token, day), every
+// later lookup for that exact key — this call, a later call in the same scan, or a call from a
+// DIFFERENT scan on the same warm serverless instance — reuses it directly, zero network cost,
+// zero accuracy change (it is the literal same fact GoldRush would return again). Deliberately NOT
+// given a TTL: unlike the negative cache above (a real "no data yet" can become "has data later"),
+// a resolved historical price for a past, already-mined day cannot un-happen — see kvClient.ts's
+// own HISTORICAL_TTL_SECONDS header for the same "immutable fact" reasoning applied to this
+// source's own remote KV layer. Process-lifetime, matching negativeGoldrushPriceCache/
+// inFlightGoldrushPriceLookups' own established convention (see resetGoldrushPriceSourceCallCount's
+// own comment: "process-lifetime... must survive across scans on a warm serverless instance for
+// their real cost-saving purpose") — never reset per-scan, only per-test via
+// __resetGoldrushPriceSourceCachesForTest.
+const positiveGoldrushPriceCache = new Map<string, number>() // `${chain}:${token}:${dateString}` -> priceUsd
+
+// LATENCY TRACKING, DISCLOSED (perf-sprint task's "Time saved" diagnostic requirement): real,
+// measured elapsed time for every GENUINE live GoldRush call this process makes (never for a
+// breaker short-circuit, negative-cache hit, singleflight join, or this new positive-cache hit —
+// only the real network round trip itself) — lets a caller compute an honest
+// `duplicatesEliminated * averageObservedLiveCallLatencyMs` estimate from THIS process's own real
+// timings, rather than a guessed constant. Reset alongside the call counter (per-scan, via
+// resetGoldrushPriceSourceCallCount) so the average reported for one scan reflects that scan's own
+// real provider latency, not a stale cross-scan blend.
+let goldrushLiveCallTotalMs = 0
+let goldrushLiveCallCount = 0
+export function getGoldrushLiveCallLatencyStats(): { totalMs: number; count: number; avgMs: number | null } {
+  return { totalMs: goldrushLiveCallTotalMs, count: goldrushLiveCallCount, avgMs: goldrushLiveCallCount > 0 ? goldrushLiveCallTotalMs / goldrushLiveCallCount : null }
+}
+function resetGoldrushLiveCallLatencyStats(): void {
+  goldrushLiveCallTotalMs = 0
+  goldrushLiveCallCount = 0
+}
+
 // BOUNDED TIMEOUT, DISCLOSED: `client.PricingService.getTokenPrices(...)` (the real Covalent SDK
 // call below) has no timeout of its own — this is the PRIMARY price source (src/pipeline/index.ts's
 // `withPriceSourceCache(goldrushPriceSource(client), 'primary', ...)`), called for every priced
@@ -210,6 +253,7 @@ export function isKnownGoldrushNegative(token: string, chain: string): boolean {
 export function resetGoldrushPriceSourceCallCount(): void {
   goldrushPriceSourceCallCount = 0
   resetGoldrushPriceSourceStage()
+  resetGoldrushLiveCallLatencyStats()
 }
 
 // TEST-SUPPORT EXPORT, DISCLOSED: same reasoning as basedex.ts's own __resetBaseDexCachesForTest —
@@ -217,9 +261,20 @@ export function resetGoldrushPriceSourceCallCount(): void {
 export function __resetGoldrushPriceSourceCachesForTest(): void {
   negativeGoldrushPriceCache.clear()
   inFlightGoldrushPriceLookups.clear()
+  positiveGoldrushPriceCache.clear()
   goldrushPriceSourceCallCount = 0
   goldrushConsecutiveMisses = 0
   goldrushBreakerOpenUntilMs = 0
+  resetGoldrushLiveCallLatencyStats()
+}
+
+// TEST-SUPPORT EXPORT, DISCLOSED: same convention as isKnownGoldrushNegative — lets a test assert a
+// (chain, token, day) is already positively cached without reaching into this module's private
+// state directly.
+export function isKnownGoldrushPositive(token: string, chain: string, timestampMs: number): boolean {
+  const dateString = toDateString(timestampMs)
+  if (!dateString) return false
+  return positiveGoldrushPriceCache.has(`${chain}:${token.toLowerCase()}:${dateString}`)
 }
 
 // TEST-SUPPORT EXPORT, DISCLOSED: read-only observability into the circuit breaker's state, same
@@ -275,6 +330,17 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
     // token on the same day genuinely cannot produce different answers and are correctly collapsed
     // onto one call.
     const inFlightKey = `${negativeCacheKey}:${dateString}`
+
+    // PERF-SPRINT TASK, DISCLOSED: checked BEFORE the in-flight/singleflight map below — a genuine,
+    // already-settled positive result for this exact (chain, token, day) beats even joining an
+    // in-flight promise (there's nothing to join; the answer is already known). See this cache's own
+    // declaration above for the full "why this is 100% accuracy-safe" disclosure.
+    const cachedPositive = positiveGoldrushPriceCache.get(inFlightKey)
+    if (cachedPositive !== undefined) {
+      recordDuplicatePrevented('goldrush', 'request_cache')
+      return cachedPositive
+    }
+
     const inFlight = inFlightGoldrushPriceLookups.get(inFlightKey)
     if (inFlight) {
       recordDuplicatePrevented('goldrush', 'singleflight')
@@ -294,6 +360,10 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
     }
 
     const lookup = (async (): Promise<number | null> => {
+      // PERF-SPRINT TASK, DISCLOSED: real elapsed ms around exactly this network call, feeding
+      // getGoldrushLiveCallLatencyStats() — see that function's own header for why (an honest,
+      // measured "time saved" estimate for the positive-cache hits above, never a guessed constant).
+      const callStartedAtMs = performance.now()
       try {
         logRpcCall({ route: 'pricingAtTimeEngine:goldrushPriceSource', chain, method: 'goldrush_sdk_getTokenPrices' })
         goldrushPriceSourceCallCount += 1
@@ -323,6 +393,12 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
           // A real call whose result the scan genuinely consumed — the numerator of the cost
           // audit's own callsWhoseResultWasUsed/Unused split.
           recordCallOutcome('goldrush', true)
+          // PERF-SPRINT TASK, DISCLOSED: the one place a genuine, finite price is known — cached
+          // here, keyed by the exact (chain, token, day) `inFlightKey` this call itself used, so
+          // every later lookup for this key (this scan or a later one) reuses it instead of paying
+          // another live call. See positiveGoldrushPriceCache's own declaration for the full "why
+          // this is safe" disclosure.
+          positiveGoldrushPriceCache.set(inFlightKey, price)
           return price
         }
         negativeGoldrushPriceCache.set(negativeCacheKey, Date.now() + NEGATIVE_PRICE_CACHE_TTL_MS)
@@ -339,6 +415,12 @@ export function goldrushPriceSource(client: GoldRushClient): PriceSourceFn {
         // regardless of whether it's a clean "no data" response or a network-level failure.
         recordGoldrushMiss()
         return null
+      } finally {
+        // PERF-SPRINT TASK, DISCLOSED: measures every real attempt (success, "no data" miss, or a
+        // thrown timeout/error) uniformly — an honest average real-provider round-trip time, not
+        // just the subset that happened to succeed.
+        goldrushLiveCallTotalMs += performance.now() - callStartedAtMs
+        goldrushLiveCallCount += 1
       }
     })()
 

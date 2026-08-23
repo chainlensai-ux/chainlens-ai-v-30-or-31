@@ -3703,6 +3703,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
   return {
     ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated,
     manifestFastPathAudit: walletPriceLookups.manifestFastPathAudit,
+    historicalPricingPerformanceSummary: walletPriceLookups.historicalPricingPerformanceSummary,
     walletScannerProviderSupportAudit,
     walletPnlCoverageRecoveryAudit,
     scanPerformanceSummary,

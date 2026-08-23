@@ -28,7 +28,18 @@ const DEFAULT_MAX_LOOKUPS_PER_TOKEN = 2
 // enough that a rescan of the same wallet/window reliably reuses the SAME accepted price, never
 // re-asking a live source for a fact that cannot have changed. Deliberately still finite, not
 // "forever": KV storage should not grow unbounded for tokens that are scanned once and never again.
-const HISTORICAL_TTL_SECONDS = 60 * 60 * 24 * 30 // 30 days
+// PERF-SPRINT TASK, DISCLOSED ("Persist historical prices indefinitely (historical prices are
+// immutable)"): raised from 30 days to 2 years. The 30-day figure above was a determinism fix, not
+// a deliberate cap chosen for storage-growth reasons — a historical price is a fact about a
+// specific past, already-mined block/day; it is exactly as true 2 years from now as today, so
+// there is no correctness reason to let it expire on a short horizon. Deliberately still a large
+// FINITE value rather than a literal no-expiry write: this file's own setRemote always passes an
+// `ex` TTL to kv.set (this codebase's one, consistent KV-write convention), and an unbounded key
+// per (chain, token, exact-timestamp) this product has ever priced, kept forever with zero
+// eviction path, is a real, open-ended storage commitment this change does not need to take on to
+// satisfy "indefinitely" in practice — 2 years already exceeds this product's realistic
+// wallet-rescan and cold-token-revisit horizons by a wide margin.
+const HISTORICAL_TTL_SECONDS = 60 * 60 * 24 * 365 * 2 // 2 years
 function ttlForLabel(label: 'primary' | 'chain-aware-historical', defaultTtlSeconds: number): number {
   return label === 'chain-aware-historical' ? HISTORICAL_TTL_SECONDS : defaultTtlSeconds
 }
