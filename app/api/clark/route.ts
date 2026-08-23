@@ -7978,7 +7978,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // Token Scanner analysis and verified per-token Whale Alerts. Never answer these from generic
   // model knowledge. A context-free "what should I watch?" is left to the active market/token
   // follow-up logic below; every explicit pump-metric question is handled here.
-  const explicitPumpQuestion = /\[mode:\s*pump-alerts\]|\bpump\b|buy\/?sell\s+pressure|buy\s+and\s+sell\s+pressure|liquidity\s+change|volume\s+acceleration|top\s+buyers?\/?sellers?|top\s+buyers?\s+and\s+sellers?|organic\s+or\s+fake/i.test(prompt);
+  //
+  // WORD-BOUNDARY BUG, DISCLOSED (reported live: "why is this token pumping 0x...B200...2001"
+  // fell through to the generic Base market list instead of a token-specific answer). Root cause,
+  // confirmed by running both regexes against the real reported prompt: classifyClarkAnalystIntent
+  // (lib/server/clarkAnalystIntent.ts's PUMP_RE) correctly matched "why is this token pumping" and
+  // set analystRouting.route to "pump_analysis" — but THIS separate gate used `\bpump\b`, whose
+  // trailing `\b` requires a non-word character immediately after "pump". "pumping" has "ing"
+  // there instead, so `\bpump\b` never matches it, `explicitPumpQuestion` came back false, the
+  // `&&` below failed, and the whole pump_analysis branch was skipped even though the analyst
+  // router had already correctly identified the question AND extracted the token address. Fixed
+  // by matching the same "pump"/"pumping"/"pumps" family PUMP_RE itself already recognizes.
+  const explicitPumpQuestion = /\[mode:\s*pump-alerts\]|\bpump(?:ing|s)?\b|buy\/?sell\s+pressure|buy\s+and\s+sell\s+pressure|liquidity\s+change|volume\s+acceleration|top\s+buyers?\/?sellers?|top\s+buyers?\s+and\s+sellers?|organic\s+or\s+fake/i.test(prompt);
   if (analystRouting.route === "pump_analysis" && explicitPumpQuestion) {
     const selectedToken = typeof body.appContext?.selectedToken === "string"
       ? body.appContext.selectedToken

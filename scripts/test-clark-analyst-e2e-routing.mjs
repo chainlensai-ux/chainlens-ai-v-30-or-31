@@ -175,6 +175,27 @@ assert.match(routeSource, /pump_intelligence_report/)
 assert.match(routeSource, /\^\\s\*why\\\?\?\\s\*\$/)
 assert.ok(routeSource.indexOf('const wantsNewBasePools = isNewBaseLaunchPrompt(prompt)') < routeSource.indexOf('const cgTrending = await fetchCoinGeckoBaseTrending()'), 'new-pool routing must bypass the CoinGecko ecosystem mover list')
 
+// WORD-BOUNDARY BUG, DISCLOSED (reported live: "why is this token pumping 0x...B200...2001" fell
+// through to the generic Base market list instead of a token-specific pump analysis). Root cause:
+// explicitPumpQuestion used a bare \bpump\b, whose trailing boundary requires a non-word character
+// right after "pump" — "pumping" has "ing" there instead, so it never matched. Assert the fixed
+// pattern is live and the old bare form is gone, checked against source with `//` comment lines
+// stripped so this disclosure text itself (which necessarily contains the old literal) can't
+// false-positive the "must be gone" check.
+assert.match(routeSource, /\\bpump\(\?:ing\|s\)\?\\b/, 'explicitPumpQuestion must recognize "pumping"/"pumps", not just bare "pump"')
+const routeSourceNoComments = routeSource
+  .split('\n')
+  .filter((line) => !line.trim().startsWith('//'))
+  .join('\n')
+assert.doesNotMatch(routeSourceNoComments, /\\bpump\\b(?!\(\?:ing)/, 'the old bare \\bpump\\b gate must not still be live (it silently misses "pumping")')
+{
+  const reportedPrompt = 'why is this token pumping 0xB2000000000000000000006B683a4612a94d2001'
+  const explicitPumpQuestion = /\[mode:\s*pump-alerts\]|\bpump(?:ing|s)?\b|buy\/?sell\s+pressure|buy\s+and\s+sell\s+pressure|liquidity\s+change|volume\s+acceleration|top\s+buyers?\/?sellers?|top\s+buyers?\s+and\s+sellers?|organic\s+or\s+fake/i
+  assert.equal(explicitPumpQuestion.test(reportedPrompt), true, 'the exact reported prompt must be recognized as an explicit pump question')
+  assert.equal(explicitPumpQuestion.test('will this pump continue'), true)
+  assert.equal(explicitPumpQuestion.test('is this pump organic or fake'), true)
+}
+
 // The V2 adapter must not discard live portfolio/canonical PnL evidence before Clark sees it.
 const v2AdapterSource = fs.readFileSync(new URL('../lib/server/v2Adapters.ts', import.meta.url), 'utf8')
 for (const field of ['totalValue', 'holdings:', 'walletTokenPnlRead', 'walletTradeStatsSummary', 'publicPnlStatus', 'walletProfile']) {
