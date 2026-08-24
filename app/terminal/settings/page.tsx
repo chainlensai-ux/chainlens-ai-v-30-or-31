@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabaseClient'
 import type { UserSettingsUpdate } from '@/lib/supabase/userSettings'
 import { authRedirectUrl } from '@/lib/authFlow'
+import { peekCachedPlan } from '@/lib/usePlan'
 
 function isValidAvatarUrl(url: string): boolean {
   if (!url || url.trim() === '') return true
@@ -167,7 +168,9 @@ export default function SettingsPage() {
   const [emailVerified, setEmailVerified] = useState<boolean | null>(null)
   const [authProvider, setAuthProvider] = useState<string | null>(null)
   const [resetState, setResetState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
-  const [currentPlan, setCurrentPlan] = useState<'free' | 'pro' | 'elite'>('free')
+  // CACHED-FIRST INIT (smoothness audit): start from the last verified cached plan so an
+  // Elite user reloading Settings sees Elite immediately — never Free flipping to Elite.
+  const [currentPlan, setCurrentPlan] = useState<'free' | 'pro' | 'elite'>(() => peekCachedPlan() ?? ('free' as 'free' | 'pro' | 'elite'))
   const [nextBillingDate, setNextBillingDate] = useState<string | null>(null)
 
   const [defaultChain, setDefaultChain] = useState<'base' | 'ethereum'>('base')

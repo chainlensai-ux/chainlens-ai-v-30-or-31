@@ -6,7 +6,7 @@ import { usePathname } from 'next/navigation'
 import Image from 'next/image'
 import { supabase } from '@/lib/supabaseClient'
 import { type UserPlan, PLAN_COLOR } from '@/lib/planFeatures'
-import { clearPlanCache, readCachedPlan, writeCachedPlan } from '@/lib/usePlan'
+import { clearPlanCache, readCachedPlan, writeCachedPlan, peekCachedPlan } from '@/lib/usePlan'
 
 const AVATAR_COLORS: Record<string, string> = {
   mint:   'linear-gradient(135deg, #2DD4BF 0%, #14b8a6 100%)',
@@ -64,9 +64,20 @@ export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [mobileToolsOpen, setMobileToolsOpen] = useState(false)
   const [accountEmail, setAccountEmail] = useState<string | null>(null)
-  const [plan, setPlan] = useState<UserPlan | null>(null)
+  // CACHED-FIRST INIT (smoothness audit): plan starts from the last verified cached value —
+  // never a guessed Free. 'CHECKING PLAN…' shows only when no cache exists at all.
+  const [plan, setPlan] = useState<UserPlan | null>(() => peekCachedPlan())
   const [planLoading, setPlanLoading] = useState(true)
-  const [avatarColor, setAvatarColor] = useState<string>('mint')
+  // PROFILE COLOR / display name: hydrate from the non-sensitive local settings cache on
+  // mount so the avatar renders in the user's color instantly instead of defaulting late.
+  const [avatarColor, setAvatarColor] = useState<string>(() => {
+    if (typeof window === 'undefined') return 'mint'
+    try {
+      const raw = window.localStorage.getItem('chainlens_local_settings')
+      const ac = raw ? String((JSON.parse(raw) as Record<string, unknown>).avatar_color ?? '') : ''
+      return AVATAR_COLORS[ac] ? ac : 'mint'
+    } catch { return 'mint' }
+  })
   const [trialDaysLeft, setTrialDaysLeft] = useState<number>(0)
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
   const [displayName, setDisplayName] = useState<string | null>(null)
