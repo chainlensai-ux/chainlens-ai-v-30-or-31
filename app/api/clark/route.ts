@@ -5499,7 +5499,21 @@ async function executeClarkToolPlan(input: {
         // CHAIN-STRICT DEPLOYER LOOKUP (Clark deployer audit): /api/dev-wallet defaults to
         // Base when no chain is sent — an ETH/BNB/Robinhood token would silently get Base
         // deployer evidence. Forward the plan's chain (input.chain is in scope here).
-        const devWalletRes = await callInternalApi(input.origin, "/api/dev-wallet", { contractAddress: address, chain: toTokenApiChain(input.chain) }, input.authHeader ?? undefined, input.verifiedPlan);
+        //
+        // TIMEOUT-TOO-TIGHT FIX, DISCLOSED (reported live: "who deployed this token" on a real Base
+        // contract returned "DEPLOYER LOOKUP — UNAVAILABLE... the dev-wallet module did not return
+        // usable data for this scan" with no further detail). Root cause: callInternalApi's default
+        // 9000ms timeout is tuned for lightweight calls, but /api/dev-wallet does real on-chain work
+        // comparable to /api/token (creator-tx lookup via Etherscan V2, bytecode/RPC reads, linked-
+        // wallet cluster analysis) — which is exactly why /api/token was already given an explicit
+        // 60s maxDuration in vercel.json while /api/dev-wallet had none at all, and was still being
+        // called from here with only a 9s client-side budget. Any run past 9s threw an AbortError,
+        // which the catch block below silently swallowed (evidence.devWallet was simply never set),
+        // producing the generic "did not return usable data" message even though the real cause was
+        // a timeout, not a missing deployer. Fixed on both ends: /api/dev-wallet now carries the
+        // same 60s maxDuration as /api/token, and this call gets a 25s budget — enough headroom
+        // under that for the route to actually finish instead of being cut off mid-lookup.
+        const devWalletRes = await callInternalApi(input.origin, "/api/dev-wallet", { contractAddress: address, chain: toTokenApiChain(input.chain) }, input.authHeader ?? undefined, input.verifiedPlan, 25_000);
         const d = (devWalletRes.json ?? {}) as Record<string, unknown>;
         const verdictRaw = ((d.clarkVerdict as Record<string, unknown> | null)?.label ?? "UNKNOWN") as string;
         const confRaw = ((d.clarkVerdict as Record<string, unknown> | null)?.confidence ?? "low") as string;
@@ -5553,6 +5567,22 @@ async function executeClarkToolPlan(input: {
       }
     } catch (err) {
       console.error("[Clark tools]", tool.name, err instanceof Error ? err.message : err);
+      // HONEST FAILURE REASON, DISCLOSED (same incident as the timeout fix above): a thrown error
+      // here previously left evidence.devWallet unset entirely, so the deployer-lookup response
+      // couldn't distinguish "the call timed out" from "no deployer identity exists" — both read as
+      // the same generic "did not return usable data" message. Records which one actually happened
+      // for dev_wallet_analyze specifically; every other tool's fallback text already handles an
+      // unset evidence field correctly and is left unchanged.
+      if (tool.name === "dev_wallet_analyze") {
+        const isTimeout = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+        evidence.devWallet = {
+          ok: false, deployerAddress: null, linkedWallets: 0, confidence: "Low", verdict: "UNKNOWN",
+          warnings: [isTimeout ? "Deployer lookup timed out." : "Deployer lookup failed."],
+          errorSafeMessage: isTimeout
+            ? "the deployer lookup timed out before returning a result — this is a provider/timeout issue, not a missing deployer"
+            : "the deployer lookup request failed",
+        };
+      }
     }
   }
 
@@ -12034,7 +12064,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         "",
         `- Chain checked: ${chainDisplayLabel(chain)}`,
         "- Sources attempted: Token Core scan (/api/token), dev/deployer module (/api/dev-wallet)",
-        `- Why unavailable: ${evidence.devWallet?.ok ? "no deployer identity resolved in the returned evidence" : "the dev-wallet module did not return usable data for this scan"}`,
+        // HONEST FAILURE REASON, DISCLOSED: prefers the real errorSafeMessage set when the lookup
+        // actually threw (timeout vs. request failure vs. free-plan gate) over the generic fallback,
+        // so a timeout is never reported to the user as an indistinguishable "no data" result.
+        `- Why unavailable: ${evidence.devWallet?.ok ? "no deployer identity resolved in the returned evidence" : (evidence.devWallet?.errorSafeMessage ?? "the dev-wallet module did not return usable data for this scan")}`,
         "- Next action: open Token Scanner on this contract to view deployer/creator evidence directly.",
       ].join("\n"),
       intent: plan.intent,

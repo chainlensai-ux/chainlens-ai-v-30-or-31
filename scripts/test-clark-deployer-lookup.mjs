@@ -130,4 +130,31 @@ const solMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
   assert.ok(['risk_explanation', 'none', 'token_scan'].includes(r4.intent))
 }
 
+// ── Timeout/honest-failure fix, DISCLOSED (reported live): "who deployed this token" on a real
+// Base contract returned "DEPLOYER LOOKUP — UNAVAILABLE ... the dev-wallet module did not return
+// usable data for this scan" with no further detail. Root cause: /api/dev-wallet does real
+// on-chain work comparable to /api/token (Etherscan creator-tx lookup, bytecode/RPC reads, cluster
+// analysis) — which is exactly why /api/token already had an explicit 60s maxDuration while
+// /api/dev-wallet had none, and was being called from Clark with only a 9s client-side timeout.
+// A run past 9s threw, and the catch block silently left evidence.devWallet unset, collapsing a
+// real timeout into the same generic message as "no deployer identity exists". These lock the fix
+// on both ends: a longer, matched client-side budget, a maxDuration matching /api/token, and an
+// honest, distinguishable failure reason instead of a swallowed exception. ────────────────────────
+{
+  assert.match(routeSrc, /callInternalApi\(input\.origin, "\/api\/dev-wallet", \{ contractAddress: address, chain: toTokenApiChain\(input\.chain\) \}, input\.authHeader \?\? undefined, input\.verifiedPlan, 25_000\)/,
+    'the dev-wallet call must use a realistic timeout budget, not callInternalApi\'s lightweight 9s default')
+  assert.match(routeSrc, /if \(tool\.name === "dev_wallet_analyze"\) \{/,
+    'a thrown error for dev_wallet_analyze must be handled distinctly, not silently swallowed like a generic tool failure')
+  assert.match(routeSrc, /isTimeout = err instanceof Error && \(err\.name === "TimeoutError" \|\| err\.name === "AbortError"\)/,
+    'a timeout must be distinguished from an unrelated request failure')
+  assert.match(routeSrc, /the deployer lookup timed out before returning a result — this is a provider\/timeout issue, not a missing deployer/,
+    'a timed-out lookup must say so honestly, never collapse into the generic "no deployer" wording')
+  assert.match(routeSrc, /evidence\.devWallet\?\.errorSafeMessage \?\? "the dev-wallet module did not return usable data for this scan"/,
+    'the user-facing unavailable message must prefer the real captured failure reason over the generic fallback')
+
+  const vercelConfig = JSON.parse(readFileSync(new URL('../vercel.json', import.meta.url), 'utf8'))
+  assert.equal(vercelConfig.functions?.['app/api/dev-wallet/route.ts']?.maxDuration, 60,
+    '/api/dev-wallet must carry the same 60s maxDuration as /api/token — it does comparable on-chain work and was the one heavy route missing from vercel.json')
+}
+
 console.log('test-clark-deployer-lookup.mjs: all assertions passed')
