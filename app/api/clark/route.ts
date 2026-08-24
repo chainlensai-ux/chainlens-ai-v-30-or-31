@@ -94,6 +94,19 @@ import {
 import { buildBaseRadarDisplayModel } from "@/lib/baseRadarDisplayModel";
 import { classifyClarkAnalystIntent, isChainLensAnalystPrompt } from "@/lib/server/clarkAnalystIntent";
 import type { PumpIntelligenceReport } from "@/lib/server/pumpIntelligence";
+// NAME COLLISION, DISCLOSED: this file already has its own local resolveClarkContext(message,
+// history) — a TEXT-SCRAPING resolver that recovers context by regexing prior assistant prose
+// (extractLastTokenContext(historyLines) et al). That one is left untouched so existing routing is
+// byte-for-byte unchanged; the new memory-based resolver is imported under an alias alongside it.
+// The two answer different questions: the old one asks "what did the transcript say?", the new one
+// asks "what entity is this session actually about?" — structured memory, chain-scoped, auditable.
+import {
+  resolveClarkContext as resolveClarkMemoryContext,
+  buildClarkContextMemoryAudit,
+  normalizeClarkChain,
+  type ClarkChain,
+  type ClarkMemoryView,
+} from "@/lib/server/clarkContextResolver";
 
 const {
   GOLDRUSH_API_KEY,
@@ -157,6 +170,9 @@ function clarkIp(req: NextRequest): string { return req.headers.get('x-forwarded
 function clarkActor(req: NextRequest, authenticated: boolean): string { return authenticated ? (req.headers.get('x-user-id')?.trim() || `ip:${clarkIp(req)}`) : `ip:${clarkIp(req)}` }
 
 // Session memory — lightweight short-term context per session/user
+// Re-exported from the pure resolver so memory and resolution can never disagree on the chain set.
+type ClarkMemoryChain = ClarkChain;
+
 type ClarkSessionMemory = {
   lastTokenSymbol?: string | null;
   lastTokenName?: string | null;
@@ -173,7 +189,10 @@ type ClarkSessionMemory = {
     symbol: string | null;
     name: string | null;
     scanSummary: string | null;
-    chain?: "base" | "eth";
+    // CHAIN-WIDENING, DISCLOSED (Clark memory audit): was `"base" | "eth"`, which could not
+    // represent bnb, Robinhood Chain or Solana at all — so scanning a token on those chains
+    // recorded no usable chain and the next follow-up resolved against the wrong network.
+    chain?: ClarkMemoryChain;
     normalizedEvidenceSummary?: string | null;
     missingEvidence?: string[];
     confidence?: "high" | "medium" | "low" | "open_check" | "failed";
@@ -186,7 +205,7 @@ type ClarkSessionMemory = {
     symbol: string | null;
     name: string | null;
     scanSummary: string | null;
-    chain: "base" | "eth";
+    chain: ClarkMemoryChain;
     ts: number;
   } | null;
   lastWallet: {
@@ -222,12 +241,17 @@ type ClarkSessionMemory = {
   lastMomentumShownCount: number;
   recentMessages: Array<{ role: "user" | "assistant"; content: string; ts: number }>;
   conversationHistory: Array<{ role: "user" | "assistant"; content: string; ts: number }>;
-  recentTokens: Array<{ address: string; symbol: string | null; name: string | null; chain: "base" | "eth"; summary: string | null; ts: number }>;
-  recentWallets: Array<{ address: string; chain: "base" | "eth"; summary: string | null; ts: number }>;
-  selectedChain: "base" | "eth";
+  recentTokens: Array<{ address: string; symbol: string | null; name: string | null; chain: ClarkMemoryChain; summary: string | null; ts: number }>;
+  recentWallets: Array<{ address: string; chain: ClarkMemoryChain; summary: string | null; ts: number }>;
+  selectedChain: ClarkMemoryChain;
   lastActiveTool: string | null;
   currentPage?: string | null;
-  lastDevWallet?: { address: string; summary: string | null; ts: number } | null;
+  // DEAD-FIELD FIX, DISCLOSED (Clark memory audit): lastDevWallet was declared here and read in
+  // two places but NEVER ASSIGNED anywhere in this file, so the deployer was never actually
+  // remembered and "who deployed it?" -> "has he rugged before?" could not resolve the dev wallet
+  // under any circumstances. It is now written by rememberClarkDeployer() whenever a deployer is
+  // resolved, and carries the chain + source token so it is chain-scoped like every other entity.
+  lastDevWallet?: { address: string; summary: string | null; chain?: ClarkMemoryChain; sourceTokenAddress?: string | null; confidence?: "high" | "medium" | "low"; ts: number } | null;
   // CLARK TOOL-CALLING MEMORY, DISCLOSED: added for the Base Radar / Whale Alerts tool-call
   // integration. lastSelectedToken/lastSelectedWallet are intentionally NOT separate fields —
   // they map straight onto the existing lastToken/lastWallet above, the same "last scanned
@@ -331,6 +355,91 @@ function getSessionKeySource(req: NextRequest, authenticated: boolean): "user" |
   return "ip";
 }
 
+// DEPLOYER MEMORY WRITE, DISCLOSED (Clark memory audit): the missing half of lastDevWallet. Called
+// wherever a deployer/creator address is actually resolved, so a subsequent "has he rugged before?"
+// / "scan that wallet" has a real referent instead of falling through to the token address (or to
+// nothing). Stores the chain and the token it came from so the deployer is chain-scoped like every
+// other remembered entity, and never overwrites a known deployer with a null one.
+function rememberClarkDeployer(
+  mem: ClarkSessionMemory,
+  address: string | null | undefined,
+  opts?: { summary?: string | null; chain?: ClarkMemoryChain | null; sourceTokenAddress?: string | null; confidence?: "high" | "medium" | "low" },
+): boolean {
+  if (typeof address !== "string") return false;
+  const addr = address.trim().toLowerCase();
+  if (!/^0x[a-f0-9]{40}$/.test(addr)) return false;
+  mem.lastDevWallet = {
+    address: addr,
+    summary: opts?.summary ?? mem.lastDevWallet?.summary ?? null,
+    chain: opts?.chain ?? mem.lastToken?.chain ?? mem.selectedChain,
+    sourceTokenAddress: opts?.sourceTokenAddress ?? mem.lastToken?.address ?? null,
+    confidence: opts?.confidence ?? "medium",
+    ts: Date.now(),
+  };
+  return true;
+}
+
+// Projects the route's session memory onto the pure resolver's structural view. Kept as an adapter
+// rather than changing ClarkSessionMemory's shape so no existing read/write in this file changes
+// behavior — the resolver simply gets a normalized, chain-scoped picture of the same state.
+function toClarkMemoryView(mem: ClarkSessionMemory): ClarkMemoryView {
+  const tokenChain = normalizeClarkChain(mem.lastToken?.chain ?? mem.lastTokenChain ?? mem.selectedChain) ?? "base";
+  const view: ClarkMemoryView = {};
+  if (mem.lastToken?.address) {
+    view.activeToken = {
+      tokenAddress: mem.lastToken.address,
+      chainSlug: tokenChain,
+      chainId: null,
+      symbol: mem.lastToken.symbol ?? null,
+      name: mem.lastToken.name ?? null,
+      ts: mem.lastToken.ts,
+    };
+  }
+  if (mem.lastWallet?.address) {
+    view.activeWallet = {
+      walletAddress: mem.lastWallet.address,
+      chainSlug: normalizeClarkChain(mem.lastWallet.chainMode) ?? "base",
+      ts: mem.lastWallet.ts,
+    };
+  }
+  if (mem.lastDevWallet?.address) {
+    view.activeDeployer = {
+      address: mem.lastDevWallet.address,
+      chainSlug: normalizeClarkChain(mem.lastDevWallet.chain) ?? tokenChain,
+      sourceTokenAddress: mem.lastDevWallet.sourceTokenAddress ?? null,
+      confidence: mem.lastDevWallet.confidence ?? "medium",
+      ts: mem.lastDevWallet.ts,
+    };
+  }
+  // Radar and Pump lists both answer rank references; the most recently populated one wins.
+  if (mem.lastRadarList.length > 0) {
+    view.activeList = {
+      kind: "radar",
+      chainSlug: normalizeClarkChain(mem.lastRadarChain) ?? "base",
+      items: mem.lastRadarList.map(r => ({ rank: r.rank, address: r.address, symbol: r.symbol, name: r.name })),
+      ts: mem.lastRadarTs,
+    };
+  } else if (mem.lastMomentumList.length > 0) {
+    view.activeList = {
+      kind: "pump",
+      chainSlug: tokenChain,
+      items: mem.lastMomentumList
+        .filter(m => typeof m.address === "string" && m.address)
+        .map(m => ({ rank: m.rank, address: m.address as string, symbol: m.symbol, name: m.name })),
+      ts: mem.lastMomentumTs,
+    };
+  }
+  view.recentTokens = (mem.recentTokens ?? [])
+    .filter(t => typeof t.address === "string" && t.address)
+    .map(t => ({
+      address: t.address,
+      chainSlug: normalizeClarkChain(t.chain) ?? "base",
+      symbol: t.symbol ?? null,
+      ts: t.ts,
+    }));
+  return view;
+}
+
 function updateMemToken(
   mem: ClarkSessionMemory,
   address: string,
@@ -343,7 +452,7 @@ function updateMemToken(
     confidence?: "high" | "medium" | "low" | "open_check" | "failed";
     normalizedEvidence?: TokenScanEvidence | null;
     cachedEvidence?: TokenScanEvidence | null;
-    chain?: "base" | "eth";
+    chain?: ClarkMemoryChain;
   }
 ) {
   if (mem.lastToken) {
@@ -590,6 +699,15 @@ interface ClarkRequestBody {
     lastMomentumShownCount?: number;
     lastToken?: ClarkSessionMemory["lastToken"];
     lastWallet?: ClarkSessionMemory["lastWallet"];
+    // COLD-START REHYDRATION, DISCLOSED (Clark memory audit): SESSION_MEMORY is a process-local
+    // Map, so on a serverless instance switch it starts empty and only whatever the client can
+    // send back survives. Previously only token/wallet/momentum round-tripped, so the deployer and
+    // the Radar list were silently lost mid-conversation — breaking exactly the follow-up chains
+    // this audit was raised for ("has he rugged before?", "scan number 2").
+    lastDeployer?: { address: string; chain?: string | null; sourceTokenAddress?: string | null; confidence?: "high" | "medium" | "low"; ts?: number } | null;
+    lastRadarList?: ClarkSessionMemory["lastRadarList"];
+    lastRadarChain?: string | null;
+    lastRadarTs?: number;
   };
   route?: string;
   currentTool?: string;
@@ -12140,13 +12258,53 @@ export async function POST(req: NextRequest) {
   }
   if (!sessionMem.lastToken && body.clientContext?.lastToken?.address) sessionMem.lastToken = body.clientContext.lastToken;
   if (!sessionMem.lastWallet && body.clientContext?.lastWallet?.address) sessionMem.lastWallet = body.clientContext.lastWallet;
+  // Restore the deployer and Radar list the same way token/wallet already were — see the
+  // COLD-START REHYDRATION disclosure on clientContext. Only fills GAPS: anything already resolved
+  // in this process is newer and always wins over the client's echo.
+  if (!sessionMem.lastDevWallet?.address && body.clientContext?.lastDeployer?.address) {
+    const d = body.clientContext.lastDeployer;
+    rememberClarkDeployer(sessionMem, d.address, {
+      chain: normalizeClarkChain(d.chain),
+      sourceTokenAddress: d.sourceTokenAddress ?? null,
+      confidence: d.confidence ?? "medium",
+    });
+    if (sessionMem.lastDevWallet && typeof d.ts === "number") sessionMem.lastDevWallet.ts = d.ts;
+  }
+  if (sessionMem.lastRadarList.length === 0 && Array.isArray(body.clientContext?.lastRadarList) && body.clientContext.lastRadarList.length > 0) {
+    sessionMem.lastRadarList = body.clientContext.lastRadarList;
+    const echoedRadarChain = body.clientContext.lastRadarChain;
+    sessionMem.lastRadarChain = echoedRadarChain === "robinhood" || echoedRadarChain === "base" ? echoedRadarChain : sessionMem.lastRadarChain;
+    sessionMem.lastRadarTs = typeof body.clientContext.lastRadarTs === "number" ? body.clientContext.lastRadarTs : Date.now();
+  }
   // Sync page and chain into session memory
   setMemPage(sessionMem, body.uiModeHint);
   const earlyPrompt = (body.prompt ?? '').trim()
   const earlyPromptChain = earlyPrompt ? extractRequestedChainFromPrompt(earlyPrompt) : null
   setMemChain(sessionMem, earlyPromptChain ?? body.chain);
-  sessionMem.selectedChain = (earlyPromptChain ?? body.chain) === "ethereum" ? "eth" : "base"
+  // SILENT CHAIN COLLAPSE, DISCLOSED (Clark memory audit): this read
+  // `=== "ethereum" ? "eth" : "base"`, which mapped EVERY other chain — bnb, Robinhood, Solana —
+  // onto "base". A Robinhood or Solana session therefore recorded its subject as a Base one and
+  // every follow-up resolved against the wrong network. Normalizes across the full supported set
+  // now, and keeps the previous selection rather than defaulting to Base when a value is unknown.
+  sessionMem.selectedChain = normalizeClarkChain(earlyPromptChain ?? body.chain) ?? sessionMem.selectedChain ?? "base"
   rememberMessage(sessionMem, "user", earlyPrompt)
+
+  // MEMORY-BASED SUBJECT RESOLUTION, DISCLOSED (Clark memory audit): resolves which on-chain
+  // subject this message is about from structured, chain-scoped session memory — distinct from the
+  // older transcript-scraping resolveClarkContext() above, which stays in charge of existing
+  // routing. Computed once per request and attached to the response as an audit record so a wrong
+  // subject is diagnosable after the fact; it never overrides an explicit address in the message.
+  const clarkMemoryResolution = earlyPrompt
+    ? resolveClarkMemoryContext(
+        earlyPrompt,
+        toClarkMemoryView(sessionMem),
+        {
+          selectedTokenAddress: typeof body.selectedToken === "string" ? body.selectedToken : null,
+          selectedWalletAddress: typeof body.selectedWallet === "string" ? body.selectedWallet : null,
+          chainSlug: normalizeClarkChain(body.chain),
+        },
+      )
+    : null
   const isMoreFollowup = earlyPrompt ? (MORE_CONTEXT_RE.test(earlyPrompt) && (sessionMem.lastMomentumList.length > 0 || Boolean(sessionMem.lastToken))) : false
   const earlyRank = earlyPrompt ? parseRankFollowup(earlyPrompt) : null
   const rankFromMemory = Boolean(earlyRank && sessionMem.lastMomentumList.length > 0)
@@ -12355,9 +12513,61 @@ export async function POST(req: NextRequest) {
           ts: sessionMem.lastToken.ts,
         }
       }
+      // DEPLOYER MEMORY, DISCLOSED (Clark memory audit): harvest whichever deployer/creator address
+      // this response actually resolved and commit it to session memory. Done here, at the single
+      // response-finalisation point where sessionMem is in scope, so every path that can surface a
+      // deployer (token scan, dev-wallet tool call, dev rug-history read) feeds the same memory
+      // instead of each needing its own write. Reads only real resolved fields — never invents one.
+      {
+        const dw = normData.devWallet as Record<string, unknown> | undefined
+        const deployerCandidate =
+          (typeof normData.deployerAddress === 'string' ? normData.deployerAddress : null)
+          ?? (typeof dw?.deployerAddress === 'string' ? dw.deployerAddress as string : null)
+          ?? (typeof dw?.likelyDeployer === 'string' ? dw.likelyDeployer as string : null)
+        if (deployerCandidate) {
+          const rawConf = typeof dw?.confidence === 'string' ? (dw.confidence as string).toLowerCase() : ''
+          rememberClarkDeployer(sessionMem, deployerCandidate, {
+            chain: normalizeClarkChain(sessionMem.lastToken?.chain ?? sessionMem.selectedChain) ?? 'base',
+            sourceTokenAddress: sessionMem.lastToken?.address ?? null,
+            confidence: rawConf === 'high' ? 'high' : rawConf === 'low' ? 'low' : 'medium',
+          })
+        }
+      }
+      // Echoed so the deployer survives a serverless instance switch: SESSION_MEMORY is a
+      // process-local Map, and without a client round-trip the deployer (like the radar list and
+      // whale rows) was silently lost on any cold start, which is what broke long follow-up chains.
+      if (sessionMem.lastDevWallet?.address) {
+        genericMemoryEcho.lastDeployer = {
+          address: sessionMem.lastDevWallet.address,
+          chain: sessionMem.lastDevWallet.chain ?? null,
+          sourceTokenAddress: sessionMem.lastDevWallet.sourceTokenAddress ?? null,
+          confidence: sessionMem.lastDevWallet.confidence ?? 'medium',
+          ts: sessionMem.lastDevWallet.ts,
+        }
+      }
+      if (sessionMem.lastRadarList.length > 0) {
+        genericMemoryEcho.lastRadarList = sessionMem.lastRadarList.map(r => ({
+          rank: r.rank, address: r.address, symbol: r.symbol, name: r.name, chain: r.chain,
+        }))
+        genericMemoryEcho.lastRadarChain = sessionMem.lastRadarChain
+        genericMemoryEcho.lastRadarTs = sessionMem.lastRadarTs
+      }
       if (Object.keys(genericMemoryEcho).length > 0) {
         const existingMemoryEcho = (typeof normData.memoryEcho === 'object' && normData.memoryEcho) ? normData.memoryEcho as Record<string, unknown> : {}
         normData.memoryEcho = { ...genericMemoryEcho, ...existingMemoryEcho }
+      }
+      // Per-message context audit — records the memory that was available BEFORE resolution
+      // alongside what was chosen and why, so "Clark answered about the wrong token" is
+      // diagnosable from data instead of reconstructed by guesswork.
+      if (clarkMemoryResolution) {
+        normData.clarkContextMemoryAudit = buildClarkContextMemoryAudit({
+          chatId: sessionKey,
+          messageId: `${sessionKey}:${Date.now()}`,
+          userPrompt: earlyPrompt,
+          memory: toClarkMemoryView(sessionMem),
+          resolution: clarkMemoryResolution,
+          memoryUpdated: Boolean(sessionMem.lastDevWallet?.address) || Boolean(sessionMem.lastToken?.address),
+        })
       }
     }
     for (const k of ["reply", "response", "analysis", "verdict"] as const) {

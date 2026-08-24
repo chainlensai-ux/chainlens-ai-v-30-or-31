@@ -12,6 +12,15 @@ const LAST_TOKEN_KEY = 'chainlens:clark:last-token'
 const RECENT_TOKENS_KEY = 'chainlens:clark:recent-tokens'
 const LAST_MOMENTUM_LIST_KEY = 'chainlens:clark:last-momentum-list'
 const LAST_MOMENTUM_SHOWN_COUNT_KEY = 'chainlens:clark:last-momentum-shown-count'
+// COLD-START MEMORY, DISCLOSED (Clark memory audit): the backend's SESSION_MEMORY is a
+// process-local Map, so on a serverless instance switch only what the client can send back
+// survives. Token/wallet/momentum already round-tripped; the deployer and the Radar list did not,
+// so mid-conversation follow-ups like "has he rugged before?" and "scan number 2" broke as soon as
+// the request landed on a cold instance. These mirror those two entities the same way.
+const LAST_DEPLOYER_KEY = 'chainlens:clark:last-deployer'
+const LAST_RADAR_LIST_KEY = 'chainlens:clark:last-radar-list'
+const LAST_RADAR_CHAIN_KEY = 'chainlens:clark:last-radar-chain'
+const LAST_RADAR_TS_KEY = 'chainlens:clark:last-radar-ts'
 
 /** Stable Clark session id. Created once per browser session, reused forever — never regenerated per message. */
 export function getClarkSessionId(): string {
@@ -31,6 +40,10 @@ export type ClarkClientContext = {
   recentTokens?: unknown[]
   lastMomentumList?: unknown[]
   lastMomentumShownCount?: number
+  lastDeployer?: unknown | null
+  lastRadarList?: unknown[]
+  lastRadarChain?: string | null
+  lastRadarTs?: number
 }
 
 function readJson(key: string): unknown {
@@ -52,6 +65,10 @@ export function readClarkClientContext(): ClarkClientContext {
     recentTokens: (readJson(RECENT_TOKENS_KEY) as unknown[] | null) ?? undefined,
     lastMomentumList: (readJson(LAST_MOMENTUM_LIST_KEY) as unknown[] | null) ?? undefined,
     lastMomentumShownCount: Number(sessionStorage.getItem(LAST_MOMENTUM_SHOWN_COUNT_KEY) ?? '0') || 0,
+    lastDeployer: readJson(LAST_DEPLOYER_KEY) ?? undefined,
+    lastRadarList: (readJson(LAST_RADAR_LIST_KEY) as unknown[] | null) ?? undefined,
+    lastRadarChain: sessionStorage.getItem(LAST_RADAR_CHAIN_KEY) ?? undefined,
+    lastRadarTs: Number(sessionStorage.getItem(LAST_RADAR_TS_KEY) ?? '0') || undefined,
   }
 }
 
@@ -77,6 +94,18 @@ export function persistClarkMemoryEcho(payload: unknown): void {
   }
   if (Array.isArray(echo.recentTokens)) {
     sessionStorage.setItem(RECENT_TOKENS_KEY, JSON.stringify(echo.recentTokens))
+  }
+
+  // Deployer + Radar list: only ever written when the echo carries a real value, so a response that
+  // simply didn't touch them can never erase a deployer or list resolved earlier in the session.
+  const lastDeployer = echo.lastDeployer as { address?: unknown } | undefined
+  if (lastDeployer && typeof lastDeployer === 'object' && typeof lastDeployer.address === 'string') {
+    sessionStorage.setItem(LAST_DEPLOYER_KEY, JSON.stringify(lastDeployer))
+  }
+  if (Array.isArray(echo.lastRadarList) && echo.lastRadarList.length > 0) {
+    sessionStorage.setItem(LAST_RADAR_LIST_KEY, JSON.stringify(echo.lastRadarList))
+    if (typeof echo.lastRadarChain === 'string') sessionStorage.setItem(LAST_RADAR_CHAIN_KEY, echo.lastRadarChain)
+    if (typeof echo.lastRadarTs === 'number') sessionStorage.setItem(LAST_RADAR_TS_KEY, String(echo.lastRadarTs))
   }
 }
 
