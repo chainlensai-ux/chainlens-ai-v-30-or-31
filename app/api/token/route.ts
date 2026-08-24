@@ -8744,6 +8744,43 @@ export async function POST(req: Request) {
         ...(cortexScoreResult.cortexConfidence === 'insufficient' ? ['CORTEX confidence insufficient — not enough evidence across core categories'] : []),
       ],
     }
+    // ROBINHOOD LP RESOLVER AUDIT (LP Safety display task): read-only receipt of exactly what the
+    // LP pipeline attempted and resolved for this pool — the data behind the UI's Robinhood-specific
+    // labels. Separates "liquidity exists" (market evidence) from "control verified" (proof), so a
+    // deep-liquidity token with no proof renders as honest partial, not a generic Open Check.
+    ;(responsePayload as any).robinhoodLpResolverAudit = chain === 'robinhood' ? {
+      chainId: 4663,
+      chainSlug: 'robinhood',
+      tokenAddress: contract,
+      primaryPoolAddress: lpPoolAddress ?? null,
+      primaryDex: primaryDexName ?? lpPool?.dexId ?? null,
+      poolModel: lpModelProof?.model ?? null,
+      liquidityUsd: liquidityUsd ?? null,
+      dexScreenerFound: _dexFb != null,
+      geckoTerminalFound: gtData != null,
+      blockscoutVerified: false as boolean, // Blockscout explorer API is not wired into this route yet — never claimed true without the call
+      rpcPoolReadAttempted: Boolean(lpPoolAddress),
+      lpControlProofAttempted: _proofApplicableEarly,
+      lpControlProofStatus: lpControllerType ?? null,
+      lockBurnProofApplicable: lpProofApplicability === 'applicable',
+      lockBurnProofStatus: lpLockStatus ?? null,
+      exitRiskStatus: resultRiskExitStatus(),
+      missingProofReason: (() => {
+        if (noActivePools && liquidityUsd == null) return 'no_active_pool'
+        if (lpLockStatus === 'locked' || lpLockStatus === 'burned') return null
+        if (!lpPoolAddress) return 'no_pool_address_resolved_for_proof_probe'
+        if (lpProofApplicability === 'unknown') return 'pool_model_unconfirmed_standard_lock_burn_not_attempted'
+        if (lpProofApplicability === 'not_applicable') return 'concentrated_or_protocol_model_standard_lock_burn_does_not_apply'
+        if (lpControllerType === 'unknown' || lpControllerType == null) return 'controller_not_verified_onchain'
+        return 'lock_burn_proof_not_confirmed'
+      })(),
+    } : undefined
+    function resultRiskExitStatus(): string {
+      if (lpLockStatus === 'burned' || lpLockStatus === 'locked') return 'protected_by_proof'
+      if (lpControllerType === 'wallet' || lpControl.status === 'team_controlled') return 'wallet_controlled'
+      if (liquidityUsd == null && noActivePools) return 'no_liquidity'
+      return 'unverified'
+    }
     const _sanitizedResponse = sanitizePublicTokenResponse(responsePayload as Record<string, any>, debugMode === true)
     // Only cache plain, non-debug, fully-completed successful scans — never an error, never a
     // partial/debug-augmented payload (see the matching read-side guard above).

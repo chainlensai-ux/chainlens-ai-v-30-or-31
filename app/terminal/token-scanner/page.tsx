@@ -3222,6 +3222,50 @@ function parseLpEvidence(evidence?: string[] | null): { topHolder: string | null
   return { topHolder, topShare }
 }
 
+// ROBINHOOD LP LABEL OVERRIDES (LP Safety display task): on Robinhood Chain, generic "Open Check"
+// labels read as broken to users even when liquidity was found. These overrides replace the four
+// generic labels with chain-honest wording. They never upgrade a status — only rename it:
+//   - proof confirmed (locked/burned/wallet-controlled) passes through untouched;
+//   - liquidity-without-proof renders as explicit partial/unverified with the reason.
+// The required explainer sentence is part of the exit-risk description per spec.
+function isRobinhoodScan(result: ScanResult): boolean {
+  return result.chain === 'robinhood'
+}
+
+const ROBINHOOD_LP_EXPLAINER = 'Liquidity was detected, but ChainLens could not verify LP lock/burn/controller proof for this Robinhood pool. Treat exit risk as unverified.'
+
+function robinhoodLpLabelOverrides(result: ScanResult): {
+  lock?: { label: string; description: string }
+  exit?: { label: string; color: string; description: string }
+  model?: { label: string; description: string }
+} | null {
+  if (!isRobinhoodScan(result)) return null
+  const lp = result.lpControl
+  const status = lp?.status
+  const hasLiquidity = (result.liquidity ?? 0) > 0 || lp?.poolAddressPresent
+  const proofConfirmed = status === 'burned' || status === 'locked' || (result.lpLockStatus === 'locked' || result.lpLockStatus === 'burned')
+  const walletControlled = status === 'team_controlled' || lp?.lpControllerType === 'wallet'
+  if (!hasLiquidity) return null // "No Active Pool" path already honest
+  if (proofConfirmed || walletControlled) return null // real proof / controller verdicts pass through
+
+  // Liquidity exists but control/proof unverified → the reported broken-looking state.
+  return {
+    lock: {
+      label: 'Standard LP proof unavailable',
+      description: ROBINHOOD_LP_EXPLAINER,
+    },
+    exit: {
+      label: 'Exit risk unverified',
+      color: '#fbbf24',
+      description: ROBINHOOD_LP_EXPLAINER,
+    },
+    model: {
+      label: 'Robinhood LP Model Partial',
+      description: `Pool detected${lp?.primaryPoolDex || result.primaryDexName ? ` (${result.primaryDexName ?? lp?.primaryPoolDex})` : ''}, but the pool model could not be fully classified on Robinhood Chain — standard ERC-20 LP assumptions are not applied to Robinhood pools.`,
+    },
+  }
+}
+
 function getLpLockLabel(result: ScanResult): { label: string; color: string; bg: string; border: string; description: string } {
   const lp = result.lpControl
   const status = lp?.status
@@ -3229,7 +3273,6 @@ function getLpLockLabel(result: ScanResult): { label: string; color: string; bg:
   const lpMode = getLpMode(result)
   const hasLiquidity = (result.liquidity ?? 0) > 0 || lp?.poolAddressPresent
   if (result.noActivePools && !hasLiquidity) return { label: 'No Active Pool', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No active liquidity pool detected on this chain. Token may be illiquid.' }
-
   // lpControl.status is the authoritative read — prioritize it over legacy lpLockStatus.
   if (status === 'team_controlled') {
     const label = lp?.lpControllerType === 'wallet' ? 'Wallet Controlled' : 'Team Controlled'
@@ -7398,13 +7441,25 @@ export default function TerminalTokenScanner() {
                       canonicalLpMeta?.concentratedProofAttempted === true &&
                       canonicalConcentratedProof?.status === 'partial' &&
                       Boolean(canonicalConcentratedProof?.positionManager)
-                    const lockInfo = isV3PartialPositionProof
+                    // ROBINHOOD LP LABEL OVERRIDES (LP Safety display task) — chain-honest
+                    // partial/unverified wording replaces the four generic Open Check labels.
+                    // Applied after the V3-partial branch so both refinements compose; see
+                    // robinhoodLpLabelOverrides for the never-upgrade rule.
+                    const _rhOverride = robinhoodLpLabelOverrides(result)
+                    const lockInfo = _rhOverride?.lock
+                      ? { ...rawLockInfo, label: _rhOverride.lock.label, description: _rhOverride.lock.description }
+                      : isV3PartialPositionProof
                       ? { ...rawLockInfo, description: 'Uniswap V3 concentrated liquidity position proof is partial; owner verification is pending.' }
                       : rawLockInfo
-                    const exitInfo = isV3PartialPositionProof
+                    const exitInfo = _rhOverride?.exit
+                      ? { ...rawExitInfo, ..._rhOverride.exit }
+                      : isV3PartialPositionProof
                       ? { ...rawExitInfo, description: 'Deep liquidity is present, but concentrated position ownership is still unresolved.' }
                       : rawExitInfo
                     const modelLabel = primaryLiquidityModelLabel(result)
+                    // Robinhood model override: "Model Open Check" → "Robinhood LP Model Partial"
+                    const rhModelLabel = _rhOverride?.model?.label
+                    const finalModelLabel = rhModelLabel ?? modelLabel
                     const modelColor = effectiveDm === 'concentrated_liquidity' ? '#c084fc'
                       : effectiveDm === 'protocol_or_gauge' ? '#a78bfa'
                       : effectiveDm === 'erc20_lp_token' ? (lpProofConfirmed ? '#34d399' : '#60a5fa')
@@ -7443,9 +7498,9 @@ export default function TerminalTokenScanner() {
                           <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Primary Liquidity Model</div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: modelColor, flexShrink: 0, boxShadow: `0 0 8px ${modelColor}` }} />
-                            <span style={{ minWidth: 0, fontSize: '16px', fontWeight: 800, color: modelColor, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{modelLabel}</span>
+                            <span style={{ minWidth: 0, fontSize: '16px', fontWeight: 800, color: modelColor, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{finalModelLabel}</span>
                           </div>
-                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{modelDesc}</p>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{_rhOverride?.model?.description ?? modelDesc}</p>
                         </div>
                       </div>
                     )
