@@ -3988,23 +3988,36 @@ export async function POST(req: Request) {
       dexFbEarly && ((dexFbEarly.liquidityUsd ?? 0) > 0 || (dexFbEarly.volume24h ?? 0) > 0 ||
         (typeof dexFbEarly.pairAddress === 'string' && /^0x[a-f0-9]{40}$/i.test(dexFbEarly.pairAddress)))
     )
-    // RPC-classify a synthesized fallback pool whose model is still unknown, using the existing
-    // RPC path (no new providers). Confirms V2/ERC-20 LP vs concentrated so the model is not left
-    // as a generic open check when on-chain data can resolve it. classifyPoolByRpc is a generic
+    // RPC-classify the primary pool whenever its model is still unknown, using the existing RPC
+    // path (no new providers). Confirms V2/ERC-20 LP vs concentrated so the model is not left as
+    // a generic open check when on-chain data can resolve it. classifyPoolByRpc is a generic
     // ERC-20/AMM selector probe (token0/token1/getReserves/totalSupply vs slot0/liquidity) — no
     // chain-specific contract address needed, so bnb/robinhood get the same real classification
     // eth/base already did (lib/server/lpProof.ts's LpChain type covers all four now).
+    //
+    // COVERAGE GAP, DISCLOSED (Robinhood-chain LP Safety fix): this was previously gated on
+    // `_dsFbPoolSynthesized`, so it only ever ran for a pool synthesized from a DexScreener
+    // fallback (i.e. only when GeckoTerminal returned ZERO pools for the token). A token whose
+    // pool WAS found by GeckoTerminal/DexScreener as a normal canonical pool, but whose dexId
+    // string didn't match classifyPoolModel's known-DEX patterns (exactly what happens for
+    // Robinhood Chain, whose GeckoTerminal/DexScreener dex metadata doesn't consistently label
+    // pools the same way Base/ETH do), left poolType stuck at "unknown" with the RPC probe never
+    // attempted — even with a fully configured, working Robinhood RPC. classifyPoolByRpc reads
+    // directly from the pool contract (token0/token1/totalSupply vs slot0/liquidity), so it
+    // doesn't need dex metadata to be correct — it only needs a valid pool address. Widened to
+    // run for ANY primary pool with an unknown type and a valid contract address, synthesized or
+    // not; the inner poolType==='unknown' guard already limits this to genuinely unresolved cases.
     let _fallbackRpcModel: 'v2' | 'concentrated' | 'unknown' | null = null
-    if (_dsFbPoolSynthesized && (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood')) {
-      const _synthPool = normalizedPools[0]
-      if (_synthPool && _synthPool.poolType === 'unknown' && _synthPool.address && /^0x[a-f0-9]{40}$/.test(_synthPool.address)) {
-        const _rpcCls = await classifyPoolByRpc(chain, _synthPool.address)
+    if (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood') {
+      const _rpcProbePool = normalizedPools[0]
+      if (_rpcProbePool && _rpcProbePool.poolType === 'unknown' && _rpcProbePool.address && /^0x[a-f0-9]{40}$/.test(_rpcProbePool.address)) {
+        const _rpcCls = await classifyPoolByRpc(chain, _rpcProbePool.address)
         _fallbackRpcModel = _rpcCls.poolType
         if (_rpcCls.poolType !== 'unknown') {
-          _synthPool.poolType = _rpcCls.poolType
-          _synthPool.hasLpToken = _rpcCls.hasLpToken
-        } else if (_synthPool.hasLpToken == null) {
-          _synthPool.hasLpToken = _rpcCls.hasLpToken
+          _rpcProbePool.poolType = _rpcCls.poolType
+          _rpcProbePool.hasLpToken = _rpcCls.hasLpToken
+        } else if (_rpcProbePool.hasLpToken == null) {
+          _rpcProbePool.hasLpToken = _rpcCls.hasLpToken
         }
       }
     }
