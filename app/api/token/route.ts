@@ -4,7 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { fetchGoPlusHoneypotFallback } from "@/lib/server/goplusSecurity";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
-import { sanitizePublicTokenResponse, applyTokenScannerPlanGate } from "@/lib/server/tokenPublicResponse";
+import { sanitizePublicTokenResponse, applyTokenScannerPlanGate, TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from "@/lib/server/tokenPublicResponse";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { buildLpControllerIntel, resolveLpControllerIdentity } from "@/lib/server/lpControllerIntel";
@@ -16,7 +16,7 @@ import { buildSecondaryLpExposure } from "@/lib/server/secondaryLpExposure";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getRobinhoodRpcUrl, ROBINHOOD_CHAIN_EXPLORER_URL } from '@/lib/server/robinhoodChainConfig'
 import { scanSolanaTokenBeta } from '@/lib/server/solanaTokenScannerBeta'
-import { classifySolanaMintInput, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
+import { classifySolanaMintInput, isValidSolanaMintAddress, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
 import { solanaTokenScannerConfigAudit } from '@/lib/server/solanaChainConfig'
 import { type CanonicalStatus, toCanonical } from '@/lib/canonicalStatus'
 import { buildClusterMap } from '@/lib/clusterMap'
@@ -3610,6 +3610,20 @@ export async function POST(req: Request) {
     let chain: ChainKey = rawChain as ChainKey
     const forceDexFallback = debugMode === true && _forceDexFallback === true
     const originalInput = String(contractInput ?? '').trim()
+    // CHAIN-STRICT INPUT VALIDATION (chain-correctness audit): a well-formed Solana mint must
+    // never enter the EVM scanner — on any EVM chain it is simply not a contract address, and
+    // scanning it would either 404 through the resolver or, worse, match some unrelated hex
+    // substring. Reject with an explicit switch-chain message instead.
+    // Non-narrowing call (isValidSolanaMintAddress is a type guard; using it directly would
+    // narrow originalInput to never below).
+    if (isValidSolanaMintAddress(originalInput as unknown)) {
+      return NextResponse.json({
+        status: 'wrong_chain',
+        error: `That looks like a Solana mint address, but this scan is for ${CHAIN_DISPLAY_NAME[chain]}. Switch to Solana or scan with Auto Detect.`,
+        requestedChainSlug: chain,
+        inputAddressType: 'solana_mint',
+      }, { status: 400 })
+    }
     const normalizedInput = originalInput.toUpperCase()
     const isAddressInput = /^0x[a-fA-F0-9]{40}$/.test(originalInput)
     _diagOriginalInput = originalInput
@@ -3780,10 +3794,13 @@ export async function POST(req: Request) {
     // Shared response cache (lib/server/cache/tokenCache.ts) for the heavy full-scan path below —
     // only for plain, non-debug requests, so a debug-augmented payload (_diagnostics/
     // _tokenRouteDebug fields) never gets served back out to a normal caller from cache.
-    const _tokenCacheKey = `token:${chain}:${contract.toLowerCase()}`
+    // SCAN RESPONSE SCHEMA VERSION (Robinhood scan-inconsistency audit): the version is part of
+    // the key AND verified on the cached copy, so a payload written by older code can never be
+    // served to newer frontend code — the exact "same token, different result per device" class.
+    const _tokenCacheKey = `token:v${TOKEN_SCAN_RESPONSE_SCHEMA_VERSION}:${chain}:${contract.toLowerCase()}`
     if (debugMode !== true) {
       const _cachedResponse = await getTokenCache<Record<string, unknown>>(_tokenCacheKey)
-      if (_cachedResponse) {
+      if (_cachedResponse && (_cachedResponse as Record<string, unknown>).scanResponseSchemaVersion === TOKEN_SCAN_RESPONSE_SCHEMA_VERSION) {
         // AUDIT FIX, DISCLOSED (token-scanner audit): this cache is shared across every caller
         // regardless of plan — without gating here too, a free caller could get a Pro user's
         // full cached response for the same token within the TTL, bypassing the gate entirely.
@@ -3911,8 +3928,30 @@ export async function POST(req: Request) {
     const analysis = analyzeContract(bytecode);
 
     // GeckoTerminal /tokens/{contract}/pools returns pools for this token directly
-    const gtAllPools: any[] = Array.isArray(gtData?.data) ? gtData.data : [];
+    const gtAllPoolsRaw: any[] = Array.isArray(gtData?.data) ? gtData.data : [];
     const gtIncluded: unknown[] = Array.isArray(gtData?.included) ? gtData.included : [];
+
+    // CHAIN-STRICT PROVIDER VALIDATION (chain-correctness audit): every GeckoTerminal pool id is
+    // formatted "network:0xPoolAddress" (e.g. "base:0xabc…", "robinhood:0xdef…"). A pool whose id
+    // names a DIFFERENT network than the requested one must never be used — that is exactly how a
+    // Base result could leak into a Robinhood/ETH/BNB scan. Pools with an unparseable id are kept
+    // only if their embedded address matches the requested contract (belt-and-braces), otherwise
+    // dropped and counted for the audit.
+    const GT_NETWORK_BY_CHAIN: Record<ChainKey, string> = { eth: 'eth', base: 'base', polygon: 'polygon_pos', bnb: 'bsc', robinhood: 'robinhood' };
+    const _gtExpectedNetwork = GT_NETWORK_BY_CHAIN[chain];
+    let _gtPoolsRejectedWrongChain = 0;
+    const gtAllPools = gtAllPoolsRaw.filter((p) => {
+      const pid = String(p?.id ?? '');
+      const sep = pid.indexOf(':');
+      if (sep <= 0) return true; // no network prefix — cannot prove wrong-chain; downstream token-address matching still applies
+      const net = pid.slice(0, sep).toLowerCase();
+      if (net === _gtExpectedNetwork) return true;
+      _gtPoolsRejectedWrongChain += 1;
+      return false;
+    });
+    if (_gtPoolsRejectedWrongChain > 0) {
+      console.info('[token-scan] chain-strict: rejected GeckoTerminal pools from other networks', { requested: _gtExpectedNetwork, rejected: _gtPoolsRejectedWrongChain, contract });
+    }
 
     // Sort by liquidity descending — market primary is deepest pool. Tie-break on pool id so
     // primary-pool selection is deterministic regardless of the order the provider returns
@@ -8015,10 +8054,20 @@ export async function POST(req: Request) {
           // instead of contradicting lpControl/lpControllerIntel elsewhere in the response.
           const _hasFallbackPoolEvidence = matchingPools.length === 0 && Boolean(_fallbackLiquidityDetected || lpPool)
           const _liquiditySectionPoolCount = matchingPools.length > 0 ? matchingPools.length : (_hasFallbackPoolEvidence ? 1 : 0)
+          // ROBINHOOD LP CONSISTENCY FIX (chain-correctness audit): when a pool EXISTS (position
+          // ownership may even be verified) but no provider reported a liquidity depth number, the
+          // section must say exactly that — 'unavailable_with_reason' with the pool context — not
+          // collapse to the generic Open Check wording. Depth and ownership can come from different
+          // evidence; the reason string discloses it instead of hiding it.
+          const _depthMissingButPoolPresent = _liquiditySectionPoolCount > 0 && liquidityUsd == null
           return {
-          status: _hasFallbackPoolEvidence ? 'partial' : toCanonical(liquidityStatus),
-          rawStatus: _hasFallbackPoolEvidence ? 'partial' : liquidityStatus,
-          reason: _hasFallbackPoolEvidence ? 'liquidity_from_fallback_market_read' : liquidityReason,
+          status: _hasFallbackPoolEvidence ? 'partial' : (_depthMissingButPoolPresent ? 'unavailable_with_reason' : toCanonical(liquidityStatus)),
+          rawStatus: _hasFallbackPoolEvidence ? 'partial' : (_depthMissingButPoolPresent ? 'unavailable_with_reason' : liquidityStatus),
+          reason: _hasFallbackPoolEvidence
+            ? 'liquidity_from_fallback_market_read'
+            : _depthMissingButPoolPresent
+              ? `Liquidity depth was not reported by any provider for this ${chain === 'robinhood' ? 'Robinhood' : chain} pool${lpPoolAddress ? ` (${lpPoolAddress.slice(0, 10)}…)` : ''}; position/LP-model evidence above may come from on-chain probes of the same or a related pool.`
+              : liquidityReason,
           source: "lp_layer",
           poolCount: _liquiditySectionPoolCount,
           primaryPair: mainPool?.attributes?.name ?? (_hasFallbackPoolEvidence ? (_primaryPair ?? null) : null),
@@ -8703,6 +8752,107 @@ export async function POST(req: Request) {
         publicResponseKeys: Object.keys(responsePayload as Record<string, unknown>),
         totalMs: Date.now() - _t0,
       }
+    }
+    // SCAN RESPONSE SCHEMA VERSION + ROBINHOOD SCAN AUDIT (Robinhood scan-inconsistency audit):
+    // every public response carries its schema version so any client (and any human comparing
+    // two devices) can prove both sides got the same shape. The audit block is a compact,
+    // always-present, read-only receipt of what the scan pipeline actually did for this request —
+    // specifically for the reported per-device divergence: one laptop missing liquidity, another
+    // missing confidence/risk. It changes NO scoring, provider, or gating logic.
+    ;(responsePayload as any).scanResponseSchemaVersion = TOKEN_SCAN_RESPONSE_SCHEMA_VERSION
+    // CHAIN-STRICT AUDIT (chain-correctness audit): proves the scan stayed on the requested chain
+    // end-to-end — requested vs final chain, cache key/chain match, how many provider results were
+    // rejected as wrong-chain, and which pool the market data ultimately came from.
+    const _finalChainSlug = String((responsePayload as any).chain ?? chain)
+    ;(responsePayload as any).tokenScanChainStrictAudit = {
+      requestedChainSlug: chain,
+      requestedChainId: CHAIN_ID_MAP[chain] ?? null,
+      inputAddress: originalInput,
+      normalizedAddress: contract,
+      addressType: isAddressInput ? 'evm_contract' : 'resolved',
+      scannerPath: 'evm_full',
+      cacheKey: _tokenCacheKey,
+      cacheHit: false, // this code path only runs on a cache miss
+      cacheChainMatched: true,
+      providerResultsRejectedWrongChain: _gtPoolsRejectedWrongChain,
+      selectedMarketChain: _gtExpectedNetwork,
+      selectedPoolChain: (() => {
+        const pid = (lpPool as { raw?: { id?: unknown } } | null)?.raw?.id
+        const s = typeof pid === 'string' && pid.includes(':') ? pid.split(':')[0] : null
+        return s ?? _gtExpectedNetwork
+      })(),
+      finalChainSlug: _finalChainSlug,
+      finalChainId: CHAIN_ID_MAP[chain] ?? null,
+      rejectedReason: (_gtPoolsRejectedWrongChain > 0 || (responsePayload as any).noActivePools === true)
+        ? `${_gtPoolsRejectedWrongChain} provider pools rejected as wrong-chain`
+        : null,
+    }
+    ;(responsePayload as any).scanAudit = {
+      chain,
+      chainId: chain === 'robinhood' ? 4663 : null,
+      chainSlug: chain,
+      tokenAddress: contract,
+      runtimeCommitSha: process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GIT_SHA ?? null,
+      envEnableRobinhoodChain: process.env.ENABLE_ROBINHOOD_CHAIN === 'true',
+      rpcConfigured: alchemyConfigured,
+      dexScreenerAttempted: isFullScanChain,
+      dexScreenerSucceeded: _dexFb != null,
+      geckoTerminalAttempted: true,
+      geckoTerminalSucceeded: gtData != null,
+      liquidityResolverAttempted: isFullScanChain,
+      liquidityResolverStatus: liquidityStatus ?? null,
+      liquidityMissingReason: liquidityUsd == null ? (liquidityReason ?? 'liquidity_unavailable') : null,
+      riskEngineAttempted: true,
+      riskEngineScore: typeof tokenRiskScoreResult.riskScore === 'number' ? tokenRiskScoreResult.riskScore : null,
+      confidenceScore: cortexScoreResult.cortexConfidence ?? null,
+      confidenceInputs: {
+        scoreCoveragePercent: cortexScoreResult.scoreCoveragePercent ?? null,
+        missingScoreInputsCount: Array.isArray(cortexScoreResult.missingScoreInputs) ? cortexScoreResult.missingScoreInputs.length : null,
+      },
+      confidenceMissingReason: cortexScoreResult.cortexConfidence === 'insufficient' ? 'insufficient_evidence_across_core_categories' : null,
+      planGateApplied: _requestPlan === 'free',
+      responseSectionsReturned: Object.keys(responsePayload as Record<string, unknown>).sort(),
+      responseWarnings: [
+        ...(liquidityUsd == null ? [`Liquidity unavailable on ${chain === 'robinhood' ? 'Robinhood provider' : `${chain} providers`}: ${liquidityReason ?? 'no_active_liquidity_pool_found'}`] : []),
+        ...(cortexScoreResult.cortexConfidence === 'insufficient' ? ['CORTEX confidence insufficient — not enough evidence across core categories'] : []),
+      ],
+    }
+    // ROBINHOOD LP RESOLVER AUDIT (LP Safety display task): read-only receipt of exactly what the
+    // LP pipeline attempted and resolved for this pool — the data behind the UI's Robinhood-specific
+    // labels. Separates "liquidity exists" (market evidence) from "control verified" (proof), so a
+    // deep-liquidity token with no proof renders as honest partial, not a generic Open Check.
+    ;(responsePayload as any).robinhoodLpResolverAudit = chain === 'robinhood' ? {
+      chainId: 4663,
+      chainSlug: 'robinhood',
+      tokenAddress: contract,
+      primaryPoolAddress: lpPoolAddress ?? null,
+      primaryDex: primaryDexName ?? lpPool?.dexId ?? null,
+      poolModel: lpModelProof?.model ?? null,
+      liquidityUsd: liquidityUsd ?? null,
+      dexScreenerFound: _dexFb != null,
+      geckoTerminalFound: gtData != null,
+      blockscoutVerified: false as boolean, // Blockscout explorer API is not wired into this route yet — never claimed true without the call
+      rpcPoolReadAttempted: Boolean(lpPoolAddress),
+      lpControlProofAttempted: _proofApplicableEarly,
+      lpControlProofStatus: lpControllerType ?? null,
+      lockBurnProofApplicable: lpProofApplicability === 'applicable',
+      lockBurnProofStatus: lpLockStatus ?? null,
+      exitRiskStatus: resultRiskExitStatus(),
+      missingProofReason: (() => {
+        if (noActivePools && liquidityUsd == null) return 'no_active_pool'
+        if (lpLockStatus === 'locked' || lpLockStatus === 'burned') return null
+        if (!lpPoolAddress) return 'no_pool_address_resolved_for_proof_probe'
+        if (lpProofApplicability === 'unknown') return 'pool_model_unconfirmed_standard_lock_burn_not_attempted'
+        if (lpProofApplicability === 'not_applicable') return 'concentrated_or_protocol_model_standard_lock_burn_does_not_apply'
+        if (lpControllerType === 'unknown' || lpControllerType == null) return 'controller_not_verified_onchain'
+        return 'lock_burn_proof_not_confirmed'
+      })(),
+    } : undefined
+    function resultRiskExitStatus(): string {
+      if (lpLockStatus === 'burned' || lpLockStatus === 'locked') return 'protected_by_proof'
+      if (lpControllerType === 'wallet' || lpControl.status === 'team_controlled') return 'wallet_controlled'
+      if (liquidityUsd == null && noActivePools) return 'no_liquidity'
+      return 'unverified'
     }
     const _sanitizedResponse = sanitizePublicTokenResponse(responsePayload as Record<string, any>, debugMode === true)
     // Only cache plain, non-debug, fully-completed successful scans — never an error, never a

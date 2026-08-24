@@ -7,7 +7,7 @@ import { resolveTokenQuery, isContractAddress, fmtLiquidity, type ResolverResult
 import { calculateCortexScoreV2, type CortexScoreResultV2 } from '@/lib/token/scoring'
 // Client-safe: lib/solanaAddress.ts reads no env var and holds no secret (unlike
 // lib/server/solanaChainConfig.ts, which must never be imported here).
-import { classifySolanaMintInput, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
+import { classifySolanaMintInput, isValidSolanaMintAddress, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
 import type { SolanaBetaScanResult } from '@/lib/server/solanaTokenScannerBeta'
 // Pure presentation mapping over solanaResult — see lib/solanaConfidenceScore.ts's own header for
 // the full disclosure on why a capped, clearly-labeled score replaced the earlier "no score shown"
@@ -495,6 +495,13 @@ type ScanResult = {
   }
   riskScore?: number
   riskLabel?: "extreme" | "high" | "moderate" | "low" | "very_low" | string
+  planGate?: { plan?: string; requiredPlan?: string } | null
+  scanAudit?: {
+    confidenceMissingReason?: string | null
+    liquidityMissingReason?: string | null
+    runtimeCommitSha?: string | null
+    responseWarnings?: string[]
+  } | null
   riskBreakdown?: {
     marketMaturity?: {
       score?: number
@@ -3215,6 +3222,50 @@ function parseLpEvidence(evidence?: string[] | null): { topHolder: string | null
   return { topHolder, topShare }
 }
 
+// ROBINHOOD LP LABEL OVERRIDES (LP Safety display task): on Robinhood Chain, generic "Open Check"
+// labels read as broken to users even when liquidity was found. These overrides replace the four
+// generic labels with chain-honest wording. They never upgrade a status — only rename it:
+//   - proof confirmed (locked/burned/wallet-controlled) passes through untouched;
+//   - liquidity-without-proof renders as explicit partial/unverified with the reason.
+// The required explainer sentence is part of the exit-risk description per spec.
+function isRobinhoodScan(result: ScanResult): boolean {
+  return result.chain === 'robinhood'
+}
+
+const ROBINHOOD_LP_EXPLAINER = 'Liquidity was detected, but ChainLens could not verify LP lock/burn/controller proof for this Robinhood pool. Treat exit risk as unverified.'
+
+function robinhoodLpLabelOverrides(result: ScanResult): {
+  lock?: { label: string; description: string }
+  exit?: { label: string; color: string; description: string }
+  model?: { label: string; description: string }
+} | null {
+  if (!isRobinhoodScan(result)) return null
+  const lp = result.lpControl
+  const status = lp?.status
+  const hasLiquidity = (result.liquidity ?? 0) > 0 || lp?.poolAddressPresent
+  const proofConfirmed = status === 'burned' || status === 'locked' || (result.lpLockStatus === 'locked' || result.lpLockStatus === 'burned')
+  const walletControlled = status === 'team_controlled' || lp?.lpControllerType === 'wallet'
+  if (!hasLiquidity) return null // "No Active Pool" path already honest
+  if (proofConfirmed || walletControlled) return null // real proof / controller verdicts pass through
+
+  // Liquidity exists but control/proof unverified → the reported broken-looking state.
+  return {
+    lock: {
+      label: 'Standard LP proof unavailable',
+      description: ROBINHOOD_LP_EXPLAINER,
+    },
+    exit: {
+      label: 'Exit risk unverified',
+      color: '#fbbf24',
+      description: ROBINHOOD_LP_EXPLAINER,
+    },
+    model: {
+      label: 'Robinhood LP Model Partial',
+      description: `Pool detected${lp?.primaryPoolDex || result.primaryDexName ? ` (${result.primaryDexName ?? lp?.primaryPoolDex})` : ''}, but the pool model could not be fully classified on Robinhood Chain — standard ERC-20 LP assumptions are not applied to Robinhood pools.`,
+    },
+  }
+}
+
 function getLpLockLabel(result: ScanResult): { label: string; color: string; bg: string; border: string; description: string } {
   const lp = result.lpControl
   const status = lp?.status
@@ -3222,7 +3273,6 @@ function getLpLockLabel(result: ScanResult): { label: string; color: string; bg:
   const lpMode = getLpMode(result)
   const hasLiquidity = (result.liquidity ?? 0) > 0 || lp?.poolAddressPresent
   if (result.noActivePools && !hasLiquidity) return { label: 'No Active Pool', color: '#94a3b8', bg: 'rgba(148,163,184,0.07)', border: 'rgba(148,163,184,0.20)', description: 'No active liquidity pool detected on this chain. Token may be illiquid.' }
-
   // lpControl.status is the authoritative read — prioritize it over legacy lpLockStatus.
   if (status === 'team_controlled') {
     const label = lp?.lpControllerType === 'wallet' ? 'Wallet Controlled' : 'Team Controlled'
@@ -4231,7 +4281,7 @@ export default function TerminalTokenScanner() {
   const [clarkError, setClarkError]     = useState<string | null>(null)
 
   // Tracked tokens
-  type TrackedToken = { id?: string; user_id?: string; contract_address: string; symbol?: string | null; created_at?: string | null; saved_at?: string | null }
+  type TrackedToken = { id?: string; user_id?: string; contract_address: string; symbol?: string | null; chain?: string | null; created_at?: string | null; saved_at?: string | null }
   const [trackedTokens, setTrackedTokens] = useState<TrackedToken[]>([])
   const [trackedLoading, setTrackedLoading] = useState(false)
   const [trackedSaving, setTrackedSaving]   = useState(false)
@@ -4331,6 +4381,9 @@ export default function TerminalTokenScanner() {
         .insert({
           user_id: session.user.id,
           contract_address: result.contract.toLowerCase(),
+          // CHAIN-STORED WITH TOKEN (chain-strictness audit): the same 0x address on different
+          // chains is a different token — the row must record which chain it was scanned on.
+          chain: (result.chain ?? chain) as string,
           symbol: result.symbol ?? null,
         })
       if (insertError) {
@@ -4357,6 +4410,9 @@ export default function TerminalTokenScanner() {
         .delete()
         .eq('user_id', session.user.id)
         .eq('contract_address', normalizedAddress)
+        // CHAIN-STRICT DELETE (chain-strictness audit): same address on another chain is a
+        // different token — deleting one must never remove the other chain's row.
+        .eq('chain', chain as string)
       if (deleteError) {
         console.error('Failed to remove tracked token', deleteError)
         setTrackedUnavailable(true)
@@ -4488,6 +4544,16 @@ export default function TerminalTokenScanner() {
     // Skip if: CA provided directly, or override from URL auto-scan / alternate picker
     let scanContract = q
     let scanChain: 'base' | 'eth' | 'bnb' | 'robinhood' = effectiveChain
+    // CHAIN-STRICT INPUT GUARD (chain-correctness audit): a well-formed Solana mint pasted while
+    // an EVM chain is selected is rejected client-side with the switch-chain message — it must
+    // never silently resolve-fail or reach the EVM scanner.
+    {
+      const looksSolanaMint = q.trim().length >= 32 && q.trim().length <= 44 && !isContractAddress(q) && /^[1-9A-HJ-NP-Za-km-z]+$/.test(q.trim())
+      if (looksSolanaMint && isValidSolanaMintAddress(q)) {
+        setError(`That looks like a Solana mint address. This token was not found on ${chainDisplayName(scanChain)}. Switch chain or scan with Auto Detect.`)
+        return
+      }
+    }
     if (!override && !isContractAddress(q)) {
       // Ticker/name search (resolveTokenQuery) only covers base/eth today — BNB and Robinhood
       // Chain scans require a pasted contract address for now rather than silently searching the
@@ -4556,7 +4622,7 @@ export default function TerminalTokenScanner() {
         const isAddrInput = isContractAddress(scanContract)
         if (json?.status === 'invalid_address') setError(json.error ?? 'Invalid contract address.')
         else if (json?.status === 'address_scan_failed') setError(json.error ?? "Token address accepted, but CORTEX could not find enough live data yet.")
-        else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') setError(`Token not found on ${chainDisplayName(scanChain)}. Try switching chains.`)
+        else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') setError(`This token was not found on ${chainDisplayName(scanChain)}. Switch chain or scan with Auto Detect.`)
         else if (json?.status === 'ambiguous') setError('Multiple tokens match this. Paste the contract address or choose one.')
         else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${chainDisplayName(scanChain)} for this token.`)
         else if (isAddrInput) setError("Token address accepted, but CORTEX could not find enough live data yet.")
@@ -4668,6 +4734,8 @@ export default function TerminalTokenScanner() {
           riskScore: typeof json.riskScore === 'number' ? json.riskScore : undefined,
           riskLabel: json.riskLabel ?? undefined,
           riskBreakdown: json.riskBreakdown ?? undefined,
+          planGate: json.planGate ?? null,
+          scanAudit: json.scanAudit ?? null,
         }
         setResult(mapped)
         if (json.devIntel) {
@@ -6638,8 +6706,22 @@ export default function TerminalTokenScanner() {
                   { label: 'Behavioral Risk', data: result.riskBreakdown?.behavioralRisk },
                 ]
                 const legacyCortexScore = result.cortexScore ?? score
+                // LIQUIDITY-UNAVAILABLE BANNER (Robinhood scan-inconsistency audit): when the scan
+                // produced no liquidity read, say so plainly with the reason — a missing section
+                // must never render as silent blank space. Data comes from the response's own
+                // scanAudit receipt; nothing is inferred or fabricated client-side.
+                const liquidityWarnings = (result.scanAudit?.responseWarnings ?? []).filter(w => /liquidity/i.test(w))
                 return (
                   <>
+                    {liquidityWarnings.length > 0 && (
+                      <div style={{ marginBottom: '14px', padding: '10px 14px', borderRadius: '12px', border: '1px solid rgba(251,191,36,0.30)', background: 'rgba(251,191,36,0.06)' }}>
+                        <p style={{ margin: 0, fontSize: '11px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em' }}>LIQUIDITY PARTIAL</p>
+                        {liquidityWarnings.map((w, wi) => (
+                          <p key={wi} style={{ margin: '4px 0 0', fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{w}</p>
+                        ))}
+                      </div>
+                    )}
+
                     {/* Token Safety Score Hero — SCORE-CARD-POLISH, DISCLOSED (Token Scanner
                         result-UI polish task): same score/label/exact numbers, tighter padding and
                         vertical rhythm (22px->18px, marginBottom 16px->14px), cleaner thinner
@@ -6662,7 +6744,13 @@ export default function TerminalTokenScanner() {
                           <div style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>Higher score means safer — evidence-weighted across market maturity, liquidity safety, contract safety, and behavioral risk.</div>
                         </>
                       ) : (
-                        <div style={{ fontSize: '18px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)', padding: '4px 0' }}>Token Safety Score unavailable</div>
+                        <div style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', padding: '4px 0', lineHeight: 1.55 }}>
+                          {result.planGate?.plan === 'free'
+                            ? <>Token Safety Score requires Pro — <a href="/pricing" style={{ color: '#53F3C3', textDecoration: 'underline' }}>upgrade to unlock</a>. Free scans still show market data and basic checks.</>
+                            : result.scanAudit?.confidenceMissingReason
+                              ? `Score unavailable: ${String(result.scanAudit.confidenceMissingReason).replace(/_/g, ' ')}.`
+                              : 'Token Safety Score unavailable — the risk engine did not return a score for this scan.'}
+                        </div>
                       )}
                     </div>
 
@@ -7369,13 +7457,25 @@ export default function TerminalTokenScanner() {
                       canonicalLpMeta?.concentratedProofAttempted === true &&
                       canonicalConcentratedProof?.status === 'partial' &&
                       Boolean(canonicalConcentratedProof?.positionManager)
-                    const lockInfo = isV3PartialPositionProof
+                    // ROBINHOOD LP LABEL OVERRIDES (LP Safety display task) — chain-honest
+                    // partial/unverified wording replaces the four generic Open Check labels.
+                    // Applied after the V3-partial branch so both refinements compose; see
+                    // robinhoodLpLabelOverrides for the never-upgrade rule.
+                    const _rhOverride = robinhoodLpLabelOverrides(result)
+                    const lockInfo = _rhOverride?.lock
+                      ? { ...rawLockInfo, label: _rhOverride.lock.label, description: _rhOverride.lock.description }
+                      : isV3PartialPositionProof
                       ? { ...rawLockInfo, description: 'Uniswap V3 concentrated liquidity position proof is partial; owner verification is pending.' }
                       : rawLockInfo
-                    const exitInfo = isV3PartialPositionProof
+                    const exitInfo = _rhOverride?.exit
+                      ? { ...rawExitInfo, ..._rhOverride.exit }
+                      : isV3PartialPositionProof
                       ? { ...rawExitInfo, description: 'Deep liquidity is present, but concentrated position ownership is still unresolved.' }
                       : rawExitInfo
                     const modelLabel = primaryLiquidityModelLabel(result)
+                    // Robinhood model override: "Model Open Check" → "Robinhood LP Model Partial"
+                    const rhModelLabel = _rhOverride?.model?.label
+                    const finalModelLabel = rhModelLabel ?? modelLabel
                     const modelColor = effectiveDm === 'concentrated_liquidity' ? '#c084fc'
                       : effectiveDm === 'protocol_or_gauge' ? '#a78bfa'
                       : effectiveDm === 'erc20_lp_token' ? (lpProofConfirmed ? '#34d399' : '#60a5fa')
@@ -7414,9 +7514,9 @@ export default function TerminalTokenScanner() {
                           <div style={{ fontSize: '9px', letterSpacing: '.15em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '9px', fontWeight: 700, textTransform: 'uppercase' }}>Primary Liquidity Model</div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
                             <span style={{ width: 7, height: 7, borderRadius: '50%', background: modelColor, flexShrink: 0, boxShadow: `0 0 8px ${modelColor}` }} />
-                            <span style={{ minWidth: 0, fontSize: '16px', fontWeight: 800, color: modelColor, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{modelLabel}</span>
+                            <span style={{ minWidth: 0, fontSize: '16px', fontWeight: 800, color: modelColor, fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.03em', lineHeight: 1.25, overflowWrap: 'anywhere' }}>{finalModelLabel}</span>
                           </div>
-                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{modelDesc}</p>
+                          <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.55 }}>{_rhOverride?.model?.description ?? modelDesc}</p>
                         </div>
                       </div>
                     )
@@ -9187,7 +9287,7 @@ export default function TerminalTokenScanner() {
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '3px' }}>
                             <span style={{ fontSize: '12px', fontWeight: 700, color: '#f1f5f9' }}>{t.symbol ?? 'Tracked Token'}</span>
-                            <span style={{ fontSize: '8px', padding: '1px 7px', borderRadius: '999px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.28)', color: '#22d3ee', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>base</span>
+                            <span style={{ fontSize: '8px', padding: '1px 7px', borderRadius: '999px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.28)', color: '#22d3ee', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>{t.chain ?? 'base'}</span>
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <span style={{ fontSize: '9px', color: '#334155', fontFamily: 'var(--font-plex-mono)' }}>{short}</span>

@@ -431,6 +431,11 @@ export default function WhaleAlertsPage() {
           }
           setSyncState(merged)
           window.localStorage.setItem(CLIENT_SYNC_STATE_CACHE_KEY, JSON.stringify(merged))
+          // EARLY STREAMING (whale sync performance task): refresh the feed after EVERY batch so
+          // alerts found in this batch appear immediately while remaining wallets are still being
+          // scanned — the sync banner already shows "Scanning X/Y" as the syncing label. The feed
+          // is never blanked (loadAlerts only replaces state on a successful response).
+          if (Number(json.inserted ?? 0) > 0) void loadAlerts({ enrich: false })
           if (json.done === true || !json.hasMore || json.nextOffset == null) {
             window.localStorage.setItem(cacheKey, String(Date.now()))
             setFullSyncCooldownLeftMs(cooldownMs)
