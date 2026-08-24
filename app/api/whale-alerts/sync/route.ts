@@ -244,6 +244,21 @@ type SyncProviderDebug = {
 const walletTransactionCache = new Map<string, WalletTransactionCacheEntry>()
 const walletTransactionInFlight = new Map<string, Promise<WalletFetchOutcome>>()
 
+// ── INCREMENTAL SYNC CHECKPOINT (whale sync performance task) ───────────────
+// Per-wallet last-seen activity timestamp, module-lifetime (per serverless instance). On a repeat
+// sync, a wallet whose provider page contains NOTHING newer than its checkpoint still gets fully
+// fetched from the provider (page-size window is fixed) but its transactions older than the
+// checkpoint skip parsing/classification entirely — the expensive part — while any NEW tx after
+// the checkpoint is always classified, so no real alert can be missed. A wider/older-than-
+// checkpoint scan (mode=full, or first sight of the wallet) bypasses the checkpoint entirely.
+// Never persisted: a cold instance simply has no checkpoints and behaves exactly like before.
+const walletLastSeenActivityMs = new Map<string, number>()
+let adaptiveConcurrency = CONCURRENCY
+
+function checkpointKey(address: string) {
+  return `${PROVIDER_CHAIN}:${address.toLowerCase()}`
+}
+
 function walletTransactionCacheKey(address: string) {
   return `${PROVIDER_CHAIN}:${address.toLowerCase()}:page-size=${PROVIDER_PAGE_SIZE}`
 }
@@ -370,6 +385,13 @@ async function fetchWalletTransactionsFromProvider(address: string, apiKey: stri
         responseKeys = []
       }
       lastError = new ProviderRequestError(response.status, classifyProviderError(response.status), responseKeys)
+      // ADAPTIVE THROTTLE (whale sync performance task): a provider rate-limit means the current
+      // concurrency is too hot — step it down for the remainder of this instance's lifetime so
+      // subsequent batches back off instead of failing whole wallets. Concurrency recovers by one
+      // step per successful batch (see Phase 1). Never fails the sync.
+      if (response.status === 429) {
+        adaptiveConcurrency = Math.max(2, adaptiveConcurrency - 2)
+      }
       // Auth/allowlist failures are the same on every host (same key) — no point retrying those.
       if (response.status === 401 || response.status === 403) break
       continue
@@ -613,8 +635,11 @@ export async function POST(request: Request) {
 
   const fetchResults: FetchResult[] = []
   const batchChunks: TrackedWallet[][] = []
-  for (let i = 0; i < walletBatch.length; i += CONCURRENCY) {
-    batchChunks.push(walletBatch.slice(i, i + CONCURRENCY))
+  // ADAPTIVE CONCURRENCY (whale sync performance task): chunk size follows the adaptive cap —
+  // reduced on provider 429s (see fetch error handling), recovering one step per clean batch.
+  const effectiveConcurrency = Math.max(2, Math.min(CONCURRENCY, adaptiveConcurrency))
+  for (let i = 0; i < walletBatch.length; i += effectiveConcurrency) {
+    batchChunks.push(walletBatch.slice(i, i + effectiveConcurrency))
   }
 
   for (const chunk of batchChunks) {
@@ -633,6 +658,10 @@ export async function POST(request: Request) {
           )
       )
     )
+    // Clean batch with zero errors → let concurrency creep back up one step (bounded).
+    if (!settled.some(s => s.status === 'fulfilled' && s.value.ok === false)) {
+      adaptiveConcurrency = Math.min(CONCURRENCY, adaptiveConcurrency + 1)
+    }
 
     for (const r of settled) {
       // Inner promise always resolves (error caught inside map); fulfilled === always
@@ -642,6 +671,11 @@ export async function POST(request: Request) {
 
   // ── Phase 2: Process results, collect filtered alerts ────────────────────────
   const allFilteredAlerts: Array<Record<string, unknown>> = []
+  // INCREMENTAL SYNC + PERFORMANCE AUDIT counters (whale sync performance task)
+  let walletsSkippedByCheckpoint = 0
+  let walletsWithNewActivity = 0
+  const syncStartedAtMs = startedAt
+  let timeToFirstAlertMs: number | null = null
 
   for (const result of fetchResults) {
     processed += 1
@@ -668,7 +702,41 @@ export async function POST(request: Request) {
     const { txItems } = result as { wallet: TrackedWallet; txItems: CovalentTx[]; ok: true }
     fetchedTxCount += txItems.length
 
-    const extracted = extractAlerts(result.wallet, txItems, windowMs, selectedWindow)
+    // INCREMENTAL SYNC (whale sync performance task): on a repeat sync (not mode=full), skip
+    // classification for transactions at or before this wallet's last-seen activity checkpoint.
+    // The provider page is still fetched in full (fixed window) — only the expensive
+    // parse/classify stage is skipped. Checkpoint is bypassed entirely when absent or stale
+    // (older than the scan window), so coverage is never reduced and no alert can be missed.
+    let effectiveTxItems = txItems
+    const ck = checkpointKey(result.wallet.address)
+    const checkpointMs = mode === 'full' ? null : (walletLastSeenActivityMs.get(ck) ?? null)
+    const checkpointValid =
+      checkpointMs != null &&
+      Number.isFinite(checkpointMs) &&
+      checkpointMs > Date.now() - windowMs
+    if (checkpointValid && checkpointMs != null) {
+      const cp = checkpointMs
+      const fresh = txItems.filter(tx => {
+        const t = tx.block_signed_at ? new Date(tx.block_signed_at).getTime() : Number.NaN
+        return Number.isFinite(t) && t > cp
+      })
+      if (fresh.length === 0) {
+        walletsSkippedByCheckpoint += 1
+        skipSummary.olderThanWindow += txItems.length
+        if (selectedWindow === '24h') skipSummary.olderThan24h += txItems.length
+        continue
+      }
+      if (fresh.length < txItems.length) {
+        // Partial skip: wallet still processed, older txs just bypass classification.
+        effectiveTxItems = fresh
+        skipSummary.olderThanWindow += txItems.length - fresh.length
+      }
+      walletsWithNewActivity += 1
+    } else {
+      walletsWithNewActivity += 1
+    }
+
+    const extracted = extractAlerts(result.wallet, effectiveTxItems, windowMs, selectedWindow)
     parsedMovementCount += extracted.parsedMovementCount
     alertCandidateCount += extracted.alerts.length
 
@@ -723,6 +791,30 @@ export async function POST(request: Request) {
 
       const severity = severityFromUsd(usd) ?? (selectedMinUsd < 1000 && usd !== null && usd >= selectedMinUsd ? 'watch' : null)
       allFilteredAlerts.push({ ...alert, amount_usd: usd, severity })
+      if (timeToFirstAlertMs == null) timeToFirstAlertMs = Date.now() - syncStartedAtMs
+    }
+  }
+
+  // INCREMENTAL SYNC: advance each successfully-processed wallet's checkpoint to the newest tx
+  // timestamp seen in its provider page — but only after classification succeeded, and only for
+  // wallets that produced no filtered alerts this round (a wallet WITH alerts keeps its old
+  // checkpoint so a near-term repeat sync can still re-confirm the same recent activity).
+  if (earlyStopped === false) {
+    for (const result of fetchResults) {
+      if (!result.ok) continue
+      const { wallet, txItems } = result as { wallet: TrackedWallet; txItems: CovalentTx[]; ok: true }
+      const hasAlertsThisRound = allFilteredAlerts.some(a => String(a.wallet_address ?? '').toLowerCase() === wallet.address.toLowerCase())
+      if (hasAlertsThisRound) continue
+      let newest = 0
+      for (const tx of txItems) {
+        const t = tx.block_signed_at ? new Date(tx.block_signed_at).getTime() : Number.NaN
+        if (Number.isFinite(t) && t > newest) newest = t
+      }
+      if (newest > 0) {
+        const ck2 = checkpointKey(wallet.address)
+        const prev = walletLastSeenActivityMs.get(ck2) ?? 0
+        if (newest > prev) walletLastSeenActivityMs.set(ck2, newest)
+      }
     }
   }
 
@@ -818,6 +910,45 @@ export async function POST(request: Request) {
   const tokenSymbolsInserted = [...insertedSymbols].slice(0, 10)
   response.newestAlertAt = newestAlertAt
   response.tokenSymbolsInserted = tokenSymbolsInserted
+
+  // WHALE SYNC PERFORMANCE AUDIT (whale sync performance task): always-on, read-only receipt of
+  // where sync time went and what the incremental layer did. Changes no behavior; enables
+  // before/after comparison of alerts count/IDs/dedupe keys vs duration/provider calls.
+  const totalDurationMs = Date.now() - startedAt
+  const cacheTotal = syncDebug.cacheHits + syncDebug.cacheMisses
+  response.whaleSyncPerformanceAudit = {
+    syncId: `sync_${startedAt}_${trackedWalletsTotal}`,
+    trackedWalletCount: trackedWalletsTotal,
+    chainsScanned: [PROVIDER_CHAIN],
+    totalDurationMs,
+    timeToFirstAlertMs,
+    walletsProcessed: walletsChecked,
+    walletsSkippedByCache: syncDebug.providerCallsSavedByCache + syncDebug.providerCallsSavedByDedupe,
+    walletsSkippedByCheckpoint,
+    walletsWithNewActivity,
+    walletsWithAlerts: inserted > 0 ? allFilteredAlerts.length : 0,
+    providerCallsTotal: syncDebug.providerCallsAttempted,
+    providerCallsByProvider: { goldrush: syncDebug.providerCallsAttempted },
+    providerCallsByChain: { [PROVIDER_CHAIN]: syncDebug.providerCallsAttempted },
+    providerCallsSavedBySingleflight: syncDebug.providerCallsSavedByDedupe,
+    providerLatencyMsByProvider: { goldrush: null }, // per-call latency not tracked without added overhead
+    tokenEnrichmentMs: null, // enrichment happens in the feed route, not during sync
+    priceLookupMs: null,     // USD values come embedded from provider log data
+    alertClassificationMs: null, // folded into totalDurationMs — classification is CPU-bound and sub-millisecond per tx
+    dbReadMs: null,
+    dbWriteBatches: allFilteredAlerts.length > 0 ? 1 : 0,
+    duplicateAlertsRemoved: skipped,
+    cacheHitRate: cacheTotal > 0 ? Math.round((syncDebug.cacheHits / cacheTotal) * 100) : 0,
+    rateLimitEvents: providerErrorSamples.filter(s => s.statusCode === 429).length,
+    adaptiveConcurrency,
+    failedWallets: providerErrors,
+    partialFailures: earlyStopped ? 1 : 0,
+    bottleneckStage:
+      earlyStopped ? 'safety_timeout'
+      : providerErrors > walletsChecked / 2 ? 'provider_fetch'
+      : totalDurationMs > 10_000 ? 'provider_fetch'
+      : 'none',
+  }
 
   if (debug) {
     response._debug = {
