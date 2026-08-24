@@ -4,6 +4,7 @@ import { getBaseMarketUniverse, NEW_BASE_POOL_MAX_AGE_HOURS, type BaseMarketCand
 import { fetchCoinGeckoBaseTrending } from "@/lib/server/coingeckoBaseTrending";
 import { getMergedTrendingTokens } from "@/app/api/trending/route";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
+import { isValidSolanaMintAddress } from "@/lib/solanaAddress";
 import { buildTokenFullReportPlan, executeClarkToolPlan as executeClarkToolLayerPlan, normalizeClarkScannerCacheKey } from "@/lib/clark/tools";
 import { buildTokenFullReport } from "@/lib/clark/reportBuilders";
 import { getWalletLite } from "@/lib/server/walletLite";
@@ -818,12 +819,19 @@ function gtNetwork(chain: SupportedChain): "base" | "eth" {
   return chain === "ethereum" ? "eth" : "base";
 }
 
-// /api/token only supports chain=base or chain=eth today. Returns null for chains
-// Token Core cannot scan yet (bnb, polygon) so callers can say so honestly instead
-// of silently scanning Base.
-function toTokenApiChain(chain: SupportedChain): "base" | "eth" | null {
-  if (chain === "ethereum") return "eth";
+// /api/token chain mapping for Token Core evidence. Maps every EVM chain Token Core
+// supports (base/eth/bnb/robinhood); returns null only for chains Token Core cannot
+// scan (solana, polygon) so callers surface that honestly instead of scanning Base.
+function toTokenApiChain(chain: string): "base" | "eth" | "bnb" | "robinhood" | null {
+  if (chain === "ethereum" || chain === "eth") return "eth";
   if (chain === "base") return "base";
+  // CHAIN-STRICT FIX (Clark deployer lookup audit): /api/token fully supports bnb and
+  // robinhood (SUPPORTED_FULL_SCAN_CHAINS). Returning null here made callers fall back
+  // to "?? \"base\"" — silently scanning a BNB/Robinhood token on Base. Now every chain
+  // maps honestly; callers that cannot scan a chain still get null only for truly
+  // unsupported slugs (e.g. solana/polygon), which they must surface, not paper over.
+  if (chain === "bnb") return "bnb";
+  if (chain === "robinhood") return "robinhood";
   return null;
 }
 
@@ -5370,7 +5378,10 @@ async function executeClarkToolPlan(input: {
         }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
-        const devWalletRes = await callInternalApi(input.origin, "/api/dev-wallet", { contractAddress: address }, input.authHeader ?? undefined, input.verifiedPlan);
+        // CHAIN-STRICT DEPLOYER LOOKUP (Clark deployer audit): /api/dev-wallet defaults to
+        // Base when no chain is sent — an ETH/BNB/Robinhood token would silently get Base
+        // deployer evidence. Forward the plan's chain (input.chain is in scope here).
+        const devWalletRes = await callInternalApi(input.origin, "/api/dev-wallet", { contractAddress: address, chain: toTokenApiChain(input.chain) }, input.authHeader ?? undefined, input.verifiedPlan);
         const d = (devWalletRes.json ?? {}) as Record<string, unknown>;
         const verdictRaw = ((d.clarkVerdict as Record<string, unknown> | null)?.label ?? "UNKNOWN") as string;
         const confRaw = ((d.clarkVerdict as Record<string, unknown> | null)?.confidence ?? "low") as string;
@@ -5951,7 +5962,8 @@ function renderDevWalletFocusedRead(
   tokenName: string,
   tokenSymbol: string,
   tokenAddress: string,
-  devWallet: NonNullable<ClarkToolEvidence["devWallet"]>
+  devWallet: NonNullable<ClarkToolEvidence["devWallet"]>,
+  chainLabel: string = "Base"
 ): string {
   const originRead = devWallet.deployerAddress
     ? `Deployer identified: ${shortAddress(devWallet.deployerAddress)} (${devWallet.confidence} confidence).`
@@ -5969,10 +5981,11 @@ function renderDevWalletFocusedRead(
   missingChecks.push("PnL, win rate, and deployer history are not verified from this scan.");
   missingChecks.push("Smart-money status is not confirmed.");
   return [
-    "DEV WALLET READ",
+    "DEPLOYER / DEV WALLET READ",
     "",
     `Token: ${tokenName} (${tokenSymbol})`,
     `Contract: ${tokenAddress}`,
+    `- Chain: ${chainLabel}`,
     "",
     "Origin read:",
     originRead,
@@ -5991,6 +6004,8 @@ function renderDevWalletFocusedRead(
     "",
     "Next action:",
     "Compare origin wallet activity with holder concentration and liquidity control. No trade call.",
+    "",
+    "CTA: Open in Token Scanner · Scan deployer wallet · Ask \"has this dev rugged before?\"",
   ].join("\n");
 }
 
@@ -8103,9 +8118,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: ["token contract address missing"], clarkToolLatencyMs: 0,
       };
     }
-    const tokenPlan = buildTokenFullReportPlan(tokenAddress, toTokenApiChain(chain) ?? "base", "full");
+    // CHAIN-STRICT (Clark deployer audit): refuse silently scanning on Base — surface
+    // unsupported chains honestly instead of defaulting.
+    const fullReportChain = toTokenApiChain(chain);
+    if (!fullReportChain) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "token.fullReport", toolsUsed: [],
+        analysis: `Full token reports aren't supported for ${chainDisplayLabel(chain)} yet — try Base, Ethereum, BNB, or Robinhood Chain.`,
+        clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: ["unsupported_chain"], clarkToolLatencyMs: 0,
+      };
+    }
+    const tokenPlan = buildTokenFullReportPlan(tokenAddress, fullReportChain, "full");
     const evidenceBundle = await executeClarkToolLayerPlan(tokenPlan, {
-      chain: toTokenApiChain(chain) ?? "base",
+      chain: fullReportChain,
       prompt,
       callInternalApi: (path, payload, timeoutMs) => callInternalApi(origin, path, payload, authHeader ?? undefined, verifiedPlan, timeoutMs),
     });
@@ -8122,7 +8147,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       clarkToolStatuses: Object.fromEntries(evidenceBundle.results.map((r) => [r.tool, r.status])),
       clarkEvidenceMissing: evidenceBundle.missing,
       clarkToolLatencyMs: evidenceBundle.latencyMs,
-      clarkScannerCacheKey: normalizeClarkScannerCacheKey({ intent: "token.fullReport", address: tokenAddress, chain: toTokenApiChain(chain) ?? "base", prompt }),
+      clarkScannerCacheKey: normalizeClarkScannerCacheKey({ intent: "token.fullReport", address: tokenAddress, chain: toTokenApiChain(chain), prompt }),
       groundedEvidenceBundle: evidenceBundle,
     };
   }
@@ -9144,7 +9169,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (THIS_DEV_RE.test(prompt) && !extractAddress(prompt)) {
     const target = sessionMem.lastToken?.address ?? body.clientContext?.lastToken?.address ?? null;
     if (!target) return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: [], analysis: "CORTEX could not verify the origin wallet from live data. Token context is still saved." };
-    const devRes = await callInternalApi(origin, "/api/dev-wallet", { contractAddress: target }, authHeader ?? undefined);
+    // CHAIN-STRICT (Clark deployer audit): forward the session's resolved chain; skip rather
+    // than silently probing Base for chains the dev-wallet module does not support.
+    const thisDevChain = toTokenApiChain(chain);
+    const devRes = thisDevChain
+      ? await callInternalApi(origin, "/api/dev-wallet", { contractAddress: target, chain: thisDevChain }, authHeader ?? undefined)
+      : { ok: false as const, json: null };
     if (!devRes.ok || !devRes.json) {
       return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: ["dev_wallet_analyze"], analysis: "CORTEX could not verify the origin wallet from live data. Token context is still saved." };
     }
@@ -9693,7 +9723,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // runs when explicitly requested via opts.fastPreview.
     const wantsFastPreview = opts?.fastPreview === true;
     const wantsFullScan = !wantsFastPreview;
-    const tokenInternalApiPayload = { contract: tokenAddress, chain: toTokenApiChain(chain) ?? "base", ...(clarkDebugMode ? { debug: true } : {}), mode: wantsFastPreview ? "clark_fast" : "clark_core" };
+    const tokenInternalApiPayload = { contract: tokenAddress, chain: toTokenApiChain(chain), ...(clarkDebugMode ? { debug: true } : {}), mode: wantsFastPreview ? "clark_fast" : "clark_core" };
     const tokenFetchPromise = callInternalApi(origin, "/api/token", tokenInternalApiPayload, authHeader ?? undefined, verifiedPlan, wantsFastPreview ? 9000 : TOKEN_CORE_TIMEOUT_MS)
       .then((r) => { tokenData = r; return r; })
       .catch((e: unknown) => {
@@ -9708,7 +9738,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     let securitySim: Awaited<ReturnType<typeof fetchHoneypotSecurity>> | null = null;
     let honeypotAborted = false;
     let honeypotNetworkError = false;
-    const honeypotPromise = fetchHoneypotSecurity(tokenAddress, toTokenApiChain(chain) ?? "base")
+    // CHAIN-STRICT: skip the honeypot sim entirely for chains with no chainId mapping
+    // (null from toTokenApiChain) instead of silently probing as Base.
+    const honeypotChain = toTokenApiChain(chain);
+    const honeypotPromise = honeypotChain == null
+      ? Promise.resolve(null)
+      : fetchHoneypotSecurity(tokenAddress, honeypotChain)
       .then((r) => { securitySim = r; return r; })
       .catch((e: unknown) => {
         const msg = e instanceof Error ? e.message : String(e);
@@ -9869,7 +9904,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       tokenInternalApiReturnedTokenFields,
       requestUrlPath: "/api/token",
       method: "POST",
-      chain: toTokenApiChain(chain) ?? "base",
+      chain: toTokenApiChain(chain),
       address: tokenAddress,
       startedAt: new Date(tokenRouteStart).toISOString(),
       tokenRouteDurationMs,
@@ -10181,12 +10216,83 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (routed.intent === "token_scan") {
     let tokenAddress = routed.address;
     let resolvedSymbol = routed.symbol;
-    // Token Core only supports Base/Ethereum today. If the user explicitly named a
-    // chain we cannot scan, say so honestly instead of silently falling back to Base.
+    // ── SOLANA MINT GUARD (Clark deployer lookup audit): a well-formed Solana mint must never
+    // enter the EVM Token Core path. Route it to the Solana scanner with Solana-native creator
+    // evidence (mint/freeze/update authority + Deep Creator Check), labeled creator/authority —
+    // never "deployer" unless the source proves it.
+    if (tokenAddress && isValidSolanaMintAddress(tokenAddress)) {
+      const solRes = await fetch(`${origin}/api/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(authHeader ? { Authorization: authHeader } : {}) },
+        body: JSON.stringify({ contract: tokenAddress, chain: "solana" }),
+        signal: AbortSignal.timeout(20_000),
+        cache: "no-store",
+      }).catch(() => null);
+      const solJson = solRes && solRes.ok ? await solRes.json().catch(() => null) : null;
+      const merged = (solJson && typeof solJson === "object" && "mergedResult" in (solJson as Record<string, unknown>))
+        ? ((solJson as Record<string, unknown>).mergedResult as Record<string, unknown> | null)
+        : null;
+      const mintAuthority = merged && typeof merged.mintAuthority === "string" ? merged.mintAuthority : null;
+      const freezeAuthority = merged && typeof merged.freezeAuthority === "string" ? merged.freezeAuthority : null;
+      const deepCreator = (solJson as Record<string, unknown> | null)?.deepCreator as Record<string, unknown> | null | undefined;
+      const creatorTrace = deepCreator?.creatorTrace as Record<string, unknown> | null | undefined;
+      const traceResolved = creatorTrace?.resolved as Record<string, unknown> | null | undefined;
+      const likelyCreator = typeof traceResolved?.likelyCreatorWallet === "string" ? traceResolved.likelyCreatorWallet as string : null;
+      const creatorConfidence = (solJson as Record<string, unknown> | null)?.creatorConfidence as Record<string, unknown> | null | undefined;
+      const lines: string[] = ["SOLANA CREATOR / AUTHORITY READ", ""];
+      const authorities: string[] = [];
+      if (mintAuthority) authorities.push(`- Mint authority: ${mintAuthority} (active — supply can be increased)`);
+      if (freezeAuthority) authorities.push(`- Freeze authority: ${freezeAuthority} (active — accounts can be frozen)`);
+      if (!mintAuthority) lines.push("- Mint authority: revoked or unresolved");
+      if (!freezeAuthority) lines.push("- Freeze authority: revoked or unresolved");
+      lines.push(...authorities);
+      if (likelyCreator) {
+        lines.push(`- Creator/fee payer (earliest tx): ${likelyCreator}`, `  Confidence: ${(creatorConfidence?.tier as string) ?? "possible"} — fee-payer of earliest transaction is a strong signal, not proof of deployer.`);
+      } else {
+        lines.push("- Creator/fee payer: Not resolved. Run the Deep Creator Check in Token Scanner for a Helius signature-history trace.");
+      }
+      lines.push("", "- Chain: Solana", `- Evidence: ${merged ? "Solana RPC (mint account) + Helius" : "Solana scan returned no usable data"}`);
+      lines.push("- CTA: Open Token Scanner → Solana Beta for the full read.");
+      return {
+        feature: "clark-ai", chain: chain === "base" ? "base" : chain, mode: "analysis", intent: "token_scan", toolsUsed: ["solana_scan"],
+        analysis: lines.join("\n"),
+        intentBadge: "solana_creator_read",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: Boolean(solJson),
+        clarkDeployerLookupAudit: {
+          userPrompt: prompt,
+          parsedAddress: tokenAddress,
+          parsedChain: "solana",
+          addressType: "solana_mint",
+          resolvedChainSlug: "solana",
+          resolvedChainId: null,
+          tokenScannerCalled: true,
+          apiRouteCalled: "/api/token (chain=solana)",
+          cacheKey: null,
+          cacheHit: false,
+          cacheChainMatched: true,
+          deployerFound: null,
+          deployerAddress: null,
+          creatorAddress: likelyCreator,
+          mintAuthority,
+          freezeAuthority,
+          metadataAuthority: null,
+          evidenceSource: merged ? "solana_rpc+helius" : "none",
+          confidence: likelyCreator ? String((creatorConfidence?.tier as string) ?? "possible").toLowerCase() : "low",
+          sourcesAttempted: ["solana_rpc_mint_authority", "helius_creator_trace"],
+          sourcesSucceeded: [ ...(merged ? ["solana_rpc_mint_authority"] : []), ...(likelyCreator ? ["helius_creator_trace"] : []) ],
+          sourcesFailed: [ ...(!merged ? ["solana_rpc_mint_authority"] : []), ...(!likelyCreator ? ["helius_creator_trace"] : []) ],
+          rejectedWrongChainResults: 0,
+          finalAnswerMode: (likelyCreator || mintAuthority || freezeAuthority) ? "found" : "unavailable_with_sources",
+        },
+      };
+    }
+    // EVM 0x address can never be a Solana mint; and for chains Token Core cannot scan,
+    // say so honestly instead of silently falling back to Base.
     if (toTokenApiChain(chain) === null) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: [],
-        analysis: `Token Core scanning on ${chainDisplayLabel(chain)} isn't available yet — I can run this on Base or Ethereum. Say "scan this token on base" or "on eth" to continue.`,
+        analysis: `Token Core scanning on ${chainDisplayLabel(chain)} isn't available yet — I can run this on Base, Ethereum, BNB, or Robinhood Chain. Name the chain ("scan this on base/eth/bnb/robinhood") to continue.`,
         intentBadge: "token_scan",
         actions: buildRoutedActions(["Open Token Scanner"]),
         quotaConsumed: false,
@@ -10435,8 +10541,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const provisional = deriveDevHistoryFromTokenEvidence(tokenEvidence);
     let walletEvidence: Record<string, unknown> | null = null;
     if (provisional.deployer) {
-      const devRes = await callInternalApi(origin, "/api/dev-wallet", { contractAddress: input.address, chain: toTokenApiChain(chain) ?? "base" }, authHeader ?? undefined, verifiedPlan).catch(() => null);
-      if (devRes?.ok && devRes.json && typeof devRes.json === "object") walletEvidence = devRes.json as Record<string, unknown>;
+      // CHAIN-STRICT DEPLOYER LOOKUP (Clark deployer audit): forward the resolved chain so a
+      // BNB/Robinhood/ETH token never receives Base deployer evidence by silent default.
+      // Skip entirely for chains /api/dev-wallet does not support rather than defaulting.
+      const devWalletChain = toTokenApiChain(chain);
+      if (!devWalletChain) {
+        walletEvidence = null;
+      } else {
+        const devRes = await callInternalApi(origin, "/api/dev-wallet", { contractAddress: input.address, chain: devWalletChain }, authHeader ?? undefined, verifiedPlan).catch(() => null);
+        if (devRes?.ok && devRes.json && typeof devRes.json === "object") walletEvidence = devRes.json as Record<string, unknown>;
+      }
     }
     const evidence = deriveDevHistoryFromTokenEvidence(tokenEvidence, walletEvidence);
     return { evidence, tokenEvidence, walletEvidence, tokenAddress: input.address, walletAddress: evidence.deployer ?? null };
@@ -11743,32 +11857,71 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const _devLiqMismatch = resolvedSymbol && evidence.liquidity?.token?.symbol && evidence.liquidity.token.symbol.toUpperCase() !== resolvedSymbol.toUpperCase();
     const tokenName = (_devScanMismatch ? undefined : evidence.tokenScan?.token?.name) ?? (_devLiqMismatch ? undefined : evidence.liquidity?.token?.name) ?? aliasForSymbol?.name ?? resolvedSymbol ?? "Unknown token";
     const tokenSymbol = (_devScanMismatch ? undefined : evidence.tokenScan?.token?.symbol) ?? (_devLiqMismatch ? undefined : evidence.liquidity?.token?.symbol) ?? resolvedSymbol ?? "?";
+    // CHAIN-STRICT AUDIT (Clark deployer lookup audit): receipt proving the deployer answer came
+    // from the requested chain's own evidence — never a wrong-chain cache or Base default.
+    const devAuditChain = toTokenApiChain(chain);
+    const clarkDeployerLookupAudit = {
+      userPrompt: prompt,
+      parsedAddress: resolvedAddress,
+      parsedChain: chain,
+      addressType: "evm_contract",
+      resolvedChainSlug: devAuditChain,
+      resolvedChainId: devAuditChain === 'eth' ? 1 : devAuditChain === 'base' ? 8453 : devAuditChain === 'bnb' ? 56 : devAuditChain === 'robinhood' ? 4663 : null,
+      tokenScannerCalled: Boolean(evidence.tokenScan),
+      apiRouteCalled: "/api/dev-wallet",
+      cacheKey: null,
+      cacheHit: false,
+      cacheChainMatched: true,
+      deployerFound: Boolean(evidence.devWallet?.deployerAddress),
+      deployerAddress: evidence.devWallet?.deployerAddress ?? null,
+      creatorAddress: null,
+      mintAuthority: null,
+      freezeAuthority: null,
+      metadataAuthority: null,
+      evidenceSource: evidence.devWallet?.ok ? "internal_dev_wallet_module" : "none",
+      confidence: (evidence.devWallet?.confidence ?? "low").toLowerCase(),
+      sourcesAttempted: ["/api/token", "/api/dev-wallet"],
+      sourcesSucceeded: [
+        ...(evidence.tokenScan ? ["/api/token"] : []),
+        ...(evidence.devWallet?.ok ? ["/api/dev-wallet"] : []),
+      ],
+      sourcesFailed: [
+        ...(!evidence.tokenScan ? ["/api/token"] : []),
+        ...(evidence.devWallet && !evidence.devWallet.ok ? ["/api/dev-wallet"] : []),
+        ...(!evidence.devWallet?.deployerAddress ? ["deployer_identity_unresolved"] : []),
+      ],
+      rejectedWrongChainResults: 0,
+      finalAnswerMode: evidence.devWallet?.deployerAddress ? "found" : (evidence.devWallet?.ok ? "unavailable_with_sources" : "sources_failed"),
+    };
     if (evidence.devWallet?.ok) {
       return {
         feature: "clark-ai",
         chain,
         mode: "analysis",
-        analysis: renderDevWalletFocusedRead(tokenName, tokenSymbol, resolvedAddress, evidence.devWallet),
+        analysis: renderDevWalletFocusedRead(tokenName, tokenSymbol, resolvedAddress, evidence.devWallet, chainDisplayLabel(chain)),
         intent: plan.intent,
         toolsUsed,
+        clarkDeployerLookupAudit,
       };
     }
     return {
       feature: "clark-ai",
       chain,
       mode: "analysis",
+      // UNAVAILABLE TEMPLATE (Clark deployer lookup audit): never a bare "unknown" — always
+      // name the chain checked, sources attempted, why it failed, and the next action.
       analysis: [
-        "DEV WALLET READ",
-        `- Asset: ${tokenName} (${tokenSymbol})`,
-        `- Contract: ${resolvedAddress}`,
-        "- Likely deployer: Unverified",
-        "- Linked wallets: Unverified",
-        "- Suspicious patterns: Data unavailable in this pass.",
-        "- Confidence: Low",
-        "- What it means: I cannot verify deployer behavior yet, so treat this as unresolved risk.",
+        "DEPLOYER LOOKUP — UNAVAILABLE", "",
+        `I couldn't verify the deployer from available sources for this ${chainDisplayLabel(chain)} token.`,
+        "",
+        `- Chain checked: ${chainDisplayLabel(chain)}`,
+        "- Sources attempted: Token Core scan (/api/token), dev/deployer module (/api/dev-wallet)",
+        `- Why unavailable: ${evidence.devWallet?.ok ? "no deployer identity resolved in the returned evidence" : "the dev-wallet module did not return usable data for this scan"}`,
+        "- Next action: open Token Scanner on this contract to view deployer/creator evidence directly.",
       ].join("\n"),
       intent: plan.intent,
       toolsUsed,
+      clarkDeployerLookupAudit,
     };
   }
 

@@ -726,7 +726,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!/clarkDebugReceipt[\s\S]{0,2000}cookie:\s*clarkInternalCtx\.cookie[^B]/.test(routeFile), 'clarkDebugReceipt must not leak raw cookie value')
 
   // Task 3: Clark threads its own debug flag and mode into the /api/token payload
-  assert.ok(routeFile.includes('tokenInternalApiPayload = { contract: tokenAddress, chain: toTokenApiChain(chain) ?? "base", ...(clarkDebugMode ? { debug: true } : {}), mode: wantsFastPreview ? "clark_fast" : "clark_core" }'), 'Clark forwards debug flag and clark_core/clark_fast mode to /api/token payload')
+  assert.ok(routeFile.includes('tokenInternalApiPayload = { contract: tokenAddress, chain: toTokenApiChain(chain), ...(clarkDebugMode ? { debug: true } : {}), mode: wantsFastPreview ? "clark_fast" : "clark_core" }'), 'Clark forwards debug flag and clark_core/clark_fast mode to /api/token payload (chain-strict, no Base fallback)')
 
   // Task 4: payload shape sent to /api/token is { contract, chain } (safe fields only)
   assert.ok(routeFile.includes('callInternalApi(origin, "/api/token", tokenInternalApiPayload'), 'fetchTokenEvidence calls /api/token with tokenInternalApiPayload')
@@ -1391,10 +1391,14 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   )
   assert.ok(!/const chain = body\.chain \?\? "base";\s*\n\s*const prompt/.test(routeFile), 'chain must no longer be resolved from body.chain alone before reading the prompt')
 
-  // /api/token only supports base/eth — Clark must map its chain and never silently
+  // /api/token chain mapping — Clark must map its chain and never silently
   // scan Base when a chain it cannot scan was explicitly requested.
-  assert.ok(routeFile.includes('function toTokenApiChain(chain: SupportedChain): "base" | "eth" | null {'), 'toTokenApiChain mapping helper exists')
-  assert.ok(routeFile.includes('chain: toTokenApiChain(chain) ?? "base"'), 'tokenInternalApiPayload uses the mapped chain, not the raw SupportedChain value')
+  // CHAIN-STRICT UPDATE (Clark deployer lookup audit): toTokenApiChain now maps all four
+  // supported EVM chains (base/eth/bnb/robinhood) and returns null only for truly
+  // unsupported chains, which callers surface honestly instead of defaulting to Base.
+  assert.ok(routeFile.includes('function toTokenApiChain(chain: string): "base" | "eth" | "bnb" | "robinhood" | null {'), 'toTokenApiChain mapping helper exists')
+  assert.ok(routeFile.includes('chain: toTokenApiChain(chain), ...(clarkDebugMode'), 'tokenInternalApiPayload uses the mapped chain with no silent Base fallback')
+  assert.doesNotMatch(routeFile, /toTokenApiChain\((?:input\.)?chain\) \?\? "base"/, 'no silent Base fallbacks remain')
   assert.ok(routeFile.includes("isn't available yet"), 'unsupported requested chain gets an honest message instead of a silent Base fallback')
 
   // Failure/partial read wording must reflect the requested chain, not a hardcoded Base label.
