@@ -4,7 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { fetchGoPlusHoneypotFallback } from "@/lib/server/goplusSecurity";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
-import { sanitizePublicTokenResponse, applyTokenScannerPlanGate } from "@/lib/server/tokenPublicResponse";
+import { sanitizePublicTokenResponse, applyTokenScannerPlanGate, TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from "@/lib/server/tokenPublicResponse";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { buildLpControllerIntel, resolveLpControllerIdentity } from "@/lib/server/lpControllerIntel";
@@ -3780,10 +3780,13 @@ export async function POST(req: Request) {
     // Shared response cache (lib/server/cache/tokenCache.ts) for the heavy full-scan path below —
     // only for plain, non-debug requests, so a debug-augmented payload (_diagnostics/
     // _tokenRouteDebug fields) never gets served back out to a normal caller from cache.
-    const _tokenCacheKey = `token:${chain}:${contract.toLowerCase()}`
+    // SCAN RESPONSE SCHEMA VERSION (Robinhood scan-inconsistency audit): the version is part of
+    // the key AND verified on the cached copy, so a payload written by older code can never be
+    // served to newer frontend code — the exact "same token, different result per device" class.
+    const _tokenCacheKey = `token:v${TOKEN_SCAN_RESPONSE_SCHEMA_VERSION}:${chain}:${contract.toLowerCase()}`
     if (debugMode !== true) {
       const _cachedResponse = await getTokenCache<Record<string, unknown>>(_tokenCacheKey)
-      if (_cachedResponse) {
+      if (_cachedResponse && (_cachedResponse as Record<string, unknown>).scanResponseSchemaVersion === TOKEN_SCAN_RESPONSE_SCHEMA_VERSION) {
         // AUDIT FIX, DISCLOSED (token-scanner audit): this cache is shared across every caller
         // regardless of plan — without gating here too, a free caller could get a Pro user's
         // full cached response for the same token within the TTL, bypassing the gate entirely.
@@ -8703,6 +8706,43 @@ export async function POST(req: Request) {
         publicResponseKeys: Object.keys(responsePayload as Record<string, unknown>),
         totalMs: Date.now() - _t0,
       }
+    }
+    // SCAN RESPONSE SCHEMA VERSION + ROBINHOOD SCAN AUDIT (Robinhood scan-inconsistency audit):
+    // every public response carries its schema version so any client (and any human comparing
+    // two devices) can prove both sides got the same shape. The audit block is a compact,
+    // always-present, read-only receipt of what the scan pipeline actually did for this request —
+    // specifically for the reported per-device divergence: one laptop missing liquidity, another
+    // missing confidence/risk. It changes NO scoring, provider, or gating logic.
+    ;(responsePayload as any).scanResponseSchemaVersion = TOKEN_SCAN_RESPONSE_SCHEMA_VERSION
+    ;(responsePayload as any).scanAudit = {
+      chain,
+      chainId: chain === 'robinhood' ? 4663 : null,
+      chainSlug: chain,
+      tokenAddress: contract,
+      runtimeCommitSha: process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GIT_SHA ?? null,
+      envEnableRobinhoodChain: process.env.ENABLE_ROBINHOOD_CHAIN === 'true',
+      rpcConfigured: alchemyConfigured,
+      dexScreenerAttempted: isFullScanChain,
+      dexScreenerSucceeded: _dexFb != null,
+      geckoTerminalAttempted: true,
+      geckoTerminalSucceeded: gtData != null,
+      liquidityResolverAttempted: isFullScanChain,
+      liquidityResolverStatus: liquidityStatus ?? null,
+      liquidityMissingReason: liquidityUsd == null ? (liquidityReason ?? 'liquidity_unavailable') : null,
+      riskEngineAttempted: true,
+      riskEngineScore: typeof tokenRiskScoreResult.riskScore === 'number' ? tokenRiskScoreResult.riskScore : null,
+      confidenceScore: cortexScoreResult.cortexConfidence ?? null,
+      confidenceInputs: {
+        scoreCoveragePercent: cortexScoreResult.scoreCoveragePercent ?? null,
+        missingScoreInputsCount: Array.isArray(cortexScoreResult.missingScoreInputs) ? cortexScoreResult.missingScoreInputs.length : null,
+      },
+      confidenceMissingReason: cortexScoreResult.cortexConfidence === 'insufficient' ? 'insufficient_evidence_across_core_categories' : null,
+      planGateApplied: _requestPlan === 'free',
+      responseSectionsReturned: Object.keys(responsePayload as Record<string, unknown>).sort(),
+      responseWarnings: [
+        ...(liquidityUsd == null ? [`Liquidity unavailable on ${chain === 'robinhood' ? 'Robinhood provider' : `${chain} providers`}: ${liquidityReason ?? 'no_active_liquidity_pool_found'}`] : []),
+        ...(cortexScoreResult.cortexConfidence === 'insufficient' ? ['CORTEX confidence insufficient — not enough evidence across core categories'] : []),
+      ],
     }
     const _sanitizedResponse = sanitizePublicTokenResponse(responsePayload as Record<string, any>, debugMode === true)
     // Only cache plain, non-debug, fully-completed successful scans — never an error, never a

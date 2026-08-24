@@ -1,3 +1,12 @@
+// SCAN RESPONSE SCHEMA VERSION, DISCLOSED (Robinhood scan-inconsistency audit): bumped whenever
+// the public token-scan response shape changes in a way that would make an older cached copy
+// render incorrectly (fields renamed/added/removed, gating semantics changed). The /api/token
+// route folds this into its cache key AND stamps it on every response, so:
+//  1. a cached response written by older code is never served to newer frontend code, and
+//  2. any client can verify it got a current-schema response instead of silently rendering
+//     a stale one (the reported "same token, different result per device" class).
+export const TOKEN_SCAN_RESPONSE_SCHEMA_VERSION = 2
+
 // Raw DEX/pool-source identifiers (e.g. "aerodrome-base", "uniswap-v3-base") are internal —
 // public text shows the neutral DEX brand name instead. Order matters: more specific
 // (versioned/network-suffixed) patterns must run before their generic catch-alls.

@@ -495,6 +495,13 @@ type ScanResult = {
   }
   riskScore?: number
   riskLabel?: "extreme" | "high" | "moderate" | "low" | "very_low" | string
+  planGate?: { plan?: string; requiredPlan?: string } | null
+  scanAudit?: {
+    confidenceMissingReason?: string | null
+    liquidityMissingReason?: string | null
+    runtimeCommitSha?: string | null
+    responseWarnings?: string[]
+  } | null
   riskBreakdown?: {
     marketMaturity?: {
       score?: number
@@ -4668,6 +4675,8 @@ export default function TerminalTokenScanner() {
           riskScore: typeof json.riskScore === 'number' ? json.riskScore : undefined,
           riskLabel: json.riskLabel ?? undefined,
           riskBreakdown: json.riskBreakdown ?? undefined,
+          planGate: json.planGate ?? null,
+          scanAudit: json.scanAudit ?? null,
         }
         setResult(mapped)
         if (json.devIntel) {
@@ -6638,8 +6647,22 @@ export default function TerminalTokenScanner() {
                   { label: 'Behavioral Risk', data: result.riskBreakdown?.behavioralRisk },
                 ]
                 const legacyCortexScore = result.cortexScore ?? score
+                // LIQUIDITY-UNAVAILABLE BANNER (Robinhood scan-inconsistency audit): when the scan
+                // produced no liquidity read, say so plainly with the reason — a missing section
+                // must never render as silent blank space. Data comes from the response's own
+                // scanAudit receipt; nothing is inferred or fabricated client-side.
+                const liquidityWarnings = (result.scanAudit?.responseWarnings ?? []).filter(w => /liquidity/i.test(w))
                 return (
                   <>
+                    {liquidityWarnings.length > 0 && (
+                      <div style={{ marginBottom: '14px', padding: '10px 14px', borderRadius: '12px', border: '1px solid rgba(251,191,36,0.30)', background: 'rgba(251,191,36,0.06)' }}>
+                        <p style={{ margin: 0, fontSize: '11px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em' }}>LIQUIDITY PARTIAL</p>
+                        {liquidityWarnings.map((w, wi) => (
+                          <p key={wi} style={{ margin: '4px 0 0', fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{w}</p>
+                        ))}
+                      </div>
+                    )}
+
                     {/* Token Safety Score Hero — SCORE-CARD-POLISH, DISCLOSED (Token Scanner
                         result-UI polish task): same score/label/exact numbers, tighter padding and
                         vertical rhythm (22px->18px, marginBottom 16px->14px), cleaner thinner
@@ -6662,7 +6685,13 @@ export default function TerminalTokenScanner() {
                           <div style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>Higher score means safer — evidence-weighted across market maturity, liquidity safety, contract safety, and behavioral risk.</div>
                         </>
                       ) : (
-                        <div style={{ fontSize: '18px', fontWeight: 700, color: '#64748b', fontFamily: 'var(--font-plex-mono)', padding: '4px 0' }}>Token Safety Score unavailable</div>
+                        <div style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', padding: '4px 0', lineHeight: 1.55 }}>
+                          {result.planGate?.plan === 'free'
+                            ? <>Token Safety Score requires Pro — <a href="/pricing" style={{ color: '#53F3C3', textDecoration: 'underline' }}>upgrade to unlock</a>. Free scans still show market data and basic checks.</>
+                            : result.scanAudit?.confidenceMissingReason
+                              ? `Score unavailable: ${String(result.scanAudit.confidenceMissingReason).replace(/_/g, ' ')}.`
+                              : 'Token Safety Score unavailable — the risk engine did not return a score for this scan.'}
+                        </div>
                       )}
                     </div>
 
