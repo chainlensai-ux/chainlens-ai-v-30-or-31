@@ -7,7 +7,7 @@ import { resolveTokenQuery, isContractAddress, fmtLiquidity, type ResolverResult
 import { calculateCortexScoreV2, type CortexScoreResultV2 } from '@/lib/token/scoring'
 // Client-safe: lib/solanaAddress.ts reads no env var and holds no secret (unlike
 // lib/server/solanaChainConfig.ts, which must never be imported here).
-import { classifySolanaMintInput, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
+import { classifySolanaMintInput, isValidSolanaMintAddress, SOLANA_MINT_REJECTION_MESSAGE } from '@/lib/solanaAddress'
 import type { SolanaBetaScanResult } from '@/lib/server/solanaTokenScannerBeta'
 // Pure presentation mapping over solanaResult — see lib/solanaConfidenceScore.ts's own header for
 // the full disclosure on why a capped, clearly-labeled score replaced the earlier "no score shown"
@@ -4281,7 +4281,7 @@ export default function TerminalTokenScanner() {
   const [clarkError, setClarkError]     = useState<string | null>(null)
 
   // Tracked tokens
-  type TrackedToken = { id?: string; user_id?: string; contract_address: string; symbol?: string | null; created_at?: string | null; saved_at?: string | null }
+  type TrackedToken = { id?: string; user_id?: string; contract_address: string; symbol?: string | null; chain?: string | null; created_at?: string | null; saved_at?: string | null }
   const [trackedTokens, setTrackedTokens] = useState<TrackedToken[]>([])
   const [trackedLoading, setTrackedLoading] = useState(false)
   const [trackedSaving, setTrackedSaving]   = useState(false)
@@ -4381,6 +4381,9 @@ export default function TerminalTokenScanner() {
         .insert({
           user_id: session.user.id,
           contract_address: result.contract.toLowerCase(),
+          // CHAIN-STORED WITH TOKEN (chain-strictness audit): the same 0x address on different
+          // chains is a different token — the row must record which chain it was scanned on.
+          chain: (result.chain ?? chain) as string,
           symbol: result.symbol ?? null,
         })
       if (insertError) {
@@ -4407,6 +4410,9 @@ export default function TerminalTokenScanner() {
         .delete()
         .eq('user_id', session.user.id)
         .eq('contract_address', normalizedAddress)
+        // CHAIN-STRICT DELETE (chain-strictness audit): same address on another chain is a
+        // different token — deleting one must never remove the other chain's row.
+        .eq('chain', chain as string)
       if (deleteError) {
         console.error('Failed to remove tracked token', deleteError)
         setTrackedUnavailable(true)
@@ -4538,6 +4544,16 @@ export default function TerminalTokenScanner() {
     // Skip if: CA provided directly, or override from URL auto-scan / alternate picker
     let scanContract = q
     let scanChain: 'base' | 'eth' | 'bnb' | 'robinhood' = effectiveChain
+    // CHAIN-STRICT INPUT GUARD (chain-correctness audit): a well-formed Solana mint pasted while
+    // an EVM chain is selected is rejected client-side with the switch-chain message — it must
+    // never silently resolve-fail or reach the EVM scanner.
+    {
+      const looksSolanaMint = q.trim().length >= 32 && q.trim().length <= 44 && !isContractAddress(q) && /^[1-9A-HJ-NP-Za-km-z]+$/.test(q.trim())
+      if (looksSolanaMint && isValidSolanaMintAddress(q)) {
+        setError(`That looks like a Solana mint address. This token was not found on ${chainDisplayName(scanChain)}. Switch chain or scan with Auto Detect.`)
+        return
+      }
+    }
     if (!override && !isContractAddress(q)) {
       // Ticker/name search (resolveTokenQuery) only covers base/eth today — BNB and Robinhood
       // Chain scans require a pasted contract address for now rather than silently searching the
@@ -4606,7 +4622,7 @@ export default function TerminalTokenScanner() {
         const isAddrInput = isContractAddress(scanContract)
         if (json?.status === 'invalid_address') setError(json.error ?? 'Invalid contract address.')
         else if (json?.status === 'address_scan_failed') setError(json.error ?? "Token address accepted, but CORTEX could not find enough live data yet.")
-        else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') setError(`Token not found on ${chainDisplayName(scanChain)}. Try switching chains.`)
+        else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') setError(`This token was not found on ${chainDisplayName(scanChain)}. Switch chain or scan with Auto Detect.`)
         else if (json?.status === 'ambiguous') setError('Multiple tokens match this. Paste the contract address or choose one.')
         else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${chainDisplayName(scanChain)} for this token.`)
         else if (isAddrInput) setError("Token address accepted, but CORTEX could not find enough live data yet.")
@@ -9271,7 +9287,7 @@ export default function TerminalTokenScanner() {
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginBottom: '3px' }}>
                             <span style={{ fontSize: '12px', fontWeight: 700, color: '#f1f5f9' }}>{t.symbol ?? 'Tracked Token'}</span>
-                            <span style={{ fontSize: '8px', padding: '1px 7px', borderRadius: '999px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.28)', color: '#22d3ee', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>base</span>
+                            <span style={{ fontSize: '8px', padding: '1px 7px', borderRadius: '999px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.28)', color: '#22d3ee', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, letterSpacing: '.08em', textTransform: 'uppercase' }}>{t.chain ?? 'base'}</span>
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                             <span style={{ fontSize: '9px', color: '#334155', fontFamily: 'var(--font-plex-mono)' }}>{short}</span>

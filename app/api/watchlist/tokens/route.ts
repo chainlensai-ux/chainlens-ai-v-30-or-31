@@ -110,7 +110,7 @@ export async function POST(req: NextRequest) {
       risk_label: riskLabel ?? null,
       score: score ?? null,
       saved_at: new Date().toISOString(),
-    }, { onConflict: 'user_id,address' })
+    }, { onConflict: 'user_id,address,chain' })
     .select()
     .single()
 
@@ -131,6 +131,12 @@ export async function DELETE(req: NextRequest) {
   if (!isValidAddress(address)) {
     return NextResponse.json({ error: 'A valid token contract address is required.' }, { status: 400 })
   }
+  // CHAIN-STRICT DELETE (chain-strictness audit): same address on another chain is a different
+  // token — the delete must target the requested chain's row, never all rows for that address.
+  const chainParam = searchParams.get('chain') ?? 'base'
+  if (!isAllowedChain(chainParam)) {
+    return NextResponse.json({ error: 'Unsupported chain.' }, { status: 400 })
+  }
 
   const db = getServiceClient()
   if (!db) return NextResponse.json({ error: 'Service unavailable' }, { status: 503 })
@@ -140,6 +146,7 @@ export async function DELETE(req: NextRequest) {
     .delete()
     .eq('user_id', userId)
     .eq('address', address.toLowerCase())
+    .eq('chain', chainParam)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ ok: true })
