@@ -8,7 +8,7 @@ import type { ReactNode } from 'react'
 import ConnectWallet from '@/components/ConnectWallet'
 import { supabase } from '@/lib/supabaseClient'
 import { canAccessFeature, type UserPlan } from '@/lib/planFeatures'
-import { clearPlanCache, readCachedPlan, writeCachedPlan } from '@/lib/usePlan'
+import { clearPlanCache, readCachedPlan, writeCachedPlan, peekCachedPlan } from '@/lib/usePlan'
 
 
 
@@ -329,7 +329,9 @@ interface Props {
 
 export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, onWalletOpen, onClose }: Props) {
   const [accountEmail, setAccountEmail] = useState<string | null>(null)
-  const [plan, setPlan] = useState<UserPlan>('free')
+  // CACHED-FIRST INIT (smoothness audit): start from the last verified cached plan — never a
+  // guessed Free. An Elite user reopening the sidebar sees Elite instantly; backend confirms.
+  const [plan, setPlan] = useState<UserPlan>(() => peekCachedPlan() ?? ('free' as UserPlan))
   const [betaElite, setBetaElite] = useState(false)
 
   useEffect(() => {
@@ -347,7 +349,11 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
           writeCachedPlan(resolvedPlan, session?.user?.id, session?.user?.email ?? null)
           setBetaElite(json?.betaEliteActive === true)
         }
-      } catch { setPlan('free'); setBetaElite(false) }
+      } catch {
+        // ERROR PATH (smoothness audit): a network failure must never downgrade the
+        // displayed plan — keep the last verified cached value instead of guessing Free.
+        setBetaElite(false)
+      }
     }
 
     supabase.auth.getSession().then(({ data }) => {

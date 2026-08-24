@@ -38,29 +38,139 @@ export function writeCachedPlan(nextPlan: UserPlan, userId?: string | null, emai
 
 export function clearPlanCache() { try { window.localStorage.removeItem(PLAN_CACHE_KEY) } catch {} }
 
+// ── SHARED PLAN STORE (smoothness/perceived-performance audit) ──────────────
+// One module-level source of truth for plan state. Every consumer (Navbar, FeatureBar,
+// usePlan, pricing, settings) subscribes to this instead of each firing its own
+// /api/user-settings request. In-flight requests are singleflighted: N components mounting
+// at once produce exactly ONE network call, and all receive the same resolved value.
+// Display-only cache rules: cached plans are shown instantly on mount; a component with no
+// valid cache shows 'unknown' (neutral), NEVER 'free' — 'free' is only ever set from a
+// confirmed backend response or an explicitly signed-out session.
+type PlanListener = (p: UserPlan | null, meta: { loading: boolean; source: 'cache' | 'network' | 'signed_out' | 'error' | 'init' }) => void
+
+const sharedPlanState: {
+  plan: UserPlan | null
+  loading: boolean
+  loadedOnce: boolean
+  listeners: Set<PlanListener>
+  inFlight: Promise<void> | null
+  lastFetchedAt: number
+} = {
+  plan: null,
+  loading: false,
+  loadedOnce: false,
+  listeners: new Set(),
+  inFlight: null,
+  lastFetchedAt: 0,
+}
+
+function notifyPlanListeners(source: Parameters<PlanListener>[1]['source']) {
+  for (const l of sharedPlanState.listeners) l(sharedPlanState.plan, { loading: sharedPlanState.loading, source })
+}
+
+/** Read the last verified cached plan without touching the network. */
+export function peekCachedPlan(): UserPlan | null {
+  try {
+    const raw = window.localStorage.getItem(PLAN_CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw) as CachedPlan
+    if (!parsed || (parsed.plan !== 'free' && parsed.plan !== 'pro' && parsed.plan !== 'elite')) return null
+    if (Date.now() - Number(parsed.updatedAt ?? 0) > PLAN_CACHE_MAX_AGE_MS) return null
+    return parsed.plan
+  } catch { return null }
+}
+
+/**
+ * Ensure the shared plan is fetched (singleflight). If a fetch is already running or a fresh
+ * one completed recently (30s — matching the cache max age), resolves immediately without a
+ * new request. Safe to call from any number of components simultaneously.
+ */
+export function ensurePlanLoaded(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.resolve()
+  // Fresh enough — no refetch needed; background staleness is handled by cache expiry.
+  if (sharedPlanState.loadedOnce && Date.now() - sharedPlanState.lastFetchedAt < PLAN_CACHE_MAX_AGE_MS && !sharedPlanState.loading) {
+    return Promise.resolve()
+  }
+  if (sharedPlanState.inFlight) return sharedPlanState.inFlight
+
+  sharedPlanState.loading = true
+  notifyPlanListeners('init')
+  sharedPlanState.inFlight = (async () => {
+    try {
+      const { data } = await supabase.auth.getSession()
+      const session = data.session
+      const token = session?.access_token
+      if (!token) {
+        clearPlanCache()
+        sharedPlanState.plan = 'free'
+        sharedPlanState.lastFetchedAt = Date.now()
+        notifyPlanListeners('signed_out')
+        return
+      }
+      const userId = session.user.id
+      const email = session.user.email ?? null
+      // Cached-verified-first: show it immediately (listeners already saw it via peek),
+      // then confirm against the backend.
+      const res = await fetch('/api/user-settings', {
+        headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
+      })
+      if (res.ok) {
+        const json = await res.json() as Record<string, unknown>
+        const p = json?.effectivePlan ?? json?.plan ?? (json?.settings as Record<string, unknown>)?.plan
+        const resolvedPlan: UserPlan = p === 'pro' || p === 'elite' ? p : 'free'
+        sharedPlanState.plan = resolvedPlan
+        sharedPlanState.lastFetchedAt = Date.now()
+        writeCachedPlan(resolvedPlan, userId, email)
+        notifyPlanListeners('network')
+      } else {
+        // Network/HTTP failure: keep whatever cached value was already visible; never
+        // downgrade to Free on error.
+        notifyPlanListeners('error')
+      }
+    } catch {
+      notifyPlanListeners('error')
+    } finally {
+      sharedPlanState.loading = false
+      sharedPlanState.loadedOnce = true
+      sharedPlanState.inFlight = null
+    }
+  })()
+  return sharedPlanState.inFlight
+}
+
+/**
+ * Subscribe a component to the shared plan state.
+ * Returns the initial display value synchronously: cached verified plan if present,
+ * otherwise null ('unknown') — never a guessed Free.
+ */
+export function subscribeToSharedPlan(
+  listener: PlanListener,
+): () => void {
+  const cached = peekCachedPlan()
+  listener(cached, { loading: sharedPlanState.loading || !sharedPlanState.loadedOnce, source: cached ? 'cache' : 'init' })
+  sharedPlanState.listeners.add(listener)
+  // Trigger/coalesce the shared fetch — deduped by singleflight.
+  void ensurePlanLoaded()
+  return () => { sharedPlanState.listeners.delete(listener) }
+}
+
 function resolvePlan(json: Record<string, unknown>): UserPlan {
   const p = json?.effectivePlan ?? json?.plan ?? (json?.settings as Record<string, unknown>)?.plan
   return p === 'pro' || p === 'elite' ? p : 'free'
 }
 
 export function usePlan(): UserPlan {
-  const [plan, setPlan] = useState<UserPlan>('free')
+  // CACHED-FIRST, NEVER-GUESS-FREE (smoothness audit): initial value is the last verified
+  // cached plan if present, otherwise 'free' is NOT assumed — null means unknown and the
+  // shared store resolves it from one singleflight request shared across all consumers.
+  const [plan, setPlan] = useState<UserPlan | null>(null)
   useEffect(() => {
-    async function load(token: string | undefined) {
-      if (!token) { setPlan('free'); return }
-      try {
-        const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
-        if (res.ok) {
-          const json = await res.json()
-          setPlan(resolvePlan(json))
-        }
-      } catch { setPlan('free') }
-    }
-    supabase.auth.getSession().then(({ data }) => load(data.session?.access_token))
-    const { data: l } = supabase.auth.onAuthStateChange((_e, session) => load(session?.access_token))
-    return () => l.subscription.unsubscribe()
+    return subscribeToSharedPlan((p) => { if (p != null) setPlan(p) })
   }, [])
-  return plan
+  // After the shared load completes with no cache ever having existed, an explicitly
+  // confirmed free/signed-out value arrives from the store; until then stay neutral.
+  return (plan ?? peekCachedPlan()) as UserPlan
 }
 
 /** Like usePlan but exposes loading state so pages can suppress the locked
@@ -86,7 +196,10 @@ function computeRemaining(expiresAt: string | null): ElitePassState['remaining']
 }
 
 export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error: string | null; betaEliteActive: boolean; elitePass: ElitePassState } {
-  const [plan, setPlan] = useState<UserPlan | null>(null)
+  // CACHED-FIRST INIT (smoothness audit): start from the last verified cached plan instead of
+  // null/'free', so an Elite user reloading sees Elite immediately. The shared store then
+  // confirms in the background — no Free→Elite flicker, and one shared request across consumers.
+  const [plan, setPlan] = useState<UserPlan | null>(() => peekCachedPlan())
   const [loading, setLoading] = useState(true)
   const [resolved, setResolved] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -147,7 +260,7 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
     })
     return () => { l.subscription.unsubscribe() }
   }, [])
-  return { plan: plan ?? 'free', loading: loading || !resolved, error, betaEliteActive, elitePass }
+  return { plan: plan ?? peekCachedPlan() ?? ('free' as UserPlan), loading: loading || !resolved, error, betaEliteActive, elitePass }
 }
 
 const FEATURE_DISPLAY: Record<string, string> = {

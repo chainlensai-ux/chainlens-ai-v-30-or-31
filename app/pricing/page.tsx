@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import Navbar from '@/components/Navbar'
 import { supabase } from '@/lib/supabaseClient'
+import { peekCachedPlan } from '@/lib/usePlan'
 import { AFFILIATE_REF_KEY, isValidReferralCode, normalizeReferralCode, readReferralCodeFromCookie } from '@/lib/affiliate/referral'
 import type { UserPlan } from '@/lib/planFeatures'
 
@@ -133,7 +134,10 @@ const NAV_LINKS = [
 ]
 
 export default function PricingPage() {
-  const [userPlan, setUserPlan] = useState<UserPlan>('free')
+  // CACHED-FIRST INIT (smoothness audit): start from the last verified cached plan instead of
+  // a guessed Free. Static plan cards render immediately regardless of plan state; only the
+  // per-user "Current plan" badge waits for confirmation.
+  const [userPlan, setUserPlan] = useState<UserPlan>(() => peekCachedPlan() ?? ('free' as UserPlan))
   const [sessionReady, setSessionReady] = useState(false)
   const [planReady, setPlanReady] = useState(false)
   const [checkoutLoading, setCheckoutLoading] = useState<PlanId | null>(null)
@@ -161,6 +165,8 @@ export default function PricingPage() {
       const token = data.session?.access_token
       if (!token) { setPlanReady(true); return }
       const p = await fetchCurrentPlan(token)
+      // CACHED-FIRST (smoothness audit): only overwrite the displayed plan when the backend
+      // confirms a different one — never blank it to Free while pending or on error.
       if (p) setUserPlan(p)
       setPlanReady(true)
     })
