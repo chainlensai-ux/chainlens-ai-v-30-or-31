@@ -431,6 +431,11 @@ export default function PumpAlertsPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [feedError, setFeedError] = useState<string | null>(null)
+  // TRUTHFUL EMPTY STATE, DISCLOSED (URGENT audit): drives which of the 4 real empty-state
+  // messages renders — "no fresh pump signals" was previously shown for every empty case,
+  // including a provider outage or a systemic 7d-data failure, which reads as "nothing pumped"
+  // when the real story is "the feed couldn't be built this cycle."
+  const [finalState, setFinalState] = useState<'ok' | 'providerUnavailable' | 'sevenDayUnavailable' | 'allFilteredOut' | 'noRawCandidates' | null>(null)
   const [countdown, setCountdown] = useState(120)
   const [activeFilter, setActiveFilter] = useState<FilterKey>('ALL')
   const [refreshKey, setRefreshKey] = useState(0)
@@ -485,6 +490,7 @@ export default function PumpAlertsPage() {
           setFetchedAt(json.fetchedAt ?? null)
           // A partial scan still returns real alerts — show them AND say which chains are missing.
           setFeedError(typeof json.error === 'string' ? json.error : null)
+          setFinalState(typeof json.finalState === 'string' ? json.finalState : null)
         } else {
           // No usable payload: keep whatever is already on screen and explain why it didn't update.
           setFeedError(typeof json.error === 'string' ? json.error : 'Pump feed request failed. Showing last known results.')
@@ -848,17 +854,23 @@ export default function PumpAlertsPage() {
             </div>
           )}
 
-          {/* Empty state */}
+          {/* Empty state — one of 4 truthful reasons, never a generic "no signals" for an outage */}
           {!loading && filtered.length === 0 && (
             <div style={{ textAlign: 'center', padding: '48px 20px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
               <div style={{ fontSize: '32px', marginBottom: '14px', opacity: 0.35 }}>◈</div>
               <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 6px', color: '#64748b' }}>
                 {activeFilter !== 'ALL' && activeFilter in CATEGORY_LABEL
                   ? `No ${CATEGORY_LABEL[activeFilter as PumpCategory]} signals right now.`
+                  : finalState === 'providerUnavailable' ? 'Providers failed — could not reach GeckoTerminal for any requested chain.'
+                  : finalState === 'sevenDayUnavailable' ? '7d pump data unavailable from provider this cycle.'
+                  : finalState === 'noRawCandidates' ? 'No candidates found — providers returned zero pools for the requested chains.'
+                  : finalState === 'allFilteredOut' ? 'All candidates filtered — none met the low-cap + confirmed 7d pump criteria this cycle.'
                   : 'No fresh pump signals passed the quality filter.'}
               </p>
               <p style={{ fontSize: '11px', margin: 0, color: '#3a5268' }}>
-                Try refreshing or widening the watchlist.
+                {finalState === 'providerUnavailable' || finalState === 'sevenDayUnavailable'
+                  ? 'This is a provider issue, not a filtering result — try refreshing shortly.'
+                  : 'Try refreshing or widening the watchlist.'}
               </p>
             </div>
           )}

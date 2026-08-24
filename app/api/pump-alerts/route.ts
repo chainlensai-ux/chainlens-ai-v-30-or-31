@@ -354,25 +354,35 @@ const SEVEN_DAY_OHLCV_CONCURRENCY_LIMIT = 4
 // returned null, and was then dropped as `missing7dData` — silently yielding ~zero non-Base
 // candidates while the response still claimed all requested chains were scanned. Takes the real
 // network slug now.
-async function fetchPoolSevenDayChange(network: string, poolAddress: string, signal: AbortSignal): Promise<number | null> {
+// LOADING-DIAGNOSTICS, DISCLOSED (URGENT: Pump Alerts showing 0 results / Base Radar audit): the
+// return type used to collapse every "no 7d change" case — a genuine provider fetch failure
+// (timeout/rate-limit/5xx), a real 404, and a pool that is simply too young to have 6 daily
+// candles yet — into a single `null`. That made it impossible to tell "the provider is failing"
+// (a systemic bug that should surface as a visible error) apart from "this token is 3 days old"
+// (expected, honest filtering, not a bug). `reason` lets the caller distinguish them and report
+// which one actually happened instead of a silent zero either way.
+type SevenDayChangeResult = { changePct: number | null; reason: 'ok' | 'httpError' | 'tooYoung' | 'malformed' | 'fetchError' }
+
+async function fetchPoolSevenDayChange(network: string, poolAddress: string, signal: AbortSignal): Promise<SevenDayChangeResult> {
   try {
     const res = await fetch(
       `https://api.geckoterminal.com/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/day?limit=8&currency=usd`,
       { headers: { accept: 'application/json' }, cache: 'no-store', signal },
     )
-    if (!res.ok) return null
+    if (!res.ok) return { changePct: null, reason: 'httpError' }
     const json = await res.json()
     const list = json?.data?.attributes?.ohlcv_list
-    if (!Array.isArray(list) || list.length < 6) return null
+    if (!Array.isArray(list)) return { changePct: null, reason: 'malformed' }
+    if (list.length < 6) return { changePct: null, reason: 'tooYoung' }
     // Each row is [timestamp, open, high, low, close, volume]. GeckoTerminal returns newest-first;
     // sort explicitly by timestamp so we never depend on that ordering being stable.
     const sorted = [...list].sort((a: number[], b: number[]) => a[0] - b[0])
     const oldestClose = Number(sorted[0]?.[4])
     const newestClose = Number(sorted[sorted.length - 1]?.[4])
-    if (!Number.isFinite(oldestClose) || !Number.isFinite(newestClose) || oldestClose <= 0) return null
-    return ((newestClose - oldestClose) / oldestClose) * 100
+    if (!Number.isFinite(oldestClose) || !Number.isFinite(newestClose) || oldestClose <= 0) return { changePct: null, reason: 'malformed' }
+    return { changePct: ((newestClose - oldestClose) / oldestClose) * 100, reason: 'ok' }
   } catch {
-    return null
+    return { changePct: null, reason: 'fetchError' }
   }
 }
 
@@ -717,10 +727,10 @@ export async function GET(req: Request) {
   // ─── Stage 2: confirm real 7-day pump performance (bounded network fan-out) ────────────────────
   const ac7d = new AbortController()
   const tid7d = setTimeout(() => ac7d.abort(), 12_000)
-  let sevenDayResults: (number | null)[] = []
+  let sevenDayResults: SevenDayChangeResult[] = []
   try {
     sevenDayResults = await mapWithConcurrencyLimit(stage1Passed, SEVEN_DAY_OHLCV_CONCURRENCY_LIMIT, async c => {
-      if (!c.poolAddr) return null
+      if (!c.poolAddr) return { changePct: null, reason: 'malformed' as const }
       // Queried against the candidate's OWN chain network — see fetchPoolSevenDayChange's disclosure.
       return fetchPoolSevenDayChange(CHAIN_CONFIG[c.chain].gtNetwork, c.poolAddr, ac7d.signal)
     })
@@ -728,10 +738,19 @@ export async function GET(req: Request) {
     clearTimeout(tid7d)
   }
 
+  // SYSTEMIC-7D-FAILURE DETECTION, DISCLOSED: if every 7d attempt failed with httpError/fetchError
+  // (never tooYoung/malformed), the provider itself is down or rate-limiting — a real outage, not
+  // "no tokens qualified." Surfaced as `sevenDayDataUnavailable` so the UI can say exactly that
+  // instead of the generic "no fresh pump signals" empty state, which would otherwise be an honest
+  // filter result masquerading as a provider outage.
+  const sevenDayAttempted = sevenDayResults.length
+  const sevenDayProviderFailures = sevenDayResults.filter(r => r.reason === 'httpError' || r.reason === 'fetchError').length
+  const sevenDayDataUnavailable = sevenDayAttempted > 0 && sevenDayProviderFailures === sevenDayAttempted
+
   const allScored: PumpAlert[] = []
 
   stage1Passed.forEach((c, i) => {
-    const change7d = sevenDayResults[i] ?? null
+    const change7d = sevenDayResults[i]?.changePct ?? null
     const result = evaluateStage2Candidate(c, change7d, requestId)
     audit.push(result.audit)
     if (result.included) allScored.push(result.alert)
@@ -749,6 +768,17 @@ export async function GET(req: Request) {
 
   const countReason = (reason: string) => audit.filter(a => a.exclusionReason === reason).length
 
+  // TRUTHFUL EMPTY STATE, DISCLOSED (URGENT audit: "counters are all 0" / "no fresh pump signals"):
+  // finalState names exactly which of the 4 real outcomes happened, so the frontend never has to
+  // infer "empty" from an empty array alone. providerUnavailable and sevenDayUnavailable are both
+  // real outages the UI must show as errors, not as "nothing qualified this cycle".
+  const finalState: 'ok' | 'providerUnavailable' | 'sevenDayUnavailable' | 'allFilteredOut' | 'noRawCandidates' =
+    chainsSucceeded.length === 0 ? 'providerUnavailable'
+    : sevenDayDataUnavailable ? 'sevenDayUnavailable'
+    : rawCount === 0 ? 'noRawCandidates'
+    : alerts.length === 0 ? 'allFilteredOut'
+    : 'ok'
+
   const payload = {
     alerts,
     fetchedAt: new Date().toISOString(),
@@ -759,7 +789,10 @@ export async function GET(req: Request) {
     providerStatus,
     chainsSucceeded,
     chainsFailed,
+    sevenDayDataUnavailable,
+    finalState,
     ...(chainsFailed.length > 0 ? { error: `Provider unavailable for: ${chainsFailed.join(', ')}. Showing ${chainsSucceeded.join(', ')} only.` } : {}),
+    ...(sevenDayDataUnavailable ? { error: '7d pump data unavailable from provider (GeckoTerminal OHLCV requests failed for every candidate this cycle).' } : {}),
     diagnostics: process.env.NODE_ENV === 'development' ? { cacheHit: false, providerStatus, rateLimited: false } : undefined,
     pumpDiscoveryEligibilityAudit: audit,
     // Request-level rollup of the same eligibility decisions recorded per-candidate above.
@@ -781,6 +814,37 @@ export async function GET(req: Request) {
       finalCount: alerts.length,
       totalDurationMs: Date.now() - now,
     },
+    // Exact shape requested for the URGENT loading audit: every candidate-count stage plus the
+    // provider/timing facts needed to tell "over-filtering" apart from "the API is failing" apart
+    // from "the cache is stale" without needing a second round-trip to ask.
+    pumpAlertsLoadAudit: {
+      requestId,
+      route: '/api/pump-alerts',
+      status: finalState === 'ok' ? 200 : (finalState === 'providerUnavailable' ? 503 : 200),
+      totalDurationMs: Date.now() - now,
+      cacheHit: false,
+      providersAttempted: chains.map(c => `geckoterminal:${CHAIN_CONFIG[c].gtNetwork}`),
+      providersSucceeded: chainsSucceeded.map(c => `geckoterminal:${CHAIN_CONFIG[c].gtNetwork}`),
+      providersFailed: chainsFailed.map(c => `geckoterminal:${CHAIN_CONFIG[c].gtNetwork}`),
+      candidatesRaw: rawCount,
+      candidatesAfterDedupe: seen.size,
+      candidatesAfterCategoryFilter: rawCount - countReason('establishedOrCategoryBlocked'),
+      candidatesAfterLowCapFilter: stage1Passed.length + countReason('missing7dData') + countReason('change7dBelowMinimum') + countReason('noCategoryMatch'),
+      candidatesAfter7dPumpFilter: allScored.length + countReason('noCategoryMatch'),
+      candidatesAfterLiquidityVolumeFilter: rawCount - countReason('establishedOrCategoryBlocked') - countReason('capDataMissing') - countReason('capExceedsLowCapCeiling') - countReason('liquidityBelowMinimum') - countReason('volumeBelowMinimum'),
+      candidatesRendered: alerts.length,
+      rejectedReasons: {
+        establishedOrCategory: countReason('establishedOrCategoryBlocked'),
+        capDataMissing: countReason('capDataMissing'),
+        highFdv: countReason('capExceedsLowCapCeiling'),
+        lowLiquidity: countReason('liquidityBelowMinimum'),
+        lowVolume: countReason('volumeBelowMinimum'),
+        missing7dData: countReason('missing7dData'),
+        below7dThreshold: countReason('change7dBelowMinimum'),
+      },
+      finalState,
+      errorShownToUser: finalState === 'providerUnavailable' || finalState === 'sevenDayUnavailable',
+    },
     _debug: {
       rawCount,
       eligibleFor7dCheck: stage1Passed.length,
@@ -789,8 +853,16 @@ export async function GET(req: Request) {
       staleCount,
       selectedCount: alerts.length,
       fallbackUsed,
+      sevenDayAttempted,
+      sevenDayProviderFailures,
     },
   }
-  pumpCache.set(cacheKey, { exp: Date.now() + PUMP_ROUTE_CACHE_TTL_MS, payload })
+  // STALE-EMPTY-CACHE FIX, DISCLOSED: a transient empty/degraded cycle (finalState !== 'ok') must
+  // never be cached for the full 90s TTL — that would keep serving "no signals" for a minute and a
+  // half even after the provider recovers on the very next real fetch. Only a genuinely complete,
+  // successful scan is cached at full TTL; anything else gets a short 10s TTL so the next request
+  // retries soon instead of being permanently suppressed by its own failure.
+  const cacheTtlMs = finalState === 'ok' ? PUMP_ROUTE_CACHE_TTL_MS : 10_000
+  pumpCache.set(cacheKey, { exp: Date.now() + cacheTtlMs, payload })
   return NextResponse.json(payload)
 }

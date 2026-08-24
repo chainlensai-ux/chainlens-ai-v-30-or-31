@@ -195,4 +195,43 @@ assert.match(pageCode, /`Chain: \$\{chainName\}`/, 'the Clark prompt must state 
 assert.match(pageCode, /setFeedError/, 'provider failures must surface in the UI, not be swallowed')
 assert.doesNotMatch(pageCode, /catch \{\s*setAlerts\(\[\]\)\s*\}/, 'a failed refresh must not blank the feed')
 
+// ─── Part 5: URGENT loading audit (route-level static assertions) ──────────
+// Locks the fixes for the reported "counters all 0" / Base Radar stuck-loading incident: a
+// distinct 7d-provider-outage signal (vs. an honest empty filter result), a truthful finalState
+// on every response, and the stale-empty-cache bug that could re-serve a degraded cycle's "no
+// signals" result for the full 90s TTL even after the provider recovered.
+{
+  const routeSrc2 = fs.readFileSync(new URL('../app/api/pump-alerts/route.ts', import.meta.url), 'utf8')
+  const routeCode2 = routeSrc2.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+
+  assert.match(routeCode2, /sevenDayDataUnavailable/, 'a systemic 7d-provider-failure signal must exist, distinct from an honest empty filter result')
+  assert.match(routeCode2, /reason === 'httpError' \|\| r\.reason === 'fetchError'/, 'the 7d outage detector must only count real provider failures, never a genuinely young pool (tooYoung) as an outage')
+  assert.match(routeCode2, /finalState:.*'ok' \| 'providerUnavailable' \| 'sevenDayUnavailable' \| 'allFilteredOut' \| 'noRawCandidates'/, 'every response must report one of the 4 truthful final states')
+  assert.match(routeCode2, /pumpAlertsLoadAudit:/, 'the exact requested pumpAlertsLoadAudit object must be returned')
+  for (const field of [
+    'requestId', 'route', 'status', 'totalDurationMs', 'cacheHit', 'providersAttempted', 'providersSucceeded',
+    'providersFailed', 'candidatesRaw', 'candidatesAfterDedupe', 'candidatesAfterCategoryFilter',
+    'candidatesAfterLowCapFilter', 'candidatesAfter7dPumpFilter', 'candidatesAfterLiquidityVolumeFilter',
+    'candidatesRendered', 'rejectedReasons', 'finalState', 'errorShownToUser',
+  ]) {
+    assert.ok(routeCode2.includes(field), `pumpAlertsLoadAudit must include ${field}`)
+  }
+
+  // STALE-EMPTY-CACHE FIX: a degraded/empty cycle must get a short TTL, not the full 90s one —
+  // otherwise a transient provider hiccup looks like "no pumps" for a minute and a half after
+  // the provider has already recovered.
+  assert.match(routeCode2, /const cacheTtlMs = finalState === 'ok' \? PUMP_ROUTE_CACHE_TTL_MS : 10_000/, 'a non-ok cycle must not be cached at the full TTL')
+  assert.doesNotMatch(routeCode2, /pumpCache\.set\(cacheKey, \{ exp: Date\.now\(\) \+ PUMP_ROUTE_CACHE_TTL_MS, payload \}\)/, 'the flat-TTL cache write must be gone — it is what let a degraded empty cycle be re-served for the full 90s')
+}
+
+// ─── Part 6: frontend truthful empty state (static assertions) ─────────────
+{
+  const pageSrc2 = fs.readFileSync(new URL('../app/terminal/pump-alerts/page.tsx', import.meta.url), 'utf8')
+  const pageCode2 = pageSrc2.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  assert.match(pageCode2, /finalState === 'providerUnavailable'/, 'the empty state must distinguish a provider outage from an honest empty filter result')
+  assert.match(pageCode2, /finalState === 'sevenDayUnavailable'/, 'the empty state must distinguish a 7d-data outage from an honest empty filter result')
+  assert.match(pageCode2, /finalState === 'noRawCandidates'/, 'the empty state must distinguish zero raw candidates from over-filtering')
+  assert.match(pageCode2, /finalState === 'allFilteredOut'/, 'the empty state must name a real over-filtering result explicitly')
+}
+
 console.log('test-pump-alerts-discovery.mjs: all assertions passed')

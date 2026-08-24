@@ -66,4 +66,29 @@ assert.match(
 // A new scan must clear the previous token's result so a stale one can't flash or persist.
 assert.match(scannerCode, /setResult\(null\)/, 'a new scan must reset the previous token result')
 
+// ─── URGENT loading audit (route-level static assertions) ───────────────────
+// Locks the fix for "Base Radar stays on loading/checking state and no tokens render": a
+// baseRadarLoadAudit in the exact requested shape, a truthful finalState distinguishing a real
+// provider outage from an honest empty-after-filtering result, and confirmation the existing
+// stale-empty-cache defenses (dead-feed skip, short TTL for a 0-token gate result) are still live.
+{
+  assert.match(routeCode, /baseRadarLoadAudit = \{/, 'a baseRadarLoadAudit object must be built for every request')
+  for (const field of [
+    'requestId', 'route', 'status', 'totalDurationMs', 'cacheHit', 'providersAttempted', 'providersSucceeded',
+    'providersFailed', 'candidatesRaw', 'candidatesAfterDedupe', 'candidatesAfterChainFilter',
+    'candidatesAfterQualityFilter', 'candidatesRendered', 'rejectedReasons', 'finalState', 'errorShownToUser',
+  ]) {
+    assert.ok(routeCode.includes(field), `baseRadarLoadAudit must include ${field}`)
+  }
+  assert.match(
+    routeCode,
+    /sourcesSucceeded === 0 \? 'providerUnavailable'\s*\n\s*: rawTotalBeforeDedupe === 0 \? 'noRawCandidates'\s*\n\s*: tokens\.length === 0 \? 'allFilteredOut'/,
+    'finalState must distinguish a real provider outage from zero raw candidates from an honest post-filter empty result',
+  )
+  // Pre-existing defenses this incident depends on staying intact. Checked against the raw source
+  // (not comment-stripped routeCode) since the first assertion targets disclosure-comment text.
+  assert.match(routeSrc, /DON'T-CACHE-A-DEAD-FEED FIX/, 'a fully failed discovery cycle must not be cached like a real result')
+  assert.match(routeCode, /EMPTY_RESULT_CACHE_TTL_MS = 5 \* 1000/, 'a 0-token gate result must use a short cache TTL, not the full one')
+}
+
 console.log('test-base-radar-chain-strict.mjs: all assertions passed')

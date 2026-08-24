@@ -648,6 +648,10 @@ export async function GET(req: NextRequest) {
   const minLiquidityUsd = Number(req.nextUrl.searchParams.get('minLiquidityUsd')) || DEFAULT_RADAR_MIN_LIQUIDITY_USD
   const allowFdvFallback = req.nextUrl.searchParams.get('allowFdvFallback') === 'false' ? false : DEFAULT_RADAR_ALLOW_FDV_FALLBACK
   const now = Date.now()
+  // URGENT LOADING AUDIT, DISCLOSED (reported: Base Radar stuck on loading/checking with no tokens
+  // rendering). requestId ties this response to baseRadarLoadAudit below and to the client-side
+  // fetch that logs it, so a specific stuck load can be traced end to end.
+  const requestId = `radar_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   const requestedMode: 'shallow' | 'full' = req.nextUrl.searchParams.get('mode') === 'full' ? 'full' : 'shallow'
   // LOAD-MORE, DISCLOSED (requested: a "Load More" control on the Base Radar feed): the feed was
   // always page 1 of GeckoTerminal's new/trending pools — there was no way to reach older-but-still-
@@ -2143,7 +2147,46 @@ export async function GET(req: NextRequest) {
     // so a real DevTools Network capture — the one method that has reliably worked all session —
     // never showed them either. Attaching both directly to the normal, always-returned payload
     // (not gated behind debug=1) so the exact same capture method already in use surfaces them.
-    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit, baseRadarHolderConcentrationAudit }
+    // URGENT LOADING AUDIT, DISCLOSED (reported: Base Radar stuck on loading/checking, no tokens
+    // rendering). Exact shape requested — a truthful, single-glance answer to "is this a provider
+    // failure, over-filtering, or a real completed empty result" without cross-referencing 4
+    // separate existing audit objects. finalState mirrors the same 4-outcome model just added to
+    // Pump Alerts for the same incident, and errorShownToUser is honest about whether the frontend
+    // actually surfaced anything or silently rendered empty.
+    const baseRadarFinalState: 'ok' | 'providerUnavailable' | 'allFilteredOut' | 'noRawCandidates' =
+      sourcesSucceeded === 0 ? 'providerUnavailable'
+      : rawTotalBeforeDedupe === 0 ? 'noRawCandidates'
+      : tokens.length === 0 ? 'allFilteredOut'
+      : 'ok'
+    const baseRadarLoadAudit = {
+      requestId,
+      route: '/api/radar',
+      status: baseRadarFinalState === 'providerUnavailable' ? 503 : 200,
+      totalDurationMs: Date.now() - now,
+      cacheHit: false,
+      providersAttempted: sourcesAttempted,
+      providersSucceeded: sourcesSucceeded,
+      providersFailed: sourcesFailedCount,
+      candidatesRaw: rawTotalBeforeDedupe,
+      candidatesAfterDedupe: dedupedPoolCount,
+      candidatesAfterChainFilter: dedupedPoolCount,
+      candidatesAfterQualityFilter: rankedCandidates.length,
+      candidatesRendered: tokens.length,
+      // Same counters the debug filterFunnel below reports, read from the same real gate
+      // counters incremented at their own sites — never re-derived, so this can't drift from
+      // the debug=1 view of the same request.
+      rejectedReasons: {
+        establishedTokenExcluded: droppedByEstablishedToken,
+        liquidityBelowMinimum: droppedByAbsoluteLiquidityFloor + droppedByLiquidityFloorSpecifically,
+        valuationUnavailable: droppedByValuationUnavailable,
+        marketCapBelow80k: droppedByMarketCapBelow80k,
+        holdersBelow30: droppedByHoldersBelow30,
+        rankingCapExcluded: droppedByRankingCap,
+      },
+      finalState: baseRadarFinalState,
+      errorShownToUser: baseRadarFinalState === 'providerUnavailable',
+    }
+    const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit, baseRadarHolderConcentrationAudit, baseRadarLoadAudit, requestId, finalState: baseRadarFinalState }
     const debugPayload = {
       sourcesAttempted,
       sourcesSucceeded,
