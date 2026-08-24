@@ -77,10 +77,16 @@ const LP_SYMBOL_PATTERN = /(^|[-_/])lp($|[-_/])|vamm-|vlp-/i
 // the Stage 1 gate for the chains actually requested.
 export type PumpChain = 'base' | 'eth' | 'robinhood'
 
-const CHAIN_CONFIG: Record<PumpChain, { gtNetwork: string; maxFdvUsd: number }> = {
-  base: { gtNetwork: 'base', maxFdvUsd: 20_000_000 },
-  eth: { gtNetwork: 'eth', maxFdvUsd: 50_000_000 },
-  robinhood: { gtNetwork: 'robinhood', maxFdvUsd: 20_000_000 },
+// CHAIN-PROVENANCE FIX, DISCLOSED (full Radar/Pump audit): chainId is carried alongside the
+// GeckoTerminal network slug because every downstream consumer — the Token Scanner handoff, the
+// report route, the Clark prompt, and the eligibility audit — must state the REAL chain a candidate
+// came from. Before this, multi-chain pools from three different networks were flattened into one
+// untagged array and every resulting alert was hardcoded `chain: 'base'`, so an ETH or Robinhood
+// token was published, scanned, reported and reasoned about as if it were a Base token.
+const CHAIN_CONFIG: Record<PumpChain, { gtNetwork: string; chainId: number; maxFdvUsd: number }> = {
+  base: { gtNetwork: 'base', chainId: 8453, maxFdvUsd: 20_000_000 },
+  eth: { gtNetwork: 'eth', chainId: 1, maxFdvUsd: 50_000_000 },
+  robinhood: { gtNetwork: 'robinhood', chainId: 4663, maxFdvUsd: 20_000_000 },
 }
 
 function requestedChains(req: Request): PumpChain[] {
@@ -100,7 +106,11 @@ export interface PumpAlert {
   symbol: string
   name: string
   contract: string
-  chain: string
+  // chain/chainId are the REAL network this candidate was discovered on, never a default — the
+  // Token Scanner handoff, report link and Clark prompt all key off these.
+  chain: PumpChain
+  chainId: number
+  pairAddress: string | null
   priceUsd: number | null
   change24h: number | null
   change7d: number | null
@@ -119,9 +129,15 @@ export interface PumpAlert {
 // Per-candidate eligibility audit — every raw candidate GeckoTerminal returned gets one entry,
 // whether it made the final cut or not, so "why isn't X showing" is always answerable from data.
 export interface PumpDiscoveryEligibilityAudit {
+  requestId: string
   token: string
-  chain: string
+  chain: PumpChain
+  chainSlug: PumpChain
+  chainId: number
+  pairAddress: string | null
+  source: string
   symbol: string
+  category: PumpCategory | null
   fdvUsd: number | null
   marketCapUsd: number | null
   liquidityUsd: number | null
@@ -181,11 +197,12 @@ function isEstablishedOrCategoryBlocked(symbol: string, name: string): boolean {
 // business logic this fix is about — can be exercised directly in tests without mocking network
 // calls or a Next.js request. GET below is a thin orchestration wrapper over these two stages.
 export type Stage1Candidate = {
+  chain: PumpChain
   symbol: string; name: string; addr: string; poolAddr: string | null
   price: number | null; change24h: number | null; volume: number | null; liquidity: number | null
   fdv: number | null; marketCap: number | null; ageDays: number | null
 }
-export type Stage1Input = { symbol: string; name: string; addr: string; poolAddr: string | null } & {
+export type Stage1Input = { chain?: PumpChain; symbol: string; name: string; addr: string; poolAddr: string | null } & {
   price: number | null; change24h: number | null; volume: number | null; liquidity: number | null
   fdv: number | null; marketCap: number | null; ageDays: number | null
 }
@@ -193,12 +210,21 @@ export type Stage1Result =
   | { passed: true; candidate: Stage1Candidate }
   | { passed: false; audit: PumpDiscoveryEligibilityAudit }
 
-export function evaluateStage1Candidate(input: Stage1Input): Stage1Result {
+export function evaluateStage1Candidate(input: Stage1Input, requestId = 'n/a'): Stage1Result {
+  const chain: PumpChain = input.chain ?? 'base'
+  const chainCfg = CHAIN_CONFIG[chain]
   const sym = input.symbol.toUpperCase()
   const categoryBlocked = isEstablishedOrCategoryBlocked(sym, input.name)
+  // PER-CHAIN CEILING FIX, DISCLOSED: the ceiling is the STRICTER of this candidate's own chain
+  // limit and the env-configured global cap — never the most-permissive limit across all requested
+  // chains, which previously let a Base token up to ETH's $50M ceiling through its own $20M one.
+  // This is only correct because `chain` is now the candidate's real chain, not a request-level
+  // default.
+  const maxFdv = Math.min(PUMP_ALERT_MAX_FDV_USD, chainCfg.maxFdvUsd)
+  const maxMarketCap = Math.min(PUMP_ALERT_MAX_MARKET_CAP_USD, chainCfg.maxFdvUsd)
   const qualifiesAsLowCap =
-    (input.fdv != null && input.fdv > 0 && input.fdv <= PUMP_ALERT_MAX_FDV_USD) ||
-    (input.marketCap != null && input.marketCap > 0 && input.marketCap <= PUMP_ALERT_MAX_MARKET_CAP_USD)
+    (input.fdv != null && input.fdv > 0 && input.fdv <= maxFdv) ||
+    (input.marketCap != null && input.marketCap > 0 && input.marketCap <= maxMarketCap)
   const capDataMissing = input.fdv == null && input.marketCap == null
   const liquidityOk = input.liquidity != null && input.liquidity >= PUMP_ALERT_MIN_LIQUIDITY_USD
   const volumeOk = input.volume != null && input.volume >= PUMP_ALERT_MIN_24H_VOLUME_USD
@@ -216,7 +242,9 @@ export function evaluateStage1Candidate(input: Stage1Input): Stage1Result {
     return {
       passed: false,
       audit: {
-        token: input.addr, chain: 'base', symbol: input.symbol,
+        requestId, token: input.addr, chain, chainSlug: chain, chainId: chainCfg.chainId,
+        pairAddress: input.poolAddr, source: 'geckoterminal:pools', category: null,
+        symbol: input.symbol,
         fdvUsd: input.fdv, marketCapUsd: input.marketCap, liquidityUsd: input.liquidity, volume24hUsd: input.volume,
         priceChange7dPct: null, priceChange24hPct: input.change24h, tokenAgeDays: input.ageDays,
         excluded: true, exclusionReason,
@@ -228,6 +256,7 @@ export function evaluateStage1Candidate(input: Stage1Input): Stage1Result {
   return {
     passed: true,
     candidate: {
+      chain,
       symbol: input.symbol, name: input.name, addr: input.addr, poolAddr: input.poolAddr,
       price: input.price, change24h: input.change24h, volume: input.volume, liquidity: input.liquidity,
       fdv: input.fdv, marketCap: input.marketCap, ageDays: input.ageDays,
@@ -239,16 +268,22 @@ export type Stage2Result =
   | { included: true; alert: PumpAlert; audit: PumpDiscoveryEligibilityAudit }
   | { included: false; audit: PumpDiscoveryEligibilityAudit }
 
-export function evaluateStage2Candidate(c: Stage1Candidate, change7d: number | null): Stage2Result {
+export function evaluateStage2Candidate(c: Stage1Candidate, change7d: number | null, requestId = 'n/a'): Stage2Result {
+  const chain: PumpChain = c.chain ?? 'base'
+  const chainId = CHAIN_CONFIG[chain].chainId
+  const auditBase = {
+    requestId, token: c.addr, chain, chainSlug: chain, chainId,
+    pairAddress: c.poolAddr, source: 'geckoterminal:ohlcv-day', symbol: c.symbol,
+    fdvUsd: c.fdv, marketCapUsd: c.marketCap, liquidityUsd: c.liquidity, volume24hUsd: c.volume,
+    priceChange7dPct: change7d, priceChange24hPct: c.change24h, tokenAgeDays: c.ageDays,
+  }
   const qualifiesAs7dPump = change7d != null && change7d >= PUMP_ALERT_MIN_7D_CHANGE_PCT
 
   if (!qualifiesAs7dPump) {
     return {
       included: false,
       audit: {
-        token: c.addr, chain: 'base', symbol: c.symbol,
-        fdvUsd: c.fdv, marketCapUsd: c.marketCap, liquidityUsd: c.liquidity, volume24hUsd: c.volume,
-        priceChange7dPct: change7d, priceChange24hPct: c.change24h, tokenAgeDays: c.ageDays,
+        ...auditBase, category: null,
         excluded: true, exclusionReason: change7d == null ? 'missing7dData' : 'change7dBelowMinimum',
         qualifiesAsLowCap: true, qualifiesAs7dPump: false, categoryBlocked: false, finalRankScore: null,
       },
@@ -260,9 +295,7 @@ export function evaluateStage2Candidate(c: Stage1Candidate, change7d: number | n
     return {
       included: false,
       audit: {
-        token: c.addr, chain: 'base', symbol: c.symbol,
-        fdvUsd: c.fdv, marketCapUsd: c.marketCap, liquidityUsd: c.liquidity, volume24hUsd: c.volume,
-        priceChange7dPct: change7d, priceChange24hPct: c.change24h, tokenAgeDays: c.ageDays,
+        ...auditBase, category: null,
         excluded: true, exclusionReason: 'noCategoryMatch',
         qualifiesAsLowCap: true, qualifiesAs7dPump: true, categoryBlocked: false, finalRankScore: null,
       },
@@ -274,7 +307,7 @@ export function evaluateStage2Candidate(c: Stage1Candidate, change7d: number | n
   if (c.volume == null || c.liquidity == null) tags.push('Needs Review')
 
   const alert: PumpAlert = {
-    symbol: c.symbol, name: c.name, contract: c.addr, chain: 'base',
+    symbol: c.symbol, name: c.name, contract: c.addr, chain, chainId, pairAddress: c.poolAddr,
     priceUsd: c.price, change24h: c.change24h, change7d,
     volume24hUsd: c.volume, liquidityUsd: c.liquidity, fdvUsd: c.fdv, marketCapUsd: c.marketCap,
     tokenAgeDays: c.ageDays,
@@ -286,9 +319,7 @@ export function evaluateStage2Candidate(c: Stage1Candidate, change7d: number | n
     included: true,
     alert,
     audit: {
-      token: c.addr, chain: 'base', symbol: c.symbol,
-      fdvUsd: c.fdv, marketCapUsd: c.marketCap, liquidityUsd: c.liquidity, volume24hUsd: c.volume,
-      priceChange7dPct: change7d, priceChange24hPct: c.change24h, tokenAgeDays: c.ageDays,
+      ...auditBase, category: scored.category,
       excluded: false, exclusionReason: null,
       qualifiesAsLowCap: true, qualifiesAs7dPump: true, categoryBlocked: false,
       finalRankScore: qualityScore(alert),
@@ -318,10 +349,15 @@ async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (ite
 // cap/liquidity/volume/category filters, keeping the extra network cost bounded to a small set.
 const SEVEN_DAY_OHLCV_CONCURRENCY_LIMIT = 4
 
-async function fetchPoolSevenDayChange(poolAddress: string, signal: AbortSignal): Promise<number | null> {
+// WRONG-NETWORK FIX, DISCLOSED: this hardcoded `networks/base/` while the caller had already gone
+// multi-chain, so every ETH/Robinhood pool address was queried against the BASE network, 404'd,
+// returned null, and was then dropped as `missing7dData` — silently yielding ~zero non-Base
+// candidates while the response still claimed all requested chains were scanned. Takes the real
+// network slug now.
+async function fetchPoolSevenDayChange(network: string, poolAddress: string, signal: AbortSignal): Promise<number | null> {
   try {
     const res = await fetch(
-      `https://api.geckoterminal.com/api/v2/networks/base/pools/${poolAddress}/ohlcv/day?limit=8&currency=usd`,
+      `https://api.geckoterminal.com/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/day?limit=8&currency=usd`,
       { headers: { accept: 'application/json' }, cache: 'no-store', signal },
     )
     if (!res.ok) return null
@@ -426,12 +462,19 @@ interface RotationResult {
   fallbackUsed: boolean
 }
 
+// CROSS-CHAIN COLLISION FIX, DISCLOSED: rotation identity was the bare lowercase contract address,
+// so the same address deployed on two scanned chains was treated as one token — the second was
+// silently suppressed as "already shown". Identity is chain-scoped now.
+function rotationKey(a: PumpAlert): string {
+  return `${a.chain}:${a.contract.toLowerCase()}`
+}
+
 function applyRotationAndDiversity(scored: PumpAlert[]): RotationResult {
   if (scored.length === 0) return { alerts: [], freshCount: 0, staleCount: 0, fallbackUsed: false }
 
   const recentAddrs = new Set(shownBatches.flat())
-  const fresh = scored.filter(a => !recentAddrs.has(a.contract.toLowerCase()))
-  const stale = scored.filter(a =>  recentAddrs.has(a.contract.toLowerCase()))
+  const fresh = scored.filter(a => !recentAddrs.has(rotationKey(a)))
+  const stale = scored.filter(a =>  recentAddrs.has(rotationKey(a)))
 
   const output: PumpAlert[] = []
   const taken = new Set<string>()
@@ -443,16 +486,16 @@ function applyRotationAndDiversity(scored: PumpAlert[]): RotationResult {
     const c = counts[a.category] ?? 0
     if (c >= FRESH_CAT_CAP[a.category]) continue
     output.push(a)
-    taken.add(a.contract.toLowerCase())
+    taken.add(rotationKey(a))
     counts[a.category] = c + 1
   }
 
   // Pass 2: stale backfill — NO category caps, just fill remaining slots
   for (const a of stale) {
     if (output.length >= 25) break
-    if (!taken.has(a.contract.toLowerCase())) {
+    if (!taken.has(rotationKey(a))) {
       output.push(a)
-      taken.add(a.contract.toLowerCase())
+      taken.add(rotationKey(a))
     }
   }
 
@@ -473,7 +516,7 @@ function applyRotationAndDiversity(scored: PumpAlert[]): RotationResult {
 
   // Record batch only when we have real results
   if (output.length > 0) {
-    shownBatches.push(output.map(a => a.contract.toLowerCase()))
+    shownBatches.push(output.map(rotationKey))
     if (shownBatches.length > MAX_HISTORY_BATCHES) shownBatches.shift()
   }
 
@@ -487,6 +530,27 @@ async function fetchGTPage(network: string, page: number, signal: AbortSignal): 
   )
   if (!res.ok) throw new Error(`GT ${res.status}`)
   return res.json()
+}
+
+// CHAIN-TAGGED CANDIDATE SET, DISCLOSED: pools and their `included` token metadata are kept
+// per-chain rather than flattened into two shared arrays. Flattening lost which network each pool
+// came from (the root cause of every wrong-chain bug in this route) and additionally risked
+// resolving a pool's base_token against another chain's `included` entries.
+type ChainPools = { chain: PumpChain; pools: GTPool[]; included: GTIncluded[] }
+
+// Fetch every requested chain independently so one chain's provider failure never silently
+// contaminates or suppresses another's, and so per-chain success is reportable in the audit.
+async function fetchChainPools(chain: PumpChain, signal: AbortSignal): Promise<ChainPools> {
+  const network = CHAIN_CONFIG[chain].gtNetwork
+  const results = await Promise.allSettled([1, 2, 3].map(page => fetchGTPage(network, page, signal)))
+  const pools: GTPool[] = []
+  const included: GTIncluded[] = []
+  for (const r of results) {
+    if (r.status !== 'fulfilled') continue
+    if (Array.isArray(r.value.data)) pools.push(...(r.value.data as GTPool[]))
+    if (Array.isArray(r.value.included)) included.push(...(r.value.included as GTIncluded[]))
+  }
+  return { chain, pools, included }
 }
 
 export async function GET(req: Request) {
@@ -510,44 +574,60 @@ export async function GET(req: Request) {
     return NextResponse.json({ error: 'Rate limit reached. Try again shortly.', rateLimited: true }, { status: 429 })
   } else rr.count += 1
 
-  const cacheKey = `pump:${plan}`
-
   // PUMP-MULTI-CHAIN, DISCLOSED: resolve the chain set once per request (default Base-only,
   // unchanged behavior when no ?chains= param is passed).
   const chains = requestedChains(req)
+  const requestId = `pump_${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`
   if (chains.length === 0) {
-    return NextResponse.json({ alerts: [], fetchedAt: new Date().toISOString(), chainsRequested: [], _note: 'no enabled chains requested' })
+    return NextResponse.json({
+      alerts: [], fetchedAt: new Date().toISOString(), requestId,
+      chains: [], pumpDiscoveryEligibilityAudit: [],
+      providerStatus: 'unavailable' as const,
+      error: 'No enabled chains requested. Robinhood Chain requires ENABLE_ROBINHOOD_CHAIN and a configured RPC.',
+    })
   }
+
+  // CACHE-KEY CHAIN FIX, DISCLOSED: the key was `pump:${plan}` — it did not include the requested
+  // chain set, so a ?chains=eth request was served a cached Base-only payload (and vice versa).
+  // The schema version is included so a deployed shape change can never be satisfied by an
+  // in-flight cache entry written by the previous shape.
+  const cacheKey = `pump:v2:${plan}:${[...chains].sort().join('+')}`
 
   const cached = pumpCache.get(cacheKey)
   if (cached && cached.exp > now) return NextResponse.json(cached.payload)
 
-  let pools: GTPool[] = []
-  let included: GTIncluded[] = []
+  const chainPools: ChainPools[] = []
   let providerStatus: 'ok' | 'partial' | 'unavailable' = 'ok'
+  const chainsSucceeded: PumpChain[] = []
+  const chainsFailed: PumpChain[] = []
 
-  try {
+  {
     const ac = new AbortController()
     const tid = setTimeout(() => ac.abort(), 10_000)
     try {
-      // Fetch 3 pages per chain in parallel (~60 raw rows per chain for a deeper candidate pool)
-      const results = await Promise.allSettled(
-        chains.flatMap(chain =>
-          [1, 2, 3].map(page => fetchGTPage(CHAIN_CONFIG[chain].gtNetwork, page, ac.signal)),
-        ),
-      )
-      for (const r of results) {
-        if (r.status !== 'fulfilled') continue
-        if (Array.isArray(r.value.data)) pools.push(...(r.value.data as GTPool[]))
-        if (Array.isArray(r.value.included)) included.push(...(r.value.included as GTIncluded[]))
-      }
-      if (pools.length === 0) throw new Error('no data')
+      // Fetch each requested chain independently and in parallel, keeping results chain-tagged.
+      const settled = await Promise.allSettled(chains.map(c => fetchChainPools(c, ac.signal)))
+      settled.forEach((r, i) => {
+        if (r.status === 'fulfilled' && r.value.pools.length > 0) {
+          chainPools.push(r.value)
+          chainsSucceeded.push(chains[i])
+        } else {
+          chainsFailed.push(chains[i])
+        }
+      })
     } finally {
       clearTimeout(tid)
     }
-  } catch {
-    providerStatus = 'partial'
-    // Fallback to shared cache (page 1, Base only — the shared cache key is Base-scoped)
+  }
+
+  if (chainsFailed.length > 0) providerStatus = chainsSucceeded.length > 0 ? 'partial' : 'unavailable'
+
+  // FAIL-HONEST FALLBACK, DISCLOSED: the shared cache entry is Base-scoped, so it may ONLY be used
+  // to serve Base. Previously this fallback ran for any chain set and its Base pools were then
+  // published under whatever chains were requested — silently presenting Base tokens as ETH or
+  // Robinhood ones. It now only rescues Base, and any chain that genuinely failed stays reported
+  // as failed in the response rather than being papered over.
+  if (chainsFailed.includes('base') && !chainsSucceeded.includes('base')) {
     try {
       const result = await getOrFetchCached<{ data?: GTPool[]; included?: GTIncluded[] }>({
         key: 'coingecko:trending-base',
@@ -557,19 +637,34 @@ export async function GET(req: Request) {
           const ac = new AbortController()
           const tid = setTimeout(() => ac.abort(), 6000)
           try {
-            const res = await fetchGTPage('base', 1, ac.signal)
-            return res
+            return await fetchGTPage('base', 1, ac.signal)
           } finally {
             clearTimeout(tid)
           }
         },
       })
-      pools = Array.isArray(result.data?.data) ? (result.data.data as GTPool[]) : []
-      included = Array.isArray(result.data?.included) ? (result.data.included as GTIncluded[]) : []
+      const pools = Array.isArray(result.data?.data) ? (result.data.data as GTPool[]) : []
+      const included = Array.isArray(result.data?.included) ? (result.data.included as GTIncluded[]) : []
+      if (pools.length > 0) {
+        chainPools.push({ chain: 'base', pools, included })
+        chainsSucceeded.push('base')
+        chainsFailed.splice(chainsFailed.indexOf('base'), 1)
+        providerStatus = 'partial'
+      }
     } catch {
-      providerStatus = 'unavailable'
-      return NextResponse.json({ alerts: [], fetchedAt: new Date().toISOString(), pumpDiscoveryEligibilityAudit: [] })
+      /* base stays in chainsFailed and is reported honestly below */
     }
+  }
+
+  if (chainsSucceeded.length === 0) {
+    return NextResponse.json({
+      alerts: [], fetchedAt: new Date().toISOString(), requestId,
+      chains: chains.map(c => ({ chain: c, chainId: CHAIN_CONFIG[c].chainId, maxFdvUsd: CHAIN_CONFIG[c].maxFdvUsd })),
+      chainsSucceeded: [], chainsFailed,
+      providerStatus: 'unavailable' as const,
+      error: `Provider unavailable for: ${chainsFailed.join(', ')}. No cached results available.`,
+      pumpDiscoveryEligibilityAudit: [],
+    })
   }
 
   const seen = new Set<string>()
@@ -578,16 +673,22 @@ export async function GET(req: Request) {
   // ─── Stage 1: cheap synchronous filters (category, cap, liquidity, volume, age) ───────────────
   // No network calls yet — only candidates surviving this stage pay the cost of a 7d OHLCV fetch.
   const stage1Passed: Stage1Candidate[] = []
+  let rawCount = 0
 
+  for (const { chain, pools, included } of chainPools) {
   for (const pool of pools) {
+    rawCount += 1
     const tokenId = pool.relationships?.base_token?.data?.id
     if (!tokenId) continue
+    // Resolved against THIS chain's included set only — never a shared cross-chain one.
     const meta = included.find(i => i.id === tokenId)
     if (!meta?.attributes?.address) continue
 
     const addr = meta.attributes.address.toLowerCase()
-    if (seen.has(addr)) continue
-    seen.add(addr)
+    // Dedupe identity is chain-scoped: the same contract address on two chains is two candidates.
+    const dedupeKey = `${chain}:${addr}`
+    if (seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
 
     const attrs = pool.attributes
     const change24h = parseNum(attrs?.price_change_percentage?.h24)
@@ -599,26 +700,18 @@ export async function GET(req: Request) {
     const createdAt = attrs?.pool_created_at ? Date.parse(attrs.pool_created_at) : NaN
     const ageDays = Number.isFinite(createdAt) ? (Date.now() - createdAt) / (1000 * 60 * 60 * 24) : null
 
-    // LOW-CAP-CEILING, DISCLOSED (merged with the staged eligibility pipeline): evaluateStage1Candidate
-    // applies the env-configurable PUMP_ALERT_MAX_* caps; for multi-chain requests the per-chain
-    // ceilings (Base $20M / ETH $50M / Robinhood $20M) are enforced here as an additional ceiling —
-    // a candidate is dropped when its FDV exceeds every requested chain's limit. The most permissive
-    // requested ceiling wins so nothing valid is dropped for being on the wrong side of a stricter
-    // chain's limit. null FDV stays allowed at this layer (the Stage 1 capDataMissing rule still
-    // applies upstream of it).
-    const maxFdvUsd = Math.max(...chains.map(c => CHAIN_CONFIG[c].maxFdvUsd))
-    if (fdv != null && fdv > maxFdvUsd) continue
-
     const result = evaluateStage1Candidate({
+      chain,
       symbol: meta.attributes.symbol ?? '?', name: meta.attributes.name ?? 'Unknown', addr,
       poolAddr: pool.attributes?.address ?? null,
       price, change24h, volume, liquidity, fdv, marketCap, ageDays,
-    })
+    }, requestId)
     if (!result.passed) {
       audit.push(result.audit)
       continue
     }
     stage1Passed.push(result.candidate)
+  }
   }
 
   // ─── Stage 2: confirm real 7-day pump performance (bounded network fan-out) ────────────────────
@@ -628,7 +721,8 @@ export async function GET(req: Request) {
   try {
     sevenDayResults = await mapWithConcurrencyLimit(stage1Passed, SEVEN_DAY_OHLCV_CONCURRENCY_LIMIT, async c => {
       if (!c.poolAddr) return null
-      return fetchPoolSevenDayChange(c.poolAddr, ac7d.signal)
+      // Queried against the candidate's OWN chain network — see fetchPoolSevenDayChange's disclosure.
+      return fetchPoolSevenDayChange(CHAIN_CONFIG[c.chain].gtNetwork, c.poolAddr, ac7d.signal)
     })
   } finally {
     clearTimeout(tid7d)
@@ -638,7 +732,7 @@ export async function GET(req: Request) {
 
   stage1Passed.forEach((c, i) => {
     const change7d = sevenDayResults[i] ?? null
-    const result = evaluateStage2Candidate(c, change7d)
+    const result = evaluateStage2Candidate(c, change7d, requestId)
     audit.push(result.audit)
     if (result.included) allScored.push(result.alert)
   })
@@ -653,14 +747,42 @@ export async function GET(req: Request) {
 
   const { alerts, freshCount, staleCount, fallbackUsed } = applyRotationAndDiversity(allScored)
 
+  const countReason = (reason: string) => audit.filter(a => a.exclusionReason === reason).length
+
   const payload = {
     alerts,
     fetchedAt: new Date().toISOString(),
-    chains: chains.map(c => ({ chain: c, maxFdvUsd: CHAIN_CONFIG[c].maxFdvUsd })),
+    requestId,
+    chains: chains.map(c => ({ chain: c, chainId: CHAIN_CONFIG[c].chainId, maxFdvUsd: Math.min(PUMP_ALERT_MAX_FDV_USD, CHAIN_CONFIG[c].maxFdvUsd) })),
+    // Provider failures are always reported, never silently swallowed — a partial result says
+    // exactly which chains are missing rather than presenting itself as a complete scan.
+    providerStatus,
+    chainsSucceeded,
+    chainsFailed,
+    ...(chainsFailed.length > 0 ? { error: `Provider unavailable for: ${chainsFailed.join(', ')}. Showing ${chainsSucceeded.join(', ')} only.` } : {}),
     diagnostics: process.env.NODE_ENV === 'development' ? { cacheHit: false, providerStatus, rateLimited: false } : undefined,
     pumpDiscoveryEligibilityAudit: audit,
+    // Request-level rollup of the same eligibility decisions recorded per-candidate above.
+    pumpDiscoverySummary: {
+      requestId,
+      chainsRequested: chains,
+      chainsSucceeded,
+      chainsFailed,
+      candidatesRaw: rawCount,
+      candidatesAfterDedupe: seen.size,
+      candidatesAfterFilters: allScored.length,
+      rejectedEstablishedOrCategory: countReason('establishedOrCategoryBlocked'),
+      rejectedCapMissing: countReason('capDataMissing'),
+      rejectedHighFdv: countReason('capExceedsLowCapCeiling'),
+      rejectedMissingLiquidity: countReason('liquidityBelowMinimum'),
+      rejectedMissingVolume: countReason('volumeBelowMinimum'),
+      rejectedMissing7d: countReason('missing7dData'),
+      rejectedBelow7dThreshold: countReason('change7dBelowMinimum'),
+      finalCount: alerts.length,
+      totalDurationMs: Date.now() - now,
+    },
     _debug: {
-      rawCount: pools.length,
+      rawCount,
       eligibleFor7dCheck: stage1Passed.length,
       scoredCount: allScored.length,
       freshCount,

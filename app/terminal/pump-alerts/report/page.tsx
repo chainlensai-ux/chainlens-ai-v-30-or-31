@@ -240,6 +240,10 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
   const topRisk = report.riskAnalysis.find(r => r.status === 'confirmed') ?? report.riskAnalysis.find(r => r.status === 'possible')
   const txCount = ms.buys24h != null && ms.sells24h != null ? ms.buys24h + ms.sells24h : null
   const marketMetrics = [
+    // 7d leads the grid: it is the gate this token had to clear to be a Pump Alert at all, so it is
+    // the single most relevant number on the page. Shows an honest "No data" rather than falling
+    // back to the 24h figure when the 7d series didn't resolve.
+    { label: '7d change', value: ms.priceChange7d == null ? '—' : `${ms.priceChange7d > 0 ? '+' : ''}${ms.priceChange7d.toFixed(1)}%`, delta: '7d · qualifying gate', status: ms.priceChange7d == null ? 'No data' : ms.priceChange7d >= 0 ? 'Bullish' : 'Risk', source: 'GeckoTerminal daily OHLCV' },
     { label: 'Price change', value: ms.priceChange24h == null ? '—' : `${ms.priceChange24h > 0 ? '+' : ''}${ms.priceChange24h.toFixed(1)}%`, delta: '24h', status: ms.priceChange24h == null ? 'No data' : ms.priceChange24h >= 0 ? 'Bullish' : 'Risk', source: 'DexScreener / GeckoTerminal' },
     { label: 'Liquidity', value: fmtUsd(ms.liquidityUsd), delta: 'No stored delta', status: ms.liquidityUsd == null ? 'No data' : 'Live', source: 'DexScreener / GeckoTerminal' },
     { label: 'Volume', value: fmtUsd(ms.volume24hUsd), delta: '24h total', status: ms.volume24hUsd == null ? 'No data' : 'Live', source: 'GeckoTerminal' },

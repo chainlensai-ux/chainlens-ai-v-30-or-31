@@ -1,0 +1,69 @@
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+
+// BASE RADAR CHAIN STRICTNESS, DISCLOSED (full Radar/Pump audit).
+//
+// The audit found Base Radar's chain handling already CORRECT — unlike Pump Alerts, which had gone
+// multi-chain without carrying chain provenance. These are regression locks on the properties that
+// make it correct, so a future multi-chain change to Radar can't repeat the Pump Alerts mistakes:
+// a single hard-whitelisted chain per request that fails closed, threaded into every provider URL,
+// and carried through both the Token Scanner and Clark handoffs.
+//
+// Static source assertions: /api/radar's GET is a 2200-line handler with a deep provider/Supabase
+// dependency graph, matching the convention already used by this repo's other route-level static
+// checks (src/pipeline/*.staticCheck.test.ts, scripts/test-clark-analyst-e2e-routing.mjs).
+
+const routeSrc = fs.readFileSync(new URL('../app/api/radar/route.ts', import.meta.url), 'utf8')
+const routeCode = routeSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+
+// ── 1. Chain is a hard whitelist that fails closed ──────────────────────────
+// Anything other than an explicitly-enabled 'robinhood' resolves to 'base'. An attacker-supplied
+// or typo'd ?chain= can never reach a provider URL verbatim.
+assert.match(
+  routeCode,
+  /searchParams\.get\('chain'\) === 'robinhood' && isRobinhoodChainAvailable\(\) \? 'robinhood' : 'base'/,
+  'radar chain must be a hard whitelist that falls back to base and gates Robinhood on the feature flag',
+)
+
+// ── 2. Every GeckoTerminal discovery URL is built from that validated chain ──
+// A hardcoded network slug here is exactly the bug class that broke Pump Alerts' 7d fetch.
+const gtUrls = [...routeCode.matchAll(/https:\/\/api\.geckoterminal\.com\/api\/v2\/networks\/([^/]+)\//g)]
+assert.ok(gtUrls.length >= 3, 'expected the radar discovery sources to build GeckoTerminal URLs')
+for (const m of gtUrls) {
+  assert.equal(
+    m[1], '${requestedChain}',
+    `every radar GeckoTerminal URL must use the validated requestedChain, found hardcoded network "${m[1]}"`,
+  )
+}
+
+// ── 3. Robinhood is gated server-side, not only in the UI ───────────────────
+assert.match(routeCode, /isRobinhoodChainAvailable\(\)/, 'Robinhood must be gated server-side (fails closed without flag + RPC)')
+
+// ── 4. Handoffs carry the chain ─────────────────────────────────────────────
+const pageSrc = fs.readFileSync(new URL('../app/terminal/base-radar/page.tsx', import.meta.url), 'utf8')
+const pageCode = pageSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+
+// Scan handoff: chain param present for non-Base, omitted for Base so existing links are unchanged.
+assert.match(
+  pageCode,
+  /const chainQuery = chain === 'base' \? '' : `&chain=\$\{chain\}`/,
+  'the radar Scan handoff must pass the real chain to Token Scanner',
+)
+assert.match(pageCode, /token-scanner\?contract=\$\{contract\}\$\{chainQuery\}/, 'the scan URL must include the chain query')
+
+// Clark handoff: the prompt must state the chain, or the model reasons on the wrong network.
+assert.match(pageCode, /`Chain: \$\{chainName\}`/, 'the radar Clark prompt must state the real chain')
+
+// ── 5. Token Scanner accepts every chain Radar/Pump can hand it ─────────────
+// A chain that Radar can send but Token Scanner silently downgrades to Base is a wrong-chain scan.
+const scannerSrc = fs.readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+const scannerCode = scannerSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+assert.match(
+  scannerCode,
+  /chainParam === 'eth' \|\| chainParam === 'bnb' \|\| chainParam === 'robinhood' \? chainParam : 'base'/,
+  'Token Scanner URL autodetect must accept every chain the Radar/Pump handoffs can send',
+)
+// A new scan must clear the previous token's result so a stale one can't flash or persist.
+assert.match(scannerCode, /setResult\(null\)/, 'a new scan must reset the previous token result')
+
+console.log('test-base-radar-chain-strict.mjs: all assertions passed')

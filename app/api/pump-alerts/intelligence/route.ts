@@ -51,6 +51,7 @@ export async function GET(req: Request) {
     contract,
     priceUsd: numOrNull(searchParams.get('priceUsd')),
     change24h: numOrNull(searchParams.get('change24h')),
+    change7d: numOrNull(searchParams.get('change7d')),
     volume24hUsd: numOrNull(searchParams.get('volume24hUsd')),
     liquidityUsd: numOrNull(searchParams.get('liquidityUsd')),
     fdvUsd: numOrNull(searchParams.get('fdvUsd')),

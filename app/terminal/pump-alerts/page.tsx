@@ -12,7 +12,11 @@ interface PumpAlert {
   symbol: string
   name: string
   contract: string
-  chain: string
+  // Narrowed from `string`: the handoff builds a Token Scanner `?chain=` param and a Clark chain
+  // label off this, so an unconstrained string would let a typo route a token to the wrong network.
+  chain: 'base' | 'eth' | 'robinhood'
+  chainId: number
+  pairAddress: string | null
   priceUsd: number | null
   change24h: number | null
   change7d: number | null
@@ -422,7 +426,11 @@ export default function PumpAlertsPage() {
   const router = useRouter()
   const [alerts, setAlerts] = useState<PumpAlert[]>([])
   const [fetchedAt, setFetchedAt] = useState<string | null>(null)
+  // `loading` is the first-paint skeleton only and never returns to true; `refreshing` drives the
+  // non-blocking "refreshing" indicator so a background refresh never tears down a good feed.
   const [loading, setLoading] = useState(true)
+  const [refreshing, setRefreshing] = useState(false)
+  const [feedError, setFeedError] = useState<string | null>(null)
   const [countdown, setCountdown] = useState(120)
   const [activeFilter, setActiveFilter] = useState<FilterKey>('ALL')
   const [refreshKey, setRefreshKey] = useState(0)
@@ -453,8 +461,14 @@ export default function PumpAlertsPage() {
   ]
   const [activeChains, setActiveChains] = useState<Set<PumpChainKey>>(new Set(['base', 'eth', 'robinhood']))
 
+  // NON-BLANKING REFRESH + HONEST FAILURES, DISCLOSED (full Radar/Pump audit): this previously
+  // called setAlerts([]) on any error and replaced alerts with [] whenever a response had no
+  // `alerts` key — so a single failed background refresh wiped a good feed to an empty state that
+  // looked like "no pumps found" rather than "the request failed". It also discarded the route's
+  // error/chainsFailed entirely, hiding provider outages. Now: last-good results are retained on
+  // failure, and the real reason is surfaced instead of being swallowed.
   const fetchAlerts = useCallback(() => {
-    setLoading(true)
+    setRefreshing(true)
     return (async () => {
       try {
         const { data: { session } } = await supabase.auth.getSession()
@@ -466,12 +480,20 @@ export default function PumpAlertsPage() {
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         })
         const json = await res.json()
-        setAlerts(Array.isArray(json.alerts) ? json.alerts : [])
-        setFetchedAt(json.fetchedAt ?? null)
+        if (Array.isArray(json.alerts)) {
+          setAlerts(json.alerts)
+          setFetchedAt(json.fetchedAt ?? null)
+          // A partial scan still returns real alerts — show them AND say which chains are missing.
+          setFeedError(typeof json.error === 'string' ? json.error : null)
+        } else {
+          // No usable payload: keep whatever is already on screen and explain why it didn't update.
+          setFeedError(typeof json.error === 'string' ? json.error : 'Pump feed request failed. Showing last known results.')
+        }
       } catch {
-        setAlerts([])
+        setFeedError('Could not reach the pump feed. Showing last known results.')
       } finally {
         setLoading(false)
+        setRefreshing(false)
       }
     })()
   }, [])
@@ -497,14 +519,21 @@ export default function PumpAlertsPage() {
     if (refreshKey > 0) { fetchAlerts(); setCountdown(120) }
   }, [refreshKey, fetchAlerts])
 
-  function openToken(contract: string) {
-    router.push(`/terminal/token-scanner?contract=${contract}`)
+  // CHAIN-STRICT HANDOFF, DISCLOSED (full Radar/Pump audit): these three handoffs all assumed Base.
+  // openToken passed no chain at all and openReport hardcoded `chain: 'base'`, so once Pump Alerts
+  // went multi-chain an ETH or Robinhood token was scanned and reported against the WRONG network
+  // (Token Scanner's URL autodetect defaults to Base when no chain param is present). Base Radar's
+  // equivalent handoff was already fixed in an earlier audit; this brings Pump Alerts in line with
+  // it, including omitting the param for Base so existing Base links stay byte-for-byte identical.
+  function openToken(alert: PumpAlert) {
+    const chainQuery = alert.chain === 'base' ? '' : `&chain=${alert.chain}`
+    router.push(`/terminal/token-scanner?contract=${alert.contract}${chainQuery}`)
   }
 
   function openReport(alert: PumpAlert) {
     const qs = new URLSearchParams({
       contract: alert.contract,
-      chain: 'base',
+      chain: alert.chain,
       symbol: alert.symbol,
       name: alert.name,
       reason: alert.reason,
@@ -514,22 +543,31 @@ export default function PumpAlertsPage() {
       ...(alert.volume24hUsd != null ? { volume24hUsd: String(alert.volume24hUsd) } : {}),
       ...(alert.liquidityUsd != null ? { liquidityUsd: String(alert.liquidityUsd) } : {}),
       ...(alert.fdvUsd != null ? { fdvUsd: String(alert.fdvUsd) } : {}),
+      ...(alert.change7d != null ? { change7d: String(alert.change7d) } : {}),
+      ...(alert.marketCapUsd != null ? { marketCapUsd: String(alert.marketCapUsd) } : {}),
     })
     router.push(`/terminal/pump-alerts/report?${qs.toString()}`)
   }
 
   function openClark(alert: PumpAlert) {
+    // The Chain line is load-bearing, not decoration: without it Clark reasoned about (and could
+    // look up) a Robinhood/ETH contract as if it were on Base. Base Radar's prompt already states
+    // its chain for exactly this reason.
+    const chainName = alert.chain === 'robinhood' ? 'Robinhood Chain' : alert.chain === 'eth' ? 'Ethereum' : 'Base'
     const prompt = [
       '[mode: pump-alerts]',
+      `Chain: ${chainName}`,
       `Token: ${alert.name} (${alert.symbol})`,
       `Contract: ${alert.contract}`,
       `Category: ${CATEGORY_LABEL[alert.category]}`,
+      `7d Change: ${alert.change7d != null ? `+${alert.change7d.toFixed(1)}%` : 'N/A'}`,
       `24h Change: ${alert.change24h != null ? `${(alert.change24h >= 0 ? '+' : '')}${alert.change24h.toFixed(1)}%` : 'N/A'}`,
       `Volume 24h: ${fmtUSD(alert.volume24hUsd)}`,
       `Liquidity: ${fmtUSD(alert.liquidityUsd)}`,
-      `FDV: ${fmtUSD(alert.fdvUsd)}`,
+      `FDV: ${fmtUSD(alert.fdvUsd ?? alert.marketCapUsd)}`,
       `Risk: ${RISK_LABEL[alert.riskLevel]}`,
       `Signal: ${alert.reason}`,
+      `Qualified because: ${alert.qualifyingReason}`,
     ].join('\n')
     router.push(`/terminal/clark-ai?prompt=${encodeURIComponent(prompt)}`)
   }
@@ -785,6 +823,22 @@ export default function PumpAlertsPage() {
             Alerts {filtered.length > 0 && `— ${filtered.length}`}
           </p>
 
+          {/* Provider/data failure — always visible, never silently swallowed. Rendered above the
+              feed so a stale-but-shown list is never mistaken for a fresh complete one. */}
+          {feedError && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '9px 12px', marginBottom: '10px', borderRadius: '10px', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.28)', fontFamily: 'var(--font-plex-mono)' }}>
+              <span style={{ color: '#fbbf24', fontSize: '12px' }}>△</span>
+              <span style={{ fontSize: '10.5px', color: '#fbbf24', lineHeight: 1.35 }}>{feedError}</span>
+            </div>
+          )}
+
+          {/* Background refresh indicator — the feed stays on screen underneath it. */}
+          {refreshing && !loading && (
+            <div style={{ fontSize: '9.5px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '8px', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+              Refreshing — showing last results
+            </div>
+          )}
+
           {/* Loading skeletons */}
           {loading && alerts.length === 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
@@ -822,7 +876,7 @@ export default function PumpAlertsPage() {
               <div key={alert.contract} style={{ animationDelay: `${i * 30}ms`, paddingTop: i === 0 ? 0 : '3px', borderTop: i === 0 ? 'none' : '1px solid rgba(148,163,184,0.10)' }}>
                 <AlertCard
                   alert={alert}
-                  onScan={() => openToken(alert.contract)}
+                  onScan={() => openToken(alert)}
                   onAskClark={() => openClark(alert)}
                   onReport={() => openReport(alert)}
                   onCopyCA={() => copyCA(alert.contract)}

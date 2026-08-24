@@ -120,6 +120,7 @@ export interface PumpIntelligenceReport {
     marketCapUsd: number | null
     ageHours: number | null
     priceChange24h: number | null
+    priceChange7d: number | null
     top1HolderPercent: number | null
     top10HolderPercent: number | null
   }
@@ -160,6 +161,9 @@ export interface PumpAlertInput {
   contract: string
   priceUsd: number | null
   change24h: number | null
+  // 7d change is the gate a token had to clear to be a Pump Alert at all, so the report must be
+  // able to show the evidence it was selected on — not just the 24h move.
+  change7d?: number | null
   volume24hUsd: number | null
   liquidityUsd: number | null
   fdvUsd: number | null
@@ -347,6 +351,7 @@ export function buildPumpIntelligenceReport(params: {
     marketCapUsd,
     ageHours,
     priceChange24h: alert.change24h,
+    priceChange7d: alert.change7d ?? null,
     top1HolderPercent: pick<number>(holderDistribution, ['top1']),
     top10HolderPercent: pick<number>(holderDistribution, ['top10']),
   }
