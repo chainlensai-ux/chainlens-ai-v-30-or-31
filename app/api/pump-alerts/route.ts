@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
+import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
 
 export const dynamic = 'force-dynamic'
 const PUMP_ROUTE_CACHE_TTL_MS = 90_000
@@ -64,6 +65,33 @@ const EXCLUDED = new Set([...STABLE_AND_WRAPPED_DENYLIST, ...ESTABLISHED_PROTOCO
 // symbol denylist can't catch (e.g. "Aerodrome LP", "xyz-USDC LP", "Bridged USDC").
 const ESTABLISHED_NAME_PATTERN = /\b(aerodrome|uniswap|velodrome|lp\s*token|liquidity\s*pool|bridged|wrapped|staked|yield\s*bearing)\b/i
 const LP_SYMBOL_PATTERN = /(^|[-_/])lp($|[-_/])|vamm-|vlp-/i
+
+// PUMP-MULTI-CHAIN + LOW-CAP-CEILING, DISCLOSED (explicitly requested: "for coingeko to load more
+// base low caps under 20 million and eth under 50 million and robinhood under 20 million").
+// Pump Alerts previously scanned GeckoTerminal's Base network only. Now each supported chain has
+// its own FDV-based low-cap ceiling (FDV is the pool-level proxy for market cap available from
+// GeckoTerminal's pools endpoint) — candidates above their chain's ceiling are excluded so the
+// feed stays a genuine low-cap feed. ETH uses GeckoTerminal's 'eth' network slug; Robinhood reuses
+// the same isRobinhoodChainAvailable() feature flag as Base Radar (fails closed — no flag, no
+// Robinhood scanning). These per-chain ceilings OVERRIDE the PUMP_ALERT_MAX_* env defaults inside
+// the Stage 1 gate for the chains actually requested.
+export type PumpChain = 'base' | 'eth' | 'robinhood'
+
+const CHAIN_CONFIG: Record<PumpChain, { gtNetwork: string; maxFdvUsd: number }> = {
+  base: { gtNetwork: 'base', maxFdvUsd: 20_000_000 },
+  eth: { gtNetwork: 'eth', maxFdvUsd: 50_000_000 },
+  robinhood: { gtNetwork: 'robinhood', maxFdvUsd: 20_000_000 },
+}
+
+function requestedChains(req: Request): PumpChain[] {
+  const chainParam = new URL(req.url).searchParams.get('chains') ?? ''
+  const wanted = chainParam
+    .split(',')
+    .map(c => c.trim().toLowerCase())
+    .filter((c): c is PumpChain => c === 'base' || c === 'eth' || c === 'robinhood')
+  const chains = wanted.length > 0 ? Array.from(new Set(wanted)) : (['base'] as PumpChain[])
+  return chains.filter(c => c !== 'robinhood' || isRobinhoodChainAvailable())
+}
 
 export type PumpCategory = 'HIGH_MOMENTUM' | 'VOLUME_EXPANSION' | 'THIN_MOONSHOT' | 'WATCH'
 export type PumpRisk = 'HIGH' | 'MEDIUM' | 'LOW'
@@ -452,9 +480,9 @@ function applyRotationAndDiversity(scored: PumpAlert[]): RotationResult {
   return { alerts: output, freshCount: fresh.length, staleCount: stale.length, fallbackUsed }
 }
 
-async function fetchGTPage(page: number, signal: AbortSignal): Promise<{ data?: GTPool[]; included?: GTIncluded[] }> {
+async function fetchGTPage(network: string, page: number, signal: AbortSignal): Promise<{ data?: GTPool[]; included?: GTIncluded[] }> {
   const res = await fetch(
-    `https://api.geckoterminal.com/api/v2/networks/base/pools?page=${page}&include=base_token,quote_token`,
+    `https://api.geckoterminal.com/api/v2/networks/${network}/pools?page=${page}&include=base_token,quote_token`,
     { headers: { accept: 'application/json' }, cache: 'no-store', signal },
   )
   if (!res.ok) throw new Error(`GT ${res.status}`)
@@ -483,6 +511,14 @@ export async function GET(req: Request) {
   } else rr.count += 1
 
   const cacheKey = `pump:${plan}`
+
+  // PUMP-MULTI-CHAIN, DISCLOSED: resolve the chain set once per request (default Base-only,
+  // unchanged behavior when no ?chains= param is passed).
+  const chains = requestedChains(req)
+  if (chains.length === 0) {
+    return NextResponse.json({ alerts: [], fetchedAt: new Date().toISOString(), chainsRequested: [], _note: 'no enabled chains requested' })
+  }
+
   const cached = pumpCache.get(cacheKey)
   if (cached && cached.exp > now) return NextResponse.json(cached.payload)
 
@@ -494,12 +530,12 @@ export async function GET(req: Request) {
     const ac = new AbortController()
     const tid = setTimeout(() => ac.abort(), 10_000)
     try {
-      // Fetch 3 pages in parallel (~60 raw rows for a deeper candidate pool)
-      const results = await Promise.allSettled([
-        fetchGTPage(1, ac.signal),
-        fetchGTPage(2, ac.signal),
-        fetchGTPage(3, ac.signal),
-      ])
+      // Fetch 3 pages per chain in parallel (~60 raw rows per chain for a deeper candidate pool)
+      const results = await Promise.allSettled(
+        chains.flatMap(chain =>
+          [1, 2, 3].map(page => fetchGTPage(CHAIN_CONFIG[chain].gtNetwork, page, ac.signal)),
+        ),
+      )
       for (const r of results) {
         if (r.status !== 'fulfilled') continue
         if (Array.isArray(r.value.data)) pools.push(...(r.value.data as GTPool[]))
@@ -511,7 +547,7 @@ export async function GET(req: Request) {
     }
   } catch {
     providerStatus = 'partial'
-    // Fallback to shared cache (page 1 only)
+    // Fallback to shared cache (page 1, Base only — the shared cache key is Base-scoped)
     try {
       const result = await getOrFetchCached<{ data?: GTPool[]; included?: GTIncluded[] }>({
         key: 'coingecko:trending-base',
@@ -521,12 +557,8 @@ export async function GET(req: Request) {
           const ac = new AbortController()
           const tid = setTimeout(() => ac.abort(), 6000)
           try {
-            const res = await fetch(
-              'https://api.geckoterminal.com/api/v2/networks/base/pools?page=1&include=base_token,quote_token',
-              { headers: { accept: 'application/json' }, cache: 'no-store', signal: ac.signal },
-            )
-            if (!res.ok) throw new Error(`GT ${res.status}`)
-            return res.json()
+            const res = await fetchGTPage('base', 1, ac.signal)
+            return res
           } finally {
             clearTimeout(tid)
           }
@@ -566,6 +598,16 @@ export async function GET(req: Request) {
     const marketCap = parseNum(attrs?.market_cap_usd)
     const createdAt = attrs?.pool_created_at ? Date.parse(attrs.pool_created_at) : NaN
     const ageDays = Number.isFinite(createdAt) ? (Date.now() - createdAt) / (1000 * 60 * 60 * 24) : null
+
+    // LOW-CAP-CEILING, DISCLOSED (merged with the staged eligibility pipeline): evaluateStage1Candidate
+    // applies the env-configurable PUMP_ALERT_MAX_* caps; for multi-chain requests the per-chain
+    // ceilings (Base $20M / ETH $50M / Robinhood $20M) are enforced here as an additional ceiling —
+    // a candidate is dropped when its FDV exceeds every requested chain's limit. The most permissive
+    // requested ceiling wins so nothing valid is dropped for being on the wrong side of a stricter
+    // chain's limit. null FDV stays allowed at this layer (the Stage 1 capDataMissing rule still
+    // applies upstream of it).
+    const maxFdvUsd = Math.max(...chains.map(c => CHAIN_CONFIG[c].maxFdvUsd))
+    if (fdv != null && fdv > maxFdvUsd) continue
 
     const result = evaluateStage1Candidate({
       symbol: meta.attributes.symbol ?? '?', name: meta.attributes.name ?? 'Unknown', addr,
@@ -614,6 +656,7 @@ export async function GET(req: Request) {
   const payload = {
     alerts,
     fetchedAt: new Date().toISOString(),
+    chains: chains.map(c => ({ chain: c, maxFdvUsd: CHAIN_CONFIG[c].maxFdvUsd })),
     diagnostics: process.env.NODE_ENV === 'development' ? { cacheHit: false, providerStatus, rateLimited: false } : undefined,
     pumpDiscoveryEligibilityAudit: audit,
     _debug: {

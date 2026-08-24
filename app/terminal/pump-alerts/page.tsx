@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useRouter } from 'next/navigation'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
@@ -142,11 +142,13 @@ function StatMetric({ label, value, dimValue, children }: { label: string; value
   )
 }
 
-function AlertCard({ alert, onScan, onAskClark, onReport }: {
+function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, copied }: {
   alert: PumpAlert
   onScan: () => void
   onAskClark: () => void
   onReport: () => void
+  onCopyCA: () => void
+  copied: boolean
 }) {
   const [hovered, setHovered] = useState(false)
   const catColor = CATEGORY_COLOR[alert.category]
@@ -326,6 +328,21 @@ function AlertCard({ alert, onScan, onAskClark, onReport }: {
             ⌕ Scan
           </button>
           <button
+            onClick={onCopyCA}
+            className="pump-action-btn"
+            aria-label={`Copy contract address for ${alert.symbol}`}
+            style={{
+              padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800,
+              letterSpacing: '0.07em', textTransform: 'uppercase',
+              border: `1px solid ${copied ? 'rgba(74,222,128,0.42)' : 'rgba(45,212,191,0.28)'}`,
+              background: copied ? 'rgba(74,222,128,0.12)' : 'rgba(255,255,255,0.04)',
+              color: copied ? '#4ade80' : '#9bb4ca', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+              transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease', boxShadow: hovered ? '0 0 18px rgba(45,212,191,0.18), inset 0 1px 0 rgba(255,255,255,0.05)' : 'inset 0 1px 0 rgba(255,255,255,0.035)', transform: hovered ? 'translateY(-1px) scale(1.03)' : 'translateY(0) scale(1)',
+            }}
+          >
+            {copied ? '✓ Copied' : '⧉ Copy CA'}
+          </button>
+          <button
             onClick={onAskClark}
             className="pump-action-btn"
             style={{
@@ -409,25 +426,60 @@ export default function PumpAlertsPage() {
   const [countdown, setCountdown] = useState(120)
   const [activeFilter, setActiveFilter] = useState<FilterKey>('ALL')
   const [refreshKey, setRefreshKey] = useState(0)
+  // COPY-CA, DISCLOSED (requested: pump alerts cards had no way to grab the contract address).
+  // Tracks which contract was just copied so its button shows "✓ Copied" briefly.
+  const [copiedContract, setCopiedContract] = useState<string | null>(null)
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const fetchAlerts = useCallback(async () => {
+  function copyCA(contract: string) {
+    navigator.clipboard?.writeText(contract).then(
+      () => {
+        setCopiedContract(contract.toLowerCase())
+        if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+        copyTimerRef.current = setTimeout(() => setCopiedContract(null), 1600)
+      },
+      () => { /* clipboard unavailable — leave button state unchanged */ },
+    )
+  }
+
+  // PUMP-CHAIN-SELECTOR, DISCLOSED (requested: load more Base <$20M, ETH <$50M, Robinhood <$20M
+  // low caps). Which chains to scan — sent to /api/pump-alerts as ?chains=; default is all three
+  // (the API silently drops Robinhood when its feature flag is off server-side).
+  type PumpChainKey = 'base' | 'eth' | 'robinhood'
+  const CHAIN_CHIPS: Array<{ key: PumpChainKey; label: string }> = [
+    { key: 'base', label: 'Base' },
+    { key: 'eth', label: 'ETH' },
+    { key: 'robinhood', label: 'Robinhood' },
+  ]
+  const [activeChains, setActiveChains] = useState<Set<PumpChainKey>>(new Set(['base', 'eth', 'robinhood']))
+
+  const fetchAlerts = useCallback(() => {
     setLoading(true)
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const token = session?.access_token
-      const res = await fetch('/api/pump-alerts', {
-        cache: 'no-store',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-      const json = await res.json()
-      setAlerts(Array.isArray(json.alerts) ? json.alerts : [])
-      setFetchedAt(json.fetchedAt ?? null)
-    } catch {
-      setAlerts([])
-    } finally {
-      setLoading(false)
-    }
+    return (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        const token = session?.access_token
+        const qs = new URLSearchParams()
+        if (chainParamRef.current.length > 0) qs.set('chains', chainParamRef.current.join(','))
+        const res = await fetch(`/api/pump-alerts?${qs.toString()}`, {
+          cache: 'no-store',
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        })
+        const json = await res.json()
+        setAlerts(Array.isArray(json.alerts) ? json.alerts : [])
+        setFetchedAt(json.fetchedAt ?? null)
+      } catch {
+        setAlerts([])
+      } finally {
+        setLoading(false)
+      }
+    })()
   }, [])
+
+  // Keep the latest chain selection readable inside the stable fetchAlerts callback without
+  // re-creating it. Updated directly in event handlers (not via a sync effect), so the ref is
+  // always current by the time fetchAlerts() is called.
+  const chainParamRef = useRef<Array<PumpChainKey>>(['base', 'eth', 'robinhood'])
 
   useEffect(() => { fetchAlerts() }, [fetchAlerts])
 
@@ -679,6 +731,52 @@ export default function PumpAlertsPage() {
               )
             })}
           </div>
+
+          {/* Chain selector, DISCLOSED: toggles which chains /api/pump-alerts scans. At least one
+              chain must stay on — the API treats an empty set as "no enabled chains requested". */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', margin: '8px 0 4px' }}>
+            <span style={{ fontSize: '9px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.10em', textTransform: 'uppercase' }}>
+              Chains
+            </span>
+            {CHAIN_CHIPS.map(chip => {
+              const active = activeChains.has(chip.key)
+              return (
+                <button
+                  key={chip.key}
+                  onClick={() => {
+                    const nextChains = (() => {
+                      const next = new Set(activeChains)
+                      if (next.has(chip.key)) {
+                        if (next.size === 1) return null // keep at least one chain
+                        next.delete(chip.key)
+                      } else {
+                        next.add(chip.key)
+                      }
+                      return Array.from(next)
+                    })()
+                    if (!nextChains) return
+                    setActiveChains(new Set(nextChains))
+                    chainParamRef.current = nextChains
+                    setCountdown(120)
+                    fetchAlerts()
+                  }}
+                  aria-pressed={active}
+                  style={{
+                    padding: '5px 11px', borderRadius: '99px', fontSize: '9px', fontWeight: 700,
+                    letterSpacing: '0.10em', textTransform: 'uppercase', cursor: 'pointer',
+                    border: `1px solid ${active ? 'rgba(45,212,191,0.40)' : 'rgba(255,255,255,0.10)'}`,
+                    background: active ? 'rgba(45,212,191,0.14)' : 'rgba(255,255,255,0.03)',
+                    color: active ? '#2DD4BF' : '#94a3b8',
+                    fontFamily: 'var(--font-plex-mono)',
+                    boxShadow: active ? '0 0 12px rgba(45,212,191,0.16)' : 'none',
+                    transition: 'background 0.15s, border-color 0.15s, box-shadow 0.15s',
+                  }}
+                >
+                  {chip.label}
+                </button>
+              )
+            })}
+          </div>
         </div>
 
         {/* Feed */}
@@ -727,6 +825,8 @@ export default function PumpAlertsPage() {
                   onScan={() => openToken(alert.contract)}
                   onAskClark={() => openClark(alert)}
                   onReport={() => openReport(alert)}
+                  onCopyCA={() => copyCA(alert.contract)}
+                  copied={copiedContract === alert.contract.toLowerCase()}
                 />
               </div>
             ))}
