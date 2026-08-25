@@ -366,4 +366,22 @@ for (const [symbol, name] of [
   )
 }
 
+// ─── Part 10: sustained-rate-limit fix — success-result caching (route-level static assertions) ──
+// Reported live: the total-blackout message persisted across repeated refreshes even AFTER the
+// 429-aware retry landed. Root cause: every refresh cycle re-fetched OHLCV/momentum data for every
+// candidate from scratch with zero caching, and a failed cycle was itself cached for only 10s, so
+// the identical full request burst re-fired every ~10s across every user hitting the route —
+// never letting GeckoTerminal's shared rate-limit budget recover. A single retry only survives one
+// short burst, not a sustained one caused by the route's own request pattern.
+{
+  const routeSrc5 = fs.readFileSync(new URL('../app/api/pump-alerts/route.ts', import.meta.url), 'utf8')
+  assert.match(routeSrc5, /const sevenDayResultCache = new Map/, 'successful 7d OHLCV results must be cached so every refresh cycle does not re-fetch from scratch')
+  assert.match(routeSrc5, /if \(cached && Date\.now\(\) - cached\.cachedAt < SEVEN_DAY_CACHE_TTL_MS\) return cached\.result/, 'a fresh-enough cached OHLCV result must be served without a network call')
+  assert.match(routeSrc5, /if \(final\.reason === 'ok'\) sevenDayResultCache\.set/, 'only successful results may be cached — failures must still retry fresh next cycle')
+
+  const evidenceSrc2 = fs.readFileSync(new URL('../lib/server/pump7dEvidence.ts', import.meta.url), 'utf8')
+  assert.match(evidenceSrc2, /const dexScreenerMomentumCache = new Map/, 'successful DexScreener momentum fetches must be cached for the same reason')
+  assert.match(evidenceSrc2, /if \(final\?\.ok\) dexScreenerMomentumCache\.set/, 'only successful momentum fetches may be cached — failures must still retry fresh next cycle')
+}
+
 console.log('test-pump-alerts-discovery.mjs: all assertions passed')

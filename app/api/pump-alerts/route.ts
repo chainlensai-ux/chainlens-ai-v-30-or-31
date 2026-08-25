@@ -445,7 +445,7 @@ const SEVEN_DAY_OHLCV_CONCURRENCY_LIMIT = 4
 // (a systemic bug that should surface as a visible error) apart from "this token is 3 days old"
 // (expected, honest filtering, not a bug). `reason` lets the caller distinguish them and report
 // which one actually happened instead of a silent zero either way.
-type SevenDayChangeResult = { changePct: number | null; reason: 'ok' | 'httpError' | 'tooYoung' | 'malformed' | 'fetchError' }
+type SevenDayChangeResult = { changePct: number | null; reason: 'ok' | 'httpError' | 'tooYoung' | 'malformed' | 'fetchError'; httpStatus?: number }
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -484,16 +484,43 @@ async function fetchPoolSevenDayChangeOnce(network: string, poolAddress: string,
   }
 }
 
+// SUSTAINED-RATE-LIMIT FIX, DISCLOSED (reported live: the total-blackout message persisted across
+// repeated refreshes even after the 429-aware retry was added). One retry only survives a single
+// short burst — it does nothing against a SUSTAINED exhaustion, and this route was structurally
+// guaranteed to cause one: every cycle re-fetched OHLCV for every stage1-passing candidate from
+// scratch with no cache, and a degraded/failed cycle was itself cached for only 10s (the
+// STALE-EMPTY-CACHE fix), so the very next request — from this user's own auto-refresh or any
+// other user hitting the route — re-fired the identical full burst 10 seconds later. Across
+// multiple concurrent users plus Base Radar sharing the same deployment-wide GeckoTerminal budget,
+// that reburst-every-10s pattern never let the rate limit recover, which is indistinguishable from
+// "the provider is down" from inside a single request even though the provider itself is fine.
+// A pool's 7-day OHLCV history barely changes minute to minute (it's a close-to-close window over
+// daily candles), so a successful result is cached for 10 minutes — only FAILURES re-fetch fresh
+// every cycle (a failure might succeed on retry; a success would just be recomputing the same
+// number). This cuts steady-state request volume by roughly the refresh-cycle-to-cache-TTL ratio
+// once the cache is warm, which is what actually lets the rate limit recover.
+const SEVEN_DAY_CACHE_TTL_MS = 10 * 60 * 1000
+const sevenDayResultCache = new Map<string, { result: SevenDayChangeResult; cachedAt: number }>()
+
 async function fetchPoolSevenDayChange(network: string, poolAddress: string, signal: AbortSignal): Promise<SevenDayChangeResult> {
+  const cacheKey = `${network}:${poolAddress.toLowerCase()}`
+  const cached = sevenDayResultCache.get(cacheKey)
+  if (cached && Date.now() - cached.cachedAt < SEVEN_DAY_CACHE_TTL_MS) return cached.result
+
   const first = await fetchPoolSevenDayChangeOnce(network, poolAddress, signal)
-  if (first.reason !== 'httpError' && first.reason !== 'fetchError') return first
-  // A 429 needs a delay that can actually outlast the rate-limit window; a generic transient
-  // failure (5xx, timeout) gets a short delay — mirrors the Base Radar 429-aware retry fix.
-  const retryDelayMs = first.httpStatus === 429 ? 1800 + Math.floor(Math.random() * 400) : 400
-  await sleep(retryDelayMs)
-  if (signal.aborted) return first
-  const second = await fetchPoolSevenDayChangeOnce(network, poolAddress, signal)
-  return { changePct: second.changePct, reason: second.reason }
+  let final: SevenDayChangeResult = first
+  if (first.reason === 'httpError' || first.reason === 'fetchError') {
+    // A 429 needs a delay that can actually outlast the rate-limit window; a generic transient
+    // failure (5xx, timeout) gets a short delay — mirrors the Base Radar 429-aware retry fix.
+    const retryDelayMs = first.httpStatus === 429 ? 1800 + Math.floor(Math.random() * 400) : 400
+    await sleep(retryDelayMs)
+    if (!signal.aborted) {
+      const second = await fetchPoolSevenDayChangeOnce(network, poolAddress, signal)
+      final = { changePct: second.changePct, reason: second.reason, httpStatus: second.httpStatus }
+    }
+  }
+  if (final.reason === 'ok') sevenDayResultCache.set(cacheKey, { result: final, cachedAt: Date.now() })
+  return final
 }
 
 function qualityScore(a: PumpAlert): number {
@@ -886,6 +913,15 @@ export async function GET(req: Request) {
   const sevenDayAttempted = sevenDayResults.length
   const sevenDayProviderFailures = sevenDayResults.filter(r => r.reason === 'httpError' || r.reason === 'fetchError').length
   const sevenDayDataUnavailable = sevenDayAttempted > 0 && sevenDayProviderFailures === sevenDayAttempted
+  // FAILURE-STATUS DIAGNOSTIC, DISCLOSED (reported live: the blackout message persisted across
+  // refreshes with no visibility into WHY — a sustained 429 (rate limit, recoverable via caching/
+  // backoff), a 403/401 (auth/ban, needs a different fix entirely), and a 5xx (provider genuinely
+  // down) all collapsed into the same "httpError" reason with no way to tell them apart from the
+  // response alone. Sampled (capped at 8) rather than logged for every candidate.
+  const sevenDayFailureStatusSample = sevenDayResults
+    .filter(r => r.httpStatus != null)
+    .slice(0, 8)
+    .map(r => r.httpStatus)
 
   // Timeout widened from 8s to 14s for the same reason — the DexScreener momentum fallback now
   // retries once on a 429, and this window covers CoinGecko + snapshot + DexScreener attempts
@@ -1114,6 +1150,7 @@ export async function GET(req: Request) {
       fallbackUsed,
       sevenDayAttempted,
       sevenDayProviderFailures,
+      sevenDayFailureStatusSample,
     },
   }
   // STALE-EMPTY-CACHE FIX, DISCLOSED: a transient empty/degraded cycle (finalState !== 'ok') must

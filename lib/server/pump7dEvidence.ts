@@ -196,14 +196,32 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+// SUSTAINED-RATE-LIMIT FIX, DISCLOSED (reported live: total blackout persisted across repeated
+// refreshes even after the 429-aware retry landed — a single retry only survives one short burst,
+// not a sustained exhaustion caused by every refresh cycle re-fetching from scratch with no cache).
+// Momentum data moves faster than 7d OHLCV, so this cache is short — 2 minutes, roughly one refresh
+// cycle — just enough to stop back-to-back auto-refreshes (and other users' concurrent requests)
+// from re-issuing the identical burst before the rate limit has any chance to recover.
+const DEXSCREENER_MOMENTUM_CACHE_TTL_MS = 2 * 60 * 1000
+const dexScreenerMomentumCache = new Map<string, { result: DexScreenerMomentumResult; cachedAt: number }>()
+
 export async function fetchDexScreenerPairMomentum(pairAddress: string, signal: AbortSignal): Promise<DexScreenerMomentumResult> {
+  const cacheKey = pairAddress.toLowerCase()
+  const cached = dexScreenerMomentumCache.get(cacheKey)
+  if (cached && Date.now() - cached.cachedAt < DEXSCREENER_MOMENTUM_CACHE_TTL_MS) return cached.result
+
   const first = await fetchDexScreenerPairMomentumOnce(pairAddress, signal)
-  if (first.ok) return first
-  const retryDelayMs = first.httpStatus === 429 ? 1800 + Math.floor(Math.random() * 400) : 400
-  await sleep(retryDelayMs)
-  if (signal.aborted) return first
-  const second = await fetchDexScreenerPairMomentumOnce(pairAddress, signal)
-  return { ok: second.ok, data: second.data }
+  let final: DexScreenerMomentumResult = first
+  if (!first.ok) {
+    const retryDelayMs = first.httpStatus === 429 ? 1800 + Math.floor(Math.random() * 400) : 400
+    await sleep(retryDelayMs)
+    if (!signal.aborted) {
+      const second = await fetchDexScreenerPairMomentumOnce(pairAddress, signal)
+      final = { ok: second.ok, data: second.data }
+    }
+  }
+  if (final?.ok) dexScreenerMomentumCache.set(cacheKey, { result: final, cachedAt: Date.now() })
+  return final
 }
 
 // ─── CoinGecko per-contract exact 7d (identity verified by construction) ────────────────────────
