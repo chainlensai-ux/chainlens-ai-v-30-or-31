@@ -97,7 +97,8 @@
     "app/api/base-radar/cron/route.ts": { "maxDuration": 60 },
     "app/api/radar/route.ts": { "maxDuration": 60 },
     "app/api/token/route.ts": { "maxDuration": 60 },
-    "app/api/dev-wallet/route.ts": { "maxDuration": 60 }
+    "app/api/dev-wallet/route.ts": { "maxDuration": 60 },
+    "app/api/pump-alerts/route.ts": { "maxDuration": 60 }
   },
   "crons": [
     { "path": "/api/base-radar/cron", "schedule": "0 6 * * *" }

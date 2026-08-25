@@ -447,13 +447,27 @@ const SEVEN_DAY_OHLCV_CONCURRENCY_LIMIT = 4
 // which one actually happened instead of a silent zero either way.
 type SevenDayChangeResult = { changePct: number | null; reason: 'ok' | 'httpError' | 'tooYoung' | 'malformed' | 'fetchError' }
 
-async function fetchPoolSevenDayChange(network: string, poolAddress: string, signal: AbortSignal): Promise<SevenDayChangeResult> {
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+// ONE-RETRY 429-AWARE FIX, DISCLOSED (reported live: Pump Alerts blacked out with "GeckoTerminal
+// OHLCV requests failed for every candidate this cycle, and no fallback provider could confirm
+// momentum either" — a total ladder failure, not an honest empty market). This fetcher previously
+// had ZERO retry: a single failed request (including a 429) permanently marked that candidate
+// failed for the whole cycle. GeckoTerminal's rate limit is a real, deployment-shared budget (the
+// same class of bug already fixed for Base Radar's discovery fetcher) — this route fires up to 4
+// concurrent OHLCV requests per cycle on top of whatever Base Radar/other Pump Alerts requests are
+// in flight, so a burst of 429s here was entirely expected, not a genuine outage. A 429 gets a
+// meaningfully longer backoff than a generic transient failure since a flat short delay can't
+// outlast a real rate-limit window.
+async function fetchPoolSevenDayChangeOnce(network: string, poolAddress: string, signal: AbortSignal): Promise<SevenDayChangeResult & { httpStatus?: number }> {
   try {
     const res = await fetch(
       `https://api.geckoterminal.com/api/v2/networks/${network}/pools/${poolAddress}/ohlcv/day?limit=8&currency=usd`,
       { headers: { accept: 'application/json' }, cache: 'no-store', signal },
     )
-    if (!res.ok) return { changePct: null, reason: 'httpError' }
+    if (!res.ok) return { changePct: null, reason: 'httpError', httpStatus: res.status }
     const json = await res.json()
     const list = json?.data?.attributes?.ohlcv_list
     if (!Array.isArray(list)) return { changePct: null, reason: 'malformed' }
@@ -468,6 +482,18 @@ async function fetchPoolSevenDayChange(network: string, poolAddress: string, sig
   } catch {
     return { changePct: null, reason: 'fetchError' }
   }
+}
+
+async function fetchPoolSevenDayChange(network: string, poolAddress: string, signal: AbortSignal): Promise<SevenDayChangeResult> {
+  const first = await fetchPoolSevenDayChangeOnce(network, poolAddress, signal)
+  if (first.reason !== 'httpError' && first.reason !== 'fetchError') return first
+  // A 429 needs a delay that can actually outlast the rate-limit window; a generic transient
+  // failure (5xx, timeout) gets a short delay — mirrors the Base Radar 429-aware retry fix.
+  const retryDelayMs = first.httpStatus === 429 ? 1800 + Math.floor(Math.random() * 400) : 400
+  await sleep(retryDelayMs)
+  if (signal.aborted) return first
+  const second = await fetchPoolSevenDayChangeOnce(network, poolAddress, signal)
+  return { changePct: second.changePct, reason: second.reason }
 }
 
 function qualityScore(a: PumpAlert): number {
@@ -830,8 +856,11 @@ export async function GET(req: Request) {
 
   const allScored: PumpAlert[] = []
 
+  // Timeout widened from 12s to 18s to give the 429-aware retry (up to ~2.2s per candidate, on top
+  // of the request itself) room to actually complete instead of getting cut off mid-retry — see the
+  // ONE-RETRY 429-AWARE FIX disclosure on fetchPoolSevenDayChange.
   const ac7d = new AbortController()
-  const tid7d = setTimeout(() => ac7d.abort(), 12_000)
+  const tid7d = setTimeout(() => ac7d.abort(), 18_000)
   // MERGE RESOLUTION, DISCLOSED: keeps BOTH sides — the remote's typed SevenDayChangeResult
   // (per-attempt failure reasons powering sevenDayDataUnavailable) and this branch's evidence
   // audit counters. The ladder below consumes changePct; the reasons still drive finalState.
@@ -858,8 +887,11 @@ export async function GET(req: Request) {
   const sevenDayProviderFailures = sevenDayResults.filter(r => r.reason === 'httpError' || r.reason === 'fetchError').length
   const sevenDayDataUnavailable = sevenDayAttempted > 0 && sevenDayProviderFailures === sevenDayAttempted
 
+  // Timeout widened from 8s to 14s for the same reason — the DexScreener momentum fallback now
+  // retries once on a 429, and this window covers CoinGecko + snapshot + DexScreener attempts
+  // sequentially per candidate.
   const acFb = new AbortController()
-  const tidFb = setTimeout(() => acFb.abort(), 8_000)
+  const tidFb = setTimeout(() => acFb.abort(), 14_000)
   try {
     const resolvedList = await mapWithConcurrencyLimit(stage1Passed, 4, async (c, i): Promise<ResolvedEvidence> => {
       const gtChange = sevenDayResults[i]?.changePct ?? null

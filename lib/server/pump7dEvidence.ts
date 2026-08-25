@@ -150,14 +150,19 @@ export type DexScreenerMomentumResult = {
   data: MomentumFallbackInput['dexscreener']
 } | null
 
-export async function fetchDexScreenerPairMomentum(pairAddress: string, signal: AbortSignal): Promise<DexScreenerMomentumResult> {
+// ONE-RETRY 429-AWARE FIX, DISCLOSED (reported live: Pump Alerts blacked out with "no fallback
+// provider could confirm momentum either" — this is the tier specifically meant to rescue a
+// GeckoTerminal OHLCV outage, so it failing too with zero retry compounded the same rate-limit
+// burst into a total ladder failure instead of an honest empty market). Mirrors the same
+// 429-aware backoff already applied to the primary GT OHLCV fetch above.
+async function fetchDexScreenerPairMomentumOnce(pairAddress: string, signal: AbortSignal): Promise<DexScreenerMomentumResult & { httpStatus?: number }> {
   try {
     const res = await fetch(`https://api.dexscreener.com/latest/dex/pairs/${pairAddress}`, {
       headers: { accept: 'application/json' },
       cache: 'no-store',
       signal,
     })
-    if (!res.ok) return { ok: false, data: null }
+    if (!res.ok) return { ok: false, data: null, httpStatus: res.status }
     const json = await res.json().catch(() => null) as Record<string, unknown> | null
     const pair = (json?.pair ?? Array.isArray(json?.pairs) ? (json?.pairs as unknown[])[0] : null) as Record<string, unknown> | null
     if (!pair || typeof pair !== 'object') return { ok: false, data: null }
@@ -185,6 +190,20 @@ export async function fetchDexScreenerPairMomentum(pairAddress: string, signal: 
   } catch {
     return { ok: false, data: null }
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+export async function fetchDexScreenerPairMomentum(pairAddress: string, signal: AbortSignal): Promise<DexScreenerMomentumResult> {
+  const first = await fetchDexScreenerPairMomentumOnce(pairAddress, signal)
+  if (first.ok) return first
+  const retryDelayMs = first.httpStatus === 429 ? 1800 + Math.floor(Math.random() * 400) : 400
+  await sleep(retryDelayMs)
+  if (signal.aborted) return first
+  const second = await fetchDexScreenerPairMomentumOnce(pairAddress, signal)
+  return { ok: second.ok, data: second.data }
 }
 
 // ─── CoinGecko per-contract exact 7d (identity verified by construction) ────────────────────────

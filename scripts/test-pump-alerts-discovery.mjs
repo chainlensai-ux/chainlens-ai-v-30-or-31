@@ -341,4 +341,29 @@ for (const [symbol, name] of [
   assert.match(routeCode3, /sevenDayProviderDegraded: sevenDayDataUnavailable && !sevenDayFullyUnavailable/, 'a partial 7d-provider failure must be exposed separately from the full blackout, for a small degraded note rather than a full-page warning')
 }
 
+// ─── Part 9: 429-aware retry on the evidence ladder (route-level static assertions) ─────────────
+// Reported live (follow-up to Part 8's contradiction fix): once the contradiction was gone, the
+// feed went to a genuine, honest full blackout ("no fallback provider could confirm momentum
+// either") on every refresh — not just once. Root cause: fetchPoolSevenDayChange and
+// fetchDexScreenerPairMomentum each had ZERO retry, so a single 429 from GeckoTerminal's shared,
+// deployment-wide rate-limit budget (this route fires up to 4 concurrent OHLCV requests per cycle
+// on top of Base Radar/other Pump Alerts traffic) permanently failed that candidate for the whole
+// cycle — the exact bug class already fixed for Base Radar's discovery fetcher.
+{
+  const routeSrc4 = fs.readFileSync(new URL('../app/api/pump-alerts/route.ts', import.meta.url), 'utf8')
+  assert.match(
+    routeSrc4,
+    /const retryDelayMs = first\.httpStatus === 429 \? 1800 \+ Math\.floor\(Math\.random\(\) \* 400\) : 400/,
+    'the primary 7d OHLCV fetch must retry once with a 429-aware backoff, not fail permanently on the first attempt',
+  )
+  assert.match(routeSrc4, /async function fetchPoolSevenDayChangeOnce/, 'the retry wrapper must sit on top of a single-attempt fetcher, not duplicate the fetch logic')
+
+  const evidenceSrc = fs.readFileSync(new URL('../lib/server/pump7dEvidence.ts', import.meta.url), 'utf8')
+  assert.match(
+    evidenceSrc,
+    /const retryDelayMs = first\.httpStatus === 429 \? 1800 \+ Math\.floor\(Math\.random\(\) \* 400\) : 400/,
+    'the DexScreener momentum-fallback fetch — the tier specifically meant to rescue a GT OHLCV outage — must also retry once with a 429-aware backoff',
+  )
+}
+
 console.log('test-pump-alerts-discovery.mjs: all assertions passed')
