@@ -650,6 +650,11 @@ export default function PumpAlertsPage() {
   }
 
   function openReport(alert: PumpAlert) {
+    // PUMP-REPORT DATA-FLOW FIX, DISCLOSED (requested: "Report must seed from Pump Alert card
+    // payload first"). change6h/change1h/marketCapUsd/tokenAgeDays/pairAddress/evidenceGrade are all
+    // real live evidence the card already has but the report never received — added here so the
+    // report's momentum/continuation/pullback scores have something to compute from immediately,
+    // before any provider enrichment call even runs.
     const qs = new URLSearchParams({
       contract: alert.contract,
       chain: alert.chain,
@@ -659,11 +664,16 @@ export default function PumpAlertsPage() {
       riskLevel: alert.riskLevel,
       ...(alert.priceUsd != null ? { priceUsd: String(alert.priceUsd) } : {}),
       ...(alert.change24h != null ? { change24h: String(alert.change24h) } : {}),
+      ...(alert.change6h != null ? { change6h: String(alert.change6h) } : {}),
+      ...(alert.change1h != null ? { change1h: String(alert.change1h) } : {}),
       ...(alert.volume24hUsd != null ? { volume24hUsd: String(alert.volume24hUsd) } : {}),
       ...(alert.liquidityUsd != null ? { liquidityUsd: String(alert.liquidityUsd) } : {}),
       ...(alert.fdvUsd != null ? { fdvUsd: String(alert.fdvUsd) } : {}),
       ...(alert.change14d != null ? { change14d: String(alert.change14d) } : {}),
       ...(alert.marketCapUsd != null ? { marketCapUsd: String(alert.marketCapUsd) } : {}),
+      ...(alert.tokenAgeDays != null ? { tokenAgeDays: String(alert.tokenAgeDays) } : {}),
+      ...(alert.pairAddress ? { pairAddress: alert.pairAddress } : {}),
+      ...(alert.evidenceGrade ? { evidenceGrade: alert.evidenceGrade } : {}),
     })
     router.push(`/terminal/pump-alerts/report?${qs.toString()}`)
   }

@@ -1,7 +1,14 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
-import { buildPumpIntelligenceReport, type PumpAlertInput, type WhaleAlertRow } from '@/lib/server/pumpIntelligence'
+import { buildPumpIntelligenceReport, type PumpAlertInput, type WhaleAlertRow, type DexScreenerTxnEvidence } from '@/lib/server/pumpIntelligence'
+import { fetchDexScreenerPairMomentum, computeSnapshotChange14d, type PumpChainSlug } from '@/lib/server/pump14dEvidence'
+
+// WRONG-CHAIN GUARD, DISCLOSED (hard rule: "Do NOT use wrong-chain pools"): DexScreener's own
+// chainId string per chain slug this route supports — a fetched pair's chainId must match before any
+// of its data (buys/sells/market cap) is trusted. Robinhood Chain isn't indexed by DexScreener at
+// all, same honest gap already established for CoinGecko elsewhere in this codebase.
+const DEXSCREENER_CHAIN_ID: Partial<Record<PumpChainSlug, string>> = { base: 'base', eth: 'ethereum' }
 
 export const dynamic = 'force-dynamic'
 
@@ -45,41 +52,103 @@ export async function GET(req: Request) {
   // Alert snapshot fields the client already has (from the pump-alerts list) — used as a fallback
   // if the fresh /api/token call below fails, so the report can still render its price/volume/
   // liquidity context rather than showing nothing.
+  // REQUIRED-DATA-FLOW FIX, DISCLOSED (requested: "Report must seed from Pump Alert card payload
+  // first"). Two real bugs fixed here: (1) the Pump Alerts card only ever sends `change14d` in its
+  // query string (see openReport() in page.tsx) — this route was reading `change7d`, a param that
+  // never existed, so the "gate" change was ALWAYS unavailable regardless of what the card actually
+  // had. (2) change6h/change1h/marketCapUsd/tokenAgeDays/pairAddress/evidenceGrade were on the card
+  // but never read at all, so momentum/continuation/pullback had none of that live evidence to work
+  // from. All of it is now read straight from the alert payload the card already sent.
+  const alertPayloadReceived = searchParams.has('change24h') || searchParams.has('priceUsd')
   const alert: PumpAlertInput = {
     symbol: searchParams.get('symbol') ?? '?',
     name: searchParams.get('name') ?? 'Unknown',
     contract,
     priceUsd: numOrNull(searchParams.get('priceUsd')),
     change24h: numOrNull(searchParams.get('change24h')),
-    change7d: numOrNull(searchParams.get('change7d')),
+    change7d: numOrNull(searchParams.get('change14d')) ?? numOrNull(searchParams.get('change7d')),
+    change6h: numOrNull(searchParams.get('change6h')),
+    change1h: numOrNull(searchParams.get('change1h')),
     volume24hUsd: numOrNull(searchParams.get('volume24hUsd')),
     liquidityUsd: numOrNull(searchParams.get('liquidityUsd')),
     fdvUsd: numOrNull(searchParams.get('fdvUsd')),
+    marketCapUsd: numOrNull(searchParams.get('marketCapUsd')),
+    tokenAgeDays: numOrNull(searchParams.get('tokenAgeDays')),
+    pairAddress: searchParams.get('pairAddress') || null,
+    evidenceGrade: (searchParams.get('evidenceGrade') as PumpAlertInput['evidenceGrade']) || null,
     reason: searchParams.get('reason') ?? 'Flagged by pump detection.',
     riskLevel: (searchParams.get('riskLevel') as PumpAlertInput['riskLevel']) ?? 'MEDIUM',
   }
 
-  // ── Fetch full CORTEX analysis via the existing, already-correct /api/token pipeline —
-  // deliberately an internal call rather than reimplementing RiskEngine/LP/holder/honeypot
-  // analysis here (see pumpIntelligence.ts's header comment for why).
-  let tokenAnalysis: Record<string, unknown> | null = null
-  try {
-    const origin = new URL(req.url).origin
-    const tokenRes = await fetch(`${origin}/api/token`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify({ contract, chain }),
-      signal: AbortSignal.timeout(20_000),
-      cache: 'no-store',
-    })
-    if (tokenRes.ok) {
+  // ── Enrich in parallel: CORTEX analysis (/api/token), DexScreener pair (txns/marketCap), and an
+  // internal-snapshot 14d change when the alert didn't already carry an exact figure. Each is
+  // independently best-effort — one failing never blocks the others or blanks the report. ──────────
+  const origin = new URL(req.url).origin
+  let tokenScannerAttempted = false
+  let dexScreenerAttempted = false
+  let dexScreenerSucceeded = false
+  let snapshotsAttempted = false
+  let snapshotsSucceeded = false
+
+  const tokenAnalysisPromise: Promise<Record<string, unknown> | null> = (async () => {
+    tokenScannerAttempted = true
+    try {
+      const tokenRes = await fetch(`${origin}/api/token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ contract, chain }),
+        signal: AbortSignal.timeout(20_000),
+        cache: 'no-store',
+      })
+      if (!tokenRes.ok) return null
       const json = await tokenRes.json()
-      if (!json?.error) tokenAnalysis = json
-      // Use the fresher, authoritative values from the live scan when present.
-      if (json?.symbol) alert.symbol = json.symbol
-      if (json?.name) alert.name = json.name
-    }
-  } catch { /* best-effort — report still renders from the alert snapshot + whale data alone */ }
+      return json?.error ? null : json
+    } catch { return null }
+  })()
+
+  const dexScreenerPromise: Promise<DexScreenerTxnEvidence | null> = (async () => {
+    if (!alert.pairAddress) return null
+    const expectedChainId = DEXSCREENER_CHAIN_ID[chain as PumpChainSlug]
+    if (!expectedChainId) return null // Robinhood Chain isn't indexed by DexScreener — honest skip.
+    dexScreenerAttempted = true
+    try {
+      const ac = new AbortController()
+      const tid = setTimeout(() => ac.abort(), 8_000)
+      const result = await fetchDexScreenerPairMomentum(alert.pairAddress, ac.signal)
+      clearTimeout(tid)
+      if (!result?.ok || !result.data) return null
+      // WRONG-CHAIN GUARD, DISCLOSED: reject the pair outright if DexScreener's own chainId doesn't
+      // match the chain this report was opened for — never trust cross-chain data by pair-address
+      // coincidence.
+      if (result.data.chainId && result.data.chainId !== expectedChainId) return null
+      dexScreenerSucceeded = true
+      return {
+        buys24h: result.data.buys24h ?? null, sells24h: result.data.sells24h ?? null,
+        buys6h: result.data.buys6h ?? null, sells6h: result.data.sells6h ?? null,
+        buys1h: result.data.buys1h ?? null, sells1h: result.data.sells1h ?? null,
+      }
+    } catch { return null }
+  })()
+
+  const snapshotPromise: Promise<number | null> = (async () => {
+    if (alert.change7d != null) return null // Already have an exact figure from the alert — no need.
+    snapshotsAttempted = true
+    try {
+      const snap = await computeSnapshotChange14d(chain as PumpChainSlug, contract)
+      if (snap.changePct != null) snapshotsSucceeded = true
+      return snap.changePct
+    } catch { return null }
+  })()
+
+  const [tokenAnalysisResult, dexScreenerTxns, snapshotChange14d] = await Promise.all([
+    tokenAnalysisPromise, dexScreenerPromise, snapshotPromise,
+  ])
+  const tokenAnalysis = tokenAnalysisResult
+  if (tokenAnalysis) {
+    // Use the fresher, authoritative values from the live scan when present.
+    if (tokenAnalysis.symbol) alert.symbol = tokenAnalysis.symbol as string
+    if (tokenAnalysis.name) alert.name = tokenAnalysis.name as string
+  }
 
   // ── Real per-token whale event log (Supabase) ──────────────────────────────────────────
   let whaleRows: WhaleAlertRow[] = []
@@ -107,7 +176,14 @@ export async function GET(req: Request) {
     } catch { /* best-effort — wallet intelligence section degrades to "no data" honestly */ }
   }
 
-  const report = buildPumpIntelligenceReport({ alert, chain, tokenAnalysis, whaleRows, trackedAddresses })
+  const report = buildPumpIntelligenceReport({
+    alert, chain, tokenAnalysis, whaleRows, trackedAddresses,
+    dexScreenerTxns, dexScreenerAttempted, dexScreenerSucceeded,
+    snapshotChange14d, snapshotsAttempted, snapshotsSucceeded,
+    tokenScannerAttempted, whaleDataAttempted: Boolean(supabaseUrl && serviceRole),
+  })
+  report.dataResolutionAudit.openedFromAlert = alertPayloadReceived
+  report.dataResolutionAudit.alertPayloadReceived = alertPayloadReceived
   return NextResponse.json({ report }, { headers: { 'Cache-Control': 'no-store' } })
 }
 

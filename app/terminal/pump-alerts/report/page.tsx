@@ -142,8 +142,11 @@ function CatalystRow({ c }: { c: Catalyst }) {
   )
 }
 
-const STATUS_COLOR: Record<RiskFactor['status'], string> = { confirmed: '#f87171', possible: '#fbbf24', clear: '#4ade80', unknown: '#64748b' }
-const STATUS_LABEL: Record<RiskFactor['status'], string> = { confirmed: 'Confirmed', possible: 'Possible', clear: 'Clear', unknown: 'Unknown' }
+const STATUS_COLOR: Record<RiskFactor['status'], string> = { confirmed: '#f87171', possible: '#fbbf24', clear: '#4ade80', unknown: '#64748b', unsupported: '#475569' }
+// UI STATE FIX, DISCLOSED (requested: replace generic "Unavailable"/"Unknown" with clearer states).
+// 'unsupported' reads distinctly from 'unknown' — this module has no resolver for it anywhere in the
+// system (permanent), vs. 'unknown' meaning this specific read just didn't resolve (worth retrying).
+const STATUS_LABEL: Record<RiskFactor['status'], string> = { confirmed: 'Confirmed', possible: 'Possible', clear: 'Clear', unknown: 'Unknown', unsupported: 'Unsupported' }
 
 function RiskRow({ r }: { r: RiskFactor }) {
   return (
@@ -238,17 +241,21 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
   const impactOrder = { high: 0, medium: 1, low: 2 }
   const sortedCatalysts = [...report.catalysts].sort((a, b) => impactOrder[a.impact] - impactOrder[b.impact])
   const topRisk = report.riskAnalysis.find(r => r.status === 'confirmed') ?? report.riskAnalysis.find(r => r.status === 'possible')
-  const txCount = ms.buys24h != null && ms.sells24h != null ? ms.buys24h + ms.sells24h : null
+  // UI STATE FIX, DISCLOSED: swapped generic "No data" for specific states — "Exact 7d unavailable"
+  // makes clear only the exact-window figure is missing (Momentum Score above is unaffected), and
+  // Buys/Sells/Transactions now name which real provider resolved them (or "Provider unavailable"
+  // when neither GeckoTerminal nor DexScreener had it) instead of a bare dash.
+  const txnsSourceLabel = ms.txnsSource === 'geckoterminal' ? 'GeckoTerminal' : ms.txnsSource === 'dexscreener' ? 'DexScreener' : 'Provider unavailable'
   const marketMetrics = [
-    // 7d leads the grid: it is the gate this token had to clear to be a Pump Alert at all, so it is
-    // the single most relevant number on the page. Shows an honest "No data" rather than falling
-    // back to the 24h figure when the 7d series didn't resolve.
-    { label: '7d change', value: ms.priceChange7d == null ? '—' : `${ms.priceChange7d > 0 ? '+' : ''}${ms.priceChange7d.toFixed(1)}%`, delta: '7d · qualifying gate', status: ms.priceChange7d == null ? 'No data' : ms.priceChange7d >= 0 ? 'Bullish' : 'Risk', source: 'GeckoTerminal daily OHLCV' },
+    // 7d/14d leads the grid: it is the gate this token had to clear to be a Pump Alert at all, so it
+    // is the single most relevant number on the page. Shows an honest "Exact 7d unavailable" rather
+    // than falling back to the 24h figure when the exact-window series didn't resolve.
+    { label: '7d/14d change', value: ms.priceChange7d == null ? 'Exact 7d unavailable' : `${ms.priceChange7d > 0 ? '+' : ''}${ms.priceChange7d.toFixed(1)}%`, delta: '7d/14d · qualifying gate', status: ms.priceChange7d == null ? 'No data' : ms.priceChange7d >= 0 ? 'Bullish' : 'Risk', source: 'GeckoTerminal OHLCV / snapshots' },
     { label: 'Price change', value: ms.priceChange24h == null ? '—' : `${ms.priceChange24h > 0 ? '+' : ''}${ms.priceChange24h.toFixed(1)}%`, delta: '24h', status: ms.priceChange24h == null ? 'No data' : ms.priceChange24h >= 0 ? 'Bullish' : 'Risk', source: 'DexScreener / GeckoTerminal' },
     { label: 'Liquidity', value: fmtUsd(ms.liquidityUsd), delta: 'No stored delta', status: ms.liquidityUsd == null ? 'No data' : 'Live', source: 'DexScreener / GeckoTerminal' },
     { label: 'Volume', value: fmtUsd(ms.volume24hUsd), delta: '24h total', status: ms.volume24hUsd == null ? 'No data' : 'Live', source: 'GeckoTerminal' },
-    { label: 'Buys / Sells', value: ms.buys24h != null && ms.sells24h != null ? `${ms.buys24h} / ${ms.sells24h}` : '—', delta: ms.buySellRatio == null ? 'No ratio' : `${ms.buySellRatio.toFixed(2)}:1 ratio`, status: ms.buySellRatio == null ? 'No data' : ms.buySellRatio > 1 ? 'Bullish' : 'Watch', source: 'GeckoTerminal' },
-    { label: 'Transactions', value: txCount == null ? '—' : txCount.toLocaleString(), delta: '24h total', status: txCount == null ? 'No data' : 'Live', source: 'GeckoTerminal' },
+    { label: 'Buys / Sells', value: ms.buys24h != null && ms.sells24h != null ? `${ms.buys24h} / ${ms.sells24h}` : 'Provider unavailable', delta: ms.buySellRatio == null ? 'No ratio' : `${ms.buySellRatio.toFixed(2)}:1 ratio`, status: ms.buySellRatio == null ? 'No data' : ms.buySellRatio > 1 ? 'Bullish' : 'Watch', source: txnsSourceLabel },
+    { label: 'Transactions', value: ms.txns24h == null ? 'Provider unavailable' : ms.txns24h.toLocaleString(), delta: '24h total', status: ms.txns24h == null ? 'No data' : 'Live', source: txnsSourceLabel },
     { label: 'FDV', value: fmtUsd(ms.fdvUsd), delta: 'Snapshot', status: ms.fdvUsd == null ? 'No data' : 'Live', source: 'DexScreener' },
     { label: 'Market cap', value: fmtUsd(ms.marketCapUsd), delta: 'Snapshot', status: ms.marketCapUsd == null ? 'No data' : 'Live', source: 'Token analysis' },
     { label: 'Pool age', value: fmtAge(ms.ageHours), delta: 'Since creation', status: ms.ageHours == null ? 'No data' : 'Live', source: 'GeckoTerminal' },
@@ -281,9 +288,9 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
 
       <Section title="Executive Summary" subtitle="Evidence scores · no synthetic estimates">
         <div className={styles.gaugeGrid}>
-          <GaugeCard label="Momentum Score" score={es.momentumScore} band={es.momentumConfidence} reason="CORTEX inverse risk score" />
-          <GaugeCard label="Continuation Probability" score={es.continuationScore} band={es.continuationProbability} reason="24h buy-side transaction share" />
-          <GaugeCard label="Pullback Risk" score={es.pullbackRiskScore} band={es.pullbackRisk} reason="CORTEX verified risk score" inverse />
+          <GaugeCard label="Momentum Score" score={es.momentumScore} band={es.momentumConfidence} reason={es.momentumEvidence} />
+          <GaugeCard label="Continuation Probability" score={es.continuationScore} band={es.continuationProbability} reason={es.continuationEvidence} />
+          <GaugeCard label="Pullback Risk" score={es.pullbackRiskScore} band={es.pullbackRisk} reason={es.pullbackEvidence} inverse />
           <GaugeCard label="Confidence" score={es.confidenceScore} band={es.overallConfidence} reason="Core evidence coverage" />
         </div>
       </Section>
@@ -304,29 +311,39 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
       </Section>
 
       {/* 4. Wallet Intelligence */}
-      <Section title="Wallet Intelligence" subtitle={`${report.walletIntelligence.eventCount} verified monitored events`}>
-        <div className={styles.walletSummary}>
-          <StatTile label="Net whale flow" value={report.walletIntelligence.netWhaleFlowUsd == null ? '—' : `${report.walletIntelligence.netWhaleFlowUsd >= 0 ? '+' : '-'}${fmtUsd(Math.abs(report.walletIntelligence.netWhaleFlowUsd))}`} sub="Monitored wallet feed" />
-          <StatTile label="Smart wallet events" value={report.walletIntelligence.trackedWalletActivity.length.toLocaleString()} sub="Tracked addresses" />
-          <StatTile label="Suspicious clusters" value="—" sub="No verified EVM evidence" />
-        </div>
-        <div className={styles.twoColumn} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '18px' }}>
-          <div>
-            <div style={{ fontSize: '10px', fontWeight: 700, color: '#4ade80', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '4px' }}>Largest Buyers</div>
-            {report.walletIntelligence.largestBuyers.length === 0 ? <Empty text="No verified wallet evidence yet." /> : report.walletIntelligence.largestBuyers.map((w, i) => <WalletRowView key={i} w={w} />)}
+      {/* WALLET-INTELLIGENCE COLLAPSE FIX, DISCLOSED (requested: "do not show a huge empty section" —
+          when the whale-alert feed has zero events for this contract, the full buyer/seller/creator/
+          cluster grid rendered as a wall of "No verified wallet evidence yet." rows). Collapses to a
+          single compact line whenever there is truly nothing to show. */}
+      {report.walletIntelligence.eventCount === 0 ? (
+        <Section title="Wallet Intelligence">
+          <div style={{ fontSize: '11.5px', color: '#64748b' }}>Wallet-level buyer/seller evidence not available for this chain/provider yet.</div>
+        </Section>
+      ) : (
+        <Section title="Wallet Intelligence" subtitle={`${report.walletIntelligence.eventCount} verified monitored events`}>
+          <div className={styles.walletSummary}>
+            <StatTile label="Net whale flow" value={report.walletIntelligence.netWhaleFlowUsd == null ? '—' : `${report.walletIntelligence.netWhaleFlowUsd >= 0 ? '+' : '-'}${fmtUsd(Math.abs(report.walletIntelligence.netWhaleFlowUsd))}`} sub="Monitored wallet feed" />
+            <StatTile label="Smart wallet events" value={report.walletIntelligence.trackedWalletActivity.length.toLocaleString()} sub="Tracked addresses" />
+            <StatTile label="Suspicious clusters" value="—" sub="No verified EVM evidence" />
           </div>
-          <div>
-            <div style={{ fontSize: '10px', fontWeight: 700, color: '#f87171', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '4px' }}>Largest Sellers</div>
-            {report.walletIntelligence.largestSellers.length === 0 ? <Empty text="No verified wallet evidence yet." /> : report.walletIntelligence.largestSellers.map((w, i) => <WalletRowView key={i} w={w} />)}
+          <div className={styles.twoColumn} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '18px' }}>
+            <div>
+              <div style={{ fontSize: '10px', fontWeight: 700, color: '#4ade80', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '4px' }}>Largest Buyers</div>
+              {report.walletIntelligence.largestBuyers.length === 0 ? <Empty text="No verified wallet evidence yet." /> : report.walletIntelligence.largestBuyers.map((w, i) => <WalletRowView key={i} w={w} />)}
+            </div>
+            <div>
+              <div style={{ fontSize: '10px', fontWeight: 700, color: '#f87171', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: '4px' }}>Largest Sellers</div>
+              {report.walletIntelligence.largestSellers.length === 0 ? <Empty text="No verified wallet evidence yet." /> : report.walletIntelligence.largestSellers.map((w, i) => <WalletRowView key={i} w={w} />)}
+            </div>
           </div>
-        </div>
-        <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ fontSize: '11px', color: '#94a3b8' }}>Creator activity</span><ConfBadge confidence={report.walletIntelligence.creatorActivity.confidence} /></div>
-          <span className={styles.compactEvidence}>{compactEvidence(report.walletIntelligence.creatorActivity.evidence)}</span>
-          <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px' }}><span style={{ fontSize: '11px', color: '#94a3b8' }}>Cluster / insider concentration</span><ConfBadge confidence={report.walletIntelligence.clusterAnalysis.confidence} /></div>
-          <span className={styles.compactEvidence}>{compactEvidence(report.walletIntelligence.clusterAnalysis.evidence)}</span>
-        </div>
-      </Section>
+          <div style={{ marginTop: '14px', paddingTop: '14px', borderTop: '1px solid rgba(255,255,255,0.08)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ fontSize: '11px', color: '#94a3b8' }}>Creator activity</span><ConfBadge confidence={report.walletIntelligence.creatorActivity.confidence} /></div>
+            <span className={styles.compactEvidence}>{compactEvidence(report.walletIntelligence.creatorActivity.evidence)}</span>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '6px' }}><span style={{ fontSize: '11px', color: '#94a3b8' }}>Cluster / insider concentration</span><ConfBadge confidence={report.walletIntelligence.clusterAnalysis.confidence} /></div>
+            <span className={styles.compactEvidence}>{compactEvidence(report.walletIntelligence.clusterAnalysis.evidence)}</span>
+          </div>
+        </Section>
+      )}
 
       {/* 5. Risk Analysis */}
       <Section title="Risk Analysis">

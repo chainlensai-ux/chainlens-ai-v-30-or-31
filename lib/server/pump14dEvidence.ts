@@ -75,6 +75,18 @@ export type MomentumFallbackInput = {
     // that don't need them (evaluateMomentumFallback ignores these) stay unaffected.
     marketCapUsd?: number | null
     fdvUsd?: number | null
+    // PUMP-REPORT BUYS/SELLS FIX, DISCLOSED: DexScreener's pair.txns object reports real buy/sell
+    // counts per window (h24/h6/h1) — read here from the same response, zero extra network cost.
+    buys24h?: number | null
+    sells24h?: number | null
+    buys6h?: number | null
+    sells6h?: number | null
+    buys1h?: number | null
+    sells1h?: number | null
+    // WRONG-CHAIN GUARD, DISCLOSED (hard rule: "Do NOT use wrong-chain pools"): DexScreener's own
+    // chainId string for this pair, so a caller matching a specific chain can verify the pair it got
+    // back is actually on that chain before trusting any of its data.
+    chainId?: string | null
   } | null
 }
 
@@ -173,10 +185,12 @@ async function fetchDexScreenerPairMomentumOnce(pairAddress: string, signal: Abo
     if (!pair || typeof pair !== 'object') return { ok: false, data: null }
     const pc = pair.priceChange as Record<string, unknown> | undefined
     const vol = pair.volume as Record<string, unknown> | undefined
+    const txns = pair.txns as Record<string, Record<string, unknown> | undefined> | undefined
     const num = (v: unknown): number | null => {
       const n = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN
       return Number.isFinite(n) ? n : null
     }
+    const txnField = (window: string, side: 'buys' | 'sells'): number | null => num(txns?.[window]?.[side])
     return {
       ok: true,
       data: {
@@ -194,6 +208,15 @@ async function fetchDexScreenerPairMomentumOnce(pairAddress: string, signal: Abo
         // the pair object — a real, provider-computed value, not something derived here.
         marketCapUsd: num(pair.marketCap),
         fdvUsd: num(pair.fdv),
+        // PUMP-REPORT BUYS/SELLS FIX, DISCLOSED: real per-window buy/sell counts from the same
+        // response — never estimated from volume.
+        buys24h: txnField('h24', 'buys'),
+        sells24h: txnField('h24', 'sells'),
+        buys6h: txnField('h6', 'buys'),
+        sells6h: txnField('h6', 'sells'),
+        buys1h: txnField('h1', 'buys'),
+        sells1h: txnField('h1', 'sells'),
+        chainId: typeof pair.chainId === 'string' ? pair.chainId : null,
       },
     }
   } catch {

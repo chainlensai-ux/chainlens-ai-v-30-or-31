@@ -15,6 +15,7 @@ const tests = [
   'test-pump-alerts-discovery.mjs',
   'test-pump-7d-fallback.mjs',
   'test-pump-snapshots.mjs',
+  'test-pump-intelligence-report.mjs',
   'test-clark-context-memory.mjs',
   'test-clark-radar-whale-toolcalls.mjs',
   'test-clark-risk-intent.mjs',

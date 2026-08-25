@@ -46,7 +46,12 @@ export interface Catalyst {
 
 export interface RiskFactor {
   label: string
-  status: 'confirmed' | 'possible' | 'clear' | 'unknown'
+  // UNSUPPORTED-VS-UNKNOWN FIX, DISCLOSED (requested: "If unsupported, label as 'Unsupported on this
+  // chain/provider' instead of generic Unknown"). 'unknown' means this token's own data COULD exist
+  // but didn't resolve this read (worth retrying); 'unsupported' means no resolver exists anywhere in
+  // this system for this chain/module at all (retrying never helps) — collapsing both into "Unknown"
+  // hid that distinction from the reader.
+  status: 'confirmed' | 'possible' | 'clear' | 'unknown' | 'unsupported'
   confidence: Confidence
   evidence: string
   impact: 'high' | 'medium' | 'low'
@@ -93,6 +98,7 @@ export interface PumpIntelligenceReport {
   executiveSummary: {
     momentumScore: number | null
     momentumConfidence: Confidence
+    momentumEvidence: string
     continuationScore: number | null
     continuationProbability: 'high' | 'medium' | 'low' | 'unavailable'
     continuationEvidence: string
@@ -109,7 +115,12 @@ export interface PumpIntelligenceReport {
   marketStructure: {
     buys24h: number | null
     sells24h: number | null
+    txns24h: number | null
     buySellRatio: number | null
+    // Which real source resolved buys/sells — GeckoTerminal (via /api/token's poolActivity) is tried
+    // first since it's already the authoritative source elsewhere in this app; DexScreener is the
+    // fallback when that didn't resolve. 'none' when neither provider had it — never fabricated.
+    txnsSource: 'geckoterminal' | 'dexscreener' | 'none'
     liquidityUsd: number | null
     liquidityTrend: EvidenceItem<null>
     volume24hUsd: number | null
@@ -153,6 +164,8 @@ export interface PumpIntelligenceReport {
   timeline: TimelineEvent[]
 
   evidenceGaps: string[]
+
+  dataResolutionAudit: PumpReportDataResolutionAudit
 }
 
 export interface PumpAlertInput {
@@ -161,14 +174,67 @@ export interface PumpAlertInput {
   contract: string
   priceUsd: number | null
   change24h: number | null
-  // 7d change is the gate a token had to clear to be a Pump Alert at all, so the report must be
-  // able to show the evidence it was selected on — not just the 24h move.
+  // 7d/14d change is the gate a token had to clear to be a Pump Alert at all, so the report must be
+  // able to show the evidence it was selected on — not just the 24h move. Pump Alerts' real evidence
+  // ladder produces a 14d figure (see pump14dEvidence.ts), so this carries either — the report shows
+  // it honestly as "Exact 7d/14d unavailable" when neither resolved, never fabricated.
   change7d?: number | null
+  // LIVE-EVIDENCE REPORT FIX, DISCLOSED (requested audit: "too many core fields show Unavailable").
+  // The Pump Alert card already has 6h/1h change, market cap, pool age, pair address and evidence
+  // mode — none of that reached this module before, so momentum/continuation/pullback had no signal
+  // to compute from unless the internal /api/token CORTEX call happened to fully resolve. Seeding
+  // these here lets the report compute real scores from the SAME evidence the card already showed,
+  // with CORTEX data (when it resolves) layered on top as a confidence upgrade, not a hard requirement.
+  change6h?: number | null
+  change1h?: number | null
+  marketCapUsd?: number | null
+  tokenAgeDays?: number | null
+  pairAddress?: string | null
+  evidenceGrade?: 'exact' | 'live_momentum' | null
   volume24hUsd: number | null
   liquidityUsd: number | null
   fdvUsd: number | null
   reason: string
   riskLevel: 'HIGH' | 'MEDIUM' | 'LOW'
+}
+
+// DexScreener transaction-count evidence, normalized separately from the poolActivity object
+// /api/token already returns (which sources buys/sells from GeckoTerminal) — this is a second real
+// provider, tried when GeckoTerminal's own count didn't resolve, never a computed/guessed number.
+export interface DexScreenerTxnEvidence {
+  buys24h: number | null
+  sells24h: number | null
+  buys6h: number | null
+  sells6h: number | null
+  buys1h: number | null
+  sells1h: number | null
+}
+
+export interface PumpReportDataResolutionAudit {
+  tokenAddress: string
+  chainSlug: string
+  pairAddress: string | null
+  openedFromAlert: boolean
+  alertPayloadReceived: boolean
+  fieldsFromAlertPayload: string[]
+  dexScreenerAttempted: boolean
+  dexScreenerSucceeded: boolean
+  dexScreenerFieldsResolved: string[]
+  geckoTerminalAttempted: boolean
+  geckoTerminalSucceeded: boolean
+  geckoFieldsResolved: string[]
+  snapshotsAttempted: boolean
+  snapshotsSucceeded: boolean
+  tokenScannerAttempted: boolean
+  tokenScannerSucceeded: boolean
+  tokenScannerFieldsResolved: string[]
+  whaleDataAttempted: boolean
+  whaleDataSucceeded: boolean
+  computedMomentumScore: number | null
+  computedContinuationProbability: string | null
+  computedPullbackRisk: string | null
+  unavailableFields: string[]
+  unavailableReasons: string[]
 }
 
 // Minimal slice of /api/token's response this module actually reads — deliberately typed loose
@@ -192,14 +258,149 @@ function pick<T = unknown>(obj: Record<string, unknown> | null | undefined, path
   return (cur ?? null) as T | null
 }
 
+// ─── Live-evidence scoring (requested audit: "core scores must compute whenever live market
+// evidence exists, not just when the full CORTEX read resolves") ─────────────────────────────────
+// Pure, deterministic composites of REAL inputs only — every term is gated on that input actually
+// being present, so missing data contributes nothing (never treated as a zero or a penalty). These
+// are always labeled 'live_estimate' evidence tier, distinct from a CORTEX-verified read, and never
+// claim to be the same thing.
+export type LiveScoreResult = { score: number | null; evidenceCount: number; parts: string[] }
+
+export function computeLiveMomentumScore(alert: PumpAlertInput): LiveScoreResult {
+  const parts: string[] = []
+  let evidenceCount = 0
+  if (alert.change24h == null && alert.volume24hUsd == null && alert.liquidityUsd == null) {
+    return { score: null, evidenceCount: 0, parts }
+  }
+  let score = 50
+  if (alert.change24h != null) {
+    evidenceCount += 1
+    const bump = alert.change24h >= 0 ? Math.min(alert.change24h / 2, 30) : -Math.min(Math.abs(alert.change24h) / 2, 20)
+    score += bump
+    parts.push(`24h change ${alert.change24h >= 0 ? '+' : ''}${alert.change24h.toFixed(1)}%`)
+  }
+  if (alert.change6h != null && alert.change1h != null) {
+    evidenceCount += 1
+    if (alert.change6h > 0 && alert.change1h > 0) { score += 8; parts.push('6h/1h still positive (accelerating)') }
+    else if (alert.change24h != null && alert.change24h > 0 && alert.change1h < 0) { score -= 8; parts.push('1h has turned negative (fading)') }
+  }
+  if (alert.volume24hUsd != null && alert.liquidityUsd != null && alert.liquidityUsd > 0) {
+    evidenceCount += 1
+    const ratio = alert.volume24hUsd / alert.liquidityUsd
+    if (ratio >= 3) { score += 10; parts.push(`volume/liquidity ${ratio.toFixed(1)}x (high turnover)`) }
+    else if (ratio < 0.3) { score -= 8; parts.push(`volume/liquidity ${ratio.toFixed(2)}x (stagnant)`) }
+  }
+  if (alert.liquidityUsd != null) {
+    evidenceCount += 1
+    if (alert.liquidityUsd >= 100_000) { score += 5; parts.push('liquidity depth ≥ $100K') }
+    else if (alert.liquidityUsd < 10_000) { score -= 10; parts.push('liquidity depth < $10K (thin)') }
+  }
+  const capTier = alert.fdvUsd ?? alert.marketCapUsd
+  if (capTier != null) {
+    evidenceCount += 1
+    if (capTier <= 1_000_000) { score += 3; parts.push('low FDV/MCap tier') }
+    else if (capTier >= 20_000_000) { score -= 8; parts.push('high FDV/MCap tier') }
+  }
+  if (alert.riskLevel === 'HIGH') { score -= 12; parts.push('HIGH risk level penalty') }
+  else if (alert.riskLevel === 'MEDIUM') { score -= 4; parts.push('MEDIUM risk level penalty') }
+  return { score: Math.round(Math.max(0, Math.min(100, score))), evidenceCount, parts }
+}
+
+export function computeLiveContinuationProbability(
+  alert: PumpAlertInput, buys24h: number | null, sells24h: number | null,
+): { band: 'high' | 'medium' | 'low' | 'unavailable'; points: number; maxPoints: number; parts: string[] } {
+  if (alert.change24h == null) return { band: 'unavailable', points: 0, maxPoints: 0, parts: [] }
+  const parts: string[] = []
+  let points = 0
+  let maxPoints = 0
+  maxPoints += 1
+  if (alert.change24h > 0) { points += 1; parts.push('positive 24h momentum') }
+  if (alert.change6h != null || alert.change1h != null) {
+    maxPoints += 1
+    if ((alert.change6h ?? 0) > 0 || (alert.change1h ?? 0) > 0) { points += 1; parts.push('short-window momentum still positive') }
+  }
+  if (alert.volume24hUsd != null && alert.liquidityUsd != null && alert.liquidityUsd > 0) {
+    maxPoints += 1
+    if (alert.volume24hUsd / alert.liquidityUsd >= 1.5) { points += 1; parts.push('healthy volume/liquidity ratio') }
+  }
+  if (alert.liquidityUsd != null) {
+    maxPoints += 1
+    if (alert.liquidityUsd >= 50_000) { points += 1; parts.push('adequate liquidity depth') }
+  }
+  const capTier = alert.fdvUsd ?? alert.marketCapUsd
+  if (capTier != null) {
+    maxPoints += 1
+    if (capTier <= 10_000_000) { points += 1; parts.push('FDV/MCap tier leaves room to grow') }
+  }
+  maxPoints += 1
+  if (alert.riskLevel !== 'HIGH') { points += 1; parts.push('not flagged HIGH risk') }
+  if (buys24h != null && sells24h != null && buys24h + sells24h > 0) {
+    maxPoints += 2
+    const ratio = sells24h > 0 ? buys24h / sells24h : buys24h > 0 ? 2 : 1
+    if (ratio > 1) { points += 2; parts.push(`buy/sell ratio ${ratio.toFixed(2)}:1`) }
+    else if (ratio < 0.8) { points -= 1; parts.push(`buy/sell ratio ${ratio.toFixed(2)}:1 (sell pressure)`) }
+  }
+  const ratioOfMax = maxPoints > 0 ? points / maxPoints : 0
+  const band: 'high' | 'medium' | 'low' = ratioOfMax >= 0.7 ? 'high' : ratioOfMax >= 0.4 ? 'medium' : 'low'
+  return { band, points, maxPoints, parts }
+}
+
+export function computeLivePullbackRisk(
+  alert: PumpAlertInput, hasTokenAnalysis: boolean, honeypotResolved: boolean,
+): { band: 'high' | 'medium' | 'low' | 'unavailable'; points: number; parts: string[] } {
+  if (alert.change24h == null && alert.liquidityUsd == null) return { band: 'unavailable', points: 0, parts: [] }
+  const parts: string[] = []
+  let points = 0
+  if (alert.change24h != null) {
+    if (alert.change24h >= 200) { points += 2; parts.push(`extreme 24h pump (+${alert.change24h.toFixed(0)}%)`) }
+    else if (alert.change24h >= 100) { points += 1; parts.push(`large 24h pump (+${alert.change24h.toFixed(0)}%)`) }
+  }
+  if (alert.liquidityUsd != null) {
+    if (alert.liquidityUsd < 10_000) { points += 2; parts.push('very thin liquidity (<$10K)') }
+    else if (alert.liquidityUsd < 30_000) { points += 1; parts.push('thin liquidity (<$30K)') }
+  }
+  if (alert.volume24hUsd != null && alert.liquidityUsd != null && alert.liquidityUsd > 0) {
+    const ratio = alert.volume24hUsd / alert.liquidityUsd
+    if (ratio >= 5) { points += 2; parts.push(`extreme volume/liquidity ratio (${ratio.toFixed(1)}x)`) }
+    else if (ratio >= 3) { points += 1; parts.push(`high volume/liquidity ratio (${ratio.toFixed(1)}x)`) }
+  }
+  if (alert.tokenAgeDays != null) {
+    if (alert.tokenAgeDays < 0.25) { points += 2; parts.push('very young pool (<6h old)') }
+    else if (alert.tokenAgeDays < 1) { points += 1; parts.push('young pool (<24h old)') }
+  }
+  const capTier = alert.fdvUsd ?? alert.marketCapUsd
+  if (capTier != null && capTier >= 20_000_000) { points += 1; parts.push('high FDV/MCap tier') }
+  if (!hasTokenAnalysis) { points += 1; parts.push('LP control unresolved') }
+  if (!honeypotResolved) { points += 1; parts.push('tax/honeypot status unresolved') }
+  const band: 'high' | 'medium' | 'low' = points >= 6 ? 'high' : points >= 3 ? 'medium' : 'low'
+  return { band, points, parts }
+}
+
 export function buildPumpIntelligenceReport(params: {
   alert: PumpAlertInput
   chain: string
   tokenAnalysis: TokenAnalysisSlice | null
   whaleRows: WhaleAlertRow[]
   trackedAddresses: Set<string>
+  // LIVE-EVIDENCE REPORT FIX, DISCLOSED: everything below is optional and additive — a caller that
+  // only ever had tokenAnalysis/whaleRows (the original shape) still gets a correct, if narrower,
+  // report. When provided, these let momentum/continuation/pullback and buys/sells compute from
+  // real second-source evidence instead of depending entirely on the internal /api/token call.
+  dexScreenerTxns?: DexScreenerTxnEvidence | null
+  dexScreenerAttempted?: boolean
+  dexScreenerSucceeded?: boolean
+  snapshotChange14d?: number | null
+  snapshotsAttempted?: boolean
+  snapshotsSucceeded?: boolean
+  tokenScannerAttempted?: boolean
+  whaleDataAttempted?: boolean
 }): PumpIntelligenceReport {
-  const { alert, chain, tokenAnalysis, whaleRows, trackedAddresses } = params
+  const {
+    alert, chain, tokenAnalysis, whaleRows, trackedAddresses,
+    dexScreenerTxns = null, dexScreenerAttempted = false, dexScreenerSucceeded = false,
+    snapshotChange14d = null, snapshotsAttempted = false, snapshotsSucceeded = false,
+    tokenScannerAttempted = tokenAnalysis != null, whaleDataAttempted = true,
+  } = params
   const evidenceGaps: string[] = []
   const gap = (msg: string) => { evidenceGaps.push(msg) }
 
@@ -216,13 +417,29 @@ export function buildPumpIntelligenceReport(params: {
   const lpIntelligence = pick<Record<string, unknown>>(riskEngine, ['lpIntelligence'])
   const lpRisk = pick<Record<string, unknown>>(riskEngine, ['lpRisk'])
 
-  const buys24h = pick<number>(poolActivity, ['buys24h'])
-  const sells24h = pick<number>(poolActivity, ['sells24h'])
+  // BUYS/SELLS NORMALIZATION FIX, DISCLOSED: GeckoTerminal (via /api/token's poolActivity) is tried
+  // first since it's already this app's authoritative pool-activity source; DexScreener's txns.h24
+  // fields are the fallback when GeckoTerminal's own count didn't resolve — never both merged into
+  // one guessed number, and never a fabricated count when neither provider has it.
+  const gtBuys24h = pick<number>(poolActivity, ['buys24h'])
+  const gtSells24h = pick<number>(poolActivity, ['sells24h'])
+  let buys24h: number | null = gtBuys24h
+  let sells24h: number | null = gtSells24h
+  let txnsSource: 'geckoterminal' | 'dexscreener' | 'none' = gtBuys24h != null && gtSells24h != null ? 'geckoterminal' : 'none'
+  if (txnsSource === 'none' && dexScreenerTxns && dexScreenerTxns.buys24h != null && dexScreenerTxns.sells24h != null) {
+    buys24h = dexScreenerTxns.buys24h
+    sells24h = dexScreenerTxns.sells24h
+    txnsSource = 'dexscreener'
+  }
+  const txns24h = buys24h != null && sells24h != null ? buys24h + sells24h : null
+
   const pairCreatedAt = pick<string>(poolActivity, ['pairCreatedAt'])
-  const ageHours = pairCreatedAt ? (Date.now() - new Date(pairCreatedAt).getTime()) / 3_600_000 : null
+  const ageHours = pairCreatedAt
+    ? (Date.now() - new Date(pairCreatedAt).getTime()) / 3_600_000
+    : (alert.tokenAgeDays != null ? alert.tokenAgeDays * 24 : null)
   const holderCount = pick<number>(holderResolver, ['holderCount']) ?? pick<number>(tokenAnalysis, ['holderCount'])
   const holderCountCapped = pick<boolean>(tokenAnalysis, ['holderCountCapped']) ?? false
-  const marketCapUsd = pick<number>(tokenAnalysis, ['marketCap', 'value']) ?? pick<number>(tokenAnalysis, ['marketCapUsd'])
+  const marketCapUsd = pick<number>(tokenAnalysis, ['marketCap', 'value']) ?? pick<number>(tokenAnalysis, ['marketCapUsd']) ?? alert.marketCapUsd ?? null
 
   const rugRiskScore = pick<number>(riskEngine, ['rugRiskScore'])
   const rugRiskLabel = pick<string>(riskEngine, ['rugRiskLabel'])
@@ -230,44 +447,88 @@ export function buildPumpIntelligenceReport(params: {
   const openChecks = pick<string[]>(riskEngine, ['openChecks']) ?? []
   const verifiedSignals = pick<string[]>(riskEngine, ['verifiedSignals']) ?? []
   const clarkInterpretation = pick<string>(riskEngine, ['clarkInterpretation'])
+  const change7dOrExact = alert.change7d ?? snapshotChange14d ?? null
+
+  // Whether the honeypot simulation resolved at all (true/false result), independent of what it
+  // found — a resolved `false` (confirmed not a honeypot) must NOT be treated as "unresolved" just
+  // because false is falsy, so this is checked with != null rather than a truthiness check.
+  const honeypotResolved = (pick<boolean>(tokenAnalysis, ['honeypot', 'isHoneypot']) ?? pick<boolean>(tokenAnalysis, ['honeypot'])) != null
+
+  // ── Live-evidence scoring (requested: "compute if live evidence exists ... do not require exact
+  // 7d/14d"). Pure functions of real inputs only — every term is gated on the input actually being
+  // present, so a missing field contributes nothing rather than being treated as zero/negative. When
+  // CORTEX (rugRiskScore) also resolved, it's blended in as a confidence upgrade, never a requirement.
+  const liveMomentum = computeLiveMomentumScore(alert)
+  const liveContinuation = computeLiveContinuationProbability(alert, buys24h, sells24h)
+  const livePullback = computeLivePullbackRisk(alert, tokenAnalysis != null, honeypotResolved)
 
   // ── 1. Executive Summary ────────────────────────────────────────────────────────────────
   const buySellRatio = buys24h != null && sells24h != null && sells24h > 0 ? buys24h / sells24h : null
-  const momentumScore = rugRiskScore != null ? Math.max(0, 100 - rugRiskScore) : null
+
+  // MOMENTUM SCORE FIX, DISCLOSED: previously this was ONLY 100-rugRiskScore — null the instant the
+  // internal /api/token call didn't fully resolve, even though the alert already carried real 24h/
+  // 6h/1h price, volume, liquidity and FDV evidence. Now computed from that live evidence first
+  // (liveMomentum), then blended 50/50 with the CORTEX inverse-risk score when it resolves — CORTEX
+  // presence upgrades confidence from a live estimate to a higher-confidence read, it doesn't gate
+  // whether a score exists at all.
+  const cortexMomentum = rugRiskScore != null ? Math.max(0, 100 - rugRiskScore) : null
+  let momentumScore: number | null = null
+  let momentumConfidence: Confidence = 'unavailable'
+  if (liveMomentum.score != null && cortexMomentum != null) {
+    momentumScore = Math.round((liveMomentum.score + cortexMomentum) / 2)
+    momentumConfidence = 'high'
+  } else if (cortexMomentum != null) {
+    momentumScore = cortexMomentum
+    momentumConfidence = 'medium'
+  } else if (liveMomentum.score != null) {
+    momentumScore = liveMomentum.score
+    momentumConfidence = liveMomentum.evidenceCount >= 3 ? 'medium' : 'low'
+  } else {
+    gap('Momentum score unavailable — neither live market evidence (price/volume/liquidity) nor the CORTEX risk read resolved for this token.')
+  }
+  const momentumEvidenceNote = liveMomentum.score != null
+    ? (cortexMomentum != null ? `Blended: live market structure (${liveMomentum.parts.join(', ') || 'limited evidence'}) + CORTEX risk read.` : `Live estimate from ${liveMomentum.parts.join(', ') || 'available market evidence'} — CORTEX risk read unavailable.`)
+    : 'CORTEX inverse risk score.'
+
   const continuationScore = buys24h != null && sells24h != null && buys24h + sells24h > 0
     ? Math.round((buys24h / (buys24h + sells24h)) * 100)
-    : null
-  const pullbackRiskScore = rugRiskScore ?? null
-  if (rugRiskScore == null) gap('Momentum score unavailable — CORTEX risk read did not resolve for this token.')
+    : (liveContinuation.band !== 'unavailable' ? Math.round((liveContinuation.maxPoints > 0 ? liveContinuation.points / liveContinuation.maxPoints : 0) * 100) : null)
 
-  let continuationProbability: 'high' | 'medium' | 'low' | 'unavailable' = 'unavailable'
+  // CONTINUATION PROBABILITY FIX, DISCLOSED: previously required BOTH a resolved buy/sell ratio AND
+  // LP-risk data — unavailable for essentially every live-momentum alert. Now always computed when
+  // any live evidence exists; buy/sell split (when it resolved) adds real weight but is no longer a
+  // hard requirement, per spec: "if unavailable, still compute with lower confidence."
+  const continuationProbability: 'high' | 'medium' | 'low' | 'unavailable' = liveContinuation.band
   let continuationEvidence = 'Insufficient verified signals to estimate continuation.'
-  if (buySellRatio != null && lpRisk) {
-    const lpConfidence = pick<string>(lpRisk, ['confidence'])
-    if (buySellRatio > 1.3 && (lpConfidence === 'high' || lpConfidence === 'medium')) {
-      continuationProbability = 'medium'
-      continuationEvidence = `Buy/sell ratio is ${buySellRatio.toFixed(2)}:1 over 24h with ${lpConfidence}-confidence LP data — demand is currently outweighing supply, but this is a 24h snapshot, not a trend.`
-    } else if (buySellRatio < 0.8) {
-      continuationProbability = 'low'
-      continuationEvidence = `Buy/sell ratio is ${buySellRatio.toFixed(2)}:1 over 24h — sell pressure currently exceeds buy pressure.`
-    } else {
-      continuationProbability = 'low'
-      continuationEvidence = `Buy/sell ratio is ${buySellRatio.toFixed(2)}:1 — roughly balanced, no clear directional edge.`
-    }
+  if (liveContinuation.band !== 'unavailable') {
+    const base = liveContinuation.parts.length > 0 ? liveContinuation.parts.join(', ') : 'limited live evidence'
+    continuationEvidence = buySellRatio != null
+      ? `${base} (buy/sell ratio ${buySellRatio.toFixed(2)}:1).`
+      : `Estimated from live market structure — buy/sell split unavailable. Signals: ${base}.`
   } else {
-    gap('Continuation probability unavailable — real-time buy/sell transaction counts did not resolve.')
+    gap('Continuation probability unavailable — no live price/volume evidence and real-time buy/sell counts did not resolve.')
   }
 
-  let pullbackRisk: 'high' | 'medium' | 'low' | 'unavailable' = 'unavailable'
-  let pullbackEvidence = 'Insufficient verified signals to estimate pullback risk.'
+  // PULLBACK RISK FIX, DISCLOSED: previously required rugRiskLabel (CORTEX-only). Now computed from
+  // live pump-size/liquidity/age/FDV/unresolved-LP/unresolved-honeypot signals whenever ANY of that
+  // evidence exists, matching the spec's explicit input list; CORTEX's label (when it resolves) is
+  // taken as the stricter of the two reads, never softened by the live estimate.
+  let pullbackRisk: 'high' | 'medium' | 'low' | 'unavailable' = livePullback.band
+  let pullbackRiskScore = livePullback.band !== 'unavailable' ? Math.min(100, livePullback.points * 14) : null
+  let pullbackEvidence = livePullback.parts.length > 0 ? `Live evidence: ${livePullback.parts.join(', ')}.` : 'Insufficient verified signals to estimate pullback risk.'
+  const bandRank = { unavailable: -1, low: 0, medium: 1, high: 2 } as const
   if (rugRiskLabel) {
-    pullbackRisk = rugRiskLabel === 'critical' || rugRiskLabel === 'high' ? 'high' : rugRiskLabel === 'watch' ? 'medium' : 'low'
-    pullbackEvidence = clarkInterpretation ?? `CORTEX risk label: ${rugRiskLabel}.`
-  } else {
-    gap('Pullback risk unavailable — CORTEX risk read did not resolve.')
+    const cortexBand: 'high' | 'medium' | 'low' = rugRiskLabel === 'critical' || rugRiskLabel === 'high' ? 'high' : rugRiskLabel === 'watch' ? 'medium' : 'low'
+    if (bandRank[cortexBand] >= bandRank[pullbackRisk]) {
+      pullbackRisk = cortexBand
+      pullbackRiskScore = rugRiskScore ?? pullbackRiskScore
+      pullbackEvidence = clarkInterpretation ?? `CORTEX risk label: ${rugRiskLabel}.${livePullback.parts.length > 0 ? ` Live signals: ${livePullback.parts.join(', ')}.` : ''}`
+    }
   }
+  if (pullbackRisk === 'unavailable') gap('Pullback risk unavailable — no live pump-size/liquidity/age evidence and the CORTEX risk read did not resolve.')
 
-  const overallConfidence: Confidence = tokenAnalysis == null ? 'unavailable'
+  const overallConfidence: Confidence = tokenAnalysis == null
+    ? (momentumScore != null ? 'low' : 'unavailable')
     : (rugRiskLabel === 'partial_data' || openChecks.length > 3) ? 'low'
     : openChecks.length > 0 ? 'medium' : 'high'
   const confidenceChecks = [rugRiskScore != null, buySellRatio != null, lpRisk != null, holderDistribution != null, riskEngine != null]
@@ -276,9 +537,10 @@ export function buildPumpIntelligenceReport(params: {
   const verdictParts: string[] = []
   verdictParts.push(`${alert.symbol} ${alert.reason.toLowerCase()}.`)
   if (buySellRatio != null) verdictParts.push(`Real-time transactions show a ${buySellRatio.toFixed(2)}:1 buy/sell ratio over 24h.`)
+  else if (momentumScore != null) verdictParts.push(`Live momentum score ${momentumScore}/100 from real price/volume/liquidity evidence.`)
   if (riskDrivers.length > 0) verdictParts.push(`Key risk: ${riskDrivers[0]}.`)
   else if (verifiedSignals.length > 0) verdictParts.push(`Verified: ${verifiedSignals[0]}.`)
-  if (tokenAnalysis == null) verdictParts.push('Full CORTEX analysis was unavailable for this token — this read is based on pump-detection signals only.')
+  if (tokenAnalysis == null) verdictParts.push('Full CORTEX analysis was unavailable for this token — this read is based on live pump-detection market evidence only.')
   const verdict = verdictParts.join(' ')
 
   // ── 2. Why It Pumped (catalysts, ranked) ────────────────────────────────────────────────
@@ -340,7 +602,9 @@ export function buildPumpIntelligenceReport(params: {
   const marketStructure = {
     buys24h,
     sells24h,
+    txns24h,
     buySellRatio,
+    txnsSource,
     liquidityUsd: alert.liquidityUsd,
     liquidityTrend: { value: null, confidence: 'unavailable' as Confidence, evidence: 'Liquidity is only ever observed as a point-in-time snapshot — no historical liquidity series is stored anywhere in this system.' },
     volume24hUsd: alert.volume24hUsd,
@@ -351,12 +615,14 @@ export function buildPumpIntelligenceReport(params: {
     marketCapUsd,
     ageHours,
     priceChange24h: alert.change24h,
-    priceChange7d: alert.change7d ?? null,
+    priceChange7d: change7dOrExact,
     top1HolderPercent: pick<number>(holderDistribution, ['top1']),
     top10HolderPercent: pick<number>(holderDistribution, ['top10']),
   }
   if (holderCount == null) gap('Holder count unavailable for this token.')
   if (ageHours == null) gap('Pool age unavailable — pool creation timestamp did not resolve.')
+  if (change7dOrExact == null) gap('Exact 7d/14d change unavailable — GeckoTerminal OHLCV and internal snapshots did not resolve; this does not affect the live Momentum Score above.')
+  if (txnsSource === 'none') gap('Buys/sells unavailable — neither GeckoTerminal nor DexScreener transaction counts resolved for this pool.')
 
   // ── 4. Wallet Intelligence ──────────────────────────────────────────────────────────────
   const toWalletRow = (r: WhaleAlertRow): WalletRow => ({
@@ -437,10 +703,12 @@ export function buildPumpIntelligenceReport(params: {
     evidence: pick<string>(sniperActivity, ['reason']) ?? (sniperCount != null ? `${sniperCount} sniper signal(s) detected from abnormal early transaction volume.` : 'Sniper analysis did not resolve.'),
     impact: sniperDetected === true ? 'medium' : 'low',
   })
-  riskAnalysis.push({ label: 'Creator selling', status: 'unknown', confidence: 'unavailable', evidence: 'Creator wallet resolution is not available for Base tokens — cannot confirm or rule out creator-wallet sells.', impact: 'medium' })
-  riskAnalysis.push({ label: 'Wash trading', status: 'unknown', confidence: 'unavailable', evidence: 'Wash-trading detection is not implemented for any chain in this system.', impact: 'medium' })
-  riskAnalysis.push({ label: 'Bundle activity', status: 'unknown', confidence: 'unavailable', evidence: 'Bundle-buy detection is not implemented in this system.', impact: 'low' })
-  riskAnalysis.push({ label: 'Bot activity', status: 'unknown', confidence: 'unavailable', evidence: 'Bot-trading detection is not implemented in this system.', impact: 'low' })
+  // UNSUPPORTED-VS-UNKNOWN FIX, DISCLOSED: these four have no resolver anywhere in this codebase for
+  // this chain (permanent, not a failed read this cycle) — 'unsupported', not 'unknown'.
+  riskAnalysis.push({ label: 'Creator selling', status: 'unsupported', confidence: 'unavailable', evidence: 'Creator wallet resolution is not available for Base/EVM tokens — cannot confirm or rule out creator-wallet sells.', impact: 'medium' })
+  riskAnalysis.push({ label: 'Wash trading', status: 'unsupported', confidence: 'unavailable', evidence: 'Wash-trading detection is not implemented for any chain in this system.', impact: 'medium' })
+  riskAnalysis.push({ label: 'Bundle activity', status: 'unsupported', confidence: 'unavailable', evidence: 'Bundle-buy detection is not implemented in this system.', impact: 'low' })
+  riskAnalysis.push({ label: 'Bot activity', status: 'unsupported', confidence: 'unavailable', evidence: 'Bot-trading detection is not implemented in this system.', impact: 'low' })
   const mintStatus = pick<string>(tokenAnalysis, ['ownerStatus'])
   riskAnalysis.push({
     label: 'Mint / owner risk',
@@ -521,7 +789,8 @@ export function buildPumpIntelligenceReport(params: {
     generatedAt: new Date().toISOString(),
     executiveSummary: {
       momentumScore,
-      momentumConfidence: momentumScore != null ? 'medium' : 'unavailable',
+      momentumConfidence,
+      momentumEvidence: momentumEvidenceNote,
       continuationScore,
       continuationProbability,
       continuationEvidence,
@@ -542,5 +811,45 @@ export function buildPumpIntelligenceReport(params: {
     watchlist,
     timeline: timeline.slice(0, 30),
     evidenceGaps,
+    dataResolutionAudit: {
+      tokenAddress: alert.contract,
+      chainSlug: chain,
+      pairAddress: alert.pairAddress ?? null,
+      openedFromAlert: true,
+      alertPayloadReceived: true,
+      fieldsFromAlertPayload: [
+        alert.priceUsd != null && 'priceUsd', alert.change24h != null && 'change24h',
+        alert.change6h != null && 'change6h', alert.change1h != null && 'change1h',
+        alert.change7d != null && 'change7d', alert.volume24hUsd != null && 'volume24hUsd',
+        alert.liquidityUsd != null && 'liquidityUsd', alert.fdvUsd != null && 'fdvUsd',
+        alert.marketCapUsd != null && 'marketCapUsd', alert.tokenAgeDays != null && 'tokenAgeDays',
+        alert.pairAddress != null && 'pairAddress', alert.evidenceGrade != null && 'evidenceGrade',
+      ].filter((v): v is string => typeof v === 'string'),
+      dexScreenerAttempted,
+      dexScreenerSucceeded,
+      dexScreenerFieldsResolved: [
+        txnsSource === 'dexscreener' && 'buys24h/sells24h',
+      ].filter((v): v is string => typeof v === 'string'),
+      geckoTerminalAttempted: tokenAnalysis != null || poolActivity != null,
+      geckoTerminalSucceeded: poolActivity != null,
+      geckoFieldsResolved: [
+        gtBuys24h != null && 'buys24h', gtSells24h != null && 'sells24h', pairCreatedAt != null && 'pairCreatedAt',
+      ].filter((v): v is string => typeof v === 'string'),
+      snapshotsAttempted,
+      snapshotsSucceeded,
+      tokenScannerAttempted,
+      tokenScannerSucceeded: tokenAnalysis != null,
+      tokenScannerFieldsResolved: [
+        rugRiskScore != null && 'rugRiskScore', holderCount != null && 'holderCount',
+        marketCapUsd != null && 'marketCapUsd', honeypotResolved && 'honeypot',
+      ].filter((v): v is string => typeof v === 'string'),
+      whaleDataAttempted,
+      whaleDataSucceeded: whaleRows.length > 0,
+      computedMomentumScore: momentumScore,
+      computedContinuationProbability: continuationProbability === 'unavailable' ? null : continuationProbability,
+      computedPullbackRisk: pullbackRisk === 'unavailable' ? null : pullbackRisk,
+      unavailableFields: evidenceGaps.map(g => g.split(' unavailable')[0]).filter((v, i, arr) => arr.indexOf(v) === i),
+      unavailableReasons: evidenceGaps,
+    },
   }
 }
