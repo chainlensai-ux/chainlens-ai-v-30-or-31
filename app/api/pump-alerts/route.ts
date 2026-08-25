@@ -1331,7 +1331,7 @@ export async function GET(req: Request) {
     const tidMcap = setTimeout(() => acMcap.abort(), 10_000)
     try {
       await mapWithConcurrencyLimit(marketCapFillTargets, 4, async alert => {
-        const result = await fetchDexScreenerPairMomentum(alert.pairAddress as string, acMcap.signal)
+        const result = await fetchDexScreenerPairMomentum(alert.chain, alert.pairAddress as string, acMcap.signal)
         const dsMarketCap = result?.data?.marketCapUsd
         if (result?.ok && dsMarketCap != null) alert.marketCapUsd = dsMarketCap
       })

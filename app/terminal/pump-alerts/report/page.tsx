@@ -207,13 +207,19 @@ function GaugeCard({ label, score, band, reason, inverse = false }: { label: str
   )
 }
 
-function MetricCard({ label, value, delta, status, source }: { label: string; value: string; delta: string; status: string; source: string }) {
+// UI STATE FIX, DISCLOSED (requested: "Replace huge 'Provider unavailable' text with smaller state:
+// 'Unavailable' — reason under it"). When a metric is unresolved, the big value slot now always
+// reads the short word "Unavailable" — never a full sentence at metricValue's large font size — and
+// the specific reason (which sources were tried) renders underneath in small text plus a hover
+// tooltip, matching "show source attempts in tooltip/dev audit, not huge UI text."
+function MetricCard({ label, value, delta, status, source, reason }: { label: string; value: string; delta: string; status: string; source: string; reason?: string }) {
   const color = status === 'Bullish' ? '#4ade80' : status === 'Risk' ? '#f87171' : status === 'Watch' ? '#fbbf24' : '#94a3b8'
+  const unavailable = value === 'Unavailable'
   return (
-    <div className={styles.metricCard}>
+    <div className={styles.metricCard} title={reason}>
       <div className={styles.metricLabel}>{label}</div>
-      <div className={styles.metricValue}>{value}</div>
-      <div className={styles.metricDelta}>{delta}</div>
+      <div className={styles.metricValue} style={unavailable ? { fontSize: '13px', color: '#64748b' } : undefined}>{value}</div>
+      <div className={styles.metricDelta}>{unavailable && reason ? reason : delta}</div>
       <div className={styles.metricFooter}><span style={{ color }}>{status}</span><span>{source}</span></div>
     </div>
   )
@@ -344,28 +350,38 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
   const impactOrder = { high: 0, medium: 1, low: 2 }
   const sortedCatalysts = [...report.catalysts].sort((a, b) => impactOrder[a.impact] - impactOrder[b.impact])
   const topRisk = report.riskAnalysis.find(r => r.status === 'confirmed') ?? report.riskAnalysis.find(r => r.status === 'possible')
-  // UI STATE FIX, DISCLOSED: swapped generic "No data" for specific states — "Exact 7d unavailable"
-  // makes clear only the exact-window figure is missing (Momentum Score above is unaffected), and
-  // Buys/Sells/Transactions now name which real provider resolved them (or "Provider unavailable"
-  // when neither GeckoTerminal nor DexScreener had it) instead of a bare dash.
-  const txnsSourceLabel = ms.txnsSource === 'geckoterminal' ? 'GeckoTerminal' : ms.txnsSource === 'dexscreener' ? 'DexScreener' : 'Provider unavailable'
+  // UI STATE FIX, DISCLOSED: swapped generic "No data"/"Provider unavailable" sentences for the
+  // short "Unavailable" value (see MetricCard) plus the REAL reason from the backend audit — never a
+  // guessed explanation. Market Cap and FDV are always independently sourced and labelled per the
+  // requested fallback order; Market Cap never silently reads the FDV number.
+  const txnsSourceLabel = ms.txnsSource === 'geckoterminal' ? 'GeckoTerminal' : ms.txnsSource === 'dexscreener' ? 'DexScreener' : 'None resolved'
+  const SOURCE_LABEL: Record<string, string> = {
+    alert_payload: 'Pump Alert card', dexscreener: 'DexScreener', token_scanner: 'Token Scanner',
+    internal_snapshot: 'Cached snapshot', none: 'None resolved',
+  }
   const marketMetrics = [
     // 7d/14d leads the grid: it is the gate this token had to clear to be a Pump Alert at all, so it
     // is the single most relevant number on the page. Shows an honest "Exact 7d unavailable" rather
-    // than falling back to the 24h figure when the exact-window series didn't resolve.
-    { label: '7d/14d change', value: ms.priceChange7d == null ? 'Exact 7d unavailable' : `${ms.priceChange7d > 0 ? '+' : ''}${ms.priceChange7d.toFixed(1)}%`, delta: '7d/14d · qualifying gate', status: ms.priceChange7d == null ? 'No data' : ms.priceChange7d >= 0 ? 'Bullish' : 'Risk', source: 'GeckoTerminal OHLCV / snapshots' },
-    { label: 'Price change', value: ms.priceChange24h == null ? '—' : `${ms.priceChange24h > 0 ? '+' : ''}${ms.priceChange24h.toFixed(1)}%`, delta: '24h', status: ms.priceChange24h == null ? 'No data' : ms.priceChange24h >= 0 ? 'Bullish' : 'Risk', source: 'DexScreener / GeckoTerminal' },
-    { label: 'Liquidity', value: fmtUsd(ms.liquidityUsd), delta: 'No stored delta', status: ms.liquidityUsd == null ? 'No data' : 'Live', source: 'DexScreener / GeckoTerminal' },
-    { label: 'Volume', value: fmtUsd(ms.volume24hUsd), delta: '24h total', status: ms.volume24hUsd == null ? 'No data' : 'Live', source: 'GeckoTerminal' },
-    { label: 'Buys / Sells', value: ms.buys24h != null && ms.sells24h != null ? `${ms.buys24h} / ${ms.sells24h}` : 'Provider unavailable', delta: ms.buySellRatio == null ? 'No ratio' : `${ms.buySellRatio.toFixed(2)}:1 ratio`, status: ms.buySellRatio == null ? 'No data' : ms.buySellRatio > 1 ? 'Bullish' : 'Watch', source: txnsSourceLabel },
-    { label: 'Transactions', value: ms.txns24h == null ? 'Provider unavailable' : ms.txns24h.toLocaleString(), delta: '24h total', status: ms.txns24h == null ? 'No data' : 'Live', source: txnsSourceLabel },
-    { label: 'FDV', value: fmtUsd(ms.fdvUsd), delta: 'Snapshot', status: ms.fdvUsd == null ? 'No data' : 'Live', source: 'DexScreener' },
-    { label: 'Market cap', value: fmtUsd(ms.marketCapUsd), delta: 'Snapshot', status: ms.marketCapUsd == null ? 'No data' : 'Live', source: 'Token analysis' },
-    { label: 'Pool age', value: fmtAge(ms.ageHours), delta: 'Since creation', status: ms.ageHours == null ? 'No data' : 'Live', source: 'GeckoTerminal' },
-    { label: 'Holders', value: ms.holderCount == null ? '—' : `${ms.holderCount.toLocaleString()}${ms.holderCountCapped ? '+' : ''}`, delta: 'No stored delta', status: ms.holderCount == null ? 'No data' : 'Live', source: 'GoldRush' },
-    { label: 'Top holder', value: ms.top1HolderPercent == null ? '—' : `${ms.top1HolderPercent.toFixed(1)}%`, delta: 'Supply share', status: ms.top1HolderPercent == null ? 'No data' : ms.top1HolderPercent > 20 ? 'Risk' : 'Live', source: 'Holder analysis' },
-    { label: 'Top 10 holders', value: ms.top10HolderPercent == null ? '—' : `${ms.top10HolderPercent.toFixed(1)}%`, delta: 'Supply share', status: ms.top10HolderPercent == null ? 'No data' : ms.top10HolderPercent > 50 ? 'Risk' : 'Live', source: 'Holder analysis' },
-    { label: 'Buy / sell ratio', value: ms.buySellRatio == null ? '—' : `${ms.buySellRatio.toFixed(2)}x`, delta: '24h', status: ms.buySellRatio == null ? 'No data' : ms.buySellRatio > 1 ? 'Bullish' : 'Watch', source: 'GeckoTerminal' },
+    // than falling back to the 24h figure when the exact-window series didn't resolve — this never
+    // affects the Momentum/Continuation/Pullback scores above, which compute from live evidence.
+    { label: '7d/14d change', value: ms.priceChange7d == null ? 'Unavailable' : `${ms.priceChange7d > 0 ? '+' : ''}${ms.priceChange7d.toFixed(1)}%`, delta: '7d/14d · qualifying gate', status: ms.priceChange7d == null ? 'No data' : ms.priceChange7d >= 0 ? 'Bullish' : 'Risk', source: 'GeckoTerminal OHLCV / snapshots', reason: ms.priceChange7d == null ? 'Exact 7d unavailable — OHLCV and internal snapshots did not resolve.' : undefined },
+    { label: 'Price change', value: ms.priceChange24h == null ? 'Unavailable' : `${ms.priceChange24h > 0 ? '+' : ''}${ms.priceChange24h.toFixed(1)}%`, delta: '24h', status: ms.priceChange24h == null ? 'No data' : ms.priceChange24h >= 0 ? 'Bullish' : 'Risk', source: 'DexScreener / GeckoTerminal' },
+    { label: 'Liquidity', value: ms.liquidityUsd == null ? 'Unavailable' : fmtUsd(ms.liquidityUsd), delta: 'No stored delta', status: ms.liquidityUsd == null ? 'No data' : 'Live', source: SOURCE_LABEL[ms.liquiditySource], reason: ms.liquidityUsd == null ? 'Neither the Pump Alert card nor DexScreener returned liquidity.' : undefined },
+    { label: 'Volume', value: ms.volume24hUsd == null ? 'Unavailable' : fmtUsd(ms.volume24hUsd), delta: '24h total', status: ms.volume24hUsd == null ? 'No data' : 'Live', source: 'GeckoTerminal' },
+    { label: 'Buys / Sells', value: ms.buys24h != null && ms.sells24h != null ? `${ms.buys24h} / ${ms.sells24h}` : 'Unavailable', delta: ms.buySellRatio == null ? 'No ratio' : `${ms.buySellRatio.toFixed(2)}:1 ratio`, status: ms.buySellRatio == null ? 'No data' : ms.buySellRatio > 1 ? 'Bullish' : 'Watch', source: txnsSourceLabel, reason: ms.txnsUnavailableReason ?? undefined },
+    { label: 'Transactions', value: ms.txns24h == null ? 'Unavailable' : ms.txns24h.toLocaleString(), delta: '24h total', status: ms.txns24h == null ? 'No data' : 'Live', source: txnsSourceLabel, reason: ms.txnsUnavailableReason ?? undefined },
+    // FDV is always its own independent card — resolved and sourced separately from Market Cap,
+    // never substituted for it.
+    { label: 'FDV', value: ms.fdvUsd == null ? 'Unavailable' : fmtUsd(ms.fdvUsd), delta: 'Snapshot', status: ms.fdvUsd == null ? 'No data' : 'Live', source: SOURCE_LABEL[ms.fdvSource], reason: ms.fdvUsd == null ? 'No supported provider returned FDV for this token.' : undefined },
+    // MARKET-CAP CARD FIX, DISCLOSED (hard rule: "Do NOT use FDV as market cap unless clearly
+    // labelled"): shows the real marketCapUsd when any of the 6 fallback tiers resolved it, or the
+    // exact required note when only FDV is available — never a silent FDV substitution, never $0.
+    { label: 'Market cap', value: ms.marketCapUsd == null ? 'Unavailable' : fmtUsd(ms.marketCapUsd), delta: 'Snapshot', status: ms.marketCapUsd == null ? 'No data' : 'Live', source: SOURCE_LABEL[ms.marketCapSource], reason: ms.marketCapUnavailableReason ?? undefined },
+    { label: 'Pool age', value: ms.ageHours == null ? 'Unavailable' : fmtAge(ms.ageHours), delta: 'Since creation', status: ms.ageHours == null ? 'No data' : 'Live', source: 'GeckoTerminal / DexScreener' },
+    { label: 'Holders', value: ms.holderCount == null ? 'Unavailable' : `${ms.holderCount.toLocaleString()}${ms.holderCountCapped ? '+' : ''}`, delta: 'No stored delta', status: ms.holderCount == null ? 'No data' : 'Live', source: 'GoldRush' },
+    { label: 'Top holder', value: ms.top1HolderPercent == null ? 'Unavailable' : `${ms.top1HolderPercent.toFixed(1)}%`, delta: 'Supply share', status: ms.top1HolderPercent == null ? 'No data' : ms.top1HolderPercent > 20 ? 'Risk' : 'Live', source: 'Holder analysis' },
+    { label: 'Top 10 holders', value: ms.top10HolderPercent == null ? 'Unavailable' : `${ms.top10HolderPercent.toFixed(1)}%`, delta: 'Supply share', status: ms.top10HolderPercent == null ? 'No data' : ms.top10HolderPercent > 50 ? 'Risk' : 'Live', source: 'Holder analysis' },
+    { label: 'Buy / sell ratio', value: ms.buySellRatio == null ? 'Unavailable' : `${ms.buySellRatio.toFixed(2)}x`, delta: '24h', status: ms.buySellRatio == null ? 'No data' : ms.buySellRatio > 1 ? 'Bullish' : 'Watch', source: txnsSourceLabel, reason: ms.buySellRatio == null ? ms.txnsUnavailableReason ?? undefined : undefined },
   ]
   return (
     <div className={styles.report}>

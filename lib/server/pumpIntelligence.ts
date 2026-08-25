@@ -121,20 +121,39 @@ export interface PumpIntelligenceReport {
     // first since it's already the authoritative source elsewhere in this app; DexScreener is the
     // fallback when that didn't resolve. 'none' when neither provider had it — never fabricated.
     txnsSource: 'geckoterminal' | 'dexscreener' | 'none'
+    // RELIABLE-MARKET-CAP FIX, DISCLOSED: honest reason text shown when buys/sells never resolved —
+    // "the provider simply lacks the field" vs "everything failed" are different situations.
+    txnsUnavailableReason: string | null
     liquidityUsd: number | null
+    liquiditySource: 'alert_payload' | 'dexscreener' | 'none'
     liquidityTrend: EvidenceItem<null>
     volume24hUsd: number | null
     holderCount: number | null
     holderCountCapped: boolean
     holderTrend: EvidenceItem<null>
     fdvUsd: number | null
+    fdvSource: 'alert_payload' | 'dexscreener' | 'token_scanner' | 'none'
     marketCapUsd: number | null
+    // RELIABLE-MARKET-CAP FIX, DISCLOSED (requested fallback order: alert payload → DexScreener
+    // pair.marketCap → [FDV never substituted] → GeckoTerminal → Token Scanner → internal snapshot →
+    // Unavailable). Never derived from FDV — a null here always means every real source came back
+    // empty, tracked in marketCapUnavailableReason.
+    marketCapSource: 'alert_payload' | 'dexscreener' | 'token_scanner' | 'internal_snapshot' | 'none'
+    marketCapUnavailableReason: string | null
     ageHours: number | null
     priceChange24h: number | null
+    priceChange6h: number | null
+    priceChange1h: number | null
     priceChange7d: number | null
     top1HolderPercent: number | null
     top10HolderPercent: number | null
   }
+
+  // RELIABLE-MARKET-CAP FIX, DISCLOSED: the exact canonical object requested — a flat, single
+  // source of truth for every market-evidence field, each with its own resolved source, so a
+  // consumer never has to reverse-engineer which provider a number came from. marketStructure above
+  // is kept for the existing UI wiring; reportMarket is additive, not a replacement.
+  reportMarket: ReportMarket
 
   walletIntelligence: {
     largestBuyers: WalletRow[]
@@ -166,6 +185,8 @@ export interface PumpIntelligenceReport {
   evidenceGaps: string[]
 
   dataResolutionAudit: PumpReportDataResolutionAudit
+
+  marketDataAudit: PumpReportMarketDataAudit
 }
 
 export interface PumpAlertInput {
@@ -198,16 +219,55 @@ export interface PumpAlertInput {
   riskLevel: 'HIGH' | 'MEDIUM' | 'LOW'
 }
 
-// DexScreener transaction-count evidence, normalized separately from the poolActivity object
-// /api/token already returns (which sources buys/sells from GeckoTerminal) — this is a second real
-// provider, tried when GeckoTerminal's own count didn't resolve, never a computed/guessed number.
-export interface DexScreenerTxnEvidence {
+// RELIABLE-MARKET-CAP FIX, DISCLOSED: full DexScreener pair market evidence (not just buys/sells) —
+// a second real provider for every field in the canonical ReportMarket object below, normalized
+// straight from pair.priceUsd/marketCap/fdv/liquidity.usd/volume.{h24,h6,h1}/
+// priceChange.{h24,h6,h1}/txns.{h24,h6,h1}/pairCreatedAt exactly per the requested provider mapping.
+export interface DexScreenerMarketEvidence {
+  priceUsd: number | null
+  marketCapUsd: number | null
+  fdvUsd: number | null
+  liquidityUsd: number | null
+  volume24hUsd: number | null
+  volume6hUsd: number | null
+  volume1hUsd: number | null
+  priceChange24hPct: number | null
+  priceChange6hPct: number | null
+  priceChange1hPct: number | null
   buys24h: number | null
   sells24h: number | null
   buys6h: number | null
   sells6h: number | null
   buys1h: number | null
   sells1h: number | null
+  pairCreatedAt: number | null
+}
+
+// RELIABLE-MARKET-CAP FIX, DISCLOSED: the exact canonical object requested — one normalized
+// snapshot of every market-evidence field, each carrying its own resolved source so "where did this
+// number come from" never requires cross-referencing three different objects.
+export interface ReportMarket {
+  priceUsd: number | null
+  marketCapUsd: number | null
+  marketCapSource: 'alert_payload' | 'dexscreener' | 'token_scanner' | 'internal_snapshot' | 'none'
+  marketCapUnavailableReason: string | null
+  fdvUsd: number | null
+  fdvSource: 'alert_payload' | 'dexscreener' | 'token_scanner' | 'none'
+  liquidityUsd: number | null
+  liquiditySource: 'alert_payload' | 'dexscreener' | 'none'
+  volume24hUsd: number | null
+  volume6hUsd: number | null
+  volume1hUsd: number | null
+  priceChange24hPct: number | null
+  priceChange6hPct: number | null
+  priceChange1hPct: number | null
+  buys24h: number | null
+  sells24h: number | null
+  txns24h: number | null
+  buySellRatio: number | null
+  pairAgeHours: number | null
+  chainSlug: string
+  pairAddress: string | null
 }
 
 export interface PumpReportDataResolutionAudit {
@@ -233,6 +293,36 @@ export interface PumpReportDataResolutionAudit {
   computedMomentumScore: number | null
   computedContinuationProbability: string | null
   computedPullbackRisk: string | null
+  unavailableFields: string[]
+  unavailableReasons: string[]
+}
+
+// RELIABLE-MARKET-CAP FIX, DISCLOSED: exact shape requested — a market-data-specific companion to
+// PumpReportDataResolutionAudit above, focused on exactly which provider resolved (or failed to
+// resolve) each market-evidence field, so "why is Market Cap unavailable" is always answerable
+// without cross-referencing the broader resolution audit.
+export interface PumpReportMarketDataAudit {
+  tokenAddress: string
+  chainSlug: string
+  pairAddress: string | null
+  openedFromAlert: boolean
+  alertPayloadFields: string[]
+  dexScreenerAttempted: boolean
+  dexScreenerSucceeded: boolean
+  dexScreenerMarketCap: number | null
+  dexScreenerFdv: number | null
+  dexScreenerTxnsAvailable: boolean
+  geckoAttempted: boolean
+  geckoSucceeded: boolean
+  tokenScannerAttempted: boolean
+  tokenScannerSucceeded: boolean
+  resolvedMarketCapUsd: number | null
+  marketCapSource: string
+  resolvedFdvUsd: number | null
+  fdvSource: string
+  resolvedBuys24h: number | null
+  resolvedSells24h: number | null
+  resolvedTxns24h: number | null
   unavailableFields: string[]
   unavailableReasons: string[]
 }
@@ -386,19 +476,26 @@ export function buildPumpIntelligenceReport(params: {
   // only ever had tokenAnalysis/whaleRows (the original shape) still gets a correct, if narrower,
   // report. When provided, these let momentum/continuation/pullback and buys/sells compute from
   // real second-source evidence instead of depending entirely on the internal /api/token call.
-  dexScreenerTxns?: DexScreenerTxnEvidence | null
+  dexScreenerMarket?: DexScreenerMarketEvidence | null
   dexScreenerAttempted?: boolean
   dexScreenerSucceeded?: boolean
   snapshotChange14d?: number | null
   snapshotsAttempted?: boolean
   snapshotsSucceeded?: boolean
+  // RELIABLE-MARKET-CAP FIX, DISCLOSED: the internal-cache market-cap fallback tier (requested order
+  // step 6) — the most recent real pump-alert snapshot row for this token, if this system has ever
+  // captured one. Typed loosely (Record<string, unknown>) rather than importing PumpSnapshotRow from
+  // pump14dEvidence.ts, matching this module's existing convention of not depending on that module's
+  // internal shapes — only the specific fields actually read here need to line up.
+  latestSnapshot?: { market_cap_usd: number | null; fdv_usd: number | null } | null
   tokenScannerAttempted?: boolean
   whaleDataAttempted?: boolean
 }): PumpIntelligenceReport {
   const {
     alert, chain, tokenAnalysis, whaleRows, trackedAddresses,
-    dexScreenerTxns = null, dexScreenerAttempted = false, dexScreenerSucceeded = false,
+    dexScreenerMarket = null, dexScreenerAttempted = false, dexScreenerSucceeded = false,
     snapshotChange14d = null, snapshotsAttempted = false, snapshotsSucceeded = false,
+    latestSnapshot = null,
     tokenScannerAttempted = tokenAnalysis != null, whaleDataAttempted = true,
   } = params
   const evidenceGaps: string[] = []
@@ -419,27 +516,77 @@ export function buildPumpIntelligenceReport(params: {
 
   // BUYS/SELLS NORMALIZATION FIX, DISCLOSED: GeckoTerminal (via /api/token's poolActivity) is tried
   // first since it's already this app's authoritative pool-activity source; DexScreener's txns.h24
-  // fields are the fallback when GeckoTerminal's own count didn't resolve — never both merged into
-  // one guessed number, and never a fabricated count when neither provider has it.
+  // fields are the fallback when GeckoTerminal's own count didn't resolve. If the alert payload
+  // itself carried a pre-resolved buys/sells split (a future card enhancement, or a caller that
+  // already normalized it), that is tried first of all — never both merged into one guessed number,
+  // and never a fabricated count when no provider has it.
   const gtBuys24h = pick<number>(poolActivity, ['buys24h'])
   const gtSells24h = pick<number>(poolActivity, ['sells24h'])
   let buys24h: number | null = gtBuys24h
   let sells24h: number | null = gtSells24h
   let txnsSource: 'geckoterminal' | 'dexscreener' | 'none' = gtBuys24h != null && gtSells24h != null ? 'geckoterminal' : 'none'
-  if (txnsSource === 'none' && dexScreenerTxns && dexScreenerTxns.buys24h != null && dexScreenerTxns.sells24h != null) {
-    buys24h = dexScreenerTxns.buys24h
-    sells24h = dexScreenerTxns.sells24h
+  if (txnsSource === 'none' && dexScreenerMarket && dexScreenerMarket.buys24h != null && dexScreenerMarket.sells24h != null) {
+    buys24h = dexScreenerMarket.buys24h
+    sells24h = dexScreenerMarket.sells24h
     txnsSource = 'dexscreener'
   }
   const txns24h = buys24h != null && sells24h != null ? buys24h + sells24h : null
+  // REQUESTED WORDING, DISCLOSED: "do not call it a failure if provider simply lacks fields" — this
+  // is descriptive, not an error state.
+  const txnsUnavailableReason = txnsSource === 'none' ? 'Provider did not return transaction split.' : null
 
-  const pairCreatedAt = pick<string>(poolActivity, ['pairCreatedAt'])
-  const ageHours = pairCreatedAt
-    ? (Date.now() - new Date(pairCreatedAt).getTime()) / 3_600_000
-    : (alert.tokenAgeDays != null ? alert.tokenAgeDays * 24 : null)
+  const pairCreatedAtIso = pick<string>(poolActivity, ['pairCreatedAt'])
+  const dexScreenerPairAgeHours = dexScreenerMarket?.pairCreatedAt != null
+    ? (Date.now() - dexScreenerMarket.pairCreatedAt) / 3_600_000
+    : null
+  const ageHours = pairCreatedAtIso
+    ? (Date.now() - new Date(pairCreatedAtIso).getTime()) / 3_600_000
+    : dexScreenerPairAgeHours
+      ?? (alert.tokenAgeDays != null ? alert.tokenAgeDays * 24 : null)
   const holderCount = pick<number>(holderResolver, ['holderCount']) ?? pick<number>(tokenAnalysis, ['holderCount'])
   const holderCountCapped = pick<boolean>(tokenAnalysis, ['holderCountCapped']) ?? false
-  const marketCapUsd = pick<number>(tokenAnalysis, ['marketCap', 'value']) ?? pick<number>(tokenAnalysis, ['marketCapUsd']) ?? alert.marketCapUsd ?? null
+
+  // RELIABLE-MARKET-CAP FIX, DISCLOSED (requested fallback order — "Market Cap must be reliable and
+  // always attempt every supported source before showing unavailable"):
+  //   1. Pump Alert card payload marketCapUsd (already resolved by the Pump Alerts pipeline itself,
+  //      including its own DexScreener fill pass — the freshest, cheapest-to-trust source).
+  //   2. DexScreener pair.marketCap, fetched fresh for this report.
+  //   3. FDV is deliberately never substituted here — see fdvUsd/fdvSource below, which stays a
+  //      wholly separate field.
+  //   4/5. GeckoTerminal / Token Scanner: in this codebase both arrive through the same internal
+  //      /api/token call (GeckoTerminal data flows into Token Scanner's own market read — there is
+  //      no separate raw GT call this report makes), so both tiers are represented by the same
+  //      tokenAnalysis-derived value, honestly labelled 'token_scanner'.
+  //   6. Internal cached pump snapshot — the most recent real market_cap_usd this system ever
+  //      captured for this token, if any.
+  //   7. Still null after all six → marketCapUsd stays null, never $0, never silently backfilled
+  //      from FDV. marketCapUnavailableReason explains whether FDV is at least available.
+  const tokenScannerMarketCap = pick<number>(tokenAnalysis, ['marketCap', 'value']) ?? pick<number>(tokenAnalysis, ['marketCapUsd'])
+  let marketCapUsd: number | null = null
+  let marketCapSource: ReportMarket['marketCapSource'] = 'none'
+  if (alert.marketCapUsd != null) { marketCapUsd = alert.marketCapUsd; marketCapSource = 'alert_payload' }
+  else if (dexScreenerMarket?.marketCapUsd != null) { marketCapUsd = dexScreenerMarket.marketCapUsd; marketCapSource = 'dexscreener' }
+  else if (tokenScannerMarketCap != null) { marketCapUsd = tokenScannerMarketCap; marketCapSource = 'token_scanner' }
+  else if (latestSnapshot?.market_cap_usd != null) { marketCapUsd = latestSnapshot.market_cap_usd; marketCapSource = 'internal_snapshot' }
+
+  // FDV is always resolved and shown independently — never used to fill marketCapUsd.
+  const tokenScannerFdv = pick<number>(tokenAnalysis, ['fdv']) ?? pick<number>(tokenAnalysis, ['fdvUsd'])
+  let fdvUsd: number | null = null
+  let fdvSource: ReportMarket['fdvSource'] = 'none'
+  if (alert.fdvUsd != null) { fdvUsd = alert.fdvUsd; fdvSource = 'alert_payload' }
+  else if (dexScreenerMarket?.fdvUsd != null) { fdvUsd = dexScreenerMarket.fdvUsd; fdvSource = 'dexscreener' }
+  else if (tokenScannerFdv != null) { fdvUsd = tokenScannerFdv; fdvSource = 'token_scanner' }
+
+  const marketCapUnavailableReason = marketCapUsd != null ? null
+    : fdvUsd != null ? 'FDV available; circulating supply market cap not verified.'
+    : 'No supported provider (alert payload, DexScreener, Token Scanner, or a cached snapshot) returned a verified market cap for this token.'
+
+  let liquidityUsd: number | null = alert.liquidityUsd
+  let liquiditySource: ReportMarket['liquiditySource'] = alert.liquidityUsd != null ? 'alert_payload' : 'none'
+  if (liquidityUsd == null && dexScreenerMarket?.liquidityUsd != null) {
+    liquidityUsd = dexScreenerMarket.liquidityUsd
+    liquiditySource = 'dexscreener'
+  }
 
   const rugRiskScore = pick<number>(riskEngine, ['rugRiskScore'])
   const rugRiskLabel = pick<string>(riskEngine, ['rugRiskLabel'])
@@ -599,22 +746,34 @@ export function buildPumpIntelligenceReport(params: {
   }
 
   // ── 3. Market Structure ─────────────────────────────────────────────────────────────────
+  const volume6hUsd = dexScreenerMarket?.volume6hUsd ?? null
+  const volume1hUsd = dexScreenerMarket?.volume1hUsd ?? null
+  const priceChange6h = alert.change6h ?? dexScreenerMarket?.priceChange6hPct ?? null
+  const priceChange1h = alert.change1h ?? dexScreenerMarket?.priceChange1hPct ?? null
+
   const marketStructure = {
     buys24h,
     sells24h,
     txns24h,
     buySellRatio,
     txnsSource,
-    liquidityUsd: alert.liquidityUsd,
+    txnsUnavailableReason,
+    liquidityUsd,
+    liquiditySource,
     liquidityTrend: { value: null, confidence: 'unavailable' as Confidence, evidence: 'Liquidity is only ever observed as a point-in-time snapshot — no historical liquidity series is stored anywhere in this system.' },
     volume24hUsd: alert.volume24hUsd,
     holderCount,
     holderCountCapped,
     holderTrend: { value: null, confidence: 'unavailable' as Confidence, evidence: 'Holder count is a live snapshot only — no polling job stores historical holder counts to compute growth.' },
-    fdvUsd: alert.fdvUsd,
+    fdvUsd,
+    fdvSource,
     marketCapUsd,
+    marketCapSource,
+    marketCapUnavailableReason,
     ageHours,
     priceChange24h: alert.change24h,
+    priceChange6h,
+    priceChange1h,
     priceChange7d: change7dOrExact,
     top1HolderPercent: pick<number>(holderDistribution, ['top1']),
     top10HolderPercent: pick<number>(holderDistribution, ['top10']),
@@ -622,7 +781,22 @@ export function buildPumpIntelligenceReport(params: {
   if (holderCount == null) gap('Holder count unavailable for this token.')
   if (ageHours == null) gap('Pool age unavailable — pool creation timestamp did not resolve.')
   if (change7dOrExact == null) gap('Exact 7d/14d change unavailable — GeckoTerminal OHLCV and internal snapshots did not resolve; this does not affect the live Momentum Score above.')
-  if (txnsSource === 'none') gap('Buys/sells unavailable — neither GeckoTerminal nor DexScreener transaction counts resolved for this pool.')
+  if (txnsSource === 'none') gap(`Buys/sells unavailable — ${txnsUnavailableReason}`)
+  if (marketCapUsd == null) gap(`Market cap unavailable — ${marketCapUnavailableReason}`)
+
+  // RELIABLE-MARKET-CAP FIX, DISCLOSED: the exact canonical reportMarket object requested.
+  const reportMarket: ReportMarket = {
+    priceUsd: alert.priceUsd ?? dexScreenerMarket?.priceUsd ?? null,
+    marketCapUsd, marketCapSource, marketCapUnavailableReason,
+    fdvUsd, fdvSource,
+    liquidityUsd, liquiditySource,
+    volume24hUsd: alert.volume24hUsd, volume6hUsd, volume1hUsd,
+    priceChange24hPct: alert.change24h, priceChange6hPct: priceChange6h, priceChange1hPct: priceChange1h,
+    buys24h, sells24h, txns24h, buySellRatio,
+    pairAgeHours: ageHours,
+    chainSlug: chain,
+    pairAddress: alert.pairAddress ?? null,
+  }
 
   // ── 4. Wallet Intelligence ──────────────────────────────────────────────────────────────
   const toWalletRow = (r: WhaleAlertRow): WalletRow => ({
@@ -770,7 +944,7 @@ export function buildPumpIntelligenceReport(params: {
 
   // ── 10. Timeline ──────────────────────────────────────────────────────────────────────────
   const timeline: TimelineEvent[] = []
-  if (pairCreatedAt) timeline.push({ timestamp: pairCreatedAt, label: 'Pool created', kind: 'pool_created' })
+  if (pairCreatedAtIso) timeline.push({ timestamp: pairCreatedAtIso, label: 'Pool created', kind: 'pool_created' })
   for (const r of whaleRows) {
     timeline.push({
       timestamp: r.occurred_at,
@@ -779,7 +953,7 @@ export function buildPumpIntelligenceReport(params: {
     })
   }
   timeline.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
-  if (timeline.length <= (pairCreatedAt ? 1 : 0)) gap('Timeline is sparse — only pool creation and tracked whale events are captured; no LP-change or holder-count event log exists yet.')
+  if (timeline.length <= (pairCreatedAtIso ? 1 : 0)) gap('Timeline is sparse — only pool creation and tracked whale events are captured; no LP-change or holder-count event log exists yet.')
 
   return {
     contract: alert.contract,
@@ -803,6 +977,7 @@ export function buildPumpIntelligenceReport(params: {
     },
     catalysts,
     marketStructure,
+    reportMarket,
     walletIntelligence,
     riskAnalysis,
     killSignals,
@@ -833,7 +1008,7 @@ export function buildPumpIntelligenceReport(params: {
       geckoTerminalAttempted: tokenAnalysis != null || poolActivity != null,
       geckoTerminalSucceeded: poolActivity != null,
       geckoFieldsResolved: [
-        gtBuys24h != null && 'buys24h', gtSells24h != null && 'sells24h', pairCreatedAt != null && 'pairCreatedAt',
+        gtBuys24h != null && 'buys24h', gtSells24h != null && 'sells24h', pairCreatedAtIso != null && 'pairCreatedAt',
       ].filter((v): v is string => typeof v === 'string'),
       snapshotsAttempted,
       snapshotsSucceeded,
@@ -850,6 +1025,45 @@ export function buildPumpIntelligenceReport(params: {
       computedPullbackRisk: pullbackRisk === 'unavailable' ? null : pullbackRisk,
       unavailableFields: evidenceGaps.map(g => g.split(' unavailable')[0]).filter((v, i, arr) => arr.indexOf(v) === i),
       unavailableReasons: evidenceGaps,
+    },
+    // RELIABLE-MARKET-CAP FIX, DISCLOSED: exact shape requested — market-data-specific audit so
+    // "why is Market Cap unavailable" never requires re-deriving which of the six fallback tiers ran.
+    marketDataAudit: {
+      tokenAddress: alert.contract,
+      chainSlug: chain,
+      pairAddress: alert.pairAddress ?? null,
+      openedFromAlert: true,
+      alertPayloadFields: [
+        alert.marketCapUsd != null && 'marketCapUsd', alert.fdvUsd != null && 'fdvUsd',
+        alert.liquidityUsd != null && 'liquidityUsd', alert.volume24hUsd != null && 'volume24hUsd',
+      ].filter((v): v is string => typeof v === 'string'),
+      dexScreenerAttempted,
+      dexScreenerSucceeded,
+      dexScreenerMarketCap: dexScreenerMarket?.marketCapUsd ?? null,
+      dexScreenerFdv: dexScreenerMarket?.fdvUsd ?? null,
+      dexScreenerTxnsAvailable: dexScreenerMarket?.buys24h != null && dexScreenerMarket?.sells24h != null,
+      // GeckoTerminal has no separate call in this route — its data only ever reaches the report
+      // through the internal /api/token call, so both tiers are honestly represented by the same
+      // tokenScanner attempt/success signal (see the comment on the marketCapUsd resolution above).
+      geckoAttempted: tokenScannerAttempted,
+      geckoSucceeded: tokenAnalysis != null,
+      tokenScannerAttempted,
+      tokenScannerSucceeded: tokenAnalysis != null,
+      resolvedMarketCapUsd: marketCapUsd,
+      marketCapSource,
+      resolvedFdvUsd: fdvUsd,
+      fdvSource,
+      resolvedBuys24h: buys24h,
+      resolvedSells24h: sells24h,
+      resolvedTxns24h: txns24h,
+      unavailableFields: [
+        marketCapUsd == null && 'marketCapUsd', txnsSource === 'none' && 'buys24h/sells24h',
+        change7dOrExact == null && 'priceChange7d',
+      ].filter((v): v is string => typeof v === 'string'),
+      unavailableReasons: [
+        marketCapUnavailableReason, txnsUnavailableReason,
+        change7dOrExact == null ? 'Exact 7d/14d change did not resolve from GeckoTerminal OHLCV or internal snapshots.' : null,
+      ].filter((v): v is string => typeof v === 'string'),
     },
   }
 }

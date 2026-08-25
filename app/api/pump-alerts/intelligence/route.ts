@@ -1,8 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
-import { buildPumpIntelligenceReport, type PumpAlertInput, type WhaleAlertRow, type DexScreenerTxnEvidence } from '@/lib/server/pumpIntelligence'
-import { fetchDexScreenerPairMomentum, computeSnapshotChange14d, type PumpChainSlug } from '@/lib/server/pump14dEvidence'
+import { buildPumpIntelligenceReport, type PumpAlertInput, type WhaleAlertRow, type DexScreenerMarketEvidence } from '@/lib/server/pumpIntelligence'
+import { fetchDexScreenerPairMomentum, computeSnapshotChange14d, getLatestPumpSnapshot, type PumpChainSlug } from '@/lib/server/pump14dEvidence'
 
 // WRONG-CHAIN GUARD, DISCLOSED (hard rule: "Do NOT use wrong-chain pools"): DexScreener's own
 // chainId string per chain slug this route supports — a fetched pair's chainId must match before any
@@ -106,7 +106,18 @@ export async function GET(req: Request) {
     } catch { return null }
   })()
 
-  const dexScreenerPromise: Promise<DexScreenerTxnEvidence | null> = (async () => {
+  // RELIABLE-MARKET-CAP FIX, DISCLOSED (requested: "Market Cap sometimes appears... it must be
+  // reliable and always attempt every supported source before showing unavailable" — buys/sells/
+  // transactions still showing "Provider unavailable" too). Root cause found auditing
+  // fetchDexScreenerPairMomentum: the request URL never included a chain segment (DexScreener's real
+  // endpoint is /latest/dex/pairs/{chainId}/{pairId}, not /latest/dex/pairs/{pairId}), AND a separate
+  // operator-precedence bug in the response parser meant every SUCCESSFUL response was being thrown
+  // away and treated as a failure (see the disclosure on fetchDexScreenerPairMomentumOnce in
+  // pump14dEvidence.ts for the exact bug). Both are fixed there; this call site now also pulls the
+  // FULL market evidence (marketCap, fdv, liquidity, volume/price-change per window, pairCreatedAt) —
+  // not just buys/sells — so the report can resolve Market Cap from a second real source instead of
+  // only ever trusting whatever the alert card already had.
+  const dexScreenerPromise: Promise<DexScreenerMarketEvidence | null> = (async () => {
     if (!alert.pairAddress) return null
     const expectedChainId = DEXSCREENER_CHAIN_ID[chain as PumpChainSlug]
     if (!expectedChainId) return null // Robinhood Chain isn't indexed by DexScreener — honest skip.
@@ -114,18 +125,29 @@ export async function GET(req: Request) {
     try {
       const ac = new AbortController()
       const tid = setTimeout(() => ac.abort(), 8_000)
-      const result = await fetchDexScreenerPairMomentum(alert.pairAddress, ac.signal)
+      const result = await fetchDexScreenerPairMomentum(chain as PumpChainSlug, alert.pairAddress, ac.signal)
       clearTimeout(tid)
       if (!result?.ok || !result.data) return null
       // WRONG-CHAIN GUARD, DISCLOSED: reject the pair outright if DexScreener's own chainId doesn't
       // match the chain this report was opened for — never trust cross-chain data by pair-address
-      // coincidence.
+      // coincidence, even now that the request itself is chain-scoped.
       if (result.data.chainId && result.data.chainId !== expectedChainId) return null
       dexScreenerSucceeded = true
       return {
+        priceUsd: result.data.priceUsd ?? null,
+        marketCapUsd: result.data.marketCapUsd ?? null,
+        fdvUsd: result.data.fdvUsd ?? null,
+        liquidityUsd: result.data.liquidityUsd ?? null,
+        volume24hUsd: result.data.volume24hUsd ?? null,
+        volume6hUsd: result.data.volume6hUsd ?? null,
+        volume1hUsd: result.data.volume1hUsd ?? null,
+        priceChange24hPct: result.data.priceChange24hPct ?? null,
+        priceChange6hPct: result.data.priceChange6hPct ?? null,
+        priceChange1hPct: result.data.priceChange1hPct ?? null,
         buys24h: result.data.buys24h ?? null, sells24h: result.data.sells24h ?? null,
         buys6h: result.data.buys6h ?? null, sells6h: result.data.sells6h ?? null,
         buys1h: result.data.buys1h ?? null, sells1h: result.data.sells1h ?? null,
+        pairCreatedAt: result.data.pairCreatedAt ?? null,
       }
     } catch { return null }
   })()
@@ -140,8 +162,14 @@ export async function GET(req: Request) {
     } catch { return null }
   })()
 
-  const [tokenAnalysisResult, dexScreenerTxns, snapshotChange14d] = await Promise.all([
-    tokenAnalysisPromise, dexScreenerPromise, snapshotPromise,
+  // MARKET-CAP FALLBACK TIER 6, DISCLOSED (requested order: "Internal cached token scan / pump
+  // snapshot" as the last real source before showing Unavailable). Always attempted in parallel —
+  // cheap (in-memory or a single indexed Supabase read) — and only actually used downstream when
+  // every earlier tier (alert payload, DexScreener, Token Scanner) came back empty.
+  const latestSnapshotPromise = getLatestPumpSnapshot(chain as PumpChainSlug, contract).catch(() => null)
+
+  const [tokenAnalysisResult, dexScreenerMarket, snapshotChange14d, latestSnapshot] = await Promise.all([
+    tokenAnalysisPromise, dexScreenerPromise, snapshotPromise, latestSnapshotPromise,
   ])
   const tokenAnalysis = tokenAnalysisResult
   if (tokenAnalysis) {
@@ -178,8 +206,8 @@ export async function GET(req: Request) {
 
   const report = buildPumpIntelligenceReport({
     alert, chain, tokenAnalysis, whaleRows, trackedAddresses,
-    dexScreenerTxns, dexScreenerAttempted, dexScreenerSucceeded,
-    snapshotChange14d, snapshotsAttempted, snapshotsSucceeded,
+    dexScreenerMarket, dexScreenerAttempted, dexScreenerSucceeded,
+    snapshotChange14d, snapshotsAttempted, snapshotsSucceeded, latestSnapshot,
     tokenScannerAttempted, whaleDataAttempted: Boolean(supabaseUrl && serviceRole),
   })
   report.dataResolutionAudit.openedFromAlert = alertPayloadReceived

@@ -83,6 +83,11 @@ export type MomentumFallbackInput = {
     sells6h?: number | null
     buys1h?: number | null
     sells1h?: number | null
+    // RELIABLE-MARKET-CAP FIX, DISCLOSED: rounding out the canonical reportMarket provider mapping —
+    // 1h volume and pool-creation timestamp were the only two fields from the real DexScreener pair
+    // response this parser wasn't already reading.
+    volume1hUsd?: number | null
+    pairCreatedAt?: number | null
     // WRONG-CHAIN GUARD, DISCLOSED (hard rule: "Do NOT use wrong-chain pools"): DexScreener's own
     // chainId string for this pair, so a caller matching a specific chain can verify the pair it got
     // back is actually on that chain before trusting any of its data.
@@ -167,21 +172,46 @@ export type DexScreenerMomentumResult = {
   data: MomentumFallbackInput['dexscreener']
 } | null
 
+// RELIABILITY FIX, DISCLOSED (reported live: "Market Cap sometimes appears... it must be reliable",
+// buys/sells/txns still showing "Provider unavailable" after the DexScreener enrichment added
+// earlier). Found two real bugs auditing this function, either of which alone would explain
+// unreliable DexScreener results:
+// 1. The request URL never included a chain segment — DexScreener's real pair-lookup endpoint is
+//    `/latest/dex/pairs/{chainId}/{pairId}`, not `/latest/dex/pairs/{pairId}`. Fixed by requiring a
+//    chain parameter and mapping it to DexScreener's own chain-id string (same honest-skip pattern
+//    already used for CoinGecko: a chain with no mapping — Robinhood — is skipped, not guessed at).
+// 2. `(json?.pair ?? Array.isArray(json?.pairs) ? (json?.pairs as unknown[])[0] : null)` — due to
+//    operator precedence, `??` binds tighter than `?:`, so this parsed as
+//    `(json?.pair ?? Array.isArray(json?.pairs)) ? (json?.pairs)[0] : null`. Whenever `json.pair`
+//    existed (the actual shape this endpoint returns: `{ pair: {...} }`, never `{ pairs: [...] }`),
+//    the ternary still took the `(json?.pairs)[0]` branch — reading `[0]` off `undefined` since
+//    `.pairs` doesn't exist on this response shape — which threw and was caught by the outer
+//    try/catch below as a silent failure. Every SUCCESSFUL DexScreener response was being discarded.
+const DEXSCREENER_CHAIN_ID_BY_CHAIN: Partial<Record<PumpChainSlug, string>> = {
+  base: 'base',
+  eth: 'ethereum',
+  // Robinhood Chain is not indexed by DexScreener — skipped honestly, same as CoinGecko below.
+}
+
 // ONE-RETRY 429-AWARE FIX, DISCLOSED (reported live: Pump Alerts blacked out with "no fallback
 // provider could confirm momentum either" — this is the tier specifically meant to rescue a
 // GeckoTerminal OHLCV outage, so it failing too with zero retry compounded the same rate-limit
 // burst into a total ladder failure instead of an honest empty market). Mirrors the same
 // 429-aware backoff already applied to the primary GT OHLCV fetch above.
-async function fetchDexScreenerPairMomentumOnce(pairAddress: string, signal: AbortSignal): Promise<DexScreenerMomentumResult & { httpStatus?: number }> {
+async function fetchDexScreenerPairMomentumOnce(chain: PumpChainSlug, pairAddress: string, signal: AbortSignal): Promise<DexScreenerMomentumResult & { httpStatus?: number }> {
+  const dexScreenerChainId = DEXSCREENER_CHAIN_ID_BY_CHAIN[chain]
+  if (!dexScreenerChainId) return { ok: false, data: null }
   try {
-    const res = await fetch(`https://api.dexscreener.com/latest/dex/pairs/${pairAddress}`, {
+    const res = await fetch(`https://api.dexscreener.com/latest/dex/pairs/${dexScreenerChainId}/${pairAddress}`, {
       headers: { accept: 'application/json' },
       cache: 'no-store',
       signal,
     })
     if (!res.ok) return { ok: false, data: null, httpStatus: res.status }
     const json = await res.json().catch(() => null) as Record<string, unknown> | null
-    const pair = (json?.pair ?? Array.isArray(json?.pairs) ? (json?.pairs as unknown[])[0] : null) as Record<string, unknown> | null
+    const pairFromSingle = json?.pair as Record<string, unknown> | undefined
+    const pairFromList = Array.isArray(json?.pairs) ? (json.pairs as unknown[])[0] as Record<string, unknown> | undefined : undefined
+    const pair = pairFromSingle ?? pairFromList ?? null
     if (!pair || typeof pair !== 'object') return { ok: false, data: null }
     const pc = pair.priceChange as Record<string, unknown> | undefined
     const vol = pair.volume as Record<string, unknown> | undefined
@@ -199,6 +229,7 @@ async function fetchDexScreenerPairMomentumOnce(pairAddress: string, signal: Abo
         priceChange1hPct: num(pc?.h1),
         volume24hUsd: num(vol?.h24),
         volume6hUsd: num(vol?.h6),
+        volume1hUsd: num(vol?.h1),
         liquidityUsd: (() => {
           const liq = pair.liquidity as Record<string, unknown> | undefined
           return num(liq?.usd)
@@ -217,6 +248,7 @@ async function fetchDexScreenerPairMomentumOnce(pairAddress: string, signal: Abo
         buys1h: txnField('h1', 'buys'),
         sells1h: txnField('h1', 'sells'),
         chainId: typeof pair.chainId === 'string' ? pair.chainId : null,
+        pairCreatedAt: num(pair.pairCreatedAt),
       },
     }
   } catch {
@@ -237,18 +269,18 @@ function sleep(ms: number): Promise<void> {
 const DEXSCREENER_MOMENTUM_CACHE_TTL_MS = 2 * 60 * 1000
 const dexScreenerMomentumCache = new Map<string, { result: DexScreenerMomentumResult; cachedAt: number }>()
 
-export async function fetchDexScreenerPairMomentum(pairAddress: string, signal: AbortSignal): Promise<DexScreenerMomentumResult> {
-  const cacheKey = pairAddress.toLowerCase()
+export async function fetchDexScreenerPairMomentum(chain: PumpChainSlug, pairAddress: string, signal: AbortSignal): Promise<DexScreenerMomentumResult> {
+  const cacheKey = `${chain}:${pairAddress.toLowerCase()}`
   const cached = dexScreenerMomentumCache.get(cacheKey)
   if (cached && Date.now() - cached.cachedAt < DEXSCREENER_MOMENTUM_CACHE_TTL_MS) return cached.result
 
-  const first = await fetchDexScreenerPairMomentumOnce(pairAddress, signal)
+  const first = await fetchDexScreenerPairMomentumOnce(chain, pairAddress, signal)
   let final: DexScreenerMomentumResult = first
   if (!first.ok) {
     const retryDelayMs = first.httpStatus === 429 ? 1800 + Math.floor(Math.random() * 400) : 400
     await sleep(retryDelayMs)
     if (!signal.aborted) {
-      const second = await fetchDexScreenerPairMomentumOnce(pairAddress, signal)
+      const second = await fetchDexScreenerPairMomentumOnce(chain, pairAddress, signal)
       final = { ok: second.ok, data: second.data }
     }
   }
@@ -353,6 +385,30 @@ export async function savePumpSnapshots(rows: PumpSnapshotRow[]): Promise<{ pers
   } catch {
     return { persisted: false, savedCount: rows.length }
   }
+}
+
+// RELIABLE-MARKET-CAP FIX, DISCLOSED (requested market cap fallback order, tier 6: "Internal cached
+// token scan / pump snapshot"). Returns the single most recent real snapshot row this chain:contract
+// has on record — Supabase first (durable across requests), falling back to the in-process ring
+// buffer when Supabase isn't configured. Never fabricates a row: null when nothing has ever been
+// captured for this token.
+export async function getLatestPumpSnapshot(chain: PumpChainSlug, contract: string): Promise<PumpSnapshotRow | null> {
+  try {
+    const admin = createServiceRoleClient()
+    if (admin) {
+      const { data, error } = await admin
+        .from('pump_alert_snapshots')
+        .select('chain, contract, pair_address, price_usd, liquidity_usd, volume_24h_usd, fdv_usd, market_cap_usd, captured_at')
+        .eq('chain', chain)
+        .ilike('contract', contract)
+        .order('captured_at', { ascending: false })
+        .limit(1)
+      if (!error && data && data.length > 0) return data[0] as PumpSnapshotRow
+    }
+  } catch { /* fall through to the in-memory ring buffer */ }
+  const arr = snapshotMemory.get(snapshotKey(chain, contract))
+  if (!arr || arr.length === 0) return null
+  return arr[arr.length - 1]
 }
 
 /**

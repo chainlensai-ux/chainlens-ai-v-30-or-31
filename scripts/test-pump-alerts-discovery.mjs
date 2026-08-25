@@ -714,7 +714,7 @@ assert.doesNotMatch(routeCode, /'fourteenDayUnavailable'/, 'the misleading blank
   // marketCap field, never derived, and only applied to alerts still missing it after GeckoTerminal/
   // CoinGecko, never overwriting a value already resolved.
   assert.match(routeCode14, /const marketCapFillTargets = alerts\.filter\(a => a\.marketCapUsd == null && a\.pairAddress\)/, 'the market-cap fill pass must only target alerts still missing a real value')
-  assert.match(routeCode14, /fetchDexScreenerPairMomentum\(alert\.pairAddress as string, acMcap\.signal\)/, 'route must use the real DexScreener pair fetch to verify market cap')
+  assert.match(routeCode14, /fetchDexScreenerPairMomentum\(alert\.chain, alert\.pairAddress as string, acMcap\.signal\)/, 'route must use the real DexScreener pair fetch (chain-scoped) to verify market cap')
   assert.match(routeCode14, /if \(result\?\.ok && dsMarketCap != null\) alert\.marketCapUsd = dsMarketCap/, 'market cap must only be set from a successful, real DexScreener response')
   assert.match(evidenceCode14, /marketCapUsd: num\(pair\.marketCap\)/, 'DexScreener pair parsing must read the provider\'s own marketCap field')
 
