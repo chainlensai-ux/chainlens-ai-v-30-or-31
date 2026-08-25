@@ -630,4 +630,75 @@ assert.doesNotMatch(routeCode, /'fourteenDayUnavailable'/, 'the misleading blank
   assert.equal(result.alert.change14d, 45)
 }
 
+// ─── Part 14: Pump Alerts UI polish + Load More (static source assertions) ─────────────────────
+//
+// This file has no DOM/React renderer, so — matching Part 4/6's established convention — these
+// assert against the real page/route source text rather than mounting components.
+{
+  const pageSrc14 = fs.readFileSync(new URL('../app/terminal/pump-alerts/page.tsx', import.meta.url), 'utf8')
+  const pageCode14 = pageSrc14.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  const routeSrc14 = fs.readFileSync(new URL('../app/api/pump-alerts/route.ts', import.meta.url), 'utf8')
+  const routeCode14 = routeSrc14.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+
+  // Market Cap renders when available; honest "MCap unavailable" when it isn't; FDV stays separate.
+  assert.match(pageCode14, /MCap unavailable/, 'card must show an honest empty state when marketCapUsd is null, never a fake $0')
+  assert.match(pageCode14, /alert\.marketCapUsd != null \? fmtUSD\(alert\.marketCapUsd\)/, 'card must render a real formatted market cap when it exists')
+  assert.match(pageCode14, /label="FDV"/, 'FDV must remain its own visible metric, never removed')
+  assert.match(pageCode14, /label="Market Cap"/, 'Market Cap must be its own dedicated metric cell')
+  assert.match(pageCode14, /label="FDV" value=\{fmtUSD\(alert\.fdvUsd\)\}/, 'the card\'s FDV cell must render fdvUsd directly, never fall back to market cap')
+
+  // Backend response carries the requested field aliases, purely additive over the existing values.
+  assert.match(routeCode14, /priceChange24hPct: a\.change24h/, 'API response must alias change24h as priceChange24hPct')
+  assert.match(routeCode14, /priceChange6hPct: a\.change6h/, 'API response must alias change6h as priceChange6hPct')
+  assert.match(routeCode14, /priceChange1hPct: a\.change1h/, 'API response must alias change1h as priceChange1hPct')
+
+  // Load More: client-side pagination over the already-fetched alerts array, no refetch.
+  assert.match(pageCode14, /const PAGE_SIZE = 10/, 'initial render / page size must be 8-10 alerts')
+  assert.match(pageCode14, /const visible = useMemo\(\(\) => filtered\.slice\(0, visibleCount\)/, 'Load More must slice the already-fetched alerts client-side, never refetch')
+  assert.match(pageCode14, /Showing \{visible\.length\} of \{filtered\.length\}/, 'feed must show a "Showing X of Y" count')
+  assert.match(pageCode14, /All current pump candidates shown\./, 'feed must say so once all alerts are loaded')
+  assert.match(pageCode14, /const hasMore = visibleCount < filtered\.length/, 'Load More button must hide once everything is shown')
+  assert.match(pageCode14, /loadMoreLoading/, 'Load More must expose a loading state on its button')
+
+  // Filters still apply after Load More: pagination resets on filter change, not on background refresh.
+  assert.match(pageCode14, /if \(activeFilter !== prevActiveFilterForReset\)/, 'pagination must reset to page 1 when the active filter changes')
+  assert.doesNotMatch(pageCode14, /useEffect\(\(\) => \{ setVisibleCount\(PAGE_SIZE\) \}, \[activeFilter\]\)/, 'the filter-change reset must not resync alerts on every background refresh via a naive effect')
+
+  // Actions preserved: Scan / Copy CA / Clark / Report handlers still wired on the rewritten card.
+  assert.match(pageCode14, /onClick=\{onScan\}/, 'Scan action must still be wired')
+  assert.match(pageCode14, /onClick=\{onCopyCA\}/, 'Copy CA action must still be wired')
+  assert.match(pageCode14, /onClick=\{onAskClark\}/, 'Ask Clark action must still be wired')
+  assert.match(pageCode14, /onClick=\{onReport\}/, 'Report action must still be wired')
+
+  // Badges preserved: risk/evidence/category/FDV-tier badges never removed.
+  assert.match(pageCode14, /Live Momentum/, 'live-momentum evidence badge must remain')
+  assert.match(pageCode14, /Exact 14d/, 'exact evidence badge must remain')
+  assert.match(pageCode14, /RISK_LABEL\[alert\.riskLevel\]/, 'risk badge must remain')
+  assert.match(pageCode14, /fdvStyle\.label/, 'FDV-tier badge must remain')
+
+  // Non-blanking refresh: last-good alerts stay visible while refreshing, feed is never blanked.
+  assert.match(pageCode14, /refreshing/i, 'a subtle refreshing indicator must exist')
+  assert.doesNotMatch(pageCode14, /setAlerts\(\[\]\)/, 'alerts must never be reset to empty on refresh — that would blank the feed')
+
+  // Audit logging surface required by the task.
+  for (const key of [
+    'totalAlertsFromApi', 'initialRenderedCount', 'currentRenderedCount', 'hasMore',
+    'marketCapAvailableCount', 'marketCapMissingCount', 'fdvAvailableCount',
+    'loadMoreClicks', 'activeFilter', 'activeChains',
+  ]) {
+    assert.match(pageCode14, new RegExp(key), `pumpAlertsUiAudit must include ${key}`)
+  }
+  assert.match(pageCode14, /pumpAlertsUiAudit/, 'the audit object must be named pumpAlertsUiAudit')
+
+  // Mobile responsiveness: dead CSS from the old layout is gone, new responsive rules target the
+  // rewritten card structure, and the grid collapses to one column so nothing overflows horizontally.
+  assert.doesNotMatch(pageCode14, /pump-card-left|pump-card-center|pump-card-right|pump-metric-band|pump-mini-bar|pump-liq-depth/, 'dead CSS/classes from the old 3-column layout must be fully removed')
+  assert.match(pageCode14, /\.pump-card-grid-container \{ grid-template-columns: 1fr !important; \}/, 'the card grid must collapse to a single column on narrow viewports')
+  assert.match(pageCode14, /\.pump-card-top\s*\{ flex-wrap: wrap !important/, 'the card header must wrap on narrow viewports instead of overflowing')
+
+  // Discovery logic untouched: the hard rule this whole task was bound by.
+  assert.match(routeCode14, /export function evaluateStage1Candidate/, 'Stage 1 discovery function must be untouched and still exported')
+  assert.match(routeCode14, /export function evaluateStage2Candidate/, 'Stage 2 discovery function must be untouched and still exported')
+}
+
 console.log('test-pump-alerts-discovery.mjs: all assertions passed')

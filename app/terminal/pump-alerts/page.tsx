@@ -146,11 +146,6 @@ function shortAddr(addr: string): string {
 }
 
 
-function metricBarValue(v: number | null, cap: number): number {
-  if (v == null || cap <= 0) return 0
-  return Math.max(8, Math.min(100, (v / cap) * 100))
-}
-
 function fdvTier(v: number | null): { color: string; bg: string; border: string; label: string; glow: string } {
   if (v == null) return { color: '#94a3b8', bg: 'linear-gradient(135deg, rgba(100,116,139,0.13), rgba(148,163,184,0.055))', border: 'rgba(148,163,184,0.18)', label: 'FDV open', glow: 'rgba(148,163,184,0.08)' }
   if (v < 500_000) return { color: '#4ade80', bg: 'linear-gradient(135deg, rgba(74,222,128,0.12), rgba(45,212,191,0.050))', border: 'rgba(74,222,128,0.28)', label: 'Low FDV', glow: 'rgba(74,222,128,0.12)' }
@@ -158,27 +153,23 @@ function fdvTier(v: number | null): { color: string; bg: string; border: string;
   return { color: '#c084fc', bg: 'linear-gradient(135deg, rgba(192,132,252,0.13), rgba(168,85,247,0.050))', border: 'rgba(192,132,252,0.30)', label: 'High FDV', glow: 'rgba(192,132,252,0.13)' }
 }
 
-function MiniMetricBar({ value, color, cap, depth = false }: { value: number | null; color: string; cap: number; depth?: boolean }) {
-  const width = metricBarValue(value, cap)
+// CARD POLISH, DISCLOSED (requested: cards feel too wide/heavy, unclear hierarchy, no Market Cap).
+// One compact metric cell for the grid — label above, value below, uniform sizing so the 10-metric
+// grid (Price/24h/6h/1h/Vol/Liq/MCap/FDV/Age/Chain) stays aligned and scannable in ~5 seconds.
+function GridMetric({ label, value, dim, strong, color }: { label: string; value: string; dim?: boolean; strong?: boolean; color?: string }) {
   return (
-    <span className={depth ? "pump-mini-bar pump-liq-depth" : "pump-mini-bar"} style={{ display: 'block', width: '64px', height: '5px', borderRadius: '99px', overflow: 'hidden', background: 'linear-gradient(90deg, rgba(15,23,42,0.74), rgba(15,23,42,0.42))', boxShadow: 'inset 0 0 0 1px rgba(45,212,191,0.055), inset 0 1px 4px rgba(2,6,23,0.62)' }}>
-      <span style={{ display: 'block', width: `${width}%`, height: '100%', borderRadius: 'inherit', background: `linear-gradient(90deg, ${color}4d, ${color})`, boxShadow: `0 0 10px ${color}45` }} />
-    </span>
-  )
-}
-
-function StatMetric({ label, value, dimValue, children }: { label: string; value: string; dimValue?: boolean; children?: React.ReactNode }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0, padding: '7px 9px', borderRadius: '12px', background: 'linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0.016))', border: '1px solid rgba(148,163,184,0.10)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.050), inset 0 -10px 18px rgba(2,6,23,0.16)' }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: '5px' }}>
-        <span style={{ fontSize: '8px', fontWeight: 850, color: '#58708a', letterSpacing: '0.13em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', flexShrink: 0, lineHeight: 1 }}>
-          {label}
-        </span>
-        <span style={{ fontSize: label === 'Price' ? '10.5px' : '12px', fontWeight: label === 'Price' ? 650 : 800, color: dimValue ? '#64748b' : (label === 'Price' ? '#8aa0b5' : '#edf6ff'), fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>
-          {value}
-        </span>
-      </div>
-      {children}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 }}>
+      <span style={{ fontSize: '7.5px', fontWeight: 800, color: '#4a6178', letterSpacing: '0.10em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)', lineHeight: 1 }}>
+        {label}
+      </span>
+      <span style={{
+        fontSize: strong ? '13px' : '11px', fontWeight: strong ? 900 : 700,
+        color: dim ? '#4a6178' : (color ?? '#dce8f2'),
+        fontFamily: 'var(--font-plex-mono)', lineHeight: 1.15,
+        whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+      }}>
+        {value}
+      </span>
     </div>
   )
 }
@@ -201,12 +192,15 @@ function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, copied }: {
   const changePositive = change >= 0
   const changeAbs = Math.abs(change)
   const changeColor = changePositive ? (changeAbs >= 50 ? '#22d3ee' : '#4ade80') : (changeAbs >= 25 ? '#fb7185' : '#f87171')
-  const changeBg = changePositive ? (changeAbs >= 50 ? 'rgba(34,211,238,0.10)' : 'rgba(74,222,128,0.09)') : 'rgba(248,113,113,0.10)'
   const avatarText = (alert.symbol || '?').slice(0, 2).toUpperCase()
   const fdvStyle = fdvTier(alert.fdvUsd)
   const showWhaleIcon = alert.tags?.some(tag => /whale/i.test(tag))
   const showRiskIcon = alert.riskLevel === 'HIGH' || alert.riskLevel === 'MEDIUM'
   const identityColor = alert.riskLevel === 'HIGH' ? riskColor : alert.category === 'HIGH_MOMENTUM' ? catColor : alert.riskLevel === 'MEDIUM' ? '#c084fc' : '#2DD4BF'
+  // MARKET CAP, DISCLOSED (requested: card must show Market Cap alongside FDV, never fabricated).
+  // marketCapUsd is only ever a real value the backend measured (or null) — "MCap unavailable" is
+  // shown verbatim rather than a fake $0 or silently reusing the FDV figure.
+  const mcapText = alert.marketCapUsd != null ? fmtUSD(alert.marketCapUsd) : 'MCap unavailable'
 
   return (
     <div
@@ -215,136 +209,61 @@ function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, copied }: {
       onMouseLeave={() => setHovered(false)}
       style={{
         background: hovered
-          ? `radial-gradient(circle at 12% 0%, ${catColor}12, transparent 30%), radial-gradient(circle at 92% 18%, rgba(168,85,247,0.060), transparent 36%), radial-gradient(circle at 48% 120%, rgba(45,212,191,0.035), transparent 42%), linear-gradient(135deg, rgba(255,255,255,0.070), rgba(255,255,255,0.030)), rgba(8,13,28,0.72)`
-          : 'radial-gradient(circle at 12% 0%, rgba(45,212,191,0.050), transparent 28%), radial-gradient(circle at 92% 16%, rgba(168,85,247,0.040), transparent 34%), radial-gradient(circle at 48% 120%, rgba(45,212,191,0.030), transparent 40%), linear-gradient(135deg, rgba(255,255,255,0.045), rgba(255,255,255,0.018)), rgba(8,13,28,0.58)',
+          ? `radial-gradient(circle at 12% 0%, ${catColor}12, transparent 30%), radial-gradient(circle at 92% 18%, rgba(168,85,247,0.060), transparent 36%), linear-gradient(135deg, rgba(255,255,255,0.065), rgba(255,255,255,0.026)), rgba(8,13,28,0.72)`
+          : 'radial-gradient(circle at 12% 0%, rgba(45,212,191,0.045), transparent 28%), radial-gradient(circle at 92% 16%, rgba(168,85,247,0.035), transparent 34%), linear-gradient(135deg, rgba(255,255,255,0.040), rgba(255,255,255,0.016)), rgba(8,13,28,0.58)',
         border: `1px solid ${hovered ? `${catColor}38` : 'rgba(255,255,255,0.09)'}`,
-        borderLeft: `1px solid ${identityColor}44`,
+        borderLeft: `2px solid ${identityColor}55`,
         ['--pump-identity-color' as string]: identityColor,
         ['--pump-accent-color' as string]: catColor,
-        borderRadius: '20px',
-        padding: '15px 16px',
+        borderRadius: '16px',
+        padding: '13px 14px',
         backdropFilter: 'blur(14px)',
-        transform: hovered ? 'scale(1.012)' : 'scale(1)',
         transition: 'background 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease',
-        boxShadow: hovered ? `0 18px 42px rgba(2,6,23,0.38), inset 0 1px 0 rgba(255,255,255,0.08), inset 0 -18px 36px rgba(255,255,255,0.018), 0 0 30px ${catColor}18, 0 0 54px rgba(168,85,247,0.055)` : '0 12px 30px rgba(2,6,23,0.24), inset 0 1px 0 rgba(255,255,255,0.055), inset 0 -16px 30px rgba(255,255,255,0.012), 0 0 32px rgba(45,212,191,0.035)',
+        boxShadow: hovered ? `0 14px 32px rgba(2,6,23,0.34), inset 0 1px 0 rgba(255,255,255,0.07), 0 0 26px ${catColor}16` : '0 8px 22px rgba(2,6,23,0.20), inset 0 1px 0 rgba(255,255,255,0.045)',
         display: 'flex',
-        flexWrap: 'wrap',
-        alignItems: 'stretch',
-        gap: '0',
+        flexDirection: 'column',
+        gap: '10px',
         animation: 'pumpSlideIn 0.3s ease both',
-        overflow: 'hidden',
+        height: '100%',
       }}
     >
-      {/* LEFT: identity */}
-      <div
-        className="pump-card-left"
-        style={{
-          display: 'flex', alignItems: 'center', gap: '11px',
-          width: '238px', flexShrink: 0,
-          paddingRight: '12px', borderRight: '1px solid rgba(45,212,191,0.10)',
-        }}
-      >
-        <div style={{
-          width: '34px', height: '34px', borderRadius: '11px', flexShrink: 0,
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: '9.5px', fontWeight: 800, color: catColor,
-          background: `${catColor}1a`, border: `1px solid ${catColor}2e`,
-          fontFamily: 'var(--font-plex-mono)',
-        }}>
-          {avatarText}
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', flexShrink: 0 }}>
-          {alert.category === 'HIGH_MOMENTUM' && <span className="pump-flame" title='High momentum' style={{ filter: `drop-shadow(0 0 7px ${catColor}66)`, fontSize: '13px', lineHeight: 1 }}>🔥</span>}
-          {showWhaleIcon && <span title='Whale activity' style={{ filter: 'drop-shadow(0 0 7px rgba(45,212,191,0.42))', fontSize: '13px', lineHeight: 1 }}>🐋</span>}
-        </div>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: '16.5px', fontWeight: 900, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {alert.name}
+      {/* TOP: identity (left) + evidence/category/risk badges (right) — clearest info first. */}
+      <div className="pump-card-top" style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '8px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '9px', minWidth: 0 }}>
+          <div style={{
+            width: '30px', height: '30px', borderRadius: '10px', flexShrink: 0,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '9px', fontWeight: 800, color: catColor,
+            background: `${catColor}1a`, border: `1px solid ${catColor}2e`,
+            fontFamily: 'var(--font-plex-mono)',
+          }}>
+            {avatarText}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>
-            <span style={{ color: '#9bb4ca', fontWeight: 850 }}>{alert.symbol}</span>
-            <span style={{ color: '#2d3f52' }}>·</span>
-            <span style={{ color: '#374a5c' }}>{shortAddr(alert.contract)}</span>
-          </div>
-        </div>
-      </div>
-
-      {/* CENTER: metrics + reason */}
-      <div
-        className="pump-card-center"
-        style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'center', padding: '0 12px', gap: '4px', minWidth: 0 }}
-      >
-        <div className="pump-metric-band" style={{ display: 'flex', gap: '9px', flexWrap: 'wrap', alignItems: 'center', padding: '6px', borderRadius: '16px', background: 'rgba(2,6,23,0.22)', border: '1px solid rgba(45,212,191,0.085)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.032), 0 0 22px rgba(45,212,191,0.025)' }}>
-          <StatMetric label="Price" value={fmtPrice(alert.priceUsd)} />
-          {alert.change14d != null && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '7px 9px', borderRadius: '12px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.33)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.045), 0 0 16px rgba(34,211,238,0.14)' }}>
-              <span style={{ fontSize: '11px', color: '#22d3ee' }}>↗</span>
-              <span style={{ fontSize: '8px', fontWeight: 850, color: '#58708a', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>14d</span>
-              <span style={{ fontSize: '13.5px', fontWeight: 900, color: '#22d3ee', fontFamily: 'var(--font-plex-mono)' }}>
-                ▲{alert.change14d.toFixed(1)}%
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <span style={{ fontSize: '14.5px', fontWeight: 900, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '150px' }}>
+                {alert.name}
               </span>
+              {alert.category === 'HIGH_MOMENTUM' && <span className="pump-flame" title='High momentum' style={{ filter: `drop-shadow(0 0 7px ${catColor}66)`, fontSize: '12px', lineHeight: 1 }}>🔥</span>}
+              {showWhaleIcon && <span title='Whale activity' style={{ filter: 'drop-shadow(0 0 7px rgba(45,212,191,0.42))', fontSize: '12px', lineHeight: 1 }}>🐋</span>}
             </div>
-          )}
-          {alert.change24h != null && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '7px 9px', borderRadius: '12px', background: changeBg, border: `1px solid ${changeColor}33`, boxShadow: `inset 0 1px 0 rgba(255,255,255,0.045), 0 0 16px ${changeColor}14` }}>
-              <span style={{ fontSize: '11px', color: changeColor, filter: `drop-shadow(0 0 8px ${changeColor}55)` }}>{changePositive ? '↗' : '↘'}</span>
-              <span style={{ fontSize: '8px', fontWeight: 850, color: '#58708a', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>24h</span>
-              <span style={{ fontSize: '13.5px', fontWeight: 900, color: changeColor, fontFamily: 'var(--font-plex-mono)' }}>
-                {changePositive ? '▲' : '▼'}{changeAbs.toFixed(1)}%
-              </span>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>
+              <span style={{ color: '#9bb4ca', fontWeight: 850 }}>{alert.symbol}</span>
+              <span style={{ color: '#2d3f52' }}>·</span>
+              <span style={{ color: '#3fa787', fontWeight: 700, textTransform: 'uppercase' }}>{alert.chain}</span>
+              <span style={{ color: '#2d3f52' }}>·</span>
+              <span style={{ color: '#374a5c' }}>{shortAddr(alert.contract)}</span>
             </div>
-          )}
-          {/* LIVE MOMENTUM MODE, DISCLOSED: 6h/1h shown whenever available — the shorter-window
-              evidence a live-momentum card may have qualified on, not just decoration. */}
-          {alert.change6h != null && (
-            <StatMetric label="6h" value={`${alert.change6h >= 0 ? '+' : ''}${alert.change6h.toFixed(1)}%`} />
-          )}
-          {alert.change1h != null && (
-            <StatMetric label="1h" value={`${alert.change1h >= 0 ? '+' : ''}${alert.change1h.toFixed(1)}%`} />
-          )}
-          <StatMetric label="Vol" value={fmtUSD(alert.volume24hUsd)} dimValue={alert.volume24hUsd == null}>
-            <MiniMetricBar value={alert.volume24hUsd} color="#22d3ee" cap={1_000_000} />
-          </StatMetric>
-          <StatMetric label="Liq" value={fmtUSD(alert.liquidityUsd)} dimValue={alert.liquidityUsd == null}>
-            <MiniMetricBar value={alert.liquidityUsd} color="#2DD4BF" cap={250_000} depth />
-          </StatMetric>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '7px' }}>
-            <StatMetric label="FDV" value={fmtUSD(alert.fdvUsd ?? alert.marketCapUsd)} dimValue={alert.fdvUsd == null && alert.marketCapUsd == null} />
-            <span style={{ padding: '5px 9px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 800, letterSpacing: '0.10em', textTransform: 'uppercase', color: fdvStyle.color, background: fdvStyle.bg, border: `1px solid ${fdvStyle.border}`, boxShadow: `inset 0 1px 0 rgba(255,255,255,0.045), 0 0 16px ${fdvStyle.glow}`, fontFamily: 'var(--font-plex-mono)', lineHeight: 1.15 }}>
-              {fdvStyle.label}
-            </span>
           </div>
-          {alert.tokenAgeDays != null && (
-            <StatMetric label="Age" value={alert.tokenAgeDays < 1 ? '<1d' : `${Math.round(alert.tokenAgeDays)}d`} />
-          )}
-          <StatMetric label="Chain" value={alert.chain} />
         </div>
-        <p style={{ margin: 0, fontSize: '10.5px', color: '#6f8498', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {showRiskIcon && <span style={{ color: riskColor }}>△ </span>}
-          {alert.reason}
-        </p>
-        <p title={alert.qualifyingReason} style={{ margin: 0, fontSize: '9px', color: '#3f7a6e', lineHeight: 1.25, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--font-plex-mono)' }}>
-          Qualifies: {alert.qualifyingReason}
-        </p>
-      </div>
-
-      {/* RIGHT: chips + actions */}
-      <div
-        className="pump-card-right"
-        style={{
-          display: 'flex', flexDirection: 'column', alignItems: 'flex-end',
-          justifyContent: 'space-between', gap: '6px',
-          flexShrink: 0, paddingLeft: '12px', borderLeft: '1px solid rgba(168,85,247,0.10)',
-        }}
-      >
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', alignItems: 'flex-end' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', justifyContent: 'flex-end', flexShrink: 0, maxWidth: '46%' }}>
           {/* EVIDENCE BADGE, DISCLOSED (ELIGIBILITY-MODEL fix): states exactly how this card
               qualified. Exact sources get a calm teal "Exact 14d" chip; live-momentum cards get a
               distinct amber "Live Momentum" chip so a live-momentum qualification can never pass as
               confirmed 14d data. */}
           {alert.evidenceGrade === 'live_momentum' ? (
             <span className="pump-pill" title={alert.qualifyingReason} style={{
-              padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
+              padding: '4px 8px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 800, letterSpacing: '0.06em',
               color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.32)',
               fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
             }}>
@@ -352,7 +271,7 @@ function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, copied }: {
             </span>
           ) : (
             <span className="pump-pill" title={alert.qualifyingReason} style={{
-              padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
+              padding: '4px 8px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 800, letterSpacing: '0.06em',
               color: '#2DD4BF', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.30)',
               fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
             }}>
@@ -360,89 +279,150 @@ function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, copied }: {
             </span>
           )}
           <span className="pump-pill" style={{
-            padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
+            padding: '4px 8px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 800, letterSpacing: '0.06em',
             color: catColor, background: catBg, border: `1px solid ${catBorder}`,
             fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
           }}>
             {alert.category === 'HIGH_MOMENTUM' ? '🔥 ' : ''}{CATEGORY_LABEL[alert.category]}
           </span>
           <span className="pump-pill" style={{
-            padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
+            padding: '4px 8px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 800, letterSpacing: '0.06em',
             color: riskColor, background: riskBg, border: `1px solid ${riskColor}33`,
             fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
           }}>
             {showRiskIcon ? '△ ' : ''}{RISK_LABEL[alert.riskLevel]}
           </span>
+          <span className="pump-pill" style={{
+            padding: '4px 8px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 800, letterSpacing: '0.06em',
+            color: fdvStyle.color, background: fdvStyle.bg, border: `1px solid ${fdvStyle.border}`,
+            fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
+          }}>
+            {fdvStyle.label}
+          </span>
           {alert.tags?.map(tag => (
             <span key={tag} className="pump-pill" style={{
-              padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
-              color: '#b7c7d8', background: 'linear-gradient(135deg, rgba(45,212,191,0.075), rgba(168,85,247,0.065), rgba(34,211,238,0.045))', border: '1px solid rgba(45,212,191,0.16)',
+              padding: '4px 8px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 800, letterSpacing: '0.06em',
+              color: '#b7c7d8', background: 'rgba(45,212,191,0.06)', border: '1px solid rgba(45,212,191,0.16)',
               fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
             }}>
               {tag}
             </span>
           ))}
         </div>
-        <div style={{ display: 'flex', gap: '4px' }}>
-          <button
-            onClick={onScan}
-            className="pump-action-btn"
-            style={{
-              padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800,
-              letterSpacing: '0.07em', textTransform: 'uppercase',
-              border: '1px solid rgba(45,212,191,0.32)', background: 'rgba(45,212,191,0.09)',
-              color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
-              transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease', boxShadow: hovered ? '0 0 18px rgba(45,212,191,0.18), inset 0 1px 0 rgba(255,255,255,0.05)' : 'inset 0 1px 0 rgba(255,255,255,0.035)', transform: hovered ? 'translateY(-1px) scale(1.03)' : 'translateY(0) scale(1)',
-            }}
-          >
-            ⌕ Scan
-          </button>
-          <button
-            onClick={onCopyCA}
-            className="pump-action-btn"
-            aria-label={`Copy contract address for ${alert.symbol}`}
-            style={{
-              padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800,
-              letterSpacing: '0.07em', textTransform: 'uppercase',
-              border: `1px solid ${copied ? 'rgba(74,222,128,0.42)' : 'rgba(45,212,191,0.28)'}`,
-              background: copied ? 'rgba(74,222,128,0.12)' : 'rgba(255,255,255,0.04)',
-              color: copied ? '#4ade80' : '#9bb4ca', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
-              transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease', boxShadow: hovered ? '0 0 18px rgba(45,212,191,0.18), inset 0 1px 0 rgba(255,255,255,0.05)' : 'inset 0 1px 0 rgba(255,255,255,0.035)', transform: hovered ? 'translateY(-1px) scale(1.03)' : 'translateY(0) scale(1)',
-            }}
-          >
-            {copied ? '✓ Copied' : '⧉ Copy CA'}
-          </button>
-          <button
-            onClick={onAskClark}
-            className="pump-action-btn"
-            style={{
-              padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800,
-              letterSpacing: '0.07em', textTransform: 'uppercase',
-              border: '1px solid rgba(45,212,191,0.28)', background: 'linear-gradient(135deg, rgba(45,212,191,0.10), rgba(168,85,247,0.10))',
-              color: '#c4b5fd', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
-              transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease', boxShadow: hovered ? '0 0 18px rgba(45,212,191,0.18), inset 0 1px 0 rgba(255,255,255,0.05)' : 'inset 0 1px 0 rgba(255,255,255,0.035)', transform: hovered ? 'translateY(-1px) scale(1.03)' : 'translateY(0) scale(1)',
-            }}
-          >
-            ✦ Clark
-          </button>
-          <button
-            onClick={onReport}
-            className="pump-action-btn"
-            style={{
-              padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800,
-              letterSpacing: '0.07em', textTransform: 'uppercase',
-              border: '1px solid rgba(168,85,247,0.32)', background: 'rgba(168,85,247,0.09)',
-              color: '#c084fc', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
-              transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease', boxShadow: hovered ? '0 0 18px rgba(168,85,247,0.18), inset 0 1px 0 rgba(255,255,255,0.05)' : 'inset 0 1px 0 rgba(255,255,255,0.035)', transform: hovered ? 'translateY(-1px) scale(1.03)' : 'translateY(0) scale(1)',
-            }}
-          >
-            ◈ Report
-          </button>
-        </div>
       </div>
-      <div className="pump-clark-preview" style={{ flexBasis: '100%' }}>
-        <div className="pump-clark-intel" style={{ marginTop: '12px', padding: '10px 12px', borderRadius: '14px', background: 'linear-gradient(135deg, rgba(45,212,191,0.075), rgba(168,85,247,0.080), rgba(34,211,238,0.040)), rgba(2,6,23,0.34)', border: '1px solid rgba(167,139,250,0.20)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.055), 0 0 22px rgba(168,85,247,0.070), 0 0 34px rgba(45,212,191,0.045)', color: '#a9bfd1', fontSize: '10px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em' }}>
-          <span style={{ color: '#c4b5fd', fontWeight: 900 }}>✦ Clark preview</span> · Momentum, liquidity, FDV tier, and risk notes are ready for an AI read.
+
+      {/* METRIC GRID, DISCLOSED: exact order requested — Price | 24h | 6h | 1h | Volume | Liquidity
+          | Market Cap | FDV | Age | Chain. 24h is the strongest number on the card (largest, always
+          colored by direction) even though its position in the grid is unchanged. */}
+      <div
+        className="pump-card-grid"
+        style={{
+          display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0, 1fr))', columnGap: '10px', rowGap: '9px',
+          padding: '9px 10px', borderRadius: '12px', background: 'rgba(2,6,23,0.24)',
+          border: '1px solid rgba(45,212,191,0.08)',
+        }}
+      >
+        <GridMetric label="Price" value={fmtPrice(alert.priceUsd)} />
+        <GridMetric
+          label="24h"
+          value={alert.change24h != null ? `${changePositive ? '▲' : '▼'}${changeAbs.toFixed(1)}%` : '—'}
+          dim={alert.change24h == null}
+          color={alert.change24h != null ? changeColor : undefined}
+          strong
+        />
+        <GridMetric
+          label="6h"
+          value={alert.change6h != null ? `${alert.change6h >= 0 ? '+' : ''}${alert.change6h.toFixed(1)}%` : '—'}
+          dim={alert.change6h == null}
+          color={alert.change6h != null ? (alert.change6h >= 0 ? '#4ade80' : '#f87171') : undefined}
+        />
+        <GridMetric
+          label="1h"
+          value={alert.change1h != null ? `${alert.change1h >= 0 ? '+' : ''}${alert.change1h.toFixed(1)}%` : '—'}
+          dim={alert.change1h == null}
+          color={alert.change1h != null ? (alert.change1h >= 0 ? '#4ade80' : '#f87171') : undefined}
+        />
+        <GridMetric label="Volume" value={fmtUSD(alert.volume24hUsd)} dim={alert.volume24hUsd == null} />
+        <GridMetric label="Liquidity" value={fmtUSD(alert.liquidityUsd)} dim={alert.liquidityUsd == null} />
+        <GridMetric label="Market Cap" value={mcapText} dim={alert.marketCapUsd == null} />
+        <GridMetric label="FDV" value={fmtUSD(alert.fdvUsd)} dim={alert.fdvUsd == null} />
+        <GridMetric label="Age" value={alert.tokenAgeDays != null ? (alert.tokenAgeDays < 1 ? '<1d' : `${Math.round(alert.tokenAgeDays)}d`) : '—'} dim={alert.tokenAgeDays == null} />
+        <GridMetric label="Chain" value={alert.chain} />
+      </div>
+
+      {/* Reason + qualifying evidence — single-line, truncated, full text on hover. */}
+      <div style={{ minWidth: 0 }}>
+        <p style={{ margin: 0, fontSize: '10px', color: '#7690a6', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {showRiskIcon && <span style={{ color: riskColor }}>△ </span>}
+          {alert.reason}
+        </p>
+        <p title={alert.qualifyingReason} style={{ margin: '2px 0 0', fontSize: '9px', color: '#3f7a6e', lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontFamily: 'var(--font-plex-mono)' }}>
+          Qualifies: {alert.qualifyingReason}
+        </p>
+      </div>
+
+      {/* ACTIONS, DISCLOSED: single compact row, bottom of card — same 4 actions/handlers as before,
+          just no longer stacked in a tall right-hand rail. */}
+      <div className="pump-card-actions" style={{ display: 'flex', gap: '5px', marginTop: 'auto' }}>
+        <button
+          onClick={onScan}
+          className="pump-action-btn"
+          style={{
+            flex: 1, padding: '7px 6px', borderRadius: '9px', fontSize: '8px', fontWeight: 800,
+            letterSpacing: '0.05em', textTransform: 'uppercase',
+            border: '1px solid rgba(45,212,191,0.32)', background: 'rgba(45,212,191,0.09)',
+            color: '#2DD4BF', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+            transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease',
+          }}
+        >
+          ⌕ Scan
+        </button>
+        <button
+          onClick={onCopyCA}
+          className="pump-action-btn"
+          aria-label={`Copy contract address for ${alert.symbol}`}
+          style={{
+            flex: 1, padding: '7px 6px', borderRadius: '9px', fontSize: '8px', fontWeight: 800,
+            letterSpacing: '0.05em', textTransform: 'uppercase',
+            border: `1px solid ${copied ? 'rgba(74,222,128,0.42)' : 'rgba(45,212,191,0.28)'}`,
+            background: copied ? 'rgba(74,222,128,0.12)' : 'rgba(255,255,255,0.04)',
+            color: copied ? '#4ade80' : '#9bb4ca', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+            transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease',
+          }}
+        >
+          {copied ? '✓ Copied' : '⧉ Copy CA'}
+        </button>
+        <button
+          onClick={onAskClark}
+          className="pump-action-btn"
+          style={{
+            flex: 1, padding: '7px 6px', borderRadius: '9px', fontSize: '8px', fontWeight: 800,
+            letterSpacing: '0.05em', textTransform: 'uppercase',
+            border: '1px solid rgba(45,212,191,0.28)', background: 'linear-gradient(135deg, rgba(45,212,191,0.10), rgba(168,85,247,0.10))',
+            color: '#c4b5fd', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+            transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease',
+          }}
+        >
+          ✦ Clark
+        </button>
+        <button
+          onClick={onReport}
+          className="pump-action-btn"
+          style={{
+            flex: 1, padding: '7px 6px', borderRadius: '9px', fontSize: '8px', fontWeight: 800,
+            letterSpacing: '0.05em', textTransform: 'uppercase',
+            border: '1px solid rgba(168,85,247,0.32)', background: 'rgba(168,85,247,0.09)',
+            color: '#c084fc', fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+            transition: 'background 0.16s ease, border-color 0.16s ease, transform 0.16s ease',
+          }}
+        >
+          ◈ Report
+        </button>
+      </div>
+
+      <div className="pump-clark-preview">
+        <div className="pump-clark-intel" style={{ padding: '9px 10px', borderRadius: '12px', background: 'linear-gradient(135deg, rgba(45,212,191,0.075), rgba(168,85,247,0.080), rgba(34,211,238,0.040)), rgba(2,6,23,0.34)', border: '1px solid rgba(167,139,250,0.20)', color: '#a9bfd1', fontSize: '9.5px', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.02em' }}>
+          <span style={{ color: '#c4b5fd', fontWeight: 900 }}>✦ Clark preview</span> · Momentum, liquidity, market cap/FDV, and risk notes are ready for an AI read.
         </div>
       </div>
     </div>
@@ -510,6 +490,15 @@ export default function PumpAlertsPage() {
   const [countdown, setCountdown] = useState(120)
   const [activeFilter, setActiveFilter] = useState<FilterKey>('ALL')
   const [refreshKey, setRefreshKey] = useState(0)
+  // LOAD MORE, DISCLOSED (requested: initial render shows 8-10 alerts, Load More appends the next
+  // 8-10 client-side — the backend has no cursor/page param, so this paginates over the already-
+  // fetched `alerts` array without ever refetching). Reset only when the active filter changes, not
+  // on every background refresh, so a user who's expanded the feed doesn't lose that on auto-refresh.
+  const PAGE_SIZE = 10
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE)
+  const [loadMoreLoading, setLoadMoreLoading] = useState(false)
+  const [loadMoreClicks, setLoadMoreClicks] = useState(0)
+  const loadMoreTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   // COPY-CA, DISCLOSED (requested: pump alerts cards had no way to grab the contract address).
   // Tracks which contract was just copied so its button shows "✓ Copied" briefly.
   const [copiedContract, setCopiedContract] = useState<string | null>(null)
@@ -669,6 +658,52 @@ export default function PumpAlertsPage() {
     [alerts, activeFilter],
   )
 
+  // Reset pagination to the first page only when the filter actually changes — not on every
+  // background refresh, so Load More progress survives an auto-refresh (requirement: "Refresh keeps
+  // existing cards visible" / "Do not reset filters when loading more"). Adjusted during render
+  // (React's documented pattern for state that must reset when a prop/value changes) rather than in
+  // a useEffect, since setState-in-effect triggers an extra render pass and an eslint error.
+  const [prevActiveFilterForReset, setPrevActiveFilterForReset] = useState(activeFilter)
+  if (activeFilter !== prevActiveFilterForReset) {
+    setPrevActiveFilterForReset(activeFilter)
+    setVisibleCount(PAGE_SIZE)
+  }
+
+  const visible = useMemo(() => filtered.slice(0, visibleCount), [filtered, visibleCount])
+  const hasMore = visibleCount < filtered.length
+
+  function handleLoadMore() {
+    setLoadMoreClicks(c => c + 1)
+    setLoadMoreLoading(true)
+    if (loadMoreTimerRef.current) clearTimeout(loadMoreTimerRef.current)
+    // Purely client-side — the alerts are already fetched, this only reveals more of them. The
+    // brief delay is deliberate UI feedback (requirement: "button should have loading state"), not
+    // a real fetch — no network call happens here.
+    loadMoreTimerRef.current = setTimeout(() => {
+      setVisibleCount(c => Math.min(filtered.length, c + PAGE_SIZE))
+      setLoadMoreLoading(false)
+    }, 180)
+  }
+
+  // UI AUDIT, DISCLOSED: exact shape requested — answers "what is actually on screen and why" for
+  // the pagination/market-cap-availability layer, distinct from the backend's discovery-side audits.
+  const pumpAlertsUiAudit = useMemo(() => ({
+    totalAlertsFromApi: alerts.length,
+    initialRenderedCount: Math.min(PAGE_SIZE, filtered.length),
+    currentRenderedCount: visible.length,
+    hasMore,
+    marketCapAvailableCount: alerts.filter(a => a.marketCapUsd != null).length,
+    marketCapMissingCount: alerts.filter(a => a.marketCapUsd == null).length,
+    fdvAvailableCount: alerts.filter(a => a.fdvUsd != null).length,
+    loadMoreClicks,
+    activeFilter,
+    activeChains: Array.from(activeChains),
+  }), [alerts, filtered.length, visible.length, hasMore, loadMoreClicks, activeFilter, activeChains])
+
+  useEffect(() => {
+    console.debug('[pumpAlertsUiAudit]', pumpAlertsUiAudit)
+  }, [pumpAlertsUiAudit])
+
   if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
   if (!canAccessFeature(plan, 'pump-alerts')) return <LockedPanel feature="pump-alerts" />
 
@@ -691,10 +726,6 @@ export default function PumpAlertsPage() {
           0%, 100% { transform: translateY(0) scale(1); }
           50% { transform: translateY(-1px) scale(1.035); }
         }
-        @keyframes miniBarReveal {
-          from { transform: scaleX(0); opacity: 0.35; }
-          to { transform: scaleX(1); opacity: 1; }
-        }
         @keyframes clarkIntelGlow {
           0%, 100% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.055), 0 0 22px rgba(168,85,247,0.070), 0 0 34px rgba(45,212,191,0.045); }
           50% { box-shadow: inset 0 1px 0 rgba(255,255,255,0.065), 0 0 28px rgba(168,85,247,0.105), 0 0 44px rgba(34,211,238,0.060); }
@@ -716,27 +747,6 @@ export default function PumpAlertsPage() {
           z-index: 1;
         }
         .pump-card > * { position: relative; z-index: 2; }
-        .pump-metric-band { position: relative; overflow: hidden; }
-        .pump-metric-band::before {
-          content: '';
-          position: absolute;
-          inset: 0;
-          background-image: linear-gradient(rgba(45,212,191,0.055) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,0.045) 1px, transparent 1px);
-          background-size: 18px 18px;
-          opacity: 0.45;
-          pointer-events: none;
-        }
-        .pump-metric-band > * { position: relative; z-index: 1; }
-        .pump-mini-bar { position: relative; }
-        .pump-mini-bar::before {
-          content: '';
-          position: absolute;
-          inset: 0;
-          background-image: repeating-linear-gradient(90deg, rgba(255,255,255,0.070) 0 1px, transparent 1px 8px), linear-gradient(90deg, rgba(45,212,191,0.12), rgba(168,85,247,0.08), rgba(34,211,238,0.10));
-          opacity: 0.22;
-        }
-        .pump-liq-depth::before { opacity: 0.34; }
-        .pump-mini-bar > span { position: relative; z-index: 1; transform-origin: left center; animation: miniBarReveal 720ms cubic-bezier(.2,.8,.2,1) both; }
         .pump-flame { position: relative; display: inline-flex; align-items: center; justify-content: center; }
         .pump-flame::before {
           content: '';
@@ -754,7 +764,7 @@ export default function PumpAlertsPage() {
         .pump-card:hover .pump-clark-preview { max-height: 74px; opacity: 1; transform: translateY(0); }
         .pump-card:hover .pump-clark-intel { animation: clarkIntelGlow 3.4s ease-in-out infinite; }
         @media (prefers-reduced-motion: reduce) {
-          .pump-card, .pump-pill, .pump-action-btn, .pump-clark-preview, .pump-mini-bar > span, .pump-card:hover .pump-clark-intel, .pump-flame::before { animation: none !important; transition: none !important; }
+          .pump-card, .pump-pill, .pump-action-btn, .pump-clark-preview, .pump-card:hover .pump-clark-intel, .pump-flame::before { animation: none !important; transition: none !important; }
         }
         @media (max-width: 768px) {
           /* 60px top clears the fixed hamburger button (top:12 + height:36 + 12 buffer) */
@@ -762,12 +772,20 @@ export default function PumpAlertsPage() {
           /* target the actual grid div inside SummaryStrip */
           .pump-strip > div { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
           .pump-header-row  { padding-left: 0 !important; }
+          /* MOBILE FIX, DISCLOSED (requested: "no horizontal overflow"): 340px minmax columns are too
+             wide to fit a ~375-414px viewport once the page's own side padding is subtracted, so force
+             a single column below the tablet breakpoint rather than letting auto-fill try to squeeze
+             a second narrow column. */
+          .pump-card-grid-container { grid-template-columns: 1fr !important; }
         }
         @media (max-width: 640px) {
-          .pump-card        { flex-direction: column !important; }
-          .pump-card-left   { width: auto !important; border-right: none !important; padding-right: 0 !important; padding-bottom: 8px !important; border-bottom: 1px solid rgba(255,255,255,0.06) !important; }
-          .pump-card-center { padding: 4px 0 !important; }
-          .pump-card-right  { flex-direction: row !important; align-items: center !important; border-left: none !important; padding-left: 0 !important; padding-top: 8px !important; border-top: 1px solid rgba(255,255,255,0.06) !important; justify-content: space-between !important; }
+          /* Cards stack cleanly: identity/badges wrap onto their own lines, metric grid drops to 3
+             columns so labels/values stay readable instead of being clipped, actions stay a full-width
+             row of equal-width buttons. */
+          .pump-card-top    { flex-wrap: wrap !important; row-gap: 8px !important; }
+          .pump-card-top > div:last-child { max-width: 100% !important; justify-content: flex-start !important; }
+          .pump-card-grid   { grid-template-columns: repeat(3, minmax(0, 1fr)) !important; }
+          .pump-card-actions { flex-wrap: wrap !important; }
         }
       `}</style>
 
@@ -1023,10 +1041,13 @@ export default function PumpAlertsPage() {
             </p>
           )}
 
-          {/* Alert cards */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
-            {filtered.map((alert, i) => (
-              <div key={alert.contract} style={{ animationDelay: `${i * 30}ms`, paddingTop: i === 0 ? 0 : '3px', borderTop: i === 0 ? 'none' : '1px solid rgba(148,163,184,0.10)' }}>
+          {/* CARD GRID, DISCLOSED (requested: cards feel too wide/heavy): a responsive grid instead
+              of a single full-width column — cards narrow to a sensible width and multiple sit
+              side-by-side on wide screens, collapsing to one column on mobile via the media query
+              below. */}
+          <div className="pump-card-grid-container" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: '11px' }}>
+            {visible.map((alert, i) => (
+              <div key={alert.contract} style={{ animationDelay: `${Math.min(i, 12) * 30}ms` }}>
                 <AlertCard
                   alert={alert}
                   onScan={() => openToken(alert)}
@@ -1038,6 +1059,45 @@ export default function PumpAlertsPage() {
               </div>
             ))}
           </div>
+
+          {/* LOAD MORE, DISCLOSED: purely client-side pagination over the already-fetched alerts —
+              never a new network request. Hidden once every filtered alert is on screen. */}
+          {filtered.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', marginTop: '16px' }}>
+              <p style={{ margin: 0, fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', letterSpacing: '0.04em' }}>
+                Showing {visible.length} of {filtered.length}
+              </p>
+              {hasMore ? (
+                <button
+                  onClick={handleLoadMore}
+                  disabled={loadMoreLoading}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: '7px',
+                    padding: '9px 20px', borderRadius: '999px',
+                    background: 'rgba(45,212,191,0.09)', border: '1px solid rgba(45,212,191,0.28)',
+                    color: loadMoreLoading ? '#3a5268' : '#2DD4BF',
+                    fontSize: '10.5px', fontWeight: 800, letterSpacing: '0.08em', textTransform: 'uppercase',
+                    cursor: loadMoreLoading ? 'not-allowed' : 'pointer', fontFamily: 'var(--font-plex-mono)',
+                    transition: 'background 0.15s ease, border-color 0.15s ease',
+                  }}
+                >
+                  {loadMoreLoading && (
+                    <svg width='11' height='11' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2.5' strokeLinecap='round' strokeLinejoin='round' style={{ animation: 'spinRefresh 0.8s linear infinite' }}>
+                      <path d='M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8' />
+                      <path d='M21 3v5h-5' />
+                      <path d='M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16' />
+                      <path d='M8 16H3v5' />
+                    </svg>
+                  )}
+                  {loadMoreLoading ? 'Loading…' : 'Load More'}
+                </button>
+              ) : (
+                <p style={{ margin: 0, fontSize: '10px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
+                  All current pump candidates shown.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Disclaimer */}
           {filtered.length > 0 && (

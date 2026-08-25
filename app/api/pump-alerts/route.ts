@@ -1361,8 +1361,19 @@ export async function GET(req: Request) {
     finalState,
   }
 
+  // UI-POLISH FIX, DISCLOSED (requested: ensure the API response carries priceChange24hPct/6hPct/
+  // 1hPct alongside the existing change24h/change6h/change1h names). Purely additive aliasing over
+  // the already-computed alert objects — no discovery/eligibility logic changes, no new fields are
+  // computed, nothing here can change which candidates qualify or how they're ranked.
+  const alertsWithAliases = alerts.map(a => ({
+    ...a,
+    priceChange24hPct: a.change24h,
+    priceChange6hPct: a.change6h,
+    priceChange1hPct: a.change1h,
+  }))
+
   const payload = {
-    alerts,
+    alerts: alertsWithAliases,
     fetchedAt: new Date().toISOString(),
     requestId,
     chains: chains.map(c => ({ chain: c, chainId: CHAIN_CONFIG[c].chainId, maxFdvUsd: Math.min(PUMP_ALERT_MAX_FDV_USD, CHAIN_CONFIG[c].maxFdvUsd) })),
