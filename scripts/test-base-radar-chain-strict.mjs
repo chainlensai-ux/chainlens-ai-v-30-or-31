@@ -91,4 +91,19 @@ assert.match(scannerCode, /setResult\(null\)/, 'a new scan must reset the previo
   assert.match(routeCode, /EMPTY_RESULT_CACHE_TTL_MS = 5 \* 1000/, 'a 0-token gate result must use a short cache TTL, not the full one')
 }
 
+// ─── Frontend finalState wiring (reported: "base radar isn't loading tokens" — same class as the
+// Pump Alerts empty-state fix). The backend already computes baseRadarFinalState (added in the
+// prior load-audit commit), but nothing in the frontend ever read it, so a real provider outage
+// that didn't cross discoveryDegradedSignificant's ≥50%-of-sources-failed threshold rendered the
+// exact same "No candidates passed the $50K+ valuation gate" copy as an honest quiet market —
+// indistinguishable from the user's side, reading as "stuck"/"not loading" rather than an outage. ──
+{
+  const pageSrc = fs.readFileSync(new URL('../app/terminal/base-radar/page.tsx', import.meta.url), 'utf8')
+  const pageCode = pageSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  assert.match(pageCode, /finalState\?: 'ok' \| 'providerUnavailable' \| 'allFilteredOut' \| 'noRawCandidates'/, 'RadarData must declare the server-computed finalState field')
+  assert.match(pageCode, /finalState === 'providerUnavailable'/, 'EmptyFeed must render a distinct message for a real provider outage')
+  assert.match(pageCode, /finalState === 'noRawCandidates'/, 'EmptyFeed must render a distinct message for zero raw candidates')
+  assert.match(pageCode, /finalState=\{data\?\.finalState\}/, 'the EmptyFeed call site must actually pass finalState through from the API response')
+}
+
 console.log('test-base-radar-chain-strict.mjs: all assertions passed')

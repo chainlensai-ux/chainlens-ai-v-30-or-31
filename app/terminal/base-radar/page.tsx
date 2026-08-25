@@ -103,6 +103,16 @@ interface RadarData {
   sourcesFailedCount?: number
   baseRadarSourceAudit?: { sourcesAttempted?: number }
   baseRadarCandidateGateAudit?: { rawCandidatesFetched?: number }
+  // TRUTHFUL EMPTY STATE, DISCLOSED (same fix already shipped for Pump Alerts, brought over here:
+  // this route already computes finalState server-side — app/api/radar/route.ts's baseRadarFinalState
+  // — but nothing in this file ever read it, so a total provider outage (every source failed) and
+  // an honest "the gate found nothing this cycle" result both rendered through the same generic
+  // EmptyFeed copy driven only by discoveryDegradedSignificant's ≥50%-failed threshold. A single-
+  // source-configured deployment failing its one source is a real outage that never crosses that
+  // 50% bar under the wrong denominator math, so it could still read as "just quiet" instead of
+  // "providers are down." finalState is the same authoritative source EmptyFeed's other props are
+  // already computed from, just not previously threaded through to it.
+  finalState?: 'ok' | 'providerUnavailable' | 'allFilteredOut' | 'noRawCandidates'
 }
 
 type RadarStatus = 'HOT' | 'WATCH' | 'EARLY' | 'UNVERIFIED' | 'RISKY' | 'DEAD'
@@ -1231,20 +1241,33 @@ function StagedRadarLoading() {
 // loaded."). Only fires when discoveryDegradedSignificant (majority-or-more pages failed) — a
 // single failed page out of 18 combined with a legitimate 0-token gate result no longer gets
 // mislabeled as a source outage.
-function EmptyFeed({ limited, holderCheckBudgetExhausted, discoveryDegradedSignificant, sourcesFailedCount, pagesAttempted, rawCandidatesRecovered }: { limited: boolean; holderCheckBudgetExhausted: boolean; discoveryDegradedSignificant: boolean; sourcesFailedCount: number; pagesAttempted: number; rawCandidatesRecovered: number }) {
+function EmptyFeed({ limited, holderCheckBudgetExhausted, discoveryDegradedSignificant, sourcesFailedCount, pagesAttempted, rawCandidatesRecovered, finalState }: { limited: boolean; holderCheckBudgetExhausted: boolean; discoveryDegradedSignificant: boolean; sourcesFailedCount: number; pagesAttempted: number; rawCandidatesRecovered: number; finalState?: 'ok' | 'providerUnavailable' | 'allFilteredOut' | 'noRawCandidates' }) {
   const pagesLoaded = Math.max(0, pagesAttempted - sourcesFailedCount)
+  // TRUTHFUL EMPTY STATE, DISCLOSED (same fix as Pump Alerts): finalState is authoritative — it is
+  // computed server-side from the exact same counters (sourcesSucceeded/rawTotalBeforeDedupe/
+  // tokens.length) this component's other props already come from, so it can never disagree with
+  // them. Checked first so a real provider outage or a genuinely empty raw pool is never described
+  // as "no candidates passed the gate" — a message that reads as an honest quiet market, not a
+  // problem, when the real story is "the providers never returned anything to filter."
+  const headline = finalState === 'providerUnavailable'
+    ? 'Providers failed — could not reach discovery sources for this chain.'
+    : finalState === 'noRawCandidates'
+      ? 'No candidates found — providers returned zero pools this cycle.'
+      : discoveryDegradedSignificant
+        ? `Radar source degraded — ${pagesLoaded}/${pagesAttempted} pages loaded${rawCandidatesRecovered > 0 ? ` (${rawCandidatesRecovered} raw candidates recovered from the loaded pages, none cleared the gate)` : ' (no candidates recovered)'}. Try refresh.`
+        : holderCheckBudgetExhausted
+          ? 'Holder-check budget reached for this cycle.'
+          : 'No candidates passed the $50K+ valuation / real liquidity gate in this cycle.'
   return (
     <div style={{ textAlign: 'center', padding: '42px 20px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', border: '1px solid rgba(148,163,184,0.12)', borderRadius: '16px', background: 'rgba(255,255,255,0.025)' }}>
       <div style={{ fontSize: '30px', marginBottom: '12px', opacity: 0.45 }}>◈</div>
-      <p style={{ fontSize: '14px', fontWeight: 800, margin: '0 0 8px', color: '#cbd5e1' }}>No strong radar candidates right now.</p>
-      <p style={{ fontSize: '12px', fontWeight: 600, margin: 0, lineHeight: 1.45 }}>
-        {discoveryDegradedSignificant
-          ? `Radar source degraded — ${pagesLoaded}/${pagesAttempted} pages loaded${rawCandidatesRecovered > 0 ? ` (${rawCandidatesRecovered} raw candidates recovered from the loaded pages, none cleared the gate)` : ' (no candidates recovered)'}. Try refresh.`
-          : holderCheckBudgetExhausted
-            ? 'Holder-check budget reached for this cycle.'
-            : 'No candidates passed the $50K+ valuation / real liquidity gate in this cycle.'}
+      <p style={{ fontSize: '14px', fontWeight: 800, margin: '0 0 8px', color: '#cbd5e1' }}>
+        {finalState === 'providerUnavailable' || finalState === 'noRawCandidates' ? 'Radar could not load this cycle.' : 'No strong radar candidates right now.'}
       </p>
-      {limited ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#3a5268' }}>Live feed is limited right now.</p> : null}
+      <p style={{ fontSize: '12px', fontWeight: 600, margin: 0, lineHeight: 1.45 }}>{headline}</p>
+      {finalState === 'providerUnavailable' || finalState === 'noRawCandidates'
+        ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#3a5268' }}>This is a provider issue, not a filtering result — try refreshing shortly.</p>
+        : limited ? <p style={{ fontSize: '11px', fontWeight: 600, margin: '6px 0 0', lineHeight: 1.4, color: '#3a5268' }}>Live feed is limited right now.</p> : null}
     </div>
   )
 }
@@ -2285,7 +2308,7 @@ export default function BaseRadarPage() {
               </div>
             )}
 
-            {!loading && tokens.length === 0 && !error && <EmptyFeed limited={Boolean(data?.limitedLiveFeed)} holderCheckBudgetExhausted={Boolean(data?.holderCheckBudgetExhausted)} discoveryDegradedSignificant={Boolean(data?.discoveryDegradedSignificant)} sourcesFailedCount={data?.sourcesFailedCount ?? 0} pagesAttempted={data?.baseRadarSourceAudit?.sourcesAttempted ?? 0} rawCandidatesRecovered={data?.baseRadarCandidateGateAudit?.rawCandidatesFetched ?? 0} />}
+            {!loading && tokens.length === 0 && !error && <EmptyFeed limited={Boolean(data?.limitedLiveFeed)} holderCheckBudgetExhausted={Boolean(data?.holderCheckBudgetExhausted)} discoveryDegradedSignificant={Boolean(data?.discoveryDegradedSignificant)} sourcesFailedCount={data?.sourcesFailedCount ?? 0} pagesAttempted={data?.baseRadarSourceAudit?.sourcesAttempted ?? 0} rawCandidatesRecovered={data?.baseRadarCandidateGateAudit?.rawCandidatesFetched ?? 0} finalState={data?.finalState} />}
 
             {!loading && tokens.length > 0 && Boolean(data?.limitedLiveFeed) && (
               <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.20)', color: '#fbbf24', fontSize: '11px', marginBottom: '12px', fontFamily: 'var(--font-plex-mono)' }}>
