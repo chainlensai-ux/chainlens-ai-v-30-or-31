@@ -180,7 +180,7 @@ const routeCode = routeSrc.split('\n').filter(l => !l.trim().startsWith('//')).j
 assert.doesNotMatch(routeCode, /chain: 'base', symbol:/, 'audit rows must carry the candidate\'s real chain, not a hardcoded Base')
 assert.doesNotMatch(routeCode, /contract: c\.addr, chain: 'base'/, 'published alerts must carry the candidate\'s real chain')
 assert.match(routeCode, /chainPools\.push\(\{ chain: 'base', pools, included \}\)/, 'the only remaining hardcoded Base is the Base-scoped cache fallback, which is correct')
-assert.match(routeCode, /token: c\.addr, chain, chainSlug: chain, chainId/, 'audit rows must be built from the real chain variable')
+assert.match(routeCode, /token: c\.addr, tokenAddress: c\.addr, name: c\.name, chain, chainSlug: chain, chainId/, 'audit rows must be built from the real chain variable')
 assert.match(routeCode, /networks\/\$\{network\}\/pools\/\$\{poolAddress\}\/ohlcv/, '7d OHLCV must be fetched from the candidate\'s own network, not a hardcoded one')
 assert.doesNotMatch(routeCode, /networks\/base\/pools\/\$\{poolAddress\}/, 'the hardcoded base OHLCV URL must be gone')
 assert.match(routeCode, /const cacheKey = `pump:v2:\$\{plan\}:\$\{\[\.\.\.chains\]\.sort\(\)\.join\('\+'\)\}`/, 'cache key must include schema version and the requested chain set')
@@ -237,6 +237,108 @@ assert.doesNotMatch(pageCode, /catch \{\s*setAlerts\(\[\]\)\s*\}/, 'a failed ref
   assert.match(pageCode2, /finalState === 'sevenDayUnavailable'/, 'the empty state must distinguish a 7d-data outage from an honest empty filter result')
   assert.match(pageCode2, /finalState === 'noRawCandidates'/, 'the empty state must distinguish zero raw candidates from over-filtering')
   assert.match(pageCode2, /finalState === 'allFilteredOut'/, 'the empty state must name a real over-filtering result explicitly')
+}
+
+// ─── Part 7: Pump Alerts quality audit (reported live: SOL/Base rendered as a low-cap pump card
+// alongside a contradictory "7d pump data unavailable" page warning) ────────────────────────────
+
+// SOL on Base must be excluded as a major/wrapped/bridged asset — this is the exact reported leak.
+{
+  const r = evaluateStage1Candidate({ ...base, chain: 'base', symbol: 'SOL', name: 'Solana', fdv: 21_200_000 })
+  assert.equal(r.passed, false, 'SOL must never pass stage 1, on any chain')
+  assert.equal(r.audit.categoryBlocked, true, 'SOL must be excluded as a category-blocked major, not merely over the cap')
+}
+// A bridged/wrapped SOL representation with a different symbol must still be caught by name.
+{
+  const r = evaluateStage1Candidate({ ...base, chain: 'base', symbol: 'BSOL', name: 'Bridged Solana', fdv: 900_000 })
+  assert.equal(r.passed, false, 'a bridged Solana representation must be excluded by name, even with an unlisted symbol')
+  assert.equal(r.audit.categoryBlocked, true)
+}
+
+// The other explicitly required majors/wrapped/bridged assets must all be excluded.
+for (const [symbol, name] of [
+  ['ETH', 'Ethereum'], ['WETH', 'Wrapped Ether'], ['CBETH', 'Coinbase Wrapped Staked ETH'], ['WSTETH', 'Wrapped stETH'],
+  ['BTC', 'Bitcoin'], ['WBTC', 'Wrapped Bitcoin'], ['CBBTC', 'Coinbase Wrapped BTC'],
+  ['USDC', 'USD Coin'], ['USDT', 'Tether'], ['DAI', 'Dai Stablecoin'],
+  ['AERO', 'Aerodrome Finance'],
+]) {
+  const r = evaluateStage1Candidate({ ...base, symbol, name, fdv: 900_000 })
+  assert.equal(r.passed, false, `${symbol} must be excluded as a major/wrapped/bridged/stable asset`)
+  assert.equal(r.audit.categoryBlocked, true, `${symbol} must be flagged categoryBlocked, not just filtered on cap`)
+}
+
+// A token above the configured max FDV must be excluded even when everything else about it looks
+// like a valid low-cap pump candidate — the exact reported $21.2M-on-Base scenario, symbol clean.
+{
+  const r = evaluateStage1Candidate({ ...base, chain: 'base', symbol: 'BIGMOVE', name: 'Big Move Token', fdv: 21_200_000 })
+  assert.equal(r.passed, false, 'a $21.2M FDV token must be excluded on Base (ceiling is min($5M default, $20M chain) = $5M)')
+  assert.equal(r.audit.exclusionReason, 'capExceedsLowCapCeiling')
+}
+
+// Fallback (momentum) mode still applies category and low-cap filters — a Stage-1-blocked candidate
+// never reaches evaluateStage2Candidate at all, so a momentum_fallback ResolvedEvidence can only
+// ever apply to a candidate that already cleared category + cap + liquidity + volume + age.
+{
+  const majorFdvBlocked = evaluateStage1Candidate({ ...base, chain: 'base', symbol: 'SOL', name: 'Solana', fdv: 900_000 })
+  assert.equal(majorFdvBlocked.passed, false, 'SOL must be blocked at stage 1 regardless of how small its FDV looks')
+  // A low-cap, non-major candidate legitimately qualifying via momentum fallback still passes.
+  const r2 = evaluateStage2Candidate(stage1Candidate, null, 'req_test_fallback', {
+    kind: 'momentum_fallback', confirmedChange24hPct: 22.5, evidenceParts: ['confirmed 24h move ≥ 22.5%'],
+  })
+  assert.equal(r2.included, true, 'a low-cap candidate with qualifying momentum-fallback evidence must be included')
+  assert.equal(r2.alert.evidenceGrade, 'momentum_fallback')
+  assert.equal(r2.alert.change7d, null, 'momentum fallback must never fabricate a 7d number')
+  assert.equal(r2.audit.lowCapQualified, true, 'low-cap rule must still be recorded true for a fallback-qualified candidate')
+}
+
+// Valid low-cap token with exact 7d passes, and its audit records the full eligibility shape.
+{
+  const r = evaluateStage2Candidate(stage1Candidate, 60, 'req_test_shape')
+  assert.equal(r.included, true)
+  assert.equal(r.alert.evidenceGrade, 'exact')
+  for (const field of [
+    'symbol', 'name', 'chain', 'tokenAddress', 'fdvUsd', 'marketCapUsd', 'liquidityUsd',
+    'priceChange7dPct', 'evidenceMode', 'category', 'categoryBlocked', 'lowCapQualified',
+    'excluded', 'exclusionReason',
+  ]) {
+    assert.ok(field in r.audit, `per-token eligibility audit must include ${field}`)
+  }
+  assert.equal(r.audit.evidenceMode, 'exact')
+  assert.equal(r.audit.tokenAddress, stage1Candidate.addr)
+}
+
+// ─── Part 8: 7d-state contradiction fix (route-level static assertions) ────────────────────────
+// Reported live: a card reading "Exact 7d" rendered under a page-wide "7d pump data unavailable
+// from provider" warning in the SAME response. sevenDayDataUnavailable/finalState/error must all be
+// reconciled against the ladder's REAL final outcome (finalRenderedCount + exact/fallback
+// qualified counts), not the pre-fallback GT-OHLCV-only snapshot.
+{
+  const routeSrc3 = fs.readFileSync(new URL('../app/api/pump-alerts/route.ts', import.meta.url), 'utf8')
+  const routeCode3 = routeSrc3.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+
+  assert.match(
+    routeCode3,
+    /const sevenDayFullyUnavailable = sevenDayDataUnavailable && alerts\.length === 0 && totalEvidenceQualified === 0/,
+    'the global 7d-unavailable state must require BOTH zero rendered alerts AND zero qualified evidence across the whole ladder, not just the pre-fallback GT-OHLCV signal',
+  )
+  assert.match(
+    routeCode3,
+    /: sevenDayFullyUnavailable \? 'sevenDayUnavailable'/,
+    'finalState must key off the reconciled post-ladder blackout flag',
+  )
+  assert.match(
+    routeCode3,
+    /sevenDayDataUnavailable: sevenDayFullyUnavailable,/,
+    'the exposed sevenDayDataUnavailable field must be the reconciled flag — a card with real evidence must never coexist with this being true',
+  )
+  assert.match(
+    routeCode3,
+    /\.\.\.\(sevenDayFullyUnavailable \? \{ error:/,
+    'the page-level error message must only fire on the reconciled full blackout, never the raw pre-fallback signal',
+  )
+  // The raw pre-fallback signal must still be computed for diagnostics/degraded-note purposes, just
+  // no longer used directly to drive the user-facing error/finalState.
+  assert.match(routeCode3, /sevenDayProviderDegraded: sevenDayDataUnavailable && !sevenDayFullyUnavailable/, 'a partial 7d-provider failure must be exposed separately from the full blackout, for a small degraded note rather than a full-page warning')
 }
 
 console.log('test-pump-alerts-discovery.mjs: all assertions passed')

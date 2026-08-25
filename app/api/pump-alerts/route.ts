@@ -62,6 +62,16 @@ const STABLE_AND_WRAPPED_DENYLIST = new Set([
   'LSETH', 'SFRXETH', 'ANKRETH', 'OSETH', 'SWETH', 'METH', 'WEETH', 'EZETH', 'RSETH',
 ])
 
+// MAJOR-CHAIN-NATIVE DENYLIST, DISCLOSED (reported live: a bridged/wrapped "Solana / SOL" pool on
+// Base rendered as a Pump Alerts card). SOL was never in any denylist — Base has multiple bridged
+// SOL representations (Wrapped SOL, Solana-pegged bridge tokens) that are majors, not low-cap pump
+// candidates, no matter which chain they're deployed on. Extended to the other top-cap L1/L2
+// natives for the same reason: a bridged/wrapped BNB, AVAX, DOGE, etc. is still a major asset.
+const MAJOR_CHAIN_NATIVE_DENYLIST = new Set([
+  'SOL', 'WSOL', 'BNB', 'WBNB', 'AVAX', 'WAVAX', 'DOT', 'ADA', 'XRP', 'TRX',
+  'LTC', 'DOGE', 'SHIB', 'TON', 'NEAR', 'ATOM', 'ICP', 'APT', 'SUI', 'FIL', 'HBAR',
+])
+
 // Established Base protocol / governance / infrastructure tokens (the AERO gap that let
 // Aerodrome and its peers leak through — none of these are ever a legitimate low-cap pump).
 const ESTABLISHED_PROTOCOL_DENYLIST = new Set([
@@ -69,11 +79,13 @@ const ESTABLISHED_PROTOCOL_DENYLIST = new Set([
   'WELL', 'SEAM', 'MORPHO', 'PRIME', 'AAVE', 'SUSHI', 'CAKE', 'GRT', 'LINK', 'MATIC', 'POL',
   'ARB', 'OP', 'AXL', 'STG', 'LAYER', 'ENA', 'PYTH', 'JUP', 'RAY', 'DEGEN', 'BRETT', 'TOSHI',
 ])
-const EXCLUDED = new Set([...STABLE_AND_WRAPPED_DENYLIST, ...ESTABLISHED_PROTOCOL_DENYLIST])
+const EXCLUDED = new Set([...STABLE_AND_WRAPPED_DENYLIST, ...ESTABLISHED_PROTOCOL_DENYLIST, ...MAJOR_CHAIN_NATIVE_DENYLIST])
 
 // Name-based check for LP/pool-share tokens and bridge/yield wrapper naming patterns that a bare
-// symbol denylist can't catch (e.g. "Aerodrome LP", "xyz-USDC LP", "Bridged USDC").
-const ESTABLISHED_NAME_PATTERN = /\b(aerodrome|uniswap|velodrome|lp\s*token|liquidity\s*pool|bridged|wrapped|staked|yield\s*bearing)\b/i
+// symbol denylist can't catch (e.g. "Aerodrome LP", "xyz-USDC LP", "Bridged USDC", "Solana").
+// "solana" is listed explicitly (not just "bridged"/"wrapped") because a bridge's display name is
+// often just the source chain's name with no bridge/wrapped qualifier at all.
+const ESTABLISHED_NAME_PATTERN = /\b(aerodrome|uniswap|velodrome|lp\s*token|liquidity\s*pool|bridged|wrapped|staked|yield\s*bearing|solana)\b/i
 const LP_SYMBOL_PATTERN = /(^|[-_/])lp($|[-_/])|vamm-|vlp-/i
 
 // PUMP-MULTI-CHAIN + LOW-CAP-CEILING, DISCLOSED (explicitly requested: "for coingeko to load more
@@ -148,6 +160,11 @@ export interface PumpAlert {
 export interface PumpDiscoveryEligibilityAudit {
   requestId: string
   token: string
+  // ELIGIBILITY-SHAPE FIX, DISCLOSED (quality audit): tokenAddress/name/evidenceMode/lowCapQualified
+  // are additive aliases matching the requested per-token audit contract exactly — `token` and
+  // `qualifiesAsLowCap` are kept too since existing tests and callers already key off them.
+  tokenAddress: string
+  name: string
   chain: PumpChain
   chainSlug: PumpChain
   chainId: number
@@ -165,8 +182,12 @@ export interface PumpDiscoveryEligibilityAudit {
   excluded: boolean
   exclusionReason: string | null
   qualifiesAsLowCap: boolean
+  lowCapQualified: boolean
   qualifiesAs7dPump: boolean
   categoryBlocked: boolean
+  // 'exact' | 'momentum_fallback' | 'none' | 'not_evaluated' (Stage 1 rejections never reach the
+  // evidence ladder, so their evidenceMode is honestly 'not_evaluated' rather than a guess).
+  evidenceMode: 'exact' | 'momentum_fallback' | 'none' | 'not_evaluated'
   finalRankScore: number | null
 }
 
@@ -259,14 +280,16 @@ export function evaluateStage1Candidate(input: Stage1Input, requestId = 'n/a'): 
     return {
       passed: false,
       audit: {
-        requestId, token: input.addr, chain, chainSlug: chain, chainId: chainCfg.chainId,
+        requestId, token: input.addr, tokenAddress: input.addr, name: input.name,
+        chain, chainSlug: chain, chainId: chainCfg.chainId,
         pairAddress: input.poolAddr, source: 'geckoterminal:pools', category: null,
         symbol: input.symbol,
         fdvUsd: input.fdv, marketCapUsd: input.marketCap, liquidityUsd: input.liquidity, volume24hUsd: input.volume,
         priceChange7dPct: null, priceChange24hPct: input.change24h, tokenAgeDays: input.ageDays,
         excluded: true, exclusionReason,
-        qualifiesAsLowCap: qualifiesAsLowCap && !capDataMissing, qualifiesAs7dPump: false,
-        categoryBlocked, finalRankScore: null,
+        qualifiesAsLowCap: qualifiesAsLowCap && !capDataMissing,
+        lowCapQualified: qualifiesAsLowCap && !capDataMissing,
+        qualifiesAs7dPump: false, categoryBlocked, evidenceMode: 'not_evaluated', finalRankScore: null,
       },
     }
   }
@@ -303,7 +326,7 @@ export function evaluateStage2Candidate(
   const chainId = CHAIN_CONFIG[chain].chainId
   const evidence: ResolvedEvidence = resolved ?? (change7d != null ? { kind: 'exact', source: 'geckoterminal_ohlcv', change7d } : { kind: 'none' })
   const auditBase = {
-    requestId, token: c.addr, chain, chainSlug: chain, chainId,
+    requestId, token: c.addr, tokenAddress: c.addr, name: c.name, chain, chainSlug: chain, chainId,
     pairAddress: c.poolAddr,
     // source reflects how the candidate actually qualified — no longer hardcoded to the OHLCV
     // endpoint now that the ladder can qualify via CoinGecko/snapshots/momentum.
@@ -314,6 +337,7 @@ export function evaluateStage2Candidate(
     fdvUsd: c.fdv, marketCapUsd: c.marketCap, liquidityUsd: c.liquidity, volume24hUsd: c.volume,
     priceChange7dPct: evidence.kind === 'exact' ? evidence.change7d : null,
     priceChange24hPct: c.change24h, tokenAgeDays: c.ageDays,
+    evidenceMode: evidence.kind,
   }
 
   if (evidence.kind === 'none') {
@@ -322,7 +346,7 @@ export function evaluateStage2Candidate(
       audit: {
         ...auditBase, category: null,
         excluded: true, exclusionReason: PUMP_REQUIRE_EXACT_7D ? 'missing7dData' : 'noQualifyingPumpEvidence',
-        qualifiesAsLowCap: true, qualifiesAs7dPump: false, categoryBlocked: false, finalRankScore: null,
+        qualifiesAsLowCap: true, lowCapQualified: true, qualifiesAs7dPump: false, categoryBlocked: false, finalRankScore: null,
       },
     }
   }
@@ -334,7 +358,7 @@ export function evaluateStage2Candidate(
       audit: {
         ...auditBase, category: null,
         excluded: true, exclusionReason: 'change7dBelowMinimum',
-        qualifiesAsLowCap: true, qualifiesAs7dPump: false, categoryBlocked: false, finalRankScore: null,
+        qualifiesAsLowCap: true, lowCapQualified: true, qualifiesAs7dPump: false, categoryBlocked: false, finalRankScore: null,
       },
     }
   }
@@ -346,7 +370,7 @@ export function evaluateStage2Candidate(
       audit: {
         ...auditBase, category: null,
         excluded: true, exclusionReason: 'noCategoryMatch',
-        qualifiesAsLowCap: true, qualifiesAs7dPump: !isMomentum, categoryBlocked: false, finalRankScore: null,
+        qualifiesAsLowCap: true, lowCapQualified: true, qualifiesAs7dPump: !isMomentum, categoryBlocked: false, finalRankScore: null,
       },
     }
   }
@@ -381,7 +405,7 @@ export function evaluateStage2Candidate(
     audit: {
       ...auditBase, category: scored.category,
       excluded: false, exclusionReason: null,
-      qualifiesAsLowCap: true, qualifiesAs7dPump: !isMomentum, categoryBlocked: false,
+      qualifiesAsLowCap: true, lowCapQualified: true, qualifiesAs7dPump: !isMomentum, categoryBlocked: false,
       finalRankScore: qualityScore(alert),
     },
   }
@@ -944,13 +968,26 @@ export async function GET(req: Request) {
 
   const countReason = (reason: string) => audit.filter(a => a.exclusionReason === reason).length
 
+  // 7D-STATE CONTRADICTION FIX, DISCLOSED (reported live: a card reading "Exact 7d" rendered
+  // alongside a page-wide "7d pump data unavailable from provider" warning for the SAME cycle).
+  // sevenDayDataUnavailable above is a snapshot of ONLY the GeckoTerminal-OHLCV exact tier, taken
+  // BEFORE the CoinGecko/snapshot/momentum fallback ladder ran — it was then used directly to drive
+  // finalState and the page-level error, so a candidate the ladder later qualified (via any tier)
+  // still rendered under a stale claim that zero 7d evidence existed anywhere. The global blackout
+  // state must reflect the ladder's REAL final outcome: it only fires when nothing rendered AND no
+  // tier — exact or fallback — qualified a single candidate. A partial failure (some candidates
+  // still got real evidence) is a degraded-provider note, not a full-page warning — the frontend's
+  // existing pump7dEvidenceAudit.degradedMode/degradedReason note already covers that case.
+  const totalEvidenceQualified = evidenceAudit.exact7dQualified + evidenceAudit.fallbackMomentumQualified
+  const sevenDayFullyUnavailable = sevenDayDataUnavailable && alerts.length === 0 && totalEvidenceQualified === 0
+
   // TRUTHFUL EMPTY STATE, DISCLOSED (URGENT audit: "counters are all 0" / "no fresh pump signals"):
   // finalState names exactly which of the 4 real outcomes happened, so the frontend never has to
   // infer "empty" from an empty array alone. providerUnavailable and sevenDayUnavailable are both
   // real outages the UI must show as errors, not as "nothing qualified this cycle".
   const finalState: 'ok' | 'providerUnavailable' | 'sevenDayUnavailable' | 'allFilteredOut' | 'noRawCandidates' =
     chainsSucceeded.length === 0 ? 'providerUnavailable'
-    : sevenDayDataUnavailable ? 'sevenDayUnavailable'
+    : sevenDayFullyUnavailable ? 'sevenDayUnavailable'
     : rawCount === 0 ? 'noRawCandidates'
     : alerts.length === 0 ? 'allFilteredOut'
     : 'ok'
@@ -965,10 +1002,16 @@ export async function GET(req: Request) {
     providerStatus,
     chainsSucceeded,
     chainsFailed,
-    sevenDayDataUnavailable,
+    // Exposed field is the RECONCILED (post-ladder) blackout flag, not the raw pre-fallback GT-only
+    // signal — see the "7D-STATE CONTRADICTION FIX" disclosure above. A rendered card with real
+    // evidence must never coexist with this being true.
+    sevenDayDataUnavailable: sevenDayFullyUnavailable,
+    // Raw GT-OHLCV-only signal, kept for diagnostics: true whenever the primary exact tier failed
+    // for every attempt, independent of whether fallbacks rescued the cycle.
+    sevenDayProviderDegraded: sevenDayDataUnavailable && !sevenDayFullyUnavailable,
     finalState,
     ...(chainsFailed.length > 0 ? { error: `Provider unavailable for: ${chainsFailed.join(', ')}. Showing ${chainsSucceeded.join(', ')} only.` } : {}),
-    ...(sevenDayDataUnavailable ? { error: '7d pump data unavailable from provider (GeckoTerminal OHLCV requests failed for every candidate this cycle).' } : {}),
+    ...(sevenDayFullyUnavailable ? { error: '7d pump data unavailable from provider (GeckoTerminal OHLCV requests failed for every candidate this cycle, and no fallback provider could confirm momentum either).' } : {}),
     diagnostics: process.env.NODE_ENV === 'development' ? { cacheHit: false, providerStatus, rateLimited: false } : undefined,
     pumpDiscoveryEligibilityAudit: audit,
     // 7D-EVIDENCE AUDIT, DISCLOSED: request-level rollup of every ladder tier's attempts/successes
