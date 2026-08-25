@@ -5,6 +5,7 @@ import { fetchCoinGeckoBaseTrending } from "@/lib/server/coingeckoBaseTrending";
 import { getMergedTrendingTokens } from "@/app/api/trending/route";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { isValidSolanaMintAddress } from "@/lib/solanaAddress";
+import { resolveTokenDeployer } from "@/lib/server/deployerResolver";
 import { buildTokenFullReportPlan, executeClarkToolPlan as executeClarkToolLayerPlan, normalizeClarkScannerCacheKey } from "@/lib/clark/tools";
 import { buildTokenFullReport } from "@/lib/clark/reportBuilders";
 import { getWalletLite } from "@/lib/server/walletLite";
@@ -5271,6 +5272,18 @@ type ClarkToolEvidence = {
     verdict: "WATCH" | "AVOID" | "TRUSTWORTHY" | "UNKNOWN" | "SCAN DEEPER";
     warnings: string[];
     errorSafeMessage?: string;
+    // FAST DEPLOYER RESOLVER, DISCLOSED: when the fast resolveTokenDeployer() path answers (instead
+    // of the full /api/dev-wallet scan), these carry the same evidence receipt fields the slow path
+    // would have — fastPath distinguishes "answered from a narrow, fast lookup, no verdict/linked-
+    // wallet analysis was run" from a fully-analyzed result, so downstream code (and a "has he
+    // rugged?" follow-up) knows whether deeper evidence still needs to be gathered.
+    fastPath?: boolean;
+    evidenceSource?: string;
+    explorerUrl?: string | null;
+    sourcesAttempted?: string[];
+    failureReason?: string | null;
+    timedOut?: boolean;
+    timeoutStage?: "fast_resolver" | "full_scan" | null;
   };
   liquidity?: {
     ok: boolean;
@@ -5500,6 +5513,40 @@ async function executeClarkToolPlan(input: {
         // Base when no chain is sent — an ETH/BNB/Robinhood token would silently get Base
         // deployer evidence. Forward the plan's chain (input.chain is in scope here).
         //
+        // FAST DEPLOYER RESOLVER, DISCLOSED (reported live: "who deployed this token 0x..." replied
+        // "DEPLOYER LOOKUP — UNAVAILABLE... deployer lookup timed out"). Root cause: the ONLY path to
+        // a deployer address was the full /api/dev-wallet HTTP call below — real, useful work
+        // (bytecode reads, linked-wallet cluster analysis) but far more than "who deployed this
+        // token" needs, and slow enough that a single provider hiccup could blow the whole budget
+        // with no partial answer. resolveTokenDeployer() (lib/server/deployerResolver.ts) is a
+        // narrow, fast, in-process, chain-scoped lookup — explorer creation-record API first, RPC
+        // earliest-transfer as fallback, each with its OWN short timeout so one slow source can never
+        // consume the whole budget. Tried FIRST, in-process (no HTTP round-trip): when it finds a
+        // deployer, that answers the question immediately without ever calling the slow full scan —
+        // "do not run a full expensive token scan if a faster deployer lookup can answer." The fast
+        // result only carries deployer identity (no verdict/linked-wallet analysis), so it's marked
+        // fastPath so a later "has he rugged?" still knows to gather that deeper evidence.
+        const resolverChain = toTokenApiChain(input.chain);
+        const resolverChainId = resolverChain === "eth" ? 1 : resolverChain === "base" ? 8453 : resolverChain === "bnb" ? 56 : resolverChain === "robinhood" ? 4663 : null;
+        let fastResult: Awaited<ReturnType<typeof resolveTokenDeployer>> | null = null;
+        if (resolverChain && resolverChainId && /^0x[a-fA-F0-9]{40}$/.test(address)) {
+          fastResult = await resolveTokenDeployer({ chainSlug: resolverChain, chainId: resolverChainId, tokenAddress: address }).catch(() => null);
+        }
+        if (fastResult?.deployerAddress) {
+          evidence.devWallet = {
+            ok: true,
+            deployerAddress: fastResult.deployerAddress,
+            linkedWallets: 0,
+            confidence: fastResult.confidence === "high" ? "High" : fastResult.confidence === "medium" ? "Medium" : "Low",
+            verdict: "UNKNOWN",
+            warnings: [],
+            fastPath: true,
+            evidenceSource: fastResult.evidenceSource,
+            explorerUrl: fastResult.explorerUrl,
+            sourcesAttempted: fastResult.sourcesAttempted,
+          };
+          continue;
+        }
         // TIMEOUT-TOO-TIGHT FIX, DISCLOSED (reported live: "who deployed this token" on a real Base
         // contract returned "DEPLOYER LOOKUP — UNAVAILABLE... the dev-wallet module did not return
         // usable data for this scan" with no further detail). Root cause: callInternalApi's default
@@ -5513,7 +5560,10 @@ async function executeClarkToolPlan(input: {
         // a timeout, not a missing deployer. Fixed on both ends: /api/dev-wallet now carries the
         // same 60s maxDuration as /api/token, and this call gets a 25s budget — enough headroom
         // under that for the route to actually finish instead of being cut off mid-lookup.
-        const devWalletRes = await callInternalApi(input.origin, "/api/dev-wallet", { contractAddress: address, chain: toTokenApiChain(input.chain) }, input.authHeader ?? undefined, input.verifiedPlan, 25_000);
+        //
+        // Only reached when the fast resolver above did not find a deployer — the fallback tier per
+        // the requested priority order ("fallback to full Token Scanner only if direct lookup fails").
+        const devWalletRes = await callInternalApi(input.origin, "/api/dev-wallet", { contractAddress: address, chain: resolverChain }, input.authHeader ?? undefined, input.verifiedPlan, 25_000);
         const d = (devWalletRes.json ?? {}) as Record<string, unknown>;
         const verdictRaw = ((d.clarkVerdict as Record<string, unknown> | null)?.label ?? "UNKNOWN") as string;
         const confRaw = ((d.clarkVerdict as Record<string, unknown> | null)?.confidence ?? "low") as string;
@@ -5533,6 +5583,11 @@ async function executeClarkToolPlan(input: {
           verdict: normalizedVerdict,
           warnings: Array.isArray(d.warnings) ? d.warnings.map(String).slice(0, 5) : [],
           errorSafeMessage: devWalletRes.ok ? undefined : "Dev wallet scan is not available right now.",
+          fastPath: false,
+          // Even on the full-scan fallback path, keep the fast resolver's own attempt/failure record
+          // so the audit shows every source that was actually tried, not just the full scan's.
+          sourcesAttempted: fastResult?.sourcesAttempted ?? [],
+          failureReason: !devWalletRes.ok ? (fastResult?.failureReason ?? null) : null,
         };
         continue;
       }
@@ -5575,12 +5630,18 @@ async function executeClarkToolPlan(input: {
       // unset evidence field correctly and is left unchanged.
       if (tool.name === "dev_wallet_analyze") {
         const isTimeout = err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError");
+        // FAST DEPLOYER RESOLVER, DISCLOSED: a timeout here can only come from the full-scan
+        // fallback — resolveTokenDeployer() never reaches this catch block because every one of its
+        // sources already carries its own bounded timeout and resolves to a result object, never
+        // throws. So a timeout recorded here is always timeoutStage: "full_scan".
         evidence.devWallet = {
           ok: false, deployerAddress: null, linkedWallets: 0, confidence: "Low", verdict: "UNKNOWN",
           warnings: [isTimeout ? "Deployer lookup timed out." : "Deployer lookup failed."],
           errorSafeMessage: isTimeout
             ? "the deployer lookup timed out before returning a result — this is a provider/timeout issue, not a missing deployer"
             : "the deployer lookup request failed",
+          timedOut: isTimeout,
+          timeoutStage: isTimeout ? "full_scan" : null,
         };
       }
     }
@@ -6103,6 +6164,32 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
     "",
     "Next action:",
     verdict.nextAction,
+  ].join("\n");
+}
+
+// FAST DEPLOYER RESOLVER, DISCLOSED: exact response format requested for the fast lookup path —
+// intentionally simpler than renderDevWalletFocusedRead below (which is for the full /api/dev-wallet
+// scan and includes linked-wallet/risk-flag evidence the fast path never gathers). Used only when
+// evidence.devWallet.fastPath is true.
+function renderFastDeployerAnswer(
+  tokenName: string,
+  tokenSymbol: string,
+  tokenAddress: string,
+  devWallet: NonNullable<ClarkToolEvidence["devWallet"]>,
+  chainLabel: string,
+): string {
+  const evidenceLabel = devWallet.evidenceSource === "explorer_creation_lookup" ? "Blockscout / chain explorer contract-creation record"
+    : devWallet.evidenceSource === "rpc_earliest_transfer" ? "Alchemy RPC (earliest on-chain activity)"
+    : devWallet.evidenceSource === "internal_cache" ? "Cached scan (previously resolved)"
+    : "Direct deployer resolver";
+  return [
+    `Deployer: ${devWallet.deployerAddress}`,
+    `Chain: ${chainLabel}`,
+    `Confidence: ${devWallet.confidence.toLowerCase()}`,
+    `Evidence: ${evidenceLabel}`,
+    "Next: Scan deployer wallet / Check dev history",
+    "",
+    `Token: ${tokenName} (${tokenSymbol}) · ${tokenAddress}`,
   ].join("\n");
 }
 
@@ -11999,6 +12086,63 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         analysis: buildLockedResponse('dev_wallet', 'ask how dev-wallet checks work.') };
     }
     if (!resolvedAddress) return { feature: "clark-ai", chain, mode: "analysis", analysis: missingAddressReply("dev_wallet"), intent: plan.intent, toolsUsed };
+    // SOLANA MINT GUARD (Clark deployer lookup audit): a well-formed Solana mint asked about via
+    // "who deployed this token" must never enter the EVM dev-wallet path (toTokenApiChain only
+    // covers base/eth/bnb/robinhood) — route it to the same creator/authority read the token_scan
+    // intent already uses, worded "creator/authority", never "deployer", since Solana identity here
+    // is never proven the way an EVM contract-creation record is.
+    if (isValidSolanaMintAddress(resolvedAddress)) {
+      const solRes = await fetch(`${origin}/api/token`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(authHeader ? { Authorization: authHeader } : {}) },
+        body: JSON.stringify({ contract: resolvedAddress, chain: "solana" }),
+        signal: AbortSignal.timeout(20_000),
+        cache: "no-store",
+      }).catch(() => null);
+      const solJson = solRes && solRes.ok ? await solRes.json().catch(() => null) : null;
+      const merged = (solJson && typeof solJson === "object" && "mergedResult" in (solJson as Record<string, unknown>))
+        ? ((solJson as Record<string, unknown>).mergedResult as Record<string, unknown> | null)
+        : null;
+      const mintAuthority = merged && typeof merged.mintAuthority === "string" ? merged.mintAuthority : null;
+      const freezeAuthority = merged && typeof merged.freezeAuthority === "string" ? merged.freezeAuthority : null;
+      const deepCreator = (solJson as Record<string, unknown> | null)?.deepCreator as Record<string, unknown> | null | undefined;
+      const creatorTrace = deepCreator?.creatorTrace as Record<string, unknown> | null | undefined;
+      const traceResolved = creatorTrace?.resolved as Record<string, unknown> | null | undefined;
+      const likelyCreator = typeof traceResolved?.likelyCreatorWallet === "string" ? traceResolved.likelyCreatorWallet as string : null;
+      const creatorConfidence = (solJson as Record<string, unknown> | null)?.creatorConfidence as Record<string, unknown> | null | undefined;
+      const lines: string[] = ["SOLANA CREATOR / AUTHORITY READ", ""];
+      const authorities: string[] = [];
+      if (mintAuthority) authorities.push(`- Mint authority: ${mintAuthority} (active — supply can be increased)`);
+      if (freezeAuthority) authorities.push(`- Freeze authority: ${freezeAuthority} (active — accounts can be frozen)`);
+      if (!mintAuthority) lines.push("- Mint authority: revoked or unresolved");
+      if (!freezeAuthority) lines.push("- Freeze authority: revoked or unresolved");
+      lines.push(...authorities);
+      if (likelyCreator) {
+        lines.push(`- Creator/fee payer (earliest tx): ${likelyCreator}`, `  Confidence: ${(creatorConfidence?.tier as string) ?? "possible"} — fee-payer of earliest transaction is a strong signal, not proof of deployer.`);
+      } else {
+        lines.push("- Creator/fee payer: Not resolved. Run the Deep Creator Check in Token Scanner for a Helius signature-history trace.");
+      }
+      lines.push("", "- Chain: Solana", `- Evidence: ${merged ? "Solana RPC (mint account) + Helius" : "Solana scan returned no usable data"}`);
+      lines.push("- CTA: Open Token Scanner → Solana Beta for the full read.");
+      return {
+        feature: "clark-ai", chain: "base", mode: "analysis", intent: plan.intent, toolsUsed: ["solana_scan"],
+        analysis: lines.join("\n"),
+        intentBadge: "solana_creator_read",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: Boolean(solJson),
+        clarkDeployerLookupAudit: {
+          prompt, parsedAddress: resolvedAddress, parsedChainSlug: "solana", resolvedChainId: null,
+          addressType: "solana_mint", cacheChecked: false, cacheHit: false, tokenScannerCacheChecked: false,
+          directResolverAttempted: false, directResolverSucceeded: false,
+          explorerAttempted: false, explorerSucceeded: false, rpcAttempted: Boolean(merged), rpcSucceeded: Boolean(mintAuthority || freezeAuthority || likelyCreator),
+          fullTokenScanAttempted: true, timedOut: !solRes, timeoutStage: !solRes ? "full_scan" as const : null,
+          deployerFound: Boolean(likelyCreator), deployerAddress: likelyCreator,
+          evidenceSource: likelyCreator ? "solana_rpc_helius" : "none",
+          confidence: likelyCreator ? ((creatorConfidence?.tier as string) ?? "low") : "low",
+          finalAnswerMode: likelyCreator ? "found" : "unavailable_with_sources",
+        },
+      };
+    }
     const resolvedSymbol = evidence.tokenResolve?.selected?.symbol ?? null;
     const aliasForSymbol = resolvedSymbol ? BASE_TOKEN_ALIAS_MAP[resolvedSymbol.toLowerCase()] : null;
     const _devScanMismatch = resolvedSymbol && evidence.tokenScan?.token?.symbol && evidence.tokenScan.token.symbol.toUpperCase() !== resolvedSymbol.toUpperCase();
@@ -12008,45 +12152,45 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // CHAIN-STRICT AUDIT (Clark deployer lookup audit): receipt proving the deployer answer came
     // from the requested chain's own evidence — never a wrong-chain cache or Base default.
     const devAuditChain = toTokenApiChain(chain);
+    const dw = evidence.devWallet;
+    // FAST DEPLOYER RESOLVER, DISCLOSED: exact audit shape requested — proves which of the fast-
+    // resolver sources (cache / direct resolver / explorer / RPC) vs. the full-scan fallback
+    // actually answered the question, and exactly where a timeout happened if one did.
     const clarkDeployerLookupAudit = {
-      userPrompt: prompt,
+      prompt,
       parsedAddress: resolvedAddress,
-      parsedChain: chain,
-      addressType: "evm_contract",
-      resolvedChainSlug: devAuditChain,
+      parsedChainSlug: devAuditChain,
       resolvedChainId: devAuditChain === 'eth' ? 1 : devAuditChain === 'base' ? 8453 : devAuditChain === 'bnb' ? 56 : devAuditChain === 'robinhood' ? 4663 : null,
-      tokenScannerCalled: Boolean(evidence.tokenScan),
-      apiRouteCalled: "/api/dev-wallet",
-      cacheKey: null,
-      cacheHit: false,
-      cacheChainMatched: true,
-      deployerFound: Boolean(evidence.devWallet?.deployerAddress),
-      deployerAddress: evidence.devWallet?.deployerAddress ?? null,
-      creatorAddress: null,
-      mintAuthority: null,
-      freezeAuthority: null,
-      metadataAuthority: null,
-      evidenceSource: evidence.devWallet?.ok ? "internal_dev_wallet_module" : "none",
-      confidence: (evidence.devWallet?.confidence ?? "low").toLowerCase(),
-      sourcesAttempted: ["/api/token", "/api/dev-wallet"],
-      sourcesSucceeded: [
-        ...(evidence.tokenScan ? ["/api/token"] : []),
-        ...(evidence.devWallet?.ok ? ["/api/dev-wallet"] : []),
-      ],
-      sourcesFailed: [
-        ...(!evidence.tokenScan ? ["/api/token"] : []),
-        ...(evidence.devWallet && !evidence.devWallet.ok ? ["/api/dev-wallet"] : []),
-        ...(!evidence.devWallet?.deployerAddress ? ["deployer_identity_unresolved"] : []),
-      ],
-      rejectedWrongChainResults: 0,
-      finalAnswerMode: evidence.devWallet?.deployerAddress ? "found" : (evidence.devWallet?.ok ? "unavailable_with_sources" : "sources_failed"),
+      addressType: "evm_contract",
+      cacheChecked: Boolean(dw),
+      cacheHit: dw?.evidenceSource === "internal_cache",
+      tokenScannerCacheChecked: Boolean(evidence.tokenScan),
+      directResolverAttempted: dw?.fastPath !== undefined,
+      directResolverSucceeded: dw?.fastPath === true && Boolean(dw?.deployerAddress),
+      explorerAttempted: Boolean(dw?.sourcesAttempted?.includes("explorer_creation_lookup")),
+      explorerSucceeded: dw?.evidenceSource === "explorer_creation_lookup",
+      rpcAttempted: Boolean(dw?.sourcesAttempted?.includes("rpc_earliest_transfer")),
+      rpcSucceeded: dw?.evidenceSource === "rpc_earliest_transfer",
+      fullTokenScanAttempted: dw?.fastPath === false,
+      timedOut: dw?.timedOut ?? false,
+      timeoutStage: dw?.timeoutStage ?? null,
+      deployerFound: Boolean(dw?.deployerAddress),
+      deployerAddress: dw?.deployerAddress ?? null,
+      evidenceSource: dw?.deployerAddress ? (dw.fastPath ? dw.evidenceSource ?? "direct_resolver" : "internal_dev_wallet_module") : "none",
+      confidence: (dw?.confidence ?? "low").toLowerCase(),
+      finalAnswerMode: dw?.deployerAddress ? "found" : (dw?.ok ? "unavailable_with_sources" : "sources_failed"),
     };
     if (evidence.devWallet?.ok) {
       return {
         feature: "clark-ai",
         chain,
         mode: "analysis",
-        analysis: renderDevWalletFocusedRead(tokenName, tokenSymbol, resolvedAddress, evidence.devWallet, chainDisplayLabel(chain)),
+        // FAST DEPLOYER RESOLVER, DISCLOSED: the fast path has no linked-wallet/verdict evidence to
+        // show, so it gets the requested short "Deployer / Chain / Confidence / Evidence / Next"
+        // format instead of the fuller CORTEX-style read the slow, full-scan path still uses.
+        analysis: evidence.devWallet.fastPath
+          ? renderFastDeployerAnswer(tokenName, tokenSymbol, resolvedAddress, evidence.devWallet, chainDisplayLabel(chain))
+          : renderDevWalletFocusedRead(tokenName, tokenSymbol, resolvedAddress, evidence.devWallet, chainDisplayLabel(chain)),
         intent: plan.intent,
         toolsUsed,
         clarkDeployerLookupAudit,
@@ -12059,16 +12203,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       // UNAVAILABLE TEMPLATE (Clark deployer lookup audit): never a bare "unknown" — always
       // name the chain checked, sources attempted, why it failed, and the next action.
       analysis: [
-        "DEPLOYER LOOKUP — UNAVAILABLE", "",
-        `I couldn't verify the deployer from available sources for this ${chainDisplayLabel(chain)} token.`,
-        "",
+        "I couldn't verify the deployer from available sources.", "",
         `- Chain checked: ${chainDisplayLabel(chain)}`,
-        "- Sources attempted: Token Core scan (/api/token), dev/deployer module (/api/dev-wallet)",
+        `- Sources attempted: ${[
+          ...(clarkDeployerLookupAudit.explorerAttempted ? ["chain explorer contract-creation lookup"] : []),
+          ...(clarkDeployerLookupAudit.rpcAttempted ? ["RPC earliest-activity lookup"] : []),
+          ...(clarkDeployerLookupAudit.fullTokenScanAttempted ? ["full Token Scanner dev-wallet module"] : []),
+        ].join(", ") || "no source was configured for this chain"}`,
         // HONEST FAILURE REASON, DISCLOSED: prefers the real errorSafeMessage set when the lookup
         // actually threw (timeout vs. request failure vs. free-plan gate) over the generic fallback,
         // so a timeout is never reported to the user as an indistinguishable "no data" result.
-        `- Why unavailable: ${evidence.devWallet?.ok ? "no deployer identity resolved in the returned evidence" : (evidence.devWallet?.errorSafeMessage ?? "the dev-wallet module did not return usable data for this scan")}`,
-        "- Next action: open Token Scanner on this contract to view deployer/creator evidence directly.",
+        `- Failed reason: ${clarkDeployerLookupAudit.timedOut ? `deployer lookup timed out (${clarkDeployerLookupAudit.timeoutStage ?? "unknown stage"})` : (evidence.devWallet?.ok ? "no deployer identity resolved in the returned evidence" : (evidence.devWallet?.errorSafeMessage ?? "the dev-wallet module did not return usable data for this scan"))}`,
+        "- Next action: Run full Token Scanner on this contract for deployer/creator evidence directly.",
       ].join("\n"),
       intent: plan.intent,
       toolsUsed,

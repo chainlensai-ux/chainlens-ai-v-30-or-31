@@ -6,6 +6,7 @@ const tests = [
   'test-clark-basic-intent.mjs',
   'test-clark-deep-scan-address-routing.mjs',
   'test-clark-deployer-routing.mjs',
+  'test-clark-deployer-lookup.mjs',
   'test-clark-followup-commands.mjs',
   'test-clark-history.mjs',
   'test-clark-intent.mjs',
