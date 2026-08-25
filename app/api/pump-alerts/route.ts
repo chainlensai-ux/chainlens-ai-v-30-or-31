@@ -903,20 +903,30 @@ export async function GET(req: Request) {
   // No network calls yet — only candidates surviving this stage pay the cost of a 14d OHLCV fetch.
   const stage1Passed: Stage1Candidate[] = []
   let rawCount = 0
+  // CANDIDATE-FUNNEL ACCURACY FIX, DISCLOSED (reported live: the funnel breakdown showed "passed
+  // liquidity/volume: 91" while only 14 candidates were actually evidence-checked — a real
+  // discrepancy, not a display quirk). rawCount includes every pool GeckoTerminal returned, but a
+  // pool with no resolvable base-token id/address, or a duplicate of one already seen, is skipped
+  // BELOW without ever reaching evaluateStage1Candidate — so it never gets an audit row. The
+  // funnel counts below were being approximated as rawCount minus every KNOWN exclusion reason,
+  // which silently assumed every raw pool reached Stage 1 evaluation. It didn't — GeckoTerminal's
+  // pool list routinely contains stale/malformed/duplicate entries. Tracking the real skip count
+  // here means the funnel breakdown adds up to what actually happened, not an inflated estimate.
+  let skippedBeforeStage1 = 0
 
   for (const { chain, pools, included } of chainPools) {
   for (const pool of pools) {
     rawCount += 1
     const tokenId = pool.relationships?.base_token?.data?.id
-    if (!tokenId) continue
+    if (!tokenId) { skippedBeforeStage1 += 1; continue }
     // Resolved against THIS chain's included set only — never a shared cross-chain one.
     const meta = included.find(i => i.id === tokenId)
-    if (!meta?.attributes?.address) continue
+    if (!meta?.attributes?.address) { skippedBeforeStage1 += 1; continue }
 
     const addr = meta.attributes.address.toLowerCase()
     // Dedupe identity is chain-scoped: the same contract address on two chains is two candidates.
     const dedupeKey = `${chain}:${addr}`
-    if (seen.has(dedupeKey)) continue
+    if (seen.has(dedupeKey)) { skippedBeforeStage1 += 1; continue }
     seen.add(dedupeKey)
 
     const attrs = pool.attributes
@@ -1175,16 +1185,18 @@ export async function GET(req: Request) {
 
   // PER-TOKEN CANDIDATE-FUNNEL AUDIT, DISCLOSED: exact shape requested — answers "why is this empty"
   // (or "why is this small") from the response itself, at every stage of the pipeline, not just the
-  // evidence-ladder tiers. lowCapCandidates/liquidityVolumeCandidates are derived from the exclusion
-  // reasons Stage 1 already records; candidates silently skipped before Stage 1 even ran (missing
-  // token id/address, or a cross-chain dedupe hit) are not attributable to a specific funnel stage,
-  // so these two counts are a close approximation of the true funnel, not a byte-exact reconciliation.
+  // evidence-ladder tiers. CANDIDATE-FUNNEL ACCURACY FIX (reported live: this showed "passed
+  // liquidity/volume: 91" while only 14 candidates were ever evidence-checked — a real math bug,
+  // not a display quirk): candidatesReachingStage1 excludes pools skipped before evaluateStage1Candidate
+  // ever ran (no resolvable token id/address, or a cross-chain dedupe hit) so the funnel below adds
+  // up to stage1Passed.length exactly, not an inflated estimate assuming every raw pool was evaluated.
+  const candidatesReachingStage1 = rawCount - skippedBeforeStage1
   const categoryFilteredCount = countReason('establishedOrCategoryBlocked')
   const capDataMissingCount = countReason('capDataMissing')
   const capExceedsCount = countReason('capExceedsLowCapCeiling')
   const liquidityBelowCount = countReason('liquidityBelowMinimum')
   const volumeBelowCount = countReason('volumeBelowMinimum')
-  const lowCapCandidatesCount = Math.max(0, rawCount - categoryFilteredCount - capDataMissingCount - capExceedsCount)
+  const lowCapCandidatesCount = Math.max(0, candidatesReachingStage1 - categoryFilteredCount - capDataMissingCount - capExceedsCount)
   const liquidityVolumeCandidatesCount = Math.max(0, lowCapCandidatesCount - liquidityBelowCount - volumeBelowCount)
   const pumpCandidateEvaluationAudit = {
     rawCandidates: rawCount,

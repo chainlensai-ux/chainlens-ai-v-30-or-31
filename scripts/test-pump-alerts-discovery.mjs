@@ -484,4 +484,31 @@ assert.doesNotMatch(routeCode, /'fourteenDayUnavailable'/, 'the misleading blank
   assert.notEqual(r2.alert.chain, 'base', 'an ETH candidate must never be accepted as a Base pool')
 }
 
+// ─── Part 12: candidate-funnel accuracy fix (route-level static assertions) ────────────────────
+// Reported live: the new funnel breakdown itself showed "passed liquidity/volume: 91" while only
+// 14 candidates were ever evidence-checked — a real reconciliation bug, not a display quirk.
+// rawCount includes every pool GeckoTerminal returned, but a pool with no resolvable base-token
+// id/address, or a duplicate of one already seen, is skipped before evaluateStage1Candidate ever
+// runs and never gets an audit row — so approximating survivors as rawCount minus known exclusion
+// reasons silently assumed every raw pool reached Stage 1, which GeckoTerminal's pool lists (full
+// of stale/malformed/duplicate entries) never guarantee.
+{
+  const routeSrc6 = fs.readFileSync(new URL('../app/api/pump-alerts/route.ts', import.meta.url), 'utf8')
+  const routeCode6 = routeSrc6.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  assert.match(routeCode6, /let skippedBeforeStage1 = 0/, 'pools skipped before Stage 1 evaluation must be counted, not silently dropped from the funnel math')
+  assert.match(routeCode6, /if \(!tokenId\) \{ skippedBeforeStage1 \+= 1; continue \}/, 'a pool with no resolvable token id must be counted as skipped-before-Stage-1')
+  assert.match(routeCode6, /if \(!meta\?\.attributes\?\.address\) \{ skippedBeforeStage1 \+= 1; continue \}/, 'a pool with no resolvable token address must be counted as skipped-before-Stage-1')
+  assert.match(routeCode6, /if \(seen\.has\(dedupeKey\)\) \{ skippedBeforeStage1 \+= 1; continue \}/, 'a duplicate pool must be counted as skipped-before-Stage-1')
+  assert.match(
+    routeCode6,
+    /const candidatesReachingStage1 = rawCount - skippedBeforeStage1/,
+    'the funnel math must start from candidates that actually reached Stage 1, not the raw pool count',
+  )
+  assert.match(
+    routeCode6,
+    /const lowCapCandidatesCount = Math\.max\(0, candidatesReachingStage1 - categoryFilteredCount - capDataMissingCount - capExceedsCount\)/,
+    'lowCapCandidates must be derived from candidatesReachingStage1, not the inflated raw pool count',
+  )
+}
+
 console.log('test-pump-alerts-discovery.mjs: all assertions passed')
