@@ -117,6 +117,35 @@ const RISK_LABEL: Record<PumpRisk, string> = {
   LOW: 'LOWER RISK',
 }
 
+// CHAIN-VISIBILITY FIX, DISCLOSED (requested: "make the chain easy to see"). Chain used to be a
+// small lowercase mono string buried in the metric grid's last cell, truncating on narrow cards
+// ("robinho…") — the same information a viewer needs first, at a glance, to know where a contract
+// lives. Gives each chain its own color and a short, non-truncating label so it reads as a proper
+// badge instead of clipped text.
+const CHAIN_LABEL: Record<'base' | 'eth' | 'robinhood', string> = {
+  base: 'BASE',
+  eth: 'ETH',
+  robinhood: 'ROBINHOOD',
+}
+
+const CHAIN_COLOR: Record<'base' | 'eth' | 'robinhood', string> = {
+  base: '#3b82f6',
+  eth: '#a78bfa',
+  robinhood: '#22c55e',
+}
+
+const CHAIN_BG: Record<'base' | 'eth' | 'robinhood', string> = {
+  base: 'rgba(59,130,246,0.12)',
+  eth: 'rgba(167,139,250,0.12)',
+  robinhood: 'rgba(34,197,94,0.12)',
+}
+
+const CHAIN_BORDER: Record<'base' | 'eth' | 'robinhood', string> = {
+  base: 'rgba(59,130,246,0.34)',
+  eth: 'rgba(167,139,250,0.32)',
+  robinhood: 'rgba(34,197,94,0.32)',
+}
+
 const FILTER_CHIPS: Array<{ key: FilterKey; label: string }> = [
   { key: 'ALL', label: 'All' },
   { key: 'HIGH_MOMENTUM', label: 'High Momentum' },
@@ -240,17 +269,26 @@ function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, copied }: {
             {avatarText}
           </div>
           <div style={{ minWidth: 0 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap' }}>
               <span style={{ fontSize: '14.5px', fontWeight: 900, color: '#f1f5f9', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '150px' }}>
                 {alert.name}
               </span>
               {alert.category === 'HIGH_MOMENTUM' && <span className="pump-flame" title='High momentum' style={{ filter: `drop-shadow(0 0 7px ${catColor}66)`, fontSize: '12px', lineHeight: 1 }}>🔥</span>}
               {showWhaleIcon && <span title='Whale activity' style={{ filter: 'drop-shadow(0 0 7px rgba(45,212,191,0.42))', fontSize: '12px', lineHeight: 1 }}>🐋</span>}
+              {/* CHAIN-VISIBILITY FIX, DISCLOSED: a real colored badge instead of small lowercase text
+                  buried in a subtitle — the chain is now the first thing a viewer can spot. */}
+              <span title={`Chain: ${CHAIN_LABEL[alert.chain]}`} style={{
+                display: 'inline-flex', alignItems: 'center', gap: '3px',
+                padding: '2px 6px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 900, letterSpacing: '0.04em',
+                color: CHAIN_COLOR[alert.chain], background: CHAIN_BG[alert.chain], border: `1px solid ${CHAIN_BORDER[alert.chain]}`,
+                fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
+              }}>
+                <span style={{ width: '5px', height: '5px', borderRadius: '999px', background: CHAIN_COLOR[alert.chain], flexShrink: 0 }} />
+                {CHAIN_LABEL[alert.chain]}
+              </span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '9px', fontFamily: 'var(--font-plex-mono)' }}>
               <span style={{ color: '#9bb4ca', fontWeight: 850 }}>{alert.symbol}</span>
-              <span style={{ color: '#2d3f52' }}>·</span>
-              <span style={{ color: '#3fa787', fontWeight: 700, textTransform: 'uppercase' }}>{alert.chain}</span>
               <span style={{ color: '#2d3f52' }}>·</span>
               <span style={{ color: '#374a5c' }}>{shortAddr(alert.contract)}</span>
             </div>
@@ -347,7 +385,7 @@ function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, copied }: {
         <GridMetric label="Market Cap" value={mcapText} dim={alert.marketCapUsd == null} />
         <GridMetric label="FDV" value={fmtUSD(alert.fdvUsd)} dim={alert.fdvUsd == null} />
         <GridMetric label="Age" value={alert.tokenAgeDays != null ? (alert.tokenAgeDays < 1 ? '<1d' : `${Math.round(alert.tokenAgeDays)}d`) : '—'} dim={alert.tokenAgeDays == null} />
-        <GridMetric label="Chain" value={alert.chain} />
+        <GridMetric label="Chain" value={CHAIN_LABEL[alert.chain]} strong color={CHAIN_COLOR[alert.chain]} />
       </div>
 
       {/* Reason + qualifying evidence — single-line, truncated, full text on hover. */}

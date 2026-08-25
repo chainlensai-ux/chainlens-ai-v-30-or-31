@@ -231,35 +231,52 @@ const COINGECKO_PLATFORM_BY_CHAIN: Partial<Record<PumpChainSlug, string>> = {
   // Robinhood Chain is not indexed by CoinGecko — the tier is skipped there, honestly.
 }
 
-export async function fetchCoinGeckoContractChange14d(chain: PumpChainSlug, contract: string, signal: AbortSignal): Promise<number | null> {
+export type CoinGeckoContractLookup = { change14d: number | null; marketCapUsd: number | null }
+
+// MARKET-CAP VERIFICATION FIX, DISCLOSED (requested: "make marketcaps working so it verifies it and
+// works"). GeckoTerminal's pool `market_cap_usd` is null for most fresh pump tokens (no verified
+// circulating supply), which is why cards were showing "MCap unavailable" so often. This function
+// already fetches CoinGecko's full per-contract payload to read the 14d change — its market_data
+// also carries a real, CoinGecko-verified market_cap.usd for any token CoinGecko has indexed. Reading
+// it here is zero extra network cost (same response, same identity-verified contract match) and is a
+// second REAL provider, never a computed/derived guess — so it stays honest with the "do not fake
+// market cap" rule while actually filling the field more often. Returns null for either field when
+// CoinGecko doesn't have it (still-unindexed tokens, or Robinhood Chain which CoinGecko doesn't
+// track at all) — the caller keeps showing "MCap unavailable" in that case, exactly as before.
+export async function fetchCoinGeckoContractChange14d(chain: PumpChainSlug, contract: string, signal: AbortSignal): Promise<CoinGeckoContractLookup> {
   const platform = COINGECKO_PLATFORM_BY_CHAIN[chain]
-  if (!platform) return null
+  if (!platform) return { change14d: null, marketCapUsd: null }
   try {
     const res = await fetch(`https://api.coingecko.com/api/v3/coins/${platform}/contract/${encodeURIComponent(contract)}`, {
       headers: { accept: 'application/json' },
       cache: 'no-store',
       signal,
     })
-    if (!res.ok) return null
+    if (!res.ok) return { change14d: null, marketCapUsd: null }
     const json = await res.json().catch(() => null) as Record<string, unknown> | null
-    if (!json || typeof json !== 'object') return null
+    if (!json || typeof json !== 'object') return { change14d: null, marketCapUsd: null }
     // Identity verification: CoinGecko resolves BY platform+contract, so a hit is inherently the
     // right token on the right chain. Guard anyway against odd proxy responses.
     const platforms = (json.platforms ?? json.detail_platforms) as Record<string, unknown> | undefined
     if (platforms && typeof platforms === 'object') {
       const addr = platforms[platform]
-      if (typeof addr === 'string' && addr.toLowerCase() !== contract.toLowerCase()) return null
+      if (typeof addr === 'string' && addr.toLowerCase() !== contract.toLowerCase()) return { change14d: null, marketCapUsd: null }
     }
+    const md = json.market_data as Record<string, unknown> | undefined
     // 14-DAY WINDOW, DISCLOSED: CoinGecko's market_data carries a genuine price_change_percentage_14d
     // field alongside its 7d one — this reads the 14d field specifically, not the 7d value
     // relabelled. Reading the 7d field here would make the 'exact' evidence grade a lie for this
     // tier: it would claim a 14-day close-to-close change while actually reporting a 7-day one.
-    const md = json.market_data as Record<string, unknown> | undefined
     const ch14d = md?.price_change_percentage_14d
-    const n = typeof ch14d === 'number' && Number.isFinite(ch14d) ? ch14d : NaN
-    return Number.isFinite(n) ? n : null
+    const ch14dN = typeof ch14d === 'number' && Number.isFinite(ch14d) ? ch14d : NaN
+    const marketCapUsdRaw = (md?.market_cap as Record<string, unknown> | undefined)?.usd
+    const marketCapN = typeof marketCapUsdRaw === 'number' && Number.isFinite(marketCapUsdRaw) && marketCapUsdRaw > 0 ? marketCapUsdRaw : NaN
+    return {
+      change14d: Number.isFinite(ch14dN) ? ch14dN : null,
+      marketCapUsd: Number.isFinite(marketCapN) ? marketCapN : null,
+    }
   } catch {
-    return null
+    return { change14d: null, marketCapUsd: null }
   }
 }
 

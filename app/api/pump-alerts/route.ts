@@ -1184,10 +1184,16 @@ export async function GET(req: Request) {
           // doesn't index Robinhood Chain; that skip is honest, not a failure).
           if (c.chain === 'base' || c.chain === 'eth') {
             evidenceAudit.coinGeckoFallbackAttempted += 1
-            const cgChange = await fetchCoinGeckoContractChange14d(c.chain, c.addr, acFb.signal)
-            if (cgChange != null) {
+            const cgLookup = await fetchCoinGeckoContractChange14d(c.chain, c.addr, acFb.signal)
+            // MARKET-CAP VERIFICATION FIX, DISCLOSED: this same CoinGecko response carries a real,
+            // provider-verified market cap. GeckoTerminal's pool market_cap_usd is null for most fresh
+            // pump tokens, which is why cards were showing "MCap unavailable" so often — filling it in
+            // here from a second real source (only when GT didn't already have one) is zero extra
+            // network cost and never fabricates a number: still null when CoinGecko doesn't have it.
+            if (c.marketCap == null && cgLookup.marketCapUsd != null) c.marketCap = cgLookup.marketCapUsd
+            if (cgLookup.change14d != null) {
               evidenceAudit.coinGeckoFallbackSucceeded += 1
-              return { kind: 'exact', source: 'coingecko_contract', change14d: cgChange }
+              return { kind: 'exact', source: 'coingecko_contract', change14d: cgLookup.change14d }
             }
           }
 

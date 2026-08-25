@@ -639,6 +639,8 @@ assert.doesNotMatch(routeCode, /'fourteenDayUnavailable'/, 'the misleading blank
   const pageCode14 = pageSrc14.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
   const routeSrc14 = fs.readFileSync(new URL('../app/api/pump-alerts/route.ts', import.meta.url), 'utf8')
   const routeCode14 = routeSrc14.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  const evidenceSrc14 = fs.readFileSync(new URL('../lib/server/pump14dEvidence.ts', import.meta.url), 'utf8')
+  const evidenceCode14 = evidenceSrc14.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
 
   // Market Cap renders when available; honest "MCap unavailable" when it isn't; FDV stays separate.
   assert.match(pageCode14, /MCap unavailable/, 'card must show an honest empty state when marketCapUsd is null, never a fake $0')
@@ -695,6 +697,17 @@ assert.doesNotMatch(routeCode, /'fourteenDayUnavailable'/, 'the misleading blank
   assert.doesNotMatch(pageCode14, /pump-card-left|pump-card-center|pump-card-right|pump-metric-band|pump-mini-bar|pump-liq-depth/, 'dead CSS/classes from the old 3-column layout must be fully removed')
   assert.match(pageCode14, /\.pump-card-grid-container \{ grid-template-columns: 1fr !important; \}/, 'the card grid must collapse to a single column on narrow viewports')
   assert.match(pageCode14, /\.pump-card-top\s*\{ flex-wrap: wrap !important/, 'the card header must wrap on narrow viewports instead of overflowing')
+
+  // Chain visibility: a real colored badge, not small truncating text — checked in both the header
+  // and the metric grid cell.
+  assert.match(pageCode14, /CHAIN_LABEL\[alert\.chain\]/, 'chain must render via a label lookup, not raw lowercase text prone to clipping')
+  assert.match(pageCode14, /CHAIN_COLOR\[alert\.chain\]/, 'chain badge must be colored so it reads at a glance')
+  assert.match(pageCode14, /const CHAIN_LABEL: Record<'base' \| 'eth' \| 'robinhood', string>/, 'chain label map must cover every supported chain')
+
+  // Market cap verification: a second real provider (CoinGecko) fills marketCapUsd when
+  // GeckoTerminal's pool data doesn't have it, never a computed/fabricated value.
+  assert.match(evidenceCode14, /export type CoinGeckoContractLookup = \{ change14d: number \| null; marketCapUsd: number \| null \}/, 'CoinGecko lookup must expose a real, provider-sourced market cap alongside the 14d change')
+  assert.match(routeCode14, /if \(c\.marketCap == null && cgLookup\.marketCapUsd != null\) c\.marketCap = cgLookup\.marketCapUsd/, 'market cap must only be filled from a real provider response, and only when GeckoTerminal did not already have one')
 
   // Discovery logic untouched: the hard rule this whole task was bound by.
   assert.match(routeCode14, /export function evaluateStage1Candidate/, 'Stage 1 discovery function must be untouched and still exported')
