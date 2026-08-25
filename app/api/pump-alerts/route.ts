@@ -67,9 +67,18 @@ const PUMP_ALERT_EXCLUDE_ESTABLISHED_TOKENS = envBool('PUMP_ALERT_EXCLUDE_ESTABL
 // - min before stop: below this qualified count, an evaluation cut short by the max-evaluated
 //   ceiling is reported as budget-exhausted (there was more to try) rather than as a clean "nothing
 //   qualified" result
-const PUMP_ALERT_TARGET_RESULTS = envNumber('PUMP_ALERT_TARGET_RESULTS', 10)
-const PUMP_ALERT_MAX_CANDIDATES_EVALUATED = envNumber('PUMP_ALERT_MAX_CANDIDATES_EVALUATED', 50)
-const PUMP_ALERT_MIN_RESULTS_BEFORE_STOP = envNumber('PUMP_ALERT_MIN_RESULTS_BEFORE_STOP', 5)
+// FEED-QUANTITY FIX, DISCLOSED (reported live: "Pump Alerts only shows 1 token — not enough for a
+// live momentum feed"). Raised targetResults/maxCandidatesEvaluated/minResultsBeforeStop to the
+// requested defaults (15/100/10) so the pipeline reaches further into the raw candidate pool before
+// giving up — the stop condition itself was already correct (evaluateCandidatesInBatches only stops
+// early once `qualifiedCount >= targetResults`, never after the first qualifier), the ceiling was
+// just set too low to reach double digits most cycles. Also added maxRawCandidates: a safety ceiling
+// on how many raw provider pools are fed into cheap Stage 1 filtering per request (see fetchChainPools
+// / the trending-pools addition below), not a real bottleneck under normal volume today.
+const PUMP_ALERT_TARGET_RESULTS = envNumber('PUMP_ALERT_TARGET_RESULTS', 15)
+const PUMP_ALERT_MAX_CANDIDATES_EVALUATED = envNumber('PUMP_ALERT_MAX_CANDIDATES_EVALUATED', 100)
+const PUMP_ALERT_MIN_RESULTS_BEFORE_STOP = envNumber('PUMP_ALERT_MIN_RESULTS_BEFORE_STOP', 10)
+const PUMP_ALERT_MAX_RAW_CANDIDATES = envNumber('PUMP_ALERT_MAX_RAW_CANDIDATES', 200)
 
 // LIVE-MOMENTUM ELIGIBILITY MODE, DISCLOSED (URGENT fix request: "Pump Alerts should not require
 // perfect 14d/7d OHLCV proof before showing anything... show live low-cap momentum coins using
@@ -864,6 +873,20 @@ async function fetchGTPage(network: string, page: number, signal: AbortSignal): 
   return res.json()
 }
 
+// FEED-QUANTITY FIX, DISCLOSED: a second real raw-candidate source — GeckoTerminal's own
+// trending_pools endpoint for the same network, same auth (none needed), same response shape as the
+// regular pools endpoint. Purely additive breadth: a pool already in the paginated set is deduped
+// downstream by the existing chain:address `seen` set, so this can only ADD candidates, never change
+// which ones pass Stage 1's filters.
+async function fetchGTTrendingPools(network: string, signal: AbortSignal): Promise<{ data?: GTPool[]; included?: GTIncluded[] }> {
+  const res = await fetch(
+    `https://api.geckoterminal.com/api/v2/networks/${network}/trending_pools?include=base_token,quote_token`,
+    { headers: { accept: 'application/json' }, cache: 'no-store', signal },
+  )
+  if (!res.ok) throw new Error(`GT trending ${res.status}`)
+  return res.json()
+}
+
 // CHAIN-TAGGED CANDIDATE SET, DISCLOSED: pools and their `included` token metadata are kept
 // per-chain rather than flattened into two shared arrays. Flattening lost which network each pool
 // came from (the root cause of every wrong-chain bug in this route) and additionally risked
@@ -872,17 +895,30 @@ type ChainPools = { chain: PumpChain; pools: GTPool[]; included: GTIncluded[] }
 
 // Fetch every requested chain independently so one chain's provider failure never silently
 // contaminates or suppresses another's, and so per-chain success is reportable in the audit.
+// FEED-QUANTITY FIX, DISCLOSED: pagination widened from 3 pages to 5 (roughly 60 → 100 raw pools per
+// chain) plus one trending_pools call, so the raw candidate pool feeding Stage 1 is meaningfully
+// wider — the reported "only 1 token shown" bug traced back to a thin raw pool more often than a
+// broken filter. Combined pools are capped at PUMP_ALERT_MAX_RAW_CANDIDATES per chain as a safety
+// ceiling, not a real bottleneck at these volumes.
 async function fetchChainPools(chain: PumpChain, signal: AbortSignal): Promise<ChainPools> {
   const network = CHAIN_CONFIG[chain].gtNetwork
-  const results = await Promise.allSettled([1, 2, 3].map(page => fetchGTPage(network, page, signal)))
+  const [pageResults, trendingResult] = await Promise.all([
+    Promise.allSettled([1, 2, 3, 4, 5].map(page => fetchGTPage(network, page, signal))),
+    Promise.allSettled([fetchGTTrendingPools(network, signal)]),
+  ])
   const pools: GTPool[] = []
   const included: GTIncluded[] = []
-  for (const r of results) {
+  for (const r of pageResults) {
     if (r.status !== 'fulfilled') continue
     if (Array.isArray(r.value.data)) pools.push(...(r.value.data as GTPool[]))
     if (Array.isArray(r.value.included)) included.push(...(r.value.included as GTIncluded[]))
   }
-  return { chain, pools, included }
+  for (const r of trendingResult) {
+    if (r.status !== 'fulfilled') continue
+    if (Array.isArray(r.value.data)) pools.push(...(r.value.data as GTPool[]))
+    if (Array.isArray(r.value.included)) included.push(...(r.value.included as GTIncluded[]))
+  }
+  return { chain, pools: pools.slice(0, PUMP_ALERT_MAX_RAW_CANDIDATES), included }
 }
 
 export async function GET(req: Request) {
@@ -1395,6 +1431,34 @@ export async function GET(req: Request) {
     finalState,
   }
 
+  // FEED-QUANTITY FIX, DISCLOSED (reported live: "Pump Alerts only shows 1 token"). Exact shape
+  // requested — the same funnel pumpCandidateEvaluationAudit already tracks, reframed with the
+  // requested field names plus a ranked list of the most common rejection reasons, so "why only 1"
+  // is always provably answerable from the response: either the raw pool was genuinely thin this
+  // cycle, or a specific filter stage is doing most of the rejecting.
+  const rejectionCounts = new Map<string, number>()
+  for (const a of audit) {
+    if (!a.exclusionReason) continue
+    rejectionCounts.set(a.exclusionReason, (rejectionCounts.get(a.exclusionReason) ?? 0) + 1)
+  }
+  const topRejectedReasons = [...rejectionCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([reason, count]) => ({ reason, count }))
+  const pumpFeedQuantityAudit = {
+    rawCandidates: rawCount,
+    candidatesAfterCategoryFilter: candidatesReachingStage1 - categoryFilteredCount,
+    candidatesAfterChainFilter: candidatesReachingStage1,
+    candidatesAfterLowCapFilter: lowCapCandidatesCount,
+    candidatesAfterLiquidityVolumeFilter: liquidityVolumeCandidatesCount,
+    liveMomentumQualified: liveMomentumAudit.liveMomentumQualified,
+    finalRenderedCount: alerts.length,
+    targetResults: PUMP_ALERT_TARGET_RESULTS,
+    maxRawCandidates: PUMP_ALERT_MAX_RAW_CANDIDATES,
+    stoppedReason,
+    topRejectedReasons,
+  }
+
   // UI-POLISH FIX, DISCLOSED (requested: ensure the API response carries priceChange24hPct/6hPct/
   // 1hPct alongside the existing change24h/change6h/change1h names). Purely additive aliasing over
   // the already-computed alert objects — no discovery/eligibility logic changes, no new fields are
@@ -1445,6 +1509,9 @@ export async function GET(req: Request) {
     pumpCandidateEvaluationAudit,
     // ELIGIBILITY-MODEL FIX, DISCLOSED: exact-vs-live-momentum funnel audit, per the fix request.
     pumpQualificationAudit,
+    // FEED-QUANTITY FIX, DISCLOSED: exact shape requested — proves whether a small rendered count is
+    // a thin raw pool this cycle or a specific filter stage doing most of the rejecting.
+    pumpFeedQuantityAudit,
     // Request-level rollup of the same eligibility decisions recorded per-candidate above.
     pumpDiscoverySummary: {
       requestId,

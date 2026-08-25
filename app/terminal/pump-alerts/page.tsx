@@ -203,12 +203,13 @@ function GridMetric({ label, value, dim, strong, color }: { label: string; value
   )
 }
 
-function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, copied }: {
+function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHoverPrefetch, copied }: {
   alert: PumpAlert
   onScan: () => void
   onAskClark: () => void
   onReport: () => void
   onCopyCA: () => void
+  onHoverPrefetch: () => void
   copied: boolean
 }) {
   const [hovered, setHovered] = useState(false)
@@ -234,7 +235,7 @@ function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, copied }: {
   return (
     <div
       className="pump-card"
-      onMouseEnter={() => setHovered(true)}
+      onMouseEnter={() => { setHovered(true); onHoverPrefetch() }}
       onMouseLeave={() => setHovered(false)}
       style={{
         background: hovered
@@ -505,9 +506,92 @@ function SummaryStrip({ alerts }: { alerts: PumpAlert[] }) {
   )
 }
 
+// INSTANT-REPORT-NAV FIX, DISCLOSED (reported live: "Clicking Report takes ~4 seconds before route
+// changes"). Root cause: router.push() alone never prefetches a route's JS chunk the way a <Link>
+// in the viewport does, so the first navigation to /terminal/pump-alerts/report paid the full
+// fetch+compile cost synchronously in the browser before the URL/content changed. Fixed by (1)
+// prefetching the route on card hover, so by click time the chunk is usually already warm, and (2)
+// writing the full card payload to sessionStorage and calling router.push() synchronously — no
+// await, nothing blocks navigation — so the report page can render real metrics from that seed the
+// instant it mounts, instead of waiting on its own API call.
+//
+// Defined at module scope (not inside the component) rather than as inline closures: they call
+// Date.now()/performance.now(), and the React Compiler's purity rule flags impure calls reachable
+// from a component's render body even when, as here, they only ever execute inside an event handler
+// — moving them out of the component avoids that false positive without disabling the rule.
+type PumpAlertsRouter = ReturnType<typeof useRouter>
+
+function reportSeedKey(chain: string, contract: string): string {
+  return `pumpReportSeed:${chain}:${contract.toLowerCase()}`
+}
+
+function reportUrlFor(alert: PumpAlert): string {
+  const qs = new URLSearchParams({
+    contract: alert.contract,
+    chain: alert.chain,
+    symbol: alert.symbol,
+    name: alert.name,
+    reason: alert.reason,
+    riskLevel: alert.riskLevel,
+    ...(alert.priceUsd != null ? { priceUsd: String(alert.priceUsd) } : {}),
+    ...(alert.change24h != null ? { change24h: String(alert.change24h) } : {}),
+    ...(alert.change6h != null ? { change6h: String(alert.change6h) } : {}),
+    ...(alert.change1h != null ? { change1h: String(alert.change1h) } : {}),
+    ...(alert.volume24hUsd != null ? { volume24hUsd: String(alert.volume24hUsd) } : {}),
+    ...(alert.liquidityUsd != null ? { liquidityUsd: String(alert.liquidityUsd) } : {}),
+    ...(alert.fdvUsd != null ? { fdvUsd: String(alert.fdvUsd) } : {}),
+    ...(alert.change14d != null ? { change14d: String(alert.change14d) } : {}),
+    ...(alert.marketCapUsd != null ? { marketCapUsd: String(alert.marketCapUsd) } : {}),
+    ...(alert.tokenAgeDays != null ? { tokenAgeDays: String(alert.tokenAgeDays) } : {}),
+    ...(alert.pairAddress ? { pairAddress: alert.pairAddress } : {}),
+    ...(alert.evidenceGrade ? { evidenceGrade: alert.evidenceGrade } : {}),
+  })
+  return `/terminal/pump-alerts/report?${qs.toString()}`
+}
+
+function prefetchReportForAlert(router: PumpAlertsRouter, prefetched: Set<string>, alert: PumpAlert) {
+  const url = reportUrlFor(alert)
+  if (prefetched.has(url)) return
+  prefetched.add(url)
+  try { router.prefetch(url) } catch { /* best-effort — a failed prefetch never blocks the click-time push */ }
+}
+
+function openReportForAlert(router: PumpAlertsRouter, prefetched: Set<string>, alert: PumpAlert) {
+  const clickStart = performance.now()
+  const url = reportUrlFor(alert)
+  const usedPrefetch = prefetched.has(url)
+  let seedPayloadAvailable = false
+  // PUMP-REPORT DATA-FLOW FIX, DISCLOSED (requested: "Report must seed from Pump Alert card payload
+  // first"). The full card payload — everything the report's live-evidence scoring needs (24h/6h/1h
+  // change, volume, liquidity, FDV, market cap, pool age, pair address, evidence mode) — is written
+  // to sessionStorage keyed by chain+contract BEFORE router.push, so the report page can render real
+  // metrics on its very first paint rather than a blank/generic skeleton.
+  try {
+    sessionStorage.setItem(reportSeedKey(alert.chain, alert.contract), JSON.stringify({
+      symbol: alert.symbol, name: alert.name, contract: alert.contract, chain: alert.chain,
+      priceUsd: alert.priceUsd, change24h: alert.change24h, change6h: alert.change6h, change1h: alert.change1h,
+      volume24hUsd: alert.volume24hUsd, liquidityUsd: alert.liquidityUsd, fdvUsd: alert.fdvUsd,
+      marketCapUsd: alert.marketCapUsd, tokenAgeDays: alert.tokenAgeDays, pairAddress: alert.pairAddress,
+      evidenceGrade: alert.evidenceGrade ?? null, reason: alert.reason, riskLevel: alert.riskLevel,
+      navStartedAt: Date.now(), usedPrefetch,
+    }))
+    seedPayloadAvailable = true
+  } catch { /* sessionStorage unavailable (private mode, quota) — report page falls back to URL params */ }
+  // Navigation must never wait on anything — no await above, router.push is the very next call.
+  router.push(url)
+  console.debug('[pumpReportNavigationAudit:click]', {
+    tokenAddress: alert.contract, chainSlug: alert.chain,
+    clickToRouterPushMs: performance.now() - clickStart,
+    seedPayloadAvailable, blockedNavigation: false, usedPrefetch,
+  })
+}
+
 export default function PumpAlertsPage() {
   const { plan, loading: planLoading } = usePlanWithLoading()
   const router = useRouter()
+  // INSTANT-REPORT-NAV FIX, DISCLOSED: tracks which report URLs have already been prefetched
+  // (card hover) so repeated hovers/re-renders never re-issue the same prefetch call.
+  const prefetchedReportUrls = useRef<Set<string>>(new Set())
   const [alerts, setAlerts] = useState<PumpAlert[]>([])
   const [fetchedAt, setFetchedAt] = useState<string | null>(null)
   // `loading` is the first-paint skeleton only and never returns to true; `refreshing` drives the
@@ -649,33 +733,12 @@ export default function PumpAlertsPage() {
     router.push(`/terminal/token-scanner?contract=${alert.contract}${chainQuery}`)
   }
 
+  function prefetchReport(alert: PumpAlert) {
+    prefetchReportForAlert(router, prefetchedReportUrls.current, alert)
+  }
+
   function openReport(alert: PumpAlert) {
-    // PUMP-REPORT DATA-FLOW FIX, DISCLOSED (requested: "Report must seed from Pump Alert card
-    // payload first"). change6h/change1h/marketCapUsd/tokenAgeDays/pairAddress/evidenceGrade are all
-    // real live evidence the card already has but the report never received — added here so the
-    // report's momentum/continuation/pullback scores have something to compute from immediately,
-    // before any provider enrichment call even runs.
-    const qs = new URLSearchParams({
-      contract: alert.contract,
-      chain: alert.chain,
-      symbol: alert.symbol,
-      name: alert.name,
-      reason: alert.reason,
-      riskLevel: alert.riskLevel,
-      ...(alert.priceUsd != null ? { priceUsd: String(alert.priceUsd) } : {}),
-      ...(alert.change24h != null ? { change24h: String(alert.change24h) } : {}),
-      ...(alert.change6h != null ? { change6h: String(alert.change6h) } : {}),
-      ...(alert.change1h != null ? { change1h: String(alert.change1h) } : {}),
-      ...(alert.volume24hUsd != null ? { volume24hUsd: String(alert.volume24hUsd) } : {}),
-      ...(alert.liquidityUsd != null ? { liquidityUsd: String(alert.liquidityUsd) } : {}),
-      ...(alert.fdvUsd != null ? { fdvUsd: String(alert.fdvUsd) } : {}),
-      ...(alert.change14d != null ? { change14d: String(alert.change14d) } : {}),
-      ...(alert.marketCapUsd != null ? { marketCapUsd: String(alert.marketCapUsd) } : {}),
-      ...(alert.tokenAgeDays != null ? { tokenAgeDays: String(alert.tokenAgeDays) } : {}),
-      ...(alert.pairAddress ? { pairAddress: alert.pairAddress } : {}),
-      ...(alert.evidenceGrade ? { evidenceGrade: alert.evidenceGrade } : {}),
-    })
-    router.push(`/terminal/pump-alerts/report?${qs.toString()}`)
+    openReportForAlert(router, prefetchedReportUrls.current, alert)
   }
 
   function openClark(alert: PumpAlert) {
@@ -1082,11 +1145,26 @@ export default function PumpAlertsPage() {
             </div>
           )}
 
-          {/* Low-count notice */}
+          {/* FEED-QUANTITY FIX, DISCLOSED (reported live: "Pump Alerts only shows 1 token" — the UI
+              gave no reason why, just a bare card or two). Below a small threshold, cite the real
+              funnel numbers ("1 of 200 candidates qualified") plus a compact breakdown instead of a
+              generic "limited candidates" line, so a thin feed is provably explained, not assumed
+              broken. */}
           {!loading && alerts.length > 0 && alerts.length < 10 && (
-            <p style={{ fontSize: '9.5px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: '0 0 8px', padding: '5px 10px', borderRadius: '7px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
-              Limited fresh candidates right now — refresh shortly for more.
-            </p>
+            candidateAudit ? (
+              <div style={{ margin: '0 0 8px', padding: '7px 10px', borderRadius: '7px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', fontFamily: 'var(--font-plex-mono)' }}>
+                <p style={{ fontSize: '9.5px', color: '#7c94ab', margin: '0 0 4px', fontWeight: 700 }}>
+                  {alerts.length} of {candidateAudit.rawCandidates} candidates qualified
+                </p>
+                <p style={{ fontSize: '8.5px', color: '#3a5268', margin: 0 }}>
+                  {candidateAudit.categoryFiltered} filtered as major/stable/wrapped · {Math.max(0, candidateAudit.rawCandidates - candidateAudit.categoryFiltered - candidateAudit.lowCapCandidates)} over FDV/cap ceiling · {Math.max(0, candidateAudit.lowCapCandidates - candidateAudit.liquidityVolumeCandidates)} below liquidity/volume minimums · {Math.max(0, candidateAudit.candidatesEvaluated - candidateAudit.qualifiedExact7d - candidateAudit.qualifiedMomentumFallback)} evidence-checked but not confirmed.
+                </p>
+              </div>
+            ) : (
+              <p style={{ fontSize: '9.5px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', margin: '0 0 8px', padding: '5px 10px', borderRadius: '7px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                Limited fresh candidates right now — refresh shortly for more.
+              </p>
+            )
           )}
 
           {/* CARD GRID, DISCLOSED (requested: cards feel too wide/heavy): a responsive grid instead
@@ -1102,6 +1180,7 @@ export default function PumpAlertsPage() {
                   onAskClark={() => openClark(alert)}
                   onReport={() => openReport(alert)}
                   onCopyCA={() => copyCA(alert.contract)}
+                  onHoverPrefetch={() => prefetchReport(alert)}
                   copied={copiedContract === alert.contract.toLowerCase()}
                 />
               </div>

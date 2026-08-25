@@ -723,4 +723,60 @@ assert.doesNotMatch(routeCode, /'fourteenDayUnavailable'/, 'the misleading blank
   assert.match(routeCode14, /export function evaluateStage2Candidate/, 'Stage 2 discovery function must be untouched and still exported')
 }
 
+// ─── Part 15: feed-quantity fix (reported live: "Pump Alerts only shows 1 token") ───────────────
+//
+// The stop condition (evaluateCandidatesInBatches) was already correct — it only stops early once
+// qualifiedCount >= targetResults, never after the first qualifier — Part 11 above already proves
+// that with targetResults:1. What was missing was proof it keeps CONTINUING to collect MULTIPLE
+// qualifiers when the target is higher than 1, which is the actual "should show 10-20, not just 1"
+// requirement.
+{
+  const rankedIndices = Array.from({ length: 30 }, (_, i) => i)
+  const qualifyingIndices = new Set([2, 5, 9, 14, 20, 27]) // 6 real qualifiers scattered through the pool
+  const evaluatedBatches = []
+  const outcome = await evaluateCandidatesInBatches(
+    rankedIndices,
+    { targetResults: 15, maxCandidatesEvaluated: 100, minResultsBeforeStop: 10, batchSize: 1 },
+    async batchIndices => {
+      evaluatedBatches.push(batchIndices)
+      const qualifiedInBatch = batchIndices.filter(i => qualifyingIndices.has(i)).length
+      return { qualifiedInBatch }
+    },
+  )
+  assert.equal(outcome.qualifiedCount, 6, 'evaluation must keep going past the FIRST qualifier and collect every real one found, not stop at 1')
+  assert.equal(outcome.stoppedReason, 'allCandidatesExhausted', 'fewer real qualifiers than the target must exhaust the pool honestly, never stop early pretending the target was hit')
+  assert.equal(outcome.evaluatedCount, 30, 'every candidate must have been tried when the target was never reached')
+}
+
+// Bumped default config: target/eval-depth/min-before-stop match the requested defaults, plus the
+// new raw-candidate ceiling and the trending-pools breadth addition (route-level static assertions —
+// this file has no live network access to GeckoTerminal).
+{
+  const routeSrc15 = fs.readFileSync(new URL('../app/api/pump-alerts/route.ts', import.meta.url), 'utf8')
+  const routeCode15 = routeSrc15.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  assert.match(routeCode15, /PUMP_ALERT_TARGET_RESULTS', 15\)/, 'target results default must be raised to 15')
+  assert.match(routeCode15, /PUMP_ALERT_MAX_CANDIDATES_EVALUATED', 100\)/, 'max candidates evaluated default must be raised to 100')
+  assert.match(routeCode15, /PUMP_ALERT_MIN_RESULTS_BEFORE_STOP', 10\)/, 'min results before stop default must be raised to 10')
+  assert.match(routeCode15, /PUMP_ALERT_MAX_RAW_CANDIDATES = envNumber\('PUMP_ALERT_MAX_RAW_CANDIDATES', 200\)/, 'a configurable raw-candidate ceiling must exist, defaulting to 200')
+  assert.match(routeCode15, /fetchGTTrendingPools/, 'route must fetch a real trending-pools source, not just the paginated default list, to widen the raw candidate pool')
+  assert.match(routeCode15, /\[1, 2, 3, 4, 5\]\.map\(page => fetchGTPage/, 'pagination must be widened beyond the original 3 pages per chain')
+
+  // pumpFeedQuantityAudit: exact shape requested, so "why only 1" is always provable from the response.
+  for (const field of [
+    'rawCandidates', 'candidatesAfterCategoryFilter', 'candidatesAfterChainFilter',
+    'candidatesAfterLowCapFilter', 'candidatesAfterLiquidityVolumeFilter', 'liveMomentumQualified',
+    'finalRenderedCount', 'targetResults', 'stoppedReason', 'topRejectedReasons',
+  ]) {
+    assert.match(routeCode15, new RegExp(field), `pumpFeedQuantityAudit must include ${field}`)
+  }
+  assert.match(routeCode15, /const pumpFeedQuantityAudit = \{/, 'pumpFeedQuantityAudit must be a real object built in the route')
+  assert.match(routeCode15, /pumpFeedQuantityAudit,\s*\n/, 'pumpFeedQuantityAudit must actually be included in the response payload')
+
+  // UI: the "1 of N candidates qualified" explanation, sourced from real audit numbers, not a
+  // hardcoded string.
+  const pageSrc15 = fs.readFileSync(new URL('../app/terminal/pump-alerts/page.tsx', import.meta.url), 'utf8')
+  const pageCode15 = pageSrc15.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  assert.match(pageCode15, /\{alerts\.length\} of \{candidateAudit\.rawCandidates\} candidates qualified/, 'low-count UI must cite the real qualified/raw counts, matching the requested "1 of 200 candidates qualified" format')
+}
+
 console.log('test-pump-alerts-discovery.mjs: all assertions passed')

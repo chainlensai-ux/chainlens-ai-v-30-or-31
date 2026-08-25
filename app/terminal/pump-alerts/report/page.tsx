@@ -17,6 +17,55 @@ import type {
 } from '@/lib/server/pumpIntelligence'
 import styles from './report.module.css'
 
+// INSTANT-REPORT-NAV FIX, DISCLOSED (reported live: "Clicking Report takes ~4 seconds before route
+// changes... report page should open immediately using the Pump Alert card payload, then enrich in
+// the background"). ReportSeed is the same card payload the Pump Alerts page already writes to
+// sessionStorage (pumpReportSeed:${chain}:${contract}) before it calls router.push — reading it here
+// lets this page paint real price/volume/liquidity/FDV/market-cap/age/chain numbers on its very
+// first render, instead of a bare loading skeleton, while the full report enriches in the background.
+type ReportSeed = {
+  symbol: string; name: string; contract: string; chain: string
+  priceUsd: number | null; change24h: number | null; change6h: number | null; change1h: number | null
+  volume24hUsd: number | null; liquidityUsd: number | null; fdvUsd: number | null; marketCapUsd: number | null
+  tokenAgeDays: number | null; pairAddress: string | null; evidenceGrade: string | null
+  reason?: string; riskLevel?: string
+  navStartedAt?: number; usedPrefetch?: boolean
+}
+
+function reportSeedKey(chain: string, contract: string): string {
+  return `pumpReportSeed:${chain}:${contract.toLowerCase()}`
+}
+
+function readSeedFromSession(chain: string, contract: string): ReportSeed | null {
+  if (typeof window === 'undefined') return null
+  try {
+    const raw = sessionStorage.getItem(reportSeedKey(chain, contract))
+    return raw ? (JSON.parse(raw) as ReportSeed) : null
+  } catch { return null }
+}
+
+// Fallback for a direct/shared report URL that never went through a card click (no sessionStorage
+// entry to read) — the same fields are already carried in the query string, so the shell can still
+// render real numbers instead of blanking out while the API call is in flight.
+function readSeedFromParams(params: URLSearchParams): ReportSeed | null {
+  const contract = params.get('contract')
+  if (!contract) return null
+  const num = (key: string): number | null => {
+    const v = params.get(key)
+    if (v == null || v === '') return null
+    const n = Number(v)
+    return Number.isFinite(n) ? n : null
+  }
+  return {
+    symbol: params.get('symbol') ?? '?', name: params.get('name') ?? 'Unknown',
+    contract, chain: params.get('chain') ?? 'base',
+    priceUsd: num('priceUsd'), change24h: num('change24h'), change6h: num('change6h'), change1h: num('change1h'),
+    volume24hUsd: num('volume24hUsd'), liquidityUsd: num('liquidityUsd'), fdvUsd: num('fdvUsd'),
+    marketCapUsd: num('marketCapUsd'), tokenAgeDays: num('tokenAgeDays'),
+    pairAddress: params.get('pairAddress'), evidenceGrade: params.get('evidenceGrade'),
+  }
+}
+
 const CONF_COLOR: Record<Confidence, string> = { high: '#4ade80', medium: '#fbbf24', low: '#fb923c', unavailable: '#64748b' }
 const CONF_BG: Record<Confidence, string> = { high: 'rgba(74,222,128,0.10)', medium: 'rgba(251,191,36,0.10)', low: 'rgba(251,146,60,0.10)', unavailable: 'rgba(100,116,139,0.10)' }
 
@@ -80,6 +129,60 @@ function fmtTime(iso: string): string {
   try { return new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) } catch { return iso }
 }
 function shortAddr(a: string): string { return a.length > 12 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a }
+
+// INSTANT-REPORT-NAV FIX, DISCLOSED: the shell rendered on first paint from the seed payload alone —
+// price/24h/6h/1h change/volume/liquidity/market cap/FDV/age/chain/evidence mode, exactly the fields
+// the requirement lists, all real values already known from the Pump Alert card. No blank page while
+// the full report enriches in the background.
+function SeedShell({ seed }: { seed: ReportSeed }) {
+  const changeColor = (v: number | null) => v == null ? '#64748b' : v >= 0 ? '#4ade80' : '#f87171'
+  const fmtPct = (v: number | null) => v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
+  const metrics: Array<[string, string, string?]> = [
+    ['Price', seed.priceUsd == null ? '—' : `$${seed.priceUsd < 0.01 ? seed.priceUsd.toPrecision(3) : seed.priceUsd.toFixed(4)}`],
+    ['24h', fmtPct(seed.change24h), changeColor(seed.change24h)],
+    ['6h', fmtPct(seed.change6h), changeColor(seed.change6h)],
+    ['1h', fmtPct(seed.change1h), changeColor(seed.change1h)],
+    ['Volume', fmtUsd(seed.volume24hUsd)],
+    ['Liquidity', fmtUsd(seed.liquidityUsd)],
+    ['Market Cap', seed.marketCapUsd == null ? 'MCap unavailable' : fmtUsd(seed.marketCapUsd)],
+    ['FDV', fmtUsd(seed.fdvUsd)],
+    ['Age', seed.tokenAgeDays == null ? '—' : (seed.tokenAgeDays < 1 ? '<1d' : `${Math.round(seed.tokenAgeDays)}d`)],
+    ['Chain', seed.chain.toUpperCase()],
+  ]
+  return (
+    <div className={styles.report}>
+      <header className={styles.hero}>
+        <div className={styles.identity}>
+          <div className={styles.tokenMark} aria-hidden="true">{(seed.symbol || seed.name || 'T').charAt(0).toUpperCase()}</div>
+          <div style={{ minWidth: 0 }}>
+            <p className={styles.eyebrow}>ChainLens intelligence dossier</p>
+            <h1 className={styles.title}>{seed.name} <span className={styles.symbol}>{seed.symbol}</span></h1>
+            <div className={styles.metaRow}>
+              <span className={styles.metaChip}>{shortAddr(seed.contract)}</span>
+              <span className={styles.metaChip}>{seed.chain.toUpperCase()} NETWORK</span>
+              <span className={styles.metaChip}>{seed.evidenceGrade === 'live_momentum' ? 'LIVE MOMENTUM' : seed.evidenceGrade === 'exact' ? 'EXACT EVIDENCE' : 'CARD EVIDENCE'}</span>
+            </div>
+          </div>
+        </div>
+      </header>
+      <Section title="Market Structure" subtitle="From the Pump Alert card — live while deeper evidence loads">
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0,1fr))', gap: '14px' }}>
+          {metrics.map(([label, value, color]) => (
+            <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+              <span style={{ fontSize: '8px', fontWeight: 800, color: '#4a6178', letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{label}</span>
+              <span style={{ fontSize: '13px', fontWeight: 800, color: color ?? '#dce8f2', fontFamily: 'var(--font-plex-mono)' }}>{value}</span>
+            </div>
+          ))}
+        </div>
+      </Section>
+      <style>{`@keyframes pumpReportSpin { to { transform: rotate(360deg); } }`}</style>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '10px', background: 'rgba(45,212,191,0.06)', border: '1px solid rgba(45,212,191,0.18)', color: '#7dd3c8', fontSize: '11px', fontFamily: 'var(--font-plex-mono)' }}>
+        <span style={{ width: '10px', height: '10px', borderRadius: '999px', border: '2px solid rgba(125,211,200,0.3)', borderTopColor: '#7dd3c8', animation: 'pumpReportSpin 0.8s linear infinite', flexShrink: 0, display: 'inline-block' }} />
+        Loading deeper evidence…
+      </div>
+    </div>
+  )
+}
 
 function compactEvidence(value: string): string {
   const first = value.split(/[.!?](?:\s|$)/)[0]?.trim()
@@ -400,13 +503,23 @@ function ReportPageInner() {
   const params = useSearchParams()
   const router = useRouter()
   const contract = params.get('contract') ?? ''
+  const chain = params.get('chain') ?? 'base'
   const [report, setReport] = useState<PumpIntelligenceReport | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  // INSTANT-REPORT-NAV FIX, DISCLOSED: read once, synchronously, on the very first render (lazy
+  // useState initializer runs before paint) — sessionStorage first (the full card payload written by
+  // the Pump Alerts page right before router.push), URL params as the fallback for a direct/shared
+  // report link that never went through a card click.
+  const [seed] = useState<ReportSeed | null>(() => {
+    if (!contract) return null
+    return readSeedFromSession(chain, contract) ?? readSeedFromParams(params)
+  })
 
   useEffect(() => {
     if (!contract) return
     let cancelled = false
+    const apiStartMs = Date.now()
     async function run() {
       setLoading(true)
       setError(null)
@@ -425,7 +538,23 @@ function ReportPageInner() {
       } catch {
         if (!cancelled) setError('Failed to load report.')
       } finally {
-        if (!cancelled) setLoading(false)
+        if (!cancelled) {
+          setLoading(false)
+          // NAV AUDIT, DISCLOSED: logged once the enrichment call settles, carrying forward the
+          // click-time fields the Pump Alerts page stamped onto the seed (navStartedAt, usedPrefetch)
+          // so the full click-to-shell-to-API timeline is visible from one console entry.
+          const now = Date.now()
+          console.debug('[pumpReportNavigationAudit:settled]', {
+            tokenAddress: contract, chainSlug: chain,
+            clickToReportShellMs: seed?.navStartedAt != null ? apiStartMs - seed.navStartedAt : null,
+            seedPayloadAvailable: seed != null,
+            reportApiStartedMs: seed?.navStartedAt != null ? apiStartMs - seed.navStartedAt : null,
+            reportApiCompletedMs: seed?.navStartedAt != null ? now - seed.navStartedAt : null,
+            blockedNavigation: false,
+            usedPrefetch: seed?.usedPrefetch ?? false,
+            usedSessionSeed: seed != null && seed.navStartedAt != null,
+          })
+        }
       }
     }
     run()
@@ -447,7 +576,11 @@ function ReportPageInner() {
         <span className={styles.backArrow}>←</span> Back to Pump Alerts
       </button>
       {!contract && <div className={styles.error}><strong>Report evidence unavailable</strong><br />No contract specified.</div>}
-      {contract && loading && <div className={styles.loading} aria-label="Building intelligence report"><div className={styles.loadingCard} /><div className={styles.loadingCard} /><div className={styles.loadingCard} /></div>}
+      {/* INSTANT-REPORT-NAV FIX, DISCLOSED: while the full report is still loading, render real
+          numbers from the seed immediately instead of a content-free skeleton — falls back to the
+          skeleton only when there's truly no seed (sessionStorage unavailable AND no URL params). */}
+      {contract && loading && seed && <SeedShell seed={seed} />}
+      {contract && loading && !seed && <div className={styles.loading} aria-label="Building intelligence report"><div className={styles.loadingCard} /><div className={styles.loadingCard} /><div className={styles.loadingCard} /></div>}
       {contract && !loading && error && <div className={styles.error}><strong>Report evidence unavailable</strong><br />{error}</div>}
       {contract && !loading && !error && report && <ReportView report={report} />}
       </div>

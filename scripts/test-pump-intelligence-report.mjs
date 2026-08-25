@@ -216,4 +216,60 @@ assert.ok(new Date(populatedReport.timeline[0].timestamp).getTime() >= new Date(
   assert.match(pageCode, /unsupported: 'Unsupported'/, 'RiskFactor status labels must render Unsupported, not a generic Unknown')
 }
 
+// ─── Instant report navigation (reported live: "Clicking Report takes ~4 seconds before route
+// changes") — static-source assertions against the real page files (no DOM renderer in this
+// harness, matching this file's established convention). ──────────────────────────────────────
+{
+  const alertsPageSrc = fs.readFileSync(new URL('../app/terminal/pump-alerts/page.tsx', import.meta.url), 'utf8')
+  const alertsPageCode = alertsPageSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+
+  // Report button calls router.push immediately without awaiting the report API.
+  assert.match(alertsPageCode, /function openReportForAlert\(router: PumpAlertsRouter, prefetched: Set<string>, alert: PumpAlert\) \{/, 'openReportForAlert must exist as the click handler entry point')
+  assert.doesNotMatch(alertsPageCode, /await fetch\(`\/api\/pump-alerts\/intelligence[\s\S]{0,200}router\.push/, 'openReportForAlert must never await the report API before navigating')
+  assert.match(alertsPageCode, /sessionStorage\.setItem\(reportSeedKey\(alert\.chain, alert\.contract\)/, 'the full card payload must be written to sessionStorage before navigating')
+  assert.match(alertsPageCode, /router\.push\(url\)/, 'router.push must be called synchronously in the click handler')
+
+  // Prefetch on hover.
+  assert.match(alertsPageCode, /function prefetchReportForAlert\(router: PumpAlertsRouter, prefetched: Set<string>, alert: PumpAlert\) \{/, 'a prefetch function must exist')
+  assert.match(alertsPageCode, /router\.prefetch\(url\)/, 'card hover must call router.prefetch for the report route')
+  assert.match(alertsPageCode, /onHoverPrefetch: \(\) => void/, 'AlertCard must accept an onHoverPrefetch prop')
+  assert.match(alertsPageCode, /onMouseEnter=\{\(\) => \{ setHovered\(true\); onHoverPrefetch\(\) \}\}/, 'card hover handler must call the prefetch callback')
+  assert.match(alertsPageCode, /onHoverPrefetch=\{\(\) => prefetchReport\(alert\)\}/, 'the card grid must wire onHoverPrefetch to the real prefetch call for each alert')
+
+  // Navigation audit is logged with the required fields.
+  assert.match(alertsPageCode, /\[pumpReportNavigationAudit:click\]/, 'a click-time navigation audit must be logged')
+  assert.match(alertsPageCode, /clickToRouterPushMs: performance\.now\(\) - clickStart/, 'the audit must measure real click-to-push time')
+
+  // Scan/Copy/Clark actions unaffected — still wired the same way as before this change.
+  assert.match(alertsPageCode, /onScan=\{\(\) => openToken\(alert\)\}/, 'Scan action must remain wired')
+  assert.match(alertsPageCode, /onCopyCA=\{\(\) => copyCA\(alert\.contract\)\}/, 'Copy CA action must remain wired')
+  assert.match(alertsPageCode, /onAskClark=\{\(\) => openClark\(alert\)\}/, 'Ask Clark action must remain wired')
+
+  // Report page renders from seed payload before the API completes, and falls back to URL params
+  // when no seed is available (a direct/shared report link).
+  const reportPageSrc = fs.readFileSync(new URL('../app/terminal/pump-alerts/report/page.tsx', import.meta.url), 'utf8')
+  const reportPageCode = reportPageSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  assert.match(reportPageCode, /function readSeedFromSession\(chain: string, contract: string\): ReportSeed \| null/, 'report page must read the sessionStorage seed')
+  assert.match(reportPageCode, /function readSeedFromParams\(params: URLSearchParams\): ReportSeed \| null/, 'report page must fall back to URL params when no seed is available')
+  assert.match(reportPageCode, /readSeedFromSession\(chain, contract\) \?\? readSeedFromParams\(params\)/, 'session seed must be tried first, URL params as the fallback — never the other way around')
+  assert.match(reportPageCode, /const \[seed\] = useState<ReportSeed \| null>\(\(\) => \{/, 'the seed must be read synchronously via a lazy useState initializer so it is available on the very first render')
+  assert.match(reportPageCode, /\{contract && loading && seed && <SeedShell seed=\{seed\} \/>\}/, 'the seed shell must render while the full report is still loading, whenever a seed exists')
+  assert.match(reportPageCode, /Loading deeper evidence…/, 'the seed shell must show the required loading copy while the full report enriches in the background')
+  assert.match(reportPageCode, /\{contract && loading && !seed && <div className=\{styles\.loading\}/, 'the bare skeleton must remain as the fallback only when there is truly no seed')
+
+  // Report enrichment updates data after load — the existing fetch effect still runs regardless of
+  // whether a seed was available, and still replaces the shell with the full ReportView on success.
+  assert.match(reportPageCode, /const res = await fetch\(`\/api\/pump-alerts\/intelligence\?\$\{qs\.toString\(\)\}`/, 'the background enrichment call must still run')
+  assert.match(reportPageCode, /\{contract && !loading && !error && report && <ReportView report=\{report\} \/>\}/, 'the full report must replace the shell once the API call completes')
+
+  // Navigation-settled audit carries the full requested shape.
+  assert.match(reportPageCode, /\[pumpReportNavigationAudit:settled\]/, 'a settled navigation audit must be logged once the API call finishes')
+  for (const field of [
+    'tokenAddress', 'chainSlug', 'clickToReportShellMs', 'seedPayloadAvailable',
+    'reportApiStartedMs', 'reportApiCompletedMs', 'blockedNavigation', 'usedPrefetch', 'usedSessionSeed',
+  ]) {
+    assert.match(reportPageCode, new RegExp(field), `pumpReportNavigationAudit must include ${field}`)
+  }
+}
+
 console.log('test-pump-intelligence-report.mjs: all assertions passed')
