@@ -19,14 +19,14 @@ interface PumpAlert {
   pairAddress: string | null
   priceUsd: number | null
   change24h: number | null
-  change7d: number | null
+  change14d: number | null
   volume24hUsd: number | null
   liquidityUsd: number | null
   fdvUsd: number | null
   marketCapUsd: number | null
   tokenAgeDays: number | null
-  // EVIDENCE BADGE, DISCLOSED (7d fallback fix): every card states HOW it qualified — 'exact' means
-  // a real measured 7d change backs it; 'momentum_fallback' means exact 7d was unavailable but
+  // EVIDENCE BADGE, DISCLOSED (14d fallback fix): every card states HOW it qualified — 'exact' means
+  // a real measured 14d change backs it; 'momentum_fallback' means exact 14d was unavailable but
   // corroborated 24h momentum evidence qualified it. Never rendered identically.
   evidenceSource?: 'geckoterminal_ohlcv' | 'coingecko_contract' | 'internal_snapshot' | 'dexscreener_momentum'
   evidenceGrade?: 'exact' | 'momentum_fallback'
@@ -244,12 +244,12 @@ function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, copied }: {
       >
         <div className="pump-metric-band" style={{ display: 'flex', gap: '9px', flexWrap: 'wrap', alignItems: 'center', padding: '6px', borderRadius: '16px', background: 'rgba(2,6,23,0.22)', border: '1px solid rgba(45,212,191,0.085)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.032), 0 0 22px rgba(45,212,191,0.025)' }}>
           <StatMetric label="Price" value={fmtPrice(alert.priceUsd)} />
-          {alert.change7d != null && (
+          {alert.change14d != null && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '7px 9px', borderRadius: '12px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.33)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.045), 0 0 16px rgba(34,211,238,0.14)' }}>
               <span style={{ fontSize: '11px', color: '#22d3ee' }}>↗</span>
-              <span style={{ fontSize: '8px', fontWeight: 850, color: '#58708a', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>7d</span>
+              <span style={{ fontSize: '8px', fontWeight: 850, color: '#58708a', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>14d</span>
               <span style={{ fontSize: '13.5px', fontWeight: 900, color: '#22d3ee', fontFamily: 'var(--font-plex-mono)' }}>
-                ▲{alert.change7d.toFixed(1)}%
+                ▲{alert.change14d.toFixed(1)}%
               </span>
             </div>
           )}
@@ -299,15 +299,15 @@ function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, copied }: {
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', alignItems: 'flex-end' }}>
           {/* EVIDENCE BADGE, DISCLOSED: states exactly how this card qualified. Exact sources get a
-              calm teal "Exact 7d" chip; momentum-fallback cards get a distinct amber chip so a
-              fallback qualification can never pass as confirmed 7d data. */}
+              calm teal "Exact 14d" chip; momentum-fallback cards get a distinct amber chip so a
+              fallback qualification can never pass as confirmed 14d data. */}
           {alert.evidenceGrade === 'momentum_fallback' ? (
             <span className="pump-pill" title={alert.qualifyingReason} style={{
               padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
               color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.32)',
               fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
             }}>
-              ◐ 7d unavailable — 24h momentum fallback
+              ◐ 14d unavailable — 24h momentum fallback
             </span>
           ) : (
             <span className="pump-pill" title={alert.qualifyingReason} style={{
@@ -315,7 +315,7 @@ function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, copied }: {
               color: '#2DD4BF', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.30)',
               fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
             }}>
-              ✓ Exact 7d
+              ✓ Exact 14d
             </span>
           )}
           <span className="pump-pill" style={{
@@ -456,10 +456,10 @@ export default function PumpAlertsPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [feedError, setFeedError] = useState<string | null>(null)
-  // TRUTHFUL EMPTY STATE (origin/main) + DEGRADED MODE (7d fallback fix), MERGED: finalState drives
+  // TRUTHFUL EMPTY STATE (origin/main) + DEGRADED MODE (14d fallback fix), MERGED: finalState drives
   // which of the real empty-state messages renders; degradedNote fires when the scan succeeded but
-  // the primary 7d provider failed and fallback evidence took over.
-  const [finalState, setFinalState] = useState<'ok' | 'providerUnavailable' | 'sevenDayUnavailable' | 'allFilteredOut' | 'noRawCandidates' | null>(null)
+  // the primary 14d provider failed and fallback evidence took over.
+  const [finalState, setFinalState] = useState<'ok' | 'providerUnavailable' | 'fourteenDayUnavailable' | 'allFilteredOut' | 'noRawCandidates' | null>(null)
   const [degradedNote, setDegradedNote] = useState<string | null>(null)
   const [countdown, setCountdown] = useState(120)
   const [activeFilter, setActiveFilter] = useState<FilterKey>('ALL')
@@ -516,13 +516,13 @@ export default function PumpAlertsPage() {
           // A partial scan still returns real alerts — show them AND say which chains are missing.
           setFeedError(typeof json.error === 'string' ? json.error : null)
           setFinalState(typeof json.finalState === 'string' ? json.finalState : null)
-          // Degraded-mode note from the 7d evidence ladder: shown even when candidates rendered,
+          // Degraded-mode note from the 14d evidence ladder: shown even when candidates rendered,
           // so fallback-qualified feeds are never mistaken for fully-sourced ones.
-          const audit7d = json.pump7dEvidenceAudit as { degradedMode?: boolean; degradedReason?: string | null; exact7dQualified?: number; fallbackMomentumQualified?: number } | undefined
-          if (audit7d?.degradedMode) {
-            const qualified = (audit7d.exact7dQualified ?? 0) + (audit7d.fallbackMomentumQualified ?? 0)
+          const audit14d = json.pump14dEvidenceAudit as { degradedMode?: boolean; degradedReason?: string | null; exact14dQualified?: number; fallbackMomentumQualified?: number } | undefined
+          if (audit14d?.degradedMode) {
+            const qualified = (audit14d.exact14dQualified ?? 0) + (audit14d.fallbackMomentumQualified ?? 0)
             setDegradedNote(
-              audit7d.degradedReason
+              audit14d.degradedReason
               ?? (qualified > 0
                 ? 'GeckoTerminal OHLCV failed this cycle — some cards are qualified by 24h momentum fallback evidence.'
                 : 'GeckoTerminal OHLCV failed this cycle and no fallback provider could confirm momentum.'),
@@ -588,7 +588,7 @@ export default function PumpAlertsPage() {
       ...(alert.volume24hUsd != null ? { volume24hUsd: String(alert.volume24hUsd) } : {}),
       ...(alert.liquidityUsd != null ? { liquidityUsd: String(alert.liquidityUsd) } : {}),
       ...(alert.fdvUsd != null ? { fdvUsd: String(alert.fdvUsd) } : {}),
-      ...(alert.change7d != null ? { change7d: String(alert.change7d) } : {}),
+      ...(alert.change14d != null ? { change14d: String(alert.change14d) } : {}),
       ...(alert.marketCapUsd != null ? { marketCapUsd: String(alert.marketCapUsd) } : {}),
     })
     router.push(`/terminal/pump-alerts/report?${qs.toString()}`)
@@ -605,7 +605,7 @@ export default function PumpAlertsPage() {
       `Token: ${alert.name} (${alert.symbol})`,
       `Contract: ${alert.contract}`,
       `Category: ${CATEGORY_LABEL[alert.category]}`,
-      `7d Change: ${alert.change7d != null ? `+${alert.change7d.toFixed(1)}%` : 'N/A'}`,
+      `14d Change: ${alert.change14d != null ? `+${alert.change14d.toFixed(1)}%` : 'N/A'}`,
       `24h Change: ${alert.change24h != null ? `${(alert.change24h >= 0 ? '+' : '')}${alert.change24h.toFixed(1)}%` : 'N/A'}`,
       `Volume 24h: ${fmtUSD(alert.volume24hUsd)}`,
       `Liquidity: ${fmtUSD(alert.liquidityUsd)}`,
@@ -878,13 +878,13 @@ export default function PumpAlertsPage() {
           )}
 
           {/* DEGRADED MODE BANNER, DISCLOSED: distinct from feedError — this fires when the scan
-              itself succeeded but the primary 7d provider failed and fallback evidence was used
+              itself succeeded but the primary 14d provider failed and fallback evidence was used
               (or produced nothing). Shown even when cards rendered below it. */}
           {degradedNote && !feedError && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '9px 12px', marginBottom: '10px', borderRadius: '10px', background: 'rgba(251,191,36,0.06)', border: '1px dashed rgba(251,191,36,0.30)', fontFamily: 'var(--font-plex-mono)' }}>
               <span style={{ color: '#fbbf24', fontSize: '12px' }}>◐</span>
               <span style={{ fontSize: '10.5px', color: '#d4b106', lineHeight: 1.35 }}>
-                {degradedNote} Cards labelled “Exact 7d” carry measured data; “24h momentum fallback” cards are qualified by corroborated short-window momentum instead.
+                {degradedNote} Cards labelled “Exact 14d” carry measured data; “24h momentum fallback” cards are qualified by corroborated short-window momentum instead.
               </span>
             </div>
           )}
@@ -909,21 +909,21 @@ export default function PumpAlertsPage() {
               degraded-mode messaging. An outage never reads as "nothing pumped". */}
           {!loading && filtered.length === 0 && (
             <div style={{ textAlign: 'center', padding: '48px 20px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
-              <div style={{ fontSize: '32px', marginBottom: '14px', opacity: 0.35 }}>{degradedNote || finalState === 'providerUnavailable' || finalState === 'sevenDayUnavailable' ? '◐' : '◈'}</div>
+              <div style={{ fontSize: '32px', marginBottom: '14px', opacity: 0.35 }}>{degradedNote || finalState === 'providerUnavailable' || finalState === 'fourteenDayUnavailable' ? '◐' : '◈'}</div>
               <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 6px', color: '#64748b' }}>
                 {activeFilter !== 'ALL' && activeFilter in CATEGORY_LABEL
                   ? `No ${CATEGORY_LABEL[activeFilter as PumpCategory]} signals right now.`
                   : degradedNote ? 'No pump signals could be verified this cycle.'
                   : finalState === 'providerUnavailable' ? 'Providers failed — could not reach GeckoTerminal for any requested chain.'
-                  : finalState === 'sevenDayUnavailable' ? '7d pump data unavailable from provider this cycle.'
+                  : finalState === 'fourteenDayUnavailable' ? '14d pump data unavailable from provider this cycle.'
                   : finalState === 'noRawCandidates' ? 'No candidates found — providers returned zero pools for the requested chains.'
                   : finalState === 'allFilteredOut' ? 'All candidates filtered — none met the low-cap + confirmed pump criteria this cycle.'
                   : 'No fresh pump signals passed the quality filter.'}
               </p>
               <p style={{ fontSize: '11px', margin: 0, color: '#3a5268' }}>
                 {degradedNote
-                  ? 'The primary 7-day provider failed and no fallback provider confirmed momentum this cycle. Refresh shortly — fallback evidence (DexScreener momentum, ChainLens snapshots) is used automatically whenever this happens.'
-                  : finalState === 'providerUnavailable' || finalState === 'sevenDayUnavailable'
+                  ? 'The primary 14-day provider failed and no fallback provider confirmed momentum this cycle. Refresh shortly — fallback evidence (DexScreener momentum, ChainLens snapshots) is used automatically whenever this happens.'
+                  : finalState === 'providerUnavailable' || finalState === 'fourteenDayUnavailable'
                     ? 'This is a provider issue, not a filtering result — try refreshing shortly.'
                     : 'Try refreshing or widening the watchlist.'}
               </p>

@@ -85,36 +85,36 @@ let stage1Candidate
   stage1Candidate = r.candidate
 }
 
-// Missing 7d must exclude — never faked from 24h data. (Reason renamed by the 7D-EVIDENCE-LADDER
+// Missing 14d must exclude — never faked from 24h data. (Reason renamed by the 14D-EVIDENCE-LADDER
 // fix: with fallback tiers available, "no evidence qualified" is the honest label for a candidate
 // that neither an exact source nor corroborated momentum could back.)
 {
   const r = evaluateStage2Candidate(stage1Candidate, null)
-  assert.equal(r.included, false, 'missing 7d data must exclude the candidate, never fake it')
+  assert.equal(r.included, false, 'missing 14d data must exclude the candidate, never fake it')
   assert.ok(
-    r.audit.exclusionReason === 'missing7dData' || r.audit.exclusionReason === 'noQualifyingPumpEvidence',
+    r.audit.exclusionReason === 'missing14dData' || r.audit.exclusionReason === 'noQualifyingPumpEvidence',
     `unexpected exclusion reason: ${r.audit.exclusionReason}`,
   )
-  assert.equal(r.audit.priceChange7dPct, null)
+  assert.equal(r.audit.priceChange14dPct, null)
 }
 
-// Below-threshold 7d excludes
+// Below-threshold 14d excludes
 {
   const r = evaluateStage2Candidate(stage1Candidate, 10)
   assert.equal(r.included, false)
-  assert.equal(r.audit.exclusionReason, 'change7dBelowMinimum')
+  assert.equal(r.audit.exclusionReason, 'change14dBelowMinimum')
 }
 
-// Valid low-cap confirmed 7d pump is included
+// Valid low-cap confirmed 14d pump is included
 {
   const r = evaluateStage2Candidate(stage1Candidate, 60)
-  assert.equal(r.included, true, 'a confirmed 7d pump on an eligible low-cap token must be included')
+  assert.equal(r.included, true, 'a confirmed 14d pump on an eligible low-cap token must be included')
   assert.equal(r.audit.excluded, false)
-  assert.equal(r.audit.qualifiesAs7dPump, true)
+  assert.equal(r.audit.qualifiesAs14dPump, true)
   assert.equal(r.audit.qualifiesAsLowCap, true)
   assert.ok(r.audit.finalRankScore != null, 'an included candidate must carry a real rank score')
-  assert.equal(r.alert.change7d, 60)
-  assert.match(r.alert.qualifyingReason, /60\.0% over 7d/)
+  assert.equal(r.alert.change14d, 60)
+  assert.match(r.alert.qualifyingReason, /60\.0% over 14d/)
   assert.match(r.alert.qualifyingReason, /low-cap/)
 }
 
@@ -181,7 +181,7 @@ assert.doesNotMatch(routeCode, /chain: 'base', symbol:/, 'audit rows must carry 
 assert.doesNotMatch(routeCode, /contract: c\.addr, chain: 'base'/, 'published alerts must carry the candidate\'s real chain')
 assert.match(routeCode, /chainPools\.push\(\{ chain: 'base', pools, included \}\)/, 'the only remaining hardcoded Base is the Base-scoped cache fallback, which is correct')
 assert.match(routeCode, /token: c\.addr, tokenAddress: c\.addr, name: c\.name, chain, chainSlug: chain, chainId/, 'audit rows must be built from the real chain variable')
-assert.match(routeCode, /networks\/\$\{network\}\/pools\/\$\{poolAddress\}\/ohlcv/, '7d OHLCV must be fetched from the candidate\'s own network, not a hardcoded one')
+assert.match(routeCode, /networks\/\$\{network\}\/pools\/\$\{poolAddress\}\/ohlcv/, '14d OHLCV must be fetched from the candidate\'s own network, not a hardcoded one')
 assert.doesNotMatch(routeCode, /networks\/base\/pools\/\$\{poolAddress\}/, 'the hardcoded base OHLCV URL must be gone')
 assert.match(routeCode, /const cacheKey = `pump:v2:\$\{plan\}:\$\{\[\.\.\.chains\]\.sort\(\)\.join\('\+'\)\}`/, 'cache key must include schema version and the requested chain set')
 assert.match(routeCode, /const dedupeKey = `\$\{chain\}:\$\{addr\}`/, 'dedupe identity must be chain-scoped')
@@ -202,21 +202,21 @@ assert.doesNotMatch(pageCode, /catch \{\s*setAlerts\(\[\]\)\s*\}/, 'a failed ref
 
 // ─── Part 5: URGENT loading audit (route-level static assertions) ──────────
 // Locks the fixes for the reported "counters all 0" / Base Radar stuck-loading incident: a
-// distinct 7d-provider-outage signal (vs. an honest empty filter result), a truthful finalState
+// distinct 14d-provider-outage signal (vs. an honest empty filter result), a truthful finalState
 // on every response, and the stale-empty-cache bug that could re-serve a degraded cycle's "no
 // signals" result for the full 90s TTL even after the provider recovered.
 {
   const routeSrc2 = fs.readFileSync(new URL('../app/api/pump-alerts/route.ts', import.meta.url), 'utf8')
   const routeCode2 = routeSrc2.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
 
-  assert.match(routeCode2, /sevenDayDataUnavailable/, 'a systemic 7d-provider-failure signal must exist, distinct from an honest empty filter result')
-  assert.match(routeCode2, /reason === 'httpError' \|\| r\.reason === 'fetchError'/, 'the 7d outage detector must only count real provider failures, never a genuinely young pool (tooYoung) as an outage')
-  assert.match(routeCode2, /finalState:.*'ok' \| 'providerUnavailable' \| 'sevenDayUnavailable' \| 'allFilteredOut' \| 'noRawCandidates'/, 'every response must report one of the 4 truthful final states')
+  assert.match(routeCode2, /fourteenDayDataUnavailable/, 'a systemic 14d-provider-failure signal must exist, distinct from an honest empty filter result')
+  assert.match(routeCode2, /reason === 'httpError' \|\| r\.reason === 'fetchError'/, 'the 14d outage detector must only count real provider failures, never a genuinely young pool (tooYoung) as an outage')
+  assert.match(routeCode2, /finalState:.*'ok' \| 'providerUnavailable' \| 'fourteenDayUnavailable' \| 'allFilteredOut' \| 'noRawCandidates'/, 'every response must report one of the 4 truthful final states')
   assert.match(routeCode2, /pumpAlertsLoadAudit:/, 'the exact requested pumpAlertsLoadAudit object must be returned')
   for (const field of [
     'requestId', 'route', 'status', 'totalDurationMs', 'cacheHit', 'providersAttempted', 'providersSucceeded',
     'providersFailed', 'candidatesRaw', 'candidatesAfterDedupe', 'candidatesAfterCategoryFilter',
-    'candidatesAfterLowCapFilter', 'candidatesAfter7dPumpFilter', 'candidatesAfterLiquidityVolumeFilter',
+    'candidatesAfterLowCapFilter', 'candidatesAfter14dPumpFilter', 'candidatesAfterLiquidityVolumeFilter',
     'candidatesRendered', 'rejectedReasons', 'finalState', 'errorShownToUser',
   ]) {
     assert.ok(routeCode2.includes(field), `pumpAlertsLoadAudit must include ${field}`)
@@ -234,13 +234,13 @@ assert.doesNotMatch(pageCode, /catch \{\s*setAlerts\(\[\]\)\s*\}/, 'a failed ref
   const pageSrc2 = fs.readFileSync(new URL('../app/terminal/pump-alerts/page.tsx', import.meta.url), 'utf8')
   const pageCode2 = pageSrc2.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
   assert.match(pageCode2, /finalState === 'providerUnavailable'/, 'the empty state must distinguish a provider outage from an honest empty filter result')
-  assert.match(pageCode2, /finalState === 'sevenDayUnavailable'/, 'the empty state must distinguish a 7d-data outage from an honest empty filter result')
+  assert.match(pageCode2, /finalState === 'fourteenDayUnavailable'/, 'the empty state must distinguish a 14d-data outage from an honest empty filter result')
   assert.match(pageCode2, /finalState === 'noRawCandidates'/, 'the empty state must distinguish zero raw candidates from over-filtering')
   assert.match(pageCode2, /finalState === 'allFilteredOut'/, 'the empty state must name a real over-filtering result explicitly')
 }
 
 // ─── Part 7: Pump Alerts quality audit (reported live: SOL/Base rendered as a low-cap pump card
-// alongside a contradictory "7d pump data unavailable" page warning) ────────────────────────────
+// alongside a contradictory "14d pump data unavailable" page warning) ────────────────────────────
 
 // SOL on Base must be excluded as a major/wrapped/bridged asset — this is the exact reported leak.
 {
@@ -287,18 +287,18 @@ for (const [symbol, name] of [
   })
   assert.equal(r2.included, true, 'a low-cap candidate with qualifying momentum-fallback evidence must be included')
   assert.equal(r2.alert.evidenceGrade, 'momentum_fallback')
-  assert.equal(r2.alert.change7d, null, 'momentum fallback must never fabricate a 7d number')
+  assert.equal(r2.alert.change14d, null, 'momentum fallback must never fabricate a 14d number')
   assert.equal(r2.audit.lowCapQualified, true, 'low-cap rule must still be recorded true for a fallback-qualified candidate')
 }
 
-// Valid low-cap token with exact 7d passes, and its audit records the full eligibility shape.
+// Valid low-cap token with exact 14d passes, and its audit records the full eligibility shape.
 {
   const r = evaluateStage2Candidate(stage1Candidate, 60, 'req_test_shape')
   assert.equal(r.included, true)
   assert.equal(r.alert.evidenceGrade, 'exact')
   for (const field of [
     'symbol', 'name', 'chain', 'tokenAddress', 'fdvUsd', 'marketCapUsd', 'liquidityUsd',
-    'priceChange7dPct', 'evidenceMode', 'category', 'categoryBlocked', 'lowCapQualified',
+    'priceChange14dPct', 'evidenceMode', 'category', 'categoryBlocked', 'lowCapQualified',
     'excluded', 'exclusionReason',
   ]) {
     assert.ok(field in r.audit, `per-token eligibility audit must include ${field}`)
@@ -307,9 +307,9 @@ for (const [symbol, name] of [
   assert.equal(r.audit.tokenAddress, stage1Candidate.addr)
 }
 
-// ─── Part 8: 7d-state contradiction fix (route-level static assertions) ────────────────────────
-// Reported live: a card reading "Exact 7d" rendered under a page-wide "7d pump data unavailable
-// from provider" warning in the SAME response. sevenDayDataUnavailable/finalState/error must all be
+// ─── Part 8: 14d-state contradiction fix (route-level static assertions) ────────────────────────
+// Reported live: a card reading "Exact 14d" rendered under a page-wide "14d pump data unavailable
+// from provider" warning in the SAME response. fourteenDayDataUnavailable/finalState/error must all be
 // reconciled against the ladder's REAL final outcome (finalRenderedCount + exact/fallback
 // qualified counts), not the pre-fallback GT-OHLCV-only snapshot.
 {
@@ -318,33 +318,33 @@ for (const [symbol, name] of [
 
   assert.match(
     routeCode3,
-    /const sevenDayFullyUnavailable = sevenDayDataUnavailable && alerts\.length === 0 && totalEvidenceQualified === 0/,
-    'the global 7d-unavailable state must require BOTH zero rendered alerts AND zero qualified evidence across the whole ladder, not just the pre-fallback GT-OHLCV signal',
+    /const fourteenDayFullyUnavailable = fourteenDayDataUnavailable && alerts\.length === 0 && totalEvidenceQualified === 0/,
+    'the global 14d-unavailable state must require BOTH zero rendered alerts AND zero qualified evidence across the whole ladder, not just the pre-fallback GT-OHLCV signal',
   )
   assert.match(
     routeCode3,
-    /: sevenDayFullyUnavailable \? 'sevenDayUnavailable'/,
+    /: fourteenDayFullyUnavailable \? 'fourteenDayUnavailable'/,
     'finalState must key off the reconciled post-ladder blackout flag',
   )
   assert.match(
     routeCode3,
-    /sevenDayDataUnavailable: sevenDayFullyUnavailable,/,
-    'the exposed sevenDayDataUnavailable field must be the reconciled flag — a card with real evidence must never coexist with this being true',
+    /fourteenDayDataUnavailable: fourteenDayFullyUnavailable,/,
+    'the exposed fourteenDayDataUnavailable field must be the reconciled flag — a card with real evidence must never coexist with this being true',
   )
   assert.match(
     routeCode3,
-    /\.\.\.\(sevenDayFullyUnavailable \? \{ error:/,
+    /\.\.\.\(fourteenDayFullyUnavailable \? \{ error:/,
     'the page-level error message must only fire on the reconciled full blackout, never the raw pre-fallback signal',
   )
   // The raw pre-fallback signal must still be computed for diagnostics/degraded-note purposes, just
   // no longer used directly to drive the user-facing error/finalState.
-  assert.match(routeCode3, /sevenDayProviderDegraded: sevenDayDataUnavailable && !sevenDayFullyUnavailable/, 'a partial 7d-provider failure must be exposed separately from the full blackout, for a small degraded note rather than a full-page warning')
+  assert.match(routeCode3, /fourteenDayProviderDegraded: fourteenDayDataUnavailable && !fourteenDayFullyUnavailable/, 'a partial 14d-provider failure must be exposed separately from the full blackout, for a small degraded note rather than a full-page warning')
 }
 
 // ─── Part 9: 429-aware retry on the evidence ladder (route-level static assertions) ─────────────
 // Reported live (follow-up to Part 8's contradiction fix): once the contradiction was gone, the
 // feed went to a genuine, honest full blackout ("no fallback provider could confirm momentum
-// either") on every refresh — not just once. Root cause: fetchPoolSevenDayChange and
+// either") on every refresh — not just once. Root cause: fetchPoolFourteenDayChange and
 // fetchDexScreenerPairMomentum each had ZERO retry, so a single 429 from GeckoTerminal's shared,
 // deployment-wide rate-limit budget (this route fires up to 4 concurrent OHLCV requests per cycle
 // on top of Base Radar/other Pump Alerts traffic) permanently failed that candidate for the whole
@@ -354,11 +354,11 @@ for (const [symbol, name] of [
   assert.match(
     routeSrc4,
     /const retryDelayMs = first\.httpStatus === 429 \? 1800 \+ Math\.floor\(Math\.random\(\) \* 400\) : 400/,
-    'the primary 7d OHLCV fetch must retry once with a 429-aware backoff, not fail permanently on the first attempt',
+    'the primary 14d OHLCV fetch must retry once with a 429-aware backoff, not fail permanently on the first attempt',
   )
-  assert.match(routeSrc4, /async function fetchPoolSevenDayChangeOnce/, 'the retry wrapper must sit on top of a single-attempt fetcher, not duplicate the fetch logic')
+  assert.match(routeSrc4, /async function fetchPoolFourteenDayChangeOnce/, 'the retry wrapper must sit on top of a single-attempt fetcher, not duplicate the fetch logic')
 
-  const evidenceSrc = fs.readFileSync(new URL('../lib/server/pump7dEvidence.ts', import.meta.url), 'utf8')
+  const evidenceSrc = fs.readFileSync(new URL('../lib/server/pump14dEvidence.ts', import.meta.url), 'utf8')
   assert.match(
     evidenceSrc,
     /const retryDelayMs = first\.httpStatus === 429 \? 1800 \+ Math\.floor\(Math\.random\(\) \* 400\) : 400/,
@@ -375,11 +375,11 @@ for (const [symbol, name] of [
 // short burst, not a sustained one caused by the route's own request pattern.
 {
   const routeSrc5 = fs.readFileSync(new URL('../app/api/pump-alerts/route.ts', import.meta.url), 'utf8')
-  assert.match(routeSrc5, /const sevenDayResultCache = new Map/, 'successful 7d OHLCV results must be cached so every refresh cycle does not re-fetch from scratch')
-  assert.match(routeSrc5, /if \(cached && Date\.now\(\) - cached\.cachedAt < SEVEN_DAY_CACHE_TTL_MS\) return cached\.result/, 'a fresh-enough cached OHLCV result must be served without a network call')
-  assert.match(routeSrc5, /if \(final\.reason === 'ok'\) sevenDayResultCache\.set/, 'only successful results may be cached — failures must still retry fresh next cycle')
+  assert.match(routeSrc5, /const fourteenDayResultCache = new Map/, 'successful 14d OHLCV results must be cached so every refresh cycle does not re-fetch from scratch')
+  assert.match(routeSrc5, /if \(cached && Date\.now\(\) - cached\.cachedAt < FOURTEEN_DAY_CACHE_TTL_MS\) return cached\.result/, 'a fresh-enough cached OHLCV result must be served without a network call')
+  assert.match(routeSrc5, /if \(final\.reason === 'ok'\) fourteenDayResultCache\.set/, 'only successful results may be cached — failures must still retry fresh next cycle')
 
-  const evidenceSrc2 = fs.readFileSync(new URL('../lib/server/pump7dEvidence.ts', import.meta.url), 'utf8')
+  const evidenceSrc2 = fs.readFileSync(new URL('../lib/server/pump14dEvidence.ts', import.meta.url), 'utf8')
   assert.match(evidenceSrc2, /const dexScreenerMomentumCache = new Map/, 'successful DexScreener momentum fetches must be cached for the same reason')
   assert.match(evidenceSrc2, /if \(final\?\.ok\) dexScreenerMomentumCache\.set/, 'only successful momentum fetches may be cached — failures must still retry fresh next cycle')
 }

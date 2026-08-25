@@ -1,7 +1,7 @@
-// PUMP 7D EVIDENCE LADDER TESTS, DISCLOSED (urgent fallback fix).
-// Covers the required behaviors: exact-7d preference, DexScreener-corroborated momentum fallback,
+// PUMP 14D EVIDENCE LADDER TESTS, DISCLOSED (urgent fallback fix).
+// Covers the required behaviors: exact-14d preference, DexScreener-corroborated momentum fallback,
 // honest empty state, majors/stables/wrapped still excluded in fallback mode, low-cap filters
-// still applied in fallback mode, evidence badges on cards, snapshot-based 7d computation once
+// still applied in fallback mode, evidence badges on cards, snapshot-based 14d computation once
 // history exists, and the audit surface. Exercises the real exported functions — no mocks.
 
 import assert from 'node:assert/strict'
@@ -9,10 +9,10 @@ import fs from 'node:fs'
 import { evaluateStage1Candidate, evaluateStage2Candidate } from '../app/api/pump-alerts/route.ts'
 import {
   evaluateMomentumFallback,
-  computeSnapshotChange7d,
+  computeSnapshotChange14d,
   _resetSnapshotMemoryForTest,
   _seedSnapshotMemoryForTest,
-} from '../lib/server/pump7dEvidence.ts'
+} from '../lib/server/pump14dEvidence.ts'
 
 const base = {
   chain: 'base',
@@ -22,28 +22,28 @@ const base = {
   fdv: 900_000, marketCap: null, ageDays: 20,
 }
 
-// ─── 1. GeckoTerminal OHLCV success → exact 7d pump token ──────────────────────
+// ─── 1. GeckoTerminal OHLCV success → exact 14d pump token ──────────────────────
 {
   const s1 = evaluateStage1Candidate({ ...base, symbol: 'MOON', name: 'Moon Token' })
   assert.equal(s1.passed, true)
-  const r = evaluateStage2Candidate(s1.candidate, null, 'req', { kind: 'exact', source: 'geckoterminal_ohlcv', change7d: 60 })
+  const r = evaluateStage2Candidate(s1.candidate, null, 'req', { kind: 'exact', source: 'geckoterminal_ohlcv', change14d: 60 })
   assert.equal(r.included, true)
-  assert.equal(r.alert.change7d, 60)
+  assert.equal(r.alert.change14d, 60)
   assert.equal(r.alert.evidenceGrade, 'exact')
   assert.equal(r.alert.evidenceSource, 'geckoterminal_ohlcv')
 }
 
-// Exact 7d below threshold still excludes — the bar doesn't drop because a source exists
+// Exact 14d below threshold still excludes — the bar doesn't drop because a source exists
 {
   const s1 = evaluateStage1Candidate(base)
-  const r = evaluateStage2Candidate(s1.candidate, null, 'req', { kind: 'exact', source: 'coingecko_contract', change7d: 10 })
+  const r = evaluateStage2Candidate(s1.candidate, null, 'req', { kind: 'exact', source: 'coingecko_contract', change14d: 10 })
   assert.equal(r.included, false)
-  assert.equal(r.audit.exclusionReason, 'change7dBelowMinimum')
+  assert.equal(r.audit.exclusionReason, 'change14dBelowMinimum')
 }
 
 // ─── 2. Momentum fallback qualification (GT fails, DexScreener corroborates) ────
 {
-  // Strong move + accelerating volume + real liquidity → qualifies WITHOUT any fake 7d number.
+  // Strong move + accelerating volume + real liquidity → qualifies WITHOUT any fake 14d number.
   const v = evaluateMomentumFallback({
     change24hPct: 22,
     volume24hUsd: 100_000,
@@ -66,9 +66,9 @@ const base = {
     evidenceParts: ['confirmed 24h move ≥ 22.0%', 'volume accelerating 2.0×', '$60K live liquidity'],
   })
   assert.equal(r.included, true, 'fallback candidate must render when GT OHLCV failed but evidence is strong')
-  assert.equal(r.alert.change7d, null, 'momentum fallback must NEVER fabricate a 7d number')
+  assert.equal(r.alert.change14d, null, 'momentum fallback must NEVER fabricate a 14d number')
   assert.equal(r.alert.evidenceGrade, 'momentum_fallback')
-  assert.match(r.alert.qualifyingReason, /7d unavailable — qualified by 24h momentum fallback/)
+  assert.match(r.alert.qualifyingReason, /14d unavailable — qualified by 24h momentum fallback/)
 }
 
 // Weak move does NOT qualify
@@ -126,7 +126,7 @@ const base = {
   const r = evaluateStage2Candidate(s1.candidate, null, 'req', { kind: 'none' })
   assert.equal(r.included, false, 'no evidence must exclude — honest empty state, not a fake pass')
   assert.ok(
-    r.audit.exclusionReason === 'missing7dData' || r.audit.exclusionReason === 'noQualifyingPumpEvidence',
+    r.audit.exclusionReason === 'missing14dData' || r.audit.exclusionReason === 'noQualifyingPumpEvidence',
     `unexpected exclusion reason: ${r.audit.exclusionReason}`,
   )
 }
@@ -153,19 +153,19 @@ for (const [sym, name] of [['USDC', 'USD Coin'], ['WETH', 'Wrapped Ether'], ['AE
 // ─── 5. UI shows evidence badges ────────────────────────────────────────────────
 const pageSrc = fs.readFileSync(new URL('../app/terminal/pump-alerts/page.tsx', import.meta.url), 'utf8')
 const pageCode = pageSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
-assert.match(pageCode, /Exact 7d/, 'cards must show an "Exact 7d" badge for measured evidence')
+assert.match(pageCode, /Exact 14d/, 'cards must show an "Exact 14d" badge for measured evidence')
 assert.match(pageCode, /24h momentum fallback/, 'cards must show a distinct badge for fallback qualification')
 assert.match(pageCode, /evidenceGrade/, 'the card must read the alert\'s evidence grade')
 
 // Route carries the audit + degraded mode surfaces
 const routeSrc = fs.readFileSync(new URL('../app/api/pump-alerts/route.ts', import.meta.url), 'utf8')
 const routeCode = routeSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
-assert.match(routeCode, /pump7dEvidenceAudit/, 'route must return the 7d evidence audit')
+assert.match(routeCode, /pump14dEvidenceAudit/, 'route must return the 14d evidence audit')
 assert.match(routeCode, /degradedMode/, 'audit must carry degraded mode')
 assert.match(routeCode, /fetchDexScreenerPairMomentum/, 'route must use the DexScreener fallback tier')
-assert.match(routeCode, /fetchCoinGeckoContractChange7d/, 'route must use the CoinGecko exact tier')
-assert.match(routeCode, /computeSnapshotChange7d/, 'route must use the internal snapshot tier')
+assert.match(routeCode, /fetchCoinGeckoContractChange14d/, 'route must use the CoinGecko exact tier')
+assert.match(routeCode, /computeSnapshotChange14d/, 'route must use the internal snapshot tier')
 assert.match(routeCode, /savePumpSnapshots/, 'route must persist internal snapshots each cycle')
-assert.doesNotMatch(routeCode, /change7d: c\.change24h/, '7d must never be silently substituted with 24h')
+assert.doesNotMatch(routeCode, /change14d: c\.change24h/, '14d must never be silently substituted with 24h')
 
-console.log('test-pump-7d-fallback.mjs: all assertions passed')
+console.log('test-pump-14d-fallback.mjs: all assertions passed')

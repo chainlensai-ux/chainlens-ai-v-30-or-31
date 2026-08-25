@@ -1,13 +1,13 @@
-// PUMP 7-DAY EVIDENCE LADDER, DISCLOSED (urgent fix request): Pump Alerts went dark whenever
-// GeckoTerminal's OHLCV endpoint failed — every candidate was dropped as `missing7dData` and the
+// PUMP 14-DAY EVIDENCE LADDER, DISCLOSED (urgent fix request): Pump Alerts went dark whenever
+// GeckoTerminal's OHLCV endpoint failed — every candidate was dropped as `missing14dData` and the
 // page rendered "0 results" even though plenty of valid low-cap movers were sitting right there in
 // the discovery pools. One provider failure must never kill the whole feed.
 //
-// This module resolves 7-day pump evidence through a strict priority ladder:
-//   1. geckoterminal_ohlcv   — real daily candles, close-to-close 7d change (exact grade)
-//   2. dexscreener_momentum  — pair priceChange/volume data; NEVER produces a fake 7d number,
+// This module resolves 14-day pump evidence through a strict priority ladder:
+//   1. geckoterminal_ohlcv   — real daily candles, close-to-close 14d change (exact grade)
+//   2. dexscreener_momentum  — pair priceChange/volume data; NEVER produces a fake 14d number,
 //                              only a labelled momentum-fallback qualification
-//   3. coingecko_contract    — CoinGecko's per-contract market data (real 7d percentage, exact
+//   3. coingecko_contract    — CoinGecko's per-contract market data (real 14d percentage, exact
 //                              grade) — only usable where CoinGecko indexes the chain (Base/Ethereum)
 //                              and only trusted because the response is keyed by the contract
 //                              address itself, so token identity + chain are verified by construction
@@ -15,12 +15,12 @@
 //                              yields a real measured change once enough history exists
 //
 // Hard rules enforced here (mirrored from the fix request):
-// - No fabricated 7d numbers: a momentum fallback sets change7d = null and carries its own
+// - No fabricated 14d numbers: a momentum fallback sets change14d = null and carries its own
 //   evidence label instead.
 // - Majors/stables/wrapped assets stay blocked: the fallback evaluator runs ON TOP of the existing
 //   Stage 1 gate, never instead of it — category denylist, low-cap ceilings, liquidity/volume
 //   floors and age checks all still apply before any fallback can qualify anything.
-// - Nothing passes silently: every tier attempt is counted in Pump7dEvidenceAudit.
+// - Nothing passes silently: every tier attempt is counted in Pump14dEvidenceAudit.
 
 import { createServiceRoleClient } from '@/lib/supabase/userSettings'
 
@@ -37,8 +37,8 @@ function envBool(name: string, fallback: boolean): boolean {
   return raw.trim().toLowerCase() === 'true'
 }
 
-/** Require a real measured 7d change before showing any candidate. */
-export const PUMP_REQUIRE_EXACT_7D = envBool('PUMP_ALERT_REQUIRE_EXACT_7D', false)
+/** Require a real measured 14d change before showing any candidate. */
+export const PUMP_REQUIRE_EXACT_14D = envBool('PUMP_ALERT_REQUIRE_EXACT_14D', false)
 /** Minimum 24h % change for a candidate to qualify via momentum fallback. */
 export const PUMP_MIN_24H_CHANGE_FALLBACK_PCT = envNumber('PUMP_ALERT_MIN_24H_CHANGE_FALLBACK_PCT', 15)
 /** Minimum volume acceleration ((h6 × 4) ÷ h24) required by momentum fallback. */
@@ -48,7 +48,7 @@ export const PUMP_ALLOW_MOMENTUM_FALLBACK = envBool('PUMP_ALERT_ALLOW_MOMENTUM_F
 
 export type PumpChainSlug = 'base' | 'eth' | 'robinhood'
 
-export type SevenDayEvidenceSource =
+export type FourteenDayEvidenceSource =
   | 'geckoterminal_ohlcv'
   | 'coingecko_contract'
   | 'internal_snapshot'
@@ -199,7 +199,7 @@ function sleep(ms: number): Promise<void> {
 // SUSTAINED-RATE-LIMIT FIX, DISCLOSED (reported live: total blackout persisted across repeated
 // refreshes even after the 429-aware retry landed — a single retry only survives one short burst,
 // not a sustained exhaustion caused by every refresh cycle re-fetching from scratch with no cache).
-// Momentum data moves faster than 7d OHLCV, so this cache is short — 2 minutes, roughly one refresh
+// Momentum data moves faster than 14d OHLCV, so this cache is short — 2 minutes, roughly one refresh
 // cycle — just enough to stop back-to-back auto-refreshes (and other users' concurrent requests)
 // from re-issuing the identical burst before the rate limit has any chance to recover.
 const DEXSCREENER_MOMENTUM_CACHE_TTL_MS = 2 * 60 * 1000
@@ -224,14 +224,14 @@ export async function fetchDexScreenerPairMomentum(pairAddress: string, signal: 
   return final
 }
 
-// ─── CoinGecko per-contract exact 7d (identity verified by construction) ────────────────────────
+// ─── CoinGecko per-contract exact 14d (identity verified by construction) ────────────────────────
 const COINGECKO_PLATFORM_BY_CHAIN: Partial<Record<PumpChainSlug, string>> = {
   base: 'base',
   eth: 'ethereum',
   // Robinhood Chain is not indexed by CoinGecko — the tier is skipped there, honestly.
 }
 
-export async function fetchCoinGeckoContractChange7d(chain: PumpChainSlug, contract: string, signal: AbortSignal): Promise<number | null> {
+export async function fetchCoinGeckoContractChange14d(chain: PumpChainSlug, contract: string, signal: AbortSignal): Promise<number | null> {
   const platform = COINGECKO_PLATFORM_BY_CHAIN[chain]
   if (!platform) return null
   try {
@@ -250,16 +250,20 @@ export async function fetchCoinGeckoContractChange7d(chain: PumpChainSlug, contr
       const addr = platforms[platform]
       if (typeof addr === 'string' && addr.toLowerCase() !== contract.toLowerCase()) return null
     }
+    // 14-DAY WINDOW, DISCLOSED: CoinGecko's market_data carries a genuine price_change_percentage_14d
+    // field alongside its 7d one — this reads the 14d field specifically, not the 7d value
+    // relabelled. Reading the 7d field here would make the 'exact' evidence grade a lie for this
+    // tier: it would claim a 14-day close-to-close change while actually reporting a 7-day one.
     const md = json.market_data as Record<string, unknown> | undefined
-    const ch7d = md?.price_change_percentage_7d
-    const n = typeof ch7d === 'number' && Number.isFinite(ch7d) ? ch7d : NaN
+    const ch14d = md?.price_change_percentage_14d
+    const n = typeof ch14d === 'number' && Number.isFinite(ch14d) ? ch14d : NaN
     return Number.isFinite(n) ? n : null
   } catch {
     return null
   }
 }
 
-// ─── Internal snapshot store (ChainLens-owned 7d change over time) ──────────────────────────────
+// ─── Internal snapshot store (ChainLens-owned 14d change over time) ──────────────────────────────
 export type PumpSnapshotRow = {
   chain: PumpChainSlug
   contract: string
@@ -303,18 +307,21 @@ export async function savePumpSnapshots(rows: PumpSnapshotRow[]): Promise<{ pers
 }
 
 /**
- * Compute a ChainLens-owned change over the longest snapshot window available (up to ~7 days).
+ * Compute a ChainLens-owned change over the longest snapshot window available (up to ~14 days).
  * Returns a real measured number only when the window spans at least MIN_SNAPSHOT_SPAN_DAYS —
- * a shorter window is returned as null (too little history is NOT quietly treated as 7d).
+ * a shorter window is returned as null (too little history is NOT quietly treated as 14d).
  */
-export async function computeSnapshotChange7d(chain: PumpChainSlug, contract: string, now = Date.now()): Promise<{
+export async function computeSnapshotChange14d(chain: PumpChainSlug, contract: string, now = Date.now()): Promise<{
   changePct: number | null
   spanDays: number | null
 }> {
   const key = snapshotKey(chain, contract)
   const arr = snapshotMemory.get(key) ?? []
-  const MIN_SNAPSHOT_SPAN_DAYS = 5
-  const MAX_SNAPSHOT_AGE_DAYS = 10
+  // 14-DAY WINDOW, DISCLOSED: raised from 5/10 to 12/17 alongside the route-wide 14d->14d change —
+  // a 5-day-apart pair of snapshots was already a stretch to label "14d"; labelling it "14d" would
+  // be outright wrong. 12 days minimum span, allowing the newest snapshot to be up to 17 days old.
+  const MIN_SNAPSHOT_SPAN_DAYS = 12
+  const MAX_SNAPSHOT_AGE_DAYS = 17
   if (arr.length < 2) return { changePct: null, spanDays: null }
   const sorted = [...arr].sort((a, b) => Date.parse(a.captured_at) - Date.parse(b.captured_at))
   const oldest = sorted[0]
@@ -342,19 +349,24 @@ export function _seedSnapshotMemoryForTest(rows: PumpSnapshotRow[]): void {
 }
 
 // ─── Request-level evidence audit ───────────────────────────────────────────────────────────────
-export interface Pump7dEvidenceAudit {
+export interface Pump14dEvidenceAudit {
   requestId: string
   candidatesRaw: number
   geckoOhlcvAttempted: number
   geckoOhlcvSucceeded: number
   geckoOhlcvFailed: number
+  // REQUEST-BUDGET CAP, DISCLOSED: only the top-N candidates by volume get a live OHLCV request per
+  // cycle (see FOURTEEN_DAY_OHLCV_BUDGET_CAP in route.ts) — the rest go straight to the fallback
+  // ladder. Counted separately from geckoOhlcvFailed since skipping-by-design is not a provider
+  // failure and must never be mistaken for one in the outage detector.
+  geckoOhlcvSkippedBudget: number
   dexScreenerFallbackAttempted: number
   dexScreenerFallbackSucceeded: number
   coinGeckoFallbackAttempted: number
   coinGeckoFallbackSucceeded: number
   internalSnapshotFallbackAttempted: number
   internalSnapshotFallbackSucceeded: number
-  exact7dQualified: number
+  exact14dQualified: number
   fallbackMomentumQualified: number
   excludedMissingAllMomentumEvidence: number
   finalRenderedCount: number
