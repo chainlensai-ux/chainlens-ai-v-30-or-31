@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { evaluateStage1Candidate, evaluateStage2Candidate, evaluateCandidatesInBatches } from '../app/api/pump-alerts/route.ts'
+import { evaluateStage1Candidate, evaluateStage2Candidate, evaluateCandidatesInBatches, evaluateLiveMomentum } from '../app/api/pump-alerts/route.ts'
 
 // PUMP DISCOVERY QUALITY + CHAIN STRICTNESS, DISCLOSED.
 //
@@ -15,7 +15,7 @@ const base = {
   chain: 'base',
   symbol: 'TEST', name: 'Test Token', addr: '0xabc0000000000000000000000000000000000a',
   poolAddr: '0xpool000000000000000000000000000000000a',
-  price: 0.002, change24h: 40, volume: 200_000, liquidity: 50_000,
+  price: 0.002, change24h: 40, change6h: null, change1h: null, volume: 200_000, liquidity: 50_000,
   fdv: 900_000, marketCap: null, ageDays: 20,
 }
 
@@ -85,16 +85,13 @@ let stage1Candidate
   stage1Candidate = r.candidate
 }
 
-// Missing 14d must exclude — never faked from 24h data. (Reason renamed by the 14D-EVIDENCE-LADDER
-// fix: with fallback tiers available, "no evidence qualified" is the honest label for a candidate
-// that neither an exact source nor corroborated momentum could back.)
+// Missing 14d evidence AND no live-momentum evidence resolved must exclude — never faked from 24h
+// data. (Reason renamed by the ELIGIBILITY-MODEL fix: "rejectedNoMomentum" is the honest label for
+// a candidate that neither an exact source nor live momentum evidence could back.)
 {
   const r = evaluateStage2Candidate(stage1Candidate, null)
-  assert.equal(r.included, false, 'missing 14d data must exclude the candidate, never fake it')
-  assert.ok(
-    r.audit.exclusionReason === 'missing14dData' || r.audit.exclusionReason === 'noQualifyingPumpEvidence',
-    `unexpected exclusion reason: ${r.audit.exclusionReason}`,
-  )
+  assert.equal(r.included, false, 'missing 14d data with no resolved evidence must exclude the candidate, never fake it')
+  assert.equal(r.audit.exclusionReason, 'rejectedNoMomentum')
   assert.equal(r.audit.priceChange14dPct, null)
 }
 
@@ -286,20 +283,22 @@ for (const [symbol, name] of [
   assert.equal(r.audit.exclusionReason, 'capExceedsLowCapCeiling')
 }
 
-// Fallback (momentum) mode still applies category and low-cap filters — a Stage-1-blocked candidate
-// never reaches evaluateStage2Candidate at all, so a momentum_fallback ResolvedEvidence can only
+// Live momentum mode still applies category and low-cap filters — a Stage-1-blocked candidate
+// never reaches evaluateStage2Candidate at all, so a live_momentum ResolvedEvidence can only
 // ever apply to a candidate that already cleared category + cap + liquidity + volume + age.
 {
   const majorFdvBlocked = evaluateStage1Candidate({ ...base, chain: 'base', symbol: 'SOL', name: 'Solana', fdv: 900_000 })
   assert.equal(majorFdvBlocked.passed, false, 'SOL must be blocked at stage 1 regardless of how small its FDV looks')
-  // A low-cap, non-major candidate legitimately qualifying via momentum fallback still passes.
-  const r2 = evaluateStage2Candidate(stage1Candidate, null, 'req_test_fallback', {
-    kind: 'momentum_fallback', confirmedChange24hPct: 22.5, evidenceParts: ['confirmed 24h move ≥ 22.5%'],
+  // A low-cap, non-major candidate legitimately qualifying via live momentum still passes.
+  const r2 = evaluateStage2Candidate(stage1Candidate, null, 'req_test_livemomentum', {
+    kind: 'live_momentum',
+    verdict: { qualified: true, changeWindow: '24h', changeValuePct: 22.5, volumeLiquidityRatio: 0.8, evidenceParts: ['24h change +22.5%'] },
   })
-  assert.equal(r2.included, true, 'a low-cap candidate with qualifying momentum-fallback evidence must be included')
-  assert.equal(r2.alert.evidenceGrade, 'momentum_fallback')
-  assert.equal(r2.alert.change14d, null, 'momentum fallback must never fabricate a 14d number')
-  assert.equal(r2.audit.lowCapQualified, true, 'low-cap rule must still be recorded true for a fallback-qualified candidate')
+  assert.equal(r2.included, true, 'a low-cap candidate with qualifying live-momentum evidence must be included')
+  assert.equal(r2.alert.evidenceGrade, 'live_momentum')
+  assert.equal(r2.alert.evidenceSource, 'live_momentum')
+  assert.equal(r2.alert.change14d, null, 'live momentum must never fabricate a 14d number')
+  assert.equal(r2.audit.lowCapQualified, true, 'low-cap rule must still be recorded true for a live-momentum-qualified candidate')
 }
 
 // Valid low-cap token with exact 14d passes, and its audit records the full eligibility shape.
@@ -509,6 +508,126 @@ assert.doesNotMatch(routeCode, /'fourteenDayUnavailable'/, 'the misleading blank
     /const lowCapCandidatesCount = Math\.max\(0, candidatesReachingStage1 - categoryFilteredCount - capDataMissingCount - capExceedsCount\)/,
     'lowCapCandidates must be derived from candidatesReachingStage1, not the inflated raw pool count',
   )
+}
+
+// ─── Part 13: live momentum eligibility model (URGENT fix request) ─────────────────────────────
+// Reported live: 12 candidates reached evidence checking, 0 qualified exact, 0 qualified fallback —
+// the feed went empty even though GeckoTerminal's own pool data already carries the 24h/6h/1h
+// momentum and volume/liquidity figures needed to evaluate a candidate WITHOUT any exact 7d/14d
+// proof. evaluateLiveMomentum is the new, pure, network-free evaluator for that — these tests drive
+// it directly against real Stage1Candidate objects produced by evaluateStage1Candidate.
+
+// Qualifies on 24h change with sufficient volume/liquidity ratio.
+{
+  const r = evaluateStage1Candidate({ ...base, symbol: 'PUMP1', name: 'Pump One', change24h: 12, volume: 50_000, liquidity: 80_000 })
+  assert.equal(r.passed, true)
+  const verdict = evaluateLiveMomentum(r.candidate)
+  assert.equal(verdict.qualified, true, 'a real 24h move with real volume relative to liquidity must qualify')
+  assert.equal(verdict.changeWindow, '24h')
+}
+
+// Falls back to 6h momentum when 24h is below threshold.
+{
+  const r = evaluateStage1Candidate({ ...base, symbol: 'PUMP2', name: 'Pump Two', change24h: 3, change6h: 5, volume: 50_000, liquidity: 80_000 })
+  assert.equal(r.passed, true)
+  const verdict = evaluateLiveMomentum(r.candidate)
+  assert.equal(verdict.qualified, true, '6h momentum must qualify when 24h does not clear its own bar')
+  assert.equal(verdict.changeWindow, '6h')
+}
+
+// Falls back to 1h momentum when both 24h and 6h are below threshold.
+{
+  const r = evaluateStage1Candidate({ ...base, symbol: 'PUMP3', name: 'Pump Three', change24h: 1, change6h: 1, change1h: 3, volume: 50_000, liquidity: 80_000 })
+  assert.equal(r.passed, true)
+  const verdict = evaluateLiveMomentum(r.candidate)
+  assert.equal(verdict.qualified, true, '1h momentum must qualify as the last resort when 24h/6h do not')
+  assert.equal(verdict.changeWindow, '1h')
+}
+
+// No momentum on any window → rejected, never faked.
+{
+  const r = evaluateStage1Candidate({ ...base, symbol: 'FLAT', name: 'Flat Token', change24h: 1, change6h: 1, change1h: 1, volume: 50_000, liquidity: 80_000 })
+  assert.equal(r.passed, true)
+  const verdict = evaluateLiveMomentum(r.candidate)
+  assert.equal(verdict.qualified, false)
+  assert.equal(verdict.reason, 'noMomentum')
+}
+
+// Real momentum but volume is NOT actually expanding relative to liquidity — a stale price delta
+// on a barely-traded pool must not qualify just because a number moved.
+{
+  const r = evaluateStage1Candidate({ ...base, symbol: 'STALE', name: 'Stale Mover', change24h: 20, volume: 10_000, liquidity: 100_000 })
+  assert.equal(r.passed, true)
+  const verdict = evaluateLiveMomentum(r.candidate)
+  assert.equal(verdict.qualified, false)
+  assert.equal(verdict.reason, 'volumeNotExpanding')
+}
+
+// DUAL-CEILING MODEL: a candidate above the exact tier's ceiling but within live-momentum's wider
+// ceiling must still pass Stage 1 (never hard-rejected on cap when live momentum could still apply),
+// carrying qualifiesForExactCap=false / qualifiesForLiveMomentumCap=true.
+{
+  const r = evaluateStage1Candidate({ ...base, chain: 'base', symbol: 'MIDCAP2', name: 'Mid Cap Mover', fdv: 15_000_000, change24h: 15 })
+  assert.equal(r.passed, true, 'a $15M-FDV Base candidate must still pass Stage 1 — over the $5M exact ceiling but under the $20M live-momentum ceiling')
+  assert.equal(r.candidate.qualifiesForExactCap, false)
+  assert.equal(r.candidate.qualifiesForLiveMomentumCap, true)
+  const verdict = evaluateLiveMomentum(r.candidate)
+  assert.equal(verdict.qualified, true, 'it must still be eligible for live momentum qualification')
+  // Defense-in-depth: exact evidence resolved for this candidate must never be accepted, even if
+  // somehow produced — model A explicitly requires the STRICTER exact-mode ceiling.
+  const exactAttempt = evaluateStage2Candidate(r.candidate, null, 'req_dualcap', { kind: 'exact', source: 'geckoterminal_ohlcv', change14d: 60 })
+  assert.equal(exactAttempt.included, false, 'exact evidence must never qualify a candidate that only fits the wider live-momentum ceiling')
+  assert.equal(exactAttempt.audit.exclusionReason, 'capExceedsLowCapCeiling')
+}
+
+// A candidate above BOTH ceilings is hard-rejected at Stage 1 — never reaches evidence checking.
+{
+  const r = evaluateStage1Candidate({ ...base, chain: 'base', symbol: 'MEGACAP', name: 'Mega Cap', fdv: 30_000_000 })
+  assert.equal(r.passed, false, 'a $30M-FDV Base candidate exceeds even the $20M live-momentum ceiling and must be rejected')
+  assert.equal(r.audit.exclusionReason, 'capExceedsLowCapCeiling')
+}
+
+// END-TO-END SCENARIO (as reported): candidates pass liquidity/volume, exact evidence fails for
+// everyone (total provider outage simulated), but some have real live momentum — the feed must
+// still render exactly those, labelled Live Momentum, never "Exact 14d", and never empty.
+{
+  const candidates = []
+  for (let i = 0; i < 12; i++) {
+    const hasMomentum = i < 3 // first 3 of the 12 have real live momentum
+    const r = evaluateStage1Candidate({
+      ...base, symbol: `LIVE${i}`, name: `Live Candidate ${i}`, addr: `0x${i.toString().padStart(40, '0')}`,
+      change24h: hasMomentum ? 15 : 2, volume: 50_000, liquidity: 80_000,
+    })
+    assert.equal(r.passed, true)
+    candidates.push(r.candidate)
+  }
+
+  const rendered = []
+  for (const c of candidates) {
+    // Simulate total exact-evidence provider failure: OHLCV/CoinGecko/snapshot all resolve to
+    // nothing, exactly like the reported "exactEvidenceQualified: 0" scenario.
+    const liveVerdict = evaluateLiveMomentum(c)
+    const resolved = liveVerdict.qualified ? { kind: 'live_momentum', verdict: liveVerdict } : { kind: 'none' }
+    const result = evaluateStage2Candidate(c, null, 'req_e2e', resolved)
+    if (result.included) rendered.push(result.alert)
+  }
+
+  assert.equal(rendered.length, 3, 'exactly the 3 candidates with real live momentum must render when every exact-evidence source fails')
+  for (const alert of rendered) {
+    assert.equal(alert.evidenceGrade, 'live_momentum', 'a card rendered without exact evidence must be labelled live_momentum, never exact')
+    assert.equal(alert.change14d, null, 'no 14d number may ever be fabricated for a live-momentum card')
+    assert.match(alert.qualifyingReason, /Live momentum/, 'the qualifying reason must state it was live momentum, not exact evidence')
+  }
+}
+
+// Exact 7d/14d success still renders the 'exact' grade — the badge a real measured change earns.
+{
+  const r = evaluateStage1Candidate({ ...base, symbol: 'EXACTOK', name: 'Exact OK', change24h: 15 })
+  assert.equal(r.passed, true)
+  const result = evaluateStage2Candidate(r.candidate, null, 'req_exact_badge', { kind: 'exact', source: 'geckoterminal_ohlcv', change14d: 45 })
+  assert.equal(result.included, true)
+  assert.equal(result.alert.evidenceGrade, 'exact', 'real exact 14d evidence must earn the exact badge, not live_momentum')
+  assert.equal(result.alert.change14d, 45)
 }
 
 console.log('test-pump-alerts-discovery.mjs: all assertions passed')

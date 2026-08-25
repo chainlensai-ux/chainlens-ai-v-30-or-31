@@ -19,17 +19,23 @@ interface PumpAlert {
   pairAddress: string | null
   priceUsd: number | null
   change24h: number | null
+  // LIVE MOMENTUM MODE, DISCLOSED (URGENT fix request): 6h/1h change from GeckoTerminal's own pool
+  // data, shown when available so a live-momentum qualification is never a bare, unexplained badge.
+  change6h: number | null
+  change1h: number | null
   change14d: number | null
   volume24hUsd: number | null
   liquidityUsd: number | null
   fdvUsd: number | null
   marketCapUsd: number | null
   tokenAgeDays: number | null
-  // EVIDENCE BADGE, DISCLOSED (14d fallback fix): every card states HOW it qualified — 'exact' means
-  // a real measured 14d change backs it; 'momentum_fallback' means exact 14d was unavailable but
-  // corroborated 24h momentum evidence qualified it. Never rendered identically.
-  evidenceSource?: 'geckoterminal_ohlcv' | 'coingecko_contract' | 'internal_snapshot' | 'dexscreener_momentum'
-  evidenceGrade?: 'exact' | 'momentum_fallback'
+  // EVIDENCE BADGE, DISCLOSED (ELIGIBILITY-MODEL fix): every card states HOW it qualified — 'exact'
+  // means a real measured 14d change backs it; 'live_momentum' means exact 14d was unavailable (or
+  // never attempted) but real, currently-observable 24h/6h/1h momentum + volume-relative-to-
+  // liquidity evidence qualified it instead. Never rendered identically — a live-momentum card must
+  // never be labelled "Exact 14d".
+  evidenceSource?: 'geckoterminal_ohlcv' | 'coingecko_contract' | 'internal_snapshot' | 'live_momentum'
+  evidenceGrade?: 'exact' | 'live_momentum'
   category: PumpCategory
   reason: string
   qualifyingReason: string
@@ -288,6 +294,14 @@ function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, copied }: {
               </span>
             </div>
           )}
+          {/* LIVE MOMENTUM MODE, DISCLOSED: 6h/1h shown whenever available — the shorter-window
+              evidence a live-momentum card may have qualified on, not just decoration. */}
+          {alert.change6h != null && (
+            <StatMetric label="6h" value={`${alert.change6h >= 0 ? '+' : ''}${alert.change6h.toFixed(1)}%`} />
+          )}
+          {alert.change1h != null && (
+            <StatMetric label="1h" value={`${alert.change1h >= 0 ? '+' : ''}${alert.change1h.toFixed(1)}%`} />
+          )}
           <StatMetric label="Vol" value={fmtUSD(alert.volume24hUsd)} dimValue={alert.volume24hUsd == null}>
             <MiniMetricBar value={alert.volume24hUsd} color="#22d3ee" cap={1_000_000} />
           </StatMetric>
@@ -324,16 +338,17 @@ function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, copied }: {
         }}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: '3px', alignItems: 'flex-end' }}>
-          {/* EVIDENCE BADGE, DISCLOSED: states exactly how this card qualified. Exact sources get a
-              calm teal "Exact 14d" chip; momentum-fallback cards get a distinct amber chip so a
-              fallback qualification can never pass as confirmed 14d data. */}
-          {alert.evidenceGrade === 'momentum_fallback' ? (
+          {/* EVIDENCE BADGE, DISCLOSED (ELIGIBILITY-MODEL fix): states exactly how this card
+              qualified. Exact sources get a calm teal "Exact 14d" chip; live-momentum cards get a
+              distinct amber "Live Momentum" chip so a live-momentum qualification can never pass as
+              confirmed 14d data. */}
+          {alert.evidenceGrade === 'live_momentum' ? (
             <span className="pump-pill" title={alert.qualifyingReason} style={{
               padding: '6px 11px', borderRadius: '999px', fontSize: '8px', fontWeight: 800, letterSpacing: '0.07em',
               color: '#fbbf24', background: 'rgba(251,191,36,0.12)', border: '1px solid rgba(251,191,36,0.32)',
               fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
             }}>
-              ◐ 14d unavailable — 24h momentum fallback
+              ◐ Live Momentum
             </span>
           ) : (
             <span className="pump-pill" title={alert.qualifyingReason} style={{
@@ -548,16 +563,16 @@ export default function PumpAlertsPage() {
           setFeedError(typeof json.error === 'string' ? json.error : null)
           setFinalState(typeof json.finalState === 'string' ? json.finalState : null)
           setCandidateAudit(json.pumpCandidateEvaluationAudit && typeof json.pumpCandidateEvaluationAudit === 'object' ? json.pumpCandidateEvaluationAudit : null)
-          // Degraded-mode note from the 14d evidence ladder: shown even when candidates rendered,
-          // so fallback-qualified feeds are never mistaken for fully-sourced ones.
+          // Degraded-mode note from the evidence ladder: shown even when candidates rendered, so
+          // live-momentum-qualified feeds are never mistaken for fully-exact-sourced ones.
           const audit14d = json.pump14dEvidenceAudit as { degradedMode?: boolean; degradedReason?: string | null; exact14dQualified?: number; fallbackMomentumQualified?: number } | undefined
           if (audit14d?.degradedMode) {
             const qualified = (audit14d.exact14dQualified ?? 0) + (audit14d.fallbackMomentumQualified ?? 0)
             setDegradedNote(
               audit14d.degradedReason
               ?? (qualified > 0
-                ? 'GeckoTerminal OHLCV failed this cycle — some cards are qualified by 24h momentum fallback evidence.'
-                : 'GeckoTerminal OHLCV failed this cycle and no fallback provider could confirm momentum.'),
+                ? 'GeckoTerminal OHLCV failed this cycle — some cards are qualified by live 24h/6h/1h momentum evidence instead.'
+                : 'GeckoTerminal OHLCV failed this cycle and no live momentum evidence qualified a candidate either.'),
             )
           } else {
             setDegradedNote(null)
@@ -910,13 +925,13 @@ export default function PumpAlertsPage() {
           )}
 
           {/* DEGRADED MODE BANNER, DISCLOSED: distinct from feedError — this fires when the scan
-              itself succeeded but the primary 14d provider failed and fallback evidence was used
-              (or produced nothing). Shown even when cards rendered below it. */}
+              itself succeeded but the primary 14d provider failed and live-momentum evidence was
+              used (or produced nothing). Shown even when cards rendered below it. */}
           {degradedNote && !feedError && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '9px 12px', marginBottom: '10px', borderRadius: '10px', background: 'rgba(251,191,36,0.06)', border: '1px dashed rgba(251,191,36,0.30)', fontFamily: 'var(--font-plex-mono)' }}>
               <span style={{ color: '#fbbf24', fontSize: '12px' }}>◐</span>
               <span style={{ fontSize: '10.5px', color: '#d4b106', lineHeight: 1.35 }}>
-                {degradedNote} Cards labelled “Exact 14d” carry measured data; “24h momentum fallback” cards are qualified by corroborated short-window momentum instead.
+                {degradedNote} Cards labelled “Exact 14d” carry measured data; “Live Momentum” cards are qualified by real, currently-observable 24h/6h/1h momentum instead.
               </span>
             </div>
           )}
@@ -957,7 +972,7 @@ export default function PumpAlertsPage() {
               </p>
               <p style={{ fontSize: '11px', margin: '0 0 14px', color: '#3a5268' }}>
                 {degradedNote
-                  ? 'The primary 14-day provider failed and no fallback provider confirmed momentum this cycle. Refresh shortly — fallback evidence (DexScreener momentum, ChainLens snapshots) is used automatically whenever this happens.'
+                  ? 'The primary 14-day provider failed and no live momentum evidence confirmed a real mover this cycle. Refresh shortly — live 24h/6h/1h momentum evidence is used automatically whenever exact evidence is unavailable.'
                   : finalState === 'providerUnavailable'
                     ? 'This is a provider issue, not a filtering result — try refreshing shortly.'
                     : finalState === 'providerBudgetExhausted'

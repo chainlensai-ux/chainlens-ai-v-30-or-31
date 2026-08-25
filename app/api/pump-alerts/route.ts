@@ -4,8 +4,6 @@ import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
 import {
   PUMP_REQUIRE_EXACT_14D,
-  evaluateMomentumFallback,
-  fetchDexScreenerPairMomentum,
   fetchCoinGeckoContractChange14d,
   savePumpSnapshots,
   computeSnapshotChange14d,
@@ -71,6 +69,30 @@ const PUMP_ALERT_EXCLUDE_ESTABLISHED_TOKENS = envBool('PUMP_ALERT_EXCLUDE_ESTABL
 const PUMP_ALERT_TARGET_RESULTS = envNumber('PUMP_ALERT_TARGET_RESULTS', 10)
 const PUMP_ALERT_MAX_CANDIDATES_EVALUATED = envNumber('PUMP_ALERT_MAX_CANDIDATES_EVALUATED', 50)
 const PUMP_ALERT_MIN_RESULTS_BEFORE_STOP = envNumber('PUMP_ALERT_MIN_RESULTS_BEFORE_STOP', 5)
+
+// LIVE-MOMENTUM ELIGIBILITY MODE, DISCLOSED (URGENT fix request: "Pump Alerts should not require
+// perfect 14d/7d OHLCV proof before showing anything... show live low-cap momentum coins using
+// available evidence, then clearly label evidence quality"). Reported live: 12 candidates reached
+// evidence checking, 0 qualified exact, 0 qualified momentum-fallback — the feed went empty even
+// though GeckoTerminal's OWN pool-list response already carries h24/h6/h1 price-change and volume
+// figures for every candidate, with ZERO extra network calls needed. The old momentum_fallback tier
+// required a separate DexScreener fetch AND strict two-provider corroboration, so it failed whenever
+// DexScreener itself was unreachable — exactly the "every provider failed" scenario reported live.
+// Live Momentum mode below is evaluated synchronously from data Stage 1 already has, so a candidate
+// can ALWAYS be checked for it regardless of whether any external OHLCV/CoinGecko/DexScreener call
+// ever succeeds. It never fabricates a 7d/14d number — change14d stays null and the card is labelled
+// "Live Momentum", never "Exact 14d". Its FDV ceiling is deliberately wider than the exact-evidence
+// ceiling (still capped by each chain's own hard limit) since a real live mover is worth surfacing
+// even above the exact tier's stricter low-cap bar.
+const PUMP_ALERT_LIVE_MOMENTUM_MIN_24H_CHANGE_PCT = envNumber('PUMP_ALERT_LIVE_MOMENTUM_MIN_24H_CHANGE_PCT', 8)
+const PUMP_ALERT_LIVE_MOMENTUM_MIN_6H_CHANGE_PCT = envNumber('PUMP_ALERT_LIVE_MOMENTUM_MIN_6H_CHANGE_PCT', 4)
+const PUMP_ALERT_LIVE_MOMENTUM_MIN_1H_CHANGE_PCT = envNumber('PUMP_ALERT_LIVE_MOMENTUM_MIN_1H_CHANGE_PCT', 2)
+const PUMP_ALERT_LIVE_MOMENTUM_MAX_FDV_USD = envNumber('PUMP_ALERT_LIVE_MOMENTUM_MAX_FDV_USD', 25_000_000)
+// "Volume expansion / strong volume relative to liquidity" from the fix request, made concrete: 24h
+// volume must be at least this fraction of liquidity — a real, actively-traded pool, not a stale one
+// that happens to show a stale price delta. Not specified numerically in the request; disclosed here
+// as this route's own choice, env-overridable like every other threshold in this file.
+const PUMP_ALERT_LIVE_MOMENTUM_MIN_VOL_LIQ_RATIO = envNumber('PUMP_ALERT_LIVE_MOMENTUM_MIN_VOL_LIQ_RATIO', 0.5)
 
 // Stablecoins / wrapped-majors / LST-LSD (kept from the original denylist, still symbol-exact).
 const STABLE_AND_WRAPPED_DENYLIST = new Set([
@@ -152,19 +174,24 @@ export interface PumpAlert {
   pairAddress: string | null
   priceUsd: number | null
   change24h: number | null
+  // LIVE MOMENTUM MODE, DISCLOSED: 6h/1h change from GeckoTerminal's own pool data, shown on the
+  // card when available so a live-momentum qualification is never just a bare, unexplained badge.
+  change6h: number | null
+  change1h: number | null
   change14d: number | null
   volume24hUsd: number | null
   liquidityUsd: number | null
   fdvUsd: number | null
   marketCapUsd: number | null
   tokenAgeDays: number | null
-  // 14D-EVIDENCE LADDER, DISCLOSED: how this candidate qualified. 'exact' = a real measured 14d
-  // change (GeckoTerminal OHLCV, CoinGecko per-contract, or ChainLens snapshots ≥5 days apart).
-  // 'momentum_fallback' = exact 14d unavailable but strong corroborated evidence (≥15% confirmed
-  // 24h move + volume acceleration ≥1.5× + real liquidity) qualified it instead — change14d stays
-  // null in that case, never faked.
-  evidenceSource: FourteenDayEvidenceSource
-  evidenceGrade: 'exact' | 'momentum_fallback'
+  // ELIGIBILITY-MODEL FIX, DISCLOSED: how this candidate qualified. 'exact' = a real measured 14d
+  // change (GeckoTerminal OHLCV, CoinGecko per-contract, or ChainLens snapshots ≥12 days apart).
+  // 'live_momentum' = exact 14d evidence was unavailable or never attempted, but real live 24h/6h/1h
+  // price movement + volume-relative-to-liquidity evidence qualified it instead, evaluated straight
+  // from the same GeckoTerminal pool data Stage 1 already has (no extra network call) — change14d
+  // stays null in that case, never faked.
+  evidenceSource: FourteenDayEvidenceSource | 'live_momentum'
+  evidenceGrade: 'exact' | 'live_momentum'
   category: PumpCategory
   reason: string
   qualifyingReason: string
@@ -202,9 +229,9 @@ export interface PumpDiscoveryEligibilityAudit {
   lowCapQualified: boolean
   qualifiesAs14dPump: boolean
   categoryBlocked: boolean
-  // 'exact' | 'momentum_fallback' | 'none' | 'not_evaluated' (Stage 1 rejections never reach the
+  // 'exact' | 'live_momentum' | 'none' | 'not_evaluated' (Stage 1 rejections never reach the
   // evidence ladder, so their evidenceMode is honestly 'not_evaluated' rather than a guess).
-  evidenceMode: 'exact' | 'momentum_fallback' | 'none' | 'not_evaluated'
+  evidenceMode: 'exact' | 'live_momentum' | 'none' | 'not_evaluated'
   finalRankScore: number | null
 }
 
@@ -219,8 +246,8 @@ type GTPool = {
     fdv_usd?: number | string
     market_cap_usd?: number | string
     pool_created_at?: string
-    volume_usd?: { h24?: number | string }
-    price_change_percentage?: { h24?: number | string }
+    volume_usd?: { h24?: number | string; h6?: number | string; h1?: number | string }
+    price_change_percentage?: { h24?: number | string; h6?: number | string; h1?: number | string }
   }
 }
 
@@ -254,11 +281,23 @@ function isEstablishedOrCategoryBlocked(symbol: string, name: string): boolean {
 export type Stage1Candidate = {
   chain: PumpChain
   symbol: string; name: string; addr: string; poolAddr: string | null
-  price: number | null; change24h: number | null; volume: number | null; liquidity: number | null
+  price: number | null
+  change24h: number | null; change6h: number | null; change1h: number | null
+  volume: number | null; liquidity: number | null
   fdv: number | null; marketCap: number | null; ageDays: number | null
+  // DUAL-CEILING MODEL, DISCLOSED: a candidate can be too big for the strict exact-evidence tier
+  // while still legitimately fitting the wider live-momentum tier's FDV ceiling (both are always
+  // additionally capped by the candidate's own chain's hard limit). Stage 1 only hard-rejects on
+  // cap when NEITHER mode's ceiling is met; which mode(s) actually apply is carried forward here so
+  // Stage 2 enforces the correct, mode-specific ceiling rather than the union used for the initial
+  // pass/fail gate.
+  qualifiesForExactCap: boolean
+  qualifiesForLiveMomentumCap: boolean
 }
 export type Stage1Input = { chain?: PumpChain; symbol: string; name: string; addr: string; poolAddr: string | null } & {
-  price: number | null; change24h: number | null; volume: number | null; liquidity: number | null
+  price: number | null
+  change24h: number | null; change6h: number | null; change1h: number | null
+  volume: number | null; liquidity: number | null
   fdv: number | null; marketCap: number | null; ageDays: number | null
 }
 export type Stage1Result =
@@ -270,16 +309,25 @@ export function evaluateStage1Candidate(input: Stage1Input, requestId = 'n/a'): 
   const chainCfg = CHAIN_CONFIG[chain]
   const sym = input.symbol.toUpperCase()
   const categoryBlocked = isEstablishedOrCategoryBlocked(sym, input.name)
-  // PER-CHAIN CEILING FIX, DISCLOSED: the ceiling is the STRICTER of this candidate's own chain
-  // limit and the env-configured global cap — never the most-permissive limit across all requested
-  // chains, which previously let a Base token up to ETH's $50M ceiling through its own $20M one.
-  // This is only correct because `chain` is now the candidate's real chain, not a request-level
-  // default.
-  const maxFdv = Math.min(PUMP_ALERT_MAX_FDV_USD, chainCfg.maxFdvUsd)
-  const maxMarketCap = Math.min(PUMP_ALERT_MAX_MARKET_CAP_USD, chainCfg.maxFdvUsd)
-  const qualifiesAsLowCap =
-    (input.fdv != null && input.fdv > 0 && input.fdv <= maxFdv) ||
-    (input.marketCap != null && input.marketCap > 0 && input.marketCap <= maxMarketCap)
+  // PER-CHAIN CEILING FIX, DISCLOSED: each mode's ceiling is the STRICTER of this candidate's own
+  // chain limit and the env-configured cap for that mode — never the most-permissive limit across
+  // all requested chains, which previously let a Base token up to ETH's $50M ceiling through its
+  // own $20M one. This is only correct because `chain` is now the candidate's real chain, not a
+  // request-level default.
+  const exactMaxFdv = Math.min(PUMP_ALERT_MAX_FDV_USD, chainCfg.maxFdvUsd)
+  const exactMaxMarketCap = Math.min(PUMP_ALERT_MAX_MARKET_CAP_USD, chainCfg.maxFdvUsd)
+  const liveMomentumMaxFdv = Math.min(PUMP_ALERT_LIVE_MOMENTUM_MAX_FDV_USD, chainCfg.maxFdvUsd)
+  const qualifiesForExactCap =
+    (input.fdv != null && input.fdv > 0 && input.fdv <= exactMaxFdv) ||
+    (input.marketCap != null && input.marketCap > 0 && input.marketCap <= exactMaxMarketCap)
+  const qualifiesForLiveMomentumCap =
+    (input.fdv != null && input.fdv > 0 && input.fdv <= liveMomentumMaxFdv) ||
+    (input.marketCap != null && input.marketCap > 0 && input.marketCap <= liveMomentumMaxFdv)
+  // ELIGIBILITY-MODEL FIX, DISCLOSED: the pass/fail gate uses the UNION of both ceilings — a
+  // candidate is only hard-rejected on cap when it fits under NEITHER mode. Previously a single
+  // ceiling could reject a $20M-FDV candidate before it ever got a chance at live-momentum
+  // qualification (its wider, deliberately more permissive ceiling).
+  const qualifiesAsLowCap = qualifiesForExactCap || qualifiesForLiveMomentumCap
   const capDataMissing = input.fdv == null && input.marketCap == null
   const liquidityOk = input.liquidity != null && input.liquidity >= PUMP_ALERT_MIN_LIQUIDITY_USD
   const volumeOk = input.volume != null && input.volume >= PUMP_ALERT_MIN_24H_VOLUME_USD
@@ -315,22 +363,66 @@ export function evaluateStage1Candidate(input: Stage1Input, requestId = 'n/a'): 
     candidate: {
       chain,
       symbol: input.symbol, name: input.name, addr: input.addr, poolAddr: input.poolAddr,
-      price: input.price, change24h: input.change24h, volume: input.volume, liquidity: input.liquidity,
+      price: input.price, change24h: input.change24h, change6h: input.change6h, change1h: input.change1h,
+      volume: input.volume, liquidity: input.liquidity,
       fdv: input.fdv, marketCap: input.marketCap, ageDays: input.ageDays,
+      qualifiesForExactCap, qualifiesForLiveMomentumCap,
     },
   }
+}
+
+// LIVE MOMENTUM MODE, DISCLOSED (URGENT fix request, model "B"): qualifies a candidate on real,
+// currently-observable momentum — no exact 7d/14d change required, no external OHLCV/CoinGecko/
+// DexScreener call needed. Every input here already exists on the Stage 1 candidate, sourced
+// straight from GeckoTerminal's own pools-list response. Pure and synchronous by design — this is
+// the tier that guarantees the feed can show something real even during a total exact-evidence
+// provider outage, without ever fabricating a 7d/14d number.
+export type LiveMomentumVerdict =
+  | { qualified: true; changeWindow: '24h' | '6h' | '1h'; changeValuePct: number; volumeLiquidityRatio: number; evidenceParts: string[] }
+  | { qualified: false; reason: string }
+
+export function evaluateLiveMomentum(c: Stage1Candidate): LiveMomentumVerdict {
+  if (!c.qualifiesForLiveMomentumCap) return { qualified: false, reason: 'capExceedsLiveMomentumCeiling' }
+  if (c.liquidity == null || c.liquidity < PUMP_ALERT_MIN_LIQUIDITY_USD) return { qualified: false, reason: 'liquidityBelowMinimum' }
+  if (c.volume == null || c.volume < PUMP_ALERT_MIN_24H_VOLUME_USD) return { qualified: false, reason: 'volumeBelowMinimum' }
+
+  let changeWindow: '24h' | '6h' | '1h' | null = null
+  let changeValuePct = 0
+  if (c.change24h != null && c.change24h >= PUMP_ALERT_LIVE_MOMENTUM_MIN_24H_CHANGE_PCT) {
+    changeWindow = '24h'; changeValuePct = c.change24h
+  } else if (c.change6h != null && c.change6h >= PUMP_ALERT_LIVE_MOMENTUM_MIN_6H_CHANGE_PCT) {
+    changeWindow = '6h'; changeValuePct = c.change6h
+  } else if (c.change1h != null && c.change1h >= PUMP_ALERT_LIVE_MOMENTUM_MIN_1H_CHANGE_PCT) {
+    changeWindow = '1h'; changeValuePct = c.change1h
+  }
+  if (changeWindow == null) return { qualified: false, reason: 'noMomentum' }
+
+  // "Volume expansion / strong volume relative to liquidity" — real, active trading, not a stale
+  // price delta on a dead pool.
+  const volumeLiquidityRatio = c.volume / c.liquidity
+  if (!Number.isFinite(volumeLiquidityRatio) || volumeLiquidityRatio < PUMP_ALERT_LIVE_MOMENTUM_MIN_VOL_LIQ_RATIO) {
+    return { qualified: false, reason: 'volumeNotExpanding' }
+  }
+
+  const evidenceParts = [
+    `${changeWindow} change +${changeValuePct.toFixed(1)}%`,
+    `volume/liquidity ${volumeLiquidityRatio.toFixed(2)}×`,
+    `$${(c.liquidity / 1000).toFixed(0)}K liquidity`,
+    `$${(c.volume / 1000).toFixed(0)}K 24h volume`,
+  ]
+  return { qualified: true, changeWindow, changeValuePct, volumeLiquidityRatio, evidenceParts }
 }
 
 export type Stage2Result =
   | { included: true; alert: PumpAlert; audit: PumpDiscoveryEligibilityAudit }
   | { included: false; audit: PumpDiscoveryEligibilityAudit }
 
-// RESOLVED EVIDENCE, DISCLOSED: what the evidence ladder produced for one candidate before Stage 2
-// runs. Exactly one of the branches is populated. change14d is ONLY ever a real measured number —
-// momentum-fallback candidates keep it null and carry the fallback label instead.
+// RESOLVED EVIDENCE, DISCLOSED: what the evidence resolution produced for one candidate before
+// Stage 2 runs. Exactly one of the branches is populated. change14d is ONLY ever a real measured
+// number — live-momentum candidates keep it null and carry the live-momentum label instead.
 export type ResolvedEvidence =
   | { kind: 'exact'; source: FourteenDayEvidenceSource; change14d: number }
-  | { kind: 'momentum_fallback'; confirmedChange24hPct: number; evidenceParts: string[] }
+  | { kind: 'live_momentum'; verdict: LiveMomentumVerdict & { qualified: true } }
   | { kind: 'none' }
 
 export function evaluateStage2Candidate(
@@ -346,10 +438,10 @@ export function evaluateStage2Candidate(
     requestId, token: c.addr, tokenAddress: c.addr, name: c.name, chain, chainSlug: chain, chainId,
     pairAddress: c.poolAddr,
     // source reflects how the candidate actually qualified — no longer hardcoded to the OHLCV
-    // endpoint now that the ladder can qualify via CoinGecko/snapshots/momentum.
+    // endpoint now that evidence can resolve via CoinGecko/snapshots/live momentum.
     source: evidence.kind === 'exact'
       ? `exact:${evidence.source}`
-      : evidence.kind === 'momentum_fallback' ? 'momentum_fallback:corroborated_24h' : 'geckoterminal:ohlcv-day',
+      : evidence.kind === 'live_momentum' ? 'live_momentum:gt_pool_data' : 'geckoterminal:ohlcv-day',
     symbol: c.symbol,
     fdvUsd: c.fdv, marketCapUsd: c.marketCap, liquidityUsd: c.liquidity, volume24hUsd: c.volume,
     priceChange14dPct: evidence.kind === 'exact' ? evidence.change14d : null,
@@ -357,18 +449,28 @@ export function evaluateStage2Candidate(
     evidenceMode: evidence.kind,
   }
 
-  if (evidence.kind === 'none') {
+  // ELIGIBILITY-MODEL FIX, DISCLOSED: PUMP_REQUIRE_EXACT_14D's whole purpose is "require a real
+  // measured change before showing any candidate" — live-momentum evidence must never bypass that
+  // when the flag is explicitly set, so it's treated as if no evidence resolved at all.
+  // DUAL-CEILING DEFENSE, DISCLOSED: exact evidence resolved for a candidate that only fits the
+  // wider live-momentum ceiling is also treated as unresolved — model A explicitly requires the
+  // candidate to be low-cap under the STRICTER exact-mode ceiling, not the union used at Stage 1.
+  // The real pipeline never fetches exact evidence for such a candidate in the first place, but
+  // this function is pure and must not trust that its caller always got that right.
+  const liveMomentumAllowed = !PUMP_REQUIRE_EXACT_14D
+  const exactRejectedByCap = evidence.kind === 'exact' && !c.qualifiesForExactCap
+  if (evidence.kind === 'none' || (evidence.kind === 'live_momentum' && !liveMomentumAllowed) || exactRejectedByCap) {
     return {
       included: false,
       audit: {
-        ...auditBase, category: null,
-        excluded: true, exclusionReason: PUMP_REQUIRE_EXACT_14D ? 'missing14dData' : 'noQualifyingPumpEvidence',
+        ...auditBase, category: null, evidenceMode: 'none',
+        excluded: true, exclusionReason: exactRejectedByCap ? 'capExceedsLowCapCeiling' : (PUMP_REQUIRE_EXACT_14D ? 'missing14dData' : 'rejectedNoMomentum'),
         qualifiesAsLowCap: true, lowCapQualified: true, qualifiesAs14dPump: false, categoryBlocked: false, finalRankScore: null,
       },
     }
   }
 
-  const isMomentum = evidence.kind === 'momentum_fallback'
+  const isLiveMomentum = evidence.kind === 'live_momentum'
   if (evidence.kind === 'exact' && evidence.change14d < PUMP_ALERT_MIN_14D_CHANGE_PCT) {
     return {
       included: false,
@@ -387,7 +489,7 @@ export function evaluateStage2Candidate(
       audit: {
         ...auditBase, category: null,
         excluded: true, exclusionReason: 'noCategoryMatch',
-        qualifiesAsLowCap: true, lowCapQualified: true, qualifiesAs14dPump: !isMomentum, categoryBlocked: false, finalRankScore: null,
+        qualifiesAsLowCap: true, lowCapQualified: true, qualifiesAs14dPump: !isLiveMomentum, categoryBlocked: false, finalRankScore: null,
       },
     }
   }
@@ -395,23 +497,23 @@ export function evaluateStage2Candidate(
   const tags: string[] = []
   if (c.fdv != null && c.fdv > 0 && c.fdv < 100_000) tags.push('Microcap')
   if (c.volume == null || c.liquidity == null) tags.push('Needs Review')
-  // Evidence badge data lives on the card too — never let a fallback token look identical to an
-  // exact-14d one.
-  if (isMomentum) tags.push('14d unavailable — qualified by 24h momentum fallback')
+  // Evidence badge data lives on the card too — never let a live-momentum token look identical to
+  // an exact-14d one.
+  if (isLiveMomentum) tags.push('Live Momentum — no exact 14d change confirmed yet')
 
   const capLabel = c.fdv != null ? `$${(c.fdv / 1_000_000).toFixed(2)}M FDV` : `$${((c.marketCap ?? 0) / 1_000_000).toFixed(2)}M MC`
-  const qualifyingReason = isMomentum
-    ? `14d unavailable — qualified by 24h momentum fallback (+${evidence.confirmedChange24hPct.toFixed(1)}% confirmed 24h move, low-cap ${capLabel}), ${evidence.evidenceParts.join(', ')}`
+  const qualifyingReason = isLiveMomentum
+    ? `Live momentum: ${evidence.verdict.evidenceParts.join(', ')}, low-cap (${capLabel})`
     : `+${evidence.change14d.toFixed(1)}% over 14d, low-cap (${capLabel}), $${((c.liquidity ?? 0) / 1000).toFixed(0)}K liquidity, $${((c.volume ?? 0) / 1000).toFixed(0)}K 24h volume`
 
   const alert: PumpAlert = {
     symbol: c.symbol, name: c.name, contract: c.addr, chain, chainId, pairAddress: c.poolAddr,
-    priceUsd: c.price, change24h: c.change24h,
+    priceUsd: c.price, change24h: c.change24h, change6h: c.change6h, change1h: c.change1h,
     change14d: evidence.kind === 'exact' ? evidence.change14d : null,
     volume24hUsd: c.volume, liquidityUsd: c.liquidity, fdvUsd: c.fdv, marketCapUsd: c.marketCap,
     tokenAgeDays: c.ageDays,
-    evidenceSource: isMomentum ? 'dexscreener_momentum' : (evidence as { source: FourteenDayEvidenceSource }).source,
-    evidenceGrade: isMomentum ? 'momentum_fallback' : 'exact',
+    evidenceSource: isLiveMomentum ? 'live_momentum' : (evidence as { source: FourteenDayEvidenceSource }).source,
+    evidenceGrade: isLiveMomentum ? 'live_momentum' : 'exact',
     qualifyingReason,
     ...scored,
     tags,
@@ -422,7 +524,7 @@ export function evaluateStage2Candidate(
     audit: {
       ...auditBase, category: scored.category,
       excluded: false, exclusionReason: null,
-      qualifiesAsLowCap: true, lowCapQualified: true, qualifiesAs14dPump: !isMomentum, categoryBlocked: false,
+      qualifiesAsLowCap: true, lowCapQualified: true, qualifiesAs14dPump: !isLiveMomentum, categoryBlocked: false,
       finalRankScore: qualityScore(alert),
     },
   }
@@ -931,6 +1033,10 @@ export async function GET(req: Request) {
 
     const attrs = pool.attributes
     const change24h = parseNum(attrs?.price_change_percentage?.h24)
+    // LIVE MOMENTUM MODE, DISCLOSED: h6/h1 come from the SAME GeckoTerminal pools-list response
+    // already being fetched for h24 — no extra request, no extra provider dependency.
+    const change6h = parseNum(attrs?.price_change_percentage?.h6)
+    const change1h = parseNum(attrs?.price_change_percentage?.h1)
     const volume = parseNum(attrs?.volume_usd?.h24)
     const liquidity = parseNum(attrs?.reserve_in_usd)
     const price = parseNum(attrs?.base_token_price_usd)
@@ -943,7 +1049,7 @@ export async function GET(req: Request) {
       chain,
       symbol: meta.attributes.symbol ?? '?', name: meta.attributes.name ?? 'Unknown', addr,
       poolAddr: pool.attributes?.address ?? null,
-      price, change24h, volume, liquidity, fdv, marketCap, ageDays,
+      price, change24h, change6h, change1h, volume, liquidity, fdv, marketCap, ageDays,
     }, requestId)
     if (!result.passed) {
       audit.push(result.audit)
@@ -1004,6 +1110,13 @@ export async function GET(req: Request) {
   let fourteenDayProviderFailureCount = 0
   const fourteenDayFailureStatusSample: number[] = []
 
+  // LIVE MOMENTUM MODE, DISCLOSED: verdicts keyed by stage1Passed index, computed synchronously
+  // per-batch (see the batch evaluator below) and consulted whenever exact evidence doesn't
+  // resolve — this is the tracking that lets a candidate qualify on live momentum even when every
+  // exact-evidence provider fails for the whole cycle.
+  const liveMomentumVerdicts = new Map<number, LiveMomentumVerdict & { qualified: true }>()
+  const liveMomentumAudit = { liveMomentumAttempted: 0, liveMomentumQualified: 0 }
+
   // CANDIDATE-EVALUATION-DEPTH FIX, DISCLOSED (reported live: candidatesRaw=20 but every evidence
   // tier only ever attempted 3 — the whole feed went dark once those 3 failed). This was NOT an
   // early-stop bug: Stage 1 already evaluates every raw candidate, so a stage1Passed count of 3
@@ -1025,8 +1138,24 @@ export async function GET(req: Request) {
         batchSize: EVAL_BATCH_SIZE,
       },
       async (batchIndices): Promise<{ qualifiedInBatch: number }> => {
+        // LIVE MOMENTUM MODE, DISCLOSED: computed synchronously for every candidate in the batch —
+        // zero network calls, sourced entirely from Stage 1's GeckoTerminal pool data — BEFORE any
+        // exact-evidence fetch is attempted. This guarantees a candidate with real live momentum can
+        // still qualify even if every exact-evidence provider is unreachable this cycle.
+        batchIndices.forEach(idx => {
+          const c = stage1Passed[idx]
+          liveMomentumAudit.liveMomentumAttempted += 1
+          const verdict = evaluateLiveMomentum(c)
+          if (verdict.qualified) liveMomentumVerdicts.set(idx, verdict)
+        })
+
         const batch14dResults = await mapWithConcurrencyLimit(batchIndices, FOURTEEN_DAY_OHLCV_CONCURRENCY_LIMIT, async idx => {
           const c = stage1Passed[idx]
+          // Exact-tier network calls are reserved for candidates the exact-mode ceiling actually
+          // allows — a candidate only fitting under the wider live-momentum ceiling can never use
+          // exact evidence anyway (see the dual-ceiling model on Stage1Candidate), so skipping it
+          // here both saves budget and keeps the grading correct.
+          if (!c.qualifiesForExactCap) { evidenceAudit.geckoOhlcvSkippedBudget += 1; return { changePct: null, reason: 'skippedBudget' as const } }
           if (!c.poolAddr) { evidenceAudit.geckoOhlcvFailed += 1; return { changePct: null, reason: 'malformed' as const } }
           if (!ohlcvBudgetEligible.has(idx)) { evidenceAudit.geckoOhlcvSkippedBudget += 1; return { changePct: null, reason: 'skippedBudget' as const } }
           evidenceAudit.geckoOhlcvAttempted += 1
@@ -1042,6 +1171,12 @@ export async function GET(req: Request) {
 
         const batchResolved = await mapWithConcurrencyLimit(batchIndices, 4, async (idx, j): Promise<ResolvedEvidence> => {
           const c = stage1Passed[idx]
+          const liveMomentumFallback: ResolvedEvidence = liveMomentumVerdicts.has(idx)
+            ? { kind: 'live_momentum', verdict: liveMomentumVerdicts.get(idx)! }
+            : { kind: 'none' }
+
+          if (!c.qualifiesForExactCap) return liveMomentumFallback
+
           const gtChange = batch14dResults[j]?.changePct ?? null
           if (gtChange != null) return { kind: 'exact', source: 'geckoterminal_ohlcv' as const, change14d: gtChange }
 
@@ -1064,28 +1199,11 @@ export async function GET(req: Request) {
             return { kind: 'exact', source: 'internal_snapshot', change14d: snap.changePct }
           }
 
-          // Momentum fallback: DexScreener pair data corroborating a strong accelerating move. Runs
-          // ONLY for candidates that already passed every Stage 1 gate (category denylist, per-chain
-          // low-cap ceiling, liquidity/volume floors, age cap).
-          if (c.poolAddr) {
-            evidenceAudit.dexScreenerFallbackAttempted += 1
-            const ds = await fetchDexScreenerPairMomentum(c.poolAddr, acFb.signal)
-            if (ds?.ok && ds.data) {
-              evidenceAudit.dexScreenerFallbackSucceeded += 1
-              const verdict = evaluateMomentumFallback({
-                change24hPct: c.change24h,
-                volume24hUsd: c.volume,
-                liquidityUsd: c.liquidity,
-                dexscreener: ds.data,
-              })
-              if (verdict.qualified) {
-                return { kind: 'momentum_fallback', confirmedChange24hPct: verdict.confirmedChange24hPct, evidenceParts: verdict.evidenceParts }
-              }
-            }
-          }
-
-          evidenceAudit.excludedMissingAllMomentumEvidence += 1
-          return { kind: 'none' }
+          // No exact evidence resolved — fall back to whatever live-momentum verdict was already
+          // computed synchronously above, never leaving a real live mover unqualified just because
+          // every exact-evidence provider failed.
+          evidenceAudit.excludedMissingAllMomentumEvidence += liveMomentumFallback.kind === 'none' ? 1 : 0
+          return liveMomentumFallback
         })
 
         let qualifiedInBatch = 0
@@ -1097,7 +1215,7 @@ export async function GET(req: Request) {
             allScored.push(result.alert)
             qualifiedInBatch += 1
             if (result.alert.evidenceGrade === 'exact') evidenceAudit.exact14dQualified += 1
-            else evidenceAudit.fallbackMomentumQualified += 1
+            else { evidenceAudit.fallbackMomentumQualified += 1; liveMomentumAudit.liveMomentumQualified += 1 }
           }
         })
         return { qualifiedInBatch }
@@ -1220,6 +1338,29 @@ export async function GET(req: Request) {
     finalRenderedCount: alerts.length,
   }
 
+  // NEW ELIGIBILITY MODEL AUDIT, DISCLOSED: exact shape requested — the exact-vs-live-momentum
+  // funnel this fix introduced, distinct from the older per-provider ladder audit above (kept for
+  // callers/tests already relying on it). rejectedNoMomentum counts candidates that reached
+  // evidence checking (survived category/low-cap/liquidity/volume) but qualified under NEITHER
+  // exact evidence NOR live momentum — the only genuinely "nothing here" outcome in this model.
+  const pumpQualificationAudit = {
+    rawCandidates: rawCount,
+    allowedCategoryCandidates: candidatesReachingStage1 - categoryFilteredCount,
+    lowCapCandidates: lowCapCandidatesCount,
+    liquidityVolumeCandidates: liquidityVolumeCandidatesCount,
+    exactEvidenceAttempted: evidenceAudit.geckoOhlcvAttempted + evidenceAudit.coinGeckoFallbackAttempted + evidenceAudit.internalSnapshotFallbackAttempted,
+    exactEvidenceQualified: evidenceAudit.exact14dQualified,
+    liveMomentumAttempted: liveMomentumAudit.liveMomentumAttempted,
+    liveMomentumQualified: liveMomentumAudit.liveMomentumQualified,
+    rejectedMajorStableWrapped: categoryFilteredCount,
+    rejectedHighFdv: capExceedsCount,
+    rejectedLowLiquidity: liquidityBelowCount,
+    rejectedLowVolume: volumeBelowCount,
+    rejectedNoMomentum: countReason('rejectedNoMomentum') + countReason('missing14dData'),
+    finalRenderedCount: alerts.length,
+    finalState,
+  }
+
   const payload = {
     alerts,
     fetchedAt: new Date().toISOString(),
@@ -1257,6 +1398,8 @@ export async function GET(req: Request) {
     // exactly why evaluation stopped, so a small finalRenderedCount is never mistaken for a provider
     // outage when it was actually a small eligible pool, a budget cutoff, or a truly clean zero.
     pumpCandidateEvaluationAudit,
+    // ELIGIBILITY-MODEL FIX, DISCLOSED: exact-vs-live-momentum funnel audit, per the fix request.
+    pumpQualificationAudit,
     // Request-level rollup of the same eligibility decisions recorded per-candidate above.
     pumpDiscoverySummary: {
       requestId,

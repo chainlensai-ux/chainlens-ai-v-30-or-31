@@ -59,16 +59,19 @@ const base = {
     assert.ok(v.volumeAcceleration != null && v.volumeAcceleration >= 1.5)
   }
 
+  // ELIGIBILITY-MODEL FIX, DISCLOSED: the route no longer uses this DexScreener-corroborated
+  // fallback tier directly (see evaluateLiveMomentum in route.ts, tested in
+  // test-pump-alerts-discovery.mjs Part 13) — evaluateMomentumFallback above stays independently
+  // tested since it's still exported, but the route-integration shape is now 'live_momentum'.
   const s1 = evaluateStage1Candidate({ ...base, symbol: 'FALLBACK', name: 'Fallback Mover', change24h: 22 })
   const r = evaluateStage2Candidate(s1.candidate, null, 'req', {
-    kind: 'momentum_fallback',
-    confirmedChange24hPct: 22,
-    evidenceParts: ['confirmed 24h move ≥ 22.0%', 'volume accelerating 2.0×', '$60K live liquidity'],
+    kind: 'live_momentum',
+    verdict: { qualified: true, changeWindow: '24h', changeValuePct: 22, volumeLiquidityRatio: 2.0, evidenceParts: ['24h change +22.0%', 'volume/liquidity 2.00×'] },
   })
-  assert.equal(r.included, true, 'fallback candidate must render when GT OHLCV failed but evidence is strong')
-  assert.equal(r.alert.change14d, null, 'momentum fallback must NEVER fabricate a 14d number')
-  assert.equal(r.alert.evidenceGrade, 'momentum_fallback')
-  assert.match(r.alert.qualifyingReason, /14d unavailable — qualified by 24h momentum fallback/)
+  assert.equal(r.included, true, 'live-momentum candidate must render when GT OHLCV failed but evidence is strong')
+  assert.equal(r.alert.change14d, null, 'live momentum must NEVER fabricate a 14d number')
+  assert.equal(r.alert.evidenceGrade, 'live_momentum')
+  assert.match(r.alert.qualifyingReason, /Live momentum/)
 }
 
 // Weak move does NOT qualify
@@ -125,10 +128,7 @@ const base = {
   const s1 = evaluateStage1Candidate(base)
   const r = evaluateStage2Candidate(s1.candidate, null, 'req', { kind: 'none' })
   assert.equal(r.included, false, 'no evidence must exclude — honest empty state, not a fake pass')
-  assert.ok(
-    r.audit.exclusionReason === 'missing14dData' || r.audit.exclusionReason === 'noQualifyingPumpEvidence',
-    `unexpected exclusion reason: ${r.audit.exclusionReason}`,
-  )
+  assert.equal(r.audit.exclusionReason, 'rejectedNoMomentum')
 }
 
 // ─── 3. Majors/stables/wrapped STILL excluded in fallback mode ──────────────────
@@ -154,7 +154,7 @@ for (const [sym, name] of [['USDC', 'USD Coin'], ['WETH', 'Wrapped Ether'], ['AE
 const pageSrc = fs.readFileSync(new URL('../app/terminal/pump-alerts/page.tsx', import.meta.url), 'utf8')
 const pageCode = pageSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
 assert.match(pageCode, /Exact 14d/, 'cards must show an "Exact 14d" badge for measured evidence')
-assert.match(pageCode, /24h momentum fallback/, 'cards must show a distinct badge for fallback qualification')
+assert.match(pageCode, /Live Momentum/, 'cards must show a distinct badge for live-momentum qualification')
 assert.match(pageCode, /evidenceGrade/, 'the card must read the alert\'s evidence grade')
 
 // Route carries the audit + degraded mode surfaces
@@ -162,7 +162,11 @@ const routeSrc = fs.readFileSync(new URL('../app/api/pump-alerts/route.ts', impo
 const routeCode = routeSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
 assert.match(routeCode, /pump14dEvidenceAudit/, 'route must return the 14d evidence audit')
 assert.match(routeCode, /degradedMode/, 'audit must carry degraded mode')
-assert.match(routeCode, /fetchDexScreenerPairMomentum/, 'route must use the DexScreener fallback tier')
+// ELIGIBILITY-MODEL FIX, DISCLOSED: the route now uses evaluateLiveMomentum (self-contained,
+// GeckoTerminal-pool-data-only, zero extra network calls) instead of the DexScreener-corroborated
+// fallback tier — evaluateMomentumFallback/fetchDexScreenerPairMomentum remain exported and tested
+// above, just no longer called from the route's Stage 2.
+assert.match(routeCode, /export function evaluateLiveMomentum/, 'route must export the live-momentum evaluator')
 assert.match(routeCode, /fetchCoinGeckoContractChange14d/, 'route must use the CoinGecko exact tier')
 assert.match(routeCode, /computeSnapshotChange14d/, 'route must use the internal snapshot tier')
 assert.match(routeCode, /savePumpSnapshots/, 'route must persist internal snapshots each cycle')
