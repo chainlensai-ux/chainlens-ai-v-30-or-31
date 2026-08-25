@@ -106,4 +106,18 @@ assert.match(scannerCode, /setResult\(null\)/, 'a new scan must reset the previo
   assert.match(pageCode, /finalState=\{data\?\.finalState\}/, 'the EmptyFeed call site must actually pass finalState through from the API response')
 }
 
+// ─── 429-aware retry delay (reported live, screenshot evidence): Robinhood Chain radar showed
+// "Providers failed" with the page's own Load-More banner confirming a real GeckoTerminal 429 at
+// the same time — the discovery fetcher's single retry only ever waited a flat 400ms regardless of
+// failure type, so a genuine rate-limit window (which does not clear in 400ms) meant the retry
+// almost always re-fired straight into the same active throttle and failed again, making the
+// existing "ONE-RETRY FIX" a no-op for exactly the failure mode it was built to absorb. ───────────
+{
+  const routeSrc2 = fs.readFileSync(new URL('../app/api/radar/route.ts', import.meta.url), 'utf8')
+  assert.match(routeSrc2, /firstStatus === 429 \? 1800 \+ Math\.floor\(Math\.random\(\) \* 400\) : 400/,
+    'a 429 must get a meaningfully longer retry delay than a generic transient failure — 400ms can never outlast a real rate-limit window')
+  assert.match(routeSrc2, /const firstStatus = \(firstErr as \{ httpStatus\?: number \} \| undefined\)\?\.httpStatus/,
+    'the retry delay must be chosen from the actual first-attempt failure status, not applied blindly')
+}
+
 console.log('test-base-radar-chain-strict.mjs: all assertions passed')

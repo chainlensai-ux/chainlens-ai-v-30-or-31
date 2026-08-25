@@ -1040,8 +1040,21 @@ export async function GET(req: NextRequest) {
           }
           try {
             return await attempt()
-          } catch {
-            await new Promise(resolve => setTimeout(resolve, 400))
+          } catch (firstErr) {
+            // 429-AWARE RETRY DELAY, DISCLOSED (reported live: Robinhood Chain radar showing
+            // "Providers failed" while the UI's own stale Load-More banner said "GeckoTerminal
+            // rate-limited this page ... wait about 2 minutes" — confirming a real, live 429 was
+            // the actual cause, not a filtering result). The retry above always waited a flat
+            // 400ms regardless of WHY the first attempt failed — fine for a one-off timeout/5xx
+            // blip, but a genuine 429 rate-limit window doesn't clear in 400ms, so the "retry"
+            // fired straight back into the same still-active throttle and failed again nearly
+            // every time, making this ONE-RETRY fix a no-op for the exact failure mode it exists
+            // to absorb. A 429 specifically now waits much longer (1.8s + up to 400ms jitter, so
+            // concurrent in-wave retries for other pages don't all re-fire in lockstep) before
+            // retrying; every other failure type keeps the original fast 400ms retry unchanged.
+            const firstStatus = (firstErr as { httpStatus?: number } | undefined)?.httpStatus
+            const retryDelayMs = firstStatus === 429 ? 1800 + Math.floor(Math.random() * 400) : 400
+            await new Promise(resolve => setTimeout(resolve, retryDelayMs))
             return attempt()
           }
         },
