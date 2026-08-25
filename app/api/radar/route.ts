@@ -988,16 +988,36 @@ export async function GET(req: NextRequest) {
     // signal instead of always being false.
     cacheStatus: 'HIT' | 'MISS' | 'STALE' | 'SKIPPED'
   }
+  // STAGE TIMING, DISCLOSED (perf: "can we make it faster"). Real per-stage durations attached to
+  // baseRadarLoadAudit below so the next live request shows exactly where the reported 11-12s
+  // actually goes (discovery waves vs. holder-count checks vs. simulation) instead of requiring
+  // guesswork or live log access this environment doesn't have. Pure instrumentation — timestamps
+  // read at points that already exist in the control flow, never adds a wait of its own.
+  const discoveryStartedAt = Date.now()
   const sourceResults: SourceFetchResult[] = new Array(sourceSpecs.length)
   for (let waveStart = 0; waveStart < sourceSpecs.length; waveStart += DISCOVERY_CONCURRENCY_LIMIT) {
     const wave = sourceSpecs.slice(waveStart, waveStart + DISCOVERY_CONCURRENCY_LIMIT)
     await reserveGlobalDiscoveryWaveSlot(DISCOVERY_WAVE_DELAY_MS)
     const waveResults = await Promise.all(wave.map(spec => fetchOneSource(spec)))
     waveResults.forEach((r, i) => { sourceResults[waveStart + i] = r })
-    if (waveStart + DISCOVERY_CONCURRENCY_LIMIT < sourceSpecs.length) {
+    // DOUBLE-SPACING FIX, DISCLOSED (perf: "can we make it faster" — Base Radar/Robinhood taking
+    // 11-12s to load). This unconditional sleep ran on top of reserveGlobalDiscoveryWaveSlot above,
+    // which was purpose-built to enforce exactly this gap: its own wait logic already blocks the
+    // NEXT wave's reservation call until at least DISCOVERY_WAVE_DELAY_MS has passed since the
+    // current wave's slot was reserved (see its header comment — `nextSlot = max(reservedUntil,
+    // now)`, so a fast wave still waits out the remainder of the gap on its next call). When Redis
+    // is configured, that gate call already provides the spacing this sleep exists for, making the
+    // sleep pure dead time stacked on top of it — up to DISCOVERY_WAVE_DELAY_MS wasted at every
+    // wave boundary (2 boundaries across the typical 3-wave cycle = up to ~800ms with zero pacing
+    // benefit, since the gate already paced it). Kept as the real fallback pacing mechanism ONLY
+    // when Redis isn't configured (reserveGlobalDiscoveryWaveSlot no-ops in that case, so this
+    // sleep is the only thing preventing an unpaced same-chain burst) — never removed outright,
+    // since correctness/throttling behavior must stay identical either way.
+    if (waveStart + DISCOVERY_CONCURRENCY_LIMIT < sourceSpecs.length && !redisConfigured()) {
       await new Promise(resolve => setTimeout(resolve, DISCOVERY_WAVE_DELAY_MS))
     }
   }
+  const discoveryMs = Date.now() - discoveryStartedAt
   async function fetchOneSource(spec: { key: string; source: string; page: number; url: string }): Promise<SourceFetchResult> {
     const startedAt = Date.now()
     const backoffUntil = await getDiscoveryBackoffUntil(spec.key)
@@ -1613,6 +1633,7 @@ export async function GET(req: NextRequest) {
     // reconciling — the exact class of unexplained funnel gap this audit exists to prevent (see the
     // AUDIT-RECONCILIATION FIX comment near droppedByMissingBaseToken above).
     const droppedByRankingCap = Math.max(0, candidates.length - rankedCandidates.length)
+    const holderCheckStartedAt = Date.now()
     const HOLDER_CHECK_CONCURRENCY = 8
     const holderCountByContract = new Map<string, number | null>()
     // Captured alongside the count so the later capped concentration step (BASE_RADAR_HOLDER_
@@ -1663,6 +1684,7 @@ export async function GET(req: NextRequest) {
         }
       }
     }
+    const holderCheckMs = Date.now() - holderCheckStartedAt
     const candidatePoolExhausted = holderCheckCursor >= rankedCandidates.length && passingHolderGateCount < DISPLAY_TARGET
     // FAIL-CLOSED ON PROVIDER OUTAGE, DISCLOSED (reported: a token with only 3 holders and $0 real
     // liquidity on DexScreener — a textbook fake-pump scam pool — made it into the live feed despite
@@ -1717,6 +1739,7 @@ export async function GET(req: NextRequest) {
     const SIM_CONCURRENCY = 7
     const simTargets = toCheck.slice(0, SIM_TOP_N)
     const hpByContract = new Map<string, HoneypotResult | null>()
+    const simulationStartedAt = Date.now()
     {
       let nextIndex = 0
       const worker = async () => {
@@ -1733,6 +1756,7 @@ export async function GET(req: NextRequest) {
       }
       await Promise.all(Array.from({ length: Math.min(SIM_CONCURRENCY, simTargets.length) }, () => worker()))
     }
+    const simulationMs = Date.now() - simulationStartedAt
     // CACHE-KEY-DRIFT, DISCLOSED (found in a full Base Radar audit): this read the bare contract as
     // the cache key, but getCachedHoneypot switched to a chain-prefixed key (`${chain}:${contract}`)
     // when Robinhood support landed — so this lookup always missed and honeypotCacheHits was
@@ -2176,6 +2200,17 @@ export async function GET(req: NextRequest) {
       route: '/api/radar',
       status: baseRadarFinalState === 'providerUnavailable' ? 503 : 200,
       totalDurationMs: Date.now() - now,
+      // STAGE TIMING, DISCLOSED (perf: "can we make it faster"): real per-stage durations, not
+      // estimates — see the STAGE TIMING disclosure near discoveryStartedAt above. otherMs is
+      // whatever's left after the three measured stages (plan/rate lookup, cache check, dedupe/
+      // ranking, response assembly) so the three numbers plus otherMs always reconcile to
+      // totalDurationMs exactly, with nothing unaccounted for.
+      stageDurationsMs: {
+        discovery: discoveryMs,
+        holderCheck: holderCheckMs,
+        simulation: simulationMs,
+        other: Math.max(0, (Date.now() - now) - discoveryMs - holderCheckMs - simulationMs),
+      },
       cacheHit: false,
       providersAttempted: sourcesAttempted,
       providersSucceeded: sourcesSucceeded,
@@ -2247,6 +2282,7 @@ export async function GET(req: NextRequest) {
     // in server logs without needing to hit the debug query param from a browser.
     console.info(`[radar] filterFunnel mergedCount=${candidates.length} finalTokenCount=${tokens.length} hiddenLowEvidenceCount=${hiddenLowEvidenceCount}`, debugPayload.filterFunnel)
     console.info('[radar] baseRadarCandidateGateAudit', baseRadarCandidateGateAudit)
+    console.info('[radar] stageDurationsMs', baseRadarLoadAudit.stageDurationsMs)
     console.info('[radar] baseRadarSourceAudit', baseRadarSourceAudit)
     console.info(`[radar] nearMissSample (${nearMissSample.length} candidates cleared liquidity/activity, before the $80K gate)`, nearMissSample.slice(0, 30))
     // DON'T-CACHE-A-DEAD-FEED FIX, DISCLOSED (same report as the one-retry fix above): a fully

@@ -120,4 +120,21 @@ assert.match(scannerCode, /setResult\(null\)/, 'a new scan must reset the previo
     'the retry delay must be chosen from the actual first-attempt failure status, not applied blindly')
 }
 
+// ─── Performance: double-spacing fix + stage timing instrumentation (requested: "can we make it
+// faster" — Base Radar/Robinhood taking 11-12s to load) ─────────────────────────────────────────
+{
+  const routeSrc3 = fs.readFileSync(new URL('../app/api/radar/route.ts', import.meta.url), 'utf8')
+  // The redundant static inter-wave sleep must be skipped when the global gate already paces
+  // waves (Redis configured) — it stays as the fallback only when the gate is a no-op.
+  assert.match(routeSrc3, /waveStart \+ DISCOVERY_CONCURRENCY_LIMIT < sourceSpecs\.length && !redisConfigured\(\)/,
+    'the static inter-wave sleep must be skipped when the global wave gate already enforces spacing (Redis configured) — otherwise waves are spaced twice')
+  // Real per-stage timing must be captured and reconcile exactly to totalDurationMs, not estimated.
+  assert.match(routeSrc3, /const discoveryStartedAt = Date\.now\(\)/, 'discovery stage must be timed')
+  assert.match(routeSrc3, /const holderCheckStartedAt = Date\.now\(\)/, 'holder-check stage must be timed')
+  assert.match(routeSrc3, /const simulationStartedAt = Date\.now\(\)/, 'simulation stage must be timed')
+  assert.match(routeSrc3, /stageDurationsMs: \{/, 'per-stage timing must be surfaced in baseRadarLoadAudit')
+  assert.match(routeSrc3, /other: Math\.max\(0, \(Date\.now\(\) - now\) - discoveryMs - holderCheckMs - simulationMs\)/,
+    'the four stage durations must reconcile exactly to the real total, leaving nothing unaccounted for')
+}
+
 console.log('test-base-radar-chain-strict.mjs: all assertions passed')
