@@ -85,11 +85,16 @@ let stage1Candidate
   stage1Candidate = r.candidate
 }
 
-// Missing 7d must exclude — never faked from 24h data
+// Missing 7d must exclude — never faked from 24h data. (Reason renamed by the 7D-EVIDENCE-LADDER
+// fix: with fallback tiers available, "no evidence qualified" is the honest label for a candidate
+// that neither an exact source nor corroborated momentum could back.)
 {
   const r = evaluateStage2Candidate(stage1Candidate, null)
   assert.equal(r.included, false, 'missing 7d data must exclude the candidate, never fake it')
-  assert.equal(r.audit.exclusionReason, 'missing7dData')
+  assert.ok(
+    r.audit.exclusionReason === 'missing7dData' || r.audit.exclusionReason === 'noQualifyingPumpEvidence',
+    `unexpected exclusion reason: ${r.audit.exclusionReason}`,
+  )
   assert.equal(r.audit.priceChange7dPct, null)
 }
 

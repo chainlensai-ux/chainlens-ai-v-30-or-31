@@ -2,6 +2,16 @@ import { NextResponse } from 'next/server'
 import { getOrFetchCached } from '@/lib/coingeckoCache'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
+import {
+  PUMP_REQUIRE_EXACT_7D,
+  evaluateMomentumFallback,
+  fetchDexScreenerPairMomentum,
+  fetchCoinGeckoContractChange7d,
+  savePumpSnapshots,
+  computeSnapshotChange7d,
+  type Pump7dEvidenceAudit,
+  type SevenDayEvidenceSource,
+} from '@/lib/server/pump7dEvidence'
 
 export const dynamic = 'force-dynamic'
 const PUMP_ROUTE_CACHE_TTL_MS = 90_000
@@ -119,6 +129,13 @@ export interface PumpAlert {
   fdvUsd: number | null
   marketCapUsd: number | null
   tokenAgeDays: number | null
+  // 7D-EVIDENCE LADDER, DISCLOSED: how this candidate qualified. 'exact' = a real measured 7d
+  // change (GeckoTerminal OHLCV, CoinGecko per-contract, or ChainLens snapshots ≥5 days apart).
+  // 'momentum_fallback' = exact 7d unavailable but strong corroborated evidence (≥15% confirmed
+  // 24h move + volume acceleration ≥1.5× + real liquidity) qualified it instead — change7d stays
+  // null in that case, never faked.
+  evidenceSource: SevenDayEvidenceSource
+  evidenceGrade: 'exact' | 'momentum_fallback'
   category: PumpCategory
   reason: string
   qualifyingReason: string
@@ -268,23 +285,55 @@ export type Stage2Result =
   | { included: true; alert: PumpAlert; audit: PumpDiscoveryEligibilityAudit }
   | { included: false; audit: PumpDiscoveryEligibilityAudit }
 
-export function evaluateStage2Candidate(c: Stage1Candidate, change7d: number | null, requestId = 'n/a'): Stage2Result {
+// RESOLVED EVIDENCE, DISCLOSED: what the evidence ladder produced for one candidate before Stage 2
+// runs. Exactly one of the branches is populated. change7d is ONLY ever a real measured number —
+// momentum-fallback candidates keep it null and carry the fallback label instead.
+export type ResolvedEvidence =
+  | { kind: 'exact'; source: SevenDayEvidenceSource; change7d: number }
+  | { kind: 'momentum_fallback'; confirmedChange24hPct: number; evidenceParts: string[] }
+  | { kind: 'none' }
+
+export function evaluateStage2Candidate(
+  c: Stage1Candidate,
+  change7d: number | null,
+  requestId = 'n/a',
+  resolved?: ResolvedEvidence,
+): Stage2Result {
   const chain: PumpChain = c.chain ?? 'base'
   const chainId = CHAIN_CONFIG[chain].chainId
+  const evidence: ResolvedEvidence = resolved ?? (change7d != null ? { kind: 'exact', source: 'geckoterminal_ohlcv', change7d } : { kind: 'none' })
   const auditBase = {
     requestId, token: c.addr, chain, chainSlug: chain, chainId,
-    pairAddress: c.poolAddr, source: 'geckoterminal:ohlcv-day', symbol: c.symbol,
+    pairAddress: c.poolAddr,
+    // source reflects how the candidate actually qualified — no longer hardcoded to the OHLCV
+    // endpoint now that the ladder can qualify via CoinGecko/snapshots/momentum.
+    source: evidence.kind === 'exact'
+      ? `exact:${evidence.source}`
+      : evidence.kind === 'momentum_fallback' ? 'momentum_fallback:corroborated_24h' : 'geckoterminal:ohlcv-day',
+    symbol: c.symbol,
     fdvUsd: c.fdv, marketCapUsd: c.marketCap, liquidityUsd: c.liquidity, volume24hUsd: c.volume,
-    priceChange7dPct: change7d, priceChange24hPct: c.change24h, tokenAgeDays: c.ageDays,
+    priceChange7dPct: evidence.kind === 'exact' ? evidence.change7d : null,
+    priceChange24hPct: c.change24h, tokenAgeDays: c.ageDays,
   }
-  const qualifiesAs7dPump = change7d != null && change7d >= PUMP_ALERT_MIN_7D_CHANGE_PCT
 
-  if (!qualifiesAs7dPump) {
+  if (evidence.kind === 'none') {
     return {
       included: false,
       audit: {
         ...auditBase, category: null,
-        excluded: true, exclusionReason: change7d == null ? 'missing7dData' : 'change7dBelowMinimum',
+        excluded: true, exclusionReason: PUMP_REQUIRE_EXACT_7D ? 'missing7dData' : 'noQualifyingPumpEvidence',
+        qualifiesAsLowCap: true, qualifiesAs7dPump: false, categoryBlocked: false, finalRankScore: null,
+      },
+    }
+  }
+
+  const isMomentum = evidence.kind === 'momentum_fallback'
+  if (evidence.kind === 'exact' && evidence.change7d < PUMP_ALERT_MIN_7D_CHANGE_PCT) {
+    return {
+      included: false,
+      audit: {
+        ...auditBase, category: null,
+        excluded: true, exclusionReason: 'change7dBelowMinimum',
         qualifiesAsLowCap: true, qualifiesAs7dPump: false, categoryBlocked: false, finalRankScore: null,
       },
     }
@@ -297,7 +346,7 @@ export function evaluateStage2Candidate(c: Stage1Candidate, change7d: number | n
       audit: {
         ...auditBase, category: null,
         excluded: true, exclusionReason: 'noCategoryMatch',
-        qualifiesAsLowCap: true, qualifiesAs7dPump: true, categoryBlocked: false, finalRankScore: null,
+        qualifiesAsLowCap: true, qualifiesAs7dPump: !isMomentum, categoryBlocked: false, finalRankScore: null,
       },
     }
   }
@@ -305,13 +354,24 @@ export function evaluateStage2Candidate(c: Stage1Candidate, change7d: number | n
   const tags: string[] = []
   if (c.fdv != null && c.fdv > 0 && c.fdv < 100_000) tags.push('Microcap')
   if (c.volume == null || c.liquidity == null) tags.push('Needs Review')
+  // Evidence badge data lives on the card too — never let a fallback token look identical to an
+  // exact-7d one.
+  if (isMomentum) tags.push('7d unavailable — qualified by 24h momentum fallback')
+
+  const capLabel = c.fdv != null ? `$${(c.fdv / 1_000_000).toFixed(2)}M FDV` : `$${((c.marketCap ?? 0) / 1_000_000).toFixed(2)}M MC`
+  const qualifyingReason = isMomentum
+    ? `7d unavailable — qualified by 24h momentum fallback (+${evidence.confirmedChange24hPct.toFixed(1)}% confirmed 24h move, low-cap ${capLabel}), ${evidence.evidenceParts.join(', ')}`
+    : `+${evidence.change7d.toFixed(1)}% over 7d, low-cap (${capLabel}), $${((c.liquidity ?? 0) / 1000).toFixed(0)}K liquidity, $${((c.volume ?? 0) / 1000).toFixed(0)}K 24h volume`
 
   const alert: PumpAlert = {
     symbol: c.symbol, name: c.name, contract: c.addr, chain, chainId, pairAddress: c.poolAddr,
-    priceUsd: c.price, change24h: c.change24h, change7d,
+    priceUsd: c.price, change24h: c.change24h,
+    change7d: evidence.kind === 'exact' ? evidence.change7d : null,
     volume24hUsd: c.volume, liquidityUsd: c.liquidity, fdvUsd: c.fdv, marketCapUsd: c.marketCap,
     tokenAgeDays: c.ageDays,
-    qualifyingReason: `+${change7d.toFixed(1)}% over 7d, low-cap (${c.fdv != null ? `$${(c.fdv / 1_000_000).toFixed(2)}M FDV` : `$${((c.marketCap ?? 0) / 1_000_000).toFixed(2)}M MC`}), $${((c.liquidity ?? 0) / 1000).toFixed(0)}K liquidity, $${((c.volume ?? 0) / 1000).toFixed(0)}K 24h volume`,
+    evidenceSource: isMomentum ? 'dexscreener_momentum' : (evidence as { source: SevenDayEvidenceSource }).source,
+    evidenceGrade: isMomentum ? 'momentum_fallback' : 'exact',
+    qualifyingReason,
     ...scored,
     tags,
   }
@@ -321,7 +381,7 @@ export function evaluateStage2Candidate(c: Stage1Candidate, change7d: number | n
     audit: {
       ...auditBase, category: scored.category,
       excluded: false, exclusionReason: null,
-      qualifiesAsLowCap: true, qualifiesAs7dPump: true, categoryBlocked: false,
+      qualifiesAsLowCap: true, qualifiesAs7dPump: !isMomentum, categoryBlocked: false,
       finalRankScore: qualityScore(alert),
     },
   }
@@ -724,37 +784,148 @@ export async function GET(req: Request) {
   }
   }
 
-  // ─── Stage 2: confirm real 7-day pump performance (bounded network fan-out) ────────────────────
+  // ─── Stage 2: resolve pump evidence via the multi-source ladder ─────────────────────────────
+  // PUMP-7D-EVIDENCE-LADDER, DISCLOSED (urgent fix: one GeckoTerminal OHLCV outage zeroed the whole
+  // feed). Priority: GT OHLCV exact → CoinGecko per-contract exact → ChainLens snapshot history →
+  // DexScreener-corroborated momentum fallback. Exact sources produce a real change7d number;
+  // the momentum fallback NEVER fabricates one — it qualifies on corroborated 24h evidence and is
+  // labelled as such end-to-end.
+  const evidenceAudit: Pump7dEvidenceAudit = {
+    requestId,
+    candidatesRaw: rawCount,
+    geckoOhlcvAttempted: 0, geckoOhlcvSucceeded: 0, geckoOhlcvFailed: 0,
+    dexScreenerFallbackAttempted: 0, dexScreenerFallbackSucceeded: 0,
+    coinGeckoFallbackAttempted: 0, coinGeckoFallbackSucceeded: 0,
+    internalSnapshotFallbackAttempted: 0, internalSnapshotFallbackSucceeded: 0,
+    exact7dQualified: 0, fallbackMomentumQualified: 0,
+    excludedMissingAllMomentumEvidence: 0,
+    finalRenderedCount: 0,
+    degradedMode: false,
+    degradedReason: null,
+  }
+
+  const allScored: PumpAlert[] = []
+
   const ac7d = new AbortController()
   const tid7d = setTimeout(() => ac7d.abort(), 12_000)
+  // MERGE RESOLUTION, DISCLOSED: keeps BOTH sides — the remote's typed SevenDayChangeResult
+  // (per-attempt failure reasons powering sevenDayDataUnavailable) and this branch's evidence
+  // audit counters. The ladder below consumes changePct; the reasons still drive finalState.
   let sevenDayResults: SevenDayChangeResult[] = []
   try {
     sevenDayResults = await mapWithConcurrencyLimit(stage1Passed, SEVEN_DAY_OHLCV_CONCURRENCY_LIMIT, async c => {
-      if (!c.poolAddr) return { changePct: null, reason: 'malformed' as const }
+      if (!c.poolAddr) { evidenceAudit.geckoOhlcvFailed += 1; return { changePct: null, reason: 'malformed' as const } }
+      evidenceAudit.geckoOhlcvAttempted += 1
       // Queried against the candidate's OWN chain network — see fetchPoolSevenDayChange's disclosure.
-      return fetchPoolSevenDayChange(CHAIN_CONFIG[c.chain].gtNetwork, c.poolAddr, ac7d.signal)
+      const r = await fetchPoolSevenDayChange(CHAIN_CONFIG[c.chain].gtNetwork, c.poolAddr, ac7d.signal)
+      if (r.changePct != null) evidenceAudit.geckoOhlcvSucceeded += 1
+      else evidenceAudit.geckoOhlcvFailed += 1
+      return r
     })
   } finally {
     clearTimeout(tid7d)
   }
 
-  // SYSTEMIC-7D-FAILURE DETECTION, DISCLOSED: if every 7d attempt failed with httpError/fetchError
-  // (never tooYoung/malformed), the provider itself is down or rate-limiting — a real outage, not
-  // "no tokens qualified." Surfaced as `sevenDayDataUnavailable` so the UI can say exactly that
-  // instead of the generic "no fresh pump signals" empty state, which would otherwise be an honest
-  // filter result masquerading as a provider outage.
+  // SYSTEMIC-7D-FAILURE DETECTION (kept from origin/main): if every 7d attempt failed with
+  // httpError/fetchError (never tooYoung/malformed), the provider itself is down or rate-limiting.
+  // The ladder's degradedMode below is the broader superset — it also fires when OHLCV returned
+  // data for nobody AND fallbacks had to take over.
   const sevenDayAttempted = sevenDayResults.length
   const sevenDayProviderFailures = sevenDayResults.filter(r => r.reason === 'httpError' || r.reason === 'fetchError').length
   const sevenDayDataUnavailable = sevenDayAttempted > 0 && sevenDayProviderFailures === sevenDayAttempted
 
-  const allScored: PumpAlert[] = []
+  const acFb = new AbortController()
+  const tidFb = setTimeout(() => acFb.abort(), 8_000)
+  try {
+    const resolvedList = await mapWithConcurrencyLimit(stage1Passed, 4, async (c, i): Promise<ResolvedEvidence> => {
+      const gtChange = sevenDayResults[i]?.changePct ?? null
+      if (gtChange != null) return { kind: 'exact', source: 'geckoterminal_ohlcv' as const, change7d: gtChange }
 
-  stage1Passed.forEach((c, i) => {
-    const change7d = sevenDayResults[i]?.changePct ?? null
-    const result = evaluateStage2Candidate(c, change7d, requestId)
-    audit.push(result.audit)
-    if (result.included) allScored.push(result.alert)
-  })
+      // Exact tier 2: CoinGecko per-contract real 7d percentage (Base/Ethereum only — CoinGecko
+      // doesn't index Robinhood Chain; that skip is honest, not a failure).
+      if (c.chain === 'base' || c.chain === 'eth') {
+        evidenceAudit.coinGeckoFallbackAttempted += 1
+        const cgChange = await fetchCoinGeckoContractChange7d(c.chain, c.addr, acFb.signal)
+        if (cgChange != null) {
+          evidenceAudit.coinGeckoFallbackSucceeded += 1
+          return { kind: 'exact', source: 'coingecko_contract', change7d: cgChange }
+        }
+      }
+
+      // Exact tier 3: ChainLens-owned snapshot history (real measured window ≥5 days apart).
+      evidenceAudit.internalSnapshotFallbackAttempted += 1
+      const snap = await computeSnapshotChange7d(c.chain, c.addr)
+      if (snap.changePct != null) {
+        evidenceAudit.internalSnapshotFallbackSucceeded += 1
+        return { kind: 'exact', source: 'internal_snapshot', change7d: snap.changePct }
+      }
+
+      // Momentum fallback: DexScreener pair data corroborating a strong accelerating move. Runs
+      // ONLY for candidates that already passed every Stage 1 gate (category denylist, per-chain
+      // low-cap ceiling, liquidity/volume floors, age cap).
+      if (c.poolAddr) {
+        evidenceAudit.dexScreenerFallbackAttempted += 1
+        const ds = await fetchDexScreenerPairMomentum(c.poolAddr, acFb.signal)
+        if (ds?.ok && ds.data) {
+          evidenceAudit.dexScreenerFallbackSucceeded += 1
+          const verdict = evaluateMomentumFallback({
+            change24hPct: c.change24h,
+            volume24hUsd: c.volume,
+            liquidityUsd: c.liquidity,
+            dexscreener: ds.data,
+          })
+          if (verdict.qualified) {
+            return { kind: 'momentum_fallback', confirmedChange24hPct: verdict.confirmedChange24hPct, evidenceParts: verdict.evidenceParts }
+          }
+        }
+      }
+
+      evidenceAudit.excludedMissingAllMomentumEvidence += 1
+      return { kind: 'none' }
+    })
+    sevenDayResults = [] // superseded by resolvedList — kept name-free below
+
+    const allScoredLocal: PumpAlert[] = []
+    stage1Passed.forEach((c, i) => {
+      const result = evaluateStage2Candidate(c, null, requestId, resolvedList[i])
+      audit.push(result.audit)
+      if (result.included) {
+        allScoredLocal.push(result.alert)
+        if (result.alert.evidenceGrade === 'exact') evidenceAudit.exact7dQualified += 1
+        else evidenceAudit.fallbackMomentumQualified += 1
+      }
+    })
+    allScored.length = 0
+    allScored.push(...allScoredLocal)
+
+    // Degraded mode = the primary OHLCV source failed across the board but fallbacks still
+    // produced candidates. Surfaced so the UI can say exactly what happened instead of a bare 0.
+    const ohlcvTotalFailure = evidenceAudit.geckoOhlcvAttempted > 0 && evidenceAudit.geckoOhlcvSucceeded === 0
+    if (ohlcvTotalFailure) {
+      evidenceAudit.degradedMode = true
+      evidenceAudit.degradedReason = evidenceAudit.exact7dQualified + evidenceAudit.fallbackMomentumQualified > 0
+        ? 'GeckoTerminal OHLCV failed this cycle — candidates qualified via fallback evidence.'
+        : 'GeckoTerminal OHLCV requests failed for every candidate this cycle, and no fallback provider could confirm momentum either.'
+    }
+  } finally {
+    clearTimeout(tidFb)
+  }
+
+  // SNAPSHOT RECORDING, DISCLOSED: every refresh persists each Stage-1-passing candidate's price/
+  // liquidity/volume so future cycles gain ChainLens-owned history — over time this becomes an
+  // independent exact-7d source that no external provider outage can take down. Best-effort;
+  // failures never touch the response path.
+  void savePumpSnapshots(stage1Passed.map(c => ({
+    chain: c.chain,
+    contract: c.addr.toLowerCase(),
+    pair_address: c.poolAddr,
+    price_usd: c.price,
+    liquidity_usd: c.liquidity,
+    volume_24h_usd: c.volume,
+    fdv_usd: c.fdv,
+    market_cap_usd: c.marketCap,
+    captured_at: new Date().toISOString(),
+  })))
 
   // Quality-sort before rotation so rotation prioritises best candidates
   allScored.sort((a, b) => {
@@ -765,6 +936,11 @@ export async function GET(req: Request) {
   })
 
   const { alerts, freshCount, staleCount, fallbackUsed } = applyRotationAndDiversity(allScored)
+
+  evidenceAudit.finalRenderedCount = alerts.length
+  if (evidenceAudit.degradedMode && alerts.length === 0 && evidenceAudit.degradedReason == null) {
+    evidenceAudit.degradedReason = 'No candidate cleared the pump gate this cycle.'
+  }
 
   const countReason = (reason: string) => audit.filter(a => a.exclusionReason === reason).length
 
@@ -795,6 +971,14 @@ export async function GET(req: Request) {
     ...(sevenDayDataUnavailable ? { error: '7d pump data unavailable from provider (GeckoTerminal OHLCV requests failed for every candidate this cycle).' } : {}),
     diagnostics: process.env.NODE_ENV === 'development' ? { cacheHit: false, providerStatus, rateLimited: false } : undefined,
     pumpDiscoveryEligibilityAudit: audit,
+    // 7D-EVIDENCE AUDIT, DISCLOSED: request-level rollup of every ladder tier's attempts/successes
+    // so "why is this empty / why is it degraded" is always answerable from the response itself.
+    pump7dEvidenceAudit: {
+      ...evidenceAudit,
+      degradedReason: evidenceAudit.degradedMode && alerts.length === 0
+        ? (evidenceAudit.degradedReason ?? 'No fallback evidence qualified any candidate.')
+        : evidenceAudit.degradedReason,
+    },
     // Request-level rollup of the same eligibility decisions recorded per-candidate above.
     pumpDiscoverySummary: {
       requestId,
