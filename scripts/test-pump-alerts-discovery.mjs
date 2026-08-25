@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { evaluateStage1Candidate, evaluateStage2Candidate } from '../app/api/pump-alerts/route.ts'
+import { evaluateStage1Candidate, evaluateStage2Candidate, evaluateCandidatesInBatches } from '../app/api/pump-alerts/route.ts'
 
 // PUMP DISCOVERY QUALITY + CHAIN STRICTNESS, DISCLOSED.
 //
@@ -211,7 +211,11 @@ assert.doesNotMatch(pageCode, /catch \{\s*setAlerts\(\[\]\)\s*\}/, 'a failed ref
 
   assert.match(routeCode2, /fourteenDayDataUnavailable/, 'a systemic 14d-provider-failure signal must exist, distinct from an honest empty filter result')
   assert.match(routeCode2, /reason === 'httpError' \|\| r\.reason === 'fetchError'/, 'the 14d outage detector must only count real provider failures, never a genuinely young pool (tooYoung) as an outage')
-  assert.match(routeCode2, /finalState:.*'ok' \| 'providerUnavailable' \| 'fourteenDayUnavailable' \| 'allFilteredOut' \| 'noRawCandidates'/, 'every response must report one of the 4 truthful final states')
+  assert.match(
+    routeCode2,
+    /finalState:.*'providerUnavailable' \| 'noRawCandidates' \| 'noEligibleLowCapCandidates'/,
+    'every response must report one of the truthful, specific final states',
+  )
   assert.match(routeCode2, /pumpAlertsLoadAudit:/, 'the exact requested pumpAlertsLoadAudit object must be returned')
   for (const field of [
     'requestId', 'route', 'status', 'totalDurationMs', 'cacheHit', 'providersAttempted', 'providersSucceeded',
@@ -225,7 +229,11 @@ assert.doesNotMatch(pageCode, /catch \{\s*setAlerts\(\[\]\)\s*\}/, 'a failed ref
   // STALE-EMPTY-CACHE FIX: a degraded/empty cycle must get a short TTL, not the full 90s one —
   // otherwise a transient provider hiccup looks like "no pumps" for a minute and a half after
   // the provider has already recovered.
-  assert.match(routeCode2, /const cacheTtlMs = finalState === 'ok' \? PUMP_ROUTE_CACHE_TTL_MS : 10_000/, 'a non-ok cycle must not be cached at the full TTL')
+  assert.match(
+    routeCode2,
+    /const cacheTtlMs = finalState === 'finalRendered' \|\| finalState === 'providerDegradedPartial' \? PUMP_ROUTE_CACHE_TTL_MS : 10_000/,
+    'a non-clean-success cycle must not be cached at the full TTL',
+  )
   assert.doesNotMatch(routeCode2, /pumpCache\.set\(cacheKey, \{ exp: Date\.now\(\) \+ PUMP_ROUTE_CACHE_TTL_MS, payload \}\)/, 'the flat-TTL cache write must be gone — it is what let a degraded empty cycle be re-served for the full 90s')
 }
 
@@ -234,9 +242,12 @@ assert.doesNotMatch(pageCode, /catch \{\s*setAlerts\(\[\]\)\s*\}/, 'a failed ref
   const pageSrc2 = fs.readFileSync(new URL('../app/terminal/pump-alerts/page.tsx', import.meta.url), 'utf8')
   const pageCode2 = pageSrc2.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
   assert.match(pageCode2, /finalState === 'providerUnavailable'/, 'the empty state must distinguish a provider outage from an honest empty filter result')
-  assert.match(pageCode2, /finalState === 'fourteenDayUnavailable'/, 'the empty state must distinguish a 14d-data outage from an honest empty filter result')
   assert.match(pageCode2, /finalState === 'noRawCandidates'/, 'the empty state must distinguish zero raw candidates from over-filtering')
-  assert.match(pageCode2, /finalState === 'allFilteredOut'/, 'the empty state must name a real over-filtering result explicitly')
+  assert.match(pageCode2, /finalState === 'noEligibleLowCapCandidates'/, 'the empty state must distinguish "nothing eligible" from a budget cutoff or an exhausted search')
+  assert.match(pageCode2, /finalState === 'providerBudgetExhausted'/, 'the empty state must say when evaluation stopped early due to budget, not exhaustion')
+  assert.match(pageCode2, /finalState === 'allCandidatesExhaustedNoMomentum'/, 'the empty state must distinguish a truly exhausted search from a truncated one')
+  assert.match(pageCode2, /candidateAudit/, 'the frontend must consume the candidate-evaluation-funnel audit for the empty-state breakdown')
+  assert.match(pageCode2, /interface PumpCandidateEvaluationAudit/, 'the frontend must declare the exact candidate-evaluation audit shape')
 }
 
 // ─── Part 7: Pump Alerts quality audit (reported live: SOL/Base rendered as a low-cap pump card
@@ -309,36 +320,28 @@ for (const [symbol, name] of [
 
 // ─── Part 8: 14d-state contradiction fix (route-level static assertions) ────────────────────────
 // Reported live: a card reading "Exact 14d" rendered under a page-wide "14d pump data unavailable
-// from provider" warning in the SAME response. fourteenDayDataUnavailable/finalState/error must all be
-// reconciled against the ladder's REAL final outcome (finalRenderedCount + exact/fallback
-// qualified counts), not the pre-fallback GT-OHLCV-only snapshot.
+// from provider" warning in the SAME response. The exposed fourteenDayDataUnavailable field and
+// finalState must both be reconciled against the ladder's REAL final outcome (alerts.length +
+// exact/fallback qualified counts), never the raw pre-fallback GT-OHLCV-only signal.
 {
   const routeSrc3 = fs.readFileSync(new URL('../app/api/pump-alerts/route.ts', import.meta.url), 'utf8')
   const routeCode3 = routeSrc3.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
 
   assert.match(
     routeCode3,
-    /const fourteenDayFullyUnavailable = fourteenDayDataUnavailable && alerts\.length === 0 && totalEvidenceQualified === 0/,
-    'the global 14d-unavailable state must require BOTH zero rendered alerts AND zero qualified evidence across the whole ladder, not just the pre-fallback GT-OHLCV signal',
+    /fourteenDayDataUnavailable: fourteenDayDataUnavailable && alerts\.length === 0\s*\n\s*&& evidenceAudit\.exact14dQualified \+ evidenceAudit\.fallbackMomentumQualified === 0,/,
+    'the exposed fourteenDayDataUnavailable field must require BOTH zero rendered alerts AND zero qualified evidence across the whole ladder — a card with real evidence must never coexist with this being true',
   )
   assert.match(
     routeCode3,
-    /: fourteenDayFullyUnavailable \? 'fourteenDayUnavailable'/,
-    'finalState must key off the reconciled post-ladder blackout flag',
+    /: stage1Passed\.length === 0 \? 'noEligibleLowCapCandidates'\s*\n\s*: alerts\.length > 0 \? \(evidenceAudit\.degradedMode \? 'providerDegradedPartial' : 'finalRendered'\)\s*\n\s*: stoppedReason === 'budgetExhausted' \? 'providerBudgetExhausted'\s*\n\s*: 'allCandidatesExhaustedNoMomentum'/,
+    'finalState must key off the real post-ladder outcome (rendered alerts + why evaluation stopped), never a raw pre-fallback signal',
   )
   assert.match(
     routeCode3,
-    /fourteenDayDataUnavailable: fourteenDayFullyUnavailable,/,
-    'the exposed fourteenDayDataUnavailable field must be the reconciled flag — a card with real evidence must never coexist with this being true',
+    /fourteenDayProviderDegraded: fourteenDayDataUnavailable && alerts\.length > 0,/,
+    'a partial 14d-provider failure that still rendered results must be exposed separately from the full blackout, for a small degraded note rather than a full-page warning',
   )
-  assert.match(
-    routeCode3,
-    /\.\.\.\(fourteenDayFullyUnavailable \? \{ error:/,
-    'the page-level error message must only fire on the reconciled full blackout, never the raw pre-fallback signal',
-  )
-  // The raw pre-fallback signal must still be computed for diagnostics/degraded-note purposes, just
-  // no longer used directly to drive the user-facing error/finalState.
-  assert.match(routeCode3, /fourteenDayProviderDegraded: fourteenDayDataUnavailable && !fourteenDayFullyUnavailable/, 'a partial 14d-provider failure must be exposed separately from the full blackout, for a small degraded note rather than a full-page warning')
 }
 
 // ─── Part 9: 429-aware retry on the evidence ladder (route-level static assertions) ─────────────
@@ -382,6 +385,103 @@ for (const [symbol, name] of [
   const evidenceSrc2 = fs.readFileSync(new URL('../lib/server/pump14dEvidence.ts', import.meta.url), 'utf8')
   assert.match(evidenceSrc2, /const dexScreenerMomentumCache = new Map/, 'successful DexScreener momentum fetches must be cached for the same reason')
   assert.match(evidenceSrc2, /if \(final\?\.ok\) dexScreenerMomentumCache\.set/, 'only successful momentum fetches may be cached — failures must still retry fresh next cycle')
+}
+
+// ─── Part 11: candidate-evaluation-depth pipeline (URGENT fix request) ─────────────────────────
+// Reported live: candidatesRaw=20 but every evidence tier only ever attempted 3 — the feed went
+// dark once those 3 failed, even though 17 more raw candidates existed. evaluateCandidatesInBatches
+// is the extracted, pure, network-free stepping/stopping algorithm GET's Stage 2 actually calls —
+// these tests drive it with a fake per-batch evaluator so the exact reported scenarios are provable
+// without mocking fetch or GeckoTerminal.
+
+// 20 raw candidates, first 3 provider-fail, candidate index 7 ("the 8th candidate") qualifies —
+// evaluation must keep going past the first 3 failures and render the later winner.
+{
+  const rankedIndices = Array.from({ length: 20 }, (_, i) => i)
+  const evaluatedBatches = []
+  const outcome = await evaluateCandidatesInBatches(
+    rankedIndices,
+    { targetResults: 1, maxCandidatesEvaluated: 50, minResultsBeforeStop: 1, batchSize: 1 },
+    async batchIndices => {
+      evaluatedBatches.push(batchIndices)
+      const qualifiedInBatch = batchIndices.includes(7) ? 1 : 0
+      return { qualifiedInBatch }
+    },
+  )
+  assert.equal(outcome.stoppedReason, 'targetReached', 'evaluation must stop once the target is reached, not run past it')
+  assert.equal(outcome.qualifiedCount, 1, 'the qualifying candidate at index 7 must be counted')
+  assert.equal(outcome.evaluatedCount, 8, 'evaluation must have continued through index 7 (8 candidates), never stopping at the first 3 failures')
+  assert.deepEqual(evaluatedBatches.flat(), [0, 1, 2, 3, 4, 5, 6, 7], 'candidates must be evaluated in order, and the first 3 failing must not halt the loop')
+}
+
+// First 3 fail but more candidates remain (none of which are ever tried in a config that only
+// evaluates 3) — must be reported as budget-exhausted, never as a provider/data-unavailable blackout.
+{
+  const rankedIndices = Array.from({ length: 20 }, (_, i) => i)
+  const outcome = await evaluateCandidatesInBatches(
+    rankedIndices,
+    { targetResults: 5, maxCandidatesEvaluated: 3, minResultsBeforeStop: 5, batchSize: 3 },
+    async () => ({ qualifiedInBatch: 0 }),
+  )
+  assert.equal(outcome.evaluatedCount, 3, 'only the budget-capped 3 candidates should have been evaluated')
+  assert.equal(outcome.stoppedReason, 'budgetExhausted', 'stopping with more eligible candidates left and too few qualified must be reported as budget-exhausted, not as a provider outage')
+}
+// The route-level finalState union no longer has a "data unavailable" catch-all for this case —
+// confirm the removed literal is genuinely gone, not just renamed in a comment.
+assert.doesNotMatch(routeCode, /'fourteenDayUnavailable'/, 'the misleading blanket "14d data unavailable" finalState must be gone — replaced by specific, truthful reasons')
+
+// Provider budget genuinely exhausted (more candidates existed than the cap allowed, and too few
+// qualified) — distinct from a truly exhausted search.
+{
+  const rankedIndices = Array.from({ length: 50 }, (_, i) => i)
+  const outcome = await evaluateCandidatesInBatches(
+    rankedIndices,
+    { targetResults: 10, maxCandidatesEvaluated: 20, minResultsBeforeStop: 5, batchSize: 5 },
+    async batchIndices => ({ qualifiedInBatch: batchIndices.includes(0) ? 2 : 0 }),
+  )
+  assert.equal(outcome.evaluatedCount, 20, 'evaluation must stop at the configured MAX_CANDIDATES_EVALUATED cap')
+  assert.equal(outcome.qualifiedCount, 2, 'only the 2 qualified before the cap should count')
+  assert.equal(outcome.stoppedReason, 'budgetExhausted', '2 qualified < minResultsBeforeStop(5) with more candidates left beyond the cap must report budget-exhausted')
+}
+
+// All candidates genuinely exhausted (no truncation — every eligible candidate really was checked)
+// and none qualified — a true, complete empty result, distinct from a budget cutoff.
+{
+  const rankedIndices = Array.from({ length: 12 }, (_, i) => i)
+  const outcome = await evaluateCandidatesInBatches(
+    rankedIndices,
+    { targetResults: 10, maxCandidatesEvaluated: 50, minResultsBeforeStop: 5, batchSize: 4 },
+    async () => ({ qualifiedInBatch: 0 }),
+  )
+  assert.equal(outcome.evaluatedCount, 12, 'every eligible candidate must have been evaluated — nothing left untried')
+  assert.equal(outcome.qualifiedCount, 0)
+  assert.equal(outcome.stoppedReason, 'allCandidatesExhausted', 'a fully-evaluated pool with zero qualifiers must be reported as genuinely exhausted, not budget-exhausted')
+}
+
+// Majors/stables/wrapped assets are filtered at Stage 1 — before any evidence ladder / OHLCV call
+// is ever made for them. Reconfirmed here against the specific "filtered before OHLCV" requirement.
+{
+  const r = evaluateStage1Candidate({ ...base, symbol: 'SOL', name: 'Solana', fdv: 900_000 })
+  assert.equal(r.passed, false, 'SOL must never reach Stage 2 (the evidence/OHLCV stage) at all')
+}
+
+// High-FDV tokens are filtered at Stage 1 — before any evidence ladder / OHLCV call.
+{
+  const r = evaluateStage1Candidate({ ...base, symbol: 'WHALE', name: 'Whale Cap', fdv: 100_000_000 })
+  assert.equal(r.passed, false, 'a high-FDV token must never reach Stage 2 (the evidence/OHLCV stage) at all')
+  assert.equal(r.audit.exclusionReason, 'capExceedsLowCapCeiling')
+}
+
+// No wrong-chain pool is accepted: a candidate's chain is fixed at Stage 1 and carried unchanged
+// through Stage 2 — an ETH candidate can never be evaluated or published as Base/Robinhood.
+{
+  const r1 = evaluateStage1Candidate({ ...base, chain: 'eth', symbol: 'ETHCHK', name: 'Eth Check' })
+  assert.equal(r1.passed, true)
+  assert.equal(r1.candidate.chain, 'eth')
+  const r2 = evaluateStage2Candidate(r1.candidate, 60)
+  assert.equal(r2.included, true)
+  assert.equal(r2.alert.chain, 'eth', 'the published alert must keep the exact chain the candidate was discovered on')
+  assert.notEqual(r2.alert.chain, 'base', 'an ETH candidate must never be accepted as a Base pool')
 }
 
 console.log('test-pump-alerts-discovery.mjs: all assertions passed')

@@ -55,6 +55,23 @@ const PUMP_ALERT_MIN_24H_VOLUME_USD = envNumber('PUMP_ALERT_MIN_24H_VOLUME_USD',
 const PUMP_ALERT_MAX_TOKEN_AGE_DAYS = envOptionalNumber('PUMP_ALERT_MAX_TOKEN_AGE_DAYS')
 const PUMP_ALERT_EXCLUDE_ESTABLISHED_TOKENS = envBool('PUMP_ALERT_EXCLUDE_ESTABLISHED_TOKENS', true)
 
+// CANDIDATE-EVALUATION-DEPTH FIX, DISCLOSED (reported live: candidatesRaw=20 but every evidence
+// tier only ever attempted 3 — the whole feed went dark once those 3 failed, even though nothing
+// says the other 17 were majors/stables; Stage 1 already evaluates every raw candidate, so a small
+// stage1Passed count is a genuine "few eligible candidates this cycle" fact, not an early-stop bug
+// — but the pipeline had no way to say so, and no way to keep trying past a small qualifying set
+// when a larger one exists). These three knobs make evaluation depth explicit and tunable instead
+// of implicitly "whatever Stage 1 happened to pass":
+// - target: stop early once this many candidates have qualified (success case, don't overspend budget)
+// - max evaluated: hard ceiling so a huge stage1Passed set (never seen yet, but possible) can't run
+//   the request past its time budget
+// - min before stop: below this qualified count, an evaluation cut short by the max-evaluated
+//   ceiling is reported as budget-exhausted (there was more to try) rather than as a clean "nothing
+//   qualified" result
+const PUMP_ALERT_TARGET_RESULTS = envNumber('PUMP_ALERT_TARGET_RESULTS', 10)
+const PUMP_ALERT_MAX_CANDIDATES_EVALUATED = envNumber('PUMP_ALERT_MAX_CANDIDATES_EVALUATED', 50)
+const PUMP_ALERT_MIN_RESULTS_BEFORE_STOP = envNumber('PUMP_ALERT_MIN_RESULTS_BEFORE_STOP', 5)
+
 // Stablecoins / wrapped-majors / LST-LSD (kept from the original denylist, still symbol-exact).
 const STABLE_AND_WRAPPED_DENYLIST = new Set([
   'USDC', 'USDT', 'DAI', 'USDBC', 'WETH', 'ETH', 'CBBTC', 'BTC', 'WBTC',
@@ -424,6 +441,56 @@ async function mapWithConcurrencyLimit<T, R>(items: T[], limit: number, fn: (ite
   const workerCount = Math.min(limit, items.length)
   await Promise.all(Array.from({ length: workerCount }, () => worker()))
   return results
+}
+
+// CANDIDATE-EVALUATION-DEPTH FIX, DISCLOSED (URGENT fix request: "the backend is only attempting
+// 14d/7d/fallback momentum checks on 3 candidates out of 20 — if those 3 fail, Pump Alerts shows
+// zero results even though there may be valid candidates later in the raw list"). Extracted as a
+// pure, exported, network-free function specifically so the stopping DECISION — keep evaluating
+// until the target is hit, the eligible pool is exhausted, or the evaluation budget runs out — is
+// directly unit-testable with a fake per-batch evaluator instead of only reachable through a live
+// GET request. GET's Stage 2 below is the only real caller; evaluateBatch there does the actual
+// OHLCV/CoinGecko/snapshot/DexScreener work as a side effect and reports back how many of its batch
+// qualified.
+export type CandidateEvaluationConfig = {
+  targetResults: number
+  maxCandidatesEvaluated: number
+  minResultsBeforeStop: number
+  batchSize: number
+}
+export type CandidateEvaluationOutcome = {
+  evaluatedCount: number
+  qualifiedCount: number
+  stoppedReason: 'targetReached' | 'allCandidatesExhausted' | 'budgetExhausted'
+}
+
+export async function evaluateCandidatesInBatches(
+  rankedIndices: number[],
+  config: CandidateEvaluationConfig,
+  evaluateBatch: (batchIndices: number[]) => Promise<{ qualifiedInBatch: number }>,
+): Promise<CandidateEvaluationOutcome> {
+  const pool = rankedIndices.slice(0, config.maxCandidatesEvaluated)
+  const evaluationTruncatedByBudget = rankedIndices.length > pool.length
+
+  let evaluatedCount = 0
+  let qualifiedCount = 0
+  let stoppedReason: CandidateEvaluationOutcome['stoppedReason'] = 'allCandidatesExhausted'
+
+  for (let start = 0; start < pool.length; start += config.batchSize) {
+    const batchIndices = pool.slice(start, start + config.batchSize)
+    const { qualifiedInBatch } = await evaluateBatch(batchIndices)
+    evaluatedCount += batchIndices.length
+    qualifiedCount += qualifiedInBatch
+    if (qualifiedCount >= config.targetResults) { stoppedReason = 'targetReached'; break }
+  }
+
+  if (stoppedReason !== 'targetReached') {
+    stoppedReason = (evaluationTruncatedByBudget && qualifiedCount < config.minResultsBeforeStop)
+      ? 'budgetExhausted'
+      : 'allCandidatesExhausted'
+  }
+
+  return { evaluatedCount, qualifiedCount, stoppedReason }
 }
 
 // 14-DAY CHANGE, DISCLOSED: GeckoTerminal's /pools list endpoint only returns h24 price change —
@@ -900,123 +967,132 @@ export async function GET(req: Request) {
 
   // Timeout widened from 12s to 18s to give the 429-aware retry (up to ~2.2s per candidate, on top
   // of the request itself) room to actually complete instead of getting cut off mid-retry — see the
-  // ONE-RETRY 429-AWARE FIX disclosure on fetchPoolFourteenDayChange.
+  // ONE-RETRY 429-AWARE FIX disclosure on fetchPoolFourteenDayChange. Shared across every batch
+  // below since batches run sequentially within the same request — once it fires, every in-flight
+  // and future OHLCV fetch fails fast instead of the request running past its time budget.
   const ac14d = new AbortController()
   const tid14d = setTimeout(() => ac14d.abort(), 18_000)
-  // MERGE RESOLUTION, DISCLOSED: keeps BOTH sides — the remote's typed FourteenDayChangeResult
-  // (per-attempt failure reasons powering fourteenDayDataUnavailable) and this branch's evidence
-  // audit counters. The ladder below consumes changePct; the reasons still drive finalState.
-  // Rank by 24h volume so the scarce OHLCV budget goes to the strongest candidates first — the rest
-  // fall through to the fallback ladder rather than each getting their own doomed request.
-  const budgetRankedIndices = stage1Passed
-    .map((c, i) => i)
-    .sort((a, b) => (stage1Passed[b].volume ?? 0) - (stage1Passed[a].volume ?? 0))
-  const budgetEligible = new Set(budgetRankedIndices.slice(0, FOURTEEN_DAY_OHLCV_BUDGET_CAP))
-
-  let fourteenDayResults: FourteenDayChangeResult[] = []
-  try {
-    fourteenDayResults = await mapWithConcurrencyLimit(stage1Passed, FOURTEEN_DAY_OHLCV_CONCURRENCY_LIMIT, async (c, i) => {
-      if (!c.poolAddr) { evidenceAudit.geckoOhlcvFailed += 1; return { changePct: null, reason: 'malformed' as const } }
-      if (!budgetEligible.has(i)) { evidenceAudit.geckoOhlcvSkippedBudget += 1; return { changePct: null, reason: 'skippedBudget' as const } }
-      evidenceAudit.geckoOhlcvAttempted += 1
-      // Queried against the candidate's OWN chain network — see fetchPoolFourteenDayChange's disclosure.
-      const r = await fetchPoolFourteenDayChange(CHAIN_CONFIG[c.chain].gtNetwork, c.poolAddr, ac14d.signal)
-      if (r.changePct != null) evidenceAudit.geckoOhlcvSucceeded += 1
-      else evidenceAudit.geckoOhlcvFailed += 1
-      return r
-    })
-  } finally {
-    clearTimeout(tid14d)
-  }
-
-  // SYSTEMIC-14D-FAILURE DETECTION (kept from origin/main): if every 14d attempt failed with
-  // httpError/fetchError (never tooYoung/malformed), the provider itself is down or rate-limiting.
-  // The ladder's degradedMode below is the broader superset — it also fires when OHLCV returned
-  // data for nobody AND fallbacks had to take over.
-  // REQUEST-BUDGET CAP FIX, DISCLOSED: 'skippedBudget' entries were never actually sent to the
-  // provider, so they must be excluded from "attempted" here — counting them would silently break
-  // the outage detector the moment any candidate got skipped (fourteenDayProviderFailures could
-  // never again equal an fourteenDayAttempted total inflated by requests that were never fired).
-  const fourteenDayAttemptedResults = fourteenDayResults.filter(r => r.reason !== 'skippedBudget')
-  const fourteenDayAttempted = fourteenDayAttemptedResults.length
-  const fourteenDayProviderFailures = fourteenDayAttemptedResults.filter(r => r.reason === 'httpError' || r.reason === 'fetchError').length
-  const fourteenDayDataUnavailable = fourteenDayAttempted > 0 && fourteenDayProviderFailures === fourteenDayAttempted
-  // FAILURE-STATUS DIAGNOSTIC, DISCLOSED (reported live: the blackout message persisted across
-  // refreshes with no visibility into WHY — a sustained 429 (rate limit, recoverable via caching/
-  // backoff), a 403/401 (auth/ban, needs a different fix entirely), and a 5xx (provider genuinely
-  // down) all collapsed into the same "httpError" reason with no way to tell them apart from the
-  // response alone. Sampled (capped at 8) rather than logged for every candidate.
-  const fourteenDayFailureStatusSample = fourteenDayResults
-    .filter(r => r.httpStatus != null)
-    .slice(0, 8)
-    .map(r => r.httpStatus)
-
   // Timeout widened from 8s to 14s for the same reason — the DexScreener momentum fallback now
   // retries once on a 429, and this window covers CoinGecko + snapshot + DexScreener attempts
   // sequentially per candidate.
   const acFb = new AbortController()
   const tidFb = setTimeout(() => acFb.abort(), 14_000)
+
+  // Rank ALL stage1-passing candidates by 24h volume once — both the OHLCV sub-budget and the
+  // overall evaluation-depth cap spend their effort on the strongest, most legitimate-looking
+  // movers first.
+  const rankedStage1Indices = stage1Passed
+    .map((_, i) => i)
+    .sort((a, b) => (stage1Passed[b].volume ?? 0) - (stage1Passed[a].volume ?? 0))
+  const evaluationPool = rankedStage1Indices.slice(0, PUMP_ALERT_MAX_CANDIDATES_EVALUATED)
+  // Only the strongest FOURTEEN_DAY_OHLCV_BUDGET_CAP candidates in the pool get a live OHLCV
+  // request — GeckoTerminal's rate budget is scarcer than DexScreener/CoinGecko/snapshot, so it's
+  // reserved for the strongest movers; everyone else in the pool still gets the full fallback ladder.
+  const ohlcvBudgetEligible = new Set(evaluationPool.slice(0, FOURTEEN_DAY_OHLCV_BUDGET_CAP))
+
+  let fourteenDayAttemptedCount = 0
+  let fourteenDayProviderFailureCount = 0
+  const fourteenDayFailureStatusSample: number[] = []
+
+  // CANDIDATE-EVALUATION-DEPTH FIX, DISCLOSED (reported live: candidatesRaw=20 but every evidence
+  // tier only ever attempted 3 — the whole feed went dark once those 3 failed). This was NOT an
+  // early-stop bug: Stage 1 already evaluates every raw candidate, so a stage1Passed count of 3
+  // was a genuine "few eligible candidates existed this cycle" fact. The real gap was that nothing
+  // kept trying past whatever Stage 1 happened to pass, and the response had no way to distinguish
+  // "we tried everything eligible and truly found nothing" from "there was more we didn't get to."
+  // evaluateCandidatesInBatches (defined above, exported and independently unit-tested) drives the
+  // stop/continue decision; this closure supplies the real per-batch OHLCV/fallback work as a side
+  // effect and reports back how many of its batch actually qualified.
+  const EVAL_BATCH_SIZE = FOURTEEN_DAY_OHLCV_CONCURRENCY_LIMIT * 3
+  let outcome: CandidateEvaluationOutcome = { evaluatedCount: 0, qualifiedCount: 0, stoppedReason: 'allCandidatesExhausted' }
   try {
-    const resolvedList = await mapWithConcurrencyLimit(stage1Passed, 4, async (c, i): Promise<ResolvedEvidence> => {
-      const gtChange = fourteenDayResults[i]?.changePct ?? null
-      if (gtChange != null) return { kind: 'exact', source: 'geckoterminal_ohlcv' as const, change14d: gtChange }
+    outcome = await evaluateCandidatesInBatches(
+      rankedStage1Indices,
+      {
+        targetResults: PUMP_ALERT_TARGET_RESULTS,
+        maxCandidatesEvaluated: PUMP_ALERT_MAX_CANDIDATES_EVALUATED,
+        minResultsBeforeStop: PUMP_ALERT_MIN_RESULTS_BEFORE_STOP,
+        batchSize: EVAL_BATCH_SIZE,
+      },
+      async (batchIndices): Promise<{ qualifiedInBatch: number }> => {
+        const batch14dResults = await mapWithConcurrencyLimit(batchIndices, FOURTEEN_DAY_OHLCV_CONCURRENCY_LIMIT, async idx => {
+          const c = stage1Passed[idx]
+          if (!c.poolAddr) { evidenceAudit.geckoOhlcvFailed += 1; return { changePct: null, reason: 'malformed' as const } }
+          if (!ohlcvBudgetEligible.has(idx)) { evidenceAudit.geckoOhlcvSkippedBudget += 1; return { changePct: null, reason: 'skippedBudget' as const } }
+          evidenceAudit.geckoOhlcvAttempted += 1
+          fourteenDayAttemptedCount += 1
+          // Queried against the candidate's OWN chain network — see fetchPoolFourteenDayChange's disclosure.
+          const r = await fetchPoolFourteenDayChange(CHAIN_CONFIG[c.chain].gtNetwork, c.poolAddr, ac14d.signal)
+          if (r.changePct != null) evidenceAudit.geckoOhlcvSucceeded += 1
+          else evidenceAudit.geckoOhlcvFailed += 1
+          if (r.reason === 'httpError' || r.reason === 'fetchError') fourteenDayProviderFailureCount += 1
+          if (r.httpStatus != null && fourteenDayFailureStatusSample.length < 8) fourteenDayFailureStatusSample.push(r.httpStatus)
+          return r
+        })
 
-      // Exact tier 2: CoinGecko per-contract real 14d percentage (Base/Ethereum only — CoinGecko
-      // doesn't index Robinhood Chain; that skip is honest, not a failure).
-      if (c.chain === 'base' || c.chain === 'eth') {
-        evidenceAudit.coinGeckoFallbackAttempted += 1
-        const cgChange = await fetchCoinGeckoContractChange14d(c.chain, c.addr, acFb.signal)
-        if (cgChange != null) {
-          evidenceAudit.coinGeckoFallbackSucceeded += 1
-          return { kind: 'exact', source: 'coingecko_contract', change14d: cgChange }
-        }
-      }
+        const batchResolved = await mapWithConcurrencyLimit(batchIndices, 4, async (idx, j): Promise<ResolvedEvidence> => {
+          const c = stage1Passed[idx]
+          const gtChange = batch14dResults[j]?.changePct ?? null
+          if (gtChange != null) return { kind: 'exact', source: 'geckoterminal_ohlcv' as const, change14d: gtChange }
 
-      // Exact tier 3: ChainLens-owned snapshot history (real measured window ≥5 days apart).
-      evidenceAudit.internalSnapshotFallbackAttempted += 1
-      const snap = await computeSnapshotChange14d(c.chain, c.addr)
-      if (snap.changePct != null) {
-        evidenceAudit.internalSnapshotFallbackSucceeded += 1
-        return { kind: 'exact', source: 'internal_snapshot', change14d: snap.changePct }
-      }
-
-      // Momentum fallback: DexScreener pair data corroborating a strong accelerating move. Runs
-      // ONLY for candidates that already passed every Stage 1 gate (category denylist, per-chain
-      // low-cap ceiling, liquidity/volume floors, age cap).
-      if (c.poolAddr) {
-        evidenceAudit.dexScreenerFallbackAttempted += 1
-        const ds = await fetchDexScreenerPairMomentum(c.poolAddr, acFb.signal)
-        if (ds?.ok && ds.data) {
-          evidenceAudit.dexScreenerFallbackSucceeded += 1
-          const verdict = evaluateMomentumFallback({
-            change24hPct: c.change24h,
-            volume24hUsd: c.volume,
-            liquidityUsd: c.liquidity,
-            dexscreener: ds.data,
-          })
-          if (verdict.qualified) {
-            return { kind: 'momentum_fallback', confirmedChange24hPct: verdict.confirmedChange24hPct, evidenceParts: verdict.evidenceParts }
+          // Exact tier 2: CoinGecko per-contract real 14d percentage (Base/Ethereum only — CoinGecko
+          // doesn't index Robinhood Chain; that skip is honest, not a failure).
+          if (c.chain === 'base' || c.chain === 'eth') {
+            evidenceAudit.coinGeckoFallbackAttempted += 1
+            const cgChange = await fetchCoinGeckoContractChange14d(c.chain, c.addr, acFb.signal)
+            if (cgChange != null) {
+              evidenceAudit.coinGeckoFallbackSucceeded += 1
+              return { kind: 'exact', source: 'coingecko_contract', change14d: cgChange }
+            }
           }
-        }
-      }
 
-      evidenceAudit.excludedMissingAllMomentumEvidence += 1
-      return { kind: 'none' }
-    })
-    fourteenDayResults = [] // superseded by resolvedList — kept name-free below
+          // Exact tier 3: ChainLens-owned snapshot history (real measured window ≥12 days apart).
+          evidenceAudit.internalSnapshotFallbackAttempted += 1
+          const snap = await computeSnapshotChange14d(c.chain, c.addr)
+          if (snap.changePct != null) {
+            evidenceAudit.internalSnapshotFallbackSucceeded += 1
+            return { kind: 'exact', source: 'internal_snapshot', change14d: snap.changePct }
+          }
 
-    const allScoredLocal: PumpAlert[] = []
-    stage1Passed.forEach((c, i) => {
-      const result = evaluateStage2Candidate(c, null, requestId, resolvedList[i])
-      audit.push(result.audit)
-      if (result.included) {
-        allScoredLocal.push(result.alert)
-        if (result.alert.evidenceGrade === 'exact') evidenceAudit.exact14dQualified += 1
-        else evidenceAudit.fallbackMomentumQualified += 1
-      }
-    })
-    allScored.length = 0
-    allScored.push(...allScoredLocal)
+          // Momentum fallback: DexScreener pair data corroborating a strong accelerating move. Runs
+          // ONLY for candidates that already passed every Stage 1 gate (category denylist, per-chain
+          // low-cap ceiling, liquidity/volume floors, age cap).
+          if (c.poolAddr) {
+            evidenceAudit.dexScreenerFallbackAttempted += 1
+            const ds = await fetchDexScreenerPairMomentum(c.poolAddr, acFb.signal)
+            if (ds?.ok && ds.data) {
+              evidenceAudit.dexScreenerFallbackSucceeded += 1
+              const verdict = evaluateMomentumFallback({
+                change24hPct: c.change24h,
+                volume24hUsd: c.volume,
+                liquidityUsd: c.liquidity,
+                dexscreener: ds.data,
+              })
+              if (verdict.qualified) {
+                return { kind: 'momentum_fallback', confirmedChange24hPct: verdict.confirmedChange24hPct, evidenceParts: verdict.evidenceParts }
+              }
+            }
+          }
+
+          evidenceAudit.excludedMissingAllMomentumEvidence += 1
+          return { kind: 'none' }
+        })
+
+        let qualifiedInBatch = 0
+        batchIndices.forEach((idx, j) => {
+          const c = stage1Passed[idx]
+          const result = evaluateStage2Candidate(c, null, requestId, batchResolved[j])
+          audit.push(result.audit)
+          if (result.included) {
+            allScored.push(result.alert)
+            qualifiedInBatch += 1
+            if (result.alert.evidenceGrade === 'exact') evidenceAudit.exact14dQualified += 1
+            else evidenceAudit.fallbackMomentumQualified += 1
+          }
+        })
+        return { qualifiedInBatch }
+      },
+    )
 
     // Degraded mode = the primary OHLCV source failed across the board but fallbacks still
     // produced candidates. Surfaced so the UI can say exactly what happened instead of a bare 0.
@@ -1028,8 +1104,17 @@ export async function GET(req: Request) {
         : 'GeckoTerminal OHLCV requests failed for every candidate this cycle, and no fallback provider could confirm momentum either.'
     }
   } finally {
+    clearTimeout(tid14d)
     clearTimeout(tidFb)
   }
+  const candidatesEvaluated = outcome.evaluatedCount
+  const stoppedReason = outcome.stoppedReason
+
+  // SYSTEMIC-14D-FAILURE DETECTION (kept from origin/main): if every real 14d attempt failed with
+  // httpError/fetchError (never tooYoung/malformed/skippedBudget), the provider itself is down or
+  // rate-limiting. The ladder's degradedMode above is the broader superset — it also fires when
+  // OHLCV returned data for nobody AND fallbacks had to take over.
+  const fourteenDayDataUnavailable = fourteenDayAttemptedCount > 0 && fourteenDayProviderFailureCount === fourteenDayAttemptedCount
 
   // SNAPSHOT RECORDING, DISCLOSED: every refresh persists each Stage-1-passing candidate's price/
   // liquidity/volume so future cycles gain ChainLens-owned history — over time this becomes an
@@ -1064,29 +1149,64 @@ export async function GET(req: Request) {
 
   const countReason = (reason: string) => audit.filter(a => a.exclusionReason === reason).length
 
-  // 14D-STATE CONTRADICTION FIX, DISCLOSED (reported live: a card reading "Exact 14d" rendered
-  // alongside a page-wide "14d pump data unavailable from provider" warning for the SAME cycle).
-  // fourteenDayDataUnavailable above is a snapshot of ONLY the GeckoTerminal-OHLCV exact tier, taken
-  // BEFORE the CoinGecko/snapshot/momentum fallback ladder ran — it was then used directly to drive
-  // finalState and the page-level error, so a candidate the ladder later qualified (via any tier)
-  // still rendered under a stale claim that zero 14d evidence existed anywhere. The global blackout
-  // state must reflect the ladder's REAL final outcome: it only fires when nothing rendered AND no
-  // tier — exact or fallback — qualified a single candidate. A partial failure (some candidates
-  // still got real evidence) is a degraded-provider note, not a full-page warning — the frontend's
-  // existing pump14dEvidenceAudit.degradedMode/degradedReason note already covers that case.
-  const totalEvidenceQualified = evidenceAudit.exact14dQualified + evidenceAudit.fallbackMomentumQualified
-  const fourteenDayFullyUnavailable = fourteenDayDataUnavailable && alerts.length === 0 && totalEvidenceQualified === 0
-
-  // TRUTHFUL EMPTY STATE, DISCLOSED (URGENT audit: "counters are all 0" / "no fresh pump signals"):
-  // finalState names exactly which of the 4 real outcomes happened, so the frontend never has to
-  // infer "empty" from an empty array alone. providerUnavailable and fourteenDayUnavailable are both
-  // real outages the UI must show as errors, not as "nothing qualified this cycle".
-  const finalState: 'ok' | 'providerUnavailable' | 'fourteenDayUnavailable' | 'allFilteredOut' | 'noRawCandidates' =
+  // TRUTHFUL, SPECIFIC EMPTY-STATE FIX, DISCLOSED (URGENT fix request): finalState previously
+  // collapsed every empty-result cause — no eligible candidates, a truncated evaluation budget, and
+  // a genuinely exhausted evaluation that found nothing — into the same 'fourteenDayUnavailable' or
+  // 'allFilteredOut' label, which is exactly what produced the misleading "14d data unavailable"
+  // message reported live for a cycle where only 3 of 20 raw candidates were ever eligible for
+  // evidence checks in the first place. Each of the 5 states below names ONE real, distinguishable
+  // outcome so the frontend never has to guess which kind of empty this is:
+  // - noEligibleLowCapCandidates: nothing survived category/cap/liquidity/volume filtering at all
+  // - providerBudgetExhausted: the evaluation-depth cap cut off evidence checks before the eligible
+  //   pool was exhausted, and too few candidates had qualified yet to call it a clean result
+  // - allCandidatesExhaustedNoMomentum: every eligible candidate really was checked through the full
+  //   evidence ladder, and none qualified — a true, complete "nothing pumped this cycle"
+  // - providerDegradedPartial: candidates DID render, but only because the primary OHLCV tier failed
+  //   broadly and fallback evidence carried the cycle — still a real result, just worth flagging
+  // - finalRendered: a clean, non-degraded successful cycle
+  const finalState: 'providerUnavailable' | 'noRawCandidates' | 'noEligibleLowCapCandidates'
+    | 'providerBudgetExhausted' | 'allCandidatesExhaustedNoMomentum' | 'providerDegradedPartial' | 'finalRendered' =
     chainsSucceeded.length === 0 ? 'providerUnavailable'
-    : fourteenDayFullyUnavailable ? 'fourteenDayUnavailable'
     : rawCount === 0 ? 'noRawCandidates'
-    : alerts.length === 0 ? 'allFilteredOut'
-    : 'ok'
+    : stage1Passed.length === 0 ? 'noEligibleLowCapCandidates'
+    : alerts.length > 0 ? (evidenceAudit.degradedMode ? 'providerDegradedPartial' : 'finalRendered')
+    : stoppedReason === 'budgetExhausted' ? 'providerBudgetExhausted'
+    : 'allCandidatesExhaustedNoMomentum'
+
+  // PER-TOKEN CANDIDATE-FUNNEL AUDIT, DISCLOSED: exact shape requested — answers "why is this empty"
+  // (or "why is this small") from the response itself, at every stage of the pipeline, not just the
+  // evidence-ladder tiers. lowCapCandidates/liquidityVolumeCandidates are derived from the exclusion
+  // reasons Stage 1 already records; candidates silently skipped before Stage 1 even ran (missing
+  // token id/address, or a cross-chain dedupe hit) are not attributable to a specific funnel stage,
+  // so these two counts are a close approximation of the true funnel, not a byte-exact reconciliation.
+  const categoryFilteredCount = countReason('establishedOrCategoryBlocked')
+  const capDataMissingCount = countReason('capDataMissing')
+  const capExceedsCount = countReason('capExceedsLowCapCeiling')
+  const liquidityBelowCount = countReason('liquidityBelowMinimum')
+  const volumeBelowCount = countReason('volumeBelowMinimum')
+  const lowCapCandidatesCount = Math.max(0, rawCount - categoryFilteredCount - capDataMissingCount - capExceedsCount)
+  const liquidityVolumeCandidatesCount = Math.max(0, lowCapCandidatesCount - liquidityBelowCount - volumeBelowCount)
+  const pumpCandidateEvaluationAudit = {
+    rawCandidates: rawCount,
+    categoryFiltered: categoryFilteredCount,
+    lowCapCandidates: lowCapCandidatesCount,
+    liquidityVolumeCandidates: liquidityVolumeCandidatesCount,
+    candidatesEvaluated,
+    candidatesSkippedBeforeOhlcv: evidenceAudit.geckoOhlcvSkippedBudget,
+    geckoAttempts: evidenceAudit.geckoOhlcvAttempted,
+    geckoSuccesses: evidenceAudit.geckoOhlcvSucceeded,
+    dexFallbackAttempts: evidenceAudit.dexScreenerFallbackAttempted,
+    dexFallbackSuccesses: evidenceAudit.dexScreenerFallbackSucceeded,
+    coinGeckoAttempts: evidenceAudit.coinGeckoFallbackAttempted,
+    coinGeckoSuccesses: evidenceAudit.coinGeckoFallbackSucceeded,
+    internalSnapshotAttempts: evidenceAudit.internalSnapshotFallbackAttempted,
+    internalSnapshotSuccesses: evidenceAudit.internalSnapshotFallbackSucceeded,
+    qualifiedExact7d: evidenceAudit.exact14dQualified,
+    qualifiedMomentumFallback: evidenceAudit.fallbackMomentumQualified,
+    rejectedAfterEvidenceCheck: Math.max(0, candidatesEvaluated - evidenceAudit.exact14dQualified - evidenceAudit.fallbackMomentumQualified),
+    stoppedReason,
+    finalRenderedCount: alerts.length,
+  }
 
   const payload = {
     alerts,
@@ -1099,15 +1219,17 @@ export async function GET(req: Request) {
     chainsSucceeded,
     chainsFailed,
     // Exposed field is the RECONCILED (post-ladder) blackout flag, not the raw pre-fallback GT-only
-    // signal — see the "14D-STATE CONTRADICTION FIX" disclosure above. A rendered card with real
-    // evidence must never coexist with this being true.
-    fourteenDayDataUnavailable: fourteenDayFullyUnavailable,
+    // signal — a rendered card with real evidence must never coexist with this being true. True
+    // only when the primary tier failed AND nothing rendered AND no tier — exact or fallback —
+    // qualified a single candidate; see finalState === 'allCandidatesExhaustedNoMomentum' /
+    // 'providerBudgetExhausted' for the specific, truthful reason it's empty.
+    fourteenDayDataUnavailable: fourteenDayDataUnavailable && alerts.length === 0
+      && evidenceAudit.exact14dQualified + evidenceAudit.fallbackMomentumQualified === 0,
     // Raw GT-OHLCV-only signal, kept for diagnostics: true whenever the primary exact tier failed
     // for every attempt, independent of whether fallbacks rescued the cycle.
-    fourteenDayProviderDegraded: fourteenDayDataUnavailable && !fourteenDayFullyUnavailable,
+    fourteenDayProviderDegraded: fourteenDayDataUnavailable && alerts.length > 0,
     finalState,
     ...(chainsFailed.length > 0 ? { error: `Provider unavailable for: ${chainsFailed.join(', ')}. Showing ${chainsSucceeded.join(', ')} only.` } : {}),
-    ...(fourteenDayFullyUnavailable ? { error: '14d pump data unavailable from provider (GeckoTerminal OHLCV requests failed for every candidate this cycle, and no fallback provider could confirm momentum either).' } : {}),
     diagnostics: process.env.NODE_ENV === 'development' ? { cacheHit: false, providerStatus, rateLimited: false } : undefined,
     pumpDiscoveryEligibilityAudit: audit,
     // 14D-EVIDENCE AUDIT, DISCLOSED: request-level rollup of every ladder tier's attempts/successes
@@ -1118,6 +1240,11 @@ export async function GET(req: Request) {
         ? (evidenceAudit.degradedReason ?? 'No fallback evidence qualified any candidate.')
         : evidenceAudit.degradedReason,
     },
+    // CANDIDATE-EVALUATION-DEPTH FIX, DISCLOSED: exact shape requested — the full candidate funnel
+    // (raw -> category -> low-cap -> liquidity/volume -> evidence-evaluated -> qualified) plus
+    // exactly why evaluation stopped, so a small finalRenderedCount is never mistaken for a provider
+    // outage when it was actually a small eligible pool, a budget cutoff, or a truly clean zero.
+    pumpCandidateEvaluationAudit,
     // Request-level rollup of the same eligibility decisions recorded per-candidate above.
     pumpDiscoverySummary: {
       requestId,
@@ -1143,7 +1270,7 @@ export async function GET(req: Request) {
     pumpAlertsLoadAudit: {
       requestId,
       route: '/api/pump-alerts',
-      status: finalState === 'ok' ? 200 : (finalState === 'providerUnavailable' ? 503 : 200),
+      status: finalState === 'providerUnavailable' ? 503 : 200,
       totalDurationMs: Date.now() - now,
       cacheHit: false,
       providersAttempted: chains.map(c => `geckoterminal:${CHAIN_CONFIG[c].gtNetwork}`),
@@ -1166,7 +1293,7 @@ export async function GET(req: Request) {
         below14dThreshold: countReason('change14dBelowMinimum'),
       },
       finalState,
-      errorShownToUser: finalState === 'providerUnavailable' || finalState === 'fourteenDayUnavailable',
+      errorShownToUser: finalState === 'providerUnavailable',
     },
     _debug: {
       rawCount,
@@ -1176,17 +1303,17 @@ export async function GET(req: Request) {
       staleCount,
       selectedCount: alerts.length,
       fallbackUsed,
-      fourteenDayAttempted,
-      fourteenDayProviderFailures,
+      fourteenDayAttempted: fourteenDayAttemptedCount,
+      fourteenDayProviderFailures: fourteenDayProviderFailureCount,
       fourteenDayFailureStatusSample,
     },
   }
-  // STALE-EMPTY-CACHE FIX, DISCLOSED: a transient empty/degraded cycle (finalState !== 'ok') must
+  // STALE-EMPTY-CACHE FIX, DISCLOSED: a transient empty/degraded cycle (not finalRendered) must
   // never be cached for the full 90s TTL — that would keep serving "no signals" for a minute and a
   // half even after the provider recovers on the very next real fetch. Only a genuinely complete,
   // successful scan is cached at full TTL; anything else gets a short 10s TTL so the next request
   // retries soon instead of being permanently suppressed by its own failure.
-  const cacheTtlMs = finalState === 'ok' ? PUMP_ROUTE_CACHE_TTL_MS : 10_000
+  const cacheTtlMs = finalState === 'finalRendered' || finalState === 'providerDegradedPartial' ? PUMP_ROUTE_CACHE_TTL_MS : 10_000
   pumpCache.set(cacheKey, { exp: Date.now() + cacheTtlMs, payload })
   return NextResponse.json(payload)
 }

@@ -39,6 +39,32 @@ interface PumpAlert {
 
 type FilterKey = 'ALL' | PumpCategory
 
+// CANDIDATE-EVALUATION-DEPTH FIX, DISCLOSED (URGENT fix request): exact shape the backend now
+// returns so an empty feed always answers "why" — how many raw candidates existed, how many were
+// filtered as majors/stables/high-FDV, how many actually got evidence-checked, and whether
+// evaluation stopped early because of a budget cap rather than genuinely running out of candidates.
+interface PumpCandidateEvaluationAudit {
+  rawCandidates: number
+  categoryFiltered: number
+  lowCapCandidates: number
+  liquidityVolumeCandidates: number
+  candidatesEvaluated: number
+  candidatesSkippedBeforeOhlcv: number
+  geckoAttempts: number
+  geckoSuccesses: number
+  dexFallbackAttempts: number
+  dexFallbackSuccesses: number
+  coinGeckoAttempts: number
+  coinGeckoSuccesses: number
+  internalSnapshotAttempts: number
+  internalSnapshotSuccesses: number
+  qualifiedExact7d: number
+  qualifiedMomentumFallback: number
+  rejectedAfterEvidenceCheck: number
+  stoppedReason: 'targetReached' | 'allCandidatesExhausted' | 'budgetExhausted'
+  finalRenderedCount: number
+}
+
 const CATEGORY_LABEL: Record<PumpCategory, string> = {
   HIGH_MOMENTUM: 'High Momentum',
   VOLUME_EXPANSION: 'Vol Expansion',
@@ -456,11 +482,16 @@ export default function PumpAlertsPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [feedError, setFeedError] = useState<string | null>(null)
-  // TRUTHFUL EMPTY STATE (origin/main) + DEGRADED MODE (14d fallback fix), MERGED: finalState drives
-  // which of the real empty-state messages renders; degradedNote fires when the scan succeeded but
-  // the primary 14d provider failed and fallback evidence took over.
-  const [finalState, setFinalState] = useState<'ok' | 'providerUnavailable' | 'fourteenDayUnavailable' | 'allFilteredOut' | 'noRawCandidates' | null>(null)
+  // TRUTHFUL, SPECIFIC EMPTY STATE (URGENT fix request): finalState drives which of the real
+  // empty-state messages renders; degradedNote fires when the scan succeeded but the primary 14d
+  // provider failed and fallback evidence took over. candidateAudit backs the "why is this empty"
+  // breakdown so a small/zero result is never presented as an undifferentiated "no pump signals".
+  const [finalState, setFinalState] = useState<
+    'providerUnavailable' | 'noRawCandidates' | 'noEligibleLowCapCandidates'
+    | 'providerBudgetExhausted' | 'allCandidatesExhaustedNoMomentum' | 'providerDegradedPartial' | 'finalRendered' | null
+  >(null)
   const [degradedNote, setDegradedNote] = useState<string | null>(null)
+  const [candidateAudit, setCandidateAudit] = useState<PumpCandidateEvaluationAudit | null>(null)
   const [countdown, setCountdown] = useState(120)
   const [activeFilter, setActiveFilter] = useState<FilterKey>('ALL')
   const [refreshKey, setRefreshKey] = useState(0)
@@ -516,6 +547,7 @@ export default function PumpAlertsPage() {
           // A partial scan still returns real alerts — show them AND say which chains are missing.
           setFeedError(typeof json.error === 'string' ? json.error : null)
           setFinalState(typeof json.finalState === 'string' ? json.finalState : null)
+          setCandidateAudit(json.pumpCandidateEvaluationAudit && typeof json.pumpCandidateEvaluationAudit === 'object' ? json.pumpCandidateEvaluationAudit : null)
           // Degraded-mode note from the 14d evidence ladder: shown even when candidates rendered,
           // so fallback-qualified feeds are never mistaken for fully-sourced ones.
           const audit14d = json.pump14dEvidenceAudit as { degradedMode?: boolean; degradedReason?: string | null; exact14dQualified?: number; fallbackMomentumQualified?: number } | undefined
@@ -905,28 +937,67 @@ export default function PumpAlertsPage() {
             </div>
           )}
 
-          {/* Empty state — MERGED: origin/main's truthful finalState reasons + the fallback fix's
-              degraded-mode messaging. An outage never reads as "nothing pumped". */}
+          {/* TRUTHFUL, SPECIFIC EMPTY STATE, DISCLOSED (URGENT fix request): 5 distinguishable empty
+              reasons instead of a single undifferentiated "no pump signals" — and, whenever the
+              backend sent one, the full candidate funnel breakdown so "why is this empty" never
+              requires a second round-trip to ask. An outage never reads as "nothing pumped". */}
           {!loading && filtered.length === 0 && (
             <div style={{ textAlign: 'center', padding: '48px 20px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
-              <div style={{ fontSize: '32px', marginBottom: '14px', opacity: 0.35 }}>{degradedNote || finalState === 'providerUnavailable' || finalState === 'fourteenDayUnavailable' ? '◐' : '◈'}</div>
+              <div style={{ fontSize: '32px', marginBottom: '14px', opacity: 0.35 }}>{degradedNote || finalState === 'providerUnavailable' ? '◐' : '◈'}</div>
               <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 6px', color: '#64748b' }}>
                 {activeFilter !== 'ALL' && activeFilter in CATEGORY_LABEL
                   ? `No ${CATEGORY_LABEL[activeFilter as PumpCategory]} signals right now.`
                   : degradedNote ? 'No pump signals could be verified this cycle.'
                   : finalState === 'providerUnavailable' ? 'Providers failed — could not reach GeckoTerminal for any requested chain.'
-                  : finalState === 'fourteenDayUnavailable' ? '14d pump data unavailable from provider this cycle.'
                   : finalState === 'noRawCandidates' ? 'No candidates found — providers returned zero pools for the requested chains.'
-                  : finalState === 'allFilteredOut' ? 'All candidates filtered — none met the low-cap + confirmed pump criteria this cycle.'
+                  : finalState === 'noEligibleLowCapCandidates' ? 'No eligible low-cap candidates this cycle — everything found was a major, stable, wrapped asset, or over the FDV ceiling.'
+                  : finalState === 'providerBudgetExhausted' ? 'Evaluation budget reached before enough candidates could be checked this cycle.'
+                  : finalState === 'allCandidatesExhaustedNoMomentum' ? 'Checked every eligible candidate this cycle — none confirmed a real pump.'
                   : 'No fresh pump signals passed the quality filter.'}
               </p>
-              <p style={{ fontSize: '11px', margin: 0, color: '#3a5268' }}>
+              <p style={{ fontSize: '11px', margin: '0 0 14px', color: '#3a5268' }}>
                 {degradedNote
                   ? 'The primary 14-day provider failed and no fallback provider confirmed momentum this cycle. Refresh shortly — fallback evidence (DexScreener momentum, ChainLens snapshots) is used automatically whenever this happens.'
-                  : finalState === 'providerUnavailable' || finalState === 'fourteenDayUnavailable'
+                  : finalState === 'providerUnavailable'
                     ? 'This is a provider issue, not a filtering result — try refreshing shortly.'
-                    : 'Try refreshing or widening the watchlist.'}
+                    : finalState === 'providerBudgetExhausted'
+                      ? 'There may be more real candidates the next refresh will reach — this cycle stopped early to stay within its evaluation budget, not because nothing else exists.'
+                      : 'Try refreshing or widening the watchlist.'}
               </p>
+              {/* CANDIDATE-FUNNEL BREAKDOWN, DISCLOSED: only shown for a real empty result (not a
+                  category filter with 0 matches) and only when the backend actually sent one. */}
+              {activeFilter === 'ALL' && candidateAudit && (
+                <div style={{
+                  display: 'inline-grid', gridTemplateColumns: 'repeat(3, minmax(120px, 1fr))', gap: '6px',
+                  padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,255,255,0.02)',
+                  border: '1px solid rgba(255,255,255,0.06)', fontSize: '9.5px', textAlign: 'left',
+                }}>
+                  {[
+                    ['Raw candidates', candidateAudit.rawCandidates],
+                    ['Filtered: major/stable', candidateAudit.categoryFiltered],
+                    ['Passed low-cap filter', candidateAudit.lowCapCandidates],
+                    ['Passed liquidity/volume', candidateAudit.liquidityVolumeCandidates],
+                    ['Evidence-checked', candidateAudit.candidatesEvaluated],
+                    ['Skipped (OHLCV budget)', candidateAudit.candidatesSkippedBeforeOhlcv],
+                    ['GeckoTerminal', `${candidateAudit.geckoSuccesses}/${candidateAudit.geckoAttempts}`],
+                    ['DexScreener', `${candidateAudit.dexFallbackSuccesses}/${candidateAudit.dexFallbackAttempts}`],
+                    ['CoinGecko', `${candidateAudit.coinGeckoSuccesses}/${candidateAudit.coinGeckoAttempts}`],
+                    ['Snapshots', `${candidateAudit.internalSnapshotSuccesses}/${candidateAudit.internalSnapshotAttempts}`],
+                    ['Qualified (exact)', candidateAudit.qualifiedExact7d],
+                    ['Qualified (momentum)', candidateAudit.qualifiedMomentumFallback],
+                  ].map(([label, value]) => (
+                    <div key={label as string} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                      <span style={{ color: '#3a5268', letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: '8px' }}>{label}</span>
+                      <span style={{ color: '#7c94ab', fontWeight: 700 }}>{value}</span>
+                    </div>
+                  ))}
+                  <div style={{ gridColumn: '1 / -1', marginTop: '4px', paddingTop: '6px', borderTop: '1px solid rgba(255,255,255,0.06)', color: '#3a5268' }}>
+                    Stopped: {candidateAudit.stoppedReason === 'targetReached' ? 'target reached'
+                      : candidateAudit.stoppedReason === 'budgetExhausted' ? 'evaluation budget exhausted'
+                      : 'all eligible candidates exhausted'}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
