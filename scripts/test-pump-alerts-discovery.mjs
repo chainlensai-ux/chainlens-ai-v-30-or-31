@@ -709,6 +709,15 @@ assert.doesNotMatch(routeCode, /'fourteenDayUnavailable'/, 'the misleading blank
   assert.match(evidenceCode14, /export type CoinGeckoContractLookup = \{ change14d: number \| null; marketCapUsd: number \| null \}/, 'CoinGecko lookup must expose a real, provider-sourced market cap alongside the 14d change')
   assert.match(routeCode14, /if \(c\.marketCap == null && cgLookup\.marketCapUsd != null\) c\.marketCap = cgLookup\.marketCapUsd/, 'market cap must only be filled from a real provider response, and only when GeckoTerminal did not already have one')
 
+  // Market cap verification, round 2: a DexScreener fill pass covers live-momentum candidates on
+  // every chain (including Robinhood, which CoinGecko cannot), sourced from DexScreener's own
+  // marketCap field, never derived, and only applied to alerts still missing it after GeckoTerminal/
+  // CoinGecko, never overwriting a value already resolved.
+  assert.match(routeCode14, /const marketCapFillTargets = alerts\.filter\(a => a\.marketCapUsd == null && a\.pairAddress\)/, 'the market-cap fill pass must only target alerts still missing a real value')
+  assert.match(routeCode14, /fetchDexScreenerPairMomentum\(alert\.pairAddress as string, acMcap\.signal\)/, 'route must use the real DexScreener pair fetch to verify market cap')
+  assert.match(routeCode14, /if \(result\?\.ok && dsMarketCap != null\) alert\.marketCapUsd = dsMarketCap/, 'market cap must only be set from a successful, real DexScreener response')
+  assert.match(evidenceCode14, /marketCapUsd: num\(pair\.marketCap\)/, 'DexScreener pair parsing must read the provider\'s own marketCap field')
+
   // Discovery logic untouched: the hard rule this whole task was bound by.
   assert.match(routeCode14, /export function evaluateStage1Candidate/, 'Stage 1 discovery function must be untouched and still exported')
   assert.match(routeCode14, /export function evaluateStage2Candidate/, 'Stage 2 discovery function must be untouched and still exported')

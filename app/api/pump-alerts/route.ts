@@ -5,6 +5,7 @@ import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
 import {
   PUMP_REQUIRE_EXACT_14D,
   fetchCoinGeckoContractChange14d,
+  fetchDexScreenerPairMomentum,
   savePumpSnapshots,
   computeSnapshotChange14d,
   type Pump14dEvidenceAudit,
@@ -1275,6 +1276,33 @@ export async function GET(req: Request) {
   })
 
   const { alerts, freshCount, staleCount, fallbackUsed } = applyRotationAndDiversity(allScored)
+
+  // MARKET-CAP VERIFICATION FIX, DISCLOSED (requested: "marcket caps arnt verfied on there" — cards
+  // were showing "MCap unavailable" for nearly everything). Root cause: GeckoTerminal's pool data
+  // only carries market_cap_usd when a token has a verified circulating supply, which most freshly
+  // launched pump tokens don't have — and the CoinGecko contract fallback added earlier only fires
+  // for candidates that both reach the exact-evidence tier AND are on Base/Ethereum, so live-momentum
+  // candidates (the majority once GT OHLCV fails) never got a second attempt at all.
+  // DexScreener's own pair payload reports marketCap directly — a real, provider-computed figure,
+  // never derived here — and covers every chain this route supports (unlike CoinGecko, which doesn't
+  // index Robinhood Chain at all). Run only on the small final `alerts` list (after rotation/
+  // diversity, never on the full scored pool) and only for alerts GeckoTerminal/CoinGecko didn't
+  // already resolve, so this stays cheap and never overwrites a value already sourced. Still leaves
+  // marketCapUsd honestly null — "MCap unavailable" in the UI — for any token no provider has priced.
+  const marketCapFillTargets = alerts.filter(a => a.marketCapUsd == null && a.pairAddress)
+  if (marketCapFillTargets.length > 0) {
+    const acMcap = new AbortController()
+    const tidMcap = setTimeout(() => acMcap.abort(), 10_000)
+    try {
+      await mapWithConcurrencyLimit(marketCapFillTargets, 4, async alert => {
+        const result = await fetchDexScreenerPairMomentum(alert.pairAddress as string, acMcap.signal)
+        const dsMarketCap = result?.data?.marketCapUsd
+        if (result?.ok && dsMarketCap != null) alert.marketCapUsd = dsMarketCap
+      })
+    } finally {
+      clearTimeout(tidMcap)
+    }
+  }
 
   evidenceAudit.finalRenderedCount = alerts.length
   if (evidenceAudit.degradedMode && alerts.length === 0 && evidenceAudit.degradedReason == null) {

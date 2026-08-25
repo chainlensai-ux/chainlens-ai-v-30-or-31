@@ -70,6 +70,11 @@ export type MomentumFallbackInput = {
     volume6hUsd: number | null
     liquidityUsd: number | null
     priceUsd: number | null
+    // MARKET-CAP VERIFICATION FIX, DISCLOSED: DexScreener's own pair payload reports marketCap/fdv
+    // directly (real, provider-computed values — never derived here). Optional so existing callers
+    // that don't need them (evaluateMomentumFallback ignores these) stay unaffected.
+    marketCapUsd?: number | null
+    fdvUsd?: number | null
   } | null
 }
 
@@ -185,6 +190,10 @@ async function fetchDexScreenerPairMomentumOnce(pairAddress: string, signal: Abo
           return num(liq?.usd)
         })(),
         priceUsd: num(pair.priceUsd),
+        // MARKET-CAP VERIFICATION FIX, DISCLOSED: DexScreener reports marketCap and fdv directly on
+        // the pair object — a real, provider-computed value, not something derived here.
+        marketCapUsd: num(pair.marketCap),
+        fdvUsd: num(pair.fdv),
       },
     }
   } catch {
