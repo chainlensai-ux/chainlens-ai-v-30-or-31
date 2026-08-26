@@ -1114,7 +1114,6 @@ export async function GET(req: NextRequest) {
   for (const r of sourceResults) {
     sourceCounts[r.key] = r.count
     if (r.data) {
-      sourcesSucceeded += 1
       sourcePayloads.push(r.data)
     }
     if (!r.ok) {
@@ -1122,6 +1121,21 @@ export async function GET(req: NextRequest) {
       failedSourceKeys.push(r.key)
     }
   }
+  // SUCCEEDED-VS-NONEMPTY FIX, DISCLOSED (bug hunt while investigating "Base/Robinhood radar can't
+  // find nothing": sourcesSucceeded used to increment only when r.data was truthy — and r.data is
+  // set to null whenever a page's real HTTP 200 response simply had 0 pools (see FAILED-SOURCE-VS-
+  // GENUINELY-EMPTY above, which introduced r.ok as the correct "did we actually reach GeckoTerminal"
+  // signal but left this older counter on the old, wrong semantics "since existing cache-write logic
+  // depends on it"). That meant a cycle where every page's real, successful response just happened to
+  // have 0 pools (routine for Robinhood — a much smaller chain that runs out of real pools well before
+  // page 5 of new_pools/trending/volume) was indistinguishable from GeckoTerminal being completely
+  // unreachable: sourcesSucceeded stayed 0, finalState became 'providerUnavailable' (wrong — nothing
+  // failed, the pages just paginated past the end), the cycle never got cached (cache write is gated
+  // on sourcesSucceeded > 0), and the stale-serve-on-total-failure fallback a few lines down never had
+  // anything to fall back to either, because a real success was never recorded as one. sourcesSucceeded
+  // now uses the same r.ok signal pagesSucceeded already uses below — a real HTTP success, whether or
+  // not that particular page happened to be empty.
+  sourcesSucceeded = sourceResults.filter(r => r.ok).length
   const discoveryDegraded = sourcesFailedCount > 0
   // SIGNIFICANT-VS-MINOR-DEGRADATION FIX, DISCLOSED (explicitly requested: "Only show degraded
   // empty state if all/most source pages fail" — the prior version flagged the UI's degraded
@@ -1133,12 +1147,8 @@ export async function GET(req: NextRequest) {
   // but doesn't override the real gate-driven explanation.
   const discoveryDegradedSignificant = sourcesFailedCount >= Math.ceil(sourcesAttempted / 2)
   // PAGES-SUCCEEDED/FAILED, DISCLOSED: `ok` (a real HTTP 200 vs. a real failure) is the authoritative
-  // per-page success signal for the new baseRadarDiscoverySourceAudit — distinct from the legacy
-  // `sourcesSucceeded` counter above (incremented only when `r.data` is truthy, i.e. a successful
-  // page that also had >0 pools; a successful-but-genuinely-empty page doesn't increment it). Left
-  // that legacy counter's semantics untouched since existing cache-write logic depends on it;
-  // pagesSucceeded/pagesFailed here answer "did the HTTP request itself succeed," which is what the
-  // requested audit shape asks for.
+  // per-page success signal for baseRadarDiscoverySourceAudit — now the same signal `sourcesSucceeded`
+  // above uses too, per the SUCCEEDED-VS-NONEMPTY fix.
   const pagesSucceeded = sourceResults.filter(r => r.ok).length
   const pagesFailed = sourceResults.filter(r => !r.ok).length
   const failedPages = sourceResults.filter(r => !r.ok).map(r => ({
