@@ -1863,10 +1863,43 @@ function deriveClusterEdgeColor(edge: ClusterEdge): string {
 function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { clusterMap: ClusterMap | null; devIntel?: DevWalletIntel | null; holderDistribution?: { topHolders?: Array<{ rank?: number | null; address?: string | null; percent?: number | null }> } | null }) {
   const fmt = (addr: string | null | undefined) => addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '—'
   const map = clusterMap
-  const nodes = map?.nodes ?? []
-  const edges = map?.edges ?? []
+  // PERF FIX, DISCLOSED (audit: Cluster Map tab pegged a CPU core / froze the page): nodes/edges
+  // were freshly-allocated arrays on every render, used by reference as the physics-simulation
+  // effect's deps below. Since the effect always ends by calling setSimPositions(new Map()) — a new
+  // object every time — React never bailed out: render -> new nodes/edges array -> effect deps
+  // "changed" -> effect reruns the 280-iteration O(n^2) simulation -> setState -> render -> repeat,
+  // forever, on every render for any reason (even one unrelated to the cluster data itself).
+  // useMemo keyed on the actual `map` prop makes nodes/edges stable across renders where the
+  // underlying cluster data hasn't changed, so the effect only reruns when it should.
+  const nodes = useMemo(() => map?.nodes ?? [], [map])
+  const edges = useMemo(() => map?.edges ?? [], [map])
   const summary = map?.summary ?? null
   const [selectedClusterNodeId, setSelectedClusterNodeId] = useState<string | null>(null)
+  // COPY FEEDBACK FIX, DISCLOSED (audit: this button gave zero feedback on click — label was
+  // permanently "COPY", and the optional-chain on navigator.clipboard meant a silent no-op in a
+  // non-secure context too, indistinguishable from a working copy).
+  const [copiedClusterAddress, setCopiedClusterAddress] = useState<string | null>(null)
+  const copyClusterAddress = async (address: string) => {
+    try {
+      if (typeof window === 'undefined') return
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(address)
+      } else {
+        const textArea = document.createElement('textarea')
+        textArea.value = address
+        textArea.setAttribute('readonly', '')
+        textArea.style.position = 'fixed'
+        textArea.style.opacity = '0'
+        textArea.style.pointerEvents = 'none'
+        document.body.appendChild(textArea)
+        textArea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textArea)
+      }
+      setCopiedClusterAddress(address)
+      window.setTimeout(() => setCopiedClusterAddress((prev) => (prev === address ? null : prev)), 1500)
+    } catch { /* best-effort — clipboard access can be denied, never fatal */ }
+  }
   const [hoveredClusterNodeId, setHoveredClusterNodeId] = useState<string | null>(null)
   const [clusterTooltipPos, setClusterTooltipPos] = useState<{x:number;y:number}|null>(null)
   const [simPositions, setSimPositions] = useState<Map<string,{x:number;y:number}>>(() => new Map())
@@ -1893,7 +1926,10 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
   const deployer = nodes.find((node) => node.type === 'deployer')
   const ordered = deployer ? [deployer, ...linked, ...cluster, ...holders] : [...linked, ...cluster, ...holders]
   const holderRows = holderDistribution?.topHolders ?? devIntel?.holderDistribution?.topHolders ?? []
-  const graphEdges: GraphEdge[] = edges.flatMap((edge, index) => {
+  // PERF FIX, DISCLOSED: memoized for the same reason nodes/edges are above — graphEdges is the
+  // other dependency of the physics-simulation effect below and must be reference-stable across
+  // renders where `edges`/`nodes` haven't actually changed.
+  const graphEdges: GraphEdge[] = useMemo(() => edges.flatMap((edge, index) => {
     const source = edge.source ?? edge.from ?? null
     const target = edge.target ?? edge.to ?? null
     const reason = edge.reason ?? 'Relationship signal detected'
@@ -1917,8 +1953,15 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
       opacity: clamp(confidenceOpacity(confidence), 0.1, 1),
       width: edgeWidthFor(weight),
     }]
-  })
+  }), [edges, nodes]) // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { clusterIsTouch.current = typeof window !== 'undefined' && window.matchMedia('(hover: none)').matches }, [])
+  // RULES-OF-HOOKS FIX, DISCLOSED (audit/lint: this ref + its cleanup effect were originally
+  // declared further down, after this component's early `if (!map || ...) return (...)` guard —
+  // a real conditional-hook-call bug (react-hooks/rules-of-hooks) that would only misbehave when
+  // the early-return branch was taken on one render and not the next. Hoisted above the guard,
+  // alongside every other hook in this component, so they're always called in the same order.
+  const edgePointerRaf = useRef<number | null>(null)
+  useEffect(() => () => { if (edgePointerRaf.current != null) cancelAnimationFrame(edgePointerRaf.current) }, [])
   useEffect(() => {
     if (!nodes.length) { setSimPositions(new Map()); return }
     const n = nodes.length
@@ -2156,11 +2199,24 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
     return { status: events[0]?.type === 'open_check' ? 'unavailable_with_reason' : map.status, mode: hasTimestamp ? 'timestamped' : events[0]?.type === 'open_check' ? 'open_check' : 'ordered', events: sorted.slice(0, 14) }
   })()
 
+  // PERF FIX, DISCLOSED (audit: mousemove over cluster-map edges forced a layout read via
+  // getBoundingClientRect() plus two setStates on every pointer sample — mousemove can fire at
+  // well over 60/s, so this was doing a forced reflow far more often than the screen can even
+  // repaint). rAF-throttled to at most once per frame; the trailing move always wins so the
+  // tooltip still tracks the cursor smoothly. (edgePointerRaf itself is declared above, before the
+  // early-return guard — see the rules-of-hooks fix note there.)
   const handleEdgePointer = (edgeId: string, event: MouseEvent<SVGPathElement>) => {
     event.stopPropagation()
-    const rect = event.currentTarget.ownerSVGElement?.getBoundingClientRect()
-    setHoveredClusterEdgeId(edgeId)
-    setEdgeTooltipPosition(rect ? { x: event.clientX - rect.left + 12, y: event.clientY - rect.top + 12 } : null)
+    const svg = event.currentTarget.ownerSVGElement
+    const clientX = event.clientX
+    const clientY = event.clientY
+    if (edgePointerRaf.current != null) cancelAnimationFrame(edgePointerRaf.current)
+    edgePointerRaf.current = requestAnimationFrame(() => {
+      edgePointerRaf.current = null
+      const rect = svg?.getBoundingClientRect()
+      setHoveredClusterEdgeId(edgeId)
+      setEdgeTooltipPosition(rect ? { x: clientX - rect.left + 12, y: clientY - rect.top + 12 } : null)
+    })
   }
   const clearEdgeHover = () => {
     setHoveredClusterEdgeId(null)
@@ -2357,7 +2413,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
                   <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.13em', color:'#64748b', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>WALLET ADDRESS</p>
                   <div style={{ display:'flex', gap:'8px', alignItems:'center', justifyContent:'space-between' }}>
                     <span title={selectedClusterNode.address} style={{ color:'#e2e8f0', fontSize:'12px', fontFamily:'var(--font-plex-mono)', fontWeight:800 }}>{fmt(selectedClusterNode.address)}</span>
-                    <button type="button" onClick={() => { void navigator.clipboard?.writeText(selectedClusterNode.address) }} style={{ padding:'5px 8px', borderRadius:'8px', border:'1px solid rgba(45,212,191,.28)', background:'rgba(45,212,191,.08)', color:'#2dd4bf', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', cursor:'pointer' }}>COPY</button>
+                    <button type="button" onClick={() => { void copyClusterAddress(selectedClusterNode.address) }} style={{ padding:'5px 8px', borderRadius:'8px', border:'1px solid rgba(45,212,191,.28)', background:'rgba(45,212,191,.08)', color:'#2dd4bf', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', cursor:'pointer' }}>{copiedClusterAddress === selectedClusterNode.address ? 'COPIED' : 'COPY'}</button>
                   </div>
                 </div>
                 <section style={{ display:'grid', gap:'7px' }}>
@@ -3581,262 +3637,6 @@ type CortexScoreResult = {
   }
 }
 
-function calculateCortexScore(result: ScanResult): CortexScoreResult {
-  const hp         = result.honeypot
-  const liq        = result.liquidity ?? 0
-  const holderState = deriveHolderState(result)
-  const lpStatus   = result.lpControl?.status
-  const lpMode = getLpMode(result)
-  const top1       = result.holderDistribution?.top1  ?? null
-  const top10      = result.holderDistribution?.top10 ?? null
-  const top20      = result.holderDistribution?.top20 ?? null
-  const buyTax     = hp?.buyTax  ?? 0
-  const sellTax    = hp?.sellTax ?? 0
-  const taxHigh    = buyTax > 8 || sellTax > 8
-
-  let pts = 50
-
-  // ── Market ──────────────────────────────────────────────────────────────
-  let marketPts = 0, marketStatus = 'unavailable', marketReason = 'No market data available.'
-  if (result.noActivePools) {
-    marketPts = -15; marketReason = 'No active pool — price and market data unavailable.'
-  } else {
-    if (result.price     != null) marketPts += 10
-    if (result.liquidity != null) marketPts += 8
-    if (result.volume24h != null) marketPts += 6
-    if (result.marketCapUsd != null) {
-      marketPts += 6; marketStatus = 'ok'; marketReason = 'Live price, liquidity, and verified market cap available.'
-    } else {
-      marketPts -= 8; marketStatus = 'partial'; marketReason = 'Market data present but market cap not confirmed.'
-    }
-    if (result.price == null && result.liquidity == null) {
-      marketStatus = 'unavailable'; marketReason = 'No price or liquidity data returned.'
-    }
-  }
-  pts += marketPts
-
-  // ── Liquidity ────────────────────────────────────────────────────────────
-  let liqPts = 0, liqStatus = 'unavailable', liqReason = 'Liquidity unavailable.'
-  if (liq >= 100_000)      { liqPts = 12;  liqStatus = 'ok';          liqReason = `Deep liquidity — ${fmtLarge(liq)}.` }
-  else if (liq >= 25_000)  { liqPts = 8;   liqStatus = 'ok';          liqReason = `Moderate liquidity — ${fmtLarge(liq)}.` }
-  else if (liq >= 5_000)   { liqPts = 4;   liqStatus = 'partial';     liqReason = `Thin liquidity — ${fmtLarge(liq)}.` }
-  else if (liq > 0)        { liqPts = -10; liqStatus = 'unavailable'; liqReason = `Very thin liquidity — ${fmtLarge(liq)}.` }
-  else                     { liqPts = -10; liqStatus = 'unavailable'; liqReason = 'No liquidity data available.' }
-  pts += liqPts
-
-  // ── Holders ──────────────────────────────────────────────────────────────
-  let holderPts = 0, holderStatus = 'unavailable', holderReason = 'Holder concentration not confirmed.'
-  if (holderState.kind === 'rowsWithPercent') {
-    holderPts = 10; holderStatus = 'ok'; holderReason = 'Holder percentages verified.'
-    if (top10 != null && top10 > 50) {
-      holderPts -= 15; holderReason = `Top 10 hold ${top10.toFixed(1)}% — high concentration.`
-    } else if (top20 != null && top20 > 60) {
-      holderPts -= 5; holderReason = `Top 20 hold ${top20.toFixed(1)}% — elevated concentration.`
-    }
-    if (top1 != null && top1 > 20) {
-      holderPts -= 8; holderReason += ` Single wallet holds ${top1.toFixed(1)}%.`
-    }
-  } else if (holderState.kind === 'rowsWithoutPercent') {
-    holderPts = 5; holderStatus = 'partial'; holderReason = 'Holder wallets found — percentages unconfirmed.'
-  } else {
-    holderPts = -12; holderReason = 'Holder concentration not confirmed — open risk.'
-  }
-  pts += holderPts
-
-  // ── Security ─────────────────────────────────────────────────────────────
-  let secPts = 0, secStatus = 'unavailable', secReason = 'Security simulation unavailable.'
-  if (hp?.isHoneypot === true) {
-    secPts = -20; secStatus = 'critical'; secReason = 'HONEYPOT — sell simulation detected blocked transaction.'
-  } else if (hp?.simulationSuccess === true && hp?.isHoneypot === false) {
-    if (taxHigh) {
-      secPts = -12; secStatus = 'risk'; secReason = `Simulation passed but taxes are high — buy ${buyTax.toFixed(1)}% / sell ${sellTax.toFixed(1)}%.`
-    } else {
-      secPts = 12; secStatus = 'ok'; secReason = 'Simulation passed — no honeypot, taxes within normal range.'
-    }
-  } else if (hp != null) {
-    secPts = 6; secStatus = 'partial'; secReason = 'Partial security data available — simulation incomplete.'
-  } else {
-    secPts = -12; secStatus = 'unavailable'; secReason = 'No security simulation data this scan.'
-  }
-  pts += secPts
-
-  // ── LP Control ───────────────────────────────────────────────────────────
-  let lpPts = 0, lpStatusLabel = 'unavailable', lpReason = 'No LP lock or burn proof confirmed.'
-  if (lpStatus === 'locked' || lpStatus === 'burned') {
-    lpPts = 10; lpStatusLabel = 'ok'; lpReason = `LP ${lpStatus} — exit liquidity confirmed.`
-  } else if (lpMode === 'protocol') {
-    lpPts = 10; lpStatusLabel = 'ok'; lpReason = 'Concentrated Liquidity (v3/v4) — LP token model is not used.'
-  } else if (result.lpControl?.poolAddressPresent) {
-    lpPts = -10; lpStatusLabel = 'partial'; lpReason = 'LP ownership could not be verified this scan.'
-  } else if (lpStatus === 'risky') {
-    lpPts = -20; lpStatusLabel = 'critical'; lpReason = 'LP flagged risky.'
-  } else {
-    lpPts = -12; lpReason = 'LP lock or burn proof not confirmed.'
-  }
-  pts += lpPts
-
-  // ── Missing checks penalty ───────────────────────────────────────────────
-  const missingItems = [
-    holderState.kind !== 'rowsWithPercent'                              ? 'holder concentration'  : null,
-    lpMode === 'protocol'                                                ? null                    : lpStatus === 'unavailable_with_reason' ? 'LP proof' : lpMode === 'unknown' ? 'LP model classification' : (lpStatus !== 'locked' && lpStatus !== 'burned' ? 'LP proof' : null),
-    result.marketCapUsd == null                                         ? 'market cap'            : null,
-    !hp?.simulationSuccess                                              ? 'security simulation'   : null,
-    result.contractSecurity == null                                               ? 'owner status'          : null,
-  ].filter((v): v is string => v != null)
-  const missingPenalty = Math.min(missingItems.length * 4, 18)
-  pts -= missingPenalty
-  const missingStatus = missingItems.length === 0 ? 'ok' : missingItems.length <= 2 ? 'partial' : 'unavailable'
-  const missingReason = missingItems.length === 0
-    ? 'No open checks.'
-    : `${missingItems.length} checks missing: ${missingItems.join(', ')}.`
-
-  // ── Score caps ───────────────────────────────────────────────────────────
-  // Applied after base calculation. Prevent incomplete scans from appearing
-  // fully verified. Each cap sets a maximum; the lowest applicable cap wins.
-  const lpVerified2   = lpStatus === 'locked' || lpStatus === 'burned'
-  const simVerified2  = hp?.simulationSuccess === true && hp?.isHoneypot === false
-  const holdersVerif2 = holderState.kind === 'rowsWithPercent'
-  const mcVerified2   = result.marketCapUsd != null
-  const mc            = result.marketCapUsd ?? null
-  const highHolderConc = top10 != null && top10 > 50
-  // allMajorVerified: every important check has a positive result
-  const allMajorVerified =
-    lpVerified2 && simVerified2 && holdersVerif2 && mcVerified2 &&
-    liq >= 25_000 && !highHolderConc && missingItems.length === 0
-
-  let cap = 100
-  let capReason: string | null = null
-
-  const setCapIfLower = (newCap: number, reason: string) => {
-    if (newCap < cap) { cap = newCap; capReason = reason }
-  }
-
-  // No data
-  if (!result.price && !result.liquidity && !hp) {
-    setCapIfLower(35, 'Insufficient data — score capped.')
-  }
-  // No active pool / no liquidity
-  if (result.noActivePools || liq === 0) {
-    setCapIfLower(40, 'No active pool detected — score capped.')
-  }
-  // Security simulation unavailable or tax sim not run
-  if (!hp?.simulationSuccess) {
-    setCapIfLower(80, 'Score capped by incomplete security/LP checks.')
-  }
-  // LP lock/burn proof unverified
-  if (!lpVerified2) {
-    setCapIfLower(72, 'Score capped by missing LP ownership proof.')
-  }
-  // Both security AND LP unverified → tighter cap
-  if (!simVerified2 && !lpVerified2) {
-    setCapIfLower(76, 'Score capped by incomplete LP/security checks.')
-  }
-  // Holder concentration unavailable
-  if (holderState.kind === 'noRowsFallback') {
-    setCapIfLower(75, 'Score capped — holder data not confirmed.')
-  }
-  // Holder concentration partial (rows present, percentages missing)
-  if (holderState.kind === 'rowsWithoutPercent') {
-    setCapIfLower(82, 'Score capped by partial holder data.')
-  }
-  // High holder concentration
-  if (highHolderConc) {
-    setCapIfLower(72, 'Score capped by high holder concentration.')
-  }
-  // Elevated top20 concentration
-  if (top20 != null && top20 > 60 && !highHolderConc) {
-    setCapIfLower(78, 'Score capped by elevated holder concentration.')
-  }
-  // Market cap unverified (but some market data exists)
-  if (!mcVerified2 && (result.price != null || result.liquidity != null)) {
-    setCapIfLower(82, 'Score capped — market cap not confirmed.')
-  }
-  // Low market cap — microcap tokens need all checks verified to score high
-  if (mc != null && mc < 1_000_000 && !allMajorVerified) {
-    setCapIfLower(72, 'Score capped by low-cap / incomplete verification.')
-  } else if (mc != null && mc < 5_000_000 && !allMajorVerified) {
-    setCapIfLower(78, 'Score capped by low-cap / incomplete verification.')
-  }
-  // 2+ major checks missing
-  if (missingItems.length >= 3) {
-    setCapIfLower(68, 'Score capped by 3+ incomplete checks.')
-  } else if (missingItems.length >= 2) {
-    setCapIfLower(76, 'Score capped by incomplete checks.')
-  }
-  // 95–100 only if everything is genuinely verified
-  if (!allMajorVerified) {
-    setCapIfLower(94, capReason ?? 'Score capped by incomplete verification.')
-  }
-  if (liq > 0 && liq < 25_000) {
-    setCapIfLower(62, 'Score capped by low liquidity depth.')
-  }
-
-  // ── Clamp ────────────────────────────────────────────────────────────────
-  const score = Math.min(cap, Math.max(0, Math.round(pts)))
-  // Clear capReason if the raw score was already below the cap (cap didn't bite)
-  const effectiveCapReason = Math.round(pts) > cap ? capReason : null
-
-  // ── Verdict ──────────────────────────────────────────────────────────────
-  const noData = !result.price && !result.liquidity && !hp
-  let verdict: CortexScoreResult['verdict']
-  if (noData) {
-    verdict = 'UNKNOWN'
-  } else if (hp?.isHoneypot === true || taxHigh || score < 40) {
-    verdict = 'AVOID'
-  } else if (
-    score >= 82 &&
-    liq >= 25_000 &&
-    holdersVerif2 &&
-    simVerified2 &&
-    !taxHigh &&
-    !highHolderConc &&
-    lpVerified2 &&
-    missingItems.length === 0
-  ) {
-    verdict = 'CLEAN LOOKING'
-  } else if (score >= 65 && !highHolderConc && (lpVerified2 || simVerified2)) {
-    verdict = 'WATCH'
-  } else {
-    verdict = 'CAUTION'
-  }
-
-  // ── Confidence ───────────────────────────────────────────────────────────
-  const hasMarket    = result.price != null || result.liquidity != null
-  const hasLiquidity = result.liquidity != null
-  const hasHolders   = holderState.kind === 'rowsWithPercent'
-  const hasHoldersPt = holderState.kind === 'rowsWithoutPercent'
-  const hasSecurity  = hp?.simulationSuccess === true
-
-  let confidence: CortexScoreResult['confidence']
-  if (hasMarket && hasLiquidity && hasHolders && hasSecurity) {
-    confidence = 'HIGH'
-  } else if (hasMarket && hasLiquidity && (hasHolders || hasHoldersPt || hasSecurity)) {
-    confidence = 'MEDIUM'
-  } else {
-    confidence = 'LOW'
-  }
-
-  // ── Scan quality ─────────────────────────────────────────────────────────
-  const dataCount = [hasMarket, hasHolders || hasHoldersPt, hasSecurity, hasLiquidity].filter(Boolean).length
-  const scanQuality: CortexScoreResult['scanQuality'] = dataCount >= 4 ? 'FULL' : dataCount >= 2 ? 'PARTIAL' : 'LIMITED'
-
-  return {
-    score,
-    verdict,
-    confidence,
-    scanQuality,
-    capReason: effectiveCapReason,
-    breakdown: {
-      market:    { status: marketStatus,  score: marketPts,    reason: marketReason },
-      liquidity: { status: liqStatus,     score: liqPts,       reason: liqReason },
-      holders:   { status: holderStatus,  score: holderPts,    reason: holderReason },
-      security:  { status: secStatus,     score: secPts,       reason: secReason },
-      lp:        { status: lpStatusLabel, score: lpPts,        reason: lpReason },
-      missing:   { status: missingStatus, penalty: -missingPenalty, reason: missingReason },
-    },
-  }
-}
-
 function getVerdictStyle(verdict: CortexScoreResult['verdict'] | CortexScoreResultV2['verdict'] | 'Strong' | 'High Risk' | 'Open Check'): { label: string; color: string; bg: string; border: string } {
   switch (verdict) {
     case 'High Risk':
@@ -4275,6 +4075,10 @@ export default function TerminalTokenScanner() {
   const [activeSection, setActiveSection] = useState<'cortex-read'|'market-pulse'|'holder-map'|'lp-safety'|'risk-engine'|'deployer-intel'>('cortex-read')
   const [devControlTab, setDevControlTab] = useState<'dev-map'|'cluster-map'|'supply-control'|'history'|'watch-plan'>('dev-map')
   const [copiedHolderAddress, setCopiedHolderAddress] = useState<string | null>(null)
+  // SEPARATE STATE ATOM FIX, DISCLOSED (audit: copySolanaAddress shared copiedHolderAddress with
+  // copyHolderAddress, so copying a mint and a holder address in quick succession made one badge's
+  // "Copied" state cancel the other's).
+  const [copiedSolanaAddress, setCopiedSolanaAddress] = useState<string | null>(null)
 
   const [clarkVerdict, setClarkVerdict] = useState<string | null>(null)
   const [clarkLoading, setClarkLoading] = useState(false)
@@ -4372,6 +4176,11 @@ export default function TerminalTokenScanner() {
 
   async function saveTrackedToken() {
     if (!result?.contract) return
+    // DUPLICATE-SAVE GUARD FIX, DISCLOSED (audit: "Save to watchlist" inserted unconditionally with
+    // no duplicate check and no "already tracked" state — repeat clicks on the same token created
+    // repeat rows). Same identity rule as the chain-strict delete: address + chain together.
+    const alreadyTracked = trackedTokens.some(t => t.contract_address === result.contract!.toLowerCase() && (t.chain ?? 'base') === (result.chain ?? chain))
+    if (alreadyTracked) return
     setTrackedSaving(true)
     try {
       const { data: { session } } = await supabase.auth.getSession()
@@ -4399,9 +4208,14 @@ export default function TerminalTokenScanner() {
     } finally { setTrackedSaving(false) }
   }
 
-  async function removeTrackedToken(address: string) {
+  async function removeTrackedToken(address: string, rowChain?: string | null) {
     const normalizedAddress = address.toLowerCase()
-    setTrackedTokens(prev => prev.filter(t => t.contract_address !== normalizedAddress))
+    // WRONG-CHAIN DELETE FIX, DISCLOSED (audit: this used the currently-selected chain pill instead
+    // of the row's own chain — removing an ETH-saved token while Base was selected deleted nothing
+    // from the DB, so it silently reappeared on next load, while the optimistic filter below also
+    // ignored chain and could hide the wrong row if the same address was saved on two chains).
+    const effectiveChain = rowChain ?? chain
+    setTrackedTokens(prev => prev.filter(t => !(t.contract_address === normalizedAddress && (t.chain ?? 'base') === effectiveChain)))
     try {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) { setTrackedLoggedOut(true); return }
@@ -4412,7 +4226,7 @@ export default function TerminalTokenScanner() {
         .eq('contract_address', normalizedAddress)
         // CHAIN-STRICT DELETE (chain-strictness audit): same address on another chain is a
         // different token — deleting one must never remove the other chain's row.
-        .eq('chain', chain as string)
+        .eq('chain', effectiveChain as string)
       if (deleteError) {
         console.error('Failed to remove tracked token', deleteError)
         setTrackedUnavailable(true)
@@ -4429,6 +4243,26 @@ export default function TerminalTokenScanner() {
 
   const [resolving, setResolving]               = useState(false)
   const [resolverResult, setResolverResult]     = useState<ResolverResult | null>(null)
+  // RE-ENTRY GUARD FIX, DISCLOSED (audit: double-clicking Scan, or a click landing in the same
+  // commit as an Enter keypress, fired two /api/token POSTs). `if (loading || resolving) return`
+  // read `loading`/`resolving` from the render that created the handler closure — two events
+  // handled in the same commit both see the pre-click `false` value and both pass the guard. A ref
+  // is set synchronously at the very start of the handler, before any await, so a second call
+  // arriving before the first has had a chance to re-render sees the guard flip immediately.
+  const scanInFlightRef = useRef(false)
+  // Clears whenever both loading flags actually settle back to false, regardless of which of
+  // handleScan's several return paths got there — simpler and less error-prone than manually
+  // resetting the ref at every one of that function's early-return points.
+  useEffect(() => { if (!loading && !resolving) scanInFlightRef.current = false }, [loading, resolving])
+  // STALE-RESPONSE RACE, DISCLOSED (audit flagged "no AbortController before setResult/setSolanaResult
+  // — switching chain/token mid-scan could let a stale response overwrite newer state"): the
+  // scanInFlightRef guard above already closes this window structurally — it's checked synchronously
+  // at the very top of handleScan, before any await, so a second handleScan call of any kind (chain
+  // pill, watchlist Scan, alternates picker, Enter key, URL auto-scan) made while one is in flight
+  // returns immediately without firing a second fetch. Combined with the chain pills / alternates
+  // buttons now being disabled while loading/resolving (see chain-seg-btn:disabled below) and the
+  // token input already having `disabled={loading}`, there is no longer a live path to start a
+  // second scan before the first settles, so no separate AbortController/request-id is needed.
 
   const isValidHolderAddress = (value: string | null | undefined) => typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value)
 
@@ -4485,6 +4319,14 @@ export default function TerminalTokenScanner() {
     // 'base', even though this page's own chain selector and handleScan already fully support all
     // four chains via the `chain` state below). Widened to accept any of the four real supported
     // values instead of a single hardcoded special case.
+    // SOLANA-DEEPLINK FIX, DISCLOSED (audit: autoChain only ever recognized the four EVM chains, so
+    // a `?chain=solana&contract=<mint>` deeplink silently fell through to Base and did nothing —
+    // the mint isn't a 0x address, so it also failed the contract regex below and never scanned).
+    if (chainParam === 'solana' && contract && isValidSolanaMintAddress(contract)) {
+      setChain('solana')
+      handleScan(contract, 'solana')
+      return
+    }
     const autoChain: 'base' | 'eth' | 'bnb' | 'robinhood' = chainParam === 'eth' || chainParam === 'bnb' || chainParam === 'robinhood' ? chainParam : 'base'
     if (autoChain !== 'base') setChain(autoChain)
     if (contract && /^0x[a-fA-F0-9]{40}$/.test(contract)) {
@@ -4493,14 +4335,15 @@ export default function TerminalTokenScanner() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  async function handleScan(override?: string, chainOverride?: 'base' | 'eth' | 'bnb' | 'robinhood') {
+  async function handleScan(override?: string, chainOverride?: 'base' | 'eth' | 'bnb' | 'robinhood' | 'solana') {
     const q             = (override ?? input).trim()
     const effectiveChain = chainOverride ?? chain
     if (!q) {
       setError('Please enter a token address or ticker before scanning.')
       return
     }
-    if (loading || resolving) return
+    if (loading || resolving || scanInFlightRef.current) return
+    scanInFlightRef.current = true
 
     // ── Stale-state reset — runs on every new scan regardless of path ────────
     setResolverResult(null)
@@ -4509,6 +4352,12 @@ export default function TerminalTokenScanner() {
     setDevIntel(null)
     setDevIntelError(null)
     devIntelCacheRef.current = {}  // clear cached devIntel so no stale data bleeds across scans
+    // STALE-SOLANA-STATE FIX, DISCLOSED (audit): this reset cleared the EVM result fields but left
+    // solanaResult/solanaDeepError/solanaClusterError untouched — a Deep Creator/Cluster error from
+    // a previous Solana scan survived into the next one and rendered under the new token.
+    setSolanaResult(null)
+    setSolanaDeepError(null)
+    setSolanaClusterError(null)
     // ────────────────────────────────────────────────────────────────────────
 
     // ── SOLANA BETA PATH, DISCLOSED (Token Scanner Solana Beta task) ─────────
@@ -4608,7 +4457,16 @@ export default function TerminalTokenScanner() {
         headers: { 'Content-Type': 'application/json', ...(_tok ? { Authorization: `Bearer ${_tok}` } : {}) },
         body: JSON.stringify({ contract: scanContract, chain: scanChain, ...(debugHolder ? { debugHolder: true } : {}) }),
       })
-      const json = await res.json()
+      // NON-JSON-RESPONSE FIX, DISCLOSED (audit: a gateway/proxy error page for a server-side
+      // failure produced the misleading generic "Network error — check your connection" message,
+      // because an unguarded res.json() throws on non-JSON and that error is caught by the outer
+      // catch block, which can't distinguish it from an actual network failure). ...
+      const json = await res.json().catch(() => null)
+      if (!json) {
+        setError('Server returned an unexpected response. Try again shortly.')
+        setClarkLoading(false)
+        return
+      }
       if (process.env.NODE_ENV !== 'production') {
         console.log('[scanner] /api/token response', {
           scanRequestAddress: scanContract,
@@ -4830,13 +4688,16 @@ export default function TerminalTokenScanner() {
       setDevIntelError(null)
       try {
         const res = await fetch(`/api/dev-wallet?address=${encodeURIComponent(contract)}&chain=${encodeURIComponent(chainKey)}`)
-        const json = await res.json()
+        // NON-JSON-RESPONSE FIX, DISCLOSED (audit, same class of bug as the /api/token handler):
+        // an unguarded res.json() threw on a non-JSON response and was caught by the outer catch,
+        // masking a real server-side failure behind the generic partial-data message.
+        const json = await res.json().catch(() => null)
         if (aborted) return
         if (res.status === 429) {
           setDevIntelError('Dev intelligence cooldown active. Showing scanner-derived signals.')
           return
         }
-        if (!res.ok || json?.error) {
+        if (!res.ok || !json || json?.error) {
           setDevIntelError('Dev intelligence temporarily partial. Showing scanner-derived signals.')
           return
         }
@@ -4887,6 +4748,10 @@ export default function TerminalTokenScanner() {
         .chain-seg{display:inline-flex;padding:3px;border-radius:10px;background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08);gap:2px;}
         .chain-seg-btn{padding:6px 15px;border-radius:7px;font-size:10.5px;font-weight:700;letter-spacing:.10em;font-family:var(--font-plex-mono);cursor:pointer;transition:background .15s,color .15s,box-shadow .15s;border:none;background:transparent;color:#63798e;}
         .chain-seg-btn:hover:not([class*="chain-seg-btn--active"]){color:#9fb2c4;}
+        /* LOADING-AFFORDANCE FIX, DISCLOSED (audit: chain pills stayed fully clickable during a
+           scan and silently no-opped via the re-entry guard, giving zero feedback that the click
+           did nothing). */
+        .chain-seg-btn:disabled{cursor:not-allowed;opacity:.45;}
         /* Per-chain active color, DISCLOSED (Token Scanner final polish task): BASE keeps the
            brand teal already used for its header pill/dot elsewhere on this page; ETHEREUM keeps
            the indigo already used for its pill — same setChain() behavior, just a sharper, more
@@ -5046,6 +4911,7 @@ export default function TerminalTokenScanner() {
                   <button
                     key={c}
                     type="button"
+                    disabled={loading || resolving}
                     onClick={() => {
                       // CROSS-CHAIN STALE-RESULT FIX, DISCLOSED: switching the chain pill only ever
                       // cleared solanaResult, never the EVM `result` (or resolver/dev/Clark state).
@@ -5185,12 +5051,13 @@ export default function TerminalTokenScanner() {
                   {resolverResult.alternates.slice(0, 4).map((alt: ResolverCandidate) => (
                     <button
                       key={alt.contractAddress + alt.chainId}
+                      disabled={loading || resolving}
                       onClick={() => {
                         const altChain: 'base' | 'eth' | 'bnb' | 'robinhood' = alt.chainId === 'ethereum' ? 'eth' : alt.chainId === 'bnb' ? 'bnb' : alt.chainId === 'robinhood' ? 'robinhood' : 'base'
                         setChain(altChain)
                         handleScan(alt.contractAddress, altChain)
                       }}
-                      style={{ padding:'4px 10px', borderRadius:'999px', background:'rgba(100,116,139,0.12)', border:'1px solid rgba(100,116,139,0.25)', color:'#94a3b8', fontSize:'9px', fontFamily:'var(--font-plex-mono)', cursor:'pointer', display:'flex', alignItems:'center', gap:'5px' }}
+                      style={{ padding:'4px 10px', borderRadius:'999px', background:'rgba(100,116,139,0.12)', border:'1px solid rgba(100,116,139,0.25)', color:'#94a3b8', fontSize:'9px', fontFamily:'var(--font-plex-mono)', cursor: (loading || resolving) ? 'not-allowed' : 'pointer', opacity: (loading || resolving) ? 0.45 : 1, display:'flex', alignItems:'center', gap:'5px' }}
                     >
                       <span style={{ fontWeight:700 }}>{alt.symbol ?? alt.name ?? alt.contractAddress.slice(0,6)}</span>
                       <span style={{ opacity:0.6 }}>{alt.chainLabel}</span>
@@ -5224,6 +5091,28 @@ export default function TerminalTokenScanner() {
               never coerced into the EVM `ScanResult` shape, which carries LP-lock/honeypot/tax/
               owner fields with no honest Solana value. Every EVM-only check stays an explicit
               "unsupported" line, never a passed/failed one. */}
+          {/* LOADING SKELETON FIX, DISCLOSED (audit: Solana results unmount during any loading, no
+              skeleton — same "blank page below the search card" gap as the EVM path above). */}
+          {loading && chain === 'solana' && !solanaResult && !error && (
+            <div style={{ maxWidth: 'none', width: '100%', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div style={{ padding: '18px', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,.6)', display: 'flex', alignItems: 'center', gap: '14px' }}>
+                <div className="shimmer-line" style={{ width: '46px', height: '46px', borderRadius: '50%', flexShrink: 0 }} />
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div className="shimmer-line" style={{ width: '38%', height: '13px' }} />
+                  <div className="shimmer-line" style={{ width: '58%', height: '10px' }} />
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
+                {[0, 1, 2, 3].map(i => (
+                  <div key={i} style={{ padding: '14px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,.6)', display: 'flex', flexDirection: 'column', gap: '9px' }}>
+                    <div className="shimmer-line" style={{ width: '50%', height: '9px' }} />
+                    <div className="shimmer-line" style={{ width: '70%', height: '16px' }} />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {solanaResult && !loading && (() => {
             const sr = solanaResult
             const sc = computeSolanaConfidenceScore(sr)
@@ -5233,9 +5122,23 @@ export default function TerminalTokenScanner() {
             const confColor = sr.betaRisk.confidence === 'MEDIUM' ? '#fbbf24' : '#94a3b8'
             const copySolanaAddress = async (address: string) => {
               try {
-                if (navigator?.clipboard?.writeText) await navigator.clipboard.writeText(address)
-                setCopiedHolderAddress(address)
-                setTimeout(() => setCopiedHolderAddress((prev) => (prev === address ? null : prev)), 1500)
+                if (typeof window === 'undefined') return
+                if (navigator?.clipboard?.writeText) {
+                  await navigator.clipboard.writeText(address)
+                } else {
+                  const textArea = document.createElement('textarea')
+                  textArea.value = address
+                  textArea.setAttribute('readonly', '')
+                  textArea.style.position = 'fixed'
+                  textArea.style.opacity = '0'
+                  textArea.style.pointerEvents = 'none'
+                  document.body.appendChild(textArea)
+                  textArea.select()
+                  document.execCommand('copy')
+                  document.body.removeChild(textArea)
+                }
+                setCopiedSolanaAddress(address)
+                window.setTimeout(() => setCopiedSolanaAddress((prev) => (prev === address ? null : prev)), 1500)
               } catch { /* best-effort — clipboard access can be denied, never fatal */ }
             }
             const conc = sr.topAccountConcentration
@@ -5582,14 +5485,14 @@ export default function TerminalTokenScanner() {
                                   <button type="button" onClick={() => { void copySolanaAddress(sr.mintAddress) }}
                                     style={{
                                       justifySelf: 'end', padding: '4px 10px', borderRadius: '999px',
-                                      border: copiedHolderAddress === sr.mintAddress ? '1px solid rgba(45,212,191,0.55)' : '1px solid rgba(167,139,250,0.48)',
-                                      background: copiedHolderAddress === sr.mintAddress ? 'linear-gradient(135deg,rgba(45,212,191,0.18),rgba(45,212,191,0.1))' : 'linear-gradient(135deg,rgba(167,139,250,0.2),rgba(45,212,191,0.08))',
-                                      color: copiedHolderAddress === sr.mintAddress ? '#67e8f9' : '#c4b5fd',
+                                      border: copiedSolanaAddress === sr.mintAddress ? '1px solid rgba(45,212,191,0.55)' : '1px solid rgba(167,139,250,0.48)',
+                                      background: copiedSolanaAddress === sr.mintAddress ? 'linear-gradient(135deg,rgba(45,212,191,0.18),rgba(45,212,191,0.1))' : 'linear-gradient(135deg,rgba(167,139,250,0.2),rgba(45,212,191,0.08))',
+                                      color: copiedSolanaAddress === sr.mintAddress ? '#67e8f9' : '#c4b5fd',
                                       fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', fontFamily: 'var(--font-plex-mono)',
                                       cursor: 'pointer', whiteSpace: 'nowrap', minHeight: '26px',
                                     }}
                                     aria-label="Copy mint address">
-                                    {copiedHolderAddress === sr.mintAddress ? 'Copied' : 'Mint'}
+                                    {copiedSolanaAddress === sr.mintAddress ? 'Copied' : 'Mint'}
                                   </button>
                                 </div>
                               )
@@ -6546,6 +6449,36 @@ export default function TerminalTokenScanner() {
                     </div>
                   ))}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* LOADING SKELETON FIX, DISCLOSED (audit: "between clicking Scan and the response landing,
+              the page below the search card is blank — only the button text changes to SCANNING…";
+              the .shimmer-line CSS class existed but was applied nowhere). Shown only while an EVM
+              scan is in flight and no result/error has landed yet — same guard shape as the
+              empty-state block above, so the two never render together. */}
+          {loading && !result && !error && !solanaResult && chain !== 'solana' && (
+            <div style={{ maxWidth: 'none', width: '100%', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div style={{ padding: '18px', borderRadius: '14px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,.6)', display: 'flex', alignItems: 'center', gap: '14px' }}>
+                <div className="shimmer-line" style={{ width: '46px', height: '46px', borderRadius: '50%', flexShrink: 0 }} />
+                <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div className="shimmer-line" style={{ width: '38%', height: '13px' }} />
+                  <div className="shimmer-line" style={{ width: '58%', height: '10px' }} />
+                </div>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '12px' }}>
+                {[0, 1, 2, 3].map(i => (
+                  <div key={i} style={{ padding: '14px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,.6)', display: 'flex', flexDirection: 'column', gap: '9px' }}>
+                    <div className="shimmer-line" style={{ width: '50%', height: '9px' }} />
+                    <div className="shimmer-line" style={{ width: '70%', height: '16px' }} />
+                  </div>
+                ))}
+              </div>
+              <div style={{ padding: '16px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(8,14,28,.6)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                <div className="shimmer-line" style={{ width: '30%', height: '10px' }} />
+                <div className="shimmer-line" style={{ width: '100%', height: '10px' }} />
+                <div className="shimmer-line" style={{ width: '85%', height: '10px' }} />
               </div>
             </div>
           )}
@@ -9226,13 +9159,18 @@ export default function TerminalTokenScanner() {
                   <p style={{...sbody,color:'#67e8f9'}}>{getNextAction(result)}</p>
                 </div>
                 {/* Save button */}
-                <button
-                  onClick={saveTrackedToken}
-                  disabled={trackedSaving}
-                  style={{ width:'100%', padding:'10px 0', borderRadius:'10px', border:'1px solid rgba(167,139,250,0.35)', background:'rgba(167,139,250,0.07)', color: trackedSaving ? '#64748b' : '#a78bfa', fontSize:'11px', fontWeight:700, fontFamily:'var(--font-plex-mono)', letterSpacing:'.10em', cursor: trackedSaving ? 'not-allowed' : 'pointer', transition:'all .15s' }}
-                >
-                  {trackedSaving ? 'SAVING…' : '+ TRACK THIS TOKEN'}
-                </button>
+                {(() => {
+                  const isTracked = !!result.contract && trackedTokens.some(t => t.contract_address === result.contract!.toLowerCase() && (t.chain ?? 'base') === (result.chain ?? chain))
+                  return (
+                    <button
+                      onClick={saveTrackedToken}
+                      disabled={trackedSaving || isTracked}
+                      style={{ width:'100%', padding:'10px 0', borderRadius:'10px', border:'1px solid rgba(167,139,250,0.35)', background:'rgba(167,139,250,0.07)', color: (trackedSaving || isTracked) ? '#64748b' : '#a78bfa', fontSize:'11px', fontWeight:700, fontFamily:'var(--font-plex-mono)', letterSpacing:'.10em', cursor: (trackedSaving || isTracked) ? 'not-allowed' : 'pointer', transition:'all .15s' }}
+                    >
+                      {trackedSaving ? 'SAVING…' : isTracked ? '✓ TRACKED' : '+ TRACK THIS TOKEN'}
+                    </button>
+                  )
+                })()}
                 {(trackedLoggedOut || trackedUnavailable) && (
                   <p style={{ margin: '8px 0 0', fontSize: '10px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
                     {trackedUnavailable ? 'Tracked tokens could not be loaded. Try again.' : walletConnected ? 'Sign in to save tracked tokens across devices.' : 'Connect wallet or sign in to track tokens.'}
@@ -9300,7 +9238,17 @@ export default function TerminalTokenScanner() {
                           ghost action — same onClick handlers/behavior, just clearer priority. */}
                       <div style={{ display: 'flex', gap: '6px' }}>
                         <button
-                          onClick={() => { setInput(t.contract_address); handleScan(t.contract_address, 'base') }}
+                          onClick={() => {
+                            // CHAIN-STRICT SCAN FIX, DISCLOSED (audit: watchlist Scan hardcoded 'base',
+                            // so rescanning a saved ETH/BNB/Robinhood/Solana token always scanned it on
+                            // Base instead of the chain it was actually saved under).
+                            const rowChain = (['base', 'eth', 'bnb', 'robinhood', 'solana'] as const).includes(t.chain as typeof chain)
+                              ? (t.chain as 'base' | 'eth' | 'bnb' | 'robinhood' | 'solana')
+                              : 'base'
+                            setInput(t.contract_address)
+                            setChain(rowChain)
+                            handleScan(t.contract_address, rowChain)
+                          }}
                           style={{ flex: 1, justifyContent: 'center', display: 'flex', alignItems: 'center', padding: '7px 0', borderRadius: '8px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.32)', color: '#67e8f9', fontSize: '10.5px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', letterSpacing: '.10em', cursor: 'pointer', transition: 'background .14s, border-color .14s' }}
                           onMouseEnter={e => { e.currentTarget.style.background = 'rgba(34,211,238,0.16)'; e.currentTarget.style.borderColor = 'rgba(34,211,238,0.50)' }}
                           onMouseLeave={e => { e.currentTarget.style.background = 'rgba(34,211,238,0.10)'; e.currentTarget.style.borderColor = 'rgba(34,211,238,0.32)' }}
@@ -9308,7 +9256,7 @@ export default function TerminalTokenScanner() {
                           Scan
                         </button>
                         <button
-                          onClick={() => removeTrackedToken(t.contract_address)}
+                          onClick={() => removeTrackedToken(t.contract_address, t.chain)}
                           className="cmd-chip"
                           style={{ padding: '7px 12px', color: '#8291a3', borderColor: 'rgba(255,255,255,0.08)' }}
                         >
