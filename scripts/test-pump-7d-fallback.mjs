@@ -1,47 +1,17 @@
-// PUMP 14D EVIDENCE LADDER TESTS, DISCLOSED (urgent fallback fix).
-// Covers the required behaviors: exact-14d preference, DexScreener-corroborated momentum fallback,
-// honest empty state, majors/stables/wrapped still excluded in fallback mode, low-cap filters
-// still applied in fallback mode, evidence badges on cards, snapshot-based 14d computation once
-// history exists, and the audit surface. Exercises the real exported functions — no mocks.
+// PUMP 14D EVIDENCE LADDER TESTS (lib/server/pump14dEvidence.ts), DISCLOSED.
+//
+// pump14dEvidence.ts is NOT part of the main Pump Alerts feed anymore (see the "STOP
+// overcomplicating Pump Alerts" rewrite in app/api/pump-alerts/route.ts's module header) — it is
+// still used by the separate Pump Report deep-dive feature (app/api/pump-alerts/intelligence/route.ts),
+// which this task never touched. This file now tests only that module's own exports directly —
+// the parts that used to import evaluateStage1Candidate/evaluateStage2Candidate from the main feed
+// route were testing route-integration shape that no longer exists and have been removed.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
-import { evaluateStage1Candidate, evaluateStage2Candidate } from '../app/api/pump-alerts/route.ts'
-import {
-  evaluateMomentumFallback,
-  computeSnapshotChange14d,
-  _resetSnapshotMemoryForTest,
-  _seedSnapshotMemoryForTest,
-} from '../lib/server/pump14dEvidence.ts'
+import { evaluateMomentumFallback } from '../lib/server/pump14dEvidence.ts'
 
-const base = {
-  chain: 'base',
-  symbol: 'TEST', name: 'Test Token', addr: '0xabc0000000000000000000000000000000000a',
-  poolAddr: '0xpool000000000000000000000000000000000a',
-  price: 0.002, change24h: 40, volume: 200_000, liquidity: 50_000,
-  fdv: 900_000, marketCap: null, ageDays: 20,
-}
-
-// ─── 1. GeckoTerminal OHLCV success → exact 14d pump token ──────────────────────
-{
-  const s1 = evaluateStage1Candidate({ ...base, symbol: 'MOON', name: 'Moon Token' })
-  assert.equal(s1.passed, true)
-  const r = evaluateStage2Candidate(s1.candidate, null, 'req', { kind: 'exact', source: 'geckoterminal_ohlcv', change14d: 60 })
-  assert.equal(r.included, true)
-  assert.equal(r.alert.change14d, 60)
-  assert.equal(r.alert.evidenceGrade, 'exact')
-  assert.equal(r.alert.evidenceSource, 'geckoterminal_ohlcv')
-}
-
-// Exact 14d below threshold still excludes — the bar doesn't drop because a source exists
-{
-  const s1 = evaluateStage1Candidate(base)
-  const r = evaluateStage2Candidate(s1.candidate, null, 'req', { kind: 'exact', source: 'coingecko_contract', change14d: 10 })
-  assert.equal(r.included, false)
-  assert.equal(r.audit.exclusionReason, 'change14dBelowMinimum')
-}
-
-// ─── 2. Momentum fallback qualification (GT fails, DexScreener corroborates) ────
+// ─── Momentum fallback qualification (GT fails, DexScreener corroborates) ───────────────────────
 {
   // Strong move + accelerating volume + real liquidity → qualifies WITHOUT any fake 14d number.
   const v = evaluateMomentumFallback({
@@ -58,20 +28,6 @@ const base = {
     assert.ok(v.confirmedChange24hPct >= 15)
     assert.ok(v.volumeAcceleration != null && v.volumeAcceleration >= 1.5)
   }
-
-  // ELIGIBILITY-MODEL FIX, DISCLOSED: the route no longer uses this DexScreener-corroborated
-  // fallback tier directly (see evaluateLiveMomentum in route.ts, tested in
-  // test-pump-alerts-discovery.mjs Part 13) — evaluateMomentumFallback above stays independently
-  // tested since it's still exported, but the route-integration shape is now 'live_momentum'.
-  const s1 = evaluateStage1Candidate({ ...base, symbol: 'FALLBACK', name: 'Fallback Mover', change24h: 22 })
-  const r = evaluateStage2Candidate(s1.candidate, null, 'req', {
-    kind: 'live_momentum',
-    verdict: { qualified: true, changeWindow: '24h', changeValuePct: 22, volumeLiquidityRatio: 2.0, evidenceParts: ['24h change +22.0%', 'volume/liquidity 2.00×'] },
-  })
-  assert.equal(r.included, true, 'live-momentum candidate must render when GT OHLCV failed but evidence is strong')
-  assert.equal(r.alert.change14d, null, 'live momentum must NEVER fabricate a 14d number')
-  assert.equal(r.alert.evidenceGrade, 'live_momentum')
-  assert.match(r.alert.qualifyingReason, /Live momentum/)
 }
 
 // Weak move does NOT qualify
@@ -123,53 +79,8 @@ const base = {
   if (!v.qualified) assert.equal(v.reason, 'volumeAccelerationUnmeasurable')
 }
 
-// No evidence at all → Stage 2 excludes honestly
-{
-  const s1 = evaluateStage1Candidate(base)
-  const r = evaluateStage2Candidate(s1.candidate, null, 'req', { kind: 'none' })
-  assert.equal(r.included, false, 'no evidence must exclude — honest empty state, not a fake pass')
-  assert.equal(r.audit.exclusionReason, 'rejectedNoMomentum')
-}
+// The Pump Report feature (unaffected by the feed rewrite) still uses this module directly.
+const intelSrc = fs.readFileSync(new URL('../app/api/pump-alerts/intelligence/route.ts', import.meta.url), 'utf8')
+assert.match(intelSrc, /from '@\/lib\/server\/pump14dEvidence'/, 'the Pump Report route must still use pump14dEvidence.ts — this task never touched that feature')
 
-// ─── 3. Majors/stables/wrapped STILL excluded in fallback mode ──────────────────
-for (const [sym, name] of [['USDC', 'USD Coin'], ['WETH', 'Wrapped Ether'], ['AERO', 'Aerodrome Finance']]) {
-  const s1 = evaluateStage1Candidate({ ...base, symbol: sym, name })
-  assert.equal(s1.passed, false, `${sym} must stay blocked even before any fallback can run`)
-}
-
-// ─── 4. Low-cap filters STILL apply in fallback mode ────────────────────────────
-{
-  // $30M FDV is over Base's $20M ceiling — momentum can't buy its way past the cap gate.
-  const s1 = evaluateStage1Candidate({ ...base, symbol: 'BIGFALL', name: 'Big Fallback', fdv: 30_000_000 })
-  assert.equal(s1.passed, false, 'a high-FDV token must not qualify via momentum fallback')
-  assert.equal(s1.audit.exclusionReason, 'capExceedsLowCapCeiling')
-
-  // Thin liquidity also stays blocked.
-  const thin = evaluateStage1Candidate({ ...base, symbol: 'THINFALL', name: 'Thin Fallback', liquidity: 500 })
-  assert.equal(thin.passed, false)
-  assert.equal(thin.audit.exclusionReason, 'liquidityBelowMinimum')
-}
-
-// ─── 5. UI shows evidence badges ────────────────────────────────────────────────
-const pageSrc = fs.readFileSync(new URL('../app/terminal/pump-alerts/page.tsx', import.meta.url), 'utf8')
-const pageCode = pageSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
-assert.match(pageCode, /Exact 14d/, 'cards must show an "Exact 14d" badge for measured evidence')
-assert.match(pageCode, /Live Momentum/, 'cards must show a distinct badge for live-momentum qualification')
-assert.match(pageCode, /evidenceGrade/, 'the card must read the alert\'s evidence grade')
-
-// Route carries the audit + degraded mode surfaces
-const routeSrc = fs.readFileSync(new URL('../app/api/pump-alerts/route.ts', import.meta.url), 'utf8')
-const routeCode = routeSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
-assert.match(routeCode, /pump14dEvidenceAudit/, 'route must return the 14d evidence audit')
-assert.match(routeCode, /degradedMode/, 'audit must carry degraded mode')
-// ELIGIBILITY-MODEL FIX, DISCLOSED: the route now uses evaluateLiveMomentum (self-contained,
-// GeckoTerminal-pool-data-only, zero extra network calls) instead of the DexScreener-corroborated
-// fallback tier — evaluateMomentumFallback/fetchDexScreenerPairMomentum remain exported and tested
-// above, just no longer called from the route's Stage 2.
-assert.match(routeCode, /export function evaluateLiveMomentum/, 'route must export the live-momentum evaluator')
-assert.match(routeCode, /fetchCoinGeckoContractChange14d/, 'route must use the CoinGecko exact tier')
-assert.match(routeCode, /computeSnapshotChange14d/, 'route must use the internal snapshot tier')
-assert.match(routeCode, /savePumpSnapshots/, 'route must persist internal snapshots each cycle')
-assert.doesNotMatch(routeCode, /change14d: c\.change24h/, '14d must never be silently substituted with 24h')
-
-console.log('test-pump-14d-fallback.mjs: all assertions passed')
+console.log('test-pump-7d-fallback.mjs: all assertions passed')

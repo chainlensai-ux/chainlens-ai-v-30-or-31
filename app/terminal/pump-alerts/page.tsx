@@ -29,46 +29,39 @@ interface PumpAlert {
   fdvUsd: number | null
   marketCapUsd: number | null
   tokenAgeDays: number | null
-  // EVIDENCE BADGE, DISCLOSED (ELIGIBILITY-MODEL fix): every card states HOW it qualified — 'exact'
-  // means a real measured 14d change backs it; 'live_momentum' means exact 14d was unavailable (or
-  // never attempted) but real, currently-observable 24h/6h/1h momentum + volume-relative-to-
-  // liquidity evidence qualified it instead. Never rendered identically — a live-momentum card must
-  // never be labelled "Exact 14d".
-  evidenceSource?: 'geckoterminal_ohlcv' | 'coingecko_contract' | 'internal_snapshot' | 'live_momentum'
+  // EVIDENCE BADGE, DISCLOSED: every card states HOW it qualified — 'exact' means a real measured
+  // 7d/14d change backs it (this feed never fetches one — see route.ts's module header); 'live_momentum'
+  // means real, currently-observable 24h/6h/1h momentum + volume-relative-to-liquidity evidence
+  // qualified it instead. Never rendered identically — a live-momentum card must never be labelled
+  // "Exact 7d".
+  evidenceSource?: 'exact' | 'live_momentum'
   evidenceGrade?: 'exact' | 'live_momentum'
   category: PumpCategory
   reason: string
   qualifyingReason: string
   riskLevel: PumpRisk
   tags: string[]
+  priceChange24hPct?: number | null
+  priceChange6hPct?: number | null
+  priceChange1hPct?: number | null
 }
 
 type FilterKey = 'ALL' | PumpCategory
 
-// CANDIDATE-EVALUATION-DEPTH FIX, DISCLOSED (URGENT fix request): exact shape the backend now
-// returns so an empty feed always answers "why" — how many raw candidates existed, how many were
-// filtered as majors/stables/high-FDV, how many actually got evidence-checked, and whether
-// evaluation stopped early because of a budget cap rather than genuinely running out of candidates.
-interface PumpCandidateEvaluationAudit {
+// LIVE-PUMP-DISCOVERY REWRITE, DISCLOSED ("STOP overcomplicating Pump Alerts... I want a live
+// pump discovery feed"): the backend no longer runs a multi-tier exact-14d evidence ladder — one
+// synchronous eligibility pass over live discovery data, so this audit is the simple rejection
+// breakdown the new pipeline actually produces: "1 of X candidates qualified" plus exactly why the
+// rest didn't (majors/stables, over cap, missing cap data, low liquidity, low volume, no momentum).
+interface PumpFeedAudit {
   rawCandidates: number
-  categoryFiltered: number
-  lowCapCandidates: number
-  liquidityVolumeCandidates: number
-  candidatesEvaluated: number
-  candidatesSkippedBeforeOhlcv: number
-  geckoAttempts: number
-  geckoSuccesses: number
-  dexFallbackAttempts: number
-  dexFallbackSuccesses: number
-  coinGeckoAttempts: number
-  coinGeckoSuccesses: number
-  internalSnapshotAttempts: number
-  internalSnapshotSuccesses: number
-  qualifiedExact7d: number
-  qualifiedMomentumFallback: number
-  rejectedAfterEvidenceCheck: number
-  stoppedReason: 'targetReached' | 'allCandidatesExhausted' | 'budgetExhausted'
-  finalRenderedCount: number
+  qualified: number
+  rejectedMajorStableWrapped: number
+  rejectedOverCap: number
+  rejectedCapDataMissing: number
+  rejectedLowLiquidity: number
+  rejectedLowVolume: number
+  rejectedNoMomentum: number
 }
 
 const CATEGORY_LABEL: Record<PumpCategory, string> = {
@@ -296,10 +289,10 @@ function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHoverPrefe
           </div>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', justifyContent: 'flex-end', flexShrink: 0, maxWidth: '46%' }}>
-          {/* EVIDENCE BADGE, DISCLOSED (ELIGIBILITY-MODEL fix): states exactly how this card
-              qualified. Exact sources get a calm teal "Exact 14d" chip; live-momentum cards get a
-              distinct amber "Live Momentum" chip so a live-momentum qualification can never pass as
-              confirmed 14d data. */}
+          {/* EVIDENCE BADGE, DISCLOSED: states exactly how this card qualified. This feed never
+              fetches exact 7d/14d evidence (see route.ts's module header) — every card qualifies on
+              live momentum, labelled honestly. The "Exact 7d" branch is kept for a future exact
+              source; it never renders today. */}
           {alert.evidenceGrade === 'live_momentum' ? (
             <span className="pump-pill" title={alert.qualifyingReason} style={{
               padding: '4px 8px', borderRadius: '999px', fontSize: '7.5px', fontWeight: 800, letterSpacing: '0.06em',
@@ -314,7 +307,7 @@ function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHoverPrefe
               color: '#2DD4BF', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.30)',
               fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap',
             }}>
-              ✓ Exact 14d
+              ✓ Exact 7d
             </span>
           )}
           <span className="pump-pill" style={{
@@ -599,16 +592,13 @@ export default function PumpAlertsPage() {
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
   const [feedError, setFeedError] = useState<string | null>(null)
-  // TRUTHFUL, SPECIFIC EMPTY STATE (URGENT fix request): finalState drives which of the real
-  // empty-state messages renders; degradedNote fires when the scan succeeded but the primary 14d
-  // provider failed and fallback evidence took over. candidateAudit backs the "why is this empty"
-  // breakdown so a small/zero result is never presented as an undifferentiated "no pump signals".
+  // TRUTHFUL, SPECIFIC EMPTY STATE, DISCLOSED: finalState drives which real empty-state message
+  // renders; candidateAudit backs the "why is this empty" rejection breakdown so a small/zero
+  // result is never presented as an undifferentiated "no pump signals".
   const [finalState, setFinalState] = useState<
-    'providerUnavailable' | 'noRawCandidates' | 'noEligibleLowCapCandidates'
-    | 'providerBudgetExhausted' | 'allCandidatesExhaustedNoMomentum' | 'providerDegradedPartial' | 'finalRendered' | null
+    'providerUnavailable' | 'noRawCandidates' | 'noneQualified' | 'finalRendered' | null
   >(null)
-  const [degradedNote, setDegradedNote] = useState<string | null>(null)
-  const [candidateAudit, setCandidateAudit] = useState<PumpCandidateEvaluationAudit | null>(null)
+  const [candidateAudit, setCandidateAudit] = useState<PumpFeedAudit | null>(null)
   const [countdown, setCountdown] = useState(120)
   const [activeFilter, setActiveFilter] = useState<FilterKey>('ALL')
   const [refreshKey, setRefreshKey] = useState(0)
@@ -673,21 +663,7 @@ export default function PumpAlertsPage() {
           // A partial scan still returns real alerts — show them AND say which chains are missing.
           setFeedError(typeof json.error === 'string' ? json.error : null)
           setFinalState(typeof json.finalState === 'string' ? json.finalState : null)
-          setCandidateAudit(json.pumpCandidateEvaluationAudit && typeof json.pumpCandidateEvaluationAudit === 'object' ? json.pumpCandidateEvaluationAudit : null)
-          // Degraded-mode note from the evidence ladder: shown even when candidates rendered, so
-          // live-momentum-qualified feeds are never mistaken for fully-exact-sourced ones.
-          const audit14d = json.pump14dEvidenceAudit as { degradedMode?: boolean; degradedReason?: string | null; exact14dQualified?: number; fallbackMomentumQualified?: number } | undefined
-          if (audit14d?.degradedMode) {
-            const qualified = (audit14d.exact14dQualified ?? 0) + (audit14d.fallbackMomentumQualified ?? 0)
-            setDegradedNote(
-              audit14d.degradedReason
-              ?? (qualified > 0
-                ? 'GeckoTerminal OHLCV failed this cycle — some cards are qualified by live 24h/6h/1h momentum evidence instead.'
-                : 'GeckoTerminal OHLCV failed this cycle and no live momentum evidence qualified a candidate either.'),
-            )
-          } else {
-            setDegradedNote(null)
-          }
+          setCandidateAudit(json.pumpFeedAudit && typeof json.pumpFeedAudit === 'object' ? json.pumpFeedAudit : null)
         } else {
           // No usable payload: keep whatever is already on screen and explain why it didn't update.
           setFeedError(typeof json.error === 'string' ? json.error : 'Pump feed request failed. Showing last known results.')
@@ -1053,18 +1029,6 @@ export default function PumpAlertsPage() {
             </div>
           )}
 
-          {/* DEGRADED MODE BANNER, DISCLOSED: distinct from feedError — this fires when the scan
-              itself succeeded but the primary 14d provider failed and live-momentum evidence was
-              used (or produced nothing). Shown even when cards rendered below it. */}
-          {degradedNote && !feedError && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '9px 12px', marginBottom: '10px', borderRadius: '10px', background: 'rgba(251,191,36,0.06)', border: '1px dashed rgba(251,191,36,0.30)', fontFamily: 'var(--font-plex-mono)' }}>
-              <span style={{ color: '#fbbf24', fontSize: '12px' }}>◐</span>
-              <span style={{ fontSize: '10.5px', color: '#d4b106', lineHeight: 1.35 }}>
-                {degradedNote} Cards labelled “Exact 14d” carry measured data; “Live Momentum” cards are qualified by real, currently-observable 24h/6h/1h momentum instead.
-              </span>
-            </div>
-          )}
-
           {/* Background refresh indicator — the feed stays on screen underneath it. */}
           {refreshing && !loading && (
             <div style={{ fontSize: '9.5px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '8px', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
@@ -1081,35 +1045,28 @@ export default function PumpAlertsPage() {
             </div>
           )}
 
-          {/* TRUTHFUL, SPECIFIC EMPTY STATE, DISCLOSED (URGENT fix request): 5 distinguishable empty
-              reasons instead of a single undifferentiated "no pump signals" — and, whenever the
-              backend sent one, the full candidate funnel breakdown so "why is this empty" never
-              requires a second round-trip to ask. An outage never reads as "nothing pumped". */}
+          {/* TRUTHFUL, SPECIFIC EMPTY STATE, DISCLOSED (live-pump-discovery rewrite): the backend's
+              finalState now has 4 real outcomes — a provider outage, zero raw candidates, real raw
+              candidates that none qualified, or a rendered feed — plus, whenever it sent one, the
+              rejection breakdown so "why is this empty" never needs a second round-trip to ask. */}
           {!loading && filtered.length === 0 && (
             <div style={{ textAlign: 'center', padding: '48px 20px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>
-              <div style={{ fontSize: '32px', marginBottom: '14px', opacity: 0.35 }}>{degradedNote || finalState === 'providerUnavailable' ? '◐' : '◈'}</div>
+              <div style={{ fontSize: '32px', marginBottom: '14px', opacity: 0.35 }}>{finalState === 'providerUnavailable' ? '◐' : '◈'}</div>
               <p style={{ fontSize: '13px', fontWeight: 600, margin: '0 0 6px', color: '#64748b' }}>
                 {activeFilter !== 'ALL' && activeFilter in CATEGORY_LABEL
                   ? `No ${CATEGORY_LABEL[activeFilter as PumpCategory]} signals right now.`
-                  : degradedNote ? 'No pump signals could be verified this cycle.'
-                  : finalState === 'providerUnavailable' ? 'Providers failed — could not reach GeckoTerminal for any requested chain.'
+                  : finalState === 'providerUnavailable' ? 'Providers failed — could not reach discovery sources for any requested chain.'
                   : finalState === 'noRawCandidates' ? 'No candidates found — providers returned zero pools for the requested chains.'
-                  : finalState === 'noEligibleLowCapCandidates' ? 'No eligible low-cap candidates this cycle — everything found was a major, stable, wrapped asset, or over the FDV ceiling.'
-                  : finalState === 'providerBudgetExhausted' ? 'Evaluation budget reached before enough candidates could be checked this cycle.'
-                  : finalState === 'allCandidatesExhaustedNoMomentum' ? 'Checked every eligible candidate this cycle — none confirmed a real pump.'
+                  : finalState === 'noneQualified' ? 'Checked every real candidate this cycle — none is pumping under $30M right now.'
                   : 'No fresh pump signals passed the quality filter.'}
               </p>
               <p style={{ fontSize: '11px', margin: '0 0 14px', color: '#3a5268' }}>
-                {degradedNote
-                  ? 'The primary 14-day provider failed and no live momentum evidence confirmed a real mover this cycle. Refresh shortly — live 24h/6h/1h momentum evidence is used automatically whenever exact evidence is unavailable.'
-                  : finalState === 'providerUnavailable'
-                    ? 'This is a provider issue, not a filtering result — try refreshing shortly.'
-                    : finalState === 'providerBudgetExhausted'
-                      ? 'There may be more real candidates the next refresh will reach — this cycle stopped early to stay within its evaluation budget, not because nothing else exists.'
-                      : 'Try refreshing or widening the watchlist.'}
+                {finalState === 'providerUnavailable'
+                  ? 'This is a provider issue, not a filtering result — try refreshing shortly.'
+                  : 'Try refreshing or widening the chain selection.'}
               </p>
-              {/* CANDIDATE-FUNNEL BREAKDOWN, DISCLOSED: only shown for a real empty result (not a
-                  category filter with 0 matches) and only when the backend actually sent one. */}
+              {/* REJECTION BREAKDOWN, DISCLOSED: exact bullets requested — majors/stables removed,
+                  over $30M removed, low liquidity removed, low volume removed, no momentum removed. */}
               {activeFilter === 'ALL' && candidateAudit && (
                 <div style={{
                   display: 'inline-grid', gridTemplateColumns: 'repeat(3, minmax(120px, 1fr))', gap: '6px',
@@ -1118,38 +1075,27 @@ export default function PumpAlertsPage() {
                 }}>
                   {[
                     ['Raw candidates', candidateAudit.rawCandidates],
-                    ['Filtered: major/stable', candidateAudit.categoryFiltered],
-                    ['Passed low-cap filter', candidateAudit.lowCapCandidates],
-                    ['Passed liquidity/volume', candidateAudit.liquidityVolumeCandidates],
-                    ['Evidence-checked', candidateAudit.candidatesEvaluated],
-                    ['Skipped (OHLCV budget)', candidateAudit.candidatesSkippedBeforeOhlcv],
-                    ['GeckoTerminal', `${candidateAudit.geckoSuccesses}/${candidateAudit.geckoAttempts}`],
-                    ['DexScreener', `${candidateAudit.dexFallbackSuccesses}/${candidateAudit.dexFallbackAttempts}`],
-                    ['CoinGecko', `${candidateAudit.coinGeckoSuccesses}/${candidateAudit.coinGeckoAttempts}`],
-                    ['Snapshots', `${candidateAudit.internalSnapshotSuccesses}/${candidateAudit.internalSnapshotAttempts}`],
-                    ['Qualified (exact)', candidateAudit.qualifiedExact7d],
-                    ['Qualified (momentum)', candidateAudit.qualifiedMomentumFallback],
+                    ['Qualified', candidateAudit.qualified],
+                    ['Majors/stables removed', candidateAudit.rejectedMajorStableWrapped],
+                    ['Over $30M removed', candidateAudit.rejectedOverCap],
+                    ['Cap data missing', candidateAudit.rejectedCapDataMissing],
+                    ['Low liquidity removed', candidateAudit.rejectedLowLiquidity],
+                    ['Low volume removed', candidateAudit.rejectedLowVolume],
+                    ['No momentum removed', candidateAudit.rejectedNoMomentum],
                   ].map(([label, value]) => (
                     <div key={label as string} style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
                       <span style={{ color: '#3a5268', letterSpacing: '0.06em', textTransform: 'uppercase', fontSize: '8px' }}>{label}</span>
                       <span style={{ color: '#7c94ab', fontWeight: 700 }}>{value}</span>
                     </div>
                   ))}
-                  <div style={{ gridColumn: '1 / -1', marginTop: '4px', paddingTop: '6px', borderTop: '1px solid rgba(255,255,255,0.06)', color: '#3a5268' }}>
-                    Stopped: {candidateAudit.stoppedReason === 'targetReached' ? 'target reached'
-                      : candidateAudit.stoppedReason === 'budgetExhausted' ? 'evaluation budget exhausted'
-                      : 'all eligible candidates exhausted'}
-                  </div>
                 </div>
               )}
             </div>
           )}
 
-          {/* FEED-QUANTITY FIX, DISCLOSED (reported live: "Pump Alerts only shows 1 token" — the UI
-              gave no reason why, just a bare card or two). Below a small threshold, cite the real
-              funnel numbers ("1 of 200 candidates qualified") plus a compact breakdown instead of a
-              generic "limited candidates" line, so a thin feed is provably explained, not assumed
-              broken. */}
+          {/* FEED-QUANTITY EXPLANATION, DISCLOSED (requested: "if only 1 token shows, the UI must
+              display '1 of X candidates qualified' with a rejection breakdown"). Below a small
+              threshold, cite the real numbers instead of a generic "limited candidates" line. */}
           {!loading && alerts.length > 0 && alerts.length < 10 && (
             candidateAudit ? (
               <div style={{ margin: '0 0 8px', padding: '7px 10px', borderRadius: '7px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', fontFamily: 'var(--font-plex-mono)' }}>
@@ -1157,7 +1103,7 @@ export default function PumpAlertsPage() {
                   {alerts.length} of {candidateAudit.rawCandidates} candidates qualified
                 </p>
                 <p style={{ fontSize: '8.5px', color: '#3a5268', margin: 0 }}>
-                  {candidateAudit.categoryFiltered} filtered as major/stable/wrapped · {Math.max(0, candidateAudit.rawCandidates - candidateAudit.categoryFiltered - candidateAudit.lowCapCandidates)} over FDV/cap ceiling · {Math.max(0, candidateAudit.lowCapCandidates - candidateAudit.liquidityVolumeCandidates)} below liquidity/volume minimums · {Math.max(0, candidateAudit.candidatesEvaluated - candidateAudit.qualifiedExact7d - candidateAudit.qualifiedMomentumFallback)} evidence-checked but not confirmed.
+                  {candidateAudit.rejectedMajorStableWrapped} majors/stables removed · {candidateAudit.rejectedOverCap + candidateAudit.rejectedCapDataMissing} over $30M removed · {candidateAudit.rejectedLowLiquidity} low liquidity removed · {candidateAudit.rejectedLowVolume} low volume removed · {candidateAudit.rejectedNoMomentum} no momentum removed.
                 </p>
               </div>
             ) : (
