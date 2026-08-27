@@ -82,9 +82,33 @@ export default function AuthPage() {
 
   useEffect(() => {
     let isMounted = true;
+    const safety = window.setTimeout(() => {
+      if (!isMounted) return
+      setAuthCheckLoading(false)
+    }, 8_000)
 
     async function checkExistingUser() {
-      const { data, error: sessionError } = await supabase.auth.getSession();
+      let data: { session?: { user?: { app_metadata?: { provider?: string }; email_confirmed_at?: string | null } } | null } | null = null
+      let sessionError: { message?: string } | null = null
+      try {
+        const raced = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise<never>((_, reject) => {
+            window.setTimeout(() => {
+              const err = new Error('getSession_timeout')
+              err.name = 'TimeoutError'
+              reject(err)
+            }, 8_000)
+          }),
+        ])
+        data = raced.data
+        sessionError = raced.error
+      } catch {
+        if (!isMounted) return
+        // Timed out / hung getSession — render the form instead of "Checking session…" forever.
+        setAuthCheckLoading(false)
+        return
+      }
 
       if (!isMounted) return;
 
@@ -122,6 +146,7 @@ export default function AuthPage() {
 
     return () => {
       isMounted = false;
+      window.clearTimeout(safety);
       subscription.unsubscribe();
     };
   }, [router]);
