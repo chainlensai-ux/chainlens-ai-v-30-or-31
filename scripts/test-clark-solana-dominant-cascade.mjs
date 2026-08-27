@@ -22,7 +22,7 @@ const routeSrc = fs.readFileSync(new URL('../app/api/clark/route.ts', import.met
 const routeCode = routeSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
 
 // The Solana handler must be a single shared function, not duplicated per branch.
-assert.match(routeCode, /async function buildSolanaCreatorAnswer\(tokenAddress: string\): Promise<Record<string, unknown>> \{/, 'a single shared Solana creator/authority answer builder must exist')
+assert.match(routeCode, /async function buildSolanaCreatorAnswer\(tokenAddress: string, wantsDeployer = false\): Promise<Record<string, unknown>> \{/, 'a single shared Solana creator/authority answer builder must exist, accepting whether the question is deployer-specific (see SOLANA-DEPLOYER-HELIUS-ENHANCED FIX)')
 const buildFnOccurrences = (routeCode.match(/async function buildSolanaCreatorAnswer\(/g) ?? []).length
 assert.equal(buildFnOccurrences, 1, 'buildSolanaCreatorAnswer must be defined exactly once — never duplicated per intent branch')
 
@@ -33,6 +33,11 @@ assert.ok(callSites >= 3, `buildSolanaCreatorAnswer must be both defined and cal
 
 // The early guard must cover every dominant natural-language token intent, not just token_scan.
 assert.match(routeCode, /const SOLANA_TOKEN_INTENTS = new Set\(\["token_safety", "liquidity_scan", "dev_rug_check", "dev_rug_history", "lp_lock_check", "risk_explanation", "token_ape_risk", "token_full_report", "token_scan"\]\);/, 'the Solana short-circuit must cover every dominant token-question intent, not just the narrow token_scan tool-plan path')
-assert.match(routeCode, /if \(routed\.address && SOLANA_TOKEN_INTENTS\.has\(routed\.intent\) && isValidSolanaMintAddress\(routed\.address\)\) \{\s*\n\s*return await buildSolanaCreatorAnswer\(routed\.address\);\s*\n\s*\}/, 'the early guard must actually short-circuit to the Solana answer before any EVM-only branch runs')
+// SOLANA-DEPLOYER-HELIUS-ENHANCED FIX, DISCLOSED (superseding round): the guard also now catches a
+// plain "who deployed X" question even when routed.intent comes back "none" (classifyClarkPrompt
+// has no dedicated bucket for a bare deployer question at all), and passes that decision through to
+// buildSolanaCreatorAnswer so it can opt into Helius Enhanced only for deployer-specific questions.
+assert.match(routeCode, /const isSolanaDeployerQuestion = routed\.address != null && SOLANA_DEPLOYER_QUESTION_RE\.test\(prompt\);/, 'the guard must independently detect a deployer question, since classifyClarkPrompt has no dedicated intent bucket for one')
+assert.match(routeCode, /if \(routed\.address && \(SOLANA_TOKEN_INTENTS\.has\(routed\.intent\) \|\| isSolanaDeployerQuestion\) && isValidSolanaMintAddress\(routed\.address\)\) \{\s*\n\s*return await buildSolanaCreatorAnswer\(routed\.address, isSolanaDeployerQuestion\);\s*\n\s*\}/, 'the early guard must short-circuit to the Solana answer for a deployer question even outside the fixed intent set, before any EVM-only branch runs')
 
 console.log('test-clark-solana-dominant-cascade.mjs: all assertions passed')

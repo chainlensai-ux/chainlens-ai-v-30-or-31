@@ -9953,12 +9953,24 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // scan Base (wrong chain, no real Solana data) or produce a confusing empty-scan message. Extracted
   // into a shared function (not duplicated per-branch) and short-circuited here, before any of those
   // EVM-only branches run, whenever the parsed address is a real Solana mint.
-  async function buildSolanaCreatorAnswer(tokenAddress: string): Promise<Record<string, unknown>> {
+  // SOLANA-DEPLOYER-HELIUS-ENHANCED FIX, DISCLOSED (requested live: "for solana for deployer ca
+  // make sure it uses helius enhanced"). The Solana creator/authority read always called /api/token
+  // WITHOUT deepDev — the one flag that reaches Helius's Enhanced Transactions API (see
+  // lib/server/solana/deepCreatorAnalyzer.ts's own disclosure: "explicit opt-in only... paid API").
+  // Without it, /api/token only checks recent signature presence, never resolving a real creator —
+  // which is exactly why every Solana deployer question ended in "Not resolved. Run the Deep
+  // Creator Check in Token Scanner." Scoped, not blanket: deepDev now goes true only when the
+  // question is actually about the deployer/creator (matches this same regex CLARK_TOKEN_QUESTION_
+  // RE and clarkIntent.ts's own DEV_WALLET_QUESTION_RE already use), so a plain "is it safe" still
+  // costs nothing extra — the explicit-opt-in-for-cost-control contract stays intact, just correctly
+  // triggered for the one question class where the fast, non-enhanced check can never answer.
+  const SOLANA_DEPLOYER_QUESTION_RE = /\b(dev\s+wallet|deployer|who\s+deployed|who\s+made\s+this|who\s+built|who\s+created|check\s+creator|origin\s+wallet|is\s+the\s+dev|check\s+dev|deployer\s+of|creator\s+of|rugged\s+before|dev\s+history|deployer\s+history)\b/i;
+  async function buildSolanaCreatorAnswer(tokenAddress: string, wantsDeployer = false): Promise<Record<string, unknown>> {
     const solRes = await fetch(`${origin}/api/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...(authHeader ? { Authorization: authHeader } : {}) },
-      body: JSON.stringify({ contract: tokenAddress, chain: "solana" }),
-      signal: AbortSignal.timeout(20_000),
+      body: JSON.stringify({ contract: tokenAddress, chain: "solana", ...(wantsDeployer ? { deepDev: true } : {}) }),
+      signal: AbortSignal.timeout(wantsDeployer ? 30_000 : 20_000),
       cache: "no-store",
     }).catch(() => null);
     const solJson = solRes && solRes.ok ? await solRes.json().catch(() => null) : null;
@@ -10036,8 +10048,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // question) — covers "X safe", "is liquidity safe on X", "can dev rug", LP/risk/full-report/rug-
   // history phrasing, not just the narrow token_scan tool-plan path this already worked on.
   const SOLANA_TOKEN_INTENTS = new Set(["token_safety", "liquidity_scan", "dev_rug_check", "dev_rug_history", "lp_lock_check", "risk_explanation", "token_ape_risk", "token_full_report", "token_scan"]);
-  if (routed.address && SOLANA_TOKEN_INTENTS.has(routed.intent) && isValidSolanaMintAddress(routed.address)) {
-    return await buildSolanaCreatorAnswer(routed.address);
+  // A plain "who deployed X"/"deployer of X" has no dedicated intent bucket in classifyClarkPrompt
+  // at all (it only feeds the liquidity_scan classifier when paired with an LP keyword) — routed.
+  // intent comes back "none" for it, so the intent-set check above alone would miss it. Checked
+  // directly against the prompt so a bare Solana deployer question is never silently dropped.
+  const isSolanaDeployerQuestion = routed.address != null && SOLANA_DEPLOYER_QUESTION_RE.test(prompt);
+  if (routed.address && (SOLANA_TOKEN_INTENTS.has(routed.intent) || isSolanaDeployerQuestion) && isValidSolanaMintAddress(routed.address)) {
+    return await buildSolanaCreatorAnswer(routed.address, isSolanaDeployerQuestion);
   }
   if (sessionMem.lastWallet?.address && !routed.address && isWalletFollowupPrompt(prompt)) {
     const memResult = buildWalletMemoryResult(sessionMem.lastWallet);
@@ -10989,7 +11006,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // evidence (mint/freeze/update authority + Deep Creator Check), labeled creator/authority —
     // never "deployer" unless the source proves it.
     if (tokenAddress && isValidSolanaMintAddress(tokenAddress)) {
-      return await buildSolanaCreatorAnswer(tokenAddress);
+      return await buildSolanaCreatorAnswer(tokenAddress, SOLANA_DEPLOYER_QUESTION_RE.test(prompt));
     }
     // EVM 0x address can never be a Solana mint; and for chains Token Core cannot scan,
     // say so honestly instead of silently falling back to Base.
