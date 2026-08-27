@@ -9980,16 +9980,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       cache: "no-store",
     }).catch(() => null);
     const solJson = solRes && solRes.ok ? await solRes.json().catch(() => null) : null;
-    const merged = (solJson && typeof solJson === "object" && "mergedResult" in (solJson as Record<string, unknown>))
-      ? ((solJson as Record<string, unknown>).mergedResult as Record<string, unknown> | null)
-      : null;
-    const mintAuthority = merged && typeof merged.mintAuthority === "string" ? merged.mintAuthority : null;
-    const freezeAuthority = merged && typeof merged.freezeAuthority === "string" ? merged.freezeAuthority : null;
-    const deepCreator = (solJson as Record<string, unknown> | null)?.deepCreator as Record<string, unknown> | null | undefined;
+    const solData = solJson && typeof solJson === "object" ? (solJson as Record<string, unknown>) : null;
+    // MERGED-RESULT-WRONG-NESTING FIX, DISCLOSED (Clark full-system audit, requested: "audit the
+    // whole clark system"): live reproduction — "is this token safe" on a real, live pump.fun mint
+    // answered "Mint authority: revoked or unresolved" / "Creator/fee payer: Not resolved" / "Solana
+    // scan returned no usable data" for every token, always, regardless of what the scan actually
+    // found. Traced to reading solJson.mergedResult — that key only exists nested inside
+    // solJson.solanaProviderWiringAudit.mergedResult (see lib/server/solana/providerMerge.ts's
+    // return statement), never at the top level, so `merged` was unconditionally null and every
+    // real mintAuthority/freezeAuthority/marketData field the scan actually resolved was silently
+    // discarded. The real fields (mintAuthority, freezeAuthority, marketData, authorityReadSucceeded,
+    // marketDataAvailable) live directly on the top-level response — read those instead.
+    const mintAuthority = typeof solData?.mintAuthority === "string" ? solData.mintAuthority : null;
+    const freezeAuthority = typeof solData?.freezeAuthority === "string" ? solData.freezeAuthority : null;
+    const hasUsableData = Boolean(solData?.authorityReadSucceeded || solData?.marketDataAvailable);
+    const deepCreator = solData?.deepCreator as Record<string, unknown> | null | undefined;
     const creatorTrace = deepCreator?.creatorTrace as Record<string, unknown> | null | undefined;
     const traceResolved = creatorTrace?.resolved as Record<string, unknown> | null | undefined;
     const likelyCreator = typeof traceResolved?.likelyCreatorWallet === "string" ? traceResolved.likelyCreatorWallet as string : null;
-    const creatorConfidence = (solJson as Record<string, unknown> | null)?.creatorConfidence as Record<string, unknown> | null | undefined;
+    const creatorConfidence = solData?.creatorConfidence as Record<string, unknown> | null | undefined;
     const lines: string[] = ["SOLANA CREATOR / AUTHORITY READ", ""];
     const authorities: string[] = [];
     if (mintAuthority) authorities.push(`- Mint authority: ${mintAuthority} (active — supply can be increased)`);
@@ -10002,7 +10011,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     } else {
       lines.push("- Creator/fee payer: Not resolved. Run the Deep Creator Check in Token Scanner for a Helius signature-history trace.");
     }
-    lines.push("", "- Chain: Solana", `- Evidence: ${merged ? "Solana RPC (mint account) + Helius" : "Solana scan returned no usable data"}`);
+    lines.push("", "- Chain: Solana", `- Evidence: ${hasUsableData ? "Solana RPC (mint account) + Helius" : "Solana scan returned no usable data"}`);
     lines.push("- CTA: Open Token Scanner → Solana Beta for the full read.");
     // SOLANA-MEMORY-BLIND FIX, DISCLOSED (Clark full-system audit, requested: "improve memory"):
     // this answer resolved real Solana evidence (mint/freeze authority, Helius creator trace) but
@@ -10012,8 +10021,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // memory or asked the user to repaste the address they'd just given. Mirrors the EVM answer
     // paths: remember the token (if we got any usable data) and the creator/fee-payer as a deployer
     // candidate (only when actually resolved — never remember a null as if it were evidence).
-    const marketData = merged?.marketData as { tokenName?: string | null; tokenSymbol?: string | null } | null | undefined;
-    if (merged) {
+    const marketData = solData?.marketData as { tokenName?: string | null; tokenSymbol?: string | null } | null | undefined;
+    if (hasUsableData) {
       updateMemToken(sessionMem!, tokenAddress, marketData?.tokenSymbol ?? null, marketData?.tokenName ?? null, lines.join("\n"), { chain: "solana" });
     }
     if (likelyCreator) {
@@ -10047,11 +10056,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         mintAuthority,
         freezeAuthority,
         metadataAuthority: null,
-        evidenceSource: merged ? "solana_rpc+helius" : "none",
+        evidenceSource: hasUsableData ? "solana_rpc+helius" : "none",
         confidence: likelyCreator ? String((creatorConfidence?.tier as string) ?? "possible").toLowerCase() : "low",
         sourcesAttempted: ["solana_rpc_mint_authority", "helius_creator_trace"],
-        sourcesSucceeded: [ ...(merged ? ["solana_rpc_mint_authority"] : []), ...(likelyCreator ? ["helius_creator_trace"] : []) ],
-        sourcesFailed: [ ...(!merged ? ["solana_rpc_mint_authority"] : []), ...(!likelyCreator ? ["helius_creator_trace"] : []) ],
+        sourcesSucceeded: [ ...(hasUsableData ? ["solana_rpc_mint_authority"] : []), ...(likelyCreator ? ["helius_creator_trace"] : []) ],
+        sourcesFailed: [ ...(!hasUsableData ? ["solana_rpc_mint_authority"] : []), ...(!likelyCreator ? ["helius_creator_trace"] : []) ],
         rejectedWrongChainResults: 0,
         finalAnswerMode: (likelyCreator || mintAuthority || freezeAuthority) ? "found" : "unavailable_with_sources",
       },
@@ -12611,16 +12620,22 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         cache: "no-store",
       }).catch(() => null);
       const solJson = solRes && solRes.ok ? await solRes.json().catch(() => null) : null;
-      const merged = (solJson && typeof solJson === "object" && "mergedResult" in (solJson as Record<string, unknown>))
-        ? ((solJson as Record<string, unknown>).mergedResult as Record<string, unknown> | null)
-        : null;
-      const mintAuthority = merged && typeof merged.mintAuthority === "string" ? merged.mintAuthority : null;
-      const freezeAuthority = merged && typeof merged.freezeAuthority === "string" ? merged.freezeAuthority : null;
-      const deepCreator = (solJson as Record<string, unknown> | null)?.deepCreator as Record<string, unknown> | null | undefined;
+      // MERGED-RESULT-WRONG-NESTING FIX, DISCLOSED (Clark full-system audit — same bug found and
+      // fixed in buildSolanaCreatorAnswer above): this second, independent Solana creator/authority
+      // read (the dev_wallet intent's own Solana guard) had the identical bug — solJson.mergedResult
+      // only ever exists nested inside solJson.solanaProviderWiringAudit.mergedResult, never at the
+      // top level, so `merged` was unconditionally null here too and "who deployed this" on a real
+      // Solana token always answered "no usable data" regardless of what the scan found. Read the
+      // real top-level fields instead.
+      const solData = solJson && typeof solJson === "object" ? (solJson as Record<string, unknown>) : null;
+      const mintAuthority = typeof solData?.mintAuthority === "string" ? solData.mintAuthority : null;
+      const freezeAuthority = typeof solData?.freezeAuthority === "string" ? solData.freezeAuthority : null;
+      const hasUsableData = Boolean(solData?.authorityReadSucceeded || solData?.marketDataAvailable);
+      const deepCreator = solData?.deepCreator as Record<string, unknown> | null | undefined;
       const creatorTrace = deepCreator?.creatorTrace as Record<string, unknown> | null | undefined;
       const traceResolved = creatorTrace?.resolved as Record<string, unknown> | null | undefined;
       const likelyCreator = typeof traceResolved?.likelyCreatorWallet === "string" ? traceResolved.likelyCreatorWallet as string : null;
-      const creatorConfidence = (solJson as Record<string, unknown> | null)?.creatorConfidence as Record<string, unknown> | null | undefined;
+      const creatorConfidence = solData?.creatorConfidence as Record<string, unknown> | null | undefined;
       const lines: string[] = ["SOLANA CREATOR / AUTHORITY READ", ""];
       const authorities: string[] = [];
       if (mintAuthority) authorities.push(`- Mint authority: ${mintAuthority} (active — supply can be increased)`);
@@ -12633,8 +12648,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       } else {
         lines.push("- Creator/fee payer: Not resolved. Run the Deep Creator Check in Token Scanner for a Helius signature-history trace.");
       }
-      lines.push("", "- Chain: Solana", `- Evidence: ${merged ? "Solana RPC (mint account) + Helius" : "Solana scan returned no usable data"}`);
+      lines.push("", "- Chain: Solana", `- Evidence: ${hasUsableData ? "Solana RPC (mint account) + Helius" : "Solana scan returned no usable data"}`);
       lines.push("- CTA: Open Token Scanner → Solana Beta for the full read.");
+      // SOLANA-MEMORY-BLIND FIX, DISCLOSED (same finding as buildSolanaCreatorAnswer above): this
+      // path never wrote the resolved creator to memory either, so a follow-up right after "who
+      // deployed this" had nothing to resolve against.
+      if (likelyCreator) {
+        rememberClarkDeployer(sessionMem!, likelyCreator, {
+          chain: "solana",
+          sourceTokenAddress: resolvedAddress,
+          confidence: (creatorConfidence?.tier as string) === "high" ? "high" : (creatorConfidence?.tier as string) === "low" ? "low" : "medium",
+        });
+      }
       return {
         feature: "clark-ai", chain: "base", mode: "analysis", intent: plan.intent, toolsUsed: ["solana_scan"],
         analysis: lines.join("\n"),
@@ -12645,7 +12670,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           prompt, parsedAddress: resolvedAddress, parsedChainSlug: "solana", resolvedChainId: null,
           addressType: "solana_mint", cacheChecked: false, cacheHit: false, tokenScannerCacheChecked: false,
           directResolverAttempted: false, directResolverSucceeded: false,
-          explorerAttempted: false, explorerSucceeded: false, rpcAttempted: Boolean(merged), rpcSucceeded: Boolean(mintAuthority || freezeAuthority || likelyCreator),
+          explorerAttempted: false, explorerSucceeded: false, rpcAttempted: hasUsableData, rpcSucceeded: Boolean(mintAuthority || freezeAuthority || likelyCreator),
           fullTokenScanAttempted: true, timedOut: !solRes, timeoutStage: !solRes ? "full_scan" as const : null,
           deployerFound: Boolean(likelyCreator), deployerAddress: likelyCreator,
           evidenceSource: likelyCreator ? "solana_rpc_helius" : "none",

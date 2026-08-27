@@ -30,8 +30,36 @@ const routeCode = routeSrc.split('\n').filter(l => !l.trim().startsWith('//')).j
 // buildSolanaCreatorAnswer must write the token to memory when it got usable data.
 assert.match(
   routeCode,
-  /if \(merged\) \{\s*\n\s*updateMemToken\(sessionMem!, tokenAddress, marketData\?\.tokenSymbol \?\? null, marketData\?\.tokenName \?\? null, lines\.join\("\\n"\), \{ chain: "solana" \}\);\s*\n\s*\}/,
-  'buildSolanaCreatorAnswer must call updateMemToken with chain: "solana" when merged evidence exists'
+  /if \(hasUsableData\) \{\s*\n\s*updateMemToken\(sessionMem!, tokenAddress, marketData\?\.tokenSymbol \?\? null, marketData\?\.tokenName \?\? null, lines\.join\("\\n"\), \{ chain: "solana" \}\);\s*\n\s*\}/,
+  'buildSolanaCreatorAnswer must call updateMemToken with chain: "solana" when usable evidence exists'
+)
+
+// MERGED-RESULT-WRONG-NESTING FIX, DISCLOSED: separately reproduced live — "is this token safe" on a
+// real, live token always answered "no usable data" / "revoked or unresolved" for every field, because
+// the code read solJson.mergedResult, a key that only ever exists nested inside
+// solJson.solanaProviderWiringAudit.mergedResult, never at the top level (see providerMerge.ts's
+// return statement). The real fields (mintAuthority, freezeAuthority, marketData,
+// authorityReadSucceeded, marketDataAvailable) live directly on the top-level response.
+assert.doesNotMatch(routeCode, /"mergedResult" in \(solJson/, 'must not read the non-existent top-level mergedResult key')
+assert.match(
+  routeCode,
+  /const mintAuthority = typeof solData\?\.mintAuthority === "string" \? solData\.mintAuthority : null;/,
+  'mintAuthority must be read directly from the top-level response field'
+)
+assert.match(
+  routeCode,
+  /const freezeAuthority = typeof solData\?\.freezeAuthority === "string" \? solData\.freezeAuthority : null;/,
+  'freezeAuthority must be read directly from the top-level response field'
+)
+assert.match(
+  routeCode,
+  /const hasUsableData = Boolean\(solData\?\.authorityReadSucceeded \|\| solData\?\.marketDataAvailable\);/,
+  'hasUsableData must be derived from the real top-level authorityReadSucceeded/marketDataAvailable flags, not a nonexistent nested mergedResult'
+)
+assert.match(
+  routeCode,
+  /const marketData = solData\?\.marketData as \{ tokenName\?: string \| null; tokenSymbol\?: string \| null \} \| null \| undefined;/,
+  'token name/symbol for memory must be read from the top-level marketData field'
 )
 
 // It must remember the creator/fee-payer as a deployer candidate, only when actually resolved.
@@ -64,6 +92,19 @@ assert.match(
   routeCode,
   /const addr = isEvm \? trimmed\.toLowerCase\(\) : trimmed;/,
   'rememberClarkDeployer must never lowercase a Solana address (base58 is case-sensitive, unlike EVM hex)'
+)
+
+// The second, independent Solana creator/authority read (the dev_wallet intent's own Solana guard,
+// a separate reimplementation rather than a call to buildSolanaCreatorAnswer — kept separate because
+// an existing test pins its distinct clarkDeployerLookupAudit shape) had the identical mergedResult
+// bug and must be fixed the same way, plus gain the same missing memory write-back.
+const mergedResultOccurrences = (routeCode.match(/"mergedResult" in \(solJson/g) ?? []).length
+assert.equal(mergedResultOccurrences, 0, 'no call site may read the non-existent top-level mergedResult key')
+assert.equal((routeCode.match(/const hasUsableData = Boolean\(solData\?\.authorityReadSucceeded \|\| solData\?\.marketDataAvailable\);/g) ?? []).length, 2, 'both Solana creator/authority read call sites must derive hasUsableData from the real top-level fields')
+assert.match(
+  routeCode,
+  /if \(likelyCreator\) \{\s*\n\s*rememberClarkDeployer\(sessionMem!, likelyCreator, \{\s*\n\s*chain: "solana",\s*\n\s*sourceTokenAddress: resolvedAddress,/,
+  'the dev_wallet intent\'s Solana guard must also remember the resolved creator for follow-ups'
 )
 
 console.log('test-clark-solana-memory-writeback.mjs: all assertions passed')
