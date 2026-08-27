@@ -34,6 +34,7 @@ const tests = [
   'test-clark-lp-eoa-check-and-solana-followup.mjs',
   'test-clark-lp-meta-field-mismatch.mjs',
   'test-clark-solana-bare-safe-and-lp-cta.mjs',
+  'test-clark-address-blind-gates.mjs',
   'test-pump-alerts-discovery.mjs',
   'test-pump-7d-fallback.mjs',
   'test-pump-snapshots.mjs',

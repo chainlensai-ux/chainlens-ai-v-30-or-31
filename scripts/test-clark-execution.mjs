@@ -973,7 +973,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(guardIdx < routedWalletScanIdx, 'guard runs before routed.intent === "wallet_scan" branch')
   assert.ok(guardIdx < walletAnalysisIdx, 'guard runs before directIntent wallet_analysis branch')
   assert.ok(routeFile.includes('isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address'), 'guard requires both a follow-up prompt and an existing lastToken in memory')
-  assert.ok(routeFile.includes('isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !extractAddress(prompt)'), 'guard defers to the explicit-address LP route when the prompt names a new contract')
+  assert.ok(routeFile.includes('isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !hasAnyAddress(prompt)'), 'guard defers to the explicit-address LP route when the prompt names a new contract of any kind (EVM or Solana)')
   assert.ok(!routeFile.slice(guardIdx, guardIdx + 1600).includes('runWalletScanner'), 'token follow-up guard never calls runWalletScanner')
 
   // Task 3/5: each formatter is section-specific, never a generic "open check" excuse,
@@ -1256,7 +1256,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const routeFile = fs.readFileSync(path.join(process.cwd(), 'app/api/clark/route.ts'), 'utf8')
 
   const followupGuard = routeFile.slice(
-    routeFile.indexOf('if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !extractAddress(prompt) && !isValidSolanaMintAddress(extractAddressForRouting(prompt) ?? "")) {'),
+    routeFile.indexOf('if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !hasAnyAddress(prompt)) {'),
     routeFile.indexOf('// ─── Wallet compare')
   )
   assert.ok(followupGuard.includes('const followupVerdictMeta = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev));'), 'memory-served follow-up guard computes verdict metadata from the same evidence it displays')
@@ -1323,7 +1323,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   // Task 3: an explicit new address in the same prompt must bypass the lastToken guard
   // entirely so the existing explicit-address LP route (classifyClarkPrompt) handles it.
-  assert.ok(routeFile.includes('isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !extractAddress(prompt)'), 'lastToken LP follow-up guard defers to an explicit new contract address in the same prompt')
+  assert.ok(routeFile.includes('isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !hasAnyAddress(prompt)'), 'lastToken LP follow-up guard defers to an explicit new contract address (EVM or Solana) in the same prompt')
 
   // Task 4/5: formatLpLockCheck produces the exact expected heading and CTA, never "P CHECK".
   const ev = {

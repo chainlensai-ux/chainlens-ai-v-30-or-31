@@ -890,6 +890,20 @@ function extractAddress(text: string): string | null {
   return match ? match[0] : null;
 }
 
+// ADDRESS-BLIND-GATE FIX, DISCLOSED (found chasing "solana lp is basic and shit and clark needs to
+// be more aware whats a wallet and a token" — same address-recognition gap already fixed once for
+// the token-followup memory guard, found here in over a dozen MORE early gates across this file).
+// Every one of the many "is there NO address in this message, so treat it as a contextual follow-up
+// / casual chat / whale-only question" guards below tested `!extractAddress(prompt)` — extractAddress
+// only recognizes 0x-EVM addresses. A real Solana mint pasted alongside "is it safe" (or "why is it
+// risky", "check this", etc.) was invisible to every one of these checks, so the guard concluded
+// "no address here" and answered from stale memory/context instead — exactly how a real Solana
+// token ended up read back as "WALLET READ ... Active chains: Base". Use this everywhere one of
+// those guards needs to know whether the CURRENT message contains a real address of any kind.
+function hasAnyAddress(text: string): boolean {
+  return extractAddress(text) != null || isValidSolanaMintAddress(extractAddressForRouting(text) ?? "");
+}
+
 const ENS_NAME_RE = /\b([a-z0-9][a-z0-9-]*\.(?:base\.eth|cb\.id|eth))\b/i
 function extractEnsName(text: string): string | null {
   const m = text.match(ENS_NAME_RE)
@@ -7448,7 +7462,7 @@ async function handleWhaleAlertFeedInner(prompt: string, body: ClarkRequestBody,
     // Organic query (e.g. "what are whales doing right now?") — use stored feed only.
     const isBuyQuery = /\bwhales? buying\b|\bwhale buys?\b|\bwhat are whales buying\b|\bwhat tokens are base whales buying\b|\bsmart wallets? buying\b/i.test(prompt);
     const isSellQuery = /\bwhales?\s+sell(?:ing)?\b|\bwhat are whales?\s+sell(?:ing)\b|\bsell[\s-]?side\s+whale\b/i.test(prompt);
-    const isStoredWhaleQuestion = /\bwhat are whales buying on base\b|\bwhat tokens are base whales buying\b|\bwhat are whales doing\b|\bwhale activity\b|\bbase whale alerts\b|\bshow base whales\b|\bbase whales\b|\bshow whales\b|\bwhat whales are rotating into\b|\bwhat are whales rotating into\b|\bwhale rotation\b|\bwhale flows\b|\bbase whale flows\b|\bsmart money on base\b|\bwhat are smart wallets buying\b|\bwhat are smart wallets rotating into\b|\bwhales? buying\b|\bwhale buys?\b|\blast week whale activity\b|\b7d whale flows\b|\bwhat were whales buying last 7 days\b/i.test(prompt.toLowerCase()) && !extractAddress(prompt);
+    const isStoredWhaleQuestion = /\bwhat are whales buying on base\b|\bwhat tokens are base whales buying\b|\bwhat are whales doing\b|\bwhale activity\b|\bbase whale alerts\b|\bshow base whales\b|\bbase whales\b|\bshow whales\b|\bwhat whales are rotating into\b|\bwhat are whales rotating into\b|\bwhale rotation\b|\bwhale flows\b|\bbase whale flows\b|\bsmart money on base\b|\bwhat are smart wallets buying\b|\bwhat are smart wallets rotating into\b|\bwhales? buying\b|\bwhale buys?\b|\blast week whale activity\b|\b7d whale flows\b|\bwhat were whales buying last 7 days\b/i.test(prompt.toLowerCase()) && !hasAnyAddress(prompt);
     const is7dQuery = /\b7d\b|\b7 day\b|\b7 days\b|\blast week\b|\bweek whale\b|\blast 7 days\b/i.test(prompt.toLowerCase());
     const isBehaviorQuery = /\bmonitor\s+whale\s+wallets?\b|\bwhich\s+wallets?\s+(should\s+I\s+)?(track|monitor|watch)\b|\bwallet\s+behav(ior|iour)\b|\btrack\s+whale\s+wallets?\b|\bwhale\s+wallet\s+(monitor|track|watch|behavior|pattern|activity)\b|\bwallet\s+patterns?\b/i.test(prompt);
     const window = is7dQuery ? "7d" : "24h";
@@ -9160,7 +9174,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // using whatever EVM token happened to be in memory from an earlier scan, completely ignoring the
   // Solana address the user just pasted. A genuinely new address of either kind in the CURRENT
   // message must always win over stale memory.
-  if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !extractAddress(prompt) && !isValidSolanaMintAddress(extractAddressForRouting(prompt) ?? "")) {
+  if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !hasAnyAddress(prompt)) {
     const followupKind = classifyTokenFollowupKind(prompt);
     const tokenAddress = sessionMem.lastToken.address;
     const cached = sessionMem.lastToken.cachedEvidence ?? null;
@@ -9776,7 +9790,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
 
-  if (THIS_DEV_RE.test(prompt) && !extractAddress(prompt)) {
+  if (THIS_DEV_RE.test(prompt) && !hasAnyAddress(prompt)) {
     const target = sessionMem.lastToken?.address ?? body.clientContext?.lastToken?.address ?? null;
     if (!target) return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: [], analysis: "CORTEX could not verify the origin wallet from live data. Token context is still saved." };
     // CHAIN-STRICT (Clark deployer audit): forward the session's resolved chain; skip rather
@@ -9817,7 +9831,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
 
-  if (THIS_LIQ_RE.test(prompt) && !extractAddress(prompt)) {
+  if (THIS_LIQ_RE.test(prompt) && !hasAnyAddress(prompt)) {
     const target = sessionMem.lastToken?.address ?? body.clientContext?.lastToken?.address ?? null;
     if (!target) return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], analysis: missingAddressReply("liquidity_safety") };
     const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { tokenAddress: target }, authHeader ?? undefined);
@@ -9846,7 +9860,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // "this" contextual resolution — liquidity check this / dev wallet this / scan this / who deployed this
   const THIS_RE = /\b(liquidity\s+check\s+this|check\s+liquidity\s+(?:for\s+)?this|lp\s+(?:check\s+)?this|who\s+(?:deployed|made|built|created)\s+this|dev\s+wallet\s+(?:for\s+)?this|check\s+(?:dev\s+wallet|deployer)\s+(?:for\s+)?this|scan\s+(?:this|it)|check\s+(?:this|it)|is\s+(?:it|this)\s+safe)\b/i;
-  if (THIS_RE.test(prompt) && !extractAddress(prompt)) {
+  if (THIS_RE.test(prompt) && !hasAnyAddress(prompt)) {
     const histLinesForThis = getHistoryMessages(body.history);
     const lastTokenCtx = extractLastTokenContext(histLinesForThis);
     const lastScanCtx = extractLastTokenScanFromHistory(body.history);
@@ -9871,7 +9885,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // "scan on ETH instead" — re-run last token scan on Ethereum mainnet
   const SCAN_ETH_INSTEAD_RE = /\b(scan\s+(?:it|this|that)\s+on\s+(?:eth(?:ereum)?)|on\s+eth(?:ereum)?\s+(?:instead|too|also)|check\s+(?:it|this)\s+on\s+eth(?:ereum)?|eth(?:ereum)?\s+version)\b/i;
-  if (SCAN_ETH_INSTEAD_RE.test(prompt) && !extractAddress(prompt)) {
+  if (SCAN_ETH_INSTEAD_RE.test(prompt) && !hasAnyAddress(prompt)) {
     const memToken = sessionMem.lastToken ?? body.clientContext?.lastToken ?? null;
     const ethTarget = memToken?.address ?? memToken?.symbol ?? null;
     if (!ethTarget) {
@@ -9883,7 +9897,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // "I'm talking about AERO" — resolve symbol from session context and make it active again.
   const TALKING_ABOUT_RE = /\b(?:i['’]?m|im)\s+talking\s+about\s+([a-z0-9]{2,20})\b/i;
   const talkingMatch = prompt.match(TALKING_ABOUT_RE);
-  if (talkingMatch && !extractAddress(prompt)) {
+  if (talkingMatch && !hasAnyAddress(prompt)) {
     const spokenSymbol = talkingMatch[1].toUpperCase();
     const tokenFromRecent = sessionMem.recentTokens.find((t) => (t.symbol ?? "").toUpperCase() === spokenSymbol) ?? null;
     const tokenFromLast = sessionMem.lastToken && (sessionMem.lastToken.symbol ?? "").toUpperCase() === spokenSymbol ? sessionMem.lastToken : null;
@@ -11707,7 +11721,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
   // Watch verdict follow-up — after a token scan, user asks whether to watch
   const WATCH_VERDICT_RE = /\b(should\s+i\s+watch\s+(?:it|this|the\s+token|that\s+token)?|is\s+it\s+worth\s+watching|worth\s+watching|final\s+verdict|what'?s\s+the\s+play|should\s+i\s+monitor\s+(?:it|this)|watch\s+verdict)\b/i;
-  if (WATCH_VERDICT_RE.test(prompt) && !extractAddress(prompt) && !extractTokenLookupQuery(prompt)) {
+  if (WATCH_VERDICT_RE.test(prompt) && !hasAnyAddress(prompt) && !extractTokenLookupQuery(prompt)) {
     const lastScan = extractLastTokenScanFromHistory(body.history);
     const memTokenVerdict = sessionMem.lastToken;
     if (lastScan) {
@@ -11730,7 +11744,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
 
-  if (isHolderQuestion(prompt) && !extractTokenLookupQuery(prompt) && !extractAddress(prompt)) {
+  if (isHolderQuestion(prompt) && !extractTokenLookupQuery(prompt) && !hasAnyAddress(prompt)) {
     const lastScan = extractLastTokenScanFromHistory(body.history);
     if (!lastScan) {
       return {
@@ -11746,7 +11760,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // "why is it risky" — pull risk section from scan summary
   const WHY_RISKY_RE = /\b(why\s+is\s+it\s+risky|what\s+makes\s+it\s+risky|why\s+is\s+(?:it|this|that)\s+(?:a\s+)?risk(?:y)?|explain\s+the\s+risk|why\s+(?:avoid|risky))\b/i;
-  if (WHY_RISKY_RE.test(prompt) && !extractAddress(prompt) && !extractTokenLookupQuery(prompt)) {
+  if (WHY_RISKY_RE.test(prompt) && !hasAnyAddress(prompt) && !extractTokenLookupQuery(prompt)) {
     const scanSrc = sessionMem.lastToken?.scanSummary ?? extractLastTokenScanFromHistory(body.history)?.scanText ?? null;
     const tokenLabel = sessionMem.lastToken ? `${sessionMem.lastToken.symbol ?? "Last token"} (${sessionMem.lastToken.address.slice(0, 6)}...${sessionMem.lastToken.address.slice(-4)})` : "Last scanned token";
     if (scanSrc) {
@@ -11779,7 +11793,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // "show me the missing checks" — extract from scan summary
   const MISSING_CHECKS_RE = /\b(show\s+(?:me\s+)?(?:the\s+)?missing\s+checks?|what\s+(?:checks?\s+)?(?:are\s+)?missing|what\s+is\s+missing|which\s+checks?\s+(?:are\s+)?missing|what\s+(?:data\s+)?(?:is\s+)?incomplete|incomplete\s+checks?)\b/i;
-  if (MISSING_CHECKS_RE.test(prompt) && !extractAddress(prompt) && !extractTokenLookupQuery(prompt)) {
+  if (MISSING_CHECKS_RE.test(prompt) && !hasAnyAddress(prompt) && !extractTokenLookupQuery(prompt)) {
     const scanSrc = sessionMem.lastToken?.scanSummary ?? extractLastTokenScanFromHistory(body.history)?.scanText ?? null;
     const tokenLabel = sessionMem.lastToken ? `${sessionMem.lastToken.symbol ?? "Last token"}` : "Last scanned token";
     if (scanSrc) {
@@ -11803,7 +11817,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // "compare to last one" — compare last 2 tokens in session memory
   const COMPARE_LAST_RE = /\b(compare\s+(?:this\s+)?to\s+(?:the\s+)?last\s+one|compare\s+(?:it\s+)?to\s+(?:the\s+)?previous|how\s+does\s+(?:it|this)\s+compare\s+to\s+(?:the\s+)?last|vs\.?\s+(?:the\s+)?last\s+(?:one|token|scan)|versus\s+(?:the\s+)?last)\b/i;
-  if (COMPARE_LAST_RE.test(prompt) && !extractAddress(prompt)) {
+  if (COMPARE_LAST_RE.test(prompt) && !hasAnyAddress(prompt)) {
     const current = sessionMem.lastToken;
     const prev = sessionMem.prevToken;
     if (current && prev) {
@@ -11838,7 +11852,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // "what should I watch next" — suggest from momentum list or last scan context
   const WATCH_NEXT_RE = /\b(what\s+should\s+i\s+(?:watch|look\s+at)\s+next|what(?:'s|\s+is)\s+(?:worth\s+watching|next|the\s+next\s+(?:one|token|play))|what\s+do\s+i\s+(?:look\s+at|check)\s+next|next\s+token|next\s+watch)\b/i;
-  if (WATCH_NEXT_RE.test(prompt) && !extractAddress(prompt) && !extractTokenLookupQuery(prompt)) {
+  if (WATCH_NEXT_RE.test(prompt) && !hasAnyAddress(prompt) && !extractTokenLookupQuery(prompt)) {
     const memList = sessionMem.lastMomentumList;
     const shownCount = sessionMem.lastMomentumShownCount ?? 0;
     const nextCandidates = memList.slice(shownCount, shownCount + 3);
@@ -11883,7 +11897,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // Casual chat — short-circuit before plan execution
   const CASUAL_CHAT_RE = /^(yo|hey|bro|man|dude)\b|^what do you think(\s+about this)?$|^is that bad\??$|^risky\??$|^why$|^explain this$|^can you help\??$/i;
-  if (CASUAL_CHAT_RE.test(prompt.trim()) && !extractAddress(prompt)) {
+  if (CASUAL_CHAT_RE.test(prompt.trim()) && !hasAnyAddress(prompt)) {
     const lastScan = extractLastTokenScanFromHistory(body.history);
     return {
       feature: "clark-ai",
