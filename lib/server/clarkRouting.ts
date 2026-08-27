@@ -167,7 +167,17 @@ export type WalletFollowupKind =
 // deep scan ("should I deep scan", "deep scan?") are handled below as advice from memory, not
 // as a trigger to actually re-run the wallet scanner.
 const WALLET_REFRESH_RE = /\b(refresh|rescan|run\s+full\s+scan|scan\s+again|run\s+deep\s+scan(?:\s+now)?|do\s+a\s+deep\s+scan(?:\s+now)?)\b/i;
-const WALLET_FOLLOWUP_CORE_RE = /\b(is\s+this\s+wallet\s+good|is\s+this\s+wallet\s+profitable|wallet\s+profitable|realized\s+pnl|why\s+(?:is\s+)?pnl\s+partial|partial\s+pnl|why\s+no\s+pnl|why\s+is\s+pnl\s+missing|explain\s+pnl|top\s+holdings?|what\s+are\s+the\s+top\s+holdings?|what\s+tokens?\s+is\s+(?:this|the)\s+wallet\s+holding|what\s+is\s+(?:this|the)\s+wallet\s+holding|what\s+chains\s+is\s+it\s+active\s+on|active\s+chains?|should\s+i\s+deep\s+scan|what\s+evidence\s+is\s+missing|what\s+is\s+missing|missing\s+evidence|coverage|excluded\s+lots?|is\s+this\s+wallet\s+risky|summarize\s+this\s+wallet|wallet\s+summary|wallet\s+risk|wallet\s+quality|wallet\s+profitability|best\/?worst\s+trade|best\s+or\s+worst\s+trade|biggest\s+buys?\/?sells?|biggest\s+buys?\s+and\s+sells?|what\s+type\s+of\s+trader|wallet\s+profile|is\s+this\s+wallet\s+(?:a\s+)?(?:whale|sniper|dev\s+wallet)|should\s+i\s+follow|why\s+this\s+score|why\s+smart\s+money|why\s+not\s+smart\s+money|smart\s+money)\b/i;
+// SMART-MONEY-FEED-VS-WALLET FIX, DISCLOSED (Clark golden-suite audit, category 6 "Whale Alerts"):
+// this list carried a BARE `smart money` alternative, and this gate runs before the whale gate in
+// classifyClarkPrompt. A whale-feed question with no wallet in context ("any smart money moving?")
+// was therefore claimed as a wallet PnL follow-up and answered against whatever wallet happened to
+// be in session memory. The genuinely wallet-scoped uses are kept — "why smart money" / "why not
+// smart money" were already listed separately, and "is this wallet smart money?" is now folded into
+// the adjacent whale/sniper/dev-wallet alternation — so only the unscoped feed query changes side.
+// Note the earlier classifyClarkToolIntent tier already claims the explicit phrasings ("what are
+// smart money buying" -> whale_alerts_buying) and returns before this classifier ever runs; this
+// only affects prompts that tier does not claim.
+const WALLET_FOLLOWUP_CORE_RE = /\b(is\s+this\s+wallet\s+good|is\s+this\s+wallet\s+profitable|wallet\s+profitable|realized\s+pnl|why\s+(?:is\s+)?pnl\s+partial|partial\s+pnl|why\s+no\s+pnl|why\s+is\s+pnl\s+missing|explain\s+pnl|top\s+holdings?|what\s+are\s+the\s+top\s+holdings?|what\s+tokens?\s+is\s+(?:this|the)\s+wallet\s+holding|what\s+is\s+(?:this|the)\s+wallet\s+holding|what\s+chains\s+is\s+it\s+active\s+on|active\s+chains?|should\s+i\s+deep\s+scan|what\s+evidence\s+is\s+missing|what\s+is\s+missing|missing\s+evidence|coverage|excluded\s+lots?|is\s+this\s+wallet\s+risky|summarize\s+this\s+wallet|wallet\s+summary|wallet\s+risk|wallet\s+quality|wallet\s+profitability|best\/?worst\s+trade|best\s+or\s+worst\s+trade|biggest\s+buys?\/?sells?|biggest\s+buys?\s+and\s+sells?|what\s+type\s+of\s+trader|wallet\s+profile|is\s+this\s+wallet\s+(?:a\s+)?(?:whale|sniper|dev\s+wallet|smart\s+money)|should\s+i\s+follow|why\s+this\s+score|why\s+(?:is\s+)?(?:this|it)?\s*(?:not\s+)?smart\s+money|(?:this|the|its)\s+smart\s+money|smart\s+money\s+(?:score|status|rating))\b/i;
 // A bare "deep scan" / "deep scan?" with nothing else (no address, no "this wallet ...") is a
 // question asking for advice, not a command — must not be confused with "deep scan this wallet 0x...".
 const WALLET_DEEP_SCAN_QUESTION_RE = /^deep\s+scan\??$/i;
@@ -358,7 +368,13 @@ export function classifyClarkPrompt(prompt: string): {
   }
 
   // ---- Wallet scan ----
-  const walletScanRe = /\b(scan\s+(?:this\s+)?wallet|scan\s+wallet|analyze\s+(?:this\s+)?wallet|wallet\s+pnl|wallet\s+(?:scan|check|report|analysis))\b/i;
+  // "that"/"the" ADDED, DISCLOSED (Clark golden-suite audit, acceptance criterion "Wallet questions
+  // never route to Token Scanner"): "scan that wallet" — the natural follow-up phrasing right after
+  // a deployer answer — matched none of these alternatives (only "this" was covered), so it fell
+  // through to TOKEN_SCAN_RE below, whose own alternation includes a bare "scan", and became a
+  // token_scan. Same for "deep scan that wallet". A message naming "wallet" this explicitly is never
+  // a token question, whichever determiner it uses.
+  const walletScanRe = /\b(scan\s+(?:this\s+|that\s+|the\s+)?wallet|scan\s+wallet|analyze\s+(?:this\s+|that\s+|the\s+)?wallet|wallet\s+pnl|wallet\s+(?:scan|check|report|analysis))\b/i;
   // token keywords prevent wallet routing even if WALLET_DEEP_RE fires
   const hasExplicitTokenKeyword = /\b(token|coin|contract|ticker|\bca\b|scan\s+this\s+token|token\s+scan|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon)\b/i.test(t);
   // AMBIGUOUS DEPTH MODIFIERS EXCLUDED FROM THIS GATE, DISCLOSED (Clark routing audit follow-up
@@ -409,8 +425,17 @@ export function classifyClarkPrompt(prompt: string): {
     // keywords either, so it fell to this same wallet-scan default — running a wallet read on what
     // is almost always a token contract the user is asking a deployer question about. A wallet is
     // never described as having a "deployer".
+    // TOKEN-METRIC-VOCABULARY FIX, DISCLOSED (Clark golden-suite audit, acceptance criterion "Token
+    // questions never route to Wallet Scanner"): "what is the market cap of 0x...?" and "top holders
+    // for 0x...?" matched NONE of these strong-intent keywords, so both fell straight through to this
+    // rule's own wallet-scan default and ran Wallet Scanner against a token contract. Both are
+    // unambiguous token vocabulary — a wallet has no market cap, no FDV, and no "top holders" — and
+    // route.ts's OWN entity gate already treats "market cap"/"top holders"/"holder concentration"/
+    // "fdv" as token questions (CLARK_TOKEN_QUESTION_RE), so this list was simply out of sync with
+    // the gate that runs before it. Added the same vocabulary here, verbatim in spirit, so the two
+    // classifiers agree instead of the routing layer contradicting the entity layer.
     const hasOtherStrongIntent =
-      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon|base\s+token|eth\s+token|ethereum\s+token|bnb\s+token|bsc\s+token|polygon\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address|safe|safety|\brug\b|honeypot|scam|deep\s+scan|full\s+scan|full\s+analysis|run\s+all\s+checks|scan\s+this\s+properly|full\s+report|complete\s+report|who\s+deployed|deployer|deployed\s+this)\b/i.test(t);
+      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon|base\s+token|eth\s+token|ethereum\s+token|bnb\s+token|bsc\s+token|polygon\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address|safe|safety|\brug\b|honeypot|scam|deep\s+scan|full\s+scan|full\s+analysis|run\s+all\s+checks|scan\s+this\s+properly|full\s+report|complete\s+report|who\s+deployed|deployer|deployed\s+this|market\s*cap|marketcap|\bfdv\b|top\s+holders?|holder\s+count|holder\s+concentration|\bholders?\b|buy\s*tax|sell\s*tax|is\s+lp\s+locked|lp\s+locked|liquidity\s+locked)\b/i.test(t);
     if (!hasOtherStrongIntent) {
       // SOLANA-BARE-ADDRESS-DEFAULT FIX, DISCLOSED (caught by a test added in another session's
       // merge: "a bare Solana mint must route as token_scan, never wallet_scan"). This default is
@@ -479,8 +504,17 @@ export function classifyClarkPrompt(prompt: string): {
   // because that same "on base" text also happened to satisfy hasExplicitTokenKeyword/
   // hasOtherStrongIntent just above and blocked BOTH wallet-scan defaults from firing first. An
   // explicit "wallet" mention alongside a real address must never be overridden by this fallback.
-  if ((TOKEN_SCAN_RE.test(t) || (address && TOKEN_SCAN_ON_CHAIN_RE.test(t))) && !(address && /\bwallet\b/i.test(t))) {
+  if ((TOKEN_SCAN_RE.test(t) || (address && TOKEN_SCAN_ON_CHAIN_RE.test(t))) && !/\bwallet\b/i.test(t)) {
     return { intent: "token_scan", address, addresses, deep: false, symbol };
+  }
+  // ADDRESSLESS WALLET FOLLOW-UP, DISCLOSED (Clark golden-suite audit, same acceptance criterion):
+  // "deep scan this wallet" / "scan that wallet" with NO address in the message (the address comes
+  // from session memory) previously reached neither wallet gate — both require `address` — and so
+  // fell to the token_scan fallback above purely on the bare word "scan". Classifying as wallet_scan
+  // with a null address is the correct, already-supported shape: route.ts resolves the address from
+  // memory for exactly this case, the same way it does for every other addressless follow-up.
+  if (!address && walletScanRe.test(t)) {
+    return { intent: "wallet_scan", address: null, addresses, deep, symbol: null };
   }
   // Named token scan without address ("scan VIRTUAL", "check AERO")
   if (symbol && TOKEN_SCAN_RE.test(t)) {

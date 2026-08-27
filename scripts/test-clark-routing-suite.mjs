@@ -38,6 +38,7 @@ const tests = [
   'test-clark-solana-deployer-helius-enhanced.mjs',
   'test-clark-solana-memory-writeback.mjs',
   'test-clark-deployer-token-identity.mjs',
+  'test-clark-golden-suite.mjs',
   // TEMPORARILY EXCLUDED, DISCLOSED: this test (merged in from another session's push to `main`)
   // imports mergeNormalizedCandidate/tokenAgeDaysFromPairCreatedAtMs from app/api/pump-alerts/
   // route.ts and checks a chunk of dedup/cap-data-missing logic plus app/terminal/pump-alerts/
