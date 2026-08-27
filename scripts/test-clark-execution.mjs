@@ -1230,7 +1230,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const routeFile = fs.readFileSync(path.join(process.cwd(), 'app/api/clark/route.ts'), 'utf8')
 
   const followupGuard = routeFile.slice(
-    routeFile.indexOf('if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !extractAddress(prompt)) {'),
+    routeFile.indexOf('if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !extractAddress(prompt) && !isValidSolanaMintAddress(extractAddressForRouting(prompt) ?? "")) {'),
     routeFile.indexOf('// ─── Wallet compare')
   )
   assert.ok(followupGuard.includes('const followupVerdictMeta = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev));'), 'memory-served follow-up guard computes verdict metadata from the same evidence it displays')

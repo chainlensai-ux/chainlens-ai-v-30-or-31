@@ -92,6 +92,7 @@ import {
   isClarkWatchlistAddCommand,
   formatPumpAnalysisRead,
   isPumpAnalysisPrompt,
+  extractAddressForRouting,
 } from "@/lib/server/clarkRouting";
 import { buildBaseRadarDisplayModel } from "@/lib/baseRadarDisplayModel";
 import { classifyClarkAnalystIntent, isChainLensAnalystPrompt } from "@/lib/server/clarkAnalystIntent";
@@ -4373,34 +4374,6 @@ async function callScanToken(
 
 // Read-only eth_getCode check — distinguishes a token contract from an EOA.
 // Modeled on getContractCode() in app/api/scan-holder/route.ts.
-async function isContractAddress(address: string, _origin: string): Promise<boolean> {
-  const key = process.env.ALCHEMY_BASE_KEY ?? "";
-  const rpc = key
-    ? `https://base-mainnet.g.alchemy.com/v2/${key}`
-    : "https://mainnet.base.org";
-  try {
-    logRpcCall({ route: "/api/clark", chain: "base", method: "eth_getCode" });
-    const res = await fetch(rpc, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "eth_getCode",
-        params: [address, "latest"],
-      }),
-      cache: "no-store",
-      signal: AbortSignal.timeout(4_000),
-    });
-    if (!res.ok) return false;
-    const json = await res.json();
-    const code: string = json?.result ?? "";
-    return code !== "0x" && code !== "";
-  } catch {
-    return false;
-  }
-}
-
 type BaseTokenCandidate = {
   name: string;
   symbol: string;
@@ -9180,7 +9153,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // what appIntent/classifyClarkPrompt would otherwise pick. This runs before every
   // wallet branch (appIntent.wallet_scan, routed.intent === "wallet_scan",
   // directIntent wallet_analysis, bare-address fallback, classifyAddressForClark).
-  if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !extractAddress(prompt)) {
+  // SOLANA-FOLLOWUP-HIJACK FIX, DISCLOSED (found chasing the same "sol working" report): a
+  // freshly-typed Solana mint address, immediately followed by "is it safe", was treated as a
+  // bare follow-up with NO new address — extractAddress(prompt) only recognizes 0x-EVM addresses,
+  // so it returned null even though a real address WAS just typed — and this guard then answered
+  // using whatever EVM token happened to be in memory from an earlier scan, completely ignoring the
+  // Solana address the user just pasted. A genuinely new address of either kind in the CURRENT
+  // message must always win over stale memory.
+  if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !extractAddress(prompt) && !isValidSolanaMintAddress(extractAddressForRouting(prompt) ?? "")) {
     const followupKind = classifyTokenFollowupKind(prompt);
     const tokenAddress = sessionMem.lastToken.address;
     const cached = sessionMem.lastToken.cachedEvidence ?? null;
@@ -10076,8 +10056,20 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (routed.intent === "liquidity_scan" && routed.address) {
-    const isContract = await isContractAddress(routed.address, origin);
-    if (!isContract) {
+    // EOA-CHECK-CHAIN-BLIND FIX, DISCLOSED (found chasing the same "Base collapse" report: three
+    // different real tokens on non-Base chains, already correctly auto-detected by the entity gate
+    // above, all wrongly hit this exact "That address looks like a wallet" reply). Root cause: the
+    // old isContractAddress() reimplemented the eth_getCode check independently — hardcoded to Base
+    // only, no chain param at all, no retry, and treated ANY fetch failure as "not a contract"
+    // rather than "unknown". A token genuinely deployed on ETH/BNB/Robinhood (and already correctly
+    // identified as a real contract by the entity gate moments earlier) would have no code on Base,
+    // so this second, redundant, chain-blind check reported it as a wallet regardless. Removed the
+    // duplicate function entirely and reused classifyAddressForClark (already chain-aware and
+    // retry-hardened) with the real auto-detected chainForClarkTools. Fails open on "unknown"
+    // (proceeds to the real LP check) rather than blocking — consistent with resolveClarkEntity's
+    // own fail-open convention elsewhere in this file.
+    const addressKind = await classifyAddressForClark(routed.address, chainForClarkTools);
+    if (addressKind === "wallet") {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: [],
         analysis: formatEoaLpCheckReply(),
