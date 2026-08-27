@@ -80,7 +80,13 @@ export function extractRequestedChainFromPrompt(prompt: string): ClarkPromptChai
   if (BASE_CHAIN_WORD_RE.test(t)) return "base";
   return null;
 }
-const TOKEN_SAFETY_RE = /\b(is\s+this\s+(?:token\s+)?safe|is\s+it\s+safe|should\s+i\s+buy(?:\s+this(?:\s+token)?)?|is\s+this\s+(?:a\s+)?rug(?:\s+pull|\s+risk)?|is\s+this\s+token\s+risky|is\s+(?:it|this)\s+risky|safe\s+to\s+buy|rug\s+(?:check|risk)|is\s+it\s+legit)\b/i;
+// KEYWORD-NOT-EXACT-PHRASING FIX, DISCLOSED: reported live — "0x... is it safe" worked but a
+// natural variant like "0x... safe" (no "is") or "safe 0x..." fell through every branch here to a
+// wrong/garbled generic response, because every alternative below required the full "is (it|this)
+// (token) safe" phrase. A bare "safe" alongside a real address is unambiguous in this chat's context
+// (this route only ever classifies crypto-scan prompts), so it's now matched directly instead of
+// requiring the user to phrase it as a question.
+const TOKEN_SAFETY_RE = /\b(is\s+this\s+(?:token\s+)?safe|is\s+it\s+safe|should\s+i\s+buy(?:\s+this(?:\s+token)?)?|is\s+this\s+(?:a\s+)?rug(?:\s+pull|\s+risk)?|is\s+this\s+token\s+risky|is\s+(?:it|this)\s+risky|safe\s+to\s+buy|rug\s+(?:check|risk)|is\s+it\s+legit)\b|0x[a-f0-9]{40}\s+safe\??$|^safe\??\s+0x[a-f0-9]{40}|^safe\??$/i;
 const DEV_RUG_RE = /\b(can\s+(?:the\s+)?dev(?:s?|eloper)?\s+(?:rug|dump)|can\s+deployer\s+(?:rug|dump)|does\s+dev\s+control|dev\s+control(?:s?|led)?|is\s+ownership\s+renounced|ownership\s+renounced|can\s+they\s+mint|dev\s+(?:wallet\s+)?risk|deployer\s+risk|mint\s+risk|blacklist\s+risk|proxy\s+risk|is\s+owner\s+renounced|who\s+controls\s+(?:the\s+)?supply|supply\s+control)\b/i;
 
 // "Ape"/"full risk breakdown"/"is this CA safe" — natural high-intent token-ape-risk prompts.

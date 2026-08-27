@@ -3381,25 +3381,40 @@ function getRpcUrlForClarkCodeCheck(chain: SupportedChain | string | undefined):
   return "https://mainnet.base.org";
 }
 
+// ENTITY-CHECK-SINGLE-ATTEMPT-FLAKE FIX, DISCLOSED (same class/investigation as the GeckoTerminal/
+// DexScreener retry fix in /api/token/route.ts): reported live, the auto-chain-detect probe kept
+// flip-flopping on whether the SAME BNB address had a real contract on BNB across back-to-back
+// identical queries — sometimes surfacing the multi-chain disclosure (contract found on Base AND
+// BNB), sometimes not (contract found on Base only). This eth_getCode RPC call was a single fetch
+// attempt with a 3.5s timeout, and ANY failure (timeout, transient RPC error, malformed response)
+// silently fell through to "unknown" with no second try — so a momentary RPC hiccup on just the BNB
+// leg of the parallel probe made that chain vanish from detection for that one request, with nothing
+// distinguishing it from "genuinely no contract there." One retry, never on a clean structural
+// result (a real "0x"/"0x0" empty-code response is a genuine wallet verdict, not a failure to retry).
 async function classifyAddressForClark(address: string, chain: SupportedChain | string | undefined): Promise<"wallet" | "contract" | "unknown"> {
   const rpcUrl = getRpcUrlForClarkCodeCheck(chain);
   if (!rpcUrl) return "unknown";
-  try {
-    const loggedChain = chain === "ethereum" ? "eth" : chain === "eth" || chain === "base" || chain === "bnb" || chain === "polygon" || chain === "robinhood" ? chain : "base";
-    logRpcCall({ route: "/api/clark", chain: loggedChain, method: "eth_getCode" });
-    const res = await fetch(rpcUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getCode", params: [address, "latest"] }),
-      signal: AbortSignal.timeout(3500),
-    });
-    const json = await res.json().catch(() => ({}));
-    const code = typeof json?.result === "string" ? json.result : null;
-    if (!code) return "unknown";
-    return code === "0x" || code === "0x0" ? "wallet" : "contract";
-  } catch {
-    return "unknown";
+  const loggedChain = chain === "ethereum" ? "eth" : chain === "eth" || chain === "base" || chain === "bnb" || chain === "polygon" || chain === "robinhood" ? chain : "base";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      logRpcCall({ route: "/api/clark", chain: loggedChain, method: "eth_getCode" });
+      const res = await fetch(rpcUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_getCode", params: [address, "latest"] }),
+        signal: AbortSignal.timeout(3500),
+      });
+      const json = await res.json().catch(() => ({}));
+      const code = typeof json?.result === "string" ? json.result : null;
+      if (code) return code === "0x" || code === "0x0" ? "wallet" : "contract";
+      if (attempt === 1) return "unknown";
+      // No usable result on the first attempt (bad/empty response, not a real structural answer) — retry once.
+    } catch {
+      if (attempt === 1) return "unknown";
+      // First attempt threw (network error/timeout) — retry once.
+    }
   }
+  return "unknown";
 }
 
 // TOKEN-VS-WALLET MISROUTING FIX, DISCLOSED: thin, reusable wrapper around the existing
@@ -3468,7 +3483,12 @@ async function detectChainForAddress(address: string): Promise<{ chain: Supporte
 // independent of the broader legacy intent classifiers (appIntent/routedClassification/
 // analystRouting/detectIntent), which stay untouched. Matches the exact intent lists from the
 // token-vs-wallet routing audit.
-const CLARK_TOKEN_QUESTION_RE = /\b(is\s+(?:it|this|that)\s+safe|is\s+0x[a-f0-9]{40}\s+safe|token\s+safe|safe\s+token|risk\s+level|market\s*cap|marketcap|\bfdv\b|top\s+holders?|holder\s+count|holder\s+concentration|lp\s+locked|is\s+lp\s+locked|liquidity\s+locked|is\s+liquidity\s+locked|liquidity\s+safety|who\s+deployed|deployer\s+of|check\s+deployer|honeypot|buy\s*tax|sell\s*tax|is\s+.{0,50}\s+pumping|why\s+is\s+.{0,50}\s+pumping|why\s+.{0,50}\s+pumping|scan\s+(?:this\s+)?token|token\s+scan)\b/i;
+// KEYWORD-NOT-EXACT-PHRASING FIX, DISCLOSED (same incident as clarkRouting.ts's TOKEN_SAFETY_RE):
+// "0x... is it safe" worked but "0x... safe" (no "is") did not — every alternative below required
+// the full "is (it|this|that) safe" phrase. A bare "safe" alongside an address is unambiguous in
+// this chat's context, so it's now matched directly (leading or trailing) instead of requiring the
+// user to phrase it as a full question.
+const CLARK_TOKEN_QUESTION_RE = /\b(is\s+(?:it|this|that)\s+safe|is\s+0x[a-f0-9]{40}\s+safe|token\s+safe|safe\s+token|risk\s+level|market\s*cap|marketcap|\bfdv\b|top\s+holders?|holder\s+count|holder\s+concentration|lp\s+locked|is\s+lp\s+locked|liquidity\s+locked|is\s+liquidity\s+locked|liquidity\s+safety|who\s+deployed|deployer\s+of|check\s+deployer|honeypot|buy\s*tax|sell\s*tax|is\s+.{0,50}\s+pumping|why\s+is\s+.{0,50}\s+pumping|why\s+.{0,50}\s+pumping|scan\s+(?:this\s+)?token|token\s+scan)\b|0x[a-f0-9]{40}\s+safe\??$|^safe\??\s+0x[a-f0-9]{40}/i;
 const CLARK_WALLET_QUESTION_RE = /\b(portfolio|holdings?|\bpnl\b|p&l|profitable|wallet\s+behavior|explain\s+(?:this\s+|that\s+)?wallet|whale\s+wallet|sniper\s+wallet|dev\s+wallet\s+behavior|scan\s+(?:this\s+|that\s+)?wallet|wallet\s+scan|analyze\s+(?:this\s+)?wallet)\b/i;
 
 function classifyClarkQuestionCategory(prompt: string): 'token' | 'wallet' | 'ambiguous' {
