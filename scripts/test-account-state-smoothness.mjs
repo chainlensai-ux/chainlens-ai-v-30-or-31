@@ -1,12 +1,4 @@
 // Account-state smoothness / perceived-performance regression tests.
-// Verifies the no-wrong-state-first contract by source inspection of the exact
-// files changed in this task:
-//   1. No consumer initializes plan state to a guessed 'free'.
-//   2. Shared singleflight plan store exists and is used (deduped fetches).
-//   3. Navbar hydrates profile color from the local settings cache on mount.
-//   4. Pricing renders static cards without gating the whole page on planReady.
-//   5. Settings uses cached-first plan init (no Free→Elite flicker).
-//   6. Errors never downgrade the displayed plan to Free.
 import { readFileSync } from 'node:fs'
 
 const results = []
@@ -36,8 +28,14 @@ check('usePlan() no longer initializes to guessed Free', () => {
 check('usePlanWithLoading starts from cached verified plan', () => {
   const fnBody = usePlanSrc.slice(usePlanSrc.indexOf('export function usePlanWithLoading'))
   if (!fnBody.includes('useState<UserPlan | null>(() => peekCachedPlan())')) throw new Error('must init from peekCachedPlan()')
-  // Never returns a bare guessed free while unknown: falls back through cache first.
-  if (!fnBody.includes("plan ?? peekCachedPlan()")) throw new Error('return path must consult cache before free')
+  if (!fnBody.includes('plan ?? peekCachedPlan()')) throw new Error('return path must consult cache before free')
+})
+
+check('usePlanWithLoading does not hang Pump Alerts when plan cache exists', () => {
+  const fnBody = usePlanSrc.slice(usePlanSrc.indexOf('export function usePlanWithLoading'))
+  if (!fnBody.includes('useState(() => peekCachedPlan() == null)')) throw new Error('loading must start false when cache exists')
+  if (!fnBody.includes('AbortSignal.timeout(8_000)')) throw new Error('user-settings fetch must abort after 8s')
+  if (!fnBody.includes('TOKEN_REFRESHED')) throw new Error('token refresh must not block the page on Loading plan access')
 })
 
 check('FeatureBar uses cached-first plan init', () => {
@@ -48,8 +46,8 @@ check('FeatureBar uses cached-first plan init', () => {
 })
 
 check('FeatureBar does not treat unknown session as Sign In', () => {
-  if (!featureBarSrc.includes("useState<string | null | undefined>(undefined)")) throw new Error('accountEmail must start undefined, not null')
-  if (!featureBarSrc.includes("accountEmail === undefined")) throw new Error('unknown session must render a placeholder, not Sign In')
+  if (!featureBarSrc.includes('useState<string | null | undefined>(undefined)')) throw new Error('accountEmail must start undefined, not null')
+  if (!featureBarSrc.includes('accountEmail === undefined')) throw new Error('unknown session must render a placeholder, not Sign In')
   if (!featureBarSrc.includes("height: '32px'")) throw new Error('unknown session placeholder must be 32px')
 })
 
@@ -59,8 +57,7 @@ check('Navbar hydrates cached plan + avatar color synchronously on mount', () =>
 })
 
 check('pricing page uses cached-first user plan', () => {
-  if (!pricingSrc.includes("useState<UserPlan>(() => peekCachedPlan()")) throw new Error('pricing must init from cache')
-  // Backend refresh only overwrites when it confirms a different plan:
+  if (!pricingSrc.includes('useState<UserPlan>(() => peekCachedPlan()')) throw new Error('pricing must init from cache')
   if (!pricingSrc.includes('if (p) setUserPlan(p)')) throw new Error('confirmed-plan overwrite missing')
 })
 
@@ -69,23 +66,18 @@ check('settings page uses cached-first currentPlan', () => {
 })
 
 check('errors never downgrade displayed plan to Free', () => {
-  // In the shared store, the HTTP-error and catch branches must only notify — never
-  // overwrite sharedPlanState.plan with 'free'. (The signed-out branch MAY, since no
-  // session is a confirmed state.)
   const storeBlock = usePlanSrc.slice(usePlanSrc.indexOf('sharedPlanState.inFlight = (async () => {'))
   const errBranch = storeBlock.slice(storeBlock.indexOf("notifyPlanListeners('error')") - 400, storeBlock.indexOf("notifyPlanListeners('error')"))
   if (/plan = 'free'/.test(errBranch)) throw new Error('HTTP error path sets plan to free')
-  const catchBlock = storeBlock.slice(storeBlock.lastIndexOf("} catch {"), storeBlock.lastIndexOf("} finally {"))
+  const catchBlock = storeBlock.slice(storeBlock.lastIndexOf('} catch {'), storeBlock.lastIndexOf('} finally {'))
   if (/plan = 'free'/.test(catchBlock)) throw new Error('exception path sets plan to free')
-  // FeatureBar catch block: no silent downgrade either.
   if (featureBarSrc.includes("catch { setPlan('free'); setBetaElite(false) }")) {
     throw new Error('FeatureBar error path downgrades to Free — must keep cached value')
   }
 })
 
 check('signed-out sessions still resolve to free explicitly', () => {
-  // Signed-out is a CONFIRMED state (no session) — allowed to show Free.
-  if (!usePlanSrc.includes("clearPlanCache()")) throw new Error('sign-out must clear cache')
+  if (!usePlanSrc.includes('clearPlanCache()')) throw new Error('sign-out must clear cache')
   if (!usePlanSrc.includes("sharedPlanState.plan = 'free'")) throw new Error('signed-out must confirm free')
 })
 
