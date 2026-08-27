@@ -50,6 +50,23 @@ import { resolveUniswapV4BaseRpc } from '@/lib/server/uniswapV4BaseRpc'
 import { resolveUniswapV3PositionOwners } from '@/lib/server/uniswapV3Subgraph'
 import type { ConcentratedOwnerResolver } from '@/lib/server/lpProof'
 
+// MAX-DURATION FIX, DISCLOSED (reported live: Token Scanner "doesn't load and just eventually says
+// error" scanning Robinhood Chain). Traced to discoverTokenOrigin's deployer-resolution fallback
+// cascade (Etherscan V2 creation lookup -> GoldRush/Covalent tx history -> up to 3 sequential
+// alchemy_getAssetTransfers RPC calls), each tier only running if the previous one found nothing —
+// a deliberate, real design (cheapest/most-confident evidence first), not a bug. For Robinhood
+// specifically, Etherscan V2 support for chain 4663 is unconfirmed (may simply come back empty
+// every time — see discoverTokenOrigin's own comment), so a Robinhood scan routinely falls through
+// every tier: worst case ~40s in that one function alone, plus the sequential calls after it
+// (findTokenLinkedWallets, resolveTokenTransfers), plus the parallel phase-1 provider block — a
+// legitimate worst-case scan can run past a minute. This route never declared its own maxDuration,
+// so it silently ran under whatever Vercel's project-level default is; every other heavy scan
+// route in this codebase (wallet-scan, scan-v2/full-scan/legacy) already declares 300s for exactly
+// this reason, confirming the deployment's plan supports it — this route was simply missed.
+// Without it, a legitimately-thorough (not broken) scan gets killed mid-flight, which is
+// indistinguishable from a crash to the user: "doesn't load, eventually errors."
+export const maxDuration = 300;
+
 // COMBINED-CONCENTRATED-OWNER-RESOLVER, DISCLOSED (fix for "Position Ownership: Attempted — open
 // check" on every single V3 scan): attemptConcentratedPositionProof only accepts one
 // ConcentratedOwnerResolver. V4/Robinhood and V3/eth-base-bnb are each real, independently-gated
@@ -7147,9 +7164,28 @@ export async function POST(req: Request) {
     // For Base: prefer ownerAddr (current owner/control wallet); fall back to _ownerFromTransfer
     // (initial mint recipient) when ownerAddr is null or zero (renounced).
     const deployerAddress = useOriginDiscovery ? ethOriginCandidate : (normalizeActorAddress(ownerAddr) ?? normalizeActorAddress(_ownerFromTransfer))
-    const ethLinkedWalletResult = useOriginDiscovery && deployerAddress
-      ? await findTokenLinkedWallets(chain, deployerAddress, contract)
-      : null
+    // MAX-DURATION FIX, DISCLOSED (same report as the maxDuration export above): findTokenLinkedWallets
+    // and resolveTokenTransfers used to run sequentially, one fully awaited before the other even
+    // started — but resolveTokenTransfers's inputs (chain/chainId/contract/deployerAddress/
+    // holderRows/moralisTransfersRaw) never depended on findTokenLinkedWallets's result, so this was
+    // pure unnecessary added latency (up to ~8s more on top of an already-long Robinhood/eth/bnb
+    // chain). holderRows is hoisted above both calls (it only needs holderDistribution, already
+    // computed earlier) so resolveTokenTransfers can be launched at the same time.
+    const holderRows = holderDistribution.topHolders ?? []
+    const [ethLinkedWalletResult, transferResolverResult] = await Promise.all([
+      useOriginDiscovery && deployerAddress
+        ? findTokenLinkedWallets(chain, deployerAddress, contract)
+        : Promise.resolve(null),
+      resolveTokenTransfers({
+        chain,
+        chainId: CHAIN_ID_MAP[chain],
+        tokenAddress: contract,
+        deployerAddress,
+        holderAddresses: holderRows.map((holder) => holder.address).filter(Boolean),
+        limit: 200,
+        providerTransfersRaw: moralisTransfersRaw,
+      }),
+    ])
     const linkedWallets: LinkedWallet[] = useOriginDiscovery
       ? (ethLinkedWalletResult?.wallets ?? [])
       : [adminAddr]
@@ -7205,16 +7241,6 @@ export async function POST(req: Request) {
       source_status: deployerAddress ? "ok" : "partial",
     }
     const linkedAddressSet = new Set(linkedWallets.map((wallet) => wallet.address))
-    const holderRows = holderDistribution.topHolders ?? []
-    const transferResolverResult = await resolveTokenTransfers({
-      chain,
-      chainId: CHAIN_ID_MAP[chain],
-      tokenAddress: contract,
-      deployerAddress,
-      holderAddresses: holderRows.map((holder) => holder.address).filter(Boolean),
-      limit: 200,
-      providerTransfersRaw: moralisTransfersRaw,
-    })
     const holderRowsHaveUsablePercents = holderRows.some((h) => typeof h.percent === 'number' && Number.isFinite(h.percent))
     const holderRowsConfirmed = holderRowsHaveUsablePercents
     const supplyRowsArePartial = holderDistributionStatus.status === 'partial' || (holderDistributionStatus.percentSource === 'calculated' || holderDistributionStatus.percentSource === 'reconstructed')
