@@ -95,6 +95,8 @@ import {
 } from "@/lib/server/clarkRouting";
 import { buildBaseRadarDisplayModel } from "@/lib/baseRadarDisplayModel";
 import { classifyClarkAnalystIntent, isChainLensAnalystPrompt } from "@/lib/server/clarkAnalystIntent";
+import { isRobinhoodChainAvailable, getRobinhoodRpcUrl, ROBINHOOD_CHAIN_ID } from "@/lib/server/robinhoodChainConfig";
+import { RPC } from "@/lib/rpc";
 import type { PumpIntelligenceReport } from "@/lib/server/pumpIntelligence";
 // NAME COLLISION, DISCLOSED: this file already has its own local resolveClarkContext(message,
 // history) — a TEXT-SCRAPING resolver that recovers context by regexing prior assistant prose
@@ -3346,16 +3348,22 @@ function wantsFastTokenPreview(prompt: string): boolean {
 // internal call (wallet, whale, liquidity, resolve) keeps the unchanged 9s budget.
 const TOKEN_CORE_TIMEOUT_MS = 18000;
 
+// MULTI-CHAIN ENTITY-CHECK FIX, DISCLOSED (requested: Clark must see tokens on Base/ETH/BNB/
+// Robinhood, not just Base). This previously collapsed EVERY chain that wasn't literally
+// "ethereum"/"eth" into the Base branch — a BNB or Robinhood address got its eth_getCode contract
+// check run against the BASE RPC, silently misclassifying wallet-vs-contract on the wrong network.
+// Reuses the same RPC map (lib/rpc.ts) already trusted for real on-chain reads elsewhere in this
+// codebase, rather than a second set of hand-rolled env var branches. Robinhood is a real chain
+// (ROBINHOOD_CHAIN_ID 4663) but its RPC key embeds an Alchemy secret and is deliberately gated —
+// same isRobinhoodChainAvailable() check Base Radar's own Robinhood support uses — so a caller
+// asking about a Robinhood address when the flag/RPC isn't configured gets null (fails open to
+// "unknown", never silently checked against the wrong chain).
 function getRpcUrlForClarkCodeCheck(chain: SupportedChain | string | undefined): string | null {
-  const c = chain === "ethereum" || chain === "eth" ? "eth" : "base";
-  if (c === "eth") {
-    if (process.env.ETH_RPC_URL && /^https?:\/\//.test(process.env.ETH_RPC_URL)) return process.env.ETH_RPC_URL;
-    if (process.env.ALCHEMY_ETHEREUM_KEY) return `https://eth-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_ETHEREUM_KEY}`;
-    return null;
-  }
+  const c = chain === "ethereum" ? "eth" : chain === "eth" || chain === "base" || chain === "bnb" || chain === "polygon" || chain === "robinhood" ? chain : "base";
+  if (c === "robinhood") return isRobinhoodChainAvailable() ? getRobinhoodRpcUrl() : null;
+  if (c === "eth" || c === "bnb" || c === "polygon") return RPC[c] || null;
   if (process.env.BASE_RPC_URL && /^https?:\/\//.test(process.env.BASE_RPC_URL)) return process.env.BASE_RPC_URL;
-  if (process.env.ALCHEMY_BASE_RPC_URL && /^https?:\/\//.test(process.env.ALCHEMY_BASE_RPC_URL)) return process.env.ALCHEMY_BASE_RPC_URL;
-  if (process.env.ALCHEMY_BASE_KEY) return `https://base-mainnet.g.alchemy.com/v2/${process.env.ALCHEMY_BASE_KEY}`;
+  if (RPC.base) return RPC.base;
   return "https://mainnet.base.org";
 }
 
@@ -3363,7 +3371,8 @@ async function classifyAddressForClark(address: string, chain: SupportedChain | 
   const rpcUrl = getRpcUrlForClarkCodeCheck(chain);
   if (!rpcUrl) return "unknown";
   try {
-    logRpcCall({ route: "/api/clark", chain: chain === "ethereum" || chain === "eth" ? "eth" : "base", method: "eth_getCode" });
+    const loggedChain = chain === "ethereum" ? "eth" : chain === "eth" || chain === "base" || chain === "bnb" || chain === "polygon" || chain === "robinhood" ? chain : "base";
+    logRpcCall({ route: "/api/clark", chain: loggedChain, method: "eth_getCode" });
     const res = await fetch(rpcUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -5365,7 +5374,7 @@ async function executeClarkToolPlan(input: {
   plan: ClarkToolPlan;
   origin: string;
   prompt: string;
-  chain: SupportedChain;
+  chain: SupportedChain | "robinhood";
   authHeader?: string | null;
   verifiedPlan?: 'free' | 'pro' | 'elite';
 }): Promise<{ evidence: ClarkToolEvidence; toolsUsed: ClarkToolName[]; resolvedAddress: string | null }> {
@@ -5444,10 +5453,23 @@ async function executeClarkToolPlan(input: {
         const addrArg = String(tool.args.address ?? "").trim();
         const addr = addrArg || String(resolvedAddress ?? "").trim();
         const _validAddr = Boolean(addr && /^0x[a-fA-F0-9]{40}$/.test(addr));
+        // MULTI-CHAIN TOKEN SCAN FIX, DISCLOSED (requested: Clark must see tokens on Base/ETH/BNB/
+        // Robinhood, not just Base). Neither call below ever passed the actual requested chain —
+        // /api/token defaults to Base with no chain param, and fetchHoneypotSecurity was hardcoded
+        // to the literal "base" — so every Clark chat token question (safety/holders/LP/market cap/
+        // tax) silently scanned the wrong network for anything that wasn't Base, regardless of what
+        // chain the user actually asked about.
+        // NO-SILENT-BASE-FALLBACK, DISCLOSED (established convention this codebase already
+        // enforces elsewhere — see the chain-strict fix on tokenInternalApiPayload): toTokenApiChain
+        // returns null for a genuinely unsupported chain (only polygon, currently). That must
+        // surface honestly, never silently become a Base scan of a token that was never on Base.
+        const _scanChain = toTokenApiChain(input.chain);
+        const _scanChainId = _scanChain === "eth" ? "1" : _scanChain === "bnb" ? "56" : _scanChain === "robinhood" ? String(ROBINHOOD_CHAIN_ID) : "8453";
+        const _scannableAddr = _validAddr && _scanChain != null;
         // Run token scan and honeypot check in parallel instead of sequential
         const [tokenData, securitySim] = await Promise.all([
-          _validAddr ? callInternalApi(input.origin, "/api/token", { contract: addr }, input.authHeader ?? undefined, input.verifiedPlan) : Promise.resolve(null),
-          _validAddr ? fetchHoneypotSecurity(addr, "base") : Promise.resolve(null),
+          _scannableAddr ? callInternalApi(input.origin, "/api/token", { contract: addr, chain: _scanChain }, input.authHeader ?? undefined, input.verifiedPlan) : Promise.resolve(null),
+          _scannableAddr ? fetchHoneypotSecurity(addr, _scanChainId) : Promise.resolve(null),
         ]);
         const tokenJson = tokenData?.ok ? tokenData.json : null;
         const t = (tokenJson ?? {}) as Record<string, unknown>;
@@ -5460,7 +5482,8 @@ async function executeClarkToolPlan(input: {
         const g = (gpResultRaw[addr.toLowerCase()] ?? gpResultRaw[addr] ?? {}) as Record<string, unknown>;
         const hp = (t.honeypot ?? {}) as Record<string, unknown>;
         const warnings: string[] = [];
-        if (!tokenJson) warnings.push("Token scan data is limited right now.");
+        if (_validAddr && _scanChain == null) warnings.push(`This chain isn't supported by the token scanner yet — only Base, Ethereum, BNB, and Robinhood Chain are.`);
+        else if (!tokenJson) warnings.push("Token scan data is limited right now.");
         if (securitySim?.warnings?.length) warnings.push(...securitySim.warnings);
         evidence.tokenScan = {
           ok: Boolean(tokenJson),
@@ -8250,6 +8273,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const promptChain = extractRequestedChainFromPrompt(prompt);
   const memSelectedChain: SupportedChain = sessionMem.selectedChain === "eth" ? "ethereum" : "base";
   const chain: SupportedChain = promptChain ?? body.chain ?? memSelectedChain;
+  // MULTI-CHAIN ENTITY-CHECK FIX, DISCLOSED (requested: Clark must see tokens across Base/ETH/BNB/
+  // Robinhood). Robinhood was never part of SupportedChain — extending that base type would have
+  // forced fake Robinhood entries into GOLDRUSH_CHAIN/GOPLUS_CHAIN_ID (providers that don't
+  // actually support it), which is exactly the "no fake data" rule this codebase holds elsewhere.
+  // Kept as a narrow, separate detection instead: only used for the entity-resolution gate and the
+  // token_scan tool's chain param below, both of which go through toTokenApiChain (already
+  // supports 'robinhood') or the RPC map, never the provider-specific maps. Fails closed to the
+  // normal `chain` value — same isRobinhoodChainAvailable() gate Base Radar's Robinhood support
+  // already uses — so an unconfigured Robinhood flag/RPC never silently claims support it doesn't
+  // have. Solana is a materially different address format (base58, no eth_getCode equivalent) and
+  // is out of scope for this fix — flagged, not silently ignored.
+  const chainForClarkTools: SupportedChain | "robinhood" =
+    /\brobinhood\b/i.test(prompt) && isRobinhoodChainAvailable() ? "robinhood" : chain;
 
   const appIntent = resolveClarkIntent(prompt, body.appContext);
   const routedClassification = classifyClarkPrompt(prompt);
@@ -8293,13 +8329,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     const questionCategory = classifyClarkQuestionCategory(prompt);
     if (inlineAddress && questionCategory !== 'ambiguous') {
-      const { hasContractCode, resolvedEntityType } = await resolveClarkEntity({ address: inlineAddress, requestedChain: chain, userIntent: questionCategory });
+      const { hasContractCode, resolvedEntityType } = await resolveClarkEntity({ address: inlineAddress, requestedChain: chainForClarkTools, userIntent: questionCategory });
       const mismatch =
         (questionCategory === 'token' && resolvedEntityType === 'wallet') ? 'token_question_wallet_address' :
         (questionCategory === 'wallet' && resolvedEntityType === 'contract') ? 'wallet_question_token_address' :
         null;
       const baseAudit: ClarkEntityRoutingAudit = {
-        prompt, parsedIntent: questionCategory, address: inlineAddress, requestedChain: chain,
+        prompt, parsedIntent: questionCategory, address: inlineAddress, requestedChain: chainForClarkTools,
         codeChecked: resolvedEntityType !== 'unknown' || hasContractCode !== null, hasContractCode,
         resolvedEntityType: resolvedEntityType === 'unknown' ? 'unknown' : resolvedEntityType,
         routeSelected: mismatch ? 'not_applicable' : questionCategory === 'token' ? 'token_engine' : 'wallet_engine',
@@ -8311,17 +8347,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       if (mismatch === 'token_question_wallet_address') {
         const href = walletScannerDeepLink(inlineAddress, false);
         return {
-          feature: "clark-ai", chain, mode: "analysis", intent: "entity_mismatch", toolsUsed: ["address_code_check"],
+          feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: "entity_mismatch", toolsUsed: ["address_code_check"],
           analysis: "This address is a wallet, not a token contract. Market cap/holders/LP/deployer do not apply.",
           ui: { intentBadge: 'Entity Check', actions: [{ label: 'Scan Wallet', href }, { label: 'Deep Scan Wallet', href: walletScannerDeepLink(inlineAddress, true) }] },
           actions: [{ label: 'Scan Wallet', href }, { label: 'Deep Scan Wallet', href: walletScannerDeepLink(inlineAddress, true) }],
         };
       }
       if (mismatch === 'wallet_question_token_address') {
-        const chainQuery = chain === 'base' ? '' : `&chain=${chain === 'ethereum' ? 'eth' : chain}`;
+        const chainQuery = chainForClarkTools === 'base' ? '' : `&chain=${chainForClarkTools === 'ethereum' ? 'eth' : chainForClarkTools}`;
         const href = `/terminal/token-scanner?contract=${inlineAddress}${chainQuery}`;
         return {
-          feature: "clark-ai", chain, mode: "analysis", intent: "entity_mismatch", toolsUsed: ["address_code_check"],
+          feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: "entity_mismatch", toolsUsed: ["address_code_check"],
           analysis: "This is a token contract. Use Token Scanner or ask token-specific questions.",
           ui: { intentBadge: 'Entity Check', actions: [{ label: 'Open Token Scanner', href }, { label: 'Deep Scan Token', href }] },
           actions: [{ label: 'Open Token Scanner', href }, { label: 'Deep Scan Token', href }],
@@ -11835,7 +11871,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     clarkContext: body.clarkContext,
     appContext: body.appContext,
   });
-  const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain, verifiedPlan: verifiedPlan ?? clarkInternalCtx.verifiedPlan ?? 'free', authHeader: authHeader ?? (clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined) });
+  const { evidence, toolsUsed, resolvedAddress } = await executeClarkToolPlan({ plan, origin, prompt, chain: chainForClarkTools, verifiedPlan: verifiedPlan ?? clarkInternalCtx.verifiedPlan ?? 'free', authHeader: authHeader ?? (clarkInternalCtx.authToken ? `Bearer ${clarkInternalCtx.authToken}` : undefined) });
 
   if (replyMode === "casual_help" || plan.intent === "casual" || plan.intent === "help") {
     if (/what can you do|what can u do|help|yo what can u do clark/i.test(prompt.toLowerCase())) {

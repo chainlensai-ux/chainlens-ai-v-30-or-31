@@ -95,7 +95,7 @@ assert.match(proxySrc, /source: "dexscreener_fallback"/, 'a fallback-served resp
 
 // ─── Required fix 4: chain context (Base/ETH/Robinhood) preserved through tool execution ───────
 assert.match(routeCode, /const resolverChain = toTokenApiChain\(input\.chain\);/, 'the deployer/dev-wallet tool must resolve the real request chain, not assume Base')
-assert.match(routeCode, /chain: SupportedChain;/, 'executeClarkToolPlan input must carry the resolved chain')
+assert.match(routeCode, /chain: SupportedChain \| "robinhood";/, 'executeClarkToolPlan input must carry the resolved chain (widened to include Robinhood — see the multi-chain token scan fix)')
 
 // ─── Required fix 5: existing scanners answer before "unavailable" (deployer/holders/LP/whale) ──
 // Deployer: fast in-process resolver tried first, full /api/dev-wallet scan as the real fallback
@@ -110,7 +110,7 @@ assert.match(routeCode, /function detectTokenFollowup\(/, 'a token followup dete
 assert.match(routeCode, /async function handleClarkWhaleToolCall\(/, 'whale activity questions must route to the real whale-alerts tool call')
 // Market cap / token safety: token_scan tool must read real market/security fields from the
 // internal Token Scanner API, not fabricate them.
-assert.match(routeCode, /_validAddr \? callInternalApi\(input\.origin, "\/api\/token"/, 'token_scan must call the real internal Token Scanner API')
+assert.match(routeCode, /_scannableAddr \? callInternalApi\(input\.origin, "\/api\/token"/, 'token_scan must call the real internal Token Scanner API')
 assert.match(routeCode, /marketCap: typeof t\.marketCapUsd === "number" \? t\.marketCapUsd : null,/, 'token_scan evidence must carry real market cap from the Token Scanner response')
 // Wallet: wallet_get_snapshot must be a real tool in the plan, not a stub that always fails.
 assert.match(routeCode, /if \(tool\.name === "wallet_get_snapshot"\) \{/, 'wallet questions must route through a real wallet_get_snapshot tool')

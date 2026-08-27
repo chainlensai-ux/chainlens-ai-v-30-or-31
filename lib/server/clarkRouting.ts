@@ -2,6 +2,7 @@
 // No Next.js / Anthropic SDK dependencies — importable directly by unit test scripts (node + .ts via tsx/ts-node-less import).
 
 export { resolveClarkIntent, type ClarkIntentContext, type ClarkResolvedIntent } from "../clarkIntent.ts";
+import { isValidSolanaMintAddress } from "../solanaAddress.ts";
 
 export type DashboardMarketRow = {
   symbol: string;
@@ -224,21 +225,44 @@ export function classifyTokenFollowupKind(prompt: string): TokenFollowupKind {
 }
 
 const EOA_ADDRESS_RE = /\b0x[a-fA-F0-9]{40}\b/g;
+// SOLANA-DEAD-CODE FIX, DISCLOSED (requested: Clark must see tokens on Sol/Robinhood/ETH/Base/BNB).
+// A real, mature Solana handling path already exists deeper in app/api/clark/route.ts (mint/freeze
+// authority reads, Deep Creator trace via /api/token's Solana Beta scanner) — but it was
+// unreachable: this file's own address extractor only ever recognized 0x-prefixed EVM addresses,
+// so `routed.address` could never actually BE a Solana mint, no matter what a user pasted. Fixed
+// here, at the source, instead of adding a second Solana code path — the existing rich handler
+// downstream now actually receives what it was always written to accept. Candidate regex matches
+// the shape (base58, 32-44 chars); isValidSolanaMintAddress does the real structural validation
+// (decodes to exactly 32 bytes) so a random 32-44 char alphanumeric string is never treated as a
+// mint just because it looks vaguely address-shaped.
+const SOLANA_MINT_CANDIDATE_RE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g;
 
 export function extractAddressForRouting(text: string): string | null {
   const m = text.match(/\b0x[a-fA-F0-9]{40}\b/);
-  return m ? m[0] : null;
+  if (m) return m[0];
+  const candidates = text.match(SOLANA_MINT_CANDIDATE_RE);
+  if (candidates) {
+    for (const c of candidates) if (isValidSolanaMintAddress(c)) return c;
+  }
+  return null;
 }
 
-/** Return every distinct 0x...40 address found in the prompt, in order of appearance. */
+/** Return every distinct EVM (0x...40) or Solana mint address found in the prompt, in order of appearance. */
 export function extractAllAddressesForRouting(text: string): string[] {
   const raw = typeof text === "string" ? text.match(EOA_ADDRESS_RE) : null;
-  if (!raw || raw.length === 0) return [];
   const seen = new Set<string>();
   const out: string[] = [];
-  for (const a of raw) {
-    const lower = a.toLowerCase();
-    if (!seen.has(lower)) { seen.add(lower); out.push(a); }
+  if (raw) {
+    for (const a of raw) {
+      const lower = a.toLowerCase();
+      if (!seen.has(lower)) { seen.add(lower); out.push(a); }
+    }
+  }
+  const solCandidates = typeof text === "string" ? text.match(SOLANA_MINT_CANDIDATE_RE) : null;
+  if (solCandidates) {
+    for (const c of solCandidates) {
+      if (!seen.has(c) && isValidSolanaMintAddress(c)) { seen.add(c); out.push(c); }
+    }
   }
   return out;
 }
@@ -360,8 +384,13 @@ export function classifyClarkPrompt(prompt: string): {
     // signal here either. app/api/clark/route.ts's own classifyPlannerIntent already treats every
     // one of these exact phrases as a TOKEN full-report trigger, never a wallet one — reused
     // verbatim here for consistency, not invented.
+    // "who deployed"/"deployer" ADDED, DISCLOSED (multi-chain token audit — same pattern class as
+    // the safe/safety/rug fix above): a bare "who deployed <address>?" matched none of these
+    // keywords either, so it fell to this same wallet-scan default — running a wallet read on what
+    // is almost always a token contract the user is asking a deployer question about. A wallet is
+    // never described as having a "deployer".
     const hasOtherStrongIntent =
-      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon|base\s+token|eth\s+token|ethereum\s+token|bnb\s+token|bsc\s+token|polygon\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address|safe|safety|\brug\b|honeypot|scam|deep\s+scan|full\s+scan|full\s+analysis|run\s+all\s+checks|scan\s+this\s+properly|full\s+report|complete\s+report)\b/i.test(t);
+      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon|base\s+token|eth\s+token|ethereum\s+token|bnb\s+token|bsc\s+token|polygon\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address|safe|safety|\brug\b|honeypot|scam|deep\s+scan|full\s+scan|full\s+analysis|run\s+all\s+checks|scan\s+this\s+properly|full\s+report|complete\s+report|who\s+deployed|deployer|deployed\s+this)\b/i.test(t);
     if (!hasOtherStrongIntent) {
       return { intent: "wallet_scan", address, addresses, deep, symbol: null };
     }
