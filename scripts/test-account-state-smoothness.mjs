@@ -41,7 +41,16 @@ check('usePlanWithLoading starts from cached verified plan', () => {
 })
 
 check('FeatureBar uses cached-first plan init', () => {
-  if (!featureBarSrc.includes("useState<UserPlan>(() => peekCachedPlan()")) throw new Error('FeatureBar still guesses Free on mount')
+  if (!featureBarSrc.includes('peekCachedPlan()')) throw new Error('FeatureBar must init from peekCachedPlan()')
+  if (featureBarSrc.includes("peekCachedPlan() ?? ('free'")) throw new Error('FeatureBar must not guess Free on mount')
+  if (!featureBarSrc.includes('subscribeToSharedPlan')) throw new Error('FeatureBar must use the shared plan store')
+  if (!featureBarSrc.includes('ensurePlanLoaded')) throw new Error('FeatureBar must call ensurePlanLoaded')
+})
+
+check('FeatureBar does not treat unknown session as Sign In', () => {
+  if (!featureBarSrc.includes("useState<string | null | undefined>(undefined)")) throw new Error('accountEmail must start undefined, not null')
+  if (!featureBarSrc.includes("accountEmail === undefined")) throw new Error('unknown session must render a placeholder, not Sign In')
+  if (!featureBarSrc.includes("height: '32px'")) throw new Error('unknown session placeholder must be 32px')
 })
 
 check('Navbar hydrates cached plan + avatar color synchronously on mount', () => {
@@ -78,6 +87,15 @@ check('signed-out sessions still resolve to free explicitly', () => {
   // Signed-out is a CONFIRMED state (no session) — allowed to show Free.
   if (!usePlanSrc.includes("clearPlanCache()")) throw new Error('sign-out must clear cache')
   if (!usePlanSrc.includes("sharedPlanState.plan = 'free'")) throw new Error('signed-out must confirm free')
+})
+
+const terminalPageSrc = readFileSync(new URL('../app/terminal/page.tsx', import.meta.url), 'utf8')
+const clarkPageSrc = readFileSync(new URL('../app/terminal/clark-ai/page.tsx', import.meta.url), 'utf8')
+check('terminal page fallback is not Loading Terminal', () => {
+  if (terminalPageSrc.includes('Loading Terminal...')) throw new Error('terminal Suspense fallback must not flash Loading Terminal...')
+})
+check('clark-ai page fallback is not Loading Clark AI', () => {
+  if (clarkPageSrc.includes('Loading Clark AI...')) throw new Error('clark Suspense fallback must not flash Loading Clark AI...')
 })
 
 for (const r of results) console.log(r)
