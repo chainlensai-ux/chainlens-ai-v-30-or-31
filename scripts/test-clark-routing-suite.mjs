@@ -30,6 +30,7 @@ const tests = [
   'test-clark-liquidity-safe-chain.mjs',
   'test-clark-evidence-chain-collapse.mjs',
   'test-clark-solana-dominant-cascade.mjs',
+  'test-clark-memory-and-lp-chain-blind.mjs',
   'test-pump-alerts-discovery.mjs',
   'test-pump-7d-fallback.mjs',
   'test-pump-snapshots.mjs',

@@ -496,7 +496,20 @@ function updateMemToken(
     mem.prevTokenChain = mem.selectedChain;
     mem.prevTokenSummary = mem.lastToken.scanSummary;
   }
-  const evidenceChain = opts?.chain ?? (opts?.cachedEvidence?.chain === "Ethereum" || opts?.cachedEvidence?.chain === "eth" ? "eth" : opts?.cachedEvidence?.chain === "Base" || opts?.cachedEvidence?.chain === "base" ? "base" : mem.selectedChain);
+  // MEMORY-CHAIN-COLLAPSE FIX, DISCLOSED (same bug class as fetchTokenEvidence's evidenceChain,
+  // reported live: "that should be for every chain as well available"): this only ever recognized
+  // "eth"/"Ethereum"/"base"/"Base" in the cached evidence's own chain — a real BNB or Robinhood scan
+  // (correctly reporting its real chain since the fetchTokenEvidence fix) fell through to
+  // mem.selectedChain (base by default) here, silently losing the real chain the moment it got
+  // stored for a follow-up. A later "is it safe" follow-up, or the title on that stored token, would
+  // then show the wrong chain even after a scan that got it right the first time.
+  const evidenceChain = opts?.chain ?? (
+    opts?.cachedEvidence?.chain === "Ethereum" || opts?.cachedEvidence?.chain === "eth" ? "eth"
+    : opts?.cachedEvidence?.chain === "Base" || opts?.cachedEvidence?.chain === "base" ? "base"
+    : opts?.cachedEvidence?.chain === "bnb" || opts?.cachedEvidence?.chain === "BNB" || opts?.cachedEvidence?.chain === "bsc" ? "bnb"
+    : opts?.cachedEvidence?.chain === "robinhood" || opts?.cachedEvidence?.chain === "Robinhood Chain" ? "robinhood"
+    : mem.selectedChain
+  );
   if (opts?.cachedEvidence) opts.cachedEvidence.chain = evidenceChain;
   mem.lastToken = {
     address, symbol, name, scanSummary, chain: evidenceChain, ts: Date.now(),
@@ -10073,7 +10086,23 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         quotaConsumed: false,
       };
     }
-    const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: routed.address, chain: "base" }, authHeader ?? undefined, verifiedPlan);
+    // LP-CHECK-CHAIN-BLIND FIX, DISCLOSED (same incident: "that should be for every chain as well
+    // available"): this always sent chain: "base" to /api/liquidity-safety regardless of the real
+    // auto-detected chain — an ETH or Robinhood token's LP check silently queried Base's liquidity
+    // instead of its own. /api/liquidity-safety itself supports base/eth/robinhood (see its own
+    // normalizeChain) but not yet bnb (collapses to base internally there) — a separate, deeper gap
+    // in that file, not fixed here; flagged honestly instead of silently forcing "base" for it too.
+    const lpApiChain = toTokenApiChain(chainForClarkTools);
+    if (lpApiChain === "bnb" || lpApiChain == null) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: [],
+        analysis: `Liquidity Safety doesn't have full ${chainDisplayLabel(chainForClarkTools)} support yet — it currently covers Base, Ethereum, and Robinhood Chain. Use Token Scanner's general LP fields for a ${chainDisplayLabel(chainForClarkTools)} read, or ask about this token on one of those chains instead.`,
+        intentBadge: "liquidity_scan",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+      };
+    }
+    const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: routed.address, chain: lpApiChain }, authHeader ?? undefined, verifiedPlan);
     const raw = (liqRes.json ?? {}) as Record<string, unknown>;
     const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
     if (!liqRes.ok || raw.ok === false || Object.keys(data).length === 0) {
