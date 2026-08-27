@@ -43,6 +43,15 @@ export interface ResolveTokenDeployerResult {
   sourcesSucceeded: string[]
   failureReason: string | null
   durationMs: number
+  // TOKEN-NAME-UNKNOWN FIX, DISCLOSED (reported live: "the deployment is saying unknown tho" — every
+  // fast deployer answer, on every EVM chain, read "Unknown token (?) was deployed by 0x...", because
+  // this resolver never fetched token identity at all, only the deployer address. Real, cheap, real
+  // on-chain evidence (an ERC20 name()/symbol() eth_call — same selectors and decode logic as
+  // app/api/token/route.ts's rpcTokenString), fetched in parallel with the deployer lookup so it adds
+  // no latency to the common case. Null when the RPC call genuinely fails or the contract has no
+  // ERC20 name()/symbol() (never a guess).
+  tokenName: string | null
+  tokenSymbol: string | null
 }
 
 // WRONG-CHAIN GUARD, DISCLOSED (hard rule: "Do NOT silently default to Base if chain is ambiguous"):
@@ -210,6 +219,45 @@ async function tryRpcEarliestTransfer(
   return { address: addr, attempted: true, succeeded: true }
 }
 
+// Same selectors/decode logic as app/api/token/route.ts's rpcTokenString — kept as its own local
+// copy rather than importing across a route boundary, matching this module's own "no shared mutable
+// state, no cross-module coupling" design (see file header).
+const ERC20_NAME_SELECTOR = '0x06fdde03'
+const ERC20_SYMBOL_SELECTOR = '0x95d89b41'
+
+function decodeAbiStringOrBytes32(hex: unknown): string | null {
+  if (typeof hex !== 'string' || hex === '0x') return null
+  try {
+    const body = hex.startsWith('0x') ? hex.slice(2) : hex
+    if (body.length >= 128) {
+      // ABI-encoded dynamic string: offset(32) + length(32) + data
+      const strLen = parseInt(body.slice(64, 128), 16)
+      if (strLen > 0 && strLen <= 256) {
+        const text = Buffer.from(body.slice(128, 128 + strLen * 2), 'hex').toString('utf8').replace(/\u0000/g, '').trim()
+        if (text) return text
+      }
+    }
+    if (body.length === 64) {
+      // bytes32-encoded name (MKR-style): fixed 32-byte value, trim null bytes
+      const text = Buffer.from(body, 'hex').toString('utf8').replace(/\u0000/g, '').trim()
+      if (text) return text
+    }
+  } catch {}
+  return null
+}
+
+async function tryTokenNameSymbol(
+  chainSlug: ResolverChainSlug, tokenAddress: string,
+): Promise<{ name: string | null; symbol: string | null }> {
+  const rpcUrl = rpcUrlFor(chainSlug)
+  if (!rpcUrl) return { name: null, symbol: null }
+  const [nameHex, symbolHex] = await Promise.all([
+    alchemyCall(rpcUrl, 'eth_call', [{ to: tokenAddress, data: ERC20_NAME_SELECTOR }, 'latest'], RPC_TIMEOUT_MS),
+    alchemyCall(rpcUrl, 'eth_call', [{ to: tokenAddress, data: ERC20_SYMBOL_SELECTOR }, 'latest'], RPC_TIMEOUT_MS),
+  ])
+  return { name: decodeAbiStringOrBytes32(nameHex), symbol: decodeAbiStringOrBytes32(symbolHex) }
+}
+
 /**
  * Fast, chain-strict deployer/creator resolution — deliberately narrower than a full token scan.
  * Target: resolve well under the ~25s a full /api/dev-wallet call could take; in practice a cache
@@ -230,15 +278,21 @@ export async function resolveTokenDeployer(input: ResolveTokenDeployerInput): Pr
   const sourcesAttempted: string[] = []
   const sourcesSucceeded: string[] = []
 
+  // Fired in parallel with the deployer lookup below (not chained after it) so token identity adds
+  // no latency to the common case — same per-source-timeout philosophy as everything else here.
+  const nameSymbolPromise = tryTokenNameSymbol(input.chainSlug, tokenAddress)
+
   const explorer = await tryExplorerCreationLookup(input.chainSlug, tokenAddress)
   if (explorer.attempted) sourcesAttempted.push('explorer_creation_lookup')
   if (explorer.succeeded && explorer.address) {
     sourcesSucceeded.push('explorer_creation_lookup')
+    const nameSymbol = await nameSymbolPromise
     const result: ResolveTokenDeployerResult = {
       deployerAddress: explorer.address, creatorAddress: explorer.address,
       confidence: 'high', evidenceSource: 'explorer_creation_lookup',
       explorerUrl: EXPLORER_CONFIG[input.chainSlug]?.explorerUrl ?? null,
       sourcesAttempted, sourcesSucceeded, failureReason: null, durationMs: Date.now() - startedAt,
+      tokenName: nameSymbol.name, tokenSymbol: nameSymbol.symbol,
     }
     resolverCache.set(key, { exp: Date.now() + SUCCESS_TTL_MS, result })
     return result
@@ -248,16 +302,19 @@ export async function resolveTokenDeployer(input: ResolveTokenDeployerInput): Pr
   if (rpcFallback.attempted) sourcesAttempted.push('rpc_earliest_transfer')
   if (rpcFallback.succeeded && rpcFallback.address) {
     sourcesSucceeded.push('rpc_earliest_transfer')
+    const nameSymbol = await nameSymbolPromise
     const result: ResolveTokenDeployerResult = {
       deployerAddress: rpcFallback.address, creatorAddress: rpcFallback.address,
       confidence: 'low', evidenceSource: 'rpc_earliest_transfer',
       explorerUrl: EXPLORER_CONFIG[input.chainSlug]?.explorerUrl ?? null,
       sourcesAttempted, sourcesSucceeded, failureReason: null, durationMs: Date.now() - startedAt,
+      tokenName: nameSymbol.name, tokenSymbol: nameSymbol.symbol,
     }
     resolverCache.set(key, { exp: Date.now() + SUCCESS_TTL_MS, result })
     return result
   }
 
+  const nameSymbol = await nameSymbolPromise
   const failureReason = sourcesAttempted.length === 0
     ? `No deployer-resolution source is configured for ${input.chainSlug} (missing explorer API key and RPC URL).`
     : 'No source returned a usable creation/earliest-activity record for this contract within the fast-lookup budget.'
@@ -265,6 +322,7 @@ export async function resolveTokenDeployer(input: ResolveTokenDeployerInput): Pr
     deployerAddress: null, creatorAddress: null, confidence: 'low', evidenceSource: 'none',
     explorerUrl: EXPLORER_CONFIG[input.chainSlug]?.explorerUrl ?? null,
     sourcesAttempted, sourcesSucceeded, failureReason, durationMs: Date.now() - startedAt,
+    tokenName: nameSymbol.name, tokenSymbol: nameSymbol.symbol,
   }
   resolverCache.set(key, { exp: Date.now() + NOT_FOUND_TTL_MS, result })
   return result

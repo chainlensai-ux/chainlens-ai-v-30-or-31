@@ -91,7 +91,9 @@ const solMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
   assert.ok(fastCallIdx > -1, 'the fast resolver must be called from the dev_wallet_analyze tool handler')
   assert.ok(slowCallIdx > -1, 'the full-scan fallback must still exist')
   assert.ok(fastCallIdx < slowCallIdx, 'the fast resolver must run BEFORE the full /api/dev-wallet call, not after or in parallel')
-  assert.match(scoped, /if \(fastResult\?\.deployerAddress\) \{[\s\S]{0,600}continue;/,
+  // TOKEN-NAME-UNKNOWN FIX, DISCLOSED: this block grew by two lines (tokenName/tokenSymbol carried
+  // through from the resolver's new parallel ERC20 name()/symbol() read) — bound widened to fit.
+  assert.match(scoped, /if \(fastResult\?\.deployerAddress\) \{[\s\S]{0,800}continue;/,
     'a successful fast-resolver result must short-circuit — the full scan must never run when the fast path already answered')
 }
 

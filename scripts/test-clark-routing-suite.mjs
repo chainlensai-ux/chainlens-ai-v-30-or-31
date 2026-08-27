@@ -37,6 +37,7 @@ const tests = [
   'test-clark-address-blind-gates.mjs',
   'test-clark-solana-deployer-helius-enhanced.mjs',
   'test-clark-solana-memory-writeback.mjs',
+  'test-clark-deployer-token-identity.mjs',
   'test-pump-alerts-discovery.mjs',
   'test-pump-7d-fallback.mjs',
   'test-pump-snapshots.mjs',

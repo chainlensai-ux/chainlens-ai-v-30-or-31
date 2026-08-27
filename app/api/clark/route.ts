@@ -5453,6 +5453,14 @@ type ClarkToolEvidence = {
     failureReason?: string | null;
     timedOut?: boolean;
     timeoutStage?: "fast_resolver" | "full_scan" | null;
+    // TOKEN-NAME-UNKNOWN FIX, DISCLOSED (reported live: "the deployment is saying unknown tho dont u
+    // see" — every fast-path deployer answer, on every EVM chain, read "Unknown token (?) was
+    // deployed by 0x..." because resolveTokenDeployer() only ever resolved the deployer address,
+    // never the token's own name/symbol, and the fast path never runs a token scan to get them any
+    // other way. resolveTokenDeployer() now also does a real, cheap, parallel ERC20 name()/symbol()
+    // RPC read (see lib/server/deployerResolver.ts) — carried through here so the answer can use it.
+    tokenName?: string | null;
+    tokenSymbol?: string | null;
   };
   liquidity?: {
     ok: boolean;
@@ -5727,6 +5735,8 @@ async function executeClarkToolPlan(input: {
             evidenceSource: fastResult.evidenceSource,
             explorerUrl: fastResult.explorerUrl,
             sourcesAttempted: fastResult.sourcesAttempted,
+            tokenName: fastResult.tokenName,
+            tokenSymbol: fastResult.tokenSymbol,
           };
           continue;
         }
@@ -12683,8 +12693,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const aliasForSymbol = resolvedSymbol ? BASE_TOKEN_ALIAS_MAP[resolvedSymbol.toLowerCase()] : null;
     const _devScanMismatch = resolvedSymbol && evidence.tokenScan?.token?.symbol && evidence.tokenScan.token.symbol.toUpperCase() !== resolvedSymbol.toUpperCase();
     const _devLiqMismatch = resolvedSymbol && evidence.liquidity?.token?.symbol && evidence.liquidity.token.symbol.toUpperCase() !== resolvedSymbol.toUpperCase();
-    const tokenName = (_devScanMismatch ? undefined : evidence.tokenScan?.token?.name) ?? (_devLiqMismatch ? undefined : evidence.liquidity?.token?.name) ?? aliasForSymbol?.name ?? resolvedSymbol ?? "Unknown token";
-    const tokenSymbol = (_devScanMismatch ? undefined : evidence.tokenScan?.token?.symbol) ?? (_devLiqMismatch ? undefined : evidence.liquidity?.token?.symbol) ?? resolvedSymbol ?? "?";
+    // TOKEN-NAME-UNKNOWN FIX, DISCLOSED (reported live: "the deployment is saying unknown tho dont u
+    // see" — real screenshots showed "Unknown token (?) was deployed by 0x..." on real BNB/Robinhood
+    // tokens). The fast deployer path never runs a token scan, so evidence.tokenScan/evidence.liquidity
+    // were always empty here — evidence.devWallet.tokenName/tokenSymbol (see resolveTokenDeployer's
+    // new parallel ERC20 name()/symbol() RPC read) is real evidence resolved from the SAME contract
+    // address being asked about, so it's added as a fallback ahead of the "Unknown token" default.
+    const tokenName = (_devScanMismatch ? undefined : evidence.tokenScan?.token?.name) ?? (_devLiqMismatch ? undefined : evidence.liquidity?.token?.name) ?? aliasForSymbol?.name ?? resolvedSymbol ?? evidence.devWallet?.tokenName ?? "Unknown token";
+    const tokenSymbol = (_devScanMismatch ? undefined : evidence.tokenScan?.token?.symbol) ?? (_devLiqMismatch ? undefined : evidence.liquidity?.token?.symbol) ?? resolvedSymbol ?? evidence.devWallet?.tokenSymbol ?? "?";
     // CHAIN-STRICT AUDIT (Clark deployer lookup audit): receipt proving the deployer answer came
     // from the requested chain's own evidence — never a wrong-chain cache or Base default.
     const devAuditChain = toTokenApiChain(chainForClarkTools);
