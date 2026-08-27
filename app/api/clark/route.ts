@@ -996,11 +996,12 @@ function tokenEvidenceChain(ev: TokenScanEvidence | null | undefined, fallback: 
   return fallback;
 }
 
-function chainDisplayLabel(chain: SupportedChain | "eth"): string {
+function chainDisplayLabel(chain: SupportedChain | "eth" | "robinhood"): string {
   if (chain === "eth") return "Ethereum";
   if (chain === "ethereum") return "Ethereum";
   if (chain === "bnb") return "BNB";
   if (chain === "polygon") return "Polygon";
+  if (chain === "robinhood") return "Robinhood Chain";
   return "Base";
 }
 
@@ -6100,7 +6101,31 @@ function explainMissingCheck(item: string): string {
   }
   return map[item] ?? item
 }
+// HONEST-EMPTY-RESULT FIX, DISCLOSED (reported live: a token scan that resolved literally nothing
+// — no name, no price, no holders, no security data — still rendered the full "TOKEN SCAN READ"
+// template with 20+ lines of "No signal in checked window" filler and a bare "VERDICT: UNKNOWN".
+// That reads as a real (if thin) analysis when it's actually "I found nothing for this address" —
+// exactly the "random shit instead of I don't understand" the report describes. Most often this
+// happens when the address is real but on a different chain than Clark checked (no explicit chain
+// named in the prompt defaults to Base) — the reply now says that plainly and asks which chain,
+// instead of pretending a real scan ran.
+function isGenuinelyEmptyReport(report: ClarkFullReportEvidence): boolean {
+  return report.token.name == null && report.token.symbol == null
+    && report.market.price == null && report.market.liquidity == null && report.market.volume24h == null && report.market.marketCap == null
+    && report.holders.holderCount == null && report.holders.topHolderPct == null
+    && report.contract.honeypot == null && report.contract.buyTax == null && report.contract.sellTax == null;
+}
+
+function buildEmptyTokenScanReply(address: string | null): string {
+  return [
+    "I couldn't verify this token.",
+    address ? `I don't have any data for ${address} on the chain I checked (defaults to Base unless you name one).` : "I don't have any data for this address on the chain I checked.",
+    "If it's on Ethereum, BNB, Robinhood Chain, or Solana, tell me which one and I'll check there instead — for example \"is 0x... safe on eth\".",
+  ].join(" ");
+}
+
 function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
+  if (isGenuinelyEmptyReport(report)) return buildEmptyTokenScanReply(report.token.address);
   const verdict = evaluateFullReportVerdict(report);
   const name = report.token.name ?? "Unknown token";
   const symbol = report.token.symbol ?? "?";
@@ -8344,11 +8369,22 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         notApplicableReason: mismatch,
       };
       clarkInternalCtx.entityAudit = baseAudit;
+      // CHAIN-SCOPED HONESTY FIX, DISCLOSED (reported live: asked about a real ETH token with no
+      // chain named in the prompt — Clark defaults to Base — and got a flat "This address is a
+      // wallet, not a token contract," which is stated as a universal fact when it's really only
+      // "no contract code on Base." The address WAS a real token, just on a different chain. Every
+      // eth_getCode check is inherently chain-scoped; the reply must say which chain was actually
+      // checked and invite a retry on another one, never assert a global truth from one chain's
+      // result.
+      const explicitChainNamed = /\b(ethereum|eth|bnb|bsc|robinhood|solana|base)\b/i.test(prompt);
       if (mismatch === 'token_question_wallet_address') {
         const href = walletScannerDeepLink(inlineAddress, false);
+        const chainCaveat = explicitChainNamed
+          ? `This address is a wallet, not a token contract, on ${chainDisplayLabel(chainForClarkTools)}. Market cap/holders/LP/deployer do not apply.`
+          : `This address is a wallet, not a token contract, on ${chainDisplayLabel(chainForClarkTools)} (the chain I checked by default). If it's a token on Ethereum, BNB, Robinhood Chain, or Solana, tell me which one and I'll check there instead.`;
         return {
           feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: "entity_mismatch", toolsUsed: ["address_code_check"],
-          analysis: "This address is a wallet, not a token contract. Market cap/holders/LP/deployer do not apply.",
+          analysis: chainCaveat,
           ui: { intentBadge: 'Entity Check', actions: [{ label: 'Scan Wallet', href }, { label: 'Deep Scan Wallet', href: walletScannerDeepLink(inlineAddress, true) }] },
           actions: [{ label: 'Scan Wallet', href }, { label: 'Deep Scan Wallet', href: walletScannerDeepLink(inlineAddress, true) }],
         };
@@ -8358,7 +8394,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         const href = `/terminal/token-scanner?contract=${inlineAddress}${chainQuery}`;
         return {
           feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: "entity_mismatch", toolsUsed: ["address_code_check"],
-          analysis: "This is a token contract. Use Token Scanner or ask token-specific questions.",
+          analysis: `This is a token contract on ${chainDisplayLabel(chainForClarkTools)}. Use Token Scanner or ask token-specific questions.`,
           ui: { intentBadge: 'Entity Check', actions: [{ label: 'Open Token Scanner', href }, { label: 'Deep Scan Token', href }] },
           actions: [{ label: 'Open Token Scanner', href }, { label: 'Deep Scan Token', href }],
         };

@@ -20,6 +20,7 @@ const tests = [
   'test-clark-entity-routing.mjs',
   'test-clark-truncated-address.mjs',
   'test-clark-multichain-scan.mjs',
+  'test-clark-honest-empty-scan.mjs',
   'test-pump-alerts-discovery.mjs',
   'test-pump-7d-fallback.mjs',
   'test-pump-snapshots.mjs',

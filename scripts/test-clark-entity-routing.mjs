@@ -44,9 +44,17 @@ assert.match(routeCode, /return \{ hasContractCode: null, resolvedEntityType: 'u
 // 'unknown' matches neither branch of the ternary, so it falls through to null (no short-circuit).
 assert.match(routeCode, /\(questionCategory === 'token' && resolvedEntityType === 'wallet'\) \? 'token_question_wallet_address' :\s*\n\s*\(questionCategory === 'wallet' && resolvedEntityType === 'contract'\) \? 'wallet_question_token_address' :\s*\n\s*null;/, 'a mismatch must only be declared for a confirmed opposite entity type, defaulting to null (no short-circuit) otherwise — this covers the unknown case implicitly')
 
-// ─── Exact required messages ────────────────────────────────────────────────────────────────
-assert.match(routeCode, /"This address is a wallet, not a token contract\. Market cap\/holders\/LP\/deployer do not apply\."/, 'the token-question-on-wallet-address message must match exactly')
-assert.match(routeCode, /"This is a token contract\. Use Token Scanner or ask token-specific questions\."/, 'the wallet-question-on-token-address message must match exactly')
+// ─── Required messages: chain-scoped, not a flat universal assertion ───────────────────────────
+// CHAIN-SCOPED HONESTY FIX, DISCLOSED (reported live: a real ETH token got "This address is a
+// wallet, not a token contract" when no chain was named — Clark defaults to Base, so that eth_
+// getCode result only proved "no code on Base," not "this is universally a wallet." Every
+// mismatch message must say which chain was actually checked and invite a retry on another one
+// when the chain wasn't explicit in the prompt.
+assert.ok(routeCode.includes('`This address is a wallet, not a token contract, on ${chainDisplayLabel(chainForClarkTools)}. Market cap/holders/LP/deployer do not apply.`'), 'the token-question-on-wallet-address message must name the chain actually checked when the user was explicit about it')
+assert.ok(routeCode.includes("`This address is a wallet, not a token contract, on ${chainDisplayLabel(chainForClarkTools)} (the chain I checked by default). If it's a token on Ethereum, BNB, Robinhood Chain, or Solana, tell me which one and I'll check there instead.`"), 'when no chain was named, the message must say it defaulted and invite a retry on another chain — never assert a global fact from one chain\'s result')
+assert.ok(routeCode.includes('`This is a token contract on ${chainDisplayLabel(chainForClarkTools)}. Use Token Scanner or ask token-specific questions.`'), 'the wallet-question-on-token-address message must also name the chain checked')
+assert.match(routeCode, /function chainDisplayLabel\(chain: SupportedChain \| "eth" \| "robinhood"\): string \{/, 'chainDisplayLabel must handle robinhood explicitly — the old signature silently mislabeled Robinhood as "Base"')
+assert.match(routeCode, /if \(chain === "robinhood"\) return "Robinhood Chain";/, 'chainDisplayLabel must return the real Robinhood label, never fall through to the Base default')
 
 // ─── Intent coverage: every required token intent must be recognized ───────────────────────────
 // route.ts pulls in Next.js server deps, so it can't be imported directly by a plain node test —
