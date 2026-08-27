@@ -6221,6 +6221,35 @@ function renderFullTokenReport(report: ClarkFullReportEvidence): string {
 // intentionally simpler than renderDevWalletFocusedRead below (which is for the full /api/dev-wallet
 // scan and includes linked-wallet/risk-flag evidence the fast path never gathers). Used only when
 // evidence.devWallet.fastPath is true.
+// CLARK AI AUDIT + UPGRADE, DISCLOSED (Priority 4 — structured intelligence, not backend output):
+// a fixed 7-section shape (Overview / Key Findings / Evidence / Risks / Opportunities / Confidence
+// / Recommended Next Action) applied to Clark's highest-traffic evidence answers. Deliberately a
+// plain string builder, not a new response schema — the frontend (app/terminal/clark-ai/page.tsx)
+// renders `analysis` as plain text with no line-prefix parsing, so restructuring the text itself
+// can't break existing consumers. Sections with nothing real to report are omitted, never padded
+// with a placeholder line — an empty "Risks" section is worse than no section at all.
+function formatClarkStructuredAnswer(input: {
+  overview: string;
+  keyFindings: string[];
+  evidence: string[];
+  risks: string[];
+  opportunities: string[];
+  confidence: "High" | "Medium" | "Low";
+  confidenceReason: string;
+  nextAction: string;
+  lastUpdatedLabel: string;
+}): string {
+  const lines: string[] = [input.overview, ""];
+  if (input.keyFindings.length > 0) lines.push("Key Findings", ...input.keyFindings.map((f) => `- ${f}`), "");
+  if (input.evidence.length > 0) lines.push("Evidence", ...input.evidence.map((e) => `- ${e}`), "");
+  if (input.risks.length > 0) lines.push("Risks", ...input.risks.map((r) => `- ${r}`), "");
+  if (input.opportunities.length > 0) lines.push("Opportunities", ...input.opportunities.map((o) => `- ${o}`), "");
+  lines.push(`Confidence: ${input.confidence} — ${input.confidenceReason}`);
+  lines.push(`Last updated: ${input.lastUpdatedLabel}`);
+  lines.push(`Recommended next action: ${input.nextAction}`);
+  return lines.join("\n");
+}
+
 function renderFastDeployerAnswer(
   tokenName: string,
   tokenSymbol: string,
@@ -6232,15 +6261,22 @@ function renderFastDeployerAnswer(
     : devWallet.evidenceSource === "rpc_earliest_transfer" ? "Alchemy RPC (earliest on-chain activity)"
     : devWallet.evidenceSource === "internal_cache" ? "Cached scan (previously resolved)"
     : "Direct deployer resolver";
-  return [
-    `Deployer: ${devWallet.deployerAddress}`,
-    `Chain: ${chainLabel}`,
-    `Confidence: ${devWallet.confidence.toLowerCase()}`,
-    `Evidence: ${evidenceLabel}`,
-    "Next: Scan deployer wallet / Check dev history",
-    "",
-    `Token: ${tokenName} (${tokenSymbol}) · ${tokenAddress}`,
-  ].join("\n");
+  // CLARK AI AUDIT + UPGRADE, DISCLOSED (Priority 6 — deployer intelligence): the fast resolver
+  // path (tried first — see resolveTokenDeployer's own disclosure above) only ever answers deployer
+  // IDENTITY; it deliberately never runs the full /api/dev-wallet cluster/rug-history scan (that's
+  // the whole point of it being fast). Never silently omits "related deployments"/"rug history" —
+  // states plainly that this pass didn't check them and names the real follow-up that would.
+  return formatClarkStructuredAnswer({
+    overview: `${tokenName} (${tokenSymbol}) was deployed by ${devWallet.deployerAddress} on ${chainLabel}.`,
+    keyFindings: [`Deployer address: ${devWallet.deployerAddress}`, `Token: ${tokenName} (${tokenSymbol}) · ${tokenAddress}`],
+    evidence: [`${evidenceLabel} (chain: ${chainLabel})`],
+    risks: [],
+    opportunities: [],
+    confidence: devWallet.confidence,
+    confidenceReason: devWallet.confidence === "High" ? "deployer identity confirmed directly from chain data" : "deployer identity resolved, but from a single source with no cross-verification",
+    lastUpdatedLabel: "just now (live lookup)",
+    nextAction: "Related deployments and rug history were not checked in this fast lookup — run Check Deployer / Deep Scan Token for the full cluster and rug-history read.",
+  });
 }
 
 function renderDevWalletFocusedRead(

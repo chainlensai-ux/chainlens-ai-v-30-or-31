@@ -881,6 +881,10 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
   } else {
     lines.push(`- Data freshness: ${fresh === "live" ? "live" : "live"}`);
   }
+  // CLARK AI AUDIT + UPGRADE, DISCLOSED (Priority 1 — every major claim needs a last-updated time,
+  // not just confidence/evidence source): cacheAgeSeconds already exists on the wallet API result,
+  // it just wasn't surfaced to the user.
+  lines.push(`- Last updated: ${cacheAge != null ? (cacheAge < 60 ? `${cacheAge}s ago` : `${Math.round(cacheAge / 60)}m ago`) : "just now (live scan)"}`);
   // TOKEN-VS-WALLET MISROUTING FIX, DISCLOSED: these four lines used to print the raw internal
   // field names (walletScanHealth/walletModuleCoverage/walletTokenPnlSummary/
   // walletTradeStatsSummary) directly into the user-facing reply — a debug dump, not an answer.

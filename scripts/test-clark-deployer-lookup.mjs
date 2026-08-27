@@ -128,12 +128,18 @@ const solMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 
 // ── Answer format: found (short, requested shape) + full-scan (richer) + unavailable template ──
 {
+  // CLARK AI AUDIT + UPGRADE, DISCLOSED (Priority 4 — structured intelligence): the fast-path
+  // deployer answer now goes through the shared formatClarkStructuredAnswer 7-section shape
+  // (Overview/Key Findings/Evidence/Risks/Opportunities/Confidence/Recommended Next Action)
+  // instead of a flat Deployer:/Chain:/Confidence:/Evidence:/Next: block — same underlying
+  // evidence (deployer address, chain, confidence, evidence source), structured per the new spec.
   assert.match(routeSrc, /function renderFastDeployerAnswer\(/, 'the fast-path answer renderer must exist')
-  assert.match(routeSrc, /Deployer: \$\{devWallet\.deployerAddress\}/, 'found (fast path) must state Deployer: 0x...')
-  assert.match(routeSrc, /Chain: \$\{chainLabel\}/, 'found (fast path) must state the chain')
-  assert.match(routeSrc, /Confidence: \$\{devWallet\.confidence\.toLowerCase\(\)\}/, 'found (fast path) must state confidence')
-  assert.match(routeSrc, /Evidence: \$\{evidenceLabel\}/, 'found (fast path) must state the evidence source')
-  assert.match(routeSrc, /Next: Scan deployer wallet \/ Check dev history/, 'found (fast path) must offer the requested next actions')
+  assert.match(routeSrc, /function formatClarkStructuredAnswer\(/, 'the shared structured-answer formatter must exist')
+  assert.match(routeSrc, /overview: `\$\{tokenName\} \(\$\{tokenSymbol\}\) was deployed by \$\{devWallet\.deployerAddress\} on \$\{chainLabel\}\.`/, 'found (fast path) overview must state deployer and chain')
+  assert.match(routeSrc, /evidence: \[`\$\{evidenceLabel\} \(chain: \$\{chainLabel\}\)`\]/, 'found (fast path) must state the evidence source and chain')
+  assert.match(routeSrc, /confidence: devWallet\.confidence,/, 'found (fast path) must state confidence')
+  assert.match(routeSrc, /lastUpdatedLabel: "just now \(live lookup\)",/, 'found (fast path) must state when the evidence was resolved')
+  assert.match(routeSrc, /Related deployments and rug history were not checked in this fast lookup/, 'found (fast path) must honestly state what the fast lookup did NOT check, never omit it silently')
   // The richer full-scan template (linked wallets, risk flags) is preserved for the slow path.
   assert.match(routeSrc, /DEPLOYER \/ DEV WALLET READ/, 'full-scan answer format header must remain')
   assert.match(routeSrc, /evidence\.devWallet\.fastPath[\s\S]{0,100}renderFastDeployerAnswer/, 'the fast template must only be used when fastPath is true')
