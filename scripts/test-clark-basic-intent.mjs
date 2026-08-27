@@ -111,4 +111,19 @@ assert.equal(
   "I can help explain ChainLens, wallets, tokens, Base, scanner results, or run a scan if you give me a wallet address or token contract.",
 )
 
+const SOL_MINT = 'So11111111111111111111111111111111111111112'
+
+{
+  const msg = `scan this token ${SOL_MINT}`
+  const intent = classifyClarkBasicIntent(msg)
+  assert.equal(intent, 'token_scan_request')
+  assert.equal(clarkMissingInputPrompt(intent, msg), null, 'a Solana mint must not be treated as missing 0x input')
+}
+{
+  const msg = `scan this wallet 0x1234567890123456789012345678901234567890 on base`
+  const intent = classifyClarkBasicIntent(msg)
+  assert.equal(intent, 'wallet_scan_request')
+  assert.equal(clarkMissingInputPrompt(intent, msg), null)
+}
+
 console.log('test-clark-basic-intent: all assertions passed')
