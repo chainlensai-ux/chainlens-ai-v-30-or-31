@@ -28,6 +28,8 @@ const tests = [
   'test-clark-entity-check-retry.mjs',
   'test-clark-keyword-not-phrasing.mjs',
   'test-clark-liquidity-safe-chain.mjs',
+  'test-clark-evidence-chain-collapse.mjs',
+  'test-clark-solana-dominant-cascade.mjs',
   'test-pump-alerts-discovery.mjs',
   'test-pump-7d-fallback.mjs',
   'test-pump-snapshots.mjs',

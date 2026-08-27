@@ -9935,6 +9935,85 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const liveIntent = detectLiveIntent(prompt);
   const directIntent = detectIntent(prompt);
 
+  // SOLANA-DOMINANT-CASCADE FIX, DISCLOSED (requested live: "i need sol working as well"). The
+  // Solana creator/authority read (mint/freeze authority + Deep Creator trace, real evidence, no
+  // fake deployer claims) already existed but was wired ONLY into routed.intent === "token_scan" —
+  // the narrow tool-plan-ish path. Most real phrasing ("X safe", "is X safe", "is liquidity safe on
+  // X", "can dev rug", etc.) routes through token_safety/liquidity_scan/dev_rug_check/lp_lock_check/
+  // risk_explanation/token_ape_risk/token_full_report/dev_rug_history instead — exactly the same
+  // "dominant legacy cascade never got the fix" pattern already found and fixed for EVM chains
+  // earlier this session. Those branches all assume an EVM 0x address and would either silently
+  // scan Base (wrong chain, no real Solana data) or produce a confusing empty-scan message. Extracted
+  // into a shared function (not duplicated per-branch) and short-circuited here, before any of those
+  // EVM-only branches run, whenever the parsed address is a real Solana mint.
+  async function buildSolanaCreatorAnswer(tokenAddress: string): Promise<Record<string, unknown>> {
+    const solRes = await fetch(`${origin}/api/token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(authHeader ? { Authorization: authHeader } : {}) },
+      body: JSON.stringify({ contract: tokenAddress, chain: "solana" }),
+      signal: AbortSignal.timeout(20_000),
+      cache: "no-store",
+    }).catch(() => null);
+    const solJson = solRes && solRes.ok ? await solRes.json().catch(() => null) : null;
+    const merged = (solJson && typeof solJson === "object" && "mergedResult" in (solJson as Record<string, unknown>))
+      ? ((solJson as Record<string, unknown>).mergedResult as Record<string, unknown> | null)
+      : null;
+    const mintAuthority = merged && typeof merged.mintAuthority === "string" ? merged.mintAuthority : null;
+    const freezeAuthority = merged && typeof merged.freezeAuthority === "string" ? merged.freezeAuthority : null;
+    const deepCreator = (solJson as Record<string, unknown> | null)?.deepCreator as Record<string, unknown> | null | undefined;
+    const creatorTrace = deepCreator?.creatorTrace as Record<string, unknown> | null | undefined;
+    const traceResolved = creatorTrace?.resolved as Record<string, unknown> | null | undefined;
+    const likelyCreator = typeof traceResolved?.likelyCreatorWallet === "string" ? traceResolved.likelyCreatorWallet as string : null;
+    const creatorConfidence = (solJson as Record<string, unknown> | null)?.creatorConfidence as Record<string, unknown> | null | undefined;
+    const lines: string[] = ["SOLANA CREATOR / AUTHORITY READ", ""];
+    const authorities: string[] = [];
+    if (mintAuthority) authorities.push(`- Mint authority: ${mintAuthority} (active — supply can be increased)`);
+    if (freezeAuthority) authorities.push(`- Freeze authority: ${freezeAuthority} (active — accounts can be frozen)`);
+    if (!mintAuthority) lines.push("- Mint authority: revoked or unresolved");
+    if (!freezeAuthority) lines.push("- Freeze authority: revoked or unresolved");
+    lines.push(...authorities);
+    if (likelyCreator) {
+      lines.push(`- Creator/fee payer (earliest tx): ${likelyCreator}`, `  Confidence: ${(creatorConfidence?.tier as string) ?? "possible"} — fee-payer of earliest transaction is a strong signal, not proof of deployer.`);
+    } else {
+      lines.push("- Creator/fee payer: Not resolved. Run the Deep Creator Check in Token Scanner for a Helius signature-history trace.");
+    }
+    lines.push("", "- Chain: Solana", `- Evidence: ${merged ? "Solana RPC (mint account) + Helius" : "Solana scan returned no usable data"}`);
+    lines.push("- CTA: Open Token Scanner → Solana Beta for the full read.");
+    return {
+      feature: "clark-ai", chain: chain === "base" ? "base" : chain, mode: "analysis", intent: "token_scan", toolsUsed: ["solana_scan"],
+      analysis: lines.join("\n"),
+      intentBadge: "solana_creator_read",
+      actions: buildRoutedActions(["Open Token Scanner"]),
+      quotaConsumed: Boolean(solJson),
+      clarkDeployerLookupAudit: {
+        userPrompt: prompt,
+        parsedAddress: tokenAddress,
+        parsedChain: "solana",
+        addressType: "solana_mint",
+        resolvedChainSlug: "solana",
+        resolvedChainId: null,
+        tokenScannerCalled: true,
+        apiRouteCalled: "/api/token (chain=solana)",
+        cacheKey: null,
+        cacheHit: false,
+        cacheChainMatched: true,
+        deployerFound: null,
+        deployerAddress: null,
+        creatorAddress: likelyCreator,
+        mintAuthority,
+        freezeAuthority,
+        metadataAuthority: null,
+        evidenceSource: merged ? "solana_rpc+helius" : "none",
+        confidence: likelyCreator ? String((creatorConfidence?.tier as string) ?? "possible").toLowerCase() : "low",
+        sourcesAttempted: ["solana_rpc_mint_authority", "helius_creator_trace"],
+        sourcesSucceeded: [ ...(merged ? ["solana_rpc_mint_authority"] : []), ...(likelyCreator ? ["helius_creator_trace"] : []) ],
+        sourcesFailed: [ ...(!merged ? ["solana_rpc_mint_authority"] : []), ...(!likelyCreator ? ["helius_creator_trace"] : []) ],
+        rejectedWrongChainResults: 0,
+        finalAnswerMode: (likelyCreator || mintAuthority || freezeAuthority) ? "found" : "unavailable_with_sources",
+      },
+    };
+  }
+
   // ── New routed intents (classifyClarkPrompt) — intercept before legacy logic ──
   const routed = classifyClarkPrompt(prompt);
   // Market-mover follow-up scans ("scan 1", "scan velvet") are forced to token_scan by
@@ -9943,6 +10022,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (body.forcedTokenScan?.address) {
     routed.intent = "token_scan";
     routed.address = body.forcedTokenScan.address;
+  }
+  // SOLANA-DOMINANT-CASCADE FIX, DISCLOSED (see buildSolanaCreatorAnswer above for the full
+  // incident): short-circuit here, before every EVM-only token-address branch below, whenever the
+  // parsed address is a real Solana mint and the question is about the token itself (not a wallet
+  // question) — covers "X safe", "is liquidity safe on X", "can dev rug", LP/risk/full-report/rug-
+  // history phrasing, not just the narrow token_scan tool-plan path this already worked on.
+  const SOLANA_TOKEN_INTENTS = new Set(["token_safety", "liquidity_scan", "dev_rug_check", "dev_rug_history", "lp_lock_check", "risk_explanation", "token_ape_risk", "token_full_report", "token_scan"]);
+  if (routed.address && SOLANA_TOKEN_INTENTS.has(routed.intent) && isValidSolanaMintAddress(routed.address)) {
+    return await buildSolanaCreatorAnswer(routed.address);
   }
   if (sessionMem.lastWallet?.address && !routed.address && isWalletFollowupPrompt(prompt)) {
     const memResult = buildWalletMemoryResult(sessionMem.lastWallet);
@@ -10438,7 +10526,21 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const hd = (t.holderDistribution ?? {}) as Record<string, unknown>;
     const resolvedInput = (t.resolvedInput && typeof t.resolvedInput === "object") ? t.resolvedInput as Record<string, unknown> : {};
     const responseChainRaw = [t.chain, resolvedInput.requestedChain, resolvedInput.resolvedChain].find((v) => typeof v === "string") as string | undefined;
-    const evidenceChain = responseChainRaw === "eth" || responseChainRaw === "ethereum" ? "eth" : responseChainRaw === "base" ? "base" : (chain === "ethereum" ? "eth" : "base");
+    // EVIDENCE-CHAIN-COLLAPSE FIX, DISCLOSED: reported live — "every Robinhood token title has Base
+    // next to it." Root cause: this only ever recognized "eth"/"ethereum"/"base" in the real /api/
+    // token response's own reported chain, and its final fallback collapsed EVERYTHING else — a
+    // genuine "bnb" or "robinhood" response value included — down to "base". So even when
+    // chainForClarkTools had already correctly auto-detected Robinhood/BNB upstream, and the actual
+    // scan genuinely ran on that chain, this evidence-chain derivation silently overwrote it with
+    // "base" before tokenEvidenceChain/chainDisplayLabel ever got a chance to show the real one —
+    // the same "no silent Base fallback" bug class already fixed elsewhere in this file, but missed
+    // here because this specific derivation predates the bnb/robinhood support being added.
+    const evidenceChain =
+      responseChainRaw === "eth" || responseChainRaw === "ethereum" ? "eth"
+      : responseChainRaw === "base" ? "base"
+      : responseChainRaw === "bnb" || responseChainRaw === "bsc" ? "bnb"
+      : responseChainRaw === "robinhood" ? "robinhood"
+      : chainForClarkTools;
 
     const hasMarket = tokenApiOk && (typeof t.priceUsd === "number" || typeof t.liquidityUsd === "number");
     const hasHolders = tokenApiOk && (typeof hd.top10 === "number" || typeof holdersSection.top10 === "number");
@@ -10838,71 +10940,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // evidence (mint/freeze/update authority + Deep Creator Check), labeled creator/authority —
     // never "deployer" unless the source proves it.
     if (tokenAddress && isValidSolanaMintAddress(tokenAddress)) {
-      const solRes = await fetch(`${origin}/api/token`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...(authHeader ? { Authorization: authHeader } : {}) },
-        body: JSON.stringify({ contract: tokenAddress, chain: "solana" }),
-        signal: AbortSignal.timeout(20_000),
-        cache: "no-store",
-      }).catch(() => null);
-      const solJson = solRes && solRes.ok ? await solRes.json().catch(() => null) : null;
-      const merged = (solJson && typeof solJson === "object" && "mergedResult" in (solJson as Record<string, unknown>))
-        ? ((solJson as Record<string, unknown>).mergedResult as Record<string, unknown> | null)
-        : null;
-      const mintAuthority = merged && typeof merged.mintAuthority === "string" ? merged.mintAuthority : null;
-      const freezeAuthority = merged && typeof merged.freezeAuthority === "string" ? merged.freezeAuthority : null;
-      const deepCreator = (solJson as Record<string, unknown> | null)?.deepCreator as Record<string, unknown> | null | undefined;
-      const creatorTrace = deepCreator?.creatorTrace as Record<string, unknown> | null | undefined;
-      const traceResolved = creatorTrace?.resolved as Record<string, unknown> | null | undefined;
-      const likelyCreator = typeof traceResolved?.likelyCreatorWallet === "string" ? traceResolved.likelyCreatorWallet as string : null;
-      const creatorConfidence = (solJson as Record<string, unknown> | null)?.creatorConfidence as Record<string, unknown> | null | undefined;
-      const lines: string[] = ["SOLANA CREATOR / AUTHORITY READ", ""];
-      const authorities: string[] = [];
-      if (mintAuthority) authorities.push(`- Mint authority: ${mintAuthority} (active — supply can be increased)`);
-      if (freezeAuthority) authorities.push(`- Freeze authority: ${freezeAuthority} (active — accounts can be frozen)`);
-      if (!mintAuthority) lines.push("- Mint authority: revoked or unresolved");
-      if (!freezeAuthority) lines.push("- Freeze authority: revoked or unresolved");
-      lines.push(...authorities);
-      if (likelyCreator) {
-        lines.push(`- Creator/fee payer (earliest tx): ${likelyCreator}`, `  Confidence: ${(creatorConfidence?.tier as string) ?? "possible"} — fee-payer of earliest transaction is a strong signal, not proof of deployer.`);
-      } else {
-        lines.push("- Creator/fee payer: Not resolved. Run the Deep Creator Check in Token Scanner for a Helius signature-history trace.");
-      }
-      lines.push("", "- Chain: Solana", `- Evidence: ${merged ? "Solana RPC (mint account) + Helius" : "Solana scan returned no usable data"}`);
-      lines.push("- CTA: Open Token Scanner → Solana Beta for the full read.");
-      return {
-        feature: "clark-ai", chain: chain === "base" ? "base" : chain, mode: "analysis", intent: "token_scan", toolsUsed: ["solana_scan"],
-        analysis: lines.join("\n"),
-        intentBadge: "solana_creator_read",
-        actions: buildRoutedActions(["Open Token Scanner"]),
-        quotaConsumed: Boolean(solJson),
-        clarkDeployerLookupAudit: {
-          userPrompt: prompt,
-          parsedAddress: tokenAddress,
-          parsedChain: "solana",
-          addressType: "solana_mint",
-          resolvedChainSlug: "solana",
-          resolvedChainId: null,
-          tokenScannerCalled: true,
-          apiRouteCalled: "/api/token (chain=solana)",
-          cacheKey: null,
-          cacheHit: false,
-          cacheChainMatched: true,
-          deployerFound: null,
-          deployerAddress: null,
-          creatorAddress: likelyCreator,
-          mintAuthority,
-          freezeAuthority,
-          metadataAuthority: null,
-          evidenceSource: merged ? "solana_rpc+helius" : "none",
-          confidence: likelyCreator ? String((creatorConfidence?.tier as string) ?? "possible").toLowerCase() : "low",
-          sourcesAttempted: ["solana_rpc_mint_authority", "helius_creator_trace"],
-          sourcesSucceeded: [ ...(merged ? ["solana_rpc_mint_authority"] : []), ...(likelyCreator ? ["helius_creator_trace"] : []) ],
-          sourcesFailed: [ ...(!merged ? ["solana_rpc_mint_authority"] : []), ...(!likelyCreator ? ["helius_creator_trace"] : []) ],
-          rejectedWrongChainResults: 0,
-          finalAnswerMode: (likelyCreator || mintAuthority || freezeAuthority) ? "found" : "unavailable_with_sources",
-        },
-      };
+      return await buildSolanaCreatorAnswer(tokenAddress);
     }
     // EVM 0x address can never be a Solana mint; and for chains Token Core cannot scan,
     // say so honestly instead of silently falling back to Base.
