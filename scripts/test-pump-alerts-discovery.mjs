@@ -6,6 +6,8 @@ import {
   isMajorStableWrappedOrLp,
   mergeNormalizedCandidate,
   tokenAgeDaysFromPairCreatedAtMs,
+  parsePairCreatedAtMs,
+  sanitizeMarketCapUsd,
   PUMP_ALERT_MAX_CAP_USD,
   PUMP_ALERT_MIN_LIQUIDITY_USD,
   PUMP_ALERT_MIN_VOLUME_24H_USD,
@@ -212,5 +214,51 @@ assert.match(routeCode, /mergeNormalizedCandidate/, 'same-token rows must merge 
 assert.match(routeCode, /pairCreatedAtMs/, 'candidates must carry pairCreatedAtMs')
 assert.match(pageCode, /rejectedCapDataMissing\} missing cap data/, 'cap-data-missing must not be labelled over $30M')
 assert.doesNotMatch(pageCode, /rejectedOverCap \+ candidateAudit\.rejectedCapDataMissing/, 'missing-cap rows must never be summed into over $30M')
+
+{
+  const iso = '2026-08-27T22:36:00.000Z'
+  const created = Date.parse(iso)
+  assert.equal(parsePairCreatedAtMs(iso), created, 'GT pool_created_at ISO must parse to ms')
+  const now = created + 5 * 3_600_000
+  const days = tokenAgeDaysFromPairCreatedAtMs(parsePairCreatedAtMs(iso), now)
+  assert.ok(days != null)
+  assert.ok(Math.abs(days - 5 / 24) < 1e-9, '5.0h GT pool_created_at must become ~5/24 days')
+}
+{
+  const ms = 1_700_000_000_000
+  assert.equal(parsePairCreatedAtMs(ms), ms, 'DS pairCreatedAt in ms stays ms')
+  const sec = 1_700_000_000
+  assert.equal(parsePairCreatedAtMs(sec), 1_700_000_000_000, 'DS pairCreatedAt in seconds must scale to ms')
+  const now = ms + 12 * 3_600_000
+  const days = tokenAgeDaysFromPairCreatedAtMs(parsePairCreatedAtMs(ms), now)
+  assert.ok(days != null)
+  assert.ok(Math.abs(days - 0.5) < 1e-9, 'DS pairCreatedAt 12h ago must become 0.5 days')
+}
+assert.match(routeCode, /Date\.parse\(attrs\.pool_created_at\)/, 'GeckoTerminal pool_created_at must be parsed into pairCreatedAtMs')
+assert.match(routeCode, /parsePairCreatedAtMs\(pair\.pairCreatedAt\)/, 'DexScreener pairCreatedAt must be parsed into pairCreatedAtMs')
+{
+  const gt = candidate({ marketCapUsd: null, fdvUsd: 9_000_000, pairCreatedAtMs: null, source: 'geckoterminal' })
+  const ds = candidate({ marketCapUsd: 1_250_000, fdvUsd: 9_000_000, pairCreatedAtMs: 1_700_000_000_000, source: 'dexscreener' })
+  const merged = mergeNormalizedCandidate(gt, ds)
+  assert.equal(merged.marketCapUsd, 1_250_000, 'GT null mcap must fill from later DS mcap')
+  assert.equal(merged.pairCreatedAtMs, 1_700_000_000_000, 'GT null age must fill from later DS pairCreatedAt')
+}
+assert.equal(sanitizeMarketCapUsd(1_000_000, 1_000_000, true), null, 'DS marketCap===fdv stays null mcap')
+assert.equal(sanitizeMarketCapUsd(1_000_000, 2_000_000, true), 1_000_000, 'DS mcap distinct from fdv is kept')
+assert.equal(sanitizeMarketCapUsd(0, 2_000_000, false), null, '0 mcap is missing, not a real cap')
+{
+  const c = candidate({ marketCapUsd: 0, fdvUsd: null, priceChange24hPct: 10 })
+  const r = evaluatePumpCandidate(c)
+  assert.equal(r.qualified, false, '0 mcap with no FDV must be capDataMissing')
+  assert.equal(r.reason, 'capDataMissing')
+}
+assert.match(routeCode, /pump:v4:/, 'cache key must bump to v4 so stale null-age/null-mcap entries die')
+assert.doesNotMatch(routeCode, /pump:v3:/, 'the v3 cache key must be gone')
+assert.match(routeCode, /r\.status === 'fulfilled'\)/, 'empty successful fetches must not count as provider failures')
+assert.doesNotMatch(routeCode, /r\.status === 'fulfilled' && r\.value\.length > 0/, 'empty success must not be treated as a chain failure')
+assert.match(pageCode, /activeChains\.size === CHAIN_CHIPS\.length/, 'clicking a chain while all are selected must isolate that chain')
+assert.match(pageCode, /chainParamRef\.current = nextChains/, 'the fetch query must be written from the new set')
+assert.match(pageCode, /toFixed\(1\)\}h/, 'sub-day age on the card must render as hours like the report')
+assert.doesNotMatch(pageCode, /tokenAgeDays < 1 \? '<1d'/, 'cards must not collapse sub-day age to <1d')
 
 console.log('test-pump-alerts-discovery.mjs: all assertions passed')
