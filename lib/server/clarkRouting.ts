@@ -376,7 +376,14 @@ export function classifyClarkPrompt(prompt: string): {
   // wallet_scan is already the resolved intent, so widening/narrowing it there is harmless; this
   // narrower check applies ONLY to this one classification gate.
   const WALLET_DEEP_UNAMBIGUOUS_RE = /\b(pnl|p&l|trades?|historical|dig\s+deeper|recover\s+(?:more\s+)?history|history\s+recovery|why\s+(?:is|are|no|the)\s+pnl|why\s+is\s+pnl\s+(?:missing|zero|wrong)|why\s+no\s+pnl|cost\s+basis|analyze\s+(?:this\s+)?wallet|full\s+wallet\s+scan|scan\s+all\s+chains)\b/i;
-  if (address && !hasExplicitTokenKeyword && (walletScanRe.test(t) || WALLET_DEEP_UNAMBIGUOUS_RE.test(t))) {
+  // WALLET-LANGUAGE-LOSES-TO-CHAIN-KEYWORD FIX, DISCLOSED (caught by a test added in another
+  // session's merge: "explicit wallet language must win over chain keywords like on base").
+  // hasExplicitTokenKeyword's own alternation includes bare "on base"/"on eth"/etc — a real signal
+  // for the vaguer WALLET_DEEP_UNAMBIGUOUS_RE alternatives (e.g. "historical", "trades", which
+  // could genuinely be a token question), but wrong to apply to walletScanRe: that pattern already
+  // requires explicit, unambiguous wallet language ("scan wallet", "analyze wallet", "wallet pnl",
+  // "wallet scan/check/report/analysis") that a bare chain-name mention should never override.
+  if (address && (walletScanRe.test(t) || (!hasExplicitTokenKeyword && WALLET_DEEP_UNAMBIGUOUS_RE.test(t)))) {
     return { intent: "wallet_scan", address, addresses, deep, symbol: null };
   }
   // Plain EOA address alone (no other strong intent keywords) → wallet scan
@@ -405,6 +412,16 @@ export function classifyClarkPrompt(prompt: string): {
     const hasOtherStrongIntent =
       /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon|base\s+token|eth\s+token|ethereum\s+token|bnb\s+token|bsc\s+token|polygon\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address|safe|safety|\brug\b|honeypot|scam|deep\s+scan|full\s+scan|full\s+analysis|run\s+all\s+checks|scan\s+this\s+properly|full\s+report|complete\s+report|who\s+deployed|deployer|deployed\s+this)\b/i.test(t);
     if (!hasOtherStrongIntent) {
+      // SOLANA-BARE-ADDRESS-DEFAULT FIX, DISCLOSED (caught by a test added in another session's
+      // merge: "a bare Solana mint must route as token_scan, never wallet_scan"). This default is
+      // tuned for EVM addresses, where a bare paste is genuinely ambiguous between a wallet and a
+      // contract. A bare Solana mint (base58, never 0x-prefixed) is overwhelmingly pasted as a
+      // token/CA in real usage — pump.fun-era "CA" culture — so it gets token_scan here instead,
+      // still gated on the exact same "no other strong intent keyword" condition as the EVM
+      // default, and still losing to explicit wallet language matched earlier in this function.
+      if (isValidSolanaMintAddress(address)) {
+        return { intent: "token_scan", address, addresses, deep: false, symbol };
+      }
       return { intent: "wallet_scan", address, addresses, deep, symbol: null };
     }
   }
@@ -454,7 +471,15 @@ export function classifyClarkPrompt(prompt: string): {
   }
 
   // ---- Token scan (explicit "token scan" keyword, or address + "on base", or named token) ----
-  if (TOKEN_SCAN_RE.test(t) || (address && TOKEN_SCAN_ON_CHAIN_RE.test(t))) {
+  // WALLET-LANGUAGE-LOSES-TO-CHAIN-KEYWORD FIX, DISCLOSED (caught by a test added in another
+  // session's merge: "explicit wallet language must win over chain keywords like on base").
+  // TOKEN_SCAN_RE's own alternation includes bare "scan"/"check" as matches — nearly any message
+  // that reaches this point contains one of those words, so "scan this wallet 0x... on base" hit
+  // this branch and became token_scan despite the earlier, explicit "wallet" wording, purely
+  // because that same "on base" text also happened to satisfy hasExplicitTokenKeyword/
+  // hasOtherStrongIntent just above and blocked BOTH wallet-scan defaults from firing first. An
+  // explicit "wallet" mention alongside a real address must never be overridden by this fallback.
+  if ((TOKEN_SCAN_RE.test(t) || (address && TOKEN_SCAN_ON_CHAIN_RE.test(t))) && !(address && /\bwallet\b/i.test(t))) {
     return { intent: "token_scan", address, addresses, deep: false, symbol };
   }
   // Named token scan without address ("scan VIRTUAL", "check AERO")

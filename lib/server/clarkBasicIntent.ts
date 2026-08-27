@@ -4,6 +4,9 @@
 // calls. Does not touch token/wallet/whale/radar scan execution — those stay on the
 // existing routing path in app/api/clark/route.ts.
 
+import { isValidSolanaMintAddress } from '../solanaAddress'
+import { extractAddressForRouting } from './clarkRouting'
+
 export type ClarkBasicIntent =
   | 'greeting'
   | 'basic_question'
@@ -175,7 +178,13 @@ export function clarkMissingInputPrompt(intent: ClarkBasicIntent, message?: stri
   // A classified scan request that already contains a valid address must continue to the real
   // scanner route. Previously this helper still returned "paste an address", blocking both
   // "analyze this wallet: 0x..." and "scan this token: 0x..." before tool execution.
-  if (ADDRESS_RE.test(raw)) return null
+  //
+  // SOLANA-ADDRESS-BLIND FIX, DISCLOSED (same bug class as app/api/clark/route.ts's hasAnyAddress,
+  // caught by a test added in another session's merge: "scan this token <Solana mint>" still
+  // answered "Paste the token contract address (0x...)" even with a real Solana address right
+  // there, because ADDRESS_RE only ever matches 0x-EVM shapes). Checked separately from ADDRESS_RE
+  // (not folded into it) since a Solana mint is base58, never 0x-prefixed.
+  if (ADDRESS_RE.test(raw) || isValidSolanaMintAddress(extractAddressForRouting(raw) ?? '')) return null
   // SLASH-COMMAND WORDING, DISCLOSED (Clark AI conversation polish): /wallet and /token with no
   // input use the exact short copy the spec asks for; every other route into the same intents
   // (e.g. "scan wallet" with no address) keeps its existing, slightly more explicit wording.
