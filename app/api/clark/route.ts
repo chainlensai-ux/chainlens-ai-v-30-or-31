@@ -8270,6 +8270,27 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // has no new address to misclassify and is left to the existing memory-resolution logic untouched.
   {
     const inlineAddress = extractAddress(prompt);
+    // MALFORMED-ADDRESS DIAGNOSTIC, DISCLOSED (same incident as the truncated-address fix above —
+    // reported live, reproduced live: pasting the exact reported 42-hex-char string a second time,
+    // AFTER the truncation fix shipped, no longer silently used a wrong address, but fell through
+    // to the generic "token_resolve" name-lookup path — which of course found nothing for a full
+    // hex string used as a search query — and answered "Unknown token (?)" with a real-looking but
+    // uninformative TOKEN SCAN template. That is technically honest (never silently wrong) but
+    // fails the "explain exactly why instead of simply saying Unavailable" requirement: the real
+    // reason is the address itself is the wrong length, not that the token can't be found. Catches
+    // any 0x-prefixed hex run of 30+ characters that did NOT extract as a valid, exactly-40-char
+    // address and says so directly, with the actual character count, before any other routing runs.
+    if (!inlineAddress) {
+      const malformedHex = prompt.match(/0x[a-fA-F0-9]{30,}/);
+      if (malformedHex) {
+        const hexLen = malformedHex[0].length - 2;
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "invalid_address", toolsUsed: [],
+          analysis: `That doesn't look like a valid address — found ${hexLen} hex characters after "0x", but a real EVM contract or wallet address needs exactly 40. Double-check for a typo or a copy/paste error and try again.`,
+          ui: { intentBadge: 'Invalid Address', actions: [] },
+        };
+      }
+    }
     const questionCategory = classifyClarkQuestionCategory(prompt);
     if (inlineAddress && questionCategory !== 'ambiguous') {
       const { hasContractCode, resolvedEntityType } = await resolveClarkEntity({ address: inlineAddress, requestedChain: chain, userIntent: questionCategory });

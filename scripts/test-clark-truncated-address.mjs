@@ -83,4 +83,26 @@ for (const alt of guardedAlternatives) {
   assert.ok(routeSrc.includes(alt), `extractLastTokenContext must guard this alternative with ${lookaheadGuard}: ${alt}`)
 }
 
+// ─── MALFORMED-ADDRESS DIAGNOSTIC, DISCLOSED ────────────────────────────────────────────────────
+// Reported live a second time, AFTER the truncation fix above shipped: pasting the exact same
+// malformed 42-char string no longer used a wrong address, but fell through to a generic
+// token_resolve name-lookup and answered "Unknown token (?)" — technically honest, but doesn't
+// explain the REAL reason (the address is the wrong length), failing "explain exactly why instead
+// of simply saying Unavailable." A dedicated check now catches any 0x-prefixed 30+-char hex run
+// that didn't extract as a valid 40-char address and says so directly, before any other routing.
+assert.ok(routeSrc.includes('const malformedHex = prompt.match(/0x[a-fA-F0-9]{30,}/);'), 'a malformed-address diagnostic must scan for a 0x-prefixed hex run that failed strict extraction')
+assert.ok(routeSrc.includes('That doesn\'t look like a valid address — found ${hexLen} hex characters after "0x", but a real EVM contract or wallet address needs exactly 40.'), 'the diagnostic must state the real reason (wrong hex length) with the actual character count, never a generic "Unknown token"')
+
+// Computational proof this actually fires for the exact string reported the second time, and does
+// NOT fire for a real, well-formed address (which must reach normal routing, not this diagnostic).
+const MALFORMED_HEX_RE = /0x[a-fA-F0-9]{30,}/
+assert.ok(MALFORMED_HEX_RE.test(MALFORMED), 'the malformed-address diagnostic pattern must match the exact reported string')
+assert.equal(extractAddressStub(MALFORMED), null, 'sanity: the malformed string must still fail strict extraction (so the diagnostic is reachable, not dead code)')
+assert.equal(MALFORMED_HEX_RE.test(`Is ${REAL_ADDRESS} safe?`), true, 'sanity: the loose 30+-char scan also matches a real address on its own — the diagnostic branch is only reached when strict extraction ALREADY failed, so this can never misfire on a valid address')
+
+function extractAddressStub(text) {
+  const m = text.match(SAFE_RE)
+  return m ? m[0] : null
+}
+
 console.log('test-clark-truncated-address.mjs: all assertions passed')
