@@ -1,0 +1,51 @@
+// CLARK-BASIC-INTENT: isolated, additive module. Classifies a Clark prompt into one of
+// the basic/chat intents before any tool routing or provider calls happen, and answers
+// greeting/basic_question/product_help/general_crypto_question directly with no provider
+// calls. Does not touch token/wallet/whale/radar scan execution — those stay on the
+// existing routing path in app/api/clark/route.ts.
+
+export type ClarkBasicIntent =
+  | 'greeting'
+  | 'basic_question'
+  | 'product_help'
+  | 'general_crypto_question'
+  | 'token_scan_request'
+  | 'wallet_scan_request'
+  | 'whale_alerts_request'
+  | 'base_radar_request'
+  | 'ambiguous_scan_request'
+  | 'unsupported_request'
+
+import { isValidSolanaMintAddress } from "../solanaAddress.ts"
+
+export type ClarkRoutingDebug = {
+  intent: ClarkBasicIntent | null
+  answeredDirectly: boolean
+  providerCallsAdded: number
+  routeUsed: string | null
+  missingInput: string | null
+  reason: string
+}
+
+// TRUNCATED-ADDRESS FIX, DISCLOSED (see app/api/clark/route.ts's extractAddress): the lookahead
+// stops a malformed 41+-char hex run from being silently truncated into a different real address.
+const ADDRESS_RE = /0x[a-fA-F0-9]{40}(?![a-fA-F0-9])/
+const SOLANA_MINT_CANDIDATE_RE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g
+
+/** True when the prompt contains a valid EVM address or a structurally-valid Solana mint. */
+export function promptHasValidScanAddress(raw: string): boolean {
+  if (ADDRESS_RE.test(raw)) return true
+  const candidates = String(raw ?? '').match(SOLANA_MINT_CANDIDATE_RE)
+  if (!candidates) return false
+  return candidates.some((c) => isValidSolanaMintAddress(c))
+}
+
+const DIRECT_ANSWER_INTENTS = new Set<ClarkBasicIntent>([
+  'greeting', 'basic_question', 'product_help', 'general_crypto_question',
+])
+
+const GREETING_RE = /^\s*(hi|hello|hey|yo|sup|gm|good\s*morning|good\s*evening|good\s*afternoon)[\s!.,]*$/i
+const SLASH_WALLET_RE = /^\s*\/wallet\s*$/i
+const SLASH_TOKEN_RE = /^\s*\/token\s*$/i
+
+const PRODUCT_HELP_RE = /\b(what\s+can\s+you\s+do|what\s+do\s+you\s+do|help\b|how\s+do\s+i\s+use|how\s+does\s+chainlens\s+work|what\s+is\s+chainlens|what\s+is\s+clark\b|who\s+are\s+you|explain\s+this\s+dashboard|how\s+do\s+i\s+scan\s+a\s+wallet|how\s+do\s+i\s+scan\s+a\s+token|how\s+do\s+i\s+get\s+started)\b/i
