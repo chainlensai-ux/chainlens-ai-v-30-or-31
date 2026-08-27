@@ -359,10 +359,6 @@ function setMemPage(mem: ClarkSessionMemory, uiModeHint: string | null | undefin
   mem.currentPage = uiModeHint ?? null;
 }
 
-function setMemChain(mem: ClarkSessionMemory, chain: string | null | undefined) {
-  mem.selectedChain = chain === "ethereum" ? "eth" : "base";
-}
-
 function parseRankFollowup(prompt: string): number | null {
   const rankPrompt = prompt.trim().toLowerCase();
   const ordinalMap: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6, seventh: 7, eighth: 8, ninth: 9, tenth: 10 };
@@ -394,14 +390,24 @@ function getSessionKeySource(req: NextRequest, authenticated: boolean): "user" |
 // / "scan that wallet" has a real referent instead of falling through to the token address (or to
 // nothing). Stores the chain and the token it came from so the deployer is chain-scoped like every
 // other remembered entity, and never overwrites a known deployer with a null one.
+// DEPLOYER-MEMORY-SOLANA-BLIND FIX, DISCLOSED (Clark full-system audit, requested: "improve
+// memory"): this only ever accepted a 0x-EVM address — a real Solana creator address (now
+// resolvable via the Helius Enhanced fix) was silently rejected and never remembered, so a
+// follow-up like "has this dev rugged before?" or "scan that wallet" right after a Solana deployer
+// answer had nothing to resolve against. Solana addresses are lowercased identically to EVM ones
+// here only for the trim/whitespace normalization — never case-folded, since base58 is
+// case-sensitive (unlike EVM hex, where case never carries meaning).
 function rememberClarkDeployer(
   mem: ClarkSessionMemory,
   address: string | null | undefined,
   opts?: { summary?: string | null; chain?: ClarkMemoryChain | null; sourceTokenAddress?: string | null; confidence?: "high" | "medium" | "low" },
 ): boolean {
   if (typeof address !== "string") return false;
-  const addr = address.trim().toLowerCase();
-  if (!/^0x[a-f0-9]{40}$/.test(addr)) return false;
+  const trimmed = address.trim();
+  const isEvm = /^0x[a-f0-9]{40}$/i.test(trimmed);
+  const isSolana = !isEvm && isValidSolanaMintAddress(trimmed);
+  if (!isEvm && !isSolana) return false;
+  const addr = isEvm ? trimmed.toLowerCase() : trimmed;
   mem.lastDevWallet = {
     address: addr,
     summary: opts?.summary ?? mem.lastDevWallet?.summary ?? null,
@@ -9998,6 +10004,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     lines.push("", "- Chain: Solana", `- Evidence: ${merged ? "Solana RPC (mint account) + Helius" : "Solana scan returned no usable data"}`);
     lines.push("- CTA: Open Token Scanner → Solana Beta for the full read.");
+    // SOLANA-MEMORY-BLIND FIX, DISCLOSED (Clark full-system audit, requested: "improve memory"):
+    // this answer resolved real Solana evidence (mint/freeze authority, Helius creator trace) but
+    // never wrote any of it to session memory — updateMemToken/rememberClarkDeployer were only ever
+    // called from the EVM branches. A follow-up like "is that safe" or "has this dev rugged before?"
+    // right after a Solana scan had nothing to resolve against, so it either misfired on stale EVM
+    // memory or asked the user to repaste the address they'd just given. Mirrors the EVM answer
+    // paths: remember the token (if we got any usable data) and the creator/fee-payer as a deployer
+    // candidate (only when actually resolved — never remember a null as if it were evidence).
+    const marketData = merged?.marketData as { tokenName?: string | null; tokenSymbol?: string | null } | null | undefined;
+    if (merged) {
+      updateMemToken(sessionMem!, tokenAddress, marketData?.tokenSymbol ?? null, marketData?.tokenName ?? null, lines.join("\n"), { chain: "solana" });
+    }
+    if (likelyCreator) {
+      rememberClarkDeployer(sessionMem!, likelyCreator, {
+        chain: "solana",
+        sourceTokenAddress: tokenAddress,
+        confidence: (creatorConfidence?.tier as string) === "high" ? "high" : (creatorConfidence?.tier as string) === "low" ? "low" : "medium",
+      });
+    }
     return {
       feature: "clark-ai", chain: chain === "base" ? "base" : chain, mode: "analysis", intent: "token_scan", toolsUsed: ["solana_scan"],
       analysis: lines.join("\n"),
@@ -13107,12 +13132,14 @@ export async function POST(req: NextRequest) {
   setMemPage(sessionMem, body.uiModeHint);
   const earlyPrompt = (body.prompt ?? '').trim()
   const earlyPromptChain = earlyPrompt ? extractRequestedChainFromPrompt(earlyPrompt) : null
-  setMemChain(sessionMem, earlyPromptChain ?? body.chain);
-  // SILENT CHAIN COLLAPSE, DISCLOSED (Clark memory audit): this read
+  // SILENT CHAIN COLLAPSE, DISCLOSED (Clark memory audit): the old setMemChain() helper read
   // `=== "ethereum" ? "eth" : "base"`, which mapped EVERY other chain — bnb, Robinhood, Solana —
   // onto "base". A Robinhood or Solana session therefore recorded its subject as a Base one and
-  // every follow-up resolved against the wrong network. Normalizes across the full supported set
-  // now, and keeps the previous selection rather than defaulting to Base when a value is unknown.
+  // every follow-up resolved against the wrong network. That helper's result was already being
+  // immediately overwritten by the normalizeClarkChain() call below it, making the call to it dead
+  // code that just wasted a write — removed the helper and its call entirely instead of leaving a
+  // no-op line. This line normalizes across the full supported set, keeping the previous selection
+  // rather than defaulting to Base when a value is unknown.
   sessionMem.selectedChain = normalizeClarkChain(earlyPromptChain ?? body.chain) ?? sessionMem.selectedChain ?? "base"
   rememberMessage(sessionMem, "user", earlyPrompt)
 
