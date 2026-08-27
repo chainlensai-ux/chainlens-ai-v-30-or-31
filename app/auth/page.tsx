@@ -11,6 +11,42 @@ import { checkPasswordPolicy, getPasswordStrength, meetsPasswordPolicy, PASSWORD
 
 type Mode = 'signin' | 'signup' | 'forgot';
 
+// PASSWORD-VISIBILITY-TOGGLE FIX, DISCLOSED (reported live: "when u try sig up and u do the both
+// passowrds right there should be a view buttpon to see it" — both signup password fields were
+// plain type="password" with no way to check what was actually typed before submitting, so a typo
+// only surfaced as "Passwords do not match" or, worse, a silent mismatch the confirm-field check
+// didn't catch because it compares strings, not what the user meant to type). Shared between the
+// Password and Confirm password fields rather than duplicated.
+function PasswordVisibilityToggle({ visible, onToggle }: { visible: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={visible ? 'Hide password' : 'Show password'}
+      tabIndex={-1}
+      style={{
+        position: 'absolute', right: '4px', top: '50%', transform: 'translateY(-50%)',
+        width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: 'none', border: 'none', cursor: 'pointer', color: 'rgba(148,163,184,0.65)',
+        padding: 0, borderRadius: '7px', transition: 'color 0.15s',
+      }}
+      onMouseEnter={e => { e.currentTarget.style.color = 'rgba(226,232,240,0.9)' }}
+      onMouseLeave={e => { e.currentTarget.style.color = 'rgba(148,163,184,0.65)' }}
+    >
+      {visible ? (
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
+          <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          <circle cx="12" cy="12" r="3" stroke="currentColor" strokeWidth="2"/>
+        </svg>
+      ) : (
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none">
+          <path d="M3 3l18 18M10.6 10.6a3 3 0 0 0 4.24 4.24M9.4 5.5A10.6 10.6 0 0 1 12 5c6.4 0 10 7 10 7a15.4 15.4 0 0 1-3.15 4.05M6.5 6.5C4.3 8 2 12 2 12s1.5 2.9 4.4 4.9" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      )}
+    </button>
+  );
+}
+
 export default function AuthPage() {
   const router = useRouter();
   const pathname = usePathname();
@@ -35,6 +71,8 @@ export default function AuthPage() {
       : null;
   });
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
   const policy = checkPasswordPolicy(password);
   const strength = getPasswordStrength(password);
@@ -472,16 +510,19 @@ export default function AuthPage() {
             onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.58)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.15), 0 0 22px rgba(139,92,246,0.14)'; }}
             onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)'; e.currentTarget.style.boxShadow = 'none'; }}
           />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            required
-            style={inputStyle}
-            onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.58)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.15), 0 0 22px rgba(139,92,246,0.14)'; }}
-            onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)'; e.currentTarget.style.boxShadow = 'none'; }}
-          />
+          <div style={{ position: 'relative' }}>
+            <input
+              type={showPassword ? 'text' : 'password'}
+              placeholder="Password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              required
+              style={{ ...inputStyle, paddingRight: '42px' }}
+              onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.58)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.15), 0 0 22px rgba(139,92,246,0.14)'; }}
+              onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)'; e.currentTarget.style.boxShadow = 'none'; }}
+            />
+            <PasswordVisibilityToggle visible={showPassword} onToggle={() => setShowPassword(v => !v)} />
+          </div>
 
           {/* Password strength — signup only */}
           {mode === 'signup' && password.length > 0 && (
@@ -532,15 +573,18 @@ export default function AuthPage() {
           {/* Confirm password — signup only */}
           {mode === 'signup' && (
             <>
-              <input
-                type="password"
-                placeholder="Confirm password"
-                value={confirmPassword}
-                onChange={e => setConfirmPassword(e.target.value)}
-                style={inputStyle}
-                onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.58)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.15), 0 0 22px rgba(139,92,246,0.14)'; }}
-                onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)'; e.currentTarget.style.boxShadow = 'none'; }}
-              />
+              <div style={{ position: 'relative' }}>
+                <input
+                  type={showConfirmPassword ? 'text' : 'password'}
+                  placeholder="Confirm password"
+                  value={confirmPassword}
+                  onChange={e => setConfirmPassword(e.target.value)}
+                  style={{ ...inputStyle, paddingRight: '42px' }}
+                  onFocus={e => { e.currentTarget.style.borderColor = 'rgba(45,212,191,0.58)'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(45,212,191,0.15), 0 0 22px rgba(139,92,246,0.14)'; }}
+                  onBlur={e => { e.currentTarget.style.borderColor = 'rgba(255,255,255,0.09)'; e.currentTarget.style.boxShadow = 'none'; }}
+                />
+                <PasswordVisibilityToggle visible={showConfirmPassword} onToggle={() => setShowConfirmPassword(v => !v)} />
+              </div>
               {confirmMismatch && (
                 <div style={{ fontSize: '11px', color: '#fca5a5', marginTop: '-4px', paddingLeft: '2px' }}>
                   Passwords do not match.
