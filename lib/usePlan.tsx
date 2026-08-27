@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 import { canAccessFeature, type UserPlan } from '@/lib/planFeatures'
+import ClaimTrialButton from '@/components/ClaimTrialButton'
 
 export { canAccessFeature }
 export const PLAN_CACHE_KEY = 'chainlens_cached_plan'
@@ -298,41 +299,35 @@ export function LockedPanel({ feature }: { feature: string }) {
         </h2>
         <p style={{
           fontSize: '14px', color: '#94a3b8', lineHeight: 1.6,
-          margin: '0 0 28px',
+          margin: '0 0 20px',
           fontFamily: 'var(--font-inter, Inter, sans-serif)',
         }}>
-          {name} is available on Pro and Elite plans. Sign in or upgrade to unlock live CORTEX intelligence for this tool.
+          {name} is available on Pro and Elite plans.
         </p>
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
-          <a
-          href="/sign-in"
-          style={{
-            display: 'inline-block', padding: '11px 20px',
-            borderRadius: '10px',
-            background: 'linear-gradient(98deg, #0ea5e9, #6366f1)',
-            color: '#fff', fontWeight: 700, fontSize: '13px',
-            textDecoration: 'none',
-            fontFamily: 'var(--font-inter, Inter, sans-serif)',
-            boxShadow: '0 8px 24px rgba(59,130,246,0.35)',
-            letterSpacing: '0.02em',
-          }}
-        >
-          Sign In
-        </a>
+        {/*
+          TRIAL-PATH FIX, DISCLOSED (audit: "people have to make an account and they automatically
+          go on free plan" — every locked feature page inside the app dead-ended into "Sign In"
+          (nonsensical for a visitor who is already signed in and simply on the free plan — this
+          panel renders purely off canAccessFeature(plan, feature), which is true for both an
+          anonymous visitor and an authenticated free-plan account) and "Get Access" (a paid
+          checkout link). The only path to the real 7-day Elite trial was a button on the
+          logged-out marketing homepage — a signed-in free user landing here from inside the app,
+          which is the far more common case post-signup, had no way to discover it at all.
+          ClaimTrialButton already self-handles "not signed in" (redirects to /auth, now preserving
+          the current page via `next=`, see that file's fix) so it works correctly for both an
+          anonymous visitor and a signed-in free user without this component needing to know which
+          one it's looking at.
+        */}
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
+          <ClaimTrialButton onClaimed={() => window.location.reload()} />
           <a
           href="/pricing"
           style={{
-            display: 'inline-block', padding: '11px 20px',
-            borderRadius: '10px',
-            background: 'linear-gradient(98deg, #7c3aed, #a855f7, #ec4899)',
-            color: '#fff', fontWeight: 700, fontSize: '13px',
-            textDecoration: 'none',
+            fontSize: '12.5px', color: '#94a3b8', textDecoration: 'underline',
             fontFamily: 'var(--font-inter, Inter, sans-serif)',
-            boxShadow: '0 8px 24px rgba(168,85,247,0.40)',
-            letterSpacing: '0.02em',
           }}
         >
-          Get Access
+          Or view Pro / Elite pricing
         </a>
         </div>
       </div>

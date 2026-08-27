@@ -37,7 +37,7 @@ function remainingLabel(endsAt: string | null): string | null {
   return `${days}d ${hours}h ${mins}m`
 }
 
-export default function ClaimTrialButton() {
+export default function ClaimTrialButton({ onClaimed }: { onClaimed?: () => void } = {}) {
   const [state, setState] = useState<TrialState>('idle')
   const [daysLeft, setDaysLeft] = useState<number | null>(null)
   const [trialEndsAt, setTrialEndsAt] = useState<string | null>(null)
@@ -84,7 +84,12 @@ export default function ClaimTrialButton() {
     const session = data.session
     if (!session?.access_token) {
       setState('login_required')
-      router.push('/auth?next=/')
+      // NEXT-PATH FIX, DISCLOSED (audit: account/plan flow): this always sent an anonymous
+      // visitor back to the homepage after login, even when they clicked "Claim Trial" from a
+      // locked feature page deep in the app — losing the exact page they were trying to reach.
+      // Preserve the real current path instead of hardcoding '/'.
+      const currentPath = typeof window !== 'undefined' ? `${window.location.pathname}${window.location.search}` : '/'
+      router.push(`/auth?next=${encodeURIComponent(currentPath)}`)
       return
     }
 
@@ -113,6 +118,13 @@ export default function ClaimTrialButton() {
         setTrialEndsAt(typeof json.trialEndsAt === 'string' ? json.trialEndsAt : null)
         setState('claimed')
         writeCachedPlan('elite', session.user.id, session.user.email ?? null)
+        // ONCLAIMED-CALLBACK FIX, DISCLOSED (audit: account/plan flow — "people have to make an
+        // account and automatically go on free plan" with no visible way out of that from inside
+        // the app). Callers embedding this button on an already-locked feature page (see
+        // LockedPanel in lib/usePlan.tsx) need a way to actually unlock that page once the claim
+        // succeeds — the plan-gated pages all resolve their plan once on mount via
+        // usePlanWithLoading, so nothing re-checks access on its own after a claim.
+        if (onClaimed) onClaimed()
         return
       }
 
@@ -120,6 +132,7 @@ export default function ClaimTrialButton() {
         setDaysLeft(typeof json.daysLeft === 'number' ? json.daysLeft : null)
         setTrialEndsAt(typeof json.trialEndsAt === 'string' ? json.trialEndsAt : null)
         setState('already_active')
+        if (onClaimed) onClaimed()
         return
       }
 
