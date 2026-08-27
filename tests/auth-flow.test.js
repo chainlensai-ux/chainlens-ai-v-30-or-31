@@ -126,21 +126,24 @@ describe('Password strength — getStrength()', () => {
 })
 
 describe('Auth flow — source code invariants (INP correctness)', () => {
-  it('handleGoogle calls setLoading(true) before any await', () => {
-    // Extract handleGoogle function body from source
+  it('handleGoogle calls setGoogleLoading(true) before any await', () => {
+    // SHARED-LOADING-STATE FIX, DISCLOSED (reported live: clicking "Sign In" also flipped the
+    // separate Google button to "Redirecting…" — both actions shared one `loading` flag). Google
+    // now has its own googleLoading state; the INP invariant this test protects (immediate visual
+    // feedback before any await) is unchanged, just correctly scoped to its own state now.
     const match = authSrc.match(/async function handleGoogle\(\)[^{]*\{([\s\S]*?)^  \}/m)
     assert.ok(match, 'handleGoogle function must exist in auth/page.tsx')
     const body = match[1]
 
-    const loadingPos = body.indexOf('setLoading(true)')
+    const loadingPos = body.indexOf('setGoogleLoading(true)')
     const awaitPos   = body.indexOf('await ')
 
-    assert.ok(loadingPos !== -1, 'handleGoogle must call setLoading(true)')
+    assert.ok(loadingPos !== -1, 'handleGoogle must call setGoogleLoading(true)')
     assert.ok(awaitPos   !== -1, 'handleGoogle must have an await expression')
     assert.ok(
       loadingPos < awaitPos,
-      `setLoading(true) must appear BEFORE the first await in handleGoogle — ` +
-      `found setLoading at offset ${loadingPos}, first await at offset ${awaitPos}`
+      `setGoogleLoading(true) must appear BEFORE the first await in handleGoogle — ` +
+      `found setGoogleLoading at offset ${loadingPos}, first await at offset ${awaitPos}`
     )
   })
 
@@ -174,10 +177,10 @@ describe('Auth flow — source code invariants (INP correctness)', () => {
     )
   })
 
-  it('Google button has disabled attribute bound to loading state', () => {
+  it('Google button has disabled attribute bound to its own loading state', () => {
     assert.ok(
-      authSrc.includes('disabled={loading}') || authSrc.includes("disabled={loading}"),
-      'Google OAuth button must have disabled={loading} to prevent double-submit'
+      authSrc.includes('disabled={googleLoading}'),
+      'Google OAuth button must have disabled={googleLoading} to prevent double-submit'
     )
   })
 

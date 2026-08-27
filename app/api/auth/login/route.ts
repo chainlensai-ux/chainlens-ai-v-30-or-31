@@ -74,10 +74,24 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'Login service unavailable. Please try again.' }, { status: 503 })
   }
 
-  const { data, error: signInError } = await supabase.auth.signInWithPassword({
-    email: email.trim().toLowerCase(),
-    password,
-  })
+  // TIMEOUT FIX, DISCLOSED (reported live: sign-in stuck on "Signing in..." indefinitely, never
+  // erroring or succeeding). Neither this call nor the browser's fetch to this route had any
+  // timeout — if Supabase's auth service is slow or unreachable, signInWithPassword's underlying
+  // fetch just hangs with nothing here to bound it, and the client has no way to know the request
+  // is dead versus still in flight. A 12s timeout (comfortably under Vercel's default serverless
+  // function limit) turns an indefinite hang into an honest, actionable error.
+  let data: Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>['data'] | undefined
+  let signInError: Awaited<ReturnType<typeof supabase.auth.signInWithPassword>>['error'] | undefined
+  try {
+    const result = await Promise.race([
+      supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password }),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('auth_timeout')), 12_000)),
+    ])
+    data = result.data
+    signInError = result.error
+  } catch {
+    return NextResponse.json({ error: 'Login is taking too long to respond. Please try again.' }, { status: 503 })
+  }
 
   if (signInError) {
     const failCount = recordFail(key)

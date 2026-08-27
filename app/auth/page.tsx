@@ -18,6 +18,11 @@ export default function AuthPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  // SHARED-LOADING-STATE FIX, DISCLOSED (reported live: clicking "Sign In" also flipped the
+  // separate Google button to "Redirecting…", even though Google was never clicked — both actions
+  // read/wrote the same `loading` flag, so the two screenshots were of the SAME state, not two
+  // simultaneous requests). Split so each action's button only ever reflects its own request.
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [authCheckLoading, setAuthCheckLoading] = useState(true);
   const [error, setError] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
@@ -85,7 +90,7 @@ export default function AuthPage() {
 
   async function handleGoogle() {
     setError(null);
-    setLoading(true); // immediate visual feedback — INP: state update before any async work
+    setGoogleLoading(true); // immediate visual feedback — INP: state update before any async work
     const nextParam = new URLSearchParams(window.location.search).get('next')
     if (isSafeInternalPath(nextParam)) {
       try { sessionStorage.setItem('cl_auth_next', nextParam) } catch {}
@@ -104,7 +109,7 @@ export default function AuthPage() {
     });
     if (oauthError) {
       setError(oauthError.message);
-      setLoading(false); // restore on error; on success the browser navigates away
+      setGoogleLoading(false); // restore on error; on success the browser navigates away
     }
   }
 
@@ -136,11 +141,19 @@ export default function AuthPage() {
     const cleanEmail = email.trim().toLowerCase();
 
     if (mode === 'signin') {
+      // STUCK-LOADING FIX, DISCLOSED (reported live: "Signing in..." never resolves — this fetch
+      // had no timeout at all, so a slow/unreachable auth backend left the button spinning
+      // indefinitely with no error and no way for the user to know the request was ever coming
+      // back). A 15s client-side timeout (a few seconds past the server route's own 12s timeout)
+      // guarantees the button always resolves to an honest error instead of hanging forever.
+      const ac = new AbortController();
+      const timeoutId = setTimeout(() => ac.abort(), 15_000);
       try {
         const res = await fetch('/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ email: cleanEmail, password }),
+          signal: ac.signal,
         });
         const data: { ok?: boolean; session?: { access_token: string; refresh_token: string }; error?: string; message?: string } = await res.json().catch(() => ({}));
         if (res.status === 429) {
@@ -158,8 +171,12 @@ export default function AuthPage() {
         } else {
           setError('Login is temporarily unavailable. Please try again.');
         }
-      } catch {
-        setError('Network error — please check your connection and try again.');
+      } catch (err) {
+        setError(err instanceof DOMException && err.name === 'AbortError'
+          ? 'Login is taking too long to respond. Please try again.'
+          : 'Network error — please check your connection and try again.');
+      } finally {
+        clearTimeout(timeoutId);
       }
     } else {
       if (!policyPassed) {
@@ -409,22 +426,22 @@ export default function AuthPage() {
           <button
             type="button"
             onClick={handleGoogle}
-            disabled={loading}
+            disabled={googleLoading}
             aria-label="Continue with Google"
             style={{
               width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
               gap: '10px', padding: '11px 16px', borderRadius: '11px',
-              background: loading
+              background: googleLoading
                 ? 'rgba(248,250,252,0.06)'
                 : 'linear-gradient(180deg, rgba(248,250,252,0.12) 0%, rgba(248,250,252,0.06) 100%)',
               border: '1px solid rgba(248,250,252,0.26)',
               color: '#f8fafc', fontSize: '13px', fontWeight: 500,
-              cursor: loading ? 'not-allowed' : 'pointer',
-              opacity: loading ? 0.65 : 1,
+              cursor: googleLoading ? 'not-allowed' : 'pointer',
+              opacity: googleLoading ? 0.65 : 1,
               fontFamily: 'inherit', transition: 'background 0.15s, border-color 0.15s, opacity 0.15s',
             }}
-            onMouseEnter={e => { if (!loading) { e.currentTarget.style.background = 'linear-gradient(180deg, rgba(248,250,252,0.12) 0%, rgba(248,250,252,0.08) 100%)'; e.currentTarget.style.borderColor = 'rgba(248,250,252,0.36)'; } }}
-            onMouseLeave={e => { if (!loading) { e.currentTarget.style.background = 'linear-gradient(180deg, rgba(248,250,252,0.08) 0%, rgba(248,250,252,0.05) 100%)'; e.currentTarget.style.borderColor = 'rgba(248,250,252,0.20)'; } }}
+            onMouseEnter={e => { if (!googleLoading) { e.currentTarget.style.background = 'linear-gradient(180deg, rgba(248,250,252,0.12) 0%, rgba(248,250,252,0.08) 100%)'; e.currentTarget.style.borderColor = 'rgba(248,250,252,0.36)'; } }}
+            onMouseLeave={e => { if (!googleLoading) { e.currentTarget.style.background = 'linear-gradient(180deg, rgba(248,250,252,0.08) 0%, rgba(248,250,252,0.05) 100%)'; e.currentTarget.style.borderColor = 'rgba(248,250,252,0.20)'; } }}
           >
             <svg width="18" height="18" viewBox="0 0 48 48">
               <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
@@ -432,7 +449,7 @@ export default function AuthPage() {
               <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
               <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
             </svg>
-            {loading ? 'Redirecting…' : 'Continue with Google'}
+            {googleLoading ? 'Redirecting…' : 'Continue with Google'}
           </button>
         </div>
 
