@@ -12555,6 +12555,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 // ---------- Main handler ----------
 
 export async function POST(req: NextRequest) {
+  const clarkAuditRequestStartedAt = Date.now()
   const auth = req.headers.get('authorization') ?? ''
   const authHeader = auth || undefined
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
@@ -12658,7 +12659,7 @@ export async function POST(req: NextRequest) {
   const earlyCacheKey = JSON.stringify({ actor, verifiedPlan: effectivePlan, feature: body.feature, mode: body.mode ?? "", prompt: earlyPrompt, chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" });
   const earlyCached = memorySensitivePrompt ? undefined : clarkCache.get(earlyCacheKey);
   if (earlyCached && earlyCached.exp > Date.now()) {
-    return NextResponse.json(earlyCached.payload);
+    return NextResponse.json(withClarkAuditCacheHit(earlyCached.payload, clarkAuditRequestStartedAt));
   }
   if (debugMemory || process.env.NODE_ENV !== 'production') {
     console.log('[clark-memory]', {
@@ -12678,6 +12679,7 @@ export async function POST(req: NextRequest) {
     const origin = req.nextUrl.origin;
     const moreResult = await handleClarkAI(body, origin, authHeader, effectivePlan, sessionMem);
     const normalized = { ok: true, feature: body.feature, data: normalizeApiReplyShape(moreResult, body) } as Record<string, unknown>
+    ;(normalized.data as Record<string, unknown>).clarkAudit = buildClarkAudit({ result: moreResult, body, responseTimeMs: Date.now() - clarkAuditRequestStartedAt, cacheUsed: false })
     if (debugMemory) normalized._debug = {
       memory: {
         messageCount: sessionMem.conversationHistory.length,
@@ -12770,7 +12772,7 @@ export async function POST(req: NextRequest) {
     // body already parsed before rate check — do NOT call req.json() again
     const cacheKey = JSON.stringify({ actor, verifiedPlan: effectivePlan, feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
     const cached = memorySensitivePrompt ? undefined : clarkCache.get(cacheKey)
-    if (cached && cached.exp > Date.now()) return NextResponse.json(cached.payload)
+    if (cached && cached.exp > Date.now()) return NextResponse.json(withClarkAuditCacheHit(cached.payload, clarkAuditRequestStartedAt))
     // Derive origin from the incoming request — always correct for any deployment
     const origin = req.nextUrl.origin;
 
@@ -12959,6 +12961,7 @@ export async function POST(req: NextRequest) {
     delete normData.quotaConsumedOverride
     if (quotaConsumed) rateResult.commitDaily()
     normalized.quotaConsumed = quotaConsumed
+    normData.clarkAudit = buildClarkAudit({ result, body, responseTimeMs: Date.now() - clarkAuditRequestStartedAt, cacheUsed: false })
     const cacheTtl = body.feature === "clark-ai" ? 90_000 : body.feature === "whale-alerts" || body.feature === "pump-alerts" || body.feature === "base-radar" ? 120_000 : 60_000
     // Never cache free/memory-sourced responses (quotaConsumed === false): the cache key has no
     // session or wallet-memory state, so caching these would replay a stale answer (e.g. a
@@ -13055,6 +13058,17 @@ export async function POST(req: NextRequest) {
         verdict: "SCAN DEEPER", source: "fallback",
         intentBadge, actions: buildRoutedActions(actions as Parameters<typeof buildRoutedActions>[0]),
         ...(debugReceipt ? { clarkDebugReceipt: debugReceipt } : {}),
+        // A thrown exception interrupted the pipeline before any per-tool status could be recorded,
+        // so unlike the normal-path clarkAudit this can't enumerate individual providers — but it
+        // still carries the one thing this fix requires above all: the EXACT reason, not a vague
+        // "Unavailable". errMsg is the real caught error, never a placeholder string.
+        clarkAudit: {
+          intent: intentBadge, routesCalled: [intentBadge], providersAttempted: [], providersSucceeded: [], providersFailed: [],
+          contextInjected: Boolean((body.appContext && Object.keys(body.appContext).length > 0) || (body.clientContext && Object.keys(body.clientContext).length > 0) || (Array.isArray(body.history) && body.history.length > 0)),
+          scannerDataUsed: false, cacheUsed: false, fallbackUsed: true, missingFields: [],
+          unavailableReason: `${isTimeout ? "timed out" : "failed"}: ${errMsg}`,
+          responseTimeMs: Date.now() - clarkAuditRequestStartedAt,
+        },
       },
       quotaConsumed: false,
     }, { status: 200 });
@@ -13062,6 +13076,124 @@ export async function POST(req: NextRequest) {
   finally {
     clarkInternalCtx = {}
   }
+}
+
+// CLARK PIPELINE AUDIT, DISCLOSED: reported symptom was Clark frequently answering "Unavailable" /
+// "Could not verify" / generic replies even when ChainLens already had the data, with no way to
+// tell — from the response itself — whether that was a real all-sources-failed outage, a single
+// provider hiccup with no fallback attempted, or intent/routing simply picking the wrong path.
+// clarkAudit is built ONCE, at the single response-finalization point every feature/branch already
+// converges on (same point that already builds the generic memory echo below), from fields the
+// pipeline already produces per-branch (toolsUsed, clarkToolStatuses, clarkEvidenceMissing,
+// clarkToolCallAudit, intent) — never re-derived per branch, so this can't drift from what each of
+// the ~40 early-return branches in handleClarkAI actually did. Every field is computed from real
+// signals already on the result object; nothing here is guessed or hardcoded to look complete.
+type ClarkAudit = {
+  intent: string | null;
+  routesCalled: string[];
+  providersAttempted: string[];
+  providersSucceeded: string[];
+  providersFailed: string[];
+  contextInjected: boolean;
+  scannerDataUsed: boolean;
+  cacheUsed: boolean;
+  fallbackUsed: boolean;
+  missingFields: string[];
+  unavailableReason: string | null;
+  responseTimeMs: number;
+};
+
+const CLARK_SCANNER_TOOLS = new Set([
+  "token_scan", "token_resolve", "wallet_get_snapshot", "wallet_analyze_quality",
+  "dev_wallet_analyze", "liquidity_analyze", "market_get_base_movers",
+]);
+const CLARK_SCANNER_FEATURES = new Set([
+  "token-scanner", "wallet-scanner", "dev-wallet-detector", "liquidity-safety",
+  "whale-alerts", "pump-alerts", "base-radar",
+]);
+
+function buildClarkAudit(input: { result: unknown; body: ClarkRequestBody; responseTimeMs: number; cacheUsed: boolean }): ClarkAudit {
+  const r = (input.result && typeof input.result === "object") ? input.result as Record<string, unknown> : {};
+  const intent = typeof r.intent === "string" ? r.intent : null;
+  const toolsUsed = Array.isArray(r.toolsUsed) ? r.toolsUsed.map(String) : [];
+  const routesCalled = Array.from(new Set([input.body.feature ?? "unknown", ...toolsUsed]));
+
+  // Provider-level truth: prefer the per-tool clarkToolStatuses map every tool-plan-driven branch
+  // already populates (ok/fail per real API call), fall back to toolsUsed (attempted, no per-tool
+  // outcome recorded) for branches that don't expose per-tool status.
+  const toolStatuses = (r.clarkToolStatuses && typeof r.clarkToolStatuses === "object") ? r.clarkToolStatuses as Record<string, unknown> : {};
+  const providersAttempted: string[] = [];
+  const providersSucceeded: string[] = [];
+  const providersFailed: string[] = [];
+  for (const [name, status] of Object.entries(toolStatuses)) {
+    providersAttempted.push(name);
+    const s = String(status).toLowerCase();
+    if (s === "ok" || s === "success" || s === "true" || s === "complete") providersSucceeded.push(name);
+    else providersFailed.push(name);
+  }
+  for (const tool of toolsUsed) {
+    if (!providersAttempted.includes(tool)) providersAttempted.push(tool);
+  }
+  // handleClarkRadarToolCall / handleClarkWhaleToolCall record a single named internal route with
+  // its own success flag via clarkToolCallAudit — fold it in the same way.
+  const toolCallAudit = (r.clarkToolCallAudit && typeof r.clarkToolCallAudit === "object") ? r.clarkToolCallAudit as Record<string, unknown> : null;
+  if (toolCallAudit && typeof toolCallAudit.toolCalled === "string") {
+    const name = toolCallAudit.toolCalled;
+    if (!providersAttempted.includes(name)) providersAttempted.push(name);
+    if (toolCallAudit.success === true && !providersSucceeded.includes(name)) providersSucceeded.push(name);
+    if (toolCallAudit.success === false && !providersFailed.includes(name)) providersFailed.push(name);
+  }
+
+  const missingFields = Array.isArray(r.clarkEvidenceMissing) ? r.clarkEvidenceMissing.map(String) : [];
+
+  // Only a genuine "every attempted source failed" cycle gets an unavailableReason — a single
+  // failed provider inside a plan that also had successes is a partial/degraded answer, not an
+  // outage, and must not report "Unavailable" (fix requirement: only after ALL sources failed).
+  const genuinelyUnavailable = providersAttempted.length > 0 && providersSucceeded.length === 0 && providersFailed.length === providersAttempted.length;
+  const unavailableReason = genuinelyUnavailable
+    ? (providersFailed.map((name) => `${name}: ${String(toolStatuses[name] ?? (toolCallAudit?.errorReason ?? "failed"))}`).join("; "))
+    : (toolCallAudit && toolCallAudit.success === false && typeof toolCallAudit.errorReason === "string" ? `${toolCallAudit.toolCalled}: ${toolCallAudit.errorReason}` : null);
+
+  const scannerDataUsed = toolsUsed.some((t) => CLARK_SCANNER_TOOLS.has(t))
+    || CLARK_SCANNER_FEATURES.has(input.body.feature ?? "")
+    || Boolean(toolCallAudit);
+
+  const contextInjected = Boolean(
+    (input.body.appContext && Object.keys(input.body.appContext).length > 0) ||
+    (input.body.clientContext && Object.keys(input.body.clientContext).length > 0) ||
+    (Array.isArray(input.body.history) && input.body.history.length > 0)
+  );
+
+  const fallbackUsed = Boolean(
+    r.servedFromStaleCache === true ||
+    r.source === "fallback" ||
+    (toolCallAudit && toolCallAudit.degraded === true) ||
+    (providersFailed.length > 0 && providersSucceeded.length > 0)
+  );
+
+  return {
+    intent, routesCalled, providersAttempted, providersSucceeded, providersFailed,
+    contextInjected, scannerDataUsed, cacheUsed: input.cacheUsed, fallbackUsed,
+    missingFields, unavailableReason, responseTimeMs: input.responseTimeMs,
+  };
+}
+
+// A cache hit skips the whole pipeline, so the stored clarkAudit reflects the ORIGINAL request
+// that populated the cache, not this one. Overlays the two fields that are genuinely different for
+// a cache hit (cacheUsed, responseTimeMs) onto a shallow clone — never mutates the cached payload
+// itself, since the same cache entry can be read by multiple concurrent requests.
+function withClarkAuditCacheHit(payload: unknown, requestStartedAt: number): unknown {
+  if (!payload || typeof payload !== "object") return payload;
+  const p = payload as Record<string, unknown>;
+  const data = p.data as Record<string, unknown> | undefined;
+  if (!data || typeof data !== "object" || !data.clarkAudit || typeof data.clarkAudit !== "object") return payload;
+  return {
+    ...p,
+    data: {
+      ...data,
+      clarkAudit: { ...(data.clarkAudit as Record<string, unknown>), cacheUsed: true, responseTimeMs: Date.now() - requestStartedAt },
+    },
+  };
 }
 
 function normalizeApiReplyShape(result: unknown, body: ClarkRequestBody) {
