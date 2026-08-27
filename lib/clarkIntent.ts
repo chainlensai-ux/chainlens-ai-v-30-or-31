@@ -28,7 +28,11 @@ export type ClarkResolvedIntent = {
   cta: Array<{ label: string; href: string; requiresInput?: boolean }>
 }
 
-const ADDRESS_RE = /0x[a-fA-F0-9]{40}/
+// TRUNCATED-ADDRESS FIX, DISCLOSED (see app/api/clark/route.ts's extractAddress for the full
+// incident): an unanchored {40} silently truncates a malformed longer hex run into a DIFFERENT,
+// wrong real-looking address instead of failing. The lookahead makes a 41+-char run fail to match
+// at all.
+const ADDRESS_RE = /0x[a-fA-F0-9]{40}(?![a-fA-F0-9])/
 
 function ctxAddress(v: unknown): string | null {
   if (typeof v === 'string') return v.match(ADDRESS_RE)?.[0] ?? null

@@ -25,7 +25,9 @@ export type ClarkRoutingDebug = {
   reason: string
 }
 
-const ADDRESS_RE = /0x[a-fA-F0-9]{40}/
+// TRUNCATED-ADDRESS FIX, DISCLOSED (see app/api/clark/route.ts's extractAddress): the lookahead
+// stops a malformed 41+-char hex run from being silently truncated into a different real address.
+const ADDRESS_RE = /0x[a-fA-F0-9]{40}(?![a-fA-F0-9])/
 
 const DIRECT_ANSWER_INTENTS = new Set<ClarkBasicIntent>([
   'greeting', 'basic_question', 'product_help', 'general_crypto_question',

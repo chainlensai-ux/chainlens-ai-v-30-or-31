@@ -191,7 +191,9 @@ export type ClarkFollowupIntent =
 
 // ─── Prompt parsing ─────────────────────────────────────────────────────────────────────────────
 
-const EVM_ADDRESS_RE = /0x[a-fA-F0-9]{40}/
+// TRUNCATED-ADDRESS FIX, DISCLOSED (see app/api/clark/route.ts's extractAddress): the lookahead
+// stops a malformed 41+-char hex run from being silently truncated into a different real address.
+const EVM_ADDRESS_RE = /0x[a-fA-F0-9]{40}(?![a-fA-F0-9])/
 // Solana mints are base58 and 32-44 chars. Anchored on word boundaries so it can't slice a longer
 // token; candidates are still validated by isValidSolanaMintAddress before being trusted.
 const SOLANA_CANDIDATE_RE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/

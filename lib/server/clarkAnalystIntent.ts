@@ -22,7 +22,9 @@ export type ClarkAnalystIntent = {
   evidenceSource: string | null;
 };
 
-const ADDRESS_RE = /0x[a-fA-F0-9]{40}/;
+// TRUNCATED-ADDRESS FIX, DISCLOSED (see app/api/clark/route.ts's extractAddress): the lookahead
+// stops a malformed 41+-char hex run from being silently truncated into a different real address.
+const ADDRESS_RE = /0x[a-fA-F0-9]{40}(?![a-fA-F0-9])/;
 
 const GENERAL_RE = /\b(?:explain|what\s+(?:is|are|does))\s+(?:verified\s+pnl|partial\s+pnl|liquidity\s+risk|holder\s+concentration|cortex\s+confidence|wallet\s+scanner|token\s+scanner|base\s+radar|pump\s+alerts?|whale\s+alerts?)\b/i;
 const RADAR_RE = /\b(?:base\s+radar|what(?:'s|\s+is)\s+pumping\s+on\s+base|new\s+base\s+tokens?|tokens?\s+(?:with|have|show)\s+(?:the\s+)?strong(?:est)?\s+momentum|(?:the\s+)?strong(?:est)?\s+momentum\s+(?:tokens?|on\s+base)|which\s+tokens?\s+have\s+(?:the\s+)?strong(?:est)?\s+momentum|why\s+is\s+(?:rank\s*)?#?\s*\d+\s+trending|why\s+is\s+(?:token\s+)?number\s+\d+\s+trending|(?:scan|open)\s+(?:token\s+)?(?:number\s+)?\d+)\b/i;

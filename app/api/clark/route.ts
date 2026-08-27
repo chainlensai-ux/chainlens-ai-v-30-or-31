@@ -853,8 +853,18 @@ function requireEnv(name: string, value: string | undefined): string {
   return value;
 }
 
+// TRUNCATED-ADDRESS FIX, DISCLOSED (reported live: "Who deployed 0x...41D01" — a malformed
+// 42-hex-char string, one character too long for a real EVM address — got silently truncated to
+// its first 40 hex characters by the old unanchored /0x[a-fA-F0-9]{40}/, producing a DIFFERENT,
+// WRONG 40-char address. Every downstream lookup — token scan, entity-type check, deployer
+// resolution — then ran against that wrong address instead of failing honestly, which is exactly
+// why the entity-routing gate didn't catch it: it correctly classified the WRONG address's real
+// on-chain type, it just never knew the address itself was already corrupted before the gate ever
+// saw it. The negative lookahead makes the match fail entirely (return null) when more hex
+// characters follow — a malformed address is now treated as "no valid address found," never
+// silently coerced into a different one.
 function extractAddress(text: string): string | null {
-  const match = text.match(/0x[a-fA-F0-9]{40}/);
+  const match = text.match(/0x[a-fA-F0-9]{40}(?![a-fA-F0-9])/);
   return match ? match[0] : null;
 }
 
@@ -1196,11 +1206,14 @@ type ClarkResolvedContext = {
 function extractLastTokenContext(historyLines: string[]): ClarkTokenContext {
   for (let i = historyLines.length - 1; i >= 0; i--) {
     const line = historyLines[i] ?? "";
+    // TRUNCATED-ADDRESS FIX, DISCLOSED (see extractAddress above): the lookahead on every
+    // alternative stops a malformed 41+-char hex run from being silently truncated into a
+    // different real address when reading a prior line back out of conversation history.
     const contractMatch =
-      line.match(/Contract:\s*(0x[a-fA-F0-9]{40})/i) ??
-      line.match(/Token resolved:[^\n]*\((0x[a-fA-F0-9]{40})\)/i) ??
-      line.match(/^\s*\d+\.\s+[^\n]*?(0x[a-fA-F0-9]{40})/m) ??
-      line.match(/(0x[a-fA-F0-9]{40})/);
+      line.match(/Contract:\s*(0x[a-fA-F0-9]{40}(?![a-fA-F0-9]))/i) ??
+      line.match(/Token resolved:[^\n]*\((0x[a-fA-F0-9]{40}(?![a-fA-F0-9]))\)/i) ??
+      line.match(/^\s*\d+\.\s+[^\n]*?(0x[a-fA-F0-9]{40}(?![a-fA-F0-9]))/m) ??
+      line.match(/(0x[a-fA-F0-9]{40}(?![a-fA-F0-9]))/);
     const assetMatch = line.match(/Asset:\s*([^\n(]+)\s*\(([^)\n]+)\)/i);
     if (contractMatch?.[1]) {
       return {
