@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
+import { supabase } from '@/lib/supabaseClient'
 
-type ChainKey = 'base' | 'eth'
+type ChainKey = 'base' | 'eth' | 'robinhood'
 
 type DrawerPreloadOptions = {
   chain?: ChainKey
@@ -17,7 +18,9 @@ const warmedTokens = new Map<string, number>()
 const WARM_TTL_MS = 60_000
 
 async function fetchJson<T>(url: string): Promise<T> {
-  const res = await fetch(url, { cache: 'no-store' })
+  const { data: { session } } = await supabase.auth.getSession()
+  const token = session?.access_token
+  const res = await fetch(url, { cache: 'no-store', headers: token ? { Authorization: `Bearer ${token}` } : {} })
   const json = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(typeof json?.error === 'string' ? json.error : `Request failed (${res.status})`)
   return json as T
