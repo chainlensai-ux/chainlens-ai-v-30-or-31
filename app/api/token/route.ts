@@ -1665,9 +1665,21 @@ async function findTokenLinkedWallets(
 }
 
 async function fetchGoldRush(chain: ChainKey, contract: string): Promise<any> {
-  logRpcCall({ route: "/api/token", chain, method: "goldrush_token_metadata" });
+  // GOLDRUSH-CHAIN-SLUG FIX, DISCLOSED (same class of bug as fetchTokenMetadata below, found while
+  // chasing a live report of BNB scans intermittently coming back with no market/holder data at
+  // all): this built the GoldRush URL with the bare ChainKey ('eth'|'base'|'bnb'|'robinhood')
+  // instead of the real GoldRush chain_name slug (e.g. 'bsc-mainnet') — every other GoldRush/
+  // Covalent call site in this file routes through COVALENT_CHAIN_SLUG for exactly this reason,
+  // but this one call site was missed when that fix was applied elsewhere. This almost certainly
+  // 404'd/failed silently on every chain (wrapped in try/catch below), degrading rather than
+  // breaking the scan since token metadata has other redundant sources merged downstream — but for
+  // BNB/Robinhood specifically, several other GoldRush-only fields (holders, contract security
+  // intel) have no non-GoldRush fallback, so a broken GoldRush call there is a bigger loss.
+  const covalentChain = (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood') ? COVALENT_CHAIN_SLUG[chain] : null
+  if (!covalentChain) return null
+  logRpcCall({ route: "/api/token", chain: covalentChain, method: "goldrush_token_metadata" });
   const res = await fetchGoldRushWithHostFallback(
-    (host) => `https://${host}/v1/${chain}/tokens/${contract}/`,
+    (host) => `https://${host}/v1/${covalentChain}/tokens/${contract}/`,
     { headers: { Authorization: `Bearer ${process.env.COVALENT_API_KEY}` } },
     5000,
   )
