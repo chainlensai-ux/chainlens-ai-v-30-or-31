@@ -2451,8 +2451,16 @@ async function fetchGMGN(contract: string): Promise<any> {
 
 async function fetchTokenMetadata(chain: ChainKey, contract: string): Promise<any> {
   logRpcCall({ route: "/api/token", chain, method: "goldrush_balances_v2" });
+  // GOLDRUSH-CHAIN-SLUG FIX, DISCLOSED (audit): this built the GoldRush URL with the bare
+  // ChainKey ('eth'|'base'|'bnb'|'robinhood') instead of a real GoldRush chain_name slug (e.g.
+  // 'eth-mainnet') — every other GoldRush/Covalent call site in this file routes through
+  // COVALENT_CHAIN_SLUG for exactly this reason. This call almost certainly 404'd/failed silently
+  // on every chain (wrapped in try/catch below), degrading — not breaking — the scan, since
+  // metadata is only one of several redundant name/symbol/decimals sources merged downstream.
+  const covalentChain = (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood') ? COVALENT_CHAIN_SLUG[chain] : null
+  if (!covalentChain) return null
   const res = await fetchGoldRushWithHostFallback(
-    (host) => `https://${host}/v1/${chain}/address/0x0000000000000000000000000000000000000000/balances_v2/?contract-address=${contract}`,
+    (host) => `https://${host}/v1/${covalentChain}/address/0x0000000000000000000000000000000000000000/balances_v2/?contract-address=${contract}`,
     { headers: { Authorization: `Bearer ${process.env.COVALENT_API_KEY}` } },
     5000,
   )
@@ -3719,7 +3727,19 @@ export async function POST(req: Request) {
       const selectedCount = Array.isArray(selectedPools?.data) ? selectedPools.data.length : 0
       _diagPoolCount = selectedCount
       _earlyGtData = selectedPools
-      if (selectedCount === 0) {
+      // WRONG-CHAIN-REASSIGNMENT FIX, DISCLOSED (audit: hard rule "no wrong-chain pools" — this
+      // "try the opposite chain" fallback predates bnb/robinhood support and only ever toggled
+      // between 'eth' and 'base'. For a bnb or robinhood scan with zero indexed pools, it silently
+      // probed Ethereum and, if that same contract address happened to resolve to ANY unrelated
+      // Ethereum pool (plausible — CREATE2/vanity-address collisions, or simply an unrelated token
+      // deployed at the same address on a different chain), continued the ENTIRE scan as an
+      // Ethereum token — wrong RPC, wrong holders, wrong everything, with the user never told
+      // their bnb/robinhood scan was silently reassigned to a chain they never selected. Scoped to
+      // base<->eth only now, which is the real, legitimate ambiguity this exists to resolve (a
+      // user unsure whether their pasted address is on Base or mainnet Ethereum — those two
+      // chains are commonly confused since Base is an L2 of Ethereum); bnb/robinhood now get an
+      // honest "no pools found on this chain" instead of a guessed foreign-chain result.
+      if (selectedCount === 0 && (chain === 'eth' || chain === 'base')) {
         const altChain: ChainKey = chain === 'eth' ? 'base' : 'eth'
         const altPools = await fetchGeckoTerminal(contract, altChain)
         const altCount = Array.isArray(altPools?.data) ? altPools.data.length : 0
@@ -6436,9 +6456,14 @@ export async function POST(req: Request) {
     // renounced/zero) owner address. This placeholder only fixes deployPattern early.
     const deployerProfile: RiskEngine["deployerProfile"] = (() => {
       const _isProxy = cortexContractFlags.proxy.status === 'verified' || cortexContractFlags.proxy.status === 'possible'
+      // CHAIN-TEXT FIX, DISCLOSED (audit): this factory-deployment inference (no owner() + not a
+      // proxy) was scoped to chain === 'base' only, with nothing here indicating that was
+      // deliberate — a factory/clone-deployed token with a renounced or absent owner is a general
+      // EVM pattern, not Base-specific, and eth/bnb/robinhood tokens matching the same signal were
+      // falling through to the less specific 'eoa'/'inferred' branches instead.
       const _deployPattern: RiskEngine["deployerProfile"]["deployPattern"] = _isProxy ? 'proxy'
         : proxyImplAddr ? 'proxy'
-        : chain === 'base' && !ownerAddr ? 'factory'
+        : !ownerAddr ? 'factory'
         : ownerAddr ? 'eoa'
         : 'inferred'
       return { status: 'inferred', deployer: null, method: 'inference', rugHistory: null, clusterRisk: 'inferred', deployPattern: _deployPattern, note: 'Deployer/origin wallet resolution pending.' }
@@ -6480,8 +6505,11 @@ export async function POST(req: Request) {
       if (liquidityUsd != null && liquidityUsd < 10_000) {
         return { status: 'inferred', concentration: 'high', churn, velocity, earlyBuyerConcentration, whaleConcentration, note: `Very low liquidity ($${Math.round(liquidityUsd).toLocaleString()}) implies limited token distribution — concentration likely high.` }
       }
-      const _chainDefault = chain === 'base' ? 'Base' : 'Ethereum'
-      return { status: 'inferred', concentration: 'inferred', churn, velocity, earlyBuyerConcentration, whaleConcentration, note: `Holder data not indexed on ${_chainDefault}. Concentration inferred as moderate-to-high — verify via block explorer.` }
+      // CHAIN-TEXT FIX, DISCLOSED (audit: this hardcoded Base/Ethereum only — a bnb or robinhood
+      // scan reaching this branch was falsely told its holder data "not indexed on Ethereum".
+      // CHAIN_DISPLAY_NAME already covers all 4 chains correctly (used two lines above/elsewhere
+      // in this same function).
+      return { status: 'inferred', concentration: 'inferred', churn, velocity, earlyBuyerConcentration, whaleConcentration, note: `Holder data not indexed on ${CHAIN_DISPLAY_NAME[chain]}. Concentration inferred as moderate-to-high — verify via block explorer.` }
     })()
 
     // ── Migration proof — derived early so LP Intelligence's migrationRisk can reflect
@@ -6559,16 +6587,21 @@ export async function POST(req: Request) {
       const _chain = CHAIN_DISPLAY_NAME[chain]
       const _selectedPoolDexForCtx = String(lpDexName ?? lpDexId ?? '').toLowerCase()
       const _selectedPoolIsConcentratedForCtx = lpPoolType === 'v3' || lpPoolType === 'concentrated' || _selectedPoolDexForCtx.includes('uniswap v4') || _selectedPoolDexForCtx.includes('uniswap_v4') || _selectedPoolDexForCtx.includes('uniswap v3') || _selectedPoolDexForCtx.includes('uniswap_v3')
+      // CHAIN-TEXT FIX, DISCLOSED (audit: hardcoded Base/Ethereum-only chain context and
+      // Etherscan/Basescan-only explorer names — a bnb scan was told "On Ethereum" and pointed at
+      // Basescan (wrong chain's explorer entirely), and a robinhood scan got the same treatment
+      // instead of its own Blockscout explorer already defined in robinhoodChainConfig.ts).
+      const _explorerName = chain === 'eth' ? 'Etherscan' : chain === 'base' ? 'Basescan' : chain === 'bnb' ? 'BscScan' : 'the Robinhood Chain explorer'
       const _chainCtx = chain === 'base'
         ? `On Base: check for CL pool (Aerodrome/Uniswap v3) and proxy-pattern contracts. Factory deployers are common. LP migration via concentrated liquidity positions is possible.`
         : _selectedPoolIsConcentratedForCtx
-          ? `On Ethereum: this token’s primary pool is concentrated liquidity, so standard ERC-20 LP lock/burn proof does not apply. Position/controller proof is the relevant verification path.`
-          : `On Ethereum: standard v2 LP patterns apply. Renounce events and Ownable/Pausable are common risk markers. Check Etherscan for deployer history.`
+          ? `On ${_chain}: this token’s primary pool is concentrated liquidity, so standard ERC-20 LP lock/burn proof does not apply. Position/controller proof is the relevant verification path.`
+          : `On ${_chain}: standard v2 LP patterns apply. Renounce events and Ownable/Pausable are common risk markers. Check ${_explorerName} for deployer history.`
       // Build next actions from open checks + data gaps
       const nextActions: string[] = []
-      if (!holderDataComplete) nextActions.push(`Verify holder concentration via ${chain === 'eth' ? 'Etherscan token holders' : 'Basescan'}.`)
+      if (!holderDataComplete) nextActions.push(`Verify holder concentration via ${_explorerName} token holders.`)
       if (!hpResult.ok) nextActions.push('Run a manual trade simulation to confirm buy/sell taxes and honeypot status.')
-      if (deployerProfile.deployer == null) nextActions.push(`Trace deployer wallet via ${chain === 'eth' ? 'Etherscan contract creation' : 'Basescan'} before taking a position.`)
+      if (deployerProfile.deployer == null) nextActions.push(`Trace deployer wallet via ${_explorerName} contract creation before taking a position.`)
       if (lpControl.proofApplicability === 'not_applicable') {
         nextActions.push('Standard ERC-20 LP lock/burn proof does not apply to the primary concentrated-liquidity pool. Liquidity control requires protocol-specific position checks.')
       } else if (lpIntelligence.migrationRisk === 'high' || lpIntelligence.migrationRisk === 'inferred') {
@@ -8815,7 +8848,10 @@ export async function POST(req: Request) {
     }
     ;(responsePayload as any).scanAudit = {
       chain,
-      chainId: chain === 'robinhood' ? 4663 : null,
+      // CHAIN-ID-DIAGNOSTIC FIX, DISCLOSED (audit): only ever populated for robinhood, always null
+      // for eth/base/bnb — CHAIN_ID_MAP[chain] (already used two lines above) has the correct
+      // value for every chain. Diagnostics-only field, no functional impact.
+      chainId: CHAIN_ID_MAP[chain] ?? null,
       chainSlug: chain,
       tokenAddress: contract,
       runtimeCommitSha: process.env.VERCEL_GIT_COMMIT_SHA ?? process.env.GIT_SHA ?? null,
