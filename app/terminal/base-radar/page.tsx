@@ -1383,6 +1383,22 @@ export default function BaseRadarPage() {
   // call instead of just being ignored client-side.
   const fetchInFlightRef = useRef(false)
   const abortControllerRef = useRef<AbortController | null>(null)
+  // NO-AUTO-RETRY-ON-COLD-OUTAGE, DISCLOSED (reported live: "it just started working but 30
+  // seconds ago it came with nothing, I had to keep refreshing"). A cycle that lands on a genuine
+  // provider outage (finalState 'providerUnavailable' — GeckoTerminal AND its DexScreener fallback
+  // both failed this cycle, with no last-good cache to serve) was previously left on-screen for
+  // the FULL 120s poll interval with no automatic recovery — the only way back was a manual Refresh
+  // click, exactly what was reported. A quiet, honestly-empty market (finalState 'allFilteredOut'/
+  // 'noRawCandidates' — providers answered, nothing qualified) is NOT retried here: that is a real
+  // result, not a failure, and retrying it would just hammer the backend for the same answer.
+  // Bounded to 2 auto-retries (8s, then 20s) so a real, longer outage still falls through to the
+  // normal 120s poll instead of retrying forever.
+  const autoRetryCountRef = useRef(0)
+  const autoRetryTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // fetchData can't call itself directly from inside its own useCallback initializer (the retry
+  // timeout needs to fire a LATER fetchData call, not close over a stale one) — same ref-sync
+  // pattern already used for effectiveRadarChainRef below.
+  const fetchDataRef = useRef<() => void>(() => {})
   // NEW-RADAR DEFAULT, DISCLOSED (Base Radar filter simplification task): default mode changed
   // from TRENDING to NEW — "fresh Base opportunities first" is now the page's default identity
   // instead of a generic screener landing on whichever tab happened to be first. Filter logic
@@ -1506,6 +1522,17 @@ export default function BaseRadarPage() {
       } else {
         hasRadarDataRef.current = true
         setData(json as RadarData)
+        const rd = json as RadarData
+        if (rd.finalState === 'providerUnavailable' && rd.tokens.length === 0 && autoRetryCountRef.current < 2) {
+          const delayMs = autoRetryCountRef.current === 0 ? 8_000 : 20_000
+          autoRetryCountRef.current += 1
+          if (autoRetryTimeoutRef.current) clearTimeout(autoRetryTimeoutRef.current)
+          autoRetryTimeoutRef.current = setTimeout(() => { fetchDataRef.current() }, delayMs)
+        } else {
+          // A real result (tokens present) or an honest empty-after-filtering state resets the
+          // counter, so a LATER genuine outage still gets its own fresh pair of auto-retries.
+          autoRetryCountRef.current = 0
+        }
       }
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
@@ -1528,6 +1555,7 @@ export default function BaseRadarPage() {
       }
     }
   }, [])
+  useEffect(() => { fetchDataRef.current = () => { void fetchData() } }, [fetchData])
 
   // LOAD MORE, DISCLOSED (requested: a way to pull in more radar candidates beyond the initial
   // feed): fetches the next GeckoTerminal page window (see /api/radar's own `page` param comment)
@@ -1767,6 +1795,8 @@ export default function BaseRadarPage() {
     prevChainRef.current = effectiveRadarChain
     setData(null)
     setLoadMoreExhausted(false)
+    if (autoRetryTimeoutRef.current) clearTimeout(autoRetryTimeoutRef.current)
+    autoRetryCountRef.current = 0
     void fetchData()
   }, [effectiveRadarChain, fetchData])
 
@@ -1775,7 +1805,10 @@ export default function BaseRadarPage() {
   // multi-token scoring work for a response nobody would ever read) and left setData/setLoading
   // calls pending against an unmounted component.
   useEffect(() => {
-    return () => { abortControllerRef.current?.abort() }
+    return () => {
+      abortControllerRef.current?.abort()
+      if (autoRetryTimeoutRef.current) clearTimeout(autoRetryTimeoutRef.current)
+    }
   }, [])
 
   // VISIBILITY-PAUSE FIX, DISCLOSED (Base Radar speed audit): previously the countdown interval
@@ -1822,6 +1855,8 @@ export default function BaseRadarPage() {
     // an abort signal reaches it).
     if (fetchInFlightRef.current) return
     setCountdown(120)
+    if (autoRetryTimeoutRef.current) clearTimeout(autoRetryTimeoutRef.current)
+    autoRetryCountRef.current = 0
     fetchData()
   }
 
