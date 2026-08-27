@@ -9,6 +9,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { getRadarFeedStatusFromScore } from '@/lib/baseRadarFeedScoring'
 import { buildBaseRadarDisplayModel, type BaseRadarDisplayModel } from '@/lib/baseRadarDisplayModel'
 import { useDrawerPreload } from '@/lib/useDrawerPreload'
+import { radarErrorMessage, radarHasVisibleFeed, radarTimeoutMessage, radarVisibleErrorFromPayload, radarStatTileMode, type RadarStatTileMode } from '@/lib/radarFeedStatus'
 
 interface HoneypotResult {
   isHoneypot: boolean | null
@@ -277,17 +278,9 @@ const SORT_OPTIONS: Array<{ key: SortMode; label: string }> = [
   { key: 'HIGHEST_MOMENTUM', label: 'Highest Momentum' },
 ]
 
-// SPECIFIC-ERROR-MESSAGE FIX, DISCLOSED (reported: "Radar refresh failed" shown for no obvious
-// reason): every failure path — a 429 rate-limit, a 403 plan-gate rejection (e.g. a stale session
-// token), or a genuine outage — collapsed into the exact same generic banner text, so there was no
-// way to tell which one actually happened without reading server logs. Now maps the real HTTP
-// status to a specific, honest message; falls back to the old generic text for anything else.
-function radarErrorMessage(status: number, hasData: boolean): string {
-  const suffix = hasData ? 'Showing last available read.' : 'Try refreshing or scanning a token directly.'
-  if (status === 429) return `Radar is getting a lot of requests right now — please wait a moment. ${suffix}`
-  if (status === 403) return `Radar needs Pro or Elite access. If you already have it, try reconnecting your account. ${suffix}`
-  return `Radar refresh failed. ${suffix}`
-}
+// SPECIFIC-ERROR-MESSAGE FIX, DISCLOSED: radarErrorMessage / timeout / payload-aware copy live in
+// lib/radarFeedStatus.ts so empty-feed "last available read" lies can be unit-tested. This page
+// imports those helpers — do not reintroduce a local copy that ignores chain-switch clears.
 
 function fmtUSD(v: number): string {
   if (!Number.isFinite(v) || v <= 0) return 'Open check'
@@ -813,28 +806,22 @@ function StripStat({ label, value, caption, accent = '#e2e8f0' }: { label: strin
   )
 }
 
-// LOADING-READS-AS-EMPTY FIX, DISCLOSED (reported: "showed no tokens for a bit, that's a glitch" —
-// live-reproduced as a real UX bug, not a network/backend issue: on the very first load before any
-// response has ever arrived, this strip derived every value straight from an empty token list —
-// "Tokens Tracked" showed the literal number 0, "Strongest Mover"/"Newest Pool" showed "Open
-// check", identical in appearance to a confirmed, completed "we checked and genuinely found
-// nothing" result. There was no way to visually tell "still loading" apart from "checked, zero
-// candidates" — the exact ambiguity a user would reasonably call a glitch even though the backend
-// was working correctly. `hasEverLoaded` (true once the first response has ever arrived, false only
-// before that) now gates this: while true loading with no data yet, every card shows a neutral
-// "Checking…" placeholder instead of a zero/empty-looking real value. Once real data has arrived at
-// least once, subsequent background refreshes keep showing the last real numbers (matching the
-// existing "Refreshing…" button label logic) — this only fixes the genuinely-ambiguous first load.
-function PulseStrip({ summary, hasEverLoaded, chain }: { summary: RadarSummary; hasEverLoaded: boolean; chain: RadarChain }) {
-  const stillLoadingFirstFetch = !hasEverLoaded
+// LOADING-READS-AS-EMPTY FIX, DISCLOSED: tileMode is checking while loading with no payload,
+// unavailable when the fetch failed and nothing is on screen (never leave Checking… stuck after
+// a failed refresh), and ready whenever this chain's data is present so background refreshes
+// keep the last real numbers.
+function PulseStrip({ summary, tileMode, chain }: { summary: RadarSummary; tileMode: RadarStatTileMode; chain: RadarChain }) {
   const isRobinhood = chain === 'robinhood'
-  const items = stillLoadingFirstFetch
-    ? [
-      { label: 'Tokens Tracked', value: '–', caption: 'Checking…', accent: '#3a5268' },
-      { label: 'Strongest Mover', value: '–', caption: 'Checking…', accent: '#3a5268' },
-      { label: 'Newest Pool', value: '–', caption: 'Checking…', accent: '#3a5268' },
-      { label: 'Evidence Gaps', value: '–', caption: 'Checking…', accent: '#3a5268' },
-    ]
+  const placeholder = (caption: string) => [
+    { label: 'Tokens Tracked', value: '–', caption, accent: '#3a5268' },
+    { label: 'Strongest Mover', value: '–', caption, accent: '#3a5268' },
+    { label: 'Newest Pool', value: '–', caption, accent: '#3a5268' },
+    { label: 'Evidence Gaps', value: '–', caption, accent: '#3a5268' },
+  ]
+  const items = tileMode === 'checking'
+    ? placeholder('Checking…')
+    : tileMode === 'unavailable'
+    ? placeholder('Unavailable')
     : [
       // CHAIN-AWARE-CAPTION FIX, DISCLOSED (found while polishing Robinhood Radar): this caption
       // read "Current Base results" unconditionally, even while viewing Robinhood Chain — a real,
@@ -1311,32 +1298,37 @@ const RADAR_CHAINS: Array<{ key: RadarChain; label: string }> = [
   { key: 'robinhood', label: 'Robinhood' },
 ]
 
-// CHAIN SELECTOR, DISCLOSED (task #2, revised for env verification + feature flag wiring task):
-// compact segmented control, Base selected by default. Robinhood only renders as an option when
-// `robinhoodAvailable` is true — i.e. ENABLE_ROBINHOOD_CHAIN=true AND ALCHEMY_ROBINHOOD_RPC_URL is
-// configured server-side (checked via /api/base-radar/chain-status, which never returns the RPC
-// URL itself — see that route and lib/server/robinhoodChainConfig.ts). Defaults to hidden (fails
-// closed) until that check resolves. Uses the existing /logos/base.png asset already in the repo
-// for the Base icon; Robinhood gets a small hand-drawn inline SVG feather badge (see below) instead
-// of a new image file.
+// CHAIN SELECTOR, DISCLOSED: compact segmented control, Base selected by default. BOTH Base and
+// Robinhood pills always render (hard reload previously flashed Base-only until chain-status
+// hydrated). Robinhood is disabled — never omitted — until ENABLE_ROBINHOOD_CHAIN=true AND
+// ALCHEMY_ROBINHOOD_RPC_URL is confirmed via /api/base-radar/chain-status (that route never
+// returns the RPC URL). Uses /logos/base.png and a small inline SVG feather for Robinhood.
 function ChainSelector({ value, onChange, robinhoodAvailable }: { value: RadarChain; onChange: (chain: RadarChain) => void; robinhoodAvailable: boolean }) {
-  const visibleChains = RADAR_CHAINS.filter(chain => chain.key === 'base' || robinhoodAvailable)
+  // Always render BASE + ROBINHOOD on first paint. Hiding Robinhood behind a client-only
+  // availability flag (false until /api/base-radar/chain-status hydrates) dropped the second
+  // pill on hard reload. Gate by disabling, never by omitting.
   return (
     <div style={{ display: 'inline-flex', alignItems: 'center', gap: '2px', padding: '3px', borderRadius: '10px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)' }}>
-      {visibleChains.map(chain => {
+      {RADAR_CHAINS.map(chain => {
         const active = chain.key === value
+        const disabled = chain.key === 'robinhood' && !robinhoodAvailable
         return (
           <button
             key={chain.key}
-            onClick={() => onChange(chain.key)}
+            type="button"
+            disabled={disabled}
+            onClick={() => { if (!disabled) onChange(chain.key) }}
             aria-pressed={active}
+            aria-disabled={disabled}
+            title={disabled ? 'Robinhood Chain is not available yet' : undefined}
             style={{
               display: 'inline-flex', alignItems: 'center', gap: '6px',
               padding: '5px 11px', borderRadius: '8px', border: 'none',
               background: active ? 'rgba(45,212,191,0.14)' : 'transparent',
               color: active ? '#5eead4' : '#94a3b8',
               fontSize: '10px', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase',
-              fontFamily: 'var(--font-plex-mono)', cursor: 'pointer',
+              fontFamily: 'var(--font-plex-mono)', cursor: disabled ? 'not-allowed' : 'pointer',
+              opacity: disabled ? 0.45 : 1,
             }}
           >
             {chain.key === 'base' ? (
@@ -1516,11 +1508,11 @@ export default function BaseRadarPage() {
       const { data: _sd } = await supabase.auth.getSession()
       const _tok = _sd.session?.access_token
       const res = await fetch(`/api/radar?chain=${effectiveRadarChainRef.current}`, { cache: 'no-store', signal: controller.signal, headers: _tok ? { Authorization: `Bearer ${_tok}` } : {} })
-      const json = await res.json()
-      if (!res.ok || json.error) {
-        setError(radarErrorMessage(res.status, hasRadarDataRef.current))
+      const json = await res.json().catch(() => null)
+      if (!json || !res.ok || json.error) {
+        setError(radarVisibleErrorFromPayload(json, res.status, hasRadarDataRef.current))
       } else {
-        hasRadarDataRef.current = true
+        hasRadarDataRef.current = radarHasVisibleFeed(json)
         setData(json as RadarData)
         const rd = json as RadarData
         if (rd.finalState === 'providerUnavailable' && rd.tokens.length === 0 && autoRetryCountRef.current < 2) {
@@ -1542,7 +1534,7 @@ export default function BaseRadarPage() {
         // above fired because nothing superseded this request — it just took too long. Only (b)
         // should surface an error, and the abortControllerRef.current check below distinguishes them.
         if (abortControllerRef.current === controller) {
-          setError(radarErrorMessage(0, hasRadarDataRef.current))
+          setError(radarTimeoutMessage(hasRadarDataRef.current))
         }
         return
       }
@@ -1794,6 +1786,10 @@ export default function BaseRadarPage() {
     if (prevChainRef.current === effectiveRadarChain) return
     prevChainRef.current = effectiveRadarChain
     setData(null)
+    setError(null)
+    setLoading(true)
+    hasRadarDataRef.current = false
+    abortControllerRef.current?.abort()
     setLoadMoreExhausted(false)
     if (autoRetryTimeoutRef.current) clearTimeout(autoRetryTimeoutRef.current)
     autoRetryCountRef.current = 0
@@ -2221,7 +2217,7 @@ export default function BaseRadarPage() {
             </div>
           )}
 
-          <PulseStrip summary={summary} hasEverLoaded={data !== null} chain={effectiveRadarChain} />
+          <PulseStrip summary={summary} tileMode={radarStatTileMode({ loading, hasData: data !== null, error })} chain={effectiveRadarChain} />
 
           <>
           <div className="radar-controls" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', flexWrap: 'wrap' }}>
