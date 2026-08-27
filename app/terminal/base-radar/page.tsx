@@ -113,6 +113,21 @@ interface RadarData {
   // "providers are down." finalState is the same authoritative source EmptyFeed's other props are
   // already computed from, just not previously threaded through to it.
   finalState?: 'ok' | 'providerUnavailable' | 'allFilteredOut' | 'noRawCandidates'
+  // BASE-RADAR-LOAD-AUDIT, DISCLOSED (required exact shape — see app/api/radar/route.ts's
+  // baseRadarLoadAudit): userVisibleError is the literal error string EmptyFeed now renders instead
+  // of a vague generic message; the rest of the shape is carried for completeness/future debugging
+  // even though this page currently only reads userVisibleError/chainSlug/chainId from it.
+  baseRadarLoadAudit?: {
+    chainSlug?: string
+    chainId?: number
+    providerErrors?: { source: string; status: number | null; errorName: string | null; errorMessage: string | null }[]
+    userVisibleError?: string | null
+  }
+  // LAST-GOOD-CACHE VISIBILITY, DISCLOSED: set only when this response is a re-served prior
+  // successful payload because every live source failed this cycle (see the SERVE-STALE-ON-TOTAL-
+  // FAILURE fallback in app/api/radar/route.ts) — lets the UI show a subtle "showing cached
+  // results" note instead of presenting aging data as this cycle's fresh live fetch.
+  servedFromStaleCache?: boolean
 }
 
 type RadarStatus = 'HOT' | 'WATCH' | 'EARLY' | 'UNVERIFIED' | 'RISKY' | 'DEAD'
@@ -321,8 +336,12 @@ function getTokenIdentity(token: RadarToken): { primary: string; symbol: string;
   return { primary, symbol, context }
 }
 
-function getOverviewTokenTitle(token: TokenIntel | undefined): string {
-  if (!token) return 'Open check'
+// UNAVAILABLE-VS-OPEN-CHECK FIX, DISCLOSED (required fix: "Header should show 'Unavailable' for
+// failed strongest mover/newest pool, not Open Check" — 'Open check' honestly means "we checked and
+// genuinely found nothing to report," which is misleading when the real reason there's no candidate
+// is that discovery providers failed this cycle, not that the market was quiet).
+function getOverviewTokenTitle(token: TokenIntel | undefined, providersFailed = false): string {
+  if (!token) return providersFailed ? 'Unavailable' : 'Open check'
   const identity = getTokenIdentity(token)
   return identity.symbol && identity.symbol !== identity.primary ? `${identity.primary} / ${identity.symbol}` : identity.primary
 }
@@ -1241,7 +1260,7 @@ function StagedRadarLoading() {
 // loaded."). Only fires when discoveryDegradedSignificant (majority-or-more pages failed) — a
 // single failed page out of 18 combined with a legitimate 0-token gate result no longer gets
 // mislabeled as a source outage.
-function EmptyFeed({ limited, holderCheckBudgetExhausted, discoveryDegradedSignificant, sourcesFailedCount, pagesAttempted, rawCandidatesRecovered, finalState }: { limited: boolean; holderCheckBudgetExhausted: boolean; discoveryDegradedSignificant: boolean; sourcesFailedCount: number; pagesAttempted: number; rawCandidatesRecovered: number; finalState?: 'ok' | 'providerUnavailable' | 'allFilteredOut' | 'noRawCandidates' }) {
+function EmptyFeed({ limited, holderCheckBudgetExhausted, discoveryDegradedSignificant, sourcesFailedCount, pagesAttempted, rawCandidatesRecovered, finalState, userVisibleError }: { limited: boolean; holderCheckBudgetExhausted: boolean; discoveryDegradedSignificant: boolean; sourcesFailedCount: number; pagesAttempted: number; rawCandidatesRecovered: number; finalState?: 'ok' | 'providerUnavailable' | 'allFilteredOut' | 'noRawCandidates'; userVisibleError?: string | null }) {
   const pagesLoaded = Math.max(0, pagesAttempted - sourcesFailedCount)
   // TRUTHFUL EMPTY STATE, DISCLOSED (same fix as Pump Alerts): finalState is authoritative — it is
   // computed server-side from the exact same counters (sourcesSucceeded/rawTotalBeforeDedupe/
@@ -1249,8 +1268,13 @@ function EmptyFeed({ limited, holderCheckBudgetExhausted, discoveryDegradedSigni
   // them. Checked first so a real provider outage or a genuinely empty raw pool is never described
   // as "no candidates passed the gate" — a message that reads as an honest quiet market, not a
   // problem, when the real story is "the providers never returned anything to filter."
+  // EXACT-ERROR FIX, DISCLOSED (required fix: "If all fail, show exact provider error, not vague
+  // 'Open check'/'Providers failed'"): userVisibleError comes straight from the backend's
+  // baseRadarLoadAudit.userVisibleError, which names the actual failing source and its real error
+  // message/status — the vague generic sentence is now only a fallback for the (should-be-rare)
+  // case the backend didn't send one.
   const headline = finalState === 'providerUnavailable'
-    ? 'Providers failed — could not reach discovery sources for this chain.'
+    ? (userVisibleError ?? 'Providers failed — could not reach discovery sources for this chain.')
     : finalState === 'noRawCandidates'
       ? 'No candidates found — providers returned zero pools this cycle.'
       : discoveryDegradedSignificant
@@ -1978,6 +2002,7 @@ export default function BaseRadarPage() {
     const newest = [...intelTokens].sort((a, b) => a.ageMinutes - b.ageMinutes)[0]
     const hottest = [...intelTokens].sort((a, b) => b.radarScore - a.radarScore)[0]
     const hasSecurityData = intelTokens.some(token => token.simulationStatus === 'passed')
+    const providersFailed = data?.finalState === 'providerUnavailable'
 
     return {
       newPools: intelTokens.length,
@@ -1985,14 +2010,14 @@ export default function BaseRadarPage() {
       highMomentum,
       unverified,
       averageLiquidity,
-      highestLiquidityToken: getOverviewTokenTitle(highestLiquidity),
-      highestLiquidityValue: highestLiquidity ? `${fmtUSD(highestLiquidity.liquidityUsd)} liquidity` : 'Needs data',
-      highestVolumeToken: getOverviewTokenTitle(highestVolume),
-      highestVolumeValue: highestVolume ? `${fmtUSD(highestVolume.volume24h)} volume` : 'Needs data',
-      newestToken: getOverviewTokenTitle(newest),
-      newestValue: newest ? `${fmtAge(newest.ageMinutes)} old` : 'Needs data',
-      hottestToken: getOverviewTokenTitle(hottest),
-      hottestValue: hottest ? `Score ${hottest.radarScore}` : 'Needs data',
+      highestLiquidityToken: getOverviewTokenTitle(highestLiquidity, providersFailed),
+      highestLiquidityValue: highestLiquidity ? `${fmtUSD(highestLiquidity.liquidityUsd)} liquidity` : (providersFailed ? 'Unavailable' : 'Needs data'),
+      highestVolumeToken: getOverviewTokenTitle(highestVolume, providersFailed),
+      highestVolumeValue: highestVolume ? `${fmtUSD(highestVolume.volume24h)} volume` : (providersFailed ? 'Unavailable' : 'Needs data'),
+      newestToken: getOverviewTokenTitle(newest, providersFailed),
+      newestValue: newest ? `${fmtAge(newest.ageMinutes)} old` : (providersFailed ? 'Unavailable' : 'Needs data'),
+      hottestToken: getOverviewTokenTitle(hottest, providersFailed),
+      hottestValue: hottest ? `Score ${hottest.radarScore}` : (providersFailed ? 'Unavailable' : 'Needs data'),
       hasSecurityData,
       hiddenLowEvidenceCount: data?.hiddenLowEvidenceCount ?? 0,
       hiddenLowValuation: data?.hiddenLowValuation ?? 0,
@@ -2001,7 +2026,7 @@ export default function BaseRadarPage() {
       hiddenHolderUnavailable: data?.hiddenHolderUnavailable ?? 0,
       hiddenConcentrationUnavailable: data?.hiddenConcentrationUnavailable ?? 0,
     }
-  }, [intelTokens, data?.hiddenLowEvidenceCount, data?.hiddenLowValuation, data?.hiddenBelow80k, data?.hiddenLowHolders, data?.hiddenHolderUnavailable, data?.hiddenConcentrationUnavailable])
+  }, [intelTokens, data?.hiddenLowEvidenceCount, data?.hiddenLowValuation, data?.hiddenBelow80k, data?.hiddenLowHolders, data?.hiddenHolderUnavailable, data?.hiddenConcentrationUnavailable, data?.finalState])
 
   const filteredAndSortedTokens = useMemo(() => {
     const filtered = intelTokens.filter(token => {
@@ -2308,7 +2333,7 @@ export default function BaseRadarPage() {
               </div>
             )}
 
-            {!loading && tokens.length === 0 && !error && <EmptyFeed limited={Boolean(data?.limitedLiveFeed)} holderCheckBudgetExhausted={Boolean(data?.holderCheckBudgetExhausted)} discoveryDegradedSignificant={Boolean(data?.discoveryDegradedSignificant)} sourcesFailedCount={data?.sourcesFailedCount ?? 0} pagesAttempted={data?.baseRadarSourceAudit?.sourcesAttempted ?? 0} rawCandidatesRecovered={data?.baseRadarCandidateGateAudit?.rawCandidatesFetched ?? 0} finalState={data?.finalState} />}
+            {!loading && tokens.length === 0 && !error && <EmptyFeed limited={Boolean(data?.limitedLiveFeed)} holderCheckBudgetExhausted={Boolean(data?.holderCheckBudgetExhausted)} discoveryDegradedSignificant={Boolean(data?.discoveryDegradedSignificant)} sourcesFailedCount={data?.sourcesFailedCount ?? 0} pagesAttempted={data?.baseRadarSourceAudit?.sourcesAttempted ?? 0} rawCandidatesRecovered={data?.baseRadarCandidateGateAudit?.rawCandidatesFetched ?? 0} finalState={data?.finalState} userVisibleError={data?.baseRadarLoadAudit?.userVisibleError} />}
 
             {!loading && tokens.length > 0 && Boolean(data?.limitedLiveFeed) && (
               <div style={{ padding: '10px 14px', borderRadius: '10px', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.20)', color: '#fbbf24', fontSize: '11px', marginBottom: '12px', fontFamily: 'var(--font-plex-mono)' }}>

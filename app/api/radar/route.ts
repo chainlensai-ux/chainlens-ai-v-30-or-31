@@ -8,7 +8,7 @@ import { getRadarSimulationDisplay, type RadarSimulationOpenCheckReason, type Ra
 import { MAIN_FEED_MIN_VALUATION_USD, MAIN_FEED_MAX_VALUATION_USD, MAIN_FEED_MIN_HOLDERS, passesMainFeedValuationMinGate, passesMainFeedValuationMaxGate, passesMainFeedHolderGate, isRealVerifiedMarketCapValue, CONCENTRATION_UNAVAILABLE_EVIDENCE_GAP, DISPLAY_TARGET, HOLDER_CHECK_BUDGET_CAP, HOLDER_CHECK_BATCH_SIZE, shouldContinueHolderChecking } from '@/lib/baseRadarMainFeedGate'
 import { redis, redisConfigured } from '@/lib/server/cache/redisClient'
 import { fetchGoldRushHolderCount, type HolderCountResult } from '@/lib/server/goldrushHolderCount'
-import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
+import { isRobinhoodChainAvailable, ROBINHOOD_CHAIN_ID } from '@/lib/server/robinhoodChainConfig'
 import { resolveBaseRadarHolderConcentration } from '@/lib/server/baseRadarHolderConcentration'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -80,6 +80,24 @@ export interface RadarToken {
   name: string
   symbol: string
   contract: string
+  // NORMALIZED-CANDIDATE-SHAPE FIX, DISCLOSED (required exact shape — additive: `contract` above is
+  // kept unchanged everywhere it's already consumed, chainSlug/chainId/tokenAddress/priceUsd/
+  // priceChange*/pairCreatedAt are new fields, never a rename, so nothing already reading `contract`,
+  // `ageMinutes`, etc. anywhere in Pump Alerts/Token Scanner/Clark/Wallet Scanner is touched).
+  // Base Radar is Base-only per the hard rule EXCEPT when explicitly scanning Robinhood via its own
+  // ?chain=robinhood request — chainSlug/chainId always reflect the SAME single chain this whole
+  // response was scanned for, never a mix.
+  chainSlug: 'base' | 'robinhood'
+  chainId: number
+  tokenAddress: string
+  priceUsd: number | null
+  priceChange24hPct: number | null
+  priceChange6hPct: number | null
+  priceChange1hPct: number | null
+  // Real ISO timestamp when known (from the provider's own pool_created_at/pairCreatedAt) — null,
+  // never fabricated, when a provider didn't report one. ageMinutes above stays the primary field
+  // every existing consumer already reads; pairCreatedAt is additive.
+  pairCreatedAt: string | null
   ageMinutes: number
   liquidityUsd: number
   volume24h: number
@@ -588,6 +606,90 @@ async function getDexMarketCapRescue(input: { chain: string; token: string; prim
     return { ...result, cacheHit: false }
   } finally {
     dexMarketCapRescueInflight.delete(key)
+  }
+}
+
+// GECKOTERMINAL-FALLBACK DISCOVERY, DISCLOSED (explicitly requested: "If GeckoTerminal fails,
+// fallback to DexScreener"). getDexMarketCapRescue above only ever fills in ONE field (market cap)
+// for a candidate GeckoTerminal already discovered — it depends entirely on GT for discovery itself,
+// so it cannot help when GT is the thing that's down. This is a genuinely independent discovery
+// path: DexScreener's own token-boosts/token-profiles lists (real, live-submitted tokens — never
+// fabricated) cross-referenced against DexScreener's OWN multi-token pair endpoint
+// (/latest/dex/tokens/{addresses}), which returns full pair data (price/liquidity/volume/price-
+// change/marketCap/fdv/pairCreatedAt) directly — no GeckoTerminal call anywhere in this path. Only
+// invoked when GT's own discovery genuinely returned zero successful sources this cycle (see the
+// call site below) — this is a fallback of last resort, not a routine extra source, so it never adds
+// load to a cycle where GT is already working. Base-only: DexScreener does not reliably index
+// Robinhood Chain (same honest gap already established elsewhere in this codebase — Pump Alerts'
+// equivalent fallback, the old evidence-ladder's CoinGecko/DexScreener tiers). Returns data already
+// reshaped into GeckoTerminal's own {data: pools[], included: tokens[]} JSON:API-ish shape so it can
+// flow through the EXACT SAME downstream pipeline (dedup, valuation, liquidity floor, category
+// exclusion, holder checks, ranking) with zero special-casing — never a parallel/duplicate pipeline.
+async function fetchDexScreenerBaseFallbackDiscovery(signal: AbortSignal): Promise<{ data: Record<string, unknown>[]; included: Record<string, unknown>[]; error: string | null }> {
+  try {
+    const [profileRes, boostRes] = await Promise.allSettled([
+      fetch('https://api.dexscreener.com/token-profiles/latest/v1', { headers: { Accept: 'application/json' }, cache: 'no-store', signal }),
+      fetch('https://api.dexscreener.com/token-boosts/latest/v1', { headers: { Accept: 'application/json' }, cache: 'no-store', signal }),
+    ])
+    const addresses = new Set<string>()
+    for (const outcome of [profileRes, boostRes]) {
+      if (outcome.status !== 'fulfilled' || !outcome.value.ok) continue
+      const list = await outcome.value.json().catch(() => null)
+      if (!Array.isArray(list)) continue
+      for (const item of list as Record<string, unknown>[]) {
+        const chainId = typeof item.chainId === 'string' ? item.chainId.toLowerCase() : ''
+        const tokenAddress = typeof item.tokenAddress === 'string' ? item.tokenAddress : ''
+        if (chainId === 'base' && tokenAddress) addresses.add(tokenAddress)
+        if (addresses.size >= 30) break
+      }
+    }
+    if (addresses.size === 0) return { data: [], included: [], error: 'No Base tokens found in DexScreener boosted/profile lists this cycle.' }
+
+    const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${[...addresses].join(',')}`, { headers: { Accept: 'application/json' }, cache: 'no-store', signal })
+    if (!res.ok) return { data: [], included: [], error: `DexScreener multi-token lookup failed (HTTP ${res.status}).` }
+    const json = await res.json().catch(() => null)
+    const pairs: Record<string, unknown>[] = Array.isArray(json?.pairs) ? json.pairs : []
+
+    const pools: Record<string, unknown>[] = []
+    const included: Record<string, unknown>[] = []
+    const seenTokenIds = new Set<string>()
+    for (const pair of pairs) {
+      // WRONG-CHAIN GUARD, DISCLOSED (hard rule: no ETH/Robinhood/Solana data in Base mode):
+      // DexScreener's multi-token endpoint can return pairs on OTHER chains for the same address —
+      // only pairs it itself attributes to 'base' are ever kept.
+      if (pair.chainId !== 'base') continue
+      const baseToken = pair.baseToken as { address?: string; symbol?: string; name?: string } | undefined
+      const addr = typeof baseToken?.address === 'string' ? baseToken.address : null
+      const pairAddr = typeof pair.pairAddress === 'string' ? pair.pairAddress : null
+      if (!addr || !pairAddr) continue
+      const tokenId = `dexfallback_token_${addr.toLowerCase()}`
+      if (!seenTokenIds.has(tokenId)) {
+        seenTokenIds.add(tokenId)
+        included.push({ type: 'token', id: tokenId, attributes: { name: baseToken?.name ?? 'Unknown', symbol: baseToken?.symbol ?? '?', address: addr } })
+      }
+      const priceChange = pair.priceChange as { h24?: number; h6?: number; h1?: number } | undefined
+      const liquidity = pair.liquidity as { usd?: number } | undefined
+      const volume = pair.volume as { h24?: number } | undefined
+      const pairCreatedAtMs = typeof pair.pairCreatedAt === 'number' ? pair.pairCreatedAt : null
+      pools.push({
+        id: `dexfallback_pool_${pairAddr.toLowerCase()}`,
+        relationships: { base_token: { data: { id: tokenId } }, dex: { data: { id: typeof pair.dexId === 'string' ? pair.dexId : 'unknown' } } },
+        attributes: {
+          address: pairAddr,
+          base_token_price_usd: pair.priceUsd ?? null,
+          reserve_in_usd: liquidity?.usd ?? null,
+          fdv_usd: pair.fdv ?? null,
+          market_cap_usd: pair.marketCap ?? null,
+          pool_created_at: pairCreatedAtMs != null ? new Date(pairCreatedAtMs).toISOString() : null,
+          volume_usd: { h24: volume?.h24 ?? null },
+          price_change_percentage: { h24: priceChange?.h24 ?? null, h6: priceChange?.h6 ?? null, h1: priceChange?.h1 ?? null },
+        },
+      })
+    }
+    return { data: pools, included, error: pools.length === 0 ? 'DexScreener returned no Base-chain pairs for the discovered token addresses.' : null }
+  } catch (err) {
+    const name = err instanceof Error ? err.name : 'unknown_error'
+    return { data: [], included: [], error: name === 'AbortError' ? 'DexScreener fallback discovery timed out.' : `DexScreener fallback discovery failed: ${err instanceof Error ? err.message : String(err)}` }
   }
 }
 
@@ -1136,6 +1238,30 @@ export async function GET(req: NextRequest) {
   // now uses the same r.ok signal pagesSucceeded already uses below — a real HTTP success, whether or
   // not that particular page happened to be empty.
   sourcesSucceeded = sourceResults.filter(r => r.ok).length
+  // GECKOTERMINAL-FALLBACK DISCOVERY, DISCLOSED (explicitly requested: "If GeckoTerminal fails,
+  // fallback to DexScreener" — see fetchDexScreenerBaseFallbackDiscovery's own header comment for
+  // the full rationale). Only fires when GT's own discovery genuinely returned zero successful
+  // sources this cycle — a real last-resort fallback, never routine extra load. Base-only, matching
+  // every other DexScreener-as-discovery path already in this codebase.
+  let dexScreenerFallbackAttempted = false
+  let dexScreenerFallbackError: string | null = null
+  if (sourcesSucceeded === 0 && requestedChain === 'base') {
+    dexScreenerFallbackAttempted = true
+    const acFallback = new AbortController()
+    const tidFallback = setTimeout(() => acFallback.abort(), 8000)
+    try {
+      const fallback = await fetchDexScreenerBaseFallbackDiscovery(acFallback.signal)
+      if (fallback.data.length > 0) {
+        sourcePayloads.push({ data: fallback.data, included: fallback.included, __radarSourceKey: `${requestedChain}_dexscreener_fallback` })
+        sourceCounts[`${requestedChain}_dexscreener_fallback`] = fallback.data.length
+        sourcesSucceeded += 1
+      } else {
+        dexScreenerFallbackError = fallback.error
+      }
+    } finally {
+      clearTimeout(tidFallback)
+    }
+  }
   const discoveryDegraded = sourcesFailedCount > 0
   // SIGNIFICANT-VS-MINOR-DEGRADATION FIX, DISCLOSED (explicitly requested: "Only show degraded
   // empty state if all/most source pages fail" — the prior version flagged the UI's degraded
@@ -1234,6 +1360,11 @@ export async function GET(req: NextRequest) {
       ageMinutes: number; liquidityUsd: number; volume24h: number
       fdvUsd: number | null; resolvedMarketCap: ReturnType<typeof resolveBaseRadarMarketCap>; primaryPoolAddress: string | null
       needsRescue: boolean; isV4Pool: boolean; quoteTokenAddress: string | null
+      // NORMALIZED-CANDIDATE-SHAPE FIX, DISCLOSED: carried from pass 1 (where the raw pool attrs are
+      // in scope) through to pass 2's candidate construction (which only has drafts[i], not the
+      // original attrs).
+      priceUsd: number | null; priceChange24hPct: number | null; priceChange6hPct: number | null; priceChange1hPct: number | null
+      pairCreatedAt: string | null
     }
     const drafts: PoolDraft[] = []
     // FUNNEL-DIAGNOSTICS, DISCLOSED: this route has gone completely empty from filter changes
@@ -1344,6 +1475,16 @@ export async function GET(req: NextRequest) {
       const ageMinutes = Math.floor(ageMs / 60000)
       const liquidityUsd = parseFloat(String(attrs?.reserve_in_usd ?? '0')) || 0
       const volume24h    = parseFloat(volObj?.h24 ?? '0') || 0
+      // NORMALIZED-CANDIDATE-SHAPE FIX, DISCLOSED: real values straight from the same provider
+      // attributes already parsed above — GeckoTerminal's own pool response and the DexScreener-
+      // fallback adapter (see fetchDexScreenerBaseFallbackDiscovery) both populate these same
+      // attribute names, so this works identically for either discovery source. null, never
+      // fabricated, when a provider didn't report a figure.
+      const priceChangeObj = attrs?.price_change_percentage as Record<string, string> | undefined
+      const priceUsd = finiteOrNull(attrs?.base_token_price_usd)
+      const priceChange24hPct = finiteOrNull(priceChangeObj?.h24)
+      const priceChange6hPct = finiteOrNull(priceChangeObj?.h6)
+      const priceChange1hPct = finiteOrNull(priceChangeObj?.h1)
 
       // V4-POOL-CROSS-CHECK, DISCLOSED: skip V4 pools here — GT's reserve_in_usd isn't trusted for
       // them (see the header comment near droppedByV4Pool's declaration) and the DexScreener cross-
@@ -1391,6 +1532,7 @@ export async function GET(req: NextRequest) {
         baseToken, ageMinutes, liquidityUsd, volume24h,
         fdvUsd, resolvedMarketCap, primaryPoolAddress, needsRescue: resolvedMarketCap.marketCapUsd == null || isV4Pool, isV4Pool,
         quoteTokenAddress,
+        priceUsd, priceChange24hPct, priceChange6hPct, priceChange1hPct, pairCreatedAt: createdAt,
       })
     }
 
@@ -1438,7 +1580,7 @@ export async function GET(req: NextRequest) {
 
     const nearMissSample: { symbol: string; contract: string; liquidityUsd: number; valuationUsd: number | null; marketCapStatus: 'verified' | 'unavailable' }[] = []
     for (let i = 0; i < drafts.length; i++) {
-      const { baseToken, ageMinutes, volume24h, fdvUsd, resolvedMarketCap, primaryPoolAddress, isV4Pool } = drafts[i]
+      const { baseToken, ageMinutes, volume24h, fdvUsd, resolvedMarketCap, primaryPoolAddress, isV4Pool, priceUsd, priceChange24hPct, priceChange6hPct, priceChange1hPct, pairCreatedAt } = drafts[i]
       const rescue = rescueResults[i]
       // WRONG-POOL LIQUIDITY FIX, DISCLOSED (reported: DexScreener showed "$0 / unknown liquidity"
       // and a real-liquidity warning banner for the exact pool this route displayed, while the radar
@@ -1589,6 +1731,8 @@ export async function GET(req: NextRequest) {
       ]
       const candidate = {
         name: baseToken.name, symbol: baseToken.symbol, contract: baseToken.address,
+        chainSlug: requestedChain, chainId: requestedChain === 'robinhood' ? ROBINHOOD_CHAIN_ID : 8453,
+        tokenAddress: baseToken.address, priceUsd, priceChange24hPct, priceChange6hPct, priceChange1hPct, pairCreatedAt,
         ageMinutes, liquidityUsd, volume24h, fdvUsd, marketCapUsd, marketCapStatus, valuationBasis: valuation.basis, valuationUsd: valuation.valueUsd, valuationLabel: valuation.label, valuationSublabel: valuationCardDisplay.sublabel, valuationVerified: valuation.verified, valuationReason: valuation.reason, valuationCortexLine: getRadarCortexValuationLine(), isEstablished, holderVerified: false, evidenceGaps, riskLevel: 'SAFE', honeypot: null,
         simulationStatus: 'open_check', simulationReason: null, simulationLabel: '', simulationCortexLine: '', pairAddress: primaryPoolAddress,
         ...(debug ? { marketCapDiagnostics: {
@@ -2205,9 +2349,36 @@ export async function GET(req: NextRequest) {
       : rawTotalBeforeDedupe === 0 ? 'noRawCandidates'
       : tokens.length === 0 ? 'allFilteredOut'
       : 'ok'
+    // BASE-RADAR-NOT-LOADING AUDIT, DISCLOSED (explicitly requested exact shape, on top of the
+    // existing audit above): chainSlug/chainId make the chain this response actually scanned
+    // unambiguous (hard rule: Base Radar must be Base-only — chainSlug='base'/chainId=8453 whenever
+    // requestedChain === 'base', never leaking another chain's identity into a Base response).
+    // providerErrors surfaces the SAME real per-source failedPages detail already computed above,
+    // reshaped to a compact {source,status,errorName,errorMessage} array instead of requiring a
+    // second round-trip into failedPages/baseRadarDiscoverySourceAudit to answer "what exactly
+    // failed." candidatesAfterCategoryFilter/candidatesAfterLiquidityFilter are real running-total
+    // stages (not just drop counts) computed the same reconciling-Math.max(0,...) way as every other
+    // funnel stage in this file. userVisibleError is the literal string the frontend renders (or
+    // null when a real result rendered) — the single field this task exists to make truthful:
+    // never a vague "Open check" when the real cause is a specific provider failure.
+    const candidatesAfterCategoryFilter = Math.max(0, dedupedPoolCount - droppedByEstablishedToken)
+    const candidatesAfterLiquidityFilter = Math.max(0, candidatesAfterCategoryFilter - droppedByAbsoluteLiquidityFloor - droppedByLiquidityFloorSpecifically)
+    const providerErrors = [
+      ...failedPages.map(p => ({ source: p.source, status: p.status, errorName: p.errorName, errorMessage: p.errorMessage })),
+      ...(dexScreenerFallbackAttempted && dexScreenerFallbackError
+        ? [{ source: 'dexscreener_fallback', status: null, errorName: null, errorMessage: dexScreenerFallbackError }]
+        : []),
+    ]
+    const userVisibleError = baseRadarFinalState === 'providerUnavailable'
+      ? (providerErrors[0]
+        ? `${providerErrors[0].source} failed: ${providerErrors[0].errorMessage ?? providerErrors[0].errorName ?? `HTTP ${providerErrors[0].status ?? 'unknown'}`}`
+        : 'All discovery providers failed to return data this cycle.')
+      : null
     const baseRadarLoadAudit = {
       requestId,
       route: '/api/radar',
+      chainSlug: requestedChain,
+      chainId: requestedChain === 'robinhood' ? ROBINHOOD_CHAIN_ID : 8453,
       status: baseRadarFinalState === 'providerUnavailable' ? 503 : 200,
       totalDurationMs: Date.now() - now,
       // STAGE TIMING, DISCLOSED (perf: "can we make it faster"): real per-stage durations, not
@@ -2225,9 +2396,12 @@ export async function GET(req: NextRequest) {
       providersAttempted: sourcesAttempted,
       providersSucceeded: sourcesSucceeded,
       providersFailed: sourcesFailedCount,
+      providerErrors,
       candidatesRaw: rawTotalBeforeDedupe,
       candidatesAfterDedupe: dedupedPoolCount,
       candidatesAfterChainFilter: dedupedPoolCount,
+      candidatesAfterCategoryFilter,
+      candidatesAfterLiquidityFilter,
       candidatesAfterQualityFilter: rankedCandidates.length,
       candidatesRendered: tokens.length,
       // Same counters the debug filterFunnel below reports, read from the same real gate
@@ -2243,6 +2417,7 @@ export async function GET(req: NextRequest) {
       },
       finalState: baseRadarFinalState,
       errorShownToUser: baseRadarFinalState === 'providerUnavailable',
+      userVisibleError,
     }
     const payload = { tokens, stats, fetchedAt: new Date().toISOString(), limitedLiveFeed, mode: requestedMode, page: radarPage, hasMore: hasMorePages, hiddenLowEvidenceCount, hiddenLowValuation, hiddenBelow80k, hiddenLowHolders, hiddenHolderUnavailable, hiddenLiquidityLow, hiddenValuationUnavailable, hiddenConcentrationUnavailable, holderCheckBudgetExhausted, candidatePoolExhausted, holderProviderReachable, holderProviderUnavailableCount, aboveEarlyRangeCount, establishedDisplayedCount, discoveryDegraded, discoveryDegradedSignificant, sourcesFailedCount, sourceBackoffSkippedCount, sourceBackoffTtlMs: DISCOVERY_FAILURE_BACKOFF_MS, baseRadarSourceAudit, baseRadarCandidateGateAudit, baseRadarDiscoverySourceAudit, baseRadarHolderConcentrationAudit, baseRadarLoadAudit, requestId, finalState: baseRadarFinalState }
     const debugPayload = {
@@ -2332,8 +2507,13 @@ export async function GET(req: NextRequest) {
     // actual prior successful response, and only when this cycle's live fetch came back with
     // nothing at all.
     if (sourcesSucceeded === 0 && cachedPayload && cachedPayload.payload.tokens.length > 0) {
+      // LAST-GOOD-CACHE VISIBILITY, DISCLOSED (required fix: "if live providers fail, show last-good
+      // cached Base results"): servedFromStaleCache is a plain, always-present (not debug-gated)
+      // signal so the frontend can show a subtle "showing cached results" note instead of presenting
+      // an aging response as if it were this cycle's fresh live data.
       return NextResponse.json({
         ...cachedPayload.payload,
+        servedFromStaleCache: true,
         ...(debug ? { _debug: { ...(cachedPayload.payload._debug ?? {}), servedStaleOnSourceFailure: true, cacheHit: true } } : {}),
       })
     }

@@ -77,6 +77,9 @@ assert.match(scannerCode, /setResult\(null\)/, 'a new scan must reset the previo
     'requestId', 'route', 'status', 'totalDurationMs', 'cacheHit', 'providersAttempted', 'providersSucceeded',
     'providersFailed', 'candidatesRaw', 'candidatesAfterDedupe', 'candidatesAfterChainFilter',
     'candidatesAfterQualityFilter', 'candidatesRendered', 'rejectedReasons', 'finalState', 'errorShownToUser',
+    // BASE-RADAR-NOT-LOADING AUDIT, DISCLOSED: additive fields from the "audit/fix Base Radar not
+    // loading" task's exact requested shape.
+    'chainSlug', 'chainId', 'providerErrors', 'candidatesAfterCategoryFilter', 'candidatesAfterLiquidityFilter', 'userVisibleError',
   ]) {
     assert.ok(routeCode.includes(field), `baseRadarLoadAudit must include ${field}`)
   }

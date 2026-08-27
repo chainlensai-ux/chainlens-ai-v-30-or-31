@@ -13,6 +13,8 @@ const tests = [
   'test-clark-market-metric-routing.mjs',
   'test-clark-market-persistence.mjs',
   'test-clark-pump-intent.mjs',
+  'test-base-radar-chain-strict.mjs',
+  'test-base-radar-provider-fallback.mjs',
   'test-pump-alerts-discovery.mjs',
   'test-pump-7d-fallback.mjs',
   'test-pump-snapshots.mjs',
