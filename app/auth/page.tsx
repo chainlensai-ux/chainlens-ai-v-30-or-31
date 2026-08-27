@@ -59,7 +59,7 @@ export default function AuthPage() {
   // read/wrote the same `loading` flag, so the two screenshots were of the SAME state, not two
   // simultaneous requests). Split so each action's button only ever reflects its own request.
   const [googleLoading, setGoogleLoading] = useState(false);
-  const [authCheckLoading, setAuthCheckLoading] = useState(true);
+  const [authCheckLoading, setAuthCheckLoading] = useState(false);
   const [error, setError] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     return authCallbackError(window.location.href);
@@ -88,7 +88,7 @@ export default function AuthPage() {
     }, 8_000)
 
     async function checkExistingUser() {
-      let data: { session?: { user?: { app_metadata?: { provider?: string }; email_confirmed_at?: string | null } } | null } | null = null
+      let data: { session?: { access_token?: string; user?: { app_metadata?: { provider?: string }; email_confirmed_at?: string | null } } | null } | null = null
       let sessionError: { message?: string } | null = null
       try {
         const raced = await Promise.race([
@@ -121,6 +121,12 @@ export default function AuthPage() {
           setAuthCheckLoading(false);
           return;
         }
+        // Form is already visible (authCheckLoading starts false). Only
+        // navigate if the session is actually usable; otherwise stay on the form.
+        if (!data.session.access_token) {
+          return;
+        }
+        setAuthCheckLoading(false);
         const nextParam = new URLSearchParams(window.location.search).get('next')
         router.replace(isSafeInternalPath(nextParam) ? nextParam : '/terminal');
         return;
@@ -139,6 +145,7 @@ export default function AuthPage() {
           Promise.resolve().then(() => supabase.auth.signOut());
           return;
         }
+        setAuthCheckLoading(false);
         const nextParam = new URLSearchParams(window.location.search).get('next')
         router.replace(isSafeInternalPath(nextParam) ? nextParam : '/terminal');
       }
@@ -149,7 +156,11 @@ export default function AuthPage() {
       window.clearTimeout(safety);
       subscription.unsubscribe();
     };
-  }, [router]);
+  // Empty deps: [router] re-subscribe was clearing the 8s safety timeout
+  // before it could fire, and SSR of useState(true) left "Checking session…"
+  // frozen when hydration/effect never ran.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleGoogle() {
     setError(null);
