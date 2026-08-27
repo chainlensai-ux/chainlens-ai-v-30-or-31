@@ -440,7 +440,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // Failure message must not just say "Token data unavailable right now."
   assert.ok(!routeFile.includes('"Token data unavailable right now."'), 'stale "unavailable" fallback removed from fetchTokenEvidence')
   assert.ok(routeFile.includes('Market, LP, and holder data'), 'specific failure message for route failure covers market/LP/holders')
-  assert.ok(routeFile.includes('Token not found on ${chainDisplayLabel(chain)}'), 'specific chain-aware failure message for no pool data')
+  assert.ok(routeFile.includes('Token not found on ${chainDisplayLabel(chainForClarkTools)}'), 'specific chain-aware failure message for no pool data')
 
   // Provider names must not appear in public Clark answers
   const publicFormatterCode = routeFile.match(/function formatTokenScan[\s\S]*?^}/m)?.[0] ?? ''
@@ -732,7 +732,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(!/clarkDebugReceipt[\s\S]{0,2000}cookie:\s*clarkInternalCtx\.cookie[^B]/.test(routeFile), 'clarkDebugReceipt must not leak raw cookie value')
 
   // Task 3: Clark threads its own debug flag and mode into the /api/token payload
-  assert.ok(routeFile.includes('tokenInternalApiPayload = { contract: tokenAddress, chain: toTokenApiChain(chain), ...(clarkDebugMode ? { debug: true } : {}), mode: wantsFastPreview ? "clark_fast" : "clark_core" }'), 'Clark forwards debug flag and clark_core/clark_fast mode to /api/token payload (chain-strict, no Base fallback)')
+  assert.ok(routeFile.includes('tokenInternalApiPayload = { contract: tokenAddress, chain: toTokenApiChain(chainForClarkTools), ...(clarkDebugMode ? { debug: true } : {}), mode: wantsFastPreview ? "clark_fast" : "clark_core" }'), 'Clark forwards debug flag and clark_core/clark_fast mode to /api/token payload (chain-strict, no Base fallback)')
 
   // Task 4: payload shape sent to /api/token is { contract, chain } (safe fields only)
   assert.ok(routeFile.includes('callInternalApi(origin, "/api/token", tokenInternalApiPayload'), 'fetchTokenEvidence calls /api/token with tokenInternalApiPayload')
@@ -1101,7 +1101,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(riskOut.includes('Proxy: no proxy detected.'), 'risk explanation includes no proxy')
   assert.ok(riskOut.includes('Security: Open Check — Security simulation unavailable.'), 'risk explanation includes provider-free security simulation status')
 
-  assert.ok(routeFile.includes('tokenEvidenceChain(ev, chain)'), 'Clark derives formatter labels from actual token evidence chain')
+  assert.ok(routeFile.includes('tokenEvidenceChain(ev, chainForClarkTools)'), 'Clark derives formatter labels from actual token evidence chain')
   assert.ok(routeFile.includes('opts.cachedEvidence.chain = evidenceChain'), 'lastToken cached evidence stores corrected chain')
   assert.ok(routeFile.includes('chain: evidenceChain'), 'lastToken memory stores corrected chain')
 }
@@ -1403,15 +1403,15 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // supported EVM chains (base/eth/bnb/robinhood) and returns null only for truly
   // unsupported chains, which callers surface honestly instead of defaulting to Base.
   assert.ok(routeFile.includes('function toTokenApiChain(chain: string): "base" | "eth" | "bnb" | "robinhood" | null {'), 'toTokenApiChain mapping helper exists')
-  assert.ok(routeFile.includes('chain: toTokenApiChain(chain), ...(clarkDebugMode'), 'tokenInternalApiPayload uses the mapped chain with no silent Base fallback')
+  assert.ok(routeFile.includes('chain: toTokenApiChain(chainForClarkTools), ...(clarkDebugMode'), 'tokenInternalApiPayload uses the mapped chain with no silent Base fallback')
   assert.doesNotMatch(routeFile, /toTokenApiChain\((?:input\.)?chain\) \?\? "base"/, 'no silent Base fallbacks remain')
   assert.ok(routeFile.includes("isn't available yet"), 'unsupported requested chain gets an honest message instead of a silent Base fallback')
 
   // Failure/partial read wording must reflect the requested chain, not a hardcoded Base label.
-  assert.ok(routeFile.includes('`Chain: ${chainDisplayLabel(tokenEvidenceChain(ev, chain))}.`'), 'token read chain line uses the evidence-resolved chain label')
+  assert.ok(routeFile.includes('`Chain: ${chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools))}.`'), 'token read chain line uses the evidence-resolved chain label')
   assert.ok(!routeFile.includes('`- Chain: Base`'), 'no hardcoded Base chain label remains in token read output')
-  assert.ok(routeFile.includes('formatFastTokenRead(ev, chainDisplayLabel(tokenEvidenceChain(ev, chain)))'), 'fast token read uses the resolved chain label')
-  assert.ok(routeFile.includes('formatTokenScanResult(ev, chainDisplayLabel(tokenEvidenceChain(ev, chain)))'), 'full token read uses the resolved chain label')
+  assert.ok(routeFile.includes('formatFastTokenRead(ev, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)))'), 'fast token read uses the resolved chain label')
+  assert.ok(routeFile.includes('formatTokenScanResult(ev, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)))'), 'full token read uses the resolved chain label')
 }
 
 {

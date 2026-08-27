@@ -989,10 +989,17 @@ function toTokenApiChain(chain: string): "base" | "eth" | "bnb" | "robinhood" | 
   return null;
 }
 
-function tokenEvidenceChain(ev: TokenScanEvidence | null | undefined, fallback: SupportedChain): SupportedChain {
+// MULTI-CHAIN DISPLAY FIX, DISCLOSED (same incident as the auto-chain-detection fix): this only
+// ever recognized "eth"/"ethereum"/"base" in the evidence's own reported chain — a real BNB or
+// Robinhood scan's evidence fell straight through to the fallback regardless of what chain it
+// actually ran on, which is exactly the class of bug that produced "TOKEN SAFETY — ? (Base)" for a
+// real ETH token whose evidence never got a chance to say otherwise.
+function tokenEvidenceChain(ev: TokenScanEvidence | null | undefined, fallback: SupportedChain | "robinhood"): SupportedChain | "robinhood" {
   const raw = String(ev?.chain ?? "").toLowerCase();
   if (raw === "eth" || raw === "ethereum") return "ethereum";
   if (raw === "base") return "base";
+  if (raw === "bnb" || raw === "bsc") return "bnb";
+  if (raw === "robinhood") return "robinhood";
   return fallback;
 }
 
@@ -8598,7 +8605,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if ((preferToken || (!preferWallet && !preferWhale)) && sessionMem.lastToken?.cachedEvidence) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "risk_explanation", toolsUsed: ["memory"],
-        analysis: formatRiskExplanation(sessionMem.lastToken.cachedEvidence, chainDisplayLabel(chain)), quotaConsumed: false,
+        analysis: formatRiskExplanation(sessionMem.lastToken.cachedEvidence, chainDisplayLabel(chainForClarkTools)), quotaConsumed: false,
       };
     }
     if ((preferWallet || !sessionMem.lastToken?.cachedEvidence) && sessionMem.lastWallet?.address) {
@@ -8636,11 +8643,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     // CHAIN-STRICT (Clark deployer audit): refuse silently scanning on Base — surface
     // unsupported chains honestly instead of defaulting.
-    const fullReportChain = toTokenApiChain(chain);
+    const fullReportChain = toTokenApiChain(chainForClarkTools);
     if (!fullReportChain) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "token.fullReport", toolsUsed: [],
-        analysis: `Full token reports aren't supported for ${chainDisplayLabel(chain)} yet — try Base, Ethereum, BNB, or Robinhood Chain.`,
+        analysis: `Full token reports aren't supported for ${chainDisplayLabel(chainForClarkTools)} yet — try Base, Ethereum, BNB, or Robinhood Chain.`,
         clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: ["unsupported_chain"], clarkToolLatencyMs: 0,
       };
     }
@@ -8663,7 +8670,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       clarkToolStatuses: Object.fromEntries(evidenceBundle.results.map((r) => [r.tool, r.status])),
       clarkEvidenceMissing: evidenceBundle.missing,
       clarkToolLatencyMs: evidenceBundle.latencyMs,
-      clarkScannerCacheKey: normalizeClarkScannerCacheKey({ intent: "token.fullReport", address: tokenAddress, chain: toTokenApiChain(chain), prompt }),
+      clarkScannerCacheKey: normalizeClarkScannerCacheKey({ intent: "token.fullReport", address: tokenAddress, chain: toTokenApiChain(chainForClarkTools), prompt }),
       groundedEvidenceBundle: evidenceBundle,
     };
   }
@@ -9100,7 +9107,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
     let analysis: string;
     let intentBadge: string;
-    const followupChainLabel = chainDisplayLabel(tokenEvidenceChain(ev, chain));
+    const followupChainLabel = chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools));
     if (followupKind === "dev_rug") { analysis = formatDevRugCheck(ev, followupChainLabel); intentBadge = "dev_rug_check"; }
     else if (followupKind === "lp_lock") { analysis = formatLpLockCheck(ev, followupChainLabel); intentBadge = "lp_lock_check"; }
     else if (followupKind === "risk") { analysis = formatRiskExplanation(ev, followupChainLabel); intentBadge = "risk_explanation"; }
@@ -9687,7 +9694,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (!target) return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: [], analysis: "CORTEX could not verify the origin wallet from live data. Token context is still saved." };
     // CHAIN-STRICT (Clark deployer audit): forward the session's resolved chain; skip rather
     // than silently probing Base for chains the dev-wallet module does not support.
-    const thisDevChain = toTokenApiChain(chain);
+    const thisDevChain = toTokenApiChain(chainForClarkTools);
     const devRes = thisDevChain
       ? await callInternalApi(origin, "/api/dev-wallet", { contractAddress: target, chain: thisDevChain }, authHeader ?? undefined)
       : { ok: false as const, json: null };
@@ -10239,7 +10246,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // runs when explicitly requested via opts.fastPreview.
     const wantsFastPreview = opts?.fastPreview === true;
     const wantsFullScan = !wantsFastPreview;
-    const tokenInternalApiPayload = { contract: tokenAddress, chain: toTokenApiChain(chain), ...(clarkDebugMode ? { debug: true } : {}), mode: wantsFastPreview ? "clark_fast" : "clark_core" };
+    const tokenInternalApiPayload = { contract: tokenAddress, chain: toTokenApiChain(chainForClarkTools), ...(clarkDebugMode ? { debug: true } : {}), mode: wantsFastPreview ? "clark_fast" : "clark_core" };
     const tokenFetchPromise = callInternalApi(origin, "/api/token", tokenInternalApiPayload, authHeader ?? undefined, verifiedPlan, wantsFastPreview ? 9000 : TOKEN_CORE_TIMEOUT_MS)
       .then((r) => { tokenData = r; return r; })
       .catch((e: unknown) => {
@@ -10256,7 +10263,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     let honeypotNetworkError = false;
     // CHAIN-STRICT: skip the honeypot sim entirely for chains with no chainId mapping
     // (null from toTokenApiChain) instead of silently probing as Base.
-    const honeypotChain = toTokenApiChain(chain);
+    const honeypotChain = toTokenApiChain(chainForClarkTools);
     const honeypotPromise = honeypotChain == null
       ? Promise.resolve(null)
       : fetchHoneypotSecurity(tokenAddress, honeypotChain)
@@ -10360,7 +10367,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const sectionsMissing: Array<{ section: string; reason: string }> = [];
 
     if (hasMarket) sectionsPresent.push("market");
-    else sectionsMissing.push({ section: "market", reason: noPoolData ? `no active pool data on ${chainDisplayLabel(chain)}` : tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable" });
+    else sectionsMissing.push({ section: "market", reason: noPoolData ? `no active pool data on ${chainDisplayLabel(chainForClarkTools)}` : tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable" });
 
     if (hasHolders) sectionsPresent.push("holders");
     else sectionsMissing.push({ section: "holders", reason: tokenRouteFailed ? `token route ${tokenRouteStatus}` : "unavailable" });
@@ -10373,7 +10380,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
     if (hasHoneypot) sectionsPresent.push("security_sim");
     else {
-      const securityMissingReason = tokenRouteStatus === "auth_failed" ? "auth_failed" : honeypotStatus === "timed_out" ? "security_simulation_timed_out" : honeypotStatus === "failed" ? "security_simulation_failed" : toTokenApiChain(chain) === null ? "unsupported_chain" : "security_simulation_unavailable";
+      const securityMissingReason = tokenRouteStatus === "auth_failed" ? "auth_failed" : honeypotStatus === "timed_out" ? "security_simulation_timed_out" : honeypotStatus === "failed" ? "security_simulation_failed" : toTokenApiChain(chainForClarkTools) === null ? "unsupported_chain" : "security_simulation_unavailable";
       sectionsMissing.push({ section: "security_sim", reason: securityMissingReason });
     }
 
@@ -10397,7 +10404,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         missingEvidence.push("Market, LP, and holder data: no response from token route / Open Check");
       }
     } else if (noPoolData) {
-      missingEvidence.push(`Token not found on ${chainDisplayLabel(chain)} or no active pool data`);
+      missingEvidence.push(`Token not found on ${chainDisplayLabel(chainForClarkTools)} or no active pool data`);
     }
 
     if (!hasHoneypot) {
@@ -10420,7 +10427,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       tokenInternalApiReturnedTokenFields,
       requestUrlPath: "/api/token",
       method: "POST",
-      chain: toTokenApiChain(chain),
+      chain: toTokenApiChain(chainForClarkTools),
       address: tokenAddress,
       startedAt: new Date(tokenRouteStart).toISOString(),
       tokenRouteDurationMs,
@@ -10681,7 +10688,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       "",
       `Verdict: ${verdict}`,
       `Confidence: ${confidence}.`,
-      `Chain: ${chainDisplayLabel(tokenEvidenceChain(ev, chain))}.`,
+      `Chain: ${chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools))}.`,
       `Market: ${marketLine}.`,
       `LP: ${lpLine}.`,
       `Holders: ${holdersLine}.`,
@@ -10805,10 +10812,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     // EVM 0x address can never be a Solana mint; and for chains Token Core cannot scan,
     // say so honestly instead of silently falling back to Base.
-    if (toTokenApiChain(chain) === null) {
+    if (toTokenApiChain(chainForClarkTools) === null) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "token_scan", toolsUsed: [],
-        analysis: `Token Core scanning on ${chainDisplayLabel(chain)} isn't available yet — I can run this on Base, Ethereum, BNB, or Robinhood Chain. Name the chain ("scan this on base/eth/bnb/robinhood") to continue.`,
+        analysis: `Token Core scanning on ${chainDisplayLabel(chainForClarkTools)} isn't available yet — I can run this on Base, Ethereum, BNB, or Robinhood Chain. Name the chain ("scan this on base/eth/bnb/robinhood") to continue.`,
         intentBadge: "token_scan",
         actions: buildRoutedActions(["Open Token Scanner"]),
         quotaConsumed: false,
@@ -10870,10 +10877,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       formatterUsed = "inline_fallback_total";
     } else if (tokenApiMode === "clark_fast" && !ev.ok) {
       // Clark fast mode: market/pool identity present, deeper sections intentionally skipped.
-      analysis = formatFastTokenRead(ev, chainDisplayLabel(tokenEvidenceChain(ev, chain)));
+      analysis = formatFastTokenRead(ev, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)));
       formatterUsed = "formatFastTokenRead";
     } else if (ev.ok && !partialEvidenceUsed) {
-      analysis = formatTokenScanResult(ev, chainDisplayLabel(tokenEvidenceChain(ev, chain)));
+      analysis = formatTokenScanResult(ev, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)));
       formatterUsed = "formatTokenScanResult";
     } else {
       // Partial evidence — at least one branch succeeded
@@ -10887,7 +10894,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       confidence: memConfidence,
       normalizedEvidence: memConfidence !== "failed" ? ev : null,
       cachedEvidence: memConfidence !== "failed" ? ev : null,
-      chain: tokenEvidenceChain(ev, chain) === "ethereum" ? "eth" : "base",
+      chain: tokenEvidenceChain(ev, chainForClarkTools) === "ethereum" ? "eth" : "base",
     });
     updateMemIntent(sessionMem, "token_analysis");
 
@@ -11033,7 +11040,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           status: "open_check",
           statusReason: "Wallet dev-history support is unavailable from this Clark path.",
           inputType: "Dev wallet",
-          chain: chainDisplayLabel(chain),
+          chain: chainDisplayLabel(chainForClarkTools),
           address: input.address,
           deployer: input.address,
           owner: null,
@@ -11060,7 +11067,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       // CHAIN-STRICT DEPLOYER LOOKUP (Clark deployer audit): forward the resolved chain so a
       // BNB/Robinhood/ETH token never receives Base deployer evidence by silent default.
       // Skip entirely for chains /api/dev-wallet does not support rather than defaulting.
-      const devWalletChain = toTokenApiChain(chain);
+      const devWalletChain = toTokenApiChain(chainForClarkTools);
       if (!devWalletChain) {
         walletEvidence = null;
       } else {
@@ -11092,7 +11099,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         feature: "clark-ai", chain, mode: "analysis", intent: "token_ape_risk", toolsUsed: [],
         analysis: formatNoTokenInMemory(),
         intentBadge: "token_ape_risk",
-        actions: buildTokenRiskActions(null, chainDisplayLabel(chain)),
+        actions: buildTokenRiskActions(null, chainDisplayLabel(chainForClarkTools)),
         quotaConsumed: false,
         clarkRiskIntent: "token_ape_risk",
         clarkAddressType: "token",
@@ -11104,7 +11111,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
-    const tokenChainLabel = chainDisplayLabel(tokenEvidenceChain(r.ev, chain));
+    const tokenChainLabel = chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools));
     const analysis = formatTokenApeRiskRead(r.ev, tokenChainLabel);
     updateMemIntent(sessionMem, "token_ape_risk");
     const usableApeEvidence = hasUsableTokenEvidence(r.ev);
@@ -11159,7 +11166,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed: [],
         analysis: "Paste a token contract address (CA) or a dev/deployer wallet address and I'll check it for rug-history signals.",
         intentBadge: "dev_rug_history",
-        actions: buildDevHistoryActions(null, chainDisplayLabel(chain)),
+        actions: buildDevHistoryActions(null, chainDisplayLabel(chainForClarkTools)),
         quotaConsumed: false,
         clarkRiskIntent: "dev_rug_history",
         clarkAddressType: "none",
@@ -11174,7 +11181,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed: [],
         analysis: "Is this a token contract or a dev wallet?",
         intentBadge: "dev_rug_history",
-        actions: buildDevHistoryActions(null, chainDisplayLabel(chain)),
+        actions: buildDevHistoryActions(null, chainDisplayLabel(chainForClarkTools)),
         quotaConsumed: false,
         clarkRiskIntent: "dev_rug_history",
         clarkAddressType: "ambiguous",
@@ -11192,7 +11199,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         toolsUsed: evidence.sourcesUsed,
         analysis: formatDevHistoryRead({ status: evidence.status, inputType: evidence.inputType, chain: evidence.chain, address: evidence.address, deployer: evidence.deployer, owner: evidence.owner, linkedWallets: evidence.linkedWallets, confidence: evidence.confidence, tokenLocalRiskSignals: evidence.tokenLocalRiskSignals, previousLaunchedTokens: evidence.previousLaunchedTokens, repeatedRiskyPatterns: evidence.repeatedRiskyPatterns, linkedWalletClusterSignals: evidence.linkedWalletClusterSignals, suspiciousFundingPatterns: evidence.suspiciousFundingPatterns, priorConfirmedRugEvidence: evidence.priorConfirmedRugEvidence, gaps: evidence.evidenceGaps, walletEvidenceChecked: evidence.walletEvidenceChecked }),
         intentBadge: "dev_rug_history",
-        actions: buildDevHistoryActions(null, chainDisplayLabel(chain)),
+        actions: buildDevHistoryActions(null, chainDisplayLabel(chainForClarkTools)),
         quotaConsumed: false,
         clarkRiskIntent: "dev_rug_history",
         clarkAddressType: "wallet", clarkDevHistoryResolvedFrom: "wallet_input",
@@ -11212,7 +11219,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         feature: "clark-ai", chain, mode: "analysis", intent: "dev_rug_history", toolsUsed: [],
         analysis: formatDevHistoryRead({ status: "open_check", gaps: ["token evidence"] }),
         intentBadge: "dev_rug_history",
-        actions: buildDevHistoryActions(null, chainDisplayLabel(chain)),
+        actions: buildDevHistoryActions(null, chainDisplayLabel(chainForClarkTools)),
         quotaConsumed: false,
         clarkRiskIntent: "dev_rug_history",
         clarkAddressType: "token",
@@ -11227,7 +11234,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const collected = await collectDevHistoryEvidence({ address: tokenAddress, inputType: "token" });
     const derived = collected.evidence;
     const toolsUsed: string[] = derived.sourcesUsed;
-    const devTokenChainLabel = collected.tokenEvidence ? chainDisplayLabel(tokenEvidenceChain(collected.tokenEvidence, chain)) : chainDisplayLabel(chain);
+    const devTokenChainLabel = collected.tokenEvidence ? chainDisplayLabel(tokenEvidenceChain(collected.tokenEvidence, chainForClarkTools)) : chainDisplayLabel(chainForClarkTools);
     const analysis = formatDevHistoryRead({ status: derived.status, inputType: derived.inputType, chain: derived.chain ?? devTokenChainLabel, address: derived.address ?? tokenAddress, deployer: derived.deployer, owner: derived.owner, linkedWallets: derived.linkedWallets, confidence: derived.confidence, tokenLocalRiskSignals: derived.tokenLocalRiskSignals, previousLaunchedTokens: derived.previousLaunchedTokens, repeatedRiskyPatterns: derived.repeatedRiskyPatterns, linkedWalletClusterSignals: derived.linkedWalletClusterSignals, suspiciousFundingPatterns: derived.suspiciousFundingPatterns, priorConfirmedRugEvidence: derived.priorConfirmedRugEvidence, gaps: derived.evidenceGaps, walletEvidenceChecked: derived.walletEvidenceChecked });
     updateMemIntent(sessionMem, "dev_rug_history");
     // This dev-history read becomes the latest active token context too, same reasoning as the
@@ -11268,7 +11275,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
-    const analysis = formatTokenSafetyAnswer(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chain)));
+    const analysis = formatTokenSafetyAnswer(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools)));
     if (!r.fromMemory) {
       updateMemToken(sessionMem, r.address, r.ev.token?.symbol ?? null, r.ev.token?.name ?? null, analysis, {
         confidence: tokenCoreConfidence(r.ev, ((r.ev as Record<string, unknown>)._evidenceSectionsPresent as string[] | undefined) ?? [], ((r.ev as Record<string, unknown>)._evidenceSectionsMissing as Array<{ section: string; reason: string }> | undefined) ?? [], hasUsableTokenEvidence(r.ev)),
@@ -11304,7 +11311,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
-    const analysis = formatDevRugCheck(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chain)));
+    const analysis = formatDevRugCheck(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools)));
     updateMemIntent(sessionMem, "dev_rug_check");
     const rugVerdictMeta = tokenScanVerdictMeta(r.ev, hasUsableTokenEvidence(r.ev));
     return {
@@ -11325,7 +11332,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (!tokenFollowupRefreshRequested) {
       const r = await resolveTokenForFollowup({ fromMemoryOnly: true });
       if (!("needsAddress" in r)) {
-        const analysis = formatLpLockCheck(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chain)));
+        const analysis = formatLpLockCheck(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools)));
         updateMemIntent(sessionMem, "lp_lock_check");
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: ["memory"],
@@ -11358,7 +11365,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
     if (!liqRes.ok || raw.ok === false || Object.keys(data).length === 0) {
       const ev = await fetchTokenEvidence(tokenAddress);
-      const analysis = formatLpLockCheck(ev, chainDisplayLabel(tokenEvidenceChain(ev, chain)));
+      const analysis = formatLpLockCheck(ev, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)));
       updateMemIntent(sessionMem, "lp_lock_check");
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: ["token_scan"],
@@ -11378,7 +11385,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       market: { liquidity: typeof data.lp_total_liquidity_usd === "number" ? data.lp_total_liquidity_usd : null },
       lpControl: { status: lpStatus, reason: typeof data.lpController === "string" ? data.lpController : null, confidence: null, poolType: displayModel },
     };
-    const analysis = formatLpLockCheck(ev, chainDisplayLabel(tokenEvidenceChain(ev, chain)));
+    const analysis = formatLpLockCheck(ev, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)));
     updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? null, ev.token?.name ?? null, analysis);
     updateMemIntent(sessionMem, "lp_lock_check");
     return {
@@ -11404,7 +11411,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
-    const analysis = formatRiskExplanation(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chain)));
+    const analysis = formatRiskExplanation(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools)));
     updateMemIntent(sessionMem, "risk_explanation");
     const riskVerdictMeta = tokenScanVerdictMeta(r.ev, hasUsableTokenEvidence(r.ev));
     return {
@@ -12432,7 +12439,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const tokenSymbol = (_devScanMismatch ? undefined : evidence.tokenScan?.token?.symbol) ?? (_devLiqMismatch ? undefined : evidence.liquidity?.token?.symbol) ?? resolvedSymbol ?? "?";
     // CHAIN-STRICT AUDIT (Clark deployer lookup audit): receipt proving the deployer answer came
     // from the requested chain's own evidence — never a wrong-chain cache or Base default.
-    const devAuditChain = toTokenApiChain(chain);
+    const devAuditChain = toTokenApiChain(chainForClarkTools);
     const dw = evidence.devWallet;
     // FAST DEPLOYER RESOLVER, DISCLOSED: exact audit shape requested — proves which of the fast-
     // resolver sources (cache / direct resolver / explorer / RPC) vs. the full-scan fallback
@@ -12470,8 +12477,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         // show, so it gets the requested short "Deployer / Chain / Confidence / Evidence / Next"
         // format instead of the fuller CORTEX-style read the slow, full-scan path still uses.
         analysis: evidence.devWallet.fastPath
-          ? renderFastDeployerAnswer(tokenName, tokenSymbol, resolvedAddress, evidence.devWallet, chainDisplayLabel(chain))
-          : renderDevWalletFocusedRead(tokenName, tokenSymbol, resolvedAddress, evidence.devWallet, chainDisplayLabel(chain)),
+          ? renderFastDeployerAnswer(tokenName, tokenSymbol, resolvedAddress, evidence.devWallet, chainDisplayLabel(chainForClarkTools))
+          : renderDevWalletFocusedRead(tokenName, tokenSymbol, resolvedAddress, evidence.devWallet, chainDisplayLabel(chainForClarkTools)),
         intent: plan.intent,
         toolsUsed,
         clarkDeployerLookupAudit,
@@ -12485,7 +12492,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       // name the chain checked, sources attempted, why it failed, and the next action.
       analysis: [
         "I couldn't verify the deployer from available sources.", "",
-        `- Chain checked: ${chainDisplayLabel(chain)}`,
+        `- Chain checked: ${chainDisplayLabel(chainForClarkTools)}`,
         `- Sources attempted: ${[
           ...(clarkDeployerLookupAudit.explorerAttempted ? ["chain explorer contract-creation lookup"] : []),
           ...(clarkDeployerLookupAudit.rpcAttempted ? ["RPC earliest-activity lookup"] : []),

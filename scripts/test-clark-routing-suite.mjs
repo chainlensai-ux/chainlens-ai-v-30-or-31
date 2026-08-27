@@ -22,6 +22,7 @@ const tests = [
   'test-clark-multichain-scan.mjs',
   'test-clark-honest-empty-scan.mjs',
   'test-clark-auto-chain-detect.mjs',
+  'test-clark-legacy-cascade-chain.mjs',
   'test-pump-alerts-discovery.mjs',
   'test-pump-7d-fallback.mjs',
   'test-pump-snapshots.mjs',
