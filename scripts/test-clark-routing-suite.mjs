@@ -24,6 +24,7 @@ const tests = [
   'test-clark-auto-chain-detect.mjs',
   'test-clark-legacy-cascade-chain.mjs',
   'test-clark-skipped-chain-honesty.mjs',
+  'test-clark-multichain-disclosure.mjs',
   'test-pump-alerts-discovery.mjs',
   'test-pump-7d-fallback.mjs',
   'test-pump-snapshots.mjs',

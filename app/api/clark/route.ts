@@ -3437,7 +3437,7 @@ async function resolveClarkEntity(input: { address: string; requestedChain: Supp
 // verified to be correct. Now tracks which chains were actually probed vs skipped outright, and
 // returns that so the caller can say so honestly instead of presenting an unverified Base label
 // with the same confidence as a real multi-chain probe.
-async function detectChainForAddress(address: string): Promise<{ chain: SupportedChain | "robinhood"; resolvedEntityType: 'contract' | 'wallet' | 'unknown'; skippedChains: (SupportedChain | "robinhood")[] }> {
+async function detectChainForAddress(address: string): Promise<{ chain: SupportedChain | "robinhood"; resolvedEntityType: 'contract' | 'wallet' | 'unknown'; skippedChains: (SupportedChain | "robinhood")[]; multiChainContracts: (SupportedChain | "robinhood")[] }> {
   const allChains: (SupportedChain | "robinhood")[] = ["base", "ethereum", "bnb"];
   if (isRobinhoodChainAvailable()) allChains.push("robinhood");
   const rpcAvailability = allChains.map((c) => ({ chain: c, rpcUrl: getRpcUrlForClarkCodeCheck(c) }));
@@ -3447,11 +3447,21 @@ async function detectChainForAddress(address: string): Promise<{ chain: Supporte
     probeChain,
     result: await resolveClarkEntity({ address, requestedChain: probeChain, userIntent: 'ambiguous' }),
   })));
-  const contractHit = probes.find((p) => p.result.resolvedEntityType === 'contract');
-  if (contractHit) return { chain: contractHit.probeChain, resolvedEntityType: 'contract', skippedChains };
+  // SAME-ADDRESS-MULTI-CHAIN DISCLOSURE, DISCLOSED: reported live, this exact incident — the same
+  // contract address genuinely has real, verifiable code on MORE than one chain (a "vanity"/CREATE2
+  // cross-chain deployment). "on bnb" returned real but different evidence (proxy/mint/ownership
+  // unverified vs the Base read's confirmed values) from the no-chain-named default, proving both
+  // reads were real, not a routing bug — the earlier default just silently picked whichever chain
+  // was probed first (Base) with no indication another real match existed. Every contract hit is now
+  // collected, not just the winner, so the caller can disclose the ambiguity instead of presenting
+  // one chain's read with the same confidence as an unambiguous single-chain match.
+  const contractHits = probes.filter((p) => p.result.resolvedEntityType === 'contract');
+  const multiChainContracts = contractHits.map((p) => p.probeChain);
+  const contractHit = contractHits[0];
+  if (contractHit) return { chain: contractHit.probeChain, resolvedEntityType: 'contract', skippedChains, multiChainContracts };
   const walletHit = probes.find((p) => p.result.resolvedEntityType === 'wallet');
-  if (walletHit) return { chain: walletHit.probeChain, resolvedEntityType: 'wallet', skippedChains };
-  return { chain: "base", resolvedEntityType: 'unknown', skippedChains };
+  if (walletHit) return { chain: walletHit.probeChain, resolvedEntityType: 'wallet', skippedChains, multiChainContracts };
+  return { chain: "base", resolvedEntityType: 'unknown', skippedChains, multiChainContracts };
 }
 
 // Dedicated, narrow keyword sets for the specific token/wallet question shapes this fix targets —
@@ -6188,6 +6198,10 @@ function buildEmptyTokenScanReply(address: string | null, scannedChainLabel: str
   ].join(" ");
 }
 
+function buildMultiChainDisclosure(scannedChainLabel: string, otherChainLabels: string[]): string {
+  return `Note: this exact contract address has real code on more than one chain (${scannedChainLabel} and ${otherChainLabels.join(", ")}). Showing the ${scannedChainLabel} read below — ask "on ${otherChainLabels[0].toLowerCase()}" for that chain's read instead.\n\n`;
+}
+
 function renderQuickTokenScan(report: ClarkFullReportEvidence, scannedChainLabel: string, skippedChainLabels: string[] = []): string {
   if (isGenuinelyEmptyReport(report)) return buildEmptyTokenScanReply(report.token.address, scannedChainLabel, skippedChainLabels);
   const verdict = evaluateFullReportVerdict(report);
@@ -8381,6 +8395,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // was never probed) can report exactly which chains were skipped, not just the gate's own
   // wallet/token mismatch message.
   let chainsSkippedForClarkTools: (SupportedChain | "robinhood")[] = [];
+  // SAME-ADDRESS-MULTI-CHAIN DISCLOSURE, DISCLOSED: hoisted for the same reason as
+  // chainsSkippedForClarkTools above — populated only when the auto-detect probe (no chain named)
+  // finds real contract code for this exact address on MORE than one chain, so the later scan
+  // render can say so instead of silently presenting one chain's read as the only match.
+  let multiChainContractsForClarkTools: (SupportedChain | "robinhood")[] = [];
   // AUTO-CHAIN-DETECTION, DISCLOSED: true only when the prompt itself names a chain — memory/UI
   // defaults don't count as "explicit" here, since the whole point is that a bare pasted address
   // with no stated chain should be probed, not silently assumed to be on whatever the UI/memory
@@ -8446,6 +8465,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         hasContractCode = resolvedEntityType === 'unknown' ? null : resolvedEntityType === 'contract';
         skippedChains = detected.skippedChains;
         chainsSkippedForClarkTools = detected.skippedChains;
+        multiChainContractsForClarkTools = detected.multiChainContracts;
         if (resolvedEntityType !== 'unknown') chainForClarkTools = detected.chain;
       }
       const checkedChainLabels = (["base", "ethereum", "bnb", ...(isRobinhoodChainAvailable() ? ["robinhood"] as const : [])] as (SupportedChain | "robinhood")[])
@@ -12744,7 +12764,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
             toolsUsed,
           };
         }
-        const fbScanText = renderQuickTokenScan(fallbackReport, chainDisplayLabel(chainForClarkTools), chainsSkippedForClarkTools.map((c) => chainDisplayLabel(c)));
+        let fbScanText = renderQuickTokenScan(fallbackReport, chainDisplayLabel(chainForClarkTools), chainsSkippedForClarkTools.map((c) => chainDisplayLabel(c)));
+        if (multiChainContractsForClarkTools.length > 1) {
+          const otherChains = multiChainContractsForClarkTools.filter((c) => c !== chainForClarkTools).map((c) => chainDisplayLabel(c));
+          if (otherChains.length > 0) fbScanText = buildMultiChainDisclosure(chainDisplayLabel(chainForClarkTools), otherChains) + fbScanText;
+        }
         updateMemToken(sessionMem, resolvedAddress, fallbackReport.token.symbol ?? null, fallbackReport.token.name ?? null, fbScanText);
         updateMemIntent(sessionMem, "token_analysis");
         return {
@@ -12804,7 +12828,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
               `- Interpretation: moves are reliable only when volume and liquidity rise together without new contract/deployer risk flags.`,
               `- Missing context: ${pack.missing.length ? pack.missing.join(", ") : "limited missing fields"}`
             ].join("\n")
-          : renderQuickTokenScan(report, chainDisplayLabel(chainForClarkTools), chainsSkippedForClarkTools.map((c) => chainDisplayLabel(c)));
+          : (() => {
+              const scanText = renderQuickTokenScan(report, chainDisplayLabel(chainForClarkTools), chainsSkippedForClarkTools.map((c) => chainDisplayLabel(c)));
+              const otherChains = multiChainContractsForClarkTools.filter((c) => c !== chainForClarkTools).map((c) => chainDisplayLabel(c));
+              return otherChains.length > 0 ? buildMultiChainDisclosure(chainDisplayLabel(chainForClarkTools), otherChains) + scanText : scanText;
+            })();
     updateMemToken(sessionMem, token.address, token.symbol ?? null, token.name ?? null, analysis);
     updateMemIntent(sessionMem, "token_analysis");
     return { feature: "clark-ai", chain, mode: "analysis", analysis, intent: plan.intent, toolsUsed };
