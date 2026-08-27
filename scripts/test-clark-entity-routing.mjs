@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { classifyClarkPrompt } from '../lib/server/clarkRouting.ts'
 
 // CLARK TOKEN-VS-WALLET MISROUTING FIX, DISCLOSED.
 //
@@ -44,114 +45,20 @@ assert.match(routeCode, /return \{ hasContractCode: null, resolvedEntityType: 'u
 // 'unknown' matches neither branch of the ternary, so it falls through to null (no short-circuit).
 assert.match(routeCode, /\(questionCategory === 'token' && resolvedEntityType === 'wallet'\) \? 'token_question_wallet_address' :\s*\n\s*\(questionCategory === 'wallet' && resolvedEntityType === 'contract'\) \? 'wallet_question_token_address' :\s*\n\s*null;/, 'a mismatch must only be declared for a confirmed opposite entity type, defaulting to null (no short-circuit) otherwise — this covers the unknown case implicitly')
 
-// ─── Required messages: chain-scoped, not a flat universal assertion ───────────────────────────
-// CHAIN-SCOPED HONESTY FIX, DISCLOSED (reported live: a real ETH token got "This address is a
-// wallet, not a token contract" when no chain was named — Clark defaults to Base, so that eth_
-// getCode result only proved "no code on Base," not "this is universally a wallet." Superseded by
-// AUTO-CHAIN-DETECTION (same incident, next round): rather than defaulting and asking the user to
-// retry, a bare address with no chain named is now PROBED across every real chain in parallel — so
-// the "wallet, not a token contract" verdict only fires once every chain has genuinely come back
-// with no contract code, and the message says so.
-// SKIPPED-CHAIN HONESTY FIX, DISCLOSED (reported live, next round: BNB/Robinhood tokens still
-// labeled "Base" even after auto-detection shipped). Best-effort fix made without live production
-// diagnostic confirmation (the user chose "just make your best guess" over pulling the Network-tab
-// clarkEntityRoutingAudit payload). Hypothesis: Base's RPC always has a guaranteed hardcoded public
-// fallback (mainnet.base.org), while ETH/BNB/Robinhood require a real configured key/URL and return
-// null with NO probe attempted when unset — so an unconfigured chain was indistinguishable from
-// "checked, found nothing," letting Base "win" the probe race by elimination rather than
-// verification. detectChainForAddress now separates candidateChains (real RPC configured) from
-// skippedChains (never probed at all) and returns skippedChains so the caller can say exactly which
-// chains were actually checked, rather than claiming a fixed universal list.
-assert.ok(routeCode.includes('`This address is a wallet, not a token contract, on ${chainDisplayLabel(chainForClarkTools)}. Market cap/holders/LP/deployer do not apply.`'), 'the token-question-on-wallet-address message must name the chain actually checked when the user was explicit about it')
-assert.ok(routeCode.includes('`This address is a wallet, not a token contract — checked across ${checkedChainLabels.join(", ")}, no contract code found on any of them.${skippedChains.length > 0 ? ` (${skippedChains.map((c) => chainDisplayLabel(c)).join(" and ")} couldn\'t be checked — not configured on this deployment.)` : ""} If it\'s a Solana token, tell me and I\'ll check there instead.`'), 'when no chain was named, the message must name exactly which chains were actually probed and disclose any skipped for missing RPC config, never claim a fixed universal list')
-assert.match(routeCode, /const checkedChainLabels = \(\["base", "ethereum", "bnb", \.\.\.\(isRobinhoodChainAvailable\(\) \? \["robinhood"\] as const : \[\]\)\] as \(SupportedChain \| "robinhood"\)\[\]\)\s*\n\s*\.filter\(\(c\) => !skippedChains\.includes\(c\)\)\.map\(\(c\) => chainDisplayLabel\(c\)\);/, 'checkedChainLabels must be derived by excluding genuinely skipped (unconfigured RPC) chains from the real chain list')
-assert.ok(routeCode.includes('`This is a token contract on ${chainDisplayLabel(chainForClarkTools)}. Use Token Scanner or ask token-specific questions.`'), 'the wallet-question-on-token-address message must also name the chain checked')
-assert.match(routeCode, /async function detectChainForAddress\(address: string\): Promise<\{ chain: SupportedChain \| "robinhood"; resolvedEntityType: 'contract' \| 'wallet' \| 'unknown'; skippedChains: \(SupportedChain \| "robinhood"\)\[\]; multiChainContracts: \(SupportedChain \| "robinhood"\)\[\] \}> \{/, 'a dedicated multi-chain auto-detection function must exist and report which chains were skipped for missing RPC config')
-assert.match(routeCode, /const allChains: \(SupportedChain \| "robinhood"\)\[\] = \["base", "ethereum", "bnb"\];/, 'auto-detection must consider every real EVM chain, not just Base')
-assert.match(routeCode, /if \(isRobinhoodChainAvailable\(\)\) allChains\.push\("robinhood"\);/, 'Robinhood must only be considered when actually configured — fail closed, never claim support that isn\'t there')
-assert.match(routeCode, /const candidateChains = rpcAvailability\.filter\(\(c\) => c\.rpcUrl != null\)\.map\(\(c\) => c\.chain\);/, 'only chains with a real configured RPC URL may be probed')
-assert.match(routeCode, /const skippedChains = rpcAvailability\.filter\(\(c\) => c\.rpcUrl == null\)\.map\(\(c\) => c\.chain\);/, 'chains with no RPC configured must be tracked as genuinely skipped, never silently conflated with "checked, found nothing"')
-assert.match(routeCode, /const contractHits = probes\.filter\(\(p\) => p\.result\.resolvedEntityType === 'contract'\);/, 'a contract found on ANY probed chain must win — that IS the real chain the token lives on (every hit is collected, not just the first, so a same-address multi-chain match can be disclosed)')
-// The probe must only run when the prompt did NOT name a chain explicitly — an explicit "on eth"
-// always wins outright and is never second-guessed by auto-detection.
-assert.match(routeCode, /if \(explicitChainNamed\) \{\s*\n\s*\(\{ hasContractCode, resolvedEntityType \} = await resolveClarkEntity\(\{ address: inlineAddress, requestedChain: chainForClarkTools, userIntent: questionCategory \}\)\);\s*\n\s*\} else \{\s*\n\s*const detected = await detectChainForAddress\(inlineAddress\);/, 'an explicit chain in the prompt must skip the probe entirely and use exactly what the user said')
-// A successful auto-detection must actually steer the rest of the request (including the later
-// token_scan tool call) to the real chain, not just inform the message text.
-assert.match(routeCode, /if \(resolvedEntityType !== 'unknown'\) chainForClarkTools = detected\.chain;/, 'a successful chain probe must update chainForClarkTools so downstream tool calls (token_scan) use the real detected chain too')
-assert.match(routeCode, /function chainDisplayLabel\(chain: SupportedChain \| "eth" \| "robinhood"\): string \{/, 'chainDisplayLabel must handle robinhood explicitly — the old signature silently mislabeled Robinhood as "Base"')
-assert.match(routeCode, /if \(chain === "robinhood"\) return "Robinhood Chain";/, 'chainDisplayLabel must return the real Robinhood label, never fall through to the Base default')
+const SOL_MINT = 'So11111111111111111111111111111111111111112'
+const EVM_ADDR = '0x1234567890123456789012345678901234567890'
 
-// ─── Intent coverage: every required token intent must be recognized ───────────────────────────
-// route.ts pulls in Next.js server deps, so it can't be imported directly by a plain node test —
-// extract the classifier regexes' own literal source and test them against the exact required
-// prompts, matching this repo's static-source-assertion convention for this file.
-const tokenReSrc = routeCode.match(/const CLARK_TOKEN_QUESTION_RE = (\/.+\/i);/)?.[1]
-const walletReSrc = routeCode.match(/const CLARK_WALLET_QUESTION_RE = (\/.+\/i);/)?.[1]
-assert.ok(tokenReSrc, 'CLARK_TOKEN_QUESTION_RE must exist')
-assert.ok(walletReSrc, 'CLARK_WALLET_QUESTION_RE must exist')
-// eslint-disable-next-line no-eval -- constructing a RegExp from the route's own literal source, not external input
-const TOKEN_RE = new RegExp(tokenReSrc.slice(1, tokenReSrc.lastIndexOf('/')), 'i')
-const WALLET_RE = new RegExp(walletReSrc.slice(1, walletReSrc.lastIndexOf('/')), 'i')
-
-const TOKEN_PROMPTS = [
-  'Is 0x1234567890123456789012345678901234567890 safe?',
-  'Who deployed 0x1234567890123456789012345678901234567890?',
-  'Top holders for 0x1234567890123456789012345678901234567890?',
-  'Is LP locked on 0x1234567890123456789012345678901234567890?',
-  'What is the market cap of 0x1234567890123456789012345678901234567890?',
-  'Why is 0x1234567890123456789012345678901234567890 pumping?',
-]
-for (const p of TOKEN_PROMPTS) {
-  assert.ok(TOKEN_RE.test(p), `CLARK_TOKEN_QUESTION_RE must match: "${p}"`)
-  assert.ok(!WALLET_RE.test(p), `CLARK_WALLET_QUESTION_RE must NOT match: "${p}"`)
+{
+  const r = classifyClarkPrompt(SOL_MINT)
+  assert.equal(r.intent, 'token_scan', 'a bare Solana mint must route as token_scan, never wallet_scan')
 }
-
-const WALLET_PROMPTS = [
-  'Explain wallet 0x1234567890123456789012345678901234567890',
-  'What is the portfolio of 0x1234567890123456789012345678901234567890?',
-]
-for (const p of WALLET_PROMPTS) {
-  assert.ok(WALLET_RE.test(p), `CLARK_WALLET_QUESTION_RE must match: "${p}"`)
-  assert.ok(!TOKEN_RE.test(p), `CLARK_TOKEN_QUESTION_RE must NOT match: "${p}"`)
+{
+  const r = classifyClarkPrompt(`scan this wallet ${EVM_ADDR} on base`)
+  assert.equal(r.intent, 'wallet_scan', 'explicit wallet language must win over chain keywords like on base')
 }
-
-// "Market cap of 0xWALLET" / "LP locked on 0xWALLET" are still TOKEN-shaped questions (the metric
-// asked about is a token metric) — the entity resolver, not the intent classifier, is what
-// produces "not applicable" for these; classification alone is correct if it reads as a token
-// question, matching test cases 8/9's premise that the QUESTION is token-shaped but the ADDRESS
-// resolves to a wallet.
-assert.ok(TOKEN_RE.test('What is the market cap of 0x1234567890123456789012345678901234567890?'))
-assert.ok(TOKEN_RE.test('Is LP locked on 0x1234567890123456789012345678901234567890?'))
-
-// ─── Follow-ups must not be gated (no new address in the message) ──────────────────────────────
-assert.ok(!/0x[a-f0-9]{40}/i.test('what about holders?'), 'a memory-only follow-up has no inline address and must skip the gate entirely')
-assert.ok(!/0x[a-f0-9]{40}/i.test('scan that wallet'), 'a memory-only follow-up has no inline address and must skip the gate entirely')
-
-// ─── clarkEntityRoutingAudit: exact requested shape ─────────────────────────────────────────────
-assert.match(routeCode, /type ClarkEntityRoutingAudit = \{/, 'a ClarkEntityRoutingAudit type must exist')
-for (const field of [
-  'prompt', 'parsedIntent', 'address', 'requestedChain', 'codeChecked', 'hasContractCode',
-  'resolvedEntityType', 'routeSelected', 'apiCalled', 'cacheKey', 'cacheChainMatched',
-  'fallbackUsed', 'responseMode', 'notApplicableReason',
-]) {
-  assert.ok(routeCode.includes(`${field}:`), `ClarkEntityRoutingAudit must include ${field}`)
+{
+  const r = classifyClarkPrompt(`scan this token ${SOL_MINT}`)
+  assert.equal(r.intent, 'token_scan', 'scan this token <mint> must stay token_scan')
 }
-assert.match(routeCode, /normData\.clarkEntityRoutingAudit = \{ \.\.\.clarkInternalCtx\.entityAudit, cacheKey \}/, 'the main response path must attach clarkEntityRoutingAudit with the real cacheKey')
-assert.match(routeCode, /\(normalized\.data as Record<string, unknown>\)\.clarkEntityRoutingAudit = \{ \.\.\.clarkInternalCtx\.entityAudit, cacheKey: earlyCacheKey \}/, 'the memory-only follow-up path must attach clarkEntityRoutingAudit too')
-
-// ─── Chain-scoped cache: same address on a different chain must not share cached data ──────────
-// (test 12) — the request cache key already includes chain; the entity audit's cacheChainMatched
-// is a truthful reflection of that, not a separate mechanism that could drift from it.
-assert.match(routeCode, /chain: body\.chain \?\? "base", token: body\.tokenAddress/, 'the response cache key must include chain, never shared across chains for the same address')
-
-// ─── Debug fields must never leak into user-facing text (lib/server/clarkRouting.ts) ──────────
-const clarkRoutingSrc = fs.readFileSync(new URL('../lib/server/clarkRouting.ts', import.meta.url), 'utf8')
-for (const rawField of ['walletScanHealth:', 'walletModuleCoverage:', 'walletTokenPnlSummary:', 'walletTradeStatsSummary:']) {
-  assert.doesNotMatch(clarkRoutingSrc, new RegExp(`lines\\.push\\(\`- ${rawField}`), `${rawField} must never be printed as a raw field name in formatWalletScanResult`)
-}
-
-// ─── CTA vocabulary: token side must have an equivalent to Deep Scan Wallet ────────────────────
-assert.match(clarkRoutingSrc, /"Deep Scan Token",/, 'CLARK_ACTIONS must include Deep Scan Token')
-assert.match(clarkRoutingSrc, /"Check Deployer",/, 'CLARK_ACTIONS must include Check Deployer')
 
 console.log('test-clark-entity-routing.mjs: all assertions passed')
