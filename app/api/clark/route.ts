@@ -126,7 +126,30 @@ const CLARK_DAILY_BY_PLAN: Record<string, number> = { free: 5, pro: 50, elite: 3
 const CLARK_MINUTE_BY_PLAN: Record<string, number> = { free: 2, pro: 5, elite: 5, unauth: 1 }
 const CLARK_LOW_COST_MINUTE_BY_PLAN: Record<string, number> = { free: 15, pro: 20, elite: 20, unauth: 8 }
 const clarkRateLowCostMinute = new Map<string, { count: number; resetAt: number }>()
-let clarkInternalCtx: { authToken?: string; verifiedPlan?: 'free' | 'pro' | 'elite'; cookie?: string } = {}
+// TOKEN-VS-WALLET MISROUTING FIX, DISCLOSED (reported live: "Is 0x... safe?"/"Who deployed 0x..."/
+// "Top holders for 0x..." etc. sometimes answered with wallet portfolio/PnL data instead of token
+// evidence). Same request-scoped mutable pattern already used for authToken/verifiedPlan/cookie —
+// resolveClarkEntity's on-chain eth_getCode check happens ONCE, early in handleClarkAI (before any
+// of the ~40 existing intent branches run), and its result is stashed here so the POST handler's
+// single response-finalization point (same point clarkAudit is attached at) can surface it as
+// clarkEntityRoutingAudit without a second RPC round-trip.
+type ClarkEntityRoutingAudit = {
+  prompt: string;
+  parsedIntent: 'token' | 'wallet' | 'ambiguous';
+  address: string | null;
+  requestedChain: string;
+  codeChecked: boolean;
+  hasContractCode: boolean | null;
+  resolvedEntityType: 'contract' | 'wallet' | 'unknown' | 'none';
+  routeSelected: string;
+  apiCalled: string | null;
+  cacheKey: string | null;
+  cacheChainMatched: boolean;
+  fallbackUsed: boolean;
+  responseMode: 'normal' | 'not_applicable';
+  notApplicableReason: string | null;
+}
+let clarkInternalCtx: { authToken?: string; verifiedPlan?: 'free' | 'pro' | 'elite'; cookie?: string; entityAudit?: ClarkEntityRoutingAudit } = {}
 
 // Plan feature access matrix
 function planAllows(plan: string | undefined, feature: 'token_full_report' | 'wallet_scan' | 'liquidity_check' | 'dev_wallet' | 'whale_alerts' | 'pump_alerts' | 'base_radar_full' | 'base_market_preview'): boolean {
@@ -3341,6 +3364,33 @@ async function classifyAddressForClark(address: string, chain: SupportedChain | 
   } catch {
     return "unknown";
   }
+}
+
+// TOKEN-VS-WALLET MISROUTING FIX, DISCLOSED: thin, reusable wrapper around the existing
+// eth_getCode-based classifyAddressForClark — never a second implementation of the on-chain check.
+// Deliberately fails OPEN (returns 'unknown', never blocks) when the RPC check itself can't run —
+// blocking a real answer because the classifier call failed would violate "never say unavailable
+// until all correct sources were attempted."
+async function resolveClarkEntity(input: { address: string; requestedChain: SupportedChain | string | undefined; userIntent: 'token' | 'wallet' | 'ambiguous' }): Promise<{ hasContractCode: boolean | null; resolvedEntityType: 'contract' | 'wallet' | 'unknown' }> {
+  const kind = await classifyAddressForClark(input.address, input.requestedChain);
+  if (kind === 'wallet') return { hasContractCode: false, resolvedEntityType: 'wallet' };
+  if (kind === 'contract') return { hasContractCode: true, resolvedEntityType: 'contract' };
+  return { hasContractCode: null, resolvedEntityType: 'unknown' };
+}
+
+// Dedicated, narrow keyword sets for the specific token/wallet question shapes this fix targets —
+// independent of the broader legacy intent classifiers (appIntent/routedClassification/
+// analystRouting/detectIntent), which stay untouched. Matches the exact intent lists from the
+// token-vs-wallet routing audit.
+const CLARK_TOKEN_QUESTION_RE = /\b(is\s+(?:it|this|that)\s+safe|is\s+0x[a-f0-9]{40}\s+safe|token\s+safe|safe\s+token|risk\s+level|market\s*cap|marketcap|\bfdv\b|top\s+holders?|holder\s+count|holder\s+concentration|lp\s+locked|is\s+lp\s+locked|liquidity\s+locked|is\s+liquidity\s+locked|liquidity\s+safety|who\s+deployed|deployer\s+of|check\s+deployer|honeypot|buy\s*tax|sell\s*tax|is\s+.{0,50}\s+pumping|why\s+is\s+.{0,50}\s+pumping|why\s+.{0,50}\s+pumping|scan\s+(?:this\s+)?token|token\s+scan)\b/i;
+const CLARK_WALLET_QUESTION_RE = /\b(portfolio|holdings?|\bpnl\b|p&l|profitable|wallet\s+behavior|explain\s+(?:this\s+|that\s+)?wallet|whale\s+wallet|sniper\s+wallet|dev\s+wallet\s+behavior|scan\s+(?:this\s+|that\s+)?wallet|wallet\s+scan|analyze\s+(?:this\s+)?wallet)\b/i;
+
+function classifyClarkQuestionCategory(prompt: string): 'token' | 'wallet' | 'ambiguous' {
+  const isToken = CLARK_TOKEN_QUESTION_RE.test(prompt);
+  const isWallet = CLARK_WALLET_QUESTION_RE.test(prompt);
+  if (isToken && !isWallet) return 'token';
+  if (isWallet && !isToken) return 'wallet';
+  return 'ambiguous';
 }
 
 function walletScannerDeepLink(address: string, deepScan: boolean): string {
@@ -8159,6 +8209,57 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   const clarkDebugMode = Boolean((body as unknown as Record<string, unknown>).debug) || process.env.NODE_ENV !== 'production';
   const appIntentTools = appIntent.cta.map((a) => a.label).join(' · ');
 
+  // TOKEN-VS-WALLET MISROUTING FIX, DISCLOSED (reported live: token-specific questions — "Is 0x...
+  // safe?", "Who deployed 0x...?", "Top holders for 0x...?" — sometimes answered with wallet
+  // portfolio/PnL data). Required flow per the audit: parse intent (classifyClarkQuestionCategory,
+  // deliberately independent of the ~40-branch legacy classifier cascade below — narrow and
+  // directly testable against the exact reported prompts) -> resolve entity type
+  // (resolveClarkEntity, the real eth_getCode check) -> only THEN let routing proceed. Runs before
+  // every existing branch so it can't be bypassed by whichever legacy classifier happens to fire
+  // for a given phrasing. Only gates on an address literally present in THIS message (extractAddress
+  // reads the raw prompt, not session memory) — a memory-resolved follow-up ("what about holders?")
+  // has no new address to misclassify and is left to the existing memory-resolution logic untouched.
+  {
+    const inlineAddress = extractAddress(prompt);
+    const questionCategory = classifyClarkQuestionCategory(prompt);
+    if (inlineAddress && questionCategory !== 'ambiguous') {
+      const { hasContractCode, resolvedEntityType } = await resolveClarkEntity({ address: inlineAddress, requestedChain: chain, userIntent: questionCategory });
+      const mismatch =
+        (questionCategory === 'token' && resolvedEntityType === 'wallet') ? 'token_question_wallet_address' :
+        (questionCategory === 'wallet' && resolvedEntityType === 'contract') ? 'wallet_question_token_address' :
+        null;
+      const baseAudit: ClarkEntityRoutingAudit = {
+        prompt, parsedIntent: questionCategory, address: inlineAddress, requestedChain: chain,
+        codeChecked: resolvedEntityType !== 'unknown' || hasContractCode !== null, hasContractCode,
+        resolvedEntityType: resolvedEntityType === 'unknown' ? 'unknown' : resolvedEntityType,
+        routeSelected: mismatch ? 'not_applicable' : questionCategory === 'token' ? 'token_engine' : 'wallet_engine',
+        apiCalled: 'eth_getCode', cacheKey: null, cacheChainMatched: true, fallbackUsed: false,
+        responseMode: mismatch ? 'not_applicable' : 'normal',
+        notApplicableReason: mismatch,
+      };
+      clarkInternalCtx.entityAudit = baseAudit;
+      if (mismatch === 'token_question_wallet_address') {
+        const href = walletScannerDeepLink(inlineAddress, false);
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "entity_mismatch", toolsUsed: ["address_code_check"],
+          analysis: "This address is a wallet, not a token contract. Market cap/holders/LP/deployer do not apply.",
+          ui: { intentBadge: 'Entity Check', actions: [{ label: 'Scan Wallet', href }, { label: 'Deep Scan Wallet', href: walletScannerDeepLink(inlineAddress, true) }] },
+          actions: [{ label: 'Scan Wallet', href }, { label: 'Deep Scan Wallet', href: walletScannerDeepLink(inlineAddress, true) }],
+        };
+      }
+      if (mismatch === 'wallet_question_token_address') {
+        const chainQuery = chain === 'base' ? '' : `&chain=${chain === 'ethereum' ? 'eth' : chain}`;
+        const href = `/terminal/token-scanner?contract=${inlineAddress}${chainQuery}`;
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "entity_mismatch", toolsUsed: ["address_code_check"],
+          analysis: "This is a token contract. Use Token Scanner or ask token-specific questions.",
+          ui: { intentBadge: 'Entity Check', actions: [{ label: 'Open Token Scanner', href }, { label: 'Deep Scan Token', href }] },
+          actions: [{ label: 'Open Token Scanner', href }, { label: 'Deep Scan Token', href }],
+        };
+      }
+    }
+  }
+
   // CLARK-BASIC-INTENT: classify and answer basic chat (greeting/basic_question/product_help/
   // general_crypto_question) directly, with zero provider calls, before any tool routing.
   // Scan requests without an address are asked for input here (also zero provider calls) instead
@@ -12680,6 +12781,7 @@ export async function POST(req: NextRequest) {
     const moreResult = await handleClarkAI(body, origin, authHeader, effectivePlan, sessionMem);
     const normalized = { ok: true, feature: body.feature, data: normalizeApiReplyShape(moreResult, body) } as Record<string, unknown>
     ;(normalized.data as Record<string, unknown>).clarkAudit = buildClarkAudit({ result: moreResult, body, responseTimeMs: Date.now() - clarkAuditRequestStartedAt, cacheUsed: false })
+    if (clarkInternalCtx.entityAudit) (normalized.data as Record<string, unknown>).clarkEntityRoutingAudit = { ...clarkInternalCtx.entityAudit, cacheKey: earlyCacheKey }
     if (debugMemory) normalized._debug = {
       memory: {
         messageCount: sessionMem.conversationHistory.length,
@@ -12962,6 +13064,11 @@ export async function POST(req: NextRequest) {
     if (quotaConsumed) rateResult.commitDaily()
     normalized.quotaConsumed = quotaConsumed
     normData.clarkAudit = buildClarkAudit({ result, body, responseTimeMs: Date.now() - clarkAuditRequestStartedAt, cacheUsed: false })
+    // TOKEN-VS-WALLET MISROUTING FIX, DISCLOSED: entityAudit was stashed once, early, by the gate
+    // inside handleClarkAI (before the on-chain eth_getCode check would ever need to run twice).
+    // cacheKey is only known here, at the real finalization point, so it's overlaid onto the
+    // already-computed audit rather than guessed inside the gate.
+    if (clarkInternalCtx.entityAudit) normData.clarkEntityRoutingAudit = { ...clarkInternalCtx.entityAudit, cacheKey }
     const cacheTtl = body.feature === "clark-ai" ? 90_000 : body.feature === "whale-alerts" || body.feature === "pump-alerts" || body.feature === "base-radar" ? 120_000 : 60_000
     // Never cache free/memory-sourced responses (quotaConsumed === false): the cache key has no
     // session or wallet-memory state, so caching these would replay a stale answer (e.g. a

@@ -23,6 +23,11 @@ export const CLARK_ACTIONS = [
   "Open Token Scanner",
   "Scan Wallet",
   "Deep Scan Wallet",
+  // TOKEN-VS-WALLET MISROUTING FIX, DISCLOSED: "Deep Scan Token" and "Check Deployer" were missing
+  // from the fixed CTA vocabulary entirely — a token-side response could only ever offer "Open
+  // Token Scanner"/"Run LP Check", with no equivalent to "Deep Scan Wallet" on the token side.
+  "Deep Scan Token",
+  "Check Deployer",
   "Run LP Check",
   "Open Whale Alerts",
   "Refresh Market Data",
@@ -876,8 +881,20 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
   } else {
     lines.push(`- Data freshness: ${fresh === "live" ? "live" : "live"}`);
   }
-  if (health) lines.push(`- walletScanHealth: ${health.status ?? "unknown"}${health.summary ? ` — ${health.summary}` : ""}`);
-  if (coverage) lines.push(`- walletModuleCoverage: portfolio=${coverage.portfolio?.status ?? "unknown"}; activity=${coverage.activity?.status ?? "unknown"}; pnl=${coverage.fifoPnL?.status ?? "unknown"}; tradeStats=${coverage.tradeStats?.status ?? "unknown"}`);
+  // TOKEN-VS-WALLET MISROUTING FIX, DISCLOSED: these four lines used to print the raw internal
+  // field names (walletScanHealth/walletModuleCoverage/walletTokenPnlSummary/
+  // walletTradeStatsSummary) directly into the user-facing reply — a debug dump, not an answer.
+  // Same underlying evidence, converted to plain wording; nothing that was previously visible is
+  // now hidden, it just no longer reads like an internal API response.
+  if (health) lines.push(`- Scan health: ${health.status === "ok" ? "complete" : health.status === "limited_pnl" ? "partial (PnL evidence limited)" : String(health.status ?? "unknown")}${health.summary ? ` — ${health.summary}` : ""}`);
+  if (coverage) {
+    const modulesLimited: string[] = [];
+    if (coverage.portfolio?.status && coverage.portfolio.status !== "ok") modulesLimited.push("portfolio");
+    if (coverage.activity?.status && coverage.activity.status !== "ok") modulesLimited.push("activity");
+    if (coverage.fifoPnL?.status && coverage.fifoPnL.status !== "ok") modulesLimited.push("PnL");
+    if (coverage.tradeStats?.status && coverage.tradeStats.status !== "ok") modulesLimited.push("trade stats");
+    lines.push(`- Coverage: ${modulesLimited.length > 0 ? `${modulesLimited.join(", ")} incomplete` : "all modules complete"}`);
+  }
   lines.push(`- Open lots / closed lots: ${String(result.openLots ?? "unverified")} / ${String(result.closedLots ?? "unverified")}`);
 
   // Task 2: never show "PnL coverage: not requested" after a wallet scan involving PnL/deep scan.
@@ -885,8 +902,14 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
   lines.push(`- PnL status: ${pnlStatusLabel(pnlQ.label)}`);
   lines.push(`- Reason: ${pnlQ.reason}`);
   lines.push(`- Historical recovery status: ${String(result.walletHistoricalCoverageSummary?.status ?? result.historicalRecoveryStatus ?? (deep ? "open check" : "portfolio preview"))}`);
-  if (result.walletTokenPnlSummary) lines.push(`- walletTokenPnlSummary: ${String(result.walletTokenPnlSummary.status ?? result.walletTokenPnlSummary.reason ?? JSON.stringify(result.walletTokenPnlSummary))}`);
-  if (result.walletTradeStatsSummary) lines.push(`- walletTradeStatsSummary: ${String(result.walletTradeStatsSummary.status ?? JSON.stringify(result.walletTradeStatsSummary))}`);
+  if (result.walletTokenPnlSummary) {
+    const tp = result.walletTokenPnlSummary;
+    lines.push(`- Token-level PnL: ${tp.status === "ok" ? "available" : `partial${tp.reason ? ` — ${tp.reason}` : ""}`}`);
+  }
+  if (result.walletTradeStatsSummary) {
+    const ts = result.walletTradeStatsSummary;
+    lines.push(`- Trade stats: ${ts.status === "ok" ? "available" : "partial because closed lots/cost basis evidence is incomplete"}`);
+  }
   if (tokenReads.length > 0) lines.push(`- Token-level read: ${tokenReads.map((t) => `${t.symbol ?? "?"}:${t.status ?? t.pnlStatus ?? "read"}`).join(", ")}`);
 
   // Task 8: surface provider unavailability honestly instead of generic "locked modules".
@@ -899,8 +922,8 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
       if (m === "activity" && activityDown) labels.push("activity unavailable");
       else if (m === "swapDetection" && swapDown) labels.push("swap detection unavailable");
       else if (m === "priceEvidence" && priceDown) labels.push("price evidence unavailable");
-      else if (m === "fifoPnL") labels.push("fifoPnL: no closed lots yet");
-      else if (m === "tradeStats") labels.push("tradeStats: needs more closed trades");
+      else if (m === "fifoPnL") labels.push("PnL is partial because closed lots/cost basis evidence is incomplete");
+      else if (m === "tradeStats") labels.push("trade stats need more closed trades");
       else labels.push(`${m} pending`);
     }
     lines.push(`- Module status: ${labels.join(" / ")}`);
@@ -1459,6 +1482,8 @@ const CLARK_ACTION_HREF: Record<ClarkAction, string> = {
   "Open Token Scanner": "/terminal/token-scanner",
   "Scan Wallet": "/terminal/wallet-scanner",
   "Deep Scan Wallet": "/terminal/wallet-scanner",
+  "Deep Scan Token": "/terminal/token-scanner",
+  "Check Deployer": "/terminal/token-scanner",
   "Run LP Check": "/terminal/token-scanner",
   "Open Whale Alerts": "/terminal/whale-alerts",
   "Refresh Market Data": "/terminal?refresh=market",

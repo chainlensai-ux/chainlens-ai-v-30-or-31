@@ -153,8 +153,14 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
     historicalRecoveryStatus: 'not_started',
   }, false)
   assert.ok(out.includes('Portfolio found. PnL is limited'))
-  assert.ok(out.includes('walletScanHealth'))
-  assert.ok(out.includes('walletModuleCoverage'))
+  // CLARK ENTITY ROUTING AUDIT, DISCLOSED: formatWalletScanResult used to print the raw internal
+  // field names (walletScanHealth/walletModuleCoverage) straight into the user-facing reply — a
+  // debug dump, not an answer. Converted to plain wording carrying the same evidence; these must
+  // never reappear as literal field names in Clark's output.
+  assert.ok(!out.includes('walletScanHealth'), 'must not print the raw walletScanHealth field name')
+  assert.ok(!out.includes('walletModuleCoverage'), 'must not print the raw walletModuleCoverage field name')
+  assert.ok(out.includes('Scan health: partial (PnL evidence limited)'), 'walletScanHealth must read as plain wording')
+  assert.ok(out.includes('Coverage: activity, PnL, trade stats incomplete'), 'walletModuleCoverage must read as plain wording')
   assert.ok(out.includes('Token-level read'))
   assert.ok(out.includes('Module status'), 'locked modules surfaced as honest Module status')
 }

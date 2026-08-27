@@ -17,6 +17,7 @@ const tests = [
   'test-base-radar-provider-fallback.mjs',
   'test-base-radar-auto-retry.mjs',
   'test-clark-full-audit.mjs',
+  'test-clark-entity-routing.mjs',
   'test-pump-alerts-discovery.mjs',
   'test-pump-7d-fallback.mjs',
   'test-pump-snapshots.mjs',
