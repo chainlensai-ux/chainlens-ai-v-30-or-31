@@ -3401,6 +3401,32 @@ async function resolveClarkEntity(input: { address: string; requestedChain: Supp
   return { hasContractCode: null, resolvedEntityType: 'unknown' };
 }
 
+// AUTO-CHAIN-DETECTION, DISCLOSED (requested: "when I put the contract address, it should know
+// what chain it is" — a bare address with no chain named in the prompt previously always checked
+// Base by default, so a real token that only existed on ETH/BNB/Robinhood got misread as "not a
+// token contract" purely because Clark looked at the wrong network, not because anything was
+// actually wrong with the address). Probes every real, non-fake chain in parallel via the SAME
+// eth_getCode check resolveClarkEntity already uses (never a second implementation) and returns
+// the first chain where the address genuinely has contract code. An EOA has no code on ANY EVM
+// chain, so a wallet verdict from one real probe is enough — it does not need to check every chain
+// to know that. Only runs when the prompt didn't name a chain explicitly; an explicit "on eth"
+// still wins outright and skips this entirely. Robinhood is only probed when
+// isRobinhoodChainAvailable() — same fail-closed gate as everywhere else, never silently claims
+// support that isn't configured.
+async function detectChainForAddress(address: string): Promise<{ chain: SupportedChain | "robinhood"; resolvedEntityType: 'contract' | 'wallet' | 'unknown' }> {
+  const candidateChains: (SupportedChain | "robinhood")[] = ["base", "ethereum", "bnb"];
+  if (isRobinhoodChainAvailable()) candidateChains.push("robinhood");
+  const probes = await Promise.all(candidateChains.map(async (probeChain) => ({
+    probeChain,
+    result: await resolveClarkEntity({ address, requestedChain: probeChain, userIntent: 'ambiguous' }),
+  })));
+  const contractHit = probes.find((p) => p.result.resolvedEntityType === 'contract');
+  if (contractHit) return { chain: contractHit.probeChain, resolvedEntityType: 'contract' };
+  const walletHit = probes.find((p) => p.result.resolvedEntityType === 'wallet');
+  if (walletHit) return { chain: walletHit.probeChain, resolvedEntityType: 'wallet' };
+  return { chain: "base", resolvedEntityType: 'unknown' };
+}
+
 // Dedicated, narrow keyword sets for the specific token/wallet question shapes this fix targets —
 // independent of the broader legacy intent classifiers (appIntent/routedClassification/
 // analystRouting/detectIntent), which stay untouched. Matches the exact intent lists from the
@@ -8309,8 +8335,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // already uses — so an unconfigured Robinhood flag/RPC never silently claims support it doesn't
   // have. Solana is a materially different address format (base58, no eth_getCode equivalent) and
   // is out of scope for this fix — flagged, not silently ignored.
-  const chainForClarkTools: SupportedChain | "robinhood" =
+  let chainForClarkTools: SupportedChain | "robinhood" =
     /\brobinhood\b/i.test(prompt) && isRobinhoodChainAvailable() ? "robinhood" : chain;
+  // AUTO-CHAIN-DETECTION, DISCLOSED: true only when the prompt itself names a chain — memory/UI
+  // defaults don't count as "explicit" here, since the whole point is that a bare pasted address
+  // with no stated chain should be probed, not silently assumed to be on whatever the UI/memory
+  // default happens to be.
+  const explicitChainNamed = /\b(ethereum|eth|bnb|bsc|robinhood|solana|base)\b/i.test(prompt);
 
   const appIntent = resolveClarkIntent(prompt, body.appContext);
   const routedClassification = classifyClarkPrompt(prompt);
@@ -8354,7 +8385,22 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     const questionCategory = classifyClarkQuestionCategory(prompt);
     if (inlineAddress && questionCategory !== 'ambiguous') {
-      const { hasContractCode, resolvedEntityType } = await resolveClarkEntity({ address: inlineAddress, requestedChain: chainForClarkTools, userIntent: questionCategory });
+      // AUTO-CHAIN-DETECTION, DISCLOSED: no chain named in the prompt -> probe every real chain in
+      // parallel instead of assuming the default (Base). When the probe finds a contract, that
+      // chain becomes the one used for this entire request (including the token_scan tool later),
+      // so a real ETH/BNB/Robinhood token no longer gets misread as "not a token contract" purely
+      // because Clark defaulted to the wrong network. An explicit "on eth" always wins outright and
+      // skips this — the user's stated chain is never second-guessed by the probe.
+      let hasContractCode: boolean | null;
+      let resolvedEntityType: 'contract' | 'wallet' | 'unknown';
+      if (explicitChainNamed) {
+        ({ hasContractCode, resolvedEntityType } = await resolveClarkEntity({ address: inlineAddress, requestedChain: chainForClarkTools, userIntent: questionCategory }));
+      } else {
+        const detected = await detectChainForAddress(inlineAddress);
+        resolvedEntityType = detected.resolvedEntityType;
+        hasContractCode = resolvedEntityType === 'unknown' ? null : resolvedEntityType === 'contract';
+        if (resolvedEntityType !== 'unknown') chainForClarkTools = detected.chain;
+      }
       const mismatch =
         (questionCategory === 'token' && resolvedEntityType === 'wallet') ? 'token_question_wallet_address' :
         (questionCategory === 'wallet' && resolvedEntityType === 'contract') ? 'wallet_question_token_address' :
@@ -8364,24 +8410,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         codeChecked: resolvedEntityType !== 'unknown' || hasContractCode !== null, hasContractCode,
         resolvedEntityType: resolvedEntityType === 'unknown' ? 'unknown' : resolvedEntityType,
         routeSelected: mismatch ? 'not_applicable' : questionCategory === 'token' ? 'token_engine' : 'wallet_engine',
-        apiCalled: 'eth_getCode', cacheKey: null, cacheChainMatched: true, fallbackUsed: false,
+        apiCalled: 'eth_getCode', cacheKey: null, cacheChainMatched: true, fallbackUsed: !explicitChainNamed,
         responseMode: mismatch ? 'not_applicable' : 'normal',
         notApplicableReason: mismatch,
       };
       clarkInternalCtx.entityAudit = baseAudit;
-      // CHAIN-SCOPED HONESTY FIX, DISCLOSED (reported live: asked about a real ETH token with no
-      // chain named in the prompt — Clark defaults to Base — and got a flat "This address is a
-      // wallet, not a token contract," which is stated as a universal fact when it's really only
-      // "no contract code on Base." The address WAS a real token, just on a different chain. Every
-      // eth_getCode check is inherently chain-scoped; the reply must say which chain was actually
-      // checked and invite a retry on another one, never assert a global truth from one chain's
-      // result.
-      const explicitChainNamed = /\b(ethereum|eth|bnb|bsc|robinhood|solana|base)\b/i.test(prompt);
       if (mismatch === 'token_question_wallet_address') {
         const href = walletScannerDeepLink(inlineAddress, false);
         const chainCaveat = explicitChainNamed
           ? `This address is a wallet, not a token contract, on ${chainDisplayLabel(chainForClarkTools)}. Market cap/holders/LP/deployer do not apply.`
-          : `This address is a wallet, not a token contract, on ${chainDisplayLabel(chainForClarkTools)} (the chain I checked by default). If it's a token on Ethereum, BNB, Robinhood Chain, or Solana, tell me which one and I'll check there instead.`;
+          : `This address is a wallet, not a token contract — checked across Base, Ethereum, and BNB${isRobinhoodChainAvailable() ? ", and Robinhood Chain" : ""}, no contract code found on any of them. If it's a Solana token, tell me and I'll check there instead.`;
         return {
           feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: "entity_mismatch", toolsUsed: ["address_code_check"],
           analysis: chainCaveat,

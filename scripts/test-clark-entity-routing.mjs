@@ -47,12 +47,24 @@ assert.match(routeCode, /\(questionCategory === 'token' && resolvedEntityType ==
 // ─── Required messages: chain-scoped, not a flat universal assertion ───────────────────────────
 // CHAIN-SCOPED HONESTY FIX, DISCLOSED (reported live: a real ETH token got "This address is a
 // wallet, not a token contract" when no chain was named — Clark defaults to Base, so that eth_
-// getCode result only proved "no code on Base," not "this is universally a wallet." Every
-// mismatch message must say which chain was actually checked and invite a retry on another one
-// when the chain wasn't explicit in the prompt.
+// getCode result only proved "no code on Base," not "this is universally a wallet." Superseded by
+// AUTO-CHAIN-DETECTION (same incident, next round): rather than defaulting and asking the user to
+// retry, a bare address with no chain named is now PROBED across every real chain in parallel — so
+// the "wallet, not a token contract" verdict only fires once every chain has genuinely come back
+// with no contract code, and the message says so.
 assert.ok(routeCode.includes('`This address is a wallet, not a token contract, on ${chainDisplayLabel(chainForClarkTools)}. Market cap/holders/LP/deployer do not apply.`'), 'the token-question-on-wallet-address message must name the chain actually checked when the user was explicit about it')
-assert.ok(routeCode.includes("`This address is a wallet, not a token contract, on ${chainDisplayLabel(chainForClarkTools)} (the chain I checked by default). If it's a token on Ethereum, BNB, Robinhood Chain, or Solana, tell me which one and I'll check there instead.`"), 'when no chain was named, the message must say it defaulted and invite a retry on another chain — never assert a global fact from one chain\'s result')
+assert.ok(routeCode.includes('`This address is a wallet, not a token contract — checked across Base, Ethereum, and BNB${isRobinhoodChainAvailable() ? ", and Robinhood Chain" : ""}, no contract code found on any of them. If it\'s a Solana token, tell me and I\'ll check there instead.`'), 'when no chain was named, the message must reflect the real multi-chain probe, never a single silent default')
 assert.ok(routeCode.includes('`This is a token contract on ${chainDisplayLabel(chainForClarkTools)}. Use Token Scanner or ask token-specific questions.`'), 'the wallet-question-on-token-address message must also name the chain checked')
+assert.match(routeCode, /async function detectChainForAddress\(address: string\): Promise<\{ chain: SupportedChain \| "robinhood"; resolvedEntityType: 'contract' \| 'wallet' \| 'unknown' \}> \{/, 'a dedicated multi-chain auto-detection function must exist')
+assert.match(routeCode, /const candidateChains: \(SupportedChain \| "robinhood"\)\[\] = \["base", "ethereum", "bnb"\];/, 'auto-detection must probe every real EVM chain, not just Base')
+assert.match(routeCode, /if \(isRobinhoodChainAvailable\(\)\) candidateChains\.push\("robinhood"\);/, 'Robinhood must only be probed when actually configured — fail closed, never claim support that isn\'t there')
+assert.match(routeCode, /const contractHit = probes\.find\(\(p\) => p\.result\.resolvedEntityType === 'contract'\);/, 'a contract found on ANY probed chain must win — that IS the real chain the token lives on')
+// The probe must only run when the prompt did NOT name a chain explicitly — an explicit "on eth"
+// always wins outright and is never second-guessed by auto-detection.
+assert.match(routeCode, /if \(explicitChainNamed\) \{\s*\n\s*\(\{ hasContractCode, resolvedEntityType \} = await resolveClarkEntity\(\{ address: inlineAddress, requestedChain: chainForClarkTools, userIntent: questionCategory \}\)\);\s*\n\s*\} else \{\s*\n\s*const detected = await detectChainForAddress\(inlineAddress\);/, 'an explicit chain in the prompt must skip the probe entirely and use exactly what the user said')
+// A successful auto-detection must actually steer the rest of the request (including the later
+// token_scan tool call) to the real chain, not just inform the message text.
+assert.match(routeCode, /if \(resolvedEntityType !== 'unknown'\) chainForClarkTools = detected\.chain;/, 'a successful chain probe must update chainForClarkTools so downstream tool calls (token_scan) use the real detected chain too')
 assert.match(routeCode, /function chainDisplayLabel\(chain: SupportedChain \| "eth" \| "robinhood"\): string \{/, 'chainDisplayLabel must handle robinhood explicitly — the old signature silently mislabeled Robinhood as "Base"')
 assert.match(routeCode, /if \(chain === "robinhood"\) return "Robinhood Chain";/, 'chainDisplayLabel must return the real Robinhood label, never fall through to the Base default')
 
