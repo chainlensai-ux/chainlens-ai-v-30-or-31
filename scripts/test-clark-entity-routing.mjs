@@ -52,12 +52,25 @@ assert.match(routeCode, /\(questionCategory === 'token' && resolvedEntityType ==
 // retry, a bare address with no chain named is now PROBED across every real chain in parallel — so
 // the "wallet, not a token contract" verdict only fires once every chain has genuinely come back
 // with no contract code, and the message says so.
+// SKIPPED-CHAIN HONESTY FIX, DISCLOSED (reported live, next round: BNB/Robinhood tokens still
+// labeled "Base" even after auto-detection shipped). Best-effort fix made without live production
+// diagnostic confirmation (the user chose "just make your best guess" over pulling the Network-tab
+// clarkEntityRoutingAudit payload). Hypothesis: Base's RPC always has a guaranteed hardcoded public
+// fallback (mainnet.base.org), while ETH/BNB/Robinhood require a real configured key/URL and return
+// null with NO probe attempted when unset — so an unconfigured chain was indistinguishable from
+// "checked, found nothing," letting Base "win" the probe race by elimination rather than
+// verification. detectChainForAddress now separates candidateChains (real RPC configured) from
+// skippedChains (never probed at all) and returns skippedChains so the caller can say exactly which
+// chains were actually checked, rather than claiming a fixed universal list.
 assert.ok(routeCode.includes('`This address is a wallet, not a token contract, on ${chainDisplayLabel(chainForClarkTools)}. Market cap/holders/LP/deployer do not apply.`'), 'the token-question-on-wallet-address message must name the chain actually checked when the user was explicit about it')
-assert.ok(routeCode.includes('`This address is a wallet, not a token contract — checked across Base, Ethereum, and BNB${isRobinhoodChainAvailable() ? ", and Robinhood Chain" : ""}, no contract code found on any of them. If it\'s a Solana token, tell me and I\'ll check there instead.`'), 'when no chain was named, the message must reflect the real multi-chain probe, never a single silent default')
+assert.ok(routeCode.includes('`This address is a wallet, not a token contract — checked across ${checkedChainLabels.join(", ")}, no contract code found on any of them.${skippedChains.length > 0 ? ` (${skippedChains.map((c) => chainDisplayLabel(c)).join(" and ")} couldn\'t be checked — not configured on this deployment.)` : ""} If it\'s a Solana token, tell me and I\'ll check there instead.`'), 'when no chain was named, the message must name exactly which chains were actually probed and disclose any skipped for missing RPC config, never claim a fixed universal list')
+assert.match(routeCode, /const checkedChainLabels = \(\["base", "ethereum", "bnb", \.\.\.\(isRobinhoodChainAvailable\(\) \? \["robinhood"\] as const : \[\]\)\] as \(SupportedChain \| "robinhood"\)\[\]\)\s*\n\s*\.filter\(\(c\) => !skippedChains\.includes\(c\)\)\.map\(\(c\) => chainDisplayLabel\(c\)\);/, 'checkedChainLabels must be derived by excluding genuinely skipped (unconfigured RPC) chains from the real chain list')
 assert.ok(routeCode.includes('`This is a token contract on ${chainDisplayLabel(chainForClarkTools)}. Use Token Scanner or ask token-specific questions.`'), 'the wallet-question-on-token-address message must also name the chain checked')
-assert.match(routeCode, /async function detectChainForAddress\(address: string\): Promise<\{ chain: SupportedChain \| "robinhood"; resolvedEntityType: 'contract' \| 'wallet' \| 'unknown' \}> \{/, 'a dedicated multi-chain auto-detection function must exist')
-assert.match(routeCode, /const candidateChains: \(SupportedChain \| "robinhood"\)\[\] = \["base", "ethereum", "bnb"\];/, 'auto-detection must probe every real EVM chain, not just Base')
-assert.match(routeCode, /if \(isRobinhoodChainAvailable\(\)\) candidateChains\.push\("robinhood"\);/, 'Robinhood must only be probed when actually configured — fail closed, never claim support that isn\'t there')
+assert.match(routeCode, /async function detectChainForAddress\(address: string\): Promise<\{ chain: SupportedChain \| "robinhood"; resolvedEntityType: 'contract' \| 'wallet' \| 'unknown'; skippedChains: \(SupportedChain \| "robinhood"\)\[\] \}> \{/, 'a dedicated multi-chain auto-detection function must exist and report which chains were skipped for missing RPC config')
+assert.match(routeCode, /const allChains: \(SupportedChain \| "robinhood"\)\[\] = \["base", "ethereum", "bnb"\];/, 'auto-detection must consider every real EVM chain, not just Base')
+assert.match(routeCode, /if \(isRobinhoodChainAvailable\(\)\) allChains\.push\("robinhood"\);/, 'Robinhood must only be considered when actually configured — fail closed, never claim support that isn\'t there')
+assert.match(routeCode, /const candidateChains = rpcAvailability\.filter\(\(c\) => c\.rpcUrl != null\)\.map\(\(c\) => c\.chain\);/, 'only chains with a real configured RPC URL may be probed')
+assert.match(routeCode, /const skippedChains = rpcAvailability\.filter\(\(c\) => c\.rpcUrl == null\)\.map\(\(c\) => c\.chain\);/, 'chains with no RPC configured must be tracked as genuinely skipped, never silently conflated with "checked, found nothing"')
 assert.match(routeCode, /const contractHit = probes\.find\(\(p\) => p\.result\.resolvedEntityType === 'contract'\);/, 'a contract found on ANY probed chain must win — that IS the real chain the token lives on')
 // The probe must only run when the prompt did NOT name a chain explicitly — an explicit "on eth"
 // always wins outright and is never second-guessed by auto-detection.

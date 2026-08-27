@@ -150,6 +150,12 @@ type ClarkEntityRoutingAudit = {
   fallbackUsed: boolean;
   responseMode: 'normal' | 'not_applicable';
   notApplicableReason: string | null;
+  // SKIPPED-CHAIN HONESTY, DISCLOSED: chains the auto-detect probe never actually reached
+  // (no RPC configured on this deployment) — empty when the chain was explicit, or every real
+  // chain had a working RPC to check. A resolvedEntityType of 'contract'/'wallet' on chain X while
+  // other chains sit here means X won because it was the only one that could answer, not
+  // necessarily because it was verified against every real candidate.
+  chainsSkipped: string[];
 }
 let clarkInternalCtx: { authToken?: string; verifiedPlan?: 'free' | 'pro' | 'elite'; cookie?: string; entityAudit?: ClarkEntityRoutingAudit } = {}
 
@@ -3420,18 +3426,32 @@ async function resolveClarkEntity(input: { address: string; requestedChain: Supp
 // still wins outright and skips this entirely. Robinhood is only probed when
 // isRobinhoodChainAvailable() — same fail-closed gate as everywhere else, never silently claims
 // support that isn't configured.
-async function detectChainForAddress(address: string): Promise<{ chain: SupportedChain | "robinhood"; resolvedEntityType: 'contract' | 'wallet' | 'unknown' }> {
-  const candidateChains: (SupportedChain | "robinhood")[] = ["base", "ethereum", "bnb"];
-  if (isRobinhoodChainAvailable()) candidateChains.push("robinhood");
+// SKIPPED-CHAIN HONESTY, DISCLOSED (reported live: a real BNB/Robinhood token got labeled "Base"
+// even after the probe found a contract). Base's RPC always has a guaranteed public fallback
+// (mainnet.base.org — see getRpcUrlForClarkCodeCheck), while ETH/BNB/Robinhood require a real
+// configured key/URL and return null with NO probe attempted at all when one isn't set. That
+// means a chain with no RPC configured was never silently "checked and found nothing" — it was
+// never checked. Previously that distinction was invisible: an unconfigured chain and a genuinely-
+// absent contract produced the identical 'unknown' result, so Base could end up "winning" the
+// detection purely because it was the only chain that could answer at all, never because it was
+// verified to be correct. Now tracks which chains were actually probed vs skipped outright, and
+// returns that so the caller can say so honestly instead of presenting an unverified Base label
+// with the same confidence as a real multi-chain probe.
+async function detectChainForAddress(address: string): Promise<{ chain: SupportedChain | "robinhood"; resolvedEntityType: 'contract' | 'wallet' | 'unknown'; skippedChains: (SupportedChain | "robinhood")[] }> {
+  const allChains: (SupportedChain | "robinhood")[] = ["base", "ethereum", "bnb"];
+  if (isRobinhoodChainAvailable()) allChains.push("robinhood");
+  const rpcAvailability = allChains.map((c) => ({ chain: c, rpcUrl: getRpcUrlForClarkCodeCheck(c) }));
+  const candidateChains = rpcAvailability.filter((c) => c.rpcUrl != null).map((c) => c.chain);
+  const skippedChains = rpcAvailability.filter((c) => c.rpcUrl == null).map((c) => c.chain);
   const probes = await Promise.all(candidateChains.map(async (probeChain) => ({
     probeChain,
     result: await resolveClarkEntity({ address, requestedChain: probeChain, userIntent: 'ambiguous' }),
   })));
   const contractHit = probes.find((p) => p.result.resolvedEntityType === 'contract');
-  if (contractHit) return { chain: contractHit.probeChain, resolvedEntityType: 'contract' };
+  if (contractHit) return { chain: contractHit.probeChain, resolvedEntityType: 'contract', skippedChains };
   const walletHit = probes.find((p) => p.result.resolvedEntityType === 'wallet');
-  if (walletHit) return { chain: walletHit.probeChain, resolvedEntityType: 'wallet' };
-  return { chain: "base", resolvedEntityType: 'unknown' };
+  if (walletHit) return { chain: walletHit.probeChain, resolvedEntityType: 'wallet', skippedChains };
+  return { chain: "base", resolvedEntityType: 'unknown', skippedChains };
 }
 
 // Dedicated, narrow keyword sets for the specific token/wallet question shapes this fix targets —
@@ -8400,14 +8420,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       // skips this — the user's stated chain is never second-guessed by the probe.
       let hasContractCode: boolean | null;
       let resolvedEntityType: 'contract' | 'wallet' | 'unknown';
+      let skippedChains: (SupportedChain | "robinhood")[] = [];
       if (explicitChainNamed) {
         ({ hasContractCode, resolvedEntityType } = await resolveClarkEntity({ address: inlineAddress, requestedChain: chainForClarkTools, userIntent: questionCategory }));
       } else {
         const detected = await detectChainForAddress(inlineAddress);
         resolvedEntityType = detected.resolvedEntityType;
         hasContractCode = resolvedEntityType === 'unknown' ? null : resolvedEntityType === 'contract';
+        skippedChains = detected.skippedChains;
         if (resolvedEntityType !== 'unknown') chainForClarkTools = detected.chain;
       }
+      const checkedChainLabels = (["base", "ethereum", "bnb", ...(isRobinhoodChainAvailable() ? ["robinhood"] as const : [])] as (SupportedChain | "robinhood")[])
+        .filter((c) => !skippedChains.includes(c)).map((c) => chainDisplayLabel(c));
       const mismatch =
         (questionCategory === 'token' && resolvedEntityType === 'wallet') ? 'token_question_wallet_address' :
         (questionCategory === 'wallet' && resolvedEntityType === 'contract') ? 'wallet_question_token_address' :
@@ -8420,13 +8444,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         apiCalled: 'eth_getCode', cacheKey: null, cacheChainMatched: true, fallbackUsed: !explicitChainNamed,
         responseMode: mismatch ? 'not_applicable' : 'normal',
         notApplicableReason: mismatch,
+        chainsSkipped: skippedChains.map((c) => chainDisplayLabel(c)),
       };
       clarkInternalCtx.entityAudit = baseAudit;
       if (mismatch === 'token_question_wallet_address') {
         const href = walletScannerDeepLink(inlineAddress, false);
         const chainCaveat = explicitChainNamed
           ? `This address is a wallet, not a token contract, on ${chainDisplayLabel(chainForClarkTools)}. Market cap/holders/LP/deployer do not apply.`
-          : `This address is a wallet, not a token contract — checked across Base, Ethereum, and BNB${isRobinhoodChainAvailable() ? ", and Robinhood Chain" : ""}, no contract code found on any of them. If it's a Solana token, tell me and I'll check there instead.`;
+          : `This address is a wallet, not a token contract — checked across ${checkedChainLabels.join(", ")}, no contract code found on any of them.${skippedChains.length > 0 ? ` (${skippedChains.map((c) => chainDisplayLabel(c)).join(" and ")} couldn't be checked — not configured on this deployment.)` : ""} If it's a Solana token, tell me and I'll check there instead.`;
         return {
           feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: "entity_mismatch", toolsUsed: ["address_code_check"],
           analysis: chainCaveat,
