@@ -39,14 +39,6 @@ export function writeCachedPlan(nextPlan: UserPlan, userId?: string | null, emai
 
 export function clearPlanCache() { try { window.localStorage.removeItem(PLAN_CACHE_KEY) } catch {} }
 
-// ── SHARED PLAN STORE (smoothness/perceived-performance audit) ──────────────
-// One module-level source of truth for plan state. Every consumer (Navbar, FeatureBar,
-// usePlan, pricing, settings) subscribes to this instead of each firing its own
-// /api/user-settings request. In-flight requests are singleflighted: N components mounting
-// at once produce exactly ONE network call, and all receive the same resolved value.
-// Display-only cache rules: cached plans are shown instantly on mount; a component with no
-// valid cache shows 'unknown' (neutral), NEVER 'free' — 'free' is only ever set from a
-// confirmed backend response or an explicitly signed-out session.
 type PlanListener = (p: UserPlan | null, meta: { loading: boolean; source: 'cache' | 'network' | 'signed_out' | 'error' | 'init' }) => void
 
 const sharedPlanState: {
@@ -81,14 +73,8 @@ export function peekCachedPlan(): UserPlan | null {
   } catch { return null }
 }
 
-/**
- * Ensure the shared plan is fetched (singleflight). If a fetch is already running or a fresh
- * one completed recently (30s — matching the cache max age), resolves immediately without a
- * new request. Safe to call from any number of components simultaneously.
- */
 export function ensurePlanLoaded(): Promise<void> {
   if (typeof window === 'undefined') return Promise.resolve()
-  // Fresh enough — no refetch needed; background staleness is handled by cache expiry.
   if (sharedPlanState.loadedOnce && Date.now() - sharedPlanState.lastFetchedAt < PLAN_CACHE_MAX_AGE_MS && !sharedPlanState.loading) {
     return Promise.resolve()
   }
@@ -110,11 +96,10 @@ export function ensurePlanLoaded(): Promise<void> {
       }
       const userId = session.user.id
       const email = session.user.email ?? null
-      // Cached-verified-first: show it immediately (listeners already saw it via peek),
-      // then confirm against the backend.
       const res = await fetch('/api/user-settings', {
         headers: { Authorization: `Bearer ${token}` },
         cache: 'no-store',
+        signal: AbortSignal.timeout(8_000),
       })
       if (res.ok) {
         const json = await res.json() as Record<string, unknown>
@@ -125,8 +110,6 @@ export function ensurePlanLoaded(): Promise<void> {
         writeCachedPlan(resolvedPlan, userId, email)
         notifyPlanListeners('network')
       } else {
-        // Network/HTTP failure: keep whatever cached value was already visible; never
-        // downgrade to Free on error.
         notifyPlanListeners('error')
       }
     } catch {
@@ -140,18 +123,12 @@ export function ensurePlanLoaded(): Promise<void> {
   return sharedPlanState.inFlight
 }
 
-/**
- * Subscribe a component to the shared plan state.
- * Returns the initial display value synchronously: cached verified plan if present,
- * otherwise null ('unknown') — never a guessed Free.
- */
 export function subscribeToSharedPlan(
   listener: PlanListener,
 ): () => void {
   const cached = peekCachedPlan()
   listener(cached, { loading: sharedPlanState.loading || !sharedPlanState.loadedOnce, source: cached ? 'cache' : 'init' })
   sharedPlanState.listeners.add(listener)
-  // Trigger/coalesce the shared fetch — deduped by singleflight.
   void ensurePlanLoaded()
   return () => { sharedPlanState.listeners.delete(listener) }
 }
@@ -162,20 +139,13 @@ function resolvePlan(json: Record<string, unknown>): UserPlan {
 }
 
 export function usePlan(): UserPlan {
-  // CACHED-FIRST, NEVER-GUESS-FREE (smoothness audit): initial value is the last verified
-  // cached plan if present, otherwise 'free' is NOT assumed — null means unknown and the
-  // shared store resolves it from one singleflight request shared across all consumers.
   const [plan, setPlan] = useState<UserPlan | null>(null)
   useEffect(() => {
     return subscribeToSharedPlan((p) => { if (p != null) setPlan(p) })
   }, [])
-  // After the shared load completes with no cache ever having existed, an explicitly
-  // confirmed free/signed-out value arrives from the store; until then stay neutral.
   return (plan ?? peekCachedPlan()) as UserPlan
 }
 
-/** Like usePlan but exposes loading state so pages can suppress the locked
- *  panel flash while the session/plan are still resolving. */
 export type ElitePassState = {
   active: boolean
   expiresAt: string | null
@@ -197,12 +167,11 @@ function computeRemaining(expiresAt: string | null): ElitePassState['remaining']
 }
 
 export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error: string | null; betaEliteActive: boolean; elitePass: ElitePassState } {
-  // CACHED-FIRST INIT (smoothness audit): start from the last verified cached plan instead of
-  // null/'free', so an Elite user reloading sees Elite immediately. The shared store then
-  // confirms in the background — no Free→Elite flicker, and one shared request across consumers.
+  // Pump Alerts hang fix: if a verified plan is already cached (FeatureBar shows Elite),
+  // do not start in loading=true. The page was blocking on /api/user-settings forever.
   const [plan, setPlan] = useState<UserPlan | null>(() => peekCachedPlan())
-  const [loading, setLoading] = useState(true)
-  const [resolved, setResolved] = useState(false)
+  const [loading, setLoading] = useState(() => peekCachedPlan() == null)
+  const [resolved, setResolved] = useState(() => peekCachedPlan() != null)
   const [error, setError] = useState<string | null>(null)
   const [betaEliteActive, setBetaEliteActive] = useState(false)
   const [elitePass, setElitePass] = useState<ElitePassState>({ active: false, expiresAt: null, remaining: null, unlocks: [] })
@@ -224,9 +193,13 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
       const email = session?.user?.email ?? null
       if (!token) { clearPlanCache(); setPlan('free'); setBetaEliteActive(false); setElitePass({ active: false, expiresAt: null, remaining: null, unlocks: [] }); setError(null); setLoading(false); setResolved(true); return }
       const cached = readCachedPlan(userId, email)
-      if (cached) setPlan(cached)
+      if (cached) {
+        setPlan(cached)
+        setLoading(false)
+        setResolved(true)
+      }
       try {
-        const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store' })
+        const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` }, cache: 'no-store', signal: AbortSignal.timeout(8_000) })
         if (res.ok) {
           const json = await res.json()
           const resolvedPlan = resolvePlan(json)
@@ -249,14 +222,22 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
       } catch {
         if (!cached) setError('plan_fetch_failed')
       }
-      if (!cached && plan == null) setPlan(null)
       setResolved(true)
       setLoading(false)
     }
     supabase.auth.getSession().then(({ data }) => load(data.session ? { access_token: data.session.access_token, user: { id: data.session.user.id, email: data.session.user.email } } : null))
-    const { data: l } = supabase.auth.onAuthStateChange((_e, session) => {
-      setLoading(true)
-      setResolved(false)
+    const { data: l } = supabase.auth.onAuthStateChange((event, session) => {
+      // TOKEN_REFRESHED / INITIAL_SESSION must not flip Pump Alerts back to
+      // "Loading plan access…" when a cached plan is already visible.
+      const hasCache = Boolean(peekCachedPlan() || (session?.user && readCachedPlan(session.user.id, session.user.email ?? null)))
+      if (event === 'TOKEN_REFRESHED' || (event === 'INITIAL_SESSION' && hasCache)) {
+        void load(session ? { access_token: session.access_token, user: { id: session.user.id, email: session.user.email } } : null)
+        return
+      }
+      if (event === 'SIGNED_OUT' || !hasCache) {
+        setLoading(true)
+        setResolved(false)
+      }
       void load(session ? { access_token: session.access_token, user: { id: session.user.id, email: session.user.email } } : null)
     })
     return () => { l.subscription.unsubscribe() }
@@ -304,20 +285,6 @@ export function LockedPanel({ feature }: { feature: string }) {
         }}>
           {name} is available on Pro and Elite plans.
         </p>
-        {/*
-          TRIAL-PATH FIX, DISCLOSED (audit: "people have to make an account and they automatically
-          go on free plan" — every locked feature page inside the app dead-ended into "Sign In"
-          (nonsensical for a visitor who is already signed in and simply on the free plan — this
-          panel renders purely off canAccessFeature(plan, feature), which is true for both an
-          anonymous visitor and an authenticated free-plan account) and "Get Access" (a paid
-          checkout link). The only path to the real 7-day Elite trial was a button on the
-          logged-out marketing homepage — a signed-in free user landing here from inside the app,
-          which is the far more common case post-signup, had no way to discover it at all.
-          ClaimTrialButton already self-handles "not signed in" (redirects to /auth, now preserving
-          the current page via `next=`, see that file's fix) so it works correctly for both an
-          anonymous visitor and a signed-in free user without this component needing to know which
-          one it's looking at.
-        */}
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 }}>
           <ClaimTrialButton onClaimed={() => window.location.reload()} />
           <a
