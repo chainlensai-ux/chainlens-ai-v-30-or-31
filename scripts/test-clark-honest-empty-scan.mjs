@@ -31,13 +31,27 @@ for (const field of [
 }
 
 // ─── The short, honest reply must actually be short and name the real reason ───────────────────
-assert.match(routeCode, /function buildEmptyTokenScanReply\(address: string \| null\): string \{/, 'a dedicated short honest-empty reply builder must exist')
+// EMPTY-SCAN CHAIN HONESTY FIX, DISCLOSED (superseding round): reported live that a real BNB/
+// Robinhood token still hit this exact reply still saying "defaults to Base unless you name one" —
+// stale wording left over from before auto-chain-detection existed. The gate now names the actual
+// chain that was scanned (which may differ from Base) and discloses any chains that couldn't be
+// probed at all because their RPC isn't configured on this deployment, instead of an unconditional
+// and now-inaccurate "defaults to Base" claim.
+assert.match(routeCode, /function buildEmptyTokenScanReply\(address: string \| null, scannedChainLabel: string, skippedChainLabels: string\[\]\): string \{/, 'a dedicated short honest-empty reply builder must exist and accept the real scanned chain plus any skipped chains')
 assert.match(routeCode, /"I couldn't verify this token\."/, 'the empty-result reply must open with a direct, honest statement — not a fabricated analysis')
-assert.match(routeCode, /defaults to Base unless you name one/, 'the reply must explain WHY nothing was found (chain default), not just that nothing was found')
+assert.match(routeCode, /I don't have any data for \$\{address\} on \$\{scannedChainLabel\} — that's the chain I checked\$\{skippedNote\}\./, 'the reply must name the real chain that was actually scanned, not a hardcoded default')
+assert.match(routeCode, /couldn't be checked — not configured on this deployment/, 'the reply must disclose when a chain could not be checked at all due to missing RPC config')
+assert.doesNotMatch(routeCode, /defaults to Base unless you name one/, 'the old unconditional "defaults to Base" wording must no longer be present — it is inaccurate now that auto-detection runs first')
 assert.match(routeCode, /tell me which one and I'll check there instead — for example \\"is 0x\.\.\. safe on eth\\"/, 'the reply must give a concrete, actionable next step')
 
 // ─── Must actually gate the noisy template, at the top of the function, for every caller ───────
-assert.match(routeCode, /function renderQuickTokenScan\(report: ClarkFullReportEvidence\): string \{\s*\n\s*if \(isGenuinelyEmptyReport\(report\)\) return buildEmptyTokenScanReply\(report\.token\.address\);/, 'renderQuickTokenScan must check for a genuinely empty result BEFORE building the full noisy template — this covers every one of its call sites automatically')
+assert.match(routeCode, /function renderQuickTokenScan\(report: ClarkFullReportEvidence, scannedChainLabel: string, skippedChainLabels: string\[\] = \[\]\): string \{\s*\n\s*if \(isGenuinelyEmptyReport\(report\)\) return buildEmptyTokenScanReply\(report\.token\.address, scannedChainLabel, skippedChainLabels\);/, 'renderQuickTokenScan must check for a genuinely empty result BEFORE building the full noisy template, threading through the real scanned chain — this covers every one of its call sites automatically')
+
+// ─── Every call site must pass a real chain label, not rely on a stale implicit default ────────
+assert.match(routeCode, /renderQuickTokenScan\(fullEvidence, "Base"\)/, 'the momentum-rank follow-up is Base-only by design (Base Radar movers list), so it may pass "Base" directly')
+assert.match(routeCode, /renderQuickTokenScan\(fallbackReport, chainDisplayLabel\(chainForClarkTools\), chainsSkippedForClarkTools\.map\(\(c\) => chainDisplayLabel\(c\)\)\)/, 'the legacy-cascade fallback scan must report the real auto-detected chain and any chains that were skipped')
+assert.match(routeCode, /renderQuickTokenScan\(report, chainDisplayLabel\(chainForClarkTools\), chainsSkippedForClarkTools\.map\(\(c\) => chainDisplayLabel\(c\)\)\)/, 'the main token-question scan must report the real auto-detected chain and any chains that were skipped')
+assert.match(routeCode, /let chainsSkippedForClarkTools: \(SupportedChain \| "robinhood"\)\[\] = \[\];/, 'skippedChains from the entity-gate probe must be hoisted to function scope so later empty-scan fallbacks can report them too')
 
 // ─── Sanity: a report with even ONE real signal must NOT be treated as empty (never suppress a
 // real, if partial, finding just because most fields are unresolved) ────────────────────────────

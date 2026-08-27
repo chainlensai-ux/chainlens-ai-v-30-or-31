@@ -6159,9 +6159,17 @@ function explainMissingCheck(item: string): string {
 // template with 20+ lines of "No signal in checked window" filler and a bare "VERDICT: UNKNOWN".
 // That reads as a real (if thin) analysis when it's actually "I found nothing for this address" —
 // exactly the "random shit instead of I don't understand" the report describes. Most often this
-// happens when the address is real but on a different chain than Clark checked (no explicit chain
-// named in the prompt defaults to Base) — the reply now says that plainly and asks which chain,
-// instead of pretending a real scan ran.
+// happens when the address is real but on a different chain than Clark checked — the reply now
+// says that plainly and asks which chain, instead of pretending a real scan ran.
+//
+// EMPTY-SCAN CHAIN HONESTY, DISCLOSED (superseding round: reported live that a real BNB/Robinhood
+// token still hit this exact reply, still saying "defaults to Base unless you name one" — stale
+// wording left over from BEFORE auto-chain-detection existed. The auto-detect gate DOES run first,
+// but when its probe finds no contract on any configured chain (most often because that chain's RPC
+// isn't configured on this deployment — see chainsSkippedForClarkTools), chainForClarkTools stays on
+// its default and the scan proceeds on that chain, coming back empty for a token that's really on an
+// unconfigured chain. The message now names the actual chain checked and discloses which chains
+// couldn't be checked, instead of an unconditional and now-inaccurate "defaults to Base" claim.
 function isGenuinelyEmptyReport(report: ClarkFullReportEvidence): boolean {
   return report.token.name == null && report.token.symbol == null
     && report.market.price == null && report.market.liquidity == null && report.market.volume24h == null && report.market.marketCap == null
@@ -6169,16 +6177,19 @@ function isGenuinelyEmptyReport(report: ClarkFullReportEvidence): boolean {
     && report.contract.honeypot == null && report.contract.buyTax == null && report.contract.sellTax == null;
 }
 
-function buildEmptyTokenScanReply(address: string | null): string {
+function buildEmptyTokenScanReply(address: string | null, scannedChainLabel: string, skippedChainLabels: string[]): string {
+  const skippedNote = skippedChainLabels.length > 0
+    ? ` (${skippedChainLabels.join(" and ")} couldn't be checked — not configured on this deployment)`
+    : "";
   return [
     "I couldn't verify this token.",
-    address ? `I don't have any data for ${address} on the chain I checked (defaults to Base unless you name one).` : "I don't have any data for this address on the chain I checked.",
-    "If it's on Ethereum, BNB, Robinhood Chain, or Solana, tell me which one and I'll check there instead — for example \"is 0x... safe on eth\".",
+    address ? `I don't have any data for ${address} on ${scannedChainLabel} — that's the chain I checked${skippedNote}.` : `I don't have any data for this address on ${scannedChainLabel} — that's the chain I checked${skippedNote}.`,
+    "If it's on a different chain, tell me which one and I'll check there instead — for example \"is 0x... safe on eth\".",
   ].join(" ");
 }
 
-function renderQuickTokenScan(report: ClarkFullReportEvidence): string {
-  if (isGenuinelyEmptyReport(report)) return buildEmptyTokenScanReply(report.token.address);
+function renderQuickTokenScan(report: ClarkFullReportEvidence, scannedChainLabel: string, skippedChainLabels: string[] = []): string {
+  if (isGenuinelyEmptyReport(report)) return buildEmptyTokenScanReply(report.token.address, scannedChainLabel, skippedChainLabels);
   const verdict = evaluateFullReportVerdict(report);
   const name = report.token.name ?? "Unknown token";
   const symbol = report.token.symbol ?? "?";
@@ -8364,6 +8375,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // is out of scope for this fix — flagged, not silently ignored.
   let chainForClarkTools: SupportedChain | "robinhood" =
     /\brobinhood\b/i.test(prompt) && isRobinhoodChainAvailable() ? "robinhood" : chain;
+  // EMPTY-SCAN CHAIN HONESTY, DISCLOSED: hoisted out of the entity gate block below so the later
+  // "I couldn't verify this token" fallback (buildEmptyTokenScanReply, reached when the token scan
+  // itself comes back with no data at all — most often because the real token lives on a chain that
+  // was never probed) can report exactly which chains were skipped, not just the gate's own
+  // wallet/token mismatch message.
+  let chainsSkippedForClarkTools: (SupportedChain | "robinhood")[] = [];
   // AUTO-CHAIN-DETECTION, DISCLOSED: true only when the prompt itself names a chain — memory/UI
   // defaults don't count as "explicit" here, since the whole point is that a bare pasted address
   // with no stated chain should be probed, not silently assumed to be on whatever the UI/memory
@@ -8428,6 +8445,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         resolvedEntityType = detected.resolvedEntityType;
         hasContractCode = resolvedEntityType === 'unknown' ? null : resolvedEntityType === 'contract';
         skippedChains = detected.skippedChains;
+        chainsSkippedForClarkTools = detected.skippedChains;
         if (resolvedEntityType !== 'unknown') chainForClarkTools = detected.chain;
       }
       const checkedChainLabels = (["base", "ethereum", "bnb", ...(isRobinhoodChainAvailable() ? ["robinhood"] as const : [])] as (SupportedChain | "robinhood")[])
@@ -11953,7 +11971,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
             },
           };
           const fullEvidence = buildFullReportEvidence(reportEvidence, memItem.address);
-          const scanText = renderQuickTokenScan(fullEvidence);
+          const scanText = renderQuickTokenScan(fullEvidence, "Base");
           const safeSym = String(td.symbol ?? memItem.symbol ?? "TOKEN");
           const safeName = String(td.name ?? memItem.name ?? safeSym);
           updateMemToken(sessionMem, memItem.address, safeSym, safeName, scanText);
@@ -12726,7 +12744,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
             toolsUsed,
           };
         }
-        const fbScanText = renderQuickTokenScan(fallbackReport);
+        const fbScanText = renderQuickTokenScan(fallbackReport, chainDisplayLabel(chainForClarkTools), chainsSkippedForClarkTools.map((c) => chainDisplayLabel(c)));
         updateMemToken(sessionMem, resolvedAddress, fallbackReport.token.symbol ?? null, fallbackReport.token.name ?? null, fbScanText);
         updateMemIntent(sessionMem, "token_analysis");
         return {
@@ -12786,7 +12804,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
               `- Interpretation: moves are reliable only when volume and liquidity rise together without new contract/deployer risk flags.`,
               `- Missing context: ${pack.missing.length ? pack.missing.join(", ") : "limited missing fields"}`
             ].join("\n")
-          : renderQuickTokenScan(report);
+          : renderQuickTokenScan(report, chainDisplayLabel(chainForClarkTools), chainsSkippedForClarkTools.map((c) => chainDisplayLabel(c)));
     updateMemToken(sessionMem, token.address, token.symbol ?? null, token.name ?? null, analysis);
     updateMemIntent(sessionMem, "token_analysis");
     return { feature: "clark-ai", chain, mode: "analysis", analysis, intent: plan.intent, toolsUsed };
