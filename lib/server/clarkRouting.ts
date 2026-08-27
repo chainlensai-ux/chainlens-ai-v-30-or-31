@@ -86,7 +86,14 @@ export function extractRequestedChainFromPrompt(prompt: string): ClarkPromptChai
 // (token) safe" phrase. A bare "safe" alongside a real address is unambiguous in this chat's context
 // (this route only ever classifies crypto-scan prompts), so it's now matched directly instead of
 // requiring the user to phrase it as a question.
-const TOKEN_SAFETY_RE = /\b(is\s+this\s+(?:token\s+)?safe|is\s+it\s+safe|should\s+i\s+buy(?:\s+this(?:\s+token)?)?|is\s+this\s+(?:a\s+)?rug(?:\s+pull|\s+risk)?|is\s+this\s+token\s+risky|is\s+(?:it|this)\s+risky|safe\s+to\s+buy|rug\s+(?:check|risk)|is\s+it\s+legit)\b|0x[a-f0-9]{40}\s+safe\??$|^safe\??\s+0x[a-f0-9]{40}|^safe\??$/i;
+// SOLANA-BARE-SAFE FIX, DISCLOSED (superseding round, same incident: "solana just aint working"):
+// the bare-"safe" widening above only recognized an EVM 0x-address next to "safe" — a Solana mint
+// (base58, no 0x prefix) followed by "safe" matched nothing here at all, classifying as intent
+// "none" and never reaching the Solana creator/authority read even though the full "is it safe"
+// phrasing worked fine for the same address. Reuses the same base58 candidate shape as
+// SOLANA_MINT_CANDIDATE_RE below (structural match only; the real isValidSolanaMintAddress check
+// still gates the actual Solana routing downstream).
+const TOKEN_SAFETY_RE = /\b(is\s+this\s+(?:token\s+)?safe|is\s+it\s+safe|should\s+i\s+buy(?:\s+this(?:\s+token)?)?|is\s+this\s+(?:a\s+)?rug(?:\s+pull|\s+risk)?|is\s+this\s+token\s+risky|is\s+(?:it|this)\s+risky|safe\s+to\s+buy|rug\s+(?:check|risk)|is\s+it\s+legit)\b|0x[a-f0-9]{40}\s+safe\??$|^safe\??\s+0x[a-f0-9]{40}|[1-9A-HJ-NP-Za-km-z]{32,44}\s+safe\??$|^safe\??\s+[1-9A-HJ-NP-Za-km-z]{32,44}|^safe\??$/i;
 const DEV_RUG_RE = /\b(can\s+(?:the\s+)?dev(?:s?|eloper)?\s+(?:rug|dump)|can\s+deployer\s+(?:rug|dump)|does\s+dev\s+control|dev\s+control(?:s?|led)?|is\s+ownership\s+renounced|ownership\s+renounced|can\s+they\s+mint|dev\s+(?:wallet\s+)?risk|deployer\s+risk|mint\s+risk|blacklist\s+risk|proxy\s+risk|is\s+owner\s+renounced|who\s+controls\s+(?:the\s+)?supply|supply\s+control)\b/i;
 
 // "Ape"/"full risk breakdown"/"is this CA safe" — natural high-intent token-ape-risk prompts.
@@ -1447,32 +1454,56 @@ export type LpCheckResult = {
   nextAction?: string | null;
 };
 
+// LP-READ-READABILITY FIX, DISCLOSED (reported live: "the lp read feels useless and not valuable
+// and not getting real info and is big paragraph no spaces or anything interesting to look at" —
+// also: "it still says liquidity safety feature but we dont have it anymore"). Two real issues:
+//  1. The CTA text said "Open Liquidity Safety" — a standalone page (/terminal/liquidity) that
+//     isn't linked anywhere in the current nav; LP checking now lives under Token Scanner's LP
+//     Safety tab, matching the CTA wording already used elsewhere in this codebase
+//     (e.g. `Open Token Scanner (LP Safety tab)` in app/api/clark/route.ts).
+//  2. For a concentrated-liquidity pool (the dominant real-world case for newer/thin tokens),
+//     lock/burn proof, locked/burned/controller status, and controller/position verification are
+//     ALL "not applicable"/"unverified" for the exact same single reason — standard ERC-20 LP-token
+//     proof doesn't exist for a concentrated position. Printing that as 3-4 separate "unverified"
+//     lines reads as noise, not information. Real numbers (liquidity depth, primary pool) now lead;
+//     the concentrated-model explanation is stated once, not repeated per field.
 export function formatLpReadResult(result: LpCheckResult | null): string {
   if (!result) {
     return [
       "LP READ — could not complete",
       "- Reason: liquidity pipeline did not return a usable result for this contract.",
       "",
-      "CTA: Open Liquidity Safety / Open Token Scanner",
+      "CTA: Open Token Scanner (LP Safety tab)",
     ].join("\n");
   }
   const name = result.token?.name ?? "Unknown";
   const symbol = result.token?.symbol ?? "?";
-  return [
+  const isConcentrated = result.poolType === "concentrated" || result.poolModel === "concentrated_liquidity";
+  const lines = [
     "LP READ",
     `- Token: ${name} (${symbol})`,
-    `- Primary pool / pool id: ${result.primaryPool ?? "not available"}`,
-    `- Pool model: ${result.poolType ?? "unknown"} / ${result.poolModel ?? "not verified"}`,
-    `- Lock/burn proof: ${result.lpProofStatus ?? result.lockBurnProof ?? "not verified"} / applicability: ${result.lpProofApplicability ?? "unknown"}`,
-    `- Locked/burned/controller status: ${result.lockStatus ?? "not verified"} / ${result.burnStatus ?? "not verified"} / ${result.controllerStatus ?? "not verified"}`,
-    `- Controller/position verification: ${result.positionVerificationStatus ?? result.controllerVerification ?? "not verified"}`,
-    `- Secondary LP exposure: ${String(result.secondaryLpExposure ?? "unverified")}`,
+    `- Primary pool: ${result.primaryPool ?? "not found by the pool-discovery sources checked"}`,
     `- Liquidity depth: ${result.liquidityDepth ?? "unverified"}`,
-    `- Exit risk: ${result.exitRisk ?? "unverified"}`,
-    `- Missing evidence: ${result.missingEvidence && result.missingEvidence.length > 0 ? result.missingEvidence.join("; ") : "none flagged"}`,
-    "",
-    "CTA: Open Liquidity Safety / Open Token Scanner",
-  ].join("\n");
+    `- Pool model: ${result.poolType ?? "unknown"} (${result.poolModel ?? "not verified"})`,
+  ];
+  if (isConcentrated) {
+    lines.push(
+      `- Lock/burn proof: does not apply — this is a concentrated-liquidity pool, which has no standard ERC-20 LP token to lock or burn. Position/controller ownership is an open check instead.`,
+    );
+  } else {
+    lines.push(
+      `- Lock/burn proof: ${result.lpProofStatus ?? result.lockBurnProof ?? "not verified"} (applicability: ${result.lpProofApplicability ?? "unknown"})`,
+      `- Locked / burned / controller: ${result.lockStatus ?? "not verified"} / ${result.burnStatus ?? "not verified"} / ${result.controllerStatus ?? "not verified"}`,
+      `- Controller/position verification: ${result.positionVerificationStatus ?? result.controllerVerification ?? "not verified"}`,
+    );
+  }
+  if (result.secondaryLpExposure) lines.push(`- Secondary LP exposure: ${String(result.secondaryLpExposure)}`);
+  lines.push(`- Exit risk: ${result.exitRisk ?? "unverified"}`);
+  if (result.missingEvidence && result.missingEvidence.length > 0) {
+    lines.push(`- Still missing: ${result.missingEvidence.filter((m) => !isConcentrated || !/lock\/burn proof does not apply/i.test(m)).join("; ") || "none beyond what's noted above"}`);
+  }
+  lines.push("", "CTA: Open Token Scanner (LP Safety tab)");
+  return lines.join("\n");
 }
 
 // ─────────────────────────────────────────────────────────────────────────

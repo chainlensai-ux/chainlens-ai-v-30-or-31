@@ -10136,7 +10136,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       liquidityDepth: typeof data.lp_total_liquidity_usd === "number" ? `$${data.lp_total_liquidity_usd.toLocaleString()}` : undefined,
       exitRisk: typeof data.lpExitRisk === "string" ? data.lpExitRisk : undefined,
       missingEvidence: concentrated ? ["ERC20 LP lock/burn proof does not apply to this pool model. Position/control verification is required.", ...gaps] : gaps,
-      nextAction: "Open Liquidity Safety / Open Token Scanner",
+      nextAction: "Open Token Scanner (LP Safety tab)",
     };
     const lpAnalysis = formatLpReadResult(mapped);
     // By this point in the branch lpApiChain has already been narrowed to eth/base/robinhood

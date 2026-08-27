@@ -92,6 +92,13 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 }
 
 // ─── formatLpReadResult ───────────────────────────────────────────────────────
+// LP-READ-READABILITY FIX, DISCLOSED (reported live: "the lp read feels useless... not getting
+// real info... big paragraph no spaces" / "it still says liquidity safety feature but we dont have
+// it anymore"): a concentrated-liquidity pool now gets ONE consolidated explanation instead of 3-4
+// separate "unverified" lines for the same underlying reason, real numbers (pool address, liquidity
+// depth) lead, an empty missingEvidence array no longer prints a pointless "nothing missing" line,
+// and the stale "Open Liquidity Safety" CTA (a page not linked in the current nav) is now "Open
+// Token Scanner (LP Safety tab)", matching this codebase's already-established convention.
 {
   const mockResult = {
     token: { name: 'Brett', symbol: 'BRETT' },
@@ -105,9 +112,28 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   }
   const out = formatLpReadResult(mockResult)
   assert.ok(out.startsWith('LP READ'))
-  for (const field of ['Token:', 'Primary pool', 'Pool model:', 'Lock/burn proof:', 'Controller', 'Liquidity depth:', 'Exit risk:', 'Missing evidence:']) {
+  for (const field of ['Token:', 'Primary pool', 'Liquidity depth:', 'Pool model:', 'Lock/burn proof:', 'Controller', 'Exit risk:']) {
     assert.ok(out.includes(field), `missing field: ${field}`)
   }
+  assert.ok(!out.includes('Missing evidence:'), 'an empty missingEvidence array must not print a pointless line')
+  assert.ok(out.includes('Open Token Scanner (LP Safety tab)'), 'the CTA must point to the current Token Scanner LP tab, not the orphaned standalone Liquidity Safety page')
+  assert.ok(!out.includes('Open Liquidity Safety'), 'the stale "Open Liquidity Safety" CTA must be gone')
+}
+{
+  // A concentrated-liquidity pool must consolidate the lock/burn/controller/position lines into
+  // one explanation instead of repeating "unverified" for the same root cause four times.
+  const concentratedResult = {
+    token: { name: 'Pepe in Hood', symbol: 'PEPE' },
+    primaryPool: '0xd38...85b0',
+    poolType: 'concentrated',
+    poolModel: 'concentrated_liquidity',
+    liquidityDepth: '$75,151.24',
+    exitRisk: 'monitor',
+    missingEvidence: ['ERC20 LP lock/burn proof does not apply to this pool model. Position/control verification is required.'],
+  }
+  const out = formatLpReadResult(concentratedResult)
+  assert.ok(out.includes('concentrated-liquidity pool'), 'concentrated pools must state the real reason once')
+  assert.ok(!/Locked \/ burned \/ controller:/.test(out), 'concentrated pools must not print the separate locked/burned/controller line — it is covered by the single consolidated explanation')
 }
 {
   const out = formatLpReadResult(null)
