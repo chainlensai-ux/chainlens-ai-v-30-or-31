@@ -1737,6 +1737,32 @@ async function fetchGoldRushContractIntel(chain: ChainKey, contract: string): Pr
   }
 }
 
+// GECKOTERMINAL-SINGLE-ATTEMPT-FLAKE FIX, DISCLOSED: found in the same investigation as the
+// fetchGoldRush chain-slug bug (a live report of BNB scans intermittently coming back with no
+// market data at all, still reproducing after that fix shipped). GeckoTerminal is this route's
+// primary market-data source and every call to it was a single fetch attempt with a 5s timeout —
+// one slow response or transient 5xx/429 killed the entire scan's price/liquidity/volume data with
+// no second try, unlike the GoldRush/Covalent calls in this file which already retry across hosts
+// via fetchGoldRushWithHostFallback. A real 404 (token genuinely has no pools on that network) is
+// NOT retried — retrying that would just waste time confirming the same true negative.
+async function fetchGeckoTerminalWithRetry(url: string, timeoutMs = 5000): Promise<Response | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: { Accept: 'application/json;version=20230302' },
+        cache: 'no-store',
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (res.ok || res.status === 404 || attempt === 1) return res;
+      // Non-ok, non-404 (5xx/429/etc) on the first attempt — worth one retry.
+    } catch (err) {
+      if (attempt === 1) { console.error('GeckoTerminal fetch failed after retry:', err); return null; }
+      // First attempt threw (network error/timeout) — retry once.
+    }
+  }
+  return null;
+}
+
 async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<any> {
   try {
     const networkMap: Record<ChainKey, string> = {
@@ -1748,16 +1774,11 @@ async function fetchGeckoTerminal(contract: string, chain: ChainKey): Promise<an
     };
     const network = networkMap[chain] ?? 'base';
     const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
-    const res = await fetch(
-      `${_gtBase}/api/v2/networks/${network}/tokens/${contract}/pools?page=1&include=base_token%2Cquote_token`,
-      {
-        headers: { Accept: 'application/json;version=20230302' },
-        cache: 'no-store',
-        signal: withTimeout(),
-      }
+    const res = await fetchGeckoTerminalWithRetry(
+      `${_gtBase}/api/v2/networks/${network}/tokens/${contract}/pools?page=1&include=base_token%2Cquote_token`
     );
-    if (!res.ok) {
-      console.error('GeckoTerminal pools error:', res.status, await res.text().catch(() => ''));
+    if (!res || !res.ok) {
+      if (res) console.error('GeckoTerminal pools error:', res.status, await res.text().catch(() => ''));
       return null;
     }
     return await res.json();
@@ -1778,15 +1799,8 @@ async function fetchGeckoTerminalToken(contract: string, chain: ChainKey): Promi
     };
     const network = networkMap[chain] ?? 'base';
     const _gtBase = (process.env.GECKO_BASE_URL ?? 'https://api.geckoterminal.com').replace(/\/$/, '')
-    const res = await fetch(
-      `${_gtBase}/api/v2/networks/${network}/tokens/${contract}`,
-      {
-        headers: { Accept: 'application/json;version=20230302' },
-        cache: 'no-store',
-        signal: withTimeout(),
-      }
-    );
-    if (!res.ok) return null;
+    const res = await fetchGeckoTerminalWithRetry(`${_gtBase}/api/v2/networks/${network}/tokens/${contract}`);
+    if (!res || !res.ok) return null;
     return await res.json();
   } catch (err) {
     console.error("Error fetching GeckoTerminal token info:", err);
@@ -2301,18 +2315,24 @@ async function fetchDexScreenerFallback(tokenAddress: string, chain: ChainKey = 
 
   try {
     const _dsBase = (process.env.DEXSCREENER_BASE_URL ?? 'https://api.dexscreener.com').replace(/\/$/, '')
-    const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), 4000)
-    let res: Response
-    try {
-      res = await fetch(
-        `${_dsBase}/token-pairs/v1/${dexChainId}/${tokenAddress}`,
-        { signal: ctrl.signal, cache: 'no-store' }
-      )
-    } finally {
-      clearTimeout(timer)
+    const dsUrl = `${_dsBase}/token-pairs/v1/${dexChainId}/${tokenAddress}`
+    // DEXSCREENER-SINGLE-ATTEMPT-FLAKE FIX, DISCLOSED (same investigation/fix class as
+    // fetchGeckoTerminalWithRetry above): one retry on a network error/timeout or a non-404 non-ok
+    // status, never on a genuine 404 (token really has no pairs on this chain).
+    let res: Response | null = null
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const ctrl = new AbortController()
+      const timer = setTimeout(() => ctrl.abort(), 4000)
+      try {
+        res = await fetch(dsUrl, { signal: ctrl.signal, cache: 'no-store' })
+      } catch {
+        res = null
+      } finally {
+        clearTimeout(timer)
+      }
+      if (res && (res.ok || res.status === 404)) break
     }
-
+    if (!res) return miss(null)
     if (!res.ok) return miss(null)
     const ct = res.headers.get('content-type') ?? ''
     if (!ct.includes('json')) return miss(null)
