@@ -39,14 +39,16 @@ const tests = [
   'test-clark-solana-memory-writeback.mjs',
   'test-clark-deployer-token-identity.mjs',
   'test-clark-golden-suite.mjs',
-  // TEMPORARILY EXCLUDED, DISCLOSED: this test (merged in from another session's push to `main`)
-  // imports mergeNormalizedCandidate/tokenAgeDaysFromPairCreatedAtMs from app/api/pump-alerts/
-  // route.ts and checks a chunk of dedup/cap-data-missing logic plus app/terminal/pump-alerts/
-  // page.tsx UI wiring — none of which exists in the merged source yet (confirmed broken on
-  // origin/main itself, before this branch touched it — a companion implementation commit for that
-  // feature was apparently never pushed). Left commented out rather than fixed here since
-  // implementing that feature is unrelated, unscoped work with no spec beyond the test's own
-  // assertions; re-enable once that pump-alerts dedup work actually lands.
+  // TEMPORARILY EXCLUDED, DISCLOSED — status updated as of the merge of origin/main's ffec721.
+  // This test came from another session's push to `main`. It is now PARTLY unblocked: the route-side
+  // exports it imports (mergeNormalizedCandidate, tokenAgeDaysFromPairCreatedAtMs) DO now exist in
+  // app/api/pump-alerts/route.ts, so the import error that originally broke it is gone and the
+  // assertions run. It still fails on the UI half — it asserts app/terminal/pump-alerts/page.tsx
+  // renders a "{rejectedCapDataMissing} missing cap data" breakdown line that has not landed yet.
+  // Verified by running it directly against the merged source, not assumed.
+  // Left excluded rather than force-passed: the remaining gap is a real, unshipped UI change owned
+  // by that feature's author, and this branch has no spec for it beyond the test's own assertions.
+  // Re-enable once that page.tsx breakdown line lands — the route side is already ready.
   // 'test-pump-alerts-discovery.mjs',
   'test-pump-7d-fallback.mjs',
   'test-pump-snapshots.mjs',
