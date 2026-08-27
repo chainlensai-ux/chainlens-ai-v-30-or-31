@@ -27,6 +27,7 @@ const tests = [
   'test-clark-multichain-disclosure.mjs',
   'test-clark-entity-check-retry.mjs',
   'test-clark-keyword-not-phrasing.mjs',
+  'test-clark-liquidity-safe-chain.mjs',
   'test-pump-alerts-discovery.mjs',
   'test-pump-7d-fallback.mjs',
   'test-pump-snapshots.mjs',

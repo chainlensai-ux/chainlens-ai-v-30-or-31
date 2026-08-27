@@ -3488,7 +3488,14 @@ async function detectChainForAddress(address: string): Promise<{ chain: Supporte
 // the full "is (it|this|that) safe" phrase. A bare "safe" alongside an address is unambiguous in
 // this chat's context, so it's now matched directly (leading or trailing) instead of requiring the
 // user to phrase it as a full question.
-const CLARK_TOKEN_QUESTION_RE = /\b(is\s+(?:it|this|that)\s+safe|is\s+0x[a-f0-9]{40}\s+safe|token\s+safe|safe\s+token|risk\s+level|market\s*cap|marketcap|\bfdv\b|top\s+holders?|holder\s+count|holder\s+concentration|lp\s+locked|is\s+lp\s+locked|liquidity\s+locked|is\s+liquidity\s+locked|liquidity\s+safety|who\s+deployed|deployer\s+of|check\s+deployer|honeypot|buy\s*tax|sell\s*tax|is\s+.{0,50}\s+pumping|why\s+is\s+.{0,50}\s+pumping|why\s+.{0,50}\s+pumping|scan\s+(?:this\s+)?token|token\s+scan)\b|0x[a-f0-9]{40}\s+safe\??$|^safe\??\s+0x[a-f0-9]{40}/i;
+// LIQUIDITY-SAFE-PHRASING FIX, DISCLOSED: "is liquidity safe on 0x..." fell through this gate
+// entirely — only "liquidity safety" (noun form) and "liquidity locked" were recognized, not
+// "liquidity safe" (adjective form). That meant the entity gate/auto-chain-detection never ran for
+// this exact phrasing, so the address fell straight to the OLDER, narrower liquidity_scan legacy
+// branch below (single-chain, no multi-chain probe) — misreporting a real, contract-confirmed
+// multi-chain token as "a wallet, not a token contract" purely because that branch only ever
+// checked the default chain, never the real auto-detected one.
+const CLARK_TOKEN_QUESTION_RE = /\b(is\s+(?:it|this|that)\s+safe|is\s+0x[a-f0-9]{40}\s+safe|token\s+safe|safe\s+token|risk\s+level|market\s*cap|marketcap|\bfdv\b|top\s+holders?|holder\s+count|holder\s+concentration|lp\s+locked|is\s+lp\s+locked|liquidity\s+locked|is\s+liquidity\s+locked|liquidity\s+safety|liquidity\s+safe|is\s+liquidity\s+safe|who\s+deployed|deployer\s+of|check\s+deployer|honeypot|buy\s*tax|sell\s*tax|is\s+.{0,50}\s+pumping|why\s+is\s+.{0,50}\s+pumping|why\s+.{0,50}\s+pumping|scan\s+(?:this\s+)?token|token\s+scan)\b|0x[a-f0-9]{40}\s+safe\??$|^safe\??\s+0x[a-f0-9]{40}/i;
 const CLARK_WALLET_QUESTION_RE = /\b(portfolio|holdings?|\bpnl\b|p&l|profitable|wallet\s+behavior|explain\s+(?:this\s+|that\s+)?wallet|whale\s+wallet|sniper\s+wallet|dev\s+wallet\s+behavior|scan\s+(?:this\s+|that\s+)?wallet|wallet\s+scan|analyze\s+(?:this\s+)?wallet)\b/i;
 
 function classifyClarkQuestionCategory(prompt: string): 'token' | 'wallet' | 'ambiguous' {
@@ -9349,7 +9356,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
   if (appIntent.intent === 'liquidity_scan' && appIntent.address) {
-    const kind = await classifyAddressForClark(appIntent.address, chain);
+    // LIQUIDITY-SAFE-CHAIN-BLIND FIX, DISCLOSED: this checked the address against the plain,
+    // pre-auto-detection `chain` default instead of `chainForClarkTools` — the entity gate above
+    // may have already auto-detected the real chain for this exact address (or been given an
+    // explicit one), and this call was silently ignoring that, re-checking on the wrong chain.
+    const kind = await classifyAddressForClark(appIntent.address, chainForClarkTools);
     if (kind === "wallet") {
       const href = walletScannerDeepLink(appIntent.address, false);
       return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: ["address_code_check"], ui: { intentBadge: 'LP Check', actions: [{ label: 'Scan Wallet', href }, { label: 'Deep Scan Wallet', href: walletScannerDeepLink(appIntent.address, true) }] }, analysis: [
