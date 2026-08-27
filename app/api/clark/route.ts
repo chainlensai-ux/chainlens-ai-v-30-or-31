@@ -10106,30 +10106,44 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         quotaConsumed: false,
       };
     }
+    // LP-META-FIELD-MISMATCH FIX, DISCLOSED (reported live: "the lp has bad information it needs
+    // to use the apis its got alchemy and goldrush for that" — liquidity depth showed a real number
+    // but primary pool/pool id always said "not available" regardless of the token). Root cause:
+    // /api/liquidity-safety's buildSharedLpMeta returns FLAT fields (primaryPoolAddress,
+    // primaryPoolDex, primaryPoolType — see lib/server/lpIntelligence.ts) but this mapping read
+    // lpMeta.primaryPool as if it were a nested object with its own .address/.poolType — a field
+    // that has never existed on that response shape, so this always evaluated to null regardless of
+    // whether the API genuinely found a pool. Real Alchemy RPC (LP lock/burn/position proof) and
+    // GoldRush (pool discovery via the shared canonical-pool-selection pipeline) data WAS already
+    // being fetched and returned correctly by /api/liquidity-safety — this was purely a display bug
+    // reading the wrong field names on the way back out, not a missing-provider gap.
     const lpMeta = data.lpMeta && typeof data.lpMeta === "object" ? data.lpMeta as Record<string, unknown> : null;
-    const primaryPool = lpMeta?.primaryPool && typeof lpMeta.primaryPool === "object" ? lpMeta.primaryPool as Record<string, unknown> : null;
     const gaps = Array.isArray(data.lp_evidence_gaps) ? (data.lp_evidence_gaps as Array<Record<string, unknown> | string>).map((g) => typeof g === "string" ? g : String(g.label ?? g.code ?? g.reason ?? "LP evidence gap")) : [];
     const displayModel = typeof data.displayLpModel === "string" ? data.displayLpModel : (typeof data.poolModel === "string" ? data.poolModel : null);
     const concentrated = displayModel === "concentrated_liquidity" || displayModel === "concentrated" || data.lpProofApplicability === "not_applicable";
     const mapped = {
       token: { name: typeof data.name === "string" ? data.name : null, symbol: typeof data.symbol === "string" ? data.symbol : null },
-      primaryPool: typeof primaryPool?.address === "string" ? primaryPool.address : null,
+      primaryPool: typeof lpMeta?.primaryPoolAddress === "string" ? lpMeta.primaryPoolAddress : null,
       poolModel: displayModel,
-      poolType: typeof primaryPool?.poolType === "string" ? primaryPool.poolType : null,
+      poolType: typeof lpMeta?.primaryPoolType === "string" ? lpMeta.primaryPoolType : null,
       lpProofStatus: typeof data.lpLockStatus === "string" ? data.lpLockStatus : null,
       lpProofApplicability: typeof data.lpProofApplicability === "string" ? data.lpProofApplicability : null,
       lockStatus: typeof data.lpLockStatus === "string" ? data.lpLockStatus : null,
       burnStatus: data.lpLockStatus === "burned" ? "burned" : "not_verified",
       controllerStatus: typeof data.lpController === "string" ? data.lpController : null,
       positionVerificationStatus: concentrated ? "Position/control verification required" : (typeof data.lpControl === "object" ? String((data.lpControl as Record<string, unknown>).status ?? "open_check") : "open_check"),
-      secondaryLpExposure: lpMeta?.secondaryLpExposure ?? null,
+      secondaryLpExposure: typeof lpMeta?.protocolPoolCandidatesCount === "number" && lpMeta.protocolPoolCandidatesCount > 0 ? `${lpMeta.protocolPoolCandidatesCount} protocol pool candidate(s) found` : null,
       liquidityDepth: typeof data.lp_total_liquidity_usd === "number" ? `$${data.lp_total_liquidity_usd.toLocaleString()}` : undefined,
       exitRisk: typeof data.lpExitRisk === "string" ? data.lpExitRisk : undefined,
       missingEvidence: concentrated ? ["ERC20 LP lock/burn proof does not apply to this pool model. Position/control verification is required.", ...gaps] : gaps,
       nextAction: "Open Liquidity Safety / Open Token Scanner",
     };
     const lpAnalysis = formatLpReadResult(mapped);
-    updateMemToken(sessionMem, routed.address, mapped.token.symbol, mapped.token.name, lpAnalysis, { cachedEvidence: { ok: true, token: { ...mapped.token, address: routed.address }, chain: "base", market: { liquidity: typeof data.lp_total_liquidity_usd === "number" ? data.lp_total_liquidity_usd : null }, lpControl: { status: mapped.lpProofStatus ?? "open_check", reason: mapped.controllerStatus, confidence: null, poolType: mapped.poolModel } } as TokenScanEvidence, chain: "base" });
+    // By this point in the branch lpApiChain has already been narrowed to eth/base/robinhood
+    // (bnb and anything else returned early above), so chainForClarkTools is one of those three —
+    // just needs "ethereum" renamed to the memory layer's "eth" spelling.
+    const lpMemoryChain = (chainForClarkTools === "ethereum" ? "eth" : chainForClarkTools) as "base" | "eth" | "robinhood";
+    updateMemToken(sessionMem, routed.address, mapped.token.symbol, mapped.token.name, lpAnalysis, { cachedEvidence: { ok: true, token: { ...mapped.token, address: routed.address }, chain: lpMemoryChain, market: { liquidity: typeof data.lp_total_liquidity_usd === "number" ? data.lp_total_liquidity_usd : null }, lpControl: { status: mapped.lpProofStatus ?? "open_check", reason: mapped.controllerStatus, confidence: null, poolType: mapped.poolModel } } as TokenScanEvidence, chain: lpMemoryChain });
     updateMemIntent(sessionMem, "liquidity_scan");
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["liquidity_analyze"],
