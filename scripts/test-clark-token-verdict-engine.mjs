@@ -169,6 +169,30 @@ assert.match(
   /\{ label: "Deep Scan Token", prompt: `deep scan \$\{r\.address\}`, kind: "prompt" as const \}/,
   'the token_safety intent must expose Deep Scan Token as an in-chat prompt action, not a link'
 )
+
+// CHECK-DEPLOYER-WRONG-ANSWER FIX, DISCLOSED (live report: "check deployer for brett gives me
+// another token"). "who deployed 0xADDRESS" has no dedicated intent bucket in classifyClarkPrompt
+// for EVM chains — it silently fell through to token_scan and re-rendered a TOKEN READ verdict
+// instead of a deployer answer. The two EVM "Check Deployer" buttons (token_scan, token_safety)
+// must send the address-less "who deployed this" instead, which the THIS_DEV_RE + session-memory
+// branch (earlier in the request flow, before classifyClarkPrompt even runs) already handles
+// correctly. The Solana button must keep the address-bearing form: THIS_DEV_RE's own EVM-only
+// /api/dev-wallet call has no Solana support and would wrongly intercept an address-less prompt
+// before the real Solana deployer cascade ever runs.
+{
+  const evmCheckDeployerCount = (routeCode.match(/\{ label: "Check Deployer", prompt: "who deployed this", kind: "prompt" as const \}/g) ?? []).length
+  assert.equal(evmCheckDeployerCount, 2, 'both EVM Check Deployer buttons (token_scan, token_safety) must use the address-less "who deployed this" form')
+  assert.match(
+    routeCode,
+    /\{ label: "Check Deployer", prompt: `who deployed \$\{tokenAddress\}`, kind: "prompt" as const \}/,
+    'the Solana Check Deployer button must keep the address-bearing form so it reaches the real Solana deployer cascade, not the EVM-only THIS_DEV_RE branch'
+  )
+}
+assert.match(
+  routeSrc,
+  /const THIS_DEV_RE = [^\n]*who\\s\+deployed\\s\+this/,
+  '"who deployed this" must actually be recognized by THIS_DEV_RE so the EVM Check Deployer button resolves from session memory'
+)
 // Both token_scan and token_safety must actually set ui.actions — the frontend only ever renders
 // buttons from payload.ui.actions (see app/terminal/clark-ai/page.tsx), so a handler that only set
 // the legacy top-level `actions` string list would silently show zero buttons.

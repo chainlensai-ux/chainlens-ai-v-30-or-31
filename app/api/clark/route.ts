@@ -10088,6 +10088,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       // CLARK-TOKEN-VERDICT FIX, DISCLOSED: same in-chat "Deep Scan Token" wiring as the EVM verdict
       // replies above, applied only to the full TOKEN READ answer (not the narrower deployer-only
       // read, which already has its own CTA line baked into its text).
+      // CHECK-DEPLOYER-WRONG-ANSWER FIX, DISCLOSED (live report: "check deployer for brett gives me
+      // another token"): the address-bearing form ("who deployed 0x...") has no dedicated intent
+      // bucket in classifyClarkPrompt for EVM chains at all — it silently fell through to token_scan
+      // and re-rendered a TOKEN READ instead of a deployer answer. Fixed for EVM by switching to the
+      // address-less "who deployed this" (THIS_DEV_RE + session memory, already correct). Solana must
+      // keep the address-bearing form instead: THIS_DEV_RE's own EVM-only /api/dev-wallet call has no
+      // Solana support (toTokenApiChain("solana") is null there), so an address-less prompt would hit
+      // that broken branch first and never reach the real Solana deployer cascade (SOLANA_TOKEN_
+      // INTENTS / isSolanaDeployerQuestion below) — the explicit address is what routes correctly here.
       ...(wantsDeployer ? {} : {
         ui: {
           intentBadge: "Token Read",
@@ -11313,7 +11322,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         actions: [
           { label: "Deep Scan Token", prompt: `deep scan ${tokenAddress}`, kind: "prompt" as const },
           { label: "Explain LP", prompt: `explain lp for ${tokenAddress}`, kind: "prompt" as const },
-          { label: "Check Deployer", prompt: `who deployed ${tokenAddress}`, kind: "prompt" as const },
+          { label: "Check Deployer", prompt: "who deployed this", kind: "prompt" as const },
           { label: "Check Holders", prompt: `top holders for ${tokenAddress}`, kind: "prompt" as const },
           { label: "Open Token Scanner", href: tokenScannerHref(tokenAddress, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools))), kind: "link" as const },
         ],
@@ -11618,7 +11627,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         actions: [
           { label: "Deep Scan Token", prompt: `deep scan ${r.address}`, kind: "prompt" as const },
           { label: "Explain LP", prompt: `explain lp for ${r.address}`, kind: "prompt" as const },
-          { label: "Check Deployer", prompt: `who deployed ${r.address}`, kind: "prompt" as const },
+          { label: "Check Deployer", prompt: "who deployed this", kind: "prompt" as const },
           { label: "Check Holders", prompt: `top holders for ${r.address}`, kind: "prompt" as const },
           { label: "Open Token Scanner", href: tokenScannerHref(r.address, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools))), kind: "link" as const },
         ],
