@@ -159,9 +159,20 @@ export function tokenAgeDaysFromPairCreatedAtMs(pairCreatedAtMs: number | null, 
   return Math.max(0, days)
 }
 
-export function sanitizeMarketCapUsd(marketCapUsd: number | null, fdvUsd: number | null, collapseEqualFdv = false): number | null {
+// MCAP-UNAVAILABLE FIX, DISCLOSED (live report: "all the marketcaps unavailable on Pump Alerts" —
+// confirmed every card on the feed showing "MCap unavailable" despite Price/24h/Liquidity/Volume/
+// FDV/Age all resolving). Root cause: normalizeDexScreenerPair below used to call this with
+// collapseEqualFdv=true, discarding pair.marketCap outright whenever it equalled pair.fdv. That
+// heuristic was meant to stop FDV being mislabeled as market cap, but DexScreener computes marketCap
+// and fdv as two INDEPENDENT fields from its own circulating/total-supply data — for the vast
+// majority of pump-style tokens (100% of supply already circulating, no vesting/lock), the two real,
+// independently-computed numbers legitimately come out equal. Discarding a real equal value is not
+// the same as substituting FDV for a missing market cap (still never done anywhere in this file —
+// marketCapUsd is only ever assigned from pair.marketCap/attrs.market_cap_usd, never from fdvUsd),
+// so the collapse parameter is removed: a real, positive, provider-reported market cap is always
+// kept, whether or not it happens to equal FDV.
+export function sanitizeMarketCapUsd(marketCapUsd: number | null): number | null {
   if (marketCapUsd == null || marketCapUsd <= 0) return null
-  if (collapseEqualFdv && fdvUsd != null && marketCapUsd === fdvUsd) return null
   return marketCapUsd
 }
 
@@ -184,7 +195,7 @@ export function mergeNormalizedCandidate(keep: NormalizedCandidate, incoming: No
 export function evaluatePumpCandidate(c: NormalizedCandidate): PumpEvaluation {
   const sym = c.symbol.toUpperCase()
   if (isMajorStableWrappedOrLp(sym, c.name)) return { qualified: false, reason: 'majorStableWrapped' }
-  const marketCapUsd = sanitizeMarketCapUsd(c.marketCapUsd, c.fdvUsd)
+  const marketCapUsd = sanitizeMarketCapUsd(c.marketCapUsd)
   const cap = marketCapUsd ?? c.fdvUsd
   if (cap == null) return { qualified: false, reason: 'capDataMissing' }
   if (cap > PUMP_ALERT_MAX_CAP_USD) return { qualified: false, reason: 'overCap' }
@@ -257,7 +268,7 @@ function buildAlert(c: NormalizedCandidate, evaluation: Extract<PumpEvaluation, 
     change24h: c.priceChange24hPct, change6h: c.priceChange6hPct, change1h: c.priceChange1hPct,
     change14d: null,
     volume24hUsd: c.volume24hUsd, liquidityUsd: c.liquidityUsd, fdvUsd: c.fdvUsd,
-    marketCapUsd: sanitizeMarketCapUsd(c.marketCapUsd, c.fdvUsd),
+    marketCapUsd: sanitizeMarketCapUsd(c.marketCapUsd),
     tokenAgeDays: tokenAgeDaysFromPairCreatedAtMs(c.pairCreatedAtMs),
     evidenceSource: 'live_momentum', evidenceGrade: 'live_momentum',
     qualifyingReason,
@@ -300,7 +311,7 @@ function normalizeGTPool(pool: GTPool, included: GTIncluded[], chain: PumpChain)
   if (!meta?.attributes?.address) return null
   const attrs = pool.attributes
   const fdvUsd = parseNum(attrs?.fdv_usd)
-  const marketCapUsd = sanitizeMarketCapUsd(parseNum(attrs?.market_cap_usd), fdvUsd)
+  const marketCapUsd = sanitizeMarketCapUsd(parseNum(attrs?.market_cap_usd))
   const poolCreatedAtMs = attrs?.pool_created_at ? Date.parse(attrs.pool_created_at) : NaN
   return {
     chainSlug: chain, chainId: CHAIN_CONFIG[chain].chainId,
@@ -367,7 +378,7 @@ function normalizeDexScreenerPair(pair: DexScreenerPair, chain: PumpChain): Norm
   const addr = pair.baseToken?.address
   if (!addr) return null
   const fdvUsd = parseNum(pair.fdv)
-  const marketCapUsd = sanitizeMarketCapUsd(parseNum(pair.marketCap), fdvUsd, true)
+  const marketCapUsd = sanitizeMarketCapUsd(parseNum(pair.marketCap))
   return {
     chainSlug: chain, chainId: CHAIN_CONFIG[chain].chainId,
     tokenAddress: addr.toLowerCase(),

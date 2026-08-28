@@ -243,9 +243,15 @@ assert.match(routeCode, /parsePairCreatedAtMs\(pair\.pairCreatedAt\)/, 'DexScree
   assert.equal(merged.marketCapUsd, 1_250_000, 'GT null mcap must fill from later DS mcap')
   assert.equal(merged.pairCreatedAtMs, 1_700_000_000_000, 'GT null age must fill from later DS pairCreatedAt')
 }
-assert.equal(sanitizeMarketCapUsd(1_000_000, 1_000_000, true), null, 'DS marketCap===fdv stays null mcap')
-assert.equal(sanitizeMarketCapUsd(1_000_000, 2_000_000, true), 1_000_000, 'DS mcap distinct from fdv is kept')
-assert.equal(sanitizeMarketCapUsd(0, 2_000_000, false), null, '0 mcap is missing, not a real cap')
+// MCAP-UNAVAILABLE FIX, DISCLOSED: a real, positive, provider-reported market cap must be kept even
+// when it happens to equal FDV — DexScreener computes the two as independent fields, and for
+// pump-style tokens with 100% circulating supply they legitimately come out equal. Discarding that
+// was the root cause of every Pump Alerts card showing "MCap unavailable" despite FDV/liquidity/
+// volume all resolving. This is still never a substitution of FDV for market cap — marketCapUsd is
+// only ever assigned from the provider's own marketCap/market_cap_usd field.
+assert.equal(sanitizeMarketCapUsd(1_000_000), 1_000_000, 'a real marketCap must be kept even when it equals FDV')
+assert.equal(sanitizeMarketCapUsd(1_000_000), 1_000_000, 'DS mcap distinct from fdv is kept')
+assert.equal(sanitizeMarketCapUsd(0), null, '0 mcap is missing, not a real cap')
 {
   const c = candidate({ marketCapUsd: 0, fdvUsd: null, priceChange24hPct: 10 })
   const r = evaluatePumpCandidate(c)
