@@ -9,6 +9,8 @@ import {
   isMintAddressFollowup,
   resolveClarkContextChain,
   uiModeHintForPrompt,
+  extractPromptEntities,
+  resolveIntentBadge,
 } from '../lib/client/clarkAiLive.ts'
 
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
@@ -43,5 +45,13 @@ assert.ok(pageSrc.includes('resolveClarkContextChain'))
 assert.ok(pageSrc.includes('resolvedChain'))
 assert.ok(!pageSrc.includes("clk-context-sub'>Chain ID: 8453"))
 assert.ok(!pageSrc.includes("clk-context-value'>Base</div><div className='clk-context-sub'>Chain ID: 8453"))
+
+assert.equal(extractPromptEntities(`scan this wallet ${DEAD} on base`).kind, 'wallet')
+assert.equal(extractPromptEntities(`scan this wallet ${DEAD} on base`).address, DEAD)
+assert.equal(extractPromptEntities(USDC).kind, 'token')
+assert.equal(resolveIntentBadge(USDC, 'WALLET READ'), 'TOKEN READ', 'sticky server wallet badge must not win on a mint')
+assert.equal(resolveIntentBadge(`scan this wallet ${DEAD} on base`, 'WALLET READ'), 'WALLET READ')
+assert.ok(pageSrc.includes('persistEntitiesFromPrompt(text, sendMode)'))
+assert.ok(pageSrc.includes('resolveIntentBadge'))
 
 console.log('test-clark-live-context.mjs: all assertions passed')

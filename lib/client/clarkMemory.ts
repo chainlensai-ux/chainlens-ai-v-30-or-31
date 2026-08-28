@@ -90,10 +90,13 @@ export function persistClarkMemoryEcho(payload: unknown): void {
 
   const lastWallet = echo.lastWallet as { address?: unknown } | undefined
   if (lastWallet && typeof lastWallet === 'object' && typeof lastWallet.address === 'string') {
-    sessionStorage.setItem(LAST_WALLET_KEY, JSON.stringify(lastWallet))
-    const walletChain = (lastWallet as { chain?: unknown }).chain
-    if (typeof walletChain === 'string' && walletChain.trim()) {
-      sessionStorage.setItem(LAST_CHAIN_KEY, walletChain.trim())
+    const walletAddress = lastWallet.address.trim()
+    if (walletAddress && walletAddress !== '?' && walletAddress.toLowerCase() !== 'none yet') {
+      sessionStorage.setItem(LAST_WALLET_KEY, JSON.stringify({ ...lastWallet, address: walletAddress }))
+      const walletChain = (lastWallet as { chain?: unknown }).chain
+      if (typeof walletChain === 'string' && walletChain.trim()) {
+        sessionStorage.setItem(LAST_CHAIN_KEY, walletChain.trim())
+      }
     }
   }
   if (Array.isArray(echo.recentWallets)) {
@@ -139,7 +142,7 @@ export function persistClarkMomentumList(items: unknown[]): void {
   sessionStorage.setItem(LAST_MOMENTUM_SHOWN_COUNT_KEY, String(Math.min(7, items.length)))
 }
 
-// ── Persisted market momentum (survives page refresh, 15-minute expiry) ───────────────────────
+// ── Persisted market momentum (survives page refresh, 15-minute expiry) ────────────────────────
 const MARKET_MOMENTUM_KEY = 'chainlens:lastMarketMomentum'
 const MARKET_MOMENTUM_TTL_MS = 15 * 60 * 1000
 

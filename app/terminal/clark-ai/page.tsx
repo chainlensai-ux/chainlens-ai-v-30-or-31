@@ -16,9 +16,9 @@ import {
   intentBadgeForPrompt,
   isClarkTimeoutError,
   isMintAddressFollowup,
-  isWalletLanguagePrompt,
   persistEntitiesFromPrompt,
   resolveClarkContextChain,
+  resolveIntentBadge,
   uiModeHintForPrompt,
 } from '@/lib/client/clarkAiLive'
 import { CLARK_AI_PAGE_CSS } from './clarkAiPageCss'
@@ -89,6 +89,7 @@ function ClarkAiContent() {
   const [loading,   setLoading]   = useState(false)
   const [loadingKind, setLoadingKind] = useState<AnalysisKind>('general')
   const [loadingStage, setLoadingStage] = useState(0)
+  const [memoryEpoch, setMemoryEpoch] = useState(0)
   const [clarkUsed, setClarkUsed] = useState(0)
   const [planLimit, setPlanLimit] = useState<number | null>(null)
   const clarkContextRef = useRef<ClarkContextState>({})
@@ -226,7 +227,8 @@ function ClarkAiContent() {
     const sentForToken = chatSessionTokenRef.current
     const sendMode = uiModeHintForPrompt(text, activeMode)
     setActiveMode(sendMode)
-    persistEntitiesFromPrompt(text)
+    persistEntitiesFromPrompt(text, sendMode)
+    setMemoryEpoch((n) => n + 1)
     setLoadingKind(inferAnalysisKind(text, sendMode))
     setLoadingStage(0)
     setMessages((prev) => [...prev, { role: 'user', text }, { role: 'clark', text: THINKING_MESSAGE }])
@@ -368,6 +370,7 @@ function ClarkAiContent() {
         ? (marketContext as Record<string, unknown>).cursor as ClarkContextState['marketCursor'] : null
       if (cursor) clarkContextRef.current.marketCursor = cursor
       persistClarkMemoryEcho(payload)
+      setMemoryEpoch((n) => n + 1)
       clarkContextRef.current.previousIntent  = clarkContextRef.current.lastIntent ?? null
       clarkContextRef.current.lastIntent      = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
       clarkContextRef.current.lastSelectedRank = /\b([1-9]\d{0,2})\b/.test(text) ? Number(text.match(/\b([1-9]\d{0,2})\b/)?.[1] ?? 0) || null : clarkContextRef.current.lastSelectedRank
@@ -385,7 +388,7 @@ function ClarkAiContent() {
       if (chatSessionTokenRef.current === sentForToken) {
         setMessages((prev) => {
           const next = [...prev]
-          const finalMsg: Message = { role: 'clark', text: String(reply), intentBadge: typeof ui?.intentBadge === 'string' ? ui.intentBadge : null, actions }
+          const finalMsg: Message = { role: 'clark', text: String(reply), intentBadge: resolveIntentBadge(text, typeof ui?.intentBadge === 'string' ? ui.intentBadge : null), actions }
           if (statusMessage) {
             next[next.length - 1] = { role: 'clark', text: statusMessage }
             next.push(finalMsg)
@@ -433,7 +436,7 @@ function ClarkAiContent() {
   const recentTokens = (clarkContextRef.current.lastMarketList ?? []).slice(0, 3)
   const recentWalletValue = clientContext.lastWallet ? formatContextValue(clientContext.lastWallet) : null
   const quickActions = QUICK_ACTIONS
-  void activeModeConfig; void applyMode; void handleImportFromRadar; void handlePasteContract; void handlePasteWallet; void chips
+  void memoryEpoch; void activeModeConfig; void applyMode; void handleImportFromRadar; void handlePasteContract; void handlePasteWallet; void chips
 
   return (
     <div className='clk-page'>
@@ -520,7 +523,7 @@ function ClarkAiContent() {
                 const isThinking = msg.role === 'clark' && loading && msg.text === THINKING_MESSAGE
                 return (
                   <div key={idx} className={`clk-msg clk-msg--${msg.role}`}>
-                    <span className='clk-msg-role' data-intent={msg.role === 'user' ? msg.text.slice(0, 34) : (msg.intentBadge ?? (isWalletLanguagePrompt(msg.text) || activeMode === 'wallet' ? 'WALLET READ' : activeMode === 'token' ? 'TOKEN READ' : activeMode === 'contract' ? 'RISK READ' : 'INTELLIGENCE'))}>{msg.role === 'user' ? 'USER' : 'CLARK'}</span>
+                    <span className='clk-msg-role' data-intent={msg.role === 'user' ? msg.text.slice(0, 34) : (msg.intentBadge ?? resolveIntentBadge(msg.text))}>{msg.role === 'user' ? 'USER' : 'CLARK'}</span>
                     {isThinking ? (
                       <div className='clk-thinking'>
                         <ThinkingOrb state="composing" size={64} speed={2.80} />

@@ -213,18 +213,30 @@ const LAST_WALLET_KEY = 'chainlens:clark:last-wallet'
 const LAST_TOKEN_KEY = 'chainlens:clark:last-token'
 const LAST_CHAIN_KEY = 'chainlens:clark:last-chain'
 
+export type ClarkUiMode = 'token' | 'wallet' | 'contract' | 'radar'
+
 /** Write last wallet/token/chain from the prompt itself. Server memoryEcho is best-effort. */
-export function persistEntitiesFromPrompt(prompt: string): void {
+export function persistEntitiesFromPrompt(prompt: string, modeHint?: ClarkUiMode): void {
   if (typeof window === 'undefined') return
   const entity = extractPromptEntities(prompt)
-  if (!entity.address || !entity.kind) return
+  const text = String(prompt ?? '')
+  const evm = text.match(EVM_ADDRESS_RE)?.[0] ?? null
+  let kind = entity.kind
+  let address = entity.address
+  let chain = entity.chain
+  if (modeHint === 'wallet' && evm) {
+    kind = 'wallet'
+    address = evm
+    chain = chain || extractChainFromPrompt(text) || 'base'
+  }
+  if (!address || !kind) return
   try {
-    if (entity.kind === 'wallet') {
-      sessionStorage.setItem(LAST_WALLET_KEY, JSON.stringify({ address: entity.address, chain: entity.chain }))
+    if (kind === 'wallet') {
+      sessionStorage.setItem(LAST_WALLET_KEY, JSON.stringify({ address, chain }))
     } else {
-      sessionStorage.setItem(LAST_TOKEN_KEY, JSON.stringify({ address: entity.address, chain: entity.chain }))
+      sessionStorage.setItem(LAST_TOKEN_KEY, JSON.stringify({ address, chain }))
     }
-    if (entity.chain) sessionStorage.setItem(LAST_CHAIN_KEY, entity.chain)
+    if (chain) sessionStorage.setItem(LAST_CHAIN_KEY, chain)
   } catch { /* sessionStorage unavailable */ }
 }
 
@@ -236,7 +248,14 @@ export function intentBadgeForPrompt(prompt: string): string {
   return 'TOKEN READ'
 }
 
-export function uiModeHintForPrompt(prompt: string, activeMode: 'token' | 'wallet' | 'contract' | 'radar'): 'token' | 'wallet' | 'contract' | 'radar' {
+/** Prefer this prompt's badge over a sticky server WALLET READ from the previous scan. */
+export function resolveIntentBadge(prompt: string, serverBadge?: string | null): string {
+  const clientBadge = intentBadgeForPrompt(prompt)
+  if (clientBadge === 'TOKEN READ' && typeof serverBadge === 'string' && /wallet/i.test(serverBadge)) return clientBadge
+  return (typeof serverBadge === 'string' && serverBadge.trim()) ? serverBadge : clientBadge
+}
+
+export function uiModeHintForPrompt(prompt: string, activeMode: ClarkUiMode): 'token' | 'wallet' | 'contract' | 'radar' {
   if (isWalletLanguagePrompt(prompt)) return 'wallet'
   if (isMintAddressFollowup(prompt)) return 'token'
   const entity = extractPromptEntities(prompt)
