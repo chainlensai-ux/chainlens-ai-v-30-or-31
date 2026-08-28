@@ -238,7 +238,16 @@ assert.ok(new Date(populatedReport.timeline[0].timestamp).getTime() >= new Date(
 // changes") — static-source assertions against the real page files (no DOM renderer in this
 // harness, matching this file's established convention). ──────────────────────────────────────
 {
+  // FILE-SPLIT FIX, DISCLOSED (caught by a test added in another session's merge, before this file
+  // was updated to match): openReportForAlert/prefetchReportForAlert and the rest of this section's
+  // click/prefetch/audit logic were extracted out of page.tsx into their own module,
+  // app/terminal/pump-alerts/pumpAlertsUi.tsx (see its `export function openReportForAlert` and
+  // `export function prefetchReportForAlert`) — a real, legitimate refactor, not a regression. Only
+  // `onHoverPrefetch={() => prefetchReport(alert)}` remains in page.tsx, wiring the extracted
+  // prefetch function into the still-page-local card grid. Reading both files together keeps every
+  // assertion checking real, present behavior regardless of which file it now lives in.
   const alertsPageSrc = fs.readFileSync(new URL('../app/terminal/pump-alerts/page.tsx', import.meta.url), 'utf8')
+    + '\n' + fs.readFileSync(new URL('../app/terminal/pump-alerts/pumpAlertsUi.tsx', import.meta.url), 'utf8')
   const alertsPageCode = alertsPageSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
 
   // Report button calls router.push immediately without awaiting the report API.
