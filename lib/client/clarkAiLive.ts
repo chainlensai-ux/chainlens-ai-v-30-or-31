@@ -179,14 +179,71 @@ export function isWalletLanguagePrompt(prompt: string): boolean {
   return /\b(wallet|portfolio|holdings?|pnl)\b/i.test(String(prompt ?? ''))
 }
 
+const EVM_ADDRESS_RE = /\b0x[a-fA-F0-9]{40}\b/
+const BASE58_RE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/
+
+export type PromptEntity = {
+  kind: 'wallet' | 'token' | null
+  address: string | null
+  chain: string | null
+}
+
+/** Pull a wallet or token address out of the prompt so CONTEXT/follow-ups do not wait on memoryEcho. */
+export function extractPromptEntities(prompt: string): PromptEntity {
+  const text = String(prompt ?? '')
+  const chain = extractChainFromPrompt(text)
+  const evm = text.match(EVM_ADDRESS_RE)?.[0] ?? null
+  let sol: string | null = null
+  for (const match of text.match(BASE58_RE) ?? []) {
+    if (isValidSolanaMintAddress(match)) { sol = match; break }
+  }
+  if (isWalletLanguagePrompt(text) && evm) {
+    return { kind: 'wallet', address: evm, chain: chain || 'base' }
+  }
+  if (sol) {
+    return { kind: 'token', address: sol, chain: chain || 'solana' }
+  }
+  if (evm) {
+    return { kind: 'token', address: evm, chain }
+  }
+  return { kind: null, address: null, chain }
+}
+
+const LAST_WALLET_KEY = 'chainlens:clark:last-wallet'
+const LAST_TOKEN_KEY = 'chainlens:clark:last-token'
+const LAST_CHAIN_KEY = 'chainlens:clark:last-chain'
+
+/** Write last wallet/token/chain from the prompt itself. Server memoryEcho is best-effort. */
+export function persistEntitiesFromPrompt(prompt: string): void {
+  if (typeof window === 'undefined') return
+  const entity = extractPromptEntities(prompt)
+  if (!entity.address || !entity.kind) return
+  try {
+    if (entity.kind === 'wallet') {
+      sessionStorage.setItem(LAST_WALLET_KEY, JSON.stringify({ address: entity.address, chain: entity.chain }))
+    } else {
+      sessionStorage.setItem(LAST_TOKEN_KEY, JSON.stringify({ address: entity.address, chain: entity.chain }))
+    }
+    if (entity.chain) sessionStorage.setItem(LAST_CHAIN_KEY, entity.chain)
+  } catch { /* sessionStorage unavailable */ }
+}
+
 export function intentBadgeForPrompt(prompt: string): string {
   if (isWalletLanguagePrompt(prompt)) return 'WALLET READ'
   if (isMintAddressFollowup(prompt)) return 'TOKEN READ'
+  const entity = extractPromptEntities(prompt)
+  if (entity.kind === 'wallet') return 'WALLET READ'
   return 'TOKEN READ'
 }
 
 export function uiModeHintForPrompt(prompt: string, activeMode: 'token' | 'wallet' | 'contract' | 'radar'): 'token' | 'wallet' | 'contract' | 'radar' {
   if (isWalletLanguagePrompt(prompt)) return 'wallet'
+  if (isMintAddressFollowup(prompt)) return 'token'
+  const entity = extractPromptEntities(prompt)
+  if (entity.kind === 'wallet') return 'wallet'
+  if (entity.kind === 'token') return 'token'
+  // Do not keep a previous wallet mode for a non-wallet prompt (bare mint, follow-up, etc).
+  if (activeMode === 'wallet') return 'token'
   return activeMode
 }
 
