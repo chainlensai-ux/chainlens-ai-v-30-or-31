@@ -10,7 +10,11 @@ assert.doesNotMatch(ui, /Set Alert/, 'Set Alert button and copy are removed from
 // Add To Watchlist actually calls the wallet watchlist API and is disabled without a scanned wallet.
 assert.match(ui, /function handleAddWalletToWatchlist\(/, 'handleAddWalletToWatchlist handler exists')
 assert.match(ui, /fetch\('\/api\/watchlist\/wallets', \{/, 'Add To Watchlist posts to the wallet watchlist API')
-assert.match(ui, /disabled=\{!result\?\.address \|\| watchlistStatus === 'saving'\}/, 'Add To Watchlist button is disabled while saving or with no scanned wallet')
+// STALE-SELECTOR FIX, DISCLOSED: this asserted the pre-V2-migration selector
+// (`result?.address`) — the page has read the wallet address from
+// `result?.scanMetadata?.walletAddress` (the real V2 report shape) since the V2 rewrite; this
+// test simply never got updated alongside that rename, so it always failed when actually run.
+assert.match(ui, /disabled=\{!result\?\.scanMetadata\?\.walletAddress \|\| watchlistStatus === 'saving'\}/, 'Add To Watchlist button is disabled while saving or with no scanned wallet')
 assert.match(ui, /Added to watchlist/, 'success feedback string is present')
 assert.match(ui, /Already in watchlist/, 'already-exists feedback string is present')
 assert.match(ui, /Sign in to add wallets to your watchlist\./, 'auth-required feedback string is present, no crash on missing session')
