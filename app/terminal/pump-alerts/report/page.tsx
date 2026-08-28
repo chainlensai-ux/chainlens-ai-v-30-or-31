@@ -146,7 +146,7 @@ function SeedShell({ seed }: { seed: ReportSeed }) {
     ['Liquidity', fmtUsd(seed.liquidityUsd)],
     ['Market Cap', seed.marketCapUsd == null ? 'MCap unavailable' : fmtUsd(seed.marketCapUsd)],
     ['FDV', fmtUsd(seed.fdvUsd)],
-    ['Age', seed.tokenAgeDays == null ? '—' : (seed.tokenAgeDays < 1 ? '<1d' : `${Math.round(seed.tokenAgeDays)}d`)],
+    ['Age', seed.tokenAgeDays == null ? '—' : (seed.tokenAgeDays < 1 ? `${(seed.tokenAgeDays*24).toFixed(1)}h` : `${Math.round(seed.tokenAgeDays)}d`)],
     ['Chain', seed.chain.toUpperCase()],
   ]
   return (
@@ -350,6 +350,12 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
   const impactOrder = { high: 0, medium: 1, low: 2 }
   const sortedCatalysts = [...report.catalysts].sort((a, b) => impactOrder[a.impact] - impactOrder[b.impact])
   const topRisk = report.riskAnalysis.find(r => r.status === 'confirmed') ?? report.riskAnalysis.find(r => r.status === 'possible')
+  const highProbKill = report.killSignals.find(k => k.probability === 'high')
+  const pullbackRiskLabel = es.pullbackEvidence.split(/[.!?](?:\s|$)/)[0]?.trim() || 'High pullback risk'
+  const biggestRisk = topRisk?.label
+    ?? (es.pullbackRisk === 'high' ? pullbackRiskLabel : undefined)
+    ?? highProbKill?.label
+    ?? 'No confirmed risk'
   // UI STATE FIX, DISCLOSED: swapped generic "No data"/"Provider unavailable" sentences for the
   // short "Unavailable" value (see MetricCard) plus the REAL reason from the backend audit — never a
   // guessed explanation. Market Cap and FDV are always independently sourced and labelled per the
@@ -506,7 +512,7 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
       <Section title="Clark Verdict" subtitle="Data shown above · 40-word maximum">
         <ul className={styles.clarkList}>
           <li><strong>Main reason:</strong> {sortedCatalysts[0]?.label ?? 'No verified catalyst'}</li>
-          <li><strong>Biggest risk:</strong> {topRisk?.label ?? 'No confirmed risk'}</li>
+          <li><strong>Biggest risk:</strong> {biggestRisk}</li>
           <li><strong>Watch next:</strong> {report.watchlist[0]?.label ?? 'Fresh evidence'}</li>
         </ul>
       </Section>

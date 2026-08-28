@@ -111,6 +111,7 @@ const ENRICHED_BY_COINGECKO = new Set(['USDC', 'USDT', 'DAI', 'USDBC', 'WETH', '
 const MAX_RANDOM_TOKENS = 15
 const WHALE_CACHE_TTL_MS = 45_000
 const whaleCache = new Map<string, { exp: number; payload: unknown }>()
+export function clearWhaleFeedCache() { whaleCache.clear() }
 const whaleRate = new Map<string, { count: number; resetAt: number }>()
 const WHALE_RATE_LIMIT: Record<'free' | 'pro' | 'elite', number> = { free: 3, pro: 12, elite: 30 }
 

@@ -59,7 +59,7 @@ export default function AuthPage() {
   // read/wrote the same `loading` flag, so the two screenshots were of the SAME state, not two
   // simultaneous requests). Split so each action's button only ever reflects its own request.
   const [googleLoading, setGoogleLoading] = useState(false);
-  const [authCheckLoading, setAuthCheckLoading] = useState(true);
+  const [authCheckLoading, setAuthCheckLoading] = useState(false);
   const [error, setError] = useState<string | null>(() => {
     if (typeof window === 'undefined') return null;
     return authCallbackError(window.location.href);
@@ -82,9 +82,33 @@ export default function AuthPage() {
 
   useEffect(() => {
     let isMounted = true;
+    const safety = window.setTimeout(() => {
+      if (!isMounted) return
+      setAuthCheckLoading(false)
+    }, 8_000)
 
     async function checkExistingUser() {
-      const { data, error: sessionError } = await supabase.auth.getSession();
+      let data: { session?: { access_token?: string; user?: { app_metadata?: { provider?: string }; email_confirmed_at?: string | null } } | null } | null = null
+      let sessionError: { message?: string } | null = null
+      try {
+        const raced = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise<never>((_, reject) => {
+            window.setTimeout(() => {
+              const err = new Error('getSession_timeout')
+              err.name = 'TimeoutError'
+              reject(err)
+            }, 8_000)
+          }),
+        ])
+        data = raced.data
+        sessionError = raced.error
+      } catch {
+        if (!isMounted) return
+        // Timed out / hung getSession — render the form instead of "Checking session…" forever.
+        setAuthCheckLoading(false)
+        return
+      }
 
       if (!isMounted) return;
 
@@ -97,6 +121,12 @@ export default function AuthPage() {
           setAuthCheckLoading(false);
           return;
         }
+        // Form is already visible (authCheckLoading starts false). Only
+        // navigate if the session is actually usable; otherwise stay on the form.
+        if (!data.session.access_token) {
+          return;
+        }
+        setAuthCheckLoading(false);
         const nextParam = new URLSearchParams(window.location.search).get('next')
         router.replace(isSafeInternalPath(nextParam) ? nextParam : '/terminal');
         return;
@@ -115,6 +145,7 @@ export default function AuthPage() {
           Promise.resolve().then(() => supabase.auth.signOut());
           return;
         }
+        setAuthCheckLoading(false);
         const nextParam = new URLSearchParams(window.location.search).get('next')
         router.replace(isSafeInternalPath(nextParam) ? nextParam : '/terminal');
       }
@@ -122,9 +153,14 @@ export default function AuthPage() {
 
     return () => {
       isMounted = false;
+      window.clearTimeout(safety);
       subscription.unsubscribe();
     };
-  }, [router]);
+  // Empty deps: [router] re-subscribe was clearing the 8s safety timeout
+  // before it could fire, and SSR of useState(true) left "Checking session…"
+  // frozen when hydration/effect never ran.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function handleGoogle() {
     setError(null);

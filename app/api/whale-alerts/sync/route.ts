@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { clearWhaleFeedCache } from '@/app/api/whale-alerts/route'
 import { createClient } from '@supabase/supabase-js'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
 import { logRpcCall } from '@/lib/server/rpcDebug'
@@ -1006,5 +1007,6 @@ export async function POST(request: Request) {
     }
   }
 
+  clearWhaleFeedCache()
   return NextResponse.json(response)
 }

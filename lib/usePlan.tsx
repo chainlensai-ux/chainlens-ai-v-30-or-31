@@ -73,6 +73,23 @@ export function peekCachedPlan(): UserPlan | null {
   } catch { return null }
 }
 
+
+const GET_SESSION_TIMEOUT_MS = 8_000
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = window.setTimeout(() => {
+      const err = new Error(message)
+      err.name = 'TimeoutError'
+      reject(err)
+    }, ms)
+    promise.then(
+      (v) => { window.clearTimeout(t); resolve(v) },
+      (e) => { window.clearTimeout(t); reject(e) },
+    )
+  })
+}
+
 export function ensurePlanLoaded(): Promise<void> {
   if (typeof window === 'undefined') return Promise.resolve()
   if (sharedPlanState.loadedOnce && Date.now() - sharedPlanState.lastFetchedAt < PLAN_CACHE_MAX_AGE_MS && !sharedPlanState.loading) {
@@ -84,7 +101,7 @@ export function ensurePlanLoaded(): Promise<void> {
   notifyPlanListeners('init')
   sharedPlanState.inFlight = (async () => {
     try {
-      const { data } = await supabase.auth.getSession()
+      const { data } = await withTimeout(supabase.auth.getSession(), GET_SESSION_TIMEOUT_MS, 'getSession_timeout')
       const session = data.session
       const token = session?.access_token
       if (!token) {
@@ -225,7 +242,38 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
       setResolved(true)
       setLoading(false)
     }
-    supabase.auth.getSession().then(({ data }) => load(data.session ? { access_token: data.session.access_token, user: { id: data.session.user.id, email: data.session.user.email } } : null))
+    let cancelled = false
+    const safety = window.setTimeout(() => {
+      if (cancelled) return
+      // Hard wall-clock: never leave "Loading plan access…" up forever.
+      setLoading(false)
+      setResolved(true)
+      setPlan((prev) => {
+        if (prev) return prev
+        const cached = peekCachedPlan()
+        if (cached) return cached
+        setError((e) => e ?? 'plan_fetch_failed')
+        return 'free'
+      })
+    }, GET_SESSION_TIMEOUT_MS)
+    withTimeout(supabase.auth.getSession(), GET_SESSION_TIMEOUT_MS, 'getSession_timeout')
+      .then(({ data }) => {
+        if (cancelled) return
+        return load(data.session ? { access_token: data.session.access_token, user: { id: data.session.user.id, email: data.session.user.email } } : null)
+      })
+      .catch(() => {
+        if (cancelled) return
+        const cached = peekCachedPlan()
+        if (cached) {
+          setPlan(cached)
+          setError(null)
+        } else {
+          setPlan('free')
+          setError('plan_fetch_failed')
+        }
+        setLoading(false)
+        setResolved(true)
+      })
     const { data: l } = supabase.auth.onAuthStateChange((event, session) => {
       // TOKEN_REFRESHED / INITIAL_SESSION must not flip Pump Alerts back to
       // "Loading plan access…" when a cached plan is already visible.
@@ -240,7 +288,7 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
       }
       void load(session ? { access_token: session.access_token, user: { id: session.user.id, email: session.user.email } } : null)
     })
-    return () => { l.subscription.unsubscribe() }
+    return () => { cancelled = true; window.clearTimeout(safety); l.subscription.unsubscribe() }
   }, [])
   return { plan: plan ?? peekCachedPlan() ?? ('free' as UserPlan), loading: loading || !resolved, error, betaEliteActive, elitePass }
 }

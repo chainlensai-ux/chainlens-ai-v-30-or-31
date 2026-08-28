@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
+import { whaleHasScanEvidence, whaleKpiTile } from '@/lib/whaleFeedStatus'
 
 type WalletCtx = {
   shortAddress: string
@@ -112,6 +113,10 @@ const RANGE_OPTIONS: { label: string; value: ValueRange }[] = [
   { label: '$10k+',     value: '10000+' },
 ]
 const WINDOWS = ['1h', '6h', '24h', '7d'] as const
+function syncWindowParam(uiWindow: (typeof WINDOWS)[number]): '24h' | '7d' {
+  // Sync route accepts 24h | 3d | 7d only. Never scan 7d when the visible GET window is 24h/1h/6h.
+  return uiWindow === '7d' ? '7d' : '24h'
+}
 const DEV_SYNC_COOLDOWN_MS = 10 * 1000
 const PRO_SYNC_COOLDOWN_MS = 60 * 1000
 const ELITE_SYNC_COOLDOWN_MS = 30 * 1000
@@ -318,11 +323,12 @@ export default function WhaleAlertsPage() {
   const [sideFilter, setSideFilter]   = useState('all')
   const [alerts, setAlerts]           = useState<AlertItem[]>([])
   const [stats, setStats]             = useState<AlertStats>({ alerts15m: 0, alerts1h: 0, alerts24h: 0, trackedWallets: 0 })
-  const [loading, setLoading]         = useState(false)
+  const [loading, setLoading]         = useState(true)
   const [enrichLoading, setEnrichLoading] = useState(false)
   const [syncing, setSyncing]         = useState(false)
   const [syncState, setSyncState]     = useState<SyncResponse | null>(null)
   const [feedError, setFeedError]     = useState(false)
+  const [feedSettled, setFeedSettled] = useState(false)
   const [feedDiagnostics, setFeedDiagnostics] = useState<FeedDiagnostics | null>(null)
   const [intelligence, setIntelligence] = useState<AlertIntelligence | null>(null)
   // UI-ONLY DISCLOSURE STATE, DISCLOSED (Whale Alerts UI redesign): drives the collapsed/expanded
@@ -368,11 +374,24 @@ export default function WhaleAlertsPage() {
       if (sevFilter !== 'all')  p.set('severity', sevFilter)
       if (sideFilter !== 'all') p.set('side', sideFilter)
       if (opts?.enrich) p.set('enrich', 'true')
-      const { data: { session } } = await supabase.auth.getSession()
-      const token = session?.access_token
+      let token: string | undefined
+      try {
+        const sessionResult = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise<never>((_, reject) => {
+            const err = new Error('getSession_timeout')
+            err.name = 'TimeoutError'
+            window.setTimeout(() => reject(err), 8_000)
+          }),
+        ])
+        token = sessionResult.data.session?.access_token
+      } catch {
+        token = undefined
+      }
       const res = await fetch(`/api/whale-alerts?${p.toString()}`, {
         cache: 'no-store',
         headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: AbortSignal.timeout(20_000),
       })
       if (!res.ok) { setFeedError(true); return }
       const json = await res.json()
@@ -385,6 +404,7 @@ export default function WhaleAlertsPage() {
     } finally {
       setLoading(false)
       setEnrichLoading(false)
+      setFeedSettled(true)
     }
   }, [windowValue, feedMode, valueRange, typeFilter, sevFilter, sideFilter])
 
@@ -411,7 +431,7 @@ export default function WhaleAlertsPage() {
         let currentOffset = typeof offset === 'number' ? offset : 0
         let cumulativeInserted = isFullResume ? (syncState?.insertedTotal ?? 0) : 0
         while (true) {
-          const params = new URLSearchParams({ window: '7d', limit: '10', minUsd: '0', mode: 'full', offset: String(currentOffset) })
+          const params = new URLSearchParams({ window: syncWindowParam(windowValue), limit: '10', minUsd: '0', mode: 'full', offset: String(currentOffset) })
           const { data: { session: syncSession } } = await supabase.auth.getSession()
           const syncToken = syncSession?.access_token
           const res = await fetch(`/api/whale-alerts/sync?${params.toString()}`, {
@@ -446,7 +466,7 @@ export default function WhaleAlertsPage() {
         }
       } else {
         // Batch: single call
-        const params = new URLSearchParams({ window: '7d', limit: '10', minUsd: '0', mode: 'batch' })
+        const params = new URLSearchParams({ window: syncWindowParam(windowValue), limit: '10', minUsd: '0', mode: 'batch' })
         if (typeof offset === 'number') params.set('offset', String(offset))
         const { data: { session: syncSession } } = await supabase.auth.getSession()
         const syncToken = syncSession?.access_token
@@ -763,24 +783,35 @@ export default function WhaleAlertsPage() {
             Flat surfaces, no per-card icon tile, no bottom accent bar, no gradient spark fill.
             The number is the only loud element; label and unit sit on one baseline above it. */}
         <div className="wa-metrics grid" style={{ gridTemplateColumns: 'repeat(4,1fr)', gap: 10 }}>
+          {/* Not scanned yet — KPI unknown/error/quiet copy comes from whaleKpiTile, never a fake 0. */}
           {metrics.map((m, idx) => {
-            const isZero = m.val === 0
+            const hasScan = whaleHasScanEvidence({ syncState, alertCount: alerts.length, diagnostics: feedDiagnostics })
+            const tile = whaleKpiTile({
+              loading,
+              feedError,
+              hasScanEvidence: hasScan,
+              feedSettled,
+              value: m.val,
+              zeroSub: m.zeroSub,
+              readySub: m.sub,
+            })
+            const isZero = tile.mode === 'quiet'
+            const isUnknown = tile.mode === 'checking' || tile.mode === 'not_scanned' || tile.mode === 'unavailable'
             return (
               <div key={`${m.label}-${m.unit ?? 'total'}`} className="relative overflow-hidden rounded-[12px]"
                 style={{ border: bdr, background: cardBg, padding: '15px 16px 14px' }}>
                 <div className="flex items-baseline" style={{ gap: 6 }}>
                   <FieldLabel>{m.label}</FieldLabel>
                   {m.unit && (
-                    <span className="tabular-nums" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', color: m.color, opacity: isZero ? 0.45 : 0.85 }}>
+                    <span className="tabular-nums" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', color: m.color, opacity: (isZero || isUnknown) ? 0.45 : 0.85 }}>
                       {m.unit}
                     </span>
                   )}
                 </div>
-                {/* A zero is dimmed rather than shown at full weight — it is a real reading, but not
-                    a headline number, so it stops competing with populated counters. */}
-                <p className="tabular-nums" style={{ marginTop: 10, fontSize: 30, fontWeight: 700, lineHeight: 1, letterSpacing: '-0.02em', color: isZero ? '#3f4a5c' : '#f1f5f9' }}>{m.val}</p>
-                <p style={{ marginTop: 7, fontSize: 11, color: '#4a5769' }}>{isZero && m.zeroSub ? m.zeroSub : m.sub}</p>
-                {!isZero && <CardSpark color={m.color} seed={idx}/>}
+                {/* Unknown/unscanned KPIs are an em dash, never a fake 0. Measured 0 stays dimmed. */}
+                <p className="tabular-nums" style={{ marginTop: 10, fontSize: 30, fontWeight: 700, lineHeight: 1, letterSpacing: '-0.02em', color: (isZero || isUnknown) ? '#3f4a5c' : '#f1f5f9' }}>{tile.display}</p>
+                <p style={{ marginTop: 7, fontSize: 11, color: '#4a5769' }}>{tile.sub}</p>
+                {tile.mode === 'ready' && <CardSpark color={m.color} seed={idx}/>}
               </div>
             )
           })}
