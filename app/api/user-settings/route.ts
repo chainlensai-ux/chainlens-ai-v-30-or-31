@@ -107,6 +107,14 @@ export async function GET(request: NextRequest) {
   const betaFields = betaEliteActive ? { betaEliteActive: true } : {};
 
   if (result.error) {
+    // SILENT-FAILURE-VISIBILITY FIX, DISCLOSED (reported live: a real user with a confirmed-correct
+    // user_settings row — elite plan, correct user_id, no duplicate auth.users account — still got
+    // "settings_unavailable"/fallback:true and showed as Free). getOrCreateUserSettings's real
+    // underlying error (RLS denial, Postgres error, network blip) was never logged anywhere — not to
+    // the client (redacted to the generic "settings_unavailable" on purpose, correctly, since it can
+    // carry raw DB error text) and not to server logs either, so there was no way to tell WHY the
+    // fallback fired versus just seeing that it did. Logs the real reason server-side only.
+    console.error('[user-settings] getOrCreateUserSettings failed', { userId: auth.userId, reason: result.error });
     return NextResponse.json(
       {
         settings: result.settings,
