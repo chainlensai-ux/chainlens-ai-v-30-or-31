@@ -1494,7 +1494,7 @@ export default function HomePage() {
                 cta: 'Pay with Crypto', ctaStyle: 'gold', border: 'rgba(251,191,36,0.40)', badge: 'FULL INTELLIGENCE',
                 bg: 'rgba(16,12,4,0.95)', radius: '18px', pad: '24px 22px 20px', mt: '-14px',
                 sections: [
-                  { title: 'Everything in Pro, plus', items: ['Clark AI: unlimited prompts', 'Auto Clark verdict on every scan', 'Smart money tracking', 'Advanced whale alerts', 'Priority CORTEX processing', 'Early access to new features'] },
+                  { title: 'Everything in Pro, plus', items: ['Clark AI: unlimited prompts', 'Smart money tracking', 'Advanced whale alerts', 'Priority CORTEX processing', 'Early access to new features'] },
                 ],
               },
             ].map(plan => {

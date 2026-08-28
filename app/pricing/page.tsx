@@ -74,7 +74,6 @@ const plans: Plan[] = [
     features: [
       'Everything in Pro',
       'Unlimited Clark AI prompts, subject to fair use',
-      'Auto Clark verdict on every supported scan',
       'Higher CORTEX usage limits',
       'Priority CORTEX processing where available',
       'More room for whale and wallet monitoring',
