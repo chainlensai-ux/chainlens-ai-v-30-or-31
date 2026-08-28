@@ -4085,7 +4085,18 @@ export default function TerminalTokenScanner() {
   const [clarkError, setClarkError]     = useState<string | null>(null)
 
   // Tracked tokens
-  type TrackedToken = { id?: string; user_id?: string; contract_address: string; symbol?: string | null; chain?: string | null; created_at?: string | null; saved_at?: string | null }
+  // WATCHLIST-ENDPOINT-MISMATCH FIX, DISCLOSED (live report: "fix the track this token it dosent
+  // work" — the panel showed "Tracked tokens could not be loaded. Try again." on every load).
+  // This page used to query `watchlist_tokens` directly from the browser via `contract_address`,
+  // a column that only ever existed in docs/supabase-watchlist-tokens.sql's own migration — the
+  // real /api/watchlist/tokens route (already used by Base Radar and /terminal/watchlist, and
+  // already flagged by that route's own NORMALIZE-WATCHLIST-ROW disclosure as disagreeing with
+  // this exact page) reads/writes `address`, not `contract_address`. Whichever column the live
+  // table actually has, a direct client query using the wrong name is exactly what breaks both
+  // the read (silently returns rows with no address field, or errors outright) and the write.
+  // Switched to the same real endpoint (GET/POST/DELETE with a Bearer token) every other watchlist
+  // entry point already uses, instead of a third, independent, differently-shaped write path.
+  type TrackedToken = { id?: string; address: string; symbol?: string | null; name?: string | null; chain?: string | null; risk_label?: string | null; score?: number | null; saved_at?: string | null }
   const [trackedTokens, setTrackedTokens] = useState<TrackedToken[]>([])
   const [trackedLoading, setTrackedLoading] = useState(false)
   const [trackedSaving, setTrackedSaving]   = useState(false)
@@ -4098,24 +4109,22 @@ export default function TerminalTokenScanner() {
     setTrackedUnavailable(false)
     try {
       const { data: { session } } = await supabase.auth.getSession()
-      if (!session) {
+      const authToken = session?.access_token
+      if (!authToken) {
         setTrackedTokens([])
         setTrackedLoggedOut(true)
         return
       }
       setTrackedLoggedOut(false)
-      const { data, error: queryError } = await supabase
-        .from('watchlist_tokens')
-        .select('*')
-        .eq('user_id', session.user.id)
-
-      if (queryError) {
-        console.error('Failed to load tracked tokens', queryError)
+      const res = await fetch('/api/watchlist/tokens', { headers: { Authorization: `Bearer ${authToken}` }, cache: 'no-store' })
+      const json = await res.json().catch(() => null)
+      if (!res.ok || !Array.isArray(json?.tokens)) {
+        console.error('Failed to load tracked tokens', json?.error ?? res.status)
         setTrackedTokens([])
         setTrackedUnavailable(true)
         return
       }
-      setTrackedTokens((data ?? []) as TrackedToken[])
+      setTrackedTokens(json.tokens as TrackedToken[])
     } catch (loadError) {
       console.error('Failed to load tracked tokens', loadError)
       setTrackedTokens([])
@@ -4176,27 +4185,37 @@ export default function TerminalTokenScanner() {
 
   async function saveTrackedToken() {
     if (!result?.contract) return
+    // SOLANA-CASE-SENSITIVE FIX, DISCLOSED: a Solana base58 mint address is case-sensitive, unlike
+    // an EVM 0x address — unconditionally lowercasing it (the old behavior) silently corrupts it
+    // into a different, non-existent address. Only ever lowercase the EVM shape.
+    const normalizedContract = isValidSolanaMintAddress(result.contract as unknown) ? result.contract : result.contract.toLowerCase()
     // DUPLICATE-SAVE GUARD FIX, DISCLOSED (audit: "Save to watchlist" inserted unconditionally with
     // no duplicate check and no "already tracked" state — repeat clicks on the same token created
     // repeat rows). Same identity rule as the chain-strict delete: address + chain together.
-    const alreadyTracked = trackedTokens.some(t => t.contract_address === result.contract!.toLowerCase() && (t.chain ?? 'base') === (result.chain ?? chain))
+    const alreadyTracked = trackedTokens.some(t => t.address === normalizedContract && (t.chain ?? 'base') === (result.chain ?? chain))
     if (alreadyTracked) return
     setTrackedSaving(true)
     try {
       const { data: { session } } = await supabase.auth.getSession()
-      if (!session) { setTrackedLoggedOut(true); setTrackedUnavailable(false); return }
-      const { error: insertError } = await supabase
-        .from('watchlist_tokens')
-        .insert({
-          user_id: session.user.id,
-          contract_address: result.contract.toLowerCase(),
+      const authToken = session?.access_token
+      if (!authToken) { setTrackedLoggedOut(true); setTrackedUnavailable(false); return }
+      const res = await fetch('/api/watchlist/tokens', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({
+          address: normalizedContract,
+          symbol: result.symbol ?? null,
+          name: result.name ?? null,
           // CHAIN-STORED WITH TOKEN (chain-strictness audit): the same 0x address on different
           // chains is a different token — the row must record which chain it was scanned on.
           chain: (result.chain ?? chain) as string,
-          symbol: result.symbol ?? null,
-        })
-      if (insertError) {
-        console.error('Failed to save tracked token', insertError)
+          riskLabel: result.cortexVerdict ?? null,
+          score: result.riskScore ?? null,
+        }),
+      })
+      if (!res.ok) {
+        const json = await res.json().catch(() => null)
+        console.error('Failed to save tracked token', json?.error ?? res.status)
         setTrackedUnavailable(true)
         return
       }
@@ -4209,26 +4228,26 @@ export default function TerminalTokenScanner() {
   }
 
   async function removeTrackedToken(address: string, rowChain?: string | null) {
-    const normalizedAddress = address.toLowerCase()
+    // SOLANA-CASE-SENSITIVE FIX, DISCLOSED: see saveTrackedToken above — never lowercase a Solana
+    // base58 mint address.
+    const normalizedAddress = isValidSolanaMintAddress(address as unknown) ? address : address.toLowerCase()
     // WRONG-CHAIN DELETE FIX, DISCLOSED (audit: this used the currently-selected chain pill instead
     // of the row's own chain — removing an ETH-saved token while Base was selected deleted nothing
     // from the DB, so it silently reappeared on next load, while the optimistic filter below also
     // ignored chain and could hide the wrong row if the same address was saved on two chains).
     const effectiveChain = rowChain ?? chain
-    setTrackedTokens(prev => prev.filter(t => !(t.contract_address === normalizedAddress && (t.chain ?? 'base') === effectiveChain)))
+    setTrackedTokens(prev => prev.filter(t => !(t.address === normalizedAddress && (t.chain ?? 'base') === effectiveChain)))
     try {
       const { data: { session } } = await supabase.auth.getSession()
-      if (!session) { setTrackedLoggedOut(true); return }
-      const { error: deleteError } = await supabase
-        .from('watchlist_tokens')
-        .delete()
-        .eq('user_id', session.user.id)
-        .eq('contract_address', normalizedAddress)
-        // CHAIN-STRICT DELETE (chain-strictness audit): same address on another chain is a
-        // different token — deleting one must never remove the other chain's row.
-        .eq('chain', effectiveChain as string)
-      if (deleteError) {
-        console.error('Failed to remove tracked token', deleteError)
+      const authToken = session?.access_token
+      if (!authToken) { setTrackedLoggedOut(true); return }
+      const res = await fetch(`/api/watchlist/tokens?address=${encodeURIComponent(normalizedAddress)}&chain=${encodeURIComponent(effectiveChain as string)}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${authToken}` },
+      })
+      if (!res.ok) {
+        const json = await res.json().catch(() => null)
+        console.error('Failed to remove tracked token', json?.error ?? res.status)
         setTrackedUnavailable(true)
       }
     } catch (deleteError) {
@@ -9160,7 +9179,8 @@ export default function TerminalTokenScanner() {
                 </div>
                 {/* Save button */}
                 {(() => {
-                  const isTracked = !!result.contract && trackedTokens.some(t => t.contract_address === result.contract!.toLowerCase() && (t.chain ?? 'base') === (result.chain ?? chain))
+                  const normalizedResultContract = result.contract ? (isValidSolanaMintAddress(result.contract as unknown) ? result.contract : result.contract.toLowerCase()) : null
+                  const isTracked = !!normalizedResultContract && trackedTokens.some(t => t.address === normalizedResultContract && (t.chain ?? 'base') === (result.chain ?? chain))
                   return (
                     <button
                       onClick={saveTrackedToken}
@@ -9213,11 +9233,11 @@ export default function TerminalTokenScanner() {
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {trackedTokens.map(t => {
                   const initials = (t.symbol ?? '?').slice(0, 2).toUpperCase()
-                  const addr = t.contract_address ?? ''
+                  const addr = t.address ?? ''
                   const short = addr.length >= 10 ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : addr
                   const savedDate = t.saved_at ? new Date(t.saved_at).toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric' }).replace(/\//g,'/') : null
                   return (
-                    <div key={t.id ?? t.contract_address} style={{ padding: '10px', borderRadius: '11px', background: 'rgba(8,14,28,.75)', border: '1px solid rgba(255,255,255,0.08)' }}>
+                    <div key={t.id ?? t.address} style={{ padding: '10px', borderRadius: '11px', background: 'rgba(8,14,28,.75)', border: '1px solid rgba(255,255,255,0.08)' }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '9px', marginBottom: '9px' }}>
                         <div style={{ width: '30px', height: '30px', borderRadius: '50%', background: 'linear-gradient(135deg,rgba(99,102,241,0.25),rgba(167,139,250,0.20))', border: '1px solid rgba(167,139,250,0.32)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontSize: '11px', fontWeight: 800, color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>
                           {initials}
@@ -9245,9 +9265,9 @@ export default function TerminalTokenScanner() {
                             const rowChain = (['base', 'eth', 'bnb', 'robinhood', 'solana'] as const).includes(t.chain as typeof chain)
                               ? (t.chain as 'base' | 'eth' | 'bnb' | 'robinhood' | 'solana')
                               : 'base'
-                            setInput(t.contract_address)
+                            setInput(t.address)
                             setChain(rowChain)
-                            handleScan(t.contract_address, rowChain)
+                            handleScan(t.address, rowChain)
                           }}
                           style={{ flex: 1, justifyContent: 'center', display: 'flex', alignItems: 'center', padding: '7px 0', borderRadius: '8px', background: 'rgba(34,211,238,0.10)', border: '1px solid rgba(34,211,238,0.32)', color: '#67e8f9', fontSize: '10.5px', fontWeight: 700, fontFamily: 'var(--font-plex-mono)', letterSpacing: '.10em', cursor: 'pointer', transition: 'background .14s, border-color .14s' }}
                           onMouseEnter={e => { e.currentTarget.style.background = 'rgba(34,211,238,0.16)'; e.currentTarget.style.borderColor = 'rgba(34,211,238,0.50)' }}
@@ -9256,7 +9276,7 @@ export default function TerminalTokenScanner() {
                           Scan
                         </button>
                         <button
-                          onClick={() => removeTrackedToken(t.contract_address, t.chain)}
+                          onClick={() => removeTrackedToken(t.address, t.chain)}
                           className="cmd-chip"
                           style={{ padding: '7px 12px', color: '#8291a3', borderColor: 'rgba(255,255,255,0.08)' }}
                         >

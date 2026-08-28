@@ -23,12 +23,18 @@ check('empty string rejected', isValidAddress('') === false)
 check('null rejected', isValidAddress(null) === false)
 check('non-string rejected', isValidAddress(12345) === false)
 
+// SOLANA-WATCHLIST FIX, DISCLOSED (Track This Token repair — Token Scanner's own chain tabs
+// already include "SOLANA BETA", so this validator must accept a real Solana mint too).
+check('real Solana mint accepted', isValidAddress('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') === true)
+check('too-short base58 string rejected', isValidAddress('abc123') === false)
+check('EVM address on the Solana path is still just an EVM address', isValidAddress('0x1234567890abcdef1234567890ABCDEF12345678') === true)
+
 // Chain allowlist
 check('base allowed', isAllowedChain('base') === true)
 check('eth allowed', isAllowedChain('eth') === true)
 check('bnb allowed', isAllowedChain('bnb') === true)
 check('robinhood allowed', isAllowedChain('robinhood') === true)
-check('unsupported chain rejected', isAllowedChain('solana') === false)
+check('solana allowed', isAllowedChain('solana') === true)
 check('arbitrary string rejected', isAllowedChain('../../etc/passwd') === false)
 check('empty string rejected', isAllowedChain('') === false)
 

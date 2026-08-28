@@ -2,6 +2,15 @@ import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
 import { createRateLimiter } from '@/lib/server/rateLimit'
 import { isValidAddress, isAllowedChain, isValidLabel } from '@/lib/server/watchlistValidation'
+import { isValidSolanaMintAddress } from '@/lib/solanaAddress'
+
+// SOLANA-CASE-SENSITIVE FIX, DISCLOSED (same repair as the address-validation fix above): a
+// Solana base58 mint address is case-sensitive, unlike an EVM 0x address — lowercasing it
+// unconditionally (the pre-existing behavior here) silently corrupts it into a different,
+// non-existent address. Only ever lowercase the EVM shape.
+function normalizeWatchlistAddress(address: string): string {
+  return isValidSolanaMintAddress(address as unknown) ? address : address.toLowerCase()
+}
 
 // HARDENING, DISCLOSED (security hardening pass): watchlist writes had no rate limit and no
 // address/chain format validation — an authenticated caller (or a compromised/scripted session)
@@ -103,7 +112,7 @@ export async function POST(req: NextRequest) {
     .from('watchlist_tokens')
     .upsert({
       user_id: userId,
-      address: address.toLowerCase(),
+      address: normalizeWatchlistAddress(address),
       symbol: symbol ?? null,
       name: name ?? null,
       chain: chainValue,
@@ -145,7 +154,7 @@ export async function DELETE(req: NextRequest) {
     .from('watchlist_tokens')
     .delete()
     .eq('user_id', userId)
-    .eq('address', address.toLowerCase())
+    .eq('address', normalizeWatchlistAddress(address))
     .eq('chain', chainParam)
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
