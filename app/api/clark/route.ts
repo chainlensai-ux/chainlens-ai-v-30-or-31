@@ -37,7 +37,6 @@ import {
   formatWalletPnlRead,
   type ClarkWalletPnlRead,
   type ClarkAction,
-  formatTokenScanResult,
   formatTokenSafetyAnswer,
   formatTokenAnalystFollowup,
   formatDevRugCheck,
@@ -93,6 +92,8 @@ import {
   formatPumpAnalysisRead,
   isPumpAnalysisPrompt,
   extractAddressForRouting,
+  renderClarkTokenVerdictForEvm,
+  renderClarkTokenVerdictForSolana,
 } from "@/lib/server/clarkRouting";
 import { buildBaseRadarDisplayModel } from "@/lib/baseRadarDisplayModel";
 import { classifyClarkAnalystIntent, isChainLensAnalystPrompt } from "@/lib/server/clarkAnalystIntent";
@@ -10003,26 +10004,64 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // marketDataAvailable) live directly on the top-level response — read those instead.
     const mintAuthority = typeof solData?.mintAuthority === "string" ? solData.mintAuthority : null;
     const freezeAuthority = typeof solData?.freezeAuthority === "string" ? solData.freezeAuthority : null;
+    const authorityReadSucceeded = Boolean(solData?.authorityReadSucceeded);
     const hasUsableData = Boolean(solData?.authorityReadSucceeded || solData?.marketDataAvailable);
     const deepCreator = solData?.deepCreator as Record<string, unknown> | null | undefined;
     const creatorTrace = deepCreator?.creatorTrace as Record<string, unknown> | null | undefined;
     const traceResolved = creatorTrace?.resolved as Record<string, unknown> | null | undefined;
     const likelyCreator = typeof traceResolved?.likelyCreatorWallet === "string" ? traceResolved.likelyCreatorWallet as string : null;
     const creatorConfidence = solData?.creatorConfidence as Record<string, unknown> | null | undefined;
-    const lines: string[] = ["SOLANA CREATOR / AUTHORITY READ", ""];
-    const authorities: string[] = [];
-    if (mintAuthority) authorities.push(`- Mint authority: ${mintAuthority} (active — supply can be increased)`);
-    if (freezeAuthority) authorities.push(`- Freeze authority: ${freezeAuthority} (active — accounts can be frozen)`);
-    if (!mintAuthority) lines.push("- Mint authority: revoked or unresolved");
-    if (!freezeAuthority) lines.push("- Freeze authority: revoked or unresolved");
-    lines.push(...authorities);
-    if (likelyCreator) {
-      lines.push(`- Creator/fee payer (earliest tx): ${likelyCreator}`, `  Confidence: ${(creatorConfidence?.tier as string) ?? "possible"} — fee-payer of earliest transaction is a strong signal, not proof of deployer.`);
-    } else {
-      lines.push("- Creator/fee payer: Not resolved. Run the Deep Creator Check in Token Scanner for a Helius signature-history trace.");
-    }
-    lines.push("", "- Chain: Solana", `- Evidence: ${hasUsableData ? "Solana RPC (mint account) + Helius" : "Solana scan returned no usable data"}`);
-    lines.push("- CTA: Open Token Scanner → Solana Beta for the full read.");
+    const marketData = solData?.marketData as { tokenName?: string | null; tokenSymbol?: string | null; marketCapUsd?: number | null; fdvUsd?: number | null; liquidityUsd?: number | null; volume24hUsd?: number | null; primaryDexLabel?: string | null; primaryPoolAddress?: string | null } | null | undefined;
+    const topAccountConcentration = solData?.topAccountConcentration as { top1Percent?: number | null; top10Percent?: number | null; accountsSampled?: number | null } | null | undefined;
+    const rugHistoryRaw = deepCreator ? (deepCreator as Record<string, unknown>).rugHistory : null;
+    // CLARK-TOKEN-VERDICT FIX, DISCLOSED (requested: "Fix Clark token scan verdicts across every
+    // Token Scanner supported chain" — hard rule: "Verdict must still work from Solana evidence").
+    // A plain "is this token safe"/"scan this token" question now gets the same full TOKEN READ
+    // verdict format every EVM chain gets, built from real Solana-native evidence (mint/freeze
+    // authority, market data, top-account concentration) through the shared scoring engine — never
+    // EVM vocabulary (see renderClarkTokenVerdictForSolana's own vocab wiring). A deployer-specific
+    // question ("who deployed this") keeps the narrower, existing creator/authority-only read below
+    // — same split EVM already has between its full verdict and its narrower "who deployed" answer.
+    const lines: string[] = wantsDeployer
+      ? (() => {
+          const l: string[] = ["SOLANA CREATOR / AUTHORITY READ", ""];
+          const authorities: string[] = [];
+          if (mintAuthority) authorities.push(`- Mint authority: ${mintAuthority} (active — supply can be increased)`);
+          if (freezeAuthority) authorities.push(`- Freeze authority: ${freezeAuthority} (active — accounts can be frozen)`);
+          if (!mintAuthority) l.push("- Mint authority: revoked or unresolved");
+          if (!freezeAuthority) l.push("- Freeze authority: revoked or unresolved");
+          l.push(...authorities);
+          if (likelyCreator) {
+            l.push(`- Creator/fee payer (earliest tx): ${likelyCreator}`, `  Confidence: ${(creatorConfidence?.tier as string) ?? "possible"} — fee-payer of earliest transaction is a strong signal, not proof of deployer.`);
+          } else {
+            l.push("- Creator/fee payer: Not resolved. Run the Deep Creator Check in Token Scanner for a Helius signature-history trace.");
+          }
+          l.push("", "- Chain: Solana", `- Evidence: ${hasUsableData ? "Solana RPC (mint account) + Helius" : "Solana scan returned no usable data"}`);
+          l.push("- CTA: Open Token Scanner → Solana Beta for the full read.");
+          return l;
+        })()
+      : renderClarkTokenVerdictForSolana({
+          tokenAddress,
+          tokenName: marketData?.tokenName ?? null,
+          tokenSymbol: marketData?.tokenSymbol ?? null,
+          mintAuthority,
+          mintAuthorityResolved: authorityReadSucceeded,
+          freezeAuthority,
+          freezeAuthorityResolved: authorityReadSucceeded,
+          marketCap: marketData?.marketCapUsd ?? null,
+          fdv: marketData?.fdvUsd ?? null,
+          liquidityUsd: marketData?.liquidityUsd ?? null,
+          volume24h: marketData?.volume24hUsd ?? null,
+          primaryDexLabel: marketData?.primaryDexLabel ?? null,
+          primaryPoolAddress: marketData?.primaryPoolAddress ?? null,
+          top1Pct: topAccountConcentration?.top1Percent ?? null,
+          top10Pct: topAccountConcentration?.top10Percent ?? null,
+          accountsSampled: topAccountConcentration?.accountsSampled ?? null,
+          likelyCreator,
+          creatorConfidenceTier: (creatorConfidence?.tier as string) ?? null,
+          deployerRugHistoryCount: typeof rugHistoryRaw === "number" ? rugHistoryRaw : null,
+          usableEvidence: hasUsableData,
+        }).split("\n");
     // SOLANA-MEMORY-BLIND FIX, DISCLOSED (Clark full-system audit, requested: "improve memory"):
     // this answer resolved real Solana evidence (mint/freeze authority, Helius creator trace) but
     // never wrote any of it to session memory — updateMemToken/rememberClarkDeployer were only ever
@@ -10031,7 +10070,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // memory or asked the user to repaste the address they'd just given. Mirrors the EVM answer
     // paths: remember the token (if we got any usable data) and the creator/fee-payer as a deployer
     // candidate (only when actually resolved — never remember a null as if it were evidence).
-    const marketData = solData?.marketData as { tokenName?: string | null; tokenSymbol?: string | null } | null | undefined;
     if (hasUsableData) {
       updateMemToken(sessionMem!, tokenAddress, marketData?.tokenSymbol ?? null, marketData?.tokenName ?? null, lines.join("\n"), { chain: "solana" });
     }
@@ -10047,6 +10085,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       analysis: lines.join("\n"),
       intentBadge: "solana_creator_read",
       actions: buildRoutedActions(["Open Token Scanner"]),
+      // CLARK-TOKEN-VERDICT FIX, DISCLOSED: same in-chat "Deep Scan Token" wiring as the EVM verdict
+      // replies above, applied only to the full TOKEN READ answer (not the narrower deployer-only
+      // read, which already has its own CTA line baked into its text).
+      ...(wantsDeployer ? {} : {
+        ui: {
+          intentBadge: "Token Read",
+          actions: [
+            { label: "Deep Scan Token", prompt: `deep scan ${tokenAddress}`, kind: "prompt" as const },
+            { label: "Check Deployer", prompt: `who deployed ${tokenAddress}`, kind: "prompt" as const },
+            { label: "Open Token Scanner", href: `/terminal/token-scanner?address=${encodeURIComponent(tokenAddress)}&chain=solana`, kind: "link" as const },
+          ],
+        },
+      }),
       quotaConsumed: Boolean(solJson),
       clarkDeployerLookupAudit: {
         userPrompt: prompt,
@@ -10788,6 +10839,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         volume24h: typeof t.volume24hUsd === "number" ? t.volume24hUsd : null,
         liquidity: typeof t.liquidityUsd === "number" ? t.liquidityUsd : null,
         marketCap: typeof t.marketCapUsd === "number" ? t.marketCapUsd : null,
+        // CLARK-TOKEN-VERDICT FIX, DISCLOSED: /api/token has always returned fdvUsd at the top
+        // level (used elsewhere for pump-alerts/report rendering) — this mapping never read it,
+        // so FDV was silently absent from every Clark token evidence object even though the real
+        // scan had it. Added as a real evidence field, not a guess (marketCap!=null does not imply
+        // FDV; they can diverge when circulating supply is unknown).
+        fdv: typeof t.fdvUsd === "number" ? t.fdvUsd : null,
       },
       holders: {
         top1: typeof hd.top1 === "number" ? hd.top1 : (typeof holdersSection.top1 === "number" ? holdersSection.top1 : null),
@@ -10802,6 +10859,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         ownerRenounced: typeof tDevOwnership.isRenounced === "boolean" ? tDevOwnership.isRenounced : null,
         mintable: typeof tContractFlags.mint === "boolean" ? tContractFlags.mint : null,
         proxy: typeof tContractFlags.proxy === "boolean" ? tContractFlags.proxy : null,
+        // CLARK-TOKEN-VERDICT FIX, DISCLOSED: /api/token's contractFlags already resolves a real
+        // blacklist/transfer-restriction flag (GoldRush contract intel + CORTEX flags), but this
+        // mapping never read it — a confirmed transfer-restriction contract could never be scored
+        // as a risk signal from here. Added the same way as the other contract flags above.
+        blacklist: typeof tContractFlags.blacklist === "boolean" ? tContractFlags.blacklist : null,
         securityStatus: _hp?.securityStatus ?? (tokenRouteSecurityMapped ? "mapped_from_token_route" : (honeypotFailed ? "Security simulation unavailable" : "unverified")),
         simulationStatus: _hp?.simulationStatus ?? (honeypotAborted ? "timeout" : (!hasHoneypot && honeypotFailed ? "unavailable" : null)),
         riskLevel: _hp?.riskLevel ?? "unknown",
@@ -11112,22 +11174,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     let analysis: string;
     let formatterUsed: string;
 
-    if (!usableEvidence) {
-      // No usable evidence at all (every major section timed out / unavailable) —
-      // be honest about it and never charge quota for this read.
-      analysis = formatPartialTokenRead(ev, tokenAddress, evDebug, memConfidence, usableEvidence);
-      formatterUsed = "inline_fallback_total";
-    } else if (tokenApiMode === "clark_fast" && !ev.ok) {
-      // Clark fast mode: market/pool identity present, deeper sections intentionally skipped.
+    if (tokenApiMode === "clark_fast" && !ev.ok && usableEvidence) {
+      // Clark fast mode: market/pool identity present, deeper sections intentionally skipped —
+      // an explicit, narrower quick-preview request, kept separate from the full verdict below.
       analysis = formatFastTokenRead(ev, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)));
       formatterUsed = "formatFastTokenRead";
-    } else if (ev.ok && !partialEvidenceUsed) {
-      analysis = formatTokenScanResult(ev, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)));
-      formatterUsed = "formatTokenScanResult";
     } else {
-      // Partial evidence — at least one branch succeeded
-      analysis = formatPartialTokenRead(ev, tokenAddress, evDebug, memConfidence, usableEvidence);
-      formatterUsed = "formatPartialTokenRead";
+      // CLARK-TOKEN-VERDICT FIX, DISCLOSED: every other case (full evidence, partial evidence, or
+      // no usable evidence at all) now goes through the single shared verdict engine instead of
+      // three separately-worded formatters (formatTokenScanResult/formatPartialTokenRead's own ad
+      // hoc "Open Check" text). No usable evidence still gets a real, honest answer — the verdict
+      // engine's own Partial-Evidence branch — never a bare "Open Check" with no reason.
+      analysis = renderClarkTokenVerdictForEvm(ev, tokenAddress, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)), usableEvidence);
+      formatterUsed = "renderClarkTokenVerdictForEvm";
     }
 
     updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? resolvedSymbol, ev.token?.name ?? null, analysis, {
@@ -11243,6 +11302,22 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       source: tokenVerdictMeta.source,
       intentBadge: "token_scan",
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+      // CLARK-TOKEN-VERDICT FIX, DISCLOSED: the frontend only renders CTA buttons from ui.actions
+      // (top-level `actions` above is a legacy string list the frontend never reads for this
+      // intent), so without this the token_scan reply showed no buttons at all. "Deep Scan Token"
+      // is wired as an in-chat prompt (kind: "prompt"), not a link, so clicking it re-runs the full
+      // Token Scanner engine through this same handler and streams the result back into the Clark
+      // thread — never navigating away, per the spec's "without leaving Clark" requirement.
+      ui: {
+        intentBadge: "Token Read",
+        actions: [
+          { label: "Deep Scan Token", prompt: `deep scan ${tokenAddress}`, kind: "prompt" as const },
+          { label: "Explain LP", prompt: `explain lp for ${tokenAddress}`, kind: "prompt" as const },
+          { label: "Check Deployer", prompt: `who deployed ${tokenAddress}`, kind: "prompt" as const },
+          { label: "Check Holders", prompt: `top holders for ${tokenAddress}`, kind: "prompt" as const },
+          { label: "Open Token Scanner", href: tokenScannerHref(tokenAddress, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools))), kind: "link" as const },
+        ],
+      },
       quotaConsumed,
       ...(clarkDebugReceipt ? { clarkDebugReceipt } : {}),
     };
@@ -11517,7 +11592,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     const toolsUsed: string[] = r.fromMemory ? ["memory"] : ["token_scan"];
-    const analysis = formatTokenSafetyAnswer(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools)));
+    // CLARK-TOKEN-VERDICT FIX, DISCLOSED: "is it safe" now renders the same shared TOKEN READ
+    // verdict as a fresh scan, instead of formatTokenSafetyAnswer's own separate, narrower wording
+    // — the two questions ask for the same thing and must never disagree on the verdict.
+    const analysis = renderClarkTokenVerdictForEvm(r.ev, r.address, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools)), hasUsableTokenEvidence(r.ev));
     if (!r.fromMemory) {
       updateMemToken(sessionMem, r.address, r.ev.token?.symbol ?? null, r.ev.token?.name ?? null, analysis, {
         confidence: tokenCoreConfidence(r.ev, ((r.ev as Record<string, unknown>)._evidenceSectionsPresent as string[] | undefined) ?? [], ((r.ev as Record<string, unknown>)._evidenceSectionsMissing as Array<{ section: string; reason: string }> | undefined) ?? [], hasUsableTokenEvidence(r.ev)),
@@ -11535,6 +11613,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       source: safetyVerdictMeta.source,
       intentBadge: "token_safety",
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+      ui: {
+        intentBadge: "Token Read",
+        actions: [
+          { label: "Deep Scan Token", prompt: `deep scan ${r.address}`, kind: "prompt" as const },
+          { label: "Explain LP", prompt: `explain lp for ${r.address}`, kind: "prompt" as const },
+          { label: "Check Deployer", prompt: `who deployed ${r.address}`, kind: "prompt" as const },
+          { label: "Check Holders", prompt: `top holders for ${r.address}`, kind: "prompt" as const },
+          { label: "Open Token Scanner", href: tokenScannerHref(r.address, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools))), kind: "link" as const },
+        ],
+      },
       quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
       clarkDebugReceipt: tokenFollowupDebug(r),
     };

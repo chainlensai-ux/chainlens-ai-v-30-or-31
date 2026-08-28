@@ -2320,6 +2320,7 @@ export type TokenScanEvidence = {
     volume24h?: number | null;
     liquidity?: number | null;
     marketCap?: number | null;
+    fdv?: number | null;
   } | null;
   holders?: {
     top1?: number | null;
@@ -2334,6 +2335,7 @@ export type TokenScanEvidence = {
     ownerRenounced?: boolean | null;
     mintable?: boolean | null;
     proxy?: boolean | null;
+    blacklist?: boolean | null;
     securityStatus?: string | null;
     simulationStatus?: string | null;
     riskLevel?: string | null;
@@ -2541,6 +2543,440 @@ export function tokenScanVerdictMeta(ev: TokenScanEvidence, usableEvidence: bool
     confidence,
     source: usableEvidence ? "token_core" : "fallback",
   };
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// CLARK TOKEN VERDICT ENGINE, DISCLOSED (requested: "Fix Clark token scan verdicts across every
+// Token Scanner supported chain"). Reported live: Clark's token reads returned raw facts but no
+// decisive verdict — many real, evidence-supported reads ended in a bare "Open Check" even when
+// enough evidence existed to call a real risk level, and there was no single scoring function
+// producing a consistent Verdict/Risk Level/Confidence triple — different intent branches
+// (formatPartialTokenRead, formatTokenScanResult, formatTokenSafetyAnswer, verdictLabel) each had
+// their own ad hoc wording with no shared scoring logic between them.
+//
+// This is an ADDITIVE new verdict system (ClarkTokenVerdict/computeClarkTokenVerdict/
+// renderClarkTokenVerdict below), not a replacement of the existing ClarkVerdict/
+// tokenScanVerdictMeta/verdictLabel above — those still back the API's own `verdict`/`confidence`/
+// `source` JSON fields, which nothing in this task asked to change and other code may already
+// depend on. The new system is what actually renders the "TOKEN READ" text for the token_scan and
+// token_safety intents (see app/api/clark/route.ts) and the Solana creator/authority read.
+//
+// SCORING PHILOSOPHY, DISCLOSED: starts from Unknown/Partial Evidence and only escalates toward a
+// real verdict on CONFIRMED evidence — a missing/null field is never treated as "safe" or as a risk
+// signal on its own, only as missing evidence. Every "why"/"risk"/"good sign" bullet traces to a
+// real field on the evidence object; nothing here invents a check that was not actually run.
+export type ClarkTokenVerdict = "Safer Watch" | "Watch" | "High Risk" | "Avoid" | "Partial Evidence";
+export type ClarkTokenRiskLevel = "Low" | "Medium" | "High" | "Critical" | "Unknown";
+export type ClarkTokenConfidenceLabel = "High" | "Medium" | "Low";
+
+export type ClarkTokenVerdictResult = {
+  verdict: ClarkTokenVerdict;
+  riskLevel: ClarkTokenRiskLevel;
+  confidence: ClarkTokenConfidenceLabel;
+  why: string[];
+  risks: string[];
+  goodSigns: string[];
+  missingEvidence: string[];
+};
+
+function fmtPct1(n: number | null | undefined): string {
+  return n == null || !Number.isFinite(n) ? "unverified" : `${n.toFixed(1)}%`;
+}
+
+/**
+ * Chain-agnostic core: given the pieces every chain module can supply (honeypot/tax, LP status,
+ * holder concentration, ownership/mint/proxy/blacklist flags, liquidity, and an optional deployer
+ * rug-history count), scores a token per the spec's exact rule set. EVM and Solana each build their
+ * own input shape from their own real evidence (see buildClarkTokenVerdictInputFromEvidence below
+ * for EVM, and the Solana creator/authority read for Solana) and pass it through the same scoring
+ * so the two chain families can never silently apply different risk thresholds for the same facts.
+ */
+export type ClarkTokenVerdictInput = {
+  honeypot: boolean | null;
+  buyTaxPct: number | null;
+  sellTaxPct: number | null;
+  ownerRenounced: boolean | null; // EVM: contract owner renounced. Solana: N/A, pass null — never asserted.
+  mintable: boolean | null; // EVM: mint() callable. Solana: mint authority still active.
+  proxy: boolean | null; // EVM: upgradeable proxy. Solana: N/A — never asserted, always null.
+  blacklist: boolean | null; // EVM: transfer-restriction/blacklist flag. Solana: freeze authority active.
+  lpStatus: "locked" | "burned" | "wallet_controlled" | "team_controlled" | "concentrated" | "unknown" | null;
+  liquidityUsd: number | null;
+  top1Pct: number | null;
+  top10Pct: number | null;
+  deployerRugHistoryCount: number | null; // confirmed prior rugs by the same deployer, if known
+  // True only when this chain's engine has no LP lock/burn-proof mechanism at all yet (Solana today
+  // — see SOLANA_UNSUPPORTED_CHECKS). Distinguishes "the provider doesn't support this check on this
+  // chain" (an honest evidence gap, Watch-tier at most) from "the check ran on a chain that DOES
+  // support it and came back unclear" (a real High Risk signal on EVM). Without this split, every
+  // single Solana token — no matter how clean everything else is — would always score High Risk
+  // purely because lpStatus can never be non-null there, which is systematically wrong in the same
+  // direction for every read and is exactly the kind of faked-confidence-in-the-wrong-direction the
+  // spec's "no faked safety" rule also implies must not happen for risk claims either.
+  lpUnsupportedOnChain?: boolean;
+  // Human-readable evidence-field labels actually available for this chain, so "Why"/Risks/Good
+  // Signs never use EVM-only vocabulary (proxy/ownership/deployer) on a Solana read.
+  vocab: {
+    ownerLabel: string; // "owner" (EVM) — unused for Solana (ownerRenounced always null there)
+    mintLabel: string; // "mintable" (EVM) or "mint authority active" (Solana)
+    controlLabel: string; // "blacklist/transfer restriction" (EVM) or "freeze authority active" (Solana)
+  };
+};
+
+export function computeClarkTokenVerdictCore(input: ClarkTokenVerdictInput, usableEvidence: boolean): ClarkTokenVerdictResult {
+  const why: string[] = [];
+  const risks: string[] = [];
+  const goodSigns: string[] = [];
+  const missingEvidence: string[] = [];
+
+  const hasSecurity = input.honeypot != null || input.buyTaxPct != null || input.sellTaxPct != null;
+  const hasLp = input.lpStatus != null && input.lpStatus !== "unknown";
+  const hasHolders = input.top1Pct != null || input.top10Pct != null;
+  const hasOwnership = input.ownerRenounced != null;
+  const hasMint = input.mintable != null;
+  const hasControlFlag = input.blacklist != null;
+
+  if (!hasSecurity) missingEvidence.push("Security simulation (honeypot/tax): not returned");
+  if (!hasLp) missingEvidence.push("LP lock/burn/control status: not returned");
+  if (!hasHolders) missingEvidence.push("Holder concentration: not returned");
+  if (!hasOwnership && input.vocab.ownerLabel) missingEvidence.push(`Ownership status (${input.vocab.ownerLabel}): not returned`);
+  if (!hasMint) missingEvidence.push(`Mintability (${input.vocab.mintLabel}): not returned`);
+  if (!hasControlFlag) missingEvidence.push(`${input.vocab.controlLabel}: not returned`);
+
+  // PARTIAL EVIDENCE — not enough core checks to score at all (spec: "scanner could not verify
+  // enough core checks / provider failures blocked security/LP/holders/market / chain-specific
+  // provider unsupported").
+  if (!usableEvidence || (!hasSecurity && !hasLp && !hasHolders)) {
+    return {
+      verdict: "Partial Evidence",
+      riskLevel: "Unknown",
+      confidence: "Low",
+      why: ["Not enough core evidence (security simulation, LP status, and holder concentration) came back to score this token."],
+      risks: [],
+      goodSigns: [],
+      missingEvidence: missingEvidence.length > 0 ? missingEvidence : ["Security, LP, and holder checks were all unavailable for this scan."],
+    };
+  }
+
+  // ── CRITICAL / AVOID ─────────────────────────────────────────────────────────────────────────
+  if (input.honeypot === true) {
+    risks.push("Honeypot detected — this simulation shows buying and/or selling can be blocked.");
+    why.push("Honeypot simulation flagged this contract.");
+  }
+  const extremeTax = (input.sellTaxPct != null && input.sellTaxPct >= 50) || (input.buyTaxPct != null && input.buyTaxPct >= 50);
+  if (extremeTax) {
+    risks.push(`Extreme tax — buy ${fmtPct1(input.buyTaxPct)}, sell ${fmtPct1(input.sellTaxPct)}.`);
+    why.push("Buy or sell tax is extreme (50%+).");
+  }
+  if (input.blacklist === true) {
+    risks.push(`${input.vocab.controlLabel} confirmed — transfers can be selectively blocked.`);
+    why.push(`${input.vocab.controlLabel} is active.`);
+  }
+  const mintableActiveControl = input.mintable === true && input.ownerRenounced === false;
+  if (mintableActiveControl) {
+    risks.push(`Supply is mintable and ${input.vocab.ownerLabel} control is still active — supply can be inflated at will.`);
+    why.push(`Mintable with active ${input.vocab.ownerLabel} control.`);
+  }
+  const lpRemovableHighControl = (input.lpStatus === "wallet_controlled" || input.lpStatus === "team_controlled") && input.ownerRenounced === false;
+  if (lpRemovableHighControl) {
+    risks.push(`LP is ${input.lpStatus === "wallet_controlled" ? "wallet" : "team"}-controlled while ${input.vocab.ownerLabel} control is still active — liquidity can be pulled.`);
+    why.push("LP is removable and dev/control risk is high.");
+  }
+  const deployerConfirmedRug = (input.deployerRugHistoryCount ?? 0) > 0;
+  if (deployerConfirmedRug) {
+    risks.push(`Deployer has ${input.deployerRugHistoryCount} confirmed prior rug${input.deployerRugHistoryCount === 1 ? "" : "s"} on record.`);
+    why.push("Deployer has confirmed rug history.");
+  }
+  if (input.honeypot === true || extremeTax || input.blacklist === true || mintableActiveControl || lpRemovableHighControl || deployerConfirmedRug) {
+    return { verdict: "Avoid", riskLevel: "Critical", confidence: hasSecurity && hasLp ? "High" : "Medium", why, risks, goodSigns, missingEvidence };
+  }
+
+  // ── HIGH RISK ────────────────────────────────────────────────────────────────────────────────
+  const veryConcentrated = (input.top1Pct != null && input.top1Pct >= 50) || (input.top10Pct != null && input.top10Pct >= 80);
+  if (veryConcentrated) {
+    risks.push(`Very concentrated holders — top-1 ${fmtPct1(input.top1Pct)}, top-10 ${fmtPct1(input.top10Pct)}.`);
+    why.push("Holder concentration is very high.");
+  }
+  const lowLiquidity = input.liquidityUsd != null && input.liquidityUsd < 5_000;
+  if (lowLiquidity) {
+    risks.push(`Low liquidity (${fmtUsdShort(input.liquidityUsd)}) — vulnerable to slippage and price manipulation.`);
+    why.push("Liquidity is low.");
+  }
+  const lpControlUnclear = !hasLp && !input.lpUnsupportedOnChain;
+  if (lpControlUnclear) why.push("LP control could not be confirmed.");
+  const controlActive = input.proxy === true || input.ownerRenounced === false;
+  if (input.proxy === true) {
+    risks.push("Contract is a proxy — logic can be changed after launch.");
+    why.push("Proxy/owner control is active.");
+  } else if (input.ownerRenounced === false && !lpRemovableHighControl) {
+    risks.push(`${input.vocab.ownerLabel[0]?.toUpperCase()}${input.vocab.ownerLabel.slice(1)} control has not been renounced.`);
+    why.push("Proxy/owner control is active.");
+  }
+  const missingMajorSafetyOnThin = (lowLiquidity || input.liquidityUsd == null) && !hasSecurity;
+  if (missingMajorSafetyOnThin) why.push("Major safety checks are missing on a new/low-liquidity token.");
+  if (veryConcentrated || lowLiquidity || lpControlUnclear || controlActive || missingMajorSafetyOnThin) {
+    return { verdict: "High Risk", riskLevel: "High", confidence: hasSecurity ? "Medium" : "Low", why, risks, goodSigns, missingEvidence };
+  }
+
+  // Confirmed-good signals collected once we're past every risk tier — used by both Watch and
+  // Safer Watch below, since a Watch verdict still deserves to show what IS confirmed good.
+  if (input.honeypot === false) goodSigns.push("Honeypot simulation: not detected.");
+  if (input.buyTaxPct != null && input.sellTaxPct != null && input.buyTaxPct < 10 && input.sellTaxPct < 10) goodSigns.push(`Tax is low — buy ${fmtPct1(input.buyTaxPct)}, sell ${fmtPct1(input.sellTaxPct)}.`);
+  if (input.ownerRenounced === true) goodSigns.push(`${input.vocab.ownerLabel[0]?.toUpperCase()}${input.vocab.ownerLabel.slice(1)} control is renounced.`);
+  if (input.mintable === false) goodSigns.push(`Not mintable (${input.vocab.mintLabel}).`);
+  if (input.proxy === false) goodSigns.push("Not a proxy contract.");
+  if (input.blacklist === false) goodSigns.push(`${input.vocab.controlLabel}: not detected.`);
+  if (input.lpStatus === "locked" || input.lpStatus === "burned") goodSigns.push(`LP is ${input.lpStatus}.`);
+  if (input.liquidityUsd != null && input.liquidityUsd >= 25_000) goodSigns.push(`Liquidity is solid — ${fmtUsdShort(input.liquidityUsd)}.`);
+
+  // ── WATCH / MEDIUM ───────────────────────────────────────────────────────────────────────────
+  const gapsRemain = !hasHolders || !hasLp || (!hasOwnership && Boolean(input.vocab.ownerLabel)) || (input.deployerRugHistoryCount == null);
+  if (gapsRemain) {
+    if (!hasHolders) why.push("Holder concentration has not been confirmed.");
+    if (!hasLp) why.push("LP ownership has not been confirmed.");
+    if (!hasOwnership && input.vocab.ownerLabel) why.push(`${input.vocab.ownerLabel[0]?.toUpperCase()}${input.vocab.ownerLabel.slice(1)} history has gaps.`);
+    if (input.honeypot === false) why.push("Honeypot not detected and taxes look normal.");
+    return { verdict: "Watch", riskLevel: "Medium", confidence: "Medium", why, risks, goodSigns, missingEvidence };
+  }
+
+  // ── SAFER WATCH / LOWER RISK ─────────────────────────────────────────────────────────────────
+  why.push("Liquidity is strong and honeypot simulation is clear.");
+  why.push(`Tax is low and ${input.vocab.ownerLabel} control is renounced or safe.`);
+  why.push("Holder concentration and LP/control risk are both acceptable.");
+  return { verdict: "Safer Watch", riskLevel: "Low", confidence: "High", why, risks, goodSigns, missingEvidence };
+}
+
+/** Maps a real EVM TokenScanEvidence object into the chain-agnostic scoring input above. */
+export function buildClarkTokenVerdictInputFromEvidence(ev: TokenScanEvidence): ClarkTokenVerdictInput {
+  const sec = ev.security;
+  const lp = ev.lpControl;
+  const h = ev.holders;
+  const lpStatus: ClarkTokenVerdictInput["lpStatus"] =
+    isConcentratedLp(lp) ? "concentrated" :
+    lp?.status === "locked" ? "locked" :
+    lp?.status === "burned" ? "burned" :
+    lp?.status === "wallet_controlled" ? "wallet_controlled" :
+    lp?.status === "team_controlled" ? "team_controlled" :
+    null;
+  const rugHistory = ev.deployerProfile && typeof ev.deployerProfile === "object"
+    ? (ev.deployerProfile as Record<string, unknown>).rugHistory
+    : null;
+  return {
+    honeypot: sec?.honeypot ?? null,
+    buyTaxPct: sec?.buyTax ?? null,
+    sellTaxPct: sec?.sellTax ?? null,
+    ownerRenounced: sec?.ownerRenounced ?? null,
+    mintable: sec?.mintable ?? null,
+    proxy: sec?.proxy ?? null,
+    blacklist: sec?.blacklist ?? null,
+    lpStatus,
+    liquidityUsd: ev.market?.liquidity ?? null,
+    top1Pct: h?.top1 ?? null,
+    top10Pct: h?.top10 ?? null,
+    deployerRugHistoryCount: typeof rugHistory === "number" ? rugHistory : null,
+    vocab: { ownerLabel: "owner", mintLabel: "mint() callable", controlLabel: "Blacklist/transfer restriction" },
+  };
+}
+
+/**
+ * Renders the exact required Clark token verdict format. Shared by every chain — EVM callers pass
+ * evmFields (Ownership/Proxy/Mintability/Honeypot-tax wording); Solana callers omit it so those
+ * lines are skipped entirely rather than showing EVM vocabulary that doesn't apply.
+ */
+export function renderClarkTokenVerdict(opts: {
+  symbolOrName: string;
+  chainLabel: string;
+  address: string;
+  result: ClarkTokenVerdictResult;
+  marketCap: number | null;
+  fdv: number | null;
+  liquidityUsd: number | null;
+  volume24h: number | null;
+  change24h: number | null;
+  holderCount: number | null;
+  top1Pct: number | null;
+  top10Pct: number | null;
+  lpStatusLabel: string; // pre-formatted, chain-appropriate LP status text
+  evmFields?: { ownershipStatus: string; proxyStatus: string; mintability: string; honeypotTaxResult: string } | null;
+  // SOLANA-VOCABULARY FIX, DISCLOSED (hard rule: "Do NOT use EVM wording for Solana-only checks —
+  // no proxy, ownership renounced, EVM deployer, or EVM honeypot unless the Solana module actually
+  // supports that check"). Solana callers pass this instead of evmFields, using only the
+  // Solana-native vocabulary the spec requires (mint authority, freeze authority, token program,
+  // creator/authority evidence) — never the EVM field set.
+  solanaFields?: { mintAuthority: string; freezeAuthority: string; tokenProgram: string; creatorAuthorityEvidence: string } | null;
+  nextActions: string[];
+}): string {
+  const { result } = opts;
+  const lines: string[] = [
+    `TOKEN READ — ${opts.symbolOrName}`,
+    `Chain: ${opts.chainLabel}`,
+    `Address: ${opts.address}`,
+    "",
+    "Verdict:",
+    result.verdict,
+    "",
+    "Risk Level:",
+    result.riskLevel,
+    "",
+    "Confidence:",
+    result.confidence,
+    "",
+    "Why:",
+    ...(result.why.length > 0 ? result.why.map(w => `- ${w}`) : ["- No specific evidence-backed reasons were generated for this read."]),
+    "",
+    "Key Metrics:",
+    `- Market Cap: ${fmtUsdShort(opts.marketCap)}`,
+    `- FDV: ${fmtUsdShort(opts.fdv)}`,
+    `- Liquidity: ${fmtUsdShort(opts.liquidityUsd)}`,
+    `- 24h Volume: ${fmtUsdShort(opts.volume24h)}`,
+    `- 24h Change: ${opts.change24h == null ? "unverified" : `${opts.change24h >= 0 ? "+" : ""}${opts.change24h.toFixed(1)}%`}`,
+    `- Holders: ${opts.holderCount == null ? "unverified" : opts.holderCount.toLocaleString()}`,
+    `- Top holder %: ${fmtPct1(opts.top1Pct)}`,
+    `- Top 10 holder %: ${fmtPct1(opts.top10Pct)}`,
+    `- LP status: ${opts.lpStatusLabel}`,
+  ];
+  if (opts.evmFields) {
+    lines.push(
+      `- Ownership status: ${opts.evmFields.ownershipStatus}`,
+      `- Proxy status: ${opts.evmFields.proxyStatus}`,
+      `- Mintability: ${opts.evmFields.mintability}`,
+      `- Honeypot/tax result: ${opts.evmFields.honeypotTaxResult}`,
+    );
+  }
+  if (opts.solanaFields) {
+    lines.push(
+      `- Mint authority: ${opts.solanaFields.mintAuthority}`,
+      `- Freeze authority: ${opts.solanaFields.freezeAuthority}`,
+      `- Token program: ${opts.solanaFields.tokenProgram}`,
+      `- Creator/authority evidence: ${opts.solanaFields.creatorAuthorityEvidence}`,
+    );
+  }
+  lines.push(
+    "",
+    "Risks:",
+    ...(result.risks.length > 0 ? result.risks.map(r => `- ${r}`) : ["- None confirmed from available evidence."]),
+    "",
+    "Good Signs:",
+    ...(result.goodSigns.length > 0 ? result.goodSigns.map(g => `- ${g}`) : ["- None confirmed from available evidence."]),
+    "",
+    "Missing Evidence:",
+    ...(result.missingEvidence.length > 0 ? result.missingEvidence.map(m => `- ${m}`) : ["- None — all core checks returned."]),
+    "",
+    "Next Actions:",
+    ...opts.nextActions.map(a => `- ${a}`),
+  );
+  return lines.join("\n");
+}
+
+const DEFAULT_CLARK_TOKEN_NEXT_ACTIONS = ["Deep Scan Token", "Explain LP", "Check Deployer", "Check Holders", "Add to Watchlist", "Open Token Scanner"];
+
+/** Full EVM entry point: evidence -> scored verdict -> rendered TOKEN READ text, in one call. */
+export function renderClarkTokenVerdictForEvm(ev: TokenScanEvidence, tokenAddress: string, chainLabel: string, usableEvidence: boolean): string {
+  const input = buildClarkTokenVerdictInputFromEvidence(ev);
+  const result = computeClarkTokenVerdictCore(input, usableEvidence);
+  const sym = String(ev.token?.symbol ?? "?").toUpperCase();
+  const name = ev.token?.name && ev.token.name !== "Unknown" ? ev.token.name : null;
+  return renderClarkTokenVerdict({
+    symbolOrName: name && name.toUpperCase() !== sym ? `${name} (${sym})` : sym,
+    chainLabel,
+    address: tokenAddress,
+    result,
+    marketCap: ev.market?.marketCap ?? null,
+    fdv: ev.market?.fdv ?? null,
+    liquidityUsd: ev.market?.liquidity ?? null,
+    volume24h: ev.market?.volume24h ?? null,
+    change24h: ev.market?.change24h ?? null,
+    holderCount: ev.holders?.holderCount ?? null,
+    top1Pct: ev.holders?.top1 ?? null,
+    top10Pct: ev.holders?.top10 ?? null,
+    lpStatusLabel: lpStatusLine(ev).replace(/^LP proof:\s*/, ""),
+    evmFields: {
+      ownershipStatus: ev.security?.ownerRenounced === true ? "Renounced" : ev.security?.ownerRenounced === false ? "Active (not renounced)" : "Unverified",
+      proxyStatus: ev.security?.proxy === true ? "Proxy contract" : ev.security?.proxy === false ? "Not a proxy" : "Unverified",
+      mintability: ev.security?.mintable === true ? "Mintable" : ev.security?.mintable === false ? "Not mintable" : "Unverified",
+      honeypotTaxResult: ev.security?.honeypot === true ? "Honeypot detected" : ev.security?.honeypot === false ? `No honeypot — buy ${fmtPct1(ev.security?.buyTax)}, sell ${fmtPct1(ev.security?.sellTax)}` : "Unverified",
+    },
+    nextActions: DEFAULT_CLARK_TOKEN_NEXT_ACTIONS,
+  });
+}
+
+/**
+ * Solana entry point: real Solana-native evidence -> scored verdict -> rendered TOKEN READ text.
+ * Never receives an EVM TokenScanEvidence object — the Solana scan has no comparable shape (no
+ * proxy/ownership/honeypot/LP-lock concept), so this takes an explicit, honestly-typed params
+ * object built directly from the real /api/token (chain=solana) response fields, matching
+ * lib/server/solana/types.ts's SolanaMarketData/topAccountConcentration shapes.
+ */
+export function renderClarkTokenVerdictForSolana(params: {
+  tokenAddress: string;
+  tokenName: string | null;
+  tokenSymbol: string | null;
+  mintAuthority: string | null; // non-null string = active; null = revoked/unresolved (see caller)
+  mintAuthorityResolved: boolean; // true only when authorityReadSucceeded — null above is ambiguous otherwise
+  freezeAuthority: string | null;
+  freezeAuthorityResolved: boolean;
+  marketCap: number | null;
+  fdv: number | null;
+  liquidityUsd: number | null;
+  volume24h: number | null;
+  primaryDexLabel: string | null;
+  primaryPoolAddress: string | null;
+  top1Pct: number | null;
+  top10Pct: number | null;
+  accountsSampled: number | null;
+  likelyCreator: string | null;
+  creatorConfidenceTier: string | null;
+  deployerRugHistoryCount: number | null;
+  usableEvidence: boolean;
+}): string {
+  const input: ClarkTokenVerdictInput = {
+    honeypot: null, // Solana has no honeypot simulation — never asserted (SOLANA_UNSUPPORTED_CHECKS)
+    buyTaxPct: null, // Solana has no buy/sell tax simulation — never asserted
+    sellTaxPct: null,
+    ownerRenounced: null, // no EVM-style ownership model on Solana — never asserted either way
+    mintable: params.mintAuthorityResolved ? params.mintAuthority != null : null,
+    proxy: null, // no proxy-contract concept on Solana — never asserted
+    blacklist: params.freezeAuthorityResolved ? params.freezeAuthority != null : null,
+    lpStatus: null, // Solana AMM pools have no comparable lock/burn-proof mechanism in this engine yet
+    lpUnsupportedOnChain: true,
+    liquidityUsd: params.liquidityUsd,
+    top1Pct: params.top1Pct,
+    top10Pct: params.top10Pct,
+    deployerRugHistoryCount: params.deployerRugHistoryCount,
+    vocab: { ownerLabel: "", mintLabel: "mint authority active", controlLabel: "Freeze authority active" },
+  };
+  const result = computeClarkTokenVerdictCore(input, params.usableEvidence);
+  // "Freeze authority active" doubling as a blacklist-equivalent risk factor already carries its own
+  // wording via vocab.controlLabel in computeClarkTokenVerdictCore — no extra Solana-specific
+  // patching needed here; the shared scoring logic already produces chain-correct bullets from the
+  // vocab strings passed in.
+  const sym = (params.tokenSymbol ?? "?").toUpperCase();
+  const symbolOrName = params.tokenName && params.tokenName.toUpperCase() !== sym ? `${params.tokenName} (${sym})` : sym;
+  return renderClarkTokenVerdict({
+    symbolOrName,
+    chainLabel: "Solana",
+    address: params.tokenAddress,
+    result,
+    marketCap: params.marketCap,
+    fdv: params.fdv,
+    liquidityUsd: params.liquidityUsd,
+    volume24h: params.volume24h,
+    change24h: null, // SolanaMarketData carries no 24h price-change field — never fabricated
+    holderCount: params.accountsSampled,
+    top1Pct: params.top1Pct,
+    top10Pct: params.top10Pct,
+    lpStatusLabel: params.primaryDexLabel
+      ? `Pool found on ${params.primaryDexLabel}${params.primaryPoolAddress ? ` (${params.primaryPoolAddress})` : ""} — LP lock/burn proof is not supported on Solana yet.`
+      : "No pool identified — LP lock/burn proof is not supported on Solana yet.",
+    solanaFields: {
+      mintAuthority: !params.mintAuthorityResolved ? "Unresolved" : params.mintAuthority ? `${params.mintAuthority} (active — supply can be increased)` : "Revoked",
+      freezeAuthority: !params.freezeAuthorityResolved ? "Unresolved" : params.freezeAuthority ? `${params.freezeAuthority} (active — accounts can be frozen)` : "Revoked",
+      tokenProgram: "SPL Token",
+      creatorAuthorityEvidence: params.likelyCreator
+        ? `${params.likelyCreator} — fee-payer of earliest transaction, confidence: ${params.creatorConfidenceTier ?? "possible"} (not proof of deployer)`
+        : "Not resolved. Run the Deep Creator Check in Token Scanner for a Helius signature-history trace.",
+    },
+    nextActions: DEFAULT_CLARK_TOKEN_NEXT_ACTIONS,
+  });
 }
 
 // Distinguishes "honeypot specifically wasn't returned" from "the whole security check

@@ -1437,7 +1437,12 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes('`Chain: ${chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools))}.`'), 'token read chain line uses the evidence-resolved chain label')
   assert.ok(!routeFile.includes('`- Chain: Base`'), 'no hardcoded Base chain label remains in token read output')
   assert.ok(routeFile.includes('formatFastTokenRead(ev, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)))'), 'fast token read uses the resolved chain label')
-  assert.ok(routeFile.includes('formatTokenScanResult(ev, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)))'), 'full token read uses the resolved chain label')
+  // CLARK-TOKEN-VERDICT FIX, DISCLOSED: the full/partial token read no longer calls
+  // formatTokenScanResult directly from route.ts — both now go through the shared verdict engine
+  // (renderClarkTokenVerdictForEvm), which itself resolves and passes the same chain label.
+  // formatTokenScanResult itself is untouched and still directly unit-tested elsewhere in this
+  // file — only route.ts's wiring to it changed.
+  assert.ok(routeFile.includes('renderClarkTokenVerdictForEvm(ev, tokenAddress, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)), usableEvidence)'), 'full/partial token read uses the shared verdict engine with the resolved chain label')
 }
 
 {

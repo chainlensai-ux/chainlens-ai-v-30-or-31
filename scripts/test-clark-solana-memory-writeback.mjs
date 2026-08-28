@@ -56,9 +56,12 @@ assert.match(
   /const hasUsableData = Boolean\(solData\?\.authorityReadSucceeded \|\| solData\?\.marketDataAvailable\);/,
   'hasUsableData must be derived from the real top-level authorityReadSucceeded/marketDataAvailable flags, not a nonexistent nested mergedResult'
 )
+// CLARK-TOKEN-VERDICT FIX, DISCLOSED: marketData's inline type widened to also carry
+// marketCap/fdv/liquidity/volume/pool fields for the new TOKEN READ verdict — token name/symbol are
+// still read from the same real top-level field, just as part of a larger, honestly-typed object.
 assert.match(
   routeCode,
-  /const marketData = solData\?\.marketData as \{ tokenName\?: string \| null; tokenSymbol\?: string \| null \} \| null \| undefined;/,
+  /const marketData = solData\?\.marketData as \{ tokenName\?: string \| null; tokenSymbol\?: string \| null;[\s\S]{0,300}\} \| null \| undefined;/,
   'token name/symbol for memory must be read from the top-level marketData field'
 )
 

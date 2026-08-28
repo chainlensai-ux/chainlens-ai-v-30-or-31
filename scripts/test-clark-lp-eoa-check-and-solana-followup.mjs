@@ -38,6 +38,10 @@ assert.match(routeCode, /if \(addressKind === "wallet"\) \{/, 'the guard must on
 // into a single hasAnyAddress() helper (EVM OR Solana) and every one of those gates now uses it.
 assert.match(routeCode, /if \(isTokenFollowupPrompt\(prompt\) && sessionMem\.lastToken\?\.address && !hasAnyAddress\(prompt\)\) \{/, 'the token-followup memory guard must use the shared hasAnyAddress helper (EVM or Solana), not the old EVM-only check')
 assert.match(routeCode, /function hasAnyAddress\(text: string\): boolean \{\s*\n\s*return extractAddress\(text\) != null \|\| isValidSolanaMintAddress\(extractAddressForRouting\(text\) \?\? ""\);\s*\n\}/, 'a shared hasAnyAddress helper must exist and check both EVM and Solana address shapes')
-assert.match(routeCode, /extractAddressForRouting,\s*\n\} from "@\/lib\/server\/clarkRouting";/, 'extractAddressForRouting must be imported so the guard above can actually use it')
+// CLARK-TOKEN-VERDICT FIX, DISCLOSED: more exports were added after extractAddressForRouting in
+// this import block, so it is no longer the last import — checking membership in the block instead
+// of exact adjacency to the closing brace.
+assert.match(routeCode, /^\s*extractAddressForRouting,\s*$/m, 'extractAddressForRouting must be imported so the guard above can actually use it')
+assert.match(routeCode, /\brenderClarkTokenVerdictForEvm\b[\s\S]{0,200}\} from "@\/lib\/server\/clarkRouting";/, 'the new verdict engine must be imported from clarkRouting')
 
 console.log('test-clark-lp-eoa-check-and-solana-followup.mjs: all assertions passed')
