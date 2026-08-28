@@ -5,6 +5,39 @@ import { usePathname, useSearchParams } from 'next/navigation'
 import { ThinkingOrb } from 'thinking-orbs'
 import { supabase } from '@/lib/supabaseClient'
 import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList, persistMarketMomentum, readMarketMomentum } from '@/lib/client/clarkMemory'
+import {
+  CLARK_FETCH_TIMEOUT_MS,
+  CLARK_TIMEOUT_MESSAGE,
+  FALLBACK_ERROR_MESSAGE,
+  formatChainDisplay,
+  formatLastTokenDisplay,
+  formatLastWalletDisplay,
+  formatMintAddressFromLastToken,
+  intentBadgeForPrompt,
+  isClarkTimeoutError,
+  isMintAddressFollowup,
+  persistEntitiesFromPrompt,
+  resolveClarkContextChain,
+  resolveIntentBadge,
+  uiModeHintForPrompt,
+} from '@/lib/client/clarkAiLive'
+import { CLARK_AI_PAGE_CSS } from './clarkAiPageCss'
+import {
+  ANALYSIS_STAGES,
+  ANALYST_CHIPS,
+  CHAT_CHIPS,
+  inferAnalysisKind,
+  MODES,
+  QUICK_ACTIONS,
+  START_WITH_CHIPS,
+  bumpClarkUsage,
+  decodePrompt,
+  CLARK_DAILY_LIMITS,
+  CLARK_LIMIT_UNAUTH,
+  readClarkUsage,
+  type AnalysisKind,
+  type Mode,
+} from './clarkAiPageConfig'
 import ClarkHistoryPanel from '@/components/ClarkHistoryPanel'
 import {
   fetchClarkHistory, fetchClarkChatMessages, createClarkChat, createClarkFolder, appendClarkMessage,
@@ -25,12 +58,10 @@ const HISTORY_STATUS_MESSAGE: Record<ClarkHistoryErrorCode, string> = {
   network_error: 'History temporarily unavailable',
 }
 
-// ── Types ─────────────────────────────────────────────────────────────────────
 type ClarkAction = { label: string; href?: string; prompt?: string; kind?: 'link' | 'prompt'; requiresInput?: boolean }
 type Message = { role: 'user' | 'clark'; text: string; intentBadge?: string | null; actions?: ClarkAction[] }
 type UiTab   = 'analyst' | 'chat'
 
-// ── Session / context helpers: shared across every Clark surface, see lib/client/clarkMemory.ts ──
 type ClarkContextState = {
   lastMarketList?: Array<{
     rank: number; symbol: string; name?: string | null; tokenAddress?: string | null
@@ -43,72 +74,8 @@ type ClarkContextState = {
   seenMarketAddresses?: string[]; seenMarketSymbols?: string[]
 }
 
-// ── Mode config (unchanged — used internally for API uiModeHint) ──────────────
-type Mode = { key: 'token' | 'wallet' | 'contract' | 'radar'; label: string; helper: string; prompt: string; icon: string }
-const MODES: Mode[] = [
-  { key: 'token',    label: 'Token Analysis', helper: 'Evaluate token quality, momentum, and risk on Base.',          prompt: 'Analyze this Base token and give me WATCH, AVOID, or SCAN DEEPER with key reasons.', icon: '◈' },
-  { key: 'wallet',   label: 'Wallet Analysis', helper: 'Break down holdings, behavior, concentration, and recent activity.', prompt: 'Analyze this Base wallet. Focus on behavior, concentration risk, and recent activity.', icon: '◎' },
-  { key: 'contract', label: 'Contract Risk',   helper: 'Review privilege flags, liquidity traps, and suspicious mechanics.', prompt: 'Run a contract risk analysis on this Base token contract. Highlight red flags clearly.', icon: '⚠' },
-  { key: 'radar',    label: 'Base Radar',       helper: 'Use imported Base Radar signal context for a concise verdict.',       prompt: 'Use my imported Base Radar context and give a concise WATCH / AVOID / SCAN DEEPER verdict.', icon: '⟲' },
-]
-
-// ── UI chips per tab ─────────────────────────────────────────────────────────
-const ANALYST_CHIPS = [
-  { label: "What's pumping on Base?", prompt: "What's pumping on Base?" },
-  { label: 'Scan wallet',             prompt: 'Scan wallet '             },
-  { label: 'Check liquidity',         prompt: 'Check liquidity '         },
-  { label: 'Analyze token',           prompt: 'Analyze token '           },
-]
-const CHAT_CHIPS = [
-  { label: 'Who deployed VIRTUAL?',  prompt: 'Who deployed VIRTUAL?'         },
-  { label: 'Show Base whales',        prompt: 'Show Base whales'              },
-  { label: 'Top movers today',        prompt: 'Top movers on Base today'       },
-  { label: 'Base activity',           prompt: 'Latest activity on Base?'      },
-]
-
-// ── Usage helpers (unchanged) ────────────────────────────────────────────────
-const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a moment.'
 const THINKING_MESSAGE       = 'Clark is thinking...'
 
-type AnalysisKind = 'token' | 'wallet' | 'lp' | 'general'
-const ANALYSIS_STAGES: Record<AnalysisKind, string[]> = {
-  token: ['Analyzing token...', 'Checking liquidity...', 'Reviewing holder distribution...', 'Inspecting security signals...', 'Building CORTEX summary...'],
-  wallet: ['Loading portfolio...', 'Reviewing activity...', 'Checking chain exposure...', 'Building wallet profile...', 'Preparing intelligence report...'],
-  lp: ['Reviewing liquidity...', 'Checking LP control...', 'Analyzing concentrated positions...', 'Preparing LP report...'],
-  general: ['Parsing request...', 'Loading CORTEX context...', 'Reviewing Base signals...', 'Preparing intelligence report...'],
-}
-function inferAnalysisKind(text: string, mode?: Mode['key']): AnalysisKind {
-  const t = text.toLowerCase()
-  if (mode === 'wallet' || /\b(wallet|portfolio|holdings?|pnl|whale)\b/.test(t)) return 'wallet'
-  if (/\b(lp|liquidity|pool|lock|unlock|concentrated)\b/.test(t)) return 'lp'
-  if (mode === 'token' || mode === 'contract' || /\b(token|contract|ca\b|holders?|deployer|rug|safe|scan)\b/.test(t)) return 'token'
-  return 'general'
-}
-const CLARK_DAILY_LIMITS: Record<string, number> = { free: 5, pro: 50, elite: 300 }
-const CLARK_LIMIT_UNAUTH = 3
-function getTodayStr() { return new Date().toISOString().slice(0, 10) }
-function readClarkUsage(): number {
-  if (typeof window === 'undefined') return 0
-  try {
-    const raw = localStorage.getItem('chainlens:clark:daily-usage')
-    if (!raw) return 0
-    const { date, count } = JSON.parse(raw) as { date: string; count: number }
-    return date === getTodayStr() ? (count || 0) : 0
-  } catch { return 0 }
-}
-function bumpClarkUsage(): number {
-  try {
-    const next = readClarkUsage() + 1
-    localStorage.setItem('chainlens:clark:daily-usage', JSON.stringify({ date: getTodayStr(), count: next }))
-    return next
-  } catch { return 0 }
-}
-function decodePrompt(value: string | null): string | null {
-  if (!value) return null
-  try { return decodeURIComponent(value) } catch { return value }
-}
-
-// ── Main content ─────────────────────────────────────────────────────────────
 function ClarkAiContent() {
   const pathname          = usePathname()
   const searchParams      = useSearchParams()
@@ -122,13 +89,13 @@ function ClarkAiContent() {
   const [loading,   setLoading]   = useState(false)
   const [loadingKind, setLoadingKind] = useState<AnalysisKind>('general')
   const [loadingStage, setLoadingStage] = useState(0)
+  const [memoryEpoch, setMemoryEpoch] = useState(0)
   const [clarkUsed, setClarkUsed] = useState(0)
   const [planLimit, setPlanLimit] = useState<number | null>(null)
   const clarkContextRef = useRef<ClarkContextState>({})
   const autoSentRef     = useRef(false)
   const threadRef       = useRef<HTMLDivElement>(null)
 
-  // ── Persistent chat history (folders/chats/messages) ─────────────────────
   const [folders, setFolders] = useState<ClarkChatFolder[]>([])
   const [chats, setChats] = useState<ClarkChatSummary[]>([])
   const [activeChatId, setActiveChatId] = useState<string | null>(null)
@@ -136,14 +103,6 @@ function ClarkAiContent() {
   const [historyErrorCode, setHistoryErrorCode] = useState<ClarkHistoryErrorCode | null>(null)
   const activeChatIdRef = useRef<string | null>(null)
   activeChatIdRef.current = activeChatId
-  // BUG FIX, DISCLOSED (Clark chat history audit): previously, switching to a different chat (or
-  // starting a new one) while Clark was still answering the PREVIOUS chat would show that delayed
-  // answer appended to whichever chat was on screen when it arrived — the reply landed in the wrong
-  // conversation. Persistence to the database was always correct (scoped by the chatId captured at
-  // send-time), this was purely a live-UI display bug. Fixed by tagging each send with the
-  // currently-displayed conversation's "session token" (bumped whenever the visible thread changes
-  // to a different conversation) and only applying the reply to `messages` if that token is still
-  // current when the response arrives — the DB save still always happens regardless.
   const chatSessionTokenRef = useRef(0)
 
   function reportHistoryFailure(err: unknown) {
@@ -228,7 +187,6 @@ function ClarkAiContent() {
     })
   }, [])
 
-  // Auto-scroll thread to latest message
   useEffect(() => {
     if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight
   }, [messages])
@@ -266,26 +224,62 @@ function ClarkAiContent() {
   async function handleSendText(raw: string) {
     const text = raw.trim()
     if (!text || loading) return
-    // BUG FIX, DISCLOSED (Clark chat history audit) — see chatSessionTokenRef's own comment above.
-    // Captured now, before any await, so it reflects exactly which conversation was on screen when
-    // this send began.
     const sentForToken = chatSessionTokenRef.current
-    setLoadingKind(inferAnalysisKind(text, activeMode))
+    const sendMode = uiModeHintForPrompt(text, activeMode)
+    setActiveMode(sendMode)
+    persistEntitiesFromPrompt(text, sendMode)
+    setMemoryEpoch((n) => n + 1)
+    setLoadingKind(inferAnalysisKind(text, sendMode))
     setLoadingStage(0)
     setMessages((prev) => [...prev, { role: 'user', text }, { role: 'clark', text: THINKING_MESSAGE }])
     setInput('')
     setLoading(true)
-    // History save is best-effort and must never block or break sending the message.
     const chatIdPromise = ensureActiveChat(text)
     try {
       const history = [...messages, { role: 'user', text }]
         .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
-      const { data: { session: authSession } } = await supabase.auth.getSession()
-      const accessToken = authSession?.access_token ?? null
+      let accessToken: string | null = null
+      try {
+        const sessionResult = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise<never>((_, reject) => { window.setTimeout(() => reject(new Error('getSession_timeout')), 4_000) }),
+        ])
+        accessToken = sessionResult.data.session?.access_token ?? null
+      } catch {
+        accessToken = null
+      }
+      if (!accessToken) {
+        try {
+          const retry = await Promise.race([
+            supabase.auth.getSession(),
+            new Promise<never>((_, reject) => { window.setTimeout(() => reject(new Error('getSession_timeout')), 4_000) }),
+          ])
+          accessToken = retry.data.session?.access_token ?? null
+        } catch {
+          accessToken = null
+        }
+      }
       const clientClarkContext = getClientClarkContext()
-      // Pull the latest safe Wallet/Token scan summaries the scanner pages persisted, so Clark can
-      // answer "explain this / why is pnl locked / what are the risks" without pasted JSON.
+      if (isMintAddressFollowup(text)) {
+        const mintReply = formatMintAddressFromLastToken(clientClarkContext.lastToken)
+        if (mintReply) {
+          if (chatSessionTokenRef.current === sentForToken) {
+            setMessages((prev) => {
+              const next = [...prev]
+              next[next.length - 1] = { role: 'clark', text: mintReply, intentBadge: 'TOKEN READ' }
+              return next
+            })
+          }
+          void chatIdPromise.then(async (chatId) => {
+            if (!chatId) return
+            await appendClarkMessage(chatId, 'user', text).catch(reportHistoryFailure)
+            await appendClarkMessage(chatId, 'assistant', mintReply).catch(reportHistoryFailure)
+            void refreshHistory()
+          })
+          return
+        }
+      }
       const readJson = (key: string): Record<string, unknown> | null => {
         try {
           if (typeof localStorage === 'undefined') return null
@@ -301,10 +295,11 @@ function ClarkAiContent() {
         : persistedMomentum?.length
           ? { items: persistedMomentum }
           : null
+      const resolvedChain = resolveClarkContextChain(clientClarkContext, text)
       const appContext = {
         route: pathname,
-        chain: 'base',
-        activeFeature: activeMode ?? 'clark-ai',
+        ...(resolvedChain ? { chain: resolvedChain } : {}),
+        activeFeature: sendMode ?? 'clark-ai',
         selectedToken: clarkContextRef.current.lastMarketList?.[0]?.tokenAddress ?? clientClarkContext.lastToken ?? null,
         selectedWallet: clientClarkContext.lastWallet ?? null,
         currentWalletAddress: (walletSummary?.address as string | undefined) ?? clientClarkContext.lastWallet ?? null,
@@ -314,7 +309,7 @@ function ClarkAiContent() {
         marketContext: latestMarketContext,
         baseRadarSummary: clarkContextRef.current.lastMarketList ?? clientClarkContext.lastMomentumList ?? null,
         whaleSyncStatus: typeof sessionStorage !== 'undefined' ? sessionStorage.getItem('chainlens:whale-alerts:sync-status') ?? 'unknown' : 'unknown',
-        currentTool: activeMode ?? null,
+        currentTool: sendMode ?? null,
       }
       const res = await fetch('/api/clark', {
         method: 'POST',
@@ -323,9 +318,10 @@ function ClarkAiContent() {
           'x-clark-session': getOrCreateSessionId(),
           ...(accessToken ? { 'Authorization': `Bearer ${accessToken}` } : {}),
         },
+        signal: AbortSignal.timeout(CLARK_FETCH_TIMEOUT_MS),
         body: JSON.stringify({
           feature: 'clark-ai', message: text, prompt: text,
-          mode: 'analyst', uiModeHint: activeMode,
+          mode: 'analyst', uiModeHint: sendMode,
           context: null, history,
           sessionId: getOrCreateSessionId(),
           clarkContext: clarkContextRef.current,
@@ -373,10 +369,8 @@ function ClarkAiContent() {
       const cursor = (marketContext && typeof marketContext === 'object' && (marketContext as Record<string, unknown>).cursor && typeof (marketContext as Record<string, unknown>).cursor === 'object')
         ? (marketContext as Record<string, unknown>).cursor as ClarkContextState['marketCursor'] : null
       if (cursor) clarkContextRef.current.marketCursor = cursor
-      // Redundancy layer for the server-side in-memory session map, and the cross-surface sync
-      // mechanism: every Clark surface persists memoryEcho through the same shared helper, so a
-      // wallet/token scanned here is immediately visible to every other Clark surface.
       persistClarkMemoryEcho(payload)
+      setMemoryEpoch((n) => n + 1)
       clarkContextRef.current.previousIntent  = clarkContextRef.current.lastIntent ?? null
       clarkContextRef.current.lastIntent      = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
       clarkContextRef.current.lastSelectedRank = /\b([1-9]\d{0,2})\b/.test(text) ? Number(text.match(/\b([1-9]\d{0,2})\b/)?.[1] ?? 0) || null : clarkContextRef.current.lastSelectedRank
@@ -391,14 +385,10 @@ function ClarkAiContent() {
         return typeof href === 'string' || typeof prompt === 'string'
       }) : []
       const statusMessage = typeof payload.clarkFollowupStatusMessage === 'string' ? payload.clarkFollowupStatusMessage : null
-      // BUG FIX, DISCLOSED (Clark chat history audit): only apply the reply to the visible thread
-      // if the user hasn't switched to a different conversation while this was in flight — see
-      // chatSessionTokenRef's own comment. The history save below is unconditional either way, so
-      // the message is never lost, just not shown in the wrong chat.
       if (chatSessionTokenRef.current === sentForToken) {
         setMessages((prev) => {
           const next = [...prev]
-          const finalMsg: Message = { role: 'clark', text: String(reply), intentBadge: typeof ui?.intentBadge === 'string' ? ui.intentBadge : null, actions }
+          const finalMsg: Message = { role: 'clark', text: String(reply), intentBadge: resolveIntentBadge(text, typeof ui?.intentBadge === 'string' ? ui.intentBadge : null), actions }
           if (statusMessage) {
             next[next.length - 1] = { role: 'clark', text: statusMessage }
             next.push(finalMsg)
@@ -408,27 +398,18 @@ function ClarkAiContent() {
           return next
         })
       }
-      // Fire-and-forget: persist the exchange without blocking or affecting the Clark UI.
-      // BUG FIX, DISCLOSED (Clark chat history audit): previously these two appends fired
-      // concurrently (neither awaited before the next started). The server does a non-atomic
-      // read-current-message_count -> insert -> write-count+1 for each — firing them at the same
-      // time let both reads happen before either write landed, silently dropping one increment.
-      // Awaiting the first before starting the second removes that race for this pair. Each is
-      // still caught independently so a failure on one doesn't block attempting the other, matching
-      // the original best-effort semantics. refreshHistory now runs after both are attempted
-      // instead of racing ahead of them, which also fixes the sidebar briefly showing a stale
-      // preview/count right after sending.
       void chatIdPromise.then(async (chatId) => {
         if (!chatId) return
         await appendClarkMessage(chatId, 'user', text).catch(reportHistoryFailure)
         await appendClarkMessage(chatId, 'assistant', String(reply), payload).catch(reportHistoryFailure)
         void refreshHistory()
       })
-    } catch {
-      // Same guard as the success path above — don't drop a stale error into a chat the user has
-      // since switched away from.
+    } catch (err) {
+      const timedOut = isClarkTimeoutError(err)
+      const errorText = timedOut ? CLARK_TIMEOUT_MESSAGE : FALLBACK_ERROR_MESSAGE
+      const errorBadge = intentBadgeForPrompt(text)
       if (chatSessionTokenRef.current === sentForToken) {
-        setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: FALLBACK_ERROR_MESSAGE }; return next })
+        setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: errorText, intentBadge: errorBadge }; return next })
       }
     } finally { setLoading(false) }
   }
@@ -443,151 +424,23 @@ function ClarkAiContent() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoSendRequested, importedPrompt, loading])
 
-  // ── Derived UI values ─────────────────────────────────────────────────────
   const isLimited   = planLimit !== null && clarkUsed >= planLimit
   const usagePct    = planLimit ? Math.min(100, (clarkUsed / planLimit) * 100) : 0
   const chips       = uiTab === 'analyst' ? ANALYST_CHIPS : CHAT_CHIPS
   const hasMessages = messages.length > 0
-  const clientContext = getClientClarkContext() as { lastToken?: unknown; lastWallet?: unknown }
-  const formatContextValue = (value: unknown) => {
-    if (!value) return 'None yet'
-    if (typeof value === 'string') return value
-    if (typeof value === 'object') {
-      const record = value as Record<string, unknown>
-      return String(record.symbol ?? record.address ?? record.tokenAddress ?? record.wallet ?? 'Available')
-    }
-    return String(value)
-  }
-  const startWithChips = [
-    { label: 'Token Reads', prompt: 'Scan token ' },
-    { label: 'Wallet Analysis', prompt: 'Analyze wallet ' },
-    { label: 'LP Checks', prompt: 'Check liquidity risk on ' },
-    { label: 'Base Movers', prompt: "What's pumping on Base?" },
-  ]
+  const clientContext = getClientClarkContext() as { lastToken?: unknown; lastWallet?: unknown; lastChain?: unknown }
+  const formatContextValue = (value: unknown) => formatLastWalletDisplay(value)
+  const contextChain = formatChainDisplay(resolveClarkContextChain(clientContext))
+  const lastTokenDisplay = formatLastTokenDisplay(clientContext.lastToken)
+  const startWithChips = START_WITH_CHIPS
   const recentTokens = (clarkContextRef.current.lastMarketList ?? []).slice(0, 3)
   const recentWalletValue = clientContext.lastWallet ? formatContextValue(clientContext.lastWallet) : null
-  const quickActions = [
-    { title: 'Market movers', sub: 'Find Base momentum.', icon: '◈', accent: '#22d3ee', prompt: "What's pumping on Base?" },
-    { title: 'Scan token', sub: 'Run token intelligence.', icon: '◎', accent: '#2dd4bf', prompt: 'Scan BRETT' },
-    { title: 'Wallet read', sub: 'Analyze wallet behavior.', icon: '▣', accent: '#a78bfa', prompt: 'Show Base whales' },
-    { title: 'LP safety', sub: 'Check liquidity control.', icon: '⌘', accent: '#22d3ee', prompt: 'Liquidity check AERO' },
-  ]
-  void activeModeConfig; void applyMode; void handleImportFromRadar; void handlePasteContract; void handlePasteWallet; void chips
+  const quickActions = QUICK_ACTIONS
+  void memoryEpoch; void activeModeConfig; void applyMode; void handleImportFromRadar; void handlePasteContract; void handlePasteWallet; void chips
 
-  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div className='clk-page'>
-      <style>{`
-        .clk-page {
-          position: relative;
-          min-height: 100%;
-          overflow-x: hidden;
-          color: #e5edf8;
-          background:
-            radial-gradient(circle at 78% 10%, rgba(76, 29, 149, .22), transparent 30%),
-            radial-gradient(circle at 18% 2%, rgba(20, 184, 166, .13), transparent 28%),
-            linear-gradient(180deg, #020611 0%, #050914 46%, #02040b 100%);
-        }
-        .clk-grid { position:absolute; inset:0; pointer-events:none; background-image: linear-gradient(rgba(34,211,238,.028) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.028) 1px, transparent 1px), radial-gradient(rgba(148,163,184,.08) 1px, transparent 1.4px); background-size: 36px 36px, 36px 36px, 18px 18px; mask-image: radial-gradient(ellipse 60% 40% at 58% 5%, black 0%, transparent 76%); }
-        .clk-glow { position:absolute; pointer-events:none; inset:0; background: radial-gradient(circle at 73% 12%, rgba(34,211,238,.08), transparent 20%), radial-gradient(circle at 88% 30%, rgba(168,85,247,.08), transparent 24%), radial-gradient(circle at 8% 60%, rgba(45,212,191,.04), transparent 30%); }
-        .clk-shell { position:relative; z-index:1; width:100%; max-width: 1560px; margin:0 auto; padding: 28px 28px 48px; display:grid; grid-template-columns: minmax(0, 1fr) 360px; gap:24px; align-items:start; }
-        .clk-main { min-width:0; }
-        .clk-hero { display:flex; flex-direction:column; gap:11px; padding: 4px 0 16px; border-bottom:1px solid rgba(148,163,184,.1); }
-        .clk-title-row { display:flex; align-items:center; gap:16px; flex-wrap:wrap; }
-        .clk-title { margin:0; font-size: clamp(34px, 3.1vw, 46px); font-weight: 850; letter-spacing:-.04em; line-height:.98; color:#f8fafc; }
-        .clk-title-ai { background: linear-gradient(110deg, #22d3ee 10%, #7c3aed 58%, #c084fc 96%); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
-        .clk-ready-pill { border:1px solid rgba(45,212,191,.32); border-radius:999px; padding:6px 14px; color:#5eead4; background:rgba(6,20,30,.6); font:700 11px var(--font-plex-mono, monospace); letter-spacing:.10em; }
-        .clk-subtitle { margin:0; color:#8b99ae; font-size:15px; line-height:1.55; }
-        .clk-status-row { display:flex; align-items:center; flex-wrap:wrap; gap:16px; margin-top:3px; }
-        .clk-status-chip { display:inline-flex; align-items:center; gap:6px; color:#8b99ae; font:700 11.5px var(--font-plex-mono, monospace); letter-spacing:.04em; white-space:nowrap; }
-        .clk-status-dot { width:5px; height:5px; border-radius:999px; flex-shrink:0; }
-        .clk-actions-row { display:grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap:12px; margin:18px 0 20px; }
-        .clk-quick-card { position:relative; height:100%; text-align:left; display:flex; gap:13px; align-items:center; border:1px solid rgba(148,163,184,.14); border-radius:13px; background:rgba(9,15,28,.6); padding:17px 18px; color:#f8fafc; cursor:pointer; transition: border-color .15s, background .15s, transform .15s; overflow:hidden; }
-        .clk-quick-card:hover { border-color: color-mix(in srgb, var(--accent) 45%, rgba(148,163,184,.3)); background:rgba(13,21,38,.78); transform: translateY(-1px); }
-        .clk-quick-icon { width:32px; height:32px; border-radius:9px; display:grid; place-items:center; font-size:16px; border:1px solid color-mix(in srgb, var(--accent) 55%, rgba(255,255,255,.08)); color:var(--accent); background: color-mix(in srgb, var(--accent) 12%, rgba(2,6,23,.7)); flex:0 0 auto; }
-        .clk-quick-copy { display:flex; min-width:0; flex:1 1 auto; flex-direction:column; justify-content:center; gap:2px; }
-        .clk-quick-title { display:block; margin:0; font-weight:750; font-size:14px; line-height:1.3; letter-spacing:-.005em; white-space:normal; overflow-wrap:break-word; }
-        .clk-quick-sub { display:block; margin:0; color:#7c8aa1; font-size:11.5px; font-weight:600; line-height:1.4; white-space:normal; overflow-wrap:break-word; }
-        .clk-console { border:1px solid rgba(59,130,246,.14); border-radius:16px; background:rgba(6,11,22,.7); overflow:hidden; }
-        .clk-tabs { display:flex; align-items:center; gap:6px; padding:13px 18px; border-bottom:1px solid rgba(148,163,184,.1); }
-        .clk-tab { min-height:0; border:1px solid transparent; border-radius:8px; background:transparent; color:#7f8ea3; font-weight:700; font-size:12.5px; letter-spacing:.01em; cursor:pointer; padding:7px 15px; display:flex; gap:7px; align-items:center; justify-content:center; transition:background .15s, color .15s, border-color .15s; }
-        .clk-tab:hover { color:#c3ccdb; }
-        .clk-tab--active { color:#67e8f9; background:rgba(34,211,238,.09); border-color:rgba(34,211,238,.22); }
-        .clk-tab svg { width:15px; height:15px; }
-        .clk-thread { position:relative; min-height:0; max-height:640px; overflow-y:auto; padding:20px 24px 14px; display:flex; flex-direction:column; gap:14px; background-image: linear-gradient(rgba(34,211,238,.018) 1px, transparent 1px), linear-gradient(90deg, rgba(34,211,238,.014) 1px, transparent 1px); background-size:32px 32px, 32px 32px; }
-        .clk-thread-top { display:flex; justify-content:flex-end; min-height:0; }
-        .clk-clear-btn { border:0; background:transparent; color:#71809a; cursor:pointer; font-size:11.5px; font-weight:600; }
-        .clk-clear-btn:hover { color:#98a6ba; }
-        .clk-intro--empty { display:flex; flex-direction:column; align-items:flex-start; width:100%; padding:22px 22px 8px; gap:16px; }
-        .clk-intro-title { color:#d3dae6; font-weight:700; font-size:14.5px; margin:0; }
-        .clk-intro-text { margin:0; color:#8391a7; line-height:1.5; font-size:13px; max-width:560px; }
-        .clk-start-with { width:100%; }
-        .clk-start-with-label { display:block; margin-bottom:9px; color:#5b6b84; font:750 10px var(--font-plex-mono, monospace); letter-spacing:.10em; text-transform:uppercase; }
-        .clk-start-with-row { display:flex; flex-wrap:wrap; gap:9px; }
-        .clk-start-chip { border:1px solid rgba(34,211,238,.2); border-radius:9px; background:rgba(34,211,238,.04); color:#a7e8f5; font-weight:700; font-size:12.5px; padding:9px 14px; cursor:pointer; transition:border-color .15s, background .15s, color .15s; }
-        .clk-start-chip:hover { border-color:rgba(45,212,191,.45); background:rgba(45,212,191,.09); color:#ccfbf1; }
-        .clk-msg { max-width:min(84%, 680px); padding:14px 17px; border-radius:16px; border:1px solid rgba(148,163,184,.13); background:linear-gradient(145deg, rgba(13,22,38,.92), rgba(6,11,24,.88)); box-shadow:0 14px 30px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.05); }
-        .clk-msg--user { align-self:flex-end; border-color:rgba(34,211,238,.22); border-bottom-right-radius:6px; background:linear-gradient(145deg, rgba(9,44,55,.82), rgba(7,24,34,.76)); }
-        .clk-msg--clark { align-self:flex-start; border-color:rgba(45,212,191,.18); border-bottom-left-radius:6px; }
-        .clk-msg-role { display:flex; gap:8px; align-items:center; margin-bottom:6px; color:#67e8f9; font:750 11px var(--font-inter, sans-serif); letter-spacing:.04em; text-transform:uppercase; }
-        .clk-msg-role::after { content:attr(data-intent); color:#7c8aa1; font-weight:600; letter-spacing:0; text-transform:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; opacity:.72; }
-        .clk-msg-text { margin:0; font-size:15.5px; line-height:1.5; color:#e1e9f5; white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; }
-        .clk-intent-badge { display:inline-flex; width:max-content; margin:0 0 9px; padding:5px 10px; border:1px solid rgba(45,212,191,.28); border-radius:999px; color:#67e8f9; background:rgba(45,212,191,.08); font-size:10.5px; font-weight:800; letter-spacing:.12em; text-transform:uppercase; }
-        .clk-actions { display:flex; flex-wrap:wrap; gap:9px; margin-top:12px; }
-        .clk-action { border:1px solid rgba(45,212,191,.25); border-radius:999px; padding:8px 13px; color:#ccfbf1; background:rgba(45,212,191,.07); font-size:12.5px; font-weight:700; text-decoration:none; }
-        .clk-action--disabled { opacity:.45; cursor:not-allowed; pointer-events:none; }
-        .clk-action--btn { cursor:pointer; font-family:inherit; }
-        .clk-thinking { display:flex; align-items:center; gap:14px; min-width:280px; }
-        .clk-thinking-stage { color:#dbeafe; font:800 13px var(--font-plex-mono, monospace); letter-spacing:.04em; transition:opacity .2s; }
-        .clk-scanline { position:relative; height:2px; margin-top:10px; overflow:hidden; background:rgba(148,163,184,.12); }
-        .clk-scanline::before { content:''; position:absolute; inset:0 auto 0 0; width:42%; background:linear-gradient(90deg, transparent, rgba(45,212,191,.9), transparent); animation:clkScan 1.15s linear infinite; }
-        @keyframes clkScan { from{ transform:translateX(-100%);} to{ transform:translateX(260%);} }
-        .clk-command { margin:16px 22px 0; }
-        .clk-command-label { display:block; margin:0 0 5px; color:#5eead4; font:800 10px var(--font-plex-mono, monospace); letter-spacing:.14em; text-transform:uppercase; }
-        .clk-command-line { margin:0; color:#8b99ae; font-size:12.5px; line-height:1.45; }
-        .clk-input-wrap { margin:14px 22px 16px; border:1px solid rgba(34,211,238,.32); border-radius:15px; background:rgba(3,9,20,.9); transition:border-color .15s; }
-        .clk-input-wrap:focus-within { border-color:rgba(34,211,238,.55); }
-        .clk-input-row { display:grid; grid-template-columns:42px minmax(0, 1fr) auto 48px; gap:12px; align-items:center; min-height:68px; padding:9px 12px 9px 14px; }
-        .clk-prompt-mark { height:38px; border-radius:10px; display:grid; place-items:center; color:#22d3ee; font:900 16px var(--font-plex-mono, monospace); background:rgba(34,211,238,.06); border:1px solid rgba(34,211,238,.16); }
-        .clk-panel-input { width:100%; background:transparent; border:0; outline:0; color:#e5edf8; font-size:15.5px; caret-color:#22d3ee; }
-        .clk-panel-input::placeholder { color:#647087; font-size:14px; }
-        .clk-helper { color:#5e6c82; font-size:11px; white-space:nowrap; }
-        .clk-send-btn { width:38px; height:38px; border-radius:10px; border:1px solid rgba(34,211,238,.45); color:#67e8f9; background:rgba(34,211,238,.08); display:grid; place-items:center; cursor:pointer; transition:border-color .15s, background .15s; }
-        .clk-send-btn:not(:disabled):hover { background:rgba(34,211,238,.14); border-color:rgba(94,234,212,.6); }
-        .clk-send-btn:disabled { opacity:.35; cursor:not-allowed; }
-        .clk-upgrade-note { margin:0 22px 14px; padding:13px 16px; border:1px solid rgba(139,92,246,.28); border-radius:13px; background:rgba(139,92,246,.08); color:#c4b5fd; display:flex; justify-content:space-between; gap:12px; font-size:13.5px; }
-        .clk-upgrade-link { color:#e9d5ff; text-decoration:none; font-weight:800; }
-        .clk-usage { display:flex; align-items:center; gap:12px; padding:0 22px 18px; }
-        .clk-usage-label, .clk-usage-count { font:700 11px var(--font-plex-mono, monospace); color:#61708a; white-space:nowrap; }
-        .clk-usage-track { flex:1; height:4px; border-radius:999px; background:rgba(148,163,184,.11); overflow:hidden; }
-        .clk-usage-fill { height:100%; border-radius:999px; transition:width .5s; }
-        .clk-intel { margin-top:20px; }
-        .clk-intel-head { margin:0 0 12px; }
-        .clk-intel-title { margin:0; color:#f1f5f9; font-size:16px; font-weight:800; letter-spacing:-.01em; }
-        .clk-intel-desc { margin:4px 0 0; color:#8391a7; font-size:12.5px; }
-        .clk-intel-grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:13px; }
-        .clk-intel-card { position:relative; min-height:0; height:100%; display:flex; flex-direction:column; border:1px solid rgba(148,163,184,.14); border-radius:13px; background:linear-gradient(145deg, rgba(12,20,36,.82), rgba(5,10,22,.9)); padding:16px 17px; box-shadow: inset 0 1px 0 rgba(255,255,255,.045); overflow:hidden; }
-        .clk-intel-card:not(.clk-intel-card--empty) { border-color: color-mix(in srgb, var(--accent) 38%, rgba(148,163,184,.2)); }
-        .clk-intel-icon { display:inline-flex; width:26px; height:26px; border-radius:8px; align-items:center; justify-content:center; margin-bottom:10px; font-size:14px; color: var(--accent, #94a3b8); border:1px solid color-mix(in srgb, var(--accent, #475569) 45%, transparent); background: color-mix(in srgb, var(--accent, #475569) 10%, transparent); flex:0 0 auto; }
-        .clk-intel-card--empty .clk-intel-icon { color:#7c8aa1; border-color:rgba(148,163,184,.22); background:rgba(148,163,184,.06); }
-        .clk-intel-label { color:#e7edf6; font-weight:700; font-size:13.5px; line-height:1.35; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .clk-intel-card--empty .clk-intel-label { color:#9aa8bb; }
-        .clk-intel-sub { color:#94a3b8; font-size:12px; line-height:1.45; margin:5px 0 0; white-space:normal; word-break:break-word; }
-        .clk-intel-empty-row { border:1px dashed rgba(148,163,184,.18); border-radius:13px; background:rgba(148,163,184,.03); padding:17px 19px; color:#8391a7; font-size:13.5px; line-height:1.55; }
-        .clk-side { display:flex; flex-direction:column; gap:16px; }
-        .clk-side-card { border:1px solid rgba(148,163,184,.1); border-radius:14px; background:rgba(7,13,25,.6); padding:17px; }
-        .clk-side-title { display:flex; align-items:center; gap:9px; margin:0 0 12px; padding-bottom:10px; border-bottom:1px solid rgba(148,163,184,.08); color:#dbe4f0; font-size:12px; font-weight:800; letter-spacing:.02em; text-transform:uppercase; }
-        .clk-side-title svg { width:15px; height:15px; color:#22d3ee; }
-        .clk-context-row { padding:0 0 9px; margin-bottom:9px; border-bottom:0; }
-        .clk-context-row:last-child { margin-bottom:0; padding-bottom:0; }
-        .clk-context-label { color:#7f8ea3; font:700 9.5px var(--font-plex-mono, monospace); letter-spacing:.08em; text-transform:uppercase; margin-bottom:4px; }
-        .clk-context-value { color:#e5edf8; font-size:13.5px; font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .clk-context-sub { color:#6d7c94; font-size:11px; margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-        .clk-empty { margin:0; color:#7c8aa1; font-size:13px; line-height:1.55; padding:12px; border:1px dashed rgba(148,163,184,.16); border-radius:11px; background:rgba(148,163,184,.03); }
-        @media (max-width: 1100px) { .clk-shell { grid-template-columns:1fr; } .clk-side { grid-template-columns:repeat(3, minmax(0,1fr)); display:grid; } }
-        @media (max-width: 780px) { .clk-shell { padding:20px 14px 44px; } .clk-actions-row { grid-template-columns:1fr 1fr; } .clk-side { display:flex; } .clk-thread { min-height:0; padding:18px 16px 12px; } .clk-input-row { grid-template-columns:40px minmax(0,1fr) 48px; min-height:66px; } .clk-helper { display:none; } .clk-intel-grid { grid-template-columns:1fr 1fr; } }
-        @media (max-width: 480px) { .clk-actions-row { grid-template-columns:1fr; } .clk-title { font-size:32px; } .clk-ready-pill { padding:5px 10px; } .clk-intel-grid { grid-template-columns:1fr; } }
-      `}</style>
+      <style>{CLARK_AI_PAGE_CSS}</style>
 
       <div aria-hidden='true'>
         <div className='clk-grid' />
@@ -670,7 +523,7 @@ function ClarkAiContent() {
                 const isThinking = msg.role === 'clark' && loading && msg.text === THINKING_MESSAGE
                 return (
                   <div key={idx} className={`clk-msg clk-msg--${msg.role}`}>
-                    <span className='clk-msg-role' data-intent={msg.role === 'user' ? msg.text.slice(0, 34) : (msg.intentBadge ?? (activeMode === 'wallet' ? 'WALLET PROFILE' : activeMode === 'token' ? 'TOKEN READ' : activeMode === 'contract' ? 'RISK READ' : 'INTELLIGENCE'))}>{msg.role === 'user' ? 'USER' : 'CLARK'}</span>
+                    <span className='clk-msg-role' data-intent={msg.role === 'user' ? msg.text.slice(0, 34) : (msg.intentBadge ?? resolveIntentBadge(msg.text))}>{msg.role === 'user' ? 'USER' : 'CLARK'}</span>
                     {isThinking ? (
                       <div className='clk-thinking'>
                         <ThinkingOrb state="composing" size={64} speed={2.80} />
@@ -795,9 +648,9 @@ function ClarkAiContent() {
         <aside className='clk-side'>
           <section className='clk-side-card'>
             <h2 className='clk-side-title'><svg width='19' height='19' viewBox='0 0 24 24' fill='none' stroke='currentColor' strokeWidth='2' strokeLinecap='round' strokeLinejoin='round'><circle cx='12' cy='12' r='2'/><path d='M16.24 7.76 14 10'/><path d='M8 16l2-2'/><path d='M14 14l2.24 2.24'/><path d='M7.76 7.76 10 10'/><circle cx='18' cy='6' r='2'/><circle cx='6' cy='18' r='2'/><circle cx='18' cy='18' r='2'/><circle cx='6' cy='6' r='2'/></svg>Context</h2>
-            <div className='clk-context-row'><div className='clk-context-label'>Current Chain</div><div className='clk-context-value'>Base</div><div className='clk-context-sub'>Chain ID: 8453</div></div>
-            <div className='clk-context-row'><div className='clk-context-label'>Last Token</div><div className='clk-context-value'>{formatContextValue(clientContext.lastToken)}</div></div>
-            <div className='clk-context-row'><div className='clk-context-label'>Last Wallet</div><div className='clk-context-value'>{formatContextValue(clientContext.lastWallet)}</div></div>
+            <div className='clk-context-row'><div className='clk-context-label'>Current Chain</div><div className='clk-context-value'>{contextChain.label}</div>{contextChain.id ? <div className='clk-context-sub'>Chain ID: {contextChain.id}</div> : <div className='clk-context-sub'>Follows last scanned chain</div>}</div>
+            <div className='clk-context-row'><div className='clk-context-label'>Last Token</div><div className='clk-context-value'>{lastTokenDisplay}</div></div>
+            <div className='clk-context-row'><div className='clk-context-label'>Last Wallet</div><div className='clk-context-value'>{formatLastWalletDisplay(clientContext.lastWallet)}</div></div>
             <div className='clk-context-row'><div className='clk-context-label'>Active Mode</div><div className='clk-context-value'>{activeMode === 'radar' ? 'Radar Mode' : 'Adaptive'}</div><div className='clk-context-sub'>Analysis adapts based on context & onchain data</div></div>
           </section>
 
