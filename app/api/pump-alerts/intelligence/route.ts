@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { buildPumpIntelligenceReport, type PumpAlertInput, type WhaleAlertRow, type DexScreenerMarketEvidence } from '@/lib/server/pumpIntelligence'
 import { fetchDexScreenerPairMomentum, computeSnapshotChange14d, getLatestPumpSnapshot, type PumpChainSlug } from '@/lib/server/pump14dEvidence'
+import { fetchGoldRushHolderCount, fetchGoldRushConcentration } from '@/lib/server/goldrushHolderCount'
 
 // WRONG-CHAIN GUARD, DISCLOSED (hard rule: "Do NOT use wrong-chain pools"): DexScreener's own
 // chainId string per chain slug this route supports — a fetched pair's chainId must match before any
@@ -168,8 +169,33 @@ export async function GET(req: Request) {
   // every earlier tier (alert payload, DexScreener, Token Scanner) came back empty.
   const latestSnapshotPromise = getLatestPumpSnapshot(chain as PumpChainSlug, contract).catch(() => null)
 
-  const [tokenAnalysisResult, dexScreenerMarket, snapshotChange14d, latestSnapshot] = await Promise.all([
-    tokenAnalysisPromise, dexScreenerPromise, snapshotPromise, latestSnapshotPromise,
+  // HOLDER-EVIDENCE-ENRICHMENT, DISCLOSED (spec: "Holders/Top holder/Top 10 holders" had zero
+  // fallback in this route — sourced exclusively from Token Scanner's /api/token call, so any Token
+  // Scanner failure/timeout took all three straight to a bare "Unavailable" with no attempt at the
+  // same GoldRush holder module Base Radar already relies on (lib/server/goldrushHolderCount.ts).
+  // GoldRush only covers 'base'/'robinhood' — 'eth' is honestly reported as chain-unsupported rather
+  // than retried against a provider that doesn't cover it.
+  const holderProviderChainSupported = chain === 'base' || chain === 'robinhood'
+  let holderProviderAttempted = false
+  let holderProviderSucceeded = false
+  const holderPromise: Promise<{ count: number | null; countCapped: boolean; top1: number | null; top10: number | null }> = (async () => {
+    if (!holderProviderChainSupported) return { count: null, countCapped: false, top1: null, top10: null }
+    holderProviderAttempted = true
+    try {
+      const [countResult, concentrationResult] = await Promise.all([
+        fetchGoldRushHolderCount(contract, chain as 'base' | 'robinhood'),
+        fetchGoldRushConcentration(contract, chain as 'base' | 'robinhood'),
+      ])
+      if (countResult.count != null || concentrationResult.top1 != null || concentrationResult.top10 != null) holderProviderSucceeded = true
+      return {
+        count: countResult.count, countCapped: countResult.isCapped ?? false,
+        top1: concentrationResult.top1, top10: concentrationResult.top10,
+      }
+    } catch { return { count: null, countCapped: false, top1: null, top10: null } }
+  })()
+
+  const [tokenAnalysisResult, dexScreenerMarket, snapshotChange14d, latestSnapshot, holderProviderResult] = await Promise.all([
+    tokenAnalysisPromise, dexScreenerPromise, snapshotPromise, latestSnapshotPromise, holderPromise,
   ])
   const tokenAnalysis = tokenAnalysisResult
   if (tokenAnalysis) {
@@ -209,6 +235,9 @@ export async function GET(req: Request) {
     dexScreenerMarket, dexScreenerAttempted, dexScreenerSucceeded,
     snapshotChange14d, snapshotsAttempted, snapshotsSucceeded, latestSnapshot,
     tokenScannerAttempted, whaleDataAttempted: Boolean(supabaseUrl && serviceRole),
+    goldRushHolderCount: holderProviderResult.count, goldRushHolderCountCapped: holderProviderResult.countCapped,
+    goldRushTop1: holderProviderResult.top1, goldRushTop10: holderProviderResult.top10,
+    holderProviderChainSupported, holderProviderAttempted, holderProviderSucceeded,
   })
   report.dataResolutionAudit.openedFromAlert = alertPayloadReceived
   report.dataResolutionAudit.alertPayloadReceived = alertPayloadReceived

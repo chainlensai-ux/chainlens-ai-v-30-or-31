@@ -363,7 +363,7 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
   const txnsSourceLabel = ms.txnsSource === 'geckoterminal' ? 'GeckoTerminal' : ms.txnsSource === 'dexscreener' ? 'DexScreener' : 'None resolved'
   const SOURCE_LABEL: Record<string, string> = {
     alert_payload: 'Pump Alert card', dexscreener: 'DexScreener', token_scanner: 'Token Scanner',
-    internal_snapshot: 'Cached snapshot', none: 'None resolved',
+    internal_snapshot: 'Cached snapshot', goldrush: 'GoldRush', none: 'None resolved',
   }
   const marketMetrics = [
     // 7d/14d leads the grid: it is the gate this token had to clear to be a Pump Alert at all, so it
@@ -384,9 +384,13 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
     // exact required note when only FDV is available — never a silent FDV substitution, never $0.
     { label: 'Market cap', value: ms.marketCapUsd == null ? 'Unavailable' : fmtUsd(ms.marketCapUsd), delta: 'Snapshot', status: ms.marketCapUsd == null ? 'No data' : 'Live', source: SOURCE_LABEL[ms.marketCapSource], reason: ms.marketCapUnavailableReason ?? undefined },
     { label: 'Pool age', value: ms.ageHours == null ? 'Unavailable' : fmtAge(ms.ageHours), delta: 'Since creation', status: ms.ageHours == null ? 'No data' : 'Live', source: 'GeckoTerminal / DexScreener' },
-    { label: 'Holders', value: ms.holderCount == null ? 'Unavailable' : `${ms.holderCount.toLocaleString()}${ms.holderCountCapped ? '+' : ''}`, delta: 'No stored delta', status: ms.holderCount == null ? 'No data' : 'Live', source: 'GoldRush' },
-    { label: 'Top holder', value: ms.top1HolderPercent == null ? 'Unavailable' : `${ms.top1HolderPercent.toFixed(1)}%`, delta: 'Supply share', status: ms.top1HolderPercent == null ? 'No data' : ms.top1HolderPercent > 20 ? 'Risk' : 'Live', source: 'Holder analysis' },
-    { label: 'Top 10 holders', value: ms.top10HolderPercent == null ? 'Unavailable' : `${ms.top10HolderPercent.toFixed(1)}%`, delta: 'Supply share', status: ms.top10HolderPercent == null ? 'No data' : ms.top10HolderPercent > 50 ? 'Risk' : 'Live', source: 'Holder analysis' },
+    // HOLDER-CARD FIX, DISCLOSED: source and reason now reflect the real resolved source
+    // (Token Scanner or the GoldRush fallback) instead of a hardcoded label, and carry the exact
+    // reason string from the backend audit (chain-unsupported / provider-unavailable / not-returned)
+    // rather than a bare "Unavailable".
+    { label: 'Holders', value: ms.holderCount == null ? 'Unavailable' : `${ms.holderCount.toLocaleString()}${ms.holderCountCapped ? '+' : ''}`, delta: 'No stored delta', status: ms.holderCount == null ? 'No data' : 'Live', source: SOURCE_LABEL[ms.holderSource], reason: ms.holderUnavailableReason ?? undefined },
+    { label: 'Top holder', value: ms.top1HolderPercent == null ? 'Unavailable' : `${ms.top1HolderPercent.toFixed(1)}%`, delta: 'Supply share', status: ms.top1HolderPercent == null ? 'No data' : ms.top1HolderPercent > 20 ? 'Risk' : 'Live', source: SOURCE_LABEL[ms.holderSource], reason: ms.top1HolderPercent == null ? ms.holderUnavailableReason ?? undefined : undefined },
+    { label: 'Top 10 holders', value: ms.top10HolderPercent == null ? 'Unavailable' : `${ms.top10HolderPercent.toFixed(1)}%`, delta: 'Supply share', status: ms.top10HolderPercent == null ? 'No data' : ms.top10HolderPercent > 50 ? 'Risk' : 'Live', source: SOURCE_LABEL[ms.holderSource], reason: ms.top10HolderPercent == null ? ms.holderUnavailableReason ?? undefined : undefined },
     { label: 'Buy / sell ratio', value: ms.buySellRatio == null ? 'Unavailable' : `${ms.buySellRatio.toFixed(2)}x`, delta: '24h', status: ms.buySellRatio == null ? 'No data' : ms.buySellRatio > 1 ? 'Bullish' : 'Watch', source: txnsSourceLabel, reason: ms.buySellRatio == null ? ms.txnsUnavailableReason ?? undefined : undefined },
   ]
   return (

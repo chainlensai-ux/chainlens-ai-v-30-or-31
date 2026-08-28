@@ -179,7 +179,7 @@ assert.ok(new Date(populatedReport.timeline[0].timestamp).getTime() >= new Date(
   const report = buildPumpIntelligenceReport({ alert: baseAlert, chain: 'base', tokenAnalysis: null, whaleRows: [], trackedAddresses: new Set() })
   assert.equal(report.marketStructure.buys24h, null)
   assert.equal(report.marketStructure.txnsSource, 'none')
-  assert.equal(report.marketStructure.txnsUnavailableReason, 'Provider did not return transaction split.')
+  assert.equal(report.marketStructure.txnsUnavailableReason, 'Transaction split unavailable from provider.')
 }
 
 // ── 7. Missing exact 7d does not blank executive summary. ──
@@ -399,6 +399,92 @@ const dexScreenerMarketFull = (overrides = {}) => ({
   const routeSrcWrongChain = fs.readFileSync(new URL('../app/api/pump-alerts/intelligence/route.ts', import.meta.url), 'utf8')
   const routeCodeWrongChain = routeSrcWrongChain.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
   assert.match(routeCodeWrongChain, /if \(result\.data\.chainId && result\.data\.chainId !== expectedChainId\) return null/, 'the report route must still verify the returned pair actually matches the requested chain as defense in depth')
+}
+
+// ─── Confidence-0 fix + holder-evidence enrichment (spec: "Pump Report should use every available
+// ChainLens/provider source before showing unavailable" / "Confidence must score from available
+// evidence" / "Do NOT require holders/wallet intelligence to calculate basic confidence") ─────────
+
+// Liquidity/volume/FDV/age from the alert seed are preserved into marketStructure even with zero
+// providers attempted — this is the exact live evidence the live report complained was being lost.
+{
+  const alert = { ...baseAlert, liquidityUsd: 80_000, volume24hUsd: 500_000, fdvUsd: 900_000, tokenAgeDays: 3 }
+  const report = buildPumpIntelligenceReport({ alert, chain: 'base', tokenAnalysis: null, whaleRows: [], trackedAddresses: new Set() })
+  assert.equal(report.marketStructure.liquidityUsd, 80_000)
+  assert.equal(report.marketStructure.volume24hUsd, 500_000)
+  assert.equal(report.marketStructure.fdvUsd, 900_000)
+  assert.equal(report.marketStructure.ageHours, 72)
+}
+
+// Holders resolve from Token Scanner when present.
+{
+  const tokenAnalysis = { holderCount: 4_200, holderDistribution: { top1: 6.1, top10: 28.4 } }
+  const report = buildPumpIntelligenceReport({ alert: baseAlert, chain: 'base', tokenAnalysis, whaleRows: [], trackedAddresses: new Set() })
+  assert.equal(report.marketStructure.holderCount, 4_200)
+  assert.equal(report.marketStructure.holderSource, 'token_scanner')
+  assert.equal(report.marketStructure.holderUnavailableReason, null)
+}
+
+// Holders fall back to the GoldRush cache when Token Scanner has no holder data, on a chain GoldRush covers.
+{
+  const report = buildPumpIntelligenceReport({
+    alert: baseAlert, chain: 'base', tokenAnalysis: null, whaleRows: [], trackedAddresses: new Set(),
+    goldRushHolderCount: 1_337, goldRushHolderCountCapped: true, goldRushTop1: 12.5, goldRushTop10: 44.2,
+    holderProviderChainSupported: true, holderProviderAttempted: true, holderProviderSucceeded: true,
+  })
+  assert.equal(report.marketStructure.holderCount, 1_337, 'GoldRush must be used as a real holder-count fallback when Token Scanner has none')
+  assert.equal(report.marketStructure.holderCountCapped, true)
+  assert.equal(report.marketStructure.holderSource, 'goldrush')
+  assert.equal(report.marketStructure.top1HolderPercent, 12.5)
+  assert.equal(report.marketStructure.top10HolderPercent, 44.2)
+}
+
+// Missing holders on an unsupported chain shows the exact required wording, never a generic unavailable.
+{
+  const report = buildPumpIntelligenceReport({
+    alert: baseAlert, chain: 'eth', tokenAnalysis: null, whaleRows: [], trackedAddresses: new Set(),
+    holderProviderChainSupported: false,
+  })
+  assert.equal(report.marketStructure.holderCount, null)
+  assert.match(report.marketStructure.holderUnavailableReason, /Holders unsupported for this chain\/provider/, 'must use the exact required wording for an unsupported chain, not a bare "Unavailable"')
+}
+
+// CONFIDENCE-0 FIX: missing holders/wallet intelligence must never force confidence to 0 when live
+// market structure (price/volume/liquidity/FDV/age) is present.
+{
+  const alert = { ...baseAlert, liquidityUsd: 80_000, volume24hUsd: 500_000, fdvUsd: 900_000, tokenAgeDays: 3, change24h: 45 }
+  const report = buildPumpIntelligenceReport({
+    alert, chain: 'eth', tokenAnalysis: null, whaleRows: [], trackedAddresses: new Set(),
+    holderProviderChainSupported: false,
+  })
+  assert.equal(report.marketStructure.holderCount, null, 'sanity: holders really are unresolved in this scenario')
+  assert.notEqual(report.executiveSummary.confidenceScore, 0, 'confidence must not be 0 just because holders/wallet intelligence are missing when live market evidence exists')
+  assert.ok(report.executiveSummary.confidenceScore > 0)
+  assert.notEqual(report.executiveSummary.overallConfidence, 'unavailable')
+}
+
+// Confidence is genuinely 0/unavailable only when there is truly zero evidence of any kind.
+{
+  const report = buildPumpIntelligenceReport({ alert: emptyAlert, chain: 'eth', tokenAnalysis: null, whaleRows: [], trackedAddresses: new Set(), holderProviderChainSupported: false })
+  assert.equal(report.executiveSummary.confidenceScore, 0)
+  assert.equal(report.executiveSummary.overallConfidence, 'unavailable')
+}
+
+// pumpReportEvidenceAudit carries the full requested shape and reflects real resolution state.
+{
+  const alert = { ...baseAlert, liquidityUsd: 80_000, volume24hUsd: 500_000, fdvUsd: 900_000 }
+  const report = buildPumpIntelligenceReport({ alert, chain: 'base', tokenAnalysis: null, whaleRows: [], trackedAddresses: new Set() })
+  const audit = report.pumpReportEvidenceAudit
+  for (const field of [
+    'tokenAddress', 'chainSlug', 'seedUsed', 'sourcesAttempted', 'sourcesSucceeded', 'marketCapSource',
+    'fdvSource', 'liquiditySource', 'volumeSource', 'ageSource', 'txnSplitSource', 'holderSource',
+    'securitySource', 'unavailableFields', 'unavailableReasons', 'confidenceInputs', 'finalConfidence',
+  ]) {
+    assert.ok(field in audit, `pumpReportEvidenceAudit must include ${field}`)
+  }
+  assert.equal(audit.seedUsed, true, 'seedUsed must reflect that the alert payload carried real evidence')
+  assert.equal(audit.finalConfidence, report.executiveSummary.overallConfidence)
+  assert.ok(audit.sourcesAttempted.includes('alert_payload'))
 }
 
 console.log('test-pump-intelligence-report.mjs: all assertions passed')

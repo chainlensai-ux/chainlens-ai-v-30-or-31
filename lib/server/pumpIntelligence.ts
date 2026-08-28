@@ -117,6 +117,8 @@ export interface PumpIntelligenceReport {
     volume24hUsd: number | null
     holderCount: number | null
     holderCountCapped: boolean
+    holderSource: 'token_scanner' | 'goldrush' | 'none'
+    holderUnavailableReason: string | null
     holderTrend: EvidenceItem<null>
     fdvUsd: number | null
     fdvSource: 'alert_payload' | 'dexscreener' | 'token_scanner' | 'none'
@@ -152,6 +154,7 @@ export interface PumpIntelligenceReport {
   evidenceGaps: string[]
   dataResolutionAudit: PumpReportDataResolutionAudit
   marketDataAudit: PumpReportMarketDataAudit
+  pumpReportEvidenceAudit: PumpReportEvidenceAudit
 }
 
 export interface PumpAlertInput {
@@ -269,6 +272,30 @@ export interface PumpReportMarketDataAudit {
   resolvedTxns24h: number | null
   unavailableFields: string[]
   unavailableReasons: string[]
+}
+
+// EVIDENCE-AUDIT, DISCLOSED (requested shape, verbatim). A THIRD audit object, additive to
+// dataResolutionAudit/marketDataAudit above (neither is replaced — existing tests assert on both) —
+// this one exists purely to answer "why does this field show what it shows" per-field, including the
+// confidence weighting itself, in the exact shape the fix was specified against.
+export interface PumpReportEvidenceAudit {
+  tokenAddress: string
+  chainSlug: string
+  seedUsed: boolean
+  sourcesAttempted: string[]
+  sourcesSucceeded: string[]
+  marketCapSource: string
+  fdvSource: string
+  liquiditySource: string
+  volumeSource: string
+  ageSource: string
+  txnSplitSource: string
+  holderSource: string
+  securitySource: string
+  unavailableFields: string[]
+  unavailableReasons: string[]
+  confidenceInputs: { key: string; label: string; verified: boolean; weight: number }[]
+  finalConfidence: Confidence
 }
 
 export type TokenAnalysisSlice = Record<string, unknown>
@@ -424,6 +451,21 @@ export function buildPumpIntelligenceReport(params: {
   latestSnapshot?: { market_cap_usd: number | null; fdv_usd: number | null } | null
   tokenScannerAttempted?: boolean
   whaleDataAttempted?: boolean
+  // HOLDER-EVIDENCE-ENRICHMENT, DISCLOSED (requested: "Pump Report should use every available
+  // ChainLens/provider source before showing unavailable" — Holders/Top holder/Top 10 holders had
+  // ZERO fallback anywhere in this route; they were sourced exclusively from Token Scanner's /api/
+  // token call, so any Token Scanner failure/timeout took all three straight to "Unavailable" with
+  // no attempt at the same GoldRush holder module Base Radar already relies on. GoldRush only
+  // covers 'base'/'robinhood' (lib/server/goldrushHolderCount.ts) — 'eth' has no non-Token-Scanner
+  // holder source in this codebase, so it is honestly reported as chain-unsupported, never retried
+  // against the wrong provider.
+  goldRushHolderCount?: number | null
+  goldRushHolderCountCapped?: boolean
+  goldRushTop1?: number | null
+  goldRushTop10?: number | null
+  holderProviderChainSupported?: boolean
+  holderProviderAttempted?: boolean
+  holderProviderSucceeded?: boolean
 }): PumpIntelligenceReport {
   const {
     alert, chain, tokenAnalysis, whaleRows, trackedAddresses,
@@ -431,6 +473,8 @@ export function buildPumpIntelligenceReport(params: {
     snapshotChange14d = null, snapshotsAttempted = false, snapshotsSucceeded = false,
     latestSnapshot = null,
     tokenScannerAttempted = tokenAnalysis != null, whaleDataAttempted = true,
+    goldRushHolderCount = null, goldRushHolderCountCapped = false, goldRushTop1 = null, goldRushTop10 = null,
+    holderProviderChainSupported = false, holderProviderAttempted = false, holderProviderSucceeded = false,
   } = params
   const evidenceGaps: string[] = []
   const gap = (msg: string) => { evidenceGaps.push(msg) }
@@ -455,7 +499,9 @@ export function buildPumpIntelligenceReport(params: {
     txnsSource = 'dexscreener'
   }
   const txns24h = buys24h != null && sells24h != null ? buys24h + sells24h : null
-  const txnsUnavailableReason = txnsSource === 'none' ? 'Provider did not return transaction split.' : null
+  // EXACT-WORDING FIX, DISCLOSED (required copy: "If provider does not return split, show:
+  // 'Transaction split unavailable from provider' not generic unavailable").
+  const txnsUnavailableReason = txnsSource === 'none' ? 'Transaction split unavailable from provider.' : null
 
   const pairCreatedAtIso = pick<string>(poolActivity, ['pairCreatedAt'])
   const dexScreenerPairAgeHours = dexScreenerMarket?.pairCreatedAt != null
@@ -465,8 +511,33 @@ export function buildPumpIntelligenceReport(params: {
     ? (Date.now() - new Date(pairCreatedAtIso).getTime()) / 3_600_000
     : dexScreenerPairAgeHours
       ?? (alert.tokenAgeDays != null ? alert.tokenAgeDays * 24 : null)
-  const holderCount = pick<number>(holderResolver, ['holderCount']) ?? pick<number>(tokenAnalysis, ['holderCount'])
-  const holderCountCapped = pick<boolean>(tokenAnalysis, ['holderCountCapped']) ?? false
+  const tokenScannerHolderCount = pick<number>(holderResolver, ['holderCount']) ?? pick<number>(tokenAnalysis, ['holderCount'])
+  let holderCount: number | null = tokenScannerHolderCount
+  let holderCountCapped = pick<boolean>(tokenAnalysis, ['holderCountCapped']) ?? false
+  let holderCountSource: 'token_scanner' | 'goldrush' | 'none' = tokenScannerHolderCount != null ? 'token_scanner' : 'none'
+  if (holderCount == null && goldRushHolderCount != null) {
+    holderCount = goldRushHolderCount
+    holderCountCapped = goldRushHolderCountCapped
+    holderCountSource = 'goldrush'
+  }
+  let top1HolderPercent = pick<number>(holderDistribution, ['top1'])
+  let top10HolderPercent = pick<number>(holderDistribution, ['top10'])
+  let holderConcentrationSource: 'token_scanner' | 'goldrush' | 'none' = top1HolderPercent != null || top10HolderPercent != null ? 'token_scanner' : 'none'
+  if (top1HolderPercent == null && goldRushTop1 != null) { top1HolderPercent = goldRushTop1; holderConcentrationSource = 'goldrush' }
+  if (top10HolderPercent == null && goldRushTop10 != null) { top10HolderPercent = goldRushTop10; holderConcentrationSource = 'goldrush' }
+  const holderSource: 'token_scanner' | 'goldrush' | 'none' = holderCountSource !== 'none' ? holderCountSource : holderConcentrationSource
+  // HOLDER-UNAVAILABLE-WORDING, DISCLOSED (hard rule: "Do NOT show 'Unavailable' until all correct
+  // sources were attempted" + required exact wording "Holders unsupported for this chain/provider"
+  // for a chain no holder provider covers, distinct from "Provider unavailable" when the provider(s)
+  // that DO cover this chain were tried and came back empty).
+  const holderUnavailableReason = holderCount != null ? null
+    : !holderProviderChainSupported && tokenAnalysis == null
+      ? `Holders unsupported for this chain/provider — no holder provider covers ${chainTokenLabel(chain)} yet, and Token Scanner did not resolve.`
+      : !holderProviderChainSupported
+        ? 'Holders unsupported for this chain/provider — no holder provider covers this chain yet.'
+        : holderProviderAttempted && !holderProviderSucceeded
+          ? 'Provider unavailable — GoldRush did not return holder data for this token.'
+          : 'Not returned — no supported holder provider returned data for this token.'
 
   const tokenScannerMarketCap = pick<number>(tokenAnalysis, ['marketCap', 'value']) ?? pick<number>(tokenAnalysis, ['marketCapUsd'])
   let marketCapUsd: number | null = null
@@ -497,7 +568,6 @@ export function buildPumpIntelligenceReport(params: {
   const rugRiskScore = pick<number>(riskEngine, ['rugRiskScore'])
   const rugRiskLabel = pick<string>(riskEngine, ['rugRiskLabel'])
   const riskDrivers = pick<string[]>(riskEngine, ['riskDrivers']) ?? []
-  const openChecks = pick<string[]>(riskEngine, ['openChecks']) ?? []
   const verifiedSignals = pick<string[]>(riskEngine, ['verifiedSignals']) ?? []
   const clarkInterpretation = pick<string>(riskEngine, ['clarkInterpretation'])
   const change7dOrExact = alert.change7d ?? snapshotChange14d ?? null
@@ -555,12 +625,31 @@ export function buildPumpIntelligenceReport(params: {
   }
   if (pullbackRisk === 'unavailable') gap('Pullback risk unavailable — no live pump-size/liquidity/age evidence and the CORTEX risk read did not resolve.')
 
-  const overallConfidence: Confidence = tokenAnalysis == null
-    ? (momentumScore != null ? 'low' : 'unavailable')
-    : (rugRiskLabel === 'partial_data' || openChecks.length > 3) ? 'low'
-    : openChecks.length > 0 ? 'medium' : 'high'
-  const confidenceChecks = [rugRiskScore != null, buySellRatio != null, lpRisk != null, holderDistribution != null, riskEngine != null]
-  const confidenceScore = Math.round((confidenceChecks.filter(Boolean).length / confidenceChecks.length) * 100)
+  // CONFIDENCE-0 FIX, DISCLOSED (live report: "still shows Confidence 0" despite strong live market
+  // evidence — 24h change/liquidity/volume/FDV/pool age all present). Root cause: the old formula
+  // scored 5 booleans, 4 of which (rugRiskScore/lpRisk/holderDistribution/riskEngine) hard-required
+  // Token Scanner to succeed — a single Token Scanner failure/timeout zeroed confidence even when
+  // every other independent source (alert seed, DexScreener, snapshots) had resolved cleanly. Hard
+  // rule: "Do NOT require holders/wallet intelligence to calculate basic confidence." New formula
+  // weights base market-structure evidence (price change/volume/liquidity/market data/pool age —
+  // sources that never depend on Token Scanner) at 60 of 100 points, so full base coverage alone
+  // lands at 'medium', never 'unavailable'; txn split/holders/security are "extra" points on top
+  // that can push it to 'high'. Bands: 0=unavailable, 1-39=low, 40-69=medium, 70-100=high.
+  const confidenceInputs = [
+    { key: 'price_change', label: 'Price change verified', verified: alert.change24h != null, weight: 10 },
+    { key: 'volume', label: 'Volume verified', verified: alert.volume24hUsd != null, weight: 10 },
+    { key: 'liquidity', label: 'Liquidity verified', verified: liquidityUsd != null, weight: 15 },
+    { key: 'market_data', label: 'FDV/market cap verified', verified: marketCapUsd != null || fdvUsd != null, weight: 15 },
+    { key: 'pool_age', label: 'Pool age verified', verified: ageHours != null, weight: 10 },
+    { key: 'txn_split', label: 'Transaction split verified', verified: txnsSource !== 'none', weight: 15 },
+    { key: 'holders', label: 'Holders verified', verified: holderCount != null, weight: 15 },
+    { key: 'security', label: 'Token security verified', verified: honeypotResolved, weight: 10 },
+  ]
+  const confidenceScore = confidenceInputs.reduce((sum, c) => sum + (c.verified ? c.weight : 0), 0)
+  const overallConfidence: Confidence = confidenceScore === 0 ? 'unavailable'
+    : confidenceScore >= 70 ? 'high'
+    : confidenceScore >= 40 ? 'medium'
+    : 'low'
 
   const verdictParts: string[] = []
   verdictParts.push(`${alert.symbol} ${alert.reason.toLowerCase()}.`)
@@ -634,14 +723,13 @@ export function buildPumpIntelligenceReport(params: {
     buys24h, sells24h, txns24h, buySellRatio, txnsSource, txnsUnavailableReason,
     liquidityUsd, liquiditySource,
     liquidityTrend: { value: null, confidence: 'unavailable' as Confidence, evidence: 'Liquidity is only ever observed as a point-in-time snapshot — no historical liquidity series is stored anywhere in this system.' },
-    volume24hUsd: alert.volume24hUsd, holderCount, holderCountCapped,
+    volume24hUsd: alert.volume24hUsd, holderCount, holderCountCapped, holderSource, holderUnavailableReason,
     holderTrend: { value: null, confidence: 'unavailable' as Confidence, evidence: 'Holder count is a live snapshot only — no polling job stores historical holder counts to compute growth.' },
     fdvUsd, fdvSource, marketCapUsd, marketCapSource, marketCapUnavailableReason, ageHours,
     priceChange24h: alert.change24h, priceChange6h, priceChange1h, priceChange7d: change7dOrExact,
-    top1HolderPercent: pick<number>(holderDistribution, ['top1']),
-    top10HolderPercent: pick<number>(holderDistribution, ['top10']),
+    top1HolderPercent, top10HolderPercent,
   }
-  if (holderCount == null) gap('Holder count unavailable for this token.')
+  if (holderCount == null) gap(`Holder count unavailable — ${holderUnavailableReason}`)
   if (ageHours == null) gap('Pool age unavailable — pool creation timestamp did not resolve.')
   if (change7dOrExact == null) gap('Exact 7d/14d change unavailable — GeckoTerminal OHLCV and internal snapshots did not resolve; this does not affect the live Momentum Score above.')
   if (txnsSource === 'none') gap(`Buys/sells unavailable — ${txnsUnavailableReason}`)
@@ -847,6 +935,39 @@ export function buildPumpIntelligenceReport(params: {
       resolvedBuys24h: buys24h, resolvedSells24h: sells24h, resolvedTxns24h: txns24h,
       unavailableFields: [marketCapUsd == null && 'marketCapUsd', txnsSource === 'none' && 'buys24h/sells24h', change7dOrExact == null && 'priceChange7d'].filter((v): v is string => typeof v === 'string'),
       unavailableReasons: [marketCapUnavailableReason, txnsUnavailableReason, change7dOrExact == null ? 'Exact 7d/14d change did not resolve from GeckoTerminal OHLCV or internal snapshots.' : null].filter((v): v is string => typeof v === 'string'),
+    },
+    pumpReportEvidenceAudit: {
+      tokenAddress: alert.contract, chainSlug: chain,
+      seedUsed: alert.evidenceGrade != null || alert.priceUsd != null || alert.change24h != null,
+      sourcesAttempted: [
+        'alert_payload',
+        dexScreenerAttempted && 'dexscreener',
+        (tokenAnalysis != null || poolActivity != null) && 'geckoterminal',
+        tokenScannerAttempted && 'token_scanner',
+        holderProviderAttempted && 'goldrush',
+        snapshotsAttempted && 'internal_snapshot',
+      ].filter((v): v is string => typeof v === 'string'),
+      sourcesSucceeded: [
+        'alert_payload',
+        dexScreenerSucceeded && 'dexscreener',
+        poolActivity != null && 'geckoterminal',
+        tokenAnalysis != null && 'token_scanner',
+        holderProviderSucceeded && 'goldrush',
+        snapshotsSucceeded && 'internal_snapshot',
+      ].filter((v): v is string => typeof v === 'string'),
+      marketCapSource, fdvSource, liquiditySource,
+      volumeSource: alert.volume24hUsd != null ? 'alert_payload' : 'none',
+      ageSource: pairCreatedAtIso ? 'geckoterminal' : dexScreenerPairAgeHours != null ? 'dexscreener' : alert.tokenAgeDays != null ? 'alert_payload' : 'none',
+      txnSplitSource: txnsSource,
+      holderSource,
+      securitySource: honeypotResolved ? 'token_scanner' : 'none',
+      unavailableFields: [
+        marketCapUsd == null && 'marketCapUsd', txnsSource === 'none' && 'buys24h/sells24h',
+        holderCount == null && 'holderCount', !honeypotResolved && 'tokenSecurity',
+      ].filter((v): v is string => typeof v === 'string'),
+      unavailableReasons: [marketCapUnavailableReason, txnsUnavailableReason, holderUnavailableReason].filter((v): v is string => typeof v === 'string'),
+      confidenceInputs,
+      finalConfidence: overallConfidence,
     },
   }
 }
