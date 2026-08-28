@@ -22,6 +22,7 @@ import {
   resolvePnlDisplayMode, selectBoundedSampleDisclosure, selectDisplayedPnl, PER_CHAIN_BOUNDED_SAMPLE_MESSAGE,
   selectLastKnownSampleDisclosure, CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL, LAST_KNOWN_SAMPLE_LABEL,
   REALIZED_PNL_LABEL, UNREALIZED_PNL_LABEL, TOTAL_PNL_LABEL, PNL_STABILITY_NOTE, LIVE_PRICE_MOVEMENT_NOTE,
+  buildUnrealizedPartialReasonMessage, buildRealizedVerifiedMessage,
 } from './PnlStatusCard'
 import { emptyCanonicalSampleManifestAudit, type CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
@@ -107,6 +108,8 @@ function reconciliation(overrides: Partial<UnrealizedReconciliationSummary> = {}
     excludedPositions: [],
     reconciledPositionsByPriceSource: {},
     excludedReasonCounts: {},
+    excludedClassificationCounts: {},
+    deadOrSpamPositionsCount: 0,
     reconciledMarketValueUsd: 0,
     reconciledCostBasisUsd: 0,
     unrealizedCoveragePercent: 100,
@@ -994,5 +997,65 @@ describe('PnlStatusCard trust gate — a discrepancy-gated bounded sample is nev
       }),
     )
     assert.equal(disclosure!.label, 'Partial verified sample — not comparable to Nansen yet')
+  })
+})
+
+// 10. UI shows verified realized + partial unrealized clearly (Wallet Scanner improvement audit, task 5).
+describe('buildRealizedVerifiedMessage / buildUnrealizedPartialReasonMessage — exact-reason UI messaging', () => {
+  it('realized message only appears when the backend gate itself says ok — never fabricated for a blocked/unavailable scan', () => {
+    assert.equal(buildRealizedVerifiedMessage('ok'), 'Realized PnL: Verified — closed-lot coverage confirmed.')
+    assert.equal(buildRealizedVerifiedMessage('limited_verified_sample'), null)
+    assert.equal(buildRealizedVerifiedMessage('unavailable'), null)
+    assert.equal(buildRealizedVerifiedMessage(null), null)
+    assert.equal(buildRealizedVerifiedMessage(undefined), null)
+  })
+
+  it('unrealized partial message is null when there is nothing partial to explain', () => {
+    assert.equal(buildUnrealizedPartialReasonMessage(null), null)
+    assert.equal(buildUnrealizedPartialReasonMessage(reconciliation({ reconciliationStatus: 'ok' })), null)
+  })
+
+  it('states the exact counts, in the requested wording, for missing price + missing balance', () => {
+    const msg = buildUnrealizedPartialReasonMessage(reconciliation({
+      reconciliationStatus: 'partial',
+      excludedClassificationCounts: { missing_price: 25, missing_balance: 35 },
+      deadOrSpamPositionsCount: 0,
+    }))
+    assert.equal(msg, 'Unrealized PnL is partial because 25 positions had no verified current price and 35 had no canonical balance.')
+  })
+
+  it('appends the dead/spam exclusion sentence only when real spam/dead positions exist', () => {
+    const withSpam = buildUnrealizedPartialReasonMessage(reconciliation({
+      reconciliationStatus: 'partial',
+      excludedClassificationCounts: { missing_price: 10 },
+      deadOrSpamPositionsCount: 4,
+    }))
+    assert.equal(withSpam, 'Unrealized PnL is partial because 10 positions had no verified current price. 4 dead/spam tokens were excluded.')
+
+    const withoutSpam = buildUnrealizedPartialReasonMessage(reconciliation({
+      reconciliationStatus: 'partial',
+      excludedClassificationCounts: { missing_price: 10 },
+      deadOrSpamPositionsCount: 0,
+    }))
+    assert.doesNotMatch(withoutSpam!, /dead\/spam/, 'must never mention dead/spam tokens when the real count is 0')
+  })
+
+  it('singular wording for a count of exactly 1', () => {
+    const msg = buildUnrealizedPartialReasonMessage(reconciliation({
+      reconciliationStatus: 'partial',
+      excludedClassificationCounts: { missing_price: 1 },
+      deadOrSpamPositionsCount: 1,
+    }))
+    assert.equal(msg, 'Unrealized PnL is partial because 1 position had no verified current price. 1 dead/spam token was excluded.')
+  })
+
+  it('a zero-count classification is never mentioned — only real, non-zero clauses appear', () => {
+    const msg = buildUnrealizedPartialReasonMessage(reconciliation({
+      reconciliationStatus: 'partial',
+      excludedClassificationCounts: { missing_price: 0, missing_balance: 12, balance_less_than_fifo_open: 0 },
+      deadOrSpamPositionsCount: 0,
+    }))
+    assert.doesNotMatch(msg!, /verified current price/)
+    assert.match(msg!, /12 had no canonical balance/)
   })
 })

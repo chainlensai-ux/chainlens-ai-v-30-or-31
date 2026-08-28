@@ -109,7 +109,7 @@ export function isKnownGeckoTerminalNoPool(chain: SupportedChain, token: string)
 }
 
 type PoolsResponse = {
-  data?: Array<{ attributes?: { address?: string; reserve_in_usd?: string } }>
+  data?: Array<{ attributes?: { address?: string; reserve_in_usd?: string; base_token_price_usd?: string } }>
 }
 
 // GeckoTerminal's ohlcv_list rows are [unixTimestampSeconds, open, high, low, close, volume].
@@ -194,6 +194,74 @@ export async function fetchGeckoTerminalPriceDetailed(
     const closePrice = closest[4]
     return Number.isFinite(closePrice) && closePrice > 0
       ? { priceUsd: closePrice, reason: null }
+      : { priceUsd: null, reason: 'unparseable_price' }
+  } catch (err) {
+    return { priceUsd: null, reason: `fetch_error:${err instanceof Error ? err.message : 'unknown'}` }
+  }
+}
+
+// WALLET-SCANNER CURRENT-PRICE FALLBACK, DISCLOSED (Wallet Scanner improvement audit — "Unrealized
+// PnL improvement": DexScreener was the only fallback tier src/modules/pricing/index.ts's
+// resolvePrices() had, and it is not this codebase's only real source; adding GeckoTerminal as a
+// second, independent tier directly reduces missing_verified_current_price exclusions). Reuses this
+// file's ALREADY-BUILT-AND-TESTED persisted-cooldown and negative-pool-cache machinery — same
+// GECKOTERMINAL_COOLDOWN_KEY, same 60s TTL, same "never permanent, fail-open on KV errors" behavior
+// as fetchGeckoTerminalPriceDetailed above — so a live 429 hit by EITHER the historical-pricing path
+// or this current-price path stops BOTH for the same cooldown window, never wastes a call re-probing
+// a source already known to be quota-limited.
+//
+// SINGLE-CALL, DISCLOSED: unlike fetchGeckoTerminalPriceDetailed (which needs a second OHLCV call for
+// a HISTORICAL timestamp), a CURRENT price is already present on the pools response itself
+// (`attributes.base_token_price_usd`) — this makes exactly one real network call, never two, keeping
+// this fallback tier cheap per the "do not increase provider calls blindly" hard rule.
+//
+// REASON VOCABULARY, DISCLOSED: uses the literal `quota_stopped` reason the task specified, distinct
+// from fetchGeckoTerminalPriceDetailed's own `skippedDueToPersistedCooldown`/`http_429` reasons —
+// this is a separate, additive function; the historical-pricing path's existing reason strings (and
+// the tests asserting them) are untouched.
+export type GeckoTerminalCurrentPriceResult = { priceUsd: number | null; reason: string | null; quotaStopped?: boolean }
+
+export async function fetchGeckoTerminalCurrentPrice(
+  token: string,
+  chain: SupportedChain,
+  options: { kv?: GeckoTerminalCooldownKvLike; now?: () => number } = {},
+): Promise<GeckoTerminalCurrentPriceResult> {
+  const network = GECKOTERMINAL_NETWORK_IDS[chain]
+  if (!network) return { priceUsd: null, reason: 'unverified_network_for_geckoterminal' }
+
+  const kv = options.kv ?? defaultCooldownKv()
+  const now = (options.now ?? Date.now)()
+
+  if (await isCooldownActive(kv, now)) {
+    return { priceUsd: null, reason: 'quota_stopped', quotaStopped: true }
+  }
+  if (isKnownNoPool(chain, token)) return { priceUsd: null, reason: 'no_pool_found' }
+
+  try {
+    const res = await fetch(
+      `https://api.geckoterminal.com/api/v2/networks/${network}/tokens/${token}/pools`,
+      { signal: AbortSignal.timeout(8_000) },
+    )
+    if (res.status === 429) {
+      // Same cross-request quota memory as the historical path — this 429 stops BOTH current- and
+      // historical-price GeckoTerminal calls for the rest of the cooldown window.
+      await recordCooldown(kv, now)
+      return { priceUsd: null, reason: 'quota_stopped', quotaStopped: true }
+    }
+    if (!res.ok) return { priceUsd: null, reason: `http_${res.status}` }
+
+    const data = (await res.json()) as PoolsResponse
+    const pools = data.data ?? []
+    if (pools.length === 0) {
+      recordNoPool(chain, token)
+      return { priceUsd: null, reason: 'no_pool_found' }
+    }
+    const best = pools.reduce((a, b) =>
+      Number(b.attributes?.reserve_in_usd ?? 0) > Number(a.attributes?.reserve_in_usd ?? 0) ? b : a,
+    )
+    const price = Number(best.attributes?.base_token_price_usd)
+    return Number.isFinite(price) && price > 0
+      ? { priceUsd: price, reason: null }
       : { priceUsd: null, reason: 'unparseable_price' }
   } catch (err) {
     return { priceUsd: null, reason: `fetch_error:${err instanceof Error ? err.message : 'unknown'}` }

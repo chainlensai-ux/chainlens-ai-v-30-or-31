@@ -159,6 +159,33 @@ export type UnrealizedExclusionReason =
   // The canonical snapshot resolved to a DIFFERENT (chainId, tokenAddress) than the one asked for.
   | 'chain_or_token_key_mismatch'
 
+// OPEN-POSITION CLASSIFICATION, DISCLOSED, ADDITIVE (Wallet Scanner improvement audit, task 2 —
+// exact taxonomy requested). This NEVER changes which positions are excluded, never changes
+// exclusionReason, never changes officialUnrealizedPnlUsd — it is a second, human-readable label
+// computed FROM the same exclusionReason plus a small set of real, already-computed position facts
+// (symbol text, quantity/balance magnitude, whether both real price providers explicitly found no
+// liquidity anywhere for this token). `priced_reconciled` is never stored on an ExcludedUnrealizedPosition
+// (a reconciled position is never excluded in the first place) — it describes the
+// reconciledOpenPositions count in UnrealizedReconciliationSummary; a UI combining both counts is how
+// all 8 taxonomy values become visible together.
+//
+// HEURISTIC, NOT A THIRD FACT SOURCE, DISCLOSED: `dust_spam`/`suspicious_airdrop` are inferred from
+// the symbol text and quantity shape (classic spam-token patterns: promotional/URL-like symbols, or
+// an implausibly large open quantity that no real accumulation could explain) — same kind of
+// evidence-based, no-network-call heuristic this codebase's app/frontend/lib/holdingsHeuristics.ts
+// already uses for its own dust/personality classification (isDust/isAirdropOnly). A position that
+// does not match any spam/dead heuristic keeps the plainer, more conservative label
+// (missing_price/missing_balance/unsupported) rather than being over-classified as spam.
+export type OpenPositionClassification =
+  | 'priced_reconciled'
+  | 'missing_price'
+  | 'missing_balance'
+  | 'balance_less_than_fifo_open'
+  | 'dust_spam'
+  | 'dead_unindexed'
+  | 'unsupported'
+  | 'suspicious_airdrop'
+
 export type ExcludedUnrealizedPosition = {
   // CHAIN IDENTIFIER, DISCLOSED: this codebase's own canonical chain key (SupportedChain — 'base',
   // 'eth', 'arbitrum', 'hyperevm'), which is the real identifier every lot/holding/price lookup in
@@ -184,6 +211,9 @@ export type ExcludedUnrealizedPosition = {
   candidateMarketValueUsd: number | null
   candidateUnrealizedPnlUsd: number | null
   exclusionReason: UnrealizedExclusionReason
+  // See OpenPositionClassification's own header above — additive, never affects exclusionReason or
+  // any total.
+  classification: OpenPositionClassification
 }
 
 export type UnrealizedReconciliationStatus =
@@ -212,6 +242,14 @@ export type UnrealizedReconciliationSummary = {
   // Count of EXCLUDED positions, grouped by their exclusionReason — the same data
   // excludedPositions carries, pre-tallied for a scan-level view.
   excludedReasonCounts: Partial<Record<UnrealizedExclusionReason, number>>
+  // Same tally, grouped by the additive `classification` label instead — lets a UI show "62 excluded:
+  // 18 missing price, 9 missing balance, ..., 21 dust/spam, 4 dead/unindexed" without re-deriving the
+  // mapping itself. `priced_reconciled` never appears here (see OpenPositionClassification's header).
+  excludedClassificationCounts: Partial<Record<OpenPositionClassification, number>>
+  // Convenience sum of excludedClassificationCounts.dust_spam + dead_unindexed + suspicious_airdrop —
+  // exactly what the requested UI's "Dead/spam token count" reads, pre-computed so no consumer has to
+  // know which 3 of the 7 excluded-position labels count as "not a real gap in coverage."
+  deadOrSpamPositionsCount: number
   // Sum of (currentPriceUsd * openQuantityFromFifo) over RECONCILED positions only — the real
   // market value backing officialUnrealizedPnlUsd.
   reconciledMarketValueUsd: number
@@ -241,6 +279,8 @@ export function emptyUnrealizedReconciliation(): UnrealizedReconciliationSummary
     excludedPositions: [],
     reconciledPositionsByPriceSource: {},
     excludedReasonCounts: {},
+    excludedClassificationCounts: {},
+    deadOrSpamPositionsCount: 0,
     reconciledMarketValueUsd: 0,
     reconciledCostBasisUsd: 0,
     unrealizedCoveragePercent: 0,
@@ -290,10 +330,19 @@ export type CurrentPriceSourceLookup = (token: string, chain: SupportedChain) =>
 export type CanonicalCurrentPriceResult = { priceUsd: number; source: string }
 export type CanonicalCurrentPriceLookup = (token: string, chain: SupportedChain) => CanonicalCurrentPriceResult | null
 
+// NO-LIQUIDITY-ANYWHERE LOOKUP, DISCLOSED, ADDITIVE (Wallet Scanner improvement audit — "classify
+// spam/dead/unpriced tokens separately"): optional, PREFERRED-when-present, same pattern as
+// canonicalCurrentPriceLookup above. Reports true only when src/modules/pricing's resolvePrices
+// pass explicitly found NEITHER DexScreener NOR GeckoTerminal indexes any pair/pool for this token —
+// a real, measured, structural fact (see resolvePricesDetailed's own noLiquidityFoundKeys header),
+// never inferred here. Absent/false means "not known to be unindexed", never "confirmed indexed".
+export type NoLiquidityFoundLookup = (token: string, chain: SupportedChain) => boolean
+
 export type UnrealizedReconciliationDiagnosticsContext = {
   positionMetadataLookup?: CanonicalPositionMetadataLookup
   currentPriceSourceLookup?: CurrentPriceSourceLookup
   canonicalCurrentPriceLookup?: CanonicalCurrentPriceLookup
+  noLiquidityFoundLookup?: NoLiquidityFoundLookup
 }
 
 export type { NormalizedEvent }

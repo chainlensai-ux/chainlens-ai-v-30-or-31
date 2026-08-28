@@ -29,7 +29,8 @@ function fifoOutput(matchedLots: MatchedLot[]): FifoOutput {
       totalOpenPositions: 0, reconciledOpenPositions: 0, excludedOpenPositions: 0,
       excludedCandidateMarketValueUsd: 0, excludedCandidateUnrealizedPnlUsd: 0, officialUnrealizedPnlUsd: null,
       reconciliationStatus: 'not_reconciled', excludedPositions: [], reconciledPositionsByPriceSource: {},
-      excludedReasonCounts: {}, reconciledMarketValueUsd: 0, reconciledCostBasisUsd: 0, unrealizedCoveragePercent: 0,
+      excludedReasonCounts: {}, excludedClassificationCounts: {}, deadOrSpamPositionsCount: 0,
+      reconciledMarketValueUsd: 0, reconciledCostBasisUsd: 0, unrealizedCoveragePercent: 0,
     },
   }
 }

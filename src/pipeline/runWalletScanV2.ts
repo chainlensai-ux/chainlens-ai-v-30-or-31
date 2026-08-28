@@ -15,16 +15,25 @@ import { validatePreScan } from './utils'
 
 import { fetchHoldings } from '../modules/holdings/index'
 import type { TokenHolding } from '../modules/holdings/types'
-import { resolvePrices } from '../modules/pricing/index'
-import type { PricingRequest, TokenPrice } from '../modules/pricing/types'
+import { resolvePricesDetailed } from '../modules/pricing/index'
+import type { PricingRequest, PricingResolutionAudit, TokenPrice } from '../modules/pricing/types'
 import { buildPortfolioSummary } from '../modules/portfolio/index'
 import type { PortfolioSummary } from '../modules/portfolio/types'
 import { createHoldingsKvWriter, withStageCache } from '../../lib/server/cache/v2StageCache'
 import { NATIVE_ASSET_ADDRESS } from '../modules/providerFetchWindow/utils'
+import { buildWalletScanPerformanceAudit, type WalletScanPerformanceAudit } from './walletScanPerformanceAudit'
 
 export type RunWalletScanV2Result = RunWalletScanResult & {
   holdings: TokenHolding[]
   portfolio: PortfolioSummary
+  // Real, measured pricing-resolution counters from this scan's one resolvePrices() call — additive,
+  // feeds walletScanPerformanceAudit's providerCalls/cacheHits/rateLimitHits fields. Null only if
+  // pricing threw before producing an audit (the existing try/catch below already degrades `prices`
+  // to [] in that case, so this mirrors that same failure mode honestly rather than fabricating zeros).
+  pricingAudit: PricingResolutionAudit | null
+  // See buildWalletScanPerformanceAudit's own module header — a derived, simplified view over
+  // scanPerformanceSummary + pricingAudit, additive alongside both.
+  walletScanPerformanceAudit: WalletScanPerformanceAudit
 }
 
 function emptyPortfolio(): PortfolioSummary {
@@ -185,6 +194,7 @@ export function buildCanonicalCurrentPriceLookup(
 // Never mutates the report runWalletScan() returns — holdings/portfolio are computed
 // independently and merged into a new object at the end.
 export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunWalletScanV2Result> {
+  const scanStartedAtMs = Date.now()
   const preScan = validatePreScan(params)
   const holdingsKvWriter = createHoldingsKvWriter()
 
@@ -218,16 +228,26 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
   // snapshot, and reused (never recomputed) for the portfolio total below — no additional
   // resolvePrices()/DexScreener/provider call is added anywhere.
   let prices: TokenPrice[] = []
+  let pricingAudit: PricingResolutionAudit | null = null
+  let noLiquidityFoundKeys: string[] = []
+  const currentPricingStartedAtMs = Date.now()
   try {
     const pricingRequests: PricingRequest[] = holdings.map((h) => ({
       chain: h.chain,
       contract: h.contract,
       knownPriceUsd: h.providerPriceUsd,
     }))
-    prices = await resolvePrices(pricingRequests)
+    const resolved = await resolvePricesDetailed(pricingRequests)
+    prices = resolved.prices
+    pricingAudit = resolved.audit
+    noLiquidityFoundKeys = resolved.noLiquidityFoundKeys
   } catch {
     prices = []
+    pricingAudit = null
+    noLiquidityFoundKeys = []
   }
+  const currentPricingMs = Date.now() - currentPricingStartedAtMs
+  const noLiquidityFoundSet = new Set(noLiquidityFoundKeys)
 
   const report = await runWalletScan({
     ...params,
@@ -238,6 +258,7 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
       // No per-token current-price SOURCE lookup separate from the canonical one above is needed —
       // canonicalCurrentPriceLookup's own `.source` field is preferred whenever present (see
       // computePnl's own "CANONICAL PRICE PREFERENCE" comment), so this legacy field is left unset.
+      noLiquidityFoundLookup: (token, chain) => noLiquidityFoundSet.has(`${chain}:${token.toLowerCase()}`),
     },
   })
 
@@ -248,5 +269,14 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
     portfolio = emptyPortfolio()
   }
 
-  return { ...report, holdings, portfolio }
+  const walletScanPerformanceAudit = buildWalletScanPerformanceAudit({
+    totalMs: Date.now() - scanStartedAtMs,
+    scanPerformanceSummary: report.scanPerformanceSummary,
+    pricingAudit,
+    currentPricingMs,
+    deadOrSpamPositionsCount: report.fifoAndPnl.unrealizedReconciliation.deadOrSpamPositionsCount,
+  })
+  console.warn('[wallet-scan-performance-audit]', walletScanPerformanceAudit)
+
+  return { ...report, holdings, portfolio, pricingAudit, walletScanPerformanceAudit }
 }

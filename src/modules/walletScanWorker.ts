@@ -178,6 +178,11 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
     // instance serving a second, unrelated scan must start with a fresh budget rather than inherit
     // the previous scan's exhausted one.
     { resetWalletProviderCostLedger, logWalletProviderCostAudit },
+    // CURRENT-PRICE CACHE RESET, DISCLOSED (Wallet Scanner improvement audit): same per-job reset
+    // convention as every other request-scoped cache above — the short-TTL current-price cache
+    // (src/modules/pricing/index.ts) must never carry a price from one wallet's scan into an
+    // unrelated one on a warm serverless instance.
+    { resetPriceCache },
   ] = await Promise.all([
     import('@/lib/server/alchemyAudit'),
     import('@/workers/walletScanV2'),
@@ -193,6 +198,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
     import('@/src/modules/pricingAtTimeEngine/sources/alchemyHistoricalPriceSource'),
     import('@/src/modules/nativePriceResolver/index'),
     import('@/src/modules/providerCost/walletProviderCostLedger'),
+    import('@/src/modules/pricing/index'),
   ])
 
   const startedAt = Date.now()
@@ -210,6 +216,7 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
   resetNativePriceResolverForScan()
   resetGeckoTerminalNoPoolCache()
   resetPricingAtTimeAdapterScanState()
+  resetPriceCache()
   // JOB-ID THREADED, DISCLOSED (provider-coalescing follow-up task's explicit audit requirement):
   // lets fetchProviderWindow's own per-key audit log attribute its entries to the real job that
   // produced them — never used for any cache-key/coalescing decision (the canonical key stays

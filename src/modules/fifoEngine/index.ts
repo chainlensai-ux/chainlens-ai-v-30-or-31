@@ -19,6 +19,7 @@ import type {
   IntegrityFlags,
   MatchedLot,
   OpenLot,
+  OpenPositionClassification,
   PriceUsdLookup,
   PublicPnlStatus,
   UnmatchedEventIdentity,
@@ -43,6 +44,7 @@ export type {
   LotEvidenceQuality,
   MatchedLot,
   OpenLot,
+  OpenPositionClassification,
   PriceUsdLookup,
   PublicPnlStatus,
   UnmatchedEventIdentity,
@@ -287,6 +289,8 @@ function emptyReconciliationSummary(
     excludedPositions: [],
     reconciledPositionsByPriceSource: {},
     excludedReasonCounts: {},
+    excludedClassificationCounts: {},
+    deadOrSpamPositionsCount: 0,
     // Not computed in the zero-change (unreconciled) path — reconciliation didn't run, so there is
     // no per-position provenance/cost-basis breakdown to report, only the pre-existing aggregate
     // figures (costBasisUsd, officialUnrealizedPnlUsd) already returned alongside this summary.
@@ -295,6 +299,73 @@ function emptyReconciliationSummary(
     // "Not reconciled" means every open position is treated as pass-through (never excluded) — 100%
     // nominal coverage when there is anything open at all, 0 when there is nothing to cover.
     unrealizedCoveragePercent: totalOpenPositions > 0 && reconciliationStatus === 'not_reconciled' ? 100 : 0,
+  }
+}
+
+// SPAM/AIRDROP SYMBOL HEURISTIC, DISCLOSED: same evidence class as
+// app/frontend/lib/holdingsHeuristics.ts's own isDust (missing/placeholder symbol) — extended with a
+// promotional/URL-shaped pattern, the other classic spam-token signature (e.g. "CLAIM-REWARDS.COM",
+// "Visit xyz.io"). Matches only obviously promotional text; a real, ordinary-looking ticker never
+// matches this and keeps its plainer classification.
+const SPAM_LIKE_SYMBOL_PATTERN = /(claim|airdrop|reward|bonus|visit|http|www\.|\.(com|io|xyz|net|org)\b|free\s|\$\$\$)/i
+
+function isSpamLikeSymbol(symbol: string | null): boolean {
+  if (symbol == null || symbol.trim() === '' || symbol === '?') return true
+  return SPAM_LIKE_SYMBOL_PATTERN.test(symbol)
+}
+
+// IMPLAUSIBLE-QUANTITY HEURISTIC, DISCLOSED: a real, common airdrop-spam pattern is dumping an
+// absurdly large token quantity (often in the billions/trillions) into wallets that never bought
+// anything — no genuine accumulation from real trading produces a quantity this large. This is a
+// coarse, deliberately conservative threshold (never fires on a normal large-supply meme-coin
+// position bought with real liquidity, since those are still bounded by what the wallet's real
+// trades/balance could produce) — used only as ONE input alongside the symbol heuristic, never alone.
+const IMPLAUSIBLE_SPAM_QUANTITY = 1_000_000_000
+
+// CLASSIFY EXCLUDED POSITION, DISCLOSED, ADDITIVE (Wallet Scanner improvement audit, task 2 — see
+// OpenPositionClassification's own header in types.ts for the full design). PURE: takes only facts
+// already computed for this exclusion, returns one label, never mutates anything, never changes
+// which exclusionReason fired or any total this module returns.
+function classifyExcludedPosition(params: {
+  exclusionReason: UnrealizedExclusionReason
+  symbol: string | null
+  openQuantityFromFifo: number
+  noLiquidityFoundAnywhere: boolean
+}): OpenPositionClassification {
+  const { exclusionReason, symbol, openQuantityFromFifo, noLiquidityFoundAnywhere } = params
+  const spamSymbol = isSpamLikeSymbol(symbol)
+  const implausibleQuantity = Number.isFinite(openQuantityFromFifo) && openQuantityFromFifo >= IMPLAUSIBLE_SPAM_QUANTITY
+
+  switch (exclusionReason) {
+    case 'synthetic_or_quarantined_position':
+      // The canonical snapshot itself already flagged this position — the strongest possible
+      // real signal this module has for "not a genuine holding."
+      return 'dust_spam'
+    case 'invalid_open_quantity':
+    case 'chain_or_token_key_mismatch':
+    case 'invalid_decimals':
+      // Data-quality gaps, not evidence about the token itself either way.
+      return 'unsupported'
+    case 'open_quantity_exceeds_balance':
+      return 'balance_less_than_fifo_open'
+    case 'missing_canonical_balance':
+      if (spamSymbol && implausibleQuantity) return 'suspicious_airdrop'
+      if (spamSymbol) return 'dust_spam'
+      return 'missing_balance'
+    case 'missing_verified_current_price':
+      // ORDER, DISCLOSED: noLiquidityFoundAnywhere (a real, measured "neither real price provider
+      // indexes this token at all" fact — see NoLiquidityFoundLookup's header) is checked before the
+      // symbol heuristic, since it is stronger, non-heuristic evidence when present.
+      if (spamSymbol && implausibleQuantity) return 'suspicious_airdrop'
+      if (spamSymbol) return 'dust_spam'
+      if (noLiquidityFoundAnywhere) return 'dead_unindexed'
+      return 'missing_price'
+    case 'unverified_or_outlier_price':
+      // A price WAS found but flagged unreliable — this codebase's own established outlier-price
+      // signature for a fake/manipulated liquidity pool, the classic airdrop-spam pricing pattern.
+      return 'suspicious_airdrop'
+    default:
+      return 'unsupported'
   }
 }
 
@@ -449,6 +520,8 @@ export function computePnl(
         ? candidateMarketValueUsd - openCostBasisUsd
         : null
 
+    const noLiquidityFoundAnywhere = diagnostics?.noLiquidityFoundLookup?.(token, chain) ?? false
+
     function exclude(exclusionReason: UnrealizedExclusionReason): void {
       excludedPositions.push({
         chainId: chain,
@@ -464,6 +537,12 @@ export function computePnl(
         candidateMarketValueUsd,
         candidateUnrealizedPnlUsd,
         exclusionReason,
+        classification: classifyExcludedPosition({
+          exclusionReason,
+          symbol: metadata?.symbol ?? null,
+          openQuantityFromFifo,
+          noLiquidityFoundAnywhere,
+        }),
       })
       unrealizedPnlExcludedTokens.push(key)
     }
@@ -533,8 +612,14 @@ export function computePnl(
   const excludedCandidateMarketValueUsd = excludedPositions.reduce((sum, p) => sum + (p.candidateMarketValueUsd ?? 0), 0)
   const excludedCandidateUnrealizedPnlUsd = excludedPositions.reduce((sum, p) => sum + (p.candidateUnrealizedPnlUsd ?? 0), 0)
   const excludedReasonCounts: Partial<Record<UnrealizedExclusionReason, number>> = {}
+  const excludedClassificationCounts: Partial<Record<OpenPositionClassification, number>> = {}
+  let deadOrSpamPositionsCount = 0
   for (const p of excludedPositions) {
     excludedReasonCounts[p.exclusionReason] = (excludedReasonCounts[p.exclusionReason] ?? 0) + 1
+    excludedClassificationCounts[p.classification] = (excludedClassificationCounts[p.classification] ?? 0) + 1
+    if (p.classification === 'dust_spam' || p.classification === 'dead_unindexed' || p.classification === 'suspicious_airdrop') {
+      deadOrSpamPositionsCount += 1
+    }
   }
 
   const reconciliationStatus: UnrealizedReconciliationStatus =
@@ -560,6 +645,8 @@ export function computePnl(
       excludedPositions,
       reconciledPositionsByPriceSource,
       excludedReasonCounts,
+      excludedClassificationCounts,
+      deadOrSpamPositionsCount,
       reconciledMarketValueUsd,
       reconciledCostBasisUsd,
       unrealizedCoveragePercent: totalOpenPositions > 0 ? (reconciledOpenPositions / totalOpenPositions) * 100 : 0,
