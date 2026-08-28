@@ -27,28 +27,22 @@ function getServiceRoleClient() {
   return createClient(url, serviceRole, { auth: { persistSession: false, autoRefreshToken: false } })
 }
 
+const FREE_PLAN_RESULT = {
+  plan: 'free' as ChainlensPlan,
+  rawPlan: 'free' as ChainlensPlan,
+  trialActive: false,
+  trialEndsAt: null,
+  userId: null as string | null,
+  email: null as string | null,
+  settingsRowFound: false,
+}
+
 export async function getCurrentUserPlanFromBearerToken(token: string) {
   const anon = createAnonSupabaseClient()
-  if (!anon) return {
-    plan: 'free' as ChainlensPlan,
-    rawPlan: 'free' as ChainlensPlan,
-    trialActive: false,
-    trialEndsAt: null,
-    userId: null,
-    email: null,
-    settingsRowFound: false,
-  }
+  if (!anon) return { ...FREE_PLAN_RESULT }
   const { data } = await anon.auth.getUser(token)
   const user = data.user
-  if (!user) return {
-    plan: 'free' as ChainlensPlan,
-    rawPlan: 'free' as ChainlensPlan,
-    trialActive: false,
-    trialEndsAt: null,
-    userId: null,
-    email: null,
-    settingsRowFound: false,
-  }
+  if (!user) return { ...FREE_PLAN_RESULT }
   if (process.env.BETA_ALL_ELITE === 'true') {
     return {
       plan: 'elite' as ChainlensPlan,
@@ -60,9 +54,13 @@ export async function getCurrentUserPlanFromBearerToken(token: string) {
       settingsRowFound: true,
     }
   }
-  // Use authed client so Bearer token is forwarded in global headers — required when RLS checks auth.uid().
-  const authed = createAuthedSupabaseClient(token)
-  const { data: row } = await (authed ?? anon)
+  // Identity is already verified via GoTrue getUser. PostgREST independently rejects the same
+  // bearer token on clock-skew ("JWT issued at future"), which made Clark treat Elite as Free and
+  // answer wallet scans with WALLET SCANNER LOCKED. Read settings with the service-role client
+  // scoped to that userId — same pattern as GET /api/user-settings. Never user-suppliable.
+  const admin = getServiceRoleClient()
+  const settingsClient = admin ?? createAuthedSupabaseClient(token) ?? anon
+  const { data: row } = await settingsClient
     .from('user_settings')
     .select('plan,subscription_status,trial_plan,trial_ends_at,current_period_end')
     .eq('user_id', user.id)
