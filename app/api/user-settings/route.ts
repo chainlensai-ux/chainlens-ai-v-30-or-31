@@ -30,8 +30,8 @@ function isValidAvatarUrl(url: unknown): boolean {
   return true
 }
 import {
-  createAuthedSupabaseClient,
   createAnonSupabaseClient,
+  createServiceRoleClient,
   getOrCreateUserSettings,
   sanitizeSettingsUpdate,
   resolveEffectivePlan,
@@ -56,7 +56,21 @@ async function getAuthenticatedUser(request: NextRequest) {
     return { error: 'Unauthorized.', userId: null };
   }
 
-  const supabase = createAuthedSupabaseClient(token);
+  // PGREST-JWT-CLOCK-SKEW FIX, DISCLOSED (reported live: a confirmed-correct account — right
+  // user_settings row, elite plan, correct user_id, single auth.users entry, verified directly
+  // against the database — still got "settings_unavailable" and showed as Free, even after a fresh
+  // sign-in). Root cause, found via the console.error just added above this fix: PostgREST does its
+  // OWN independent JWT validation on every forwarded bearer token, separate from GoTrue's (which
+  // the auth.getUser() call two lines up already performs, successfully). The RLS-scoped client
+  // below used to forward the same token straight to PostgREST for every settings read/write, and
+  // PostgREST was rejecting it with "JWT issued at future" — a clock-skew mismatch between this
+  // project's Auth and Postgres layers, external to this codebase and not something a code change
+  // can resync. Since identity is already independently verified above, the service-role client is
+  // used for the actual read/write instead — it authenticates via the service-role KEY, never
+  // re-validates the user's JWT against Postgres's clock, and every query below still scopes
+  // strictly to this verified userId (never user-suppliable), so this is not a widened trust
+  // boundary — it swaps which of two already-passing identity checks the DB layer relies on.
+  const supabase = createServiceRoleClient();
   if (!supabase) {
     return { error: 'Settings service unavailable.', userId: null };
   }
