@@ -154,14 +154,42 @@ function freshResultFromCache(entry: CacheEntry, overrides: Partial<FomoLeaderbo
   };
 }
 
+// IN-FLIGHT DE-DUPE, DISCLOSED (live report: "one leaderboard load appears to cost multiple
+// credits/requests"). The 10-minute cache only helps once a result is already stored — two
+// concurrent callers for the same window+limit (React StrictMode's dev-only double effect
+// invocation, a fast tab switch remounting the panel, two browser tabs open at once) both saw a
+// cache MISS and BOTH called the real FOMO API, since the original check-then-fetch had no lock
+// between the miss and the .set() that follows a successful fetch. A single shared in-flight
+// Promise per cache key means every concurrent caller for the same key gets the one real request's
+// result — one external call really does mean one external call, however many UI callers ask for
+// it in that window.
+const inFlight = new Map<string, Promise<FomoLeaderboardFetchResult>>();
+
 export async function fetchFomoLeaderboard(window: FomoWindow, limit: number): Promise<FomoLeaderboardFetchResult> {
-  const startedAt = Date.now();
   const cacheKey = `${window}:${limit}`;
   const cached = leaderboardCache.get(cacheKey);
   if (cached && Date.now() - cached.at < FOMO_CACHE_TTL_MS) {
-    return freshResultFromCache(cached, { apiCalled: false }, startedAt);
+    return freshResultFromCache(cached, { apiCalled: false }, Date.now());
   }
+  const existingInFlight = inFlight.get(cacheKey);
+  if (existingInFlight) return existingInFlight;
 
+  const promise = fetchFomoLeaderboardUncached(window, limit, cacheKey, cached ?? null);
+  inFlight.set(cacheKey, promise);
+  try {
+    return await promise;
+  } finally {
+    inFlight.delete(cacheKey);
+  }
+}
+
+async function fetchFomoLeaderboardUncached(
+  window: FomoWindow,
+  limit: number,
+  cacheKey: string,
+  cached: CacheEntry | null,
+): Promise<FomoLeaderboardFetchResult> {
+  const startedAt = Date.now();
   const apiKey = process.env.FOMO_API_KEY;
   if (!apiKey) {
     // No key configured — serve stale cache if we have any (better than nothing), otherwise a

@@ -6,7 +6,7 @@
 // existing Activity feed's state — no leaderboard row is ever merged into an alert, and adding a
 // wallet here only makes it eligible for the existing Sync pipeline to pick up on its own schedule.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
 
 type FomoWindow = '24h' | '7d' | '30d' | 'all'
@@ -46,6 +46,7 @@ type FomoLeaderboardAudit = {
 }
 
 type AddState = 'idle' | 'adding' | 'added' | 'duplicate' | 'error'
+type AddErrorInfo = { reason: string; message: string }
 
 const cardBg = 'rgba(9,14,24,0.90)'
 const innerBg = 'rgba(5,9,17,0.80)'
@@ -94,7 +95,17 @@ export default function FomoBoardPanel() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [trackedAddresses, setTrackedAddresses] = useState<Set<string>>(new Set())
+  const [trackedCount, setTrackedCount] = useState<number | null>(null)
   const [addStates, setAddStates] = useState<Record<string, AddState>>({})
+  const [addErrors, setAddErrors] = useState<Record<string, AddErrorInfo>>({})
+  const [toast, setToast] = useState<string | null>(null)
+  // fomoApiUsageAudit's requestCountThisPageLoad, DISCLOSED (live report: "one leaderboard load
+  // appears to cost multiple credits/requests"). Counts only requests the server actually reports
+  // as apiCalled:true (a real external FOMO API call) — a cache hit against our own route never
+  // increments this, so "100 traders shown" never silently implies "100 API calls" or even
+  // "N tab-switches = N API calls". Kept in a ref (not state) since it's audit-only, never rendered
+  // reactively, and must survive re-renders without triggering its own render.
+  const requestCountThisPageLoad = useRef(0)
 
   const loadTrackedAddresses = useCallback(async () => {
     try {
@@ -102,26 +113,32 @@ export default function FomoBoardPanel() {
       const json = await res.json().catch(() => null)
       if (res.ok && Array.isArray(json?.addresses)) {
         setTrackedAddresses(new Set((json.addresses as string[]).map((a) => a.toLowerCase())))
+        setTrackedCount(typeof json.count === 'number' ? json.count : json.addresses.length)
       }
     } catch {
       // Best-effort — Add buttons just won't pre-show "Tracked" for already-tracked wallets.
     }
   }, [])
 
-  const loadLeaderboard = useCallback(async (w: FomoWindow) => {
+  const loadLeaderboard = useCallback(async (w: FomoWindow, reason: 'initial_load' | 'window_change' | 'manual_refresh') => {
     setLoading(true)
     setError(null)
     try {
       const res = await fetch(`/api/fomo/leaderboard?window=${w}&limit=100`, { cache: 'no-store' })
       const json = await res.json().catch(() => null)
+      const a = json?.fomoLeaderboardAudit as FomoLeaderboardAudit | undefined
+      if (a?.apiCalled) requestCountThisPageLoad.current += 1
+      if (process.env.NODE_ENV === 'development' && a) {
+        console.log('[fomo] fomoApiUsageAudit', { ...a, requestCountThisPageLoad: requestCountThisPageLoad.current, reasonForFetch: reason })
+      }
       if (!res.ok || !json?.ok) {
         setTraders([])
-        setAudit(json?.fomoLeaderboardAudit ?? null)
+        setAudit(a ?? null)
         setError(json?.error ?? 'Could not load the FOMO board.')
         return
       }
       setTraders(Array.isArray(json.traders) ? json.traders : [])
-      setAudit(json.fomoLeaderboardAudit ?? null)
+      setAudit(a ?? null)
     } catch {
       setTraders([])
       setError('Could not load the FOMO board.')
@@ -130,42 +147,83 @@ export default function FomoBoardPanel() {
     }
   }, [])
 
+  const isFirstLoadRef = useRef(true)
   useEffect(() => {
     queueMicrotask(() => { void loadTrackedAddresses() })
   }, [loadTrackedAddresses])
 
   useEffect(() => {
-    queueMicrotask(() => { void loadLeaderboard(window_) })
-  }, [window_, loadLeaderboard])
+    const reason = isFirstLoadRef.current ? 'initial_load' : 'window_change'
+    isFirstLoadRef.current = false
+    queueMicrotask(() => { void loadLeaderboard(window_, reason) })
+    // Only window_ should ever re-trigger a fetch — loadLeaderboard is a stable useCallback with no
+    // deps, so this effect fires exactly once per real window change, never on remount alone once
+    // the panel is kept mounted across tab switches (see the parent page's fomoBoardMounted).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [window_])
+
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 4500)
+    return () => clearTimeout(t)
+  }, [toast])
 
   async function handleAdd(row: FomoTraderRow) {
     if (!row.evmWallet) return
     const addr = row.evmWallet
     setAddStates((prev) => ({ ...prev, [addr]: 'adding' }))
+    setAddErrors((prev) => { const next = { ...prev }; delete next[addr]; return next })
     try {
       const { data: { session } } = await supabase.auth.getSession()
       const token = session?.access_token
+      const countBefore = trackedCount
       const res = await fetch('/api/whale-alerts/tracked-wallets', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
-        body: JSON.stringify({ address: addr, label: `FOMO: ${row.handle}`, source: 'fomo-board' }),
+        // FOMO-ADD METADATA, DISCLOSED: row.evmWallet only — never row.handle — is sent as the
+        // address (hard rule: never add a FOMO handle as a wallet, never add a Solana wallet here).
+        // The rest is provenance so a tracked wallet is traceable back to the exact FOMO board rank/
+        // window it was discovered from.
+        body: JSON.stringify({
+          address: addr,
+          chainSlug: 'base',
+          source: 'fomo',
+          fomoHandle: row.handle,
+          fomoRank: row.rank,
+          fomoWindow: window_,
+          label: row.displayName || row.handle,
+          tags: ['fomo', 'social_trader'],
+        }),
       })
       const json = await res.json().catch(() => null)
+      if (process.env.NODE_ENV === 'development') {
+        console.log('[fomo] fomoAddTrackerAudit', json?.fomoAddTrackerAudit)
+      }
       if (!res.ok || !json?.ok) {
+        const reason = json?.fomoAddTrackerAudit?.errorReason ?? (res.status === 403 ? 'plan_blocked' : 'add_failed')
+        const message =
+          reason === 'plan_blocked' ? 'Whale Alerts tracking requires Pro or Elite.'
+          : reason === 'rls_blocked_on_write' || reason === 'rls_blocked_on_lookup' ? 'Permission denied writing to the tracker.'
+          : reason === 'invalid_evm_address' ? 'That wallet is not a valid Base (EVM) address.'
+          : (typeof json?.error === 'string' && json.error) || 'Could not add this wallet. Try again.'
         setAddStates((prev) => ({ ...prev, [addr]: 'error' }))
+        setAddErrors((prev) => ({ ...prev, [addr]: { reason, message } }))
         return
       }
-      if (json.status === 'duplicate') {
-        setAddStates((prev) => ({ ...prev, [addr]: 'duplicate' }))
-      } else {
-        setAddStates((prev) => ({ ...prev, [addr]: 'added' }))
-      }
+      const alreadyTracked = json.status === 'duplicate' || json.alreadyTracked === true
+      setAddStates((prev) => ({ ...prev, [addr]: alreadyTracked ? 'duplicate' : 'added' }))
       setTrackedAddresses((prev) => new Set(prev).add(addr))
+      const countAfter = json?.fomoAddTrackerAudit?.trackedWalletCountAfter
+      setTrackedCount(typeof countAfter === 'number' ? countAfter : (countBefore != null ? countBefore + (alreadyTracked ? 0 : 1) : null))
+      if (!alreadyTracked) {
+        setToast(`Added ${fmtAddr(addr)} to Base Whale Alerts tracker.`)
+      }
     } catch {
       setAddStates((prev) => ({ ...prev, [addr]: 'error' }))
+      setAddErrors((prev) => ({ ...prev, [addr]: { reason: 'network_error', message: 'Network error — check your connection and retry.' } }))
     }
   }
 
@@ -175,36 +233,46 @@ export default function FomoBoardPanel() {
     const alreadyTracked = addr != null && (trackedAddresses.has(addr) || state === 'duplicate' || state === 'added')
 
     if (row.walletStatus === 'sol_only') {
-      return <span style={pillStyle('#94a3b8', 'rgba(148,163,184,0.10)', 'rgba(148,163,184,0.28)')}>SOL only</span>
+      return <span title="This trader only has a Solana wallet on file — Base Whale Alerts tracks EVM wallets only." style={pillStyle('#94a3b8', 'rgba(148,163,184,0.10)', 'rgba(148,163,184,0.28)')}>SOL only</span>
     }
     if (!addr) {
-      return <span style={pillStyle('#94a3b8', 'rgba(148,163,184,0.10)', 'rgba(148,163,184,0.28)')}>Wallet pending</span>
+      return <span title="FOMO hasn't resolved an EVM wallet for this trader yet." style={pillStyle('#94a3b8', 'rgba(148,163,184,0.10)', 'rgba(148,163,184,0.28)')}>Wallet pending</span>
     }
     if (alreadyTracked) {
-      return <span style={pillStyle('#5eead4', 'rgba(45,212,191,0.10)', 'rgba(45,212,191,0.30)')}>Tracked</span>
+      return <span title="Already in the Base Whale Alerts tracker — Sync wallets will watch it." style={pillStyle('#5eead4', 'rgba(45,212,191,0.10)', 'rgba(45,212,191,0.30)')}>Tracked</span>
     }
     if (state === 'error') {
+      const info = addErrors[addr]
       return (
-        <button type="button" onClick={() => void handleAdd(row)} style={{ ...addBtnStyle, borderColor: 'rgba(244,63,94,0.45)', color: '#fda4af' }}>
+        <button type="button" onClick={() => void handleAdd(row)} title={info?.message ?? 'Add failed — click to retry.'} style={{ ...addBtnStyle, borderColor: 'rgba(244,63,94,0.45)', color: '#fda4af' }}>
           Retry
         </button>
       )
     }
     return (
-      <button type="button" onClick={() => void handleAdd(row)} disabled={state === 'adding'} style={addBtnStyle}>
+      <button type="button" onClick={() => void handleAdd(row)} disabled={state === 'adding'} title="Store this trader's EVM wallet in the Base Whale Alerts tracker." style={addBtnStyle}>
         {state === 'adding' ? 'Adding…' : '+ Add'}
       </button>
     )
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {toast && (
+        <div style={{ position: 'fixed', bottom: 24, right: 24, zIndex: 50, padding: '10px 16px', borderRadius: 10, background: 'rgba(15,23,32,0.96)', border: '1px solid rgba(45,212,191,0.35)', color: '#5eead4', fontSize: 12, fontWeight: 600, boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
+          {toast}
+        </div>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10 }}>
         <div>
-          <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: '#f1f5f9' }}>FOMO Board</p>
-          <p style={{ margin: '4px 0 0', fontSize: 11.5, color: '#7c8ba1', lineHeight: 1.5 }}>
-            Ranked FOMO social traders — a scoreboard for discovering wallets, not a live alert feed.
-            Add an EVM wallet to track it on Base.
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: '#f1f5f9' }}>FOMO Board</p>
+            {trackedCount != null && (
+              <span style={pillStyle('#7c8ba1', 'rgba(148,163,184,0.08)', 'rgba(148,163,184,0.22)')}>{trackedCount} tracked</span>
+            )}
+          </div>
+          <p style={{ margin: '4px 0 0', fontSize: 11.5, color: '#7c8ba1', lineHeight: 1.5 }} title="FOMO board discovers traders. Add stores the trader's EVM wallet into ChainLens Whale Alerts so Sync wallets can monitor Base swaps.">
+            FOMO board discovers traders. Add stores the trader&rsquo;s EVM wallet into ChainLens Whale Alerts so Sync wallets can monitor Base swaps.
           </p>
         </div>
         <div role="tablist" aria-label="FOMO board window" style={{ display: 'flex', gap: 4, background: innerBg, border: bdrInner, borderRadius: 9, padding: 3 }}>

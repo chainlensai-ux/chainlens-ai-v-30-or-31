@@ -321,6 +321,15 @@ export default function WhaleAlertsPage() {
   // module, alert feed) is untouched below, just wrapped in `activeTab === 'activity'` so none of
   // its own state, filters, or effects are removed or altered.
   const [activeTab, setActiveTab] = useState<'activity' | 'fomo'>('activity')
+  // KEEP-MOUNTED-ACROSS-TABS FIX, DISCLOSED (live report: "clicking + Add does not visibly work").
+  // The FOMO board used to be conditionally rendered (`activeTab === 'fomo' && <FomoBoardPanel />`),
+  // which fully unmounts it the instant the user leaves the tab — wiping its in-progress Add
+  // states, its loaded trader list, and its tracked-address set. A very plausible real path to "Add
+  // doesn't visibly work": click Add, tab away to check the tracked count on Activity, tab back —
+  // the panel remounts from scratch and everything looks like it never happened. Once the FOMO tab
+  // has been opened once, it now stays mounted (visibility toggled via CSS) for the rest of the
+  // page's life, so its own state survives switching back and forth.
+  const [fomoBoardMounted, setFomoBoardMounted] = useState(false)
   const [windowValue, setWindowValue] = useState<(typeof WINDOWS)[number]>('24h')
   const [feedMode, setFeedMode]       = useState<'interesting' | 'all'>('interesting')
   const [valueRange, setValueRange]   = useState<ValueRange>('all')
@@ -792,10 +801,14 @@ export default function WhaleAlertsPage() {
         <Segmented
           options={[{ value: 'activity', label: 'Activity' }, { value: 'fomo', label: 'FOMO board' }] as const}
           value={activeTab}
-          onChange={setActiveTab}
+          onChange={(v) => { setActiveTab(v); if (v === 'fomo') setFomoBoardMounted(true) }}
         />
 
-        {activeTab === 'fomo' && <FomoBoardPanel />}
+        {fomoBoardMounted && (
+          <div style={{ display: activeTab === 'fomo' ? 'block' : 'none' }}>
+            <FomoBoardPanel />
+          </div>
+        )}
 
         {activeTab === 'activity' && (<>
 

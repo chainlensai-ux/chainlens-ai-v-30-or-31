@@ -34,6 +34,18 @@ create table if not exists public.whale_alerts (
   created_at timestamptz not null default now()
 );
 
+-- FOMO BOARD METADATA, DISCLOSED: additive columns so a wallet added from the FOMO board's
+-- "+ Add" button records which FOMO trader/rank/window it came from, not just a bare address.
+-- app/api/whale-alerts/tracked-wallets/route.ts writes these when present and falls back to the
+-- original columns (address/label/category/source/is_active) if this migration hasn't been run
+-- yet, so re-running this file is safe and never required for Add to keep working.
+alter table public.tracked_wallets
+  add column if not exists chain_slug text not null default 'base',
+  add column if not exists tags text[] not null default '{}',
+  add column if not exists fomo_handle text,
+  add column if not exists fomo_rank integer,
+  add column if not exists fomo_window text;
+
 create index if not exists idx_tracked_wallets_address on public.tracked_wallets (address);
 create index if not exists idx_tracked_wallets_is_active on public.tracked_wallets (is_active);
 

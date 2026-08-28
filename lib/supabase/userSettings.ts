@@ -305,13 +305,30 @@ export async function getVerifiedUserPlan(request: Request): Promise<'free' | 'p
       _planCache.set(token, { plan: 'elite', exp: now + PLAN_CACHE_TTL_MS })
       return 'elite'
     }
-    // Use authed client with Bearer in global headers for RLS-compatible DB query.
-    const authedSb = createAuthedSupabaseClient(token) ?? sb
-    const { data: row } = await authedSb
+    // PGREST-JWT-CLOCK-SKEW FIX, DISCLOSED (same root cause and fix already applied in
+    // app/api/user-settings/route.ts's getAuthenticatedUser, requested here as a follow-up:
+    // "FOMO board Add-to-tracker... clicking + Add does not visibly work"). This used to forward
+    // the caller's JWT to PostgREST via createAuthedSupabaseClient(token) for the plan lookup — the
+    // same reproducible bug: sb.auth.getUser(token) (GoTrue) accepts the token, but the SAME token
+    // forwarded to PostgREST can be rejected with "JWT issued at future" on server/DB clock skew,
+    // and the query's `error` was never even checked here (only `data` was destructured), so a
+    // rejected query silently produced `row: null` -> resolveEffectivePlan(null) -> 'free' for a
+    // genuinely paid user. Every plan-gated write that calls getVerifiedUserPlan (whale-alerts
+    // sync, the new FOMO board tracked-wallets POST, watchlist writes) would then 403 as
+    // "Included in Pro and Elite" for a real Elite/Pro user hitting this — exactly the unexplained
+    // "Retry" failures reported. Fixed the same way: identity is already independently verified via
+    // GoTrue (userData.user, checked above), so the DB read uses the service-role client instead —
+    // service-role auth never re-validates the caller's JWT against Postgres's clock, and the query
+    // stays scoped to the already-verified user_id, so this is not a widened trust boundary.
+    const authedSb = createServiceRoleClient() ?? sb
+    const { data: row, error: rowError } = await authedSb
       .from('user_settings')
       .select('plan,subscription_status,trial_plan,trial_ends_at,current_period_end')
       .eq('user_id', userData.user.id)
       .maybeSingle()
+    if (rowError) {
+      console.error('[getVerifiedUserPlan] user_settings lookup failed', { userId: userData.user.id, reason: rowError })
+    }
     const plan = resolveEffectivePlan(row as Partial<UserSettings> | null)
     if (_planCache.size >= PLAN_CACHE_MAX) _planCache.clear()
     _planCache.set(token, { plan, exp: now + PLAN_CACHE_TTL_MS })
