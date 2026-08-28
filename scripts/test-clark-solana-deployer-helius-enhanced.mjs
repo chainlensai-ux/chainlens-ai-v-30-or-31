@@ -40,7 +40,19 @@ assert.match(routeCode, /if \(routed\.address && \(SOLANA_TOKEN_INTENTS\.has\(ro
 
 // EVM deployer chain-awareness, verified intact (not modified this round).
 assert.match(routeCode, /resolverChain = toTokenApiChain\(input\.chain\);/, 'the fast EVM deployer resolver must still resolve the real chain, not default to Base')
-assert.match(routeCode, /const thisDevChain = toTokenApiChain\(chainForClarkTools\);/, 'the "who deployed this" contextual dev-wallet lookup must still use the real auto-detected chain')
+// SOLANA-DEV-CLUSTER-BLIND FIX, DISCLOSED (superseding round — requested live: "it should work
+// when scanning tokens from chains like robinhood eth and solana"): the plain chainForClarkTools
+// forward this test used to pin was itself the bug for an address-less "check deployer" question —
+// chainForClarkTools reflects the chain detected from THIS message's own address/chain mention,
+// which doesn't exist for an address-less follow-up, so it silently defaulted to Base regardless of
+// which chain the resolved target token was actually on. Now resolved from the same memory the
+// target address itself came from, falling back to chainForClarkTools only when that memory has no
+// chain recorded.
+assert.match(routeCode, /const targetChain = sessionMem\.lastToken\?\.chain\s*\n\s*\?\? body\.clientContext\?\.lastToken\?\.chain\s*\n\s*\?\? body\.appContext\?\.tokenSummary\?\.chain\s*\n\s*\?\? null;/, 'the "who deployed this" contextual dev-wallet lookup must resolve the chain from the same memory as the target address')
+assert.match(routeCode, /const thisDevChain = \(targetChain === "base" \|\| targetChain === "eth" \|\| targetChain === "bnb" \|\| targetChain === "robinhood"\)\s*\n\s*\? targetChain\s*\n\s*: toTokenApiChain\(chainForClarkTools\);/, 'the contextual dev-wallet lookup must prefer the target\'s own resolved chain over chainForClarkTools')
+// A Solana target must never reach the EVM-only /api/dev-wallet call at all — it has its own real
+// creator/authority read.
+assert.match(routeCode, /if \(isValidSolanaMintAddress\(target\)\) \{\s*\n\s*return await buildSolanaCreatorAnswer\(target, true\);\s*\n\s*\}/, 'an address-less "check deployer" question about a Solana token must route to buildSolanaCreatorAnswer, not the EVM-only dev-wallet path')
 assert.match(routeCode, /const devWalletChain = toTokenApiChain\(chainForClarkTools\);\s*\n\s*if \(!devWalletChain\) \{/, 'the dev-history dev-wallet lookup must still skip honestly rather than defaulting to Base for an unsupported chain')
 
 console.log('test-clark-solana-deployer-helius-enhanced.mjs: all assertions passed')

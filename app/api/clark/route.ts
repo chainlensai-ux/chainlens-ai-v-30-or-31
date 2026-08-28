@@ -9828,9 +9828,37 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       ?? body.appContext?.currentTokenAddress
       ?? null;
     if (!target) return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: [], analysis: "CORTEX could not verify the origin wallet from live data. Token context is still saved." };
+    // SOLANA-DEV-CLUSTER-BLIND FIX, DISCLOSED (requested live: "it should work when scanning
+    // tokens from chains like robinhood eth and solana and of course base"). This branch used to
+    // fall straight into the EVM-only /api/dev-wallet call below regardless of what chain `target`
+    // actually resolved from — chainForClarkTools' own type (SupportedChain | "robinhood") has no
+    // Solana variant at all, so toTokenApiChain(chainForClarkTools) is always null for a Solana
+    // token and every address-less "check deployer"/"who deployed this" on one dead-ended into
+    // "CORTEX could not verify the origin wallet", even though the real Solana creator/authority
+    // read (buildSolanaCreatorAnswer, already used for an explicit Solana address) works fine.
+    // Detected by address shape (base58 mint), the same way every other Solana branch in this file
+    // already distinguishes chains — not by trusting a chain label that may not even exist yet.
+    if (isValidSolanaMintAddress(target)) {
+      return await buildSolanaCreatorAnswer(target, true);
+    }
     // CHAIN-STRICT (Clark deployer audit): forward the session's resolved chain; skip rather
     // than silently probing Base for chains the dev-wallet module does not support.
-    const thisDevChain = toTokenApiChain(chainForClarkTools);
+    // TARGET-CHAIN FIX, DISCLOSED (same "it should work when scanning tokens from chains like
+    // robinhood eth and solana" request): this used to forward chainForClarkTools — the chain
+    // detected from THIS message's own address/chain-name mention — but an address-less "check
+    // deployer" question has no address in it to detect a chain from, so chainForClarkTools falls
+    // back to its own default (base) regardless of what chain `target` actually resolved from.
+    // Scanning an ETH/BNB/Robinhood token and then asking "check deployer" would silently probe
+    // Base's RPC for a contract that only exists on the real chain. Resolved from the exact same
+    // memory the target address itself came from, in the same priority order, so the two can never
+    // disagree about which token/chain pair this question is actually about.
+    const targetChain = sessionMem.lastToken?.chain
+      ?? body.clientContext?.lastToken?.chain
+      ?? body.appContext?.tokenSummary?.chain
+      ?? null;
+    const thisDevChain = (targetChain === "base" || targetChain === "eth" || targetChain === "bnb" || targetChain === "robinhood")
+      ? targetChain
+      : toTokenApiChain(chainForClarkTools);
     const devRes = thisDevChain
       ? await callInternalApi(origin, "/api/dev-wallet", { contractAddress: target, chain: thisDevChain }, authHeader ?? undefined)
       : { ok: false as const, json: null };
