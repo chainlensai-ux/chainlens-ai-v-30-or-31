@@ -17,6 +17,7 @@ import {
   isClarkTimeoutError,
   isMintAddressFollowup,
   isWalletLanguagePrompt,
+  persistEntitiesFromPrompt,
   resolveClarkContextChain,
   uiModeHintForPrompt,
 } from '@/lib/client/clarkAiLive'
@@ -224,7 +225,8 @@ function ClarkAiContent() {
     if (!text || loading) return
     const sentForToken = chatSessionTokenRef.current
     const sendMode = uiModeHintForPrompt(text, activeMode)
-    if (sendMode === 'wallet') setActiveMode('wallet')
+    setActiveMode(sendMode)
+    persistEntitiesFromPrompt(text)
     setLoadingKind(inferAnalysisKind(text, sendMode))
     setLoadingStage(0)
     setMessages((prev) => [...prev, { role: 'user', text }, { role: 'clark', text: THINKING_MESSAGE }])
@@ -235,8 +237,27 @@ function ClarkAiContent() {
       const history = [...messages, { role: 'user', text }]
         .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
-      const { data: { session: authSession } } = await supabase.auth.getSession()
-      const accessToken = authSession?.access_token ?? null
+      let accessToken: string | null = null
+      try {
+        const sessionResult = await Promise.race([
+          supabase.auth.getSession(),
+          new Promise<never>((_, reject) => { window.setTimeout(() => reject(new Error('getSession_timeout')), 4_000) }),
+        ])
+        accessToken = sessionResult.data.session?.access_token ?? null
+      } catch {
+        accessToken = null
+      }
+      if (!accessToken) {
+        try {
+          const retry = await Promise.race([
+            supabase.auth.getSession(),
+            new Promise<never>((_, reject) => { window.setTimeout(() => reject(new Error('getSession_timeout')), 4_000) }),
+          ])
+          accessToken = retry.data.session?.access_token ?? null
+        } catch {
+          accessToken = null
+        }
+      }
       const clientClarkContext = getClientClarkContext()
       if (isMintAddressFollowup(text)) {
         const mintReply = formatMintAddressFromLastToken(clientClarkContext.lastToken)
