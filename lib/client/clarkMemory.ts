@@ -21,6 +21,7 @@ const LAST_DEPLOYER_KEY = 'chainlens:clark:last-deployer'
 const LAST_RADAR_LIST_KEY = 'chainlens:clark:last-radar-list'
 const LAST_RADAR_CHAIN_KEY = 'chainlens:clark:last-radar-chain'
 const LAST_RADAR_TS_KEY = 'chainlens:clark:last-radar-ts'
+const LAST_CHAIN_KEY = 'chainlens:clark:last-chain'
 
 /** Stable Clark session id. Created once per browser session, reused forever — never regenerated per message. */
 export function getClarkSessionId(): string {
@@ -44,6 +45,7 @@ export type ClarkClientContext = {
   lastRadarList?: unknown[]
   lastRadarChain?: string | null
   lastRadarTs?: number
+  lastChain?: string | null
 }
 
 function readJson(key: string): unknown {
@@ -69,6 +71,7 @@ export function readClarkClientContext(): ClarkClientContext {
     lastRadarList: (readJson(LAST_RADAR_LIST_KEY) as unknown[] | null) ?? undefined,
     lastRadarChain: sessionStorage.getItem(LAST_RADAR_CHAIN_KEY) ?? undefined,
     lastRadarTs: Number(sessionStorage.getItem(LAST_RADAR_TS_KEY) ?? '0') || undefined,
+    lastChain: sessionStorage.getItem(LAST_CHAIN_KEY) ?? undefined,
   }
 }
 
@@ -80,17 +83,36 @@ export function persistClarkMemoryEcho(payload: unknown): void {
   if (!memoryEcho || typeof memoryEcho !== 'object') return
   const echo = memoryEcho as Record<string, unknown>
 
+  const payloadChain = (payload as Record<string, unknown>).chain
+  if (typeof payloadChain === 'string' && payloadChain.trim()) {
+    sessionStorage.setItem(LAST_CHAIN_KEY, payloadChain.trim())
+  }
+
   const lastWallet = echo.lastWallet as { address?: unknown } | undefined
   if (lastWallet && typeof lastWallet === 'object' && typeof lastWallet.address === 'string') {
     sessionStorage.setItem(LAST_WALLET_KEY, JSON.stringify(lastWallet))
+    const walletChain = (lastWallet as { chain?: unknown }).chain
+    if (typeof walletChain === 'string' && walletChain.trim()) {
+      sessionStorage.setItem(LAST_CHAIN_KEY, walletChain.trim())
+    }
   }
   if (Array.isArray(echo.recentWallets)) {
     sessionStorage.setItem(RECENT_WALLETS_KEY, JSON.stringify(echo.recentWallets))
   }
 
-  const lastToken = echo.lastToken as { address?: unknown } | undefined
-  if (lastToken && typeof lastToken === 'object' && typeof lastToken.address === 'string') {
-    sessionStorage.setItem(LAST_TOKEN_KEY, JSON.stringify(lastToken))
+  const lastToken = echo.lastToken as { address?: unknown; mint?: unknown; tokenAddress?: unknown; chain?: unknown } | undefined
+  if (lastToken && typeof lastToken === 'object') {
+    const tokenAddress =
+      (typeof lastToken.address === 'string' && lastToken.address) ||
+      (typeof lastToken.mint === 'string' && lastToken.mint) ||
+      (typeof lastToken.tokenAddress === 'string' && lastToken.tokenAddress) ||
+      null
+    if (tokenAddress) {
+      sessionStorage.setItem(LAST_TOKEN_KEY, JSON.stringify({ ...lastToken, address: tokenAddress }))
+    }
+    if (typeof lastToken.chain === 'string' && lastToken.chain.trim()) {
+      sessionStorage.setItem(LAST_CHAIN_KEY, lastToken.chain.trim())
+    }
   }
   if (Array.isArray(echo.recentTokens)) {
     sessionStorage.setItem(RECENT_TOKENS_KEY, JSON.stringify(echo.recentTokens))
@@ -107,6 +129,7 @@ export function persistClarkMemoryEcho(payload: unknown): void {
     if (typeof echo.lastRadarChain === 'string') sessionStorage.setItem(LAST_RADAR_CHAIN_KEY, echo.lastRadarChain)
     if (typeof echo.lastRadarTs === 'number') sessionStorage.setItem(LAST_RADAR_TS_KEY, String(echo.lastRadarTs))
   }
+
 }
 
 /** Persists the momentum/movers list a Clark response returns, shared across surfaces. */
@@ -116,7 +139,7 @@ export function persistClarkMomentumList(items: unknown[]): void {
   sessionStorage.setItem(LAST_MOMENTUM_SHOWN_COUNT_KEY, String(Math.min(7, items.length)))
 }
 
-// ── Persisted market momentum (survives page refresh, 15-minute expiry) ────────────────────────
+// ── Persisted market momentum (survives page refresh, 15-minute expiry) ───────────────────────
 const MARKET_MOMENTUM_KEY = 'chainlens:lastMarketMomentum'
 const MARKET_MOMENTUM_TTL_MS = 15 * 60 * 1000
 
