@@ -593,6 +593,18 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
       }
       const { data: sessionData } = await supabase.auth.getSession()
       const token = sessionData.session?.access_token
+      // ALWAYS-SAME-DEPLOYER FIX, DISCLOSED (live report: "for every fcking token i say check
+      // deployer its this same blue bull"). This widget never sent appContext.tokenSummary at all —
+      // the full /terminal/clark-ai page already reads Token Scanner's last-scan summary out of
+      // localStorage and forwards it so Clark knows about a token scanned directly through Token
+      // Scanner's own UI (no Clark chat turn involved). Without it, a "check deployer"/"who deployed
+      // this" question here could only ever resolve against whichever token CLARK itself last
+      // scanned — a stale, possibly much older token, exactly as reported.
+      let tokenSummary: Record<string, unknown> | null = null
+      try {
+        const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('chainlens:clark:lastTokenSummary') : null
+        tokenSummary = raw ? JSON.parse(raw) as Record<string, unknown> : null
+      } catch { tokenSummary = null }
       const res = await fetch(`/api/clark`, {
         method: 'POST',
         headers: {
@@ -613,6 +625,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           moversContext: { items: clarkContextRef.current.lastMarketList ?? [] },
           marketContext: { items: clarkContextRef.current.lastMarketList ?? [] },
           clientContext: getClientClarkContext(),
+          ...(tokenSummary ? { appContext: { tokenSummary, currentTokenAddress: (tokenSummary.address as string | undefined) ?? null } } : {}),
         }),
       })
       const json = await res.json()

@@ -40,6 +40,7 @@ const tests = [
   'test-clark-deployer-token-identity.mjs',
   'test-clark-golden-suite.mjs',
   'test-clark-token-verdict-engine.mjs',
+  'test-clark-deployer-context-fallback.mjs',
   // TEMPORARILY EXCLUDED, DISCLOSED — status updated as of the merge of origin/main's ffec721.
   // This test came from another session's push to `main`. It is now PARTLY unblocked: the route-side
   // exports it imports (mergeNormalizedCandidate, tokenAgeDaysFromPairCreatedAtMs) DO now exist in

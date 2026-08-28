@@ -9808,7 +9808,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (THIS_DEV_RE.test(prompt) && !hasAnyAddress(prompt)) {
-    const target = sessionMem.lastToken?.address ?? body.clientContext?.lastToken?.address ?? null;
+    // ALWAYS-SAME-DEPLOYER FIX, DISCLOSED (live report: "for every fcking token i say check
+    // deployer its this same blue bull" — Dashboard's Clark widget). Root cause: this branch only
+    // ever resolved `target` from sessionMem.lastToken (server-side memory, wiped on any cold
+    // serverless instance) or clientContext.lastToken (only ever written when CLARK ITSELF last
+    // ran a token_scan/token_safety intent) — never from appContext.tokenSummary/
+    // currentTokenAddress, the mechanism the full Clark AI page already uses (see its own
+    // `readJson('chainlens:clark:lastTokenSummary')` call) to tell Clark about a token scanned
+    // directly through Token Scanner's own UI, with no Clark chat turn involved at all. So a user
+    // who scans tokens via Token Scanner and only ever asks Clark "check deployer" got answered
+    // from whichever token Clark itself last scanned in that browser session — which could be a
+    // completely different, much older token, exactly as reported. Falling back to appContext here
+    // (already the established precedent — see the identical "session memory > appContext.
+    // tokenSummary" ordering elsewhere in this file, e.g. the "explain_current_token" resolver)
+    // fixes it without touching the address-less "who deployed this" phrasing itself.
+    const target = sessionMem.lastToken?.address
+      ?? body.clientContext?.lastToken?.address
+      ?? body.appContext?.tokenSummary?.address
+      ?? body.appContext?.currentTokenAddress
+      ?? null;
     if (!target) return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: [], analysis: "CORTEX could not verify the origin wallet from live data. Token context is still saved." };
     // CHAIN-STRICT (Clark deployer audit): forward the session's resolved chain; skip rather
     // than silently probing Base for chains the dev-wallet module does not support.
