@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { whaleHasScanEvidence, whaleKpiTile } from '@/lib/whaleFeedStatus'
+import FomoBoardPanel from '@/components/whale-alerts/FomoBoardPanel'
 
 type WalletCtx = {
   shortAddress: string
@@ -315,6 +316,11 @@ function TokenAvatar({ tok, logoUrl, avatarBg, line }: {
 
 export default function WhaleAlertsPage() {
   const { plan, loading: planLoading, betaEliteActive } = usePlanWithLoading()
+  // FOMO BOARD TAB, DISCLOSED: a second, separate section on this page ("Activity" vs "FOMO
+  // board"), switched with a tab control — the existing Activity content (KPI row, controls, sync
+  // module, alert feed) is untouched below, just wrapped in `activeTab === 'activity'` so none of
+  // its own state, filters, or effects are removed or altered.
+  const [activeTab, setActiveTab] = useState<'activity' | 'fomo'>('activity')
   const [windowValue, setWindowValue] = useState<(typeof WINDOWS)[number]>('24h')
   const [feedMode, setFeedMode]       = useState<'interesting' | 'all'>('interesting')
   const [valueRange, setValueRange]   = useState<ValueRange>('all')
@@ -778,6 +784,20 @@ export default function WhaleAlertsPage() {
             <Pill color="purple" dot>CORTEX</Pill>
           </div>
         </header>
+
+        {/* ═══ ACTIVITY | FOMO BOARD SWITCH ═══════════════════════════════════
+            Second, separate section on this same page — a scoreboard for discovering wallets to
+            add to the tracker, never merged into the Activity alert feed below. Switching tabs
+            never touches Activity's own state; its filters/feed/sync module are unchanged. */}
+        <Segmented
+          options={[{ value: 'activity', label: 'Activity' }, { value: 'fomo', label: 'FOMO board' }] as const}
+          value={activeTab}
+          onChange={setActiveTab}
+        />
+
+        {activeTab === 'fomo' && <FomoBoardPanel />}
+
+        {activeTab === 'activity' && (<>
 
         {/* ═══ 2. KPI ROW ════════════════════════════════════════════════════
             Flat surfaces, no per-card icon tile, no bottom accent bar, no gradient spark fill.
@@ -1463,6 +1483,8 @@ export default function WhaleAlertsPage() {
           )}
 
         </section>
+
+        </>)}
 
       </div>
     </div>
