@@ -9838,30 +9838,101 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: ["dev_wallet_analyze"], analysis: "CORTEX could not verify the origin wallet from live data. Token context is still saved." };
     }
     const cx = buildCortexEvidenceContext({ address: target, sessionMem, clientContext: body.clientContext });
+    // DEV-CLUSTER-READ FIX, DISCLOSED (requested live: "cant we use like the section from dev
+    // cluster for clark on token scan" — following the always-same-deployer memory fix above).
+    // /api/dev-wallet already computes the full Dev Cluster read Token Scanner's own "Dev" tab
+    // shows (deployerAddress, linkedWallets, clusterMap with linked/cluster/holder wallet counts
+    // and a risk label, devClusterSupply, previousProjects, suspiciousTransfers) AND a dedicated
+    // clarkVerdict object (label/confidence/summary/keySignals/risks/nextAction) built specifically
+    // for this answer — devRes.json was fetched, checked for ok/non-null, and then thrown away in
+    // favor of hardcoded boilerplate ("Likely origin wallet is shown only when returned by this
+    // CORTEX read" etc.) that never actually read a single field from it. Every real signal below
+    // is read straight from that same payload; nothing here is a new computation.
+    const dw = devRes.json as Record<string, unknown>;
+    const cv = (dw.clarkVerdict && typeof dw.clarkVerdict === "object") ? dw.clarkVerdict as Record<string, unknown> : null;
+    const cm = (dw.clusterMap && typeof dw.clusterMap === "object") ? dw.clusterMap as Record<string, unknown> : null;
+    const cmSummary = (cm?.summary && typeof cm.summary === "object") ? cm.summary as Record<string, unknown> : null;
+    const deployerAddress = typeof dw.deployerAddress === "string" ? dw.deployerAddress : null;
+    const deployerStatus = typeof dw.deployerStatus === "string" ? dw.deployerStatus : null;
+    const deployerConfidence = typeof dw.deployerConfidence === "string" ? dw.deployerConfidence : null;
+    const linkedWallets = Array.isArray(dw.linkedWallets) ? dw.linkedWallets as unknown[] : [];
+    const devClusterSupply = typeof dw.devClusterSupply === "number" ? dw.devClusterSupply : null;
+    const previousProjects = Array.isArray(dw.previousProjects) ? dw.previousProjects as unknown[] : [];
+    const previousActivityAvailable = dw.previousActivityAvailable === true;
+    const suspiciousTransfers = dw.suspiciousTransfers === true;
+    const suspiciousTransferReasons = Array.isArray(dw.suspiciousTransferReasons) ? (dw.suspiciousTransferReasons as unknown[]).filter((r): r is string => typeof r === "string") : [];
+    const creatorInTopHolders = typeof dw.creatorInTopHolders === "boolean" ? dw.creatorInTopHolders : null;
+
+    const originLines = deployerAddress
+      ? [
+          `- Origin wallet: ${deployerAddress}`,
+          `- Status: ${deployerStatus === "confirmed" ? "Confirmed from on-chain creation record" : deployerStatus === "possible_match" ? "Likely match, not fully confirmed" : "Not fully confirmed"}${deployerConfidence ? ` (confidence: ${deployerConfidence})` : ""}`,
+        ]
+      : ["- Origin wallet could not be verified from this pass."];
+
+    const clusterRiskLabel = typeof cmSummary?.clusterRiskLabel === "string" ? cmSummary.clusterRiskLabel : null;
+    const clusterDominance = typeof cmSummary?.clusterDominance === "string" ? cmSummary.clusterDominance : null;
+    const clusterReason = typeof cmSummary?.reason === "string" ? cmSummary.reason : null;
+    const linkedWalletCount = typeof cmSummary?.linkedWalletCount === "number" ? cmSummary.linkedWalletCount : linkedWallets.length;
+    const clusterLines = cmSummary
+      ? [
+          `- Linked wallets: ${linkedWalletCount}${typeof cmSummary.holderWalletCount === "number" ? ` (${cmSummary.holderWalletCount} holding supply)` : ""}`,
+          `- Dev cluster supply: ${devClusterSupply != null ? `${devClusterSupply.toFixed(1)}%` : "unverified"}${clusterDominance ? ` — ${clusterDominance} dominance` : ""}`,
+          `- Cluster risk: ${clusterRiskLabel ?? "open_check"}${clusterReason ? ` — ${clusterReason}` : ""}`,
+        ]
+      : linkedWallets.length > 0
+        ? [`- Linked wallets: ${linkedWallets.length}`, `- Dev cluster supply: ${devClusterSupply != null ? `${devClusterSupply.toFixed(1)}%` : "unverified"}`]
+        : ["- No linked wallet relationships confirmed from current evidence."];
+
+    const holderLines = creatorInTopHolders != null
+      ? [`- Creator/deployer holds a top-holder position: ${creatorInTopHolders ? "Yes" : "No"}`]
+      : ["- Creator-vs-holder overlap not confirmed from this pass."];
+
+    const activityLines = previousProjects.length > 0
+      ? [`- ${previousProjects.length} prior contract${previousProjects.length === 1 ? "" : "s"} linked to this deployer.`]
+      : previousActivityAvailable
+        ? ["- No prior deployer activity found."]
+        : ["- Prior deployer activity check unavailable in this pass."];
+
+    const riskLines = [
+      ...(suspiciousTransfers ? suspiciousTransferReasons.map(r => `- ${r}`) : []),
+      ...(cv && Array.isArray(cv.risks) ? (cv.risks as unknown[]).filter((r): r is string => typeof r === "string").map(r => `- ${r}`) : []),
+    ];
+    if (riskLines.length === 0) riskLines.push("- No specific risk flags returned from current evidence.");
+
+    const verdictLabel = typeof cv?.label === "string" ? cv.label : null;
+    const verdictConfidence = typeof cv?.confidence === "string" ? cv.confidence : null;
+    const verdictSummary = typeof cv?.summary === "string" ? cv.summary : null;
+    const nextAction = typeof cv?.nextAction === "string" ? cv.nextAction : "Compare origin wallet activity with holder concentration and liquidity control. No trade call.";
+
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: ["dev_wallet_analyze"],
+      // Feeds the existing generic DEPLOYER MEMORY harvester (response-finalisation block below)
+      // so a resolved deployer here is remembered for follow-ups ("has he rugged before?") the same
+      // way every other deployer-resolving path already is — no separate write needed.
+      ...(deployerAddress ? { deployerAddress, devWallet: { confidence: deployerConfidence ?? "medium" } } : {}),
       analysis: [
-        "DEV WALLET READ", "",
+        "DEPLOYER / DEV CLUSTER READ", "",
         `Token: ${cx.name} (${cx.symbol})`,
         `Contract: ${target}`, "",
-        "Origin read:",
-        "- Likely origin wallet is shown only when returned by this CORTEX read.",
-        "- Origin wallet could not be verified from this pass.",
+        "Origin:",
+        ...originLines,
         "",
-        "Linked wallet signals:",
-        "- No linked wallet signals returned unless explicitly shown.",
+        "Dev Cluster:",
+        ...clusterLines,
         "",
-        "Prior activity:",
-        "- Prior deployer activity incomplete unless explicitly shown.",
+        "Holder Overlap:",
+        ...holderLines,
         "",
-        "Risk flags:",
-        "- Dev/origin data is still a missing confidence layer unless origin is returned.",
+        "Prior Activity:",
+        ...activityLines,
         "",
-        "Missing checks:",
-        "- Full origin wallet history may be incomplete in this pass.",
+        "Risk Flags:",
+        ...riskLines,
         "",
-        "Next action:",
-        "Compare origin wallet activity with holder concentration and liquidity control. No trade call.",
+        ...(verdictLabel ? [`Verdict: ${verdictLabel}${verdictConfidence ? ` (confidence: ${verdictConfidence})` : ""}`, ...(verdictSummary ? [verdictSummary] : []), ""] : []),
+        "Next Action:",
+        nextAction,
       ].join("\n"),
     };
   }
