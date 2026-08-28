@@ -173,16 +173,26 @@ assert.match(routeCode, /finalState: 'providerUnavailable'/, 'a genuine total-ou
 
 const pageSrc = fs.readFileSync(new URL('../app/terminal/pump-alerts/page.tsx', import.meta.url), 'utf8')
 const pageCode = pageSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
-assert.match(pageCode, /onClick=\{onScan\}/, 'Scan action must be wired')
-assert.match(pageCode, /onClick=\{onCopyCA\}/, 'Copy CA action must be wired')
-assert.match(pageCode, /onClick=\{onAskClark\}/, 'Ask Clark action must be wired')
-assert.match(pageCode, /onClick=\{onReport\}/, 'Report action must be wired')
-assert.match(pageCode, /Live Momentum/, 'the Live Momentum badge must render')
+// FILE-SPLIT FIX, DISCLOSED (matches the same fix already applied in
+// test-pump-intelligence-report.mjs): the card's action buttons — Scan/Copy CA/Ask Clark/Report —
+// were extracted out of page.tsx into AlertCard in pumpAlertsUi.tsx (a real, legitimate refactor,
+// not a regression); page.tsx now only wires the onScan/onCopyCA/onAskClark/onReport callback props
+// into <AlertCard>. Reading both files together keeps this assertion checking real, present wiring
+// regardless of which file it now lives in.
+const uiSrcForActions = fs.readFileSync(new URL('../app/terminal/pump-alerts/pumpAlertsUi.tsx', import.meta.url), 'utf8')
+const actionWiringCode = pageCode + '\n' + uiSrcForActions.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+assert.match(actionWiringCode, /onClick=\{onScan\}/, 'Scan action must be wired')
+assert.match(actionWiringCode, /onClick=\{onCopyCA\}/, 'Copy CA action must be wired')
+assert.match(actionWiringCode, /onClick=\{onAskClark\}/, 'Ask Clark action must be wired')
+assert.match(actionWiringCode, /onClick=\{onReport\}/, 'Report action must be wired')
+// Live Momentum badge and the report handoff's chain field also moved into AlertCard as part of the
+// same extraction — checked against the combined actionWiringCode for the same reason as above.
+assert.match(actionWiringCode, /Live Momentum/, 'the Live Momentum badge must render')
 assert.match(pageCode, /const PAGE_SIZE = 10/, 'initial render / page size must stay 8-10 alerts')
 assert.match(pageCode, /const hasMore = visibleCount < filtered\.length/, 'Load More must hide once everything is shown')
 assert.match(pageCode, /loadMoreLoading/, 'Load More must expose a loading state')
 assert.match(pageCode, /alert\.chain === 'base' \? '' : `&chain=\$\{alert\.chain\}`/, 'Scan handoff must pass the real chain to Token Scanner')
-assert.match(pageCode, /chain: alert\.chain,/, 'the report handoff must pass the alert\'s real chain')
+assert.match(actionWiringCode, /chain: alert\.chain,/, 'the report handoff must pass the alert\'s real chain')
 assert.doesNotMatch(pageCode, /setAlerts\(\[\]\)/, 'alerts must never be reset to empty on refresh — that would blank the feed')
 assert.match(pageCode, /\{alerts\.length\} of \{candidateAudit\.rawCandidates\} candidates qualified/, 'the low-count explanation must cite the real qualified/raw counts')
 assert.match(pageCode, /rejectedMajorStableWrapped\} majors\/stables removed/, 'the breakdown must state majors/stables removed')
@@ -209,7 +219,11 @@ assert.match(pageCode, /no momentum removed/, 'the breakdown must state no momen
   assert.equal(tokenAgeDaysFromPairCreatedAtMs(now, now), 0, 'a just-created pair must keep age 0, not null')
   assert.equal(tokenAgeDaysFromPairCreatedAtMs(null, now), null)
 }
-assert.match(routeCode, /marketCapUsd === fdvUsd/, 'DexScreener mcap===fdv must be treated as unknown circulating supply')
+// MCAP-UNAVAILABLE FIX, DISCLOSED: this used to assert the route treated DexScreener mcap===fdv as
+// unknown circulating supply (collapseEqualFdv) — that was the root cause of nearly every card
+// showing "MCap unavailable" and has been removed (see sanitizeMarketCapUsd's own disclosure above).
+// The route must no longer discard a real marketCap for merely equalling fdv.
+assert.doesNotMatch(routeCode, /collapseEqualFdv/, 'the equal-value market cap collapse must stay removed — a real provider-reported market cap is kept even when it equals FDV')
 assert.match(routeCode, /mergeNormalizedCandidate/, 'same-token rows must merge instead of first-wins')
 assert.match(routeCode, /pairCreatedAtMs/, 'candidates must carry pairCreatedAtMs')
 assert.match(pageCode, /rejectedCapDataMissing\} missing cap data/, 'cap-data-missing must not be labelled over $30M')
@@ -252,6 +266,20 @@ assert.match(routeCode, /parsePairCreatedAtMs\(pair\.pairCreatedAt\)/, 'DexScree
 assert.equal(sanitizeMarketCapUsd(1_000_000), 1_000_000, 'a real marketCap must be kept even when it equals FDV')
 assert.equal(sanitizeMarketCapUsd(1_000_000), 1_000_000, 'DS mcap distinct from fdv is kept')
 assert.equal(sanitizeMarketCapUsd(0), null, '0 mcap is missing, not a real cap')
+
+// MCAP-CARD-FALLBACK, DISCLOSED: even with a real (un-collapsed) marketCap field, GeckoTerminal/
+// DexScreener only populate a distinct market cap for tokens with a registered circulating supply —
+// brand-new pump tokens essentially never have one, so the card must not perpetually show a dead
+// "Unavailable" next to a populated FDV figure. When marketCapUsd is null but fdvUsd resolved, the
+// card shows the FDV number with the label itself changed to disclose it ("Mkt Cap (≈FDV)") — never
+// a silent, unlabeled substitution.
+{
+  const uiSrc = fs.readFileSync(new URL('../app/terminal/pump-alerts/pumpAlertsUi.tsx', import.meta.url), 'utf8')
+  const uiCode = uiSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+  assert.match(uiCode, /alert\.marketCapUsd != null \? 'real' : alert\.fdvUsd != null \? 'fdv_fallback' : 'none'/, 'the card must fall back to FDV, clearly labeled, when no real market cap resolved')
+  assert.match(uiCode, /'Mkt Cap \(≈FDV\)'/, 'the FDV-fallback state must relabel the Market Cap tile rather than silently showing an FDV number under an unqualified "Market Cap" label')
+  assert.match(uiCode, /mcapText = marketCapSource === 'real' \? fmtUSD\(alert\.marketCapUsd\)/, 'a real, provider-reported market cap must still win when present')
+}
 {
   const c = candidate({ marketCapUsd: 0, fdvUsd: null, priceChange24hPct: 10 })
   const r = evaluatePumpCandidate(c)
@@ -264,7 +292,9 @@ assert.match(routeCode, /r\.status === 'fulfilled'\)/, 'empty successful fetches
 assert.doesNotMatch(routeCode, /r\.status === 'fulfilled' && r\.value\.length > 0/, 'empty success must not be treated as a chain failure')
 assert.match(pageCode, /activeChains\.size === CHAIN_CHIPS\.length/, 'clicking a chain while all are selected must isolate that chain')
 assert.match(pageCode, /chainParamRef\.current = nextChains/, 'the fetch query must be written from the new set')
-assert.match(pageCode, /toFixed\(1\)\}h/, 'sub-day age on the card must render as hours like the report')
-assert.doesNotMatch(pageCode, /tokenAgeDays < 1 \? '<1d'/, 'cards must not collapse sub-day age to <1d')
+// fmtAge (the card's own age formatter) also moved into pumpAlertsUi.tsx as part of the same
+// extraction — checked against uiSrcForActions for the same reason as the action-wiring block above.
+assert.match(uiSrcForActions, /toFixed\(1\)\}h/, 'sub-day age on the card must render as hours like the report')
+assert.doesNotMatch(uiSrcForActions, /tokenAgeDays < 1 \? '<1d'/, 'cards must not collapse sub-day age to <1d')
 
 console.log('test-pump-alerts-discovery.mjs: all assertions passed')

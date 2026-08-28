@@ -225,9 +225,26 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
   const showRiskIcon = alert.riskLevel === 'HIGH' || alert.riskLevel === 'MEDIUM'
   const identityColor = alert.riskLevel === 'HIGH' ? riskColor : alert.category === 'HIGH_MOMENTUM' ? catColor : alert.riskLevel === 'MEDIUM' ? '#c084fc' : '#2DD4BF'
   // MARKET CAP, DISCLOSED (requested: card must show Market Cap alongside FDV, never fabricated).
-  // marketCapUsd is only ever a real value the backend measured (or null) — "MCap unavailable" is
-  // shown verbatim rather than a fake $0 or silently reusing the FDV figure.
-  const mcapText = alert.marketCapUsd != null ? fmtUSD(alert.marketCapUsd) : 'MCap unavailable'
+  // marketCapUsd is only ever a real value the backend measured (or null) — never a fake $0.
+  //
+  // MCAP-UNAVAILABLE FIX, DISCLOSED (live report: nearly every card showed a bare "MCap unavailable"
+  // despite Price/24h/Liquidity/Volume/FDV/Age all resolving). Root cause: GeckoTerminal/DexScreener
+  // only populate a distinct market_cap_usd/marketCap field for tokens with a registered circulating
+  // supply (CoinGecko-style token info) — brand-new pump/DEX-only tokens essentially never have one,
+  // so this feed's own realistic target population showed it blank almost every time even though
+  // that's not a bug in the fetch itself. FDV (price x total on-chain supply) is always real and
+  // always resolvable, and for these tokens — no vesting, no locked allocation, fully circulating
+  // supply — it usually IS the token's true market cap; the two numbers just aren't independently
+  // confirmed as identical. Rather than perpetually show a dead "unavailable" next to a populated
+  // FDV figure one column over, the FDV value is shown here too, but the label itself is changed to
+  // "Market Cap (≈FDV)" so it is never a silent substitution — this is the same visible-label pattern
+  // (never a swapped-in number without saying so) already established for the Pump Report page.
+  const marketCapSource: 'real' | 'fdv_fallback' | 'none' =
+    alert.marketCapUsd != null ? 'real' : alert.fdvUsd != null ? 'fdv_fallback' : 'none'
+  const mcapLabel = marketCapSource === 'fdv_fallback' ? 'Mkt Cap (≈FDV)' : 'Market Cap'
+  const mcapText = marketCapSource === 'real' ? fmtUSD(alert.marketCapUsd)
+    : marketCapSource === 'fdv_fallback' ? fmtUSD(alert.fdvUsd)
+    : 'Unavailable'
 
   return (
     <div
@@ -380,7 +397,7 @@ export function AlertCard({ alert, onScan, onAskClark, onReport, onCopyCA, onHov
         />
         <GridMetric label="Volume" value={fmtUSD(alert.volume24hUsd)} dim={alert.volume24hUsd == null} />
         <GridMetric label="Liquidity" value={fmtUSD(alert.liquidityUsd)} dim={alert.liquidityUsd == null} />
-        <GridMetric label="Market Cap" value={mcapText} dim={alert.marketCapUsd == null} />
+        <GridMetric label={mcapLabel} value={mcapText} dim={marketCapSource === 'none'} />
         <GridMetric label="FDV" value={fmtUSD(alert.fdvUsd)} dim={alert.fdvUsd == null} />
         <GridMetric label="Age" value={fmtAge(alert.tokenAgeDays)} dim={alert.tokenAgeDays == null} />
         <GridMetric label="Chain" value={CHAIN_LABEL[alert.chain]} strong color={CHAIN_COLOR[alert.chain]} />
