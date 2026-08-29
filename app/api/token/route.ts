@@ -6,6 +6,14 @@ import { fetchGoPlusHoneypotFallback } from "@/lib/server/goplusSecurity";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
 import { sanitizePublicTokenResponse, applyTokenScannerPlanGate, TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from "@/lib/server/tokenPublicResponse";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
+import {
+  resolveTokenScanChainDecision,
+  buildTokenScanCacheKey,
+  isCacheHitValid,
+  EVM_CHAIN_SLUGS,
+  type ChainExistenceProbe,
+  type TokenScannerChainStrictnessAudit,
+} from "@/lib/tokenScannerChainStrictness";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { buildLpControllerIntel, resolveLpControllerIdentity } from "@/lib/server/lpControllerIntel";
 import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
@@ -3664,7 +3672,7 @@ export async function POST(req: Request) {
     if (rawChain !== 'base' && rawChain !== 'eth' && rawChain !== 'bnb' && rawChain !== 'robinhood') {
       return NextResponse.json({ error: 'Unsupported chain. Use chain=base, chain=eth, chain=bnb, chain=robinhood, or chain=solana.' }, { status: 400 })
     }
-    let chain: ChainKey = rawChain as ChainKey
+    const chain: ChainKey = rawChain as ChainKey
     const forceDexFallback = debugMode === true && _forceDexFallback === true
     const originalInput = String(contractInput ?? '').trim()
     // CHAIN-STRICT INPUT VALIDATION (chain-correctness audit): a well-formed Solana mint must
@@ -3753,33 +3761,75 @@ export async function POST(req: Request) {
     // (fetchGeckoTerminal swallows non-2xx responses and returns null, which downstream reads
     // as "no pools" — the token then reports name: Unknown / poolCount: 0 / noActivePools: true).
     let _earlyGtData: any = null
+    let _earlyBytecode: string | null = null
+    // CHAIN-STRICTNESS FIX, DISCLOSED (reported bug: "selected Ethereum, entered a Base contract,
+    // Token Scanner scanned it successfully as Base" — hard rule violation, "Do NOT silently switch
+    // chains"). Root cause was directly below: on zero indexed pools for the selected chain, this
+    // block used to silently reassign `chain = altChain` and continue the ENTIRE scan as whichever
+    // chain the token was actually found on — wrong RPC, wrong holders, wrong everything, with the
+    // user never told. `chain` is now NEVER reassigned. Instead this is a hard existence gate: the
+    // selected chain's own RPC bytecode (eth_getCode) is the authoritative "is this contract
+    // actually deployed here" signal — independent of whether it has an indexed liquidity pool, and
+    // extended to all four EVM chains (not just eth/base). A confirmed-absent result ("0x", i.e. the
+    // RPC call itself succeeded and definitively found no code) blocks the scan outright with an
+    // explicit error naming the cross-chain candidate, if one is found, so the user can choose to
+    // switch — never an automatic switch. An inconclusive bytecode result (RPC not configured/
+    // failed, i.e. null) never blocks — this stays fail-open exactly like the bytecode check used
+    // later in the pipeline, so a chain without full RPC coverage doesn't produce false blocks.
+    let tokenScannerChainStrictnessAudit: TokenScannerChainStrictnessAudit | null = null
     if (isAddressInput) {
       _diagPoolAttempted = true
-      const selectedPools = await fetchGeckoTerminal(contract, chain)
+      const [selectedPools, selectedBytecode] = await Promise.all([
+        fetchGeckoTerminal(contract, chain),
+        fetchBytecode(chain, contract),
+      ])
       const selectedCount = Array.isArray(selectedPools?.data) ? selectedPools.data.length : 0
       _diagPoolCount = selectedCount
       _earlyGtData = selectedPools
-      // WRONG-CHAIN-REASSIGNMENT FIX, DISCLOSED (audit: hard rule "no wrong-chain pools" — this
-      // "try the opposite chain" fallback predates bnb/robinhood support and only ever toggled
-      // between 'eth' and 'base'. For a bnb or robinhood scan with zero indexed pools, it silently
-      // probed Ethereum and, if that same contract address happened to resolve to ANY unrelated
-      // Ethereum pool (plausible — CREATE2/vanity-address collisions, or simply an unrelated token
-      // deployed at the same address on a different chain), continued the ENTIRE scan as an
-      // Ethereum token — wrong RPC, wrong holders, wrong everything, with the user never told
-      // their bnb/robinhood scan was silently reassigned to a chain they never selected. Scoped to
-      // base<->eth only now, which is the real, legitimate ambiguity this exists to resolve (a
-      // user unsure whether their pasted address is on Base or mainnet Ethereum — those two
-      // chains are commonly confused since Base is an L2 of Ethereum); bnb/robinhood now get an
-      // honest "no pools found on this chain" instead of a guessed foreign-chain result.
-      if (selectedCount === 0 && (chain === 'eth' || chain === 'base')) {
-        const altChain: ChainKey = chain === 'eth' ? 'base' : 'eth'
-        const altPools = await fetchGeckoTerminal(contract, altChain)
-        const altCount = Array.isArray(altPools?.data) ? altPools.data.length : 0
-        if (altCount > 0) {
-          chain = altChain
-          _diagPoolCount = altCount
-          _earlyGtData = altPools
-        }
+      _earlyBytecode = selectedBytecode
+
+      // Candidate probes are only fetched when the selected chain's own existence is inconclusive-
+      // or-absent (confirmed "0x" bytecode, or zero pools) — the common happy path (bytecode found)
+      // never pays for three extra chains' worth of RPC/GT calls.
+      const needsCandidateProbe = selectedBytecode === '0x' || selectedCount === 0
+      const candidateProbes: ChainExistenceProbe[] = needsCandidateProbe
+        ? await Promise.all(
+          EVM_CHAIN_SLUGS.filter((c) => c !== chain).map(async (candidate) => {
+            const [candidatePools, candidateBytecode] = await Promise.all([
+              fetchGeckoTerminal(contract, candidate).catch(() => null),
+              fetchBytecode(candidate, contract).catch(() => null),
+            ])
+            const poolCount = Array.isArray(candidatePools?.data) ? candidatePools.data.length : 0
+            return { chain: candidate, poolCount, bytecode: candidateBytecode }
+          })
+        )
+        : []
+
+      // Safe: the earlier chain-param guard already rejected anything other than base/eth/bnb/
+      // robinhood before this block runs — 'polygon' (ChainKey's only other member) never reaches
+      // here.
+      const evmChain = chain as unknown as import("@/lib/tokenScannerChainStrictness").EvmChainSlug
+      const decision = resolveTokenScanChainDecision({
+        userSelectedChain: rawChain,
+        requestedChainSlug: evmChain,
+        inputAddress: originalInput,
+        normalizedAddress: contract,
+        selectedProbe: { chain: evmChain, poolCount: selectedCount, bytecode: selectedBytecode },
+        candidateProbes,
+      })
+      tokenScannerChainStrictnessAudit = decision.audit
+
+      if (decision.blocked) {
+        return NextResponse.json({
+          status: 'wrong_chain',
+          error: decision.errorMessage,
+          requestedChainSlug: chain,
+          requestedChainId: CHAIN_ID_MAP[chain],
+          crossChainCandidateFound: decision.audit.crossChainCandidateFound,
+          crossChainCandidateChain: decision.audit.crossChainCandidateChain,
+          tokenScannerChainStrictnessAudit,
+          ...(debugMode === true ? { _diagnostics: { tokenScannerChainStrictnessAudit } } : {}),
+        }, { status: 404 })
       }
     }
     _diagSelectedChain = chain
@@ -3864,16 +3914,35 @@ export async function POST(req: Request) {
     // only for plain, non-debug requests, so a debug-augmented payload (_diagnostics/
     // _tokenRouteDebug fields) never gets served back out to a normal caller from cache.
     // SCAN RESPONSE SCHEMA VERSION (Robinhood scan-inconsistency audit): the version is part of
-    // the key AND verified on the cached copy, so a payload written by older code can never be
+    // the cached value AND verified on read, so a payload written by older code can never be
     // served to newer frontend code — the exact "same token, different result per device" class.
-    const _tokenCacheKey = `token:v${TOKEN_SCAN_RESPONSE_SCHEMA_VERSION}:${chain}:${contract.toLowerCase()}`
+    // CHAIN-STRICTNESS CACHE KEY, DISCLOSED: key format now matches
+    // tokenScan:${chainSlug}:${chainId}:${tokenAddress} exactly — the key alone already scopes
+    // Base/Ethereum/BNB/Robinhood to separate entries for the same address, since each chain slug
+    // is distinct. On top of that, the cached payload's OWN recorded chain/contract is explicitly
+    // re-validated against the current request below (isCacheHitValid) before ever being served —
+    // a second, independent guard so a cross-chain hit is rejected even in the hypothetical case of
+    // a key collision, not just trusted because the key matched.
+    const _tokenScanCacheKey = buildTokenScanCacheKey(chain as unknown as import("@/lib/tokenScannerChainStrictness").EvmChainSlug, CHAIN_ID_MAP[chain], contract)
     if (debugMode !== true) {
-      const _cachedResponse = await getTokenCache<Record<string, unknown>>(_tokenCacheKey)
+      const _cachedResponse = await getTokenCache<Record<string, unknown>>(_tokenScanCacheKey)
       if (_cachedResponse && (_cachedResponse as Record<string, unknown>).scanResponseSchemaVersion === TOKEN_SCAN_RESPONSE_SCHEMA_VERSION) {
-        // AUDIT FIX, DISCLOSED (token-scanner audit): this cache is shared across every caller
-        // regardless of plan — without gating here too, a free caller could get a Pro user's
-        // full cached response for the same token within the TTL, bypassing the gate entirely.
-        return NextResponse.json(applyTokenScannerPlanGate(_cachedResponse, _requestPlan))
+        const _cachedChain = String((_cachedResponse as Record<string, unknown>).chain ?? '')
+        const _cachedContract = String((_cachedResponse as Record<string, unknown>).contract ?? '')
+        const _cacheValid = isCacheHitValid(
+          { chainSlug: _cachedChain, chainId: CHAIN_ID_MAP[_cachedChain as ChainKey] ?? -1, tokenAddress: _cachedContract },
+          { chainSlug: chain, chainId: CHAIN_ID_MAP[chain], tokenAddress: contract },
+        )
+        if (_cacheValid) {
+          // AUDIT FIX, DISCLOSED (token-scanner audit): this cache is shared across every caller
+          // regardless of plan — without gating here too, a free caller could get a Pro user's
+          // full cached response for the same token within the TTL, bypassing the gate entirely.
+          const _gated = applyTokenScannerPlanGate(_cachedResponse, _requestPlan) as Record<string, unknown>
+          const _existingAudit = (_gated.tokenScannerChainStrictnessAudit ?? {}) as Record<string, unknown>
+          _gated.tokenScannerChainStrictnessAudit = { ..._existingAudit, cacheKey: _tokenScanCacheKey, cacheHit: true, cacheChainMatched: true }
+          return NextResponse.json(_gated)
+        }
+        // Cross-chain / mismatched cache entry — never served; falls through to a fresh scan.
       }
     }
 
@@ -3925,7 +3994,9 @@ export async function POST(req: Request) {
     _diagMarketAttempted = true
     const bytecodePromise = (async () => {
       const t0 = Date.now()
-      const out = await fetchBytecode(chain, contract)
+      // Reuses the bytecode already fetched by the chain-strictness existence gate above (same
+      // chain/contract) instead of paying for the eth_getCode RPC call twice per scan.
+      const out = _earlyBytecode !== null ? _earlyBytecode : await fetchBytecode(chain, contract)
       if (debugMode) {
         rpcCheckDiagnostics.push({
           checkName: 'bytecodeCheck',
@@ -7530,10 +7601,33 @@ export async function POST(req: Request) {
     }
 
     _scanStage = 'response_assembly'
+    // Success-path audit: reuses the object built by the chain-strictness existence gate above when
+    // that path ran (isAddressInput); alias-resolved inputs (e.g. WETH on Base) never had a
+    // cross-chain ambiguity to check, so this fills in the same shape — cacheHit is always false
+    // here specifically because this is the fresh-scan path (a cache hit returns earlier, above,
+    // with its own audit reflecting cacheHit: true).
+    const finalTokenScannerChainStrictnessAudit = tokenScannerChainStrictnessAudit ?? {
+      userSelectedChain: rawChain,
+      requestedChainSlug: chain,
+      requestedChainId: CHAIN_ID_MAP[chain],
+      inputAddress: originalInput,
+      normalizedAddress: contract.toLowerCase(),
+      tokenExistsOnSelectedChain: true,
+      crossChainCandidateFound: false,
+      crossChainCandidateChain: null,
+      autoSwitchedChain: false,
+      cacheKey: _tokenScanCacheKey,
+      cacheHit: false,
+      cacheChainMatched: true,
+      finalChainSlug: chain,
+      finalChainId: CHAIN_ID_MAP[chain],
+      blockedReason: null,
+    }
     const responsePayload = {
       chain,
       contract,
       resolvedInput,
+      tokenScannerChainStrictnessAudit: finalTokenScannerChainStrictnessAudit,
 
       // Core token fields
       name: finalResolvedName,
@@ -8862,7 +8956,7 @@ export async function POST(req: Request) {
       normalizedAddress: contract,
       addressType: isAddressInput ? 'evm_contract' : 'resolved',
       scannerPath: 'evm_full',
-      cacheKey: _tokenCacheKey,
+      cacheKey: _tokenScanCacheKey,
       cacheHit: false, // this code path only runs on a cache miss
       cacheChainMatched: true,
       providerResultsRejectedWrongChain: _gtPoolsRejectedWrongChain,
@@ -8956,7 +9050,7 @@ export async function POST(req: Request) {
     // would incorrectly receive a free-gated response for up to the cache TTL. The plan gate is
     // applied only to the copy returned for THIS request, below.
     if (debugMode !== true) {
-      await setTokenCache(_tokenCacheKey, _sanitizedResponse, 45)
+      await setTokenCache(_tokenScanCacheKey, _sanitizedResponse, 45)
     }
     return NextResponse.json(applyTokenScannerPlanGate(_sanitizedResponse, _requestPlan))
   } catch (err) {

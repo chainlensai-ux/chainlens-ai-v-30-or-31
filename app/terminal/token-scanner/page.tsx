@@ -4220,6 +4220,11 @@ export default function TerminalTokenScanner() {
   const [loading, setLoading]   = useState(false)
   const [result, setResult]     = useState<ScanResult | null>(null)
   const [error, setError]       = useState<string | null>(null)
+  // CHAIN-STRICTNESS FIX, DISCLOSED: populated only from a backend-confirmed cross-chain candidate
+  // on a blocked scan (see handleScan's wrong_chain branch) — the "Switch to X and scan" CTA this
+  // powers below never fires a scan on its own; it only pre-fills the chain switch + rescan for the
+  // user to click.
+  const [crossChainSwitchCandidate, setCrossChainSwitchCandidate] = useState<{ chain: 'base' | 'eth' | 'bnb' | 'robinhood'; address: string } | null>(null)
   const [lpExpanded, setLpExpanded] = useState(true)
   const [activeSection, setActiveSection] = useState<'cortex-read'|'market-pulse'|'holder-map'|'lp-safety'|'risk-engine'|'deployer-intel'>('cortex-read')
   const [devControlTab, setDevControlTab] = useState<'dev-map'|'cluster-map'|'supply-control'|'history'|'watch-plan'>('dev-map')
@@ -4517,6 +4522,7 @@ export default function TerminalTokenScanner() {
     setResolverResult(null)
     setResult(null)
     setError(null)
+    setCrossChainSwitchCandidate(null)
     setDevIntel(null)
     setDevIntelError(null)
     devIntelCacheRef.current = {}  // clear cached devIntel so no stale data bleeds across scans
@@ -4648,7 +4654,20 @@ export default function TerminalTokenScanner() {
         const isAddrInput = isContractAddress(scanContract)
         if (json?.status === 'invalid_address') setError(json.error ?? 'Invalid contract address.')
         else if (json?.status === 'address_scan_failed') setError(json.error ?? "Token address accepted, but CORTEX could not find enough live data yet.")
-        else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') setError(`This token was not found on ${chainDisplayName(scanChain)}. Switch chain or scan with Auto Detect.`)
+        else if (json?.status === 'wrong_chain' || json?.status === 'chain_mismatch') {
+          // CHAIN-STRICTNESS FIX, DISCLOSED: the backend now runs a real on-chain existence check
+          // (see app/api/token/route.ts's tokenScannerChainStrictnessAudit) and returns the exact
+          // required copy plus which chain the contract actually exists on, if any — used here
+          // verbatim instead of the old generic "switch chain or Auto Detect" message. The optional
+          // "Switch to X and scan" CTA below only ever appears from this candidate; it is never
+          // auto-applied.
+          setError(json.error ?? `This token was not found on ${chainDisplayName(scanChain)}. Switch chain or scan with Auto Detect.`)
+          setCrossChainSwitchCandidate(
+            json?.crossChainCandidateFound && json?.crossChainCandidateChain
+              ? { chain: json.crossChainCandidateChain as 'base' | 'eth' | 'bnb' | 'robinhood', address: scanContract }
+              : null
+          )
+        }
         else if (json?.status === 'ambiguous') setError('Multiple tokens match this. Paste the contract address or choose one.')
         else if (json?.status === 'no_pool_found' || json?.marketStatus === 'no_pool_found') setError(`No active liquidity pools found on ${chainDisplayName(scanChain)} for this token.`)
         else if (isAddrInput) setError("Token address accepted, but CORTEX could not find enough live data yet.")
@@ -5247,7 +5266,22 @@ export default function TerminalTokenScanner() {
               fontSize: '13px', fontFamily: 'var(--font-plex-mono)',
               marginBottom: '24px',
             }}>
-              {error}
+              <p style={{ margin: crossChainSwitchCandidate ? '0 0 10px' : 0 }}>{error}</p>
+              {crossChainSwitchCandidate && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const candidate = crossChainSwitchCandidate
+                    if (!candidate) return
+                    setChain(candidate.chain)
+                    setCrossChainSwitchCandidate(null)
+                    void handleScan(candidate.address, candidate.chain)
+                  }}
+                  style={{ padding: '7px 12px', borderRadius: '8px', border: '1px solid rgba(251,191,36,.32)', background: 'rgba(251,191,36,.08)', color: '#fbbf24', fontSize: '11px', fontWeight: 800, fontFamily: 'var(--font-plex-mono)', cursor: 'pointer' }}
+                >
+                  Switch to {chainDisplayName(crossChainSwitchCandidate.chain)} and scan
+                </button>
+              )}
             </div>
           )}
 
