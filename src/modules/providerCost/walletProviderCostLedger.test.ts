@@ -229,7 +229,7 @@ test('a genuine mix of historical and current-price calls attributes unused/used
   // Honest clamp, never fabricated exact attribution (see the field's own header) — bounded by both
   // the pass's own call count and the ledger-wide total.
   assert.equal(audit.goldrushCallSplit.unusedHistoricalGoldrushCalls, 1)
-  assert.equal(audit.goldrushCallSplit.currentPriceCallsUsedForUnrealized, 1)
+  assert.equal(audit.goldrushCallSplit.legacyMisleadingCurrentPriceCallsUsedForUnrealized, 1)
 })
 
 test('omitting the split leaves every new field honestly null — never a fabricated zero for an unwired caller', () => {
@@ -240,7 +240,7 @@ test('omitting the split leaves every new field honestly null — never a fabric
   assert.equal(audit.goldrushCallSplit.currentPriceGoldrushLiveCalls, null)
   assert.equal(audit.goldrushCallSplit.currentPriceDexLiveCalls, null)
   assert.equal(audit.goldrushCallSplit.unusedHistoricalGoldrushCalls, null)
-  assert.equal(audit.goldrushCallSplit.currentPriceCallsUsedForUnrealized, null)
+  assert.equal(audit.goldrushCallSplit.legacyMisleadingCurrentPriceCallsUsedForUnrealized, null)
   // The pre-existing, unsplit totals are completely unaffected by this task.
   assert.equal(audit.outputs.callsWhoseResultWasUnused, 1)
 })

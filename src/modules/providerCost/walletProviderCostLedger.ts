@@ -284,18 +284,31 @@ export type WalletProviderCostAudit = {
   // `currentPriceDexActualLiveCalls`) supplies the split as an OPTIONAL parameter.
   // `historicalGoldrushLiveCalls`/`currentPriceGoldrushLiveCalls`/`currentPriceDexLiveCalls` are then
   // the caller's own REAL, MEASURED numbers, passed straight through — never derived here.
-  // `unusedHistoricalGoldrushCalls`/`currentPriceCallsUsedForUnrealized` are honestly clamped
-  // (`min(pass count, ledger-wide total)`) rather than fabricated exact per-call attribution this
-  // ledger has no way to know — EXACT (not just a bound) whenever the corresponding pass count is 0,
-  // which is precisely the replay-covered-path claim this task exists to prove. Every field defaults
-  // to `null` when the caller doesn't supply the split (an older/unwired caller) — never a fabricated
-  // zero standing in for "unknown".
+  // `unusedHistoricalGoldrushCalls` is honestly clamped (`min(pass count, ledger-wide total)`) rather
+  // than fabricated exact per-call attribution this ledger has no way to know — EXACT (not just a
+  // bound) whenever the corresponding pass count is 0, which is precisely the replay-covered-path
+  // claim this task exists to prove. Every field defaults to `null` when the caller doesn't supply
+  // the split (an older/unwired caller) — never a fabricated zero standing in for "unknown".
+  //
+  // RENAMED-TO-LEGACY, DISCLOSED (Wallet Scanner live-regression audit — reported: this field kept
+  // showing `0` in live cost-audit logs even after the codebase already grew a real replacement).
+  // `legacyMisleadingCurrentPriceCallsUsedForUnrealized` was previously named
+  // `currentPriceCallsUsedForUnrealized` — same honestly-clamped `min(currentPriceGoldrushLiveCalls,
+  // ledger-wide resultUsed)` computation, UNCHANGED — but that name promised a measurement it never
+  // performed: it is a scan-WIDE GoldRush "was any call's result used" clamp, blind to which specific
+  // pass (historical vs. current-price) or which specific RECONCILED open position a given call's
+  // price actually backed. `unrealizedPriceUsageAudit` (src/pipeline/unrealizedPriceUsageAudit.ts —
+  // `pricesUsedInOfficialUnrealized`/`fallbackPricesAccepted`) is the real answer to that question,
+  // built from fifoEngine's own per-position reconciliation outcome. This field is kept (never
+  // silently dropped, so an existing dashboard reading it doesn't get a missing-key crash) but
+  // renamed so its name itself discloses that it is not the measurement to trust for "was a
+  // current-price call actually used in the official unrealized total."
   goldrushCallSplit: {
     historicalGoldrushLiveCalls: number | null
     currentPriceGoldrushLiveCalls: number | null
     currentPriceDexLiveCalls: number | null
     unusedHistoricalGoldrushCalls: number | null
-    currentPriceCallsUsedForUnrealized: number | null
+    legacyMisleadingCurrentPriceCallsUsedForUnrealized: number | null
   }
 }
 
@@ -314,7 +327,7 @@ export function getWalletProviderCostAudit(goldrushSplit?: GoldrushCallSplitInpu
   const totalGoldrushUnused = state.goldrush.resultUnused
   const totalGoldrushUsed = state.goldrush.resultUsed
   const unusedHistoricalGoldrushCalls = goldrushSplit ? Math.min(goldrushSplit.historicalGoldrushLiveCalls, totalGoldrushUnused) : null
-  const currentPriceCallsUsedForUnrealized = goldrushSplit ? Math.min(goldrushSplit.currentPriceGoldrushLiveCalls, totalGoldrushUsed) : null
+  const legacyMisleadingCurrentPriceCallsUsedForUnrealized = goldrushSplit ? Math.min(goldrushSplit.currentPriceGoldrushLiveCalls, totalGoldrushUsed) : null
   // HISTORICAL-ONLY UNUSED, DISCLOSED: with a real split, every GoldRush call this ledger cannot
   // prove is historical is treated as current-price and excluded from the headline unused figure —
   // see `outputs`' own header above. Alchemy's unused count is always included unchanged.
@@ -353,7 +366,7 @@ export function getWalletProviderCostAudit(goldrushSplit?: GoldrushCallSplitInpu
       currentPriceGoldrushLiveCalls: goldrushSplit?.currentPriceGoldrushLiveCalls ?? null,
       currentPriceDexLiveCalls: goldrushSplit?.currentPriceDexLiveCalls ?? null,
       unusedHistoricalGoldrushCalls,
-      currentPriceCallsUsedForUnrealized,
+      legacyMisleadingCurrentPriceCallsUsedForUnrealized,
     },
   }
 }

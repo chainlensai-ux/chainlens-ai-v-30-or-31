@@ -18,6 +18,96 @@ type WalletScanJobState = {
   error?: string
 }
 
+// WALLET-WORKER-TIMING-AUDIT, DISCLOSED, ADDITIVE (Wallet Scanner live-regression audit — reported:
+// "job completed... 81.5s. Pipeline timing showed ~72.5s" with no accounting for the ~9s gap).
+// ROOT CAUSE, CONFIRMED BY READING THIS FILE'S OWN CONTROL FLOW: `jobState.durationMs` (the number
+// this file already logs as "[wallet-scan-worker] job finished ... durationMs") is captured INSIDE
+// executeWalletScanJob, BEFORE this function's own `toSerializableResult` + `publishFinal` steps
+// run — so the real end-to-end job time a caller/queue actually experiences was always LARGER than
+// the one number this codebase logged, by exactly the serialization + two sequential KV writes
+// (walletScanResultKey, walletScanJobKey) that happen after jobState is built. That gap was real,
+// present in every prior scan, and simply never measured. Separately, the ~15 dynamic imports
+// executeWalletScanJob awaits BEFORE its own `startedAt` capture (cold-start module resolution) were
+// also never measured — both gaps are now real, named fields below, not folded silently into
+// "pipeline time."
+//
+// HONEST SCOPE, DISCLOSED: this worker's persistence layer is KV/Redis only (`lib/server/kv` —
+// see publishFinal below) — no Supabase write happens anywhere in this job's execution path, so
+// `supabaseWriteMs` is always null here (never a fabricated 0 standing in for "not applicable").
+// `cacheWriteMs` is likewise null: the only OTHER cache write in this call chain
+// (lib/server/cache/v2StageCache.ts's holdings-stage cache) happens INSIDE the pipeline itself,
+// already folded into `pipelineMs` — measuring it separately here would require threading a timer
+// through runWalletScanV2Worker's own internals, out of this task's safe, additive scope.
+export type WalletWorkerTimingAudit = {
+  // Full, real wall-clock span of runWalletScanWorker() — KV-connection verify through the final
+  // Response — the true "how long did this job take" number a caller/queue experiences.
+  jobDurationMs: number
+  // executeWalletScanJob's own measured span (jobState.durationMs) — dynamic imports excluded (see
+  // prePipelineMs), persistence excluded (see persistenceMs).
+  pipelineMs: number
+  // KV-connection verify + queue claim + executeWalletScanJob's own ~15 dynamic imports, all of
+  // which happen before executeWalletScanJob's `startedAt` is captured — real, previously-unmeasured
+  // cold-start/setup cost.
+  prePipelineMs: number
+  // toSerializableResult() + publishFinal()'s two sequential KV writes, combined — the real gap this
+  // audit exists to close. Equal to jobDurationMs - prePipelineMs - pipelineMs whenever the job
+  // reaches serialization (the one other possible time sink — the KV-connection verify/claim step —
+  // is folded into prePipelineMs instead, since it happens before the pipeline, not after).
+  postPipelineMs: number
+  // Same real measured span as postPipelineMs — kept as its own explicit field (rather than only
+  // inferring it from the totals above) because it is the one this task's audit shape specifically
+  // asks for by this name.
+  persistenceMs: number
+  cacheWriteMs: number | null
+  // The result-write half of publishFinal (walletScanResultKey) — this is literally the write that
+  // makes a completed scan visible to the UI's poll route, so it is reported under this name.
+  uiPublishMs: number
+  supabaseWriteMs: number | null
+  // The job-state-write half of publishFinal (walletScanJobKey, status:'done') — the "job is
+  // finished" marker write, separate from the result write above.
+  kvWriteMs: number
+  // Whichever of the two previously-invisible spans (prePipelineMs vs. postPipelineMs) turned out
+  // larger for this run — the most actionable single answer to "where did the missing time go."
+  slowestUnmeasuredStage: 'pre_pipeline_imports_and_claim' | 'post_pipeline_serialization_and_publish' | null
+  // Real residual: jobDurationMs minus every span this audit accounts for. Near-zero once
+  // prePipelineMs/pipelineMs/postPipelineMs are all measured; a persistently large value here would
+  // itself be the next diagnostic lead (e.g. Response.json/runtime overhead outside this file).
+  unexplainedMs: number
+}
+
+export function buildWalletWorkerTimingAudit(params: {
+  jobDurationMs: number
+  pipelineMs: number
+  prePipelineMs: number
+  resultWriteMs: number
+  jobStateWriteMs: number
+  serializationMs: number
+}): WalletWorkerTimingAudit {
+  const { jobDurationMs, pipelineMs, prePipelineMs, resultWriteMs, jobStateWriteMs, serializationMs } = params
+  const persistenceMs = serializationMs + resultWriteMs + jobStateWriteMs
+  const accountedMs = prePipelineMs + pipelineMs + persistenceMs
+  const unexplainedMs = Math.max(0, jobDurationMs - accountedMs)
+  const slowestUnmeasuredStage: WalletWorkerTimingAudit['slowestUnmeasuredStage'] =
+    prePipelineMs === 0 && persistenceMs === 0
+      ? null
+      : prePipelineMs >= persistenceMs
+        ? 'pre_pipeline_imports_and_claim'
+        : 'post_pipeline_serialization_and_publish'
+  return {
+    jobDurationMs,
+    pipelineMs,
+    prePipelineMs,
+    postPipelineMs: persistenceMs,
+    persistenceMs,
+    cacheWriteMs: null,
+    uiPublishMs: resultWriteMs,
+    supabaseWriteMs: null,
+    kvWriteMs: jobStateWriteMs,
+    slowestUnmeasuredStage,
+    unexplainedMs,
+  }
+}
+
 // SHAPE, DISCLOSED: the client (app/frontend/api/scanWallet.ts's ScanWalletApiResponse, and
 // app/terminal/wallet-scanner/page.tsx's `response.error?.message` read) requires `error` to be an
 // object with a `message` field, never a bare string — a bare string previously made
@@ -91,9 +181,22 @@ export function toSerializableResult(result: unknown): unknown {
 // "Final scan result is temporarily unavailable" degraded state the UI reported after otherwise
 // successful pipeline runs. Correct order — write the result, THEN mark done — makes "done"
 // mean "the full result is already safely stored", closing that window entirely.
-export async function publishFinal(jobId: string, jobState: WalletScanJobState, result: unknown): Promise<void> {
+// TIMING HOOK, DISCLOSED, ADDITIVE: `onTiming` is optional and defaults to doing nothing — every
+// existing caller (including this file's own tests) that doesn't pass it gets byte-identical
+// behavior, same two awaited kv.set calls in the same order. runWalletScanWorker below is the one
+// real caller that supplies it, to power walletWorkerTimingAudit's uiPublishMs/kvWriteMs split.
+export async function publishFinal(
+  jobId: string,
+  jobState: WalletScanJobState,
+  result: unknown,
+  onTiming?: (resultWriteMs: number, jobStateWriteMs: number) => void,
+): Promise<void> {
+  const t0 = Date.now()
   await kv.set(walletScanResultKey(jobId), result)
+  const t1 = Date.now()
   await kv.set(walletScanJobKey(jobId), jobState)
+  const t2 = Date.now()
+  onTiming?.(t1 - t0, t2 - t1)
 }
 
 export async function verifyWalletScanKvConnection(): Promise<void> {
@@ -293,6 +396,9 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
 }
 
 export async function runWalletScanWorker(req: Request): Promise<Response> {
+  // ENTRY-TIME CAPTURE, DISCLOSED: see WalletWorkerTimingAudit's own header — this is the moment
+  // prePipelineMs starts counting from, and jobDurationMs is measured against.
+  const workerEntryAtMs = Date.now()
   const { claimWalletScanPayload } = await import('@/src/modules/walletScanQueue')
   const jobId = await readWorkerJobId(req)
 
@@ -336,6 +442,7 @@ export async function runWalletScanWorker(req: Request): Promise<Response> {
   // stuck job is at least diagnosable), and the route reports the failure honestly instead of
   // returning 'done'.
   let serializableResult: unknown
+  const serializationStartMs = Date.now()
   try {
     serializableResult = toSerializableResult(result)
   } catch (err) {
@@ -343,14 +450,43 @@ export async function runWalletScanWorker(req: Request): Promise<Response> {
     await markJobFailed(jobId, jobState, 'worker_result_serialization_failed')
     return Response.json({ status: 'failed', jobId, resultPublished: false, error: 'worker_result_serialization_failed' }, { status: 500 })
   }
+  const serializationMs = Date.now() - serializationStartMs
 
+  let resultWriteMs = 0
+  let jobStateWriteMs = 0
   try {
-    await publishFinal(jobId, jobState, serializableResult)
+    await publishFinal(jobId, jobState, serializableResult, (rMs, jMs) => { resultWriteMs = rMs; jobStateWriteMs = jMs })
   } catch (err) {
     console.error('[wallet-scan-worker] result publication failed', { jobId, error: err instanceof Error ? err.message : String(err) })
     await markJobFailed(jobId, jobState, 'worker_result_publish_failed')
     return Response.json({ status: 'failed', jobId, resultPublished: false, error: 'worker_result_publish_failed' }, { status: 500 })
   }
+
+  // TIMING AUDIT, DISCLOSED: see WalletWorkerTimingAudit's own header for the full disclosure — logs
+  // unconditionally (console.warn survives the production console strip, same convention as every
+  // other diagnostic in this file) on the success path, where the full span is meaningful.
+  const jobDurationMs = Date.now() - workerEntryAtMs
+  const prePipelineMs = Math.max(0, jobState.startedAt - workerEntryAtMs)
+  const walletWorkerTimingAudit = buildWalletWorkerTimingAudit({
+    jobDurationMs,
+    pipelineMs: jobState.durationMs,
+    prePipelineMs,
+    resultWriteMs,
+    jobStateWriteMs,
+    serializationMs,
+  })
+  console.warn('[wallet-worker-timing-audit]', { jobId, ...walletWorkerTimingAudit })
+
+  // UNREALIZED-PRICE-USAGE-AUDIT VISIBILITY, DISCLOSED (this task's own explicit requirement — "make
+  // unrealizedPriceUsageAudit appear in logs/output"): the field already survives all the way into
+  // `result`/`finalBody` (src/deployment/api.ts's SanitizedReportV2 already carries it through, and
+  // src/pipeline/runWalletScanV2.ts already logs it once mid-scan under its own tag), but it was
+  // never re-surfaced at THIS job's final summary point, next to the cost audit and the timing audit
+  // above, where an operator reading one job's logs would actually look for it. Read-only extraction
+  // from the already-built result — never a new computation, never a second measurement.
+  const finalBody = result as { data?: Record<string, unknown> } | null | undefined
+  const unrealizedPriceUsageAuditFromResult = finalBody?.data?.unrealizedPriceUsageAudit ?? null
+  console.warn('[wallet-worker-unrealized-price-usage-audit]', { jobId, unrealizedPriceUsageAudit: unrealizedPriceUsageAuditFromResult })
 
   return Response.json({ status: 'done', jobId, resultPublished: true })
 }
