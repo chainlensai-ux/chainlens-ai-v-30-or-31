@@ -219,6 +219,8 @@ interface WatchlistTokenRow {
   chain: string | null
   risk_label: string | null
   score: number | null
+  score_type?: 'radar_score' | 'risk_score' | 'safety_score' | null
+  score_direction?: 'higher_is_riskier' | 'higher_is_safer' | null
   saved_at?: string
 }
 
@@ -1934,7 +1936,7 @@ export default function BaseRadarPage() {
     const tokenChain = effectiveRadarChainRef.current
     setWatchlistTokens(prev => wasWatched
       ? prev.filter(w => typeof w?.address !== 'string' || w.address.toLowerCase() !== address)
-      : [{ address, symbol: token.symbol, name: token.name, chain: tokenChain, risk_label: token.status, score: token.radarScore }, ...prev])
+      : [{ address, symbol: token.symbol, name: token.name, chain: tokenChain, risk_label: token.status, score: token.radarScore, score_type: 'radar_score', score_direction: null }, ...prev])
 
     const { data: { session } } = await supabase.auth.getSession()
     const authToken = session?.access_token
@@ -1950,7 +1952,7 @@ export default function BaseRadarPage() {
         await fetch('/api/watchlist/tokens', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-          body: JSON.stringify({ address, symbol: token.symbol, name: token.name, chain: tokenChain, riskLabel: token.status, score: token.radarScore }),
+          body: JSON.stringify({ address, symbol: token.symbol, name: token.name, chain: tokenChain, riskLabel: token.status, score: token.radarScore, scoreType: 'radar_score' }),
         })
       }
     } catch {

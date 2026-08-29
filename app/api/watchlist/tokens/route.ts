@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { createRateLimiter } from '@/lib/server/rateLimit'
 import { isValidAddress, isAllowedChain, isValidLabel } from '@/lib/server/watchlistValidation'
 import { isValidSolanaMintAddress } from '@/lib/solanaAddress'
+import { normalizeRiskScore } from '@/lib/riskScoreDirection'
 
 // SOLANA-CASE-SENSITIVE FIX, DISCLOSED (same repair as the address-validation fix above): a
 // Solana base58 mint address is case-sensitive, unlike an EVM 0x address — lowercasing it
@@ -72,12 +73,19 @@ export async function GET(req: NextRequest) {
   // returned with an empty/fake address.
   const rows = (data ?? []) as Array<Record<string, unknown>>
   const tokens = rows
-    .map((row) => {
+    .flatMap((row) => {
       const address = (row.address ?? row.contract_address) as string | null | undefined
-      if (typeof address !== 'string' || !address) return null
-      return { ...row, address }
+      if (typeof address !== 'string' || !address) return []
+      const storedRiskLabel = typeof row.risk_label === 'string' ? row.risk_label : null
+      const embeddedRiskType = storedRiskLabel?.startsWith('risk_score:') === true
+      return [{
+        ...row,
+        address,
+        risk_label: embeddedRiskType ? storedRiskLabel.slice('risk_score:'.length) : storedRiskLabel,
+        score_type: row.score_type ?? (embeddedRiskType ? 'risk_score' : null),
+        score_direction: row.score_direction ?? (embeddedRiskType ? 'higher_is_riskier' : null),
+      }]
     })
-    .filter((row): row is Record<string, unknown> & { address: string } => row != null)
   return NextResponse.json({ tokens })
 }
 
@@ -90,7 +98,7 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json().catch(() => null)
-  const { address, symbol, name, chain, riskLabel, score } = body ?? {}
+  const { address, symbol, name, chain, riskLabel, score, scoreType, scoreDirection } = body ?? {}
   if (!isValidAddress(address)) {
     return NextResponse.json({ error: 'A valid token contract address is required.' }, { status: 400 })
   }
@@ -104,24 +112,75 @@ export async function POST(req: NextRequest) {
   if (!isValidLabel(name)) {
     return NextResponse.json({ error: 'name is too long.' }, { status: 400 })
   }
+  if (scoreType != null && scoreType !== 'risk_score' && scoreType !== 'radar_score' && scoreType !== 'safety_score') {
+    return NextResponse.json({ error: 'Unsupported score type.' }, { status: 400 })
+  }
+  if (scoreDirection != null && scoreDirection !== 'higher_is_riskier' && scoreDirection !== 'higher_is_safer') {
+    return NextResponse.json({ error: 'Unsupported score direction.' }, { status: 400 })
+  }
+  if (score != null && (typeof score !== 'number' || !Number.isFinite(score) || score < 0 || score > 100)) {
+    return NextResponse.json({ error: 'Score must be between 0 and 100.' }, { status: 400 })
+  }
+  if (scoreType === 'risk_score' && scoreDirection !== 'higher_is_riskier') {
+    return NextResponse.json({ error: 'Risk Score direction must be higher_is_riskier.' }, { status: 400 })
+  }
+  if (scoreType === 'safety_score' && scoreDirection !== 'higher_is_safer') {
+    return NextResponse.json({ error: 'Safety Score direction must be higher_is_safer.' }, { status: 400 })
+  }
+
+  const canonicalWatchlistRisk = scoreType === 'risk_score' || scoreType === 'safety_score'
+    ? normalizeRiskScore({ rawScore: score, rawScoreType: scoreType, source: 'watchlist_api', displayLocation: 'watchlist_storage' })
+    : null
+  const storedScore = canonicalWatchlistRisk?.riskScore0To100 ?? score ?? null
+  const storedRiskLabel = canonicalWatchlistRisk?.riskLabel ?? riskLabel ?? null
+  const storedScoreType = canonicalWatchlistRisk ? 'risk_score' : scoreType ?? null
+  const storedScoreDirection = canonicalWatchlistRisk ? 'higher_is_riskier' : scoreDirection ?? null
 
   const db = getServiceClient()
   if (!db) return NextResponse.json({ error: 'Service unavailable' }, { status: 503 })
 
-  const { data, error } = await db
+  const watchlistRow = {
+    user_id: userId,
+    address: normalizeWatchlistAddress(address),
+    symbol: symbol ?? null,
+    name: name ?? null,
+    chain: chainValue,
+    risk_label: storedRiskLabel,
+    score: storedScore,
+    score_type: storedScoreType,
+    score_direction: storedScoreDirection,
+    saved_at: new Date().toISOString(),
+  }
+  let { data, error } = await db
     .from('watchlist_tokens')
-    .upsert({
-      user_id: userId,
-      address: normalizeWatchlistAddress(address),
-      symbol: symbol ?? null,
-      name: name ?? null,
-      chain: chainValue,
-      risk_label: riskLabel ?? null,
-      score: score ?? null,
-      saved_at: new Date().toISOString(),
-    }, { onConflict: 'user_id,address,chain' })
+    .upsert(watchlistRow, { onConflict: 'user_id,address,chain' })
     .select()
     .single()
+
+  // Rollout compatibility: if the optional score metadata columns have not reached the live table
+  // yet, preserve direction in an explicit label prefix. Untyped historical rows remain untrusted.
+  if (error && /score_type|score_direction/i.test(error.message)) {
+    const legacyRow = {
+      user_id: watchlistRow.user_id,
+      address: watchlistRow.address,
+      symbol: watchlistRow.symbol,
+      name: watchlistRow.name,
+      chain: watchlistRow.chain,
+      risk_label: watchlistRow.risk_label,
+      score: watchlistRow.score,
+      saved_at: watchlistRow.saved_at,
+    }
+    const fallbackRow = storedScoreType === 'risk_score' && storedRiskLabel
+      ? { ...legacyRow, risk_label: `risk_score:${storedRiskLabel}` }
+      : legacyRow
+    const fallback = await db
+      .from('watchlist_tokens')
+      .upsert(fallbackRow, { onConflict: 'user_id,address,chain' })
+      .select()
+      .single()
+    data = fallback.data
+    error = fallback.error
+  }
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ token: data })

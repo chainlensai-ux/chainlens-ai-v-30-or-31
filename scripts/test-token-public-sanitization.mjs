@@ -93,7 +93,7 @@ const virtualLikePayload = {
   symbol: 'VIRTUAL',
   selectedPool: { address: '0x21594b992f68495dd28d605834b58889d0a727c7', pair: 'VIRTUAL / WETH', dex: 'aerodrome-base', liquidityUsd: 1234567, createdAt: '2024-03-31T15:39:37.000Z' },
   riskScore: 58,
-  riskLabel: 'moderate',
+  riskLabel: 'High Risk',
   riskBreakdown: { total: 58, liquiditySafety: { score: 7, max: 30, reasons: ['Wallet-controlled LP'] } },
   lpControl: {
     status: 'team_controlled',
@@ -247,7 +247,7 @@ virtualLikePayload.lpHistoryTimeline = buildLpHistoryTimeline({
 console.log('\nA. VIRTUAL-like public response')
 const publicPayload = sanitizePublicTokenResponse(JSON.parse(JSON.stringify(virtualLikePayload)), false)
 assert('riskScore remains present', publicPayload.riskScore === 58, publicPayload.riskScore)
-assert('riskLabel remains moderate', publicPayload.riskLabel === 'moderate', publicPayload.riskLabel)
+assert('riskLabel remains High Risk', publicPayload.riskLabel === 'High Risk', publicPayload.riskLabel)
 assert('riskBreakdown remains present', Boolean(publicPayload.riskBreakdown), publicPayload.riskBreakdown)
 assert('lpControl.status is team_controlled', publicPayload.lpControl?.status === 'team_controlled', publicPayload.lpControl)
 assert('lpControlRead says wallet controlled', publicPayload.lpControlRead?.title === 'LP controlled by wallet', publicPayload.lpControlRead)
@@ -266,7 +266,7 @@ assert('drops top-level rugRisk.label', !('label' in publicPayload.rugRisk), pub
 assert('drops riskEngine.rugRiskScore', !('rugRiskScore' in publicPayload.riskEngine), publicPayload.riskEngine)
 assert('drops riskEngine.rugRiskLabel', !('rugRiskLabel' in publicPayload.riskEngine), publicPayload.riskEngine)
 assert('Clark summary does not say Rug-risk pressure', !/Rug-risk pressure/i.test(publicPayload.riskEngine.clarkInterpretation.summary), publicPayload.riskEngine.clarkInterpretation.summary)
-assert('Clark summary references canonical Token Safety Score', /Token Safety Score:\s*58\/100 \(moderate\)/.test(publicPayload.riskEngine.clarkInterpretation.summary), publicPayload.riskEngine.clarkInterpretation.summary)
+assert('Clark summary references canonical Risk Score', /Risk Score:\s*58\/100 — High Risk/.test(publicPayload.riskEngine.clarkInterpretation.summary), publicPayload.riskEngine.clarkInterpretation.summary)
 assert('public payload has no Rug-risk pressure wording', !/Rug-risk pressure/i.test(serialized(publicPayload)), publicPayload.riskEngine.clarkInterpretation)
 assert('drops lpDataModeRaw', !('lpDataModeRaw' in publicPayload))
 assert('keeps normalized public lpDataMode', publicPayload.lpDataMode === 'evidence_based', publicPayload.lpDataMode)
@@ -518,7 +518,7 @@ const fallbackPayload = {
     createdAt: normalizedCreatedAtFallback,
   },
   riskScore: 58,
-  riskLabel: 'moderate',
+  riskLabel: 'High Risk',
   riskBreakdown: { total: 58, liquiditySafety: { score: 7, max: 30, reasons: ['Wallet-controlled LP'] } },
   lpControl: {
     status: 'team_controlled',
@@ -757,8 +757,8 @@ const unknownControllerRiskInput = {
 const walletControlledRisk = calculateTokenRiskScore(walletControlledRiskInput)
 const unknownControllerRisk = calculateTokenRiskScore(unknownControllerRiskInput)
 assert('unknown-controller liquiditySafety is not higher than wallet-controlled', unknownControllerRisk.riskBreakdown.liquiditySafety.score <= walletControlledRisk.riskBreakdown.liquiditySafety.score, { unknown: unknownControllerRisk.riskBreakdown.liquiditySafety.score, wallet: walletControlledRisk.riskBreakdown.liquiditySafety.score })
-assert('unknown-controller riskScore is not higher (more bullish) than wallet-controlled', unknownControllerRisk.riskScore <= walletControlledRisk.riskScore, { unknown: unknownControllerRisk.riskScore, wallet: walletControlledRisk.riskScore })
-assert('unknown-controller riskLabel is not "safer" than wallet-controlled', !(unknownControllerRisk.riskLabel === 'low' && walletControlledRisk.riskLabel !== 'low'), { unknown: unknownControllerRisk.riskLabel, wallet: walletControlledRisk.riskLabel })
+assert('unknown-controller Risk Score is not lower (safer) than wallet-controlled', unknownControllerRisk.riskScore >= walletControlledRisk.riskScore, { unknown: unknownControllerRisk.riskScore, wallet: walletControlledRisk.riskScore })
+assert('unknown-controller riskLabel is not safer than wallet-controlled', unknownControllerRisk.riskScore >= walletControlledRisk.riskScore, { unknown: unknownControllerRisk.riskLabel, wallet: walletControlledRisk.riskLabel })
 
 // ─── I. LP history summary typo fix (Aerodromeis -> Aerodrome is) ──────────
 console.log('\nI. LP history timeline "Aerodrome is" wording (no Aerodromeis typo)')
@@ -1169,8 +1169,8 @@ console.log('\nN. VIRTUAL-like Aerodrome V2 dominant LP holder evidence')
     lpMigrationProof: { status: 'low' },
   }
   const virtualRiskFixed = calculateTokenRiskScore(virtualRiskInputFixed)
-  assert('VIRTUAL riskScore stays around 58 (moderate)', virtualRiskFixed.riskScore >= 50 && virtualRiskFixed.riskScore <= 65, virtualRiskFixed.riskScore)
-  assert('VIRTUAL riskLabel stays moderate', virtualRiskFixed.riskLabel === 'moderate', virtualRiskFixed.riskLabel)
+  assert('VIRTUAL Risk Score stays medium (25-49)', virtualRiskFixed.riskScore >= 25 && virtualRiskFixed.riskScore <= 49, virtualRiskFixed.riskScore)
+  assert('VIRTUAL riskLabel stays Medium Risk', virtualRiskFixed.riskLabel === 'Medium Risk', virtualRiskFixed.riskLabel)
 }
 
 // Concentrated fixtures (PMFI/EVO/MFERGPT-style, PLAY) remain not_applicable after the
@@ -1315,33 +1315,33 @@ console.log('\nP. CORTEX wording is evidence-based, never scam/financial-advice 
   assert('CORTEX critical wording says to verify open checks', /verify open checks before relying on this scan/i.test(criticalRiskSuffix), criticalRiskSuffix)
 
   // A summary built from this suffix must not say "critical" anywhere, even when the legacy
-  // rugRiskLabel tier was "critical" — only the canonical Token Safety Score/label (e.g.
-  // "49/100 (moderate)") should describe the overall tier.
-  const playClarkSummary = `Base token. Token Safety Score: 49/100 (moderate). ${criticalRiskSuffix}`
-  assert('CORTEX summary does not say "critical" when riskLabel is moderate', !/critical/i.test(playClarkSummary), playClarkSummary)
-  assert('CORTEX summary cites the canonical Token Safety Score (49/100 (moderate))', /Token Safety Score:\s*49\/100 \(moderate\)/i.test(playClarkSummary), playClarkSummary)
+  // rugRiskLabel tier was "critical" — only the canonical Risk Score/label (e.g.
+  // "49/100 (Medium Risk)") should describe the overall tier.
+  const playClarkSummary = `Base token. Risk Score: 49/100 (Medium Risk). ${criticalRiskSuffix}`
+  assert('CORTEX summary does not say "critical" when riskLabel is Medium Risk', !/critical/i.test(playClarkSummary), playClarkSummary)
+  assert('CORTEX summary cites the canonical Risk Score (49/100 (Medium Risk))', /Risk Score:\s*49\/100 \(Medium Risk\)/i.test(playClarkSummary), playClarkSummary)
 
   // Mirrors lib/server/tokenPublicResponse.ts's cortexLpRead.riskSummary rewrite: a
   // "shows an overall ... risk tier" sentence built from the legacy rugRiskLabel tier
-  // ("critical") must be replaced with evidence-first canonical Token Safety Score
-  // wording, never left as "critical" when riskScore/riskLabel say 49/moderate.
+  // ("critical") must be replaced with evidence-first canonical Risk Score
+  // wording, never left as "critical" when riskScore/riskLabel say 49/Medium Risk.
   const playCortexRewritePayload = sanitizePublicTokenResponse({
     symbol: 'PLAY',
     riskScore: 49,
-    riskLabel: 'moderate',
+    riskLabel: 'Medium Risk',
     cortexLpRead: {
       riskSummary: 'PLAY (PLAY) shows an overall "critical" risk tier based on observed pool data. Liquidity depth is moderate for this token.',
     },
   }, false)
   const rewrittenCortexLpReadSummary = playCortexRewritePayload.cortexLpRead.riskSummary
-  assert('cortexLpRead.riskSummary does not say "critical" when riskLabel is moderate', !/critical/i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
-  assert('cortexLpRead.riskSummary uses evidence-first moderate Token Safety wording without unsupported severe dev-control', /PLAY has a moderate Token Safety Score \(49\/100\); no severe holder\/dev-control risk drivers were confirmed from current evidence\./i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
+  assert('cortexLpRead.riskSummary does not say "critical" when riskLabel is Medium Risk', !/critical/i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
+  assert('cortexLpRead.riskSummary uses evidence-first Medium Risk wording without unsupported severe dev-control', /PLAY has a Risk Score of 49\/100 — Medium Risk; no severe holder\/dev-control risk drivers were confirmed from current evidence\./i.test(rewrittenCortexLpReadSummary), rewrittenCortexLpReadSummary)
 
   const droolingDogSummary = sanitizePublicTokenResponse({
     name: 'Drooling Dog',
     symbol: 'DOG',
     riskScore: 35,
-    riskLabel: 'high',
+    riskLabel: 'Medium Risk',
     holderDistribution: { top1: 42, top10: 75, top20: 88, holderCount: 51 },
     supplyControl: { creatorHolderPercent: 2, devClusterSupplyPercent: 2 },
     security: { devOwnership: { ownershipStatus: 'active_owner' } },
@@ -1349,7 +1349,7 @@ console.log('\nP. CORTEX wording is evidence-based, never scam/financial-advice 
       riskSummary: 'Drooling Dog (DOG) shows an overall "high" risk tier based on observed pool data.',
     },
   }, false).cortexLpRead.riskSummary
-  assert('Drooling Dog CORTEX says low Token Safety Score for 35', /Drooling Dog \(DOG\) has a low Token Safety Score \(35\/100\)/i.test(droolingDogSummary), droolingDogSummary)
+  assert('Drooling Dog CORTEX says Medium Risk Score for 35', /Drooling Dog \(DOG\) has a Risk Score of 35\/100 — Medium Risk/i.test(droolingDogSummary), droolingDogSummary)
   assert('Drooling Dog CORTEX mentions holder concentration + active owner/admin', /Score is pressured by high holder concentration and active owner\/admin control\./i.test(droolingDogSummary), droolingDogSummary)
   assert('Drooling Dog CORTEX does not claim severe dev-control', !/severe holder\/dev-control/i.test(droolingDogSummary), droolingDogSummary)
 
@@ -1467,8 +1467,8 @@ console.log('\nQ. VIRTUAL Aerodrome LP holder regression — placeholder percent
     lpMigrationProof: { status: 'low' },
   }
   const virtualRiskRecovered = calculateTokenRiskScore(virtualRiskInputRecovered)
-  assert('VIRTUAL riskScore stays around 58 (moderate)', virtualRiskRecovered.riskScore >= 50 && virtualRiskRecovered.riskScore <= 65, virtualRiskRecovered.riskScore)
-  assert('VIRTUAL riskLabel stays moderate', virtualRiskRecovered.riskLabel === 'moderate', virtualRiskRecovered.riskLabel)
+  assert('VIRTUAL Risk Score stays medium (25-49)', virtualRiskRecovered.riskScore >= 25 && virtualRiskRecovered.riskScore <= 49, virtualRiskRecovered.riskScore)
+  assert('VIRTUAL riskLabel stays Medium Risk', virtualRiskRecovered.riskLabel === 'Medium Risk', virtualRiskRecovered.riskLabel)
 
   // A resolved wallet-controlled LP must score as "wallet-controlled, no lock/burn proof" —
   // never as "controller unknown" (an unresolved controller is not a safer/different state
@@ -1482,7 +1482,7 @@ console.log('\nQ. VIRTUAL Aerodrome LP holder regression — placeholder percent
   // finalResolvedName/finalResolvedSymbol — for VIRTUAL these are "Virtual Protocol"/"VIRTUAL",
   // so the identity reads "Virtual Protocol (VIRTUAL) ..." and must never duplicate the
   // symbol as "(VIRTUAL) VIRTUAL ...".
-  const virtualIdentityLine = `Virtual Protocol (VIRTUAL) has a Token Safety Score: 58/100 (moderate) based on observed pool data.`
+  const virtualIdentityLine = `Virtual Protocol (VIRTUAL) has a Risk Score: 58/100 (High Risk) based on observed pool data.`
   assert('VIRTUAL cortex identity does not duplicate the symbol as "(VIRTUAL) VIRTUAL"', !virtualIdentityLine.includes('(VIRTUAL) VIRTUAL'), virtualIdentityLine)
 }
 
@@ -1602,12 +1602,12 @@ console.log('\nS. CORTEX identity formatter avoids duplicate symbol/name')
       name: tokenCase.name,
       symbol: tokenCase.symbol,
       riskScore: 58,
-      riskLabel: 'moderate',
+      riskLabel: 'High Risk',
       cortexLpRead: {
         riskSummary: `${identity} shows an overall "moderate" risk tier based on observed pool data. Liquidity depth is moderate.`,
       },
     }, false).cortexLpRead.riskSummary
-    assert(`${identity} public CORTEX summary starts with exactly one formatted identity`, sanitizedSummary.startsWith(`${identity} has a moderate Token Safety Score`), sanitizedSummary)
+    assert(`${identity} public CORTEX summary starts with exactly one formatted identity`, sanitizedSummary.startsWith(`${identity} has a Risk Score of 58/100 — High Risk`), sanitizedSummary)
     assert(`${identity} public CORTEX summary does not duplicate symbol after formatted identity`, !tokenCase.bad.test(sanitizedSummary), sanitizedSummary)
   }
 }

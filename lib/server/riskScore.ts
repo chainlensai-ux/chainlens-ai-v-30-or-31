@@ -1,10 +1,13 @@
 // Deterministic product-level Token Risk Score (0-100).
 // Pure function: reads already-derived evidence fields from the token scanner
-// response and produces a score + breakdown. Higher score = lower risk.
+// response and produces a score + breakdown. The historical section math awards safety points;
+// the exported product Risk Score converts that total exactly once so higher = riskier.
 // No I/O, no randomness, no time-based branching — same input always
 // produces the same output.
 
-export type RiskLabel = 'extreme' | 'high' | 'moderate' | 'low' | 'very_low'
+import { normalizeRiskScore, type CanonicalRiskLabel, type RiskScoreDirectionAudit } from '../riskScoreDirection.ts'
+
+export type RiskLabel = CanonicalRiskLabel
 
 export interface RiskScoreSectionResult {
   score: number
@@ -15,13 +18,18 @@ export interface RiskScoreSectionResult {
 
 export interface RiskScoreResult {
   riskScore: number
+  safetyScore: number
   riskLabel: RiskLabel
+  rawScoreType: 'safety_score'
+  scoreDirection: 'higher_is_riskier'
+  riskScoreDirectionAudit: RiskScoreDirectionAudit
   riskBreakdown: {
     marketMaturity: RiskScoreSectionResult
     liquiditySafety: RiskScoreSectionResult
     contractSafety: RiskScoreSectionResult
     behavioralRisk: RiskScoreSectionResult
     total: number
+    safetyTotal: number
   }
 }
 
@@ -470,14 +478,6 @@ function scoreBehavioralRisk(input: RiskScoreInput): RiskScoreSectionResult {
   return { score, max: 20, components, reasons }
 }
 
-function riskLabelFromScore(score: number): RiskLabel {
-  if (score <= 20) return 'extreme'
-  if (score <= 40) return 'high'
-  if (score <= 60) return 'moderate'
-  if (score <= 80) return 'low'
-  return 'very_low'
-}
-
 // HARD-CAP FIX, DISCLOSED (token-scanner audit): previously the additive total let a confirmed
 // critical flag (mint/blacklist/pause/honeypot) get diluted by unrelated positive signals elsewhere
 // — e.g. a token with a confirmed mint function could still land in "moderate"/"low" risk if
@@ -512,17 +512,38 @@ export function calculateTokenRiskScore(input: RiskScoreInput): RiskScoreResult 
     100,
   )
   const hardCapped = hasHardCriticalFlag(input)
-  const riskScore = hardCapped ? Math.min(Math.round(total), 15) : Math.round(total)
+  // Preserve the historical evidence math and hard cap as an explicitly named Safety Score.
+  // This is the only inversion point for the public product Risk Score.
+  const safetyScore = hardCapped ? Math.min(Math.round(total), 15) : Math.round(total)
+  const normalized = normalizeRiskScore({
+    rawScore: safetyScore,
+    rawScoreType: 'safety_score',
+    riskDrivers: [
+      ...marketMaturity.reasons,
+      ...liquiditySafety.reasons,
+      ...contractSafety.reasons,
+      ...behavioralRisk.reasons,
+    ],
+    confidence: 'medium',
+    source: 'lib/server/riskScore.calculateTokenRiskScore',
+    displayLocation: 'token_api',
+  })
+  const riskScore = normalized.riskScore0To100 ?? 50
 
   return {
     riskScore,
-    riskLabel: hardCapped ? 'extreme' : riskLabelFromScore(riskScore),
+    safetyScore,
+    riskLabel: normalized.riskLabel ?? 'Medium Risk',
+    rawScoreType: 'safety_score',
+    scoreDirection: 'higher_is_riskier',
+    riskScoreDirectionAudit: normalized.audit,
     riskBreakdown: {
       marketMaturity,
       liquiditySafety,
       contractSafety,
       behavioralRisk,
       total: riskScore,
+      safetyTotal: safetyScore,
     },
   }
 }

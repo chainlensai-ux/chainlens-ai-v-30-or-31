@@ -15,6 +15,7 @@
     "test:lighthouse": "node scripts/lighthouse-sim.js",
     "test:desktop": "node scripts/desktop-perf-sim.js",
     "test:clark-routing": "tsx scripts/test-clark-routing-suite.mjs",
+    "test:risk-score-direction": "node --import tsx --test tests/risk-score-direction.test.ts",
     "test:security": "node scripts/security-audit.js",
     "env:check": "node scripts/env-check.js",
     "perf:wallet-scan": "tsx scripts/perfBenchmark/run.ts",

@@ -8424,6 +8424,23 @@ export async function POST(req: Request) {
     ;(responsePayload as any).riskScore = tokenRiskScoreResult.riskScore
     ;(responsePayload as any).riskLabel = tokenRiskScoreResult.riskLabel
     ;(responsePayload as any).riskBreakdown = tokenRiskScoreResult.riskBreakdown
+    ;(responsePayload as any).safetyScore = tokenRiskScoreResult.safetyScore
+    ;(responsePayload as any).riskScoreType = 'risk_score'
+    ;(responsePayload as any).riskScoreDirection = tokenRiskScoreResult.scoreDirection
+    ;(responsePayload as any).riskScoreDirectionAudit = tokenRiskScoreResult.riskScoreDirectionAudit
+    ;(responsePayload as any).riskEngine = {
+      ...(responsePayload as any).riskEngine,
+      riskScore: tokenRiskScoreResult.riskScore,
+      riskLabel: tokenRiskScoreResult.riskLabel,
+      scoreDirection: tokenRiskScoreResult.scoreDirection,
+      cortexSafetyScore: cortexScoreResult.cortexScore,
+      cortexSafetyVerdict: cortexScoreResult.cortexVerdict,
+      cortexScoreType: 'safety_score',
+      riskScoreDirectionAudit: {
+        ...tokenRiskScoreResult.riskScoreDirectionAudit,
+        displayLocation: 'risk_engine_api',
+      },
+    }
 
     if (process.env.NODE_ENV === 'development') {
       const _totalMs = Date.now() - _t0

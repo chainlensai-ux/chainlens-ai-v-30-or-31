@@ -5,7 +5,7 @@
 //  1. a cached response written by older code is never served to newer frontend code, and
 //  2. any client can verify it got a current-schema response instead of silently rendering
 //     a stale one (the reported "same token, different result per device" class).
-export const TOKEN_SCAN_RESPONSE_SCHEMA_VERSION = 2
+export const TOKEN_SCAN_RESPONSE_SCHEMA_VERSION = 3
 
 // Raw DEX/pool-source identifiers (e.g. "aerodrome-base", "uniswap-v3-base") are internal —
 // public text shows the neutral DEX brand name instead. Order matters: more specific
@@ -53,22 +53,21 @@ const PROVIDER_NAME_REPLACEMENTS: Array<[RegExp, string]> = [
 ]
 
 
-function formatTokenSafetyScore(payload: Record<string, any>): string {
+function formatTokenRiskScore(payload: Record<string, any>): string {
   const score = typeof payload.riskScore === 'number' ? payload.riskScore : null
   const rawLabel = typeof payload.riskLabel === 'string' ? payload.riskLabel : null
-  const label = rawLabel ? ` (${rawLabel})` : ''
-  return score == null ? `Token Safety Score${label}` : `Token Safety Score: ${score}/100${label}`
+  const label = rawLabel ? ` — ${rawLabel}` : ''
+  return score == null ? `Risk Score${label}` : `Risk Score: ${score}/100${label}`
 }
 
 
 
-function tokenSafetyAdjective(score: number | null, fallbackLabel: string | null): string | null {
+function tokenRiskAdjective(score: number | null, fallbackLabel: string | null): string | null {
   if (score == null) return fallbackLabel
-  if (score <= 24) return 'very low'
-  if (score <= 39) return 'low'
-  if (score <= 59) return 'moderate'
-  if (score <= 74) return 'watchlist'
-  return 'stronger'
+  if (score <= 24) return 'Low Risk'
+  if (score <= 49) return 'Medium Risk'
+  if (score <= 74) return 'High Risk'
+  return 'Critical Risk'
 }
 
 function formatTokenIdentityForPublic(name: string | null | undefined, symbol: string | null | undefined): string {
@@ -80,13 +79,13 @@ function formatTokenIdentityForPublic(name: string | null | undefined, symbol: s
   return 'This token'
 }
 
-function tokenSafetySentence(payload: Record<string, any>): string {
+function tokenRiskSentence(payload: Record<string, any>): string {
   const symbol = typeof payload.symbol === 'string' && payload.symbol.trim() ? payload.symbol.trim() : null
   const name = typeof payload.name === 'string' && payload.name.trim() ? payload.name.trim() : null
   const identity = formatTokenIdentityForPublic(name, symbol)
   const score = typeof payload.riskScore === 'number' ? payload.riskScore : null
   const rawLabel = typeof payload.riskLabel === 'string' && payload.riskLabel.trim() ? payload.riskLabel.trim() : null
-  const label = tokenSafetyAdjective(score, rawLabel)
+  const label = tokenRiskAdjective(score, rawLabel)
   const holderDistribution = payload.holderDistribution && typeof payload.holderDistribution === 'object' ? payload.holderDistribution as Record<string, any> : {}
   const top1 = typeof holderDistribution.top1 === 'number' ? holderDistribution.top1 : null
   const top10 = typeof holderDistribution.top10 === 'number' ? holderDistribution.top10 : null
@@ -102,12 +101,12 @@ function tokenSafetySentence(payload: Record<string, any>): string {
     || (typeof creatorSupply === 'number' && creatorSupply >= 50)
   )
   const scorePart = score != null && label
-    ? `has a ${label} Token Safety Score (${score}/100)`
+    ? `has a Risk Score of ${score}/100 — ${label}`
     : label
-      ? `has a ${label} Token Safety Score`
+      ? `has a ${label} classification`
       : score != null
-        ? `has a Token Safety Score of ${score}/100`
-        : 'has a Token Safety Score'
+        ? `has a Risk Score of ${score}/100`
+        : 'has a Risk Score'
   if (severeHolderDev) return `${identity} ${scorePart}, with severe holder/dev-control risk drivers.`
   if (highHolderConcentration && activeOwner) return `${identity} ${scorePart}. Score is pressured by high holder concentration and active owner/admin control.`
   const broadHolders = top1 != null && top1 <= 10 && top10 != null && top10 <= 20 && holderCount != null && holderCount >= 100
@@ -121,7 +120,7 @@ function tokenSafetySentence(payload: Record<string, any>): string {
 function rewriteLegacyRiskSummaryText(text: string, payload: Record<string, any>): string {
   return text
     .replace(/^(?:Base|Ethereum) token\.\s*/i, '')
-    .replace(/Rug-risk pressure:\s*\d+\s*\/\s*100\.?/gi, `${formatTokenSafetyScore(payload)}.`)
+    .replace(/Rug-risk pressure:\s*\d+\s*\/\s*100\.?/gi, `${formatTokenRiskScore(payload)}.`)
 }
 
 function rewriteLegacyRiskSummaryValues(value: unknown, payload: Record<string, any>): unknown {
@@ -191,7 +190,7 @@ const FREE_TIER_GATED_OBJECT_SECTIONS = [
   'concentratedPositionProof', 'concentratedPositionProofRead', 'supplyControl', 'security',
 ] as const
 const FREE_TIER_GATED_SCALAR_FIELDS = [
-  'riskScore', 'riskLabel', 'riskBreakdown', 'devClusterSupplyPercent', 'creatorHolderPercent',
+  'riskScore', 'riskLabel', 'riskBreakdown', 'safetyScore', 'riskScoreDirectionAudit', 'devClusterSupplyPercent', 'creatorHolderPercent',
 ] as const
 
 // NEVER MUTATES ITS INPUT, DISCLOSED: this route's response cache (lib/server/cache/tokenCache.ts)
@@ -263,7 +262,7 @@ export function sanitizePublicTokenResponse<T extends Record<string, any>>(paylo
     }
   }
   // riskEngine.rugRiskScore/rugRiskLabel are the legacy V1 score — competes with the
-  // public Token Safety Score (riskScore/riskLabel/riskBreakdown), debug-only.
+  // public canonical Risk Score (riskScore/riskLabel/riskBreakdown), debug-only.
   if ((sanitized as any).riskEngine) {
     delete (sanitized as any).riskEngine.rugRiskScore
     delete (sanitized as any).riskEngine.rugRiskLabel
@@ -288,7 +287,7 @@ export function sanitizePublicTokenResponse<T extends Record<string, any>>(paylo
     }
   }
   // cortexLpRead.riskSummary's "shows an overall ... risk tier" wording is built from the
-  // legacy rugRiskLabel tier, which can disagree with the canonical Token Safety Score
+  // legacy rugRiskLabel tier, which can disagree with the canonical Risk Score
   // (e.g. a "critical" LP-risk tier alongside a 49/100 "moderate" overall score). Replace it
   // with the canonical score/label so the public summary never names a different tier than
   // riskScore/riskLabel.
@@ -296,7 +295,7 @@ export function sanitizePublicTokenResponse<T extends Record<string, any>>(paylo
     const cortexLpRead = (sanitized as any).cortexLpRead
     cortexLpRead.riskSummary = cortexLpRead.riskSummary.replace(
       /^(?:(?:[^.]*?\([^)]*\)|[^.]*?)\s+)?shows an overall \"[^\"]*\" risk tier based on observed pool data\./i,
-      tokenSafetySentence(sanitized as Record<string, any>)
+      tokenRiskSentence(sanitized as Record<string, any>)
     )
   }
   if ((sanitized as any).priceChart?.points?.length > 150) {

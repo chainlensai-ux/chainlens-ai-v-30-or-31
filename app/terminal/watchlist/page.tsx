@@ -5,8 +5,21 @@ import ProjectOverviewDrawer from '../base-radar/ProjectOverviewDrawer'
 import TimelineMiniChart from '../base-radar/TimelineMiniChart'
 import { useDrawerPreload } from '@/lib/useDrawerPreload'
 import { supabase } from '@/lib/supabaseClient'
+import { normalizeRiskScore, riskColorFromCanonicalLabel } from '@/lib/riskScoreDirection'
 
-type WatchlistToken = { id?: string | number; symbol?: string | null; name?: string | null; contract_address?: string | null; contract?: string | null; address?: string | null; token_address?: string | null }
+type WatchlistToken = {
+  id?: string | number
+  symbol?: string | null
+  name?: string | null
+  contract_address?: string | null
+  contract?: string | null
+  address?: string | null
+  token_address?: string | null
+  risk_label?: string | null
+  score?: number | null
+  score_type?: 'risk_score' | 'safety_score' | 'radar_score' | null
+  score_direction?: 'higher_is_riskier' | 'higher_is_safer' | null
+}
 
 function addressOf(token: WatchlistToken) { return token.contract_address || token.contract || token.address || token.token_address || '' }
 function shortAddr(addr: string) { return addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : 'Open check' }
@@ -25,7 +38,18 @@ function WatchlistRow({ token, onOpen, onRemove }: { token: WatchlistToken; onOp
   const contract = addressOf(token)
   const { preload, registerPreloadTarget, state } = useDrawerPreload(contract)
   const symbol = token.symbol || token.name || 'Saved token'
-  const score = 55 + (contract ? seededValue(contract, 2) % 41 : 0)
+  const embeddedRiskType = token.risk_label?.startsWith('risk_score:') === true
+  const effectiveScoreType = token.score_type ?? (embeddedRiskType ? 'risk_score' : null)
+  const normalizedRisk = normalizeRiskScore({
+    rawScore: token.score,
+    rawScoreType: effectiveScoreType === 'risk_score' ? 'risk_score' : effectiveScoreType === 'safety_score' ? 'safety_score' : 'unknown',
+    source: 'watchlist',
+    displayLocation: 'watchlist_badge',
+  })
+  const hasTypedRiskScore = effectiveScoreType === 'risk_score' || effectiveScoreType === 'safety_score'
+  const score = hasTypedRiskScore ? normalizedRisk.riskScore0To100 : null
+  const riskLabel = hasTypedRiskScore ? normalizedRisk.riskLabel : null
+  const riskColor = riskColorFromCanonicalLabel(riskLabel)
 
   return (
     <article ref={registerPreloadTarget} onMouseEnter={preload} onFocus={preload} style={{ border: '1px solid rgba(148,163,184,.14)', background: 'linear-gradient(135deg, rgba(8,13,24,.94), rgba(4,9,18,.9))', borderRadius: 18, padding: 14, boxShadow: '0 18px 45px rgba(0,0,0,.24)' }}>
@@ -34,7 +58,11 @@ function WatchlistRow({ token, onOpen, onRemove }: { token: WatchlistToken; onOp
           <p style={{ margin: '0 0 5px', color: '#f8fafc', fontSize: 18, fontWeight: 850 }}>{symbol}</p>
           <p style={{ margin: '0 0 12px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', fontSize: 11 }}>{shortAddr(contract)} · {state === 'cached' ? 'drawer cache ready' : 'hover or scroll to preload'}</p>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8 }}>
-            {[['Watch Score', String(score)], ['Liquidity', 'Cached read'], ['Momentum', score > 75 ? 'High' : 'Forming']].map(([label, value]) => <div key={label} style={{ border: '1px solid rgba(255,255,255,.09)', borderRadius: 12, padding: 10, background: 'rgba(255,255,255,.035)' }}><p style={{ margin: '0 0 5px', color: '#64748b', fontSize: 9, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '.12em' }}>{label}</p><p style={{ margin: 0, color: '#99f6e4', fontWeight: 800, fontSize: 13 }}>{value}</p></div>)}
+            {[
+              ['Risk Score', score != null ? `${score}/100` : 'Rescan required'],
+              ['Risk Verdict', riskLabel ?? 'Unrated'],
+              ['Direction', score != null ? 'Higher = riskier' : 'Not recorded'],
+            ].map(([label, value]) => <div key={label} style={{ border: '1px solid rgba(255,255,255,.09)', borderRadius: 12, padding: 10, background: 'rgba(255,255,255,.035)' }}><p style={{ margin: '0 0 5px', color: '#64748b', fontSize: 9, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', letterSpacing: '.12em' }}>{label}</p><p style={{ margin: 0, color: score != null ? riskColor : '#94a3b8', fontWeight: 800, fontSize: 13 }}>{value}</p></div>)}
           </div>
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <button onClick={() => { preload(); onOpen(token) }} style={{ border: '1px solid rgba(45,212,191,.35)', background: 'rgba(45,212,191,.12)', color: '#99f6e4', borderRadius: 11, padding: '8px 11px', fontSize: 10, fontWeight: 800, fontFamily: 'var(--font-plex-mono)', textTransform: 'uppercase', cursor: 'pointer' }}>Open Drawer</button>
