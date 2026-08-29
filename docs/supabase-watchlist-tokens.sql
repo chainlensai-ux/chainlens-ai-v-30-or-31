@@ -8,6 +8,12 @@ create table if not exists public.watchlist_tokens (
   user_id uuid not null references auth.users(id) on delete cascade,
   contract_address text not null,
   symbol text,
+  name text,
+  chain text,
+  risk_label text,
+  score numeric,
+  score_type text,
+  score_direction text,
   created_at timestamptz not null default now(),
   saved_at timestamptz not null default now()
 );
@@ -17,6 +23,12 @@ alter table public.watchlist_tokens
   add column if not exists user_id uuid references auth.users(id) on delete cascade,
   add column if not exists contract_address text,
   add column if not exists symbol text,
+  add column if not exists name text,
+  add column if not exists chain text,
+  add column if not exists risk_label text,
+  add column if not exists score numeric,
+  add column if not exists score_type text,
+  add column if not exists score_direction text,
   add column if not exists created_at timestamptz not null default now(),
   add column if not exists saved_at timestamptz not null default now();
 

@@ -10959,6 +10959,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         address: typeof t.contract === "string" ? t.contract : tokenAddress,
       } : null,
       chain: evidenceChain,
+      riskScore: typeof t.riskScore === "number" ? t.riskScore : null,
+      riskLabel: typeof t.riskLabel === "string" ? t.riskLabel : null,
+      riskScoreType: t.riskScoreType === "safety_score" ? "safety_score" : "risk_score",
       market: {
         price: typeof t.priceUsd === "number" ? t.priceUsd : null,
         change24h: typeof t.priceChange24h === "number" ? t.priceChange24h : (typeof tSectMarket.change24h === "number" ? tSectMarket.change24h : null),

@@ -15,6 +15,12 @@ import type { SolanaBetaScanResult } from '@/lib/server/solanaTokenScannerBeta'
 import { computeSolanaConfidenceScore } from '@/lib/solanaConfidenceScore'
 import { computeSolanaCortexRisk, classifySolanaExtensionRisk } from '@/lib/solanaCortexRisk'
 import { resolveDeployerWalletIntel } from '@/lib/deployerWalletIntel'
+import {
+  normalizeRiskScore,
+  riskColorFromCanonicalLabel,
+  riskGaugeFillPercent,
+  type RiskScoreDirectionAudit,
+} from '@/lib/riskScoreDirection'
 
 // Type-only import above is erased at build time, so no server module is bundled into the client.
 type SolanaBetaResult = SolanaBetaScanResult
@@ -495,6 +501,10 @@ type ScanResult = {
     confidence?: string
   }
   riskScore?: number
+  safetyScore?: number
+  riskScoreType?: 'risk_score' | 'safety_score'
+  riskScoreDirection?: 'higher_is_riskier'
+  riskScoreDirectionAudit?: RiskScoreDirectionAudit
   riskLabel?: "extreme" | "high" | "moderate" | "low" | "very_low" | string
   planGate?: { plan?: string; requiredPlan?: string } | null
   scanAudit?: {
@@ -529,6 +539,7 @@ type ScanResult = {
       reasons?: string[]
     }
     total?: number
+    safetyTotal?: number
   }
   riskEngine?: {
     rugRiskScore: number | null
@@ -538,6 +549,13 @@ type ScanResult = {
     verifiedSignals: string[]
     riskDrivers: string[]
     openChecks: string[]
+    riskScore?: number | null
+    riskLabel?: string | null
+    scoreDirection?: 'higher_is_riskier'
+    riskScoreDirectionAudit?: RiskScoreDirectionAudit
+    cortexSafetyScore?: number | null
+    cortexSafetyVerdict?: string | null
+    cortexScoreType?: 'safety_score'
     cortexScore?: number | null
     cortexVerdict?: 'Strong' | 'Watch' | 'Caution' | 'High Risk' | 'Open Check'
     cortexConfidence?: 'high' | 'medium' | 'low' | 'insufficient'
@@ -3802,27 +3820,16 @@ function getVerdictStyle(verdict: CortexScoreResult['verdict'] | CortexScoreResu
 
 // ─── Token Safety Score helpers ────────────────────────────────────────────
 const RISK_LABEL_MAP: Record<string, string> = {
-  extreme: 'Extreme Risk',
+  extreme: 'Critical Risk',
   high: 'High Risk',
-  moderate: 'Moderate Risk',
+  moderate: 'Medium Risk',
   low: 'Low Risk',
-  very_low: 'Very Low Risk',
+  very_low: 'Low Risk',
 }
 
 function getRiskLabelDisplay(riskLabel?: string | null): string {
   if (!riskLabel) return 'Unrated'
   return RISK_LABEL_MAP[riskLabel] ?? riskLabel
-}
-
-function getRiskLabelColor(riskLabel?: string | null): string {
-  switch (riskLabel) {
-    case 'very_low': return '#34d399'
-    case 'low':      return '#2DD4BF'
-    case 'moderate': return '#fbbf24'
-    case 'high':     return '#f59e0b'
-    case 'extreme':  return '#f87171'
-    default:         return '#94a3b8'
-  }
 }
 
 const RISK_REASON_MAP: Record<string, string> = {
@@ -3995,12 +4002,12 @@ function CortexSummaryCard({ result }: { result: ScanResult }) {
 
 // ─── Risk Gauge Circle ───────────────────────────────────────────────
 
-function RiskGaugeCircle({ score, color }: { score: number | null; color: string }) {
+function RiskGaugeCircle({ score, color, scoreType = 'safety' }: { score: number | null; color: string; scoreType?: 'risk' | 'safety' }) {
   const size = 152
   const sw = 9
   const r = (size - sw) / 2
   const circ = 2 * Math.PI * r
-  const pct = score != null ? Math.max(0, Math.min(100, score)) / 100 : 0
+  const pct = score != null ? (scoreType === 'risk' ? riskGaugeFillPercent(score) : Math.max(0, Math.min(100, score))) / 100 : 0
   const offset = circ - pct * circ
   const gradId = `riskGaugeGrad-${color.replace('#', '')}`
   return (
@@ -4025,7 +4032,7 @@ function RiskGaugeCircle({ score, color }: { score: number | null; color: string
         <span style={{ fontSize: '34px', fontWeight: 800, color, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, letterSpacing: '-0.01em' }}>
           {score != null ? score : '—'}
         </span>
-        <span style={{ fontSize: '8px', color: '#4a6178', letterSpacing: '.16em', fontFamily: 'var(--font-plex-mono)' }}>/ 100 SCORE</span>
+        <span style={{ fontSize: '8px', color: '#4a6178', letterSpacing: '.16em', fontFamily: 'var(--font-plex-mono)' }}>/ 100 {scoreType === 'risk' ? 'RISK' : 'SAFETY'}</span>
       </div>
     </div>
   )
@@ -4323,7 +4330,8 @@ export default function TerminalTokenScanner() {
         symbol: result.symbol ?? null,
         name: result.name ?? null,
         score: result.riskScore ?? null,
-        verdict: result.cortexVerdict ?? null,
+        verdict: getRiskLabelDisplay(result.riskLabel),
+        scoreDirection: result.riskScoreDirection ?? 'higher_is_riskier',
         topRisks,
         sectionStatus: Object.keys(sectionStatus).length ? sectionStatus : null,
         ts: Date.now(),
@@ -4358,8 +4366,10 @@ export default function TerminalTokenScanner() {
           // CHAIN-STORED WITH TOKEN (chain-strictness audit): the same 0x address on different
           // chains is a different token — the row must record which chain it was scanned on.
           chain: (result.chain ?? chain) as string,
-          riskLabel: result.cortexVerdict ?? null,
+          riskLabel: getRiskLabelDisplay(result.riskLabel),
           score: result.riskScore ?? null,
+          scoreType: 'risk_score',
+          scoreDirection: 'higher_is_riskier',
         }),
       })
       if (!res.ok) {
@@ -4758,6 +4768,10 @@ export default function TerminalTokenScanner() {
           cortexScore: json.cortexScore ?? null,
           cortexVerdict: json.cortexVerdict ?? undefined,
           riskScore: typeof json.riskScore === 'number' ? json.riskScore : undefined,
+          safetyScore: typeof json.safetyScore === 'number' ? json.safetyScore : undefined,
+          riskScoreType: json.riskScoreType === 'safety_score' ? 'safety_score' : 'risk_score',
+          riskScoreDirection: json.riskScoreDirection ?? undefined,
+          riskScoreDirectionAudit: json.riskScoreDirectionAudit ?? undefined,
           riskLabel: json.riskLabel ?? undefined,
           riskBreakdown: json.riskBreakdown ?? undefined,
           planGate: json.planGate ?? null,
@@ -6797,9 +6811,17 @@ export default function TerminalTokenScanner() {
                 ]
                 const goodSignals = goodSigns.length >= 2 ? goodSigns : [...goodSigns, 'No additional positive signals confirmed this scan.']
                 const riskSignals = riskSigns.length >= 2 ? riskSigns : [...riskSigns, 'No additional risk signals surfaced beyond current checks.']
-                const riskScoreVal = typeof result.riskScore === 'number' && Number.isFinite(result.riskScore) ? result.riskScore : null
-                const riskLabelColor = getRiskLabelColor(result.riskLabel)
-                const riskLabelDisplay = getRiskLabelDisplay(result.riskLabel)
+                const normalizedRisk = normalizeRiskScore({
+                  rawScore: result.riskScore,
+                  rawScoreType: result.riskScoreType ?? 'risk_score',
+                  riskDrivers: result.riskEngine?.riskDrivers,
+                  confidence: result.riskEngine?.confidence,
+                  source: 'token_scanner',
+                  displayLocation: 'overview',
+                })
+                const riskScoreVal = normalizedRisk.riskScore0To100
+                const riskLabelColor = riskColorFromCanonicalLabel(normalizedRisk.riskLabel)
+                const riskLabelDisplay = normalizedRisk.riskLabel ?? 'Unrated'
                 const riskBreakdownRows: Array<{ label: string; data?: { score?: number; max?: number; reasons?: string[] } }> = [
                   { label: 'Market Maturity', data: result.riskBreakdown?.marketMaturity },
                   { label: 'Liquidity Safety', data: result.riskBreakdown?.liquiditySafety },
@@ -6823,13 +6845,13 @@ export default function TerminalTokenScanner() {
                       </div>
                     )}
 
-                    {/* Token Safety Score Hero — SCORE-CARD-POLISH, DISCLOSED (Token Scanner
+                    {/* Canonical Risk Score Hero — SCORE-CARD-POLISH, DISCLOSED (Token Scanner
                         result-UI polish task): same score/label/exact numbers, tighter padding and
                         vertical rhythm (22px->18px, marginBottom 16px->14px), cleaner thinner
                         progress bar, explanatory copy unchanged in wording but sized down slightly
                         so it reads as a caption, not body text. */}
                     <div className="risk-score-hero" style={{ marginBottom: '14px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${riskLabelColor}32`, borderRadius: '16px', padding: '18px 22px', boxShadow: `0 0 44px ${riskLabelColor}10, 0 0 0 1px ${riskLabelColor}06 inset` }}>
-                      <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>TOKEN SAFETY SCORE</div>
+                      <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '5px' }}>RISK SCORE</div>
                       {riskScoreVal != null ? (
                         <>
                           <div style={{ display: 'flex', alignItems: 'baseline', gap: '12px', flexWrap: 'wrap' }}>
@@ -6840,17 +6862,17 @@ export default function TerminalTokenScanner() {
                             <span style={{ padding: '4px 14px', borderRadius: '999px', fontSize: '11px', fontWeight: 800, letterSpacing: '0.10em', color: riskLabelColor, background: `${riskLabelColor}14`, border: `1px solid ${riskLabelColor}45`, fontFamily: 'var(--font-plex-mono)' }}>{riskLabelDisplay}</span>
                           </div>
                           <div style={{ height: '4px', borderRadius: '999px', background: 'rgba(255,255,255,0.06)', overflow: 'hidden', marginTop: '12px' }}>
-                            <div style={{ height: '100%', width: `${riskScoreVal}%`, borderRadius: '999px', background: `linear-gradient(90deg,${riskLabelColor},${riskLabelColor}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 6px ${riskLabelColor}55` }} />
+                            <div style={{ height: '100%', width: `${riskGaugeFillPercent(riskScoreVal)}%`, borderRadius: '999px', background: `linear-gradient(90deg,${riskLabelColor},${riskLabelColor}80)`, transition: 'width 0.7s ease', boxShadow: `0 0 6px ${riskLabelColor}55` }} />
                           </div>
-                          <div style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>Higher score means safer — evidence-weighted across market maturity, liquidity safety, contract safety, and behavioral risk.</div>
+                          <div style={{ fontSize: '10px', color: '#5b7186', fontFamily: 'var(--font-plex-mono)', marginTop: '9px', lineHeight: 1.55 }}>Higher score means higher risk. Derived once from the evidence-weighted safety model.</div>
                         </>
                       ) : (
                         <div style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', padding: '4px 0', lineHeight: 1.55 }}>
                           {result.planGate?.plan === 'free'
-                            ? <>Token Safety Score requires Pro — <a href="/pricing" style={{ color: '#53F3C3', textDecoration: 'underline' }}>upgrade to unlock</a>. Free scans still show market data and basic checks.</>
+                            ? <>Risk Score requires Pro — <a href="/pricing" style={{ color: '#53F3C3', textDecoration: 'underline' }}>upgrade to unlock</a>. Free scans still show market data and basic checks.</>
                             : result.scanAudit?.confidenceMissingReason
                               ? `Score unavailable: ${String(result.scanAudit.confidenceMissingReason).replace(/_/g, ' ')}.`
-                              : 'Token Safety Score unavailable — the risk engine did not return a score for this scan.'}
+                              : 'Risk Score unavailable — the risk engine did not return a score for this scan.'}
                         </div>
                       )}
                     </div>
@@ -6862,7 +6884,8 @@ export default function TerminalTokenScanner() {
                         instead of feeling like a dense stack. */}
                     {result.riskBreakdown && (
                       <div style={{ marginBottom: '16px', padding: '14px 16px', borderRadius: '12px', border: '1px solid rgba(125,211,252,0.20)', background: 'rgba(8,14,28,0.72)' }}>
-                        <p style={{ margin: '0 0 12px', fontSize: '10px', letterSpacing: '.16em', color: '#7dd3fc', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>SCORE BREAKDOWN</p>
+                        <p style={{ margin: '0 0 4px', fontSize: '10px', letterSpacing: '.16em', color: '#7dd3fc', fontWeight: 800, fontFamily: 'var(--font-plex-mono)' }}>SAFETY EVIDENCE BREAKDOWN</p>
+                        <p style={{ margin: '0 0 12px', fontSize: '9px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>These section points are safety evidence: higher is safer. They are converted once into the Risk Score above.</p>
                         <div style={{ display: 'grid', gap: '10px' }}>
                           {riskBreakdownRows.map(({ label, data }, rIdx) => {
                             const sc = data?.score ?? 0
@@ -6905,19 +6928,19 @@ export default function TerminalTokenScanner() {
                       </div>
                     )}
 
-                    {/* CORTEX Engine Read — secondary legacy score */}
+                    {/* CORTEX Safety Read — explicitly named historical safety score. */}
                     <div style={{ marginBottom: '20px', padding: '12px 16px', borderRadius: '12px', border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(8,14,28,0.55)' }}>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', alignItems: 'baseline', marginBottom: '6px' }}>
-                        <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>CORTEX ENGINE READ</div>
-                        <div style={{ fontSize: '15px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)' }}>{legacyCortexScore != null ? `${scoreDisplay}/100` : 'Unavailable'}</div>
-                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>CORTEX Verdict: <span style={{ color: v.color, fontWeight: 700 }}>{v.label}</span></div>
+                        <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>CORTEX SAFETY READ</div>
+                        <div style={{ fontSize: '15px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)' }}>{legacyCortexScore != null ? `Safety Score: ${legacyCortexScore}/100` : 'Unavailable'}</div>
+                        <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>Safety verdict: <span style={{ color: v.color, fontWeight: 700 }}>{v.label}</span></div>
                       </div>
-                      <p style={{ margin: 0, fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>CORTEX Engine is a stricter evidence-weighted risk read. Token Safety Score is the main normalized product score.</p>
+                      <p style={{ margin: 0, fontSize: '10px', color: '#475569', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>This secondary model is explicitly a Safety Score: higher means safer. The Risk Score above is the canonical product score.</p>
                     </div>
 
                     {/* Advanced CORTEX Details — collapsed by default. The old large CORTEX
                         Score Hero and its breakdown live here as a secondary, opt-in view;
-                        Token Safety Score and the compact CORTEX Engine Read strip above are
+                        the canonical Risk Score and compact CORTEX Safety Read strip above are
                         the only scores shown by default. */}
                     <details style={{ marginBottom: '20px' }}>
                     <summary className="detail-summary" style={{ cursor: 'pointer', listStyle: 'none', fontSize: '11px', letterSpacing: '.14em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', fontWeight: 700, padding: '10px 14px', borderRadius: '10px', border: '1px solid rgba(148,163,184,0.16)', background: 'rgba(8,14,28,0.55)', display: 'flex', alignItems: 'center', gap: '8px' }}><span className="detail-chevron" aria-hidden="true" style={{ display: 'inline-block', fontSize: '9px' }}>▶</span>ADVANCED CORTEX DETAILS</summary>
@@ -6925,7 +6948,7 @@ export default function TerminalTokenScanner() {
                     <div className="cortex-score-hero" style={{ marginBottom: '20px', background: 'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.96))', border: `1px solid ${scoreColor}32`, borderRadius: '18px', padding: '22px 24px', boxShadow: `0 0 60px ${scoreColor}12, 0 0 24px ${scoreColor}08, 0 0 0 1px ${scoreColor}06 inset` }}>
                       <div style={{ display: 'flex', alignItems: 'flex-start', gap: '20px', flexWrap: 'wrap', marginBottom: '18px' }}>
                         <div style={{ flexShrink: 0 }}>
-                          <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '6px' }}>CORTEX SCORE</div>
+                          <div style={{ fontSize: '10px', letterSpacing: '.18em', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '6px' }}>CORTEX SAFETY SCORE</div>
                           <div style={{ display: 'flex', alignItems: 'baseline', gap: '3px' }}>
                             <span style={{ fontSize: score == null ? '38px' : '62px', fontWeight: 800, color: scoreColor, fontFamily: 'var(--font-plex-mono)', lineHeight: 1, textShadow: `0 0 28px ${scoreColor}40` }}>{scoreDisplay}</span>
                             {score != null && <span style={{ fontSize: '18px', color: `${scoreColor}55`, fontFamily: 'var(--font-plex-mono)' }}>/100</span>}
@@ -6970,7 +6993,7 @@ export default function TerminalTokenScanner() {
                       </div>
                     )}
                     <div style={{ marginBottom:'20px', padding:'14px 16px', borderRadius:'12px', border:'1px solid rgba(125,211,252,0.20)', background:'rgba(8,14,28,0.72)' }}>
-                      <p style={{ margin:'0 0 12px', fontSize:'10px', letterSpacing:'.16em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CORTEX SCORE BREAKDOWN</p>
+                      <p style={{ margin:'0 0 12px', fontSize:'10px', letterSpacing:'.16em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CORTEX SAFETY SCORE BREAKDOWN</p>
                       <div style={{ display:'grid', gap:'0' }}>
                         {scoreBreakdown.map((b, bIdx)=>(
                           <div key={b.label} className="cortex-bdrow" style={{ display:'grid', gridTemplateColumns:'150px 74px 1fr', gap:'10px', alignItems:'center', padding:'7px 8px', borderBottom: bIdx < scoreBreakdown.length - 1 ? '1px solid rgba(255,255,255,.04)' : 'none' }}>
@@ -8379,25 +8402,19 @@ export default function TerminalTokenScanner() {
                     const ownerState = deriveHolderFallbackEvidence(result).ownerStatus
                     const missing2 = getMissingChecks(result)
                     const next2 = getNextAction(result)
-                    const rugLabelMap: Record<string, string> = { low_visible_risk:'Low visible risk', watch:'Watch', high:'High', critical:'Critical', partial_data:'Open check', unavailable_with_reason:'Open check', unverified:'Open check' }
                     const lpLabelMap: Record<string, string> = { burned:'Burned', locked:'Locked', protocol:'Protocol-specific', concentrated_liquidity:'Concentrated Liquidity', team_controlled:'Wallet Controlled', wallet_controlled:'Wallet Controlled', partial:'Partial Evidence', no_pool:'Open Check', unavailable_with_reason:'Open Check', unverified:'Open Check', insufficient_data:'Open Check', error:'Open Check', open_check:'Open Check', not_applicable:'Protocol-specific' }
-                    // Recompute locally as a last-resort fallback — older cached
-                    // responses may not carry cortexScore/cortexVerdict on
-                    // riskEngine yet. A numeric score is always preferred over
-                    // "Open Check", and a numeric score's verdict is never
-                    // overridden by an "Open Check" verdict.
-                    const localCortex = calculateCortexScoreV2(result)
-                    const displayCortexScore = result.cortexScore ?? engine?.cortexScore ?? localCortex.cortexScore ?? (engine?.rugRiskScore != null ? Math.max(0, 100 - engine.rugRiskScore) : null)
-                    const verdictFromScore = (s: number): typeof localCortex.cortexVerdict =>
-                      s >= 75 ? 'Strong' : s >= 60 ? 'Watch' : s >= 40 ? 'Caution' : 'High Risk'
-                    const rawCortexVerdict = result.cortexVerdict ?? engine?.cortexVerdict ?? null
-                    const displayCortexVerdict = (rawCortexVerdict && rawCortexVerdict !== 'Open Check')
-                      ? rawCortexVerdict
-                      : displayCortexScore != null
-                        ? (localCortex.cortexVerdict !== 'Open Check' ? localCortex.cortexVerdict : verdictFromScore(displayCortexScore))
-                        : rawCortexVerdict
-                    const displayCortexConfidence = result.cortexConfidence ?? engine?.cortexConfidence ?? (engine?.confidence ?? 'low')
-                    const gaugeColor = displayCortexScore == null ? '#94a3b8' : displayCortexScore >= 85 ? '#34d399' : displayCortexScore >= 70 ? '#fbbf24' : displayCortexScore >= 50 ? '#f59e0b' : '#f43f5e'
+                    const normalizedEngineRisk = normalizeRiskScore({
+                      rawScore: engine?.riskScore ?? result.riskScore,
+                      rawScoreType: 'risk_score',
+                      riskDrivers: engine?.riskDrivers,
+                      confidence: engine?.confidence,
+                      source: 'token_scanner',
+                      displayLocation: 'risk_engine_tab',
+                    })
+                    const displayCortexScore = normalizedEngineRisk.riskScore0To100
+                    const displayCortexVerdict = normalizedEngineRisk.riskLabel
+                    const displayCortexConfidence = normalizedEngineRisk.confidence
+                    const gaugeColor = riskColorFromCanonicalLabel(displayCortexVerdict)
                     const confColor = displayCortexConfidence === 'high' ? '#34d399' : displayCortexConfidence === 'medium' ? '#fbbf24' : displayCortexConfidence === 'low' ? '#94a3b8' : '#fbbf24'
                     const cardBase: React.CSSProperties = { padding:'14px 16px', background:'linear-gradient(145deg,rgba(6,12,24,.94),rgba(14,16,32,.84))', borderRadius:'14px' }
                     const cardTitle: React.CSSProperties = { margin:'0 0 10px',fontSize:'10px',fontWeight:700,letterSpacing:'.14em',textTransform:'uppercase',fontFamily:'var(--font-plex-mono)' }
@@ -8413,19 +8430,19 @@ export default function TerminalTokenScanner() {
                         <div style={{ padding:'22px 24px', background:'linear-gradient(160deg,rgba(8,16,32,.98),rgba(4,8,18,.95))', border:`1px solid ${gaugeColor}35`, borderRadius:'20px', boxShadow:`0 0 44px ${gaugeColor}0c` }}>
                           <div style={{ display:'flex', alignItems:'center', gap:'28px', flexWrap:'wrap' }}>
                             <div style={{ flexShrink:0 }}>
-                              <RiskGaugeCircle score={displayCortexScore} color={gaugeColor} />
+                              <RiskGaugeCircle score={displayCortexScore} color={gaugeColor} scoreType="risk" />
                             </div>
                             <div style={{ flex:1, minWidth:'200px', display:'flex', flexDirection:'column', gap:'11px' }}>
                               <div style={{ fontSize:'9px',letterSpacing:'.18em',color:'#3a5268',fontFamily:'var(--font-plex-mono)' }}>CORTEX RISK ENGINE</div>
                               <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
                                 <span style={{ padding:'5px 14px',borderRadius:'999px',fontSize:'11px',fontWeight:800,letterSpacing:'.10em',color:gaugeColor,background:`${gaugeColor}14`,border:`1px solid ${gaugeColor}44`,fontFamily:'var(--font-plex-mono)' }}>
-                                  {displayCortexVerdict ?? (rugLabelMap[engine?.rugRiskLabel ?? 'unavailable_with_reason'] ?? 'OPEN CHECK')}
+                                  {displayCortexVerdict ?? 'OPEN CHECK'}
                                 </span>
                                 <span style={{ padding:'5px 10px',borderRadius:'999px',fontSize:'9px',fontWeight:700,letterSpacing:'.10em',color:confColor,background:`${confColor}12`,border:`1px solid ${confColor}38`,fontFamily:'var(--font-plex-mono)' }}>
-                                  {displayCortexConfidence === 'insufficient' ? 'Insufficient confidence' : displayCortexConfidence === 'low' ? 'Partial confidence' : `${displayCortexConfidence.toUpperCase()} CONFIDENCE`}
+                                  {displayCortexConfidence === 'low' ? 'Partial confidence' : `${displayCortexConfidence.toUpperCase()} CONFIDENCE`}
                                 </span>
                               </div>
-                              <p style={{ margin:0,fontSize:'10.5px',color:'#4a6178',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>Score calculated from available evidence. Missing checks reduce confidence.</p>
+                              <p style={{ margin:0,fontSize:'10.5px',color:'#4a6178',fontFamily:'var(--font-plex-mono)',lineHeight:1.5 }}>Risk Score: higher values mean higher risk. Missing checks reduce confidence.</p>
                               {engine?.cortexRead ? (
                                 <div style={{ padding:'10px 12px',borderRadius:'10px',background:'rgba(45,212,191,0.05)',border:'1px solid rgba(45,212,191,0.18)' }}>
                                   <p style={{ margin:0,fontSize:'11px',color:'#99f6e4',lineHeight:1.6,fontFamily:'var(--font-plex-mono)' }}>{engine.cortexRead}</p>
@@ -8691,9 +8708,19 @@ export default function TerminalTokenScanner() {
                   ...(linkedWalletCount === 0 ? ['Linked wallet cluster still limited from available transfer evidence.'] : []),
                   ...(holderState.kind !== 'rowsWithPercent' ? ['Holder concentration data remains partial.'] : []),
                 ]
-                const score = Math.max(10, Math.min(98, Math.round((creatorStatus === 'confirmed' ? 32 : creatorStatus === 'likely' ? 24 : 14) + (linkedWalletCount > 0 ? 18 : 8) + (devClusterSupply != null ? Math.max(0, 25 - Math.round(devClusterSupply / 2)) : 10) + (suspiciousTransferPattern ? 4 : 14))))
-                const riskLabel = score >= 76 ? 'LOW RISK' : score >= 56 ? 'WATCH' : score >= 35 ? 'HIGH RISK' : 'CRITICAL'
+                const devSafetyScore = Math.max(10, Math.min(98, Math.round((creatorStatus === 'confirmed' ? 32 : creatorStatus === 'likely' ? 24 : 14) + (linkedWalletCount > 0 ? 18 : 8) + (devClusterSupply != null ? Math.max(0, 25 - Math.round(devClusterSupply / 2)) : 10) + (suspiciousTransferPattern ? 4 : 14))))
                 const confidenceLabel = creatorStatus && holderState.kind === 'rowsWithPercent' ? 'HIGH' : creatorStatus || linkedWalletCount > 0 ? 'MEDIUM' : 'LOW'
+                const normalizedDevRisk = normalizeRiskScore({
+                  rawScore: devSafetyScore,
+                  rawScoreType: 'safety_score',
+                  riskDrivers: clusterSignals,
+                  confidence: confidenceLabel.toLowerCase(),
+                  source: 'token_scanner_dev_control',
+                  displayLocation: 'dev_tab',
+                })
+                const score = normalizedDevRisk.riskScore0To100 ?? 0
+                const riskLabel = normalizedDevRisk.riskLabel ?? 'Unrated'
+                const devRiskColor = riskColorFromCanonicalLabel(normalizedDevRisk.riskLabel)
                 const next = getNextAction(result)
                 const safeError = devIntelError ? 'Dev intelligence is temporarily unavailable. Retry the scan to refresh this module.' : null
 
@@ -8704,13 +8731,13 @@ export default function TerminalTokenScanner() {
                         <p style={{ margin:'0 0 6px',fontSize:'10px',letterSpacing:'.14em',color:'#7dd3fc',fontWeight:700,fontFamily:'var(--font-plex-mono)' }}>CORTEX Dev Control Read</p>
                         <p style={{ margin:0,fontSize:'12px',color:'#cbd5e1',fontFamily:'var(--font-plex-mono)' }}>Deployer identity, wallet cluster connections, and on-chain supply influence — CORTEX dev intelligence layer.</p>
                       </div>
-                      <p style={{ margin:0,fontSize:'28px',fontWeight:800,color:'#f8fafc',fontFamily:'var(--font-plex-mono)' }}>{score}<span style={{ fontSize:'12px',color:'#64748b' }}>/100</span></p>
+                      <p style={{ margin:0,fontSize:'28px',fontWeight:800,color:devRiskColor,fontFamily:'var(--font-plex-mono)' }}>{score}<span style={{ fontSize:'12px',color:'#64748b' }}>/100 RISK</span></p>
                     </div>
                     <div style={{ display:'flex',gap:'8px',flexWrap:'wrap',marginBottom:'10px' }}>
-                      <span style={{ padding:'4px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:riskLabel.includes('LOW') ? '#34d399' : riskLabel==='WATCH' ? '#fbbf24' : '#f87171',background:riskLabel.includes('LOW')?'rgba(52,211,153,.1)':riskLabel==='WATCH'?'rgba(251,191,36,.1)':'rgba(248,113,113,.1)',border:riskLabel.includes('LOW')?'1px solid rgba(52,211,153,.35)':riskLabel==='WATCH'?'1px solid rgba(251,191,36,.35)':'1px solid rgba(248,113,113,.35)',fontFamily:'var(--font-plex-mono)' }}>{riskLabel}</span>
+                      <span style={{ padding:'4px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:devRiskColor,background:`${devRiskColor}18`,border:`1px solid ${devRiskColor}55`,fontFamily:'var(--font-plex-mono)' }}>{riskLabel}</span>
                       <span style={{ padding:'4px 9px',borderRadius:'999px',fontSize:'10px',fontWeight:700,color:'#7dd3fc',border:'1px solid rgba(125,211,252,0.26)',fontFamily:'var(--font-plex-mono)' }}>CONFIDENCE {confidenceLabel}</span>
                     </div>
-                    <div style={{ height:'8px',borderRadius:'999px',background:'rgba(15,23,42,0.9)',border:'1px solid rgba(255,255,255,0.08)',overflow:'hidden' }}><div style={{ width:`${score}%`,height:'100%',background:'linear-gradient(90deg, #2dd4bf, #7dd3fc)' }} /></div>
+                    <div style={{ height:'8px',borderRadius:'999px',background:'rgba(15,23,42,0.9)',border:'1px solid rgba(255,255,255,0.08)',overflow:'hidden' }}><div style={{ width:`${riskGaugeFillPercent(score)}%`,height:'100%',background:`linear-gradient(90deg, ${devRiskColor}99, ${devRiskColor})` }} /></div>
                   </div>
                   <div style={{ display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:'10px',marginBottom:'14px' }}>
                     {[
@@ -9213,9 +9240,16 @@ export default function TerminalTokenScanner() {
             const top10 = result.holderDistribution?.top10
             const top20 = result.holderDistribution?.top20
             const taxesHigh = (buyTax != null && buyTax > 8) || (sellTax != null && sellTax > 8)
-            const scx = calculateCortexScoreV2(result)
-            const verdict = result.cortexVerdict ?? scx.cortexVerdict
-            const verdictColor = verdict === 'High Risk' ? '#f87171' : verdict === 'Strong' ? '#2DD4BF' : verdict === 'Watch' ? '#fbbf24' : verdict === 'Caution' ? '#f59e0b' : '#94a3b8'
+            const sidebarRisk = normalizeRiskScore({
+              rawScore: result.riskScore,
+              rawScoreType: result.riskScoreType ?? 'risk_score',
+              riskDrivers: result.riskEngine?.riskDrivers,
+              confidence: result.riskEngine?.confidence,
+              source: 'token_scanner',
+              displayLocation: 'right_rail',
+            })
+            const verdict = sidebarRisk.riskLabel ?? 'Open Check'
+            const verdictColor = riskColorFromCanonicalLabel(sidebarRisk.riskLabel)
             const bull = [
               liq > 1_000_000 ? `Deep liquidity — ${fmtLarge(liq)} pool depth.` : liq > 200_000 ? `Moderate liquidity — ${fmtLarge(liq)} pool depth.` : liq > 0 ? 'Liquidity present.' : '',
               d.hasMarketData ? 'Live market data confirmed.' : '',
@@ -9237,9 +9271,9 @@ export default function TerminalTokenScanner() {
               d.fallbackEvidence.ownerStatus === 'Open check' ? 'Owner status' : '',
               result.marketCapUsd == null ? 'Market cap' : '',
             ].filter(Boolean)
-            // Score from data-driven engine
-            const sidebarScore = result.cortexScore ?? scx.cortexScore
-            const sidebarScoreColor = sidebarScore == null ? '#94a3b8' : sidebarScore >= 85 ? '#34d399' : sidebarScore >= 70 ? '#fbbf24' : sidebarScore >= 50 ? '#f59e0b' : '#f87171'
+            // Canonical Risk Score: higher is riskier on every Token Scanner surface.
+            const sidebarScore = sidebarRisk.riskScore0To100
+            const sidebarScoreColor = verdictColor
             // Critical risks (top 3 actionable)
             const criticalRisks: string[] = [
               hp?.isHoneypot === true ? 'HONEYPOT detected — do not trade.' : null,
@@ -9266,13 +9300,13 @@ export default function TerminalTokenScanner() {
                   <div style={{fontSize:'9px',letterSpacing:'.16em',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'10px'}}>CORTEX RECEIPT</div>
                   <div style={{display:'flex',alignItems:'center',gap:'12px',flexWrap:'wrap'}}>
                     <div style={{flexShrink:0}}>
-                      <div style={{fontSize:'9px',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'2px'}}>SCORE</div>
+                      <div style={{fontSize:'9px',color:'#3a5268',fontFamily:'var(--font-plex-mono)',marginBottom:'2px'}}>RISK SCORE</div>
                       <div style={{fontSize:'28px',fontWeight:800,color:sidebarScoreColor,fontFamily:'var(--font-plex-mono)',lineHeight:1}}>{sidebarScore ?? 'Open Check'}{sidebarScore != null && <span style={{fontSize:'12px',color:`${sidebarScoreColor}55`}}>/100</span>}</div>
                     </div>
                     <div style={{flex:1}}>
                       <div style={{display:'inline-flex',padding:'5px 14px',borderRadius:'999px',border:`1px solid ${verdictColor}55`,color:verdictColor,fontWeight:800,fontSize:'11px',letterSpacing:'.10em',background:`${verdictColor}12`,fontFamily:'var(--font-plex-mono)',marginBottom:'6px'}}>{verdict}</div>
                       <div style={{height:'4px',borderRadius:'999px',background:'rgba(255,255,255,0.06)',overflow:'hidden'}}>
-                        <div style={{height:'100%',width:`${sidebarScore ?? 0}%`,borderRadius:'999px',background:`linear-gradient(90deg,${sidebarScoreColor},${sidebarScoreColor}70)`,transition:'width 0.6s ease'}} />
+                        <div style={{height:'100%',width:`${riskGaugeFillPercent(sidebarScore)}%`,borderRadius:'999px',background:`linear-gradient(90deg,${sidebarScoreColor},${sidebarScoreColor}70)`,transition:'width 0.6s ease'}} />
                       </div>
                     </div>
                   </div>

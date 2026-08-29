@@ -3,6 +3,7 @@
 
 export { resolveClarkIntent, type ClarkIntentContext, type ClarkResolvedIntent } from "../clarkIntent.ts";
 import { isValidSolanaMintAddress } from "../solanaAddress.ts";
+import { normalizeRiskScore } from "../riskScoreDirection.ts";
 
 export type DashboardMarketRow = {
   symbol: string;
@@ -2314,6 +2315,9 @@ export function buildClarkContextActions(
 export type TokenScanEvidence = {
   token?: { name?: string | null; symbol?: string | null; address?: string | null } | null;
   chain?: string | null;
+  riskScore?: number | null;
+  riskLabel?: string | null;
+  riskScoreType?: 'risk_score' | 'safety_score' | null;
   market?: {
     price?: number | null;
     change24h?: number | null;
@@ -2796,6 +2800,7 @@ export function renderClarkTokenVerdict(opts: {
   top1Pct: number | null;
   top10Pct: number | null;
   lpStatusLabel: string; // pre-formatted, chain-appropriate LP status text
+  canonicalRisk?: { score: number; label: string } | null;
   evmFields?: { ownershipStatus: string; proxyStatus: string; mintability: string; honeypotTaxResult: string } | null;
   // SOLANA-VOCABULARY FIX, DISCLOSED (hard rule: "Do NOT use EVM wording for Solana-only checks —
   // no proxy, ownership renounced, EVM deployer, or EVM honeypot unless the Solana module actually
@@ -2834,6 +2839,9 @@ export function renderClarkTokenVerdict(opts: {
     `- Top 10 holder %: ${fmtPct1(opts.top10Pct)}`,
     `- LP status: ${opts.lpStatusLabel}`,
   ];
+  if (opts.canonicalRisk) {
+    lines.push(`- Risk Score: ${opts.canonicalRisk.score}/100 — ${opts.canonicalRisk.label} (higher = riskier)`);
+  }
   if (opts.evmFields) {
     lines.push(
       `- Ownership status: ${opts.evmFields.ownershipStatus}`,
@@ -2875,6 +2883,12 @@ export function renderClarkTokenVerdictForEvm(ev: TokenScanEvidence, tokenAddres
   const result = computeClarkTokenVerdictCore(input, usableEvidence);
   const sym = String(ev.token?.symbol ?? "?").toUpperCase();
   const name = ev.token?.name && ev.token.name !== "Unknown" ? ev.token.name : null;
+  const canonicalRisk = normalizeRiskScore({
+    rawScore: ev.riskScore,
+    rawScoreType: ev.riskScoreType ?? 'risk_score',
+    source: 'clark_token_answer',
+    displayLocation: 'clark_token_read',
+  });
   return renderClarkTokenVerdict({
     symbolOrName: name && name.toUpperCase() !== sym ? `${name} (${sym})` : sym,
     chainLabel,
@@ -2889,6 +2903,9 @@ export function renderClarkTokenVerdictForEvm(ev: TokenScanEvidence, tokenAddres
     top1Pct: ev.holders?.top1 ?? null,
     top10Pct: ev.holders?.top10 ?? null,
     lpStatusLabel: lpStatusLine(ev).replace(/^LP proof:\s*/, ""),
+    canonicalRisk: canonicalRisk.riskScore0To100 != null && canonicalRisk.riskLabel
+      ? { score: canonicalRisk.riskScore0To100, label: canonicalRisk.riskLabel }
+      : null,
     evmFields: {
       ownershipStatus: ev.security?.ownerRenounced === true ? "Renounced" : ev.security?.ownerRenounced === false ? "Active (not renounced)" : "Unverified",
       proxyStatus: ev.security?.proxy === true ? "Proxy contract" : ev.security?.proxy === false ? "Not a proxy" : "Unverified",

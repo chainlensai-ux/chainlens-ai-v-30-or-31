@@ -111,8 +111,8 @@ const microcapInput = {
 const microcapResult = calculateTokenRiskScore(microcapInput)
 console.log('  riskScore:', microcapResult.riskScore, 'riskLabel:', microcapResult.riskLabel)
 
-assert('microcap riskScore is much lower than VIRTUAL', microcapResult.riskScore < virtualResult.riskScore - 15, { microcap: microcapResult.riskScore, virtual: virtualResult.riskScore })
-assert('microcap riskLabel is extreme or high', microcapResult.riskLabel === 'extreme' || microcapResult.riskLabel === 'high', microcapResult.riskLabel)
+assert('microcap Risk Score is much higher (riskier) than VIRTUAL', microcapResult.riskScore > virtualResult.riskScore + 15, { microcap: microcapResult.riskScore, virtual: virtualResult.riskScore })
+assert('microcap riskLabel is Critical Risk', microcapResult.riskLabel === 'Critical Risk', microcapResult.riskLabel)
 
 // ─── Scenario 3: Burned/locked mature token ─────────────────────────────────
 console.log('\nScenario 3: Burned/locked mature token (good market maturity, burned LP, no critical flags)')
@@ -153,9 +153,9 @@ const burnedInput = {
 const burnedResult = calculateTokenRiskScore(burnedInput)
 console.log('  riskScore:', burnedResult.riskScore, 'riskLabel:', burnedResult.riskLabel)
 
-assert('burned/locked token riskScore is high (>=61)', burnedResult.riskScore >= 61, burnedResult.riskScore)
-assert('burned/locked token riskLabel is low or very_low', burnedResult.riskLabel === 'low' || burnedResult.riskLabel === 'very_low', burnedResult.riskLabel)
-assert('burned/locked token scores higher than VIRTUAL', burnedResult.riskScore > virtualResult.riskScore, { burned: burnedResult.riskScore, virtual: virtualResult.riskScore })
+assert('burned/locked token Risk Score is low (<=24)', burnedResult.riskScore <= 24, burnedResult.riskScore)
+assert('burned/locked token riskLabel is Low Risk', burnedResult.riskLabel === 'Low Risk', burnedResult.riskLabel)
+assert('burned/locked token scores lower (safer) than VIRTUAL', burnedResult.riskScore < virtualResult.riskScore, { burned: burnedResult.riskScore, virtual: virtualResult.riskScore })
 
 // ─── Scenario 4: VIRTUAL-like with unknown LP controller, no lock/burn proof ──
 console.log('\nScenario 4: VIRTUAL-like mature token but LP controller is unresolved/unknown (same market evidence as Scenario 1)')
@@ -177,8 +177,8 @@ console.log('  riskScore:', unknownControllerResult.riskScore, 'riskLabel:', unk
 assert('lpLockOrBurn for unknown controller is 0 (not higher than wallet-controlled)', unknownControllerResult.riskBreakdown.liquiditySafety.components.lpLockOrBurn === 0, unknownControllerResult.riskBreakdown.liquiditySafety.components.lpLockOrBurn)
 assert('lpControllerRisk for unknown controller is 0 (not higher than wallet-controlled)', unknownControllerResult.riskBreakdown.liquiditySafety.components.lpControllerRisk === 0, unknownControllerResult.riskBreakdown.liquiditySafety.components.lpControllerRisk)
 assert('unknown-controller liquiditySafety is not higher than wallet-controlled VIRTUAL', unknownControllerResult.riskBreakdown.liquiditySafety.score <= virtualResult.riskBreakdown.liquiditySafety.score, { unknown: unknownControllerResult.riskBreakdown.liquiditySafety.score, virtual: virtualResult.riskBreakdown.liquiditySafety.score })
-assert('unknown-controller riskScore is not higher (more bullish) than wallet-controlled VIRTUAL', unknownControllerResult.riskScore <= virtualResult.riskScore, { unknown: unknownControllerResult.riskScore, virtual: virtualResult.riskScore })
-assert('unknown-controller riskLabel is not a "safer" label than VIRTUAL', !(unknownControllerResult.riskLabel === 'low' && virtualResult.riskLabel === 'moderate'), { unknown: unknownControllerResult.riskLabel, virtual: virtualResult.riskLabel })
+assert('unknown-controller Risk Score is not lower (safer) than wallet-controlled VIRTUAL', unknownControllerResult.riskScore >= virtualResult.riskScore, { unknown: unknownControllerResult.riskScore, virtual: virtualResult.riskScore })
+assert('unknown-controller riskLabel is not safer than VIRTUAL', unknownControllerResult.riskLabel === virtualResult.riskLabel || unknownControllerResult.riskScore > virtualResult.riskScore, { unknown: unknownControllerResult.riskLabel, virtual: virtualResult.riskLabel })
 
 // ─── Determinism ────────────────────────────────────────────────────────────
 console.log('\nDeterminism checks')
