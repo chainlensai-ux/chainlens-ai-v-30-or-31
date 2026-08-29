@@ -14,6 +14,7 @@ import type { SolanaBetaScanResult } from '@/lib/server/solanaTokenScannerBeta'
 // design (this task explicitly permits it). Client-safe, no env var, no secret.
 import { computeSolanaConfidenceScore } from '@/lib/solanaConfidenceScore'
 import { computeSolanaCortexRisk, classifySolanaExtensionRisk } from '@/lib/solanaCortexRisk'
+import { resolveDeployerWalletIntel } from '@/lib/deployerWalletIntel'
 
 // Type-only import above is erased at build time, so no server module is bundled into the client.
 type SolanaBetaResult = SolanaBetaScanResult
@@ -847,7 +848,16 @@ type ClusterInfluence = {
 type DevWalletIntel = {
   deployerAddress?: string | null
   deployerStatus?: 'confirmed' | 'possible_match' | 'not_confirmed' | string
-  linkedWallets?: Array<{ address: string; reason?: string | null; confidence?: string | null }>
+  // RICHER-LINKED-WALLET-FIELDS, DISCLOSED (deployer wallet detail fix): /api/dev-wallet's own
+  // LinkedWallet already carries amountReceived/firstSeen/txHash — previously dropped at the client
+  // type boundary so the UI only ever saw a bare reason string. Optional, additive fields only.
+  linkedWallets?: Array<{ address: string; reason?: string | null; confidence?: string | null; amountReceived?: number | null; asset?: string | null; firstSeen?: string | null; txHash?: string | null }>
+  // RELATED-DEPLOYMENTS FIELDS, DISCLOSED (deployer wallet detail fix): /api/dev-wallet already
+  // returns previousProjects (the deployer's other deployed contracts) — never previously reached
+  // this client type, so "Check Related Deployments" had no data to render.
+  previousActivityAvailable?: boolean | null
+  previousActivityStatus?: string | null
+  previousProjects?: Array<{ contractAddress: string; name: string | null; symbol: string | null; createdAt: string | null; rugFlag: boolean | null }>
   linkedWalletSupply?: number | null
   linkedWalletSupplyPercent?: number | null
   devClusterSupply?: number | null
@@ -1860,7 +1870,7 @@ function deriveClusterEdgeColor(edge: ClusterEdge): string {
   return edge.confidence === 'high' ? '#2dd4bf' : edge.confidence === 'medium' ? '#7dd3fc' : '#475569'
 }
 
-function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { clusterMap: ClusterMap | null; devIntel?: DevWalletIntel | null; holderDistribution?: { topHolders?: Array<{ rank?: number | null; address?: string | null; percent?: number | null }> } | null }) {
+function ClusterMapPanel({ clusterMap, devIntel, holderDistribution, chain, tokenAddress, tokenSymbol, tokenName }: { clusterMap: ClusterMap | null; devIntel?: DevWalletIntel | null; holderDistribution?: { topHolders?: Array<{ rank?: number | null; address?: string | null; percent?: number | null }> } | null; chain?: string | null; tokenAddress?: string | null; tokenSymbol?: string | null; tokenName?: string | null }) {
   const fmt = (addr: string | null | undefined) => addr ? `${addr.slice(0, 6)}…${addr.slice(-4)}` : '—'
   const map = clusterMap
   // PERF FIX, DISCLOSED (audit: Cluster Map tab pegged a CPU core / froze the page): nodes/edges
@@ -1907,6 +1917,42 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
   const clusterIsTouch = useRef(false)
   const [hoveredClusterEdgeId, setHoveredClusterEdgeId] = useState<string | null>(null)
   const [edgeTooltipPosition, setEdgeTooltipPosition] = useState<{ x: number; y: number } | null>(null)
+  // CHEAP-BALANCE-CALL, DISCLOSED (deployer wallet detail fix, resolution step 5): one small,
+  // rate-limited /api/deployer-balance read fired only when the DEPLOYER node is selected — never the
+  // full Wallet Scanner. eth/base only (matches Dev Control's own chain support); any other chain, or
+  // any failure, just leaves the indexed holder-snapshot figures as the answer.
+  const [deployerCheapBalance, setDeployerCheapBalance] = useState<{ attempted: boolean; succeeded: boolean; balance: number | null } | null>(null)
+  const [showRelatedDeployments, setShowRelatedDeployments] = useState(false)
+  useEffect(() => {
+    // Resets the previous node's cheap-balance result before the (possibly async) fetch below for
+    // the newly-selected node resolves.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDeployerCheapBalance(null)
+    const node = (clusterMap?.nodes ?? []).find((n) => n.id === selectedClusterNodeId)
+    if (!node || node.type !== 'deployer') return
+    if (chain !== 'eth' && chain !== 'base') return
+    if (!tokenAddress || !node.address) return
+    let cancelled = false
+    // Marks the call as in-flight before the fetch below settles; see the disclosure above.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setDeployerCheapBalance({ attempted: true, succeeded: false, balance: null })
+    fetch(`/api/deployer-balance?chain=${chain}&tokenAddress=${tokenAddress}&walletAddress=${node.address}`)
+      .then((res) => res.json())
+      .then((json: { ok?: boolean; tokenBalanceRaw?: string | null; tokenBalanceSucceeded?: boolean }) => {
+        if (cancelled) return
+        if (!json?.ok || !json.tokenBalanceSucceeded || json.tokenBalanceRaw == null) {
+          setDeployerCheapBalance({ attempted: true, succeeded: false, balance: null })
+          return
+        }
+        // Raw balance is base-unit (no decimals applied) — shown as a raw integer count when decimals
+        // aren't independently known here; the resolver only uses it to answer "holds >0 tokens now",
+        // not to compute a supply percent (that stays sourced from the indexed holder snapshot).
+        const raw = Number(json.tokenBalanceRaw)
+        setDeployerCheapBalance({ attempted: true, succeeded: Number.isFinite(raw), balance: Number.isFinite(raw) ? raw : null })
+      })
+      .catch(() => { if (!cancelled) setDeployerCheapBalance({ attempted: true, succeeded: false, balance: null }) })
+    return () => { cancelled = true }
+  }, [selectedClusterNodeId, chain, tokenAddress, clusterMap])
   const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
   const edgeColorFor = (type: string, reason: string) => {
     const lowerType = type.toLowerCase()
@@ -2242,12 +2288,67 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
   ].find((reason) => /fund|transfer|deployer|source/i.test(reason)) : null
   const supplyPercent = supplyFor(selectedClusterNode)
   const holderRank = holderRankFor(selectedClusterNode)
-  const openChecks = selectedClusterNode ? [
+  const openChecks = selectedClusterNode && selectedClusterNode.type !== 'deployer' ? [
     ...(supplyPercent == null ? ['Wallet not indexed in this pass.'] : []),
     ...(map.status === 'partial' ? ['Some wallet data may be incomplete.'] : []),
     ...(selectedClusterNode.confidence === 'open_check' ? ['CORTEX needs more holder or transfer evidence before confirming cluster influence.'] : []),
     ...(relatedEdges.length === 0 ? ['No transfer edge confirmed for this wallet.'] : []),
   ] : []
+
+  // DEPLOYER-WALLET-DETAIL FIX, DISCLOSED: the deployer/origin node is the one node type this task
+  // requires real intelligence for — resolveDeployerWalletIntel assembles it purely from evidence
+  // already fetched for this scan (Dev Control's supplyControl/linkedWallets/previousProjects, the
+  // holder snapshot, and the cluster graph's own edges), plus the cheap live-balance result above.
+  // Never runs the full Wallet Scanner and never fabricates a supply position or transfer link.
+  const isDeployerSelected = selectedClusterNode?.type === 'deployer'
+  const deployerIntelResult = isDeployerSelected && selectedClusterNode ? resolveDeployerWalletIntel({
+    chainSlug: chain ?? 'base',
+    tokenAddress: tokenAddress ?? '',
+    tokenSymbol: tokenSymbol ?? null,
+    tokenName: tokenName ?? null,
+    deployerAddress: selectedClusterNode.address,
+    existingScannerResult: { deployerAddress: devIntel?.deployerAddress ?? null },
+    holderSnapshot: { available: holderRows.length > 0, topHolders: holderRows.map(h => ({ address: h.address ?? '', rank: h.rank ?? null, percent: h.percent ?? null })) },
+    transferEdges: graphEdges.map(e => ({ source: e.source, target: e.target, type: e.type, reason: e.reason, confidence: e.confidence })),
+    clusterMap: { nodes: nodes.map(n => ({ address: n.address, id: n.id })) },
+    devControlResult: devIntel ? {
+      supplyControl: devIntel.supplyControl ?? null,
+      linkedWallets: devIntel.linkedWallets ?? null,
+      previousActivityAvailable: devIntel.previousActivityAvailable ?? null,
+      previousActivityStatus: devIntel.previousActivityStatus ?? null,
+      previousProjects: devIntel.previousProjects ?? null,
+      suspiciousTransfers: devIntel.suspiciousTransfers ?? null,
+      suspiciousTransferReasons: devIntel.suspiciousTransferReasons ?? null,
+    } : null,
+    cheapBalance: deployerCheapBalance,
+  }) : null
+  const deployerIntel = deployerIntelResult?.intel ?? null
+
+  // LINEAGE-CARD-DEPLOYER-INTEL, DISCLOSED: the "DEPLOYER LINEAGE" card below is always visible
+  // (not gated on node selection), so it needs its own resolver pass keyed off the graph's own
+  // deployer node rather than whichever node the user has clicked — same resolver, same evidence.
+  const lineageDeployerNode = deployerLineage.deployer
+  const lineageDeployerIntel = lineageDeployerNode ? resolveDeployerWalletIntel({
+    chainSlug: chain ?? 'base',
+    tokenAddress: tokenAddress ?? '',
+    tokenSymbol: tokenSymbol ?? null,
+    tokenName: tokenName ?? null,
+    deployerAddress: lineageDeployerNode.address,
+    existingScannerResult: { deployerAddress: devIntel?.deployerAddress ?? null },
+    holderSnapshot: { available: holderRows.length > 0, topHolders: holderRows.map(h => ({ address: h.address ?? '', rank: h.rank ?? null, percent: h.percent ?? null })) },
+    transferEdges: graphEdges.map(e => ({ source: e.source, target: e.target, type: e.type, reason: e.reason, confidence: e.confidence })),
+    clusterMap: { nodes: nodes.map(n => ({ address: n.address, id: n.id })) },
+    devControlResult: devIntel ? {
+      supplyControl: devIntel.supplyControl ?? null,
+      linkedWallets: devIntel.linkedWallets ?? null,
+      previousActivityAvailable: devIntel.previousActivityAvailable ?? null,
+      previousActivityStatus: devIntel.previousActivityStatus ?? null,
+      previousProjects: devIntel.previousProjects ?? null,
+      suspiciousTransfers: devIntel.suspiciousTransfers ?? null,
+      suspiciousTransferReasons: devIntel.suspiciousTransferReasons ?? null,
+    } : null,
+    cheapBalance: isDeployerSelected ? deployerCheapBalance : null,
+  }).intel : null
 
   return (
     <div style={{ display:'grid', gap:'12px' }}>
@@ -2413,15 +2514,45 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
                   <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.13em', color:'#64748b', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>WALLET ADDRESS</p>
                   <div style={{ display:'flex', gap:'8px', alignItems:'center', justifyContent:'space-between' }}>
                     <span title={selectedClusterNode.address} style={{ color:'#e2e8f0', fontSize:'12px', fontFamily:'var(--font-plex-mono)', fontWeight:800 }}>{fmt(selectedClusterNode.address)}</span>
-                    <button type="button" onClick={() => { void copyClusterAddress(selectedClusterNode.address) }} style={{ padding:'5px 8px', borderRadius:'8px', border:'1px solid rgba(45,212,191,.28)', background:'rgba(45,212,191,.08)', color:'#2dd4bf', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', cursor:'pointer' }}>{copiedClusterAddress === selectedClusterNode.address ? 'COPIED' : 'COPY'}</button>
+                    <button type="button" onClick={() => { void copyClusterAddress(selectedClusterNode.address) }} style={{ padding:'5px 8px', borderRadius:'8px', border:'1px solid rgba(45,212,191,.28)', background:'rgba(45,212,191,.08)', color:'#2dd4bf', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', cursor:'pointer' }}>{copiedClusterAddress === selectedClusterNode.address ? 'COPIED' : 'COPY ADDRESS'}</button>
                   </div>
                 </div>
+                {isDeployerSelected && deployerIntel && (
+                  <section style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(min(100%,150px),1fr))', gap:'6px' }}>
+                    <button type="button" onClick={() => { if (typeof window !== 'undefined') window.location.href = `/terminal/wallet-scanner?address=${selectedClusterNode.address}&chain=${chain ?? 'base'}` }} style={{ padding:'8px 9px', borderRadius:'9px', border:'1px solid rgba(251,191,36,.32)', background:'rgba(251,191,36,.08)', color:'#fbbf24', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', cursor:'pointer' }}>Run Deployer Wallet Scan</button>
+                    <button type="button" onClick={() => { if (typeof window !== 'undefined') window.location.href = `/terminal/wallet-scanner?address=${selectedClusterNode.address}&chain=${chain ?? 'base'}` }} style={{ padding:'8px 9px', borderRadius:'9px', border:'1px solid rgba(125,211,252,.28)', background:'rgba(125,211,252,.08)', color:'#7dd3fc', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', cursor:'pointer' }}>Open Wallet Scanner</button>
+                    <button type="button" onClick={() => setShowRelatedDeployments(v => !v)} style={{ padding:'8px 9px', borderRadius:'9px', border:'1px solid rgba(148,163,184,.24)', background:'rgba(148,163,184,.06)', color:'#cbd5e1', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)', cursor:'pointer' }}>Check Related Deployments</button>
+                  </section>
+                )}
+                {isDeployerSelected && deployerIntel && showRelatedDeployments && (
+                  <section style={{ display:'grid', gap:'6px', padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.58)', border:'1px solid rgba(148,163,184,.14)' }}>
+                    <p style={{ margin:0, color:'#94a3b8', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.relatedDeploymentsLabel}</p>
+                    {deployerIntel.relatedDeployments.map((project) => (
+                      <div key={project.contractAddress} style={{ display:'flex', justifyContent:'space-between', gap:'8px', padding:'5px 0', borderTop:'1px solid rgba(148,163,184,.08)' }}>
+                        <span style={{ color:'#e2e8f0', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{project.symbol ?? project.name ?? fmt(project.contractAddress)}</span>
+                        <span style={{ color: project.rugFlag ? '#fb7185' : '#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{project.rugFlag ? 'Rug flagged' : (project.createdAt ?? 'unknown date')}</span>
+                      </div>
+                    ))}
+                  </section>
+                )}
                 <section style={{ display:'grid', gap:'7px' }}>
                   <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>SUPPLY POSITION</p>
                   <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
-                    <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Supply</p><p style={{ margin:0, color:supplyPercent == null ? '#94a3b8' : '#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{supplyPercent == null ? 'Not indexed in this pass' : `${supplyPercent.toFixed(1)}% of supply`}</p></div>
-                    <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Holder rank</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{holderRank != null ? `#${holderRank}` : 'Open check'}</p></div>
+                    <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Supply</p><p style={{ margin:0, color:(isDeployerSelected ? supplyPercent == null : supplyPercent == null) ? '#94a3b8' : '#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{isDeployerSelected && deployerIntel ? deployerIntel.supplyLabel : (supplyPercent == null ? 'Outside indexed holder sample' : `${supplyPercent.toFixed(1)}% of supply`)}</p></div>
+                    <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Holder rank</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{isDeployerSelected && deployerIntel ? deployerIntel.holderRankLabel : (holderRank != null ? `#${holderRank}` : 'Not in indexed top holders')}</p></div>
                   </div>
+                  {isDeployerSelected && deployerIntel && (
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
+                      <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Is current holder?</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'capitalize' }}>{deployerIntel.isCurrentHolder}</p></div>
+                      <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Native balance</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.deployerNativeBalance.available && deployerIntel.deployerNativeBalance.amount != null ? `${deployerIntel.deployerNativeBalance.amount.toFixed(4)} ${deployerIntel.deployerNativeBalance.asset ?? ''}` : 'Not checked'}</p></div>
+                    </div>
+                  )}
+                  {isDeployerSelected && deployerIntel && (
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
+                      <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Received supply at launch?</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'capitalize' }}>{deployerIntel.receivedSupplyAtLaunch}</p></div>
+                      <div style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.62)', border:'1px solid rgba(148,163,184,.12)' }}><p style={{ margin:'0 0 4px', color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>Transferred/sold tokens?</p><p style={{ margin:0, color:'#e2e8f0', fontSize:'12px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'capitalize' }}>{deployerIntel.transferredOrSold}</p></div>
+                    </div>
+                  )}
                 </section>
                 <section style={{ display:'grid', gap:'7px', paddingTop:'2px' }}>
                   <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CLUSTER ROLE</p>
@@ -2444,11 +2575,23 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
                       </div>
                       {selectedWalletBehavior.reasons.slice(0, 3).map((reason, index) => <p key={reason + index} style={{ margin:0, color:'#cbd5e1', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>› {reason}</p>)}
                     </div>
-                  ) : <p style={{ margin:0, color:'#64748b', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>No wallet behavior pattern confirmed in this pass.</p>}
+                  ) : <p style={{ margin:0, color:'#64748b', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>{isDeployerSelected && deployerIntel ? deployerIntel.behaviorPatternLabel : 'No wallet behavior pattern confirmed in this pass.'}</p>}
                 </section>
                 <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(148,163,184,.1)', paddingTop:'10px' }}>
                   <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>TRANSFER LINKS</p>
-                  {relatedEdges.length === 0 ? <p style={{ margin:0, color:'#64748b', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>No transfer links found in this pass.</p> : relatedEdges.map((edge) => {
+                  {isDeployerSelected && deployerIntel ? (
+                    deployerIntel.linkedWallets.length === 0 ? (
+                      <p style={{ margin:0, color:'#64748b', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>{deployerIntel.transferLinksLabel}</p>
+                    ) : deployerIntel.linkedWallets.map((lw) => (
+                      <div key={lw.address} style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.58)', border:'1px solid rgba(148,163,184,.12)' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', marginBottom:'5px' }}>
+                          <span style={{ color:'#e2e8f0', fontSize:'10px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{fmt(lw.address)}</span>
+                          {lw.confidence && <span style={{ color:'#94a3b8', fontSize:'9px', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{lw.confidence}</span>}
+                        </div>
+                        <p style={{ margin:0, color:'#94a3b8', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{lw.reason ?? 'linked wallet'}{lw.amountReceived != null ? ` · received ${lw.amountReceived}${lw.asset ? ` ${lw.asset}` : ''}` : ''}</p>
+                      </div>
+                    ))
+                  ) : relatedEdges.length === 0 ? <p style={{ margin:0, color:'#64748b', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>No transfer links found in current cluster map.</p> : relatedEdges.map((edge) => {
                     const otherNodeId = edge.source === selectedClusterNode.id ? edge.target : edge.source
                     const otherNode = nodes.find((node) => node.id === otherNodeId)
                     return <div key={edge.id} style={{ padding:'9px', borderRadius:'10px', background:'rgba(15,23,42,.58)', border:'1px solid rgba(148,163,184,.12)' }}><div style={{ display:'flex', justifyContent:'space-between', gap:'8px', marginBottom:'5px' }}><span style={{ color:'#e2e8f0', fontSize:'10px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{fmt(otherNode?.address)}</span><span style={{ color:'#94a3b8', fontSize:'9px', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{edge.confidence}</span></div><p style={{ margin:'0 0 4px', color:'#7dd3fc', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>{edgeLabel(edge.type)} · weight {edge.weight}</p><p style={{ margin:0, color:'#94a3b8', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{edge.reason}</p></div>
@@ -2457,7 +2600,7 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
                 <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(148,163,184,.1)', paddingTop:'10px' }}>
                   <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>RISK SIGNALS</p>
                   <div style={{ padding:'8px 9px', borderRadius:'10px', background:'rgba(15,23,42,.5)', border:`1px solid ${riskContextColor}33` }}><p style={{ margin:0, color:riskContextColor, fontSize:'10px', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>{riskContextScore != null ? `Cluster risk ${riskContextScore}/100 · ${riskContextLabel}` : `Cluster risk · ${riskContextLabel}`}</p></div>
-                  {walletSignals.length === 0 ? <p style={{ margin:0, color:'#64748b', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>No wallet-specific signals.</p> : walletSignals.slice(0, 5).map((signal, index) => <p key={signal + index} style={{ margin:0, color:'#cbd5e1', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>› {signal}</p>)}
+                  {(isDeployerSelected && deployerIntel ? deployerIntel.riskSignals : walletSignals).length === 0 ? <p style={{ margin:0, color:'#64748b', fontSize:'10px', fontFamily:'var(--font-plex-mono)' }}>No wallet-specific signals.</p> : (isDeployerSelected && deployerIntel ? deployerIntel.riskSignals : walletSignals).slice(0, 5).map((signal, index) => <p key={signal + index} style={{ margin:0, color:'#cbd5e1', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>› {signal}</p>)}
                 </section>
                 <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(148,163,184,.1)', paddingTop:'10px' }}>
                   <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>FUNDING SOURCE</p>
@@ -2465,7 +2608,13 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
                 </section>
                 <section style={{ display:'grid', gap:'7px', borderTop:'1px solid rgba(148,163,184,.1)', paddingTop:'10px' }}>
                   <p style={{ margin:0, fontSize:'9px', letterSpacing:'.13em', color:'#7dd3fc', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>CONFIDENCE</p>
-                  <p style={{ margin:0, color:'#cbd5e1', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{confidenceCopy(selectedClusterNode.confidence)}</p>
+                  <p style={{ margin:0, color:'#cbd5e1', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{isDeployerSelected && deployerIntel ? confidenceCopy(deployerIntel.confidence) : confidenceCopy(selectedClusterNode.confidence)}</p>
+                {isDeployerSelected && deployerIntel && deployerIntel.evidenceSource.length > 0 && (
+                  <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:'9px', lineHeight:1.4, fontFamily:'var(--font-plex-mono)' }}>Evidence: {deployerIntel.evidenceSource.join(', ')}</p>
+                )}
+                {isDeployerSelected && deployerIntel && (
+                  <p style={{ margin:'4px 0 0', color:'#64748b', fontSize:'9px', lineHeight:1.4, fontFamily:'var(--font-plex-mono)' }}>Next: {deployerIntel.nextActions.join(' ')}</p>
+                )}
                 </section>
                 {openChecks.length > 0 && (
                   <section style={{ display:'grid', gap:'6px', borderTop:'1px solid rgba(148,163,184,.1)', paddingTop:'10px' }}>
@@ -2492,11 +2641,11 @@ function ClusterMapPanel({ clusterMap, devIntel, holderDistribution }: { cluster
                 ['Direct links', String(deployerLineage.summary.directLinks)],
                 ['Second layer', String(deployerLineage.summary.secondLayerLinks)],
                 ['Suspicious links', String(deployerLineage.summary.suspiciousLinks)],
-                ['Linked supply', deployerLineage.summary.linkedSupplyPercent == null ? 'Open check' : `${deployerLineage.summary.linkedSupplyPercent.toFixed(1)}%`],
-                ['Cluster supply', deployerLineage.summary.clusterSupplyPercent == null ? 'Open check' : `${deployerLineage.summary.clusterSupplyPercent.toFixed(1)}%`],
+                ['Linked supply', deployerLineage.summary.linkedSupplyPercent == null ? 'Holder data unavailable' : `${deployerLineage.summary.linkedSupplyPercent.toFixed(1)}%`],
+                ['Cluster supply', deployerLineage.summary.clusterSupplyPercent == null ? 'Holder data unavailable' : `${deployerLineage.summary.clusterSupplyPercent.toFixed(1)}%`],
               ].map(([label, value]) => <div key={label} style={{ display:'flex', justifyContent:'space-between', gap:'8px', padding:'5px 0', borderTop:'1px solid rgba(148,163,184,.08)' }}><span style={{ color:'#64748b', fontSize:'9px', fontFamily:'var(--font-plex-mono)' }}>{label}</span><span style={{ color:'#e2e8f0', fontSize:'9px', fontWeight:800, fontFamily:'var(--font-plex-mono)' }}>{value}</span></div>)}
               <p style={{ margin:0, color:'#cbd5e1', fontSize:'10px', lineHeight:1.45, fontFamily:'var(--font-plex-mono)' }}>{deployerLineage.summary.reason}</p>
-              <p style={{ margin:0, color:'#94a3b8', fontSize:'9px', lineHeight:1.4, fontFamily:'var(--font-plex-mono)' }}>Other contracts not available in this pass.</p>
+              <p style={{ margin:0, color:'#94a3b8', fontSize:'9px', lineHeight:1.4, fontFamily:'var(--font-plex-mono)' }}>{lineageDeployerIntel?.relatedDeploymentsLabel ?? 'Related deployments unavailable in this pass.'}</p>
             </div>
           </details>
           <details open style={{ padding:'12px', borderRadius:'13px', background:'rgba(15,23,42,.58)', border:'1px solid rgba(125,211,252,.16)' }}>
@@ -8760,7 +8909,7 @@ export default function TerminalTokenScanner() {
                         )}
                       </div>
                     )}
-                    {devControlTab==='cluster-map' && <ClusterMapPanel clusterMap={clusterMap} devIntel={activeDevIntel} holderDistribution={activeDevIntel?.holderDistribution ?? result.holderDistribution ?? null} />}
+                    {devControlTab==='cluster-map' && <ClusterMapPanel clusterMap={clusterMap} devIntel={activeDevIntel} holderDistribution={activeDevIntel?.holderDistribution ?? result.holderDistribution ?? null} chain={result.chain ?? null} tokenAddress={result.contract ?? null} tokenSymbol={result.symbol ?? null} tokenName={result.name ?? null} />}
                     {devControlTab==='history' && (
                       <div style={{ display:'grid', gap:'10px' }}>
                         {activeDevIntel?.reasons && activeDevIntel.reasons.length > 0 ? (

@@ -259,6 +259,22 @@ export default function WalletScannerPage() {
 
   const isFullRecoveryAdmin = (signedInEmail ?? '').toLowerCase() === 'chainlensai@gmail.com'
 
+  // QUERY-PARAM-PREFILL, DISCLOSED (Cluster Map "Run Deployer Wallet Scan" / "Open Wallet Scanner"
+  // CTA fix): this page previously ignored any URL query string entirely — a navigation from Token
+  // Scanner's Cluster Map with ?address=&chain= landed on an empty, unprefilled scanner. Mirrors
+  // Token Scanner's own existing ?contract=/?chain= auto-fill effect. Deliberately prefills ONLY —
+  // it never calls handleScan()/triggers a scan on its own, per the hard rule that a Cluster Map
+  // click must never auto-run the (comparatively expensive) full Wallet Scanner.
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const address = params.get('address')?.trim()
+    // One-time prefill of the input field from the URL's ?address= param on mount; never re-fires,
+    // never triggers a scan on its own.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (address) setInput(address)
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     supabase.auth.getSession().then(({ data }) => {
