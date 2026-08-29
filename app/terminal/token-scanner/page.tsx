@@ -15,6 +15,7 @@ import type { SolanaBetaScanResult } from '@/lib/server/solanaTokenScannerBeta'
 import { computeSolanaConfidenceScore } from '@/lib/solanaConfidenceScore'
 import { computeSolanaCortexRisk, classifySolanaExtensionRisk } from '@/lib/solanaCortexRisk'
 import { resolveDeployerWalletIntel } from '@/lib/deployerWalletIntel'
+import { resolveRobinhoodTokenEvidence } from '@/lib/robinhoodTokenEvidence'
 import {
   normalizeRiskScore,
   riskColorFromCanonicalLabel,
@@ -196,6 +197,12 @@ type ScanResult = {
     sellTax: number | null
     transferTax: number | null
     simulationSuccess: boolean
+    // ROBINHOOD-EVIDENCE FIX, DISCLOSED, ADDITIVE: the server already computes these precisely
+    // (lib/server/honeypotSecurity.ts's own simulationStatus/honeypotReason) but they previously
+    // never reached the client — the whole `honeypot` object collapsed to `null` on any provider
+    // failure, discarding the real reason. Optional so no existing reader of this type breaks.
+    honeypotStatus?: 'confirmed' | 'unavailable' | 'failed' | 'not_supported' | 'timeout'
+    honeypotReason?: string | null
   } | null
   noActivePools?: boolean
   primaryDexName?: string | null
@@ -921,8 +928,8 @@ type HolderFallbackEvidence = {
   liquidityDepth: number | null
   marketCapToFdvPct: number | null
   marketCapToFdvLabel: string
-  holderConcentration: 'Open check'
-  supplySpread: 'Open check'
+  holderConcentration: string
+  supplySpread: string
   providerReturnedNoRows: boolean
 }
 
@@ -1576,14 +1583,18 @@ function deriveHolderFallbackEvidence(result: ScanResult): HolderFallbackEvidenc
   const ratio = result.marketCapUsd != null && result.fdvUsd != null && result.fdvUsd > 0
     ? (result.marketCapUsd / result.fdvUsd) * 100
     : null
+  // ROBINHOOD-EVIDENCE FIX, DISCLOSED: these two fields fed the hero row's bare "Open check" text
+  // for holder concentration/supply spread regardless of chain or reason. Robinhood scans now get
+  // the resolver's real classification; every other chain keeps the exact prior literal.
+  const robinhood = robinhoodEvidenceFor(result)
   return {
     ownerStatus: deriveOwnerStatus(result.security?.devOwnership),
     poolCount: result.pools?.length ?? 0,
     liquidityDepth: result.liquidity ?? null,
     marketCapToFdvPct: ratio,
     marketCapToFdvLabel: ratio == null ? 'MC unavailable' : `${ratio.toFixed(1)}%`,
-    holderConcentration: 'Open check',
-    supplySpread: 'Open check',
+    holderConcentration: robinhood?.holderLabel ?? 'Open check',
+    supplySpread: robinhood?.holderLabel ?? 'Open check',
     providerReturnedNoRows: (result.holderDistribution?.topHolders?.length ?? 0) === 0,
   }
 }
@@ -3489,6 +3500,70 @@ function robinhoodLpLabelOverrides(result: ScanResult): {
   }
 }
 
+// ROBINHOOD TOKEN EVIDENCE, DISCLOSED (Robinhood Chain evidence-gap audit — reported: holder
+// concentration/owner status/security simulation/dev-cluster influence all showed generic "Open
+// check" even when the backend had a real, specific reason). Builds the shared
+// resolveRobinhoodTokenEvidence() input from fields already present on `result` — never a new
+// provider call, never invented data. Holder/security/ownership/LP sections read straight off
+// `result`; the dev-control section is deliberately left at safe, conservative defaults here (its
+// real inputs — activeDevIntel/supplyControl — are section-local state computed only inside the Dev
+// Control tab) and is resolved again, with its own real inputs, at that render site.
+function robinhoodEvidenceFor(result: ScanResult): ReturnType<typeof resolveRobinhoodTokenEvidence> | null {
+  if (!isRobinhoodScan(result)) return null
+  const holderRows = result.holderDistribution?.topHolders ?? []
+  const hp = result.honeypot
+  const own = result.security?.devOwnership
+  const lp = result.lpControl
+  const lpProofApplicable = lp?.proofStatus !== 'not_applicable' && lp?.displayLpModel !== 'concentrated_liquidity' && lp?.displayLpModel !== 'protocol_or_gauge'
+  return resolveRobinhoodTokenEvidence({
+    chainSlug: 'robinhood',
+    chainId: 4663,
+    tokenAddress: result.contract ?? '',
+    marketData: {
+      hasPrice: result.price != null,
+      hasLiquidity: (result.liquidity ?? 0) > 0,
+      noActivePools: Boolean(result.noActivePools),
+    },
+    poolData: {
+      poolCount: result.pools?.length ?? 0,
+      liquidityUsd: result.liquidity ?? null,
+      poolAddress: result.selectedPool?.address ?? null,
+      dexName: result.primaryDexName ?? lp?.primaryPoolDex ?? null,
+      poolModel: lp?.displayLpModel ?? null,
+    },
+    holderData: {
+      topHoldersCount: holderRows.length,
+      providerStatus: normalizeHolderProviderStatus(result.holderDistributionStatus),
+      providerReason: result.holderDistributionStatus?.reason ?? null,
+      providerAttempted: result.holderDistributionStatus?.status !== undefined,
+    },
+    securityData: {
+      attempted: hp != null,
+      simulationStatus: hp?.honeypotStatus ?? null,
+      honeypotReason: hp?.honeypotReason ?? null,
+      isHoneypot: hp?.isHoneypot ?? null,
+    },
+    ownershipData: {
+      ownerAddress: own?.ownerAddress ?? null,
+      adminAddress: own?.adminAddress ?? null,
+      isRenounced: own?.isRenounced ?? null,
+      checkCompleted: own != null,
+    },
+    lpData: {
+      proofApplicable: lpProofApplicable,
+      controllerType: lp?.lpControllerType ?? null,
+      controllerVerified: lp?.status === 'burned' || lp?.status === 'locked' || lp?.lpControllerType === 'wallet',
+      lockBurnRegistrySupported: false,
+    },
+    devControlData: {
+      deployerAddress: null,
+      deployerResolved: false,
+      holderEvidenceAvailable: holderRows.length > 0,
+      clusterSupplyPercent: null,
+    },
+  })
+}
+
 function getLpLockLabel(result: ScanResult): { label: string; color: string; bg: string; border: string; description: string } {
   const lp = result.lpControl
   const status = lp?.status
@@ -3906,7 +3981,14 @@ function getMarketRead(result: ScanResult): string {
 function getSecurityRead(result: ScanResult): string {
   const hp = result.honeypot
   if (hp?.isHoneypot === true) return 'Honeypot flagged — sell simulation detected blocked transaction.'
-  if (!hp?.simulationSuccess) return 'Security simulation did not complete — status is an open check this pass.'
+  if (!hp?.simulationSuccess) {
+    // ROBINHOOD-EVIDENCE FIX, DISCLOSED: was a single generic "open check this pass" fallback for
+    // every unsuccessful simulation, chain-agnostic — now uses the real, specific reason
+    // (unsupported/failed/timeout) the resolver already classified for Robinhood.
+    const robinhood = robinhoodEvidenceFor(result)
+    if (robinhood) return robinhood.securityLabel
+    return 'Security simulation did not complete — status is an open check this pass.'
+  }
   const parts = [
     'Honeypot: not flagged',
     hp.buyTax != null ? `buy tax ${hp.buyTax.toFixed(1)}%` : null,
@@ -3918,7 +4000,14 @@ function getSecurityRead(result: ScanResult): string {
 
 function getHolderRead(result: ScanResult): string {
   const holderState = deriveHolderState(result)
-  if (holderState.kind === 'noRowsFallback') return 'Holder distribution was not returned this scan. Supply spread is an open check.'
+  if (holderState.kind === 'noRowsFallback') {
+    // ROBINHOOD-EVIDENCE FIX, DISCLOSED: chain-generic "open check" replaced with the resolver's
+    // real classification (unsupported-for-Robinhood vs. genuinely-not-returned-this-pass) when
+    // this is a Robinhood scan.
+    const robinhood = robinhoodEvidenceFor(result)
+    if (robinhood) return robinhood.holderLabel
+    return 'Holder distribution was not returned this scan. Supply spread is an open check.'
+  }
   if (holderState.kind === 'rowsWithoutPercent') return 'Holder wallets available, but supply percentages not confirmed. Concentration is an open check.'
   const top10 = result.holderDistribution?.top10
   const count = result.holderDistribution?.holderCount
@@ -7545,13 +7634,20 @@ export default function TerminalTokenScanner() {
                       const lpS = result.lpControl?.status
                       const lpV = lpS === 'locked' || lpS === 'burned'
                       const hpV = result.honeypot?.simulationSuccess === true
+                      // ROBINHOOD-EVIDENCE FIX, DISCLOSED: Owner status / Security simulation chips
+                      // used to fall back to the bare enum value / a binary "Open check" regardless
+                      // of chain or real reason — Robinhood scans now show the resolver's specific
+                      // classification instead.
+                      const robinhoodEv = robinhoodEvidenceFor(result)
+                      const ownerStatusValue = fallback.ownerStatus !== 'Open check' ? fallback.ownerStatus : (robinhoodEv?.ownershipLabel ?? fallback.ownerStatus)
+                      const securityValue = hpV ? 'Verified' : (robinhoodEv?.securityLabel ?? 'Open check')
                       const evItems: Array<{label:string;value:string;ok:boolean}> = [
                         { label: 'Market data',         value: result.price!=null?'Available':'Unavailable',                   ok: result.price!=null },
                         { label: 'Liquidity depth',     value: fallback.liquidityDepth!=null?fmtLarge(fallback.liquidityDepth):'Open check', ok: fallback.liquidityDepth!=null },
                         { label: 'Pool count',          value: fallback.poolCount>0?String(fallback.poolCount):'Open check',    ok: fallback.poolCount>0 },
                         { label: 'LP control',          value: lpV?'Verified':'Open check',                                   ok: lpV },
-                        { label: 'Owner status',        value: fallback.ownerStatus,                                           ok: fallback.ownerStatus==='Renounced' },
-                        { label: 'Security simulation', value: hpV?'Verified':'Open check',                                   ok: hpV },
+                        { label: 'Owner status',        value: ownerStatusValue,                                              ok: fallback.ownerStatus==='Renounced' },
+                        { label: 'Security simulation', value: securityValue,                                                 ok: hpV },
                       ]
                       return (
                         <div style={{ marginBottom: '20px', background: 'linear-gradient(160deg,rgba(12,10,4,.72),rgba(4,8,18,.88))', border: '1px solid rgba(251,191,36,.22)', borderRadius: '14px', padding: '18px' }}>
@@ -8735,6 +8831,20 @@ export default function TerminalTokenScanner() {
                 const clusterRiskLabel = clusterInfluence?.clusterRiskLabel ?? (clusterSupplyPercent == null ? 'open_check' : 'low')
                 const clusterDominanceLabel = clusterDominance === 'unknown' ? 'Open check' : clusterDominance === 'none' ? 'No dominance' : `${clusterDominance.charAt(0).toUpperCase()}${clusterDominance.slice(1)} dominance`
                 const clusterRiskAccent = clusterRiskLabel === 'critical' || clusterRiskLabel === 'high' ? '#f87171' : clusterRiskLabel === 'elevated' || clusterRiskLabel === 'watch' ? '#fbbf24' : clusterRiskLabel === 'open_check' ? '#94a3b8' : '#34d399'
+                // ROBINHOOD-EVIDENCE FIX, DISCLOSED: dev-control/cluster-influence resolved here with
+                // this section's OWN real inputs (creatorAddress/holder rows/clusterSupplyPercent) —
+                // distinct from robinhoodEvidenceFor()'s conservative top-level defaults, since dev
+                // control's real evidence only exists as section-local state.
+                const robinhoodDevControl = isRobinhoodScan(result) ? resolveRobinhoodTokenEvidence({
+                  chainSlug: 'robinhood', chainId: 4663, tokenAddress: result.contract ?? '',
+                  marketData: { hasPrice: result.price != null, hasLiquidity: (result.liquidity ?? 0) > 0, noActivePools: Boolean(result.noActivePools) },
+                  poolData: { poolCount: result.pools?.length ?? 0, liquidityUsd: result.liquidity ?? null, poolAddress: null, dexName: result.primaryDexName ?? null, poolModel: result.lpControl?.displayLpModel ?? null },
+                  holderData: { topHoldersCount: result.holderDistribution?.topHolders?.length ?? 0, providerStatus: normalizeHolderProviderStatus(result.holderDistributionStatus), providerReason: result.holderDistributionStatus?.reason ?? null, providerAttempted: result.holderDistributionStatus?.status !== undefined },
+                  securityData: { attempted: result.honeypot != null, simulationStatus: result.honeypot?.honeypotStatus ?? null, honeypotReason: result.honeypot?.honeypotReason ?? null, isHoneypot: result.honeypot?.isHoneypot ?? null },
+                  ownershipData: { ownerAddress: result.security?.devOwnership?.ownerAddress ?? null, adminAddress: result.security?.devOwnership?.adminAddress ?? null, isRenounced: result.security?.devOwnership?.isRenounced ?? null, checkCompleted: result.security?.devOwnership != null },
+                  lpData: { proofApplicable: result.lpControl?.proofStatus !== 'not_applicable', controllerType: result.lpControl?.lpControllerType ?? null, controllerVerified: result.lpControl?.status === 'burned' || result.lpControl?.status === 'locked', lockBurnRegistrySupported: false },
+                  devControlData: { deployerAddress: creatorAddress, deployerResolved: creatorAddress != null, holderEvidenceAvailable: (result.holderDistribution?.topHolders?.length ?? 0) > 0, clusterSupplyPercent },
+                }) : null
                 const clusterSignals = (clusterInfluence?.signals?.length ? clusterInfluence.signals : ([clusterInfluence?.reason].filter(Boolean) as string[])).slice(0, 3)
                 const suspiciousTransferPattern = activeDevIntel?.suspiciousTransfers ?? false
                 const missingChecks = getMissingChecks(result)
@@ -8934,9 +9044,9 @@ export default function TerminalTokenScanner() {
                             <div>
                               <p style={{ margin:'0 0 5px', fontSize:'9px', letterSpacing:'.14em', color:'#2dd4bf', fontWeight:800, fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dev Cluster Influence</p>
                               <p style={{ margin:0, fontSize:'11px', color:'#94a3b8', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>
-                                {clusterSupplyPercent == null ? 'Open check' : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}
+                                {clusterSupplyPercent == null ? (robinhoodDevControl?.devControlLabel ?? 'Open check') : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}
                                 {' · '}
-                                {clusterSupplyPercent == null ? 'CORTEX needs more holder evidence before confirming cluster influence.' : clusterInfluence?.reason ?? clusterDominanceLabel}
+                                {clusterSupplyPercent == null ? (robinhoodDevControl?.devControlLabel ?? 'CORTEX needs more holder evidence before confirming cluster influence.') : clusterInfluence?.reason ?? clusterDominanceLabel}
                               </p>
                             </div>
                             <div style={{ textAlign:'right', flexShrink:0 }}>
@@ -8947,7 +9057,7 @@ export default function TerminalTokenScanner() {
                           <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))', gap:'8px', marginBottom:'10px' }}>
                             <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
                               <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Cluster supply</p>
-                              <p style={{ margin:0, fontSize:'12px', color:clusterSupplyPercent == null ? '#94a3b8' : '#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{clusterSupplyPercent == null ? 'Open check' : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}</p>
+                              <p style={{ margin:0, fontSize:'12px', color:clusterSupplyPercent == null ? '#94a3b8' : '#e2e8f0', fontWeight:700, fontFamily:'var(--font-plex-mono)' }}>{clusterSupplyPercent == null ? (robinhoodDevControl?.devControlLabel ?? 'Open check') : `${clusterSupplyPercent.toFixed(1)}% cluster supply`}</p>
                             </div>
                             <div style={{ padding:'9px 11px', borderRadius:'10px', background:'rgba(15,23,42,.72)', border:'1px solid rgba(148,163,184,.12)' }}>
                               <p style={{ margin:'0 0 4px', fontSize:'8px', letterSpacing:'.1em', color:'#475569', fontFamily:'var(--font-plex-mono)', textTransform:'uppercase' }}>Dominance</p>
@@ -8955,7 +9065,7 @@ export default function TerminalTokenScanner() {
                             </div>
                           </div>
                           <div style={{ display:'grid', gap:'5px' }}>
-                            {(clusterSupplyPercent == null ? ['CORTEX needs more holder evidence before confirming cluster influence.'] : clusterSignals.length > 0 ? clusterSignals : ['No cluster supply found in indexed holders.']).slice(0, 3).map((signal, i) => (
+                            {(clusterSupplyPercent == null ? [robinhoodDevControl?.devControlLabel ?? 'CORTEX needs more holder evidence before confirming cluster influence.'] : clusterSignals.length > 0 ? clusterSignals : ['No cluster supply found in indexed holders.']).slice(0, 3).map((signal, i) => (
                               <div key={i} style={{ display:'flex', gap:'8px', alignItems:'flex-start' }}>
                                 <span style={{ color:clusterRiskAccent, flexShrink:0, fontSize:'10px', lineHeight:'16px' }}>›</span>
                                 <p style={{ margin:0, fontSize:'10px', color:'#cbd5e1', fontFamily:'var(--font-plex-mono)', lineHeight:1.5 }}>{signal}</p>

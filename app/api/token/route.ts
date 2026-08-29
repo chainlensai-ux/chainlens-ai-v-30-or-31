@@ -14,6 +14,7 @@ import {
   type ChainExistenceProbe,
   type TokenScannerChainStrictnessAudit,
 } from "@/lib/tokenScannerChainStrictness";
+import { resolveRobinhoodTokenEvidence } from "@/lib/robinhoodTokenEvidence";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { buildLpControllerIntel, resolveLpControllerIdentity } from "@/lib/server/lpControllerIntel";
 import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
@@ -2163,8 +2164,23 @@ const CHAIN_ID_MAP: Record<ChainKey, number> = { eth: 1, base: 8453, polygon: 13
 const LOCKER_REGISTRY: Partial<Record<ChainKey, string[]>> = LP_LOCK_BURN_REGISTRY.lockersByChain;
 
 // Resolves honeypot + tax simulation for a given chain and token address.
-// Wraps fetchHoneypotSecurity and returns the canonical simulation object or null on failure.
+// Wraps fetchHoneypotSecurity and returns the canonical simulation object.
+//
+// SIMULATION-STATUS-PRESERVED FIX, DISCLOSED (Robinhood Chain evidence-gap audit — reported:
+// "Security simulation" shows generic "Open check" on Robinhood scans instead of a real reason).
+// ROOT CAUSE: this function used to `return null` on ANY `!r.ok`, which discarded
+// `r.simulationStatus`/`r.honeypotReason` — fields fetchHoneypotSecurity already computes precisely
+// for exactly this case (e.g. a 403 from honeypot.is for an unindexed chain ID returns
+// `simulationStatus: 'not_supported'`, `honeypotReason: 'Security provider does not support this
+// token/chain pair'`). Robinhood Chain (4663) is new enough that honeypot.is 403s/404s for it, so
+// every Robinhood scan hit this exact discard path, and the client then had nothing but `null` to
+// render — collapsing to a generic "Open check". Now always returns the real, measured result
+// (still carrying its own honest `ok: false` on failure) so the caller can distinguish "provider
+// doesn't support this chain/token" from "provider errored" from "timed out" — never a fabricated
+// success, just the real reason instead of a swallowed one. Only the genuine exception path
+// (network throw before fetchHoneypotSecurity itself could produce a result) still returns null.
 async function resolveSimulation(chain: string, address: string): Promise<{
+  ok: boolean;
   honeypot: boolean | null;
   honeypotStatus: "confirmed" | "unavailable" | "failed" | "not_supported" | "timeout";
   honeypotReason: string | null;
@@ -2182,8 +2198,8 @@ async function resolveSimulation(chain: string, address: string): Promise<{
     // to actually respond instead of being cut off early. fetchHoneypotSecurity's other callers
     // (Base Radar's live simulation query) keep the fast 3500ms default.
     const r = await fetchHoneypotSecurity(address, CHAIN_ID_MAP[chain as ChainKey], 8000)
-    if (!r.ok) return null
     return {
+      ok: r.ok,
       honeypot: r.honeypot,
       honeypotStatus: r.simulationStatus,
       honeypotReason: r.honeypotReason,
@@ -4032,25 +4048,36 @@ export async function POST(req: Request) {
       goldrushEnabled ? fetchGoldRushContractIntel(chain, contract) : Promise.resolve(null),
     ]);
     // GOPLUS-FALLBACK, DISCLOSED: honeypot.is (resolveSimulation/_simResult above) is the primary
-    // and preferred provider — only reached for when it returned nothing, so the happy path never
-    // pays for a second network call. Real secondary read via lib/server/goplusSecurity.ts, not a
-    // fabricated result — stays null if GoPlus also has no data, the chain isn't supported, or the
-    // request fails.
-    const _gpFallback = _simResult == null && isFullScanChain
+    // and preferred provider — only reached for when it didn't produce a usable verdict, so the
+    // happy path never pays for a second network call. Real secondary read via
+    // lib/server/goplusSecurity.ts, not a fabricated result — stays null if GoPlus also has no
+    // data, the chain isn't supported (GOPLUS_SUPPORTED_CHAIN_IDS excludes Robinhood's 4663), or
+    // the request fails.
+    // TRIGGER FIX, DISCLOSED: was `_simResult == null` — now that resolveSimulation always returns
+    // a real object (see its own header), that condition would never fire again, silently
+    // disabling the GoPlus fallback entirely. Checks `!_simResult?.ok` instead — the same real
+    // "honeypot.is didn't give us a usable verdict" condition as before.
+    const _gpFallback = !_simResult?.ok && isFullScanChain
       ? await fetchGoPlusHoneypotFallback(CHAIN_ID_MAP[chain], contract).catch(() => null)
       : null;
-    // Compatibility wrapper: adapts resolveSimulation result to hpResult shape used throughout
+    // Compatibility wrapper: adapts resolveSimulation result to hpResult shape used throughout.
+    // PRIORITY FIX, DISCLOSED: _gpFallback is only ever attempted when honeypot.is failed, so it
+    // represents a real, successful SECONDARY read when present — it must win over _simResult's own
+    // (now always-populated, honest-failure) fields, or a successful GoPlus result would never be
+    // used. When _gpFallback is also null (not attempted, or attempted and itself failed/
+    // unsupported), _simResult's real status/reason (e.g. 'not_supported' for Robinhood) is the
+    // best available answer — no longer collapsed to the generic 'unavailable'/null it used to be.
     const hpResult = {
-      ok: _simResult != null || _gpFallback != null,
-      honeypot: _simResult?.honeypot ?? _gpFallback?.honeypot ?? null,
-      honeypotStatus: _simResult?.honeypotStatus ?? _gpFallback?.honeypotStatus ?? 'unavailable' as const,
-      honeypotReason: _simResult?.honeypotReason ?? _gpFallback?.honeypotReason ?? null,
-      buyTax: _simResult?.buyTax ?? _gpFallback?.buyTax ?? null,
-      sellTax: _simResult?.sellTax ?? _gpFallback?.sellTax ?? null,
-      transferTax: _simResult?.transferTax ?? _gpFallback?.transferTax ?? null,
-      simulationSuccess: _simResult?.simulationSuccess ?? _gpFallback?.simulationSuccess ?? null,
-      honeypotProvider: _simResult != null ? 'ok' as const : _gpFallback != null ? 'partial' as const : 'partial' as const,
-      honeypotSourceUsed: _simResult != null ? 'honeypot_is' as const : _gpFallback != null ? 'goplus' as const : 'none' as const,
+      ok: Boolean(_gpFallback) || Boolean(_simResult?.ok),
+      honeypot: _gpFallback?.honeypot ?? _simResult?.honeypot ?? null,
+      honeypotStatus: _gpFallback?.honeypotStatus ?? _simResult?.honeypotStatus ?? 'unavailable' as const,
+      honeypotReason: _gpFallback?.honeypotReason ?? _simResult?.honeypotReason ?? null,
+      buyTax: _gpFallback?.buyTax ?? _simResult?.buyTax ?? null,
+      sellTax: _gpFallback?.sellTax ?? _simResult?.sellTax ?? null,
+      transferTax: _gpFallback?.transferTax ?? _simResult?.transferTax ?? null,
+      simulationSuccess: _gpFallback?.simulationSuccess ?? _simResult?.simulationSuccess ?? null,
+      honeypotProvider: _gpFallback != null ? 'partial' as const : _simResult?.ok ? 'ok' as const : 'partial' as const,
+      honeypotSourceUsed: _gpFallback != null ? 'goplus' as const : _simResult?.ok ? 'honeypot_is' as const : 'none' as const,
     };
     const alchemyMandatoryReads = await Promise.all([
       countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[0] }, 'latest'], 'ownerCheck.owner', false),
@@ -7623,11 +7650,56 @@ export async function POST(req: Request) {
       finalChainId: CHAIN_ID_MAP[chain],
       blockedReason: null,
     }
+    // ROBINHOOD-TOKEN-EVIDENCE AUDIT, DISCLOSED (Robinhood Chain evidence-gap audit): computed
+    // server-side, from the exact same already-fetched evidence the response itself carries — never
+    // a second provider call, never invented data. Only attached for Robinhood scans; every other
+    // chain's response is byte-identical to before this field was added.
+    const robinhoodTokenEvidenceAudit = chain === 'robinhood'
+      ? resolveRobinhoodTokenEvidence({
+        chainSlug: 'robinhood',
+        chainId: 4663,
+        tokenAddress: contract,
+        marketData: { hasPrice: _ep != null, hasLiquidity: (liquidityUsd ?? 0) > 0, noActivePools },
+        poolData: { poolCount: normalizedPools.length, liquidityUsd: liquidityUsd ?? null, poolAddress: lpPoolAddress ?? null, dexName: lpDexName ?? null, poolModel: null },
+        holderData: {
+          topHoldersCount: holderDistribution.topHolders?.length ?? 0,
+          providerStatus: holderDistributionStatus.status === 'ok' ? 'ok' : holderDistributionStatus.status === 'partial' ? 'partial' : 'unavailable_with_reason',
+          providerReason: (holderDistributionStatus as { reason?: string | null }).reason ?? null,
+          providerAttempted: true,
+        },
+        securityData: {
+          attempted: true,
+          simulationStatus: hpResult.honeypotStatus,
+          honeypotReason: hpResult.honeypotReason,
+          isHoneypot: hpResult.honeypot,
+        },
+        ownershipData: {
+          ownerAddress: ownerAddr,
+          adminAddress: adminAddr,
+          isRenounced: _ownershipStatusFinal === 'renounced',
+          checkCompleted: _ownershipStatusFinal !== 'open_check' || Boolean(ownerAddr || adminAddr),
+        },
+        lpData: {
+          proofApplicable: lpProofApplicability === 'applicable',
+          controllerType: lpControllerType ?? null,
+          controllerVerified: lpLockStatus === 'locked' || lpLockStatus === 'burned',
+          lockBurnRegistrySupported: false,
+        },
+        devControlData: {
+          deployerAddress: deployerAddress ?? null,
+          deployerResolved: deployerAddress != null,
+          holderEvidenceAvailable: (holderDistribution.topHolders?.length ?? 0) > 0,
+          clusterSupplyPercent: null,
+        },
+      }).audit
+      : null
+
     const responsePayload = {
       chain,
       contract,
       resolvedInput,
       tokenScannerChainStrictnessAudit: finalTokenScannerChainStrictnessAudit,
+      ...(robinhoodTokenEvidenceAudit ? { robinhoodTokenEvidenceAudit } : {}),
 
       // Core token fields
       name: finalResolvedName,
@@ -8095,7 +8167,14 @@ export async function POST(req: Request) {
 
       // Security simulation — Honeypot.is is the preferred provider.
       // GoPlus is an optional low-confidence fallback only; not a core provider.
-      honeypot: hpResult.ok ? {
+      // ALWAYS-PRESENT FIX, DISCLOSED (Robinhood Chain evidence-gap audit): this collapsed the
+      // WHOLE object to `null` whenever `hpResult.ok` was false — discarding honeypotStatus/
+      // honeypotReason (now always real and honest, see resolveSimulation's own header) at the very
+      // last step before the client ever saw them. The object is now always returned;
+      // `simulationSuccess`/`isHoneypot`/tax fields still honestly report null on a real failure —
+      // only the status/reason strings are guaranteed present so the client can render the real
+      // cause instead of falling back to a generic "Open check".
+      honeypot: {
         isHoneypot:        hpResult.honeypot,
         honeypotStatus:    hpResult.honeypotStatus,
         honeypotReason:    hpResult.honeypotReason,
@@ -8103,7 +8182,7 @@ export async function POST(req: Request) {
         sellTax:           hpResult.sellTax,
         transferTax:       hpResult.transferTax,
         simulationSuccess: hpResult.simulationSuccess,
-      } : null,
+      },
       securityDiagnostics: {
         honeypotProvider: hpResult.ok ? "ok" : hpResult.honeypotProvider,
         // GOPLUS-FALLBACK, DISCLOSED: reflects which provider actually supplied the honeypot
