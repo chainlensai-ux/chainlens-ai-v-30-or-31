@@ -202,10 +202,13 @@ describe('priceLotsForWallet — closed-lot pricing requirement priority (confir
     })
 
     // Per priceLotsForWallet's two internal pricing passes: the at-trade-time pass caps 'target' at
-    // maxLookupsPerToken (2, dense tier — 122 distinct tokens here), and the separate "current price"
-    // pass makes exactly 1 more real call for 'target' (one distinct-held-token entry, cap never
-    // binds for a single entry) — 3 total, regardless of whether 1, 2, or 4 closed lots compete for
-    // that token's budget. The cap itself was never raised; only dispatch order changed.
-    assert.equal(realCallsForTarget, 3, 'the target token\'s real provider-call count must stay bounded at cap(2) + current-price(1) = 3, never scaling up with the number of competing closed lots')
+    // maxLookupsPerToken (2, dense tier — 122 distinct tokens here). The separate "current price"
+    // pass no longer makes a call here — Wallet Scanner second-pass audit's OVER-FETCH FIX
+    // (priceLotsForWallet's own header on distinctHeldTokens) skips a token whose net quantity
+    // (buys - sells, from this file's own already-available event data) is <= 0, i.e. proven fully
+    // exited. This fixture's 4 buy/sell pairs are exactly that case (4 buys, 4 sells, net 0) — the
+    // real regression this test still guards (the cap holding regardless of competing-lot count)
+    // is unaffected; only the now-correctly-skipped current-price call changes the total.
+    assert.equal(realCallsForTarget, 2, 'the target token\'s real provider-call count must stay bounded at cap(2) + 0 (net-exited, current-price call correctly skipped), never scaling up with the number of competing closed lots')
   })
 })

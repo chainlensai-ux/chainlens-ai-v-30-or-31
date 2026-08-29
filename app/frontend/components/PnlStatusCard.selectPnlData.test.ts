@@ -22,7 +22,7 @@ import {
   resolvePnlDisplayMode, selectBoundedSampleDisclosure, selectDisplayedPnl, PER_CHAIN_BOUNDED_SAMPLE_MESSAGE,
   selectLastKnownSampleDisclosure, CANONICAL_SAMPLE_UNAVAILABLE_PNL_LABEL, LAST_KNOWN_SAMPLE_LABEL,
   REALIZED_PNL_LABEL, UNREALIZED_PNL_LABEL, TOTAL_PNL_LABEL, PNL_STABILITY_NOTE, LIVE_PRICE_MOVEMENT_NOTE,
-  buildUnrealizedPartialReasonMessage, buildRealizedVerifiedMessage,
+  buildUnrealizedPartialReasonMessage, buildRealizedVerifiedMessage, selectPnlConfidenceStatus,
 } from './PnlStatusCard'
 import { emptyCanonicalSampleManifestAudit, type CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 import type { PnlV2 } from '@/lib/engine/modules/pnl/types'
@@ -113,6 +113,7 @@ function reconciliation(overrides: Partial<UnrealizedReconciliationSummary> = {}
     reconciledMarketValueUsd: 0,
     reconciledCostBasisUsd: 0,
     unrealizedCoveragePercent: 100,
+    openPositionCoveragePercent: 100,
     ...overrides,
   }
 }
@@ -942,14 +943,15 @@ describe('PnlStatusCard trust gate — a discrepancy-gated bounded sample is nev
     }
   }
 
-  it('HARD ASSERTION (required regression): selectDisplayedPnl replaces the normal "PARTIAL — VERIFIED N-DAY SAMPLE" integrityLabel with the exact trust-gate headline when triggered', () => {
+  it('HARD ASSERTION (required regression, updated — Wallet Scanner second-pass audit task 3): selectDisplayedPnl replaces the normal "PARTIAL — VERIFIED N-DAY SAMPLE" integrityLabel with the CALM public label (never the raw "not comparable to Nansen" technical headline) when the trust gate is triggered', () => {
     const displayed = selectDisplayedPnl({
       pnlV2: pnlV2({ realizedPnlUsd: 100 }),
       publicPnlStatus: 'limited_verified_sample',
       reconciliationSummary: reconciliationSummary({ realizedPnlUsd: -10667.43, pnlDiscrepancyAudit: triggeredAudit() }),
     })
-    assert.equal(displayed.integrityLabel, 'Partial verified sample — not comparable to Nansen yet')
-    assert.equal(displayed.realizedPnlTileLabel, 'Partial verified sample — not comparable to Nansen yet')
+    assert.equal(displayed.integrityLabel, 'Realized PnL is verified for the closed lots found in this scan.')
+    assert.equal(displayed.realizedPnlTileLabel, 'Realized PnL is verified for the closed lots found in this scan.')
+    assert.doesNotMatch(displayed.integrityLabel, /Nansen|disagree/i, 'the raw technical headline must never appear in this always-visible tile')
     assert.equal(displayed.trustGateTriggered, true)
     // The real number is NEVER hidden (rule #5) — only the label/styling changes.
     assert.equal(displayed.realizedPnlUsd, -10667.43)
@@ -976,15 +978,25 @@ describe('PnlStatusCard trust gate — a discrepancy-gated bounded sample is nev
     assert.equal(displayedOk.realizedPnlTileLabel, REALIZED_PNL_LABEL)
   })
 
-  it('HARD ASSERTION (required regression): selectBoundedSampleDisclosure mirrors the same headline label and trustGateTriggered flag', () => {
+  it('HARD ASSERTION (required regression, updated — Wallet Scanner second-pass audit task 3): selectBoundedSampleDisclosure shows the CALM public label by default, and carries the real technical headline separately (unhidden) via technicalLabel', () => {
     const disclosure = selectBoundedSampleDisclosure(
       'limited_verified_sample',
       reconciliationSummary({ realizedPnlUsd: -10667.43, pnlDiscrepancyAudit: triggeredAudit() }),
     )
     assert.ok(disclosure)
-    assert.equal(disclosure!.label, 'Partial verified sample — not comparable to Nansen yet')
+    assert.equal(disclosure!.label, 'Realized PnL is verified for the closed lots found in this scan.')
+    assert.equal(disclosure!.technicalLabel, 'Partial verified sample — not comparable to Nansen yet', 'the real technical headline must still be fully available, never deleted — just moved out of the default label')
     assert.equal(disclosure!.trustGateTriggered, true)
     assert.equal(disclosure!.realizedPnlUsd, -10667.43, 'the real number is still disclosed, never hidden')
+  })
+
+  it('a healthy bounded sample (trust gate not triggered) has no technicalLabel — nothing technical to disclose', () => {
+    const disclosure = selectBoundedSampleDisclosure(
+      'limited_verified_sample',
+      reconciliationSummary({ realizedPnlUsd: 608.45 }),
+    )
+    assert.ok(disclosure)
+    assert.equal(disclosure!.technicalLabel, null)
   })
 
   it('the trust-gate label wins over the truncated-history label when both conditions are true', () => {
@@ -996,7 +1008,8 @@ describe('PnlStatusCard trust gate — a discrepancy-gated bounded sample is nev
         publicPnlGateAudit: { ...reconciliationSummary().publicPnlGateAudit, historyCoverageStatus: 'truncated' },
       }),
     )
-    assert.equal(disclosure!.label, 'Partial verified sample — not comparable to Nansen yet')
+    assert.equal(disclosure!.label, 'Realized PnL is verified for the closed lots found in this scan.')
+    assert.equal(disclosure!.technicalLabel, 'Partial verified sample — not comparable to Nansen yet', 'the trust gate must still win over the truncated-history label in which real technical string gets disclosed')
   })
 })
 
@@ -1057,5 +1070,48 @@ describe('buildRealizedVerifiedMessage / buildUnrealizedPartialReasonMessage —
     }))
     assert.doesNotMatch(msg!, /verified current price/)
     assert.match(msg!, /12 had no canonical balance/)
+  })
+})
+
+// 4. Split PnL confidence (Wallet Scanner second-pass audit, task 4 — "do not mix realized and
+// unrealized confidence").
+describe('selectPnlConfidenceStatus — split realized/unrealized/coverage/integrity', () => {
+  it('realized: ok -> Verified, limited_verified_sample -> Partial, unavailable/null -> Locked', () => {
+    assert.equal(selectPnlConfidenceStatus('ok', null, null).realized, 'Verified')
+    assert.equal(selectPnlConfidenceStatus('limited_verified_sample', null, null).realized, 'Partial')
+    assert.equal(selectPnlConfidenceStatus('unavailable', null, null).realized, 'Locked')
+    assert.equal(selectPnlConfidenceStatus(null, null, null).realized, 'Locked')
+  })
+
+  it('unrealized: ok -> Full, partial/failed -> Partial, not_reconciled/absent -> Unavailable', () => {
+    assert.equal(selectPnlConfidenceStatus('ok', reconciliation({ reconciliationStatus: 'ok' }), null).unrealized, 'Full')
+    assert.equal(selectPnlConfidenceStatus('ok', reconciliation({ reconciliationStatus: 'partial' }), null).unrealized, 'Partial')
+    assert.equal(selectPnlConfidenceStatus('ok', reconciliation({ reconciliationStatus: 'failed' }), null).unrealized, 'Partial')
+    assert.equal(selectPnlConfidenceStatus('ok', reconciliation({ reconciliationStatus: 'not_reconciled' }), null).unrealized, 'Unavailable')
+    assert.equal(selectPnlConfidenceStatus('ok', null, null).unrealized, 'Unavailable')
+  })
+
+  it('realized and unrealized status are never derived from each other — independent inputs, independent outputs', () => {
+    const status = selectPnlConfidenceStatus('unavailable', reconciliation({ reconciliationStatus: 'ok' }), null)
+    assert.equal(status.realized, 'Locked')
+    assert.equal(status.unrealized, 'Full', 'unrealized must reflect its own real reconciliationStatus, never downgraded just because realized is locked')
+  })
+
+  it('openPositionCoveragePercent is read directly from the backend field, never recomputed', () => {
+    const status = selectPnlConfidenceStatus('ok', reconciliation({ openPositionCoveragePercent: 42.5 }), null)
+    assert.equal(status.openPositionCoveragePercent, 42.5)
+    assert.equal(selectPnlConfidenceStatus('ok', null, null).openPositionCoveragePercent, null)
+  })
+
+  it('integrity is null (not a guessed "OK") when the backend has not computed a real integrityTier', () => {
+    assert.equal(selectPnlConfidenceStatus('ok', null, null).integrity, null)
+  })
+
+  it('integrity maps full/partial/blocked to OK/Needs review/Debug only', () => {
+    const withTier = (integrityTier: 'full' | 'partial' | 'blocked') =>
+      selectPnlConfidenceStatus('ok', null, reconciliationSummary({ publicPnlGateAudit: { ...reconciliationSummary().publicPnlGateAudit, integrityTier } })).integrity
+    assert.equal(withTier('full'), 'OK')
+    assert.equal(withTier('partial'), 'Needs review')
+    assert.equal(withTier('blocked'), 'Debug only')
   })
 })

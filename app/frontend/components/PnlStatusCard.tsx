@@ -1,5 +1,7 @@
 'use client'
 
+import { useState } from 'react'
+
 // PnlStatusCard — single-verified-source redesign of the FIFO & PnL section.
 //
 // SINGLE-SOURCE MIGRATION, DISCLOSED (this task's own request): this component previously merged
@@ -30,6 +32,7 @@ import type { PublicPnlStatus, UnrealizedReconciliationSummary } from '@/src/mod
 import type { SyntheticPnlSummary } from '@/src/modules/syntheticPnl/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
 import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
+import { PARTIAL_TRUST_GATE_PUBLIC_LABEL } from '@/src/lib/pnlDiscrepancyAudit'
 import { fmtSignedUsd, fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { StatusBadge } from './StatusBadge'
 import { MetricCard, toneFromNumber } from './MetricCard'
@@ -203,6 +206,57 @@ export function buildUnrealizedPartialReasonMessage(
 export function buildRealizedVerifiedMessage(publicPnlStatus: PublicPnlStatus | null | undefined): string | null {
   if (publicPnlStatus !== 'ok') return null
   return 'Realized PnL: Verified — closed-lot coverage confirmed.'
+}
+
+// SPLIT PNL CONFIDENCE, DISCLOSED, ADDITIVE (Wallet Scanner second-pass audit, task 4 — "do not mix
+// realized and unrealized confidence"). Every field here is read from an already-real, already-
+// computed backend value — never a new computation, never a guess standing in for a missing one
+// (each field falls back to null/'Not available' rather than defaulting to an optimistic label).
+export type PnlConfidenceStatus = {
+  realized: 'Verified' | 'Partial' | 'Locked'
+  unrealized: 'Full' | 'Partial' | 'Unavailable'
+  historicalCoverage: string
+  openPositionCoveragePercent: number | null
+  integrity: 'OK' | 'Needs review' | 'Debug only' | null
+}
+
+export function selectPnlConfidenceStatus(
+  effectivePublicPnlStatus: PublicPnlStatus | null | undefined,
+  unrealizedReconciliation: UnrealizedReconciliationSummary | null | undefined,
+  reconciliationSummary: PnlReconciliationSummary | null | undefined,
+): PnlConfidenceStatus {
+  const realized: PnlConfidenceStatus['realized'] =
+    effectivePublicPnlStatus === 'ok' ? 'Verified'
+      : effectivePublicPnlStatus === 'limited_verified_sample' ? 'Partial'
+      : 'Locked'
+
+  const reconciliationStatus = unrealizedReconciliation?.reconciliationStatus ?? null
+  const unrealized: PnlConfidenceStatus['unrealized'] =
+    reconciliationStatus === 'ok' ? 'Full'
+      : reconciliationStatus === 'partial' || reconciliationStatus === 'failed' ? 'Partial'
+      : 'Unavailable'
+
+  const audit = reconciliationSummary?.publicPnlGateAudit
+  const scanWindowDays = audit?.scanWindowDays ?? null
+  const historicalCoverage =
+    audit?.historyCoverageStatus === 'exhaustive' ? (scanWindowDays != null ? `Full ${scanWindowDays}-day history` : 'Full history')
+      : audit?.historyCoverageStatus === 'truncated' ? 'Bounded sample (history truncated)'
+      : audit?.historyCoverageStatus === 'partial' ? (scanWindowDays != null ? `Bounded sample (${scanWindowDays}-day)` : 'Bounded sample')
+      : 'Not available'
+
+  const integrity: PnlConfidenceStatus['integrity'] =
+    audit?.integrityTier === 'full' ? 'OK'
+      : audit?.integrityTier === 'partial' ? 'Needs review'
+      : audit?.integrityTier === 'blocked' ? 'Debug only'
+      : null
+
+  return {
+    realized,
+    unrealized,
+    historicalCoverage,
+    openPositionCoveragePercent: unrealizedReconciliation?.openPositionCoveragePercent ?? null,
+    integrity,
+  }
 }
 
 // DEV-ONLY DIAGNOSTIC, DISCLOSED (this task's own "add a development assertion/log identifying the
@@ -456,7 +510,15 @@ export const LIVE_PRICE_MOVEMENT_NOTE = 'This changes with live open-position pr
 // (an older/unwired caller) — so an absent prop degrades to "no bounded-sample block", never a
 // fabricated one. Pure, exported for direct testing.
 export type BoundedSampleDisclosure = {
+  // CALM-BY-DEFAULT, DISCLOSED (Wallet Scanner second-pass audit, task 3): this is now always the
+  // calm, actionable public wording — never the raw "engines disagree"/"not comparable to Nansen"
+  // technical language, even when trustGateTriggered is true. See `technicalLabel` below for that.
   label: string
+  // TECHNICAL LABEL, DISCLOSED, ADDITIVE: the REAL technical headline (unchanged from before this
+  // fix — pnlDiscrepancyAudit.headlineOverrideLabel when the trust gate fired) — never deleted, only
+  // moved out of the default view. Null whenever the trust gate did not fire (nothing technical to
+  // disclose beyond the normal bounded-sample wording).
+  technicalLabel: string | null
   realizedPnlUsd: number | null
   verifiedClosedLots: number
   structuralClosedLots: number
@@ -464,9 +526,10 @@ export type BoundedSampleDisclosure = {
   unresolvedExitsExcluded: number
   warning: string | null
   // TRUST GATE, DISCLOSED (Wallet Scanner trust-gate task): mirrors `DisplayedPnl.trustGateTriggered`
-  // — real, from `reconciliationSummary.pnlDiscrepancyAudit.trustGateTriggered`. `label` above is
-  // already overridden to the same non-official wording when this is true; kept as its own field so
-  // the rendered block can also downgrade its own styling (never "official/locked").
+  // — real, from `reconciliationSummary.pnlDiscrepancyAudit.trustGateTriggered`. `label` no longer
+  // changes wording when this is true (see CALM-BY-DEFAULT above) — kept as its own field so the
+  // rendered block can still downgrade its own styling (never "official/locked") and decide whether
+  // to offer the expandable technical details at all.
   trustGateTriggered: boolean
 }
 
@@ -531,8 +594,16 @@ export function selectBoundedSampleDisclosure(
   // overridden BY it (both can legitimately be true at once; the trust-gate wording always wins).
   const trustGateTriggered = reconciliationSummary.pnlDiscrepancyAudit?.trustGateTriggered === true
   const headlineOverrideLabel = reconciliationSummary.pnlDiscrepancyAudit?.headlineOverrideLabel ?? null
+  // CALM-BY-DEFAULT, DISCLOSED (Wallet Scanner second-pass audit, task 3): `label` is now always
+  // calm, actionable wording — the raw "engines disagree"/"not comparable to Nansen" technical
+  // headline is never shown here by default. `technicalLabel` carries that SAME real, unmodified
+  // string (nothing about the underlying trust-gate computation changed) for the expandable
+  // "Technical integrity details" section (PnlStatusCard's own render, below) — never deleted, only
+  // moved out of the default view, per the hard rule against hiding real integrity issues from
+  // debug/admin.
+  const technicalLabel = trustGateTriggered && headlineOverrideLabel ? headlineOverrideLabel : null
   const label = trustGateTriggered && headlineOverrideLabel
-    ? headlineOverrideLabel
+    ? PARTIAL_TRUST_GATE_PUBLIC_LABEL
     : audit.historyCoverageStatus === 'truncated'
       ? 'Verified bounded sample — transaction history was truncated.'
       : `Verified ${scanWindowDays}-day sample`
@@ -542,6 +613,7 @@ export function selectBoundedSampleDisclosure(
   const verifiedPricingCoveragePercent = audit.verifiedPricingCoverage != null ? Math.min(100, audit.verifiedPricingCoverage * 100) : null
   return {
     label,
+    technicalLabel,
     realizedPnlUsd: reconciliationSummary.realizedPnlUsd,
     verifiedClosedLots: audit.verifiedClosedLots,
     structuralClosedLots: audit.structuralClosedLots,
@@ -648,19 +720,27 @@ export function selectDisplayedPnl(params: {
     // TRUST GATE, DISCLOSED (Wallet Scanner trust-gate task, explicit rule #1): a bounded sample
     // whose own discrepancy audit fired (engine divergence, thin pricing coverage, missing
     // critical evidence, or genuine unmatched sells) never shows the normal "PARTIAL — VERIFIED
-    // N-DAY SAMPLE" / "Realized PnL (Official)" presentation — both are replaced with the same
-    // explicit, non-official label. The underlying numbers themselves are UNCHANGED (still real,
-    // still shown) — only the presentation is downgraded, never hidden (rule #5).
+    // N-DAY SAMPLE" / "Realized PnL (Official)" presentation. The underlying numbers themselves are
+    // UNCHANGED (still real, still shown) — only the presentation is downgraded, never hidden
+    // (rule #5).
+    //
+    // CALM-BY-DEFAULT, DISCLOSED (Wallet Scanner second-pass audit, task 3): these are the MOST
+    // prominent, always-visible labels on this card (the Integrity tile and the Realized PnL tile's
+    // own label) — the raw technical headline (`headlineOverrideLabel`, e.g. "engines disagree")
+    // used to render directly here with no toggle at all. It now shows the calm public label
+    // instead; the real technical string is still fully available, unhidden, via
+    // selectBoundedSampleDisclosure's `technicalLabel` behind this card's own expandable "Technical
+    // integrity details" toggle (rendered alongside these tiles for the same scan).
     const trustGateTriggered = summary.pnlDiscrepancyAudit?.trustGateTriggered === true
     const headlineOverrideLabel = summary.pnlDiscrepancyAudit?.headlineOverrideLabel ?? null
     return {
       status, realizedPnlUsd, unrealizedPnlUsd, totalPnlUsd,
       costBasisUsd: null, costBasisLabel: 'Not available for bounded sample',
       roiPercent: null, roiLabel: 'Not calculated for bounded sample',
-      integrityLabel: trustGateTriggered && headlineOverrideLabel ? headlineOverrideLabel : `PARTIAL — VERIFIED ${scanWindowDays}-DAY SAMPLE`,
+      integrityLabel: trustGateTriggered && headlineOverrideLabel ? PARTIAL_TRUST_GATE_PUBLIC_LABEL : `PARTIAL — VERIFIED ${scanWindowDays}-DAY SAMPLE`,
       source: 'reconciliationSummary',
       trustGateTriggered,
-      realizedPnlTileLabel: trustGateTriggered && headlineOverrideLabel ? headlineOverrideLabel : REALIZED_PNL_LABEL,
+      realizedPnlTileLabel: trustGateTriggered && headlineOverrideLabel ? PARTIAL_TRUST_GATE_PUBLIC_LABEL : REALIZED_PNL_LABEL,
     }
   }
 
@@ -738,6 +818,11 @@ export function resolvePnlDisplayMode(params: {
 }
 
 export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit }: PnlStatusCardProps) {
+  // TECHNICAL-DETAILS TOGGLE, DISCLOSED (Wallet Scanner second-pass audit, task 3 — same collapsed-
+  // by-default convention as WalletScannerDiagnosticsV3's own "Advanced Diagnostics" section): real
+  // engine-divergence/coverage/evidence numbers are never deleted or hidden from a user who wants
+  // them — only collapsed by default so the calm public wording is what a normal user sees first.
+  const [showTechnicalDetails, setShowTechnicalDetails] = useState(false)
   const effectivePublicPnlStatus = resolveEffectivePublicPnlStatus(publicPnlStatus, reconciliationSummary, canonicalSampleManifestAudit)
   const pnl = selectVerifiedPnlData(pnlV2, effectivePublicPnlStatus, unrealizedReconciliation)
   const isActive = pnlV2 != null
@@ -780,6 +865,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   // function's own header for exactly what it does and does not assert.
   const unrealizedPartialReasonMessage = buildUnrealizedPartialReasonMessage(unrealizedReconciliation)
   const realizedVerifiedMessage = buildRealizedVerifiedMessage(effectivePublicPnlStatus)
+  const confidenceStatus = selectPnlConfidenceStatus(effectivePublicPnlStatus, unrealizedReconciliation, reconciliationSummary)
   const limitedSampleBadgeLabel = shouldShowLimitedSampleBadge(effectivePublicPnlStatus)
   const showSyntheticGlobal = shouldShowSyntheticGlobal(effectivePublicPnlStatus, syntheticPnl)
   const showSyntheticPerChain = shouldShowSyntheticPerChain(effectivePublicPnlStatus, syntheticPnl)
@@ -828,6 +914,22 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
         {unrealizedCoverageBadgeLabel && <StatusBadge label={unrealizedCoverageBadgeLabel} tone="warning" />}
       </div>
 
+      {/* SPLIT PNL CONFIDENCE, DISCLOSED (task 4 — "do not mix realized and unrealized confidence").
+          Five short, real, independently-sourced status values — never a single blended "confidence"
+          label. Integrity is omitted entirely (not shown as a guessed "OK") when the backend hasn't
+          computed a real integrityTier for this scan. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px', margin: '0 0 14px', fontSize: '11px', color: '#94a3b8' }}>
+        <span>Realized PnL: <strong style={{ color: '#e2e8f0' }}>{confidenceStatus.realized}</strong></span>
+        <span>Unrealized PnL: <strong style={{ color: '#e2e8f0' }}>{confidenceStatus.unrealized}</strong></span>
+        <span>Historical Coverage: <strong style={{ color: '#e2e8f0' }}>{confidenceStatus.historicalCoverage}</strong></span>
+        {confidenceStatus.openPositionCoveragePercent != null && (
+          <span>Open Position Coverage: <strong style={{ color: '#e2e8f0' }}>{confidenceStatus.openPositionCoveragePercent.toFixed(1)}%</strong></span>
+        )}
+        {confidenceStatus.integrity && (
+          <span>Integrity: <strong style={{ color: confidenceStatus.integrity === 'OK' ? '#4ade80' : confidenceStatus.integrity === 'Needs review' ? '#fbbf24' : '#f87171' }}>{confidenceStatus.integrity}</strong></span>
+        )}
+      </div>
+
       {showUnavailableBanner && (
         <p style={{ fontSize: '13px', fontWeight: 700, color: '#fbbf24', margin: '0 0 12px' }}>
           {PNL_UNAVAILABLE_MESSAGE}
@@ -865,6 +967,16 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
           {unrealizedReconciliation.excludedCandidateMarketValueUsd > 0 && (
             <span>Estimated excluded value: <strong style={{ color: '#e2e8f0' }}>{fmtUsd(unrealizedReconciliation.excludedCandidateMarketValueUsd)}</strong> (not included in official PnL)</span>
           )}
+          {/* MISSING-BALANCE WORDING, DISCLOSED (Wallet Scanner second-pass audit, task 2 — exact
+              requested wording: "historical open position not currently in canonical holdings", and
+              "do not count as a current open-position coverage failure if balance is truly absent").
+              Shown as its own line, separate from the coverage percentage above (which already
+              excludes this count from its denominator — see openPositionCoveragePercent). */}
+          {(unrealizedReconciliation.excludedClassificationCounts.missing_balance ?? 0) > 0 && (
+            <span>
+              <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.excludedClassificationCounts.missing_balance}</strong> historical open position{(unrealizedReconciliation.excludedClassificationCounts.missing_balance ?? 0) === 1 ? '' : 's'} not currently in canonical holdings
+            </span>
+          )}
         </div>
       )}
 
@@ -883,21 +995,38 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
             {boundedSample.label}
           </div>
           {/* WHY, DISCLOSED (Wallet Scanner trust-gate task, explicit rule #5 — "downgrade
-              confidence and explain why"): the real reason code(s) the discrepancy audit fired on,
-              in plain language — never just a bare label with no explanation. */}
+              confidence and explain why"): the real reason code(s) the discrepancy audit fired on.
+              CALM-BY-DEFAULT, DISCLOSED (Wallet Scanner second-pass audit, task 3): collapsed behind
+              an explicit toggle rather than always-visible raw engine-divergence language — the data
+              itself is completely unchanged and un-hidden, a user who wants it gets it on request. */}
           {boundedSample.trustGateTriggered && reconciliationSummary?.pnlDiscrepancyAudit && (
-            <div style={{ fontSize: '11px', color: 'rgba(248,113,113,0.85)', lineHeight: 1.6, marginBottom: '8px' }}>
-              {reconciliationSummary.pnlDiscrepancyAudit.likelyReasonCodes.includes('engine_divergence_exceeds_threshold') && (
-                <div>⚠ Two independent PnL engines disagree by {reconciliationSummary.pnlDiscrepancyAudit.engineDivergenceUsd != null ? fmtSignedUsd(reconciliationSummary.pnlDiscrepancyAudit.engineDivergenceUsd) : 'an unresolved amount'}{reconciliationSummary.pnlDiscrepancyAudit.engineDivergencePct != null ? ` (${(reconciliationSummary.pnlDiscrepancyAudit.engineDivergencePct * 100).toFixed(1)}%)` : ''}</div>
-              )}
-              {reconciliationSummary.pnlDiscrepancyAudit.likelyReasonCodes.includes('pricing_coverage_below_threshold') && (
-                <div>⚠ Pricing coverage {reconciliationSummary.pnlDiscrepancyAudit.pricingCoverage != null ? `${(reconciliationSummary.pnlDiscrepancyAudit.pricingCoverage * 100).toFixed(1)}%` : 'unknown'} — below the 85% trust threshold</div>
-              )}
-              {reconciliationSummary.pnlDiscrepancyAudit.likelyReasonCodes.includes('critical_trade_evidence_missing') && (
-                <div>⚠ {reconciliationSummary.pnlDiscrepancyAudit.criticalTradeEvidenceMissing} trade(s) missing critical evidence</div>
-              )}
-              {reconciliationSummary.pnlDiscrepancyAudit.likelyReasonCodes.includes('genuine_unmatched_sells_present') && (
-                <div>⚠ {reconciliationSummary.pnlDiscrepancyAudit.genuineUnmatchedSells} genuinely unmatched sell(s) not yet reconciled</div>
+            <div style={{ marginBottom: '8px' }}>
+              <button
+                type="button"
+                onClick={() => setShowTechnicalDetails((v) => !v)}
+                style={{
+                  fontSize: '11px', color: 'rgba(248,113,113,0.85)', background: 'transparent', border: 'none',
+                  padding: 0, cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit',
+                }}
+              >
+                {showTechnicalDetails ? '▾ Hide technical integrity details' : '▸ Show technical integrity details'}
+              </button>
+              {showTechnicalDetails && (
+                <div style={{ fontSize: '11px', color: 'rgba(248,113,113,0.85)', lineHeight: 1.6, marginTop: '6px' }}>
+                  {boundedSample.technicalLabel && <div style={{ fontWeight: 700, marginBottom: '4px' }}>{boundedSample.technicalLabel}</div>}
+                  {reconciliationSummary.pnlDiscrepancyAudit.likelyReasonCodes.includes('engine_divergence_exceeds_threshold') && (
+                    <div>⚠ Two independent PnL engines disagree by {reconciliationSummary.pnlDiscrepancyAudit.engineDivergenceUsd != null ? fmtSignedUsd(reconciliationSummary.pnlDiscrepancyAudit.engineDivergenceUsd) : 'an unresolved amount'}{reconciliationSummary.pnlDiscrepancyAudit.engineDivergencePct != null ? ` (${(reconciliationSummary.pnlDiscrepancyAudit.engineDivergencePct * 100).toFixed(1)}%)` : ''}</div>
+                  )}
+                  {reconciliationSummary.pnlDiscrepancyAudit.likelyReasonCodes.includes('pricing_coverage_below_threshold') && (
+                    <div>⚠ Pricing coverage {reconciliationSummary.pnlDiscrepancyAudit.pricingCoverage != null ? `${(reconciliationSummary.pnlDiscrepancyAudit.pricingCoverage * 100).toFixed(1)}%` : 'unknown'} — below the 85% trust threshold</div>
+                  )}
+                  {reconciliationSummary.pnlDiscrepancyAudit.likelyReasonCodes.includes('critical_trade_evidence_missing') && (
+                    <div>⚠ {reconciliationSummary.pnlDiscrepancyAudit.criticalTradeEvidenceMissing} trade(s) missing critical evidence</div>
+                  )}
+                  {reconciliationSummary.pnlDiscrepancyAudit.likelyReasonCodes.includes('genuine_unmatched_sells_present') && (
+                    <div>⚠ {reconciliationSummary.pnlDiscrepancyAudit.genuineUnmatchedSells} genuinely unmatched sell(s) not yet reconciled</div>
+                  )}
+                </div>
               )}
             </div>
           )}

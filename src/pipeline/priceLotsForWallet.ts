@@ -26,6 +26,7 @@
 // prefetched, real data. Never fabricates a price: an event with no real price resolves to null in
 // the lookup, exactly like fifoEngine's own default.
 
+import type { SupportedChain } from '../modules/providerFetchWindow/types'
 import { mergeNormalizedEvents } from '../modules/fifoEngine/utils'
 import { buildLots, matchLotsFIFO } from '../modules/fifoEngine/index'
 import type { CurrentPriceUsdLookup, MatchedLot, PriceUsdLookup } from '../modules/fifoEngine/types'
@@ -452,6 +453,19 @@ export async function priceLotsForWallet(params: {
   // providers, unchanged). See buildAcceptedEvidenceSkipSet's own header for the full rule.
   acceptedEvidenceKv?: AcceptedEvidenceKvLike
   now?: () => number
+  // DUPLICATE-CURRENT-PRICE FIX, DISCLOSED (Wallet Scanner second-pass audit — live report:
+  // currentPriceGoldrushLiveCalls: 2, currentPriceDexLiveCalls: 13, currentPriceCallsUsedForUnrealized:
+  // 0). ROOT CAUSE, AUDITED: this file's own "now" pass (below) and runWalletScanV2.ts's
+  // canonicalCurrentPriceLookup (src/modules/pricing's resolvePricesDetailed, added the prior audit
+  // pass) are TWO INDEPENDENT current-price systems that both run every scan. fifoEngine's own
+  // computePnl always prefers the canonical one when present (see its "CANONICAL PRICE PREFERENCE"
+  // comment) — so for any token the canonical resolver already covers, this file's own GoldRush/
+  // DexScreener "now" calls are made and then thrown away, unused, real wasted provider cost.
+  // Optional, additive, backward-compatible: a caller that hasn't wired this (any caller besides
+  // runWalletScanV2.ts) gets EXACTLY today's behavior — every held token still gets a real "now"
+  // price attempt. Only tokens this lookup already answers for (a real, positive resolved price) are
+  // skipped below — a token still needing THIS pass's own fallback keeps getting it.
+  skipCurrentPriceLookup?: (token: string, chain: SupportedChain) => boolean
 }): Promise<WalletPriceLookups> {
   // PERF-SPRINT TASK, DISCLOSED ("Profile every historical pricing request" — see
   // historicalPricingPerformanceSummary's own construction near this function's return for the
@@ -1914,7 +1928,35 @@ export async function priceLotsForWallet(params: {
   // "Current" price for open lots — pricingAtTimeEngine only prices at a given timestamp, so "now"
   // is passed as that timestamp; same real source, evaluated at the present moment. amount is
   // fixed at '1' so the resolved costUsd is exactly the real per-unit price, not scaled by amount.
+  //
+  // OVER-FETCH FIX, DISCLOSED (Wallet Scanner second-pass audit): `buys` is every inbound event
+  // EVER, not open positions — a token bought once and fully sold long ago still got priced live
+  // here, for zero real consumer (fifoEngine has no open lot left to value). NET-QUANTITY FILTER,
+  // CONSERVATIVE: a token is only skipped when its (sum of buy amounts) - (sum of sell amounts) is
+  // <= 0 — i.e. this file's OWN already-available event data proves it cannot still be open. Ambiguous
+  // or partial-decimal cases never skip (a token this heuristic isn't sure about still gets priced,
+  // same as before this fix) — this can only ever REDUCE calls, never change which price a token
+  // that's still plausibly open receives.
+  const netQuantityByToken = new Map<string, number>()
+  for (const e of buys) {
+    const key = `${e.chain}:${e.contract.toLowerCase()}`
+    netQuantityByToken.set(key, (netQuantityByToken.get(key) ?? 0) + e.amount)
+  }
+  for (const e of sells) {
+    const key = `${e.chain}:${e.contract.toLowerCase()}`
+    netQuantityByToken.set(key, (netQuantityByToken.get(key) ?? 0) - e.amount)
+  }
   const distinctHeldTokens = [...new Map(buys.map((e) => [`${e.chain}:${e.contract.toLowerCase()}`, e])).values()]
+    .filter((e) => {
+      const key = `${e.chain}:${e.contract.toLowerCase()}`
+      const netQuantity = netQuantityByToken.get(key)
+      if (netQuantity != null && Number.isFinite(netQuantity) && netQuantity <= 0) return false
+      // DUPLICATE-CURRENT-PRICE FIX, DISCLOSED (see this function's own params header): skip a token
+      // the canonical resolver already priced — its real, resolved price always wins in computePnl
+      // regardless of whatever this pass would separately fetch.
+      if (params.skipCurrentPriceLookup?.(e.contract, e.chain)) return false
+      return true
+    })
   const nowEntries: PriceableEntry[] = distinctHeldTokens.map((e) => ({
     txHash: `current:${e.chain}:${e.contract.toLowerCase()}`,
     token: e.contract,

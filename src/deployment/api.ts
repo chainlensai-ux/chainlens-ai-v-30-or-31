@@ -19,7 +19,7 @@ export type SanitizedReport = Omit<FinalReport, 'recoveryPolicy'> & {
   }
 }
 
-export type SanitizedReportV2 = SanitizedReport & Pick<RunWalletScanV2Result, 'holdings' | 'portfolio' | 'pricingAudit' | 'walletScanPerformanceAudit'>
+export type SanitizedReportV2 = SanitizedReport & Pick<RunWalletScanV2Result, 'holdings' | 'portfolio' | 'pricingAudit' | 'walletScanPerformanceAudit' | 'unrealizedPriceUsageAudit'>
 
 // PURE. The only place recoveryPolicy.evaluation[].recoveredEvents (raw, provider-shaped
 // transfer data) is touched — replaced with a count so the client never receives raw provider

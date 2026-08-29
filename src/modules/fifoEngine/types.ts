@@ -259,6 +259,16 @@ export type UnrealizedReconciliationSummary = {
   // positions at all — vacuously fully covered, matching derivePublicPnlStatus's own "empty is ok"
   // convention elsewhere in this file).
   unrealizedCoveragePercent: number
+  // OPEN-POSITION COVERAGE, DISCLOSED, ADDITIVE (Wallet Scanner second-pass audit, task 2 — "do not
+  // count as a current open-position coverage failure if balance is truly absent"). A position
+  // excluded as `missing_balance` (classification, from exclusionReason `missing_canonical_balance`)
+  // is not a CURRENTLY open position this scan failed to price — it's a FIFO-inferred position with
+  // no real evidence it's still held at all (see the exact wording this reason now carries on
+  // ExcludedUnrealizedPosition). Counting it against coverage the same way as a real, balance-
+  // verified-but-unpriced position would overstate how broken the scan is. This field excludes those
+  // from BOTH the numerator and denominator; `unrealizedCoveragePercent` above is UNCHANGED (still
+  // includes them) for any existing caller relying on its exact prior definition.
+  openPositionCoveragePercent: number
 }
 
 // Shared factory for the "reconciliation never ran" summary — used by degraded/fallback FifoOutput
@@ -284,6 +294,7 @@ export function emptyUnrealizedReconciliation(): UnrealizedReconciliationSummary
     reconciledMarketValueUsd: 0,
     reconciledCostBasisUsd: 0,
     unrealizedCoveragePercent: 0,
+    openPositionCoveragePercent: 0,
   }
 }
 

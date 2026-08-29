@@ -260,9 +260,14 @@ export async function fetchGeckoTerminalCurrentPrice(
       Number(b.attributes?.reserve_in_usd ?? 0) > Number(a.attributes?.reserve_in_usd ?? 0) ? b : a,
     )
     const price = Number(best.attributes?.base_token_price_usd)
-    return Number.isFinite(price) && price > 0
-      ? { priceUsd: price, reason: null }
-      : { priceUsd: null, reason: 'unparseable_price' }
+    if (!(Number.isFinite(price) && price > 0)) return { priceUsd: null, reason: 'unparseable_price' }
+    // LIQUIDITY-VALIDITY GUARD, DISCLOSED (Wallet Scanner second-pass audit, task 2 — "only include
+    // if price is fresh and liquidity is valid"; same floor and reasoning as
+    // src/modules/pricing/utils.ts's MIN_VALID_LIQUIDITY_USD, applied here for GeckoTerminal's own
+    // current-price tier so both fallback providers apply the identical anti-manipulation floor).
+    const reserveUsd = Number(best.attributes?.reserve_in_usd ?? 0)
+    if (!(Number.isFinite(reserveUsd) && reserveUsd >= 1_000)) return { priceUsd: null, reason: 'liquidity_too_low' }
+    return { priceUsd: price, reason: null }
   } catch (err) {
     return { priceUsd: null, reason: `fetch_error:${err instanceof Error ? err.message : 'unknown'}` }
   }

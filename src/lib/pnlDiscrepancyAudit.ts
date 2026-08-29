@@ -43,6 +43,15 @@ export const PRICING_COVERAGE_TRUST_THRESHOLD = 0.85
 
 export const PARTIAL_TRUST_GATE_HEADLINE_LABEL = 'Partial verified sample — not comparable to Nansen yet'
 
+// CALM PUBLIC WORDING, DISCLOSED (Wallet Scanner second-pass audit, task 3 — "do NOT show scary raw
+// integrity/debug language to normal users unless it is actionable" / "do NOT hide real integrity
+// issues from debug/admin"). PARTIAL_TRUST_GATE_HEADLINE_LABEL above is UNCHANGED and still the real,
+// technical label — it is never deleted, and every trust-gate reason code/divergence figure it
+// describes stays fully computed and available. This is a SEPARATE, calmer label shown to normal
+// users by default; the technical one moves to an expandable "Technical integrity details" section
+// (see PnlStatusCard.tsx's own BoundedSampleDisclosure.technicalLabel).
+export const PARTIAL_TRUST_GATE_PUBLIC_LABEL = 'Realized PnL is verified for the closed lots found in this scan.'
+
 export type PnlDiscrepancyReasonCode =
   | 'engine_divergence_exceeds_threshold'
   | 'pricing_coverage_below_threshold'

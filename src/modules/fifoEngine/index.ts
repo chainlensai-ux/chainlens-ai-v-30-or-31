@@ -299,6 +299,7 @@ function emptyReconciliationSummary(
     // "Not reconciled" means every open position is treated as pass-through (never excluded) — 100%
     // nominal coverage when there is anything open at all, 0 when there is nothing to cover.
     unrealizedCoveragePercent: totalOpenPositions > 0 && reconciliationStatus === 'not_reconciled' ? 100 : 0,
+    openPositionCoveragePercent: totalOpenPositions > 0 && reconciliationStatus === 'not_reconciled' ? 100 : 0,
   }
 }
 
@@ -629,6 +630,14 @@ export function computePnl(
         ? 'failed'
         : 'partial'
 
+  // OPEN-POSITION COVERAGE, DISCLOSED — see UnrealizedReconciliationSummary's own header on
+  // openPositionCoveragePercent. A missing_balance position (classification, from
+  // missing_canonical_balance) has no evidence it is even currently held — excluded from BOTH the
+  // numerator and denominator here, since it isn't a "currently open position we failed to price."
+  const missingBalanceCount = excludedClassificationCounts.missing_balance ?? 0
+  const currentlyOpenPositions = totalOpenPositions - missingBalanceCount
+  const openPositionCoveragePercent = currentlyOpenPositions > 0 ? (reconciledOpenPositions / currentlyOpenPositions) * 100 : 0
+
   return {
     realizedPnlUsd,
     unrealizedPnlUsd,
@@ -650,6 +659,7 @@ export function computePnl(
       reconciledMarketValueUsd,
       reconciledCostBasisUsd,
       unrealizedCoveragePercent: totalOpenPositions > 0 ? (reconciledOpenPositions / totalOpenPositions) * 100 : 0,
+      openPositionCoveragePercent,
     },
   }
 }

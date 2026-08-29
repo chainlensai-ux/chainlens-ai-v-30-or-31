@@ -22,6 +22,7 @@ import type { PortfolioSummary } from '../modules/portfolio/types'
 import { createHoldingsKvWriter, withStageCache } from '../../lib/server/cache/v2StageCache'
 import { NATIVE_ASSET_ADDRESS } from '../modules/providerFetchWindow/utils'
 import { buildWalletScanPerformanceAudit, type WalletScanPerformanceAudit } from './walletScanPerformanceAudit'
+import { buildUnrealizedPriceUsageAudit, type UnrealizedPriceUsageAudit } from './unrealizedPriceUsageAudit'
 
 export type RunWalletScanV2Result = RunWalletScanResult & {
   holdings: TokenHolding[]
@@ -34,6 +35,9 @@ export type RunWalletScanV2Result = RunWalletScanResult & {
   // See buildWalletScanPerformanceAudit's own module header — a derived, simplified view over
   // scanPerformanceSummary + pricingAudit, additive alongside both.
   walletScanPerformanceAudit: WalletScanPerformanceAudit
+  // See buildUnrealizedPriceUsageAudit's own module header — answers "why were current-price calls
+  // made but not used" with real, measured reconciliation data.
+  unrealizedPriceUsageAudit: UnrealizedPriceUsageAudit
 }
 
 function emptyPortfolio(): PortfolioSummary {
@@ -278,5 +282,11 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
   })
   console.warn('[wallet-scan-performance-audit]', walletScanPerformanceAudit)
 
-  return { ...report, holdings, portfolio, pricingAudit, walletScanPerformanceAudit }
+  const unrealizedPriceUsageAudit = buildUnrealizedPriceUsageAudit({
+    unrealizedReconciliation: report.fifoAndPnl.unrealizedReconciliation,
+    pricingAudit,
+  })
+  console.warn('[unrealized-price-usage-audit]', unrealizedPriceUsageAudit)
+
+  return { ...report, holdings, portfolio, pricingAudit, walletScanPerformanceAudit, unrealizedPriceUsageAudit }
 }

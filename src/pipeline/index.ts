@@ -2121,6 +2121,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     // accepted evidence, closing the "27 accepted sides loaded/applied yet
     // upstreamLookupsSkippedByAcceptedEvidence: 0" production gap this task's own proof describes.
     acceptedEvidenceKv: acceptedEvidenceRealKv,
+    // DUPLICATE-CURRENT-PRICE FIX, DISCLOSED (see priceLotsForWallet's own header on this param):
+    // when the caller (runWalletScanV2.ts) has already resolved a real canonical current price for a
+    // token, this pass's own separate "now" GoldRush/DexScreener call for that SAME token is pure
+    // waste — computePnl always prefers the canonical one. Absent for any caller that hasn't wired
+    // canonicalCurrentPriceLookup — exactly today's behavior, unchanged.
+    skipCurrentPriceLookup: params.unrealizedReconciliationDiagnostics?.canonicalCurrentPriceLookup
+      ? (token, chain) => params.unrealizedReconciliationDiagnostics!.canonicalCurrentPriceLookup!(token, chain) != null
+      : undefined,
   })
   scanTimer.mark('priceLotsForWallet', priceLotsForWalletStart)
   // CU-ESTIMATOR SNAPSHOT, DISCLOSED: delta over rpcDebugLog taken specifically around this stage's

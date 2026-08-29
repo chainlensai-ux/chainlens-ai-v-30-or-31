@@ -93,9 +93,11 @@ describe('resolvePricesDetailed — multi-provider current-price fallback', () =
   })
 
   it('8b. a stale (past-TTL) cached price is used when GeckoTerminal is quota-stopped and DexScreener has nothing', async () => {
-    // Prime the cache with a real prior resolution, then force it stale by writing an already-expired entry.
+    // Prime the cache with a real prior resolution, then force it stale by writing an already-expired
+    // entry. Liquidity must clear MIN_VALID_LIQUIDITY_USD (1,000) — the second-pass audit's own
+    // liquidity-validity guard — or DexScreener correctly refuses the price outright.
     mockFetch((url) => (url.includes('dexscreener')
-      ? new Response(JSON.stringify({ pairs: [{ liquidity: { usd: 100 }, priceUsd: '7' }] }), { status: 200 })
+      ? new Response(JSON.stringify({ pairs: [{ liquidity: { usd: 5000 }, priceUsd: '7' }] }), { status: 200 })
       : new Response('{}', { status: 200 })))
     await resolvePricesDetailed([REQ]) // resolves and caches priceUsd: 7 via DexScreener
     assert.equal(peekCachedPrice('base', REQ.contract)?.priceUsd, 7)
@@ -136,5 +138,27 @@ describe('resolvePricesDetailed — multi-provider current-price fallback', () =
     const { audit } = await resolvePricesDetailed(requests)
     assert.equal(audit.fallbackCapReached, true)
     assert.ok(audit.dexscreenerCalls <= 20, 'provider calls must stay bounded by MAX_FALLBACK_PRICE_LOOKUPS, never unbounded')
+  })
+
+  // Wallet Scanner second-pass audit, task 2 — "only include if price is fresh and liquidity is
+  // valid": a real pair with near-zero liquidity is trivially manipulable and must never back
+  // official unrealized PnL, even though a real price value was technically returned.
+  it('a DexScreener pair below the liquidity floor is rejected, even though it has a real, parseable price', async () => {
+    mockFetch((url) => (url.includes('dexscreener')
+      ? new Response(JSON.stringify({ pairs: [{ liquidity: { usd: 5 }, priceUsd: '999' }] }), { status: 200 })
+      : new Response(JSON.stringify({ data: [] }), { status: 200 }))) // GeckoTerminal also has nothing
+    const { prices, audit } = await resolvePricesDetailed([REQ])
+    assert.equal(prices[0].priceUsd, null, 'a thin-liquidity price must never be used, regardless of how plausible the number looks')
+    assert.equal(prices[0].source, 'unavailable')
+    assert.equal(audit.dexscreenerSuccesses, 0)
+  })
+
+  it('a GeckoTerminal pool below the liquidity floor is rejected the same way', async () => {
+    mockFetch((url) => (url.includes('dexscreener')
+      ? new Response(JSON.stringify({ pairs: [] }), { status: 200 })
+      : new Response(JSON.stringify({ data: [{ attributes: { address: '0xpool', reserve_in_usd: '5', base_token_price_usd: '999' } }] }), { status: 200 })))
+    const { prices, audit } = await resolvePricesDetailed([REQ])
+    assert.equal(prices[0].priceUsd, null)
+    assert.equal(audit.geckoTerminalSuccesses, 0)
   })
 })
