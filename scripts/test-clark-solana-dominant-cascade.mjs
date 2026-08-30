@@ -31,8 +31,10 @@ assert.equal(buildFnOccurrences, 1, 'buildSolanaCreatorAnswer must be defined ex
 const callSites = (routeCode.match(/buildSolanaCreatorAnswer\(/g) ?? []).length
 assert.ok(callSites >= 3, `buildSolanaCreatorAnswer must be both defined and called from multiple sites (found ${callSites} occurrences including the definition)`)
 
-// The early guard must cover every dominant natural-language token intent, not just token_scan.
-assert.match(routeCode, /const SOLANA_TOKEN_INTENTS = new Set\(\["token_safety", "liquidity_scan", "dev_rug_check", "dev_rug_history", "lp_lock_check", "risk_explanation", "token_ape_risk", "token_full_report", "token_scan"\]\);/, 'the Solana short-circuit must cover every dominant token-question intent, not just the narrow token_scan tool-plan path')
+// LP-only questions are the deliberate exception: they must pass to the dedicated liquidity
+// branch so Clark returns LP evidence, never a full creator/token read.
+assert.match(routeCode, /const SOLANA_TOKEN_INTENTS = new Set\(\["token_safety", "dev_rug_check", "dev_rug_history", "lp_lock_check", "risk_explanation", "token_ape_risk", "token_full_report", "token_scan"\]\);/, 'the Solana creator shortcut must leave liquidity_scan for the dedicated LP-only route')
+assert.match(routeCode, /if \(routed\.intent === "liquidity_scan"\) \{/, 'a dedicated liquidity route must remain available after the Solana guard')
 // SOLANA-DEPLOYER-HELIUS-ENHANCED FIX, DISCLOSED (superseding round): the guard also now catches a
 // plain "who deployed X" question even when routed.intent comes back "none" (classifyClarkPrompt
 // has no dedicated bucket for a bare deployer question at all), and passes that decision through to

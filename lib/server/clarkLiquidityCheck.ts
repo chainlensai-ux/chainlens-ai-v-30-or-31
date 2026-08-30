@@ -108,15 +108,25 @@ function normalizeConfidence(raw: string | null | undefined, missing: string[], 
 }
 
 export function formatAmbiguousLiquiditySymbol(symbol: string, matches: ClarkLiquidityMatch[]): string {
-  const uniq = Array.from(new Set(matches.map((m) => m.chainSlug).filter(Boolean)))
-  const listed = uniq.length ? uniq.map((c) => c === "ethereum" ? "Ethereum" : c === "solana" ? "Solana" : c === "robinhood" ? "Robinhood" : c === "base" ? "Base" : c).join(", ") : "Base, Ethereum, Robinhood, or Solana"
+  const labelChain = (chain: string): string => chain === "ethereum" || chain === "eth" ? "Ethereum" : chain === "solana" ? "Solana" : chain === "robinhood" ? "Robinhood" : chain === "base" ? "Base" : chain
+  const unique = Array.from(new Map(matches
+    .filter((m) => m.address)
+    .map((m) => [`${m.chainSlug.toLowerCase()}:${m.address.toLowerCase()}`, m]))
+    .values())
+    .slice(0, 5)
+  const choices = unique.map((m, index) => {
+    const name = m.name && m.name.toUpperCase() !== m.symbol.toUpperCase() ? `${m.name} (${m.symbol})` : m.symbol
+    const liquidity = m.liquidityUsd == null ? "liquidity not returned" : `liquidity ${formatUsdLiquidity(m.liquidityUsd)}`
+    return `${index + 1}. ${name} — ${labelChain(m.chainSlug)} — ${m.address} — ${liquidity}`
+  })
   return [
     `LIQUIDITY CHECK — ${symbol.toUpperCase()}`,
     `I found more than one ${symbol.toUpperCase()} match.`,
-    uniq.includes("base") ? "Do you want AERO on Base or another chain?".replace("AERO", symbol.toUpperCase()) : `Which chain should I check: ${listed}?`,
-    "I will not silently switch chains.",
+    "Choose one contract so I do not check the wrong token:",
+    ...choices,
+    "Paste the exact contract address you want checked.",
     "",
-    "CTA: Open Token Scanner",
+    "CTA: Run LP Check",
   ].join("\n")
 }
 

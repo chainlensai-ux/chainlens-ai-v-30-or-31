@@ -30,6 +30,14 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112'
   assert.equal(r.address, null)
 }
 {
+  // The exact typo from the production report must remain an LP-only request,
+  // not fall through to the generic "check" token scanner.
+  const r = classifyClarkPrompt('liqudity check HOUSE')
+  assert.equal(r.intent, 'liquidity_scan')
+  assert.equal(r.symbol, 'HOUSE')
+  assert.equal(r.address, null)
+}
+{
   const r = classifyClarkPrompt('Check LP for AERO on Base')
   assert.equal(r.intent, 'liquidity_scan')
   assert.equal(r.symbol, 'AERO')
@@ -40,6 +48,13 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112'
   assert.equal(r.intent, 'liquidity_scan')
   assert.equal(r.address, ADDR)
   assert.equal(extractRequestedChainFromPrompt(`LP check ${ADDR} on Ethereum`), 'ethereum')
+}
+{
+  // A contract address must go directly through the LP route even when the
+  // user makes the common liquidity typo.
+  const r = classifyClarkPrompt(`liqudity check ${ADDR}`)
+  assert.equal(r.intent, 'liquidity_scan')
+  assert.equal(r.address, ADDR)
 }
 {
   const r = classifyClarkPrompt(`liquidity check ${SOL_MINT}`)
@@ -154,10 +169,13 @@ assert.ok(needs.includes('Base, Ethereum, Robinhood, or Solana'))
 
 {
   const out = formatAmbiguousLiquiditySymbol('AERO', [
-    { address: AERO, chainSlug: 'base', symbol: 'AERO' },
-    { address: ADDR, chainSlug: 'ethereum', symbol: 'AERO' },
+    { address: AERO, chainSlug: 'base', symbol: 'AERO', name: 'Aerodrome Finance', liquidityUsd: 1_200_000 },
+    { address: ADDR, chainSlug: 'ethereum', symbol: 'AERO', name: 'Aero', liquidityUsd: 8_000 },
   ])
-  assert.ok(out.includes('Do you want AERO on Base or another chain?'))
+  assert.ok(out.includes('1. Aerodrome Finance (AERO) — Base'))
+  assert.ok(out.includes('2. AERO — Ethereum'))
+  assert.ok(out.includes(ADDR))
+  assert.ok(out.includes('Paste the exact contract address you want checked.'))
   assert.ok(!out.toLowerCase().includes('send a token contract'))
 }
 
@@ -165,6 +183,9 @@ const routeSrc = fs.readFileSync(new URL('../app/api/clark/route.ts', import.met
 assert.ok(routeSrc.includes('runClarkLiquidityCheck('), 'Clark route must call runClarkLiquidityCheck')
 assert.ok(routeSrc.includes('clarkLiquidityCheckAudit'), 'Clark route must emit clarkLiquidityCheckAudit')
 assert.ok(routeSrc.includes('formatNeedsTokenLiquidityReply'), 'empty LP check still uses the needs-token reply')
+assert.ok(routeSrc.includes('requireExplicitSelection: true'), 'same-name liquidity lookups must require a contract choice')
+assert.match(routeSrc, /SOLANA_TOKEN_INTENTS = new Set\(\["token_safety", "dev_rug_check"/, 'Solana liquidity requests must not take the full token-read shortcut')
+assert.match(routeSrc, /fetchEvmLiquidity:[\s\S]*?"\/api\/liquidity-safety"/, 'EVM contract liquidity checks must use the dedicated liquidity endpoint')
 assert.ok(fs.readFileSync(new URL('../lib/server/clarkLiquidityCheck.ts', import.meta.url), 'utf8').includes('Send a token contract and I will check pool model'), 'no-target fallback still asks for a contract')
 assert.match(routeSrc, /if \(!isSol\) \{[\s\S]*classifyAddressForClark\(routed\.address, chainForClarkTools\)/, 'EOA guard skipped for Solana mints')
 
