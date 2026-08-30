@@ -110,4 +110,8 @@ test('walletWorkerTimingAudit and the legacy-labeled ledger field never reach th
   const uiSrc = fs.readFileSync(new URL('../../app/frontend/components/PnlStatusCard.tsx', import.meta.url), 'utf8')
   assert.doesNotMatch(uiSrc, /walletWorkerTimingAudit/, 'server-log-only diagnostic must not appear in the calm public PnL card')
   assert.doesNotMatch(uiSrc, /legacyMisleadingCurrentPriceCallsUsedForUnrealized/, 'legacy debug counter must not appear in the calm public PnL card')
+  assert.doesNotMatch(uiSrc, /goldRushHistoricalPricingEfficiencyAudit/, 'GoldRush efficiency audit must not leak into the public PnL card')
+  assert.doesNotMatch(uiSrc, /openPositionExclusionAudit/, 'exclusion audit object must not leak into the public PnL card')
+  assert.doesNotMatch(uiSrc, /walletProviderCostAudit/, 'provider-cost audit must not leak into the public PnL card')
+  assert.match(uiSrc, /Technical details/, 'raw exclusion counts must sit behind a Technical details control')
 })

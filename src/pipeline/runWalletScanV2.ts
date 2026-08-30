@@ -23,6 +23,7 @@ import { createHoldingsKvWriter, withStageCache } from '../../lib/server/cache/v
 import { NATIVE_ASSET_ADDRESS } from '../modules/providerFetchWindow/utils'
 import { buildWalletScanPerformanceAudit, type WalletScanPerformanceAudit } from './walletScanPerformanceAudit'
 import { buildUnrealizedPriceUsageAudit, type UnrealizedPriceUsageAudit } from './unrealizedPriceUsageAudit'
+import { buildOpenPositionExclusionAudit, type OpenPositionExclusionAudit } from './openPositionExclusionAudit'
 
 export type RunWalletScanV2Result = RunWalletScanResult & {
   holdings: TokenHolding[]
@@ -38,6 +39,7 @@ export type RunWalletScanV2Result = RunWalletScanResult & {
   // See buildUnrealizedPriceUsageAudit's own module header — answers "why were current-price calls
   // made but not used" with real, measured reconciliation data.
   unrealizedPriceUsageAudit: UnrealizedPriceUsageAudit
+  openPositionExclusionAudit: OpenPositionExclusionAudit
 }
 
 function emptyPortfolio(): PortfolioSummary {
@@ -240,6 +242,8 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
       chain: h.chain,
       contract: h.contract,
       knownPriceUsd: h.providerPriceUsd,
+      symbol: h.symbol,
+      amount: h.amount,
     }))
     const resolved = await resolvePricesDetailed(pricingRequests)
     prices = resolved.prices
@@ -253,9 +257,15 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
   const currentPricingMs = Date.now() - currentPricingStartedAtMs
   const noLiquidityFoundSet = new Set(noLiquidityFoundKeys)
 
+  const canonicalHoldingKeys = new Set<string>()
+  for (const h of holdings) {
+    for (const key of nativeAliasKeys(h.chain, h.contract)) canonicalHoldingKeys.add(key)
+  }
+
   const report = await runWalletScan({
     ...params,
     canonicalBalanceLookup: buildCanonicalBalanceLookup(holdings),
+    canonicalHoldingKeys,
     unrealizedReconciliationDiagnostics: {
       positionMetadataLookup: buildCanonicalPositionMetadataLookup(holdings),
       canonicalCurrentPriceLookup: buildCanonicalCurrentPriceLookup(holdings, prices),
@@ -288,5 +298,8 @@ export async function runWalletScanV2(params: RunWalletScanParams): Promise<RunW
   })
   console.warn('[unrealized-price-usage-audit]', unrealizedPriceUsageAudit)
 
-  return { ...report, holdings, portfolio, pricingAudit, walletScanPerformanceAudit, unrealizedPriceUsageAudit }
+  const openPositionExclusionAudit = buildOpenPositionExclusionAudit(report.fifoAndPnl.unrealizedReconciliation)
+  console.warn('[open-position-exclusion-audit]', openPositionExclusionAudit)
+
+  return { ...report, holdings, portfolio, pricingAudit, walletScanPerformanceAudit, unrealizedPriceUsageAudit, openPositionExclusionAudit }
 }

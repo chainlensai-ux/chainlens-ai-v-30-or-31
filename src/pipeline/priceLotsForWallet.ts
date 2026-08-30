@@ -85,6 +85,11 @@ import {
 import { getGoldrushPriceSourceCallCount, setGoldrushPriceSourceStage, resetGoldrushPriceSourceStage, getGoldrushLiveCallLatencyStats } from '../modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { getWalletProviderCostAudit } from '../modules/providerCost/walletProviderCostLedger'
 import { getDexscreenerCallCount } from '../modules/pricingAtTimeEngine/sources/dexscreener'
+import {
+  buildGoldRushHistoricalPricingEfficiencyAudit,
+  planUnheldOpenBuySkip,
+  type GoldRushHistoricalPricingEfficiencyAudit,
+} from './goldRushHistoricalPricingEfficiencyAudit'
 
 // ADDRESS-BASED NATIVE/WETH RECOGNITION, DISCLOSED (confirmed production bug: nativeQuoteRequirementsFound
 // stayed 0 despite 84 valid opposite legs — the previous symbol==='ETH'/'WETH' check was a weaker
@@ -293,6 +298,7 @@ export type WalletPriceLookups = {
   // PERF-SPRINT TASK, DISCLOSED — see HistoricalPricingPerformanceSummary's own header for the full
   // set of fields and why every one is real/measured, not fabricated.
   historicalPricingPerformanceSummary: HistoricalPricingPerformanceSummary
+  goldRushHistoricalPricingEfficiencyAudit: GoldRushHistoricalPricingEfficiencyAudit
 }
 
 // ACCEPTED-EVIDENCE SKIP AUDIT, DISCLOSED (requirement #5): every field here is incremented at the
@@ -466,6 +472,15 @@ export async function priceLotsForWallet(params: {
   // price attempt. Only tokens this lookup already answers for (a real, positive resolved price) are
   // skipped below — a token still needing THIS pass's own fallback keeps getting it.
   skipCurrentPriceLookup?: (token: string, chain: SupportedChain) => boolean
+  // CHEAPER GOLDRUSH STRATEGY, DISCLOSED (Wallet Scanner weak-spot pass): optional set of
+  // `${chain}:${tokenLower}` keys from the SAME canonical holdings snapshot fifoEngine already
+  // reconciles against. When present, unmatched inbound (open-lot) buys whose token is NOT in
+  // this set are skipped before historical pricing — they cannot be a closed-lot side (structural
+  // FIFO already ran) and they are excluded from official unrealized as missing_canonical_balance.
+  // Realized PnL, closed-lot count, publicPnlStatus, and lane are therefore identical. Omitted
+  // (every existing test/caller) keeps today's behavior: every open buy is still priced.
+  canonicalHoldingKeys?: ReadonlySet<string>
+  skipUnheldOpenBuys?: boolean
 }): Promise<WalletPriceLookups> {
   // PERF-SPRINT TASK, DISCLOSED ("Profile every historical pricing request" — see
   // historicalPricingPerformanceSummary's own construction near this function's return for the
@@ -669,6 +684,25 @@ export async function priceLotsForWallet(params: {
   manifestFastPathAudit.openPositionRequirementsRetained = buys.filter(
     (b) => !matchedLotSideKeys.has(`${b.chain}:${b.txHash.toLowerCase()}:entry`),
   ).length
+
+  const { cheaperStrategy, buyIndexesToRemove } = planUnheldOpenBuySkip({
+    buys,
+    sells,
+    matchedLotSideKeys,
+    canonicalHoldingKeys: params.canonicalHoldingKeys,
+    skipUnheldOpenBuys: params.skipUnheldOpenBuys,
+  })
+  if (cheaperStrategy.applied && buyIndexesToRemove.length > 0) {
+    const remove = new Set(buyIndexesToRemove)
+    for (let i = buys.length - 1; i >= 0; i--) {
+      if (remove.has(i)) buys.splice(i, 1)
+    }
+    manifestFastPathAudit.openPositionRequirementsRetained = buys.filter(
+      (b) => !matchedLotSideKeys.has(`${b.chain}:${b.txHash.toLowerCase()}:entry`),
+    ).length
+  }
+  // eslint-disable-next-line no-console
+  console.warn('[goldrush-unheld-open-buy-shadow]', cheaperStrategy)
 
   acceptedEvidenceSkipAudit.pricingRequirementsAfterSkip = buys.length + sells.length
   // REAL, MEASURED LIVE-CALL SNAPSHOT, DISCLOSED (requirement #7): taken immediately around this
@@ -2082,6 +2116,18 @@ export async function priceLotsForWallet(params: {
   // eslint-disable-next-line no-console
   console.warn('[historical-pricing-performance-summary]', historicalPricingPerformanceSummary)
 
+  const goldRushHistoricalPricingEfficiencyAudit = buildGoldRushHistoricalPricingEfficiencyAudit({
+    liveHistoricalGoldrushCalls: acceptedEvidenceSkipAudit.goldrushActualLiveCalls,
+    liveCurrentPriceGoldrushCalls: acceptedEvidenceSkipAudit.currentPriceGoldrushLiveCalls,
+    uniqueTokenTimestampRequests,
+    duplicateRequestsEliminated,
+    negativeCacheHitsAvoided,
+    acceptedEvidenceSidesSkipped: acceptedEvidenceSkipAudit.pricingRequirementsRemovedByAcceptedEvidence,
+    cheaperStrategy,
+  })
+  // eslint-disable-next-line no-console
+  console.warn('[goldrush-historical-pricing-efficiency-audit]', goldRushHistoricalPricingEfficiencyAudit)
+
   return {
     priceUsdLookup,
     currentPriceUsdLookup,
@@ -2093,5 +2139,6 @@ export async function priceLotsForWallet(params: {
     acceptedEvidenceSkipAudit,
     manifestFastPathAudit,
     historicalPricingPerformanceSummary,
+    goldRushHistoricalPricingEfficiencyAudit,
   }
 }

@@ -8,8 +8,9 @@
 
 import { describe, it, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { resolvePricesDetailed, resetPriceCache, peekCachedPrice } from './index'
+import { resolvePricesDetailed, resetPriceCache, peekCachedPrice, shouldSkipCurrentPriceFallback } from './index'
 import { resetGeckoTerminalNoPoolCache } from '../../pipeline/providers/geckoTerminalPriceSource'
+import { resetDexscreenerRequestCache } from '../../lib/dexscreenerRequestCache'
 
 const originalFetch = global.fetch
 
@@ -17,6 +18,7 @@ afterEach(() => {
   global.fetch = originalFetch
   resetPriceCache()
   resetGeckoTerminalNoPoolCache()
+  resetDexscreenerRequestCache()
 })
 
 function mockFetch(handler: (url: string) => Promise<Response> | Response): { callCount: () => number; urls: string[] } {
@@ -47,7 +49,7 @@ describe('resolvePricesDetailed — multi-provider current-price fallback', () =
   it('DexScreener success never falls through to GeckoTerminal', async () => {
     const fetchSpy = mockFetch((url) => {
       if (url.includes('dexscreener')) {
-        return new Response(JSON.stringify({ pairs: [{ liquidity: { usd: 1000 }, priceUsd: '2.5' }] }), { status: 200 })
+        return new Response(JSON.stringify({ pairs: [{ chainId: 'base', liquidity: { usd: 1000 }, priceUsd: '2.5', baseToken: { address: REQ.contract } }] }), { status: 200 })
       }
       throw new Error('must not call GeckoTerminal when DexScreener already resolved a price')
     })
@@ -97,7 +99,7 @@ describe('resolvePricesDetailed — multi-provider current-price fallback', () =
     // entry. Liquidity must clear MIN_VALID_LIQUIDITY_USD (1,000) — the second-pass audit's own
     // liquidity-validity guard — or DexScreener correctly refuses the price outright.
     mockFetch((url) => (url.includes('dexscreener')
-      ? new Response(JSON.stringify({ pairs: [{ liquidity: { usd: 5000 }, priceUsd: '7' }] }), { status: 200 })
+      ? new Response(JSON.stringify({ pairs: [{ chainId: 'base', liquidity: { usd: 5000 }, priceUsd: '7', baseToken: { address: REQ.contract } }] }), { status: 200 })
       : new Response('{}', { status: 200 })))
     await resolvePricesDetailed([REQ]) // resolves and caches priceUsd: 7 via DexScreener
     assert.equal(peekCachedPrice('base', REQ.contract)?.priceUsd, 7)
@@ -145,7 +147,7 @@ describe('resolvePricesDetailed — multi-provider current-price fallback', () =
   // official unrealized PnL, even though a real price value was technically returned.
   it('a DexScreener pair below the liquidity floor is rejected, even though it has a real, parseable price', async () => {
     mockFetch((url) => (url.includes('dexscreener')
-      ? new Response(JSON.stringify({ pairs: [{ liquidity: { usd: 5 }, priceUsd: '999' }] }), { status: 200 })
+      ? new Response(JSON.stringify({ pairs: [{ chainId: 'base', liquidity: { usd: 5 }, priceUsd: '999', baseToken: { address: REQ.contract } }] }), { status: 200 })
       : new Response(JSON.stringify({ data: [] }), { status: 200 }))) // GeckoTerminal also has nothing
     const { prices, audit } = await resolvePricesDetailed([REQ])
     assert.equal(prices[0].priceUsd, null, 'a thin-liquidity price must never be used, regardless of how plausible the number looks')
@@ -160,5 +162,53 @@ describe('resolvePricesDetailed — multi-provider current-price fallback', () =
     const { prices, audit } = await resolvePricesDetailed([REQ])
     assert.equal(prices[0].priceUsd, null)
     assert.equal(audit.geckoTerminalSuccesses, 0)
+  })
+
+  it('rejects a wrong-chain DexScreener pair even when it is the most liquid', async () => {
+    mockFetch((url) => {
+      if (url.includes('dexscreener')) {
+        return new Response(JSON.stringify({
+          pairs: [
+            { chainId: 'ethereum', liquidity: { usd: 10_000_000 }, priceUsd: '999', baseToken: { address: REQ.contract } },
+            { chainId: 'base', liquidity: { usd: 2000 }, priceUsd: '1.5', baseToken: { address: REQ.contract } },
+          ],
+        }), { status: 200 })
+      }
+      throw new Error('must not call GeckoTerminal when a same-chain DexScreener pair resolved')
+    })
+    const { prices } = await resolvePricesDetailed([REQ])
+    assert.equal(prices[0].priceUsd, 1.5)
+    assert.equal(prices[0].source, 'dexscreener_fallback')
+  })
+
+  it('does not spend a fallback slot on a promotional-spam symbol, so a real token still gets priced under the cap', async () => {
+    const spam = Array.from({ length: 25 }, (_, i) => ({
+      chain: 'base' as const,
+      contract: `0xspam${i.toString().padStart(36, '0')}`,
+      symbol: 'CLAIM-REWARDS.COM',
+      amount: 1,
+    }))
+    const real = {
+      chain: 'base' as const,
+      contract: REQ.contract,
+      symbol: 'AERO',
+      amount: 10,
+    }
+    mockFetch((url) => {
+      if (url.includes('dexscreener') && url.toLowerCase().includes(REQ.contract.toLowerCase())) {
+        return new Response(JSON.stringify({
+          pairs: [{ chainId: 'base', liquidity: { usd: 5000 }, priceUsd: '4.2', baseToken: { address: REQ.contract } }],
+        }), { status: 200 })
+      }
+      if (url.includes('dexscreener')) throw new Error(`spam token must not hit DexScreener: ${url}`)
+      throw new Error(`unexpected fetch: ${url}`)
+    })
+    const { prices, audit } = await resolvePricesDetailed([...spam, real])
+    const realPrice = prices.find((p) => p.contract === REQ.contract)
+    assert.equal(realPrice?.priceUsd, 4.2)
+    assert.equal(audit.dexscreenerCalls, 1)
+    assert.equal(audit.fallbackCapReached, false)
+    assert.equal(shouldSkipCurrentPriceFallback({ symbol: 'CLAIM-REWARDS.COM', amount: 1 }), true)
+    assert.equal(shouldSkipCurrentPriceFallback({ symbol: 'AERO', amount: 10 }), false)
   })
 })
