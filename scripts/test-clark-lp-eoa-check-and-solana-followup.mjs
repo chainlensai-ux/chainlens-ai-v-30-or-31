@@ -36,12 +36,12 @@ assert.match(routeCode, /if \(addressKind === "wallet"\) \{/, 'the guard must on
 // token") found over a dozen MORE early gates in this file with the identical bug — all testing
 // `!extractAddress(prompt)` (EVM-only) as their "no address in this message" check. Consolidated
 // into a single hasAnyAddress() helper (EVM OR Solana) and every one of those gates now uses it.
-assert.match(routeCode, /if \(!isForcedLiquidityCheckPrompt\(prompt\) && !isLiquidityCheckIntent\(prompt\) && classifyTokenFollowupKind\(prompt\) !== "lp_lock" && isTokenFollowupPrompt\(prompt\) && \(sessionMem\.lastClarkSubject\?\.address \|\| sessionMem\.lastToken\?\.address\) && !hasAnyAddress\(prompt\) && !deepScanItOnWallet\) \{/, 'the token-followup memory guard must use hasAnyAddress, skip LP-locked prompts, and skip wallet deep-scan-it follow-ups')
+assert.match(routeCode, /if \(!isForcedLiquidityCheckPrompt\(prompt\) && !isLiquidityCheckIntent\(prompt\) && classifyTokenFollowupKind\(prompt\) !== "lp_lock" && classifyTokenFollowupKind\(prompt\) !== "deployer" && isTokenFollowupPrompt\(prompt\) && \(sessionMem\.lastClarkSubject\?\.address \|\| sessionMem\.lastToken\?\.address\) && !hasAnyAddress\(prompt\) && !deepScanItOnWallet\) \{/, 'the token-followup memory guard must use hasAnyAddress, skip LP-locked and deployer prompts, and skip wallet deep-scan-it follow-ups')
 assert.match(routeCode, /function hasAnyAddress\(text: string\): boolean \{\s*\n\s*return extractAddress\(text\) != null \|\| isValidSolanaMintAddress\(extractAddressForRouting\(text\) \?\? ""\);\s*\n\}/, 'a shared hasAnyAddress helper must exist and check both EVM and Solana address shapes')
 // CLARK-TOKEN-VERDICT FIX, DISCLOSED: more exports were added after extractAddressForRouting in
 // this import block, so it is no longer the last import — checking membership in the block instead
 // of exact adjacency to the closing brace.
 assert.match(routeCode, /^\s*extractAddressForRouting,\s*$/m, 'extractAddressForRouting must be imported so the guard above can actually use it')
-assert.match(routeCode, /\brenderClarkTokenVerdictForEvm\b[\s\S]{0,200}\} from "@\/lib\/server\/clarkRouting";/, 'the new verdict engine must be imported from clarkRouting')
+assert.match(routeCode, /^\s*renderClarkTokenVerdictForEvm,\s*$/m, 'the new verdict engine must be imported from clarkRouting')
 
 console.log('test-clark-lp-eoa-check-and-solana-followup.mjs: all assertions passed')

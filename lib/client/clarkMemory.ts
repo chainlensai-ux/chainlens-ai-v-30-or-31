@@ -212,13 +212,13 @@ export function buildClarkRequestMeta(): { headers: { 'x-clark-session': string 
   }
 }
 
-export type ClarkCommandChipKind = 'lp' | 'token' | 'wallet'
+export type ClarkCommandChipKind = 'lp' | 'token' | 'wallet' | 'holders' | 'deployer' | 'explain'
 
-/** Address a /lp /token /wallet chip should auto-run against, or null to just insert the command. */
+/** Address a /lp /token /wallet /holders /deployer chip should auto-run against, or null to just insert the command. */
 export function resolveClarkCommandChipTarget(kind: ClarkCommandChipKind, ctx?: ClarkClientContext): string | null {
   const c = ctx ?? readClarkClientContext()
   const sub = c.lastClarkSubject as { entityType?: string; address?: string } | null | undefined
-  if (kind === 'lp' || kind === 'token') {
+  if (kind === 'lp' || kind === 'token' || kind === 'holders' || kind === 'deployer' || kind === 'explain') {
     if (sub?.address && (sub.entityType === 'token' || sub.entityType === 'pair' || sub.entityType === 'unknown')) return sub.address
     const t = c.lastToken as { address?: string } | undefined
     return typeof t?.address === 'string' && t.address.trim() ? t.address : null

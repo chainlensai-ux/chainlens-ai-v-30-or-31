@@ -170,7 +170,7 @@ function evmPayload(overrides = {}) {
   })
   assert.match(rendered, /Meaning:/)
   assert.match(rendered, /Creator\/authority:/)
-  assert.match(rendered, /Check Creator/)
+  assert.match(rendered, /\/deployer/)
   assert.doesNotMatch(rendered, /\bproxy\b/i)
   assert.doesNotMatch(rendered, /\bowner renounced\b/i)
   assert.doesNotMatch(rendered, /honeypot simulation (?:flagged|detected|clear|not detected)/i)

@@ -35,7 +35,7 @@ assert.match(routeCode, /if \(THIS_RE\.test\(prompt\) && !hasAnyAddress\(prompt\
 // Every other migrated gate, so a future edit can't quietly reintroduce the EVM-only check on one
 // of them without this test catching it.
 for (const gatePattern of [
-  /if \(THIS_DEV_RE\.test\(prompt\) && !hasAnyAddress\(prompt\)\) \{/,
+  /THIS_DEV_RE\.test\(prompt\).*!hasAnyAddress\(prompt\)/,
   /if \(THIS_LIQ_RE\.test\(prompt\) && !hasAnyAddress\(prompt\)\) \{/,
   /if \(SCAN_ETH_INSTEAD_RE\.test\(prompt\) && !hasAnyAddress\(prompt\)\) \{/,
   /if \(talkingMatch && !hasAnyAddress\(prompt\)\) \{/,

@@ -58,7 +58,7 @@ const WALLET_ENGINE_INTENTS = new Set([
 const TOKEN_ENGINE_INTENTS = new Set([
   'token_scan', 'token_safety', 'token_full_report', 'token_ape_risk',
   'liquidity_scan', 'lp_lock_check', 'dev_rug_check', 'dev_rug_history',
-  'risk_explanation', 'pump_analysis',
+  'risk_explanation', 'pump_analysis', 'holders_check', 'deployer_check',
 ])
 
 // TWO-TIER ROUTING, DISCLOSED — this mirrors production ordering and is the single most important
@@ -263,6 +263,7 @@ function assertNeverTokenEngine(prompt, label) {
   // Explicit whale phrasings are claimed by Tier 1 and answered by the whale tool handler.
   for (const [prompt, expected] of [
     ['Show me whale alerts', 'whale_alerts_summary'],
+    ['Show Base whales', 'whale_alerts_summary'],
     ['What are whales buying?', 'whale_alerts_buying'],
     ['what are smart money buying', 'whale_alerts_buying'],
   ]) {
@@ -430,10 +431,11 @@ function assertNeverTokenEngine(prompt, label) {
 // ══════════════════════════════════════════════════════════════════════════════════════════════
 {
   const actionsSrc = fs.readFileSync(new URL('../lib/server/clarkRouting.ts', import.meta.url), 'utf8')
-  for (const cta of ['Deep Scan Token', 'Deep Scan Wallet', 'Open Token Scanner', 'Scan Wallet', 'Check Deployer', 'Run LP Check']) {
+  for (const cta of ['Deep Scan Wallet', 'Open Token Scanner', 'Scan Wallet', 'Check Deployer', 'Run LP Check']) {
     assert.ok(actionsSrc.includes(`"${cta}"`), `"${cta}" must be in the fixed CTA vocabulary`)
     pass()
   }
+  assert.ok(!actionsSrc.includes('"Deep Scan Token"'), 'Deep Scan Token is not a real feature and must not be in the CTA vocabulary')
   // Deep-scan CTAs must be reachable on BOTH sides — a token-side answer with only wallet CTAs (or
   // vice versa) leaves the user with no correct next step.
   assert.match(routeCode, /walletScannerDeepLink\(inlineAddress, true\)/, 'the Deep Scan Wallet CTA must link to a real deep-scan deep link')

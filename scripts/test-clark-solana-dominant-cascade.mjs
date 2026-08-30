@@ -33,7 +33,7 @@ assert.ok(callSites >= 3, `buildSolanaCreatorAnswer must be both defined and cal
 
 // LP-only questions are the deliberate exception: they must pass to the dedicated liquidity
 // branch so Clark returns LP evidence, never a full creator/token read.
-assert.match(routeCode, /const SOLANA_TOKEN_INTENTS = new Set\(\["token_safety", "dev_rug_check", "dev_rug_history", "risk_explanation", "token_ape_risk", "token_full_report", "token_scan"\]\);/, 'the Solana creator shortcut must leave liquidity_scan and lp_lock_check for the dedicated LP-only route')
+assert.match(routeCode, /const SOLANA_TOKEN_INTENTS = new Set\(\["token_safety", "dev_rug_check", "dev_rug_history", "risk_explanation", "token_ape_risk", "token_full_report", "token_scan", "deployer_check"\]\);/, 'the Solana creator shortcut must leave liquidity_scan, lp_lock_check, and holders_check for their dedicated routes')
 assert.match(routeCode, /if \(routed\.intent === "liquidity_scan"\) \{/, 'a dedicated liquidity route must remain available after the Solana guard')
 // SOLANA-DEPLOYER-HELIUS-ENHANCED FIX, DISCLOSED (superseding round): the guard also now catches a
 // plain "who deployed X" question even when routed.intent comes back "none" (classifyClarkPrompt

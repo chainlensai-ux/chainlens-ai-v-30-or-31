@@ -153,6 +153,9 @@ function bareSlashCommandReply(text: string): string | null {
   if (/^\/wallet$/.test(t)) return "Paste a wallet address and I'll analyze it."
   if (/^\/token$/.test(t)) return "Paste a token contract and I'll scan it."
   if (/^\/lp$/.test(t)) return "Paste a token or pool and I'll check LP control and lock status."
+  if (/^\/holders$/.test(t)) return "Paste a token contract and I'll check holder concentration."
+  if (/^\/deployer$/.test(t)) return "Paste a token contract and I'll look up the deployer/creator."
+  if (/^\/explain(?:\s+lp)?$/.test(t)) return "Paste a token contract and I'll explain its LP status."
   return null
 }
 
@@ -733,9 +736,9 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
       window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(text)}&autosend=1`
       return
     }
-    const slashBare = text.match(/^\/(lp|token|wallet)$/i)
+    const slashBare = text.match(/^\/(lp|token|wallet|holders|deployer)$/i)
     if (slashBare) {
-      const cmd = slashBare[1].toLowerCase() as 'lp' | 'token' | 'wallet'
+      const cmd = slashBare[1].toLowerCase() as 'lp' | 'token' | 'wallet' | 'holders' | 'deployer'
       const target = resolveClarkCommandChipTarget(cmd, getClientClarkContext())
       if (target) {
         setInput('')
@@ -754,8 +757,19 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
   }
 
   function applyQuickChip(prefix: string) {
-    if (prefix === '/lp' || prefix === '/token' || prefix === '/wallet') {
-      const target = resolveClarkCommandChipTarget(prefix.slice(1) as 'lp' | 'token' | 'wallet', getClientClarkContext())
+    if (prefix === 'explain lp' || prefix === '/explain lp') {
+      const target = resolveClarkCommandChipTarget('explain', getClientClarkContext())
+      if (target) {
+        setInput('')
+        sendToClark(`/explain lp ${target}`)
+        return
+      }
+      setInput('')
+      sendToClark('explain lp')
+      return
+    }
+    if (prefix === '/lp' || prefix === '/token' || prefix === '/wallet' || prefix === '/holders' || prefix === '/deployer') {
+      const target = resolveClarkCommandChipTarget(prefix.slice(1) as 'lp' | 'token' | 'wallet' | 'holders' | 'deployer', getClientClarkContext())
       if (target) {
         setInput('')
         sendToClark(`${prefix} ${target}`)
@@ -1170,7 +1184,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
 
               {/* Command chips — same slash commands the composer's quick-chip row uses */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '5px', flexWrap: 'wrap', justifyContent: 'center' }}>
-                {['/token', '/wallet', '/lp', '/base'].map((cmd) => (
+                {['/token', '/lp', '/holders', '/deployer', '/wallet'].map((cmd) => (
                   <button key={cmd} type="button" className="clark-quick-chip" onClick={() => applyQuickChip(cmd)}>
                     {cmd}
                   </button>
@@ -1265,7 +1279,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
         >
           {/* Quick command chips */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '6px', overflowX: 'auto' }}>
-            {['/token', '/wallet', '/lp', '/base'].map((cmd) => (
+            {['/token', '/lp', '/holders', '/deployer', '/wallet'].map((cmd) => (
               <button key={cmd} type="button" className="clark-quick-chip" onClick={() => applyQuickChip(cmd)}>
                 {cmd}
               </button>

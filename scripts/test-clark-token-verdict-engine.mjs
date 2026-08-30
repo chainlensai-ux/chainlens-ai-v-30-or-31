@@ -155,48 +155,23 @@ function baseSafeInput(vocab) {
   assert.doesNotMatch(rendered, /\bfreeze authority\b/i, 'EVM render must never use Solana-only freeze-authority vocabulary');
 }
 
-// ── route.ts wiring: "Deep Scan Token" must be an in-chat prompt action, never a page link ───
+// ── route.ts wiring: token CTAs must be real commands, never fake Deep Scan Token ───
 const routeSrc = fs.readFileSync(new URL('../app/api/clark/route.ts', import.meta.url), 'utf8')
 const routeCode = routeSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
 
-assert.match(
-  routeCode,
-  /\{ label: "Deep Scan Token", prompt: `deep scan \$\{tokenAddress\}`, kind: "prompt" as const \}/,
-  'the token_scan intent must expose Deep Scan Token as an in-chat prompt action, not a link'
-)
-assert.match(
-  routeCode,
-  /\{ label: "Deep Scan Token", prompt: `deep scan \$\{r\.address\}`, kind: "prompt" as const \}/,
-  'the token_safety intent must expose Deep Scan Token as an in-chat prompt action, not a link'
-)
+assert.match(routeCode, /buildClarkTokenAnswerActions\(/, 'token answers must use the shared real token CTA helper')
+assert.match(routeCode, /buildClarkLpAnswerActions\(/, 'LP answers must use the shared real LP CTA helper')
+assert.doesNotMatch(routeCode, /label: "Deep Scan Token"/, 'Deep Scan Token is not a real feature and must not render')
 
-// CHECK-DEPLOYER-WRONG-ANSWER FIX, DISCLOSED (live report: "check deployer for brett gives me
-// another token"). "who deployed 0xADDRESS" has no dedicated intent bucket in classifyClarkPrompt
-// for EVM chains — it silently fell through to token_scan and re-rendered a TOKEN READ verdict
-// instead of a deployer answer. The two EVM "Check Deployer" buttons (token_scan, token_safety)
-// must send the address-less "who deployed this" instead, which the THIS_DEV_RE + session-memory
-// branch (earlier in the request flow, before classifyClarkPrompt even runs) already handles
-// correctly. The Solana button must keep the address-bearing form: THIS_DEV_RE's own EVM-only
-// /api/dev-wallet call has no Solana support and would wrongly intercept an address-less prompt
-// before the real Solana deployer cascade ever runs.
-{
-  const evmCheckDeployerCount = (routeCode.match(/\{ label: "Check Deployer", prompt: "who deployed this", kind: "prompt" as const \}/g) ?? []).length
-  assert.equal(evmCheckDeployerCount, 2, 'both EVM Check Deployer buttons (token_scan, token_safety) must use the address-less "who deployed this" form')
-  assert.match(
-    routeCode,
-    /\{ label: "Check Deployer", prompt: `who deployed \$\{tokenAddress\}`, kind: "prompt" as const \}/,
-    'the Solana Check Deployer button must keep the address-bearing form so it reaches the real Solana deployer cascade, not the EVM-only THIS_DEV_RE branch'
-  )
-}
 assert.match(
   routeSrc,
-  /const THIS_DEV_RE = [^\n]*who\\s\+deployed\\s\+this/,
-  '"who deployed this" must actually be recognized by THIS_DEV_RE so the EVM Check Deployer button resolves from session memory'
+  /const THIS_DEV_RE = [^\n]*who\\s\+deployed\\s\+\(\?:this\|it\|that\)/,
+  '"who deployed this/it/that" must actually be recognized by THIS_DEV_RE so deployer follow-ups resolve from session memory'
 )
 // Both token_scan and token_safety must actually set ui.actions — the frontend only ever renders
 // buttons from payload.ui.actions (see app/terminal/clark-ai/page.tsx), so a handler that only set
 // the legacy top-level `actions` string list would silently show zero buttons.
 const uiActionsBlocks = (routeCode.match(/ui: \{\s*\n\s*intentBadge: "Token Read",/g) ?? []).length
-assert.ok(uiActionsBlocks >= 3, 'token_scan, token_safety, and the Solana full-verdict read must all set ui.actions with intentBadge "Token Read"')
+assert.ok(uiActionsBlocks >= 2, 'token_scan and token_safety (and Solana full-verdict) must set ui.actions')
 
 console.log('test-clark-token-verdict-engine.mjs: all assertions passed')

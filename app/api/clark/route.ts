@@ -122,11 +122,18 @@ import {
   classifyClarkToolIntent,
   type ClarkToolIntent,
   isClarkWatchlistAddCommand,
+  isClarkTrackWalletCommand,
   formatPumpAnalysisRead,
   isPumpAnalysisPrompt,
   extractAddressForRouting,
   renderClarkTokenVerdictForEvm,
   renderClarkTokenVerdictForSolana,
+  buildClarkTokenAnswerActions,
+  buildClarkLpAnswerActions,
+  buildClarkWalletAnswerActions,
+  formatHoldersCheck,
+  isHoldersCheckPrompt,
+  isDeployerCheckPrompt,
 } from "@/lib/server/clarkRouting";
 import { buildBaseRadarDisplayModel } from "@/lib/baseRadarDisplayModel";
 import { classifyClarkAnalystIntent, isChainLensAnalystPrompt } from "@/lib/server/clarkAnalystIntent";
@@ -720,7 +727,7 @@ const WATCH_VERDICT_LOW_COST_RE = /\b(should\s+i\s+watch\s+(?:it|this|the\s+toke
 const WALLET_FOLLOWUP_LOW_COST_RE = /\b(is\s+it\s+worth|worth\s+monitoring|is\s+this\s+wallet|should\s+i\s+watch|should\s+i\s+copy|what\s+are\s+its|any\s+risk|main\s+holdings?|scan\s+its|top\s+holding)\b/i;
 
 const MORE_CONTEXT_RE = /^(more|continue|expand|go on|keep going|give me more|show more|more tokens|more tokens from pool|show more movers|more pumping tokens)\s*$/i;
-const THIS_DEV_RE = /\b(who\s+deployed\s+this|who\s+made\s+this|who\s+built\s+this|who\s+created\s+this|dev\s+wallet\s+this|origin\s+wallet\s+this|deployer\s+this|creator\s+wallet)\b/i;
+const THIS_DEV_RE = /\b(who\s+deployed\s+(?:this|it|that)|who\s+made\s+this|who\s+built\s+this|who\s+created\s+this|dev\s+wallet\s+this|origin\s+wallet\s+this|deployer\s+this|creator\s+wallet)\b/i;
 const THIS_LIQ_RE = /\b(liquidity\s+check\s+this|lp\s+check\s+this|is\s+(?:the\s+)?lp\s+locked|is\s+(?:the\s+)?liquidity\s+(?:safe|locked)|pool\s+safety\s+this|lp\s+safe\s+(?:for\s+)?this)\b/i;
 
 function isLowCostPrompt(prompt: string, sessionMem?: ClarkSessionMemory): boolean {
@@ -6603,7 +6610,7 @@ function renderFastDeployerAnswer(
     confidence: devWallet.confidence,
     confidenceReason: devWallet.confidence === "High" ? "deployer identity confirmed directly from chain data" : "deployer identity resolved, but from a single source with no cross-verification",
     lastUpdatedLabel: "just now (live lookup)",
-    nextAction: "Related deployments and rug history were not checked in this fast lookup — run Check Deployer / Deep Scan Token for the full cluster and rug-history read.",
+    nextAction: "Related deployments and rug history were not checked in this fast lookup — run /deployer for the origin wallet and cluster read.",
   });
 }
 
@@ -8472,21 +8479,33 @@ async function handleClarkWhaleToolCall(
   const top = ranked[0];
   const lines: string[] = [];
   if (stepLines.length) lines.push(...stepLines, "");
-  lines.push(`Whale Alerts found ${ranked.length} movement${ranked.length === 1 ? "" : "s"} in the last ${window === "7d" ? "7d" : "24h"}.`.trim());
-  lines.push(`Largest signal: ${top.walletLabel ?? "tracked wallet"}${top.walletAddress ? ` ${shortAddress(top.walletAddress)}` : ""} ${top.side ?? "moved"} ${top.amountUsd != null ? fmtUsd(top.amountUsd) : "an unverified amount"} of ${top.tokenSymbol ?? "an unknown token"}${top.occurredAt ? ` ${new Date(top.occurredAt).toLocaleString()}` : ""}. Severity: ${top.signalScore ?? "unrated"}.`);
-  lines.push("I'd review token liquidity and holder concentration before trusting the move.");
-  if (ranked.length > 1) {
-    lines.push("", "Other recent movements:");
-    for (const a of ranked.slice(1, 5)) {
-      lines.push(`- ${a.walletLabel ?? "tracked wallet"}${a.walletAddress ? ` ${shortAddress(a.walletAddress)}` : ""}: ${a.side ?? "move"} ${a.amountUsd != null ? fmtUsd(a.amountUsd) : "unverified"} ${a.tokenSymbol ?? "?"} (${a.signalScore ?? "unrated"})`);
-    }
+  lines.push(`Whale Alerts found ${ranked.length} movement${ranked.length === 1 ? "" : "s"} in the last ${window === "7d" ? "7d" : "24h"}.`);
+  if (trackedWalletCount != null) lines.push(`Watching ${trackedWalletCount} Base wallets.`);
+  lines.push("", "Wallets:");
+  for (const a of ranked.slice(0, 6)) {
+    lines.push(`${a.rank}. ${a.walletLabel ?? "tracked wallet"}${a.walletAddress ? ` ${shortAddress(a.walletAddress)}` : ""} — ${a.side ?? "move"} ${a.amountUsd != null ? fmtUsd(a.amountUsd) : "unverified"} ${a.tokenSymbol ?? "?"}${a.signalScore ? ` (${a.signalScore})` : ""}`);
   }
+  const buys = groupClarkWhaleFlow(rawAlerts, "buy");
+  if (buys.ranked.length > 0) {
+    lines.push("", "Buying:");
+    buys.ranked.slice(0, 5).forEach((g, i) => {
+      lines.push(`${i + 1}. ${g.token} — ${g.count} buy${g.count === 1 ? "" : "s"}${g.wallets.size > 1 ? ` from ${g.wallets.size} wallets` : ""}${g.usdVerified ? `, ${fmtUsd(g.usd)} verified` : ", USD unverified"}`);
+    });
+    if (buys.unknownSide > 0) {
+      lines.push(`${buys.unknownSide} further movement${buys.unknownSide === 1 ? "" : "s"} had no verified direction and are not counted as buys.`);
+    }
+  } else if (buys.unknownSide > 0) {
+    lines.push("", `Buy-side is not labeled on ${buys.unknownSide} movement${buys.unknownSide === 1 ? "" : "s"} — I won't call them buys.`);
+  }
+  lines.push("", "wallet_label is an internal ChainLens tracking label, not a verified public identity.");
+  lines.push("I'd review token liquidity and holder concentration before trusting a move.");
   lines.push("", "Not financial advice.");
 
   const actions: ClarkUiAction[] = [
     { label: "Open Whale Alerts", href: "/terminal/whale-alerts", kind: "link" },
     ...(feed.syncRan ? [] : [{ label: "Refresh Whale Alerts", prompt: "sync whale alerts", kind: "prompt" as const }]),
     { label: "What are whales buying", prompt: "what are whales buying", kind: "prompt" as const },
+    { label: "What are whales selling", prompt: "what are whales selling", kind: "prompt" as const },
     ...(top.tokenSymbol ? [{ label: "Scan Token", prompt: `scan ${top.tokenSymbol}`, kind: "prompt" as const }] : []),
   ];
 
@@ -8562,6 +8581,57 @@ async function handleClarkWatchlistAdd(origin: string, authHeader: string | null
       feature: "clark-ai", chain, mode: "analysis", intent: "watchlist_add", toolsUsed: ["watchlist_add"],
       analysis: `Couldn't add ${target.symbol} to your watchlist right now. Try again shortly.`,
       clarkToolPlan: null, clarkToolsExecuted: ["watchlist_add"], clarkToolStatuses: { watchlist_add: "failed" }, clarkEvidenceMissing: ["watchlist_write_failed"], clarkToolLatencyMs: Date.now() - t0,
+    };
+  }
+}
+
+async function handleClarkTrackWallet(origin: string, authHeader: string | null, chain: SupportedChain, sessionMem: ClarkSessionMemory) {
+  const subject = sessionMem.lastClarkSubject
+  const walletAddr =
+    (subject?.entityType === "wallet" ? subject.address : null)
+    ?? sessionMem.lastWallet?.address
+    ?? null
+  if (!walletAddr) {
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "wallet_track", toolsUsed: [],
+      analysis: "I don't have a wallet in memory to track. Scan a wallet first, then ask me to track it.",
+      clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: ["no_wallet_in_memory"], clarkToolLatencyMs: 0,
+    };
+  }
+  if (!authHeader) {
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "wallet_track", toolsUsed: [],
+      analysis: "Sign in to track wallets.",
+      clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: ["not_authenticated"], clarkToolLatencyMs: 0,
+    };
+  }
+  const t0 = Date.now();
+  try {
+    const res = await fetch(`${origin}/api/watchlist/wallets`, {
+      method: "POST",
+      signal: AbortSignal.timeout(8000),
+      headers: { Authorization: authHeader, "Content-Type": "application/json" },
+      body: JSON.stringify({ address: walletAddr, source: "clark" }),
+    });
+    if (res.ok) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "wallet_track", toolsUsed: ["watchlist_wallets"],
+        analysis: `Tracking ${walletAddr}. Open Wallet Scanner to manage tracked wallets.`,
+        clarkToolPlan: null, clarkToolsExecuted: ["watchlist_wallets"], clarkToolStatuses: { watchlist_wallets: "ok" }, clarkEvidenceMissing: [], clarkToolLatencyMs: Date.now() - t0,
+        ui: { intentBadge: "Wallet Track", actions: [{ label: "Open Wallet Scanner", href: `/terminal/wallet-scanner?address=${encodeURIComponent(walletAddr)}&chain=auto`, kind: "link" as const }] },
+      };
+    }
+    const errJson = await res.json().catch(() => null) as { error?: string } | null;
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "wallet_track", toolsUsed: ["watchlist_wallets"],
+      analysis: `Couldn't track this wallet${errJson?.error ? ` (${errJson.error})` : ""}. Try again shortly.`,
+      clarkToolPlan: null, clarkToolsExecuted: ["watchlist_wallets"], clarkToolStatuses: { watchlist_wallets: "failed" }, clarkEvidenceMissing: ["watchlist_write_failed"], clarkToolLatencyMs: Date.now() - t0,
+    };
+  } catch {
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "wallet_track", toolsUsed: ["watchlist_wallets"],
+      analysis: "Couldn't track this wallet right now. Try again shortly.",
+      clarkToolPlan: null, clarkToolsExecuted: ["watchlist_wallets"], clarkToolStatuses: { watchlist_wallets: "failed" }, clarkEvidenceMissing: ["watchlist_write_failed"], clarkToolLatencyMs: Date.now() - t0,
     };
   }
 }
@@ -8724,8 +8794,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         return {
           feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: "entity_mismatch", toolsUsed: ["address_code_check"],
           analysis: formatTokenContractNotWalletReply(chainDisplayLabel(chainForClarkTools)),
-          ui: { intentBadge: 'Entity Check', actions: [{ label: 'Open Token Scanner', href }, { label: 'Deep Scan Token', href }] },
-          actions: [{ label: 'Open Token Scanner', href }, { label: 'Deep Scan Token', href }],
+          ui: { intentBadge: 'Entity Check', actions: [{ label: 'Open Token Scanner', href }, { label: '/token', prompt: `/token ${inlineAddress}`, kind: 'prompt' as const }] },
+          actions: [{ label: 'Open Token Scanner', href }],
         };
       }
     }
@@ -8745,8 +8815,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       sessionMem.lastToken?.address || sessionMem.lastWallet?.address || sessionMem.lastMomentumList.length ||
       sessionMem.lastWhaleAlerts.length || body.appContext?.tokenSummary || body.appContext?.walletSummary || body.appContext?.marketContext,
     );
-    const contextualShortFollowup = hasAnalystContext && /^\s*(?:why|scan\s+it|is\s+it\s+safe|explain\s+the\s+risk|what\s+should\s+i\s+watch)\??\s*$/i.test(prompt);
-    const directAnswer = isChainLensAnalystPrompt(prompt) || contextualShortFollowup ? null : buildClarkDirectAnswer(basicIntent, prompt);
+    const contextualShortFollowup = hasAnalystContext && /^\s*(?:why|scan\s+it|is\s+it\s+safe|explain\s+the\s+risk|what\s+should\s+i\s+watch|explain\s+lp|holders?\??|who\s+deployed\s+(?:it|this|that)|what\s+does\s+(?:lp|liquidity)\s+mean|should\s+i\s+watch\s+(?:it|this|that)?)\??\s*$/i.test(prompt);
+    const slashEarly = parseClarkSlashCommand(prompt);
+    const skipDirectAnswer = isChainLensAnalystPrompt(prompt)
+      || contextualShortFollowup
+      || isForcedLiquidityCheckPrompt(prompt)
+      || isHoldersCheckPrompt(prompt)
+      || isDeployerCheckPrompt(prompt)
+      || Boolean(slashEarly)
+      || (isTokenFollowupPrompt(prompt) && hasAnalystContext);
+    const directAnswer = skipDirectAnswer ? null : buildClarkDirectAnswer(basicIntent, prompt);
     if (directAnswer) {
       return {
         feature: "clark-ai", chain, mode: "chat", intent: basicIntent, toolsUsed: [],
@@ -8810,6 +8888,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     if (isClarkWatchlistAddCommand(prompt)) {
       return await handleClarkWatchlistAdd(origin, authHeader ?? null, chain, sessionMem);
+    }
+    if (isClarkTrackWalletCommand(prompt)) {
+      return await handleClarkTrackWallet(origin, authHeader ?? null, chain, sessionMem);
     }
   }
 
@@ -9394,7 +9475,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       : sessionMem.lastWallet.address;
     routedClassification.deep = true;
   }
-  if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && isTokenFollowupPrompt(prompt) && (sessionMem.lastClarkSubject?.address || sessionMem.lastToken?.address) && !hasAnyAddress(prompt) && !deepScanItOnWallet) {
+  if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && classifyTokenFollowupKind(prompt) !== "deployer" && isTokenFollowupPrompt(prompt) && (sessionMem.lastClarkSubject?.address || sessionMem.lastToken?.address) && !hasAnyAddress(prompt) && !deepScanItOnWallet) {
     const followupKind = classifyTokenFollowupKind(prompt);
     const subject = isTokenLikeClarkSubject(sessionMem.lastClarkSubject) ? sessionMem.lastClarkSubject : null;
     const tokenAddress = subject?.address ?? sessionMem.lastToken?.address;
@@ -9454,6 +9535,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const followupChainLabel = chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools));
     if (followupKind === "dev_rug") { analysis = formatDevRugCheck(ev, followupChainLabel); intentBadge = "dev_rug_check"; }
     else if (followupKind === "lp_lock") { analysis = formatLpLockCheck(ev, followupChainLabel); intentBadge = "lp_lock_check"; }
+    else if (followupKind === "holders") { analysis = formatHoldersCheck(ev, followupChainLabel); intentBadge = "holders_check"; }
     else if (followupKind === "risk") { analysis = formatRiskExplanation(ev, followupChainLabel); intentBadge = "risk_explanation"; }
     else if (followupKind === "analyst") { analysis = formatTokenAnalystFollowup(ev, followupChainLabel); intentBadge = "token_analyst_followup"; }
     else { analysis = formatTokenSafetyAnswer(ev, followupChainLabel); intentBadge = "token_safety"; }
@@ -9483,6 +9565,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       source: followupVerdictMeta.source,
       intentBadge,
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+      ui: {
+        intentBadge: followupKind === "lp_lock" ? "LP Check" : "Token Read",
+        actions: followupKind === "lp_lock"
+          ? buildClarkLpAnswerActions(tokenAddress, followupChainLabel)
+          : buildClarkTokenAnswerActions(tokenAddress, followupChainLabel),
+      },
       quotaConsumed,
       clarkFollowupRoutingAudit: buildClarkFollowupRoutingAudit({
         prompt,
@@ -9586,7 +9674,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   // Token intent from classifyClarkPrompt takes priority over appIntent wallet_scan
-  const TOKEN_INTENTS = new Set(['token_scan','token_safety','dev_rug_check','lp_lock_check','risk_explanation','liquidity_scan'] as const);
+  const TOKEN_INTENTS = new Set(['token_scan','token_safety','dev_rug_check','lp_lock_check','risk_explanation','liquidity_scan','holders_check','deployer_check'] as const);
   const routedIsToken = TOKEN_INTENTS.has(routedClassification.intent as typeof TOKEN_INTENTS extends Set<infer T> ? T : never);
   if (appIntent.intent === 'wallet_scan' && !routedIsToken && routeHint !== 'token' && !isLiquidityCheckIntent(prompt) && parseClarkLiquidityIntent(prompt) == null) {
     const selectedWallet = typeof body.appContext?.selectedWallet === 'string' ? body.appContext.selectedWallet : body.appContext?.selectedWallet?.address ?? null;
@@ -9595,8 +9683,6 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (!walletAddress) {
       return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan", toolsUsed: [], ui: { intentBadge: 'Wallet Scan', actions: appIntent.cta }, analysis: `WALLET SCAN\nI can run Wallet Scanner, but I need a wallet address or selected wallet context.\nCTA: ${appIntentTools}` };
     }
-    const href = walletScannerDeepLink(walletAddress, deepScan);
-    const reqBody = buildWalletApiRequestBody(walletAddress, deepScan);
     const w = (await getWalletFromV2(walletAddress) ?? await getWalletLite(walletAddress)
       .catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "wallet_scan_timeout" }))) as Record<string, unknown>;
     const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
@@ -9631,7 +9717,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // Usable wallet evidence (mappedResult.ok) means the runner actually returned a real
     // WALLET READ — never report this as a generic "fallback" source, and only consume
     // quota when there is real evidence to show for it.
-    const walletActions = [{ label: 'Open Wallet Scanner', href }, { label: 'Run Deep Scan', href: walletScannerDeepLink(walletAddress, true) }];
+    const walletActions = buildClarkWalletAnswerActions(walletAddress);
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan",
       toolsUsed: ["wallet_scanner_runner"],
@@ -10089,7 +10175,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
 
-  if (THIS_DEV_RE.test(prompt) && !hasAnyAddress(prompt)) {
+  if ((THIS_DEV_RE.test(prompt) || /^\s*\/deployer\s*$/i.test(prompt)) && !hasAnyAddress(prompt)) {
     // ALWAYS-SAME-DEPLOYER FIX, DISCLOSED (live report: "for every fcking token i say check
     // deployer its this same blue bull" — Dashboard's Clark widget). Root cause: this branch only
     // ever resolved `target` from sessionMem.lastToken (server-side memory, wiped on any cold
@@ -10499,11 +10585,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       ...(wantsDeployer ? {} : {
         ui: {
           intentBadge: "Token Read",
-          actions: [
-            { label: "Deep Scan Token", prompt: `deep scan ${tokenAddress}`, kind: "prompt" as const },
-            { label: "Check Deployer", prompt: `who deployed ${tokenAddress}`, kind: "prompt" as const },
-            { label: "Open Token Scanner", href: `/terminal/token-scanner?address=${encodeURIComponent(tokenAddress)}&chain=solana`, kind: "link" as const },
-          ],
+          actions: buildClarkTokenAnswerActions(tokenAddress, "solana"),
         },
       }),
       quotaConsumed: Boolean(solJson),
@@ -10548,22 +10630,31 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       lastWalletAddress: sessionMem.lastWallet?.address ?? null,
     });
     if (slashFill.mismatch === "wallet_not_token_or_pool") {
+      if (slashCmd.command === "lp" || slashCmd.command === "explain") {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["memory"],
+          analysis: formatEoaLpCheckReply(),
+          ui: { intentBadge: "LP Check", actions: [{ label: "Open Token Scanner", href: "/terminal/token-scanner" }] },
+          actions: [{ label: "Open Token Scanner", href: "/terminal/token-scanner" }],
+          quotaConsumed: false,
+          clarkFollowupRoutingAudit: buildClarkFollowupRoutingAudit({
+            prompt,
+            hasNewAddress: false,
+            previousSubject: sessionMem.lastClarkSubject,
+            reusedSubject: true,
+            parsedIntent: "lp_check",
+            resolvedAddress: slashFill.address,
+            routeSelected: "not_applicable",
+            reason: "slash_lp_on_wallet_subject",
+          }),
+        };
+      }
       return {
-        feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["memory"],
-        analysis: formatEoaLpCheckReply(),
-        ui: { intentBadge: "LP Check", actions: [{ label: "Open Token Scanner", href: "/terminal/token-scanner" }] },
-        actions: [{ label: "Open Token Scanner", href: "/terminal/token-scanner" }],
+        feature: "clark-ai", chain, mode: "analysis", intent: slashCmd.intent, toolsUsed: [],
+        analysis: formatNoTokenInMemory(),
+        intentBadge: slashCmd.intent,
+        actions: buildRoutedActions(["Open Token Scanner"]),
         quotaConsumed: false,
-        clarkFollowupRoutingAudit: buildClarkFollowupRoutingAudit({
-          prompt,
-          hasNewAddress: false,
-          previousSubject: sessionMem.lastClarkSubject,
-          reusedSubject: true,
-          parsedIntent: "lp_check",
-          resolvedAddress: slashFill.address,
-          routeSelected: "not_applicable",
-          reason: "slash_lp_on_wallet_subject",
-        }),
       };
     }
     if (slashCmd.command === "wallet" && slashFill.mismatch === "token_not_wallet" && !slashCmd.address) {
@@ -10575,7 +10666,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     if (slashFill.address && !routed.address) {
       routed.address = slashFill.address;
-      if (!routed.symbol && (slashCmd.command === "lp" || slashCmd.command === "token")) {
+      if (!routed.symbol && (slashCmd.command === "lp" || slashCmd.command === "token" || slashCmd.command === "deployer" || slashCmd.command === "holders" || slashCmd.command === "explain")) {
         routed.symbol = sessionMem.lastClarkSubject?.symbol ?? sessionMem.lastToken?.symbol ?? routed.symbol;
       }
     }
@@ -10605,7 +10696,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // A liquidity request must reach the dedicated liquidity branch below, including for a
   // Solana mint. That branch renders only LP/liquidity evidence; sending it through this
   // creator/token-read shortcut produced a full TOKEN READ for an LP-only question.
-  const SOLANA_TOKEN_INTENTS = new Set(["token_safety", "dev_rug_check", "dev_rug_history", "risk_explanation", "token_ape_risk", "token_full_report", "token_scan"]);
+  const SOLANA_TOKEN_INTENTS = new Set(["token_safety", "dev_rug_check", "dev_rug_history", "risk_explanation", "token_ape_risk", "token_full_report", "token_scan", "deployer_check"]);
   // A plain "who deployed X"/"deployer of X" has no dedicated intent bucket in classifyClarkPrompt
   // at all (it only feeds the liquidity_scan classifier when paired with an LP keyword) — routed.
   // intent comes back "none" for it, so the intent-set check above alone would miss it. Checked
@@ -11014,10 +11105,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       analysis: lpAnalysis,
       intentBadge: "liquidity_scan",
       actions: [
-        { label: "Deep Scan Token", href: tokenHref },
         { label: "Open Token Scanner", href: tokenHref },
         { label: "Check LP", href: tokenHref },
       ],
+      ui: {
+        intentBadge: "LP Check",
+        actions: buildClarkLpAnswerActions(routed.address, runChain === "ethereum" ? "eth" : runChain),
+      },
       quotaConsumed: true,
       memoryEcho: buildWalletMemoryEcho(sessionMem),
       clarkLiquidityCheckAudit: liqAudit,
@@ -11083,7 +11177,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"],
       analysis,
       intentBadge: "wallet_scan",
-      actions: buildRoutedActions(routed.deep ? ["Open Token Scanner"] : ["Deep Scan Wallet"]),
+      actions: buildRoutedActions(routed.deep ? ["Deep Scan Wallet"] : ["Deep Scan Wallet"]),
+      ui: {
+        intentBadge: routed.deep ? "Wallet Deep Scan" : "Wallet Scan",
+        actions: buildClarkWalletAnswerActions(routed.address),
+      },
       quotaConsumed: ok,
       memoryEcho: buildWalletMemoryEcho(sessionMem),
       ...(clarkDebugMode ? { clarkDebugReceipt: { memoryAfter: { lastWallet: sessionMem.lastWallet ? { address: sessionMem.lastWallet.address } : null } } } : {}),
@@ -11904,6 +12002,167 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
 
+  if (routed.intent === "holders_check") {
+    const holdersAddr = routed.address
+      ?? (isTokenLikeClarkSubject(sessionMem.lastClarkSubject) ? sessionMem.lastClarkSubject!.address : null)
+      ?? sessionMem.lastToken?.address
+      ?? null;
+    if (!holdersAddr) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "holders_check", toolsUsed: [],
+        analysis: formatNoTokenInMemory(),
+        intentBadge: "holders_check",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+      };
+    }
+    if (isValidSolanaMintAddress(holdersAddr)) {
+      const tokRes = await callInternalApi(origin, "/api/token", { contract: holdersAddr, chain: "solana" }, authHeader ?? undefined, verifiedPlan);
+      const raw = (tokRes.json ?? {}) as Record<string, unknown>;
+      const conc = raw.topAccountConcentration as { top1Percent?: number | null; top10Percent?: number | null; accountsSampled?: number | null } | null | undefined;
+      const market = raw.marketData as { tokenSymbol?: string | null } | null | undefined;
+      const analysis = formatHoldersCheck({
+        token: { symbol: (typeof market?.tokenSymbol === "string" ? market.tokenSymbol : null) ?? routed.symbol ?? "?", address: holdersAddr },
+        holders: {
+          top1: typeof conc?.top1Percent === "number" ? conc.top1Percent : null,
+          top10: typeof conc?.top10Percent === "number" ? conc.top10Percent : null,
+          holderCount: null,
+        },
+      }, "Solana");
+      updateMemToken(sessionMem, holdersAddr, routed.symbol ?? null, null, analysis, { chain: "solana" });
+      updateMemIntent(sessionMem, "holders_check");
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "holders_check", toolsUsed: ["solana_scan"],
+        analysis,
+        intentBadge: "holders_check",
+        ui: { intentBadge: "Holders Read", actions: buildClarkTokenAnswerActions(holdersAddr, "solana") },
+        quotaConsumed: tokRes.ok,
+      };
+    }
+    const r = await resolveTokenForFollowup();
+    if ("needsAddress" in r) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "holders_check", toolsUsed: [],
+        analysis: formatNoTokenInMemory(),
+        intentBadge: "holders_check",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+      };
+    }
+    const holdersChain = chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools));
+    const analysis = formatHoldersCheck({ ...r.ev, token: { ...(r.ev.token ?? {}), address: r.address } }, holdersChain);
+    if (!r.fromMemory) {
+      updateMemToken(sessionMem, r.address, r.ev.token?.symbol ?? null, r.ev.token?.name ?? null, analysis, {
+        cachedEvidence: r.ev.ok || (r.ev as Record<string, unknown>)._partialEvidenceUsed ? r.ev : null,
+      });
+    }
+    updateMemIntent(sessionMem, "holders_check");
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "holders_check", toolsUsed: r.fromMemory ? ["memory"] : ["token_scan"],
+      analysis,
+      intentBadge: "holders_check",
+      ui: { intentBadge: "Holders Read", actions: buildClarkTokenAnswerActions(r.address, holdersChain) },
+      quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
+      clarkDebugReceipt: tokenFollowupDebug(r),
+    };
+  }
+
+  if (routed.intent === "deployer_check") {
+    const target = routed.address
+      ?? (isTokenLikeClarkSubject(sessionMem.lastClarkSubject) ? sessionMem.lastClarkSubject!.address : null)
+      ?? sessionMem.lastToken?.address
+      ?? body.clientContext?.lastToken?.address
+      ?? body.appContext?.tokenSummary?.address
+      ?? null;
+    if (!target) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "deployer_check", toolsUsed: [],
+        analysis: formatNoTokenInMemory(),
+        intentBadge: "deployer_check",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+      };
+    }
+    if (isValidSolanaMintAddress(target)) {
+      return await buildSolanaCreatorAnswer(target, true);
+    }
+    const targetChain = sessionMem.lastToken?.chain
+      ?? body.clientContext?.lastToken?.chain
+      ?? body.appContext?.tokenSummary?.chain
+      ?? null;
+    const thisDevChain = (targetChain === "base" || targetChain === "eth" || targetChain === "bnb" || targetChain === "robinhood")
+      ? targetChain
+      : toTokenApiChain(chainForClarkTools);
+    const devRes = thisDevChain
+      ? await callInternalApi(origin, "/api/dev-wallet", { contractAddress: target, chain: thisDevChain }, authHeader ?? undefined)
+      : { ok: false as const, json: null };
+    if (!devRes.ok || !devRes.json) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "deployer_check", toolsUsed: ["dev_wallet_analyze"],
+        analysis: [
+          "DEPLOYER READ",
+          `Contract: ${target}`,
+          "",
+          "Origin wallet could not be verified from this pass.",
+          thisDevChain ? `Source failed: /api/dev-wallet on ${thisDevChain} did not return a usable deployer record.` : "Source failed: this chain is not supported by the EVM deployer lookup.",
+          "",
+          "CTA: Open Token Scanner",
+        ].join("\n"),
+        intentBadge: "deployer_check",
+        ui: { intentBadge: "Deployer Read", actions: buildClarkTokenAnswerActions(target, thisDevChain ?? "base") },
+        quotaConsumed: false,
+      };
+    }
+    const dw = devRes.json as Record<string, unknown>;
+    const deployerAddress = typeof dw.deployerAddress === "string" ? dw.deployerAddress : null;
+    const deployerStatus = typeof dw.deployerStatus === "string" ? dw.deployerStatus : null;
+    const deployerConfidence = typeof dw.deployerConfidence === "string" ? dw.deployerConfidence : null;
+    const previousProjects = Array.isArray(dw.previousProjects) ? dw.previousProjects : [];
+    const cx = buildCortexEvidenceContext({ address: target, sessionMem, clientContext: body.clientContext });
+    const analysis = [
+      "DEPLOYER READ",
+      `Token: ${cx.name} (${cx.symbol})`,
+      `Contract: ${target}`,
+      "",
+      "Origin:",
+      deployerAddress
+        ? `- Origin wallet: ${deployerAddress}`
+        : "- Origin wallet could not be verified from this pass.",
+      `- Status: ${deployerStatus === "confirmed" ? "Confirmed from on-chain creation record" : deployerStatus === "possible_match" ? "Likely match, not fully confirmed" : "Not fully confirmed"}`,
+      deployerConfidence ? `- Confidence: ${deployerConfidence}` : "- Confidence: open_check",
+      "",
+      "Related deployments:",
+      previousProjects.length > 0
+        ? `- ${previousProjects.length} prior contract${previousProjects.length === 1 ? "" : "s"} linked to this deployer.`
+        : "- No related deployments returned in this pass.",
+      "",
+      "Missing evidence:",
+      deployerAddress ? "- none for origin wallet" : "- deployer address not returned",
+      "",
+      "Next:",
+      "- /holders",
+      "- /lp",
+      "- Open Token Scanner",
+    ].join("\n");
+    if (deployerAddress) {
+      rememberClarkDeployer(sessionMem, deployerAddress, {
+        chain: thisDevChain ?? "base",
+        sourceTokenAddress: target,
+        confidence: deployerConfidence === "high" ? "high" : deployerConfidence === "low" ? "low" : "medium",
+      });
+    }
+    updateMemToken(sessionMem, target, cx.symbol ?? null, cx.name ?? null, analysis);
+    updateMemIntent(sessionMem, "deployer_check");
+    return {
+      feature: "clark-ai", chain, mode: "analysis", intent: "deployer_check", toolsUsed: ["dev_wallet_analyze"],
+      ...(deployerAddress ? { deployerAddress, devWallet: { confidence: deployerConfidence ?? "medium" } } : {}),
+      analysis,
+      intentBadge: "deployer_check",
+      ui: { intentBadge: "Deployer Read", actions: buildClarkTokenAnswerActions(target, thisDevChain ?? "base") },
+      quotaConsumed: true,
+    };
+  }
+
   if (routed.intent === "token_scan") {
     let tokenAddress = routed.address;
     let resolvedSymbol = routed.symbol;
@@ -12115,13 +12374,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       // thread — never navigating away, per the spec's "without leaving Clark" requirement.
       ui: {
         intentBadge: "Token Read",
-        actions: [
-          { label: "Deep Scan Token", prompt: `deep scan ${tokenAddress}`, kind: "prompt" as const },
-          { label: "Explain LP", prompt: `explain lp for ${tokenAddress}`, kind: "prompt" as const },
-          { label: "Check Deployer", prompt: "who deployed this", kind: "prompt" as const },
-          { label: "Check Holders", prompt: `top holders for ${tokenAddress}`, kind: "prompt" as const },
-          { label: "Open Token Scanner", href: tokenScannerHref(tokenAddress, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools))), kind: "link" as const },
-        ],
+        actions: buildClarkTokenAnswerActions(tokenAddress, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools))),
       },
       quotaConsumed,
       ...(clarkDebugReceipt ? { clarkDebugReceipt } : {}),
@@ -12420,13 +12673,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
       ui: {
         intentBadge: "Token Read",
-        actions: [
-          { label: "Deep Scan Token", prompt: `deep scan ${r.address}`, kind: "prompt" as const },
-          { label: "Explain LP", prompt: `explain lp for ${r.address}`, kind: "prompt" as const },
-          { label: "Check Deployer", prompt: "who deployed this", kind: "prompt" as const },
-          { label: "Check Holders", prompt: `top holders for ${r.address}`, kind: "prompt" as const },
-          { label: "Open Token Scanner", href: tokenScannerHref(r.address, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools))), kind: "link" as const },
-        ],
+        actions: buildClarkTokenAnswerActions(r.address, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools))),
       },
       quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
       clarkDebugReceipt: tokenFollowupDebug(r),
@@ -12484,6 +12731,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           analysis,
           intentBadge: "lp_lock_check",
           actions: buildRoutedActions(["Run LP Check"]),
+          ui: { intentBadge: "LP Check", actions: buildClarkLpAnswerActions(r.address, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools))) },
           quotaConsumed: false,
           clarkDebugReceipt: tokenFollowupDebug(r),
         };
@@ -12589,6 +12837,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       analysis,
       intentBadge: "lp_lock_check",
       actions: buildRoutedActions(["Run LP Check", "Open Token Scanner"]),
+      ui: { intentBadge: "LP Check", actions: buildClarkLpAnswerActions(tokenAddress, runChain === "ethereum" ? "eth" : runChain) },
       quotaConsumed: !cached || wrongChainRejected,
       clarkDebugReceipt: { followUpUsedMemory: Boolean(cached) && !wrongChainRejected, followUpTriggeredRefresh: tokenFollowupRefreshRequested, tokenMemoryAgeMs: sessionMem?.lastToken?.ts ? Date.now() - sessionMem.lastToken.ts : null, evidenceSource: cached && !wrongChainRejected ? "cache" : "freshScan" },
       clarkLiquidityAnswerAudit: liquidityAnswerAuditFromResult(prompt, check),

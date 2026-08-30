@@ -418,9 +418,14 @@ function ClarkAiContent() {
 
   function applyCommandChip(prompt: string) {
     const trimmed = prompt.trim()
-    const slash = trimmed.match(/^\/(lp|token|wallet)$/i)
+    if (/^explain lp$/i.test(trimmed)) {
+      const target = resolveClarkCommandChipTarget('explain', getClientClarkContext())
+      void handleSendText(target ? `/explain lp ${target}` : 'explain lp')
+      return
+    }
+    const slash = trimmed.match(/^\/(lp|token|wallet|holders|deployer)$/i)
     if (slash) {
-      const cmd = slash[1].toLowerCase() as 'lp' | 'token' | 'wallet'
+      const cmd = slash[1].toLowerCase() as 'lp' | 'token' | 'wallet' | 'holders' | 'deployer'
       const target = resolveClarkCommandChipTarget(cmd, getClientClarkContext())
       if (target) {
         void handleSendText(`/${cmd} ${target}`)
@@ -429,8 +434,8 @@ function ClarkAiContent() {
       setInput(`/${cmd} `)
       return
     }
-    if (trimmed.endsWith(' ') && /^\/(lp|token|wallet)\s+$/i.test(prompt)) {
-      const cmd = trimmed.slice(1).toLowerCase() as 'lp' | 'token' | 'wallet'
+    if (trimmed.endsWith(' ') && /^\/(lp|token|wallet|holders|deployer)\s+$/i.test(prompt)) {
+      const cmd = trimmed.slice(1).toLowerCase() as 'lp' | 'token' | 'wallet' | 'holders' | 'deployer'
       const target = resolveClarkCommandChipTarget(cmd, getClientClarkContext())
       if (target) {
         void handleSendText(`/${cmd} ${target}`)
@@ -597,22 +602,25 @@ function ClarkAiContent() {
             )}
             <div className='clk-input-wrap'>
               <div className='clk-start-with-row' style={{ marginBottom: 8 }} aria-label='Clark commands'>
-                {['/token', '/wallet', '/lp', '/base'].map((cmd) => (
+                {['/token', '/lp', '/holders', '/deployer', '/wallet'].map((cmd) => (
                   <button
                     key={cmd}
                     type='button'
                     className='clk-start-chip'
                     onClick={() => {
-                      if (cmd === '/base') {
-                        void handleSendText("What's pumping on Base?")
-                        return
-                      }
                       applyCommandChip(`${cmd} `)
                     }}
                   >
                     {cmd}
                   </button>
                 ))}
+                <button
+                  type='button'
+                  className='clk-start-chip'
+                  onClick={() => { void handleSendText('explain lp') }}
+                >
+                  explain lp
+                </button>
               </div>
               <div className='clk-input-row'>
                 <span className='clk-prompt-mark'>›</span>

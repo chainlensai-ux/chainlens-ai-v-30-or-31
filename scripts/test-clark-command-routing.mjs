@@ -126,7 +126,7 @@ assert.match(routeCode, /slash_lp_on_wallet_subject/, '/lp on last wallet subjec
   assert.ok(notWallet.includes('token contract'))
   assert.ok(/not a wallet/i.test(notWallet))
   assert.ok(/Open Token Scanner/i.test(notWallet))
-  assert.ok(/Deep Scan Token/i.test(notWallet))
+  assert.ok(!/Deep Scan Token/i.test(notWallet), 'token-contract-not-wallet reply must not show fake Deep Scan Token')
   assert.ok(!/WALLET READ|holdings count|PnL/i.test(notWallet))
 }
 assert.match(routeCode, /formatTokenContractNotWalletReply/, '/wallet on a token contract must use the not-wallet reply')

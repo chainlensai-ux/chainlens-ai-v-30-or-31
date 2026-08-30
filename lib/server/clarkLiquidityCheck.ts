@@ -624,8 +624,9 @@ export function isLiquidityStrengthFollowupPrompt(prompt: string): boolean {
 export function isLiquidityLockFollowupPrompt(prompt: string): boolean {
   const t = String(prompt ?? "").trim()
   if (!t || /^\/lp\b/i.test(t)) return false
+  if (/^\/explain(?:\s+lp(?:\s|$)|$)/i.test(t)) return true
   if (isLiquidityStrengthFollowupPrompt(t)) return false
-  return /\b(is\s+(?:the\s+|this\s+|that\s+)?(?:lp|liquidity)\s+locked|is\s+it\s+locked|is\s+(?:the\s+|this\s+)?(?:lp|liquidity)\s+burned|lock\s+proof|burn\s+proof|explain\s+(?:the\s+)?(?:lp|liquidity)|can\s+(?:the\s+)?(?:lp|liquidity)\s+be\s+pulled|who\s+controls\s+(?:the\s+)?(?:lp|liquidity))\b/i.test(t)
+  return /\b(is\s+(?:the\s+|this\s+|that\s+)?(?:lp|liquidity)\s+locked|is\s+it\s+locked|is\s+(?:the\s+|this\s+)?(?:lp|liquidity)\s+burned|lock\s+proof|burn\s+proof|explain\s+(?:the\s+)?(?:lp|liquidity)|can\s+(?:the\s+)?(?:lp|liquidity)\s+be\s+pulled|who\s+controls\s+(?:the\s+)?(?:lp|liquidity)|what\s+does\s+(?:lp|liquidity)\s+mean)\b/i.test(t)
 }
 
 function lockFollowupLead(result: ClarkLiquidityCheckResult): string {
@@ -670,7 +671,6 @@ export function formatClarkLiquidityCheck(result: ClarkLiquidityCheckResult): st
     : (result.lockBurnStatus || "unverified")
   const dexLabel = result.dexName ?? (result.chainSlug === "solana" ? "unverified DEX/pool source" : "unverified")
   const poolAddr = result.pairAddress ?? result.primaryPool ?? "not returned"
-  const nextCreator = result.chainSlug === "solana" ? "Check Creator" : "Check Deployer"
   const lpControlLine = result.chainSlug === "solana"
     ? `LP/control evidence: ${result.controllerStatus || "unavailable/partial"}`
     : `LP lock/burn: ${lockBurn}`
@@ -715,10 +715,9 @@ export function formatClarkLiquidityCheck(result: ClarkLiquidityCheckResult): st
     `Verdict: ${verdictTextFor(result.status)}`,
     "",
     "Next:",
-    "- Deep Scan Token",
-    "- Check LP",
-    "- Check Holders",
-    `- ${nextCreator}`,
+    "- /holders",
+    "- /deployer",
+    "- /explain lp",
     "- Add to Watchlist",
     "- Open Token Scanner",
   ].join("\n")
@@ -735,7 +734,6 @@ export function formatClarkLiquidityFollowup(result: ClarkLiquidityCheckResult):
     ? (result.lockBurnStatus || "unsupported")
     : lockBurn
   const poolAddr = result.pairAddress ?? result.primaryPool
-  const nextCreator = result.chainSlug === "solana" ? "Check Creator" : "Check Deployer"
   const risks = result.risks.slice(0, 3).map((s) => `- ${s}`)
   return [
     `LIQUIDITY READ — ${result.symbol}`,
@@ -762,9 +760,8 @@ export function formatClarkLiquidityFollowup(result: ClarkLiquidityCheckResult):
     ...missing,
     "",
     "Next:",
-    "- Deep Scan Token",
-    "- Check LP",
-    `- ${nextCreator}`,
+    "- /holders",
+    "- /deployer",
     "- Open Token Scanner",
   ].join("\n")
 }
@@ -779,7 +776,6 @@ export function formatClarkLiquidityLockFollowup(result: ClarkLiquidityCheckResu
     : lockBurn
   const controller = publicControllerLabel(result.controllerStatus, result.chainSlug)
   const poolAddr = result.pairAddress ?? result.primaryPool
-  const nextCreator = result.chainSlug === "solana" ? "Check Creator" : "Check Deployer"
   const risks = result.risks.slice(0, 3).map((s) => `- ${s}`)
   const why = (() => {
     if (result.chainSlug === "solana") {
@@ -789,7 +785,7 @@ export function formatClarkLiquidityLockFollowup(result: ClarkLiquidityCheckResu
       return "Robinhood pool models do not expose EVM-style LP lock/burn proof, so lock status cannot be confirmed from this engine."
     }
     if (isConcentratedPool(result)) {
-      return "Concentrated liquidity does not mint a standard LP token. Exit risk follows positions and depth, not a burned LP token."
+      return "Concentrated liquidity means standard LP lock/burn proof does not apply. The key risk is whether the position/controller can withdraw liquidity."
     }
     if (lpControl === "verified") {
       return "Lock/burn evidence is verified, which lowers rug-pull exit risk relative to an unlocked pool. Depth still matters for exits."
@@ -820,9 +816,8 @@ export function formatClarkLiquidityLockFollowup(result: ClarkLiquidityCheckResu
     ...missing,
     "",
     "Next:",
-    "- Deep Scan Token",
-    "- Check LP",
-    `- ${nextCreator}`,
+    "- /holders",
+    "- /deployer",
     "- Open Token Scanner",
   ].join("\n")
 }
