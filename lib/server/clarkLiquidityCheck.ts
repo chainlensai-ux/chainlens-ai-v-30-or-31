@@ -585,7 +585,7 @@ export function explainLiquidityMeaning(result: ClarkLiquidityCheckResult): stri
   } else {
     parts.push(`Exit risk is ${result.exitRisk.toLowerCase()} on current evidence — LP/control is not fully verified.`)
   }
-  return parts.slice(0, 2).join(" ")
+  return parts.slice(0, 3).join(" ")
 }
 
 function poolModelLabel(result: ClarkLiquidityCheckResult): string {
@@ -593,6 +593,31 @@ function poolModelLabel(result: ClarkLiquidityCheckResult): string {
   if (result.chainSlug === "robinhood") return result.lpModel ?? "Robinhood pool model (partial)"
   if (isConcentratedPool(result)) return result.lpModel ?? "concentrated"
   return result.lpModel ?? "unverified"
+}
+
+function publicVerdictLine(result: ClarkLiquidityCheckResult): string {
+  const verdict = publicLiquidityVerdict(result)
+  if (result.status === "verified" && verdict === "Strong") return "Strong"
+  if (result.confidence === "Low" || result.status === "partial" || result.status === "unsupported_proof") {
+    return `${verdict} but not fully verified`
+  }
+  return verdict
+}
+
+function strengthFollowupLead(result: ClarkLiquidityCheckResult): string {
+  const verdict = publicLiquidityVerdict(result)
+  if (verdict === "Strong") return "Yes — liquidity looks strong on current pool depth."
+  if (verdict === "Decent") return "Not fully — liquidity is decent, not strong."
+  if (verdict === "Thin") return "No — liquidity is thin."
+  if (verdict === "Risky") return "No — liquidity is risky."
+  return "Not fully — liquidity evidence is only partial."
+}
+
+/** Follow-ups like "is liquidity strong?" — not /lp, not a first scan. */
+export function isLiquidityStrengthFollowupPrompt(prompt: string): boolean {
+  const t = String(prompt ?? "").trim()
+  if (!t || /^\/lp\b/i.test(t)) return false
+  return /\b(is\s+(?:the\s+|this\s+|that\s+)?liquidity\s+strong|is\s+that\s+enough\s+liquidity|is\s+(?:the\s+|this\s+)?liquidity\s+(?:good|ok|decent|thin|deep|weak|enough)|how\s+strong\s+is\s+(?:the\s+|this\s+)?liquidity|liquidity\s+strong(?:\s+enough)?|enough\s+liquidity)\b/i.test(t)
 }
 
 export function formatClarkLiquidityCheck(result: ClarkLiquidityCheckResult): string {
@@ -613,19 +638,13 @@ export function formatClarkLiquidityCheck(result: ClarkLiquidityCheckResult): st
     : (result.lockBurnStatus || "unverified")
   const dexLabel = result.dexName ?? (result.chainSlug === "solana" ? "unverified DEX/pool source" : "unverified")
   const poolAddr = result.pairAddress ?? result.primaryPool ?? "not returned"
-  const verdict = publicLiquidityVerdict(result)
-  const verdictLine = result.status === "verified" && verdict === "Strong"
-    ? "Strong"
-    : result.confidence === "Low" || result.status === "partial" || result.status === "unsupported_proof"
-      ? `${verdict} but not fully verified`
-      : verdict
   const nextCreator = result.chainSlug === "solana" ? "Check Creator" : "Check Deployer"
   const lpControlLine = result.chainSlug === "solana"
     ? `LP/control evidence: ${result.controllerStatus || "unavailable/partial"}`
     : `LP lock/burn: ${lockBurn}`
   return [
     `LIQUIDITY CHECK — ${result.symbol}`,
-    `Verdict: ${verdictLine}`,
+    `Verdict: ${publicVerdictLine(result)}`,
     "",
     "Meaning:",
     explainLiquidityMeaning(result),
@@ -637,7 +656,7 @@ export function formatClarkLiquidityCheck(result: ClarkLiquidityCheckResult): st
     `- Market cap: ${mcap}`,
     `- FDV: ${fdv}`,
     `- Chain: ${chainLabel(result.chainSlug)}`,
-    `- DEX: ${result.dexName ?? "unverified"}`,
+    `- DEX: ${dexLabel}`,
     `- DEX / pool source: ${dexLabel}`,
     `- Pool: ${poolAddr}`,
     `- Primary pool: ${result.primaryPool ?? result.dexName ?? "not returned"}`,
@@ -669,6 +688,51 @@ export function formatClarkLiquidityCheck(result: ClarkLiquidityCheckResult): st
     "- Check Holders",
     `- ${nextCreator}`,
     "- Add to Watchlist",
+    "- Open Token Scanner",
+  ].join("\n")
+}
+
+/** Direct answer for "is liquidity strong?" — same evidence as the full LP card, not a second scan. */
+export function formatClarkLiquidityFollowup(result: ClarkLiquidityCheckResult): string {
+  const liq = formatUsdLiquidity(result.liquidityUsd)
+  const vol = formatUsdLiquidity(result.volume24hUsd ?? null)
+  const ratio = formatVolumeLiquidityRatio(volumeLiquidityRatio(result.volume24hUsd, result.liquidityUsd))
+  const missing = publicMissingEvidence(result).slice(0, 4).map((s) => `- ${s}`)
+  const lockBurn = publicLockBurnLabel(result.lockBurnStatus, result.chainSlug)
+  const lpControl = result.chainSlug === "solana" || result.chainSlug === "robinhood"
+    ? (result.lockBurnStatus || "unsupported")
+    : lockBurn
+  const poolAddr = result.pairAddress ?? result.primaryPool
+  const nextCreator = result.chainSlug === "solana" ? "Check Creator" : "Check Deployer"
+  const risks = result.risks.slice(0, 3).map((s) => `- ${s}`)
+  return [
+    `LIQUIDITY READ — ${result.symbol}`,
+    `Is liquidity strong? ${strengthFollowupLead(result)}`,
+    `Verdict: ${publicVerdictLine(result)}`,
+    "",
+    "Why:",
+    explainLiquidityMeaning(result),
+    "",
+    "Key numbers:",
+    `- Liquidity: ${liq}`,
+    `- 24h Volume: ${vol}`,
+    `- Volume/liquidity ratio: ${ratio}`,
+    `- Chain: ${chainLabel(result.chainSlug)}`,
+    `- DEX: ${result.dexName ?? "unverified"}`,
+    ...(poolAddr ? [`- Pool address: ${poolAddr}`] : []),
+    `- Pool age: ${result.poolAge && String(result.poolAge).trim() ? result.poolAge : "unknown"}`,
+    `- LP/control: ${lpControl}`,
+    `- Exit risk: ${result.exitRisk}`,
+    `- Confidence: ${result.confidence}`,
+    ...(risks.length ? ["", "Risks:", ...risks] : []),
+    "",
+    "Missing evidence:",
+    ...missing,
+    "",
+    "Next:",
+    "- Deep Scan Token",
+    "- Check LP",
+    `- ${nextCreator}`,
     "- Open Token Scanner",
   ].join("\n")
 }
