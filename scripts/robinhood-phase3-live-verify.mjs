@@ -67,11 +67,11 @@ async function verifyWallet(address) {
   try {
     res = await fetch(url, { headers, signal: AbortSignal.timeout(30_000) })
   } catch (err) {
-    return { address, providerError: `request failed: ${err instanceof Error ? err.message : String(err)}` }
+    return { wallet: address, providerError: `request failed: ${err instanceof Error ? err.message : String(err)}` }
   }
   const json = await res.json().catch(() => null)
   if (!res.ok || !json?.ok) {
-    return { address, providerError: json?.error?.message ?? `HTTP ${res.status}` }
+    return { wallet: address, providerError: json?.error?.message ?? `HTTP ${res.status}` }
   }
 
   const { activity, pnl, robinhoodWalletScannerAudit: audit } = json
@@ -84,12 +84,21 @@ async function verifyWallet(address) {
     .map(summarizeSwapAudit)
 
   return {
-    address,
+    wallet: address,
+    routeStatus: json.ok === true ? 'ok' : 'not_ok',
     chainId: json.chainId,
+    // PROVIDER STATUS/ERRORS, DISCLOSED: holdings.status/activity.status are the route's own real,
+    // measured outcome for each leg (never guessed here) — reason fields are the real provider-level
+    // cause (e.g. 'http_error', 'rate_limited', 'no_data', 'rpc_timeout') the route itself recorded.
     holdingsStatus: json.holdings?.status,
     activityStatus: activity?.status,
+    nativeBalanceStatus: audit?.nativeBalanceStatus,
+    tokenBalanceStatus: audit?.tokenBalanceStatus,
+    pricingStatus: audit?.pricingStatus,
+    providerErrors: [json.holdings?.reason, activity?.reason].filter(Boolean),
     verifiedSwapCount: activity?.verifiedSwapCount ?? 0,
     skippedSwapLogs: activity?.skippedSwapLogs ?? 0,
+    swapDecodeStatus: audit?.swapDecodeStatus,
     pnlStatus: pnl?.status,
     pnlMessage: pnl?.message,
     disabledPnlReason: audit?.disabledPnlReason ?? null,
@@ -120,10 +129,10 @@ async function run() {
   console.log('SUMMARY')
   for (const r of results) {
     if (r.providerError) {
-      console.log(`  ${r.address}: PROVIDER ERROR — ${r.providerError}`)
+      console.log(`  ${r.wallet}: PROVIDER ERROR — ${r.providerError}`)
       continue
     }
-    console.log(`  ${r.address}: verifiedSwapCount=${r.verifiedSwapCount} skippedSwapLogs=${r.skippedSwapLogs} pnlStatus=${r.pnlStatus}${r.pnlStatus !== 'verified' ? ` reason="${r.disabledPnlReason}"` : ` realizedPnlUsd=${r.realizedPnlUsd}`}`)
+    console.log(`  ${r.wallet}: verifiedSwapCount=${r.verifiedSwapCount} skippedSwapLogs=${r.skippedSwapLogs} swapDecodeStatus=${r.swapDecodeStatus} pnlStatus=${r.pnlStatus}${r.pnlStatus !== 'verified' ? ` reason="${r.disabledPnlReason}"` : ` realizedPnlUsd=${r.realizedPnlUsd}`}`)
   }
 
   const anyProviderError = results.some((r) => r.providerError)
