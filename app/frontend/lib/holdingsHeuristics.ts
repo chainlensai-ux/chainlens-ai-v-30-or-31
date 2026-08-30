@@ -20,6 +20,12 @@ export const CHAIN_LABELS: Record<string, string> = {
   eth: 'ETH',
   arbitrum: 'Arbitrum',
   hyperevm: 'HyperEVM · pending', // no verified provider yet — see providerFetchWindow's HyperEVM TODO
+  // ROBINHOOD WALLET SCANNER UI INTEGRATION, DISCLOSED: label only — Robinhood Chain's own scanner
+  // (lib/server/robinhoodWalletScanner.ts) stays a genuinely separate module/route from the V2
+  // pipeline this file otherwise supports (see that module's own header). Adding the label here just
+  // lets app/terminal/wallet-scanner/page.tsx reuse the shared ChainBadge component for it — it does
+  // not add 'robinhood' to SupportedChain or any V2 pipeline type.
+  robinhood: 'Robinhood Chain',
 }
 
 export function fmtChainLabel(chain: string): string {

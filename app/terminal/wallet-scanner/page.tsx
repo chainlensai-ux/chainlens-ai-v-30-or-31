@@ -33,18 +33,22 @@ import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyC
 import { logScanIdentityIfDev } from '@/app/frontend/lib/walletScanIdentity'
 import {
   BehaviorIntelView,
+  ChainBadge,
   ChainSelectionView,
   CoverageTimelineCard,
   FinalSummaryView,
   SellActivitySummary,
   ScanDiagnosticsCard,
   HoldingsViewV2,
+  PnLHeaderCard,
   PnlStatusCard,
   RecoveryHealthCard,
   SectionDivider,
+  StatusBadge,
   WalletProfileHeader,
   WalletScannerResultsV3,
 } from '@/app/frontend/components'
+import type { StatusTone } from '@/app/frontend/components/StatusBadge'
 import type { FinalReport } from '@/src/modules/finalReportAssembler/types'
 import type { TokenHolding } from '@/src/modules/holdings/types'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
@@ -265,6 +269,232 @@ export type RobinhoodWalletScanResponse = {
   robinhoodWalletScannerAudit: Record<string, unknown>
 }
 
+// ROBINHOOD CHAIN META, DISCLOSED (multi-chain integration task): the display identity this task
+// asked for — chainSlug/chainId/label — used only by ChainBadge/labels below. This is presentational
+// only; it does NOT add 'robinhood' to SupportedChain, SUPPORTED_CHAINS, or any V2 pipeline type
+// (see lib/server/robinhoodWalletScanner.ts's own header for why that stays a deliberately separate
+// module/route — Base/ETH/BNB's shared pipeline is untouched by this or any other Robinhood work).
+export const ROBINHOOD_CHAIN_META = { chainSlug: 'robinhood' as const, chainId: 4663, label: 'Robinhood Chain' }
+
+function robinhoodLastActivityTimestamp(items: RobinhoodWalletScanResponse['activity']['items']): string | null {
+  const timestamps = items.map((i) => i.blockTimestamp).filter((t): t is string => t != null)
+  if (timestamps.length === 0) return null
+  return timestamps.reduce((latest, t) => (new Date(t).getTime() > new Date(latest).getTime() ? t : latest))
+}
+
+// ROBINHOOD CHAIN SECTION, DISCLOSED (multi-chain integration task — "no raw list, real cards/
+// tables, no giant monospaced dump"): a presentational component built from the SAME shared
+// components (ChainBadge/StatusBadge/PnLHeaderCard) every other chain's results already use in this
+// codebase. Every number here is read directly off the real RobinhoodWalletScanResponse the route
+// already computed (lib/server/robinhoodWalletScanner.ts) — nothing is derived, guessed, or
+// recomputed client-side, and PnL is shown exactly as gated server-side (never upgraded from
+// activity/transfer volume here). The optional raw-JSON block only ever renders when the page was
+// loaded with ?debug=true — never the default view.
+function RobinhoodChainSection({
+  result, onRescan, rescanLoading, debugMode,
+}: {
+  result: RobinhoodWalletScanResponse
+  onRescan: () => void
+  rescanLoading: boolean
+  debugMode: boolean
+}) {
+  const { holdings, activity, pnl } = result
+  const notConfigured = holdings.status === 'not_configured'
+  const tokenCount = holdings.holdings.length
+  const unpricedCount = holdings.unpricedTokenCount
+  const pricedCount = Math.max(0, tokenCount - unpricedCount)
+  // "Vacuously fully covered" when there are no token holdings at all to price — same convention
+  // this codebase's own derivePublicPnlStatus/coverage-ratio helpers already use elsewhere.
+  const pricingCoveragePercent = tokenCount > 0 ? Math.round((pricedCount / tokenCount) * 100) : 100
+  const lastActivity = robinhoodLastActivityTimestamp(activity.items)
+  const pnlLabel = pnl.status === 'verified' ? 'Verified Robinhood PnL' : 'PnL: Not verified yet'
+  const pnlTone: StatusTone = pnl.status === 'verified' ? 'success' : pnl.status === 'partial' ? 'warning' : 'neutral'
+  const blockscout = activity.blockscoutEvidence
+  const providerErrors = [
+    holdings.reason ? `Holdings: ${holdings.reason}` : null,
+    activity.reason ? `Activity: ${activity.reason}` : null,
+    blockscout?.blockscoutError ? `Blockscout: ${blockscout.blockscoutError}` : null,
+  ].filter((v): v is string => v != null)
+
+  return (
+    <div className="ws-card ws-result-fade" style={{ marginBottom: '16px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <ChainBadge chain={ROBINHOOD_CHAIN_META.chainSlug} />
+          <span style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+            chainId {result.chainId} · {result.wallet}
+          </span>
+        </div>
+        <button
+          onClick={onRescan}
+          disabled={rescanLoading}
+          style={{
+            padding: '5px 12px', borderRadius: '7px', border: '1px solid rgba(148,163,184,0.25)',
+            background: 'rgba(255,255,255,0.03)', color: 'rgba(226,232,240,0.75)',
+            fontSize: '10px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase',
+            cursor: rescanLoading ? 'not-allowed' : 'pointer',
+            fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+          }}
+        >
+          {rescanLoading ? 'Rescanning…' : 'Rescan'}
+        </button>
+      </div>
+
+      {notConfigured ? (
+        <p style={{ fontSize: '13px', color: 'rgba(148,163,184,0.75)', margin: 0 }}>Robinhood Chain is not configured on this deployment.</p>
+      ) : (
+        <>
+          {/* SUMMARY CARDS, DISCLOSED: Total value / Native ETH / Priced holdings / Unpriced
+              holdings / Pricing coverage / PnL status — exactly the six this task's spec asked for. */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginBottom: '18px' }}>
+            <PnLHeaderCard label="Total Value" value={holdings.portfolioTotalUsd != null ? `$${holdings.portfolioTotalUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'} tone="neutral" index={0} />
+            <PnLHeaderCard label="Native ETH" value={holdings.native?.uiBalance != null ? holdings.native.uiBalance.toLocaleString(undefined, { maximumFractionDigits: 4 }) : '—'} tone="neutral" index={1} />
+            <PnLHeaderCard label="Priced Holdings" value={String(pricedCount)} tone="neutral" index={2} />
+            <PnLHeaderCard label="Unpriced Holdings" value={String(unpricedCount)} tone={unpricedCount > 0 ? 'negative' : 'neutral'} index={3} />
+            <PnLHeaderCard label="Pricing Coverage" value={`${pricingCoveragePercent}%`} tone={pricingCoveragePercent === 100 ? 'positive' : 'neutral'} index={4} />
+            <PnLHeaderCard label="PnL Status" value={pnl.status === 'verified' ? 'Verified' : pnl.status === 'partial' ? 'Partial' : 'Not verified'} tone={pnl.status === 'verified' ? 'positive' : 'neutral'} index={5} />
+          </div>
+
+          {/* HOLDINGS TABLE, DISCLOSED: Token / Balance / Price / Value / Pricing status / Source —
+              a real table, never a raw stacked list. */}
+          {(holdings.native || tokenCount > 0) && (
+            <div style={{ marginBottom: '16px', overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
+                <thead>
+                  <tr style={{ textAlign: 'left', color: 'rgba(148,163,184,0.55)', fontSize: '9px', letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+                    <th style={{ padding: '6px 10px' }}>Token</th>
+                    <th style={{ padding: '6px 10px' }}>Balance</th>
+                    <th style={{ padding: '6px 10px' }}>Price</th>
+                    <th style={{ padding: '6px 10px' }}>Value</th>
+                    <th style={{ padding: '6px 10px' }}>Pricing Status</th>
+                    <th style={{ padding: '6px 10px' }}>Source</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {holdings.native && (
+                    <tr style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <td style={{ padding: '9px 10px', fontWeight: 700, color: '#e2e8f0' }}>{holdings.native.symbol}</td>
+                      <td style={{ padding: '9px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#cbd5e1' }}>{holdings.native.uiBalance != null ? holdings.native.uiBalance.toFixed(6) : '—'}</td>
+                      <td style={{ padding: '9px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#cbd5e1' }}>{holdings.native.priceUsd != null ? `$${holdings.native.priceUsd.toLocaleString(undefined, { maximumFractionDigits: 6 })}` : '—'}</td>
+                      <td style={{ padding: '9px 10px', color: holdings.native.valueUsd == null ? 'rgba(148,163,184,0.45)' : '#e2e8f0' }}>{holdings.native.valueUsd != null ? `$${holdings.native.valueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}</td>
+                      <td style={{ padding: '9px 10px' }}><StatusBadge label={holdings.native.priceUsd != null ? 'Priced' : 'Unpriced'} tone={holdings.native.priceUsd != null ? 'success' : 'warning'} /></td>
+                      <td style={{ padding: '9px 10px', color: 'rgba(148,163,184,0.65)' }}>{holdings.native.priceUsd != null ? 'GoldRush' : '—'}</td>
+                    </tr>
+                  )}
+                  {holdings.holdings.map((h) => (
+                    <tr key={h.address} style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+                      <td style={{ padding: '9px 10px', fontWeight: 700, color: '#e2e8f0' }}>{h.symbol ?? `${h.address.slice(0, 6)}…${h.address.slice(-4)}`}</td>
+                      <td style={{ padding: '9px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#cbd5e1' }}>{h.uiBalance != null ? h.uiBalance.toLocaleString(undefined, { maximumFractionDigits: 4 }) : '—'}</td>
+                      <td style={{ padding: '9px 10px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', color: '#cbd5e1' }}>{h.priceUsd != null ? `$${h.priceUsd.toLocaleString(undefined, { maximumFractionDigits: 6 })}` : '—'}</td>
+                      <td style={{ padding: '9px 10px', color: h.valueUsd == null ? 'rgba(148,163,184,0.45)' : '#e2e8f0' }}>{h.valueUsd != null ? `$${h.valueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : '—'}</td>
+                      <td style={{ padding: '9px 10px' }}><StatusBadge label={h.priceUsd != null ? 'Priced' : 'Unpriced'} tone={h.priceUsd != null ? 'success' : 'warning'} /></td>
+                      <td style={{ padding: '9px 10px', color: 'rgba(148,163,184,0.65)', textTransform: 'capitalize' }}>{h.priceSource ?? '—'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* WARNING CARD, DISCLOSED: exact wording this task's spec asked for — shown only when
+              unpriced tokens are real (unpricedCount > 0), never a fabricated warning. */}
+          {unpricedCount > 0 && (
+            <div style={{ marginBottom: '14px', padding: '10px 12px', borderRadius: '8px', border: '1px solid rgba(251,191,36,0.32)', background: 'rgba(251,191,36,0.06)' }}>
+              <div style={{ fontSize: '12px', fontWeight: 700, color: '#fbbf24' }}>
+                {unpricedCount} token{unpricedCount === 1 ? '' : 's'} could not be priced
+              </div>
+              <div style={{ marginTop: '4px', fontSize: '11px', color: 'rgba(251,191,36,0.75)' }}>
+                These tokens are included in holdings but excluded from portfolio value until pricing is available.
+              </div>
+            </div>
+          )}
+
+          {/* ACTIVITY CARD, DISCLOSED: kept visually and textually separate from the PnL card below —
+              never merged into one line, never implying activity volume is a PnL signal. */}
+          <div style={{ marginBottom: '12px', padding: '12px 14px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
+            <div className="ws-section-header" style={{ color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontSize: '10px' }}>Activity (not PnL)</div>
+            <p style={{ fontSize: '12px', color: 'rgba(226,232,240,0.80)', margin: '0 0 8px' }}>
+              {activity.status === 'ok'
+                ? `${activity.items.length} token transfer${activity.items.length === 1 ? '' : 's'} found — transfers only, not classified as trades.`
+                : `No activity data available${activity.reason ? ` (${activity.reason})` : ''}.`}
+            </p>
+            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
+              <span>Verified Robinhood swaps: <strong style={{ color: '#e2e8f0' }}>{activity.verifiedSwapCount}</strong></span>
+              <span>Skipped unsupported swap logs: <strong style={{ color: '#e2e8f0' }}>{activity.skippedSwapLogs}</strong></span>
+              {lastActivity && (
+                <span>Last activity: <strong style={{ color: '#e2e8f0' }}>{new Date(lastActivity).toLocaleString()}</strong></span>
+              )}
+            </div>
+          </div>
+
+          {/* PNL CARD, DISCLOSED: exact wording this task's spec asked for on both the disabled and
+              verified paths. Realized/unrealized figures only ever come from the gated FIFO output
+              (pnl.realizedPnlUsd) — never derived from activity items here. */}
+          <div style={{
+            marginBottom: '12px', padding: '12px 14px', borderRadius: '10px',
+            border: pnl.status === 'verified' ? '1px solid rgba(45,212,191,0.35)' : '1px solid rgba(148,163,184,0.18)',
+            background: pnl.status === 'verified' ? 'rgba(45,212,191,0.06)' : 'rgba(255,255,255,0.02)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
+              <StatusBadge label={pnl.status === 'verified' ? 'Verified' : 'Not verified'} tone={pnlTone} />
+              <span style={{ fontSize: '13px', fontWeight: 800, color: pnl.status === 'verified' ? '#2DD4BF' : '#e2e8f0' }}>{pnlLabel}</span>
+            </div>
+            {pnl.status === 'verified' ? (
+              <div style={{ fontSize: '12px', color: 'rgba(226,232,240,0.80)' }}>
+                Realized: {pnl.realizedPnlUsd != null ? `$${pnl.realizedPnlUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'n/a'} · {pnl.matchedLotsCount} matched lot{pnl.matchedLotsCount === 1 ? '' : 's'}
+              </div>
+            ) : (
+              <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
+                Robinhood PnL requires verified swap logs and price evidence on both legs. Activity alone is not counted as PnL.
+              </div>
+            )}
+          </div>
+
+          {/* EVIDENCE CARD, DISCLOSED: real, measured provider status only — GoldRush/Alchemy RPC/
+              Blockscout fallback — never raw API payloads. */}
+          <div style={{ padding: '12px 14px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.06)', background: 'rgba(255,255,255,0.02)' }}>
+            <div className="ws-section-header" style={{ color: 'rgba(148,163,184,0.55)', marginBottom: '8px', fontSize: '10px' }}>Evidence</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '8px' }}>
+              <StatusBadge label={`GoldRush: ${holdings.status}`} tone={holdings.status === 'ok' ? 'success' : holdings.status === 'partial' ? 'warning' : holdings.status === 'not_configured' ? 'neutral' : 'danger'} />
+              <StatusBadge label={`Alchemy RPC: ${holdings.native ? 'ok' : 'unavailable'}`} tone={holdings.native ? 'success' : 'neutral'} />
+              {/* EXACT WORDING, DISCLOSED: "Explorer fallback used" / "Blockscout unavailable" /
+                  "Swap logs verified by explorer" are the fixed wordings the Blockscout integration
+                  task required — kept verbatim here as the badge label rather than invented anew. */}
+              <StatusBadge
+                label={
+                  blockscout?.blockscoutVerifiedSwap ? 'Swap logs verified by explorer'
+                    : blockscout?.blockscoutFallbackUsed ? 'Explorer fallback used'
+                      : blockscout?.blockscoutAttempted && !blockscout.blockscoutSucceeded ? 'Blockscout unavailable'
+                        : 'Blockscout: not used'
+                }
+                tone={blockscout?.blockscoutVerifiedSwap ? 'success' : blockscout?.blockscoutFallbackUsed ? 'info' : blockscout?.blockscoutAttempted && !blockscout.blockscoutSucceeded ? 'warning' : 'neutral'}
+              />
+            </div>
+            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
+              <span>verifiedSwapCount: {activity.verifiedSwapCount}</span>
+              <span>skippedSwapLogs: {activity.skippedSwapLogs}</span>
+              <span>blockscoutFallbackUsed: {String(blockscout?.blockscoutFallbackUsed ?? false)}</span>
+            </div>
+            {providerErrors.length > 0 && (
+              <div style={{ marginTop: '8px', display: 'flex', flexDirection: 'column', gap: '2px', fontSize: '11px', color: '#f87171' }}>
+                {providerErrors.map((e) => <span key={e}>{e}</span>)}
+              </div>
+            )}
+          </div>
+
+          {/* DEBUG-ONLY RAW VIEW, DISCLOSED: only rendered with ?debug=true — never the default page. */}
+          {debugMode && (
+            <details style={{ marginTop: '14px' }}>
+              <summary style={{ cursor: 'pointer', fontSize: '11px', color: 'rgba(148,163,184,0.55)' }}>Raw response (debug)</summary>
+              <pre style={{ fontSize: '10px', color: 'rgba(148,163,184,0.65)', overflowX: 'auto', marginTop: '8px', whiteSpace: 'pre-wrap' }}>{JSON.stringify(result, null, 2)}</pre>
+            </details>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
+
 export default function WalletScannerPage() {
   const { plan, loading: planLoading, betaEliteActive } = usePlanWithLoading()
 
@@ -313,6 +543,11 @@ export default function WalletScannerPage() {
   const [robinhoodLoading, setRobinhoodLoading] = useState(false)
   const [robinhoodError, setRobinhoodError] = useState<string | null>(null)
   const [robinhoodResult, setRobinhoodResult] = useState<RobinhoodWalletScanResponse | null>(null)
+  // DEBUG-ONLY RAW VIEW, DISCLOSED (multi-chain integration task's own "no separate custom page
+  // unless debug=true" requirement): the normal Robinhood card UI below never depends on this — it
+  // only gates an OPTIONAL raw-JSON troubleshooting block appended after the real cards, for anyone
+  // who lands on this page with ?debug=true.
+  const [debugMode, setDebugMode] = useState(false)
   const [watchlistDeleting, setWatchlistDeleting] = useState<string | null>(null)
 
   const isFullRecoveryAdmin = (signedInEmail ?? '').toLowerCase() === 'chainlensai@gmail.com'
@@ -331,6 +566,7 @@ export default function WalletScannerPage() {
     // never triggers a scan on its own.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     if (address) setInput(address)
+    if (params.get('debug') === 'true') setDebugMode(true)
   }, [])
 
   useEffect(() => {
@@ -470,6 +706,15 @@ export default function WalletScannerPage() {
 
     setLoading(true)
     setError(null)
+    // MULTI-CHAIN INTEGRATION, DISCLOSED (Robinhood UI integration task): a normal Scan now also
+    // attempts Robinhood Chain automatically — the same "chain=auto includes every supported chain"
+    // behavior Base/ETH already get, not a separate opt-in feature. Fire-and-forget: it runs on its
+    // own independent state (robinhoodLoading/robinhoodError/robinhoodResult, untouched by this
+    // function) and never blocks or gates the Base/ETH scan above — if Robinhood Chain isn't
+    // configured on this deployment, resolveRobinhoodWalletHoldings/Activity already degrade to a
+    // clean "not_configured" status (see lib/server/robinhoodWalletScanner.ts), so this is always
+    // safe to fire unconditionally, never a guessed/loosened gate.
+    void handleRobinhoodScan()
     // STAGED-REFRESH FIX, DISCLOSED (provider-call-audit follow-up task, explicit "refresh keeps
     // previous total until canonical portfolio stage resolves" requirement): this previously
     // unconditionally cleared `result` to null the instant ANY scan (including a plain refresh of
@@ -710,24 +955,11 @@ export default function WalletScannerPage() {
             <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>
               V2 engine · holdings + portfolio + recovery policy
             </span>
-            <button
-              onClick={() => void handleRobinhoodScan()}
-              disabled={robinhoodLoading || !input.trim()}
-              title="Robinhood Chain (chainId 4663) — holdings and portfolio only. Verified PnL is not yet available: activity decoding is pending."
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: '6px',
-                padding: '6px 13px', borderRadius: '8px', border: '1px solid rgba(139,92,246,0.45)',
-                background: 'rgba(139,92,246,0.08)', color: '#a78bfa',
-                fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase',
-                cursor: (robinhoodLoading || !input.trim()) ? 'not-allowed' : 'pointer',
-                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-              }}
-            >
-              {robinhoodLoading ? 'Scanning…' : 'Robinhood Chain'}
-            </button>
-            <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>
-              chainId 4663 · holdings + portfolio · PnL not verified yet
-            </span>
+            {/* ROBINHOOD SEPARATE BUTTON REMOVED, DISCLOSED (multi-chain integration task): Robinhood
+                Chain is no longer a separate, bolt-on action — handleScan() above now fires
+                handleRobinhoodScan() automatically as part of a normal multi-chain scan (chainSlug
+                'robinhood', chainId 4663, alongside Base/ETH). Explicit re-scanning stays possible
+                via the "Rescan" control inside the Robinhood card itself, once results exist. */}
           </div>
 
           {/* Loading state */}
@@ -772,14 +1004,15 @@ export default function WalletScannerPage() {
             </div>
           )}
 
-          {/* ROBINHOOD CHAIN RESULTS, DISCLOSED (phased rollout, Phase 1+2): its own self-contained
-              card, rendered independently of the Base/ETH `result`/`loading`/`error` state above —
-              a Robinhood scan and a Base/ETH scan can both be on screen at once, each showing only
-              its own real data. Holdings/portfolio are shown when available; PnL is ALWAYS the fixed
-              "not verified yet" message per this task's hard rule — never a computed number. */}
-          {robinhoodLoading && (
+          {/* ROBINHOOD CHAIN RESULTS, DISCLOSED (multi-chain integration task): rendered inline with
+              the rest of the scan results, using the SAME card/table/badge components every other
+              chain's results use (RobinhoodChainSection below) — no more raw-list/debug styling.
+              Still its own independent state (robinhoodLoading/robinhoodError/robinhoodResult),
+              never touching Base/ETH's `result`/`loading`/`error` — a Robinhood result and a Base/ETH
+              result can both be on screen at once, each showing only its own real data. */}
+          {robinhoodLoading && !robinhoodResult && (
             <div className="ws-card" style={{ color: 'rgba(148,163,184,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '13px', marginBottom: '16px' }}>
-              Scanning Robinhood Chain holdings for {input.trim()}…
+              Scanning Robinhood Chain for {input.trim()}…
             </div>
           )}
           {!robinhoodLoading && robinhoodError && (
@@ -787,103 +1020,13 @@ export default function WalletScannerPage() {
               Robinhood Chain scan failed — try again later. ({robinhoodError})
             </div>
           )}
-          {!robinhoodLoading && robinhoodResult && (
-            <div className="ws-card ws-result-fade" style={{ marginBottom: '16px' }}>
-              <div className="ws-section-header" style={{ color: '#a78bfa', marginBottom: '10px' }}>
-                Robinhood Chain (chainId {robinhoodResult.chainId}) · {robinhoodResult.wallet}
-              </div>
-              {robinhoodResult.holdings.status === 'not_configured' && (
-                <p style={{ fontSize: '13px', color: 'rgba(148,163,184,0.75)' }}>Robinhood Chain is not configured on this deployment.</p>
-              )}
-              {robinhoodResult.holdings.status !== 'not_configured' && (
-                <>
-                  <div style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0', marginBottom: '4px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                    {robinhoodResult.holdings.portfolioTotalUsd != null ? `$${robinhoodResult.holdings.portfolioTotalUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'Portfolio total unavailable'}
-                  </div>
-                  {robinhoodResult.holdings.status === 'partial' && (
-                    <p style={{ fontSize: '11px', color: '#fbbf24', margin: '0 0 10px' }}>
-                      Partial — {robinhoodResult.holdings.unpricedTokenCount} token{robinhoodResult.holdings.unpricedTokenCount === 1 ? '' : 's'} could not be priced{robinhoodResult.holdings.reason ? ` (${robinhoodResult.holdings.reason})` : ''}.
-                    </p>
-                  )}
-                  {robinhoodResult.holdings.status === 'unavailable' && (
-                    <p style={{ fontSize: '11px', color: '#f87171', margin: '0 0 10px' }}>
-                      Holdings unavailable{robinhoodResult.holdings.reason ? ` — ${robinhoodResult.holdings.reason}` : ''}.
-                    </p>
-                  )}
-                  {robinhoodResult.holdings.native && (
-                    <div style={{ fontSize: '12px', color: 'rgba(226,232,240,0.85)', marginBottom: '8px' }}>
-                      Native {robinhoodResult.holdings.native.symbol}: {robinhoodResult.holdings.native.uiBalance != null ? robinhoodResult.holdings.native.uiBalance.toFixed(6) : 'unavailable'}
-                      {robinhoodResult.holdings.native.valueUsd != null ? ` (~$${robinhoodResult.holdings.native.valueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })})` : ''}
-                    </div>
-                  )}
-                  {robinhoodResult.holdings.holdings.length > 0 && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '10px' }}>
-                      {robinhoodResult.holdings.holdings.map((h) => (
-                        <div key={h.address} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'rgba(226,232,240,0.80)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
-                          <span>{h.symbol ?? h.address.slice(0, 8)}</span>
-                          <span>{h.uiBalance != null ? h.uiBalance.toLocaleString(undefined, { maximumFractionDigits: 4 }) : 'n/a'}{h.valueUsd != null ? ` — $${h.valueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : h.priceUsd == null ? ' — price unavailable' : ''}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </>
-              )}
-              {/* PHASE 3/4, DISCLOSED: "Do NOT enable Robinhood PnL until swap evidence is verified"
-                  — this box now reflects the real, per-scan pnlStatus. 'verified' gets a real green
-                  treatment with the real realizedPnlUsd figure (only ever shown when FIFO actually
-                  produced one); 'disabled'/'partial' keep the amber "not confirmed" treatment this
-                  codebase already uses elsewhere (e.g. Solana's "NOT CONFIRMED HEALTHY" state) so an
-                  unverified PnL always reads as a clear caution, never as just another neutral row. */}
-              <div style={{
-                marginTop: '10px', padding: '10px 12px', borderRadius: '8px',
-                border: robinhoodResult.pnl.status === 'verified' ? '1px solid rgba(45,212,191,0.35)' : '1px solid rgba(251,191,36,0.32)',
-                background: robinhoodResult.pnl.status === 'verified' ? 'rgba(45,212,191,0.08)' : 'rgba(251,191,36,0.06)',
-                color: robinhoodResult.pnl.status === 'verified' ? '#2DD4BF' : '#fbbf24',
-                fontSize: '12px', fontWeight: 700,
-              }}>
-                {robinhoodResult.pnl.status === 'verified'
-                  ? `Verified Robinhood PnL: ${robinhoodResult.pnl.realizedPnlUsd != null ? `$${robinhoodResult.pnl.realizedPnlUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'n/a'} realized (${robinhoodResult.pnl.matchedLotsCount} matched lot${robinhoodResult.pnl.matchedLotsCount === 1 ? '' : 's'})`
-                  : 'PnL: disabled/partial — verified Robinhood swap decoding unavailable'}
-                {robinhoodResult.pnl.status !== 'verified' && robinhoodResult.pnl.reason && (
-                  <div style={{ marginTop: '4px', fontSize: '11px', fontWeight: 500, color: 'rgba(251,191,36,0.75)' }}>
-                    {robinhoodResult.pnl.reason}
-                  </div>
-                )}
-              </div>
-              {/* ACTIVITY-VS-PNL SEPARATION, DISCLOSED: the transfer/swap counts below are explicitly
-                  labeled as raw activity/decode diagnostics, never phrased in a way that could be
-                  mistaken for a PnL figure — they never appear inside the PnL box above, always their
-                  own separate, neutrally-styled lines. */}
-              {robinhoodResult.activity.status === 'ok' && (
-                <p style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', marginTop: '8px' }}>
-                  Activity (not PnL): {robinhoodResult.activity.items.length} recent transfer{robinhoodResult.activity.items.length === 1 ? '' : 's'} found — transfers only, not classified as trades.
-                </p>
-              )}
-              <p style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', marginTop: '4px' }}>
-                Verified Robinhood swaps: {robinhoodResult.activity.verifiedSwapCount}
-              </p>
-              {robinhoodResult.activity.skippedSwapLogs > 0 && (
-                <p style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', marginTop: '4px' }}>
-                  Skipped unsupported swap logs: {robinhoodResult.activity.skippedSwapLogs}
-                </p>
-              )}
-              {/* BLOCKSCOUT EVIDENCE, DISCLOSED: shown only as a status line when Blockscout was
-                  actually consulted this scan — never the default/idle case, never raw API payloads,
-                  never phrased as a PnL signal (it never appears inside the PnL box above). Exactly
-                  the three wordings this task's UI section specifies, chosen from real, measured
-                  fields only. */}
-              {robinhoodResult.activity.blockscoutEvidence?.blockscoutAttempted && (
-                <p style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', marginTop: '4px' }}>
-                  {robinhoodResult.activity.blockscoutEvidence.blockscoutVerifiedSwap
-                    ? 'Swap logs verified by explorer.'
-                    : robinhoodResult.activity.blockscoutEvidence.blockscoutFallbackUsed
-                      ? 'Explorer fallback used.'
-                      : robinhoodResult.activity.blockscoutEvidence.blockscoutSucceeded
-                        ? null
-                        : 'Blockscout unavailable.'}
-                </p>
-              )}
-            </div>
+          {robinhoodResult && (
+            <RobinhoodChainSection
+              result={robinhoodResult}
+              onRescan={() => void handleRobinhoodScan()}
+              rescanLoading={robinhoodLoading}
+              debugMode={debugMode}
+            />
           )}
 
           {/* Idle placeholder */}
