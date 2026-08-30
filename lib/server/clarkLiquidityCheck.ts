@@ -34,7 +34,85 @@ export type ClarkLiquidityCheckResult = {
   goodSigns: string[]
   risks: string[]
   verdict: string
+  volume24hUsd?: number | null
+  fdvUsd?: number | null
+  marketCapUsd?: number | null
+  lastUpdated?: string | null
   technicalDebug: Record<string, unknown>
+}
+
+export type ClarkLiquidityEntityType = "token_contract" | "lp_pair" | "wallet" | "unknown"
+
+export type ClarkLiquidityRouteSelected =
+  | "token_lp_module"
+  | "pool_resolver"
+  | "not_applicable"
+  | "ask_chain"
+  | "needs_token"
+
+export type ClarkLiquidityRoutingAudit = {
+  prompt: string
+  parsedIntent: string
+  address: string | null
+  requestedChain: string | null
+  hasContractCode: boolean | null
+  resolvedEntityType: ClarkLiquidityEntityType | string
+  routeSelected: ClarkLiquidityRouteSelected | string
+  liquiditySourcesAttempted: string[]
+  liquiditySourcesSucceeded: string[]
+  liquidityUsd: number | null
+  poolAddress: string | null
+  dex: string | null
+  cacheChainMatched: boolean
+  notApplicableReason: string | null
+}
+
+export function resolveClarkLiquidityEntity(input: {
+  hasContractCode: boolean | null
+  isLpPair?: boolean | null
+}): ClarkLiquidityEntityType {
+  if (input.hasContractCode === false) return "wallet"
+  if (input.hasContractCode === true && input.isLpPair === true) return "lp_pair"
+  if (input.hasContractCode === true) return "token_contract"
+  return "unknown"
+}
+
+export function inferLpPairFromPayload(
+  data: Record<string, unknown> | null | undefined,
+  queriedAddress: string,
+): boolean {
+  if (!data || !queriedAddress) return false
+  const q = queriedAddress.toLowerCase()
+  const meta = data.lpMeta && typeof data.lpMeta === "object" ? data.lpMeta as Record<string, unknown> : {}
+  const pair = String(
+    data.pairAddress ?? data.primaryPoolAddress ?? data.primaryPool ?? meta.primaryPoolAddress ?? "",
+  ).toLowerCase()
+  if (pair && pair === q) return true
+  if (data.isPair === true || data.isLpPair === true || data.entityType === "lp_pair") return true
+  const t0 = data.token0 ?? meta.token0
+  const t1 = data.token1 ?? meta.token1
+  return typeof t0 === "string" && typeof t1 === "string" && Boolean(t0) && Boolean(t1)
+}
+
+export function buildClarkLiquidityRoutingAudit(
+  partial: Partial<ClarkLiquidityRoutingAudit> & Pick<ClarkLiquidityRoutingAudit, "prompt" | "parsedIntent">,
+): ClarkLiquidityRoutingAudit {
+  return {
+    prompt: partial.prompt,
+    parsedIntent: partial.parsedIntent,
+    address: partial.address ?? null,
+    requestedChain: partial.requestedChain ?? null,
+    hasContractCode: partial.hasContractCode ?? null,
+    resolvedEntityType: partial.resolvedEntityType ?? "unknown",
+    routeSelected: partial.routeSelected ?? "needs_token",
+    liquiditySourcesAttempted: partial.liquiditySourcesAttempted ?? [],
+    liquiditySourcesSucceeded: partial.liquiditySourcesSucceeded ?? [],
+    liquidityUsd: partial.liquidityUsd ?? null,
+    poolAddress: partial.poolAddress ?? null,
+    dex: partial.dex ?? null,
+    cacheChainMatched: partial.cacheChainMatched ?? true,
+    notApplicableReason: partial.notApplicableReason ?? null,
+  }
 }
 
 export type ClarkLiquidityCheckAudit = {
@@ -237,6 +315,13 @@ export function mapEvmLiquiditySafetyPayload(
   const dexName = typeof lpMeta.primaryPoolDex === "string" ? lpMeta.primaryPoolDex : (typeof data.dexName === "string" ? data.dexName : null)
   const lockStatus = typeof data.lpLockStatus === "string" ? data.lpLockStatus : "unverified"
   const controller = typeof data.lpController === "string" ? data.lpController : "not verified"
+  const breakdown = Array.isArray(data.pool_breakdown) ? data.pool_breakdown as Array<Record<string, unknown>> : []
+  const primaryRow = breakdown[0] ?? null
+  const volume24hUsd = typeof primaryRow?.volume24h === "number"
+    ? primaryRow.volume24h
+    : (typeof data.volume24hUsd === "number" ? data.volume24hUsd : (typeof data.volume24h === "number" ? data.volume24h : null))
+  const fdvUsd = typeof data.fdvUsd === "number" ? data.fdvUsd : (typeof data.fdv === "number" ? data.fdv : null)
+  const marketCapUsd = typeof data.marketCapUsd === "number" ? data.marketCapUsd : (typeof data.marketCap === "number" ? data.marketCap : null)
   const missing = concentrated
     ? ["ERC-20 LP lock/burn proof does not apply to this concentrated pool model. Position/control verification is required.", ...gaps]
     : (gaps.length ? gaps : (liquidityUsd == null ? ["Liquidity depth not returned by pool sources"] : []))
@@ -268,7 +353,7 @@ export function mapEvmLiquiditySafetyPayload(
     dexName,
     pairAddress: primaryPool,
     lpModel: displayModel ?? (typeof lpMeta.primaryPoolType === "string" ? String(lpMeta.primaryPoolType) : null),
-    lockBurnStatus: concentrated ? "not applicable (concentrated liquidity)" : lockStatus,
+    lockBurnStatus: concentrated ? "Concentrated pool — lock proof not applicable" : lockStatus,
     controllerStatus: controller,
     exitRisk: normalizeExitRisk(typeof data.lpExitRisk === "string" ? data.lpExitRisk : null, liquidityUsd),
     poolAge: typeof data.poolAge === "string" ? data.poolAge : null,
@@ -278,6 +363,10 @@ export function mapEvmLiquiditySafetyPayload(
     goodSigns: good,
     risks,
     verdict: verdictTextFor(status),
+    volume24hUsd,
+    fdvUsd,
+    marketCapUsd,
+    lastUpdated: typeof data.updatedAt === "string" ? data.updatedAt : "live",
     technicalDebug: { displayModel, concentrated, lpLockStatus: lockStatus },
   }
   if (opts.chainSlug === "robinhood") result = applyRobinhoodWording(result)
@@ -322,6 +411,10 @@ export function mapSolanaLiquidityPayload(
     goodSigns: [],
     risks: [],
     verdict: "",
+    volume24hUsd: typeof market.volume24hUsd === "number" ? market.volume24hUsd : (typeof market.volume24h === "number" ? market.volume24h : null),
+    fdvUsd: typeof market.fdvUsd === "number" ? market.fdvUsd : null,
+    marketCapUsd: typeof market.marketCapUsd === "number" ? market.marketCapUsd : null,
+    lastUpdated: "live",
     technicalDebug: { poolLabel: pool.label ?? null, poolVerdict: pool.verdict ?? null },
   }
   return applySolanaWording(result)
@@ -347,24 +440,35 @@ function publicControllerLabel(status: string, chain: ClarkLiquidityChain): stri
 
 export function formatClarkLiquidityCheck(result: ClarkLiquidityCheckResult): string {
   const liq = formatUsdLiquidity(result.liquidityUsd)
+  const vol = formatUsdLiquidity(result.volume24hUsd ?? null)
+  const fdv = result.fdvUsd != null ? formatUsdLiquidity(result.fdvUsd) : (result.marketCapUsd != null ? formatUsdLiquidity(result.marketCapUsd) : "Unavailable")
   const good = result.goodSigns.length ? result.goodSigns.map((s) => `- ${s}`) : ["- none confirmed in this pass"]
   const risks = result.risks.length ? result.risks.map((s) => `- ${s}`) : ["- none confirmed in this pass"]
   const missing = result.missingEvidence.length ? result.missingEvidence.map((s) => `- ${s}`) : ["- none flagged"]
   const lockBurn = publicLockBurnLabel(result.lockBurnStatus, result.chainSlug)
   const controller = publicControllerLabel(result.controllerStatus, result.chainSlug)
   const poolAge = result.poolAge && String(result.poolAge).trim() ? result.poolAge : "unknown"
+  const evidence = result.sourceLabels.length ? result.sourceLabels.join(" + ") : "Token Scanner LP module"
+  const lpStatus = result.lockBurnStatus || "unverified"
   return [
     `LIQUIDITY CHECK — ${result.symbol}`,
     `Chain: ${chainLabel(result.chainSlug)}`,
     `Liquidity: ${liq}`,
+    `DEX: ${result.dexName ?? "unverified"}`,
+    `Pool: ${result.primaryPool ?? result.pairAddress ?? "not returned"}`,
     `Primary pool: ${result.dexName ?? result.primaryPool ?? "not returned"}`,
     `Pool address: ${result.pairAddress ?? result.primaryPool ?? "not returned"}`,
+    `24h Volume: ${vol}`,
+    `FDV: ${fdv}`,
     `LP model: ${result.lpModel ?? "unverified"}`,
     `LP lock/burn: ${lockBurn}`,
+    `LP Status: ${lpStatus}`,
     `Controller: ${controller}`,
     `Pool age: ${poolAge}`,
     `Exit risk: ${result.exitRisk}`,
     `Confidence: ${result.confidence}`,
+    `Evidence: ${evidence}`,
+    `Updated: ${result.lastUpdated ?? "live"}`,
     "",
     "Good signs:",
     ...good,
@@ -379,9 +483,21 @@ export function formatClarkLiquidityCheck(result: ClarkLiquidityCheckResult): st
     `- ${result.verdict}`,
     "",
     "CTA:",
+    "- Deep Scan Token",
     "- Open Token Scanner",
+    "- Check LP",
     "- Run full LP Safety",
     "- Add to Watchlist",
+  ].join("\n")
+}
+
+export function formatUnknownLiquidityEntityReply(): string {
+  return [
+    "LIQUIDITY CHECK",
+    "I couldn't confirm whether this is a token contract, an LP/pool, or a wallet.",
+    "Tell me the chain — Base, Ethereum, Robinhood, or Solana — or paste a token contract.",
+    "",
+    "CTA: Open Token Scanner",
   ].join("\n")
 }
 

@@ -87,8 +87,9 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 // ─── formatEoaLpCheckReply ────────────────────────────────────────────────────
 {
   const out = formatEoaLpCheckReply()
-  assert.ok(out.includes('Scan Wallet'))
-  assert.ok(out.includes('wallet, not a token contract'))
+  assert.ok(out.includes('Liquidity checks do not apply'))
+  assert.ok(out.includes('wallet, not a token or pool') || out.includes('wallet, not a token contract'))
+  assert.ok(!/holdings|portfolio|walletScanHealth/i.test(out), 'EOA LP reply must not include wallet portfolio data')
 }
 
 // ─── formatLpReadResult ───────────────────────────────────────────────────────
