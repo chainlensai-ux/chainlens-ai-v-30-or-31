@@ -7,7 +7,6 @@ import { supabase } from '@/lib/supabaseClient'
 import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList, persistMarketMomentum, readMarketMomentum, resolveClarkCommandChipTarget } from '@/lib/client/clarkMemory'
 import {
   CLARK_FETCH_TIMEOUT_MS,
-  CLARK_TIMEOUT_MESSAGE,
   FALLBACK_ERROR_MESSAGE,
   formatChainDisplay,
   formatLastTokenDisplay,
@@ -21,6 +20,7 @@ import {
   resolveIntentBadge,
   uiModeHintForPrompt,
 } from '@/lib/client/clarkAiLive'
+import { clarkFetchSignal, clientTimeoutReply, createClarkRequestGate } from '@/lib/client/clarkRequestLifecycle'
 import { CLARK_AI_PAGE_CSS } from './clarkAiPageCss'
 import {
   ANALYSIS_STAGES,
@@ -59,7 +59,7 @@ const HISTORY_STATUS_MESSAGE: Record<ClarkHistoryErrorCode, string> = {
 }
 
 type ClarkAction = { label: string; href?: string; prompt?: string; kind?: 'link' | 'prompt'; requiresInput?: boolean }
-type Message = { role: 'user' | 'clark'; text: string; intentBadge?: string | null; actions?: ClarkAction[] }
+type Message = { role: 'user' | 'clark'; text: string; intentBadge?: string | null; actions?: ClarkAction[]; requestId?: string }
 type UiTab   = 'analyst' | 'chat'
 
 type ClarkContextState = {
@@ -104,6 +104,7 @@ function ClarkAiContent() {
   const activeChatIdRef = useRef<string | null>(null)
   activeChatIdRef.current = activeChatId
   const chatSessionTokenRef = useRef(0)
+  const requestGateRef = useRef(createClarkRequestGate())
 
   function reportHistoryFailure(err: unknown) {
     const code = err instanceof ClarkHistoryError ? err.code : 'network_error'
@@ -133,6 +134,8 @@ function ClarkAiContent() {
     try {
       const rows = await fetchClarkChatMessages(chatId)
       chatSessionTokenRef.current += 1
+      requestGateRef.current.bumpSession()
+      setLoading(false)
       setMessages(rows.map((r) => ({ role: r.role === 'assistant' ? 'clark' : 'user', text: r.content })))
       setActiveChatId(chatId)
       if (persistAsActive && typeof window !== 'undefined') sessionStorage.setItem(ACTIVE_CHAT_ID_KEY, chatId)
@@ -141,6 +144,8 @@ function ClarkAiContent() {
 
   function handleNewChat() {
     chatSessionTokenRef.current += 1
+    requestGateRef.current.bumpSession()
+    setLoading(false)
     setMessages([])
     setActiveChatId(null)
     if (typeof window !== 'undefined') sessionStorage.removeItem(ACTIVE_CHAT_ID_KEY)
@@ -223,7 +228,10 @@ function ClarkAiContent() {
 
   async function handleSendText(raw: string) {
     const text = raw.trim()
-    if (!text || loading) return
+    if (!text) return
+    const begun = requestGateRef.current.begin(text)
+    if (!begun.proceed) return
+    const requestId = begun.requestId
     const sentForToken = chatSessionTokenRef.current
     const sendMode = uiModeHintForPrompt(text, activeMode)
     setActiveMode(sendMode)
@@ -231,10 +239,19 @@ function ClarkAiContent() {
     setMemoryEpoch((n) => n + 1)
     setLoadingKind(inferAnalysisKind(text, sendMode))
     setLoadingStage(0)
-    setMessages((prev) => [...prev, { role: 'user', text }, { role: 'clark', text: THINKING_MESSAGE }])
+    setMessages((prev) => {
+      const withoutStaleThinking = prev.filter((m) => !(m.role === 'clark' && m.text === THINKING_MESSAGE && m.requestId && m.requestId !== requestId))
+      return [...withoutStaleThinking, { role: 'user', text, requestId }, { role: 'clark', text: THINKING_MESSAGE, requestId }]
+    })
     setInput('')
     setLoading(true)
     const chatIdPromise = ensureActiveChat(text)
+    const applyIfCurrent = (updater: (prev: Message[]) => Message[]) => {
+      if (chatSessionTokenRef.current !== sentForToken) return false
+      if (!requestGateRef.current.shouldApply(requestId)) return false
+      setMessages(updater)
+      return true
+    }
     try {
       const history = [...messages, { role: 'user', text }]
         .slice(-10)
@@ -264,19 +281,21 @@ function ClarkAiContent() {
       if (isMintAddressFollowup(text)) {
         const mintReply = formatMintAddressFromLastToken(clientClarkContext.lastToken)
         if (mintReply) {
-          if (chatSessionTokenRef.current === sentForToken) {
-            setMessages((prev) => {
-              const next = [...prev]
-              next[next.length - 1] = { role: 'clark', text: mintReply, intentBadge: 'TOKEN READ' }
-              return next
+          applyIfCurrent((prev) => {
+            const next = [...prev]
+            const idx = next.findLastIndex((m) => m.role === 'clark' && m.requestId === requestId)
+            if (idx < 0) return prev
+            next[idx] = { role: 'clark', text: mintReply, intentBadge: 'TOKEN READ', requestId }
+            return next
+          })
+          if (requestGateRef.current.shouldApply(requestId)) {
+            void chatIdPromise.then(async (chatId) => {
+              if (!chatId) return
+              await appendClarkMessage(chatId, 'user', text).catch(reportHistoryFailure)
+              await appendClarkMessage(chatId, 'assistant', mintReply).catch(reportHistoryFailure)
+              void refreshHistory()
             })
           }
-          void chatIdPromise.then(async (chatId) => {
-            if (!chatId) return
-            await appendClarkMessage(chatId, 'user', text).catch(reportHistoryFailure)
-            await appendClarkMessage(chatId, 'assistant', mintReply).catch(reportHistoryFailure)
-            void refreshHistory()
-          })
           return
         }
       }
@@ -318,9 +337,10 @@ function ClarkAiContent() {
           'x-clark-session': getOrCreateSessionId(),
           ...(accessToken ? { 'Authorization': `Bearer ${accessToken}` } : {}),
         },
-        signal: AbortSignal.timeout(CLARK_FETCH_TIMEOUT_MS),
+        signal: clarkFetchSignal(begun.abortSignal, CLARK_FETCH_TIMEOUT_MS),
         body: JSON.stringify({
           feature: 'clark-ai', message: text, prompt: text,
+          requestId, messageId: requestId,
           mode: 'analyst', uiModeHint: sendMode,
           context: null, history,
           sessionId: getOrCreateSessionId(),
@@ -333,8 +353,12 @@ function ClarkAiContent() {
         }),
       })
       const json = await res.json()
-      if (res.status !== 429 && json.quotaConsumed !== false) setClarkUsed(bumpClarkUsage())
       const payload = (json.data as Record<string, unknown>) ?? {}
+      const echoedId = typeof payload.requestId === 'string' ? payload.requestId : (typeof json.requestId === 'string' ? json.requestId : requestId)
+      if (echoedId !== requestId || !requestGateRef.current.shouldApply(requestId) || chatSessionTokenRef.current !== sentForToken) {
+        return
+      }
+      if (res.status !== 429 && json.quotaConsumed !== false) setClarkUsed(bumpClarkUsage())
       const marketContext = (payload.marketContext && typeof payload.marketContext === 'object')
         ? payload.marketContext as { items?: unknown } : null
       const nextItems = Array.isArray(marketContext?.items) ? marketContext?.items : null
@@ -385,33 +409,41 @@ function ClarkAiContent() {
         return typeof href === 'string' || typeof prompt === 'string'
       }) : []
       const statusMessage = typeof payload.clarkFollowupStatusMessage === 'string' ? payload.clarkFollowupStatusMessage : null
-      if (chatSessionTokenRef.current === sentForToken) {
-        setMessages((prev) => {
-          const next = [...prev]
-          const finalMsg: Message = { role: 'clark', text: String(reply), intentBadge: resolveIntentBadge(text, typeof ui?.intentBadge === 'string' ? ui.intentBadge : null), actions }
-          if (statusMessage) {
-            next[next.length - 1] = { role: 'clark', text: statusMessage }
-            next.push(finalMsg)
-          } else {
-            next[next.length - 1] = finalMsg
-          }
-          return next
+      applyIfCurrent((prev) => {
+        const next = [...prev]
+        const idx = next.findLastIndex((m) => m.role === 'clark' && m.requestId === requestId)
+        if (idx < 0) return prev
+        const finalMsg: Message = { role: 'clark', text: String(reply), intentBadge: resolveIntentBadge(text, typeof ui?.intentBadge === 'string' ? ui.intentBadge : null), actions, requestId }
+        if (statusMessage) {
+          next[idx] = { role: 'clark', text: statusMessage, requestId }
+          next.splice(idx + 1, 0, finalMsg)
+        } else {
+          next[idx] = finalMsg
+        }
+        return next
+      })
+      if (requestGateRef.current.shouldApply(requestId)) {
+        void chatIdPromise.then(async (chatId) => {
+          if (!chatId) return
+          await appendClarkMessage(chatId, 'user', text).catch(reportHistoryFailure)
+          await appendClarkMessage(chatId, 'assistant', String(reply), payload).catch(reportHistoryFailure)
+          void refreshHistory()
         })
       }
-      void chatIdPromise.then(async (chatId) => {
-        if (!chatId) return
-        await appendClarkMessage(chatId, 'user', text).catch(reportHistoryFailure)
-        await appendClarkMessage(chatId, 'assistant', String(reply), payload).catch(reportHistoryFailure)
-        void refreshHistory()
-      })
     } catch (err) {
+      if (!requestGateRef.current.shouldApply(requestId) || chatSessionTokenRef.current !== sentForToken) return
       const timedOut = isClarkTimeoutError(err)
-      const errorText = timedOut ? CLARK_TIMEOUT_MESSAGE : FALLBACK_ERROR_MESSAGE
-      const errorBadge = intentBadgeForPrompt(text)
-      if (chatSessionTokenRef.current === sentForToken) {
-        setMessages((prev) => { const next = [...prev]; next[next.length - 1] = { role: 'clark', text: errorText, intentBadge: errorBadge }; return next })
-      }
-    } finally { setLoading(false) }
+      const fallback = timedOut ? clientTimeoutReply(text) : { text: FALLBACK_ERROR_MESSAGE, intentBadge: intentBadgeForPrompt(text), actions: [] }
+      applyIfCurrent((prev) => {
+        const next = [...prev]
+        const idx = next.findLastIndex((m) => m.role === 'clark' && m.requestId === requestId)
+        if (idx < 0) return prev
+        next[idx] = { role: 'clark', text: fallback.text, intentBadge: fallback.intentBadge, actions: fallback.actions, requestId }
+        return next
+      })
+    } finally {
+      if (requestGateRef.current.complete(requestId)) setLoading(false)
+    }
   }
 
   async function handleSend() { await handleSendText(input) }

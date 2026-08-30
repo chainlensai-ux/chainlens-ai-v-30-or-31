@@ -5,6 +5,8 @@ import HeroSection from '@/components/HeroSection'
 import HomeTokenScreener from '@/components/HomeTokenScreener'
 import { supabase } from '@/lib/supabaseClient'
 import { persistClarkMemoryEcho } from '@/lib/client/clarkMemory'
+import { clarkFetchSignal, clientTimeoutReply, createClarkRequestGate } from '@/lib/client/clarkRequestLifecycle'
+import { CLARK_FETCH_TIMEOUT_MS } from '@/lib/client/clarkAiLive'
 
 interface ClarkChatProps {
   active: string | null
@@ -18,6 +20,7 @@ interface ClarkChatProps {
 interface Message {
   role: 'user' | 'clark'
   text: string
+  requestId?: string
 }
 const THINKING_MESSAGE = 'Clark is thinking...'
 type ClarkContextState = {
@@ -164,6 +167,7 @@ export default function ClarkChat({
   const clarkContextRef = useRef<ClarkContextState>({})
   const [clarkUsed, setClarkUsed] = useState(0)
   const [planLimit, setPlanLimit] = useState<number | null>(null)
+  const requestGateRef = useRef(createClarkRequestGate())
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -188,13 +192,20 @@ export default function ClarkChat({
   }, [])
 
   const executeSend = useCallback(async (text: string) => {
-    setMessages(prev => [...prev, { role: 'user', text }])
+    const trimmed = text.trim()
+    if (!trimmed) return
+    const begun = requestGateRef.current.begin(trimmed)
+    if (!begun.proceed) return
+    const requestId = begun.requestId
+    setMessages(prev => {
+      const withoutStaleThinking = prev.filter((m) => !(m.role === 'clark' && m.text === THINKING_MESSAGE && m.requestId && m.requestId !== requestId))
+      return [...withoutStaleThinking, { role: 'user', text: trimmed, requestId }, { role: 'clark', text: THINKING_MESSAGE, requestId }]
+    })
     setLoading(true)
-    setMessages(prev => [...prev, { role: 'clark', text: THINKING_MESSAGE }])
 
     try {
-      const body = parseMessage(text)
-      const history = [...messages, { role: 'user', text }]
+      const body = parseMessage(trimmed)
+      const history = [...messages, { role: 'user', text: trimmed }]
         .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
       const { data: sessionData } = await supabase.auth.getSession()
@@ -216,9 +227,13 @@ export default function ClarkChat({
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           'x-clark-session': getOrCreateSessionId(),
         },
+        signal: clarkFetchSignal(begun.abortSignal, CLARK_FETCH_TIMEOUT_MS),
         body: JSON.stringify({
           ...body,
-          message: text,
+          message: trimmed,
+          prompt: trimmed,
+          requestId,
+          messageId: requestId,
           mode: "chat",
           uiModeHint: mode,
           context: null,
@@ -232,8 +247,10 @@ export default function ClarkChat({
         }),
       })
       const json = await res.json()
-      if (res.status !== 429 && json.quotaConsumed !== false) setClarkUsed(bumpClarkUsage())
       const payload = (json.data as Record<string, unknown>) ?? {}
+      const echoedId = typeof payload.requestId === 'string' ? payload.requestId : (typeof json.requestId === 'string' ? json.requestId : requestId)
+      if (echoedId !== requestId || !requestGateRef.current.shouldApply(requestId)) return
+      if (res.status !== 429 && json.quotaConsumed !== false) setClarkUsed(bumpClarkUsage())
       persistClarkMemoryEcho(payload)
       const marketContext = (payload.marketContext && typeof payload.marketContext === 'object')
         ? payload.marketContext as { items?: unknown }
@@ -262,25 +279,33 @@ export default function ClarkChat({
       if (cursor) clarkContextRef.current.marketCursor = cursor
       clarkContextRef.current.previousIntent = clarkContextRef.current.lastIntent ?? null
       clarkContextRef.current.lastIntent = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
-      clarkContextRef.current.lastSelectedRank = /\b([1-9]\d{0,2})\b/.test(text) ? Number(text.match(/\b([1-9]\d{0,2})\b/)?.[1] ?? 0) || null : clarkContextRef.current.lastSelectedRank
+      clarkContextRef.current.lastSelectedRank = /\b([1-9]\d{0,2})\b/.test(trimmed) ? Number(trimmed.match(/\b([1-9]\d{0,2})\b/)?.[1] ?? 0) || null : clarkContextRef.current.lastSelectedRank
       const reply = json.ok
         ? (String(payload?.reply ?? formatResponse(payload)))
         : (json.error ?? 'Something went wrong.')
 
       setMessages(prev => {
         const next = [...prev]
-        next[next.length - 1] = { role: 'clark', text: reply }
+        const idx = next.findLastIndex((m) => m.role === 'clark' && m.requestId === requestId)
+        if (idx < 0) return prev
+        next[idx] = { role: 'clark', text: reply, requestId }
         return next
       })
     } catch {
+      if (!requestGateRef.current.shouldApply(requestId)) return
+      const fallback = clientTimeoutReply(trimmed)
       setMessages(prev => {
         const next = [...prev]
-        next[next.length - 1] = { role: 'clark', text: 'Clark backend unreachable.' }
+        const idx = next.findLastIndex((m) => m.role === 'clark' && m.requestId === requestId)
+        if (idx < 0) return prev
+        next[idx] = { role: 'clark', text: fallback.text, requestId }
         return next
       })
     } finally {
-      setLoading(false)
-      if (!isMobileClient()) inputRef.current?.focus()
+      if (requestGateRef.current.complete(requestId)) {
+        setLoading(false)
+        if (!isMobileClient()) inputRef.current?.focus()
+      }
     }
   }, [messages, mode])
 
@@ -298,7 +323,7 @@ export default function ClarkChat({
 
   function handleSend() {
     const text = input.trim()
-    if (!text || loading) return
+    if (!text) return
     if (isMobileClient()) {
       window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(text)}&autosend=1`
       return

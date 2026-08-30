@@ -4,6 +4,7 @@
 // and "what is the mint address?" answers from lastToken memory.
 
 import { isValidSolanaMintAddress } from '../solanaAddress'
+import { parseClarkCommandName } from '../clark/commandFormats'
 
 export const FALLBACK_ERROR_MESSAGE = 'Clark is unavailable right now. Try again in a moment.'
 export const CLARK_TIMEOUT_MESSAGE = 'Clark timed out waiting for this scan. Try again.'
@@ -241,6 +242,12 @@ export function persistEntitiesFromPrompt(prompt: string, modeHint?: ClarkUiMode
 }
 
 export function intentBadgeForPrompt(prompt: string): string {
+  const command = parseClarkCommandName(prompt)
+  if (command === 'deployer') return 'DEPLOYER READ'
+  if (command === 'holders') return 'HOLDERS READ'
+  if (command === 'lp' || command === 'explain') return 'LIQUIDITY CHECK'
+  if (command === 'wallet') return 'WALLET READ'
+  if (command === 'token') return 'TOKEN READ'
   if (isWalletLanguagePrompt(prompt)) return 'WALLET READ'
   if (/\b(liquidity\s+check|lp\s+check|check\s+lp|check\s+liquidity|is\s+lp\s+locked|is\s+liquidity\s+locked|liquidity\s+safety|where\s+is\s+liquidity|pool\s+check|what\s+about\s+lp)\b/i.test(String(prompt ?? ''))) return 'LIQUIDITY CHECK'
   if (isMintAddressFollowup(prompt)) return 'TOKEN READ'

@@ -65,6 +65,7 @@ const tests = [
   'test-pump-intelligence-report.mjs',
   'test-clark-context-memory.mjs',
   'test-clark-radar-whale-toolcalls.mjs',
+  'test-clark-request-lifecycle.mjs',
   'test-clark-risk-intent.mjs',
   'test-clark-safety-address-routing.mjs',
   'test-clark-token-core.mjs',
