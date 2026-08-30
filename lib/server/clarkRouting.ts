@@ -155,6 +155,78 @@ export function isLiquidityCheckIntent(prompt: string): boolean {
   return LIQUIDITY_CHECK_INTENT_RE.test(String(prompt ?? "").trim().toLowerCase());
 }
 
+// Tight lock phrases from the product spec. Bare "liquidity" is intentionally NOT enough —
+// that would steal educational/pump questions. "liquidity check HOUSE" and "is LP locked"
+// must always win over token_read / risk / safety / full-report.
+const LIQUIDITY_INTENT_LOCK_RE = new RegExp(
+  `\\b(?:${LIQUIDITY_WORD}\\s+check|check\\s+${LIQUIDITY_WORD}|lp\\s+check|check\\s+lp|run\\s+lp\\s+check|run\\s+${LIQUIDITY_WORD}\\s+check|${LIQUIDITY_WORD}\\s+safety|lp\\s+safety|is\\s+lp\\s+locked|is\\s+${LIQUIDITY_WORD}\\s+locked|is\\s+${LIQUIDITY_WORD}\\s+safe|is\\s+it\\s+locked|pool\\s+check|where\\s+is\\s+${LIQUIDITY_WORD}|exit\\s+(?:${LIQUIDITY_WORD}|risk)|burn\\s+proof|lock\\s+proof|what\\s+about\\s+(?:lp|${LIQUIDITY_WORD})|explain\\s+(?:lp|${LIQUIDITY_WORD})|can\\s+${LIQUIDITY_WORD}\\s+be\\s+pulled)\\b`,
+  "i",
+);
+
+export const CLARK_LIQUIDITY_BLOCKED_FALLBACKS = [
+  "token_scan",
+  "token_safety",
+  "token_full_report",
+  "token_ape_risk",
+  "risk_explanation",
+  "token_analyst_followup",
+] as const;
+
+export type ClarkIntentLockAudit = {
+  prompt: string;
+  detectedIntent: string;
+  forcedIntent: string | null;
+  blockedFallbackIntents: string[];
+  resolvedSymbolOrAddress: string | null;
+  chainSlug: string | null;
+  scannerCalled: boolean;
+  responseTemplate: string;
+  fallbackPrevented: boolean;
+};
+
+export function isForcedLiquidityCheckPrompt(prompt: string): boolean {
+  return LIQUIDITY_INTENT_LOCK_RE.test(String(prompt ?? "").trim());
+}
+
+export function buildClarkIntentLockAudit(
+  partial: Partial<ClarkIntentLockAudit> & Pick<ClarkIntentLockAudit, "prompt" | "detectedIntent">,
+): ClarkIntentLockAudit {
+  return {
+    prompt: partial.prompt,
+    detectedIntent: partial.detectedIntent,
+    forcedIntent: partial.forcedIntent ?? null,
+    blockedFallbackIntents: partial.blockedFallbackIntents ?? [],
+    resolvedSymbolOrAddress: partial.resolvedSymbolOrAddress ?? null,
+    chainSlug: partial.chainSlug ?? null,
+    scannerCalled: partial.scannerCalled ?? false,
+    responseTemplate: partial.responseTemplate ?? "none",
+    fallbackPrevented: partial.fallbackPrevented ?? false,
+  };
+}
+
+export function applyClarkLiquidityIntentLock<T extends { intent: string; address: string | null; symbol: string | null }>(
+  routed: T,
+  prompt: string,
+): { routed: T; audit: ClarkIntentLockAudit } {
+  const detectedIntent = routed.intent;
+  if (!isForcedLiquidityCheckPrompt(prompt)) {
+    return { routed, audit: buildClarkIntentLockAudit({ prompt, detectedIntent, resolvedSymbolOrAddress: routed.address ?? routed.symbol }) };
+  }
+  routed.intent = "liquidity_scan" as T["intent"];
+  return {
+    routed,
+    audit: buildClarkIntentLockAudit({
+      prompt,
+      detectedIntent,
+      forcedIntent: "liquidity_scan",
+      blockedFallbackIntents: [...CLARK_LIQUIDITY_BLOCKED_FALLBACKS],
+      resolvedSymbolOrAddress: routed.address ?? routed.symbol,
+      responseTemplate: "LIQUIDITY CHECK",
+      fallbackPrevented: true,
+    }),
+  };
+}
+
 /**
  * Single source of truth for address routing hint.
  * Returns "token" when explicit token keywords are present, "wallet" when
@@ -372,6 +444,13 @@ export function classifyClarkPrompt(prompt: string): {
     return { intent: "wallet_pnl_followup", address, addresses, deep: false, symbol: null };
   }
 
+  // Intent lock: LP/liquidity phrasing always wins over token_read / risk / safety / full-report.
+  // Do not require an address or symbol here — lastToken / resolver handle missing targets later.
+  // Without this, "liquidity check" (no ticker) falls through TOKEN_SCAN_RE's bare "check" into TOKEN READ.
+  if (isForcedLiquidityCheckPrompt(raw) || (LIQUIDITY_CHECK_INTENT_RE.test(t) && (address || symbol))) {
+    return { intent: "liquidity_scan", address, addresses, deep: false, symbol: address ? null : symbol };
+  }
+
   // ---- Token ape-risk / full risk breakdown (must run before address-based wallet_scan fallback) ----
   if (TOKEN_APE_RISK_RE.test(t)) {
     return { intent: "token_ape_risk", address, addresses, deep: false, symbol };
@@ -385,13 +464,6 @@ export function classifyClarkPrompt(prompt: string): {
   // ---- Dev rug HISTORY ("has this dev ever rugged before") — distinct from dev_rug_check ----
   if (DEV_RUG_HISTORY_RE.test(t)) {
     return { intent: "dev_rug_history", address, addresses, deep: false, symbol };
-  }
-
-  // ---- LP / liquidity check (classify by phrase; contract-vs-EOA decided by caller via eth_getCode) ----
-  // Symbol-only ("liquidity check AERO") is allowed too — caller resolves the symbol to a
-  // Base-preferred contract before calling /api/liquidity-safety.
-  if (LIQUIDITY_CHECK_INTENT_RE.test(t) && (address || symbol)) {
-    return { intent: "liquidity_scan", address, addresses, deep: false, symbol: address ? null : symbol };
   }
 
   // ---- Wallet scan ----

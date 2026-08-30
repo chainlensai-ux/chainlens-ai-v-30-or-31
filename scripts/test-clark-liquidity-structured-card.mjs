@@ -26,11 +26,15 @@ const REQUIRED_CARD_LINES = [
   /^Liquidity: /,
   /^Primary pool: /,
   /^LP model: /,
+  /^Pool address: /,
+  /^LP lock\/burn: /,
+  /^Controller: /,
+  /^Pool age: /,
   /^Exit risk: /,
   /^Confidence: /,
   /^Good signs:$/,
   /^Risks:$/,
-  /^Missing evidence:$/,
+  /^Missing LP evidence:$/,
   /^Verdict:$/,
   /^CTA:$/,
 ]
@@ -98,7 +102,9 @@ function assertFullCardShape(out, label) {
   const out = formatClarkLiquidityCheck(sol)
   assertFullCardShape(out, 'solana partial')
   check('Solana card shows pool age', out.includes('42d'))
-  check('Solana card never claims a lock/burn/controller EVM-style status', !/\b(lp\s+lock(?:ed)?|lp\s+burn(?:ed)?|erc-?20\s+lp)\b/i.test(out.replace(/LP lock proof is not an EVM-style check on Solana/g, '')))
+  check('Solana card labels LP lock/burn as unsupported, never verified', /LP lock\/burn: unsupported/.test(out) && !/LP lock\/burn: verified/.test(out))
+  check('Solana card never uses erc-20 lp wording', !/erc-?20\s+lp/i.test(out))
+  check('Solana card labels controller as unsupported', /Controller: unsupported/.test(out))
 }
 {
   const solEmpty = mapSolanaLiquidityPayload({}, { tokenAddressOrMint: SOL_MINT, symbol: 'GONE' })

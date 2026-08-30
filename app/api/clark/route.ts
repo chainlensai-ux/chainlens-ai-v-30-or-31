@@ -66,6 +66,9 @@ import {
   extractRequestedChainFromPrompt,
   extractLiquiditySymbol,
   isLiquidityCheckIntent,
+  isForcedLiquidityCheckPrompt,
+  applyClarkLiquidityIntentLock,
+  type ClarkIntentLockAudit,
   type TokenScanEvidence,
   getClarkAddressRouteHint,
   isWalletFollowupPrompt,
@@ -8481,6 +8484,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   const appIntent = resolveClarkIntent(prompt, body.appContext);
   const routedClassification = classifyClarkPrompt(prompt);
+  if (isForcedLiquidityCheckPrompt(prompt)) {
+    routedClassification.intent = "liquidity_scan";
+  }
   const analystRouting = classifyClarkAnalystIntent(prompt);
   const routeHint = getClarkAddressRouteHint(prompt);
   const clarkDebugMode = Boolean((body as unknown as Record<string, unknown>).debug) || process.env.NODE_ENV !== 'production';
@@ -9220,7 +9226,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // using whatever EVM token happened to be in memory from an earlier scan, completely ignoring the
   // Solana address the user just pasted. A genuinely new address of either kind in the CURRENT
   // message must always win over stale memory.
-  if (isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !hasAnyAddress(prompt)) {
+  if (!isForcedLiquidityCheckPrompt(prompt) && isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !hasAnyAddress(prompt)) {
     const followupKind = classifyTokenFollowupKind(prompt);
     const tokenAddress = sessionMem.lastToken.address;
     const cached = sessionMem.lastToken.cachedEvidence ?? null;
@@ -10289,10 +10295,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // ── New routed intents (classifyClarkPrompt) — intercept before legacy logic ──
   const routed = classifyClarkPrompt(prompt);
+  const liqIntentLock = applyClarkLiquidityIntentLock(routed, prompt);
+  let clarkIntentLockAudit: ClarkIntentLockAudit = liqIntentLock.audit;
   // Market-mover follow-up scans ("scan 1", "scan velvet") are forced to token_scan by
   // the recursive call below — never let the plain-address classifier reclassify the
   // contract as a wallet EOA and fall through to wallet_scan.
-  if (body.forcedTokenScan?.address) {
+  // A liquidity-locked prompt must never be rewritten into TOKEN READ.
+  if (body.forcedTokenScan?.address && !isForcedLiquidityCheckPrompt(prompt)) {
     routed.intent = "token_scan";
     routed.address = body.forcedTokenScan.address;
   }
@@ -10304,7 +10313,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // A liquidity request must reach the dedicated liquidity branch below, including for a
   // Solana mint. That branch renders only LP/liquidity evidence; sending it through this
   // creator/token-read shortcut produced a full TOKEN READ for an LP-only question.
-  const SOLANA_TOKEN_INTENTS = new Set(["token_safety", "dev_rug_check", "dev_rug_history", "lp_lock_check", "risk_explanation", "token_ape_risk", "token_full_report", "token_scan"]);
+  const SOLANA_TOKEN_INTENTS = new Set(["token_safety", "dev_rug_check", "dev_rug_history", "risk_explanation", "token_ape_risk", "token_full_report", "token_scan"]);
   // A plain "who deployed X"/"deployer of X" has no dedicated intent bucket in classifyClarkPrompt
   // at all (it only feeds the liquidity_scan classifier when paired with an LP keyword) — routed.
   // intent comes back "none" for it, so the intent-set check above alone would miss it. Checked
@@ -10344,6 +10353,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       scannerCalled: false,
       responseStatus: "pending",
     });
+    clarkIntentLockAudit = {
+      ...clarkIntentLockAudit,
+      chainSlug: liqChain,
+      resolvedSymbolOrAddress: routed.address ?? routed.symbol,
+      responseTemplate: "LIQUIDITY CHECK",
+      fallbackPrevented: true,
+    };
     if (!routed.address && routed.symbol) {
       const resolved = await resolveTokenSymbolToAddress(routed.symbol, liqChain, { requireExplicitSelection: true });
       liqAudit.resolverSource = "token_resolve";
@@ -10358,6 +10374,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
           quotaConsumed: false,
           clarkLiquidityCheckAudit: liqAudit,
+          clarkIntentLockAudit,
+
         };
       }
       if (!resolved || !resolved.address) {
@@ -10374,6 +10392,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
           quotaConsumed: false,
           clarkLiquidityCheckAudit: liqAudit,
+          clarkIntentLockAudit,
+
         };
       }
       routed.address = resolved.address;
@@ -10383,8 +10403,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
     if (!routed.address && sessionMem.lastToken?.address) {
       routed.address = sessionMem.lastToken.address;
+      if (!routed.symbol && sessionMem.lastToken.symbol) routed.symbol = sessionMem.lastToken.symbol;
       liqAudit.resolverSource = "lastToken";
       liqAudit.entityType = "token";
+      clarkIntentLockAudit = {
+        ...clarkIntentLockAudit,
+        resolvedSymbolOrAddress: routed.address ?? routed.symbol,
+        chainSlug: liqChain,
+      };
     }
     if (!routed.address) {
       liqAudit.responseStatus = "needs_token";
@@ -10395,6 +10421,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
         quotaConsumed: false,
         clarkLiquidityCheckAudit: liqAudit,
+        clarkIntentLockAudit,
       };
     }
 
@@ -10411,6 +10438,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           actions: buildRoutedActions(["Scan Wallet", "Deep Scan Wallet"]),
           quotaConsumed: false,
           clarkLiquidityCheckAudit: liqAudit,
+          clarkIntentLockAudit,
+
         };
       }
     }
@@ -10423,6 +10452,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         intentBadge: "liquidity_scan",
         actions: buildRoutedActions(["Open Token Scanner"]),
         quotaConsumed: false,
+        clarkIntentLockAudit,
       };
     }
 
@@ -10473,6 +10503,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       chain: lpMemoryChain as "base" | "eth" | "robinhood",
     });
     updateMemIntent(sessionMem, "liquidity_scan");
+    clarkIntentLockAudit = {
+      ...clarkIntentLockAudit,
+      chainSlug: runChain,
+      resolvedSymbolOrAddress: routed.address ?? routed.symbol ?? check.symbol,
+      scannerCalled: liqAudit.scannerCalled,
+      responseTemplate: "LIQUIDITY CHECK",
+      fallbackPrevented: true,
+    };
     const tokenHref = `/terminal/token-scanner?contract=${encodeURIComponent(routed.address)}${runChain === "base" ? "" : `&chain=${runChain === "ethereum" ? "eth" : runChain}`}`;
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["liquidity_analyze"],
@@ -10485,6 +10523,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       quotaConsumed: true,
       memoryEcho: buildWalletMemoryEcho(sessionMem),
       clarkLiquidityCheckAudit: liqAudit,
+      clarkIntentLockAudit,
     };
   }
 
@@ -13927,19 +13966,34 @@ export async function POST(req: NextRequest) {
     } catch { /* ignore */ }
     const rh = (() => { try { return getClarkAddressRouteHint(prompt); } catch { return "none" as const; } })();
 
-    const TOKEN_INTENTS_FB = new Set(["token_scan", "token_safety", "dev_rug_check", "lp_lock_check", "risk_explanation"]);
+    const TOKEN_INTENTS_FB = new Set(["token_scan", "token_safety", "dev_rug_check", "risk_explanation"]);
     const WALLET_INTENTS_FB = new Set(["wallet_scan", "wallet_pnl_followup", "wallet_compare", "wallet_dig_deeper"]);
     const MARKET_INTENTS_FB = new Set(["base_radar", "base_market_discovery", "whale_alert"]);
+    const LIQUIDITY_INTENTS_FB = new Set(["liquidity_scan", "lp_lock_check"]);
 
-    const isTokenFallback = TOKEN_INTENTS_FB.has(routedFallback.intent) || rh === "token";
-    const isWalletFallback = !isTokenFallback && (WALLET_INTENTS_FB.has(routedFallback.intent) || rh === "wallet");
-    const isMarketFallback = !isTokenFallback && !isWalletFallback && MARKET_INTENTS_FB.has(routedFallback.intent);
+    const isLiquidityFallback = LIQUIDITY_INTENTS_FB.has(routedFallback.intent) || isForcedLiquidityCheckPrompt(prompt);
+    const isTokenFallback = !isLiquidityFallback && (TOKEN_INTENTS_FB.has(routedFallback.intent) || rh === "token");
+    const isWalletFallback = !isLiquidityFallback && !isTokenFallback && (WALLET_INTENTS_FB.has(routedFallback.intent) || rh === "wallet");
+    const isMarketFallback = !isLiquidityFallback && !isTokenFallback && !isWalletFallback && MARKET_INTENTS_FB.has(routedFallback.intent);
 
     let intentBadge: string;
     let safeMsg: string;
     let actions: string[];
 
-    if (isTokenFallback) {
+    if (isLiquidityFallback) {
+      intentBadge = "liquidity_scan";
+      const sym = routedFallback.symbol ? routedFallback.symbol.toUpperCase() : "this token";
+      safeMsg = [
+        `LIQUIDITY CHECK — ${sym}`,
+        `- Liquidity unavailable: ${isTimeout ? "the LP pipeline timed out before evidence could be returned" : errMsg}.`,
+        "- This stayed a liquidity check. It did not fall through into a full token read.",
+        "",
+        "CTA:",
+        "- Open Token Scanner",
+        "- Run full LP Safety",
+      ].join("\n");
+      actions = ["Open Token Scanner", "Run LP Check"];
+    } else if (isTokenFallback) {
       intentBadge = "token_scan";
       const addrLine = routedFallback.address ? `\n- Address: ${routedFallback.address}` : "";
       const symLine = routedFallback.symbol ? ` (${routedFallback.symbol})` : "";

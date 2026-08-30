@@ -150,12 +150,12 @@ assert.equal(classifyClarkPrompt("what's pumping on Base Radar?").intent, 'base_
   assert.equal(classifyClarkPrompt('dev wallet risk').intent, 'dev_rug_check')
 }
 
-// ─── Pack 1: lp_lock_check ────────────────────────────────────────────────────
+// ─── Pack 1: lp_lock_check / liquidity lock ───────────────────────────────────
 {
-  assert.equal(classifyClarkPrompt('is LP locked').intent, 'lp_lock_check')
-  assert.equal(classifyClarkPrompt('can liquidity be pulled').intent, 'lp_lock_check')
-  assert.equal(classifyClarkPrompt('explain LP').intent, 'lp_lock_check')
-  assert.equal(classifyClarkPrompt('is liquidity safe').intent, 'lp_lock_check')
+  assert.equal(classifyClarkPrompt('is LP locked').intent, 'liquidity_scan')
+  assert.equal(classifyClarkPrompt('can liquidity be pulled').intent, 'liquidity_scan')
+  assert.equal(classifyClarkPrompt('explain LP').intent, 'liquidity_scan')
+  assert.equal(classifyClarkPrompt('is liquidity safe').intent, 'liquidity_scan')
 }
 
 // ─── Pack 1: risk_explanation ─────────────────────────────────────────────────
@@ -307,7 +307,7 @@ assert.equal(extractRequestedChainFromPrompt('LP check on Robinhood'), 'robinhoo
 }
 {
   const r = classifyClarkPrompt('explain liquidity')
-  assert.equal(r.intent, 'lp_lock_check', 'explain liquidity uses last token LP context when available')
+  assert.equal(r.intent, 'liquidity_scan', 'explain liquidity is locked to LP-only, not TOKEN READ')
   assert.equal(r.symbol, null)
 }
 
