@@ -4561,7 +4561,7 @@ const WHALE_SYNC_RE = /\b(sync\s+whale|refresh\s+whale|whale\s+sync|whale\s+refr
 // `any\s+big\s+(?:buys?|sells?)` handling.
 const WHALE_BOTH_SIDES_RE = /\bbuy(?:ing|s)?\s*(?:\/|or|and)\s*sell(?:ing|s)?\b|\bsell(?:ing|s)?\s*(?:\/|or|and)\s*buy(?:ing|s)?\b/i;
 const WHALE_RECENT_RE = /\b(what\s+wallets?\s+moved|recent(?:ly)?\s+whale|latest\s+whale\s+alerts?|whale\s+(?:movement|moves)\s+(?:today|recently|now)|what\s+happened\s+in\s+whale|what\s+did\s+whales?\s+buy\s*\/\s*sell|which\s+wallets?\s+are\s+accumulating|wallets?\s+accumulating|any\s+big\s+(?:buys?|sells?)|big\s+buys?\s*(?:\/|or)\s*sells?|whale\s+activity\s+today)\b/i;
-const WHALE_SUMMARY_RE = /\b(any\s+whale\s+alerts?|show\s+whale\s+(?:movement|alerts?)|whale\s+alerts?|whale\s+movement|open\s+whale\s+alerts?|which\s+(?:whale\s+)?alerts?\s+matter\s+most)\b/i;
+const WHALE_SUMMARY_RE = /\b(any\s+whale\s+alerts?|show\s+(?:me\s+)?(?:the\s+)?(?:latest\s+)?whale\s+(?:movement|alerts?|feed|activity)|show\s+(?:me\s+)?(?:the\s+)?(?:base\s+)?whales?|base\s+whales?|whale\s+alerts?|whale\s+movement|whale\s+activity|whale\s+feed|whale\s+flows?|base\s+whale\s+flows?|smart\s+money\s+on\s+base|open\s+whale\s+alerts?|which\s+(?:whale\s+)?alerts?\s+matter\s+most)\b/i;
 const WHALE_BUYING_RE = /\bwhales?\s+(?:are\s+)?buy(?:ing|s)?\b|\bwhale\s+buys?\b|\bwhat\s+(?:are|did)\s+(?:base\s+)?whales?\s+buy(?:ing)?\b|\bwhat\s+are\s+smart\s+(?:money|wallets?)\s+buying\b|\bwhales?\s+(?:rotating|accumulating)\s+into\b|\bwhat\s+are\s+whales?\s+accumulating\b/i;
 const WHALE_SELLING_RE = /\bwhales?\s+(?:are\s+)?sell(?:ing|s)?\b|\bwhale\s+sells?\b|\bwhat\s+(?:are|did)\s+whales?\s+sell(?:ing)?\b|\bsell[\s-]?side\s+whale\b|\bwhat\s+are\s+whales?\s+dumping\b|\bwhales?\s+dumping\b/i;
 

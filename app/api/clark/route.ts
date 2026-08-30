@@ -8479,21 +8479,33 @@ async function handleClarkWhaleToolCall(
   const top = ranked[0];
   const lines: string[] = [];
   if (stepLines.length) lines.push(...stepLines, "");
-  lines.push(`Whale Alerts found ${ranked.length} movement${ranked.length === 1 ? "" : "s"} in the last ${window === "7d" ? "7d" : "24h"}.`.trim());
-  lines.push(`Largest signal: ${top.walletLabel ?? "tracked wallet"}${top.walletAddress ? ` ${shortAddress(top.walletAddress)}` : ""} ${top.side ?? "moved"} ${top.amountUsd != null ? fmtUsd(top.amountUsd) : "an unverified amount"} of ${top.tokenSymbol ?? "an unknown token"}${top.occurredAt ? ` ${new Date(top.occurredAt).toLocaleString()}` : ""}. Severity: ${top.signalScore ?? "unrated"}.`);
-  lines.push("I'd review token liquidity and holder concentration before trusting the move.");
-  if (ranked.length > 1) {
-    lines.push("", "Other recent movements:");
-    for (const a of ranked.slice(1, 5)) {
-      lines.push(`- ${a.walletLabel ?? "tracked wallet"}${a.walletAddress ? ` ${shortAddress(a.walletAddress)}` : ""}: ${a.side ?? "move"} ${a.amountUsd != null ? fmtUsd(a.amountUsd) : "unverified"} ${a.tokenSymbol ?? "?"} (${a.signalScore ?? "unrated"})`);
-    }
+  lines.push(`Whale Alerts found ${ranked.length} movement${ranked.length === 1 ? "" : "s"} in the last ${window === "7d" ? "7d" : "24h"}.`);
+  if (trackedWalletCount != null) lines.push(`Watching ${trackedWalletCount} Base wallets.`);
+  lines.push("", "Wallets:");
+  for (const a of ranked.slice(0, 6)) {
+    lines.push(`${a.rank}. ${a.walletLabel ?? "tracked wallet"}${a.walletAddress ? ` ${shortAddress(a.walletAddress)}` : ""} — ${a.side ?? "move"} ${a.amountUsd != null ? fmtUsd(a.amountUsd) : "unverified"} ${a.tokenSymbol ?? "?"}${a.signalScore ? ` (${a.signalScore})` : ""}`);
   }
+  const buys = groupClarkWhaleFlow(rawAlerts, "buy");
+  if (buys.ranked.length > 0) {
+    lines.push("", "Buying:");
+    buys.ranked.slice(0, 5).forEach((g, i) => {
+      lines.push(`${i + 1}. ${g.token} — ${g.count} buy${g.count === 1 ? "" : "s"}${g.wallets.size > 1 ? ` from ${g.wallets.size} wallets` : ""}${g.usdVerified ? `, ${fmtUsd(g.usd)} verified` : ", USD unverified"}`);
+    });
+    if (buys.unknownSide > 0) {
+      lines.push(`${buys.unknownSide} further movement${buys.unknownSide === 1 ? "" : "s"} had no verified direction and are not counted as buys.`);
+    }
+  } else if (buys.unknownSide > 0) {
+    lines.push("", `Buy-side is not labeled on ${buys.unknownSide} movement${buys.unknownSide === 1 ? "" : "s"} — I won't call them buys.`);
+  }
+  lines.push("", "wallet_label is an internal ChainLens tracking label, not a verified public identity.");
+  lines.push("I'd review token liquidity and holder concentration before trusting a move.");
   lines.push("", "Not financial advice.");
 
   const actions: ClarkUiAction[] = [
     { label: "Open Whale Alerts", href: "/terminal/whale-alerts", kind: "link" },
     ...(feed.syncRan ? [] : [{ label: "Refresh Whale Alerts", prompt: "sync whale alerts", kind: "prompt" as const }]),
     { label: "What are whales buying", prompt: "what are whales buying", kind: "prompt" as const },
+    { label: "What are whales selling", prompt: "what are whales selling", kind: "prompt" as const },
     ...(top.tokenSymbol ? [{ label: "Scan Token", prompt: `scan ${top.tokenSymbol}`, kind: "prompt" as const }] : []),
   ];
 

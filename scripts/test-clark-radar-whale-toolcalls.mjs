@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import {
   classifyClarkToolIntent,
   isClarkWatchlistAddCommand,
@@ -31,6 +32,12 @@ assert.equal(classifyClarkToolIntent('why is it on radar').intent, 'base_radar_e
 // ─── Whale Alerts tool intent routing ─────────────────────────────────────
 assert.equal(classifyClarkToolIntent('Any whale alerts?').intent, 'whale_alerts_summary')
 assert.equal(classifyClarkToolIntent('Show whale movement').intent, 'whale_alerts_summary')
+assert.equal(classifyClarkToolIntent('Show Base whales').intent, 'whale_alerts_summary')
+assert.equal(classifyClarkToolIntent('show base whales').intent, 'whale_alerts_summary')
+assert.equal(classifyClarkToolIntent('Show me Base whales').intent, 'whale_alerts_summary')
+assert.equal(classifyClarkToolIntent('base whales').intent, 'whale_alerts_summary')
+assert.equal(classifyClarkToolIntent('smart money on base').intent, 'whale_alerts_summary')
+assert.equal(classifyClarkToolIntent('whale activity').intent, 'whale_alerts_summary')
 assert.equal(classifyClarkToolIntent('Sync whale alerts').intent, 'whale_alerts_sync')
 assert.equal(classifyClarkToolIntent('Refresh whale alerts').intent, 'whale_alerts_sync')
 assert.equal(classifyClarkToolIntent('What wallets moved recently?').intent, 'whale_alerts_recent')
@@ -71,6 +78,7 @@ assert.equal(classifyClarkToolIntent('what are people buying').intent, 'none')
 for (const p of [
   'Any low caps on Base?', 'Show Robinhood Chain movers', 'What are the best radar candidates?',
   'Open the radar', 'Base radar', 'Any whale alerts?', 'Sync whale alerts', 'Show whale movement',
+  'Show Base whales', 'Show me Base whales', 'base whales', 'smart money on base',
   'What wallets moved recently?', 'Any big buys/sells?', 'Refresh whale alerts', 'What happened in whale alerts today?',
 ]) {
   assert.notEqual(classifyClarkToolIntent(p).intent, 'none', `"${p}" must not fall through to generic chat`)
@@ -90,6 +98,11 @@ for (const p of [
 assert.equal(classifyClarkToolIntent('scan this wallet 0x1234567890abcdef1234567890abcdef12345678').intent, 'none')
 assert.equal(classifyClarkToolIntent('is this token safe').intent, 'none')
 assert.equal(classifyClarkToolIntent('hello').intent, 'none')
+
+const routeSrc = fs.readFileSync(new URL('../app/api/clark/route.ts', import.meta.url), 'utf8')
+assert.match(routeSrc, /lines\.push\("", "Wallets:"\)/, 'whale summary must list wallets from the Whale Alerts feed')
+assert.match(routeSrc, /lines\.push\("", "Buying:"\)/, 'whale summary must group verified buys from the same feed rows')
+assert.match(routeSrc, /groupClarkWhaleFlow\(rawAlerts, "buy"\)/, 'buy grouping must use the real feed, never invented sides')
 
 // ─── Watchlist add command ─────────────────────────────────────────────────
 assert.equal(isClarkWatchlistAddCommand('add that to watchlist'), true)

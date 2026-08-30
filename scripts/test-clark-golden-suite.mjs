@@ -263,6 +263,7 @@ function assertNeverTokenEngine(prompt, label) {
   // Explicit whale phrasings are claimed by Tier 1 and answered by the whale tool handler.
   for (const [prompt, expected] of [
     ['Show me whale alerts', 'whale_alerts_summary'],
+    ['Show Base whales', 'whale_alerts_summary'],
     ['What are whales buying?', 'whale_alerts_buying'],
     ['what are smart money buying', 'whale_alerts_buying'],
   ]) {
