@@ -25,10 +25,6 @@ export const CLARK_ACTIONS = [
   "Open Token Scanner",
   "Scan Wallet",
   "Deep Scan Wallet",
-  // TOKEN-VS-WALLET MISROUTING FIX, DISCLOSED: "Deep Scan Token" and "Check Deployer" were missing
-  // from the fixed CTA vocabulary entirely — a token-side response could only ever offer "Open
-  // Token Scanner"/"Run LP Check", with no equivalent to "Deep Scan Wallet" on the token side.
-  "Deep Scan Token",
   "Check Deployer",
   "Run LP Check",
   "Open Whale Alerts",
@@ -55,6 +51,8 @@ export type ClarkRoutedIntent =
   | "dev_rug_history"
   | "lp_lock_check"
   | "risk_explanation"
+  | "deployer_check"
+  | "holders_check"
   | "none";
 
 const WALLET_DEEP_RE = /\b(deep\s+scan|deep|full\s+scan|full\s+wallet\s+scan|scan\s+all\s+chains|pnl|p&l|trades?|historical|dig\s+deeper|recover\s+(?:more\s+)?history|history\s+recovery|why\s+(?:is|are|no|the)\s+pnl|why\s+is\s+pnl\s+(?:missing|zero|wrong)|why\s+no\s+pnl|cost\s+basis|analyze\s+(?:this\s+)?wallet)\b/i;
@@ -172,7 +170,7 @@ export function isLiquidityCheckIntent(prompt: string): boolean {
 // that would steal educational/pump questions. "liquidity check HOUSE" and "is LP locked"
 // must always win over token_read / risk / safety / full-report.
 const LIQUIDITY_INTENT_LOCK_RE = new RegExp(
-  `\\b(?:${LIQUIDITY_WORD}\\s+check|check\\s+${LIQUIDITY_WORD}|how\\s+much\\s+${LIQUIDITY_WORD}|is\\s+(?:that\\s+|this\\s+|it\\s+)?(?:enough\\s+)?${LIQUIDITY_WORD}|is\\s+${LIQUIDITY_WORD}\\s+(?:strong|safe|locked|thin|good|deep|weak|enough)|${LIQUIDITY_WORD}\\s+(?:strong|thin|weak|deep|enough|risk|safety)|enough\\s+${LIQUIDITY_WORD}|lp\\s+check|check\\s+lp|run\\s+lp\\s+check|run\\s+${LIQUIDITY_WORD}\\s+check|${LIQUIDITY_WORD}\\s+safety|lp\\s+safety|is\\s+lp\\s+locked|is\\s+${LIQUIDITY_WORD}\\s+locked|is\\s+${LIQUIDITY_WORD}\\s+safe|is\\s+it\\s+locked|pool\\s+check|check\\s+pool|where\\s+is\\s+${LIQUIDITY_WORD}|exit\\s+(?:${LIQUIDITY_WORD}|risk)|burn\\s+proof|lock\\s+proof|what\\s+about\\s+(?:lp|${LIQUIDITY_WORD})|explain\\s+(?:lp|${LIQUIDITY_WORD})|can\\s+${LIQUIDITY_WORD}\\s+be\\s+pulled)\\b`,
+  `\\b(?:${LIQUIDITY_WORD}\\s+check|check\\s+${LIQUIDITY_WORD}|how\\s+much\\s+${LIQUIDITY_WORD}|is\\s+(?:that\\s+|this\\s+|it\\s+)?(?:enough\\s+)?${LIQUIDITY_WORD}|is\\s+${LIQUIDITY_WORD}\\s+(?:strong|safe|locked|thin|good|deep|weak|enough)|${LIQUIDITY_WORD}\\s+(?:strong|thin|weak|deep|enough|risk|safety)|enough\\s+${LIQUIDITY_WORD}|lp\\s+check|check\\s+lp|run\\s+lp\\s+check|run\\s+${LIQUIDITY_WORD}\\s+check|${LIQUIDITY_WORD}\\s+safety|lp\\s+safety|is\\s+lp\\s+locked|is\\s+${LIQUIDITY_WORD}\\s+locked|is\\s+${LIQUIDITY_WORD}\\s+safe|is\\s+it\\s+locked|pool\\s+check|check\\s+pool|where\\s+is\\s+${LIQUIDITY_WORD}|exit\\s+(?:${LIQUIDITY_WORD}|risk)|burn\\s+proof|lock\\s+proof|what\\s+about\\s+(?:lp|${LIQUIDITY_WORD})|explain\\s+(?:lp|${LIQUIDITY_WORD})|can\\s+${LIQUIDITY_WORD}\\s+be\\s+pulled|what\\s+does\\s+(?:lp|${LIQUIDITY_WORD})\\s+mean)\\b`,
   "i",
 );
 
@@ -200,6 +198,7 @@ export type ClarkIntentLockAudit = {
 export function isForcedLiquidityCheckPrompt(prompt: string): boolean {
   const t = String(prompt ?? "").trim();
   if (/^\/lp\b/i.test(t)) return true;
+  if (/^\/explain(?:\s+lp(?:\s|$)|$)/i.test(t)) return true;
   return LIQUIDITY_INTENT_LOCK_RE.test(t);
 }
 
@@ -255,7 +254,7 @@ export function applyClarkLiquidityIntentLock<T extends { intent: string; addres
  */
 export function getClarkAddressRouteHint(prompt: string): "token" | "wallet" | "ambiguous" | "none" {
   const t = (prompt ?? "").trim().toLowerCase();
-  if (/^\/(lp|token)\b/.test(t)) return "token";
+  if (/^\/(lp|token|deployer|holders|explain)\b/.test(t)) return "token";
   if (/^\/wallet\b/.test(t)) return "wallet";
   const tokenSignals = /\b(token|coin|contract|\bca\b|ticker|scan\s+this\s+token|token\s+scan|is\s+this\s+token|base\s+token|eth\s+token|on\s+base|on\s+eth|rug|dev\s+rug|lp\s+locked|liquidity\s+locked|liquidity\s+check|check\s+liquidity|lp\s+check|check\s+lp|pool\s+check|how\s+much\s+liquidity|is\s+liquidity|liquidity\s+strong|liquidity\s+risk|exit\s+liquidity|enough\s+liquidity|\bliquidity\b|\blp\b|base\s+contract|ethereum\s+token|honeypot|buy\s+tax|sell\s+tax)\b/i.test(t);
   const walletSignals = /\b(wallet|portfolio|holdings?|pnl|profit|trades?|scan\s+this\s+wallet|analyze\s+wallet|deep\s+scan\s+wallet|wallet\s+pnl|wallet\s+scan|wallet\s+check|wallet\s+report)\b/i.test(t);
@@ -339,7 +338,7 @@ export function isWalletComparePrompt(text: string): boolean {
 
 // Task 1 (Pack 1 hard fix): token follow-up prompts that must always resolve against
 // the last scanned token in memory, never fall through to a wallet branch.
-const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|safe\s+to\s+ape|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|rug\s+risk|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+(?:rug|dump)|who\s+controls\s+(?:the\s+)?supply|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+liquidity\s+locked|is\s+it\s+locked|is\s+liquidity\s+strong|is\s+that\s+enough\s+liquidity|liquidity\s+strong|liquidity\s+risk|enough\s+liquidity|exit\s+liquidity|how\s+much\s+liquidity|explain\s+lp|explain\s+holders|what\s+about\s+holders|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+risk|contract\s+risk|risk\s+score|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+red\s+flags|explain\s+(?:the\s+)?risks?|explain\s+verdict|bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|run\s+lp\s+check|lp\s+check|check\s+lp|what\s+about\s+lp|what\s+about\s+liquidity|where\s+is\s+liquidity|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check|should\s+i\s+watch\s+(?:it|this|that)|deep\s+scan\s+it)\b/i;
+const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|safe\s+to\s+ape|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|rug\s+risk|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+(?:rug|dump)|who\s+controls\s+(?:the\s+)?supply|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+liquidity\s+locked|is\s+it\s+locked|is\s+liquidity\s+strong|is\s+that\s+enough\s+liquidity|liquidity\s+strong|liquidity\s+risk|enough\s+liquidity|exit\s+liquidity|how\s+much\s+liquidity|explain\s+lp|explain\s+holders|what\s+about\s+holders|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+risk|contract\s+risk|risk\s+score|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+red\s+flags|explain\s+(?:the\s+)?risks?|explain\s+verdict|bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|run\s+lp\s+check|lp\s+check|check\s+lp|what\s+about\s+lp|what\s+about\s+liquidity|where\s+is\s+liquidity|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check|should\s+i\s+watch\s+(?:it|this|that)|deep\s+scan\s+it|who\s+deployed\s+(?:it|this|that)|what\s+does\s+(?:lp|liquidity)\s+mean|check\s+holders?|top\s+holders?)\b/i;
 
 // Task 3: explicit wallet language must override token-memory follow-up routing — a user
 // who says "wallet pnl", "scan wallet <address>", "portfolio", or "holdings" clearly wants
@@ -355,16 +354,22 @@ export function isTokenFollowupPrompt(prompt: string): boolean {
   const t = String(prompt ?? "").trim();
   if (EXPLICIT_WALLET_OVERRIDE_RE.test(t)) return false;
   if (/^safe\??$/i.test(t)) return true;
+  if (/^\s*holders?\??\s*$/i.test(t)) return true;
+  if (/^\s*who\s+deployed\s+(?:it|this|that)\??\s*$/i.test(t)) return true;
+  if (/^\s*what\s+does\s+(?:lp|liquidity)\s+mean\??\s*$/i.test(t)) return true;
+  if (/^\s*explain\s+lp\??\s*$/i.test(t)) return true;
   return TOKEN_FOLLOWUP_RE.test(t);
 }
 
-export type TokenFollowupKind = "safety" | "dev_rug" | "lp_lock" | "risk" | "analyst";
+export type TokenFollowupKind = "safety" | "dev_rug" | "lp_lock" | "risk" | "analyst" | "holders" | "deployer";
 
 /** Maps a token follow-up prompt to the formatter/intent it should use. */
 export function classifyTokenFollowupKind(prompt: string): TokenFollowupKind {
   const t = String(prompt ?? "").toLowerCase();
+  if (/^\s*holders?\??\s*$/i.test(t) || /\b(check\s+holders?|what\s+about\s+holders?|holder\s+check|holder\s+distribution|who\s+holds|holder\s+concentration|top\s+holders?)\b/.test(t)) return "holders";
+  if (/\b(who\s+deployed(?:\s+(?:it|this|that))?|check\s+deployer|deployer\s+of|who\s+(?:made|created|built)\s+(?:this|it|that))\b/.test(t)) return "deployer";
   if (/\b(can\s+(?:the\s+)?dev\s+(?:rug|dump)|who\s+controls\s+(?:the\s+)?supply|explain\s+dev(?:\s+control)?)\b/.test(t)) return "dev_rug";
-  if (/\b(is\s+lp\s+locked|is\s+it\s+locked|explain\s+lp|what\s+about\s+lp|what\s+about\s+liquidity|where\s+is\s+liquidity|can\s+liquidity\s+be\s+pulled|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check|is\s+liquidity\s+strong|is\s+that\s+enough\s+liquidity|liquidity\s+strong|liquidity\s+risk|enough\s+liquidity|exit\s+liquidity|how\s+much\s+liquidity)\b/.test(t)) return "lp_lock";
+  if (/\b(is\s+lp\s+locked|is\s+it\s+locked|explain\s+lp|what\s+about\s+lp|what\s+about\s+liquidity|where\s+is\s+liquidity|can\s+liquidity\s+be\s+pulled|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check|is\s+liquidity\s+strong|is\s+that\s+enough\s+liquidity|liquidity\s+strong|liquidity\s+risk|enough\s+liquidity|exit\s+liquidity|how\s+much\s+liquidity|what\s+does\s+(?:lp|liquidity)\s+mean)\b/.test(t)) return "lp_lock";
   if (/\b(bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|should\s+i\s+buy|should\s+i\s+watch|what\s+should\s+i\s+watch)\b/.test(t)) return "analyst";
   if (/\b(why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|what\s+are\s+red\s+flags|explain\s+(?:the\s+)?risk|explain\s+verdict|explain\s+holders|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+risk|contract\s+risk|risk\s+score)\b/.test(t)) return "risk";
   return "safety";
@@ -413,7 +418,7 @@ export function extractAllAddressesForRouting(text: string): string[] {
   return out;
 }
 
-export type ClarkSlashCommandName = "lp" | "token" | "wallet" | "base";
+export type ClarkSlashCommandName = "lp" | "token" | "wallet" | "base" | "deployer" | "holders" | "explain";
 
 export type ClarkSlashCommand = {
   command: ClarkSlashCommandName;
@@ -425,28 +430,49 @@ export type ClarkSlashCommand = {
   bare: boolean;
 };
 
-const SLASH_COMMAND_RE = /^\/(lp|token|wallet|base)(?:\s+([\s\S]*))?$/i;
+const SLASH_COMMAND_RE = /^\/(lp|token|wallet|base|deployer|holders)(?:\s+([\s\S]*))?$/i;
+const SLASH_EXPLAIN_LP_RE = /^\/explain(?:\s+lp(?:\s+([\s\S]*))?)?$/i;
+
+function slashSymbolFromRest(rest: string, address: string | null): string | null {
+  if (!rest || address) return null;
+  const first = rest.replace(/^\$/, "").split(/\s+/)[0] ?? "";
+  const upper = first.toUpperCase();
+  if (/^[A-Z][A-Z0-9]{1,15}$/.test(upper) && !TOKEN_NAME_STOPWORDS.has(upper) && !LP_CHAIN_WORDS.has(upper)) {
+    return upper;
+  }
+  return null;
+}
 
 export function parseClarkSlashCommand(prompt: string): ClarkSlashCommand | null {
   const raw = String(prompt ?? "").trim();
+  const explain = raw.match(SLASH_EXPLAIN_LP_RE);
+  if (explain) {
+    const rest = (explain[1] ?? "").trim();
+    const address = rest ? extractAddressForRouting(rest) : null;
+    const addresses = rest ? extractAllAddressesForRouting(rest) : [];
+    return {
+      command: "explain",
+      intent: "liquidity_scan",
+      rest,
+      address,
+      addresses,
+      symbol: slashSymbolFromRest(rest, address),
+      bare: rest.length === 0,
+    };
+  }
   const m = raw.match(SLASH_COMMAND_RE);
   if (!m) return null;
   const command = m[1].toLowerCase() as ClarkSlashCommandName;
   const rest = (m[2] ?? "").trim();
   const address = rest ? extractAddressForRouting(rest) : null;
   const addresses = rest ? extractAllAddressesForRouting(rest) : [];
-  let symbol: string | null = null;
-  if (rest && !address) {
-    const first = rest.replace(/^\$/, "").split(/\s+/)[0] ?? "";
-    const upper = first.toUpperCase();
-    if (/^[A-Z][A-Z0-9]{1,15}$/.test(upper) && !TOKEN_NAME_STOPWORDS.has(upper) && !LP_CHAIN_WORDS.has(upper)) {
-      symbol = upper;
-    }
-  }
+  const symbol = slashSymbolFromRest(rest, address);
   const intent: ClarkRoutedIntent =
     command === "lp" ? "liquidity_scan"
     : command === "token" ? "token_scan"
     : command === "wallet" ? "wallet_scan"
+    : command === "deployer" ? "deployer_check"
+    : command === "holders" ? "holders_check"
     : "base_market_discovery";
   return { command, intent, rest, address, addresses, symbol, bare: rest.length === 0 };
 }
@@ -455,12 +481,31 @@ export function slashCommandQuestionCategory(prompt: string): "token" | "wallet"
   const slash = parseClarkSlashCommand(prompt);
   if (!slash) return null;
   if (slash.command === "wallet") return "wallet";
-  if (slash.command === "lp" || slash.command === "token") return "token";
+  if (slash.command === "lp" || slash.command === "token" || slash.command === "deployer" || slash.command === "holders" || slash.command === "explain") return "token";
   return null;
 }
 
 export function isDeepScanItFollowup(prompt: string): boolean {
   return /^\s*deep\s+scan\s+(?:it|this|that)\s*\??\s*$/i.test(String(prompt ?? "").trim());
+}
+
+const HOLDERS_CHECK_RE = /^(?:\/holders\b|(?:check\s+)?holders?\??|what\s+about\s+holders?\??|holder\s+(?:check|distribution|concentration)|who\s+holds(?:\s+(?:this|it|that))?\??|top\s+holders?(?:\s+for)?)\b/i;
+const DEPLOYER_CHECK_RE = /^(?:\/deployer\b|who\s+deployed(?:\s+(?:this|it|that|the\s+token))?\??|check\s+(?:the\s+)?deployer|deployer\s+(?:of|for|check)|who\s+(?:made|created|built)\s+(?:this|it|that))\b/i;
+
+export function isHoldersCheckPrompt(prompt: string): boolean {
+  const t = String(prompt ?? "").trim();
+  if (!t) return false;
+  if (/^\/holders\b/i.test(t)) return true;
+  if (/^\s*holders?\??\s*$/i.test(t)) return true;
+  return HOLDERS_CHECK_RE.test(t);
+}
+
+export function isDeployerCheckPrompt(prompt: string): boolean {
+  const t = String(prompt ?? "").trim();
+  if (!t) return false;
+  if (/^\/deployer\b/i.test(t)) return true;
+  if (/\bwho\s+deployed\b/i.test(t) || /\bcheck\s+(?:the\s+)?deployer\b/i.test(t) || /\bdeployer\s+of\b/i.test(t)) return true;
+  return DEPLOYER_CHECK_RE.test(t);
 }
 
 export type ClarkSlashMemoryMismatch = "wallet_not_token_or_pool" | "token_not_wallet";
@@ -477,7 +522,7 @@ export function resolveSlashCommandMemoryTarget(input: {
   const subType = input.lastSubject?.entityType ?? null;
   const subAddr = input.lastSubject?.address ?? null;
   const tokenLike = subType === "token" || subType === "pair" || subType === "unknown";
-  if (input.command === "lp" || input.command === "token") {
+  if (input.command === "lp" || input.command === "token" || input.command === "deployer" || input.command === "holders" || input.command === "explain") {
     if (subAddr && tokenLike) return { address: subAddr, reusedSubject: true, mismatch: null };
     if (input.lastTokenAddress) return { address: input.lastTokenAddress, reusedSubject: true, mismatch: null };
     if (subAddr && subType === "wallet") return { address: subAddr, reusedSubject: true, mismatch: "wallet_not_token_or_pool" };
@@ -527,7 +572,7 @@ export function classifyClarkPrompt(prompt: string): {
         ? liquiditySymbolCandidate
         : null);
 
-  // Command-first: /lp /token /wallet /base bypass generic TOKEN READ / wallet-default routing.
+  // Command-first: /lp /token /wallet /base /deployer /holders /explain bypass generic TOKEN READ / wallet-default routing.
   if (slash) {
     return {
       intent: slash.intent,
@@ -566,6 +611,13 @@ export function classifyClarkPrompt(prompt: string): {
     || (parseClarkLiquidityIntent(raw) != null && address != null && isValidSolanaMintAddress(address))
   ) {
     return { intent: "liquidity_scan", address, addresses, deep: false, symbol: address ? null : symbol };
+  }
+
+  if (isHoldersCheckPrompt(raw)) {
+    return { intent: "holders_check", address, addresses, deep: false, symbol: address ? null : symbol };
+  }
+  if (isDeployerCheckPrompt(raw)) {
+    return { intent: "deployer_check", address, addresses, deep: false, symbol: address ? null : symbol };
   }
 
   // ---- Token ape-risk / full risk breakdown (must run before address-based wallet_scan fallback) ----
@@ -1337,6 +1389,8 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
   lines.push("Next:");
   if (!deep) lines.push("- Deep Scan Wallet");
   lines.push("- Open Wallet Scanner");
+  lines.push("- Track Wallet");
+  lines.push("- Explain PnL");
   lines.push("");
   lines.push(`CTA: Open Wallet Scanner${deep ? "" : " / Deep Scan Wallet"}`);
   return lines.join("\n");
@@ -1795,7 +1849,7 @@ export function formatTokenContractNotWalletReply(chainLabel?: string | null): s
   return [
     `This is a token contract${where}, not a wallet. Wallet scans do not apply.`,
     "",
-    "CTA: Open Token Scanner / Deep Scan Token",
+    "CTA: Open Token Scanner",
   ].join("\n");
 }
 
@@ -1917,7 +1971,6 @@ const CLARK_ACTION_HREF: Record<ClarkAction, string> = {
   "Open Token Scanner": "/terminal/token-scanner",
   "Scan Wallet": "/terminal/wallet-scanner",
   "Deep Scan Wallet": "/terminal/wallet-scanner",
-  "Deep Scan Token": "/terminal/token-scanner",
   "Check Deployer": "/terminal/token-scanner",
   "Run LP Check": "/terminal/token-scanner",
   "Open Whale Alerts": "/terminal/whale-alerts",
@@ -1926,6 +1979,42 @@ const CLARK_ACTION_HREF: Record<ClarkAction, string> = {
 
 export function toClarkUiActions(actions: ClarkAction[]): Array<{ label: string; href: string }> {
   return actions.map((a) => ({ label: a, href: CLARK_ACTION_HREF[a] }));
+}
+
+/** Real token-answer CTAs. Deep Scan Token is not a feature — never included. */
+export function buildClarkTokenAnswerActions(tokenAddress: string, chainLabel = "base"): ClarkUiAction[] {
+  const href = tokenScannerHref(tokenAddress, chainLabel);
+  return [
+    { label: "/lp", prompt: "/lp", kind: "prompt" },
+    { label: "/holders", prompt: "/holders", kind: "prompt" },
+    { label: "/deployer", prompt: "/deployer", kind: "prompt" },
+    { label: "/explain lp", prompt: "/explain lp", kind: "prompt" },
+    { label: "Open Token Scanner", href, kind: "link" },
+    { label: "Add to Watchlist", prompt: "add that to watchlist", kind: "prompt" },
+  ];
+}
+
+/** Real LP-answer CTAs. Deep Scan Token is not a feature — never included. */
+export function buildClarkLpAnswerActions(tokenAddress: string, chainLabel = "base"): ClarkUiAction[] {
+  const href = tokenScannerHref(tokenAddress, chainLabel);
+  return [
+    { label: "/holders", prompt: "/holders", kind: "prompt" },
+    { label: "/deployer", prompt: "/deployer", kind: "prompt" },
+    { label: "/explain lp", prompt: "/explain lp", kind: "prompt" },
+    { label: "Open Token Scanner", href, kind: "link" },
+    { label: "Add to Watchlist", prompt: "add that to watchlist", kind: "prompt" },
+  ];
+}
+
+/** Real wallet-answer CTAs. Deep Scan Wallet is the only valid Deep Scan action. */
+export function buildClarkWalletAnswerActions(walletAddress: string): ClarkUiAction[] {
+  const href = `/terminal/wallet-scanner?address=${encodeURIComponent(walletAddress)}&chain=auto`;
+  return [
+    { label: "Deep Scan Wallet", prompt: "deep scan it", kind: "prompt" },
+    { label: "Open Wallet Scanner", href, kind: "link" },
+    { label: "Track Wallet", prompt: "track this wallet", kind: "prompt" },
+    { label: "Explain PnL", prompt: "explain pnl", kind: "prompt" },
+  ];
 }
 
 /** Graceful, non-scary reply for "no fresh Base market rows available right now". */
@@ -3260,8 +3349,8 @@ export function renderClarkTokenVerdict(opts: {
   return lines.join("\n");
 }
 
-const DEFAULT_CLARK_TOKEN_NEXT_ACTIONS = ["Deep Scan Token", "Explain LP", "Check Deployer", "Check Holders", "Add to Watchlist", "Open Token Scanner"];
-const SOLANA_CLARK_TOKEN_NEXT_ACTIONS = ["Deep Scan Token", "Explain LP", "Check Creator", "Check Holders", "Add to Watchlist", "Open Token Scanner"];
+const DEFAULT_CLARK_TOKEN_NEXT_ACTIONS = ["/lp", "/holders", "/deployer", "/explain lp", "Add to Watchlist", "Open Token Scanner"];
+const SOLANA_CLARK_TOKEN_NEXT_ACTIONS = ["/lp", "/holders", "/deployer", "/explain lp", "Add to Watchlist", "Open Token Scanner"];
 
 /** Full EVM entry point: evidence -> scored verdict -> rendered TOKEN READ text, in one call. */
 export function renderClarkTokenVerdictForEvm(ev: TokenScanEvidence, tokenAddress: string, chainLabel: string, usableEvidence: boolean): string {
@@ -3506,8 +3595,10 @@ export function formatFastTokenRead(ev: TokenScanEvidence, chain = "Base"): stri
   lines.push(`- Missing evidence: holders, LP proof, dev-risk require full Token Scanner scan`);
   lines.push("");
   lines.push("Next:");
-  lines.push("- Deep Scan Token");
-  lines.push("- Check LP");
+  lines.push("- /lp");
+  lines.push("- /holders");
+  lines.push("- /deployer");
+  lines.push("- /explain lp");
   lines.push("- Open Token Scanner");
   lines.push("CTA: Open Token Scanner");
   return lines.join("\n");
@@ -3692,7 +3783,9 @@ export function formatTokenAnalystFollowup(ev: TokenScanEvidence, chain = "Base"
     ...(gaps.length ? ["Missing evidence:", ...gaps.slice(0, 3).map(g => `- ${g}`), ""] : []),
     "Next:",
     `- ${gaps.length ? `Resolve open checks: ${gaps.slice(0, 3).join("; ")}` : "Use Token Scanner / LP Check before making any trade decision."}`,
-    "- Deep Scan Token",
+    "- /lp",
+    "- /holders",
+    "- /deployer",
   ].join("\n");
 }
 
@@ -3740,6 +3833,54 @@ export function formatDevRugCheck(ev: TokenScanEvidence, chain = "Base"): string
 
   lines.push("", "CTA: Review Dev Control / Open Token Scanner");
   return lines.join("\n");
+}
+
+export function formatHoldersCheck(ev: TokenScanEvidence, chain = "Base"): string {
+  const sym = String(ev.token?.symbol ?? "?").toUpperCase();
+  const addr = ev.token?.address ?? null;
+  const h = ev.holders;
+  const top1 = h?.top1 ?? null;
+  const top10 = h?.top10 ?? null;
+  const count = h?.holderCount ?? null;
+  const missing: string[] = [];
+  if (top1 == null) missing.push("top holder percent");
+  if (top10 == null) missing.push("top 10 percent");
+  if (count == null) missing.push("holder count");
+  const conc =
+    top1 != null && top1 >= 40 ? "High — a single wallet dominates supply."
+    : top10 != null && top10 >= 60 ? "High — top 10 wallets dominate supply."
+    : top10 != null && top10 >= 40 ? "Elevated — top 10 concentration is material."
+    : top1 != null && top1 >= 20 ? "Medium — watch the top wallet."
+    : top1 == null && top10 == null ? "Open Check — holder concentration was not returned."
+    : "Moderate — no extreme concentration in returned holder rows.";
+  const confidence = (top1 != null || top10 != null) && count != null ? "Medium"
+    : (top1 != null || top10 != null) ? "Low"
+    : "open_check";
+  const meaning = top1 == null && top10 == null
+    ? "Holder concentration was not returned in this pass. Do not treat missing holder data as distributed supply."
+    : "Returned holder rows are on-chain distribution counts only. Wallet identities are not verified here.";
+  return [
+    `HOLDERS READ — ${sym} (${chain})`,
+    ...(addr ? [`Address: ${addr}`] : []),
+    "",
+    `Top holder: ${top1 != null ? `${top1.toFixed(1)}%` : "unverified"}`,
+    `Top 10: ${top10 != null ? `${top10.toFixed(1)}%` : "unverified"}`,
+    `Holder count: ${count != null ? count.toLocaleString() : "unverified"}`,
+    `Concentration risk: ${conc}`,
+    `Confidence: ${confidence}`,
+    "",
+    "Meaning:",
+    meaning,
+    "",
+    "Missing evidence:",
+    ...(missing.length > 0 ? missing.map((m) => `- ${m}`) : ["- none — top holder, top 10, and holder count returned"]),
+    "",
+    "Next:",
+    "- /lp",
+    "- /deployer",
+    "- /explain lp",
+    "- Open Token Scanner",
+  ].join("\n");
 }
 
 // Maps a canonical ClarkVerdict to an "ape risk" label. Cleaner -> Low, everything that isn't
@@ -4224,7 +4365,7 @@ export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string
     else lines.push("- Liquidity depth: open check");
     const hasControllerProof = concentratedControllerProofStatus(lp).hasProof;
     lines.push(`- Confidence: ${hasControllerProof ? (lp?.confidence ?? "partial") : "open_check"}`);
-    lines.push("", "Next:", "- Deep Scan Token", "- Check LP", "- Open Token Scanner");
+    lines.push("", "Next:", "- /holders", "- /deployer", "- /explain lp", "- Open Token Scanner");
     lines.push("", "CTA: Run LP Check");
     return lines.join("\n");
   }
@@ -4241,7 +4382,7 @@ export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string
   if (!chainIsSolana && !chainIsRobinhood && !lp?.reason) missing.push("controller/holder identity");
   if (missing.length > 0) lines.push(`- Missing: ${missing.join(", ")}`);
 
-  lines.push("", "Next:", "- Deep Scan Token", "- Check LP", "- Open Token Scanner");
+  lines.push("", "Next:", "- /holders", "- /deployer", "- /explain lp", "- Open Token Scanner");
   lines.push("", "CTA: Run LP Check / Open Token Scanner")
   return lines.join("\n");
 }
@@ -4336,8 +4477,9 @@ export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): st
   lines.push("Read:", readParts.join(" "), "");
 
   lines.push("Next:");
-  lines.push("- Deep Scan Token");
-  lines.push("- Check LP");
+  lines.push("- /lp");
+  lines.push("- /holders");
+  lines.push("- /deployer");
   lines.push("- Open Token Scanner");
   lines.push("");
   lines.push("CTA: Open Token Scanner / Run LP Check");
@@ -4471,6 +4613,13 @@ export function isClarkWatchlistAddCommand(prompt: string): boolean {
   // "should I watch it?" is a follow-up question about the last token, not a write command.
   if (/\bshould\s+i\s+watch\b/i.test(t)) return false;
   return WATCHLIST_ADD_RE.test(t);
+}
+
+const TRACK_WALLET_RE = /\b(track\s+(?:this\s+|that\s+)?wallet|add\s+(?:this\s+|that\s+)?wallet\s+to\s+(?:my\s+)?watchlist)\b/i;
+
+export function isClarkTrackWalletCommand(prompt: string): boolean {
+  const t = String(prompt ?? "").trim();
+  return TRACK_WALLET_RE.test(t);
 }
 
 export function formatNoTokenInMemory(): string {

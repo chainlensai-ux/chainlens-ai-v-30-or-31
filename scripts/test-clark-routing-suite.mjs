@@ -33,6 +33,7 @@ const tests = [
   'test-clark-intent-lock.mjs',
   'test-clark-followup-and-solana-lp.mjs',
   'test-clark-command-routing.mjs',
+  'test-clark-real-actions.mjs',
   'test-clark-answer-quality.mjs',
   'test-clark-evidence-chain-collapse.mjs',
   'test-clark-solana-dominant-cascade.mjs',

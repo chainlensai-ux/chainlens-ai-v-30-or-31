@@ -1042,7 +1042,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   // Task 1: the hard guard is the first conditional in handleClarkAI, strictly before any
   // wallet snapshot execution or wallet-routing branch in the file.
-  const guardIdx = routeFile.indexOf('if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && isTokenFollowupPrompt(prompt)')
+  const guardIdx = routeFile.indexOf('if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && classifyTokenFollowupKind(prompt) !== "deployer" && isTokenFollowupPrompt(prompt)')
   const walletSnapshotIdx = routeFile.indexOf('toolsUsed: ["wallet_get_snapshot"]')
   assert.ok(guardIdx > -1, 'hard token follow-up guard exists in handleClarkAI')
   assert.ok(walletSnapshotIdx === -1 || guardIdx < walletSnapshotIdx, 'token follow-up guard runs before any wallet_get_snapshot call')
@@ -1257,7 +1257,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const routeFile = fs.readFileSync(path.join(process.cwd(), 'app/api/clark/route.ts'), 'utf8')
 
   const followupGuard = routeFile.slice(
-    routeFile.indexOf('if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && isTokenFollowupPrompt(prompt)'),
+    routeFile.indexOf('if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && classifyTokenFollowupKind(prompt) !== "deployer" && isTokenFollowupPrompt(prompt)'),
     routeFile.indexOf('// ─── Wallet compare')
   )
   assert.ok(followupGuard.length > 100, 'located the token follow-up guard (LP-locked prompts skip this TOKEN READ path)')
@@ -1319,7 +1319,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   // Task 2: the hard guard (lastToken reuse) must run before the generic "Send a token
   // contract" liquidity_scan-with-no-address branch.
-  const guardIdx = routeFile.indexOf('if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && isTokenFollowupPrompt(prompt)')
+  const guardIdx = routeFile.indexOf('if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && classifyTokenFollowupKind(prompt) !== "deployer" && isTokenFollowupPrompt(prompt)')
   const sendContractIdx = routeFile.indexOf("appIntent.intent === 'liquidity_scan' && !appIntent.address")
   assert.ok(guardIdx > -1 && sendContractIdx > -1 && guardIdx < sendContractIdx, 'lastToken LP follow-up guard runs before the generic "send a token contract" branch')
 
@@ -1601,7 +1601,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes('source: mappedResult.ok ? "wallet_scanner_runner" : "fallback"'), 'wallet_scan handler reports source: wallet_scanner_runner on success, honest fallback on failure')
   assert.ok(routeFile.includes("toolsUsed: [\"wallet_scanner_runner\"]"), 'wallet_scan handler keeps toolsUsed: ["wallet_scanner_runner"]')
   assert.ok(routeFile.includes('quotaConsumed: mappedResult.ok'), 'wallet_scan handler ties quotaConsumed to usable wallet evidence')
-  assert.ok(routeFile.includes("const walletActions = [{ label: 'Open Wallet Scanner', href }, { label: 'Run Deep Scan', href: walletScannerDeepLink(walletAddress, true) }]"), 'wallet_scan handler builds the exact wallet CTA actions')
+  assert.ok(routeFile.includes('const walletActions = buildClarkWalletAnswerActions(walletAddress)'), 'wallet_scan handler builds the exact wallet CTA actions')
 
   // normalizeApiReplyShape must pass object-shaped wallet CTAs through verbatim instead of
   // silently dropping them back to "Refresh Market Data" via the closed CLARK_ACTIONS union.

@@ -10,9 +10,11 @@ export const MODES: Mode[] = [
 
 export const ANALYST_CHIPS = [
   { label: "What's pumping on Base?", prompt: "What's pumping on Base?" },
-  { label: '/wallet',                 prompt: '/wallet '                 },
+  { label: '/token',                  prompt: '/token '                 },
   { label: '/lp',                     prompt: '/lp '                     },
-  { label: '/token',                  prompt: '/token '                  },
+  { label: '/holders',                prompt: '/holders '                },
+  { label: '/deployer',               prompt: '/deployer '               },
+  { label: '/wallet',                 prompt: '/wallet '                 },
 ]
 export const CHAT_CHIPS = [
   { label: 'Who deployed VIRTUAL?',  prompt: 'Who deployed VIRTUAL?'         },
@@ -38,9 +40,11 @@ export function inferAnalysisKind(text: string, mode?: Mode['key']): AnalysisKin
 
 export const START_WITH_CHIPS = [
   { label: '/token', prompt: '/token ' },
-  { label: '/wallet', prompt: '/wallet ' },
   { label: '/lp', prompt: '/lp ' },
-  { label: 'Base Movers', prompt: "What's pumping on Base?" },
+  { label: '/holders', prompt: '/holders ' },
+  { label: '/deployer', prompt: '/deployer ' },
+  { label: '/wallet', prompt: '/wallet ' },
+  { label: 'explain lp', prompt: 'explain lp' },
 ]
 
 export const QUICK_ACTIONS = [
