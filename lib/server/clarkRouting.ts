@@ -144,6 +144,7 @@ export type ClarkLiquidityParsedIntent = "liquidity_check" | "lp_check" | "pool_
 export function parseClarkLiquidityIntent(prompt: string): ClarkLiquidityParsedIntent | null {
   const t = String(prompt ?? "").trim().toLowerCase();
   if (!t) return null;
+  if (/^\/lp\b/.test(t)) return "lp_check";
   if (/\b(pool\s+check|check\s+pool|check\s+this\s+pool|pair\s+check|this\s+pool)\b/i.test(t)) return "pool_check";
   if (/\b(lp\s+check|check\s+lp|run\s+lp\s+check|is\s+lp\s+locked|lp\s+locked|lp\s+safety|lp\s+status|burn\s+proof|lock\s+proof)\b/i.test(t)) return "lp_check";
   if (LIQUIDITY_CHECK_INTENT_RE.test(t) || /\b(how\s+much\s+liqu(?:i)?dity|is\s+(?:that\s+|this\s+)?(?:enough\s+)?liqu(?:i)?dity|is\s+liqu(?:i)?dity\s+strong|liqu(?:i)?dity\s+strong|liqu(?:i)?dity\s+risk|exit\s+liqu(?:i)?dity|enough\s+liqu(?:i)?dity|check\s+liqu(?:i)?dity)\b/i.test(t)) return "liquidity_check";
@@ -197,7 +198,9 @@ export type ClarkIntentLockAudit = {
 };
 
 export function isForcedLiquidityCheckPrompt(prompt: string): boolean {
-  return LIQUIDITY_INTENT_LOCK_RE.test(String(prompt ?? "").trim());
+  const t = String(prompt ?? "").trim();
+  if (/^\/lp\b/i.test(t)) return true;
+  return LIQUIDITY_INTENT_LOCK_RE.test(t);
 }
 
 export function buildClarkIntentLockAudit(
@@ -252,6 +255,8 @@ export function applyClarkLiquidityIntentLock<T extends { intent: string; addres
  */
 export function getClarkAddressRouteHint(prompt: string): "token" | "wallet" | "ambiguous" | "none" {
   const t = (prompt ?? "").trim().toLowerCase();
+  if (/^\/(lp|token)\b/.test(t)) return "token";
+  if (/^\/wallet\b/.test(t)) return "wallet";
   const tokenSignals = /\b(token|coin|contract|\bca\b|ticker|scan\s+this\s+token|token\s+scan|is\s+this\s+token|base\s+token|eth\s+token|on\s+base|on\s+eth|rug|dev\s+rug|lp\s+locked|liquidity\s+locked|liquidity\s+check|check\s+liquidity|lp\s+check|check\s+lp|pool\s+check|how\s+much\s+liquidity|is\s+liquidity|liquidity\s+strong|liquidity\s+risk|exit\s+liquidity|enough\s+liquidity|\bliquidity\b|\blp\b|base\s+contract|ethereum\s+token|honeypot|buy\s+tax|sell\s+tax)\b/i.test(t);
   const walletSignals = /\b(wallet|portfolio|holdings?|pnl|profit|trades?|scan\s+this\s+wallet|analyze\s+wallet|deep\s+scan\s+wallet|wallet\s+pnl|wallet\s+scan|wallet\s+check|wallet\s+report)\b/i.test(t);
   if (tokenSignals && !walletSignals) return "token";
@@ -408,6 +413,82 @@ export function extractAllAddressesForRouting(text: string): string[] {
   return out;
 }
 
+export type ClarkSlashCommandName = "lp" | "token" | "wallet" | "base";
+
+export type ClarkSlashCommand = {
+  command: ClarkSlashCommandName;
+  intent: ClarkRoutedIntent;
+  rest: string;
+  address: string | null;
+  addresses: string[];
+  symbol: string | null;
+  bare: boolean;
+};
+
+const SLASH_COMMAND_RE = /^\/(lp|token|wallet|base)(?:\s+([\s\S]*))?$/i;
+
+export function parseClarkSlashCommand(prompt: string): ClarkSlashCommand | null {
+  const raw = String(prompt ?? "").trim();
+  const m = raw.match(SLASH_COMMAND_RE);
+  if (!m) return null;
+  const command = m[1].toLowerCase() as ClarkSlashCommandName;
+  const rest = (m[2] ?? "").trim();
+  const address = rest ? extractAddressForRouting(rest) : null;
+  const addresses = rest ? extractAllAddressesForRouting(rest) : [];
+  let symbol: string | null = null;
+  if (rest && !address) {
+    const first = rest.replace(/^\$/, "").split(/\s+/)[0] ?? "";
+    const upper = first.toUpperCase();
+    if (/^[A-Z][A-Z0-9]{1,15}$/.test(upper) && !TOKEN_NAME_STOPWORDS.has(upper) && !LP_CHAIN_WORDS.has(upper)) {
+      symbol = upper;
+    }
+  }
+  const intent: ClarkRoutedIntent =
+    command === "lp" ? "liquidity_scan"
+    : command === "token" ? "token_scan"
+    : command === "wallet" ? "wallet_scan"
+    : "base_market_discovery";
+  return { command, intent, rest, address, addresses, symbol, bare: rest.length === 0 };
+}
+
+export function slashCommandQuestionCategory(prompt: string): "token" | "wallet" | null {
+  const slash = parseClarkSlashCommand(prompt);
+  if (!slash) return null;
+  if (slash.command === "wallet") return "wallet";
+  if (slash.command === "lp" || slash.command === "token") return "token";
+  return null;
+}
+
+export function isDeepScanItFollowup(prompt: string): boolean {
+  return /^\s*deep\s+scan\s+(?:it|this|that)\s*\??\s*$/i.test(String(prompt ?? "").trim());
+}
+
+export type ClarkSlashMemoryMismatch = "wallet_not_token_or_pool" | "token_not_wallet";
+
+export function resolveSlashCommandMemoryTarget(input: {
+  command: ClarkSlashCommandName;
+  promptAddress: string | null;
+  lastSubject?: { entityType?: string | null; address?: string | null } | null;
+  lastTokenAddress?: string | null;
+  lastWalletAddress?: string | null;
+}): { address: string | null; reusedSubject: boolean; mismatch: ClarkSlashMemoryMismatch | null } {
+  if (input.command === "base") return { address: null, reusedSubject: false, mismatch: null };
+  if (input.promptAddress) return { address: input.promptAddress, reusedSubject: false, mismatch: null };
+  const subType = input.lastSubject?.entityType ?? null;
+  const subAddr = input.lastSubject?.address ?? null;
+  const tokenLike = subType === "token" || subType === "pair" || subType === "unknown";
+  if (input.command === "lp" || input.command === "token") {
+    if (subAddr && tokenLike) return { address: subAddr, reusedSubject: true, mismatch: null };
+    if (input.lastTokenAddress) return { address: input.lastTokenAddress, reusedSubject: true, mismatch: null };
+    if (subAddr && subType === "wallet") return { address: subAddr, reusedSubject: true, mismatch: "wallet_not_token_or_pool" };
+    return { address: null, reusedSubject: false, mismatch: null };
+  }
+  if (subAddr && subType === "wallet") return { address: subAddr, reusedSubject: true, mismatch: null };
+  if (input.lastWalletAddress) return { address: input.lastWalletAddress, reusedSubject: true, mismatch: null };
+  if (subAddr && tokenLike) return { address: subAddr, reusedSubject: true, mismatch: "token_not_wallet" };
+  return { address: null, reusedSubject: false, mismatch: null };
+}
+
 /**
  * Classify a free-form Clark prompt into one of the new routed intents.
  * Returns "none" when the prompt does not match any of the new routing rules
@@ -432,17 +513,30 @@ export function classifyClarkPrompt(prompt: string): {
 } {
   const raw = prompt ?? "";
   const t = raw.trim().toLowerCase().replace(/[‘’ʼ´`]/g, "'");
-  const address = extractAddressForRouting(raw);
-  const addresses = extractAllAddressesForRouting(raw);
-  const deep = WALLET_DEEP_RE.test(t);
+  const slash = parseClarkSlashCommand(raw);
+  const address = slash?.address ?? extractAddressForRouting(raw);
+  const addresses = slash ? slash.addresses : extractAllAddressesForRouting(raw);
+  const deep = WALLET_DEEP_RE.test(t) || (slash?.command === "wallet" && WALLET_DEEP_RE.test(slash.rest));
   const tokenNameMatch = raw.match(TOKEN_NAME_RE);
   const tokenSymbolCandidate = tokenNameMatch?.[2]?.toUpperCase() ?? null;
   const liquiditySymbolCandidate = extractLiquiditySymbol(raw);
-  const symbol = tokenSymbolCandidate && !TOKEN_NAME_STOPWORDS.has(tokenSymbolCandidate)
-    ? tokenSymbolCandidate
-    : liquiditySymbolCandidate
-      ? liquiditySymbolCandidate
-      : null;
+  const symbol = slash?.symbol
+    ?? (tokenSymbolCandidate && !TOKEN_NAME_STOPWORDS.has(tokenSymbolCandidate)
+      ? tokenSymbolCandidate
+      : liquiditySymbolCandidate
+        ? liquiditySymbolCandidate
+        : null);
+
+  // Command-first: /lp /token /wallet /base bypass generic TOKEN READ / wallet-default routing.
+  if (slash) {
+    return {
+      intent: slash.intent,
+      address: slash.address,
+      addresses: slash.addresses,
+      deep: slash.command === "wallet" ? deep : false,
+      symbol: slash.address ? null : slash.symbol,
+    };
+  }
 
   // ---- Wallet compare (must run before generic wallet_scan) ----
   if (WALLET_COMPARE_RE.test(t)) {
@@ -1612,6 +1706,15 @@ export function formatEoaLpCheckReply(): string {
     "This is a wallet, not a token or pool. Liquidity checks do not apply.",
     "",
     "CTA: Open Token Scanner",
+  ].join("\n");
+}
+
+export function formatTokenContractNotWalletReply(chainLabel?: string | null): string {
+  const where = chainLabel ? ` on ${chainLabel}` : "";
+  return [
+    `This is a token contract${where}, not a wallet. Wallet scans do not apply.`,
+    "",
+    "CTA: Open Token Scanner / Deep Scan Token",
   ].join("\n");
 }
 

@@ -4,7 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { ThinkingOrb } from 'thinking-orbs'
 import ClarkOrb from '@/components/ClarkOrb'
 import { supabase } from '@/lib/supabaseClient'
-import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList } from '@/lib/client/clarkMemory'
+import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList, resolveClarkCommandChipTarget } from '@/lib/client/clarkMemory'
 
 const HINT_CHIPS = [
   'Scan BRETT',
@@ -733,6 +733,16 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
       window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(text)}&autosend=1`
       return
     }
+    const slashBare = text.match(/^\/(lp|token|wallet)$/i)
+    if (slashBare) {
+      const cmd = slashBare[1].toLowerCase() as 'lp' | 'token' | 'wallet'
+      const target = resolveClarkCommandChipTarget(cmd, getClientClarkContext())
+      if (target) {
+        setInput('')
+        sendToClark(`/${cmd} ${target}`)
+        return
+      }
+    }
     const bareReply = bareSlashCommandReply(text)
     if (bareReply) {
       setInput('')
@@ -744,6 +754,14 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
   }
 
   function applyQuickChip(prefix: string) {
+    if (prefix === '/lp' || prefix === '/token' || prefix === '/wallet') {
+      const target = resolveClarkCommandChipTarget(prefix.slice(1) as 'lp' | 'token' | 'wallet', getClientClarkContext())
+      if (target) {
+        setInput('')
+        sendToClark(`${prefix} ${target}`)
+        return
+      }
+    }
     setInput(`${prefix} `)
     inputRef.current?.focus()
   }

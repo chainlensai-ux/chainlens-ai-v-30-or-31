@@ -22,6 +22,8 @@ const LAST_RADAR_LIST_KEY = 'chainlens:clark:last-radar-list'
 const LAST_RADAR_CHAIN_KEY = 'chainlens:clark:last-radar-chain'
 const LAST_RADAR_TS_KEY = 'chainlens:clark:last-radar-ts'
 const LAST_CHAIN_KEY = 'chainlens:clark:last-chain'
+const LAST_CLARK_SUBJECT_KEY = 'chainlens:clark:last-clark-subject'
+const PREV_CLARK_SUBJECT_KEY = 'chainlens:clark:prev-clark-subject'
 
 /** Stable Clark session id. Created once per browser session, reused forever — never regenerated per message. */
 export function getClarkSessionId(): string {
@@ -46,6 +48,8 @@ export type ClarkClientContext = {
   lastRadarChain?: string | null
   lastRadarTs?: number
   lastChain?: string | null
+  lastClarkSubject?: unknown | null
+  prevClarkSubject?: unknown | null
 }
 
 function readJson(key: string): unknown {
@@ -72,6 +76,8 @@ export function readClarkClientContext(): ClarkClientContext {
     lastRadarChain: sessionStorage.getItem(LAST_RADAR_CHAIN_KEY) ?? undefined,
     lastRadarTs: Number(sessionStorage.getItem(LAST_RADAR_TS_KEY) ?? '0') || undefined,
     lastChain: sessionStorage.getItem(LAST_CHAIN_KEY) ?? undefined,
+    lastClarkSubject: readJson(LAST_CLARK_SUBJECT_KEY) ?? undefined,
+    prevClarkSubject: readJson(PREV_CLARK_SUBJECT_KEY) ?? undefined,
   }
 }
 
@@ -131,6 +137,15 @@ export function persistClarkMemoryEcho(payload: unknown): void {
     sessionStorage.setItem(LAST_RADAR_LIST_KEY, JSON.stringify(echo.lastRadarList))
     if (typeof echo.lastRadarChain === 'string') sessionStorage.setItem(LAST_RADAR_CHAIN_KEY, echo.lastRadarChain)
     if (typeof echo.lastRadarTs === 'number') sessionStorage.setItem(LAST_RADAR_TS_KEY, String(echo.lastRadarTs))
+  }
+
+  const lastClarkSubject = echo.lastClarkSubject as { address?: unknown } | undefined
+  if (lastClarkSubject && typeof lastClarkSubject === 'object' && typeof lastClarkSubject.address === 'string' && lastClarkSubject.address.trim()) {
+    sessionStorage.setItem(LAST_CLARK_SUBJECT_KEY, JSON.stringify(lastClarkSubject))
+  }
+  const prevClarkSubject = echo.prevClarkSubject as { address?: unknown } | undefined
+  if (prevClarkSubject && typeof prevClarkSubject === 'object' && typeof prevClarkSubject.address === 'string' && prevClarkSubject.address.trim()) {
+    sessionStorage.setItem(PREV_CLARK_SUBJECT_KEY, JSON.stringify(prevClarkSubject))
   }
 
 }
@@ -195,4 +210,20 @@ export function buildClarkRequestMeta(): { headers: { 'x-clark-session': string 
     headers: { 'x-clark-session': sessionId },
     body: { sessionId, clientContext: readClarkClientContext() },
   }
+}
+
+export type ClarkCommandChipKind = 'lp' | 'token' | 'wallet'
+
+/** Address a /lp /token /wallet chip should auto-run against, or null to just insert the command. */
+export function resolveClarkCommandChipTarget(kind: ClarkCommandChipKind, ctx?: ClarkClientContext): string | null {
+  const c = ctx ?? readClarkClientContext()
+  const sub = c.lastClarkSubject as { entityType?: string; address?: string } | null | undefined
+  if (kind === 'lp' || kind === 'token') {
+    if (sub?.address && (sub.entityType === 'token' || sub.entityType === 'pair' || sub.entityType === 'unknown')) return sub.address
+    const t = c.lastToken as { address?: string } | undefined
+    return typeof t?.address === 'string' && t.address.trim() ? t.address : null
+  }
+  if (sub?.address && sub.entityType === 'wallet') return sub.address
+  const w = c.lastWallet as { address?: string } | undefined
+  return typeof w?.address === 'string' && w.address.trim() ? w.address : null
 }

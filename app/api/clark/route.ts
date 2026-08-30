@@ -42,6 +42,7 @@ import {
   formatWalletScanResult,
   formatWalletCompareUnsupported,
   formatEoaLpCheckReply,
+  formatTokenContractNotWalletReply,
   formatLpReadResult,
   formatCouldNotComplete,
   formatNoFreshMarketData,
@@ -74,6 +75,10 @@ import {
   parseClarkLiquidityIntent,
   isForcedLiquidityCheckPrompt,
   applyClarkLiquidityIntentLock,
+  parseClarkSlashCommand,
+  slashCommandQuestionCategory,
+  isDeepScanItFollowup,
+  resolveSlashCommandMemoryTarget,
   type ClarkIntentLockAudit,
   type TokenScanEvidence,
   getClarkAddressRouteHint,
@@ -3667,6 +3672,8 @@ const CLARK_TOKEN_QUESTION_RE = /\b(is\s+(?:it|this|that)\s+safe|is\s+0x[a-f0-9]
 const CLARK_WALLET_QUESTION_RE = /\b(portfolio|holdings?|\bpnl\b|p&l|profitable|wallet\s+behavior|explain\s+(?:this\s+|that\s+)?wallet|whale\s+wallet|sniper\s+wallet|dev\s+wallet\s+behavior|scan\s+(?:this\s+|that\s+)?wallet|wallet\s+scan|analyze\s+(?:this\s+)?wallet)\b/i;
 
 function classifyClarkQuestionCategory(prompt: string): 'token' | 'wallet' | 'ambiguous' {
+  const slashCat = slashCommandQuestionCategory(prompt);
+  if (slashCat) return slashCat;
   const isToken = CLARK_TOKEN_QUESTION_RE.test(prompt) || isLiquidityCheckIntent(prompt);
   const isWallet = CLARK_WALLET_QUESTION_RE.test(prompt) && !isLiquidityCheckIntent(prompt);
   if (isToken && !isWallet) return 'token';
@@ -8711,7 +8718,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         const href = `/terminal/token-scanner?contract=${inlineAddress}${chainQuery}`;
         return {
           feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: "entity_mismatch", toolsUsed: ["address_code_check"],
-          analysis: `This is a token contract on ${chainDisplayLabel(chainForClarkTools)}. Use Token Scanner or ask token-specific questions.`,
+          analysis: formatTokenContractNotWalletReply(chainDisplayLabel(chainForClarkTools)),
           ui: { intentBadge: 'Entity Check', actions: [{ label: 'Open Token Scanner', href }, { label: 'Deep Scan Token', href }] },
           actions: [{ label: 'Open Token Scanner', href }, { label: 'Deep Scan Token', href }],
         };
@@ -8747,6 +8754,20 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     if (basicIntent === 'token_scan_request' || basicIntent === 'wallet_scan_request' || basicIntent === 'ambiguous_scan_request') {
+      const slash = parseClarkSlashCommand(prompt);
+      const slashFill = slash
+        ? resolveSlashCommandMemoryTarget({
+          command: slash.command,
+          promptAddress: slash.address,
+          lastSubject: sessionMem.lastClarkSubject,
+          lastTokenAddress: sessionMem.lastToken?.address ?? null,
+          lastWalletAddress: sessionMem.lastWallet?.address ?? null,
+        })
+        : null;
+      const slashCanFill = Boolean(slash && (slash.address || (slashFill?.address && !slashFill.mismatch)));
+      if (slashCanFill) {
+        // Command already has a target, or lastClarkSubject can supply one — do not ask again.
+      } else {
       const missing = clarkMissingInputPrompt(basicIntent, prompt);
       if (missing) {
         const missingInputLabel = basicIntent === 'token_scan_request' ? 'token_contract' : basicIntent === 'wallet_scan_request' ? 'wallet_address' : 'token_or_wallet_address';
@@ -8759,6 +8780,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
             reason: `${basicIntent} requested without a valid address — asked for input instead of calling a scan API.`,
           }),
         };
+      }
       }
     }
   }
@@ -9356,7 +9378,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // using whatever EVM token happened to be in memory from an earlier scan, completely ignoring the
   // Solana address the user just pasted. A genuinely new address of either kind in the CURRENT
   // message must always win over stale memory.
-  if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && isTokenFollowupPrompt(prompt) && (sessionMem.lastClarkSubject?.address || sessionMem.lastToken?.address) && !hasAnyAddress(prompt)) {
+  const deepScanItOnWallet = !hasAnyAddress(prompt) && isDeepScanItFollowup(prompt) && (
+    sessionMem.lastClarkSubject?.entityType === "wallet"
+    || (Boolean(sessionMem.lastWallet?.address) && sessionMem.lastClarkSubject?.entityType !== "token" && sessionMem.lastClarkSubject?.entityType !== "pair")
+  );
+  if (deepScanItOnWallet && sessionMem.lastWallet?.address) {
+    routedClassification.intent = "wallet_scan";
+    routedClassification.address = sessionMem.lastClarkSubject?.entityType === "wallet"
+      ? sessionMem.lastClarkSubject.address
+      : sessionMem.lastWallet.address;
+    routedClassification.deep = true;
+  }
+  if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && isTokenFollowupPrompt(prompt) && (sessionMem.lastClarkSubject?.address || sessionMem.lastToken?.address) && !hasAnyAddress(prompt) && !deepScanItOnWallet) {
     const followupKind = classifyTokenFollowupKind(prompt);
     const subject = isTokenLikeClarkSubject(sessionMem.lastClarkSubject) ? sessionMem.lastClarkSubject : null;
     const tokenAddress = subject?.address ?? sessionMem.lastToken?.address;
@@ -10476,6 +10509,55 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
 
   // ── New routed intents (classifyClarkPrompt) — intercept before legacy logic ──
   const routed = classifyClarkPrompt(prompt);
+  const slashCmd = parseClarkSlashCommand(prompt);
+  if (slashCmd) {
+    const slashFill = resolveSlashCommandMemoryTarget({
+      command: slashCmd.command,
+      promptAddress: slashCmd.address,
+      lastSubject: sessionMem.lastClarkSubject,
+      lastTokenAddress: sessionMem.lastToken?.address ?? null,
+      lastWalletAddress: sessionMem.lastWallet?.address ?? null,
+    });
+    if (slashFill.mismatch === "wallet_not_token_or_pool") {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["memory"],
+        analysis: formatEoaLpCheckReply(),
+        ui: { intentBadge: "LP Check", actions: [{ label: "Open Token Scanner", href: "/terminal/token-scanner" }] },
+        actions: [{ label: "Open Token Scanner", href: "/terminal/token-scanner" }],
+        quotaConsumed: false,
+        clarkFollowupRoutingAudit: buildClarkFollowupRoutingAudit({
+          prompt,
+          hasNewAddress: false,
+          previousSubject: sessionMem.lastClarkSubject,
+          reusedSubject: true,
+          parsedIntent: "lp_check",
+          resolvedAddress: slashFill.address,
+          routeSelected: "not_applicable",
+          reason: "slash_lp_on_wallet_subject",
+        }),
+      };
+    }
+    if (slashCmd.command === "wallet" && slashFill.mismatch === "token_not_wallet" && !slashCmd.address) {
+      return {
+        feature: "clark-ai", chain, mode: "chat", intent: "wallet_scan_request", toolsUsed: [],
+        analysis: "Paste a wallet address and I'll analyze it.",
+        quotaConsumed: false,
+      };
+    }
+    if (slashFill.address && !routed.address) {
+      routed.address = slashFill.address;
+      if (!routed.symbol && (slashCmd.command === "lp" || slashCmd.command === "token")) {
+        routed.symbol = sessionMem.lastClarkSubject?.symbol ?? sessionMem.lastToken?.symbol ?? routed.symbol;
+      }
+    }
+  }
+  if (deepScanItOnWallet) {
+    routed.intent = "wallet_scan";
+    routed.address = sessionMem.lastClarkSubject?.entityType === "wallet"
+      ? sessionMem.lastClarkSubject.address
+      : (sessionMem.lastWallet?.address ?? routed.address);
+    routed.deep = true;
+  }
   const liqIntentLock = applyClarkLiquidityIntentLock(routed, prompt);
   let clarkIntentLockAudit: ClarkIntentLockAudit = liqIntentLock.audit;
   // Market-mover follow-up scans ("scan 1", "scan velvet") are forced to token_scan by
@@ -10917,6 +10999,13 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         reason: followupAudit.reusedSubject ? "reused_last_clark_subject" : (hasNewAddress ? "explicit_address" : followupAudit.reason),
       },
     };
+  }
+
+  if (routed.intent === "wallet_scan" && !routed.address) {
+    routed.address = sessionMem.lastClarkSubject?.entityType === "wallet"
+      ? sessionMem.lastClarkSubject.address
+      : (sessionMem.lastWallet?.address ?? null);
+    if (deepScanItOnWallet) routed.deep = true;
   }
 
   if (routed.intent === "wallet_scan" && routed.address && routeHint !== 'token' && !isLiquidityCheckIntent(prompt) && parseClarkLiquidityIntent(prompt) == null) {
@@ -14104,19 +14193,36 @@ export async function POST(req: NextRequest) {
   // zero-cost helper prompts (no scan is run), so they must never hit plan gating or rate limits —
   // short-circuit them here, before both, using the same lib/server/clarkBasicIntent.ts helper
   // handleClarkAI uses further down for every other "missing input" case.
-  if (body.feature === 'clark-ai' && /^\s*\/(wallet|token)\s*$/i.test(earlyPrompt)) {
-    const slashIntent = /wallet/i.test(earlyPrompt) ? 'wallet_scan_request' : 'token_scan_request';
-    const missing = clarkMissingInputPrompt(slashIntent, earlyPrompt);
-    if (missing) {
-      return NextResponse.json({
-        ok: true, feature: 'clark-ai',
-        data: {
-          feature: 'clark-ai', chain: 'base', mode: 'chat', intent: slashIntent, toolsUsed: [],
-          analysis: missing,
-          clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: [slashIntent === 'wallet_scan_request' ? 'wallet_address' : 'token_contract'], clarkToolLatencyMs: 0,
-        },
-        quotaConsumed: false,
-      }, { status: 200 });
+  // When lastClarkSubject / lastToken / lastWallet can fill the command, skip this and let
+  // handleClarkAI reuse that subject instead of asking again.
+  if (body.feature === 'clark-ai' && /^\s*\/(wallet|token|lp)\s*$/i.test(earlyPrompt)) {
+    const slashIntent = parseClarkSlashCommand(earlyPrompt);
+    const slashFill = slashIntent
+      ? resolveSlashCommandMemoryTarget({
+        command: slashIntent.command,
+        promptAddress: slashIntent.address,
+        lastSubject: sessionMem.lastClarkSubject,
+        lastTokenAddress: sessionMem.lastToken?.address ?? null,
+        lastWalletAddress: sessionMem.lastWallet?.address ?? null,
+      })
+      : null;
+    const canFill = Boolean(slashFill?.address && !slashFill.mismatch);
+    if (!canFill) {
+      const missingIntent = slashIntent?.command === 'wallet' ? 'wallet_scan_request' : slashIntent?.command === 'lp' ? 'token_scan_request' : /wallet/i.test(earlyPrompt) ? 'wallet_scan_request' : 'token_scan_request';
+      const missing = slashIntent?.command === 'lp'
+        ? "Paste a token or pool and I'll check LP control and lock status."
+        : clarkMissingInputPrompt(missingIntent, earlyPrompt);
+      if (missing) {
+        return NextResponse.json({
+          ok: true, feature: 'clark-ai',
+          data: {
+            feature: 'clark-ai', chain: 'base', mode: 'chat', intent: missingIntent, toolsUsed: [],
+            analysis: missing,
+            clarkToolPlan: null, clarkToolsExecuted: [], clarkToolStatuses: {}, clarkEvidenceMissing: [missingIntent === 'wallet_scan_request' ? 'wallet_address' : 'token_contract'], clarkToolLatencyMs: 0,
+          },
+          quotaConsumed: false,
+        }, { status: 200 });
+      }
     }
   }
 
