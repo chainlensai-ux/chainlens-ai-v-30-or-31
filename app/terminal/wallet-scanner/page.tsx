@@ -25,7 +25,7 @@
 // holdingsEngine/pricingEngine/portfolioAssembler, /api/scan, /api/scan-v2, Clark AI, and
 // /api/portfolio are untouched.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { scanWalletV2, type WalletScanStageProgress } from '@/app/frontend/api/scanWallet'
@@ -500,6 +500,19 @@ export default function WalletScannerPage() {
 
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  // DUPLICATE-CLICK GUARD, DISCLOSED (button-responsiveness task): a ref, not just the `loading`
+  // state var — `disabled={loading || ...}` on the button only takes effect after React re-renders,
+  // leaving a real window (e.g. a fast double-click, or Enter+click racing) where handleScan could
+  // be invoked twice before the first call's setLoading(true) has painted. The ref updates
+  // synchronously, closing that window without touching any scan/decoder logic — same pattern
+  // already proven in Token Scanner's scanInFlightRef.
+  const scanInFlightRef = useRef(false)
+  // SELF-HEALING RELEASE, DISCLOSED: mirrors Token Scanner's own scanInFlightRef pattern — handleScan
+  // has early-return paths (empty address, deep-scan session not loaded yet) that never reach
+  // setLoading(true)/finally's setLoading(false). Rather than resetting the ref on every individual
+  // early return, this effect releases it whenever `loading` goes false for any reason, so the guard
+  // can never get stuck permanently blocking future scans.
+  useEffect(() => { if (!loading) scanInFlightRef.current = false }, [loading])
   const [jobStatusMessage, setJobStatusMessage] = useState<string | null>(null)
   const [currentJobId, setCurrentJobId] = useState<string | null>(null)
   // STAGE PROGRESS, DISCLOSED (perceived-speed follow-up task — replaces the previously-dead
@@ -690,6 +703,8 @@ export default function WalletScannerPage() {
   async function handleScan(mode: 'normal' | 'deep' = 'normal') {
     const address = input.trim()
     if (!address) return
+    if (scanInFlightRef.current) return
+    scanInFlightRef.current = true
 
     if (mode === 'deep') {
       // eslint-disable-next-line no-console
@@ -700,6 +715,10 @@ export default function WalletScannerPage() {
 
     if (mode === 'deep' && !sessionLoaded) {
       // SESSION-RACE-GUARD: never resolve "not admin" from an unloaded session.
+      // Explicit release, DISCLOSED: this path never calls setLoading(true), so `loading` never
+      // toggles — the [loading] self-healing effect above would never re-fire to release the ref,
+      // permanently blocking every future scan click. Release it here directly instead.
+      scanInFlightRef.current = false
       setError('Verifying your session — try again in a moment.')
       return
     }

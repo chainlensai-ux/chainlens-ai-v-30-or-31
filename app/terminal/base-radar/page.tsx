@@ -1934,43 +1934,57 @@ export default function BaseRadarPage() {
     const address = token.contract.toLowerCase()
     const wasWatched = isWatched(address)
     const tokenChain = effectiveRadarChainRef.current
+    // ROLLBACK SNAPSHOT, DISCLOSED (button-responsiveness task's "optimistic state rolls back on
+    // failure" requirement): the optimistic update below used to be treated as final regardless of
+    // whether the real save actually succeeded ("the next loadWatchlist() will reconcile" — true,
+    // but leaves a wrong-looking watchlist star until the user's next visit). Captured before the
+    // optimistic update so a genuine failure (no session, non-ok response, network error) can revert
+    // the button to its real, pre-click state immediately instead of waiting on a future page load.
+    const previousTokens = watchlistTokens
     setWatchlistTokens(prev => wasWatched
       ? prev.filter(w => typeof w?.address !== 'string' || w.address.toLowerCase() !== address)
       : [{ address, symbol: token.symbol, name: token.name, chain: tokenChain, risk_label: token.status, score: token.radarScore, score_type: 'radar_score', score_direction: null }, ...prev])
 
     const { data: { session } } = await supabase.auth.getSession()
     const authToken = session?.access_token
-    if (!authToken) return
+    if (!authToken) {
+      setWatchlistTokens(previousTokens)
+      return
+    }
 
     try {
-      if (wasWatched) {
-        await fetch(`/api/watchlist/tokens?address=${encodeURIComponent(address)}`, {
-          method: 'DELETE',
-          headers: { Authorization: `Bearer ${authToken}` },
-        })
-      } else {
-        await fetch('/api/watchlist/tokens', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-          body: JSON.stringify({ address, symbol: token.symbol, name: token.name, chain: tokenChain, riskLabel: token.status, score: token.radarScore, scoreType: 'radar_score' }),
-        })
-      }
+      const res = wasWatched
+        ? await fetch(`/api/watchlist/tokens?address=${encodeURIComponent(address)}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${authToken}` },
+          })
+        : await fetch('/api/watchlist/tokens', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+            body: JSON.stringify({ address, symbol: token.symbol, name: token.name, chain: tokenChain, riskLabel: token.status, score: token.radarScore, scoreType: 'radar_score' }),
+          })
+      if (!res.ok) setWatchlistTokens(previousTokens)
     } catch {
-      // Best-effort — the optimistic local state already reflects the user's action; the next
-      // loadWatchlist() (e.g. a future visit) will reconcile with the server's real state.
+      // ROLLBACK ON FAILURE, DISCLOSED: a real network/fetch error means the change never actually
+      // persisted — revert the optimistic UI rather than leaving a watchlist star that lies.
+      setWatchlistTokens(previousTokens)
     }
   }
 
   function removeFromWatchlist(address: string) {
+    const previousTokens = watchlistTokens
     setWatchlistTokens(prev => prev.filter(w => typeof w?.address !== 'string' || w.address.toLowerCase() !== address.toLowerCase()))
     void (async () => {
       const { data: { session } } = await supabase.auth.getSession()
       const authToken = session?.access_token
-      if (!authToken) return
+      if (!authToken) { setWatchlistTokens(previousTokens); return }
       try {
-        await fetch(`/api/watchlist/tokens?address=${encodeURIComponent(address)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` } })
+        const res = await fetch(`/api/watchlist/tokens?address=${encodeURIComponent(address)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` } })
+        if (!res.ok) setWatchlistTokens(previousTokens)
       } catch {
-        // Best-effort, same as toggleTrack above.
+        // ROLLBACK ON FAILURE, DISCLOSED: same as toggleTrack above — a real failure reverts the
+        // optimistic removal instead of leaving state that doesn't match the server.
+        setWatchlistTokens(previousTokens)
       }
     })()
   }

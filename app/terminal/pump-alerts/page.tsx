@@ -57,14 +57,25 @@ export default function PumpAlertsPage() {
   const [copiedContract, setCopiedContract] = useState<string | null>(null)
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  // OPTIMISTIC COPY FEEDBACK, DISCLOSED (button-responsiveness task): the "✓ Copied" pressed state
+  // used to be set only inside writeText's resolved .then() — real on every modern browser, but
+  // still a network-free async hop the click had to wait through before showing anything. Now the
+  // pressed state is set synchronously, before the (still real) clipboard write is even issued; if
+  // that write genuinely fails (permissions, non-secure context), the optimistic state is rolled
+  // back immediately rather than left showing a false "Copied".
   function copyCA(contract: string) {
+    const key = contract.toLowerCase()
+    setCopiedContract(key)
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
+    copyTimerRef.current = setTimeout(() => setCopiedContract(null), 1600)
     navigator.clipboard?.writeText(contract).then(
+      () => { /* optimistic state already showing — nothing further to do on success */ },
       () => {
-        setCopiedContract(contract.toLowerCase())
+        // ROLLBACK, DISCLOSED: the copy did not actually happen — never leave a fake "Copied" state
+        // showing for a write that failed.
+        setCopiedContract((current) => (current === key ? null : current))
         if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
-        copyTimerRef.current = setTimeout(() => setCopiedContract(null), 1600)
       },
-      () => { /* clipboard unavailable — leave button state unchanged */ },
     )
   }
 
