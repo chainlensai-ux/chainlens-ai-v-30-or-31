@@ -242,6 +242,7 @@ export function persistEntitiesFromPrompt(prompt: string, modeHint?: ClarkUiMode
 
 export function intentBadgeForPrompt(prompt: string): string {
   if (isWalletLanguagePrompt(prompt)) return 'WALLET READ'
+  if (/\b(liquidity\s+check|lp\s+check|check\s+lp|check\s+liquidity|is\s+lp\s+locked|is\s+liquidity\s+locked|liquidity\s+safety|where\s+is\s+liquidity|pool\s+check|what\s+about\s+lp)\b/i.test(String(prompt ?? ''))) return 'LIQUIDITY CHECK'
   if (isMintAddressFollowup(prompt)) return 'TOKEN READ'
   const entity = extractPromptEntities(prompt)
   if (entity.kind === 'wallet') return 'WALLET READ'

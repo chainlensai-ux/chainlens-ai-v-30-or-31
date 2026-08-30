@@ -327,25 +327,42 @@ export function mapSolanaLiquidityPayload(
   return applySolanaWording(result)
 }
 
+function publicLockBurnLabel(status: string, chain: ClarkLiquidityChain): string {
+  const t = String(status ?? "").toLowerCase()
+  if (chain === "solana" || chain === "robinhood") return "unsupported"
+  if (/\bnot applicable\b/.test(t)) return "not confirmed"
+  if ((/\b(locked|burned)\b/.test(t)) && !/unverified|not confirmed|unsupported|not returned|not an evm/.test(t)) return "verified"
+  if (/unsupported/.test(t)) return "unsupported"
+  return "not confirmed"
+}
+
+function publicControllerLabel(status: string, chain: ClarkLiquidityChain): string {
+  const t = String(status ?? "").toLowerCase()
+  if (chain === "solana" || chain === "robinhood") return "unsupported"
+  if (/unsupported/.test(t)) return "unsupported"
+  if (/\b(not verified|unverified|not returned|unavailable|partial|open check)\b/.test(t)) return "not verified"
+  if (/\b(protocol|burn|renounced|verified|locked)\b/.test(t)) return "verified"
+  return "not verified"
+}
+
 export function formatClarkLiquidityCheck(result: ClarkLiquidityCheckResult): string {
   const liq = formatUsdLiquidity(result.liquidityUsd)
   const good = result.goodSigns.length ? result.goodSigns.map((s) => `- ${s}`) : ["- none confirmed in this pass"]
   const risks = result.risks.length ? result.risks.map((s) => `- ${s}`) : ["- none confirmed in this pass"]
   const missing = result.missingEvidence.length ? result.missingEvidence.map((s) => `- ${s}`) : ["- none flagged"]
-  // POOL AGE, DISCLOSED (Clark liquidity structured-card task): the task's Solana chain-behavior
-  // rule explicitly requires pool age in a Solana LP card ("show AMM liquidity, pool source, pool
-  // age, and Solana-native missing evidence") — the field already existed on the result type but was
-  // captured and never rendered. Shown for any chain when known (real, provider-sourced value; never
-  // fabricated), omitted entirely rather than printed as "not returned" when genuinely unknown, since
-  // pool age isn't part of the fixed 7-field header block every chain is guaranteed to have.
-  const poolAgeLine = result.poolAge ? [`Pool age: ${result.poolAge}`] : []
+  const lockBurn = publicLockBurnLabel(result.lockBurnStatus, result.chainSlug)
+  const controller = publicControllerLabel(result.controllerStatus, result.chainSlug)
+  const poolAge = result.poolAge && String(result.poolAge).trim() ? result.poolAge : "unknown"
   return [
     `LIQUIDITY CHECK — ${result.symbol}`,
     `Chain: ${chainLabel(result.chainSlug)}`,
     `Liquidity: ${liq}`,
     `Primary pool: ${result.dexName ?? result.primaryPool ?? "not returned"}`,
+    `Pool address: ${result.pairAddress ?? result.primaryPool ?? "not returned"}`,
     `LP model: ${result.lpModel ?? "unverified"}`,
-    ...poolAgeLine,
+    `LP lock/burn: ${lockBurn}`,
+    `Controller: ${controller}`,
+    `Pool age: ${poolAge}`,
     `Exit risk: ${result.exitRisk}`,
     `Confidence: ${result.confidence}`,
     "",
@@ -355,7 +372,7 @@ export function formatClarkLiquidityCheck(result: ClarkLiquidityCheckResult): st
     "Risks:",
     ...risks,
     "",
-    "Missing evidence:",
+    "Missing LP evidence:",
     ...missing,
     "",
     "Verdict:",

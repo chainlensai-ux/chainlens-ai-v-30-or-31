@@ -128,7 +128,7 @@ function assertNeverTokenEngine(prompt, label) {
   // The subset that must claim a specific routed intent (not fall through to the legacy cascade),
   // because a dedicated handler exists for them and regressing off it would lose real evidence.
   assert.equal(route(`Is ${TOKEN} safe?`).intent, 'token_safety', '"is X safe" must route to token_safety')
-  assert.equal(route(`Is LP locked on ${TOKEN}?`).intent, 'lp_lock_check', 'LP-lock phrasing must route to lp_lock_check')
+  assert.equal(route(`Is LP locked on ${TOKEN}?`).intent, 'liquidity_scan', 'LP-lock phrasing must stay LP-only, never TOKEN READ')
   assert.equal(route('Has this dev rugged before?').intent, 'dev_rug_history', 'dev rug history must have its own intent')
   assert.equal(route('Deep scan this token.').intent, 'token_scan', 'deep scan token must route to the token engine')
   checks += 4

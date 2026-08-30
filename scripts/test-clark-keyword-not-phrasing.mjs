@@ -22,8 +22,8 @@ assert.equal(classifyClarkPrompt(`safe ${ADDR}`).intent, 'token_safety', '"safe"
 assert.equal(classifyClarkPrompt(`${ADDR} is it safe`).intent, 'token_safety', 'the original full-phrase form must still work (no regression)')
 
 // Must not swallow the existing, more specific LP/liquidity-safety category.
-assert.equal(classifyClarkPrompt('is liquidity safe').intent, 'lp_lock_check', 'the bare-"safe" widening must not steal "is liquidity safe" from lp_lock_check')
-assert.equal(classifyClarkPrompt('is LP locked').intent, 'lp_lock_check', 'lp_lock_check routing must be unaffected')
+assert.equal(classifyClarkPrompt('is liquidity safe').intent, 'liquidity_scan', 'the bare-"safe" widening must not steal "is liquidity safe" into token_safety')
+assert.equal(classifyClarkPrompt('is LP locked').intent, 'liquidity_scan', 'LP lock phrasing must stay LP-only')
 
 const routeSrc = fs.readFileSync(new URL('../app/api/clark/route.ts', import.meta.url), 'utf8')
 const routeCode = routeSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')

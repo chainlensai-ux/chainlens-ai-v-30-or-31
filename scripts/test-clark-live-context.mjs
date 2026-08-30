@@ -19,6 +19,8 @@ const DEAD = '0x000000000000000000000000000000000000dEaD'
 assert.equal(uiModeHintForPrompt(`scan this wallet ${DEAD} on base`, 'token'), 'wallet')
 assert.equal(uiModeHintForPrompt(USDC, 'wallet'), 'token', 'bare Solana mint must not inherit sticky wallet mode')
 assert.equal(intentBadgeForPrompt(USDC), 'TOKEN READ')
+assert.equal(intentBadgeForPrompt('liquidity check HOUSE'), 'LIQUIDITY CHECK')
+assert.equal(intentBadgeForPrompt('LP check AERO'), 'LIQUIDITY CHECK')
 assert.equal(uiModeHintForPrompt('what is the mint address?', 'wallet'), 'token')
 assert.equal(intentBadgeForPrompt(`scan this wallet ${DEAD} on base`), 'WALLET READ')
 assert.equal(isMintAddressFollowup('what is the mint address?'), true)

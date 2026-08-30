@@ -61,8 +61,8 @@ const SOL_MINT = 'So11111111111111111111111111111111111111112'
   assert.equal(r.intent, 'liquidity_scan')
   assert.equal(r.address, SOL_MINT)
 }
-assert.equal(classifyClarkPrompt('is LP locked').intent, 'lp_lock_check')
-assert.equal(classifyClarkPrompt('is liquidity safe').intent, 'lp_lock_check')
+assert.equal(classifyClarkPrompt('is LP locked').intent, 'liquidity_scan')
+assert.equal(classifyClarkPrompt('is liquidity safe').intent, 'liquidity_scan')
 assert.ok(isLiquidityCheckIntent('liquidity safety for this token'))
 assert.ok(isLiquidityCheckIntent('where is liquidity'))
 assert.equal(extractLiquiditySymbol('Liquidity check AERO'), 'AERO')
