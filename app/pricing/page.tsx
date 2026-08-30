@@ -29,16 +29,18 @@ const plans: Plan[] = [
     price: '$0',
     subtext: 'forever free · no card required',
     sectionTitle: 'WHAT\'S INCLUDED',
-    note: 'Great for exploring ChainLens before you commit.',
     badge: 'CORTEX LITE',
     features: [
-      'Token Scanner — basic token + liquidity checks',
+      'Token Scanner — basic market data and liquidity depth',
       'Clark AI — 5 prompts per day',
-      'No AI token verdict',
+      'No AI token verdict / risk score',
       'No Wallet Scanner',
+      'No Liquidity Safety',
+      'No Dev Wallet Detector',
       'No Pump Alerts',
       'No Whale Alerts',
       'No Base Radar',
+      'No Portfolio',
     ],
     ctaClass: 'cta-free',
   },
@@ -47,19 +49,18 @@ const plans: Plan[] = [
     label: 'PRO',
     price: '$30',
     subtext: 'per month',
-    sectionTitle: 'FULL ACCESS',
-    note: 'Everything serious Base traders need.',
+    sectionTitle: 'WHAT\'S INCLUDED',
     badge: 'CORTEX STANDARD',
     features: [
-      'Token Scanner — full token, liquidity, LP, holder, security, and dev-risk analysis',
+      'Token Scanner — full token, liquidity, LP, holder, security, tax, and dev-risk analysis',
+      'Liquidity Safety',
       'Wallet Scanner',
+      'Dev Wallet Detector',
       'Pump Alerts',
       'Whale Alerts',
       'Base Radar',
-      'Clark AI — 50 prompts / day',
-      'Token security and tax simulation where available',
-      'Holder distribution where available',
-      'Portfolio and account tools',
+      'Portfolio',
+      'Clark AI — 50 prompts per day',
     ],
     ctaClass: 'cta-pro',
   },
@@ -68,17 +69,12 @@ const plans: Plan[] = [
     label: 'ELITE',
     price: '$60',
     subtext: 'per month',
-    sectionTitle: 'POWER TIER',
-    note: 'For traders who want more CORTEX power, higher limits, and faster reads.',
+    sectionTitle: 'ELITE ADDITIONS',
     badge: 'CORTEX FULL INTELLIGENCE',
     features: [
       'Everything in Pro',
-      'Unlimited Clark AI prompts, subject to fair use',
-      'Higher CORTEX usage limits',
-      'Priority CORTEX processing where available',
-      'More room for whale and wallet monitoring',
-      'Early access to new ChainLens features',
-      'Best plan for daily Base researchers and active traders',
+      'Clark AI — 300 prompts per day',
+      'Faster whale-alert sync than Pro',
     ],
     ctaClass: 'cta-elite',
   },
@@ -119,9 +115,9 @@ function IcClark() {
 
 const PRODUCT_PROOF = [
   { Icon: IcChain, label: 'Base-native terminal' },
-  { Icon: IcScan, label: 'Live token scanner' },
-  { Icon: IcWhale, label: 'Whale + pump alerts' },
-  { Icon: IcClark, label: 'Clark AI reports' },
+  { Icon: IcScan, label: 'Token Scanner' },
+  { Icon: IcClark, label: 'Clark AI' },
+  { Icon: IcWhale, label: 'Whale + pump alerts on Pro and Elite' },
 ]
 
 const NAV_LINKS = [
@@ -518,7 +514,7 @@ export default function PricingPage() {
 
                   {plan.id === 'elite' && (
                     <div style={{ border:'1px solid rgba(212,160,23,.20)', background:'rgba(212,160,23,.05)', color:'#d9be82', borderRadius:10, padding:'8px 10px', fontSize:11.5, lineHeight:1.4, marginTop:10 }}>
-                      Everything in Pro — plus maximum CORTEX access, higher limits, and early feature access.
+                      Everything in Pro, plus 300 Clark prompts per day and faster whale-alert sync.
                     </div>
                   )}
 

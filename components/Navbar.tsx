@@ -23,7 +23,7 @@ const TIER_COLUMNS = [
     bg: 'rgba(236,72,153,0.10)',
     border: 'rgba(236,72,153,0.20)',
     tools: [
-      { icon: '🧪', name: 'Token Scanner',    href: '/terminal/token-scanner', note: 'Basic token + liquidity checks' },
+      { icon: '🧪', name: 'Token Scanner',    href: '/terminal/token-scanner', note: 'Basic market data + liquidity depth' },
       { icon: '🤖', name: 'Clark AI',         href: '/terminal?tab=clark',      note: '5 prompts/day' },
     ],
   },
@@ -35,7 +35,9 @@ const TIER_COLUMNS = [
     border: 'rgba(45,212,191,0.20)',
     tools: [
       { icon: '🧪', name: 'Token Scanner',    href: '/terminal/token-scanner', note: 'Full token, liquidity, LP, holder, security, and dev-risk analysis' },
+      { icon: '💧', name: 'Liquidity Safety', href: '/terminal/liquidity',      note: '' },
       { icon: '👛', name: 'Wallet Scanner',   href: '/terminal?tab=wallet',     note: '' },
+      { icon: '🧑‍💻', name: 'Dev Wallet',      href: '/terminal/dev-wallet',     note: '' },
       { icon: '🐋', name: 'Whale Alerts',     href: '/terminal?tab=whales',     note: '' },
       { icon: '🚨', name: 'Pump Alerts',      href: '/terminal?tab=pumps',      note: '' },
       { icon: '📡', name: 'Base Radar',       href: '/terminal?tab=radar',      note: '' },
@@ -49,12 +51,8 @@ const TIER_COLUMNS = [
     bg: 'rgba(251,191,36,0.08)',
     border: 'rgba(251,191,36,0.22)',
     tools: [
-      { icon: '🤖', name: 'Clark AI',         href: '/terminal?tab=clark',      note: 'Unlimited' },
-      { icon: '⚡', name: 'Auto Verdicts',     href: '/terminal?tab=clark',      note: 'Every scan' },
-      { icon: '🧠', name: 'Smart Money',       href: '/terminal?tab=wallet',     note: 'Tracking' },
-      { icon: '🐋', name: 'Whale Alerts',      href: '/terminal?tab=whales',     note: 'Advanced' },
-      { icon: '🔮', name: 'Priority CORTEX',   href: '/terminal?tab=clark',      note: 'Full engine' },
-      { icon: '🚀', name: 'Early Access',      href: '/app',                     note: 'New features' },
+      { icon: '🤖', name: 'Clark AI',         href: '/terminal?tab=clark',      note: '300 prompts/day' },
+      { icon: '🐋', name: 'Whale Alerts',      href: '/terminal?tab=whales',     note: 'Faster sync than Pro' },
     ],
   },
 ]
