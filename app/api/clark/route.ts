@@ -10412,7 +10412,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       }
     }
 
-    const runChain: ClarkLiquidityChain = isSol ? "solana" : (liqChain === "solana" ? "base" : liqChain);
+    const runChain: ClarkLiquidityChain = isSol ? "solana" : liqChain;
     if (runChain !== "solana" && runChain !== "base" && runChain !== "ethereum" && runChain !== "robinhood") {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: [],
