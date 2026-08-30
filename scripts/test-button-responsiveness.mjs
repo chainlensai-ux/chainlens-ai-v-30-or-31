@@ -123,7 +123,13 @@ function run() {
   {
     // Wallet Scanner: the ATOMIC ENVELOPE pattern already guarantees a report + its scan identity
     // are set together, only from the real awaited response — never a placeholder result object.
-    check('Wallet Scanner only ever calls setResultEnvelope with a real, awaited API response (envelope built from `report` after the await)', /const report = response\.data as WalletV2Report[\s\S]{0,300}setResultEnvelope\(envelope\)/.test(walletScannerSrc))
+    // WIDENED BOUND, DISCLOSED (Wallet Scanner chain selection fix, worker level): the gap between
+    // `const report = ...` and `setResultEnvelope(envelope)` now also includes a disclosed block
+    // that reads the worker's own post-scan walletChainSelectionAudit off `report` and reconciles
+    // page state with it — still entirely between the same two anchors, still before `envelope` is
+    // built from `report`. The guarantee this check verifies (envelope only ever built from a real,
+    // awaited API response) is unchanged; only the literal character distance grew.
+    check('Wallet Scanner only ever calls setResultEnvelope with a real, awaited API response (envelope built from `report` after the await)', /const report = response\.data as WalletV2Report[\s\S]{0,2000}setResultEnvelope\(envelope\)/.test(walletScannerSrc))
     check('Wallet Scanner clears the envelope (never leaves a stale/fake one) on a degraded or thrown scan', walletScannerSrc.includes('setResultEnvelope(null)'))
     // Robinhood section: pnl/holdings/activity cards all read directly off the real robinhoodResult
     // state, which is only ever set from the awaited fetch response (setRobinhoodResult(json)).

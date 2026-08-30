@@ -555,6 +555,20 @@ export default function WalletScannerPage() {
         throw new Error(response.error?.message ?? 'Scan failed')
       }
       const report = response.data as WalletV2Report
+      // WORKER-LEVEL CHAIN SELECTION AUDIT, DISCLOSED (Wallet Scanner chain selection fix, worker
+      // level): the job's own final result (workers/walletScanV2.ts's runWalletScanV2Worker) now
+      // carries its own walletChainSelectionAudit, reconciled with the REAL scan outcome —
+      // `finalChainsScanned` only includes 'robinhood' when a real, non-null scanRobinhoodWallet()
+      // result came back. This is strictly more honest than the pre-scan one set from the enqueue
+      // response's onUpdate above (whose finalChainsScanned was only ever a stated INTENT), so it
+      // always wins when present. No reconciliation logic beyond "prefer the later, real one" is
+      // needed here.
+      const workerReportAudit = (report as unknown as { walletChainSelectionAudit?: typeof chainSelectionAudit })?.walletChainSelectionAudit
+      if (workerReportAudit) {
+        setChainSelectionAudit(workerReportAudit)
+        // eslint-disable-next-line no-console
+        console.log('[SCAN] walletChainSelectionAudit (worker, final)', workerReportAudit)
+      }
       // ATOMIC REPLACEMENT: the entire previous envelope (report + identity) is replaced in one
       // update — never merged field-by-field with the prior scan.
       const envelope: WalletScanEnvelope = { report, jobId: scanJobId, completedAt: Date.now() }

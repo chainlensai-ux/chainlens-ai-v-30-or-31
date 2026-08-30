@@ -337,6 +337,13 @@ async function executeWalletScanJob(payload: WalletScanJobPayload): Promise<{ jo
       { walletAddress: payload.walletAddress, chains: payload.chains, scanMode: payload.scanMode },
       payload.ip,
       payload.jobId,
+      // ADDED, DISCLOSED (Wallet Scanner chain selection fix, worker level): threads the real,
+      // ORIGINAL client intent (was Robinhood requested?) from the queued job payload
+      // (src/modules/walletScanQueue.ts's WalletScanJobPayload.includeRobinhoodRequested, set at
+      // enqueue time by app/api/wallet-scan/route.ts) through to the worker — see
+      // workers/walletScanV2.ts's own header for why this can't be recovered from `payload.chains`
+      // alone (Robinhood is filtered out of `chains` before it ever reaches this queue).
+      payload.includeRobinhoodRequested,
     )
 
     if (!result || typeof result !== 'object' || !('body' in result)) {

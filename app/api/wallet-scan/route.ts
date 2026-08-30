@@ -101,7 +101,13 @@ export async function POST(req: Request): Promise<Response> {
   const jobId = crypto.randomUUID()
 
   try {
-    await enqueueWalletScanJob(jobId, { jobId, walletAddress: wallet, chains, scanMode, ip })
+    // WORKER-LEVEL ROBINHOOD FIX, DISCLOSED: `includeRobinhoodRequested` (computed above from the
+    // caller's original, unfiltered `chains`) now rides along with the job payload so the worker
+    // (workers/walletScanV2.ts's runWalletScanV2Worker, via src/modules/walletScanWorker.ts) can
+    // itself run a real scanRobinhoodWallet() call as part of processing the queued deep-scan job —
+    // not just this route's own non-blocking cache-warm below, which only warms the shared cache and
+    // never becomes part of the job's own published result.
+    await enqueueWalletScanJob(jobId, { jobId, walletAddress: wallet, chains, scanMode, ip, includeRobinhoodRequested })
   } catch (err) {
     console.error('[wallet-scan] failed to enqueue job', { error: err instanceof Error ? err.message : String(err) })
     if (err instanceof WalletScanQueueUnavailableError) {

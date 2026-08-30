@@ -39,6 +39,16 @@ import { withScanTimeout } from '@/src/utils/timeout'
 import { alchemyAudit } from '@/lib/server/alchemyAudit'
 import { getGoldrushPriceSourceCallCount } from '@/src/modules/pricingAtTimeEngine/sources/goldrushPriceSource'
 import { getDexscreenerCallCount } from '@/src/modules/pricingAtTimeEngine/sources/dexscreener'
+// ROBINHOOD WORKER INCLUSION, DISCLOSED (Wallet Scanner chain selection fix, worker level): this
+// reuses the EXACT existing scanRobinhoodWallet() call sequence app/api/wallet-scan/route.ts's
+// cache-warm, the orchestrator, and the standalone Robinhood route all already use — no new scan
+// logic, no PnL recomputation. It is deliberately NOT wired into fetchAllHoldings/resolveHoldings-
+// AllowedChainIds or any other part of the EVM holdings/pricing/FIFO/PnL chain above — see this
+// file's own inline disclosure at its call site below and lib/server/walletChainSelectionAudit.ts's
+// header for why SupportedChain (EVM-only) must never gain a 'robinhood' member.
+import { scanRobinhoodWallet } from '@/lib/server/robinhoodWalletScanner'
+import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
+import { buildWalletChainSelectionAudit } from '@/lib/server/walletChainSelectionAudit'
 
 // V2-DIRECT-FAILURE LOGGER: moved here unchanged from the route file (still exported so the route
 // can also tag its own outer catch with the same log tag).
@@ -355,7 +365,18 @@ export type WalletScanTimingAudit = {
 // app/api/scan-v2/worker/route.ts (which has the real job id); left undefined by
 // app/api/scan-v2/full-scan/legacy/route.ts's call site (unchanged, still 2 args) and by any other
 // existing caller, so this is purely additive — no existing call site needed to change.
-export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?: string): Promise<WalletScanV2WorkerResult> {
+// `includeRobinhoodRequested`, ADDED DISCLOSED (Wallet Scanner chain selection fix, worker level):
+// optional, fourth parameter — whether the ORIGINAL client request asked for Robinhood Chain (via
+// an explicit 'robinhood' entry in `chains`, or by omitting `chains` entirely — the same
+// auto/all_supported semantics app/api/wallet-scan/route.ts and walletScanOrchestrator.ts's
+// resolveChains() already use). This can't be recovered from `rawBody`/`sanitized` alone: the
+// EVM-only SanitizedScanRequest.chains (src/deployment/validator.ts's SUPPORTED_CHAINS) never
+// contains 'robinhood' in the first place, and callers that filter it out before enqueuing (e.g.
+// app/api/wallet-scan/route.ts, which must — enqueueWalletScanJob()/runValidatedScanRequest() are
+// EVM-only) would otherwise leave this worker with no way to know Robinhood was ever asked for.
+// Defaults to false so every existing call site (app/api/scan-v2/full-scan/legacy/route.ts's
+// 2-arg call, this file's own tests) is unaffected — purely additive.
+export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?: string, includeRobinhoodRequested = false): Promise<WalletScanV2WorkerResult> {
   const startTime = Date.now()
   const eventsCache = createEventsCache()
   const cuBudget = createCuBudget()
@@ -390,6 +411,29 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   const holdingsAllowedChainIds = resolveHoldingsAllowedChainIds(sanitized.chains)
   // eslint-disable-next-line no-console
   console.warn('[CU-TRACK] deep-scan start:', { walletAddress, scanMode: sanitized.scanMode, chainsScanned: sanitized.chains, chains: holdingsAllowedChainIds })
+
+  // WALLET CHAIN SELECTION AUDIT, WORKER-LEVEL, DISCLOSED (Wallet Scanner chain selection fix): a
+  // NEW, ADJACENT log line — never a replacement for the `[CU-TRACK] deep-scan start` line above,
+  // which stays EVM-only exactly as before (it honestly describes resolveHoldingsAllowedChainIds'
+  // real, EVM-only behavior; see lib/server/walletChainSelectionAudit.ts's header). This is the
+  // canonical requested/allowed/omitted chain-selection decision for THIS worker invocation,
+  // including Robinhood's numeric chain id (4663) whenever it was requested. `robinhoodAvailable`
+  // gates on the exact same isRobinhoodChainAvailable() (feature flag + configured RPC URL) every
+  // other Robinhood call site in this codebase already gates on.
+  const robinhoodAvailable = isRobinhoodChainAvailable()
+  const includeRobinhood = includeRobinhoodRequested && robinhoodAvailable
+  const initialWalletChainSelectionAudit = buildWalletChainSelectionAudit({
+    requestedMode: sanitized.scanMode,
+    evmChainSlugs: sanitized.chains,
+    includeRobinhoodRequested,
+    // Best-known intent at this point in the request lifecycle — the EVM chains are what's about to
+    // run (holdings/pricing/trades/pnl below); Robinhood is included here only when it was both
+    // requested AND actually available, mirroring app/api/wallet-scan/route.ts's own
+    // finalChainsScanned convention. Reconciled with the real outcome below once the scan completes.
+    finalChainsScanned: includeRobinhood ? [...sanitized.chains, 'robinhood'] : [...sanitized.chains],
+  })
+  // eslint-disable-next-line no-console
+  console.warn('[CU-TRACK] wallet chain selection audit:', initialWalletChainSelectionAudit)
   const chainOverallStart = performance.now()
 
   async function computeFastSnapshot() {
@@ -513,6 +557,27 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
   // warning, and never affects the real, later `await fastSnapshotPromise` below (a promise's
   // resolution is independent of how many places observe it).
   fastSnapshotPromise.catch(() => {})
+
+  // ROBINHOOD SCAN, WORKER-LEVEL, DISCLOSED (Wallet Scanner chain selection fix): started
+  // concurrently with the fast snapshot and the core call, same as those two — never on the
+  // critical path for the EVM/FIFO side. Reuses the EXACT existing scanRobinhoodWallet() (see this
+  // file's top-of-file import disclosure) — no new scan logic, no PnL recomputation, no widening of
+  // the EVM-only fetchAllHoldings/SupportedChain pipeline above. `.catch` returns null on failure —
+  // scanRobinhoodWallet never throws unhandled on its own, but this worker treats a Robinhood
+  // failure as non-fatal to the EVM/FIFO scan either way, exactly like the orchestrator's own
+  // scanRobinhoodWallet call site (lib/server/walletScanOrchestrator.ts).
+  const robinhoodPromise = includeRobinhood
+    ? scanRobinhoodWallet(walletAddress, fetch).catch((err) => {
+      // eslint-disable-next-line no-console
+      console.warn('[CU-TRACK] worker robinhood scan failed', { walletAddress, error: err instanceof Error ? err.message : String(err) })
+      return null
+    })
+    : Promise.resolve(null)
+  // UNHANDLED-REJECTION GUARD, DISCLOSED: matches the exact same defensive pattern as
+  // fastSnapshotPromise.catch(() => {}) above — robinhoodPromise's own internal `.catch` already
+  // resolves to null on failure, so this is a pure no-op guard against Node's unhandled-rejection
+  // warning on the (never-actually-taken) early-return paths below that abandon this promise.
+  robinhoodPromise.catch(() => {})
   const corePromise = withScanTimeout(router.runValidatedScanRequest(sanitized), WORKER_GLOBAL_TIMEOUT_MS)
 
   // handleScanRequest already never throws internally (rate-limit/validation errors and any
@@ -903,6 +968,33 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     })
     recordCuUsage(cuBudget.providerCalls, eventsCache.hitCount)
     logIfUnexpectedV2Shape(body.data as Record<string, unknown> | undefined)
+
+    // ROBINHOOD MERGE, WORKER-LEVEL, DISCLOSED (Wallet Scanner chain selection fix): additive only
+    // — `robinhood` and `walletChainSelectionAudit` are NEW sibling fields on `body.data`, alongside
+    // (never inside/mixed into) the EVM holdings/pricing/pnlV2/etc fields set above. This is the
+    // real, post-scan outcome: `robinhood` is null whenever it wasn't requested, wasn't available,
+    // or the scan itself failed (see robinhoodPromise's own `.catch` above) — never a fabricated
+    // stand-in. `finalWalletChainSelectionAudit` reconciles the pre-scan intent
+    // (initialWalletChainSelectionAudit, already logged above) with what the scan actually produced:
+    // 'robinhood' is only in finalChainsScanned when a real, non-null result came back.
+    const robinhood = await robinhoodPromise
+    const actualChainsScanned = includeRobinhood && robinhood ? [...sanitized.chains, 'robinhood'] : [...sanitized.chains]
+    const finalWalletChainSelectionAudit = buildWalletChainSelectionAudit({
+      requestedMode: sanitized.scanMode,
+      evmChainSlugs: sanitized.chains,
+      includeRobinhoodRequested,
+      finalChainsScanned: actualChainsScanned,
+    })
+    // eslint-disable-next-line no-console
+    console.warn('[CU-TRACK] wallet chain selection audit (final):', finalWalletChainSelectionAudit)
+    body = {
+      ...body,
+      data: {
+        ...body.data,
+        robinhood: robinhood ? { holdings: robinhood.holdings, activity: robinhood.activity, pnl: robinhood.pnl, audit: robinhood.audit } : null,
+        walletChainSelectionAudit: finalWalletChainSelectionAudit,
+      },
+    } as typeof body
   }
 
   return { status: result.status, body }

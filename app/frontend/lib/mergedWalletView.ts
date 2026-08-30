@@ -14,6 +14,20 @@
 // the existing two fetches (scanWalletV2, handleRobinhoodScan) already produced. It never fakes
 // Robinhood PnL and never touches the Robinhood decoder/PnL gates in lib/server/robinhoodWalletScanner.ts.
 //
+// WORKER-LEVEL ROBINHOOD FIELD, DISCLOSED (Wallet Scanner chain selection fix, worker level): the
+// job/poll result (`report.robinhood`, populated by workers/walletScanV2.ts's runWalletScanV2Worker
+// once it's threaded `includeRobinhoodRequested`) is a SECOND, independent source of the same
+// Robinhood data this file's `robinhoodResult` param already reads via the separate GET
+// /api/wallet-scan/robinhood fetch. No reconciliation logic exists between the two on purpose,
+// verified rather than assumed: both ultimately call the exact same scanRobinhoodWallet(), which
+// reads/writes the exact same wallet-keyed ~60s TTL cache (getCachedRobinhoodWalletHoldings/
+// getCachedRobinhoodWalletActivity in lib/server/robinhoodWalletScanner.ts) — so within that window
+// they describe the same underlying cached scan and will naturally agree. This function
+// deliberately keeps reading only `robinhoodResult` (the separate fetch) since that is the ONLY
+// source available on the fast preview-scan path, which never goes through the async job worker at
+// all — using `report.robinhood` as the sole source here would silently regress that path to "no
+// Robinhood" instead.
+//
 import type { RobinhoodWalletScanResponse } from '@/app/frontend/components/RobinhoodChainSection'
 
 export type RobinhoodInclusion = {

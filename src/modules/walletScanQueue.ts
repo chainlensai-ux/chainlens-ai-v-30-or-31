@@ -53,6 +53,13 @@ export type WalletScanJobMetadata = {
   finishedAt?: number
   progress?: WalletScanJobProgress
   partial?: WalletScanPartialSnapshot
+  // ADDED, DISCLOSED (Wallet Scanner chain selection fix, worker level): whether the ORIGINAL
+  // client request asked for Robinhood Chain — see workers/walletScanV2.ts's own header for why
+  // this can't be recovered from `chains` alone (Robinhood is filtered out of `chains` before it
+  // ever reaches this queue, since enqueueWalletScanJob/runValidatedScanRequest are EVM-only).
+  // Optional/defaults to false in every reader below — purely additive, no existing job record
+  // written before this task loses meaning.
+  includeRobinhoodRequested?: boolean
 }
 
 export type WalletScanJobPayload = {
@@ -61,6 +68,11 @@ export type WalletScanJobPayload = {
   chains: string[]
   scanMode: 'normal' | 'deep'
   ip: string
+  // Optional, DISCLOSED: defaults to false in enqueueWalletScanJob below — every existing caller
+  // (walletScanOrchestrator.ts's deep-mode enqueue, this file's own tests) that doesn't pass it
+  // keeps byte-identical behavior (no Robinhood inclusion at the worker level, same as before this
+  // task), purely additive for app/api/wallet-scan/route.ts, which now does pass it.
+  includeRobinhoodRequested?: boolean
 }
 
 const JOB_TTL_SECONDS = 30 * 60
@@ -220,6 +232,7 @@ export async function claimWalletScanPayload(jobId: string): Promise<WalletScanJ
     chains: job.chains ?? ['base', 'eth'],
     scanMode: job.scanMode ?? 'normal',
     ip: job.ip ?? 'unknown',
+    includeRobinhoodRequested: job.includeRobinhoodRequested ?? false,
   }
 }
 
@@ -250,6 +263,7 @@ export async function claimNextWalletScanPayload(): Promise<WalletScanJobPayload
     chains: job.chains ?? ['base', 'eth'],
     scanMode: job.scanMode ?? 'normal',
     ip: job.ip ?? 'unknown',
+    includeRobinhoodRequested: job.includeRobinhoodRequested ?? false,
   }
 }
 
@@ -283,6 +297,7 @@ export async function enqueueWalletScanJob(jobId: string, payload: WalletScanJob
     chains: payload.chains,
     scanMode: payload.scanMode,
     ip: payload.ip,
+    includeRobinhoodRequested: payload.includeRobinhoodRequested ?? false,
   })
   try {
     await kv.set(walletScanPendingJobKey(jobId), true, { ex: JOB_TTL_SECONDS })
