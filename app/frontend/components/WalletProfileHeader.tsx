@@ -23,11 +23,13 @@ import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
 import type { SmartMoneyScore } from '@/lib/engine/modules/smartMoney/types'
 import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
+import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { ChainBadge } from './ChainBadge'
 import { ConfidenceBadge } from './ConfidenceBadge'
 import { PortfolioIntelligenceCard, selectPortfolioStats } from './PortfolioIntelligenceCard'
 import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
+import { computeMergedTotalValueUsd, portfolioCoverageCopy } from '@/app/frontend/lib/mergedWalletView'
 
 // PORTFOLIO V2 MIGRATION, UPDATED: see app/terminal/wallet-scanner/page.tsx's own local
 // WalletV2Report type (a separately-defined but structurally identical type — this file's own
@@ -102,6 +104,11 @@ export type WalletProfileHeaderProps = {
   isFullRecoveryAdmin: boolean
   onDeepScan: () => void
   onAdminAction: () => void
+  // ONE CANONICAL RESULT, DISCLOSED (split-Wallet-Scanner-results fix task): optional — when present,
+  // the hero total below and PortfolioIntelligenceCard merge Robinhood's real total in and stop
+  // claiming Robinhood is excluded. Omitting it degrades exactly to this component's prior,
+  // Base/ETH-only behavior — Base/ETH/BNB output is unchanged either way.
+  robinhoodResult?: RobinhoodWalletScanResponse | null
 }
 
 function fmtUsdFull(value: number): string {
@@ -221,9 +228,13 @@ export function WalletOverview({ report }: { report: WalletV2Report }) {
 // already-computed totalValueUsd field either way, it never re-sums holdings for this purpose).
 // EXPORTED, DISCLOSED (Wallet Scanner V3 layout task): additive-only — see WalletOverview's own
 // export disclosure above for the reasoning.
-export function PortfolioSnapshot({ report }: { report: WalletV2Report }) {
+export function PortfolioSnapshot({ report, robinhoodResult }: { report: WalletV2Report; robinhoodResult?: RobinhoodWalletScanResponse | null }) {
   const { stats, usingV2 } = selectPortfolioStats(report.portfolio, report.portfolioV2)
-  const totalValueUsd = stats.totalValueUsd
+  // ONE CANONICAL TOTAL, DISCLOSED (split-Wallet-Scanner-results fix task): this hero total must
+  // never disagree with PortfolioIntelligenceCard's total for the same scan — both now read through
+  // the same computeMergedTotalValueUsd() helper. See mergedWalletView.ts's own header.
+  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult)
+  const totalValueUsd = merged.totalValueUsd
 
   // DIAGNOSTICS, DISCLOSED (this task's explicit requirement): compares what the backend actually
   // computed against what this card is about to render, plus a LOCAL, comparison-only recomputation
@@ -262,14 +273,16 @@ export function PortfolioSnapshot({ report }: { report: WalletV2Report }) {
           {report.scanMetadata?.intel_window_days ?? '—'}-Day Intelligence Engine
         </span>
       </div>
-      {/* COVERAGE DISCLOSURE, DISCLOSED (FreeCode valuation audit task's explicit requirement):
-          Wallet Scanner only ever covers on-chain holdings on its supported chains — it has no
-          custodial/exchange (e.g. Robinhood, Coinbase) integration anywhere in this codebase, so
-          this total can never represent "all assets" for a wallet owner who also holds custodial
-          positions. Always shown, not conditional on any per-scan flag — there is no code path
-          that ever adds custodial data, so this coverage gap is permanent, not scan-dependent. */}
+      {/* COVERAGE DISCLOSURE, UPDATED DISCLOSURE (split-Wallet-Scanner-results fix task): Robinhood
+          Chain scanning now genuinely exists in this codebase (lib/server/robinhoodWalletScanner.ts,
+          wired into this page's own handleRobinhoodScan()) — the old comment/copy here claiming "no
+          custodial/exchange integration anywhere in this codebase" / "permanent, not scan-dependent"
+          is now false and has been replaced with copy that reflects the real, scan-dependent state:
+          when Robinhood was actually, successfully scanned this session, the total above already
+          includes it (see mergedWalletView.ts) and the copy says so; otherwise it stays honest about
+          on-chain-only coverage without claiming Robinhood support doesn't exist. */}
       <p style={{ fontSize: '10px', color: 'rgba(148,163,184,0.45)', marginTop: '4px', maxWidth: '480px' }}>
-        Covers on-chain holdings on supported chains only — custodial/exchange holdings (e.g. Robinhood) may not be included.
+        {portfolioCoverageCopy(merged.robinhoodIncluded)}
       </p>
 
       {breakdown.length === 0 && chainsWithoutData.length === 0 ? (
@@ -383,19 +396,20 @@ export function Actions({ loading, onDeepScan }: Pick<WalletProfileHeaderProps, 
   )
 }
 
-export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDeepScan, onAdminAction }: WalletProfileHeaderProps) {
+export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDeepScan, onAdminAction, robinhoodResult }: WalletProfileHeaderProps) {
   if (!report) return null
 
   return (
     <div className="wph-root ws-result-fade" style={{ background: 'linear-gradient(160deg, rgba(45,212,191,0.05), rgba(6,10,18,0.97))', border: '1px solid rgba(45,212,191,0.18)', borderRadius: '18px', padding: '24px 26px', marginBottom: '20px', display: 'flex', flexDirection: 'column', gap: '20px', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06), 0 12px 32px rgba(0,0,0,0.28)' }}>
       <WalletOverview report={report} />
       <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
-      <PortfolioSnapshot report={report} />
+      <PortfolioSnapshot report={report} robinhoodResult={robinhoodResult} />
       <PortfolioIntelligenceCard
         portfolio={report.portfolio}
         portfolioV2={report.portfolioV2}
         chainsScanned={report.scanMetadata?.chainsScanned}
         activeChain={report.behaviorIntel?.multiChainParticipation?.primaryChain}
+        robinhoodResult={robinhoodResult}
       />
       {report.smartMoneyScore && (
         <>

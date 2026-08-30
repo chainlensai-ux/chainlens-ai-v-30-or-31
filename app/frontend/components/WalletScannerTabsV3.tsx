@@ -10,24 +10,34 @@
 // tab-switching UI state.
 import { useState } from 'react'
 import type { WalletV2Report } from '@/app/terminal/wallet-scanner/page'
+import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { HoldingsViewV2 } from './HoldingsViewV2'
 import { SellActivitySummary } from './SellActivitySummary'
 import { ChainSelectionView } from './ChainSelectionView'
+import { RobinhoodChainSection } from './RobinhoodChainSection'
 
 export type WalletScannerTabsV3Props = {
   report: WalletV2Report
+  // ONE CANONICAL RESULT, DISCLOSED (split-Wallet-Scanner-results fix task): when present, Robinhood
+  // Chain renders as ONE MORE TAB in this same tabbed workspace — a normal chain section inside the
+  // one Wallet Scanner result model, never a second, separate top-level card/scanner. Optional — a
+  // scan with no Robinhood result (not configured, not yet scanned) simply has no Robinhood tab.
+  robinhoodResult?: RobinhoodWalletScanResponse | null
+  onRobinhoodRescan?: () => void
+  robinhoodRescanLoading?: boolean
+  debugMode?: boolean
 }
 
-type TabKey = 'holdings' | 'sell-activity' | 'chains'
+type TabKey = 'holdings' | 'sell-activity' | 'chains' | 'robinhood'
 
-const TABS: Array<{ key: TabKey; label: string }> = [
-  { key: 'holdings', label: 'Holdings' },
-  { key: 'sell-activity', label: 'Sell Activity' },
-  { key: 'chains', label: 'Chains' },
-]
-
-export function WalletScannerTabsV3({ report }: WalletScannerTabsV3Props) {
+export function WalletScannerTabsV3({ report, robinhoodResult, onRobinhoodRescan, robinhoodRescanLoading, debugMode }: WalletScannerTabsV3Props) {
   const [activeTab, setActiveTab] = useState<TabKey>('holdings')
+  const TABS: Array<{ key: TabKey; label: string }> = [
+    { key: 'holdings', label: 'Holdings' },
+    { key: 'sell-activity', label: 'Sell Activity' },
+    { key: 'chains', label: 'Chains' },
+    ...(robinhoodResult ? [{ key: 'robinhood' as const, label: 'Robinhood' }] : []),
+  ]
 
   return (
     <div className="ws-card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -70,6 +80,19 @@ export function WalletScannerTabsV3({ report }: WalletScannerTabsV3Props) {
         )}
         {activeTab === 'chains' && (
           <ChainSelectionView data={report.chainSelection} chainActivityV2={report.chainActivityV2} />
+        )}
+        {/* ROBINHOOD AS A CHAIN TAB, DISCLOSED (split-Wallet-Scanner-results fix task): the exact
+            same RobinhoodChainSection cards/tables (total, native ETH, priced/unpriced holdings,
+            pricing coverage, verified swaps, skipped swap logs, Blockscout status, PnL status) now
+            render inside this SAME tabbed workspace instead of as a separate, competing top-level
+            card — one canonical result, Robinhood as one more chain section within it. */}
+        {activeTab === 'robinhood' && robinhoodResult && (
+          <RobinhoodChainSection
+            result={robinhoodResult}
+            onRescan={onRobinhoodRescan ?? (() => {})}
+            rescanLoading={robinhoodRescanLoading ?? false}
+            debugMode={debugMode ?? false}
+          />
         )}
       </div>
     </div>

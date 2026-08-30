@@ -39,7 +39,9 @@ import { concentrationLabelFor } from '@/src/modules/behaviorIntel/utils'
 import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
 import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
+import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
+import { computeMergedTotalValueUsd, portfolioCoverageCopy } from '@/app/frontend/lib/mergedWalletView'
 import { ChainBadge } from './ChainBadge'
 
 export type PortfolioIntelligenceCardProps = {
@@ -47,6 +49,11 @@ export type PortfolioIntelligenceCardProps = {
   portfolioV2?: EnginePortfolioV2 | null // new
   chainsScanned: SupportedChain[] | null | undefined
   activeChain?: SupportedChain | null
+  // ONE CANONICAL TOTAL, DISCLOSED (split-Wallet-Scanner-results fix task): optional — when the page
+  // has a Robinhood Chain result for this scan, pass it here so this card's total merges Robinhood in
+  // and its coverage line stops falsely claiming Robinhood is excluded. Omitting it (existing callers
+  // that never scan Robinhood) degrades exactly to this card's prior V2-only behavior.
+  robinhoodResult?: RobinhoodWalletScanResponse | null
 }
 
 type PortfolioStats = {
@@ -121,14 +128,20 @@ function StatBox({ label, value, sub, valueColor }: { label: string; value: Reac
   )
 }
 
-export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanned, activeChain }: PortfolioIntelligenceCardProps) {
+export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanned, activeChain, robinhoodResult }: PortfolioIntelligenceCardProps) {
   const { stats, usingV2 } = selectPortfolioStats(portfolio, portfolioV2)
   // TEMPORARY, per this migration's own instructions — remove once portfolioV2 is verified live
   // and this fallback path is no longer needed.
   // eslint-disable-next-line no-console
   console.debug('PortfolioCard using V2:', usingV2)
 
-  const { totalValueUsd, pricedTokenCount, concentration, topChips } = stats
+  // ONE CANONICAL TOTAL, DISCLOSED: merges Robinhood's real total into this card's displayed total
+  // ONLY when Robinhood was actually, successfully scanned (see mergedWalletView.ts's own header) —
+  // never a fabricated number, never silently dropping a real Robinhood value that was on screen a
+  // card away.
+  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult)
+  const totalValueUsd = merged.totalValueUsd
+  const { pricedTokenCount, concentration, topChips } = stats
   const chains = Array.isArray(chainsScanned) ? chainsScanned : []
 
   return (
@@ -149,7 +162,7 @@ export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanne
         <StatBox
           label="Supported On-Chain Portfolio Value"
           value={totalValueUsd != null ? fmtUsd(totalValueUsd) : 'Not available'}
-          sub="Custodial/exchange holdings (e.g. Robinhood) are not included"
+          sub={portfolioCoverageCopy(merged.robinhoodIncluded)}
           valueColor="#2DD4BF"
         />
         <StatBox label="Priced Tokens" value={pricedTokenCount} sub="Zero/unpriced tokens excluded" />
@@ -177,7 +190,7 @@ export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanne
         </div>
       )}
 
-      {chains.length > 0 && (
+      {(chains.length > 0 || merged.robinhoodIncluded) && (
         <div>
           <div style={{ fontSize: '9px', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'rgba(148,163,184,0.50)', marginBottom: '8px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
             Chain Exposure
@@ -188,6 +201,15 @@ export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanne
                 <ChainBadge chain={chain} />
               </span>
             ))}
+            {/* ONE CANONICAL RESULT, DISCLOSED: Robinhood Chain is shown as one more chain badge in
+                this SAME card — a normal chain section inside the one Wallet Scanner result model,
+                never a second competing total/card — rendered only when it was actually included in
+                the merged total above. */}
+            {merged.robinhoodIncluded && (
+              <span key="robinhood">
+                <ChainBadge chain="robinhood" />
+              </span>
+            )}
           </div>
         </div>
       )}

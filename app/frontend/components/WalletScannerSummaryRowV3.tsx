@@ -10,12 +10,17 @@
 // requirements (unavailable-evidence messaging, never showing a blocked/unstable figure as verified
 // profit, real backend-classification badges only) — see that file's own header.
 import type { WalletV2Report } from '@/app/terminal/wallet-scanner/page'
+import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { PortfolioIntelligenceCard } from './PortfolioIntelligenceCard'
 import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { PnlStatusCard } from './PnlStatusCard'
 
 export type WalletScannerSummaryRowV3Props = {
   report: WalletV2Report
+  // ONE CANONICAL RESULT, DISCLOSED (split-Wallet-Scanner-results fix task): optional — forwarded to
+  // PortfolioIntelligenceCard so its total/coverage line agree with the hero total above it. See
+  // app/frontend/lib/mergedWalletView.ts's own header.
+  robinhoodResult?: RobinhoodWalletScanResponse | null
 }
 
 const cardStyle: React.CSSProperties = {
@@ -23,7 +28,7 @@ const cardStyle: React.CSSProperties = {
   borderRadius: '16px', padding: '18px 20px', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.05), 0 8px 20px rgba(0,0,0,0.18)',
 }
 
-export function WalletScannerSummaryRowV3({ report }: WalletScannerSummaryRowV3Props) {
+export function WalletScannerSummaryRowV3({ report, robinhoodResult }: WalletScannerSummaryRowV3Props) {
   return (
     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', marginBottom: '16px' }}>
       {/* PortfolioIntelligenceCard already renders its OWN complete card chrome (padding/border/
@@ -35,6 +40,7 @@ export function WalletScannerSummaryRowV3({ report }: WalletScannerSummaryRowV3P
           portfolioV2={report.portfolioV2}
           chainsScanned={report.scanMetadata?.chainsScanned}
           activeChain={report.behaviorIntel?.multiChainParticipation?.primaryChain}
+          robinhoodResult={robinhoodResult}
         />
       </div>
 

@@ -350,16 +350,14 @@ async function run() {
     const audit = buildRobinhoodWalletScannerAudit({ wallet: WALLET, holdings: richHoldings, activity: richActivity, pnl, wrongChainCacheRejected: false })
     check('even with 50 real transfers and priced holdings, pnlStatus stays "disabled" — activity volume never upgrades it', audit.pnlStatus === 'disabled')
     check('the disabledPnlReason stays the same fixed, honest sentence regardless of how much activity exists', audit.disabledPnlReason === 'No verified Robinhood swaps were found for this wallet in this scan — PnL requires at least one swap with real token identities and real price evidence on both legs.')
-    const pageSrc = fs.readFileSync(new URL('../app/terminal/wallet-scanner/page.tsx', import.meta.url), 'utf8')
-    // PRECISION FIX, DISCLOSED (multi-chain integration task's UI restructure moved the PnL label
-    // computation onto its own line, close enough to an unrelated `activity.items` read that the
-    // OLD proximity regex here started false-positiving on the literal string "PnL" in `pnlLabel`'s
-    // own ternary — never an actual data dependency). The real invariant this check guards
-    // (activity.items is never arithmetically combined into a PnL figure) is now verified precisely:
-    // no `.reduce`/`.map` numeric fold over activity.items, and the UI's own realized-PnL text is
-    // sourced only from `pnl.realizedPnlUsd`, never `activity.items`.
-    check('activity.items is never reduced/mapped into a numeric PnL figure', !/activity\.items\s*\.\s*(reduce|map)\s*\(/.test(pageSrc))
-    check('the UI\'s realized PnL figure is sourced only from pnl.realizedPnlUsd, never activity.items', pageSrc.includes('pnl.realizedPnlUsd != null ? `$${pnl.realizedPnlUsd'))
+    // RELOCATED, DISCLOSED (split-Wallet-Scanner-results fix task): the Robinhood UI (including this
+    // PnL rendering) moved out of page.tsx into its own component so it can render as a chain tab
+    // inside the merged Wallet Scanner result instead of a separate top-level card — see
+    // app/frontend/components/RobinhoodChainSection.tsx's own header. Same real invariant, read from
+    // its new real location.
+    const robinhoodUiSrc = fs.readFileSync(new URL('../app/frontend/components/RobinhoodChainSection.tsx', import.meta.url), 'utf8')
+    check('activity.items is never reduced/mapped into a numeric PnL figure', !/activity\.items\s*\.\s*(reduce|map)\s*\(/.test(robinhoodUiSrc))
+    check('the UI\'s realized PnL figure is sourced only from pnl.realizedPnlUsd, never activity.items', robinhoodUiSrc.includes('pnl.realizedPnlUsd != null ? `$${pnl.realizedPnlUsd'))
   }
 
   // ── PHASE 3/4: verified swaps create matched lots only when token in/out + price evidence exist ──
@@ -530,15 +528,22 @@ async function run() {
   //    PnL" and "PnL: Not verified yet") are present, and that the PnL card element never also
   //    renders the activity transfer count inline. ────────────────────────────────────────────────
   {
-    const pageSrc = fs.readFileSync(new URL('../app/terminal/wallet-scanner/page.tsx', import.meta.url), 'utf8')
-    check('UI shows "Verified Robinhood PnL" when pnl.status is verified', pageSrc.includes('Verified Robinhood PnL'))
-    check('UI shows the exact required "PnL: Not verified yet" fallback wording', pageSrc.includes('PnL: Not verified yet'))
-    check('UI shows the exact required not-verified reason sentence', pageSrc.includes('Robinhood PnL requires verified swap logs and price evidence on both legs. Activity alone is not counted as PnL.'))
-    check('UI shows a "Verified Robinhood swaps: X" line', pageSrc.includes('Verified Robinhood swaps: <strong'))
-    check('UI labels the activity card exactly "Activity (not PnL)"', pageSrc.includes('>Activity (not PnL)<'))
+    // RELOCATED, DISCLOSED (split-Wallet-Scanner-results fix task): read from the real new location
+    // of this UI — app/frontend/components/RobinhoodChainSection.tsx — see that file's own header.
+    const robinhoodUiSrc = fs.readFileSync(new URL('../app/frontend/components/RobinhoodChainSection.tsx', import.meta.url), 'utf8')
+    check('UI shows "Verified Robinhood PnL" when pnl.status is verified', robinhoodUiSrc.includes('Verified Robinhood PnL'))
+    check('UI shows the exact required "PnL: Not verified yet" fallback wording', robinhoodUiSrc.includes('PnL: Not verified yet'))
+    // WORDING UPDATE, DISCLOSED (split-Wallet-Scanner-results fix task's own explicit required
+    // wording): the not-verified reason sentence changed to this task's own required exact text —
+    // "Robinhood PnL not verified yet — requires verified swap logs and both-leg price evidence." —
+    // a genuine, task-mandated wording change, not a weakened guarantee (the underlying invariant —
+    // a real, honest "not verified" explanation, never blended with portfolio value — is unchanged).
+    check('UI shows the exact required not-verified reason sentence', robinhoodUiSrc.includes('Robinhood PnL not verified yet — requires verified swap logs and both-leg price evidence.'))
+    check('UI shows a "Verified Robinhood swaps: X" line', robinhoodUiSrc.includes('Verified Robinhood swaps: <strong'))
+    check('UI labels the activity card exactly "Activity (not PnL)"', robinhoodUiSrc.includes('>Activity (not PnL)<'))
     // The PnL card element is the one that renders pnlLabel — confirm it never also contains the
     // activity transfer count language, so the two can never merge into one line.
-    const pnlBlockMatch = pageSrc.match(/PNL CARD, DISCLOSED[\s\S]{0,1400}?<\/div>\s*\)\s*:\s*\(/)
+    const pnlBlockMatch = robinhoodUiSrc.match(/PNL CARD:[\s\S]{0,1400}?<\/div>\s*\)\s*:\s*\(/)
     check('the PnL card never also renders the activity transfer count inline (no ambiguous merge)', pnlBlockMatch != null && !pnlBlockMatch[0].includes('activity.items.length'))
   }
 
@@ -547,10 +552,12 @@ async function run() {
   //    (real stat, not a raw text line hidden behind a >0 gate) — the honesty guarantee (never
   //    labeled a verified swap) is unchanged. ─────────────────────────────────────────────────────
   {
-    const pageSrc = fs.readFileSync(new URL('../app/terminal/wallet-scanner/page.tsx', import.meta.url), 'utf8')
-    check('UI renders activity.skippedSwapLogs in the Activity card', pageSrc.includes('Skipped unsupported swap logs: <strong'))
-    check('UI also renders skippedSwapLogs in the Evidence card', pageSrc.includes('skippedSwapLogs: {activity.skippedSwapLogs}'))
-    check('the skippedSwapLogs UI line never labels the skipped logs as a decoded/verified swap', !/Skipped unsupported swap logs[\s\S]{0,120}verified swap/i.test(pageSrc))
+    // RELOCATED, DISCLOSED (split-Wallet-Scanner-results fix task): see RobinhoodChainSection.tsx's
+    // own header.
+    const robinhoodUiSrc = fs.readFileSync(new URL('../app/frontend/components/RobinhoodChainSection.tsx', import.meta.url), 'utf8')
+    check('UI renders activity.skippedSwapLogs in the Activity card', robinhoodUiSrc.includes('Skipped unsupported swap logs: <strong'))
+    check('UI also renders skippedSwapLogs in the Evidence card', robinhoodUiSrc.includes('skippedSwapLogs: {activity.skippedSwapLogs}'))
+    check('the skippedSwapLogs UI line never labels the skipped logs as a decoded/verified swap', !/Skipped unsupported swap logs[\s\S]{0,120}verified swap/i.test(robinhoodUiSrc))
   }
 
   // 11. Clark must never describe Robinhood WALLET activity as verified swaps or verified PnL —

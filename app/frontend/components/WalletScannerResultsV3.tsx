@@ -13,6 +13,7 @@
 // env var would be a "risky environment change" this task explicitly avoids. The OLD layout JSX in
 // page.tsx is left fully intact (not deleted) for instant rollback by flipping that one constant.
 import type { WalletV2Report } from '@/app/terminal/wallet-scanner/page'
+import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { WalletScannerHeaderV3 } from './WalletScannerHeaderV3'
 import { WalletScannerSummaryRowV3 } from './WalletScannerSummaryRowV3'
 import { WalletScannerTabsV3 } from './WalletScannerTabsV3'
@@ -27,6 +28,16 @@ export type WalletScannerResultsV3Props = {
   onAdminAction: () => void
   scanDurationMs: number | null
   moduleErrors: Record<string, string> | null
+  // ONE CANONICAL RESULT, DISCLOSED (split-Wallet-Scanner-results fix task): Robinhood Chain's real
+  // scan result for this same wallet, when available — threaded into the header total, the summary
+  // row's Portfolio Intelligence total, and a Robinhood tab in the tabbed workspace, so there is
+  // exactly one Wallet Scanner result on screen (one total, one holdings table, one Activity card,
+  // one PnL card, one Evidence card) rather than a second, separate top-level card. Optional and
+  // purely additive — a report with no Robinhood result renders exactly as before this task.
+  robinhoodResult?: RobinhoodWalletScanResponse | null
+  onRobinhoodRescan?: () => void
+  robinhoodRescanLoading?: boolean
+  debugMode?: boolean
 }
 
 export function WalletScannerResultsV3({
@@ -37,6 +48,10 @@ export function WalletScannerResultsV3({
   onAdminAction,
   scanDurationMs,
   moduleErrors,
+  robinhoodResult,
+  onRobinhoodRescan,
+  robinhoodRescanLoading,
+  debugMode,
 }: WalletScannerResultsV3Props) {
   return (
     <div className="ws-result-fade">
@@ -46,15 +61,22 @@ export function WalletScannerResultsV3({
         isFullRecoveryAdmin={isFullRecoveryAdmin}
         onDeepScan={onDeepScan}
         onAdminAction={onAdminAction}
+        robinhoodResult={robinhoodResult}
       />
-      <WalletScannerSummaryRowV3 report={report} />
+      <WalletScannerSummaryRowV3 report={report} robinhoodResult={robinhoodResult} />
       {/* WALLET PERSONALITY, DISCLOSED: full-width, directly below the Portfolio Intelligence /
           Smart Money Score / PnL summary row — never squeezed into the Smart Money Score card
           itself (see WalletPersonalityCard.tsx's own header for why it always renders, even with
           zero PnL evidence). */}
       <WalletPersonalityCard report={report} />
       <div style={{ marginBottom: '16px' }}>
-        <WalletScannerTabsV3 report={report} />
+        <WalletScannerTabsV3
+          report={report}
+          robinhoodResult={robinhoodResult}
+          onRobinhoodRescan={onRobinhoodRescan}
+          robinhoodRescanLoading={robinhoodRescanLoading}
+          debugMode={debugMode}
+        />
       </div>
       <WalletScannerDiagnosticsV3 report={report} scanDurationMs={scanDurationMs} moduleErrors={moduleErrors} />
     </div>

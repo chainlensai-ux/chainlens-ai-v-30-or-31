@@ -4,6 +4,14 @@
 // unless ?debug=true) — without touching Robinhood's decoder/PnL gates or Base/ETH/BNB's own
 // pipeline. Source-level (this file's own subject is a 'use client' React page, not something a
 // plain Node script can render), consistent with this session's established pattern for this page.
+//
+// RELOCATED, DISCLOSED (split-Wallet-Scanner-results fix task): the Robinhood chain card's own
+// content (metadata, holdings table, Activity/PnL/Evidence cards, debug raw view) moved out of
+// page.tsx into app/frontend/components/RobinhoodChainSection.tsx so it can render as ONE MORE CHAIN
+// TAB inside the merged Wallet Scanner result (WalletScannerTabsV3.tsx) instead of a second,
+// competing top-level card — see that file's own header for the confirmed bug this closes (two
+// conflicting portfolio totals for the same wallet). Checks below now read whichever file the
+// content actually lives in today.
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
@@ -12,13 +20,14 @@ let passed = 0
 function check(label, condition) { assert.ok(condition, label); passed++ }
 
 const pageSrc = fs.readFileSync(new URL('../app/terminal/wallet-scanner/page.tsx', import.meta.url), 'utf8')
+const robinhoodUiSrc = fs.readFileSync(new URL('../app/frontend/components/RobinhoodChainSection.tsx', import.meta.url), 'utf8')
 
 function run() {
   // ── 1. Robinhood chain metadata matches the task's exact spec ───────────────────────────────
   {
-    check('chainSlug is the literal "robinhood"', /ROBINHOOD_CHAIN_META\s*=\s*\{\s*chainSlug:\s*'robinhood'/.test(pageSrc))
-    check('chainId is the real 4663', /ROBINHOOD_CHAIN_META[\s\S]{0,80}chainId:\s*4663/.test(pageSrc))
-    check('label is "Robinhood Chain"', /ROBINHOOD_CHAIN_META[\s\S]{0,120}label:\s*'Robinhood Chain'/.test(pageSrc))
+    check('chainSlug is the literal "robinhood"', /ROBINHOOD_CHAIN_META\s*=\s*\{\s*chainSlug:\s*'robinhood'/.test(robinhoodUiSrc))
+    check('chainId is the real 4663', /ROBINHOOD_CHAIN_META[\s\S]{0,80}chainId:\s*4663/.test(robinhoodUiSrc))
+    check('label is "Robinhood Chain"', /ROBINHOOD_CHAIN_META[\s\S]{0,120}label:\s*'Robinhood Chain'/.test(robinhoodUiSrc))
   }
 
   // ── 2. Robinhood appears in multi-chain scan results / chain=auto includes it ───────────────
@@ -36,55 +45,61 @@ function run() {
   // ── 3. Explicit Robinhood scan still works ───────────────────────────────────────────────────
   {
     check('handleRobinhoodScan is still a real, standalone, callable function', /async function handleRobinhoodScan\(\)/.test(pageSrc))
-    // Explicit re-scan is now reachable from inside the Robinhood card itself (RobinhoodChainSection's
-    // onRescan prop), not a top-level button — still a real, user-triggerable call to the same function.
-    check('RobinhoodChainSection wires an explicit onRescan callback to handleRobinhoodScan', /onRescan=\{\(\) => void handleRobinhoodScan\(\)\}/.test(pageSrc))
+    // Explicit re-scan is reachable both from the Robinhood tab (WalletScannerTabsV3 passes
+    // onRobinhoodRescan through to RobinhoodChainSection's onRescan prop) and from the debug/no-
+    // main-result fallback card in page.tsx — both real, user-triggerable calls to the same function.
+    check('page.tsx wires an explicit onRobinhoodRescan callback to handleRobinhoodScan', /onRobinhoodRescan=\{\(\) => void handleRobinhoodScan\(\)\}/.test(pageSrc))
+    check('the fallback RobinhoodChainSection card also wires onRescan to handleRobinhoodScan', /onRescan=\{\(\) => void handleRobinhoodScan\(\)\}/.test(pageSrc))
   }
 
   // ── 4. Robinhood holdings render in a standard table (Token/Balance/Price/Value/Pricing
   //    status/Source), never a raw stacked list ────────────────────────────────────────────────
   {
-    const tableMatch = pageSrc.match(/<table[\s\S]{0,1400}?<\/thead>/)
+    const tableMatch = robinhoodUiSrc.match(/<table[\s\S]{0,1400}?<\/thead>/)
     check('a real <table> exists for Robinhood holdings', tableMatch != null)
     const theadText = tableMatch ? tableMatch[0] : ''
     for (const col of ['Token', 'Balance', 'Price', 'Value', 'Pricing Status', 'Source']) {
       check(`holdings table has a "${col}" column header`, theadText.includes(`>${col}<`))
     }
     // The OLD raw-list rendering (space-between flex rows with inline balance/value text) is gone.
-    check('the old raw flex-row holdings list is removed', !/justifyContent: 'space-between'[\s\S]{0,60}h\.symbol \?\? h\.address\.slice\(0, 8\)/.test(pageSrc))
+    check('the old raw flex-row holdings list is removed', !/justifyContent: 'space-between'[\s\S]{0,60}h\.symbol \?\? h\.address\.slice\(0, 8\)/.test(robinhoodUiSrc))
   }
 
   // ── 5. Unpriced tokens show a pricing-status badge, not raw text ────────────────────────────
   {
-    check('each holdings row renders a Priced/Unpriced StatusBadge, not raw "price unavailable" text', /<StatusBadge label=\{h\.priceUsd != null \? 'Priced' : 'Unpriced'\}/.test(pageSrc))
-    check('the old raw "— price unavailable" text fragment is removed', !pageSrc.includes('— price unavailable'))
+    check('each holdings row renders a Priced/Unpriced StatusBadge, not raw "price unavailable" text', /<StatusBadge label=\{h\.priceUsd != null \? 'Priced' : 'Unpriced'\}/.test(robinhoodUiSrc))
+    check('the old raw "— price unavailable" text fragment is removed', !robinhoodUiSrc.includes('— price unavailable'))
     // The required warning-card wording for unpriced tokens.
-    check('the unpriced-tokens warning card uses the exact required headline pattern', /\{unpricedCount\} token\{unpricedCount === 1 \? '' : 's'\} could not be priced/.test(pageSrc))
-    check('the unpriced-tokens warning card uses the exact required explanation sentence', pageSrc.includes('These tokens are included in holdings but excluded from portfolio value until pricing is available.'))
+    check('the unpriced-tokens warning card uses the exact required headline pattern', /\{unpricedCount\} token\{unpricedCount === 1 \? '' : 's'\} could not be priced/.test(robinhoodUiSrc))
+    check('the unpriced-tokens warning card uses the exact required explanation sentence', robinhoodUiSrc.includes('These tokens are included in holdings but excluded from portfolio value until pricing is available.'))
   }
 
   // ── 6. Activity and PnL are separate cards ───────────────────────────────────────────────────
   {
-    const activityCardIndex = pageSrc.indexOf('ACTIVITY CARD, DISCLOSED')
-    const pnlCardIndex = pageSrc.indexOf('PNL CARD, DISCLOSED')
+    const activityCardIndex = robinhoodUiSrc.indexOf('ACTIVITY CARD:')
+    const pnlCardIndex = robinhoodUiSrc.indexOf('PNL CARD:')
     check('an Activity card and a PnL card both exist, in that order', activityCardIndex !== -1 && pnlCardIndex !== -1 && activityCardIndex < pnlCardIndex)
-    const activityCardSrc = pageSrc.slice(activityCardIndex, pnlCardIndex)
+    const activityCardSrc = robinhoodUiSrc.slice(activityCardIndex, pnlCardIndex)
     check('the Activity card never mentions Robinhood PnL wording inline', !/Verified Robinhood PnL|PnL: Not verified yet/.test(activityCardSrc))
   }
 
   // ── 7. verifiedSwapCount and skippedSwapLogs render ─────────────────────────────────────────
   {
-    check('verifiedSwapCount renders in the Activity card', /Verified Robinhood swaps: <strong[^>]*>\{activity\.verifiedSwapCount\}/.test(pageSrc))
-    check('skippedSwapLogs renders in the Activity card', /Skipped unsupported swap logs: <strong[^>]*>\{activity\.skippedSwapLogs\}/.test(pageSrc))
-    check('verifiedSwapCount also renders in the Evidence card', pageSrc.includes('verifiedSwapCount: {activity.verifiedSwapCount}'))
-    check('skippedSwapLogs also renders in the Evidence card', pageSrc.includes('skippedSwapLogs: {activity.skippedSwapLogs}'))
+    check('verifiedSwapCount renders in the Activity card', /Verified Robinhood swaps: <strong[^>]*>\{activity\.verifiedSwapCount\}/.test(robinhoodUiSrc))
+    check('skippedSwapLogs renders in the Activity card', /Skipped unsupported swap logs: <strong[^>]*>\{activity\.skippedSwapLogs\}/.test(robinhoodUiSrc))
+    check('verifiedSwapCount also renders in the Evidence card', robinhoodUiSrc.includes('verifiedSwapCount: {activity.verifiedSwapCount}'))
+    check('skippedSwapLogs also renders in the Evidence card', robinhoodUiSrc.includes('skippedSwapLogs: {activity.skippedSwapLogs}'))
   }
 
   // ── 8. PnL stays disabled (UI-visible) without verified swaps — the UI reads pnl.status, never
   //    derives it from activity volume itself ─────────────────────────────────────────────────
   {
-    check('the PnL card label is driven by pnl.status, not activity data', /pnlLabel = pnl\.status === 'verified' \? 'Verified Robinhood PnL' : 'PnL: Not verified yet'/.test(pageSrc))
-    check('the not-verified reason sentence is the exact required wording', pageSrc.includes('Robinhood PnL requires verified swap logs and price evidence on both legs. Activity alone is not counted as PnL.'))
+    check('the PnL card label is driven by pnl.status, not activity data', /pnlLabel = pnl\.status === 'verified' \? 'Verified Robinhood PnL' : 'PnL: Not verified yet'/.test(robinhoodUiSrc))
+    // WORDING UPDATE, DISCLOSED (split-Wallet-Scanner-results fix task's own explicit required
+    // wording): "Robinhood PnL not verified yet — requires verified swap logs and both-leg price
+    // evidence." — a genuine, task-mandated wording change; the underlying guarantee (a real, honest
+    // not-verified explanation, never blended with portfolio value) is unchanged.
+    check('the not-verified reason sentence is the exact required wording', robinhoodUiSrc.includes('Robinhood PnL not verified yet — requires verified swap logs and both-leg price evidence.'))
   }
 
   // ── 9. Base/ETH/BNB output unchanged — the V2 scan call, its result state, and its own
@@ -101,17 +116,30 @@ function run() {
   // ── 10. Debug-only raw view — never the default page ─────────────────────────────────────────
   {
     check('a debugMode state exists, sourced from ?debug=true', pageSrc.includes("if (params.get('debug') === 'true') setDebugMode(true)"))
-    check('the raw JSON view is gated behind debugMode', /\{debugMode && \([\s\S]{0,500}JSON\.stringify\(result/.test(pageSrc))
+    check('the raw JSON view is gated behind debugMode', /\{debugMode && \([\s\S]{0,500}JSON\.stringify\(result/.test(robinhoodUiSrc))
   }
 
   // ── 11. No wrong-chain contamination: RobinhoodChainSection only ever reads fields off the
   //    RobinhoodWalletScanResponse it was given — never touches the Base/ETH `result`/`report`
   //    state, and vice versa ────────────────────────────────────────────────────────────────────
   {
-    const sectionMatch = pageSrc.match(/function RobinhoodChainSection\([\s\S]*?\n\}\n/)
+    const sectionMatch = robinhoodUiSrc.match(/export function RobinhoodChainSection\([\s\S]*?\n\}\n/)
     check('RobinhoodChainSection component exists', sectionMatch != null)
     const sectionSrc = sectionMatch ? sectionMatch[0] : ''
     check('RobinhoodChainSection never references the Base/ETH WalletV2Report state', !/\bresultEnvelope\b|\bcortexRead\b/.test(sectionSrc))
+  }
+
+  // ── 12. ONE CANONICAL RESULT, DISCLOSED (split-Wallet-Scanner-results fix task): Robinhood
+  //    renders as a chain tab inside the same merged Wallet Scanner result, never as an
+  //    unconditional second top-level card competing with it — the confirmed root cause of the
+  //    "$2.25 total next to a real Robinhood total" bug this task closes ───────────────────────
+  {
+    check('WalletScannerTabsV3 renders RobinhoodChainSection as one more tab, not a separate scanner', fs.readFileSync(new URL('../app/frontend/components/WalletScannerTabsV3.tsx', import.meta.url), 'utf8').includes("activeTab === 'robinhood' && robinhoodResult"))
+    check('page.tsx no longer renders RobinhoodChainSection unconditionally whenever robinhoodResult exists', !/\{robinhoodResult && \(\s*<RobinhoodChainSection/.test(pageSrc))
+    check('the standalone fallback card only renders when there is no main result, or in debug mode', pageSrc.includes('{robinhoodResult && (!result || debugMode) && ('))
+    check('the merged total helper sums the V2 total and Robinhood total when Robinhood was included', fs.readFileSync(new URL('../app/frontend/lib/mergedWalletView.ts', import.meta.url), 'utf8').includes('(v2Total ?? 0) + (valueUsd ?? 0)'))
+    check('the old unconditional "are not included" wording is gone from PortfolioIntelligenceCard', !fs.readFileSync(new URL('../app/frontend/components/PortfolioIntelligenceCard.tsx', import.meta.url), 'utf8').includes('Custodial/exchange holdings (e.g. Robinhood) are not included'))
+    check('the exact required "Includes Robinhood Chain..." wording exists for when Robinhood was scanned', fs.readFileSync(new URL('../app/frontend/lib/mergedWalletView.ts', import.meta.url), 'utf8').includes('Includes Robinhood Chain when enabled and successfully scanned.'))
   }
 
   console.log(`test-robinhood-multichain-ui.mjs: all ${passed} assertions passed`)

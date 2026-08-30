@@ -10,6 +10,7 @@
 // (which move into WalletScannerSummaryRowV3/WalletScannerDiagnosticsV3 in the V3 layout) from what
 // WalletProfileHeader itself renders as one monolithic card.
 import type { WalletV2Report } from '@/app/terminal/wallet-scanner/page'
+import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { WalletOverview, PortfolioSnapshot, Actions } from './WalletProfileHeader'
 
 export type WalletScannerHeaderV3Props = {
@@ -18,9 +19,13 @@ export type WalletScannerHeaderV3Props = {
   isFullRecoveryAdmin: boolean
   onDeepScan: () => void
   onAdminAction: () => void
+  // ONE CANONICAL RESULT, DISCLOSED (split-Wallet-Scanner-results fix task): optional — forwarded
+  // straight to PortfolioSnapshot so the live V3 hero total merges Robinhood in. See
+  // app/frontend/lib/mergedWalletView.ts's own header.
+  robinhoodResult?: RobinhoodWalletScanResponse | null
 }
 
-export function WalletScannerHeaderV3({ report, loading, isFullRecoveryAdmin, onDeepScan, onAdminAction }: WalletScannerHeaderV3Props) {
+export function WalletScannerHeaderV3({ report, loading, isFullRecoveryAdmin, onDeepScan, onAdminAction, robinhoodResult }: WalletScannerHeaderV3Props) {
   return (
     <div
       className="wph-root ws-result-fade"
@@ -36,7 +41,7 @@ export function WalletScannerHeaderV3({ report, loading, isFullRecoveryAdmin, on
         <Actions loading={loading} isFullRecoveryAdmin={isFullRecoveryAdmin} onDeepScan={onDeepScan} onAdminAction={onAdminAction} />
       </div>
       <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
-      <PortfolioSnapshot report={report} />
+      <PortfolioSnapshot report={report} robinhoodResult={robinhoodResult} />
     </div>
   )
 }
