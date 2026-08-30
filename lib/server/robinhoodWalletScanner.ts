@@ -916,3 +916,37 @@ export async function getCachedRobinhoodWalletActivity(
   if (!result.fromCache) await setTokenCache(key, result, CACHE_TTL_SECONDS).catch(() => {})
   return { ...result, wrongChainCacheRejected }
 }
+
+// ── Shared scan sequence, DISCLOSED (Wallet Scanner unification task): the EXACT same
+// holdings → price lookup → pool-currency resolver → activity → pnl → audit call sequence that
+// used to live inline in app/api/wallet-scan/robinhood/route.ts's GET handler, extracted so both
+// that route AND the new canonical orchestrator (lib/server/walletScanOrchestrator.ts) call one
+// real implementation instead of two copies drifting apart. No internal function here is modified —
+// this only reorders nothing and adds no new logic, it is a pure extraction of the existing call
+// order into a named, reusable function.
+export async function scanRobinhoodWallet(
+  wallet: string,
+  fetchImpl: FetchImpl,
+): Promise<{
+  holdings: RobinhoodWalletHoldingsResult & { wrongChainCacheRejected: boolean }
+  activity: RobinhoodWalletActivityResult & { wrongChainCacheRejected: boolean }
+  pnl: RobinhoodWalletPnlResult
+  audit: RobinhoodWalletScannerAudit
+}> {
+  const holdings = await getCachedRobinhoodWalletHoldings(wallet, fetchImpl)
+  const priceUsdLookupForToken = buildRobinhoodPriceUsdLookup(holdings, fetchImpl)
+  const resolvePoolCurrencies = (poolId: string) => resolvePoolCurrenciesViaRpc(poolId, fetchImpl)
+
+  const activity = await getCachedRobinhoodWalletActivity(wallet, fetchImpl, { resolvePoolCurrencies, priceUsdLookupForToken })
+  const pnl = await resolveRobinhoodWalletPnl(wallet, activity, { priceUsdLookupForToken, fetchImpl })
+
+  const audit = buildRobinhoodWalletScannerAudit({
+    wallet,
+    holdings,
+    activity,
+    pnl,
+    wrongChainCacheRejected: holdings.wrongChainCacheRejected || activity.wrongChainCacheRejected,
+  })
+
+  return { holdings, activity, pnl, audit }
+}

@@ -3,15 +3,7 @@ import { isAddress } from 'viem'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { canAccessFeature } from '@/lib/planFeatures'
 import { createRateLimiter, getClientIp } from '@/lib/server/rateLimit'
-import {
-  getCachedRobinhoodWalletHoldings,
-  getCachedRobinhoodWalletActivity,
-  buildRobinhoodWalletScannerAudit,
-  buildRobinhoodPriceUsdLookup,
-  resolveRobinhoodWalletPnl,
-  formatRobinhoodPnlMessage,
-} from '@/lib/server/robinhoodWalletScanner'
-import { resolvePoolCurrenciesViaRpc } from '@/lib/server/robinhoodSwapDecoder'
+import { scanRobinhoodWallet, formatRobinhoodPnlMessage } from '@/lib/server/robinhoodWalletScanner'
 
 // ROBINHOOD WALLET SCANNER ROUTE, DISCLOSED (phased Robinhood Chain Wallet Scanner rollout,
 // Phase 1+2). Deliberately its OWN route, not a branch inside app/api/wallet-scan/route.ts's
@@ -50,24 +42,12 @@ export async function GET(req: Request): Promise<Response> {
   }
 
   const fetchImpl: typeof fetch = fetch
-  // Holdings first, DISCLOSED (Phase 3/4): activity's swap decoding and PnL both need a real
-  // priceUsdLookupForToken — built directly from THIS scan's own holdings prices (see
-  // buildRobinhoodPriceUsdLookup) rather than a second, independent pricing path — so holdings must
-  // resolve before activity/PnL can use it.
-  const holdings = await getCachedRobinhoodWalletHoldings(wallet, fetchImpl)
-  const priceUsdLookupForToken = buildRobinhoodPriceUsdLookup(holdings, fetchImpl)
-  const resolvePoolCurrencies = (poolId: string) => resolvePoolCurrenciesViaRpc(poolId, fetchImpl)
-
-  const activity = await getCachedRobinhoodWalletActivity(wallet, fetchImpl, { resolvePoolCurrencies, priceUsdLookupForToken })
-  const pnl = await resolveRobinhoodWalletPnl(wallet, activity, { priceUsdLookupForToken, fetchImpl })
-
-  const audit = buildRobinhoodWalletScannerAudit({
-    wallet,
-    holdings,
-    activity,
-    pnl,
-    wrongChainCacheRejected: holdings.wrongChainCacheRejected || activity.wrongChainCacheRejected,
-  })
+  // WALLET SCANNER UNIFICATION, DISCLOSED: the holdings → price lookup → pool-currency resolver →
+  // activity → pnl → audit call sequence now lives once in robinhoodWalletScanner.ts's own
+  // scanRobinhoodWallet() (also reused by the new canonical orchestrator) — this route calls that
+  // single real implementation instead of repeating the sequence inline. Output shape below is
+  // unchanged.
+  const { holdings, activity, pnl, audit } = await scanRobinhoodWallet(wallet, fetchImpl)
 
   return NextResponse.json({
     ok: true,

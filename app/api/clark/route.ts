@@ -10,6 +10,7 @@ import { buildTokenFullReportPlan, executeClarkToolPlan as executeClarkToolLayer
 import { buildTokenFullReport } from "@/lib/clark/reportBuilders";
 import { getWalletLite } from "@/lib/server/walletLite";
 import { getWalletFromV2 } from "@/lib/server/v2Adapters";
+import { runWalletScan } from "@/lib/server/walletScanOrchestrator";
 import { classifyClarkBasicIntent, buildClarkDirectAnswer, clarkMissingInputPrompt, CLARK_SAFE_FALLBACK, buildClarkRoutingDebug } from "@/lib/server/clarkBasicIntent";
 import {
   runClarkLiquidityCheck,
@@ -9601,7 +9602,30 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
     const mappedResult = mapWalletRunnerResult(walletAddress, w, holdings);
     const profileBlock = mappedResult.ok ? buildWalletProfileBlock(mappedResult.walletProfile as Record<string, unknown> | null) : null;
-    const analysis = formatWalletScanResult(walletAddress, mappedResult, deepScan) + (profileBlock ? `\n\n${profileBlock}` : "");
+    // WALLET SCANNER UNIFICATION, ADDITIVE: the canonical orchestrator runs alongside (never
+    // replacing) the getWalletFromV2() call above — projectWalletV2ForClark's rich EVM/PnL
+    // formatting above is untouched. This adds real Robinhood-chain evidence Clark otherwise lacks,
+    // and — when the user asked for a deep scan — surfaces the real queued job status/scanId
+    // instead of only a CTA link. Never blocks or slows the existing reply: any orchestrator
+    // failure is swallowed and simply omits this extra note.
+    const orchestratorResult = await runWalletScan({
+      walletAddress,
+      chainMode: 'auto',
+      scanDepth: deepScan ? 'deep' : 'preview',
+      source: 'clark',
+    }).catch((err) => {
+      console.warn('[clark] wallet scan orchestrator failed', { walletAddress, error: err instanceof Error ? err.message : String(err) });
+      return null;
+    });
+    const orchestratorNoteLines: string[] = [];
+    if (orchestratorResult?.evidenceSources.includes('robinhood_chain')) {
+      orchestratorNoteLines.push(`Robinhood Chain: ${orchestratorResult.pnlStatus === 'available' ? 'verified evidence found.' : 'scanned, evidence still limited.'}`);
+    }
+    if (deepScan && orchestratorResult?.jobStatus === 'queued' && orchestratorResult.jobId) {
+      orchestratorNoteLines.push(`Deep scan queued (job ${orchestratorResult.jobId}) — poll Wallet Scanner for the completed multi-chain result.`);
+    }
+    const orchestratorNote = orchestratorNoteLines.length ? `\n\n${orchestratorNoteLines.join('\n')}` : '';
+    const analysis = formatWalletScanResult(walletAddress, mappedResult, deepScan) + (profileBlock ? `\n\n${profileBlock}` : "") + orchestratorNote;
     updateMemWallet(sessionMem, walletAddress, null, analysis, mappedResult as Record<string, unknown>, extractPnlEvidence(mappedResult as Record<string, unknown>));
     updateMemIntent(sessionMem, "wallet_analysis");
     // Usable wallet evidence (mappedResult.ok) means the runner actually returned a real
@@ -9617,6 +9641,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       ui: { intentBadge: deepScan ? 'Wallet Deep Scan' : 'Wallet Scan', actions: walletActions },
       analysis,
       memoryEcho: buildWalletMemoryEcho(sessionMem),
+      ...(deepScan && orchestratorResult?.jobId ? { deepScanJobId: orchestratorResult.jobId } : {}),
       ...(clarkDebugMode ? { clarkDebugReceipt: { memoryAfter: { lastWallet: sessionMem.lastWallet ? { address: sessionMem.lastWallet.address } : null } } } : {}),
     };
   }

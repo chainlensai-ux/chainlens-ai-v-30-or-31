@@ -46,7 +46,11 @@ function sanitizeStack(stack: string | undefined): string {
 }
 
 const V2_ADAPTER_TTL_SECONDS = 45
-const DEFAULT_CHAINS = ['base', 'eth', 'arbitrum']
+// Exported (unification task, step 1): the canonical Wallet Scanner orchestrator
+// (lib/server/walletScanOrchestrator.ts) reuses this exact list and this exact function below for
+// its 'auto'/'all_supported' chain resolution and preview-mode EVM scan — no new chain list, no new
+// scan call, only an additive export. Behavior/values unchanged.
+export const DEFAULT_CHAINS = ['base', 'eth', 'arbitrum']
 
 // Mirrors tokenCache.ts's own internal env check — kept as a separate, explicit guard here too
 // (rather than relying solely on getTokenCache/setTokenCache's internal check) so this file's own
@@ -89,7 +93,7 @@ async function writeToKv(cacheKey: string, value: WalletLiteResult): Promise<voi
 // today, and adding it would mean modifying the 3 calling routes/runners, which this diagnostic
 // task's own scope excludes ("never modify existing API routes"). Disclosed as an honest proxy,
 // not a claim of full per-HTTP-route attribution.
-async function runV2Scan(address: string, route: string): Promise<RunWalletScanV2Result | null> {
+export async function runV2Scan(address: string, route: string): Promise<RunWalletScanV2Result | null> {
   for (const chain of DEFAULT_CHAINS) {
     logRpcCall({ chain, method: 'runWalletScanV2', route, stack: sanitizeStack(new Error().stack) })
   }

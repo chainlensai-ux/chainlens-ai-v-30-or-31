@@ -480,7 +480,11 @@ async function run() {
     check('the Robinhood scanner never imports the FIFO engine', !importLines.includes('fifoEngine'))
     check('the Robinhood scanner never imports the Base-only receipt swap decoder', !importLines.includes('receiptSwapDecoder'))
     const routeSrc = fs.readFileSync(new URL('../app/api/wallet-scan/robinhood/route.ts', import.meta.url), 'utf8')
-    check('the Robinhood route is a standalone route, never a branch inside the existing wallet-scan job queue route', routeSrc.includes('getCachedRobinhoodWalletHoldings') && !routeSrc.includes('enqueueWalletScanJob'))
+    // UNIFICATION REFACTOR, DISCLOSED: the route now calls the shared scanRobinhoodWallet()
+    // (lib/server/robinhoodWalletScanner.ts), which itself calls getCachedRobinhoodWalletHoldings —
+    // same real call sequence, extracted so the new canonical orchestrator can reuse it too. The
+    // real invariant this check protects (never a branch inside the job-queue route) is unchanged.
+    check('the Robinhood route is a standalone route, never a branch inside the existing wallet-scan job queue route', routeSrc.includes('scanRobinhoodWallet') && !routeSrc.includes('enqueueWalletScanJob'))
     const mainRouteSrc = fs.readFileSync(new URL('../app/api/wallet-scan/route.ts', import.meta.url), 'utf8')
     check('the existing Base/ETH wallet-scan route source is untouched by this feature (no robinhood reference)', !/robinhood/i.test(mainRouteSrc))
     const pageSrc = fs.readFileSync(new URL('../app/terminal/wallet-scanner/page.tsx', import.meta.url), 'utf8')
