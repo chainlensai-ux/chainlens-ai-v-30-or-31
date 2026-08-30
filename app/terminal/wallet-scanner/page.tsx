@@ -215,6 +215,31 @@ export type WalletScanEnvelope = {
   completedAt: number
 }
 
+// ROBINHOOD CHAIN WALLET SCANNER, DISCLOSED (phased rollout, Phase 1+2): mirrors the JSON shape
+// GET /api/wallet-scan/robinhood returns (see lib/server/robinhoodWalletScanner.ts). Deliberately
+// untyped against the V2 pipeline's WalletV2Report — Robinhood does not run through that pipeline.
+export type RobinhoodWalletScanResponse = {
+  ok: boolean
+  wallet: string
+  chainSlug: 'robinhood'
+  chainId: number
+  holdings: {
+    status: 'ok' | 'partial' | 'unavailable' | 'not_configured'
+    native: { symbol: string; uiBalance: number | null; priceUsd: number | null; valueUsd: number | null } | null
+    holdings: Array<{ address: string; symbol: string | null; name: string | null; uiBalance: number | null; priceUsd: number | null; valueUsd: number | null; priceSource: string | null }>
+    portfolioTotalUsd: number | null
+    unpricedTokenCount: number
+    reason: string | null
+  }
+  activity: {
+    status: 'ok' | 'partial' | 'unavailable' | 'not_configured'
+    items: Array<{ txHash: string; blockTimestamp: string | null; kind: 'native_transfer' | 'token_transfer'; direction: 'incoming' | 'outgoing'; counterparty: string | null; tokenSymbol: string | null }>
+    reason: string | null
+  }
+  pnl: { status: 'not_verified'; message: string }
+  robinhoodWalletScannerAudit: Record<string, unknown>
+}
+
 export default function WalletScannerPage() {
   const { plan, loading: planLoading, betaEliteActive } = usePlanWithLoading()
 
@@ -255,6 +280,14 @@ export default function WalletScannerPage() {
   const [watchlistMessage, setWatchlistMessage] = useState<string | null>(null)
   const [watchlistWallets, setWatchlistWallets] = useState<WatchlistWallet[]>([])
   const [watchlistLoading, setWatchlistLoading] = useState(false)
+  // ROBINHOOD CHAIN WALLET SCANNER, DISCLOSED (phased Robinhood Chain Wallet Scanner rollout,
+  // Phase 1+2 UI): deliberately its OWN state, own handler, own results card — never mixed into
+  // `result`/`resultEnvelope`/`loading` above, which belong entirely to the existing Base/Ethereum
+  // V2 pipeline (scanWalletV2). This block never touches those, so a Robinhood scan can never
+  // clobber or be clobbered by a Base/ETH scan's state.
+  const [robinhoodLoading, setRobinhoodLoading] = useState(false)
+  const [robinhoodError, setRobinhoodError] = useState<string | null>(null)
+  const [robinhoodResult, setRobinhoodResult] = useState<RobinhoodWalletScanResponse | null>(null)
   const [watchlistDeleting, setWatchlistDeleting] = useState<string | null>(null)
 
   const isFullRecoveryAdmin = (signedInEmail ?? '').toLowerCase() === 'chainlensai@gmail.com'
@@ -492,6 +525,36 @@ export default function WalletScannerPage() {
     }
   }
 
+  // ROBINHOOD CHAIN SCAN, DISCLOSED (phased rollout, Phase 1+2): a genuinely separate request to a
+  // genuinely separate route (GET /api/wallet-scan/robinhood) — never touches scanWalletV2, never
+  // touches resultEnvelope/loading/error above. Runs entirely independently of a Base/ETH scan; a
+  // user can have both a Base/ETH result and a Robinhood result on screen at once.
+  async function handleRobinhoodScan() {
+    const address = input.trim()
+    if (!address) return
+    setRobinhoodLoading(true)
+    setRobinhoodError(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      const res = await fetch(`/api/wallet-scan/robinhood?address=${encodeURIComponent(address)}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      const json = await res.json().catch(() => null) as (RobinhoodWalletScanResponse & { error?: { message?: string } }) | null
+      if (!res.ok || !json?.ok) {
+        setRobinhoodResult(null)
+        setRobinhoodError(json?.error?.message ?? 'Robinhood scan failed — try again later')
+        return
+      }
+      setRobinhoodResult(json)
+    } catch (err: unknown) {
+      setRobinhoodResult(null)
+      setRobinhoodError(err instanceof Error ? err.message : 'Robinhood scan failed — try again later')
+    } finally {
+      setRobinhoodLoading(false)
+    }
+  }
+
   if (planLoading) {
     return (
       <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>
@@ -622,6 +685,24 @@ export default function WalletScannerPage() {
             <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>
               V2 engine · holdings + portfolio + recovery policy
             </span>
+            <button
+              onClick={() => void handleRobinhoodScan()}
+              disabled={robinhoodLoading || !input.trim()}
+              title="Robinhood Chain (chainId 4663) — holdings and portfolio only. Verified PnL is not yet available: activity decoding is pending."
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                padding: '6px 13px', borderRadius: '8px', border: '1px solid rgba(139,92,246,0.45)',
+                background: 'rgba(139,92,246,0.08)', color: '#a78bfa',
+                fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase',
+                cursor: (robinhoodLoading || !input.trim()) ? 'not-allowed' : 'pointer',
+                fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
+              }}
+            >
+              {robinhoodLoading ? 'Scanning…' : 'Robinhood Chain'}
+            </button>
+            <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>
+              chainId 4663 · holdings + portfolio · PnL not verified yet
+            </span>
           </div>
 
           {/* Loading state */}
@@ -663,6 +744,75 @@ export default function WalletScannerPage() {
           {!loading && error && (
             <div className="ws-card" style={{ borderColor: 'rgba(248,113,113,0.4)', background: 'rgba(248,113,113,0.06)', color: '#fca5a5', fontSize: '13px' }}>
               Scan failed — try again later. ({error})
+            </div>
+          )}
+
+          {/* ROBINHOOD CHAIN RESULTS, DISCLOSED (phased rollout, Phase 1+2): its own self-contained
+              card, rendered independently of the Base/ETH `result`/`loading`/`error` state above —
+              a Robinhood scan and a Base/ETH scan can both be on screen at once, each showing only
+              its own real data. Holdings/portfolio are shown when available; PnL is ALWAYS the fixed
+              "not verified yet" message per this task's hard rule — never a computed number. */}
+          {robinhoodLoading && (
+            <div className="ws-card" style={{ color: 'rgba(148,163,184,0.75)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '13px', marginBottom: '16px' }}>
+              Scanning Robinhood Chain holdings for {input.trim()}…
+            </div>
+          )}
+          {!robinhoodLoading && robinhoodError && (
+            <div className="ws-card" style={{ borderColor: 'rgba(248,113,113,0.4)', background: 'rgba(248,113,113,0.06)', color: '#fca5a5', fontSize: '13px', marginBottom: '16px' }}>
+              Robinhood Chain scan failed — try again later. ({robinhoodError})
+            </div>
+          )}
+          {!robinhoodLoading && robinhoodResult && (
+            <div className="ws-card ws-result-fade" style={{ marginBottom: '16px' }}>
+              <div className="ws-section-header" style={{ color: '#a78bfa', marginBottom: '10px' }}>
+                Robinhood Chain (chainId {robinhoodResult.chainId}) · {robinhoodResult.wallet}
+              </div>
+              {robinhoodResult.holdings.status === 'not_configured' && (
+                <p style={{ fontSize: '13px', color: 'rgba(148,163,184,0.75)' }}>Robinhood Chain is not configured on this deployment.</p>
+              )}
+              {robinhoodResult.holdings.status !== 'not_configured' && (
+                <>
+                  <div style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0', marginBottom: '4px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                    {robinhoodResult.holdings.portfolioTotalUsd != null ? `$${robinhoodResult.holdings.portfolioTotalUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'Portfolio total unavailable'}
+                  </div>
+                  {robinhoodResult.holdings.status === 'partial' && (
+                    <p style={{ fontSize: '11px', color: '#fbbf24', margin: '0 0 10px' }}>
+                      Partial — {robinhoodResult.holdings.unpricedTokenCount} token{robinhoodResult.holdings.unpricedTokenCount === 1 ? '' : 's'} could not be priced{robinhoodResult.holdings.reason ? ` (${robinhoodResult.holdings.reason})` : ''}.
+                    </p>
+                  )}
+                  {robinhoodResult.holdings.status === 'unavailable' && (
+                    <p style={{ fontSize: '11px', color: '#f87171', margin: '0 0 10px' }}>
+                      Holdings unavailable{robinhoodResult.holdings.reason ? ` — ${robinhoodResult.holdings.reason}` : ''}.
+                    </p>
+                  )}
+                  {robinhoodResult.holdings.native && (
+                    <div style={{ fontSize: '12px', color: 'rgba(226,232,240,0.85)', marginBottom: '8px' }}>
+                      Native {robinhoodResult.holdings.native.symbol}: {robinhoodResult.holdings.native.uiBalance != null ? robinhoodResult.holdings.native.uiBalance.toFixed(6) : 'unavailable'}
+                      {robinhoodResult.holdings.native.valueUsd != null ? ` (~$${robinhoodResult.holdings.native.valueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })})` : ''}
+                    </div>
+                  )}
+                  {robinhoodResult.holdings.holdings.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '10px' }}>
+                      {robinhoodResult.holdings.holdings.map((h) => (
+                        <div key={h.address} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: 'rgba(226,232,240,0.80)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                          <span>{h.symbol ?? h.address.slice(0, 8)}</span>
+                          <span>{h.uiBalance != null ? h.uiBalance.toLocaleString(undefined, { maximumFractionDigits: 4 }) : 'n/a'}{h.valueUsd != null ? ` — $${h.valueUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : h.priceUsd == null ? ' — price unavailable' : ''}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+              {/* HARD RULE, DISCLOSED: "Do NOT show verified Robinhood PnL until swaps + prices are
+                  proven" — this message is fixed and never varies with any data on this page. */}
+              <div style={{ marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px dashed rgba(148,163,184,0.25)', color: 'rgba(148,163,184,0.75)', fontSize: '12px' }}>
+                {robinhoodResult.pnl.message}
+              </div>
+              {robinhoodResult.activity.status === 'ok' && (
+                <p style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', marginTop: '8px' }}>
+                  {robinhoodResult.activity.items.length} recent transfer{robinhoodResult.activity.items.length === 1 ? '' : 's'} found (transfers only — not classified as trades).
+                </p>
+              )}
             </div>
           )}
 
