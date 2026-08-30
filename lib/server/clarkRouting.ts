@@ -365,7 +365,7 @@ export function classifyTokenFollowupKind(prompt: string): TokenFollowupKind {
   const t = String(prompt ?? "").toLowerCase();
   if (/\b(can\s+(?:the\s+)?dev\s+(?:rug|dump)|who\s+controls\s+(?:the\s+)?supply|explain\s+dev(?:\s+control)?)\b/.test(t)) return "dev_rug";
   if (/\b(is\s+lp\s+locked|is\s+it\s+locked|explain\s+lp|what\s+about\s+lp|what\s+about\s+liquidity|where\s+is\s+liquidity|can\s+liquidity\s+be\s+pulled|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check|is\s+liquidity\s+strong|is\s+that\s+enough\s+liquidity|liquidity\s+strong|liquidity\s+risk|enough\s+liquidity|exit\s+liquidity|how\s+much\s+liquidity)\b/.test(t)) return "lp_lock";
-  if (/\b(bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|should\s+i\s+buy|should\s+i\s+watch)\b/.test(t)) return "analyst";
+  if (/\b(bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|should\s+i\s+buy|should\s+i\s+watch|what\s+should\s+i\s+watch)\b/.test(t)) return "analyst";
   if (/\b(why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|what\s+are\s+red\s+flags|explain\s+(?:the\s+)?risk|explain\s+verdict|explain\s+holders|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+risk|contract\s+risk|risk\s+score)\b/.test(t)) return "risk";
   return "safety";
 }
@@ -1146,6 +1146,74 @@ function describePnlQuality(result: WalletApiResult): { label: string; reason: s
   return { label: "attempted: limited", reason: tokenPnl?.reason ? String(tokenPnl.reason) : "cost basis / closed lots incomplete" };
 }
 
+function explainWalletMeaning(
+  result: WalletApiResult,
+  deep: boolean,
+  totalValue: string,
+  chains: string,
+  pnlQ: { label: string; reason: string },
+): string {
+  const holdings = result.holdings ?? [];
+  const parts: string[] = [];
+  parts.push(`Portfolio value is ${totalValue} across ${chains}.`);
+  if (holdings.length === 0) {
+    parts.push("No priced holdings were returned in this pass.");
+  } else {
+    parts.push(`${holdings.length} holding${holdings.length === 1 ? "" : "s"} priced.`);
+  }
+  if (pnlStatusLabel(pnlQ.label) === "Partial" || pnlStatusLabel(pnlQ.label) === "Open Check" || pnlStatusLabel(pnlQ.label) === "Unavailable") {
+    parts.push(`PnL is partial because ${pnlQ.reason}.`);
+  } else {
+    parts.push("PnL evidence is complete enough for a verified read.");
+  }
+  if (!deep) {
+    parts.push("This is a portfolio preview, not a full activity history.");
+  }
+  return parts.join(" ");
+}
+
+function explainWalletBehavior(
+  result: WalletApiResult,
+  deep: boolean,
+  topHoldings: Array<{ symbol?: string; value?: number; chain?: string | null }>,
+): string {
+  const holdings = result.holdings ?? [];
+  if (holdings.length === 0) return "No priced holdings were returned, so behavior cannot be read from portfolio mix.";
+  const parts: string[] = [];
+  const top = topHoldings[0];
+  const total = typeof result.totalValue === "number" && result.totalValue > 0 ? result.totalValue : null;
+  if (top?.symbol && total && typeof top.value === "number" && top.value / total >= 0.7) {
+    parts.push(`Portfolio is concentrated in ${String(top.symbol).toUpperCase()}.`);
+  } else if (top?.symbol) {
+    parts.push(`Largest position is ${String(top.symbol).toUpperCase()}.`);
+  }
+  if (!deep) {
+    parts.push("Activity is a portfolio preview — not a full trade-history read.");
+  } else if (result.txCount != null) {
+    parts.push(`Activity window shows ${result.txCount} transactions.`);
+  } else {
+    parts.push("Activity history was not returned in this pass.");
+  }
+  const pnlQ = describePnlQuality(result);
+  if (pnlQ.label !== "ok") {
+    parts.push("Trader skill and win rate stay locked until closed lots/cost basis recover.");
+  } else {
+    parts.push("Closed-lot evidence is complete enough that performance can be read.");
+  }
+  return parts.join(" ");
+}
+
+function walletReadConfidence(result: WalletApiResult, deep: boolean): string {
+  const health = result.walletScanHealth;
+  const status = String(health?.status ?? "");
+  if (status === "ok" && deep) return "High — holdings, activity, and PnL evidence all returned.";
+  if (status === "limited_pnl" || status === "cached") {
+    return "Medium — holdings are visible, but PnL/activity evidence is partial.";
+  }
+  if (!deep) return "Low — portfolio preview only. Deep Scan Wallet is needed for activity and PnL.";
+  return "Medium — some modules returned, but the read is not complete.";
+}
+
 export function formatWalletScanResult(address: string, result: WalletApiResult | null, deep: boolean): string {
   if (!result || !result.ok) {
     const reason = result?.error ? result.error : "the wallet data provider did not return a usable result for this address";
@@ -1179,6 +1247,7 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
     `- Address: ${address}`,
     `- Active chains: ${chains}`,
     `- Holdings count: ${holdings.length}`,
+    `- Portfolio value: ${totalValue}`,
     `- Total value: ${totalValue}`,
   ];
 
@@ -1256,6 +1325,18 @@ export function formatWalletScanResult(address: string, result: WalletApiResult 
   }
   if (result.warnings) lines.push(`- Warnings/limits: ${String(result.warnings)}`);
   lines.push(`- Evidence gaps: ${holdings.length === 0 ? "no priced holdings returned" : "closed/open lot attribution and historical recovery may be partial"}`);
+  lines.push("");
+  lines.push("Meaning:");
+  lines.push(explainWalletMeaning(result, deep, totalValue, chains, pnlQ));
+  lines.push("");
+  lines.push("Behavior:");
+  lines.push(explainWalletBehavior(result, deep, topHoldings));
+  lines.push("");
+  lines.push(`Confidence: ${walletReadConfidence(result, deep)}`);
+  lines.push("");
+  lines.push("Next:");
+  if (!deep) lines.push("- Deep Scan Wallet");
+  lines.push("- Open Wallet Scanner");
   lines.push("");
   lines.push(`CTA: Open Wallet Scanner${deep ? "" : " / Deep Scan Wallet"}`);
   return lines.join("\n");
@@ -3010,6 +3091,71 @@ export function buildClarkTokenVerdictInputFromEvidence(ev: TokenScanEvidence): 
  * evmFields (Ownership/Proxy/Mintability/Honeypot-tax wording); Solana callers omit it so those
  * lines are skipped entirely rather than showing EVM vocabulary that doesn't apply.
  */
+function explainClarkTokenMeaning(opts: {
+  chainLabel: string;
+  marketCap: number | null;
+  fdv: number | null;
+  liquidityUsd: number | null;
+  volume24h: number | null;
+  holderCount: number | null;
+  top1Pct: number | null;
+  top10Pct: number | null;
+  lpStatusLabel: string;
+  evmFields?: { ownershipStatus: string; proxyStatus: string; mintability: string; honeypotTaxResult: string } | null;
+  solanaFields?: { mintAuthority: string; freezeAuthority: string; tokenProgram: string; creatorAuthorityEvidence: string } | null;
+}): string {
+  const parts: string[] = [];
+  const liq = opts.liquidityUsd;
+  const bits: string[] = [];
+  if (opts.marketCap != null) bits.push(`market cap ${fmtUsdShort(opts.marketCap)}`);
+  if (liq != null) bits.push(`liquidity ${fmtUsdShort(liq)}`);
+  if (opts.volume24h != null) bits.push(`24h volume ${fmtUsdShort(opts.volume24h)}`);
+  let marketQuality = "unverified";
+  if (liq == null || !Number.isFinite(liq) || liq <= 0) marketQuality = bits.length ? "visible but pool depth unverified" : "unverified";
+  else if (liq < 10_000) marketQuality = "thin";
+  else if (liq < 75_000) marketQuality = "usable for small size";
+  else if (liq < 250_000) marketQuality = "decent";
+  else marketQuality = "deeper than typical small-cap";
+  parts.push(`Market quality: ${marketQuality}${bits.length ? ` (${bits.join(", ")})` : ""}.`);
+  parts.push(`LP/liquidity: ${opts.lpStatusLabel.replace(/^LP status:\s*/i, "") || "unverified"}.`);
+  if (opts.top1Pct == null && opts.top10Pct == null) {
+    parts.push(opts.holderCount != null
+      ? `Holders/concentration: ${opts.holderCount.toLocaleString()} accounts sampled, top-holder share not returned.`
+      : "Holders/concentration: not returned.");
+  } else {
+    const top1 = opts.top1Pct != null ? `top-1 ${fmtPct1(opts.top1Pct)}` : "top-1 unverified";
+    const top10 = opts.top10Pct != null ? `top-10 ${fmtPct1(opts.top10Pct)}` : "top-10 unverified";
+    let conc = "unverified";
+    if (opts.top1Pct != null && opts.top1Pct >= 40) conc = "high single-wallet dominance";
+    else if (opts.top10Pct != null && opts.top10Pct >= 40) conc = "elevated top-10 concentration";
+    else if (opts.top1Pct != null && opts.top1Pct < 10 && (opts.top10Pct == null || opts.top10Pct < 30)) conc = "not highly concentrated on current evidence";
+    else conc = "moderate concentration";
+    parts.push(`Holders/concentration: ${conc} (${top1}, ${top10}).`);
+  }
+  if (opts.solanaFields) {
+    const mint = /^Revoked/i.test(opts.solanaFields.mintAuthority)
+      ? "revoked"
+      : /^Unresolved/i.test(opts.solanaFields.mintAuthority)
+        ? "unresolved"
+        : /active/i.test(opts.solanaFields.mintAuthority)
+          ? "active"
+          : opts.solanaFields.mintAuthority;
+    const freeze = /^Revoked/i.test(opts.solanaFields.freezeAuthority)
+      ? "revoked"
+      : /^Unresolved/i.test(opts.solanaFields.freezeAuthority)
+        ? "unresolved"
+        : /active/i.test(opts.solanaFields.freezeAuthority)
+          ? "active"
+          : opts.solanaFields.freezeAuthority;
+    parts.push(`Creator/authority: mint ${mint}, freeze ${freeze}. ${opts.solanaFields.creatorAuthorityEvidence}`);
+    parts.push("Security checks: Solana mint/freeze authority are the control checks here. EVM-style buy/sell simulation is not available on Solana.");
+  } else if (opts.evmFields) {
+    parts.push(`Deployer/ownership: ${opts.evmFields.ownershipStatus}. Proxy: ${opts.evmFields.proxyStatus}.`);
+    parts.push(`Security checks: ${opts.evmFields.honeypotTaxResult}. Mintability: ${opts.evmFields.mintability}.`);
+  }
+  return parts.join(" ");
+}
+
 export function renderClarkTokenVerdict(opts: {
   symbolOrName: string;
   chainLabel: string;
@@ -3051,6 +3197,21 @@ export function renderClarkTokenVerdict(opts: {
     "",
     "Why:",
     ...(result.why.length > 0 ? result.why.map(w => `- ${w}`) : ["- No specific evidence-backed reasons were generated for this read."]),
+    "",
+    "Meaning:",
+    explainClarkTokenMeaning({
+      chainLabel: opts.chainLabel,
+      marketCap: opts.marketCap,
+      fdv: opts.fdv,
+      liquidityUsd: opts.liquidityUsd,
+      volume24h: opts.volume24h,
+      holderCount: opts.holderCount,
+      top1Pct: opts.top1Pct,
+      top10Pct: opts.top10Pct,
+      lpStatusLabel: opts.lpStatusLabel,
+      evmFields: opts.evmFields,
+      solanaFields: opts.solanaFields,
+    }),
     "",
     "Key Metrics:",
     `- Market Cap: ${fmtUsdShort(opts.marketCap)}`,
@@ -3100,6 +3261,7 @@ export function renderClarkTokenVerdict(opts: {
 }
 
 const DEFAULT_CLARK_TOKEN_NEXT_ACTIONS = ["Deep Scan Token", "Explain LP", "Check Deployer", "Check Holders", "Add to Watchlist", "Open Token Scanner"];
+const SOLANA_CLARK_TOKEN_NEXT_ACTIONS = ["Deep Scan Token", "Explain LP", "Check Creator", "Check Holders", "Add to Watchlist", "Open Token Scanner"];
 
 /** Full EVM entry point: evidence -> scored verdict -> rendered TOKEN READ text, in one call. */
 export function renderClarkTokenVerdictForEvm(ev: TokenScanEvidence, tokenAddress: string, chainLabel: string, usableEvidence: boolean): string {
@@ -3216,7 +3378,7 @@ export function renderClarkTokenVerdictForSolana(params: {
         ? `${params.likelyCreator} — fee-payer of earliest transaction, confidence: ${params.creatorConfidenceTier ?? "possible"} (not proof of deployer)`
         : "Not resolved. Run the Deep Creator Check in Token Scanner for a Helius signature-history trace.",
     },
-    nextActions: DEFAULT_CLARK_TOKEN_NEXT_ACTIONS,
+    nextActions: SOLANA_CLARK_TOKEN_NEXT_ACTIONS,
   });
 }
 
@@ -3422,6 +3584,19 @@ export function formatTokenSafetyAnswer(ev: TokenScanEvidence, chain = "Base"): 
 
   const lines = [`TOKEN SAFETY — ${sym} (${chain})`, "", `Verdict: ${verdict}`, safeLine];
 
+  const whyBits: string[] = [];
+  if (sec?.honeypot === true) whyBits.push("Honeypot detected.");
+  for (const r of risks) {
+    if (!whyBits.includes(r)) whyBits.push(r);
+  }
+  if (openChecks.length > 0 && risks.length === 0) {
+    whyBits.push(`Open checks remain: ${openTopics.length ? openTopics.join(", ") : "security, LP, or holders"}.`);
+  }
+  if (whyBits.length > 0) {
+    lines.push("", "Why:");
+    whyBits.slice(0, 4).forEach((w) => lines.push(`- ${w}`));
+  }
+
   if (visible.length > 0) {
     lines.push("", "Visible evidence:");
     visible.forEach(v => lines.push(`- ${v}`));
@@ -3456,53 +3631,54 @@ export function formatTokenAnalystFollowup(ev: TokenScanEvidence, chain = "Base"
   const lp = ev.lpControl;
   const mkt = ev.market;
   const meta = tokenScanVerdictMeta(ev, hasUsableTokenEvidence(ev));
-  const bull: string[] = [];
-  const bear: string[] = [];
+  const watchBecause: string[] = [];
+  const watchFor: string[] = [];
   const gaps: string[] = [];
 
-  if (mkt?.liquidity != null) bull.push(`Liquidity visible: ${fmtUsdShort(mkt.liquidity)}.`);
+  if (mkt?.liquidity != null) watchBecause.push(`Liquidity visible: ${fmtUsdShort(mkt.liquidity)}.`);
   else gaps.push("Liquidity depth not confirmed.");
-  if (mkt?.volume24h != null) bull.push(`24h volume visible: ${fmtUsdShort(mkt.volume24h)}.`);
-  if (sec?.honeypot === false) bull.push("Honeypot simulation did not flag a honeypot.");
-  if (sec?.ownerRenounced === true) bull.push("Ownership is renounced.");
-  if (lp?.status === "locked" || lp?.status === "burned") bull.push(`LP status: ${lp.status}.`);
+  if (mkt?.volume24h != null) watchBecause.push(`24h volume visible: ${fmtUsdShort(mkt.volume24h)}.`);
+  if (sec?.honeypot === false) watchBecause.push("Honeypot simulation did not flag a honeypot.");
+  if (sec?.ownerRenounced === true) watchBecause.push("Ownership is renounced.");
+  if (lp?.status === "locked" || lp?.status === "burned") watchBecause.push(`LP status: ${lp.status}.`);
 
-  if (sec?.honeypot === true) bear.push("Honeypot flag detected.");
-  if (sec?.ownerRenounced === false) bear.push("Ownership is active.");
-  if (sec?.mintable === true) bear.push("Mint authority is present.");
-  if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") bear.push("LP is wallet/team controlled.");
-  if (h?.top1 != null && h.top1 >= 40) bear.push(`Major single-wallet dominance: top-1 holder controls ${h.top1.toFixed(1)}% of supply.`);
-  else if (h?.top1 != null && h.top1 >= 20) bear.push(`Top-1 holder controls ${h.top1.toFixed(1)}% of supply.`);
-  if (h?.top10 != null && h.top10 >= 40) bear.push(`Elevated holder concentration: top-10 holders control ${h.top10.toFixed(1)}% of supply.`);
+  if (sec?.honeypot === true) watchFor.push("Honeypot flag detected.");
+  if (sec?.ownerRenounced === false) watchFor.push("Ownership is active.");
+  if (sec?.mintable === true) watchFor.push("Mint authority is present.");
+  if (lp?.status === "wallet_controlled" || lp?.status === "team_controlled") watchFor.push("LP is wallet/team controlled.");
+  if (h?.top1 != null && h.top1 >= 40) watchFor.push(`Major single-wallet dominance: top-1 holder controls ${h.top1.toFixed(1)}% of supply.`);
+  else if (h?.top1 != null && h.top1 >= 20) watchFor.push(`Top-1 holder controls ${h.top1.toFixed(1)}% of supply.`);
+  if (h?.top10 != null && h.top10 >= 40) watchFor.push(`Elevated holder concentration: top-10 holders control ${h.top10.toFixed(1)}% of supply.`);
   if (!h || h.top10 == null) gaps.push("Holder concentration not confirmed.");
   if (!lp || !lp.status || lp.status === "open_check" || lp.status === "unverified") gaps.push("LP control/lock proof not confirmed.");
   if (!sec || sec.honeypot == null) gaps.push("Honeypot/security simulation not confirmed.");
 
-  const biggestRisk = bear[0] ?? gaps[0] ?? "No single confirmed red flag in cached evidence.";
-  const quickTake = meta.verdict === "Avoid" ? "Avoid until the confirmed risk is resolved."
-    : bear.length > 0 ? "Caution — confirmed risk signals exist."
-    : gaps.length > 0 ? "Open check — do not treat it as safe yet."
-    : "No confirmed red flags in cached evidence.";
+  const biggestRisk = watchFor[0] ?? gaps[0] ?? "No single confirmed red flag in cached evidence.";
+  const shouldWatch = meta.verdict === "Avoid" ? "No — confirmed avoid-level risk. Watch only if you are tracking the failure mode."
+    : watchFor.length > 0 ? "Yes, with caution — confirmed risk signals exist."
+    : gaps.length > 0 ? "Watch as an open check — do not treat it as safe yet."
+    : "Optional watch — no confirmed red flags in cached evidence.";
 
   return [
-    `QUICK TAKE — ${sym} (${chain})`,
-    quickTake,
+    `WATCH READ — ${sym} (${chain})`,
+    `Should you watch it? ${shouldWatch}`,
     "",
-    "WHY",
-    `- Verdict: ${meta.verdict}`,
-    `- Confidence: ${meta.confidence}`,
+    "Why watch:",
+    ...(watchBecause.length ? watchBecause.map(x => `- ${x}`) : ["- No confirmed watch-reason from cached evidence beyond the open checks below."]),
     "",
-    "BULL CASE",
-    ...(bull.length ? bull.map(x => `- ${x}`) : ["- No strong bull case was proven by cached evidence."]),
+    "Watch for (risks):",
+    ...(watchFor.length ? watchFor.map(x => `- ${x}`) : ["- No confirmed risk signal in cached evidence."]),
     "",
-    "BEAR CASE",
-    ...(bear.length ? bear.map(x => `- ${x}`) : ["- No confirmed bear-case red flag in cached evidence."]),
+    `Verdict: ${meta.verdict}`,
+    `Confidence: ${meta.confidence}`,
     "",
-    "BIGGEST RISK",
+    "Biggest risk:",
     `- ${biggestRisk}`,
     "",
-    "NEXT ACTION",
+    ...(gaps.length ? ["Missing evidence:", ...gaps.slice(0, 3).map(g => `- ${g}`), ""] : []),
+    "Next:",
     `- ${gaps.length ? `Resolve open checks: ${gaps.slice(0, 3).join("; ")}` : "Use Token Scanner / LP Check before making any trade decision."}`,
+    "- Deep Scan Token",
   ].join("\n");
 }
 

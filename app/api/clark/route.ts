@@ -14,6 +14,8 @@ import { classifyClarkBasicIntent, buildClarkDirectAnswer, clarkMissingInputProm
 import {
   runClarkLiquidityCheck,
   formatClarkLiquidityCheck,
+  formatClarkLiquidityFollowup,
+  isLiquidityStrengthFollowupPrompt,
   formatAmbiguousLiquiditySymbol,
   formatNeedsTokenLiquidityReply,
   formatUnknownLiquidityEntityReply,
@@ -10922,7 +10924,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       },
     });
     clarkLiquidityResultCache.set(cacheKey, { exp: Date.now() + CLARK_LIQ_CACHE_TTL_MS, result: check });
-    const lpAnalysis = formatClarkLiquidityCheck(check);
+    const lpAnalysis = isLiquidityStrengthFollowupPrompt(prompt)
+      ? formatClarkLiquidityFollowup(check)
+      : formatClarkLiquidityCheck(check);
     const isPair = inferLpPairFromPayload(
       { pairAddress: check.pairAddress, primaryPool: check.primaryPool, primaryPoolAddress: check.primaryPool, isLpPair: parsedLiqIntent === "pool_check" },
       routed.address,
