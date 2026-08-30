@@ -28,6 +28,11 @@ export type RunWalletScanParams = {
   // quarantine flag + current-price source). Sourced from the SAME canonical holdings snapshot the
   // balance lookup above already uses — never an additional holdings fetch.
   unrealizedReconciliationDiagnostics?: import('../modules/fifoEngine/types').UnrealizedReconciliationDiagnosticsContext
+  // CHEAPER GOLDRUSH STRATEGY, DISCLOSED (Wallet Scanner weak-spot pass): optional
+  // `${chain}:${tokenLower}` keys from the canonical holdings snapshot. Threaded into
+  // priceLotsForWallet so unmatched open buys of tokens the wallet does not currently hold are
+  // not historically priced. Omitted by every caller that hasn't opted in — zero behavior change.
+  canonicalHoldingKeys?: ReadonlySet<string>
   // EXPLICIT REFRESH, DISCLOSED (durable-canonical-sample follow-up task, requirement #7): default
   // false, no public automatic refresh — a rescan reproduces the previously published canonical
   // sample unless this is deliberately set true, in which case a NEW manifest version is created
@@ -65,6 +70,7 @@ export type RunWalletScanResult = FinalReport & {
   // src/pipeline/priceLotsForWallet.ts's own HistoricalPricingPerformanceSummary header for the
   // full field list and why every one is real/measured, not fabricated.
   historicalPricingPerformanceSummary?: import('./priceLotsForWallet').HistoricalPricingPerformanceSummary
+  goldRushHistoricalPricingEfficiencyAudit?: import('./goldRushHistoricalPricingEfficiencyAudit').GoldRushHistoricalPricingEfficiencyAudit
   // GOLDRUSH CALL SPLIT, DISCLOSED (UI/trust follow-up task): the real, measured historical-vs-
   // current-price GoldRush call split — see AcceptedEvidenceSkipAudit's own header on
   // priceLotsForWallet.ts. Read by walletScanWorker.ts to attribute [wallet-provider-cost-audit]'s

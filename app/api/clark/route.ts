@@ -11,6 +11,18 @@ import { buildTokenFullReport } from "@/lib/clark/reportBuilders";
 import { getWalletLite } from "@/lib/server/walletLite";
 import { getWalletFromV2 } from "@/lib/server/v2Adapters";
 import { classifyClarkBasicIntent, buildClarkDirectAnswer, clarkMissingInputPrompt, CLARK_SAFE_FALLBACK, buildClarkRoutingDebug } from "@/lib/server/clarkBasicIntent";
+import {
+  runClarkLiquidityCheck,
+  formatClarkLiquidityCheck,
+  formatAmbiguousLiquiditySymbol,
+  formatNeedsTokenLiquidityReply,
+  clarkLiquidityCacheKey,
+  rejectWrongChainLiquidityCache,
+  buildClarkLiquidityCheckAudit,
+  type ClarkLiquidityChain,
+  type ClarkLiquidityCheckResult,
+  type ClarkLiquidityMatch,
+} from "@/lib/server/clarkLiquidityCheck";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
 import {
@@ -52,6 +64,8 @@ import {
   isTokenFollowupPrompt,
   classifyTokenFollowupKind,
   extractRequestedChainFromPrompt,
+  extractLiquiditySymbol,
+  isLiquidityCheckIntent,
   type TokenScanEvidence,
   getClarkAddressRouteHint,
   isWalletFollowupPrompt,
@@ -688,6 +702,21 @@ function checkClarkLowCostRate(actor: string, planKey: string): ClarkRateResult 
 // ---------- Types ----------
 
 type SupportedChain = "base" | "ethereum" | "polygon" | "bnb";
+
+const CLARK_LIQ_CACHE_TTL_MS = 10 * 60 * 1000
+const clarkLiquidityResultCache = new Map<string, { exp: number; result: ClarkLiquidityCheckResult }>()
+
+function resolveLiquidityChainForClark(prompt: string, chainForClarkTools: string, selectedChain: string | null | undefined): ClarkLiquidityChain {
+  const named = extractRequestedChainFromPrompt(prompt)
+  if (named === "solana" || named === "robinhood" || named === "ethereum" || named === "base") return named
+  if (chainForClarkTools === "solana" || chainForClarkTools === "robinhood" || chainForClarkTools === "ethereum" || chainForClarkTools === "base") {
+    return chainForClarkTools
+  }
+  if (selectedChain === "eth" || selectedChain === "ethereum") return "ethereum"
+  if (selectedChain === "robinhood") return "robinhood"
+  if (selectedChain === "solana") return "solana"
+  return "base"
+}
 
 type ClarkFeature =
   | "token-scanner"
@@ -8419,7 +8448,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // be overridden by the default UI chain.
   const promptChain = extractRequestedChainFromPrompt(prompt);
   const memSelectedChain: SupportedChain = sessionMem.selectedChain === "eth" ? "ethereum" : "base";
-  const chain: SupportedChain = promptChain ?? body.chain ?? memSelectedChain;
+  const chain: SupportedChain = (promptChain === "solana" || promptChain === "robinhood" ? null : promptChain) ?? body.chain ?? memSelectedChain;
   // MULTI-CHAIN ENTITY-CHECK FIX, DISCLOSED (requested: Clark must see tokens across Base/ETH/BNB/
   // Robinhood). Robinhood was never part of SupportedChain — extending that base type would have
   // forced fake Robinhood entries into GOLDRUSH_CHAIN/GOPLUS_CHAIN_ID (providers that don't
@@ -9398,12 +9427,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
   }
   if (appIntent.intent === 'liquidity_scan' && !appIntent.address) {
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], ui: { intentBadge: 'LP Check', actions: appIntent.cta }, analysis: [
-      'LP CHECK',
-      'Liquidity Safety is the right Elite LP pipeline for that.',
-      'Send a token contract and I will check pool model, lock/burn proof, controller/position verification, liquidity depth, exit risk, and missing proof.',
-      'CTA: Run LP Check or Scan Token.'
-    ].join('\n') };
+    const routedHasTarget = Boolean(routedClassification.address || routedClassification.symbol);
+    const lastTokenTarget = Boolean(sessionMem.lastToken?.address);
+    const selectedTokenTarget = Boolean(
+      typeof body.appContext?.selectedToken === 'string'
+        ? body.appContext.selectedToken
+        : body.appContext?.selectedToken?.address ?? body.appContext?.selectedToken?.contract,
+    );
+    if (!(routedHasTarget || lastTokenTarget || selectedTokenTarget || (isLiquidityCheckIntent(prompt) && extractLiquiditySymbol(prompt)))) {
+      return { feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_safety", toolsUsed: [], ui: { intentBadge: 'LP Check', actions: appIntent.cta }, analysis: formatNeedsTokenLiquidityReply() };
+    }
   }
   if (appIntent.intent === 'whale_alerts') {
     const synced = String(body.appContext?.whaleSyncStatus ?? '').toLowerCase();
@@ -10293,117 +10326,162 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     }
   }
 
-  if (routed.intent === "liquidity_scan" && !routed.address && routed.symbol) {
-    const resolved = await resolveTokenSymbolToAddress(routed.symbol);
-    if (!resolved || !resolved.address) {
+  if (routed.intent === "liquidity_scan") {
+    const liqChain = resolveLiquidityChainForClark(prompt, String(chainForClarkTools), sessionMem.selectedChain ?? sessionMem.lastTokenChain);
+    let liqAudit = buildClarkLiquidityCheckAudit({
+      prompt,
+      resolvedIntent: "liquidity_scan",
+      symbolOrAddress: routed.address ?? routed.symbol,
+      selectedChain: liqChain,
+      resolvedChain: liqChain,
+      entityType: routed.address ? (isValidSolanaMintAddress(routed.address) ? "solana_mint" : "token") : "symbol",
+      resolverSource: routed.address ? "prompt_address" : routed.symbol ? "symbol" : null,
+      matchesCount: 0,
+      ambiguityHandled: false,
+      scannerCalled: false,
+      responseStatus: "pending",
+    });
+    if (!routed.address && routed.symbol) {
+      const resolved = await resolveTokenSymbolToAddress(routed.symbol, liqChain);
+      liqAudit.resolverSource = "token_resolve";
+      liqAudit.matchesCount = resolved?.matchesCount ?? 0;
+      if (resolved?.status === "ambiguous" && Array.isArray(resolved.matches) && resolved.matches.length > 1) {
+        liqAudit.ambiguityHandled = true;
+        liqAudit.responseStatus = "ambiguous";
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["token_resolve"],
+          analysis: formatAmbiguousLiquiditySymbol(routed.symbol, resolved.matches as ClarkLiquidityMatch[]),
+          intentBadge: "liquidity_scan",
+          actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+          quotaConsumed: false,
+          clarkLiquidityCheckAudit: liqAudit,
+        };
+      }
+      if (!resolved || !resolved.address) {
+        liqAudit.responseStatus = resolved?.status === "timed_out" ? "timed_out" : "not_found";
+        const named = extractRequestedChainFromPrompt(prompt);
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["token_resolve"],
+          analysis: resolved?.status === "timed_out"
+            ? `I understood this as a liquidity check, but token resolution timed out before I could run LP analysis.`
+            : named
+              ? `I couldn't resolve ${routed.symbol} on ${named}. Liquidity unavailable — token not found on the selected chain.`
+              : `I couldn't resolve ${routed.symbol} confidently. Which chain should I check: Base, Ethereum, Robinhood, or Solana?`,
+          intentBadge: "liquidity_scan",
+          actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+          quotaConsumed: false,
+          clarkLiquidityCheckAudit: liqAudit,
+        };
+      }
+      routed.address = resolved.address;
+      if (resolved.chain === "solana" || resolved.chain === "ethereum" || resolved.chain === "robinhood" || resolved.chain === "base") {
+        liqAudit.resolvedChain = resolved.chain;
+      }
+    }
+    if (!routed.address && sessionMem.lastToken?.address) {
+      routed.address = sessionMem.lastToken.address;
+      liqAudit.resolverSource = "lastToken";
+      liqAudit.entityType = "token";
+    }
+    if (!routed.address) {
+      liqAudit.responseStatus = "needs_token";
       return {
-        feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["token_resolve"],
-        analysis: resolved?.status === "timed_out" ? `I understood this as a liquidity check, but token resolution timed out before I could run LP analysis.` : `I couldn’t resolve ${routed.symbol} confidently on Base from the current market index. Paste the contract address or try again.`,
+        feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: [],
+        analysis: formatNeedsTokenLiquidityReply(),
         intentBadge: "liquidity_scan",
         actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
         quotaConsumed: false,
+        clarkLiquidityCheckAudit: liqAudit,
       };
     }
-    routed.address = resolved.address;
-  }
 
-  if (routed.intent === "liquidity_scan" && routed.address) {
-    // EOA-CHECK-CHAIN-BLIND FIX, DISCLOSED (found chasing the same "Base collapse" report: three
-    // different real tokens on non-Base chains, already correctly auto-detected by the entity gate
-    // above, all wrongly hit this exact "That address looks like a wallet" reply). Root cause: the
-    // old isContractAddress() reimplemented the eth_getCode check independently — hardcoded to Base
-    // only, no chain param at all, no retry, and treated ANY fetch failure as "not a contract"
-    // rather than "unknown". A token genuinely deployed on ETH/BNB/Robinhood (and already correctly
-    // identified as a real contract by the entity gate moments earlier) would have no code on Base,
-    // so this second, redundant, chain-blind check reported it as a wallet regardless. Removed the
-    // duplicate function entirely and reused classifyAddressForClark (already chain-aware and
-    // retry-hardened) with the real auto-detected chainForClarkTools. Fails open on "unknown"
-    // (proceeds to the real LP check) rather than blocking — consistent with resolveClarkEntity's
-    // own fail-open convention elsewhere in this file.
-    const addressKind = await classifyAddressForClark(routed.address, chainForClarkTools);
-    if (addressKind === "wallet") {
-      return {
-        feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: [],
-        analysis: formatEoaLpCheckReply(),
-        intentBadge: "liquidity_scan",
-        actions: buildRoutedActions(["Scan Wallet", "Deep Scan Wallet"]),
-        quotaConsumed: false,
-      };
+    const isSol = isValidSolanaMintAddress(routed.address) || liqChain === "solana";
+    if (!isSol) {
+      const addressKind = await classifyAddressForClark(routed.address, chainForClarkTools);
+      if (addressKind === "wallet") {
+        liqAudit.entityType = "wallet";
+        liqAudit.responseStatus = "entity_mismatch";
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["address_code_check"],
+          analysis: formatEoaLpCheckReply(),
+          intentBadge: "liquidity_scan",
+          actions: buildRoutedActions(["Scan Wallet", "Deep Scan Wallet"]),
+          quotaConsumed: false,
+          clarkLiquidityCheckAudit: liqAudit,
+        };
+      }
     }
-    // LP-CHECK-CHAIN-BLIND FIX, DISCLOSED (same incident: "that should be for every chain as well
-    // available"): this always sent chain: "base" to /api/liquidity-safety regardless of the real
-    // auto-detected chain — an ETH or Robinhood token's LP check silently queried Base's liquidity
-    // instead of its own. /api/liquidity-safety itself supports base/eth/robinhood (see its own
-    // normalizeChain) but not yet bnb (collapses to base internally there) — a separate, deeper gap
-    // in that file, not fixed here; flagged honestly instead of silently forcing "base" for it too.
-    const lpApiChain = toTokenApiChain(chainForClarkTools);
-    if (lpApiChain === "bnb" || lpApiChain == null) {
+
+    const runChain: ClarkLiquidityChain = isSol ? "solana" : liqChain;
+    if (runChain !== "solana" && runChain !== "base" && runChain !== "ethereum" && runChain !== "robinhood") {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: [],
-        analysis: `Liquidity Safety doesn't have full ${chainDisplayLabel(chainForClarkTools)} support yet — it currently covers Base, Ethereum, and Robinhood Chain. Use Token Scanner's general LP fields for a ${chainDisplayLabel(chainForClarkTools)} read, or ask about this token on one of those chains instead.`,
+        analysis: `Liquidity Safety doesn't have full ${chainDisplayLabel(chainForClarkTools)} support yet — it currently covers Base, Ethereum, Robinhood, and Solana. Use Token Scanner's general LP fields, or ask about this token on one of those chains instead.`,
         intentBadge: "liquidity_scan",
         actions: buildRoutedActions(["Open Token Scanner"]),
         quotaConsumed: false,
       };
     }
-    const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: routed.address, chain: lpApiChain }, authHeader ?? undefined, verifiedPlan);
-    const raw = (liqRes.json ?? {}) as Record<string, unknown>;
-    const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
-    if (!liqRes.ok || raw.ok === false || Object.keys(data).length === 0) {
-      return {
-        feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["liquidity_safety_pipeline"],
-        analysis: formatLpReadResult(null),
-        intentBadge: "liquidity_scan",
-        actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
-        quotaConsumed: false,
-      };
-    }
-    // LP-META-FIELD-MISMATCH FIX, DISCLOSED (reported live: "the lp has bad information it needs
-    // to use the apis its got alchemy and goldrush for that" — liquidity depth showed a real number
-    // but primary pool/pool id always said "not available" regardless of the token). Root cause:
-    // /api/liquidity-safety's buildSharedLpMeta returns FLAT fields (primaryPoolAddress,
-    // primaryPoolDex, primaryPoolType — see lib/server/lpIntelligence.ts) but this mapping read
-    // lpMeta.primaryPool as if it were a nested object with its own .address/.poolType — a field
-    // that has never existed on that response shape, so this always evaluated to null regardless of
-    // whether the API genuinely found a pool. Real Alchemy RPC (LP lock/burn/position proof) and
-    // GoldRush (pool discovery via the shared canonical-pool-selection pipeline) data WAS already
-    // being fetched and returned correctly by /api/liquidity-safety — this was purely a display bug
-    // reading the wrong field names on the way back out, not a missing-provider gap.
-    const lpMeta = data.lpMeta && typeof data.lpMeta === "object" ? data.lpMeta as Record<string, unknown> : null;
-    const gaps = Array.isArray(data.lp_evidence_gaps) ? (data.lp_evidence_gaps as Array<Record<string, unknown> | string>).map((g) => typeof g === "string" ? g : String(g.label ?? g.code ?? g.reason ?? "LP evidence gap")) : [];
-    const displayModel = typeof data.displayLpModel === "string" ? data.displayLpModel : (typeof data.poolModel === "string" ? data.poolModel : null);
-    const concentrated = displayModel === "concentrated_liquidity" || displayModel === "concentrated" || data.lpProofApplicability === "not_applicable";
-    const mapped = {
-      token: { name: typeof data.name === "string" ? data.name : null, symbol: typeof data.symbol === "string" ? data.symbol : null },
-      primaryPool: typeof lpMeta?.primaryPoolAddress === "string" ? lpMeta.primaryPoolAddress : null,
-      poolModel: displayModel,
-      poolType: typeof lpMeta?.primaryPoolType === "string" ? lpMeta.primaryPoolType : null,
-      lpProofStatus: typeof data.lpLockStatus === "string" ? data.lpLockStatus : null,
-      lpProofApplicability: typeof data.lpProofApplicability === "string" ? data.lpProofApplicability : null,
-      lockStatus: typeof data.lpLockStatus === "string" ? data.lpLockStatus : null,
-      burnStatus: data.lpLockStatus === "burned" ? "burned" : "not_verified",
-      controllerStatus: typeof data.lpController === "string" ? data.lpController : null,
-      positionVerificationStatus: concentrated ? "Position/control verification required" : (typeof data.lpControl === "object" ? String((data.lpControl as Record<string, unknown>).status ?? "open_check") : "open_check"),
-      secondaryLpExposure: typeof lpMeta?.protocolPoolCandidatesCount === "number" && lpMeta.protocolPoolCandidatesCount > 0 ? `${lpMeta.protocolPoolCandidatesCount} protocol pool candidate(s) found` : null,
-      liquidityDepth: typeof data.lp_total_liquidity_usd === "number" ? `$${data.lp_total_liquidity_usd.toLocaleString()}` : undefined,
-      exitRisk: typeof data.lpExitRisk === "string" ? data.lpExitRisk : undefined,
-      missingEvidence: concentrated ? ["ERC20 LP lock/burn proof does not apply to this pool model. Position/control verification is required.", ...gaps] : gaps,
-      nextAction: "Open Token Scanner (LP Safety tab)",
-    };
-    const lpAnalysis = formatLpReadResult(mapped);
-    // By this point in the branch lpApiChain has already been narrowed to eth/base/robinhood
-    // (bnb and anything else returned early above), so chainForClarkTools is one of those three —
-    // just needs "ethereum" renamed to the memory layer's "eth" spelling.
-    const lpMemoryChain = (chainForClarkTools === "ethereum" ? "eth" : chainForClarkTools) as "base" | "eth" | "robinhood";
-    updateMemToken(sessionMem, routed.address, mapped.token.symbol, mapped.token.name, lpAnalysis, { cachedEvidence: { ok: true, token: { ...mapped.token, address: routed.address }, chain: lpMemoryChain, market: { liquidity: typeof data.lp_total_liquidity_usd === "number" ? data.lp_total_liquidity_usd : null }, lpControl: { status: mapped.lpProofStatus ?? "open_check", reason: mapped.controllerStatus, confidence: null, poolType: mapped.poolModel } } as TokenScanEvidence, chain: lpMemoryChain });
+
+    const cacheKey = clarkLiquidityCacheKey(runChain, routed.address);
+    const cachedHit = clarkLiquidityResultCache.get(cacheKey);
+    const cached = cachedHit && cachedHit.exp > Date.now() ? cachedHit.result : null;
+    const wrongChainRejected = rejectWrongChainLiquidityCache(cached, { chainSlug: runChain, tokenAddressOrMint: routed.address });
+    liqAudit.cacheKey = cacheKey;
+    liqAudit.wrongChainCacheRejected = wrongChainRejected;
+    liqAudit.resolvedChain = runChain;
+
+    const check = await runClarkLiquidityCheck({
+      chainSlug: runChain,
+      tokenAddressOrMint: routed.address,
+      symbol: routed.symbol,
+      source: "clark",
+      cached: cached && !wrongChainRejected ? cached : null,
+    }, {
+      fetchEvmLiquidity: async (tokenAddress, evmChain) => {
+        const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: tokenAddress, chain: evmChain }, authHeader ?? undefined, verifiedPlan);
+        const raw = (liqRes.json ?? {}) as Record<string, unknown>;
+        const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
+        if (!liqRes.ok || raw.ok === false || Object.keys(data).length === 0) return null;
+        return data;
+      },
+      fetchSolanaLiquidity: async (mint) => {
+        const tokRes = await callInternalApi(origin, "/api/token", { contract: mint, chain: "solana" }, authHeader ?? undefined, verifiedPlan);
+        const raw = (tokRes.json ?? {}) as Record<string, unknown>;
+        if (!tokRes.ok || raw.ok === false) return null;
+        return raw;
+      },
+    });
+    clarkLiquidityResultCache.set(cacheKey, { exp: Date.now() + CLARK_LIQ_CACHE_TTL_MS, result: check });
+    const lpAnalysis = formatClarkLiquidityCheck(check);
+    liqAudit.scannerCalled = !cached || wrongChainRejected;
+    liqAudit.liquidityStatus = check.status;
+    liqAudit.lpStatus = check.lockBurnStatus;
+    liqAudit.responseStatus = check.status;
+    const lpMemoryChain = runChain === "ethereum" ? "eth" : runChain === "solana" ? "base" : runChain;
+    updateMemToken(sessionMem, routed.address, check.symbol, check.symbol, lpAnalysis, {
+      cachedEvidence: {
+        ok: check.status !== "unavailable",
+        token: { symbol: check.symbol, name: check.symbol, address: routed.address },
+        chain: lpMemoryChain as "base" | "eth" | "robinhood",
+        market: { liquidity: check.liquidityUsd },
+        lpControl: { status: check.lockBurnStatus, reason: check.controllerStatus, confidence: check.confidence, poolType: check.lpModel },
+      } as TokenScanEvidence,
+      chain: lpMemoryChain as "base" | "eth" | "robinhood",
+    });
     updateMemIntent(sessionMem, "liquidity_scan");
+    const tokenHref = `/terminal/token-scanner?contract=${encodeURIComponent(routed.address)}${runChain === "base" ? "" : `&chain=${runChain === "ethereum" ? "eth" : runChain}`}`;
     return {
-      feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["liquidity_analyze"],
+      feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: [runChain === "solana" ? "solana_token_scanner" : "liquidity_analyze"],
       analysis: lpAnalysis,
       intentBadge: "liquidity_scan",
-      actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+      actions: [
+        { label: "Open Token Scanner", href: tokenHref },
+        { label: "Run LP Check", href: tokenHref },
+      ],
       quotaConsumed: true,
       memoryEcho: buildWalletMemoryEcho(sessionMem),
+      clarkLiquidityCheckAudit: liqAudit,
     };
   }
 
@@ -11068,28 +11146,52 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
 
-  async function resolveTokenSymbolToAddress(sym: string): Promise<{ address: string; name: string; symbol: string; status: "resolved" | "not_found" | "timed_out" | "ambiguous"; confidence?: string } | null> {
-    if (/^0x[a-fA-F0-9]{40}$/.test(sym.trim())) return { address: sym.trim(), name: sym, symbol: sym, status: "resolved", confidence: "high" };
-    const res = await callInternalApi(origin, "/api/resolve", { query: sym, chain: "base" }, authHeader ?? undefined, verifiedPlan).catch((err) => {
+  async function resolveTokenSymbolToAddress(sym: string, preferChain: string = "base"): Promise<{ address: string; name: string; symbol: string; status: "resolved" | "not_found" | "timed_out" | "ambiguous"; confidence?: string; chain?: string; matches?: ClarkLiquidityMatch[]; matchesCount?: number } | null> {
+    if (/^0x[a-fA-F0-9]{40}$/.test(sym.trim())) return { address: sym.trim(), name: sym, symbol: sym, status: "resolved", confidence: "high", chain: preferChain, matchesCount: 1 };
+    if (isValidSolanaMintAddress(sym.trim())) return { address: sym.trim(), name: sym, symbol: sym, status: "resolved", confidence: "high", chain: "solana", matchesCount: 1 };
+    const prefer = preferChain === "ethereum" ? "eth" : preferChain;
+    const res = await callInternalApi(origin, "/api/resolve", { query: sym, chain: prefer }, authHeader ?? undefined, verifiedPlan).catch((err) => {
       const msg = String(err?.message ?? err ?? "");
       return { ok: false, json: { status: /timeout|abort/i.test(msg) ? "timed_out" : "not_found", reason: msg } } as Awaited<ReturnType<typeof callInternalApi>>;
     });
     if (!res?.ok) {
       const status = String((res?.json as Record<string, unknown> | undefined)?.status ?? (res?.json as Record<string, unknown> | undefined)?.reason ?? "");
-      return status && /timeout|abort|timed_out/i.test(status) ? { address: "", name: sym, symbol: sym.toUpperCase(), status: "timed_out" } : null;
+      return status && /timeout|abort|timed_out/i.test(status) ? { address: "", name: sym, symbol: sym.toUpperCase(), status: "timed_out", matchesCount: 0 } : null;
     }
     const j = (res.json ?? {}) as Record<string, unknown>;
     const candidates = Array.isArray(j.candidates) ? j.candidates as Array<Record<string, unknown>> : Array.isArray(j.alternates) ? j.alternates as Array<Record<string, unknown>> : [];
-    const exact = candidates
-      .filter((c) => String(c.chain ?? c.chainLabel ?? "base").toLowerCase().includes("base"))
-      .filter((c) => String(c.symbol ?? "").toUpperCase() === sym.toUpperCase())
-      .sort((a, b) => Number(b.liquidityUsd ?? b.liquidity ?? 0) - Number(a.liquidityUsd ?? a.liquidity ?? 0) || Number(b.volume24hUsd ?? b.volume24h ?? 0) - Number(a.volume24hUsd ?? a.volume24h ?? 0))[0];
-    const addr = typeof j.address === "string" ? j.address : (typeof j.contract === "string" ? j.contract : (typeof j.contractAddress === "string" ? j.contractAddress : (typeof exact?.contractAddress === "string" ? exact.contractAddress : null)));
-    if (!addr || !/^0x[a-fA-F0-9]{40}$/.test(addr)) {
-      const status = String(j.status ?? j.reason ?? "");
-      return /timeout|abort|timed_out/i.test(status) ? { address: "", name: sym, symbol: sym.toUpperCase(), status: "timed_out" } : null;
+    const matches: ClarkLiquidityMatch[] = candidates.map((c) => ({
+      address: String(c.contractAddress ?? c.address ?? ""),
+      chainSlug: String(c.chainId ?? c.chain ?? "base").toLowerCase(),
+      symbol: String(c.symbol ?? sym).toUpperCase(),
+      name: typeof c.name === "string" ? c.name : null,
+      liquidityUsd: typeof c.liquidityUsd === "number" ? c.liquidityUsd : null,
+    })).filter((m) => m.address);
+    const uniqueChains = Array.from(new Set(matches.map((m) => m.chainSlug.replace(/^eth$/, "ethereum"))));
+    const preferNorm = prefer === "eth" ? "ethereum" : prefer;
+    const preferMatches = matches.filter((m) => {
+      const ch = m.chainSlug === "eth" ? "ethereum" : m.chainSlug;
+      return ch === preferNorm || (preferNorm === "base" && ch.includes("base"));
+    });
+    if (!preferChain || preferChain === "base") {
+      const exact = preferMatches
+        .filter((c) => c.symbol.toUpperCase() === sym.toUpperCase())
+        .sort((a, b) => Number(b.liquidityUsd ?? 0) - Number(a.liquidityUsd ?? 0))[0];
+      const addr = typeof j.address === "string" ? j.address : (typeof j.contract === "string" ? j.contract : (typeof j.contractAddress === "string" ? j.contractAddress : (exact?.address ?? null)));
+      if (!addr || !/^0x[a-fA-F0-9]{40}$/.test(addr)) {
+        const status = String(j.status ?? j.reason ?? "");
+        return /timeout|abort|timed_out/i.test(status) ? { address: "", name: sym, symbol: sym.toUpperCase(), status: "timed_out", matchesCount: matches.length } : null;
+      }
+      return { address: addr, name: String(j.name ?? exact?.name ?? sym), symbol: String(j.symbol ?? exact?.symbol ?? sym).toUpperCase(), status: "resolved", confidence: String(j.confidence ?? "high"), chain: "base", matches, matchesCount: matches.length };
     }
-    return { address: addr, name: String(j.name ?? exact?.name ?? sym), symbol: String(j.symbol ?? exact?.symbol ?? sym).toUpperCase(), status: "resolved", confidence: String(j.confidence ?? exact?.confidence ?? "high") };
+    if (uniqueChains.length > 1 && preferMatches.length === 0) {
+      return { address: "", name: sym, symbol: sym.toUpperCase(), status: "ambiguous", matches, matchesCount: matches.length };
+    }
+    const chosen = preferMatches[0] ?? matches[0];
+    const addr = chosen?.address ?? (typeof j.address === "string" ? j.address : null);
+    if (!addr) return { address: "", name: sym, symbol: sym.toUpperCase(), status: "not_found", matches, matchesCount: matches.length };
+    const chainSlug = (chosen?.chainSlug === "eth" ? "ethereum" : chosen?.chainSlug) || preferNorm;
+    return { address: addr, name: String(chosen?.name ?? j.name ?? sym), symbol: String(chosen?.symbol ?? j.symbol ?? sym).toUpperCase(), status: "resolved", confidence: "medium", chain: chainSlug, matches, matchesCount: matches.length };
   }
 
   type TokenConfidenceLabel = "high" | "medium" | "low" | "open_check" | "failed";
@@ -11819,7 +11921,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         clarkDebugReceipt: tokenFollowupDebug({ needsAddress: true }),
       };
     }
-    const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: tokenAddress, chain: "base" }, authHeader ?? undefined, verifiedPlan);
+    const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: tokenAddress, chain: toTokenApiChain(chainForClarkTools) ?? "base" }, authHeader ?? undefined, verifiedPlan);
     const raw = (liqRes.json ?? {}) as Record<string, unknown>;
     const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
     if (!liqRes.ok || raw.ok === false || Object.keys(data).length === 0) {

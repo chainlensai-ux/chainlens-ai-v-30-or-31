@@ -23,12 +23,14 @@
 
 import type { PricingRequest, PricingResolutionAudit, TokenPrice } from './types'
 import { FALLBACK_PRICE_CONCURRENCY_LIMIT, MAX_FALLBACK_PRICE_LOOKUPS, PRICE_CACHE_TTL_MS } from './types'
-import { fetchDexscreenerPriceDetailed } from './utils'
 import { fetchGeckoTerminalCurrentPrice } from '../../pipeline/providers/geckoTerminalPriceSource'
+import { fetchDexscreenerPriceShared } from '../../lib/dexscreenerRequestCache'
 import type { SupportedChain } from '../providerFetchWindow/types'
+import { shouldSkipCurrentPriceFallback } from './spamSkip'
 
 export type { PriceSource, PricingRequest, PricingResolutionAudit, TokenPrice } from './types'
 export { MAX_FALLBACK_PRICE_LOOKUPS } from './types'
+export { shouldSkipCurrentPriceFallback } from './spamSkip'
 
 // SHORT-TTL PRICE CACHE, DISCLOSED: same convention as this codebase's other per-process negative
 // caches (e.g. geckoTerminalPriceSource.ts's negativeGeckoTerminalPoolCache) — a plain module-level
@@ -123,7 +125,12 @@ export async function resolvePricesDetailed(requests: PricingRequest[]): Promise
 
   let fallbackLookupsUsed = 0
   const toResolve: number[] = []
+  const skippedAsSpam: number[] = []
   for (const i of needsFallback) {
+    if (shouldSkipCurrentPriceFallback(requests[i])) {
+      skippedAsSpam.push(i)
+      continue
+    }
     if (fallbackLookupsUsed >= MAX_FALLBACK_PRICE_LOOKUPS) {
       audit.fallbackCapReached = true
       prices[i] = { chain: requests[i].chain, contract: requests[i].contract, priceUsd: null, source: 'unavailable' }
@@ -133,6 +140,10 @@ export async function resolvePricesDetailed(requests: PricingRequest[]): Promise
     fallbackLookupsUsed += 1
     toResolve.push(i)
   }
+  for (const i of skippedAsSpam) {
+    prices[i] = { chain: requests[i].chain, contract: requests[i].contract, priceUsd: null, source: 'unavailable' }
+    audit.unresolvedCount += 1
+  }
 
   const noLiquidityFoundKeys: string[] = []
 
@@ -140,8 +151,15 @@ export async function resolvePricesDetailed(requests: PricingRequest[]): Promise
     const request = requests[i]
 
     audit.dexscreenerCalls += 1
-    const dexResult = await fetchDexscreenerPriceDetailed(request.contract)
-    if (dexResult.priceUsd != null) {
+    // SAME-CHAIN ONLY, DISCLOSED (Wallet Scanner weak-spot pass / hard rule "do not use wrong-chain
+    // cache"): the previous current-price DexScreener path (src/modules/pricing/utils.ts) called
+    // `/tokens/{address}` and picked the most-liquid pair across EVERY chain. Official unrealized
+    // then marked a Base position to an Ethereum (or Solana) price. The shared, already-chain-filtered
+    // DexScreener client (pricingAtTimeEngine/sources/dexscreener.ts via dexscreenerRequestCache)
+    // rejects any pair whose own chainId is not this request's chain, and requires the requested
+    // token to be the pair's baseToken. 'holdings' caller lane is uncapped by the historical budget.
+    const dexResult = await fetchDexscreenerPriceShared(request.contract, request.chain, now, 'holdings')
+    if (dexResult.priceUsd != null && Number.isFinite(dexResult.priceUsd) && dexResult.priceUsd > 0) {
       audit.dexscreenerSuccesses += 1
       priceCache.set(cacheKey(request.chain, request.contract), { priceUsd: dexResult.priceUsd, source: 'dexscreener_fallback', expiresAt: now + PRICE_CACHE_TTL_MS })
       prices[i] = { chain: request.chain, contract: request.contract, priceUsd: dexResult.priceUsd, source: 'dexscreener_fallback' }
@@ -174,7 +192,8 @@ export async function resolvePricesDetailed(requests: PricingRequest[]): Promise
       }
     }
 
-    if (dexResult.reason === 'no_pairs_found' && gtResult.reason === 'no_pool_found') {
+    const dexStructuralMiss = dexResult.reason === 'no_matching_pair' || dexResult.reason === 'unverified_chain_for_dexscreener'
+    if (dexStructuralMiss && gtResult.reason === 'no_pool_found') {
       noLiquidityFoundKeys.push(cacheKey(request.chain, request.contract))
     }
 

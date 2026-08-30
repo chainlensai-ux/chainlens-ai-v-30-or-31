@@ -852,13 +852,13 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   // reading "Partial — 40.24% coverage" sat next to the PnL tiles with no indication of WHICH
   // coverage it meant, and users reasonably read it as describing the verified REALIZED closed-lot
   // sample — the one figure this codebase actually guarantees is stable. This coverage percentage is
-  // `unrealizedReconciliation.unrealizedCoveragePercent` — it describes ONLY how much of the open
-  // (unrealized) position set was successfully reconciled, and has no bearing on realized PnL at
-  // all. The literal string now says so.
+  // `unrealizedReconciliation.openPositionCoveragePercent` — currently-held open positions only
+  // (FIFO leftovers with no canonical balance are not counted as a current coverage failure).
+  // Has no bearing on realized PnL.
   const unrealizedCoverageBadgeLabel = canonicalSampleUnavailable
     ? null
     : unrealizedReconciliation?.reconciliationStatus === 'partial'
-      ? `Open-position coverage: ${unrealizedReconciliation.unrealizedCoveragePercent.toFixed(2)}% (unrealized only)`
+      ? `Open-position coverage: ${unrealizedReconciliation.openPositionCoveragePercent.toFixed(2)}% (currently held)`
       : null
   // EXACT-REASON MESSAGING, DISCLOSED (task 5 — "should not just say partial vaguely"): computed
   // alongside the coverage badge above, from the SAME real unrealizedReconciliation prop — see each
@@ -958,24 +958,33 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
           it exists (excludedCandidateMarketValueUsd > 0 — a position with zero computable candidates
           contributes 0 there, which is correctly treated as "no evidence" here, not "worth $0"). */}
       {unrealizedReconciliation && unrealizedReconciliation.totalOpenPositions > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', margin: '0 0 16px', fontSize: '11px', color: '#94a3b8' }}>
-          <span>Reconciled positions: <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.reconciledOpenPositions}</strong></span>
-          <span>Excluded positions: <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.excludedOpenPositions}</strong></span>
-          {unrealizedReconciliation.deadOrSpamPositionsCount > 0 && (
-            <span>Dead/spam tokens: <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.deadOrSpamPositionsCount}</strong></span>
-          )}
-          {unrealizedReconciliation.excludedCandidateMarketValueUsd > 0 && (
-            <span>Estimated excluded value: <strong style={{ color: '#e2e8f0' }}>{fmtUsd(unrealizedReconciliation.excludedCandidateMarketValueUsd)}</strong> (not included in official PnL)</span>
-          )}
-          {/* MISSING-BALANCE WORDING, DISCLOSED (Wallet Scanner second-pass audit, task 2 — exact
-              requested wording: "historical open position not currently in canonical holdings", and
-              "do not count as a current open-position coverage failure if balance is truly absent").
-              Shown as its own line, separate from the coverage percentage above (which already
-              excludes this count from its denominator — see openPositionCoveragePercent). */}
-          {(unrealizedReconciliation.excludedClassificationCounts.missing_balance ?? 0) > 0 && (
-            <span>
-              <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.excludedClassificationCounts.missing_balance}</strong> historical open position{(unrealizedReconciliation.excludedClassificationCounts.missing_balance ?? 0) === 1 ? '' : 's'} not currently in canonical holdings
-            </span>
+        <div style={{ margin: '0 0 16px' }}>
+          <button
+            type="button"
+            onClick={() => setShowTechnicalDetails((v) => !v)}
+            style={{
+              fontSize: '11px', color: '#94a3b8', background: 'transparent', border: 'none',
+              padding: 0, cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit',
+            }}
+          >
+            {showTechnicalDetails ? '▾ Hide technical details' : '▸ Technical details'}
+          </button>
+          {showTechnicalDetails && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '14px', marginTop: '8px', fontSize: '11px', color: '#94a3b8' }}>
+              <span>Reconciled positions: <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.reconciledOpenPositions}</strong></span>
+              <span>Excluded positions: <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.excludedOpenPositions}</strong></span>
+              {unrealizedReconciliation.deadOrSpamPositionsCount > 0 && (
+                <span>Dead/spam tokens: <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.deadOrSpamPositionsCount}</strong></span>
+              )}
+              {unrealizedReconciliation.excludedCandidateMarketValueUsd > 0 && (
+                <span>Estimated excluded value: <strong style={{ color: '#e2e8f0' }}>{fmtUsd(unrealizedReconciliation.excludedCandidateMarketValueUsd)}</strong> (not included in official PnL)</span>
+              )}
+              {(unrealizedReconciliation.excludedClassificationCounts.missing_balance ?? 0) > 0 && (
+                <span>
+                  <strong style={{ color: '#e2e8f0' }}>{unrealizedReconciliation.excludedClassificationCounts.missing_balance}</strong> historical open position{(unrealizedReconciliation.excludedClassificationCounts.missing_balance ?? 0) === 1 ? '' : 's'} not currently in canonical holdings
+                </span>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -1009,7 +1018,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
                   padding: 0, cursor: 'pointer', textDecoration: 'underline', fontFamily: 'inherit',
                 }}
               >
-                {showTechnicalDetails ? '▾ Hide technical integrity details' : '▸ Show technical integrity details'}
+                {showTechnicalDetails ? '▾ Hide technical details' : '▸ Technical details'}
               </button>
               {showTechnicalDetails && (
                 <div style={{ fontSize: '11px', color: 'rgba(248,113,113,0.85)', lineHeight: 1.6, marginTop: '6px' }}>

@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { pumpCandidateCacheKey, pumpReportCacheKey } from '@/lib/pumpReportPresentation'
 
 export type PumpCategory = 'HIGH_MOMENTUM' | 'VOLUME_EXPANSION' | 'THIN_MOONSHOT' | 'WATCH'
 export type PumpRisk = 'HIGH' | 'MEDIUM' | 'LOW'
@@ -535,10 +536,6 @@ export function SummaryStrip({ alerts }: { alerts: PumpAlert[] }) {
 // — moving them out of the component avoids that false positive without disabling the rule.
 export type PumpAlertsRouter = ReturnType<typeof useRouter>
 
-export function reportSeedKey(chain: string, contract: string): string {
-  return `pumpReportSeed:${chain}:${contract.toLowerCase()}`
-}
-
 export function reportUrlFor(alert: PumpAlert): string {
   const qs = new URLSearchParams({
     contract: alert.contract,
@@ -581,14 +578,16 @@ export function openReportForAlert(router: PumpAlertsRouter, prefetched: Set<str
   // to sessionStorage keyed by chain+contract BEFORE router.push, so the report page can render real
   // metrics on its very first paint rather than a blank/generic skeleton.
   try {
-    sessionStorage.setItem(reportSeedKey(alert.chain, alert.contract), JSON.stringify({
+    const candidate = {
       symbol: alert.symbol, name: alert.name, contract: alert.contract, chain: alert.chain,
       priceUsd: alert.priceUsd, change24h: alert.change24h, change6h: alert.change6h, change1h: alert.change1h,
       volume24hUsd: alert.volume24hUsd, liquidityUsd: alert.liquidityUsd, fdvUsd: alert.fdvUsd,
       marketCapUsd: alert.marketCapUsd, tokenAgeDays: alert.tokenAgeDays, pairAddress: alert.pairAddress,
       evidenceGrade: alert.evidenceGrade ?? null, reason: alert.reason, riskLevel: alert.riskLevel,
       navStartedAt: Date.now(), usedPrefetch,
-    }))
+    }
+    sessionStorage.setItem(pumpReportCacheKey(alert.chain, alert.contract), JSON.stringify(candidate))
+    sessionStorage.setItem(pumpCandidateCacheKey(alert.chain, alert.contract, alert.pairAddress), JSON.stringify(candidate))
     seedPayloadAvailable = true
   } catch { /* sessionStorage unavailable (private mode, quota) — report page falls back to URL params */ }
   // Navigation must never wait on anything — no await above, router.push is the very next call.

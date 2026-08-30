@@ -2129,6 +2129,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     skipCurrentPriceLookup: params.unrealizedReconciliationDiagnostics?.canonicalCurrentPriceLookup
       ? (token, chain) => params.unrealizedReconciliationDiagnostics!.canonicalCurrentPriceLookup!(token, chain) != null
       : undefined,
+    canonicalHoldingKeys: params.canonicalHoldingKeys,
   })
   scanTimer.mark('priceLotsForWallet', priceLotsForWalletStart)
   // CU-ESTIMATOR SNAPSHOT, DISCLOSED: delta over rpcDebugLog taken specifically around this stage's
@@ -3736,6 +3737,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<RunWal
     ...finalReport, normalizationErrors, walletConditionMessages, scanDeterminismAudit, canonicalSampleManifestAudit, sampleUpdated,
     manifestFastPathAudit: walletPriceLookups.manifestFastPathAudit,
     historicalPricingPerformanceSummary: walletPriceLookups.historicalPricingPerformanceSummary,
+    goldRushHistoricalPricingEfficiencyAudit: walletPriceLookups.goldRushHistoricalPricingEfficiencyAudit,
     walletScannerProviderSupportAudit,
     walletPnlCoverageRecoveryAudit,
     scanPerformanceSummary,

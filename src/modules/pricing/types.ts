@@ -30,6 +30,13 @@ export type PricingRequest = {
   // uses this instead of spending a fallback lookup, and never overwrites it with a lower-quality
   // source.
   knownPriceUsd?: number | null
+  // SYMBOL / AMOUNT, DISCLOSED, ADDITIVE (Wallet Scanner weak-spot pass): optional facts from the
+  // same canonical holdings snapshot. Used only to skip DexScreener/Gecko fallback spend on
+  // promotional-spam / implausible-quantity tokens so the bounded fallback cap is spent on
+  // currently-held, ordinary-looking positions. Never used as a price. Omitted requests are
+  // treated as non-spam (full fallback eligibility), matching today's behavior.
+  symbol?: string | null
+  amount?: number | null
 }
 
 // Bounds how many missing-price fallback lookups a single pricing pass will make — cost safety,
