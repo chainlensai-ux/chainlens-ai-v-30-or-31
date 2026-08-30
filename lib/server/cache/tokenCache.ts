@@ -281,6 +281,15 @@ function memoryFallbackSet<T>(key: string, value: T, ttlSeconds: number): void {
   memoryFallback.set(key, { value, expiresAt: Date.now() + ttlSeconds * 1000 })
 }
 
+// TEST-ONLY, DISCLOSED (Solana holder-concentration reliability task): the in-memory fallback is
+// process-lifetime by design (see header above), which is correct for production but means a test
+// script that scans the SAME mint/key twice with two different fixtures — to exercise two different
+// code paths — would silently get a stale cached value on the second scan instead of exercising the
+// path under test. Mirrors the existing __resetKvCircuitBreakerForTest convention in this file.
+export function __resetMemoryFallbackForTest(): void {
+  memoryFallback.clear()
+}
+
 // COMPRESSION, DISCLOSED — EDGE RUNTIME FIX: originally used Node's built-in `node:zlib`
 // (gzipSync/gunzipSync), which broke the production build: this module is transitively imported
 // by an Edge Runtime route (app/api/scan-v2/full-scan-edge/route.ts -> src/deployment/router.ts ->

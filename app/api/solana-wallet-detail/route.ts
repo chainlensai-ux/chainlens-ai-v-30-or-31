@@ -20,11 +20,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: 'Too many requests' }, { status: 429 })
   }
   if (!isSolanaChainAvailable()) {
-    return NextResponse.json({ ok: false, error: 'Solana Beta is not enabled.' }, { status: 400 })
+    return NextResponse.json({ ok: false, error: 'Solana is not enabled.' }, { status: 400 })
   }
   const rpcUrl = getSolanaRpcUrl()
   if (!rpcUrl) {
-    return NextResponse.json({ ok: false, error: 'Solana Beta is not configured yet.' }, { status: 400 })
+    return NextResponse.json({ ok: false, error: 'Solana is not configured yet.' }, { status: 400 })
   }
   const body = await req.json().catch(() => null) as { address?: unknown } | null
   const address = typeof body?.address === 'string' ? body.address.trim() : ''

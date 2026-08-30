@@ -10154,7 +10154,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
             l.push("- Creator/fee payer: Not resolved. Run the Deep Creator Check in Token Scanner for a Helius signature-history trace.");
           }
           l.push("", "- Chain: Solana", `- Evidence: ${hasUsableData ? "Solana RPC (mint account) + Helius" : "Solana scan returned no usable data"}`);
-          l.push("- CTA: Open Token Scanner → Solana Beta for the full read.");
+          l.push("- CTA: Open Token Scanner → Solana for the full read.");
           return l;
         })()
       : renderClarkTokenVerdictForSolana({
@@ -12876,7 +12876,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         lines.push("- Creator/fee payer: Not resolved. Run the Deep Creator Check in Token Scanner for a Helius signature-history trace.");
       }
       lines.push("", "- Chain: Solana", `- Evidence: ${hasUsableData ? "Solana RPC (mint account) + Helius" : "Solana scan returned no usable data"}`);
-      lines.push("- CTA: Open Token Scanner → Solana Beta for the full read.");
+      lines.push("- CTA: Open Token Scanner → Solana for the full read.");
       // SOLANA-MEMORY-BLIND FIX, DISCLOSED (same finding as buildSolanaCreatorAnswer above): this
       // path never wrote the resolved creator to memory either, so a follow-up right after "who
       // deployed this" had nothing to resolve against.

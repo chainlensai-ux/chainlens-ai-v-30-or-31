@@ -56,11 +56,11 @@ export async function runSolanaProviderMerge(
   const audit = emptySolanaAudit(mintAddress, enabled, rpcConfigured)
 
   if (!enabled) {
-    return { solanaBeta: true, chain: 'solana', status: 'not_enabled', error: 'Solana Beta is not enabled.', solanaTokenScannerAudit: audit }
+    return { solanaBeta: true, chain: 'solana', status: 'not_enabled', error: 'Solana is not enabled.', solanaTokenScannerAudit: audit }
   }
   const rpcUrl = opts.rpcUrl !== undefined ? opts.rpcUrl : getSolanaRpcUrl()
   if (!rpcUrl) {
-    return { solanaBeta: true, chain: 'solana', status: 'not_configured', error: 'Solana Beta is not configured yet.', solanaTokenScannerAudit: audit }
+    return { solanaBeta: true, chain: 'solana', status: 'not_configured', error: 'Solana is not configured yet.', solanaTokenScannerAudit: audit }
   }
 
   // ── 1. Mint identity + authority + supply (Alchemy) ─────────────────────────
@@ -156,6 +156,7 @@ export async function runSolanaProviderMerge(
     marketDataAvailable: market.data != null,
     liquidityUsd: market.data?.liquidityUsd ?? null,
     evidenceGapCount: evidenceGaps.length,
+    holderConcentrationAvailable: holders.topAccountConcentration != null,
   })
 
   audit.evidenceGaps = evidenceGaps
@@ -284,6 +285,11 @@ export async function runSolanaProviderMerge(
     authorityReadSucceeded: mint.authorityReadSucceeded,
     holderConcentrationAvailable: holders.topAccountConcentration != null,
     topAccountConcentration: holders.topAccountConcentration,
+    // RELIABILITY FIX, DISCLOSED (Solana holder-concentration reliability task): the resolver's own
+    // richer status/source/confidence/public-reason view, plus its full audit trail — additive,
+    // never replacing topAccountConcentration above.
+    solanaHolderConcentrationResult: holders.concentrationResult,
+    solanaHolderConcentrationAudit: holders.concentrationAudit,
     marketDataAvailable: market.data != null,
     marketData: market.data,
     betaRisk,

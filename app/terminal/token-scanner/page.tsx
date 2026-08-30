@@ -4649,13 +4649,13 @@ export default function TerminalTokenScanner() {
         })
         const json = await res.json().catch(() => null)
         if (!res.ok || !json || 'status' in (json ?? {})) {
-          setError(typeof json?.error === 'string' ? json.error : 'Solana Beta scan failed. Try again shortly.')
+          setError(typeof json?.error === 'string' ? json.error : 'Solana scan failed. Try again shortly.')
           setSolanaResult(null)
         } else {
           setSolanaResult(json as SolanaBetaResult)
         }
       } catch {
-        setError('Solana Beta scan failed. Try again shortly.')
+        setError('Solana scan failed. Try again shortly.')
         setSolanaResult(null)
       } finally { setLoading(false) }
       return
@@ -5223,7 +5223,7 @@ export default function TerminalTokenScanner() {
                     }}
                     className={`chain-seg-btn${chain === c ? ` chain-seg-btn--active-${c}` : ''}`}
                   >
-                    {c === 'base' ? 'BASE' : c === 'eth' ? 'ETHEREUM' : c === 'bnb' ? 'BNB' : c === 'robinhood' ? 'ROBINHOOD' : 'SOLANA BETA'}
+                    {c === 'base' ? 'BASE' : c === 'eth' ? 'ETHEREUM' : c === 'bnb' ? 'BNB' : c === 'robinhood' ? 'ROBINHOOD' : 'SOLANA'}
                   </button>
                 ))}
               </div>
@@ -5477,7 +5477,7 @@ export default function TerminalTokenScanner() {
                         {shorten(sr.mintAddress)}
                       </span>
                       <span style={{ padding: '3px 10px', border: '1px solid rgba(153,69,255,.42)', borderRadius: '999px', color: '#ddd0ff', fontSize: '9.5px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', background: 'rgba(153,69,255,.10)' }}>
-                        SOLANA BETA
+                        SOLANA
                       </span>
                       <span style={{ padding: '3px 10px', border: '1px solid rgba(94,234,212,.35)', borderRadius: '999px', color: '#5eead4', fontSize: '9.5px', fontWeight: 700, letterSpacing: '.08em', fontFamily: 'var(--font-plex-mono)', background: 'rgba(45,212,191,.07)' }}>
                         {sr.tokenProgram === 'spl-token-2022' ? 'TOKEN-2022' : sr.tokenProgram === 'spl-token' ? 'SPL TOKEN' : 'PROGRAM UNKNOWN'}
@@ -5729,7 +5729,21 @@ export default function TerminalTokenScanner() {
                           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
                             <span style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '.16em', color: '#a78bfa', fontFamily: 'var(--font-plex-mono)' }}>TOP-ACCOUNT CONCENTRATION</span>
                             <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '.12em', color: concColor, background: `${concColor}12`, border: `1px solid ${concColor}40`, fontFamily: 'var(--font-plex-mono)' }}>{concRisk ?? 'OPEN CHECK'}</span>
+                            {/* RELIABILITY FIX, DISCLOSED (Solana holder-concentration reliability
+                                task, UI state #4 — "if verified: show ... source badge"): the real
+                                source resolveSolanaHolderConcentration used for this scan's
+                                concentration data — cache / Helius / RPC getTokenLargestAccounts.
+                                Also flags a PARTIAL badge when the source itself reported partial
+                                (e.g. a lower-bound Helius sample), per UI state #4's own spec. */}
+                            {sr.solanaHolderConcentrationResult && sr.solanaHolderConcentrationResult.source !== 'none' && (
+                              <span style={{ padding: '3px 10px', borderRadius: '999px', fontSize: '9px', fontWeight: 700, letterSpacing: '.1em', color: '#8aa3b8', background: 'rgba(148,163,184,0.08)', border: '1px solid rgba(148,163,184,0.22)', fontFamily: 'var(--font-plex-mono)' }}>
+                                {sr.solanaHolderConcentrationResult.status === 'partial' ? 'PARTIAL · ' : ''}SOURCE: {sr.solanaHolderConcentrationResult.source === 'rpc_largest_accounts' ? 'SOLANA RPC' : sr.solanaHolderConcentrationResult.source.toUpperCase()}
+                              </span>
+                            )}
                           </div>
+                          {sr.solanaHolderConcentrationResult?.status === 'partial' && sr.solanaHolderConcentrationResult.publicReason && (
+                            <p style={{ margin: '0 0 10px', fontSize: '10.5px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{sr.solanaHolderConcentrationResult.publicReason}</p>
+                          )}
                           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(110px,1fr))', gap: '8px', marginBottom: '10px' }}>
                             {[
                               ['Top 1', conc.top1Percent != null ? `${conc.top1Percent.toFixed(1)}%` : 'N/A'],
@@ -5807,11 +5821,17 @@ export default function TerminalTokenScanner() {
                       </>
                     ) : (
                       <div style={{ padding: '20px', border: '1px dashed rgba(148,163,184,0.24)', borderRadius: '14px', background: 'rgba(148,163,184,0.03)', marginBottom: '16px' }}>
-                        <p style={{ margin: 0, fontSize: '12.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Top-account concentration unavailable for this mint — shown as an open check, never a fabricated 0%.</p>
-                        {(() => {
-                          const gap = sr.solanaEvidenceGaps.find((g) => g.startsWith('Top token accounts could not be read'))
-                          return gap ? <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>{gap}</p> : null
-                        })()}
+                        {/* PUBLIC-SAFE WORDING, DISCLOSED (Solana holder-concentration reliability
+                            task, UI state #4 — "if unavailable: show Holder concentration
+                            unavailable / exact public reason / Not confirmed healthy"): always the
+                            resolver's clean publicReason — never a raw provider/RPC error string
+                            (technicalReason stays debug-only, never rendered here). Never a
+                            fabricated 0% — the fields simply aren't shown in this branch. */}
+                        <p style={{ margin: 0, fontSize: '12.5px', color: '#8ea0b5', lineHeight: 1.6 }}>Holder concentration unavailable for this mint.</p>
+                        <p style={{ margin: '8px 0 0', fontSize: '10.5px', color: '#5b7590', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.5 }}>
+                          {sr.solanaHolderConcentrationResult?.publicReason ?? 'Holder concentration unavailable — Solana provider did not return top token accounts.'}
+                        </p>
+                        <p style={{ margin: '8px 0 0', fontSize: '10px', fontWeight: 700, letterSpacing: '.08em', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)' }}>NOT CONFIRMED HEALTHY</p>
                       </div>
                     )}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 14px', borderRadius: '10px', background: 'rgba(148,163,184,0.04)', border: '1px solid rgba(148,163,184,0.14)' }}>
@@ -5952,7 +5972,7 @@ export default function TerminalTokenScanner() {
                   return (
                     <>
                       <div style={{ marginBottom: '18px' }}>
-                        <p style={{ margin: '0 0 3px', fontSize: '13px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP SAFETY ANALYZER · SOLANA BETA</p>
+                        <p style={{ margin: '0 0 3px', fontSize: '13px', fontWeight: 800, letterSpacing: '0.10em', color: '#34d399', fontFamily: 'var(--font-plex-mono)' }}>LP SAFETY ANALYZER · SOLANA</p>
                         <p style={{ margin: 0, fontSize: '11px', color: '#3a5268', fontFamily: 'var(--font-plex-mono)' }}>Solana pool liquidity and authority evidence — not an EVM-style LP lock/burn proof.</p>
                       </div>
 
@@ -6012,7 +6032,7 @@ export default function TerminalTokenScanner() {
                       {/* ── Scan Mode / Evidence Confidence chips — same style as EVM ── */}
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
                         <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.10)', fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>
-                          SCAN MODE: SOLANA BETA
+                          SCAN MODE: SOLANA
                         </span>
                         <span style={{ display: 'inline-block', padding: '5px 12px', borderRadius: '999px', background: 'rgba(255,255,255,0.04)', border: `1px solid ${sr.betaRisk.confidence === 'MEDIUM' ? '#fbbf2440' : '#fb923c40'}`, fontSize: '9px', fontWeight: 700, letterSpacing: '0.12em', color: sr.betaRisk.confidence === 'MEDIUM' ? '#fbbf24' : '#fb923c', fontFamily: 'var(--font-plex-mono)' }}>
                           EVIDENCE CONFIDENCE: {sr.betaRisk.confidence}
@@ -9336,7 +9356,7 @@ export default function TerminalTokenScanner() {
             return (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '9px' }}>
                 <div style={{ padding: '16px', border: `1px solid ${cx.verdictColor}22`, borderRadius: '14px', background: 'linear-gradient(135deg,rgba(8,20,38,.92),rgba(14,12,38,.90))', boxShadow: `0 0 18px ${cx.verdictColor}08` }}>
-                  <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '10px' }}>CORTEX RECEIPT · SOLANA BETA</div>
+                  <div style={{ fontSize: '9px', letterSpacing: '.16em', color: '#3a5268', fontFamily: 'var(--font-plex-mono)', marginBottom: '10px' }}>CORTEX RECEIPT · SOLANA</div>
                   <div style={{ fontSize: '17px', fontWeight: 800, color: cx.verdictColor, fontFamily: 'var(--font-plex-mono)' }}>{cx.verdict}</div>
                   <div style={{ fontSize: '10px', color: '#7c93aa', fontFamily: 'var(--font-plex-mono)', marginTop: '3px' }}>{cx.score}/{cx.scoreMax} overall · {cx.overallConfidence.toLowerCase()} evidence confidence</div>
                   <p style={{ margin: '10px 0 0', fontSize: '11px', color: '#cbd5e1', lineHeight: 1.6, fontFamily: 'var(--font-plex-mono)' }}>{verdictMeaning[cx.verdict]}</p>

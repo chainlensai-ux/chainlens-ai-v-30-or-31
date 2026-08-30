@@ -10,7 +10,7 @@
 // config presence. The real RPC reads live in lib/server/solanaTokenScannerBeta.ts.
 
 export const SOLANA_CHAIN_SLUG = 'solana'
-export const SOLANA_CHAIN_NAME = 'Solana Beta'
+export const SOLANA_CHAIN_NAME = 'Solana'
 export const SOLANA_EXPLORER_URL = 'https://solscan.io'
 
 // Public Solana mainnet RPC. Used ONLY as a last-resort fallback so the Beta is testable without a
@@ -64,7 +64,7 @@ export function isSolanaRpcConfigured(): boolean {
  * appear at all.
  *
  * DELIBERATE, DISCLOSED: the public RPC constant above is NOT accepted here. Enabling the flag
- * without configuring a real endpoint yields the honest "Solana Beta is not configured yet."
+ * without configuring a real endpoint yields the honest "Solana is not configured yet."
  * message the task specifies, rather than silently routing production traffic onto a public
  * endpoint that will rate-limit and produce misleading partial evidence.
  */

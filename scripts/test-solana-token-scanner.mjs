@@ -19,6 +19,8 @@ import {
 } from '../lib/server/solanaTokenScannerBeta.ts'
 import { computeSolanaConfidenceScore } from '../lib/solanaConfidenceScore.ts'
 import { computeSolanaCortexRisk } from '../lib/solanaCortexRisk.ts'
+import { resolveSolanaHolderConcentration } from '../lib/server/solana/holderConcentrationResolver.ts'
+import { SOLANA_CHAIN_NAME } from '../lib/server/solanaChainConfig.ts'
 
 let passed = 0
 function check(label, condition) { assert.ok(condition, label); passed++ }
@@ -27,6 +29,19 @@ function check(label, condition) { assert.ok(condition, label); passed++ }
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 const BONK_MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263'
 const EVM_ADDR  = '0x1234567890abcdef1234567890abcdef12345678'
+
+// UNIQUE-PER-TEST MINTS, DISCLOSED (Solana holder-concentration reliability task): the resolver's
+// new Step 1 cache (keyed by mintAddress, see holderConcentrationResolver.ts) is a REQUIRED part of
+// this fix, not a bug — but it means two test blocks that reuse the SAME mint to exercise DIFFERENT
+// getTokenLargestAccounts call-count/retry behavior would silently get a cache hit from whichever
+// block ran first, short-circuiting the RPC path the second block exists to test. Each RPC-retry
+// test below gets its own synthetic mint (never fetched, never shared) so its call-count assertions
+// only ever see fresh state, matching every other test's isolation.
+const RETRY_MINT_1 = 'RetryMint111111111111111111111111111111111'
+const RETRY_MINT_2 = 'RetryMint222222222222222222222222222222222'
+const RETRY_MINT_3 = 'RetryMint333333333333333333333333333333333'
+const RETRY_MINT_4 = 'RetryMint444444444444444444444444444444444'
+const RETRY_MINT_5 = 'RetryMint555555555555555555555555555555555'
 
 // ─── Address validation ───────────────────────────────────────────────────────
 check('real USDC mint is valid', isValidSolanaMintAddress(USDC_MINT) === true)
@@ -61,7 +76,7 @@ check('empty classifies as empty', classifySolanaMintInput('') === 'empty')
   process.env.ENABLE_SOLANA_BETA = 'true'
   const r = await scanSolanaTokenBeta(USDC_MINT, { rpcUrl: null, fetchImpl: async () => { throw new Error('must not fetch') } })
   check('enabled but unconfigured returns not_configured', r.status === 'not_configured')
-  check('not_configured uses the exact spec message', r.error === 'Solana Beta is not configured yet.')
+  check('not_configured uses the exact spec message', r.error === 'Solana is not configured yet.')
 }
 
 // ─── solanaTokenScannerConfigAudit (env/config wiring task) ───────────────────
@@ -258,7 +273,7 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
 {
   // Transient (HTTP 429) failure on getTokenLargestAccounts, once, then succeeds — must recover.
   let largestCalls = 0
-  const r = await scanSolanaTokenBeta(USDC_MINT, {
+  const r = await scanSolanaTokenBeta(RETRY_MINT_1, {
     rpcUrl: 'https://stub',
     fetchImpl: async (url, init) => {
       if (typeof url === 'string' && url.includes('dexscreener')) return { ok: true, json: async () => ({ pairs: [] }) }
@@ -283,7 +298,7 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
   // rpcClient.ts's own header on why this specific call was raised from the shared 1-retry
   // default (documented, real production flakiness under concurrent load on a shared RPC key).
   let largestCalls = 0
-  const r = await scanSolanaTokenBeta(USDC_MINT, {
+  const r = await scanSolanaTokenBeta(RETRY_MINT_2, {
     rpcUrl: 'https://stub',
     fetchImpl: async (url, init) => {
       if (typeof url === 'string' && url.includes('dexscreener')) return { ok: true, json: async () => ({ pairs: [] }) }
@@ -294,14 +309,18 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
     },
   })
   check('a persistently failing call still degrades to an honest gap, never fabricated data', r.holderConcentrationAvailable === false && r.topAccountConcentration === null)
-  check('the real failure reason is surfaced in the evidence gap, not a generic "unavailable"', r.solanaEvidenceGaps.some((g) => g.includes('rpc_http_429')))
+  // PUBLIC-WORDING UPDATE, DISCLOSED (Solana holder-reliability task, hard rule "Do NOT show raw
+  // RPC errors in public UI"): the raw rpc_http_429 detail must now live ONLY in the resolver's
+  // technicalReason (debug/admin surface), never in the public-facing solanaEvidenceGaps array.
+  check('the real failure reason is captured in the technical (debug-only) reason, not lost', r.solanaHolderConcentrationResult.technicalReason?.includes('rpc_http_429') ?? false)
+  check('the raw rpc error string never leaks into the public evidence gaps', !r.solanaEvidenceGaps.some((g) => g.includes('rpc_http_429')))
   check('retry is bounded to exactly 3 attempts total (2 retries), not unbounded', largestCalls === 3)
 }
 {
   // A transient failure that recovers only on the THIRD attempt (2nd retry) must still succeed —
   // proves the raised retry count is actually being used, not silently capped back to 1.
   let largestCalls = 0
-  const r = await scanSolanaTokenBeta(USDC_MINT, {
+  const r = await scanSolanaTokenBeta(RETRY_MINT_3, {
     rpcUrl: 'https://stub',
     fetchImpl: async (url, init) => {
       if (typeof url === 'string' && url.includes('dexscreener')) return { ok: true, json: async () => ({ pairs: [] }) }
@@ -323,7 +342,7 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
   // on getTokenLargestAccounts. That generic -32603 code carries no query-specific content (unlike
   // a real answer such as "Invalid params"), so it must now be retried, not treated as permanent.
   let largestCalls = 0
-  const r = await scanSolanaTokenBeta(USDC_MINT, {
+  const r = await scanSolanaTokenBeta(RETRY_MINT_4, {
     rpcUrl: 'https://stub',
     fetchImpl: async (url, init) => {
       if (typeof url === 'string' && url.includes('dexscreener')) return { ok: true, json: async () => ({ pairs: [] }) }
@@ -343,7 +362,7 @@ const HEALTHY_LARGEST = { value: [{ amount: '400000' }, { amount: '100000' }, { 
   // A different, SPECIFIC JSON-RPC error message must still NOT be retried — only the exact
   // generic "Internal error" string is treated as transient, nothing broader.
   let largestCalls = 0
-  const r = await scanSolanaTokenBeta(USDC_MINT, {
+  const r = await scanSolanaTokenBeta(RETRY_MINT_5, {
     rpcUrl: 'https://stub',
     fetchImpl: async (url, init) => {
       if (typeof url === 'string' && url.includes('dexscreener')) return { ok: true, json: async () => ({ pairs: [] }) }
@@ -1790,6 +1809,132 @@ function cortexSrTopTier(overrides = {}) {
   check('classifySolanaExtensionRisk sorts a moderate extension correctly', classified.moderate.some(e => e.type === 'transferFeeConfig'))
   check('classifySolanaExtensionRisk sorts a benign extension correctly', classified.benign.some(e => e.type === 'metadataPointer'))
   check('classifySolanaExtensionRisk partitions every input extension exactly once', classified.severe.length + classified.moderate.length + classified.benign.length === 3)
+}
+
+// ─── Solana Beta -> Solana rename + holder-concentration reliability regression tests ──────────
+// (Solana Token Scanner holder-concentration reliability + "Solana Beta" -> "Solana" rename task)
+
+// 1. UI says Solana, not Solana Beta.
+{
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+  check('SOLANA_CHAIN_NAME is "Solana", not "Solana Beta"', SOLANA_CHAIN_NAME === 'Solana')
+  // Strip // and {/* */} comments before checking — "Solana Beta" is still allowed in developer
+  // comments (internal, never rendered) per this task's own instruction to leave internal
+  // identifiers alone; only RENDERED public copy must never say "Solana Beta"/"SOLANA BETA".
+  const pageNoComments = page
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .split('\n').map((line) => line.replace(/\/\/.*$/, '')).join('\n')
+  check('token-scanner page.tsx never renders the public label "Solana Beta" (outside comments)', !pageNoComments.includes('Solana Beta'))
+  check('token-scanner page.tsx never renders the public label "SOLANA BETA" (outside comments)', !pageNoComments.includes('SOLANA BETA'))
+  const clarkRoute = readFileSync(new URL('../app/api/clark/route.ts', import.meta.url), 'utf8')
+  check('Clark route never renders "Solana Beta" in a response string', !clarkRoute.includes('Solana Beta'))
+}
+
+// 2. A successful getTokenLargestAccounts renders top concentration (verified status, real numbers).
+{
+  const { result, audit } = await resolveSolanaHolderConcentration({
+    mintAddress: 'FreshVerifiedMint11111111111111111111111111',
+    chainSlug: 'solana',
+    rpcUrl: 'https://stub',
+    fetchImpl: rpcStub({ largest: HEALTHY_LARGEST }),
+    rawSupply: 1000000,
+  })
+  check('successful getTokenLargestAccounts resolves status verified', result.status === 'verified')
+  check('successful getTokenLargestAccounts computes real top1/top10 percentages', result.top1Percent === 40 && result.top10Percent === 55)
+  check('successful getTokenLargestAccounts is sourced from rpc_largest_accounts', result.source === 'rpc_largest_accounts')
+  check('audit records the RPC attempt as ok', audit.rpcLargestAccountsAttempted === true && audit.rpcLargestAccountsStatus === 'ok')
+}
+
+// 3. A provider internal error does not leak raw rpc_error text in the public UI.
+{
+  let calls = 0
+  const { result, audit } = await resolveSolanaHolderConcentration({
+    mintAddress: 'FreshInternalErrorMint111111111111111111111',
+    chainSlug: 'solana',
+    rpcUrl: 'https://stub',
+    fetchImpl: async (url, init) => {
+      const body = JSON.parse(init.body)
+      if (body.method === 'getTokenLargestAccounts') {
+        calls++
+        return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, error: { message: 'Internal error' } }) }
+      }
+      return { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: null }) }
+    },
+    rawSupply: 1000000,
+  })
+  check('a generic Internal error is retried (transient), not surfaced as a permanent failure on the first attempt', calls > 1)
+  check('the public reason never contains the raw rpc_error string', !result.publicReason?.includes('rpc_error'))
+  check('the public reason is the clean, spec-exact wording', result.publicReason === 'Top token accounts were not returned by the Solana provider this scan.')
+  check('the raw rpc_error detail is preserved, but only in technicalReason (debug-only)', result.technicalReason?.includes('rpc_error') ?? false)
+  check('the audit publicReason also never leaks the raw rpc_error string', !audit.publicReason?.includes('rpc_error'))
+}
+
+// 4. Holder unavailable never shows a fake 0% — top1/top10/top20 stay null, never a fabricated zero.
+{
+  const { result } = await resolveSolanaHolderConcentration({
+    mintAddress: 'NeverReturnsAnyAccountsMint1111111111111111',
+    chainSlug: 'solana',
+    rpcUrl: 'https://stub',
+    fetchImpl: async () => ({ ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: { value: [] } }) }),
+    rawSupply: null,
+  })
+  check('unavailable holder concentration reports status not_returned, not a fabricated success', result.status === 'not_returned')
+  check('unavailable holder concentration never fabricates top1Percent as 0 — stays null', result.top1Percent === null)
+  check('unavailable holder concentration never fabricates top10Percent as 0 — stays null', result.top10Percent === null)
+  check('unavailable holder concentration never fabricates top20Percent as 0 — stays null', result.top20Percent === null)
+  check('unavailable holder concentration returns an empty topAccounts list, never a zeroed placeholder', result.topAccounts.length === 0)
+  check('unavailable holder concentration carries the clean public-safe unavailable reason', result.publicReason === 'Holder concentration unavailable — Solana provider did not return top token accounts.')
+}
+
+// 5. Missing holder-concentration evidence lowers risk-engine confidence (never marked safe, never
+//    escalated to critical purely from missing evidence).
+{
+  const { scoreSolanaBeta: scoreForTest } = await import('../lib/server/solana/riskEngine.ts')
+  const withHolders = scoreForTest({
+    mintAuthority: null, freezeAuthority: null, authorityReadSucceeded: true,
+    top1Percent: 40, marketDataAvailable: true, liquidityUsd: 50000, evidenceGapCount: 0,
+    holderConcentrationAvailable: true,
+  })
+  const withoutHolders = scoreForTest({
+    mintAuthority: null, freezeAuthority: null, authorityReadSucceeded: true,
+    top1Percent: null, marketDataAvailable: true, liquidityUsd: 50000, evidenceGapCount: 0,
+    holderConcentrationAvailable: false,
+  })
+  check('missing holder concentration is called out by name in the risk reasons', withoutHolders.reasons.some((r) => /holder concentration is unavailable/i.test(r)))
+  check('a scan WITH holder concentration does not carry that specific evidence-limited reason', !withHolders.reasons.some((r) => /holder concentration is unavailable/i.test(r)))
+  check('missing holder concentration never upgrades the verdict to a safe/verified state', !['SAFE', 'VERIFIED'].includes(withoutHolders.verdict))
+  check('missing holder concentration alone never escalates straight to a critical verdict', withoutHolders.verdict !== 'CRITICAL')
+}
+
+// 6. A cached holder snapshot is chain/mint strict — a snapshot recorded under a DIFFERENT mint (or
+//    chain) must never be trusted for the current request, even if handed in directly.
+{
+  const staleSnapshot = {
+    status: 'verified', topAccounts: [{ rank: 1, address: 'X', amountRaw: '400000', percentOfSupply: 40 }],
+    top1Percent: 40, top10Percent: 55, top20Percent: 55, totalSupply: '1000000',
+    source: 'cache', confidence: 'high', publicReason: null, technicalReason: null,
+    mintAddress: 'SnapshotWasRecordedForThisMint1111111111111', chainSlug: 'solana',
+  }
+  const { result, audit } = await resolveSolanaHolderConcentration({
+    mintAddress: 'FreshMintNotMatchingTheSnapshot111111111111', // deliberately NOT the mint the snapshot was recorded for
+    chainSlug: 'solana',
+    rpcUrl: 'https://stub',
+    fetchImpl: rpcStub({ largest: HEALTHY_LARGEST }),
+    rawSupply: 1000000,
+    cachedSnapshot: staleSnapshot,
+  })
+  check('a snapshot recorded for a different mint is never trusted as a cache hit', audit.cacheHit === false)
+  check('the mismatched-mint snapshot is ignored and the resolver falls through to a real RPC read instead', result.source === 'rpc_largest_accounts')
+}
+
+// 7. Solana scan output still uses Solana-native wording (mint/freeze authority), never EVM terms.
+{
+  const { readFileSync } = await import('node:fs')
+  const page = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
+  check('page.tsx still uses Solana-native "mint authority" wording', /mint authority/i.test(page))
+  check('page.tsx still uses Solana-native "freeze authority" wording', /freeze authority/i.test(page))
+  check('page.tsx never uses EVM-only "renounced ownership" wording anywhere', !/renounced ownership/i.test(page))
 }
 
 console.log(`test-solana-token-scanner.mjs: all ${passed} assertions passed`)

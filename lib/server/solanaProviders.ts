@@ -323,6 +323,75 @@ export async function fetchHeliusHolderCount(mintAddress: string, fetchImpl: Fet
   }
 }
 
+// ── Helius: top token accounts by balance (concentration fallback) ─────────────────────────────
+//
+// ADDED, DISCLOSED (Solana holder-concentration reliability task, resolution-order fallback #2 —
+// "Helius token holders / token accounts endpoint if configured"): fetchHeliusHolderCount above
+// already calls this same DAS getTokenAccounts method but only ever keeps a running COUNT,
+// discarding each account's own `amount` the moment it's counted. This sibling function keeps the
+// per-account amounts from the FIRST page (capped at HELIUS_HOLDER_PAGE_LIMIT accounts) and sorts
+// by balance descending — a real, honest top-N by balance for any mint whose real holder count fits
+// in one page. HONESTY, DISCLOSED: Helius's DAS getTokenAccounts response is not documented as
+// balance-sorted, so for a mint with MORE accounts than fit in one page, accounts beyond the first
+// page could theoretically outrank ones already fetched — `isLowerBound: true` in that case flags
+// this honestly (mirrors fetchHeliusHolderCount's own isLowerBound contract) rather than silently
+// presenting a possibly-incomplete top-N as authoritative. Only ONE Helius call (not the 3-page
+// pagination fetchHeliusHolderCount uses) — this is a fallback path, not the primary source, so it
+// stays cheap.
+export type SolanaHeliusTopAccountsResult = {
+  called: boolean
+  success: boolean
+  accounts: Array<{ address: string; amountRaw: string }>
+  isLowerBound: boolean
+  errorReason: string | null
+}
+
+function emptyTopAccountsResult(called: boolean, errorReason: string | null): SolanaHeliusTopAccountsResult {
+  return { called, success: false, accounts: [], isLowerBound: false, errorReason }
+}
+
+export async function fetchHeliusTopAccounts(mintAddress: string, fetchImpl: FetchImpl): Promise<SolanaHeliusTopAccountsResult> {
+  if (!isHeliusConfigured()) return emptyTopAccountsResult(false, 'Helius Solana enrichment is not enabled (ENABLE_HELIUS_SOLANA is not "true", or HELIUS_API_KEY is missing).')
+  const apiKey = getHeliusApiKey()
+  if (!apiKey) return emptyTopAccountsResult(false, 'HELIUS_API_KEY missing.')
+
+  const rpcUrl = `https://mainnet.helius-rpc.com/?api-key=${apiKey}`
+  try {
+    const res = await fetchImpl(rpcUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTokenAccounts', params: { mint: mintAddress, page: 1, limit: HELIUS_HOLDER_PAGE_LIMIT } }),
+      signal: AbortSignal.timeout(8000),
+    })
+    if (!res.ok) return emptyTopAccountsResult(true, `helius_top_accounts_http_${res.status}`)
+    const json = await res.json().catch(() => null) as { result?: { token_accounts?: unknown[] }; error?: { message?: string } } | null
+    if (!json) return emptyTopAccountsResult(true, 'helius_top_accounts_bad_json')
+    if (json.error) return emptyTopAccountsResult(true, `helius_top_accounts_rpc_error:${json.error.message ?? 'unknown'}`)
+    const raw = Array.isArray(json.result?.token_accounts) ? json.result!.token_accounts! : []
+    const parsed = raw
+      .map((a) => {
+        const rec = a as Record<string, unknown> | null
+        const address = typeof rec?.address === 'string' ? rec.address : null
+        const amt = rec?.amount
+        const amountRaw = typeof amt === 'string' ? amt : typeof amt === 'number' ? String(Math.trunc(amt)) : null
+        return address && amountRaw ? { address, amountRaw } : null
+      })
+      .filter((a): a is { address: string; amountRaw: string } => a !== null)
+      .sort((a, b) => {
+        try {
+          const diff = BigInt(b.amountRaw) - BigInt(a.amountRaw)
+          return diff > BigInt(0) ? 1 : diff < BigInt(0) ? -1 : 0
+        } catch {
+          return 0
+        }
+      })
+    if (parsed.length === 0) return emptyTopAccountsResult(true, 'empty_response')
+    return { called: true, success: true, accounts: parsed.slice(0, 20), isLowerBound: raw.length >= HELIUS_HOLDER_PAGE_LIMIT, errorReason: null }
+  } catch {
+    return emptyTopAccountsResult(true, 'helius_top_accounts_unreachable')
+  }
+}
+
 // ── Helius: Deep Mode creator trace — Enhanced Transactions, EXPLICITLY OPT-IN ONLY ────────────
 //
 // COST DISCLOSURE, CRITICAL: this is the ONE function in this codebase allowed to call Helius's

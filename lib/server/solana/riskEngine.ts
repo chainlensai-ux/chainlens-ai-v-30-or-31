@@ -28,6 +28,15 @@ export function scoreSolanaBeta(input: {
   marketDataAvailable: boolean
   liquidityUsd: number | null
   evidenceGapCount: number
+  // RELIABILITY FIX, DISCLOSED (Solana holder-concentration reliability task, hard rule: "do not
+  // treat unsupported as confirmed bad... final verdict should say evidence limited if holder data
+  // missing"): optional so every existing caller/test that doesn't pass it is unaffected — when
+  // omitted, behavior is byte-identical to before this field existed (no holder-specific reason
+  // added, confidence still governed by evidenceGapCount alone, same as always). When explicitly
+  // `false`, this ONLY ever adds a reason string and, together with the evidenceGapCount check
+  // below, can only ever LOWER confidence — never raises verdict to CAUTION/HIGH_RISK by itself,
+  // since missing evidence is not itself a risk finding.
+  holderConcentrationAvailable?: boolean
 }): SolanaRiskRead {
   let verdict: SolanaRiskRead['verdict'] = 'OPEN_CHECK'
 
@@ -53,6 +62,9 @@ export function scoreSolanaBeta(input: {
   const confidence: SolanaRiskRead['confidence'] =
     input.authorityReadSucceeded && input.marketDataAvailable && input.evidenceGapCount <= 2 ? 'MEDIUM' : 'LOW'
 
-  reasons.push('Solana Beta: honeypot, tax, LP-control and deployer checks are not available on this path.')
+  reasons.push('Solana: honeypot, tax, LP-control and deployer checks are not available on this path.')
+  if (input.holderConcentrationAvailable === false) {
+    reasons.push('Evidence limited — holder concentration is unavailable for this mint, so supply-distribution risk could not be assessed.')
+  }
   return { verdict, confidence, reasons }
 }

@@ -236,6 +236,13 @@ export type SolanaBetaScanResult = {
     top20Percent: number | null
     accounts: SolanaTopAccountShare[]
   } | null
+  // RELIABILITY FIX, DISCLOSED (Solana holder-concentration reliability task), ADDITIVE: the
+  // resolver's own richer status/source/confidence/public-vs-technical-reason view of the SAME
+  // concentration read `topAccountConcentration` above already reflects — never a second,
+  // independent computation. See holderConcentrationResolver.ts for the full cache/Helius/RPC/
+  // supply-only/failure resolution order.
+  solanaHolderConcentrationResult: import('./holderConcentrationResolver.ts').SolanaHolderConcentrationResult
+  solanaHolderConcentrationAudit: import('./holderConcentrationResolver.ts').SolanaHolderConcentrationAudit
   marketDataAvailable: boolean
   marketData: SolanaMarketData | null
   /** Reduced-confidence risk read. Never 'SAFE'/'verified' — see riskEngine.ts. */
