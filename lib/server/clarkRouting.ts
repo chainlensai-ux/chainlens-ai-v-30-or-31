@@ -67,14 +67,18 @@ const TOKEN_SCAN_ON_CHAIN_RE = /\bscan\b.{0,80}\bon\s+(?:base|eth|ethereum|bnb|b
 // Chain keywords explicitly named in a Clark prompt. Order doesn't matter — the
 // keyword sets are disjoint. Returns the app's canonical SupportedChain value, or
 // null when no chain is explicitly named (caller falls back to UI/memory/default).
-export type ClarkPromptChain = "base" | "ethereum" | "polygon" | "bnb";
+export type ClarkPromptChain = "base" | "ethereum" | "polygon" | "bnb" | "solana" | "robinhood";
 const ETH_CHAIN_WORD_RE = /\b(eth|ethereum|erc-?20|mainnet)\b/i;
 const BNB_CHAIN_WORD_RE = /\b(bnb|bsc|binance(?:[-\s]smart(?:[-\s]chain)?)?)\b/i;
 const POLYGON_CHAIN_WORD_RE = /\b(polygon|matic)\b/i;
 const BASE_CHAIN_WORD_RE = /\bbase\b/i;
+const SOLANA_CHAIN_WORD_RE = /\bsolana\b/i;
+const ROBINHOOD_CHAIN_WORD_RE = /\brobinhood\b/i;
 
 export function extractRequestedChainFromPrompt(prompt: string): ClarkPromptChain | null {
   const t = String(prompt ?? "");
+  if (SOLANA_CHAIN_WORD_RE.test(t)) return "solana";
+  if (ROBINHOOD_CHAIN_WORD_RE.test(t)) return "robinhood";
   if (ETH_CHAIN_WORD_RE.test(t)) return "ethereum";
   if (BNB_CHAIN_WORD_RE.test(t)) return "bnb";
   if (POLYGON_CHAIN_WORD_RE.test(t)) return "polygon";
@@ -125,7 +129,27 @@ export function classifyTokenOrWalletAddress(prompt: string): "token" | "wallet"
 const LP_LOCK_RE = /\b(is\s+lp\s+locked|lp\s+locked|run\s+lp\s+check|check\s+lp|lp\s+check|can\s+liquidity\s+be\s+pulled|is\s+liquidity\s+safe|who\s+controls\s+(?:the\s+)?(?:lp|liquidity)|lp\s+(?:burned|burn)|burned\s+lp|explain\s+(?:the\s+)?(?:lp|liquidity)|what\s+about\s+lp|lp\s+(?:lock|control|safety)|liquidity\s+(?:lock|locked|safety|control|pulled))\b/i;
 const RISK_EXPL_RE = /\b(why\s+(?:is\s+(?:this|it)\s+)?(?:high|low)\s+risk|why\s+did\s+it\s+score\s+low|explain\s+(?:the\s+)?(?:risk|lp\s+risk|holder\s+risk|contract\s+risk|risk\s+score)|what\s+are\s+the\s+red\s+flags|red\s+flags|why\s+(?:the\s+)?caution|why\s+risky|explain\s+(?:the\s+)?score|what\s+makes\s+(?:it|this)\s+risky|what\s+are\s+the\s+risks|explain\s+(?:the\s+)?verdict|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+concentration|contract\s+risk|risk\s+score)\b/i;
 const TOKEN_NAME_RE = /\b(scan|check|analyze|tell\s+me\s+about|token\s+scan|is|look\s+up)\s+\$?([a-z][a-z0-9]{1,10})\b/i;
-const TOKEN_NAME_STOPWORDS = new Set(["THIS", "THAT", "IT", "TOKEN", "WALLET", "LIQUIDITY", "LP", "SAFE", "RISK", "BE", "CHANGE", "CHECK", "LOCKED", "PULLED"]);
+const TOKEN_NAME_STOPWORDS = new Set(["THIS", "THAT", "IT", "TOKEN", "WALLET", "LIQUIDITY", "LP", "SAFE", "RISK", "BE", "CHANGE", "CHECK", "LOCKED", "PULLED", "FOR", "ON", "THE", "POOL", "EXIT"]);
+const LP_CHAIN_WORDS = new Set(["BASE", "ETH", "ETHEREUM", "SOL", "SOLANA", "ROBINHOOD", "BNB", "BSC", "POLYGON"]);
+
+const LIQUIDITY_CHECK_INTENT_RE = /\b(lp\s+check|check\s+lp|liquidity(?:\s+check)?|explain\s+liquidity|liquidity\s+safety|pool\s+check|where\s+is\s+liquidity|exit\s+risk|burn\s+proof|lock\s+proof|lp\s+safety)\b/i;
+
+export function extractLiquiditySymbol(raw: string): string | null {
+  const patterns = [
+    /\b(?:liquidity\s+check|lp\s+check|check\s+lp|check\s+liquidity|liquidity\s+safety|explain\s+liquidity|where\s+is\s+liquidity|pool\s+check)\s+(?:for\s+)?\$?([a-z][a-z0-9]{1,15})\b/i,
+    /\b(?:liquidity|lp)\s+(?:check\s+)?\$?([a-z][a-z0-9]{1,15})\b/i,
+  ];
+  for (const p of patterns) {
+    const m = raw.match(p);
+    const cand = m?.[1]?.toUpperCase() ?? null;
+    if (cand && !TOKEN_NAME_STOPWORDS.has(cand) && !LP_CHAIN_WORDS.has(cand)) return cand;
+  }
+  return null;
+}
+
+export function isLiquidityCheckIntent(prompt: string): boolean {
+  return LIQUIDITY_CHECK_INTENT_RE.test(String(prompt ?? "").trim().toLowerCase());
+}
 
 /**
  * Single source of truth for address routing hint.
@@ -217,7 +241,7 @@ export function isWalletComparePrompt(text: string): boolean {
 
 // Task 1 (Pack 1 hard fix): token follow-up prompts that must always resolve against
 // the last scanned token in memory, never fall through to a wallet branch.
-const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|safe\s+to\s+ape|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|rug\s+risk|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+(?:rug|dump)|who\s+controls\s+(?:the\s+)?supply|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+liquidity\s+locked|explain\s+lp|explain\s+holders|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+risk|contract\s+risk|risk\s+score|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+red\s+flags|explain\s+(?:the\s+)?risk|explain\s+verdict|bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check)\b/i;
+const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|safe\s+to\s+ape|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|rug\s+risk|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+(?:rug|dump)|who\s+controls\s+(?:the\s+)?supply|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+liquidity\s+locked|is\s+it\s+locked|explain\s+lp|explain\s+holders|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+risk|contract\s+risk|risk\s+score|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+red\s+flags|explain\s+(?:the\s+)?risk|explain\s+verdict|bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|run\s+lp\s+check|lp\s+check|check\s+lp|what\s+about\s+lp|what\s+about\s+liquidity|where\s+is\s+liquidity|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check)\b/i;
 
 // Task 3: explicit wallet language must override token-memory follow-up routing — a user
 // who says "wallet pnl", "scan wallet <address>", "portfolio", or "holdings" clearly wants
@@ -242,7 +266,7 @@ export type TokenFollowupKind = "safety" | "dev_rug" | "lp_lock" | "risk" | "ana
 export function classifyTokenFollowupKind(prompt: string): TokenFollowupKind {
   const t = String(prompt ?? "").toLowerCase();
   if (/\b(can\s+(?:the\s+)?dev\s+(?:rug|dump)|who\s+controls\s+(?:the\s+)?supply|explain\s+dev(?:\s+control)?)\b/.test(t)) return "dev_rug";
-  if (/\b(is\s+lp\s+locked|explain\s+lp|can\s+liquidity\s+be\s+pulled|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check)\b/.test(t)) return "lp_lock";
+  if (/\b(is\s+lp\s+locked|is\s+it\s+locked|explain\s+lp|what\s+about\s+lp|what\s+about\s+liquidity|where\s+is\s+liquidity|can\s+liquidity\s+be\s+pulled|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check)\b/.test(t)) return "lp_lock";
   if (/\b(bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|should\s+i\s+buy)\b/.test(t)) return "analyst";
   if (/\b(why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|what\s+are\s+red\s+flags|explain\s+(?:the\s+)?risk|explain\s+verdict|explain\s+holders|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+risk|contract\s+risk|risk\s+score)\b/.test(t)) return "risk";
   return "safety";
@@ -319,13 +343,11 @@ export function classifyClarkPrompt(prompt: string): {
   const addresses = extractAllAddressesForRouting(raw);
   const deep = WALLET_DEEP_RE.test(t);
   const tokenNameMatch = raw.match(TOKEN_NAME_RE);
-  const liquiditySymbolMatch = raw.match(/\b(?:liquidity|lp)\s+(?:check\s+)?\$?([a-z][a-z0-9]{1,10})\b/i)
-    ?? raw.match(/\b(?:explain\s+liquidity|check\s+lp|lp\s+check)\s+\$?([a-z][a-z0-9]{1,10})\b/i);
   const tokenSymbolCandidate = tokenNameMatch?.[2]?.toUpperCase() ?? null;
-  const liquiditySymbolCandidate = liquiditySymbolMatch?.[1]?.toUpperCase() ?? null;
+  const liquiditySymbolCandidate = extractLiquiditySymbol(raw);
   const symbol = tokenSymbolCandidate && !TOKEN_NAME_STOPWORDS.has(tokenSymbolCandidate)
     ? tokenSymbolCandidate
-    : liquiditySymbolCandidate && !TOKEN_NAME_STOPWORDS.has(liquiditySymbolCandidate)
+    : liquiditySymbolCandidate
       ? liquiditySymbolCandidate
       : null;
 
@@ -364,7 +386,7 @@ export function classifyClarkPrompt(prompt: string): {
   // ---- LP / liquidity check (classify by phrase; contract-vs-EOA decided by caller via eth_getCode) ----
   // Symbol-only ("liquidity check AERO") is allowed too — caller resolves the symbol to a
   // Base-preferred contract before calling /api/liquidity-safety.
-  if (/\b(lp\s+check|check\s+lp|liquidity(?:\s+check)?|explain\s+liquidity)\b/i.test(t) && (address || symbol)) {
+  if (LIQUIDITY_CHECK_INTENT_RE.test(t) && (address || symbol)) {
     return { intent: "liquidity_scan", address, addresses, deep: false, symbol: address ? null : symbol };
   }
 

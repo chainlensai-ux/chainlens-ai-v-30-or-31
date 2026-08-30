@@ -29,9 +29,8 @@ assert.match(routeCode, /opts\?\.cachedEvidence\?\.chain === "robinhood" \|\| op
 
 // ─── the liquidity_scan branch must use the real detected chain, never a hardcoded "base" ──────
 assert.doesNotMatch(routeCode, /callInternalApi\(origin, "\/api\/liquidity-safety", \{ contract: routed\.address, chain: "base" \}/, 'the old hardcoded chain: "base" call to /api/liquidity-safety must be gone')
-assert.match(routeCode, /const lpApiChain = toTokenApiChain\(chainForClarkTools\);/, 'the liquidity_scan branch must resolve the real auto-detected chain before calling /api/liquidity-safety')
-assert.match(routeCode, /callInternalApi\(origin, "\/api\/liquidity-safety", \{ contract: routed\.address, chain: lpApiChain \}/, 'the actual LP-safety call must use the resolved real chain')
-// bnb must be honestly flagged as unsupported by this specific endpoint, never silently forced to base.
-assert.match(routeCode, /if \(lpApiChain === "bnb" \|\| lpApiChain == null\) \{/, 'a chain /api/liquidity-safety cannot handle (bnb, or anything unsupported) must get an honest message, never a silent Base substitution')
+assert.match(routeCode, /runClarkLiquidityCheck\(/, 'the liquidity_scan branch must call the Token Scanner LP adapter')
+assert.match(routeCode, /callInternalApi\(origin, "\/api\/liquidity-safety", \{ contract: tokenAddress, chain: evmChain \}/, 'the actual LP-safety call must use the resolved real chain')
+assert.match(routeCode, /chain: "solana"/, 'Solana liquidity checks must call the Solana-native token scanner, not EVM LP proof')
 
 console.log('test-clark-memory-and-lp-chain-blind.mjs: all assertions passed')

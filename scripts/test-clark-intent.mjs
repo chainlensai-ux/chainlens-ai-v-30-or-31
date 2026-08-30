@@ -280,6 +280,8 @@ assert.equal(extractRequestedChainFromPrompt('bnb token 0xabc'), 'bnb')
 assert.equal(extractRequestedChainFromPrompt('bsc token 0xabc'), 'bnb')
 assert.equal(extractRequestedChainFromPrompt('base token 0xabc'), 'base')
 assert.equal(extractRequestedChainFromPrompt('scan this token 0xabc'), null, 'no chain named => null, caller falls back to default')
+assert.equal(extractRequestedChainFromPrompt('liquidity check on solana'), 'solana')
+assert.equal(extractRequestedChainFromPrompt('LP check on Robinhood'), 'robinhood')
 // Token prompt with explicit ETH must never route as a wallet scan
 {
   const r = classifyClarkPrompt('0xabcdef1234567890abcdef1234567890abcdef12 scan this eth token')
@@ -296,7 +298,7 @@ assert.equal(extractRequestedChainFromPrompt('scan this token 0xabc'), null, 'no
   }
 }
 {
-  const phrases = ['liquidity check aero', 'liquidity AERO', 'explain liquidity AERO', 'check LP AERO', 'LP check AERO']
+  const phrases = ['liquidity check aero', 'liquidity AERO', 'explain liquidity AERO', 'check LP AERO', 'LP check AERO', 'Check LP for AERO on Base', 'liquidity safety AERO']
   for (const phrase of phrases) {
     const r = classifyClarkPrompt(phrase)
     assert.equal(r.intent, 'liquidity_scan', `${phrase} => liquidity_scan`)

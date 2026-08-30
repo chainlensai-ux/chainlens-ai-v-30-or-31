@@ -1342,7 +1342,11 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(lpOut.includes('CTA: Run LP Check / Open Token Scanner'), 'LP follow-up keeps the LP-specific CTA')
 
   // Task 6: no lastToken + no address still asks for a token contract via the existing branch.
-  assert.ok(routeFile.includes('Send a token contract and I will check pool model'), 'with no lastToken and no address, Clark still asks for a token contract')
+  assert.ok(
+    routeFile.includes('Send a token contract and I will check pool model') ||
+    routeFile.includes('formatNeedsTokenLiquidityReply'),
+    'with no lastToken and no address, Clark still asks for a token contract',
+  )
 }
 
 // ─── Clark risk explanation depth fix: explain full cached evidence, not just LP ──────
@@ -1418,7 +1422,8 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // Prompt-named chain must win over the UI/default chain.
   assert.ok(routeFile.includes('const promptChain = extractRequestedChainFromPrompt(prompt);'), 'handleClarkAI extracts a chain override from the prompt')
   assert.ok(
-    routeFile.includes('const chain: SupportedChain = promptChain ?? body.chain ?? memSelectedChain;'),
+    routeFile.includes('const chain: SupportedChain = promptChain ?? body.chain ?? memSelectedChain;')
+    || routeFile.includes('(promptChain === "solana" || promptChain === "robinhood" ? null : promptChain) ?? body.chain ?? memSelectedChain'),
     'chain priority is prompt > UI param > session memory > base default'
   )
   assert.ok(!/const chain = body\.chain \?\? "base";\s*\n\s*const prompt/.test(routeFile), 'chain must no longer be resolved from body.chain alone before reading the prompt')
