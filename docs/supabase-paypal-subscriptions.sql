@@ -14,7 +14,7 @@ create table if not exists public.paypal_subscriptions (
   user_id                uuid        not null references auth.users(id) on delete cascade,
   paypal_subscription_id text        not null unique,
   plan                   text        not null, -- 'pro' | 'elite' — which ChainLens plan this subscription grants
-  status                 text        not null default 'pending', -- 'pending' | 'active' | 'cancelled' | 'suspended' | 'expired'
+  status                 text        not null default 'pending', -- 'pending' | 'active' | 'cancelled' | 'suspended' | 'expired' | 'refunded'
   next_billing_date      timestamptz,
   created_at             timestamptz not null default now(),
   updated_at             timestamptz not null default now()

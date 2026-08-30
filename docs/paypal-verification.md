@@ -60,6 +60,10 @@ don't need the historical rows.
      `CANCELLED`) — marks the subscription row `suspended`/`expired` so it doesn't stay stuck on
      `active` after PayPal stops billing. Requires these two events to actually be subscribed to in
      the dashboard (see below) or this handler never runs.
+   - `PAYMENT.SALE.REFUNDED` / `PAYMENT.SALE.REVERSED` (a refund or chargeback on an otherwise
+     still-active subscription) — marks the subscription row `refunded` and downgrades to free under
+     the same "only if this subscription was the actual source of the paid plan" guard as
+     `CANCELLED`. Without subscribing to these, a refunded/reversed payment leaves paid access active.
 7. Back on `/pricing`, since the plan isn't granted until the webhook lands (a few seconds after
    redirect), the page polls `/api/user-settings` for up to ~24s after returning from
    `?paypal_subscription=approved`, showing "activating your plan…" until it sees the real plan
@@ -74,10 +78,11 @@ don't need the historical rows.
 - A webhook pointed at `/api/paypal/webhook` on whichever domain is live (preview:
   `https://chainlens-vthirty.vercel.app`, production: `https://www.chainlensai.app`), subscribed to
   `BILLING.SUBSCRIPTION.CREATED`, `BILLING.SUBSCRIPTION.ACTIVATED`, `BILLING.SUBSCRIPTION.CANCELLED`,
-  `BILLING.SUBSCRIPTION.SUSPENDED`, `BILLING.SUBSCRIPTION.EXPIRED`, `PAYMENT.SALE.COMPLETED`, with
-  its Webhook ID in `PAYPAL_SUBSCRIPTIONS_WEBHOOK_ID`. If `SUSPENDED`/`EXPIRED` aren't subscribed to,
-  the webhook handler's code for them (app/api/paypal/webhook/route.ts) simply never runs — PayPal
-  won't deliver events you didn't subscribe to.
+  `BILLING.SUBSCRIPTION.SUSPENDED`, `BILLING.SUBSCRIPTION.EXPIRED`, `PAYMENT.SALE.COMPLETED`,
+  `PAYMENT.SALE.REFUNDED`, `PAYMENT.SALE.REVERSED`, with its Webhook ID in
+  `PAYPAL_SUBSCRIPTIONS_WEBHOOK_ID`. If any of these aren't subscribed to, the webhook handler's code
+  for them (app/api/paypal/webhook/route.ts) simply never runs — PayPal won't deliver events you
+  didn't subscribe to.
 - `docs/supabase-paypal-subscriptions.sql` — the `paypal_subscriptions` and `paypal_webhook_events`
   tables + RLS.
 
