@@ -238,6 +238,17 @@ export type RobinhoodWalletScanResponse = {
     // PHASE 3, DISCLOSED: count of swap logs that reached confidence 'high' (real token identities
     // AND real price evidence on both legs) — the only swaps ever fed into PnL below.
     verifiedSwapCount: number
+    // BLOCKSCOUT EVIDENCE, DISCLOSED: real, per-scan outcome of every Blockscout call this scan made
+    // (explorer fallback/proof layer only — see lib/server/robinhoodBlockscoutEvidence.ts's own
+    // header). Never itself a PnL signal — only ever surfaced as an activity-evidence status line.
+    blockscoutEvidence: {
+      blockscoutAttempted: boolean
+      blockscoutSucceeded: boolean
+      blockscoutFallbackUsed: boolean
+      blockscoutStatus: 'ok' | 'unavailable' | 'not_configured' | 'rate_limited' | 'not_attempted'
+      blockscoutError: string | null
+      blockscoutVerifiedSwap: boolean
+    }
     reason: string | null
   }
   // PHASE 3/4, DISCLOSED: status now reflects the real, per-scan outcome ('disabled' when zero
@@ -854,6 +865,22 @@ export default function WalletScannerPage() {
               {robinhoodResult.activity.skippedSwapLogs > 0 && (
                 <p style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', marginTop: '4px' }}>
                   Skipped unsupported swap logs: {robinhoodResult.activity.skippedSwapLogs}
+                </p>
+              )}
+              {/* BLOCKSCOUT EVIDENCE, DISCLOSED: shown only as a status line when Blockscout was
+                  actually consulted this scan — never the default/idle case, never raw API payloads,
+                  never phrased as a PnL signal (it never appears inside the PnL box above). Exactly
+                  the three wordings this task's UI section specifies, chosen from real, measured
+                  fields only. */}
+              {robinhoodResult.activity.blockscoutEvidence?.blockscoutAttempted && (
+                <p style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', marginTop: '4px' }}>
+                  {robinhoodResult.activity.blockscoutEvidence.blockscoutVerifiedSwap
+                    ? 'Swap logs verified by explorer.'
+                    : robinhoodResult.activity.blockscoutEvidence.blockscoutFallbackUsed
+                      ? 'Explorer fallback used.'
+                      : robinhoodResult.activity.blockscoutEvidence.blockscoutSucceeded
+                        ? null
+                        : 'Blockscout unavailable.'}
                 </p>
               )}
             </div>

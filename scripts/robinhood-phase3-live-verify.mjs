@@ -107,6 +107,17 @@ async function verifyWallet(address) {
     decodedSwapSamples: decodedSamples.slice(0, 5),
     missingPriceEvidence: missingPriceEvidence.slice(0, 5),
     wrongChainCacheRejected: json.holdings?.wrongChainCacheRejected || activity?.wrongChainCacheRejected || false,
+    // BLOCKSCOUT EVIDENCE, DISCLOSED: read straight from the route's own real
+    // robinhoodWalletScannerAudit fields (lib/server/robinhoodBlockscoutEvidence.ts) — an explorer/
+    // indexer proof-layer status only, never itself a PnL signal. Useful here specifically because
+    // this script IS the live tx/log-sample verification the Blockscout integration task asked for.
+    blockscoutAttempted: audit?.blockscoutAttempted ?? false,
+    blockscoutSucceeded: audit?.blockscoutSucceeded ?? false,
+    blockscoutFallbackUsed: audit?.blockscoutFallbackUsed ?? false,
+    blockscoutStatus: audit?.blockscoutStatus ?? null,
+    blockscoutError: audit?.blockscoutError ?? null,
+    blockscoutRateLimitRemaining: audit?.blockscoutRateLimitRemaining ?? null,
+    blockscoutCreditsRemaining: audit?.blockscoutCreditsRemaining ?? null,
   }
 }
 

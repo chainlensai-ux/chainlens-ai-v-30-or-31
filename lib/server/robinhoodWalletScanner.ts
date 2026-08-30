@@ -46,6 +46,11 @@ import {
   decodeRobinhoodSwapLog, resolvePoolCurrenciesViaRpc, fetchTokenDecimalsViaRpc, buildRobinhoodMatchedLotsFromSwaps,
   V4_NATIVE_CURRENCY_ADDRESS, type RobinhoodSwapDecodeAudit, type RobinhoodPoolCurrencies, type VerifiedRobinhoodSwap,
 } from './robinhoodSwapDecoder'
+import {
+  isRobinhoodBlockscoutConfigured, getBlockscoutAddressTransactions, getBlockscoutAddressTokenTransfers,
+  getBlockscoutTransactionLogs, blockscoutLogToRawEvmLog, emptyBlockscoutEvidenceAudit, mergeBlockscoutEvidenceAudits,
+  type BlockscoutEvidenceAudit,
+} from './robinhoodBlockscoutEvidence'
 
 export type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>
 
@@ -155,6 +160,12 @@ export type RobinhoodWalletActivityResult = {
   // Count of swaps that reached confidence 'high' — real token identities on both legs AND real
   // price evidence for both. Only swaps at this confidence are ever fed into FIFO/PnL.
   verifiedSwapCount: number
+  // BLOCKSCOUT EVIDENCE, DISCLOSED: a merged summary of every real Blockscout call this activity
+  // scan made (address transactions/token-transfers fallback when GoldRush fails entirely, and/or
+  // per-tx log lookups when GoldRush's own log is missing raw topics/data) — see
+  // robinhoodBlockscoutEvidence.ts's own header for the full "fallback/proof layer only" contract.
+  // Stays the empty/'not_attempted' default whenever Blockscout was never consulted this scan.
+  blockscoutEvidence: BlockscoutEvidenceAudit
   reason: string | null
   fromCache: boolean
 }
@@ -207,6 +218,21 @@ export type RobinhoodWalletScannerAudit = {
   swapDecodeStatus: 'built_no_verified_swaps' | 'partial' | 'verified'
   verifiedSwapCount: number
   unsupportedReasons: string[]
+  // BLOCKSCOUT EVIDENCE, DISCLOSED (flat fields, exactly as this task's spec names them) — the same
+  // merged BlockscoutEvidenceAudit already on the activity result, spread out at the top level so a
+  // caller of this audit object doesn't need to know the nested shape. See
+  // robinhoodBlockscoutEvidence.ts's header for the full fallback/proof-layer contract.
+  blockscoutAttempted: boolean
+  blockscoutSucceeded: boolean
+  blockscoutFallbackUsed: boolean
+  blockscoutEndpoint: string | null
+  blockscoutStatus: BlockscoutEvidenceAudit['blockscoutStatus']
+  blockscoutError: string | null
+  blockscoutRateLimitRemaining: number | null
+  blockscoutCreditsRemaining: number | null
+  blockscoutCacheHit: boolean
+  blockscoutRejectedReason: string | null
+  blockscoutVerifiedSwap: boolean
 }
 
 // KEPT FOR BACKWARD COMPATIBILITY, DISCLOSED: Phase 2's own test pins this exact wording, and no
@@ -271,6 +297,8 @@ export function buildRobinhoodWalletScannerAudit(input: {
           ? 'ok'
           : 'unavailable'
 
+  const blockscout = input.activity?.blockscoutEvidence ?? emptyBlockscoutEvidenceAudit()
+
   return {
     wallet: input.wallet,
     holdingsStatus: input.holdings?.status ?? 'not_run',
@@ -287,6 +315,17 @@ export function buildRobinhoodWalletScannerAudit(input: {
     swapDecodeStatus: verifiedSwapCount === 0 ? 'built_no_verified_swaps' : pnlStatus === 'verified' ? 'verified' : 'partial',
     verifiedSwapCount,
     unsupportedReasons,
+    blockscoutAttempted: blockscout.blockscoutAttempted,
+    blockscoutSucceeded: blockscout.blockscoutSucceeded,
+    blockscoutFallbackUsed: blockscout.blockscoutFallbackUsed,
+    blockscoutEndpoint: blockscout.blockscoutEndpoint,
+    blockscoutStatus: blockscout.blockscoutStatus,
+    blockscoutError: blockscout.blockscoutError,
+    blockscoutRateLimitRemaining: blockscout.blockscoutRateLimitRemaining,
+    blockscoutCreditsRemaining: blockscout.blockscoutCreditsRemaining,
+    blockscoutCacheHit: blockscout.blockscoutCacheHit,
+    blockscoutRejectedReason: blockscout.blockscoutRejectedReason,
+    blockscoutVerifiedSwap: blockscout.blockscoutVerifiedSwap,
   }
 }
 
@@ -528,6 +567,96 @@ export async function fetchRobinhoodTransactions(wallet: string, fetchImpl: Fetc
 
 const ERC20_TRANSFER_EVENT_NAME = 'Transfer'
 
+// ── Blockscout fallback: full activity reconstruction, DISCLOSED ───────────────────────────────
+// Only ever consulted when GoldRush's transactions_v3 has already failed entirely (see the `!txs`
+// branch below) — never a first-choice source. Builds the SAME CovalentTransaction-shaped list the
+// rest of this function already knows how to process, from two real Blockscout endpoints (address
+// transactions for native moves, address token-transfers for ERC-20 moves), so no separate
+// processing path is needed downstream.
+async function fetchRobinhoodTransactionsViaBlockscout(
+  wallet: string,
+  fetchImpl: FetchImpl,
+): Promise<{ items: CovalentTransaction[] | null; audits: BlockscoutEvidenceAudit[] }> {
+  const [txResult, transfersResult] = await Promise.all([
+    getBlockscoutAddressTransactions(wallet, fetchImpl),
+    getBlockscoutAddressTokenTransfers(wallet, fetchImpl),
+  ])
+  const audits = [txResult.audit, transfersResult.audit]
+  // FALLBACK-USED, DISCLOSED: marked true only once real data was actually obtained — an attempt
+  // that itself failed is still recorded in the merged audit's status/error, but never claimed as
+  // "fallback used" (that would misrepresent a failed attempt as a successful substitution).
+  if (txResult.data != null) txResult.audit.blockscoutFallbackUsed = true
+  if (transfersResult.data != null) transfersResult.audit.blockscoutFallbackUsed = true
+
+  if (txResult.data == null && transfersResult.data == null) {
+    return { items: null, audits }
+  }
+
+  const byTxHash = new Map<string, CovalentTransaction>()
+  for (const tx of txResult.data?.items ?? []) {
+    if (!tx.hash) continue
+    byTxHash.set(tx.hash, {
+      tx_hash: tx.hash,
+      block_signed_at: tx.timestamp,
+      from_address: tx.from?.hash,
+      to_address: tx.to?.hash ?? undefined,
+      value: tx.value,
+      log_events: [],
+    })
+  }
+  for (const transfer of transfersResult.data?.items ?? []) {
+    if (!transfer.transaction_hash) continue
+    const existing = byTxHash.get(transfer.transaction_hash) ?? {
+      tx_hash: transfer.transaction_hash,
+      block_signed_at: transfer.timestamp,
+      from_address: transfer.from?.hash,
+      to_address: transfer.to?.hash,
+      value: undefined,
+      log_events: [],
+    }
+    existing.log_events = [
+      ...(existing.log_events ?? []),
+      {
+        decoded: {
+          name: ERC20_TRANSFER_EVENT_NAME,
+          params: [
+            { name: 'from', value: transfer.from?.hash },
+            { name: 'to', value: transfer.to?.hash },
+            { name: 'value', value: transfer.total?.value },
+          ],
+        },
+        sender_address: transfer.token?.address,
+        sender_contract_ticker_symbol: transfer.token?.symbol,
+      },
+    ]
+    byTxHash.set(transfer.transaction_hash, existing)
+  }
+  return { items: Array.from(byTxHash.values()), audits }
+}
+
+// ── Blockscout fallback: per-transaction logs for the swap decoder, DISCLOSED ───────────────────
+// Only consulted for a specific log that is missing the raw topics/data GoldRush would normally
+// supply (raw_log_topics/raw_log_data undefined — never triggered for a log that already carries
+// real data). Fetches (and caches, via the shared per-tx `blockscoutLogsByTx` map below) that
+// transaction's REAL logs from Blockscout once per tx, regardless of how many missing logs in it
+// need supplementing. This never itself decides which log is "the" swap — every log obtained here
+// still goes through the exact same decodeRobinhoodSwapLog confidence gates as a GoldRush-sourced
+// one; a mismatched correlation can only ever produce another honest rejection (wrong address/topic
+// checks fail), never a fabricated "verified" result.
+async function fetchBlockscoutLogsForTx(
+  txHash: string,
+  fetchImpl: FetchImpl,
+  blockscoutLogsByTx: Map<string, { logs: ReturnType<typeof blockscoutLogToRawEvmLog>[] | null; audit: BlockscoutEvidenceAudit }>,
+): Promise<{ logs: ReturnType<typeof blockscoutLogToRawEvmLog>[] | null; audit: BlockscoutEvidenceAudit }> {
+  const existing = blockscoutLogsByTx.get(txHash)
+  if (existing) return existing
+  const result = await getBlockscoutTransactionLogs(txHash, fetchImpl)
+  const logs = result.data?.items ? result.data.items.map(blockscoutLogToRawEvmLog) : null
+  const entry = { logs, audit: result.audit }
+  blockscoutLogsByTx.set(txHash, entry)
+  return entry
+}
+
 export type ResolveRobinhoodActivityDeps = {
   fetchImpl: FetchImpl
   cached?: (RobinhoodWalletActivityResult & { chainSlug: 'robinhood'; wallet: string }) | null
@@ -544,14 +673,33 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
     return { ...deps.cached, fromCache: true }
   }
   if (!isRobinhoodChainAvailable()) {
-    return { status: 'not_configured', wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, swapDecodeAudits: [], verifiedSwapCount: 0, reason: 'Robinhood Chain is not configured.', fromCache: false }
+    return { status: 'not_configured', wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, swapDecodeAudits: [], verifiedSwapCount: 0, blockscoutEvidence: emptyBlockscoutEvidenceAudit(), reason: 'Robinhood Chain is not configured.', fromCache: false }
   }
-  const { items: txs, reason } = await fetchRobinhoodTransactions(wallet, deps.fetchImpl)
+  const blockscoutAudits: BlockscoutEvidenceAudit[] = []
+  let { items: txs, reason } = await fetchRobinhoodTransactions(wallet, deps.fetchImpl)
+  // BLOCKSCOUT FALLBACK (Case A), DISCLOSED: only reached when GoldRush's transactions_v3 has
+  // already failed entirely — never a substitute for a real GoldRush success, and never attempted
+  // when Blockscout itself isn't configured (isRobinhoodBlockscoutConfigured gates every real call
+  // inside fetchRobinhoodTransactionsViaBlockscout too, so this is a cheap no-op otherwise).
+  if (!txs && isRobinhoodBlockscoutConfigured()) {
+    const fallback = await fetchRobinhoodTransactionsViaBlockscout(wallet, deps.fetchImpl)
+    blockscoutAudits.push(...fallback.audits)
+    if (fallback.items) {
+      txs = fallback.items
+      reason = null
+    }
+  }
   if (!txs) {
-    return { status: reason === 'no_api_key' ? 'not_configured' : 'unavailable', wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, swapDecodeAudits: [], verifiedSwapCount: 0, reason: reason ?? 'no_data', fromCache: false }
+    return {
+      status: reason === 'no_api_key' ? 'not_configured' : 'unavailable',
+      wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, swapDecodeAudits: [], verifiedSwapCount: 0,
+      blockscoutEvidence: mergeBlockscoutEvidenceAudits(blockscoutAudits),
+      reason: reason ?? 'no_data', fromCache: false,
+    }
   }
   const resolvePoolCurrencies = deps.resolvePoolCurrencies ?? ((poolId: string) => resolvePoolCurrenciesViaRpc(poolId, deps.fetchImpl))
   const priceUsdLookupForToken = deps.priceUsdLookupForToken ?? (async () => null)
+  const blockscoutLogsByTx = new Map<string, { logs: ReturnType<typeof blockscoutLogToRawEvmLog>[] | null; audit: BlockscoutEvidenceAudit }>()
 
   const lowerWallet = wallet.toLowerCase()
   const items: RobinhoodActivityItem[] = []
@@ -584,14 +732,39 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
         // topic0 is the real, computed Swap event signature, ever produces decodedSwap:true — every
         // other non-Transfer log (Mint/Burn/ModifyLiquidity/an unrelated contract's event/anything
         // this decoder doesn't recognize) still lands in skippedSwapLogs exactly as Phase 2 did.
+        let logAddress: string | null | undefined = log.sender_address
+        let logTopics: Array<string | null | undefined> | null | undefined = log.raw_log_topics
+        let logData: string | null | undefined = log.raw_log_data
+        let blockscoutFetchedAudit: BlockscoutEvidenceAudit | null = null
+        // BLOCKSCOUT FALLBACK (Case B), DISCLOSED: only triggered when the primary source's raw log
+        // is genuinely missing its topics — never when GoldRush already supplied real (even empty)
+        // data. Best-effort correlation by the log's own emitting-contract address within this same
+        // transaction; decodeRobinhoodSwapLog independently re-verifies the address/topic0/pool
+        // before ever claiming a decoded swap, so a wrong correlation only yields another honest
+        // rejection below, never a false "verified" result.
+        if (logTopics === undefined && isRobinhoodBlockscoutConfigured()) {
+          const fetched = await fetchBlockscoutLogsForTx(tx.tx_hash, deps.fetchImpl, blockscoutLogsByTx)
+          blockscoutAudits.push(fetched.audit)
+          const match = fetched.logs?.find((l) => l.address && logAddress && l.address.toLowerCase() === String(logAddress).toLowerCase())
+          if (match) {
+            fetched.audit.blockscoutFallbackUsed = true
+            blockscoutFetchedAudit = fetched.audit
+            logAddress = match.address
+            logTopics = match.topics ?? undefined
+            logData = match.data ?? undefined
+          }
+        }
         const audit = await decodeRobinhoodSwapLog(wallet, ROBINHOOD_CHAIN_ID, tx.tx_hash, {
-          address: log.sender_address, topics: log.raw_log_topics, data: log.raw_log_data,
+          address: logAddress, topics: logTopics, data: logData,
         }, { resolvePoolCurrencies, priceUsdLookupForToken }).catch((): RobinhoodSwapDecodeAudit => ({
           wallet, chainId: ROBINHOOD_CHAIN_ID, txHash: tx.tx_hash ?? '', logsSeen: 1, swapLogsSeen: 0,
           routerMatched: null, poolMatched: null, decodedSwap: false, tokenIn: null, tokenOut: null,
           amountIn: null, amountOut: null, quoteLeg: null, priceEvidence: false, confidence: null,
           rejectedReason: 'swap decode threw unexpectedly',
         }))
+        // Marked only once the Blockscout-supplied log actually reached confidence 'high' — real
+        // evidence contributed to a verified swap, not just to reconstructing raw activity.
+        if (blockscoutFetchedAudit && audit.confidence === 'high') blockscoutFetchedAudit.blockscoutVerifiedSwap = true
         swapDecodeAudits.push(audit)
         // Only a confidence:'high' decode (real token identities AND real price evidence on both
         // legs) is ever excluded from skippedSwapLogs — anything less specific still counts as
@@ -621,6 +794,7 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
   return {
     status: items.length > 0 || verifiedSwapCount > 0 ? 'ok' : 'partial',
     wallet, chainSlug: 'robinhood', items, skippedSwapLogs, swapDecodeAudits, verifiedSwapCount,
+    blockscoutEvidence: mergeBlockscoutEvidenceAudits(blockscoutAudits),
     reason: items.length === 0 && verifiedSwapCount === 0 ? 'no_transfers_found_in_returned_window' : null,
     fromCache: false,
   }
