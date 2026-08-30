@@ -4,7 +4,7 @@ import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 import { usePathname, useSearchParams } from 'next/navigation'
 import { ThinkingOrb } from 'thinking-orbs'
 import { supabase } from '@/lib/supabaseClient'
-import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList, persistMarketMomentum, readMarketMomentum } from '@/lib/client/clarkMemory'
+import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList, persistMarketMomentum, readMarketMomentum, resolveClarkCommandChipTarget } from '@/lib/client/clarkMemory'
 import {
   CLARK_FETCH_TIMEOUT_MS,
   CLARK_TIMEOUT_MESSAGE,
@@ -416,6 +416,30 @@ function ClarkAiContent() {
 
   async function handleSend() { await handleSendText(input) }
 
+  function applyCommandChip(prompt: string) {
+    const trimmed = prompt.trim()
+    const slash = trimmed.match(/^\/(lp|token|wallet)$/i)
+    if (slash) {
+      const cmd = slash[1].toLowerCase() as 'lp' | 'token' | 'wallet'
+      const target = resolveClarkCommandChipTarget(cmd, getClientClarkContext())
+      if (target) {
+        void handleSendText(`/${cmd} ${target}`)
+        return
+      }
+      setInput(`/${cmd} `)
+      return
+    }
+    if (trimmed.endsWith(' ') && /^\/(lp|token|wallet)\s+$/i.test(prompt)) {
+      const cmd = trimmed.slice(1).toLowerCase() as 'lp' | 'token' | 'wallet'
+      const target = resolveClarkCommandChipTarget(cmd, getClientClarkContext())
+      if (target) {
+        void handleSendText(`/${cmd} ${target}`)
+        return
+      }
+    }
+    setInput(prompt)
+  }
+
   useEffect(() => {
     if (!autoSendRequested || !importedPrompt || loading || autoSentRef.current) return
     autoSentRef.current = true
@@ -510,7 +534,7 @@ function ClarkAiContent() {
                           key={chip.label}
                           type='button'
                           className='clk-start-chip'
-                          onClick={() => setInput(chip.prompt)}
+                          onClick={() => applyCommandChip(chip.prompt)}
                         >
                           {chip.label}
                         </button>
@@ -572,6 +596,24 @@ function ClarkAiContent() {
               </div>
             )}
             <div className='clk-input-wrap'>
+              <div className='clk-start-with-row' style={{ marginBottom: 8 }} aria-label='Clark commands'>
+                {['/token', '/wallet', '/lp', '/base'].map((cmd) => (
+                  <button
+                    key={cmd}
+                    type='button'
+                    className='clk-start-chip'
+                    onClick={() => {
+                      if (cmd === '/base') {
+                        void handleSendText("What's pumping on Base?")
+                        return
+                      }
+                      applyCommandChip(`${cmd} `)
+                    }}
+                  >
+                    {cmd}
+                  </button>
+                ))}
+              </div>
               <div className='clk-input-row'>
                 <span className='clk-prompt-mark'>›</span>
                 <input
