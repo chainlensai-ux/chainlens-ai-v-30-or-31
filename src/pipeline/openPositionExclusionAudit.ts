@@ -65,7 +65,19 @@ export type OpenPositionExclusionAudit = {
 const MAX_EXAMPLES = 8
 
 function publicLabelFor(p: ExcludedUnrealizedPosition): string {
-  if (p.classification !== 'missing_price' && p.classification !== 'missing_balance' && p.classification !== 'balance_less_than_fifo_open' && p.classification !== 'unsupported') {
+  // PRE-EXISTING TSC FIX, DISCLOSED (unrelated to this session's PayPal task — found blocking the
+  // shared build/tsc gate): OpenPositionClassification includes 'priced_reconciled', which
+  // PUBLIC_CLASSIFICATION_LABELS deliberately excludes (a reconciled position isn't "excluded" and
+  // has no exclusion label). The narrowing below must rule it out too, same as the other
+  // exclusion-reason-based classifications, or TS can't prove the PUBLIC_CLASSIFICATION_LABELS
+  // lookup below is exhaustive.
+  if (
+    p.classification !== 'missing_price' &&
+    p.classification !== 'missing_balance' &&
+    p.classification !== 'balance_less_than_fifo_open' &&
+    p.classification !== 'unsupported' &&
+    p.classification !== 'priced_reconciled'
+  ) {
     return PUBLIC_CLASSIFICATION_LABELS[p.classification]
   }
   return PUBLIC_EXCLUSION_REASON_LABELS[p.exclusionReason]
