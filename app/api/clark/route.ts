@@ -11889,28 +11889,31 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (routed.intent === "lp_lock_check") {
-    // Memory-first for LP follow-ups; only explicit refresh/rescan/deep/full/retry requests may call live LP evidence.
-    if (!tokenFollowupRefreshRequested) {
-      const r = await resolveTokenForFollowup({ fromMemoryOnly: true });
-      if (!("needsAddress" in r)) {
-        const analysis = formatLpLockCheck(r.ev, chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools)));
-        updateMemIntent(sessionMem, "lp_lock_check");
-        return {
-          feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: ["memory"],
-          analysis,
-          intentBadge: "lp_lock_check",
-          actions: buildRoutedActions(["Run LP Check"]),
-          quotaConsumed: false,
-          clarkDebugReceipt: tokenFollowupDebug(r),
-        };
-      }
-    }
+    // CHAIN-BLIND FIX, DISCLOSED (Clark liquidity structured-card task): this branch used to build a
+    // TokenScanEvidence with `chain: chain === "ethereum" ? "eth" : "base"` and format it through the
+    // EVM-only formatLpLockCheck — a Robinhood or Solana "is LP locked"/"run LP check" prompt was
+    // silently treated as Base, applying Base/Ethereum LP-token lock/burn assumptions to chains that
+    // don't have that concept (the exact thing this task's hard rules forbid). "Check LP" and "is LP
+    // locked" are the same underlying question as the liquidity_scan intent's "check liquidity" — now
+    // shares the SAME chain-aware, multi-chain runClarkLiquidityCheck/formatClarkLiquidityCheck engine
+    // (and its cache) instead of a second, chain-blind formatter, so both phrasings of an LP query
+    // return the identical structured LIQUIDITY CHECK card for every chain.
+    const liqChain = resolveLiquidityChainForClark(prompt, String(chainForClarkTools), sessionMem.selectedChain ?? sessionMem.lastTokenChain);
     let tokenAddress = routed.address;
     if (!tokenAddress && routed.symbol) {
-      const resolved = await resolveTokenSymbolToAddress(routed.symbol);
+      const resolved = await resolveTokenSymbolToAddress(routed.symbol, liqChain);
+      if (resolved?.status === "ambiguous" && Array.isArray(resolved.matches) && resolved.matches.length > 1) {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: ["token_resolve"],
+          analysis: formatAmbiguousLiquiditySymbol(routed.symbol, resolved.matches as ClarkLiquidityMatch[]),
+          intentBadge: "lp_lock_check",
+          actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+          quotaConsumed: false,
+        };
+      }
       tokenAddress = resolved?.address ?? null;
     }
-    if (!tokenAddress && sessionMem.lastToken) tokenAddress = sessionMem.lastToken.address;
+    if (!tokenAddress && sessionMem.lastToken?.address) tokenAddress = sessionMem.lastToken.address;
     if (!tokenAddress) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: [],
@@ -11921,41 +11924,79 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         clarkDebugReceipt: tokenFollowupDebug({ needsAddress: true }),
       };
     }
-    const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: tokenAddress, chain: toTokenApiChain(chainForClarkTools) ?? "base" }, authHeader ?? undefined, verifiedPlan);
-    const raw = (liqRes.json ?? {}) as Record<string, unknown>;
-    const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
-    if (!liqRes.ok || raw.ok === false || Object.keys(data).length === 0) {
-      const ev = await fetchTokenEvidence(tokenAddress);
-      const analysis = formatLpLockCheck(ev, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)));
-      updateMemIntent(sessionMem, "lp_lock_check");
+
+    const isSol = isValidSolanaMintAddress(tokenAddress) || liqChain === "solana";
+    if (!isSol) {
+      const addressKind = await classifyAddressForClark(tokenAddress, chainForClarkTools);
+      if (addressKind === "wallet") {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: ["address_code_check"],
+          analysis: formatEoaLpCheckReply(),
+          intentBadge: "lp_lock_check",
+          actions: buildRoutedActions(["Scan Wallet", "Deep Scan Wallet"]),
+          quotaConsumed: false,
+        };
+      }
+    }
+
+    const runChain: ClarkLiquidityChain = isSol ? "solana" : liqChain;
+    if (runChain !== "solana" && runChain !== "base" && runChain !== "ethereum" && runChain !== "robinhood") {
       return {
-        feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: ["token_scan"],
-        analysis,
+        feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: [],
+        analysis: `Liquidity Safety doesn't have full ${chainDisplayLabel(chainForClarkTools)} support yet — it currently covers Base, Ethereum, Robinhood, and Solana. Use Token Scanner's general LP fields, or ask about this token on one of those chains instead.`,
         intentBadge: "lp_lock_check",
-        actions: buildRoutedActions(["Run LP Check", "Open Token Scanner"]),
+        actions: buildRoutedActions(["Open Token Scanner"]),
         quotaConsumed: false,
-        clarkDebugReceipt: { followUpUsedMemory: false, followUpTriggeredRefresh: tokenFollowupRefreshRequested, tokenMemoryAgeMs: sessionMem?.lastToken?.ts ? Date.now() - sessionMem.lastToken.ts : null, evidenceSource: "freshScan" },
       };
     }
-    const displayModel = typeof data.displayLpModel === "string" ? data.displayLpModel : null;
-    const concentrated = displayModel === "concentrated_liquidity" || displayModel === "concentrated" || data.lpProofApplicability === "not_applicable";
-    const lpStatus = typeof data.lpLockStatus === "string" ? data.lpLockStatus : (concentrated ? "concentrated" : "unverified");
-    const ev: TokenScanEvidence = {
-      token: { name: typeof data.name === "string" ? data.name : null, symbol: typeof data.symbol === "string" ? data.symbol : null, address: tokenAddress },
-      chain: chain === "ethereum" ? "eth" : "base",
-      market: { liquidity: typeof data.lp_total_liquidity_usd === "number" ? data.lp_total_liquidity_usd : null },
-      lpControl: { status: lpStatus, reason: typeof data.lpController === "string" ? data.lpController : null, confidence: null, poolType: displayModel },
-    };
-    const analysis = formatLpLockCheck(ev, chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools)));
-    updateMemToken(sessionMem, tokenAddress, ev.token?.symbol ?? null, ev.token?.name ?? null, analysis);
+
+    const cacheKey = clarkLiquidityCacheKey(runChain, tokenAddress);
+    const cachedHit = clarkLiquidityResultCache.get(cacheKey);
+    const cached = !tokenFollowupRefreshRequested && cachedHit && cachedHit.exp > Date.now() ? cachedHit.result : null;
+    const wrongChainRejected = rejectWrongChainLiquidityCache(cached, { chainSlug: runChain, tokenAddressOrMint: tokenAddress });
+
+    const check = await runClarkLiquidityCheck({
+      chainSlug: runChain,
+      tokenAddressOrMint: tokenAddress,
+      symbol: routed.symbol,
+      source: "clark",
+      cached: cached && !wrongChainRejected ? cached : null,
+    }, {
+      fetchEvmLiquidity: async (addr, evmChain) => {
+        const liqRes = await callInternalApi(origin, "/api/liquidity-safety", { contract: addr, chain: evmChain }, authHeader ?? undefined, verifiedPlan);
+        const raw = (liqRes.json ?? {}) as Record<string, unknown>;
+        const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
+        if (!liqRes.ok || raw.ok === false || Object.keys(data).length === 0) return null;
+        return data;
+      },
+      fetchSolanaLiquidity: async (mint) => {
+        const tokRes = await callInternalApi(origin, "/api/token", { contract: mint, chain: "solana" }, authHeader ?? undefined, verifiedPlan);
+        const raw = (tokRes.json ?? {}) as Record<string, unknown>;
+        if (!tokRes.ok || raw.ok === false) return null;
+        return raw;
+      },
+    });
+    clarkLiquidityResultCache.set(cacheKey, { exp: Date.now() + CLARK_LIQ_CACHE_TTL_MS, result: check });
+    const analysis = formatClarkLiquidityCheck(check);
+    const lpMemoryChain = runChain === "ethereum" ? "eth" : runChain === "solana" ? "base" : runChain;
+    updateMemToken(sessionMem, tokenAddress, check.symbol, check.symbol, analysis, {
+      cachedEvidence: {
+        ok: check.status !== "unavailable",
+        token: { symbol: check.symbol, name: check.symbol, address: tokenAddress },
+        chain: lpMemoryChain as "base" | "eth" | "robinhood",
+        market: { liquidity: check.liquidityUsd },
+        lpControl: { status: check.lockBurnStatus, reason: check.controllerStatus, confidence: check.confidence, poolType: check.lpModel },
+      } as TokenScanEvidence,
+      chain: lpMemoryChain as "base" | "eth" | "robinhood",
+    });
     updateMemIntent(sessionMem, "lp_lock_check");
     return {
-      feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: ["liquidity_analyze"],
+      feature: "clark-ai", chain, mode: "analysis", intent: "lp_lock_check", toolsUsed: [runChain === "solana" ? "solana_token_scanner" : "liquidity_analyze"],
       analysis,
       intentBadge: "lp_lock_check",
       actions: buildRoutedActions(["Run LP Check", "Open Token Scanner"]),
-      quotaConsumed: true,
-      clarkDebugReceipt: { followUpUsedMemory: false, followUpTriggeredRefresh: tokenFollowupRefreshRequested, tokenMemoryAgeMs: sessionMem?.lastToken?.ts ? Date.now() - sessionMem.lastToken.ts : null, evidenceSource: "freshScan" },
+      quotaConsumed: !cached || wrongChainRejected,
+      clarkDebugReceipt: { followUpUsedMemory: Boolean(cached) && !wrongChainRejected, followUpTriggeredRefresh: tokenFollowupRefreshRequested, tokenMemoryAgeMs: sessionMem?.lastToken?.ts ? Date.now() - sessionMem.lastToken.ts : null, evidenceSource: cached && !wrongChainRejected ? "cache" : "freshScan" },
     };
   }
 

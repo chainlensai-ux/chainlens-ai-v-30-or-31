@@ -130,6 +130,28 @@ export function formatNeedsTokenLiquidityReply(): string {
   ].join("\n")
 }
 
+// VERDICT VOCABULARY, DISCLOSED (Clark liquidity structured-card task): the Verdict line must
+// always read as one of the task's fixed words — "Liquidity verified / partial / risky /
+// unsupported proof" — rather than the freeform sentences this used to carry per chain/branch
+// ("Liquidity detected but exit risk is partial", "Solana AMM liquidity detected", etc.). The
+// richer, chain-specific detail those sentences carried is not lost — it already lives in
+// goodSigns/risks/missingEvidence, which the card prints separately. "unavailable" (no pool
+// evidence returned at all) is not one of the four listed words but is kept as its own honest
+// label rather than folded into "risky" — claiming directional risk from zero evidence would
+// itself be a hidden-evidence violation of this task's own hard rules.
+function verdictTextFor(status: ClarkLiquidityStatus): string {
+  switch (status) {
+    case "verified": return "Liquidity verified"
+    case "partial": return "Liquidity partial"
+    case "risky": return "Liquidity risky"
+    case "unsupported_proof": return "Liquidity unsupported proof"
+    case "unavailable": return "Liquidity unavailable"
+    case "ambiguous": return "Liquidity check ambiguous — multiple tokens matched"
+    case "needs_token": return "Liquidity check needs a token"
+    default: return "Liquidity partial"
+  }
+}
+
 function chainLabel(chain: ClarkLiquidityChain): string {
   if (chain === "ethereum") return "Ethereum"
   if (chain === "robinhood") return "Robinhood"
@@ -155,9 +177,7 @@ function applyRobinhoodWording(result: ClarkLiquidityCheckResult): ClarkLiquidit
     exitRisk: result.liquidityUsd != null && result.liquidityUsd > 0 ? "Unverified" : result.exitRisk,
     missingEvidence: missing,
     status: result.liquidityUsd != null && result.liquidityUsd > 0 ? "unsupported_proof" : "partial",
-    verdict: result.liquidityUsd != null && result.liquidityUsd > 0
-      ? "Liquidity detected but exit risk is partial"
-      : "Liquidity unavailable — Robinhood pool proof is unsupported or not returned",
+    verdict: verdictTextFor(result.liquidityUsd != null && result.liquidityUsd > 0 ? "unsupported_proof" : "partial"),
     confidence: "Low",
   }
 }
@@ -185,7 +205,7 @@ function applySolanaWording(result: ClarkLiquidityCheckResult): ClarkLiquidityCh
     ],
     risks: result.risks.filter((s) => !EVM_LOCK_WORDS.test(s)),
     status: hasLiq ? "partial" : "unavailable",
-    verdict: hasLiq ? "Solana AMM liquidity detected" : "Solana AMM liquidity not returned",
+    verdict: verdictTextFor(hasLiq ? "partial" : "unavailable"),
   }
 }
 
@@ -247,7 +267,7 @@ export function mapEvmLiquiditySafetyPayload(
     sourceLabels: ["liquidity-safety", "token-scanner-lp"],
     goodSigns: good,
     risks,
-    verdict: status === "verified" ? "Liquidity verified" : status === "risky" ? "Liquidity risky" : status === "unavailable" ? "Liquidity unavailable" : "Liquidity partial",
+    verdict: verdictTextFor(status),
     technicalDebug: { displayModel, concentrated, lpLockStatus: lockStatus },
   }
   if (opts.chainSlug === "robinhood") result = applyRobinhoodWording(result)
@@ -302,12 +322,20 @@ export function formatClarkLiquidityCheck(result: ClarkLiquidityCheckResult): st
   const good = result.goodSigns.length ? result.goodSigns.map((s) => `- ${s}`) : ["- none confirmed in this pass"]
   const risks = result.risks.length ? result.risks.map((s) => `- ${s}`) : ["- none confirmed in this pass"]
   const missing = result.missingEvidence.length ? result.missingEvidence.map((s) => `- ${s}`) : ["- none flagged"]
+  // POOL AGE, DISCLOSED (Clark liquidity structured-card task): the task's Solana chain-behavior
+  // rule explicitly requires pool age in a Solana LP card ("show AMM liquidity, pool source, pool
+  // age, and Solana-native missing evidence") — the field already existed on the result type but was
+  // captured and never rendered. Shown for any chain when known (real, provider-sourced value; never
+  // fabricated), omitted entirely rather than printed as "not returned" when genuinely unknown, since
+  // pool age isn't part of the fixed 7-field header block every chain is guaranteed to have.
+  const poolAgeLine = result.poolAge ? [`Pool age: ${result.poolAge}`] : []
   return [
     `LIQUIDITY CHECK — ${result.symbol}`,
     `Chain: ${chainLabel(result.chainSlug)}`,
     `Liquidity: ${liq}`,
     `Primary pool: ${result.dexName ?? result.primaryPool ?? "not returned"}`,
     `LP model: ${result.lpModel ?? "unverified"}`,
+    ...poolAgeLine,
     `Exit risk: ${result.exitRisk}`,
     `Confidence: ${result.confidence}`,
     "",
@@ -388,7 +416,7 @@ export async function runClarkLiquidityCheck(opts: {
         sourceLabels: ["solana-token-scanner"],
         goodSigns: [],
         risks: [],
-        verdict: "Liquidity unavailable — Solana scanner did not return pool evidence",
+        verdict: verdictTextFor("unavailable"),
         technicalDebug: { reason: "solana_payload_empty" },
       })
     }
@@ -417,7 +445,7 @@ export async function runClarkLiquidityCheck(opts: {
       sourceLabels: ["liquidity-safety"],
       goodSigns: [],
       risks: [],
-      verdict: "Liquidity unavailable",
+      verdict: verdictTextFor("unavailable"),
       technicalDebug: { reason: "evm_payload_empty" },
     }
   }
