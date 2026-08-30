@@ -126,18 +126,22 @@ export function isDevRugHistoryPrompt(prompt: string): boolean {
 export function classifyTokenOrWalletAddress(prompt: string): "token" | "wallet" | "ambiguous" | "none" {
   return getClarkAddressRouteHint(prompt);
 }
-const LP_LOCK_RE = /\b(is\s+lp\s+locked|lp\s+locked|run\s+lp\s+check|check\s+lp|lp\s+check|can\s+liquidity\s+be\s+pulled|is\s+liquidity\s+safe|who\s+controls\s+(?:the\s+)?(?:lp|liquidity)|lp\s+(?:burned|burn)|burned\s+lp|explain\s+(?:the\s+)?(?:lp|liquidity)|what\s+about\s+lp|lp\s+(?:lock|control|safety)|liquidity\s+(?:lock|locked|safety|control|pulled))\b/i;
+// Accept the common "liqudity" typo as liquidity. It is intentionally narrow: only the
+// missing second "i" spelling is normalized, so ordinary token-check phrasing still does
+// not get reclassified as an LP request.
+const LIQUIDITY_WORD = "liqu(?:i)?dity";
+const LP_LOCK_RE = new RegExp(`\\b(is\\s+lp\\s+locked|lp\\s+locked|run\\s+lp\\s+check|check\\s+lp|lp\\s+check|can\\s+${LIQUIDITY_WORD}\\s+be\\s+pulled|is\\s+${LIQUIDITY_WORD}\\s+safe|who\\s+controls\\s+(?:the\\s+)?(?:lp|${LIQUIDITY_WORD})|lp\\s+(?:burned|burn)|burned\\s+lp|explain\\s+(?:the\\s+)?(?:lp|${LIQUIDITY_WORD})|what\\s+about\\s+lp|lp\\s+(?:lock|control|safety)|${LIQUIDITY_WORD}\\s+(?:lock|locked|safety|control|pulled))\\b`, "i");
 const RISK_EXPL_RE = /\b(why\s+(?:is\s+(?:this|it)\s+)?(?:high|low)\s+risk|why\s+did\s+it\s+score\s+low|explain\s+(?:the\s+)?(?:risk|lp\s+risk|holder\s+risk|contract\s+risk|risk\s+score)|what\s+are\s+the\s+red\s+flags|red\s+flags|why\s+(?:the\s+)?caution|why\s+risky|explain\s+(?:the\s+)?score|what\s+makes\s+(?:it|this)\s+risky|what\s+are\s+the\s+risks|explain\s+(?:the\s+)?verdict|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+concentration|contract\s+risk|risk\s+score)\b/i;
 const TOKEN_NAME_RE = /\b(scan|check|analyze|tell\s+me\s+about|token\s+scan|is|look\s+up)\s+\$?([a-z][a-z0-9]{1,10})\b/i;
 const TOKEN_NAME_STOPWORDS = new Set(["THIS", "THAT", "IT", "TOKEN", "WALLET", "LIQUIDITY", "LP", "SAFE", "RISK", "BE", "CHANGE", "CHECK", "LOCKED", "PULLED", "FOR", "ON", "THE", "POOL", "EXIT"]);
 const LP_CHAIN_WORDS = new Set(["BASE", "ETH", "ETHEREUM", "SOL", "SOLANA", "ROBINHOOD", "BNB", "BSC", "POLYGON"]);
 
-const LIQUIDITY_CHECK_INTENT_RE = /\b(lp\s+check|check\s+lp|liquidity(?:\s+check)?|explain\s+liquidity|liquidity\s+safety|pool\s+check|where\s+is\s+liquidity|exit\s+risk|burn\s+proof|lock\s+proof|lp\s+safety)\b/i;
+const LIQUIDITY_CHECK_INTENT_RE = new RegExp(`\\b(lp\\s+check|check\\s+lp|${LIQUIDITY_WORD}(?:\\s+check)?|explain\\s+${LIQUIDITY_WORD}|${LIQUIDITY_WORD}\\s+safety|pool\\s+check|where\\s+is\\s+${LIQUIDITY_WORD}|exit\\s+risk|burn\\s+proof|lock\\s+proof|lp\\s+safety)\\b`, "i");
 
 export function extractLiquiditySymbol(raw: string): string | null {
   const patterns = [
-    /\b(?:liquidity\s+check|lp\s+check|check\s+lp|check\s+liquidity|liquidity\s+safety|explain\s+liquidity|where\s+is\s+liquidity|pool\s+check)\s+(?:for\s+)?\$?([a-z][a-z0-9]{1,15})\b/i,
-    /\b(?:liquidity|lp)\s+(?:check\s+)?\$?([a-z][a-z0-9]{1,15})\b/i,
+    new RegExp(`\\b(?:${LIQUIDITY_WORD}\\s+check|lp\\s+check|check\\s+lp|check\\s+${LIQUIDITY_WORD}|${LIQUIDITY_WORD}\\s+safety|explain\\s+${LIQUIDITY_WORD}|where\\s+is\\s+${LIQUIDITY_WORD}|pool\\s+check)\\s+(?:for\\s+)?\\$?([a-z][a-z0-9]{1,15})\\b`, "i"),
+    new RegExp(`\\b(?:${LIQUIDITY_WORD}|lp)\\s+(?:check\\s+)?\\$?([a-z][a-z0-9]{1,15})\\b`, "i"),
   ];
   for (const p of patterns) {
     const m = raw.match(p);

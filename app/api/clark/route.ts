@@ -10112,8 +10112,8 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // SOLANA-DOMINANT-CASCADE FIX, DISCLOSED (requested live: "i need sol working as well"). The
   // Solana creator/authority read (mint/freeze authority + Deep Creator trace, real evidence, no
   // fake deployer claims) already existed but was wired ONLY into routed.intent === "token_scan" —
-  // the narrow tool-plan-ish path. Most real phrasing ("X safe", "is X safe", "is liquidity safe on
-  // X", "can dev rug", etc.) routes through token_safety/liquidity_scan/dev_rug_check/lp_lock_check/
+  // the narrow tool-plan-ish path. Most real phrasing ("X safe", "is X safe", "can dev rug",
+  // etc.) routes through token_safety/dev_rug_check/lp_lock_check/
   // risk_explanation/token_ape_risk/token_full_report/dev_rug_history instead — exactly the same
   // "dominant legacy cascade never got the fix" pattern already found and fixed for EVM chains
   // earlier this session. Those branches all assume an EVM 0x address and would either silently
@@ -10299,9 +10299,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // SOLANA-DOMINANT-CASCADE FIX, DISCLOSED (see buildSolanaCreatorAnswer above for the full
   // incident): short-circuit here, before every EVM-only token-address branch below, whenever the
   // parsed address is a real Solana mint and the question is about the token itself (not a wallet
-  // question) — covers "X safe", "is liquidity safe on X", "can dev rug", LP/risk/full-report/rug-
+  // question) — covers "X safe", "can dev rug", LP/risk/full-report/rug-
   // history phrasing, not just the narrow token_scan tool-plan path this already worked on.
-  const SOLANA_TOKEN_INTENTS = new Set(["token_safety", "liquidity_scan", "dev_rug_check", "dev_rug_history", "lp_lock_check", "risk_explanation", "token_ape_risk", "token_full_report", "token_scan"]);
+  // A liquidity request must reach the dedicated liquidity branch below, including for a
+  // Solana mint. That branch renders only LP/liquidity evidence; sending it through this
+  // creator/token-read shortcut produced a full TOKEN READ for an LP-only question.
+  const SOLANA_TOKEN_INTENTS = new Set(["token_safety", "dev_rug_check", "dev_rug_history", "lp_lock_check", "risk_explanation", "token_ape_risk", "token_full_report", "token_scan"]);
   // A plain "who deployed X"/"deployer of X" has no dedicated intent bucket in classifyClarkPrompt
   // at all (it only feeds the liquidity_scan classifier when paired with an LP keyword) — routed.
   // intent comes back "none" for it, so the intent-set check above alone would miss it. Checked
@@ -10342,7 +10345,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       responseStatus: "pending",
     });
     if (!routed.address && routed.symbol) {
-      const resolved = await resolveTokenSymbolToAddress(routed.symbol, liqChain);
+      const resolved = await resolveTokenSymbolToAddress(routed.symbol, liqChain, { requireExplicitSelection: true });
       liqAudit.resolverSource = "token_resolve";
       liqAudit.matchesCount = resolved?.matchesCount ?? 0;
       if (resolved?.status === "ambiguous" && Array.isArray(resolved.matches) && resolved.matches.length > 1) {
@@ -10472,7 +10475,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     updateMemIntent(sessionMem, "liquidity_scan");
     const tokenHref = `/terminal/token-scanner?contract=${encodeURIComponent(routed.address)}${runChain === "base" ? "" : `&chain=${runChain === "ethereum" ? "eth" : runChain}`}`;
     return {
-      feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: [runChain === "solana" ? "solana_token_scanner" : "liquidity_analyze"],
+      feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["liquidity_analyze"],
       analysis: lpAnalysis,
       intentBadge: "liquidity_scan",
       actions: [
@@ -11146,7 +11149,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     };
   }
 
-  async function resolveTokenSymbolToAddress(sym: string, preferChain: string = "base"): Promise<{ address: string; name: string; symbol: string; status: "resolved" | "not_found" | "timed_out" | "ambiguous"; confidence?: string; chain?: string; matches?: ClarkLiquidityMatch[]; matchesCount?: number } | null> {
+  async function resolveTokenSymbolToAddress(sym: string, preferChain: string = "base", options?: { requireExplicitSelection?: boolean }): Promise<{ address: string; name: string; symbol: string; status: "resolved" | "not_found" | "timed_out" | "ambiguous"; confidence?: string; chain?: string; matches?: ClarkLiquidityMatch[]; matchesCount?: number } | null> {
     if (/^0x[a-fA-F0-9]{40}$/.test(sym.trim())) return { address: sym.trim(), name: sym, symbol: sym, status: "resolved", confidence: "high", chain: preferChain, matchesCount: 1 };
     if (isValidSolanaMintAddress(sym.trim())) return { address: sym.trim(), name: sym, symbol: sym, status: "resolved", confidence: "high", chain: "solana", matchesCount: 1 };
     const prefer = preferChain === "ethereum" ? "eth" : preferChain;
@@ -11159,7 +11162,12 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       return status && /timeout|abort|timed_out/i.test(status) ? { address: "", name: sym, symbol: sym.toUpperCase(), status: "timed_out", matchesCount: 0 } : null;
     }
     const j = (res.json ?? {}) as Record<string, unknown>;
-    const candidates = Array.isArray(j.candidates) ? j.candidates as Array<Record<string, unknown>> : Array.isArray(j.alternates) ? j.alternates as Array<Record<string, unknown>> : [];
+    // /api/resolve returns the chosen result as bestCandidate and alternatives separately.
+    // Include both before deciding whether an LP name lookup is safe to auto-resolve.
+    const candidates = [
+      ...(j.bestCandidate && typeof j.bestCandidate === "object" ? [j.bestCandidate as Record<string, unknown>] : []),
+      ...(Array.isArray(j.candidates) ? j.candidates as Array<Record<string, unknown>> : Array.isArray(j.alternates) ? j.alternates as Array<Record<string, unknown>> : []),
+    ];
     const matches: ClarkLiquidityMatch[] = candidates.map((c) => ({
       address: String(c.contractAddress ?? c.address ?? ""),
       chainSlug: String(c.chainId ?? c.chain ?? "base").toLowerCase(),
@@ -11173,6 +11181,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       const ch = m.chainSlug === "eth" ? "ethereum" : m.chainSlug;
       return ch === preferNorm || (preferNorm === "base" && ch.includes("base"));
     });
+    if (options?.requireExplicitSelection) {
+      const requested = sym.trim().replace(/^\$/, "").toUpperCase();
+      const exactMatches = matches.filter((m) => m.symbol.toUpperCase() === requested || m.name?.trim().toUpperCase() === requested);
+      const uniqueExact = Array.from(new Map(exactMatches.map((m) => [`${m.chainSlug.toLowerCase()}:${m.address.toLowerCase()}`, m])).values());
+      if (uniqueExact.length > 1) {
+        return { address: "", name: sym, symbol: sym.toUpperCase(), status: "ambiguous", matches: uniqueExact, matchesCount: uniqueExact.length };
+      }
+    }
     if (!preferChain || preferChain === "base") {
       const exact = preferMatches
         .filter((c) => c.symbol.toUpperCase() === sym.toUpperCase())
