@@ -6,13 +6,17 @@ import fs from 'node:fs'
 import {
   formatClarkLiquidityCheck,
   formatClarkLiquidityFollowup,
+  formatClarkLiquidityLockFollowup,
   isLiquidityStrengthFollowupPrompt,
+  isLiquidityLockFollowupPrompt,
   mapEvmLiquiditySafetyPayload,
   mapSolanaLiquidityPayload,
 } from '../lib/server/clarkLiquidityCheck.ts'
 import {
   classifyClarkPrompt,
   classifyTokenFollowupKind,
+  formatFastTokenRead,
+  formatLpLockCheck,
   formatTokenAnalystFollowup,
   formatTokenSafetyAnswer,
   formatWalletScanResult,
@@ -51,6 +55,13 @@ function evmPayload(overrides = {}) {
   assert.equal(isLiquidityStrengthFollowupPrompt('is that enough liquidity'), true)
   assert.equal(isLiquidityStrengthFollowupPrompt(`/lp ${ADDR}`), false)
   assert.equal(isLiquidityStrengthFollowupPrompt('is LP locked'), false)
+  assert.equal(isLiquidityLockFollowupPrompt('is LP locked'), true)
+  assert.equal(isLiquidityLockFollowupPrompt('explain LP'), true)
+  assert.equal(isLiquidityLockFollowupPrompt('is it locked?'), true)
+  assert.equal(isLiquidityLockFollowupPrompt(`/lp ${ADDR}`), false)
+  assert.equal(isLiquidityLockFollowupPrompt('is liquidity strong?'), false)
+  assert.equal(isLiquidityLockFollowupPrompt('run LP check'), false)
+  assert.equal(classifyClarkPrompt('is LP locked').intent, 'liquidity_scan')
 }
 
 {
@@ -88,6 +99,21 @@ function evmPayload(overrides = {}) {
 }
 
 {
+  const lock = formatClarkLiquidityLockFollowup(evmPayload())
+  assert.ok(lock.startsWith('LP LOCK READ — AERO'))
+  assert.match(lock, /Is LP locked\?/)
+  assert.match(lock, /Why:/)
+  assert.match(lock, /Verdict:/)
+  assert.match(lock, /Missing evidence:/)
+  assert.match(lock, /concentrated pool/i)
+  assert.doesNotMatch(lock, /^TOKEN READ/m)
+  assert.doesNotMatch(lock, /^LIQUIDITY CHECK/m)
+  assert.doesNotMatch(lock, /technicalDebug/)
+  const full = formatClarkLiquidityCheck(evmPayload())
+  assert.ok(lock.length < full.length, 'lock follow-up should be shorter than the full LP card')
+}
+
+{
   const sol = mapSolanaLiquidityPayload({
     resolvedTokenSymbol: 'BONK',
     marketData: { liquidityUsd: 800_000, primaryDexLabel: 'Raydium', primaryPoolAddress: 'pool1', pairAgeLabel: '42d' },
@@ -98,6 +124,11 @@ function evmPayload(overrides = {}) {
   assert.match(follow, /Solana AMM/)
   assert.doesNotMatch(follow, /erc-?20\s+lp/i)
   assert.doesNotMatch(follow, /owner renounced/i)
+  const lock = formatClarkLiquidityLockFollowup(sol)
+  assert.match(lock, /Is LP locked\?/)
+  assert.match(lock, /Solana AMM|not an EVM LP lock/i)
+  assert.doesNotMatch(lock, /lock\/burn proof is verified/i)
+  assert.doesNotMatch(lock, /owner renounced/i)
 }
 
 {
@@ -179,6 +210,52 @@ function evmPayload(overrides = {}) {
 }
 
 {
+  const fast = formatFastTokenRead({
+    ok: false,
+    token: { name: 'FastCoin', symbol: 'FAST', address: ADDR },
+    market: { price: 0.01, liquidity: 50_000, volume24h: 5_000, change24h: null, marketCap: null },
+    holders: null,
+    lpControl: { status: 'open_check', reason: 'LP lock/burn proof not run in Clark fast mode.', confidence: 'open_check' },
+    security: { honeypot: false, buyTax: null, sellTax: null, ownerRenounced: null, mintable: null, proxy: null, missing: [] },
+  }, 'Base')
+  assert.ok(fast.startsWith('TOKEN READ — fast evidence'))
+  assert.match(fast, /Meaning:/)
+  assert.match(fast, /Next:/)
+  assert.match(fast, /LP: Open Check — full LP proof not run in Clark fast read/)
+  assert.match(fast, /Holders: Open Check — holder scan not run in Clark fast read/)
+  assert.doesNotMatch(fast, /lp lock\/burn proof confirmed/i)
+  assert.doesNotMatch(fast, /walletScanHealth/)
+}
+
+{
+  const lpMem = formatLpLockCheck({
+    ok: true,
+    token: { name: 'Brett', symbol: 'BRETT', address: ADDR },
+    market: { liquidity: 80_000 },
+    holders: null,
+    lpControl: { status: 'unverified' },
+    security: null,
+  }, 'Base')
+  assert.ok(lpMem.startsWith('LP CHECK — BRETT (Base)'))
+  assert.match(lpMem, /^Status: LP proof not confirmed$/m)
+  assert.match(lpMem, /Why:/)
+  assert.match(lpMem, /Meaning:/)
+  assert.match(lpMem, /Next:/)
+  assert.doesNotMatch(lpMem, /lp lock\/burn proof confirmed/i)
+}
+
+{
+  const lpSol = formatLpLockCheck({
+    ok: true,
+    token: { name: 'Bonk', symbol: 'BONK', address: SOL_MINT },
+    market: { liquidity: 90_000 },
+    lpControl: { status: 'locked', reason: 'should not be treated as EVM lock' },
+  }, 'Solana')
+  assert.match(lpSol, /not an EVM-style check on Solana/)
+  assert.doesNotMatch(lpSol, /LP lock\/burn proof confirmed/)
+}
+
+{
   const out = formatWalletScanResult(ADDR, {
     ok: true,
     totalValue: 1234,
@@ -206,6 +283,8 @@ function evmPayload(overrides = {}) {
   const routeSrc = fs.readFileSync(new URL('../app/api/clark/route.ts', import.meta.url), 'utf8')
   assert.match(routeSrc, /isLiquidityStrengthFollowupPrompt\(prompt\)/)
   assert.match(routeSrc, /formatClarkLiquidityFollowup\(check\)/)
+  assert.match(routeSrc, /isLiquidityLockFollowupPrompt\(prompt\)/)
+  assert.match(routeSrc, /formatClarkLiquidityLockFollowup\(check\)/)
   assert.match(routeSrc, /formatClarkLiquidityCheck\(check\)/)
 }
 

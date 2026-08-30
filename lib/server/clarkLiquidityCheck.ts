@@ -620,6 +620,38 @@ export function isLiquidityStrengthFollowupPrompt(prompt: string): boolean {
   return /\b(is\s+(?:the\s+|this\s+|that\s+)?liquidity\s+strong|is\s+that\s+enough\s+liquidity|is\s+(?:the\s+|this\s+)?liquidity\s+(?:good|ok|decent|thin|deep|weak|enough)|how\s+strong\s+is\s+(?:the\s+|this\s+)?liquidity|liquidity\s+strong(?:\s+enough)?|enough\s+liquidity)\b/i.test(t)
 }
 
+/** Follow-ups like "is LP locked?" / "explain LP" — not /lp, not "run LP check". */
+export function isLiquidityLockFollowupPrompt(prompt: string): boolean {
+  const t = String(prompt ?? "").trim()
+  if (!t || /^\/lp\b/i.test(t)) return false
+  if (isLiquidityStrengthFollowupPrompt(t)) return false
+  return /\b(is\s+(?:the\s+|this\s+|that\s+)?(?:lp|liquidity)\s+locked|is\s+it\s+locked|is\s+(?:the\s+|this\s+)?(?:lp|liquidity)\s+burned|lock\s+proof|burn\s+proof|explain\s+(?:the\s+)?(?:lp|liquidity)|can\s+(?:the\s+)?(?:lp|liquidity)\s+be\s+pulled|who\s+controls\s+(?:the\s+)?(?:lp|liquidity))\b/i.test(t)
+}
+
+function lockFollowupLead(result: ClarkLiquidityCheckResult): string {
+  if (result.chainSlug === "solana") {
+    return "Not as an EVM LP lock. Solana AMM liquidity has no ERC-20 lock/burn proof in this engine."
+  }
+  if (result.chainSlug === "robinhood") {
+    return "Not as an EVM LP lock. Robinhood pool models do not have ERC-20 LP lock/burn proof."
+  }
+  if (isConcentratedPool(result)) {
+    return "Not applicable — this is a concentrated pool, not a locked LP token."
+  }
+  const lock = publicLockBurnLabel(result.lockBurnStatus, result.chainSlug)
+  const t = `${result.lockBurnStatus ?? ""} ${result.controllerStatus ?? ""}`.toLowerCase()
+  if (lock === "verified" || ((/locked|burned/.test(t)) && result.status === "verified" && !/unverified|not confirmed|unsupported/.test(t))) {
+    return "Yes — LP lock/burn proof is verified on current evidence."
+  }
+  if (/wallet[_\s-]?controlled|team[_\s-]?controlled/.test(t)) {
+    return "No — LP appears wallet/team controlled, not locked."
+  }
+  if (result.status === "unavailable") {
+    return "Not confirmed — liquidity/LP evidence was not returned."
+  }
+  return "Not confirmed — LP lock/burn proof was not verified in this pass."
+}
+
 export function formatClarkLiquidityCheck(result: ClarkLiquidityCheckResult): string {
   const liq = formatUsdLiquidity(result.liquidityUsd)
   const vol = formatUsdLiquidity(result.volume24hUsd ?? null)
@@ -722,6 +754,64 @@ export function formatClarkLiquidityFollowup(result: ClarkLiquidityCheckResult):
     ...(poolAddr ? [`- Pool address: ${poolAddr}`] : []),
     `- Pool age: ${result.poolAge && String(result.poolAge).trim() ? result.poolAge : "unknown"}`,
     `- LP/control: ${lpControl}`,
+    `- Exit risk: ${result.exitRisk}`,
+    `- Confidence: ${result.confidence}`,
+    ...(risks.length ? ["", "Risks:", ...risks] : []),
+    "",
+    "Missing evidence:",
+    ...missing,
+    "",
+    "Next:",
+    "- Deep Scan Token",
+    "- Check LP",
+    `- ${nextCreator}`,
+    "- Open Token Scanner",
+  ].join("\n")
+}
+
+/** Direct answer for "is LP locked?" / "explain LP" — same evidence as the full LP card, not a second scan. */
+export function formatClarkLiquidityLockFollowup(result: ClarkLiquidityCheckResult): string {
+  const liq = formatUsdLiquidity(result.liquidityUsd)
+  const missing = publicMissingEvidence(result).slice(0, 4).map((s) => `- ${s}`)
+  const lockBurn = publicLockBurnLabel(result.lockBurnStatus, result.chainSlug)
+  const lpControl = result.chainSlug === "solana" || result.chainSlug === "robinhood"
+    ? (result.lockBurnStatus || "unsupported")
+    : lockBurn
+  const controller = publicControllerLabel(result.controllerStatus, result.chainSlug)
+  const poolAddr = result.pairAddress ?? result.primaryPool
+  const nextCreator = result.chainSlug === "solana" ? "Check Creator" : "Check Deployer"
+  const risks = result.risks.slice(0, 3).map((s) => `- ${s}`)
+  const why = (() => {
+    if (result.chainSlug === "solana") {
+      return "Solana uses AMM pool liquidity, not an ERC-20 LP token that can be locked or burned. Control/lock proof stays unsupported here."
+    }
+    if (result.chainSlug === "robinhood") {
+      return "Robinhood pool models do not expose EVM-style LP lock/burn proof, so lock status cannot be confirmed from this engine."
+    }
+    if (isConcentratedPool(result)) {
+      return "Concentrated liquidity does not mint a standard LP token. Exit risk follows positions and depth, not a burned LP token."
+    }
+    if (lpControl === "verified") {
+      return "Lock/burn evidence is verified, which lowers rug-pull exit risk relative to an unlocked pool. Depth still matters for exits."
+    }
+    return `LP/control is ${lpControl}. Exit risk is ${result.exitRisk.toLowerCase()} on current evidence — do not treat unverified lock as locked.`
+  })()
+  return [
+    `LP LOCK READ — ${result.symbol}`,
+    `Is LP locked? ${lockFollowupLead(result)}`,
+    `Verdict: ${publicVerdictLine(result)}`,
+    "",
+    "Why:",
+    why,
+    "",
+    "Key numbers:",
+    `- Liquidity: ${liq}`,
+    `- Chain: ${chainLabel(result.chainSlug)}`,
+    `- DEX: ${result.dexName ?? "unverified"}`,
+    ...(poolAddr ? [`- Pool address: ${poolAddr}`] : []),
+    `- LP model: ${poolModelLabel(result)}`,
+    `- LP/control: ${lpControl}`,
+    `- Controller: ${controller}`,
     `- Exit risk: ${result.exitRisk}`,
     `- Confidence: ${result.confidence}`,
     ...(risks.length ? ["", "Risks:", ...risks] : []),

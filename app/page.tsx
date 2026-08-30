@@ -1474,9 +1474,9 @@ export default function HomePage() {
                 cta: 'Get Started', ctaStyle: 'outline', border: 'rgba(255,255,255,0.09)', badge: null,
                 bg: 'rgba(10,10,18,0.72)', radius: '14px', pad: '20px 16px 18px', mt: '0',
                 sections: [
-                  { title: 'Token Scanner', items: ['Basic token and liquidity checks', 'No AI verdict'] },
+                  { title: 'Token Scanner', items: ['Basic market data and liquidity depth', 'No AI verdict / risk score'] },
                   { title: 'Clark AI', items: ['5 prompts per day'] },
-                  { title: 'Not Included', items: ['No Wallet Scanner', 'No Pump Alerts', 'No Whale Alerts', 'No Base Radar'] },
+                  { title: 'Not Included', items: ['No Wallet Scanner', 'No Liquidity Safety', 'No Dev Wallet Detector', 'No Pump Alerts', 'No Whale Alerts', 'No Base Radar', 'No Portfolio'] },
                 ],
               },
               {
@@ -1485,7 +1485,7 @@ export default function HomePage() {
                 cta: 'Pay with Crypto', ctaStyle: 'gradient', border: 'rgba(139,92,246,0.55)', badge: 'MOST POPULAR',
                 bg: 'rgba(12,10,26,0.92)', radius: '14px', pad: '20px 16px 18px', mt: '-8px',
                 sections: [
-                  { title: 'Everything in Free, plus', items: ['Token security, liquidity, holder, tax, LP, and dev-risk analysis where available', 'Wallet Scanner', 'Pump Alerts', 'Whale Alerts', 'Base Radar', 'Clark AI: 50 prompts / day'] },
+                  { title: 'Everything in Free, plus', items: ['Token Scanner — full LP, holder, security, tax, and dev-risk analysis', 'Liquidity Safety', 'Wallet Scanner', 'Dev Wallet Detector', 'Pump Alerts', 'Whale Alerts', 'Base Radar', 'Portfolio', 'Clark AI: 50 prompts per day'] },
                 ],
               },
               {
@@ -1494,7 +1494,7 @@ export default function HomePage() {
                 cta: 'Pay with Crypto', ctaStyle: 'gold', border: 'rgba(251,191,36,0.40)', badge: 'FULL INTELLIGENCE',
                 bg: 'rgba(16,12,4,0.95)', radius: '18px', pad: '24px 22px 20px', mt: '-14px',
                 sections: [
-                  { title: 'Everything in Pro, plus', items: ['Clark AI: unlimited prompts', 'Smart money tracking', 'Advanced whale alerts', 'Priority CORTEX processing', 'Early access to new features'] },
+                  { title: 'Everything in Pro, plus', items: ['Clark AI: 300 prompts per day', 'Faster whale-alert sync than Pro'] },
                 ],
               },
             ].map(plan => {
@@ -1567,7 +1567,7 @@ export default function HomePage() {
                   {isElite && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '10px', padding: '8px 12px', marginBottom: '12px' }}>
                       <span style={{ fontSize: '13px', flexShrink: 0 }}>⭐</span>
-                      <span style={{ fontSize: '11px', fontWeight: 600, color: 'rgba(251,191,36,0.85)', lineHeight: 1.4 }}>Everything in Pro included, plus full CORTEX intelligence.</span>
+                      <span style={{ fontSize: '11px', fontWeight: 600, color: 'rgba(251,191,36,0.85)', lineHeight: 1.4 }}>Everything in Pro, plus 300 Clark prompts per day and faster whale-alert sync.</span>
                     </div>
                   )}
                   {/* CTA */}

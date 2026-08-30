@@ -18,7 +18,7 @@ import { Providers } from './providers'
 import AffiliateRefCapture from '@/components/AffiliateRefCapture'
 // Lazy client wrapper — defers the full chat drawer bundle from the initial page load
 import MobileClarkDrawerLazy from '@/components/MobileClarkDrawerLazy'
-import { wagmiConfig } from '@/lib/wallet'
+import { wagmiConfig, decodeWagmiCookieHeader } from '@/lib/wallet'
 
 const SITE_URL = 'https://www.chainlensai.app'
 const TITLE = 'ChainLens AI — Base Onchain Intelligence Terminal'
@@ -72,7 +72,7 @@ export default async function RootLayout({
   children: React.ReactNode
 }) {
   const headersList = await headers()
-  const cookie = headersList.get('cookie')
+  const cookie = decodeWagmiCookieHeader(headersList.get('cookie'))
   const initialState = cookieToInitialState(wagmiConfig, cookie)
 
   return (

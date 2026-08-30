@@ -3494,7 +3494,21 @@ export function formatFastTokenRead(ev: TokenScanEvidence, chain = "Base"): stri
   const verdictKnown = sec?.honeypot === true;
   lines.push(`- Verdict: ${verdictKnown ? "Avoid — honeypot detected" : "Open Check unless enough evidence exists"}`);
 
+  lines.push("");
+  lines.push("Meaning:");
+  lines.push(verdictKnown
+    ? "Honeypot evidence is enough to avoid this token even in a fast preview. LP proof, holders, and deployer/dev-risk were still not run."
+    : "This is a fast preview. Market identity may be available, but LP proof, holders, and deployer/dev-risk were not run — do not treat this as a full TOKEN READ.");
+  if (hasMarket && mkt?.liquidity != null) {
+    lines.push(`Visible liquidity is ${fmtUsdShort(mkt.liquidity)}, which is market depth only — not lock safety.`);
+  }
+
   lines.push(`- Missing evidence: holders, LP proof, dev-risk require full Token Scanner scan`);
+  lines.push("");
+  lines.push("Next:");
+  lines.push("- Deep Scan Token");
+  lines.push("- Check LP");
+  lines.push("- Open Token Scanner");
   lines.push("CTA: Open Token Scanner");
   return lines.join("\n");
 }
@@ -4158,8 +4172,12 @@ export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string
   const sym = String(ev.token?.symbol ?? "?").toUpperCase();
   const lp = ev.lpControl;
   const mkt = ev.market;
+  const chainIsSolana = /\bsolana\b/i.test(chain);
+  const chainIsRobinhood = /\brobinhood\b/i.test(chain);
 
   const lead = (() => {
+    if (chainIsSolana) return "LP lock proof is not an EVM-style check on Solana";
+    if (chainIsRobinhood) return "LP lock proof is unsupported on this Robinhood pool model";
     if (!lp) return "LP proof not confirmed";
     if (isConcentratedLp(lp)) return "Concentrated liquidity / protocol-specific proof required";
     const s = lp.status ?? "unverified";
@@ -4169,13 +4187,32 @@ export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string
     return "LP proof not confirmed";
   })();
 
+  const meaning = chainIsSolana
+    ? "Solana AMM liquidity is not an ERC-20 LP token. Lock/burn proof does not apply; exit risk follows pool depth and unverified control evidence."
+    : chainIsRobinhood
+    ? "Robinhood pool models do not expose EVM-style LP lock/burn proof. Depth is not the same as lock safety."
+    : isConcentratedLp(lp)
+    ? "This is a concentrated pool, not a locked LP token. Exit risk follows positions and depth, not a burned LP token."
+    : lp?.status === "locked" || lp?.status === "burned"
+    ? "Lock/burn evidence lowers rug-pull exit risk relative to an unlocked pool. Liquidity depth is still a separate exit question."
+    : lp?.status === "wallet_controlled" || lp?.status === "team_controlled"
+    ? "Wallet/team-controlled LP means liquidity can be pulled. Do not treat this as locked."
+    : "LP lock/burn proof was not verified in this pass. Do not treat unverified lock as locked.";
+
   const lines = [
     `LP CHECK — ${sym} (${chain})`,
     `Status: ${lead}`,
     "",
+    "Why:",
+    `- ${lead}`,
+    ...(lp?.reason && !chainIsSolana && !chainIsRobinhood ? [`- ${lp.reason}`] : []),
+    "",
+    "Meaning:",
+    meaning,
+    "",
   ];
 
-  if (isConcentratedLp(lp)) {
+  if (isConcentratedLp(lp) && !chainIsSolana && !chainIsRobinhood) {
     lines.push(`- Primary liquidity: ${concentratedLpPrimary(lp)}`);
     lines.push("- Lock/burn proof: Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.");
     {
@@ -4187,6 +4224,7 @@ export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string
     else lines.push("- Liquidity depth: open check");
     const hasControllerProof = concentratedControllerProofStatus(lp).hasProof;
     lines.push(`- Confidence: ${hasControllerProof ? (lp?.confidence ?? "partial") : "open_check"}`);
+    lines.push("", "Next:", "- Deep Scan Token", "- Check LP", "- Open Token Scanner");
     lines.push("", "CTA: Run LP Check");
     return lines.join("\n");
   }
@@ -4194,14 +4232,16 @@ export function formatLpLockCheck(ev: TokenScanEvidence, chain = "Base"): string
   if (mkt?.liquidity != null) lines.push(`- Liquidity depth: ${fmtUsdShort(mkt.liquidity)} (not the same as lock safety)`);
   else lines.push("- Liquidity depth: open check");
 
-  if (lp?.reason) lines.push(`- Lock/burn detail: ${lp.reason}`);
+  if (lp?.reason && !chainIsSolana && !chainIsRobinhood) lines.push(`- Lock/burn detail: ${lp.reason}`);
   if (lp?.confidence) lines.push(`- Confidence: ${lp.confidence}`);
 
   const missing: string[] = [];
-  if (!lp || lp.status === "unverified") missing.push("LP lock/burn proof");
-  if (!lp?.reason) missing.push("controller/holder identity");
+  if (chainIsSolana || chainIsRobinhood) missing.push("EVM-style LP lock/burn proof (unsupported on this chain)");
+  else if (!lp || lp.status === "unverified") missing.push("LP lock/burn proof");
+  if (!chainIsSolana && !chainIsRobinhood && !lp?.reason) missing.push("controller/holder identity");
   if (missing.length > 0) lines.push(`- Missing: ${missing.join(", ")}`);
 
+  lines.push("", "Next:", "- Deep Scan Token", "- Check LP", "- Open Token Scanner");
   lines.push("", "CTA: Run LP Check / Open Token Scanner")
   return lines.join("\n");
 }
@@ -4295,6 +4335,11 @@ export function formatRiskExplanation(ev: TokenScanEvidence, chain = "Base"): st
   if (openChecks.length > 0) readParts.push("Some evidence is still an open check rather than confirmed safe.");
   lines.push("Read:", readParts.join(" "), "");
 
+  lines.push("Next:");
+  lines.push("- Deep Scan Token");
+  lines.push("- Check LP");
+  lines.push("- Open Token Scanner");
+  lines.push("");
   lines.push("CTA: Open Token Scanner / Run LP Check");
   return lines.join("\n");
 }

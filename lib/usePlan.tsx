@@ -170,7 +170,7 @@ export type ElitePassState = {
   unlocks: string[]
 }
 
-const ELITE_UNLOCKS = ['token-scanner-full', 'wallet-scanner', 'dev-wallet', 'whale-alerts', 'pump-alerts', 'base-radar', 'clark-ai-full', 'liquidity-safety', 'portfolio', 'auto-verdicts', 'advanced-whale-alerts', 'priority-cortex', 'early-access']
+const ELITE_UNLOCKS = ['token-scanner-full', 'wallet-scanner', 'dev-wallet', 'whale-alerts', 'pump-alerts', 'base-radar', 'clark-ai-full', 'liquidity-safety', 'portfolio']
 
 function computeRemaining(expiresAt: string | null): ElitePassState['remaining'] {
   if (!expiresAt) return null
