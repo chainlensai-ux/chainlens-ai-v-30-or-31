@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { useAccount, useConnect, useDisconnect } from 'wagmi'
+import { useAccount, useConnect, useDisconnect, useReconnect } from 'wagmi'
 import { useWeb3Modal } from '@web3modal/wagmi/react'
 import { usePathname } from 'next/navigation'
 import { walletConnectEnabled } from '@/lib/wallet'
@@ -30,6 +30,7 @@ function readLocalWalletState(key = LOCAL_WALLET_KEY): SavedWalletState | null {
     return {
       address: parsed.address,
       connectorId: typeof parsed.connectorId === 'string' ? parsed.connectorId : null,
+      chainId: typeof parsed.chainId === 'number' ? parsed.chainId : null,
       updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : new Date().toISOString(),
     }
   } catch {
@@ -52,6 +53,36 @@ const MANUAL_DISCONNECT_KEY = 'chainlens_wallet_manual_disconnect'
 
 function walletKeyForUser(userId: string | null): string {
   return userId ? `${LOCAL_WALLET_KEY}:${userId}` : LOCAL_WALLET_KEY
+}
+
+function readBestLocalWallet(userId: string | null): SavedWalletState | null {
+  const device = readLocalWalletState(LOCAL_WALLET_KEY)
+  const user = userId ? readLocalWalletState(walletKeyForUser(userId)) : null
+  if (user && device) {
+    const userTs = Date.parse(user.updatedAt) || 0
+    const deviceTs = Date.parse(device.updatedAt) || 0
+    return userTs >= deviceTs ? user : device
+  }
+  return user ?? device
+}
+
+function persistLocalWallet(userId: string | null, state: SavedWalletState | null) {
+  writeLocalWalletState(LOCAL_WALLET_KEY, state)
+  if (userId) writeLocalWalletState(walletKeyForUser(userId), state)
+}
+
+function markManualDisconnect(userId: string | null) {
+  setManualDisconnectFlag(null, true)
+  if (userId) setManualDisconnectFlag(userId, true)
+}
+
+function clearManualDisconnectFlags(userId: string | null) {
+  setManualDisconnectFlag(null, false)
+  if (userId) setManualDisconnectFlag(userId, false)
+}
+
+function shouldSkipAutoRestore(userId: string | null): boolean {
+  return getManualDisconnectFlag(null) || getManualDisconnectFlag(userId)
 }
 
 function getManualDisconnectFlag(userId: string | null): boolean {
@@ -155,6 +186,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   const connectors = dedupeConnectors(allConnectors)
   const filteredConnectors = visibleConnectors(connectors)
   const { disconnect } = useDisconnect()
+  const { reconnectAsync } = useReconnect()
 
   // web3modal.open is populated by WCBridge once it mounts (client-only)
   const openWeb3ModalRef = useRef<(() => void) | null>(null)
@@ -173,7 +205,6 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   const visibilityRecheckCountRef = useRef(0)
   const reconnectButtonUsedRef = useRef(false)
   const reconnectResultRef = useRef<'idle' | 'restored' | 'modal_opened' | 'failed'>('idle')
-  const passiveWcCheckDoneRef = useRef(false)
   const saveAttemptedRef = useRef(false)
   const saveSucceededRef = useRef(false)
   const saveFailureReasonRef = useRef<string | null>(null)
@@ -185,6 +216,8 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
   // stale values captured in its effect closure.
   const isConnectedRef = useRef(false)
   const isReconnectingRef = useRef(false)
+  const MAX_RESTORE_ATTEMPTS = 4
+  const [restoreAttempt, setRestoreAttempt] = useState(0)
 
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -401,15 +434,14 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       const userId = session?.user?.id ?? null
       if (!cancelled) setAuthUserId(userId)
 
-      const key = walletKeyForUser(userId)
-      const local = readLocalWalletState(key)
+      const local = readBestLocalWallet(userId)
       if (!cancelled) setSavedState(local)
 
       if (!session?.access_token) return
       hydrateFromServerAttemptedRef.current = true
       const nextState = await fetchServerWalletState(session.access_token)
       if (!nextState || cancelled) return
-      writeLocalWalletState(key, nextState)
+      persistLocalWallet(userId, nextState)
       if (!cancelled) {
         setSavedState(nextState)
         hydrateFromServerSucceededRef.current = true
@@ -433,21 +465,23 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       }
       if (event === 'SIGNED_OUT') {
         setAuthUserId(null)
-        setSavedState(null)
+        // Wallet connection is independent of account login. Keep the device-linked
+        // wallet so signing out does not force a reconnect.
+        setSavedState(readBestLocalWallet(null))
         return
       }
       if ((event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') && userId && session?.access_token) {
         hydrateFromServerAttemptedRef.current = true
         setAuthUserId(userId)
         reconnectAttemptedRef.current = false
-        const key = walletKeyForUser(userId)
-        const local = readLocalWalletState(key)
+        setRestoreAttempt(0)
+        const local = readBestLocalWallet(userId)
         setSavedState(local)
         const token = session.access_token
         void (async () => {
           const nextState = await fetchServerWalletState(token)
           if (!nextState) return
-          writeLocalWalletState(key, nextState)
+          persistLocalWallet(userId, nextState)
           setSavedState(nextState)
           hydrateFromServerSucceededRef.current = true
         })()
@@ -460,10 +494,10 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     if (!isConnected || !address) return
     const connectorId = connector?.id ?? null
     const nextState: SavedWalletState = { address, connectorId, chainId: chain?.id ?? null, updatedAt: new Date().toISOString() }
-    const key = walletKeyForUser(authUserId)
-    writeLocalWalletState(key, nextState)
+    persistLocalWallet(authUserId, nextState)
     setSavedState(nextState)
-    setManualDisconnectFlag(authUserId, false)
+    clearManualDisconnectFlags(authUserId)
+    setRestoreAttempt(0)
     if (process.env.NODE_ENV !== 'production') {
       console.debug('[ConnectWallet] wallet saved', { address: address.slice(0, 6) + '…', connectorId, chainId: chain?.id ?? null, authUserIdPresent: !!authUserId })
     }
@@ -482,82 +516,48 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
 
   useEffect(() => {
     if (!mounted) return
-    if (reconnectAttemptedRef.current || isConnected || isReconnecting || !savedState) return
-    if (getManualDisconnectFlag(authUserId)) {
+    if (isConnected || isReconnecting) return
+    if (shouldSkipAutoRestore(authUserId)) {
       if (process.env.NODE_ENV !== 'production') {
         console.debug('[ConnectWallet] reconnect skipped — manual disconnect flag set', { authUserIdPresent: !!authUserId })
       }
       return
     }
-    // AUDIT FIX, DISCLOSED (wallet-connection audit): previously fell back to connectors[0] — an
-    // arbitrary guess — whenever the saved connectorId was missing (this happens, e.g. wallet state
-    // hydrated from the server without one). Reconnecting with a blind guess could silently attempt
-    // to connect a different wallet than the one the user actually used. Now skips the silent
-    // reconnect entirely in that case, same as the existing WalletConnect skip below — the user
-    // still sees the normal "Reconnect Wallet" button (showReconnectState), just no auto-attempt.
-    const preferred = savedState.connectorId
-      ? connectors.find(c => c.id === savedState.connectorId || c.name === savedState.connectorId)
-      : null
-    if (!preferred) return
-    // Skip WalletConnect — wagmi's reconnectOnMount handles WC session restore
-    if (isWalletConnect(preferred.id)) return
-    reconnectAttemptedRef.current = true
+    if (restoreAttempt >= MAX_RESTORE_ATTEMPTS) return
+    if (!savedState && !hasLikelyWcSession()) return
+    // Use wagmi reconnect (isReconnecting: true → eth_accounts), never connectAsync.
+    // connectAsync on injected wallets with shimDisconnect calls wallet_requestPermissions,
+    // which needs a user gesture and is why sessions failed to stay restored.
+    const delay = restoreAttempt === 0 ? 250 : 600 * restoreAttempt
     if (process.env.NODE_ENV !== 'production') {
       console.debug('[ConnectWallet] attempting silent reconnect', {
-        connectorId: preferred.id,
-        savedAddress: savedState.address.slice(0, 6) + '…',
+        savedAddress: savedState?.address ? savedState.address.slice(0, 6) + '…' : null,
+        restoreAttempt,
         authUserIdPresent: !!authUserId,
       })
     }
-    void connectAsync({ connector: preferred }).then(() => {
-      if (process.env.NODE_ENV !== 'production') {
-        console.debug('[ConnectWallet] silent reconnect succeeded')
-      }
-    }).catch((err) => {
-      // AUDIT FIX, DISCLOSED (wallet-connection audit): previously this ref stayed `true` forever
-      // on failure, permanently blocking every future silent-reconnect attempt for the rest of the
-      // page session (the only reset was a tab visibility/focus change). A very common real cause
-      // of failure here is simply that the injected provider (window.ethereum) isn't ready yet at
-      // the moment this effect first runs — a transient race, not a permanent condition. Resetting
-      // the ref lets the next legitimate re-render (e.g. wagmi's connectors list updating once the
-      // provider becomes available) retry, instead of requiring the user to switch tabs away and
-      // back before reconnection can ever work again.
-      reconnectAttemptedRef.current = false
-      if (process.env.NODE_ENV !== 'production') {
-        console.debug('[ConnectWallet] silent reconnect failed', { reason: err instanceof Error ? err.message : String(err) })
-      }
-    })
-  }, [mounted, connectAsync, connectors, isConnected, isReconnecting, savedState, authUserId])
-
-  useEffect(() => {
-    if (!mounted) return
-    const savedIsWC = !!savedState?.connectorId && isWalletConnect(savedState.connectorId)
-    if (!savedIsWC || isConnected || isReconnecting || getManualDisconnectFlag(authUserId)) return
-    if (passiveWcCheckDoneRef.current) return
-    const wcConnector = getWalletConnectConnector()
-    if (!wcConnector) return
-    const maybeSession = hasLikelyWcSession()
-    if (!maybeSession) return
-    passiveWcCheckDoneRef.current = true
-    // AUDIT FIX, DISCLOSED (wallet-connection audit): previously fired immediately, racing wagmi's
-    // own reconnectOnMount (which the silent-reconnect effect above already defers to for exactly
-    // this WalletConnect case) — two concurrent connectAsync calls against the same WC session can
-    // conflict. A short delay lets wagmi's own mount-time restore resolve first; isConnected/
-    // isReconnecting are re-checked via refs right before actually attempting, so a stale timer
-    // firing after the state already changed becomes a no-op instead of a duplicate attempt.
     const timer = window.setTimeout(() => {
       if (isConnectedRef.current || isReconnectingRef.current) return
-      void connectAsync({ connector: wcConnector }).then(() => {
-        reconnectResultRef.current = 'restored'
-      }).catch(() => {
+      void reconnectAsync().then((connections) => {
+        if (connections && connections.length > 0) {
+          reconnectResultRef.current = 'restored'
+          if (process.env.NODE_ENV !== 'production') {
+            console.debug('[ConnectWallet] silent reconnect succeeded')
+          }
+          return
+        }
         reconnectResultRef.current = 'failed'
-        // Same reasoning as the silent-reconnect effect's catch above — don't permanently block
-        // retry on a single transient failure.
-        passiveWcCheckDoneRef.current = false
+        setRestoreAttempt(n => n + 1)
+      }).catch((err) => {
+        reconnectResultRef.current = 'failed'
+        setRestoreAttempt(n => n + 1)
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('[ConnectWallet] silent reconnect failed', { reason: err instanceof Error ? err.message : String(err) })
+        }
       })
-    }, 1000)
+    }, delay)
     return () => window.clearTimeout(timer)
-  }, [authUserId, connectAsync, getWalletConnectConnector, hasLikelyWcSession, isConnected, isReconnecting, mounted, savedState])
+  }, [mounted, reconnectAsync, isConnected, isReconnecting, savedState, authUserId, restoreAttempt, hasLikelyWcSession])
 
   useEffect(() => {
     if (!mounted) return
@@ -566,7 +566,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
       if (!visible) return
       visibilityRecheckCountRef.current += 1
       reconnectAttemptedRef.current = false
-      passiveWcCheckDoneRef.current = false
+      setRestoreAttempt(0)
     }
     document.addEventListener('visibilitychange', onVisibleOrFocus)
     window.addEventListener('focus', onVisibleOrFocus)
@@ -580,9 +580,9 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     if (process.env.NODE_ENV === 'production') return
     const isExternalMobileBrowser = isMobileClient && !isMetaMaskMobileBrowser()
     const wcConnector = getWalletConnectConnector()
-    const localWallet = readLocalWalletState(walletKeyForUser(authUserId))
-    const manualDisconnectBlocked = getManualDisconnectFlag(authUserId)
-    const showingSavedReconnectState = !!savedState && !isConnected && !isReconnecting && !manualDisconnectBlocked
+    const localWallet = readBestLocalWallet(authUserId)
+    const manualDisconnectBlocked = shouldSkipAutoRestore(authUserId)
+    const showingSavedReconnectState = !!savedState && !isConnected && !isReconnecting && !manualDisconnectBlocked && restoreAttempt >= MAX_RESTORE_ATTEMPTS
     const debug = {
       authUserId,
       serverWalletFound: !!savedState,
@@ -670,11 +670,11 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
               type="button"
               onClick={() => {
                 disconnect()
-                const disconnectKey = walletKeyForUser(authUserId)
-                writeLocalWalletState(disconnectKey, null)
-                setManualDisconnectFlag(authUserId, true)
+                persistLocalWallet(authUserId, null)
+                markManualDisconnect(authUserId)
                 setSavedState(null)
                 reconnectAttemptedRef.current = false
+                setRestoreAttempt(MAX_RESTORE_ATTEMPTS)
                 if (process.env.NODE_ENV !== 'production') {
                   console.debug('[ConnectWallet] manual disconnect', { authUserIdPresent: !!authUserId })
                 }
@@ -702,7 +702,13 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     )
   }
 
-  if (isReconnecting) {
+  const autoRestoring =
+    !!savedState
+    && !isConnected
+    && !shouldSkipAutoRestore(authUserId)
+    && restoreAttempt < MAX_RESTORE_ATTEMPTS
+
+  if (isReconnecting || autoRestoring) {
     return (
       <button className={className} style={{ ...baseStyle, opacity: 0.85, cursor: 'wait' }} disabled>
         Reconnecting wallet…
@@ -710,7 +716,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
     )
   }
 
-  const showReconnectState = !!savedState && !isConnected && !isReconnecting && !getManualDisconnectFlag(authUserId)
+  const showReconnectState = !!savedState && !isConnected && !isReconnecting && !shouldSkipAutoRestore(authUserId)
   const hasSavedConnector = savedState?.connectorId ? connectors.find(c => c.id === savedState.connectorId || c.name === savedState.connectorId) : null
 
   // ── disconnected — trigger button + modal ─────────────────────────────────
@@ -947,7 +953,7 @@ export default function ConnectWallet({ className, onBeforeOpen }: { className?:
             {savedState?.address.slice(0, 6)}…{savedState?.address.slice(-4)}
           </div>
           <div style={{ fontSize: '10px', color: '#64748b', textAlign: 'center' }}>
-            Wallet saved to your account. Reconnect on this device.
+            Could not restore automatically. Click to reconnect this wallet.
           </div>
         </div>
       )}

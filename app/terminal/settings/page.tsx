@@ -195,6 +195,7 @@ export default function SettingsPage() {
 
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const [savedFiltersCount, setSavedFiltersCount] = useState(0)
+  const savedFiltersExtraRef = useRef<Record<string, unknown>>({})
   const [selectedTerminalTool, setSelectedTerminalTool] = useState<string | null>(null)
   const [onboardingCount, setOnboardingCount] = useState(0)
 
@@ -211,6 +212,7 @@ export default function SettingsPage() {
         selected_terminal_tool: 'settings',
       },
       saved_filters: {
+        ...savedFiltersExtraRef.current,
         whale_alerts: notifWhale,
         pump_alerts: notifPump,
         base_radar_alerts: notifRadar,
@@ -246,8 +248,14 @@ export default function SettingsPage() {
       if (typeof safeFilters.whale_alerts === 'boolean') setNotifWhale(safeFilters.whale_alerts)
       if (typeof safeFilters.pump_alerts === 'boolean') setNotifPump(safeFilters.pump_alerts)
       if (typeof safeFilters.base_radar_alerts === 'boolean') setNotifRadar(safeFilters.base_radar_alerts)
+      const extra = { ...safeFilters }
+      delete extra.whale_alerts
+      delete extra.pump_alerts
+      delete extra.base_radar_alerts
+      savedFiltersExtraRef.current = extra
       setSavedFiltersCount(Object.keys(safeFilters).length)
     } else {
+      savedFiltersExtraRef.current = {}
       setSavedFiltersCount(0)
     }
 
