@@ -83,6 +83,8 @@ export interface WatchItem {
   threshold: string
 }
 
+export type MarketEvidenceSource = 'alert_payload' | 'dexscreener' | 'geckoterminal' | 'token_scanner' | 'internal_snapshot' | 'none'
+
 export interface PumpIntelligenceReport {
   contract: string
   chain: string
@@ -112,7 +114,7 @@ export interface PumpIntelligenceReport {
     txnsSource: 'geckoterminal' | 'dexscreener' | 'none'
     txnsUnavailableReason: string | null
     liquidityUsd: number | null
-    liquiditySource: 'alert_payload' | 'dexscreener' | 'none'
+    liquiditySource: MarketEvidenceSource
     liquidityTrend: EvidenceItem<null>
     volume24hUsd: number | null
     holderCount: number | null
@@ -121,15 +123,18 @@ export interface PumpIntelligenceReport {
     holderUnavailableReason: string | null
     holderTrend: EvidenceItem<null>
     fdvUsd: number | null
-    fdvSource: 'alert_payload' | 'dexscreener' | 'token_scanner' | 'none'
+    fdvSource: MarketEvidenceSource
     marketCapUsd: number | null
-    marketCapSource: 'alert_payload' | 'dexscreener' | 'token_scanner' | 'internal_snapshot' | 'none'
+    marketCapSource: MarketEvidenceSource
     marketCapUnavailableReason: string | null
     ageHours: number | null
     priceChange24h: number | null
     priceChange6h: number | null
     priceChange1h: number | null
     priceChange7d: number | null
+    priceChangeSource: MarketEvidenceSource
+    volumeSource: MarketEvidenceSource
+    ageSource: MarketEvidenceSource
     top1HolderPercent: number | null
     top10HolderPercent: number | null
   }
@@ -146,6 +151,14 @@ export interface PumpIntelligenceReport {
     dataSource: string
   }
   riskAnalysis: RiskFactor[]
+  riskSummary: {
+    riskLevel: 'high' | 'medium' | 'low' | 'unknown'
+    confidence: Confidence
+    risks: string[]
+    goodSigns: string[]
+    missingEvidence: string[]
+    verdict: string
+  }
   killSignals: KillSignal[]
   continuationSignals: ContinuationSignal[]
   historicalSimilarity: { available: false; reason: string }
@@ -155,6 +168,8 @@ export interface PumpIntelligenceReport {
   dataResolutionAudit: PumpReportDataResolutionAudit
   marketDataAudit: PumpReportMarketDataAudit
   pumpReportEvidenceAudit: PumpReportEvidenceAudit
+  pumpMarketCapAudit: PumpMarketCapAudit
+  pumpReportScoreAudit?: PumpReportScoreAudit
 }
 
 export interface PumpAlertInput {
@@ -200,12 +215,12 @@ export interface DexScreenerMarketEvidence {
 export interface ReportMarket {
   priceUsd: number | null
   marketCapUsd: number | null
-  marketCapSource: 'alert_payload' | 'dexscreener' | 'token_scanner' | 'internal_snapshot' | 'none'
+  marketCapSource: MarketEvidenceSource
   marketCapUnavailableReason: string | null
   fdvUsd: number | null
-  fdvSource: 'alert_payload' | 'dexscreener' | 'token_scanner' | 'none'
+  fdvSource: MarketEvidenceSource
   liquidityUsd: number | null
-  liquiditySource: 'alert_payload' | 'dexscreener' | 'none'
+  liquiditySource: MarketEvidenceSource
   volume24hUsd: number | null
   volume6hUsd: number | null
   volume1hUsd: number | null
@@ -219,6 +234,25 @@ export interface ReportMarket {
   pairAgeHours: number | null
   chainSlug: string
   pairAddress: string | null
+}
+
+export interface PumpMarketCapAudit {
+  chainSlug: string
+  tokenAddress: string
+  selectedMarketCap: number | null
+  fdv: number | null
+  source: MarketEvidenceSource
+  didUseFdvAsMarketCap: false
+}
+
+export interface PumpReportScoreAudit {
+  momentumInputs: Record<string, unknown>
+  continuationInputs: Record<string, unknown>
+  pullbackInputs: Record<string, unknown>
+  confidenceInputs: { key: string; label: string; verified: boolean; weight: number }[]
+  missingInputs: string[]
+  finalScores: Record<string, number | string | null>
+  sourceCoverage: Record<string, string>
 }
 
 export interface PumpReportDataResolutionAudit {
@@ -314,6 +348,16 @@ function pick<T = unknown>(obj: Record<string, unknown> | null | undefined, path
     cur = (cur as Record<string, unknown>)[key]
   }
   return (cur ?? null) as T | null
+}
+
+function positiveFinite(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isFinite(n) && n > 0 ? n : null
+}
+
+function finiteNumber(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isFinite(n) ? n : null
 }
 
 export type LiveScoreResult = { score: number | null; evidenceCount: number; parts: string[] }
@@ -448,7 +492,8 @@ export function buildPumpIntelligenceReport(params: {
   snapshotChange14d?: number | null
   snapshotsAttempted?: boolean
   snapshotsSucceeded?: boolean
-  latestSnapshot?: { market_cap_usd: number | null; fdv_usd: number | null } | null
+  latestSnapshot?: { chain?: string; contract?: string; market_cap_usd: number | null; fdv_usd: number | null } | null
+  includeDebugAudit?: boolean
   tokenScannerAttempted?: boolean
   whaleDataAttempted?: boolean
   // HOLDER-EVIDENCE-ENRICHMENT, DISCLOSED (requested: "Pump Report should use every available
@@ -471,7 +516,7 @@ export function buildPumpIntelligenceReport(params: {
     alert, chain, tokenAnalysis, whaleRows, trackedAddresses,
     dexScreenerMarket = null, dexScreenerAttempted = false, dexScreenerSucceeded = false,
     snapshotChange14d = null, snapshotsAttempted = false, snapshotsSucceeded = false,
-    latestSnapshot = null,
+    latestSnapshot = null, includeDebugAudit = false,
     tokenScannerAttempted = tokenAnalysis != null, whaleDataAttempted = true,
     goldRushHolderCount = null, goldRushHolderCountCapped = false, goldRushTop1 = null, goldRushTop10 = null,
     holderProviderChainSupported = false, holderProviderAttempted = false, holderProviderSucceeded = false,
@@ -483,10 +528,18 @@ export function buildPumpIntelligenceReport(params: {
   const poolActivity = pick<Record<string, unknown>>(tokenAnalysis, ['poolActivity'])
   const holderDistribution = pick<Record<string, unknown>>(tokenAnalysis, ['holderDistribution'])
   const holderResolver = pick<Record<string, unknown>>(tokenAnalysis, ['holderResolver'])
-  const holderIntelligence = pick<Record<string, unknown>>(riskEngine, ['holderIntelligence'])
   const smartMoney = pick<Record<string, unknown>>(riskEngine, ['smartMoney'])
   const sniperActivity = pick<Record<string, unknown>>(riskEngine, ['sniperActivity'])
   const lpRisk = pick<Record<string, unknown>>(riskEngine, ['lpRisk'])
+  const marketTrendSnapshot = pick<Record<string, unknown>>(tokenAnalysis, ['marketTrendSnapshot'])
+  const tokenMarketDataSource = pick<string>(tokenAnalysis, ['marketDataSource'])
+  const tokenMarketSource: MarketEvidenceSource = tokenMarketDataSource === 'primary'
+    ? 'geckoterminal'
+    : tokenMarketDataSource === 'fallback'
+      ? 'dexscreener'
+      : 'token_scanner'
+  const trendChanges = pick<Array<Record<string, unknown>>>(marketTrendSnapshot, ['changes']) ?? []
+  const trendChange = (label: string): number | null => finiteNumber(trendChanges.find(row => row.label === label)?.value)
 
   const gtBuys24h = pick<number>(poolActivity, ['buys24h'])
   const gtSells24h = pick<number>(poolActivity, ['sells24h'])
@@ -511,6 +564,13 @@ export function buildPumpIntelligenceReport(params: {
     ? (Date.now() - new Date(pairCreatedAtIso).getTime()) / 3_600_000
     : dexScreenerPairAgeHours
       ?? (alert.tokenAgeDays != null ? alert.tokenAgeDays * 24 : null)
+  const ageSource: MarketEvidenceSource = pairCreatedAtIso
+    ? tokenMarketSource
+    : dexScreenerPairAgeHours != null
+      ? 'dexscreener'
+      : alert.tokenAgeDays != null
+        ? 'alert_payload'
+        : 'none'
   const tokenScannerHolderCount = pick<number>(holderResolver, ['holderCount']) ?? pick<number>(tokenAnalysis, ['holderCount'])
   let holderCount: number | null = tokenScannerHolderCount
   let holderCountCapped = pick<boolean>(tokenAnalysis, ['holderCountCapped']) ?? false
@@ -539,31 +599,63 @@ export function buildPumpIntelligenceReport(params: {
           ? 'Provider unavailable — GoldRush did not return holder data for this token.'
           : 'Not returned — no supported holder provider returned data for this token.'
 
-  const tokenScannerMarketCap = pick<number>(tokenAnalysis, ['marketCap', 'value']) ?? pick<number>(tokenAnalysis, ['marketCapUsd'])
+  // Market Cap accepts only explicit marketCapUsd evidence. Estimated values and FDV are never
+  // eligible for this field. A cached snapshot is accepted only when its own identity matches.
+  const tokenScannerMarketCap = positiveFinite(pick<number>(tokenAnalysis, ['marketCapUsd']))
+  const snapshotIdentityMatches = latestSnapshot != null
+    && (latestSnapshot.chain == null || latestSnapshot.chain.toLowerCase() === chain.toLowerCase())
+    && (latestSnapshot.contract == null || latestSnapshot.contract.toLowerCase() === alert.contract.toLowerCase())
   let marketCapUsd: number | null = null
   let marketCapSource: ReportMarket['marketCapSource'] = 'none'
-  if (alert.marketCapUsd != null) { marketCapUsd = alert.marketCapUsd; marketCapSource = 'alert_payload' }
-  else if (dexScreenerMarket?.marketCapUsd != null) { marketCapUsd = dexScreenerMarket.marketCapUsd; marketCapSource = 'dexscreener' }
-  else if (tokenScannerMarketCap != null) { marketCapUsd = tokenScannerMarketCap; marketCapSource = 'token_scanner' }
-  else if (latestSnapshot?.market_cap_usd != null) { marketCapUsd = latestSnapshot.market_cap_usd; marketCapSource = 'internal_snapshot' }
+  if (positiveFinite(alert.marketCapUsd) != null) { marketCapUsd = positiveFinite(alert.marketCapUsd); marketCapSource = 'alert_payload' }
+  else if (positiveFinite(dexScreenerMarket?.marketCapUsd) != null) { marketCapUsd = positiveFinite(dexScreenerMarket?.marketCapUsd); marketCapSource = 'dexscreener' }
+  else if (tokenScannerMarketCap != null) { marketCapUsd = tokenScannerMarketCap; marketCapSource = tokenMarketSource }
+  else if (snapshotIdentityMatches && positiveFinite(latestSnapshot?.market_cap_usd) != null) { marketCapUsd = positiveFinite(latestSnapshot?.market_cap_usd); marketCapSource = 'internal_snapshot' }
 
   const tokenScannerFdv = pick<number>(tokenAnalysis, ['fdv']) ?? pick<number>(tokenAnalysis, ['fdvUsd'])
   let fdvUsd: number | null = null
   let fdvSource: ReportMarket['fdvSource'] = 'none'
-  if (alert.fdvUsd != null) { fdvUsd = alert.fdvUsd; fdvSource = 'alert_payload' }
-  else if (dexScreenerMarket?.fdvUsd != null) { fdvUsd = dexScreenerMarket.fdvUsd; fdvSource = 'dexscreener' }
-  else if (tokenScannerFdv != null) { fdvUsd = tokenScannerFdv; fdvSource = 'token_scanner' }
+  if (positiveFinite(alert.fdvUsd) != null) { fdvUsd = positiveFinite(alert.fdvUsd); fdvSource = 'alert_payload' }
+  else if (positiveFinite(dexScreenerMarket?.fdvUsd) != null) { fdvUsd = positiveFinite(dexScreenerMarket?.fdvUsd); fdvSource = 'dexscreener' }
+  else if (tokenScannerFdv != null) { fdvUsd = tokenScannerFdv; fdvSource = tokenMarketSource }
 
   const marketCapUnavailableReason = marketCapUsd != null ? null
     : fdvUsd != null ? 'FDV available; circulating supply market cap not verified.'
     : 'No supported provider (alert payload, DexScreener, Token Scanner, or a cached snapshot) returned a verified market cap for this token.'
 
-  let liquidityUsd: number | null = alert.liquidityUsd
-  let liquiditySource: ReportMarket['liquiditySource'] = alert.liquidityUsd != null ? 'alert_payload' : 'none'
-  if (liquidityUsd == null && dexScreenerMarket?.liquidityUsd != null) {
-    liquidityUsd = dexScreenerMarket.liquidityUsd
-    liquiditySource = 'dexscreener'
-  }
+  const tokenLiquidity = positiveFinite(pick<number>(tokenAnalysis, ['liquidityUsd']))
+  const liquidityUsd: number | null = tokenLiquidity ?? positiveFinite(dexScreenerMarket?.liquidityUsd) ?? positiveFinite(alert.liquidityUsd)
+  const liquiditySource: ReportMarket['liquiditySource'] = tokenLiquidity != null
+    ? tokenMarketSource
+    : positiveFinite(dexScreenerMarket?.liquidityUsd) != null
+      ? 'dexscreener'
+      : positiveFinite(alert.liquidityUsd) != null
+        ? 'alert_payload'
+        : 'none'
+
+  const tokenVolume24h = positiveFinite(pick<number>(tokenAnalysis, ['volume24hUsd']))
+  const volume24hUsd = tokenVolume24h ?? positiveFinite(dexScreenerMarket?.volume24hUsd) ?? positiveFinite(alert.volume24hUsd)
+  const volumeSource: MarketEvidenceSource = tokenVolume24h != null
+    ? tokenMarketSource
+    : positiveFinite(dexScreenerMarket?.volume24hUsd) != null
+      ? 'dexscreener'
+      : positiveFinite(alert.volume24hUsd) != null
+        ? 'alert_payload'
+        : 'none'
+
+  const tokenChange24h = trendChange('24h')
+  const tokenChange6h = trendChange('6h')
+  const tokenChange1h = trendChange('1h')
+  const priceChange24h = tokenChange24h ?? finiteNumber(dexScreenerMarket?.priceChange24hPct) ?? finiteNumber(alert.change24h)
+  const priceChange6h = tokenChange6h ?? finiteNumber(dexScreenerMarket?.priceChange6hPct) ?? finiteNumber(alert.change6h)
+  const priceChange1h = tokenChange1h ?? finiteNumber(dexScreenerMarket?.priceChange1hPct) ?? finiteNumber(alert.change1h)
+  const priceChangeSource: MarketEvidenceSource = tokenChange24h != null || tokenChange6h != null || tokenChange1h != null
+    ? tokenMarketSource
+    : dexScreenerMarket?.priceChange24hPct != null || dexScreenerMarket?.priceChange6hPct != null || dexScreenerMarket?.priceChange1hPct != null
+      ? 'dexscreener'
+      : alert.change24h != null || alert.change6h != null || alert.change1h != null
+        ? 'alert_payload'
+        : 'none'
 
   const rugRiskScore = pick<number>(riskEngine, ['rugRiskScore'])
   const rugRiskLabel = pick<string>(riskEngine, ['rugRiskLabel'])
@@ -573,9 +665,20 @@ export function buildPumpIntelligenceReport(params: {
   const change7dOrExact = alert.change7d ?? snapshotChange14d ?? null
   const honeypotResolved = (pick<boolean>(tokenAnalysis, ['honeypot', 'isHoneypot']) ?? pick<boolean>(tokenAnalysis, ['honeypot'])) != null
 
-  const liveMomentum = computeLiveMomentumScore(alert)
-  const liveContinuation = computeLiveContinuationProbability(alert, buys24h, sells24h)
-  const livePullback = computeLivePullbackRisk(alert, tokenAnalysis != null, honeypotResolved)
+  const scoringAlert: PumpAlertInput = {
+    ...alert,
+    change24h: priceChange24h,
+    change6h: priceChange6h,
+    change1h: priceChange1h,
+    volume24hUsd,
+    liquidityUsd,
+    marketCapUsd,
+    fdvUsd,
+    tokenAgeDays: ageHours == null ? alert.tokenAgeDays : ageHours / 24,
+  }
+  const liveMomentum = computeLiveMomentumScore(scoringAlert)
+  const liveContinuation = computeLiveContinuationProbability(scoringAlert, buys24h, sells24h)
+  const livePullback = computeLivePullbackRisk(scoringAlert, tokenAnalysis != null, honeypotResolved)
 
   const buySellRatio = buys24h != null && sells24h != null && sells24h > 0 ? buys24h / sells24h : null
   const cortexMomentum = rugRiskScore != null ? Math.max(0, 100 - rugRiskScore) : null
@@ -616,7 +719,12 @@ export function buildPumpIntelligenceReport(params: {
   let pullbackEvidence = livePullback.parts.length > 0 ? `Live evidence: ${livePullback.parts.join(', ')}.` : 'Insufficient verified signals to estimate pullback risk.'
   const bandRank = { unavailable: -1, low: 0, medium: 1, high: 2 } as const
   if (rugRiskLabel) {
-    const cortexBand: 'high' | 'medium' | 'low' = rugRiskLabel === 'critical' || rugRiskLabel === 'high' ? 'high' : rugRiskLabel === 'watch' ? 'medium' : 'low'
+    const normalizedRiskLabel = rugRiskLabel.toLowerCase()
+    const cortexBand: 'high' | 'medium' | 'low' = normalizedRiskLabel.includes('critical') || normalizedRiskLabel.includes('high')
+      ? 'high'
+      : normalizedRiskLabel.includes('medium') || normalizedRiskLabel.includes('watch')
+        ? 'medium'
+        : 'low'
     if (bandRank[cortexBand] >= bandRank[pullbackRisk]) {
       pullbackRisk = cortexBand
       pullbackRiskScore = rugRiskScore ?? pullbackRiskScore
@@ -636,8 +744,8 @@ export function buildPumpIntelligenceReport(params: {
   // lands at 'medium', never 'unavailable'; txn split/holders/security are "extra" points on top
   // that can push it to 'high'. Bands: 0=unavailable, 1-39=low, 40-69=medium, 70-100=high.
   const confidenceInputs = [
-    { key: 'price_change', label: 'Price change verified', verified: alert.change24h != null, weight: 10 },
-    { key: 'volume', label: 'Volume verified', verified: alert.volume24hUsd != null, weight: 10 },
+    { key: 'price_change', label: 'Price change verified', verified: priceChange24h != null || priceChange6h != null || priceChange1h != null, weight: 10 },
+    { key: 'volume', label: 'Volume verified', verified: volume24hUsd != null, weight: 10 },
     { key: 'liquidity', label: 'Liquidity verified', verified: liquidityUsd != null, weight: 15 },
     { key: 'market_data', label: 'FDV/market cap verified', verified: marketCapUsd != null || fdvUsd != null, weight: 15 },
     { key: 'pool_age', label: 'Pool age verified', verified: ageHours != null, weight: 10 },
@@ -682,16 +790,16 @@ export function buildPumpIntelligenceReport(params: {
       impact: 'medium',
     })
   }
-  if ((alert.volume24hUsd ?? 0) >= 250_000) {
+  if ((volume24hUsd ?? 0) >= 250_000) {
     catalysts.push({
       label: 'Volume expansion',
-      evidence: `24h volume of $${Math.round(alert.volume24hUsd ?? 0).toLocaleString()}.`,
+      evidence: `24h volume of $${Math.round(volume24hUsd ?? 0).toLocaleString()}.`,
       source: 'GeckoTerminal',
       confidence: 'high',
-      impact: (alert.volume24hUsd ?? 0) >= 1_000_000 ? 'high' : 'medium',
+      impact: (volume24hUsd ?? 0) >= 1_000_000 ? 'high' : 'medium',
     })
   }
-  const lpLockStatus = pick<string>(tokenAnalysis, ['liquidityStatus'])
+  const lpLockStatus = pick<string>(tokenAnalysis, ['lpLockStatus'])
   if (lpLockStatus === 'locked' || lpLockStatus === 'burned') {
     catalysts.push({
       label: 'Liquidity secured',
@@ -716,17 +824,15 @@ export function buildPumpIntelligenceReport(params: {
 
   const volume6hUsd = dexScreenerMarket?.volume6hUsd ?? null
   const volume1hUsd = dexScreenerMarket?.volume1hUsd ?? null
-  const priceChange6h = alert.change6h ?? dexScreenerMarket?.priceChange6hPct ?? null
-  const priceChange1h = alert.change1h ?? dexScreenerMarket?.priceChange1hPct ?? null
 
   const marketStructure = {
     buys24h, sells24h, txns24h, buySellRatio, txnsSource, txnsUnavailableReason,
     liquidityUsd, liquiditySource,
     liquidityTrend: { value: null, confidence: 'unavailable' as Confidence, evidence: 'Liquidity is only ever observed as a point-in-time snapshot — no historical liquidity series is stored anywhere in this system.' },
-    volume24hUsd: alert.volume24hUsd, holderCount, holderCountCapped, holderSource, holderUnavailableReason,
+    volume24hUsd, volumeSource, holderCount, holderCountCapped, holderSource, holderUnavailableReason,
     holderTrend: { value: null, confidence: 'unavailable' as Confidence, evidence: 'Holder count is a live snapshot only — no polling job stores historical holder counts to compute growth.' },
     fdvUsd, fdvSource, marketCapUsd, marketCapSource, marketCapUnavailableReason, ageHours,
-    priceChange24h: alert.change24h, priceChange6h, priceChange1h, priceChange7d: change7dOrExact,
+    priceChange24h, priceChange6h, priceChange1h, priceChange7d: change7dOrExact, priceChangeSource, ageSource,
     top1HolderPercent, top10HolderPercent,
   }
   if (holderCount == null) gap(`Holder count unavailable — ${holderUnavailableReason}`)
@@ -736,10 +842,10 @@ export function buildPumpIntelligenceReport(params: {
   if (marketCapUsd == null) gap(`Market cap unavailable — ${marketCapUnavailableReason}`)
 
   const reportMarket: ReportMarket = {
-    priceUsd: alert.priceUsd ?? dexScreenerMarket?.priceUsd ?? null,
+    priceUsd: finiteNumber(pick<number>(tokenAnalysis, ['priceUsd'])) ?? finiteNumber(dexScreenerMarket?.priceUsd) ?? finiteNumber(alert.priceUsd),
     marketCapUsd, marketCapSource, marketCapUnavailableReason, fdvUsd, fdvSource, liquidityUsd, liquiditySource,
-    volume24hUsd: alert.volume24hUsd, volume6hUsd, volume1hUsd,
-    priceChange24hPct: alert.change24h, priceChange6hPct: priceChange6h, priceChange1hPct: priceChange1h,
+    volume24hUsd, volume6hUsd, volume1hUsd,
+    priceChange24hPct: priceChange24h, priceChange6hPct: priceChange6h, priceChange1hPct: priceChange1h,
     buys24h, sells24h, txns24h, buySellRatio, pairAgeHours: ageHours, chainSlug: chain,
     pairAddress: alert.pairAddress ?? null,
   }
@@ -772,8 +878,36 @@ export function buildPumpIntelligenceReport(params: {
 
   const riskAnalysis: RiskFactor[] = []
   const honeypot = pick<boolean>(tokenAnalysis, ['honeypot', 'isHoneypot']) ?? pick<boolean>(tokenAnalysis, ['honeypot'])
-  const sellTax = pick<number>(tokenAnalysis, ['sellTax'])
-  const buyTax = pick<number>(tokenAnalysis, ['buyTax'])
+  const sellTax = pick<number>(tokenAnalysis, ['honeypot', 'sellTax']) ?? pick<number>(tokenAnalysis, ['sellTax'])
+  const buyTax = pick<number>(tokenAnalysis, ['honeypot', 'buyTax']) ?? pick<number>(tokenAnalysis, ['buyTax'])
+  riskAnalysis.push({
+    label: 'Liquidity depth',
+    status: liquidityUsd == null ? 'unknown' : liquidityUsd < 10_000 ? 'confirmed' : liquidityUsd < 30_000 ? 'possible' : 'clear',
+    confidence: liquidityUsd == null ? 'unavailable' : 'high',
+    evidence: liquidityUsd == null ? 'Liquidity depth did not resolve.' : `${Math.round(liquidityUsd).toLocaleString()} USD live liquidity.`,
+    impact: liquidityUsd != null && liquidityUsd < 10_000 ? 'high' : 'medium',
+  })
+  riskAnalysis.push({
+    label: 'Valuation coverage',
+    status: marketCapUsd == null && fdvUsd == null ? 'unknown' : marketCapUsd == null ? 'possible' : 'clear',
+    confidence: marketCapUsd != null ? 'high' : fdvUsd != null ? 'medium' : 'unavailable',
+    evidence: marketCapUsd != null ? `Verified market cap ${Math.round(marketCapUsd).toLocaleString()} USD.` : fdvUsd != null ? `FDV ${Math.round(fdvUsd).toLocaleString()} USD; circulating market cap is not verified.` : 'Neither market cap nor FDV resolved.',
+    impact: 'medium',
+  })
+  riskAnalysis.push({
+    label: 'Pool age',
+    status: ageHours == null ? 'unknown' : ageHours < 6 ? 'confirmed' : ageHours < 24 ? 'possible' : 'clear',
+    confidence: ageHours == null ? 'unavailable' : 'high',
+    evidence: ageHours == null ? 'Pool creation time did not resolve.' : `Pool age ${ageHours < 24 ? `${ageHours.toFixed(1)} hours` : `${(ageHours / 24).toFixed(1)} days`}.`,
+    impact: ageHours != null && ageHours < 6 ? 'high' : 'medium',
+  })
+  riskAnalysis.push({
+    label: 'Sell pressure',
+    status: buySellRatio == null ? 'unknown' : buySellRatio < 0.8 ? 'confirmed' : buySellRatio < 1 ? 'possible' : 'clear',
+    confidence: buySellRatio == null ? 'unavailable' : 'high',
+    evidence: buySellRatio == null ? 'Buy/sell transaction split did not resolve.' : `24h buy/sell ratio ${buySellRatio.toFixed(2)}:1.`,
+    impact: buySellRatio != null && buySellRatio < 0.8 ? 'high' : 'medium',
+  })
   riskAnalysis.push({
     label: 'Liquidity removable',
     status: lpLockStatus === 'locked' || lpLockStatus === 'burned' ? 'clear' : lpLockStatus === 'unlocked' ? 'confirmed' : 'unknown',
@@ -819,7 +953,9 @@ export function buildPumpIntelligenceReport(params: {
   riskAnalysis.push({ label: 'Wash trading', status: 'unsupported', confidence: 'unavailable', evidence: 'Wash-trading detection is not implemented for any chain in this system.', impact: 'medium' })
   riskAnalysis.push({ label: 'Bundle activity', status: 'unsupported', confidence: 'unavailable', evidence: 'Bundle-buy detection is not implemented in this system.', impact: 'low' })
   riskAnalysis.push({ label: 'Bot activity', status: 'unsupported', confidence: 'unavailable', evidence: 'Bot-trading detection is not implemented in this system.', impact: 'low' })
-  const mintStatus = pick<string>(tokenAnalysis, ['ownerStatus'])
+  const ownershipRenounced = pick<boolean>(tokenAnalysis, ['ownership', 'is_renounced'])
+  const ownerAddress = pick<string>(tokenAnalysis, ['ownership', 'owner_address'])
+  const mintStatus = ownershipRenounced === true ? 'renounced' : ownerAddress ? 'held' : null
   riskAnalysis.push({
     label: 'Mint / owner risk',
     status: mintStatus === 'renounced' ? 'clear' : mintStatus ? 'possible' : 'unknown',
@@ -827,6 +963,33 @@ export function buildPumpIntelligenceReport(params: {
     evidence: mintStatus ? `Contract owner status: ${mintStatus}.` : 'Owner/renounce status did not resolve.',
     impact: 'medium',
   })
+
+  const confirmedHighRisk = riskAnalysis.some(row => row.status === 'confirmed' && row.impact === 'high')
+  const materialRisk = riskAnalysis.some(row => row.status === 'confirmed' || (row.status === 'possible' && row.impact === 'high'))
+  const verifiedRiskRows = riskAnalysis.filter(row => row.status !== 'unknown' && row.status !== 'unsupported')
+  const criticalEvidenceMissing = riskAnalysis.some(row =>
+    (row.label === 'Liquidity removable' || row.label === 'Honeypot / sell-blocking' || row.label === 'Holder concentration')
+    && (row.status === 'unknown' || row.status === 'unsupported'))
+  const riskLevel: PumpIntelligenceReport['riskSummary']['riskLevel'] = confirmedHighRisk
+    ? 'high'
+    : materialRisk
+      ? 'medium'
+      : verifiedRiskRows.length > 0 && !criticalEvidenceMissing
+        ? 'low'
+        : 'unknown'
+  const risks = riskAnalysis.filter(row => row.status === 'confirmed' || row.status === 'possible').map(row => row.label)
+  const goodSigns = riskAnalysis.filter(row => row.status === 'clear').map(row => row.label)
+  const missingEvidence = riskAnalysis.filter(row => row.status === 'unknown' || row.status === 'unsupported').map(row => row.label)
+  const riskSummary: PumpIntelligenceReport['riskSummary'] = {
+    riskLevel,
+    confidence: overallConfidence,
+    risks,
+    goodSigns,
+    missingEvidence,
+    verdict: riskLevel === 'unknown'
+      ? 'Risk is unresolved because core evidence is missing.'
+      : `${riskLevel[0].toUpperCase()}${riskLevel.slice(1)} observed risk with ${overallConfidence} evidence confidence.`,
+  }
 
   const killSignals: KillSignal[] = []
   if (whaleSells.length > 0) {
@@ -854,7 +1017,7 @@ export function buildPumpIntelligenceReport(params: {
   const continuationSignals: ContinuationSignal[] = [
     { label: 'Liquidity secured (locked/burned)', status: lpLockStatus === 'locked' || lpLockStatus === 'burned' ? true : lpLockStatus ? false : null, detail: lpLockStatus ? `LP status: ${lpLockStatus}.` : 'Unresolved.' },
     { label: 'Buys outpacing sells (24h)', status: buySellRatio != null ? buySellRatio > 1 : null, detail: buySellRatio != null ? `${buySellRatio.toFixed(2)}:1 ratio.` : 'Unresolved.' },
-    { label: 'Volume expanding', status: (alert.volume24hUsd ?? 0) >= 100_000 ? true : (alert.volume24hUsd != null ? false : null), detail: alert.volume24hUsd != null ? `$${Math.round(alert.volume24hUsd).toLocaleString()} 24h volume.` : 'Unresolved.' },
+    { label: 'Volume expanding', status: (volume24hUsd ?? 0) >= 100_000 ? true : (volume24hUsd != null ? false : null), detail: volume24hUsd != null ? `$${Math.round(volume24hUsd).toLocaleString()} 24h volume.` : 'Unresolved.' },
     { label: 'Whale accumulation present', status: whaleRows.length > 0 ? whaleBuys.length > whaleSells.length : null, detail: whaleRows.length > 0 ? `${whaleBuys.length} buy(s) vs ${whaleSells.length} sell(s) tracked.` : 'No tracked whale activity for this contract.' },
     { label: 'Healthy holder distribution (top 10 < 50%)', status: marketStructure.top10HolderPercent != null ? marketStructure.top10HolderPercent < 50 : null, detail: marketStructure.top10HolderPercent != null ? `${marketStructure.top10HolderPercent.toFixed(1)}%.` : 'Unresolved.' },
     { label: 'Not flagged as honeypot', status: honeypot != null ? !honeypot : null, detail: honeypot != null ? (honeypot ? 'Flagged.' : 'Sell simulation passed.') : 'Unresolved.' },
@@ -893,7 +1056,7 @@ export function buildPumpIntelligenceReport(params: {
       continuationScore, continuationProbability, continuationEvidence,
       pullbackRiskScore, pullbackRisk, pullbackEvidence, confidenceScore, overallConfidence, verdict,
     },
-    catalysts, marketStructure, reportMarket, walletIntelligence, riskAnalysis, killSignals, continuationSignals,
+    catalysts, marketStructure, reportMarket, walletIntelligence, riskAnalysis, riskSummary, killSignals, continuationSignals,
     historicalSimilarity, watchlist, timeline: timeline.slice(0, 30), evidenceGaps,
     dataResolutionAudit: {
       tokenAddress: alert.contract, chainSlug: chain, pairAddress: alert.pairAddress ?? null,
@@ -956,8 +1119,8 @@ export function buildPumpIntelligenceReport(params: {
         snapshotsSucceeded && 'internal_snapshot',
       ].filter((v): v is string => typeof v === 'string'),
       marketCapSource, fdvSource, liquiditySource,
-      volumeSource: alert.volume24hUsd != null ? 'alert_payload' : 'none',
-      ageSource: pairCreatedAtIso ? 'geckoterminal' : dexScreenerPairAgeHours != null ? 'dexscreener' : alert.tokenAgeDays != null ? 'alert_payload' : 'none',
+      volumeSource,
+      ageSource,
       txnSplitSource: txnsSource,
       holderSource,
       securitySource: honeypotResolved ? 'token_scanner' : 'none',
@@ -969,5 +1132,51 @@ export function buildPumpIntelligenceReport(params: {
       confidenceInputs,
       finalConfidence: overallConfidence,
     },
+    pumpMarketCapAudit: {
+      chainSlug: chain,
+      tokenAddress: alert.contract,
+      selectedMarketCap: marketCapUsd,
+      fdv: fdvUsd,
+      source: marketCapSource,
+      didUseFdvAsMarketCap: false,
+    },
+    ...(includeDebugAudit ? {
+      pumpReportScoreAudit: {
+        momentumInputs: {
+          priceChange1h, priceChange6h, priceChange24h, volume24hUsd, liquidityUsd,
+          cortexRiskScore: rugRiskScore, evidenceCount: liveMomentum.evidenceCount,
+        },
+        continuationInputs: {
+          priceChange1h, priceChange6h, priceChange24h, volume24hUsd, liquidityUsd,
+          buys24h, sells24h, points: liveContinuation.points, maxPoints: liveContinuation.maxPoints,
+        },
+        pullbackInputs: {
+          priceChange24h, liquidityUsd, volume24hUsd, ageHours, marketCapUsd, fdvUsd,
+          lpEvidenceAvailable: lpLockStatus != null, securityEvidenceAvailable: honeypotResolved,
+        },
+        confidenceInputs,
+        missingInputs: confidenceInputs.filter(input => !input.verified).map(input => input.key),
+        finalScores: {
+          momentumScore,
+          continuationScore,
+          continuationProbability: continuationProbability === 'unavailable' ? null : continuationProbability,
+          pullbackRiskScore,
+          pullbackRisk: pullbackRisk === 'unavailable' ? null : pullbackRisk,
+          confidenceScore,
+        },
+        sourceCoverage: {
+          price: priceChangeSource,
+          volume: volumeSource,
+          liquidity: liquiditySource,
+          marketCap: marketCapSource,
+          fdv: fdvSource,
+          age: ageSource,
+          transactions: txnsSource,
+          holders: holderSource,
+          security: honeypotResolved ? 'token_scanner' : 'none',
+          wallets: whaleRows.length > 0 ? 'whale_monitor' : 'none',
+        },
+      },
+    } : {}),
   }
 }

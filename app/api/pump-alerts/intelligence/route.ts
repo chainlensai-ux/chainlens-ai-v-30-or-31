@@ -27,15 +27,20 @@ function getIp(req: Request): string {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url)
   const contract = (searchParams.get('contract') ?? '').trim()
-  const chain = (searchParams.get('chain') ?? 'base').trim().toLowerCase()
+  const rawChain = (searchParams.get('chain') ?? 'base').trim().toLowerCase()
+  if (rawChain !== 'base' && rawChain !== 'eth' && rawChain !== 'robinhood') {
+    return NextResponse.json({ error: 'Unsupported chain.' }, { status: 400 })
+  }
+  const chain: PumpChainSlug = rawChain
   if (!contract) return NextResponse.json({ error: 'contract is required' }, { status: 400 })
 
   const auth = req.headers.get('authorization') ?? ''
   const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
   let plan: 'free' | 'pro' | 'elite' = 'free'
+  let userEmail: string | null = null
   if (token) {
     const planData = await getCurrentUserPlanFromBearerToken(token).catch(() => null)
-    if (planData) plan = planData.plan
+    if (planData) { plan = planData.plan; userEmail = planData.email }
   }
   if (plan === 'free') {
     return NextResponse.json({ error: 'Pump Intelligence Reports are included in Pro and Elite.' }, { status: 403 })
@@ -216,10 +221,11 @@ export async function GET(req: Request) {
         supabase
           .from('whale_alerts')
           .select('wallet_address, side, amount_usd, occurred_at')
+          .eq('chain', chain)
           .ilike('token_address', contract)
           .order('occurred_at', { ascending: false })
           .limit(60),
-        supabase.from('tracked_wallets').select('address').eq('is_active', true),
+        supabase.from('tracked_wallets').select('address, chain_slug').eq('is_active', true).eq('chain_slug', chain),
       ])
       if (!alertsRes.error && alertsRes.data) whaleRows = alertsRes.data as WhaleAlertRow[]
       if (!trackedRes.error && trackedRes.data) {
@@ -238,6 +244,9 @@ export async function GET(req: Request) {
     goldRushHolderCount: holderProviderResult.count, goldRushHolderCountCapped: holderProviderResult.countCapped,
     goldRushTop1: holderProviderResult.top1, goldRushTop10: holderProviderResult.top10,
     holderProviderChainSupported, holderProviderAttempted, holderProviderSucceeded,
+    includeDebugAudit: searchParams.get('debug') === 'true'
+      && userEmail != null
+      && new Set((process.env.ADMIN_EMAILS ?? '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean)).has(userEmail.toLowerCase()),
   })
   report.dataResolutionAudit.openedFromAlert = alertPayloadReceived
   report.dataResolutionAudit.alertPayloadReceived = alertPayloadReceived

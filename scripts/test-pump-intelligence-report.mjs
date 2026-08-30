@@ -6,6 +6,12 @@ import {
   computeLiveContinuationProbability,
   computeLivePullbackRisk,
 } from '../lib/server/pumpIntelligence.ts'
+import {
+  buildMomentumWindow,
+  matchesPumpCacheIdentity,
+  pumpCandidateCacheKey,
+  pumpReportCacheKey,
+} from '../lib/pumpReportPresentation.ts'
 
 // PUMP-INTELLIGENCE-REPORT, DISCLOSED: the report's whole premise is "never fabricate evidence,
 // Unknown stays Unknown, separate verified facts from inference." These assertions exist to catch
@@ -159,7 +165,11 @@ assert.ok(new Date(populatedReport.timeline[0].timestamp).getTime() >= new Date(
 
 // GeckoTerminal (via poolActivity) must be preferred over DexScreener when both resolve.
 {
-  const tokenAnalysis = { poolActivity: { buys24h: 80, sells24h: 20, pairCreatedAt: '2026-01-01T00:00:00Z' } }
+  const tokenAnalysis = {
+    marketDataSource: 'primary', liquidityUsd: 91_000, volume24hUsd: 610_000, marketCapUsd: 2_200_000,
+    marketTrendSnapshot: { changes: [{ label: '1h', value: 4 }, { label: '6h', value: 11 }, { label: '24h', value: 33 }] },
+    poolActivity: { buys24h: 80, sells24h: 20, pairCreatedAt: '2026-01-01T00:00:00Z' },
+  }
   const dexScreenerMarket = {
     priceUsd: null, marketCapUsd: null, fdvUsd: null, liquidityUsd: null,
     volume24hUsd: null, volume6hUsd: null, volume1hUsd: null,
@@ -172,6 +182,16 @@ assert.ok(new Date(populatedReport.timeline[0].timestamp).getTime() >= new Date(
   })
   assert.equal(report.marketStructure.buys24h, 80, 'GeckoTerminal poolActivity must win over DexScreener when both resolved')
   assert.equal(report.marketStructure.txnsSource, 'geckoterminal')
+  assert.equal(report.marketStructure.liquidityUsd, 91_000)
+  assert.equal(report.marketStructure.liquiditySource, 'geckoterminal')
+  assert.equal(report.marketStructure.volume24hUsd, 610_000)
+  assert.equal(report.marketStructure.volumeSource, 'geckoterminal')
+  assert.equal(report.marketStructure.priceChange1h, 4)
+  assert.equal(report.marketStructure.priceChange6h, 11)
+  assert.equal(report.marketStructure.priceChange24h, 33)
+  assert.equal(report.marketStructure.priceChangeSource, 'geckoterminal')
+  assert.equal(report.marketStructure.marketCapUsd, 2_200_000)
+  assert.equal(report.pumpMarketCapAudit.source, 'geckoterminal')
 }
 
 // Missing txns shows unavailable with the required reason (never called a generic failure).
@@ -222,6 +242,8 @@ assert.ok(new Date(populatedReport.timeline[0].timestamp).getTime() >= new Date(
   const routeCode = routeSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
   assert.match(routeCode, /result\.data\.chainId && result\.data\.chainId !== expectedChainId/, 'route must reject a DexScreener pair whose own chainId does not match the requested chain')
   assert.match(routeCode, /DEXSCREENER_CHAIN_ID/, 'route must map each supported chain to its real DexScreener chain id before trusting a pair')
+  assert.match(routeCode, /from\('whale_alerts'\)[\s\S]*?\.eq\('chain', chain\)[\s\S]*?\.ilike\('token_address', contract\)/, 'wallet evidence must be filtered by chain and token together')
+  assert.match(routeCode, /from\('tracked_wallets'\)[\s\S]*?\.eq\('chain_slug', chain\)/, 'tracked-wallet matching must be chain strict')
 }
 
 // Wallet Intelligence collapse — UI-level static assertion (no DOM renderer in this harness).
@@ -229,7 +251,9 @@ assert.ok(new Date(populatedReport.timeline[0].timestamp).getTime() >= new Date(
   const pageSrc = fs.readFileSync(new URL('../app/terminal/pump-alerts/report/page.tsx', import.meta.url), 'utf8')
   const pageCode = pageSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
   assert.match(pageCode, /report\.walletIntelligence\.eventCount === 0/, 'Wallet Intelligence must check for zero events to decide whether to collapse')
-  assert.match(pageCode, /Wallet-level buyer\/seller evidence not available for this chain\/provider yet\./, 'collapsed Wallet Intelligence must show the specific required message')
+  assert.match(pageCode, /Wallet evidence unavailable for this chain\/provider/, 'wallet empty state must identify the unavailable evidence scope')
+  assert.match(pageCode, /Buyer\/seller wallets not returned/, 'wallet empty state must state what was not returned')
+  assert.match(pageCode, /Confidence reduced/, 'wallet empty state must disclose the confidence impact')
   assert.match(pageCode, /unsupported: '#475569'/, 'RiskFactor status colors must cover the unsupported state')
   assert.match(pageCode, /unsupported: 'Unsupported'/, 'RiskFactor status labels must render Unsupported, not a generic Unknown')
 }
@@ -253,7 +277,8 @@ assert.ok(new Date(populatedReport.timeline[0].timestamp).getTime() >= new Date(
   // Report button calls router.push immediately without awaiting the report API.
   assert.match(alertsPageCode, /function openReportForAlert\(router: PumpAlertsRouter, prefetched: Set<string>, alert: PumpAlert\) \{/, 'openReportForAlert must exist as the click handler entry point')
   assert.doesNotMatch(alertsPageCode, /await fetch\(`\/api\/pump-alerts\/intelligence[\s\S]{0,200}router\.push/, 'openReportForAlert must never await the report API before navigating')
-  assert.match(alertsPageCode, /sessionStorage\.setItem\(reportSeedKey\(alert\.chain, alert\.contract\)/, 'the full card payload must be written to sessionStorage before navigating')
+  assert.match(alertsPageCode, /sessionStorage\.setItem\(pumpReportCacheKey\(alert\.chain, alert\.contract\)/, 'the full card payload must be written to the chain-scoped report cache before navigating')
+  assert.match(alertsPageCode, /sessionStorage\.setItem\(pumpCandidateCacheKey\(alert\.chain, alert\.contract, alert\.pairAddress\)/, 'the card payload must also be available from the chain+token+pair candidate cache')
   assert.match(alertsPageCode, /router\.push\(url\)/, 'router.push must be called synchronously in the click handler')
 
   // Prefetch on hover.
@@ -276,18 +301,18 @@ assert.ok(new Date(populatedReport.timeline[0].timestamp).getTime() >= new Date(
   // when no seed is available (a direct/shared report link).
   const reportPageSrc = fs.readFileSync(new URL('../app/terminal/pump-alerts/report/page.tsx', import.meta.url), 'utf8')
   const reportPageCode = reportPageSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
-  assert.match(reportPageCode, /function readSeedFromSession\(chain: string, contract: string\): ReportSeed \| null/, 'report page must read the sessionStorage seed')
+  assert.match(reportPageCode, /function readReportCache\(chain: string, contract: string, pairAddress: string \| null\)/, 'report page must read the chain-strict session cache')
   assert.match(reportPageCode, /function readSeedFromParams\(params: URLSearchParams\): ReportSeed \| null/, 'report page must fall back to URL params when no seed is available')
-  assert.match(reportPageCode, /readSeedFromSession\(chain, contract\) \?\? readSeedFromParams\(params\)/, 'session seed must be tried first, URL params as the fallback — never the other way around')
-  assert.match(reportPageCode, /const \[seed\] = useState<ReportSeed \| null>\(\(\) => \{/, 'the seed must be read synchronously via a lazy useState initializer so it is available on the very first render')
-  assert.match(reportPageCode, /\{contract && loading && seed && <SeedShell seed=\{seed\} \/>\}/, 'the seed shell must render while the full report is still loading, whenever a seed exists')
+  assert.match(reportPageCode, /const \[initialCache\] = useState\(\(\) => contract/, 'the cache must be read synchronously so it is available on first render')
+  assert.match(reportPageCode, /initialCache\.seed \?\? readSeedFromParams\(params\)/, 'the URL payload must remain the fallback when no stored candidate exists')
+  assert.match(reportPageCode, /\{contract && loading && !visibleReport && visibleSeed && <SeedShell seed=\{visibleSeed\} \/>\}/, 'the identity-checked seed shell must render while the full report is still loading')
   assert.match(reportPageCode, /Loading deeper evidence…/, 'the seed shell must show the required loading copy while the full report enriches in the background')
-  assert.match(reportPageCode, /\{contract && loading && !seed && <div className=\{styles\.loading\}/, 'the bare skeleton must remain as the fallback only when there is truly no seed')
+  assert.match(reportPageCode, /\{contract && loading && !visibleReport && !visibleSeed && <div className=\{styles\.loading\}/, 'the bare skeleton must remain as the fallback only when there is truly no same-chain report or seed')
 
   // Report enrichment updates data after load — the existing fetch effect still runs regardless of
   // whether a seed was available, and still replaces the shell with the full ReportView on success.
   assert.match(reportPageCode, /const res = await fetch\(`\/api\/pump-alerts\/intelligence\?\$\{qs\.toString\(\)\}`/, 'the background enrichment call must still run')
-  assert.match(reportPageCode, /\{contract && !loading && !error && report && <ReportView report=\{report\} \/>\}/, 'the full report must replace the shell once the API call completes')
+  assert.match(reportPageCode, /\{contract && visibleReport && <ReportView report=\{visibleReport\} \/>\}/, 'a same-chain cached or enriched report must render without waiting for enrichment')
 
   // Navigation-settled audit carries the full requested shape.
   assert.match(reportPageCode, /\[pumpReportNavigationAudit:settled\]/, 'a settled navigation audit must be logged once the API call finishes')
@@ -362,9 +387,9 @@ const dexScreenerMarketFull = (overrides = {}) => ({
 // Token Scanner (tier 4/5) and internal snapshot (tier 6) both work as real fallbacks, in order.
 {
   const alert = { ...baseAlert, marketCapUsd: null, fdvUsd: null }
-  const tokenAnalysis = { marketCap: { value: 4_100_000 } }
+  const tokenAnalysis = { marketCapUsd: 4_100_000 }
   const report = buildPumpIntelligenceReport({ alert, chain: 'base', tokenAnalysis, whaleRows: [], trackedAddresses: new Set() })
-  assert.equal(report.marketStructure.marketCapUsd, 4_100_000, 'Token Scanner market.marketCapUsd must be a real fallback tier')
+  assert.equal(report.marketStructure.marketCapUsd, 4_100_000, 'Token Scanner marketCapUsd must be a real fallback tier')
   assert.equal(report.marketStructure.marketCapSource, 'token_scanner')
 }
 {
@@ -485,6 +510,75 @@ const dexScreenerMarketFull = (overrides = {}) => ({
   assert.equal(audit.seedUsed, true, 'seedUsed must reflect that the alert payload carried real evidence')
   assert.equal(audit.finalConfidence, report.executiveSummary.overallConfidence)
   assert.ok(audit.sourcesAttempted.includes('alert_payload'))
+}
+
+// ─── Data-first cleanup regression suite ───────────────────────────────────────────────────────
+{
+  const momentum = buildMomentumWindow({ change1h: 8, change6h: 19, change24h: 31 })
+  assert.equal(momentum.title, 'Momentum Window')
+  assert.equal(momentum.strongestWindow, '24h')
+  assert.equal(momentum.strongestChange, 31)
+  assert.equal(momentum.label, 'Strong momentum')
+  assert.deepEqual(momentum.windows.map(row => row.window), ['1h', '6h', '24h'])
+
+  const only24h = buildMomentumWindow({ change1h: null, change6h: null, change24h: 12 })
+  assert.equal(only24h.title, '24h Momentum')
+  assert.equal(buildMomentumWindow({ change1h: null, change6h: null, change24h: null }), null)
+  assert.equal(buildMomentumWindow({ change1h: -3, change6h: 5, change24h: 40 }).label, 'Cooling')
+}
+
+// Cache identity is always chain + token, and candidate identity additionally includes the pair.
+{
+  assert.equal(pumpReportCacheKey('BASE', '0xAbC'), 'pumpReport:base:0xabc')
+  assert.equal(pumpCandidateCacheKey('BASE', '0xAbC', '0xPaIr'), 'pumpCandidate:base:0xabc:0xpair')
+  const cached = { chain: 'base', contract: '0xabc', pairAddress: '0xpair' }
+  assert.equal(matchesPumpCacheIdentity(cached, { chainSlug: 'base', tokenAddress: '0xabc', pairAddress: '0xpair' }), true)
+  assert.equal(matchesPumpCacheIdentity(cached, { chainSlug: 'eth', tokenAddress: '0xabc', pairAddress: '0xpair' }), false, 'wrong-chain cache must be rejected')
+  assert.equal(matchesPumpCacheIdentity(cached, { chainSlug: 'base', tokenAddress: '0xabc', pairAddress: '0xother' }), false, 'wrong-pair candidate cache must be rejected')
+}
+
+// FDV is never accepted as Market Cap, and the exact audit proves that invariant.
+{
+  const alert = { ...baseAlert, marketCapUsd: null, fdvUsd: 7_500_000 }
+  const report = buildPumpIntelligenceReport({ alert, chain: 'base', tokenAnalysis: { marketCap: { value: 7_500_000 } }, whaleRows: [], trackedAddresses: new Set() })
+  assert.equal(report.marketStructure.marketCapUsd, null, 'legacy/estimated marketCap.value must not enter canonical marketCapUsd')
+  assert.deepEqual(report.pumpMarketCapAudit, {
+    chainSlug: 'base', tokenAddress: alert.contract, selectedMarketCap: null, fdv: 7_500_000,
+    source: 'none', didUseFdvAsMarketCap: false,
+  })
+}
+
+// Cached snapshots are accepted only for the exact requested chain/token identity.
+{
+  const alert = { ...baseAlert, marketCapUsd: null, fdvUsd: null }
+  const wrongChain = buildPumpIntelligenceReport({
+    alert, chain: 'base', tokenAnalysis: null, whaleRows: [], trackedAddresses: new Set(),
+    latestSnapshot: { chain: 'eth', contract: alert.contract, market_cap_usd: 9_000_000, fdv_usd: null },
+  })
+  assert.equal(wrongChain.marketStructure.marketCapUsd, null, 'wrong-chain internal snapshot must be rejected')
+}
+
+// Score audit is opt-in only; public/default reports never expose it.
+{
+  const publicReport = buildPumpIntelligenceReport({ alert: baseAlert, chain: 'base', tokenAnalysis: null, whaleRows: [], trackedAddresses: new Set() })
+  assert.equal(publicReport.pumpReportScoreAudit, undefined)
+  const debugReport = buildPumpIntelligenceReport({ alert: baseAlert, chain: 'base', tokenAnalysis: null, whaleRows: [], trackedAddresses: new Set(), includeDebugAudit: true })
+  assert.ok(debugReport.pumpReportScoreAudit)
+  for (const field of ['momentumInputs', 'continuationInputs', 'pullbackInputs', 'confidenceInputs', 'missingInputs', 'finalScores', 'sourceCoverage']) {
+    assert.ok(field in debugReport.pumpReportScoreAudit, `pumpReportScoreAudit must include ${field}`)
+  }
+}
+
+// Public UI suppresses optional unresolved cards and raw provider/debug details.
+{
+  const pageSrc = fs.readFileSync(new URL('../app/terminal/pump-alerts/report/page.tsx', import.meta.url), 'utf8')
+  const pageCode = pageSrc.split('\n').filter(line => !line.trim().startsWith('//')).join('\n')
+  assert.doesNotMatch(pageCode, /label: '7d\/14d change'/, 'unavailable 7d/14d card must be removed')
+  assert.match(pageCode, /buildMomentumWindow/, 'Momentum Window must be derived from the available 1h/6h/24h readings')
+  assert.match(pageCode, /\.filter\(\(metric\).*metric != null/, 'optional unresolved market cards must be filtered out')
+  assert.doesNotMatch(pageCode, /json\.error \?\?/, 'raw API/provider errors must not be copied into the public report UI')
+  assert.match(pageCode, /Market intelligence only — not financial advice\./)
+  assert.match(pageCode, /report\.riskSummary\.missingEvidence/, 'risk UI must preserve important missing evidence')
 }
 
 console.log('test-pump-intelligence-report.mjs: all assertions passed')

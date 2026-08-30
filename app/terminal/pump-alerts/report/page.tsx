@@ -15,12 +15,18 @@ import type {
   PumpIntelligenceReport, Confidence, Catalyst, RiskFactor, KillSignal,
   ContinuationSignal, WalletRow, TimelineEvent, WatchItem,
 } from '@/lib/server/pumpIntelligence'
+import {
+  buildMomentumWindow,
+  matchesPumpCacheIdentity,
+  pumpCandidateCacheKey,
+  pumpReportCacheKey,
+} from '@/lib/pumpReportPresentation'
 import styles from './report.module.css'
 
 // INSTANT-REPORT-NAV FIX, DISCLOSED (reported live: "Clicking Report takes ~4 seconds before route
 // changes... report page should open immediately using the Pump Alert card payload, then enrich in
 // the background"). ReportSeed is the same card payload the Pump Alerts page already writes to
-// sessionStorage (pumpReportSeed:${chain}:${contract}) before it calls router.push — reading it here
+// sessionStorage (pumpReport:${chain}:${contract}) before it calls router.push — reading it here
 // lets this page paint real price/volume/liquidity/FDV/market-cap/age/chain numbers on its very
 // first render, instead of a bare loading skeleton, while the full report enriches in the background.
 type ReportSeed = {
@@ -32,16 +38,31 @@ type ReportSeed = {
   navStartedAt?: number; usedPrefetch?: boolean
 }
 
-function reportSeedKey(chain: string, contract: string): string {
-  return `pumpReportSeed:${chain}:${contract.toLowerCase()}`
-}
-
-function readSeedFromSession(chain: string, contract: string): ReportSeed | null {
-  if (typeof window === 'undefined') return null
+function readReportCache(chain: string, contract: string, pairAddress: string | null): {
+  seed: ReportSeed | null
+  report: PumpIntelligenceReport | null
+} {
+  if (typeof window === 'undefined') return { seed: null, report: null }
   try {
-    const raw = sessionStorage.getItem(reportSeedKey(chain, contract))
-    return raw ? (JSON.parse(raw) as ReportSeed) : null
-  } catch { return null }
+    const reportRaw = sessionStorage.getItem(pumpReportCacheKey(chain, contract))
+    if (reportRaw) {
+      const parsed = JSON.parse(reportRaw) as unknown
+      if (matchesPumpCacheIdentity(parsed, { chainSlug: chain, tokenAddress: contract })) {
+        if (parsed && typeof parsed === 'object' && 'executiveSummary' in parsed) {
+          return { seed: null, report: parsed as PumpIntelligenceReport }
+        }
+        return { seed: parsed as ReportSeed, report: null }
+      }
+    }
+    const candidateRaw = sessionStorage.getItem(pumpCandidateCacheKey(chain, contract, pairAddress))
+    if (candidateRaw) {
+      const parsed = JSON.parse(candidateRaw) as unknown
+      if (matchesPumpCacheIdentity(parsed, { chainSlug: chain, tokenAddress: contract, pairAddress })) {
+        return { seed: parsed as ReportSeed, report: null }
+      }
+    }
+  } catch { /* malformed or unavailable browser cache is ignored */ }
+  return { seed: null, report: null }
 }
 
 // Fallback for a direct/shared report URL that never went through a card click (no sessionStorage
@@ -137,18 +158,18 @@ function shortAddr(a: string): string { return a.length > 12 ? `${a.slice(0, 6)}
 function SeedShell({ seed }: { seed: ReportSeed }) {
   const changeColor = (v: number | null) => v == null ? '#64748b' : v >= 0 ? '#4ade80' : '#f87171'
   const fmtPct = (v: number | null) => v == null ? '—' : `${v >= 0 ? '+' : ''}${v.toFixed(1)}%`
-  const metrics: Array<[string, string, string?]> = [
-    ['Price', seed.priceUsd == null ? '—' : `$${seed.priceUsd < 0.01 ? seed.priceUsd.toPrecision(3) : seed.priceUsd.toFixed(4)}`],
-    ['24h', fmtPct(seed.change24h), changeColor(seed.change24h)],
-    ['6h', fmtPct(seed.change6h), changeColor(seed.change6h)],
-    ['1h', fmtPct(seed.change1h), changeColor(seed.change1h)],
-    ['Volume', fmtUsd(seed.volume24hUsd)],
-    ['Liquidity', fmtUsd(seed.liquidityUsd)],
-    ['Market Cap', seed.marketCapUsd == null ? 'MCap unavailable' : fmtUsd(seed.marketCapUsd)],
-    ['FDV', fmtUsd(seed.fdvUsd)],
-    ['Age', seed.tokenAgeDays == null ? '—' : (seed.tokenAgeDays < 1 ? `${(seed.tokenAgeDays*24).toFixed(1)}h` : `${Math.round(seed.tokenAgeDays)}d`)],
+  const momentum = buildMomentumWindow({ change1h: seed.change1h, change6h: seed.change6h, change24h: seed.change24h })
+  const metrics: Array<[string, string, string?] | null> = [
+    seed.priceUsd == null ? null : ['Price', `$${seed.priceUsd < 0.01 ? seed.priceUsd.toPrecision(3) : seed.priceUsd.toFixed(4)}`],
+    momentum == null ? null : [momentum.title, `${momentum.strongestWindow} ${fmtPct(momentum.strongestChange)}`, changeColor(momentum.strongestChange)],
+    seed.volume24hUsd == null ? null : ['Volume', fmtUsd(seed.volume24hUsd)],
+    seed.liquidityUsd == null ? null : ['Liquidity', fmtUsd(seed.liquidityUsd)],
+    seed.marketCapUsd == null ? null : ['Market Cap', fmtUsd(seed.marketCapUsd)],
+    seed.fdvUsd == null ? null : ['FDV', fmtUsd(seed.fdvUsd)],
+    seed.tokenAgeDays == null ? null : ['Age', seed.tokenAgeDays < 1 ? `${(seed.tokenAgeDays*24).toFixed(1)}h` : `${Math.round(seed.tokenAgeDays)}d`],
     ['Chain', seed.chain.toUpperCase()],
   ]
+  const visibleMetrics = metrics.filter((metric): metric is [string, string, string?] => metric != null)
   return (
     <div className={styles.report}>
       <header className={styles.hero}>
@@ -167,7 +188,7 @@ function SeedShell({ seed }: { seed: ReportSeed }) {
       </header>
       <Section title="Market Structure" subtitle="From the Pump Alert card — live while deeper evidence loads">
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, minmax(0,1fr))', gap: '14px' }}>
-          {metrics.map(([label, value, color]) => (
+          {visibleMetrics.map(([label, value, color]) => (
             <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
               <span style={{ fontSize: '8px', fontWeight: 800, color: '#4a6178', letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>{label}</span>
               <span style={{ fontSize: '13px', fontWeight: 800, color: color ?? '#dce8f2', fontFamily: 'var(--font-plex-mono)' }}>{value}</span>
@@ -207,19 +228,13 @@ function GaugeCard({ label, score, band, reason, inverse = false }: { label: str
   )
 }
 
-// UI STATE FIX, DISCLOSED (requested: "Replace huge 'Provider unavailable' text with smaller state:
-// 'Unavailable' — reason under it"). When a metric is unresolved, the big value slot now always
-// reads the short word "Unavailable" — never a full sentence at metricValue's large font size — and
-// the specific reason (which sources were tried) renders underneath in small text plus a hover
-// tooltip, matching "show source attempts in tooltip/dev audit, not huge UI text."
-function MetricCard({ label, value, delta, status, source, reason }: { label: string; value: string; delta: string; status: string; source: string; reason?: string }) {
+function MetricCard({ label, value, delta, status, source }: { label: string; value: string; delta: string; status: string; source: string }) {
   const color = status === 'Bullish' ? '#4ade80' : status === 'Risk' ? '#f87171' : status === 'Watch' ? '#fbbf24' : '#94a3b8'
-  const unavailable = value === 'Unavailable'
   return (
-    <div className={styles.metricCard} title={reason}>
+    <div className={styles.metricCard}>
       <div className={styles.metricLabel}>{label}</div>
-      <div className={styles.metricValue} style={unavailable ? { fontSize: '13px', color: '#64748b' } : undefined}>{value}</div>
-      <div className={styles.metricDelta}>{unavailable && reason ? reason : delta}</div>
+      <div className={styles.metricValue}>{value}</div>
+      <div className={styles.metricDelta}>{delta}</div>
       <div className={styles.metricFooter}><span style={{ color }}>{status}</span><span>{source}</span></div>
     </div>
   )
@@ -356,43 +371,38 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
     ?? (es.pullbackRisk === 'high' ? pullbackRiskLabel : undefined)
     ?? highProbKill?.label
     ?? 'No confirmed risk'
-  // UI STATE FIX, DISCLOSED: swapped generic "No data"/"Provider unavailable" sentences for the
-  // short "Unavailable" value (see MetricCard) plus the REAL reason from the backend audit — never a
-  // guessed explanation. Market Cap and FDV are always independently sourced and labelled per the
-  // requested fallback order; Market Cap never silently reads the FDV number.
   const txnsSourceLabel = ms.txnsSource === 'geckoterminal' ? 'GeckoTerminal' : ms.txnsSource === 'dexscreener' ? 'DexScreener' : 'None resolved'
   const SOURCE_LABEL: Record<string, string> = {
     alert_payload: 'Pump Alert card', dexscreener: 'DexScreener', token_scanner: 'Token Scanner',
-    internal_snapshot: 'Cached snapshot', goldrush: 'GoldRush', none: 'None resolved',
+    geckoterminal: 'GeckoTerminal', internal_snapshot: 'Cached snapshot', goldrush: 'GoldRush', none: 'None resolved',
   }
+  const momentumWindow = buildMomentumWindow({
+    change1h: ms.priceChange1h,
+    change6h: ms.priceChange6h,
+    change24h: ms.priceChange24h,
+  })
+  const pct = (value: number) => `${value >= 0 ? '+' : ''}${value.toFixed(1)}%`
   const marketMetrics = [
-    // 7d/14d leads the grid: it is the gate this token had to clear to be a Pump Alert at all, so it
-    // is the single most relevant number on the page. Shows an honest "Exact 7d unavailable" rather
-    // than falling back to the 24h figure when the exact-window series didn't resolve — this never
-    // affects the Momentum/Continuation/Pullback scores above, which compute from live evidence.
-    { label: '7d/14d change', value: ms.priceChange7d == null ? 'Unavailable' : `${ms.priceChange7d > 0 ? '+' : ''}${ms.priceChange7d.toFixed(1)}%`, delta: '7d/14d · qualifying gate', status: ms.priceChange7d == null ? 'No data' : ms.priceChange7d >= 0 ? 'Bullish' : 'Risk', source: 'GeckoTerminal OHLCV / snapshots', reason: ms.priceChange7d == null ? 'Exact 7d unavailable — OHLCV and internal snapshots did not resolve.' : undefined },
-    { label: 'Price change', value: ms.priceChange24h == null ? 'Unavailable' : `${ms.priceChange24h > 0 ? '+' : ''}${ms.priceChange24h.toFixed(1)}%`, delta: '24h', status: ms.priceChange24h == null ? 'No data' : ms.priceChange24h >= 0 ? 'Bullish' : 'Risk', source: 'DexScreener / GeckoTerminal' },
-    { label: 'Liquidity', value: ms.liquidityUsd == null ? 'Unavailable' : fmtUsd(ms.liquidityUsd), delta: 'No stored delta', status: ms.liquidityUsd == null ? 'No data' : 'Live', source: SOURCE_LABEL[ms.liquiditySource], reason: ms.liquidityUsd == null ? 'Neither the Pump Alert card nor DexScreener returned liquidity.' : undefined },
-    { label: 'Volume', value: ms.volume24hUsd == null ? 'Unavailable' : fmtUsd(ms.volume24hUsd), delta: '24h total', status: ms.volume24hUsd == null ? 'No data' : 'Live', source: 'GeckoTerminal' },
-    { label: 'Buys / Sells', value: ms.buys24h != null && ms.sells24h != null ? `${ms.buys24h} / ${ms.sells24h}` : 'Unavailable', delta: ms.buySellRatio == null ? 'No ratio' : `${ms.buySellRatio.toFixed(2)}:1 ratio`, status: ms.buySellRatio == null ? 'No data' : ms.buySellRatio > 1 ? 'Bullish' : 'Watch', source: txnsSourceLabel, reason: ms.txnsUnavailableReason ?? undefined },
-    { label: 'Transactions', value: ms.txns24h == null ? 'Unavailable' : ms.txns24h.toLocaleString(), delta: '24h total', status: ms.txns24h == null ? 'No data' : 'Live', source: txnsSourceLabel, reason: ms.txnsUnavailableReason ?? undefined },
-    // FDV is always its own independent card — resolved and sourced separately from Market Cap,
-    // never substituted for it.
-    { label: 'FDV', value: ms.fdvUsd == null ? 'Unavailable' : fmtUsd(ms.fdvUsd), delta: 'Snapshot', status: ms.fdvUsd == null ? 'No data' : 'Live', source: SOURCE_LABEL[ms.fdvSource], reason: ms.fdvUsd == null ? 'No supported provider returned FDV for this token.' : undefined },
-    // MARKET-CAP CARD FIX, DISCLOSED (hard rule: "Do NOT use FDV as market cap unless clearly
-    // labelled"): shows the real marketCapUsd when any of the 6 fallback tiers resolved it, or the
-    // exact required note when only FDV is available — never a silent FDV substitution, never $0.
-    { label: 'Market cap', value: ms.marketCapUsd == null ? 'Unavailable' : fmtUsd(ms.marketCapUsd), delta: 'Snapshot', status: ms.marketCapUsd == null ? 'No data' : 'Live', source: SOURCE_LABEL[ms.marketCapSource], reason: ms.marketCapUnavailableReason ?? undefined },
-    { label: 'Pool age', value: ms.ageHours == null ? 'Unavailable' : fmtAge(ms.ageHours), delta: 'Since creation', status: ms.ageHours == null ? 'No data' : 'Live', source: 'GeckoTerminal / DexScreener' },
-    // HOLDER-CARD FIX, DISCLOSED: source and reason now reflect the real resolved source
-    // (Token Scanner or the GoldRush fallback) instead of a hardcoded label, and carry the exact
-    // reason string from the backend audit (chain-unsupported / provider-unavailable / not-returned)
-    // rather than a bare "Unavailable".
-    { label: 'Holders', value: ms.holderCount == null ? 'Unavailable' : `${ms.holderCount.toLocaleString()}${ms.holderCountCapped ? '+' : ''}`, delta: 'No stored delta', status: ms.holderCount == null ? 'No data' : 'Live', source: SOURCE_LABEL[ms.holderSource], reason: ms.holderUnavailableReason ?? undefined },
-    { label: 'Top holder', value: ms.top1HolderPercent == null ? 'Unavailable' : `${ms.top1HolderPercent.toFixed(1)}%`, delta: 'Supply share', status: ms.top1HolderPercent == null ? 'No data' : ms.top1HolderPercent > 20 ? 'Risk' : 'Live', source: SOURCE_LABEL[ms.holderSource], reason: ms.top1HolderPercent == null ? ms.holderUnavailableReason ?? undefined : undefined },
-    { label: 'Top 10 holders', value: ms.top10HolderPercent == null ? 'Unavailable' : `${ms.top10HolderPercent.toFixed(1)}%`, delta: 'Supply share', status: ms.top10HolderPercent == null ? 'No data' : ms.top10HolderPercent > 50 ? 'Risk' : 'Live', source: SOURCE_LABEL[ms.holderSource], reason: ms.top10HolderPercent == null ? ms.holderUnavailableReason ?? undefined : undefined },
-    { label: 'Buy / sell ratio', value: ms.buySellRatio == null ? 'Unavailable' : `${ms.buySellRatio.toFixed(2)}x`, delta: '24h', status: ms.buySellRatio == null ? 'No data' : ms.buySellRatio > 1 ? 'Bullish' : 'Watch', source: txnsSourceLabel, reason: ms.buySellRatio == null ? ms.txnsUnavailableReason ?? undefined : undefined },
-  ]
+    ms.priceChange24h == null ? null : { label: 'Price change', value: pct(ms.priceChange24h), delta: '24h', status: ms.priceChange24h >= 0 ? 'Bullish' : 'Risk', source: SOURCE_LABEL[ms.priceChangeSource] },
+    momentumWindow == null ? null : {
+      label: momentumWindow.title,
+      value: `${momentumWindow.strongestWindow} ${pct(momentumWindow.strongestChange)}`,
+      delta: momentumWindow.windows.map(row => `${row.window} ${pct(row.change)}`).join(' · '),
+      status: momentumWindow.label === 'Strong momentum' ? 'Bullish' : momentumWindow.label === 'Cooling' ? 'Risk' : 'Watch',
+      source: SOURCE_LABEL[ms.priceChangeSource],
+    },
+    ms.liquidityUsd == null ? null : { label: 'Liquidity', value: fmtUsd(ms.liquidityUsd), delta: 'Current depth', status: 'Live', source: SOURCE_LABEL[ms.liquiditySource] },
+    ms.volume24hUsd == null ? null : { label: 'Volume', value: fmtUsd(ms.volume24hUsd), delta: '24h total', status: 'Live', source: SOURCE_LABEL[ms.volumeSource] },
+    ms.buys24h == null || ms.sells24h == null ? null : { label: 'Buys / Sells', value: `${ms.buys24h} / ${ms.sells24h}`, delta: ms.buySellRatio == null ? '24h split' : `${ms.buySellRatio.toFixed(2)}:1 ratio`, status: ms.buySellRatio != null && ms.buySellRatio > 1 ? 'Bullish' : 'Watch', source: txnsSourceLabel },
+    ms.txns24h == null ? null : { label: 'Transactions', value: ms.txns24h.toLocaleString(), delta: '24h total', status: 'Live', source: txnsSourceLabel },
+    ms.fdvUsd == null ? null : { label: 'FDV', value: fmtUsd(ms.fdvUsd), delta: 'Fully diluted', status: 'Live', source: SOURCE_LABEL[ms.fdvSource] },
+    ms.marketCapUsd == null ? null : { label: 'Market cap', value: fmtUsd(ms.marketCapUsd), delta: 'Verified circulating value', status: 'Live', source: SOURCE_LABEL[ms.marketCapSource] },
+    ms.ageHours == null ? null : { label: 'Pool age', value: fmtAge(ms.ageHours), delta: 'Since creation', status: 'Live', source: SOURCE_LABEL[ms.ageSource] },
+    ms.holderCount == null ? null : { label: 'Holders', value: `${ms.holderCount.toLocaleString()}${ms.holderCountCapped ? '+' : ''}`, delta: 'Current count', status: 'Live', source: SOURCE_LABEL[ms.holderSource] },
+    ms.top1HolderPercent == null ? null : { label: 'Top holder', value: `${ms.top1HolderPercent.toFixed(1)}%`, delta: 'Supply share', status: ms.top1HolderPercent > 20 ? 'Risk' : 'Live', source: SOURCE_LABEL[ms.holderSource] },
+    ms.top10HolderPercent == null ? null : { label: 'Top 10 holders', value: `${ms.top10HolderPercent.toFixed(1)}%`, delta: 'Supply share', status: ms.top10HolderPercent > 50 ? 'Risk' : 'Live', source: SOURCE_LABEL[ms.holderSource] },
+    ms.buySellRatio == null ? null : { label: 'Buy / sell ratio', value: `${ms.buySellRatio.toFixed(2)}x`, delta: '24h', status: ms.buySellRatio > 1 ? 'Bullish' : 'Watch', source: txnsSourceLabel },
+  ].filter((metric): metric is NonNullable<typeof metric> => metric != null)
   return (
     <div className={styles.report}>
       {/* Header */}
@@ -427,11 +437,6 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
       {/* 2. Why It Pumped */}
       <Section title="Why It Pumped" subtitle="Verified catalysts, ranked by impact">
         {sortedCatalysts.length === 0 ? <Empty text="Not detected — no catalyst cleared verification." /> : <div className={styles.catalystGrid}>{sortedCatalysts.map((c, i) => <div key={`${c.label}-${i}`} className={styles.rankedCard}><span className={styles.rank}>#{i + 1}</span><CatalystRow c={c} /></div>)}</div>}
-        <div className={styles.notDetectedGrid}>
-          {!sortedCatalysts.some(c => /liquidity/i.test(c.label)) && <Empty text="Liquidity increase · Not detected" />}
-          {!sortedCatalysts.some(c => /holder/i.test(c.label)) && <Empty text="Holder growth · Not detected" />}
-          {!sortedCatalysts.some(c => /volume/i.test(c.label)) && <Empty text="Volume acceleration · Not detected" />}
-        </div>
       </Section>
 
       {/* 3. Market Structure */}
@@ -446,7 +451,11 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
           single compact line whenever there is truly nothing to show. */}
       {report.walletIntelligence.eventCount === 0 ? (
         <Section title="Wallet Intelligence">
-          <div style={{ fontSize: '11.5px', color: '#64748b' }}>Wallet-level buyer/seller evidence not available for this chain/provider yet.</div>
+          <div style={{ display: 'grid', gap: '7px', fontSize: '11.5px', color: '#94a3b8' }}>
+            <div>○ Wallet evidence unavailable for this chain/provider</div>
+            <div>○ Buyer/seller wallets not returned</div>
+            <div style={{ color: '#fbbf24' }}>○ Confidence reduced</div>
+          </div>
         </Section>
       ) : (
         <Section title="Wallet Intelligence" subtitle={`${report.walletIntelligence.eventCount} verified monitored events`}>
@@ -476,6 +485,14 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
 
       {/* 5. Risk Analysis */}
       <Section title="Risk Analysis">
+        <div className={styles.walletSummary} style={{ marginBottom: '14px' }}>
+          <StatTile label="Risk level" value={report.riskSummary.riskLevel.toUpperCase()} />
+          <StatTile label="Confidence" value={report.riskSummary.confidence.toUpperCase()} />
+          <StatTile label="Risks" value={report.riskSummary.risks.length.toLocaleString()} sub={report.riskSummary.risks.slice(0, 2).join(' · ') || 'None confirmed'} />
+          <StatTile label="Good signs" value={report.riskSummary.goodSigns.length.toLocaleString()} sub={report.riskSummary.goodSigns.slice(0, 2).join(' · ') || 'None verified'} />
+          <StatTile label="Missing evidence" value={report.riskSummary.missingEvidence.length.toLocaleString()} sub={report.riskSummary.missingEvidence.slice(0, 2).join(' · ') || 'Core evidence covered'} />
+        </div>
+        <div style={{ marginBottom: '12px', fontSize: '11px', color: '#94a3b8' }}>{report.riskSummary.verdict}</div>
         <div className={styles.riskGrid}>{report.riskAnalysis.map((r, i) => <RiskRow key={i} r={r} />)}</div>
       </Section>
 
@@ -493,25 +510,17 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
         {report.continuationSignals.map((s, i) => <ContinuationRow key={i} s={s} />)}
       </Section>
 
-      {/* 8. Historical Similarity */}
-      <Section title="Historical Similarity">
-        <Empty text="Not detected · no verified pump-outcome history" />
-      </Section>
-
       {/* 9. Actionable Watchlist */}
       <Section title="Actionable Watchlist">
         {report.watchlist.map((w, i) => <WatchRow key={i} w={w} />)}
       </Section>
 
       {/* 10. Timeline */}
-      <Section title="Timeline" subtitle="Chronological, most recent first">
-        {report.timeline.length === 0 ? <Empty text="No timed events captured for this token yet." /> : report.timeline.map((e, i) => <TimelineRow key={i} e={e} />)}
-        <div className={styles.notDetectedGrid}>
-          <Empty text="Liquidity event · Not timestamped" />
-          <Empty text="Holder milestone · Not timestamped" />
-          <Empty text="Creator movement · Not detected" />
-        </div>
-      </Section>
+      {report.timeline.length > 0 && (
+        <Section title="Timeline" subtitle="Chronological, most recent first">
+          {report.timeline.map((e, i) => <TimelineRow key={i} e={e} />)}
+        </Section>
+      )}
 
       <Section title="Clark Verdict" subtitle="Data shown above · 40-word maximum">
         <ul className={styles.clarkList}>
@@ -520,6 +529,9 @@ function ReportView({ report }: { report: PumpIntelligenceReport }) {
           <li><strong>Watch next:</strong> {report.watchlist[0]?.label ?? 'Fresh evidence'}</li>
         </ul>
       </Section>
+      <div style={{ padding: '4px 2px 18px', fontSize: '9px', color: '#475569', textAlign: 'center', fontFamily: 'var(--font-plex-mono)' }}>
+        Market intelligence only — not financial advice.
+      </div>
     </div>
   )
 }
@@ -530,16 +542,21 @@ function ReportPageInner() {
   const router = useRouter()
   const contract = params.get('contract') ?? ''
   const chain = params.get('chain') ?? 'base'
-  const [report, setReport] = useState<PumpIntelligenceReport | null>(null)
+  const pairAddress = params.get('pairAddress')
+  const queryString = params.toString()
+  const [initialCache] = useState(() => contract
+    ? readReportCache(chain, contract, pairAddress)
+    : { seed: null, report: null })
+  const [report, setReport] = useState<PumpIntelligenceReport | null>(initialCache.report)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   // INSTANT-REPORT-NAV FIX, DISCLOSED: read once, synchronously, on the very first render (lazy
   // useState initializer runs before paint) — sessionStorage first (the full card payload written by
   // the Pump Alerts page right before router.push), URL params as the fallback for a direct/shared
   // report link that never went through a card click.
-  const [seed] = useState<ReportSeed | null>(() => {
+  const [seed, setSeed] = useState<ReportSeed | null>(() => {
     if (!contract) return null
-    return readSeedFromSession(chain, contract) ?? readSeedFromParams(params)
+    return initialCache.seed ?? readSeedFromParams(params)
   })
 
   useEffect(() => {
@@ -547,20 +564,30 @@ function ReportPageInner() {
     let cancelled = false
     const apiStartMs = Date.now()
     async function run() {
+      const currentCache = readReportCache(chain, contract, pairAddress)
+      const navigationSeed = currentCache.seed ?? readSeedFromParams(new URLSearchParams(queryString))
+      setReport(currentCache.report)
+      setSeed(navigationSeed)
       setLoading(true)
       setError(null)
       try {
         const { data: { session } } = await supabase.auth.getSession()
         const token = session?.access_token
-        const qs = new URLSearchParams(params.toString())
+        const qs = new URLSearchParams(queryString)
         const res = await fetch(`/api/pump-alerts/intelligence?${qs.toString()}`, {
           cache: 'no-store',
           headers: token ? { Authorization: `Bearer ${token}` } : {},
         })
         const json = await res.json()
         if (cancelled) return
-        if (!res.ok || json.error) { setError(json.error ?? 'Failed to load report.'); setReport(null) }
-        else setReport(json.report)
+        if (!res.ok || json.error) {
+          setError('Fresh report evidence could not be loaded. Showing the last verified data when available.')
+        } else {
+          setReport(json.report)
+          try {
+            sessionStorage.setItem(pumpReportCacheKey(chain, contract), JSON.stringify(json.report))
+          } catch { /* browser cache is best-effort */ }
+        }
       } catch {
         if (!cancelled) setError('Failed to load report.')
       } finally {
@@ -572,21 +599,25 @@ function ReportPageInner() {
           const now = Date.now()
           console.debug('[pumpReportNavigationAudit:settled]', {
             tokenAddress: contract, chainSlug: chain,
-            clickToReportShellMs: seed?.navStartedAt != null ? apiStartMs - seed.navStartedAt : null,
-            seedPayloadAvailable: seed != null,
-            reportApiStartedMs: seed?.navStartedAt != null ? apiStartMs - seed.navStartedAt : null,
-            reportApiCompletedMs: seed?.navStartedAt != null ? now - seed.navStartedAt : null,
+            clickToReportShellMs: navigationSeed?.navStartedAt != null ? apiStartMs - navigationSeed.navStartedAt : null,
+            seedPayloadAvailable: navigationSeed != null,
+            reportApiStartedMs: navigationSeed?.navStartedAt != null ? apiStartMs - navigationSeed.navStartedAt : null,
+            reportApiCompletedMs: navigationSeed?.navStartedAt != null ? now - navigationSeed.navStartedAt : null,
             blockedNavigation: false,
-            usedPrefetch: seed?.usedPrefetch ?? false,
-            usedSessionSeed: seed != null && seed.navStartedAt != null,
+            usedPrefetch: navigationSeed?.usedPrefetch ?? false,
+            usedSessionSeed: navigationSeed != null && navigationSeed.navStartedAt != null,
           })
         }
       }
     }
     run()
     return () => { cancelled = true }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [contract])
+  }, [chain, contract, pairAddress, queryString])
+
+  const visibleReport = report && report.chain.toLowerCase() === chain.toLowerCase()
+    && report.contract.toLowerCase() === contract.toLowerCase() ? report : null
+  const visibleSeed = seed && seed.chain.toLowerCase() === chain.toLowerCase()
+    && seed.contract.toLowerCase() === contract.toLowerCase() ? seed : null
 
   if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading plan access…</div>
   if (!canAccessFeature(plan, 'pump-alerts')) return <LockedPanel feature="pump-alerts" />
@@ -605,10 +636,10 @@ function ReportPageInner() {
       {/* INSTANT-REPORT-NAV FIX, DISCLOSED: while the full report is still loading, render real
           numbers from the seed immediately instead of a content-free skeleton — falls back to the
           skeleton only when there's truly no seed (sessionStorage unavailable AND no URL params). */}
-      {contract && loading && seed && <SeedShell seed={seed} />}
-      {contract && loading && !seed && <div className={styles.loading} aria-label="Building intelligence report"><div className={styles.loadingCard} /><div className={styles.loadingCard} /><div className={styles.loadingCard} /></div>}
-      {contract && !loading && error && <div className={styles.error}><strong>Report evidence unavailable</strong><br />{error}</div>}
-      {contract && !loading && !error && report && <ReportView report={report} />}
+      {contract && visibleReport && <ReportView report={visibleReport} />}
+      {contract && loading && !visibleReport && visibleSeed && <SeedShell seed={visibleSeed} />}
+      {contract && loading && !visibleReport && !visibleSeed && <div className={styles.loading} aria-label="Building intelligence report"><div className={styles.loadingCard} /><div className={styles.loadingCard} /><div className={styles.loadingCard} /></div>}
+      {contract && !loading && error && !visibleReport && <div className={styles.error}><strong>Report evidence unavailable</strong><br />{error}</div>}
       </div>
     </main>
   )

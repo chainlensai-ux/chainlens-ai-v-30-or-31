@@ -55,7 +55,8 @@ const biggestRisk = topRisk?.label
   ?? highProbKill?.label
   ?? 'No confirmed risk'
 assert.notEqual(biggestRisk, 'No confirmed risk', 'high pullback must not surface "No confirmed risk" as biggest risk')
-assert.equal(biggestRisk, pullbackRiskLabel, 'with no confirmed/possible rows, biggest risk must come from live pullback evidence')
+assert.equal(biggestRisk, 'Liquidity depth', 'the new market-risk audit must promote verified very-thin liquidity above a generic pullback fallback')
+assert.equal(topRisk?.evidence, '5,000 USD live liquidity.', 'the promoted risk must remain backed by exact observed liquidity')
 
 const reportPageSrc = fs.readFileSync(new URL('../app/terminal/pump-alerts/report/page.tsx', import.meta.url), 'utf8')
 const reportPageCode = reportPageSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
