@@ -283,6 +283,65 @@ async function run() {
     process.env.ENABLE_ROBINHOOD_CHAIN = 'true'
   }
 
+  // ── FINAL PHASE 2 VERIFICATION, DISCLOSED (final Robinhood Phase 2 audit task) ───────────────────
+
+  // 2. No DexScreener lookup anywhere in the module uses the literal string "WETH" (or any bare
+  //    symbol) as if it were a contract address — source-level, so this can never silently regress.
+  {
+    const src = fs.readFileSync(new URL('../lib/server/robinhoodWalletScanner.ts', import.meta.url), 'utf8')
+    const codeLines = src.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+    check('no code (outside disclosure comments) ever passes the literal string "WETH" to a DexScreener/price lookup', !/fetchRobinhoodDexscreenerPrice\(\s*['"]WETH['"]/.test(codeLines) && !codeLines.includes("wethLikeSymbol"))
+  }
+
+  // 6/7. UI clearly separates Activity from PnL with the exact required labels, in separate
+  //    elements — never merged into one ambiguous line. ─────────────────────────────────────────
+  {
+    const pageSrc = fs.readFileSync(new URL('../app/terminal/wallet-scanner/page.tsx', import.meta.url), 'utf8')
+    check('UI labels the PnL line exactly "PnL:"', /PnL:\s*\{robinhoodResult\.pnl\.message\}/.test(pageSrc))
+    check('UI labels the activity line exactly "Activity (not PnL):"', pageSrc.includes('Activity (not PnL):'))
+    // The two labels must not appear inside the same JSX element/string — extract each element's
+    // own text and confirm the PnL text never also contains the activity transfer count language.
+    const pnlBlockMatch = pageSrc.match(/PnL:\s*\{robinhoodResult\.pnl\.message\}[\s\S]{0,40}<\/div>/)
+    check('the PnL box never also renders the activity transfer count inline (no ambiguous merge)', pnlBlockMatch != null && !pnlBlockMatch[0].includes('activity.items.length'))
+  }
+
+  // 5. skippedSwapLogs is rendered in the UI whenever > 0, so undecoded DEX activity is visible ────
+  {
+    const pageSrc = fs.readFileSync(new URL('../app/terminal/wallet-scanner/page.tsx', import.meta.url), 'utf8')
+    check('UI renders a line for robinhoodResult.activity.skippedSwapLogs when it is greater than 0', /robinhoodResult\.activity\.skippedSwapLogs\s*>\s*0/.test(pageSrc))
+    check('the skippedSwapLogs UI line never labels the skipped logs as a decoded/verified swap', !/skippedSwapLogs[\s\S]{0,300}verified swap/i.test(pageSrc))
+  }
+
+  // 8. No Robinhood activity is ever treated as verified realized PnL — pnlStatus is unconditionally
+  //    'disabled' no matter what holdings/activity contain, and the UI never derives a PnL number
+  //    from activity items. ──────────────────────────────────────────────────────────────────────
+  {
+    const richActivity = {
+      status: 'ok', wallet: WALLET, chainSlug: 'robinhood',
+      items: Array.from({ length: 50 }, (_, i) => ({ txHash: `0x${i}`, blockTimestamp: null, kind: 'token_transfer', direction: i % 2 === 0 ? 'incoming' : 'outgoing', counterparty: null, tokenAddress: TOKEN_A, tokenSymbol: 'RHT', rawAmount: '1' })),
+      skippedSwapLogs: 20, reason: null, fromCache: false,
+    }
+    const richHoldings = { status: 'ok', wallet: WALLET, chainSlug: 'robinhood', chainId: 4663, native: null, holdings: [{ address: TOKEN_A, symbol: 'RHT', name: null, decimals: 18, rawBalance: '1', uiBalance: 1, priceUsd: 5, priceSource: 'goldrush', valueUsd: 5 }], portfolioTotalUsd: 5, unpricedTokenCount: 0, reason: null, fromCache: false }
+    const audit = buildRobinhoodWalletScannerAudit({ wallet: WALLET, holdings: richHoldings, activity: richActivity, wrongChainCacheRejected: false })
+    check('even with 50 real transfers and priced holdings, pnlStatus stays "disabled" — activity volume never upgrades it', audit.pnlStatus === 'disabled')
+    check('the disabledPnlReason stays the same fixed, honest sentence regardless of how much activity exists', audit.disabledPnlReason === 'No independently-verified Robinhood swap router exists yet, so activity cannot be decoded into buy/sell trades — PnL cannot be computed safely without that.')
+    const pageSrc = fs.readFileSync(new URL('../app/terminal/wallet-scanner/page.tsx', import.meta.url), 'utf8')
+    check('the UI never computes/derives a PnL figure from robinhoodResult.activity.items — pnl only ever comes from robinhoodResult.pnl.message', !/activity\.items[\s\S]{0,120}(realized|pnl|profit)/i.test(pageSrc))
+  }
+
+  // 11. Clark must never describe Robinhood WALLET activity as verified swaps or verified PnL —
+  //    Clark has no integration with the Robinhood Wallet Scanner at all today (a fully separate
+  //    feature), so this is enforced by confirming that isolation stays true, not by checking
+  //    wording in a code path that doesn't exist. If this ever starts failing, it means Clark has
+  //    begun referencing Robinhood wallet-scan data and must be re-audited for honest wording. ────
+  {
+    const clarkRoutingSrc = fs.readFileSync(new URL('../lib/server/clarkRouting.ts', import.meta.url), 'utf8')
+    const clarkRouteSrc = fs.readFileSync(new URL('../app/api/clark/route.ts', import.meta.url), 'utf8')
+    check('Clark routing never imports the Robinhood wallet scanner module', !clarkRoutingSrc.includes('robinhoodWalletScanner'))
+    check('the Clark API route never imports the Robinhood wallet scanner module', !clarkRouteSrc.includes('robinhoodWalletScanner'))
+    check('Clark never references the Robinhood wallet-scan route', !clarkRoutingSrc.includes('wallet-scan/robinhood') && !clarkRouteSrc.includes('wallet-scan/robinhood'))
+  }
+
   console.log(`test-robinhood-wallet-scanner.mjs: all ${passed} assertions passed`)
 }
 
