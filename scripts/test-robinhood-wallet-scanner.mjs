@@ -55,19 +55,32 @@ function mockFetch({ nativeBalanceHex = '0xde0b6b3a7640000', balances = [], tran
 async function run() {
   // ── 1. Robinhood holdings load ────────────────────────────────────────────────────────────────
   {
-    const { fetchImpl } = mockFetch({
+    const { fetchImpl, calls } = mockFetch({
       nativeBalanceHex: '0xde0b6b3a7640000', // 1 ETH
       balances: [
-        { native_token: true, contract_address: 'native', balance: '1000000000000000000' },
+        { native_token: true, contract_address: 'native', balance: '1000000000000000000', quote_rate: 3000 },
         { contract_address: TOKEN_A, contract_ticker_symbol: 'RHT', contract_name: 'Robinhood Token', contract_decimals: 18, balance: '5000000000000000000', quote_rate: 2 },
       ],
-      dexPrice: 3000,
     })
     const result = await resolveRobinhoodWalletHoldings(WALLET, { fetchImpl })
     check('holdings load with status ok', result.status === 'ok')
     check('holdings include the real token balance', result.holdings.length === 1 && result.holdings[0].address === TOKEN_A)
     check('holdings use the real GoldRush quote_rate as price, not a fabricated number', result.holdings[0].priceUsd === 2 && result.holdings[0].priceSource === 'goldrush')
+    check('native ETH price comes from GoldRush\'s own native-token quote_rate, not a guessed lookup', result.native?.priceUsd === 3000 && result.native?.priceSource === 'goldrush')
+    check('resolving native price never calls DexScreener with a fake symbol string (the fixed bug)', calls.dexscreener === 0)
     check('portfolio total is the real sum of native + token value', result.portfolioTotalUsd === (1 * 3000) + (5 * 2))
+  }
+  {
+    // NATIVE-PRICE-HONESTY, DISCLOSED: when GoldRush's own response has no native-token row (or no
+    // rate on it), native price stays null — it must NEVER fall back to a guessed/DexScreener-symbol
+    // lookup (the exact bug this task's audit found and fixed).
+    const { fetchImpl, calls } = mockFetch({
+      nativeBalanceHex: '0xde0b6b3a7640000',
+      balances: [{ contract_address: TOKEN_A, contract_decimals: 18, balance: '1000000000000000000', quote_rate: 1 }],
+    })
+    const result = await resolveRobinhoodWalletHoldings(WALLET, { fetchImpl })
+    check('native ETH price stays honestly null when GoldRush has no native-token row for it', result.native?.priceUsd == null && result.native?.priceSource == null)
+    check('no DexScreener call is ever made to price native ETH', calls.dexscreener === 0)
   }
 
   // ── 2. Robinhood native ETH balance loads ─────────────────────────────────────────────────────
@@ -134,20 +147,41 @@ async function run() {
 
   // ── 5. Unknown Robinhood flows stay unknown — never a buy/sell/swap label anywhere on an
   //    activity item, and any log event that ISN'T a decoded Transfer is simply skipped, not
-  //    guessed into a trade. ────────────────────────────────────────────────────────────────────
+  //    guessed into a trade — but IS counted, not silently discarded (this audit task's own
+  //    "skipped Swap logs are counted in diagnostics" requirement). ────────────────────────────
   {
     const { fetchImpl } = mockFetch({
       transactions: [{
         tx_hash: '0xtx3', block_signed_at: '2025-01-03T00:00:00Z', from_address: WALLET, to_address: '0xffffffffffffffffffffffffffffffffffffff', value: '0',
-        log_events: [{ decoded: { name: 'Swap', params: [] }, sender_address: TOKEN_A, sender_contract_ticker_symbol: 'RHT' }],
+        log_events: [
+          { decoded: { name: 'Swap', params: [] }, sender_address: TOKEN_A, sender_contract_ticker_symbol: 'RHT' },
+          { decoded: { name: 'Mint', params: [] }, sender_address: TOKEN_A, sender_contract_ticker_symbol: 'RHT' },
+        ],
       }],
     })
     const result = await resolveRobinhoodWalletActivity(WALLET, { fetchImpl })
     check('an unrecognized/unverified log event (e.g. a raw Swap event) is never turned into a labeled item', result.items.length === 0)
+    check('skipped Swap/Mint/other unrecognized log events are counted, not silently discarded', result.skippedSwapLogs === 2)
   }
   {
     const holdingsResult = await resolveRobinhoodWalletHoldings(WALLET, { fetchImpl: mockFetch({ balances: [] }).fetchImpl })
     check('no activity item type anywhere in the module schema carries a buy/sell/swap field', !JSON.stringify(holdingsResult).includes('"side"') && !JSON.stringify(holdingsResult).includes('"tradeType"'))
+  }
+  {
+    // A real Transfer alongside an unrecognized Swap log in the SAME tx: the Transfer is still
+    // captured normally, and the Swap is still counted — neither suppresses the other.
+    const { fetchImpl } = mockFetch({
+      transactions: [{
+        tx_hash: '0xtx4', block_signed_at: '2025-01-04T00:00:00Z', from_address: WALLET, to_address: '0xffffffffffffffffffffffffffffffffffffff', value: '0',
+        log_events: [
+          { decoded: { name: 'Swap', params: [] }, sender_address: TOKEN_A, sender_contract_ticker_symbol: 'RHT' },
+          { decoded: { name: 'Transfer', params: [{ name: 'from', value: WALLET }, { name: 'to', value: '0xffffffffffffffffffffffffffffffffffffff' }, { name: 'value', value: '1' }] }, sender_address: TOKEN_A, sender_contract_ticker_symbol: 'RHT' },
+        ],
+      }],
+    })
+    const result = await resolveRobinhoodWalletActivity(WALLET, { fetchImpl })
+    check('a real Transfer log in the same tx as an unrecognized Swap log is still captured', result.items.length === 1 && result.items[0].kind === 'token_transfer')
+    check('the unrecognized Swap log alongside it is still counted', result.skippedSwapLogs === 1)
   }
 
   // ── 6. Swap decoding only marks verified swaps — none exist yet, and the audit says so honestly,
@@ -156,6 +190,24 @@ async function run() {
     const audit = buildRobinhoodWalletScannerAudit({ wallet: WALLET, holdings: null, activity: null, wrongChainCacheRejected: false })
     check('swapDecodeStatus is honestly "not_built", never a fabricated verified/unverified result', audit.swapDecodeStatus === 'not_built')
     check('the audit discloses why swap decoding is not built (no verified router)', audit.unsupportedReasons.some((r) => /verified Robinhood swap router/i.test(r)))
+  }
+  // ── Audit shape, DISCLOSED (this audit task's own required robinhoodWalletScannerAudit fields) ──
+  {
+    const holdings = { status: 'partial', wallet: WALLET, chainSlug: 'robinhood', chainId: 4663, native: { symbol: 'ETH', rawBalance: '1', uiBalance: 1, priceUsd: null, priceSource: null, valueUsd: null }, holdings: [{ address: TOKEN_A, symbol: 'RHT', name: null, decimals: 18, rawBalance: '1', uiBalance: 1, priceUsd: null, priceSource: null, valueUsd: null }], portfolioTotalUsd: null, unpricedTokenCount: 1, reason: 'partial_pricing', fromCache: false }
+    const activity = { status: 'ok', wallet: WALLET, chainSlug: 'robinhood', items: [], skippedSwapLogs: 3, reason: null, fromCache: false }
+    const audit = buildRobinhoodWalletScannerAudit({ wallet: WALLET, holdings, activity, wrongChainCacheRejected: true })
+    for (const field of ['wallet', 'holdingsStatus', 'nativeBalanceStatus', 'tokenBalanceStatus', 'pricingStatus', 'activityStatus', 'skippedSwapLogs', 'unpricedTokenCount', 'pnlStatus', 'disabledPnlReason', 'wrongChainCacheRejected']) {
+      check(`robinhoodWalletScannerAudit carries the required field "${field}"`, field in audit)
+    }
+    check('wallet matches the scanned wallet', audit.wallet === WALLET)
+    check('holdingsStatus reflects the real holdings result', audit.holdingsStatus === 'partial')
+    check('activityStatus reflects the real activity result', audit.activityStatus === 'ok')
+    check('skippedSwapLogs is the real count from activity, not zero when logs were actually skipped', audit.skippedSwapLogs === 3)
+    check('unpricedTokenCount is the real count from holdings', audit.unpricedTokenCount === 1)
+    check('nativeBalanceStatus is real: native balance is present but unpriced -> still "ok" (balance itself loaded)', audit.nativeBalanceStatus === 'ok')
+    check('tokenBalanceStatus is "partial" when a real token balance loaded but could not be priced', audit.tokenBalanceStatus === 'partial')
+    check('pricingStatus is "partial" when at least one holding is unpriced', audit.pricingStatus === 'partial')
+    check('wrongChainCacheRejected reflects the real caller-supplied flag', audit.wrongChainCacheRejected === true)
   }
   {
     // Source-level check: no verified swap router is ever invented in this module.
@@ -173,7 +225,24 @@ async function run() {
   {
     const audit = buildRobinhoodWalletScannerAudit({ wallet: WALLET, holdings: null, activity: null, wrongChainCacheRejected: false })
     check('pnlStatus is always "disabled" — never a computed number, never "verified"', audit.pnlStatus === 'disabled')
+    check('disabledPnlReason is a real, non-empty explanation, not a blank/placeholder string', typeof audit.disabledPnlReason === 'string' && audit.disabledPnlReason.length > 20)
+    check('nothing that never ran is reported as "not_run", never defaulted to a healthy-looking status', audit.holdingsStatus === 'not_run' && audit.activityStatus === 'not_run')
     check('the fixed public PnL message matches the task-required exact wording', formatRobinhoodPnlNotVerifiedMessage() === 'Robinhood PnL not verified yet — activity decoding pending.')
+  }
+
+  // ── Errors show provider unavailable/partial, never a "broken scanner" crash ──────────────────
+  {
+    // A hard network failure on every provider must still resolve to a clean status object, never
+    // throw out of resolveRobinhoodWalletHoldings/Activity.
+    const alwaysThrows = async () => { throw new Error('simulated network failure') }
+    const holdings = await resolveRobinhoodWalletHoldings(WALLET, { fetchImpl: alwaysThrows })
+    check('a total provider outage on holdings resolves to a clean "unavailable" status, never throws', holdings.status === 'unavailable' || holdings.status === 'not_configured')
+    const activity = await resolveRobinhoodWalletActivity(WALLET, { fetchImpl: alwaysThrows })
+    check('a total provider outage on activity resolves to a clean "unavailable" status, never throws', activity.status === 'unavailable' || activity.status === 'not_configured')
+    // A rate-limited (429) response is reported as a real, specific reason, not a generic crash.
+    const rateLimited = async (url) => (String(url).includes('/rpc') ? { ok: true, json: async () => ({ jsonrpc: '2.0', id: 1, result: '0x0' }) } : { ok: false, status: 429 })
+    const rateLimitedHoldings = await resolveRobinhoodWalletHoldings(WALLET, { fetchImpl: rateLimited })
+    check('a rate-limited provider response reports a real reason, not a silent crash or fake success', rateLimitedHoldings.status !== 'ok' && typeof rateLimitedHoldings.reason === 'string')
   }
 
   // ── 9. Base/ETH wallet scans unchanged — this module and its route never import or modify any

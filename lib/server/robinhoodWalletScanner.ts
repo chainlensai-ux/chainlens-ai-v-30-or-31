@@ -89,7 +89,7 @@ export type RobinhoodNativeBalance = {
   rawBalance: string
   uiBalance: number | null
   priceUsd: number | null
-  priceSource: 'dexscreener' | null
+  priceSource: 'goldrush' | null
   valueUsd: number | null
 }
 
@@ -132,6 +132,13 @@ export type RobinhoodWalletActivityResult = {
   wallet: string
   chainSlug: 'robinhood'
   items: RobinhoodActivityItem[]
+  // SKIPPED-LOGS DIAGNOSTIC, DISCLOSED (Phase 1/2 audit follow-up): every decoded log event whose
+  // name is NOT the recognized ERC-20 `Transfer` — most importantly a raw `Swap` event — used to be
+  // silently dropped with no trace at all. It is still never turned into an activity item (no
+  // verified swap-decoding exists — see file header), but it is now counted here so a real DEX
+  // interaction on this wallet is visible in the audit as "N unrecognized logs skipped" rather than
+  // looking identical to a wallet with zero DEX activity at all.
+  skippedSwapLogs: number
   reason: string | null
   fromCache: boolean
 }
@@ -153,21 +160,37 @@ export type RobinhoodWalletSwapDecodeAudit = {
   rejectionReason: string | null
 }
 
+// DISABLED-PNL REASON, DISCLOSED: one fixed, honest sentence — never varies per scan, since the
+// reason PnL is disabled (no verified swap decoding) is a fact about this codebase's current state,
+// not about any particular wallet's data.
+const DISABLED_PNL_REASON = 'No independently-verified Robinhood swap router exists yet, so activity cannot be decoded into buy/sell trades — PnL cannot be computed safely without that.'
+
+export type RobinhoodProviderStatus = 'ok' | 'partial' | 'unavailable' | 'not_configured' | 'not_run'
+
+// AUDIT SHAPE, DISCLOSED (Phase 1/2 audit task — exact required field set): every field here is
+// either a real, measured status/count from this scan, or the one fixed disabled-PnL constant above
+// — nothing here is guessed or defaulted to a "healthy-looking" value when the real answer is
+// unknown (a field that never ran reports 'not_run', not 'ok').
 export type RobinhoodWalletScannerAudit = {
   wallet: string
-  chainId: number
   holdingsStatus: RobinhoodHoldingsStatus | 'not_run'
+  nativeBalanceStatus: RobinhoodProviderStatus
+  tokenBalanceStatus: RobinhoodProviderStatus
+  pricingStatus: RobinhoodProviderStatus
   activityStatus: RobinhoodActivityStatus | 'not_run'
-  // Always 'not_built' today — see file header's Phase 3/4 status. Never 'verified'/'unverified' as
-  // if a real attempt happened, since none has.
-  swapDecodeStatus: 'not_built'
-  // Always 'disabled' today — PnL is never computed until Phase 3+4 land, matching the hard rule
-  // "Do NOT show verified Robinhood PnL until swaps + prices are proven."
-  pricingStatus: 'holdings_only' | 'not_run'
+  skippedSwapLogs: number
+  unpricedTokenCount: number
   pnlStatus: 'disabled'
-  providerCoverage: { goldrush: boolean; dexscreener: boolean; rpc: boolean }
-  unsupportedReasons: string[]
+  disabledPnlReason: string
   wrongChainCacheRejected: boolean
+  // ADDITIVE, DISCLOSED: not in the task's minimum required shape, kept because they carry real
+  // diagnostic value the required fields alone don't — chainId for at-a-glance chain identity,
+  // swapDecodeStatus makes the Phase 3 gate explicit (never 'verified'/'unverified' since no attempt
+  // has run), unsupportedReasons is the human-readable expansion of disabledPnlReason plus any
+  // provider-specific failure reasons for this scan.
+  chainId: number
+  swapDecodeStatus: 'not_built'
+  unsupportedReasons: string[]
 }
 
 export function formatRobinhoodPnlNotVerifiedMessage(): string {
@@ -182,25 +205,55 @@ export function buildRobinhoodWalletScannerAudit(input: {
 }): RobinhoodWalletScannerAudit {
   const unsupportedReasons: string[] = [
     'Robinhood swap decoding is not built — no independently-verified Robinhood swap router exists yet.',
-    'Robinhood PnL is disabled until swap decoding and same-chain historical/current pricing are proven.',
+    DISABLED_PNL_REASON,
   ]
   if (input.holdings?.reason) unsupportedReasons.push(`Holdings: ${input.holdings.reason}`)
   if (input.activity?.reason) unsupportedReasons.push(`Activity: ${input.activity.reason}`)
+
+  // NATIVE/TOKEN-BALANCE-SPECIFIC STATUS, DISCLOSED: holdingsStatus is the combined outcome (native
+  // + token balances + pricing all folded together), which is fine for a top-line status but hides
+  // WHICH leg actually failed. These two split it back out so "native RPC is down but GoldRush token
+  // balances are fine" and "GoldRush is down but RPC native balance worked" are distinguishable —
+  // both real, both measured from the same holdings result, never guessed.
+  const nativeBalanceStatus: RobinhoodProviderStatus = !input.holdings
+    ? 'not_run'
+    : input.holdings.status === 'not_configured'
+      ? 'not_configured'
+      : input.holdings.native != null
+        ? 'ok'
+        : 'unavailable'
+  const tokenBalanceStatus: RobinhoodProviderStatus = !input.holdings
+    ? 'not_run'
+    : input.holdings.status === 'not_configured'
+      ? 'not_configured'
+      : input.holdings.holdings.length > 0
+        ? (input.holdings.unpricedTokenCount > 0 ? 'partial' : 'ok')
+        : 'unavailable'
+  const pricingStatus: RobinhoodProviderStatus = !input.holdings
+    ? 'not_run'
+    : input.holdings.status === 'not_configured'
+      ? 'not_configured'
+      : input.holdings.unpricedTokenCount > 0
+        ? 'partial'
+        : (input.holdings.native?.priceUsd != null || input.holdings.holdings.some((h) => h.priceUsd != null))
+          ? 'ok'
+          : 'unavailable'
+
   return {
     wallet: input.wallet,
-    chainId: ROBINHOOD_CHAIN_ID,
     holdingsStatus: input.holdings?.status ?? 'not_run',
+    nativeBalanceStatus,
+    tokenBalanceStatus,
+    pricingStatus,
     activityStatus: input.activity?.status ?? 'not_run',
-    swapDecodeStatus: 'not_built',
-    pricingStatus: input.holdings ? 'holdings_only' : 'not_run',
+    skippedSwapLogs: input.activity?.skippedSwapLogs ?? 0,
+    unpricedTokenCount: input.holdings?.unpricedTokenCount ?? 0,
     pnlStatus: 'disabled',
-    providerCoverage: {
-      goldrush: input.holdings?.status === 'ok' || input.holdings?.status === 'partial',
-      dexscreener: (input.holdings?.holdings ?? []).some((h) => h.priceSource === 'dexscreener') || input.holdings?.native?.priceSource === 'dexscreener',
-      rpc: input.holdings?.native != null,
-    },
-    unsupportedReasons,
+    disabledPnlReason: DISABLED_PNL_REASON,
     wrongChainCacheRejected: input.wrongChainCacheRejected,
+    chainId: ROBINHOOD_CHAIN_ID,
+    swapDecodeStatus: 'not_built',
+    unsupportedReasons,
   }
 }
 
@@ -314,20 +367,28 @@ export async function resolveRobinhoodWalletHoldings(wallet: string, deps: { fet
 
   let native: RobinhoodNativeBalance | null = null
   if (nativeResult.rawBalance != null) {
-    let nativePriceUsd: number | null = null
-    // NEVER-FAKE-A-PRICE, DISCLOSED: no verified native-ETH-on-Robinhood price source exists in
-    // this module beyond DexScreener's WETH-equivalent pair lookup; if that returns nothing, price
-    // (and therefore valueUsd) stays null rather than reusing mainnet ETH's price, which would be a
-    // different chain's price presented as this chain's — exactly what the hard rules forbid.
-    const wethLikeSymbol = 'WETH'
-    nativePriceUsd = await fetchRobinhoodDexscreenerPrice(wethLikeSymbol, deps.fetchImpl).catch(() => null)
+    // NEVER-FAKE-A-PRICE FIX, DISCLOSED (Phase 1/2 audit): this used to query DexScreener with the
+    // literal string 'WETH' as if it were a token CONTRACT ADDRESS — dexscreener.com/latest/dex/
+    // tokens/WETH is not a real lookup, it would only ever return zero pairs (silently degrading
+    // native pricing to "unavailable" every time) or, in the worst case, whatever DexScreener's own
+    // fuzzy matching did with a bare symbol string — neither is a real, verified same-chain price.
+    // No verified wrapped-native (WETH-equivalent) contract address for Robinhood Chain exists
+    // anywhere in this codebase (checked: robinhoodChainConfig.ts, lpProof.ts,
+    // uniswapV4RobinhoodRpc.ts — none define one), so guessing one is exactly the "assumption
+    // unless verified" this task's hard rules forbid. Instead, this now reads the REAL price
+    // Covalent/GoldRush's own balances_v2 response already returns for the wallet's native-ETH row
+    // (`native_token: true`, same `quote_rate` field already trusted for every ERC-20 holding below)
+    // — a real, chain-scoped provider price, not a guessed lookup. Stays null, honestly, if
+    // GoldRush's own response has no native row or no rate for it.
+    const nativeCovalentRow = balances.items?.find((item) => item.native_token)
+    const nativePriceUsd = typeof nativeCovalentRow?.quote_rate === 'number' && nativeCovalentRow.quote_rate > 0 ? nativeCovalentRow.quote_rate : null
     const uiBalance = Number(nativeResult.rawBalance) / 1e18
     native = {
       symbol: ROBINHOOD_CHAIN_NATIVE_CURRENCY,
       rawBalance: nativeResult.rawBalance,
       uiBalance: Number.isFinite(uiBalance) ? uiBalance : null,
       priceUsd: nativePriceUsd,
-      priceSource: nativePriceUsd != null ? 'dexscreener' : null,
+      priceSource: nativePriceUsd != null ? 'goldrush' : null,
       valueUsd: nativePriceUsd != null && Number.isFinite(uiBalance) ? uiBalance * nativePriceUsd : null,
     }
   }
@@ -433,14 +494,15 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: { fet
     return { ...deps.cached, fromCache: true }
   }
   if (!isRobinhoodChainAvailable()) {
-    return { status: 'not_configured', wallet, chainSlug: 'robinhood', items: [], reason: 'Robinhood Chain is not configured.', fromCache: false }
+    return { status: 'not_configured', wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, reason: 'Robinhood Chain is not configured.', fromCache: false }
   }
   const { items: txs, reason } = await fetchRobinhoodTransactions(wallet, deps.fetchImpl)
   if (!txs) {
-    return { status: reason === 'no_api_key' ? 'not_configured' : 'unavailable', wallet, chainSlug: 'robinhood', items: [], reason: reason ?? 'no_data', fromCache: false }
+    return { status: reason === 'no_api_key' ? 'not_configured' : 'unavailable', wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, reason: reason ?? 'no_data', fromCache: false }
   }
   const lowerWallet = wallet.toLowerCase()
   const items: RobinhoodActivityItem[] = []
+  let skippedSwapLogs = 0
   for (const tx of txs) {
     if (!tx.tx_hash) continue
     // Native transfer — the tx's own top-level value field, present whenever the tx moved native
@@ -462,7 +524,13 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: { fet
     // ever applied here, per this phase's own hard rule — every row is either an incoming or
     // outgoing token movement, nothing more is claimed.
     for (const log of tx.log_events ?? []) {
-      if (log.decoded?.name !== ERC20_TRANSFER_EVENT_NAME) continue
+      if (log.decoded?.name !== ERC20_TRANSFER_EVENT_NAME) {
+        // SKIPPED-LOGS COUNTED, DISCLOSED: this is the exact spot a raw Swap/Mint/Burn/other
+        // unrecognized log event lands — counted, never silently discarded, and never turned into
+        // a fabricated activity row since no verified decoder for it exists yet (see file header).
+        skippedSwapLogs += 1
+        continue
+      }
       const fromParam = log.decoded.params?.find((p) => p.name === 'from')?.value ?? null
       const toParam = log.decoded.params?.find((p) => p.name === 'to')?.value ?? null
       const valueParam = log.decoded.params?.find((p) => p.name === 'value')?.value ?? null
@@ -481,7 +549,7 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: { fet
       })
     }
   }
-  return { status: items.length > 0 ? 'ok' : 'partial', wallet, chainSlug: 'robinhood', items, reason: items.length === 0 ? 'no_transfers_found_in_returned_window' : null, fromCache: false }
+  return { status: items.length > 0 ? 'ok' : 'partial', wallet, chainSlug: 'robinhood', items, skippedSwapLogs, reason: items.length === 0 ? 'no_transfers_found_in_returned_window' : null, fromCache: false }
 }
 
 // ── Cached wrapper, DISCLOSED: chain-strict cache reads/writes go through the shared tokenCache.ts

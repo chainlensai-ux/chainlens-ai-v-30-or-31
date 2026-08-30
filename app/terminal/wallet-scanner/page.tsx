@@ -234,6 +234,7 @@ export type RobinhoodWalletScanResponse = {
   activity: {
     status: 'ok' | 'partial' | 'unavailable' | 'not_configured'
     items: Array<{ txHash: string; blockTimestamp: string | null; kind: 'native_transfer' | 'token_transfer'; direction: 'incoming' | 'outgoing'; counterparty: string | null; tokenSymbol: string | null }>
+    skippedSwapLogs: number
     reason: string | null
   }
   pnl: { status: 'not_verified'; message: string }
@@ -804,13 +805,29 @@ export default function WalletScannerPage() {
                 </>
               )}
               {/* HARD RULE, DISCLOSED: "Do NOT show verified Robinhood PnL until swaps + prices are
-                  proven" — this message is fixed and never varies with any data on this page. */}
-              <div style={{ marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px dashed rgba(148,163,184,0.25)', color: 'rgba(148,163,184,0.75)', fontSize: '12px' }}>
-                {robinhoodResult.pnl.message}
+                  proven" — this message is fixed and never varies with any data on this page.
+                  AMBER/WARNING STYLING, DISCLOSED (Phase 1/2 audit follow-up: "UI cannot confuse
+                  Robinhood partial activity with verified PnL"): previously a neutral dashed gray
+                  box, visually indistinguishable from an ordinary informational note — restyled to
+                  the same amber "not confirmed" treatment this codebase already uses elsewhere
+                  (e.g. Solana's "NOT CONFIRMED HEALTHY" state) so a not-verified PnL reads as a
+                  clear caution, never as just another neutral data row sitting next to the real
+                  transfer count below it. */}
+              <div style={{ marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px solid rgba(251,191,36,0.32)', background: 'rgba(251,191,36,0.06)', color: '#fbbf24', fontSize: '12px', fontWeight: 700 }}>
+                PnL: {robinhoodResult.pnl.message}
               </div>
+              {/* ACTIVITY-VS-PNL SEPARATION, DISCLOSED: the transfer count below is explicitly
+                  labeled as raw activity, never phrased as a total/count that could be mistaken for
+                  a PnL figure — it never appears inside the amber PnL box above, always its own
+                  separate, neutrally-styled line. */}
               {robinhoodResult.activity.status === 'ok' && (
                 <p style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', marginTop: '8px' }}>
-                  {robinhoodResult.activity.items.length} recent transfer{robinhoodResult.activity.items.length === 1 ? '' : 's'} found (transfers only — not classified as trades).
+                  Activity (not PnL): {robinhoodResult.activity.items.length} recent transfer{robinhoodResult.activity.items.length === 1 ? '' : 's'} found — transfers only, not classified as trades.
+                </p>
+              )}
+              {robinhoodResult.activity.skippedSwapLogs > 0 && (
+                <p style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', marginTop: '4px' }}>
+                  {robinhoodResult.activity.skippedSwapLogs} additional on-chain log{robinhoodResult.activity.skippedSwapLogs === 1 ? '' : 's'} (e.g. possible swaps) were seen but not decoded — swap decoding is not available yet.
                 </p>
               )}
             </div>
