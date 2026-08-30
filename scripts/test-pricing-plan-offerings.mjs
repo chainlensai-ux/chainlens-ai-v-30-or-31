@@ -32,5 +32,21 @@ assert.match(pricing, /No Portfolio/)
 assert.match(planFeatures, /'token-scanner-basic':\s+\['free', 'pro', 'elite'\]/)
 assert.match(planFeatures, /'wallet-scanner':\s+\['pro', 'elite'\]/)
 assert.match(planFeatures, /'liquidity-safety':\s+\['pro', 'elite'\]/)
+assert.doesNotMatch(planFeatures, /auto-verdicts/)
+assert.doesNotMatch(planFeatures, /priority-cortex/)
+assert.doesNotMatch(planFeatures, /early-access/)
+
+const faq = fs.readFileSync(new URL('../components/FAQAccordion.tsx', import.meta.url), 'utf8')
+assert.match(faq, /Clark AI at 5 prompts per day/)
+assert.match(faq, /Clark AI at 50 prompts per day/)
+assert.match(faq, /Clark AI at 300 prompts per day/)
+assert.doesNotMatch(faq, /GhostTrade/)
+assert.doesNotMatch(faq, /DipRadar/)
+assert.doesNotMatch(faq, /ProofVault/)
+
+const about = fs.readFileSync(new URL('../app/about/page.tsx', import.meta.url), 'utf8')
+assert.doesNotMatch(about, /Smart money tracking/)
+assert.doesNotMatch(about, /Smart money pattern detection/)
+
 
 console.log('test-pricing-plan-offerings.mjs: all assertions passed')

@@ -441,7 +441,7 @@ export default function SettingsPage() {
     { name: 'GeckoTerminal',  sub: 'Token & pool data',         connected: true  },
     { name: 'Base RPC',       sub: 'On-chain reads',            connected: true  },
     { name: 'CORTEX Engine',  sub: 'AI risk scoring',           connected: true  },
-    { name: 'Whale Tracker',  sub: 'Smart money detection',     connected: true  },
+    { name: 'Whale Tracker',  sub: 'Whale movement alerts',     connected: true  },
     { name: 'Clark AI',       sub: 'Conversational intelligence', connected: true },
   ]
 

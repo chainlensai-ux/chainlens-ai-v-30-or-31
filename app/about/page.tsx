@@ -192,14 +192,13 @@ export default function AboutPage() {
                 </p>
                 {[
                   'Real-time blockchain data',
-                  'Advanced liquidity analysis',
-                  'Smart money tracking',
+                  'Liquidity and LP analysis',
+                  'Whale alerts',
                   'Contract safety checks',
                   'AI-driven risk scoring',
-                  'Whale flow detection',
                   'Token and wallet scanning',
-                  'LP safety analysis',
-                  'Market-moving alerts',
+                  'Pump alerts and Base Radar',
+                  'Clark AI reports',
                 ].map(i => <CheckItem key={i}>{i}</CheckItem>)}
                 <p style={{ fontSize: '12px', color: 'rgba(255,255,255,0.35)', margin: '16px 0 0',
                   fontFamily: 'var(--font-plex-mono,IBM Plex Mono,monospace)', letterSpacing: '0.06em' }}>
@@ -240,10 +239,10 @@ export default function AboutPage() {
                   AI ENGINES
                 </div>
                 {[
-                  'CORTEX Engine — elite risk analysis',
+                  'CORTEX Engine — risk analysis',
                   'Clark AI — token, wallet, LP intelligence',
                   'Rule-based safety systems',
-                  'Smart money pattern detection',
+                  'Wallet behavior reads',
                 ].map(i => <CheckItem key={i} color='#2DD4BF'>{i}</CheckItem>)}
               </Card>
 

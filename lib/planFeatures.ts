@@ -14,10 +14,6 @@ const PLAN_FEATURES: Record<string, UserPlan[]> = {
   'clark-ai-full':          ['pro', 'elite'],
   'liquidity-safety':       ['pro', 'elite'],
   'portfolio':              ['pro', 'elite'],
-  'auto-verdicts':          ['elite'],
-  'advanced-whale-alerts':  ['elite'],
-  'priority-cortex':        ['elite'],
-  'early-access':           ['elite'],
 }
 
 export function canAccessFeature(plan: UserPlan, feature: string): boolean {
