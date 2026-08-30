@@ -36,7 +36,7 @@ assert.match(routeCode, /if \(addressKind === "wallet"\) \{/, 'the guard must on
 // token") found over a dozen MORE early gates in this file with the identical bug — all testing
 // `!extractAddress(prompt)` (EVM-only) as their "no address in this message" check. Consolidated
 // into a single hasAnyAddress() helper (EVM OR Solana) and every one of those gates now uses it.
-assert.match(routeCode, /if \(!isForcedLiquidityCheckPrompt\(prompt\) && isTokenFollowupPrompt\(prompt\) && sessionMem\.lastToken\?\.address && !hasAnyAddress\(prompt\)\) \{/, 'the token-followup memory guard must use hasAnyAddress and skip LP-locked prompts so they stay liquidity-only')
+assert.match(routeCode, /if \(!isForcedLiquidityCheckPrompt\(prompt\) && !isLiquidityCheckIntent\(prompt\) && classifyTokenFollowupKind\(prompt\) !== "lp_lock" && isTokenFollowupPrompt\(prompt\) && \(sessionMem\.lastClarkSubject\?\.address \|\| sessionMem\.lastToken\?\.address\) && !hasAnyAddress\(prompt\)\) \{/, 'the token-followup memory guard must use hasAnyAddress and skip LP-locked prompts so they stay liquidity-only')
 assert.match(routeCode, /function hasAnyAddress\(text: string\): boolean \{\s*\n\s*return extractAddress\(text\) != null \|\| isValidSolanaMintAddress\(extractAddressForRouting\(text\) \?\? ""\);\s*\n\}/, 'a shared hasAnyAddress helper must exist and check both EVM and Solana address shapes')
 // CLARK-TOKEN-VERDICT FIX, DISCLOSED: more exports were added after extractAddressForRouting in
 // this import block, so it is no longer the last import — checking membership in the block instead

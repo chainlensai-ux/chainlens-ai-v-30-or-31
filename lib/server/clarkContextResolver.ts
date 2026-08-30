@@ -141,6 +141,8 @@ export type ClarkMemoryView = {
   activeList?: ClarkActiveList | null
   /** Recently discussed tokens, newest first — used only to DETECT ambiguity, never to guess. */
   recentTokens?: Array<{ address: string; chainSlug: ClarkChain; symbol: string | null; ts: number }>
+  lastClarkSubject?: ClarkLastSubject | null
+  prevClarkSubject?: ClarkLastSubject | null
 }
 
 /** Scanner context from the page the user is currently on (priority 3). */
@@ -151,6 +153,60 @@ export type ClarkPageContext = {
 }
 
 export type ClarkSubjectType = 'token' | 'wallet' | 'deployer' | 'pump_alert' | 'whale_alert' | 'list_item' | 'none'
+
+export type ClarkSubjectEntityType = 'token' | 'wallet' | 'pair' | 'deployer' | 'unknown'
+
+/** Last on-chain subject Clark answered about. Reused by address-less follow-ups. */
+export type ClarkLastSubject = {
+  entityType: ClarkSubjectEntityType
+  chainSlug: ClarkChain | string
+  chainId: number | null
+  address: string
+  symbol: string | null
+  name: string | null
+  lastIntent: string
+  lastResultSummary: string | null
+  timestamp: number
+}
+
+export type ClarkFollowupRoutingAudit = {
+  prompt: string
+  hasNewAddress: boolean
+  previousSubject: ClarkLastSubject | null
+  reusedSubject: boolean
+  parsedIntent: string
+  resolvedChain: string | null
+  resolvedAddress: string | null
+  routeSelected: string
+  reason: string
+}
+
+export function buildClarkFollowupRoutingAudit(
+  partial: Partial<ClarkFollowupRoutingAudit> & Pick<ClarkFollowupRoutingAudit, 'prompt' | 'parsedIntent'>,
+): ClarkFollowupRoutingAudit {
+  return {
+    prompt: partial.prompt,
+    hasNewAddress: partial.hasNewAddress ?? false,
+    previousSubject: partial.previousSubject ?? null,
+    reusedSubject: partial.reusedSubject ?? false,
+    parsedIntent: partial.parsedIntent,
+    resolvedChain: partial.resolvedChain ?? null,
+    resolvedAddress: partial.resolvedAddress ?? null,
+    routeSelected: partial.routeSelected ?? 'none',
+    reason: partial.reason ?? 'unresolved',
+  }
+}
+
+export function clarkSubjectChainId(chainSlug: string | null | undefined): number | null {
+  const chain = normalizeClarkChain(chainSlug)
+  if (!chain) return null
+  return CLARK_CHAIN_IDS[chain]
+}
+
+export function isTokenLikeClarkSubject(subject: ClarkLastSubject | null | undefined): boolean {
+  if (!subject?.address) return false
+  return subject.entityType === 'token' || subject.entityType === 'pair' || subject.entityType === 'unknown'
+}
 
 export type ClarkMemorySource =
   | 'explicit_prompt'

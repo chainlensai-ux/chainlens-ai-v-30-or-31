@@ -28,6 +28,7 @@ assert.match(adapterSrc, /primaryPoolType/, 'poolType must read the real flat pr
 // The memory-storage chain must also use the real auto-detected chain, not a hardcoded "base" —
 // same bug class as the other Base-collapse fixes found this session.
 assert.doesNotMatch(routeCode, /cachedEvidence: \{ ok: true, token: \{ \.\.\.mapped\.token, address: routed\.address \}, chain: "base",/, 'the LP-check memory storage must not hardcode chain: "base"')
-assert.match(routeCode, /const lpMemoryChain = runChain === "ethereum" \? "eth" : runChain === "solana" \? "base" : runChain;/, 'the LP-check memory storage must derive its chain from the real resolved runChain')
+assert.match(routeCode, /const lpMemoryChain = runChain === "ethereum" \? "eth" : runChain;/, 'the LP-check memory storage must derive its chain from the real resolved runChain')
+assert.doesNotMatch(routeCode, /runChain === "solana" \? "base"/, 'Solana liquidity checks must not be stored as Base in session memory')
 
 console.log('test-clark-lp-meta-field-mismatch.mjs: all assertions passed')

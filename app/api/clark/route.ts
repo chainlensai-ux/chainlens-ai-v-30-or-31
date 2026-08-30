@@ -23,6 +23,7 @@ import {
   buildClarkLiquidityRoutingAudit,
   resolveClarkLiquidityEntity,
   inferLpPairFromPayload,
+  liquidityAnswerAuditFromResult,
   type ClarkLiquidityChain,
   type ClarkLiquidityCheckResult,
   type ClarkLiquidityMatch,
@@ -131,9 +132,14 @@ import type { PumpIntelligenceReport } from "@/lib/server/pumpIntelligence";
 import {
   resolveClarkContext as resolveClarkMemoryContext,
   buildClarkContextMemoryAudit,
+  buildClarkFollowupRoutingAudit,
   normalizeClarkChain,
+  CLARK_CHAIN_IDS,
+  isTokenLikeClarkSubject,
   type ClarkChain,
   type ClarkMemoryView,
+  type ClarkLastSubject,
+  type ClarkFollowupRoutingAudit,
 } from "@/lib/server/clarkContextResolver";
 
 const {
@@ -350,6 +356,8 @@ type ClarkSessionMemory = {
   // remembered", which falls back to a real live read.
   lastWhaleAlertsRows?: WhaleAlertRow[];
   lastWhaleTrackedCount?: number | null;
+  lastClarkSubject?: ClarkLastSubject | null;
+  prevClarkSubject?: ClarkLastSubject | null;
 };
 const SESSION_MEMORY = new Map<string, ClarkSessionMemory>();
 const SESSION_MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min
@@ -360,7 +368,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   const now = Date.now();
   const existing = SESSION_MEMORY.get(key);
   if (!existing) {
-    const fresh: ClarkSessionMemory = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null };
+    const fresh: ClarkSessionMemory = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null, lastClarkSubject: null, prevClarkSubject: null };
     SESSION_MEMORY.set(key, fresh);
     return fresh;
   }
@@ -375,6 +383,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   }
   if (existing.lastIntent && now - existing.lastIntentTs > INTENT_MEMORY_TTL_MS) existing.lastIntent = null;
   if (existing.lastActionableIntent && now - existing.lastActionableIntentTs > INTENT_MEMORY_TTL_MS) existing.lastActionableIntent = null;
+  if (existing.lastClarkSubject == null) existing.lastClarkSubject = null;
   return existing;
 }
 
@@ -439,7 +448,39 @@ function rememberClarkDeployer(
     confidence: opts?.confidence ?? "medium",
     ts: Date.now(),
   };
+  rememberClarkSubject(mem, {
+    entityType: "deployer",
+    chainSlug: mem.lastDevWallet.chain ?? mem.selectedChain,
+    address: addr,
+    symbol: null,
+    name: null,
+    lastIntent: "deployer",
+    lastResultSummary: mem.lastDevWallet.summary,
+  });
   return true;
+}
+
+function rememberClarkSubject(
+  mem: ClarkSessionMemory,
+  subject: Omit<ClarkLastSubject, "timestamp" | "chainId"> & { chainId?: number | null; timestamp?: number },
+) {
+  const chainSlug = normalizeClarkChain(subject.chainSlug) ?? subject.chainSlug;
+  const next: ClarkLastSubject = {
+    entityType: subject.entityType,
+    chainSlug,
+    chainId: subject.chainId ?? (normalizeClarkChain(chainSlug) ? CLARK_CHAIN_IDS[normalizeClarkChain(chainSlug)!] : null),
+    address: subject.address,
+    symbol: subject.symbol ?? null,
+    name: subject.name ?? null,
+    lastIntent: subject.lastIntent,
+    lastResultSummary: subject.lastResultSummary ?? null,
+    timestamp: subject.timestamp ?? Date.now(),
+  };
+  const prev = mem.lastClarkSubject;
+  if (prev && prev.address && next.address && prev.address.toLowerCase() !== next.address.toLowerCase()) {
+    mem.prevClarkSubject = prev;
+  }
+  mem.lastClarkSubject = next;
 }
 
 // Projects the route's session memory onto the pure resolver's structural view. Kept as an adapter
@@ -500,6 +541,20 @@ function toClarkMemoryView(mem: ClarkSessionMemory): ClarkMemoryView {
       symbol: t.symbol ?? null,
       ts: t.ts,
     }));
+  view.lastClarkSubject = mem.lastClarkSubject ?? null;
+  view.prevClarkSubject = mem.prevClarkSubject ?? null;
+  if (!view.activeToken && isTokenLikeClarkSubject(mem.lastClarkSubject)) {
+    const sub = mem.lastClarkSubject!;
+    const subChain = normalizeClarkChain(sub.chainSlug) ?? tokenChain;
+    view.activeToken = {
+      tokenAddress: sub.address,
+      chainSlug: subChain,
+      chainId: sub.chainId ?? CLARK_CHAIN_IDS[subChain],
+      symbol: sub.symbol ?? null,
+      name: sub.name ?? null,
+      ts: sub.timestamp,
+    };
+  }
   return view;
 }
 
@@ -516,6 +571,8 @@ function updateMemToken(
     normalizedEvidence?: TokenScanEvidence | null;
     cachedEvidence?: TokenScanEvidence | null;
     chain?: ClarkMemoryChain;
+    entityType?: "token" | "pair";
+    lastIntent?: string;
   }
 ) {
   if (mem.lastToken) {
@@ -538,6 +595,7 @@ function updateMemToken(
     : opts?.cachedEvidence?.chain === "Base" || opts?.cachedEvidence?.chain === "base" ? "base"
     : opts?.cachedEvidence?.chain === "bnb" || opts?.cachedEvidence?.chain === "BNB" || opts?.cachedEvidence?.chain === "bsc" ? "bnb"
     : opts?.cachedEvidence?.chain === "robinhood" || opts?.cachedEvidence?.chain === "Robinhood Chain" ? "robinhood"
+    : opts?.cachedEvidence?.chain === "solana" || opts?.cachedEvidence?.chain === "Solana" ? "solana"
     : mem.selectedChain
   );
   if (opts?.cachedEvidence) opts.cachedEvidence.chain = evidenceChain;
@@ -555,6 +613,15 @@ function updateMemToken(
   mem.lastTokenChain = evidenceChain;
   mem.lastTokenSummary = scanSummary;
   mem.recentTokens = [{ address, symbol, name, chain: evidenceChain, summary: scanSummary, ts: Date.now() }, ...mem.recentTokens.filter(t => t.address !== address)].slice(0, 3)
+  rememberClarkSubject(mem, {
+    entityType: opts?.entityType ?? "token",
+    chainSlug: evidenceChain,
+    address,
+    symbol,
+    name,
+    lastIntent: opts?.lastIntent ?? mem.lastIntent ?? "token_scan",
+    lastResultSummary: scanSummary,
+  });
 }
 
 function updateMemWallet(
@@ -579,6 +646,15 @@ function updateMemWallet(
     ts: now,
   };
   mem.recentWallets = [{ address, chain: mem.selectedChain, summary: walletSummary, ts: now }, ...mem.recentWallets.filter(w => w.address !== address)].slice(0, 5)
+  rememberClarkSubject(mem, {
+    entityType: "wallet",
+    chainSlug: mem.selectedChain,
+    address,
+    symbol: null,
+    name: ensName,
+    lastIntent: "wallet_scan",
+    lastResultSummary: walletSummary,
+  });
 }
 function rememberMessage(mem: ClarkSessionMemory, role: "user" | "assistant", content: string) {
   const c = content.trim()
@@ -714,9 +790,27 @@ type SupportedChain = "base" | "ethereum" | "polygon" | "bnb";
 const CLARK_LIQ_CACHE_TTL_MS = 10 * 60 * 1000
 const clarkLiquidityResultCache = new Map<string, { exp: number; result: ClarkLiquidityCheckResult }>()
 
-function resolveLiquidityChainForClark(prompt: string, chainForClarkTools: string, selectedChain: string | null | undefined): ClarkLiquidityChain {
+function memoryChainToLiquidityChain(chain: string | null | undefined): ClarkLiquidityChain | null {
+  const n = String(chain ?? "").toLowerCase()
+  if (n === "solana") return "solana"
+  if (n === "robinhood") return "robinhood"
+  if (n === "eth" || n === "ethereum") return "ethereum"
+  if (n === "base") return "base"
+  return null
+}
+
+function resolveLiquidityChainForClark(
+  prompt: string,
+  chainForClarkTools: string,
+  selectedChain: string | null | undefined,
+  lastSubjectChain?: string | null,
+  address?: string | null,
+): ClarkLiquidityChain {
+  if (address && isValidSolanaMintAddress(address)) return "solana"
   const named = extractRequestedChainFromPrompt(prompt)
   if (named === "solana" || named === "robinhood" || named === "ethereum" || named === "base") return named
+  const fromSubject = memoryChainToLiquidityChain(lastSubjectChain)
+  if (fromSubject) return fromSubject
   if (chainForClarkTools === "solana" || chainForClarkTools === "robinhood" || chainForClarkTools === "ethereum" || chainForClarkTools === "base") {
     return chainForClarkTools
   }
@@ -799,6 +893,8 @@ interface ClarkRequestBody {
     lastRadarList?: ClarkSessionMemory["lastRadarList"];
     lastRadarChain?: string | null;
     lastRadarTs?: number;
+    lastClarkSubject?: ClarkLastSubject | null;
+    prevClarkSubject?: ClarkLastSubject | null;
   };
   route?: string;
   currentTool?: string;
@@ -8394,9 +8490,18 @@ async function handleClarkWhaleToolCall(
 // ---------- Add to watchlist tool call ----------
 
 async function handleClarkWatchlistAdd(origin: string, authHeader: string | null, chain: SupportedChain, sessionMem: ClarkSessionMemory) {
-  const target = sessionMem.lastRadarList[0] ?? (sessionMem.lastToken ? {
-    address: sessionMem.lastToken.address, symbol: sessionMem.lastToken.symbol ?? "TOKEN", name: sessionMem.lastToken.name, chain: "base" as const, score: null as number | null, riskLabel: null as string | null,
-  } : null);
+  const subject = sessionMem.lastClarkSubject
+  const subjectToken = isTokenLikeClarkSubject(subject) ? subject : null
+  const target = subjectToken ? {
+    address: subjectToken.address,
+    symbol: subjectToken.symbol ?? sessionMem.lastToken?.symbol ?? "TOKEN",
+    name: subjectToken.name ?? sessionMem.lastToken?.name ?? null,
+    chain: subjectToken.chainSlug,
+    score: null as number | null,
+    riskLabel: null as string | null,
+  } : sessionMem.lastToken ? {
+    address: sessionMem.lastToken.address, symbol: sessionMem.lastToken.symbol ?? "TOKEN", name: sessionMem.lastToken.name, chain: sessionMem.lastToken.chain ?? "base", score: null as number | null, riskLabel: null as string | null,
+  } : (sessionMem.lastRadarList[0] ?? null);
   if (!target) {
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "watchlist_add", toolsUsed: [],
@@ -8419,7 +8524,9 @@ async function handleClarkWatchlistAdd(origin: string, authHeader: string | null
       headers: { Authorization: authHeader, "Content-Type": "application/json" },
       body: JSON.stringify({
         address: target.address, symbol: target.symbol, name: target.name,
-        chain: "chain" in target && target.chain === "robinhood" ? "robinhood" : "base",
+        chain: "chain" in target && (target.chain === "robinhood" || target.chain === "solana" || target.chain === "eth" || target.chain === "ethereum" || target.chain === "bnb")
+          ? (target.chain === "ethereum" ? "eth" : target.chain)
+          : "base",
         riskLabel: "riskLabel" in target ? target.riskLabel : null,
         score: "score" in target ? target.score : null,
       }),
@@ -8449,7 +8556,7 @@ async function handleClarkWatchlistAdd(origin: string, authHeader: string | null
 
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory): Promise<Record<string, unknown>> {
   // Ensure we always have a session memory object even for recursive calls
-  if (!sessionMem) sessionMem = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null };
+  if (!sessionMem) sessionMem = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null, lastClarkSubject: null, prevClarkSubject: null };
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   // Chain priority: 1) explicit chain named in the prompt, 2) explicit UI chain param,
   // 3) selectedChain from session memory, 4) base default. Prompt wording must never
@@ -9249,10 +9356,37 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // using whatever EVM token happened to be in memory from an earlier scan, completely ignoring the
   // Solana address the user just pasted. A genuinely new address of either kind in the CURRENT
   // message must always win over stale memory.
-  if (!isForcedLiquidityCheckPrompt(prompt) && isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !hasAnyAddress(prompt)) {
+  if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && isTokenFollowupPrompt(prompt) && (sessionMem.lastClarkSubject?.address || sessionMem.lastToken?.address) && !hasAnyAddress(prompt)) {
     const followupKind = classifyTokenFollowupKind(prompt);
-    const tokenAddress = sessionMem.lastToken.address;
-    const cached = sessionMem.lastToken.cachedEvidence ?? null;
+    const subject = isTokenLikeClarkSubject(sessionMem.lastClarkSubject) ? sessionMem.lastClarkSubject : null;
+    const tokenAddress = subject?.address ?? sessionMem.lastToken?.address;
+    if (!tokenAddress) {
+      // fall through
+    } else if (sessionMem.prevClarkSubject && isTokenLikeClarkSubject(sessionMem.prevClarkSubject) && Date.now() - sessionMem.prevClarkSubject.timestamp < 10 * 60 * 1000 && sessionMem.prevClarkSubject.address.toLowerCase() !== tokenAddress.toLowerCase() && followupKind !== "lp_lock") {
+      const a = sessionMem.lastClarkSubject;
+      const b = sessionMem.prevClarkSubject;
+      const label = (s: ClarkLastSubject | null | undefined) => s ? `${s.symbol ?? s.address.slice(0, 6)} on ${s.chainSlug}` : "unknown";
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "clarify_subject", toolsUsed: ["memory"],
+        analysis: `You've discussed more than one token recently. Do you mean ${label(a)} or ${label(b)}?`,
+        intentBadge: "clarify_subject",
+        actions: buildRoutedActions(["Open Token Scanner"]),
+        quotaConsumed: false,
+        clarkFollowupRoutingAudit: buildClarkFollowupRoutingAudit({
+          prompt,
+          hasNewAddress: false,
+          previousSubject: sessionMem.lastClarkSubject,
+          reusedSubject: false,
+          parsedIntent: followupKind,
+          routeSelected: "ask_which_subject",
+          reason: "two_recent_subjects",
+        }),
+      };
+    } else if (isValidSolanaMintAddress(tokenAddress) || sessionMem.lastToken?.chain === "solana" || String(sessionMem.lastClarkSubject?.chainSlug ?? "") === "solana") {
+      // Solana follow-ups must not use the EVM Token Core memory path (that becomes TOKEN READ).
+      // Fall through so liquidity_scan / Solana creator routing can reuse lastClarkSubject.
+    } else {
+    const cached = sessionMem.lastToken?.cachedEvidence ?? null;
 
     // Case A: cached evidence already has at least one confirmed *non-tax* safety section
     // (honeypot, LP, holders, ownership/flags) — answer from memory, never re-fetch.
@@ -9312,6 +9446,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       intentBadge,
       actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
       quotaConsumed,
+      clarkFollowupRoutingAudit: buildClarkFollowupRoutingAudit({
+        prompt,
+        hasNewAddress: false,
+        previousSubject: sessionMem.lastClarkSubject,
+        reusedSubject: true,
+        parsedIntent: followupKind,
+        resolvedChain: subject?.chainSlug ?? sessionMem.lastToken?.chain ?? null,
+        resolvedAddress: tokenAddress,
+        routeSelected: intentBadge,
+        reason: fromMemory ? "reused_last_clark_subject_memory" : "reused_last_clark_subject_with_safety_fetch",
+      }),
       ...(clarkDebugMode ? {
         clarkDebugReceipt: {
           cachedHasTaxEvidence,
@@ -9325,6 +9470,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         },
       } : {}),
     };
+    }
   }
 
   // ─── Wallet compare (honest unsupported compare — never scan only one wallet) ───
@@ -10357,6 +10503,20 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (routed.address && (SOLANA_TOKEN_INTENTS.has(routed.intent) || isSolanaDeployerQuestion) && isValidSolanaMintAddress(routed.address)) {
     return await buildSolanaCreatorAnswer(routed.address, isSolanaDeployerQuestion);
   }
+  const solFollowupMint =
+    !routed.address
+    && (sessionMem.lastClarkSubject?.address && isValidSolanaMintAddress(sessionMem.lastClarkSubject.address)
+      ? sessionMem.lastClarkSubject.address
+      : (sessionMem.lastToken?.address && isValidSolanaMintAddress(sessionMem.lastToken.address) ? sessionMem.lastToken.address : null));
+  if (
+    solFollowupMint
+    && (SOLANA_TOKEN_INTENTS.has(routed.intent) || SOLANA_DEPLOYER_QUESTION_RE.test(prompt))
+    && !isForcedLiquidityCheckPrompt(prompt)
+    && parseClarkLiquidityIntent(prompt) == null
+    && routed.intent !== "liquidity_scan"
+  ) {
+    return await buildSolanaCreatorAnswer(solFollowupMint, SOLANA_DEPLOYER_QUESTION_RE.test(prompt));
+  }
   if (sessionMem.lastWallet?.address && !routed.address && isWalletFollowupPrompt(prompt) && !isLiquidityCheckIntent(prompt) && routed.intent !== "liquidity_scan") {
     const memResult = buildWalletMemoryResult(sessionMem.lastWallet);
     if (memResult) {
@@ -10374,16 +10534,96 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (routed.intent === "liquidity_scan") {
-    const liqChain = resolveLiquidityChainForClark(prompt, String(chainForClarkTools), sessionMem.selectedChain ?? sessionMem.lastTokenChain);
     const parsedLiqIntent = parseClarkLiquidityIntent(prompt) ?? "liquidity_check";
-    let liqAudit = buildClarkLiquidityCheckAudit({
+    const memResolution = resolveClarkMemoryContext(
+      prompt,
+      toClarkMemoryView(sessionMem),
+      {
+        selectedTokenAddress: typeof body.appContext?.selectedToken === "string"
+          ? body.appContext.selectedToken
+          : body.appContext?.selectedToken?.address ?? body.appContext?.selectedToken?.contract ?? (typeof body.selectedToken === "string" ? body.selectedToken : null),
+        selectedWalletAddress: typeof body.appContext?.selectedWallet === "string"
+          ? body.appContext.selectedWallet
+          : (typeof body.selectedWallet === "string" ? body.selectedWallet : null),
+        chainSlug: normalizeClarkChain(chainForClarkTools),
+      },
+    );
+    const hasNewAddress = Boolean(routed.address);
+    let followupAudit: ClarkFollowupRoutingAudit = buildClarkFollowupRoutingAudit({
+      prompt,
+      hasNewAddress,
+      previousSubject: sessionMem.lastClarkSubject,
+      reusedSubject: false,
+      parsedIntent: parsedLiqIntent,
+      resolvedChain: null,
+      resolvedAddress: routed.address,
+      routeSelected: "liquidity_scan",
+      reason: hasNewAddress ? "explicit_address" : "pending_memory",
+    });
+    if (!routed.address) {
+      if (memResolution.needsClarification && memResolution.clarificationQuestion) {
+        followupAudit = { ...followupAudit, routeSelected: "ask_which_subject", reason: memResolution.ambiguityReason ?? "ambiguous_subject" };
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["memory"],
+          analysis: memResolution.clarificationQuestion,
+          intentBadge: "liquidity_scan",
+          actions: buildRoutedActions(["Open Token Scanner", "Run LP Check"]),
+          quotaConsumed: false,
+          clarkFollowupRoutingAudit: followupAudit,
+          clarkIntentLockAudit,
+        };
+      }
+      if (memResolution.resolvedSubjectType === "wallet" && memResolution.resolvedWallet && !memResolution.resolvedToken) {
+        followupAudit = { ...followupAudit, routeSelected: "not_applicable", resolvedAddress: memResolution.resolvedWallet, resolvedChain: memResolution.resolvedChain, reason: "last_subject_is_wallet" };
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["memory"],
+          analysis: formatEoaLpCheckReply(),
+          intentBadge: "liquidity_scan",
+          actions: [{ label: "Open Token Scanner", href: "/terminal/token-scanner" }],
+          quotaConsumed: false,
+          clarkFollowupRoutingAudit: followupAudit,
+          clarkIntentLockAudit,
+          clarkLiquidityRoutingAudit: buildClarkLiquidityRoutingAudit({
+            prompt, parsedIntent: parsedLiqIntent, address: memResolution.resolvedWallet,
+            requestedChain: memResolution.resolvedChain, hasContractCode: false,
+            resolvedEntityType: "wallet", routeSelected: "not_applicable",
+            notApplicableReason: "wallet_not_token_or_pool",
+          }),
+        };
+      }
+      const reuseAddress = memResolution.resolvedToken
+        ?? (isTokenLikeClarkSubject(sessionMem.lastClarkSubject) ? sessionMem.lastClarkSubject!.address : null)
+        ?? sessionMem.lastToken?.address
+        ?? null;
+      if (reuseAddress) {
+        routed.address = reuseAddress;
+        if (!routed.symbol) {
+          routed.symbol = memResolution.resolvedToken
+            ? (sessionMem.lastClarkSubject?.symbol ?? sessionMem.lastToken?.symbol ?? routed.symbol)
+            : (sessionMem.lastClarkSubject?.symbol ?? sessionMem.lastToken?.symbol ?? routed.symbol);
+        }
+        followupAudit = {
+          ...followupAudit,
+          reusedSubject: true,
+          resolvedAddress: reuseAddress,
+          resolvedChain: memResolution.resolvedChain ?? sessionMem.lastClarkSubject?.chainSlug ?? sessionMem.lastToken?.chain ?? null,
+          reason: memResolution.memorySource === "active_token" ? "reused_last_clark_subject" : `reused_${memResolution.memorySource}`,
+        };
+      }
+    }
+    const lastSubjectChain = sessionMem.lastClarkSubject?.chainSlug ?? sessionMem.lastToken?.chain ?? sessionMem.lastTokenChain ?? null;
+    const liqChain = resolveLiquidityChainForClark(prompt, String(chainForClarkTools), sessionMem.selectedChain ?? sessionMem.lastTokenChain, lastSubjectChain, routed.address);
+    followupAudit = { ...followupAudit, resolvedChain: liqChain, resolvedAddress: routed.address };
+    const liqAudit = buildClarkLiquidityCheckAudit({
       prompt,
       resolvedIntent: "liquidity_scan",
       symbolOrAddress: routed.address ?? routed.symbol,
       selectedChain: liqChain,
       resolvedChain: liqChain,
       entityType: routed.address ? (isValidSolanaMintAddress(routed.address) ? "solana_mint" : "token") : "symbol",
-      resolverSource: routed.address ? "prompt_address" : routed.symbol ? "symbol" : null,
+      resolverSource: routed.address
+        ? (hasNewAddress ? "prompt_address" : (followupAudit.reusedSubject ? "lastClarkSubject" : "prompt_address"))
+        : routed.symbol ? "symbol" : null,
       matchesCount: 0,
       ambiguityHandled: false,
       scannerCalled: false,
@@ -10488,6 +10728,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         quotaConsumed: false,
         clarkLiquidityCheckAudit: liqAudit,
         clarkIntentLockAudit,
+        clarkFollowupRoutingAudit: { ...followupAudit, routeSelected: "needs_token", reason: "missing_token_or_pool" },
         clarkLiquidityRoutingAudit: buildClarkLiquidityRoutingAudit({
           prompt,
           parsedIntent: parsedLiqIntent,
@@ -10529,7 +10770,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           clarkLiquidityRoutingAudit: routingAudit,
         };
       }
-      if (addressKind === "unknown" && !explicitChainNamed) {
+      if (addressKind === "unknown" && !explicitChainNamed && !lastSubjectChain) {
         liqAudit.entityType = "unknown";
         liqAudit.responseStatus = "unknown_entity";
         const routingAudit = buildClarkLiquidityRoutingAudit({
@@ -10630,16 +10871,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       cacheChainMatched: !wrongChainRejected,
       notApplicableReason: null,
     });
-    const lpMemoryChain = runChain === "ethereum" ? "eth" : runChain === "solana" ? "base" : runChain;
+    const lpMemoryChain = runChain === "ethereum" ? "eth" : runChain;
     updateMemToken(sessionMem, routed.address, check.symbol, check.symbol, lpAnalysis, {
       cachedEvidence: {
         ok: check.status !== "unavailable",
         token: { symbol: check.symbol, name: check.symbol, address: routed.address },
-        chain: lpMemoryChain as "base" | "eth" | "robinhood",
+        chain: lpMemoryChain,
         market: { liquidity: check.liquidityUsd, volume24h: check.volume24hUsd ?? null, marketCap: check.marketCapUsd ?? null },
         lpControl: { status: check.lockBurnStatus, reason: check.controllerStatus, confidence: check.confidence, poolType: check.lpModel },
       } as TokenScanEvidence,
-      chain: lpMemoryChain as "base" | "eth" | "robinhood",
+      chain: lpMemoryChain,
+      entityType: isPair ? "pair" : "token",
+      lastIntent: "liquidity_scan",
     });
     updateMemIntent(sessionMem, "liquidity_scan");
     clarkIntentLockAudit = {
@@ -10665,6 +10908,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       clarkLiquidityCheckAudit: liqAudit,
       clarkIntentLockAudit,
       clarkLiquidityRoutingAudit: routingAudit,
+      clarkLiquidityAnswerAudit: liquidityAnswerAuditFromResult(prompt, check),
+      clarkFollowupRoutingAudit: {
+        ...followupAudit,
+        resolvedChain: runChain,
+        resolvedAddress: routed.address,
+        routeSelected: "liquidity_scan",
+        reason: followupAudit.reusedSubject ? "reused_last_clark_subject" : (hasNewAddress ? "explicit_address" : followupAudit.reason),
+      },
     };
   }
 
@@ -11534,6 +11785,11 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   if (routed.intent === "token_scan") {
     let tokenAddress = routed.address;
     let resolvedSymbol = routed.symbol;
+    if (!tokenAddress && !resolvedSymbol) {
+      const sub = isTokenLikeClarkSubject(sessionMem.lastClarkSubject) ? sessionMem.lastClarkSubject : null;
+      tokenAddress = sub?.address ?? sessionMem.lastToken?.address ?? tokenAddress;
+      resolvedSymbol = sub?.symbol ?? sessionMem.lastToken?.symbol ?? resolvedSymbol;
+    }
     // ── SOLANA MINT GUARD (Clark deployer lookup audit): a well-formed Solana mint must never
     // enter the EVM Token Core path. Route it to the Solana scanner with Solana-native creator
     // evidence (mint/freeze/update authority + Deep Creator Check), labeled creator/authority —
@@ -12190,16 +12446,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     });
     clarkLiquidityResultCache.set(cacheKey, { exp: Date.now() + CLARK_LIQ_CACHE_TTL_MS, result: check });
     const analysis = formatClarkLiquidityCheck(check);
-    const lpMemoryChain = runChain === "ethereum" ? "eth" : runChain === "solana" ? "base" : runChain;
+    const lpMemoryChain = runChain === "ethereum" ? "eth" : runChain;
     updateMemToken(sessionMem, tokenAddress, check.symbol, check.symbol, analysis, {
       cachedEvidence: {
         ok: check.status !== "unavailable",
         token: { symbol: check.symbol, name: check.symbol, address: tokenAddress },
-        chain: lpMemoryChain as "base" | "eth" | "robinhood",
+        chain: lpMemoryChain,
         market: { liquidity: check.liquidityUsd },
         lpControl: { status: check.lockBurnStatus, reason: check.controllerStatus, confidence: check.confidence, poolType: check.lpModel },
       } as TokenScanEvidence,
-      chain: lpMemoryChain as "base" | "eth" | "robinhood",
+      chain: lpMemoryChain,
+      entityType: "token",
+      lastIntent: "lp_lock_check",
     });
     updateMemIntent(sessionMem, "lp_lock_check");
     return {
@@ -12209,6 +12467,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       actions: buildRoutedActions(["Run LP Check", "Open Token Scanner"]),
       quotaConsumed: !cached || wrongChainRejected,
       clarkDebugReceipt: { followUpUsedMemory: Boolean(cached) && !wrongChainRejected, followUpTriggeredRefresh: tokenFollowupRefreshRequested, tokenMemoryAgeMs: sessionMem?.lastToken?.ts ? Date.now() - sessionMem.lastToken.ts : null, evidenceSource: cached && !wrongChainRejected ? "cache" : "freshScan" },
+      clarkLiquidityAnswerAudit: liquidityAnswerAuditFromResult(prompt, check),
     };
   }
 
@@ -13741,6 +14000,12 @@ export async function POST(req: NextRequest) {
     sessionMem.lastRadarChain = echoedRadarChain === "robinhood" || echoedRadarChain === "base" ? echoedRadarChain : sessionMem.lastRadarChain;
     sessionMem.lastRadarTs = typeof body.clientContext.lastRadarTs === "number" ? body.clientContext.lastRadarTs : Date.now();
   }
+  if (!sessionMem.lastClarkSubject && body.clientContext?.lastClarkSubject?.address) {
+    sessionMem.lastClarkSubject = body.clientContext.lastClarkSubject;
+  }
+  if (!sessionMem.prevClarkSubject && body.clientContext?.prevClarkSubject?.address) {
+    sessionMem.prevClarkSubject = body.clientContext.prevClarkSubject;
+  }
   // Sync page and chain into session memory
   setMemPage(sessionMem, body.uiModeHint);
   const earlyPrompt = (body.prompt ?? '').trim()
@@ -13981,6 +14246,12 @@ export async function POST(req: NextRequest) {
           chain: sessionMem.lastToken.chain ?? sessionMem.selectedChain ?? null,
           ts: sessionMem.lastToken.ts,
         }
+      }
+      if (sessionMem.lastClarkSubject?.address) {
+        genericMemoryEcho.lastClarkSubject = sessionMem.lastClarkSubject
+      }
+      if (sessionMem.prevClarkSubject?.address) {
+        genericMemoryEcho.prevClarkSubject = sessionMem.prevClarkSubject
       }
       // DEPLOYER MEMORY, DISCLOSED (Clark memory audit): harvest whichever deployer/creator address
       // this response actually resolved and commit it to session memory. Done here, at the single

@@ -26,6 +26,7 @@ const routeCode = routeSrc.split('\n').filter(l => !l.trim().startsWith('//')).j
 // ─── updateMemToken must recognize every real chain, not just eth/base ─────────────────────────
 assert.match(routeCode, /opts\?\.cachedEvidence\?\.chain === "bnb" \|\| opts\?\.cachedEvidence\?\.chain === "BNB" \|\| opts\?\.cachedEvidence\?\.chain === "bsc" \? "bnb"/, 'updateMemToken must recognize a real BNB cached-evidence chain')
 assert.match(routeCode, /opts\?\.cachedEvidence\?\.chain === "robinhood" \|\| opts\?\.cachedEvidence\?\.chain === "Robinhood Chain" \? "robinhood"/, 'updateMemToken must recognize a real Robinhood cached-evidence chain')
+assert.match(routeCode, /opts\?\.cachedEvidence\?\.chain === "solana" \|\| opts\?\.cachedEvidence\?\.chain === "Solana" \? "solana"/, 'updateMemToken must recognize a real Solana cached-evidence chain')
 
 // ─── the liquidity_scan branch must use the real detected chain, never a hardcoded "base" ──────
 assert.doesNotMatch(routeCode, /callInternalApi\(origin, "\/api\/liquidity-safety", \{ contract: routed\.address, chain: "base" \}/, 'the old hardcoded chain: "base" call to /api/liquidity-safety must be gone')

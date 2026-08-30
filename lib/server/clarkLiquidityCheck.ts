@@ -115,6 +115,74 @@ export function buildClarkLiquidityRoutingAudit(
   }
 }
 
+export type ClarkLiquidityAnswerAudit = {
+  prompt: string
+  chainSlug: string
+  address: string | null
+  symbol: string | null
+  liquidityUsd: number | null
+  volume24hUsd: number | null
+  volumeLiquidityRatio: number | null
+  marketCapUsd: number | null
+  fdvUsd: number | null
+  dex: string | null
+  poolAddress: string | null
+  poolAge: string | null
+  verdict: string
+  confidence: string
+  sourcesUsed: string[]
+  missingEvidence: string[]
+}
+
+export function volumeLiquidityRatio(volume24hUsd: number | null | undefined, liquidityUsd: number | null | undefined): number | null {
+  if (volume24hUsd == null || liquidityUsd == null || !Number.isFinite(volume24hUsd) || !Number.isFinite(liquidityUsd) || liquidityUsd <= 0) return null
+  return volume24hUsd / liquidityUsd
+}
+
+export function buildClarkLiquidityAnswerAudit(
+  partial: Partial<ClarkLiquidityAnswerAudit> & Pick<ClarkLiquidityAnswerAudit, "prompt" | "chainSlug">,
+): ClarkLiquidityAnswerAudit {
+  return {
+    prompt: partial.prompt,
+    chainSlug: partial.chainSlug,
+    address: partial.address ?? null,
+    symbol: partial.symbol ?? null,
+    liquidityUsd: partial.liquidityUsd ?? null,
+    volume24hUsd: partial.volume24hUsd ?? null,
+    volumeLiquidityRatio: partial.volumeLiquidityRatio ?? null,
+    marketCapUsd: partial.marketCapUsd ?? null,
+    fdvUsd: partial.fdvUsd ?? null,
+    dex: partial.dex ?? null,
+    poolAddress: partial.poolAddress ?? null,
+    poolAge: partial.poolAge ?? null,
+    verdict: partial.verdict ?? "Partial",
+    confidence: partial.confidence ?? "Low",
+    sourcesUsed: partial.sourcesUsed ?? [],
+    missingEvidence: partial.missingEvidence ?? [],
+  }
+}
+
+export function liquidityAnswerAuditFromResult(prompt: string, result: ClarkLiquidityCheckResult): ClarkLiquidityAnswerAudit {
+  return buildClarkLiquidityAnswerAudit({
+    prompt,
+    chainSlug: result.chainSlug,
+    address: result.tokenAddressOrMint,
+    symbol: result.symbol,
+    liquidityUsd: result.liquidityUsd,
+    volume24hUsd: result.volume24hUsd ?? null,
+    volumeLiquidityRatio: volumeLiquidityRatio(result.volume24hUsd, result.liquidityUsd),
+    marketCapUsd: result.marketCapUsd ?? null,
+    fdvUsd: result.fdvUsd ?? null,
+    dex: result.dexName,
+    poolAddress: result.pairAddress ?? result.primaryPool,
+    poolAge: result.poolAge,
+    verdict: publicLiquidityVerdict(result),
+    confidence: result.confidence,
+    sourcesUsed: result.sourceLabels,
+    missingEvidence: publicMissingEvidence(result),
+  })
+}
+
 export type ClarkLiquidityCheckAudit = {
   prompt: string
   resolvedIntent: string
@@ -438,37 +506,151 @@ function publicControllerLabel(status: string, chain: ClarkLiquidityChain): stri
   return "not verified"
 }
 
+export function publicLiquidityVerdict(result: ClarkLiquidityCheckResult): "Strong" | "Decent" | "Thin" | "Risky" | "Partial" {
+  const liq = result.liquidityUsd
+  if (result.status === "risky") return "Risky"
+  if (liq == null || !Number.isFinite(liq) || liq <= 0) return result.status === "unavailable" ? "Thin" : "Partial"
+  if (liq < 10_000) return "Thin"
+  if (result.status === "verified" && liq >= 250_000 && result.exitRisk === "Low") return "Strong"
+  if (liq >= 50_000 && result.status !== "unavailable") return "Decent"
+  return "Partial"
+}
+
+function formatVolumeLiquidityRatio(ratio: number | null): string {
+  if (ratio == null || !Number.isFinite(ratio)) return "Unavailable"
+  if (ratio >= 10) return `${ratio.toFixed(1)}x`
+  return `${ratio.toFixed(2)}x`
+}
+
+function isConcentratedPool(result: ClarkLiquidityCheckResult): boolean {
+  const model = `${result.lpModel ?? ""} ${result.lockBurnStatus ?? ""}`.toLowerCase()
+  return /concentrated|v3|not applicable/.test(model)
+}
+
+export function publicMissingEvidence(result: ClarkLiquidityCheckResult): string[] {
+  const out: string[] = []
+  const push = (item: string) => {
+    if (!out.some((x) => x.toLowerCase() === item.toLowerCase())) out.push(item)
+  }
+  const lock = `${result.lockBurnStatus ?? ""} ${result.controllerStatus ?? ""}`.toLowerCase()
+  if (result.chainSlug === "solana" || result.chainSlug === "robinhood" || /unsupported|not verified|unverified|not an evm|not applicable|partial|unavailable/.test(lock)) {
+    push("LP/control not verified")
+  }
+  if (!result.poolAge || result.poolAge === "unknown") push("Pool age missing")
+  if (!result.missingEvidence.some((m) => /holder|creator|deployer|authority/i.test(m))) {
+    push(result.chainSlug === "solana" ? "Holder/creator missing" : "Holder/deployer missing")
+  }
+  if (!result.missingEvidence.some((m) => /security|simulation|honeypot/i.test(m))) {
+    push("Security simulation missing")
+  }
+  for (const m of result.missingEvidence) {
+    if (/erc-20|honeypot tax|contract verified/i.test(m) && (result.chainSlug === "solana" || result.chainSlug === "robinhood")) continue
+    push(m)
+  }
+  return out
+}
+
+export function explainLiquidityMeaning(result: ClarkLiquidityCheckResult): string {
+  const liq = result.liquidityUsd
+  const vol = result.volume24hUsd ?? null
+  const liqLabel = formatUsdLiquidity(liq)
+  const ratio = volumeLiquidityRatio(vol, liq)
+  const parts: string[] = []
+  if (liq == null || liq <= 0) {
+    parts.push("No usable pool liquidity was returned, so this cannot be called strong.")
+  } else if (liq < 10_000) {
+    parts.push(`Liquidity is ${liqLabel}. That is thin — even small trades can move the price, and exit risk is high.`)
+  } else if (liq < 75_000) {
+    parts.push(`Liquidity is ${liqLabel}. That is enough for small trades, but not deep enough for large entries without slippage risk.`)
+  } else if (liq < 250_000) {
+    parts.push(`Liquidity is ${liqLabel}. Normal-size trades should clear, but large exits can still move the pool.`)
+  } else {
+    parts.push(`Liquidity is ${liqLabel}. Depth is enough for most normal traders, though large size still depends on the pool model and 24h volume.`)
+  }
+  if (liq && liq > 0 && ratio != null) {
+    if (ratio >= 2) parts.push("24h volume is healthy compared with liquidity.")
+    else if (ratio >= 0.5) parts.push("24h volume is moderate compared with liquidity.")
+    else parts.push("24h volume is light compared with liquidity, so turnover is weaker than the depth suggests.")
+  } else if (liq && liq > 0) {
+    parts.push("24h volume was not returned, so turnover versus depth cannot be confirmed.")
+  }
+  if (result.chainSlug === "solana") {
+    parts.push(`This is a Solana AMM. EVM-style lock/burn proof does not apply. Exit risk is ${result.exitRisk.toLowerCase()} on pool liquidity and unverified LP/control evidence.`)
+  } else if (result.chainSlug === "robinhood") {
+    parts.push("Robinhood pool models do not have EVM-style LP lock proof, so exit risk stays partial even when liquidity exists.")
+  } else if (isConcentratedPool(result)) {
+    parts.push("This is a concentrated pool, not a locked LP token. Lock/burn proof is not applicable; exit risk follows positions and depth, not a burned LP token.")
+  } else if ((/locked|burned/.test(String(result.lockBurnStatus).toLowerCase())) && result.status === "verified") {
+    parts.push("LP lock/burn evidence is verified, which lowers rug-pull exit risk relative to an unlocked pool.")
+  } else {
+    parts.push(`Exit risk is ${result.exitRisk.toLowerCase()} on current evidence — LP/control is not fully verified.`)
+  }
+  return parts.slice(0, 2).join(" ")
+}
+
+function poolModelLabel(result: ClarkLiquidityCheckResult): string {
+  if (result.chainSlug === "solana") return result.lpModel && /amm/i.test(result.lpModel) ? result.lpModel : "Solana AMM"
+  if (result.chainSlug === "robinhood") return result.lpModel ?? "Robinhood pool model (partial)"
+  if (isConcentratedPool(result)) return result.lpModel ?? "concentrated"
+  return result.lpModel ?? "unverified"
+}
+
 export function formatClarkLiquidityCheck(result: ClarkLiquidityCheckResult): string {
   const liq = formatUsdLiquidity(result.liquidityUsd)
   const vol = formatUsdLiquidity(result.volume24hUsd ?? null)
+  const ratio = formatVolumeLiquidityRatio(volumeLiquidityRatio(result.volume24hUsd, result.liquidityUsd))
+  const mcap = result.marketCapUsd != null ? formatUsdLiquidity(result.marketCapUsd) : "Unavailable"
   const fdv = result.fdvUsd != null ? formatUsdLiquidity(result.fdvUsd) : (result.marketCapUsd != null ? formatUsdLiquidity(result.marketCapUsd) : "Unavailable")
   const good = result.goodSigns.length ? result.goodSigns.map((s) => `- ${s}`) : ["- none confirmed in this pass"]
   const risks = result.risks.length ? result.risks.map((s) => `- ${s}`) : ["- none confirmed in this pass"]
-  const missing = result.missingEvidence.length ? result.missingEvidence.map((s) => `- ${s}`) : ["- none flagged"]
+  const missing = publicMissingEvidence(result).map((s) => `- ${s}`)
   const lockBurn = publicLockBurnLabel(result.lockBurnStatus, result.chainSlug)
   const controller = publicControllerLabel(result.controllerStatus, result.chainSlug)
   const poolAge = result.poolAge && String(result.poolAge).trim() ? result.poolAge : "unknown"
-  const evidence = result.sourceLabels.length ? result.sourceLabels.join(" + ") : "Token Scanner LP module"
-  const lpStatus = result.lockBurnStatus || "unverified"
+  const evidence = result.sourceLabels.length ? result.sourceLabels.join(" + ") : (result.chainSlug === "solana" ? "Solana Token Scanner market/pool module" : "Token Scanner LP module")
+  const lpStatus = result.chainSlug === "solana" || result.chainSlug === "robinhood"
+    ? result.lockBurnStatus
+    : (result.lockBurnStatus || "unverified")
+  const dexLabel = result.dexName ?? (result.chainSlug === "solana" ? "unverified DEX/pool source" : "unverified")
+  const poolAddr = result.pairAddress ?? result.primaryPool ?? "not returned"
+  const verdict = publicLiquidityVerdict(result)
+  const verdictLine = result.status === "verified" && verdict === "Strong"
+    ? "Strong"
+    : result.confidence === "Low" || result.status === "partial" || result.status === "unsupported_proof"
+      ? `${verdict} but not fully verified`
+      : verdict
+  const nextCreator = result.chainSlug === "solana" ? "Check Creator" : "Check Deployer"
+  const lpControlLine = result.chainSlug === "solana"
+    ? `LP/control evidence: ${result.controllerStatus || "unavailable/partial"}`
+    : `LP lock/burn: ${lockBurn}`
   return [
     `LIQUIDITY CHECK — ${result.symbol}`,
-    `Chain: ${chainLabel(result.chainSlug)}`,
-    `Liquidity: ${liq}`,
-    `DEX: ${result.dexName ?? "unverified"}`,
-    `Pool: ${result.primaryPool ?? result.pairAddress ?? "not returned"}`,
-    `Primary pool: ${result.dexName ?? result.primaryPool ?? "not returned"}`,
-    `Pool address: ${result.pairAddress ?? result.primaryPool ?? "not returned"}`,
-    `24h Volume: ${vol}`,
-    `FDV: ${fdv}`,
-    `LP model: ${result.lpModel ?? "unverified"}`,
-    `LP lock/burn: ${lockBurn}`,
-    `LP Status: ${lpStatus}`,
-    `Controller: ${controller}`,
-    `Pool age: ${poolAge}`,
-    `Exit risk: ${result.exitRisk}`,
-    `Confidence: ${result.confidence}`,
-    `Evidence: ${evidence}`,
-    `Updated: ${result.lastUpdated ?? "live"}`,
+    `Verdict: ${verdictLine}`,
+    "",
+    "Meaning:",
+    explainLiquidityMeaning(result),
+    "",
+    "Key metrics:",
+    `- Liquidity: ${liq}`,
+    `- 24h Volume: ${vol}`,
+    `- Volume/liquidity ratio: ${ratio}`,
+    `- Market cap: ${mcap}`,
+    `- FDV: ${fdv}`,
+    `- Chain: ${chainLabel(result.chainSlug)}`,
+    `- DEX: ${result.dexName ?? "unverified"}`,
+    `- DEX / pool source: ${dexLabel}`,
+    `- Pool: ${poolAddr}`,
+    `- Primary pool: ${result.primaryPool ?? result.dexName ?? "not returned"}`,
+    `- Pool address: ${poolAddr}`,
+    `- Pool age: ${poolAge}`,
+    `- LP model: ${poolModelLabel(result)}`,
+    `- ${lpControlLine}`,
+    `- LP Status: ${lpStatus}`,
+    `- Controller: ${controller}`,
+    `- Exit risk: ${result.exitRisk}`,
+    `- Confidence: ${result.confidence}`,
+    `- Evidence: ${evidence}`,
+    `- Updated: ${result.lastUpdated ?? "live"}`,
     "",
     "Good signs:",
     ...good,
@@ -476,18 +658,18 @@ export function formatClarkLiquidityCheck(result: ClarkLiquidityCheckResult): st
     "Risks:",
     ...risks,
     "",
-    "Missing LP evidence:",
+    "Missing evidence:",
     ...missing,
     "",
-    "Verdict:",
-    `- ${result.verdict}`,
+    `Verdict: ${verdictTextFor(result.status)}`,
     "",
-    "CTA:",
+    "Next:",
     "- Deep Scan Token",
-    "- Open Token Scanner",
     "- Check LP",
-    "- Run full LP Safety",
+    "- Check Holders",
+    `- ${nextCreator}`,
     "- Add to Watchlist",
+    "- Open Token Scanner",
   ].join("\n")
 }
 

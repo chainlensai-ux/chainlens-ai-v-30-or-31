@@ -111,10 +111,12 @@ assert.ok(unknown.includes('Base, Ethereum, Robinhood, or Solana'))
   assert.ok(out.includes('Exit risk: Medium'))
   assert.ok(out.includes('Confidence:'))
   assert.ok(out.includes('Evidence:'))
+  assert.ok(out.includes('Meaning:'))
   assert.ok(out.includes('Open Token Scanner'))
   assert.ok(!out.toLowerCase().includes('wallet read'))
   assert.ok(!out.toLowerCase().includes('holdings count'))
   assert.ok(!/pnl partial/i.test(out))
+  assert.ok(!/technicalDebug/i.test(out))
 }
 
 // ─── Wrong-chain cached liquidity rejected ────────────────────────────────────

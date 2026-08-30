@@ -973,8 +973,8 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(guardIdx < appIntentWalletScanIdx, 'guard runs before appIntent.wallet_scan branch')
   assert.ok(guardIdx < routedWalletScanIdx, 'guard runs before routed.intent === "wallet_scan" branch')
   assert.ok(guardIdx < walletAnalysisIdx, 'guard runs before directIntent wallet_analysis branch')
-  assert.ok(routeFile.includes('isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address'), 'guard requires both a follow-up prompt and an existing lastToken in memory')
-  assert.ok(routeFile.includes('isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !hasAnyAddress(prompt)'), 'guard defers to the explicit-address LP route when the prompt names a new contract of any kind (EVM or Solana)')
+  assert.ok(routeFile.includes('isTokenFollowupPrompt(prompt)') && routeFile.includes('sessionMem.lastToken?.address'), 'guard requires both a follow-up prompt and an existing lastToken in memory')
+  assert.ok(routeFile.includes('!hasAnyAddress(prompt)'), 'guard defers to the explicit-address LP route when the prompt names a new contract of any kind (EVM or Solana)')
   assert.ok(!routeFile.slice(guardIdx, guardIdx + 1600).includes('runWalletScanner'), 'token follow-up guard never calls runWalletScanner')
 
   // Task 3/5: each formatter is section-specific, never a generic "open check" excuse,
@@ -1042,7 +1042,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   // Task 1: the hard guard is the first conditional in handleClarkAI, strictly before any
   // wallet snapshot execution or wallet-routing branch in the file.
-  const guardIdx = routeFile.indexOf('if (!isForcedLiquidityCheckPrompt(prompt) && isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address')
+  const guardIdx = routeFile.indexOf('if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && isTokenFollowupPrompt(prompt)')
   const walletSnapshotIdx = routeFile.indexOf('toolsUsed: ["wallet_get_snapshot"]')
   assert.ok(guardIdx > -1, 'hard token follow-up guard exists in handleClarkAI')
   assert.ok(walletSnapshotIdx === -1 || guardIdx < walletSnapshotIdx, 'token follow-up guard runs before any wallet_get_snapshot call')
@@ -1257,7 +1257,7 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   const routeFile = fs.readFileSync(path.join(process.cwd(), 'app/api/clark/route.ts'), 'utf8')
 
   const followupGuard = routeFile.slice(
-    routeFile.indexOf('if (!isForcedLiquidityCheckPrompt(prompt) && isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !hasAnyAddress(prompt)) {'),
+    routeFile.indexOf('if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && isTokenFollowupPrompt(prompt)'),
     routeFile.indexOf('// ─── Wallet compare')
   )
   assert.ok(followupGuard.length > 100, 'located the token follow-up guard (LP-locked prompts skip this TOKEN READ path)')
@@ -1319,15 +1319,15 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
 
   // Task 2: the hard guard (lastToken reuse) must run before the generic "Send a token
   // contract" liquidity_scan-with-no-address branch.
-  const guardIdx = routeFile.indexOf('if (!isForcedLiquidityCheckPrompt(prompt) && isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address')
+  const guardIdx = routeFile.indexOf('if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && isTokenFollowupPrompt(prompt)')
   const sendContractIdx = routeFile.indexOf("appIntent.intent === 'liquidity_scan' && !appIntent.address")
   assert.ok(guardIdx > -1 && sendContractIdx > -1 && guardIdx < sendContractIdx, 'lastToken LP follow-up guard runs before the generic "send a token contract" branch')
 
   // Task 3: an explicit new address in the same prompt must bypass the lastToken guard
   // entirely so the existing explicit-address LP route (classifyClarkPrompt) handles it.
   // LP-locked prompts skip this TOKEN READ follow-up entirely and use the LP-only branch.
-  assert.ok(routeFile.includes('isTokenFollowupPrompt(prompt) && sessionMem.lastToken?.address && !hasAnyAddress(prompt)'), 'lastToken LP follow-up guard defers to an explicit new contract address (EVM or Solana) in the same prompt')
-  assert.ok(routeFile.includes('!isForcedLiquidityCheckPrompt(prompt) && isTokenFollowupPrompt(prompt)'), 'LP-locked prompts must not use the token follow-up TOKEN READ path')
+  assert.ok(routeFile.includes('isTokenFollowupPrompt(prompt)') && routeFile.includes('!hasAnyAddress(prompt)'), 'lastToken LP follow-up guard defers to an explicit new contract address (EVM or Solana) in the same prompt')
+  assert.ok(routeFile.includes('!isForcedLiquidityCheckPrompt(prompt)') && routeFile.includes('classifyTokenFollowupKind(prompt) !== "lp_lock"'), 'LP-locked prompts must not use the token follow-up TOKEN READ path')
 
   // Task 4/5: formatLpLockCheck produces the exact expected heading and CTA, never "P CHECK".
   const ev = {
