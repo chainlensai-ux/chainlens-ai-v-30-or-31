@@ -67,7 +67,7 @@ assert.ok(route.includes('walletScanAttempted: false'), 'token scan debug must c
 // 9. Ethereum Token Core compatibility: prompt chain must be preserved end-to-end.
 assert.ok(routing.includes('ETH_CHAIN_WORD_RE'), 'routing must recognize ETH/Ethereum token prompts')
 assert.ok(routing.includes('on\\s+eth') && routing.includes('ethereum\\s+token'), 'ETH token prompts must be treated as token prompts, not wallet prompts')
-assert.ok(route.includes('const chain: SupportedChain = promptChain ?? body.chain ?? memSelectedChain'), 'explicit ETH prompt chain must override UI/default chain')
+assert.ok(route.includes('const chain: SupportedChain = (promptChain === "solana" || promptChain === "robinhood" ? null : promptChain) ?? body.chain ?? memSelectedChain'), 'explicit ETH prompt chain must override UI/default chain')
 assert.ok(route.includes('tokenInternalApiPayload = { contract: tokenAddress, chain: toTokenApiChain(chainForClarkTools)'), '/api/token payload must use resolved ETH chain (no silent Base fallback)')
 assert.ok(route.includes('const honeypotChain = toTokenApiChain(chainForClarkTools);'), 'independent security check must resolve chain explicitly (no silent Base default)')
 assert.ok(route.includes('chainDisplayLabel(tokenEvidenceChain(ev, chainForClarkTools))'), 'formatter/debug path must preserve Ethereum chain label')

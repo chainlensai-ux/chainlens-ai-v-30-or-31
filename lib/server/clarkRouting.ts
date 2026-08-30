@@ -136,7 +136,19 @@ const TOKEN_NAME_RE = /\b(scan|check|analyze|tell\s+me\s+about|token\s+scan|is|l
 const TOKEN_NAME_STOPWORDS = new Set(["THIS", "THAT", "IT", "TOKEN", "WALLET", "LIQUIDITY", "LP", "SAFE", "RISK", "BE", "CHANGE", "CHECK", "LOCKED", "PULLED", "FOR", "ON", "THE", "POOL", "EXIT"]);
 const LP_CHAIN_WORDS = new Set(["BASE", "ETH", "ETHEREUM", "SOL", "SOLANA", "ROBINHOOD", "BNB", "BSC", "POLYGON"]);
 
-const LIQUIDITY_CHECK_INTENT_RE = new RegExp(`\\b(lp\\s+check|check\\s+lp|${LIQUIDITY_WORD}(?:\\s+check)?|explain\\s+${LIQUIDITY_WORD}|${LIQUIDITY_WORD}\\s+safety|pool\\s+check|where\\s+is\\s+${LIQUIDITY_WORD}|exit\\s+risk|burn\\s+proof|lock\\s+proof|lp\\s+safety)\\b`, "i");
+const LIQUIDITY_CHECK_INTENT_RE = new RegExp(`\\b(lp\\s+check|check\\s+lp|run\\s+lp\\s+check|${LIQUIDITY_WORD}(?:\\s+check)?|check\\s+${LIQUIDITY_WORD}|how\\s+much\\s+${LIQUIDITY_WORD}|is\\s+(?:that\\s+|this\\s+|it\\s+)?(?:enough\\s+)?${LIQUIDITY_WORD}|is\\s+${LIQUIDITY_WORD}\\s+(?:strong|safe|locked|thin|good|deep|weak|enough)|${LIQUIDITY_WORD}\\s+(?:strong|thin|weak|deep|enough|risk|safety)|enough\\s+${LIQUIDITY_WORD}|explain\\s+${LIQUIDITY_WORD}|${LIQUIDITY_WORD}\\s+safety|pool\\s+check|check\\s+pool|where\\s+is\\s+${LIQUIDITY_WORD}|exit\\s+(?:${LIQUIDITY_WORD}|risk)|burn\\s+proof|lock\\s+proof|lp\\s+safety)\\b`, "i");
+
+export type ClarkLiquidityParsedIntent = "liquidity_check" | "lp_check" | "pool_check";
+
+/** Sub-intent for LP/liquidity/pool questions. Null when the prompt is not a liquidity question. */
+export function parseClarkLiquidityIntent(prompt: string): ClarkLiquidityParsedIntent | null {
+  const t = String(prompt ?? "").trim().toLowerCase();
+  if (!t) return null;
+  if (/\b(pool\s+check|check\s+pool|check\s+this\s+pool|pair\s+check|this\s+pool)\b/i.test(t)) return "pool_check";
+  if (/\b(lp\s+check|check\s+lp|run\s+lp\s+check|is\s+lp\s+locked|lp\s+locked|lp\s+safety|lp\s+status|burn\s+proof|lock\s+proof)\b/i.test(t)) return "lp_check";
+  if (LIQUIDITY_CHECK_INTENT_RE.test(t) || /\b(how\s+much\s+liqu(?:i)?dity|is\s+(?:that\s+|this\s+)?(?:enough\s+)?liqu(?:i)?dity|is\s+liqu(?:i)?dity\s+strong|liqu(?:i)?dity\s+strong|liqu(?:i)?dity\s+risk|exit\s+liqu(?:i)?dity|enough\s+liqu(?:i)?dity|check\s+liqu(?:i)?dity)\b/i.test(t)) return "liquidity_check";
+  return null;
+}
 
 export function extractLiquiditySymbol(raw: string): string | null {
   const patterns = [
@@ -146,20 +158,20 @@ export function extractLiquiditySymbol(raw: string): string | null {
   for (const p of patterns) {
     const m = raw.match(p);
     const cand = m?.[1]?.toUpperCase() ?? null;
-    if (cand && !TOKEN_NAME_STOPWORDS.has(cand) && !LP_CHAIN_WORDS.has(cand)) return cand;
+    if (cand && !TOKEN_NAME_STOPWORDS.has(cand) && !LP_CHAIN_WORDS.has(cand) && !isValidSolanaMintAddress(m?.[1] ?? "")) return cand;
   }
   return null;
 }
 
 export function isLiquidityCheckIntent(prompt: string): boolean {
-  return LIQUIDITY_CHECK_INTENT_RE.test(String(prompt ?? "").trim().toLowerCase());
+  return parseClarkLiquidityIntent(prompt) != null;
 }
 
 // Tight lock phrases from the product spec. Bare "liquidity" is intentionally NOT enough —
 // that would steal educational/pump questions. "liquidity check HOUSE" and "is LP locked"
 // must always win over token_read / risk / safety / full-report.
 const LIQUIDITY_INTENT_LOCK_RE = new RegExp(
-  `\\b(?:${LIQUIDITY_WORD}\\s+check|check\\s+${LIQUIDITY_WORD}|lp\\s+check|check\\s+lp|run\\s+lp\\s+check|run\\s+${LIQUIDITY_WORD}\\s+check|${LIQUIDITY_WORD}\\s+safety|lp\\s+safety|is\\s+lp\\s+locked|is\\s+${LIQUIDITY_WORD}\\s+locked|is\\s+${LIQUIDITY_WORD}\\s+safe|is\\s+it\\s+locked|pool\\s+check|where\\s+is\\s+${LIQUIDITY_WORD}|exit\\s+(?:${LIQUIDITY_WORD}|risk)|burn\\s+proof|lock\\s+proof|what\\s+about\\s+(?:lp|${LIQUIDITY_WORD})|explain\\s+(?:lp|${LIQUIDITY_WORD})|can\\s+${LIQUIDITY_WORD}\\s+be\\s+pulled)\\b`,
+  `\\b(?:${LIQUIDITY_WORD}\\s+check|check\\s+${LIQUIDITY_WORD}|how\\s+much\\s+${LIQUIDITY_WORD}|is\\s+(?:that\\s+|this\\s+|it\\s+)?(?:enough\\s+)?${LIQUIDITY_WORD}|is\\s+${LIQUIDITY_WORD}\\s+(?:strong|safe|locked|thin|good|deep|weak|enough)|${LIQUIDITY_WORD}\\s+(?:strong|thin|weak|deep|enough|risk|safety)|enough\\s+${LIQUIDITY_WORD}|lp\\s+check|check\\s+lp|run\\s+lp\\s+check|run\\s+${LIQUIDITY_WORD}\\s+check|${LIQUIDITY_WORD}\\s+safety|lp\\s+safety|is\\s+lp\\s+locked|is\\s+${LIQUIDITY_WORD}\\s+locked|is\\s+${LIQUIDITY_WORD}\\s+safe|is\\s+it\\s+locked|pool\\s+check|check\\s+pool|where\\s+is\\s+${LIQUIDITY_WORD}|exit\\s+(?:${LIQUIDITY_WORD}|risk)|burn\\s+proof|lock\\s+proof|what\\s+about\\s+(?:lp|${LIQUIDITY_WORD})|explain\\s+(?:lp|${LIQUIDITY_WORD})|can\\s+${LIQUIDITY_WORD}\\s+be\\s+pulled)\\b`,
   "i",
 );
 
@@ -209,7 +221,12 @@ export function applyClarkLiquidityIntentLock<T extends { intent: string; addres
   prompt: string,
 ): { routed: T; audit: ClarkIntentLockAudit } {
   const detectedIntent = routed.intent;
-  if (!isForcedLiquidityCheckPrompt(prompt)) {
+  const parsed = parseClarkLiquidityIntent(prompt);
+  const shouldLock =
+    isForcedLiquidityCheckPrompt(prompt)
+    || (parsed != null && Boolean(routed.address || routed.symbol))
+    || (parsed != null && classifyTokenFollowupKind(prompt) === "lp_lock");
+  if (!shouldLock) {
     return { routed, audit: buildClarkIntentLockAudit({ prompt, detectedIntent, resolvedSymbolOrAddress: routed.address ?? routed.symbol }) };
   }
   routed.intent = "liquidity_scan" as T["intent"];
@@ -235,7 +252,7 @@ export function applyClarkLiquidityIntentLock<T extends { intent: string; addres
  */
 export function getClarkAddressRouteHint(prompt: string): "token" | "wallet" | "ambiguous" | "none" {
   const t = (prompt ?? "").trim().toLowerCase();
-  const tokenSignals = /\b(token|coin|contract|\bca\b|ticker|scan\s+this\s+token|token\s+scan|is\s+this\s+token|base\s+token|eth\s+token|on\s+base|on\s+eth|rug|dev\s+rug|lp\s+locked|liquidity\s+locked|base\s+contract|ethereum\s+token|honeypot|buy\s+tax|sell\s+tax)\b/i.test(t);
+  const tokenSignals = /\b(token|coin|contract|\bca\b|ticker|scan\s+this\s+token|token\s+scan|is\s+this\s+token|base\s+token|eth\s+token|on\s+base|on\s+eth|rug|dev\s+rug|lp\s+locked|liquidity\s+locked|liquidity\s+check|check\s+liquidity|lp\s+check|check\s+lp|pool\s+check|how\s+much\s+liquidity|is\s+liquidity|liquidity\s+strong|liquidity\s+risk|exit\s+liquidity|enough\s+liquidity|\bliquidity\b|\blp\b|base\s+contract|ethereum\s+token|honeypot|buy\s+tax|sell\s+tax)\b/i.test(t);
   const walletSignals = /\b(wallet|portfolio|holdings?|pnl|profit|trades?|scan\s+this\s+wallet|analyze\s+wallet|deep\s+scan\s+wallet|wallet\s+pnl|wallet\s+scan|wallet\s+check|wallet\s+report)\b/i.test(t);
   if (tokenSignals && !walletSignals) return "token";
   if (walletSignals && !tokenSignals) return "wallet";
@@ -317,7 +334,7 @@ export function isWalletComparePrompt(text: string): boolean {
 
 // Task 1 (Pack 1 hard fix): token follow-up prompts that must always resolve against
 // the last scanned token in memory, never fall through to a wallet branch.
-const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|safe\s+to\s+ape|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|rug\s+risk|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+(?:rug|dump)|who\s+controls\s+(?:the\s+)?supply|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+liquidity\s+locked|is\s+it\s+locked|explain\s+lp|explain\s+holders|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+risk|contract\s+risk|risk\s+score|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+red\s+flags|explain\s+(?:the\s+)?risk|explain\s+verdict|bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|run\s+lp\s+check|lp\s+check|check\s+lp|what\s+about\s+lp|what\s+about\s+liquidity|where\s+is\s+liquidity|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check)\b/i;
+const TOKEN_FOLLOWUP_RE = /\b(is\s+it\s+safe|safe\?|is\s+this\s+safe|is\s+this\s+token\s+safe|safe\s+to\s+ape|should\s+i\s+buy|is\s+it\s+legit|is\s+it\s+a\s+rug|rug\s+risk|is\s+it\s+risky|can\s+(?:the\s+)?dev\s+(?:rug|dump)|who\s+controls\s+(?:the\s+)?supply|can\s+liquidity\s+be\s+pulled|is\s+lp\s+locked|is\s+liquidity\s+locked|is\s+it\s+locked|is\s+liquidity\s+strong|is\s+that\s+enough\s+liquidity|liquidity\s+strong|liquidity\s+risk|enough\s+liquidity|exit\s+liquidity|how\s+much\s+liquidity|explain\s+lp|explain\s+holders|what\s+about\s+holders|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+risk|contract\s+risk|risk\s+score|explain\s+dev(?:\s+control)?|why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|why\s+open\s+check|what\s+are\s+red\s+flags|explain\s+(?:the\s+)?risks?|explain\s+verdict|bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|run\s+lp\s+check|lp\s+check|check\s+lp|what\s+about\s+lp|what\s+about\s+liquidity|where\s+is\s+liquidity|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check|should\s+i\s+watch\s+(?:it|this|that)|deep\s+scan\s+it)\b/i;
 
 // Task 3: explicit wallet language must override token-memory follow-up routing — a user
 // who says "wallet pnl", "scan wallet <address>", "portfolio", or "holdings" clearly wants
@@ -342,8 +359,8 @@ export type TokenFollowupKind = "safety" | "dev_rug" | "lp_lock" | "risk" | "ana
 export function classifyTokenFollowupKind(prompt: string): TokenFollowupKind {
   const t = String(prompt ?? "").toLowerCase();
   if (/\b(can\s+(?:the\s+)?dev\s+(?:rug|dump)|who\s+controls\s+(?:the\s+)?supply|explain\s+dev(?:\s+control)?)\b/.test(t)) return "dev_rug";
-  if (/\b(is\s+lp\s+locked|is\s+it\s+locked|explain\s+lp|what\s+about\s+lp|what\s+about\s+liquidity|where\s+is\s+liquidity|can\s+liquidity\s+be\s+pulled|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check)\b/.test(t)) return "lp_lock";
-  if (/\b(bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|should\s+i\s+buy)\b/.test(t)) return "analyst";
+  if (/\b(is\s+lp\s+locked|is\s+it\s+locked|explain\s+lp|what\s+about\s+lp|what\s+about\s+liquidity|where\s+is\s+liquidity|can\s+liquidity\s+be\s+pulled|run\s+lp\s+check|lp\s+check|check\s+lp|liquidity\s+safety|check\s+liquidity(?:\s+safety)?|run\s+liquidity\s+check|is\s+liquidity\s+strong|is\s+that\s+enough\s+liquidity|liquidity\s+strong|liquidity\s+risk|enough\s+liquidity|exit\s+liquidity|how\s+much\s+liquidity)\b/.test(t)) return "lp_lock";
+  if (/\b(bull\s+case|bear\s+case|biggest\s+risk|what\s+am\s+i\s+missing|what\s+is\s+missing|should\s+i\s+buy|should\s+i\s+watch)\b/.test(t)) return "analyst";
   if (/\b(why\s+high\s+risk|why\s+is\s+it\s+risky|why\s+caution|what\s+are\s+red\s+flags|explain\s+(?:the\s+)?risk|explain\s+verdict|explain\s+holders|are\s+(?:the\s+)?holders?\s+concentrated|holder\s+risk|contract\s+risk|risk\s+score)\b/.test(t)) return "risk";
   return "safety";
 }
@@ -445,9 +462,15 @@ export function classifyClarkPrompt(prompt: string): {
   }
 
   // Intent lock: LP/liquidity phrasing always wins over token_read / risk / safety / full-report.
-  // Do not require an address or symbol here — lastToken / resolver handle missing targets later.
+  // Do not require an address or symbol here — lastToken / lastClarkSubject handle missing targets later.
   // Without this, "liquidity check" (no ticker) falls through TOKEN_SCAN_RE's bare "check" into TOKEN READ.
-  if (isForcedLiquidityCheckPrompt(raw) || (LIQUIDITY_CHECK_INTENT_RE.test(t) && (address || symbol))) {
+  // Never default a 0x address to wallet when the user asked about liquidity/LP/pool.
+  // A Solana mint next to LP language must stay liquidity_scan — never generic TOKEN READ.
+  if (
+    isForcedLiquidityCheckPrompt(raw)
+    || (parseClarkLiquidityIntent(raw) != null && (address || symbol))
+    || (parseClarkLiquidityIntent(raw) != null && address != null && isValidSolanaMintAddress(address))
+  ) {
     return { intent: "liquidity_scan", address, addresses, deep: false, symbol: address ? null : symbol };
   }
 
@@ -534,7 +557,7 @@ export function classifyClarkPrompt(prompt: string): {
     // the gate that runs before it. Added the same vocabulary here, verbatim in spirit, so the two
     // classifiers agree instead of the routing layer contradicting the entity layer.
     const hasOtherStrongIntent =
-      /\b(lp\s+check|liquidity\s+check|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon|base\s+token|eth\s+token|ethereum\s+token|bnb\s+token|bsc\s+token|polygon\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address|safe|safety|\brug\b|honeypot|scam|deep\s+scan|full\s+scan|full\s+analysis|run\s+all\s+checks|scan\s+this\s+properly|full\s+report|complete\s+report|who\s+deployed|deployer|deployed\s+this|market\s*cap|marketcap|\bfdv\b|top\s+holders?|holder\s+count|holder\s+concentration|\bholders?\b|buy\s*tax|sell\s*tax|is\s+lp\s+locked|lp\s+locked|liquidity\s+locked)\b/i.test(t);
+      /\b(lp\s+check|liquidity\s+check|check\s+liquidity|how\s+much\s+liquidity|pool\s+check|check\s+pool|is\s+liquidity|liquidity|radar|pumping|trending|movers|whale|smart\s+money|token\s+scan|scan\s+this\s+token|token\s+check|is\s+(?:this\s+)?token|this\s+token|can\s+(?:the\s+)?dev|is\s+lp|explain\s+lp|high\s+risk|red\s+flags|on\s+base|on\s+eth|on\s+ethereum|on\s+bnb|on\s+bsc|on\s+polygon|base\s+token|eth\s+token|ethereum\s+token|bnb\s+token|bsc\s+token|polygon\s+token|\btoken\b|\bcoin\b|\bca\b|\bticker\b|contract\s+address|safe|safety|\brug\b|honeypot|scam|deep\s+scan|full\s+scan|full\s+analysis|run\s+all\s+checks|scan\s+this\s+properly|full\s+report|complete\s+report|who\s+deployed|deployer|deployed\s+this|market\s*cap|marketcap|\bfdv\b|top\s+holders?|holder\s+count|holder\s+concentration|\bholders?\b|buy\s*tax|sell\s*tax|is\s+lp\s+locked|lp\s+locked|liquidity\s+locked)\b/i.test(t);
     if (!hasOtherStrongIntent) {
       // SOLANA-BARE-ADDRESS-DEFAULT FIX, DISCLOSED (caught by a test added in another session's
       // merge: "a bare Solana mint must route as token_scan, never wallet_scan"). This default is
@@ -1586,9 +1609,9 @@ export function formatWalletCompareUnsupported(opts: {
 
 export function formatEoaLpCheckReply(): string {
   return [
-    "That address looks like a wallet, not a token contract. LP checks need a token contract.",
+    "This is a wallet, not a token or pool. Liquidity checks do not apply.",
     "",
-    "CTA: Scan Wallet / Deep Scan Wallet",
+    "CTA: Open Token Scanner",
   ].join("\n");
 }
 
@@ -4120,7 +4143,10 @@ export function classifyClarkToolIntent(prompt: string): ClarkToolIntentResult {
 const WATCHLIST_ADD_RE = /\b(add\s+(?:that|this|it)\s+to\s+(?:my\s+)?watchlist|add\s+to\s+watchlist|watch\s+(?:that|this|it))\b/i;
 
 export function isClarkWatchlistAddCommand(prompt: string): boolean {
-  return WATCHLIST_ADD_RE.test(String(prompt ?? "").trim());
+  const t = String(prompt ?? "").trim();
+  // "should I watch it?" is a follow-up question about the last token, not a write command.
+  if (/\bshould\s+i\s+watch\b/i.test(t)) return false;
+  return WATCHLIST_ADD_RE.test(t);
 }
 
 export function formatNoTokenInMemory(): string {

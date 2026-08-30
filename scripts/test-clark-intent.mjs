@@ -173,8 +173,10 @@ assert.equal(formatBaseRadarRead([]), null)
 assert.equal(formatBaseRadarRead(null), null)
 
 const eoaReply = formatEoaLpCheckReply()
-assert.ok(eoaReply.includes('wallet, not a token contract'))
+assert.ok(eoaReply.includes('wallet, not a token or pool') || eoaReply.includes('wallet, not a token contract'))
+assert.ok(eoaReply.includes('Liquidity checks do not apply'))
 assert.ok(eoaReply.includes('CTA:'))
+assert.ok(!/holdings|portfolio|pnl|walletScanHealth/i.test(eoaReply), 'EOA LP reply must not leak wallet portfolio fields')
 
 // ─── Pack 1: format functions output shape ────────────────────────────────────
 const mockEv = {
