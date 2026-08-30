@@ -21,7 +21,11 @@
 // derived from — match Uniswap's real, public v4-core repository exactly, not a same-named clone.
 // 14,921 real transactions and a $12M+ live balance at verification time confirm this is the
 // actively-used deployment, not a dormant/test one.
-const ROBINHOOD_V4_POOL_MANAGER = '0x8366a39CC670B4001A1121B8F6A443A643e40951'
+// EXPORTED, DISCLOSED (Robinhood Wallet Scanner Phase 3 follow-up): re-used by
+// lib/server/robinhoodSwapDecoder.ts as the one verified V4 singleton contract every real
+// Robinhood swap log must originate from — the same address, the same verification, no second
+// source of truth introduced.
+export const ROBINHOOD_V4_POOL_MANAGER = '0x8366a39CC670B4001A1121B8F6A443A643e40951'
 
 // Event-topic derivation, disclosed: computed (via viem's toEventSelector, not hand-rolled crypto)
 // from the exact canonical signature `ModifyLiquidity(bytes32,address,int24,int24,int256,bytes32)`

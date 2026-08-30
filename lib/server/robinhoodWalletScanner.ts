@@ -21,22 +21,31 @@
 //     provider-supported, portfolio total, chain-strict cache. DONE.
 //   Phase 2 (this file) — wallet activity (token/native transfers, in/out classification only,
 //     never buy/sell/swap labels). DONE.
-//   Phase 3 (swap decoding) — NOT built. A real, independently-verified Robinhood swap ROUTER
-//     address does not exist anywhere in this codebase today (confirmed: lib/server/lpProof.ts's own
-//     resolveConcentratedProtocol hardcodes `router: null` for Robinhood — the only Robinhood
-//     contract addresses verified in this codebase are Uniswap V3's NonfungiblePositionManager and
-//     V4's PoolManager/PositionManager, which answer "who owns this LP position," not "what routed
-//     this swap"). Per this task's own hard rule ("Do NOT use Base/Ethereum router or pool
-//     assumptions on Robinhood unless verified"), Phase 3 cannot be built without fabricating or
-//     guessing a router address — left honestly unbuilt. robinhoodWalletSwapDecodeAudit's TYPE is
-//     defined below so Phase 3 has a ready target, but nothing constructs one yet.
-//   Phase 4 (pricing + PnL) — gated OFF by design (pnlStatus is always 'not_verified' below) until
-//     Phase 3 exists and passes FIFO regression — src/modules/fifoEngine/ itself needs zero changes
-//     for this (chain is a passthrough label there, confirmed), it just never receives Robinhood
-//     trade events because Phase 3 never produces any.
+//   Phase 3 (swap decoding, lib/server/robinhoodSwapDecoder.ts) — BUILT, real decoding against the
+//     one independently-verified Robinhood contract this codebase trusts (the Uniswap V4
+//     PoolManager singleton — see that file's own header for the full verification trail and the
+//     event-topic derivation method). There is still no "router" in the V2/V3 sense to verify for
+//     V4 (a documented, real architectural fact, not a gap) — routerMatched is honestly always null.
+//     LIVE VERIFICATION SCOPE, DISCLOSED: this sandbox has no configured Robinhood RPC, so the
+//     pool-currency (Initialize-event) and token-decimals (eth_call) lookups the decoder depends on
+//     have not been exercised against real, live chain data in this session — only against injected
+//     test fixtures that prove the decode logic itself is correct. In production, with a real RPC
+//     configured, a genuinely verified swap can and will be decoded; in this environment, expect
+//     verifiedSwapCount to be 0 on every real scan, which is the honest, correct outcome per this
+//     phase's own hard rule ("Do NOT enable Robinhood PnL until swap evidence is verified").
+//   Phase 4 (pricing + PnL) — wired: verified swaps (confidence 'high' only — real token identities
+//     AND real price evidence on both legs) are fed into src/modules/fifoEngine's own, unmodified
+//     buildFifoOutput (genuine reuse, not a reimplementation or a fork — see
+//     robinhoodSwapDecoder.ts's buildRobinhoodMatchedLotsFromSwaps for the one disclosed type-cast
+//     this requires and why it's safe). pnlStatus stays 'disabled' whenever verifiedSwapCount is 0;
+//     never enabled from transfer volume or activity alone.
 
 import { getRobinhoodRpcUrl, isRobinhoodChainAvailable, ROBINHOOD_CHAIN_ID, ROBINHOOD_CHAIN_SLUG, ROBINHOOD_CHAIN_NATIVE_CURRENCY } from './robinhoodChainConfig'
 import { getTokenCache, setTokenCache } from './cache/tokenCache'
+import {
+  decodeRobinhoodSwapLog, resolvePoolCurrenciesViaRpc, fetchTokenDecimalsViaRpc, buildRobinhoodMatchedLotsFromSwaps,
+  V4_NATIVE_CURRENCY_ADDRESS, type RobinhoodSwapDecodeAudit, type RobinhoodPoolCurrencies, type VerifiedRobinhoodSwap,
+} from './robinhoodSwapDecoder'
 
 export type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>
 
@@ -139,38 +148,44 @@ export type RobinhoodWalletActivityResult = {
   // interaction on this wallet is visible in the audit as "N unrecognized logs skipped" rather than
   // looking identical to a wallet with zero DEX activity at all.
   skippedSwapLogs: number
+  // PHASE 3, DISCLOSED: real per-log decode attempts against the one verified Robinhood pool
+  // contract (see robinhoodSwapDecoder.ts) — every non-Transfer log gets one of these, whether it
+  // resolved to a verified swap or not, so the full decode reasoning is auditable.
+  swapDecodeAudits: RobinhoodSwapDecodeAudit[]
+  // Count of swaps that reached confidence 'high' — real token identities on both legs AND real
+  // price evidence for both. Only swaps at this confidence are ever fed into FIFO/PnL.
+  verifiedSwapCount: number
   reason: string | null
   fromCache: boolean
 }
 
-// Phase 3 target shape — not constructed anywhere yet (see file header). Kept here, not deleted,
-// so the eventual real swap decoder has an already-agreed-upon audit shape to fill in.
-export type RobinhoodWalletSwapDecodeAudit = {
-  wallet: string
-  txHash: string
-  router: string | null
-  pool: string | null
-  dexName: string | null
-  tokenIn: string | null
-  tokenOut: string | null
-  quoteToken: string | null
-  amountIn: string | null
-  amountOut: string | null
-  confidence: 'high' | 'medium' | 'low' | null
-  rejectionReason: string | null
+// Re-exported so callers of this module don't need a second import from robinhoodSwapDecoder.ts
+// just to type a wallet-scanner-level swapDecodeAudits array.
+export type { RobinhoodSwapDecodeAudit }
+
+export type RobinhoodWalletPnlStatus = 'disabled' | 'partial' | 'verified'
+
+export type RobinhoodWalletPnlResult = {
+  status: RobinhoodWalletPnlStatus
+  realizedPnlUsd: number | null
+  matchedLotsCount: number
+  verifiedSwapCount: number
+  reason: string | null
 }
 
-// DISABLED-PNL REASON, DISCLOSED: one fixed, honest sentence — never varies per scan, since the
-// reason PnL is disabled (no verified swap decoding) is a fact about this codebase's current state,
-// not about any particular wallet's data.
-const DISABLED_PNL_REASON = 'No independently-verified Robinhood swap router exists yet, so activity cannot be decoded into buy/sell trades — PnL cannot be computed safely without that.'
+// FIXED PUBLIC PNL MESSAGES, DISCLOSED: exactly the wording this task's UI section requires —
+// 'disabled' when zero verified swaps exist, 'partial' when some do but the sample/evidence is
+// still thin (mirrors fifoEngine's own derivePublicPnlStatus 'limited_verified_sample'). Neither
+// ever varies with wallet-specific numbers; the numbers themselves live in RobinhoodWalletPnlResult.
+const DISABLED_PNL_MESSAGE = 'PnL: disabled — verified Robinhood swap decoding unavailable'
+const PARTIAL_PNL_MESSAGE = 'PnL: partial — verified Robinhood swap decoding unavailable'
 
 export type RobinhoodProviderStatus = 'ok' | 'partial' | 'unavailable' | 'not_configured' | 'not_run'
 
-// AUDIT SHAPE, DISCLOSED (Phase 1/2 audit task — exact required field set): every field here is
-// either a real, measured status/count from this scan, or the one fixed disabled-PnL constant above
-// — nothing here is guessed or defaulted to a "healthy-looking" value when the real answer is
-// unknown (a field that never ran reports 'not_run', not 'ok').
+// AUDIT SHAPE, DISCLOSED (Phase 1/2 audit task — exact required field set, extended for Phase 3):
+// every field here is either a real, measured status/count from this scan, or one of the two fixed
+// PnL-message constants above — nothing here is guessed or defaulted to a "healthy-looking" value
+// when the real answer is unknown (a field that never ran reports 'not_run', not 'ok').
 export type RobinhoodWalletScannerAudit = {
   wallet: string
   holdingsStatus: RobinhoodHoldingsStatus | 'not_run'
@@ -180,33 +195,50 @@ export type RobinhoodWalletScannerAudit = {
   activityStatus: RobinhoodActivityStatus | 'not_run'
   skippedSwapLogs: number
   unpricedTokenCount: number
-  pnlStatus: 'disabled'
+  pnlStatus: RobinhoodWalletPnlStatus
   disabledPnlReason: string
   wrongChainCacheRejected: boolean
   // ADDITIVE, DISCLOSED: not in the task's minimum required shape, kept because they carry real
   // diagnostic value the required fields alone don't — chainId for at-a-glance chain identity,
-  // swapDecodeStatus makes the Phase 3 gate explicit (never 'verified'/'unverified' since no attempt
-  // has run), unsupportedReasons is the human-readable expansion of disabledPnlReason plus any
-  // provider-specific failure reasons for this scan.
+  // swapDecodeStatus/verifiedSwapCount make the Phase 3 outcome explicit and real (never claimed
+  // 'verified' without an actual verified swap count > 0), unsupportedReasons is the human-readable
+  // expansion of disabledPnlReason plus any provider-specific failure reasons for this scan.
   chainId: number
-  swapDecodeStatus: 'not_built'
+  swapDecodeStatus: 'built_no_verified_swaps' | 'partial' | 'verified'
+  verifiedSwapCount: number
   unsupportedReasons: string[]
 }
 
+// KEPT FOR BACKWARD COMPATIBILITY, DISCLOSED: Phase 2's own test pins this exact wording, and no
+// caller needs it renamed — Phase 3/4 callers should use formatRobinhoodPnlMessage(status) below
+// instead, which reflects the real, per-scan pnlStatus rather than a single Phase-2-era constant.
 export function formatRobinhoodPnlNotVerifiedMessage(): string {
   return 'Robinhood PnL not verified yet — activity decoding pending.'
+}
+
+// STATUS-AWARE PNL MESSAGE, DISCLOSED (Phase 3/4): the route/UI going forward call this instead of
+// the fixed Phase-2 message above — it reflects the real, measured pnlStatus for this scan
+// (verified swaps + FIFO output vs. genuinely zero verified evidence), never a guess.
+export function formatRobinhoodPnlMessage(status: RobinhoodWalletPnlStatus): string {
+  if (status === 'verified') return 'Verified Robinhood PnL'
+  if (status === 'partial') return PARTIAL_PNL_MESSAGE
+  return DISABLED_PNL_MESSAGE
 }
 
 export function buildRobinhoodWalletScannerAudit(input: {
   wallet: string
   holdings: RobinhoodWalletHoldingsResult | null
   activity: RobinhoodWalletActivityResult | null
+  pnl: RobinhoodWalletPnlResult | null
   wrongChainCacheRejected: boolean
 }): RobinhoodWalletScannerAudit {
-  const unsupportedReasons: string[] = [
-    'Robinhood swap decoding is not built — no independently-verified Robinhood swap router exists yet.',
-    DISABLED_PNL_REASON,
-  ]
+  const pnlStatus: RobinhoodWalletPnlStatus = input.pnl?.status ?? 'disabled'
+  const verifiedSwapCount = input.activity?.verifiedSwapCount ?? 0
+  const disabledPnlReason = pnlStatus === 'verified'
+    ? 'Not applicable — PnL is verified for this scan.'
+    : (input.pnl?.reason ?? NO_VERIFIED_SWAPS_REASON)
+  const unsupportedReasons: string[] = []
+  if (pnlStatus !== 'verified') unsupportedReasons.push(disabledPnlReason)
   if (input.holdings?.reason) unsupportedReasons.push(`Holdings: ${input.holdings.reason}`)
   if (input.activity?.reason) unsupportedReasons.push(`Activity: ${input.activity.reason}`)
 
@@ -248,11 +280,12 @@ export function buildRobinhoodWalletScannerAudit(input: {
     activityStatus: input.activity?.status ?? 'not_run',
     skippedSwapLogs: input.activity?.skippedSwapLogs ?? 0,
     unpricedTokenCount: input.holdings?.unpricedTokenCount ?? 0,
-    pnlStatus: 'disabled',
-    disabledPnlReason: DISABLED_PNL_REASON,
+    pnlStatus,
+    disabledPnlReason,
     wrongChainCacheRejected: input.wrongChainCacheRejected,
     chainId: ROBINHOOD_CHAIN_ID,
-    swapDecodeStatus: 'not_built',
+    swapDecodeStatus: verifiedSwapCount === 0 ? 'built_no_verified_swaps' : pnlStatus === 'verified' ? 'verified' : 'partial',
+    verifiedSwapCount,
     unsupportedReasons,
   }
 }
@@ -450,6 +483,12 @@ type CovalentTxLogEvent = {
   decoded?: { name?: string; params?: Array<{ name?: string; value?: string }> }
   sender_contract_ticker_symbol?: string
   sender_address?: string
+  // RAW LOG FIELDS, DISCLOSED (Phase 3): Covalent/GoldRush's documented log_events schema — used to
+  // decode a Swap event directly from the emitting contract's own topic0, independent of whether
+  // Covalent's own indexer has this contract's ABI registered for `decoded`. Optional because
+  // Phase 2's Transfer-only path never needed them.
+  raw_log_topics?: string[]
+  raw_log_data?: string
 }
 type CovalentTransaction = {
   tx_hash?: string
@@ -489,19 +528,34 @@ export async function fetchRobinhoodTransactions(wallet: string, fetchImpl: Fetc
 
 const ERC20_TRANSFER_EVENT_NAME = 'Transfer'
 
-export async function resolveRobinhoodWalletActivity(wallet: string, deps: { fetchImpl: FetchImpl; cached?: (RobinhoodWalletActivityResult & { chainSlug: 'robinhood'; wallet: string }) | null }): Promise<RobinhoodWalletActivityResult> {
+export type ResolveRobinhoodActivityDeps = {
+  fetchImpl: FetchImpl
+  cached?: (RobinhoodWalletActivityResult & { chainSlug: 'robinhood'; wallet: string }) | null
+  // PHASE 3 DEPENDENCIES, DISCLOSED: all optional, all default to the real, RPC/pricing-backed
+  // implementations below — a caller (test or otherwise) can inject fakes without this function's
+  // own decode/counting logic ever changing. See robinhoodSwapDecoder.ts for what each real default
+  // actually does and why it's a genuine verification, not a guess.
+  resolvePoolCurrencies?: (poolId: string) => Promise<RobinhoodPoolCurrencies | null>
+  priceUsdLookupForToken?: (tokenAddress: string) => Promise<number | null>
+}
+
+export async function resolveRobinhoodWalletActivity(wallet: string, deps: ResolveRobinhoodActivityDeps): Promise<RobinhoodWalletActivityResult> {
   if (deps.cached && !rejectWrongChainRobinhoodCache(deps.cached, { wallet })) {
     return { ...deps.cached, fromCache: true }
   }
   if (!isRobinhoodChainAvailable()) {
-    return { status: 'not_configured', wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, reason: 'Robinhood Chain is not configured.', fromCache: false }
+    return { status: 'not_configured', wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, swapDecodeAudits: [], verifiedSwapCount: 0, reason: 'Robinhood Chain is not configured.', fromCache: false }
   }
   const { items: txs, reason } = await fetchRobinhoodTransactions(wallet, deps.fetchImpl)
   if (!txs) {
-    return { status: reason === 'no_api_key' ? 'not_configured' : 'unavailable', wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, reason: reason ?? 'no_data', fromCache: false }
+    return { status: reason === 'no_api_key' ? 'not_configured' : 'unavailable', wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, swapDecodeAudits: [], verifiedSwapCount: 0, reason: reason ?? 'no_data', fromCache: false }
   }
+  const resolvePoolCurrencies = deps.resolvePoolCurrencies ?? ((poolId: string) => resolvePoolCurrenciesViaRpc(poolId, deps.fetchImpl))
+  const priceUsdLookupForToken = deps.priceUsdLookupForToken ?? (async () => null)
+
   const lowerWallet = wallet.toLowerCase()
   const items: RobinhoodActivityItem[] = []
+  const swapDecodeAudits: RobinhoodSwapDecodeAudit[] = []
   let skippedSwapLogs = 0
   for (const tx of txs) {
     if (!tx.tx_hash) continue
@@ -525,10 +579,24 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: { fet
     // outgoing token movement, nothing more is claimed.
     for (const log of tx.log_events ?? []) {
       if (log.decoded?.name !== ERC20_TRANSFER_EVENT_NAME) {
-        // SKIPPED-LOGS COUNTED, DISCLOSED: this is the exact spot a raw Swap/Mint/Burn/other
-        // unrecognized log event lands — counted, never silently discarded, and never turned into
-        // a fabricated activity row since no verified decoder for it exists yet (see file header).
-        skippedSwapLogs += 1
+        // PHASE 3, DISCLOSED: attempt a real, verified swap decode before falling back to the
+        // Phase 2 "skipped" count. Only a log from the one verified Robinhood pool contract, whose
+        // topic0 is the real, computed Swap event signature, ever produces decodedSwap:true — every
+        // other non-Transfer log (Mint/Burn/ModifyLiquidity/an unrelated contract's event/anything
+        // this decoder doesn't recognize) still lands in skippedSwapLogs exactly as Phase 2 did.
+        const audit = await decodeRobinhoodSwapLog(wallet, ROBINHOOD_CHAIN_ID, tx.tx_hash, {
+          address: log.sender_address, topics: log.raw_log_topics, data: log.raw_log_data,
+        }, { resolvePoolCurrencies, priceUsdLookupForToken }).catch((): RobinhoodSwapDecodeAudit => ({
+          wallet, chainId: ROBINHOOD_CHAIN_ID, txHash: tx.tx_hash ?? '', logsSeen: 1, swapLogsSeen: 0,
+          routerMatched: null, poolMatched: null, decodedSwap: false, tokenIn: null, tokenOut: null,
+          amountIn: null, amountOut: null, quoteLeg: null, priceEvidence: false, confidence: null,
+          rejectedReason: 'swap decode threw unexpectedly',
+        }))
+        swapDecodeAudits.push(audit)
+        // Only a confidence:'high' decode (real token identities AND real price evidence on both
+        // legs) is ever excluded from skippedSwapLogs — anything less specific still counts as
+        // skipped, since it never produces usable evidence for activity or PnL.
+        if (audit.confidence !== 'high') skippedSwapLogs += 1
         continue
       }
       const fromParam = log.decoded.params?.find((p) => p.name === 'from')?.value ?? null
@@ -549,7 +617,100 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: { fet
       })
     }
   }
-  return { status: items.length > 0 ? 'ok' : 'partial', wallet, chainSlug: 'robinhood', items, skippedSwapLogs, reason: items.length === 0 ? 'no_transfers_found_in_returned_window' : null, fromCache: false }
+  const verifiedSwapCount = swapDecodeAudits.filter((a) => a.confidence === 'high').length
+  return {
+    status: items.length > 0 || verifiedSwapCount > 0 ? 'ok' : 'partial',
+    wallet, chainSlug: 'robinhood', items, skippedSwapLogs, swapDecodeAudits, verifiedSwapCount,
+    reason: items.length === 0 && verifiedSwapCount === 0 ? 'no_transfers_found_in_returned_window' : null,
+    fromCache: false,
+  }
+}
+
+// PRICE-LOOKUP REUSE, DISCLOSED (Phase 3/4): rather than a second, independent pricing path, this
+// builds the swap decoder's priceUsdLookupForToken dependency directly out of the SAME holdings
+// result already fetched for this scan (native ETH's real GoldRush quote_rate, each held token's
+// real GoldRush/DexScreener price) — only a token address this scan's holdings never saw at all
+// falls through to a fresh, real DexScreener lookup. No price here is invented or defaulted.
+export function buildRobinhoodPriceUsdLookup(holdings: RobinhoodWalletHoldingsResult, fetchImpl: FetchImpl): (tokenAddress: string) => Promise<number | null> {
+  const priceByAddress = new Map<string, number>()
+  if (holdings.native?.priceUsd != null && holdings.native.priceUsd > 0) {
+    priceByAddress.set(V4_NATIVE_CURRENCY_ADDRESS, holdings.native.priceUsd)
+  }
+  for (const h of holdings.holdings) {
+    if (h.priceUsd != null && h.priceUsd > 0) priceByAddress.set(h.address.toLowerCase(), h.priceUsd)
+  }
+  return async (tokenAddress: string): Promise<number | null> => {
+    const lower = tokenAddress.toLowerCase()
+    const known = priceByAddress.get(lower)
+    if (known != null) return known
+    if (lower === V4_NATIVE_CURRENCY_ADDRESS) return null
+    return fetchRobinhoodDexscreenerPrice(tokenAddress, fetchImpl).catch(() => null)
+  }
+}
+
+// ── Phase 3/4: PnL, gated strictly on verified swaps ────────────────────────────────────────────
+
+// DISABLED-PNL REASON (activity-level), DISCLOSED: distinct wording from the wallet-scanner-level
+// DISABLED_PNL_REASON declared further below — this one is specific to "this scan found zero
+// verified swaps," not a blanket "Phase 3 doesn't exist" statement (which is no longer true).
+const NO_VERIFIED_SWAPS_REASON = 'No verified Robinhood swaps were found for this wallet in this scan — PnL requires at least one swap with real token identities and real price evidence on both legs.'
+
+export async function resolveRobinhoodWalletPnl(
+  wallet: string,
+  activity: RobinhoodWalletActivityResult,
+  deps: {
+    decimalsLookupForToken?: (tokenAddress: string) => Promise<number | null>
+    // Re-supplied here (not read off the audit object, which only ever carries the boolean
+    // priceEvidence flag) — the SAME dependency decodeRobinhoodSwapLog already used to gate
+    // confidence to 'high' in the first place, so the actual USD figures used for cost basis/
+    // proceeds are the identical real prices that earned this swap its 'high' confidence, not a
+    // second, potentially-different lookup.
+    priceUsdLookupForToken?: (tokenAddress: string) => Promise<number | null>
+    fetchImpl: FetchImpl
+  },
+): Promise<RobinhoodWalletPnlResult> {
+  const verified = activity.swapDecodeAudits.filter((a) => a.confidence === 'high')
+  if (verified.length === 0) {
+    return { status: 'disabled', realizedPnlUsd: null, matchedLotsCount: 0, verifiedSwapCount: 0, reason: NO_VERIFIED_SWAPS_REASON }
+  }
+  const decimalsLookupForToken = deps.decimalsLookupForToken ?? ((addr: string) => fetchTokenDecimalsViaRpc(addr, deps.fetchImpl))
+  const priceUsdLookupForToken = deps.priceUsdLookupForToken ?? (async () => null)
+  const verifiedSwaps: VerifiedRobinhoodSwap[] = []
+  for (const audit of verified) {
+    if (!audit.tokenIn || !audit.tokenOut) continue
+    const [tokenInDecimals, tokenOutDecimals, tokenInPriceUsd, tokenOutPriceUsd] = await Promise.all([
+      decimalsLookupForToken(audit.tokenIn),
+      decimalsLookupForToken(audit.tokenOut),
+      priceUsdLookupForToken(audit.tokenIn),
+      priceUsdLookupForToken(audit.tokenOut),
+    ])
+    // Missing price evidence blocks verified PnL, DISCLOSED: decodeRobinhoodSwapLog already
+    // confirmed priceEvidence was true at decode time, but prices can be volatile/transient — this
+    // re-check is the actual, current-call guard: if either price is null/non-positive HERE, the
+    // swap is dropped rather than fed into FIFO with a fabricated/zero price. Same for decimals — a
+    // swap whose decimals can't be resolved is dropped rather than guessed, which would silently
+    // corrupt the human-readable amount.
+    if (tokenInDecimals == null || tokenOutDecimals == null) continue
+    if (tokenInPriceUsd == null || tokenInPriceUsd <= 0 || tokenOutPriceUsd == null || tokenOutPriceUsd <= 0) continue
+    const activityItem = activity.items.find((i) => i.txHash === audit.txHash)
+    verifiedSwaps.push({
+      audit,
+      blockTimestamp: activityItem?.blockTimestamp ?? new Date(0).toISOString(),
+      tokenInDecimals, tokenOutDecimals, tokenInPriceUsd, tokenOutPriceUsd,
+    })
+  }
+  if (verifiedSwaps.length === 0) {
+    return { status: 'disabled', realizedPnlUsd: null, matchedLotsCount: 0, verifiedSwapCount: 0, reason: 'Verified swaps were found, but token decimals/prices could not be re-confirmed for any of them.' }
+  }
+  const fifoOutput = buildRobinhoodMatchedLotsFromSwaps(wallet, verifiedSwaps)
+  const status: RobinhoodWalletPnlStatus = fifoOutput.publicPnlStatus === 'ok' ? 'verified' : fifoOutput.publicPnlStatus === 'limited_verified_sample' ? 'partial' : 'disabled'
+  return {
+    status,
+    realizedPnlUsd: fifoOutput.realizedPnlUsd,
+    matchedLotsCount: fifoOutput.matchedLots.length,
+    verifiedSwapCount: verifiedSwaps.length,
+    reason: status === 'disabled' ? 'Verified swaps exist, but FIFO could not produce a publicly-reportable sample yet.' : null,
+  }
 }
 
 // ── Cached wrapper, DISCLOSED: chain-strict cache reads/writes go through the shared tokenCache.ts
@@ -566,11 +727,18 @@ export async function getCachedRobinhoodWalletHoldings(wallet: string, fetchImpl
   return { ...result, wrongChainCacheRejected }
 }
 
-export async function getCachedRobinhoodWalletActivity(wallet: string, fetchImpl: FetchImpl): Promise<RobinhoodWalletActivityResult & { wrongChainCacheRejected: boolean }> {
+export async function getCachedRobinhoodWalletActivity(
+  wallet: string,
+  fetchImpl: FetchImpl,
+  // PHASE 3, DISCLOSED: optional real-lookup deps threaded through to resolveRobinhoodWalletActivity
+  // so the route can supply real resolvers (holdings-derived prices + RPC pool-currency resolution)
+  // without this cache wrapper needing to know how those lookups work.
+  swapDeps?: { resolvePoolCurrencies?: (poolId: string) => Promise<RobinhoodPoolCurrencies | null>; priceUsdLookupForToken?: (tokenAddress: string) => Promise<number | null> },
+): Promise<RobinhoodWalletActivityResult & { wrongChainCacheRejected: boolean }> {
   const key = robinhoodWalletCacheKey('activity', wallet)
   const cached = await getTokenCache<RobinhoodWalletActivityResult & { chainSlug: 'robinhood'; wallet: string }>(key).catch(() => null)
   const wrongChainCacheRejected = rejectWrongChainRobinhoodCache(cached, { wallet })
-  const result = await resolveRobinhoodWalletActivity(wallet, { fetchImpl, cached: cached && !wrongChainCacheRejected ? cached : null })
+  const result = await resolveRobinhoodWalletActivity(wallet, { fetchImpl, cached: cached && !wrongChainCacheRejected ? cached : null, ...swapDeps })
   if (!result.fromCache) await setTokenCache(key, result, CACHE_TTL_SECONDS).catch(() => {})
   return { ...result, wrongChainCacheRejected }
 }

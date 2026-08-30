@@ -235,9 +235,22 @@ export type RobinhoodWalletScanResponse = {
     status: 'ok' | 'partial' | 'unavailable' | 'not_configured'
     items: Array<{ txHash: string; blockTimestamp: string | null; kind: 'native_transfer' | 'token_transfer'; direction: 'incoming' | 'outgoing'; counterparty: string | null; tokenSymbol: string | null }>
     skippedSwapLogs: number
+    // PHASE 3, DISCLOSED: count of swap logs that reached confidence 'high' (real token identities
+    // AND real price evidence on both legs) — the only swaps ever fed into PnL below.
+    verifiedSwapCount: number
     reason: string | null
   }
-  pnl: { status: 'not_verified'; message: string }
+  // PHASE 3/4, DISCLOSED: status now reflects the real, per-scan outcome ('disabled' when zero
+  // verified swaps exist, 'partial' for a thin-but-real sample, 'verified' when FIFO produced a
+  // publicly-reportable result) — never a single fixed "not verified" placeholder.
+  pnl: {
+    status: 'disabled' | 'partial' | 'verified'
+    message: string
+    realizedPnlUsd: number | null
+    matchedLotsCount: number
+    verifiedSwapCount: number
+    reason: string | null
+  }
   robinhoodWalletScannerAudit: Record<string, unknown>
 }
 
@@ -804,30 +817,43 @@ export default function WalletScannerPage() {
                   )}
                 </>
               )}
-              {/* HARD RULE, DISCLOSED: "Do NOT show verified Robinhood PnL until swaps + prices are
-                  proven" — this message is fixed and never varies with any data on this page.
-                  AMBER/WARNING STYLING, DISCLOSED (Phase 1/2 audit follow-up: "UI cannot confuse
-                  Robinhood partial activity with verified PnL"): previously a neutral dashed gray
-                  box, visually indistinguishable from an ordinary informational note — restyled to
-                  the same amber "not confirmed" treatment this codebase already uses elsewhere
-                  (e.g. Solana's "NOT CONFIRMED HEALTHY" state) so a not-verified PnL reads as a
-                  clear caution, never as just another neutral data row sitting next to the real
-                  transfer count below it. */}
-              <div style={{ marginTop: '10px', padding: '10px 12px', borderRadius: '8px', border: '1px solid rgba(251,191,36,0.32)', background: 'rgba(251,191,36,0.06)', color: '#fbbf24', fontSize: '12px', fontWeight: 700 }}>
-                PnL: {robinhoodResult.pnl.message}
+              {/* PHASE 3/4, DISCLOSED: "Do NOT enable Robinhood PnL until swap evidence is verified"
+                  — this box now reflects the real, per-scan pnlStatus. 'verified' gets a real green
+                  treatment with the real realizedPnlUsd figure (only ever shown when FIFO actually
+                  produced one); 'disabled'/'partial' keep the amber "not confirmed" treatment this
+                  codebase already uses elsewhere (e.g. Solana's "NOT CONFIRMED HEALTHY" state) so an
+                  unverified PnL always reads as a clear caution, never as just another neutral row. */}
+              <div style={{
+                marginTop: '10px', padding: '10px 12px', borderRadius: '8px',
+                border: robinhoodResult.pnl.status === 'verified' ? '1px solid rgba(45,212,191,0.35)' : '1px solid rgba(251,191,36,0.32)',
+                background: robinhoodResult.pnl.status === 'verified' ? 'rgba(45,212,191,0.08)' : 'rgba(251,191,36,0.06)',
+                color: robinhoodResult.pnl.status === 'verified' ? '#2DD4BF' : '#fbbf24',
+                fontSize: '12px', fontWeight: 700,
+              }}>
+                {robinhoodResult.pnl.status === 'verified'
+                  ? `Verified Robinhood PnL: ${robinhoodResult.pnl.realizedPnlUsd != null ? `$${robinhoodResult.pnl.realizedPnlUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'n/a'} realized (${robinhoodResult.pnl.matchedLotsCount} matched lot${robinhoodResult.pnl.matchedLotsCount === 1 ? '' : 's'})`
+                  : 'PnL: disabled/partial — verified Robinhood swap decoding unavailable'}
+                {robinhoodResult.pnl.status !== 'verified' && robinhoodResult.pnl.reason && (
+                  <div style={{ marginTop: '4px', fontSize: '11px', fontWeight: 500, color: 'rgba(251,191,36,0.75)' }}>
+                    {robinhoodResult.pnl.reason}
+                  </div>
+                )}
               </div>
-              {/* ACTIVITY-VS-PNL SEPARATION, DISCLOSED: the transfer count below is explicitly
-                  labeled as raw activity, never phrased as a total/count that could be mistaken for
-                  a PnL figure — it never appears inside the amber PnL box above, always its own
-                  separate, neutrally-styled line. */}
+              {/* ACTIVITY-VS-PNL SEPARATION, DISCLOSED: the transfer/swap counts below are explicitly
+                  labeled as raw activity/decode diagnostics, never phrased in a way that could be
+                  mistaken for a PnL figure — they never appear inside the PnL box above, always their
+                  own separate, neutrally-styled lines. */}
               {robinhoodResult.activity.status === 'ok' && (
                 <p style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', marginTop: '8px' }}>
                   Activity (not PnL): {robinhoodResult.activity.items.length} recent transfer{robinhoodResult.activity.items.length === 1 ? '' : 's'} found — transfers only, not classified as trades.
                 </p>
               )}
+              <p style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', marginTop: '4px' }}>
+                Verified Robinhood swaps: {robinhoodResult.activity.verifiedSwapCount}
+              </p>
               {robinhoodResult.activity.skippedSwapLogs > 0 && (
                 <p style={{ fontSize: '11px', color: 'rgba(148,163,184,0.55)', marginTop: '4px' }}>
-                  {robinhoodResult.activity.skippedSwapLogs} additional on-chain log{robinhoodResult.activity.skippedSwapLogs === 1 ? '' : 's'} (e.g. possible swaps) were seen but not decoded — swap decoding is not available yet.
+                  Skipped unsupported swap logs: {robinhoodResult.activity.skippedSwapLogs}
                 </p>
               )}
             </div>

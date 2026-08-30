@@ -7,8 +7,11 @@ import {
   getCachedRobinhoodWalletHoldings,
   getCachedRobinhoodWalletActivity,
   buildRobinhoodWalletScannerAudit,
-  formatRobinhoodPnlNotVerifiedMessage,
+  buildRobinhoodPriceUsdLookup,
+  resolveRobinhoodWalletPnl,
+  formatRobinhoodPnlMessage,
 } from '@/lib/server/robinhoodWalletScanner'
+import { resolvePoolCurrenciesViaRpc } from '@/lib/server/robinhoodSwapDecoder'
 
 // ROBINHOOD WALLET SCANNER ROUTE, DISCLOSED (phased Robinhood Chain Wallet Scanner rollout,
 // Phase 1+2). Deliberately its OWN route, not a branch inside app/api/wallet-scan/route.ts's
@@ -47,15 +50,22 @@ export async function GET(req: Request): Promise<Response> {
   }
 
   const fetchImpl: typeof fetch = fetch
-  const [holdings, activity] = await Promise.all([
-    getCachedRobinhoodWalletHoldings(wallet, fetchImpl),
-    getCachedRobinhoodWalletActivity(wallet, fetchImpl),
-  ])
+  // Holdings first, DISCLOSED (Phase 3/4): activity's swap decoding and PnL both need a real
+  // priceUsdLookupForToken — built directly from THIS scan's own holdings prices (see
+  // buildRobinhoodPriceUsdLookup) rather than a second, independent pricing path — so holdings must
+  // resolve before activity/PnL can use it.
+  const holdings = await getCachedRobinhoodWalletHoldings(wallet, fetchImpl)
+  const priceUsdLookupForToken = buildRobinhoodPriceUsdLookup(holdings, fetchImpl)
+  const resolvePoolCurrencies = (poolId: string) => resolvePoolCurrenciesViaRpc(poolId, fetchImpl)
+
+  const activity = await getCachedRobinhoodWalletActivity(wallet, fetchImpl, { resolvePoolCurrencies, priceUsdLookupForToken })
+  const pnl = await resolveRobinhoodWalletPnl(wallet, activity, { priceUsdLookupForToken, fetchImpl })
 
   const audit = buildRobinhoodWalletScannerAudit({
     wallet,
     holdings,
     activity,
+    pnl,
     wrongChainCacheRejected: holdings.wrongChainCacheRejected || activity.wrongChainCacheRejected,
   })
 
@@ -67,9 +77,16 @@ export async function GET(req: Request): Promise<Response> {
     holdings,
     activity,
     // HARD RULE, DISCLOSED: "Do NOT show verified Robinhood PnL until swaps + prices are proven" —
-    // pnl is always this fixed shape today; never a computed number, never optimistically "pending"
-    // in a way that implies a number is coming soon from THIS request.
-    pnl: { status: 'not_verified', message: formatRobinhoodPnlNotVerifiedMessage() },
+    // this now reflects the real, per-scan pnlStatus (verified swaps + FIFO output, or a genuine
+    // zero-verified-evidence reason) rather than a single fixed Phase-2 message.
+    pnl: {
+      status: pnl.status,
+      message: formatRobinhoodPnlMessage(pnl.status),
+      realizedPnlUsd: pnl.realizedPnlUsd,
+      matchedLotsCount: pnl.matchedLotsCount,
+      verifiedSwapCount: pnl.verifiedSwapCount,
+      reason: pnl.reason,
+    },
     robinhoodWalletScannerAudit: audit,
   })
 }
