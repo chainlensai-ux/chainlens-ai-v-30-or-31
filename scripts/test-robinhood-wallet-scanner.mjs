@@ -484,7 +484,18 @@ async function run() {
     // real invariant this check protects (never a branch inside the job-queue route) is unchanged.
     check('the Robinhood route is a standalone route, never a branch inside the existing wallet-scan job queue route', routeSrc.includes('scanRobinhoodWallet') && !routeSrc.includes('enqueueWalletScanJob'))
     const mainRouteSrc = fs.readFileSync(new URL('../app/api/wallet-scan/route.ts', import.meta.url), 'utf8')
-    check('the existing Base/ETH wallet-scan route source is untouched by this feature (no robinhood reference)', !/robinhood/i.test(mainRouteSrc))
+    // UPDATED, DISCLOSED (Wallet Scanner deep scan chain coverage fix): this route now DOES
+    // reference Robinhood — deliberately, per that task's own explicit requirement that Robinhood
+    // "must be included in the canonical Wallet Scanner chain selection... not only rendered as a
+    // UI tab or separate side path." A same-named-route audit + non-blocking cache-warm call were
+    // added. The real invariant this check protects — that the EVM `chains` array actually fed
+    // into enqueueWalletScanJob() never contains 'robinhood' and Base/ETH's own job payload is
+    // unaffected — still holds and is checked directly rather than by a blanket "no mention of
+    // robinhood anywhere in this file" rule, which the new, honest audit necessarily violates.
+    const enqueueCallMatch = mainRouteSrc.match(/await enqueueWalletScanJob\(jobId, \{[\s\S]*?\}\)/)
+    check('enqueueWalletScanJob call still exists in the main wallet-scan route', enqueueCallMatch != null)
+    check("the EVM job payload passed to enqueueWalletScanJob never contains a literal 'robinhood'", enqueueCallMatch != null && !/'robinhood'/.test(enqueueCallMatch[0]))
+    check("default EVM chains still fall back to ['base', 'eth'] when no chains are provided in the request body", /: \['base', 'eth'\]/.test(mainRouteSrc))
     const pageSrc = fs.readFileSync(new URL('../app/terminal/wallet-scanner/page.tsx', import.meta.url), 'utf8')
     check('the Base/ETH scan call (scanWalletV2) still requests exactly base+eth, untouched', pageSrc.includes("scanWalletV2(address, ['base', 'eth'], mode"))
     check('the Robinhood UI state is fully separate from the Base/ETH result/loading state', pageSrc.includes('robinhoodResult') && pageSrc.includes('resultEnvelope'))

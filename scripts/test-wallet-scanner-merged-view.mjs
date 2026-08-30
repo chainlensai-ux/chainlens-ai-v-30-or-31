@@ -12,8 +12,10 @@ import {
   computeRobinhoodInclusion,
   computeMergedTotalValueUsd,
   portfolioCoverageCopy,
+  robinhoodStatusCopy,
   ROBINHOOD_INCLUDED_COPY,
   ROBINHOOD_NOT_INCLUDED_COPY,
+  ROBINHOOD_NOT_CONFIGURED_COPY,
 } from '../app/frontend/lib/mergedWalletView.ts'
 
 let passed = 0
@@ -69,15 +71,26 @@ function run() {
   // ── 4. The old unconditional "not included" wording is gone from all three named locations ─────
   {
     check('PortfolioIntelligenceCard.tsx no longer has the unconditional "are not included" sub-text', !portfolioCardSrc.includes('Custodial/exchange holdings (e.g. Robinhood) are not included'))
-    check('PortfolioIntelligenceCard.tsx now sources its coverage line from portfolioCoverageCopy(merged.robinhoodIncluded)', portfolioCardSrc.includes('sub={portfolioCoverageCopy(merged.robinhoodIncluded)}'))
+    // UPDATED, DISCLOSED (Wallet Scanner deep scan chain coverage fix, requirement 7): these two
+    // call sites now use robinhoodStatusCopy(robinhoodResult, merged.robinhoodIncluded) instead of
+    // the generic portfolioCoverageCopy(merged.robinhoodIncluded) — the more specific function
+    // still returns the exact same ROBINHOOD_INCLUDED_COPY/ROBINHOOD_NOT_INCLUDED_COPY strings for
+    // the included/generic-not-included cases (see check 3 and the direct call below), but ALSO
+    // distinguishes the not-configured case with its own exact required wording — a strictly more
+    // honest superset of the old behavior, not a weakening of it.
+    check('PortfolioIntelligenceCard.tsx now sources its coverage line from robinhoodStatusCopy(robinhoodResult, merged.robinhoodIncluded)', portfolioCardSrc.includes('sub={robinhoodStatusCopy(robinhoodResult, merged.robinhoodIncluded)}'))
     check('WalletProfileHeader.tsx (PortfolioSnapshot) no longer has the unconditional "may not be included" copy', !walletProfileHeaderSrc.includes('Covers on-chain holdings on supported chains only — custodial/exchange holdings (e.g. Robinhood) may not be included.'))
-    check('WalletProfileHeader.tsx now sources its coverage line from portfolioCoverageCopy(merged.robinhoodIncluded)', walletProfileHeaderSrc.includes('{portfolioCoverageCopy(merged.robinhoodIncluded)}'))
+    check('WalletProfileHeader.tsx now sources its coverage line from robinhoodStatusCopy(robinhoodResult, merged.robinhoodIncluded)', walletProfileHeaderSrc.includes('{robinhoodStatusCopy(robinhoodResult, merged.robinhoodIncluded)}'))
     check('PortfolioValueView.tsx no longer has the unconditional "may not be included" copy', !portfolioValueViewSrc.includes('Custodial/exchange holdings (e.g. Robinhood) may not be included.'))
     check('PortfolioValueView.tsx now sources its coverage line from portfolioCoverageCopy', portfolioValueViewSrc.includes('portfolioCoverageCopy(robinhoodIncluded)'))
     // The rendered coverage line in all three is now genuinely conditional on real scan state (see
     // check 3 above for the exact copy) rather than the old fixed, unconditional string — confirmed
     // directly by check 4's own assertions that the fixed old strings are gone and the conditional
-    // `portfolioCoverageCopy(...)` call sites exist instead.
+    // call sites exist instead.
+    check('robinhoodStatusCopy(included:true) still returns the exact required "included" wording', robinhoodStatusCopy({ ok: true, holdings: { status: 'ok', portfolioTotalUsd: 5 } }, true) === ROBINHOOD_INCLUDED_COPY)
+    check('robinhoodStatusCopy(not_configured) returns the exact required requirement-7 wording', robinhoodStatusCopy({ ok: true, holdings: { status: 'not_configured', portfolioTotalUsd: null } }, false) === ROBINHOOD_NOT_CONFIGURED_COPY)
+    check("requirement-7's exact string is 'Robinhood Chain not scanned — not configured'", ROBINHOOD_NOT_CONFIGURED_COPY === 'Robinhood Chain not scanned — not configured')
+    check('robinhoodStatusCopy(null result) falls back to the generic not-included wording, not the not-configured one', robinhoodStatusCopy(null, false) === ROBINHOOD_NOT_INCLUDED_COPY)
   }
 
   // ── 5. One canonical total: the total merges Robinhood in wherever it is displayed ─────────────

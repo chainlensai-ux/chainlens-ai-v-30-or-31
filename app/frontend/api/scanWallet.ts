@@ -93,6 +93,22 @@ export type WalletScanStageProgress = {
   elapsedMs: number
 }
 
+// CHAIN SELECTION AUDIT, DISCLOSED (Wallet Scanner deep scan chain coverage fix): the shape
+// lib/server/walletChainSelectionAudit.ts's buildWalletChainSelectionAudit() returns, only ever
+// echoed back from the /api/wallet-scan POST response — never computed client-side.
+export type WalletChainSelectionAudit = {
+  requestedMode: string
+  enableRobinhood: boolean
+  envHasRobinhoodRpc: boolean
+  envHasGoldrush: boolean
+  envHasBlockscout: boolean
+  requestedChains: number[]
+  allowedChains: number[]
+  omittedChains: number[]
+  omittedReasons: Record<string, string>
+  finalChainsScanned: string[]
+}
+
 type WalletScanJobResponse = {
   jobId?: string
   status?: WalletScanJobStatus
@@ -100,12 +116,17 @@ type WalletScanJobResponse = {
   error?: string | { message?: string }
   degraded?: boolean
   progress?: WalletScanStageProgress
+  walletChainSelectionAudit?: WalletChainSelectionAudit
 }
 
 export type ScanWalletStatusUpdate = {
   jobId: string
   status: WalletScanJobStatus
   progress?: WalletScanStageProgress
+  // Only ever present on the initial enqueue update (the /api/wallet-scan POST response) — a
+  // subsequent poll response never carries it, so this field is never overwritten with an absent
+  // value on later updates.
+  walletChainSelectionAudit?: WalletChainSelectionAudit
 }
 
 function sleep(ms: number): Promise<void> {
@@ -157,7 +178,7 @@ export async function scanWalletV2(
       return toErrorResponse(startBody?.error && typeof startBody.error === 'object' && startBody.error.message ? startBody.error.message : 'scan-enqueue-failed')
     }
 
-    onUpdate?.({ jobId: startBody.jobId, status: startBody.status })
+    onUpdate?.({ jobId: startBody.jobId, status: startBody.status, walletChainSelectionAudit: startBody.walletChainSelectionAudit })
 
     if (startBody.status === 'done') {
       return startBody.result ?? { success: false, degraded: true, error: { message: 'Final scan result is temporarily unavailable. Please rescan in a moment.', category: 'network' } }

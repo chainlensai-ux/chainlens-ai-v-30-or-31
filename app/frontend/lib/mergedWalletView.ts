@@ -73,3 +73,25 @@ export const ROBINHOOD_NOT_INCLUDED_COPY =
 export function portfolioCoverageCopy(robinhoodIncluded: boolean): string {
   return robinhoodIncluded ? ROBINHOOD_INCLUDED_COPY : ROBINHOOD_NOT_INCLUDED_COPY
 }
+
+// NOT-CONFIGURED WORDING, DISCLOSED (Wallet Scanner deep scan chain coverage fix, requirement 7):
+// when Robinhood is disabled or missing its RPC/env config, the UI must say so plainly — never the
+// generic "not included this scan" copy above, which could be misread as "the scan tried and
+// failed" rather than "Robinhood Chain support isn't turned on for this deployment." Reuses
+// RobinhoodChainSection's own existing `holdings.status === 'not_configured'` vocabulary (see that
+// component) rather than inventing a new status field.
+export const ROBINHOOD_NOT_CONFIGURED_COPY = 'Robinhood Chain not scanned — not configured'
+
+// STATUS-AWARE COPY, DISCLOSED: the specific, more-informative sibling of portfolioCoverageCopy()
+// above — callers that have the real RobinhoodWalletScanResponse (and so can tell "not configured"
+// apart from "attempted but failed"/"never attempted") should call this instead so the
+// not-configured case gets its own exact, honest wording rather than the generic fallback.
+export function robinhoodStatusCopy(
+  robinhoodResult: RobinhoodWalletScanResponse | null | undefined,
+  robinhoodIncluded: boolean,
+): string {
+  if (robinhoodIncluded) return ROBINHOOD_INCLUDED_COPY
+  const status = robinhoodResult && robinhoodResult.ok ? robinhoodResult.holdings.status : null
+  if (status === 'not_configured') return ROBINHOOD_NOT_CONFIGURED_COPY
+  return ROBINHOOD_NOT_INCLUDED_COPY
+}

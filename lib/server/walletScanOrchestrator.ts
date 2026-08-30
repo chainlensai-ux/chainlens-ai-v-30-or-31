@@ -37,6 +37,7 @@ import type { RobinhoodWalletScannerAudit } from '@/lib/server/robinhoodWalletSc
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
 import { enqueueWalletScanJob } from '@/src/modules/walletScanQueue'
 import { getTokenCache, setTokenCache } from '@/lib/server/cache/tokenCache'
+import { buildWalletChainSelectionAudit, type WalletChainSelectionAudit } from '@/lib/server/walletChainSelectionAudit'
 
 export type ChainMode = 'auto' | 'all_supported' | 'base' | 'ethereum' | 'bnb' | 'robinhood'
 export type ScanDepth = 'preview' | 'deep'
@@ -71,6 +72,11 @@ export type CanonicalWalletScanResult = {
     evmReport: RunWalletScanV2Result | null
     robinhoodAudit: RobinhoodWalletScannerAudit | null
   }
+  // NEW, additive, DISCLOSED: the canonical chain-selection audit — requested/allowed/omitted
+  // chains (including Robinhood's numeric chain id, 4663) plus the real env flags this decision
+  // was made from. Always present (same tier as evidenceSources/missingEvidence above), never
+  // gated behind debug.
+  walletChainSelectionAudit: WalletChainSelectionAudit
 }
 
 export type RunWalletScanParams = {
@@ -295,6 +301,14 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
     }
   }
 
+  const walletChainSelectionAudit = buildWalletChainSelectionAudit({
+    requestedMode: params.chainMode,
+    evmChainSlugs: evmChains,
+    includeRobinhoodRequested: includeRobinhood,
+    finalChainsScanned: chainsScanned,
+  })
+  console.log('[walletScanOrchestrator] walletChainSelectionAudit', walletChainSelectionAudit)
+
   const result: CanonicalWalletScanResult = {
     wallet: walletAddress,
     chainsScanned,
@@ -317,6 +331,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
     scanId: jobId ?? crypto.randomUUID(),
     ...(jobStatus ? { jobStatus, jobId } : {}),
     ...(params.debug ? { debug: { evmReport, robinhoodAudit } } : {}),
+    walletChainSelectionAudit,
   }
 
   if (params.scanDepth === 'preview') {

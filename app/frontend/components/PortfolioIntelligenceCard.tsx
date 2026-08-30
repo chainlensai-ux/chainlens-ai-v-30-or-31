@@ -41,7 +41,7 @@ import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfo
 import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
 import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
-import { computeMergedTotalValueUsd, portfolioCoverageCopy } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, robinhoodStatusCopy } from '@/app/frontend/lib/mergedWalletView'
 import { ChainBadge } from './ChainBadge'
 
 export type PortfolioIntelligenceCardProps = {
@@ -162,7 +162,7 @@ export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanne
         <StatBox
           label="Supported On-Chain Portfolio Value"
           value={totalValueUsd != null ? fmtUsd(totalValueUsd) : 'Not available'}
-          sub={portfolioCoverageCopy(merged.robinhoodIncluded)}
+          sub={robinhoodStatusCopy(robinhoodResult, merged.robinhoodIncluded)}
           valueColor="#2DD4BF"
         />
         <StatBox label="Priced Tokens" value={pricedTokenCount} sub="Zero/unpriced tokens excluded" />

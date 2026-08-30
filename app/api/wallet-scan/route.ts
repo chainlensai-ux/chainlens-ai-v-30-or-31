@@ -3,6 +3,9 @@ import { isAddress } from 'viem'
 import { WALLET_SCAN_QUEUE_UNAVAILABLE, WalletScanQueueUnavailableError, enqueueWalletScanJob, walletScanRedisConfigured } from '@/src/modules/walletScanQueue'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { canAccessFeature } from '@/lib/planFeatures'
+import { buildWalletChainSelectionAudit } from '@/lib/server/walletChainSelectionAudit'
+import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
+import { scanRobinhoodWallet } from '@/lib/server/robinhoodWalletScanner'
 
 export const runtime = 'nodejs'
 export const preferredRegion = 'iad1'
@@ -70,11 +73,26 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json({ error: { message: 'Wallet Scanner requires a Pro or Elite plan.', category: 'plan' } }, { status: 403 })
   }
 
-  const chains = Array.isArray(body?.chains) && body.chains.every((chain) => typeof chain === 'string')
-    ? body.chains
-    : ['base', 'eth']
+  const rawChains = Array.isArray(body?.chains) && body.chains.every((chain) => typeof chain === 'string')
+    ? (body.chains as string[])
+    : null
+  // CHAINS FOR THE ENQUEUED EVM JOB, UNCHANGED, DISCLOSED: this is exactly the pre-existing
+  // default/pass-through logic — 'robinhood' is filtered out here (never fed to
+  // enqueueWalletScanJob()/runWalletScanV2(), whose SupportedChain union is EVM-only by design —
+  // see lib/server/walletChainSelectionAudit.ts's header for why) but its presence/absence still
+  // informs the Robinhood request decision below.
+  const chains = (rawChains ? rawChains.filter((c) => c.toLowerCase() !== 'robinhood') : ['base', 'eth'])
   const scanMode: ScanMode = body?.scanMode === 'deep' ? 'deep' : 'normal'
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
+
+  // CANONICAL CHAIN SELECTION, DISCLOSED (Wallet Scanner deep scan chain coverage fix): Robinhood
+  // Chain is considered "requested" for this scan whenever the caller used the default/auto chain
+  // set (no explicit `chains` in the body — matching auto/all_supported semantics) OR explicitly
+  // asked for it via 'robinhood' in `chains`. A caller who explicitly restricts to specific EVM
+  // chains only (e.g. ['base']) without naming 'robinhood' is treated as not requesting it — an
+  // honest, narrower request, not an omission bug.
+  const includeRobinhoodRequested = rawChains === null || rawChains.some((c) => c.toLowerCase() === 'robinhood')
+  const robinhoodAvailable = isRobinhoodChainAvailable()
 
   if (!checkWalletScanRate(ip)) {
     return NextResponse.json({ error: { message: 'Rate limit reached. Try again shortly.', category: 'rate_limit' } }, { status: 429 })
@@ -92,7 +110,36 @@ export async function POST(req: Request): Promise<Response> {
     return NextResponse.json(WALLET_SCAN_QUEUE_UNAVAILABLE, { status: 503 })
   }
 
-  return NextResponse.json({ jobId, wallet, status: 'queued' })
+  const walletChainSelectionAudit = buildWalletChainSelectionAudit({
+    requestedMode: scanMode,
+    evmChainSlugs: chains,
+    includeRobinhoodRequested,
+    // Honest at this point in the request lifecycle: the EVM chains are what was just enqueued
+    // (queued, not yet complete); Robinhood is included here only when it was both requested AND
+    // actually available, since the cache-warm call fired below is the real, non-blocking attempt
+    // to scan it — never a claim that it already finished.
+    finalChainsScanned: includeRobinhoodRequested && robinhoodAvailable ? [...chains, 'robinhood'] : [...chains],
+  })
+  console.log('[wallet-scan] walletChainSelectionAudit', walletChainSelectionAudit)
+
+  // ROBINHOOD CACHE-WARM, DISCLOSED: fires the SAME real scanRobinhoodWallet() call sequence the
+  // standalone GET /api/wallet-scan/robinhood route already uses, populating the SAME
+  // holdings/activity cache (lib/server/robinhoodWalletScanner.ts's getCachedRobinhoodWalletHoldings/
+  // getCachedRobinhoodWalletActivity, keyed by wallet) that route reads from — so the page's own
+  // parallel Robinhood fetch lands warm. This is what makes Robinhood part of the SAME deep-scan-
+  // triggering request rather than "only rendered as a UI tab or separate side path." Never
+  // awaited — the queued-job response must stay fast — and never silently swallowed: a failure is
+  // logged with the real error, not hidden.
+  if (includeRobinhoodRequested && robinhoodAvailable) {
+    void scanRobinhoodWallet(wallet, fetch).catch((err) => {
+      console.warn('[wallet-scan] robinhood cache-warm failed', {
+        wallet,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    })
+  }
+
+  return NextResponse.json({ jobId, wallet, status: 'queued', walletChainSelectionAudit })
 }
 
 

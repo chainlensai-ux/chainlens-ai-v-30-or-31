@@ -29,7 +29,7 @@ import { ConfidenceBadge } from './ConfidenceBadge'
 import { PortfolioIntelligenceCard, selectPortfolioStats } from './PortfolioIntelligenceCard'
 import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
-import { computeMergedTotalValueUsd, portfolioCoverageCopy } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, robinhoodStatusCopy } from '@/app/frontend/lib/mergedWalletView'
 
 // PORTFOLIO V2 MIGRATION, UPDATED: see app/terminal/wallet-scanner/page.tsx's own local
 // WalletV2Report type (a separately-defined but structurally identical type — this file's own
@@ -282,7 +282,7 @@ export function PortfolioSnapshot({ report, robinhoodResult }: { report: WalletV
           includes it (see mergedWalletView.ts) and the copy says so; otherwise it stays honest about
           on-chain-only coverage without claiming Robinhood support doesn't exist. */}
       <p style={{ fontSize: '10px', color: 'rgba(148,163,184,0.45)', marginTop: '4px', maxWidth: '480px' }}>
-        {portfolioCoverageCopy(merged.robinhoodIncluded)}
+        {robinhoodStatusCopy(robinhoodResult, merged.robinhoodIncluded)}
       </p>
 
       {breakdown.length === 0 && chainsWithoutData.length === 0 ? (

@@ -28,7 +28,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
-import { scanWalletV2, type WalletScanStageProgress } from '@/app/frontend/api/scanWallet'
+import { scanWalletV2, type WalletScanStageProgress, type WalletChainSelectionAudit } from '@/app/frontend/api/scanWallet'
 import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
 import { logScanIdentityIfDev } from '@/app/frontend/lib/walletScanIdentity'
 import { computeMergedTotalValueUsd } from '@/app/frontend/lib/mergedWalletView'
@@ -270,6 +270,12 @@ export default function WalletScannerPage() {
   // written by the SAME worker via src/modules/walletScanQueue.ts's updateWalletScanJobProgress).
   // Real, six-literal-label stage text and a real elapsed-ms figure, never fabricated.
   const [scanProgress, setScanProgress] = useState<WalletScanStageProgress | null>(null)
+  // CHAIN SELECTION AUDIT, DISCLOSED (Wallet Scanner deep scan chain coverage fix): the real,
+  // canonical requested/allowed/omitted chain decision (including Robinhood's numeric chain id,
+  // 4663, when relevant) echoed back from the /api/wallet-scan POST response — captured here so
+  // it's real, observable evidence for this specific scan, not just a server log line the UI
+  // never shows.
+  const [chainSelectionAudit, setChainSelectionAudit] = useState<WalletChainSelectionAudit | null>(null)
   // MODULE ERRORS, ADDED DISCLOSED (stuck-at-module-11 task): mirrors the optional `moduleErrors`
   // field the completed job's status carries (see app/frontend/api/scanWallet.ts) — captured off
   // the same onUpdate callback that already fires on the final 'completed' status before
@@ -501,6 +507,7 @@ export default function WalletScannerPage() {
     setScanProgress(null)
     setModuleErrors(null)
     setScanDurationMs(null)
+    setChainSelectionAudit(null)
 
     const scanStartedAt = Date.now()
     // SCAN IDENTITY CAPTURE, DISCLOSED: held in a local (not read back from `currentJobId` state,
@@ -514,7 +521,7 @@ export default function WalletScannerPage() {
       const { data: { session: scanSession } } = await supabase.auth.getSession()
       // JOB/POLL CALL: scanWalletV2() enqueues immediately, then polls status while the
       // background queue runs the unchanged full scan worker outside this HTTP request.
-      const response = await scanWalletV2(address, ['base', 'eth'], mode, ({ jobId, status, progress }) => {
+      const response = await scanWalletV2(address, ['base', 'eth'], mode, ({ jobId, status, progress, walletChainSelectionAudit }) => {
         scanJobId = jobId
         setCurrentJobId(jobId)
         setJobStatusMessage(status === 'queued' ? 'queued — still scanning…' : status === 'running' ? 'running — still scanning…' : status)
@@ -523,6 +530,13 @@ export default function WalletScannerPage() {
         // never cleared back to null mid-scan (a later poll simply hasn't reached a new checkpoint
         // yet — the last real stage stays visible rather than the UI reverting to a generic spinner).
         if (progress) setScanProgress(progress)
+        // Only present on the enqueue update — kept on later polls that don't carry it (see
+        // ScanWalletStatusUpdate's own header in scanWallet.ts).
+        if (walletChainSelectionAudit) {
+          setChainSelectionAudit(walletChainSelectionAudit)
+          // eslint-disable-next-line no-console
+          console.log('[SCAN] walletChainSelectionAudit', walletChainSelectionAudit)
+        }
       }, scanSession?.access_token)
       setScanDurationMs(Date.now() - scanStartedAt)
       // CONFIRMED ROOT-CAUSE FIX, DISCLOSED (live-value staleness task): both failure paths below
@@ -795,6 +809,22 @@ export default function WalletScannerPage() {
               Robinhood Chain scan failed — try again later. ({robinhoodError})
             </div>
           )}
+          {/* CHAIN SELECTION AUDIT, DISCLOSED (Wallet Scanner deep scan chain coverage fix): the
+              real requested/allowed/omitted chain decision for this scan, including Robinhood's
+              numeric chain id (4663) when relevant — visible under ?debug=true, same convention as
+              the Robinhood section's own debugMode prop below, so "logs prove it" is also true of
+              the UI, not just server logs. */}
+          {debugMode && chainSelectionAudit && (
+            <div className="ws-card" style={{ marginBottom: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', fontSize: '11px', color: 'rgba(148,163,184,0.85)' }}>
+              <div style={{ marginBottom: '6px', fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: '#475569' }}>
+                Wallet Chain Selection Audit
+              </div>
+              <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+                {JSON.stringify(chainSelectionAudit, null, 2)}
+              </pre>
+            </div>
+          )}
+
           {robinhoodResult && (!result || debugMode) && (
             <div className="ws-card" style={{ marginBottom: '16px' }}>
               <RobinhoodChainSection
