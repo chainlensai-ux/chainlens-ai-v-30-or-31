@@ -29,7 +29,7 @@ const resolverSrc = readFileSync(new URL('../lib/server/deployerResolver.ts', im
 // ── 1. The routed deployer_check handler calls resolveTokenDeployer before the /api/dev-wallet
 // fallback, and short-circuits (returns) when it finds a confirmed deployer. ─────────────────────
 {
-  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,12000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)
+  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,20000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)
   assert.ok(block, 'the routed deployer_check handler block must exist')
   const body = block[0]
   const fastIdx = body.indexOf('resolveTokenDeployer(')
@@ -44,7 +44,7 @@ const resolverSrc = readFileSync(new URL('../lib/server/deployerResolver.ts', im
 // resolver call and the /api/dev-wallet fallback call — never two different chain values, and never
 // a bare "eth"/"base" literal used as a chain default anywhere in this handler. ───────────────────
 {
-  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,12000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
+  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,20000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
   assert.match(block, /chainSlug: thisDevChain, chainId: resolverChainId, tokenAddress: target/, 'the fast resolver must be called with the resolved chain, never a hardcoded one')
   assert.match(block, /chain: thisDevChain \}, authHeader/, 'the /api/dev-wallet fallback must be called with the SAME resolved chain the fast resolver used')
   // Chain-strict guard: resolverChainId is only assigned for the four real EVM chains this resolver
@@ -129,6 +129,59 @@ const resolverSrc = readFileSync(new URL('../lib/server/deployerResolver.ts', im
   // Repeated call for the same chain/token must be stable (same-instance cache), never flip results.
   const repeat = await resolveTokenDeployer({ chainSlug: 'bnb', chainId: 56, tokenAddress: addr })
   assert.equal(repeat.deployerAddress, bnbResult.deployerAddress, 'repeated lookups for the same chain/token must return a stable result')
+}
+
+// ── 8. Response-format parity, DISCLOSED (this task): the slow-path (/api/dev-wallet) fallback
+// template must produce the SAME field set/order as the fast-path template — Chain:, Evidence
+// source:, high/medium/low confidence vocabulary, and the full 5-item /holders /lp /token /deployer
+// Open-Token-Scanner Next list — never the older "Status:"/"open_check" shape. ────────────────────
+{
+  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,20000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
+  const slowIdx = block.indexOf('const dw = devRes.json as Record<string, unknown>;')
+  assert.ok(slowIdx > -1, 'the slow-path (/api/dev-wallet) success branch must exist')
+  const slowBlock = block.slice(slowIdx)
+  assert.match(slowBlock, /`Chain: \$\{chainDisplayLabel\(thisDevChain\)\}`/, 'the slow-path template must include a Chain: line, matching the fast-path template')
+  assert.match(slowBlock, /`Evidence source: \$\{evidenceLabelSlow\}`/, 'the slow-path template must include an Evidence source: line, matching the fast-path template')
+  assert.match(slowBlock, /`- Confidence: \$\{deployerConfidence \?\? "low"\}`/, 'the slow-path confidence must use the real high\/medium\/low vocabulary, never a fake level')
+  assert.doesNotMatch(slowBlock, /open_check/, 'the fabricated "open_check" confidence level must never appear again')
+  assert.doesNotMatch(slowBlock, /- Status: \$\{deployerStatus/, 'the old non-"Why" Status: line must be gone')
+  assert.match(slowBlock, /"- \/holders",\n\s*"- \/lp",\n\s*"- \/token",\n\s*"- \/deployer",\n\s*"- Open Token Scanner",/,
+    'the slow-path Next: action list must match the fast path\'s full 5-item list (previously missing /token and /deployer)')
+}
+
+// ── 9. No `?? "base"` chain-mislabeling remains reachable anywhere in the deployer_check handler —
+// every write either uses the resolved chain directly (proven non-null by an earlier guard) or
+// routes to an honest chain-not-supported response instead of a fabricated "base" label. ──────────
+{
+  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,20000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
+  assert.doesNotMatch(block, /thisDevChain \?\? "base"/, 'no site in the deployer_check handler may silently substitute "base" for a null/unresolved chain')
+}
+
+// ── 10. The failure response itemizes chain attempted / sources attempted / missing config / next
+// action explicitly — never just "Source failed: ...". ────────────────────────────────────────────
+{
+  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,20000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
+  assert.match(block, /`Chain attempted: \$\{thisDevChain \? chainDisplayLabel\(thisDevChain\) : chainDisplayLabel\(chainForClarkTools\)\}`/,
+    'the failure response must explicitly itemize the chain attempted')
+  assert.match(block, /`Sources attempted: \$\{attemptedSources\.length > 0 \? attemptedSources\.join\(", "\) : /,
+    'the failure response must explicitly itemize the sources attempted')
+  assert.match(block, /`Missing config\/source: \$\{missingConfig\}`/, 'the failure response must explicitly name the missing config/source')
+  assert.match(block, /Next best action: Open Token Scanner/, 'the failure response must explicitly name a next best action')
+}
+
+// ── 11. Wrong-chain cache rejection for a non-Base chain: a Base cache entry for address X must
+// never satisfy a BNB (or Robinhood) request for the same address X — the resolver's cache keys are
+// chain-scoped by construction (`${chainSlug}:${tokenAddress}` in-memory, `deployer:${chainSlug}:
+// ${tokenAddress}` in the KV tier), never address-only. ─────────────────────────────────────────
+{
+  const addr = '0x' + 'ab'.repeat(20)
+  const baseResult = await resolveTokenDeployer({ chainSlug: 'base', chainId: 8453, tokenAddress: addr })
+  const bnbResult = await resolveTokenDeployer({ chainSlug: 'bnb', chainId: 56, tokenAddress: addr })
+  // Even when both resolve to "not found" in this network-less test env, they must be independently
+  // computed, distinct result objects — never the same cached object served across chains.
+  assert.notEqual(baseResult, bnbResult, 'a Base result object must never be the same cached object served for a BNB request on the same address')
+  assert.match(resolverSrc, /function cacheKey\([^)]*\): string \{\s*\n\s*return `\$\{chainSlug\}:\$\{tokenAddress\.toLowerCase\(\)\}`/,
+    'the in-memory cache key must be chain-scoped (chainSlug:tokenAddress), never address-only')
 }
 
 console.log('test-clark-deployer-multichain.mjs: all assertions passed')

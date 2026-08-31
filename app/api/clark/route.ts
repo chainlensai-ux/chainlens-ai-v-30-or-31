@@ -12330,9 +12330,59 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         };
       }
       // HONEST PER-CHAIN FAILURE REASON, DISCLOSED (hard rule: "if unsupported, say exactly which
-      // Robinhood source is missing" — extended to every chain here): prefers the fast resolver's own
-      // failureReason (already distinguishes "not configured for this chain" from "no source returned
-      // a usable record", per chain) over a generic message.
+      // Robinhood source is missing" — extended to every chain here): itemizes chain attempted,
+      // every source attempted (from the fast resolver's own sourcesAttempted list), the exact
+      // missing config/source (failureReason distinguishes "not configured for this chain" from "no
+      // source returned a usable record"), and a next best action — never just "source failed."
+      // CHAIN-LABEL FIX (this task): thisDevChain can genuinely be null here (a chain toTokenApiChain
+      // does not support, e.g. polygon — Solana already exits earlier at line ~12244). Labeling the
+      // actions/link as "base" in that case would violate the hard rule against silently falling back
+      // to Base for a non-Base ask, so the raw resolved chain (chainForClarkTools) is used instead —
+      // it always reflects the actual chain this request resolved to, never a fabricated "base".
+      const attemptedSources = fastDeployer?.sourcesAttempted ?? [];
+      const missingConfig = thisDevChain
+        ? (fastDeployer?.failureReason ?? `/api/dev-wallet on ${chainDisplayLabel(thisDevChain)} did not return a usable deployer record.`)
+        : `${chainDisplayLabel(chainForClarkTools)} is not supported by the EVM deployer lookup (Token Core has no deployer module for this chain).`;
+      const cxFail = buildCortexEvidenceContext({ address: target, sessionMem, clientContext: body.clientContext });
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "deployer_check", toolsUsed: ["dev_wallet_analyze"],
+        analysis: [
+          "DEPLOYER READ",
+          `Token: ${cxFail.name} (${cxFail.symbol})`,
+          `Chain: ${thisDevChain ? chainDisplayLabel(thisDevChain) : chainDisplayLabel(chainForClarkTools)}`,
+          `Contract: ${target}`,
+          "",
+          "Origin wallet could not be verified from this pass.",
+          "",
+          `Chain attempted: ${thisDevChain ? chainDisplayLabel(thisDevChain) : chainDisplayLabel(chainForClarkTools)}`,
+          `Sources attempted: ${attemptedSources.length > 0 ? attemptedSources.join(", ") : (thisDevChain ? "full Token Scanner dev-wallet scan" : "none (chain unsupported)")}`,
+          `Missing config/source: ${missingConfig}`,
+          "Next best action: Open Token Scanner for a full manual read, or retry /deployer once this chain's explorer source is configured.",
+          "",
+          "Missing evidence:",
+          "- Deployer identity could not be confirmed from any configured source on this pass.",
+          "",
+          "Next:",
+          "- /holders",
+          "- /lp",
+          "- /token",
+          "- /deployer",
+          "- Open Token Scanner",
+        ].join("\n"),
+        intentBadge: "deployer_check",
+        ui: { intentBadge: "Deployer Read", actions: buildClarkTokenAnswerActions(target, thisDevChain ?? String(chainForClarkTools)) },
+        quotaConsumed: false,
+      };
+    }
+    // thisDevChain is provably non-null on every path that reaches here: devRes was only fetched
+    // (line ~12318) via `thisDevChain ? await callInternalApiCaught(...) : { ok: false, json: null,
+    // ... }`, and the `!devRes.ok || !devRes.json` branch above already returned. So `devRes.json`
+    // being truthy here means the `thisDevChain`-truthy arm ran. The `?? "base"` fallbacks that used
+    // to sit on every write below this point were therefore dead code that could only ever mislabel a
+    // real, known chain as "base" by coincidence of syntax — removed; `thisDevChain` is used directly.
+    // TS cannot see that runtime proof across the ternary above, so this narrows the type explicitly;
+    // the branch is unreachable in practice (proven above), not a live fallback.
+    if (!thisDevChain) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "deployer_check", toolsUsed: ["dev_wallet_analyze"],
         analysis: [
@@ -12340,34 +12390,57 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           `Contract: ${target}`,
           "",
           "Origin wallet could not be verified from this pass.",
-          thisDevChain
-            ? `Source failed: ${fastDeployer?.failureReason ?? `/api/dev-wallet on ${thisDevChain} did not return a usable deployer record.`}`
-            : "Source failed: this chain is not supported by the EVM deployer lookup.",
-          "",
-          "CTA: Open Token Scanner",
+          `Chain attempted: ${chainDisplayLabel(chainForClarkTools)}`,
+          "Sources attempted: none (chain unsupported)",
+          "Missing config/source: this chain is not supported by the EVM deployer lookup.",
+          "Next best action: Open Token Scanner for a full manual read.",
         ].join("\n"),
         intentBadge: "deployer_check",
-        ui: { intentBadge: "Deployer Read", actions: buildClarkTokenAnswerActions(target, thisDevChain ?? "base") },
+        ui: { intentBadge: "Deployer Read", actions: buildClarkTokenAnswerActions(target, String(chainForClarkTools)) },
         quotaConsumed: false,
       };
     }
     const dw = devRes.json as Record<string, unknown>;
     const deployerAddress = typeof dw.deployerAddress === "string" ? dw.deployerAddress : null;
     const deployerStatus = typeof dw.deployerStatus === "string" ? dw.deployerStatus : null;
-    const deployerConfidence = typeof dw.deployerConfidence === "string" ? dw.deployerConfidence : null;
+    const deployerConfidenceRaw = typeof dw.deployerConfidence === "string" ? dw.deployerConfidence : null;
+    // Normalize to the required high/medium/low vocabulary honestly — /api/dev-wallet's
+    // deployerConfidence already uses this vocabulary (see app/api/dev-wallet/route.ts:255), so this
+    // is a pass-through, not an invention; "medium" is only used as a floor when the field is missing
+    // but a deployer address WAS still returned (never invented as a confident-sounding fake level).
+    const deployerConfidence: "high" | "medium" | "low" | null =
+      deployerConfidenceRaw === "high" || deployerConfidenceRaw === "medium" || deployerConfidenceRaw === "low"
+        ? deployerConfidenceRaw
+        : (deployerAddress ? "medium" : null);
+    const methodUsed = typeof dw.methodUsed === "string" ? dw.methodUsed : null;
+    const originReason = typeof dw.originReason === "string" ? dw.originReason : null;
     const previousProjects = Array.isArray(dw.previousProjects) ? dw.previousProjects : [];
     const cx = buildCortexEvidenceContext({ address: target, sessionMem, clientContext: body.clientContext });
+    const evidenceLabelSlow = methodUsed === "transaction_creation_record"
+      ? `${chainDisplayLabel(thisDevChain)} chain explorer contract-creation record`
+      : methodUsed === "earliest_contract_activity" || methodUsed === "earliest_transfer" || methodUsed === "earliest_external_activity"
+        ? "Earliest indexed on-chain activity (full Token Scanner dev-wallet scan)"
+        : methodUsed === "initial_token_flow_signal"
+          ? "First token-transfer recipient signal (full Token Scanner dev-wallet scan)"
+          : "Full Token Scanner dev-wallet scan — no confirmed creation record";
+    const whySlow = originReason
+      ?? (deployerAddress
+        ? "Deployer identity confirmed from the full Token Scanner dev-wallet scan's own creation-record check."
+        : "No origin candidate was found by any source in the full Token Scanner dev-wallet scan.");
     const analysis = [
       "DEPLOYER READ",
       `Token: ${cx.name} (${cx.symbol})`,
+      `Chain: ${chainDisplayLabel(thisDevChain)}`,
       `Contract: ${target}`,
       "",
       "Origin:",
       deployerAddress
-        ? `- Origin wallet: ${deployerAddress}`
+        ? `- Origin wallet (deployer): ${deployerAddress}`
         : "- Origin wallet could not be verified from this pass.",
-      `- Status: ${deployerStatus === "confirmed" ? "Confirmed from on-chain creation record" : deployerStatus === "possible_match" ? "Likely match, not fully confirmed" : "Not fully confirmed"}`,
-      deployerConfidence ? `- Confidence: ${deployerConfidence}` : "- Confidence: open_check",
+      `- Confidence: ${deployerConfidence ?? "low"}`,
+      `- Why: ${whySlow}${deployerStatus === "possible_match" ? " (likely match, not fully confirmed)" : ""}`,
+      "",
+      `Evidence source: ${evidenceLabelSlow}`,
       "",
       "Related deployments:",
       previousProjects.length > 0
@@ -12380,23 +12453,25 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       "Next:",
       "- /holders",
       "- /lp",
+      "- /token",
+      "- /deployer",
       "- Open Token Scanner",
     ].join("\n");
     if (deployerAddress) {
       rememberClarkDeployer(sessionMem, deployerAddress, {
-        chain: thisDevChain ?? "base",
+        chain: thisDevChain,
         sourceTokenAddress: target,
-        confidence: deployerConfidence === "high" ? "high" : deployerConfidence === "low" ? "low" : "medium",
+        confidence: deployerConfidence ?? "medium",
       });
     }
-    updateMemToken(sessionMem, target, cx.symbol ?? null, cx.name ?? null, analysis, { chain: thisDevChain ?? "base", lastIntent: "deployer_check" });
+    updateMemToken(sessionMem, target, cx.symbol ?? null, cx.name ?? null, analysis, { chain: thisDevChain, lastIntent: "deployer_check" });
     updateMemIntent(sessionMem, "deployer_check");
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "deployer_check", toolsUsed: ["dev_wallet_analyze"],
       ...(deployerAddress ? { deployerAddress, devWallet: { confidence: deployerConfidence ?? "medium" } } : {}),
       analysis,
       intentBadge: "deployer_check",
-      ui: { intentBadge: "Deployer Read", actions: buildClarkDeployerAnswerActions(target, thisDevChain ?? "base") },
+      ui: { intentBadge: "Deployer Read", actions: buildClarkDeployerAnswerActions(target, thisDevChain) },
       quotaConsumed: true,
     };
   }
