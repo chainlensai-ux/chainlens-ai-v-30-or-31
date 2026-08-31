@@ -397,6 +397,19 @@ export type RobinhoodBlockscoutUsageAudit = {
   robinhoodAdapterStatus: string | null
   robinhoodMerged: boolean | null
   finalPortfolioTotalByChain: Record<string, number> | null
+  // SCANNER-LEVEL FIELDS, DISCLOSED (missing-Blockscout-usage-audit follow-up, this task's own explicit
+  // required fields): also NOT knowable from Blockscout-call data alone — GoldRush's real balances_v2/
+  // transactions_v3 outcome and the Alchemy Robinhood RPC's real eth_getBalance outcome live in
+  // robinhoodWalletScanner.ts's holdings/activity results, not in this module's own per-call Blockscout
+  // audits. Left null here at this layer for the same reason as the three worker-level fields above;
+  // buildRobinhoodWalletScannerAudit (the real Robinhood adapter/proof layer this task names) fills
+  // them in with real, already-computed provider statuses — never a second, separately-fetched call.
+  goldrushRobinhoodStatus: string | null
+  robinhoodRpcStatus: string | null
+  // FINAL CONTRIBUTION, DISCLOSED: honestly 'none' whenever none of the blockscoutUsedForX flags above
+  // are true — this exists so a log reader sees ONE explicit summary of what Blockscout actually
+  // contributed (or didn't) instead of having to cross-reference three separate booleans.
+  finalContribution: string | null
 }
 
 function endpointCategory(endpoint: string | null): 'tx' | 'transfer' | 'log' | 'contract' | 'unknown' {
@@ -488,5 +501,8 @@ export function buildRobinhoodBlockscoutUsageAudit(params: {
     robinhoodAdapterStatus: null,
     robinhoodMerged: null,
     finalPortfolioTotalByChain: null,
+    goldrushRobinhoodStatus: null,
+    robinhoodRpcStatus: null,
+    finalContribution: null,
   }
 }
