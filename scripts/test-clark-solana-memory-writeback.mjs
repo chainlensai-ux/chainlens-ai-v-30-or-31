@@ -30,8 +30,8 @@ const routeCode = routeSrc.split('\n').filter(l => !l.trim().startsWith('//')).j
 // buildSolanaCreatorAnswer must write the token to memory when it got usable data.
 assert.match(
   routeCode,
-  /if \(hasUsableData\) \{\s*\n\s*updateMemToken\(sessionMem!, tokenAddress, marketData\?\.tokenSymbol \?\? null, marketData\?\.tokenName \?\? null, lines\.join\("\\n"\), \{ chain: "solana" \}\);\s*\n\s*\}/,
-  'buildSolanaCreatorAnswer must call updateMemToken with chain: "solana" when usable evidence exists'
+  /if \(hasUsableData\) \{\s*\n\s*updateMemToken\(sessionMem!, tokenAddress, marketData\?\.tokenSymbol \?\? null, marketData\?\.tokenName \?\? null, lines\.join\("\\n"\), \{\s*\n\s*chain: "solana", \.\.\.\(wantsDeployer \? \{ lastIntent: "deployer_check" \} : \{\}\),\s*\n\s*\}\);/,
+  'buildSolanaCreatorAnswer must call updateMemToken with chain: "solana" (and lastIntent: "deployer_check" for deployer questions) when usable evidence exists'
 )
 
 // MERGED-RESULT-WRONG-NESTING FIX, DISCLOSED: separately reproduced live — "is this token safe" on a

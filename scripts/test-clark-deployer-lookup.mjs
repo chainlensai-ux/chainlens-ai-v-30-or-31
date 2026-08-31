@@ -104,7 +104,7 @@ const solMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
   assert.match(routeSrc, /isValidSolanaMintAddress\(resolvedAddress\)/,
     'dev_wallet intent must ALSO check for Solana mints before the EVM deployer path — a "who deployed this Solana token" question must not enter toTokenApiChain/resolveTokenDeployer at all')
   assert.match(routeSrc, /chain: "solana"/, 'Solana branch calls /api/token with chain=solana')
-  assert.match(routeSrc, /SOLANA CREATOR \/ AUTHORITY READ/, 'Solana creator read exists')
+  assert.match(routeSrc, /SOLANA CREATOR READ/, 'Solana creator read exists, using the required literal header')
   const tokenRoute = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
   assert.match(tokenRoute, /isValidSolanaMintAddress\(originalInput as unknown\)/)
 }
@@ -137,13 +137,13 @@ const solMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
   // evidence (deployer address, chain, confidence, evidence source), structured per the new spec.
   assert.match(routeSrc, /function renderFastDeployerAnswer\(/, 'the fast-path answer renderer must exist')
   assert.match(routeSrc, /function formatClarkStructuredAnswer\(/, 'the shared structured-answer formatter must exist')
-  assert.match(routeSrc, /overview: `\$\{tokenName\} \(\$\{tokenSymbol\}\) was deployed by \$\{devWallet\.deployerAddress\} on \$\{chainLabel\}\.`/, 'found (fast path) overview must state deployer and chain')
+  assert.match(routeSrc, /overview: `DEPLOYER READ\\n\\n\$\{tokenName\} \(\$\{tokenSymbol\}\) was deployed by \$\{devWallet\.deployerAddress\} on \$\{chainLabel\}\.`/, 'found (fast path) overview must use the required DEPLOYER READ header and state deployer and chain')
   assert.match(routeSrc, /evidence: \[`\$\{evidenceLabel\} \(chain: \$\{chainLabel\}\)`\]/, 'found (fast path) must state the evidence source and chain')
   assert.match(routeSrc, /confidence: devWallet\.confidence,/, 'found (fast path) must state confidence')
   assert.match(routeSrc, /lastUpdatedLabel: "just now \(live lookup\)",/, 'found (fast path) must state when the evidence was resolved')
   assert.match(routeSrc, /Related deployments and rug history were not checked in this fast lookup/, 'found (fast path) must honestly state what the fast lookup did NOT check, never omit it silently')
   // The richer full-scan template (linked wallets, risk flags) is preserved for the slow path.
-  assert.match(routeSrc, /DEPLOYER \/ DEV WALLET READ/, 'full-scan answer format header must remain')
+  assert.match(routeSrc, /"DEPLOYER READ",\n\s*"",\n\s*`Token: \$\{tokenName\}/, 'full-scan answer format must use the required literal DEPLOYER READ header')
   assert.match(routeSrc, /evidence\.devWallet\.fastPath[\s\S]{0,100}renderFastDeployerAnswer/, 'the fast template must only be used when fastPath is true')
   // Unavailable template — exact requested wording.
   assert.match(routeSrc, /I couldn't verify the deployer from available sources\./, 'unavailable template must use the exact requested opening line')

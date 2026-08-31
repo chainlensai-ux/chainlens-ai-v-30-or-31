@@ -17,6 +17,7 @@
 
 import { RPC } from '@/lib/rpc'
 import { getRobinhoodRpcUrl } from '@/lib/server/robinhoodChainConfig'
+import { getTokenCache, setTokenCache } from '@/lib/server/cache/tokenCache'
 
 export type DeployerConfidence = 'high' | 'medium' | 'low'
 export type DeployerEvidenceSource =
@@ -156,6 +157,28 @@ const resolverCache = new Map<string, { exp: number; result: ResolveTokenDeploye
 
 function cacheKey(chainSlug: ResolverChainSlug, tokenAddress: string): string {
   return `${chainSlug}:${tokenAddress.toLowerCase()}`
+}
+
+// CROSS-INSTANCE PERSISTENCE, DISCLOSED (this task's own request: "same token can confirm once, then
+// timeout later"). ROOT CAUSE: resolverCache above is a plain in-process Map — scoped to a single
+// serverless function instance's process lifetime. A cold start or instance recycle loses it
+// entirely, so "confirmed once" on one instance means nothing to a later request that lands on a
+// fresh instance, which then has to redo the full lookup and can hit a slower/failing provider that
+// second time — reading as an inexplicable downgrade from "confirmed" to "timeout" even though
+// nothing about the token or the confirmed answer actually changed.
+//
+// FIX: reuse the SAME shared (Vercel KV / Redis-backed, cross-instance, fails open) cache module
+// already used by 11+ other call sites in this codebase (lib/server/cache/tokenCache.ts) — never a
+// new persistence layer. Only CONFIRMED results (a real deployerAddress) are written through to KV;
+// a "not found" stays in-memory-only (its 5-minute TTL exists specifically so a bad/unlisted token
+// isn't hammered every message in one conversation, not to be treated as a durable cross-instance
+// fact — a different instance is allowed to try again and possibly succeed). Key format matches the
+// task's own required convention: `deployer:${chainSlug}:${tokenAddressOrMint}`.
+const KV_KEY_PREFIX = 'deployer'
+const KV_SUCCESS_TTL_SECONDS = SUCCESS_TTL_MS / 1000
+
+function kvCacheKey(chainSlug: ResolverChainSlug, tokenAddress: string): string {
+  return `${KV_KEY_PREFIX}:${chainSlug}:${tokenAddress.toLowerCase()}`
 }
 
 async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response | null> {
@@ -309,6 +332,18 @@ export async function resolveTokenDeployer(input: ResolveTokenDeployerInput): Pr
   if (cached && cached.exp > Date.now()) {
     return { ...cached.result, evidenceSource: cached.result.deployerAddress ? 'internal_cache' : cached.result.evidenceSource, durationMs: Date.now() - startedAt }
   }
+  // TIER-A CROSS-INSTANCE CACHE, DISCLOSED: only reached on a same-instance in-memory miss (cold
+  // start, recycled instance, or a different warm instance entirely) — this is exactly the gap that
+  // let a confirmed deployer "downgrade" to a timeout on a later request. A KV hit here is always a
+  // previously-CONFIRMED result (see the write-through below, which only ever persists a real
+  // deployerAddress) — never a cached miss/timeout, so returning it immediately can never regress
+  // "never downgrade to timeout on the same chain/token" across real requests over time.
+  const kvHit = await getTokenCache<ResolveTokenDeployerResult>(kvCacheKey(input.chainSlug, tokenAddress)).catch(() => null)
+  if (kvHit && kvHit.deployerAddress) {
+    const result: ResolveTokenDeployerResult = { ...kvHit, evidenceSource: 'internal_cache', durationMs: Date.now() - startedAt }
+    resolverCache.set(key, { exp: Date.now() + SUCCESS_TTL_MS, result })
+    return result
+  }
 
   const sourcesAttempted: string[] = []
   const sourcesSucceeded: string[] = []
@@ -334,6 +369,7 @@ export async function resolveTokenDeployer(input: ResolveTokenDeployerInput): Pr
       tokenName: nameSymbol.name, tokenSymbol: nameSymbol.symbol,
     }
     resolverCache.set(key, { exp: Date.now() + SUCCESS_TTL_MS, result })
+    void setTokenCache(kvCacheKey(input.chainSlug, tokenAddress), result, KV_SUCCESS_TTL_SECONDS)
     return result
   }
 
@@ -358,6 +394,7 @@ export async function resolveTokenDeployer(input: ResolveTokenDeployerInput): Pr
       tokenName: nameSymbol.name, tokenSymbol: nameSymbol.symbol,
     }
     resolverCache.set(key, { exp: Date.now() + SUCCESS_TTL_MS, result })
+    void setTokenCache(kvCacheKey(input.chainSlug, tokenAddress), result, KV_SUCCESS_TTL_SECONDS)
     return result
   }
 

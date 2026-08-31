@@ -1500,7 +1500,7 @@ function resolveClarkContext(message: string, history: ClarkRequestBody["history
     /TOKEN SCAN READ|CLARK TOKEN SCAN|CLARK FULL REPORT|Bull case|Bear case/i.test(marketText) ? "token_full_report_request" :
     /Which Base token should I run the full report on/i.test(marketText) ? "token_full_report_request" :
     /I can run that, but I need a token contract first/i.test(marketText) ? "token_analysis" :
-    /DEV WALLET READ|Dev wallet read:/i.test(marketText) ? "dev_wallet" :
+    /DEV WALLET READ|Dev wallet read:|^DEPLOYER READ/im.test(marketText) ? "dev_wallet" :
     /Liquidity read:/i.test(marketText) ? "liquidity_safety" :
     /WALLET READ|Wallet:|wallet quality|Asset: Wallet/i.test(marketText) ? "wallet_quality" :
     /Base Market|what'?s pumping|movers?/i.test(marketText) ? "market" :
@@ -6658,7 +6658,7 @@ function renderFastDeployerAnswer(
   // — "Related deployments" honestly says so rather than fabricating a count (hard rule: "Do NOT
   // fake related deployments").
   return formatClarkStructuredAnswer({
-    overview: `${tokenName} (${tokenSymbol}) was deployed by ${devWallet.deployerAddress} on ${chainLabel}.`,
+    overview: `DEPLOYER READ\n\n${tokenName} (${tokenSymbol}) was deployed by ${devWallet.deployerAddress} on ${chainLabel}.`,
     keyFindings: [
       `Deployer address: ${devWallet.deployerAddress}`,
       `Token: ${tokenName} (${tokenSymbol}) · ${tokenAddress}`,
@@ -6709,7 +6709,7 @@ function renderDevWalletFocusedRead(
   missingChecks.push("PnL, win rate, and deployer history are not verified from this scan.");
   missingChecks.push("Smart-money status is not confirmed.");
   return [
-    "DEPLOYER / DEV WALLET READ",
+    "DEPLOYER READ",
     "",
     `Token: ${tokenName} (${tokenSymbol})`,
     `Contract: ${tokenAddress}`,
@@ -10611,7 +10611,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // — same split EVM already has between its full verdict and its narrower "who deployed" answer.
     const lines: string[] = wantsDeployer
       ? (() => {
-          const l: string[] = ["SOLANA CREATOR / AUTHORITY READ", ""];
+          const l: string[] = ["SOLANA CREATOR READ", ""];
           const authorities: string[] = [];
           if (mintAuthority) authorities.push(`- Mint authority: ${mintAuthority} (active — supply can be increased)`);
           if (freezeAuthority) authorities.push(`- Freeze authority: ${freezeAuthority} (active — accounts can be frozen)`);
@@ -10657,8 +10657,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     // memory or asked the user to repaste the address they'd just given. Mirrors the EVM answer
     // paths: remember the token (if we got any usable data) and the creator/fee-payer as a deployer
     // candidate (only when actually resolved — never remember a null as if it were evidence).
+    // FOLLOW-UP MEMORY SHAPE PARITY, DISCLOSED (this task): a Solana deployer/creator answer must
+    // leave the SAME follow-up-reusable memory shape as an EVM /deployer answer does
+    // (chainSlug/chainId/tokenAddress/symbol/lastIntent) so "holders", "lp", "is it safe", "scan
+    // token", "open token scanner" all resolve the same mint after a Solana creator read exactly like
+    // they already do after an EVM one. lastIntent is only ever set to "deployer_check" for the
+    // wantsDeployer branch — the plain "is this safe" full TOKEN READ branch keeps its existing
+    // token_scan-shaped memory, unchanged.
     if (hasUsableData) {
-      updateMemToken(sessionMem!, tokenAddress, marketData?.tokenSymbol ?? null, marketData?.tokenName ?? null, lines.join("\n"), { chain: "solana" });
+      updateMemToken(sessionMem!, tokenAddress, marketData?.tokenSymbol ?? null, marketData?.tokenName ?? null, lines.join("\n"), {
+        chain: "solana", ...(wantsDeployer ? { lastIntent: "deployer_check" } : {}),
+      });
     }
     if (likelyCreator) {
       rememberClarkDeployer(sessionMem!, likelyCreator, {
@@ -10667,11 +10676,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         confidence: (creatorConfidence?.tier as string) === "high" ? "high" : (creatorConfidence?.tier as string) === "low" ? "low" : "medium",
       });
     }
+    if (wantsDeployer) updateMemIntent(sessionMem!, "deployer_check");
     return {
       feature: "clark-ai", chain: chain === "base" ? "base" : chain, mode: "analysis", intent: "token_scan", toolsUsed: ["solana_scan"],
       analysis: lines.join("\n"),
       intentBadge: "solana_creator_read",
-      actions: buildRoutedActions(["Open Token Scanner"]),
+      // REAL ACTION-SET PARITY, DISCLOSED (this task: "reuse buildClarkDeployerAnswerActions... for
+      // Solana answers too"): the deployer-answer branch now gets the SAME real /holders, /lp,
+      // /token, /deployer, Open Token Scanner action set the EVM DEPLOYER READ answer gets, instead
+      // of a bare "Open Token Scanner" link — tokenScannerHref already accepts any chain label
+      // string, "solana" included.
+      actions: wantsDeployer ? buildClarkDeployerAnswerActions(tokenAddress, "solana") : buildRoutedActions(["Open Token Scanner"]),
       // CLARK-TOKEN-VERDICT FIX, DISCLOSED: same in-chat "Deep Scan Token" wiring as the EVM verdict
       // replies above, applied only to the full TOKEN READ answer (not the narrower deployer-only
       // read, which already has its own CTA line baked into its text).
@@ -10684,12 +10699,15 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       // Solana support (toTokenApiChain("solana") is null there), so an address-less prompt would hit
       // that broken branch first and never reach the real Solana deployer cascade (SOLANA_TOKEN_
       // INTENTS / isSolanaDeployerQuestion below) — the explicit address is what routes correctly here.
-      ...(wantsDeployer ? {} : {
-        ui: {
-          intentBadge: "Token Read",
-          actions: buildClarkTokenAnswerActions(tokenAddress, "solana"),
-        },
-      }),
+      // REAL CLICKABLE ACTIONS, DISCLOSED (this task): the client (app/terminal/clark-ai/page.tsx)
+      // only ever renders actions from `payload.ui.actions` — the top-level `actions` field above is
+      // read server-side by normalizeApiReplyShape but never reaches the click-to-send UI on its
+      // own. The deployer branch previously omitted `ui` entirely, so its actions silently never
+      // rendered as clickable chips even though the (unused) top-level array was correct. Both
+      // branches now set `ui.actions`, matching the EVM DEPLOYER READ answer's own shape.
+      ui: wantsDeployer
+        ? { intentBadge: "Deployer Read", actions: buildClarkDeployerAnswerActions(tokenAddress, "solana") }
+        : { intentBadge: "Token Read", actions: buildClarkTokenAnswerActions(tokenAddress, "solana") },
       quotaConsumed: Boolean(solJson),
       clarkDeployerLookupAudit: {
         userPrompt: prompt,
@@ -12232,6 +12250,71 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     const thisDevChain = (targetChain === "base" || targetChain === "eth" || targetChain === "bnb" || targetChain === "robinhood")
       ? targetChain
       : toTokenApiChain(chainForClarkTools);
+    // FAST DEPLOYER RESOLVER WIRED INTO /deployer, DISCLOSED (this task): this handler is the actual
+    // code path a typed "/deployer" command or "who deployed this" phrasing reaches (classifyClarkPrompt
+    // routes here BEFORE the legacy plan.intent === "dev_wallet" branch below ever runs) — but it
+    // previously called the full, slow /api/dev-wallet route directly with no attempt to use
+    // resolveTokenDeployer()'s fast, chain-scoped, cached lookup first. That is the actual root cause
+    // of "Clark is not consistently using the Token Scanner engine/cache" and "/deployer does not work
+    // properly for Robinhood and BNB" (both are fully supported by resolveTokenDeployer's
+    // EXPLORER_CONFIG, but this path never called it). Tier A/B of the required source-priority list
+    // (cached confirmed deployer -> Token Scanner cached result) now runs here first, exactly like the
+    // dev_wallet_analyze tool path already does; the full /api/dev-wallet call is the fallback tier,
+    // reached only when the fast resolver has no result.
+    const resolverChainId = thisDevChain === "eth" ? 1 : thisDevChain === "base" ? 8453 : thisDevChain === "bnb" ? 56 : thisDevChain === "robinhood" ? 4663 : null;
+    const fastDeployer = (thisDevChain && resolverChainId && /^0x[a-fA-F0-9]{40}$/.test(target))
+      ? await resolveTokenDeployer({ chainSlug: thisDevChain, chainId: resolverChainId, tokenAddress: target }).catch(() => null)
+      : null;
+    if (fastDeployer?.deployerAddress && thisDevChain) {
+      const fastChain = thisDevChain;
+      const cx0 = buildCortexEvidenceContext({ address: target, sessionMem, clientContext: body.clientContext });
+      const tokenNameFast = fastDeployer.tokenName ?? cx0.name;
+      const tokenSymbolFast = fastDeployer.tokenSymbol ?? cx0.symbol;
+      const evidenceLabelFast = fastDeployer.evidenceSource === "explorer_creation_lookup"
+        ? `${chainDisplayLabel(fastChain)} chain explorer contract-creation record`
+        : fastDeployer.evidenceSource === "rpc_earliest_transfer"
+          ? "RPC earliest on-chain activity"
+          : "Cached deployer lookup";
+      const analysisFast = [
+        "DEPLOYER READ",
+        `Token: ${tokenNameFast} (${tokenSymbolFast})`,
+        `Chain: ${chainDisplayLabel(fastChain)}`,
+        `Contract: ${target}`,
+        "",
+        "Origin:",
+        `- Origin wallet (deployer): ${fastDeployer.deployerAddress}`,
+        `- Confidence: ${fastDeployer.confidence}`,
+        `- Why: ${fastDeployer.confidenceReason}`,
+        "",
+        `Evidence source: ${evidenceLabelFast}`,
+        "",
+        "Related deployments:",
+        "- Not checked in this fast lookup — run the full Token Scanner dev-cluster read for prior-deployment history.",
+        "",
+        "Missing evidence:",
+        "- Linked-wallet cluster and rug history (fast lookup only resolves deployer identity, by design).",
+        "",
+        "Next:",
+        "- /holders",
+        "- /lp",
+        "- /token",
+        "- /deployer",
+        "- Open Token Scanner",
+      ].join("\n");
+      rememberClarkDeployer(sessionMem, fastDeployer.deployerAddress, {
+        chain: fastChain, sourceTokenAddress: target, confidence: fastDeployer.confidence,
+      });
+      updateMemToken(sessionMem, target, tokenSymbolFast, tokenNameFast, analysisFast, { chain: fastChain, lastIntent: "deployer_check" });
+      updateMemIntent(sessionMem, "deployer_check");
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "deployer_check", toolsUsed: ["token_scanner_cache"],
+        deployerAddress: fastDeployer.deployerAddress, devWallet: { confidence: fastDeployer.confidence },
+        analysis: analysisFast,
+        intentBadge: "deployer_check",
+        ui: { intentBadge: "Deployer Read", actions: buildClarkDeployerAnswerActions(target, fastChain) },
+        quotaConsumed: true,
+      };
+    }
     const devRes = thisDevChain
       ? await callInternalApiCaught(origin, "/api/dev-wallet", { contractAddress: target, chain: thisDevChain }, authHeader ?? undefined, undefined, CLARK_DEPLOYER_SOURCE_TIMEOUT_MS)
       : { ok: false as const, json: null, timedOut: false };
@@ -12246,6 +12329,10 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           clarkCommandPartial: "timeout",
         };
       }
+      // HONEST PER-CHAIN FAILURE REASON, DISCLOSED (hard rule: "if unsupported, say exactly which
+      // Robinhood source is missing" — extended to every chain here): prefers the fast resolver's own
+      // failureReason (already distinguishes "not configured for this chain" from "no source returned
+      // a usable record", per chain) over a generic message.
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "deployer_check", toolsUsed: ["dev_wallet_analyze"],
         analysis: [
@@ -12253,7 +12340,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           `Contract: ${target}`,
           "",
           "Origin wallet could not be verified from this pass.",
-          thisDevChain ? `Source failed: /api/dev-wallet on ${thisDevChain} did not return a usable deployer record.` : "Source failed: this chain is not supported by the EVM deployer lookup.",
+          thisDevChain
+            ? `Source failed: ${fastDeployer?.failureReason ?? `/api/dev-wallet on ${thisDevChain} did not return a usable deployer record.`}`
+            : "Source failed: this chain is not supported by the EVM deployer lookup.",
           "",
           "CTA: Open Token Scanner",
         ].join("\n"),
@@ -12300,14 +12389,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         confidence: deployerConfidence === "high" ? "high" : deployerConfidence === "low" ? "low" : "medium",
       });
     }
-    updateMemToken(sessionMem, target, cx.symbol ?? null, cx.name ?? null, analysis);
+    updateMemToken(sessionMem, target, cx.symbol ?? null, cx.name ?? null, analysis, { chain: thisDevChain ?? "base", lastIntent: "deployer_check" });
     updateMemIntent(sessionMem, "deployer_check");
     return {
       feature: "clark-ai", chain, mode: "analysis", intent: "deployer_check", toolsUsed: ["dev_wallet_analyze"],
       ...(deployerAddress ? { deployerAddress, devWallet: { confidence: deployerConfidence ?? "medium" } } : {}),
       analysis,
       intentBadge: "deployer_check",
-      ui: { intentBadge: "Deployer Read", actions: buildClarkTokenAnswerActions(target, thisDevChain ?? "base") },
+      ui: { intentBadge: "Deployer Read", actions: buildClarkDeployerAnswerActions(target, thisDevChain ?? "base") },
       quotaConsumed: true,
     };
   }
@@ -13999,7 +14088,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       const traceResolved = creatorTrace?.resolved as Record<string, unknown> | null | undefined;
       const likelyCreator = typeof traceResolved?.likelyCreatorWallet === "string" ? traceResolved.likelyCreatorWallet as string : null;
       const creatorConfidence = solData?.creatorConfidence as Record<string, unknown> | null | undefined;
-      const lines: string[] = ["SOLANA CREATOR / AUTHORITY READ", ""];
+      const lines: string[] = ["SOLANA CREATOR READ", ""];
       const authorities: string[] = [];
       if (mintAuthority) authorities.push(`- Mint authority: ${mintAuthority} (active — supply can be increased)`);
       if (freezeAuthority) authorities.push(`- Freeze authority: ${freezeAuthority} (active — accounts can be frozen)`);
@@ -14023,11 +14112,21 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           confidence: (creatorConfidence?.tier as string) === "high" ? "high" : (creatorConfidence?.tier as string) === "low" ? "low" : "medium",
         });
       }
+      // FOLLOW-UP MEMORY + REAL ACTIONS PARITY, DISCLOSED (this task): this second, independent
+      // "who deployed this" Solana branch had the same two gaps as buildSolanaCreatorAnswer did
+      // before this task's fix — no lastToken memory write (so "holders"/"lp"/"is it safe" right
+      // after this answer had nothing to resolve against) and actions only set at the top level
+      // (never rendered client-side, which reads payload.ui.actions only). Both fixed the same way.
+      if (hasUsableData || likelyCreator) {
+        updateMemToken(sessionMem!, resolvedAddress, null, null, lines.join("\n"), { chain: "solana", lastIntent: "deployer_check" });
+      }
+      updateMemIntent(sessionMem!, "deployer_check");
       return {
         feature: "clark-ai", chain: "base", mode: "analysis", intent: plan.intent, toolsUsed: ["solana_scan"],
         analysis: lines.join("\n"),
         intentBadge: "solana_creator_read",
-        actions: buildRoutedActions(["Open Token Scanner"]),
+        actions: buildClarkDeployerAnswerActions(resolvedAddress, "solana"),
+        ui: { intentBadge: "Deployer Read", actions: buildClarkDeployerAnswerActions(resolvedAddress, "solana") },
         quotaConsumed: Boolean(solJson),
         clarkDeployerLookupAudit: {
           prompt, parsedAddress: resolvedAddress, parsedChainSlug: "solana", resolvedChainId: null,
