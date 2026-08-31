@@ -485,8 +485,16 @@ export function slashCommandQuestionCategory(prompt: string): "token" | "wallet"
   return null;
 }
 
+// PHRASE-COVERAGE EXPANSION, DISCLOSED (Clark Deep Scan Wallet follow-up task): the original regex
+// only matched the bare "deep scan it/this/that" chip-generated prompt — "deep scan this wallet",
+// "run deep scan", "run deeper", "full scan", and "scan more history" (all required follow-up
+// phrasings per the task spec) fell through this classifier entirely. lastWalletSubject-reuse
+// coverage now matches every one of those; "explain pnl" is intentionally NOT included here — it
+// must never trigger a re-scan, only reuse the last wallet's memory (handled separately).
+const DEEP_SCAN_WALLET_FOLLOWUP_RE = /^\s*(?:deep\s+scan\s+(?:it|this|that)(?:\s+wallet)?|run\s+deep\s+scan(?:\s+now)?|run\s+deeper|full\s+scan|scan\s+more\s+history)\s*\??\s*$/i;
+
 export function isDeepScanItFollowup(prompt: string): boolean {
-  return /^\s*deep\s+scan\s+(?:it|this|that)\s*\??\s*$/i.test(String(prompt ?? "").trim());
+  return DEEP_SCAN_WALLET_FOLLOWUP_RE.test(String(prompt ?? "").trim());
 }
 
 const HOLDERS_CHECK_RE = /^(?:\/holders\b|(?:check\s+)?holders?\??|what\s+about\s+holders?\??|holder\s+(?:check|distribution|concentration)|who\s+holds(?:\s+(?:this|it|that))?\??|top\s+holders?(?:\s+for)?)\b/i;

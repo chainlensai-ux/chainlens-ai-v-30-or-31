@@ -75,6 +75,18 @@ type ClarkContextState = {
 }
 
 const THINKING_MESSAGE       = 'Clark is thinking...'
+// DEEP-SCAN INSTANT FEEDBACK, DISCLOSED (Clark Deep Scan Wallet follow-up task, requirement 3):
+// a more specific placeholder than the generic THINKING_MESSAGE for the exact phrases that trigger
+// the real deep Wallet Scanner flow — mirrors (deliberately duplicated, not imported, to keep this
+// client bundle free of the server-only lib/server/clarkRouting module) the deep-scan-follow-up
+// phrase set isDeepScanItFollowup() recognizes server-side. Purely cosmetic — the actual dedup/guard
+// against duplicate deep-scan sends is createClarkRequestGate() (requestGateRef), already applied to
+// every send including these.
+const DEEP_SCAN_TRIGGER_RE = /^\s*(?:deep\s+scan\s+(?:it|this|that)(?:\s+wallet)?|run\s+deep\s+scan(?:\s+now)?|run\s+deeper|full\s+scan|scan\s+more\s+history)\s*\??\s*$/i
+const DEEP_SCAN_STARTED_MESSAGE = 'Deep scan started…'
+function thinkingPlaceholderFor(text: string): string {
+  return DEEP_SCAN_TRIGGER_RE.test(text.trim()) ? DEEP_SCAN_STARTED_MESSAGE : THINKING_MESSAGE
+}
 
 function ClarkAiContent() {
   const pathname          = usePathname()
@@ -239,9 +251,10 @@ function ClarkAiContent() {
     setMemoryEpoch((n) => n + 1)
     setLoadingKind(inferAnalysisKind(text, sendMode))
     setLoadingStage(0)
+    const thinkingText = thinkingPlaceholderFor(text)
     setMessages((prev) => {
-      const withoutStaleThinking = prev.filter((m) => !(m.role === 'clark' && m.text === THINKING_MESSAGE && m.requestId && m.requestId !== requestId))
-      return [...withoutStaleThinking, { role: 'user', text, requestId }, { role: 'clark', text: THINKING_MESSAGE, requestId }]
+      const withoutStaleThinking = prev.filter((m) => !(m.role === 'clark' && (m.text === THINKING_MESSAGE || m.text === DEEP_SCAN_STARTED_MESSAGE) && m.requestId && m.requestId !== requestId))
+      return [...withoutStaleThinking, { role: 'user', text, requestId }, { role: 'clark', text: thinkingText, requestId }]
     })
     setInput('')
     setLoading(true)
@@ -581,7 +594,7 @@ function ClarkAiContent() {
                 </div>
               )}
               {messages.map((msg, idx) => {
-                const isThinking = msg.role === 'clark' && loading && msg.text === THINKING_MESSAGE
+                const isThinking = msg.role === 'clark' && loading && (msg.text === THINKING_MESSAGE || msg.text === DEEP_SCAN_STARTED_MESSAGE)
                 return (
                   <div key={idx} className={`clk-msg clk-msg--${msg.role}`}>
                     <span className='clk-msg-role' data-intent={msg.role === 'user' ? msg.text.slice(0, 34) : (msg.intentBadge ?? resolveIntentBadge(msg.text))}>{msg.role === 'user' ? 'USER' : 'CLARK'}</span>

@@ -50,11 +50,16 @@ function run() {
     const handleSendMatch = clarkSrc.match(/async function handleSendText\([\s\S]*?\n  \}\n/)
     check('handleSendText exists', handleSendMatch != null)
     const body = handleSendMatch ? handleSendMatch[0] : ''
-    const appendIndex = body.indexOf("return [...withoutStaleThinking, { role: 'user', text, requestId }, { role: 'clark', text: THINKING_MESSAGE, requestId }]")
+    // DEEP-SCAN INSTANT FEEDBACK, DISCLOSED (Clark Deep Scan Wallet follow-up task): the hardcoded
+    // THINKING_MESSAGE literal was replaced with `thinkingText` — computed synchronously via
+    // thinkingPlaceholderFor(text) just above this append — so a deep-scan-triggering send shows
+    // 'Deep scan started…' instead of the generic 'Clark is thinking...'. The guarantee this check
+    // verifies (a real placeholder is appended synchronously, before any await) is unchanged.
+    const appendIndex = body.indexOf("return [...withoutStaleThinking, { role: 'user', text, requestId }, { role: 'clark', text: thinkingText, requestId }]")
     const firstAwaitIndex = body.indexOf('await ')
     check('the user message is appended to the message list', appendIndex !== -1)
     check('the user message is appended before the first await — never waits on the network to show what was typed', appendIndex !== -1 && (firstAwaitIndex === -1 || appendIndex < firstAwaitIndex))
-    check('a real "Clark is thinking" placeholder is appended in the same synchronous update — instant feedback, not a fake result', body.includes("{ role: 'clark', text: THINKING_MESSAGE, requestId }"))
+    check('a real thinking/deep-scan placeholder (computed synchronously via thinkingPlaceholderFor) is appended in the same synchronous update — instant feedback, not a fake result', body.includes('const thinkingText = thinkingPlaceholderFor(text)') && body.includes("{ role: 'clark', text: thinkingText, requestId }"))
   }
 
   // ── 2. Clicking /lp (or /token, /wallet) chip updates input or starts the check instantly ──────

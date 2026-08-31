@@ -396,6 +396,19 @@ type ClarkSessionMemory = {
   lastWhaleTrackedCount?: number | null;
   lastClarkSubject?: ClarkLastSubject | null;
   prevClarkSubject?: ClarkLastSubject | null;
+  // DEEP-SCAN-FOLLOWUP MEMORY, DISCLOSED (Clark Deep Scan Wallet follow-up task): written after
+  // every /wallet result (preview or deep), read by the deep-scan follow-up phrasings ("deep scan
+  // it", "run deeper", "full scan", "scan more history", ...) so a follow-up always targets the
+  // exact wallet/chain scope the user just saw, independent of lastClarkSubject/lastWallet's own
+  // shapes (which predate this field and are kept unchanged so nothing else that reads them breaks).
+  lastWalletSubject?: {
+    entityType: "wallet";
+    walletAddress: string;
+    chainMode: string | null;
+    scanDepth: "preview" | "deep";
+    chainsFound: string[];
+    timestamp: number;
+  } | null;
 };
 const SESSION_MEMORY = new Map<string, ClarkSessionMemory>();
 const SESSION_MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min
@@ -406,7 +419,7 @@ function getSessionMemory(key: string): ClarkSessionMemory {
   const now = Date.now();
   const existing = SESSION_MEMORY.get(key);
   if (!existing) {
-    const fresh: ClarkSessionMemory = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null, lastClarkSubject: null, prevClarkSubject: null };
+    const fresh: ClarkSessionMemory = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null, lastClarkSubject: null, prevClarkSubject: null, lastWalletSubject: null };
     SESSION_MEMORY.set(key, fresh);
     return fresh;
   }
@@ -935,6 +948,7 @@ interface ClarkRequestBody {
     lastRadarTs?: number;
     lastClarkSubject?: ClarkLastSubject | null;
     prevClarkSubject?: ClarkLastSubject | null;
+    lastWalletSubject?: ClarkSessionMemory["lastWalletSubject"];
   };
   route?: string;
   currentTool?: string;
@@ -3901,8 +3915,8 @@ function buildWalletProfileBlock(walletProfile: Record<string, unknown> | null |
 // Compact, JSON-safe echo of lastWallet sent back to the client so the frontend can persist it
 // (sessionStorage) as a redundancy layer for the server-side in-memory session map — never the
 // primary store, just a fallback restore source for the next request's clientContext.lastWallet.
-function buildWalletMemoryEcho(mem: ClarkSessionMemory): { lastWallet?: { address: string; chainMode: string | null; lastScannedAt: number; cachedEvidence?: { walletProfile: unknown } }; lastToken?: { address: string; symbol: string | null; name: string | null; chain: string | null; lastTool: string | null; lastScannedAt: number; cachedEvidence?: TokenScanEvidence | null }; recentTokens?: ClarkSessionMemory["recentTokens"] } | undefined {
-  const echo: { lastWallet?: { address: string; chainMode: string | null; lastScannedAt: number; cachedEvidence?: { walletProfile: unknown } }; lastToken?: { address: string; symbol: string | null; name: string | null; chain: string | null; lastTool: string | null; lastScannedAt: number; cachedEvidence?: TokenScanEvidence | null }; recentTokens?: ClarkSessionMemory["recentTokens"] } = {};
+function buildWalletMemoryEcho(mem: ClarkSessionMemory): { lastWallet?: { address: string; chainMode: string | null; lastScannedAt: number; cachedEvidence?: { walletProfile: unknown } }; lastWalletSubject?: ClarkSessionMemory["lastWalletSubject"]; lastToken?: { address: string; symbol: string | null; name: string | null; chain: string | null; lastTool: string | null; lastScannedAt: number; cachedEvidence?: TokenScanEvidence | null }; recentTokens?: ClarkSessionMemory["recentTokens"] } | undefined {
+  const echo: { lastWallet?: { address: string; chainMode: string | null; lastScannedAt: number; cachedEvidence?: { walletProfile: unknown } }; lastWalletSubject?: ClarkSessionMemory["lastWalletSubject"]; lastToken?: { address: string; symbol: string | null; name: string | null; chain: string | null; lastTool: string | null; lastScannedAt: number; cachedEvidence?: TokenScanEvidence | null }; recentTokens?: ClarkSessionMemory["recentTokens"] } = {};
   if (mem.lastWallet?.address) {
     const walletProfile = (mem.lastWallet.cachedEvidence as Record<string, unknown> | null | undefined)?.walletProfile ?? null;
     echo.lastWallet = {
@@ -3912,6 +3926,12 @@ function buildWalletMemoryEcho(mem: ClarkSessionMemory): { lastWallet?: { addres
       ...(walletProfile ? { cachedEvidence: { walletProfile } } : {}),
     };
   }
+  // lastWalletSubject echo, DISCLOSED (Clark Deep Scan Wallet follow-up task, Bug B fix): round
+  // trips the new deep-scan-followup memory field the same way lastWallet/lastToken already do, so
+  // a cache-hit reply (which never calls updateMemWallet/this-request's buildClarkWalletReadResponse)
+  // can still restore the CACHED payload's own known wallet into fresh session memory before
+  // returning — see the earlyCached handling in POST().
+  if (mem.lastWalletSubject) echo.lastWalletSubject = mem.lastWalletSubject;
   if (mem.lastToken?.address) {
     echo.lastToken = {
       address: mem.lastToken.address,
@@ -3925,6 +3945,57 @@ function buildWalletMemoryEcho(mem: ClarkSessionMemory): { lastWallet?: { addres
     echo.recentTokens = mem.recentTokens;
   }
   return Object.keys(echo).length ? echo : undefined;
+}
+
+// BUG B FIX, DISCLOSED (Clark Deep Scan Wallet follow-up task): "/wallet <EOA>" got a cacheUsed:true
+// early-cache-hit reply (correct TEXT for that EOA) but the early-cache-hit shortcut below returned
+// straight out of POST() before handleClarkAI/buildClarkWalletReadResponse — the only code that
+// calls updateMemWallet/writes lastWalletSubject — ever ran. So the cached reply showed the RIGHT
+// wallet to the user while session memory silently kept pointing at whatever wallet the last
+// UNCACHED call used, and that stale address leaked into the very next "deep scan it" follow-up.
+// Only the expensive network/scan portion may be skipped by a cache hit — session bookkeeping must
+// not be. The cached payload already carries its own known wallet address (memoryEcho.lastWallet /
+// memoryEcho.lastWalletSubject, written when that response was first computed and cached) — no new
+// network call is needed to recover it, so this just replays that address into fresh session memory
+// before returning, converging the cached and non-cached paths on the same memory-write guarantee.
+function applyCachedClarkWalletMemory(mem: ClarkSessionMemory, payload: unknown): void {
+  const data = (payload && typeof payload === "object" ? (payload as Record<string, unknown>).data : null) as Record<string, unknown> | null | undefined;
+  const echo = (data && typeof data === "object" ? data.memoryEcho : null) as Record<string, unknown> | null | undefined;
+  if (!echo) return;
+  const echoedSubject = echo.lastWalletSubject as ClarkSessionMemory["lastWalletSubject"] | undefined;
+  const echoedWallet = echo.lastWallet as { address?: string; chainMode?: string | null; lastScannedAt?: number; cachedEvidence?: Record<string, unknown> | null } | undefined;
+  const address = echoedSubject?.walletAddress ?? echoedWallet?.address ?? null;
+  if (!address) return;
+  const sameAddress = mem.lastWallet?.address?.toLowerCase() === address.toLowerCase();
+  mem.lastWallet = {
+    address,
+    ensName: sameAddress ? (mem.lastWallet?.ensName ?? null) : null,
+    walletSummary: sameAddress ? (mem.lastWallet?.walletSummary ?? null) : null,
+    snapshot: sameAddress ? (mem.lastWallet?.snapshot ?? null) : null,
+    pnlEvidence: sameAddress ? (mem.lastWallet?.pnlEvidence ?? null) : null,
+    cachedEvidence: echoedWallet?.cachedEvidence ?? (sameAddress ? (mem.lastWallet?.cachedEvidence ?? null) : null),
+    chainMode: echoedWallet?.chainMode ?? echoedSubject?.chainMode ?? null,
+    lastScannedAt: echoedWallet?.lastScannedAt ?? Date.now(),
+    ts: Date.now(),
+  };
+  mem.recentWallets = [{ address, chain: mem.selectedChain, summary: mem.lastWallet.walletSummary, ts: Date.now() }, ...mem.recentWallets.filter((w) => w.address.toLowerCase() !== address.toLowerCase())].slice(0, 5);
+  rememberClarkSubject(mem, {
+    entityType: "wallet",
+    chainSlug: mem.selectedChain,
+    address,
+    symbol: null,
+    name: null,
+    lastIntent: "wallet_scan",
+    lastResultSummary: mem.lastWallet.walletSummary,
+  });
+  mem.lastWalletSubject = echoedSubject ?? {
+    entityType: "wallet",
+    walletAddress: address,
+    chainMode: echoedWallet?.chainMode ?? "all_supported",
+    scanDepth: "preview",
+    chainsFound: [],
+    timestamp: Date.now(),
+  };
 }
 
 // CANONICAL /wallet ENGINE SWAP, DISCLOSED (this task): the ONE place every /wallet-shaped Clark
@@ -3981,6 +4052,17 @@ async function buildClarkWalletReadResponse(params: {
 
   updateMemWallet(sessionMem, address, null, analysis, null, null);
   updateMemIntent(sessionMem, "wallet_analysis");
+  // lastWalletSubject, DISCLOSED (Clark Deep Scan Wallet follow-up task): the single write site for
+  // this field — every /wallet result (preview or deep) reaches this shared helper, so every
+  // deep-scan follow-up phrase reads a consistently fresh wallet/chain scope from here.
+  sessionMem.lastWalletSubject = {
+    entityType: "wallet",
+    walletAddress: address,
+    chainMode: "all_supported",
+    scanDepth: deepScan ? "deep" : "preview",
+    chainsFound: result.chainsScanned ?? [],
+    timestamp: Date.now(),
+  };
 
   const hasEvidence = result.evidenceSources.length > 0;
   return {
@@ -8874,7 +8956,7 @@ async function handleClarkTrackWallet(origin: string, authHeader: string | null,
 
 async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?: string | null, verifiedPlan?: 'free' | 'pro' | 'elite', sessionMem?: ClarkSessionMemory): Promise<Record<string, unknown>> {
   // Ensure we always have a session memory object even for recursive calls
-  if (!sessionMem) sessionMem = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null, lastClarkSubject: null, prevClarkSubject: null };
+  if (!sessionMem) sessionMem = { lastTokenSymbol: null, lastTokenName: null, lastTokenAddress: null, lastTokenChain: null, lastTokenSummary: null, prevTokenSymbol: null, prevTokenName: null, prevTokenAddress: null, prevTokenChain: null, prevTokenSummary: null, lastToken: null, lastWallet: null, lastMomentumList: [], lastMomentumTs: 0, lastIntent: null, lastIntentTs: 0, lastActionableIntent: null, lastActionableIntentTs: 0, allowedRankScanUntil: 0, allowedRankScanUsed: false, lastMomentumShownCount: 0, recentMessages: [], conversationHistory: [], recentTokens: [], recentWallets: [], selectedChain: "base", lastActiveTool: null, currentPage: null, lastDevWallet: null, lastRadarList: [], lastRadarChain: null, lastRadarTs: 0, lastWhaleAlerts: [], lastWhaleAlertsTs: 0, lastWhaleSyncStatus: null, lastClarkSubject: null, prevClarkSubject: null, lastWalletSubject: null };
   const prompt = body.prompt ?? "Give me a clear on-chain summary.";
   // Chain priority: 1) explicit chain named in the prompt, 2) explicit UI chain param,
   // 3) selectedChain from session memory, 4) base default. Prompt wording must never
@@ -9755,16 +9837,47 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // using whatever EVM token happened to be in memory from an earlier scan, completely ignoring the
   // Solana address the user just pasted. A genuinely new address of either kind in the CURRENT
   // message must always win over stale memory.
-  const deepScanItOnWallet = !hasAnyAddress(prompt) && isDeepScanItFollowup(prompt) && (
-    sessionMem.lastClarkSubject?.entityType === "wallet"
+  // DEEP-SCAN-FOLLOWUP TARGET RESOLUTION, DISCLOSED (Clark Deep Scan Wallet follow-up task):
+  // lastWalletSubject (written once, in buildClarkWalletReadResponse, after every real /wallet
+  // result) is the preferred source of truth for "which wallet does this follow-up mean" — it is
+  // always as fresh as the last /wallet call, cache hit or not (see the cache-hit-updates-memory
+  // fix below). lastClarkSubject/lastWallet are kept as a fallback for sessions from before this
+  // field existed, or edge cases where lastWalletSubject was cleared by TTL but lastWallet wasn't.
+  const deepScanTargetAddress = sessionMem.lastWalletSubject?.walletAddress
+    ?? (sessionMem.lastClarkSubject?.entityType === "wallet" ? sessionMem.lastClarkSubject.address : null)
+    ?? sessionMem.lastWallet?.address
+    ?? null;
+  const deepScanItOnWallet = !hasAnyAddress(prompt) && isDeepScanItFollowup(prompt) && Boolean(deepScanTargetAddress) && (
+    sessionMem.lastWalletSubject != null
+    || sessionMem.lastClarkSubject?.entityType === "wallet"
     || (Boolean(sessionMem.lastWallet?.address) && sessionMem.lastClarkSubject?.entityType !== "token" && sessionMem.lastClarkSubject?.entityType !== "pair")
   );
-  if (deepScanItOnWallet && sessionMem.lastWallet?.address) {
+  if (deepScanItOnWallet && deepScanTargetAddress) {
     routedClassification.intent = "wallet_scan";
-    routedClassification.address = sessionMem.lastClarkSubject?.entityType === "wallet"
-      ? sessionMem.lastClarkSubject.address
-      : sessionMem.lastWallet.address;
+    routedClassification.address = deepScanTargetAddress;
     routedClassification.deep = true;
+  }
+  // Requirements 4 & 5, DISCLOSED (Clark Deep Scan Wallet follow-up task): an UNAMBIGUOUS
+  // deep-scan-WALLET phrase (one that names "wallet" explicitly, e.g. "deep scan this wallet") with
+  // no address in the current message and no wallet target resolved — honest guard rails instead of
+  // silently falling through to the token-followup/appIntent branches below. Bare, ambiguous phrases
+  // ("deep scan it", "run deeper", "full scan", "scan more history") are intentionally NOT covered
+  // here — when the last subject is a token those must keep resolving as a token deep-scan
+  // follow-up, exactly as they did before this task (isTokenFollowupPrompt/classifyTokenFollowupKind
+  // below, and the existing test coverage for "deep scan it" reusing a token subject).
+  if (!hasAnyAddress(prompt) && !deepScanTargetAddress && /\bwallet\b/i.test(prompt) && isDeepScanItFollowup(prompt)) {
+    if (isTokenLikeClarkSubject(sessionMem.lastClarkSubject)) {
+      return {
+        feature: "clark-ai", chain, mode: "chat", intent: "wallet_scan_request", toolsUsed: [],
+        analysis: "Current subject is a token, not a wallet. Send a wallet address or use /token.",
+        quotaConsumed: false,
+      };
+    }
+    return {
+      feature: "clark-ai", chain, mode: "chat", intent: "wallet_scan_request", toolsUsed: [],
+      analysis: "I don't have a wallet in context yet. Paste a wallet address, or run /wallet <address> first.",
+      quotaConsumed: false,
+    };
   }
   if (!isForcedLiquidityCheckPrompt(prompt) && !isLiquidityCheckIntent(prompt) && classifyTokenFollowupKind(prompt) !== "lp_lock" && classifyTokenFollowupKind(prompt) !== "deployer" && isTokenFollowupPrompt(prompt) && (sessionMem.lastClarkSubject?.address || sessionMem.lastToken?.address) && !hasAnyAddress(prompt) && !deepScanItOnWallet) {
     const followupKind = classifyTokenFollowupKind(prompt);
@@ -9967,7 +10080,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   // Token intent from classifyClarkPrompt takes priority over appIntent wallet_scan
   const TOKEN_INTENTS = new Set(['token_scan','token_safety','dev_rug_check','lp_lock_check','risk_explanation','liquidity_scan','holders_check','deployer_check'] as const);
   const routedIsToken = TOKEN_INTENTS.has(routedClassification.intent as typeof TOKEN_INTENTS extends Set<infer T> ? T : never);
-  if (appIntent.intent === 'wallet_scan' && !routedIsToken && routeHint !== 'token' && !isLiquidityCheckIntent(prompt) && parseClarkLiquidityIntent(prompt) == null) {
+  // BUG A FIX, DISCLOSED (Clark Deep Scan Wallet follow-up task): this legacy appIntent-driven
+  // branch used to fire for any prompt containing "wallet" — including "deep scan this wallet",
+  // whose appIntent.address/selectedWallet are BOTH null with no session-memory fallback here — so
+  // it returned "I need a wallet address" (badge "Wallet Scan", no deepScanJobId) instead of ever
+  // reaching the deepScanItOnWallet-aware routed.intent === "wallet_scan" branch further down that
+  // DOES fall back to lastWalletSubject/lastWallet and sets scanDepth: 'deep'. Deep-scan follow-ups
+  // now always skip this branch and fall through to that single consolidated dispatch point.
+  if (appIntent.intent === 'wallet_scan' && !routedIsToken && routeHint !== 'token' && !isLiquidityCheckIntent(prompt) && parseClarkLiquidityIntent(prompt) == null && !deepScanItOnWallet) {
     const selectedWallet = typeof body.appContext?.selectedWallet === 'string' ? body.appContext.selectedWallet : body.appContext?.selectedWallet?.address ?? null;
     const walletAddress = appIntent.address ?? selectedWallet ?? null;
     const deepScan = wantsWalletDeepScan(prompt);
@@ -10957,9 +11077,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
   if (deepScanItOnWallet) {
     routed.intent = "wallet_scan";
-    routed.address = sessionMem.lastClarkSubject?.entityType === "wallet"
-      ? sessionMem.lastClarkSubject.address
-      : (sessionMem.lastWallet?.address ?? routed.address);
+    routed.address = deepScanTargetAddress ?? routed.address;
     routed.deep = true;
   }
   const liqIntentLock = applyClarkLiquidityIntentLock(routed, prompt);
@@ -11413,9 +11531,9 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (routed.intent === "wallet_scan" && !routed.address) {
-    routed.address = sessionMem.lastClarkSubject?.entityType === "wallet"
-      ? sessionMem.lastClarkSubject.address
-      : (sessionMem.lastWallet?.address ?? null);
+    routed.address = deepScanTargetAddress
+      ?? (sessionMem.lastClarkSubject?.entityType === "wallet" ? sessionMem.lastClarkSubject.address : null)
+      ?? (sessionMem.lastWallet?.address ?? null);
     if (deepScanItOnWallet) routed.deep = true;
   }
 
@@ -14960,6 +15078,9 @@ export async function POST(req: NextRequest) {
   if (!sessionMem.prevClarkSubject && body.clientContext?.prevClarkSubject?.address) {
     sessionMem.prevClarkSubject = body.clientContext.prevClarkSubject;
   }
+  if (!sessionMem.lastWalletSubject && body.clientContext?.lastWalletSubject?.walletAddress) {
+    sessionMem.lastWalletSubject = body.clientContext.lastWalletSubject;
+  }
   // Sync page and chain into session memory
   setMemPage(sessionMem, body.uiModeHint);
   const earlyPrompt = (body.prompt ?? '').trim()
@@ -15012,6 +15133,9 @@ export async function POST(req: NextRequest) {
   const earlyCacheKey = JSON.stringify({ actor, verifiedPlan: effectivePlan, feature: body.feature, mode: body.mode ?? "", prompt: earlyPrompt, chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" });
   const earlyCached = memorySensitivePrompt ? undefined : clarkCache.get(earlyCacheKey);
   if (earlyCached && earlyCached.exp > Date.now()) {
+    // Bug B fix, see applyCachedClarkWalletMemory above: a cache hit must still refresh wallet
+    // session memory, not just replay the cached text.
+    applyCachedClarkWalletMemory(sessionMem, earlyCached.payload);
     return NextResponse.json(stampClarkRequestId(withClarkAuditCacheHit(earlyCached.payload, clarkAuditRequestStartedAt), requestId, messageId));
   }
   if (debugMemory || process.env.NODE_ENV !== 'production') {
@@ -15143,7 +15267,12 @@ export async function POST(req: NextRequest) {
     // body already parsed before rate check — do NOT call req.json() again
     const cacheKey = JSON.stringify({ actor, verifiedPlan: effectivePlan, feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
     const cached = memorySensitivePrompt ? undefined : clarkCache.get(cacheKey)
-    if (cached && cached.exp > Date.now()) return NextResponse.json(stampClarkRequestId(withClarkAuditCacheHit(cached.payload, clarkAuditRequestStartedAt), requestId, messageId))
+    if (cached && cached.exp > Date.now()) {
+      // Bug B fix, see applyCachedClarkWalletMemory above: a cache hit must still refresh wallet
+      // session memory, not just replay the cached text.
+      applyCachedClarkWalletMemory(sessionMem, cached.payload);
+      return NextResponse.json(stampClarkRequestId(withClarkAuditCacheHit(cached.payload, clarkAuditRequestStartedAt), requestId, messageId))
+    }
     // Derive origin from the incoming request — always correct for any deployment
     const origin = req.nextUrl.origin;
 
@@ -15235,6 +15364,9 @@ export async function POST(req: NextRequest) {
       }
       if (sessionMem.prevClarkSubject?.address) {
         genericMemoryEcho.prevClarkSubject = sessionMem.prevClarkSubject
+      }
+      if (sessionMem.lastWalletSubject?.walletAddress) {
+        genericMemoryEcho.lastWalletSubject = sessionMem.lastWalletSubject
       }
       // DEPLOYER MEMORY, DISCLOSED (Clark memory audit): harvest whichever deployer/creator address
       // this response actually resolved and commit it to session memory. Done here, at the single

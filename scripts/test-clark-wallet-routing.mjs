@@ -21,6 +21,7 @@ import {
   formatCanonicalWalletRead,
   buildClarkWalletAnswerActions,
   buildClarkLpAnswerActions,
+  isDeepScanItFollowup,
 } from '../lib/server/clarkRouting.ts'
 
 const routeSrc = readFileSync(new URL('../app/api/clark/route.ts', import.meta.url), 'utf8')
@@ -91,7 +92,7 @@ const TOKEN = '0x940181a94A35A4569E4529A3CDfB74e38FD98631'
   assert.doesNotMatch(helperBlock[0], /getWalletFromV2|mapWalletRunnerResult/, 'buildClarkWalletReadResponse must never fall back to the old V2-report engine')
 
   // Every real /wallet call site now delegates to the shared helper.
-  const appIntentBlock = routeSrc.match(/if \(appIntent\.intent === 'wallet_scan'[\s\S]{0,1400}?\n  \}/)
+  const appIntentBlock = routeSrc.match(/if \(appIntent\.intent === 'wallet_scan'[\s\S]{0,1600}?\n  \}/)
   assert.ok(appIntentBlock, 'appIntent.intent === wallet_scan block must exist')
   assert.match(appIntentBlock[0], /return await buildClarkWalletReadResponse\(\{/, 'appIntent wallet_scan branch must delegate to the shared canonical-engine helper')
   assert.doesNotMatch(appIntentBlock[0], /getWalletFromV2\(walletAddress\)/, 'appIntent wallet_scan branch must no longer build its primary reply from the old engine')
@@ -207,6 +208,64 @@ const TOKEN = '0x940181a94A35A4569E4529A3CDfB74e38FD98631'
   const deepScanAction = actions.find((a) => a.label === 'Deep Scan Wallet')
   assert.equal(deepScanAction.kind, 'prompt')
   assert.match(routeCode, /function wantsWalletDeepScan\(prompt: string\): boolean \{\s*return \/\\b\(deep\\s\*scan/, 'the prompt the Deep Scan Wallet chip submits must be recognized by wantsWalletDeepScan')
+}
+
+// ── 9. Clark Deep Scan Wallet follow-up task ────────────────────────────────────────────────────
+// Bug A: "deep scan this wallet" (and the other required phrasings) must reach
+// buildClarkWalletReadResponse with a truthy deep-scan flag, through ONE unambiguous path — not get
+// hijacked by the legacy appIntent.intent === 'wallet_scan' branch, which had no session-memory
+// fallback and returned "I need a wallet address" (badge "Wallet Scan", no deepScanJobId) instead.
+{
+  // 9a. Phrase coverage — every required follow-up phrasing is recognized (all except "explain pnl",
+  // which intentionally must NOT trigger a re-scan; it reuses memory instead — see 9d).
+  for (const phrase of ['deep scan this wallet', 'deep scan it', 'deep scan this', 'deep scan that', 'run deep scan', 'run deeper', 'full scan', 'scan more history']) {
+    assert.ok(isDeepScanItFollowup(phrase), `"${phrase}" must be recognized as a deep-scan-wallet follow-up`)
+  }
+  assert.equal(isDeepScanItFollowup('explain pnl'), false, '"explain pnl" must never itself trigger a re-scan')
+  assert.equal(isDeepScanItFollowup('deep scan this token'), false, 'a token-scoped deep scan phrase must not be claimed as a wallet follow-up')
+
+  // 9b. Bug A fix: the legacy appIntent branch must explicitly skip deep-scan follow-ups so they
+  // fall through to the single consolidated routed.intent === "wallet_scan" dispatch point.
+  assert.match(
+    routeCode,
+    /if \(appIntent\.intent === 'wallet_scan'[^\n]*&& !deepScanItOnWallet\) \{/,
+    'Bug A fix: the legacy appIntent.intent === "wallet_scan" branch must skip deep-scan-wallet follow-ups (no session-memory fallback there), letting them reach the routed.intent === "wallet_scan" branch that does fall back correctly',
+  )
+  // The single source of truth for "which wallet" a deep-scan follow-up targets.
+  assert.match(routeCode, /const deepScanTargetAddress = sessionMem\.lastWalletSubject\?\.walletAddress/, 'deep-scan follow-up target resolution must prefer lastWalletSubject')
+  assert.match(routeCode, /const deepScanItOnWallet = !hasAnyAddress\(prompt\) && isDeepScanItFollowup\(prompt\) && Boolean\(deepScanTargetAddress\)/, 'deepScanItOnWallet must be computed once and require a real resolved target')
+
+  // 9c. Bug B fix: a cache hit must still refresh wallet session memory, not just replay cached text.
+  const cacheHitBlocks = [...routeSrc.matchAll(/clarkCache\.get\((?:earlyCacheKey|cacheKey)\)[\s\S]{0,400}/g)]
+  assert.ok(cacheHitBlocks.length >= 2, 'both cache-hit shortcuts must be present')
+  for (const block of cacheHitBlocks) {
+    assert.match(block[0], /applyCachedClarkWalletMemory\(sessionMem, (?:earlyCached|cached)\.payload\)/, 'Bug B fix: every cache-hit shortcut must call applyCachedClarkWalletMemory before returning the cached payload — a cache hit must never skip the wallet-memory write')
+  }
+  assert.match(routeCode, /function applyCachedClarkWalletMemory\(mem: ClarkSessionMemory, payload: unknown\): void \{/, 'applyCachedClarkWalletMemory must exist as the single place a cache hit reconciles session memory')
+
+  // 9d. lastWalletSubject shape + single write site (buildClarkWalletReadResponse, after every real
+  // /wallet result) + it feeds deep-scan target resolution.
+  assert.match(
+    routeCode,
+    /lastWalletSubject\?: \{\s*entityType: "wallet";\s*walletAddress: string;\s*chainMode: string \| null;\s*scanDepth: "preview" \| "deep";\s*chainsFound: string\[\];\s*timestamp: number;\s*\} \| null;/,
+    'lastWalletSubject must carry the exact required shape',
+  )
+  const helperIdx2 = routeSrc.indexOf('async function buildClarkWalletReadResponse')
+  const helperBlock2 = routeSrc.slice(helperIdx2, helperIdx2 + 3600)
+  assert.match(helperBlock2, /sessionMem\.lastWalletSubject = \{/, 'lastWalletSubject must be written inside buildClarkWalletReadResponse — the one function every /wallet result (preview or deep) reaches')
+  assert.match(helperBlock2, /entityType: "wallet",/)
+  assert.match(helperBlock2, /walletAddress: address,/)
+  assert.match(helperBlock2, /scanDepth: deepScan \? "deep" : "preview",/)
+  assert.match(helperBlock2, /chainsFound: result\.chainsScanned/)
+
+  // 9e. Token-subject / no-context guards (requirements 4 & 5) exist and are worded honestly.
+  assert.match(routeCode, /Current subject is a token, not a wallet\. Send a wallet address or use \/token\./, 'an explicit deep-scan-WALLET phrase with a token subject in context must say so plainly')
+  assert.match(routeCode, /I don't have a wallet in context yet\. Paste a wallet address, or run \/wallet <address> first\./, 'an explicit deep-scan-WALLET phrase with no wallet context at all must ask for an address, never fabricate a scan')
+
+  // 9f. No debug fields / no fake PnL: buildClarkWalletReadResponse only ever attaches deepScanJobId
+  // from a REAL orchestrator jobId, and clarkDebugReceipt only under the explicit debug flag.
+  assert.match(helperBlock2, /\.\.\.\(deepScan && result\.jobId \? \{ deepScanJobId: result\.jobId \} : \{\}\)/, 'deepScanJobId must only ever come from the real orchestrator jobId, never fabricated')
+  assert.match(helperBlock2, /\.\.\.\(clarkDebugMode \? \{ clarkDebugReceipt:/, 'raw debug fields must stay gated behind clarkDebugMode, never rendered by default')
 }
 
 console.log('test-clark-wallet-routing.mjs OK')
