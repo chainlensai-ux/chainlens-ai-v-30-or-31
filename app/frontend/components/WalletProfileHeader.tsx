@@ -29,7 +29,7 @@ import { ConfidenceBadge } from './ConfidenceBadge'
 import { PortfolioIntelligenceCard, selectPortfolioStats } from './PortfolioIntelligenceCard'
 import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
-import { computeMergedTotalValueUsd, robinhoodStatusCopy, deriveCanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, robinhoodStatusCopy, deriveCanonicalMergeOverride, buildWalletPublicUiDataAudit } from '@/app/frontend/lib/mergedWalletView'
 
 // PORTFOLIO V2 MIGRATION, UPDATED: see app/terminal/wallet-scanner/page.tsx's own local
 // WalletV2Report type (a separately-defined but structurally identical type — this file's own
@@ -64,9 +64,13 @@ export type WalletV2Report = FinalReport & {
   // WalletV2Report is a separate, structurally-identical type, not an import of page.tsx's).
   canonicalTotalValueUsd?: number | null
   finalCanonicalMergeAudit?: { robinhoodMerged: boolean }
+  // AFTER-MERGE CHAIN BREAKDOWN, DISCLOSED (Wallet-Scanner-Robinhood-UI-breakdown-mismatch fix):
+  // workers/walletScanV2.ts's own per-chain map (numeric chain id string keys, includes '4663' only
+  // when Robinhood was actually merged) — see selectChainBreakdown's own header for the full trace.
+  portfolioTotalByChain?: Record<string, number>
 }
 
-const CHAIN_ID_TO_CHAIN_STRING: Record<number, string> = { 1: 'eth', 8453: 'base', 42161: 'arbitrum', 999: 'hyperevm' }
+const CHAIN_ID_TO_CHAIN_STRING: Record<number, string> = { 1: 'eth', 8453: 'base', 42161: 'arbitrum', 999: 'hyperevm', 4663: 'robinhood' }
 
 export type ChainBreakdownRow = { chain: string; valueUsd: number; percent: number }
 
@@ -81,18 +85,29 @@ function clampPercent(percent: number): number {
 }
 
 // PURE, exported for direct testing (same convention as PortfolioIntelligenceCard.tsx's own
-// selectPortfolioStats). Prefers the canonical `chainValueUsd`/`totalValueUsd` pair — the same real
-// per-chain totals portfolioV2.totalValueUsd is summed from — computing each chain's percentage
-// against the SAME real total this header renders above, never a separately-summed (and therefore
-// potentially disagreeing) subtotal. Falls back to the old V1 `chainValueBreakdown` only when
-// `chainValueUsd` is genuinely absent (e.g. an older cached response predating this field).
+// selectPortfolioStats). PRIORITY ORDER, DISCLOSED (Wallet-Scanner-Robinhood-UI-breakdown-mismatch
+// fix): `canonicalChainTotalByChain` (workers/walletScanV2.ts's `portfolioTotalByChain` — the
+// AFTER-Robinhood-merge per-chain map, real numeric chain ids 1/8453/4663/etc, only ever contains
+// 4663 when the Robinhood adapter actually merged a real value) is now the FIRST-priority source —
+// this is the exact same map the hero total above (via canonicalTotalValueUsd/
+// deriveCanonicalMergeOverride) is built from, so the bars can never again show a smaller sum than
+// the total displayed next to them (the confirmed live bug: total $9,097.55, bars summing to only
+// $1,721.23 because the bars read the OLD, permanently EVM-only `chainValueUsd` while the total had
+// already been fixed to include Robinhood). `chainValueUsd` (EVM-only pricing.chainValueUsd) is the
+// fallback for a report that never went through the async job worker (the fast preview path, which
+// has no canonicalChainTotalByChain field at all) — same real per-chain totals as before, just no
+// longer the top priority. The old V1 `chainValueBreakdown` stays the last-resort fallback, unchanged.
 export function selectChainBreakdown(
   chainValueUsd: Record<number, number> | null | undefined,
   totalValueUsd: number | null,
   v1Breakdown: ChainBreakdownRow[] | null | undefined,
+  canonicalChainTotalByChain?: Record<string, number> | null,
 ): ChainBreakdownRow[] {
-  if (chainValueUsd && typeof chainValueUsd === 'object') {
-    return Object.entries(chainValueUsd)
+  const source = (canonicalChainTotalByChain && typeof canonicalChainTotalByChain === 'object' && Object.keys(canonicalChainTotalByChain).length > 0)
+    ? canonicalChainTotalByChain
+    : chainValueUsd
+  if (source && typeof source === 'object') {
+    return Object.entries(source)
       .filter(([, valueUsd]) => valueUsd > 0)
       .map(([chainIdStr, valueUsd]) => ({
         chain: CHAIN_ID_TO_CHAIN_STRING[Number(chainIdStr)] ?? chainIdStr,
@@ -266,9 +281,29 @@ export function PortfolioSnapshot({ report, robinhoodResult }: { report: WalletV
     })
   }
 
-  const breakdown = selectChainBreakdown(report.chainValueUsd, totalValueUsd, report.portfolio?.chainValueBreakdown)
+  const breakdown = selectChainBreakdown(report.chainValueUsd, totalValueUsd, report.portfolio?.chainValueBreakdown, report.portfolioTotalByChain)
   const chainsScanned = Array.isArray(report.scanMetadata?.chainsScanned) ? report.scanMetadata.chainsScanned : []
   const chainsWithoutData = chainsScanned.filter((c) => !breakdown.some((b) => b.chain === c))
+
+  // WALLET PUBLIC UI DATA AUDIT, DISCLOSED (Wallet-Scanner-Robinhood-UI-breakdown-mismatch fix): logged
+  // unconditionally (not gated to non-production, unlike the diagnostic above) — this is the literal,
+  // required proof that the chain bars a user sees sum to the same total displayed next to them, and
+  // that CORTEX (chainSignalLabel, computed the same way from the same `report`/`merged` inputs) shows
+  // the same chain set. See mergedWalletView.ts's own header for the full disclosure.
+  const cortexChainsForAudit = merged.robinhoodIncluded
+    ? [...(report.behaviorIntel?.multiChainParticipation?.activeChains ?? []), 'robinhood']
+    : [...(report.behaviorIntel?.multiChainParticipation?.activeChains ?? [])]
+  const walletPublicUiDataAudit = buildWalletPublicUiDataAudit({
+    displayedTotalUsd: totalValueUsd,
+    displayedBreakdown: breakdown,
+    canonicalChainTotalByChain: report.portfolioTotalByChain,
+    evmOnlyChainValueUsd: report.chainValueUsd,
+    v1BreakdownPresent: Array.isArray(report.portfolio?.chainValueBreakdown) && report.portfolio!.chainValueBreakdown!.length > 0,
+    chainsScanned,
+    cortexChainsDisplayed: cortexChainsForAudit,
+  })
+  // eslint-disable-next-line no-console
+  console.log('[wallet-profile-header] walletPublicUiDataAudit', walletPublicUiDataAudit)
 
   return (
     <div>

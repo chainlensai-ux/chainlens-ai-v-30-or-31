@@ -148,7 +148,15 @@ export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanne
   // card away.
   const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, canonicalOverride)
   const totalValueUsd = merged.totalValueUsd
-  const { pricedTokenCount, concentration, topChips } = stats
+  const { concentration, topChips } = stats
+  // AFTER-MERGE PRICED-TOKEN COUNT, DISCLOSED (Wallet-Scanner-Robinhood-UI-breakdown-mismatch fix):
+  // "Priced Tokens" must not silently stay EVM-only while the total two lines above it already
+  // includes Robinhood — real counts only, read directly off the real, already-fetched
+  // robinhoodResult (no new call), added only when Robinhood was actually included in the total.
+  const robinhoodPricedCount = (merged.robinhoodIncluded && robinhoodResult?.ok)
+    ? robinhoodResult.holdings.holdings.filter((h) => h.valueUsd != null).length + (robinhoodResult.holdings.native?.valueUsd != null ? 1 : 0)
+    : 0
+  const pricedTokenCount = stats.pricedTokenCount + robinhoodPricedCount
   const chains = Array.isArray(chainsScanned) ? chainsScanned : []
 
   return (

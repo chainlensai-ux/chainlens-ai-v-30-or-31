@@ -148,3 +148,72 @@ export function robinhoodStatusCopy(
   if (status === 'not_configured') return ROBINHOOD_NOT_CONFIGURED_COPY
   return ROBINHOOD_NOT_INCLUDED_COPY
 }
+
+// WALLET PUBLIC UI DATA AUDIT, DISCLOSED (Wallet-Scanner-Robinhood-UI-breakdown-mismatch fix): this
+// task's own explicit requirement — a single, computed-client-side proof that the chain bars/chips a
+// user actually SEES sum to the same total displayed next to them, using the SAME source object CORTEX
+// reads. Confirmed live bug this closes: total $9,097.55 (already merged, from canonicalTotalValueUsd)
+// next to chain bars summing to only $1,721.23 (still reading the old, EVM-only chainValueUsd) — the
+// exact class of silent mismatch this audit exists to make impossible to miss. Pure — no network call,
+// no new computation beyond summing the ALREADY-DISPLAYED breakdown rows and comparing to the
+// ALREADY-DISPLAYED total.
+export type WalletPublicUiDataAudit = {
+  displayedTotalUsd: number | null
+  displayedPortfolioTotalByChain: Record<string, number>
+  displayedChainSumUsd: number
+  displayedHoldingsChains: string[]
+  displayedChainsScanned: string[]
+  cortexChainsDisplayed: string[]
+  sourceObjectUsed: 'canonical_portfolio_total_by_chain' | 'evm_only_chain_value_usd' | 'v1_chain_value_breakdown' | 'none'
+  usesMergedCanonicalResult: boolean
+  mismatchUsd: number | null
+  mismatchReason: string | null
+}
+
+// TOLERANCE, DISCLOSED: cents-level rounding across several chain sums is expected and never a real
+// mismatch — anything above $0.01 means the bars and the total genuinely disagree.
+const CHAIN_SUM_MISMATCH_TOLERANCE_USD = 0.01
+
+export function buildWalletPublicUiDataAudit(params: {
+  displayedTotalUsd: number | null
+  displayedBreakdown: Array<{ chain: string; valueUsd: number }>
+  canonicalChainTotalByChain: Record<string, number> | null | undefined
+  evmOnlyChainValueUsd: Record<number, number> | null | undefined
+  v1BreakdownPresent: boolean
+  chainsScanned: string[]
+  cortexChainsDisplayed: string[]
+}): WalletPublicUiDataAudit {
+  const displayedPortfolioTotalByChain: Record<string, number> = {}
+  for (const row of params.displayedBreakdown) displayedPortfolioTotalByChain[row.chain] = row.valueUsd
+  const displayedChainSumUsd = params.displayedBreakdown.reduce((sum, row) => sum + row.valueUsd, 0)
+  const displayedHoldingsChains = params.displayedBreakdown.map((row) => row.chain)
+
+  const usesMergedCanonicalResult = Boolean(params.canonicalChainTotalByChain && Object.keys(params.canonicalChainTotalByChain).length > 0)
+  const sourceObjectUsed: WalletPublicUiDataAudit['sourceObjectUsed'] = usesMergedCanonicalResult
+    ? 'canonical_portfolio_total_by_chain'
+    : (params.evmOnlyChainValueUsd && Object.keys(params.evmOnlyChainValueUsd).length > 0)
+      ? 'evm_only_chain_value_usd'
+      : params.v1BreakdownPresent
+        ? 'v1_chain_value_breakdown'
+        : 'none'
+
+  const mismatchUsd = params.displayedTotalUsd != null ? Math.abs(params.displayedTotalUsd - displayedChainSumUsd) : null
+  const mismatchReason = (mismatchUsd != null && mismatchUsd > CHAIN_SUM_MISMATCH_TOLERANCE_USD)
+    ? (usesMergedCanonicalResult
+      ? `Chain bars (sum $${displayedChainSumUsd.toFixed(2)}) disagree with the displayed total ($${params.displayedTotalUsd!.toFixed(2)}) even though the merged canonical per-chain map was used — investigate a real data inconsistency.`
+      : `Chain bars are reading a non-canonical source ('${sourceObjectUsed}') while the displayed total may already include Robinhood — this is the exact split-source bug this audit exists to catch.`)
+    : null
+
+  return {
+    displayedTotalUsd: params.displayedTotalUsd,
+    displayedPortfolioTotalByChain,
+    displayedChainSumUsd,
+    displayedHoldingsChains,
+    displayedChainsScanned: params.chainsScanned,
+    cortexChainsDisplayed: params.cortexChainsDisplayed,
+    sourceObjectUsed,
+    usesMergedCanonicalResult,
+    mismatchUsd,
+    mismatchReason,
+  }
+}
