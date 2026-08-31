@@ -1020,6 +1020,11 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       if (chainId == null) continue
       portfolioTotalByChain[String(chainId)] = (portfolioTotalByChain[String(chainId)] ?? 0) + t.valueUsd
     }
+    // BEFORE/AFTER SNAPSHOT, DISCLOSED (final-canonical-merge-proof follow-up): a plain shallow copy
+    // taken BEFORE Robinhood's own total (if any) is added below — this is the literal EVM-only
+    // state the worker's native holdings/pricing modules produced, kept for the audit so a log
+    // reader can see the merge's actual before/after effect, not just the final result.
+    const portfolioTotalByChainBeforeMerge: Record<string, number> = { ...portfolioTotalByChain }
     if (robinhood && robinhoodTotalValueUsd != null) {
       portfolioTotalByChain[String(ROBINHOOD_CHAIN_ID)] = (portfolioTotalByChain[String(ROBINHOOD_CHAIN_ID)] ?? 0) + robinhoodTotalValueUsd
     }
@@ -1071,6 +1076,61 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[CU-TRACK] worker chain propagation audit:', workerChainPropagationAudit)
 
+    // FINAL CANONICAL MERGE AUDIT, DISCLOSED (this task's own explicit requirement): the single,
+    // conclusive proof — logged unconditionally, every scan — of whether Robinhood was selected,
+    // whether the adapter (scanRobinhoodWallet(), via `robinhoodPromise` above) was actually
+    // attempted, what it returned, and whether that result was actually merged into the final
+    // canonical totals a caller (UI, CORTEX) reads. Every field is read off values already computed
+    // above — nothing here is a new call or a new number. `robinhoodAdapterAttempted` is true iff the
+    // adapter promise was genuinely created and awaited (includeRobinhood), independent of whether it
+    // produced a usable result. `robinhoodAdapterStatus` distinguishes "never attempted" from a
+    // thrown/caught failure (`robinhood` came back null despite being attempted) from the real,
+    // reported RobinhoodHoldingsStatus ('ok'|'partial'|'unavailable'|'not_configured') on a completed
+    // attempt. `robinhoodMerged` is true ONLY when Robinhood actually contributed a real value to
+    // `portfolioTotalByChain`/`finalTotalValueUsd` — a completed-but-degraded attempt (adapter ran,
+    // returned an honest zero/unpriced result) is `robinhoodAdapterAttempted: true` but
+    // `robinhoodMerged: false`, never silently counted as included.
+    const robinhoodHoldingsCount = robinhood ? robinhood.holdings.holdings.length + (robinhood.holdings.native ? 1 : 0) : 0
+    const robinhoodPricedHoldingsCount = robinhood
+      ? robinhood.holdings.holdings.filter((h) => h.valueUsd != null).length + (robinhood.holdings.native?.valueUsd != null ? 1 : 0)
+      : 0
+    const robinhoodUnpricedHoldingsCount = robinhood
+      ? robinhood.holdings.holdings.filter((h) => h.valueUsd == null).length + (robinhood.holdings.native && robinhood.holdings.native.valueUsd == null ? 1 : 0)
+      : 0
+    const robinhoodAdapterStatus: string = !includeRobinhoodRequested
+      ? 'not_requested'
+      : !includeRobinhood
+        ? 'not_available'
+        : robinhood
+          ? robinhood.holdings.status
+          : 'adapter_failed'
+    const robinhoodMerged = robinhood != null && robinhoodTotalValueUsd != null
+    const finalCanonicalMergeAudit = {
+      evmWorkerChains: holdingsAllowedChainIds,
+      robinhoodSelected: includeRobinhoodRequested,
+      robinhoodAdapterAttempted: includeRobinhood,
+      robinhoodAdapterStatus,
+      robinhoodValueUsd: robinhoodTotalValueUsd,
+      robinhoodHoldingsCount,
+      robinhoodPricedHoldingsCount,
+      robinhoodUnpricedHoldingsCount,
+      robinhoodMerged,
+      portfolioTotalByChainBeforeMerge,
+      portfolioTotalByChainAfterMerge: portfolioTotalByChain,
+      finalTotalValueUsd: canonicalTotalValueUsd,
+      finalChainsScanned: actualChainsScanned,
+      // UI/CORTEX DISPLAY CONTRACT, DISCLOSED: these two fields are the literal, intended display
+      // chain list for BOTH surfaces — a caller (page.tsx, buildCortexReadV2) that reads
+      // `finalCanonicalMergeAudit.uiChainsDisplayed`/`cortexChainsDisplayed` instead of
+      // `body.data.scanMetadata.chainsScanned` (the pipeline's own EVM-only echo) is guaranteed to
+      // see the AFTER-merge chain list, never the pre-worker/EVM-only one.
+      uiChainsDisplayed: actualChainsScanned,
+      cortexChainsDisplayed: actualChainsScanned,
+      droppedReason: robinhoodDropReason,
+    }
+    // eslint-disable-next-line no-console
+    console.warn('[CU-TRACK] final canonical merge audit:', finalCanonicalMergeAudit)
+
     body = {
       ...body,
       data: {
@@ -1078,6 +1138,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         robinhood: robinhood ? { holdings: robinhood.holdings, activity: robinhood.activity, pnl: robinhood.pnl, audit: robinhood.audit } : null,
         walletChainSelectionAudit: finalWalletChainSelectionAudit,
         workerChainPropagationAudit,
+        finalCanonicalMergeAudit,
         canonicalChainsScanned: actualChainsScanned,
         canonicalTotalValueUsd,
         portfolioTotalByChain,

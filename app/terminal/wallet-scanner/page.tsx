@@ -31,7 +31,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { scanWalletV2, type WalletScanStageProgress, type WalletChainSelectionAudit } from '@/app/frontend/api/scanWallet'
 import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
 import { logScanIdentityIfDev } from '@/app/frontend/lib/walletScanIdentity'
-import { computeMergedTotalValueUsd } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
 import {
   BehaviorIntelView,
   ChainSelectionView,
@@ -124,6 +124,37 @@ export type WalletV2Report = FinalReport & {
   // so PnlStatusCard/SmartMoneyScoreCard had no way to read it from this page at all. Optional — an
   // older cached response predating this field degrades to today's existing behavior unchanged.
   canonicalSampleManifestAudit?: CanonicalSampleManifestAudit
+  // CANONICAL MULTI-CHAIN MERGE, DISCLOSED (final-canonical-merge-proof follow-up): additive fields
+  // workers/walletScanV2.ts attaches to the deep-scan job's own `body.data` once the core scan
+  // completes — present only for a scan that went through the async job worker (the fast preview
+  // path never sets these). When present, `canonicalTotalValueUsd`/`canonicalChainsScanned` are the
+  // AFTER-Robinhood-merge total/chain list (real EVM total plus a real, non-null Robinhood result —
+  // never fabricated, never double-counted with the separate Robinhood fetch this page also makes).
+  // `finalCanonicalMergeAudit` is the full, honest proof object: whether Robinhood was selected, the
+  // adapter (scanRobinhoodWallet()) actually attempted, what it returned, and whether it was really
+  // merged — never claiming inclusion beyond what the adapter actually produced.
+  robinhood?: { holdings: unknown; activity: unknown; pnl: unknown; audit: unknown } | null
+  canonicalChainsScanned?: string[]
+  canonicalTotalValueUsd?: number | null
+  portfolioTotalByChain?: Record<string, number>
+  finalCanonicalMergeAudit?: {
+    evmWorkerChains: number[]
+    robinhoodSelected: boolean
+    robinhoodAdapterAttempted: boolean
+    robinhoodAdapterStatus: string
+    robinhoodValueUsd: number | null
+    robinhoodHoldingsCount: number
+    robinhoodPricedHoldingsCount: number
+    robinhoodUnpricedHoldingsCount: number
+    robinhoodMerged: boolean
+    portfolioTotalByChainBeforeMerge: Record<string, number>
+    portfolioTotalByChainAfterMerge: Record<string, number>
+    finalTotalValueUsd: number | null
+    finalChainsScanned: string[]
+    uiChainsDisplayed: string[]
+    cortexChainsDisplayed: string[]
+    droppedReason: string | null
+  }
 }
 
 type WatchlistWallet = {
@@ -179,7 +210,13 @@ function buildCortexReadV2(
   // main result card two feet to its left. Now reads through the SAME merge helper every other
   // canonical-total display uses (see app/frontend/lib/mergedWalletView.ts).
   const v2TotalValueUsd = report?.portfolioV2?.totalValueUsd ?? report?.portfolio?.totalValueUsd ?? null
-  const merged = computeMergedTotalValueUsd(v2TotalValueUsd, robinhoodResult)
+  // AFTER-MERGE CORTEX READ, DISCLOSED (final-canonical-merge-proof follow-up): prefers the
+  // worker's own already-merged canonical total (deriveCanonicalMergeOverride reads
+  // report.canonicalTotalValueUsd/finalCanonicalMergeAudit.robinhoodMerged, present on a completed
+  // deep-scan job result) over recomputing from the two separate fetches — CORTEX must never disagree
+  // with the same worker-produced proof the logs show. Falls through to the existing v2Total +
+  // robinhoodResult computation for the fast preview path, which never carries these fields.
+  const merged = computeMergedTotalValueUsd(v2TotalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report))
   const totalValueUsd = merged.totalValueUsd
   const chainSignalLabel = merged.robinhoodIncluded
     ? [...activeChains, ROBINHOOD_CHAIN_META.label].join(', ')

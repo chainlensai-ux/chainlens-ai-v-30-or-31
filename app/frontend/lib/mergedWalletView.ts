@@ -61,16 +61,55 @@ export type MergedTotal = {
   robinhoodValueUsd: number | null
 }
 
+// CANONICAL WORKER OVERRIDE, DISCLOSED (final-canonical-merge-proof follow-up): when a deep-scan job
+// result carries the worker's own already-merged `canonicalTotalValueUsd`/`finalCanonicalMergeAudit`
+// (workers/walletScanV2.ts — see WalletV2Report's own header in app/terminal/wallet-scanner/page.tsx),
+// that IS the authoritative, already-computed after-merge total: prefer it outright rather than
+// re-summing v2Total + the separate Robinhood fetch a second time here, which would either duplicate
+// the same real number (harmless but redundant) or, worse, silently diverge from the worker's own
+// proof object if the two ever disagree. Only used when the caller actually has it — the fast preview
+// path (which never goes through the async job worker) has no such field and falls through to the
+// existing v2Total + robinhoodResult computation below, unchanged.
+export type CanonicalMergeOverride = {
+  totalValueUsd: number | null
+  robinhoodMerged: boolean
+} | null | undefined
+
 export function computeMergedTotalValueUsd(
   v2TotalValueUsd: number | null | undefined,
   robinhoodResult: RobinhoodWalletScanResponse | null | undefined,
+  canonicalOverride?: CanonicalMergeOverride,
 ): MergedTotal {
+  if (canonicalOverride) {
+    return {
+      totalValueUsd: canonicalOverride.totalValueUsd,
+      robinhoodIncluded: canonicalOverride.robinhoodMerged,
+      robinhoodValueUsd: canonicalOverride.robinhoodMerged
+        ? (canonicalOverride.totalValueUsd ?? 0) - (v2TotalValueUsd ?? 0)
+        : null,
+    }
+  }
   const v2Total = v2TotalValueUsd ?? null
   const { included, valueUsd } = computeRobinhoodInclusion(robinhoodResult)
   if (v2Total == null && valueUsd == null) {
     return { totalValueUsd: null, robinhoodIncluded: included, robinhoodValueUsd: valueUsd }
   }
   return { totalValueUsd: (v2Total ?? 0) + (valueUsd ?? 0), robinhoodIncluded: included, robinhoodValueUsd: valueUsd }
+}
+
+// WORKER-CANONICAL-TO-OVERRIDE ADAPTER, DISCLOSED: a small, pure helper turning a WalletV2Report's
+// own (optional) canonical fields into the `CanonicalMergeOverride` shape above — kept as its own
+// function so every call site (CORTEX, the hero total, chain chips) derives the override the exact
+// same way, never by re-reading the report's raw fields inconsistently in three different places.
+export function deriveCanonicalMergeOverride(report: {
+  canonicalTotalValueUsd?: number | null
+  finalCanonicalMergeAudit?: { robinhoodMerged: boolean } | null
+} | null | undefined): CanonicalMergeOverride {
+  if (!report || report.canonicalTotalValueUsd === undefined) return null
+  return {
+    totalValueUsd: report.canonicalTotalValueUsd,
+    robinhoodMerged: report.finalCanonicalMergeAudit?.robinhoodMerged ?? false,
+  }
 }
 
 // EXACT WORDING, DISCLOSED (this task's own explicit requirement): when Robinhood was genuinely

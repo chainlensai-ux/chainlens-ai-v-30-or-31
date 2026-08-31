@@ -98,7 +98,10 @@ function run() {
     check('robinhoodDroppedAtStage is null (not dropped) exactly when a real robinhood result was merged', /const robinhoodDroppedAtStage: string \| null = robinhood\s*\n\s*\? null/.test(workerSrc))
     check('workerChainPropagationAudit object has all 8 required fields', /const workerChainPropagationAudit = \{\s*\n\s*selectedChainsFromOrchestrator: finalWalletChainSelectionAudit\.requestedChainsAfter,\s*\n\s*workerRequestedChains: holdingsAllowedChainIds,\s*\n\s*workerAllowedChains: holdingsAllowedChainIds,\s*\n\s*holdingsChainsProcessed,\s*\n\s*pricingChainsProcessed,\s*\n\s*portfolioChainsIncluded,\s*\n\s*robinhoodDroppedAtStage,\s*\n\s*dropReason: robinhoodDropReason,\s*\n\s*\}/.test(workerSrc))
     check('the audit is logged unconditionally on the success path', /console\.warn\('\[CU-TRACK\] worker chain propagation audit:', workerChainPropagationAudit\)/.test(workerSrc))
-    check('workerChainPropagationAudit is merged into body.data alongside the other new fields', /workerChainPropagationAudit,\s*\n\s*canonicalChainsScanned: actualChainsScanned,/.test(workerSrc))
+    // UPDATED, DISCLOSED (final-canonical-merge-proof follow-up): a new finalCanonicalMergeAudit
+    // field was inserted between workerChainPropagationAudit and canonicalChainsScanned — both are
+    // still merged into body.data, just no longer literally adjacent.
+    check('workerChainPropagationAudit is merged into body.data alongside the other new fields', /workerChainPropagationAudit,\s*\n\s*finalCanonicalMergeAudit,\s*\n\s*canonicalChainsScanned: actualChainsScanned,/.test(workerSrc))
     check('workerRequestedChains/workerAllowedChains are the SAME real value fetchAllHoldings was actually called with (holdingsAllowedChainIds) — never a separately-computed, possibly-diverging number', /workerRequestedChains: holdingsAllowedChainIds,\s*\n\s*workerAllowedChains: holdingsAllowedChainIds,/.test(workerSrc))
     check(
       "holdingsChainsProcessed/pricingChainsProcessed derivations read real chainId fields off EVM-only arrays (chainHoldings/pricing.pricedHoldings), never Robinhood/4663",

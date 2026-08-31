@@ -16,6 +16,7 @@ import {
   ROBINHOOD_INCLUDED_COPY,
   ROBINHOOD_NOT_INCLUDED_COPY,
   ROBINHOOD_NOT_CONFIGURED_COPY,
+  deriveCanonicalMergeOverride,
 } from '../app/frontend/lib/mergedWalletView.ts'
 
 let passed = 0
@@ -95,8 +96,13 @@ function run() {
 
   // ── 5. One canonical total: the total merges Robinhood in wherever it is displayed ─────────────
   {
-    check('PortfolioIntelligenceCard merges Robinhood into its displayed total via computeMergedTotalValueUsd', portfolioCardSrc.includes('computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult)'))
-    check('WalletProfileHeader\'s PortfolioSnapshot (the live V3 hero total) merges Robinhood in the same way', walletProfileHeaderSrc.includes('computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult)'))
+    // UPDATED, DISCLOSED (final-canonical-merge-proof follow-up): both call sites gained an optional
+    // 3rd argument (canonicalOverride / deriveCanonicalMergeOverride(report)) so the displayed total
+    // can prefer the worker's own already-merged canonicalTotalValueUsd when present — the underlying
+    // guarantee (Robinhood is merged in via computeMergedTotalValueUsd, never a separate computation)
+    // is unchanged, just with a 3rd param now present.
+    check('PortfolioIntelligenceCard merges Robinhood into its displayed total via computeMergedTotalValueUsd', portfolioCardSrc.includes('computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, canonicalOverride)'))
+    check('WalletProfileHeader\'s PortfolioSnapshot (the live V3 hero total) merges Robinhood in the same way', walletProfileHeaderSrc.includes('computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report))'))
     check('WalletScannerSummaryRowV3 forwards robinhoodResult into PortfolioIntelligenceCard', summaryRowSrc.includes('robinhoodResult={robinhoodResult}'))
     check('WalletScannerHeaderV3 forwards robinhoodResult into PortfolioSnapshot', headerV3Src.includes('robinhoodResult={robinhoodResult}'))
     check('WalletScannerResultsV3 forwards robinhoodResult into both the header and the summary row', (resultsV3Src.match(/robinhoodResult=\{robinhoodResult\}/g) ?? []).length >= 2)
@@ -114,7 +120,9 @@ function run() {
   // ── 7. The CORTEX Wallet Read sidebar uses the same merged result, not the V2-only one ─────────
   {
     check('buildCortexReadV2 accepts a robinhoodResult parameter', /function buildCortexReadV2\(\s*report: WalletV2Report \| null \| undefined,\s*robinhoodResult\?: RobinhoodWalletScanResponse \| null,/.test(pageSrc))
-    check('buildCortexReadV2 computes its total through the same computeMergedTotalValueUsd helper every other canonical total uses', pageSrc.includes('const merged = computeMergedTotalValueUsd(v2TotalValueUsd, robinhoodResult)'))
+    // UPDATED, DISCLOSED (final-canonical-merge-proof follow-up): gained the same optional
+    // canonicalOverride 3rd argument as every other call site — still the same shared helper.
+    check('buildCortexReadV2 computes its total through the same computeMergedTotalValueUsd helper every other canonical total uses', pageSrc.includes('const merged = computeMergedTotalValueUsd(v2TotalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report))'))
     check('the CORTEX sidebar call site passes the real robinhoodResult state through', pageSrc.includes('buildCortexReadV2(result, robinhoodResult)'))
   }
 
@@ -143,6 +151,51 @@ function run() {
     check('lib/server/robinhoodWalletScanner.ts was not touched by this task (still exports the same gated PnL resolver)', read('lib/server/robinhoodWalletScanner.ts').includes('export async function resolveRobinhoodWalletPnl'))
     check('lib/server/robinhoodSwapDecoder.ts was not touched by this task (still exports the same decoder)', read('lib/server/robinhoodSwapDecoder.ts').includes('decodeRobinhoodSwapLog'))
     check('the Robinhood API route response shape is untouched (still returns the same top-level keys)', /ok:\s*true[\s\S]{0,400}wallet[\s\S]{0,400}holdings[\s\S]{0,400}activity[\s\S]{0,400}pnl/.test(read('app/api/wallet-scan/robinhood/route.ts')) || read('app/api/wallet-scan/robinhood/route.ts').includes('holdings,') )
+  }
+
+  // ── 11. Final canonical merge audit, DISCLOSED (Robinhood-canonical-merge-proof follow-up) ──────
+  {
+    const workerSrc = read('workers/walletScanV2.ts')
+    check('finalCanonicalMergeAudit has all 16 required fields', /const finalCanonicalMergeAudit = \{\s*\n\s*evmWorkerChains: holdingsAllowedChainIds,\s*\n\s*robinhoodSelected: includeRobinhoodRequested,\s*\n\s*robinhoodAdapterAttempted: includeRobinhood,\s*\n\s*robinhoodAdapterStatus,\s*\n\s*robinhoodValueUsd: robinhoodTotalValueUsd,\s*\n\s*robinhoodHoldingsCount,\s*\n\s*robinhoodPricedHoldingsCount,\s*\n\s*robinhoodUnpricedHoldingsCount,\s*\n\s*robinhoodMerged,\s*\n\s*portfolioTotalByChainBeforeMerge,\s*\n\s*portfolioTotalByChainAfterMerge: portfolioTotalByChain,\s*\n\s*finalTotalValueUsd: canonicalTotalValueUsd,\s*\n\s*finalChainsScanned: actualChainsScanned,/.test(workerSrc))
+    check('uiChainsDisplayed/cortexChainsDisplayed are both the AFTER-merge chain list (actualChainsScanned), never the pre-worker one', /uiChainsDisplayed: actualChainsScanned,\s*\n\s*cortexChainsDisplayed: actualChainsScanned,/.test(workerSrc))
+    check('robinhoodMerged is true ONLY when a real, non-null value was actually added to totals — never merely "attempted"', /const robinhoodMerged = robinhood != null && robinhoodTotalValueUsd != null/.test(workerSrc))
+    check('the audit is logged unconditionally, every scan', /console\.warn\('\[CU-TRACK\] final canonical merge audit:', finalCanonicalMergeAudit\)/.test(workerSrc))
+    check('finalCanonicalMergeAudit is merged into body.data', /finalCanonicalMergeAudit,\s*\n\s*canonicalChainsScanned: actualChainsScanned,/.test(workerSrc))
+    check('portfolioTotalByChainBeforeMerge is a real snapshot taken BEFORE Robinhood is added, not the same object reference mutated after the fact', /const portfolioTotalByChainBeforeMerge: Record<string, number> = \{ \.\.\.portfolioTotalByChain \}/.test(workerSrc))
+  }
+
+  // ── 12. UI/CORTEX prefer the worker's after-merge canonical total over a second recomputation ───
+  {
+    check('deriveCanonicalMergeOverride returns null when the report has no worker-produced canonical fields (fast preview path — degrades to the existing computation)', deriveCanonicalMergeOverride({}) === null)
+    check('deriveCanonicalMergeOverride returns null for a null/undefined report', deriveCanonicalMergeOverride(null) === null && deriveCanonicalMergeOverride(undefined) === null)
+    check(
+      'deriveCanonicalMergeOverride reads canonicalTotalValueUsd/finalCanonicalMergeAudit.robinhoodMerged off a real worker-produced report',
+      (() => {
+        const override = deriveCanonicalMergeOverride({ canonicalTotalValueUsd: 1234.56, finalCanonicalMergeAudit: { robinhoodMerged: true } })
+        return override != null && override.totalValueUsd === 1234.56 && override.robinhoodMerged === true
+      })(),
+    )
+    check(
+      'computeMergedTotalValueUsd, given a canonicalOverride, uses it directly — never re-sums v2Total + a separately-fetched robinhoodResult total (no double-counting)',
+      (() => {
+        const override = { totalValueUsd: 500, robinhoodMerged: true }
+        // A DIFFERENT, deliberately-wrong v2Total/robinhoodResult pair is passed alongside the
+        // override — if the function ignored the override and re-summed these, the result would be
+        // 300 + 999999 (very wrong); the override must win outright.
+        const result = computeMergedTotalValueUsd(300, { ok: true, holdings: { status: 'ok', portfolioTotalUsd: 999999 } }, override)
+        return result.totalValueUsd === 500 && result.robinhoodIncluded === true
+      })(),
+    )
+    check(
+      'without a canonicalOverride, computeMergedTotalValueUsd falls back to its existing v2Total + robinhoodResult computation, unchanged',
+      (() => {
+        const result = computeMergedTotalValueUsd(300, { ok: true, holdings: { status: 'ok', portfolioTotalUsd: 200 } })
+        return result.totalValueUsd === 500
+      })(),
+    )
+    check('page.tsx\'s CORTEX read (buildCortexReadV2) passes deriveCanonicalMergeOverride(report) into computeMergedTotalValueUsd', /computeMergedTotalValueUsd\(v2TotalValueUsd, robinhoodResult, deriveCanonicalMergeOverride\(report\)\)/.test(pageSrc))
+    check('PortfolioIntelligenceCard accepts a canonicalOverride prop', read('app/frontend/components/PortfolioIntelligenceCard.tsx').includes('canonicalOverride?: CanonicalMergeOverride'))
+    check('WalletScannerSummaryRowV3 (the live V3 layout) forwards deriveCanonicalMergeOverride(report) into PortfolioIntelligenceCard', read('app/frontend/components/WalletScannerSummaryRowV3.tsx').includes('canonicalOverride={deriveCanonicalMergeOverride(report)}'))
   }
 
   console.log(`test-wallet-scanner-merged-view.mjs: all ${passed} assertions passed`)

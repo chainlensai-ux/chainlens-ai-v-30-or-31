@@ -14,6 +14,7 @@ import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { PortfolioIntelligenceCard } from './PortfolioIntelligenceCard'
 import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { PnlStatusCard } from './PnlStatusCard'
+import { deriveCanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
 
 export type WalletScannerSummaryRowV3Props = {
   report: WalletV2Report
@@ -41,6 +42,11 @@ export function WalletScannerSummaryRowV3({ report, robinhoodResult }: WalletSca
           chainsScanned={report.scanMetadata?.chainsScanned}
           activeChain={report.behaviorIntel?.multiChainParticipation?.primaryChain}
           robinhoodResult={robinhoodResult}
+          // AFTER-MERGE TOTAL, DISCLOSED (final-canonical-merge-proof follow-up): see
+          // mergedWalletView.ts's deriveCanonicalMergeOverride/computeMergedTotalValueUsd headers —
+          // this is the live V3 layout's actual rendered card (WALLET_SCANNER_UI_V3 = true), so this
+          // is the real, user-visible total that must match the worker's finalCanonicalMergeAudit log.
+          canonicalOverride={deriveCanonicalMergeOverride(report)}
         />
       </div>
 

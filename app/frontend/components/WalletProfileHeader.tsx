@@ -29,7 +29,7 @@ import { ConfidenceBadge } from './ConfidenceBadge'
 import { PortfolioIntelligenceCard, selectPortfolioStats } from './PortfolioIntelligenceCard'
 import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
-import { computeMergedTotalValueUsd, robinhoodStatusCopy } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, robinhoodStatusCopy, deriveCanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
 
 // PORTFOLIO V2 MIGRATION, UPDATED: see app/terminal/wallet-scanner/page.tsx's own local
 // WalletV2Report type (a separately-defined but structurally identical type — this file's own
@@ -58,6 +58,12 @@ export type WalletV2Report = FinalReport & {
   // so no page-level caller could pass it into PnlStatusCard/SmartMoneyScoreCard at all. Optional —
   // an older cached response predating this field degrades to today's existing behavior.
   canonicalSampleManifestAudit?: CanonicalSampleManifestAudit
+  // CANONICAL MULTI-CHAIN MERGE, DISCLOSED (final-canonical-merge-proof follow-up): same additive
+  // fields as page.tsx's own WalletV2Report — see that file's header for the full disclosure. Only
+  // the two fields deriveCanonicalMergeOverride() actually reads are declared here (this file's
+  // WalletV2Report is a separate, structurally-identical type, not an import of page.tsx's).
+  canonicalTotalValueUsd?: number | null
+  finalCanonicalMergeAudit?: { robinhoodMerged: boolean }
 }
 
 const CHAIN_ID_TO_CHAIN_STRING: Record<number, string> = { 1: 'eth', 8453: 'base', 42161: 'arbitrum', 999: 'hyperevm' }
@@ -233,7 +239,11 @@ export function PortfolioSnapshot({ report, robinhoodResult }: { report: WalletV
   // ONE CANONICAL TOTAL, DISCLOSED (split-Wallet-Scanner-results fix task): this hero total must
   // never disagree with PortfolioIntelligenceCard's total for the same scan — both now read through
   // the same computeMergedTotalValueUsd() helper. See mergedWalletView.ts's own header.
-  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult)
+  // AFTER-MERGE HERO TOTAL, DISCLOSED (final-canonical-merge-proof follow-up): prefers the worker's
+  // own already-merged canonical total (report.canonicalTotalValueUsd) when this report came from a
+  // completed deep-scan job — the hero total must show the SAME after-merge figure the worker's own
+  // finalCanonicalMergeAudit log proves, never a second, independently-recomputed number.
+  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report))
   const totalValueUsd = merged.totalValueUsd
 
   // DIAGNOSTICS, DISCLOSED (this task's explicit requirement): compares what the backend actually
@@ -407,9 +417,17 @@ export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDe
       <PortfolioIntelligenceCard
         portfolio={report.portfolio}
         portfolioV2={report.portfolioV2}
+        // NOTE, DISCLOSED: `chainsScanned` here stays EVM-only (report.scanMetadata.chainsScanned) —
+        // it feeds this card's own "Chain Exposure" chip list, which is typed against SupportedChain
+        // (base/eth/arbitrum/hyperevm only; ChainBadge has no 'robinhood' rendering case). Robinhood's
+        // own chain chip/tab already exists via the dedicated WalletScannerTabsV3/RobinhoodChainSection
+        // mechanism (split-Wallet-Scanner-results fix task) — that is Robinhood's real "chain chip",
+        // not this SupportedChain-typed prop. Forcing 'robinhood' into this array would be a type lie
+        // with no real renderer for it, not an honest inclusion.
         chainsScanned={report.scanMetadata?.chainsScanned}
         activeChain={report.behaviorIntel?.multiChainParticipation?.primaryChain}
         robinhoodResult={robinhoodResult}
+        canonicalOverride={deriveCanonicalMergeOverride(report)}
       />
       {report.smartMoneyScore && (
         <>

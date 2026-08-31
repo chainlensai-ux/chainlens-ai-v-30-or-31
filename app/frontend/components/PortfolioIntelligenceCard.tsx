@@ -41,7 +41,7 @@ import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfo
 import type { SupportedChain } from '@/src/modules/providerFetchWindow/types'
 import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
-import { computeMergedTotalValueUsd, robinhoodStatusCopy } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, robinhoodStatusCopy, type CanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
 import { ChainBadge } from './ChainBadge'
 
 export type PortfolioIntelligenceCardProps = {
@@ -54,6 +54,13 @@ export type PortfolioIntelligenceCardProps = {
   // and its coverage line stops falsely claiming Robinhood is excluded. Omitting it (existing callers
   // that never scan Robinhood) degrades exactly to this card's prior V2-only behavior.
   robinhoodResult?: RobinhoodWalletScanResponse | null
+  // AFTER-MERGE OVERRIDE, DISCLOSED (final-canonical-merge-proof follow-up): optional — pass
+  // deriveCanonicalMergeOverride(report) when the caller has a WalletV2Report with the worker's own
+  // already-merged canonicalTotalValueUsd (a completed deep-scan job result). When present, this
+  // card's total is the SAME after-merge figure the worker's finalCanonicalMergeAudit log proves,
+  // never a second, independently-recomputed number. Omitting it degrades to the existing
+  // v2Total + robinhoodResult computation (the fast preview path, which never has this field).
+  canonicalOverride?: CanonicalMergeOverride
 }
 
 type PortfolioStats = {
@@ -128,7 +135,7 @@ function StatBox({ label, value, sub, valueColor }: { label: string; value: Reac
   )
 }
 
-export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanned, activeChain, robinhoodResult }: PortfolioIntelligenceCardProps) {
+export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanned, activeChain, robinhoodResult, canonicalOverride }: PortfolioIntelligenceCardProps) {
   const { stats, usingV2 } = selectPortfolioStats(portfolio, portfolioV2)
   // TEMPORARY, per this migration's own instructions — remove once portfolioV2 is verified live
   // and this fallback path is no longer needed.
@@ -139,7 +146,7 @@ export function PortfolioIntelligenceCard({ portfolio, portfolioV2, chainsScanne
   // ONLY when Robinhood was actually, successfully scanned (see mergedWalletView.ts's own header) —
   // never a fabricated number, never silently dropping a real Robinhood value that was on screen a
   // card away.
-  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult)
+  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, canonicalOverride)
   const totalValueUsd = merged.totalValueUsd
   const { pricedTokenCount, concentration, topChips } = stats
   const chains = Array.isArray(chainsScanned) ? chainsScanned : []
