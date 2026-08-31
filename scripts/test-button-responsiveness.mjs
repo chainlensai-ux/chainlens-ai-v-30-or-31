@@ -36,15 +36,25 @@ function run() {
 
   // ── 1. Clicking Clark send immediately appends the user message ─────────────────────────────
   {
-    check('handleSendText guards against empty input/in-flight sends as its first real check', /async function handleSendText\(raw: string\) \{\s*const text = raw\.trim\(\)\s*if \(!text \|\| loading\) return/.test(clarkSrc))
+    // STALE-TEST FIX, DISCLOSED (this task: isolate test-button-responsiveness.mjs failure): the
+    // bare `if (!text || loading) return` guard this block originally matched was superseded by
+    // commit 3fc6344 ("Fix Clark request races and command-specific timeout fallbacks"), which
+    // replaced the simple `loading` boolean check with requestGateRef — a strictly stronger
+    // duplicate-in-flight guard (lib/client/clarkRequestLifecycle.ts: rejects a same-text resend
+    // within a 2.5s window, aborts and supersedes a genuinely different in-flight request instead
+    // of just refusing it). The guarantee this test cares about (empty input and in-flight/duplicate
+    // sends are both guarded before any real work happens) still holds — it is implemented better,
+    // just phrased differently in source. These four checks are updated to match that current,
+    // verified-equivalent shape; no behavior changed.
+    check('handleSendText guards against empty input, then against duplicate in-flight sends via requestGateRef', /async function handleSendText\(raw: string\) \{\s*const text = raw\.trim\(\)\s*if \(!text\) return\s*const begun = requestGateRef\.current\.begin\(text\)\s*if \(!begun\.proceed\) return/.test(clarkSrc))
     const handleSendMatch = clarkSrc.match(/async function handleSendText\([\s\S]*?\n  \}\n/)
     check('handleSendText exists', handleSendMatch != null)
     const body = handleSendMatch ? handleSendMatch[0] : ''
-    const appendIndex = body.indexOf("setMessages((prev) => [...prev, { role: 'user', text }")
+    const appendIndex = body.indexOf("return [...withoutStaleThinking, { role: 'user', text, requestId }, { role: 'clark', text: THINKING_MESSAGE, requestId }]")
     const firstAwaitIndex = body.indexOf('await ')
     check('the user message is appended to the message list', appendIndex !== -1)
     check('the user message is appended before the first await — never waits on the network to show what was typed', appendIndex !== -1 && (firstAwaitIndex === -1 || appendIndex < firstAwaitIndex))
-    check('a real "Clark is thinking" placeholder is appended in the same synchronous update — instant feedback, not a fake result', body.includes("{ role: 'clark', text: THINKING_MESSAGE }"))
+    check('a real "Clark is thinking" placeholder is appended in the same synchronous update — instant feedback, not a fake result', body.includes("{ role: 'clark', text: THINKING_MESSAGE, requestId }"))
   }
 
   // ── 2. Clicking /lp (or /token, /wallet) chip updates input or starts the check instantly ──────
