@@ -1105,6 +1105,26 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
           ? robinhood.holdings.status
           : 'adapter_failed'
     const robinhoodMerged = robinhood != null && robinhoodTotalValueUsd != null
+    // VALUED/PARTIAL/FAILED SPLIT, DISCLOSED (Robinhood-partial-adapter-and-Blockscout-proof follow-up,
+    // this task's own explicit requirement 4): `uiChainsDisplayed`/`cortexChainsDisplayed` (kept below,
+    // unchanged, for existing callers) collapse "scanned" and "genuinely valued" into one list — a
+    // Robinhood scan that found holdings but priced none of them still showed up there, which is exactly
+    // the "list Robinhood as displayed even when value=null" bug this task reports. These three fields
+    // are the honest split: EVM chains are always real/valued (the core pipeline never returns an
+    // unpriced EVM chain here); Robinhood lands in exactly one bucket — 'valued' only when
+    // `robinhoodMerged` is true, 'partial' when it was attempted and returned real holdings but no
+    // priced total, 'failed' when it was requested but the adapter came back unusable/unavailable, or
+    // omitted entirely when Robinhood was never requested at all.
+    const robinhoodDisplayBucket: 'valued' | 'partial' | 'failed' | null = !includeRobinhoodRequested
+      ? null
+      : robinhoodMerged
+        ? 'valued'
+        : (robinhood && robinhoodHoldingsCount > 0)
+          ? 'partial'
+          : 'failed'
+    const valuedChainsDisplayed = [...sanitized.chains, ...(robinhoodDisplayBucket === 'valued' ? ['robinhood'] : [])]
+    const partialChainsDisplayed = robinhoodDisplayBucket === 'partial' ? ['robinhood'] : []
+    const failedChainsDisplayed = robinhoodDisplayBucket === 'failed' ? ['robinhood'] : []
     const finalCanonicalMergeAudit = {
       evmWorkerChains: holdingsAllowedChainIds,
       robinhoodSelected: includeRobinhoodRequested,
@@ -1126,6 +1146,9 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       // see the AFTER-merge chain list, never the pre-worker/EVM-only one.
       uiChainsDisplayed: actualChainsScanned,
       cortexChainsDisplayed: actualChainsScanned,
+      valuedChainsDisplayed,
+      partialChainsDisplayed,
+      failedChainsDisplayed,
       droppedReason: robinhoodDropReason,
     }
     // eslint-disable-next-line no-console

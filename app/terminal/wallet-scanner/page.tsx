@@ -31,7 +31,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { scanWalletV2, type WalletScanStageProgress, type WalletChainSelectionAudit } from '@/app/frontend/api/scanWallet'
 import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
 import { logScanIdentityIfDev } from '@/app/frontend/lib/walletScanIdentity'
-import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride, computeRobinhoodDisplayState } from '@/app/frontend/lib/mergedWalletView'
 import {
   BehaviorIntelView,
   ChainSelectionView,
@@ -221,6 +221,17 @@ function buildCortexReadV2(
   const chainSignalLabel = merged.robinhoodIncluded
     ? [...activeChains, ROBINHOOD_CHAIN_META.label].join(', ')
     : (activeChains.join(', ') || 'none active')
+  // PARTIAL/UNPRICED SIGNAL, DISCLOSED (Robinhood-partial-adapter-and-Blockscout-proof follow-up,
+  // acceptance test "CORTEX says Robinhood partial/unpriced instead of implying included value"):
+  // `chainSignalLabel` above already correctly OMITS Robinhood when it's not included (per the
+  // computeRobinhoodInclusion fix), but silent omission alone reads the same to a user as "Robinhood
+  // was never scanned" — indistinguishable from a real found-but-unpriced result. Add an explicit
+  // signal line for exactly that state, using the same shared classification the main UI's coverage
+  // copy uses, so CORTEX never implies Robinhood contributed value it didn't.
+  const robinhoodDisplayState = computeRobinhoodDisplayState(robinhoodResult)
+  const robinhoodSignal = robinhoodDisplayState === 'partial_unpriced'
+    ? 'Robinhood Chain: found holdings, unpriced — not included in total.'
+    : null
 
   return {
     verdict: (b?.rotationStyle?.value ?? 'unknown').toUpperCase(),
@@ -229,6 +240,7 @@ function buildCortexReadV2(
       `Risk posture: ${b?.riskOnOff?.value ?? 'unknown'}`,
       `Chains: ${chainSignalLabel}`,
       totalValueUsd != null ? `Portfolio value: ${fmtUSD(totalValueUsd)}` : 'Portfolio value: not available',
+      ...(robinhoodSignal ? [robinhoodSignal] : []),
     ],
     risks: [
       s?.financialStatus?.headline ?? 'PnL unavailable due to missing evidence.',

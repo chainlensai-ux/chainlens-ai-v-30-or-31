@@ -366,12 +366,25 @@ export type RobinhoodBlockscoutUsageAudit = {
   robinhoodSelected: boolean
   envHasBlockscout: boolean
   blockscoutAttempted: boolean
+  // SEPARATED, DISCLOSED (Robinhood-partial-adapter-and-Blockscout-proof follow-up, this task's own
+  // explicit field): previously only folded into `blockscoutFailureReason` (a real, honest, but
+  // ambiguous choice — "skipped" and "genuinely failed" read the same to a log consumer that only
+  // checks one field). Now its own field: non-null ONLY when Blockscout was never attempted at all
+  // (e.g. GoldRush already succeeded); null whenever at least one real attempt was made, whether that
+  // attempt succeeded or failed.
+  blockscoutSkippedReason: string | null
   blockscoutEndpointsAttempted: string[]
   blockscoutHttpStatuses: number[]
   blockscoutTxCount: number
   blockscoutTokenTransferCount: number
   blockscoutLogCount: number
   blockscoutContractEvidenceCount: number
+  // ADDED, DISCLOSED (this task's own explicit required field): honestly false in every real scan
+  // today — this module's real scope (see file header) never touches holdings/pricing at all, only
+  // activity/tx reconstruction and swap-log evidence. Declared here (rather than omitted) so a log
+  // reader sees an explicit, honest "not used for holdings" rather than inferring it from the field's
+  // absence, and so a genuine future holdings-evidence use of Blockscout has a real field to flip.
+  blockscoutUsedForHoldings: boolean
   blockscoutUsedForActivity: boolean
   blockscoutUsedForSwapLogs: boolean
   blockscoutUsedForFallback: boolean
@@ -443,17 +456,31 @@ export function buildRobinhoodBlockscoutUsageAudit(params: {
     ? (firstFailure ? (firstFailure.blockscoutError ?? firstFailure.blockscoutRejectedReason) : null)
     : (params.skippedReason ?? (envHasBlockscout ? null : 'BLOCKSCOUT_API_KEY not configured for this deployment.'))
 
+  // SKIPPED REASON, DISCLOSED: honestly non-null ONLY when nothing was ever attempted — a real attempt
+  // (success or failure) is never a "skip", so this is null whenever `blockscoutAttempted` is true even
+  // if that attempt failed (that case is `blockscoutFailureReason`'s job, not this one's).
+  const blockscoutSkippedReason = blockscoutAttempted ? null : (params.skippedReason ?? null)
+
+  // USED-FOR-HOLDINGS, DISCLOSED: always false today. `endpointCategory` only ever classifies a
+  // Blockscout call as 'tx' | 'transfer' | 'log' | 'contract' | 'unknown' — none of which this codebase
+  // ever consumes for holdings/pricing (GoldRush/DexScreener own that role exclusively). Kept as its own
+  // named field (rather than omitted) so a genuine future holdings-evidence use of Blockscout has a real
+  // field to flip, instead of the absence of a field silently implying "not used".
+  const blockscoutUsedForHoldings = false
+
   return {
     walletAddress: params.walletAddress,
     robinhoodSelected: params.robinhoodSelected,
     envHasBlockscout,
     blockscoutAttempted,
+    blockscoutSkippedReason,
     blockscoutEndpointsAttempted,
     blockscoutHttpStatuses,
     blockscoutTxCount,
     blockscoutTokenTransferCount,
     blockscoutLogCount,
     blockscoutContractEvidenceCount,
+    blockscoutUsedForHoldings,
     blockscoutUsedForActivity,
     blockscoutUsedForSwapLogs,
     blockscoutUsedForFallback,

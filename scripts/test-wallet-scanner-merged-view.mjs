@@ -10,12 +10,14 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import {
   computeRobinhoodInclusion,
+  computeRobinhoodDisplayState,
   computeMergedTotalValueUsd,
   portfolioCoverageCopy,
   robinhoodStatusCopy,
   ROBINHOOD_INCLUDED_COPY,
   ROBINHOOD_NOT_INCLUDED_COPY,
   ROBINHOOD_NOT_CONFIGURED_COPY,
+  ROBINHOOD_FOUND_UNPRICED_COPY,
   deriveCanonicalMergeOverride,
   buildWalletPublicUiDataAudit,
 } from '../app/frontend/lib/mergedWalletView.ts'
@@ -45,8 +47,50 @@ function run() {
     check('"not_configured" holdings status is never "included"', computeRobinhoodInclusion({ ok: true, holdings: { status: 'not_configured', portfolioTotalUsd: null } }).included === false)
     check('"unavailable" holdings status is never "included"', computeRobinhoodInclusion({ ok: true, holdings: { status: 'unavailable', portfolioTotalUsd: null } }).included === false)
     check('a real "ok" holdings status with a real total IS included, with the real value', computeRobinhoodInclusion({ ok: true, holdings: { status: 'ok', portfolioTotalUsd: 42.5 } }).included === true && computeRobinhoodInclusion({ ok: true, holdings: { status: 'ok', portfolioTotalUsd: 42.5 } }).valueUsd === 42.5)
-    check('a real "partial" holdings status is also included (a real, thin-but-real sample)', computeRobinhoodInclusion({ ok: true, holdings: { status: 'partial', portfolioTotalUsd: 3 } }).included === true)
-    check('an included scan with a null portfolioTotalUsd contributes 0, never a fabricated number', computeRobinhoodInclusion({ ok: true, holdings: { status: 'ok', portfolioTotalUsd: null } }).valueUsd === 0)
+    check('a real "partial" holdings status WITH a real priced total is included, with the real value', computeRobinhoodInclusion({ ok: true, holdings: { status: 'partial', portfolioTotalUsd: 3 } }).included === true)
+    // FIXED, DISCLOSED (Robinhood-partial-adapter-and-Blockscout-proof follow-up): the confirmed live
+    // bug this task closes — a real 'partial' (or 'ok') status with a genuinely null portfolioTotalUsd
+    // (holdings exist but nothing could be priced) previously defaulted to `included: true, valueUsd: 0`,
+    // a fabricated "included" claim with zero real evidence behind it. Now honestly `included: false,
+    // valueUsd: null` regardless of status — this exact null-total case is what `partial_unpriced` (see
+    // computeRobinhoodDisplayState below) exists to describe separately.
+    check('an "ok" status with a null portfolioTotalUsd is honestly NOT included, and reports valueUsd: null (never a fabricated 0)', (() => {
+      const r = computeRobinhoodInclusion({ ok: true, holdings: { status: 'ok', portfolioTotalUsd: null } })
+      return r.included === false && r.valueUsd === null
+    })())
+    check('a "partial" status with holdings found but a null portfolioTotalUsd is honestly NOT included either (this task\'s exact reported scenario)', (() => {
+      const r = computeRobinhoodInclusion({ ok: true, holdings: { status: 'partial', portfolioTotalUsd: null } })
+      return r.included === false && r.valueUsd === null
+    })())
+  }
+
+  // ── 1b. computeRobinhoodDisplayState — distinguishes "found but unpriced" from other states ──────
+  {
+    check('null robinhoodResult is "not_scanned"', computeRobinhoodDisplayState(null) === 'not_scanned')
+    check('ok:false response is "failed"', computeRobinhoodDisplayState({ ok: false, holdings: { status: 'ok', portfolioTotalUsd: 5 } }) === 'failed')
+    check('"not_configured" holdings status is "not_configured"', computeRobinhoodDisplayState({ ok: true, holdings: { status: 'not_configured', portfolioTotalUsd: null } }) === 'not_configured')
+    check('"unavailable" holdings status is "failed"', computeRobinhoodDisplayState({ ok: true, holdings: { status: 'unavailable', portfolioTotalUsd: null } }) === 'failed')
+    check('a real priced total is "valued", regardless of status', computeRobinhoodDisplayState({ ok: true, holdings: { status: 'ok', portfolioTotalUsd: 42.5 } }) === 'valued')
+    // THIS TASK'S EXACT REPORTED SCENARIO: robinhoodHoldingsCount: 1, robinhoodPricedHoldingsCount: 0,
+    // robinhoodValueUsd: null — a real 'partial' status with real holdings (one unpriced token) but no
+    // priced total at all must be its own distinct "partial_unpriced" state, not folded into "failed".
+    check(
+      'a "partial" status WITH real holdings but a null portfolioTotalUsd is "partial_unpriced" — this task\'s exact reported scenario',
+      computeRobinhoodDisplayState({ ok: true, holdings: { status: 'partial', portfolioTotalUsd: null, holdings: [{ address: '0xabc', valueUsd: null }], native: null } }) === 'partial_unpriced',
+    )
+    check(
+      'a "partial" status with NO real holdings at all and a null total is "failed", not "partial_unpriced" (no evidence to call it partial)',
+      computeRobinhoodDisplayState({ ok: true, holdings: { status: 'partial', portfolioTotalUsd: null, holdings: [], native: null } }) === 'failed',
+    )
+  }
+
+  // ── 1c. robinhoodStatusCopy — exact "found but unpriced" wording for the partial_unpriced state ──
+  {
+    check(
+      'robinhoodStatusCopy returns the exact required "found but unpriced" wording for a partial/unpriced result',
+      robinhoodStatusCopy({ ok: true, holdings: { status: 'partial', portfolioTotalUsd: null, holdings: [{ address: '0xabc', valueUsd: null }], native: null } }, false) === ROBINHOOD_FOUND_UNPRICED_COPY,
+    )
+    check("ROBINHOOD_FOUND_UNPRICED_COPY says found-but-unpriced, honestly, not-included", ROBINHOOD_FOUND_UNPRICED_COPY === 'Robinhood Chain found holdings but could not price them — not included in the total.')
   }
 
   // ── 2. computeMergedTotalValueUsd — the ONE canonical total, never fabricated ──────────────────
@@ -159,6 +203,16 @@ function run() {
     const workerSrc = read('workers/walletScanV2.ts')
     check('finalCanonicalMergeAudit has all 16 required fields', /const finalCanonicalMergeAudit = \{\s*\n\s*evmWorkerChains: holdingsAllowedChainIds,\s*\n\s*robinhoodSelected: includeRobinhoodRequested,\s*\n\s*robinhoodAdapterAttempted: includeRobinhood,\s*\n\s*robinhoodAdapterStatus,\s*\n\s*robinhoodValueUsd: robinhoodTotalValueUsd,\s*\n\s*robinhoodHoldingsCount,\s*\n\s*robinhoodPricedHoldingsCount,\s*\n\s*robinhoodUnpricedHoldingsCount,\s*\n\s*robinhoodMerged,\s*\n\s*portfolioTotalByChainBeforeMerge,\s*\n\s*portfolioTotalByChainAfterMerge: portfolioTotalByChain,\s*\n\s*finalTotalValueUsd: canonicalTotalValueUsd,\s*\n\s*finalChainsScanned: actualChainsScanned,/.test(workerSrc))
     check('uiChainsDisplayed/cortexChainsDisplayed are both the AFTER-merge chain list (actualChainsScanned), never the pre-worker one', /uiChainsDisplayed: actualChainsScanned,\s*\n\s*cortexChainsDisplayed: actualChainsScanned,/.test(workerSrc))
+    // ADDED, DISCLOSED (Robinhood-partial-adapter-and-Blockscout-proof follow-up, requirement 4):
+    // finalCanonicalMergeAudit now also carries valuedChainsDisplayed/partialChainsDisplayed/
+    // failedChainsDisplayed — the honest split that uiChainsDisplayed/cortexChainsDisplayed alone
+    // could not express (both of those still list a scanned-but-unpriced Robinhood as "displayed",
+    // which is exactly why the split exists as its own, separate proof).
+    check('finalCanonicalMergeAudit carries valuedChainsDisplayed/partialChainsDisplayed/failedChainsDisplayed', /valuedChainsDisplayed,\s*\n\s*partialChainsDisplayed,\s*\n\s*failedChainsDisplayed,/.test(workerSrc))
+    check(
+      'robinhoodDisplayBucket is "valued" only when robinhoodMerged is true, "partial" only when real holdings exist but were not merged, "failed" otherwise — and null (no bucket) when Robinhood was never requested',
+      /const robinhoodDisplayBucket: 'valued' \| 'partial' \| 'failed' \| null = !includeRobinhoodRequested\s*\n\s*\? null\s*\n\s*: robinhoodMerged\s*\n\s*\? 'valued'\s*\n\s*: \(robinhood && robinhoodHoldingsCount > 0\)\s*\n\s*\? 'partial'\s*\n\s*: 'failed'/.test(workerSrc),
+    )
     check('robinhoodMerged is true ONLY when a real, non-null value was actually added to totals — never merely "attempted"', /const robinhoodMerged = robinhood != null && robinhoodTotalValueUsd != null/.test(workerSrc))
     check('the audit is logged unconditionally, every scan', /console\.warn\('\[CU-TRACK\] final canonical merge audit:', finalCanonicalMergeAudit\)/.test(workerSrc))
     // UPDATED, DISCLOSED (proof-that-Blockscout-is-actually-used follow-up): see the matching update

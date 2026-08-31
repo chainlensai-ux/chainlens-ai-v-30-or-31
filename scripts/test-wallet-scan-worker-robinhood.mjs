@@ -113,6 +113,22 @@ function run() {
     )
   }
 
+  // ── 8. valuedChainsDisplayed/partialChainsDisplayed/failedChainsDisplayed, DISCLOSED
+  //    (Robinhood-partial-adapter-and-Blockscout-proof follow-up, this task's own explicit
+  //    requirement 4): uiChainsDisplayed/cortexChainsDisplayed alone still list a scanned-but-
+  //    unpriced Robinhood as "displayed" — these three fields are the honest split that lets a
+  //    caller distinguish genuinely valued chains from ones that were merely attempted.
+  {
+    check(
+      'robinhoodDisplayBucket is computed off includeRobinhoodRequested/robinhoodMerged/robinhoodHoldingsCount, not re-derived separately',
+      /const robinhoodDisplayBucket: 'valued' \| 'partial' \| 'failed' \| null = !includeRobinhoodRequested/.test(workerSrc),
+    )
+    check('valuedChainsDisplayed starts from the real EVM chain list and adds robinhood only when robinhoodDisplayBucket is "valued"', /const valuedChainsDisplayed = \[\.\.\.sanitized\.chains, \.\.\.\(robinhoodDisplayBucket === 'valued' \? \['robinhood'\] : \[\]\)\]/.test(workerSrc))
+    check('partialChainsDisplayed only ever contains robinhood, only when robinhoodDisplayBucket is "partial"', /const partialChainsDisplayed = robinhoodDisplayBucket === 'partial' \? \['robinhood'\] : \[\]/.test(workerSrc))
+    check('failedChainsDisplayed only ever contains robinhood, only when robinhoodDisplayBucket is "failed"', /const failedChainsDisplayed = robinhoodDisplayBucket === 'failed' \? \['robinhood'\] : \[\]/.test(workerSrc))
+    check('all three are merged into finalCanonicalMergeAudit alongside the existing uiChainsDisplayed/cortexChainsDisplayed fields', /uiChainsDisplayed: actualChainsScanned,\s*\n\s*cortexChainsDisplayed: actualChainsScanned,\s*\n\s*valuedChainsDisplayed,\s*\n\s*partialChainsDisplayed,\s*\n\s*failedChainsDisplayed,/.test(workerSrc))
+  }
+
   console.log(`\n✅ ${passed} wallet-scan-worker-robinhood checks passed`)
 }
 

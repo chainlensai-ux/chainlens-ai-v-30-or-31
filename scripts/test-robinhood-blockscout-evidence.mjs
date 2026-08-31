@@ -328,6 +328,12 @@ async function run() {
     check('blockscoutFailureReason surfaces the real skipped reason, not a generic message', auditSkipped.blockscoutFailureReason === skippedResult.blockscoutSkippedReason)
     check('no endpoints/statuses/counts are fabricated when nothing was attempted', auditSkipped.blockscoutEndpointsAttempted.length === 0 && auditSkipped.blockscoutHttpStatuses.length === 0 && auditSkipped.blockscoutTxCount === 0 && auditSkipped.blockscoutLogCount === 0)
     check('blockscoutUsedForActivity/blockscoutUsedForSwapLogs/blockscoutUsedForFallback are all false when nothing was attempted', auditSkipped.blockscoutUsedForActivity === false && auditSkipped.blockscoutUsedForSwapLogs === false && auditSkipped.blockscoutUsedForFallback === false)
+    // ADDED, DISCLOSED (Robinhood-partial-adapter-and-Blockscout-proof follow-up, this task's own
+    // explicit required field): blockscoutSkippedReason is its own distinct field now — "configured
+    // but skipped" must log a real skipped reason as its own field, separate from
+    // blockscoutFailureReason (which still also carries it for backward compatibility, per check above).
+    check('blockscoutSkippedReason carries the real skipped reason as its own field when nothing was attempted', typeof auditSkipped.blockscoutSkippedReason === 'string' && auditSkipped.blockscoutSkippedReason.includes('GoldRush'))
+    check('blockscoutUsedForHoldings is honestly false — Blockscout is never used for holdings/pricing anywhere in this codebase', auditSkipped.blockscoutUsedForHoldings === false)
 
     // 11b. Blockscout genuinely attempted and succeeds for a per-tx logs call -> real endpoint/status/count logged.
     __resetRobinhoodBlockscoutRateLimitForTest()
@@ -342,6 +348,8 @@ async function run() {
     check('a successful /logs call sets blockscoutUsedForSwapLogs (real swap-evidence usage), never blockscoutUsedForFallback (that is tx/transfer-only)', auditAttempted.blockscoutUsedForSwapLogs === true && auditAttempted.blockscoutUsedForFallback === false)
     check('blockscoutUsedForActivity is true whenever ANY real usage occurred (fallback OR swap logs)', auditAttempted.blockscoutUsedForActivity === true)
     check('blockscoutFailureReason is null on a real success', auditAttempted.blockscoutFailureReason === null)
+    check('blockscoutSkippedReason is null once a real attempt was made — a real attempt is never a "skip", success or not', auditAttempted.blockscoutSkippedReason === null)
+    check('blockscoutUsedForHoldings stays honestly false even on a real, successful swap-log attempt — /logs evidence feeds swap decoding, never holdings/pricing', auditAttempted.blockscoutUsedForHoldings === false)
 
     // 11c. Blockscout attempted and fails -> exact failure reason, never silence, never fake success.
     const failFetch = async () => ({ ok: false, status: 503, headers: noHeaders() })
@@ -350,6 +358,7 @@ async function run() {
     check('a real HTTP failure is attempted (a real request was sent) but never succeeded', auditFailed.blockscoutAttempted === true && failResult.audit.httpStatus === 503)
     check('blockscoutFailureReason carries the exact real reason (http_503), never a vague fallback string', auditFailed.blockscoutFailureReason === 'http_503')
     check('blockscoutUsedForActivity/blockscoutUsedForSwapLogs are false on a failed call — never claimed used', auditFailed.blockscoutUsedForActivity === false && auditFailed.blockscoutUsedForSwapLogs === false)
+    check('blockscoutSkippedReason is null on a failed-but-attempted call — a real failure is not a "skip"', auditFailed.blockscoutSkippedReason === null)
 
     // 11d. Robinhood merge still works honestly even with zero fake Blockscout evidence.
     check('buildRobinhoodBlockscoutUsageAudit never fabricates counts for an empty audits list', buildRobinhoodBlockscoutUsageAudit({ walletAddress: 'w', robinhoodSelected: false, audits: [] }).blockscoutTxCount === 0)

@@ -31,23 +31,60 @@
 import type { RobinhoodWalletScanResponse } from '@/app/frontend/components/RobinhoodChainSection'
 
 export type RobinhoodInclusion = {
-  // True only when Robinhood Chain was actually, successfully scanned this session — a real `ok`/
-  // `partial` holdings status with a real response, never merely "an attempt was made". A
-  // 'not_configured' deployment, a failed fetch (robinhoodResult === null), or an 'unavailable'
-  // holdings status are all `included: false` — honest, not "excluded", since those are three
-  // different real states (see robinhoodStatusCopy below for the distinction shown to the user).
+  // True only when Robinhood Chain was actually, successfully scanned this session AND produced a
+  // real, non-null priced total — a real `ok`/`partial` holdings status with a real response, never
+  // merely "an attempt was made". A 'not_configured' deployment, a failed fetch
+  // (robinhoodResult === null), an 'unavailable' holdings status, OR a real 'partial' holdings-found-
+  // but-genuinely-unpriced result are all `included: false` — honest, not "excluded", since these are
+  // several different real states (see robinhoodStatusCopy/robinhoodDisplayState below for the
+  // distinction shown to the user).
   included: boolean
   valueUsd: number | null
 }
 
+// FIXED, DISCLOSED (Robinhood-partial-adapter-and-Blockscout-proof follow-up): confirmed live bug —
+// this previously returned `included: true, valueUsd: portfolioTotalUsd ?? 0` for ANY 'ok'/'partial'
+// status, including a real 'partial' result whose `portfolioTotalUsd` is genuinely null (holdings
+// exist — e.g. one unpriced token — but no priced evidence at all). Defaulting a null total to `0`
+// while still claiming `included: true` is exactly the false "merged" claim the task's hard rules
+// forbid ("Do NOT add Robinhood value unless priced evidence exists", "Do NOT show Robinhood in
+// normal chain breakdown as valued if robinhoodMerged=false") — it made the UI show a Robinhood chip/
+// "Includes Robinhood Chain" copy for a wallet with ZERO real priced Robinhood value. `included` now
+// requires a real, non-null `portfolioTotalUsd` regardless of status — a 'partial' status with a null
+// total is honestly `included: false` (see robinhoodDisplayState below for its own, distinct
+// "found but unpriced" UI state, which is NOT the same as "not included at all").
 export function computeRobinhoodInclusion(
   robinhoodResult: RobinhoodWalletScanResponse | null | undefined,
 ): RobinhoodInclusion {
   if (!robinhoodResult || !robinhoodResult.ok) return { included: false, valueUsd: null }
   const status = robinhoodResult.holdings.status
   if (status !== 'ok' && status !== 'partial') return { included: false, valueUsd: null }
-  return { included: true, valueUsd: robinhoodResult.holdings.portfolioTotalUsd ?? 0 }
+  const valueUsd = robinhoodResult.holdings.portfolioTotalUsd
+  if (valueUsd == null) return { included: false, valueUsd: null }
+  return { included: true, valueUsd }
 }
+
+// DISPLAY STATE, DISCLOSED (this task's own explicit requirement — item 2's "Robinhood found but
+// unpriced" wording): a finer-grained classification than `included` alone, so the UI can show the
+// TRUE state of a Robinhood scan rather than collapsing "genuinely not scanned/disabled" and "scanned,
+// holdings found, but nothing could be priced" into the same generic "not included" bucket.
+export type RobinhoodDisplayState = 'valued' | 'partial_unpriced' | 'failed' | 'not_configured' | 'not_scanned'
+
+export function computeRobinhoodDisplayState(
+  robinhoodResult: RobinhoodWalletScanResponse | null | undefined,
+): RobinhoodDisplayState {
+  if (!robinhoodResult) return 'not_scanned'
+  if (!robinhoodResult.ok) return 'failed'
+  const status = robinhoodResult.holdings.status
+  if (status === 'not_configured') return 'not_configured'
+  if (status === 'unavailable') return 'failed'
+  const valueUsd = robinhoodResult.holdings.portfolioTotalUsd
+  if (valueUsd != null) return 'valued'
+  const hasHoldings = (robinhoodResult.holdings.holdings?.length ?? 0) > 0 || robinhoodResult.holdings.native != null
+  return hasHoldings ? 'partial_unpriced' : 'failed'
+}
+
+export const ROBINHOOD_FOUND_UNPRICED_COPY = 'Robinhood Chain found holdings but could not price them — not included in the total.'
 
 export type MergedTotal = {
   // The ONE canonical portfolio value for this wallet+scan: the V2 pipeline's total (Base/ETH/
@@ -146,6 +183,12 @@ export function robinhoodStatusCopy(
   if (robinhoodIncluded) return ROBINHOOD_INCLUDED_COPY
   const status = robinhoodResult && robinhoodResult.ok ? robinhoodResult.holdings.status : null
   if (status === 'not_configured') return ROBINHOOD_NOT_CONFIGURED_COPY
+  // FOUND-BUT-UNPRICED, DISCLOSED (Robinhood-partial-adapter-and-Blockscout-proof follow-up,
+  // requirement 2's explicit wording): a real 'partial' holdings status with real holdings but no
+  // priced total is a genuinely different state from "never scanned"/"disabled" — say so honestly
+  // rather than folding it into the generic not-included copy, which would misleadingly suggest
+  // Robinhood was never even attempted for this wallet.
+  if (computeRobinhoodDisplayState(robinhoodResult) === 'partial_unpriced') return ROBINHOOD_FOUND_UNPRICED_COPY
   return ROBINHOOD_NOT_INCLUDED_COPY
 }
 
