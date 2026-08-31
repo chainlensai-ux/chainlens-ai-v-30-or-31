@@ -23,13 +23,14 @@ import type { PortfolioSummary } from '@/src/modules/portfolio/types'
 import type { Portfolio as EnginePortfolioV2 } from '@/lib/engine/modules/portfolio/types'
 import type { SmartMoneyScore } from '@/lib/engine/modules/smartMoney/types'
 import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
+import type { PricedHolding } from '@/lib/engine/modules/pricing/types'
 import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { ChainBadge } from './ChainBadge'
 import { ConfidenceBadge } from './ConfidenceBadge'
 import { PortfolioIntelligenceCard, selectPortfolioStats } from './PortfolioIntelligenceCard'
 import { SmartMoneyScoreCard } from './SmartMoneyScoreCard'
 import { fmtSignedUsd } from '@/app/frontend/lib/holdingsHeuristics'
-import { computeMergedTotalValueUsd, robinhoodStatusCopy, deriveCanonicalMergeOverride, buildWalletPublicUiDataAudit } from '@/app/frontend/lib/mergedWalletView'
+import { computeMergedTotalValueUsd, robinhoodStatusCopy, deriveCanonicalMergeOverride, buildWalletPublicUiDataAudit, mergeRobinhoodIntoPricedHoldings } from '@/app/frontend/lib/mergedWalletView'
 
 // PORTFOLIO V2 MIGRATION, UPDATED: see app/terminal/wallet-scanner/page.tsx's own local
 // WalletV2Report type (a separately-defined but structurally identical type — this file's own
@@ -68,6 +69,11 @@ export type WalletV2Report = FinalReport & {
   // workers/walletScanV2.ts's own per-chain map (numeric chain id string keys, includes '4663' only
   // when Robinhood was actually merged) — see selectChainBreakdown's own header for the full trace.
   portfolioTotalByChain?: Record<string, number>
+  // ADDED, DISCLOSED (finish-Wallet-Scanner-Robinhood-integration follow-up): same real field as
+  // page.tsx's own WalletV2Report (lib/engine/modules/pricing's priceHoldings() output) — needed here
+  // so walletPublicUiDataAudit's new per-chain holdings/priced counts can be computed off the SAME
+  // real rows the Holdings tab renders (via mergeRobinhoodIntoPricedHoldings), not a re-derived guess.
+  pricedHoldings?: PricedHolding[]
 }
 
 const CHAIN_ID_TO_CHAIN_STRING: Record<number, string> = { 1: 'eth', 8453: 'base', 42161: 'arbitrum', 999: 'hyperevm', 4663: 'robinhood' }
@@ -293,6 +299,19 @@ export function PortfolioSnapshot({ report, robinhoodResult }: { report: WalletV
   const cortexChainsForAudit = merged.robinhoodIncluded
     ? [...(report.behaviorIntel?.multiChainParticipation?.activeChains ?? []), 'robinhood']
     : [...(report.behaviorIntel?.multiChainParticipation?.activeChains ?? [])]
+  // HOLDINGS/PNL COUNT INPUTS, DISCLOSED (finish-Wallet-Scanner-Robinhood-integration follow-up):
+  // the SAME merge the Holdings tab itself uses (WalletScannerTabsV3.tsx) — never a second,
+  // independently-derived merge that could silently disagree with what the tab actually renders.
+  const mergedHoldingsForAudit = mergeRobinhoodIntoPricedHoldings(report.pricedHoldings, report.chainValueUsd, robinhoodResult, report.portfolioTotalByChain)
+  const CHAIN_ID_TO_CHAIN_STRING_FOR_AUDIT = CHAIN_ID_TO_CHAIN_STRING
+  const displayedHoldingsRows = mergedHoldingsForAudit.pricedHoldings.map((p) => ({
+    chain: CHAIN_ID_TO_CHAIN_STRING_FOR_AUDIT[p.chainId] ?? String(p.chainId),
+    valueUsd: p.valueUsd,
+  }))
+  const displayedPnlChains = [
+    ...chainsScanned,
+    ...(robinhoodResult && robinhoodResult.ok ? ['robinhood'] : []),
+  ]
   const walletPublicUiDataAudit = buildWalletPublicUiDataAudit({
     displayedTotalUsd: totalValueUsd,
     displayedBreakdown: breakdown,
@@ -301,6 +320,8 @@ export function PortfolioSnapshot({ report, robinhoodResult }: { report: WalletV
     v1BreakdownPresent: Array.isArray(report.portfolio?.chainValueBreakdown) && report.portfolio!.chainValueBreakdown!.length > 0,
     chainsScanned,
     cortexChainsDisplayed: cortexChainsForAudit,
+    displayedHoldingsRows,
+    displayedPnlChains,
   })
   // eslint-disable-next-line no-console
   console.log('[wallet-profile-header] walletPublicUiDataAudit', walletPublicUiDataAudit)

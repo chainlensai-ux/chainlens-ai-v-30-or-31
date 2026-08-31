@@ -29,6 +29,8 @@
 // Robinhood" instead.
 //
 import type { RobinhoodWalletScanResponse } from '@/app/frontend/components/RobinhoodChainSection'
+import type { PricedHolding } from '@/lib/engine/modules/pricing/types'
+import { ROBINHOOD_CHAIN_META } from '@/app/frontend/components/RobinhoodChainSection'
 
 export type RobinhoodInclusion = {
   // True only when Robinhood Chain was actually, successfully scanned this session AND produced a
@@ -205,6 +207,20 @@ export type WalletPublicUiDataAudit = {
   displayedPortfolioTotalByChain: Record<string, number>
   displayedChainSumUsd: number
   displayedHoldingsChains: string[]
+  // ADDED, DISCLOSED (finish-Wallet-Scanner-Robinhood-integration follow-up, this task's own explicit
+  // required fields): real per-chain counts off the SAME rows the Holdings tab actually renders
+  // (post-Robinhood-merge, see mergeRobinhoodIntoPricedHoldings below) — never a separate recount.
+  // displayedHoldingsCountByChain counts every displayed row (priced OR dust, whatever the Holdings
+  // tab shows); displayedPricedCountByChain is the subset of those with a real, non-null valueUsd —
+  // the same "priced" concept PortfolioIntelligenceCard's own pricedTokenCount already uses.
+  displayedHoldingsCountByChain: Record<string, number>
+  displayedPricedCountByChain: Record<string, number>
+  // Chains for which SOME real PnL status/message is shown to the user this scan — EVM chains (the
+  // aggregate pnlV2/fifoAndPnl figures cover the whole EVM scan, never split per chain beyond
+  // pnlV2.chainBreakdown) plus 'robinhood' whenever a real robinhoodResult.pnl status line is
+  // rendered (verified, partial, or the honest disabled/unsupported message) — never implies a
+  // verified number exists for every chain listed here, only that a real status is displayed.
+  displayedPnlChains: string[]
   displayedChainsScanned: string[]
   cortexChainsDisplayed: string[]
   sourceObjectUsed: 'canonical_portfolio_total_by_chain' | 'evm_only_chain_value_usd' | 'v1_chain_value_breakdown' | 'none'
@@ -225,11 +241,24 @@ export function buildWalletPublicUiDataAudit(params: {
   v1BreakdownPresent: boolean
   chainsScanned: string[]
   cortexChainsDisplayed: string[]
+  // ADDED, DISCLOSED (finish-Wallet-Scanner-Robinhood-integration follow-up): the real rows the
+  // Holdings tab is actually displaying this scan (post-Robinhood-merge) — used ONLY to build the two
+  // per-chain count fields above, never to recompute displayedChainSumUsd/mismatchUsd (those stay
+  // sourced from displayedBreakdown, unchanged).
+  displayedHoldingsRows: Array<{ chain: string; valueUsd: number | null }>
+  displayedPnlChains: string[]
 }): WalletPublicUiDataAudit {
   const displayedPortfolioTotalByChain: Record<string, number> = {}
   for (const row of params.displayedBreakdown) displayedPortfolioTotalByChain[row.chain] = row.valueUsd
   const displayedChainSumUsd = params.displayedBreakdown.reduce((sum, row) => sum + row.valueUsd, 0)
   const displayedHoldingsChains = params.displayedBreakdown.map((row) => row.chain)
+
+  const displayedHoldingsCountByChain: Record<string, number> = {}
+  const displayedPricedCountByChain: Record<string, number> = {}
+  for (const row of params.displayedHoldingsRows) {
+    displayedHoldingsCountByChain[row.chain] = (displayedHoldingsCountByChain[row.chain] ?? 0) + 1
+    if (row.valueUsd != null) displayedPricedCountByChain[row.chain] = (displayedPricedCountByChain[row.chain] ?? 0) + 1
+  }
 
   const usesMergedCanonicalResult = Boolean(params.canonicalChainTotalByChain && Object.keys(params.canonicalChainTotalByChain).length > 0)
   const sourceObjectUsed: WalletPublicUiDataAudit['sourceObjectUsed'] = usesMergedCanonicalResult
@@ -252,11 +281,85 @@ export function buildWalletPublicUiDataAudit(params: {
     displayedPortfolioTotalByChain,
     displayedChainSumUsd,
     displayedHoldingsChains,
+    displayedHoldingsCountByChain,
+    displayedPricedCountByChain,
+    displayedPnlChains: params.displayedPnlChains,
     displayedChainsScanned: params.chainsScanned,
     cortexChainsDisplayed: params.cortexChainsDisplayed,
     sourceObjectUsed,
     usesMergedCanonicalResult,
     mismatchUsd,
     mismatchReason,
+  }
+}
+
+// ROBINHOOD-INTO-HOLDINGS MERGE, DISCLOSED (finish-Wallet-Scanner-Robinhood-integration follow-up,
+// this task's own explicit requirement 3): the Holdings tab previously only ever received
+// report.pricedHoldings/report.chainValueUsd — the EVM-only pricing engine's own output — so
+// Robinhood never appeared there at all, only inside its own separate tab. This function adapts
+// Robinhood's real, already-fetched holdings (RobinhoodWalletScanResponse['holdings'], a genuinely
+// different shape — address/uiBalance/priceSource, not tokenAddress/quantity/decimals/classification)
+// into real PricedHolding-shaped rows so they flow through the SAME selectHoldingsV2 selector every
+// EVM holding already does — same dust/zero-value filtering, same sort, same table component. NEVER
+// fabricates a price or value: a Robinhood token with `priceUsd: null`/`valueUsd: null` becomes a
+// PricedHolding with the same null fields, which selectHoldingsV2 already, honestly excludes from
+// both the meaningful and dust buckets (see holdingsV2Selector.ts's own "NEVER HIDDEN BY VALUE"
+// header) — exactly the same treatment an unpriced EVM token already gets today, not a new rule.
+// `decimals: 0`/`quantity: String(uiBalance)` is a deliberate, disclosed shortcut: the frontend
+// RobinhoodWalletScanResponse type only ever carries the already-human-readable `uiBalance` (see
+// RobinhoodChainSection.tsx's own type — no raw decimals/rawBalance reach the client), and
+// HoldingsTable/holdingsV2Selector only ever read `amount`/`providerValueUsd` from the derived
+// TokenHolding row (via toDisplayRow), never quantity*10**decimals — so this never produces a wrong
+// displayed balance, only skips a client-side round-trip through decimals that was never needed.
+export function mergeRobinhoodIntoPricedHoldings(
+  pricedHoldings: PricedHolding[] | null | undefined,
+  chainValueUsd: Record<number, number> | null | undefined,
+  robinhoodResult: RobinhoodWalletScanResponse | null | undefined,
+  // Same priority-order convention as selectChainBreakdown (WalletProfileHeader.tsx): the worker's
+  // own AFTER-merge canonicalChainTotalByChain (only ever contains 4663 when Robinhood was genuinely
+  // merged — see workers/walletScanV2.ts) takes priority over the EVM-only chainValueUsd. Passing
+  // neither/undefined degrades to the plain EVM-only chainValueUsd, unchanged from before this task.
+  canonicalChainTotalByChain?: Record<string, number> | null,
+): { pricedHoldings: PricedHolding[]; chainValueUsd: Record<number, number> } {
+  const basePricedHoldings = Array.isArray(pricedHoldings) ? pricedHoldings : []
+  const baseChainValueUsd = (chainValueUsd && typeof chainValueUsd === 'object') ? chainValueUsd : {}
+  const mergedChainValueUsd = (canonicalChainTotalByChain && Object.keys(canonicalChainTotalByChain).length > 0)
+    ? Object.fromEntries(Object.entries(canonicalChainTotalByChain).map(([chainIdStr, valueUsd]) => [Number(chainIdStr), valueUsd]))
+    : { ...baseChainValueUsd }
+
+  if (!robinhoodResult || !robinhoodResult.ok) {
+    return { pricedHoldings: basePricedHoldings, chainValueUsd: mergedChainValueUsd }
+  }
+
+  const robinhoodRows: PricedHolding[] = []
+  const h = robinhoodResult.holdings
+  if (h.native) {
+    robinhoodRows.push({
+      chainId: ROBINHOOD_CHAIN_META.chainId,
+      tokenAddress: 'native',
+      symbol: h.native.symbol,
+      decimals: 0,
+      quantity: String(h.native.uiBalance ?? 0),
+      priceUsd: h.native.priceUsd,
+      valueUsd: h.native.valueUsd,
+      classification: 'other',
+    })
+  }
+  for (const t of h.holdings) {
+    robinhoodRows.push({
+      chainId: ROBINHOOD_CHAIN_META.chainId,
+      tokenAddress: t.address,
+      symbol: t.symbol ?? t.address.slice(0, 8),
+      decimals: 0,
+      quantity: String(t.uiBalance ?? 0),
+      priceUsd: t.priceUsd,
+      valueUsd: t.valueUsd,
+      classification: 'other',
+    })
+  }
+
+  return {
+    pricedHoldings: [...basePricedHoldings, ...robinhoodRows],
+    chainValueUsd: mergedChainValueUsd,
   }
 }

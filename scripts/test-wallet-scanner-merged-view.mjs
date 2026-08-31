@@ -20,6 +20,7 @@ import {
   ROBINHOOD_FOUND_UNPRICED_COPY,
   deriveCanonicalMergeOverride,
   buildWalletPublicUiDataAudit,
+  mergeRobinhoodIntoPricedHoldings,
 } from '../app/frontend/lib/mergedWalletView.ts'
 
 let passed = 0
@@ -295,7 +296,19 @@ function run() {
   // ── 14. walletPublicUiDataAudit, DISCLOSED (this task's own explicit required audit object) ─────
   {
     const walletProfileHeaderSrc = read('app/frontend/components/WalletProfileHeader.tsx')
-    check('buildWalletPublicUiDataAudit is exported from mergedWalletView.ts with all 10 required fields', /export type WalletPublicUiDataAudit = \{\s*\n\s*displayedTotalUsd: number \| null\s*\n\s*displayedPortfolioTotalByChain: Record<string, number>\s*\n\s*displayedChainSumUsd: number\s*\n\s*displayedHoldingsChains: string\[\]\s*\n\s*displayedChainsScanned: string\[\]\s*\n\s*cortexChainsDisplayed: string\[\]\s*\n\s*sourceObjectUsed:/.test(read('app/frontend/lib/mergedWalletView.ts')))
+    check('buildWalletPublicUiDataAudit is exported from mergedWalletView.ts with all 10 required fields', /export type WalletPublicUiDataAudit = \{\s*\n\s*displayedTotalUsd: number \| null\s*\n\s*displayedPortfolioTotalByChain: Record<string, number>\s*\n\s*displayedChainSumUsd: number\s*\n\s*displayedHoldingsChains: string\[\]/.test(read('app/frontend/lib/mergedWalletView.ts')))
+    // ADDED, DISCLOSED (finish-Wallet-Scanner-Robinhood-integration follow-up, this task's own
+    // explicit required fields): displayedHoldingsCountByChain/displayedPricedCountByChain/
+    // displayedPnlChains now exist on the same audit type.
+    check(
+      'WalletPublicUiDataAudit now also carries displayedHoldingsCountByChain/displayedPricedCountByChain/displayedPnlChains',
+      (() => {
+        const src = read('app/frontend/lib/mergedWalletView.ts')
+        return src.includes('displayedHoldingsCountByChain: Record<string, number>')
+          && src.includes('displayedPricedCountByChain: Record<string, number>')
+          && /export type WalletPublicUiDataAudit[\s\S]{0,2000}displayedPnlChains: string\[\]/.test(src)
+      })(),
+    )
     check('WalletProfileHeader computes and logs walletPublicUiDataAudit unconditionally (never gated to non-production, unlike the pre-existing diagnostic)', walletProfileHeaderSrc.includes("console.log('[wallet-profile-header] walletPublicUiDataAudit', walletPublicUiDataAudit)"))
     check('the audit is built from the SAME breakdown/total already rendered on screen — no separate recomputation', /buildWalletPublicUiDataAudit\(\{\s*\n\s*displayedTotalUsd: totalValueUsd,\s*\n\s*displayedBreakdown: breakdown,/.test(walletProfileHeaderSrc))
     check('cortexChainsDisplayed is derived the same way (merged.robinhoodIncluded) CORTEX itself uses — never a separately-tracked list that could drift', walletProfileHeaderSrc.includes('const cortexChainsForAudit = merged.robinhoodIncluded'))
@@ -313,6 +326,8 @@ function run() {
           v1BreakdownPresent: false,
           chainsScanned: ['base', 'eth'],
           cortexChainsDisplayed: ['base', 'eth', 'robinhood'],
+          displayedHoldingsRows: [{ chain: 'eth', valueUsd: 1581.74 }, { chain: 'base', valueUsd: 139.49 }],
+          displayedPnlChains: ['base', 'eth'],
         })
         return audit.mismatchUsd != null && audit.mismatchUsd > 0.01 && typeof audit.mismatchReason === 'string' && audit.usesMergedCanonicalResult === false
       })(),
@@ -328,8 +343,19 @@ function run() {
           v1BreakdownPresent: false,
           chainsScanned: ['base', 'eth'],
           cortexChainsDisplayed: ['base', 'eth', 'robinhood'],
+          displayedHoldingsRows: [
+            { chain: 'eth', valueUsd: 1581.74 }, { chain: 'base', valueUsd: 139.49 },
+            { chain: 'robinhood', valueUsd: 7376.32 }, { chain: 'robinhood', valueUsd: null },
+          ],
+          displayedPnlChains: ['base', 'eth', 'robinhood'],
         })
         return audit.mismatchReason === null && audit.usesMergedCanonicalResult === true && audit.sourceObjectUsed === 'canonical_portfolio_total_by_chain' && audit.displayedHoldingsChains.includes('robinhood')
+          // ADDED, DISCLOSED: displayedHoldingsCountByChain counts BOTH robinhood rows (priced +
+          // unpriced), displayedPricedCountByChain counts only the priced one — real per-chain
+          // counts, never fabricated, off the exact rows passed in.
+          && audit.displayedHoldingsCountByChain.robinhood === 2 && audit.displayedPricedCountByChain.robinhood === 1
+          && audit.displayedHoldingsCountByChain.eth === 1 && audit.displayedPricedCountByChain.eth === 1
+          && audit.displayedPnlChains.includes('robinhood')
       })(),
     )
   }
@@ -339,6 +365,89 @@ function run() {
     const portfolioCardSrc2 = read('app/frontend/components/PortfolioIntelligenceCard.tsx')
     check('pricedTokenCount adds robinhoodPricedCount, gated on merged.robinhoodIncluded — never counted when Robinhood was not included', portfolioCardSrc2.includes('const pricedTokenCount = stats.pricedTokenCount + robinhoodPricedCount'))
     check('robinhoodPricedCount is read off the real, already-fetched robinhoodResult holdings — no new network call, no fabricated count', /const robinhoodPricedCount = \(merged\.robinhoodIncluded && robinhoodResult\?\.ok\)/.test(portfolioCardSrc2))
+  }
+
+  // ── 16. finish-Wallet-Scanner-Robinhood-integration follow-up: Robinhood is first-class in the
+  //    normal Holdings tab, "Holdings (V2)" label is gone, PnL breakdown shows Robinhood honestly ──
+  {
+    const holdingsViewSrc = read('app/frontend/components/HoldingsViewV2.tsx')
+    const tabsSrc2 = read('app/frontend/components/WalletScannerTabsV3.tsx')
+    const pnlStatusCardSrc = read('app/frontend/components/PnlStatusCard.tsx')
+    const summaryRowSrc2 = read('app/frontend/components/WalletScannerSummaryRowV3.tsx')
+
+    // Requirement 1: no public "Holdings (V2)" label anywhere (the h3 JSX text, not disclosure prose
+    // that quotes the old label by name while explaining the fix — that mention is expected and fine).
+    check('HoldingsViewV2.tsx no longer renders "Holdings (V2)" as the h3 heading text', !/<h3[^>]*>\s*Holdings \(V2\)\s*<\/h3>/.test(holdingsViewSrc))
+    check('HoldingsViewV2.tsx now renders "Multi-chain Holdings" as the h3 heading text', /<h3[^>]*>\s*Multi-chain Holdings\s*<\/h3>/.test(holdingsViewSrc))
+    check('no component anywhere under app/frontend still renders "Holdings (V2)" as literal JSX heading text', (() => {
+      const dir = new URL('../app/frontend/components/', import.meta.url)
+      const files = fs.readdirSync(dir).filter((f) => f.endsWith('.tsx'))
+      return files.every((f) => !/<h[1-6][^>]*>\s*Holdings \(V2\)\s*<\/h[1-6]>/.test(fs.readFileSync(new URL(f, dir), 'utf8')))
+    })())
+
+    // Requirement 2/3: the Holdings tab (WalletScannerTabsV3, the live V3 workspace) merges
+    // Robinhood into pricedHoldings/chainValueUsd via mergeRobinhoodIntoPricedHoldings, instead of
+    // reading report.pricedHoldings/report.chainValueUsd directly (the confirmed bug: Robinhood only
+    // reachable via its own separate tab).
+    check('WalletScannerTabsV3 imports mergeRobinhoodIntoPricedHoldings', tabsSrc2.includes("import { mergeRobinhoodIntoPricedHoldings } from '@/app/frontend/lib/mergedWalletView'"))
+    check('the Holdings tab reads the MERGED pricedHoldings/chainValueUsd, not the raw report fields directly', tabsSrc2.includes('pricedHoldings={merged.pricedHoldings}') && tabsSrc2.includes('chainValueUsd={merged.chainValueUsd}'))
+    check('the merge is computed from report.pricedHoldings/report.chainValueUsd/robinhoodResult/report.portfolioTotalByChain — the same canonical after-merge map every other display uses', /mergeRobinhoodIntoPricedHoldings\(report\.pricedHoldings, report\.chainValueUsd, robinhoodResult, report\.portfolioTotalByChain\)/.test(tabsSrc2))
+
+    // Requirement 4: the Robinhood tab still exists (chain-specific evidence/debug), not removed.
+    check('the Robinhood tab still exists in WalletScannerTabsV3 (evidence/debug detail, not the only place to see holdings)', tabsSrc2.includes("robinhoodResult ? [{ key: 'robinhood' as const, label: 'Robinhood' }]"))
+
+    // Requirement 5: PnL per-chain breakdown shows Robinhood honestly, never a fake number.
+    check('PnlStatusCard accepts a robinhoodResult prop', pnlStatusCardSrc.includes('robinhoodResult?: RobinhoodWalletScanResponse | null'))
+    check('a RobinhoodPnlRow is rendered under the Per-Chain Breakdown section whenever a real robinhoodResult exists', pnlStatusCardSrc.includes('{robinhoodResult && robinhoodResult.ok && <RobinhoodPnlRow robinhoodResult={robinhoodResult} />}'))
+    check('the exact required "disabled" wording is used verbatim', pnlStatusCardSrc.includes("'Robinhood — PnL not verified / unsupported'"))
+    check('a "verified" Robinhood PnL result is the ONLY case a real number is shown for — never for disabled/partial', /pnl\.status === 'verified' && pnl\.realizedPnlUsd != null/.test(pnlStatusCardSrc))
+    check('WalletScannerSummaryRowV3 forwards robinhoodResult into PnlStatusCard', summaryRowSrc2.includes('robinhoodResult={robinhoodResult}\n        />') || /PnlStatusCard[\s\S]{0,400}robinhoodResult=\{robinhoodResult\}/.test(summaryRowSrc2))
+
+    // Exercise mergeRobinhoodIntoPricedHoldings directly with real-shaped inputs.
+    const robinhoodResultForTest = {
+      ok: true, wallet: '0xabc', chainSlug: 'robinhood', chainId: 4663,
+      holdings: {
+        status: 'partial', portfolioTotalUsd: 42.5, unpricedTokenCount: 1, reason: null,
+        native: { symbol: 'ETH', uiBalance: 0.01, priceUsd: 3000, valueUsd: 30 },
+        holdings: [
+          { address: '0xpriced', symbol: 'RHT', name: null, uiBalance: 5, priceUsd: 2.5, valueUsd: 12.5, priceSource: 'goldrush' },
+          { address: '0xunpriced', symbol: 'UNK', name: null, uiBalance: 100, priceUsd: null, valueUsd: null, priceSource: null },
+        ],
+      },
+      activity: { status: 'ok', items: [], skippedSwapLogs: 0, verifiedSwapCount: 0, blockscoutEvidence: {}, reason: null },
+      pnl: { status: 'disabled', message: 'PnL: disabled — verified Robinhood swap decoding unavailable', realizedPnlUsd: null, matchedLotsCount: 0, verifiedSwapCount: 0, reason: null },
+      robinhoodWalletScannerAudit: {},
+    }
+    check(
+      'mergeRobinhoodIntoPricedHoldings adds real, honestly-priced-or-null Robinhood rows to pricedHoldings — never a fabricated price/value',
+      (() => {
+        const merged = mergeRobinhoodIntoPricedHoldings([{ chainId: 8453, tokenAddress: '0xbase', symbol: 'BASE', decimals: 18, quantity: '1', priceUsd: 10, valueUsd: 10, classification: 'other' }], { 8453: 10 }, robinhoodResultForTest, null)
+        const rhRows = merged.pricedHoldings.filter((p) => p.chainId === 4663)
+        const nativeRow = rhRows.find((r) => r.tokenAddress === 'native')
+        const pricedTokenRow = rhRows.find((r) => r.tokenAddress === '0xpriced')
+        const unpricedTokenRow = rhRows.find((r) => r.tokenAddress === '0xunpriced')
+        return rhRows.length === 3 && nativeRow?.valueUsd === 30 && pricedTokenRow?.valueUsd === 12.5 && unpricedTokenRow?.valueUsd === null && unpricedTokenRow?.priceUsd === null
+      })(),
+    )
+    check(
+      'mergeRobinhoodIntoPricedHoldings never adds a Robinhood chain total to chainValueUsd unless a real canonicalChainTotalByChain says it was merged — no duplicate/fabricated total',
+      (() => {
+        const mergedNoCanonical = mergeRobinhoodIntoPricedHoldings([], {}, robinhoodResultForTest, null)
+        const mergedWithCanonical = mergeRobinhoodIntoPricedHoldings([], {}, robinhoodResultForTest, { '4663': 42.5 })
+        return mergedNoCanonical.chainValueUsd[4663] === undefined && mergedWithCanonical.chainValueUsd[4663] === 42.5
+      })(),
+    )
+    check(
+      'mergeRobinhoodIntoPricedHoldings with no robinhoodResult at all leaves pricedHoldings/chainValueUsd exactly as passed in — zero behavior change for a Base/ETH-only scan',
+      (() => {
+        const basePriced = [{ chainId: 8453, tokenAddress: '0xbase', symbol: 'BASE', decimals: 18, quantity: '1', priceUsd: 10, valueUsd: 10, classification: 'other' }]
+        const merged = mergeRobinhoodIntoPricedHoldings(basePriced, { 8453: 10 }, null, null)
+        return merged.pricedHoldings.length === 1 && merged.pricedHoldings[0] === basePriced[0] && merged.chainValueUsd[8453] === 10 && merged.chainValueUsd[4663] === undefined
+      })(),
+    )
+
+    // holdingsV2Selector correctly classifies the Robinhood chain id.
+    check('holdingsV2Selector.ts maps chainId 4663 to the "robinhood" chain string', read('app/frontend/lib/holdingsV2Selector.ts').includes("4663: 'robinhood'"))
   }
 
   console.log(`test-wallet-scanner-merged-view.mjs: all ${passed} assertions passed`)

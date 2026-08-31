@@ -70,6 +70,7 @@ export function WalletScannerSummaryRowV3({ report, robinhoodResult }: WalletSca
           syntheticPnl={report.syntheticPnl}
           unrealizedReconciliation={report.fifoAndPnl?.unrealizedReconciliation}
           reconciliationSummary={report.reconciliationSummary}
+          robinhoodResult={robinhoodResult}
         />
       </div>
     </div>

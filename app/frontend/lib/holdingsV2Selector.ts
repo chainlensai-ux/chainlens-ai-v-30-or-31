@@ -49,6 +49,12 @@ const CHAIN_ID_TO_CHAIN_STRING: Record<number, string> = {
   8453: 'base',
   42161: 'arbitrum',
   999: 'hyperevm',
+  // ADDED, DISCLOSED (finish-Wallet-Scanner-Robinhood-integration follow-up): Robinhood's real
+  // holdings now flow through this SAME selector (see mergedWalletView.ts's
+  // mergeRobinhoodIntoPricedHoldings) as ordinary PricedHolding rows keyed by chainId 4663 — mapped
+  // to the same 'robinhood' chain string ChainBadge/fmtChainLabel already render as "Robinhood Chain"
+  // everywhere else in this codebase (holdingsHeuristics.ts).
+  4663: 'robinhood',
 }
 
 export const HOLDINGS_V2_DUST_USD_THRESHOLD = 0.10

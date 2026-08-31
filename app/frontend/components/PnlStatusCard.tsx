@@ -32,6 +32,7 @@ import type { PublicPnlStatus, UnrealizedReconciliationSummary } from '@/src/mod
 import type { SyntheticPnlSummary } from '@/src/modules/syntheticPnl/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
 import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
+import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { PARTIAL_TRUST_GATE_PUBLIC_LABEL } from '@/src/lib/pnlDiscrepancyAudit'
 import { fmtSignedUsd, fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { StatusBadge } from './StatusBadge'
@@ -80,6 +81,16 @@ export type PnlStatusCardProps = {
   // claim — defense in depth, not a replacement for the backend's own fail-closed gate. See
   // `selectDisplayedPnl`'s own header for the exact precedence.
   canonicalSampleManifestAudit?: CanonicalSampleManifestAudit | null
+  // ADDED, DISCLOSED (finish-Wallet-Scanner-Robinhood-integration follow-up, this task's own explicit
+  // requirement 5 — confirmed live bug: "PnL per-chain breakdown only shows chain 1 and 8453;
+  // Robinhood is silently missing"): ChainBreakdownTable below is, and stays, pnlV2.chainBreakdown-
+  // only (EVM engine output — never touched by this task, per its own "do not change Base/ETH/BNB
+  // PnL/FIFO" rule). This optional prop adds an HONEST, SEPARATE row underneath it for Robinhood —
+  // its real pnl.status/message/realizedPnlUsd exactly as lib/server/robinhoodWalletScanner.ts's own
+  // PnL gate already computed and disclosed (never a fabricated number, never upgraded to
+  // "verified"). Omitting this prop (a caller not yet wired, or a scan with no Robinhood result)
+  // renders exactly as before this task — the per-chain section simply says nothing about Robinhood.
+  robinhoodResult?: RobinhoodWalletScanResponse | null
 }
 
 export type VerifiedPnlData = {
@@ -384,6 +395,39 @@ export function selectVerifiedPnlData(
 // The one honest option is this explicit unavailability sentence — never the old "verified V2
 // engine" wording, which reads as if pnlV2 itself were the authority for a bounded sample (it isn't).
 export const PER_CHAIN_BOUNDED_SAMPLE_MESSAGE = 'Per-chain breakdown not available for this verified sample'
+
+// ROBINHOOD PER-CHAIN PNL ROW, DISCLOSED (finish-Wallet-Scanner-Robinhood-integration follow-up,
+// this task's own explicit requirement 5): rendered as a distinct row underneath ChainBreakdownTable
+// (never inside it — that table's numeric columns stay pnlV2/EVM-only, unmodified). Reads ONLY
+// robinhoodResult.pnl — the exact status/message/realizedPnlUsd
+// lib/server/robinhoodWalletScanner.ts's real PnL gate already computed server-side. 'verified' is
+// the ONLY status this ever shows a real number for; 'disabled'/'partial' show the exact server
+// message, never a number — the hard rule this task states twice ("Do NOT fake Robinhood PnL", "Do
+// NOT show unsupported PnL as verified").
+function RobinhoodPnlRow({ robinhoodResult }: { robinhoodResult: RobinhoodWalletScanResponse }) {
+  const pnl = robinhoodResult.pnl
+  const isVerified = pnl.status === 'verified' && pnl.realizedPnlUsd != null
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 10px', marginTop: '6px', borderTop: '1px dashed rgba(255,255,255,0.10)', fontSize: '12px', flexWrap: 'wrap' }}>
+      <span style={{ fontWeight: 700, color: '#e2e8f0', minWidth: '90px' }}>Robinhood</span>
+      {isVerified ? (
+        <span style={{ fontWeight: 700, color: pnl.realizedPnlUsd! >= 0 ? '#4ade80' : '#f87171' }}>
+          {fmtSignedUsd(pnl.realizedPnlUsd)} realized (verified)
+        </span>
+      ) : (
+        <span style={{ color: 'rgba(148,163,184,0.65)' }}>
+          {/* EXACT REQUIRED WORDING, DISCLOSED (this task's own literal spec for the 'disabled' case)
+              — 'partial' is a genuinely different real state (some verified evidence exists, just
+              not a full sample), so it gets its own honest phrasing rather than reusing the same
+              string for a materially different situation. Both append the real, non-generic reason
+              lib/server/robinhoodWalletScanner.ts's PnL gate already computed. */}
+          {pnl.status === 'disabled' ? 'Robinhood — PnL not verified / unsupported' : 'Robinhood — PnL partial, not fully verified'}
+          {pnl.reason ? ` — ${pnl.reason}` : ` — ${pnl.message}`}
+        </span>
+      )}
+    </div>
+  )
+}
 
 function ChainBreakdownTable({
   chainBreakdown,
@@ -817,7 +861,7 @@ export function resolvePnlDisplayMode(params: {
   return 'real'
 }
 
-export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit }: PnlStatusCardProps) {
+export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit, robinhoodResult }: PnlStatusCardProps) {
   // TECHNICAL-DETAILS TOGGLE, DISCLOSED (Wallet Scanner second-pass audit, task 3 — same collapsed-
   // by-default convention as WalletScannerDiagnosticsV3's own "Advanced Diagnostics" section): real
   // engine-divergence/coverage/evidence numbers are never deleted or hidden from a user who wants
@@ -1146,6 +1190,11 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
           // yet migrated to this fix) falls back to it.
           <ChainBreakdownTable chainBreakdown={pnlV2?.chainBreakdown ?? []} unreliable={pnl.unreliable || blocked} hasCanonicalUnrealizedSource={unrealizedReconciliation !== undefined} />
         )}
+        {/* ROBINHOOD ROW, DISCLOSED: rendered unconditionally whenever a real robinhoodResult exists,
+            independent of the EVM per-chain section's own state above (canonicalSampleUnavailable/
+            isBoundedSample/normal) — Robinhood's PnL gate is a completely separate real evaluation
+            from pnlV2's, so its own honest status is never blocked by an unrelated EVM-sample state. */}
+        {robinhoodResult && robinhoodResult.ok && <RobinhoodPnlRow robinhoodResult={robinhoodResult} />}
       </div>
 
       {!isActive && (

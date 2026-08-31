@@ -63,7 +63,7 @@ function ChainSummaryStrip({
   chainCounts: Map<string, number>
   chainGroupedValueUsd: Record<number, number>
 }) {
-  const CHAIN_STRING_TO_ID: Record<string, number> = { eth: 1, base: 8453, arbitrum: 42161, hyperevm: 999 }
+  const CHAIN_STRING_TO_ID: Record<string, number> = { eth: 1, base: 8453, arbitrum: 42161, hyperevm: 999, robinhood: 4663 }
   return (
     <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' }}>
       {[...chainCounts.entries()].map(([chain, count]) => {
@@ -105,8 +105,13 @@ export function HoldingsViewV2({ pricedHoldings, chainValueUsd, buyEntries, brid
   return (
     <section>
       <div style={{ marginBottom: '14px' }}>
+        {/* RENAMED, DISCLOSED (finish-Wallet-Scanner-Robinhood-integration follow-up, this task's own
+            explicit requirement 1): "Holdings (V2)" was an internal engine-version label that leaked
+            into the public UI — never meaningful to a user, and increasingly wrong now that this same
+            view also renders Robinhood Chain holdings (a completely different, non-"V2" pipeline) side
+            by side with the EVM ones. No behavior change — same selector, same data, same table. */}
         <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
-          Holdings (V2)
+          Multi-chain Holdings
         </h3>
         <p style={{ margin: '4px 0 0', fontSize: '10px', letterSpacing: '0.08em', textTransform: 'uppercase', color: 'rgba(45,212,191,0.65)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
           Sorted by value · Zero/unpriced hidden · Dust-collapsed · No fabricated USD or 24H data

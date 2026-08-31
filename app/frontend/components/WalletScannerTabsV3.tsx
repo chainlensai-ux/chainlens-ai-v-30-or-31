@@ -8,13 +8,14 @@
 // pricedHoldings/chainValueUsd via selectHoldingsV2(), see that component/selector's own headers),
 // SellActivitySummary, ChainSelectionView. No calculation logic is duplicated; this file only adds
 // tab-switching UI state.
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import type { WalletV2Report } from '@/app/terminal/wallet-scanner/page'
 import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
 import { HoldingsViewV2 } from './HoldingsViewV2'
 import { SellActivitySummary } from './SellActivitySummary'
 import { ChainSelectionView } from './ChainSelectionView'
 import { RobinhoodChainSection } from './RobinhoodChainSection'
+import { mergeRobinhoodIntoPricedHoldings } from '@/app/frontend/lib/mergedWalletView'
 
 export type WalletScannerTabsV3Props = {
   report: WalletV2Report
@@ -32,6 +33,17 @@ type TabKey = 'holdings' | 'sell-activity' | 'chains' | 'robinhood'
 
 export function WalletScannerTabsV3({ report, robinhoodResult, onRobinhoodRescan, robinhoodRescanLoading, debugMode }: WalletScannerTabsV3Props) {
   const [activeTab, setActiveTab] = useState<TabKey>('holdings')
+  // ROBINHOOD-IN-HOLDINGS, DISCLOSED (finish-Wallet-Scanner-Robinhood-integration follow-up, this
+  // task's own explicit requirement 2/3): the Holdings tab now shows Robinhood alongside ETH/Base as
+  // ONE merged holdings view, instead of being reachable ONLY via the separate Robinhood tab below —
+  // the Robinhood tab still exists (requirement 4), now scoped to chain-specific evidence/debug
+  // detail (Activity, Blockscout status, PnL gate reasoning) rather than being the only place a
+  // user can see a Robinhood holding at all. See mergedWalletView.ts's own header for why this never
+  // fabricates a price/value and never double-counts against report.portfolioTotalByChain.
+  const merged = useMemo(
+    () => mergeRobinhoodIntoPricedHoldings(report.pricedHoldings, report.chainValueUsd, robinhoodResult, report.portfolioTotalByChain),
+    [report.pricedHoldings, report.chainValueUsd, robinhoodResult, report.portfolioTotalByChain],
+  )
   const TABS: Array<{ key: TabKey; label: string }> = [
     { key: 'holdings', label: 'Holdings' },
     { key: 'sell-activity', label: 'Sell Activity' },
@@ -65,8 +77,8 @@ export function WalletScannerTabsV3({ report, robinhoodResult, onRobinhoodRescan
       <div style={{ padding: '18px 20px' }}>
         {activeTab === 'holdings' && (
           <HoldingsViewV2
-            pricedHoldings={report.pricedHoldings}
-            chainValueUsd={report.chainValueUsd}
+            pricedHoldings={merged.pricedHoldings}
+            chainValueUsd={merged.chainValueUsd}
             buyEntries={report.timelines?.buyTimeline?.entries}
             bridgeEntries={report.bridgeTimeline}
           />
@@ -81,11 +93,13 @@ export function WalletScannerTabsV3({ report, robinhoodResult, onRobinhoodRescan
         {activeTab === 'chains' && (
           <ChainSelectionView data={report.chainSelection} chainActivityV2={report.chainActivityV2} />
         )}
-        {/* ROBINHOOD AS A CHAIN TAB, DISCLOSED (split-Wallet-Scanner-results fix task): the exact
-            same RobinhoodChainSection cards/tables (total, native ETH, priced/unpriced holdings,
-            pricing coverage, verified swaps, skipped swap logs, Blockscout status, PnL status) now
-            render inside this SAME tabbed workspace instead of as a separate, competing top-level
-            card — one canonical result, Robinhood as one more chain section within it. */}
+        {/* ROBINHOOD AS A CHAIN TAB, DISCLOSED (split-Wallet-Scanner-results fix task, narrowed by
+            the finish-Wallet-Scanner-Robinhood-integration follow-up's requirement 4): Robinhood
+            holdings themselves now live in the normal Holdings tab above (merged in via
+            mergeRobinhoodIntoPricedHoldings) — this tab is no longer the only place to see them.
+            What stays HERE is chain-specific evidence/debug detail that has no EVM-chain equivalent
+            in the Holdings tab: Activity items, Blockscout call evidence, and the Robinhood PnL
+            gate's own detailed reasoning (verified swap count, skipped logs, disabled reason). */}
         {activeTab === 'robinhood' && robinhoodResult && (
           <RobinhoodChainSection
             result={robinhoodResult}
