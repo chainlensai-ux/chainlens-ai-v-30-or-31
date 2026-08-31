@@ -29,7 +29,7 @@ const resolverSrc = readFileSync(new URL('../lib/server/deployerResolver.ts', im
 // ── 1. The routed deployer_check handler calls resolveTokenDeployer before the /api/dev-wallet
 // fallback, and short-circuits (returns) when it finds a confirmed deployer. ─────────────────────
 {
-  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,20000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)
+  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,30000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)
   assert.ok(block, 'the routed deployer_check handler block must exist')
   const body = block[0]
   const fastIdx = body.indexOf('resolveTokenDeployer(')
@@ -44,7 +44,7 @@ const resolverSrc = readFileSync(new URL('../lib/server/deployerResolver.ts', im
 // resolver call and the /api/dev-wallet fallback call — never two different chain values, and never
 // a bare "eth"/"base" literal used as a chain default anywhere in this handler. ───────────────────
 {
-  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,20000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
+  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,30000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
   assert.match(block, /chainSlug: thisDevChain, chainId: resolverChainId, tokenAddress: target/, 'the fast resolver must be called with the resolved chain, never a hardcoded one')
   assert.match(block, /chain: thisDevChain \}, authHeader/, 'the /api/dev-wallet fallback must be called with the SAME resolved chain the fast resolver used')
   // Chain-strict guard: resolverChainId is only assigned for the four real EVM chains this resolver
@@ -136,7 +136,7 @@ const resolverSrc = readFileSync(new URL('../lib/server/deployerResolver.ts', im
 // source:, high/medium/low confidence vocabulary, and the full 5-item /holders /lp /token /deployer
 // Open-Token-Scanner Next list — never the older "Status:"/"open_check" shape. ────────────────────
 {
-  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,20000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
+  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,30000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
   const slowIdx = block.indexOf('const dw = devRes.json as Record<string, unknown>;')
   assert.ok(slowIdx > -1, 'the slow-path (/api/dev-wallet) success branch must exist')
   const slowBlock = block.slice(slowIdx)
@@ -153,14 +153,14 @@ const resolverSrc = readFileSync(new URL('../lib/server/deployerResolver.ts', im
 // every write either uses the resolved chain directly (proven non-null by an earlier guard) or
 // routes to an honest chain-not-supported response instead of a fabricated "base" label. ──────────
 {
-  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,20000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
+  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,30000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
   assert.doesNotMatch(block, /thisDevChain \?\? "base"/, 'no site in the deployer_check handler may silently substitute "base" for a null/unresolved chain')
 }
 
 // ── 10. The failure response itemizes chain attempted / sources attempted / missing config / next
 // action explicitly — never just "Source failed: ...". ────────────────────────────────────────────
 {
-  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,20000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
+  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,30000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
   assert.match(block, /`Chain attempted: \$\{thisDevChain \? chainDisplayLabel\(thisDevChain\) : chainDisplayLabel\(chainForClarkTools\)\}`/,
     'the failure response must explicitly itemize the chain attempted')
   assert.match(block, /`Sources attempted: \$\{attemptedSources\.length > 0 \? attemptedSources\.join\(", "\) : /,
@@ -182,6 +182,65 @@ const resolverSrc = readFileSync(new URL('../lib/server/deployerResolver.ts', im
   assert.notEqual(baseResult, bnbResult, 'a Base result object must never be the same cached object served for a BNB request on the same address')
   assert.match(resolverSrc, /function cacheKey\([^)]*\): string \{\s*\n\s*return `\$\{chainSlug\}:\$\{tokenAddress\.toLowerCase\(\)\}`/,
     'the in-memory cache key must be chain-scoped (chainSlug:tokenAddress), never address-only')
+}
+
+// ── 12. STALE-CHAIN-MEMORY FIX (this task's root cause): a NEW address supplied this turn
+// (routed.address present) must never inherit a chain from a DIFFERENT remembered address — the
+// exact literal reported scenario ("after scanning a Base token, /deployer keeps resolving new
+// addresses as Base"). A bare follow-up (no new address this turn) legitimately DOES still reuse
+// the chain paired with the address it falls back to (regression guard for the last two tasks'
+// follow-up-memory-reuse fix). ──────────────────────────────────────────────────────────────────
+{
+  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,30000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
+  assert.match(block, /if \(!routed\.address\) \{/, 'a remembered chain may only be consulted when there is no new address this turn')
+  assert.match(block, /function chainFromMemoryPair\(/, 'the chain-resolution fix must pair a remembered chain with the SAME remembered address before trusting it')
+  assert.match(block, /memAddress\.toLowerCase\(\) !== target!\.toLowerCase\(\)/, 'a remembered chain must be rejected when its paired address does not match the resolved target')
+  // The old bug: targetChain was computed from sessionMem.lastToken?.chain with NO address check at
+  // all, independent of `target`. That exact unguarded pattern must not remain.
+  assert.doesNotMatch(block, /const targetChain = sessionMem\.lastToken\?\.chain\s*\n\s*\?\? body\.clientContext\?\.lastToken\?\.chain/,
+    'the old unguarded "targetChain" (no address-match check) must be gone')
+}
+
+// ── 13. Real multi-chain bytecode-probe logic exists and is used when no reliable memory/explicit
+// chain hint applies — reusing detectChainForAddress (the same eth_getCode-based helper the
+// entity-routing gate already uses), never a duplicate implementation. ────────────────────────────
+{
+  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,30000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
+  assert.match(block, /await detectChainForAddress\(target\)/, 'the deployer handler must probe real chains via detectChainForAddress when no trustworthy chain hint applies')
+  assert.match(block, /extractRequestedChainFromPrompt\(prompt\)/, 'an explicit chain word in the prompt must be checked before falling back to the multi-chain probe')
+}
+
+// ── 14. Multiple real chain matches trigger a clarification response listing the matched chains —
+// never a silent pick of "whichever chain happened to be probed first". ───────────────────────────
+{
+  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,30000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
+  assert.match(block, /probe\.multiChainContracts\.length > 1/, 'the handler must detect a multi-chain match and ask the user which chain they meant')
+  assert.match(block, /Which one did you mean\?/, 'the clarification response must actually ask the user which chain they meant')
+  assert.match(block, /\/deployer \$\{chainSlugForPrompt\(label\)\} \$\{target\}/, 'the clarification must offer explicit `/deployer <chain> <address>` follow-ups the user can pick from')
+}
+
+// ── 15. No chain match at all triggers an honest "could not resolve" response that lists exactly
+// which chains were attempted vs skipped — never a silent Base default. ────────────────────────────
+{
+  const block = routeSrc.match(/if \(routed\.intent === "deployer_check"\) \{[\s\S]{0,30000}?\n  \}\n\n  if \(routed\.intent === "token_scan"\)/)[0]
+  assert.match(block, /Could not resolve which chain this address belongs to\./, 'a genuine no-match must say so honestly, in these words')
+  assert.match(block, /Chains attempted: \$\{deployerChainsAttemptedLabels/, 'the no-match response must list exactly which chains were attempted')
+  assert.match(block, /Chains skipped \(not configured on this deployment\): \$\{deployerChainsSkippedLabels/, 'the no-match response must distinguish chains skipped (no config) from chains attempted with no match')
+  assert.match(block, /never guessed, never defaulted to Base/, 'the no-match response must explicitly disclaim any Base default')
+}
+
+// ── 16. `/deployer <chain> <address>` explicit-chain parsing already works: extractAddressForRouting
+// finds the address regardless of a leading chain word, and extractRequestedChainFromPrompt scans
+// the full raw prompt (not just the slash command's `rest`), so no new parser code was needed. ─────
+{
+  const clarkRoutingSrc = readFileSync(new URL('../lib/server/clarkRouting.ts', import.meta.url), 'utf8')
+  const { parseClarkSlashCommand, extractRequestedChainFromPrompt } = await import('../lib/server/clarkRouting.ts')
+  const addr = '0x' + 'cd'.repeat(20)
+  const parsed = parseClarkSlashCommand(`/deployer bnb ${addr}`)
+  assert.ok(parsed, '/deployer <chain> <address> must still parse as a deployer slash command')
+  assert.equal(parsed.address?.toLowerCase(), addr, 'the address must be extracted correctly even with a leading chain word')
+  assert.equal(extractRequestedChainFromPrompt(`/deployer bnb ${addr}`), 'bnb', 'the explicit chain word must be recognized from the full prompt')
+  void clarkRoutingSrc
 }
 
 console.log('test-clark-deployer-multichain.mjs: all assertions passed')

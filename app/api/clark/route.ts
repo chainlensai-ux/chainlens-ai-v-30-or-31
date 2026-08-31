@@ -12243,13 +12243,111 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (isValidSolanaMintAddress(target)) {
       return await buildSolanaCreatorAnswer(target, true);
     }
-    const targetChain = sessionMem.lastToken?.chain
-      ?? body.clientContext?.lastToken?.chain
-      ?? body.appContext?.tokenSummary?.chain
-      ?? null;
-    const thisDevChain = (targetChain === "base" || targetChain === "eth" || targetChain === "bnb" || targetChain === "robinhood")
-      ? targetChain
-      : toTokenApiChain(chainForClarkTools);
+    // STALE-CHAIN-MEMORY FIX, DISCLOSED (this task's root cause, confirmed live: "after scanning a
+    // Base token, /deployer keeps resolving new addresses as Base"). ROOT CAUSE: `target` above
+    // correctly prefers a NEW address parsed from THIS prompt (routed.address) over any remembered
+    // address, but the OLD `targetChain` here was computed completely independently — it always
+    // pulled sessionMem.lastToken?.chain (or clientContext/appContext chain) FIRST, with no check
+    // that the chain it was about to trust was ever actually paired with `target`. A Base scan
+    // followed by "/deployer 0xNEW_BNB_TOKEN" correctly resolved `target` to the new BNB address but
+    // kept `targetChain` pinned to the stale "base" from the last scan, because nothing ever compared
+    // the two.
+    //
+    // FIX: a remembered chain is trustworthy ONLY when it is paired with the SAME address as
+    // `target` — checked per source, never assumed. When the user typed a brand-new address this
+    // turn (routed.address present), memory is not consulted at all: chain is resolved fresh, either
+    // from an explicit chain word in the prompt or a real multi-chain eth_getCode probe (reusing
+    // detectChainForAddress — the same helper the entity-routing gate above already uses, never a
+    // second implementation). When this is a bare follow-up ("deployer", "holders", "is it safe",
+    // "it" — no new address in `routed.address`), the address-matched memory chain is legitimately
+    // trustworthy and is reused, preserving the correct "follow-up reuses context" behavior from the
+    // prior two tasks.
+    function chainFromMemoryPair(memAddress: string | null | undefined, memChain: string | null | undefined): "base" | "eth" | "bnb" | "robinhood" | null {
+      if (!memAddress || !memChain) return null;
+      if (memAddress.toLowerCase() !== target!.toLowerCase()) return null;
+      return (memChain === "base" || memChain === "eth" || memChain === "bnb" || memChain === "robinhood") ? memChain : null;
+    }
+    let thisDevChain: "base" | "eth" | "bnb" | "robinhood" | null = null;
+    if (!routed.address) {
+      // Bare follow-up, no new address this turn — reuse the chain paired with the SAME address
+      // `target` actually resolved to (never a chain from a DIFFERENT remembered address).
+      const subj = isTokenLikeClarkSubject(sessionMem.lastClarkSubject) ? sessionMem.lastClarkSubject : null;
+      thisDevChain = chainFromMemoryPair(subj?.address, subj?.chainSlug)
+        ?? chainFromMemoryPair(sessionMem.lastToken?.address, sessionMem.lastToken?.chain)
+        ?? chainFromMemoryPair(body.clientContext?.lastToken?.address, body.clientContext?.lastToken?.chain)
+        ?? chainFromMemoryPair(body.appContext?.tokenSummary?.address, body.appContext?.tokenSummary?.chain)
+        ?? null;
+    }
+    // MULTI-CHAIN RESOLUTION REQUIRED, DISCLOSED: reached whenever a genuinely new address was
+    // supplied this turn, or a follow-up whose remembered chain didn't actually pair with `target`.
+    // Never falls back to a default chain (Base or otherwise) here — an explicit chain word in the
+    // prompt wins outright; failing that, a real per-chain eth_getCode probe across every configured
+    // chain decides it. Multiple real matches ask the user which chain; zero real matches say so
+    // honestly and list exactly which chains were attempted vs skipped.
+    let deployerChainClarification: string[] | null = null;
+    let deployerChainsAttemptedLabels: string[] = [];
+    let deployerChainsSkippedLabels: string[] = [];
+    if (!thisDevChain) {
+      const namedChain = extractRequestedChainFromPrompt(prompt);
+      const explicitResolverChain: "base" | "eth" | "bnb" | "robinhood" | null =
+        namedChain === "ethereum" ? "eth"
+          : namedChain === "base" ? "base"
+            : namedChain === "bnb" ? "bnb"
+              : namedChain === "robinhood" ? "robinhood"
+                : null;
+      if (explicitResolverChain) {
+        thisDevChain = explicitResolverChain;
+      } else if (/^0x[a-fA-F0-9]{40}$/.test(target)) {
+        const probe = await detectChainForAddress(target);
+        const allProbedChains: (SupportedChain | "robinhood")[] = ["base", "ethereum", "bnb", ...(isRobinhoodChainAvailable() ? ["robinhood"] as const : [])];
+        deployerChainsAttemptedLabels = allProbedChains.filter((c) => !probe.skippedChains.includes(c)).map((c) => chainDisplayLabel(c));
+        deployerChainsSkippedLabels = probe.skippedChains.map((c) => chainDisplayLabel(c));
+        if (probe.multiChainContracts.length > 1) {
+          deployerChainClarification = probe.multiChainContracts.map((c) => chainDisplayLabel(c));
+        } else if (probe.resolvedEntityType === "contract") {
+          thisDevChain = toTokenApiChain(probe.chain);
+        }
+        // probe.resolvedEntityType === "wallet" or "unknown" -> thisDevChain stays null, handled below.
+      }
+    }
+    if (deployerChainClarification) {
+      const chainSlugForPrompt = (label: string): string => label === "Ethereum" ? "eth" : label === "BNB" ? "bnb" : label === "Robinhood Chain" ? "robinhood" : "base";
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "deployer_check", toolsUsed: ["address_code_check"],
+        analysis: [
+          `This address has a real contract on more than one chain: ${deployerChainClarification.join(", ")}.`,
+          "Which one did you mean?",
+          "",
+          ...deployerChainClarification.map((label) => `- /deployer ${chainSlugForPrompt(label)} ${target}`),
+        ].join("\n"),
+        intentBadge: "deployer_check",
+        ui: {
+          intentBadge: "Deployer Read",
+          actions: deployerChainClarification.map((label) => ({ label: `Use ${label}`, prompt: `/deployer ${chainSlugForPrompt(label)} ${target}`, kind: "prompt" as const })),
+        },
+        quotaConsumed: false,
+      };
+    }
+    if (!thisDevChain) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "deployer_check", toolsUsed: ["address_code_check"],
+        analysis: [
+          "DEPLOYER READ",
+          `Contract: ${target}`,
+          "",
+          "Could not resolve which chain this address belongs to.",
+          `Chains attempted: ${deployerChainsAttemptedLabels.length > 0 ? deployerChainsAttemptedLabels.join(", ") : "none"}`,
+          deployerChainsSkippedLabels.length > 0 ? `Chains skipped (not configured on this deployment): ${deployerChainsSkippedLabels.join(", ")}` : "Chains skipped: none",
+          "",
+          "No deployer identity is being shown because no chain could be confirmed for this address — never guessed, never defaulted to Base.",
+          "",
+          "Next best action: name the chain explicitly (\"/deployer base 0x...\", \"/deployer eth 0x...\", \"/deployer bnb 0x...\", \"/deployer robinhood 0x...\") or open Token Scanner for a manual read.",
+        ].join("\n"),
+        intentBadge: "deployer_check",
+        ui: { intentBadge: "Deployer Read", actions: buildRoutedActions(["Open Token Scanner"]) },
+        quotaConsumed: false,
+      };
+    }
     // FAST DEPLOYER RESOLVER WIRED INTO /deployer, DISCLOSED (this task): this handler is the actual
     // code path a typed "/deployer" command or "who deployed this" phrasing reaches (classifyClarkPrompt
     // routes here BEFORE the legacy plan.intent === "dev_wallet" branch below ever runs) — but it
