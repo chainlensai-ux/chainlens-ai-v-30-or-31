@@ -105,12 +105,16 @@ function run() {
   // ── 9. Base/ETH/BNB output unchanged — the V2 scan call, its result state, and its own
   //    rendering path (WalletScannerResultsV3) are untouched by this integration ────────────────
   {
-    check('the Base/ETH scan call (scanWalletV2) still requests exactly base+eth, untouched', pageSrc.includes("scanWalletV2(address, ['base', 'eth'], mode"))
+    // UPDATED, DISCLOSED (Robinhood-not-in-normal-pipeline fix): see test-robinhood-wallet-scanner.mjs's
+    // matching update for the full disclosure — this literal string previously locked in the exact
+    // bug being fixed (the client never told the route Robinhood was wanted, so it was silently
+    // excluded from the normal scan pipeline even with every Robinhood env flag enabled).
+    check("the Base/ETH scan call (scanWalletV2) still requests base+eth (plus robinhood, so Robinhood is honestly requested)", pageSrc.includes("scanWalletV2(address, ['base', 'eth', 'robinhood'], mode"))
     check('WalletScannerResultsV3 (the Base/ETH results renderer) is still used, untouched by this task', pageSrc.includes('<WalletScannerResultsV3'))
     check('the Base/ETH result/loading/error state names are unchanged', pageSrc.includes('const [loading, setLoading] = useState(false)') && pageSrc.includes('const [error, setError] = useState<string | null>(null)'))
     // handleScan's own Base/ETH scanWalletV2 call and error/degraded handling are untouched — the
     // only addition inside handleScan is the one fire-and-forget Robinhood call already checked above.
-    check('handleScan still calls scanWalletV2 for the Base/ETH engine', /await scanWalletV2\(address, \['base', 'eth'\], mode/.test(pageSrc))
+    check('handleScan still calls scanWalletV2 for the Base/ETH engine', /await scanWalletV2\(address, \['base', 'eth', 'robinhood'\], mode/.test(pageSrc))
   }
 
   // ── 10. Debug-only raw view — never the default page ─────────────────────────────────────────

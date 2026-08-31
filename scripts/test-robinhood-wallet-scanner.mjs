@@ -497,7 +497,17 @@ async function run() {
     check("the EVM job payload passed to enqueueWalletScanJob never contains a literal 'robinhood'", enqueueCallMatch != null && !/'robinhood'/.test(enqueueCallMatch[0]))
     check("default EVM chains still fall back to ['base', 'eth'] when no chains are provided in the request body", /: \['base', 'eth'\]/.test(mainRouteSrc))
     const pageSrc = fs.readFileSync(new URL('../app/terminal/wallet-scanner/page.tsx', import.meta.url), 'utf8')
-    check('the Base/ETH scan call (scanWalletV2) still requests exactly base+eth, untouched', pageSrc.includes("scanWalletV2(address, ['base', 'eth'], mode"))
+    // UPDATED, DISCLOSED (Robinhood-not-in-normal-pipeline fix): this assertion previously locked in
+    // the exact bug being fixed — page.tsx hardcoded ['base', 'eth'], so
+    // app/api/wallet-scan/route.ts's own `includeRobinhoodRequested` (derived from whether 'robinhood'
+    // appears in the caller's raw chains array) was always false, even with every Robinhood env flag
+    // enabled. The route already strips 'robinhood' back out of the EVM chains array before it ever
+    // reaches enqueueWalletScanJob()/runWalletScanV2() (see the enqueueCallMatch check above, still
+    // passing) — adding it client-side only flips that one boolean, it never reaches the EVM/FIFO
+    // pipeline. The real, still-verified guarantee (Base/ETH's own scan request shape is unchanged)
+    // now reads: the call includes 'base' and 'eth' verbatim, plus 'robinhood' to make the request
+    // honest about wanting it when available.
+    check('the Base/ETH scan call (scanWalletV2) still requests base+eth (plus robinhood, so Robinhood is honestly requested — see route.ts, which strips it from the EVM chains list before the pipeline ever sees it)', pageSrc.includes("scanWalletV2(address, ['base', 'eth', 'robinhood'], mode"))
     check('the Robinhood UI state is fully separate from the Base/ETH result/loading state', pageSrc.includes('robinhoodResult') && pageSrc.includes('resultEnvelope'))
   }
 

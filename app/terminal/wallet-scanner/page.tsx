@@ -521,7 +521,21 @@ export default function WalletScannerPage() {
       const { data: { session: scanSession } } = await supabase.auth.getSession()
       // JOB/POLL CALL: scanWalletV2() enqueues immediately, then polls status while the
       // background queue runs the unchanged full scan worker outside this HTTP request.
-      const response = await scanWalletV2(address, ['base', 'eth'], mode, ({ jobId, status, progress, walletChainSelectionAudit }) => {
+      // ROOT-CAUSE FIX, DISCLOSED (Robinhood-not-in-normal-pipeline bug): this call previously
+      // hardcoded ['base', 'eth'] for EVERY scan, so app/api/wallet-scan/route.ts's own
+      // `includeRobinhoodRequested = rawChains === null || rawChains.includes('robinhood')` always
+      // evaluated false here — even with ENABLE_ROBINHOOD_CHAIN=true, ALCHEMY_ROBINHOOD_RPC_URL,
+      // GOLDRUSH_API_KEY, and BLOCKSCOUT_API_KEY all configured — because this client never told the
+      // route Robinhood was wanted. That is the exact live-log symptom reported: requestedChains/
+      // allowedChains/finalChainsScanned excluding Robinhood despite every env flag being true.
+      // Adding 'robinhood' here is safe: the route already strips it back out of the EVM `chains`
+      // array before it ever reaches enqueueWalletScanJob()/runWalletScanV2() (see
+      // app/api/wallet-scan/route.ts's own `chains = rawChains.filter(c => c !== 'robinhood')`) — its
+      // only effect is flipping `includeRobinhoodRequested` to true so the worker's real
+      // scanRobinhoodWallet() call and the walletChainSelectionAudit both honestly reflect the
+      // request. Robinhood availability is still gated server-side by isRobinhoodChainAvailable() —
+      // sending this string never fakes Robinhood being scanned when it isn't configured.
+      const response = await scanWalletV2(address, ['base', 'eth', 'robinhood'], mode, ({ jobId, status, progress, walletChainSelectionAudit }) => {
         scanJobId = jobId
         setCurrentJobId(jobId)
         setJobStatusMessage(status === 'queued' ? 'queued — still scanning…' : status === 'running' ? 'running — still scanning…' : status)

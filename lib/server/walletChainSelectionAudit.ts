@@ -32,10 +32,22 @@ export type ChainSelectionOmittedReason =
 
 export type WalletChainSelectionAudit = {
   requestedMode: string
+  // ADDED, DISCLOSED (Robinhood-not-in-normal-pipeline fix): a human-readable label for the chain
+  // *selection* decision itself, distinct from `requestedMode` (scan depth: 'normal'/'deep'). Never
+  // computed from a guess — 'auto' when the caller omitted `chains` entirely (the same condition
+  // that already drives `includeRobinhoodRequested`), 'all_supported' when the caller's own EVM
+  // chain list already spans every EVM chain this route defaults to, otherwise the caller's real,
+  // explicit chain list joined verbatim so a narrowed request (e.g. just 'base') is never mislabeled.
+  chainMode: string
   enableRobinhood: boolean
   envHasRobinhoodRpc: boolean
   envHasGoldrush: boolean
   envHasBlockscout: boolean
+  // ADDED, DISCLOSED: the EVM chain ids the caller asked for BEFORE Robinhood's own id is
+  // considered/appended — lets a log reader see the exact before/after effect of the Robinhood
+  // chain-selection step, rather than only the final merged `requestedChains`.
+  requestedChainsBefore: number[]
+  requestedChainsAfter: number[]
   requestedChains: number[]
   allowedChains: number[]
   omittedChains: number[]
@@ -61,6 +73,11 @@ const BNB_CHAIN_ID = EVM_CHAIN_IDS.bnb
 
 export function buildWalletChainSelectionAudit(params: {
   requestedMode: string
+  // Optional, DISCLOSED: defaults to a value derived from evmChainSlugs/includeRobinhoodRequested
+  // when the caller doesn't already track an explicit chainMode concept (e.g.
+  // app/api/wallet-scan/route.ts, which only ever dealt with a raw `chains` array before this
+  // field existed) — never guessed beyond what the caller's own real inputs already say.
+  chainMode?: string
   evmChainSlugs: string[]
   includeRobinhoodRequested: boolean
   finalChainsScanned: string[]
@@ -71,6 +88,7 @@ export function buildWalletChainSelectionAudit(params: {
   const envHasBlockscout = Boolean(process.env.BLOCKSCOUT_API_KEY)
   const robinhoodAvailable = isRobinhoodChainAvailable()
 
+  const requestedChainsBefore: number[] = []
   const requestedChains: number[] = []
   const allowedChains: number[] = []
   const omittedChains: number[] = []
@@ -79,6 +97,7 @@ export function buildWalletChainSelectionAudit(params: {
   for (const slug of params.evmChainSlugs) {
     const id = EVM_CHAIN_IDS[slug.toLowerCase()]
     if (id == null) continue
+    if (!requestedChainsBefore.includes(id)) requestedChainsBefore.push(id)
     if (!requestedChains.includes(id)) requestedChains.push(id)
     if (id === BNB_CHAIN_ID) {
       // BNB is requestable but not actually supported by the V2 pipeline (SupportedChain has no
@@ -103,12 +122,20 @@ export function buildWalletChainSelectionAudit(params: {
     }
   }
 
+  const chainMode = params.chainMode
+    ?? (params.includeRobinhoodRequested
+      ? (requestedChainsBefore.length >= 2 ? 'all_supported' : 'auto')
+      : params.evmChainSlugs.join(',') || 'none')
+
   return {
     requestedMode: params.requestedMode,
+    chainMode,
     enableRobinhood,
     envHasRobinhoodRpc,
     envHasGoldrush,
     envHasBlockscout,
+    requestedChainsBefore,
+    requestedChainsAfter: requestedChains,
     requestedChains,
     allowedChains,
     omittedChains,

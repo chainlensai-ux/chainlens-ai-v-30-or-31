@@ -302,7 +302,11 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
   }
 
   const walletChainSelectionAudit = buildWalletChainSelectionAudit({
-    requestedMode: params.chainMode,
+    // FIXED, DISCLOSED: this previously passed `params.chainMode` as `requestedMode`, mislabeling the
+    // chain-selection mode ('auto'/'all_supported'/...) as the scan-depth field. `chainMode` is now
+    // its own tracked field on the audit — pass both correctly.
+    requestedMode: params.scanDepth,
+    chainMode: params.chainMode,
     evmChainSlugs: evmChains,
     includeRobinhoodRequested: includeRobinhood,
     finalChainsScanned: chainsScanned,

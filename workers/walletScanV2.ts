@@ -987,12 +987,51 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     })
     // eslint-disable-next-line no-console
     console.warn('[CU-TRACK] wallet chain selection audit (final):', finalWalletChainSelectionAudit)
+
+    // CANONICAL MULTI-CHAIN MERGE, DISCLOSED (Robinhood-not-in-normal-pipeline fix): Robinhood is
+    // still NEVER fed into the EVM/FIFO-typed fields (`body.data.portfolio`, `body.data.scanMetadata`,
+    // `body.data.fifoAndPnl`/`canonicalPricedFifo` all stay exactly as the core pipeline computed them
+    // — untouched, no regression risk to Base/ETH/BNB). Instead these are NEW, purely-additive
+    // sibling fields, computed AFTER the real scan, from the real EVM portfolio total the pipeline
+    // already produced plus the real Robinhood holdings total `scanRobinhoodWallet()` already
+    // produced — never a fabricated number, never double-counted (this is the ONLY place either
+    // total is summed; the client must read `canonicalTotalValueUsd`, not re-add the two itself).
+    // `canonicalChainsScanned`/`portfolioTotalByChain`/`canonicalHoldings` are what a caller (the
+    // Wallet Scanner page, CORTEX, Clark) should treat as "the normal Wallet Scanner pipeline"
+    // result — Robinhood only appears here when `robinhood` above is a real, non-null result.
+    const evmPortfolio = (body.data as { portfolio?: { totalValueUsd?: number | null; tokens?: Array<{ chain?: string; symbol?: string; valueUsd?: number | null }> } } | undefined)?.portfolio
+    const evmTotalValueUsd = typeof evmPortfolio?.totalValueUsd === 'number' ? evmPortfolio.totalValueUsd : null
+    const evmTokens = Array.isArray(evmPortfolio?.tokens) ? evmPortfolio!.tokens! : []
+    const robinhoodTotalValueUsd = robinhood?.holdings?.portfolioTotalUsd ?? null
+    const canonicalTotalValueUsd = (evmTotalValueUsd == null && robinhoodTotalValueUsd == null)
+      ? null
+      : (evmTotalValueUsd ?? 0) + (robinhoodTotalValueUsd ?? 0)
+    const portfolioTotalByChain: Record<string, number> = {}
+    for (const t of evmTokens) {
+      if (!t.chain || typeof t.valueUsd !== 'number') continue
+      portfolioTotalByChain[t.chain] = (portfolioTotalByChain[t.chain] ?? 0) + t.valueUsd
+    }
+    if (robinhood && robinhoodTotalValueUsd != null) {
+      portfolioTotalByChain.robinhood = (portfolioTotalByChain.robinhood ?? 0) + robinhoodTotalValueUsd
+    }
+    const canonicalHoldings = robinhood
+      ? [
+          ...evmTokens.map((t) => ({ chain: t.chain ?? null, symbol: t.symbol ?? null, valueUsd: t.valueUsd ?? null })),
+          ...(robinhood.holdings.native ? [{ chain: 'robinhood', symbol: robinhood.holdings.native.symbol, valueUsd: robinhood.holdings.native.valueUsd }] : []),
+          ...robinhood.holdings.holdings.map((h) => ({ chain: 'robinhood', symbol: h.symbol ?? h.address.slice(0, 8), valueUsd: h.valueUsd })),
+        ]
+      : null
+
     body = {
       ...body,
       data: {
         ...body.data,
         robinhood: robinhood ? { holdings: robinhood.holdings, activity: robinhood.activity, pnl: robinhood.pnl, audit: robinhood.audit } : null,
         walletChainSelectionAudit: finalWalletChainSelectionAudit,
+        canonicalChainsScanned: actualChainsScanned,
+        canonicalTotalValueUsd,
+        portfolioTotalByChain,
+        canonicalHoldings,
       },
     } as typeof body
   }
