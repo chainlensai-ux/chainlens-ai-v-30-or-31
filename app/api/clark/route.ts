@@ -130,6 +130,7 @@ import {
   renderClarkTokenVerdictForSolana,
   buildClarkTokenAnswerActions,
   buildClarkLpAnswerActions,
+  buildClarkDeployerAnswerActions,
   buildClarkWalletAnswerActions,
   formatHoldersCheck,
   isHoldersCheckPrompt,
@@ -332,6 +333,10 @@ type ClarkSessionMemory = {
   // under any circumstances. It is now written by rememberClarkDeployer() whenever a deployer is
   // resolved, and carries the chain + source token so it is chain-scoped like every other entity.
   lastDevWallet?: { address: string; summary: string | null; chain?: ClarkMemoryChain; sourceTokenAddress?: string | null; confidence?: "high" | "medium" | "low"; ts: number } | null;
+  // SAME-COMMAND DEDUP, DISCLOSED (requested: "/wallet on a token contract — do not repeat the
+  // same response twice if the exact same command is sent again; show 'same result' or reuse
+  // cache"). Scoped narrowly to this one case per the request — not a general command-dedup system.
+  lastNotWalletCheck?: { address: string; chain: string; ts: number } | null;
   // CLARK TOOL-CALLING MEMORY, DISCLOSED: added for the Base Radar / Whale Alerts tool-call
   // integration. lastSelectedToken/lastSelectedWallet are intentionally NOT separate fields —
   // they map straight onto the existing lastToken/lastWallet above, the same "last scanned
@@ -5614,6 +5619,16 @@ type ClarkToolEvidence = {
     // RPC read (see lib/server/deployerResolver.ts) — carried through here so the answer can use it.
     tokenName?: string | null;
     tokenSymbol?: string | null;
+    // DEPLOYER ANSWER QUALITY, DISCLOSED (requested: "'Likely match, not fully confirmed' needs a
+    // reason" / full required field list — Why confidence is high/medium/low, Related deployments if
+    // available, Missing evidence). confidenceReason carries the resolver's own honest sentence for
+    // the fast path (see deployerResolver.ts); relatedDeployments/missingEvidence are populated ONLY
+    // from data a call already fetched for another reason (the full /api/dev-wallet fallback's own
+    // previousProjects/linkedWallets) — never from a new scan triggered just to fill these fields,
+    // per the hard rule "Do NOT turn deployer checks into full token scans unless requested."
+    confidenceReason?: string | null;
+    relatedDeployments?: string | null;
+    missingEvidence?: string[];
   };
   liquidity?: {
     ok: boolean;
@@ -5890,6 +5905,7 @@ async function executeClarkToolPlan(input: {
             sourcesAttempted: fastResult.sourcesAttempted,
             tokenName: fastResult.tokenName,
             tokenSymbol: fastResult.tokenSymbol,
+            confidenceReason: fastResult.confidenceReason,
           };
           continue;
         }
@@ -5934,6 +5950,14 @@ async function executeClarkToolPlan(input: {
           // so the audit shows every source that was actually tried, not just the full scan's.
           sourcesAttempted: fastResult?.sourcesAttempted ?? [],
           failureReason: !devWalletRes.ok ? (fastResult?.failureReason ?? null) : null,
+          // RELATED DEPLOYMENTS, DISCLOSED (hard rule: "Do NOT fake related deployments" / "Do NOT
+          // turn deployer checks into full token scans unless requested") — populated ONLY from the
+          // full /api/dev-wallet fallback's own already-fetched previousProjects, never from a new
+          // call triggered just to fill this field. Absent/empty stays honestly unset (no fabricated
+          // "0 related deployments" claim when the module simply didn't return the field).
+          relatedDeployments: Array.isArray(d.previousProjects) && d.previousProjects.length > 0
+            ? `${d.previousProjects.length} prior contract${d.previousProjects.length === 1 ? "" : "s"} linked to this deployer.`
+            : (d.previousActivityAvailable === true ? "No prior deployer activity found." : null),
         };
         continue;
       }
@@ -6601,14 +6625,26 @@ function renderFastDeployerAnswer(
   // IDENTITY; it deliberately never runs the full /api/dev-wallet cluster/rug-history scan (that's
   // the whole point of it being fast). Never silently omits "related deployments"/"rug history" —
   // states plainly that this pass didn't check them and names the real follow-up that would.
+  // FULL FIELD LIST, DISCLOSED (requested: Token, Chain, Contract, Origin/deployer wallet,
+  // Confidence, Evidence source, Why confidence is high/medium/low, Related deployments if
+  // available, Missing evidence, Next actions). The fast path never runs a cluster/rug-history scan
+  // — "Related deployments" honestly says so rather than fabricating a count (hard rule: "Do NOT
+  // fake related deployments").
   return formatClarkStructuredAnswer({
     overview: `${tokenName} (${tokenSymbol}) was deployed by ${devWallet.deployerAddress} on ${chainLabel}.`,
-    keyFindings: [`Deployer address: ${devWallet.deployerAddress}`, `Token: ${tokenName} (${tokenSymbol}) · ${tokenAddress}`],
+    keyFindings: [
+      `Deployer address: ${devWallet.deployerAddress}`,
+      `Token: ${tokenName} (${tokenSymbol}) · ${tokenAddress}`,
+      `Contract: ${tokenAddress}`,
+      `Chain: ${chainLabel}`,
+      `Related deployments: not checked in this fast lookup — run the full Token Scanner dev-cluster read for prior-deployment history.`,
+      `Missing evidence: linked-wallet cluster and rug history (fast lookup only resolves deployer identity, by design).`,
+    ],
     evidence: [`${evidenceLabel} (chain: ${chainLabel})`],
     risks: [],
     opportunities: [],
     confidence: devWallet.confidence,
-    confidenceReason: devWallet.confidence === "High" ? "deployer identity confirmed directly from chain data" : "deployer identity resolved, but from a single source with no cross-verification",
+    confidenceReason: devWallet.confidenceReason ?? (devWallet.confidence === "High" ? "deployer identity confirmed directly from chain data" : "deployer identity resolved, but from a single source with no cross-verification"),
     lastUpdatedLabel: "just now (live lookup)",
     nextAction: "Related deployments and rug history were not checked in this fast lookup — run /deployer for the origin wallet and cluster read.",
   });
@@ -6624,6 +6660,15 @@ function renderDevWalletFocusedRead(
   const originRead = devWallet.deployerAddress
     ? `Deployer identified: ${shortAddress(devWallet.deployerAddress)} (${devWallet.confidence} confidence).`
     : "Origin wallet could not be verified from this pass.";
+  // WHY CONFIDENCE, DISCLOSED (requested: "'Likely match, not fully confirmed' needs a reason").
+  // Prefers the resolver's own honest, source-specific sentence (carried through from the fast tier
+  // that first tried to answer this, even on the full-scan fallback path) over a generic default.
+  const whyConfidence = devWallet.confidenceReason
+    ?? (devWallet.confidence === "High"
+      ? "Deployer identity confirmed directly from on-chain creation evidence."
+      : devWallet.confidence === "Medium"
+        ? "Origin wallet matched from available creation evidence, but full deployer history was not confirmed."
+        : "Deployer identity resolved from limited evidence; treat as directional, not confirmed.");
   const linkedRead = devWallet.linkedWallets > 0
     ? `${devWallet.linkedWallets} linked wallet${devWallet.linkedWallets > 1 ? "s" : ""} found in deployer cluster.`
     : "No linked wallet signals returned.";
@@ -6645,6 +6690,10 @@ function renderDevWalletFocusedRead(
     "",
     "Origin read:",
     originRead,
+    `Why: ${whyConfidence}`,
+    "",
+    "Related deployments:",
+    devWallet.relatedDeployments ?? "No related deployments returned in this pass.",
     "",
     "Linked wallet signals:",
     linkedRead,
@@ -8791,10 +8840,26 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       if (mismatch === 'wallet_question_token_address') {
         const chainQuery = chainForClarkTools === 'base' ? '' : `&chain=${chainForClarkTools === 'ethereum' ? 'eth' : chainForClarkTools}`;
         const href = `/terminal/token-scanner?contract=${inlineAddress}${chainQuery}`;
+        // SAME-COMMAND DEDUP, DISCLOSED: the exact same "/wallet <this token contract>" repeated
+        // right after the prior one (same address, same chain, within a short window) reuses the
+        // cached read instead of re-running the check and re-printing an identical wall of text —
+        // still fully real/accurate, just prefixed so it's clear why it's unchanged.
+        const priorCheck = sessionMem.lastNotWalletCheck;
+        const isRepeat = Boolean(priorCheck && priorCheck.address.toLowerCase() === inlineAddress.toLowerCase()
+          && priorCheck.chain === chainForClarkTools && (Date.now() - priorCheck.ts) < 5 * 60 * 1000);
+        sessionMem.lastNotWalletCheck = { address: inlineAddress.toLowerCase(), chain: String(chainForClarkTools), ts: Date.now() };
+        const notWalletActions = [
+          { label: '/token', prompt: `/token ${inlineAddress}`, kind: 'prompt' as const },
+          { label: '/holders', prompt: `/holders ${inlineAddress}`, kind: 'prompt' as const },
+          { label: '/lp', prompt: `/lp ${inlineAddress}`, kind: 'prompt' as const },
+          { label: '/deployer', prompt: `/deployer ${inlineAddress}`, kind: 'prompt' as const },
+          { label: 'Open Token Scanner', href },
+        ];
+        const baseReply = formatTokenContractNotWalletReply(chainDisplayLabel(chainForClarkTools));
         return {
           feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: "entity_mismatch", toolsUsed: ["address_code_check"],
-          analysis: formatTokenContractNotWalletReply(chainDisplayLabel(chainForClarkTools)),
-          ui: { intentBadge: 'Entity Check', actions: [{ label: 'Open Token Scanner', href }, { label: '/token', prompt: `/token ${inlineAddress}`, kind: 'prompt' as const }] },
+          analysis: isRepeat ? `Same result as last check — cached within this session.\n\n${baseReply}` : baseReply,
+          ui: { intentBadge: 'Entity Check', actions: notWalletActions },
           actions: [{ label: 'Open Token Scanner', href }],
         };
       }
@@ -13937,6 +14002,28 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       finalAnswerMode: dw?.deployerAddress ? "found" : (dw?.ok ? "unavailable_with_sources" : "sources_failed"),
     };
     if (evidence.devWallet?.ok) {
+      const dwOkChain = devAuditChain ?? "base";
+      const dwAnalysis = evidence.devWallet.fastPath
+        ? renderFastDeployerAnswer(tokenName, tokenSymbol, resolvedAddress, evidence.devWallet, chainDisplayLabel(chainForClarkTools))
+        : renderDevWalletFocusedRead(tokenName, tokenSymbol, resolvedAddress, evidence.devWallet, chainDisplayLabel(chainForClarkTools));
+      // FOLLOW-UP MEMORY, DISCLOSED (requested: "follow-up commands must reuse current token
+      // context" — "holders", "check holders", "lp", "explain lp", "is it safe", "scan token",
+      // "open token scanner" must all resolve to the SAME token after /deployer). This explicit-
+      // address deployer path (plan.intent === "dev_wallet") never wrote session memory at all
+      // before this fix — every follow-up path that reads sessionMem.lastToken (holders_check,
+      // liquidity_scan's "this"-resolution, token_safety_followup, etc.) had nothing to resolve
+      // against. Written the same way every other successful token-scanning answer in this file
+      // already writes it — chain-scoped, matching rememberClarkDeployer's own chain-scoping
+      // discipline (hard rule: "Do NOT use wrong-chain cache").
+      if (evidence.devWallet.deployerAddress) {
+        rememberClarkDeployer(sessionMem, evidence.devWallet.deployerAddress, {
+          chain: dwOkChain,
+          sourceTokenAddress: resolvedAddress,
+          confidence: evidence.devWallet.confidence === "High" ? "high" : evidence.devWallet.confidence === "Low" ? "low" : "medium",
+        });
+      }
+      updateMemToken(sessionMem, resolvedAddress, tokenSymbol !== "?" ? tokenSymbol : null, tokenName !== "Unknown token" ? tokenName : null, dwAnalysis, { chain: dwOkChain, lastIntent: "dev_wallet" });
+      updateMemIntent(sessionMem, "dev_wallet");
       return {
         feature: "clark-ai",
         chain,
@@ -13944,12 +14031,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         // FAST DEPLOYER RESOLVER, DISCLOSED: the fast path has no linked-wallet/verdict evidence to
         // show, so it gets the requested short "Deployer / Chain / Confidence / Evidence / Next"
         // format instead of the fuller CORTEX-style read the slow, full-scan path still uses.
-        analysis: evidence.devWallet.fastPath
-          ? renderFastDeployerAnswer(tokenName, tokenSymbol, resolvedAddress, evidence.devWallet, chainDisplayLabel(chainForClarkTools))
-          : renderDevWalletFocusedRead(tokenName, tokenSymbol, resolvedAddress, evidence.devWallet, chainDisplayLabel(chainForClarkTools)),
+        analysis: dwAnalysis,
         intent: plan.intent,
         toolsUsed,
         clarkDeployerLookupAudit,
+        // CLICKABLE NEXT ACTIONS, DISCLOSED (requested: "next actions render like plain text instead
+        // of real command actions" / "make action rows clickable or submit the matching command with
+        // current context"). Real, current-token-scoped commands — /holders, /lp, /token, /deployer,
+        // Open Token Scanner — rendered by the client as clickable chips (see
+        // app/terminal/clark-ai/page.tsx's msg.actions rendering) that submit through the same
+        // handleSendText path a manually typed command would use.
+        ui: { intentBadge: "Deployer Read", actions: buildClarkDeployerAnswerActions(resolvedAddress, dwOkChain) },
       };
     }
     return {
@@ -13975,6 +14067,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       intent: plan.intent,
       toolsUsed,
       clarkDeployerLookupAudit,
+      ui: { intentBadge: "Deployer Read", actions: buildRoutedActions(["Open Token Scanner"]) },
     };
   }
 

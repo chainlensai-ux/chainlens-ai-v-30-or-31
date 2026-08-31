@@ -52,6 +52,13 @@ export interface ResolveTokenDeployerResult {
   // ERC20 name()/symbol() (never a guess).
   tokenName: string | null
   tokenSymbol: string | null
+  // MEDIUM-CONFIDENCE + "WHY", DISCLOSED (requested: "'Likely match, not fully confirmed' needs a
+  // reason" / "if confidence is medium, explain: 'Origin wallet matched from available creation
+  // evidence, but full deployer history was not confirmed.'"). Always a real, source-specific
+  // sentence — never a generic placeholder — so every confidence tier states exactly what evidence
+  // was and wasn't available. See the confidence-tiering comment above resolveTokenDeployer for how
+  // each tier is decided.
+  confidenceReason: string
 }
 
 // WRONG-CHAIN GUARD, DISCLOSED (hard rule: "Do NOT silently default to Base if chain is ambiguous"):
@@ -159,25 +166,52 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
   }
 }
 
-async function tryExplorerCreationLookup(
+async function tryExplorerCreationLookupOnce(
   chainSlug: ResolverChainSlug, tokenAddress: string,
-): Promise<{ address: string | null; attempted: boolean; succeeded: boolean }> {
+): Promise<{ address: string | null; attempted: boolean; succeeded: boolean; transientFailure: boolean }> {
   const cfg = EXPLORER_CONFIG[chainSlug]
-  if (!cfg) return { address: null, attempted: false, succeeded: false }
+  if (!cfg) return { address: null, attempted: false, succeeded: false, transientFailure: false }
   const apiKey = cfg.apiKey()
-  if (!apiKey) return { address: null, attempted: false, succeeded: false }
+  // Not configured for this chain — never worth retrying (no key will ever appear mid-request).
+  if (!apiKey) return { address: null, attempted: false, succeeded: false, transientFailure: false }
   const url = cfg.buildCreationLookupUrl(tokenAddress, apiKey)
   const res = await fetchWithTimeout(url, EXPLORER_TIMEOUT_MS)
-  if (!res || !res.ok) return { address: null, attempted: true, succeeded: false }
+  // No response (network error/abort) or a 429/5xx-class status is a transient provider hiccup —
+  // exactly the class of failure the retry below exists for. A non-2xx that still returned a body
+  // (e.g. 4xx auth/format errors) is left non-transient since a retry would just repeat it.
+  if (!res) return { address: null, attempted: true, succeeded: false, transientFailure: true }
+  if (!res.ok) return { address: null, attempted: true, succeeded: false, transientFailure: res.status === 429 || res.status >= 500 }
   try {
     const json = await res.json()
     const raw = cfg.parseCreationLookup(json)
     const addr = normalizeAddress(raw)
-    if (isUsableCandidate(addr, tokenAddress)) return { address: addr, attempted: true, succeeded: true }
-    return { address: null, attempted: true, succeeded: false }
+    if (isUsableCandidate(addr, tokenAddress)) return { address: addr, attempted: true, succeeded: true, transientFailure: false }
+    return { address: null, attempted: true, succeeded: false, transientFailure: false }
   } catch {
-    return { address: null, attempted: true, succeeded: false }
+    // A response arrived but wasn't valid JSON — treat as transient (a truncated/garbled response
+    // under load), worth one retry.
+    return { address: null, attempted: true, succeeded: false, transientFailure: true }
   }
+}
+
+// RETRY-BEFORE-TIMEOUT FIX, DISCLOSED (reported live: "/deployer sometimes times out first, then
+// works on retry" — the user's own re-send of /deployer was absorbing a transient explorer hiccup
+// that a single retry-with-backoff on the SAME source should absorb automatically). One bounded
+// extra attempt, short fixed backoff, and ONLY when the first failure looked transient (network
+// error, 429/5xx, unparseable body) — a permanently-unconfigured source (no API key) is never
+// retried, since that would just burn timeout budget for a guaranteed-identical failure.
+const EXPLORER_RETRY_BACKOFF_MS = 300
+
+async function tryExplorerCreationLookup(
+  chainSlug: ResolverChainSlug, tokenAddress: string,
+): Promise<{ address: string | null; attempted: boolean; succeeded: boolean; retried: boolean }> {
+  const first = await tryExplorerCreationLookupOnce(chainSlug, tokenAddress)
+  if (first.succeeded || !first.attempted || !first.transientFailure) {
+    return { address: first.address, attempted: first.attempted, succeeded: first.succeeded, retried: false }
+  }
+  await new Promise(resolve => setTimeout(resolve, EXPLORER_RETRY_BACKOFF_MS))
+  const retry = await tryExplorerCreationLookupOnce(chainSlug, tokenAddress)
+  return { address: retry.address, attempted: true, succeeded: retry.succeeded, retried: true }
 }
 
 async function alchemyCall(rpcUrl: string, method: string, params: unknown[], timeoutMs: number): Promise<unknown> {
@@ -261,10 +295,11 @@ async function tryTokenNameSymbol(
 /**
  * Fast, chain-strict deployer/creator resolution — deliberately narrower than a full token scan.
  * Target: resolve well under the ~25s a full /api/dev-wallet call could take; in practice a cache
- * hit or a healthy explorer response lands in well under 2s, though a cold lookup that must fall
- * through to the RPC tier (each source has its own ~1.8s budget) can take longer under real network
- * conditions — still bounded by per-source timeouts, never one global deadline that kills every
- * source at once.
+ * hit or a healthy explorer response lands in well under 2s. A cold lookup that hits a transient
+ * explorer hiccup gets ONE bounded retry (its own ~300ms backoff, see EXPLORER_RETRY_BACKOFF_MS)
+ * before falling through to the RPC tier (its own ~1.8s budget) — worst case around 2*1.8s + 0.3s
+ * for the explorer tier alone, still bounded by per-source timeouts, never one global deadline that
+ * kills every source at once.
  */
 export async function resolveTokenDeployer(input: ResolveTokenDeployerInput): Promise<ResolveTokenDeployerResult> {
   const startedAt = Date.now()
@@ -283,13 +318,17 @@ export async function resolveTokenDeployer(input: ResolveTokenDeployerInput): Pr
   const nameSymbolPromise = tryTokenNameSymbol(input.chainSlug, tokenAddress)
 
   const explorer = await tryExplorerCreationLookup(input.chainSlug, tokenAddress)
-  if (explorer.attempted) sourcesAttempted.push('explorer_creation_lookup')
+  if (explorer.attempted) sourcesAttempted.push(explorer.retried ? 'explorer_creation_lookup (retried)' : 'explorer_creation_lookup')
   if (explorer.succeeded && explorer.address) {
     sourcesSucceeded.push('explorer_creation_lookup')
     const nameSymbol = await nameSymbolPromise
     const result: ResolveTokenDeployerResult = {
       deployerAddress: explorer.address, creatorAddress: explorer.address,
+      // HIGH CONFIDENCE, DISCLOSED: a chain-explorer contract-creation record is a direct read of
+      // the on-chain creation transaction itself — not an inference — so this is the only tier
+      // honestly labeled 'high'. See MEDIUM/LOW below for the tiers that are inferred, not read.
       confidence: 'high', evidenceSource: 'explorer_creation_lookup',
+      confidenceReason: 'Origin wallet read directly from the chain explorer\'s contract-creation record for this address — the strongest evidence this resolver checks.',
       explorerUrl: EXPLORER_CONFIG[input.chainSlug]?.explorerUrl ?? null,
       sourcesAttempted, sourcesSucceeded, failureReason: null, durationMs: Date.now() - startedAt,
       tokenName: nameSymbol.name, tokenSymbol: nameSymbol.symbol,
@@ -305,7 +344,15 @@ export async function resolveTokenDeployer(input: ResolveTokenDeployerInput): Pr
     const nameSymbol = await nameSymbolPromise
     const result: ResolveTokenDeployerResult = {
       deployerAddress: rpcFallback.address, creatorAddress: rpcFallback.address,
-      confidence: 'low', evidenceSource: 'rpc_earliest_transfer',
+      // MEDIUM CONFIDENCE, DISCLOSED (requested: "'Likely match, not fully confirmed' needs a
+      // reason" / exact required sentence when medium). No explorer creation record was available
+      // (missing API key, or the explorer genuinely had none — see failureReason on the explorer
+      // attempt above), so this is the earliest-on-chain-activity heuristic: the first address that
+      // moved this token is the address that put it into circulation — real, available creation-
+      // adjacent evidence, but not a direct creation-transaction record, so it can't be called
+      // fully confirmed the way the explorer tier can.
+      confidence: 'medium', evidenceSource: 'rpc_earliest_transfer',
+      confidenceReason: 'Origin wallet matched from available creation evidence, but full deployer history was not confirmed.',
       explorerUrl: EXPLORER_CONFIG[input.chainSlug]?.explorerUrl ?? null,
       sourcesAttempted, sourcesSucceeded, failureReason: null, durationMs: Date.now() - startedAt,
       tokenName: nameSymbol.name, tokenSymbol: nameSymbol.symbol,
@@ -320,6 +367,7 @@ export async function resolveTokenDeployer(input: ResolveTokenDeployerInput): Pr
     : 'No source returned a usable creation/earliest-activity record for this contract within the fast-lookup budget.'
   const result: ResolveTokenDeployerResult = {
     deployerAddress: null, creatorAddress: null, confidence: 'low', evidenceSource: 'none',
+    confidenceReason: failureReason,
     explorerUrl: EXPLORER_CONFIG[input.chainSlug]?.explorerUrl ?? null,
     sourcesAttempted, sourcesSucceeded, failureReason, durationMs: Date.now() - startedAt,
     tokenName: nameSymbol.name, tokenSymbol: nameSymbol.symbol,

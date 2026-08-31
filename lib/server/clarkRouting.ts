@@ -1844,12 +1844,16 @@ export function formatEoaLpCheckReply(): string {
   ].join("\n");
 }
 
+// WALLET-ON-TOKEN-CONTRACT, DISCLOSED (requested exact wording: "This is a token contract, not a
+// wallet."). Kept as its own first, standalone line — real chain context still follows on the next
+// line, but never folded into the same sentence, so the exact requested phrase always appears
+// verbatim rather than as a paraphrase.
 export function formatTokenContractNotWalletReply(chainLabel?: string | null): string {
-  const where = chainLabel ? ` on ${chainLabel}` : "";
   return [
-    `This is a token contract${where}, not a wallet. Wallet scans do not apply.`,
+    "This is a token contract, not a wallet.",
+    chainLabel ? `Chain: ${chainLabel}. Wallet scans do not apply — use the token actions below.` : "Wallet scans do not apply — use the token actions below.",
     "",
-    "CTA: Open Token Scanner",
+    "CTA: /token, /holders, /lp, /deployer, Open Token Scanner",
   ].join("\n");
 }
 
@@ -1991,6 +1995,21 @@ export function buildClarkTokenAnswerActions(tokenAddress: string, chainLabel = 
     { label: "/explain lp", prompt: "/explain lp", kind: "prompt" },
     { label: "Open Token Scanner", href, kind: "link" },
     { label: "Add to Watchlist", prompt: "add that to watchlist", kind: "prompt" },
+  ];
+}
+
+/** Real deployer-answer CTAs — exactly the literal command set requested: /holders, /lp, /token,
+ * /deployer, Open Token Scanner. Every action either submits a real slash command with the current
+ * token still in context (handled client-side via applyCommandChip/handleSendText) or navigates to
+ * a real page — never a dead text label. */
+export function buildClarkDeployerAnswerActions(tokenAddress: string, chainLabel = "base"): ClarkUiAction[] {
+  const href = tokenScannerHref(tokenAddress, chainLabel);
+  return [
+    { label: "/holders", prompt: "/holders", kind: "prompt" },
+    { label: "/lp", prompt: "/lp", kind: "prompt" },
+    { label: "/token", prompt: "/token", kind: "prompt" },
+    { label: "/deployer", prompt: "/deployer", kind: "prompt" },
+    { label: "Open Token Scanner", href, kind: "link" },
   ];
 }
 
