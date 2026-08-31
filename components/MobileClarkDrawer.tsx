@@ -3,8 +3,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { ThinkingOrb } from 'thinking-orbs'
 import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList } from '@/lib/client/clarkMemory'
+import { clarkFetchSignal, clientTimeoutReply, createClarkRequestGate } from '@/lib/client/clarkRequestLifecycle'
+import { CLARK_FETCH_TIMEOUT_MS } from '@/lib/client/clarkAiLive'
 
-type Message = { role: 'user' | 'clark'; text: string; pending?: boolean }
+type Message = { role: 'user' | 'clark'; text: string; pending?: boolean; requestId?: string }
 
 type AnalysisKind = 'token' | 'wallet' | 'lp' | 'general'
 const ANALYSIS_STAGES: Record<AnalysisKind, string[]> = {
@@ -53,6 +55,7 @@ export default function MobileClarkDrawer() {
   const [error, setError] = useState('')
   const endRef = useRef<HTMLDivElement | null>(null)
   const loadingRef = useRef(false)
+  const requestGateRef = useRef(createClarkRequestGate())
 
   const debugClark = typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('debugClark') === 'true'
 
@@ -72,7 +75,10 @@ export default function MobileClarkDrawer() {
 
   const sendText = async (raw: string) => {
     const text = raw.trim()
-    if (!text || loadingRef.current) return
+    if (!text) return
+    const begun = requestGateRef.current.begin(text)
+    if (!begun.proceed) return
+    const requestId = begun.requestId
 
     setError('')
     setInput('')
@@ -81,7 +87,10 @@ export default function MobileClarkDrawer() {
     setLoading(true)
     loadingRef.current = true
     setLastAction('send')
-    setMessages((prev) => [...prev, { role: 'user', text }, { role: 'clark', text: 'Clark is thinking...' }])
+    setMessages((prev) => {
+      const withoutStaleThinking = prev.filter((m) => !(m.role === 'clark' && m.text === 'Clark is thinking...' && m.requestId && m.requestId !== requestId))
+      return [...withoutStaleThinking, { role: 'user', text, requestId }, { role: 'clark', text: 'Clark is thinking...', requestId }]
+    })
 
     try {
       const history = messages
@@ -90,10 +99,15 @@ export default function MobileClarkDrawer() {
       const res = await fetch('/api/clark', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-clark-session': getOrCreateSessionId() },
-        body: JSON.stringify({ feature: 'clark-ai', prompt: text, sessionId: getOrCreateSessionId(), clientContext: getClientClarkContext() }),
+        signal: clarkFetchSignal(begun.abortSignal, CLARK_FETCH_TIMEOUT_MS),
+        body: JSON.stringify({ feature: 'clark-ai', prompt: text, message: text, requestId, messageId: requestId, sessionId: getOrCreateSessionId(), clientContext: getClientClarkContext() }),
       })
       const json = await res.json().catch(() => ({}))
       const payload = (json?.data && typeof json.data === 'object') ? json.data : json
+      const echoedId = payload && typeof payload === 'object' && typeof (payload as { requestId?: unknown }).requestId === 'string'
+        ? (payload as { requestId: string }).requestId
+        : requestId
+      if (echoedId !== requestId || !requestGateRef.current.shouldApply(requestId)) return
       const marketItems = payload?.marketContext && typeof payload.marketContext === 'object' && Array.isArray((payload.marketContext as { items?: unknown[] }).items)
         ? (payload.marketContext as { items?: unknown[] }).items
         : null
@@ -106,15 +120,31 @@ export default function MobileClarkDrawer() {
       const reply = typeof payload?.reply === 'string' && payload.reply.trim()
         ? payload.reply
         : (typeof payload?.analysis === 'string' && payload.analysis.trim() ? payload.analysis : FALLBACK_ERROR_MESSAGE)
-      setMessages((prev) => [...prev.slice(0, -1), { role: 'clark', text: reply }])
+      setMessages((prev) => {
+        const next = [...prev]
+        const idx = next.findLastIndex((m) => m.role === 'clark' && m.requestId === requestId)
+        if (idx < 0) return prev
+        next[idx] = { role: 'clark', text: reply, requestId }
+        return next
+      })
       setLastAction('send-success')
     } catch {
-      setError(FALLBACK_ERROR_MESSAGE)
-      setMessages((prev) => [...prev.slice(0, -1), { role: 'clark', text: FALLBACK_ERROR_MESSAGE }])
+      if (!requestGateRef.current.shouldApply(requestId)) return
+      const fallback = clientTimeoutReply(text)
+      setError(fallback.text)
+      setMessages((prev) => {
+        const next = [...prev]
+        const idx = next.findLastIndex((m) => m.role === 'clark' && m.requestId === requestId)
+        if (idx < 0) return prev
+        next[idx] = { role: 'clark', text: fallback.text, requestId }
+        return next
+      })
       setLastAction('send-fail')
     } finally {
-      setLoading(false)
-      loadingRef.current = false
+      if (requestGateRef.current.complete(requestId)) {
+        setLoading(false)
+        loadingRef.current = false
+      }
     }
   }
 

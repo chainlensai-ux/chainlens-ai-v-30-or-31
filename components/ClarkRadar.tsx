@@ -5,6 +5,8 @@ import { ThinkingOrb } from 'thinking-orbs'
 import ClarkOrb from '@/components/ClarkOrb'
 import { supabase } from '@/lib/supabaseClient'
 import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList, resolveClarkCommandChipTarget } from '@/lib/client/clarkMemory'
+import { clarkFetchSignal, clientTimeoutReply, createClarkRequestGate } from '@/lib/client/clarkRequestLifecycle'
+import { CLARK_FETCH_TIMEOUT_MS } from '@/lib/client/clarkAiLive'
 
 const HINT_CHIPS = [
   'Scan BRETT',
@@ -29,6 +31,7 @@ interface MoverItem {
 interface Message {
   role: 'user' | 'clark'
   text: string
+  requestId?: string
   // STRUCTURED MOVERS, DISCLOSED (Clark panel redesign — presentational only): the SAME real
   // marketContext.items array the backend already returns and this component already persisted
   // into clarkContextRef for follow-up-prompt memory — never fabricated, never re-fetched. Attached
@@ -568,6 +571,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
   const lastSentRef = useRef<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const clarkContextRef = useRef<ClarkContextState>({})
+  const requestGateRef = useRef(createClarkRequestGate())
 
   useEffect(() => {
     messagesRef.current = messages
@@ -577,15 +581,22 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
   }, [messages])
 
   const sendToClark = useCallback(async (text: string) => {
-    setMessages(prev => [...prev, { role: 'user', text }])
-    setLoadingKind(inferAnalysisKind(text))
+    const trimmed = text.trim()
+    if (!trimmed) return
+    const begun = requestGateRef.current.begin(trimmed)
+    if (!begun.proceed) return
+    const requestId = begun.requestId
+    setMessages(prev => {
+      const withoutStaleThinking = prev.filter((m) => !(m.role === 'clark' && m.text === 'Clark is thinking...' && m.requestId && m.requestId !== requestId))
+      return [...withoutStaleThinking, { role: 'user', text: trimmed, requestId }, { role: 'clark', text: 'Clark is thinking...', requestId }]
+    })
+    setLoadingKind(inferAnalysisKind(trimmed))
     setLoading(true)
-    setMessages(prev => [...prev, { role: 'clark', text: 'Clark is thinking...' }])
 
     try {
-      const body = parseMessage(text, clarkMode)
+      const body = parseMessage(trimmed, clarkMode)
       const requestMode = clarkMode
-      const history = [...messagesRef.current, { role: 'user', text }]
+      const history = [...messagesRef.current, { role: 'user', text: trimmed }]
         .slice(-10)
         .map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
       if (process.env.NODE_ENV === 'development') {
@@ -615,9 +626,13 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
           'x-clark-session': getOrCreateSessionId(),
         },
+        signal: clarkFetchSignal(begun.abortSignal, CLARK_FETCH_TIMEOUT_MS),
         body: JSON.stringify({
           ...body,
-          message: text,
+          message: trimmed,
+          prompt: trimmed,
+          requestId,
+          messageId: requestId,
           mode: requestMode,
           uiModeHint: clarkMode,
           context: null,
@@ -633,6 +648,8 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
       })
       const json = await res.json()
       const payload = (json.data as Record<string, unknown>) ?? {}
+      const echoedId = typeof payload.requestId === 'string' ? payload.requestId : (typeof json.requestId === 'string' ? json.requestId : requestId)
+      if (echoedId !== requestId || !requestGateRef.current.shouldApply(requestId)) return
       const marketContext = (payload.marketContext && typeof payload.marketContext === 'object')
         ? payload.marketContext as { items?: unknown }
         : null
@@ -662,7 +679,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
       persistClarkMemoryEcho(payload)
       clarkContextRef.current.previousIntent = clarkContextRef.current.lastIntent ?? null
       clarkContextRef.current.lastIntent = typeof payload.intent === 'string' ? payload.intent : clarkContextRef.current.lastIntent
-      clarkContextRef.current.lastSelectedRank = /\b([1-9]\d{0,2})\b/.test(text) ? Number(text.match(/\b([1-9]\d{0,2})\b/)?.[1] ?? 0) || null : clarkContextRef.current.lastSelectedRank
+      clarkContextRef.current.lastSelectedRank = /\b([1-9]\d{0,2})\b/.test(trimmed) ? Number(trimmed.match(/\b([1-9]\d{0,2})\b/)?.[1] ?? 0) || null : clarkContextRef.current.lastSelectedRank
       const reply = json.ok
         ? String(payload?.reply ?? formatResponse(payload))
         : (json.error ?? 'Something went wrong.')
@@ -673,18 +690,26 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
 
       setMessages(prev => {
         const next = [...prev]
-        next[next.length - 1] = { role: 'clark', text: reply, movers }
+        const idx = next.findLastIndex((m) => m.role === 'clark' && m.requestId === requestId)
+        if (idx < 0) return prev
+        next[idx] = { role: 'clark', text: reply, movers, requestId }
         return next
       })
     } catch {
+      if (!requestGateRef.current.shouldApply(requestId)) return
+      const fallback = clientTimeoutReply(trimmed)
       setMessages(prev => {
         const next = [...prev]
-        next[next.length - 1] = { role: 'clark', text: 'Clark backend unreachable.' }
+        const idx = next.findLastIndex((m) => m.role === 'clark' && m.requestId === requestId)
+        if (idx < 0) return prev
+        next[idx] = { role: 'clark', text: fallback.text, requestId }
         return next
       })
     } finally {
-      setLoading(false)
-      inputRef.current?.focus()
+      if (requestGateRef.current.complete(requestId)) {
+        setLoading(false)
+        inputRef.current?.focus()
+      }
     }
   }, [clarkMode])
 
@@ -731,7 +756,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
 
   function handleSend() {
     const text = input.trim()
-    if (!text || loading) return
+    if (!text) return
     if (isMobileClient()) {
       window.location.href = `/terminal/clark-ai?prompt=${encodeURIComponent(text)}&autosend=1`
       return
@@ -1304,8 +1329,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
               type="text"
               value={input}
               onChange={e => setInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && !loading) handleSend() }}
-              disabled={loading}
+              onKeyDown={e => { if (e.key === 'Enter') handleSend() }}
               placeholder={clarkMode === 'chat' ? 'Ask Clark about a token, wallet, or Base move…' : 'Paste a Base contract or wallet address to analyze…'}
               className="clark-panel-input"
               style={{
@@ -1323,7 +1347,7 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
             />
             <button
               onClick={handleSend}
-              disabled={loading || !input.trim()}
+              disabled={!input.trim()}
               className={input.trim() && !loading ? 'clark-radar-send' : undefined}
               style={{
                 flexShrink: 0,

@@ -64,8 +64,8 @@ assert.match(routeCode, /clarkAudit: \{[\s\S]{0,600}unavailableReason: `\$\{isTi
 // overlaid fresh on every cache read, everything else in the audit is preserved from the original
 // request that actually produced it.
 assert.match(routeCode, /function withClarkAuditCacheHit\(/, 'a cache-hit read must overlay live cacheUsed/responseTimeMs onto the stored clarkAudit')
-assert.match(routeCode, /return NextResponse\.json\(withClarkAuditCacheHit\(earlyCached\.payload, clarkAuditRequestStartedAt\)\)/, 'the early cache-hit path must use the overlay helper')
-assert.match(routeCode, /return NextResponse\.json\(withClarkAuditCacheHit\(cached\.payload, clarkAuditRequestStartedAt\)\)/, 'the main cache-hit path must use the overlay helper')
+assert.match(routeCode, /withClarkAuditCacheHit\(earlyCached\.payload, clarkAuditRequestStartedAt\)/, 'the early cache-hit path must use the overlay helper')
+assert.match(routeCode, /withClarkAuditCacheHit\(cached\.payload, clarkAuditRequestStartedAt\)/, 'the main cache-hit path must use the overlay helper')
 
 // ─── Required fix: only "Unavailable" after ALL sources failed ─────────────────────────────────
 assert.match(

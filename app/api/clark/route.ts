@@ -136,6 +136,21 @@ import {
   isHoldersCheckPrompt,
   isDeployerCheckPrompt,
 } from "@/lib/server/clarkRouting";
+import {
+  normalizeClarkRequestId,
+  resolveClarkCommandIdentity,
+  clarkSingleflightKey,
+  runClarkSingleflight,
+  buildClarkRequestLifecycleAudit,
+  buildClarkCommandFallbackAudit,
+  resolveClarkTimeoutFallback,
+  formatDeployerTimeoutPartial,
+  formatHoldersTimeoutPartial,
+  timeoutActionsForCommand,
+  CLARK_DEPLOYER_SOURCE_TIMEOUT_MS,
+  CLARK_HOLDERS_SOURCE_TIMEOUT_MS,
+  type ClarkCommandIdentity,
+} from "@/lib/server/clarkRequestLifecycle";
 import { buildBaseRadarDisplayModel } from "@/lib/baseRadarDisplayModel";
 import { classifyClarkAnalystIntent, isChainLensAnalystPrompt } from "@/lib/server/clarkAnalystIntent";
 import { isRobinhoodChainAvailable, getRobinhoodRpcUrl, ROBINHOOD_CHAIN_ID } from "@/lib/server/robinhoodChainConfig";
@@ -866,6 +881,8 @@ interface ClarkRequestBody {
   chain?: SupportedChain;
   prompt?: string;
   query?: string;
+  requestId?: string;
+  messageId?: string;
   tokenData?: unknown;
   appContext?: {
     route?: string | null;
@@ -4310,6 +4327,16 @@ async function callInternalApi(origin: string, path: string, payload: Record<str
   });
   const json = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, json };
+}
+
+async function callInternalApiCaught(origin: string, path: string, payload: Record<string, unknown>, authHeader?: string, verifiedPlan?: 'free' | 'pro' | 'elite', timeoutMs: number = 9000): Promise<{ ok: boolean; status: number; json: unknown; timedOut: boolean }> {
+  try {
+    const r = await callInternalApi(origin, path, payload, authHeader, verifiedPlan, timeoutMs);
+    return { ...r, timedOut: false };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, status: 0, json: null, timedOut: /abort|timeout/i.test(msg) };
+  }
 }
 
 function buildStructuredVerdict(
@@ -10293,9 +10320,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       ? targetChain
       : toTokenApiChain(chainForClarkTools);
     const devRes = thisDevChain
-      ? await callInternalApi(origin, "/api/dev-wallet", { contractAddress: target, chain: thisDevChain }, authHeader ?? undefined)
-      : { ok: false as const, json: null };
+      ? await callInternalApiCaught(origin, "/api/dev-wallet", { contractAddress: target, chain: thisDevChain }, authHeader ?? undefined, undefined, CLARK_DEPLOYER_SOURCE_TIMEOUT_MS)
+      : { ok: false as const, json: null, timedOut: false };
     if (!devRes.ok || !devRes.json) {
+      if ("timedOut" in devRes && devRes.timedOut) {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: ["dev_wallet_analyze"],
+          analysis: formatDeployerTimeoutPartial({ address: target, chain: thisDevChain }),
+          intentBadge: "deployer_check",
+          ui: { intentBadge: "Deployer Read", actions: timeoutActionsForCommand("deployer", target) },
+          quotaConsumed: false,
+          clarkCommandPartial: "timeout",
+        };
+      }
       return { feature: "clark-ai", chain, mode: "analysis", intent: "dev_wallet", toolsUsed: ["dev_wallet_analyze"], analysis: "CORTEX could not verify the origin wallet from live data. Token context is still saved." };
     }
     const cx = buildCortexEvidenceContext({ address: target, sessionMem, clientContext: body.clientContext });
@@ -12082,7 +12119,17 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       };
     }
     if (isValidSolanaMintAddress(holdersAddr)) {
-      const tokRes = await callInternalApi(origin, "/api/token", { contract: holdersAddr, chain: "solana" }, authHeader ?? undefined, verifiedPlan);
+      const tokRes = await callInternalApiCaught(origin, "/api/token", { contract: holdersAddr, chain: "solana" }, authHeader ?? undefined, verifiedPlan, CLARK_HOLDERS_SOURCE_TIMEOUT_MS);
+      if (tokRes.timedOut) {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "holders_check", toolsUsed: ["solana_scan"],
+          analysis: formatHoldersTimeoutPartial({ address: holdersAddr, chain: "solana" }),
+          intentBadge: "holders_check",
+          ui: { intentBadge: "Holders Read", actions: timeoutActionsForCommand("holders", holdersAddr) },
+          quotaConsumed: false,
+          clarkCommandPartial: "timeout",
+        };
+      }
       const raw = (tokRes.json ?? {}) as Record<string, unknown>;
       const conc = raw.topAccountConcentration as { top1Percent?: number | null; top10Percent?: number | null; accountsSampled?: number | null } | null | undefined;
       const market = raw.marketData as { tokenSymbol?: string | null } | null | undefined;
@@ -12104,7 +12151,22 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         quotaConsumed: tokRes.ok,
       };
     }
-    const r = await resolveTokenForFollowup();
+    const r = await Promise.race([
+      resolveTokenForFollowup(),
+      new Promise<{ timedOut: true }>((resolve) => {
+        setTimeout(() => resolve({ timedOut: true }), CLARK_HOLDERS_SOURCE_TIMEOUT_MS);
+      }),
+    ]);
+    if ("timedOut" in r) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "holders_check", toolsUsed: ["token_scan"],
+        analysis: formatHoldersTimeoutPartial({ address: holdersAddr, chain: chainDisplayLabel(chainForClarkTools) }),
+        intentBadge: "holders_check",
+        ui: { intentBadge: "Holders Read", actions: timeoutActionsForCommand("holders", holdersAddr) },
+        quotaConsumed: false,
+        clarkCommandPartial: "timeout",
+      };
+    }
     if ("needsAddress" in r) {
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "holders_check", toolsUsed: [],
@@ -12114,21 +12176,33 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
         quotaConsumed: false,
       };
     }
-    const holdersChain = chainDisplayLabel(tokenEvidenceChain(r.ev, chainForClarkTools));
-    const analysis = formatHoldersCheck({ ...r.ev, token: { ...(r.ev.token ?? {}), address: r.address } }, holdersChain);
-    if (!r.fromMemory) {
-      updateMemToken(sessionMem, r.address, r.ev.token?.symbol ?? null, r.ev.token?.name ?? null, analysis, {
-        cachedEvidence: r.ev.ok || (r.ev as Record<string, unknown>)._partialEvidenceUsed ? r.ev : null,
+    const holdersFollowup = r;
+    const holdersChain = chainDisplayLabel(tokenEvidenceChain(holdersFollowup.ev, chainForClarkTools));
+    const evMeta = holdersFollowup.ev as { _tokenRouteStatus?: string };
+    if (evMeta._tokenRouteStatus === "timed_out" && holdersFollowup.ev.holders?.top1 == null && holdersFollowup.ev.holders?.top10 == null) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "holders_check", toolsUsed: holdersFollowup.fromMemory ? ["memory"] : ["token_scan"],
+        analysis: formatHoldersTimeoutPartial({ address: holdersFollowup.address, chain: holdersChain }),
+        intentBadge: "holders_check",
+        ui: { intentBadge: "Holders Read", actions: timeoutActionsForCommand("holders", holdersFollowup.address) },
+        quotaConsumed: false,
+        clarkCommandPartial: "timeout",
+      };
+    }
+    const analysis = formatHoldersCheck({ ...holdersFollowup.ev, token: { ...(holdersFollowup.ev.token ?? {}), address: holdersFollowup.address } }, holdersChain);
+    if (!holdersFollowup.fromMemory) {
+      updateMemToken(sessionMem, holdersFollowup.address, holdersFollowup.ev.token?.symbol ?? null, holdersFollowup.ev.token?.name ?? null, analysis, {
+        cachedEvidence: holdersFollowup.ev.ok || (holdersFollowup.ev as Record<string, unknown>)._partialEvidenceUsed ? holdersFollowup.ev : null,
       });
     }
     updateMemIntent(sessionMem, "holders_check");
     return {
-      feature: "clark-ai", chain, mode: "analysis", intent: "holders_check", toolsUsed: r.fromMemory ? ["memory"] : ["token_scan"],
+      feature: "clark-ai", chain, mode: "analysis", intent: "holders_check", toolsUsed: holdersFollowup.fromMemory ? ["memory"] : ["token_scan"],
       analysis,
       intentBadge: "holders_check",
-      ui: { intentBadge: "Holders Read", actions: buildClarkTokenAnswerActions(r.address, holdersChain) },
-      quotaConsumed: r.fromMemory ? false : (r.ev.ok ?? false),
-      clarkDebugReceipt: tokenFollowupDebug(r),
+      ui: { intentBadge: "Holders Read", actions: buildClarkTokenAnswerActions(holdersFollowup.address, holdersChain) },
+      quotaConsumed: holdersFollowup.fromMemory ? false : (holdersFollowup.ev.ok ?? false),
+      clarkDebugReceipt: tokenFollowupDebug(holdersFollowup),
     };
   }
 
@@ -12159,9 +12233,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       ? targetChain
       : toTokenApiChain(chainForClarkTools);
     const devRes = thisDevChain
-      ? await callInternalApi(origin, "/api/dev-wallet", { contractAddress: target, chain: thisDevChain }, authHeader ?? undefined)
-      : { ok: false as const, json: null };
+      ? await callInternalApiCaught(origin, "/api/dev-wallet", { contractAddress: target, chain: thisDevChain }, authHeader ?? undefined, undefined, CLARK_DEPLOYER_SOURCE_TIMEOUT_MS)
+      : { ok: false as const, json: null, timedOut: false };
     if (!devRes.ok || !devRes.json) {
+      if ("timedOut" in devRes && devRes.timedOut) {
+        return {
+          feature: "clark-ai", chain, mode: "analysis", intent: "deployer_check", toolsUsed: ["dev_wallet_analyze"],
+          analysis: formatDeployerTimeoutPartial({ address: target, chain: thisDevChain }),
+          intentBadge: "deployer_check",
+          ui: { intentBadge: "Deployer Read", actions: timeoutActionsForCommand("deployer", target) },
+          quotaConsumed: false,
+          clarkCommandPartial: "timeout",
+        };
+      }
       return {
         feature: "clark-ai", chain, mode: "analysis", intent: "deployer_check", toolsUsed: ["dev_wallet_analyze"],
         analysis: [
@@ -14434,6 +14518,11 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request body" }, { status: 400 })
   }
   if (body.message && !body.prompt) body.prompt = body.message
+  const requestId = normalizeClarkRequestId(body.requestId)
+  const messageId = typeof body.messageId === "string" && body.messageId.trim() ? body.messageId.trim().slice(0, 80) : requestId
+  body.requestId = requestId
+  body.messageId = messageId
+  const clarkCommandIdentity: ClarkCommandIdentity = resolveClarkCommandIdentity(body.prompt ?? "", body.chain ?? null)
   const debugMemory = Boolean((body as { debugMemory?: boolean }).debugMemory) || req.nextUrl.searchParams.get('debug') === 'true'
 
   // Classify prompt cost for two-tier rate limiting
@@ -14524,7 +14613,7 @@ export async function POST(req: NextRequest) {
   const earlyCacheKey = JSON.stringify({ actor, verifiedPlan: effectivePlan, feature: body.feature, mode: body.mode ?? "", prompt: earlyPrompt, chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" });
   const earlyCached = memorySensitivePrompt ? undefined : clarkCache.get(earlyCacheKey);
   if (earlyCached && earlyCached.exp > Date.now()) {
-    return NextResponse.json(withClarkAuditCacheHit(earlyCached.payload, clarkAuditRequestStartedAt));
+    return NextResponse.json(stampClarkRequestId(withClarkAuditCacheHit(earlyCached.payload, clarkAuditRequestStartedAt), requestId, messageId));
   }
   if (debugMemory || process.env.NODE_ENV !== 'production') {
     console.log('[clark-memory]', {
@@ -14560,7 +14649,7 @@ export async function POST(req: NextRequest) {
       }
     }
     normalized.quotaConsumed = false
-    return NextResponse.json(normalized, { status: 200 })
+    return NextResponse.json(stampClarkRequestId(normalized, requestId, messageId), { status: 200 })
   }
 
   // SLASH-COMMAND-NO-INPUT FIX, DISCLOSED (Clark AI conversation polish): a bare "/wallet" or
@@ -14655,7 +14744,7 @@ export async function POST(req: NextRequest) {
     // body already parsed before rate check — do NOT call req.json() again
     const cacheKey = JSON.stringify({ actor, verifiedPlan: effectivePlan, feature: body.feature, mode: body.mode ?? "", prompt: body.prompt ?? body.message ?? "", chain: body.chain ?? "base", token: body.tokenAddress ?? body.addressOrToken ?? "", wallet: body.walletAddress ?? "" })
     const cached = memorySensitivePrompt ? undefined : clarkCache.get(cacheKey)
-    if (cached && cached.exp > Date.now()) return NextResponse.json(withClarkAuditCacheHit(cached.payload, clarkAuditRequestStartedAt))
+    if (cached && cached.exp > Date.now()) return NextResponse.json(stampClarkRequestId(withClarkAuditCacheHit(cached.payload, clarkAuditRequestStartedAt), requestId, messageId))
     // Derive origin from the incoming request — always correct for any deployment
     const origin = req.nextUrl.origin;
 
@@ -14697,7 +14786,19 @@ export async function POST(req: NextRequest) {
         if (rankAllowanceActive) {
           sessionMem.allowedRankScanUsed = true;
         }
-        result = await handleClarkAI(body, origin, authHeader, effectivePlan, sessionMem);
+        {
+          const sfKey = clarkSingleflightKey(
+            clarkCommandIdentity.command,
+            clarkCommandIdentity.address,
+            clarkCommandIdentity.chain ?? body.chain ?? null,
+          );
+          const sf = await runClarkSingleflight(sfKey, () => handleClarkAI(body, origin, authHeader, effectivePlan, sessionMem));
+          result = sf.value;
+          (body as { _clarkSingleflight?: { duplicatePrevented: boolean; cacheHit: boolean } })._clarkSingleflight = {
+            duplicatePrevented: sf.duplicatePrevented,
+            cacheHit: sf.cacheHit,
+          };
+        }
         break;
       default:
         return NextResponse.json(
@@ -14856,6 +14957,34 @@ export async function POST(req: NextRequest) {
     // cacheKey is only known here, at the real finalization point, so it's overlaid onto the
     // already-computed audit rather than guessed inside the gate.
     if (clarkInternalCtx.entityAudit) normData.clarkEntityRoutingAudit = { ...clarkInternalCtx.entityAudit, cacheKey }
+    {
+      const finalText = typeof normData.reply === "string" ? normData.reply : (typeof (result as Record<string, unknown>)?.analysis === "string" ? (result as Record<string, unknown>).analysis as string : "")
+      const sfMeta = (body as { _clarkSingleflight?: { duplicatePrevented: boolean; cacheHit: boolean } })._clarkSingleflight
+      const timedOut = (result as { clarkCommandPartial?: string })?.clarkCommandPartial === "timeout"
+      const toolsUsed = Array.isArray((result as Record<string, unknown>)?.toolsUsed) ? (result as Record<string, unknown>).toolsUsed as string[] : []
+      normalized.requestId = requestId
+      normData.requestId = requestId
+      normData.messageId = messageId
+      normData.clarkRequestLifecycleAudit = buildClarkRequestLifecycleAudit({
+        requestId,
+        prompt: body.prompt ?? "",
+        identity: clarkCommandIdentity,
+        startedAt: clarkAuditRequestStartedAt,
+        finalText,
+        duplicatePrevented: sfMeta?.duplicatePrevented,
+        cacheHit: sfMeta?.cacheHit,
+        timedOut,
+        sourcesStarted: toolsUsed,
+        sourcesCompleted: timedOut ? [] : toolsUsed,
+        sourcesTimedOut: timedOut ? toolsUsed : [],
+      })
+      normData.clarkCommandFallbackAudit = buildClarkCommandFallbackAudit({
+        identity: clarkCommandIdentity,
+        finalText,
+        timedOut,
+        fallbackReason: timedOut ? "timeout_partial" : (sfMeta?.cacheHit ? "singleflight_cache" : null),
+      })
+    }
     const cacheTtl = body.feature === "clark-ai" ? 90_000 : body.feature === "whale-alerts" || body.feature === "pump-alerts" || body.feature === "base-radar" ? 120_000 : 60_000
     // Never cache free/memory-sourced responses (quotaConsumed === false): the cache key has no
     // session or wallet-memory state, so caching these would replay a stale answer (e.g. a
@@ -14882,16 +15011,35 @@ export async function POST(req: NextRequest) {
     const MARKET_INTENTS_FB = new Set(["base_radar", "base_market_discovery", "whale_alert"]);
     const LIQUIDITY_INTENTS_FB = new Set(["liquidity_scan", "lp_lock_check"]);
 
-    const isLiquidityFallback = LIQUIDITY_INTENTS_FB.has(routedFallback.intent) || isForcedLiquidityCheckPrompt(prompt);
-    const isTokenFallback = !isLiquidityFallback && (TOKEN_INTENTS_FB.has(routedFallback.intent) || rh === "token");
-    const isWalletFallback = !isLiquidityFallback && !isTokenFallback && (WALLET_INTENTS_FB.has(routedFallback.intent) || rh === "wallet");
-    const isMarketFallback = !isLiquidityFallback && !isTokenFallback && !isWalletFallback && MARKET_INTENTS_FB.has(routedFallback.intent);
+    const commandTimeout = resolveClarkTimeoutFallback(prompt, {
+      isTimeout,
+      errMsg,
+      chain: body.chain ?? clarkCommandIdentity.chain,
+      symbol: routedFallback.symbol,
+      routeHint: rh,
+      classifiedIntent: routedFallback.intent,
+    });
+
+    const isDeployerFallback = commandTimeout.kind === "deployer";
+    const isHoldersFallback = commandTimeout.kind === "holders";
+    const isLiquidityFallback = LIQUIDITY_INTENTS_FB.has(routedFallback.intent) || isForcedLiquidityCheckPrompt(prompt) || commandTimeout.kind === "liquidity";
+    const isTokenFallback = !isLiquidityFallback && !isDeployerFallback && !isHoldersFallback && (TOKEN_INTENTS_FB.has(routedFallback.intent) || rh === "token");
+    const isWalletFallback = !isLiquidityFallback && !isTokenFallback && !isDeployerFallback && !isHoldersFallback && (WALLET_INTENTS_FB.has(routedFallback.intent) || rh === "wallet");
+    const isMarketFallback = !isLiquidityFallback && !isTokenFallback && !isWalletFallback && !isDeployerFallback && !isHoldersFallback && MARKET_INTENTS_FB.has(routedFallback.intent);
 
     let intentBadge: string;
     let safeMsg: string;
-    let actions: string[];
+    let actions: string[] | Array<{ label: string; prompt?: string; href?: string; kind: "prompt" | "link" }>;
 
-    if (isLiquidityFallback) {
+    if (isDeployerFallback) {
+      intentBadge = "deployer_check";
+      safeMsg = commandTimeout.reply;
+      actions = commandTimeout.actions;
+    } else if (isHoldersFallback) {
+      intentBadge = "holders_check";
+      safeMsg = commandTimeout.reply;
+      actions = commandTimeout.actions;
+    } else if (isLiquidityFallback) {
       intentBadge = "liquidity_scan";
       const sym = routedFallback.symbol ? routedFallback.symbol.toUpperCase() : "this token";
       safeMsg = [
@@ -14954,18 +15102,46 @@ export async function POST(req: NextRequest) {
     const debugReceipt = process.env.NODE_ENV !== "production" ? {
       originalIntent: routedFallback.intent,
       routeHint: rh,
-      timeoutStage: isTimeout ? "token scan" : "execution",
-      fallbackUsed: isTokenFallback ? "token" : isWalletFallback ? "wallet" : isMarketFallback ? "market" : "generic",
+      timeoutStage: isTimeout
+        ? (isDeployerFallback ? "deployer" : isHoldersFallback ? "holders" : isLiquidityFallback ? "liquidity" : isTokenFallback ? "token scan" : "execution")
+        : "execution",
+      fallbackUsed: isDeployerFallback ? "deployer" : isHoldersFallback ? "holders" : isLiquidityFallback ? "liquidity" : isTokenFallback ? "token" : isWalletFallback ? "wallet" : isMarketFallback ? "market" : "generic",
       finalIntentBadge: intentBadge,
     } : undefined;
 
+    const catchActions = Array.isArray(actions) && actions.length > 0 && typeof actions[0] === "object"
+      ? actions
+      : buildRoutedActions(actions as Parameters<typeof buildRoutedActions>[0]);
+    const catchLifecycle = buildClarkRequestLifecycleAudit({
+      requestId,
+      prompt,
+      identity: clarkCommandIdentity,
+      startedAt: clarkAuditRequestStartedAt,
+      finalText: safeMsg,
+      timedOut: isTimeout,
+      sourcesTimedOut: isTimeout ? [clarkCommandIdentity.routeSelected] : [],
+    });
+    const catchFallback = buildClarkCommandFallbackAudit({
+      identity: clarkCommandIdentity,
+      finalText: safeMsg,
+      timedOut: isTimeout,
+      fallbackReason: isTimeout ? "timeout_partial" : `exception: ${errMsg}`,
+      fallbackRoutesAttempted: isTokenFallback ? ["token_scan"] : [],
+    });
+
     return NextResponse.json({
       ok: true,
+      requestId,
       feature: "clark-ai",
       data: {
+        requestId,
+        messageId,
         reply: safeMsg, response: safeMsg, message: safeMsg, text: safeMsg, analysis: safeMsg,
         verdict: "SCAN DEEPER", source: "fallback",
-        intentBadge, actions: buildRoutedActions(actions as Parameters<typeof buildRoutedActions>[0]),
+        intentBadge, actions: catchActions,
+        ui: { intentBadge, actions: catchActions },
+        clarkRequestLifecycleAudit: catchLifecycle,
+        clarkCommandFallbackAudit: catchFallback,
         ...(debugReceipt ? { clarkDebugReceipt: debugReceipt } : {}),
         // A thrown exception interrupted the pipeline before any per-tool status could be recorded,
         // so unlike the normal-path clarkAudit this can't enumerate individual providers — but it
@@ -15103,6 +15279,15 @@ function withClarkAuditCacheHit(payload: unknown, requestStartedAt: number): unk
       clarkAudit: { ...(data.clarkAudit as Record<string, unknown>), cacheUsed: true, responseTimeMs: Date.now() - requestStartedAt },
     },
   };
+}
+
+function stampClarkRequestId(payload: unknown, requestId: string, messageId?: string): unknown {
+  if (!payload || typeof payload !== "object") return payload;
+  const p = payload as Record<string, unknown>;
+  const data = p.data && typeof p.data === "object" ? { ...(p.data as Record<string, unknown>) } : {};
+  data.requestId = requestId;
+  if (messageId) data.messageId = messageId;
+  return { ...p, requestId, data };
 }
 
 function normalizeApiReplyShape(result: unknown, body: ClarkRequestBody) {
