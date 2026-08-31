@@ -1587,7 +1587,11 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFileForWalletMemory.includes('toolsUsed: ["memory"]'), 'wallet memory follow-up returns toolsUsed memory')
   assert.ok(routeFileForWalletMemory.includes('quotaConsumed: false'), 'wallet memory follow-up does not consume quota')
   const guardIdx = routeFileForWalletMemory.indexOf('sessionMem.lastWallet?.address && !routed.address && isWalletFollowupPrompt(prompt)')
-  const walletCallIdx = routeFileForWalletMemory.indexOf('getWalletFromV2(routed.address)', guardIdx)
+  // CANONICAL ENGINE SWAP, DISCLOSED (later task): the routed.intent === "wallet_scan" branch no
+  // longer calls getWalletFromV2 directly — it now delegates to buildClarkWalletReadResponse, the
+  // shared helper that calls the canonical runWalletScan() engine. Same "guard runs before the real
+  // wallet-scan call" guarantee, just naming the current call site.
+  const walletCallIdx = routeFileForWalletMemory.indexOf('buildClarkWalletReadResponse({', guardIdx)
   assert.ok(guardIdx >= 0 && walletCallIdx > guardIdx, 'wallet memory guard runs before wallet scan call')
   assert.ok(routeFileForWalletMemory.includes('routed.intent === "wallet_scan" && routed.address'), 'explicit new wallet address still runs wallet scan')
   assert.ok(routeFileForWalletMemory.includes('routed.intent === "token_scan"'), 'explicit token route remains available after wallet memory')
@@ -1598,10 +1602,14 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   // Successful wallet scan must report a wallet-specific source, never the generic fallback,
   // and must build wallet CTAs (not the token/market "Refresh Market Data" action).
   const routeFile = fs.readFileSync(path.join(__dirname, '..', 'app', 'api', 'clark', 'route.ts'), 'utf8')
-  assert.ok(routeFile.includes('source: mappedResult.ok ? "wallet_scanner_runner" : "fallback"'), 'wallet_scan handler reports source: wallet_scanner_runner on success, honest fallback on failure')
-  assert.ok(routeFile.includes("toolsUsed: [\"wallet_scanner_runner\"]"), 'wallet_scan handler keeps toolsUsed: ["wallet_scanner_runner"]')
-  assert.ok(routeFile.includes('quotaConsumed: mappedResult.ok'), 'wallet_scan handler ties quotaConsumed to usable wallet evidence')
-  assert.ok(routeFile.includes('const walletActions = buildClarkWalletAnswerActions(walletAddress)'), 'wallet_scan handler builds the exact wallet CTA actions')
+  // CANONICAL ENGINE SWAP, DISCLOSED (later task): the wallet_scan handler now delegates to
+  // buildClarkWalletReadResponse (the shared canonical runWalletScan() helper), which reports the
+  // same "honest source tied to real evidence" guarantee under new literal names —
+  // wallet_scan_orchestrator instead of wallet_scanner_runner, hasEvidence instead of mappedResult.ok.
+  assert.ok(routeFile.includes('source: hasEvidence ? "wallet_scan_orchestrator" : "fallback"'), 'wallet_scan handler reports source: wallet_scan_orchestrator on success, honest fallback on failure')
+  assert.ok(routeFile.includes('toolsUsed: ["wallet_scan_orchestrator"]'), 'wallet_scan handler keeps toolsUsed: ["wallet_scan_orchestrator"]')
+  assert.ok(routeFile.includes('quotaConsumed: hasEvidence,'), 'wallet_scan handler ties quotaConsumed to usable wallet evidence')
+  assert.ok(routeFile.includes('const walletActions = buildClarkWalletAnswerActions(address);'), 'wallet_scan handler builds the exact wallet CTA actions')
 
   // normalizeApiReplyShape must pass object-shaped wallet CTAs through verbatim instead of
   // silently dropping them back to "Refresh Market Data" via the closed CLARK_ACTIONS union.
@@ -1613,8 +1621,9 @@ assert.deepEqual(buildWalletApiRequestBody(addr, true), {
   assert.ok(routeFile.includes('const uiIntentBadge = (obj.ui && typeof obj.ui === "object"'), 'normalizeApiReplyShape prefers ui.intentBadge for the public badge')
   assert.ok(routeFile.includes('intentBadge = "Wallet Scan";'), 'timeout/failure wallet path also uses the clean "Wallet Scan" public badge')
 
-  // The wallet_scan ClarkSource union must include the new honest source value.
+  // The wallet_scan ClarkSource union must include the honest source values.
   assert.ok(routeFile.includes('"wallet_scanner_runner"'), 'ClarkSource union includes wallet_scanner_runner')
+  assert.ok(routeFile.includes('"wallet_scan_orchestrator"'), 'ClarkSource union includes wallet_scan_orchestrator (canonical engine)')
 }
 
 {

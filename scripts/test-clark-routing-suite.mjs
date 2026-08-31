@@ -73,6 +73,7 @@ const tests = [
   'test-clark-v2-wallet-projection.mjs',
   'test-wallet-clark-pnl-read.mjs',
   'test-clark-execution.mjs',
+  'test-clark-wallet-routing.mjs',
 ]
 
 for (const test of tests) await import(`./${test}`)

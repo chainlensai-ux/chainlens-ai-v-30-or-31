@@ -111,14 +111,22 @@ function run() {
     check('orchestrator reuses the same scanRobinhoodWallet (no second copy of the call sequence)', /import \{ scanRobinhoodWallet \} from '@\/lib\/server\/robinhoodWalletScanner'/.test(orchestratorSrc))
   }
 
-  // ── 10. Clark's wired call site references runWalletScan, additively alongside getWalletFromV2 ──
+  // ── 10. Clark's /wallet call sites now use runWalletScan as the PRIMARY engine ──────────────────
+  // CANONICAL /wallet ENGINE SWAP, DISCLOSED (later task, "/wallet routing and wallet scan output"):
+  // the additive design (getWalletFromV2 primary + runWalletScan appended as an extra note) that
+  // this section originally locked in was itself the root cause of Clark's /wallet responses not
+  // matching the Wallet Scanner feature's real engine/output. Every /wallet call site now shares one
+  // helper, buildClarkWalletReadResponse, which calls runWalletScan as the PRIMARY (only) engine —
+  // getWalletFromV2 is no longer called from any /wallet-shaped response path.
   {
     check('Clark imports the canonical orchestrator', /import \{ runWalletScan \} from "@\/lib\/server\/walletScanOrchestrator";/.test(clarkSrc))
-    check('the primary wallet_scan intent handler still calls getWalletFromV2 (rich EVM/PnL formatting untouched)', /appIntent\.intent === 'wallet_scan'[\s\S]{0,1200}await getWalletFromV2\(walletAddress\)/.test(clarkSrc))
-    check('the same handler additively calls runWalletScan alongside it (never replacing it)', /appIntent\.intent === 'wallet_scan'[\s\S]{0,2200}const orchestratorResult = await runWalletScan\(\{/.test(clarkSrc))
-    check('the orchestrator call passes chainMode: auto and maps deepScan to scanDepth', /chainMode: 'auto',\s*\n\s*scanDepth: deepScan \? 'deep' : 'preview'/.test(clarkSrc))
-    check('a failed orchestrator call is swallowed and never breaks the existing reply', /\}\)\.catch\(\(err\) => \{\s*\n\s*console\.warn\('\[clark\] wallet scan orchestrator failed'/.test(clarkSrc))
-    check('deep-scan-it now surfaces the real queued jobId instead of only a CTA link', /orchestratorResult\?\.jobStatus === 'queued' && orchestratorResult\.jobId/.test(clarkSrc))
+    check('buildClarkWalletReadResponse is the shared helper every /wallet call site delegates to', /async function buildClarkWalletReadResponse\(params: \{/.test(clarkSrc))
+    check('the shared helper calls runWalletScan as its PRIMARY engine (not additive)', /async function buildClarkWalletReadResponse[\s\S]{0,600}const result = await runWalletScan\(\{/.test(clarkSrc))
+    check('the orchestrator call scans all supported chains and maps deepScan to scanDepth', /chainMode: "all_supported",\s*\n\s*scanDepth: deepScan \? "deep" : "preview",/.test(clarkSrc))
+    check('a failed orchestrator call is swallowed with an honest unavailable reply, never a crash', /async function buildClarkWalletReadResponse[\s\S]{0,900}\}\)\.catch\(\(err\) => \{\s*\n\s*console\.warn\("\[clark\] \/wallet orchestrator failed"/.test(clarkSrc))
+    check('a real Deep Scan Wallet run surfaces the real queued jobId, never a fabricated completed result', /deepScan && result\.jobId \? \{ deepScanJobId: result\.jobId \}/.test(clarkSrc))
+    check('the appIntent-driven wallet_scan branch now delegates to the shared helper (no longer calls getWalletFromV2 itself)', !/if \(appIntent\.intent === 'wallet_scan'[\s\S]{0,2000}await getWalletFromV2\(walletAddress\)/.test(clarkSrc))
+    check('the routed wallet_scan memory follow-up also delegates to the shared helper (no longer calls getWalletFromV2 itself)', !/if \(routed\.intent === "wallet_scan" && routed\.address[\s\S]{0,1200}await getWalletFromV2\(routed\.address\)/.test(clarkSrc))
   }
 
   // ── 11. Real EVM engine, FIFO/PnL, and Robinhood swap-gate logic are never rewritten ─────────────

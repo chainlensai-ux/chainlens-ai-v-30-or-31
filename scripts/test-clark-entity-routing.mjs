@@ -43,7 +43,13 @@ assert.match(routeCode, /if \(inlineAddress && questionCategory !== 'ambiguous'\
 assert.match(routeCode, /return \{ hasContractCode: null, resolvedEntityType: 'unknown' \};/, 'resolveClarkEntity must fail open (unknown), never block a real answer when the RPC check itself fails')
 // The mismatch ternary only fires on a CONFIRMED opposite entity type ('wallet' or 'contract') —
 // 'unknown' matches neither branch of the ternary, so it falls through to null (no short-circuit).
-assert.match(routeCode, /\(questionCategory === 'token' && resolvedEntityType === 'wallet'\) \? 'token_question_wallet_address' :\s*\n\s*\(questionCategory === 'wallet' && resolvedEntityType === 'contract'\) \? 'wallet_question_token_address' :\s*\n\s*null;/, 'a mismatch must only be declared for a confirmed opposite entity type, defaulting to null (no short-circuit) otherwise — this covers the unknown case implicitly')
+// CONTRACT-WALLET FIX, DISCLOSED (later task): a bare resolvedEntityType === 'contract' hit is no
+// longer sufficient on its own for the wallet-question branch — it must ALSO be a CONFIRMED token
+// (contractSubtype === 'token') via classifyClarkContractSubtype; a real contract/smart wallet
+// (contractSubtype === 'contract_wallet'/'unknown') is never auto-rejected as "not a wallet". This
+// is a strictly STRONGER version of the same "only a confirmed opposite entity type" guarantee this
+// test verifies, not a weakening of it.
+assert.match(routeCode, /\(questionCategory === 'token' && resolvedEntityType === 'wallet'\) \? 'token_question_wallet_address' :\s*\n\s*\(questionCategory === 'wallet' && resolvedEntityType === 'contract' && contractSubtype === 'token'\) \? 'wallet_question_token_address' :\s*\n\s*\(questionCategory === 'wallet' && resolvedEntityType === 'contract' && contractSubtype === 'pair'\) \? 'wallet_question_pair_address' :\s*\n\s*null;/, 'a mismatch must only be declared for a confirmed opposite entity type — now further narrowed to a confirmed token/pair subtype, never a bare contract-code hit — defaulting to null (no short-circuit) otherwise')
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112'
 const EVM_ADDR = '0x1234567890123456789012345678901234567890'

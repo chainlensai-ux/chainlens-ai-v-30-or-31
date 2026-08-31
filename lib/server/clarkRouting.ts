@@ -1857,6 +1857,120 @@ export function formatTokenContractNotWalletReply(chainLabel?: string | null): s
   ].join("\n");
 }
 
+// POOL/PAIR-ON-WALLET-QUESTION, DISCLOSED (this task: /wallet must distinguish a real LP/pair
+// contract from a plain token contract and from a real contract wallet — previously EVERY contract
+// with bytecode, pair included, fell into the token-shaped "not a wallet" reply above, which is
+// misleading for a pool since /token/holders/deployer don't meaningfully apply to a pair either).
+export function formatPoolContractNotWalletReply(chainLabel?: string | null): string {
+  return [
+    "This is a pool/pair contract, not a wallet.",
+    chainLabel ? `Chain: ${chainLabel}. Wallet scans do not apply — use the LP actions below.` : "Wallet scans do not apply — use the LP actions below.",
+    "",
+    "CTA: /lp, Open Token Scanner",
+  ].join("\n");
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Canonical wallet read (Clark /wallet unification, DISCLOSED)
+// ─────────────────────────────────────────────────────────────────────────
+//
+// Duck-typed against walletScanOrchestrator.ts's CanonicalWalletScanResult (not imported — this
+// file is deliberately kept free of Next.js-coupled pipeline modules so it stays importable by
+// plain-node test scripts, same reasoning as every other formatter here). Every field below is read
+// straight off the orchestrator's real return value — nothing here computes PnL, trades, or
+// behavior labels the evidence doesn't support; "unknown" is a legitimate answer when the signal
+// isn't there.
+export type CanonicalWalletReadInput = {
+  chainsScanned: string[];
+  totalValueUsd: number | null;
+  holdings: Array<{ chain: string; symbol: string; valueUsd: number | null }>;
+  activitySummary: { uniqueTransactions: number | null; note: string | null };
+  pnlStatus: "available" | "partial" | "unavailable" | "unsupported";
+  realizedPnlUsd?: number | null;
+  unrealizedPnlUsd?: number | null;
+  pricingCoverage: "ok" | "partial" | "unknown";
+  evidenceSources: string[];
+  missingEvidence: string[];
+  scanMode: "preview" | "deep";
+  jobStatus?: "queued" | "unavailable";
+  jobId?: string;
+};
+
+const WALLET_EVIDENCE_SOURCE_LABELS: Record<string, string> = {
+  v2_pipeline: "V2 chain pipeline",
+  robinhood_chain: "Robinhood Chain",
+  async_job_queue: "Deep scan job queue",
+};
+
+function fmtUsd(v: number | null | undefined): string {
+  return v != null ? `$${v.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : "not available";
+}
+
+// Honest behavior label — derived only from real fields already on the result; never a guess. See
+// CanonicalWalletReadInput's own doc comment above.
+function deriveClarkWalletBehavior(r: CanonicalWalletReadInput): string {
+  if (r.evidenceSources.length === 0) return "unknown — no evidence sources returned data for this wallet";
+  const value = r.totalValueUsd ?? 0;
+  const holdingsCount = r.holdings.length;
+  const txCount = r.activitySummary.uniqueTransactions ?? 0;
+  if (value >= 250_000) return "whale — large portfolio value observed";
+  if (holdingsCount === 0 && txCount === 0) return "inactive — no holdings or activity found across the chains scanned";
+  if (txCount >= 25) return "distributor — high transaction activity relative to holdings";
+  if (holdingsCount >= 5 && value > 0) return "accumulator — multiple active holdings across chains";
+  return "unknown — insufficient signal to confidently classify behavior";
+}
+
+export function formatCanonicalWalletRead(address: string, r: CanonicalWalletReadInput): string {
+  const topHoldings = [...r.holdings].sort((a, b) => (b.valueUsd ?? 0) - (a.valueUsd ?? 0)).slice(0, 5);
+  const lines: string[] = [
+    `WALLET READ — ${address}`,
+    "",
+    "Overview:",
+    `- Total portfolio value: ${fmtUsd(r.totalValueUsd)}`,
+    `- Chains found: ${r.chainsScanned.length > 0 ? r.chainsScanned.join(", ") : "none"}`,
+    `- Holdings count: ${r.holdings.length}`,
+    `- Top holdings: ${topHoldings.length > 0 ? topHoldings.map((h) => `${h.symbol} (${h.chain}${h.valueUsd != null ? `, ${fmtUsd(h.valueUsd)}` : ""})`).join(", ") : "none found"}`,
+    "- Last active: not available",
+    "",
+    `Behavior: ${deriveClarkWalletBehavior(r)}`,
+    `- Active chains: ${r.chainsScanned.length > 0 ? r.chainsScanned.join(", ") : "none"}`,
+    `- Recent activity summary: ${r.activitySummary.uniqueTransactions != null ? `${r.activitySummary.uniqueTransactions} unique transactions observed` : (r.activitySummary.note ?? "not available")}`,
+    "",
+    "PnL:",
+  ];
+  if (r.pnlStatus === "available" && r.realizedPnlUsd != null) {
+    lines.push(`- Realized PnL (verified): ${fmtUsd(r.realizedPnlUsd)}`);
+    if (r.unrealizedPnlUsd != null) lines.push(`- Unrealized PnL: ${fmtUsd(r.unrealizedPnlUsd)}`);
+  } else {
+    const reason =
+      r.missingEvidence.find((m) => /pnl|swap|trade/i.test(m)) ??
+      (r.pnlStatus === "partial"
+        ? "Partial evidence only — not enough verified swaps to confirm PnL."
+        : r.pnlStatus === "unsupported"
+          ? "No evidence sources returned data for PnL."
+          : "PnL could not be verified from the evidence available.");
+    lines.push(`- Status: ${r.pnlStatus} — ${reason}`);
+  }
+  lines.push(
+    "",
+    "Evidence:",
+    `- Sources used: ${r.evidenceSources.length > 0 ? r.evidenceSources.map((s) => WALLET_EVIDENCE_SOURCE_LABELS[s] ?? s).join(", ") : "none"}`,
+    `- Pricing coverage: ${r.pricingCoverage}`,
+    `- Chains scanned: ${r.chainsScanned.length > 0 ? r.chainsScanned.join(", ") : "none"}`,
+    `- Missing evidence: ${r.missingEvidence.length > 0 ? r.missingEvidence.join("; ") : "none"}`,
+  );
+  if (r.scanMode === "deep") {
+    lines.push(
+      "",
+      r.jobStatus === "queued" && r.jobId
+        ? `Deep scan queued (job ${r.jobId}) — poll Wallet Scanner for the completed multi-chain result.`
+        : "Deep scan is temporarily unavailable — try again shortly.",
+    );
+  }
+  lines.push("", "CTA: Deep Scan Wallet / Open Wallet Scanner / Track Wallet / Explain PnL");
+  return lines.join("\n");
+}
+
 export type LpCheckResult = {
   token?: { name?: string | null; symbol?: string | null } | null;
   primaryPool?: string | null;

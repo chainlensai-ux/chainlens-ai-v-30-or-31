@@ -370,8 +370,11 @@ function assertNeverTokenEngine(prompt, label) {
   // ('unknown') check must fall through rather than assert a wrong not-applicable answer.
   assert.match(
     routeCode,
-    /\(questionCategory === 'token' && resolvedEntityType === 'wallet'\) \? 'token_question_wallet_address' :\s*\n\s*\(questionCategory === 'wallet' && resolvedEntityType === 'contract'\) \? 'wallet_question_token_address' :\s*\n\s*null;/,
-    'both mismatch directions must be detected, and only on a confirmed opposite entity type',
+    /\(questionCategory === 'token' && resolvedEntityType === 'wallet'\) \? 'token_question_wallet_address' :\s*\n\s*\(questionCategory === 'wallet' && resolvedEntityType === 'contract' && contractSubtype === 'token'\) \? 'wallet_question_token_address' :\s*\n\s*\(questionCategory === 'wallet' && resolvedEntityType === 'contract' && contractSubtype === 'pair'\) \? 'wallet_question_pair_address' :\s*\n\s*null;/,
+    // CONTRACT-WALLET FIX, DISCLOSED (later task): strengthened further — a bare contract-code hit
+    // is no longer enough on its own; the wallet-question mismatch now also requires a CONFIRMED
+    // token/pair subtype, so a real contract/smart wallet is never auto-rejected.
+    'both mismatch directions must be detected, and only on a confirmed opposite entity type (now including a confirmed token/pair subtype, not bare contract code)',
   )
   assert.match(routeCode, /return \{ hasContractCode: null, resolvedEntityType: 'unknown' \};/, 'the entity check must fail open (unknown) rather than guess when the RPC itself fails')
   checks += 2

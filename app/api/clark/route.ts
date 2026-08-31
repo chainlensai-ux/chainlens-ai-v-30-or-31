@@ -38,7 +38,6 @@ import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
 import {
   resolveClarkIntent,
   classifyClarkPrompt,
-  buildWalletApiRequestBody,
   formatBaseMarketReadFromRows,
   formatBaseMarketReadFromCandidates,
   formatNewBasePoolReadFromCandidates,
@@ -48,6 +47,8 @@ import {
   formatWalletCompareUnsupported,
   formatEoaLpCheckReply,
   formatTokenContractNotWalletReply,
+  formatPoolContractNotWalletReply,
+  formatCanonicalWalletRead,
   formatLpReadResult,
   formatCouldNotComplete,
   formatNoFreshMarketData,
@@ -1019,7 +1020,7 @@ type ClarkToolPlan = {
   };
 };
 
-type ClarkSource = "casual" | "feature_context" | "tool_call" | "fallback" | "token_core" | "wallet_scanner_runner" | "memory" | "trending_api" | "market_feed";
+type ClarkSource = "casual" | "feature_context" | "tool_call" | "fallback" | "token_core" | "wallet_scanner_runner" | "wallet_scan_orchestrator" | "memory" | "trending_api" | "market_feed";
 type ClarkReplyMode =
   | "casual_help"
   | "general_market"
@@ -3636,6 +3637,95 @@ async function resolveClarkEntity(input: { address: string; requestedChain: Supp
   return { hasContractCode: null, resolvedEntityType: 'unknown' };
 }
 
+// CONTRACT-WALLET MISCLASSIFICATION FIX, DISCLOSED (this task: "Clark says 'This is a token
+// contract, not a wallet' for addresses that should be scanned as wallets" — resolveClarkEntity
+// above answers only "has bytecode or not", never "what KIND of contract". Every consumer that used
+// a bare hasContractCode/resolvedEntityType==='contract' check to reject an address as "not a
+// wallet" was therefore rejecting EVERY contract — including real contract/smart wallets (Safe,
+// account-abstraction wallets, proxy wallets) that hold real balances and have real activity, which
+// is exactly the reported bug. This function narrows "contract" into what it actually is, using the
+// SAME class of cheap, real on-chain identity checks resolveTokenDeployer's tryTokenNameSymbol (see
+// lib/server/deployerResolver.ts) and app/api/token/route.ts's rpcTokenString/token0()/token1()
+// pair-probe already use elsewhere in this codebase for the exact same ERC20/pair identity question
+// — kept as ITS OWN local copy rather than importing across the route/module boundary, matching the
+// documented precedent at deployerResolver.ts's own tryTokenNameSymbol ("kept as its own local copy
+// rather than importing across a route boundary... no shared mutable state, no cross-module
+// coupling"). Only ever called when resolvedEntityType is already 'contract' — an EOA/unknown never
+// reaches this, so it adds zero extra RPC traffic to the already-correct wallet/unknown paths.
+const CLARK_ERC20_NAME_SELECTOR = '0x06fdde03';
+const CLARK_ERC20_SYMBOL_SELECTOR = '0x95d89b41';
+const CLARK_ERC20_TOTAL_SUPPLY_SELECTOR = '0x18160ddd';
+const CLARK_PAIR_TOKEN0_SELECTOR = '0x0dfe1681';
+const CLARK_PAIR_TOKEN1_SELECTOR = '0xd21220a7';
+
+function decodeClarkAbiStringOrBytes32(hex: unknown): string | null {
+  if (typeof hex !== "string" || hex === "0x") return null;
+  try {
+    const body = hex.startsWith("0x") ? hex.slice(2) : hex;
+    if (body.length >= 128) {
+      const strLen = parseInt(body.slice(64, 128), 16);
+      if (strLen > 0 && strLen <= 256) {
+        const text = Buffer.from(body.slice(128, 128 + strLen * 2), "hex").toString("utf8").replace(/\u0000/g, "").trim();
+        if (text) return text;
+      }
+    }
+    if (body.length === 64) {
+      const text = Buffer.from(body, "hex").toString("utf8").replace(/\u0000/g, "").trim();
+      if (text) return text;
+    }
+  } catch {}
+  return null;
+}
+
+function decodeClarkAbiAddress(hex: unknown): string | null {
+  if (typeof hex !== "string" || hex.length < 66) return null;
+  const addr = `0x${hex.slice(-40)}`;
+  return /^0x[0-9a-fA-F]{40}$/.test(addr) && addr !== "0x0000000000000000000000000000000000000000" ? addr : null;
+}
+
+async function clarkContractSubtypeEthCall(rpcUrl: string, to: string, selector: string): Promise<string | null> {
+  try {
+    const res = await fetch(rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_call", params: [{ to, data: selector }, "latest"] }),
+      signal: AbortSignal.timeout(3500),
+    });
+    const json = await res.json().catch(() => ({}));
+    const result = typeof json?.result === "string" ? json.result : null;
+    return result && result !== "0x" ? result : null;
+  } catch {
+    return null;
+  }
+}
+
+export type ClarkContractSubtype = "token" | "pair" | "contract_wallet" | "unknown";
+
+// Fails open to 'unknown' (never 'token'/'pair') on any RPC failure — an unclassifiable contract
+// must never be silently treated as a token/pool rejection; the caller treats 'unknown' the same as
+// 'contract_wallet' (wallet-scannable), consistent with "never reject unless confirmed with strong
+// evidence".
+async function classifyClarkContractSubtype(address: string, chain: SupportedChain | string | undefined): Promise<ClarkContractSubtype> {
+  const rpcUrl = getRpcUrlForClarkCodeCheck(chain);
+  if (!rpcUrl) return "unknown";
+  const loggedChain = chain === "ethereum" ? "eth" : chain === "eth" || chain === "base" || chain === "bnb" || chain === "polygon" || chain === "robinhood" ? chain : "base";
+  logRpcCall({ route: "/api/clark", chain: loggedChain, method: "eth_call:contract_subtype_probe" });
+  const [token0Hex, token1Hex] = await Promise.all([
+    clarkContractSubtypeEthCall(rpcUrl, address, CLARK_PAIR_TOKEN0_SELECTOR),
+    clarkContractSubtypeEthCall(rpcUrl, address, CLARK_PAIR_TOKEN1_SELECTOR),
+  ]);
+  if (decodeClarkAbiAddress(token0Hex) && decodeClarkAbiAddress(token1Hex)) return "pair";
+  const [nameHex, symbolHex, totalSupplyHex] = await Promise.all([
+    clarkContractSubtypeEthCall(rpcUrl, address, CLARK_ERC20_NAME_SELECTOR),
+    clarkContractSubtypeEthCall(rpcUrl, address, CLARK_ERC20_SYMBOL_SELECTOR),
+    clarkContractSubtypeEthCall(rpcUrl, address, CLARK_ERC20_TOTAL_SUPPLY_SELECTOR),
+  ]);
+  const name = decodeClarkAbiStringOrBytes32(nameHex);
+  const symbol = decodeClarkAbiStringOrBytes32(symbolHex);
+  if ((name || symbol) && totalSupplyHex != null) return "token";
+  return "contract_wallet";
+}
+
 // AUTO-CHAIN-DETECTION, DISCLOSED (requested: "when I put the contract address, it should know
 // what chain it is" — a bare address with no chain named in the prompt previously always checked
 // Base by default, so a real token that only existed on ETH/BNB/Robinhood got misread as "not a
@@ -3835,6 +3925,76 @@ function buildWalletMemoryEcho(mem: ClarkSessionMemory): { lastWallet?: { addres
     echo.recentTokens = mem.recentTokens;
   }
   return Object.keys(echo).length ? echo : undefined;
+}
+
+// CANONICAL /wallet ENGINE SWAP, DISCLOSED (this task): the ONE place every /wallet-shaped Clark
+// response (entity gate below, the routed wallet-scan memory follow-up, appIntent-driven
+// wallet_scan) builds its reply from — always the real runWalletScan()/walletScanOrchestrator.ts
+// canonical result (the exact function/shape the Wallet Scanner page's own scan/deep-scan buttons
+// use), never the old getWalletFromV2/mapWalletRunnerResult V2-report shape. Never fakes PnL/trades/
+// a completed deep scan — deep mode reports the orchestrator's own honest queued/unavailable status.
+async function buildClarkWalletReadResponse(params: {
+  address: string;
+  outerChain: SupportedChain | "robinhood";
+  deepScan: boolean;
+  sessionMem: ClarkSessionMemory;
+  clarkDebugMode: boolean;
+}): Promise<Record<string, unknown>> {
+  const { address, outerChain, deepScan, sessionMem, clarkDebugMode } = params;
+  const result = await runWalletScan({
+    walletAddress: address,
+    chainMode: "all_supported",
+    scanDepth: deepScan ? "deep" : "preview",
+    source: "clark",
+  }).catch((err) => {
+    console.warn("[clark] /wallet orchestrator failed", { address, error: err instanceof Error ? err.message : String(err) });
+    return null;
+  });
+
+  const walletActions = buildClarkWalletAnswerActions(address);
+
+  if (!result) {
+    return {
+      feature: "clark-ai", chain: outerChain, mode: "analysis", intent: "wallet_scan", toolsUsed: ["wallet_scan_orchestrator"],
+      analysis: `WALLET READ — ${address}\n\nThe Wallet Scanner engine is temporarily unavailable for this address. Try again shortly, or open the Wallet Scanner directly.`,
+      ui: { intentBadge: deepScan ? "Wallet Deep Scan" : "Wallet Scan", actions: walletActions },
+      actions: walletActions,
+      quotaConsumed: false,
+    };
+  }
+
+  const analysis = formatCanonicalWalletRead(address, {
+    chainsScanned: result.chainsScanned,
+    totalValueUsd: result.totalValueUsd,
+    holdings: result.holdings,
+    activitySummary: result.activitySummary,
+    pnlStatus: result.pnlStatus,
+    realizedPnlUsd: result.realizedPnlUsd,
+    unrealizedPnlUsd: result.unrealizedPnlUsd,
+    pricingCoverage: result.pricingCoverage,
+    evidenceSources: result.evidenceSources,
+    missingEvidence: result.missingEvidence,
+    scanMode: result.scanMode,
+    jobStatus: result.jobStatus,
+    jobId: result.jobId,
+  });
+
+  updateMemWallet(sessionMem, address, null, analysis, null, null);
+  updateMemIntent(sessionMem, "wallet_analysis");
+
+  const hasEvidence = result.evidenceSources.length > 0;
+  return {
+    feature: "clark-ai", chain: outerChain, mode: "analysis", intent: "wallet_scan",
+    toolsUsed: ["wallet_scan_orchestrator"],
+    source: hasEvidence ? "wallet_scan_orchestrator" : "fallback",
+    actions: walletActions,
+    quotaConsumed: hasEvidence,
+    ui: { intentBadge: deepScan ? "Wallet Deep Scan" : "Wallet Scan", actions: walletActions },
+    analysis,
+    memoryEcho: buildWalletMemoryEcho(sessionMem),
+    ...(deepScan && result.jobId ? { deepScanJobId: result.jobId } : {}),
+    ...(clarkDebugMode ? { clarkDebugReceipt: { memoryAfter: { lastWallet: sessionMem.lastWallet ? { address: sessionMem.lastWallet.address } : null } } } : {}),
+  };
 }
 
 // ─── Wallet Profile V2 analyst-explanation builders ───
@@ -8819,9 +8979,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       }
       const checkedChainLabels = (["base", "ethereum", "bnb", ...(isRobinhoodChainAvailable() ? ["robinhood"] as const : [])] as (SupportedChain | "robinhood")[])
         .filter((c) => !skippedChains.includes(c)).map((c) => chainDisplayLabel(c));
+      // CONTRACT-WALLET FIX, DISCLOSED (this task): a bare "has bytecode" contract hit must NOT be
+      // treated as "not a wallet" by itself — only a CONFIRMED token or pair contract is a real
+      // mismatch for a wallet question. classifyClarkContractSubtype only runs when it's actually
+      // needed (wallet question + contract hit) so every other combination costs zero extra RPC.
+      const contractSubtype: ClarkContractSubtype | null =
+        (questionCategory === 'wallet' && resolvedEntityType === 'contract')
+          ? await classifyClarkContractSubtype(inlineAddress, chainForClarkTools)
+          : null;
       const mismatch =
         (questionCategory === 'token' && resolvedEntityType === 'wallet') ? 'token_question_wallet_address' :
-        (questionCategory === 'wallet' && resolvedEntityType === 'contract') ? 'wallet_question_token_address' :
+        (questionCategory === 'wallet' && resolvedEntityType === 'contract' && contractSubtype === 'token') ? 'wallet_question_token_address' :
+        (questionCategory === 'wallet' && resolvedEntityType === 'contract' && contractSubtype === 'pair') ? 'wallet_question_pair_address' :
         null;
       const baseAudit: ClarkEntityRoutingAudit = {
         prompt, parsedIntent: questionCategory, address: inlineAddress, requestedChain: chainForClarkTools,
@@ -8889,6 +9058,36 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           ui: { intentBadge: 'Entity Check', actions: notWalletActions },
           actions: [{ label: 'Open Token Scanner', href }],
         };
+      }
+      // NEW CASE, DISCLOSED (this task, step 5 of the required flow): confirmed LP/pair contract on
+      // a wallet question — distinct wording + LP actions, never the token-shaped reply above.
+      if (mismatch === 'wallet_question_pair_address') {
+        const lpActions = buildClarkLpAnswerActions(inlineAddress, chainDisplayLabel(chainForClarkTools));
+        const baseReply = formatPoolContractNotWalletReply(chainDisplayLabel(chainForClarkTools));
+        return {
+          feature: "clark-ai", chain: chainForClarkTools, mode: "analysis", intent: "entity_mismatch", toolsUsed: ["address_code_check"],
+          analysis: baseReply,
+          ui: { intentBadge: 'Entity Check', actions: lpActions },
+          actions: lpActions,
+        };
+      }
+      // CANONICAL /wallet ENGINE, DISCLOSED (this task, steps 1-3 & 6 of the required flow): every
+      // wallet-scannable address with an inline address in THIS message (EOA, contract/smart wallet,
+      // or an unresolved/unknown address per step 6's "run a safe preview first") runs the SAME
+      // Wallet Scanner engine (runWalletScan) the Wallet Scanner page itself uses, right here — never
+      // falls through to the older getWalletFromV2/mapWalletRunnerResult path further down this
+      // function. Only reached when there is no token/pair mismatch above. Because inlineAddress only
+      // ever reflects an address literally present in THIS prompt (never session memory), a `/wallet`
+      // right after a prior token scan with a genuinely new address always resolves fresh here — the
+      // same "never inherit a prior subject for a new address" discipline the /deployer fix applied.
+      if (questionCategory === 'wallet' && !mismatch) {
+        return await buildClarkWalletReadResponse({
+          address: inlineAddress,
+          outerChain: chainForClarkTools,
+          deepScan: wantsWalletDeepScan(prompt),
+          sessionMem,
+          clarkDebugMode,
+        });
       }
     }
   }
@@ -9775,53 +9974,18 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     if (!walletAddress) {
       return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan", toolsUsed: [], ui: { intentBadge: 'Wallet Scan', actions: appIntent.cta }, analysis: `WALLET SCAN\nI can run Wallet Scanner, but I need a wallet address or selected wallet context.\nCTA: ${appIntentTools}` };
     }
-    const w = (await getWalletFromV2(walletAddress) ?? await getWalletLite(walletAddress)
-      .catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "wallet_scan_timeout" }))) as Record<string, unknown>;
-    const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
-    const mappedResult = mapWalletRunnerResult(walletAddress, w, holdings);
-    const profileBlock = mappedResult.ok ? buildWalletProfileBlock(mappedResult.walletProfile as Record<string, unknown> | null) : null;
-    // WALLET SCANNER UNIFICATION, ADDITIVE: the canonical orchestrator runs alongside (never
-    // replacing) the getWalletFromV2() call above — projectWalletV2ForClark's rich EVM/PnL
-    // formatting above is untouched. This adds real Robinhood-chain evidence Clark otherwise lacks,
-    // and — when the user asked for a deep scan — surfaces the real queued job status/scanId
-    // instead of only a CTA link. Never blocks or slows the existing reply: any orchestrator
-    // failure is swallowed and simply omits this extra note.
-    const orchestratorResult = await runWalletScan({
-      walletAddress,
-      chainMode: 'auto',
-      scanDepth: deepScan ? 'deep' : 'preview',
-      source: 'clark',
-    }).catch((err) => {
-      console.warn('[clark] wallet scan orchestrator failed', { walletAddress, error: err instanceof Error ? err.message : String(err) });
-      return null;
+    // CANONICAL ENGINE SWAP, DISCLOSED (this task): previously built its reply from
+    // getWalletFromV2/mapWalletRunnerResult (the old V2-report shape) with the canonical orchestrator
+    // only appended as an extra note. Now uses buildClarkWalletReadResponse — the SAME shared helper
+    // the /wallet entity gate above and the routed.intent === "wallet_scan" memory follow-up below
+    // use — so every Clark wallet-read entry point returns the identical canonical shape/format.
+    return await buildClarkWalletReadResponse({
+      address: walletAddress,
+      outerChain: chain,
+      deepScan,
+      sessionMem,
+      clarkDebugMode,
     });
-    const orchestratorNoteLines: string[] = [];
-    if (orchestratorResult?.evidenceSources.includes('robinhood_chain')) {
-      orchestratorNoteLines.push(`Robinhood Chain: ${orchestratorResult.pnlStatus === 'available' ? 'verified evidence found.' : 'scanned, evidence still limited.'}`);
-    }
-    if (deepScan && orchestratorResult?.jobStatus === 'queued' && orchestratorResult.jobId) {
-      orchestratorNoteLines.push(`Deep scan queued (job ${orchestratorResult.jobId}) — poll Wallet Scanner for the completed multi-chain result.`);
-    }
-    const orchestratorNote = orchestratorNoteLines.length ? `\n\n${orchestratorNoteLines.join('\n')}` : '';
-    const analysis = formatWalletScanResult(walletAddress, mappedResult, deepScan) + (profileBlock ? `\n\n${profileBlock}` : "") + orchestratorNote;
-    updateMemWallet(sessionMem, walletAddress, null, analysis, mappedResult as Record<string, unknown>, extractPnlEvidence(mappedResult as Record<string, unknown>));
-    updateMemIntent(sessionMem, "wallet_analysis");
-    // Usable wallet evidence (mappedResult.ok) means the runner actually returned a real
-    // WALLET READ — never report this as a generic "fallback" source, and only consume
-    // quota when there is real evidence to show for it.
-    const walletActions = buildClarkWalletAnswerActions(walletAddress);
-    return {
-      feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan",
-      toolsUsed: ["wallet_scanner_runner"],
-      source: mappedResult.ok ? "wallet_scanner_runner" : "fallback",
-      actions: walletActions,
-      quotaConsumed: mappedResult.ok,
-      ui: { intentBadge: deepScan ? 'Wallet Deep Scan' : 'Wallet Scan', actions: walletActions },
-      analysis,
-      memoryEcho: buildWalletMemoryEcho(sessionMem),
-      ...(deepScan && orchestratorResult?.jobId ? { deepScanJobId: orchestratorResult.jobId } : {}),
-      ...(clarkDebugMode ? { clarkDebugReceipt: { memoryAfter: { lastWallet: sessionMem.lastWallet ? { address: sessionMem.lastWallet.address } : null } } } : {}),
-    };
   }
   if (appIntent.intent === 'liquidity_scan' && appIntent.address) {
     // LIQUIDITY-SAFE-CHAIN-BLIND FIX, DISCLOSED: this checked the address against the plain,
@@ -11256,56 +11420,19 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
   }
 
   if (routed.intent === "wallet_scan" && routed.address && routeHint !== 'token' && !isLiquidityCheckIntent(prompt) && parseClarkLiquidityIntent(prompt) == null) {
-    const reqBody = buildWalletApiRequestBody(routed.address, routed.deep);
-    const w = (await getWalletFromV2(routed.address) ?? await getWalletLite(routed.address).catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "Wallet Scanner authorization failed inside Clark execution. The direct Wallet Scanner page may still work." }))) as Record<string, unknown>;
-    const ok = w.ok === true && Object.keys(w).length > 0 && w.error == null;
-    const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
-    const chainsActive = Array.from(new Set(
-      holdings.map((h) => (typeof h.chain === "string" ? h.chain : null)).filter((c): c is string => !!c)
-    ));
-    const mappedResult = {
-      ok,
+    // CANONICAL ENGINE SWAP, DISCLOSED (this task): this is the memory-resolved /wallet follow-up
+    // path (e.g. "deep scan it" after a prior /wallet, or a bare /wallet reusing the last-remembered
+    // address) — previously built its reply from getWalletFromV2/mapWalletRunnerResult, the same old
+    // V2-report shape the inline-address entity gate used to use. Now shares the SAME
+    // buildClarkWalletReadResponse helper (and therefore the SAME runWalletScan() canonical engine)
+    // as every other /wallet entry point in this file.
+    return await buildClarkWalletReadResponse({
       address: routed.address,
-      totalValue: typeof w.totalValue === "number" ? w.totalValue : null,
-      holdings: holdings.map((h) => ({
-        symbol: typeof h.symbol === "string" ? h.symbol : undefined,
-        value: typeof h.value === "number" ? h.value : undefined,
-        chain: typeof h.chain === "string" ? h.chain : null,
-      })),
-      chainsActive: chainsActive.length > 0 ? chainsActive : null,
-      txCount: typeof w.txCount === "number" ? w.txCount : null,
-      error: typeof w.error === "string" ? w.error : null,
-      pnlCoverage: w.pnlCoverage,
-      historicalRecoveryStatus: w.historicalRecoveryStatus,
-      openLots: w.openLots,
-      closedLots: w.closedLots,
-      walletScanHealth: w.walletScanHealth,
-      walletModuleCoverage: w.walletModuleCoverage,
-      walletTokenPnlSummary: w.walletTokenPnlSummary,
-      walletTokenPnlRead: Array.isArray(w.walletTokenPnlRead) ? w.walletTokenPnlRead : [],
-      walletTradeStatsSummary: w.walletTradeStatsSummary,
-      walletHistoricalCoverageSummary: w.walletHistoricalCoverageSummary,
-      warnings: w.warnings,
-      walletProfile: w.walletProfile ?? null,
-    } as any;
-    const baseAnalysis = formatWalletScanResult(routed.address, mappedResult, routed.deep);
-    const profileBlock = ok ? buildWalletProfileBlock(mappedResult.walletProfile as Record<string, unknown> | null) : null;
-    const analysis = `${baseAnalysis}${profileBlock ? `\n\n${profileBlock}` : ""}`;
-    updateMemWallet(sessionMem, routed.address, null, analysis, mappedResult, extractPnlEvidence(mappedResult));
-    updateMemIntent(sessionMem, "wallet_analysis");
-    return {
-      feature: "clark-ai", chain, mode: "analysis", intent: "wallet_analysis", toolsUsed: ["wallet_get_snapshot"],
-      analysis,
-      intentBadge: "wallet_scan",
-      actions: buildRoutedActions(routed.deep ? ["Deep Scan Wallet"] : ["Deep Scan Wallet"]),
-      ui: {
-        intentBadge: routed.deep ? "Wallet Deep Scan" : "Wallet Scan",
-        actions: buildClarkWalletAnswerActions(routed.address),
-      },
-      quotaConsumed: ok,
-      memoryEcho: buildWalletMemoryEcho(sessionMem),
-      ...(clarkDebugMode ? { clarkDebugReceipt: { memoryAfter: { lastWallet: sessionMem.lastWallet ? { address: sessionMem.lastWallet.address } : null } } } : {}),
-    };
+      outerChain: chain,
+      deepScan: Boolean(routed.deep),
+      sessionMem,
+      clarkDebugMode,
+    });
   }
 
   if (routed.intent === "base_radar") {
