@@ -552,19 +552,17 @@ async function run() {
     // RELOCATED, DISCLOSED (split-Wallet-Scanner-results fix task): read from the real new location
     // of this UI — app/frontend/components/RobinhoodChainSection.tsx — see that file's own header.
     const robinhoodUiSrc = fs.readFileSync(new URL('../app/frontend/components/RobinhoodChainSection.tsx', import.meta.url), 'utf8')
-    check('UI shows "Verified Robinhood PnL" when pnl.status is verified', robinhoodUiSrc.includes('Verified Robinhood PnL'))
-    check('UI shows the exact required "PnL: Not verified yet" fallback wording', robinhoodUiSrc.includes('PnL: Not verified yet'))
-    // WORDING UPDATE, DISCLOSED (split-Wallet-Scanner-results fix task's own explicit required
-    // wording): the not-verified reason sentence changed to this task's own required exact text —
-    // "Robinhood PnL not verified yet — requires verified swap logs and both-leg price evidence." —
-    // a genuine, task-mandated wording change, not a weakened guarantee (the underlying invariant —
-    // a real, honest "not verified" explanation, never blended with portfolio value — is unchanged).
-    check('UI shows the exact required not-verified reason sentence', robinhoodUiSrc.includes('Robinhood PnL not verified yet — requires verified swap logs and both-leg price evidence.'))
+    check('UI shows "Robinhood PnL: Verified" when the Phase 3 lane is verified', robinhoodUiSrc.includes('Robinhood PnL: Verified'))
+    check('UI shows the exact required "Robinhood: Not verified" fallback wording', robinhoodUiSrc.includes('Robinhood: Not verified'))
+    check('UI shows the exact required not-verified reason sentence', robinhoodUiSrc.includes('Requires verified Robinhood swaps + both-leg price evidence.'))
+    check('verified compact proof names the Phase 3 sidecar source', robinhoodUiSrc.includes('Source: Robinhood Phase 3 sidecar'))
+    check('verified compact proof shows closed lots from the audit', robinhoodUiSrc.includes('Closed lots: {pnlAudit.fifoClosedLots}'))
+    check('the Robinhood tab uses selectRobinhoodPnlLaneStatus, never pnl.status === \'verified\' alone', robinhoodUiSrc.includes("selectRobinhoodPnlLaneStatus(result) === 'verified'"))
     check('UI shows a "Verified Robinhood swaps: X" line', robinhoodUiSrc.includes('Verified Robinhood swaps: <strong'))
     check('UI labels the activity card exactly "Activity (not PnL)"', robinhoodUiSrc.includes('>Activity (not PnL)<'))
     // The PnL card element is the one that renders pnlLabel — confirm it never also contains the
     // activity transfer count language, so the two can never merge into one line.
-    const pnlBlockMatch = robinhoodUiSrc.match(/PNL CARD:[\s\S]{0,1400}?<\/div>\s*\)\s*:\s*\(/)
+    const pnlBlockMatch = robinhoodUiSrc.match(/PNL CARD:[\s\S]*?EVIDENCE CARD:/)
     check('the PnL card never also renders the activity transfer count inline (no ambiguous merge)', pnlBlockMatch != null && !pnlBlockMatch[0].includes('activity.items.length'))
   }
 

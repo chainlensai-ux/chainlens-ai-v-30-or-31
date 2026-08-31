@@ -104,7 +104,7 @@ function run() {
   {
     check('robinhoodWalletScanner.ts exports scanRobinhoodWallet', /export async function scanRobinhoodWallet\(/.test(robinhoodScannerSrc))
     check('scanRobinhoodWallet runs the real holdings -> pricing -> activity -> pnl -> audit sequence (no reimplementation)', /const holdings = await getCachedRobinhoodWalletHoldings\(wallet, fetchImpl\)/.test(robinhoodScannerSrc) && /const audit = buildRobinhoodWalletScannerAudit\(/.test(robinhoodScannerSrc))
-    check('app/api/wallet-scan/robinhood/route.ts now calls scanRobinhoodWallet instead of the inline sequence', /const \{ holdings, activity, pnl, audit \} = await scanRobinhoodWallet\(wallet, fetchImpl\)/.test(robinhoodRouteSrc))
+    check('app/api/wallet-scan/robinhood/route.ts now calls scanRobinhoodWallet instead of the inline sequence', /const \{ holdings, activity, pnl, audit, pnlVerificationAudit \} = await scanRobinhoodWallet\(wallet, fetchImpl\)/.test(robinhoodRouteSrc))
     check('the Robinhood route no longer inlines the individual holdings/activity/pnl/audit calls directly', !/const holdings = await getCachedRobinhoodWalletHoldings\(wallet, fetchImpl\)/.test(robinhoodRouteSrc))
     check('the Robinhood route keeps its existing plan gate untouched', /canAccessFeature\(plan, 'wallet-scanner'\)/.test(robinhoodRouteSrc))
     check('the Robinhood route keeps its existing rate limiter untouched', /createRateLimiter\(\{ windowMs: 60_000, max: 10 \}\)/.test(robinhoodRouteSrc))

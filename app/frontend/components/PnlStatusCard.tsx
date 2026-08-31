@@ -32,7 +32,7 @@ import type { PublicPnlStatus, UnrealizedReconciliationSummary } from '@/src/mod
 import type { SyntheticPnlSummary } from '@/src/modules/syntheticPnl/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
 import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
-import type { RobinhoodWalletScanResponse } from './RobinhoodChainSection'
+import { selectRobinhoodPnlLaneStatus, ROBINHOOD_PNL_NOT_VERIFIED_REASON, type RobinhoodWalletScanResponse, type RobinhoodPnlLaneStatus } from './RobinhoodChainSection'
 import { PARTIAL_TRUST_GATE_PUBLIC_LABEL } from '@/src/lib/pnlDiscrepancyAudit'
 import { fmtSignedUsd, fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { StatusBadge } from './StatusBadge'
@@ -40,6 +40,8 @@ import { MetricCard, toneFromNumber } from './MetricCard'
 import { TrendingDownIcon, TrendingUpIcon, WarningIcon } from './Icons'
 import { SyntheticPnlBlock } from './SyntheticPnlBlock'
 import { SyntheticPerChainPnlBlock } from './SyntheticPerChainPnlBlock'
+
+export { selectRobinhoodPnlLaneStatus, ROBINHOOD_PNL_NOT_VERIFIED_REASON, type RobinhoodPnlLaneStatus }
 
 export type PnlStatusCardProps = {
   pnlV2: PnlV2 | null | undefined
@@ -433,21 +435,9 @@ export function selectEvmPnlLaneStatus(params: {
   return (pnl.unreliable || !pnl.stable) ? 'partial' : 'verified'
 }
 
-// ROBINHOOD LANE, DISCLOSED: 'verified' requires the FULL Phase 3 chain — a real 'verified' status
-// AND a real, non-null realizedPnlUsd AND verifiedSwapCount > 0 (belt-and-suspenders: the server-side
-// gate in lib/server/robinhoodWalletScanner.ts's resolveRobinhoodWalletPnl already guarantees all
-// three hold together whenever status is 'verified', but this checks all three explicitly anyway so
-// this UI-side classification can never silently drift from that guarantee if the server contract
-// ever changes). 'disabled'/'partial' (real evidence, but not a full verified sample) both fold into
-// 'not_verified' — a genuinely different real state from 'unavailable' (no robinhoodResult at all, or
-// the scan itself failed), which this task's own required 3-state list keeps distinct.
-export type RobinhoodPnlLaneStatus = 'verified' | 'not_verified' | 'unavailable'
-export function selectRobinhoodPnlLaneStatus(robinhoodResult: RobinhoodWalletScanResponse | null | undefined): RobinhoodPnlLaneStatus {
-  if (!robinhoodResult || !robinhoodResult.ok) return 'unavailable'
-  const pnl = robinhoodResult.pnl
-  if (pnl.status === 'verified' && pnl.realizedPnlUsd != null && pnl.verifiedSwapCount > 0) return 'verified'
-  return 'not_verified'
-}
+// ROBINHOOD LANE, DISCLOSED: defined in RobinhoodChainSection.tsx (next to the response type) so
+// this card, the Robinhood tab, and CORTEX share one function without a circular import. Re-exported
+// here so existing callers/tests that import from this file keep working.
 
 // ROBINHOOD PER-CHAIN PNL ROW, DISCLOSED (finish-Wallet-Scanner-Robinhood-integration follow-up,
 // this task's own explicit requirement 5): rendered as a distinct row underneath ChainBreakdownTable
@@ -459,24 +449,34 @@ export function selectRobinhoodPnlLaneStatus(robinhoodResult: RobinhoodWalletSca
 // NOT show unsupported PnL as verified").
 function RobinhoodPnlRow({ robinhoodResult }: { robinhoodResult: RobinhoodWalletScanResponse }) {
   const pnl = robinhoodResult.pnl
+  const audit = robinhoodResult.robinhoodPnlVerificationAudit
   const isVerified = selectRobinhoodPnlLaneStatus(robinhoodResult) === 'verified'
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 10px', marginTop: '6px', borderTop: '1px dashed rgba(255,255,255,0.10)', fontSize: '12px', flexWrap: 'wrap' }}>
-      <span style={{ fontWeight: 700, color: '#e2e8f0', minWidth: '90px' }}>Robinhood</span>
-      {isVerified ? (
-        <span style={{ fontWeight: 700, color: pnl.realizedPnlUsd! >= 0 ? '#4ade80' : '#f87171' }}>
-          {fmtSignedUsd(pnl.realizedPnlUsd)} realized (verified)
-        </span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '9px 10px', marginTop: '6px', borderTop: '1px dashed rgba(255,255,255,0.10)', fontSize: '12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+        <span style={{ fontWeight: 700, color: '#e2e8f0', minWidth: '90px' }}>Robinhood</span>
+        {isVerified ? (
+          <span style={{ fontWeight: 700, color: pnl.realizedPnlUsd! >= 0 ? '#4ade80' : '#f87171' }}>
+            {fmtSignedUsd(pnl.realizedPnlUsd)} realized (verified)
+          </span>
+        ) : (
+          <span style={{ color: 'rgba(148,163,184,0.65)' }}>
+            Robinhood: Not verified
+          </span>
+        )}
+      </div>
+      {isVerified && audit ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '1px', paddingLeft: '90px', fontSize: '11px', color: 'rgba(148,163,184,0.85)' }}>
+          <span>Robinhood PnL: Verified</span>
+          <span>Source: Robinhood Phase 3 sidecar</span>
+          <span>Verified swaps: {audit.verifiedSwapCount}</span>
+          <span>Closed lots: {audit.fifoClosedLots}</span>
+          <span>Price evidence: both legs verified</span>
+        </div>
       ) : (
-        <span style={{ color: 'rgba(148,163,184,0.65)' }}>
-          {/* EXACT REQUIRED WORDING, DISCLOSED (this task's own literal spec for the 'disabled' case)
-              — 'partial' is a genuinely different real state (some verified evidence exists, just
-              not a full sample), so it gets its own honest phrasing rather than reusing the same
-              string for a materially different situation. Both append the real, non-generic reason
-              lib/server/robinhoodWalletScanner.ts's PnL gate already computed. */}
-          {pnl.status === 'disabled' ? 'Robinhood — PnL not verified / unsupported' : 'Robinhood — PnL partial, not fully verified'}
-          {pnl.reason ? ` — ${pnl.reason}` : ` — ${pnl.message}`}
-        </span>
+        <div style={{ paddingLeft: '90px', fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
+          Reason: {ROBINHOOD_PNL_NOT_VERIFIED_REASON}
+        </div>
       )}
     </div>
   )
