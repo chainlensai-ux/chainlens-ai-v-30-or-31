@@ -22,6 +22,7 @@ import {
   buildWalletPublicUiDataAudit,
   mergeRobinhoodIntoPricedHoldings,
 } from '../app/frontend/lib/mergedWalletView.ts'
+import { selectEvmPnlLaneStatus, selectRobinhoodPnlLaneStatus } from '../app/frontend/components/PnlStatusCard.tsx'
 
 let passed = 0
 function check(label, condition) { assert.ok(condition, label); passed++ }
@@ -448,6 +449,65 @@ function run() {
 
     // holdingsV2Selector correctly classifies the Robinhood chain id.
     check('holdingsV2Selector.ts maps chainId 4663 to the "robinhood" chain string', read('app/frontend/lib/holdingsV2Selector.ts').includes("4663: 'robinhood'"))
+  }
+
+  // ── 17. Wallet-Scanner-Robinhood-final-integration follow-up: split PnL lanes, renamed header,
+  //    Robinhood PnL gated strictly on Phase 3 verified evidence, CORTEX uses the same lane statuses ─
+  {
+    const pnlStatusCardSrc2 = read('app/frontend/components/PnlStatusCard.tsx')
+    const pageSrc2 = read('app/terminal/wallet-scanner/page.tsx')
+    const workerSrc2 = read('workers/walletScanV2.ts')
+
+    // Requirement 3: the misleading "PnL (Verified V2)" header is gone.
+    check('PnlStatusCard no longer renders the misleading "PnL (Verified V2)" header', !pnlStatusCardSrc2.includes('>PnL (Verified V2)<'))
+    check('PnlStatusCard now renders "PnL Evidence" as its header', pnlStatusCardSrc2.includes('>PnL Evidence<'))
+
+    // Requirement 2/6: selectEvmPnlLaneStatus/selectRobinhoodPnlLaneStatus are the ONE shared source
+    // both the main PnL card AND CORTEX use — confirmed by exercising them directly plus a source
+    // check that CORTEX calls the same two functions.
+    check('buildCortexReadV2 (page.tsx) imports selectEvmPnlLaneStatus/selectRobinhoodPnlLaneStatus from the barrel, the same functions PnlStatusCard itself uses', pageSrc2.includes('selectEvmPnlLaneStatus') && pageSrc2.includes('selectRobinhoodPnlLaneStatus'))
+    check('CORTEX calls selectEvmPnlLaneStatus with the SAME report fields WalletScannerSummaryRowV3 passes into the live PnlStatusCard', /const evmPnlLane = selectEvmPnlLaneStatus\(\{\s*\n\s*pnlV2: report\?\.pnlV2,/.test(pageSrc2))
+    check('CORTEX calls selectRobinhoodPnlLaneStatus with the real robinhoodResult, never a re-derived summary', pageSrc2.includes('const robinhoodPnlLane = selectRobinhoodPnlLaneStatus(robinhoodResult)'))
+    check('CORTEX renders a distinct Base/ETH-vs-Robinhood PnL lane signal, never one blended claim', /const pnlLaneSignal = `PnL: Base\/ETH \$\{evmPnlLane\}/.test(pageSrc2))
+
+    // selectEvmPnlLaneStatus: real behavior.
+    check('selectEvmPnlLaneStatus is "unavailable" when pnlV2 itself is absent', selectEvmPnlLaneStatus({ pnlV2: null }) === 'unavailable')
+    check('selectEvmPnlLaneStatus is "partial" for a bounded/limited-verified-sample scan', selectEvmPnlLaneStatus({
+      pnlV2: { realizedPnlUsd: 10, unrealizedPnlUsd: 0, costBasis: [], realized: [], unrealized: [], chainBreakdown: [] },
+      publicPnlStatus: 'limited_verified_sample',
+    }) === 'partial')
+    check('selectEvmPnlLaneStatus is "verified" for a real, stable, non-bounded sample with real reconciled unrealized evidence', selectEvmPnlLaneStatus({
+      pnlV2: { realizedPnlUsd: 10, unrealizedPnlUsd: 5, costBasis: [{ tokenAddress: '0x1', chainId: 8453, totalQuantity: 1, totalCostUsd: 100, averageCostUsd: 100 }], realized: [], unrealized: [], chainBreakdown: [] },
+      publicPnlStatus: 'ok',
+      unrealizedReconciliation: { officialUnrealizedPnlUsd: 5, reconciliationStatus: 'ok', unrealizedCoveragePercent: 100 },
+    }) === 'verified')
+
+    // selectRobinhoodPnlLaneStatus: the EXACT acceptance test this task states twice — "If Robinhood
+    // verifiedSwapCount is 0, Robinhood PnL says Not verified" and "Robinhood realized PnL only
+    // appears when Phase 3 gates pass".
+    check('selectRobinhoodPnlLaneStatus is "unavailable" with no robinhoodResult at all', selectRobinhoodPnlLaneStatus(null) === 'unavailable')
+    check('selectRobinhoodPnlLaneStatus is "unavailable" for an ok:false response', selectRobinhoodPnlLaneStatus({ ok: false, pnl: { status: 'verified', realizedPnlUsd: 5, verifiedSwapCount: 3 } }) === 'unavailable')
+    check(
+      'selectRobinhoodPnlLaneStatus is "not_verified" when verifiedSwapCount is 0, even if status somehow claims "verified" — belt-and-suspenders against a real number ever leaking through with zero real evidence',
+      selectRobinhoodPnlLaneStatus({ ok: true, pnl: { status: 'verified', realizedPnlUsd: 5, verifiedSwapCount: 0 } }) === 'not_verified',
+    )
+    check('selectRobinhoodPnlLaneStatus is "not_verified" for a real "disabled" status', selectRobinhoodPnlLaneStatus({ ok: true, pnl: { status: 'disabled', realizedPnlUsd: null, verifiedSwapCount: 0 } }) === 'not_verified')
+    check('selectRobinhoodPnlLaneStatus is "not_verified" for a real "partial" status (real evidence, not a full verified sample)', selectRobinhoodPnlLaneStatus({ ok: true, pnl: { status: 'partial', realizedPnlUsd: null, verifiedSwapCount: 1 } }) === 'not_verified')
+    check('selectRobinhoodPnlLaneStatus is "verified" ONLY when status is verified AND realizedPnlUsd is real AND verifiedSwapCount > 0 — the full Phase 3 chain', selectRobinhoodPnlLaneStatus({ ok: true, pnl: { status: 'verified', realizedPnlUsd: 12.5, verifiedSwapCount: 2 } }) === 'verified')
+
+    // RobinhoodPnlRow reuses selectRobinhoodPnlLaneStatus — never a second, independent gate.
+    check('RobinhoodPnlRow computes isVerified via selectRobinhoodPnlLaneStatus, not a re-derived condition', pnlStatusCardSrc2.includes("const isVerified = selectRobinhoodPnlLaneStatus(robinhoodResult) === 'verified'"))
+
+    // Requirement 5: per-chain lane badges — Base/ETH share the EVM lane status, Robinhood gets its
+    // own distinct badge, and neither renders when its own input (chainsScanned/robinhoodResult) is
+    // absent — the "Base/ETH-only scan unchanged" acceptance test.
+    check('the per-chain lane badges are only ever built from real chainsScanned/robinhoodResult inputs — never a hardcoded chain list', pnlStatusCardSrc2.includes("(chainsScanned ?? [])") && pnlStatusCardSrc2.includes('.filter((c) => c === \'base\' || c === \'eth\' || c === \'ethereum\')'))
+    check('the Robinhood lane badge only renders when a real robinhoodResult exists — a Base/ETH-only scan never shows one', /\{robinhoodResult && \(\s*\n\s*<StatusBadge\s*\n\s*label=\{`robinhood: /.test(pnlStatusCardSrc2))
+
+    // Requirement 1: robinhoodChainCallAudit's own robinhoodResultReceived/robinhoodHoldingsStatus
+    // fields are read off the awaited result — re-confirmed here alongside the PnL lane checks since
+    // both this task's fixes land in the same worker function.
+    check('robinhoodChainCallAudit and the finalCanonicalMergeAudit/robinhoodBlockscoutUsageAudit logs all coexist without one replacing another', /console\.warn\('\[CU-TRACK\] robinhoodChainCallAudit:', robinhoodChainCallAudit\)/.test(workerSrc2) && /console\.warn\('\[CU-TRACK\] final canonical merge audit:', finalCanonicalMergeAudit\)/.test(workerSrc2))
   }
 
   console.log(`test-wallet-scanner-merged-view.mjs: all ${passed} assertions passed`)

@@ -91,6 +91,13 @@ export type PnlStatusCardProps = {
   // "verified"). Omitting this prop (a caller not yet wired, or a scan with no Robinhood result)
   // renders exactly as before this task — the per-chain section simply says nothing about Robinhood.
   robinhoodResult?: RobinhoodWalletScanResponse | null
+  // ADDED, DISCLOSED (Wallet-Scanner-Robinhood-final-integration follow-up, this task's own explicit
+  // requirement 5 — "Per-chain breakdown must show status: Base: verified/partial, ETH:
+  // verified/partial, Robinhood: verified/not verified/unavailable"): the real EVM chain slugs this
+  // scan covered (report.scanMetadata?.chainsScanned) — used ONLY to decide which EVM lane badges to
+  // render (never to recompute pnlV2 itself). Omitting this prop simply skips the EVM lane badges —
+  // no fabricated chain list.
+  chainsScanned?: string[]
 }
 
 export type VerifiedPnlData = {
@@ -396,6 +403,52 @@ export function selectVerifiedPnlData(
 // engine" wording, which reads as if pnlV2 itself were the authority for a bounded sample (it isn't).
 export const PER_CHAIN_BOUNDED_SAMPLE_MESSAGE = 'Per-chain breakdown not available for this verified sample'
 
+// PNL LANE STATUS, DISCLOSED (Wallet-Scanner-Robinhood-final-integration follow-up, this task's own
+// explicit requirement 2/6 — "Split PnL lanes: Base/ETH PnL lane, Robinhood PnL lane... CORTEX must
+// use same PnL lane statuses"): the ONE shared, exported classification every real caller of this
+// component's PnL lane state must use — page.tsx's buildCortexReadV2 (the CORTEX Wallet Read
+// sidebar) imports and calls these SAME two functions with the SAME real report fields
+// WalletScannerSummaryRowV3 already passes into this card, so CORTEX and the main UI can never
+// disagree on lane status. Neither function performs a network call or new computation — both are
+// pure re-derivations of state this component (or robinhoodWalletScanner.ts's own PnL gate) already
+// computes elsewhere.
+//
+// EVM LANE, DISCLOSED: reuses this file's own selectVerifiedPnlData/resolveEffectivePublicPnlStatus
+// (the SAME pipeline the numeric tiles below are built from) — 'partial' covers both the bounded-
+// sample case (effectivePublicPnlStatus === 'limited_verified_sample') and the magnitude/stability
+// guard (`blocked`) that already suppresses the numeric tiles elsewhere in this file; 'unavailable'
+// only when pnlV2 itself is absent (isActive === false).
+export type EvmPnlLaneStatus = 'verified' | 'partial' | 'unavailable'
+export function selectEvmPnlLaneStatus(params: {
+  pnlV2: PnlV2 | null | undefined
+  publicPnlStatus?: PublicPnlStatus | null
+  unrealizedReconciliation?: UnrealizedReconciliationSummary | null
+  reconciliationSummary?: PnlReconciliationSummary | null
+  canonicalSampleManifestAudit?: CanonicalSampleManifestAudit | null
+}): EvmPnlLaneStatus {
+  if (params.pnlV2 == null) return 'unavailable'
+  const effectivePublicPnlStatus = resolveEffectivePublicPnlStatus(params.publicPnlStatus, params.reconciliationSummary, params.canonicalSampleManifestAudit)
+  if (effectivePublicPnlStatus === 'limited_verified_sample') return 'partial'
+  const pnl = selectVerifiedPnlData(params.pnlV2, effectivePublicPnlStatus, params.unrealizedReconciliation)
+  return (pnl.unreliable || !pnl.stable) ? 'partial' : 'verified'
+}
+
+// ROBINHOOD LANE, DISCLOSED: 'verified' requires the FULL Phase 3 chain — a real 'verified' status
+// AND a real, non-null realizedPnlUsd AND verifiedSwapCount > 0 (belt-and-suspenders: the server-side
+// gate in lib/server/robinhoodWalletScanner.ts's resolveRobinhoodWalletPnl already guarantees all
+// three hold together whenever status is 'verified', but this checks all three explicitly anyway so
+// this UI-side classification can never silently drift from that guarantee if the server contract
+// ever changes). 'disabled'/'partial' (real evidence, but not a full verified sample) both fold into
+// 'not_verified' — a genuinely different real state from 'unavailable' (no robinhoodResult at all, or
+// the scan itself failed), which this task's own required 3-state list keeps distinct.
+export type RobinhoodPnlLaneStatus = 'verified' | 'not_verified' | 'unavailable'
+export function selectRobinhoodPnlLaneStatus(robinhoodResult: RobinhoodWalletScanResponse | null | undefined): RobinhoodPnlLaneStatus {
+  if (!robinhoodResult || !robinhoodResult.ok) return 'unavailable'
+  const pnl = robinhoodResult.pnl
+  if (pnl.status === 'verified' && pnl.realizedPnlUsd != null && pnl.verifiedSwapCount > 0) return 'verified'
+  return 'not_verified'
+}
+
 // ROBINHOOD PER-CHAIN PNL ROW, DISCLOSED (finish-Wallet-Scanner-Robinhood-integration follow-up,
 // this task's own explicit requirement 5): rendered as a distinct row underneath ChainBreakdownTable
 // (never inside it — that table's numeric columns stay pnlV2/EVM-only, unmodified). Reads ONLY
@@ -406,7 +459,7 @@ export const PER_CHAIN_BOUNDED_SAMPLE_MESSAGE = 'Per-chain breakdown not availab
 // NOT show unsupported PnL as verified").
 function RobinhoodPnlRow({ robinhoodResult }: { robinhoodResult: RobinhoodWalletScanResponse }) {
   const pnl = robinhoodResult.pnl
-  const isVerified = pnl.status === 'verified' && pnl.realizedPnlUsd != null
+  const isVerified = selectRobinhoodPnlLaneStatus(robinhoodResult) === 'verified'
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 10px', marginTop: '6px', borderTop: '1px dashed rgba(255,255,255,0.10)', fontSize: '12px', flexWrap: 'wrap' }}>
       <span style={{ fontWeight: 700, color: '#e2e8f0', minWidth: '90px' }}>Robinhood</span>
@@ -861,7 +914,7 @@ export function resolvePnlDisplayMode(params: {
   return 'real'
 }
 
-export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit, robinhoodResult }: PnlStatusCardProps) {
+export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit, robinhoodResult, chainsScanned }: PnlStatusCardProps) {
   // TECHNICAL-DETAILS TOGGLE, DISCLOSED (Wallet Scanner second-pass audit, task 3 — same collapsed-
   // by-default convention as WalletScannerDiagnosticsV3's own "Advanced Diagnostics" section): real
   // engine-divergence/coverage/evidence numbers are never deleted or hidden from a user who wants
@@ -882,6 +935,11 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
   // unrelated source).
   const displayed = selectDisplayedPnl({ pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit })
   const isBoundedSample = effectivePublicPnlStatus === 'limited_verified_sample'
+  // PER-CHAIN LANE STATUS, DISCLOSED: computed via the SAME shared, exported selectors CORTEX's
+  // buildCortexReadV2 (page.tsx) also calls — see those functions' own header for the full
+  // "never diverge from CORTEX" disclosure.
+  const evmPnlLaneStatus = selectEvmPnlLaneStatus({ pnlV2, publicPnlStatus, unrealizedReconciliation, reconciliationSummary, canonicalSampleManifestAudit })
+  const robinhoodPnlLaneStatus = selectRobinhoodPnlLaneStatus(robinhoodResult)
   // PARTIAL-COVERAGE BADGE, DISCLOSED (this task's own requirement): shown SEPARATELY from the
   // blocked/unavailable states above — a "partial" reconciliation still has a real, honestly-
   // computed officialUnrealizedPnlUsd (excluded positions are simply left out, never blended in),
@@ -943,7 +1001,13 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
           Presentational only — no badge label, tone, or underlying PnL value changes. */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '16px', flexWrap: 'wrap' }}>
         <span style={{ display: 'inline-flex' }}>{headerIcon}</span>
-        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>PnL (Verified V2)</h3>
+        {/* RENAMED, DISCLOSED (Wallet-Scanner-Robinhood-final-integration follow-up, this task's own
+            explicit requirement 3 — "PnL (Verified V2)" read as if EVERYTHING under this header,
+            including the Robinhood row below, carried the same V2-verified guarantee. "PnL Evidence"
+            makes no chain-scoped claim by itself — the per-chain lane badges immediately below it
+            (Base/ETH/Robinhood, each independently verified/partial/not-verified/unavailable) are
+            what actually tells the user which real evidence backs which chain. */}
+        <h3 style={{ margin: 0, fontSize: '15px', fontWeight: 800, color: '#e2e8f0', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>PnL Evidence</h3>
         <StatusBadge label={isActive ? 'Active' : 'Unavailable'} tone={isActive ? 'success' : 'neutral'} glow={isActive} />
         {/* BOUNDED-SAMPLE EXEMPT, DISCLOSED: these two badges are computed from `pnl` (pnlV2's own
             magnitude/stability heuristics) — irrelevant once a bounded sample displays
@@ -957,6 +1021,32 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
         {limitedSampleBadgeLabel && <StatusBadge label={limitedSampleBadgeLabel} tone="warning" />}
         {unrealizedCoverageBadgeLabel && <StatusBadge label={unrealizedCoverageBadgeLabel} tone="warning" />}
       </div>
+
+      {/* PER-CHAIN PNL LANE BADGES, DISCLOSED (this task's own explicit requirement 5): Base/ETH
+          each get their own badge (even though pnlV2 computes one combined EVM figure, never split
+          per chain — see ChainBreakdownTable's own header — so both real, scanned EVM chains
+          honestly share the SAME lane status) plus a distinct Robinhood badge from its own,
+          independently-gated PnL lane. Rendered only for chains this scan actually covered — never a
+          fabricated chain list. */}
+      {(chainsScanned && chainsScanned.length > 0) || robinhoodResult ? (
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px' }}>
+          {(chainsScanned ?? [])
+            .filter((c) => c === 'base' || c === 'eth' || c === 'ethereum')
+            .map((c) => (
+              <StatusBadge
+                key={c}
+                label={`${c === 'ethereum' ? 'eth' : c}: ${evmPnlLaneStatus}`}
+                tone={evmPnlLaneStatus === 'verified' ? 'success' : evmPnlLaneStatus === 'partial' ? 'warning' : 'neutral'}
+              />
+            ))}
+          {robinhoodResult && (
+            <StatusBadge
+              label={`robinhood: ${robinhoodPnlLaneStatus === 'not_verified' ? 'not verified' : robinhoodPnlLaneStatus}`}
+              tone={robinhoodPnlLaneStatus === 'verified' ? 'success' : robinhoodPnlLaneStatus === 'not_verified' ? 'warning' : 'neutral'}
+            />
+          )}
+        </div>
+      ) : null}
 
       {/* SPLIT PNL CONFIDENCE, DISCLOSED (task 4 — "do not mix realized and unrealized confidence").
           Five short, real, independently-sourced status values — never a single blended "confidence"

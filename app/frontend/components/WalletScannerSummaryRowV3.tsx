@@ -71,6 +71,7 @@ export function WalletScannerSummaryRowV3({ report, robinhoodResult }: WalletSca
           unrealizedReconciliation={report.fifoAndPnl?.unrealizedReconciliation}
           reconciliationSummary={report.reconciliationSummary}
           robinhoodResult={robinhoodResult}
+          chainsScanned={report.scanMetadata?.chainsScanned}
         />
       </div>
     </div>

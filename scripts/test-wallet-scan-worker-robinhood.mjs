@@ -129,6 +129,28 @@ function run() {
     check('all three are merged into finalCanonicalMergeAudit alongside the existing uiChainsDisplayed/cortexChainsDisplayed fields', /uiChainsDisplayed: actualChainsScanned,\s*\n\s*cortexChainsDisplayed: actualChainsScanned,\s*\n\s*valuedChainsDisplayed,\s*\n\s*partialChainsDisplayed,\s*\n\s*failedChainsDisplayed,/.test(workerSrc))
   }
 
+  // ── 9. robinhoodChainCallAudit, DISCLOSED (Wallet-Scanner-Robinhood-final-integration follow-up,
+  //    this task's own explicit requirement 1): confirmed live confusion — walletChainSelectionAudit
+  //    (a canonical INTENT audit) legitimately lists 4663/'robinhood' in requestedChainsAfter/
+  //    finalChainsScanned, while the REAL EVM worker call ([chain-call-audit], fetchHoldings.ts) only
+  //    ever logs Base+ETH — reusing requestedChains/allowedChains as field names in both reads, out
+  //    of context, as if Robinhood silently dropped out of the canonical path. This new, distinctly-
+  //    named log makes the sidecar mechanism explicit and cross-references the real EVM chain list.
+  {
+    const holdingsSrc2 = read('lib/engine/modules/holdings/fetchHoldings.ts')
+    check(
+      '[chain-call-audit] (the REAL EVM worker call, fetchHoldings.ts) is untouched by this task — still logs requestedChains/allowedChains/blockedChains only, never Robinhood',
+      /console\.warn\('\[chain-call-audit\]', \{\s*\n\s*requestedChains: requestedChainIds,\s*\n\s*allowedChains: allowedChainIds,\s*\n\s*blockedChains: blockedChainIds,/.test(holdingsSrc2)
+      && !/robinhood/i.test(holdingsSrc2) && !/4663/.test(holdingsSrc2),
+    )
+    check('robinhoodChainCallAudit is built as its own, distinctly-named object — never reusing the [chain-call-audit] field names for a different real meaning', /const robinhoodChainCallAudit = \{/.test(workerSrc))
+    check('it explicitly identifies itself as a sidecar call, never part of the V2 worker\'s own chain-call-audit', /calledVia: 'sidecar_scanRobinhoodWallet',\s*\n\s*partOfV2WorkerChainCallAudit: false,/.test(workerSrc))
+    check('it cross-references the REAL EVM chain list [chain-call-audit] was actually called with (holdingsAllowedChainIds), read directly off the same value the worker used — never re-derived', /v2WorkerChainCallAuditChains: holdingsAllowedChainIds,/.test(workerSrc))
+    check('robinhoodResultReceived/robinhoodHoldingsStatus are real, post-await outcomes — read off the actual awaited robinhood result, never guessed before the scan completes', /robinhoodResultReceived: robinhood != null,\s*\n\s*robinhoodHoldingsStatus: robinhood\?\.holdings\.status \?\? null,/.test(workerSrc))
+    check('robinhoodChainCallAudit is logged unconditionally, every scan', /console\.warn\('\[CU-TRACK\] robinhoodChainCallAudit:', robinhoodChainCallAudit\)/.test(workerSrc))
+    check('robinhoodChainCallAudit is built AFTER robinhood is awaited (post-outcome, not pre-scan intent)', workerSrc.indexOf('const robinhood = await robinhoodPromise') < workerSrc.indexOf('const robinhoodChainCallAudit = {'))
+  }
+
   console.log(`\n✅ ${passed} wallet-scan-worker-robinhood checks passed`)
 }
 

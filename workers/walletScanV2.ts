@@ -988,6 +988,41 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[CU-TRACK] wallet chain selection audit (final):', finalWalletChainSelectionAudit)
 
+    // ROBINHOOD CHAIN CALL AUDIT, DISCLOSED (Wallet-Scanner-Robinhood-final-integration follow-up,
+    // this task's own explicit requirement 1): confirmed live confusion — `finalWalletChainSelectionAudit`
+    // above (a canonical INTENT audit, by design — see walletChainSelectionAudit.ts's own header)
+    // legitimately lists 4663/'robinhood' in requestedChainsAfter/finalChainsScanned, while the REAL
+    // EVM worker call — `[chain-call-audit]` (lib/engine/modules/holdings/fetchHoldings.ts's
+    // logChainCallAudit(), fired inside fetchAllHoldings) — only ever logs `requestedChains`/
+    // `allowedChains` for `holdingsAllowedChainIds` (Base+ETH, e.g. [8453, 1]), because Robinhood
+    // structurally can NEVER enter that call (SupportedChain has no 'robinhood' member — see this
+    // file's own "CANONICAL MULTI-CHAIN MERGE" header below and fetchHoldings.ts's header). Reusing
+    // the field names `requestedChains`/`allowedChains` in TWO different logs for two DIFFERENT real
+    // things (one EVM-worker-call-scoped, one canonical-intent-scoped) reads, out of context, as if
+    // Robinhood silently vanished from the canonical path — it never entered it at all, by permanent
+    // design; it was always handled by the separate `scanRobinhoodWallet()` sidecar call
+    // (`robinhoodPromise` above). This log makes that fact explicit and unconditional, cross-
+    // referencing the REAL EVM chain list (`holdingsAllowedChainIds`, the exact same value
+    // `[chain-call-audit]` itself was called with) so a log reader never has to infer it.
+    const robinhoodChainCallAudit = {
+      walletAddress,
+      robinhoodChainId: ROBINHOOD_CHAIN_ID,
+      robinhoodRequested: includeRobinhoodRequested,
+      robinhoodAvailable,
+      robinhoodAttempted: includeRobinhood,
+      // Literal, honest identification of the call mechanism — never "part of the V2 worker's own
+      // chain-call-audit", which is exactly the misreading this audit exists to prevent.
+      calledVia: 'sidecar_scanRobinhoodWallet',
+      partOfV2WorkerChainCallAudit: false,
+      // The REAL EVM chain list the V2 worker's own [chain-call-audit] was actually called with this
+      // scan — read directly off the same value, never re-derived — so a reader can directly compare
+      // "what fetchAllHoldings actually called" against "what Robinhood's own sidecar call did".
+      v2WorkerChainCallAuditChains: holdingsAllowedChainIds,
+      robinhoodResultReceived: robinhood != null,
+      robinhoodHoldingsStatus: robinhood?.holdings.status ?? null,
+    }
+    console.warn('[CU-TRACK] robinhoodChainCallAudit:', robinhoodChainCallAudit)
+
     // CANONICAL MULTI-CHAIN MERGE, DISCLOSED (Robinhood-not-in-normal-pipeline fix, hardened for
     // worker-module-propagation follow-up): Robinhood is still NEVER fed into the EVM/FIFO-typed
     // fields (`body.data.portfolio`, `body.data.scanMetadata`, `body.data.fifoAndPnl`/

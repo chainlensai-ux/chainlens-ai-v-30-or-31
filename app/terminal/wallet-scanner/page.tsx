@@ -41,6 +41,8 @@ import {
   ScanDiagnosticsCard,
   HoldingsViewV2,
   PnlStatusCard,
+  selectEvmPnlLaneStatus,
+  selectRobinhoodPnlLaneStatus,
   RecoveryHealthCard,
   RobinhoodChainSection,
   ROBINHOOD_CHAIN_META,
@@ -233,6 +235,23 @@ function buildCortexReadV2(
     ? 'Robinhood Chain: found holdings, unpriced — not included in total.'
     : null
 
+  // PNL LANE STATUS, DISCLOSED (Wallet-Scanner-Robinhood-final-integration follow-up, this task's own
+  // explicit requirement 6 — "CORTEX must use same PnL lane statuses"): calls the EXACT SAME two
+  // exported selectors PnlStatusCard.tsx itself uses for its own per-chain lane badges
+  // (WalletScannerSummaryRowV3's real, live PnlStatusCard call site — same report fields, same
+  // robinhoodResult), so this sidebar can never disagree with the main PnL card on lane status. Never
+  // shown as "verified" for Robinhood unless selectRobinhoodPnlLaneStatus itself says so (the same
+  // Phase-3-gated, verifiedSwapCount>0 check the main card's RobinhoodPnlRow uses).
+  const evmPnlLane = selectEvmPnlLaneStatus({
+    pnlV2: report?.pnlV2,
+    publicPnlStatus: report?.finalSummary?.financialStatus?.officialPnlStatus,
+    unrealizedReconciliation: report?.fifoAndPnl?.unrealizedReconciliation,
+    reconciliationSummary: report?.reconciliationSummary,
+    canonicalSampleManifestAudit: report?.canonicalSampleManifestAudit,
+  })
+  const robinhoodPnlLane = selectRobinhoodPnlLaneStatus(robinhoodResult)
+  const pnlLaneSignal = `PnL: Base/ETH ${evmPnlLane}${robinhoodResult ? `, Robinhood ${robinhoodPnlLane === 'not_verified' ? 'not verified' : robinhoodPnlLane}` : ''}`
+
   return {
     verdict: (b?.rotationStyle?.value ?? 'unknown').toUpperCase(),
     read: s?.walletPersonality ?? 'Insufficient data to classify wallet behavior.',
@@ -240,6 +259,7 @@ function buildCortexReadV2(
       `Risk posture: ${b?.riskOnOff?.value ?? 'unknown'}`,
       `Chains: ${chainSignalLabel}`,
       totalValueUsd != null ? `Portfolio value: ${fmtUSD(totalValueUsd)}` : 'Portfolio value: not available',
+      pnlLaneSignal,
       ...(robinhoodSignal ? [robinhoodSignal] : []),
     ],
     risks: [
