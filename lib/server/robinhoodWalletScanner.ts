@@ -49,6 +49,7 @@ import {
 import {
   isRobinhoodBlockscoutConfigured, getBlockscoutAddressTransactions, getBlockscoutAddressTokenTransfers,
   getBlockscoutTransactionLogs, blockscoutLogToRawEvmLog, emptyBlockscoutEvidenceAudit, mergeBlockscoutEvidenceAudits,
+  buildRobinhoodBlockscoutUsageAudit, type RobinhoodBlockscoutUsageAudit,
   type BlockscoutEvidenceAudit,
 } from './robinhoodBlockscoutEvidence'
 
@@ -166,6 +167,18 @@ export type RobinhoodWalletActivityResult = {
   // robinhoodBlockscoutEvidence.ts's own header for the full "fallback/proof layer only" contract.
   // Stays the empty/'not_attempted' default whenever Blockscout was never consulted this scan.
   blockscoutEvidence: BlockscoutEvidenceAudit
+  // RAW PER-CALL AUDITS, DISCLOSED (proof-that-Blockscout-is-actually-used follow-up): the full,
+  // un-merged list every real Blockscout call this scan attempted produced — `blockscoutEvidence`
+  // above is a single folded summary (loses per-endpoint counts/statuses); this raw list is what
+  // buildRobinhoodBlockscoutUsageAudit() (robinhoodBlockscoutEvidence.ts) reads to build the exact,
+  // itemized proof object the task requires. Empty array whenever Blockscout was never consulted.
+  blockscoutAudits: BlockscoutEvidenceAudit[]
+  // SKIPPED REASON, DISCLOSED: set (non-null) only on the specific path where Blockscout was never
+  // even attempted because GoldRush's own transactions_v3 already returned usable data — the
+  // honest "skipped, with reason" case requirement 2 explicitly asks for. Null whenever Blockscout
+  // WAS attempted (a real per-call failure reason takes priority in that case) or when Robinhood
+  // Chain/Blockscout simply aren't configured (already distinguishable via envHasBlockscout).
+  blockscoutSkippedReason: string | null
   reason: string | null
   fromCache: boolean
 }
@@ -233,6 +246,13 @@ export type RobinhoodWalletScannerAudit = {
   blockscoutCacheHit: boolean
   blockscoutRejectedReason: string | null
   blockscoutVerifiedSwap: boolean
+  // ITEMIZED PROOF, DISCLOSED (proof-that-Blockscout-is-actually-used follow-up): the exact,
+  // required audit object — see robinhoodBlockscoutEvidence.ts's own header for the full disclosure.
+  // `robinhoodAdapterStatus`/`robinhoodMerged`/`finalPortfolioTotalByChain` stay null/false here (this
+  // is the standalone Robinhood-scan-level audit, which has no "final canonical merge" concept) — a
+  // caller with that context (workers/walletScanV2.ts) overrides those three fields when logging its
+  // own copy, reusing everything else here unchanged.
+  robinhoodBlockscoutUsageAudit: RobinhoodBlockscoutUsageAudit
 }
 
 // KEPT FOR BACKWARD COMPATIBILITY, DISCLOSED: Phase 2's own test pins this exact wording, and no
@@ -298,6 +318,16 @@ export function buildRobinhoodWalletScannerAudit(input: {
           : 'unavailable'
 
   const blockscout = input.activity?.blockscoutEvidence ?? emptyBlockscoutEvidenceAudit()
+  const robinhoodBlockscoutUsageAudit = buildRobinhoodBlockscoutUsageAudit({
+    walletAddress: input.wallet,
+    // Standalone scanner-level audit — Robinhood was, by definition, selected (this function only
+    // ever runs as part of an actual Robinhood scan).
+    robinhoodSelected: true,
+    audits: input.activity?.blockscoutAudits ?? [],
+    skippedReason: input.activity?.blockscoutSkippedReason ?? null,
+  })
+  // eslint-disable-next-line no-console
+  console.log('[robinhood-wallet-scanner] robinhoodBlockscoutUsageAudit', robinhoodBlockscoutUsageAudit)
 
   return {
     wallet: input.wallet,
@@ -326,6 +356,7 @@ export function buildRobinhoodWalletScannerAudit(input: {
     blockscoutCacheHit: blockscout.blockscoutCacheHit,
     blockscoutRejectedReason: blockscout.blockscoutRejectedReason,
     blockscoutVerifiedSwap: blockscout.blockscoutVerifiedSwap,
+    robinhoodBlockscoutUsageAudit,
   }
 }
 
@@ -587,6 +618,11 @@ async function fetchRobinhoodTransactionsViaBlockscout(
   // "fallback used" (that would misrepresent a failed attempt as a successful substitution).
   if (txResult.data != null) txResult.audit.blockscoutFallbackUsed = true
   if (transfersResult.data != null) transfersResult.audit.blockscoutFallbackUsed = true
+  // REAL ITEM COUNTS, DISCLOSED (proof-that-Blockscout-is-actually-used follow-up): the actual
+  // number of rows this specific response carried — 0 for a real, successful, genuinely-empty
+  // response, null when the call never received a usable response at all (attempt failed/skipped).
+  if (txResult.data != null) txResult.audit.itemCount = Array.isArray(txResult.data.items) ? txResult.data.items.length : 0
+  if (transfersResult.data != null) transfersResult.audit.itemCount = Array.isArray(transfersResult.data.items) ? transfersResult.data.items.length : 0
 
   if (txResult.data == null && transfersResult.data == null) {
     return { items: null, audits }
@@ -652,6 +688,8 @@ async function fetchBlockscoutLogsForTx(
   if (existing) return existing
   const result = await getBlockscoutTransactionLogs(txHash, fetchImpl)
   const logs = result.data?.items ? result.data.items.map(blockscoutLogToRawEvmLog) : null
+  // REAL ITEM COUNT, DISCLOSED: same convention as fetchRobinhoodTransactionsViaBlockscout above.
+  if (result.data != null) result.audit.itemCount = Array.isArray(result.data.items) ? result.data.items.length : 0
   const entry = { logs, audit: result.audit }
   blockscoutLogsByTx.set(txHash, entry)
   return entry
@@ -673,15 +711,22 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
     return { ...deps.cached, fromCache: true }
   }
   if (!isRobinhoodChainAvailable()) {
-    return { status: 'not_configured', wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, swapDecodeAudits: [], verifiedSwapCount: 0, blockscoutEvidence: emptyBlockscoutEvidenceAudit(), reason: 'Robinhood Chain is not configured.', fromCache: false }
+    return { status: 'not_configured', wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, swapDecodeAudits: [], verifiedSwapCount: 0, blockscoutEvidence: emptyBlockscoutEvidenceAudit(), blockscoutAudits: [], blockscoutSkippedReason: null, reason: 'Robinhood Chain is not configured.', fromCache: false }
   }
   const blockscoutAudits: BlockscoutEvidenceAudit[] = []
+  let blockscoutSkippedReason: string | null = null
   let { items: txs, reason } = await fetchRobinhoodTransactions(wallet, deps.fetchImpl)
   // BLOCKSCOUT FALLBACK (Case A), DISCLOSED: only reached when GoldRush's transactions_v3 has
   // already failed entirely — never a substitute for a real GoldRush success, and never attempted
   // when Blockscout itself isn't configured (isRobinhoodBlockscoutConfigured gates every real call
   // inside fetchRobinhoodTransactionsViaBlockscout too, so this is a cheap no-op otherwise).
-  if (!txs && isRobinhoodBlockscoutConfigured()) {
+  if (txs) {
+    // SKIPPED, WITH REASON, DISCLOSED (requirement 2's explicit "skipped, with reason" case): GoldRush
+    // already returned usable data — Blockscout is never even attempted for this call.
+    blockscoutSkippedReason = 'GoldRush transactions_v3 already returned usable data — Blockscout fallback was not needed.'
+  } else if (!isRobinhoodBlockscoutConfigured()) {
+    blockscoutSkippedReason = 'BLOCKSCOUT_API_KEY not configured (or Robinhood Chain unavailable) — Blockscout fallback could not be attempted.'
+  } else {
     const fallback = await fetchRobinhoodTransactionsViaBlockscout(wallet, deps.fetchImpl)
     blockscoutAudits.push(...fallback.audits)
     if (fallback.items) {
@@ -694,6 +739,7 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
       status: reason === 'no_api_key' ? 'not_configured' : 'unavailable',
       wallet, chainSlug: 'robinhood', items: [], skippedSwapLogs: 0, swapDecodeAudits: [], verifiedSwapCount: 0,
       blockscoutEvidence: mergeBlockscoutEvidenceAudits(blockscoutAudits),
+      blockscoutAudits, blockscoutSkippedReason,
       reason: reason ?? 'no_data', fromCache: false,
     }
   }
@@ -795,6 +841,7 @@ export async function resolveRobinhoodWalletActivity(wallet: string, deps: Resol
     status: items.length > 0 || verifiedSwapCount > 0 ? 'ok' : 'partial',
     wallet, chainSlug: 'robinhood', items, skippedSwapLogs, swapDecodeAudits, verifiedSwapCount,
     blockscoutEvidence: mergeBlockscoutEvidenceAudits(blockscoutAudits),
+    blockscoutAudits, blockscoutSkippedReason,
     reason: items.length === 0 && verifiedSwapCount === 0 ? 'no_transfers_found_in_returned_window' : null,
     fromCache: false,
   }

@@ -101,7 +101,10 @@ function run() {
     // UPDATED, DISCLOSED (final-canonical-merge-proof follow-up): a new finalCanonicalMergeAudit
     // field was inserted between workerChainPropagationAudit and canonicalChainsScanned — both are
     // still merged into body.data, just no longer literally adjacent.
-    check('workerChainPropagationAudit is merged into body.data alongside the other new fields', /workerChainPropagationAudit,\s*\n\s*finalCanonicalMergeAudit,\s*\n\s*canonicalChainsScanned: actualChainsScanned,/.test(workerSrc))
+    // UPDATED, DISCLOSED (proof-that-Blockscout-is-actually-used follow-up): robinhoodBlockscoutUsageAudit
+    // was inserted between finalCanonicalMergeAudit and canonicalChainsScanned — all three fields are
+    // still merged into body.data, just no longer literally adjacent in that exact order.
+    check('workerChainPropagationAudit is merged into body.data alongside the other new fields', /workerChainPropagationAudit,\s*\n\s*finalCanonicalMergeAudit,\s*\n\s*robinhoodBlockscoutUsageAudit,\s*\n\s*canonicalChainsScanned: actualChainsScanned,/.test(workerSrc))
     check('workerRequestedChains/workerAllowedChains are the SAME real value fetchAllHoldings was actually called with (holdingsAllowedChainIds) — never a separately-computed, possibly-diverging number', /workerRequestedChains: holdingsAllowedChainIds,\s*\n\s*workerAllowedChains: holdingsAllowedChainIds,/.test(workerSrc))
     check(
       "holdingsChainsProcessed/pricingChainsProcessed derivations read real chainId fields off EVM-only arrays (chainHoldings/pricing.pricedHoldings), never Robinhood/4663",

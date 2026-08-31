@@ -1131,6 +1131,23 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[CU-TRACK] final canonical merge audit:', finalCanonicalMergeAudit)
 
+    // ROBINHOOD BLOCKSCOUT USAGE AUDIT, WORKER-LEVEL, DISCLOSED (proof-that-Blockscout-is-actually-
+    // used follow-up): reuses the SAME robinhoodBlockscoutUsageAudit lib/server/robinhoodWalletScanner.ts's
+    // buildRobinhoodWalletScannerAudit() already computed from the real, per-call Blockscout audits —
+    // never recomputed, never a second implementation — only overrides the three worker-only fields
+    // (robinhoodAdapterStatus/robinhoodMerged/finalPortfolioTotalByChain) with THIS scan's actual,
+    // already-computed outcome, since the standalone scanner has no "final canonical merge" concept.
+    const robinhoodBlockscoutUsageAudit = robinhood
+      ? {
+          ...robinhood.audit.robinhoodBlockscoutUsageAudit,
+          robinhoodAdapterStatus,
+          robinhoodMerged,
+          finalPortfolioTotalByChain: portfolioTotalByChain,
+        }
+      : null
+    // eslint-disable-next-line no-console
+    console.log('[CU-TRACK] robinhoodBlockscoutUsageAudit:', robinhoodBlockscoutUsageAudit)
+
     body = {
       ...body,
       data: {
@@ -1139,6 +1156,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         walletChainSelectionAudit: finalWalletChainSelectionAudit,
         workerChainPropagationAudit,
         finalCanonicalMergeAudit,
+        robinhoodBlockscoutUsageAudit,
         canonicalChainsScanned: actualChainsScanned,
         canonicalTotalValueUsd,
         portfolioTotalByChain,

@@ -23,9 +23,12 @@ import {
   isRobinhoodBlockscoutConfigured,
   getBlockscoutAddressTransactions,
   getBlockscoutAddressTokenTransfers,
+  getBlockscoutTransactionLogs,
   __resetRobinhoodBlockscoutRateLimitForTest,
+  buildRobinhoodBlockscoutUsageAudit,
+  emptyBlockscoutEvidenceAudit,
 } from '../lib/server/robinhoodBlockscoutEvidence.ts'
-import { resolveRobinhoodWalletActivity, resolveRobinhoodWalletPnl } from '../lib/server/robinhoodWalletScanner.ts'
+import { resolveRobinhoodWalletActivity, resolveRobinhoodWalletPnl, buildRobinhoodWalletScannerAudit } from '../lib/server/robinhoodWalletScanner.ts'
 import { ROBINHOOD_V4_POOL_MANAGER } from '../lib/server/uniswapV4RobinhoodRpc.ts'
 import { V4_NATIVE_CURRENCY_ADDRESS } from '../lib/server/robinhoodSwapDecoder.ts'
 
@@ -299,6 +302,72 @@ async function run() {
     check('the UI shows the exact required "Explorer fallback used" wording', robinhoodUiSrc.includes('Explorer fallback used'))
     check('the UI shows the exact required "Blockscout unavailable" wording', robinhoodUiSrc.includes('Blockscout unavailable'))
     check('the UI shows the exact required "Swap logs verified by explorer" wording', robinhoodUiSrc.includes('Swap logs verified by explorer'))
+  }
+
+  // ── 11. robinhoodBlockscoutUsageAudit, DISCLOSED (proof-that-Blockscout-is-actually-used task) ──
+  //    envHasBlockscout:true alone must never be mistaken for "actually called"/"evidence used" —
+  //    this block proves the new audit distinguishes all three.
+  {
+    // 11a. envHasBlockscout true, but no call made (GoldRush succeeds) -> logs a real skipped reason.
+    setEnv()
+    process.env.BLOCKSCOUT_API_KEY = 'test-key'
+    __resetRobinhoodBlockscoutRateLimitForTest()
+    const walletSkipped = walletFor(20)
+    const goldrushOnlyFetch = async (url) => {
+      const u = String(url)
+      if (u.includes('/transactions_v3/')) {
+        return { ok: true, json: async () => ({ data: { items: [] } }) }
+      }
+      throw new Error(`unexpected fetch in test 11a: ${u}`)
+    }
+    const skippedResult = await resolveRobinhoodWalletActivity(walletSkipped, { fetchImpl: goldrushOnlyFetch })
+    check('GoldRush succeeding means Blockscout is never attempted at all', skippedResult.blockscoutAudits.length === 0 && skippedResult.blockscoutEvidence.blockscoutAttempted === false)
+    check('a real, honest skipped reason is recorded — never silence', typeof skippedResult.blockscoutSkippedReason === 'string' && skippedResult.blockscoutSkippedReason.includes('GoldRush'))
+    const auditSkipped = buildRobinhoodBlockscoutUsageAudit({ walletAddress: walletSkipped, robinhoodSelected: true, audits: skippedResult.blockscoutAudits, skippedReason: skippedResult.blockscoutSkippedReason })
+    check('envHasBlockscout is true (key IS configured) while blockscoutAttempted is false — proves "configured" != "called"', auditSkipped.envHasBlockscout === true && auditSkipped.blockscoutAttempted === false)
+    check('blockscoutFailureReason surfaces the real skipped reason, not a generic message', auditSkipped.blockscoutFailureReason === skippedResult.blockscoutSkippedReason)
+    check('no endpoints/statuses/counts are fabricated when nothing was attempted', auditSkipped.blockscoutEndpointsAttempted.length === 0 && auditSkipped.blockscoutHttpStatuses.length === 0 && auditSkipped.blockscoutTxCount === 0 && auditSkipped.blockscoutLogCount === 0)
+    check('blockscoutUsedForActivity/blockscoutUsedForSwapLogs/blockscoutUsedForFallback are all false when nothing was attempted', auditSkipped.blockscoutUsedForActivity === false && auditSkipped.blockscoutUsedForSwapLogs === false && auditSkipped.blockscoutUsedForFallback === false)
+
+    // 11b. Blockscout genuinely attempted and succeeds for a per-tx logs call -> real endpoint/status/count logged.
+    __resetRobinhoodBlockscoutRateLimitForTest()
+    const txHash = '0xteststatuslogs00000000000000000000000000000000000000000000000'
+    const successFetch = async () => ({ ok: true, status: 200, headers: noHeaders(), json: async () => ({ items: [{ address: { hash: ROBINHOOD_V4_POOL_MANAGER }, topics: [SWAP_TOPIC0, POOL_ID, '0x' + '00'.repeat(32)], data: buildSwapLogData(1n, -1n) }] }) })
+    const logsResult = await getBlockscoutTransactionLogs(txHash, successFetch)
+    check('a real successful call carries the real HTTP status (200), not a guess', logsResult.audit.httpStatus === 200)
+    check('itemCount is set by the call site from the real response shape', logsResult.data?.items?.length === 1)
+    const auditAttempted = buildRobinhoodBlockscoutUsageAudit({ walletAddress: walletFor(21), robinhoodSelected: true, audits: [{ ...logsResult.audit, itemCount: 1, blockscoutFallbackUsed: false }] })
+    check('blockscoutAttempted is true and the real endpoint/status are recorded', auditAttempted.blockscoutAttempted === true && auditAttempted.blockscoutEndpointsAttempted.length === 1 && auditAttempted.blockscoutHttpStatuses.includes(200))
+    check('a successful /logs call is honestly counted as blockscoutLogCount (not tx/transfer/contract)', auditAttempted.blockscoutLogCount === 1 && auditAttempted.blockscoutTxCount === 0 && auditAttempted.blockscoutTokenTransferCount === 0)
+    check('a successful /logs call sets blockscoutUsedForSwapLogs (real swap-evidence usage), never blockscoutUsedForFallback (that is tx/transfer-only)', auditAttempted.blockscoutUsedForSwapLogs === true && auditAttempted.blockscoutUsedForFallback === false)
+    check('blockscoutUsedForActivity is true whenever ANY real usage occurred (fallback OR swap logs)', auditAttempted.blockscoutUsedForActivity === true)
+    check('blockscoutFailureReason is null on a real success', auditAttempted.blockscoutFailureReason === null)
+
+    // 11c. Blockscout attempted and fails -> exact failure reason, never silence, never fake success.
+    const failFetch = async () => ({ ok: false, status: 503, headers: noHeaders() })
+    const failResult = await getBlockscoutAddressTransactions(walletFor(22), failFetch)
+    const auditFailed = buildRobinhoodBlockscoutUsageAudit({ walletAddress: walletFor(22), robinhoodSelected: true, audits: [failResult.audit] })
+    check('a real HTTP failure is attempted (a real request was sent) but never succeeded', auditFailed.blockscoutAttempted === true && failResult.audit.httpStatus === 503)
+    check('blockscoutFailureReason carries the exact real reason (http_503), never a vague fallback string', auditFailed.blockscoutFailureReason === 'http_503')
+    check('blockscoutUsedForActivity/blockscoutUsedForSwapLogs are false on a failed call — never claimed used', auditFailed.blockscoutUsedForActivity === false && auditFailed.blockscoutUsedForSwapLogs === false)
+
+    // 11d. Robinhood merge still works honestly even with zero fake Blockscout evidence.
+    check('buildRobinhoodBlockscoutUsageAudit never fabricates counts for an empty audits list', buildRobinhoodBlockscoutUsageAudit({ walletAddress: 'w', robinhoodSelected: false, audits: [] }).blockscoutTxCount === 0)
+    check('robinhoodSelected:false is honestly recorded, not silently coerced to true', buildRobinhoodBlockscoutUsageAudit({ walletAddress: 'w', robinhoodSelected: false, audits: [] }).robinhoodSelected === false)
+  }
+
+  // ── 12. buildRobinhoodWalletScannerAudit wires robinhoodBlockscoutUsageAudit into the final result ─
+  {
+    const emptyAudit = buildRobinhoodWalletScannerAudit({ wallet: walletFor(23), holdings: null, activity: null, pnl: null, wrongChainCacheRejected: false })
+    check('robinhoodBlockscoutUsageAudit is present on the final RobinhoodWalletScannerAudit', emptyAudit.robinhoodBlockscoutUsageAudit !== undefined)
+    check('with no activity result at all, blockscoutAttempted honestly stays false — never fabricated', emptyAudit.robinhoodBlockscoutUsageAudit.blockscoutAttempted === false)
+  }
+
+  // ── 13. Base/ETH unaffected — no new field ever touches the shared EVM pipeline ─────────────────
+  {
+    const workerSrc = fs.readFileSync(new URL('../workers/walletScanV2.ts', import.meta.url), 'utf8')
+    check('robinhoodBlockscoutUsageAudit in the worker is only ever built from robinhood.audit — never from EVM holdings/pricing/trades data', /robinhoodBlockscoutUsageAudit = robinhood\s*\n\s*\? \{\s*\n\s*\.\.\.robinhood\.audit\.robinhoodBlockscoutUsageAudit,/.test(workerSrc))
+    check('the worker logs robinhoodBlockscoutUsageAudit unconditionally', workerSrc.includes("console.log('[CU-TRACK] robinhoodBlockscoutUsageAudit:', robinhoodBlockscoutUsageAudit)"))
   }
 
   console.log(`test-robinhood-blockscout-evidence.mjs: all ${passed} assertions passed`)

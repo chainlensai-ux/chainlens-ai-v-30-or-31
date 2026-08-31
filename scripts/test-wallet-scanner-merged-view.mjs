@@ -161,7 +161,10 @@ function run() {
     check('uiChainsDisplayed/cortexChainsDisplayed are both the AFTER-merge chain list (actualChainsScanned), never the pre-worker one', /uiChainsDisplayed: actualChainsScanned,\s*\n\s*cortexChainsDisplayed: actualChainsScanned,/.test(workerSrc))
     check('robinhoodMerged is true ONLY when a real, non-null value was actually added to totals — never merely "attempted"', /const robinhoodMerged = robinhood != null && robinhoodTotalValueUsd != null/.test(workerSrc))
     check('the audit is logged unconditionally, every scan', /console\.warn\('\[CU-TRACK\] final canonical merge audit:', finalCanonicalMergeAudit\)/.test(workerSrc))
-    check('finalCanonicalMergeAudit is merged into body.data', /finalCanonicalMergeAudit,\s*\n\s*canonicalChainsScanned: actualChainsScanned,/.test(workerSrc))
+    // UPDATED, DISCLOSED (proof-that-Blockscout-is-actually-used follow-up): see the matching update
+    // in test-wallet-scan-worker-robinhood.mjs — robinhoodBlockscoutUsageAudit was inserted between
+    // finalCanonicalMergeAudit and canonicalChainsScanned in body.data.
+    check('finalCanonicalMergeAudit is merged into body.data', /finalCanonicalMergeAudit,\s*\n\s*robinhoodBlockscoutUsageAudit,\s*\n\s*canonicalChainsScanned: actualChainsScanned,/.test(workerSrc))
     check('portfolioTotalByChainBeforeMerge is a real snapshot taken BEFORE Robinhood is added, not the same object reference mutated after the fact', /const portfolioTotalByChainBeforeMerge: Record<string, number> = \{ \.\.\.portfolioTotalByChain \}/.test(workerSrc))
   }
 
