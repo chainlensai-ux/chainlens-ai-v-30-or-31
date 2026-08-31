@@ -31,7 +31,10 @@ function run() {
   // ── 1. workers/walletScanV2.ts genuinely calls scanRobinhoodWallet() concurrently ───────────────
   {
     check('imports scanRobinhoodWallet', /import \{ scanRobinhoodWallet \} from '@\/lib\/server\/robinhoodWalletScanner'/.test(workerSrc))
-    check('imports isRobinhoodChainAvailable', /import \{ isRobinhoodChainAvailable \} from '@\/lib\/server\/robinhoodChainConfig'/.test(workerSrc))
+    // UPDATED, DISCLOSED (Robinhood-worker-module-propagation fix): this import gained a second,
+    // named export (ROBINHOOD_CHAIN_ID, needed to key Robinhood into portfolioTotalByChain by its
+    // real numeric chain id) — isRobinhoodChainAvailable's own presence/behavior is unchanged.
+    check('imports isRobinhoodChainAvailable (and ROBINHOOD_CHAIN_ID)', /import \{ isRobinhoodChainAvailable, ROBINHOOD_CHAIN_ID \} from '@\/lib\/server\/robinhoodChainConfig'/.test(workerSrc))
     check('imports buildWalletChainSelectionAudit', /import \{ buildWalletChainSelectionAudit \} from '@\/lib\/server\/walletChainSelectionAudit'/.test(workerSrc))
     check('runWalletScanV2Worker accepts a 4th, optional includeRobinhoodRequested param (additive, defaults false)', /export async function runWalletScanV2Worker\(rawBody: unknown, ip: string, jobId\?: string, includeRobinhoodRequested = false\)/.test(workerSrc))
     check('creates a robinhoodPromise calling scanRobinhoodWallet, gated on includeRobinhood', /const robinhoodPromise = includeRobinhood\s*\n\s*\? scanRobinhoodWallet\(walletAddress, fetch\)\.catch/.test(workerSrc))
@@ -59,7 +62,10 @@ function run() {
     check("fetchHoldings.ts contains no 'robinhood' reference anywhere", !/robinhood/i.test(holdingsSrc))
     check('fetchHoldings.ts contains no literal 4663 anywhere', !/4663/.test(holdingsSrc))
     check("SupportedChain union is still exactly 'base'|'eth'|'arbitrum'|'hyperevm' — no 'robinhood' member added", /export type SupportedChain = 'base' \| 'eth' \| 'arbitrum' \| 'hyperevm'/.test(chainTypesSrc))
-    check('fetchAllHoldings/resolveHoldingsAllowedChainIds are still imported unmodified (same names) by the worker', /import \{ fetchAllHoldings, resolveHoldingsAllowedChainIds \} from '@\/lib\/engine\/modules\/holdings\/fetchHoldings'/.test(workerSrc))
+    // UPDATED, DISCLOSED: gained a third named import (SUPPORTED_CHAIN_TO_CHAIN_ID, a real, already-
+    // exported map this file already used internally — see test 7) — fetchAllHoldings/
+    // resolveHoldingsAllowedChainIds themselves are unmodified.
+    check('fetchAllHoldings/resolveHoldingsAllowedChainIds (and SUPPORTED_CHAIN_TO_CHAIN_ID) are still imported unmodified (same names) by the worker', /import \{ fetchAllHoldings, resolveHoldingsAllowedChainIds, SUPPORTED_CHAIN_TO_CHAIN_ID \} from '@\/lib\/engine\/modules\/holdings\/fetchHoldings'/.test(workerSrc))
     check('holdingsAllowedChainIds is still computed the exact same EVM-only way', /const holdingsAllowedChainIds = resolveHoldingsAllowedChainIds\(sanitized\.chains\)/.test(workerSrc))
   }
 
@@ -77,6 +83,28 @@ function run() {
   // ── 6. UI prefers the worker's real, post-scan audit over the pre-scan enqueue-time one ─────────
   {
     check('page.tsx reads walletChainSelectionAudit off the completed job result and overrides state with it', /workerReportAudit[\s\S]*?setChainSelectionAudit\(workerReportAudit\)/.test(pageSrc))
+  }
+
+  // ── 7. workerChainPropagationAudit, DISCLOSED (Robinhood-worker-module-propagation fix): honest
+  //    per-stage accounting of where chain 4663 is filtered out of the EVM-native worker stages, and
+  //    whether it was still successfully re-attached via the canonical adapter.
+  {
+    check("SUPPORTED_CHAIN_TO_CHAIN_ID is imported for numeric chain-id keying", /import \{ fetchAllHoldings, resolveHoldingsAllowedChainIds, SUPPORTED_CHAIN_TO_CHAIN_ID \} from '@\/lib\/engine\/modules\/holdings\/fetchHoldings'/.test(workerSrc))
+    check('ROBINHOOD_CHAIN_ID is imported from robinhoodChainConfig', /import \{ isRobinhoodChainAvailable, ROBINHOOD_CHAIN_ID \} from '@\/lib\/server\/robinhoodChainConfig'/.test(workerSrc))
+    check('holdingsChainsProcessed is derived from the REAL chainHoldings rows, not just the requested list', /const holdingsChainsProcessed = Array\.from\(new Set\(chainHoldings\.map\(\(h\) => h\.chainId\)\)\)/.test(workerSrc))
+    check('pricingChainsProcessed is derived from the REAL pricing.pricedHoldings rows', /const pricingChainsProcessed = Array\.from\(new Set\(pricing\.pricedHoldings\.map\(\(p\) => p\.chainId\)\)\)/.test(workerSrc))
+    check('portfolioTotalByChain keys are numeric chain ids (via SUPPORTED_CHAIN_TO_CHAIN_ID), not EVM chain slugs', /portfolioTotalByChain\[String\(chainId\)\]/.test(workerSrc))
+    check('Robinhood is keyed into portfolioTotalByChain under its real numeric ROBINHOOD_CHAIN_ID (4663), never a slug', /portfolioTotalByChain\[String\(ROBINHOOD_CHAIN_ID\)\]/.test(workerSrc))
+    check('robinhoodDroppedAtStage is null (not dropped) exactly when a real robinhood result was merged', /const robinhoodDroppedAtStage: string \| null = robinhood\s*\n\s*\? null/.test(workerSrc))
+    check('workerChainPropagationAudit object has all 8 required fields', /const workerChainPropagationAudit = \{\s*\n\s*selectedChainsFromOrchestrator: finalWalletChainSelectionAudit\.requestedChainsAfter,\s*\n\s*workerRequestedChains: holdingsAllowedChainIds,\s*\n\s*workerAllowedChains: holdingsAllowedChainIds,\s*\n\s*holdingsChainsProcessed,\s*\n\s*pricingChainsProcessed,\s*\n\s*portfolioChainsIncluded,\s*\n\s*robinhoodDroppedAtStage,\s*\n\s*dropReason: robinhoodDropReason,\s*\n\s*\}/.test(workerSrc))
+    check('the audit is logged unconditionally on the success path', /console\.warn\('\[CU-TRACK\] worker chain propagation audit:', workerChainPropagationAudit\)/.test(workerSrc))
+    check('workerChainPropagationAudit is merged into body.data alongside the other new fields', /workerChainPropagationAudit,\s*\n\s*canonicalChainsScanned: actualChainsScanned,/.test(workerSrc))
+    check('workerRequestedChains/workerAllowedChains are the SAME real value fetchAllHoldings was actually called with (holdingsAllowedChainIds) — never a separately-computed, possibly-diverging number', /workerRequestedChains: holdingsAllowedChainIds,\s*\n\s*workerAllowedChains: holdingsAllowedChainIds,/.test(workerSrc))
+    check(
+      "holdingsChainsProcessed/pricingChainsProcessed derivations read real chainId fields off EVM-only arrays (chainHoldings/pricing.pricedHoldings), never Robinhood/4663",
+      /const holdingsChainsProcessed = Array\.from\(new Set\(chainHoldings\.map\(\(h\) => h\.chainId\)\)\)/.test(workerSrc)
+      && /const pricingChainsProcessed = Array\.from\(new Set\(pricing\.pricedHoldings\.map\(\(p\) => p\.chainId\)\)\)/.test(workerSrc),
+    )
   }
 
   console.log(`\n✅ ${passed} wallet-scan-worker-robinhood checks passed`)

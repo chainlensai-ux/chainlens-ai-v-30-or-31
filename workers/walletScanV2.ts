@@ -17,7 +17,7 @@
 // calls) is still called from here, unchanged; this file does not reimplement or bypass it.
 
 import { router } from '@/src/deployment/index'
-import { fetchAllHoldings, resolveHoldingsAllowedChainIds } from '@/lib/engine/modules/holdings/fetchHoldings'
+import { fetchAllHoldings, resolveHoldingsAllowedChainIds, SUPPORTED_CHAIN_TO_CHAIN_ID } from '@/lib/engine/modules/holdings/fetchHoldings'
 import { priceHoldings } from '@/lib/engine/modules/pricing/fetchPricing'
 import { buildPortfolio } from '@/lib/engine/modules/portfolio/buildPortfolio'
 import { computePnl, fetchParsedTrades } from '@/lib/engine/modules/pnl/computePnl'
@@ -47,7 +47,7 @@ import { getDexscreenerCallCount } from '@/src/modules/pricingAtTimeEngine/sourc
 // file's own inline disclosure at its call site below and lib/server/walletChainSelectionAudit.ts's
 // header for why SupportedChain (EVM-only) must never gain a 'robinhood' member.
 import { scanRobinhoodWallet } from '@/lib/server/robinhoodWalletScanner'
-import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
+import { isRobinhoodChainAvailable, ROBINHOOD_CHAIN_ID } from '@/lib/server/robinhoodChainConfig'
 import { buildWalletChainSelectionAudit } from '@/lib/server/walletChainSelectionAudit'
 
 // V2-DIRECT-FAILURE LOGGER: moved here unchanged from the route file (still exported so the route
@@ -988,17 +988,24 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // eslint-disable-next-line no-console
     console.warn('[CU-TRACK] wallet chain selection audit (final):', finalWalletChainSelectionAudit)
 
-    // CANONICAL MULTI-CHAIN MERGE, DISCLOSED (Robinhood-not-in-normal-pipeline fix): Robinhood is
-    // still NEVER fed into the EVM/FIFO-typed fields (`body.data.portfolio`, `body.data.scanMetadata`,
-    // `body.data.fifoAndPnl`/`canonicalPricedFifo` all stay exactly as the core pipeline computed them
-    // — untouched, no regression risk to Base/ETH/BNB). Instead these are NEW, purely-additive
-    // sibling fields, computed AFTER the real scan, from the real EVM portfolio total the pipeline
-    // already produced plus the real Robinhood holdings total `scanRobinhoodWallet()` already
-    // produced — never a fabricated number, never double-counted (this is the ONLY place either
-    // total is summed; the client must read `canonicalTotalValueUsd`, not re-add the two itself).
-    // `canonicalChainsScanned`/`portfolioTotalByChain`/`canonicalHoldings` are what a caller (the
-    // Wallet Scanner page, CORTEX, Clark) should treat as "the normal Wallet Scanner pipeline"
-    // result — Robinhood only appears here when `robinhood` above is a real, non-null result.
+    // CANONICAL MULTI-CHAIN MERGE, DISCLOSED (Robinhood-not-in-normal-pipeline fix, hardened for
+    // worker-module-propagation follow-up): Robinhood is still NEVER fed into the EVM/FIFO-typed
+    // fields (`body.data.portfolio`, `body.data.scanMetadata`, `body.data.fifoAndPnl`/
+    // `canonicalPricedFifo` all stay exactly as the core pipeline computed them — untouched, no
+    // regression risk to Base/ETH/BNB). `holdingsAllowedChainIds` (used for the real
+    // fetchAllHoldings/fetchParsedTrades/computePnl calls above) is, and must permanently stay,
+    // EVM-only — chain 4663 structurally cannot enter that call because
+    // resolveHoldingsAllowedChainIds()/CHAIN_ID_TO_SUPPORTED_CHAIN are typed against
+    // SupportedChain ('base'|'eth'|'arbitrum'|'hyperevm'), which has no Robinhood member and must
+    // never be widened (see lib/engine/modules/holdings/fetchHoldings.ts and
+    // lib/server/walletChainSelectionAudit.ts's own headers for why — real regression risk to
+    // Base/ETH/BNB's FIFO/pricing/provider-cost pipeline). Robinhood chain data is instead produced
+    // by the separate, real `scanRobinhoodWallet()` call (`robinhoodPromise` above) and merged HERE,
+    // after the core scan completes, into these NEW, purely-additive sibling fields — never a
+    // fabricated number, never double-counted (this is the ONLY place either total is summed; a
+    // caller must read `canonicalTotalValueUsd`, not re-add the two itself). Chain keys below are
+    // numeric chain ids (matching `walletChainSelectionAudit`'s own requestedChains/allowedChains
+    // convention: 8453=Base, 1=Ethereum, 4663=Robinhood), not slugs.
     const evmPortfolio = (body.data as { portfolio?: { totalValueUsd?: number | null; tokens?: Array<{ chain?: string; symbol?: string; valueUsd?: number | null }> } } | undefined)?.portfolio
     const evmTotalValueUsd = typeof evmPortfolio?.totalValueUsd === 'number' ? evmPortfolio.totalValueUsd : null
     const evmTokens = Array.isArray(evmPortfolio?.tokens) ? evmPortfolio!.tokens! : []
@@ -1009,10 +1016,12 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     const portfolioTotalByChain: Record<string, number> = {}
     for (const t of evmTokens) {
       if (!t.chain || typeof t.valueUsd !== 'number') continue
-      portfolioTotalByChain[t.chain] = (portfolioTotalByChain[t.chain] ?? 0) + t.valueUsd
+      const chainId = SUPPORTED_CHAIN_TO_CHAIN_ID[t.chain as keyof typeof SUPPORTED_CHAIN_TO_CHAIN_ID]
+      if (chainId == null) continue
+      portfolioTotalByChain[String(chainId)] = (portfolioTotalByChain[String(chainId)] ?? 0) + t.valueUsd
     }
     if (robinhood && robinhoodTotalValueUsd != null) {
-      portfolioTotalByChain.robinhood = (portfolioTotalByChain.robinhood ?? 0) + robinhoodTotalValueUsd
+      portfolioTotalByChain[String(ROBINHOOD_CHAIN_ID)] = (portfolioTotalByChain[String(ROBINHOOD_CHAIN_ID)] ?? 0) + robinhoodTotalValueUsd
     }
     const canonicalHoldings = robinhood
       ? [
@@ -1022,12 +1031,53 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
         ]
       : null
 
+    // WORKER CHAIN PROPAGATION AUDIT, DISCLOSED (this task's own explicit requirement): documents,
+    // honestly and per-stage, exactly where chain 4663 is (structurally, permanently) filtered out of
+    // the EVM-native worker stages, and whether it was still successfully re-attached to the final
+    // canonical result via the adapter above. Real distinct chain ids only — `holdingsChainsProcessed`
+    // is read off the REAL `chainHoldings` rows fetchAllHoldings returned (not just the requested
+    // list), same for `pricingChainsProcessed` off `pricing.pricedHoldings` — so a chain that was
+    // *allowed* but genuinely returned nothing is visibly distinguishable from one that returned data.
+    const holdingsChainsProcessed = Array.from(new Set(chainHoldings.map((h) => h.chainId))).sort((a, b) => a - b)
+    const pricingChainsProcessed = Array.from(new Set(pricing.pricedHoldings.map((p) => p.chainId))).sort((a, b) => a - b)
+    const portfolioChainsIncluded = Object.keys(portfolioTotalByChain).map(Number).sort((a, b) => a - b)
+    const robinhoodOmittedReason = finalWalletChainSelectionAudit.omittedReasons[String(ROBINHOOD_CHAIN_ID)] ?? null
+    const robinhoodDroppedAtStage: string | null = robinhood
+      ? null // successfully merged into the canonical result via the adapter — not dropped
+      : includeRobinhoodRequested
+        ? (includeRobinhood ? 'robinhood_scan' : 'chain_selection')
+        : 'not_requested'
+    const robinhoodDropReason: string | null = robinhood
+      ? null
+      : includeRobinhoodRequested
+        ? (includeRobinhood
+          ? 'scanRobinhoodWallet() returned no usable holdings/native data for this wallet (see walletChainSelectionAudit for env/config context) — never fabricated as included.'
+          : (robinhoodOmittedReason === 'robinhood_disabled'
+            ? 'Robinhood Chain scanning is disabled for this deployment (ENABLE_ROBINHOOD_CHAIN is not true).'
+            : robinhoodOmittedReason === 'robinhood_rpc_not_configured'
+              ? 'Robinhood Chain RPC is not configured for this deployment (ALCHEMY_ROBINHOOD_RPC_URL missing).'
+              : 'Robinhood Chain is unavailable for this scan.'))
+        : 'Robinhood Chain was not requested for this scan.'
+    const workerChainPropagationAudit = {
+      selectedChainsFromOrchestrator: finalWalletChainSelectionAudit.requestedChainsAfter,
+      workerRequestedChains: holdingsAllowedChainIds,
+      workerAllowedChains: holdingsAllowedChainIds,
+      holdingsChainsProcessed,
+      pricingChainsProcessed,
+      portfolioChainsIncluded,
+      robinhoodDroppedAtStage,
+      dropReason: robinhoodDropReason,
+    }
+    // eslint-disable-next-line no-console
+    console.warn('[CU-TRACK] worker chain propagation audit:', workerChainPropagationAudit)
+
     body = {
       ...body,
       data: {
         ...body.data,
         robinhood: robinhood ? { holdings: robinhood.holdings, activity: robinhood.activity, pnl: robinhood.pnl, audit: robinhood.audit } : null,
         walletChainSelectionAudit: finalWalletChainSelectionAudit,
+        workerChainPropagationAudit,
         canonicalChainsScanned: actualChainsScanned,
         canonicalTotalValueUsd,
         portfolioTotalByChain,
