@@ -775,9 +775,29 @@ function ClarkAiContent() {
   )
 }
 
+// SKELETON, NOT A TEXT FLASH, DISCLOSED (performance + UX optimization task's "remove fake loading"
+// / "skeletons instead of blank screens"): this Suspense fallback rendered the bare string
+// a bare "Loading…" string — a visible text flash that told the user nothing and left no room for
+// the real layout, so the page jumped when content arrived. Replaced with a chat-shaped skeleton at
+// roughly the real rhythm (a header line, two message blocks, a composer bar) so the transition into
+// the real UI is a swap rather than a jump. Opacity-only animation via the shared .cl-skeleton class,
+// which is disabled under prefers-reduced-motion.
+function ClarkAiSkeleton() {
+  return (
+    <div aria-busy="true" style={{ flex: 1, padding: '24px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <span className="sr-only">Loading Clark AI</span>
+      <div className="cl-skeleton" style={{ height: '28px', width: 'min(240px, 55%)', borderRadius: '9px' }} />
+      <div className="cl-skeleton" style={{ height: '84px', borderRadius: '14px' }} />
+      <div className="cl-skeleton" style={{ height: '64px', width: '80%', borderRadius: '14px' }} />
+      <div style={{ flex: 1 }} />
+      <div className="cl-skeleton" style={{ height: '46px', borderRadius: '12px' }} />
+    </div>
+  )
+}
+
 export default function ClarkAiPage() {
   return (
-    <Suspense fallback={<div style={{ padding: 32, color: '#94a3b8' }}>Loading Clark AI...</div>}>
+    <Suspense fallback={<ClarkAiSkeleton />}>
       <ClarkAiContent />
     </Suspense>
   )

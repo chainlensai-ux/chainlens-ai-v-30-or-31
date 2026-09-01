@@ -114,7 +114,13 @@ export type AccountProfile = {
 export type AccountSnapshot = {
   /** null only while genuinely unknown (first ever load, no cache). Never a guessed 'free'. */
   plan: UserPlan | null
-  email: string | null
+  /**
+   * `undefined` = the session has not resolved yet; `null` = resolved and genuinely signed out.
+   * Keeping those distinct is what stops the sidebar flashing "Sign In / Sign Up" at a signed-in
+   * user during the first paint — an unknown session must render a neutral placeholder, not a
+   * confident signed-out state.
+   */
+  email: string | null | undefined
   betaEliteActive: boolean
   elitePass: ElitePassState
   profile: AccountProfile
@@ -137,7 +143,7 @@ const EMPTY_PROFILE: AccountProfile = { avatarColor: null, avatarUrl: null, disp
 // and renders a skeleton, never a blocking text wall.
 const SERVER_SNAPSHOT: AccountSnapshot = Object.freeze({
   plan: null,
-  email: null,
+  email: undefined,
   betaEliteActive: false,
   elitePass: EMPTY_ELITE_PASS,
   profile: EMPTY_PROFILE,

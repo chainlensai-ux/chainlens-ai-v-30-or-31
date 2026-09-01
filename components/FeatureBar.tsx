@@ -614,6 +614,17 @@ export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, 
               </span>
             )}
           </Link>
+        ) : accountEmail === undefined ? (
+          /* UNKNOWN SESSION, DISCLOSED (performance + UX optimization task): `undefined` means the
+             session has not resolved yet — distinct from `null`, which means resolved-and-signed-out.
+             Rendering "Sign In / Sign Up" here would flash a confident signed-out state at a user who
+             is in fact signed in, on every first paint. A neutral placeholder at the SAME 32px height
+             as the real account row keeps the sidebar from jumping when the answer arrives. */
+          <div
+            aria-hidden="true"
+            className="cl-skeleton"
+            style={{ height: '32px', borderRadius: '7px', marginTop: '2px', width: '100%' }}
+          />
         ) : (
           <div className="flex" style={{ gap: '6px' }}>
             <Link
