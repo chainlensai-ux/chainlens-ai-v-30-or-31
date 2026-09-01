@@ -295,18 +295,16 @@ function moverTagTone(tag: string): 'positive' | 'caution' | 'accent' {
 
 // Compact mover row — the structured alternative to a plain "- Token: 24h +x%, vol $y, liq $z"
 // text line, using the SAME real per-item fields the backend's marketContext.items already carries.
-function MoverRow({ item, onScan, onWatch, watchState }: {
+function MoverRow({ item, onScan }: {
   item: MoverItem
   onScan: (item: MoverItem) => void
-  onWatch: (item: MoverItem) => void
-  watchState: 'idle' | 'saving' | 'saved' | 'error'
 }) {
   const positive = (item.change24h ?? 0) >= 0
   const contract = item.tokenAddress ?? item.poolAddress ?? null
   // TWO-LINE LAYOUT, DISCLOSED (Clark right-panel layout fix task): the right panel is narrow, so
   // packing rank/symbol/tag/%/vol/liq/contract/actions into one row squeezed everything together.
   // Split into a top identity row (rank, symbol, tag, 24h%) and a bottom metrics+actions row (vol,
-  // liq, contract chip, Scan/Watch) — same fields, same real data, just given room to breathe.
+  // liq, contract chip, Scan) — same fields, same real data, just given room to breathe.
   return (
     <div className="clark-mover-row">
       <div className="clark-mover-row-top">
@@ -331,14 +329,6 @@ function MoverRow({ item, onScan, onWatch, watchState }: {
         </div>
         <div className="clark-mover-row-actions">
           <button type="button" className="clark-mover-action" onClick={() => onScan(item)}>Scan</button>
-          <button
-            type="button"
-            className={`clark-mover-action${watchState === 'saved' ? ' is-active' : ''}`}
-            onClick={() => onWatch(item)}
-            disabled={watchState === 'saving'}
-          >
-            {watchState === 'saved' ? 'Watching' : watchState === 'saving' ? '…' : 'Watch'}
-          </button>
         </div>
       </div>
     </div>
@@ -429,11 +419,9 @@ function parseUsdShort(raw: string): number | null {
   return n
 }
 
-function MarketReadCard({ data, onScan, onWatch, watchStateFor, onReplyPrompt }: {
+function MarketReadCard({ data, onScan, onReplyPrompt }: {
   data: ParsedMarketRead
   onScan: (item: MoverItem) => void
-  onWatch: (item: MoverItem) => void
-  watchStateFor: (item: MoverItem) => 'idle' | 'saving' | 'saved' | 'error'
   onReplyPrompt: () => void
 }) {
   return (
@@ -459,8 +447,6 @@ function MarketReadCard({ data, onScan, onWatch, watchStateFor, onReplyPrompt }:
               key={`${item.symbol}-${item.rank ?? i}`}
               item={item}
               onScan={onScan}
-              onWatch={onWatch}
-              watchState={watchStateFor(item)}
             />
           ))}
         </div>
@@ -489,12 +475,10 @@ function MarketReadCard({ data, onScan, onWatch, watchStateFor, onReplyPrompt }:
 // Renders one reply as structured analysis: section headers for label lines, mover-row cards for
 // list lines when this message carries real marketContext.items, plain lines otherwise — same
 // content, never rewritten, just given hierarchy instead of one flat text block.
-function ClarkMessage({ text, movers, onScan, onWatch, watchStateFor, onReplyPrompt }: {
+function ClarkMessage({ text, movers, onScan, onReplyPrompt }: {
   text: string
   movers?: MoverItem[]
   onScan: (item: MoverItem) => void
-  onWatch: (item: MoverItem) => void
-  watchStateFor: (item: MoverItem) => 'idle' | 'saving' | 'saved' | 'error'
   onReplyPrompt: () => void
 }) {
   // Base Market Read gets its own dedicated card when the text matches that exact shape; any other
@@ -506,8 +490,6 @@ function ClarkMessage({ text, movers, onScan, onWatch, watchStateFor, onReplyPro
       <MarketReadCard
         data={marketRead}
         onScan={onScan}
-        onWatch={onWatch}
-        watchStateFor={watchStateFor}
         onReplyPrompt={onReplyPrompt}
       />
     )
@@ -535,8 +517,6 @@ function ClarkMessage({ text, movers, onScan, onWatch, watchStateFor, onReplyPro
                     key={`${item.symbol}-${mi}`}
                     item={item}
                     onScan={onScan}
-                    onWatch={onWatch}
-                    watchState={watchStateFor(item)}
                   />
                 ))}
               </div>
@@ -565,7 +545,6 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
   const [loading, setLoading] = useState(false)
   const [loadingKind, setLoadingKind] = useState<AnalysisKind>('general')
   const [clarkMode, setClarkMode] = useState<ClarkMode>('chat')
-  const [watchStates, setWatchStates] = useState<Record<string, 'idle' | 'saving' | 'saved' | 'error'>>({})
   const scrollRef = useRef<HTMLDivElement>(null)
   const messagesRef = useRef<Message[]>([])
   const lastSentRef = useRef<string | null>(null)
@@ -713,38 +692,14 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
     }
   }, [clarkMode])
 
-  // MICRO-ACTIONS, DISCLOSED (Clark panel redesign): "Scan" reuses sendToClark exactly like typing
-  // a prompt would — no new backend path. "Watch" reuses the existing, unmodified
-  // /api/watchlist/tokens endpoint the Watchlist page already calls; this is the same real
-  // add-to-watchlist action, just triggered from a mover row instead of that page.
-  const watchKey = useCallback((item: MoverItem) => (item.tokenAddress ?? item.poolAddress ?? item.symbol).toLowerCase(), [])
-  const watchStateFor = useCallback((item: MoverItem) => watchStates[watchKey(item)] ?? 'idle', [watchStates, watchKey])
-
+  // MICRO-ACTIONS: Scan a pumping-list token via /token, never wallet scan. Watch removed.
   const handleScanMover = useCallback((item: MoverItem) => {
-    const target = item.tokenAddress ?? item.symbol
-    sendToClark(`Scan ${target}`)
+    const target = item.tokenAddress ?? item.poolAddress ?? item.symbol
+    if (!target) return
+    sendToClark(/^0x[a-fA-F0-9]{40}$/.test(target) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(target)
+      ? `/token ${target}`
+      : `/token ${item.symbol}`)
   }, [sendToClark])
-
-  const handleWatchMover = useCallback(async (item: MoverItem) => {
-    const key = watchKey(item)
-    if (watchStates[key] === 'saving' || watchStates[key] === 'saved') return
-    setWatchStates(prev => ({ ...prev, [key]: 'saving' }))
-    try {
-      const { data: sessionData } = await supabase.auth.getSession()
-      const token = sessionData.session?.access_token
-      if (!token) { setWatchStates(prev => ({ ...prev, [key]: 'error' })); return }
-      const address = item.tokenAddress ?? item.poolAddress ?? ''
-      if (!address) { setWatchStates(prev => ({ ...prev, [key]: 'error' })); return }
-      const res = await fetch('/api/watchlist/tokens', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ address, symbol: item.symbol, chain: 'base' }),
-      })
-      setWatchStates(prev => ({ ...prev, [key]: res.ok ? 'saved' : 'error' }))
-    } catch {
-      setWatchStates(prev => ({ ...prev, [key]: 'error' }))
-    }
-  }, [watchStates, watchKey])
 
   useEffect(() => {
     if (pendingMessage && pendingMessage !== lastSentRef.current) {
@@ -1281,8 +1236,6 @@ export default function ClarkRadar({ onSelectRadar: _onSelectRadar, pendingMessa
                         text={msg.text}
                         movers={msg.movers}
                         onScan={handleScanMover}
-                        onWatch={handleWatchMover}
-                        watchStateFor={watchStateFor}
                         onReplyPrompt={() => inputRef.current?.focus()}
                       />
                     ) : msg.text}
