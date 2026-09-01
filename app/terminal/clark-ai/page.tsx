@@ -4,6 +4,7 @@ import { Suspense, useEffect, useMemo, useRef, useState, type CSSProperties } fr
 import { usePathname, useSearchParams } from 'next/navigation'
 import { ThinkingOrb } from 'thinking-orbs'
 import { supabase } from '@/lib/supabaseClient'
+import { useAccount } from '@/lib/usePlan'
 import { getClarkSessionId as getOrCreateSessionId, readClarkClientContext as getClientClarkContext, persistClarkMemoryEcho, persistClarkMomentumList, persistMarketMomentum, readMarketMomentum, resolveClarkCommandChipTarget } from '@/lib/client/clarkMemory'
 import {
   CLARK_FETCH_TIMEOUT_MS,
@@ -103,7 +104,12 @@ function ClarkAiContent() {
   const [loadingStage, setLoadingStage] = useState(0)
   const [memoryEpoch, setMemoryEpoch] = useState(0)
   const [clarkUsed, setClarkUsed] = useState(0)
-  const [planLimit, setPlanLimit] = useState<number | null>(null)
+  const account = useAccount()
+  const planLimit = account.email === undefined
+    ? null
+    : account.email === null
+      ? CLARK_LIMIT_UNAUTH
+      : CLARK_DAILY_LIMITS[account.plan ?? 'free'] ?? CLARK_DAILY_LIMITS.free
   const clarkContextRef = useRef<ClarkContextState>({})
   const autoSentRef     = useRef(false)
   const threadRef       = useRef<HTMLDivElement>(null)
@@ -190,18 +196,6 @@ function ClarkAiContent() {
 
   useEffect(() => {
     setClarkUsed(readClarkUsage())
-    supabase.auth.getSession().then(async ({ data }) => {
-      const token = data.session?.access_token
-      if (!token) { setPlanLimit(CLARK_LIMIT_UNAUTH); return }
-      try {
-        const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
-        if (res.ok) {
-          const json = await res.json() as Record<string, unknown>
-          const p = String(json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan ?? '')
-          setPlanLimit(CLARK_DAILY_LIMITS[p] ?? CLARK_DAILY_LIMITS.free)
-        } else { setPlanLimit(CLARK_DAILY_LIMITS.free) }
-      } catch { setPlanLimit(CLARK_DAILY_LIMITS.free) }
-    })
   }, [])
 
   useEffect(() => {
