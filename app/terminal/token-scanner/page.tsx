@@ -17,6 +17,14 @@ import { computeSolanaCortexRisk, classifySolanaExtensionRisk } from '@/lib/sola
 import { resolveDeployerWalletIntel } from '@/lib/deployerWalletIntel'
 import { resolveRobinhoodTokenEvidence } from '@/lib/robinhoodTokenEvidence'
 import {
+  buildRobinhoodLpCopy,
+  buildRobinhoodLpSafetyBuckets,
+  ROBINHOOD_HOLDER_UNAVAILABLE_LABEL,
+  ROBINHOOD_SECURITY_UNSUPPORTED_LABEL,
+  type RobinhoodLpProofAudit,
+  type RobinhoodLpResolutionAudit,
+} from '@/lib/robinhoodLpProofShared'
+import {
   normalizeRiskScore,
   riskColorFromCanonicalLabel,
   riskGaugeFillPercent,
@@ -272,6 +280,8 @@ type ScanResult = {
   lpProofStatus?: 'confirmed' | 'partial' | 'missing' | 'not_applicable' | 'unknown'
   lpExitRisk?: 'low' | 'monitor' | 'watch' | 'medium' | 'high' | 'open_check'
   liquidityDepthRisk?: 'low' | 'medium' | 'high' | 'open_check'
+  robinhoodLpProofAudit?: RobinhoodLpProofAudit | null
+  robinhoodLpResolutionAudit?: RobinhoodLpResolutionAudit | null
   lpExitRiskReason?: string
   lpEvidenceSummary?: string
   lpEvidenceGaps?: Array<{ id: string; label: string; explanation: string; nextAction: string }>
@@ -3468,6 +3478,23 @@ function isRobinhoodScan(result: ScanResult): boolean {
 
 const ROBINHOOD_LP_EXPLAINER = 'Liquidity was detected, but ChainLens could not verify LP lock/burn/controller proof for this Robinhood pool. Treat exit risk as unverified.'
 
+function robinhoodProofCopy(result: ScanResult) {
+  const audit = result.robinhoodLpProofAudit
+  if (!audit) return null
+  const concentrated = audit.poolType === 'v3' || audit.poolType === 'concentrated' || audit.concentratedProofAttempted && (result.lpControl?.displayLpModel === 'concentrated_liquidity' || result.lpControl?.status === 'concentrated_liquidity')
+  const position = result.concentratedPositionProof?.status === 'verified'
+    ? 'verified' as const
+    : result.concentratedPositionProof?.status === 'partial'
+      ? 'partial' as const
+      : (concentrated ? 'unavailable' as const : null)
+  return buildRobinhoodLpCopy({
+    concentrated: Boolean(concentrated || result.lpControl?.status === 'concentrated_liquidity' || result.lpControl?.displayLpModel === 'concentrated_liquidity'),
+    classification: audit.status,
+    reason: audit.reason,
+    positionOwnerProof: position,
+  })
+}
+
 function robinhoodLpLabelOverrides(result: ScanResult): {
   lock?: { label: string; description: string }
   exit?: { label: string; color: string; description: string }
@@ -3479,23 +3506,27 @@ function robinhoodLpLabelOverrides(result: ScanResult): {
   const hasLiquidity = (result.liquidity ?? 0) > 0 || lp?.poolAddressPresent
   const proofConfirmed = status === 'burned' || status === 'locked' || (result.lpLockStatus === 'locked' || result.lpLockStatus === 'burned')
   const walletControlled = status === 'team_controlled' || lp?.lpControllerType === 'wallet'
-  if (!hasLiquidity) return null // "No Active Pool" path already honest
-  if (proofConfirmed || walletControlled) return null // real proof / controller verdicts pass through
+  if (!hasLiquidity) return null
+  if (proofConfirmed || walletControlled) return null
 
-  // Liquidity exists but control/proof unverified → the reported broken-looking state.
+  const copy = robinhoodProofCopy(result)
+  const lockWhy = copy?.lockWhy ?? result.robinhoodLpProofAudit?.reason ?? ROBINHOOD_LP_EXPLAINER
+  const concentrated = Boolean(copy?.concentratedNote)
   return {
     lock: {
-      label: 'Standard LP proof unavailable',
-      description: ROBINHOOD_LP_EXPLAINER,
+      label: copy?.lockLabel ?? 'LP lock not confirmed',
+      description: lockWhy,
     },
     exit: {
       label: 'Exit risk unverified',
       color: '#fbbf24',
-      description: ROBINHOOD_LP_EXPLAINER,
+      description: lockWhy,
     },
     model: {
-      label: 'Robinhood LP Model Partial',
-      description: `Pool detected${lp?.primaryPoolDex || result.primaryDexName ? ` (${result.primaryDexName ?? lp?.primaryPoolDex})` : ''}, but the pool model could not be fully classified on Robinhood Chain — standard ERC-20 LP assumptions are not applied to Robinhood pools.`,
+      label: concentrated ? 'Concentrated LP model' : 'Robinhood LP Model Partial',
+      description: concentrated
+        ? 'Concentrated liquidity detected. Standard ERC-20 LP lock/burn proof does not apply. Controller/position proof still required.'
+        : `Pool detected${lp?.primaryPoolDex || result.primaryDexName ? ` (${result.primaryDexName ?? lp?.primaryPoolDex})` : ''}, but LP lock/burn/controller proof is ${result.robinhoodLpProofAudit?.status === 'unavailable_with_reason' ? 'unavailable' : 'partial'} on Robinhood Chain.`,
     },
   }
 }
@@ -7660,12 +7691,20 @@ export default function TerminalTokenScanner() {
                       // classification instead.
                       const robinhoodEv = robinhoodEvidenceFor(result)
                       const ownerStatusValue = fallback.ownerStatus !== 'Open check' ? fallback.ownerStatus : (robinhoodEv?.ownershipLabel ?? fallback.ownerStatus)
-                      const securityValue = hpV ? 'Verified' : (robinhoodEv?.securityLabel ?? 'Open check')
+                      const securityValue = hpV
+                        ? 'Verified'
+                        : (robinhoodEv?.securityLabel ?? (isRobinhoodScan(result) ? ROBINHOOD_SECURITY_UNSUPPORTED_LABEL : 'Open check'))
+                      const lpControlValue = lpV
+                        ? 'Verified'
+                        : (robinhoodEv?.lpControllerLabel ?? (isRobinhoodScan(result) ? (robinhoodProofCopy(result)?.controllerLabel ?? 'LP controller not verified') : 'Open check'))
+                      const holderMissingCopy = isRobinhoodScan(result)
+                        ? ROBINHOOD_HOLDER_UNAVAILABLE_LABEL
+                        : 'Holder distribution was not returned in this scan. Supply concentration remains an open risk check.'
                       const evItems: Array<{label:string;value:string;ok:boolean}> = [
                         { label: 'Market data',         value: result.price!=null?'Available':'Unavailable',                   ok: result.price!=null },
                         { label: 'Liquidity depth',     value: fallback.liquidityDepth!=null?fmtLarge(fallback.liquidityDepth):'Open check', ok: fallback.liquidityDepth!=null },
                         { label: 'Pool count',          value: fallback.poolCount>0?String(fallback.poolCount):'Open check',    ok: fallback.poolCount>0 },
-                        { label: 'LP control',          value: lpV?'Verified':'Open check',                                   ok: lpV },
+                        { label: 'LP control',          value: lpControlValue,                                                ok: lpV },
                         { label: 'Owner status',        value: ownerStatusValue,                                              ok: fallback.ownerStatus==='Renounced' },
                         { label: 'Security simulation', value: securityValue,                                                 ok: hpV },
                       ]
@@ -7675,12 +7714,12 @@ export default function TerminalTokenScanner() {
                             <p style={{ fontSize: '12px', fontWeight: 800, letterSpacing: '0.12em', color: '#8fb3d0', margin: 0, fontFamily: 'var(--font-plex-mono)' }}>HOLDER CONCENTRATION</p>
                             <span style={{ padding: '2px 7px', borderRadius: '999px', fontSize: '9px', fontWeight: 800, letterSpacing: '0.1em', fontFamily: 'var(--font-plex-mono)', border: '1px solid rgba(251,191,36,.4)', color: '#fbbf24', background: 'rgba(251,191,36,.08)' }}>UNVERIFIED</span>
                           </div>
-                          <p style={{ margin: '0 0 12px', fontSize: '12px', color: '#fde68a', lineHeight: 1.5 }}>Holder distribution was not returned in this scan. Supply concentration remains an open risk check.</p>
+                          <p style={{ margin: '0 0 12px', fontSize: '12px', color: '#fde68a', lineHeight: 1.5 }}>{holderMissingCopy}</p>
                           <div className="intel-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3,minmax(0,1fr))', gap: '8px', marginBottom: '14px' }}>
                             {evItems.map(({label,value,ok})=>(
-                              <div key={label} style={{ padding: '9px 10px', borderRadius: '10px', background: 'rgba(15,23,42,0.42)', border: `1px solid ${ok?'rgba(52,211,153,.22)':value==='Open check'?'rgba(251,191,36,.22)':'rgba(248,113,113,.22)'}` }}>
+                              <div key={label} style={{ padding: '9px 10px', borderRadius: '10px', background: 'rgba(15,23,42,0.42)', border: `1px solid ${ok?'rgba(52,211,153,.22)':/open check/i.test(value)?'rgba(251,191,36,.22)':/unsupported/i.test(value)?'rgba(125,211,252,.22)':'rgba(248,113,113,.22)'}` }}>
                                 <div style={{ fontSize: '9px', color: '#64748b', fontFamily: 'var(--font-plex-mono)', marginBottom: '3px' }}>{label}</div>
-                                <div style={{ fontSize: '11px', fontWeight: 700, color: ok?'#34d399':value==='Open check'?'#fbbf24':'#f87171', fontFamily: 'var(--font-plex-mono)' }}>{value}</div>
+                                <div style={{ fontSize: '11px', fontWeight: 700, color: ok?'#34d399':/open check/i.test(value)?'#fbbf24':/unsupported/i.test(value)?'#7dd3fc':'#f87171', fontFamily: 'var(--font-plex-mono)' }}>{value}</div>
                               </div>
                             ))}
                           </div>
@@ -7796,6 +7835,48 @@ export default function TerminalTokenScanner() {
                     )
                   })()}
 
+                  {isRobinhoodScan(result) && result.robinhoodLpProofAudit && (() => {
+                    const audit = result.robinhoodLpProofAudit
+                    const copy = robinhoodProofCopy(result) ?? buildRobinhoodLpCopy({
+                      concentrated: result.lpControl?.status === 'concentrated_liquidity' || result.lpControl?.displayLpModel === 'concentrated_liquidity',
+                      classification: audit.status,
+                      reason: audit.reason,
+                      positionOwnerProof: result.concentratedPositionProof?.status === 'verified' ? 'verified' : result.concentratedPositionProof?.status === 'partial' ? 'partial' : 'unavailable',
+                    })
+                    const buckets = buildRobinhoodLpSafetyBuckets({
+                      audit,
+                      copy,
+                      liquidityUsd: result.liquidity ?? null,
+                      tokenHolderRowsReturned: result.holderDistribution?.topHolders?.length ?? 0,
+                      securityUnsupported: result.honeypot?.honeypotStatus === 'not_supported' || result.honeypot?.honeypotReason === ROBINHOOD_SECURITY_UNSUPPORTED_LABEL,
+                      securityErrored: result.honeypot?.honeypotStatus === 'failed',
+                      concentrated: Boolean(copy.concentratedNote),
+                    })
+                    const sections: Array<{ key: keyof typeof buckets; title: string; color: string; border: string }> = [
+                      { key: 'verified', title: 'Verified evidence', color: '#34d399', border: 'rgba(52,211,153,.22)' },
+                      { key: 'partial', title: 'Partial evidence', color: '#fbbf24', border: 'rgba(251,191,36,.22)' },
+                      { key: 'missing', title: 'Missing evidence', color: '#94a3b8', border: 'rgba(148,163,184,.22)' },
+                      { key: 'unsupported', title: 'Unsupported on Robinhood', color: '#7dd3fc', border: 'rgba(125,211,252,.22)' },
+                    ]
+                    return (
+                      <div style={{ marginBottom: '16px', padding: '14px 16px', background: 'rgba(8,14,28,0.55)', border: '1px solid rgba(125,211,252,.16)', borderRadius: '14px' }}>
+                        <p style={{ margin: '0 0 10px', fontSize: '9px', fontWeight: 800, letterSpacing: '.16em', color: '#7dd3fc', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono)' }}>Robinhood LP evidence</p>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: '8px' }}>
+                          {sections.map(({ key, title, color, border }) => (
+                            <div key={key} style={{ padding: '10px 11px', borderRadius: '10px', background: 'rgba(10,18,32,0.55)', border: `1px solid ${border}` }}>
+                              <div style={{ fontSize: '9px', fontWeight: 800, letterSpacing: '.08em', color, fontFamily: 'var(--font-plex-mono)', marginBottom: '6px', textTransform: 'uppercase' }}>{title}</div>
+                              {buckets[key].length === 0
+                                ? <div style={{ fontSize: '11px', color: '#64748b', fontFamily: 'var(--font-plex-mono)' }}>None</div>
+                                : buckets[key].map((line) => (
+                                  <div key={line} style={{ fontSize: '11px', color: '#cbd5e1', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.45, marginBottom: '4px', overflowWrap: 'anywhere' }}>{line}</div>
+                                ))}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })()}
+
                   {/* ── Compact detail rows ───────────────────────────── */}
                   {(() => {
                     const lpModeVal = getLpMode(result)
@@ -7868,11 +7949,13 @@ export default function TerminalTokenScanner() {
                     const controlProof = result.lpControl?.status === 'team_controlled' || result.lpControl?.proofStatus === 'verified'
                       ? 'Confirmed'
                       : isV3Partial ? 'Owner verification pending'
-                      : protocolPosition ? (controlProofFromAttempt ?? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable')) : 'Open Check'
+                      : protocolPosition ? (controlProofFromAttempt ?? (hasResolvedConcentratedManager(result) ? 'Position manager resolved — owner verification pending' : 'Position check unavailable'))
+                      : (isRobinhoodScan(result) ? (robinhoodProofCopy(result)?.controllerLabel ?? 'LP controller not verified') : 'Open Check')
                     const lockBurnProof = result.lpControl?.lockStatus === 'locked' || result.lpControl?.burnStatus === 'burned'
                       ? 'Confirmed'
                       : isV3Partial ? 'ERC-20 LP proof not used'
-                      : notApplicable ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.' : 'Open Check'
+                      : notApplicable ? 'Not Applicable — standard ERC-20 LP-token lock/burn proof does not apply.'
+                      : (isRobinhoodScan(result) ? (robinhoodProofCopy(result)?.lockLabel ?? 'LP lock not confirmed') : 'Open Check')
                     const liquidityDepth = result.liquidityDepthRisk === 'low'
                       ? 'Deep'
                       : result.liquidityDepthRisk === 'medium' ? 'Moderate'
@@ -7891,8 +7974,10 @@ export default function TerminalTokenScanner() {
                       : lpStatus === 'burned' ? 'Burned'
                       : lpStatus === 'locked' ? 'Locked'
                       : lpStatus === 'partial' ? 'Partial Evidence'
-                      : lpStatus === 'no_pool' ? 'Open Check'
-                      : cleanStatusLabel(lpStatus)
+                      : lpStatus === 'no_pool' ? (isRobinhoodScan(result) ? 'Unavailable' : 'Open Check')
+                      : (cleanStatusLabel(lpStatus) === 'Open Check' && isRobinhoodScan(result)
+                        ? (robinhoodProofCopy(result)?.controllerLabel ?? 'LP controller not verified')
+                        : cleanStatusLabel(lpStatus))
                     // LP Control for concentrated pools mirrors the real position-proof attempt
                     // result instead of a static "required" placeholder — keeps it consistent
                     // with Control Proof rather than showing two contradictory "required" lines.

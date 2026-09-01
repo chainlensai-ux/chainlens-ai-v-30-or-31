@@ -759,7 +759,7 @@ describe('selectDisplayedPnl — canonical single-source selector (contradictory
     const displayed = selectDisplayedPnl({ pnlV2: pnlV2({ realizedPnlUsd: 42, costBasis: [] }), publicPnlStatus: 'unavailable', reconciliationSummary: summary })
     assert.equal(displayed.source, 'pnlV2')
     assert.equal(displayed.realizedPnlUsd, 42, 'unavailable must still read pnlV2, never reconciliationSummary')
-    assert.equal(displayed.integrityLabel, 'Not available (V2 engine)')
+    assert.equal(displayed.integrityLabel, 'Not available')
   })
 
   it("HARD ASSERTION: 'ok' (available) status keeps the existing pnlV2 pass-through and integrity wording — unchanged by this task", () => {
@@ -773,7 +773,7 @@ describe('selectDisplayedPnl — canonical single-source selector (contradictory
     assert.equal(displayed.realizedPnlUsd, 100, "'ok' must never read reconciliationSummary either")
     assert.equal(displayed.totalPnlUsd, 110)
     assert.equal(displayed.costBasisUsd, 50)
-    assert.equal(displayed.integrityLabel, 'Not available (V2 engine)')
+    assert.equal(displayed.integrityLabel, 'Not available')
   })
 })
 

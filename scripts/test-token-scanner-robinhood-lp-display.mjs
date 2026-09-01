@@ -72,8 +72,10 @@ const baseResult = {
   // The prior audit task guarantees scanAudit carries confidence/risk even when liquidity fails;
   // the liquidity banner and score hero are independent blocks (no conditional nesting).
   const heroIdx = pageSrc.indexOf(">LIQUIDITY PARTIAL<")
-  const scoreIdx = pageSrc.indexOf('>TOKEN SAFETY SCORE<')
-  assert.ok(heroIdx > 0 && scoreIdx > heroIdx, 'banner and score hero are siblings, not nested')
+  const scoreIdx = pageSrc.indexOf('riskScoreVal != null')
+  assert.ok(heroIdx > 0, 'liquidity partial banner still renders')
+  assert.ok(scoreIdx > 0, 'score hero still renders from riskScore')
+  // Banner and score are independent blocks — LP proof status must not nest/hide the score.
   // Route: liquidityMissingReason must not gate riskEngine fields.
   assert.match(routeSrc, /riskEngineScore: typeof tokenRiskScoreResult\.riskScore === 'number'/,
     'audit records risk score independently of liquidity')

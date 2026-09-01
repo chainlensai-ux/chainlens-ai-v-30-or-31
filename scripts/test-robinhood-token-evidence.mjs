@@ -38,12 +38,12 @@ function baseInput(overrides = {}) {
 {
   const notAttempted = resolveRobinhoodTokenEvidence(baseInput({ holderData: { topHoldersCount: 0, providerStatus: 'unavailable_with_reason', providerReason: null, providerAttempted: false } }))
   check('no supported holder provider -> unsupported_on_robinhood', notAttempted.holderStatus === 'unsupported_on_robinhood')
-  check('exact required wording, no "Open check" text', notAttempted.holderLabel === 'Holder distribution unsupported for Robinhood provider right now')
+  check('exact required wording, no "Open check" text', notAttempted.holderLabel === 'Holder distribution unavailable — Robinhood provider did not return holder rows.')
   check('label never contains the literal string "Open check"', !/open check/i.test(notAttempted.holderLabel))
 
   const attemptedButFailed = resolveRobinhoodTokenEvidence(baseInput({ holderData: { topHoldersCount: 0, providerStatus: 'error', providerReason: 'provider_error', providerAttempted: true } }))
   check('provider attempted but errored -> provider_unavailable', attemptedButFailed.holderStatus === 'provider_unavailable')
-  check('same honest wording for a real provider failure', attemptedButFailed.holderLabel === 'Holder distribution unsupported for Robinhood provider right now')
+  check('same honest wording for a real provider failure', attemptedButFailed.holderLabel === 'Holder distribution unavailable — Robinhood provider did not return holder rows.')
 
   const withHolders = resolveRobinhoodTokenEvidence(baseInput({ holderData: { topHoldersCount: 12, providerStatus: 'ok', providerReason: null, providerAttempted: true } }))
   check('real holder rows -> verified', withHolders.holderStatus === 'verified')
@@ -72,7 +72,7 @@ function baseInput(overrides = {}) {
     securityData: { attempted: true, simulationStatus: 'not_supported', honeypotReason: 'Security provider does not support this token/chain pair', isHoneypot: null },
   }))
   check('honeypot.is 403 -> unsupported_on_robinhood', unsupported.securityStatus === 'unsupported_on_robinhood')
-  check('exact required security wording', unsupported.securityLabel === 'Security simulation unsupported for Robinhood provider')
+  check('exact required security wording', unsupported.securityLabel === 'Security simulation unsupported on Robinhood')
   check('never the literal "Open check"', !/open check/i.test(unsupported.securityLabel))
 
   const failed = resolveRobinhoodTokenEvidence(baseInput({

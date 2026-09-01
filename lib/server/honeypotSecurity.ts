@@ -164,9 +164,26 @@ function normalize(raw: Record<string, unknown>): HoneypotSecurityResult {
   };
 }
 
+export function honeypotSimulationUnsupportedReason(chainIdOrNetwork: string | number): string | null {
+  const raw = String(chainIdOrNetwork ?? '').trim().toLowerCase()
+  if (raw === '4663' || raw === 'robinhood') return 'Security simulation unsupported on Robinhood'
+  return null
+}
+
 export async function fetchHoneypotSecurity(tokenAddress: string, chainIdOrNetwork: string | number = "base", timeoutMs = 3500): Promise<HoneypotSecurityResult> {
   if (!/^0x[a-fA-F0-9]{40}$/.test(tokenAddress)) {
     return { ...UNVERIFIED, honeypotProvider: "error", warnings: ["Invalid token address"], ok: false };
+  }
+
+  const unsupportedReason = honeypotSimulationUnsupportedReason(chainIdOrNetwork)
+  if (unsupportedReason) {
+    return {
+      ...UNVERIFIED,
+      honeypotProvider: "unsupported",
+      simulationStatus: "not_supported",
+      honeypotReason: unsupportedReason,
+      warnings: [unsupportedReason],
+    }
   }
 
   const chainID = chainIdOrNetwork === "base" ? "8453" : String(chainIdOrNetwork || "8453");

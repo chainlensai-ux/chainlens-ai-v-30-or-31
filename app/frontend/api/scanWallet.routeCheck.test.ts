@@ -239,4 +239,44 @@ describe('scanWalletV2 (wallet-scan background job + polling)', () => {
     }
   })
 
+  it('forwards the worker partial snapshot on poll so the UI can show holdings before PnL completes', async () => {
+    const partials: Array<{ holdingsCount: number; portfolioTotalValueUsd: number | null } | undefined> = []
+    global.setTimeout = ((cb: (...args: unknown[]) => void) => originalSetTimeout(cb, 0)) as typeof setTimeout
+    const originalFetch = global.fetch
+    let polls = 0
+    global.fetch = mock.fn(async (url: string) => {
+      if (url === '/api/wallet-scan') {
+        return new Response(JSON.stringify({ jobId: 'job-partial', status: 'queued' }), { status: 200 })
+      }
+      polls += 1
+      if (polls === 1) {
+        return new Response(JSON.stringify({
+          status: 'running',
+          partial: {
+            portfolioTotalValueUsd: 14940.03,
+            holdingsCount: 4,
+            topHoldings: [{ chainId: 8453, tokenAddress: '0xabc', symbol: 'USDC', valueUsd: 11940 }],
+            activeChainIds: [8453, 1],
+            publishedAtElapsedMs: 4200,
+          },
+        }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ status: 'done', result: { success: true, data: { complete: true } } }), { status: 200 })
+    }) as unknown as typeof fetch
+
+    try {
+      const { scanWalletV2 } = await import('./scanWallet.ts')
+      const result = await scanWalletV2('0xabc', ['base', 'eth'], 'deep', ({ partial }) => {
+        if (partial) partials.push(partial)
+      })
+      assert.equal(partials.length, 1)
+      assert.equal(partials[0]?.holdingsCount, 4)
+      assert.equal(partials[0]?.portfolioTotalValueUsd, 14940.03)
+      assert.equal(result.success, true)
+    } finally {
+      global.fetch = originalFetch
+      global.setTimeout = originalSetTimeout
+    }
+  })
+
 })

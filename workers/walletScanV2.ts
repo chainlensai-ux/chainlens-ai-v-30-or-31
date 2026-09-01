@@ -1031,7 +1031,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     console.warn('[CU-TRACK] robinhoodPnlVerificationAudit:', robinhoodPnlVerificationAudit)
 
     // CANONICAL MULTI-CHAIN MERGE, DISCLOSED (Robinhood-not-in-normal-pipeline fix, hardened for
-    // worker-module-propagation follow-up): Robinhood is still NEVER fed into the EVM/FIFO-typed
+    // worker-module-propagation follow-up + progressive-render QA): Robinhood is still NEVER fed into the EVM/FIFO-typed
     // fields (`body.data.portfolio`, `body.data.scanMetadata`, `body.data.fifoAndPnl`/
     // `canonicalPricedFifo` all stay exactly as the core pipeline computed them — untouched, no
     // regression risk to Base/ETH/BNB). `holdingsAllowedChainIds` (used for the real
@@ -1048,19 +1048,43 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     // caller must read `canonicalTotalValueUsd`, not re-add the two itself). Chain keys below are
     // numeric chain ids (matching `walletChainSelectionAudit`'s own requestedChains/allowedChains
     // convention: 8453=Base, 1=Ethereum, 4663=Robinhood), not slugs.
+    //
+    // EVM BASE = SNAPSHOT TOTAL, DISCLOSED (progressive-render QA check 8): the live snapshot
+    // published `portfolioOutput.portfolio.totalValueUsd` (the same number attached as
+    // `portfolioV2`) WHILE FIFO still ran. `body.data.portfolio` is the core pipeline's older V1
+    // field and can be a stale Base/ETH-only figure. Using V1 here made `canonicalTotalValueUsd`
+    // (and the client's canonicalOverride) replace the snapshot's merged total with that older
+    // EVM-only number the moment the scan completed. Prefer the snapshot/portfolioV2 total; fall
+    // back to V1 only when the fast snapshot genuinely produced no numeric total.
     const evmPortfolio = (body.data as { portfolio?: { totalValueUsd?: number | null; tokens?: Array<{ chain?: string; symbol?: string; valueUsd?: number | null }> } } | undefined)?.portfolio
-    const evmTotalValueUsd = typeof evmPortfolio?.totalValueUsd === 'number' ? evmPortfolio.totalValueUsd : null
+    const evmTotalFromSnapshot = typeof portfolioOutput.portfolio.totalValueUsd === 'number'
+      ? portfolioOutput.portfolio.totalValueUsd
+      : null
+    const evmTotalFromV1 = typeof evmPortfolio?.totalValueUsd === 'number' ? evmPortfolio.totalValueUsd : null
+    // Timeout/empty fallback from runWithTimeoutAndRpcAudit is { totalValueUsd: 0, status: 'empty' }.
+    // Don't let that clobber a real V1 total; a genuine empty wallet still lands on 0 either way.
+    const snapshotTimedOutEmpty = portfolioOutput.portfolioStatus === 'empty'
+      && (evmTotalFromSnapshot ?? 0) === 0
+      && evmTotalFromV1 != null
+    const evmTotalValueUsd = snapshotTimedOutEmpty ? evmTotalFromV1 : (evmTotalFromSnapshot ?? evmTotalFromV1)
     const evmTokens = Array.isArray(evmPortfolio?.tokens) ? evmPortfolio!.tokens! : []
     const robinhoodTotalValueUsd = robinhood?.holdings?.portfolioTotalUsd ?? null
     const canonicalTotalValueUsd = (evmTotalValueUsd == null && robinhoodTotalValueUsd == null)
       ? null
       : (evmTotalValueUsd ?? 0) + (robinhoodTotalValueUsd ?? 0)
     const portfolioTotalByChain: Record<string, number> = {}
-    for (const t of evmTokens) {
-      if (!t.chain || typeof t.valueUsd !== 'number') continue
-      const chainId = SUPPORTED_CHAIN_TO_CHAIN_ID[t.chain as keyof typeof SUPPORTED_CHAIN_TO_CHAIN_ID]
-      if (chainId == null) continue
-      portfolioTotalByChain[String(chainId)] = (portfolioTotalByChain[String(chainId)] ?? 0) + t.valueUsd
+    // Same source as the live snapshot's EVM total (pricing.chainValueUsd → buildPortfolio), so
+    // the completed chain map cannot silently revert to a smaller V1 token-sum.
+    for (const [chainId, valueUsd] of Object.entries(pricing.chainValueUsd)) {
+      if (typeof valueUsd === 'number') portfolioTotalByChain[String(chainId)] = valueUsd
+    }
+    if (Object.keys(portfolioTotalByChain).length === 0) {
+      for (const t of evmTokens) {
+        if (!t.chain || typeof t.valueUsd !== 'number') continue
+        const chainId = SUPPORTED_CHAIN_TO_CHAIN_ID[t.chain as keyof typeof SUPPORTED_CHAIN_TO_CHAIN_ID]
+        if (chainId == null) continue
+        portfolioTotalByChain[String(chainId)] = (portfolioTotalByChain[String(chainId)] ?? 0) + t.valueUsd
+      }
     }
     // BEFORE/AFTER SNAPSHOT, DISCLOSED (final-canonical-merge-proof follow-up): a plain shallow copy
     // taken BEFORE Robinhood's own total (if any) is added below — this is the literal EVM-only

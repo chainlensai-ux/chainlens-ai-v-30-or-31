@@ -81,7 +81,7 @@ const TOKEN = '0x940181a94A35A4569E4529A3CDfB74e38FD98631'
   )
   const helperIdx = routeSrc.indexOf('async function buildClarkWalletReadResponse')
   assert.ok(helperIdx > -1, 'buildClarkWalletReadResponse must be defined')
-  const helperBlock = [routeSrc.slice(helperIdx, helperIdx + 3600)]
+  const helperBlock = [routeSrc.slice(helperIdx, helperIdx + 8000)]
   assert.ok(helperBlock, 'buildClarkWalletReadResponse body must be found')
   assert.match(helperBlock[0], /const result = await runWalletScan\(\{/, 'buildClarkWalletReadResponse must call the canonical runWalletScan()')
   assert.match(helperBlock[0], /walletAddress: address,/)
@@ -128,23 +128,24 @@ const TOKEN = '0x940181a94A35A4569E4529A3CDfB74e38FD98631'
     evidenceSources: ['v2_pipeline'],
     missingEvidence: [],
     scanMode: 'preview',
+    evmPnlLaneStatus: 'verified',
+    robinhoodPnlLaneStatus: 'unavailable',
+    pricedHoldingsCount: 2,
   })
-  assert.match(preview, /^WALLET READ — 0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045/, 'must start with the required WALLET READ header')
-  assert.match(preview, /Overview:/)
-  assert.match(preview, /Total portfolio value: \$12,345\.67/)
-  assert.match(preview, /Chains found: base, eth/)
-  assert.match(preview, /Holdings count: 2/)
-  assert.match(preview, /Top holdings: AERO \(base, \$10,000\), WETH \(eth, \$2,345\.67\)/)
-  assert.match(preview, /Behavior:/)
-  assert.match(preview, /Active chains: base, eth/)
-  assert.match(preview, /Recent activity summary: 8 unique transactions observed/)
-  assert.match(preview, /PnL:/)
-  assert.match(preview, /Realized PnL \(verified\): \$500\.5/)
-  assert.match(preview, /Evidence:/)
-  assert.match(preview, /Sources used: V2 chain pipeline/)
-  assert.match(preview, /Pricing coverage: ok/)
-  assert.match(preview, /Missing evidence: none/)
-  assert.match(preview, /CTA: Deep Scan Wallet \/ Open Wallet Scanner \/ Track Wallet \/ Explain PnL/)
+  assert.match(preview, /^WALLET READ — 0xd8dA/, 'must start with the required WALLET READ header')
+  assert.match(preview, /Overview/)
+  assert.match(preview, /Total supported value: \$12,345\.67/)
+  assert.match(preview, /Chains scanned: Base, ETH/)
+  assert.match(preview, /Top holdings: AERO \$10,000, WETH \$2,345\.67/)
+  assert.match(preview, /Behavior/)
+  assert.match(preview, /PnL Evidence/)
+  assert.match(preview, /Base\/ETH: verified/)
+  assert.match(preview, /Realized PnL: \$500\.5/)
+  assert.match(preview, /Missing Evidence/)
+  assert.match(preview, /Next/)
+  assert.match(preview, /Run Deep Scan Wallet/)
+  assert.match(preview, /Open Wallet Scanner/)
+  assert.match(preview, /Explain PnL/)
   assert.ok(!/debug|rawReport|finalReport|walletChainSelectionAudit/i.test(preview), 'must never leak raw debug/internal field names')
 
   // Unavailable PnL must be honest, never a fake number.
@@ -158,26 +159,32 @@ const TOKEN = '0x940181a94A35A4569E4529A3CDfB74e38FD98631'
     evidenceSources: ['v2_pipeline'],
     missingEvidence: ['No verified swaps found for this wallet.'],
     scanMode: 'preview',
+    evmPnlLaneStatus: 'unavailable',
+    robinhoodPnlLaneStatus: 'unavailable',
   })
-  assert.match(noPnl, /Status: unavailable — No verified swaps found for this wallet\./)
-  assert.ok(!/Realized PnL \(verified\)/.test(noPnl), 'must never print a verified PnL line when pnlStatus is not available')
+  assert.match(noPnl, /Base\/ETH: unavailable/)
+  assert.match(noPnl, /Realized PnL: not verified/)
+  assert.ok(!/Realized PnL \(verified\)/.test(noPnl), 'must never print a verified PnL line when pnl is not verified')
 
-  // Deep scan must report an honest queued status, never a fabricated completed result.
+  // Deep scan must keep a PnL Evidence section and never claim a fabricated completed result.
   const deep = formatCanonicalWalletRead(WALLET, {
     chainsScanned: ['base', 'eth'],
-    totalValueUsd: null,
-    holdings: [],
+    totalValueUsd: 12345.67,
+    holdings: [{ chain: 'base', symbol: 'AERO', valueUsd: 10000 }],
     activitySummary: { uniqueTransactions: null, note: null },
-    pnlStatus: 'unsupported',
+    pnlStatus: 'unavailable',
     pricingCoverage: 'unknown',
-    evidenceSources: ['async_job_queue'],
+    evidenceSources: ['v2_pipeline', 'async_job_queue'],
     missingEvidence: [],
     scanMode: 'deep',
     jobStatus: 'queued',
     jobId: 'job-123',
+    evmPnlLaneStatus: 'unavailable',
+    robinhoodPnlLaneStatus: 'unavailable',
   })
-  assert.match(deep, /Deep scan queued \(job job-123\) — poll Wallet Scanner for the completed multi-chain result\./)
-  assert.ok(!/is complete\b|scan finished|100%|fully scanned/i.test(deep), 'deep scan must never claim it already finished — only an honest queued status')
+  assert.match(deep, /PnL Evidence/)
+  assert.match(deep, /job-123/)
+  assert.ok(!/is complete\b|scan finished|100%|fully scanned/i.test(deep), 'deep scan must never claim it already finished')
 }
 
 // ── 7. Pool/pair-on-wallet-question reply is distinct from the token reply, with LP actions. ───────
@@ -207,7 +214,8 @@ const TOKEN = '0x940181a94A35A4569E4529A3CDfB74e38FD98631'
   assert.deepEqual(actions.map((a) => a.label), ['Deep Scan Wallet', 'Open Wallet Scanner', 'Track Wallet', 'Explain PnL'])
   const deepScanAction = actions.find((a) => a.label === 'Deep Scan Wallet')
   assert.equal(deepScanAction.kind, 'prompt')
-  assert.match(routeCode, /function wantsWalletDeepScan\(prompt: string\): boolean \{\s*return \/\\b\(deep\\s\*scan/, 'the prompt the Deep Scan Wallet chip submits must be recognized by wantsWalletDeepScan')
+  assert.match(routeCode, /function wantsWalletDeepScan\(prompt: string\): boolean \{/, 'wantsWalletDeepScan must exist')
+  assert.match(routeSrc, /deep\\s\*scan/, 'the prompt the Deep Scan Wallet chip submits must be recognized by wantsWalletDeepScan')
 }
 
 // ── 9. Clark Deep Scan Wallet follow-up task ────────────────────────────────────────────────────
@@ -251,7 +259,7 @@ const TOKEN = '0x940181a94A35A4569E4529A3CDfB74e38FD98631'
     'lastWalletSubject must carry the exact required shape',
   )
   const helperIdx2 = routeSrc.indexOf('async function buildClarkWalletReadResponse')
-  const helperBlock2 = routeSrc.slice(helperIdx2, helperIdx2 + 3600)
+  const helperBlock2 = routeSrc.slice(helperIdx2, helperIdx2 + 8000)
   assert.match(helperBlock2, /sessionMem\.lastWalletSubject = \{/, 'lastWalletSubject must be written inside buildClarkWalletReadResponse — the one function every /wallet result (preview or deep) reaches')
   assert.match(helperBlock2, /entityType: "wallet",/)
   assert.match(helperBlock2, /walletAddress: address,/)

@@ -43,7 +43,6 @@ import {
   formatNewBasePoolReadFromCandidates,
   isNewBaseLaunchPrompt,
   formatBaseRadarRead,
-  formatWalletScanResult,
   formatWalletCompareUnsupported,
   formatEoaLpCheckReply,
   formatTokenContractNotWalletReply,
@@ -3563,7 +3562,11 @@ function formatWalletBalanceSummary(snapshot: NonNullable<ClarkToolEvidence["wal
 }
 
 function wantsWalletDeepScan(prompt: string): boolean {
-  return /\b(deep\s*scan|full\s*(?:wallet\s*)?scan|scan\s+all\s+chains|deep\b|historical|pnl|p&l|trades?|dig\s+deeper|recover\s+(?:more\s+)?history|analyze\s+(?:this\s+)?wallet|wallet\s+pnl|why\s+is\s+pnl|cost\s+basis|closed\s+lots?)\b/i.test(prompt);
+  const t = String(prompt ?? "").trim();
+  if (isDeepScanItFollowup(t)) return true;
+  if (/^\/deep\s+wallet\b/i.test(t)) return true;
+  if (/^\/wallet\b/i.test(t) && /\bdeep(?:\s+scan)?\b/i.test(t)) return true;
+  return /\b(deep\s*scan|full\s*(?:wallet\s*)?scan|scan\s+all\s+chains|dig\s+deeper|recover\s+(?:more\s+)?history)\b/i.test(t);
 }
 
 // Task 5: explicit opt-in to the full (heavy) /api/token scan path for token_scan.
@@ -4010,8 +4013,13 @@ async function buildClarkWalletReadResponse(params: {
   deepScan: boolean;
   sessionMem: ClarkSessionMemory;
   clarkDebugMode: boolean;
+  command?: string;
+  sourceRoute?: string;
 }): Promise<Record<string, unknown>> {
   const { address, outerChain, deepScan, sessionMem, clarkDebugMode } = params;
+  const startedAt = Date.now();
+  const command = params.command ?? (deepScan ? "/wallet deep" : "/wallet");
+  const sourceRoute = params.sourceRoute ?? "buildClarkWalletReadResponse";
   const result = await runWalletScan({
     walletAddress: address,
     chainMode: "all_supported",
@@ -4023,14 +4031,34 @@ async function buildClarkWalletReadResponse(params: {
   });
 
   const walletActions = buildClarkWalletAnswerActions(address);
+  const durationMs = Date.now() - startedAt;
 
   if (!result) {
+    const clarkWalletReadAudit = {
+      wallet: address,
+      command,
+      scanDepth: deepScan ? "deep" : "preview",
+      sourceRoute,
+      usedCanonicalWalletScanner: true,
+      usedCachedCanonicalResult: false,
+      mainWalletTotalUsd: null,
+      clarkTotalUsd: null,
+      canonicalTotalUsd: null,
+      totalsMatch: false,
+      chainsFromMainResult: [] as string[],
+      chainsShownByClark: [] as string[],
+      pnlLaneStatuses: { evm: "unavailable", robinhood: "unavailable" },
+      staleResultRejected: false,
+      durationMs,
+    };
+    console.log("[clarkWalletReadAudit]", clarkWalletReadAudit);
     return {
       feature: "clark-ai", chain: outerChain, mode: "analysis", intent: "wallet_scan", toolsUsed: ["wallet_scan_orchestrator"],
       analysis: `WALLET READ — ${address}\n\nThe Wallet Scanner engine is temporarily unavailable for this address. Try again shortly, or open the Wallet Scanner directly.`,
       ui: { intentBadge: deepScan ? "Wallet Deep Scan" : "Wallet Scan", actions: walletActions },
       actions: walletActions,
       quotaConsumed: false,
+      clarkWalletReadAudit,
     };
   }
 
@@ -4048,23 +4076,71 @@ async function buildClarkWalletReadResponse(params: {
     scanMode: result.scanMode,
     jobStatus: result.jobStatus,
     jobId: result.jobId,
+    evmPnlLaneStatus: result.evmPnlLaneStatus,
+    robinhoodPnlLaneStatus: result.robinhoodPnlLaneStatus,
+    robinhoodPnlProof: result.robinhoodPnlProof,
+    lastActive: result.lastActive,
+    pricedHoldingsCount: result.pricedHoldingsCount,
+    unpricedHoldingsCount: result.unpricedHoldingsCount,
+    verifiedSwapCount: result.verifiedSwapCount,
+    verifiedCoveragePercent: result.verifiedCoveragePercent,
+    openPositionCoveragePercent: result.openPositionCoveragePercent,
   });
 
-  updateMemWallet(sessionMem, address, null, analysis, null, null);
-  updateMemIntent(sessionMem, "wallet_analysis");
-  // lastWalletSubject, DISCLOSED (Clark Deep Scan Wallet follow-up task): the single write site for
-  // this field — every /wallet result (preview or deep) reaches this shared helper, so every
-  // deep-scan follow-up phrase reads a consistently fresh wallet/chain scope from here.
-  sessionMem.lastWalletSubject = {
-    entityType: "wallet",
-    walletAddress: address,
-    chainMode: "all_supported",
-    scanDepth: deepScan ? "deep" : "preview",
-    chainsFound: result.chainsScanned ?? [],
-    timestamp: Date.now(),
-  };
+  const existing = sessionMem.lastWalletSubject;
+  const staleResultRejected = Boolean(
+    existing
+    && existing.walletAddress.toLowerCase() === address.toLowerCase()
+    && existing.timestamp > startedAt,
+  );
+
+  if (!staleResultRejected) {
+    updateMemWallet(sessionMem, address, null, analysis, null, {
+      evmPnlLaneStatus: result.evmPnlLaneStatus,
+      robinhoodPnlLaneStatus: result.robinhoodPnlLaneStatus,
+      realizedPnlUsd: result.realizedPnlUsd ?? null,
+      unrealizedPnlUsd: result.unrealizedPnlUsd ?? null,
+      totalValueUsd: result.totalValueUsd,
+      chainsScanned: result.chainsScanned,
+      robinhoodPnlProof: result.robinhoodPnlProof,
+      verifiedSwapCount: result.verifiedSwapCount,
+      missingEvidence: result.missingEvidence,
+      scanMode: result.scanMode,
+    });
+    updateMemIntent(sessionMem, "wallet_analysis");
+    sessionMem.lastWalletSubject = {
+      entityType: "wallet",
+      walletAddress: address,
+      chainMode: "all_supported",
+      scanDepth: deepScan ? "deep" : "preview",
+      chainsFound: result.chainsScanned ?? [],
+      timestamp: Date.now(),
+    };
+  }
 
   const hasEvidence = result.evidenceSources.length > 0;
+  const clarkWalletReadAudit = {
+    wallet: address,
+    command,
+    scanDepth: result.scanMode,
+    sourceRoute,
+    usedCanonicalWalletScanner: result.usedCanonicalWalletScan,
+    usedCachedCanonicalResult: result.usedCachedCanonicalResult,
+    mainWalletTotalUsd: result.totalValueUsd,
+    clarkTotalUsd: result.totalValueUsd,
+    canonicalTotalUsd: result.totalValueUsd,
+    totalsMatch: true,
+    chainsFromMainResult: result.chainsScanned,
+    chainsShownByClark: result.chainsScanned,
+    pnlLaneStatuses: {
+      evm: result.evmPnlLaneStatus,
+      robinhood: result.robinhoodPnlLaneStatus,
+    },
+    staleResultRejected,
+    durationMs,
+  };
+  console.log("[clarkWalletReadAudit]", clarkWalletReadAudit);
+
   return {
     feature: "clark-ai", chain: outerChain, mode: "analysis", intent: "wallet_scan",
     toolsUsed: ["wallet_scan_orchestrator"],
@@ -4074,6 +4150,7 @@ async function buildClarkWalletReadResponse(params: {
     ui: { intentBadge: deepScan ? "Wallet Deep Scan" : "Wallet Scan", actions: walletActions },
     analysis,
     memoryEcho: buildWalletMemoryEcho(sessionMem),
+    clarkWalletReadAudit,
     ...(deepScan && result.jobId ? { deepScanJobId: result.jobId } : {}),
     ...(clarkDebugMode ? { clarkDebugReceipt: { memoryAfter: { lastWallet: sessionMem.lastWallet ? { address: sessionMem.lastWallet.address } : null } } } : {}),
   };
@@ -4505,6 +4582,39 @@ function buildDigDeeperNote(mapped: Record<string, any>): string {
  * re-call. Honest about why PnL is limited; never fakes lots or "not requested".
  */
 function buildWalletPnlFollowupFromEvidence(address: string, ev: Record<string, any>): string {
+  if (ev.evmPnlLaneStatus || ev.robinhoodPnlLaneStatus) {
+    const evm = String(ev.evmPnlLaneStatus ?? "unavailable");
+    const rh = String(ev.robinhoodPnlLaneStatus ?? "unavailable");
+    const rhLabel = rh === "not_verified" ? "not verified" : rh;
+    const lines = [
+      `WALLET READ — ${address.slice(0, 6)}...${address.slice(-4)}`,
+      "",
+      "PnL Evidence",
+      `- Base/ETH: ${evm}`,
+      `- Robinhood: ${rhLabel}`,
+    ];
+    if ((evm === "verified" || evm === "partial" || rh === "verified") && ev.realizedPnlUsd != null) {
+      lines.push(`- Realized PnL: $${Number(ev.realizedPnlUsd).toLocaleString(undefined, { maximumFractionDigits: 2 })}`);
+    } else {
+      lines.push("- Realized PnL: not verified");
+    }
+    if (rh === "verified" && ev.robinhoodPnlProof) {
+      const proof = ev.robinhoodPnlProof as { source?: string; verifiedSwapCount?: number; fifoClosedLots?: number };
+      lines.push("- Robinhood PnL: Verified");
+      if (proof.source) lines.push(`- Source: ${proof.source}`);
+      if (proof.verifiedSwapCount != null) lines.push(`- Verified swaps: ${proof.verifiedSwapCount}`);
+      if (proof.fifoClosedLots != null) lines.push(`- Closed lots: ${proof.fifoClosedLots}`);
+      lines.push("- Price evidence: both legs verified");
+    } else if (rh === "not_verified") {
+      lines.push("- Robinhood PnL: Not verified");
+      lines.push("- Requires verified Robinhood swaps + both-leg price evidence.");
+    }
+    if (Array.isArray(ev.missingEvidence) && ev.missingEvidence.length > 0) {
+      lines.push("", "Missing Evidence", ...ev.missingEvidence.map((m: string) => `- ${m}`));
+    }
+    lines.push("", "This is the current wallet PnL evidence — no rescan.", "", "Next", "- Run Deep Scan Wallet", "- Open Wallet Scanner");
+    return lines.join("\n");
+  }
   const coverage = ev.walletModuleCoverage ?? null;
   const health = ev.walletScanHealth ?? null;
   const tokenPnl = ev.walletTokenPnlSummary ?? null;
@@ -9847,15 +9957,52 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     ?? (sessionMem.lastClarkSubject?.entityType === "wallet" ? sessionMem.lastClarkSubject.address : null)
     ?? sessionMem.lastWallet?.address
     ?? null;
-  const deepScanItOnWallet = !hasAnyAddress(prompt) && isDeepScanItFollowup(prompt) && Boolean(deepScanTargetAddress) && (
+  const lastSubjectIsToken = isTokenLikeClarkSubject(sessionMem.lastClarkSubject);
+  const namedWalletDeepScan = /\bwallet\b/i.test(prompt);
+  const deepScanItOnWallet = !hasAnyAddress(prompt) && isDeepScanItFollowup(prompt) && Boolean(deepScanTargetAddress) && (!lastSubjectIsToken || namedWalletDeepScan) && (
     sessionMem.lastWalletSubject != null
     || sessionMem.lastClarkSubject?.entityType === "wallet"
-    || (Boolean(sessionMem.lastWallet?.address) && sessionMem.lastClarkSubject?.entityType !== "token" && sessionMem.lastClarkSubject?.entityType !== "pair")
+    || Boolean(sessionMem.lastWallet?.address)
   );
   if (deepScanItOnWallet && deepScanTargetAddress) {
     routedClassification.intent = "wallet_scan";
     routedClassification.address = deepScanTargetAddress;
     routedClassification.deep = true;
+  }
+  // Deep Scan is a wallet action only. Never fake a token deep scan, and never guess the
+  // last wallet when the current subject is a token ("deep scan it").
+  if (!hasAnyAddress(prompt) && isDeepScanItFollowup(prompt) && !deepScanItOnWallet && !namedWalletDeepScan) {
+    const lastWalletAddr = deepScanTargetAddress
+      ?? sessionMem.lastWalletSubject?.walletAddress
+      ?? sessionMem.lastWallet?.address
+      ?? null;
+    if (lastSubjectIsToken && lastWalletAddr) {
+      const tokenLabel = sessionMem.lastClarkSubject?.symbol
+        ?? sessionMem.lastToken?.symbol
+        ?? sessionMem.lastClarkSubject?.address
+        ?? sessionMem.lastToken?.address
+        ?? "the last token";
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "clarify_subject", toolsUsed: ["memory"],
+        analysis: [
+          "Deep Scan only applies to wallets, not tokens.",
+          `I have both in context — last token: ${tokenLabel}, last wallet: ${lastWalletAddr}.`,
+          "Which one? Say /wallet deep for the wallet, or keep the token with /lp /holders /deployer.",
+        ].join("\n"),
+        intentBadge: "clarify_subject",
+        actions: buildRoutedActions(["Deep Scan Wallet", "Open Token Scanner"]),
+        quotaConsumed: false,
+      };
+    }
+    if (lastSubjectIsToken || sessionMem.lastToken?.address) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan_request", toolsUsed: ["memory"],
+        analysis: "Deep Scan only applies to wallets, not tokens. Send a wallet address or run /wallet.",
+        intentBadge: "wallet_scan_request",
+        actions: buildRoutedActions(["Scan Wallet", "Deep Scan Wallet"]),
+        quotaConsumed: false,
+      };
+    }
   }
   // Requirements 4 & 5, DISCLOSED (Clark Deep Scan Wallet follow-up task): an UNAMBIGUOUS
   // deep-scan-WALLET phrase (one that names "wallet" explicitly, e.g. "deep scan this wallet") with
@@ -10060,21 +10207,16 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       updateMemIntent(sessionMem, "wallet_pnl_followup");
       return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_pnl_followup", toolsUsed: [], ui: { intentBadge: 'Wallet PnL', actions: [{ label: 'Open Wallet Scanner', href: walletScannerDeepLink(targetAddr, true) }, { label: 'Run Deep Scan', href: walletScannerDeepLink(targetAddr, true) }] }, analysis };
     }
-    // Explicit refresh/deep/recover → re-run the existing deep scan path for the resolved address.
-    const deepScan = true;
-    const w = (await getWalletFromV2(targetAddr) ?? await getWalletLite(targetAddr)
-      .catch((err) => ({ ok: false, error: err instanceof Error ? err.message : "wallet_scan_timeout" }))) as Record<string, unknown>;
-    const holdings = Array.isArray(w.holdings) ? (w.holdings as Array<Record<string, unknown>>) : [];
-    const mappedResult = mapWalletRunnerResult(targetAddr, w, holdings);
-    const isDigDeeper = /\bdig\s+deeper\b/i.test(prompt);
-    const baseAnalysis = formatWalletScanResult(targetAddr, mappedResult, true);
-    // Task 5: if the deep scan came back capped/cached, label it honestly instead of "I need an address".
-    const digNote = isDigDeeper ? buildDigDeeperNote(mappedResult as Record<string, unknown>) : null;
-    const profileBlock = mappedResult.ok ? buildWalletProfileBlock(mappedResult.walletProfile as Record<string, unknown> | null) : null;
-    const analysis = `${digNote ? `${baseAnalysis}\n\n${digNote}` : baseAnalysis}${profileBlock ? `\n\n${profileBlock}` : ""}`;
-    updateMemWallet(sessionMem, targetAddr, null, analysis, mappedResult as Record<string, unknown>, extractPnlEvidence(mappedResult as Record<string, unknown>));
-    updateMemIntent(sessionMem, "wallet_pnl_followup");
-    return { feature: "clark-ai", chain, mode: "analysis", intent: "wallet_pnl_followup", toolsUsed: ["wallet_scanner_runner"], ui: { intentBadge: 'Wallet Deep Scan', actions: [{ label: 'Open Wallet Scanner', href: walletScannerDeepLink(targetAddr, true) }] }, analysis };
+    // Explicit refresh/deep/recover → canonical Wallet Scanner deep scan, never the old light preview.
+    return await buildClarkWalletReadResponse({
+      address: targetAddr,
+      outerChain: chain,
+      deepScan: true,
+      sessionMem,
+      clarkDebugMode,
+      command: "/wallet deep",
+      sourceRoute: "wallet_pnl_followup_refresh",
+    });
   }
 
   // Token intent from classifyClarkPrompt takes priority over appIntent wallet_scan
