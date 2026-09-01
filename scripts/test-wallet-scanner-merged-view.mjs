@@ -8,6 +8,8 @@
 
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import { execSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import {
   computeRobinhoodInclusion,
   computeRobinhoodDisplayState,
@@ -255,6 +257,31 @@ function run() {
       (() => {
         const result = computeMergedTotalValueUsd(300, { ok: true, holdings: { status: 'ok', portfolioTotalUsd: 200 } })
         return result.totalValueUsd === 500
+      })(),
+    )
+    check(
+      'an EVM-only worker override must NOT overwrite a sidecar-priced Robinhood merge — completed result keeps the snapshot merged total',
+      (() => {
+        const evmOnlyOverride = { totalValueUsd: 0.03, robinhoodMerged: false }
+        const sidecar = { ok: true, holdings: { status: 'ok', portfolioTotalUsd: 14940 } }
+        const result = computeMergedTotalValueUsd(0.03, sidecar, evmOnlyOverride)
+        return result.totalValueUsd === 14940.03 && result.robinhoodIncluded === true && result.robinhoodValueUsd === 14940
+      })(),
+    )
+    check(
+      'an EVM-only worker override still wins when the sidecar has no priced Robinhood value',
+      (() => {
+        const evmOnlyOverride = { totalValueUsd: 2.25, robinhoodMerged: false }
+        const result = computeMergedTotalValueUsd(2.25, { ok: true, holdings: { status: 'not_configured', portfolioTotalUsd: null } }, evmOnlyOverride)
+        return result.totalValueUsd === 2.25 && result.robinhoodIncluded === false
+      })(),
+    )
+    check(
+      'a worker override that DID merge Robinhood still wins outright — never double-count the sidecar',
+      (() => {
+        const override = { totalValueUsd: 14942.25, robinhoodMerged: true }
+        const result = computeMergedTotalValueUsd(2.25, { ok: true, holdings: { status: 'ok', portfolioTotalUsd: 14940 } }, override)
+        return result.totalValueUsd === 14942.25 && result.robinhoodIncluded === true
       })(),
     )
     check('page.tsx\'s CORTEX read (buildCortexReadV2) passes deriveCanonicalMergeOverride(report) into computeMergedTotalValueUsd', /computeMergedTotalValueUsd\(stats\.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride\(report\)\)/.test(pageSrc))
@@ -544,6 +571,9 @@ function run() {
   {
     const perfSrc = read('src/pipeline/walletScanPerformanceAudit.ts')
     const scanWalletSrc = read('app/frontend/api/scanWallet.ts')
+    const workerSrcQa = read('workers/walletScanV2.ts')
+    const clarkRouteSrc = read('app/api/clark/route.ts')
+    const clarkRoutingSrc = read('lib/server/clarkRouting.ts')
     check('performance audit includes totalDurationMs', perfSrc.includes('totalDurationMs: totalMs'))
     check('performance audit includes stageDurations', perfSrc.includes('stageDurations: Object.fromEntries'))
     check('performance audit includes robinhoodSidecarDurationMs (null in EVM worker — sidecar is separate)', perfSrc.includes('robinhoodSidecarDurationMs: null'))
@@ -552,8 +582,20 @@ function run() {
     check('scanWallet client forwards the worker partial snapshot', scanWalletSrc.includes('partial: pollBody.partial'))
     check('Wallet Scanner page consumes partial snapshot for a live portfolio card', pageSrc.includes('partialSnapshot') && pageSrc.includes('Deep scan still running'))
     check('snapshot total uses computeMergedTotalValueUsd — one merged total, not a second card', pageSrc.includes('computeMergedTotalValueUsd(partialSnapshot.portfolioTotalValueUsd, robinhoodResult)'))
+    check('snapshot total does NOT pass a worker canonicalOverride — sidecar merge is the snapshot source of truth', /computeMergedTotalValueUsd\(partialSnapshot\.portfolioTotalValueUsd, robinhoodResult\)/.test(pageSrc) && !/computeMergedTotalValueUsd\(partialSnapshot\.portfolioTotalValueUsd, robinhoodResult,/.test(pageSrc))
+    check('snapshot PnL is pending / Deep scan still running — never a completed PnL figure', pageSrc.includes('PnL: pending — Base/ETH and Robinhood lanes stay separate. Deep scan still running.'))
+    check('standalone Robinhood card is hidden while the snapshot is on screen — no duplicate totals', /\{robinhoodResult && \(!result \|\| debugMode\) && !partialSnapshot &&/.test(pageSrc))
+    check('snapshot card is hidden once the completed result exists', /\{loading && partialSnapshot && !result &&/.test(pageSrc))
     check('user-facing Deep Scan copy no longer says V2 engine', !/V2 engine · holdings/.test(pageSrc))
     check('page logs walletScanPerformanceAudit with uiFirstResultMs', pageSrc.includes('[walletScanPerformanceAudit]') && pageSrc.includes('uiFirstResultMs'))
+    check('worker canonical EVM total prefers the live snapshot/portfolioV2 figure, not stale V1 portfolio', workerSrcQa.includes('const evmTotalFromSnapshot = typeof portfolioOutput.portfolio.totalValueUsd === \'number\'') && workerSrcQa.includes('const evmTotalValueUsd = snapshotTimedOutEmpty ? evmTotalFromV1 : (evmTotalFromSnapshot ?? evmTotalFromV1)'))
+    check('worker chain map prefers pricing.chainValueUsd (same source as the snapshot) over V1 token sums', workerSrcQa.includes('for (const [chainId, valueUsd] of Object.entries(pricing.chainValueUsd))'))
+    check('this QA does not rewrite Clark routing', clarkRouteSrc.length > 0 && clarkRoutingSrc.length > 0)
+    const changedFiles = execSync('git diff --name-only HEAD', { encoding: 'utf8', cwd: fileURLToPath(new URL('..', import.meta.url)) })
+    check(
+      'no Clark files changed in this working tree',
+      !/(^|\n)(app\/api\/clark\/|lib\/server\/clarkRouting\.ts|lib\/clarkIntent\.ts|lib\/clark\/)/.test(changedFiles),
+    )
   }
 
   console.log(`test-wallet-scanner-merged-view.mjs: all ${passed} assertions passed`)

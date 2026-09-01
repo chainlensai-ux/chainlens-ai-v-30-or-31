@@ -100,15 +100,16 @@ export type MergedTotal = {
   robinhoodValueUsd: number | null
 }
 
-// CANONICAL WORKER OVERRIDE, DISCLOSED (final-canonical-merge-proof follow-up): when a deep-scan job
-// result carries the worker's own already-merged `canonicalTotalValueUsd`/`finalCanonicalMergeAudit`
-// (workers/walletScanV2.ts — see WalletV2Report's own header in app/terminal/wallet-scanner/page.tsx),
-// that IS the authoritative, already-computed after-merge total: prefer it outright rather than
-// re-summing v2Total + the separate Robinhood fetch a second time here, which would either duplicate
-// the same real number (harmless but redundant) or, worse, silently diverge from the worker's own
-// proof object if the two ever disagree. Only used when the caller actually has it — the fast preview
-// path (which never goes through the async job worker) has no such field and falls through to the
-// existing v2Total + robinhoodResult computation below, unchanged.
+// CANONICAL WORKER OVERRIDE, DISCLOSED (final-canonical-merge-proof follow-up, hardened in
+// progressive-render QA): when a deep-scan job result carries the worker's own already-merged
+// `canonicalTotalValueUsd`/`finalCanonicalMergeAudit` (workers/walletScanV2.ts), that IS the
+// authoritative after-merge total IF the worker actually merged Robinhood (`robinhoodMerged: true`).
+// Prefer it outright in that case rather than re-summing v2Total + the separate Robinhood sidecar,
+// which would double-count. An EVM-only worker override (`robinhoodMerged: false`) must NOT win
+// over a real sidecar-priced Robinhood total — that is the live Deep Scan completion bug this
+// QA closes: the snapshot showed Base/ETH + Robinhood, then the completed result replaced it with
+// the old Base/ETH-only canonicalTotalValueUsd. Fast preview (no worker fields) still falls
+// through to v2Total + robinhoodResult, unchanged.
 export type CanonicalMergeOverride = {
   totalValueUsd: number | null
   robinhoodMerged: boolean
@@ -119,17 +120,28 @@ export function computeMergedTotalValueUsd(
   robinhoodResult: RobinhoodWalletScanResponse | null | undefined,
   canonicalOverride?: CanonicalMergeOverride,
 ): MergedTotal {
+  const { included, valueUsd } = computeRobinhoodInclusion(robinhoodResult)
   if (canonicalOverride) {
-    return {
-      totalValueUsd: canonicalOverride.totalValueUsd,
-      robinhoodIncluded: canonicalOverride.robinhoodMerged,
-      robinhoodValueUsd: canonicalOverride.robinhoodMerged
-        ? (canonicalOverride.totalValueUsd ?? 0) - (v2TotalValueUsd ?? 0)
-        : null,
+    if (canonicalOverride.robinhoodMerged) {
+      return {
+        totalValueUsd: canonicalOverride.totalValueUsd,
+        robinhoodIncluded: true,
+        robinhoodValueUsd: (canonicalOverride.totalValueUsd ?? 0) - (v2TotalValueUsd ?? 0),
+      }
     }
+    // Worker published an EVM-only canonical total. Keep it only when the sidecar has no priced
+    // Robinhood value of its own — otherwise merge the sidecar the same way the live snapshot did.
+    if (!included) {
+      return {
+        totalValueUsd: canonicalOverride.totalValueUsd,
+        robinhoodIncluded: false,
+        robinhoodValueUsd: null,
+      }
+    }
+    const evm = v2TotalValueUsd ?? canonicalOverride.totalValueUsd ?? 0
+    return { totalValueUsd: evm + (valueUsd ?? 0), robinhoodIncluded: true, robinhoodValueUsd: valueUsd }
   }
   const v2Total = v2TotalValueUsd ?? null
-  const { included, valueUsd } = computeRobinhoodInclusion(robinhoodResult)
   if (v2Total == null && valueUsd == null) {
     return { totalValueUsd: null, robinhoodIncluded: included, robinhoodValueUsd: valueUsd }
   }
