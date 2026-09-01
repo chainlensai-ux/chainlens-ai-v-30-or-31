@@ -5182,11 +5182,6 @@ export default function TerminalTokenScanner() {
                 widths don't feel jammed together. */}
             <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '7px', rowGap: '8px' }}>
               {[
-                { label: 'BASE',                    color: '#22d3ee', bg: 'rgba(34,211,238,0.08)',  border: 'rgba(34,211,238,0.26)' },
-                { label: 'ETH',                     color: '#818cf8', bg: 'rgba(129,140,248,0.08)', border: 'rgba(129,140,248,0.26)' },
-                { label: 'Live CORTEX',             color: '#34d399', bg: 'rgba(52,211,153,0.08)',  border: 'rgba(52,211,153,0.26)' },
-                { label: 'Real Data Only',          color: '#94a3b8', bg: 'rgba(148,163,184,0.06)', border: 'rgba(148,163,184,0.18)' },
-                { label: 'LP + Holder Intelligence',color: '#a78bfa', bg: 'rgba(167,139,250,0.08)', border: 'rgba(167,139,250,0.26)' },
                 { label: 'No Financial Advice',     color: '#64748b', bg: 'rgba(100,116,139,0.05)', border: 'rgba(100,116,139,0.16)' },
               ].map(p => (
                 <span key={p.label} style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.09em', padding: '4px 11px', borderRadius: '99px', color: p.color, background: p.bg, border: `1px solid ${p.border}`, fontFamily: 'var(--font-plex-mono)', whiteSpace: 'nowrap' }}>
