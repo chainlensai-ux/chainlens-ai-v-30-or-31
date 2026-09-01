@@ -155,7 +155,11 @@ function fmtTimestamp(ms: number | null): string {
 // PURE. Earliest/latest timestamp across every real timeline entry this report actually produced
 // (buy/sell/distribution/bridge) — never a guess, and null (not "now"/"genesis") when there's
 // nothing to derive it from.
-function deriveActivityWindow(report: WalletV2Report): { firstSeenMs: number | null; lastActiveMs: number | null } {
+// EXPORTED, DISCLOSED (Wallet Read / CORTEX sidebar redesign follow-up): the Wallet Read sidebar's
+// "Last active" key signal now reuses this SAME function (via walletReadBuilder.ts's caller in
+// page.tsx) rather than a second, independently-derived timestamp scan — the two can never disagree
+// on which real timeline entry was most recent.
+export function deriveActivityWindow(report: WalletV2Report): { firstSeenMs: number | null; lastActiveMs: number | null } {
   const timestamps: number[] = []
 
   const buyEntries = Array.isArray(report.timelines?.buyTimeline?.entries) ? report.timelines.buyTimeline.entries : []

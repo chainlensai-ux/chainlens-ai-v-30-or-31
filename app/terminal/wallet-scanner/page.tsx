@@ -32,6 +32,7 @@ import { scanWalletV2, type WalletScanStageProgress, type WalletChainSelectionAu
 import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
 import { logScanIdentityIfDev } from '@/app/frontend/lib/walletScanIdentity'
 import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride, computeRobinhoodDisplayState } from '@/app/frontend/lib/mergedWalletView'
+import { buildWalletReadV2, type WalletReadV2 } from '@/app/frontend/lib/walletReadBuilder'
 import {
   BehaviorIntelView,
   ChainSelectionView,
@@ -43,11 +44,15 @@ import {
   PnlStatusCard,
   selectEvmPnlLaneStatus,
   selectRobinhoodPnlLaneStatus,
+  selectPnlConfidenceStatus,
+  selectPortfolioStats,
+  selectChainBreakdown,
+  deriveActivityWindow,
   RecoveryHealthCard,
   RobinhoodChainSection,
-  ROBINHOOD_CHAIN_META,
   SectionDivider,
   WalletProfileHeader,
+  WalletReadPanel,
   WalletScannerResultsV3,
 } from '@/app/frontend/components'
 import type { RobinhoodWalletScanResponse } from '@/app/frontend/components/RobinhoodChainSection'
@@ -181,9 +186,15 @@ function fmtUSD(v: number): string {
   return `$${v.toFixed(2)}`
 }
 
-// Replaces the old buildWalletVerdict(result) (which read profiler-only fields) with a small
-// V2-sourced equivalent for the CORTEX Wallet Read sidebar — every value here is a direct
-// restatement of report.finalSummary / report.behaviorIntel, never a new judgment.
+// WALLET READ BUILDER CALL SITE, DISCLOSED (Wallet Read / CORTEX sidebar redesign task): replaces
+// the old flat {verdict, read, keySignals, risks, nextAction} shape with the structured WalletReadV2
+// object walletReadBuilder.ts's buildWalletReadV2 produces — see that file's own header for the
+// full "every field is a real, already-computed value, same selectors as the main UI" disclosure.
+// This function's OWN job is now just: call the same selectors the main Wallet Scanner components
+// already call (selectPortfolioStats, selectChainBreakdown, selectEvmPnlLaneStatus/
+// selectRobinhoodPnlLaneStatus/selectPnlConfidenceStatus, computeMergedTotalValueUsd/
+// deriveCanonicalMergeOverride/computeRobinhoodDisplayState), then hand their real outputs to the
+// pure builder — never a second, independently-derived number.
 //
 // V2-SAFE GUARD: `report` is typed as non-optional, but that is a compile-time contract only —
 // a real API response can still be malformed/partial at runtime, so every nested access here is
@@ -191,49 +202,27 @@ function fmtUSD(v: number): string {
 function buildCortexReadV2(
   report: WalletV2Report | null | undefined,
   robinhoodResult?: RobinhoodWalletScanResponse | null,
-): {
-  verdict: string
-  read: string
-  keySignals: string[]
-  risks: string[]
-  nextAction: string
-} {
-  const b = report?.behaviorIntel
-  const s = report?.finalSummary
-  const activeChains = Array.isArray(b?.multiChainParticipation?.activeChains) ? b!.multiChainParticipation.activeChains : []
+): WalletReadV2 | null {
+  if (!report) return null
+  const b = report.behaviorIntel
+
   // CONFIRMED REGRESSION, FIXED (same root cause as WalletProfileHeader.tsx's PortfolioSnapshot —
   // see that file's own header comment for the full trace): prefer the canonical, real
   // portfolioV2.totalValueUsd over the stale V1 `portfolio.totalValueUsd` field, so this sidebar
   // readout can never disagree with the main hero total for the same scan.
-  //
+  const { stats } = selectPortfolioStats(report.portfolio, report.portfolioV2)
   // ONE CANONICAL RESULT, DISCLOSED (split-Wallet-Scanner-results fix task): the CORTEX Wallet Read
   // panel used to read only the V2 (Base/ETH) total, never Robinhood's — a real wallet with a
   // scanned, nonzero Robinhood balance would show a DIFFERENT, lower "Portfolio value" here than the
   // main result card two feet to its left. Now reads through the SAME merge helper every other
   // canonical-total display uses (see app/frontend/lib/mergedWalletView.ts).
-  const v2TotalValueUsd = report?.portfolioV2?.totalValueUsd ?? report?.portfolio?.totalValueUsd ?? null
-  // AFTER-MERGE CORTEX READ, DISCLOSED (final-canonical-merge-proof follow-up): prefers the
-  // worker's own already-merged canonical total (deriveCanonicalMergeOverride reads
-  // report.canonicalTotalValueUsd/finalCanonicalMergeAudit.robinhoodMerged, present on a completed
-  // deep-scan job result) over recomputing from the two separate fetches — CORTEX must never disagree
-  // with the same worker-produced proof the logs show. Falls through to the existing v2Total +
-  // robinhoodResult computation for the fast preview path, which never carries these fields.
-  const merged = computeMergedTotalValueUsd(v2TotalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report))
-  const totalValueUsd = merged.totalValueUsd
-  const chainSignalLabel = merged.robinhoodIncluded
-    ? [...activeChains, ROBINHOOD_CHAIN_META.label].join(', ')
-    : (activeChains.join(', ') || 'none active')
-  // PARTIAL/UNPRICED SIGNAL, DISCLOSED (Robinhood-partial-adapter-and-Blockscout-proof follow-up,
-  // acceptance test "CORTEX says Robinhood partial/unpriced instead of implying included value"):
-  // `chainSignalLabel` above already correctly OMITS Robinhood when it's not included (per the
-  // computeRobinhoodInclusion fix), but silent omission alone reads the same to a user as "Robinhood
-  // was never scanned" — indistinguishable from a real found-but-unpriced result. Add an explicit
-  // signal line for exactly that state, using the same shared classification the main UI's coverage
-  // copy uses, so CORTEX never implies Robinhood contributed value it didn't.
+  const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report))
+  // SAME CHAIN BARS THE MAIN UI RENDERS, DISCLOSED: selectChainBreakdown is the exact function
+  // WalletProfileHeader.tsx's PortfolioSnapshot uses for the hero chain bars — reused verbatim here
+  // (same priority: canonical portfolioTotalByChain first) so "Largest chain exposure" can never
+  // show a different top chain than the main UI's own bars.
+  const chainBreakdown = selectChainBreakdown(report.chainValueUsd, merged.totalValueUsd, report.portfolio?.chainValueBreakdown, report.portfolioTotalByChain)
   const robinhoodDisplayState = computeRobinhoodDisplayState(robinhoodResult)
-  const robinhoodSignal = robinhoodDisplayState === 'partial_unpriced'
-    ? 'Robinhood Chain: found holdings, unpriced — not included in total.'
-    : null
 
   // PNL LANE STATUS, DISCLOSED (Wallet-Scanner-Robinhood-final-integration follow-up, this task's own
   // explicit requirement 6 — "CORTEX must use same PnL lane statuses"): calls the EXACT SAME two
@@ -243,34 +232,40 @@ function buildCortexReadV2(
   // shown as "verified" for Robinhood unless selectRobinhoodPnlLaneStatus itself says so (the same
   // Phase-3-gated, verifiedSwapCount>0 check the main card's RobinhoodPnlRow uses).
   const evmPnlLane = selectEvmPnlLaneStatus({
-    pnlV2: report?.pnlV2,
-    publicPnlStatus: report?.finalSummary?.financialStatus?.officialPnlStatus,
-    unrealizedReconciliation: report?.fifoAndPnl?.unrealizedReconciliation,
-    reconciliationSummary: report?.reconciliationSummary,
-    canonicalSampleManifestAudit: report?.canonicalSampleManifestAudit,
+    pnlV2: report.pnlV2,
+    publicPnlStatus: report.finalSummary?.financialStatus?.officialPnlStatus,
+    unrealizedReconciliation: report.fifoAndPnl?.unrealizedReconciliation,
+    reconciliationSummary: report.reconciliationSummary,
+    canonicalSampleManifestAudit: report.canonicalSampleManifestAudit,
   })
   const robinhoodPnlLane = selectRobinhoodPnlLaneStatus(robinhoodResult)
-  const pnlLaneSignal = `PnL: Base/ETH ${evmPnlLane}${robinhoodResult ? `, Robinhood ${robinhoodPnlLane === 'not_verified' ? 'not verified' : robinhoodPnlLane}` : ''}`
+  const pnlConfidence = selectPnlConfidenceStatus(
+    report.finalSummary?.financialStatus?.officialPnlStatus,
+    report.fifoAndPnl?.unrealizedReconciliation,
+    report.reconciliationSummary,
+  )
+  const { lastActiveMs } = deriveActivityWindow(report)
 
-  return {
-    verdict: (b?.rotationStyle?.value ?? 'unknown').toUpperCase(),
-    read: s?.walletPersonality ?? 'Insufficient data to classify wallet behavior.',
-    keySignals: [
-      `Risk posture: ${b?.riskOnOff?.value ?? 'unknown'}`,
-      `Chains: ${chainSignalLabel}`,
-      totalValueUsd != null ? `Portfolio value: ${fmtUSD(totalValueUsd)}` : 'Portfolio value: not available',
-      pnlLaneSignal,
-      ...(robinhoodSignal ? [robinhoodSignal] : []),
-    ],
-    risks: [
-      s?.financialStatus?.headline ?? 'PnL unavailable due to missing evidence.',
-      b?.automationSignals?.suspectedBot ? 'Automation signal detected in trade timing.' : 'No automation signal detected.',
-      s?.recoverySummary ?? 'No recovery attempted.',
-    ],
-    nextAction: b?.confidence === 'low' || !b
-      ? 'Confidence is low — coverage is thin (dust-heavy chains or a partial window). Treat this read as directional only.'
-      : 'Scan additional chains or run a Deep Scan for broader coverage.',
-  }
+  return buildWalletReadV2({
+    walletAddress: report.scanMetadata?.walletAddress,
+    scanTimestamp: report.scanMetadata?.scanTimestamp,
+    chainsScanned: Array.isArray(report.scanMetadata?.chainsScanned) ? report.scanMetadata.chainsScanned : [],
+    behaviorIntel: b,
+    finalSummary: report.finalSummary,
+    totalValueUsd: merged.totalValueUsd,
+    robinhoodIncluded: merged.robinhoodIncluded,
+    chainBreakdown,
+    pricedTokenCount: stats.pricedTokenCount + (merged.robinhoodIncluded && robinhoodResult?.ok ? robinhoodResult.holdings.holdings.filter((h) => h.valueUsd != null).length + (robinhoodResult.holdings.native?.valueUsd != null ? 1 : 0) : 0),
+    concentrationDetail: stats.concentration?.detail ?? null,
+    concentrationLabel: b?.concentrationSignals?.concentrationLabel ?? null,
+    matchedLotsCount: report.fifoAndPnl?.matchedLots?.length ?? 0,
+    lastActiveMs,
+    evmPnlLane,
+    robinhoodPnlLane,
+    robinhoodDisplayState,
+    robinhoodResult,
+    pnlConfidence,
+  })
 }
 
 // STAGED-REFRESH FIX, DISCLOSED (provider-call-audit follow-up task, explicit "refresh keeps
@@ -1112,27 +1107,13 @@ export default function WalletScannerPage() {
                 Scan a wallet to generate a CORTEX wallet read.
               </p>
             )}
-            {!loading && cortexRead && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-                <span style={{ padding: '4px 11px', borderRadius: '99px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.12em', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', background: 'rgba(45,212,191,0.10)', border: '1px solid rgba(45,212,191,0.25)', color: '#2DD4BF', alignSelf: 'flex-start' }}>{cortexRead.verdict}</span>
-                <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px 12px' }}>
-                  <p style={{ margin: '0 0 5px', fontSize: '9px', color: '#475569', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Portfolio Read</p>
-                  <p style={{ margin: 0, fontSize: '12px', color: '#e2e8f0', lineHeight: 1.65 }}>{cortexRead.read}</p>
-                </div>
-                <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px 12px' }}>
-                  <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#475569', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Key Signals</p>
-                  {cortexRead.keySignals.map((line, i) => <p key={i} style={{ margin: '0 0 5px', fontSize: '12px', color: '#94a3b8', lineHeight: 1.5 }}>— {line}</p>)}
-                </div>
-                <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px 12px' }}>
-                  <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#475569', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Risks / Missing Evidence</p>
-                  {cortexRead.risks.map((line, i) => <p key={i} style={{ margin: '0 0 5px', fontSize: '12px', color: '#fca5a5', lineHeight: 1.5 }}>— {line}</p>)}
-                </div>
-                <div style={{ background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)', borderRadius: '10px', padding: '10px 12px' }}>
-                  <p style={{ margin: '0 0 6px', fontSize: '9px', color: '#475569', letterSpacing: '0.12em', textTransform: 'uppercase', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>Next Action</p>
-                  <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8', lineHeight: 1.6 }}>{cortexRead.nextAction}</p>
-                </div>
-              </div>
-            )}
+            {/* PREMIUM WALLET READ, DISCLOSED (Wallet Read / CORTEX sidebar redesign task): the old
+                flat verdict/read/keySignals/risks/nextAction card stack is replaced by
+                WalletReadPanel — a single component driven entirely by buildCortexReadV2's
+                structured WalletReadV2 output (identity, headline, key signals, why-this-label
+                bullets, verified/partial/missing evidence, isolated PnL lanes, next action). See
+                app/frontend/lib/walletReadBuilder.ts's own header for the full disclosure. */}
+            {!loading && cortexRead && <WalletReadPanel read={cortexRead} />}
 
             <div style={{ marginTop: '4px', background: 'rgba(45,212,191,0.035)', border: '1px solid rgba(45,212,191,0.12)', borderRadius: '14px', padding: '14px' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px', marginBottom: '12px' }}>

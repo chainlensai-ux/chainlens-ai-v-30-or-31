@@ -167,10 +167,14 @@ function run() {
   // ── 7. The CORTEX Wallet Read sidebar uses the same merged result, not the V2-only one ─────────
   {
     check('buildCortexReadV2 accepts a robinhoodResult parameter', /function buildCortexReadV2\(\s*report: WalletV2Report \| null \| undefined,\s*robinhoodResult\?: RobinhoodWalletScanResponse \| null,/.test(pageSrc))
-    // UPDATED, DISCLOSED (final-canonical-merge-proof follow-up): gained the same optional
-    // canonicalOverride 3rd argument as every other call site — still the same shared helper.
-    check('buildCortexReadV2 computes its total through the same computeMergedTotalValueUsd helper every other canonical total uses', pageSrc.includes('const merged = computeMergedTotalValueUsd(v2TotalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report))'))
+    // UPDATED, DISCLOSED (Wallet Read / CORTEX sidebar redesign follow-up): buildCortexReadV2 now
+    // sources its total from selectPortfolioStats(...).stats.totalValueUsd (the SAME selector
+    // PortfolioIntelligenceCard uses) rather than a locally re-derived `v2TotalValueUsd` — still the
+    // same computeMergedTotalValueUsd/deriveCanonicalMergeOverride helpers underneath.
+    check('buildCortexReadV2 computes its total through the same computeMergedTotalValueUsd helper every other canonical total uses', pageSrc.includes('const merged = computeMergedTotalValueUsd(stats.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride(report))'))
+    check('buildCortexReadV2 sources totalValueUsd from the same selectPortfolioStats selector PortfolioIntelligenceCard uses', pageSrc.includes('const { stats } = selectPortfolioStats(report.portfolio, report.portfolioV2)'))
     check('the CORTEX sidebar call site passes the real robinhoodResult state through', pageSrc.includes('buildCortexReadV2(result, robinhoodResult)'))
+    check('buildCortexReadV2 returns null (not a fabricated empty read) when there is no report at all', pageSrc.includes('if (!report) return null'))
   }
 
   // ── 8. Activity and PnL stay separate — never blended, never mixed into portfolio value ────────
@@ -253,7 +257,7 @@ function run() {
         return result.totalValueUsd === 500
       })(),
     )
-    check('page.tsx\'s CORTEX read (buildCortexReadV2) passes deriveCanonicalMergeOverride(report) into computeMergedTotalValueUsd', /computeMergedTotalValueUsd\(v2TotalValueUsd, robinhoodResult, deriveCanonicalMergeOverride\(report\)\)/.test(pageSrc))
+    check('page.tsx\'s CORTEX read (buildCortexReadV2) passes deriveCanonicalMergeOverride(report) into computeMergedTotalValueUsd', /computeMergedTotalValueUsd\(stats\.totalValueUsd, robinhoodResult, deriveCanonicalMergeOverride\(report\)\)/.test(pageSrc))
     check('PortfolioIntelligenceCard accepts a canonicalOverride prop', read('app/frontend/components/PortfolioIntelligenceCard.tsx').includes('canonicalOverride?: CanonicalMergeOverride'))
     check('WalletScannerSummaryRowV3 (the live V3 layout) forwards deriveCanonicalMergeOverride(report) into PortfolioIntelligenceCard', read('app/frontend/components/WalletScannerSummaryRowV3.tsx').includes('canonicalOverride={deriveCanonicalMergeOverride(report)}'))
   }
@@ -466,9 +470,14 @@ function run() {
     // both the main PnL card AND CORTEX use — confirmed by exercising them directly plus a source
     // check that CORTEX calls the same two functions.
     check('buildCortexReadV2 (page.tsx) imports selectEvmPnlLaneStatus/selectRobinhoodPnlLaneStatus from the barrel, the same functions PnlStatusCard itself uses', pageSrc2.includes('selectEvmPnlLaneStatus') && pageSrc2.includes('selectRobinhoodPnlLaneStatus'))
-    check('CORTEX calls selectEvmPnlLaneStatus with the SAME report fields WalletScannerSummaryRowV3 passes into the live PnlStatusCard', /const evmPnlLane = selectEvmPnlLaneStatus\(\{\s*\n\s*pnlV2: report\?\.pnlV2,/.test(pageSrc2))
+    check('CORTEX calls selectEvmPnlLaneStatus with the SAME report fields WalletScannerSummaryRowV3 passes into the live PnlStatusCard', /const evmPnlLane = selectEvmPnlLaneStatus\(\{\s*\n\s*pnlV2: report\.pnlV2,/.test(pageSrc2))
     check('CORTEX calls selectRobinhoodPnlLaneStatus with the real robinhoodResult, never a re-derived summary', pageSrc2.includes('const robinhoodPnlLane = selectRobinhoodPnlLaneStatus(robinhoodResult)'))
-    check('CORTEX renders a distinct Base/ETH-vs-Robinhood PnL lane signal, never one blended claim', /const pnlLaneSignal = `PnL: Base\/ETH \$\{evmPnlLane\}/.test(pageSrc2))
+    // UPDATED, DISCLOSED (Wallet Read / CORTEX sidebar redesign follow-up): the old single blended
+    // `pnlLaneSignal` string is gone — evmPnlLane/robinhoodPnlLane now flow into
+    // buildWalletReadV2/buildPnlLanes (walletReadBuilder.ts), which renders them as two DISTINCT,
+    // never-merged lane entries (see WalletReadPanel's own PnlLaneRow) — a stronger form of "never
+    // merge them" than a shared string ever was.
+    check('CORTEX passes both lane statuses into buildWalletReadV2, which renders them as isolated pnlLanes (never one blended claim)', pageSrc2.includes('evmPnlLane,') && pageSrc2.includes('robinhoodPnlLane,') && pageSrc2.includes('return buildWalletReadV2({'))
 
     // selectEvmPnlLaneStatus: real behavior.
     check('selectEvmPnlLaneStatus is "unavailable" when pnlV2 itself is absent', selectEvmPnlLaneStatus({ pnlV2: null }) === 'unavailable')
