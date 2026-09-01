@@ -19,6 +19,7 @@ export function parseClarkCommandName(prompt: string): ClarkCommandName | null {
   const t = String(prompt ?? "").trim();
   if (!t) return null;
   if (/^\/explain(?:\s+lp(?:\s|$)|$)/i.test(t)) return "explain";
+  if (/^\/deep\s+wallet\b/i.test(t)) return "wallet";
   const slash = t.match(/^\/(lp|token|wallet|deployer|holders|base)\b/i);
   if (slash) return slash[1].toLowerCase() as ClarkCommandName;
   if (/^(?:who\s+deployed|check\s+(?:the\s+)?deployer|deployer\s+(?:of|for|check))\b/i.test(t)) return "deployer";

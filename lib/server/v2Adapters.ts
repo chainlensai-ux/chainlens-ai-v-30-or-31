@@ -93,12 +93,13 @@ async function writeToKv(cacheKey: string, value: WalletLiteResult): Promise<voi
 // today, and adding it would mean modifying the 3 calling routes/runners, which this diagnostic
 // task's own scope excludes ("never modify existing API routes"). Disclosed as an honest proxy,
 // not a claim of full per-HTTP-route attribution.
-export async function runV2Scan(address: string, route: string): Promise<RunWalletScanV2Result | null> {
-  for (const chain of DEFAULT_CHAINS) {
+export async function runV2Scan(address: string, route: string, chains: string[] = DEFAULT_CHAINS): Promise<RunWalletScanV2Result | null> {
+  const scanChains = chains.length > 0 ? chains : DEFAULT_CHAINS
+  for (const chain of scanChains) {
     logRpcCall({ chain, method: 'runWalletScanV2', route, stack: sanitizeStack(new Error().stack) })
   }
   try {
-    return await runWalletScanV2({ walletAddress: address, chains: DEFAULT_CHAINS, scanMode: 'normal' })
+    return await runWalletScanV2({ walletAddress: address, chains: scanChains, scanMode: 'normal' })
   } catch (err) {
     console.warn('[v2Adapters] runWalletScanV2 threw, treating as V2 unavailable', {
       address,

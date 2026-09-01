@@ -31,13 +31,26 @@
 // none either.
 
 import { DEFAULT_CHAINS, runV2Scan } from '@/lib/server/v2Adapters'
+export { DEFAULT_CHAINS }
 import type { RunWalletScanV2Result } from '@/src/pipeline/runWalletScanV2'
-import { scanRobinhoodWallet } from '@/lib/server/robinhoodWalletScanner'
+import { scanRobinhoodWallet, formatRobinhoodPnlMessage } from '@/lib/server/robinhoodWalletScanner'
 import type { RobinhoodWalletScannerAudit } from '@/lib/server/robinhoodWalletScanner'
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
-import { enqueueWalletScanJob } from '@/src/modules/walletScanQueue'
+import { enqueueWalletScanJob, readWalletScanJob, readWalletScanResult } from '@/src/modules/walletScanQueue'
 import { getTokenCache, setTokenCache } from '@/lib/server/cache/tokenCache'
 import { buildWalletChainSelectionAudit, type WalletChainSelectionAudit } from '@/lib/server/walletChainSelectionAudit'
+import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride } from '@/app/frontend/lib/mergedWalletView'
+import {
+  WALLET_SCANNER_EVM_CHAINS,
+  selectEvmPnlLaneStatus,
+  selectRobinhoodPnlLaneStatus,
+  robinhoodCompactProof,
+  toRobinhoodWalletScanResponse,
+  type EvmPnlLaneStatus,
+  type RobinhoodPnlLaneStatus,
+  type RobinhoodPnlCompactProof,
+  type RobinhoodWalletScanResponse,
+} from '@/lib/walletScan/canonicalWalletSelectors'
 
 export type ChainMode = 'auto' | 'all_supported' | 'base' | 'ethereum' | 'bnb' | 'robinhood'
 export type ScanDepth = 'preview' | 'deep'
@@ -61,9 +74,25 @@ export type CanonicalWalletScanResult = {
   nextActions: string[]
   scanMode: ScanDepth
   scanId: string
+  // Lane statuses — the SAME selectors the Wallet Scanner page / CORTEX use. Never a blended
+  // Base/ETH+Robinhood PnL label.
+  evmPnlLaneStatus: EvmPnlLaneStatus
+  robinhoodPnlLaneStatus: RobinhoodPnlLaneStatus
+  robinhoodPnlProof: RobinhoodPnlCompactProof | null
+  robinhoodIncluded: boolean
+  pricedHoldingsCount: number
+  unpricedHoldingsCount: number
+  scannedAt: number
+  usedMergedTotalSelector: boolean
+  usedPnlLaneSelectors: boolean
+  usedCanonicalWalletScan: boolean
+  usedCachedCanonicalResult: boolean
+  lastActive: string | null
+  verifiedCoveragePercent: number | null
+  openPositionCoveragePercent: number | null
   // Job status for the deep/async EVM path — present whenever a deep scan enqueued a real job the
   // caller can poll via the existing, unmodified /api/wallet-scan/[jobId] route.
-  jobStatus?: 'queued' | 'unavailable'
+  jobStatus?: 'queued' | 'unavailable' | 'done'
   jobId?: string
   // Only populated when the caller explicitly passed debug: true — never a spread of the raw
   // FinalReport (src/modules/finalReportAssembler/types.ts), which carries internal provider
@@ -87,7 +116,7 @@ export type RunWalletScanParams = {
   debug?: boolean
 }
 
-const ORCHESTRATOR_CACHE_VERSION = 'v1'
+const ORCHESTRATOR_CACHE_VERSION = 'v2'
 const ORCHESTRATOR_PREVIEW_CACHE_TTL_SECONDS = 45
 
 function orchestratorCacheKey(walletAddress: string, chainMode: ChainMode, scanDepth: ScanDepth): string {
@@ -116,7 +145,11 @@ function resolveChains(chainMode: ChainMode): ResolvedChains {
     case 'auto':
     case 'all_supported':
     default:
-      return { evmChains: [...DEFAULT_CHAINS], includeRobinhood: robinhoodAvailable, robinhoodAvailable }
+      // WALLET SCANNER PAGE PARITY, DISCLOSED: Clark /wallet and the Wallet Scanner page must
+      // request the same EVM set (Base + ETH). DEFAULT_CHAINS still includes arbitrum for
+      // /api/portfolio via v2Adapters — Clark must not list Arbitrum unless it was actually
+      // scanned, and the page never requests it.
+      return { evmChains: [...WALLET_SCANNER_EVM_CHAINS], includeRobinhood: robinhoodAvailable, robinhoodAvailable }
   }
 }
 
@@ -188,7 +221,10 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
 
   if (params.scanDepth === 'preview') {
     const cached = await readOrchestratorCache(cacheKey, evmChains).catch(() => null)
-    if (cached) return params.debug ? cached : stripDebug(cached)
+    if (cached) {
+      const hit: CanonicalWalletScanResult = { ...cached, usedCachedCanonicalResult: true }
+      return params.debug ? hit : stripDebug(hit)
+    }
   }
 
   const evidenceSources: WalletScanEvidenceSource[] = []
@@ -196,7 +232,7 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
   const nextActions: string[] = []
 
   let holdings: CanonicalWalletScanResult['holdings'] = []
-  let totalValueUsd: number | null = null
+  let evmTotalValueUsd: number | null = null
   let uniqueTransactions: number | null = null
   let pnlStatus: CanonicalWalletScanResult['pnlStatus'] = 'unavailable'
   let realizedPnlUsd: number | null | undefined
@@ -206,62 +242,89 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
   let skippedSwapLogs: number | null = null
   let evmReport: RunWalletScanV2Result | null = null
   let robinhoodAudit: RobinhoodWalletScannerAudit | null = null
+  let robinhoodResponse: RobinhoodWalletScanResponse | null = null
   let jobStatus: CanonicalWalletScanResult['jobStatus'] | undefined
   let jobId: string | undefined
-  let chainsScanned: string[] = []
+  let lastActive: string | null = null
+  let verifiedCoveragePercent: number | null = null
+  let openPositionCoveragePercent: number | null = null
+  let canonicalOverride: ReturnType<typeof deriveCanonicalMergeOverride> = null
 
   if (params.chainMode === 'bnb') {
     missingEvidence.push('BNB chain is not supported by the Wallet Scanner engine.')
     nextActions.push('Scan this wallet on Base, Ethereum, or Robinhood Chain instead.')
   }
 
-  if (evmChains.length > 0) {
-    if (params.scanDepth === 'preview') {
-      // Reuses the exact same runV2Scan() the async job worker's/Clark's v2Adapters already call —
-      // no reimplementation, no new engine call.
-      evmReport = await runV2Scan(walletAddress, `orchestrator_preview:${params.source}`)
-      if (evmReport) {
-        evidenceSources.push('v2_pipeline')
-        const summary = summarizeEvmReport(evmReport)
-        holdings = holdings.concat(summary.holdings)
-        totalValueUsd = (totalValueUsd ?? 0) + (summary.totalValueUsd ?? 0)
-        uniqueTransactions = (uniqueTransactions ?? 0) + summary.uniqueTransactions
-        pnlStatus = summary.pnlStatus
-        realizedPnlUsd = summary.realizedPnlUsd
-        unrealizedPnlUsd = summary.unrealizedPnlUsd
-        pricingCoverage = summary.pricingCoverage
-        verifiedSwapCount = summary.verifiedSwapCount
-        chainsScanned = chainsScanned.concat(summary.chainsScanned)
-      } else {
-        missingEvidence.push(`EVM scan (${evmChains.map(evmChainLabel).join(', ')}) is temporarily unavailable.`)
-        nextActions.push('Retry the scan shortly.')
-      }
-    } else {
-      // Deep mode: enqueue the SAME real async job app/api/wallet-scan/route.ts already enqueues —
-      // never a fabricated "complete" result. scanId is the real jobId, pollable via the existing,
-      // unmodified /api/wallet-scan/[jobId] route.
-      jobId = crypto.randomUUID()
-      try {
-        await enqueueWalletScanJob(jobId, {
-          jobId,
-          walletAddress,
-          chains: evmChains,
-          scanMode: 'deep',
-          ip: 'unknown',
-        })
-        evidenceSources.push('async_job_queue')
-        jobStatus = 'queued'
-        chainsScanned = chainsScanned.concat(evmChains)
-        nextActions.push(`Poll /api/wallet-scan?jobId=${jobId} for the deep scan result.`)
-      } catch (err) {
-        jobStatus = 'unavailable'
-        missingEvidence.push('Deep scan queue is temporarily unavailable.')
-        nextActions.push('Retry the deep scan shortly.')
-        console.warn('[walletScanOrchestrator] enqueueWalletScanJob failed', {
+  const rhPromise = (includeRobinhood && robinhoodAvailable)
+    ? scanRobinhoodWallet(walletAddress, fetch).catch((err) => {
+        console.warn('[walletScanOrchestrator] scanRobinhoodWallet failed', {
           walletAddress,
           error: err instanceof Error ? err.message : String(err),
         })
+        return null
+      })
+    : Promise.resolve(null)
+
+  // Preview EVM always runs for holdings/total — same runV2Scan the Wallet Scanner's fast path
+  // uses, with the SAME chain list the Wallet Scanner page requests (Base + ETH). Deep mode
+  // ALSO enqueues the page's Deep Scan job (includeRobinhoodRequested) and overlays EVM PnL
+  // if the job finishes before the Clark timeout window.
+  if (evmChains.length > 0) {
+    evmReport = await runV2Scan(walletAddress, `orchestrator_${params.scanDepth}:${params.source}`, evmChains)
+    if (evmReport) {
+      evidenceSources.push('v2_pipeline')
+      const summary = summarizeEvmReport(evmReport)
+      holdings = holdings.concat(filterHoldingsToRequestedChains(summary.holdings, evmChains))
+      evmTotalValueUsd = summary.totalValueUsd
+      uniqueTransactions = (uniqueTransactions ?? 0) + summary.uniqueTransactions
+      pnlStatus = summary.pnlStatus
+      realizedPnlUsd = summary.realizedPnlUsd
+      unrealizedPnlUsd = summary.unrealizedPnlUsd
+      pricingCoverage = summary.pricingCoverage
+      verifiedSwapCount = summary.verifiedSwapCount
+    } else {
+      missingEvidence.push(`EVM scan (${evmChains.map(evmChainLabel).join(', ')}) is temporarily unavailable.`)
+      nextActions.push('Retry the scan shortly.')
+    }
+  }
+
+  if (params.scanDepth === 'deep' && evmChains.length > 0) {
+    jobId = crypto.randomUUID()
+    try {
+      await enqueueWalletScanJob(jobId, {
+        jobId,
+        walletAddress,
+        chains: evmChains,
+        scanMode: 'deep',
+        ip: 'unknown',
+        includeRobinhoodRequested: includeRobinhood,
+      })
+      evidenceSources.push('async_job_queue')
+      jobStatus = 'queued'
+      const worker = await pollDeepWalletScanJob(jobId, DEEP_POLL_TIMEOUT_MS)
+      if (worker) {
+        jobStatus = 'done'
+        overlayWorkerEvmPnl(worker, {
+          setPnlStatus: (s) => { pnlStatus = s },
+          setRealized: (v) => { realizedPnlUsd = v },
+          setUnrealized: (v) => { unrealizedPnlUsd = v },
+          setVerified: (v) => { verifiedSwapCount = v },
+          setCoverage: (v) => { verifiedCoveragePercent = v },
+          setOpenCoverage: (v) => { openPositionCoveragePercent = v },
+          setOverride: (v) => { canonicalOverride = v },
+          setEvmReport: (r) => { if (r) evmReport = r },
+        })
+      } else {
+        nextActions.push('Open Wallet Scanner to wait for the full Deep Scan PnL result.')
       }
+    } catch (err) {
+      jobStatus = 'unavailable'
+      missingEvidence.push('Deep scan queue is temporarily unavailable.')
+      nextActions.push('Retry the deep scan shortly.')
+      console.warn('[walletScanOrchestrator] enqueueWalletScanJob failed', {
+        walletAddress,
+        error: err instanceof Error ? err.message : String(err),
+      })
     }
   }
 
@@ -269,42 +332,109 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
     missingEvidence.push('Robinhood Chain scanning is currently disabled.')
     nextActions.push('Try again once Robinhood Chain support is enabled.')
   } else if (includeRobinhood && robinhoodAvailable) {
-    // Robinhood has no async job concept — it always runs synchronously via the exact same
-    // scanRobinhoodWallet() call sequence app/api/wallet-scan/robinhood/route.ts uses, even in deep
-    // mode, merged alongside the (possibly still-queued) EVM status.
-    const rh = await scanRobinhoodWallet(walletAddress, fetch).catch((err) => {
-      console.warn('[walletScanOrchestrator] scanRobinhoodWallet failed', {
-        walletAddress,
-        error: err instanceof Error ? err.message : String(err),
-      })
-      return null
-    })
+    const rh = await rhPromise
     if (rh) {
       evidenceSources.push('robinhood_chain')
       robinhoodAudit = rh.audit
+      robinhoodResponse = toRobinhoodWalletScanResponse(walletAddress, {
+        holdings: {
+          status: rh.holdings.status,
+          native: rh.holdings.native
+            ? { symbol: rh.holdings.native.symbol, uiBalance: rh.holdings.native.uiBalance, priceUsd: rh.holdings.native.priceUsd, valueUsd: rh.holdings.native.valueUsd }
+            : null,
+          holdings: rh.holdings.holdings.map((t) => ({
+            address: t.address,
+            symbol: t.symbol,
+            name: t.name,
+            uiBalance: t.uiBalance,
+            priceUsd: t.priceUsd,
+            valueUsd: t.valueUsd,
+            priceSource: t.priceSource,
+          })),
+          portfolioTotalUsd: rh.holdings.portfolioTotalUsd,
+          unpricedTokenCount: rh.holdings.unpricedTokenCount,
+          reason: rh.holdings.reason,
+        },
+        activity: {
+          status: rh.activity.status,
+          items: rh.activity.items.map((i) => ({
+            txHash: i.txHash,
+            blockTimestamp: i.blockTimestamp,
+            kind: i.kind,
+            direction: i.direction,
+            counterparty: i.counterparty,
+            tokenSymbol: i.tokenSymbol,
+          })),
+          skippedSwapLogs: rh.activity.skippedSwapLogs,
+          verifiedSwapCount: rh.activity.verifiedSwapCount,
+          blockscoutEvidence: rh.activity.blockscoutEvidence,
+          reason: rh.activity.reason,
+        },
+        pnl: {
+          status: rh.pnl.status,
+          realizedPnlUsd: rh.pnl.realizedPnlUsd,
+          matchedLotsCount: rh.pnl.matchedLotsCount,
+          verifiedSwapCount: rh.pnl.verifiedSwapCount,
+          reason: rh.pnl.reason,
+        },
+        audit: rh.audit as unknown as Record<string, unknown> & { chainId?: number },
+        pnlVerificationAudit: rh.pnlVerificationAudit,
+      })
+      if (robinhoodResponse.pnl.message === robinhoodResponse.pnl.reason || !robinhoodResponse.pnl.message) {
+        robinhoodResponse.pnl.message = formatRobinhoodPnlMessage(rh.pnl.status)
+      }
       const rhHoldings = rh.holdings.native
         ? [{ chain: 'robinhood', symbol: rh.holdings.native.symbol, valueUsd: rh.holdings.native.valueUsd }]
         : []
       holdings = holdings.concat(rhHoldings, rh.holdings.holdings.map((t) => ({ chain: 'robinhood', symbol: t.symbol ?? t.address.slice(0, 8), valueUsd: t.valueUsd })))
-      chainsScanned = chainsScanned.concat(['robinhood'])
       skippedSwapLogs = rh.audit.skippedSwapLogs
       verifiedSwapCount = (verifiedSwapCount ?? 0) + rh.pnl.verifiedSwapCount
-      // Never overrides a stronger 'available' EVM status with Robinhood's own weaker status —
-      // only fills in when the EVM side reported nothing.
-      if (pnlStatus === 'unavailable') {
-        pnlStatus = rh.pnl.status === 'verified' ? 'available' : rh.pnl.status === 'partial' ? 'partial' : 'unavailable'
-        if (realizedPnlUsd === undefined || realizedPnlUsd === null) realizedPnlUsd = rh.pnl.realizedPnlUsd
-      }
+      lastActive = lastActiveFromRobinhood(rh.activity.items)
+      // HARD RULE: never promote Robinhood PnL into the EVM canonical pnlStatus. Lanes stay split.
     } else {
       missingEvidence.push('Robinhood Chain scan is temporarily unavailable.')
       nextActions.push('Retry the Robinhood Chain scan shortly.')
     }
+  } else if (includeRobinhood && !robinhoodAvailable) {
+    missingEvidence.push('Robinhood Chain scanning is currently disabled.')
   }
 
+  const merged = computeMergedTotalValueUsd(evmTotalValueUsd, robinhoodResponse, canonicalOverride)
+  const totalValueUsd = merged.totalValueUsd
+  const pricedHoldingsCount = holdings.filter((h) => h.valueUsd != null).length
+  const unpricedHoldingsCount = holdings.length - pricedHoldingsCount
+
+  const evmPnlLaneStatus = selectEvmPnlLaneStatus({
+    pnlV2: evmReport ? ((evmReport as unknown as { pnlV2?: Parameters<typeof selectEvmPnlLaneStatus>[0]['pnlV2'] }).pnlV2 ?? null) : null,
+    publicPnlStatus: evmReport?.reconciliationSummary?.publicPnlStatus === 'available'
+      ? 'ok'
+      : evmReport?.reconciliationSummary?.publicPnlStatus === 'partial'
+        ? 'limited_verified_sample'
+        : evmReport?.canonicalPricedFifo?.publicPnlStatus === 'ok'
+          ? 'ok'
+          : evmReport?.canonicalPricedFifo?.publicPnlStatus === 'limited_verified_sample'
+            ? 'limited_verified_sample'
+            : evmReport ? 'unavailable' : null,
+    unrealizedReconciliation: (evmReport as unknown as { fifoAndPnl?: { unrealizedReconciliation?: Parameters<typeof selectEvmPnlLaneStatus>[0]['unrealizedReconciliation'] } } | null)?.fifoAndPnl?.unrealizedReconciliation ?? null,
+    reconciliationSummary: evmReport?.reconciliationSummary as Parameters<typeof selectEvmPnlLaneStatus>[0]['reconciliationSummary'],
+    canonicalSampleManifestAudit: (evmReport as unknown as { canonicalSampleManifestAudit?: Parameters<typeof selectEvmPnlLaneStatus>[0]['canonicalSampleManifestAudit'] } | null)?.canonicalSampleManifestAudit ?? null,
+  })
+  const robinhoodPnlLaneStatus = selectRobinhoodPnlLaneStatus(robinhoodResponse)
+  const robinhoodPnlProof = robinhoodCompactProof(robinhoodResponse)
+
+  if (params.scanDepth === 'preview') {
+    nextActions.push('Run Deep Scan Wallet')
+  }
+  nextActions.push('Explain PnL')
+  nextActions.push('Open Wallet Scanner')
+
+  // Requested chains only — never list Arbitrum (or any other chain) unless this scan asked for it.
+  const chainsScanned = [
+    ...evmChains,
+    ...(robinhoodResponse ? ['robinhood'] : []),
+  ]
+
   const walletChainSelectionAudit = buildWalletChainSelectionAudit({
-    // FIXED, DISCLOSED: this previously passed `params.chainMode` as `requestedMode`, mislabeling the
-    // chain-selection mode ('auto'/'all_supported'/...) as the scan-depth field. `chainMode` is now
-    // its own tracked field on the audit — pass both correctly.
     requestedMode: params.scanDepth,
     chainMode: params.chainMode,
     evmChainSlugs: evmChains,
@@ -333,6 +463,20 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
     nextActions,
     scanMode: params.scanDepth,
     scanId: jobId ?? crypto.randomUUID(),
+    evmPnlLaneStatus,
+    robinhoodPnlLaneStatus,
+    robinhoodPnlProof,
+    robinhoodIncluded: merged.robinhoodIncluded,
+    pricedHoldingsCount,
+    unpricedHoldingsCount,
+    scannedAt: Date.now(),
+    usedMergedTotalSelector: true,
+    usedPnlLaneSelectors: true,
+    usedCanonicalWalletScan: true,
+    usedCachedCanonicalResult: false,
+    lastActive,
+    verifiedCoveragePercent,
+    openPositionCoveragePercent,
     ...(jobStatus ? { jobStatus, jobId } : {}),
     ...(params.debug ? { debug: { evmReport, robinhoodAudit } } : {}),
     walletChainSelectionAudit,
@@ -343,6 +487,80 @@ export async function runWalletScan(params: RunWalletScanParams): Promise<Canoni
   }
 
   return result
+}
+
+const DEEP_POLL_INTERVAL_MS = 2_500
+const DEEP_POLL_TIMEOUT_MS = 12_000
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function pollDeepWalletScanJob(jobId: string, timeoutMs: number): Promise<unknown | null> {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    await sleep(DEEP_POLL_INTERVAL_MS)
+    const job = await readWalletScanJob(jobId).catch(() => null)
+    if (!job) continue
+    if (job.status === 'done') {
+      return await readWalletScanResult(jobId).catch(() => null)
+    }
+    if (job.status === 'failed') return null
+  }
+  return null
+}
+
+function filterHoldingsToRequestedChains(
+  rows: CanonicalWalletScanResult['holdings'],
+  evmChains: string[],
+): CanonicalWalletScanResult['holdings'] {
+  const allowed = new Set(evmChains.map((c) => c === 'ethereum' ? 'eth' : c))
+  return rows.filter((row) => allowed.has(row.chain === 'ethereum' ? 'eth' : row.chain))
+}
+
+function lastActiveFromRobinhood(items: Array<{ blockTimestamp: string | null }>): string | null {
+  const timestamps = items.map((i) => i.blockTimestamp).filter((t): t is string => t != null)
+  if (timestamps.length === 0) return null
+  return timestamps.reduce((latest, t) => (new Date(t).getTime() > new Date(latest).getTime() ? t : latest))
+}
+
+function overlayWorkerEvmPnl(
+  raw: unknown,
+  setters: {
+    setPnlStatus: (s: CanonicalWalletScanResult['pnlStatus']) => void
+    setRealized: (v: number | null) => void
+    setUnrealized: (v: number | null) => void
+    setVerified: (v: number | null) => void
+    setCoverage: (v: number | null) => void
+    setOpenCoverage: (v: number | null) => void
+    setOverride: (v: ReturnType<typeof deriveCanonicalMergeOverride>) => void
+    setEvmReport: (r: RunWalletScanV2Result | null) => void
+  },
+): void {
+  const envelope = raw && typeof raw === 'object' ? raw as Record<string, unknown> : null
+  const report = (envelope && (envelope.data && typeof envelope.data === 'object' ? envelope.data : envelope.result && typeof envelope.result === 'object' ? envelope.result : envelope)) as Record<string, unknown> | null
+  if (!report) return
+  if (report.canonicalTotalValueUsd !== undefined) {
+    setters.setOverride(deriveCanonicalMergeOverride({
+      canonicalTotalValueUsd: report.canonicalTotalValueUsd as number | null,
+      finalCanonicalMergeAudit: (report.finalCanonicalMergeAudit as { robinhoodMerged: boolean } | null) ?? null,
+    }))
+  }
+  const recon = report.reconciliationSummary as RunWalletScanV2Result['reconciliationSummary'] | undefined
+  const fifo = report.canonicalPricedFifo as RunWalletScanV2Result['canonicalPricedFifo'] | undefined
+  const publicStatus = recon?.publicPnlStatus ?? (fifo?.publicPnlStatus === 'ok' ? 'available' : fifo?.publicPnlStatus === 'limited_verified_sample' ? 'partial' : 'unavailable')
+  if (publicStatus) setters.setPnlStatus(publicStatus)
+  const realized = recon?.realizedPnlUsd ?? fifo?.realizedPnlUsd ?? null
+  if (realized != null) setters.setRealized(realized)
+  const unrealized = fifo?.unrealizedPnlUsd ?? null
+  if (unrealized != null) setters.setUnrealized(unrealized)
+  const lots = recon?.publishedMatchedLots ?? fifo?.matchedLots
+  if (Array.isArray(lots)) setters.setVerified(lots.length)
+  const openCov = (report.fifoAndPnl as { unrealizedReconciliation?: { openPositionCoveragePercent?: number | null } } | undefined)?.unrealizedReconciliation?.openPositionCoveragePercent
+  if (typeof openCov === 'number') setters.setOpenCoverage(openCov)
+  if (report.pnlV2 || report.canonicalPricedFifo) {
+    setters.setEvmReport(report as unknown as RunWalletScanV2Result)
+  }
 }
 
 function stripDebug(result: CanonicalWalletScanResult): CanonicalWalletScanResult {

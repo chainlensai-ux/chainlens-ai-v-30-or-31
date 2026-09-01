@@ -33,6 +33,7 @@ import type { SyntheticPnlSummary } from '@/src/modules/syntheticPnl/types'
 import type { PnlReconciliationSummary } from '@/src/lib/pnlReconciliation'
 import type { CanonicalSampleManifestAudit } from '@/src/lib/canonicalPnlSampleManifest'
 import { selectRobinhoodPnlLaneStatus, ROBINHOOD_PNL_NOT_VERIFIED_REASON, type RobinhoodWalletScanResponse, type RobinhoodPnlLaneStatus } from './RobinhoodChainSection'
+import { selectEvmPnlLaneStatus as selectEvmPnlLaneStatusShared, type EvmPnlLaneStatus as SharedEvmPnlLaneStatus } from '@/lib/walletScan/canonicalWalletSelectors'
 import { PARTIAL_TRUST_GATE_PUBLIC_LABEL } from '@/src/lib/pnlDiscrepancyAudit'
 import { fmtSignedUsd, fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { StatusBadge } from './StatusBadge'
@@ -420,7 +421,7 @@ export const PER_CHAIN_BOUNDED_SAMPLE_MESSAGE = 'Per-chain breakdown not availab
 // sample case (effectivePublicPnlStatus === 'limited_verified_sample') and the magnitude/stability
 // guard (`blocked`) that already suppresses the numeric tiles elsewhere in this file; 'unavailable'
 // only when pnlV2 itself is absent (isActive === false).
-export type EvmPnlLaneStatus = 'verified' | 'partial' | 'unavailable'
+export type EvmPnlLaneStatus = SharedEvmPnlLaneStatus
 export function selectEvmPnlLaneStatus(params: {
   pnlV2: PnlV2 | null | undefined
   publicPnlStatus?: PublicPnlStatus | null
@@ -428,11 +429,7 @@ export function selectEvmPnlLaneStatus(params: {
   reconciliationSummary?: PnlReconciliationSummary | null
   canonicalSampleManifestAudit?: CanonicalSampleManifestAudit | null
 }): EvmPnlLaneStatus {
-  if (params.pnlV2 == null) return 'unavailable'
-  const effectivePublicPnlStatus = resolveEffectivePublicPnlStatus(params.publicPnlStatus, params.reconciliationSummary, params.canonicalSampleManifestAudit)
-  if (effectivePublicPnlStatus === 'limited_verified_sample') return 'partial'
-  const pnl = selectVerifiedPnlData(params.pnlV2, effectivePublicPnlStatus, params.unrealizedReconciliation)
-  return (pnl.unreliable || !pnl.stable) ? 'partial' : 'verified'
+  return selectEvmPnlLaneStatusShared(params)
 }
 
 // ROBINHOOD LANE, DISCLOSED: defined in RobinhoodChainSection.tsx (next to the response type) so

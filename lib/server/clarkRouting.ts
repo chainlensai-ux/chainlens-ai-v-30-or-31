@@ -428,10 +428,13 @@ export type ClarkSlashCommand = {
   addresses: string[];
   symbol: string | null;
   bare: boolean;
+  deep?: boolean;
 };
 
 const SLASH_COMMAND_RE = /^\/(lp|token|wallet|base|deployer|holders)(?:\s+([\s\S]*))?$/i;
 const SLASH_EXPLAIN_LP_RE = /^\/explain(?:\s+lp(?:\s+([\s\S]*))?)?$/i;
+const SLASH_DEEP_WALLET_RE = /^\/deep\s+wallet(?:\s+([\s\S]*))?$/i;
+const WALLET_SLASH_DEEP_RE = /\bdeep(?:\s+scan)?\b/i;
 
 function slashSymbolFromRest(rest: string, address: string | null): string | null {
   if (!rest || address) return null;
@@ -460,6 +463,22 @@ export function parseClarkSlashCommand(prompt: string): ClarkSlashCommand | null
       bare: rest.length === 0,
     };
   }
+  const deepWallet = raw.match(SLASH_DEEP_WALLET_RE);
+  if (deepWallet) {
+    const rest = (deepWallet[1] ?? "").trim();
+    const address = rest ? extractAddressForRouting(rest) : null;
+    const addresses = rest ? extractAllAddressesForRouting(rest) : [];
+    return {
+      command: "wallet",
+      intent: "wallet_scan",
+      rest,
+      address,
+      addresses,
+      symbol: slashSymbolFromRest(rest, address),
+      bare: rest.length === 0,
+      deep: true,
+    };
+  }
   const m = raw.match(SLASH_COMMAND_RE);
   if (!m) return null;
   const command = m[1].toLowerCase() as ClarkSlashCommandName;
@@ -474,7 +493,8 @@ export function parseClarkSlashCommand(prompt: string): ClarkSlashCommand | null
     : command === "deployer" ? "deployer_check"
     : command === "holders" ? "holders_check"
     : "base_market_discovery";
-  return { command, intent, rest, address, addresses, symbol, bare: rest.length === 0 };
+  const deep = command === "wallet" ? WALLET_SLASH_DEEP_RE.test(rest) : false;
+  return { command, intent, rest, address, addresses, symbol, bare: rest.length === 0, ...(command === "wallet" ? { deep } : {}) };
 }
 
 export function slashCommandQuestionCategory(prompt: string): "token" | "wallet" | null {
@@ -569,7 +589,9 @@ export function classifyClarkPrompt(prompt: string): {
   const slash = parseClarkSlashCommand(raw);
   const address = slash?.address ?? extractAddressForRouting(raw);
   const addresses = slash ? slash.addresses : extractAllAddressesForRouting(raw);
-  const deep = WALLET_DEEP_RE.test(t) || (slash?.command === "wallet" && WALLET_DEEP_RE.test(slash.rest));
+  const deep = (slash?.command === "wallet" && Boolean(slash.deep))
+    || (slash?.command === "wallet" && WALLET_SLASH_DEEP_RE.test(slash.rest))
+    || (slash?.command !== "wallet" && WALLET_DEEP_RE.test(t));
   const tokenNameMatch = raw.match(TOKEN_NAME_RE);
   const tokenSymbolCandidate = tokenNameMatch?.[2]?.toUpperCase() ?? null;
   const liquiditySymbolCandidate = extractLiquiditySymbol(raw);
@@ -1900,82 +1922,181 @@ export type CanonicalWalletReadInput = {
   evidenceSources: string[];
   missingEvidence: string[];
   scanMode: "preview" | "deep";
-  jobStatus?: "queued" | "unavailable";
+  jobStatus?: "queued" | "unavailable" | "done";
   jobId?: string;
-};
-
-const WALLET_EVIDENCE_SOURCE_LABELS: Record<string, string> = {
-  v2_pipeline: "V2 chain pipeline",
-  robinhood_chain: "Robinhood Chain",
-  async_job_queue: "Deep scan job queue",
+  evmPnlLaneStatus?: "verified" | "partial" | "unavailable";
+  robinhoodPnlLaneStatus?: "verified" | "not_verified" | "unavailable";
+  robinhoodPnlProof?: {
+    source: string;
+    verifiedSwapCount: number;
+    fifoClosedLots: number;
+    priceEvidenceBothLegs: boolean;
+  } | null;
+  lastActive?: string | null;
+  pricedHoldingsCount?: number;
+  unpricedHoldingsCount?: number;
+  verifiedSwapCount?: number | null;
+  verifiedCoveragePercent?: number | null;
+  openPositionCoveragePercent?: number | null;
+  behaviorLabel?: string | null;
+  behaviorWhy?: string[];
 };
 
 function fmtUsd(v: number | null | undefined): string {
   return v != null ? `$${v.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : "not available";
 }
 
-// Honest behavior label — derived only from real fields already on the result; never a guess. See
-// CanonicalWalletReadInput's own doc comment above.
-function deriveClarkWalletBehavior(r: CanonicalWalletReadInput): string {
-  if (r.evidenceSources.length === 0) return "unknown — no evidence sources returned data for this wallet";
+function chainReadLabel(chain: string): string {
+  const c = String(chain ?? "").toLowerCase();
+  if (c === "eth" || c === "ethereum") return "ETH";
+  if (c === "base") return "Base";
+  if (c === "robinhood") return "Robinhood";
+  if (c === "arbitrum") return "Arbitrum";
+  if (c === "bnb" || c === "bsc") return "BNB";
+  return chain;
+}
+
+function shortWallet(address: string): string {
+  const a = String(address ?? "");
+  if (a.length < 12) return a;
+  return `${a.slice(0, 6)}...${a.slice(-4)}`;
+}
+
+function deriveClarkWalletBehaviorLabel(r: CanonicalWalletReadInput): { label: string; why: string[] } {
+  if (r.behaviorLabel) {
+    return { label: r.behaviorLabel, why: r.behaviorWhy && r.behaviorWhy.length > 0 ? r.behaviorWhy.slice(0, 3) : ["Derived from the canonical Wallet Scanner result."] };
+  }
   const value = r.totalValueUsd ?? 0;
   const holdingsCount = r.holdings.length;
   const txCount = r.activitySummary.uniqueTransactions ?? 0;
-  if (value >= 250_000) return "whale — large portfolio value observed";
-  if (holdingsCount === 0 && txCount === 0) return "inactive — no holdings or activity found across the chains scanned";
-  if (txCount >= 25) return "distributor — high transaction activity relative to holdings";
-  if (holdingsCount >= 5 && value > 0) return "accumulator — multiple active holdings across chains";
-  return "unknown — insufficient signal to confidently classify behavior";
+  const priced = r.pricedHoldingsCount ?? r.holdings.filter((h) => h.valueUsd != null).length;
+  const why: string[] = [];
+  if (r.chainsScanned.length > 0) why.push(`Active on ${r.chainsScanned.map(chainReadLabel).join(", ")}.`);
+  if (priced > 0) why.push(`${priced} priced holding${priced === 1 ? "" : "s"} in the canonical scan.`);
+  if (txCount > 0) why.push(`${txCount} unique transaction${txCount === 1 ? "" : "s"} observed.`);
+  while (why.length < 3) {
+    if (why.length === 0) why.push("Canonical Wallet Scanner result used — no fabricated metrics.");
+    else if (why.length === 1) why.push(value > 0 ? `Supported portfolio value ${fmtUsd(value)}.` : "No priced portfolio value in this pass.");
+    else why.push("Behavior is a read of observed holdings and activity, not a score.");
+  }
+  if (r.evidenceSources.length === 0) return { label: "Unknown", why: why.slice(0, 3) };
+  if (holdingsCount === 0 && txCount === 0) return { label: "Inactive", why: why.slice(0, 3) };
+  if (holdingsCount > 0 && holdingsCount <= 2 && value > 0) return { label: "Concentrated holder", why: why.slice(0, 3) };
+  if (txCount >= 25) return { label: "Rotator", why: why.slice(0, 3) };
+  if (holdingsCount >= 5 && value > 0) return { label: "Accumulator", why: why.slice(0, 3) };
+  if (txCount >= 8) return { label: "Distributor", why: why.slice(0, 3) };
+  return { label: "Concentrated holder", why: why.slice(0, 3) };
+}
+
+function evmLaneLabel(status: CanonicalWalletReadInput["evmPnlLaneStatus"], fallback: CanonicalWalletReadInput["pnlStatus"]): string {
+  if (status) return status;
+  if (fallback === "available") return "verified";
+  if (fallback === "partial") return "partial";
+  return "unavailable";
+}
+
+function rhLaneLabel(status: CanonicalWalletReadInput["robinhoodPnlLaneStatus"]): string {
+  if (!status || status === "unavailable") return "unavailable";
+  if (status === "verified") return "verified";
+  return "not verified";
 }
 
 export function formatCanonicalWalletRead(address: string, r: CanonicalWalletReadInput): string {
   const topHoldings = [...r.holdings].sort((a, b) => (b.valueUsd ?? 0) - (a.valueUsd ?? 0)).slice(0, 5);
+  const priced = r.pricedHoldingsCount ?? r.holdings.filter((h) => h.valueUsd != null).length;
+  const unpriced = r.unpricedHoldingsCount ?? r.holdings.filter((h) => h.valueUsd == null).length;
+  const behavior = deriveClarkWalletBehaviorLabel(r);
+  const evmLane = evmLaneLabel(r.evmPnlLaneStatus, r.pnlStatus);
+  const rhLane = rhLaneLabel(r.robinhoodPnlLaneStatus);
+  const chainList = r.chainsScanned.length > 0 ? r.chainsScanned.map(chainReadLabel).join(", ") : "none";
+  const topLine = topHoldings.length > 0
+    ? topHoldings.map((h) => `${h.symbol} ${h.valueUsd != null ? fmtUsd(h.valueUsd) : "unpriced"}`).join(", ")
+    : "none found";
+  const txCount = r.activitySummary.uniqueTransactions;
+
   const lines: string[] = [
-    `WALLET READ — ${address}`,
+    `WALLET READ — ${shortWallet(address)}`,
     "",
-    "Overview:",
-    `- Total portfolio value: ${fmtUsd(r.totalValueUsd)}`,
-    `- Chains found: ${r.chainsScanned.length > 0 ? r.chainsScanned.join(", ") : "none"}`,
-    `- Holdings count: ${r.holdings.length}`,
-    `- Top holdings: ${topHoldings.length > 0 ? topHoldings.map((h) => `${h.symbol} (${h.chain}${h.valueUsd != null ? `, ${fmtUsd(h.valueUsd)}` : ""})`).join(", ") : "none found"}`,
-    "- Last active: not available",
+    "Overview",
+    `- Total supported value: ${fmtUsd(r.totalValueUsd)}`,
+    `- Chains scanned: ${chainList}`,
+    `- Top holdings: ${topLine}`,
+    `- Priced tokens: ${priced}`,
+    `- Unpriced tokens: ${unpriced}`,
+    `- Last active: ${r.lastActive ?? "unavailable"}`,
+    `- Unique transactions: ${txCount == null ? "unavailable" : txCount}`,
     "",
-    `Behavior: ${deriveClarkWalletBehavior(r)}`,
-    `- Active chains: ${r.chainsScanned.length > 0 ? r.chainsScanned.join(", ") : "none"}`,
-    `- Recent activity summary: ${r.activitySummary.uniqueTransactions != null ? `${r.activitySummary.uniqueTransactions} unique transactions observed` : (r.activitySummary.note ?? "not available")}`,
+    "Behavior",
+    `- Label: ${behavior.label}`,
+    ...behavior.why.map((w) => `- Why: ${w}`),
     "",
-    "PnL:",
+    "PnL Evidence",
+    `- Base/ETH: ${evmLane}`,
+    `- Robinhood: ${rhLane}`,
   ];
-  if (r.pnlStatus === "available" && r.realizedPnlUsd != null) {
-    lines.push(`- Realized PnL (verified): ${fmtUsd(r.realizedPnlUsd)}`);
-    if (r.unrealizedPnlUsd != null) lines.push(`- Unrealized PnL: ${fmtUsd(r.unrealizedPnlUsd)}`);
+
+  const showRealized = (r.evmPnlLaneStatus === "verified" || r.evmPnlLaneStatus === "partial" || r.robinhoodPnlLaneStatus === "verified")
+    && r.realizedPnlUsd != null;
+  if (showRealized) {
+    lines.push(`- Realized PnL: ${fmtUsd(r.realizedPnlUsd)}`);
   } else {
-    const reason =
-      r.missingEvidence.find((m) => /pnl|swap|trade/i.test(m)) ??
-      (r.pnlStatus === "partial"
-        ? "Partial evidence only — not enough verified swaps to confirm PnL."
-        : r.pnlStatus === "unsupported"
-          ? "No evidence sources returned data for PnL."
-          : "PnL could not be verified from the evidence available.");
-    lines.push(`- Status: ${r.pnlStatus} — ${reason}`);
+    lines.push("- Realized PnL: not verified");
   }
+  if (r.verifiedCoveragePercent != null) {
+    lines.push(`- Coverage: ${Math.round(r.verifiedCoveragePercent)}%`);
+  } else if (r.scanMode === "deep" && r.jobStatus === "queued") {
+    lines.push("- Coverage: pending — deep scan still running");
+  } else {
+    lines.push("- Coverage: not rated — verified trade coverage was not published for this pass");
+  }
+  if (r.unrealizedPnlUsd != null && (r.evmPnlLaneStatus === "verified" || r.evmPnlLaneStatus === "partial")) {
+    lines.push(`- Unrealized PnL: ${fmtUsd(r.unrealizedPnlUsd)}`);
+  } else {
+    lines.push("- Unrealized PnL: unavailable");
+  }
+  if (r.openPositionCoveragePercent != null) {
+    lines.push(`- Open-position coverage: ${Math.round(r.openPositionCoveragePercent)}%`);
+  }
+  if (typeof r.verifiedSwapCount === "number") {
+    lines.push(`- Verified trades: ${r.verifiedSwapCount}`);
+  }
+
+  if (r.robinhoodPnlLaneStatus === "verified" && r.robinhoodPnlProof) {
+    lines.push(`- Robinhood PnL: Verified`);
+    lines.push(`- Source: ${r.robinhoodPnlProof.source}`);
+    lines.push(`- Verified swaps: ${r.robinhoodPnlProof.verifiedSwapCount}`);
+    lines.push(`- Closed lots: ${r.robinhoodPnlProof.fifoClosedLots}`);
+    lines.push(`- Price evidence: both legs verified`);
+  } else if (r.robinhoodPnlLaneStatus === "not_verified") {
+    lines.push("- Robinhood PnL: Not verified");
+    lines.push("- Requires verified Robinhood swaps + both-leg price evidence.");
+  } else if (r.robinhoodPnlLaneStatus === "unavailable") {
+    lines.push("- Robinhood PnL: unavailable");
+  }
+
+  if (r.scanMode === "deep" && r.jobStatus === "queued" && r.jobId) {
+    lines.push(`- Reason if not official: Deep scan job ${r.jobId} is still running — Base/ETH PnL may update in Wallet Scanner.`);
+  } else if (evmLane === "unavailable" && rhLane !== "verified") {
+    lines.push("- Reason if not official: PnL could not be verified from the evidence available.");
+  } else if (evmLane === "partial") {
+    lines.push("- Reason if not official: Partial evidence only — not enough verified swaps to confirm official PnL.");
+  }
+
+  const missing = [...r.missingEvidence];
+  if (r.scanMode === "preview") missing.push("Deep scan history (FIFO / Base-ETH realized PnL)");
+  if (r.robinhoodPnlLaneStatus === "not_verified") missing.push("Verified Robinhood swaps + both-leg price evidence");
+  if (r.evmPnlLaneStatus === "unavailable" && r.scanMode === "deep" && r.jobStatus === "queued") missing.push("Completed Deep Scan job result");
+
   lines.push(
     "",
-    "Evidence:",
-    `- Sources used: ${r.evidenceSources.length > 0 ? r.evidenceSources.map((s) => WALLET_EVIDENCE_SOURCE_LABELS[s] ?? s).join(", ") : "none"}`,
-    `- Pricing coverage: ${r.pricingCoverage}`,
-    `- Chains scanned: ${r.chainsScanned.length > 0 ? r.chainsScanned.join(", ") : "none"}`,
-    `- Missing evidence: ${r.missingEvidence.length > 0 ? r.missingEvidence.join("; ") : "none"}`,
+    "Missing Evidence",
+    missing.length > 0 ? missing.map((m) => `- ${m}`).join("\n") : "- none",
+    "",
+    "Next",
+    "- Run Deep Scan Wallet",
+    "- Explain PnL",
+    "- Open Wallet Scanner",
   );
-  if (r.scanMode === "deep") {
-    lines.push(
-      "",
-      r.jobStatus === "queued" && r.jobId
-        ? `Deep scan queued (job ${r.jobId}) — poll Wallet Scanner for the completed multi-chain result.`
-        : "Deep scan is temporarily unavailable — try again shortly.",
-    );
-  }
-  lines.push("", "CTA: Deep Scan Wallet / Open Wallet Scanner / Track Wallet / Explain PnL");
   return lines.join("\n");
 }
 

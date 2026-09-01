@@ -28,9 +28,9 @@
 // all — using `report.robinhood` as the sole source here would silently regress that path to "no
 // Robinhood" instead.
 //
-import type { RobinhoodWalletScanResponse } from '@/app/frontend/components/RobinhoodChainSection'
+import type { RobinhoodWalletScanResponse } from '@/lib/walletScan/canonicalWalletSelectors'
 import type { PricedHolding } from '@/lib/engine/modules/pricing/types'
-import { ROBINHOOD_CHAIN_META } from '@/app/frontend/components/RobinhoodChainSection'
+import { ROBINHOOD_CHAIN_META } from '@/lib/walletScan/canonicalWalletSelectors'
 
 export type RobinhoodInclusion = {
   // True only when Robinhood Chain was actually, successfully scanned this session AND produced a

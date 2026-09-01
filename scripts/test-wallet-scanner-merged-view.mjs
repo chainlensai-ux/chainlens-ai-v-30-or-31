@@ -194,7 +194,7 @@ function run() {
     check('Verified Robinhood swaps still renders', robinhoodUiSrc.includes('Verified Robinhood swaps: <strong'))
     check('Skipped unsupported swap logs still renders', robinhoodUiSrc.includes('Skipped unsupported swap logs: <strong'))
     check('the Blockscout status badges still render (GoldRush/Alchemy RPC/explorer evidence)', robinhoodUiSrc.includes('GoldRush: ${holdings.status}') && robinhoodUiSrc.includes('Alchemy RPC: ${holdings.native'))
-    check('the robinhoodWalletScannerAudit field is still carried on the response type (nothing stripped)', robinhoodUiSrc.includes('robinhoodWalletScannerAudit: Record<string, unknown>'))
+    check('the robinhoodWalletScannerAudit field is still carried on the response type (nothing stripped)', robinhoodUiSrc.includes('robinhoodWalletScannerAudit') || read('lib/walletScan/canonicalWalletSelectors.ts').includes('robinhoodWalletScannerAudit: Record<string, unknown>'))
   }
 
   // ── 10. Robinhood decoder/PnL gates untouched by this task ──────────────────────────────────────

@@ -16,113 +16,22 @@
 import { ChainBadge } from './ChainBadge'
 import { PnLHeaderCard } from './PnLHeaderCard'
 import { StatusBadge, type StatusTone } from './StatusBadge'
+import {
+  ROBINHOOD_CHAIN_META as ROBINHOOD_CHAIN_META_SHARED,
+  selectRobinhoodPnlLaneStatus as selectRobinhoodPnlLaneStatusShared,
+  type RobinhoodPnlLaneStatus as RobinhoodPnlLaneStatusShared,
+  type RobinhoodPnlVerificationAudit as RobinhoodPnlVerificationAuditShared,
+  type RobinhoodWalletScanResponse as RobinhoodWalletScanResponseShared,
+} from '@/lib/walletScan/canonicalWalletSelectors'
 
-// Mirrors GET /api/wallet-scan/robinhood's robinhoodPnlVerificationAudit (see
-// lib/server/robinhoodWalletScanner.ts). Client-side copy so this module never imports the server
-// scanner. Missing/incomplete proof → selectRobinhoodPnlLaneStatus returns not_verified.
-export type RobinhoodPnlVerificationAudit = {
-  wallet: string
-  chainId: number
-  source: 'robinhood_sidecar_phase3'
-  status: 'disabled' | 'partial' | 'verified'
-  realizedPnlUsd: number | null
-  verifiedSwapCount: number
-  decodedSwapCount: number
-  swapsFedToFifo: number
-  fifoClosedLots: number
-  priceEvidenceBothLegsCount: number
-  missingPriceEvidenceCount: number
-  blockscoutFallbackUsed: boolean
-  goldrushUsed: boolean
-  alchemyRpcUsed: boolean
-  pnlEnabledReason: string | null
-  pnlDisabledReason: string | null
-  rejectedReasonIfNotVerified: string | null
-}
-
-// Mirrors the JSON shape GET /api/wallet-scan/robinhood returns (see
-// lib/server/robinhoodWalletScanner.ts). Deliberately untyped against the V2 pipeline's
-// WalletV2Report — Robinhood does not run through that pipeline.
-export type RobinhoodWalletScanResponse = {
-  ok: boolean
-  wallet: string
-  chainSlug: 'robinhood'
-  chainId: number
-  holdings: {
-    status: 'ok' | 'partial' | 'unavailable' | 'not_configured'
-    native: { symbol: string; uiBalance: number | null; priceUsd: number | null; valueUsd: number | null } | null
-    holdings: Array<{ address: string; symbol: string | null; name: string | null; uiBalance: number | null; priceUsd: number | null; valueUsd: number | null; priceSource: string | null }>
-    portfolioTotalUsd: number | null
-    unpricedTokenCount: number
-    reason: string | null
-  }
-  activity: {
-    status: 'ok' | 'partial' | 'unavailable' | 'not_configured'
-    items: Array<{ txHash: string; blockTimestamp: string | null; kind: 'native_transfer' | 'token_transfer'; direction: 'incoming' | 'outgoing'; counterparty: string | null; tokenSymbol: string | null }>
-    skippedSwapLogs: number
-    // Count of swap logs that reached confidence 'high' (real token identities AND real price
-    // evidence on both legs) — the only swaps ever fed into PnL below.
-    verifiedSwapCount: number
-    // Real, per-scan outcome of every Blockscout call this scan made (explorer fallback/proof layer
-    // only — see lib/server/robinhoodBlockscoutEvidence.ts's own header). Never itself a PnL signal —
-    // only ever surfaced as an activity-evidence status line.
-    blockscoutEvidence: {
-      blockscoutAttempted: boolean
-      blockscoutSucceeded: boolean
-      blockscoutFallbackUsed: boolean
-      blockscoutStatus: 'ok' | 'unavailable' | 'not_configured' | 'rate_limited' | 'not_attempted'
-      blockscoutError: string | null
-      blockscoutVerifiedSwap: boolean
-    }
-    reason: string | null
-  }
-  // status reflects the real, per-scan outcome ('disabled' when zero verified swaps exist, 'partial'
-  // for a thin-but-real sample, 'verified' when FIFO produced a publicly-reportable result) — never a
-  // single fixed "not verified" placeholder.
-  pnl: {
-    status: 'disabled' | 'partial' | 'verified'
-    message: string
-    realizedPnlUsd: number | null
-    matchedLotsCount: number
-    verifiedSwapCount: number
-    reason: string | null
-  }
-  robinhoodWalletScannerAudit: Record<string, unknown>
-  robinhoodPnlVerificationAudit?: RobinhoodPnlVerificationAudit | null
-}
-
-// The display identity Robinhood Chain uses everywhere — chainSlug/chainId/label — used only by
-// ChainBadge/labels. This is presentational only; it does NOT add 'robinhood' to SupportedChain,
-// SUPPORTED_CHAINS, or any V2 pipeline type (see lib/server/robinhoodWalletScanner.ts's own header
-// for why that stays a deliberately separate module/route — Base/ETH/BNB's shared pipeline is
-// untouched by this or any other Robinhood work).
-export const ROBINHOOD_CHAIN_META = { chainSlug: 'robinhood' as const, chainId: 4663, label: 'Robinhood Chain' }
-
-// ROBINHOOD LANE, DISCLOSED (this task): lives next to the response type so PnlStatusCard and this
-// tab share ONE function without a circular import. 'verified' requires the Phase 3 sidecar proof
-// object — source marker, verified status, real realizedPnlUsd, verifiedSwapCount > 0, swaps fed
-// to FIFO, FIFO closed lots, and both-leg price evidence. V2 pnlV2 is never read here.
-export type RobinhoodPnlLaneStatus = 'verified' | 'not_verified' | 'unavailable'
-const ROBINHOOD_PNL_PHASE3_SOURCE = 'robinhood_sidecar_phase3'
+export type RobinhoodPnlVerificationAudit = RobinhoodPnlVerificationAuditShared
+export type RobinhoodWalletScanResponse = RobinhoodWalletScanResponseShared
+export const ROBINHOOD_CHAIN_META = ROBINHOOD_CHAIN_META_SHARED
+export type RobinhoodPnlLaneStatus = RobinhoodPnlLaneStatusShared
 export const ROBINHOOD_PNL_NOT_VERIFIED_REASON = 'Requires verified Robinhood swaps + both-leg price evidence.'
 
 export function selectRobinhoodPnlLaneStatus(robinhoodResult: RobinhoodWalletScanResponse | null | undefined): RobinhoodPnlLaneStatus {
-  if (!robinhoodResult || !robinhoodResult.ok) return 'unavailable'
-  const pnl = robinhoodResult.pnl
-  const audit = robinhoodResult.robinhoodPnlVerificationAudit
-  if (!audit || audit.source !== ROBINHOOD_PNL_PHASE3_SOURCE || audit.chainId !== 4663) return 'not_verified'
-  if (
-    pnl.status === 'verified'
-    && audit.status === 'verified'
-    && pnl.realizedPnlUsd != null
-    && audit.realizedPnlUsd != null
-    && pnl.verifiedSwapCount > 0
-    && audit.verifiedSwapCount > 0
-    && audit.swapsFedToFifo > 0
-    && audit.fifoClosedLots > 0
-    && audit.priceEvidenceBothLegsCount > 0
-  ) return 'verified'
-  return 'not_verified'
+  return selectRobinhoodPnlLaneStatusShared(robinhoodResult)
 }
 
 function robinhoodLastActivityTimestamp(items: RobinhoodWalletScanResponse['activity']['items']): string | null {

@@ -42,7 +42,7 @@ function run() {
     check("'ethereum' resolves to EVM chains ['eth']", /case 'ethereum':\s*\n\s*return \{ evmChains: \['eth'\]/.test(body))
     check("'bnb' resolves to zero EVM chains (honestly unsupported, never fabricated)", /case 'bnb':\s*\n\s*return \{ evmChains: \[\]/.test(body))
     check("'robinhood' resolves to zero EVM chains and includeRobinhood: true regardless of gate result", /case 'robinhood':[\s\S]*?return \{ evmChains: \[\], includeRobinhood: true/.test(body))
-    check("'auto'/'all_supported' use the exported DEFAULT_CHAINS from v2Adapters.ts", /case 'auto':\s*\n\s*case 'all_supported':[\s\S]*?evmChains: \[\.\.\.DEFAULT_CHAINS\]/.test(body))
+    check("'auto'/'all_supported' use the Wallet Scanner page EVM list (base+eth), not DEFAULT_CHAINS arbitrum", /case 'auto':\s*\n\s*case 'all_supported':[\s\S]*?evmChains: \[\.\.\.WALLET_SCANNER_EVM_CHAINS\]/.test(body))
     check("'auto'/'all_supported' gate Robinhood inclusion on the real isRobinhoodChainAvailable() result", /includeRobinhood: robinhoodAvailable/.test(body))
     check('BNB is reflected as unsupported via missingEvidence/nextActions, never fabricated data', /chainMode === 'bnb'[\s\S]*?missingEvidence\.push\('BNB chain is not supported/.test(orchestratorSrc))
   }
@@ -71,7 +71,7 @@ function run() {
   // ── 5. Cache key format includes wallet + chainMode + scanDepth + version ──────────────────────
   {
     check('cache key builder uses the wsorch:v1: prefix plus wallet/chainMode/scanDepth', /`wsorch:\$\{ORCHESTRATOR_CACHE_VERSION\}:\$\{walletAddress\.toLowerCase\(\)\}:\$\{chainMode\}:\$\{scanDepth\}`/.test(orchestratorSrc))
-    check("cache version literal is 'v1'", /const ORCHESTRATOR_CACHE_VERSION = 'v1'/.test(orchestratorSrc))
+    check("cache version literal is 'v2' so stale $0.03 preview entries cannot override the merged total", /const ORCHESTRATOR_CACHE_VERSION = 'v2'/.test(orchestratorSrc))
     check('wrong-chain cache entries are rejected rather than served (mirrors rejectWrongChainRobinhoodCache philosophy)', /WRONG-CHAIN CACHE REJECTION/.test(orchestratorSrc) && /if \(!sameChains\) return null/.test(orchestratorSrc))
   }
 
@@ -79,25 +79,25 @@ function run() {
   {
     check('debug field is only populated when params.debug is explicitly true', /\.\.\.\(params\.debug \? \{ debug: \{ evmReport, robinhoodAudit \} \} : \{\}\)/.test(orchestratorSrc))
     check('preview-mode cache write always strips debug before storing (stripDebug helper)', /await writeOrchestratorCache\(cacheKey, stripDebug\(result\), evmChains\)/.test(orchestratorSrc))
-    check('a cache hit returns the stripped shape unless the caller explicitly requested debug', /return params\.debug \? cached : stripDebug\(cached\)/.test(orchestratorSrc))
+    check('a cache hit returns the stripped shape unless the caller explicitly requested debug', /return params\.debug \? hit : stripDebug\(hit\)/.test(orchestratorSrc) || /return params\.debug \? cached : stripDebug\(cached\)/.test(orchestratorSrc))
     check('never spreads the raw FinalReport into the canonical shape', !/\.\.\.report\b/.test(orchestratorSrc) && !/\.\.\.evmReport\b/.test(orchestratorSrc))
   }
 
   // ── 7. Deep mode calls the same enqueueWalletScanJob() app/api/wallet-scan/route.ts uses ────────
   {
-    check('orchestrator imports enqueueWalletScanJob from the real queue module', /import \{ enqueueWalletScanJob \} from '@\/src\/modules\/walletScanQueue'/.test(orchestratorSrc))
+    check('orchestrator imports enqueueWalletScanJob from the real queue module', /import \{ enqueueWalletScanJob/.test(orchestratorSrc) && /from '@\/src\/modules\/walletScanQueue'/.test(orchestratorSrc))
     check('app/api/wallet-scan/route.ts imports the same enqueueWalletScanJob (same function, no duplicate queue)', /enqueueWalletScanJob/.test(walletScanRouteSrc))
     check('deep-mode EVM scan enqueues a real job with scanMode: \'deep\'', /await enqueueWalletScanJob\(jobId, \{[\s\S]*?scanMode: 'deep'/.test(orchestratorSrc))
-    check('deep mode never fabricates a completed result — reports an honest queued/unavailable jobStatus', /jobStatus = 'queued'/.test(orchestratorSrc) && /jobStatus = 'unavailable'/.test(orchestratorSrc))
+    check('deep mode reports queued/unavailable/done from the real job — never a fabricated complete PnL', /jobStatus = 'queued'/.test(orchestratorSrc) && /jobStatus = 'unavailable'/.test(orchestratorSrc))
     check("scanId for a deep scan is the real jobId used to poll the existing /api/wallet-scan/[jobId] route", /scanId: jobId \?\? crypto\.randomUUID\(\)/.test(orchestratorSrc))
   }
 
   // ── 8. Preview mode reuses the real, now-exported runV2Scan()/DEFAULT_CHAINS from v2Adapters.ts ──
   {
     check('v2Adapters.ts still exports DEFAULT_CHAINS', /export const DEFAULT_CHAINS = \['base', 'eth', 'arbitrum'\]/.test(v2AdaptersSrc))
-    check('v2Adapters.ts still exports runV2Scan', /export async function runV2Scan\(address: string, route: string\)/.test(v2AdaptersSrc))
+    check('v2Adapters.ts still exports runV2Scan', /export async function runV2Scan\(address: string, route: string/.test(v2AdaptersSrc))
     check('orchestrator imports both from v2Adapters.ts rather than reimplementing the scan call', /import \{ DEFAULT_CHAINS, runV2Scan \} from '@\/lib\/server\/v2Adapters'/.test(orchestratorSrc))
-    check('preview EVM scan calls the real runV2Scan()', /evmReport = await runV2Scan\(walletAddress, `orchestrator_preview/.test(orchestratorSrc))
+    check('preview EVM scan calls the real runV2Scan() with the resolved chain list', /evmReport = await runV2Scan\(walletAddress, `orchestrator_/.test(orchestratorSrc))
   }
 
   // ── 9. Robinhood route now calls the shared scanRobinhoodWallet() ──────────────────────────────
@@ -108,7 +108,7 @@ function run() {
     check('the Robinhood route no longer inlines the individual holdings/activity/pnl/audit calls directly', !/const holdings = await getCachedRobinhoodWalletHoldings\(wallet, fetchImpl\)/.test(robinhoodRouteSrc))
     check('the Robinhood route keeps its existing plan gate untouched', /canAccessFeature\(plan, 'wallet-scanner'\)/.test(robinhoodRouteSrc))
     check('the Robinhood route keeps its existing rate limiter untouched', /createRateLimiter\(\{ windowMs: 60_000, max: 10 \}\)/.test(robinhoodRouteSrc))
-    check('orchestrator reuses the same scanRobinhoodWallet (no second copy of the call sequence)', /import \{ scanRobinhoodWallet \} from '@\/lib\/server\/robinhoodWalletScanner'/.test(orchestratorSrc))
+    check('orchestrator reuses the same scanRobinhoodWallet (no second copy of the call sequence)', /import \{ scanRobinhoodWallet/.test(orchestratorSrc) && /from '@\/lib\/server\/robinhoodWalletScanner'/.test(orchestratorSrc))
   }
 
   // ── 10. Clark's /wallet call sites now use runWalletScan as the PRIMARY engine ──────────────────
@@ -121,7 +121,7 @@ function run() {
   {
     check('Clark imports the canonical orchestrator', /import \{ runWalletScan \} from "@\/lib\/server\/walletScanOrchestrator";/.test(clarkSrc))
     check('buildClarkWalletReadResponse is the shared helper every /wallet call site delegates to', /async function buildClarkWalletReadResponse\(params: \{/.test(clarkSrc))
-    check('the shared helper calls runWalletScan as its PRIMARY engine (not additive)', /async function buildClarkWalletReadResponse[\s\S]{0,600}const result = await runWalletScan\(\{/.test(clarkSrc))
+    check('the shared helper calls runWalletScan as its PRIMARY engine (not additive)', /async function buildClarkWalletReadResponse[\s\S]{0,1200}const result = await runWalletScan\(\{/.test(clarkSrc))
     check('the orchestrator call scans all supported chains and maps deepScan to scanDepth', /chainMode: "all_supported",\s*\n\s*scanDepth: deepScan \? "deep" : "preview",/.test(clarkSrc))
     check('a failed orchestrator call is swallowed with an honest unavailable reply, never a crash', /async function buildClarkWalletReadResponse[\s\S]{0,900}\}\)\.catch\(\(err\) => \{\s*\n\s*console\.warn\("\[clark\] \/wallet orchestrator failed"/.test(clarkSrc))
     check('a real Deep Scan Wallet run surfaces the real queued jobId, never a fabricated completed result', /deepScan && result\.jobId \? \{ deepScanJobId: result\.jobId \}/.test(clarkSrc))
