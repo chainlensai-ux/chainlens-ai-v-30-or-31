@@ -22,7 +22,7 @@
 
 import type { BehaviorIntelResult } from '@/src/modules/behaviorIntel/types'
 import type { FinalSummary } from '@/src/modules/finalReportAssembler/types'
-import type { RobinhoodWalletScanResponse } from '@/app/frontend/components/RobinhoodChainSection'
+import { type RobinhoodWalletScanResponse, ROBINHOOD_PNL_NOT_VERIFIED_REASON } from '@/app/frontend/components/RobinhoodChainSection'
 import type { ChainBreakdownRow } from '@/app/frontend/components/WalletProfileHeader'
 import type { PnlConfidenceStatus, EvmPnlLaneStatus, RobinhoodPnlLaneStatus } from '@/app/frontend/components/PnlStatusCard'
 import type { RobinhoodDisplayState } from '@/app/frontend/lib/mergedWalletView'
@@ -263,8 +263,10 @@ export function buildEvidence(params: {
 // PNL LANES, DISCLOSED (this task's own explicit hard rule — "never merge them", "if Robinhood is
 // not verified, say exactly why"): two independent lane entries, Base/ETH and Robinhood (only when
 // a real robinhoodResult exists) — never a single blended status or number. The exact reason string
-// for a not-verified Robinhood lane matches this task's own required wording verbatim.
-export const ROBINHOOD_PNL_NOT_VERIFIED_REASON = 'Requires verified Robinhood swaps + both-leg price evidence.'
+// for a not-verified Robinhood lane is the SAME real constant RobinhoodChainSection.tsx's own PnL
+// evidence card already uses (re-exported here, not redefined) — never a second, independently
+// literal copy that could drift from the one actually rendered elsewhere on the page.
+export { ROBINHOOD_PNL_NOT_VERIFIED_REASON }
 
 export function buildPnlLanes(params: {
   evmPnlLane: EvmPnlLaneStatus

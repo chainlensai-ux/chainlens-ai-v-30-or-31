@@ -94,12 +94,24 @@ function run() {
   // ── 8. PnL stays disabled (UI-visible) without verified swaps — the UI reads pnl.status, never
   //    derives it from activity volume itself ─────────────────────────────────────────────────
   {
-    check('the PnL card label is driven by pnl.status, not activity data', /pnlLabel = pnl\.status === 'verified' \? 'Verified Robinhood PnL' : 'PnL: Not verified yet'/.test(robinhoodUiSrc))
+    // UPDATED, DISCLOSED (Gate-Robinhood-verified-PnL-on-Phase-3-sidecar-proof follow-up): the PnL
+    // label now reads selectRobinhoodPnlLaneStatus(result) — the SAME shared lane-status selector
+    // PnlStatusCard.tsx/CORTEX use — rather than a bare `pnl.status === 'verified'` check, so the UI
+    // can never call PnL "Verified" without the full Phase 3 gate (source-marker/both-leg/FIFO-closed-
+    // lot proof) also passing. Still honestly driven by real, already-computed status — never
+    // re-derived from activity volume.
+    check('the PnL card label is driven by the shared selectRobinhoodPnlLaneStatus selector, never activity data or a bare pnl.status check', /const robinhoodPnlVerified = selectRobinhoodPnlLaneStatus\(result\) === 'verified'/.test(robinhoodUiSrc))
+    check('the PnL label reads "Robinhood PnL: Verified" only when the full lane check passes, otherwise "Robinhood: Not verified"', /const pnlLabel = robinhoodPnlVerified \? 'Robinhood PnL: Verified' : 'Robinhood: Not verified'/.test(robinhoodUiSrc))
     // WORDING UPDATE, DISCLOSED (split-Wallet-Scanner-results fix task's own explicit required
     // wording): "Robinhood PnL not verified yet — requires verified swap logs and both-leg price
     // evidence." — a genuine, task-mandated wording change; the underlying guarantee (a real, honest
     // not-verified explanation, never blended with portfolio value) is unchanged.
-    check('the not-verified reason sentence is the exact required wording', robinhoodUiSrc.includes('Robinhood PnL not verified yet — requires verified swap logs and both-leg price evidence.'))
+    // UPDATED, DISCLOSED (Gate-Robinhood-verified-PnL-on-Phase-3-sidecar-proof follow-up, and this
+    // same session's own Wallet Read redesign task — both independently landed on this identical,
+    // more precise wording): "Requires verified Robinhood swaps + both-leg price evidence." — the
+    // underlying guarantee (a real, honest not-verified explanation, never blended with portfolio
+    // value) is unchanged, only the exact sentence.
+    check('the not-verified reason sentence is the exact required wording', robinhoodUiSrc.includes('Requires verified Robinhood swaps + both-leg price evidence.'))
   }
 
   // ── 9. Base/ETH/BNB output unchanged — the V2 scan call, its result state, and its own
