@@ -627,3 +627,71 @@ button, [role="button"], a {
     scroll-behavior: smooth;
   }
 }
+
+/* ── Skeletons + a11y helper, ADDED (performance + UX optimization task) ────────────────────────
+   .cl-skeleton replaces the full-screen "Loading plan access…" text walls that used to block six
+   terminal pages (see lib/usePlan.tsx's PlanGateSkeleton). It animates OPACITY ONLY — no width /
+   height / top / left, nothing that triggers layout — so it stays on the compositor and cannot
+   cause the layout jumping this task asks to eliminate. */
+.cl-skeleton {
+  background: linear-gradient(180deg, rgba(255,255,255,0.045) 0%, rgba(255,255,255,0.022) 100%);
+  border: 1px solid rgba(255,255,255,0.06);
+  animation: cl-skeleton-pulse 1.4s ease-in-out infinite;
+  will-change: opacity;
+}
+
+@keyframes cl-skeleton-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 0.95; }
+}
+
+/* REDUCED MOTION, DISCLOSED (this task's accessibility requirement): the skeleton stays fully
+   visible and simply stops pulsing — never removed, so the loading affordance survives. */
+@media (prefers-reduced-motion: reduce) {
+  .cl-skeleton { animation: none; opacity: 0.8; }
+}
+
+/* Visually hidden but announced by screen readers — pairs with aria-busy on the skeleton so a
+   non-sighted user is told the page is checking access, which the old text wall did implicitly. */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  padding: 0; margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* ── Touch targets, ADDED (performance + UX optimization task's explicit "minimum 44px buttons") ──
+   The mobile sidebar toggle was already 44px, but the FeatureBar navigation rows inside the
+   slide-in sidebar — the primary way a phone user moves between tools — were 36px, and the small
+   Sign In / Sign Up / wallet chips were 30-32px. Those are set as inline styles on the elements, so
+   overriding them from CSS genuinely requires !important; this is scoped to coarse-pointer
+   viewports only, so the desktop layout (which this task also asks to keep dense and premium) is
+   byte-for-byte unchanged.
+   Uses min-height rather than height so a row with wrapped text grows instead of clipping. */
+@media (max-width: 767px) {
+  .mob-featurebar nav a,
+  .mob-featurebar nav button {
+    min-height: 44px !important;
+    height: auto !important;
+    touch-action: manipulation;
+  }
+  .mob-featurebar a[href="/sign-in"],
+  .mob-featurebar .fb-wallet-chip {
+    min-height: 44px !important;
+    height: auto !important;
+    touch-action: manipulation;
+  }
+}
+
+/* POINTER-COARSE SAFETY NET: tablets in landscape can exceed 767px while still being touch-only.
+   Same rule, keyed off the input device rather than the viewport width. */
+@media (pointer: coarse) {
+  .mob-featurebar nav a,
+  .mob-featurebar nav button {
+    min-height: 44px !important;
+    height: auto !important;
+  }
+}

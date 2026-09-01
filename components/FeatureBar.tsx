@@ -2,13 +2,11 @@
 
 import Image from 'next/image'
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import type { ReactNode } from 'react'
 import ConnectWallet from '@/components/ConnectWallet'
-import { supabase } from '@/lib/supabaseClient'
 import { canAccessFeature, type UserPlan } from '@/lib/planFeatures'
-import { clearPlanCache, readCachedPlan, writeCachedPlan, peekCachedPlan } from '@/lib/usePlan'
+import { useAccount } from '@/lib/usePlan'
 
 
 
@@ -328,46 +326,15 @@ interface Props {
 
 
 export default function FeatureBar({ active = 'dashboard', onSelect = () => {}, onWalletOpen, onClose }: Props) {
-  const [accountEmail, setAccountEmail] = useState<string | null>(null)
-  // CACHED-FIRST INIT (smoothness audit): start from the last verified cached plan — never a
-  // guessed Free. An Elite user reopening the sidebar sees Elite instantly; backend confirms.
-  const [plan, setPlan] = useState<UserPlan>(() => peekCachedPlan() ?? ('free' as UserPlan))
-  const [betaElite, setBetaElite] = useState(false)
-
-  useEffect(() => {
-    async function loadPlan(token: string | undefined, session?: { user?: { id?: string; email?: string | null } } | null) {
-      if (!token) { clearPlanCache(); setPlan('free'); setBetaElite(false); return }
-      const cached = readCachedPlan(session?.user?.id, session?.user?.email ?? null)
-      if (cached) setPlan(cached)
-      try {
-        const res = await fetch('/api/user-settings', { headers: { Authorization: `Bearer ${token}` } })
-        if (res.ok) {
-          const json = await res.json()
-          const p = json?.plan ?? json?.effectivePlan ?? (json?.settings as Record<string, unknown>)?.plan
-          const resolvedPlan = p === 'pro' || p === 'elite' ? p : 'free'
-          setPlan(resolvedPlan)
-          writeCachedPlan(resolvedPlan, session?.user?.id, session?.user?.email ?? null)
-          setBetaElite(json?.betaEliteActive === true)
-        }
-      } catch {
-        // ERROR PATH (smoothness audit): a network failure must never downgrade the
-        // displayed plan — keep the last verified cached value instead of guessing Free.
-        setBetaElite(false)
-      }
-    }
-
-    supabase.auth.getSession().then(({ data }) => {
-      setAccountEmail(data.session?.user?.email ?? null)
-      void loadPlan(data.session?.access_token, data.session ?? null)
-    })
-
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setAccountEmail(session?.user?.email ?? null)
-      void loadPlan(session?.access_token, session ?? null)
-    })
-
-    return () => listener.subscription.unsubscribe()
-  }, [])
+  // SHARED ACCOUNT STORE, DISCLOSED (performance + UX optimization task): this component used to run
+  // its OWN supabase.auth.getSession() + /api/user-settings fetch + onAuthStateChange subscription —
+  // a third full copy of the same work the page's usePlanWithLoading() and Navbar were each also
+  // doing, so a single terminal page load fired the same request 2-3x. It now reads the one shared,
+  // deduped, cached-first store (lib/usePlan.tsx). Same cached-first behavior as before (an Elite
+  // user still sees Elite on the first paint, never a guessed Free), same never-downgrade-on-error
+  // rule — just no longer a duplicate request.
+  const { plan: storePlan, email: accountEmail, betaEliteActive: betaElite } = useAccount()
+  const plan = (storePlan ?? 'free') as UserPlan
 
   const initials = (accountEmail?.[0] ?? 'A').toUpperCase()
   const shortEmail = accountEmail

@@ -1,12 +1,11 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import Image from 'next/image'
-import { supabase } from '@/lib/supabaseClient'
 import { type UserPlan, PLAN_COLOR } from '@/lib/planFeatures'
-import { clearPlanCache, readCachedPlan, writeCachedPlan, peekCachedPlan } from '@/lib/usePlan'
+import { useAccount } from '@/lib/usePlan'
 
 const AVATAR_COLORS: Record<string, string> = {
   mint:   'linear-gradient(135deg, #2DD4BF 0%, #14b8a6 100%)',
@@ -61,71 +60,33 @@ export default function Navbar() {
   const [open, setOpen] = useState(false)
   const [mobileOpen, setMobileOpen] = useState(false)
   const [mobileToolsOpen, setMobileToolsOpen] = useState(false)
-  const [accountEmail, setAccountEmail] = useState<string | null>(null)
-  // CACHED-FIRST INIT (smoothness audit): plan starts from the last verified cached value —
-  // never a guessed Free. 'CHECKING PLAN…' shows only when no cache exists at all.
-  const [plan, setPlan] = useState<UserPlan | null>(() => peekCachedPlan())
-  const [planLoading, setPlanLoading] = useState(true)
-  // PROFILE COLOR / display name: hydrate from the non-sensitive local settings cache on
-  // mount so the avatar renders in the user's color instantly instead of defaulting late.
-  const [avatarColor, setAvatarColor] = useState<string>(() => {
+  // SHARED ACCOUNT STORE, DISCLOSED (performance + UX optimization task): this component used to run
+  // its OWN supabase.auth.getSession() + /api/user-settings fetch + onAuthStateChange subscription —
+  // a fourth full copy of the same work FeatureBar and the page's usePlanWithLoading() were also
+  // each doing. It now reads the one shared, deduped, cached-first store (lib/usePlan.tsx), which
+  // already carries every field this component needs (plan, email, avatar colour/url, display name,
+  // trial days) from the SAME single /api/user-settings response.
+  const account = useAccount()
+  const accountEmail = account.email
+  const plan = account.plan
+  const planLoading = account.loading
+  const trialDaysLeft = account.profile.trialDaysLeft
+  const avatarUrl = account.profile.avatarUrl
+  const displayName = account.profile.displayName
+  // LOCAL-CACHE FALLBACK, DISCLOSED: the avatar colour still hydrates from the non-sensitive local
+  // settings cache first so it renders in the user's colour on the very first paint (unchanged
+  // behaviour) — the store's verified value takes over as soon as it lands.
+  const avatarColor = useMemo(() => {
+    const fromStore = account.profile.avatarColor
+    if (fromStore && AVATAR_COLORS[fromStore]) return fromStore
     if (typeof window === 'undefined') return 'mint'
     try {
       const raw = window.localStorage.getItem('chainlens_local_settings')
       const ac = raw ? String((JSON.parse(raw) as Record<string, unknown>).avatar_color ?? '') : ''
       return AVATAR_COLORS[ac] ? ac : 'mint'
     } catch { return 'mint' }
-  })
-  const [trialDaysLeft, setTrialDaysLeft] = useState<number>(0)
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(null)
-  const [displayName, setDisplayName] = useState<string | null>(null)
+  }, [account.profile.avatarColor])
   const pathname = usePathname()
-
-  useEffect(() => {
-    async function loadSession(token?: string, userId?: string, email?: string | null) {
-      if (!token) { clearPlanCache(); setPlan('free'); setPlanLoading(false); return }
-      const cached = readCachedPlan(userId, email)
-      if (cached) setPlan(cached)
-      try {
-        const res = await fetch('/api/user-settings', {
-          headers: { Authorization: `Bearer ${token}` },
-          cache: 'no-store',
-        })
-        if (res.ok) {
-          const json = await res.json() as Record<string, unknown>
-          const settings = json?.settings as Record<string, unknown> | undefined
-          const p = json?.plan ?? json?.effectivePlan ?? settings?.plan
-          const days = Number(json?.trialDaysLeft ?? 0)
-          setTrialDaysLeft(Number.isFinite(days) ? days : 0)
-          const resolvedPlan: UserPlan = p === 'pro' || p === 'elite' ? p : 'free'
-          setPlan(resolvedPlan)
-          writeCachedPlan(resolvedPlan, userId, email)
-          const ac = String(settings?.avatar_color ?? json?.avatar_color ?? 'mint')
-          setAvatarColor(AVATAR_COLORS[ac] ? ac : 'mint')
-          const au = String(settings?.avatar_url ?? json?.avatar_url ?? '')
-          setAvatarUrl(au || null)
-          const dn = String(settings?.display_name ?? json?.display_name ?? '')
-          setDisplayName(dn || null)
-        }
-      } catch {}
-      setPlanLoading(false)
-    }
-
-    supabase.auth.getSession().then(({ data }) => {
-      const session = data.session
-      setAccountEmail(session?.user?.email ?? null)
-      setPlanLoading(true)
-      loadSession(session?.access_token, session?.user?.id, session?.user?.email ?? null)
-    })
-
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, session) => {
-      setAccountEmail(session?.user?.email ?? null)
-      setPlanLoading(true)
-      loadSession(session?.access_token, session?.user?.id, session?.user?.email ?? null)
-    })
-
-    return () => listener.subscription.unsubscribe()
-  }, [])
 
   useEffect(() => { setMobileOpen(false) }, [pathname])
 

@@ -26,7 +26,7 @@
 // /api/portfolio are untouched.
 
 import { useEffect, useRef, useState } from 'react'
-import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { usePlanWithLoading, LockedPanel, canAccessFeature, PlanGateSkeleton } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { scanWalletV2, type WalletScanStageProgress, type WalletChainSelectionAudit } from '@/app/frontend/api/scanWallet'
 import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
@@ -696,13 +696,14 @@ export default function WalletScannerPage() {
     }
   }
 
-  if (planLoading) {
-    return (
-      <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>
-        Loading plan access…
-      </div>
-    )
-  }
+  // SKELETON, NOT A TEXT WALL, DISCLOSED (performance + UX optimization task): this was a
+  // full-screen "Loading plan access…" wall that ALSO rendered into the SSR HTML — confirmed by
+  // fetching this exact route and finding the string in the server response — so it flashed on every
+  // single load even for a user whose plan was already cached locally. PlanGateSkeleton mirrors the
+  // page's real rhythm so nothing jumps when content replaces it, and the shared account store now
+  // only reports loading:true when there is genuinely no cached plan to trust.
+  if (planLoading) return <PlanGateSkeleton />
+
   if (!betaEliteActive && !canAccessFeature(plan, 'wallet-scanner')) {
     return <LockedPanel feature="wallet-scanner" />
   }

@@ -5,7 +5,7 @@ import LiquiditySafetyVerdictCard, {
   type LiquiditySafetyResult,
 } from '@/components/LiquiditySafetyVerdictCard'
 import LPSafetyExtendedBox from '@/components/LPSafetyExtendedBox'
-import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
+import { usePlanWithLoading, LockedPanel, canAccessFeature, PlanGateSkeleton } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 
 // CHAIN SELECTOR, DISCLOSED (reported live: "we have a liquidity safety problem for the chain
@@ -76,7 +76,12 @@ export default function LiquiditySafetyPage() {
     }
   }
 
-  if (planLoading) return <div style={{ display: 'flex', flex: 1, alignItems: 'center', justifyContent: 'center', minHeight: '60vh', color: '#94a3b8', fontFamily: 'var(--font-plex-mono)' }}>Loading access…</div>
+  // SKELETON, NOT A TEXT WALL, DISCLOSED (performance + UX optimization task): this was a
+  // full-screen "Loading plan access…" wall that ALSO rendered into the SSR HTML, so it flashed on
+  // every single load even for a user whose plan was already cached. PlanGateSkeleton mirrors the
+  // page's real rhythm so nothing jumps when content replaces it, and the shared account store now
+  // only reports loading:true when there is genuinely no cached plan to trust.
+  if (planLoading) return <PlanGateSkeleton />
   if (!canAccessFeature(plan, 'liquidity-safety')) return <LockedPanel feature="liquidity-safety" />
 
   return (
