@@ -137,8 +137,8 @@ export interface RobinhoodTokenEvidence {
   audit: RobinhoodTokenEvidenceAudit
 }
 
-const HOLDER_UNSUPPORTED_LABEL = 'Holder distribution unsupported for Robinhood provider right now'
-const SECURITY_UNSUPPORTED_LABEL = 'Security simulation unsupported for Robinhood provider'
+const HOLDER_UNAVAILABLE_LABEL = 'Holder distribution unavailable — Robinhood provider did not return holder rows.'
+const SECURITY_UNSUPPORTED_LABEL = 'Security simulation unsupported on Robinhood'
 const LP_LOCK_UNSUPPORTED_LABEL = 'LP lock proof unsupported for this Robinhood pool model'
 const LP_CONTROLLER_UNVERIFIED_LABEL = 'LP controller not verified'
 const DEV_CONTROL_NEEDS_HOLDERS_LABEL = 'Needs holder evidence before confirming supply control'
@@ -150,12 +150,12 @@ function resolveHolder(input: RobinhoodHolderDataInput): { status: RobinhoodEvid
       : { status: 'partial', label: 'Holder distribution partially confirmed — some rows indexed, concentration percentages not fully verified.' }
   }
   if (!input.providerAttempted) {
-    return { status: 'unsupported_on_robinhood', label: HOLDER_UNSUPPORTED_LABEL }
+    return { status: 'unsupported_on_robinhood', label: HOLDER_UNAVAILABLE_LABEL }
   }
   if (input.providerStatus === 'error' || input.providerStatus === 'unavailable_with_reason') {
-    return { status: 'provider_unavailable', label: HOLDER_UNSUPPORTED_LABEL }
+    return { status: 'provider_unavailable', label: HOLDER_UNAVAILABLE_LABEL }
   }
-  return { status: 'not_returned', label: 'Holder distribution not returned this pass for Robinhood Chain.' }
+  return { status: 'not_returned', label: HOLDER_UNAVAILABLE_LABEL }
 }
 
 function resolveSecurity(input: RobinhoodSecurityDataInput): { status: RobinhoodEvidenceStatus; label: string } {

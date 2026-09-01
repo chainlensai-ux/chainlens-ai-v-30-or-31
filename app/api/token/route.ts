@@ -15,6 +15,8 @@ import {
   type TokenScannerChainStrictnessAudit,
 } from "@/lib/tokenScannerChainStrictness";
 import { resolveRobinhoodTokenEvidence } from "@/lib/robinhoodTokenEvidence";
+import { confirmedRobinhoodLpControlStatus } from "@/lib/robinhoodLpProofShared";
+import { fetchRobinhoodBlockscoutHolders, resolveRobinhoodLpProof, blockscoutHoldersToProviderShape, type RobinhoodLpProofResult } from "@/lib/server/robinhoodLpProof";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { buildLpControllerIntel, resolveLpControllerIdentity } from "@/lib/server/lpControllerIntel";
 import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
@@ -1393,6 +1395,28 @@ async function resolveTokenHolders(params: {
     sourceTrail.push('moralis_token_owners:not_configured')
   }
 
+  if (params.chain === 'robinhood') {
+    fallbackUsed = 'blockscout_token_holders'
+    sourceTrail.push('blockscout_token_holders:attempted')
+    try {
+      const bs = await fetchRobinhoodBlockscoutHolders(params.tokenAddress)
+      const raw = blockscoutHoldersToProviderShape(bs)
+      const holders = finalizeHolders(params.chain, params.tokenAddress, holderRowsFromProvider(raw, 'blockscout_token_holders'), limit)
+      if (holders.length > 0) {
+        return {
+          holders,
+          insufficientEvidence: false,
+          sourceTrail: [...sourceTrail, 'blockscout_token_holders:succeeded'],
+          fallbackUsed,
+          confidence: holders.some((h) => h.pctOfSupply != null) ? 'medium' : 'low',
+        }
+      }
+      sourceTrail.push(bs.error ? `blockscout_token_holders:${bs.error}` : 'blockscout_token_holders:no_usable_holder_rows')
+    } catch {
+      sourceTrail.push('blockscout_token_holders:fetch_error')
+    }
+  }
+
   return {
     holders: [],
     sourceTrail,
@@ -2222,6 +2246,7 @@ async function resolveSimulation(chain: string, address: string): Promise<{
 const PUBLIC_SOURCE_LABELS: Record<string, string> = {
   goldrush_token_holders: 'Holder evidence',
   moralis_token_owners: 'Holder evidence',
+  blockscout_token_holders: 'Holder evidence',
   moralis_token_transfers: 'Transfer evidence',
   moralis_transfer_fallback: 'Transfer inference',
   rpc_selector: 'On-chain verification',
@@ -4057,7 +4082,7 @@ export async function POST(req: Request) {
     // a real object (see its own header), that condition would never fire again, silently
     // disabling the GoPlus fallback entirely. Checks `!_simResult?.ok` instead — the same real
     // "honeypot.is didn't give us a usable verdict" condition as before.
-    const _gpFallback = !_simResult?.ok && isFullScanChain
+    const _gpFallback = !_simResult?.ok && isFullScanChain && chain !== 'robinhood'
       ? await fetchGoPlusHoneypotFallback(CHAIN_ID_MAP[chain], contract).catch(() => null)
       : null;
     // Compatibility wrapper: adapts resolveSimulation result to hpResult shape used throughout.
@@ -5009,6 +5034,67 @@ export async function POST(req: Request) {
       })
       lpControl = _reconciled
     }
+
+    let _robinhoodLpProofResult: RobinhoodLpProofResult | null = null
+    if (chain === 'robinhood') {
+      const _rhGtId = String((mainPool as { id?: unknown } | null)?.id ?? '')
+      const _rhGtNet = _rhGtId.includes(':') ? _rhGtId.slice(0, _rhGtId.indexOf(':')) : null
+      const _rhPoolChainHint = _rhGtNet
+        ?? (dexFbEarly ? 'robinhood' : null)
+        ?? (matchingPools.length > 0 && _gtExpectedNetwork === 'robinhood' ? 'robinhood' : null)
+      const _rhExistingLpItems = Array.isArray(_lpHoldersForControl?.data?.items)
+        ? (_lpHoldersForControl.data.items as Array<Record<string, unknown>>)
+        : []
+      const _rhExistingRows = _rhExistingLpItems.map((h) => ({
+        address: String(h.address ?? h.holder_address ?? h.wallet_address ?? '').toLowerCase(),
+        balanceRaw: h.balance != null ? String(h.balance) : (h.token_balance != null ? String(h.token_balance) : (h.amount != null ? String(h.amount) : null)),
+        pct: toNum(h.percentage) ?? toNum(h.percent) ?? toNum(h.ownership_percentage) ?? toNum(h.percent_of_supply) ?? null,
+        isContract: typeof h.is_contract === 'boolean' ? h.is_contract : null,
+      })).filter((row) => /^0x[a-f0-9]{40}$/.test(row.address))
+      const _rhExistingSupply = _rhExistingLpItems.find((i) => i?.total_supply != null)?.total_supply
+      const _rhConcentrated = lpControl.status === 'concentrated_liquidity'
+        || _primaryConcentrated
+        || lpPoolType === 'v3' || lpPoolType === 'concentrated'
+        || _lpProofType === 'v3' || _lpProofType === 'concentrated'
+      _robinhoodLpProofResult = await resolveRobinhoodLpProof({
+        tokenAddress: contract,
+        poolAddress: _lpProofAddress ?? lpPoolAddress,
+        pairAddress: lpVerifyPoolAddress ?? lpPoolAddress ?? _lpProofAddress,
+        lpTokenAddress: _lpProofAddress ?? lpPoolAddress,
+        dex: lpVerifyPool?.dexId ?? lpVerifyPool?.dexName ?? lpPool?.dexId ?? lpPool?.dexName ?? primaryDexName ?? null,
+        poolType: _lpProofType ?? lpPoolType,
+        liquidityUsd: lpVerifyPool?.liquidityUsd ?? lpPool?.liquidityUsd ?? null,
+        createdAt: dexFbEarly?.pairCreatedAt ?? null,
+        poolChainHint: _rhPoolChainHint,
+        concentrated: _rhConcentrated,
+        positionManagerDetected: Boolean(concentratedPositionProof?.positionManager),
+        concentratedProofAttempted: Boolean(concentratedPositionProof),
+        positionOwnerProof: concentratedPositionProof?.status === 'verified'
+          ? 'verified'
+          : concentratedPositionProof?.status === 'partial'
+            ? 'partial'
+            : (concentratedPositionProof ? 'unavailable' : (_rhConcentrated ? 'unavailable' : null)),
+        existingHolderRows: _rhExistingRows,
+        existingTotalSupplyRaw: _rhExistingSupply != null ? String(_rhExistingSupply) : null,
+      })
+      const _rhOverlay = _robinhoodLpProofResult.lpControlOverlay
+      if (
+        _rhOverlay
+        && !_rhConcentrated
+        && _robinhoodLpProofResult.proofAudit.selectedPoolChainOk
+        && !confirmedRobinhoodLpControlStatus(lpControl.status)
+      ) {
+        lpControl = {
+          ...lpControl,
+          status: _rhOverlay.status,
+          confidence: _rhOverlay.confidence,
+          source: _robinhoodLpProofResult.proofAudit.blockscoutUsed ? 'robinhood_blockscout_lp_holders' : lpControl.source,
+          reason: _rhOverlay.reason,
+          evidence: [...(_rhOverlay.evidence ?? []), ...(lpControl.evidence ?? [])].slice(0, 12),
+        }
+      }
+    }
+
     // Different-pair secondary V2/Aerodrome pools (rule 4/5, e.g. GAME/VIRTUAL when scanning
     // VIRTUAL) — classified ONLY as secondaryLpControlSignals/secondaryLpExposure below.
     // secondaryPoolPromotedToPrimary is always false: this never replaces lpControl.status.
@@ -5337,11 +5423,13 @@ export async function POST(req: Request) {
           source: h.source,
         }))
       : []
-    const _holderSource: 'goldrush' | 'moralis' | 'none' = holderResolverResult.holders.some((h) => h.source === 'goldrush_token_holders')
+    const _holderSource: 'goldrush' | 'moralis' | 'blockscout' | 'none' = holderResolverResult.holders.some((h) => h.source === 'goldrush_token_holders')
       ? 'goldrush'
       : holderResolverResult.holders.some((h) => h.source === 'moralis_token_owners')
         ? 'moralis'
-        : 'none'
+        : holderResolverResult.holders.some((h) => h.source === 'blockscout_token_holders')
+          ? 'blockscout'
+          : 'none'
     console.log('[holders] items length', holderItems.length, 'source', _holderSource)
 
     const holderCount = holdersRaw?.data?.pagination?.total_count ?? holdersRaw?.pagination?.total_count ?? moralisHoldersRaw?.total ?? null
@@ -6822,7 +6910,21 @@ export async function POST(req: Request) {
         : lpProofApplicability === 'not_applicable'
           ? 'Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool.'
           : `LP proof skipped: no pool address available for LP proof (status ${lpControl.status}).`
-    } else if (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood') {
+    } else if (chain === 'robinhood') {
+      // ROBINHOOD: do not call PinkLock. PinkLock is pair-address keyed with no chain param and
+      // is not a verified Robinhood locker. Burn/controller proof comes from robinhoodLpProof.
+      if (_robinhoodLpProofResult?.classification === 'verified_burned') {
+        lpProof = { lpLockStatus: 'burned', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'burn' }
+      } else if (_robinhoodLpProofResult?.classification === 'verified_locked') {
+        lpProof = { lpLockStatus: 'locked', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'lockContract' }
+      } else if (_robinhoodLpProofResult?.classification === 'wallet_controlled') {
+        lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'wallet', reasonCode: 'robinhood_wallet_controlled' }
+      } else if (_robinhoodLpProofResult?.classification === 'contract_controlled_unverified') {
+        lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'contract', reasonCode: 'robinhood_contract_unverified' }
+      } else {
+        lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown', reasonCode: _robinhoodLpProofResult?.proofAudit.status ?? 'robinhood_no_pinklock' }
+      }
+    } else if (chain === 'eth' || chain === 'base' || chain === 'bnb') {
       // BNB/ROBINHOOD LOCK/BURN FIX, DISCLOSED (follow-up to the chain-expansion pass): resolveLpProof
       // only does two things — a PinkLock API lookup (keyed by pool address only, no chain param,
       // already worked for any chain) and a generic ERC-20 burn scan via RPC (balanceOf of the
@@ -9115,7 +9217,7 @@ export async function POST(req: Request) {
       liquidityUsd: liquidityUsd ?? null,
       dexScreenerFound: _dexFb != null,
       geckoTerminalFound: gtData != null,
-      blockscoutVerified: false as boolean, // Blockscout explorer API is not wired into this route yet — never claimed true without the call
+      blockscoutVerified: Boolean(_robinhoodLpProofResult?.proofAudit.blockscoutUsed && (_robinhoodLpProofResult?.proofAudit.holderRowsReturned ?? 0) > 0),
       rpcPoolReadAttempted: Boolean(lpPoolAddress),
       lpControlProofAttempted: _proofApplicableEarly,
       lpControlProofStatus: lpControllerType ?? null,
@@ -9132,6 +9234,10 @@ export async function POST(req: Request) {
         return 'lock_burn_proof_not_confirmed'
       })(),
     } : undefined
+    if (chain === 'robinhood' && _robinhoodLpProofResult) {
+      ;(responsePayload as any).robinhoodLpResolutionAudit = _robinhoodLpProofResult.resolutionAudit
+      ;(responsePayload as any).robinhoodLpProofAudit = _robinhoodLpProofResult.proofAudit
+    }
     function resultRiskExitStatus(): string {
       if (lpLockStatus === 'burned' || lpLockStatus === 'locked') return 'protected_by_proof'
       if (lpControllerType === 'wallet' || lpControl.status === 'team_controlled') return 'wallet_controlled'
