@@ -5,7 +5,7 @@
 //  1. a cached response written by older code is never served to newer frontend code, and
 //  2. any client can verify it got a current-schema response instead of silently rendering
 //     a stale one (the reported "same token, different result per device" class).
-export const TOKEN_SCAN_RESPONSE_SCHEMA_VERSION = 3
+export const TOKEN_SCAN_RESPONSE_SCHEMA_VERSION = 4
 
 // Raw DEX/pool-source identifiers (e.g. "aerodrome-base", "uniswap-v3-base") are internal —
 // public text shows the neutral DEX brand name instead. Order matters: more specific
@@ -156,6 +156,10 @@ function sanitizePublicValue(value: unknown): unknown {
     if (key === 'sourceTrail') continue
     if (key === 'cortexScoreDebug') continue
     if (key === 'samplingDebug') continue
+    if (key === 'devClusterDiagnosisAudit') {
+      out[key] = raw
+      continue
+    }
     if (key === 'samplingReason') {
       out[key] = sanitizePublicValue(publicSamplingReason(raw))
       continue

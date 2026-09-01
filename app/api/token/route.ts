@@ -17,6 +17,7 @@ import {
 import { resolveRobinhoodTokenEvidence } from "@/lib/robinhoodTokenEvidence";
 import { confirmedRobinhoodLpControlStatus } from "@/lib/robinhoodLpProofShared";
 import { fetchRobinhoodBlockscoutHolders, resolveRobinhoodLpProof, blockscoutHoldersToProviderShape, type RobinhoodLpProofResult } from "@/lib/server/robinhoodLpProof";
+import { resolveDevClusterDiagnosis } from "@/lib/server/devClusterDiagnosis";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { buildLpControllerIntel, resolveLpControllerIdentity } from "@/lib/server/lpControllerIntel";
 import { buildLpMovementWatch } from "@/lib/server/lpMovementWatch";
@@ -7406,17 +7407,10 @@ export async function POST(req: Request) {
     holderSanityDebug.finalPercentSource = percentSource
 
 
-    // BNB/ROBINHOOD DEPLOYER-DISCOVERY FIX, DISCLOSED: discoverTokenOrigin (creation-record lookup
-    // via Etherscan's unified V2 API + GoldRush/Covalent transaction history + Alchemy
-    // alchemy_getAssetTransfers mint-recipient/earliest-transfer fallbacks — no Moralis anywhere in
-    // it) was already fully chain-generic and already worked for bnb/robinhood once
-    // COVALENT_CHAIN_SLUG/CREATOR_LOOKUP_CHAIN_ID were extended for them earlier this session. It
-    // was just never CALLED for anything but chain === 'eth' — bnb/robinhood fell through to the
-    // much weaker ownerAddr-RPC-call + Moralis-mint-fallback path instead (Moralis doesn't index
-    // either of these chains, so that fallback silently returns nothing). base intentionally keeps
-    // its existing dedicated ownerAddr-based path unchanged here — this fix is scoped to the two
-    // chains that actually had the reported gap.
-    const useOriginDiscovery = chain === 'eth' || chain === 'bnb' || chain === 'robinhood'
+    // Origin discovery now runs on Base as well as ETH/BNB/Robinhood. Base previously used
+    // current ownerAddr as the "deployer", which mixed live ownership with origin identity
+    // and left Dev Map on Limited signal / 0 mapped when owner() was empty or renounced.
+    const useOriginDiscovery = chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood'
     const ethOriginDiscovery = useOriginDiscovery ? await discoverTokenOrigin(chain, contract) : null
 
     const roundSupplyPct = (value: number): number => Math.round(value * 100) / 100
@@ -7426,17 +7420,8 @@ export async function POST(req: Request) {
       return /^0x[a-f0-9]{40}$/.test(trimmed) && trimmed !== _ZERO_ADDR && trimmed !== DEAD_ADDRESS ? trimmed : null
     }
     const ethOriginCandidate = normalizeActorAddress(ethOriginDiscovery?.candidate.address ?? null)
-    // For Base: prefer ownerAddr (current owner/control wallet); fall back to _ownerFromTransfer
-    // (initial mint recipient) when ownerAddr is null or zero (renounced).
-    const deployerAddress = useOriginDiscovery ? ethOriginCandidate : (normalizeActorAddress(ownerAddr) ?? normalizeActorAddress(_ownerFromTransfer))
-    // MAX-DURATION FIX, DISCLOSED (same report as the maxDuration export above): findTokenLinkedWallets
-    // and resolveTokenTransfers used to run sequentially, one fully awaited before the other even
-    // started — but resolveTokenTransfers's inputs (chain/chainId/contract/deployerAddress/
-    // holderRows/moralisTransfersRaw) never depended on findTokenLinkedWallets's result, so this was
-    // pure unnecessary added latency (up to ~8s more on top of an already-long Robinhood/eth/bnb
-    // chain). holderRows is hoisted above both calls (it only needs holderDistribution, already
-    // computed earlier) so resolveTokenTransfers can be launched at the same time.
-    const holderRows = holderDistribution.topHolders ?? []
+    let deployerAddress = useOriginDiscovery ? ethOriginCandidate : (normalizeActorAddress(ownerAddr) ?? normalizeActorAddress(_ownerFromTransfer))
+    let holderRows = holderDistribution.topHolders ?? []
     const [ethLinkedWalletResult, transferResolverResult] = await Promise.all([
       useOriginDiscovery && deployerAddress
         ? findTokenLinkedWallets(chain, deployerAddress, contract)
@@ -7451,7 +7436,7 @@ export async function POST(req: Request) {
         providerTransfersRaw: moralisTransfersRaw,
       }),
     ])
-    const linkedWallets: LinkedWallet[] = useOriginDiscovery
+    let linkedWallets: LinkedWallet[] = useOriginDiscovery
       ? (ethLinkedWalletResult?.wallets ?? [])
       : [adminAddr]
         .map(normalizeActorAddress)
@@ -7459,20 +7444,134 @@ export async function POST(req: Request) {
         .filter((address, index, arr) => arr.indexOf(address) === index)
         .map((address) => ({ address, amountReceived: null, asset: null, txHash: null, firstSeen: null, reason: 'admin_or_proxy_control_wallet', confidence: 'medium' as const }))
     const ethOrigin = ethOriginDiscovery?.candidate ?? null
-    const devDeployerStatus = useOriginDiscovery
+    let devDeployerStatus = useOriginDiscovery
       ? (deployerAddress ? (ethOrigin?.deployerStatus ?? 'possible_match') : 'not_confirmed')
       : (deployerAddress ? 'confirmed' : 'not_confirmed')
-    const devDeployerConfidence = useOriginDiscovery
+    let devDeployerConfidence = useOriginDiscovery
       ? (deployerAddress ? (ethOrigin?.confidence ?? 'medium') : 'low')
       : (deployerAddress ? 'high' : 'low')
-    const devMethodUsed = useOriginDiscovery
+    let devMethodUsed = useOriginDiscovery
       ? (ethOrigin?.methodUsed ?? 'unknown')
       : (deployerAddress ? (_ownerFromTransfer ? 'moralis_transfer_fallback' : 'rpc_selector') : 'unknown')
-    const devCreationTxHash = useOriginDiscovery ? (ethOrigin?.creationTxHash ?? null) : null
-    const devOriginReason = useOriginDiscovery
+    let devCreationTxHash = useOriginDiscovery ? (ethOrigin?.creationTxHash ?? null) : null
+    let devOriginReason = useOriginDiscovery
       ? (ethOrigin?.reason ?? 'No origin candidate found from Token Scanner checks')
       : (deployerAddress ? (_ownerFromTransfer ? 'Deployer inferred from earliest mint transfer recipient.' : 'Deployer resolved from ownership/control checks.') : 'Deployer not resolved from token scan data.')
+    let factoryAddress: string | null = null
+    let devClusterDiagnosisAudit: Awaited<ReturnType<typeof resolveDevClusterDiagnosis>>['audit'] | null = null
 
+    const clusterChainSlug = (chain === 'eth' || chain === 'base' || chain === 'bnb' || chain === 'robinhood' || chain === 'polygon')
+      ? chain
+      : null
+    if (clusterChainSlug) {
+      const overlay = await resolveDevClusterDiagnosis({
+        chainSlug: clusterChainSlug,
+        chainId: CHAIN_ID_MAP[chain],
+        tokenAddress: contract,
+        existing: {
+          deployerAddress,
+          deployerStatus: devDeployerStatus,
+          creationTxHash: devCreationTxHash,
+          originDiscoveryAttempted: useOriginDiscovery,
+          holders: holderRows.map((h) => ({
+            address: String(h.address ?? '').toLowerCase(),
+            percent: typeof h.percent === 'number' && Number.isFinite(h.percent) ? h.percent : null,
+            balanceRaw: h.amount != null ? String(h.amount) : null,
+            rank: h.rank ?? null,
+          })),
+          holderPercentsAvailable: holderRows.some((h) => typeof h.percent === 'number' && Number.isFinite(h.percent)),
+          linkedWallets: linkedWallets.map((w) => ({
+            address: w.address,
+            reason: w.reason ?? 'linked',
+            confidence: (w.confidence === 'high' || w.confidence === 'medium' || w.confidence === 'low') ? w.confidence : 'medium',
+            amountReceived: w.amountReceived,
+            asset: w.asset,
+            txHash: w.txHash,
+            firstSeen: w.firstSeen,
+          })),
+          linkedGraphStatus: ethLinkedWalletResult?.status ?? (useOriginDiscovery ? 'skipped' : null),
+          linkedGraphReason: ethLinkedWalletResult?.diag?.reason ?? null,
+          transfers: (transferResolverResult.transfers ?? []).map((t) => ({
+            from: t.from ?? null,
+            to: t.to ?? null,
+            amountRaw: t.amountRaw ?? t.amountFormatted ?? null,
+            txHash: t.txHash ?? null,
+            timestamp: t.timestamp ?? null,
+            category: 'erc20' as const,
+          })),
+          totalSupplyRaw: typeof (holderDistribution as { totalSupply?: unknown }).totalSupply === 'string'
+            ? String((holderDistribution as { totalSupply?: unknown }).totalSupply)
+            : null,
+        },
+      })
+      devClusterDiagnosisAudit = overlay.audit
+      if (!deployerAddress && overlay.originAddress) {
+        deployerAddress = overlay.originAddress
+        devDeployerStatus = overlay.deployerStatus
+        devDeployerConfidence = overlay.deployerConfidence
+        devMethodUsed = overlay.audit.deployerResolution.sourcesTried.slice(-1)[0] ?? 'origin_overlay'
+        devCreationTxHash = overlay.creationTxHash
+        devOriginReason = overlay.finalReason
+      } else if (deployerAddress && overlay.factoryAddress && overlay.factoryAddress === deployerAddress && overlay.originAddress && overlay.originAddress !== deployerAddress) {
+        // Never keep a factory contract as the origin wallet.
+        deployerAddress = overlay.originAddress
+        factoryAddress = overlay.factoryAddress
+        devDeployerStatus = overlay.deployerStatus
+        devDeployerConfidence = overlay.deployerConfidence
+        devCreationTxHash = overlay.creationTxHash ?? devCreationTxHash
+        devOriginReason = 'Factory deploy separated from origin wallet'
+      } else if (overlay.factoryAddress) {
+        factoryAddress = overlay.factoryAddress
+      }
+      if (linkedWallets.length === 0 && overlay.graphRan && overlay.linkedWallets.length > 0) {
+        linkedWallets = overlay.linkedWallets.map((w) => ({
+          address: w.address,
+          amountReceived: w.amountReceived ?? null,
+          asset: w.asset ?? null,
+          txHash: w.txHash ?? null,
+          firstSeen: w.firstSeen ?? null,
+          confidence: w.confidence,
+          reason: w.reason,
+        }))
+      }
+      if (overlay.holders.length > 0) {
+        const havePct = holderRows.some((h) => typeof h.percent === 'number' && Number.isFinite(h.percent))
+        if (!havePct) {
+          holderRows = overlay.holders.map((h, i) => ({
+            rank: h.rank ?? i + 1,
+            address: h.address,
+            amount: h.balanceRaw ?? null,
+            percent: h.percent,
+          }))
+          holderDistribution = {
+            ...holderDistribution,
+            top1: overlay.top1Pct ?? holderDistribution.top1,
+            top10: overlay.top10Pct ?? holderDistribution.top10,
+            top20: overlay.top20Pct ?? holderDistribution.top20,
+            others: overlay.top20Pct != null ? Math.max(0, 100 - overlay.top20Pct) : holderDistribution.others,
+            topHolders: holderRows,
+          }
+          holderDistributionStatus = {
+            ...holderDistributionStatus,
+            status: 'partial',
+            reason: overlay.holdersSource === 'transfer_derived'
+              ? 'holder_percentages_derived_from_transfers'
+              : 'holder_percentages_from_dev_cluster_overlay',
+            percentSource: overlay.holdersSource === 'transfer_derived' ? 'reconstructed' : holderDistributionStatus.percentSource,
+            itemCount: Math.max(holderDistributionStatus.itemCount, overlay.holders.length),
+            normalizedCount: holderRows.length,
+          }
+        } else if ((holderDistribution.top1 == null || holderDistribution.top10 == null) && overlay.top1Pct != null) {
+          holderDistribution = {
+            ...holderDistribution,
+            top1: overlay.top1Pct,
+            top10: overlay.top10Pct,
+            top20: overlay.top20Pct,
+            others: overlay.top20Pct != null ? Math.max(0, 100 - overlay.top20Pct) : holderDistribution.others,
+          }
+        }
+      }
+    }
     // Reconcile deployerProfile with the resolved deployer/origin wallet (devIntel.deployerAddress).
     // The zero address only ever represents a renounced *owner* — it must never appear as
     // `deployer`. When no deployer/origin wallet is resolved, report null/inferred (open check).
@@ -7648,6 +7747,8 @@ export async function POST(req: Request) {
       deployerConfidence: devDeployerConfidence,
       methodUsed: publicSourceLabel(devMethodUsed, debugMode),
       creationTxHash: devCreationTxHash,
+      factoryAddress,
+      originAddress: deployerAddress,
       linkedWallets,
       creatorInTopHolders,
       linkedWalletSupply: linkedWalletSupplyPercent,
@@ -7684,6 +7785,7 @@ export async function POST(req: Request) {
       confidence: deployerAddress && holderRowsHaveUsablePercents ? 'high' : deployerAddress || holderRowsHaveUsablePercents ? 'medium' : 'low',
       supplyControl,
       clusterMap,
+      ...(devClusterDiagnosisAudit ? { devClusterDiagnosisAudit } : {}),
     }
 
     const bytecodeStatus = bytecode && bytecode !== '0x' ? 'ok' : 'inferred'
@@ -9237,6 +9339,9 @@ export async function POST(req: Request) {
     if (chain === 'robinhood' && _robinhoodLpProofResult) {
       ;(responsePayload as any).robinhoodLpResolutionAudit = _robinhoodLpProofResult.resolutionAudit
       ;(responsePayload as any).robinhoodLpProofAudit = _robinhoodLpProofResult.proofAudit
+    }
+    if (devClusterDiagnosisAudit) {
+      ;(responsePayload as any).devClusterDiagnosisAudit = devClusterDiagnosisAudit
     }
     function resultRiskExitStatus(): string {
       if (lpLockStatus === 'burned' || lpLockStatus === 'locked') return 'protected_by_proof'
