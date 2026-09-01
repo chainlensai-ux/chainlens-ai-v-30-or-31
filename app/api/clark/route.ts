@@ -4043,6 +4043,7 @@ async function buildClarkWalletReadResponse(params: {
       usedCachedCanonicalResult: false,
       mainWalletTotalUsd: null,
       clarkTotalUsd: null,
+      canonicalTotalUsd: null,
       totalsMatch: false,
       chainsFromMainResult: [] as string[],
       chainsShownByClark: [] as string[],
@@ -4127,6 +4128,7 @@ async function buildClarkWalletReadResponse(params: {
     usedCachedCanonicalResult: result.usedCachedCanonicalResult,
     mainWalletTotalUsd: result.totalValueUsd,
     clarkTotalUsd: result.totalValueUsd,
+    canonicalTotalUsd: result.totalValueUsd,
     totalsMatch: true,
     chainsFromMainResult: result.chainsScanned,
     chainsShownByClark: result.chainsScanned,
@@ -9955,15 +9957,52 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
     ?? (sessionMem.lastClarkSubject?.entityType === "wallet" ? sessionMem.lastClarkSubject.address : null)
     ?? sessionMem.lastWallet?.address
     ?? null;
-  const deepScanItOnWallet = !hasAnyAddress(prompt) && isDeepScanItFollowup(prompt) && Boolean(deepScanTargetAddress) && (
+  const lastSubjectIsToken = isTokenLikeClarkSubject(sessionMem.lastClarkSubject);
+  const namedWalletDeepScan = /\bwallet\b/i.test(prompt);
+  const deepScanItOnWallet = !hasAnyAddress(prompt) && isDeepScanItFollowup(prompt) && Boolean(deepScanTargetAddress) && (!lastSubjectIsToken || namedWalletDeepScan) && (
     sessionMem.lastWalletSubject != null
     || sessionMem.lastClarkSubject?.entityType === "wallet"
-    || (Boolean(sessionMem.lastWallet?.address) && sessionMem.lastClarkSubject?.entityType !== "token" && sessionMem.lastClarkSubject?.entityType !== "pair")
+    || Boolean(sessionMem.lastWallet?.address)
   );
   if (deepScanItOnWallet && deepScanTargetAddress) {
     routedClassification.intent = "wallet_scan";
     routedClassification.address = deepScanTargetAddress;
     routedClassification.deep = true;
+  }
+  // Deep Scan is a wallet action only. Never fake a token deep scan, and never guess the
+  // last wallet when the current subject is a token ("deep scan it").
+  if (!hasAnyAddress(prompt) && isDeepScanItFollowup(prompt) && !deepScanItOnWallet && !namedWalletDeepScan) {
+    const lastWalletAddr = deepScanTargetAddress
+      ?? sessionMem.lastWalletSubject?.walletAddress
+      ?? sessionMem.lastWallet?.address
+      ?? null;
+    if (lastSubjectIsToken && lastWalletAddr) {
+      const tokenLabel = sessionMem.lastClarkSubject?.symbol
+        ?? sessionMem.lastToken?.symbol
+        ?? sessionMem.lastClarkSubject?.address
+        ?? sessionMem.lastToken?.address
+        ?? "the last token";
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "clarify_subject", toolsUsed: ["memory"],
+        analysis: [
+          "Deep Scan only applies to wallets, not tokens.",
+          `I have both in context — last token: ${tokenLabel}, last wallet: ${lastWalletAddr}.`,
+          "Which one? Say /wallet deep for the wallet, or keep the token with /lp /holders /deployer.",
+        ].join("\n"),
+        intentBadge: "clarify_subject",
+        actions: buildRoutedActions(["Deep Scan Wallet", "Open Token Scanner"]),
+        quotaConsumed: false,
+      };
+    }
+    if (lastSubjectIsToken || sessionMem.lastToken?.address) {
+      return {
+        feature: "clark-ai", chain, mode: "analysis", intent: "wallet_scan_request", toolsUsed: ["memory"],
+        analysis: "Deep Scan only applies to wallets, not tokens. Send a wallet address or run /wallet.",
+        intentBadge: "wallet_scan_request",
+        actions: buildRoutedActions(["Scan Wallet", "Deep Scan Wallet"]),
+        quotaConsumed: false,
+      };
+    }
   }
   // Requirements 4 & 5, DISCLOSED (Clark Deep Scan Wallet follow-up task): an UNAMBIGUOUS
   // deep-scan-WALLET phrase (one that names "wallet" explicitly, e.g. "deep scan this wallet") with

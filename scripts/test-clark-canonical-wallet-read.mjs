@@ -185,9 +185,11 @@ const rhVerified = {
   check('buildClarkWalletReadResponse is still the only /wallet engine', /const result = await runWalletScan\(\{/.test(clarkSrc))
   check('PnL follow-up refresh no longer calls getWalletFromV2/getWalletLite', !/await getWalletFromV2\(targetAddr\) \?\? await getWalletLite\(targetAddr\)/.test(clarkSrc))
   check('PnL follow-up refresh delegates to buildClarkWalletReadResponse', clarkSrc.includes('sourceRoute: "wallet_pnl_followup_refresh"'))
-  check('clarkWalletReadAudit is logged and attached', clarkSrc.includes('clarkWalletReadAudit') && clarkSrc.includes('totalsMatch') && clarkSrc.includes('staleResultRejected'))
+  check('clarkWalletReadAudit is logged and attached', clarkSrc.includes('clarkWalletReadAudit') && clarkSrc.includes('totalsMatch') && clarkSrc.includes('staleResultRejected') && clarkSrc.includes('canonicalTotalUsd'))
   check('stale lastWalletSubject cannot overwrite a newer scan', /existing\.timestamp > startedAt/.test(clarkSrc) && /staleResultRejected/.test(clarkSrc))
   check('explain pnl still does not trigger isDeepScanItFollowup', isDeepScanItFollowup('explain pnl') === false)
+  check('deep scan it is not a token follow-up', clarkSrc.includes('Deep Scan only applies to wallets, not tokens') && clarkSrc.includes('lastSubjectIsToken'))
+  check('deep scan it after a token asks instead of guessing the last wallet', /lastSubjectIsToken && lastWalletAddr/.test(clarkSrc))
 }
 
 console.log(`test-clark-canonical-wallet-read.mjs: all ${passed} assertions passed`)

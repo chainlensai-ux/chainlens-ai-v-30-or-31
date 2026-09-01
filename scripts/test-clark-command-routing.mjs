@@ -59,6 +59,13 @@ const routeCode = routeSrc.split('\n').filter((l) => !l.trim().startsWith('//'))
   assert.equal(r.intent, 'liquidity_scan')
   assert.notEqual(r.intent, 'wallet_scan')
 }
+assert.equal(classifyClarkPrompt('liquidity check').intent, 'liquidity_scan', 'liquidity check = /lp')
+assert.equal(classifyClarkPrompt(`/lp ${BASE_TOKEN}`).intent, classifyClarkPrompt(`liquidity check ${BASE_TOKEN}`).intent)
+assert.equal(classifyClarkPrompt('check holders').intent, 'holders_check', 'check holders = /holders')
+assert.equal(classifyClarkPrompt(`/holders ${BASE_TOKEN}`).intent, classifyClarkPrompt(`check holders ${BASE_TOKEN}`).intent)
+assert.equal(classifyClarkPrompt('who deployed it').intent, 'deployer_check', 'who deployed it = /deployer')
+assert.equal(classifyClarkPrompt(`/deployer ${BASE_TOKEN}`).intent, classifyClarkPrompt(`who deployed it ${BASE_TOKEN}`).intent)
+assert.equal(classifyClarkPrompt(`/wallet ${WALLET}`).intent, 'wallet_scan')
 
 // 2. /token 0xTOKEN then "what about LP?" → LP check on same token
 {
@@ -94,7 +101,7 @@ const routeCode = routeSrc.split('\n').filter((l) => !l.trim().startsWith('//'))
 }
 assert.equal(isDeepScanItFollowup('deep scan it'), true)
 assert.equal(isDeepScanItFollowup('deep scan this'), true)
-assert.equal(isTokenFollowupPrompt('deep scan it'), true, 'deep scan it is a follow-up that reuses last subject')
+assert.equal(isTokenFollowupPrompt('deep scan it'), false, 'deep scan it is a wallet action, never a token follow-up')
 assert.match(routeCode, /deepScanItOnWallet/, 'route must intercept deep-scan-it after a wallet')
 assert.match(routeCode, /routed\.intent = "wallet_scan"/, 'deep scan it after a wallet must force wallet_scan')
 assert.match(routeCode, /routed\.deep = true/, 'deep scan it after a wallet must be a deep wallet scan')
