@@ -30,8 +30,12 @@ assert.equal(classifyClarkPrompt("what's pumping on Base Radar?").intent, 'base_
   assert.equal(r.address, '0xabcdef1234567890abcdef1234567890abcdef12')
 }
 {
-  const r = classifyClarkPrompt('token scan 0xabcdef1234567890abcdef1234567890abcdef12')
-  assert.equal(r.intent, 'token_scan', 'token scan 0x => token_scan')
+  const r = classifyClarkPrompt('Scan 0xabcdef1234567890abcdef1234567890abcdef12')
+  assert.equal(r.intent, 'token_scan', 'Scan 0x... (mover/token paste) => token_scan, not wallet_scan')
+}
+{
+  const r = classifyClarkPrompt('scan this wallet 0x1234567890123456789012345678901234567890')
+  assert.equal(r.intent, 'wallet_scan', 'explicit wallet keyword still wins')
 }
 {
   const r = classifyClarkPrompt('is this token safe 0xabcdef1234567890abcdef1234567890abcdef12')
