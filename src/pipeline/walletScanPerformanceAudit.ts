@@ -23,6 +23,7 @@ import type { PricingResolutionAudit } from '../modules/pricing/types'
 
 export type WalletScanPerformanceAudit = {
   totalMs: number
+  totalDurationMs: number
   providerFetchWindowMs: number | null
   recoveryPolicyMs: number | null
   priceLotsForWalletMs: number | null
@@ -45,6 +46,13 @@ export type WalletScanPerformanceAudit = {
   // came back empty).
   slowestStage: { name: string; ms: number } | null
   slowestProvider: { chain: string; ms: number } | null
+  stageDurations: Record<string, number>
+  // Robinhood is a sidecar (GET /api/wallet-scan/robinhood), not this EVM worker. The worker cannot
+  // honestly measure it — the Wallet Scanner page logs robinhoodSidecarDurationMs separately.
+  robinhoodSidecarDurationMs: number | null
+  evmWorkerDurationMs: number
+  // First paint of holdings/portfolio is a client event (partial snapshot). Null here, never guessed.
+  uiFirstResultMs: number | null
   // Real current-price calls that consumed a fallback slot / made a real network request but
   // resolved nothing useful (excludes calls pre-emptively short-circuited by the GeckoTerminal
   // cooldown, which cost zero network time — see PricingResolutionAudit's own
@@ -111,6 +119,7 @@ export function buildWalletScanPerformanceAudit(params: {
 
   return {
     totalMs,
+    totalDurationMs: totalMs,
     providerFetchWindowMs: stageMs('providerFetchWindow'),
     recoveryPolicyMs: stageMs('recoveryPolicy'),
     priceLotsForWalletMs: stageMs('priceLotsForWallet'),
@@ -121,6 +130,10 @@ export function buildWalletScanPerformanceAudit(params: {
     rateLimitHits: pricingAudit?.geckoTerminalQuotaStopped ?? 0,
     slowestStage: slowestStageEntry ? { name: slowestStageEntry.name, ms: slowestStageEntry.ms } : null,
     slowestProvider: slowestProviderEntry ? { chain: slowestProviderEntry.chain, ms: slowestProviderEntry.ms } : null,
+    stageDurations: Object.fromEntries(stages.map((s) => [s.name, s.ms])),
+    robinhoodSidecarDurationMs: null,
+    evmWorkerDurationMs: totalMs,
+    uiFirstResultMs: null,
     wastedCalls,
     skippedSpamTokens: deadOrSpamPositionsCount,
     userVisiblePhaseTimings,

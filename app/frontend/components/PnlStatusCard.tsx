@@ -489,7 +489,7 @@ function ChainBreakdownTable({
   hasCanonicalUnrealizedSource: boolean
 }) {
   if (chainBreakdown.length === 0) {
-    return <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>No per-chain PnL breakdown from the verified V2 engine.</p>
+    return <p style={{ fontSize: '12px', color: 'rgba(148,163,184,0.55)', margin: 0 }}>No per-chain PnL breakdown from verified trade evidence.</p>
   }
   return (
     <div style={{ overflowX: 'auto' }}>
@@ -851,7 +851,7 @@ export function selectDisplayedPnl(params: {
     costBasisLabel: null,
     roiPercent: pnl.roi.value,
     roiLabel: pnl.roi.display,
-    integrityLabel: 'Not available (V2 engine)',
+    integrityLabel: 'Not available',
     source: params.pnlV2 != null ? 'pnlV2' : 'none',
     trustGateTriggered: false, realizedPnlTileLabel: REALIZED_PNL_LABEL,
   }
@@ -1247,7 +1247,7 @@ export function PnlStatusCard({ pnlV2, publicPnlStatus, syntheticPnl, unrealized
           <MetricCard label={TOTAL_PNL_LABEL} value={blocked ? PNL_UNAVAILABLE_MESSAGE : fmtSignedUsd(pnl.totalPnlUsd)} tone={blocked ? 'neutral' : toneFromNumber(pnl.totalPnlUsd)} sub={LIVE_PRICE_MOVEMENT_NOTE} emphasis="muted" index={2} />
           <MetricCard label="ROI" value={blocked ? PNL_UNAVAILABLE_MESSAGE : pnl.roi.display} tone={blocked ? 'neutral' : toneFromNumber(pnl.roi.value)} index={3} />
           <MetricCard label="Cost Basis" value={pnl.unreliable ? 'Not reliable' : fmtUsd(pnl.totalCostBasisUsd)} index={4} />
-          <MetricCard label="Integrity" value={<StatusBadge label="Not available (V2 engine)" tone="neutral" />} index={5} />
+          <MetricCard label="Integrity" value={<StatusBadge label="Not available" tone="neutral" />} index={5} />
         </div>
       )}
 

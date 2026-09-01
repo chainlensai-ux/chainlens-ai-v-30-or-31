@@ -161,7 +161,7 @@ function run() {
     check('WalletScannerTabsV3 adds a "robinhood" tab key only when a real robinhoodResult exists', tabsSrc.includes("...(robinhoodResult ? [{ key: 'robinhood' as const, label: 'Robinhood' }] : [])"))
     check('the Robinhood tab renders the real RobinhoodChainSection component, not a re-derived summary', tabsSrc.includes("activeTab === 'robinhood' && robinhoodResult") && tabsSrc.includes('<RobinhoodChainSection'))
     check('page.tsx no longer renders RobinhoodChainSection unconditionally whenever a robinhoodResult exists (the confirmed two-card bug)', !/\{robinhoodResult && \(\s*<RobinhoodChainSection/.test(pageSrc))
-    check('the one remaining standalone RobinhoodChainSection render in page.tsx is gated to only fire when there is no main result, or in debug mode', pageSrc.includes('{robinhoodResult && (!result || debugMode) && ('))
+    check('the one remaining standalone RobinhoodChainSection render in page.tsx is gated to only fire when there is no main result, or in debug mode', /\{robinhoodResult && \(!result \|\| debugMode\) &&/.test(pageSrc))
   }
 
   // ── 7. The CORTEX Wallet Read sidebar uses the same merged result, not the V2-only one ─────────
@@ -539,6 +539,21 @@ function run() {
     // fields are read off the awaited result — re-confirmed here alongside the PnL lane checks since
     // both this task's fixes land in the same worker function.
     check('robinhoodChainCallAudit and the finalCanonicalMergeAudit/robinhoodBlockscoutUsageAudit logs all coexist without one replacing another', /console\.warn\('\[CU-TRACK\] robinhoodChainCallAudit:', robinhoodChainCallAudit\)/.test(workerSrc2) && /console\.warn\('\[CU-TRACK\] final canonical merge audit:', finalCanonicalMergeAudit\)/.test(workerSrc2))
+  }
+
+  {
+    const perfSrc = read('src/pipeline/walletScanPerformanceAudit.ts')
+    const scanWalletSrc = read('app/frontend/api/scanWallet.ts')
+    check('performance audit includes totalDurationMs', perfSrc.includes('totalDurationMs: totalMs'))
+    check('performance audit includes stageDurations', perfSrc.includes('stageDurations: Object.fromEntries'))
+    check('performance audit includes robinhoodSidecarDurationMs (null in EVM worker — sidecar is separate)', perfSrc.includes('robinhoodSidecarDurationMs: null'))
+    check('performance audit includes evmWorkerDurationMs', perfSrc.includes('evmWorkerDurationMs: totalMs'))
+    check('performance audit includes uiFirstResultMs (client-measured, never guessed on the worker)', perfSrc.includes('uiFirstResultMs: null'))
+    check('scanWallet client forwards the worker partial snapshot', scanWalletSrc.includes('partial: pollBody.partial'))
+    check('Wallet Scanner page consumes partial snapshot for a live portfolio card', pageSrc.includes('partialSnapshot') && pageSrc.includes('Deep scan still running'))
+    check('snapshot total uses computeMergedTotalValueUsd — one merged total, not a second card', pageSrc.includes('computeMergedTotalValueUsd(partialSnapshot.portfolioTotalValueUsd, robinhoodResult)'))
+    check('user-facing Deep Scan copy no longer says V2 engine', !/V2 engine · holdings/.test(pageSrc))
+    check('page logs walletScanPerformanceAudit with uiFirstResultMs', pageSrc.includes('[walletScanPerformanceAudit]') && pageSrc.includes('uiFirstResultMs'))
   }
 
   console.log(`test-wallet-scanner-merged-view.mjs: all ${passed} assertions passed`)

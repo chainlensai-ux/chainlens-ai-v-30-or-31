@@ -116,6 +116,7 @@ type WalletScanJobResponse = {
   error?: string | { message?: string }
   degraded?: boolean
   progress?: WalletScanStageProgress
+  partial?: ScanWalletStatusUpdate['partial']
   walletChainSelectionAudit?: WalletChainSelectionAudit
 }
 
@@ -123,6 +124,16 @@ export type ScanWalletStatusUpdate = {
   jobId: string
   status: WalletScanJobStatus
   progress?: WalletScanStageProgress
+  // FAST SNAPSHOT, DISCLOSED: the worker publishes holdings/portfolio totals on the job record
+  // while FIFO/PnL is still running (see publishWalletScanPartialSnapshot). The poll route already
+  // echoes `partial`; this client previously dropped it, so the UI waited for the full ~100s job.
+  partial?: {
+    portfolioTotalValueUsd: number | null
+    holdingsCount: number
+    topHoldings: Array<{ chainId: number; tokenAddress: string; symbol: string; valueUsd: number | null }>
+    activeChainIds: number[]
+    publishedAtElapsedMs: number
+  }
   // Only ever present on the initial enqueue update (the /api/wallet-scan POST response) — a
   // subsequent poll response never carries it, so this field is never overwritten with an absent
   // value on later updates.
@@ -224,7 +235,7 @@ export async function scanWalletV2(
         return toErrorResponse('Scan status is temporarily unavailable. Please rescan in a moment.')
       }
 
-      onUpdate?.({ jobId: startBody.jobId, status: pollBody.status, progress: pollBody.progress })
+      onUpdate?.({ jobId: startBody.jobId, status: pollBody.status, progress: pollBody.progress, partial: pollBody.partial })
 
       if (pollBody.status === 'done') {
         const result = pollBody.result

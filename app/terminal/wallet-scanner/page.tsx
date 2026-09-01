@@ -28,10 +28,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
-import { scanWalletV2, type WalletScanStageProgress, type WalletChainSelectionAudit } from '@/app/frontend/api/scanWallet'
+import { scanWalletV2, type WalletScanStageProgress, type WalletChainSelectionAudit, type ScanWalletStatusUpdate } from '@/app/frontend/api/scanWallet'
 import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
 import { logScanIdentityIfDev } from '@/app/frontend/lib/walletScanIdentity'
 import { computeMergedTotalValueUsd, deriveCanonicalMergeOverride, computeRobinhoodDisplayState } from '@/app/frontend/lib/mergedWalletView'
+import { fmtUsd } from '@/app/frontend/lib/holdingsHeuristics'
 import { buildWalletReadV2, type WalletReadV2 } from '@/app/frontend/lib/walletReadBuilder'
 import {
   BehaviorIntelView,
@@ -334,6 +335,9 @@ export default function WalletScannerPage() {
   // written by the SAME worker via src/modules/walletScanQueue.ts's updateWalletScanJobProgress).
   // Real, six-literal-label stage text and a real elapsed-ms figure, never fabricated.
   const [scanProgress, setScanProgress] = useState<WalletScanStageProgress | null>(null)
+  const [partialSnapshot, setPartialSnapshot] = useState<NonNullable<ScanWalletStatusUpdate['partial']> | null>(null)
+  const uiFirstResultMsRef = useRef<number | null>(null)
+  const robinhoodSidecarDurationMsRef = useRef<number | null>(null)
   // CHAIN SELECTION AUDIT, DISCLOSED (Wallet Scanner deep scan chain coverage fix): the real,
   // canonical requested/allowed/omitted chain decision (including Robinhood's numeric chain id,
   // 4663, when relevant) echoed back from the /api/wallet-scan POST response — captured here so
@@ -541,6 +545,10 @@ export default function WalletScannerPage() {
 
     setLoading(true)
     setError(null)
+    setPartialSnapshot(null)
+    uiFirstResultMsRef.current = null
+    robinhoodSidecarDurationMsRef.current = null
+    const scanStartedAt = Date.now()
     // MULTI-CHAIN INTEGRATION, DISCLOSED (Robinhood UI integration task): a normal Scan now also
     // attempts Robinhood Chain automatically — the same "chain=auto includes every supported chain"
     // behavior Base/ETH already get, not a separate opt-in feature. Fire-and-forget: it runs on its
@@ -549,7 +557,9 @@ export default function WalletScannerPage() {
     // configured on this deployment, resolveRobinhoodWalletHoldings/Activity already degrade to a
     // clean "not_configured" status (see lib/server/robinhoodWalletScanner.ts), so this is always
     // safe to fire unconditionally, never a guessed/loosened gate.
-    void handleRobinhoodScan()
+    void handleRobinhoodScan().finally(() => {
+      robinhoodSidecarDurationMsRef.current = Date.now() - scanStartedAt
+    })
     // STAGED-REFRESH FIX, DISCLOSED (provider-call-audit follow-up task, explicit "refresh keeps
     // previous total until canonical portfolio stage resolves" requirement): this previously
     // unconditionally cleared `result` to null the instant ANY scan (including a plain refresh of
@@ -573,7 +583,6 @@ export default function WalletScannerPage() {
     setScanDurationMs(null)
     setChainSelectionAudit(null)
 
-    const scanStartedAt = Date.now()
     // SCAN IDENTITY CAPTURE, DISCLOSED: held in a local (not read back from `currentJobId` state,
     // which the finally-block below deliberately clears) so the completed report is bound to the
     // exact job that produced it, with no dependency on React state timing.
@@ -599,7 +608,7 @@ export default function WalletScannerPage() {
       // scanRobinhoodWallet() call and the walletChainSelectionAudit both honestly reflect the
       // request. Robinhood availability is still gated server-side by isRobinhoodChainAvailable() —
       // sending this string never fakes Robinhood being scanned when it isn't configured.
-      const response = await scanWalletV2(address, ['base', 'eth', 'robinhood'], mode, ({ jobId, status, progress, walletChainSelectionAudit }) => {
+      const response = await scanWalletV2(address, ['base', 'eth', 'robinhood'], mode, ({ jobId, status, progress, partial, walletChainSelectionAudit }) => {
         scanJobId = jobId
         setCurrentJobId(jobId)
         setJobStatusMessage(status === 'queued' ? 'queued — still scanning…' : status === 'running' ? 'running — still scanning…' : status)
@@ -608,6 +617,10 @@ export default function WalletScannerPage() {
         // never cleared back to null mid-scan (a later poll simply hasn't reached a new checkpoint
         // yet — the last real stage stays visible rather than the UI reverting to a generic spinner).
         if (progress) setScanProgress(progress)
+        if (partial) {
+          if (uiFirstResultMsRef.current == null) uiFirstResultMsRef.current = Date.now() - scanStartedAt
+          setPartialSnapshot(partial)
+        }
         // Only present on the enqueue update — kept on later polls that don't carry it (see
         // ScanWalletStatusUpdate's own header in scanWallet.ts).
         if (walletChainSelectionAudit) {
@@ -651,12 +664,26 @@ export default function WalletScannerPage() {
       // update — never merged field-by-field with the prior scan.
       const envelope: WalletScanEnvelope = { report, jobId: scanJobId, completedAt: Date.now() }
       setResultEnvelope(envelope)
+      setPartialSnapshot(null)
+      const workerPerf = (report as { walletScanPerformanceAudit?: { providerCalls?: number; cacheHits?: number; slowestStage?: { name: string; ms: number } | null; stageDurations?: Record<string, number>; totalDurationMs?: number; evmWorkerDurationMs?: number } }).walletScanPerformanceAudit
+      // eslint-disable-next-line no-console
+      console.warn('[walletScanPerformanceAudit]', {
+        totalDurationMs: Date.now() - scanStartedAt,
+        slowestStage: workerPerf?.slowestStage?.name ?? scanProgress?.stage ?? null,
+        stageDurations: workerPerf?.stageDurations ?? {},
+        providerCalls: workerPerf?.providerCalls ?? 0,
+        cacheHits: workerPerf?.cacheHits ?? 0,
+        robinhoodSidecarDurationMs: robinhoodSidecarDurationMsRef.current,
+        evmWorkerDurationMs: workerPerf?.evmWorkerDurationMs ?? workerPerf?.totalDurationMs ?? (Date.now() - scanStartedAt),
+        uiFirstResultMs: uiFirstResultMsRef.current,
+      })
       logEngineConsistencyIfDev(report)
       logScanIdentityIfDev(envelope)
     } catch (err: unknown) {
       // eslint-disable-next-line no-console
       console.error('Scan failed', err)
       setResultEnvelope(null)
+      setPartialSnapshot(null)
       setError(err instanceof Error ? err.message : 'Scan failed — try again later')
     } finally {
       setLoading(false)
@@ -814,7 +841,7 @@ export default function WalletScannerPage() {
             <button
               onClick={() => void handleScan('deep')}
               disabled={loading || !input.trim()}
-              title="Deep scan via the 180-Day Intelligence Engine — includes holdings, portfolio value, and recovery-policy evaluation."
+              title="Deep scan — holdings and portfolio first, then recovery and PnL."
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: '6px',
                 padding: '6px 13px', borderRadius: '8px', border: '1px solid rgba(45,212,191,0.45)',
@@ -827,7 +854,7 @@ export default function WalletScannerPage() {
               Deep Scan
             </button>
             <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>
-              V2 engine · holdings + portfolio + recovery policy
+              Holdings + portfolio first · PnL and recovery follow
             </span>
             {/* ROBINHOOD SEPARATE BUTTON REMOVED, DISCLOSED (multi-chain integration task): Robinhood
                 Chain is no longer a separate, bolt-on action — handleScan() above now fires
@@ -867,9 +894,45 @@ export default function WalletScannerPage() {
                   {(scanProgress.elapsedMs / 1000).toFixed(1)}s elapsed
                 </div>
               )}
+              {partialSnapshot && !result && (
+                <div style={{ marginTop: '8px', color: '#fbbf24', fontSize: '11px', fontWeight: 700, letterSpacing: '0.04em' }}>
+                  Deep scan still running — PnL and recovery update when verified evidence is ready.
+                </div>
+              )}
               </div>
             </div>
           )}
+
+          {loading && partialSnapshot && !result && (() => {
+            const merged = computeMergedTotalValueUsd(partialSnapshot.portfolioTotalValueUsd, robinhoodResult)
+            const chainLabels = partialSnapshot.activeChainIds.map((id) => (
+              id === 8453 ? 'Base' : id === 1 ? 'ETH' : id === 4663 ? 'Robinhood' : `chain ${id}`
+            ))
+            if (merged.robinhoodIncluded && !chainLabels.includes('Robinhood')) chainLabels.push('Robinhood')
+            const top = partialSnapshot.topHoldings.slice(0, 5)
+            return (
+              <div className="ws-card" style={{ marginBottom: '16px', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)' }}>
+                <div style={{ fontSize: '9px', letterSpacing: '0.12em', textTransform: 'uppercase', color: '#2DD4BF', marginBottom: '10px' }}>
+                  Portfolio snapshot · live
+                </div>
+                <div style={{ fontSize: '22px', fontWeight: 800, color: '#e2e8f0', marginBottom: '8px' }}>
+                  {fmtUsd(merged.totalValueUsd)}
+                </div>
+                <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.8)', marginBottom: '10px' }}>
+                  Chains: {chainLabels.join(', ') || 'pending'} · {partialSnapshot.holdingsCount} holdings
+                  {merged.robinhoodIncluded ? ' · includes Robinhood' : ''}
+                </div>
+                {top.length > 0 && (
+                  <div style={{ fontSize: '12px', color: '#cbd5e1', lineHeight: 1.6 }}>
+                    {top.map((h) => `${h.symbol} ${fmtUsd(h.valueUsd)}`).join(' · ')}
+                  </div>
+                )}
+                <div style={{ marginTop: '12px', fontSize: '11px', color: '#fbbf24' }}>
+                  PnL: pending — Base/ETH and Robinhood lanes stay separate. Deep scan still running.
+                </div>
+              </div>
+            )
+          })()}
 
           {/* Error state */}
           {!loading && error && (
@@ -917,7 +980,7 @@ export default function WalletScannerPage() {
             </div>
           )}
 
-          {robinhoodResult && (!result || debugMode) && (
+          {robinhoodResult && (!result || debugMode) && !partialSnapshot && (
             <div className="ws-card" style={{ marginBottom: '16px' }}>
               <RobinhoodChainSection
                 result={robinhoodResult}
