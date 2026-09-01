@@ -1023,6 +1023,13 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
     }
     console.warn('[CU-TRACK] robinhoodChainCallAudit:', robinhoodChainCallAudit)
 
+    // ROBINHOOD PNL VERIFICATION AUDIT, DISCLOSED (this task): the Phase 3 sidecar proof that
+    // Robinhood verified PnL — if shown — came from scanRobinhoodWallet's own decode/FIFO path,
+    // never from V2 pnlV2 / chain-call-audit / holdings delta. Logged unconditionally (null when
+    // the sidecar did not run or failed) so a missing proof is visible rather than silent.
+    const robinhoodPnlVerificationAudit = robinhood?.pnlVerificationAudit ?? null
+    console.warn('[CU-TRACK] robinhoodPnlVerificationAudit:', robinhoodPnlVerificationAudit)
+
     // CANONICAL MULTI-CHAIN MERGE, DISCLOSED (Robinhood-not-in-normal-pipeline fix, hardened for
     // worker-module-propagation follow-up): Robinhood is still NEVER fed into the EVM/FIFO-typed
     // fields (`body.data.portfolio`, `body.data.scanMetadata`, `body.data.fifoAndPnl`/
@@ -1210,7 +1217,7 @@ export async function runWalletScanV2Worker(rawBody: unknown, ip: string, jobId?
       ...body,
       data: {
         ...body.data,
-        robinhood: robinhood ? { holdings: robinhood.holdings, activity: robinhood.activity, pnl: robinhood.pnl, audit: robinhood.audit } : null,
+        robinhood: robinhood ? { holdings: robinhood.holdings, activity: robinhood.activity, pnl: robinhood.pnl, audit: robinhood.audit, pnlVerificationAudit: robinhood.pnlVerificationAudit } : null,
         walletChainSelectionAudit: finalWalletChainSelectionAudit,
         workerChainPropagationAudit,
         finalCanonicalMergeAudit,

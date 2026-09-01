@@ -17,6 +17,29 @@ import { ChainBadge } from './ChainBadge'
 import { PnLHeaderCard } from './PnLHeaderCard'
 import { StatusBadge, type StatusTone } from './StatusBadge'
 
+// Mirrors GET /api/wallet-scan/robinhood's robinhoodPnlVerificationAudit (see
+// lib/server/robinhoodWalletScanner.ts). Client-side copy so this module never imports the server
+// scanner. Missing/incomplete proof → selectRobinhoodPnlLaneStatus returns not_verified.
+export type RobinhoodPnlVerificationAudit = {
+  wallet: string
+  chainId: number
+  source: 'robinhood_sidecar_phase3'
+  status: 'disabled' | 'partial' | 'verified'
+  realizedPnlUsd: number | null
+  verifiedSwapCount: number
+  decodedSwapCount: number
+  swapsFedToFifo: number
+  fifoClosedLots: number
+  priceEvidenceBothLegsCount: number
+  missingPriceEvidenceCount: number
+  blockscoutFallbackUsed: boolean
+  goldrushUsed: boolean
+  alchemyRpcUsed: boolean
+  pnlEnabledReason: string | null
+  pnlDisabledReason: string | null
+  rejectedReasonIfNotVerified: string | null
+}
+
 // Mirrors the JSON shape GET /api/wallet-scan/robinhood returns (see
 // lib/server/robinhoodWalletScanner.ts). Deliberately untyped against the V2 pipeline's
 // WalletV2Report — Robinhood does not run through that pipeline.
@@ -65,6 +88,7 @@ export type RobinhoodWalletScanResponse = {
     reason: string | null
   }
   robinhoodWalletScannerAudit: Record<string, unknown>
+  robinhoodPnlVerificationAudit?: RobinhoodPnlVerificationAudit | null
 }
 
 // The display identity Robinhood Chain uses everywhere — chainSlug/chainId/label — used only by
@@ -73,6 +97,33 @@ export type RobinhoodWalletScanResponse = {
 // for why that stays a deliberately separate module/route — Base/ETH/BNB's shared pipeline is
 // untouched by this or any other Robinhood work).
 export const ROBINHOOD_CHAIN_META = { chainSlug: 'robinhood' as const, chainId: 4663, label: 'Robinhood Chain' }
+
+// ROBINHOOD LANE, DISCLOSED (this task): lives next to the response type so PnlStatusCard and this
+// tab share ONE function without a circular import. 'verified' requires the Phase 3 sidecar proof
+// object — source marker, verified status, real realizedPnlUsd, verifiedSwapCount > 0, swaps fed
+// to FIFO, FIFO closed lots, and both-leg price evidence. V2 pnlV2 is never read here.
+export type RobinhoodPnlLaneStatus = 'verified' | 'not_verified' | 'unavailable'
+const ROBINHOOD_PNL_PHASE3_SOURCE = 'robinhood_sidecar_phase3'
+export const ROBINHOOD_PNL_NOT_VERIFIED_REASON = 'Requires verified Robinhood swaps + both-leg price evidence.'
+
+export function selectRobinhoodPnlLaneStatus(robinhoodResult: RobinhoodWalletScanResponse | null | undefined): RobinhoodPnlLaneStatus {
+  if (!robinhoodResult || !robinhoodResult.ok) return 'unavailable'
+  const pnl = robinhoodResult.pnl
+  const audit = robinhoodResult.robinhoodPnlVerificationAudit
+  if (!audit || audit.source !== ROBINHOOD_PNL_PHASE3_SOURCE || audit.chainId !== 4663) return 'not_verified'
+  if (
+    pnl.status === 'verified'
+    && audit.status === 'verified'
+    && pnl.realizedPnlUsd != null
+    && audit.realizedPnlUsd != null
+    && pnl.verifiedSwapCount > 0
+    && audit.verifiedSwapCount > 0
+    && audit.swapsFedToFifo > 0
+    && audit.fifoClosedLots > 0
+    && audit.priceEvidenceBothLegsCount > 0
+  ) return 'verified'
+  return 'not_verified'
+}
 
 function robinhoodLastActivityTimestamp(items: RobinhoodWalletScanResponse['activity']['items']): string | null {
   const timestamps = items.map((i) => i.blockTimestamp).filter((t): t is string => t != null)
@@ -97,8 +148,12 @@ export function RobinhoodChainSection({
   // this codebase's own derivePublicPnlStatus/coverage-ratio helpers already use elsewhere.
   const pricingCoveragePercent = tokenCount > 0 ? Math.round((pricedCount / tokenCount) * 100) : 100
   const lastActivity = robinhoodLastActivityTimestamp(activity.items)
-  const pnlLabel = pnl.status === 'verified' ? 'Verified Robinhood PnL' : 'PnL: Not verified yet'
-  const pnlTone: StatusTone = pnl.status === 'verified' ? 'success' : pnl.status === 'partial' ? 'warning' : 'neutral'
+  // SAME selector PnlStatusCard / CORTEX use — never pnl.status === 'verified' alone, which would
+  // skip the Phase 3 source-marker / both-leg / FIFO-closed-lot proof.
+  const robinhoodPnlVerified = selectRobinhoodPnlLaneStatus(result) === 'verified'
+  const pnlLabel = robinhoodPnlVerified ? 'Robinhood PnL: Verified' : 'Robinhood: Not verified'
+  const pnlTone: StatusTone = robinhoodPnlVerified ? 'success' : 'neutral'
+  const pnlAudit = result.robinhoodPnlVerificationAudit
   const blockscout = activity.blockscoutEvidence
   const providerErrors = [
     holdings.reason ? `Holdings: ${holdings.reason}` : null,
@@ -142,7 +197,7 @@ export function RobinhoodChainSection({
             <PnLHeaderCard label="Priced Holdings" value={String(pricedCount)} tone="neutral" index={2} />
             <PnLHeaderCard label="Unpriced Holdings" value={String(unpricedCount)} tone={unpricedCount > 0 ? 'negative' : 'neutral'} index={3} />
             <PnLHeaderCard label="Pricing Coverage" value={`${pricingCoveragePercent}%`} tone={pricingCoveragePercent === 100 ? 'positive' : 'neutral'} index={4} />
-            <PnLHeaderCard label="PnL Status" value={pnl.status === 'verified' ? 'Verified' : pnl.status === 'partial' ? 'Partial' : 'Not verified'} tone={pnl.status === 'verified' ? 'positive' : 'neutral'} index={5} />
+            <PnLHeaderCard label="PnL Status" value={robinhoodPnlVerified ? 'Verified' : 'Not verified'} tone={robinhoodPnlVerified ? 'positive' : 'neutral'} index={5} />
           </div>
 
           {/* HOLDINGS TABLE: Token / Balance / Price / Value / Pricing status / Source — a real table,
@@ -222,20 +277,24 @@ export function RobinhoodChainSection({
               from activity items here. Kept out of, and never mixed into, the portfolio value line. */}
           <div style={{
             marginBottom: '12px', padding: '12px 14px', borderRadius: '10px',
-            border: pnl.status === 'verified' ? '1px solid rgba(45,212,191,0.35)' : '1px solid rgba(148,163,184,0.18)',
-            background: pnl.status === 'verified' ? 'rgba(45,212,191,0.06)' : 'rgba(255,255,255,0.02)',
+            border: robinhoodPnlVerified ? '1px solid rgba(45,212,191,0.35)' : '1px solid rgba(148,163,184,0.18)',
+            background: robinhoodPnlVerified ? 'rgba(45,212,191,0.06)' : 'rgba(255,255,255,0.02)',
           }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '6px' }}>
-              <StatusBadge label={pnl.status === 'verified' ? 'Verified' : 'Not verified'} tone={pnlTone} />
-              <span style={{ fontSize: '13px', fontWeight: 800, color: pnl.status === 'verified' ? '#2DD4BF' : '#e2e8f0' }}>{pnlLabel}</span>
+              <StatusBadge label={robinhoodPnlVerified ? 'Verified' : 'Not verified'} tone={pnlTone} />
+              <span style={{ fontSize: '13px', fontWeight: 800, color: robinhoodPnlVerified ? '#2DD4BF' : '#e2e8f0' }}>{pnlLabel}</span>
             </div>
-            {pnl.status === 'verified' ? (
-              <div style={{ fontSize: '12px', color: 'rgba(226,232,240,0.80)' }}>
-                Realized: {pnl.realizedPnlUsd != null ? `$${pnl.realizedPnlUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'n/a'} · {pnl.matchedLotsCount} matched lot{pnl.matchedLotsCount === 1 ? '' : 's'}
+            {robinhoodPnlVerified && pnlAudit ? (
+              <div style={{ fontSize: '12px', color: 'rgba(226,232,240,0.80)', display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                <span>Realized: {pnl.realizedPnlUsd != null ? `$${pnl.realizedPnlUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'n/a'}</span>
+                <span>Verified swaps: {pnlAudit.verifiedSwapCount}</span>
+                <span>Closed lots: {pnlAudit.fifoClosedLots}</span>
+                <span>Price evidence: both legs verified</span>
+                <span>Source: Robinhood Phase 3 sidecar</span>
               </div>
             ) : (
               <div style={{ fontSize: '11px', color: 'rgba(148,163,184,0.65)' }}>
-                Robinhood PnL not verified yet — requires verified swap logs and both-leg price evidence.
+                Reason: Requires verified Robinhood swaps + both-leg price evidence.
               </div>
             )}
           </div>

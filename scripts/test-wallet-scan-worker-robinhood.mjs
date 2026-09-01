@@ -46,8 +46,8 @@ function run() {
   {
     check('awaits robinhoodPromise on the success path', /const robinhood = await robinhoodPromise/.test(workerSrc))
     check('reconciles finalChainsScanned against the REAL outcome (only true when robinhood is non-null)', /const actualChainsScanned = includeRobinhood && robinhood \? \[\.\.\.sanitized\.chains, 'robinhood'\] : \[\.\.\.sanitized\.chains\]/.test(workerSrc))
-    check('merges body.data.robinhood additively (never replacing existing EVM fields)', /data: \{\s*\n\s*\.\.\.body\.data,\s*\n\s*robinhood: robinhood \? \{ holdings: robinhood\.holdings, activity: robinhood\.activity, pnl: robinhood\.pnl, audit: robinhood\.audit \} : null,\s*\n\s*walletChainSelectionAudit: finalWalletChainSelectionAudit,/.test(workerSrc))
-    check('a failed/null robinhood scan merges robinhood: null, never a fabricated stand-in', /robinhood \? \{ holdings: robinhood\.holdings, activity: robinhood\.activity, pnl: robinhood\.pnl, audit: robinhood\.audit \} : null/.test(workerSrc))
+    check('merges body.data.robinhood additively (never replacing existing EVM fields)', /data: \{\s*\n\s*\.\.\.body\.data,\s*\n\s*robinhood: robinhood \? \{ holdings: robinhood\.holdings, activity: robinhood\.activity, pnl: robinhood\.pnl, audit: robinhood\.audit, pnlVerificationAudit: robinhood\.pnlVerificationAudit \} : null,\s*\n\s*walletChainSelectionAudit: finalWalletChainSelectionAudit,/.test(workerSrc))
+    check('a failed/null robinhood scan merges robinhood: null, never a fabricated stand-in', /robinhood \? \{ holdings: robinhood\.holdings, activity: robinhood\.activity, pnl: robinhood\.pnl, audit: robinhood\.audit, pnlVerificationAudit: robinhood\.pnlVerificationAudit \} : null/.test(workerSrc))
   }
 
   // ── 3. The pre-scan intent log fires unconditionally, right after the existing CU-TRACK line ────
@@ -149,6 +149,8 @@ function run() {
     check('robinhoodResultReceived/robinhoodHoldingsStatus are real, post-await outcomes — read off the actual awaited robinhood result, never guessed before the scan completes', /robinhoodResultReceived: robinhood != null,\s*\n\s*robinhoodHoldingsStatus: robinhood\?\.holdings\.status \?\? null,/.test(workerSrc))
     check('robinhoodChainCallAudit is logged unconditionally, every scan', /console\.warn\('\[CU-TRACK\] robinhoodChainCallAudit:', robinhoodChainCallAudit\)/.test(workerSrc))
     check('robinhoodChainCallAudit is built AFTER robinhood is awaited (post-outcome, not pre-scan intent)', workerSrc.indexOf('const robinhood = await robinhoodPromise') < workerSrc.indexOf('const robinhoodChainCallAudit = {'))
+    check('robinhoodPnlVerificationAudit is logged as its own CU-TRACK line, never mixed into V2 chain-call-audit', /console\.warn\('\[CU-TRACK\] robinhoodPnlVerificationAudit:', robinhoodPnlVerificationAudit\)/.test(workerSrc))
+    check('robinhoodPnlVerificationAudit is read off the sidecar scan result, never derived from pnlV2', /const robinhoodPnlVerificationAudit = robinhood\?\.pnlVerificationAudit \?\? null/.test(workerSrc))
   }
 
   console.log(`\n✅ ${passed} wallet-scan-worker-robinhood checks passed`)

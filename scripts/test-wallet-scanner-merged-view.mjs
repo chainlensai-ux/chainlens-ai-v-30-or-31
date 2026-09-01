@@ -182,8 +182,8 @@ function run() {
     const activityCardIndex = robinhoodUiSrc.indexOf('ACTIVITY CARD:')
     const pnlCardIndex = robinhoodUiSrc.indexOf('PNL CARD:')
     check('the Activity card and PnL card are still two distinct elements, in that order', activityCardIndex !== -1 && pnlCardIndex !== -1 && activityCardIndex < pnlCardIndex)
-    check('the required "PnL not verified yet" message exists, worded exactly as this task\'s own spec requires', robinhoodUiSrc.includes('Robinhood PnL not verified yet — requires verified swap logs and both-leg price evidence.'))
-    check('the not-verified PnL message never appears inside the portfolio-value StatBox rendering (no mixing value and PnL-status text)', !new RegExp('Supported On-Chain Portfolio Value[\\s\\S]{0,400}Robinhood PnL not verified yet').test(portfolioCardSrc))
+    check('the required not-verified message exists, worded exactly as this task requires', robinhoodUiSrc.includes('Requires verified Robinhood swaps + both-leg price evidence.'))
+    check('the not-verified PnL message never appears inside the portfolio-value StatBox rendering (no mixing value and PnL-status text)', !new RegExp('Supported On-Chain Portfolio Value[\\s\\S]{0,400}Requires verified Robinhood swaps').test(portfolioCardSrc))
   }
 
   // ── 9. Robinhood evidence/audit fields are still fully visible (nothing deleted) ────────────────
@@ -404,8 +404,8 @@ function run() {
     // Requirement 5: PnL per-chain breakdown shows Robinhood honestly, never a fake number.
     check('PnlStatusCard accepts a robinhoodResult prop', pnlStatusCardSrc.includes('robinhoodResult?: RobinhoodWalletScanResponse | null'))
     check('a RobinhoodPnlRow is rendered under the Per-Chain Breakdown section whenever a real robinhoodResult exists', pnlStatusCardSrc.includes('{robinhoodResult && robinhoodResult.ok && <RobinhoodPnlRow robinhoodResult={robinhoodResult} />}'))
-    check('the exact required "disabled" wording is used verbatim', pnlStatusCardSrc.includes("'Robinhood — PnL not verified / unsupported'"))
-    check('a "verified" Robinhood PnL result is the ONLY case a real number is shown for — never for disabled/partial', /pnl\.status === 'verified' && pnl\.realizedPnlUsd != null/.test(pnlStatusCardSrc))
+    check('the exact required not-verified wording is used verbatim', pnlStatusCardSrc.includes('Robinhood: Not verified'))
+    check('a verified Robinhood PnL number is only rendered when isVerified is true — never for disabled/partial', pnlStatusCardSrc.includes('{fmtSignedUsd(pnl.realizedPnlUsd)} realized (verified)') && pnlStatusCardSrc.includes("const isVerified = selectRobinhoodPnlLaneStatus(robinhoodResult) === 'verified'"))
     check('WalletScannerSummaryRowV3 forwards robinhoodResult into PnlStatusCard', summaryRowSrc2.includes('robinhoodResult={robinhoodResult}\n        />') || /PnlStatusCard[\s\S]{0,400}robinhoodResult=\{robinhoodResult\}/.test(summaryRowSrc2))
 
     // Exercise mergeRobinhoodIntoPricedHoldings directly with real-shaped inputs.
@@ -502,10 +502,32 @@ function run() {
     )
     check('selectRobinhoodPnlLaneStatus is "not_verified" for a real "disabled" status', selectRobinhoodPnlLaneStatus({ ok: true, pnl: { status: 'disabled', realizedPnlUsd: null, verifiedSwapCount: 0 } }) === 'not_verified')
     check('selectRobinhoodPnlLaneStatus is "not_verified" for a real "partial" status (real evidence, not a full verified sample)', selectRobinhoodPnlLaneStatus({ ok: true, pnl: { status: 'partial', realizedPnlUsd: null, verifiedSwapCount: 1 } }) === 'not_verified')
-    check('selectRobinhoodPnlLaneStatus is "verified" ONLY when status is verified AND realizedPnlUsd is real AND verifiedSwapCount > 0 — the full Phase 3 chain', selectRobinhoodPnlLaneStatus({ ok: true, pnl: { status: 'verified', realizedPnlUsd: 12.5, verifiedSwapCount: 2 } }) === 'verified')
+    check(
+      'selectRobinhoodPnlLaneStatus is "not_verified" when the Phase 3 source marker is missing, even if pnl.status claims verified with a real number — the $27k figure must never show without proof',
+      selectRobinhoodPnlLaneStatus({ ok: true, pnl: { status: 'verified', realizedPnlUsd: 27542.22, verifiedSwapCount: 2 } }) === 'not_verified',
+    )
+    check(
+      'selectRobinhoodPnlLaneStatus is "verified" ONLY when status is verified AND realizedPnlUsd is real AND verifiedSwapCount > 0 AND the Phase 3 sidecar audit proves both-leg prices + FIFO closed lots',
+      selectRobinhoodPnlLaneStatus({
+        ok: true,
+        pnl: { status: 'verified', realizedPnlUsd: 12.5, verifiedSwapCount: 2 },
+        robinhoodPnlVerificationAudit: {
+          wallet: '0xabc', chainId: 4663, source: 'robinhood_sidecar_phase3', status: 'verified',
+          realizedPnlUsd: 12.5, verifiedSwapCount: 2, decodedSwapCount: 2, swapsFedToFifo: 2,
+          fifoClosedLots: 10, priceEvidenceBothLegsCount: 2, missingPriceEvidenceCount: 0,
+          blockscoutFallbackUsed: false, goldrushUsed: true, alchemyRpcUsed: true,
+          pnlEnabledReason: 'ok', pnlDisabledReason: null, rejectedReasonIfNotVerified: null,
+        },
+      }) === 'verified',
+    )
 
     // RobinhoodPnlRow reuses selectRobinhoodPnlLaneStatus — never a second, independent gate.
     check('RobinhoodPnlRow computes isVerified via selectRobinhoodPnlLaneStatus, not a re-derived condition', pnlStatusCardSrc2.includes("const isVerified = selectRobinhoodPnlLaneStatus(robinhoodResult) === 'verified'"))
+    check('verified compact proof names the Phase 3 sidecar as the source', pnlStatusCardSrc2.includes('Source: Robinhood Phase 3 sidecar'))
+    check('verified compact proof shows verified swap count from the audit, never an invented number', pnlStatusCardSrc2.includes('Verified swaps: {audit.verifiedSwapCount}'))
+    check('verified compact proof shows FIFO closed lots from the audit', pnlStatusCardSrc2.includes('Closed lots: {audit.fifoClosedLots}'))
+    check('verified compact proof states both-leg price evidence', pnlStatusCardSrc2.includes('Price evidence: both legs verified'))
+    check('missing-proof copy uses the shared ROBINHOOD_PNL_NOT_VERIFIED_REASON', pnlStatusCardSrc2.includes('ROBINHOOD_PNL_NOT_VERIFIED_REASON'))
 
     // Requirement 5: per-chain lane badges — Base/ETH share the EVM lane status, Robinhood gets its
     // own distinct badge, and neither renders when its own input (chainsScanned/robinhoodResult) is

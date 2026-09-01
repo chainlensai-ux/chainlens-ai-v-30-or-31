@@ -203,6 +203,127 @@ export type RobinhoodWalletPnlResult = {
 // ever varies with wallet-specific numbers; the numbers themselves live in RobinhoodWalletPnlResult.
 const DISABLED_PNL_MESSAGE = 'PnL: disabled — verified Robinhood swap decoding unavailable'
 const PARTIAL_PNL_MESSAGE = 'PnL: partial — verified Robinhood swap decoding unavailable'
+// HOISTED, DISCLOSED: previously declared next to resolveRobinhoodWalletPnl. Same string, moved up
+// so buildRobinhoodPnlVerificationAudit (this task) can reuse it without a second copy.
+const NO_VERIFIED_SWAPS_REASON = 'No verified Robinhood swaps were found for this wallet in this scan — PnL requires at least one swap with real token identities and real price evidence on both legs.'
+
+// PHASE 3 PNL VERIFICATION AUDIT, DISCLOSED (this task): the ONLY proof object the Wallet Scanner
+// UI is allowed to treat as "Robinhood verified PnL". Built exclusively from this sidecar's own
+// Phase 3 decode → both-leg price re-check → FIFO path (resolveRobinhoodWalletPnl /
+// buildRobinhoodMatchedLotsFromSwaps). Never reads V2 pnlV2, never a holdings delta, never transfer
+// volume, never Blockscout-as-PnL. If this object is missing or its proof fields fail, the UI MUST
+// render "Robinhood: Not verified" — even if pnl.status somehow claims 'verified'.
+export const ROBINHOOD_PNL_PHASE3_SOURCE = 'robinhood_sidecar_phase3' as const
+export const ROBINHOOD_PNL_NOT_VERIFIED_REASON = 'Requires verified Robinhood swaps + both-leg price evidence.'
+export const ROBINHOOD_PNL_ENABLED_REASON = 'Phase 3 sidecar produced verified PnL from verified Robinhood swaps with both-leg price evidence and FIFO closed lots.'
+
+export type RobinhoodPnlVerificationAudit = {
+  wallet: string
+  chainId: number
+  source: typeof ROBINHOOD_PNL_PHASE3_SOURCE
+  status: RobinhoodWalletPnlStatus
+  realizedPnlUsd: number | null
+  verifiedSwapCount: number
+  decodedSwapCount: number
+  swapsFedToFifo: number
+  fifoClosedLots: number
+  priceEvidenceBothLegsCount: number
+  missingPriceEvidenceCount: number
+  blockscoutFallbackUsed: boolean
+  goldrushUsed: boolean
+  alchemyRpcUsed: boolean
+  pnlEnabledReason: string | null
+  pnlDisabledReason: string | null
+  rejectedReasonIfNotVerified: string | null
+}
+
+// PURE PROOF GATE, DISCLOSED: the same field checks the client-side selectRobinhoodPnlLaneStatus
+// applies. 'verified' requires the Phase 3 source marker, a real realized figure, verified swaps
+// actually fed into FIFO, both-leg price evidence, and at least one FIFO closed lot. Missing any
+// one of those is a hard fail-closed — never a holdings/transfer/Blockscout-only upgrade.
+export function robinhoodPnlVerificationAuditProvesVerified(
+  audit: RobinhoodPnlVerificationAudit | null | undefined,
+): boolean {
+  if (!audit) return false
+  if (audit.source !== ROBINHOOD_PNL_PHASE3_SOURCE) return false
+  if (audit.chainId !== ROBINHOOD_CHAIN_ID) return false
+  if (audit.status !== 'verified') return false
+  if (audit.realizedPnlUsd == null || !Number.isFinite(audit.realizedPnlUsd)) return false
+  if (!(audit.verifiedSwapCount > 0)) return false
+  if (!(audit.swapsFedToFifo > 0)) return false
+  if (!(audit.fifoClosedLots > 0)) return false
+  if (!(audit.priceEvidenceBothLegsCount > 0)) return false
+  return true
+}
+
+export function buildRobinhoodPnlVerificationAudit(input: {
+  wallet: string
+  holdings: RobinhoodWalletHoldingsResult | null
+  activity: RobinhoodWalletActivityResult | null
+  pnl: RobinhoodWalletPnlResult | null
+}): RobinhoodPnlVerificationAudit {
+  const audits = input.activity?.swapDecodeAudits ?? []
+  const decodedSwapCount = audits.filter((a) => a.decodedSwap).length
+  const priceEvidenceBothLegsCount = audits.filter((a) => a.priceEvidence === true).length
+  const missingPriceEvidenceCount = audits.filter((a) => a.decodedSwap && !a.priceEvidence).length
+  // verifiedSwapCount / swapsFedToFifo are the PnL-gate counts (high-confidence AND both-leg prices
+  // re-confirmed at FIFO time) — NOT activity.verifiedSwapCount (decode-time high-confidence, which
+  // can still be dropped on the re-check). Transfers never enter either count.
+  const verifiedSwapCount = input.pnl?.verifiedSwapCount ?? 0
+  const swapsFedToFifo = verifiedSwapCount
+  const fifoClosedLots = input.pnl?.matchedLotsCount ?? 0
+  const realizedPnlUsd = input.pnl?.realizedPnlUsd ?? null
+  const pnlStatus = input.pnl?.status ?? 'disabled'
+
+  const countsProve =
+    realizedPnlUsd != null
+    && Number.isFinite(realizedPnlUsd)
+    && verifiedSwapCount > 0
+    && swapsFedToFifo > 0
+    && fifoClosedLots > 0
+    && priceEvidenceBothLegsCount > 0
+
+  // Fail closed: a 'verified' pnl status without Phase 3 proof is rewritten to 'disabled' on this
+  // audit. Decoder/FIFO gates themselves are untouched (resolveRobinhoodWalletPnl is unchanged).
+  const status: RobinhoodWalletPnlStatus =
+    pnlStatus === 'verified' && countsProve
+      ? 'verified'
+      : pnlStatus === 'verified'
+        ? 'disabled'
+        : pnlStatus
+
+  const goldrushUsed = Boolean(
+    (input.holdings && (input.holdings.status === 'ok' || input.holdings.status === 'partial'))
+    || (input.activity?.blockscoutSkippedReason != null && /GoldRush/i.test(input.activity.blockscoutSkippedReason))
+    || (
+      (input.activity?.items.length ?? 0) > 0
+      && input.activity?.blockscoutEvidence?.blockscoutFallbackUsed !== true
+    ),
+  )
+  const alchemyRpcUsed = input.holdings?.native != null
+  const blockscoutFallbackUsed = input.activity?.blockscoutEvidence?.blockscoutFallbackUsed === true
+
+  const verified = status === 'verified' && countsProve
+  return {
+    wallet: input.wallet,
+    chainId: ROBINHOOD_CHAIN_ID,
+    source: ROBINHOOD_PNL_PHASE3_SOURCE,
+    status,
+    realizedPnlUsd,
+    verifiedSwapCount,
+    decodedSwapCount,
+    swapsFedToFifo,
+    fifoClosedLots,
+    priceEvidenceBothLegsCount,
+    missingPriceEvidenceCount,
+    blockscoutFallbackUsed,
+    goldrushUsed,
+    alchemyRpcUsed,
+    pnlEnabledReason: verified ? ROBINHOOD_PNL_ENABLED_REASON : null,
+    pnlDisabledReason: verified ? null : (input.pnl?.reason ?? NO_VERIFIED_SWAPS_REASON),
+    rejectedReasonIfNotVerified: verified ? null : ROBINHOOD_PNL_NOT_VERIFIED_REASON,
+  }
+}
 
 export type RobinhoodProviderStatus = 'ok' | 'partial' | 'unavailable' | 'not_configured' | 'not_run'
 
@@ -898,11 +1019,8 @@ export function buildRobinhoodPriceUsdLookup(holdings: RobinhoodWalletHoldingsRe
 }
 
 // ── Phase 3/4: PnL, gated strictly on verified swaps ────────────────────────────────────────────
-
-// DISABLED-PNL REASON (activity-level), DISCLOSED: distinct wording from the wallet-scanner-level
-// DISABLED_PNL_REASON declared further below — this one is specific to "this scan found zero
-// verified swaps," not a blanket "Phase 3 doesn't exist" statement (which is no longer true).
-const NO_VERIFIED_SWAPS_REASON = 'No verified Robinhood swaps were found for this wallet in this scan — PnL requires at least one swap with real token identities and real price evidence on both legs.'
+// NO_VERIFIED_SWAPS_REASON is declared with the other PnL message constants above so the
+// robinhoodPnlVerificationAudit builder can reuse the same string.
 
 export async function resolveRobinhoodWalletPnl(
   wallet: string,
@@ -1007,6 +1125,7 @@ export async function scanRobinhoodWallet(
   activity: RobinhoodWalletActivityResult & { wrongChainCacheRejected: boolean }
   pnl: RobinhoodWalletPnlResult
   audit: RobinhoodWalletScannerAudit
+  pnlVerificationAudit: RobinhoodPnlVerificationAudit
 }> {
   const holdings = await getCachedRobinhoodWalletHoldings(wallet, fetchImpl)
   const priceUsdLookupForToken = buildRobinhoodPriceUsdLookup(holdings, fetchImpl)
@@ -1022,6 +1141,10 @@ export async function scanRobinhoodWallet(
     pnl,
     wrongChainCacheRejected: holdings.wrongChainCacheRejected || activity.wrongChainCacheRejected,
   })
+  const pnlVerificationAudit = buildRobinhoodPnlVerificationAudit({ wallet, holdings, activity, pnl })
+  // REQUIRED LOG, DISCLOSED (this task): fires unconditionally on every real sidecar scan so a
+  // log reader can prove Robinhood verified PnL came from Phase 3, not from V2 chain-call-audit.
+  console.log('[robinhoodPnlVerificationAudit]', pnlVerificationAudit)
 
-  return { holdings, activity, pnl, audit }
+  return { holdings, activity, pnl, audit, pnlVerificationAudit }
 }

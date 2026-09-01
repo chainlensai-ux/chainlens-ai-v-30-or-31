@@ -47,7 +47,7 @@ export async function GET(req: Request): Promise<Response> {
   // scanRobinhoodWallet() (also reused by the new canonical orchestrator) — this route calls that
   // single real implementation instead of repeating the sequence inline. Output shape below is
   // unchanged.
-  const { holdings, activity, pnl, audit } = await scanRobinhoodWallet(wallet, fetchImpl)
+  const { holdings, activity, pnl, audit, pnlVerificationAudit } = await scanRobinhoodWallet(wallet, fetchImpl)
 
   return NextResponse.json({
     ok: true,
@@ -68,5 +68,6 @@ export async function GET(req: Request): Promise<Response> {
       reason: pnl.reason,
     },
     robinhoodWalletScannerAudit: audit,
+    robinhoodPnlVerificationAudit: pnlVerificationAudit,
   })
 }
