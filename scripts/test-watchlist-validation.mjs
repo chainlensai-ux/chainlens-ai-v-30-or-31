@@ -5,7 +5,7 @@
 // Run: node scripts/test-watchlist-validation.mjs
 
 import assert from 'node:assert'
-import { isValidAddress, isAllowedChain, isValidLabel, MAX_WATCHLIST_LABEL_LEN } from '../lib/server/watchlistValidation.ts'
+import { isValidAddress, isAllowedChain, isValidLabel, MAX_WATCHLIST_LABEL_LEN, watchlistTokenUpsertAttempts, isRetryableWatchlistSchemaError, watchlistTokenDeleteAttempts } from '../lib/server/watchlistValidation.ts'
 
 let passed = 0
 function check(label, condition) {
@@ -44,5 +44,26 @@ check('null label accepted (optional field)', isValidLabel(null) === true)
 check('undefined label accepted (optional field)', isValidLabel(undefined) === true)
 check('label at max length accepted', isValidLabel('a'.repeat(MAX_WATCHLIST_LABEL_LEN)) === true)
 check('oversized label rejected', isValidLabel('a'.repeat(MAX_WATCHLIST_LABEL_LEN + 1)) === false)
+
+const attempts = watchlistTokenUpsertAttempts({
+  user_id: 'user-1',
+  address: '0x1234567890abcdef1234567890abcdef12345678',
+  symbol: 'WASSETS',
+  name: 'Wassets',
+  chain: 'base',
+  risk_label: 'High Risk',
+  score: 58,
+  score_type: 'risk_score',
+  score_direction: 'higher_is_riskier',
+  saved_at: '2026-09-02T00:00:00.000Z',
+})
+check('first upsert still uses address + chain conflict', attempts[0].onConflict === 'user_id,address,chain' && 'address' in attempts[0].row)
+check('later upsert uses contract_address for the documented table', attempts.some((a) => a.onConflict.includes('contract_address') && 'contract_address' in a.row))
+check('no attempt mixes factory-style fake addresses', attempts.every((a) => (a.row.address ?? a.row.contract_address) === '0x1234567890abcdef1234567890abcdef12345678'))
+check('missing address column is retryable', isRetryableWatchlistSchemaError("Could not find the 'address' column of 'watchlist_tokens' in the schema cache") === true)
+check('on-conflict mismatch is retryable', isRetryableWatchlistSchemaError('there is no unique or exclusion constraint matching the ON CONFLICT specification') === true)
+check('unrelated db error is not retried forever', isRetryableWatchlistSchemaError('permission denied for table watchlist_tokens') === false)
+const deletes = watchlistTokenDeleteAttempts('0x1234567890abcdef1234567890abcdef12345678', 'base')
+check('delete tries address then contract_address', deletes[0].column === 'address' && deletes.some((d) => d.column === 'contract_address'))
 
 console.log(`test-watchlist-validation.mjs: all ${passed} assertions passed`)

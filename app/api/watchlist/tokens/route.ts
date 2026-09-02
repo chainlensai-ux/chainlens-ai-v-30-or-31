@@ -1,7 +1,7 @@
 import { createClient } from '@supabase/supabase-js'
 import { NextRequest, NextResponse } from 'next/server'
 import { createRateLimiter } from '@/lib/server/rateLimit'
-import { isValidAddress, isAllowedChain, isValidLabel } from '@/lib/server/watchlistValidation'
+import { isValidAddress, isAllowedChain, isValidLabel, watchlistTokenUpsertAttempts, isRetryableWatchlistSchemaError, watchlistTokenDeleteAttempts } from '@/lib/server/watchlistValidation'
 import { isValidSolanaMintAddress } from '@/lib/solanaAddress'
 import { normalizeRiskScore } from '@/lib/riskScoreDirection'
 
@@ -58,7 +58,11 @@ export async function GET(req: NextRequest) {
     .eq('user_id', userId)
     .order('saved_at', { ascending: false })
 
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
+  const query = error && isRetryableWatchlistSchemaError(error.message)
+    ? await db.from('watchlist_tokens').select('*').eq('user_id', userId)
+    : { data, error }
+
+  if (query.error) return NextResponse.json({ error: query.error.message }, { status: 500 })
   // NORMALIZE-WATCHLIST-ROW FIX, DISCLOSED: this route's own POST/DELETE below write/read an
   // `address` column, but Token Scanner's "Track This Token" button writes directly to this same
   // table via a separate client-side Supabase insert using `contract_address` instead (see
@@ -71,7 +75,7 @@ export async function GET(req: NextRequest) {
   // fallback to `contract_address`, fixes it for every consumer of this endpoint without needing
   // to know which column the live table actually has. Rows with neither are dropped rather than
   // returned with an empty/fake address.
-  const rows = (data ?? []) as Array<Record<string, unknown>>
+  const rows = (query.data ?? []) as Array<Record<string, unknown>>
   const tokens = rows
     .flatMap((row) => {
       const address = (row.address ?? row.contract_address) as string | null | undefined
@@ -139,7 +143,7 @@ export async function POST(req: NextRequest) {
   const db = getServiceClient()
   if (!db) return NextResponse.json({ error: 'Service unavailable' }, { status: 503 })
 
-  const watchlistRow = {
+  const writeFields = {
     user_id: userId,
     address: normalizeWatchlistAddress(address),
     symbol: symbol ?? null,
@@ -151,35 +155,63 @@ export async function POST(req: NextRequest) {
     score_direction: storedScoreDirection,
     saved_at: new Date().toISOString(),
   }
-  let { data, error } = await db
-    .from('watchlist_tokens')
-    .upsert(watchlistRow, { onConflict: 'user_id,address,chain' })
-    .select()
-    .single()
 
-  // Rollout compatibility: if the optional score metadata columns have not reached the live table
-  // yet, preserve direction in an explicit label prefix. Untyped historical rows remain untrusted.
-  if (error && /score_type|score_direction/i.test(error.message)) {
-    const legacyRow = {
-      user_id: watchlistRow.user_id,
-      address: watchlistRow.address,
-      symbol: watchlistRow.symbol,
-      name: watchlistRow.name,
-      chain: watchlistRow.chain,
-      risk_label: watchlistRow.risk_label,
-      score: watchlistRow.score,
-      saved_at: watchlistRow.saved_at,
-    }
-    const fallbackRow = storedScoreType === 'risk_score' && storedRiskLabel
-      ? { ...legacyRow, risk_label: `risk_score:${storedRiskLabel}` }
-      : legacyRow
-    const fallback = await db
+  let data: Record<string, unknown> | null = null
+  let error: { message: string } | null = null
+  for (const attempt of watchlistTokenUpsertAttempts(writeFields)) {
+    const result = await db
       .from('watchlist_tokens')
-      .upsert(fallbackRow, { onConflict: 'user_id,address,chain' })
+      .upsert(attempt.row, { onConflict: attempt.onConflict })
       .select()
       .single()
-    data = fallback.data
-    error = fallback.error
+    if (!result.error) {
+      data = result.data as Record<string, unknown>
+      error = null
+      break
+    }
+    error = result.error
+    if (!isRetryableWatchlistSchemaError(result.error.message)) break
+  }
+
+  if (error && isRetryableWatchlistSchemaError(error.message)) {
+    const insertRow = {
+      user_id: userId,
+      contract_address: writeFields.address,
+      symbol: writeFields.symbol,
+      name: writeFields.name,
+      chain: writeFields.chain,
+      risk_label: writeFields.risk_label,
+      score: writeFields.score,
+      saved_at: writeFields.saved_at,
+    }
+    const inserted = await db.from('watchlist_tokens').insert(insertRow).select().single()
+    if (!inserted.error) {
+      data = inserted.data as Record<string, unknown>
+      error = null
+    } else if (/duplicate|unique/i.test(inserted.error.message)) {
+      const updated = await db
+        .from('watchlist_tokens')
+        .update({
+          symbol: insertRow.symbol,
+          name: insertRow.name,
+          chain: insertRow.chain,
+          risk_label: insertRow.risk_label,
+          score: insertRow.score,
+          saved_at: insertRow.saved_at,
+        })
+        .eq('user_id', userId)
+        .eq('contract_address', writeFields.address)
+        .select()
+        .maybeSingle()
+      if (!updated.error) {
+        data = (updated.data as Record<string, unknown> | null) ?? insertRow
+        error = null
+      } else {
+        error = updated.error
+      }
+    } else {
+      error = inserted.error
+    }
   }
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
@@ -209,12 +241,20 @@ export async function DELETE(req: NextRequest) {
   const db = getServiceClient()
   if (!db) return NextResponse.json({ error: 'Service unavailable' }, { status: 503 })
 
-  const { error } = await db
-    .from('watchlist_tokens')
-    .delete()
-    .eq('user_id', userId)
-    .eq('address', normalizeWatchlistAddress(address))
-    .eq('chain', chainParam)
+  const normalized = normalizeWatchlistAddress(address)
+  let error: { message: string } | null = null
+  for (const attempt of watchlistTokenDeleteAttempts(normalized, chainParam)) {
+    let q = db.from('watchlist_tokens').delete().eq('user_id', userId).eq(attempt.column, normalized)
+    if (attempt.chain) q = q.eq('chain', attempt.chain)
+    const result = await q.select('id')
+    if (!result.error) {
+      error = null
+      if ((result.data?.length ?? 0) > 0) break
+      continue
+    }
+    error = result.error
+    if (!isRetryableWatchlistSchemaError(result.error.message)) break
+  }
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 })
   return NextResponse.json({ ok: true })

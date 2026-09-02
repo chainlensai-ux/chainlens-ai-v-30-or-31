@@ -9,6 +9,7 @@ import { TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from '../lib/server/tokenPublicRes
 const routeSrc = readFileSync(new URL('../app/api/token/route.ts', import.meta.url), 'utf8')
 const pageSrc = readFileSync(new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
 const watchlistSrc = readFileSync(new URL('../app/api/watchlist/tokens/route.ts', import.meta.url), 'utf8')
+const watchlistWriteSrc = readFileSync(new URL('../lib/server/watchlistValidation.ts', import.meta.url), 'utf8')
 
 const evmAddr = '0x' + 'd'.repeat(40)
 const solMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' // USDC on Solana — well-formed mint format
@@ -75,8 +76,9 @@ const solMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' // USDC on Solana
 // ── 7. Tracked tokens store chain; delete is chain-scoped; badge not hardcoded ──
 {
   assert.match(pageSrc, /chain: \(result\.chain \?\? chain\) as string/, 'tracked insert stores chain')
-  assert.match(watchlistSrc, /onConflict: 'user_id,address,chain'/, 'upsert conflict includes chain')
-  assert.match(watchlistSrc, /\.eq\('chain', chainParam\)/, 'API delete filters by chain')
+  assert.match(watchlistWriteSrc, /onConflict: 'user_id,address,chain'/, 'upsert conflict includes chain')
+  assert.match(watchlistSrc, /watchlistTokenUpsertAttempts/, 'token watchlist write uses schema fallbacks')
+  assert.match(watchlistSrc, /\.eq\('chain', attempt\.chain\)/, 'API delete filters by chain')
   assert.doesNotMatch(pageSrc, /letterSpacing: '\.08em', textTransform: 'uppercase' \}>base<\/span>/,
     'badge must not hardcode base')
 }

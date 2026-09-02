@@ -4391,6 +4391,7 @@ export default function TerminalTokenScanner() {
   const [trackedSaving, setTrackedSaving]   = useState(false)
   const [trackedLoggedOut, setTrackedLoggedOut] = useState(false)
   const [trackedUnavailable, setTrackedUnavailable] = useState(false)
+  const [trackedSaveError, setTrackedSaveError] = useState<string | null>(null)
   const [walletConnected, setWalletConnected] = useState(false)
 
   async function refreshTrackedTokens() {
@@ -4407,6 +4408,11 @@ export default function TerminalTokenScanner() {
       setTrackedLoggedOut(false)
       const res = await fetch('/api/watchlist/tokens', { headers: { Authorization: `Bearer ${authToken}` }, cache: 'no-store' })
       const json = await res.json().catch(() => null)
+      if (res.status === 401) {
+        setTrackedTokens([])
+        setTrackedLoggedOut(true)
+        return
+      }
       if (!res.ok || !Array.isArray(json?.tokens)) {
         console.error('Failed to load tracked tokens', json?.error ?? res.status)
         setTrackedTokens([])
@@ -4485,6 +4491,7 @@ export default function TerminalTokenScanner() {
     const alreadyTracked = trackedTokens.some(t => t.address === normalizedContract && (t.chain ?? 'base') === (result.chain ?? chain))
     if (alreadyTracked) return
     setTrackedSaving(true)
+    setTrackedSaveError(null)
     try {
       const { data: { session } } = await supabase.auth.getSession()
       const authToken = session?.access_token
@@ -4505,17 +4512,21 @@ export default function TerminalTokenScanner() {
           scoreDirection: 'higher_is_riskier',
         }),
       })
+      if (res.status === 401) {
+        setTrackedLoggedOut(true)
+        return
+      }
       if (!res.ok) {
         const json = await res.json().catch(() => null)
         console.error('Failed to save tracked token', json?.error ?? res.status)
-        setTrackedUnavailable(true)
+        setTrackedSaveError('Could not save this token. Try again.')
         return
       }
       setTrackedLoggedOut(false)
       await refreshTrackedTokens()
     } catch (saveError) {
       console.error('Failed to save tracked token', saveError)
-      setTrackedUnavailable(true)
+      setTrackedSaveError('Could not save this token. Try again.')
     } finally { setTrackedSaving(false) }
   }
 
@@ -9655,9 +9666,13 @@ export default function TerminalTokenScanner() {
                     </button>
                   )
                 })()}
-                {(trackedLoggedOut || trackedUnavailable) && (
+                {(trackedLoggedOut || trackedUnavailable || trackedSaveError) && (
                   <p style={{ margin: '8px 0 0', fontSize: '10px', color: '#fbbf24', fontFamily: 'var(--font-plex-mono)', lineHeight: 1.6 }}>
-                    {trackedUnavailable ? 'Tracked tokens could not be loaded. Try again.' : walletConnected ? 'Sign in to save tracked tokens across devices.' : 'Connect wallet or sign in to track tokens.'}
+                    {trackedSaveError
+                      ? trackedSaveError
+                      : trackedUnavailable
+                        ? 'Tracked tokens could not be loaded. Try again.'
+                        : walletConnected ? 'Sign in to save tracked tokens across devices.' : 'Connect wallet or sign in to track tokens.'}
                   </p>
                 )}
               </div>
