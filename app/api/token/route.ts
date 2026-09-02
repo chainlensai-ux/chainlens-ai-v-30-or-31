@@ -7,6 +7,7 @@ import { resolveTradingSimulationAudit } from "@/lib/server/tradingSimulation";
 import { ROBINHOOD_SIM_CHAIN_ID, ROBINHOOD_SIM_UNSUPPORTED_REASON } from "@/lib/tradingSimulation";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
 import { sanitizePublicTokenResponse, applyTokenScannerPlanGate, TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from "@/lib/server/tokenPublicResponse";
+import { consumeDailyScan } from "@/lib/scanQuota";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
 import {
   resolveTokenScanChainDecision,
@@ -3643,10 +3644,15 @@ function _buildDeterministicSummary(
 // ------------------------------
 export async function POST(req: Request) {
   if (!(await checkRate(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
-  // AUDIT FIX, DISCLOSED (token-scanner audit): computed once and reused for both the cache-read
-  // early-return below and the fresh-computation response at the end of this handler — previously
-  // plan was only ever used to pick a rate-limit tier, never to gate response content.
   const _requestPlan = await getPlan(req)
+  const _scanQuota = consumeDailyScan(_requestPlan, getClientIp(req))
+  if (!_scanQuota.allowed) {
+    return NextResponse.json({
+      error: `Daily scan limit reached (${_scanQuota.limit} full scans per day on ${_requestPlan}).`,
+      category: 'scan_limit',
+      scanQuota: { limit: _scanQuota.limit, remaining: 0, plan: _requestPlan },
+    }, { status: 429 })
+  }
 
   // Hoisted outside the main try block so the fatal-error handler can still
   // report accurate resolver diagnostics for address-based scans.

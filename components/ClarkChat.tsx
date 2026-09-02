@@ -8,6 +8,7 @@ import { useAccount } from '@/lib/usePlan'
 import { persistClarkMemoryEcho } from '@/lib/client/clarkMemory'
 import { clarkFetchSignal, clientTimeoutReply, createClarkRequestGate } from '@/lib/client/clarkRequestLifecycle'
 import { CLARK_FETCH_TIMEOUT_MS } from '@/lib/client/clarkAiLive'
+import { CLARK_DAILY_LIMITS, CLARK_DAILY_UNAUTH as CLARK_LIMIT_UNAUTH } from '@/lib/pricingPlans'
 
 interface ClarkChatProps {
   active: string | null
@@ -113,9 +114,6 @@ function getClientClarkContext() {
     }
   } catch { return {} }
 }
-
-const CLARK_DAILY_LIMITS: Record<string, number> = { free: 5, pro: 50, elite: 300 }
-const CLARK_LIMIT_UNAUTH = 3
 
 function getTodayStr() { return new Date().toISOString().slice(0, 10) }
 

@@ -54,8 +54,7 @@ export const QUICK_ACTIONS = [
   { title: 'LP safety', sub: 'Check liquidity control.', icon: '⌘', accent: '#22d3ee', prompt: 'Liquidity check AERO' },
 ]
 
-export const CLARK_DAILY_LIMITS: Record<string, number> = { free: 5, pro: 50, elite: 300 }
-export const CLARK_LIMIT_UNAUTH = 3
+export { CLARK_DAILY_LIMITS, CLARK_DAILY_UNAUTH as CLARK_LIMIT_UNAUTH } from '@/lib/pricingPlans'
 function getTodayStr() { return new Date().toISOString().slice(0, 10) }
 export function readClarkUsage(): number {
   if (typeof window === 'undefined') return 0

@@ -1,6 +1,7 @@
 'use client'
 
 import { useState } from 'react'
+import { planFaqWhatIsIncluded, planFaqProVsElite, planFaqClarkLimits } from '@/lib/pricingPlans'
 
 const FAQS = [
   {
@@ -9,15 +10,15 @@ const FAQS = [
   },
   {
     q: 'What does each plan include?',
-    a: 'Free: Token Scanner basic market data and liquidity depth, plus Clark AI at 5 prompts per day. Pro ($30/month): full Token Scanner, Liquidity Safety, Wallet Scanner, Dev Wallet Detector, Pump Alerts, Whale Alerts, Base Radar, Portfolio, and Clark AI at 50 prompts per day. Elite ($60/month): everything in Pro, Clark AI at 300 prompts per day, and faster whale-alert sync.',
+    a: planFaqWhatIsIncluded(),
   },
   {
     q: "What's the difference between Pro and Elite?",
-    a: 'Both unlock the full terminal. Elite raises Clark AI from 50 to 300 prompts per day and runs whale-alert sync faster than Pro. There is no separate Elite-only product suite beyond those limits.',
+    a: planFaqProVsElite(),
   },
   {
     q: 'How many Clark prompts do I get?',
-    a: 'Signed-out visitors get 3 per day. Free gets 5. Pro gets 50. Elite gets 300. Unused prompts do not roll over.',
+    a: planFaqClarkLimits(),
   },
   {
     q: 'Can I cancel my subscription any time?',

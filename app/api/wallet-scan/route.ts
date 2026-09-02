@@ -3,6 +3,7 @@ import { isAddress } from 'viem'
 import { WALLET_SCAN_QUEUE_UNAVAILABLE, WalletScanQueueUnavailableError, enqueueWalletScanJob, walletScanRedisConfigured } from '@/src/modules/walletScanQueue'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { canAccessFeature } from '@/lib/planFeatures'
+import { consumeDailyScan } from '@/lib/scanQuota'
 import { buildWalletChainSelectionAudit } from '@/lib/server/walletChainSelectionAudit'
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
 import { scanRobinhoodWallet } from '@/lib/server/robinhoodWalletScanner'
@@ -70,7 +71,7 @@ export async function POST(req: Request): Promise<Response> {
 
   const plan = await getPlan(req)
   if (!canAccessFeature(plan, 'wallet-scanner')) {
-    return NextResponse.json({ error: { message: 'Wallet Scanner requires a Pro or Elite plan.', category: 'plan' } }, { status: 403 })
+    return NextResponse.json({ error: { message: 'Wallet Scanner is not available on this plan.', category: 'plan' } }, { status: 403 })
   }
 
   const rawChains = Array.isArray(body?.chains) && body.chains.every((chain) => typeof chain === 'string')
@@ -82,7 +83,7 @@ export async function POST(req: Request): Promise<Response> {
   // see lib/server/walletChainSelectionAudit.ts's header for why) but its presence/absence still
   // informs the Robinhood request decision below.
   const chains = (rawChains ? rawChains.filter((c) => c.toLowerCase() !== 'robinhood') : ['base', 'eth'])
-  const scanMode: ScanMode = body?.scanMode === 'deep' ? 'deep' : 'normal'
+  const scanMode: ScanMode = (body?.scanMode === 'deep' && canAccessFeature(plan, 'wallet-scanner-full')) ? 'deep' : 'normal'
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
 
   // CANONICAL CHAIN SELECTION, DISCLOSED (Wallet Scanner deep scan chain coverage fix): Robinhood
@@ -96,6 +97,10 @@ export async function POST(req: Request): Promise<Response> {
 
   if (!checkWalletScanRate(ip)) {
     return NextResponse.json({ error: { message: 'Rate limit reached. Try again shortly.', category: 'rate_limit' } }, { status: 429 })
+  }
+  const scanQuota = consumeDailyScan(plan, ip)
+  if (!scanQuota.allowed) {
+    return NextResponse.json({ error: { message: `Daily scan limit reached (${scanQuota.limit} full scans per day on ${plan}).`, category: 'scan_limit' } }, { status: 429 })
   }
 
   const jobId = crypto.randomUUID()

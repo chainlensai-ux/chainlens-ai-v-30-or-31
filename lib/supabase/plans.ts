@@ -10,7 +10,7 @@ export type ChainlensFeature =
 const RANK: Record<ChainlensPlan, number> = { free: 0, pro: 1, elite: 2 }
 const FEATURE_MIN_PLAN: Record<ChainlensFeature, ChainlensPlan> = {
   token_screener: 'free', basic_token_info: 'free', clark_limited: 'free',
-  full_token_scanner: 'pro', wallet_scanner: 'pro', whale_alerts: 'pro', pump_alerts: 'pro', base_radar: 'pro',
+  full_token_scanner: 'free', wallet_scanner: 'free', whale_alerts: 'pro', pump_alerts: 'pro', base_radar: 'pro',
 }
 
 export function normalizePlan(value: unknown): ChainlensPlan {

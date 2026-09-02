@@ -31,7 +31,7 @@ const tokenAddr = '0x' + 'c'.repeat(40)
     'response payload must be stamped with schema version')
 }
 
-// ── 2. Plan gate: free plan nulls scores but keeps sections present + discloses why ────
+// ── 2. Plan gate: Free includes holders, LP Safety, Risk Engine, and dev checks ────
 {
   const full = {
     chain: 'robinhood',
@@ -46,17 +46,12 @@ const tokenAddr = '0x' + 'c'.repeat(40)
     holderDistribution: { top1: 12 },
   }
   const gated = applyTokenScannerPlanGate(full, 'free')
-  // Scalars nulled…
-  assert.equal(gated.riskScore, null)
-  assert.equal(gated.riskLabel, null)
-  assert.equal(gated.riskBreakdown, null)
-  // …objects replaced but PRESENT (no missing-key crashes downstream)…
-  assert.deepEqual(gated.riskEngine, { status: 'requires_pro' })
-  assert.deepEqual(gated.security, { status: 'requires_pro' })
-  // …and the gate is DISCLOSED, not silent.
-  assert.equal(gated.planGate.plan, 'free')
-  assert.equal(gated.planGate.requiredPlan, 'pro')
-  // Paid plans pass through untouched.
+  assert.equal(gated, full)
+  assert.equal(gated.riskScore, 42)
+  assert.equal(gated.riskLabel, 'moderate')
+  assert.equal(gated.holderDistribution.top1, 12)
+  assert.equal(gated.lpControl.status, 'partial')
+  assert.equal(gated.planGate, undefined)
   const elite = applyTokenScannerPlanGate(full, 'elite')
   assert.equal(elite.riskScore, 42)
   assert.equal(elite.planGate, undefined)
@@ -126,7 +121,8 @@ const tokenAddr = '0x' + 'c'.repeat(40)
 {
   const pageSrc = (await import('node:fs')).readFileSync(
     new URL('../app/terminal/token-scanner/page.tsx', import.meta.url), 'utf8')
-  assert.match(pageSrc, /result\.planGate\?\.plan === 'free'/, 'score fallback must check planGate disclosure')
+  assert.doesNotMatch(pageSrc, /Risk Score requires Pro/, 'Free Token Scanner includes Risk Score — no fake upgrade copy')
+  assert.match(pageSrc, /result\.scanAudit\?\.confidenceMissingReason/, 'score fallback must use scanAudit when score is missing')
   assert.match(pageSrc, /result\.scanAudit\?\.responseWarnings/, 'liquidity banner must come from scanAudit receipt')
   assert.match(pageSrc, /json\.planGate \?\? null/, 'planGate must be mapped into result state')
   assert.match(pageSrc, /json\.scanAudit \?\? null/, 'scanAudit must be mapped into result state')

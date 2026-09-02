@@ -371,7 +371,7 @@ export async function POST(req: NextRequest) {
     if (planData) { plan = planData.plan; settingsRowFound = planData.settingsRowFound }
   }
   const adapterRead = req.headers.get('x-chainlens-adapter-route') === 'project-overview'
-  if (plan === 'free' && !adapterRead) return NextResponse.json({ ok: false, error: 'Included in Pro and Elite.', rateLimited: false, planGate: { verifiedPlan: plan, requiredPlan: 'pro', settingsRowFound, planSource: token ? 'bearer_token' : 'no_token' } }, { status: 403 })
+  void adapterRead
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
   const now = Date.now()
   const rk = `${ip}:${plan}`

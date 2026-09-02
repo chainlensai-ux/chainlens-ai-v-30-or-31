@@ -7,7 +7,7 @@ import { riskLabelFromCanonicalScore } from '../riskScoreDirection.ts'
 //  1. a cached response written by older code is never served to newer frontend code, and
 //  2. any client can verify it got a current-schema response instead of silently rendering
 //     a stale one (the reported "same token, different result per device" class).
-export const TOKEN_SCAN_RESPONSE_SCHEMA_VERSION = 6
+export const TOKEN_SCAN_RESPONSE_SCHEMA_VERSION = 7
 
 // Raw DEX/pool-source identifiers (e.g. "aerodrome-base", "uniswap-v3-base") are internal —
 // public text shows the neutral DEX brand name instead. Order matters: more specific
@@ -187,42 +187,14 @@ function sanitizePublicValue(value: unknown): unknown {
 // `result.x.y` still resolves — to `undefined`, which every sampled frontend fallback already
 // treats the same as missing evidence via `== null`/`??`) and gated scalars are set to `null`
 // (matching this codebase's existing "number | null" convention for these exact fields).
-const FREE_TIER_GATED_OBJECT_SECTIONS = [
-  'holderDistribution', 'devIntel', 'riskEngine', 'cortexLpRead', 'lpControl', 'lpControlRead',
-  'lpControllerIntel', 'lpLockBurnIntel', 'lpUnlockTimeline', 'lpMovementWatch',
-  'concentratedPositionProof', 'concentratedPositionProofRead', 'supplyControl', 'security',
-] as const
-const FREE_TIER_GATED_SCALAR_FIELDS = [
-  'riskScore', 'riskLabel', 'riskBreakdown', 'safetyScore', 'riskScoreDirectionAudit', 'devClusterSupplyPercent', 'creatorHolderPercent',
-] as const
+// applyTokenScannerPlanGate is an identity no-op: Free includes holders, LP
+// Safety, Risk Engine, and dev checks. Daily scan quota is enforced at the
+// /api/token route, not by redacting evidence. The function is kept so every
+// cache-read and fresh-computation path still gates a copy per request.
 
-// NEVER MUTATES ITS INPUT, DISCLOSED: this route's response cache (lib/server/cache/tokenCache.ts)
-// is shared across every caller regardless of plan — a Pro user's full scan and a free user's
-// gated scan for the same token share one cache entry. Applying this in place on the object that
-// gets cached would leak a free-gated (redacted) response back out to the next Pro/Elite caller
-// that hits the cache within the TTL. Always returns a shallow copy for 'free' so the original
-// (cached) object is untouched; callers must cache the pre-gate response and gate a copy per
-// request, on both the fresh-computation path and the cache-read path.
 export function applyTokenScannerPlanGate<T extends Record<string, unknown>>(payload: T, plan: 'free' | 'pro' | 'elite'): T {
-  if (plan !== 'free') return payload
-  const gated: Record<string, unknown> = { ...payload }
-  for (const key of FREE_TIER_GATED_OBJECT_SECTIONS) {
-    if (gated[key] && typeof gated[key] === 'object') gated[key] = { status: 'requires_pro' }
-  }
-  for (const key of FREE_TIER_GATED_SCALAR_FIELDS) {
-    if (key in gated) gated[key] = null
-  }
-  const sections = gated.sections as Record<string, unknown> | null | undefined
-  if (sections && typeof sections === 'object' && sections.contractChecks) {
-    gated.sections = { ...sections, contractChecks: { status: 'requires_pro' } }
-  }
-  gated.planGate = {
-    plan: 'free',
-    requiredPlan: 'pro',
-    gatedObjectSections: FREE_TIER_GATED_OBJECT_SECTIONS,
-    gatedScalarFields: FREE_TIER_GATED_SCALAR_FIELDS,
-  }
-  return gated as T
+  void plan
+  return payload
 }
 
 export function sanitizePublicTokenResponse<T extends Record<string, any>>(payload: T, debugMode: boolean): T {

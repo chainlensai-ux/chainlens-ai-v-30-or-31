@@ -416,8 +416,8 @@ export function usePlanWithLoading(): { plan: UserPlan; loading: boolean; error:
 
 const FEATURE_DISPLAY: Record<string, string> = {
   'wallet-scanner':   'Wallet Scanner',
-  'dev-wallet':       'Dev Wallet Detector',
-  'liquidity-safety': 'Liquidity Safety',
+  'dev-wallet':       'Dev checks',
+  'liquidity-safety': 'LP Safety',
   'whale-alerts':     'Whale Alerts',
   'pump-alerts':      'Pump Alerts',
   'base-radar':       'Base Radar',

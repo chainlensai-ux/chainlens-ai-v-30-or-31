@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import Image from 'next/image'
 import { type UserPlan, PLAN_COLOR } from '@/lib/planFeatures'
+import { PLAN_TOOL_NAV as TIER_COLUMNS } from '@/lib/pricingPlans'
 import { useAccount } from '@/lib/usePlan'
 
 const AVATAR_COLORS: Record<string, string> = {
@@ -13,48 +14,6 @@ const AVATAR_COLORS: Record<string, string> = {
   pink:   'linear-gradient(135deg, #ec4899 0%, #f43f5e 100%)',
   blue:   'linear-gradient(135deg, #38bdf8 0%, #3b82f6 100%)',
 }
-
-const TIER_COLUMNS = [
-  {
-    tier: 'FREE',
-    label: 'FREE',
-    color: '#ec4899',
-    bg: 'rgba(236,72,153,0.10)',
-    border: 'rgba(236,72,153,0.20)',
-    tools: [
-      { icon: '🧪', name: 'Token Scanner',    href: '/terminal/token-scanner', note: 'Basic market data + liquidity depth' },
-      { icon: '🤖', name: 'Clark AI',         href: '/terminal?tab=clark',      note: '5 prompts/day' },
-    ],
-  },
-  {
-    tier: 'PRO',
-    label: 'PRO + ELITE',
-    color: '#2DD4BF',
-    bg: 'rgba(45,212,191,0.08)',
-    border: 'rgba(45,212,191,0.20)',
-    tools: [
-      { icon: '🧪', name: 'Token Scanner',    href: '/terminal/token-scanner', note: 'Full token, liquidity, LP, holder, security, and dev-risk analysis' },
-      { icon: '💧', name: 'Liquidity Safety', href: '/terminal/liquidity',      note: '' },
-      { icon: '👛', name: 'Wallet Scanner',   href: '/terminal?tab=wallet',     note: '' },
-      { icon: '🧑‍💻', name: 'Dev Wallet',      href: '/terminal/dev-wallet',     note: '' },
-      { icon: '🐋', name: 'Whale Alerts',     href: '/terminal?tab=whales',     note: '' },
-      { icon: '🚨', name: 'Pump Alerts',      href: '/terminal?tab=pumps',      note: '' },
-      { icon: '📡', name: 'Base Radar',       href: '/terminal?tab=radar',      note: '' },
-      { icon: '🤖', name: 'Clark AI',         href: '/terminal?tab=clark',      note: '50 prompts/day' },
-    ],
-  },
-  {
-    tier: 'ELITE',
-    label: 'ELITE ONLY',
-    color: '#fbbf24',
-    bg: 'rgba(251,191,36,0.08)',
-    border: 'rgba(251,191,36,0.22)',
-    tools: [
-      { icon: '🤖', name: 'Clark AI',         href: '/terminal?tab=clark',      note: '300 prompts/day' },
-      { icon: '🐋', name: 'Whale Alerts',      href: '/terminal?tab=whales',     note: 'Faster sync than Pro' },
-    ],
-  },
-]
 
 export default function Navbar() {
   const [open, setOpen] = useState(false)

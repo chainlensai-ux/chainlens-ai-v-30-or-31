@@ -7149,11 +7149,9 @@ export default function TerminalTokenScanner() {
                         </>
                       ) : (
                         <div style={{ fontSize: '13px', fontWeight: 600, color: '#94a3b8', fontFamily: 'var(--font-plex-mono)', padding: '4px 0', lineHeight: 1.55 }}>
-                          {result.planGate?.plan === 'free'
-                            ? <>Risk Score requires Pro — <a href="/pricing" style={{ color: '#53F3C3', textDecoration: 'underline' }}>upgrade to unlock</a>. Free scans still show market data and basic checks.</>
-                            : result.scanAudit?.confidenceMissingReason
-                              ? `Score unavailable: ${String(result.scanAudit.confidenceMissingReason).replace(/_/g, ' ')}.`
-                              : 'Risk Score unavailable — the risk engine did not return a score for this scan.'}
+                          {result.scanAudit?.confidenceMissingReason
+                            ? `Score unavailable: ${String(result.scanAudit.confidenceMissingReason).replace(/_/g, ' ')}.`
+                            : 'Risk Score unavailable — the risk engine did not return a score for this scan.'}
                         </div>
                       )}
                     </div>

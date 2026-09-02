@@ -8,6 +8,7 @@ import Navbar from '@/components/Navbar'
 import IntelligenceHero from '@/components/home/IntelligenceHero'
 import ReferenceHero from '@/components/home/ReferenceHero'
 import Reveal from '@/components/home/Reveal'
+import { pricingPlans } from '@/lib/pricingPlans'
 const ConnectWallet = dynamic(() => import('@/components/ConnectWallet'), { ssr: false })
 const ClaimTrialButton = dynamic(() => import('@/components/ClaimTrialButton'), { ssr: false })
 
@@ -1465,39 +1466,34 @@ export default function HomePage() {
             </p>
           </div></Reveal>
 
-          {/* Cards — Elite gets 1.28× width */}
-          <div className="mob-pricing-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1.28fr', gap: '14px', maxWidth: '1020px', margin: '0 auto', alignItems: 'start' }}>
-            {[
-              {
-                id: 'free', label: 'FREE', labelColor: '#ec4899', price: '$0',
-                billing: 'forever free · no card required', engine: 'CORTEX LITE', engineColor: 'rgba(236,72,153,0.65)',
-                cta: 'Get Started', ctaStyle: 'outline', border: 'rgba(255,255,255,0.09)', badge: null,
-                bg: 'rgba(10,10,18,0.72)', radius: '14px', pad: '20px 16px 18px', mt: '0',
-                sections: [
-                  { title: 'Token Scanner', items: ['Basic market data and liquidity depth', 'No AI verdict / risk score'] },
-                  { title: 'Clark AI', items: ['5 prompts per day'] },
-                  { title: 'Not Included', items: ['No Wallet Scanner', 'No Liquidity Safety', 'No Dev Wallet Detector', 'No Pump Alerts', 'No Whale Alerts', 'No Base Radar', 'No Portfolio'] },
-                ],
-              },
-              {
-                id: 'pro', label: 'PRO', labelColor: '#2DD4BF', price: '$30',
-                billing: 'per month', engine: 'CORTEX STANDARD', engineColor: 'rgba(45,212,191,0.65)',
-                cta: 'Pay with Crypto', ctaStyle: 'gradient', border: 'rgba(139,92,246,0.55)', badge: 'MOST POPULAR',
-                bg: 'rgba(12,10,26,0.92)', radius: '14px', pad: '20px 16px 18px', mt: '-8px',
-                sections: [
-                  { title: 'Everything in Free, plus', items: ['Token Scanner — full LP, holder, security, tax, and dev-risk analysis', 'Liquidity Safety', 'Wallet Scanner', 'Dev Wallet Detector', 'Pump Alerts', 'Whale Alerts', 'Base Radar', 'Portfolio', 'Clark AI: 50 prompts per day'] },
-                ],
-              },
-              {
-                id: 'elite', label: 'ELITE', labelColor: '#fbbf24', price: '$60',
-                billing: 'per month', engine: 'CORTEX FULL INTELLIGENCE', engineColor: 'rgba(251,191,36,0.75)',
-                cta: 'Pay with Crypto', ctaStyle: 'gold', border: 'rgba(251,191,36,0.40)', badge: 'FULL INTELLIGENCE',
-                bg: 'rgba(16,12,4,0.95)', radius: '18px', pad: '24px 22px 20px', mt: '-14px',
-                sections: [
-                  { title: 'Everything in Pro, plus', items: ['Clark AI: 300 prompts per day', 'Faster whale-alert sync than Pro'] },
-                ],
-              },
-            ].map(plan => {
+          {/* Cards — wrap before overlapping; copy comes from pricingPlans */}
+          <div className="mob-pricing-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px', maxWidth: '1100px', margin: '0 auto', alignItems: 'stretch', width: '100%' }}>
+            {pricingPlans.map(src => {
+              const visual = {
+                free: { labelColor: '#67e8f9', engineColor: 'rgba(103,232,249,0.75)', cta: 'Get Started', ctaStyle: 'outline', border: 'rgba(255,255,255,0.09)', badge: null as string | null, bg: 'rgba(10,10,18,0.72)', radius: '14px', pad: '22px 18px 18px', mt: '0' },
+                pro: { labelColor: '#c4b5fd', engineColor: 'rgba(167,139,250,0.75)', cta: 'Pay with Crypto', ctaStyle: 'gradient', border: 'rgba(139,92,246,0.55)', badge: 'MOST POPULAR' as string | null, bg: 'rgba(12,10,26,0.92)', radius: '14px', pad: '22px 18px 18px', mt: '0' },
+                elite: { labelColor: '#fbbf24', engineColor: 'rgba(251,191,36,0.75)', cta: 'Pay with Crypto', ctaStyle: 'gold', border: 'rgba(251,191,36,0.40)', badge: 'POWER USERS' as string | null, bg: 'rgba(16,12,4,0.95)', radius: '16px', pad: '22px 18px 18px', mt: '0' },
+              }[src.id]
+              const plan = {
+                id: src.id,
+                label: src.label,
+                labelColor: visual.labelColor,
+                price: src.price,
+                billing: src.subtext,
+                engine: src.badge ?? src.label,
+                engineColor: visual.engineColor,
+                cta: visual.cta,
+                ctaStyle: visual.ctaStyle,
+                border: visual.border,
+                badge: visual.badge,
+                bg: visual.bg,
+                radius: visual.radius,
+                pad: visual.pad,
+                mt: visual.mt,
+                sections: [{ title: src.sectionTitle, items: src.features }],
+              }
+              return plan
+            }).map(plan => {
               const isElite = plan.id === 'elite'
               const isPro   = plan.id === 'pro'
               const checkColor: Record<string,string> = { free: 'rgba(236,72,153,0.55)', pro: '#2DD4BF', elite: '#fbbf24' }
@@ -1521,14 +1517,14 @@ export default function HomePage() {
                       position: 'absolute', top: '-15px', left: '50%', transform: 'translateX(-50%)',
                       background: isElite ? 'linear-gradient(90deg,#f59e0b,#fbbf24,#f59e0b)' : 'linear-gradient(90deg,#8b5cf6,#ec4899)',
                       borderRadius: '999px', padding: '3px 12px',
-                      fontSize: '8px', fontWeight: 800, letterSpacing: '0.18em',
+                      fontSize: '11px', fontWeight: 800, letterSpacing: '0.14em',
                       color: isElite ? '#0a0800' : '#fff',
                       whiteSpace: 'nowrap', fontFamily: 'var(--font-plex-mono,IBM Plex Mono,monospace)',
                       boxShadow: isElite ? '0 0 14px rgba(251,191,36,0.50)' : undefined,
                     }}>{plan.badge}</div>
                   )}
                   {/* Tier label */}
-                  <div style={{ fontSize: '9px', fontWeight: 700, letterSpacing: '0.18em', color: plan.labelColor, fontFamily: 'var(--font-plex-mono,IBM Plex Mono,monospace)', marginBottom: '7px' }}>{plan.label}</div>
+                  <div style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '0.18em', color: plan.labelColor, fontFamily: 'var(--font-inter, Inter, sans-serif)', marginBottom: '7px' }}>{plan.label}</div>
                   {/* Price */}
                   <div style={{
                     fontSize: isElite ? 'clamp(34px,3.8vw,48px)' : 'clamp(30px,3.2vw,42px)',
@@ -1536,11 +1532,11 @@ export default function HomePage() {
                     ...(isElite ? { background: 'linear-gradient(135deg,#fbbf24 0%,#fff 60%,#fbbf24 100%)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent', backgroundClip: 'text' } : { color: '#fff' }),
                   }}>{plan.price}</div>
                   {/* Billing */}
-                  <div style={{ fontSize: '9px', color: 'rgba(255,255,255,0.30)', marginBottom: '12px', fontFamily: 'var(--font-plex-mono,IBM Plex Mono,monospace)' }}>{plan.billing}</div>
+                  <div style={{ fontSize: '13px', color: 'rgba(255,255,255,0.45)', marginBottom: '12px', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{plan.billing}</div>
                   {/* Engine badge */}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '5px', marginBottom: '12px' }}>
                     <div style={{ width: '4px', height: '4px', borderRadius: '50%', background: plan.engineColor, flexShrink: 0, boxShadow: isElite ? '0 0 5px rgba(251,191,36,0.80)' : undefined }} />
-                    <span style={{ fontSize: '7px', fontWeight: 700, letterSpacing: '0.16em', color: plan.engineColor, fontFamily: 'var(--font-plex-mono,IBM Plex Mono,monospace)' }}>{plan.engine}</span>
+                    <span style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '0.12em', color: plan.engineColor, fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>{plan.engine}</span>
                   </div>
                   {/* Divider */}
                   <div style={{ height: '1px', background: isElite ? 'rgba(251,191,36,0.15)' : 'rgba(255,255,255,0.07)', marginBottom: '14px' }} />
@@ -1548,14 +1544,14 @@ export default function HomePage() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '16px', flex: 1 }}>
                     {plan.sections.map(sec => (
                       <div key={sec.title}>
-                        <div style={{ fontSize: '7px', fontWeight: 700, letterSpacing: '0.16em', color: secColor[plan.id], fontFamily: 'var(--font-plex-mono,IBM Plex Mono,monospace)', textTransform: 'uppercase', marginBottom: '5px' }}>{sec.title}</div>
+                        <div style={{ fontSize: '12px', fontWeight: 700, letterSpacing: '0.12em', color: secColor[plan.id], fontFamily: 'var(--font-inter, Inter, sans-serif)', textTransform: 'uppercase', marginBottom: '5px' }}>{sec.title}</div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
                           {sec.items.map(item => {
                             const isNo = item.startsWith('No ')
                             return (
                               <div key={item} style={{ display: 'flex', alignItems: 'flex-start', gap: '7px' }}>
-                                <span style={{ fontSize: '9px', flexShrink: 0, marginTop: '1px', color: isNo ? 'rgba(255,255,255,0.18)' : checkColor[plan.id], lineHeight: 1.2 }}>{isNo ? '✕' : '✓'}</span>
-                                <span style={{ fontSize: '11px', lineHeight: 1.45, color: isNo ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.72)' }}>{item}</span>
+                                <span style={{ fontSize: '13px', flexShrink: 0, marginTop: '1px', color: isNo ? 'rgba(255,255,255,0.18)' : checkColor[plan.id], lineHeight: 1.2 }}>{isNo ? '✕' : '✓'}</span>
+                                <span style={{ fontSize: '14px', lineHeight: 1.5, color: isNo ? 'rgba(255,255,255,0.28)' : 'rgba(255,255,255,0.72)' }}>{item}</span>
                               </div>
                             )
                           })}
@@ -1567,11 +1563,11 @@ export default function HomePage() {
                   {isElite && (
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', background: 'rgba(251,191,36,0.07)', border: '1px solid rgba(251,191,36,0.18)', borderRadius: '10px', padding: '8px 12px', marginBottom: '12px' }}>
                       <span style={{ fontSize: '13px', flexShrink: 0 }}>⭐</span>
-                      <span style={{ fontSize: '11px', fontWeight: 600, color: 'rgba(251,191,36,0.85)', lineHeight: 1.4 }}>Everything in Pro, plus 300 Clark prompts per day and faster whale-alert sync.</span>
+                      <span style={{ fontSize: '13px', fontWeight: 600, color: 'rgba(251,191,36,0.85)', lineHeight: 1.4 }}>Everything in Pro, plus the highest Clark and scan limits.</span>
                     </div>
                   )}
                   {/* CTA */}
-                  <Link href="/pricing" className={`cta-${plan.ctaStyle}`} style={{ display: 'block', textAlign: 'center', padding: isElite ? '10px 16px' : '9px 14px', borderRadius: '8px', fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase', textDecoration: 'none', cursor: 'pointer' }}>{plan.cta}</Link>
+                  <Link href="/pricing" className={`cta-${plan.ctaStyle}`} style={{ display: 'block', textAlign: 'center', padding: isElite ? '10px 16px' : '9px 14px', borderRadius: '8px', fontSize: '13px', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', textDecoration: 'none', cursor: 'pointer' }}>{plan.cta}</Link>
                 </div></Reveal>
               )
             })}

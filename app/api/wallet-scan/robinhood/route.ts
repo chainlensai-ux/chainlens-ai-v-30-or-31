@@ -38,7 +38,7 @@ export async function GET(req: Request): Promise<Response> {
 
   const plan = await getPlan(req)
   if (!canAccessFeature(plan, 'wallet-scanner')) {
-    return NextResponse.json({ error: { message: 'Wallet Scanner requires a Pro or Elite plan.', category: 'plan' } }, { status: 403 })
+    return NextResponse.json({ error: { message: 'Wallet Scanner is not available on this plan.', category: 'plan' } }, { status: 403 })
   }
 
   const fetchImpl: typeof fetch = fetch

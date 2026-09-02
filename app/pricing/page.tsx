@@ -7,118 +7,7 @@ import { supabase } from '@/lib/supabaseClient'
 import { peekCachedPlan } from '@/lib/usePlan'
 import { AFFILIATE_REF_KEY, isValidReferralCode, normalizeReferralCode, readReferralCodeFromCookie } from '@/lib/affiliate/referral'
 import type { UserPlan } from '@/lib/planFeatures'
-
-type PlanId = 'free' | 'pro' | 'elite'
-
-type Plan = {
-  id: PlanId
-  label: string
-  price: string
-  subtext: string
-  sectionTitle: string
-  features: string[]
-  note?: string
-  badge?: string
-  ctaClass: string
-}
-
-const plans: Plan[] = [
-  {
-    id: 'free',
-    label: 'FREE',
-    price: '$0',
-    subtext: 'forever free · no card required',
-    sectionTitle: 'WHAT\'S INCLUDED',
-    badge: 'CORTEX LITE',
-    features: [
-      'Token Scanner — basic market data and liquidity depth',
-      'Clark AI — 5 prompts per day',
-      'No AI token verdict / risk score',
-      'No Wallet Scanner',
-      'No Liquidity Safety',
-      'No Dev Wallet Detector',
-      'No Pump Alerts',
-      'No Whale Alerts',
-      'No Base Radar',
-      'No Portfolio',
-    ],
-    ctaClass: 'cta-free',
-  },
-  {
-    id: 'pro',
-    label: 'PRO',
-    price: '$30',
-    subtext: 'per month',
-    sectionTitle: 'WHAT\'S INCLUDED',
-    badge: 'CORTEX STANDARD',
-    features: [
-      'Token Scanner — full token, liquidity, LP, holder, security, tax, and dev-risk analysis',
-      'Liquidity Safety',
-      'Wallet Scanner',
-      'Dev Wallet Detector',
-      'Pump Alerts',
-      'Whale Alerts',
-      'Base Radar',
-      'Portfolio',
-      'Clark AI — 50 prompts per day',
-    ],
-    ctaClass: 'cta-pro',
-  },
-  {
-    id: 'elite',
-    label: 'ELITE',
-    price: '$60',
-    subtext: 'per month',
-    sectionTitle: 'ELITE ADDITIONS',
-    badge: 'CORTEX FULL INTELLIGENCE',
-    features: [
-      'Everything in Pro',
-      'Clark AI — 300 prompts per day',
-      'Faster whale-alert sync than Pro',
-    ],
-    ctaClass: 'cta-elite',
-  },
-]
-
-// Simple line icons, DISCLOSED (pricing page professional polish task): inline SVGs matching this
-// codebase's own established icon convention (Navbar.tsx/FeatureBar.tsx use dozens of small inline
-// SVGs already) — replaces the previous emoji icons in the "What's included" panel with something
-// that reads as a professional product feature list rather than a marketing sidebar.
-function IcChain() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M9 17H7a5 5 0 0 1 0-10h2" /><path d="M15 7h2a5 5 0 1 1 0 10h-2" /><line x1="8" y1="12" x2="16" y2="12" />
-    </svg>
-  )
-}
-function IcScan() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-    </svg>
-  )
-}
-function IcWhale() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" />
-    </svg>
-  )
-}
-function IcClark() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9z" /><path d="M19 3v4m2-2h-4" />
-    </svg>
-  )
-}
-
-const PRODUCT_PROOF = [
-  { Icon: IcChain, label: 'Base-native terminal' },
-  { Icon: IcScan, label: 'Token Scanner' },
-  { Icon: IcClark, label: 'Clark AI' },
-  { Icon: IcWhale, label: 'Whale + pump alerts on Pro and Elite' },
-]
+import { pricingPlans, PRICING_PROOF } from '@/lib/pricingPlans'
 
 const NAV_LINKS = [
   { label: 'Terminal', href: '/terminal' },
@@ -132,10 +21,10 @@ export default function PricingPage() {
   // CACHED-FIRST INIT (smoothness audit): start from the last verified cached plan instead of
   // a guessed Free. Static plan cards render immediately regardless of plan state; only the
   // per-user "Current plan" badge waits for confirmation.
-  const [userPlan, setUserPlan] = useState<UserPlan>(() => peekCachedPlan() ?? ('free' as UserPlan))
-  const [sessionReady, setSessionReady] = useState(false)
-  const [planReady, setPlanReady] = useState(false)
-  const [checkoutLoading, setCheckoutLoading] = useState<PlanId | null>(null)
+  const [userPlan, setUserPlan] = useState<UserPlan | null>(() => peekCachedPlan())
+  const [, setSessionReady] = useState(false)
+  const [planReady, setPlanReady] = useState(() => peekCachedPlan() != null)
+  const [checkoutLoading, setCheckoutLoading] = useState<UserPlan | null>(null)
   const [checkoutError, setCheckoutError] = useState<string | null>(null)
   const [awaitingPayPalActivation, setAwaitingPayPalActivation] = useState(false)
   const [awaitingCryptoActivation, setAwaitingCryptoActivation] = useState(false)
@@ -158,11 +47,12 @@ export default function PricingPage() {
     supabase.auth.getSession().then(async ({ data }) => {
       setSessionReady(true)
       const token = data.session?.access_token
-      if (!token) { setPlanReady(true); return }
+      if (!token) { setUserPlan('free'); setPlanReady(true); return }
       const p = await fetchCurrentPlan(token)
-      // CACHED-FIRST (smoothness audit): only overwrite the displayed plan when the backend
-      // confirms a different one — never blank it to Free while pending or on error.
+      // CACHED-FIRST: only overwrite the displayed plan when the backend confirms
+      // a different one — never blank it to Free while pending or on error.
       if (p) setUserPlan(p)
+      else if (peekCachedPlan() == null) setUserPlan('free')
       setPlanReady(true)
     })
   }, [])
@@ -317,14 +207,14 @@ export default function PricingPage() {
   }
 
   return (
-    <div style={{ minHeight: '100vh', background: '#03060f', color: '#f8fafc', position: 'relative', overflow: 'hidden' }}>
+    <div style={{ minHeight: '100vh', background: '#03060f', color: '#f8fafc', position: 'relative', overflowX: 'hidden', overflowY: 'auto', fontFamily: 'var(--font-inter, Inter, sans-serif)' }}>
       <style>{`
         /* PROFESSIONAL POLISH PASS, DISCLOSED (pricing page task): calmer glass cards, static
            (never animated) shadows, softer badge capsules instead of floating glowing ribbons, and
            a toned-down Elite treatment (dark glass + a restrained gold accent, not a bright yellow
            gradient button) — same three plans/prices/CTAs/payment routes, purely visual. */
         .glass{background:linear-gradient(170deg,rgba(9,13,24,.90),rgba(5,8,17,.86));backdrop-filter:blur(12px);border:1px solid rgba(148,163,184,.14);border-radius:16px}
-        .cta{display:block;width:100%;text-align:center;border-radius:10px;padding:11px 14px;font-weight:700;font-size:12px;letter-spacing:.07em;text-decoration:none;transition:.18s transform,.18s box-shadow,.18s opacity,.18s border-color,.18s background;cursor:pointer;border:none}
+        .cta{display:block;width:100%;text-align:center;border-radius:10px;padding:12px 14px;font-weight:700;font-size:13px;letter-spacing:.06em;text-decoration:none;transition:.18s transform,.18s box-shadow,.18s opacity,.18s border-color,.18s background;cursor:pointer;border:none;font-family:var(--font-inter, Inter, sans-serif)}
         .cta-free{border:1px solid rgba(148,163,184,.22) !important;color:#e2e8f0;background:rgba(255,255,255,.03)}
         .cta-free:hover{border-color:rgba(103,232,249,.38) !important;background:rgba(103,232,249,.05) !important;transform:translateY(-1px)}
         .cta-pro{color:#fff;background:linear-gradient(98deg,#6d28d9,#8b5cf6,#0891b2);box-shadow:0 8px 22px rgba(139,92,246,.28)}
@@ -340,7 +230,7 @@ export default function PricingPage() {
         .pricing-card-elite:hover{border-color:rgba(212,160,23,.42) !important}
 
         /* Tier badge capsule — small, inline, near the header (replaces the old floating ribbon) */
-        .plan-badge{display:inline-flex;align-items:center;border-radius:999px;padding:3px 9px;font-size:9px;font-weight:800;letter-spacing:.10em;white-space:nowrap}
+        .plan-badge{display:inline-flex;align-items:center;border-radius:999px;padding:4px 10px;font-size:11px;font-weight:800;letter-spacing:.08em;white-space:nowrap}
         .plan-badge-free{color:rgba(103,232,249,.85);background:rgba(103,232,249,.07);border:1px solid rgba(103,232,249,.20)}
         .plan-badge-pro{color:rgba(196,181,253,.90);background:rgba(139,92,246,.09);border:1px solid rgba(139,92,246,.24)}
         .plan-badge-elite{color:#e8c874;background:rgba(212,160,23,.08);border:1px solid rgba(212,160,23,.26)}
@@ -353,9 +243,12 @@ export default function PricingPage() {
         .energy-right{position:absolute;right:-80px;top:120px;width:480px;height:360px;opacity:.10;background:repeating-linear-gradient(135deg,rgba(217,70,239,.45) 0 1px,transparent 1px 14px);filter:blur(1.2px)}
         .energy-left{position:absolute;left:-130px;top:120px;width:420px;height:340px;opacity:.08;background:radial-gradient(circle at 25% 50%,rgba(56,189,248,.28),transparent 65%)}
 
-        /* Layout responsive */
-        @media(max-width:1250px){.hero{grid-template-columns:1fr !important}.plan-grid{grid-template-columns:repeat(2,minmax(0,1fr)) !important}.stats{max-width:340px}.intro{min-height:auto !important}}
-        @media(max-width:860px){.plan-grid{grid-template-columns:1fr !important}.pricing-card:hover{transform:none !important}}
+        /* Layout — wrap before overlapping; never a cramped 3-up squeeze */
+        .hero{display:flex;flex-direction:column;gap:28px}
+        .plan-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:20px;width:100%;align-items:stretch}
+        .pricing-card{min-width:0;overflow:hidden}
+        @media(max-width:1250px){.hero{grid-template-columns:1fr !important}.intro{min-height:auto !important}}
+        @media(max-width:860px){.plan-grid{grid-template-columns:minmax(0,1fr) !important}.pricing-card:hover{transform:none !important}}
         @media(max-width:960px){.pf-footer-grid{grid-template-columns:1fr 1fr !important;gap:36px !important}}
         @media(max-width:560px){.pf-footer-grid{grid-template-columns:1fr !important}}
 
@@ -363,13 +256,13 @@ export default function PricingPage() {
            more vertical room than before (padding 10→12) so the two options read as clean payment
            choices rather than a cramped strip. */
         .cta-split-row{display:flex;gap:9px}
-        .cta-box{flex:1;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border-radius:10px;padding:10px 8px;font-weight:700;font-size:11px;letter-spacing:.04em;text-decoration:none;text-align:center;cursor:pointer;transition:.18s transform,.18s border-color,.18s background,.18s opacity;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.025);color:#e2e8f0}
-        .cta-box small{font-weight:600;font-size:9px;letter-spacing:.02em;color:#94a3b8;text-transform:none}
+        .cta-box{flex:1;position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;border-radius:10px;padding:12px 8px;font-weight:700;font-size:13px;letter-spacing:.04em;text-decoration:none;text-align:center;cursor:pointer;transition:.18s transform,.18s border-color,.18s background,.18s opacity;border:1px solid rgba(255,255,255,.09);background:rgba(255,255,255,.025);color:#e2e8f0;font-family:var(--font-inter, Inter, sans-serif)}
+        .cta-box small{font-weight:600;font-size:11px;letter-spacing:.02em;color:#94a3b8;text-transform:none}
         .cta-box-crypto{border-color:rgba(45,212,191,.32);background:rgba(45,212,191,.03)}
         .cta-box-crypto:hover:not(:disabled){border-color:rgba(45,212,191,.55) !important;background:rgba(45,212,191,.06) !important;transform:translateY(-1px)}
         .cta-box-card{border-color:rgba(148,163,184,.18)}
         .cta-box-card:hover{border-color:rgba(148,163,184,.32) !important;background:rgba(148,163,184,.04) !important;transform:translateY(-1px)}
-        .cta-box-tag{position:absolute;top:-8px;right:8px;background:#0a1420;border:1px solid rgba(45,212,191,.40);color:#5eead4;font-size:8px;font-weight:800;letter-spacing:.06em;border-radius:999px;padding:1px 6px;white-space:nowrap}
+        .cta-box-tag{position:absolute;top:-8px;right:8px;background:#0a1420;border:1px solid rgba(45,212,191,.40);color:#5eead4;font-size:11px;font-weight:800;letter-spacing:.04em;border-radius:999px;padding:2px 7px;white-space:nowrap}
 
         @media (prefers-reduced-motion: reduce) {
           .pricing-card, .cta, .cta-box { transition: none !important; }
@@ -405,12 +298,12 @@ export default function PricingPage() {
           content, copy, or card proportions relative to each other. */}
       <div style={{ position:'relative', zIndex:2, maxWidth:1680, margin:'0 auto', padding:'14px 22px 40px' }}>
 
-        <section className='hero' style={{ display:'grid', gridTemplateColumns:'1.02fr 2.65fr .72fr', gap:12, alignItems:'stretch' }}>
+        <section className='hero'>
 
           {/* Left intro — top padding matches the pricing-card grid's own paddingTop so the
               "One price. Worldwide." headline starts at the same vertical line as the cards
               instead of floating slightly above them. */}
-          <div className='intro' style={{ padding:'10px 12px 8px 6px', minHeight:416 }}>
+          <div className='intro' style={{ padding:'10px 4px 8px' }}>
             <div style={{ color:'#67e8f9', fontSize:11, letterSpacing:'.2em', marginBottom:10 }}>• PRICING</div>
             <div style={{ fontSize:'clamp(36px,3.2vw,60px)', lineHeight:.95, fontWeight:900 }}>
               ONE PRICE.<br />
@@ -426,8 +319,8 @@ export default function PricingPage() {
           </div>
 
           {/* Pricing cards */}
-          <div className='plan-grid' style={{ display:'grid', gridTemplateColumns:'repeat(3,minmax(0,1fr))', gap:14, paddingTop:10 }}>
-            {plans.map((plan) => {
+          <div className='plan-grid'>
+            {pricingPlans.map((plan) => {
               const isCurrent = userPlan === plan.id
               const isPaid = plan.id === 'pro' || plan.id === 'elite'
               const isLoading = checkoutLoading === plan.id
@@ -454,8 +347,8 @@ export default function PricingPage() {
                   key={plan.id}
                   className={`glass pricing-card pricing-card-${plan.id}`}
                   style={{
-                    padding:'17px 20px 15px',
-                    minHeight:416,
+                    padding:'22px 22px 18px',
+                    minHeight:0,
                     display:'flex',
                     flexDirection:'column',
                     borderColor,
@@ -487,7 +380,7 @@ export default function PricingPage() {
                     const excluded = plan.features.filter((f) => f.startsWith('No '))
                     const rowGap = plan.features.length <= 7 ? 10 : plan.features.length <= 8 ? 8 : 7
                     const row = (f: string, no: boolean) => (
-                      <div key={f} style={{ display:'flex', gap: no ? 7 : 9, alignItems:'flex-start', color: no ? '#4a5768' : '#cbd5e1', fontSize: no ? 11.5 : 12.5, lineHeight: no ? 1.35 : 1.45 }}>
+                      <div key={f} style={{ display:'flex', gap: no ? 7 : 9, alignItems:'flex-start', color: no ? '#4a5768' : '#cbd5e1', fontSize: 14, lineHeight: 1.5 }}>
                         <span style={{
                           color: no ? '#3a4452' : plan.id === 'elite' ? '#c9a545' : plan.id === 'pro' ? '#a78bfa' : '#67e8f9',
                           flexShrink:0, fontSize:11, marginTop:1,
@@ -514,7 +407,7 @@ export default function PricingPage() {
 
                   {plan.id === 'elite' && (
                     <div style={{ border:'1px solid rgba(212,160,23,.20)', background:'rgba(212,160,23,.05)', color:'#d9be82', borderRadius:10, padding:'8px 10px', fontSize:11.5, lineHeight:1.4, marginTop:10 }}>
-                      Everything in Pro, plus 300 Clark prompts per day and faster whale-alert sync.
+                      Everything in Pro, plus the highest Clark and scan limits.
                     </div>
                   )}
 
@@ -522,11 +415,7 @@ export default function PricingPage() {
                       them (paid plans only), so Crypto/PayPal read as "how to unlock what's above"
                       rather than a separate, detached block. DISCLOSED (final pricing polish task). */}
                   <div style={{ marginTop:10, paddingTop: isPaid ? 10 : 0, borderTop: isPaid ? '1px solid rgba(148,163,184,.08)' : 'none' }}>
-                    {!planReady ? (
-                      <span className={`cta ${plan.ctaClass}`} style={{ opacity:0.25, cursor:'default', pointerEvents:'none', display:'block' }}>
-                        &nbsp;
-                      </span>
-                    ) : isCurrent ? (
+                    {isCurrent ? (
                       <span className={`cta ${plan.ctaClass}`} style={{ opacity:0.85, cursor:'default', pointerEvents:'none', display:'block' }}>
                         ✓ Current plan
                       </span>
@@ -573,21 +462,13 @@ export default function PricingPage() {
               polish task): line-icon rows with consistent spacing/dividers instead of large emoji
               and a loud cyan-glow border, matching the calmer treatment used across the rest of
               the page. */}
-          <aside className='glass stats' style={{ padding:'15px 16px', minHeight:416, borderColor:'rgba(148,163,184,.14)', boxShadow:'none', display:'flex', flexDirection:'column' }}>
-            <div style={{ color:'#94a3b8', fontSize:10, letterSpacing:'.15em', fontWeight:700 }}>WHAT&apos;S INCLUDED</div>
-            <div style={{ color:'#4a5768', fontSize:11, marginTop:4, lineHeight:1.5 }}>Core platform access</div>
-            {PRODUCT_PROOF.map(({ Icon, label }, i) => (
-              <div key={label} style={{ display:'flex', alignItems:'center', gap:11, borderTop: '1px solid rgba(148,163,184,.09)', padding: i === 0 ? '12px 0' : '12px 0' }}>
-                <span style={{ display:'flex', alignItems:'center', justifyContent:'center', width:30, height:30, flexShrink:0, borderRadius:8, background:'rgba(103,232,249,.06)', border:'1px solid rgba(103,232,249,.16)', color:'#67e8f9' }}>
-                  <Icon />
-                </span>
-                <div style={{ color:'#dbeafe', fontSize:12.5, fontWeight:600, lineHeight:1.4 }}>{label}</div>
+          <aside className='glass stats' style={{ padding:'18px 20px', borderColor:'rgba(148,163,184,.14)', boxShadow:'none', display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))', gap:12 }}>
+            {PRICING_PROOF.map((label) => (
+              <div key={label} style={{ display:'flex', alignItems:'flex-start', gap:10, padding:'8px 4px' }}>
+                <span style={{ color:'#67e8f9', flexShrink:0, marginTop:2 }}>✓</span>
+                <div style={{ color:'#dbeafe', fontSize:14, fontWeight:600, lineHeight:1.45 }}>{label}</div>
               </div>
             ))}
-            <div style={{ flex:1 }} />
-            <div style={{ borderTop:'1px solid rgba(148,163,184,.09)', paddingTop:10, marginTop:4, color:'#3f4a58', fontSize:11, lineHeight:1.6, letterSpacing:'.02em' }}>
-              Powered by the same CORTEX engine on every plan.
-            </div>
           </aside>
         </section>
 
@@ -656,7 +537,7 @@ export default function PricingPage() {
               </div>
               <p style={{ color:'#475569', fontSize:13, lineHeight:1.72, maxWidth:300, margin:0 }}>
                 Onchain intelligence for Base traders.<br />
-                Scan wallets, track whales, detect pumps, and get AI-powered analysis from Clark — all in one terminal.
+                On-chain analytics for wallets, tokens, liquidity, and risk — with Clark reading the same scanner evidence.
               </p>
               <div style={{ marginTop:20, display:'flex', gap:8, flexWrap:'wrap' }}>
                 {['BUILT ON BASE', 'POWERED BY CORTEX'].map((tag) => (

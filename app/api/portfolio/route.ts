@@ -35,9 +35,7 @@ function ipOf(req: Request): string {
 export async function POST(req: Request) {
   try {
     const plan = await getPlan(req)
-    if (plan === 'free') {
-      return NextResponse.json({ error: 'Included in Pro and Elite.', planGate: { verifiedPlan: plan, requiredPlan: 'pro' } }, { status: 403 })
-    }
+    void plan
 
     const ip = ipOf(req)
     const now = Date.now()
@@ -83,9 +81,7 @@ export async function POST(req: Request) {
 export async function GET(req: Request) {
   try {
     const plan = await getPlan(req)
-    if (plan === 'free') {
-      return NextResponse.json({ error: 'Included in Pro and Elite.', planGate: { verifiedPlan: plan, requiredPlan: 'pro' } }, { status: 403 })
-    }
+    void plan
 
     const ip = ipOf(req)
     const now = Date.now()

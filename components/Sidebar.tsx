@@ -117,11 +117,11 @@ type Item = {
 
 const FEATURES: Item[] = [
   { key: 'token-scanner',     label: 'Token Scanner',       icon: <IcTokenScanner />,  href: '/terminal/token-scanner'  },
-  { key: 'wallet-scanner',    label: 'Wallet Scanner',      icon: <IcWalletScanner />, href: '/terminal/wallet-scanner', tier: 'pro'   },
+  { key: 'wallet-scanner',    label: 'Wallet Scanner',      icon: <IcWalletScanner />, href: '/terminal/wallet-scanner'  },
   { key: 'whale-alerts',      label: 'Whale Alerts',        icon: <IcWhaleAlerts />,   href: '/terminal/whale-alerts',   tier: 'pro'   },
   { key: 'pump-alerts',       label: 'Pump Alerts',         icon: <IcPumpAlerts />,    href: '/terminal/pump-alerts',    tier: 'pro'   },
   { key: 'base-radar',        label: 'Base Radar',          icon: <IcBaseRadar />,     href: '/terminal/base-radar',     tier: 'pro'   },
-  { key: 'clark-ai',          label: 'Clark AI',            icon: <IcClarkAI />,       href: '/terminal/clark-ai',       tier: 'elite' },
+  { key: 'clark-ai',          label: 'Clark AI',            icon: <IcClarkAI />,       href: '/terminal/clark-ai'        },
 ]
 
 const SECONDARY: Item[] = [

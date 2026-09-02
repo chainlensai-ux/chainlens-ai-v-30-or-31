@@ -35,6 +35,7 @@ import {
 } from "@/lib/server/clarkLiquidityCheck";
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { getVerifiedUserPlan } from '@/lib/supabase/userSettings'
+import { CLARK_DAILY_BY_PLAN, clarkPlanAllows } from '@/lib/pricingPlans'
 import {
   resolveClarkIntent,
   classifyClarkPrompt,
@@ -187,7 +188,6 @@ const CLARK_CACHE_TTL_MS = 90 * 1000
 const clarkCache = new Map<string, { exp: number; payload: unknown }>()
 const clarkRateDaily = new Map<string, { count: number; resetAt: number }>()
 const clarkRateMinute = new Map<string, { count: number; resetAt: number }>()
-const CLARK_DAILY_BY_PLAN: Record<string, number> = { free: 5, pro: 50, elite: 300, unauth: 3 }
 const CLARK_MINUTE_BY_PLAN: Record<string, number> = { free: 2, pro: 5, elite: 5, unauth: 1 }
 const CLARK_LOW_COST_MINUTE_BY_PLAN: Record<string, number> = { free: 15, pro: 20, elite: 20, unauth: 8 }
 const clarkRateLowCostMinute = new Map<string, { count: number; resetAt: number }>()
@@ -224,20 +224,7 @@ let clarkInternalCtx: { authToken?: string; verifiedPlan?: 'free' | 'pro' | 'eli
 
 // Plan feature access matrix
 function planAllows(plan: string | undefined, feature: 'token_full_report' | 'wallet_scan' | 'liquidity_check' | 'dev_wallet' | 'whale_alerts' | 'pump_alerts' | 'base_radar_full' | 'base_market_preview'): boolean {
-  const p = plan ?? 'free';
-  if (p === 'elite' || p === 'pro') return true; // pro/elite get everything
-  // free plan
-  switch (feature) {
-    case 'base_market_preview': return true; // limited preview allowed
-    case 'token_full_report': return false;
-    case 'wallet_scan': return false;
-    case 'liquidity_check': return false;
-    case 'dev_wallet': return false;
-    case 'whale_alerts': return false;
-    case 'pump_alerts': return false;
-    case 'base_radar_full': return false;
-    default: return false;
-  }
+  return clarkPlanAllows(plan, feature)
 }
 
 function buildLockedResponse(feature: string, freeAlternative: string): string {
@@ -6205,10 +6192,6 @@ async function executeClarkToolPlan(input: {
       }
 
       if (tool.name === "wallet_get_snapshot") {
-        if (input.verifiedPlan === "free") {
-          evidence.walletSnapshot = { ok: false, address: "", totalValue: 0, holdingsTop10: [], hiddenHoldingsCount: 0, dustOrUnpricedHidden: false, stablecoinExposureUsd: 0, tokenCount: 0, txCount: 0, walletAgeDays: 0, dataQuality: "Limited", errorSafeMessage: "This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports." }
-          continue
-        }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
         // /api/wallet was deleted (V1 engine migration) — no longer calling it; this call always
@@ -6241,10 +6224,6 @@ async function executeClarkToolPlan(input: {
       }
 
       if (tool.name === "dev_wallet_analyze") {
-        if (input.verifiedPlan === "free") {
-          evidence.devWallet = { ok: false, deployerAddress: null, linkedWallets: 0, confidence: "Low", verdict: "UNKNOWN", warnings: ["This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports."], errorSafeMessage: "This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports." }
-          continue
-        }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
         // CHAIN-STRICT DEPLOYER LOOKUP (Clark deployer audit): /api/dev-wallet defaults to
@@ -6342,10 +6321,6 @@ async function executeClarkToolPlan(input: {
       }
 
       if (tool.name === "liquidity_analyze") {
-        if (input.verifiedPlan === "free") {
-          evidence.liquidity = { ok: false, token: null, liquidityUsd: null, riskTier: null, stabilityScore: null, volume24h: null, primaryPool: null, warnings: ["This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports."], errorSafeMessage: "This is a Pro feature. Upgrade to Pro to run wallet/dev/liquidity reports." }
-          continue
-        }
         const addrArg = String(tool.args.address ?? "").trim();
         const address = addrArg || String(resolvedAddress ?? "").trim();
         const liqRes = await callInternalApi(input.origin, "/api/liquidity-safety", { contract: address }, input.authHeader ?? undefined, input.verifiedPlan);

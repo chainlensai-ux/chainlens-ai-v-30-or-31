@@ -82,7 +82,7 @@ check('Navbar hydrates cached plan + avatar color synchronously on mount', () =>
 })
 
 check('pricing page uses cached-first user plan', () => {
-  if (!pricingSrc.includes('useState<UserPlan>(() => peekCachedPlan()')) throw new Error('pricing must init from cache')
+  if (!pricingSrc.includes('useState<UserPlan | null>(() => peekCachedPlan()') && !pricingSrc.includes("useState<UserPlan>(() => peekCachedPlan()")) throw new Error('pricing must init from cache')
   if (!pricingSrc.includes('if (p) setUserPlan(p)')) throw new Error('confirmed-plan overwrite missing')
 })
 
