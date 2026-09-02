@@ -36,6 +36,7 @@ import {
   buildTradingSimulationUi,
   classifyTradingSimulation,
   type TradingSimulationAudit,
+  type RobinhoodTradingSimulationAudit,
 } from '@/lib/tradingSimulation'
 import {
   normalizeRiskScore,
@@ -249,6 +250,7 @@ type ScanResult = {
     finalReason?: string | null
   } | null
   tradingSimulationAudit?: TradingSimulationAudit | null
+  robinhoodTradingSimulationAudit?: RobinhoodTradingSimulationAudit | null
   noActivePools?: boolean
   primaryDexName?: string | null
   marketDataSource?: 'primary' | 'fallback' | 'none'
@@ -1716,7 +1718,7 @@ function deriveVerdictInput(result: ScanResult): VerdictInput {
   const hp = result.honeypot
   const simUi = tradingSimUiFor(result)
   const baseChips: SecurityChip[] = [
-    { label: 'Honeypot', displayLabel: simUi.honeypotValue, style: simUi.honeypotValue === 'YES' ? pillDanger() : simUi.honeypotValue === 'NO' ? pillSafe() : pillMuted(), source: 'honeypot' },
+    { label: 'Honeypot', displayLabel: simUi.honeypotValue, style: simUi.honeypotValue === 'YES' || simUi.honeypotValue === 'Blocked' ? pillDanger() : simUi.honeypotValue === 'NO' || simUi.honeypotValue === 'Sellable' ? pillSafe() : pillMuted(), source: 'honeypot' },
     { label: 'Buy Tax', displayLabel: simUi.showTaxRows ? simUi.buyTaxValue : simUi.statusLabel, style: hp?.buyTax != null && simUi.showTaxRows ? taxPct(hp.buyTax) : pillMuted(), source: 'honeypot' },
     { label: 'Sell Tax', displayLabel: simUi.showTaxRows ? simUi.sellTaxValue : simUi.statusLabel, style: hp?.sellTax != null && simUi.showTaxRows ? taxPct(hp.sellTax) : pillMuted(), source: 'honeypot' },
     { label: 'Honeypot', displayLabel: String(gp?.is_honeypot ?? 'N/A'), style: String(gp?.is_honeypot ?? '') === '1' ? pillDanger() : pillSafe(), source: 'contract' },
@@ -3571,18 +3573,25 @@ function tradingSimUiFor(result: ScanResult) {
     : chainSlug === 'base' ? 8453
     : chainSlug === 'solana' ? null
     : null
+  const poolAddress = result.robinhoodTradingSimulationAudit?.poolAddress
+    ?? result.lpControllerIntel?.poolAddress
+    ?? result.lpControl?.primaryMarketPool
+    ?? null
   return buildTradingSimulationUi(classifyTradingSimulation({
     chainSlug,
     chainId,
     tokenAddress: result.contract ?? '',
+    poolAddress,
+    providerSelected: chainSlug === 'robinhood' ? 'chainlens_robinhood_sim' : undefined,
     timedOut: result.honeypot?.honeypotStatus === 'timeout',
     honeypotResult: result.honeypot?.isHoneypot ?? null,
     buyTax: result.honeypot?.buyTax ?? null,
     sellTax: result.honeypot?.sellTax ?? null,
+    sellable: result.robinhoodTradingSimulationAudit?.sellable ?? null,
     simulationSuccess: result.honeypot?.simulationSuccess ?? null,
-    honeypotStatus: result.honeypot?.honeypotStatus ?? result.honeypot?.finalStatus ?? null,
+    honeypotStatus: result.robinhoodTradingSimulationAudit?.finalStatus ?? result.honeypot?.honeypotStatus ?? result.honeypot?.finalStatus ?? null,
     honeypotReason: result.honeypot?.honeypotReason ?? result.honeypot?.finalReason ?? null,
-    requestAttempted: result.honeypot != null && chainSlug !== 'robinhood' && chainSlug !== 'solana',
+    requestAttempted: result.honeypot != null && chainSlug !== 'solana',
   }))
 }
 
@@ -8821,13 +8830,13 @@ export default function TerminalTokenScanner() {
                     const engine = result.riskEngine
                     const _secSim = result.security?.simulation
                     const simAuditUi = tradingSimUiFor(result)
-                    const sim = _secSim != null ? {
+                    const sim = result.honeypot ?? (_secSim != null ? {
                       isHoneypot: _secSim.honeypot,
                       buyTax: _secSim.buyTax,
                       sellTax: _secSim.sellTax,
                       transferTax: _secSim.transferTax,
                       simulationSuccess: _secSim.simulationSuccess,
-                    } : result.honeypot
+                    } : null)
                     const simVerified = simAuditUi.badge === 'VERIFIED CLEAR'
                     const simRisk = simAuditUi.badge === 'RISK DETECTED'
                     const lpState = result.lpControl?.status ?? 'unavailable_with_reason'
@@ -9028,10 +9037,11 @@ export default function TerminalTokenScanner() {
                             {simAuditUi.showTaxRows ? (
                             <div style={{ display:'grid',gap:'6px' }}>
                               {([
-                                ['Honeypot', simAuditUi.honeypotValue, sim?.isHoneypot?'#f87171':sim?.isHoneypot===false?'#34d399':'#94a3b8'],
-                                ['Buy Tax', simAuditUi.buyTaxValue, sim?.buyTax!=null?(sim.buyTax>8?'#f87171':sim.buyTax>0?'#fbbf24':'#34d399'):'#94a3b8'],
-                                ['Sell Tax', simAuditUi.sellTaxValue, sim?.sellTax!=null?(sim.sellTax>8?'#f87171':sim.sellTax>0?'#fbbf24':'#34d399'):'#94a3b8'],
-                                ...(sim?.transferTax!=null&&sim.transferTax>0 ? [['Transfer Tax',`${sim.transferTax.toFixed(1)}%`,'#fbbf24'] as [string,string,string]] : []),
+                                ['Honeypot', simAuditUi.honeypotValue, simAuditUi.honeypotValue === 'Blocked' || simAuditUi.honeypotValue === 'YES' ? '#f87171' : simAuditUi.honeypotValue === 'Sellable' || simAuditUi.honeypotValue === 'NO' ? '#34d399' : '#94a3b8'],
+                                ['Buy Tax', simAuditUi.buyTaxValue, (result.tradingSimulationAudit?.buyTax ?? sim?.buyTax) != null ? ((result.tradingSimulationAudit?.buyTax ?? sim?.buyTax ?? 0) > 8 ? '#f87171' : (result.tradingSimulationAudit?.buyTax ?? sim?.buyTax ?? 0) > 0 ? '#fbbf24' : '#34d399') : '#94a3b8'],
+                                ['Sell Tax', simAuditUi.sellTaxValue, (result.tradingSimulationAudit?.sellTax ?? sim?.sellTax) != null ? ((result.tradingSimulationAudit?.sellTax ?? sim?.sellTax ?? 0) > 8 ? '#f87171' : (result.tradingSimulationAudit?.sellTax ?? sim?.sellTax ?? 0) > 0 ? '#fbbf24' : '#34d399') : '#94a3b8'],
+                                ...(sim?.transferTax != null && sim.transferTax > 0 ? [['Transfer Tax', `${sim.transferTax.toFixed(1)}%`, '#fbbf24'] as [string, string, string]] : []),
+                                ...(simAuditUi.source ? [['Source', simAuditUi.source, '#67e8f9'] as [string, string, string]] : []),
                               ] as Array<[string,string,string]>).map(([label,val,col])=>(
                                 <div key={label} style={{ display:'flex',justifyContent:'space-between',gap:'8px' }}>
                                   <span style={{ fontSize:'11px',color:'#64748b',fontFamily:'var(--font-plex-mono)' }}>{label}</span>
@@ -9833,6 +9843,14 @@ export default function TerminalTokenScanner() {
                   <p style={stitle}>Trading Simulation</p>
                   <p style={{...sbody,margin:0,color:'#e2e8f0',fontWeight:700}}>{simUi.statusLabel}</p>
                   <p style={{...sbody,margin:'4px 0 0'}}>{simUi.reason}</p>
+                  {simUi.showTaxRows && (
+                    <div style={{display:'grid',gap:'4px',marginTop:'8px'}}>
+                      <p style={{...sbody,margin:0}}>Honeypot: {simUi.honeypotValue}</p>
+                      <p style={{...sbody,margin:0}}>Buy Tax: {simUi.buyTaxValue}</p>
+                      <p style={{...sbody,margin:0}}>Sell Tax: {simUi.sellTaxValue}</p>
+                      {simUi.source && <p style={{...sbody,margin:0}}>Source: {simUi.source}</p>}
+                    </div>
+                  )}
                 </div>
                 {/* Top 2 Positives */}
                 <div style={ss}>

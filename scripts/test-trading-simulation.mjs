@@ -7,15 +7,17 @@ import { readFileSync } from 'node:fs'
 const {
   TRADING_SIMULATION_SUPPORT,
   ROBINHOOD_SIM_CHAIN_ID,
-  ROBINHOOD_SIM_UNSUPPORTED_STATUS,
   ROBINHOOD_SIM_UNSUPPORTED_REASON,
   ROBINHOOD_SIM_UNSUPPORTED_IMPACT,
+  ROBINHOOD_SIM_SOURCE,
+  ROBINHOOD_SIM_TIMEOUT_LABEL,
   SOLANA_SIM_NOT_APPLICABLE_REASON,
   tradingSimulationSupportFor,
   providerSupportsTradingSimulation,
   buildTradingSimulationCacheKey,
   isTradingSimulationCacheHitValid,
   classifyTradingSimulation,
+  classifyFromRobinhoodHoneypotSim,
   buildTradingSimulationUi,
 } = await import('../lib/tradingSimulation.ts')
 
@@ -31,6 +33,7 @@ function check(label, condition) {
 
 const TOKEN = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 const BASE_TOKEN = '0xcccccccccccccccccccccccccccccccccccccccc'
+const POOL = '0xdddddddddddddddddddddddddddddddddddddddd'
 
 // ── 1. Support matrix ───────────────────────────────────────────────────────
 {
@@ -44,17 +47,20 @@ const BASE_TOKEN = '0xcccccccccccccccccccccccccccccccccccccccc'
   check('BNB support uses chainId 56', bnb.chainId === 56 && bnb.honeypotIs === true)
   check('Robinhood chainId is 4663 only', rh.chainId === ROBINHOOD_SIM_CHAIN_ID && ROBINHOOD_SIM_CHAIN_ID === 4663)
   check('Robinhood has no honeypot.is/GoPlus provider', rh.honeypotIs === false && rh.goplus === false)
+  check('Robinhood sim provider is enabled', rh.robinhoodSim === true)
   check('Solana is not applicable', sol.notApplicable === true && sol.honeypotIs === false)
   check('matrix Base/ETH/BNB/Robinhood/Solana keys exist',
     TRADING_SIMULATION_SUPPORT.base.honeypotIs
     && TRADING_SIMULATION_SUPPORT.eth.honeypotIs
     && TRADING_SIMULATION_SUPPORT.bnb.honeypotIs
     && TRADING_SIMULATION_SUPPORT.robinhood.honeypotIs === false
+    && TRADING_SIMULATION_SUPPORT.robinhood.robinhoodSim === true
     && TRADING_SIMULATION_SUPPORT.solana.notApplicable === true)
   check('none provider never supports a chain', providerSupportsTradingSimulation(base, 'none') === false)
+  check('chainlens_robinhood_sim only on Robinhood', providerSupportsTradingSimulation(rh, 'chainlens_robinhood_sim') === true && providerSupportsTradingSimulation(base, 'chainlens_robinhood_sim') === false)
 }
 
-// ── 2. Robinhood unsupported — exact copy, never fake-safe ──────────────────
+// ── 2. Robinhood no-provider fallback — exact copy, never fake-safe ─────────
 {
   const audit = classifyTradingSimulation({
     chainSlug: 'robinhood',
@@ -67,10 +73,9 @@ const BASE_TOKEN = '0xcccccccccccccccccccccccccccccccccccccccc'
   const ui = buildTradingSimulationUi(audit)
   check('Robinhood finalStatus is unsupported_on_robinhood', audit.finalStatus === 'unsupported_on_robinhood')
   check('Robinhood requestAttempted is false', audit.requestAttempted === false)
-  check('Robinhood requestChainId is null', audit.requestChainId === null)
   check('Robinhood is not marked verified_clear', audit.finalStatus !== 'verified_clear')
   check('Robinhood honeypotResult stays null', audit.honeypotResult === null)
-  check('Robinhood status copy is exact', ui.statusLabel === ROBINHOOD_SIM_UNSUPPORTED_STATUS)
+  check('Robinhood unsupported UI prefixes reason', ui.statusLabel === `Unsupported: ${ROBINHOOD_SIM_UNSUPPORTED_REASON}`)
   check('Robinhood reason copy is exact', ui.reason === ROBINHOOD_SIM_UNSUPPORTED_REASON)
   check('Robinhood impact copy is exact', ui.impact === ROBINHOOD_SIM_UNSUPPORTED_IMPACT)
   check('Robinhood reason names chainId 4663', ui.reason.includes('4663'))
@@ -107,6 +112,9 @@ const BASE_TOKEN = '0xcccccccccccccccccccccccccccccccccccccccc'
     honeypotStatus: 'timeout',
   })
   check('timeout classifies before Robinhood unsupported', rhTimeout.finalStatus === 'provider_timeout')
+  const rhTimeoutUi = buildTradingSimulationUi(rhTimeout)
+  check('Robinhood timeout UI is Simulation timed out', rhTimeoutUi.statusLabel === ROBINHOOD_SIM_TIMEOUT_LABEL)
+  check('Robinhood timeout is not a honeypot', rhTimeout.honeypotResult !== true && rhTimeout.finalStatus !== 'risk_detected')
 }
 
 // ── 4. Base/ETH cache is rejected for Robinhood ─────────────────────────────
@@ -114,11 +122,15 @@ const BASE_TOKEN = '0xcccccccccccccccccccccccccccccccccccccccc'
   const baseKey = buildTradingSimulationCacheKey(8453, TOKEN, 'honeypot_is')
   const rhKey = buildTradingSimulationCacheKey(4663, TOKEN, 'honeypot_is')
   const ethKey = buildTradingSimulationCacheKey(1, TOKEN, 'honeypot_is')
+  const rhSimKey = buildTradingSimulationCacheKey(4663, TOKEN, 'chainlens_robinhood_sim', POOL)
+  const rhSimOtherPool = buildTradingSimulationCacheKey(4663, TOKEN, 'chainlens_robinhood_sim', BASE_TOKEN)
   check('cache key includes chainId', baseKey.includes('8453') && rhKey.includes('4663'))
   check('cache key includes provider', baseKey.startsWith('sim:honeypot_is:'))
   check('cache key includes token', baseKey.endsWith(TOKEN))
   check('Base and Robinhood cache keys differ', baseKey !== rhKey)
   check('ETH and Robinhood cache keys differ', ethKey !== rhKey)
+  check('Robinhood sim cache key includes pool', rhSimKey.includes(POOL))
+  check('Robinhood sim cache keys differ by pool', rhSimKey !== rhSimOtherPool)
   check('Base cache rejected for Robinhood selected', isTradingSimulationCacheHitValid(
     { chainId: 8453, tokenAddress: TOKEN, provider: 'honeypot_is' },
     { chainId: 4663, tokenAddress: TOKEN, provider: 'honeypot_is' },
@@ -134,6 +146,14 @@ const BASE_TOKEN = '0xcccccccccccccccccccccccccccccccccccccccc'
   check('token mismatch is rejected', isTradingSimulationCacheHitValid(
     { chainId: 8453, tokenAddress: TOKEN, provider: 'honeypot_is' },
     { chainId: 8453, tokenAddress: BASE_TOKEN, provider: 'honeypot_is' },
+  ) === false)
+  check('Robinhood sim wrong chain cache rejected', isTradingSimulationCacheHitValid(
+    { chainId: 8453, tokenAddress: TOKEN, provider: 'chainlens_robinhood_sim', poolAddress: POOL },
+    { chainId: 4663, tokenAddress: TOKEN, provider: 'chainlens_robinhood_sim', poolAddress: POOL },
+  ) === false)
+  check('Robinhood sim pool mismatch rejected', isTradingSimulationCacheHitValid(
+    { chainId: 4663, tokenAddress: TOKEN, provider: 'chainlens_robinhood_sim', poolAddress: POOL },
+    { chainId: 4663, tokenAddress: TOKEN, provider: 'chainlens_robinhood_sim', poolAddress: BASE_TOKEN },
   ) === false)
 }
 
@@ -218,28 +238,123 @@ const BASE_TOKEN = '0xcccccccccccccccccccccccccccccccccccccccc'
   const card = pageSrc.slice(cardStart, cardEnd)
   check('Trading Simulation card uses simAuditUi helper', /simAuditUi\.(badge|statusLabel|reason)/.test(card))
   check('Trading Simulation card has no Open Check fallback', !/Open check/i.test(card))
+  check('Trading Simulation card shows Source row', /simAuditUi\.source/.test(card))
   check('page helper tradingSimUiFor is shared', pageSrc.includes('function tradingSimUiFor(result: ScanResult)'))
   check('Risk Engine uses tradingSimUiFor', /const simAuditUi = tradingSimUiFor\(result\)/.test(pageSrc))
   check('sidebar uses tradingSimUiFor', /const simUi = tradingSimUiFor\(result\)/.test(pageSrc))
   check('sidebar renders simUi.statusLabel', /<p style=\{stitle\}>Trading Simulation<\/p>[\s\S]{0,220}\{simUi\.statusLabel\}/.test(pageSrc))
+  check('sidebar renders same honeypot/tax/source rows', /simUi\.honeypotValue/.test(pageSrc) && /simUi\.buyTaxValue/.test(pageSrc) && /simUi\.source/.test(pageSrc))
   check('verdict chips use simUi not Open check', /simUi\.honeypotValue/.test(pageSrc))
   check('holders security value uses helper status', /const securityValue = simUiHolders\.statusLabel/.test(pageSrc))
   check('Security Confidence uses helper status', /const securityConfidenceLabel = simUiOverview\.statusLabel/.test(pageSrc))
 }
 
-// ── 8. Backend: Robinhood is skipped, audit is attached, no Base default ────
+// ── 8. Backend: Robinhood skips honeypot.is, runs ChainLens sim after pool ──
 {
   check('route skips fetchHoneypotSecurity for Robinhood', /chain === 'robinhood'[\s\S]{0,180}ROBINHOOD_SIM_CHAIN_ID/.test(routeSrc))
-  check('route never requests Robinhood as Base/ETH', /requestChainId: chain === 'robinhood' \? null/.test(routeSrc))
-  check('route requestAttempted is false on Robinhood', /requestAttempted: chain !== 'robinhood'/.test(routeSrc))
   check('GoPlus fallback skipped for Robinhood', /chain !== 'robinhood'/.test(routeSrc))
-  check('route attaches tradingSimulationAudit', /tradingSimulationAudit = await resolveTradingSimulationAudit/.test(routeSrc))
+  check('route attaches tradingSimulationAudit', /tradingSimulationAudit = await resolveTradingSimulationAudit/.test(routeSrc) || /let tradingSimulationAudit = await resolveTradingSimulationAudit/.test(routeSrc))
   check('payload includes tradingSimulationAudit', /\(responsePayload as any\)\.tradingSimulationAudit = tradingSimulationAudit/.test(routeSrc))
+  check('payload includes robinhoodTradingSimulationAudit', /robinhoodTradingSimulationAudit/.test(routeSrc))
   check('honeypot payload carries finalStatus', /finalStatus:\s+tradingSimulationAudit\.finalStatus/.test(routeSrc))
   check('security.simulationStatus uses finalStatus, not open_check', /simulationStatus: tradingSimulationAudit\.finalStatus/.test(routeSrc))
   check('clusterMap simulationStatus is not hardcoded open_check', !/simulationStatus: hpResult\.ok \? 'ok' : 'open_check'/.test(routeSrc))
   check('fetchHoneypotSecurity does not default missing chainId to base', !/chainIdOrNetwork: string \| number = "base"/.test(honeypotSrc))
   check('missing chainId returns an explicit unavailable reason', /Trading simulation chain id was not provided/.test(honeypotSrc))
+  const poolIdx = routeSrc.indexOf('const lpPoolAddress = lpPool?.address ?? null')
+  const simIdx = routeSrc.indexOf('simulateRobinhoodHoneypot(')
+  check('simulateRobinhoodHoneypot is called', simIdx >= 0)
+  check('simulateRobinhoodHoneypot runs after selected pool', poolIdx >= 0 && simIdx > poolIdx)
+  check('Robinhood sim is gated to robinhood chain', /if \(chain === 'robinhood'\) \{\s*const \{ result: rhSim/.test(routeSrc) || /if \(chain === 'robinhood'\) \{[\s\S]{0,200}simulateRobinhoodHoneypot/.test(routeSrc))
+  check('sellable does not set hpResult.ok true', /hpResult\.ok = false/.test(routeSrc))
+  check('route never marks Robinhood sim as honeypot.is ok', !/hpResult\.ok = true/.test(routeSrc))
+}
+
+// ── 9. Robinhood sim classify + UI ──────────────────────────────────────────
+{
+  const sellable = classifyFromRobinhoodHoneypotSim({
+    tokenAddress: TOKEN,
+    poolAddress: POOL,
+    attempted: true,
+    sellable: true,
+    honeypotStatus: 'sellable',
+    buyTaxPct: 1.2,
+    sellTaxPct: 2.4,
+    failureReason: null,
+    rawProviderError: null,
+  })
+  const sellableUi = buildTradingSimulationUi(sellable)
+  check('sellable finalStatus is simulated, never verified_clear', sellable.finalStatus === 'simulated' && sellable.finalStatus !== 'verified_clear')
+  check('sellable treats as open risk', sellableUi.treatAsOpenRisk === true)
+  check('sellable honeypot value is Sellable', sellableUi.honeypotValue === 'Sellable')
+  check('sellable status is Sellable', sellableUi.statusLabel === 'Sellable')
+  check('sellable shows taxes', sellableUi.showTaxRows === true && sellableUi.buyTaxValue === '1.2%' && sellableUi.sellTaxValue === '2.4%')
+  check('sellable source is ChainLens Robinhood simulation', sellableUi.source === ROBINHOOD_SIM_SOURCE)
+  check('sellable audit cache key includes chain+token+pool', sellable.cacheKey.includes('4663') && sellable.cacheKey.includes(TOKEN) && sellable.cacheKey.includes(POOL))
+  check('sellable is not Open Check', !/open check/i.test(`${sellableUi.statusLabel} ${sellableUi.honeypotValue}`))
+
+  const blocked = classifyFromRobinhoodHoneypotSim({
+    tokenAddress: TOKEN,
+    poolAddress: POOL,
+    attempted: true,
+    sellable: false,
+    honeypotStatus: 'blocked',
+    buyTaxPct: null,
+    sellTaxPct: null,
+    failureReason: 'Simulated sell failed',
+    rawProviderError: null,
+  })
+  const blockedUi = buildTradingSimulationUi(blocked)
+  check('blocked finalStatus is risk_detected', blocked.finalStatus === 'risk_detected')
+  check('blocked honeypot value is Blocked', blockedUi.honeypotValue === 'Blocked')
+  check('blocked status is Blocked', blockedUi.statusLabel === 'Blocked')
+  check('blocked source is ChainLens Robinhood simulation', blockedUi.source === ROBINHOOD_SIM_SOURCE)
+  check('blocked is not Open Check', !/open check/i.test(`${blockedUi.statusLabel} ${blockedUi.honeypotValue}`))
+
+  const missingPool = classifyFromRobinhoodHoneypotSim({
+    tokenAddress: TOKEN,
+    poolAddress: null,
+    attempted: false,
+    sellable: null,
+    honeypotStatus: 'unsupported',
+    buyTaxPct: null,
+    sellTaxPct: null,
+    failureReason: 'No selected Robinhood pool',
+    rawProviderError: null,
+  })
+  const missingUi = buildTradingSimulationUi(missingPool)
+  check('missing pool is unsupported', missingPool.finalStatus === 'unsupported_on_robinhood')
+  check('missing pool UI is Unsupported: reason', missingUi.statusLabel === 'Unsupported: No selected Robinhood pool')
+
+  const timedOut = classifyFromRobinhoodHoneypotSim({
+    tokenAddress: TOKEN,
+    poolAddress: POOL,
+    attempted: true,
+    sellable: null,
+    honeypotStatus: 'timeout',
+    buyTaxPct: null,
+    sellTaxPct: null,
+    failureReason: 'Simulation timed out',
+    rawProviderError: 'timeout',
+  })
+  const timedUi = buildTradingSimulationUi(timedOut)
+  check('RPC timeout is provider_timeout not honeypot', timedOut.finalStatus === 'provider_timeout' && timedOut.finalStatus !== 'risk_detected')
+  check('timeout UI is Simulation timed out', timedUi.statusLabel === ROBINHOOD_SIM_TIMEOUT_LABEL)
+
+  const unavailable = classifyFromRobinhoodHoneypotSim({
+    tokenAddress: TOKEN,
+    poolAddress: POOL,
+    attempted: true,
+    sellable: null,
+    honeypotStatus: 'unavailable',
+    buyTaxPct: null,
+    sellTaxPct: null,
+    failureReason: 'Robinhood RPC is not configured',
+    rawProviderError: null,
+  })
+  const unUi = buildTradingSimulationUi(unavailable)
+  check('RPC failure is unavailable not honeypot', unavailable.finalStatus === 'unavailable_with_reason')
+  check('unavailable UI prefixes exact reason', unUi.statusLabel === 'Unavailable: Robinhood RPC is not configured')
 }
 
 console.log(`test-trading-simulation: ${passed} checks passed`)

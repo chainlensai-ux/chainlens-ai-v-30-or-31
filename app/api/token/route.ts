@@ -4,7 +4,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { fetchGoPlusHoneypotFallback } from "@/lib/server/goplusSecurity";
 import { resolveTradingSimulationAudit } from "@/lib/server/tradingSimulation";
-import { ROBINHOOD_SIM_CHAIN_ID, ROBINHOOD_SIM_UNSUPPORTED_REASON } from "@/lib/tradingSimulation";
+import { ROBINHOOD_SIM_CHAIN_ID, ROBINHOOD_SIM_UNSUPPORTED_REASON, classifyFromRobinhoodHoneypotSim } from "@/lib/tradingSimulation";
+import { simulateRobinhoodHoneypot, robinhoodSimToHpStatus, type RobinhoodTradingSimulationAudit } from "@/lib/server/robinhoodHoneypotSimulation";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
 import { sanitizePublicTokenResponse, applyTokenScannerPlanGate, TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from "@/lib/server/tokenPublicResponse";
 import { consumeDailyScan } from "@/lib/scanQuota";
@@ -3591,6 +3592,10 @@ function _buildDeterministicSummary(
         : null
       confirmed.push(`Trading simulation passed${taxNote ? ` (${taxNote})` : ''}.`)
     }
+  } else if (hpResult.honeypot === true) {
+    risks.push('honeypot simulation triggered — sell transactions blocked')
+  } else if (hpResult.simulationSuccess === true && hpResult.honeypot === false) {
+    inferred.push('simulated sell succeeded — not a safety clearance; LP/dev/holder risks remain')
   } else {
     inferred.push('trading simulation not confirmed — verify buy/sell path and tax behavior before relying on this scan')
   }
@@ -4127,7 +4132,7 @@ export async function POST(req: Request) {
       honeypotProvider: _gpFallback != null ? 'partial' as const : _simResult?.ok ? 'ok' as const : 'partial' as const,
       honeypotSourceUsed: _gpFallback != null ? 'goplus' as const : _simResult?.ok ? 'honeypot_is' as const : 'none' as const,
     };
-    const tradingSimulationAudit = await resolveTradingSimulationAudit({
+    let tradingSimulationAudit = await resolveTradingSimulationAudit({
       chainSlug: chain,
       chainId: CHAIN_ID_MAP[chain] ?? null,
       tokenAddress: contract,
@@ -4135,9 +4140,11 @@ export async function POST(req: Request) {
         ? 'goplus'
         : hpResult.honeypotSourceUsed === 'honeypot_is'
           ? 'honeypot_is'
-          : 'none',
+          : chain === 'robinhood'
+            ? 'chainlens_robinhood_sim'
+            : 'none',
       requestAttempted: chain !== 'robinhood' && _simResult != null,
-      requestChainId: chain === 'robinhood' ? null : (CHAIN_ID_MAP[chain] ?? null),
+      requestChainId: chain === 'robinhood' ? ROBINHOOD_SIM_CHAIN_ID : (CHAIN_ID_MAP[chain] ?? null),
       timedOut: hpResult.honeypotStatus === 'timeout',
       honeypotResult: hpResult.honeypot,
       buyTax: hpResult.buyTax,
@@ -4146,6 +4153,7 @@ export async function POST(req: Request) {
       honeypotStatus: hpResult.honeypotStatus,
       honeypotReason: hpResult.honeypotReason,
     })
+    let robinhoodTradingSimulationAudit: RobinhoodTradingSimulationAudit | null = null
     const alchemyMandatoryReads = await Promise.all([
       countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[0] }, 'latest'], 'ownerCheck.owner', false),
       countedRpcCall('eth_call', [{ to: contract, data: ownerSelectors[1] }, 'latest'], 'ownerCheck.getOwner', false),
@@ -4416,6 +4424,37 @@ export async function POST(req: Request) {
     const hasSecurityData = Boolean(hpResult.ok)
     // lpPoolAddress is the market display pool address (used for display/evidence)
     const lpPoolAddress = lpPool?.address ?? null
+    if (chain === 'robinhood') {
+      const { result: rhSim, audit: rhAudit } = await simulateRobinhoodHoneypot({
+        chainId: ROBINHOOD_SIM_CHAIN_ID,
+        tokenAddress: contract,
+        poolAddress: lpPoolAddress,
+        poolType: lpPoolType,
+      })
+      robinhoodTradingSimulationAudit = rhAudit
+      // Sellable is not a safety clearance — keep hpResult.ok false so the rest of the
+      // scanner does not treat this as a verified-safe honeypot.is result.
+      hpResult.ok = false
+      hpResult.honeypot = rhSim.honeypotStatus === 'blocked' ? true : rhSim.honeypotStatus === 'sellable' ? false : null
+      hpResult.honeypotStatus = robinhoodSimToHpStatus(rhSim.honeypotStatus)
+      hpResult.honeypotReason = rhSim.failureReason
+      hpResult.buyTax = rhSim.buyTaxPct
+      hpResult.sellTax = rhSim.sellTaxPct
+      hpResult.simulationSuccess = rhSim.sellable === true
+      hpResult.honeypotSourceUsed = 'none'
+      tradingSimulationAudit = classifyFromRobinhoodHoneypotSim({
+        tokenAddress: contract,
+        poolAddress: lpPoolAddress,
+        attempted: rhSim.attempted,
+        sellable: rhSim.sellable,
+        honeypotStatus: rhSim.honeypotStatus,
+        buyTaxPct: rhSim.buyTaxPct,
+        sellTaxPct: rhSim.sellTaxPct,
+        failureReason: rhSim.failureReason,
+        rawProviderError: rhSim.rawProviderError,
+        cacheHit: rhAudit.cacheHit,
+      })
+    }
     // When the canonical pool identity (cross-scan merge) established this address as
     // concentrated but the raw dex id string lacks a concentrated marker (e.g. a fallback
     // scan only saw a generic "aerodrome" string), prefer the canonical protocol variant so
@@ -6567,6 +6606,17 @@ export async function POST(req: Request) {
       if (hpResult.honeypot === true) { riskDrivers.push('Trading simulation indicates a blocked or trapped sell path.'); riskScore += 45 }
       if ((hpResult.buyTax ?? 0) > 12 || (hpResult.sellTax ?? 0) > 12) { riskDrivers.push('Trading taxes are high (>12%).'); riskScore += 20 }
       else if ((hpResult.buyTax ?? 0) > 7 || (hpResult.sellTax ?? 0) > 7) { riskDrivers.push('Trading taxes are elevated (>7%).'); riskScore += 10 }
+    } else if (chain === 'robinhood' && tradingSimulationAudit.providerSelected === 'chainlens_robinhood_sim') {
+      if (tradingSimulationAudit.finalStatus === 'risk_detected' || hpResult.honeypot === true) {
+        riskDrivers.push('Trading simulation indicates a blocked or trapped sell path.')
+        riskScore += 45
+      }
+      if ((hpResult.buyTax ?? 0) > 12 || (hpResult.sellTax ?? 0) > 12) { riskDrivers.push('Trading taxes are high (>12%).'); riskScore += 20 }
+      else if ((hpResult.buyTax ?? 0) > 7 || (hpResult.sellTax ?? 0) > 7) { riskDrivers.push('Trading taxes are elevated (>7%).'); riskScore += 10 }
+      if (tradingSimulationAudit.finalStatus === 'provider_timeout' || tradingSimulationAudit.finalStatus === 'unavailable_with_reason' || tradingSimulationAudit.finalStatus === 'unsupported_on_robinhood') {
+        openChecks.push(`Trading simulation: ${tradingSimulationAudit.finalReason}`)
+        riskScore += 8
+      }
     } else if (tradingSimConfigured) {
       openChecks.push('Trading simulation result pending — tax rates and honeypot status require direct chain verification.')
       riskScore += 8
@@ -8791,7 +8841,7 @@ export async function POST(req: Request) {
       if (!alchemyConfigured) skippedChecks.push('rpc_checks_missing_configuration')
       if (holdersStatus !== 'verified') skippedChecks.push('holder_verification_incomplete')
       if (lpControl.status === 'insufficient_data' || lpControl.status === 'error' || lpControl.status === 'partial' || lpControl.status === 'no_pool') skippedChecks.push('lp_proof_incomplete')
-      if (!hpResult.ok) skippedChecks.push('trading_simulation_incomplete')
+      if (!hpResult.ok && !(chain === 'robinhood' && (tradingSimulationAudit.finalStatus === 'simulated' || tradingSimulationAudit.finalStatus === 'risk_detected'))) skippedChecks.push('trading_simulation_incomplete')
       const chainReasons = [
         holdersReason ? `holders:${holdersReason}` : null,
         lpControl.reason ? `lp:${lpControl.reason}` : null,
@@ -9396,6 +9446,9 @@ export async function POST(req: Request) {
       ;(responsePayload as any).robinhoodLpProofAudit = _robinhoodLpProofResult.proofAudit
     }
     ;(responsePayload as any).tradingSimulationAudit = tradingSimulationAudit
+    if (chain === 'robinhood' && robinhoodTradingSimulationAudit) {
+      ;(responsePayload as any).robinhoodTradingSimulationAudit = robinhoodTradingSimulationAudit
+    }
     if (devClusterDiagnosisAudit) {
       ;(responsePayload as any).devClusterDiagnosisAudit = devClusterDiagnosisAudit
     }

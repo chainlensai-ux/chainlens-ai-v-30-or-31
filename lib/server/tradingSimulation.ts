@@ -15,6 +15,7 @@ export interface ResolveTradingSimulationInput {
   chainSlug: string
   chainId: number | null
   tokenAddress: string
+  poolAddress?: string | null
   providerSelected: TradingSimulationProvider
   requestAttempted: boolean
   requestChainId: number | null
@@ -24,6 +25,7 @@ export interface ResolveTradingSimulationInput {
   honeypotResult?: boolean | null
   buyTax?: number | null
   sellTax?: number | null
+  sellable?: boolean | null
   simulationSuccess?: boolean | null
   honeypotStatus?: string | null
   honeypotReason?: string | null
@@ -35,14 +37,16 @@ export async function resolveTradingSimulationAudit(input: ResolveTradingSimulat
   const provider: TradingSimulationProvider = input.providerSelected
   const chainId = support.chainId ?? input.chainId
   const tokenAddress = input.tokenAddress.toLowerCase()
-  const cacheKey = buildTradingSimulationCacheKey(chainId, tokenAddress, provider)
-  const selected = { chainId, tokenAddress, provider }
+  const poolAddress = input.poolAddress ?? null
+  const cacheKey = buildTradingSimulationCacheKey(chainId, tokenAddress, provider, poolAddress)
+  const selected = { chainId, tokenAddress, provider, poolAddress }
 
   if (!input.skipCache) {
     const cached = await getTokenCache<{
       chainId: number | null
       tokenAddress: string
       provider: TradingSimulationProvider
+      poolAddress?: string | null
       audit: TradingSimulationAudit
     }>(cacheKey)
     if (
@@ -57,6 +61,7 @@ export async function resolveTradingSimulationAudit(input: ResolveTradingSimulat
     chainSlug: input.chainSlug,
     chainId,
     tokenAddress,
+    poolAddress,
     providerSelected: provider,
     requestAttempted: input.requestAttempted,
     requestChainId: input.requestChainId,
@@ -69,6 +74,7 @@ export async function resolveTradingSimulationAudit(input: ResolveTradingSimulat
     honeypotResult: input.honeypotResult ?? null,
     buyTax: input.buyTax ?? null,
     sellTax: input.sellTax ?? null,
+    sellable: input.sellable ?? null,
     simulationSuccess: input.simulationSuccess ?? null,
     honeypotStatus: input.honeypotStatus ?? null,
     honeypotReason: input.honeypotReason ?? null,

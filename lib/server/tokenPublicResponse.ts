@@ -155,7 +155,7 @@ function sanitizePublicValue(value: unknown): unknown {
     if (key === 'sourceTrail') continue
     if (key === 'cortexScoreDebug') continue
     if (key === 'samplingDebug') continue
-    if (key === 'devClusterDiagnosisAudit' || key === 'tradingSimulationAudit') {
+    if (key === 'devClusterDiagnosisAudit' || key === 'tradingSimulationAudit' || key === 'robinhoodTradingSimulationAudit') {
       out[key] = raw
       continue
     }
