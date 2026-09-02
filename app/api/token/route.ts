@@ -9,6 +9,7 @@ import { simulateRobinhoodHoneypot, robinhoodSimToHpStatus, type RobinhoodTradin
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
 import { sanitizePublicTokenResponse, applyTokenScannerPlanGate, TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from "@/lib/server/tokenPublicResponse";
 import { consumeDailyScan } from "@/lib/scanQuota";
+import { scanDailyLimitReachedMessage } from "@/lib/pricingPlans";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
 import {
   resolveTokenScanChainDecision,
@@ -3653,7 +3654,7 @@ export async function POST(req: Request) {
   const _scanQuota = consumeDailyScan(_requestPlan, getClientIp(req))
   if (!_scanQuota.allowed) {
     return NextResponse.json({
-      error: `Daily scan limit reached (${_scanQuota.limit} full scans per day on ${_requestPlan}).`,
+      error: scanDailyLimitReachedMessage(_requestPlan, _scanQuota.limit),
       category: 'scan_limit',
       scanQuota: { limit: _scanQuota.limit, remaining: 0, plan: _requestPlan },
     }, { status: 429 })

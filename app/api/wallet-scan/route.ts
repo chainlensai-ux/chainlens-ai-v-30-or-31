@@ -4,6 +4,7 @@ import { WALLET_SCAN_QUEUE_UNAVAILABLE, WalletScanQueueUnavailableError, enqueue
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { canAccessFeature } from '@/lib/planFeatures'
 import { consumeDailyScan } from '@/lib/scanQuota'
+import { scanDailyLimitReachedMessage } from '@/lib/pricingPlans'
 import { buildWalletChainSelectionAudit } from '@/lib/server/walletChainSelectionAudit'
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
 import { scanRobinhoodWallet } from '@/lib/server/robinhoodWalletScanner'
@@ -83,7 +84,8 @@ export async function POST(req: Request): Promise<Response> {
   // see lib/server/walletChainSelectionAudit.ts's header for why) but its presence/absence still
   // informs the Robinhood request decision below.
   const chains = (rawChains ? rawChains.filter((c) => c.toLowerCase() !== 'robinhood') : ['base', 'eth'])
-  const scanMode: ScanMode = (body?.scanMode === 'deep' && canAccessFeature(plan, 'wallet-scanner-full')) ? 'deep' : 'normal'
+  const wantsDeep = body?.scanMode === 'deep'
+  const scanMode: ScanMode = wantsDeep ? 'deep' : 'normal'
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown'
 
   // CANONICAL CHAIN SELECTION, DISCLOSED (Wallet Scanner deep scan chain coverage fix): Robinhood
@@ -98,9 +100,11 @@ export async function POST(req: Request): Promise<Response> {
   if (!checkWalletScanRate(ip)) {
     return NextResponse.json({ error: { message: 'Rate limit reached. Try again shortly.', category: 'rate_limit' } }, { status: 429 })
   }
-  const scanQuota = consumeDailyScan(plan, ip)
-  if (!scanQuota.allowed) {
-    return NextResponse.json({ error: { message: `Daily scan limit reached (${scanQuota.limit} full scans per day on ${plan}).`, category: 'scan_limit' } }, { status: 429 })
+  if (wantsDeep) {
+    const scanQuota = consumeDailyScan(plan, ip)
+    if (!scanQuota.allowed) {
+      return NextResponse.json({ error: { message: scanDailyLimitReachedMessage(plan, scanQuota.limit), category: 'scan_limit' } }, { status: 429 })
+    }
   }
 
   const jobId = crypto.randomUUID()
