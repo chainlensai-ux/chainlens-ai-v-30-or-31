@@ -287,7 +287,12 @@ clearRobinhoodHoneypotSimCache()
 
 // ── 9. Route + UI wiring ────────────────────────────────────────────────────
 {
-  check('route only simulates on robinhood', /if \(chain === 'robinhood'\) \{[\s\S]{0,400}simulateRobinhoodHoneypot/.test(routeSrc))
+  // UPDATED, DISCLOSED (Robinhood trading-simulation "No selected Robinhood pool" diagnosis):
+  // simulation now runs deeper inside the same `if (chain === 'robinhood')` block — after LP
+  // Safety's own canonical pool resolver (_robinhoodLpProofResult), not right at the top of it —
+  // so the 400-char proximity window no longer holds. Still the same real guarantee: the call is
+  // nested inside, and only inside, this one chain==='robinhood' branch.
+  check('route only simulates on robinhood', /if \(chain === 'robinhood'\) \{[\s\S]{0,6000}simulateRobinhoodHoneypot/.test(routeSrc))
   check('route keeps hpResult.ok false', /hpResult\.ok = false/.test(routeSrc))
   check('route attaches robinhoodTradingSimulationAudit', /robinhoodTradingSimulationAudit/.test(routeSrc))
   check('Risk Engine and sidebar share tradingSimUiFor', (pageSrc.match(/tradingSimUiFor\(result\)/g) || []).length >= 2)

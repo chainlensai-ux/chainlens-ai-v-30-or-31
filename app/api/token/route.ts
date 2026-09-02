@@ -4424,37 +4424,19 @@ export async function POST(req: Request) {
     const hasSecurityData = Boolean(hpResult.ok)
     // lpPoolAddress is the market display pool address (used for display/evidence)
     const lpPoolAddress = lpPool?.address ?? null
-    if (chain === 'robinhood') {
-      const { result: rhSim, audit: rhAudit } = await simulateRobinhoodHoneypot({
-        chainId: ROBINHOOD_SIM_CHAIN_ID,
-        tokenAddress: contract,
-        poolAddress: lpPoolAddress,
-        poolType: lpPoolType,
-      })
-      robinhoodTradingSimulationAudit = rhAudit
-      // Sellable is not a safety clearance — keep hpResult.ok false so the rest of the
-      // scanner does not treat this as a verified-safe honeypot.is result.
-      hpResult.ok = false
-      hpResult.honeypot = rhSim.honeypotStatus === 'blocked' ? true : rhSim.honeypotStatus === 'sellable' ? false : null
-      hpResult.honeypotStatus = robinhoodSimToHpStatus(rhSim.honeypotStatus)
-      hpResult.honeypotReason = rhSim.failureReason
-      hpResult.buyTax = rhSim.buyTaxPct
-      hpResult.sellTax = rhSim.sellTaxPct
-      hpResult.simulationSuccess = rhSim.sellable === true
-      hpResult.honeypotSourceUsed = 'none'
-      tradingSimulationAudit = classifyFromRobinhoodHoneypotSim({
-        tokenAddress: contract,
-        poolAddress: lpPoolAddress,
-        attempted: rhSim.attempted,
-        sellable: rhSim.sellable,
-        honeypotStatus: rhSim.honeypotStatus,
-        buyTaxPct: rhSim.buyTaxPct,
-        sellTaxPct: rhSim.sellTaxPct,
-        failureReason: rhSim.failureReason,
-        rawProviderError: rhSim.rawProviderError,
-        cacheHit: rhAudit.cacheHit,
-      })
-    }
+    // ROBINHOOD-SELECTED-POOL-TIMING FIX, DISCLOSED (Robinhood trading-simulation diagnosis):
+    // this block used to run HERE, using only `lpPoolAddress` (= lpPool?.address — an early,
+    // generic pool candidate) — roughly 700 lines and one full canonical-pool-resolution pass
+    // before _robinhoodLpProofResult (LP Safety's own Robinhood-specific pool resolver, which
+    // independently confirms chainId 4663 and merges lpVerifyPool/lpPool/lpPoolType into one
+    // canonical identity) ever runs. When the early, generic `lpPool` candidate was empty/wrong
+    // for Robinhood chain (the same generic classifier gap already found and fixed for LP
+    // Safety's own applicability gate — see the ROBINHOOD-APPLICABILITY-GATE FIX comment further
+    // down), trading simulation received `poolAddress: null` and hard-failed with "No selected
+    // Robinhood pool" — even when LP Safety, using the SAME token a few hundred lines later,
+    // went on to find and verify a real pool. Moved below, after _robinhoodLpProofResult
+    // resolves, so both features read the identical canonical pool identity. See that block for
+    // the actual simulation call.
     // When the canonical pool identity (cross-scan merge) established this address as
     // concentrated but the raw dex id string lacks a concentrated marker (e.g. a fallback
     // scan only saw a generic "aerodrome" string), prefer the canonical protocol variant so
@@ -5174,6 +5156,71 @@ export async function POST(req: Request) {
           evidence: [...(_rhOverlay.evidence ?? []), ...(lpControl.evidence ?? [])].slice(0, 12),
         }
       }
+
+      // CANONICAL-ROBINHOOD-SELECTED-POOL, DISCLOSED (Robinhood trading-simulation diagnosis):
+      // the exact same pool identity LP Safety just verified above — never a second, independent
+      // guess. selectedPoolAddress is only ever non-null here when selectedRobinhoodPoolChainOk()
+      // (lib/robinhoodLpProofShared.ts) independently confirmed the pool as chainId 4663, so this
+      // can never pull in a wrong-chain (Base/ETH/cached) pool — the same hard-fail-closed check
+      // LP Safety itself relies on. Trading simulation now runs AFTER this resolves, using this
+      // one canonical pool, instead of the earlier/generic `lpPool` candidate that could be empty
+      // even when LP Safety went on to find a real one.
+      // The two raw candidates that existed anywhere in the normalized scan result BEFORE
+      // Robinhood-specific canonicalization — kept distinct in the audit so a future report of
+      // "wrong/missing pool" can see exactly what each stage found.
+      const robinhoodSelectedPoolFromMarket = lpPoolAddress
+      const robinhoodSelectedPoolFromLp = _lpProofAddress ?? lpPoolAddress
+      const robinhoodProofSelectedPool = _robinhoodLpProofResult.proofAudit.selectedPoolAddress
+      const robinhoodSelectedPoolChainOk = _robinhoodLpProofResult.proofAudit.selectedPoolChainOk
+      const canonicalRobinhoodSelectedPool = robinhoodSelectedPoolChainOk ? robinhoodProofSelectedPool : null
+      const robinhoodSelectedPoolDex = lpDexId ?? lpDexName ?? primaryDexName ?? null
+      // A pool address exists somewhere in the normalized scan result, but its chain could not be
+      // independently confirmed as Robinhood (4663) — a different, more precise failure than
+      // "no pool exists at all", and never silently treated as the same thing.
+      const robinhoodPoolExistsButChainUnconfirmed = !canonicalRobinhoodSelectedPool && Boolean(robinhoodProofSelectedPool)
+
+      const { result: rhSim, audit: rhAudit } = await simulateRobinhoodHoneypot({
+        chainId: ROBINHOOD_SIM_CHAIN_ID,
+        tokenAddress: contract,
+        poolAddress: canonicalRobinhoodSelectedPool,
+        poolType: _robinhoodLpProofResult.proofAudit.poolType ?? _lpProofType ?? lpPoolType,
+      })
+      const rhFailureReason = robinhoodPoolExistsButChainUnconfirmed
+        ? (_robinhoodLpProofResult.reason || 'Selected Robinhood pool could not be confirmed as chainId 4663.')
+        : rhSim.failureReason
+      robinhoodTradingSimulationAudit = {
+        ...rhAudit,
+        failureReason: rhFailureReason,
+        finalReason: rhFailureReason,
+        selectedPoolFromMarket: robinhoodSelectedPoolFromMarket,
+        selectedPoolFromLp: robinhoodSelectedPoolFromLp,
+        canonicalSelectedPool: canonicalRobinhoodSelectedPool,
+        selectedPoolAddress: canonicalRobinhoodSelectedPool,
+        selectedPoolDex: robinhoodSelectedPoolDex,
+        selectedPoolChainOk: robinhoodSelectedPoolChainOk,
+      }
+      // Sellable is not a safety clearance — keep hpResult.ok false so the rest of the
+      // scanner does not treat this as a verified-safe honeypot.is result.
+      hpResult.ok = false
+      hpResult.honeypot = rhSim.honeypotStatus === 'blocked' ? true : rhSim.honeypotStatus === 'sellable' ? false : null
+      hpResult.honeypotStatus = robinhoodSimToHpStatus(rhSim.honeypotStatus)
+      hpResult.honeypotReason = rhFailureReason
+      hpResult.buyTax = rhSim.buyTaxPct
+      hpResult.sellTax = rhSim.sellTaxPct
+      hpResult.simulationSuccess = rhSim.sellable === true
+      hpResult.honeypotSourceUsed = 'none'
+      tradingSimulationAudit = classifyFromRobinhoodHoneypotSim({
+        tokenAddress: contract,
+        poolAddress: canonicalRobinhoodSelectedPool,
+        attempted: rhSim.attempted,
+        sellable: rhSim.sellable,
+        honeypotStatus: rhSim.honeypotStatus,
+        buyTaxPct: rhSim.buyTaxPct,
+        sellTaxPct: rhSim.sellTaxPct,
+        failureReason: rhFailureReason,
+        rawProviderError: rhSim.rawProviderError,
+        cacheHit: rhAudit.cacheHit,
+      })
     }
 
     // Different-pair secondary V2/Aerodrome pools (rule 4/5, e.g. GAME/VIRTUAL when scanning

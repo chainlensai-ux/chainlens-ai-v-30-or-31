@@ -1482,6 +1482,12 @@ export default function HomePage() {
           <div className="mob-pricing-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '16px', maxWidth: '1100px', margin: '0 auto', alignItems: 'stretch', width: '100%' }}>
             {pricingPlans.map(src => {
               const visual = {
+                // CARD-CHOOSES-PLAN FIX, DISCLOSED (pricing CTA duplication task): this homepage
+                // pricing section is a second, independent card implementation (copy/prices come
+                // from the shared pricingPlans config, but the CTA label was its own hardcoded
+                // "Pay with Crypto" string) — the CTA has always just linked to /pricing (see the
+                // Link below), never triggered checkout directly, so this was a stale/duplicated
+                // label, not a behavior change. Matches app/pricing/page.tsx's real card CTAs.
                 free: { labelColor: '#67e8f9', engineColor: 'rgba(103,232,249,0.75)', cta: 'Get Started', ctaStyle: 'outline', border: 'rgba(255,255,255,0.09)', badge: null as string | null, bg: 'rgba(10,10,18,0.72)', radius: '14px', pad: '22px 18px 18px', mt: '0' },
                 pro: { labelColor: '#c4b5fd', engineColor: 'rgba(167,139,250,0.75)', cta: 'Upgrade to Pro', ctaStyle: 'gradient', border: 'rgba(139,92,246,0.55)', badge: 'MOST POPULAR' as string | null, bg: 'rgba(12,10,26,0.92)', radius: '14px', pad: '22px 18px 18px', mt: '0' },
                 elite: { labelColor: '#fbbf24', engineColor: 'rgba(251,191,36,0.75)', cta: 'Upgrade to Elite', ctaStyle: 'gold', border: 'rgba(251,191,36,0.40)', badge: 'POWER USERS' as string | null, bg: 'rgba(16,12,4,0.95)', radius: '16px', pad: '22px 18px 18px', mt: '0' },

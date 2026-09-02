@@ -57,6 +57,26 @@ export interface RobinhoodTradingSimulationAudit {
   finalStatus: RobinhoodHoneypotSimStatus
   failureReason: string | null
   cacheHit: boolean
+  // CANONICAL-SELECTED-POOL AUDIT, DISCLOSED (Robinhood trading-simulation diagnosis): traces
+  // exactly which pool candidate simulation received and where it came from, so a future
+  // "wrong/missing pool" report is diagnosable from this object alone instead of re-reading the
+  // route. selectedPoolFromMarket/selectedPoolFromLp are the two raw candidates that existed
+  // anywhere in the normalized scan result BEFORE canonicalization; canonicalSelectedPool /
+  // selectedPoolAddress are the one pool actually used (identical, since LP Safety's own
+  // resolveRobinhoodLpProof already IS the canonicalization step — see app/api/token/route.ts's
+  // ROBINHOOD-SELECTED-POOL-TIMING FIX comment). selectedPoolChainOk is only ever true once
+  // selectedRobinhoodPoolChainOk() independently confirmed chainId 4663 — false or null here
+  // means simulation deliberately received no pool rather than risk a wrong-chain address.
+  selectedPoolFromMarket: string | null
+  selectedPoolFromLp: string | null
+  canonicalSelectedPool: string | null
+  selectedPoolAddress: string | null
+  selectedPoolDex: string | null
+  selectedPoolChainOk: boolean
+  simulationAttempted: boolean
+  simulationModuleLoaded: boolean
+  envReady: boolean
+  finalReason: string | null
 }
 
 export interface TradingSimulationAudit {

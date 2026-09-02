@@ -200,6 +200,25 @@ function auditFrom(result: RobinhoodHoneypotSimResult, poolAddress: string | nul
     finalStatus: result.honeypotStatus,
     failureReason: result.failureReason,
     cacheHit,
+    // CANONICAL-SELECTED-POOL AUDIT, DISCLOSED: this module only ever sees the ALREADY-canonical
+    // pool address its caller resolved (see app/api/token/route.ts) — it has no visibility into
+    // the separate market/LP candidates that fed that canonicalization, so those three fields
+    // default here and are filled in by the caller, which does have that context. simulationAttempted/
+    // finalReason are plain aliases of ethCallAttempted/failureReason for the audit shape's own
+    // naming; simulationModuleLoaded is always true — this is a static import, never a runtime-
+    // conditional dynamic load, so there is no "module failed to load" failure mode to report
+    // honestly other than true. envReady reflects the one real environment gate this module
+    // itself checks: whether a Robinhood RPC URL resolved at all.
+    selectedPoolFromMarket: null,
+    selectedPoolFromLp: null,
+    canonicalSelectedPool: poolAddress,
+    selectedPoolAddress: poolAddress,
+    selectedPoolDex: null,
+    selectedPoolChainOk: poolAddress != null,
+    simulationAttempted: result.attempted,
+    simulationModuleLoaded: true,
+    envReady: result.failureReason !== 'Robinhood RPC is not configured',
+    finalReason: result.failureReason,
   }
 }
 

@@ -261,13 +261,22 @@ const POOL = '0xdddddddddddddddddddddddddddddddddddddddd'
   check('clusterMap simulationStatus is not hardcoded open_check', !/simulationStatus: hpResult\.ok \? 'ok' : 'open_check'/.test(routeSrc))
   check('fetchHoneypotSecurity does not default missing chainId to base', !/chainIdOrNetwork: string \| number = "base"/.test(honeypotSrc))
   check('missing chainId returns an explicit unavailable reason', /Trading simulation chain id was not provided/.test(honeypotSrc))
-  const poolIdx = routeSrc.indexOf('const lpPoolAddress = lpPool?.address ?? null')
+  // UPDATED, DISCLOSED (Robinhood trading-simulation "No selected Robinhood pool" diagnosis):
+  // simulation used to run right after `lpPoolAddress` (an early, generic pool candidate) —
+  // technically "after selected pool" per the old assertion, but that pool candidate could be
+  // empty/wrong for Robinhood chain even when LP Safety's own resolver (_robinhoodLpProofResult,
+  // ~700 lines later at the time) went on to find a real one. Simulation now runs after THAT
+  // resolver — the actual canonical, chain-confirmed pool identity LP Safety itself uses — not
+  // merely after the earlier, less-reliable candidate.
+  const canonicalPoolIdx = routeSrc.indexOf('const robinhoodProofSelectedPool = _robinhoodLpProofResult.proofAudit.selectedPoolAddress')
   const simIdx = routeSrc.indexOf('simulateRobinhoodHoneypot(')
   check('simulateRobinhoodHoneypot is called', simIdx >= 0)
-  check('simulateRobinhoodHoneypot runs after selected pool', poolIdx >= 0 && simIdx > poolIdx)
-  check('Robinhood sim is gated to robinhood chain', /if \(chain === 'robinhood'\) \{\s*const \{ result: rhSim/.test(routeSrc) || /if \(chain === 'robinhood'\) \{[\s\S]{0,200}simulateRobinhoodHoneypot/.test(routeSrc))
+  check('simulateRobinhoodHoneypot runs after the canonical LP-Safety-resolved pool, not just the early candidate', canonicalPoolIdx >= 0 && simIdx > canonicalPoolIdx)
+  check('Robinhood sim is gated to robinhood chain', /if \(chain === 'robinhood'\) \{[\s\S]{0,6000}const \{ result: rhSim/.test(routeSrc))
   check('sellable does not set hpResult.ok true', /hpResult\.ok = false/.test(routeSrc))
   check('route never marks Robinhood sim as honeypot.is ok', !/hpResult\.ok = true/.test(routeSrc))
+  check('simulation only uses a chain-confirmed canonical pool, never a wrong-chain candidate', /const canonicalRobinhoodSelectedPool = robinhoodSelectedPoolChainOk \? robinhoodProofSelectedPool : null/.test(routeSrc))
+  check('a pool that exists but is not chain-confirmed gets a distinct reason, not the generic "no pool" message', /robinhoodPoolExistsButChainUnconfirmed/.test(routeSrc))
 }
 
 // ── 9. Robinhood sim classify + UI ──────────────────────────────────────────
