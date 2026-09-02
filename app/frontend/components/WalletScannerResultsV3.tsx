@@ -26,6 +26,7 @@ export type WalletScannerResultsV3Props = {
   isFullRecoveryAdmin: boolean
   onDeepScan: () => void
   onAdminAction: () => void
+  deepScanDisabled?: boolean
   scanDurationMs: number | null
   moduleErrors: Record<string, string> | null
   // ONE CANONICAL RESULT, DISCLOSED (split-Wallet-Scanner-results fix task): Robinhood Chain's real
@@ -46,6 +47,7 @@ export function WalletScannerResultsV3({
   isFullRecoveryAdmin,
   onDeepScan,
   onAdminAction,
+  deepScanDisabled,
   scanDurationMs,
   moduleErrors,
   robinhoodResult,
@@ -61,6 +63,7 @@ export function WalletScannerResultsV3({
         isFullRecoveryAdmin={isFullRecoveryAdmin}
         onDeepScan={onDeepScan}
         onAdminAction={onAdminAction}
+        deepScanDisabled={deepScanDisabled}
         robinhoodResult={robinhoodResult}
       />
       <WalletScannerSummaryRowV3 report={report} robinhoodResult={robinhoodResult} />

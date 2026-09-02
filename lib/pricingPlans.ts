@@ -41,6 +41,13 @@ export function deepScanLimitLabel(plan: UserPlan): string {
   return `${limit} deep scans per day`
 }
 
+export function deepScanRemainingLabel(remaining: number | null, limit: number | null): string {
+  if (limit == null) return 'Unlimited'
+  const left = remaining ?? 0
+  if (limit === 1) return left === 1 ? '1 left today' : '0 left today'
+  return `${left} of ${limit} left today`
+}
+
 export function scanDailyLimitReachedMessage(plan: UserPlan, limit: number | null): string {
   if (limit == null) return `Daily deep scan limit reached on ${plan}.`
   const unit = limit === 1 ? '1 deep scan' : `${limit} deep scans`

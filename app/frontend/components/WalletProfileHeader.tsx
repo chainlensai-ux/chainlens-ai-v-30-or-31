@@ -131,6 +131,7 @@ export type WalletProfileHeaderProps = {
   isFullRecoveryAdmin: boolean
   onDeepScan: () => void
   onAdminAction: () => void
+  deepScanDisabled?: boolean
   // ONE CANONICAL RESULT, DISCLOSED (split-Wallet-Scanner-results fix task): optional — when present,
   // the hero total below and PortfolioIntelligenceCard merge Robinhood's real total in and stop
   // claiming Robinhood is excluded. Omitting it degrades exactly to this component's prior,
@@ -442,7 +443,8 @@ function BehaviorSummary({ report }: { report: WalletV2Report }) {
 
 // EXPORTED, DISCLOSED (Wallet Scanner V3 layout task): additive-only — see WalletOverview's own
 // export disclosure above for the reasoning.
-export function Actions({ loading, onDeepScan }: Pick<WalletProfileHeaderProps, 'loading' | 'isFullRecoveryAdmin' | 'onDeepScan' | 'onAdminAction'>) {
+export function Actions({ loading, onDeepScan, deepScanDisabled }: Pick<WalletProfileHeaderProps, 'loading' | 'isFullRecoveryAdmin' | 'onDeepScan' | 'onAdminAction' | 'deepScanDisabled'>) {
+  const disabled = loading || Boolean(deepScanDisabled)
   return (
     <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
       {/* Run Deep Scan is the sole action here — Smart Recovery / Admin Full Recovery removed
@@ -450,14 +452,15 @@ export function Actions({ loading, onDeepScan }: Pick<WalletProfileHeaderProps, 
       <button
         type="button"
         onClick={onDeepScan}
-        disabled={loading}
+        disabled={disabled}
         style={{
           padding: '10px 18px', borderRadius: '10px', border: 'none',
-          background: loading ? 'rgba(45,212,191,0.25)' : 'linear-gradient(135deg, #2DD4BF, #22c5ae)',
+          background: disabled ? 'rgba(45,212,191,0.25)' : 'linear-gradient(135deg, #2DD4BF, #22c5ae)',
           color: '#03121e', fontSize: '11px', fontWeight: 800,
-          letterSpacing: '0.08em', textTransform: 'uppercase', cursor: loading ? 'not-allowed' : 'pointer',
+          letterSpacing: '0.08em', textTransform: 'uppercase', cursor: disabled ? 'not-allowed' : 'pointer',
           fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
-          boxShadow: loading ? 'none' : '0 0 20px rgba(45,212,191,0.25)',
+          boxShadow: disabled ? 'none' : '0 0 20px rgba(45,212,191,0.25)',
+          opacity: deepScanDisabled ? 0.55 : 1,
         }}
       >
         Run Deep Scan
@@ -466,7 +469,7 @@ export function Actions({ loading, onDeepScan }: Pick<WalletProfileHeaderProps, 
   )
 }
 
-export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDeepScan, onAdminAction, robinhoodResult }: WalletProfileHeaderProps) {
+export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDeepScan, onAdminAction, robinhoodResult, deepScanDisabled }: WalletProfileHeaderProps) {
   if (!report) return null
 
   return (
@@ -499,7 +502,7 @@ export function WalletProfileHeader({ report, loading, isFullRecoveryAdmin, onDe
       <PnlAndConfidenceRow report={report} />
       <div style={{ height: '1px', background: 'rgba(255,255,255,0.06)' }} />
       <BehaviorSummary report={report} />
-      <Actions loading={loading} isFullRecoveryAdmin={isFullRecoveryAdmin} onDeepScan={onDeepScan} onAdminAction={onAdminAction} />
+      <Actions loading={loading} isFullRecoveryAdmin={isFullRecoveryAdmin} onDeepScan={onDeepScan} onAdminAction={onAdminAction} deepScanDisabled={deepScanDisabled} />
     </div>
   )
 }

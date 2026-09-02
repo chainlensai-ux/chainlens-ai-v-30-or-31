@@ -1,5 +1,11 @@
 import { SCAN_DAILY_LIMITS, type UserPlan } from './pricingPlans'
 
+// Daily deep-scan quota for Wallet Scanner deep mode only.
+// Token Scanner uses its own per-minute rate limit in /api/token and must not
+// call consumeDailyScan — otherwise Free's advertised 1 deep scan is burned
+// by a token lookup. `null` limit = unlimited (Elite). Do not coalesce null
+// with `??` (that would treat Elite as Free).
+
 const daily = new Map<string, { count: number; resetAt: number }>()
 
 function utcMidnightReset(now = Date.now()): number {
@@ -10,6 +16,25 @@ function utcMidnightReset(now = Date.now()): number {
 function planScanLimit(plan: UserPlan): number | null {
   if (Object.prototype.hasOwnProperty.call(SCAN_DAILY_LIMITS, plan)) return SCAN_DAILY_LIMITS[plan]
   return SCAN_DAILY_LIMITS.free
+}
+
+export type DeepScanQuotaSnapshot = {
+  plan: UserPlan
+  limit: number | null
+  remaining: number | null
+  used: number
+  unlimited: boolean
+}
+
+export function snapshotDailyScan(plan: UserPlan, actor: string): DeepScanQuotaSnapshot {
+  const peeked = peekDailyScan(plan, actor)
+  return {
+    plan,
+    limit: peeked.limit,
+    remaining: peeked.remaining,
+    used: peeked.count,
+    unlimited: peeked.limit == null,
+  }
 }
 
 export function consumeDailyScan(plan: UserPlan, actor: string): { allowed: boolean; limit: number | null; remaining: number | null } {

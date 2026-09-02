@@ -188,9 +188,11 @@ function sanitizePublicValue(value: unknown): unknown {
 // treats the same as missing evidence via `== null`/`??`) and gated scalars are set to `null`
 // (matching this codebase's existing "number | null" convention for these exact fields).
 // applyTokenScannerPlanGate is an identity no-op: Free includes holders, LP
-// Safety, Risk Engine, and dev checks. Daily scan quota is enforced at the
-// /api/token route, not by redacting evidence. The function is kept so every
-// cache-read and fresh-computation path still gates a copy per request.
+// Safety, Risk Engine, and dev checks. Token Scanner is not gated by the
+// wallet deep-scan quota (SCAN_DAILY_LIMITS) — that pool is Wallet Scanner
+// deep mode only. Token POST uses its own per-minute rate limit.
+// The function is kept so every cache-read and fresh-computation path still
+// gates a copy per request.
 
 export function applyTokenScannerPlanGate<T extends Record<string, unknown>>(payload: T, plan: 'free' | 'pro' | 'elite'): T {
   void plan
