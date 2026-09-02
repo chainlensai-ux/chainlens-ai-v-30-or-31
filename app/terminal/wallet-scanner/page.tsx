@@ -27,7 +27,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature, PlanGateSkeleton } from '@/lib/usePlan'
-import { deepScanRemainingLabel, scanDailyLimitReachedMessage } from '@/lib/pricingPlans'
+import { deepScanRemainingLabel, deepScanQuotaPeriod, scanDailyLimitReachedMessage } from '@/lib/pricingPlans'
 import { supabase } from '@/lib/supabaseClient'
 import { scanWalletV2, type WalletScanStageProgress, type WalletChainSelectionAudit, type ScanWalletStatusUpdate } from '@/app/frontend/api/scanWallet'
 import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
@@ -776,7 +776,7 @@ export default function WalletScannerPage() {
   const cortexRead = result ? buildCortexReadV2(result, robinhoodResult) : null
   const deepScanAtLimit = deepScanQuota != null && deepScanQuota.limit != null && (deepScanQuota.remaining ?? 0) <= 0
   const deepScanQuotaLabel = deepScanQuota
-    ? deepScanRemainingLabel(deepScanQuota.remaining, deepScanQuota.limit)
+    ? deepScanRemainingLabel(deepScanQuota.remaining, deepScanQuota.limit, deepScanQuotaPeriod(plan))
     : null
 
   return (

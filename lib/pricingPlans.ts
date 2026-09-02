@@ -34,24 +34,42 @@ export const SCAN_DAILY_LIMITS: Record<UserPlan, number | null> = {
 }
 export const SCAN_HISTORY_LIMITS = { free: 5, pro: 30, elite: 100 } as const
 
-export function deepScanLimitLabel(plan: UserPlan): string {
-  const limit = SCAN_DAILY_LIMITS[plan]
-  if (limit == null) return 'Unlimited deep scans'
-  if (limit === 1) return '1 deep scan per day'
-  return `${limit} deep scans per day`
+export type DeepScanQuotaPeriod = 'day' | 'month'
+
+export const SCAN_QUOTA_PERIOD: Record<UserPlan, DeepScanQuotaPeriod | null> = {
+  free: 'day',
+  pro: 'month',
+  elite: null,
 }
 
-export function deepScanRemainingLabel(remaining: number | null, limit: number | null): string {
-  if (limit == null) return 'Unlimited'
+export function deepScanQuotaPeriod(plan: UserPlan): DeepScanQuotaPeriod | null {
+  if (Object.prototype.hasOwnProperty.call(SCAN_QUOTA_PERIOD, plan)) return SCAN_QUOTA_PERIOD[plan]
+  return SCAN_QUOTA_PERIOD.free
+}
+
+export function deepScanLimitLabel(plan: UserPlan): string {
+  const limit = SCAN_DAILY_LIMITS[plan]
+  const period = deepScanQuotaPeriod(plan)
+  if (limit == null || period == null) return 'Unlimited deep scans'
+  if (limit === 1 && period === 'day') return '1 deep scan per day'
+  const unit = limit === 1 ? '1 deep scan' : `${limit} deep scans`
+  return `${unit} per ${period}`
+}
+
+export function deepScanRemainingLabel(remaining: number | null, limit: number | null, period: DeepScanQuotaPeriod | null = 'day'): string {
+  if (limit == null || period == null) return 'Unlimited'
   const left = remaining ?? 0
-  if (limit === 1) return left === 1 ? '1 left today' : '0 left today'
-  return `${left} of ${limit} left today`
+  const window = period === 'month' ? 'this month' : 'today'
+  if (limit === 1) return left === 1 ? `1 left ${window}` : `0 left ${window}`
+  return `${left} of ${limit} left ${window}`
 }
 
 export function scanDailyLimitReachedMessage(plan: UserPlan, limit: number | null): string {
-  if (limit == null) return `Daily deep scan limit reached on ${plan}.`
+  const period = deepScanQuotaPeriod(plan)
+  if (limit == null || period == null) return `Deep scan limit reached on ${plan}.`
   const unit = limit === 1 ? '1 deep scan' : `${limit} deep scans`
-  return `Daily deep scan limit reached (${unit} per day on ${plan}).`
+  const cadence = period === 'month' ? 'Monthly' : 'Daily'
+  return `${cadence} deep scan limit reached (${unit} per ${period} on ${plan}).`
 }
 
 // Saved Clark chats. `null` = unlimited (Elite). Pro is capped at 10 new chats.
@@ -266,7 +284,7 @@ export const PRICING_PROOF = [
   'Wallet Scanner and Portfolio Intelligence',
   'Watchlist on every plan',
   'Clark AI — on-chain analysis, not trading signals',
-  'Deep scans: 1 / day on Free, 30 / day on Pro, unlimited on Elite',
+  'Deep scans: 1 / day on Free, 30 / month on Pro, unlimited on Elite',
 ] as const
 
 export type PlanToolNavItem = { icon: string; name: string; href: string; note: string }
@@ -301,7 +319,7 @@ export const PLAN_TOOL_NAV: Array<{
     border: 'rgba(139,92,246,0.20)',
     tools: [
       { icon: '🧪', name: 'Token Scanner', href: '/terminal/token-scanner', note: 'Full token analysis' },
-      { icon: '👛', name: 'Wallet Scanner', href: '/terminal/wallet-scanner', note: 'Full wallet reads · 30 deep scans/day' },
+      { icon: '👛', name: 'Wallet Scanner', href: '/terminal/wallet-scanner', note: 'Full wallet reads · 30 deep scans/month' },
       { icon: '📡', name: 'Base Radar', href: '/terminal/base-radar', note: '' },
       { icon: '🤖', name: 'Clark AI', href: '/terminal/clark-ai', note: '50 prompts/day · 10 saved chats' },
     ],
