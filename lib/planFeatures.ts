@@ -4,6 +4,7 @@
 export type { UserPlan } from './pricingPlans'
 export {
   canAccessFeature,
+  canAccessFomoBoard,
   PLAN_FEATURES,
   PLAN_LABEL,
   PLAN_COLOR,

@@ -34,10 +34,10 @@
 
 import { useCallback, useSyncExternalStore } from 'react'
 import { supabase } from '@/lib/supabaseClient'
-import { canAccessFeature, type UserPlan } from '@/lib/planFeatures'
+import { canAccessFeature, canAccessFomoBoard, type UserPlan } from '@/lib/planFeatures'
 import ClaimTrialButton from '@/components/ClaimTrialButton'
 
-export { canAccessFeature }
+export { canAccessFeature, canAccessFomoBoard }
 export const PLAN_CACHE_KEY = 'chainlens_cached_plan'
 export const PLAN_CACHE_MAX_AGE_MS = 1000 * 60 * 30
 type CachedPlan = { plan: UserPlan; updatedAt: number; userId?: string | null; emailHash?: string | null; v: 2 }

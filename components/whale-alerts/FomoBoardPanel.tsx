@@ -8,6 +8,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabaseClient'
+import { usePlanWithLoading, canAccessFomoBoard } from '@/lib/usePlan'
 
 type FomoWindow = '24h' | '7d' | '30d' | 'all'
 
@@ -88,7 +89,63 @@ function fmtAgo(ms: number | null): string {
   return `${m}m ago`
 }
 
+export function FomoBoardLockedCard() {
+  return (
+    <div
+      data-testid="fomo-board-locked"
+      style={{
+        background: cardBg,
+        border: bdr,
+        borderRadius: 14,
+        padding: '22px 20px',
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 12,
+        maxWidth: '100%',
+        minWidth: 0,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+        <p style={{ margin: 0, fontSize: 15, fontWeight: 800, color: '#f1f5f9' }}>FOMO Board</p>
+        <span style={pillStyle('#facc15', 'rgba(250,204,21,0.12)', 'rgba(250,204,21,0.40)')}>Elite only</span>
+      </div>
+      <p style={{ margin: 0, fontSize: 13, color: '#cbd5e1', lineHeight: 1.55 }}>
+        Track high-velocity whale and momentum activity from one premium board.
+      </p>
+      <p style={{ margin: 0, fontSize: 12, color: '#94a3b8', lineHeight: 1.55 }}>
+        FOMO Board is an Elite-only feed for high-velocity whale and momentum activity.
+      </p>
+      <a
+        href="/pricing"
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          alignSelf: 'flex-start',
+          width: '100%',
+          maxWidth: 320,
+          minHeight: 44,
+          padding: '10px 16px',
+          borderRadius: 10,
+          background: 'linear-gradient(135deg,#d4a017,#facc15)',
+          color: '#1c1917',
+          fontSize: 13,
+          fontWeight: 800,
+          letterSpacing: '0.02em',
+          textDecoration: 'none',
+          boxSizing: 'border-box',
+        }}
+      >
+        Upgrade to Elite
+      </a>
+    </div>
+  )
+}
+
 export default function FomoBoardPanel() {
+  const { plan, loading: planLoading, betaEliteActive, elitePass } = usePlanWithLoading()
+  const unlockedByPass = Boolean(elitePass?.active && elitePass.unlocks.includes('whale-alerts'))
+  const hasAccess = canAccessFomoBoard(plan) || betaEliteActive || unlockedByPass
   const [window_, setWindow] = useState<FomoWindow>('24h')
   const [traders, setTraders] = useState<FomoTraderRow[]>([])
   const [audit, setAudit] = useState<FomoLeaderboardAudit | null>(null)
@@ -108,8 +165,14 @@ export default function FomoBoardPanel() {
   const requestCountThisPageLoad = useRef(0)
 
   const loadTrackedAddresses = useCallback(async () => {
+    if (!hasAccess) return
     try {
-      const res = await fetch('/api/whale-alerts/tracked-wallets', { cache: 'no-store' })
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      const res = await fetch('/api/whale-alerts/tracked-wallets', {
+        cache: 'no-store',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
       const json = await res.json().catch(() => null)
       if (res.ok && Array.isArray(json?.addresses)) {
         setTrackedAddresses(new Set((json.addresses as string[]).map((a) => a.toLowerCase())))
@@ -118,13 +181,19 @@ export default function FomoBoardPanel() {
     } catch {
       // Best-effort — Add buttons just won't pre-show "Tracked" for already-tracked wallets.
     }
-  }, [])
+  }, [hasAccess])
 
   const loadLeaderboard = useCallback(async (w: FomoWindow, reason: 'initial_load' | 'window_change' | 'manual_refresh') => {
+    if (!hasAccess) return
     setLoading(true)
     setError(null)
     try {
-      const res = await fetch(`/api/fomo/leaderboard?window=${w}&limit=100`, { cache: 'no-store' })
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      const res = await fetch(`/api/fomo/leaderboard?window=${w}&limit=100`, {
+        cache: 'no-store',
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
       const json = await res.json().catch(() => null)
       const a = json?.fomoLeaderboardAudit as FomoLeaderboardAudit | undefined
       if (a?.apiCalled) requestCountThisPageLoad.current += 1
@@ -145,14 +214,16 @@ export default function FomoBoardPanel() {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [hasAccess])
 
   const isFirstLoadRef = useRef(true)
   useEffect(() => {
+    if (!hasAccess || planLoading) return
     queueMicrotask(() => { void loadTrackedAddresses() })
-  }, [loadTrackedAddresses])
+  }, [hasAccess, planLoading, loadTrackedAddresses])
 
   useEffect(() => {
+    if (!hasAccess || planLoading) return
     const reason = isFirstLoadRef.current ? 'initial_load' : 'window_change'
     isFirstLoadRef.current = false
     queueMicrotask(() => { void loadLeaderboard(window_, reason) })
@@ -160,7 +231,7 @@ export default function FomoBoardPanel() {
     // deps, so this effect fires exactly once per real window change, never on remount alone once
     // the panel is kept mounted across tab switches (see the parent page's fomoBoardMounted).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [window_])
+  }, [hasAccess, planLoading, window_])
 
   useEffect(() => {
     if (!toast) return
@@ -169,6 +240,7 @@ export default function FomoBoardPanel() {
   }, [toast])
 
   async function handleAdd(row: FomoTraderRow) {
+    if (!hasAccess) return
     if (!row.evmWallet) return
     const addr = row.evmWallet
     setAddStates((prev) => ({ ...prev, [addr]: 'adding' }))
@@ -256,8 +328,19 @@ export default function FomoBoardPanel() {
     )
   }
 
+  if (planLoading) {
+    return (
+      <div aria-busy="true" style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }}>
+        <div className="cl-skeleton" style={{ height: 22, width: 'min(220px, 55%)', borderRadius: 8 }} />
+        <div className="cl-skeleton" style={{ height: 160, borderRadius: 14 }} />
+      </div>
+    )
+  }
+
+  if (!hasAccess) return <FomoBoardLockedCard />
+
   return (
-    <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', gap: 14 }}>
+    <div style={{ position: 'relative', display: 'flex', flexDirection: 'column', gap: 14, minWidth: 0, maxWidth: '100%' }}>
       {toast && (
         <div style={{ position: 'fixed', bottom: 24, right: 24, zIndex: 50, padding: '10px 16px', borderRadius: 10, background: 'rgba(15,23,32,0.96)', border: '1px solid rgba(45,212,191,0.35)', color: '#5eead4', fontSize: 12, fontWeight: 600, boxShadow: '0 8px 24px rgba(0,0,0,0.4)' }}>
           {toast}

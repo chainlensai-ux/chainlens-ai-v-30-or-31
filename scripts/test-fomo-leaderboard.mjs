@@ -6,7 +6,7 @@ import {
   clearFomoLeaderboardCache,
   FOMO_ALLOWED_WINDOWS,
 } from '../lib/server/fomoApi.ts'
-import { GET as fomoLeaderboardGET } from '../app/api/fomo/leaderboard/route.ts'
+import { GET as fomoLeaderboardGET, authorizeFomoLeaderboardRequest, FOMO_BOARD_ELITE_REQUIRED } from '../app/api/fomo/leaderboard/route.ts'
 
 // MODULE-INSTANCE NOTE, DISCLOSED: under tsx's module resolver (test-only — the real Next.js build
 // single-instances every module normally), a file imported both directly (this test) and
@@ -179,48 +179,58 @@ async function run() {
     assert.ok(['24h', '7d', '30d', 'all'].includes(w))
   }
 
-  // ── Route: caps limit at 100 ────────────────────────────────────────────────────────────────
-  // Uses window=24h — a cache key ("24h:100") no other route-level test below reuses.
+  // ── Route: Elite-only. Unauthenticated / non-Elite never hits the FOMO API. ────────────────
   {
-    mockFetchOnce(200, { data: Array.from({ length: 5 }, (_, i) => ({ rank: i + 1, handle: `t${i}` })) })
+    const getCalls = mockFetchOnce(200, { data: [{ rank: 1, handle: 'should-not-fetch' }] })
     const res = await fomoLeaderboardGET(new Request('http://localhost/api/fomo/leaderboard?window=24h&limit=99999'))
+    assert.equal(res.status, 403)
     const json = await res.json()
-    assert.equal(json.fomoLeaderboardAudit.limit, 100, 'a requested limit above 100 must be capped, not rejected')
+    assert.equal(json.error, 'elite_required')
+    assert.equal(json.message, 'FOMO Board requires Elite.')
+    assert.equal(json.error, FOMO_BOARD_ELITE_REQUIRED.error)
+    assert.equal(json.message, FOMO_BOARD_ELITE_REQUIRED.message)
+    assert.equal(getCalls(), 0, 'non-Elite 403 must not call the FOMO API')
+    assert.equal('traders' in json, false, '403 must not leak FOMO trader payload')
   }
 
-  // ── Route: requires the server API key (missing key never crashes, never leaks) ────────────
-  // Uses window=7d — a cache key ("7d:100") this route module instance has never touched, so this
-  // is guaranteed cache-cold regardless of whether clearFomoLeaderboardCache() reaches it.
   {
     delete process.env.FOMO_API_KEY
     const res = await fomoLeaderboardGET(new Request('http://localhost/api/fomo/leaderboard?window=7d'))
-    assert.equal(res.status, 503)
+    assert.equal(res.status, 403, 'missing key must not be reached before the Elite gate')
     const bodyText = JSON.stringify(await res.json())
     assert.doesNotMatch(bodyText, /test-fomo-key/, 'the response must never include the API key value')
     process.env.FOMO_API_KEY = 'test-fomo-key'
   }
 
-  // ── Route: successful response normalizes traders and never exposes the key ────────────────
-  // Uses window=30d — a cache key ("30d:100") this route module instance has never touched.
   {
     mockFetchOnce(200, {
       data: [
         { rank: 1, handle: 'top1', wallets: { evm: '0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }, holdings: 4 },
-        { rank: 2, handle: 'top2', wallets: { solana: 'Sol11111111111111111111111111111111111111' } },
+        { rank: 2, handle: 'top2', wallets: { solana: 'Sol11111111111111111111111111111111111' } },
       ],
     })
     const res = await fomoLeaderboardGET(new Request('http://localhost/api/fomo/leaderboard?window=30d&limit=100'))
-    assert.equal(res.status, 200)
+    assert.equal(res.status, 403, 'unauthenticated GET must not return FOMO data')
     const json = await res.json()
-    assert.equal(json.ok, true)
-    assert.equal(json.traders.length, 2)
-    assert.equal(json.traders[0].canAddToBaseTracker, true)
-    assert.equal(json.traders[0].holdingsCount, 4)
-    assert.equal(json.traders[1].walletStatus, 'sol_only')
-    const bodyText = JSON.stringify(json)
-    assert.doesNotMatch(bodyText, /test-fomo-key/, 'a successful response must never include the raw API key')
-    assert.equal(json.fomoLeaderboardAudit.evmResolvedCount, 1)
-    assert.equal(json.fomoLeaderboardAudit.solOnlyCount, 1)
+    assert.equal(json.error, 'elite_required')
+    assert.equal('traders' in json, false)
+  }
+
+  {
+    const freeDenied = authorizeFomoLeaderboardRequest('free')
+    const proDenied = authorizeFomoLeaderboardRequest('pro')
+    const eliteAllowed = authorizeFomoLeaderboardRequest('elite')
+    assert.equal(freeDenied.allowed, false)
+    assert.equal(proDenied.allowed, false)
+    if (!freeDenied.allowed) {
+      assert.equal(freeDenied.status, 403)
+      assert.equal(freeDenied.body.error, 'elite_required')
+      assert.equal(freeDenied.body.message, 'FOMO Board requires Elite.')
+    }
+    if (!proDenied.allowed) {
+      assert.equal(proDenied.body.error, 'elite_required')
+    }
+    assert.equal(eliteAllowed.allowed, true)
   }
 
   restore()
@@ -272,7 +282,7 @@ async function run() {
 
   // ── Whale Alerts page: Activity tab preserved, FOMO board is a separate tab/panel ──────────
   const pageSrc = fs.readFileSync(new URL('../app/terminal/whale-alerts/page.tsx', import.meta.url), 'utf8')
-  assert.match(pageSrc, /import FomoBoardPanel from '@\/components\/whale-alerts\/FomoBoardPanel'/, 'the FOMO board must be its own component, not inlined into the alert-feed rendering path')
+  assert.match(pageSrc, /import FomoBoardPanel(?:, \{ FomoBoardLockedCard \})? from '@\/components\/whale-alerts\/FomoBoardPanel'/, 'the FOMO board must be its own component, not inlined into the alert-feed rendering path')
   assert.match(pageSrc, /const \[activeTab, setActiveTab\] = useState<'activity' \| 'fomo'>\('activity'\)/, 'must default to the Activity tab so existing behavior is unchanged on load')
   // KEEP-MOUNTED FIX, DISCLOSED (live report: "clicking + Add does not visibly work"): the FOMO
   // board must stay mounted (visibility toggled via CSS) once opened once, rather than being
@@ -280,7 +290,7 @@ async function run() {
   // state and the loaded trader list, which is a very plausible cause of "Add looks like it did
   // nothing" if the user checks the tracked count on Activity and tabs back.
   assert.match(pageSrc, /const \[fomoBoardMounted, setFomoBoardMounted\] = useState\(false\)/, 'the FOMO board must track whether it has ever been opened, so it can stay mounted afterward')
-  assert.match(pageSrc, /\{fomoBoardMounted && \(/, 'the FOMO board panel must render (possibly hidden) once mounted, not unmount on every tab switch')
+  assert.match(pageSrc, /\{fomoBoardMounted && hasFomoAccess && \(/, 'the FOMO board panel must render (possibly hidden) once mounted, not unmount on every tab switch')
   assert.match(pageSrc, /display: activeTab === 'fomo' \? 'block' : 'none'/, 'tab switching must hide the FOMO board via CSS, not unmount it')
   assert.match(pageSrc, /\{activeTab === 'activity' && \(<>/, 'the entire existing Activity section (KPI row, controls, sync module, feed) must stay gated behind the Activity tab, not replaced')
   // Existing Activity state/behavior must be verifiably untouched: same filter state variables,

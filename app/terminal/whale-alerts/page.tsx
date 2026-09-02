@@ -1,10 +1,10 @@
 'use client'
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { usePlanWithLoading, LockedPanel, canAccessFeature, PlanGateSkeleton } from '@/lib/usePlan'
+import { usePlanWithLoading, LockedPanel, canAccessFeature, canAccessFomoBoard, PlanGateSkeleton } from '@/lib/usePlan'
 import { supabase } from '@/lib/supabaseClient'
 import { whaleHasScanEvidence, whaleKpiTile } from '@/lib/whaleFeedStatus'
-import FomoBoardPanel from '@/components/whale-alerts/FomoBoardPanel'
+import FomoBoardPanel, { FomoBoardLockedCard } from '@/components/whale-alerts/FomoBoardPanel'
 
 type WalletCtx = {
   shortAddress: string
@@ -315,7 +315,7 @@ function TokenAvatar({ tok, logoUrl, avatarBg, line }: {
 }
 
 export default function WhaleAlertsPage() {
-  const { plan, loading: planLoading, betaEliteActive } = usePlanWithLoading()
+  const { plan, loading: planLoading, betaEliteActive, elitePass } = usePlanWithLoading()
   // FOMO BOARD TAB, DISCLOSED: a second, separate section on this page ("Activity" vs "FOMO
   // board"), switched with a tab control — the existing Activity content (KPI row, controls, sync
   // module, alert feed) is untouched below, just wrapped in `activeTab === 'activity'` so none of
@@ -663,6 +663,7 @@ export default function WhaleAlertsPage() {
   // only reports loading:true when there is genuinely no cached plan to trust.
   if (planLoading) return <PlanGateSkeleton />
   if (!betaEliteActive && !canAccessFeature(plan, 'whale-alerts')) return <LockedPanel feature="whale-alerts" />
+  const hasFomoAccess = canAccessFomoBoard(plan) || betaEliteActive || Boolean(elitePass.active && elitePass.unlocks.includes('whale-alerts'))
 
   return (
     <div className="whale-alerts-page min-h-dvh overflow-x-hidden"
@@ -809,7 +810,9 @@ export default function WhaleAlertsPage() {
           onChange={(v) => { setActiveTab(v); if (v === 'fomo') setFomoBoardMounted(true) }}
         />
 
-        {fomoBoardMounted && (
+        {activeTab === 'fomo' && !hasFomoAccess && <FomoBoardLockedCard />}
+
+        {fomoBoardMounted && hasFomoAccess && (
           <div style={{ display: activeTab === 'fomo' ? 'block' : 'none' }}>
             <FomoBoardPanel />
           </div>

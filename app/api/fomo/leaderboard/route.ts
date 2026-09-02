@@ -1,14 +1,28 @@
 import { NextResponse } from "next/server";
 import { fetchFomoLeaderboard, FOMO_ALLOWED_WINDOWS, type FomoWindow } from "@/lib/server/fomoApi";
+import { getVerifiedUserPlan } from "@/lib/supabase/userSettings";
+import { canAccessFomoBoard } from "@/lib/planFeatures";
 
 // GET /api/fomo/leaderboard?window=24h&limit=100 — server-side, cached FOMO board read for the
-// Whale Alerts "FOMO board" tab. This is the ONLY place the app talks to the FOMO API; the browser
-// only ever calls this route. FOMO_API_KEY never leaves lib/server/fomoApi.ts and is never included
-// in this route's response.
+// Whale Alerts "FOMO board" tab. Elite-only. This is the ONLY place the app talks to the FOMO API;
+// the browser only ever calls this route. FOMO_API_KEY never leaves lib/server/fomoApi.ts and is
+// never included in this route's response. Non-Elite callers receive 403 and never trigger a FOMO fetch.
 
 const DEFAULT_WINDOW: FomoWindow = "24h";
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 100;
+
+export const FOMO_BOARD_ELITE_REQUIRED = {
+  error: "elite_required",
+  message: "FOMO Board requires Elite.",
+} as const;
+
+export function authorizeFomoLeaderboardRequest(plan: string | null | undefined):
+  | { allowed: true }
+  | { allowed: false; status: 403; body: typeof FOMO_BOARD_ELITE_REQUIRED } {
+  if (canAccessFomoBoard(plan)) return { allowed: true };
+  return { allowed: false, status: 403, body: FOMO_BOARD_ELITE_REQUIRED };
+}
 
 function errorMessage(reason: string | null): string {
   switch (reason) {
@@ -33,6 +47,12 @@ export async function GET(request: Request) {
     );
   }
   const window = rawWindow as FomoWindow;
+
+  const verifiedPlan = await getVerifiedUserPlan(request);
+  const access = authorizeFomoLeaderboardRequest(verifiedPlan);
+  if (!access.allowed) {
+    return NextResponse.json(access.body, { status: access.status });
+  }
 
   const rawLimitParam = url.searchParams.get("limit");
   const rawLimit = rawLimitParam == null ? DEFAULT_LIMIT : Number(rawLimitParam);

@@ -53,6 +53,10 @@ export function canAccessFeature(plan: UserPlan, feature: string): boolean {
   return allowed.includes(plan)
 }
 
+export function canAccessFomoBoard(plan: UserPlan | string | null | undefined): boolean {
+  return plan === 'elite'
+}
+
 export function clarkDailyLimit(plan: UserPlan | 'unauth' | null | undefined): number {
   if (plan === 'unauth' || plan == null) return CLARK_DAILY_UNAUTH
   return CLARK_DAILY_LIMITS[plan] ?? CLARK_DAILY_LIMITS.free
