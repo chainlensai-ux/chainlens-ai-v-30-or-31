@@ -4584,23 +4584,55 @@ export default function TerminalTokenScanner() {
     } catch { /* non-critical */ }
   }, [result])
 
+  // CHAIN-ID SUPPORT, DISCLOSED (Track This Token save-failure diagnosis): mirrors
+  // lib/server/watchlistValidation.ts's CHAIN_ID_BY_SLUG exactly — no secret/env value here, just
+  // the same public numeric-chainId convention app/api/token/route.ts already uses. Sent so the
+  // server can confirm (never silently override) the slug's own chainId, and so Robinhood (4663)
+  // is unambiguous in the saved row and in watchlistSaveAudit.
+  const WATCHLIST_CHAIN_ID_BY_SLUG: Record<string, number | null> = { base: 8453, eth: 1, bnb: 56, robinhood: 4663, solana: null }
+
   async function saveTrackedToken() {
     if (!result?.contract) return
     // SOLANA-CASE-SENSITIVE FIX, DISCLOSED: a Solana base58 mint address is case-sensitive, unlike
     // an EVM 0x address — unconditionally lowercasing it (the old behavior) silently corrupts it
     // into a different, non-existent address. Only ever lowercase the EVM shape.
     const normalizedContract = isValidSolanaMintAddress(result.contract as unknown) ? result.contract : result.contract.toLowerCase()
+    const effectiveChain = (result.chain ?? chain) as string
     // DUPLICATE-SAVE GUARD FIX, DISCLOSED (audit: "Save to watchlist" inserted unconditionally with
     // no duplicate check and no "already tracked" state — repeat clicks on the same token created
     // repeat rows). Same identity rule as the chain-strict delete: address + chain together.
-    const alreadyTracked = trackedTokens.some(t => t.address === normalizedContract && (t.chain ?? 'base') === (result.chain ?? chain))
+    const alreadyTracked = trackedTokens.some(t => t.address === normalizedContract && (t.chain ?? 'base') === effectiveChain)
     if (alreadyTracked) return
+
+    // OPTIMISTIC-SAVE-WITH-ROLLBACK FIX, DISCLOSED (Track This Token save-failure diagnosis): the
+    // sidebar/tracked-tokens list only ever updated after the full round-trip finished
+    // (refreshTrackedTokens(), a second network call) — a real save felt like nothing happened
+    // until both the write and a full reload completed. Insert the token into local state
+    // immediately so the sidebar reflects it instantly; on any failure (including duplicate,
+    // which isn't really a failure) reconcile against the real server response instead of leaving
+    // a token in the sidebar the server never actually saved.
+    const optimisticToken: TrackedToken = {
+      address: normalizedContract,
+      symbol: result.symbol ?? null,
+      name: result.name ?? null,
+      chain: effectiveChain,
+      risk_label: getRiskLabelDisplay(result.riskLabel),
+      score: result.riskScore ?? null,
+      saved_at: new Date().toISOString(),
+    }
+    setTrackedTokens(prev => [optimisticToken, ...prev])
     setTrackedSaving(true)
     setTrackedSaveError(null)
+    const rollback = () => setTrackedTokens(prev => prev.filter(t => !(t.address === normalizedContract && (t.chain ?? 'base') === effectiveChain && t.id == null)))
     try {
       const { data: { session } } = await supabase.auth.getSession()
       const authToken = session?.access_token
-      if (!authToken) { setTrackedLoggedOut(true); setTrackedUnavailable(false); return }
+      if (!authToken) {
+        rollback()
+        setTrackedLoggedOut(true)
+        setTrackedUnavailable(false)
+        return
+      }
       const res = await fetch('/api/watchlist/tokens', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
@@ -4610,26 +4642,45 @@ export default function TerminalTokenScanner() {
           name: result.name ?? null,
           // CHAIN-STORED WITH TOKEN (chain-strictness audit): the same 0x address on different
           // chains is a different token — the row must record which chain it was scanned on.
-          chain: (result.chain ?? chain) as string,
+          chain: effectiveChain,
+          chainId: WATCHLIST_CHAIN_ID_BY_SLUG[effectiveChain] ?? null,
           riskLabel: getRiskLabelDisplay(result.riskLabel),
           score: result.riskScore ?? null,
           scoreType: 'risk_score',
           scoreDirection: 'higher_is_riskier',
         }),
       })
+      const json = await res.json().catch(() => null)
       if (res.status === 401) {
+        rollback()
         setTrackedLoggedOut(true)
         return
       }
+      // ALREADY-TRACKED-IS-NOT-AN-ERROR FIX, DISCLOSED: the server now resolves a repeat save as
+      // a 200 with `duplicate: true` (a real row, not fabricated) instead of only ever a fresh
+      // insert — show "Already in watchlist" and keep the token marked tracked, never the
+      // generic save-failure copy for what is actually a success from the user's point of view.
+      if (res.ok && json?.duplicate === true) {
+        setTrackedSaveError(null)
+        setTrackedLoggedOut(false)
+        await refreshTrackedTokens()
+        return
+      }
       if (!res.ok) {
-        const json = await res.json().catch(() => null)
-        console.error('Failed to save tracked token', json?.error ?? res.status)
-        setTrackedSaveError('Could not save this token. Try again.')
+        rollback()
+        console.error('Failed to save tracked token', json?.reason ?? json?.error ?? res.status)
+        // SPECIFIC-REASON FIX, DISCLOSED: the server now returns a message specific to what
+        // actually went wrong (sign-in required, invalid payload, a real db error, ...) via
+        // lib/server/watchlistValidation.ts's WATCHLIST_SAVE_CLIENT_MESSAGE — show it instead of
+        // a single hardcoded string for every failure mode. The hardcoded generic string is now
+        // only the last-resort fallback for a response with no error message at all.
+        setTrackedSaveError(json?.error ?? 'Could not save this token. Try again.')
         return
       }
       setTrackedLoggedOut(false)
       await refreshTrackedTokens()
     } catch (saveError) {
+      rollback()
       console.error('Failed to save tracked token', saveError)
       setTrackedSaveError('Could not save this token. Try again.')
     } finally { setTrackedSaving(false) }

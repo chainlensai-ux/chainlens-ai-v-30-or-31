@@ -75,7 +75,14 @@ const solMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v' // USDC on Solana
 
 // ── 7. Tracked tokens store chain; delete is chain-scoped; badge not hardcoded ──
 {
-  assert.match(pageSrc, /chain: \(result\.chain \?\? chain\) as string/, 'tracked insert stores chain')
+  // UPDATED, DISCLOSED (Track This Token save-failure diagnosis): `chain: (result.chain ?? chain)
+  // as string` was pulled out into a named `effectiveChain` local (still the exact same
+  // expression, reused for the optimistic-save entry, the duplicate check, and the request body)
+  // so the value can't drift between the optimistic UI update and the actual network write —
+  // same chain-scoped storage guarantee this assertion exists to protect, expressed once instead
+  // of duplicated inline.
+  assert.match(pageSrc, /const effectiveChain = \(result\.chain \?\? chain\) as string/, 'tracked insert stores chain')
+  assert.match(pageSrc, /chain: effectiveChain,/, 'tracked insert request body uses the stored chain')
   assert.match(watchlistWriteSrc, /onConflict: 'user_id,address,chain'/, 'upsert conflict includes chain')
   assert.match(watchlistSrc, /watchlistTokenUpsertAttempts/, 'token watchlist write uses schema fallbacks')
   assert.match(watchlistSrc, /\.eq\('chain', attempt\.chain\)/, 'API delete filters by chain')
