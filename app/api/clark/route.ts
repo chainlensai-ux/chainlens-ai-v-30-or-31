@@ -11282,7 +11282,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
       reason: hasNewAddress ? "explicit_address" : "pending_memory",
     });
     if (!routed.address) {
-      if (memResolution.needsClarification && memResolution.clarificationQuestion) {
+      // DISCLOSED: memResolution only knows explicit addresses + remembered session entities — it
+      // has zero ability to resolve a spelled symbol like "AERO" (that needs network I/O, which
+      // this pure resolver deliberately excludes). Without the `!routed.symbol` guard here, a
+      // first-time "Liquidity check AERO" with no prior session memory would short-circuit straight
+      // to the generic "paste an address" clarification before ever reaching the real symbol
+      // resolver call below (resolveTokenSymbolToAddress, ~line 11360+), which is what actually
+      // resolves a plain-text symbol via /api/resolve's alias map + live DEX search.
+      if (!routed.symbol && memResolution.needsClarification && memResolution.clarificationQuestion) {
         followupAudit = { ...followupAudit, routeSelected: "ask_which_subject", reason: memResolution.ambiguityReason ?? "ambiguous_subject" };
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["memory"],
@@ -11294,7 +11301,7 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           clarkIntentLockAudit,
         };
       }
-      if (memResolution.resolvedSubjectType === "wallet" && memResolution.resolvedWallet && !memResolution.resolvedToken) {
+      if (!routed.symbol && memResolution.resolvedSubjectType === "wallet" && memResolution.resolvedWallet && !memResolution.resolvedToken) {
         followupAudit = { ...followupAudit, routeSelected: "not_applicable", resolvedAddress: memResolution.resolvedWallet, resolvedChain: memResolution.resolvedChain, reason: "last_subject_is_wallet" };
         return {
           feature: "clark-ai", chain, mode: "analysis", intent: "liquidity_scan", toolsUsed: ["memory"],
@@ -11312,10 +11319,14 @@ async function handleClarkAI(body: ClarkRequestBody, origin: string, authHeader?
           }),
         };
       }
-      const reuseAddress = memResolution.resolvedToken
+      // DISCLOSED: only fall back to a remembered subject when the prompt didn't itself name a new
+      // symbol — otherwise a newly spelled token ("Liquidity check AERO" after some earlier token
+      // was in memory) would get silently overridden by the OLD remembered address instead of being
+      // resolved fresh below.
+      const reuseAddress = routed.symbol ? null : (memResolution.resolvedToken
         ?? (isTokenLikeClarkSubject(sessionMem.lastClarkSubject) ? sessionMem.lastClarkSubject!.address : null)
         ?? sessionMem.lastToken?.address
-        ?? null;
+        ?? null);
       if (reuseAddress) {
         routed.address = reuseAddress;
         if (!routed.symbol) {

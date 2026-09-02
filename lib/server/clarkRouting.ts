@@ -831,6 +831,24 @@ export function classifyClarkPrompt(prompt: string): {
     return { intent: "token_scan", address: null, addresses, deep: false, symbol };
   }
 
+  // ---- Bare multi-word token NAME fallback ("aerodrome finance", "pepe coin") — no verb, no
+  // liquidity keyword, no other intent matched. Real project names are commonly typed as a plain
+  // lowercase phrase with zero command word (a natural follow-up to "which token do you mean?"),
+  // and the resolver this feeds (resolveTokenSymbolToAddress -> /api/resolve) already matches by
+  // NAME, not just symbol, via matchScore's exact_name path — so treat a short, plausible,
+  // non-question phrase as a token-name lookup instead of giving up with a generic clarification.
+  const BARE_NAME_GREETING_RE = /^(hi|hello|hey|yo|thanks|thank\s*you|yes|no|ok|okay|sup|what'?s\s+up|ping|test|lol)$/i;
+  const trimmedRaw = raw.trim();
+  if (
+    !address
+    && /^[a-z][a-z\s]{1,38}[a-z]$/i.test(trimmedRaw)
+    && trimmedRaw.split(/\s+/).length <= 4
+    && !BARE_NAME_GREETING_RE.test(trimmedRaw)
+    && !EDUCATIONAL_QUESTION_RE.test(t)
+  ) {
+    return { intent: "token_scan", address: null, addresses, deep: false, symbol: trimmedRaw };
+  }
+
   return { intent: "none", address, addresses, deep: false, symbol: null };
 }
 

@@ -1,4 +1,15 @@
 import { NextResponse } from 'next/server'
+import { isEvmAddress, isValidSolanaMintAddress } from '@/lib/solanaAddress'
+
+// DISCLOSED: base58 Solana mint addresses are case-sensitive — unlike EVM hex addresses, which are
+// safe to lowercase for comparison, lowercasing a Solana address changes it into a different,
+// invalid address. Only normalize case for the EVM shape.
+function normalizeCandidateAddress(addr: string): string {
+  return isEvmAddress(addr) ? addr.toLowerCase() : addr
+}
+function isResolvableContractAddress(addr: string): boolean {
+  return isEvmAddress(addr) || isValidSolanaMintAddress(addr)
+}
 
 const INTERNAL_ALIASES: Record<string, { address: string; symbol: string; name: string }> = {
   WETH:    { address: '0x4200000000000000000000000000000000000006', symbol: 'WETH',   name: 'Wrapped Ether' },
@@ -54,8 +65,11 @@ function chainBonus(chainId: string, prefer: string): number {
   const p = prefer.toLowerCase()
   if (p === 'base' && c === 'base') return 300
   if (p === 'eth' && (c === 'ethereum' || c === 'eth')) return 300
+  if (p === 'solana' && c === 'solana') return 300
+  if (p === 'bsc' && c === 'bsc') return 300
   if (c === 'ethereum' || c === 'eth') return 80
   if (c === 'base') return 80
+  if (c === 'solana') return 80
   if (['arbitrum', 'optimism', 'polygon', 'bsc', 'avalanche'].includes(c)) return 30
   return -100
 }
@@ -107,9 +121,10 @@ async function fetchDexScreener(query: string, prefer: string): Promise<Resolver
       if (typeof pair !== 'object' || pair === null) continue
       const p = pair as Record<string, unknown>
       const bt = p.baseToken as Record<string, unknown> | undefined
-      const addr = (bt?.address as string | undefined)?.toLowerCase()
+      const rawAddr = bt?.address as string | undefined
       const chainId = ((p.chainId as string | undefined) ?? 'unknown').toLowerCase()
-      if (!addr || !CA_REGEX.test(addr)) continue
+      if (!rawAddr || !isResolvableContractAddress(rawAddr)) continue
+      const addr = normalizeCandidateAddress(rawAddr)
       const key = `${addr}:${chainId}`
       if (seen.has(key)) continue
       seen.add(key)
@@ -161,8 +176,9 @@ async function fetchGeckoTerminal(query: string, prefer: string): Promise<Resolv
       const rel = (relId?.id as string) ?? ''
       const parts = rel.split('_')
       const network = parts[0]?.toLowerCase() ?? 'unknown'
-      const addr = parts.slice(1).join('_')?.toLowerCase()
-      if (!addr || !CA_REGEX.test(addr)) continue
+      const rawAddr = parts.slice(1).join('_')
+      if (!rawAddr || !isResolvableContractAddress(rawAddr)) continue
+      const addr = normalizeCandidateAddress(rawAddr)
       const key = `${addr}:${network}`
       if (seen.has(key)) continue
       seen.add(key)
@@ -229,9 +245,13 @@ export async function POST(req: Request) {
     const normalized = rawQuery.replace(/^\$/, '').trim()
     const upper = normalized.toUpperCase()
 
-    // 1. Direct CA — resolve immediately
+    // 1. Direct CA — resolve immediately (EVM lowercased for comparison; Solana mints are
+    // case-sensitive base58 and must be returned exactly as given).
     if (CA_REGEX.test(rawQuery)) {
       return NextResponse.json<ResolverResult>({ status: 'resolved', contractAddress: rawQuery.toLowerCase(), chain: prefer, bestCandidate: null, alternates: [], confidence: 'high', reason: 'Contract address provided directly.' })
+    }
+    if (isValidSolanaMintAddress(rawQuery)) {
+      return NextResponse.json<ResolverResult>({ status: 'resolved', contractAddress: rawQuery, chain: 'solana', bestCandidate: null, alternates: [], confidence: 'high', reason: 'Contract address provided directly.' })
     }
 
     // 2. Internal alias map — instant, no network call
