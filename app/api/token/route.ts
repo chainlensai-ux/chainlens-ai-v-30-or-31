@@ -6936,17 +6936,23 @@ export async function POST(req: Request) {
     const _proofApplicableEarly = lpProofApplicability === 'applicable'
     let lpProof: { lpLockStatus: 'locked' | 'burned' | 'unlocked' | 'unverified'; lpLockAmount: number | null; lpUnlockTime: number | null; lpLockProvider: 'PinkLock' | null; lpController: 'wallet' | 'contract' | 'burn' | 'lockContract' | 'unknown'; reasonCode?: string }
     let _lpProofSkipReason: string | null = null
-    if (!_proofApplicableEarly) {
-      lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown', reasonCode: 'proofNotApplicable' }
-      // Keep "pool model unknown" (proof may apply once confirmed) and "confirmed
-      // concentrated/protocol pool" (proof genuinely does not apply) as separate reasons —
-      // the latter wording must never be shown for an unverified/open-check pool model.
-      _lpProofSkipReason = lpProofApplicability === 'unknown'
-        ? 'LP proof skipped because the pool model is unknown. Standard lock/burn proof only applies after an ERC-20 LP token is confirmed.'
-        : lpProofApplicability === 'not_applicable'
-          ? 'Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool.'
-          : `LP proof skipped: no pool address available for LP proof (status ${lpControl.status}).`
-    } else if (chain === 'robinhood') {
+    // ROBINHOOD-APPLICABILITY-GATE FIX, DISCLOSED (Robinhood LP Safety verification-never-fires
+    // audit): this branch used to sit BEHIND the generic `!_proofApplicableEarly` gate below,
+    // which reads `lpControl.proofApplicability` — a value set earlier by the chain-agnostic
+    // dex/pool-type classifier, which the Robinhood overlay (a few hundred lines up) never
+    // touches. For a niche/new chain whose DEX isn't in that generic classifier's recognized set,
+    // proofApplicability silently comes back 'unknown' instead of 'applicable' even when
+    // resolveRobinhoodLpProof() — called unconditionally above for every Robinhood scan, and
+    // fully able to judge its own applicability (chain-confirmed pool, concentrated vs. not,
+    // LP token resolved vs. not) from real Blockscout/RPC evidence — already proved a real
+    // burn/lock/wallet-controlled state. Every Robinhood scan fell into the generic "skip, proof
+    // not applicable" branch below regardless of what robinhoodLpProof actually found, so real
+    // verified evidence could never surface: LP Safety always showed "LP lock not confirmed" /
+    // "LP controller not verified" / Exit Risk "Open Check" / "Partial Evidence" even for tokens
+    // whose LP was genuinely burned or wallet-controlled. Checking chain === 'robinhood' FIRST —
+    // independent of the generic gate — lets Robinhood's own resolver decide its own outcome, the
+    // same as it always could; nothing else about the branch's own logic changed.
+    if (chain === 'robinhood') {
       // ROBINHOOD: do not call PinkLock. PinkLock is pair-address keyed with no chain param and
       // is not a verified Robinhood locker. Burn/controller proof comes from robinhoodLpProof.
       if (_robinhoodLpProofResult?.classification === 'verified_burned') {
@@ -6960,6 +6966,16 @@ export async function POST(req: Request) {
       } else {
         lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown', reasonCode: _robinhoodLpProofResult?.proofAudit.status ?? 'robinhood_no_pinklock' }
       }
+    } else if (!_proofApplicableEarly) {
+      lpProof = { lpLockStatus: 'unverified', lpLockAmount: null, lpUnlockTime: null, lpLockProvider: null, lpController: 'unknown', reasonCode: 'proofNotApplicable' }
+      // Keep "pool model unknown" (proof may apply once confirmed) and "confirmed
+      // concentrated/protocol pool" (proof genuinely does not apply) as separate reasons —
+      // the latter wording must never be shown for an unverified/open-check pool model.
+      _lpProofSkipReason = lpProofApplicability === 'unknown'
+        ? 'LP proof skipped because the pool model is unknown. Standard lock/burn proof only applies after an ERC-20 LP token is confirmed.'
+        : lpProofApplicability === 'not_applicable'
+          ? 'Standard ERC-20 LP lock/burn proof does not apply to this concentrated-liquidity pool.'
+          : `LP proof skipped: no pool address available for LP proof (status ${lpControl.status}).`
     } else if (chain === 'eth' || chain === 'base' || chain === 'bnb') {
       // BNB/ROBINHOOD LOCK/BURN FIX, DISCLOSED (follow-up to the chain-expansion pass): resolveLpProof
       // only does two things — a PinkLock API lookup (keyed by pool address only, no chain param,

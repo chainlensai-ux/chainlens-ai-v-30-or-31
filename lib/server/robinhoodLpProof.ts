@@ -293,8 +293,22 @@ export async function fetchRobinhoodBlockscoutHolders(
 
 const BURN_ADDRESSES_SET = new Set<string>(ROBINHOOD_BURN_ADDRESSES)
 
+// TOP-HOLDER-FIRST ENRICHMENT FIX, DISCLOSED (Robinhood LP Safety verification-never-fires
+// audit): this used to slice the first 8 unknown-isContract rows in whatever order the
+// provider (Blockscout holders/transfers) happened to return them in — NOT sorted by share.
+// classifyRobinhoodLpHolders() ranks by pct and reads isContract off the TOP holder to decide
+// wallet_controlled vs. contract_controlled_unverified; if that dominant holder wasn't among
+// the arbitrary first 8, its isContract stayed null and classification fell through to the
+// generic "contract-vs-wallet proof did not resolve" partial_evidence branch — even when the
+// real top holder's contract status was only a single extra RPC call away. Sorting by pct
+// descending first (mirrors the ranking classifyRobinhoodLpHolders itself does) guarantees the
+// highest-share unknown rows are resolved first, so real evidence for the dominant holder is
+// never skipped in favor of resolving a handful of minor ones.
 async function enrichContractFlags(rows: RobinhoodLpHolderRow[]): Promise<RobinhoodLpHolderRow[]> {
-  const unknown = rows.filter((row) => row.isContract == null && !BURN_ADDRESSES_SET.has(row.address)).slice(0, 8)
+  const unknown = [...rows]
+    .filter((row) => row.isContract == null && !BURN_ADDRESSES_SET.has(row.address))
+    .sort((a, b) => (b.pct ?? 0) - (a.pct ?? 0))
+    .slice(0, 8)
   if (unknown.length === 0) return rows
   const flags = await Promise.all(unknown.map(async (row) => [row.address, await rpcIsContract(row.address)] as const))
   const map = new Map(flags)
