@@ -164,7 +164,7 @@ assert.ok(
 // 11. Clark reuses the trending merge logic IN-PROCESS (no fragile server self-fetch),
 //     pump-alerts is optional, and the new fetch-diagnostic debug fields are wired.
 assert.ok(
-  /import\s*\{\s*getMergedTrendingTokens\s*\}\s*from\s*"@\/app\/api\/trending\/route"/.test(routeSrc),
+  /import\s*\{\s*getMergedTrendingTokens\s*\}\s*from\s*['"]@\/lib\/server\/trendingTokens['"]/.test(routeSrc),
   'route.ts reuses getMergedTrendingTokens() directly instead of self-fetching /api/trending',
 )
 assert.ok(
@@ -188,10 +188,10 @@ assert.ok(
   'clarkMarketSource is trending_api whenever normalized trending rows exist',
 )
 
-// 12. trending/route.ts exports the shared in-process merge function used above.
+// 12. The shared merge function lives outside the Next route module so Next 16 can type it.
 assert.ok(
-  /export async function getMergedTrendingTokens\(/.test(fs.readFileSync(path.join(__dirname, '../app/api/trending/route.ts'), 'utf8')),
-  'trending/route.ts exports getMergedTrendingTokens for safe server-side reuse',
+  /export async function getMergedTrendingTokens\(/.test(fs.readFileSync(path.join(__dirname, '../lib/server/trendingTokens.ts'), 'utf8')),
+  'trendingTokens exports getMergedTrendingTokens for safe server-side reuse',
 )
 
 // 13. pickScanIdentifiers extracts a usable token scan target from any address field,

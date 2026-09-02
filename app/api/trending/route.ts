@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getOrFetchCached } from "@/lib/coingeckoCache";
 import { createRateLimiter, getClientIp } from "@/lib/server/rateLimit";
+import { getMergedTrendingTokens } from '@/lib/server/trendingTokens'
 
 export const dynamic = "force-dynamic";
 
@@ -163,34 +164,6 @@ async function fetchCoinGecko(): Promise<{ tokens: MergedToken[]; warning?: stri
   } catch {
     return { tokens: [] }
   }
-}
-
-// Shared in-process trending logic so server-side callers (e.g. the Clark market
-// handler) can reuse the exact same merged rows the dashboard Token Screener sees
-// WITHOUT a fragile self-fetch to /api/trending. Same GeckoTerminal + CoinGecko
-// sources as before — no new providers.
-export async function getMergedTrendingTokens(): Promise<{ data: MergedToken[]; warning?: string }> {
-  const [gtResult, cgResult] = await Promise.all([
-    fetchGT(),
-    fetchCoinGecko(),
-  ]);
-
-  const merged = [...gtResult.tokens, ...cgResult.tokens];
-
-  const deduped = Object.values(
-    merged.reduce<Record<string, MergedToken>>((acc, t) => {
-      if (t.symbol && !acc[t.symbol]) acc[t.symbol] = t;
-      return acc;
-    }, {})
-  );
-
-  deduped.sort((a, b) => {
-    const liqDiff = (b.liquidity ?? 0) - (a.liquidity ?? 0);
-    if (liqDiff !== 0) return liqDiff;
-    return (b.volume ?? 0) - (a.volume ?? 0);
-  });
-
-  return { data: deduped, warning: gtResult.warning ?? cgResult.warning };
 }
 
 export async function GET(req: NextRequest) {

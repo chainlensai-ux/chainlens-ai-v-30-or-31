@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { logRpcCall } from "@/lib/server/rpcDebug";
 import { getBaseMarketUniverse, NEW_BASE_POOL_MAX_AGE_HOURS, type BaseMarketCandidate, type BaseMarketMode } from "@/lib/server/baseMarketUniverse";
 import { fetchCoinGeckoBaseTrending } from "@/lib/server/coingeckoBaseTrending";
-import { getMergedTrendingTokens } from "@/app/api/trending/route";
+import { getMergedTrendingTokens } from '@/lib/server/trendingTokens';
 import { fetchHoneypotSecurity } from "@/lib/server/honeypotSecurity";
 import { isValidSolanaMintAddress } from "@/lib/solanaAddress";
 import { resolveTokenDeployer } from "@/lib/server/deployerResolver";
