@@ -27,6 +27,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { usePlanWithLoading, LockedPanel, canAccessFeature, PlanGateSkeleton } from '@/lib/usePlan'
+import { deepScanRemainingLabel, deepScanQuotaPeriod, scanDailyLimitReachedMessage } from '@/lib/pricingPlans'
 import { supabase } from '@/lib/supabaseClient'
 import { scanWalletV2, type WalletScanStageProgress, type WalletChainSelectionAudit, type ScanWalletStatusUpdate } from '@/app/frontend/api/scanWallet'
 import { logEngineConsistencyIfDev } from '@/app/frontend/lib/engineConsistencyCheck'
@@ -392,6 +393,7 @@ export default function WalletScannerPage() {
   // who lands on this page with ?debug=true.
   const [debugMode, setDebugMode] = useState(false)
   const [watchlistDeleting, setWatchlistDeleting] = useState<string | null>(null)
+  const [deepScanQuota, setDeepScanQuota] = useState<{ plan: string; limit: number | null; remaining: number | null } | null>(null)
 
   const isFullRecoveryAdmin = (signedInEmail ?? '').toLowerCase() === 'chainlensai@gmail.com'
 
@@ -425,6 +427,35 @@ export default function WalletScannerPage() {
     })
     return () => { cancelled = true }
   }, [])
+
+  async function refreshDeepScanQuota(signal?: { cancelled: boolean }) {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const token = session?.access_token
+      const res = await fetch('/api/wallet-scan/quota', {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      const json = await res.json().catch(() => null) as { plan?: string; limit?: number | null; remaining?: number | null } | null
+      if (signal?.cancelled) return
+      if (!json || typeof json !== 'object' || !('limit' in json) || !('remaining' in json)) return
+      setDeepScanQuota({
+        plan: typeof json.plan === 'string' ? json.plan : plan,
+        limit: json.limit ?? null,
+        remaining: json.remaining ?? null,
+      })
+    } catch {
+      // Quota display is additive — a failed peek must never block Scan / Deep Scan.
+    }
+  }
+
+  useEffect(() => {
+    const signal = { cancelled: false }
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- remaining deep-scan count for the Deep Scan button; never blocks Scan.
+    void refreshDeepScanQuota(signal)
+    return () => { signal.cancelled = true }
+    // Re-peek when the resolved plan changes (sign-in / beta elite).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plan])
 
   async function loadWalletWatchlist() {
     setWatchlistLoading(true)
@@ -553,6 +584,12 @@ export default function WalletScannerPage() {
       return
     }
 
+    if (mode === 'deep' && deepScanQuota && deepScanQuota.limit != null && (deepScanQuota.remaining ?? 0) <= 0) {
+      scanInFlightRef.current = false
+      setError(scanDailyLimitReachedMessage(plan, deepScanQuota.limit))
+      return
+    }
+
     setLoading(true)
     setError(null)
     setPartialSnapshot(null)
@@ -653,7 +690,11 @@ export default function WalletScannerPage() {
         return
       }
       if (!response.success || !response.data) {
-        throw new Error(response.error?.message ?? 'Scan failed')
+        const message = response.error?.message ?? 'Scan failed'
+        if (mode === 'deep' && /deep scan limit/i.test(message)) {
+          setDeepScanQuota((prev) => prev && prev.limit != null ? { ...prev, remaining: 0 } : prev)
+        }
+        throw new Error(message)
       }
       const report = response.data as WalletV2Report
       // WORKER-LEVEL CHAIN SELECTION AUDIT, DISCLOSED (Wallet Scanner chain selection fix, worker
@@ -700,6 +741,7 @@ export default function WalletScannerPage() {
       setJobStatusMessage(null)
       setCurrentJobId(null)
       setScanProgress(null)
+      if (mode === 'deep') void refreshDeepScanQuota()
     }
   }
 
@@ -749,6 +791,10 @@ export default function WalletScannerPage() {
   // scanned) as the main results card below — never a Base/ETH-only readout for a wallet that also
   // has a real Robinhood result on screen.
   const cortexRead = result ? buildCortexReadV2(result, robinhoodResult) : null
+  const deepScanAtLimit = deepScanQuota != null && deepScanQuota.limit != null && (deepScanQuota.remaining ?? 0) <= 0
+  const deepScanQuotaLabel = deepScanQuota
+    ? deepScanRemainingLabel(deepScanQuota.remaining, deepScanQuota.limit, deepScanQuotaPeriod(plan))
+    : null
 
   return (
     <>
@@ -851,14 +897,15 @@ export default function WalletScannerPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '12px', flexWrap: 'wrap', marginBottom: '24px' }}>
             <button
               onClick={() => void handleScan('deep')}
-              disabled={loading || !input.trim()}
-              title="Deep scan — holdings and portfolio first, then recovery and PnL."
+              disabled={loading || !input.trim() || deepScanAtLimit}
+              title={deepScanAtLimit ? scanDailyLimitReachedMessage(plan, deepScanQuota?.limit ?? null) : 'Deep scan — holdings and portfolio first, then recovery and PnL.'}
               style={{
                 display: 'inline-flex', alignItems: 'center', gap: '6px',
                 padding: '6px 13px', borderRadius: '8px', border: '1px solid rgba(45,212,191,0.45)',
                 background: 'rgba(45,212,191,0.08)', color: '#2DD4BF',
                 fontSize: '10px', fontWeight: 700, letterSpacing: '0.10em', textTransform: 'uppercase',
-                cursor: (loading || !input.trim()) ? 'not-allowed' : 'pointer',
+                cursor: (loading || !input.trim() || deepScanAtLimit) ? 'not-allowed' : 'pointer',
+                opacity: deepScanAtLimit ? 0.45 : 1,
                 fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)',
               }}
             >
@@ -866,6 +913,7 @@ export default function WalletScannerPage() {
             </button>
             <span style={{ fontSize: '10px', color: 'rgba(255,255,255,0.22)', fontFamily: 'var(--font-plex-mono, IBM Plex Mono, monospace)', letterSpacing: '0.04em' }}>
               Holdings + portfolio first · PnL and recovery follow
+              {deepScanQuotaLabel ? ` · ${deepScanQuotaLabel}` : ''}
             </span>
             {/* ROBINHOOD SEPARATE BUTTON REMOVED, DISCLOSED (multi-chain integration task): Robinhood
                 Chain is no longer a separate, bolt-on action — handleScan() above now fires
@@ -1039,6 +1087,7 @@ export default function WalletScannerPage() {
               isFullRecoveryAdmin={isFullRecoveryAdmin}
               onDeepScan={() => void handleScan('deep')}
               onAdminAction={() => void handleScan('deep')}
+              deepScanDisabled={deepScanAtLimit}
               scanDurationMs={scanDurationMs}
               moduleErrors={moduleErrors}
               robinhoodResult={robinhoodResult}

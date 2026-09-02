@@ -3,7 +3,7 @@ import { isAddress } from 'viem'
 import { WALLET_SCAN_QUEUE_UNAVAILABLE, WalletScanQueueUnavailableError, enqueueWalletScanJob, walletScanRedisConfigured } from '@/src/modules/walletScanQueue'
 import { getCurrentUserPlanFromBearerToken } from '@/lib/supabase/plans'
 import { canAccessFeature } from '@/lib/planFeatures'
-import { consumeDailyScan } from '@/lib/scanQuota'
+import { consumeDailyScan, snapshotDailyScan } from '@/lib/scanQuota'
 import { scanDailyLimitReachedMessage } from '@/lib/pricingPlans'
 import { buildWalletChainSelectionAudit } from '@/lib/server/walletChainSelectionAudit'
 import { isRobinhoodChainAvailable } from '@/lib/server/robinhoodChainConfig'
@@ -100,11 +100,16 @@ export async function POST(req: Request): Promise<Response> {
   if (!checkWalletScanRate(ip)) {
     return NextResponse.json({ error: { message: 'Rate limit reached. Try again shortly.', category: 'rate_limit' } }, { status: 429 })
   }
+  let deepScanQuota = snapshotDailyScan(plan, ip)
   if (wantsDeep) {
     const scanQuota = consumeDailyScan(plan, ip)
     if (!scanQuota.allowed) {
-      return NextResponse.json({ error: { message: scanDailyLimitReachedMessage(plan, scanQuota.limit), category: 'scan_limit' } }, { status: 429 })
+      return NextResponse.json({
+        error: { message: scanDailyLimitReachedMessage(plan, scanQuota.limit), category: 'scan_limit' },
+        scanQuota: snapshotDailyScan(plan, ip),
+      }, { status: 429 })
     }
+    deepScanQuota = snapshotDailyScan(plan, ip)
   }
 
   const jobId = crypto.randomUUID()
@@ -154,7 +159,7 @@ export async function POST(req: Request): Promise<Response> {
     })
   }
 
-  return NextResponse.json({ jobId, wallet, status: 'queued', walletChainSelectionAudit })
+  return NextResponse.json({ jobId, wallet, status: 'queued', walletChainSelectionAudit, scanQuota: deepScanQuota })
 }
 
 

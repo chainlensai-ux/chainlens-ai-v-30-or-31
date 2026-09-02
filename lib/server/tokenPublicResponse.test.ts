@@ -1,6 +1,7 @@
 // Tests for lib/server/tokenPublicResponse.ts's applyTokenScannerPlanGate.
 // Free now includes holders, LP Safety, Risk Engine, and dev checks — the gate
-// must not redact those sections. Quota is enforced at the route.
+// must not redact those sections. Wallet deep-scan quota is enforced at
+// /api/wallet-scan, not by redacting token evidence.
 //
 // Run with:
 //   npx tsx --test lib/server/tokenPublicResponse.test.ts

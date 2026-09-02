@@ -8,8 +8,6 @@ import { ROBINHOOD_SIM_CHAIN_ID, ROBINHOOD_SIM_UNSUPPORTED_REASON, classifyFromR
 import { simulateRobinhoodHoneypot, robinhoodSimToHpStatus, type RobinhoodTradingSimulationAudit } from "@/lib/server/robinhoodHoneypotSimulation";
 import { calculateTokenRiskScore } from "@/lib/server/riskScore";
 import { sanitizePublicTokenResponse, applyTokenScannerPlanGate, TOKEN_SCAN_RESPONSE_SCHEMA_VERSION } from "@/lib/server/tokenPublicResponse";
-import { consumeDailyScan } from "@/lib/scanQuota";
-import { scanDailyLimitReachedMessage } from "@/lib/pricingPlans";
 import { getTokenCache, setTokenCache } from "@/lib/server/cache/tokenCache";
 import {
   resolveTokenScanChainDecision,
@@ -3651,14 +3649,6 @@ function _buildDeterministicSummary(
 export async function POST(req: Request) {
   if (!(await checkRate(req))) return NextResponse.json({ error: "Rate limit reached. Try again shortly." }, { status: 429 })
   const _requestPlan = await getPlan(req)
-  const _scanQuota = consumeDailyScan(_requestPlan, getClientIp(req))
-  if (!_scanQuota.allowed) {
-    return NextResponse.json({
-      error: scanDailyLimitReachedMessage(_requestPlan, _scanQuota.limit),
-      category: 'scan_limit',
-      scanQuota: { limit: _scanQuota.limit, remaining: 0, plan: _requestPlan },
-    }, { status: 429 })
-  }
 
   // Hoisted outside the main try block so the fatal-error handler can still
   // report accurate resolver diagnostics for address-based scans.
